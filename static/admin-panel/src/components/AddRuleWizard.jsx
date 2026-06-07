@@ -15,6 +15,7 @@ import ReviewPanel from "./ReviewPanel";
 import SemanticConfig from "./SemanticConfig";
 import GenerateDocConfig from "./GenerateDocConfig";
 import ResearchConfig from "./ResearchConfig";
+import CommentConfig from "./CommentConfig";
 import FunctionBuilder from "./FunctionBuilder";
 
 const RULE_TYPE_OPTIONS = [
@@ -23,6 +24,7 @@ const RULE_TYPE_OPTIONS = [
   { value: "postfunction-semantic", label: "Semantic Post Function", desc: "AI modifies a field after transition" },
   { value: "postfunction-generate-doc", label: "Generate Document", desc: "AI writes a doc & attaches it to the issue" },
   { value: "postfunction-research", label: "Research & Save", desc: "Web-search a topic & save it to the doc library" },
+  { value: "postfunction-comment", label: "Add Comment", desc: "AI drafts & posts a comment after transition" },
   { value: "postfunction-static", label: "Static Post Function", desc: "Run custom code after transition" },
 ];
 
@@ -64,6 +66,7 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
   const [researchQuery, setResearchQuery] = useState("");
   const [researchTitle, setResearchTitle] = useState("");
   const [autoSelectResearchDoc, setAutoSelectResearchDoc] = useState(false);
+  const [commentPrompt, setCommentPrompt] = useState("");
   const [enableTools, setEnableTools] = useState(null); // null = auto, true = on, false = off
   // Doc library: selected reference docs that get fed into the AI prompt.
   // Used for validators/conditions and semantic post-functions.
@@ -173,6 +176,7 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
     if (ruleType === "condition" && (!fieldId || !prompt.trim())) return;
     if (ruleType === "postfunction-semantic" && !conditionPrompt.trim()) return;
     if (ruleType === "postfunction-generate-doc" && !contentPrompt.trim()) return;
+    if (ruleType === "postfunction-comment" && !commentPrompt.trim()) return;
     if (ruleType === "postfunction-static" && !functions.some((f) => f.code)) return;
 
     setSaving(true);
@@ -206,7 +210,9 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
             ? { type: ruleType, fieldId: fieldId || "description", prompt: contentPrompt, contentPrompt, docFormat, docTitlePrompt, attachComment, selectedDocIds, workflow: workflowData }
             : ruleType === "postfunction-research"
               ? { type: ruleType, fieldId: fieldId || "description", prompt: researchQuery, researchQuery, researchTitle, autoSelectResearchDoc, workflow: workflowData }
-              : { type: ruleType, fieldId: fieldId || "description", prompt: prompt || conditionPrompt, conditionPrompt, actionPrompt, actionFieldId, selectedDocIds, crossCheckClaims, workflow: workflowData }
+              : ruleType === "postfunction-comment"
+                ? { type: ruleType, fieldId: fieldId || "description", prompt: commentPrompt, commentPrompt, selectedDocIds, workflow: workflowData }
+                : { type: ruleType, fieldId: fieldId || "description", prompt: prompt || conditionPrompt, conditionPrompt, actionPrompt, actionFieldId, selectedDocIds, crossCheckClaims, workflow: workflowData }
         : { type: ruleType, fieldId: fieldId || "description", prompt, enableTools, selectedDocIds, workflow: workflowData };
 
       if (isPostFunction) {
@@ -295,7 +301,7 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
               setSelectedProject(null); setSelectedWorkflow(null); setSelectedTransition(null); setRuleType(null);
               setFieldId(""); setPrompt(""); setConditionPrompt(""); setActionPrompt(""); setActionFieldId(""); setCrossCheckClaims(false);
               setDocFormat("pdf"); setContentPrompt(""); setDocTitlePrompt(""); setAttachComment(false);
-              setResearchQuery(""); setResearchTitle(""); setAutoSelectResearchDoc(false);
+              setResearchQuery(""); setResearchTitle(""); setAutoSelectResearchDoc(false); setCommentPrompt("");
               setSelectedDocIds([]);
               setTestResult(null); setTestIssue("");
               setFunctions([{
@@ -832,6 +838,18 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
                 setResearchTitle={setResearchTitle}
                 autoSelectResearchDoc={autoSelectResearchDoc}
                 setAutoSelectResearchDoc={setAutoSelectResearchDoc}
+              />
+            )}
+
+            {ruleType === "postfunction-comment" && (
+              <CommentConfig
+                fieldId={fieldId}
+                setFieldId={setFieldId}
+                fields={fields}
+                loadingFields={loadingFields}
+                errorFields={null}
+                commentPrompt={commentPrompt}
+                setCommentPrompt={setCommentPrompt}
               />
             )}
 

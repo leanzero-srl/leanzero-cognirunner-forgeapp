@@ -1405,8 +1405,9 @@ const RULE_KEY_MAP = {
   validator: { ruleKey: "forge:expression-validator", moduleKey: "ai-text-field-validator" },
   condition: { ruleKey: "forge:expression-condition", moduleKey: "ai-text-field-condition" },
   "postfunction-semantic": { ruleKey: "forge:expression-post-function", moduleKey: "ai-semantic-post-function" },
-  // generate-doc reuses the semantic PF module; config.type drives runtime dispatch.
+  // generate-doc + research reuse the semantic PF module; config.type drives dispatch.
   "postfunction-generate-doc": { ruleKey: "forge:expression-post-function", moduleKey: "ai-semantic-post-function" },
+  "postfunction-research": { ruleKey: "forge:expression-post-function", moduleKey: "ai-semantic-post-function" },
   "postfunction-static": { ruleKey: "forge:expression-post-function", moduleKey: "ai-static-post-function" },
 };
 
@@ -3119,7 +3120,7 @@ export const serveAttachmentUpload = async (req) => {
  */
 resolver.define("registerPostFunction", async ({ payload, context }) => {
   try {
-    const { id, type, fieldId, prompt, conditionPrompt, actionPrompt, actionFieldId, functions, workflow, selectedDocIds, crossCheckClaims, docFormat, contentPrompt, docTitlePrompt, attachComment, stylePreset } = payload;
+    const { id, type, fieldId, prompt, conditionPrompt, actionPrompt, actionFieldId, functions, workflow, selectedDocIds, crossCheckClaims, docFormat, contentPrompt, docTitlePrompt, attachComment, stylePreset, researchQuery, researchTitle, autoSelectResearchDoc } = payload;
     if (!id) return { success: false, error: "Missing post-function ID" };
     if (!type) return { success: false, error: "Missing post-function type" };
 
@@ -3146,6 +3147,9 @@ resolver.define("registerPostFunction", async ({ payload, context }) => {
       docTitlePrompt: (docTitlePrompt || "").substring(0, 200),
       attachComment: !!attachComment,
       stylePreset: stylePreset || "",
+      researchQuery: (researchQuery || "").substring(0, 500),
+      researchTitle: (researchTitle || "").substring(0, 100),
+      autoSelectResearchDoc: !!autoSelectResearchDoc,
       functions: functions || [],
       workflow: workflow || {},
       disabled: existing >= 0 ? configs[existing].disabled : false,
@@ -4275,6 +4279,39 @@ resolver.define("testGenerateDocPostFunction", async ({ payload }) => {
       sourceField: sourceFieldId,
       sourceValue: (fieldValue || "").slice(0, 500),
       reason: `Would generate a ${docFormat || "pdf"} titled "${gen.title}" and attach it to the issue.`,
+      logs, executionTimeMs: Date.now() - startTime,
+    };
+  } catch (e) {
+    return { success: false, error: e.message, logs };
+  }
+});
+
+// Dry-run for the "research & save" action: runs the web search but does NOT save.
+resolver.define("testResearchPostFunction", async ({ payload }) => {
+  const startTime = Date.now();
+  const logs = [];
+  try {
+    const { issueKey, fieldId, researchQuery, researchTitle } = payload;
+    const sourceFieldId = fieldId || "description";
+    if (!(await mcpEnabled("webSearch"))) logs.push("NOTE: web-search MCP is not enabled — a real run would SKIP.");
+    const fieldValue = await getFieldValue(issueKey, sourceFieldId, null);
+    let query = String(researchQuery || "").trim();
+    if (query.includes("${")) query = query.replace(/\$\{(\w+)\}/g, (_, f) => (f === sourceFieldId || f === "field" ? (fieldValue || "") : "")).trim();
+    if (!query) query = String(fieldValue || "").slice(0, 300).trim();
+    if (!query) return { success: false, error: "No research query (set a query or ensure the source field has content).", logs };
+    logs.push(`Query: "${query.slice(0, 120)}"`);
+    const res = await runWebResearch(query, { timeoutMs: 18000 });
+    if (!res.ok) return { success: false, error: res.reason, logs, executionTimeMs: Date.now() - startTime };
+    const title = String(researchTitle || query).slice(0, 100);
+    logs.push(`Research returned ${res.text.length} chars`);
+    logs.push("DRY RUN — nothing was saved to the doc library.");
+    return {
+      success: true, decision: "RESEARCH",
+      title,
+      proposedValue: res.text.slice(0, 6000),
+      targetField: "Research doc (library)",
+      sourceField: sourceFieldId,
+      reason: `Would save a Research doc titled "${title}" to the library.`,
       logs, executionTimeMs: Date.now() - startTime,
     };
   } catch (e) {
@@ -6096,6 +6133,51 @@ const callDocProcessorCreate = async (format, { title, content, stylePreset }, u
   }
 };
 
+// --- Web research → DocRepository (Integration A) ---
+
+// Single-shot web research via the web-search MCP (full-web-search). The Serper key
+// is injected by the bridge from the admin web-search config (X-Serper-Key header).
+const runWebResearch = async (query, { timeoutMs = 18000 } = {}) => {
+  const q = String(query || "").trim();
+  if (!q) return { ok: false, reason: "empty research query" };
+  if (!(await mcpEnabled("webSearch"))) return { ok: false, reason: "web-search MCP not enabled" };
+  try {
+    const TIMED_OUT = Symbol("research-timeout");
+    const raced = await Promise.race([
+      callBridgeTool("webSearch", "full-web-search", { query: q }),
+      new Promise((resolve) => setTimeout(() => resolve(TIMED_OUT), timeoutMs)),
+    ]);
+    if (raced === TIMED_OUT) return { ok: false, reason: `web research timed out after ${Math.round(timeoutMs / 1000)}s` };
+    const text = typeof raced === "string" ? raced : "";
+    if (text.trim().length < 80) return { ok: false, reason: "web-search returned no usable content (check the Serper key in Settings)", raw: text.slice(0, 200) };
+    return { ok: true, text };
+  } catch (e) {
+    return { ok: false, reason: e.message };
+  }
+};
+
+// Persist research markdown into the shared DocRepository (dedup-update by title +
+// category so curated docs aren't evicted). Mirrors the saveContextDoc storage shape.
+const persistResearchDoc = async ({ title, markdown, category = "Research", actorAccountId }) => {
+  const content = String(markdown || "").slice(0, 180000);
+  if (!content.trim()) return { ok: false, reason: "no research content to save" };
+  const cleanTitle = (String(title || "Research").trim().slice(0, 100)) || "Research";
+  try {
+    let index = (await storage.get(DOC_REPO_INDEX_KEY)) || [];
+    const existing = index.find((d) => d.category === category && (d.title || "").toLowerCase() === cleanTitle.toLowerCase());
+    const id = existing ? existing.id : `${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    const doc = { id, title: cleanTitle, category, contentLength: content.length, createdBy: actorAccountId || null, createdAt: existing?.createdAt || new Date().toISOString() };
+    await storage.set(`${DOC_REPO_PREFIX}${id}`, { ...doc, content });
+    index = index.filter((d) => d.id !== id);
+    index.unshift(doc);
+    if (index.length > MAX_DOCS) index = index.slice(0, MAX_DOCS);
+    await storage.set(DOC_REPO_INDEX_KEY, index);
+    return { ok: true, id, updated: !!existing };
+  } catch (e) {
+    return { ok: false, reason: e.message };
+  }
+};
+
 const callOpenAIWithTools = async (fieldValue, validationPrompt, attachmentParts, issueContext, projectKey, validatedFieldId, deadline, contextDocsText) => {
   const apiKey = await getOpenAIKey();
   if (!apiKey) {
@@ -7287,6 +7369,56 @@ const executeGenerateDocPostFunction = async (issueKey, config) => {
 };
 
 /**
+ * Execute a "research & save" post-function (Integration A): runs a web search via the
+ * web-search MCP and saves the results into the shared DocRepository as a reusable
+ * Research doc (dedup-updated). Single-shot, fail-open.
+ */
+const executeResearchPostFunction = async (issueKey, config) => {
+  const trace = [];
+  const sourceFieldId = config.fieldId || "description";
+  if (!(await mcpEnabled("webSearch"))) {
+    trace.push("web-search MCP not enabled — skipping");
+    return { success: true, decision: "SKIP", reason: "Research needs the web-search MCP enabled (Settings → MCP Integrations).", trace };
+  }
+  // Resolve the query: support a ${field} template; else researchQuery; else the source field.
+  const fieldValue = await getFieldValue(issueKey, sourceFieldId, null);
+  let query = String(config.researchQuery || "").trim();
+  if (query.includes("${")) {
+    query = query.replace(/\$\{(\w+)\}/g, (_, f) => (f === sourceFieldId || f === "field" ? (fieldValue || "") : "")).trim();
+  }
+  if (!query) query = String(fieldValue || "").slice(0, 300).trim();
+  if (!query) return { success: true, decision: "SKIP", reason: "No research query (set a query, or ensure the source field has content).", trace };
+
+  trace.push(`Researching: "${query.slice(0, 120)}"`);
+  const res = await runWebResearch(query, { timeoutMs: 18000 });
+  if (!res.ok) { trace.push(`Research failed: ${res.reason}`); return { success: true, decision: "SKIP", reason: res.reason, trace }; }
+
+  const title = String(config.researchTitle || query).slice(0, 100);
+  const markdown = `# ${title}\n\n> Auto-researched by CogniRunner on a transition of ${issueKey}.\n\n${res.text}`;
+  const saved = await persistResearchDoc({ title, markdown, category: "Research", actorAccountId: config.actorAccountId });
+  if (!saved.ok) { trace.push(`Save failed: ${saved.reason}`); return { success: false, decision: "RESEARCH", reason: `Saving research to the doc library failed: ${saved.reason}`, trace }; }
+  trace.push(`${saved.updated ? "Updated" : "Saved"} research doc "${title}" (id ${saved.id})`);
+
+  // Optional: auto-select the new doc into THIS rule's selectedDocIds for later runs.
+  if (config.autoSelectResearchDoc) {
+    try {
+      const ruleId = config.ruleId || config.id;
+      if (ruleId) {
+        const configs = (await storage.get(CONFIG_REGISTRY_KEY)) || [];
+        const idx = configs.findIndex((c) => c.id === ruleId);
+        if (idx >= 0) {
+          const sel = new Set([...(configs[idx].selectedDocIds || []), saved.id]);
+          configs[idx].selectedDocIds = [...sel];
+          await storage.set(CONFIG_REGISTRY_KEY, configs);
+          trace.push("Auto-selected the research doc for this rule");
+        }
+      }
+    } catch (e) { trace.push(`Auto-select skipped: ${e.message}`); }
+  }
+  return { success: true, decision: "RESEARCH", reason: `${saved.updated ? "Updated" : "Saved"} research "${title}"`, docId: saved.id, trace };
+};
+
+/**
  * Execute a static post-function: runs sandboxed JavaScript code with an API surface.
  * Each function block runs sequentially; results are shared via variable chaining.
  */
@@ -7719,6 +7851,26 @@ export const executePostFunction = async (args) => {
       if (result.attachment) logEntry.attachment = result.attachment;
       if (result.trace) logEntry.trace = result.trace;
       if (result.recommendation) logEntry.recommendation = result.recommendation;
+      await storeLog(logEntry);
+    } else if (type.includes("research")) {
+      const result = await executeResearchPostFunction(issue.key, config);
+      console.log("Research PF result:", JSON.stringify(result));
+      const logEntry = {
+        type: "postfunction-research",
+        issueKey: issue.key,
+        fieldId: "research",
+        isValid: result.success,
+        decision: result.decision,
+        reason: result.reason,
+        executionTimeMs: Date.now() - pfStartTime,
+        ruleId: config.ruleId || config.id || null,
+        ruleName: config.workflow?.workflowName
+          ? `${config.workflow.workflowName} / ${config.workflow.transitionFromName || "Any"} → ${config.workflow.transitionToName || "?"}`
+          : null,
+        ruleWorkflow: config.workflow || null,
+      };
+      if (result.docId) logEntry.docId = result.docId;
+      if (result.trace) logEntry.trace = result.trace;
       await storeLog(logEntry);
     } else {
       // Unknown / missing type — write a diagnostic log entry instead of silently

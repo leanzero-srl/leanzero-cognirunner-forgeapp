@@ -14,6 +14,7 @@ import DocRepository from "./DocRepository";
 import ReviewPanel from "./ReviewPanel";
 import SemanticConfig from "./SemanticConfig";
 import GenerateDocConfig from "./GenerateDocConfig";
+import ResearchConfig from "./ResearchConfig";
 import FunctionBuilder from "./FunctionBuilder";
 
 const RULE_TYPE_OPTIONS = [
@@ -21,6 +22,7 @@ const RULE_TYPE_OPTIONS = [
   { value: "condition", label: "Condition", desc: "Hide transition if condition not met" },
   { value: "postfunction-semantic", label: "Semantic Post Function", desc: "AI modifies a field after transition" },
   { value: "postfunction-generate-doc", label: "Generate Document", desc: "AI writes a doc & attaches it to the issue" },
+  { value: "postfunction-research", label: "Research & Save", desc: "Web-search a topic & save it to the doc library" },
   { value: "postfunction-static", label: "Static Post Function", desc: "Run custom code after transition" },
 ];
 
@@ -59,6 +61,9 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
   const [contentPrompt, setContentPrompt] = useState("");
   const [docTitlePrompt, setDocTitlePrompt] = useState("");
   const [attachComment, setAttachComment] = useState(false);
+  const [researchQuery, setResearchQuery] = useState("");
+  const [researchTitle, setResearchTitle] = useState("");
+  const [autoSelectResearchDoc, setAutoSelectResearchDoc] = useState(false);
   const [enableTools, setEnableTools] = useState(null); // null = auto, true = on, false = off
   // Doc library: selected reference docs that get fed into the AI prompt.
   // Used for validators/conditions and semantic post-functions.
@@ -199,7 +204,9 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
           ? { type: ruleType, fieldId: "static-code", prompt: functions[0]?.operationPrompt || "", functions, workflow: workflowData }
           : ruleType === "postfunction-generate-doc"
             ? { type: ruleType, fieldId: fieldId || "description", prompt: contentPrompt, contentPrompt, docFormat, docTitlePrompt, attachComment, selectedDocIds, workflow: workflowData }
-            : { type: ruleType, fieldId: fieldId || "description", prompt: prompt || conditionPrompt, conditionPrompt, actionPrompt, actionFieldId, selectedDocIds, crossCheckClaims, workflow: workflowData }
+            : ruleType === "postfunction-research"
+              ? { type: ruleType, fieldId: fieldId || "description", prompt: researchQuery, researchQuery, researchTitle, autoSelectResearchDoc, workflow: workflowData }
+              : { type: ruleType, fieldId: fieldId || "description", prompt: prompt || conditionPrompt, conditionPrompt, actionPrompt, actionFieldId, selectedDocIds, crossCheckClaims, workflow: workflowData }
         : { type: ruleType, fieldId: fieldId || "description", prompt, enableTools, selectedDocIds, workflow: workflowData };
 
       if (isPostFunction) {
@@ -288,6 +295,7 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
               setSelectedProject(null); setSelectedWorkflow(null); setSelectedTransition(null); setRuleType(null);
               setFieldId(""); setPrompt(""); setConditionPrompt(""); setActionPrompt(""); setActionFieldId(""); setCrossCheckClaims(false);
               setDocFormat("pdf"); setContentPrompt(""); setDocTitlePrompt(""); setAttachComment(false);
+              setResearchQuery(""); setResearchTitle(""); setAutoSelectResearchDoc(false);
               setSelectedDocIds([]);
               setTestResult(null); setTestIssue("");
               setFunctions([{
@@ -808,6 +816,22 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
                 setAttachComment={setAttachComment}
                 selectedDocIds={selectedDocIds}
                 onDocSelectionChange={setSelectedDocIds}
+              />
+            )}
+
+            {ruleType === "postfunction-research" && (
+              <ResearchConfig
+                fieldId={fieldId}
+                setFieldId={setFieldId}
+                fields={fields}
+                loadingFields={loadingFields}
+                errorFields={null}
+                researchQuery={researchQuery}
+                setResearchQuery={setResearchQuery}
+                researchTitle={researchTitle}
+                setResearchTitle={setResearchTitle}
+                autoSelectResearchDoc={autoSelectResearchDoc}
+                setAutoSelectResearchDoc={setAutoSelectResearchDoc}
               />
             )}
 

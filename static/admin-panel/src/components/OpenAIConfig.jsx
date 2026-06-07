@@ -994,12 +994,13 @@ export default function OpenAIConfig({ invoke }) {
       </div>
 
       {/* MCP Integrations.
-          - context7 + web-search are LM-Studio-only (require local stdio
-            MCP processes — not exposed via the hosted-MCP path).
-          - doc-reader works on LM Studio (local stdio OR remote HTTP via
-            mcp.json) AND Anthropic (native mcp_servers field). For Anthropic,
-            it requires the hosted doc-processor URL+bearer below.
-            OpenAI / OpenRouter are deferred — surfaced as "coming soon". */}
+          - context7 is LM-Studio-only (requires a local stdio MCP process — not
+            exposed via a hosted URL we can proxy).
+          - doc-reader + web-search work on LM Studio (mcp.json), Anthropic
+            (native mcp_servers field), AND OpenAI / Azure / OpenRouter, where
+            CogniRunner acts as the MCP client and bridges the tool calls
+            (the cross-provider hosted-MCP bridge). They need the hosted URL +
+            bearer below (+ a Serper key for web-search). */}
       {provider === savedProvider && (
         <div className="card" style={{ marginTop: "16px" }}>
           <div style={{ padding: "16px" }}>
@@ -1010,7 +1011,7 @@ export default function OpenAIConfig({ invoke }) {
               <p style={{ margin: 0, fontSize: "12px", color: "var(--text-secondary)" }}>
                 {isLmStudio
                   ? <>Extra tools the model can call via your LM Studio's <code style={{ fontSize: "11px" }}>mcp.json</code>. Enable each and follow the setup steps. JQL agentic search is unaffected — it runs on a separate code path.</>
-                  : <>Document tools the model can call when this provider supports remote MCP. Configure the hosted <code style={{ fontSize: "11px" }}>doc-processor</code> below, then enable doc-reader. <code style={{ fontSize: "11px" }}>context7</code> and <code style={{ fontSize: "11px" }}>web-search</code> are LM-Studio-only (they require local processes).</>
+                  : <>Tools the model can call. Configure the hosted <code style={{ fontSize: "11px" }}>doc-processor</code> / <code style={{ fontSize: "11px" }}>web-search</code> below, then enable doc-reader / web-search — they work on Anthropic (native) and on OpenAI / Azure / OpenRouter, where CogniRunner bridges the tool calls. Only <code style={{ fontSize: "11px" }}>context7</code> stays LM-Studio-only (it needs a local process).</>
                 }
               </p>
             </div>
@@ -1054,9 +1055,9 @@ export default function OpenAIConfig({ invoke }) {
             )}
 
             {/* web-search — visible for ALL providers (LM Studio uses local
-                or remote mcp.json; Anthropic uses native mcp_servers; OpenAI
-                + OpenRouter are deferred — surfaced as "coming soon" in the
-                setup block below). */}
+                or remote mcp.json; Anthropic uses native mcp_servers; OpenAI /
+                Azure / OpenRouter use the cross-provider bridge — CogniRunner
+                proxies the tool calls). */}
             <McpCard
               mcpKey="webSearch"
               title="web-search"
@@ -1210,9 +1211,9 @@ npm install && npm run build`}
             />
 
             {/* doc-reader — visible for ALL providers (LM Studio uses local
-                or remote mcp.json; Anthropic uses native mcp_servers; OpenAI
-                + OpenRouter are deferred — surfaced as "coming soon" in the
-                setup block below). */}
+                or remote mcp.json; Anthropic uses native mcp_servers; OpenAI /
+                Azure / OpenRouter use the cross-provider bridge — CogniRunner
+                proxies the tool calls). */}
             <McpCard
               mcpKey="docReader"
               title="doc-reader"
@@ -1290,14 +1291,9 @@ npm install && npm run build`}
                       <strong>Anthropic native MCP:</strong> when this MCP is on AND the hosted doc-processor above is configured, CogniRunner attaches it to every Messages API request via the <code style={{ fontSize: "11px" }}>mcp_servers</code> field with the beta header <code style={{ fontSize: "11px" }}>anthropic-beta: mcp-client-2025-11-20</code>. Claude itself dispatches tool calls — no per-tool plumbing on our side. Single-use upload capability for each Jira issue is bound server-side and passed in the system prompt; the model cannot redirect uploads.
                     </div>
                   )}
-                  {(provider === "openai" || provider === "azure") && (
-                    <div style={{ padding: "8px 10px", marginBottom: "10px", background: "rgba(245, 158, 11, 0.08)", border: "1px solid rgba(245, 158, 11, 0.4)", borderRadius: "6px", fontSize: "11px" }}>
-                      <strong>{provider === "azure" ? "Azure OpenAI" : "OpenAI"} support: coming soon.</strong> Native remote-MCP requires the OpenAI Responses API (Chat Completions doesn't support it), which is a separate refactor. For now, use Anthropic or LM Studio for doc-reader. The hosted doc-processor URL above is reusable across providers when this lands.
-                    </div>
-                  )}
-                  {provider === "openrouter" && (
-                    <div style={{ padding: "8px 10px", marginBottom: "10px", background: "rgba(245, 158, 11, 0.08)", border: "1px solid rgba(245, 158, 11, 0.4)", borderRadius: "6px", fontSize: "11px" }}>
-                      <strong>OpenRouter support: coming soon.</strong> OpenRouter does not have native remote-MCP support yet; a tool-by-tool proxy is doable but separate work. For now, use Anthropic or LM Studio for doc-reader.
+                  {(provider === "openai" || provider === "azure" || provider === "openrouter") && (
+                    <div style={{ padding: "8px 10px", marginBottom: "10px", background: "rgba(34, 197, 94, 0.08)", border: "1px solid rgba(34, 197, 94, 0.4)", borderRadius: "6px", fontSize: "11px" }}>
+                      <strong>{provider === "azure" ? "Azure OpenAI" : provider === "openrouter" ? "OpenRouter" : "OpenAI"} support: enabled.</strong> These APIs have no native remote-MCP, so CogniRunner bridges it: during agentic validation it lists the enabled doc-reader tools, exposes them to the model, and proxies the tool calls to the hosted doc-processor. Configure the URL + Bearer above and enable doc-reader (and doc-writer for the create/edit tools).
                     </div>
                   )}
                   {isLmStudio && (

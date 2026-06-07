@@ -3913,7 +3913,7 @@ resolver.define("testValidation", async ({ payload }) => {
 
     // Determine if tools (JQL search) should be used
     const useTools = enableTools === true
-      || (enableTools !== false && promptRequiresTools(prompt));
+      || (enableTools !== false && (promptRequiresTools(prompt) || await mcpBridgeActive()));
     logs.push(`Mode: ${useTools ? "Agentic (JQL search enabled)" : "Standard"}`);
 
     // Extract project key for JQL scoping
@@ -5732,6 +5732,124 @@ Respond with JSON only.`;
  * @param {number} deadline - Unix timestamp (ms) after which we must bail out
  * @returns {{ isValid: boolean, reason: string, toolMeta?: object }}
  */
+// ============================================================================
+// Cross-provider hosted-MCP bridge
+// ============================================================================
+//
+// Anthropic reaches the hosted MCPs via its native mcp_servers connector, and LM
+// Studio loads them as plugins. The OpenAI-compatible providers (OpenAI, Azure,
+// OpenRouter) have NO native MCP support — so for those, CogniRunner acts as the
+// MCP CLIENT itself: it lists the enabled hosted MCP tools, exposes them to the
+// model as function tools, and proxies tool calls over the MCP Streamable-HTTP
+// protocol using plain fetch (no SDK — Forge-friendly; the servers are stateless
+// so no session handshake is needed). doc-reader needs only its tenant Bearer;
+// the keyless web-search MCP gets its Serper key from the WEB_SEARCH_SERPER_KEY
+// env var (`forge variables set WEB_SEARCH_SERPER_KEY <key>`). Egress to *.ts.net
+// is already allowlisted in manifest.yml.
+
+// Parse a Streamable-HTTP response body (JSON or SSE) into its JSON-RPC message.
+const parseMcpBody = (contentType, text) => {
+  if (String(contentType || "").includes("text/event-stream")) {
+    let json = null;
+    for (const line of String(text).split("\n")) {
+      const m = /^data:\s*(.+)$/.exec(line.trim());
+      if (m) { try { const o = JSON.parse(m[1]); if (o && o.jsonrpc) json = o; } catch { /* skip */ } }
+    }
+    return json;
+  }
+  try { return JSON.parse(text); } catch { return null; }
+};
+
+// One JSON-RPC POST to a hosted MCP (uses @forge/api fetch).
+const mcpRpc = async (url, headers, body) => {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "Accept": "application/json, text/event-stream", ...headers },
+    body: JSON.stringify(body),
+  });
+  const text = await res.text();
+  return { status: res.status, json: parseMcpBody(res.headers.get("content-type"), text) };
+};
+
+// Resolve a hosted MCP's connection (url + auth headers) for the bridge.
+const getBridgeMcp = async (mcpKey) => {
+  if (mcpKey === "docReader") {
+    const r = await getDocProcessorRemoteConfig();
+    if (!r) return null;
+    return { url: r.url, headers: { Authorization: `Bearer ${r.bearer}` } };
+  }
+  if (mcpKey === "webSearch") {
+    const r = await getWebSearchRemoteConfig();
+    if (!r) return null;
+    const headers = { Authorization: `Bearer ${r.bearer}` };
+    if (process.env.WEB_SEARCH_SERPER_KEY) headers["X-Serper-Key"] = process.env.WEB_SEARCH_SERPER_KEY;
+    return { url: r.url, headers };
+  }
+  return null;
+};
+
+// Execute a hosted MCP tool call; returns a string for the tool-result message.
+const callBridgeTool = async (mcpKey, toolName, args) => {
+  const cfg = await getBridgeMcp(mcpKey);
+  if (!cfg) return JSON.stringify({ error: `MCP "${mcpKey}" not configured` });
+  const r = await mcpRpc(cfg.url, cfg.headers, { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: toolName, arguments: args || {} } });
+  if (r.json?.error) return JSON.stringify({ error: r.json.error.message || "MCP tool error" });
+  const content = r.json?.result?.content || [];
+  const text = content.filter((b) => b && b.type === "text").map((b) => b.text).join("\n");
+  return text || JSON.stringify(r.json?.result ?? { ok: false });
+};
+
+// Build OpenAI function tools for the enabled hosted MCPs (doc-reader + web-search),
+// filtered to the curated allow-list. Returns { tools, index: { toolName -> mcpKey } }.
+// Best-effort: a tools/list failure for one MCP just omits it.
+const buildBridgeMcpTools = async () => {
+  const enabled = (await storage.get(LMSTUDIO_MCPS_KVS_KEY)) || {};
+  const result = { tools: [], index: {} };
+  for (const mcpKey of ["docReader", "webSearch"]) {
+    if (enabled[mcpKey] !== true) continue;
+    const info = SUPPORTED_MCPS[mcpKey];
+    let allow = info.allowedTools || [];
+    if (mcpKey === "docReader" && enabled.docWriter === true && Array.isArray(info.writeTools)) {
+      allow = [...allow, ...info.writeTools];
+    }
+    try {
+      const cfg = await getBridgeMcp(mcpKey);
+      if (!cfg) continue;
+      const r = await mcpRpc(cfg.url, cfg.headers, { jsonrpc: "2.0", id: 1, method: "tools/list" });
+      const allowSet = new Set(allow);
+      for (const t of (r.json?.result?.tools || [])) {
+        if (!allowSet.has(t.name) || result.index[t.name]) continue;
+        result.tools.push({
+          type: "function",
+          function: {
+            name: t.name,
+            description: String(t.description || "").slice(0, 1024),
+            parameters: t.inputSchema || { type: "object", properties: {} },
+          },
+        });
+        result.index[t.name] = mcpKey;
+      }
+    } catch (e) {
+      console.warn(`[mcp-bridge] tools/list failed for ${mcpKey}: ${e.message}`);
+    }
+  }
+  return result;
+};
+
+// True when the bridge should engage: a non-Anthropic provider (Anthropic uses
+// its native connector) with doc-reader or web-search enabled. Used to also flip
+// validation into the agentic tool loop so the MCP tools are actually offered.
+const mcpBridgeActive = async () => {
+  try {
+    const { provider } = await getProviderConfig();
+    if (provider === "anthropic") return false;
+    const enabled = (await storage.get(LMSTUDIO_MCPS_KVS_KEY)) || {};
+    return enabled.docReader === true || enabled.webSearch === true;
+  } catch {
+    return false;
+  }
+};
+
 const callOpenAIWithTools = async (fieldValue, validationPrompt, attachmentParts, issueContext, projectKey, validatedFieldId, deadline, contextDocsText) => {
   const apiKey = await getOpenAIKey();
   if (!apiKey) {
@@ -5772,6 +5890,24 @@ const callOpenAIWithTools = async (fieldValue, validationPrompt, attachmentParts
 
   // Build tool definitions from registry
   const tools = Object.values(TOOL_REGISTRY).map((t) => t.definition);
+
+  // Cross-provider hosted-MCP bridge: for non-Anthropic providers (Anthropic gets
+  // the MCPs natively), expose the enabled hosted MCP tools as function tools and
+  // proxy their execution below. Best-effort — never blocks validation.
+  let mcpBridgeIndex = {};
+  try {
+    const { provider: bridgeProvider } = await getProviderConfig();
+    if (bridgeProvider !== "anthropic") {
+      const bridge = await buildBridgeMcpTools();
+      if (bridge.tools.length > 0) {
+        tools.push(...bridge.tools);
+        mcpBridgeIndex = bridge.index;
+        console.log(`[mcp-bridge] exposed ${bridge.tools.length} hosted MCP tool(s) to ${bridgeProvider}: ${Object.keys(bridge.index).join(", ")}`);
+      }
+    }
+  } catch (e) {
+    console.warn("[mcp-bridge] setup skipped:", e.message);
+  }
 
   const projectScope = projectKey ? `project = ${projectKey}` : null;
 
@@ -5878,7 +6014,17 @@ RESPONSE FORMAT:
           const tool = TOOL_REGISTRY[toolName];
 
           let toolResult;
-          if (!tool) {
+          if (!tool && mcpBridgeIndex[toolName]) {
+            // Hosted-MCP tool → proxy to the remote MCP via the bridge.
+            try {
+              const args = JSON.parse(toolCall.function.arguments || "{}");
+              console.log(`Executing hosted-MCP tool "${toolName}" (${mcpBridgeIndex[toolName]}):`, JSON.stringify(args).slice(0, 200));
+              toolResult = await callBridgeTool(mcpBridgeIndex[toolName], toolName, args);
+            } catch (e) {
+              console.error(`Hosted-MCP tool "${toolName}" error:`, e);
+              toolResult = JSON.stringify({ error: `MCP tool error: ${e.message}` });
+            }
+          } else if (!tool) {
             toolResult = JSON.stringify({ error: `Unknown tool: ${toolName}` });
           } else if (Date.now() >= deadline) {
             toolResult = JSON.stringify({ error: "Timeout: cannot execute tool" });
@@ -6205,7 +6351,7 @@ export const validate = async (args) => {
   // Three-way logic: explicit override from config, or auto-detect from prompt keywords.
   const enableTools = configuration?.enableTools;
   const useTools = enableTools === true
-    || (enableTools !== false && promptRequiresTools(validationPrompt));
+    || (enableTools !== false && (promptRequiresTools(validationPrompt) || await mcpBridgeActive()));
 
   // Extract project key for JQL scoping.
   // From issue key (e.g., "PROJ-123" → "PROJ"), or from modifiedFields.project on CREATE.

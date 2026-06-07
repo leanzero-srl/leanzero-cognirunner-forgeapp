@@ -5,6 +5,17 @@
 > check it off and add a one-line "shipped: <commit/version>" note. **First execution step after
 > approval: copy this file to `CogniRunner/docs/ROADMAP.md` (in-repo, durable) and keep both in sync.**
 
+
+## ✅ Shipped so far (CogniRunner dev v16.13.0 + web-search live)
+- **P0** engine hardening H1–H6 (v16.8.0)
+- **P1** fact-check checkbox / Integration C (v16.10.0)
+- **P2** Generate Document / Integration B (v16.11.0)
+- **P3** Research & Save / Integration A (v16.12.0)
+- **P5** web-search self-documentation (live; committed to mcp-web-search main)
+- **P4 (start)** Add Comment native action (v16.13.0)
+
+**Remaining:** P4 rest (sub-task/transition/copy-derive + sandbox api.*); P6 website per-tool docs; config-ui parity for the new action types (generate-doc/research/comment — admin-panel works; workflow-editor UI deferred); opportunistic research-capture in validation; insights re-run.
+
 ---
 
 ## 1. Context & vision
@@ -96,7 +107,7 @@ The "standard library." Each capability ships as a **declarative AI-assisted act
 | Capability | ScriptRunner analogue | CogniRunner realization | Surface | Status |
 |---|---|---|---|---|
 | Set / copy / **derive** field value | Set field value | semantic PF + H1 validation; AI derives from issue | declarative (exists; add copy/derive) | [ ] |
-| **Add comment** (AI-drafted) | Add comment | `POST /issue/{key}/comment` | declarative + `api.addComment` | [ ] |
+| **Add comment** (AI-drafted) | Add comment | `POST /issue/{key}/comment` | declarative (shipped v16.13.0) | [x] |
 | **Create sub-task / linked issue** | Create sub-task | `POST /issue` + `/issueLink`, AI fills fields from parent | declarative + `api.createSubtask` | [ ] |
 | Transition related issues (parent/subtasks/linked) | Transition parent/subtasks | guardrailed wrapper over `transitionIssue` + JQL | declarative + sandbox | [ ] |
 | Links / labels / assignee / components | field/link ops | targeted REST | declarative small-ops | [ ] |
@@ -110,8 +121,8 @@ The "standard library." Each capability ships as a **declarative AI-assisted act
 First 3 native actions to add (highest value): **Add comment**, **Create sub-task/linked issue**, **Generate document & attach** (= WS-B). Then sandbox `api.*` parity for power users.
 
 ### WS-D — MCP tool polish & self-documentation
-- [ ] **web-search:** add a SERVER_INSTRUCTIONS-equivalent with a **tool-selection decision tree**; rewrite the trio descriptions with explicit "use X when…/use Y when…"; frame `research_and_save_to_markdown`, sitemap, and cache tools by use case. (Improves how *CogniRunner* drives them too.)
-- [ ] **doc-processor:** surface hidden limitations in descriptions (`edit-pptx` lossy rebuild, `drift-monitor` cap, `fact-check` cross-MCP creds); add "when to call" to `get-lineage`/`list-documents`; ensure no bare `{type:"string"}` schema fields.
+- [x] **web-search:** (shipped, live) added a SERVER_INSTRUCTIONS decision tree + rewrote the confusable-trio descriptions with "WHEN TO USE". Originally: add a SERVER_INSTRUCTIONS-equivalent with a **tool-selection decision tree**; rewrite the trio descriptions with explicit "use X when…/use Y when…"; frame `research_and_save_to_markdown`, sitemap, and cache tools by use case. (Improves how *CogniRunner* drives them too.)
+- [x] **doc-processor:** (already done in prior work) edit-pptx/drift-monitor/fact-check descriptions already surface their limitations. Originally: surface hidden limitations in descriptions (`edit-pptx` lossy rebuild, `drift-monitor` cap, `fact-check` cross-MCP creds); add "when to call" to `get-lineage`/`list-documents`; ensure no bare `{type:"string"}` schema fields.
 - [ ] Re-run `npm run insights` on both; fold the top real failures into the polish backlog (data-driven). Re-deploy live per standing rule.
 
 ### WS-E — Website documentation (start with the MCPs)
@@ -129,8 +140,8 @@ Each phase = one or more independent deploys. Read-and-verify before moving on.
 - **P1 — Integration C** (fact-check checkbox). ✅ shipped v16.10.0.
 - **P2 — Integration B** (generate-doc + attach). ✅ shipped v16.11.0.
 - **P3 — Integration A** (research → DocRepository). ✅ shipped v16.12.0 (Step-0: full-web-search is the query tool).
-- **P4 — Native toolbox** (Add comment, Create sub-task, transition wrappers, copy/derive field) + sandbox `api.*` parity. *WS-C.*
-- **P5 — MCP deep polish** (web-search SERVER_INSTRUCTIONS + decision trees; doc-processor limitation surfacing) + insights-driven fixes. *WS-D.*
+- **P4 — Native toolbox**. 🟡 STARTED v16.13.0 — "Add Comment" action shipped. Remaining: Create sub-task / linked issue, transition related issues, copy/derive field, sandbox `api.*` parity.
+- **P5 — MCP deep polish**. ✅ web-search self-docs shipped live (instructions + trio); doc-processor already surfaces limits. Remaining: insights-driven fixes (`npm run insights`).
 - **P6 — Website per-tool docs** (MCPs first via `tools.ts`/`<ToolDoc>`, then CogniRunner). *WS-E.*
 
 Cross-repo: doc-processor & web-search are already live and contract-stable; CogniRunner deploys per phase; website deploys independently (Amplify on Bitbucket master).

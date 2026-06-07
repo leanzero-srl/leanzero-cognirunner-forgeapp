@@ -2440,12 +2440,12 @@ const SUPPORTED_MCPS = {
     allowedTools: ["read-doc", "list-documents"],
     // Composed onto allowedTools by buildLmStudioIntegrations only when the
     // docWriter sub-toggle is on AND docReader is on. Tenant defaults: OFF.
-    writeTools: ["create-doc", "create-markdown", "create-excel", "detect-format", "list-templates"],
+    writeTools: ["create-doc", "create-markdown", "create-excel", "create-pdf", "detect-format", "list-templates"],
     guidance: "Use to read PDF, DOCX, or Excel content. Two input variants: (a) `filePath` for files on the LM Studio host, or (b) `url` + `authHeader` for remote files (Jira attachments come this way — the user prompt lists them). Use the URL variant EXACTLY as shown — don't modify it, don't retry on 404 (the capability is single-use). Action selection: `summary` for \"is this document about X?\" (cheapest); `focused` with a `query` when you need a specific fact; `indepth` ONLY when you need full extraction. The filename's extension determines which parser runs — don't override it. Hard cap of 50 MB per file on the doc-processor side.",
     // Appended to the MCP system-prompt block ONLY when docWriter is on (see
     // buildMcpSystemPrompt). The user-prompt also carries the bound uploadUrl
     // + uploadAuthHeader for THIS issue (see textContextParts assembly).
-    writeGuidance: "When you need to PRODUCE a document for the user, choose by content type: `create-markdown` for technical / code-heavy / implementation docs; `create-doc` for stakeholder / business / legal / report docs (DOCX, modern claude-like style); `create-excel` for tabular / numeric / financial data (XLSX). For each call you MUST pass the EXACT `uploadUrl` and `uploadAuthHeader` provided in the user prompt — they are bound to THIS issue and are single-use (do NOT retry on 404). Use clientHint:\"interactive\" so the response is concise.",
+    writeGuidance: "When you need to PRODUCE a document for the user, choose by content type AND intent: `create-markdown` for technical / code-heavy / implementation docs (READMEs, specs); `create-doc` for stakeholder / business / legal / report docs the user may keep EDITING (DOCX, modern claude-like style); `create-pdf` for FINAL / printable / send-as-PDF deliverables — invoices, letters, resumes, official or sign-ready documents (PDF, same 8 presets; pass toc:true for a clickable table of contents); `create-excel` for tabular / numeric / financial data (XLSX). Key nuance: DOCX = editable, PDF = final/print/send. For each call you MUST pass the EXACT `uploadUrl` and `uploadAuthHeader` provided in the user prompt — they are bound to THIS issue and are single-use (do NOT retry on 404). Use clientHint:\"interactive\" so the response is concise.",
   },
 };
 const LMSTUDIO_MCPS_KVS_KEY = "COGNIRUNNER_LMSTUDIO_MCPS";
@@ -2462,8 +2462,8 @@ resolver.define("getLmStudioMcps", async () => {
       webSearch: stored.webSearch === true,
       docReader: stored.docReader === true,
       // Sub-capability of doc-reader: when ON, the model can call create-doc /
-      // create-markdown / create-excel and have the resulting file attached to
-      // the issue under validation. Defaults OFF for ALL existing tenants.
+      // create-markdown / create-excel / create-pdf and have the resulting file
+      // attached to the issue under validation. Defaults OFF for ALL existing tenants.
       docWriter: stored.docWriter === true,
     };
     const supported = Object.entries(SUPPORTED_MCPS).map(([key, info]) => ({

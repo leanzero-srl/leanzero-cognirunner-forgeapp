@@ -13,12 +13,14 @@ import CustomSelect from "./CustomSelect";
 import DocRepository from "./DocRepository";
 import ReviewPanel from "./ReviewPanel";
 import SemanticConfig from "./SemanticConfig";
+import GenerateDocConfig from "./GenerateDocConfig";
 import FunctionBuilder from "./FunctionBuilder";
 
 const RULE_TYPE_OPTIONS = [
   { value: "validator", label: "Validator", desc: "Block transition if validation fails" },
   { value: "condition", label: "Condition", desc: "Hide transition if condition not met" },
   { value: "postfunction-semantic", label: "Semantic Post Function", desc: "AI modifies a field after transition" },
+  { value: "postfunction-generate-doc", label: "Generate Document", desc: "AI writes a doc & attaches it to the issue" },
   { value: "postfunction-static", label: "Static Post Function", desc: "Run custom code after transition" },
 ];
 
@@ -53,6 +55,10 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
   const [actionPrompt, setActionPrompt] = useState("");
   const [actionFieldId, setActionFieldId] = useState("");
   const [crossCheckClaims, setCrossCheckClaims] = useState(false);
+  const [docFormat, setDocFormat] = useState("pdf");
+  const [contentPrompt, setContentPrompt] = useState("");
+  const [docTitlePrompt, setDocTitlePrompt] = useState("");
+  const [attachComment, setAttachComment] = useState(false);
   const [enableTools, setEnableTools] = useState(null); // null = auto, true = on, false = off
   // Doc library: selected reference docs that get fed into the AI prompt.
   // Used for validators/conditions and semantic post-functions.
@@ -161,6 +167,7 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
     if (ruleType === "validator" && (!fieldId || !prompt.trim())) return;
     if (ruleType === "condition" && (!fieldId || !prompt.trim())) return;
     if (ruleType === "postfunction-semantic" && !conditionPrompt.trim()) return;
+    if (ruleType === "postfunction-generate-doc" && !contentPrompt.trim()) return;
     if (ruleType === "postfunction-static" && !functions.some((f) => f.code)) return;
 
     setSaving(true);
@@ -190,7 +197,9 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
       const configPayload = isPostFunction
         ? ruleType === "postfunction-static"
           ? { type: ruleType, fieldId: "static-code", prompt: functions[0]?.operationPrompt || "", functions, workflow: workflowData }
-          : { type: ruleType, fieldId: fieldId || "description", prompt: prompt || conditionPrompt, conditionPrompt, actionPrompt, actionFieldId, selectedDocIds, crossCheckClaims, workflow: workflowData }
+          : ruleType === "postfunction-generate-doc"
+            ? { type: ruleType, fieldId: fieldId || "description", prompt: contentPrompt, contentPrompt, docFormat, docTitlePrompt, attachComment, selectedDocIds, workflow: workflowData }
+            : { type: ruleType, fieldId: fieldId || "description", prompt: prompt || conditionPrompt, conditionPrompt, actionPrompt, actionFieldId, selectedDocIds, crossCheckClaims, workflow: workflowData }
         : { type: ruleType, fieldId: fieldId || "description", prompt, enableTools, selectedDocIds, workflow: workflowData };
 
       if (isPostFunction) {
@@ -278,6 +287,7 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
               setCreated(false); setStep(1); setSubmitted(false);
               setSelectedProject(null); setSelectedWorkflow(null); setSelectedTransition(null); setRuleType(null);
               setFieldId(""); setPrompt(""); setConditionPrompt(""); setActionPrompt(""); setActionFieldId(""); setCrossCheckClaims(false);
+              setDocFormat("pdf"); setContentPrompt(""); setDocTitlePrompt(""); setAttachComment(false);
               setSelectedDocIds([]);
               setTestResult(null); setTestIssue("");
               setFunctions([{
@@ -778,6 +788,26 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
                 onDocSelectionChange={setSelectedDocIds}
                 crossCheckClaims={crossCheckClaims}
                 setCrossCheckClaims={setCrossCheckClaims}
+              />
+            )}
+
+            {ruleType === "postfunction-generate-doc" && (
+              <GenerateDocConfig
+                fieldId={fieldId}
+                setFieldId={setFieldId}
+                fields={fields}
+                loadingFields={loadingFields}
+                errorFields={null}
+                docFormat={docFormat}
+                setDocFormat={setDocFormat}
+                contentPrompt={contentPrompt}
+                setContentPrompt={setContentPrompt}
+                docTitlePrompt={docTitlePrompt}
+                setDocTitlePrompt={setDocTitlePrompt}
+                attachComment={attachComment}
+                setAttachComment={setAttachComment}
+                selectedDocIds={selectedDocIds}
+                onDocSelectionChange={setSelectedDocIds}
               />
             )}
 

@@ -52,6 +52,7 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
   const [conditionPrompt, setConditionPrompt] = useState("");
   const [actionPrompt, setActionPrompt] = useState("");
   const [actionFieldId, setActionFieldId] = useState("");
+  const [crossCheckClaims, setCrossCheckClaims] = useState(false);
   const [enableTools, setEnableTools] = useState(null); // null = auto, true = on, false = off
   // Doc library: selected reference docs that get fed into the AI prompt.
   // Used for validators/conditions and semantic post-functions.
@@ -189,7 +190,7 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
       const configPayload = isPostFunction
         ? ruleType === "postfunction-static"
           ? { type: ruleType, fieldId: "static-code", prompt: functions[0]?.operationPrompt || "", functions, workflow: workflowData }
-          : { type: ruleType, fieldId: fieldId || "description", prompt: prompt || conditionPrompt, conditionPrompt, actionPrompt, actionFieldId, selectedDocIds, workflow: workflowData }
+          : { type: ruleType, fieldId: fieldId || "description", prompt: prompt || conditionPrompt, conditionPrompt, actionPrompt, actionFieldId, selectedDocIds, crossCheckClaims, workflow: workflowData }
         : { type: ruleType, fieldId: fieldId || "description", prompt, enableTools, selectedDocIds, workflow: workflowData };
 
       if (isPostFunction) {
@@ -276,7 +277,7 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
             <button className="btn-small btn-edit" onClick={() => {
               setCreated(false); setStep(1); setSubmitted(false);
               setSelectedProject(null); setSelectedWorkflow(null); setSelectedTransition(null); setRuleType(null);
-              setFieldId(""); setPrompt(""); setConditionPrompt(""); setActionPrompt(""); setActionFieldId("");
+              setFieldId(""); setPrompt(""); setConditionPrompt(""); setActionPrompt(""); setActionFieldId(""); setCrossCheckClaims(false);
               setSelectedDocIds([]);
               setTestResult(null); setTestIssue("");
               setFunctions([{
@@ -775,6 +776,8 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
                 errorFields={null}
                 selectedDocIds={selectedDocIds}
                 onDocSelectionChange={setSelectedDocIds}
+                crossCheckClaims={crossCheckClaims}
+                setCrossCheckClaims={setCrossCheckClaims}
               />
             )}
 

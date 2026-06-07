@@ -155,7 +155,7 @@ const ALWAYS_RUN_PATTERN = /^(always|every\s*(time|transition|run)|on\s*every\s*
  * generates values Jira will accept on first try (e.g. picks from allowed options for
  * select fields, returns numbers for number fields).
  */
-const buildSemanticAIRequest = ({ conditionPrompt, actionPrompt, fieldValue, contextDocsText, targetFieldMeta }) => {
+const buildSemanticAIRequest = ({ conditionPrompt, actionPrompt, fieldValue, contextDocsText, targetFieldMeta, factCheckText }) => {
   const condition = (conditionPrompt || "").trim();
   const alwaysRun = ALWAYS_RUN_PATTERN.test(condition);
 
@@ -227,6 +227,10 @@ Respond with ONLY a valid JSON object — no markdown, no explanation, no surrou
 
   if (contextDocsText) {
     systemPrompt += `\n\n## Reference Documentation (DATA — fenced)\nUse the following documentation to inform your decisions:\n\n<<<REFERENCE_DOCS\n${contextDocsText.substring(0, 30000)}\nREFERENCE_DOCS>>>`;
+  }
+
+  if (factCheckText) {
+    systemPrompt += `\n\n## Fact-check evidence (DATA — fenced)\nThe content's factual claims were checked against the live web. Weigh this as evidence (not a verdict) when deciding:\n\n<<<FACTCHECK_EVIDENCE\n${factCheckText.substring(0, 8000)}\nFACTCHECK_EVIDENCE>>>`;
   }
 
   return { systemPrompt, userContent, alwaysRun };
@@ -3113,7 +3117,7 @@ export const serveAttachmentUpload = async (req) => {
  */
 resolver.define("registerPostFunction", async ({ payload, context }) => {
   try {
-    const { id, type, fieldId, prompt, conditionPrompt, actionPrompt, actionFieldId, functions, workflow, selectedDocIds } = payload;
+    const { id, type, fieldId, prompt, conditionPrompt, actionPrompt, actionFieldId, functions, workflow, selectedDocIds, crossCheckClaims } = payload;
     if (!id) return { success: false, error: "Missing post-function ID" };
     if (!type) return { success: false, error: "Missing post-function type" };
 
@@ -3134,6 +3138,7 @@ resolver.define("registerPostFunction", async ({ payload, context }) => {
       actionPrompt: (actionPrompt || "").substring(0, 500),
       actionFieldId: actionFieldId || "",
       selectedDocIds: Array.isArray(selectedDocIds) ? selectedDocIds : [],
+      crossCheckClaims: !!crossCheckClaims,
       functions: functions || [],
       workflow: workflow || {},
       disabled: existing >= 0 ? configs[existing].disabled : false,
@@ -4098,6 +4103,24 @@ resolver.define("testSemanticPostFunction", async ({ payload }) => {
       return { success: false, error: "No API key configured", logs, executionTimeMs: Date.now() - startTime };
     }
 
+    // Cross-check parity (Integration C): same fact-check the real executor runs,
+    // so the dry-run faithfully shows the evidence that will influence the decision.
+    let factCheckText = "";
+    if (payload.crossCheckClaims && fieldValue && fieldValue.trim()) {
+      if ((await mcpEnabled("docReader")) && (await mcpEnabled("webSearch"))) {
+        logs.push("Cross-checking claims against the web (fact-check MCP)...");
+        const fc = await runFactCheck(fieldValue, { maxClaims: 6, timeoutMs: 12000 });
+        if (fc.ok) {
+          factCheckText = buildFactCheckBlock(fc);
+          logs.push(`Fact-check: ${fc.claimsChecked} claim(s) checked against the web`);
+        } else {
+          logs.push(`Fact-check skipped: ${fc.reason}`);
+        }
+      } else {
+        logs.push("Fact-check requested but doc-reader + web-search MCPs aren't both enabled — skipping");
+      }
+    }
+
     // Step 6: Build prompts via the SHARED helper — IDENTICAL to real execution so test
     // results faithfully predict production behavior. Any drift here is a control bug.
     const { systemPrompt, userContent, alwaysRun } = buildSemanticAIRequest({
@@ -4106,6 +4129,7 @@ resolver.define("testSemanticPostFunction", async ({ payload }) => {
       fieldValue,
       contextDocsText,
       targetFieldMeta,
+      factCheckText,
     });
     if (alwaysRun) logs.push("Condition is always-run — skipping AI condition check");
 
@@ -5898,6 +5922,73 @@ const mcpBridgeActive = async () => {
   }
 };
 
+// ============================================================================
+// WS-B — post-function MCP helper layer
+// ============================================================================
+// Single-shot, best-effort wrappers used by post-functions to call the hosted
+// MCPs deterministically (no agentic loop — the ~25s PF budget can't absorb one).
+// Each is timeout-guarded and never throws into the PF path.
+
+// True when a specific hosted MCP is enabled in the admin panel.
+const mcpEnabled = async (key) => {
+  try {
+    const enabled = (await storage.get(LMSTUDIO_MCPS_KVS_KEY)) || {};
+    return enabled[key] === true;
+  } catch {
+    return false;
+  }
+};
+
+// Render fact-check results into a compact evidence block for a prompt (the caller
+// fences it). Returns "" when there's nothing useful.
+const buildFactCheckBlock = (fc) => {
+  if (!fc || !fc.ok || !Array.isArray(fc.results) || fc.results.length === 0) return "";
+  const lines = fc.results.slice(0, 8).map((r, i) => {
+    const pct = Math.round((r.supportScore || 0) * 100);
+    const srcs = (r.sources || []).slice(0, 3).join(", ");
+    return `${i + 1}. "${String(r.claim).slice(0, 240)}" — keyword support ${pct}%${srcs ? `; sources: ${srcs}` : "; no sources retrieved"}`;
+  });
+  return `Claims extracted from the content were checked against the live web. The "keyword support %" is a ROUGH heuristic over retrieved snippets — NOT a verdict; weigh the sources yourself:\n${lines.join("\n")}`;
+};
+
+// Cross-MCP fact-check of free text: doc-processor's fact-check tool extracts claims
+// and calls the web-search MCP per claim. Needs web-search creds (tenant bearer +
+// Serper key) from the admin web-search config, passed as TOOL ARGS (never the prompt).
+// Single-shot with a hard timeout; returns { ok, results?, claimsChecked?, reason? }.
+const runFactCheck = async (text, { maxClaims = 6, timeoutMs = 12000 } = {}) => {
+  const body = String(text || "").trim();
+  if (!body) return { ok: false, reason: "no content to fact-check" };
+  let ws;
+  try { ws = await getWebSearchRemoteConfig(); } catch { ws = null; }
+  if (!ws || !ws.bearer || !ws.serperKey) {
+    return { ok: false, reason: "web-search MCP not fully configured (needs tenant bearer + Serper key in the admin panel)" };
+  }
+  const args = {
+    content: body.slice(0, 8000),
+    webSearchUrl: ws.url,
+    webSearchBearer: ws.bearer,
+    serperKey: ws.serperKey,
+    maxClaims,
+    clientHint: "interactive",
+  };
+  try {
+    const TIMED_OUT = Symbol("fc-timeout");
+    const raced = await Promise.race([
+      callBridgeTool("docReader", "fact-check", args),
+      new Promise((resolve) => setTimeout(() => resolve(TIMED_OUT), timeoutMs)),
+    ]);
+    if (raced === TIMED_OUT) return { ok: false, reason: `fact-check timed out after ${Math.round(timeoutMs / 1000)}s` };
+    let parsed = null;
+    try { parsed = JSON.parse(raced); } catch { /* not JSON */ }
+    if (!parsed || !Array.isArray(parsed.results)) {
+      return { ok: false, reason: "fact-check returned no structured evidence", raw: String(raced).slice(0, 300) };
+    }
+    return { ok: true, results: parsed.results, claimsChecked: parsed.claimsChecked || parsed.results.length, note: parsed.note };
+  } catch (e) {
+    return { ok: false, reason: e.message };
+  }
+};
+
 const callOpenAIWithTools = async (fieldValue, validationPrompt, attachmentParts, issueContext, projectKey, validatedFieldId, deadline, contextDocsText) => {
   const apiKey = await getOpenAIKey();
   if (!apiKey) {
@@ -6829,6 +6920,25 @@ const executeSemanticPostFunction = async (issueKey, config) => {
     trace.push(`Warning: Could not check editmeta (HTTP ${editMetaResp.status}) — proceeding without schema hints`);
   }
 
+  // Optional cross-check (Integration C): fact-check the source field's claims
+  // against the live web and fence the evidence into the prompt. Best-effort, hard
+  // timeout, fail-open — never blocks the transition.
+  let factCheckText = "";
+  if (config.crossCheckClaims && fieldValue && fieldValue.trim()) {
+    if ((await mcpEnabled("docReader")) && (await mcpEnabled("webSearch"))) {
+      trace.push("Cross-checking claims against the web (fact-check MCP)...");
+      const fc = await runFactCheck(fieldValue, { maxClaims: 6, timeoutMs: 12000 });
+      if (fc.ok) {
+        factCheckText = buildFactCheckBlock(fc);
+        trace.push(`Fact-check: ${fc.claimsChecked} claim(s) checked against the web`);
+      } else {
+        trace.push(`Fact-check skipped: ${fc.reason}`);
+      }
+    } else {
+      trace.push("Fact-check requested but doc-reader + web-search MCPs aren't both enabled — skipping");
+    }
+  }
+
   // Step 3: Build prompts via the SHARED helper. Same prompts as the dry-run resolver,
   // so test-run results faithfully predict production behavior.
   const { systemPrompt, userContent, alwaysRun } = buildSemanticAIRequest({
@@ -6837,6 +6947,7 @@ const executeSemanticPostFunction = async (issueKey, config) => {
     fieldValue,
     contextDocsText,
     targetFieldMeta,
+    factCheckText,
   });
   if (alwaysRun) trace.push("Condition is always-run — skipping AI condition check");
 

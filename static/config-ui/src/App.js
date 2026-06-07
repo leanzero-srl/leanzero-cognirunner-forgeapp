@@ -1957,6 +1957,7 @@ let currentPostFunctionType = null; // null | "semantic" | "static"
 let currentConditionPrompt = "";
 let currentActionPrompt = "";
 let currentActionFieldId = "";
+let currentCrossCheckClaims = false;
 let currentFunctions = [];
 let currentValidatorDocIds = [];
 // Stable rule id — loaded from existing config on edit so we don't generate a fresh one each time
@@ -2005,6 +2006,7 @@ function App() {
   const [conditionPrompt, setConditionPrompt] = useState("");
   const [actionPrompt, setActionPrompt] = useState("");
   const [actionFieldId, setActionFieldId] = useState("");
+  const [crossCheckClaims, setCrossCheckClaims] = useState(false);
   const [functions, setFunctions] = useState([{
     id: `func_${Date.now()}_initial`,
     name: "",
@@ -2036,6 +2038,7 @@ function App() {
   useEffect(() => { currentConditionPrompt = conditionPrompt; }, [conditionPrompt]);
   useEffect(() => { currentActionPrompt = actionPrompt; }, [actionPrompt]);
   useEffect(() => { currentActionFieldId = actionFieldId; }, [actionFieldId]);
+  useEffect(() => { currentCrossCheckClaims = crossCheckClaims; }, [crossCheckClaims]);
   useEffect(() => { currentFunctions = functions; }, [functions]);
   useEffect(() => { currentValidatorDocIds = validatorDocIds; }, [validatorDocIds]);
 
@@ -2203,6 +2206,10 @@ function App() {
               setActionFieldId(config.actionFieldId);
               currentActionFieldId = config.actionFieldId;
             }
+            if (typeof config.crossCheckClaims === "boolean") {
+              setCrossCheckClaims(config.crossCheckClaims);
+              currentCrossCheckClaims = config.crossCheckClaims;
+            }
             if (config.functions && Array.isArray(config.functions) && config.functions.length > 0) {
               setFunctions(config.functions);
               currentFunctions = config.functions;
@@ -2327,6 +2334,7 @@ function App() {
               config.conditionPrompt = currentConditionPrompt.trim();
               config.actionPrompt = currentActionPrompt.trim();
               config.actionFieldId = currentActionFieldId;
+              config.crossCheckClaims = currentCrossCheckClaims;
             } else if (isPostFn && currentPostFunctionType === "static") {
               const populatedSteps = (currentFunctions || []).filter(
                 (fn) => fn && fn.code && fn.code.trim().length > 0
@@ -2566,6 +2574,8 @@ function App() {
             errorFields={fieldsError}
             selectedDocIds={validatorDocIds}
             onDocSelectionChange={(ids) => { setValidatorDocIds(ids); currentValidatorDocIds = ids; }}
+            crossCheckClaims={crossCheckClaims}
+            setCrossCheckClaims={(v) => { setCrossCheckClaims(v); currentCrossCheckClaims = v; }}
           />
         </div>
       )}

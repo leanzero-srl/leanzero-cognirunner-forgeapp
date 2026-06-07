@@ -27,6 +27,8 @@ export default function SemanticConfig({
   errorFields,
   selectedDocIds,
   onDocSelectionChange,
+  crossCheckClaims,
+  setCrossCheckClaims,
 }) {
   const [showTest, setShowTest] = useState(false);
   const [testIssue, setTestIssue] = useState("");
@@ -45,6 +47,7 @@ export default function SemanticConfig({
         actionPrompt,
         actionFieldId,
         selectedDocIds: selectedDocIds || [],
+        crossCheckClaims: !!crossCheckClaims,
       });
       setTestResult(result);
     } catch (e) {
@@ -185,6 +188,25 @@ export default function SemanticConfig({
         </p>
       </div>
 
+      {/* Cross-check claims (fact-check MCP) */}
+      <div className="form-group">
+        <label className="label">
+          Cross-check claims
+          <Tooltip text="When on, CogniRunner fact-checks the source field's factual claims against the live web (via the doc-processor + web-search MCPs) and feeds the cited evidence into the AI's decision. Requires both the doc-reader and web-search MCPs enabled in Settings. Best-effort with a 12s timeout — it never blocks the transition." />
+        </label>
+        <label style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer", fontSize: "13px" }}>
+          <input
+            type="checkbox"
+            checked={!!crossCheckClaims}
+            onChange={(e) => setCrossCheckClaims && setCrossCheckClaims(e.target.checked)}
+          />
+          Verify the source field&apos;s claims against the web before deciding
+        </label>
+        <p className="hint">
+          Adds fenced fact-check evidence (claims + sources) to the AI prompt. Requires the doc-reader and web-search MCPs (Settings → MCP Integrations).
+        </p>
+      </div>
+
       {/* Documentation Library */}
       <DocRepository
         selectedDocs={selectedDocIds || []}
@@ -194,7 +216,7 @@ export default function SemanticConfig({
       {/* AI Review */}
       <ReviewPanel
         configType="postfunction-semantic"
-        config={{ fieldId, conditionPrompt, actionPrompt, actionFieldId, selectedDocIds }}
+        config={{ fieldId, conditionPrompt, actionPrompt, actionFieldId, selectedDocIds, crossCheckClaims }}
       />
 
       {/* Test Panel */}

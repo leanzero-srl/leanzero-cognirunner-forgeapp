@@ -1858,9 +1858,9 @@ resolver.define("getWebSearchRemote", async () => {
   try {
     const raw = await storage.get(WEB_SEARCH_REMOTE_KVS_KEY);
     if (raw && typeof raw === "object" && raw.url) {
-      return { success: true, url: String(raw.url), hasBearer: !!raw.bearer };
+      return { success: true, url: String(raw.url), hasBearer: !!raw.bearer, hasSerperKey: !!raw.serperKey };
     }
-    return { success: true, url: "", hasBearer: false };
+    return { success: true, url: "", hasBearer: false, hasSerperKey: false };
   } catch (error) {
     console.error("Failed to read web-search remote config:", error?.message);
     return { success: false, error: error.message };
@@ -1882,11 +1882,19 @@ resolver.define("saveWebSearchRemote", async ({ payload, context }) => {
     if (bearer.length < 16) {
       return { success: false, error: "Tenant Bearer looks too short (expected ≥16 chars)" };
     }
-    await storage.set(WEB_SEARCH_REMOTE_KVS_KEY, { url, bearer });
-    _cachedWebSearchRemote = { url, bearer };
+    // Serper key is optional and the web-search MCP is keyless, so supplying it is
+    // the ADMIN's responsibility (this panel). Preserve an existing key when the
+    // field is left blank, so editing URL/Bearer doesn't wipe it.
+    const serperKey = (payload?.serperKey || "").trim();
+    const existing = await storage.get(WEB_SEARCH_REMOTE_KVS_KEY);
+    const finalSerper = serperKey || (existing && existing.serperKey) || "";
+    const toStore = { url, bearer };
+    if (finalSerper) toStore.serperKey = finalSerper;
+    await storage.set(WEB_SEARCH_REMOTE_KVS_KEY, toStore);
+    _cachedWebSearchRemote = toStore;
     _cachedWebSearchRemoteChecked = true;
-    console.log(`saveWebSearchRemote: configured url=${url} bearer=${bearer.substring(0, 6)}…`);
-    return { success: true, url, hasBearer: true };
+    console.log(`saveWebSearchRemote: configured url=${url} bearer=${bearer.substring(0, 6)}… serper=${finalSerper ? "set" : "none"}`);
+    return { success: true, url, hasBearer: true, hasSerperKey: !!finalSerper };
   } catch (error) {
     console.error("Failed to save web-search remote config:", error?.message);
     return { success: false, error: error.message };
@@ -5051,7 +5059,7 @@ const getWebSearchRemoteConfig = async () => {
     const raw = await storage.get(WEB_SEARCH_REMOTE_KVS_KEY);
     _cachedWebSearchRemoteChecked = true;
     if (raw && typeof raw === "object" && raw.url && raw.bearer) {
-      _cachedWebSearchRemote = { url: String(raw.url), bearer: String(raw.bearer) };
+      _cachedWebSearchRemote = { url: String(raw.url), bearer: String(raw.bearer), serperKey: raw.serperKey ? String(raw.serperKey) : undefined };
       return _cachedWebSearchRemote;
     }
   } catch (error) {
@@ -5743,9 +5751,9 @@ Respond with JSON only.`;
 // model as function tools, and proxies tool calls over the MCP Streamable-HTTP
 // protocol using plain fetch (no SDK — Forge-friendly; the servers are stateless
 // so no session handshake is needed). doc-reader needs only its tenant Bearer;
-// the keyless web-search MCP gets its Serper key from the WEB_SEARCH_SERPER_KEY
-// env var (`forge variables set WEB_SEARCH_SERPER_KEY <key>`). Egress to *.ts.net
-// is already allowlisted in manifest.yml.
+// the keyless web-search MCP gets its Serper key from the hosted web-search
+// config the ADMIN sets in the admin panel (stored alongside url + bearer).
+// Egress to *.ts.net is already allowlisted in manifest.yml.
 
 // Parse a Streamable-HTTP response body (JSON or SSE) into its JSON-RPC message.
 const parseMcpBody = (contentType, text) => {
@@ -5782,7 +5790,9 @@ const getBridgeMcp = async (mcpKey) => {
     const r = await getWebSearchRemoteConfig();
     if (!r) return null;
     const headers = { Authorization: `Bearer ${r.bearer}` };
-    if (process.env.WEB_SEARCH_SERPER_KEY) headers["X-Serper-Key"] = process.env.WEB_SEARCH_SERPER_KEY;
+    // The web-search MCP is keyless — the admin supplies the Serper key in the
+    // hosted web-search config (admin panel), stored alongside url + bearer.
+    if (r.serperKey) headers["X-Serper-Key"] = r.serperKey;
     return { url: r.url, headers };
   }
   return null;

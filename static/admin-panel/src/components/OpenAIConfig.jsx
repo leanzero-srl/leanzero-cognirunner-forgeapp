@@ -80,6 +80,10 @@ export default function OpenAIConfig({ invoke }) {
   const [webSearchHasBearer, setWebSearchHasBearer] = useState(false);
   const [webSearchSaving, setWebSearchSaving] = useState(false);
   const [webSearchShowBearerInput, setWebSearchShowBearerInput] = useState(false);
+  // Serper key for the keyless web-search MCP — the admin supplies it here.
+  const [webSearchSerperInput, setWebSearchSerperInput] = useState("");
+  const [webSearchHasSerper, setWebSearchHasSerper] = useState(false);
+  const [webSearchShowSerperInput, setWebSearchShowSerperInput] = useState(false);
 
   const pHelp = PROVIDER_HELP[provider] || PROVIDER_HELP.openai;
   const isLmStudio = provider === "lmstudio";
@@ -151,6 +155,7 @@ export default function OpenAIConfig({ invoke }) {
       if (webSearchResult && webSearchResult.success) {
         setWebSearchUrl(webSearchResult.url || "");
         setWebSearchHasBearer(!!webSearchResult.hasBearer);
+        setWebSearchHasSerper(!!webSearchResult.hasSerperKey);
       }
     } catch (e) {
       console.error("Failed to load AI config status:", e);
@@ -260,11 +265,15 @@ export default function OpenAIConfig({ invoke }) {
       const result = await invoke("saveWebSearchRemote", {
         url: webSearchUrl.trim(),
         bearer: webSearchBearerInput.trim(),
+        serperKey: webSearchSerperInput.trim(),
       });
       if (result.success) {
         setWebSearchHasBearer(true);
         setWebSearchBearerInput("");
         setWebSearchShowBearerInput(false);
+        setWebSearchHasSerper(!!result.hasSerperKey);
+        setWebSearchSerperInput("");
+        setWebSearchShowSerperInput(false);
       } else {
         setError(result.error || "Failed to save web-search remote config");
       }
@@ -285,6 +294,9 @@ export default function OpenAIConfig({ invoke }) {
         setWebSearchHasBearer(false);
         setWebSearchBearerInput("");
         setWebSearchShowBearerInput(false);
+        setWebSearchHasSerper(false);
+        setWebSearchSerperInput("");
+        setWebSearchShowSerperInput(false);
       } else {
         setError(result.error || "Failed to remove web-search remote config");
       }
@@ -1065,7 +1077,7 @@ export default function OpenAIConfig({ invoke }) {
                   <div style={{ padding: "10px 12px", marginBottom: "10px", background: "rgba(34, 197, 94, 0.06)", border: "1px solid rgba(34, 197, 94, 0.4)", borderRadius: "6px", fontSize: "11px" }}>
                     <strong>Hosted web-search (remote MCP)</strong>
                     <div style={{ marginTop: "4px", color: "var(--text-secondary)" }}>
-                      Required for {provider === "anthropic" ? "Anthropic" : "non-LM-Studio providers"}. LM Studio can also use it via <code style={{ fontSize: "11px" }}>~/.lmstudio/mcp.json</code> (URL + headers — see below). Self-host on your Mac with Tailscale Funnel; see the <code style={{ fontSize: "11px" }}>mcp-web-search</code> README for the one-time setup. Separate Service URL + Bearer from doc-processor — these are independent services.
+                      Required for {provider === "anthropic" ? "Anthropic" : "non-LM-Studio providers"}. LM Studio can also use it via <code style={{ fontSize: "11px" }}>~/.lmstudio/mcp.json</code> (URL + headers — see below). Self-host on your Mac with Tailscale Funnel; see the <code style={{ fontSize: "11px" }}>mcp-web-search</code> README for the one-time setup. Separate Service URL + Bearer from doc-processor — these are independent services. The web-search MCP is keyless, so also paste a Serper API key (free tier at <code style={{ fontSize: "11px" }}>serper.dev</code>) — it powers every search.
                     </div>
                     <div style={{ display: "flex", flexDirection: "column", gap: "6px", marginTop: "8px" }}>
                       <input
@@ -1093,6 +1105,27 @@ export default function OpenAIConfig({ invoke }) {
                           placeholder="Tenant Bearer (paste from web-search admin)"
                           value={webSearchBearerInput}
                           onChange={(e) => setWebSearchBearerInput(e.target.value)}
+                          style={{ padding: "5px 8px", border: "1px solid var(--border-color)", borderRadius: "4px", background: "var(--input-bg)", color: "var(--text-color)", fontSize: "11px", fontFamily: "monospace" }}
+                        />
+                      )}
+                      {webSearchHasSerper && !webSearchShowSerperInput ? (
+                        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                          <span style={{ flex: 1, padding: "5px 8px", border: "1px solid var(--border-color)", borderRadius: "4px", background: "var(--input-bg)", color: "var(--text-muted)", fontFamily: "monospace", fontSize: "11px" }}>
+                            ••••••••  (Serper key saved)
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setWebSearchShowSerperInput(true)}
+                            disabled={webSearchSaving}
+                            style={{ fontSize: "10px", padding: "4px 8px", border: "1px solid var(--border-color)", borderRadius: "4px", background: "var(--input-bg)", color: "var(--text-color)", cursor: "pointer" }}
+                          >Replace</button>
+                        </div>
+                      ) : (
+                        <input
+                          type="password"
+                          placeholder="Serper API key (free tier at serper.dev) — powers web search"
+                          value={webSearchSerperInput}
+                          onChange={(e) => setWebSearchSerperInput(e.target.value)}
                           style={{ padding: "5px 8px", border: "1px solid var(--border-color)", borderRadius: "4px", background: "var(--input-bg)", color: "var(--text-color)", fontSize: "11px", fontFamily: "monospace" }}
                         />
                       )}
@@ -1124,14 +1157,9 @@ export default function OpenAIConfig({ invoke }) {
                       </div>
                     </div>
                   )}
-                  {(provider === "openai" || provider === "azure") && (
-                    <div style={{ padding: "8px 10px", marginBottom: "10px", background: "rgba(245, 158, 11, 0.08)", border: "1px solid rgba(245, 158, 11, 0.4)", borderRadius: "6px", fontSize: "11px" }}>
-                      <strong>{provider === "azure" ? "Azure OpenAI" : "OpenAI"} support: coming soon.</strong> Native remote-MCP requires the OpenAI Responses API (Chat Completions doesn't support it), which is a separate refactor. For now, use Anthropic or LM Studio for web-search.
-                    </div>
-                  )}
-                  {provider === "openrouter" && (
-                    <div style={{ padding: "8px 10px", marginBottom: "10px", background: "rgba(245, 158, 11, 0.08)", border: "1px solid rgba(245, 158, 11, 0.4)", borderRadius: "6px", fontSize: "11px" }}>
-                      <strong>OpenRouter support: coming soon.</strong> OpenRouter does not have native remote-MCP support yet; a tool-by-tool proxy is doable but separate work. For now, use Anthropic or LM Studio for web-search.
+                  {(provider === "openai" || provider === "azure" || provider === "openrouter") && (
+                    <div style={{ padding: "8px 10px", marginBottom: "10px", background: "rgba(34, 197, 94, 0.08)", border: "1px solid rgba(34, 197, 94, 0.4)", borderRadius: "6px", fontSize: "11px" }}>
+                      <strong>{provider === "azure" ? "Azure OpenAI" : provider === "openrouter" ? "OpenRouter" : "OpenAI"} support: enabled.</strong> These APIs have no native remote-MCP, so CogniRunner bridges it: during agentic validation it lists the enabled hosted MCP tools, exposes them to the model as function tools, and proxies the tool calls to the hosted server. Configure the Service URL + Bearer (+ the Serper key for web-search) above and toggle the MCP on.
                     </div>
                   )}
 

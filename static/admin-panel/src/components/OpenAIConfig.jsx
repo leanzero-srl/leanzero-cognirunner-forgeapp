@@ -73,6 +73,10 @@ export default function OpenAIConfig({ invoke }) {
   const [docProcHasBearer, setDocProcHasBearer] = useState(false);
   const [docProcSaving, setDocProcSaving] = useState(false);
   const [docProcShowBearerInput, setDocProcShowBearerInput] = useState(false);
+  // Z.AI key for the doc-processor MCP — only needed for OCR of scanned PDFs.
+  const [docProcZaiInput, setDocProcZaiInput] = useState("");
+  const [docProcHasZai, setDocProcHasZai] = useState(false);
+  const [docProcShowZaiInput, setDocProcShowZaiInput] = useState(false);
   // Hosted web-search (remote MCP). Same pattern as docProc above; separate KVS
   // slot so each MCP service can be hosted at a different URL/Bearer.
   const [webSearchUrl, setWebSearchUrl] = useState("");
@@ -84,6 +88,10 @@ export default function OpenAIConfig({ invoke }) {
   const [webSearchSerperInput, setWebSearchSerperInput] = useState("");
   const [webSearchHasSerper, setWebSearchHasSerper] = useState(false);
   const [webSearchShowSerperInput, setWebSearchShowSerperInput] = useState(false);
+  // Optional GitHub token for the web-search github tool (higher rate limits / private repos).
+  const [webSearchGithubInput, setWebSearchGithubInput] = useState("");
+  const [webSearchHasGithub, setWebSearchHasGithub] = useState(false);
+  const [webSearchShowGithubInput, setWebSearchShowGithubInput] = useState(false);
 
   const pHelp = PROVIDER_HELP[provider] || PROVIDER_HELP.openai;
   const isLmStudio = provider === "lmstudio";
@@ -151,11 +159,13 @@ export default function OpenAIConfig({ invoke }) {
       if (docProcResult && docProcResult.success) {
         setDocProcUrl(docProcResult.url || "");
         setDocProcHasBearer(!!docProcResult.hasBearer);
+        setDocProcHasZai(!!docProcResult.hasZaiKey);
       }
       if (webSearchResult && webSearchResult.success) {
         setWebSearchUrl(webSearchResult.url || "");
         setWebSearchHasBearer(!!webSearchResult.hasBearer);
         setWebSearchHasSerper(!!webSearchResult.hasSerperKey);
+        setWebSearchHasGithub(!!webSearchResult.hasGithubToken);
       }
     } catch (e) {
       console.error("Failed to load AI config status:", e);
@@ -222,11 +232,15 @@ export default function OpenAIConfig({ invoke }) {
       const result = await invoke("saveDocProcessorRemote", {
         url: docProcUrl.trim(),
         bearer: docProcBearerInput.trim(),
+        zaiKey: docProcZaiInput.trim(),
       });
       if (result.success) {
         setDocProcHasBearer(true);
         setDocProcBearerInput("");
         setDocProcShowBearerInput(false);
+        setDocProcHasZai(!!result.hasZaiKey);
+        setDocProcZaiInput("");
+        setDocProcShowZaiInput(false);
       } else {
         setError(result.error || "Failed to save doc-processor remote config");
       }
@@ -247,6 +261,9 @@ export default function OpenAIConfig({ invoke }) {
         setDocProcHasBearer(false);
         setDocProcBearerInput("");
         setDocProcShowBearerInput(false);
+        setDocProcHasZai(false);
+        setDocProcZaiInput("");
+        setDocProcShowZaiInput(false);
       } else {
         setError(result.error || "Failed to remove doc-processor remote config");
       }
@@ -266,6 +283,7 @@ export default function OpenAIConfig({ invoke }) {
         url: webSearchUrl.trim(),
         bearer: webSearchBearerInput.trim(),
         serperKey: webSearchSerperInput.trim(),
+        githubToken: webSearchGithubInput.trim(),
       });
       if (result.success) {
         setWebSearchHasBearer(true);
@@ -274,6 +292,9 @@ export default function OpenAIConfig({ invoke }) {
         setWebSearchHasSerper(!!result.hasSerperKey);
         setWebSearchSerperInput("");
         setWebSearchShowSerperInput(false);
+        setWebSearchHasGithub(!!result.hasGithubToken);
+        setWebSearchGithubInput("");
+        setWebSearchShowGithubInput(false);
       } else {
         setError(result.error || "Failed to save web-search remote config");
       }
@@ -297,6 +318,9 @@ export default function OpenAIConfig({ invoke }) {
         setWebSearchHasSerper(false);
         setWebSearchSerperInput("");
         setWebSearchShowSerperInput(false);
+        setWebSearchHasGithub(false);
+        setWebSearchGithubInput("");
+        setWebSearchShowGithubInput(false);
       } else {
         setError(result.error || "Failed to remove web-search remote config");
       }
@@ -1016,6 +1040,17 @@ export default function OpenAIConfig({ invoke }) {
               </p>
             </div>
 
+            {/* How to connect — the three modes, made explicit. */}
+            <div style={{ padding: "10px 12px", marginBottom: "12px", background: "rgba(37, 99, 235, 0.06)", border: "1px solid rgba(37, 99, 235, 0.35)", borderRadius: "6px", fontSize: "11px", color: "var(--text-secondary)" }}>
+              <strong style={{ color: "var(--text-color)" }}>Three ways to connect an MCP:</strong>
+              <ul style={{ margin: "6px 0 0", paddingLeft: "18px", display: "flex", flexDirection: "column", gap: "4px" }}>
+                <li><strong>Your own self-hosted server</strong> — clone the open-source repo, run it (e.g. behind Tailscale Funnel), and paste its Service URL + Bearer in the card below. Works on Anthropic and on OpenAI / Azure / OpenRouter (CogniRunner bridges the tool calls).</li>
+                <li><strong>LeanZero&apos;s hosted demo</strong> — use our Mac Studio instance; click the &ldquo;get a free demo key&rdquo; link in a card below. Rate-limited, for evaluation. Same providers as above.</li>
+                <li><strong>LM Studio (local stdio)</strong> — run the server locally and point LM Studio&apos;s <code style={{ fontSize: "11px" }}>mcp.json</code> at it. LM Studio provider only; <code style={{ fontSize: "11px" }}>context7</code> works this way only.</li>
+              </ul>
+              <div style={{ marginTop: "6px" }}>Bring your own service keys: <strong>web-search</strong> needs a Serper key; <strong>doc-processor</strong> needs a Z.AI key only for scanned-PDF OCR. Both are entered in the cards below.</div>
+            </div>
+
             {/* context7 — LM Studio only */}
             {isLmStudio && (
             <McpCard
@@ -1078,7 +1113,7 @@ export default function OpenAIConfig({ invoke }) {
                   <div style={{ padding: "10px 12px", marginBottom: "10px", background: "rgba(34, 197, 94, 0.06)", border: "1px solid rgba(34, 197, 94, 0.4)", borderRadius: "6px", fontSize: "11px" }}>
                     <strong>Hosted web-search (remote MCP)</strong>
                     <div style={{ marginTop: "4px", color: "var(--text-secondary)" }}>
-                      Required for {provider === "anthropic" ? "Anthropic" : "non-LM-Studio providers"}. LM Studio can also use it via <code style={{ fontSize: "11px" }}>~/.lmstudio/mcp.json</code> (URL + headers — see below). Self-host on your Mac with Tailscale Funnel; see the <code style={{ fontSize: "11px" }}>mcp-web-search</code> README for the one-time setup. Separate Service URL + Bearer from doc-processor — these are independent services. The web-search MCP is keyless, so also paste a Serper API key (free tier at <code style={{ fontSize: "11px" }}>serper.dev</code>) — it powers every search.
+                      Point this at a web-search MCP. Use <strong>your own self-host</strong> (clone <code style={{ fontSize: "11px" }}>mcp-web-search</code>, expose via Tailscale Funnel) or <strong>LeanZero&apos;s hosted demo</strong> — <a href="https://leanzero.atlascrafted.com/portfolio/mcp-web-search#get-key" target="_blank" rel="noopener noreferrer" style={{ color: "var(--success-color)", fontWeight: 600 }}>get a free demo key →</a>. Independent from doc-processor (separate URL + Bearer). The MCP is keyless, so also paste a Serper key (free tier at <a href="https://serper.dev" target="_blank" rel="noopener noreferrer" style={{ color: "var(--success-color)", fontWeight: 600 }}>serper.dev</a>) — it powers every search.
                     </div>
                     <div style={{ display: "flex", flexDirection: "column", gap: "6px", marginTop: "8px" }}>
                       <input
@@ -1127,6 +1162,27 @@ export default function OpenAIConfig({ invoke }) {
                           placeholder="Serper API key (free tier at serper.dev) — powers web search"
                           value={webSearchSerperInput}
                           onChange={(e) => setWebSearchSerperInput(e.target.value)}
+                          style={{ padding: "5px 8px", border: "1px solid var(--border-color)", borderRadius: "4px", background: "var(--input-bg)", color: "var(--text-color)", fontSize: "11px", fontFamily: "monospace" }}
+                        />
+                      )}
+                      {webSearchHasGithub && !webSearchShowGithubInput ? (
+                        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                          <span style={{ flex: 1, padding: "5px 8px", border: "1px solid var(--border-color)", borderRadius: "4px", background: "var(--input-bg)", color: "var(--text-muted)", fontFamily: "monospace", fontSize: "11px" }}>
+                            ••••••••  (GitHub token saved)
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setWebSearchShowGithubInput(true)}
+                            disabled={webSearchSaving}
+                            style={{ fontSize: "10px", padding: "4px 8px", border: "1px solid var(--border-color)", borderRadius: "4px", background: "var(--input-bg)", color: "var(--text-color)", cursor: "pointer" }}
+                          >Replace</button>
+                        </div>
+                      ) : (
+                        <input
+                          type="password"
+                          placeholder="GitHub token — OPTIONAL, for the github tool (rate limits / private repos)"
+                          value={webSearchGithubInput}
+                          onChange={(e) => setWebSearchGithubInput(e.target.value)}
                           style={{ padding: "5px 8px", border: "1px solid var(--border-color)", borderRadius: "4px", background: "var(--input-bg)", color: "var(--text-color)", fontSize: "11px", fontFamily: "monospace" }}
                         />
                       )}
@@ -1217,8 +1273,8 @@ npm install && npm run build`}
             <McpCard
               mcpKey="docReader"
               title="doc-reader"
-              subtitle="PDF / DOCX / Excel processing — local files + Jira attachments (URL variant)"
-              tools={["read-doc", "list-documents"]}
+              subtitle="Read PDF / DOCX / Excel / PowerPoint, and (with doc-writer) create / edit DOCX, PDF, Excel, Markdown, PPTX, plus fact-check"
+              tools={["read-doc", "detect-format", "list-documents", "list-templates", "create-doc", "create-markdown", "create-excel", "create-pdf", "create-pptx", "edit-pptx", "fact-check"]}
               enabled={mcpEnabled.docReader}
               saving={mcpSavingKey === "docReader"}
               expanded={!!mcpExpanded.docReader}
@@ -1235,7 +1291,7 @@ npm install && npm run build`}
                   <div style={{ padding: "10px 12px", marginBottom: "10px", background: "rgba(34, 197, 94, 0.06)", border: "1px solid rgba(34, 197, 94, 0.4)", borderRadius: "6px", fontSize: "11px" }}>
                     <strong>Hosted doc-processor (remote MCP)</strong>
                     <div style={{ marginTop: "4px", color: "var(--text-secondary)" }}>
-                      Required for {provider === "anthropic" ? "Anthropic" : "non-LM-Studio providers"}. LM Studio can also use it via <code style={{ fontSize: "11px" }}>~/.lmstudio/mcp.json</code> (URL + headers — see below). Self-host on your Mac with Tailscale Funnel; see the <code style={{ fontSize: "11px" }}>leanzero-mcp-doc-processor</code> README for the one-time setup.
+                      Point this at a doc-processor MCP. Use <strong>your own self-host</strong> (clone <code style={{ fontSize: "11px" }}>leanzero-mcp-doc-processor</code>, expose via Tailscale Funnel) or <strong>LeanZero&apos;s hosted demo</strong> on our Mac Studio — <a href="https://leanzero.atlascrafted.com/portfolio/mcp-doc-processor#get-key" target="_blank" rel="noopener noreferrer" style={{ color: "var(--success-color)", fontWeight: 600 }}>get a free demo key →</a>. Paste the Service URL + Bearer below. LM Studio can alternatively point its <code style={{ fontSize: "11px" }}>mcp.json</code> at the same URL (see below).
                     </div>
                     <div style={{ display: "flex", flexDirection: "column", gap: "6px", marginTop: "8px" }}>
                       <input
@@ -1263,6 +1319,27 @@ npm install && npm run build`}
                           placeholder="Tenant Bearer (paste from doc-processor admin)"
                           value={docProcBearerInput}
                           onChange={(e) => setDocProcBearerInput(e.target.value)}
+                          style={{ padding: "5px 8px", border: "1px solid var(--border-color)", borderRadius: "4px", background: "var(--input-bg)", color: "var(--text-color)", fontSize: "11px", fontFamily: "monospace" }}
+                        />
+                      )}
+                      {docProcHasZai && !docProcShowZaiInput ? (
+                        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                          <span style={{ flex: 1, padding: "5px 8px", border: "1px solid var(--border-color)", borderRadius: "4px", background: "var(--input-bg)", color: "var(--text-muted)", fontFamily: "monospace", fontSize: "11px" }}>
+                            ••••••••  (Z.AI key saved)
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setDocProcShowZaiInput(true)}
+                            disabled={docProcSaving}
+                            style={{ fontSize: "10px", padding: "4px 8px", border: "1px solid var(--border-color)", borderRadius: "4px", background: "var(--input-bg)", color: "var(--text-color)", cursor: "pointer" }}
+                          >Replace</button>
+                        </div>
+                      ) : (
+                        <input
+                          type="password"
+                          placeholder="Z.AI key — OPTIONAL, only for OCR of scanned PDFs (z.ai)"
+                          value={docProcZaiInput}
+                          onChange={(e) => setDocProcZaiInput(e.target.value)}
                           style={{ padding: "5px 8px", border: "1px solid var(--border-color)", borderRadius: "4px", background: "var(--input-bg)", color: "var(--text-color)", fontSize: "11px", fontFamily: "monospace" }}
                         />
                       )}

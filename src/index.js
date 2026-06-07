@@ -1796,9 +1796,9 @@ resolver.define("getDocProcessorRemote", async () => {
   try {
     const raw = await storage.get(DOC_PROCESSOR_REMOTE_KVS_KEY);
     if (raw && typeof raw === "object" && raw.url) {
-      return { success: true, url: String(raw.url), hasBearer: !!raw.bearer };
+      return { success: true, url: String(raw.url), hasBearer: !!raw.bearer, hasZaiKey: !!raw.zaiKey };
     }
-    return { success: true, url: "", hasBearer: false };
+    return { success: true, url: "", hasBearer: false, hasZaiKey: false };
   } catch (error) {
     console.error("Failed to read doc-processor remote config:", error?.message);
     return { success: false, error: error.message };
@@ -1820,11 +1820,18 @@ resolver.define("saveDocProcessorRemote", async ({ payload, context }) => {
     if (bearer.length < 16) {
       return { success: false, error: "Tenant Bearer looks too short (expected ≥16 chars)" };
     }
-    await storage.set(DOC_PROCESSOR_REMOTE_KVS_KEY, { url, bearer });
-    _cachedDocProcessorRemote = { url, bearer };
+    // Z.AI key is optional — only needed for OCR of scanned (image-based) PDFs.
+    // The admin supplies it here; preserve an existing key when left blank.
+    const zaiKey = (payload?.zaiKey || "").trim();
+    const existing = await storage.get(DOC_PROCESSOR_REMOTE_KVS_KEY);
+    const finalZai = zaiKey || (existing && existing.zaiKey) || "";
+    const toStore = { url, bearer };
+    if (finalZai) toStore.zaiKey = finalZai;
+    await storage.set(DOC_PROCESSOR_REMOTE_KVS_KEY, toStore);
+    _cachedDocProcessorRemote = toStore;
     _cachedDocProcessorRemoteChecked = true;
-    console.log(`saveDocProcessorRemote: configured url=${url} bearer=${bearer.substring(0, 6)}…`);
-    return { success: true, url, hasBearer: true };
+    console.log(`saveDocProcessorRemote: configured url=${url} bearer=${bearer.substring(0, 6)}… zai=${finalZai ? "set" : "none"}`);
+    return { success: true, url, hasBearer: true, hasZaiKey: !!finalZai };
   } catch (error) {
     console.error("Failed to save doc-processor remote config:", error?.message);
     return { success: false, error: error.message };
@@ -1858,9 +1865,9 @@ resolver.define("getWebSearchRemote", async () => {
   try {
     const raw = await storage.get(WEB_SEARCH_REMOTE_KVS_KEY);
     if (raw && typeof raw === "object" && raw.url) {
-      return { success: true, url: String(raw.url), hasBearer: !!raw.bearer, hasSerperKey: !!raw.serperKey };
+      return { success: true, url: String(raw.url), hasBearer: !!raw.bearer, hasSerperKey: !!raw.serperKey, hasGithubToken: !!raw.githubToken };
     }
-    return { success: true, url: "", hasBearer: false, hasSerperKey: false };
+    return { success: true, url: "", hasBearer: false, hasSerperKey: false, hasGithubToken: false };
   } catch (error) {
     console.error("Failed to read web-search remote config:", error?.message);
     return { success: false, error: error.message };
@@ -1886,15 +1893,18 @@ resolver.define("saveWebSearchRemote", async ({ payload, context }) => {
     // the ADMIN's responsibility (this panel). Preserve an existing key when the
     // field is left blank, so editing URL/Bearer doesn't wipe it.
     const serperKey = (payload?.serperKey || "").trim();
+    const githubToken = (payload?.githubToken || "").trim();
     const existing = await storage.get(WEB_SEARCH_REMOTE_KVS_KEY);
     const finalSerper = serperKey || (existing && existing.serperKey) || "";
+    const finalGithub = githubToken || (existing && existing.githubToken) || "";
     const toStore = { url, bearer };
     if (finalSerper) toStore.serperKey = finalSerper;
+    if (finalGithub) toStore.githubToken = finalGithub;
     await storage.set(WEB_SEARCH_REMOTE_KVS_KEY, toStore);
     _cachedWebSearchRemote = toStore;
     _cachedWebSearchRemoteChecked = true;
-    console.log(`saveWebSearchRemote: configured url=${url} bearer=${bearer.substring(0, 6)}… serper=${finalSerper ? "set" : "none"}`);
-    return { success: true, url, hasBearer: true, hasSerperKey: !!finalSerper };
+    console.log(`saveWebSearchRemote: configured url=${url} bearer=${bearer.substring(0, 6)}… serper=${finalSerper ? "set" : "none"} github=${finalGithub ? "set" : "none"}`);
+    return { success: true, url, hasBearer: true, hasSerperKey: !!finalSerper, hasGithubToken: !!finalGithub };
   } catch (error) {
     console.error("Failed to save web-search remote config:", error?.message);
     return { success: false, error: error.message };
@@ -5032,7 +5042,7 @@ const getDocProcessorRemoteConfig = async () => {
     const raw = await storage.get(DOC_PROCESSOR_REMOTE_KVS_KEY);
     _cachedDocProcessorRemoteChecked = true;
     if (raw && typeof raw === "object" && raw.url && raw.bearer) {
-      _cachedDocProcessorRemote = { url: String(raw.url), bearer: String(raw.bearer) };
+      _cachedDocProcessorRemote = { url: String(raw.url), bearer: String(raw.bearer), zaiKey: raw.zaiKey ? String(raw.zaiKey) : undefined };
       return _cachedDocProcessorRemote;
     }
   } catch (error) {
@@ -5059,7 +5069,7 @@ const getWebSearchRemoteConfig = async () => {
     const raw = await storage.get(WEB_SEARCH_REMOTE_KVS_KEY);
     _cachedWebSearchRemoteChecked = true;
     if (raw && typeof raw === "object" && raw.url && raw.bearer) {
-      _cachedWebSearchRemote = { url: String(raw.url), bearer: String(raw.bearer), serperKey: raw.serperKey ? String(raw.serperKey) : undefined };
+      _cachedWebSearchRemote = { url: String(raw.url), bearer: String(raw.bearer), serperKey: raw.serperKey ? String(raw.serperKey) : undefined, githubToken: raw.githubToken ? String(raw.githubToken) : undefined };
       return _cachedWebSearchRemote;
     }
   } catch (error) {
@@ -5784,15 +5794,18 @@ const getBridgeMcp = async (mcpKey) => {
   if (mcpKey === "docReader") {
     const r = await getDocProcessorRemoteConfig();
     if (!r) return null;
-    return { url: r.url, headers: { Authorization: `Bearer ${r.bearer}` } };
+    const headers = { Authorization: `Bearer ${r.bearer}` };
+    if (r.zaiKey) headers["X-ZAI-Key"] = r.zaiKey;  // only used for scanned-PDF OCR
+    return { url: r.url, headers };
   }
   if (mcpKey === "webSearch") {
     const r = await getWebSearchRemoteConfig();
     if (!r) return null;
     const headers = { Authorization: `Bearer ${r.bearer}` };
-    // The web-search MCP is keyless — the admin supplies the Serper key in the
-    // hosted web-search config (admin panel), stored alongside url + bearer.
+    // The web-search MCP is keyless — the admin supplies the Serper key (and an
+    // optional GitHub token for the github tool) in the hosted web-search config.
     if (r.serperKey) headers["X-Serper-Key"] = r.serperKey;
+    if (r.githubToken) headers["X-GitHub-Token"] = r.githubToken;
     return { url: r.url, headers };
   }
   return null;

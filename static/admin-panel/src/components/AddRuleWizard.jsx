@@ -16,6 +16,7 @@ import SemanticConfig from "./SemanticConfig";
 import GenerateDocConfig from "./GenerateDocConfig";
 import ResearchConfig from "./ResearchConfig";
 import CommentConfig from "./CommentConfig";
+import SubtaskConfig from "./SubtaskConfig";
 import FunctionBuilder from "./FunctionBuilder";
 
 const RULE_TYPE_OPTIONS = [
@@ -25,6 +26,7 @@ const RULE_TYPE_OPTIONS = [
   { value: "postfunction-generate-doc", label: "Generate Document", desc: "AI writes a doc & attaches it to the issue" },
   { value: "postfunction-research", label: "Research & Save", desc: "Web-search a topic & save it to the doc library" },
   { value: "postfunction-comment", label: "Add Comment", desc: "AI drafts & posts a comment after transition" },
+  { value: "postfunction-subtask", label: "Create Sub-task", desc: "AI drafts & creates a sub-task under the issue" },
   { value: "postfunction-static", label: "Static Post Function", desc: "Run custom code after transition" },
 ];
 
@@ -67,6 +69,7 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
   const [researchTitle, setResearchTitle] = useState("");
   const [autoSelectResearchDoc, setAutoSelectResearchDoc] = useState(false);
   const [commentPrompt, setCommentPrompt] = useState("");
+  const [subtaskPrompt, setSubtaskPrompt] = useState("");
   const [enableTools, setEnableTools] = useState(null); // null = auto, true = on, false = off
   // Doc library: selected reference docs that get fed into the AI prompt.
   // Used for validators/conditions and semantic post-functions.
@@ -177,6 +180,7 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
     if (ruleType === "postfunction-semantic" && !conditionPrompt.trim()) return;
     if (ruleType === "postfunction-generate-doc" && !contentPrompt.trim()) return;
     if (ruleType === "postfunction-comment" && !commentPrompt.trim()) return;
+    if (ruleType === "postfunction-subtask" && !subtaskPrompt.trim()) return;
     if (ruleType === "postfunction-static" && !functions.some((f) => f.code)) return;
 
     setSaving(true);
@@ -212,7 +216,9 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
               ? { type: ruleType, fieldId: fieldId || "description", prompt: researchQuery, researchQuery, researchTitle, autoSelectResearchDoc, workflow: workflowData }
               : ruleType === "postfunction-comment"
                 ? { type: ruleType, fieldId: fieldId || "description", prompt: commentPrompt, commentPrompt, selectedDocIds, workflow: workflowData }
-                : { type: ruleType, fieldId: fieldId || "description", prompt: prompt || conditionPrompt, conditionPrompt, actionPrompt, actionFieldId, selectedDocIds, crossCheckClaims, workflow: workflowData }
+                : ruleType === "postfunction-subtask"
+                  ? { type: ruleType, fieldId: fieldId || "description", prompt: subtaskPrompt, subtaskPrompt, selectedDocIds, workflow: workflowData }
+                  : { type: ruleType, fieldId: fieldId || "description", prompt: prompt || conditionPrompt, conditionPrompt, actionPrompt, actionFieldId, selectedDocIds, crossCheckClaims, workflow: workflowData }
         : { type: ruleType, fieldId: fieldId || "description", prompt, enableTools, selectedDocIds, workflow: workflowData };
 
       if (isPostFunction) {
@@ -301,7 +307,7 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
               setSelectedProject(null); setSelectedWorkflow(null); setSelectedTransition(null); setRuleType(null);
               setFieldId(""); setPrompt(""); setConditionPrompt(""); setActionPrompt(""); setActionFieldId(""); setCrossCheckClaims(false);
               setDocFormat("pdf"); setContentPrompt(""); setDocTitlePrompt(""); setAttachComment(false);
-              setResearchQuery(""); setResearchTitle(""); setAutoSelectResearchDoc(false); setCommentPrompt("");
+              setResearchQuery(""); setResearchTitle(""); setAutoSelectResearchDoc(false); setCommentPrompt(""); setSubtaskPrompt("");
               setSelectedDocIds([]);
               setTestResult(null); setTestIssue("");
               setFunctions([{
@@ -850,6 +856,18 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
                 errorFields={null}
                 commentPrompt={commentPrompt}
                 setCommentPrompt={setCommentPrompt}
+              />
+            )}
+
+            {ruleType === "postfunction-subtask" && (
+              <SubtaskConfig
+                fieldId={fieldId}
+                setFieldId={setFieldId}
+                fields={fields}
+                loadingFields={loadingFields}
+                errorFields={null}
+                subtaskPrompt={subtaskPrompt}
+                setSubtaskPrompt={setSubtaskPrompt}
               />
             )}
 

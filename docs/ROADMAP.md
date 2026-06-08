@@ -6,15 +6,17 @@
 > approval: copy this file to `CogniRunner/docs/ROADMAP.md` (in-repo, durable) and keep both in sync.**
 
 
-## ✅ Shipped so far (CogniRunner dev v16.13.0 + web-search live)
+## ✅ Shipped so far (CogniRunner dev v16.15.0 + web-search live + website)
 - **P0** engine hardening H1–H6 (v16.8.0)
 - **P1** fact-check checkbox / Integration C (v16.10.0)
 - **P2** Generate Document / Integration B (v16.11.0)
 - **P3** Research & Save / Integration A (v16.12.0)
-- **P5** web-search self-documentation (live; committed to mcp-web-search main)
-- **P4 (start)** Add Comment native action (v16.13.0)
+- **P5** web-search self-documentation (live; mcp-web-search main)
+- **P4** native toolbox: Add Comment (v16.13.0) + Create Sub-task (v16.15.0)
+- **config-ui safety** — preserves the new action types on workflow-editor save (v16.14.0)
+- **P6 (start)** web-search portfolio page: tool decision guide + clearer trio (LeanZero-website master)
 
-**Remaining:** P4 rest (sub-task/transition/copy-derive + sandbox api.*); P6 website per-tool docs; config-ui parity for the new action types (generate-doc/research/comment — admin-panel works; workflow-editor UI deferred); opportunistic research-capture in validation; insights re-run.
+**Remaining:** P4 rest (transition related issues, copy/derive field, sandbox `api.*` parity); P6 rest (doc-processor + cognirunner portfolio pages); FULL config-ui editing parity for the new action types (the safety fix prevents clobbering; in-editor editing still TODO); opportunistic research-capture in validation; insights re-run.
 
 ---
 
@@ -108,7 +110,7 @@ The "standard library." Each capability ships as a **declarative AI-assisted act
 |---|---|---|---|---|
 | Set / copy / **derive** field value | Set field value | semantic PF + H1 validation; AI derives from issue | declarative (exists; add copy/derive) | [ ] |
 | **Add comment** (AI-drafted) | Add comment | `POST /issue/{key}/comment` | declarative (shipped v16.13.0) | [x] |
-| **Create sub-task / linked issue** | Create sub-task | `POST /issue` + `/issueLink`, AI fills fields from parent | declarative + `api.createSubtask` | [ ] |
+| **Create sub-task / linked issue** | Create sub-task | `POST /issue` + `/issueLink`, AI fills fields from parent | declarative (sub-task shipped v16.15.0) | [x] |
 | Transition related issues (parent/subtasks/linked) | Transition parent/subtasks | guardrailed wrapper over `transitionIssue` + JQL | declarative + sandbox | [ ] |
 | Links / labels / assignee / components | field/link ops | targeted REST | declarative small-ops | [ ] |
 | JQL query + bulk-iterate | JQL + loops | `searchJql` with caps | sandbox + structured | [ ] |

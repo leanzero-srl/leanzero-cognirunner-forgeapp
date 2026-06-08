@@ -1958,6 +1958,7 @@ let currentConditionPrompt = "";
 let currentActionPrompt = "";
 let currentActionFieldId = "";
 let currentCrossCheckClaims = false;
+let currentManagedConfig = null; // a generate-doc/research/comment config loaded on edit
 let currentFunctions = [];
 let currentValidatorDocIds = [];
 // Stable rule id — loaded from existing config on edit so we don't generate a fresh one each time
@@ -2007,6 +2008,7 @@ function App() {
   const [actionPrompt, setActionPrompt] = useState("");
   const [actionFieldId, setActionFieldId] = useState("");
   const [crossCheckClaims, setCrossCheckClaims] = useState(false);
+  const [managedType, setManagedType] = useState(null); // generate-doc/research/comment → managed in admin panel
   const [functions, setFunctions] = useState([{
     id: `func_${Date.now()}_initial`,
     name: "",
@@ -2193,6 +2195,15 @@ function App() {
             // fresh Date.now() id every save and orphan the previous registry entry.
             if (config.id) currentExistingRuleId = config.id;
 
+            // Safety: declarative action types created in the admin panel (generate-doc /
+            // research / comment) reuse the semantic module but aren't editable here yet.
+            // Capture them so onConfigure preserves them intact instead of clobbering.
+            const MANAGED_PF_TYPES = ["postfunction-generate-doc", "postfunction-research", "postfunction-comment"];
+            if (MANAGED_PF_TYPES.includes(config.type)) {
+              currentManagedConfig = config;
+              setManagedType(config.type);
+            }
+
             // Load post-function-specific config
             if (config.conditionPrompt) {
               setConditionPrompt(config.conditionPrompt);
@@ -2311,6 +2322,13 @@ function App() {
               fieldId: currentFieldId.trim(),
               prompt: currentPrompt.trim(),
             };
+
+            // Preserve declarative action types created in the admin panel (generate-doc /
+            // research / comment): config-ui doesn't render their editors yet, so re-saving
+            // here must NOT downgrade them to a plain semantic rule. Return them intact.
+            if (isPostFn && currentManagedConfig && currentManagedConfig.type) {
+              return { ...currentManagedConfig, id: ruleId, workflow: workflowContext };
+            }
 
             // Validate based on module type. Return undefined to signal "invalid" — Forge then
             // shows its built-in field-error UI and the save is blocked.
@@ -2548,7 +2566,22 @@ function App() {
       )}
 
       {/* Semantic post-function: condition/action prompts + field selector */}
-      {isPostFunction && postFunctionType === "semantic" && (
+      {isPostFunction && managedType && (
+        <div className="card">
+          <div style={{ padding: "16px" }}>
+            <h3 style={{ margin: "0 0 6px", fontSize: "14px", fontWeight: 600 }}>
+              {managedType === "postfunction-generate-doc" ? "Generate Document"
+                : managedType === "postfunction-research" ? "Research & Save"
+                : "Add Comment"} rule
+            </h3>
+            <p style={{ margin: 0, fontSize: "12px", color: "var(--text-secondary, #5e6c84)" }}>
+              This action type is configured in the <strong>CogniRunner admin panel</strong> (Apps → CogniRunner). The workflow editor can&apos;t edit it yet — saving here preserves the rule unchanged. Open the admin panel to change its settings.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {isPostFunction && postFunctionType === "semantic" && !managedType && (
         <div className="card">
           {isByok && (
             <div className="byok-cost-notice">

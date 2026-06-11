@@ -403,11 +403,35 @@ Respond with ONLY valid JSON:
  * the per-type executor and writes the result log itself — nothing polls this task,
  * so the generic async_task status bookkeeping is skipped for it (see handler()).
  */
-const executeQueuedPostFunction = async (params) => {
+const executeQueuedPostFunction = async (params, taskId) => {
   const { issueKey, config, extensionKey } = params || {};
   if (!issueKey || !config) {
     console.error("Queued post-function missing issueKey/config — dropping");
     return { success: false };
+  }
+  // Idempotency: Forge async events are delivered at-least-once (platform-level
+  // failures — timeouts, OOM — are redelivered automatically; app-level throws are
+  // not, but we never rely on that). Claim this task atomically BEFORE executing —
+  // a redelivery then skips instead of double-posting comments / re-attaching
+  // documents. Claim-first means a crash mid-execution is NOT retried with side
+  // effects intact; for fail-open automations, duplicates are the worse failure.
+  if (taskId) {
+    try {
+      await storage.set(`pf_exec:${taskId}`, { issueKey, claimedAt: new Date().toISOString() }, {
+        keyPolicy: "FAIL_IF_EXISTS",
+        ttl: { value: 6, unit: "HOURS" },
+      });
+    } catch (e) {
+      const isConflict = e?.code === "KEY_ALREADY_EXISTS"
+        || e?.responseDetails?.status === 409
+        || /already\s*exist/i.test(String(e?.message));
+      if (isConflict) {
+        console.log(`[pf] duplicate delivery of ${taskId} — already executed/executing, skipping`);
+        return { success: true, deduped: true };
+      }
+      // Claim infrastructure failed for another reason — execute anyway (fail-open).
+      console.warn("[pf] dedup claim errored (continuing):", e?.message);
+    }
   }
   // 110s budget under the consumer's 120s platform timeout.
   await dispatchPostFunction(issueKey, config, extensionKey || null, Date.now() + 110000);
@@ -448,8 +472,8 @@ export async function handler(event) {
     // Mark as processing (only for tasks something will poll)
     if (polled) await storage.set(`${TASK_PREFIX}${taskId}`, { status: "processing" });
 
-    // Execute the task
-    const result = await taskHandler(params);
+    // Execute the task (taskId lets idempotent handlers claim their execution)
+    const result = await taskHandler(params, taskId);
 
     // Store result
     if (polled) await storage.set(`${TASK_PREFIX}${taskId}`, { status: "done", result });

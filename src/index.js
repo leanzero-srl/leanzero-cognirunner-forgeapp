@@ -346,28 +346,93 @@ const fetchContextDocs = async (docIds) => {
 };
 
 /**
- * Store a validation log entry
+ * Store a validation log entry.
+ *
+ * Each entry lives under its OWN key (`log_entry:<inverted-ts>_<rand>`) so
+ * concurrent writers (validator + inline PF + queued PF on the same transition)
+ * can never lose entries to a read-modify-write race on a shared array — the
+ * failure mode of the old single-key `validation_logs` design.
+ *
+ * Key ordering: the timestamp is inverted (1e13 - now) and zero-padded so a
+ * plain ascending BEGINS_WITH query returns newest-first without sorting.
+ * A 30-day TTL plus a probabilistic prune (below) bounds storage growth.
  */
+const LOG_ENTRY_PREFIX = "log_entry:";
+const logEntryKey = () =>
+  LOG_ENTRY_PREFIX
+  + String(1e13 - Date.now()).padStart(13, "0")
+  + "_" + Math.random().toString(36).slice(2, 8);
+
 const storeLog = async (logEntry) => {
   try {
-    let logs = (await storage.get(LOGS_STORAGE_KEY)) || [];
-
-    // Add new log at the beginning
-    logs.unshift({
+    const entry = {
       ...logEntry,
       timestamp: new Date().toISOString(),
-      id: Date.now().toString(),
-    });
-
-    // Keep only the most recent logs
-    if (logs.length > MAX_LOGS) {
-      logs = logs.slice(0, MAX_LOGS);
+      id: Date.now().toString() + Math.random().toString(36).slice(2, 6),
+    };
+    try {
+      await storage.set(logEntryKey(), entry, { ttl: { value: 30, unit: "DAYS" } });
+    } catch {
+      // TTL option rejected — store without it; the prune below still bounds growth.
+      await storage.set(logEntryKey(), entry);
     }
-
-    await storage.set(LOGS_STORAGE_KEY, logs);
+    // Probabilistic prune (~10% of writes): delete entries beyond MAX_LOGS so a
+    // busy site doesn't accumulate 30 days of entries against the storage quota.
+    // Query result ORDER is undocumented — sort client-side by key (fixed-width
+    // inverted-ts keys: lexicographic ascending = newest first) before slicing,
+    // and additionally only delete entries older than 1 hour so an arbitrary
+    // page composition can never kill a fresh entry.
+    if (Math.random() < 0.1) {
+      try {
+        const page = await storage.query()
+          .where("key", { condition: "BEGINS_WITH", values: [LOG_ENTRY_PREFIX] })
+          .limit(100)
+          .getMany();
+        const sorted = (page.results || []).map((r) => r.key).sort();
+        const cutoff = Date.now() - 60 * 60 * 1000;
+        const stale = sorted.slice(MAX_LOGS).filter((key) => {
+          const ts = 1e13 - parseInt(key.slice(LOG_ENTRY_PREFIX.length, LOG_ENTRY_PREFIX.length + 13), 10);
+          return Number.isFinite(ts) && ts < cutoff;
+        });
+        // batchDelete caps at 25 keys per call — chunk.
+        for (let i = 0; i < stale.length; i += 25) {
+          await storage.batchDelete(stale.slice(i, i + 25).map((key) => ({ key })));
+        }
+      } catch (e) {
+        console.log("Log prune skipped:", e.message);
+      }
+    }
   } catch (error) {
     console.error("Failed to store log:", error);
   }
+};
+
+/**
+ * Read the most recent log entries (newest first). Merges the legacy single-key
+ * array (pre-migration entries) with the per-entry keys, capped at MAX_LOGS.
+ */
+const readLogs = async () => {
+  // Fetch a full page (max 100) and sort client-side — query result order is
+  // undocumented. Keys are fixed-width inverted timestamps, so ascending
+  // lexicographic order = newest first.
+  const page = await storage.query()
+    .where("key", { condition: "BEGINS_WITH", values: [LOG_ENTRY_PREFIX] })
+    .limit(100)
+    .getMany();
+  let logs = (page.results || [])
+    .slice()
+    .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
+    .slice(0, MAX_LOGS)
+    .map((r) => r.value);
+  if (logs.length < MAX_LOGS) {
+    try {
+      const legacy = (await storage.get(LOGS_STORAGE_KEY)) || [];
+      if (Array.isArray(legacy) && legacy.length > 0) {
+        logs = [...logs, ...legacy].slice(0, MAX_LOGS);
+      }
+    } catch { /* legacy read is best-effort */ }
+  }
+  return logs;
 };
 
 /**
@@ -390,7 +455,7 @@ resolver.define("checkLicense", ({ context }) => {
  */
 resolver.define("getLogs", async () => {
   try {
-    const logs = (await storage.get(LOGS_STORAGE_KEY)) || [];
+    const logs = await readLogs();
     return { success: true, logs };
   } catch (error) {
     console.error("Failed to get logs:", error);
@@ -406,6 +471,20 @@ resolver.define("clearLogs", async ({ context }) => {
     return { success: false, error: "Editor access required" };
   }
   try {
+    // Delete per-entry keys page by page (batchDelete caps at 25 keys per call),
+    // then the legacy array key.
+    for (let i = 0; i < 40; i++) {
+      const page = await storage.query()
+        .where("key", { condition: "BEGINS_WITH", values: [LOG_ENTRY_PREFIX] })
+        .limit(100)
+        .getMany();
+      const keys = (page.results || []).map((r) => ({ key: r.key }));
+      if (keys.length === 0) break;
+      for (let j = 0; j < keys.length; j += 25) {
+        await storage.batchDelete(keys.slice(j, j + 25));
+      }
+      if (!page.nextCursor && keys.length < 100) break;
+    }
     await storage.set(LOGS_STORAGE_KEY, []);
     return { success: true };
   } catch (error) {
@@ -457,6 +536,14 @@ resolver.define("registerConfig", async ({ payload, context }) => {
         const legacyId = `${workflowData.workflowName}::${workflowData.transitionId}`;
         existingIndex = configs.findIndex((c) => c.id === legacyId && sameFamily(c));
       }
+    }
+    // Scale guard: the registry lives in ONE KVS value (hard cap ~240KB) — refuse
+    // unbounded growth with a clear message instead of corrupting at the limit.
+    if (existingIndex < 0 && configs.length >= 500) {
+      return { success: false, error: "Rule registry is full (500 rules). Remove unused rules from the admin panel before adding more." };
+    }
+    if (existingIndex < 0 && JSON.stringify(configs).length > 200000) {
+      return { success: false, error: "Rule registry is near the storage size limit. Remove unused rules from the admin panel before adding more." };
     }
     // If a different-family row already holds this exact id (legacy collision),
     // namespace ours so registry ids stay unique.
@@ -2874,11 +2961,14 @@ const mintAttachmentToken = async ({ attachmentId, issueKey, actorAccountId }) =
   // field is kept on the record for a defense-in-depth soft check in the
   // handler in case the KVS backend's TTL is fuzzy.
   try {
+    // @forge/kvs TTL option shape is { ttl: { value, unit } } — the earlier
+    // { ttlSeconds } form was silently ignored (tokens never auto-expired in KVS;
+    // only the soft expiresAt guard bounded replay).
     await storage.set(ATTACHMENT_TOKEN_PREFIX + token, record, {
-      ttlSeconds: Math.ceil(ATTACHMENT_TOKEN_TTL_MS / 1000),
+      ttl: { value: Math.ceil(ATTACHMENT_TOKEN_TTL_MS / 1000), unit: "SECONDS" },
     });
   } catch {
-    // Older @forge/kvs without ttlSeconds support — fall back to plain set.
+    // KVS rejected the TTL option — fall back to plain set.
     // The expiresAt soft check in serveAttachment still bounds replay.
     await storage.set(ATTACHMENT_TOKEN_PREFIX + token, record);
   }
@@ -2928,7 +3018,7 @@ const mintUploadToken = async ({ issueKey, allowedFilename, actorAccountId }) =>
   };
   try {
     await storage.set(UPLOAD_TOKEN_PREFIX + token, record, {
-      ttlSeconds: Math.ceil(UPLOAD_TOKEN_TTL_MS / 1000),
+      ttl: { value: Math.ceil(UPLOAD_TOKEN_TTL_MS / 1000), unit: "SECONDS" },
     });
   } catch {
     await storage.set(UPLOAD_TOKEN_PREFIX + token, record);
@@ -3272,6 +3362,13 @@ resolver.define("registerPostFunction", async ({ payload, context }) => {
     // (remove/disable/enable) already do this; the create/update path was an oversight.
     if (existing >= 0 && !(await canActOnConfig(context.accountId, configs[existing], "editor"))) {
       return { success: false, error: "You don't have permission to modify this post-function" };
+    }
+    // Scale guard — same single-KVS-value limit as registerConfig.
+    if (existing < 0 && configs.length >= 500) {
+      return { success: false, error: "Rule registry is full (500 rules). Remove unused rules from the admin panel before adding more." };
+    }
+    if (existing < 0 && JSON.stringify(configs).length > 200000) {
+      return { success: false, error: "Rule registry is near the storage size limit. Remove unused rules (static post-function code is the usual culprit) before adding more." };
     }
     // If a different-family row already holds this exact id, namespace ours.
     const otherFamilyHoldsId = configs.some((c, i) => c.id === id && i !== existing);
@@ -7619,18 +7716,22 @@ const executeSemanticPostFunction = async (issueKey, config, deadline = Date.now
     trace.push("Evaluating condition with AI...");
     const aiStart = Date.now();
     // Reserve 5s after the AI call for the Jira PUT + log write.
-    const aiResult = await raceDeadline(
-      callAIChat({
-        apiKey, model,
-        jsonMode: true,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userContent },
-        ],
-      }),
-      deadline - 5000,
-      "Semantic AI evaluation",
-    );
+    const semanticAiCall = () => callAIChat({
+      apiKey, model,
+      jsonMode: true,
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userContent },
+      ],
+    });
+    let aiResult = await raceDeadline(semanticAiCall(), deadline - 5000, "Semantic AI evaluation");
+    // One retry on transient provider errors (rate limit / 5xx) when the budget allows —
+    // a single 429 should not cost the tenant the whole automation run.
+    if (!aiResult.ok && [429, 500, 502, 503, 529].includes(aiResult.status) && deadline - Date.now() > 12000) {
+      trace.push(`Transient AI error (HTTP ${aiResult.status}) — retrying once...`);
+      await new Promise((r) => setTimeout(r, 1500));
+      aiResult = await raceDeadline(semanticAiCall(), deadline - 5000, "Semantic AI evaluation (retry)");
+    }
     const aiTimeMs = Date.now() - aiStart;
 
     if (!aiResult.ok) {
@@ -7727,12 +7828,29 @@ const executeSemanticPostFunction = async (issueKey, config, deadline = Date.now
           sourceFieldId, sourceFieldLength: fieldLen, docCount };
       }
 
+      // Size guard: Jira text fields cap at 32767 chars — a runaway generation
+      // should degrade to a truncated write, not a 400 that fails the whole run.
+      if (typeof result.value === "string" && result.value.length > 30000) {
+        trace.push(`Value too long (${result.value.length} chars) — truncated to 30000`);
+        result.value = result.value.slice(0, 30000) + "…";
+      }
+
       trace.push(`Updating field "${actionFieldId}" on ${issueKey}...`);
       const updateBody = { fields: { [actionFieldId]: result.value } };
-      const updateResponse = await api.asApp().requestJira(
+      const doUpdate = () => api.asApp().requestJira(
         route`/rest/api/3/issue/${issueKey}`,
         { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(updateBody) },
       );
+      let updateResponse = await doUpdate();
+      // One retry on Jira rate-limit / transient upstream errors, honoring
+      // Retry-After within the remaining budget.
+      if (!updateResponse.ok && [429, 502, 503].includes(updateResponse.status) && deadline - Date.now() > 6000) {
+        const retryAfterSec = Number(updateResponse.headers?.get?.("retry-after")) || 2;
+        const waitMs = Math.max(500, Math.min(retryAfterSec * 1000, deadline - Date.now() - 4000, 5000));
+        trace.push(`Jira returned ${updateResponse.status} — retrying the update after ${Math.round(waitMs / 1000)}s...`);
+        await new Promise((r) => setTimeout(r, waitMs));
+        updateResponse = await doUpdate();
+      }
       if (!updateResponse.ok) {
         const errStatus = updateResponse.status;
         const errBody = await updateResponse.text().catch(() => "");
@@ -8391,21 +8509,35 @@ export const executePostFunction = async (args) => {
   const isHeavyPf = pfType.includes("generate-doc")
     || pfType.includes("research")
     || (pfType.includes("semantic") && config.crossCheckClaims === true);
+  const queuePayloadTaskId = `pf_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   if (isHeavyPf) {
     try {
+      const queuePayload = {
+        taskType: "postfunction",
+        taskId: queuePayloadTaskId,
+        params: { issueKey: issue.key, config, extensionKey },
+      };
+      // Async events for long-timeout consumers cap at 100KB per event — an
+      // oversized config degrades to an inline run instead of a rejected push.
+      // Measure BYTES (multibyte content makes .length undercount badly).
+      if (Buffer.byteLength(JSON.stringify(queuePayload), "utf8") > 90000) {
+        throw new Error("config too large for the async queue (100KB event cap)");
+      }
       const { Queue } = await import("@forge/events");
       const queue = new Queue({ key: "async-ai-queue" });
-      await queue.push({
-        body: {
-          taskType: "postfunction",
-          taskId: `pf_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-          params: { issueKey: issue.key, config, extensionKey },
-        },
-      });
+      await queue.push({ body: queuePayload });
       console.log(`[pf] queued ${pfType} on ${issue.key} for async execution (110s budget)`);
       return { result: true };
     } catch (e) {
       console.warn(`[pf] queueing failed (${e.message}) — running inline with the tight budget`);
+      // The push outcome can be AMBIGUOUS (network error after the platform accepted
+      // the event). Best-effort claim of the task id so an actually-enqueued duplicate
+      // dedupes in the consumer instead of double-applying side effects.
+      try {
+        await storage.set(`pf_exec:${queuePayloadTaskId}`, {
+          issueKey: issue.key, claimedAt: new Date().toISOString(), claimedBy: "inline-fallback",
+        }, { keyPolicy: "FAIL_IF_EXISTS", ttl: { value: 6, unit: "HOURS" } });
+      } catch { /* best-effort */ }
     }
   }
 

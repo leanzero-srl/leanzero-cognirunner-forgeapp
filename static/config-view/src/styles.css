@@ -109,15 +109,19 @@ html, body {
 }
 
 .license-active {
-  background: rgba(0, 102, 68, 0.1);
+  background: var(--card-bg);
   border-color: var(--success-color);
+  border-width: 2px;
   color: var(--success-color);
+  box-shadow: 0 4px 12px -4px rgba(22, 163, 106, 0.35);
 }
 
 .license-inactive {
-  background: rgba(222, 53, 11, 0.1);
+  background: var(--card-bg);
   border-color: var(--error-color);
+  border-width: 2px;
   color: var(--error-color);
+  box-shadow: 0 4px 12px -4px rgba(220, 38, 38, 0.35);
 }
 
 .rule-status-banner {
@@ -134,14 +138,18 @@ html, body {
 
 .status-disabled-banner {
   border-color: var(--error-color);
-  background: rgba(222, 53, 11, 0.08);
+  border-width: 2px;
+  background: var(--card-bg);
   color: var(--error-color);
+  box-shadow: 0 4px 12px -4px rgba(220, 38, 38, 0.35);
 }
 
 .status-active-banner {
   border-color: var(--success-color);
-  background: rgba(0, 102, 68, 0.08);
+  border-width: 2px;
+  background: var(--card-bg);
   color: var(--success-color);
+  box-shadow: 0 4px 12px -4px rgba(22, 163, 106, 0.35);
 }
 
 .rule-status-content {
@@ -157,7 +165,8 @@ html, body {
 }
 
 .btn-enable:hover {
-  background: rgba(0, 102, 68, 0.1);
+  background: var(--success-color);
+  color: #ffffff;
 }
 
 .btn-danger {
@@ -167,7 +176,8 @@ html, body {
 }
 
 .btn-danger:hover {
-  background: rgba(222, 53, 11, 0.1);
+  background: var(--error-color);
+  color: #ffffff;
 }
 
 .alert {
@@ -182,9 +192,11 @@ html, body {
 }
 
 .alert-error {
-  background: rgba(222, 53, 11, 0.08);
+  background: var(--card-bg);
   border-color: var(--error-color);
+  border-width: 2px;
   color: var(--error-color);
+  box-shadow: 0 4px 12px -4px rgba(220, 38, 38, 0.35);
 }
 
 .alert-warning {
@@ -226,13 +238,13 @@ html[data-color-mode="dark"] .alert-warning {
   border-radius: 3px;
   font-size: 10px;
   font-weight: 600;
-  background: rgba(0, 82, 204, 0.1);
-  color: var(--primary-color);
+  background: var(--primary-color);
+  color: #ffffff;
   margin-right: 6px;
 }
 
 html[data-color-mode="dark"] .log-tools-badge {
-  background: rgba(87, 157, 255, 0.15);
+  background: var(--primary-color);
 }
 
 .log-queries {

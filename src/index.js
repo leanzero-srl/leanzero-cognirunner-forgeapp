@@ -1565,7 +1565,9 @@ resolver.define("injectWorkflowRule", async ({ payload, context }) => {
         tree.conditions.push(newRule);
         if (!tree.operation) tree.operation = "ALL";
       } else {
-        targetTransition.conditions = { operation: "ALL", conditions: [newRule], conditionGroups: [] };
+        // Preserve any legacy flat-array conditions instead of dropping them.
+        const legacy = Array.isArray(tree) ? tree : [];
+        targetTransition.conditions = { operation: "ALL", conditions: [...legacy, newRule], conditionGroups: [] };
       }
     } else {
       // Post-functions are `actions` in the v3 workflows API
@@ -4464,7 +4466,7 @@ resolver.define("testSubtaskPostFunction", async ({ payload }) => {
 });
 
 resolver.define("testPostFunction", async ({ payload }) => {
-  const { code, issueKey, jql } = payload;
+  const { code, issueKey, jql, priorVariables } = payload;
   if (!code || typeof code !== "string") {
     return { success: false, logs: ["No code provided"] };
   }
@@ -4610,9 +4612,27 @@ resolver.define("testPostFunction", async ({ payload }) => {
   };
 
   try {
+    // Mirror the PRODUCTION sandbox shape exactly (vars argument + ${var}->vars[...]
+    // substitution + named scope params) so Test Run predicts real execution.
+    // priorVariables is optional — single-step tests get an empty vars object, and
+    // chained-variable references then fail here the same way they would in prod
+    // when the prior step produced nothing.
+    const variables = (priorVariables && typeof priorVariables === "object") ? priorVariables : {};
+    let testCode = code;
+    for (const varName of Object.keys(variables)) {
+      const placeholder = "${" + varName + "}";
+      if (testCode.includes(placeholder)) {
+        testCode = testCode.split(placeholder).join(`vars[${JSON.stringify(varName)}]`);
+      }
+    }
     const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-    const sandboxFn = new AsyncFunction("api", code);
-    const result = await sandboxFn(testApi);
+    const scopeVarNames = Object.keys(variables).filter((n) =>
+      /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(n)
+      && n !== "api" && n !== "vars"
+      && !SANDBOX_RESERVED_WORDS.has(n)
+      && !new RegExp("\\b(?:const|let|var|class|function)\\s+" + n + "\\b").test(testCode));
+    const sandboxFn = new AsyncFunction("api", "vars", ...scopeVarNames, testCode);
+    const result = await sandboxFn(testApi, variables, ...scopeVarNames.map((n) => variables[n]));
     if (result !== undefined) {
       testLogs.push("Return value: " + (typeof result === "object" ? JSON.stringify(result) : String(result)));
     }
@@ -4675,7 +4695,8 @@ const FORGE_LLM_FALLBACK_MODELS = [
  *     JSON.parse(toolCall.function.arguments) keeps working
  *   - text-only: image_url / file content parts are dropped with an inline note
  *   - no response_format — JSON mode is enforced via the system message
- * Errors carry the response body at err.context.responseText.
+ * Errors are ForgeLlmAPIError with TOP-LEVEL .status/.statusText/.code/.message
+ * (the response body is folded into .message — there is no .context property).
  */
 const callForgeLlmChat = async ({ model, messages, tools, tool_choice, jsonMode }) => {
   try {
@@ -4717,6 +4738,9 @@ const callForgeLlmChat = async ({ model, messages, tools, tool_choice, jsonMode 
         jsonInstructionAdded = true;
       }
       if (msg.role === "assistant" && Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
+        // The service contract intends non-empty message content — give tool-call-only
+        // assistant turns a placeholder so multi-round tool calling can't 400 on it.
+        if (!out.content) out.content = "(calling tools)";
         // Forge LLM wants arguments as an OBJECT and an index per tool call.
         out.tool_calls = msg.tool_calls.map((tc, i) => ({
           id: tc.id,
@@ -4782,9 +4806,9 @@ const callForgeLlmChat = async ({ model, messages, tools, tool_choice, jsonMode 
     }
     return { ok: true, status: 200, data: openAIData };
   } catch (err) {
-    const detail = err?.context?.responseText || err?.message || String(err);
-    console.error("Forge LLM error:", detail);
-    return { ok: false, status: err?.context?.status || 500, data: null, error: String(detail).substring(0, 500) };
+    const detail = err?.message || String(err);
+    console.error("Forge LLM error:", err?.status, detail);
+    return { ok: false, status: err?.status || 500, data: null, error: String(detail).substring(0, 500) };
   }
 };
 
@@ -6623,9 +6647,12 @@ RESPONSE FORMAT:
     }
 
     try {
-      // Offer tools only if we haven't exhausted tool-call rounds
-      const callTools = round < MAX_TOOL_ROUNDS ? tools : undefined;
-      const callToolChoice = round < MAX_TOOL_ROUNDS ? "auto" : undefined;
+      // On the final round, keep the tool DEFINITIONS (several providers reject a
+      // conversation containing tool_use/tool_result history when `tools` is absent)
+      // but force tool_choice "none" so the model must produce its final answer.
+      const exhausted = round >= MAX_TOOL_ROUNDS;
+      const callTools = tools;
+      const callToolChoice = exhausted ? "none" : "auto";
 
       const aiResult = await callAIChat({
         apiKey, model, messages,
@@ -7034,13 +7061,18 @@ export const validate = async (args) => {
   try {
     const configs = (await storage.get(CONFIG_REGISTRY_KEY)) || [];
     const ruleId = configuration?.ruleId || configuration?.id || null;
+    // Registry ids are shared across rule types on the same transition (legacy format
+    // has no type component), so a row whose type is a post-function must never mute
+    // a validator/condition invocation.
+    const isValidatorRow = (c) => !String(c.type || "validator").startsWith("postfunction");
     let matchingConfig = null;
     if (ruleId) {
-      matchingConfig = configs.find((c) => c.id === ruleId && c.disabled === true);
+      matchingConfig = configs.find((c) => c.id === ruleId && c.disabled === true && isValidatorRow(c));
     }
     if (!matchingConfig && configuration?.workflow?.workflowName && configuration?.workflow?.transitionId) {
       matchingConfig = configs.find((c) =>
         c.disabled === true
+        && isValidatorRow(c)
         && c.workflow?.workflowName === configuration.workflow.workflowName
         && String(c.workflow?.transitionId) === String(configuration.workflow.transitionId)
       );
@@ -7173,11 +7205,16 @@ export const validate = async (args) => {
       // For non-LM-Studio providers, ALSO require the hosted doc-processor
       // to be configured — without it there's nowhere for the model to call.
       let providerSupportsBridge = aiProvider === "lmstudio";
-      if (aiProvider === "anthropic") {
+      if (aiProvider === "anthropic" || aiProvider === "atlassian") {
+        // Anthropic reaches doc-reader natively (mcp_servers); Forge LLM reaches it
+        // through the cross-provider MCP bridge (read-doc proxied as a function tool).
+        // Both need the hosted doc-processor configured. Forge LLM additionally NEEDS
+        // the URL bridge for documents — it has no inline file input at all.
         const remote = await getDocProcessorRemoteConfig();
         providerSupportsBridge = !!(remote && remote.url && remote.bearer);
       }
-      // OpenAI + OpenRouter: providerSupportsBridge stays false → no bridge.
+      // OpenAI + OpenRouter: providerSupportsBridge stays false → inline file path
+      // (both accept type:"file" content natively).
 
       const useUrlBridge = providerSupportsBridge && docReaderEnabled;
       const useUploadBridge = providerSupportsBridge && docWriterEnabled;
@@ -7867,6 +7904,17 @@ const executeSubtaskPostFunction = async (issueKey, config) => {
   } catch (e) { return { success: false, decision: "SUBTASK", reason: e.message, trace }; }
 };
 
+// Names that cannot be AsyncFunction parameters (reserved words incl. strict-mode
+// and async-context ones). Chained values with these names stay reachable via vars[...].
+const SANDBOX_RESERVED_WORDS = new Set([
+  "await", "break", "case", "catch", "class", "const", "continue", "debugger",
+  "default", "delete", "do", "else", "enum", "export", "extends", "false",
+  "finally", "for", "function", "if", "implements", "import", "in", "instanceof",
+  "interface", "let", "new", "null", "package", "private", "protected", "public",
+  "return", "static", "super", "switch", "this", "throw", "true", "try", "typeof",
+  "var", "void", "while", "with", "yield", "arguments", "eval",
+]);
+
 /**
  * Execute a static post-function: runs sandboxed JavaScript code with an API surface.
  * Each function block runs sequentially; results are shared via variable chaining.
@@ -7997,8 +8045,15 @@ const executeStaticPostFunction = async (issueKey, config) => {
       // tells the AI "reference them directly by name", so a bare
       // `searchResults.issues` must resolve.
       const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-      const scopeVarNames = Object.keys(variables)
-        .filter((n) => /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(n) && n !== "api" && n !== "vars");
+      const scopeVarNames = Object.keys(variables).filter((n) =>
+        /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(n)
+        && n !== "api" && n !== "vars"
+        // Reserved words are illegal as parameter names — constructing would SyntaxError
+        // even if the code never uses the variable (vars[...] still gives access).
+        && !SANDBOX_RESERVED_WORDS.has(n)
+        // If the step's code re-declares the name (const/let/class/function), injecting it
+        // as a parameter is a SyntaxError — skip it and let the declaration win.
+        && !new RegExp("\\b(?:const|let|var|class|function)\\s+" + n + "\\b").test(code));
       const sandboxFn = new AsyncFunction("api", "vars", ...scopeVarNames, code);
 
       // H2: per-step timeout. Bounds a single async step (e.g. a slow network/MCP

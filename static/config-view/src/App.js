@@ -331,15 +331,19 @@ const injectStyles = () => {
     }
 
     .license-active {
-      background: rgba(0, 102, 68, 0.1);
+      background: var(--card-bg);
       border-color: var(--success-color);
+      border-width: 2px;
       color: var(--success-color);
+      box-shadow: 0 4px 12px -4px rgba(22, 163, 106, 0.35);
     }
 
     .license-inactive {
-      background: rgba(222, 53, 11, 0.1);
+      background: var(--card-bg);
       border-color: var(--error-color);
+      border-width: 2px;
       color: var(--error-color);
+      box-shadow: 0 4px 12px -4px rgba(220, 38, 38, 0.35);
     }
 
     .rule-status-banner {
@@ -356,14 +360,18 @@ const injectStyles = () => {
 
     .status-disabled-banner {
       border-color: var(--error-color);
-      background: rgba(222, 53, 11, 0.08);
+      border-width: 2px;
+      background: var(--card-bg);
       color: var(--error-color);
+      box-shadow: 0 4px 12px -4px rgba(220, 38, 38, 0.35);
     }
 
     .status-active-banner {
       border-color: var(--success-color);
-      background: rgba(0, 102, 68, 0.08);
+      border-width: 2px;
+      background: var(--card-bg);
       color: var(--success-color);
+      box-shadow: 0 4px 12px -4px rgba(22, 163, 106, 0.35);
     }
 
     .rule-status-content {
@@ -379,7 +387,8 @@ const injectStyles = () => {
     }
 
     .btn-enable:hover {
-      background: rgba(0, 102, 68, 0.1);
+      background: var(--success-color);
+      color: #ffffff;
     }
 
     .btn-danger {
@@ -389,7 +398,8 @@ const injectStyles = () => {
     }
 
     .btn-danger:hover {
-      background: rgba(222, 53, 11, 0.1);
+      background: var(--error-color);
+      color: #ffffff;
     }
 
     .alert {
@@ -404,9 +414,11 @@ const injectStyles = () => {
     }
 
     .alert-error {
-      background: rgba(222, 53, 11, 0.08);
+      background: var(--card-bg);
       border-color: var(--error-color);
+      border-width: 2px;
       color: var(--error-color);
+      box-shadow: 0 4px 12px -4px rgba(220, 38, 38, 0.35);
     }
 
     .alert-warning {

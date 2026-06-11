@@ -30,29 +30,24 @@ const TASK_TTL_HOURS = 1; // Results expire after 1 hour
 const providerKeySlot = (provider) => `COGNIRUNNER_KEY_${provider}`;
 const providerModelSlot = (provider) => `COGNIRUNNER_MODEL_${provider}`;
 
-let _cachedKey = null;
-let _cachedKeyChecked = false;
-
+// NO module-level key cache here. This consumer runs in a different warm container
+// than the resolver that handles saveProvider, so a cached key can't be invalidated
+// on provider switch — a stale key paired with a freshly-read provider sends the
+// wrong credential (guaranteed wrong for the Forge LLM sentinel). One KVS read per
+// queued task is cheap; correctness wins.
 const getOpenAIKey = async () => {
-  if (_cachedKeyChecked) return _cachedKey || process.env.OPENAI_API_KEY;
   try {
     const { provider } = await getProviderConfig();
     // Forge LLM needs no API key — sentinel keeps `if (!apiKey)` call sites working.
-    if (provider === "atlassian") {
-      _cachedKeyChecked = true;
-      _cachedKey = "atlassian-forge-llm";
-      return _cachedKey;
-    }
+    if (provider === "atlassian") return "atlassian-forge-llm";
     let byokKey = await storage.get(providerKeySlot(provider));
     // Legacy migration fallback
     if (!byokKey) {
       const legacy = await storage.get("COGNIRUNNER_OPENAI_API_KEY");
       if (legacy) { byokKey = legacy; }
     }
-    _cachedKeyChecked = true;
-    if (byokKey) { _cachedKey = byokKey; return byokKey; }
+    if (byokKey) return byokKey;
   } catch (e) { /* fall through */ }
-  _cachedKeyChecked = true;
   return process.env.OPENAI_API_KEY;
 };
 
@@ -60,6 +55,7 @@ const PROVIDER_DEFAULT_MODELS = {
   openrouter: "openai/gpt-5.4-mini",
   anthropic: "claude-haiku-4-5-20251001",
   atlassian: "claude-haiku-4-5-20251001",
+  lmstudio: "gpt-5.4-mini", // placeholder — LM Studio admins always save a model
 };
 
 const getOpenAIModel = async () => {
@@ -184,8 +180,9 @@ const callAIChatSimple = async ({ apiKey, model, systemPrompt, userMessage, json
         || ((response?.usage?.input_tokens || 0) + (response?.usage?.output_tokens || 0));
       return { ok: true, content, tokens };
     } catch (err) {
-      const detail = err?.context?.responseText || err?.message || String(err);
-      return { ok: false, status: err?.context?.status || 500, error: String(detail).substring(0, 300) };
+      // ForgeLlmAPIError carries top-level .status/.message (no .context property)
+      const detail = err?.message || String(err);
+      return { ok: false, status: err?.status || 500, error: String(detail).substring(0, 300) };
     }
   }
 

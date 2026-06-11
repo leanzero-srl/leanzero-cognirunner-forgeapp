@@ -677,7 +677,7 @@ export default function OpenAIConfig({ invoke }) {
               All providers support chat completions and tool calling. Vision (image attachments) requires OpenAI, Azure, OpenRouter, Anthropic, or a vision-capable LM Studio model — Atlassian Forge LLM is text-only for now.
             </p>
             {isAtlassian && (
-              <div style={{ marginTop: "8px", padding: "8px 10px", background: "rgba(37, 99, 235, 0.08)", border: "1px solid rgba(37, 99, 235, 0.4)", borderRadius: "6px", fontSize: "11px", color: "var(--text-secondary)" }}>
+              <div style={{ marginTop: "8px", padding: "8px 10px", background: "var(--card-bg)", border: "2px solid var(--primary-color)", boxShadow: "0 4px 12px -4px rgba(37, 99, 235, 0.35)", borderRadius: "6px", fontSize: "11px", color: "var(--text-secondary)" }}>
                 <strong>Atlassian-hosted Claude (Forge LLMs, Preview).</strong> No API key and no
                 egress — prompts and field data never leave the Atlassian platform. Token usage is
                 billed to the app vendor (LeanZero), not to your site. Supports tool calling (JQL
@@ -1144,7 +1144,7 @@ export default function OpenAIConfig({ invoke }) {
                   {/* Hosted web-search remote config — separate KVS slot from
                       doc-processor so the two services can be hosted at
                       different URLs / Bearers. */}
-                  <div style={{ padding: "10px 12px", marginBottom: "10px", background: "rgba(34, 197, 94, 0.06)", border: "1px solid rgba(34, 197, 94, 0.4)", borderRadius: "6px", fontSize: "11px" }}>
+                  <div style={{ padding: "10px 12px", marginBottom: "10px", background: "var(--card-bg)", border: "2px solid var(--success-color)", boxShadow: "0 4px 12px -4px rgba(22, 163, 106, 0.35)", borderRadius: "6px", fontSize: "11px" }}>
                     <strong>Hosted web-search (remote MCP)</strong>
                     <div style={{ marginTop: "4px", color: "var(--text-secondary)" }}>
                       Point this at a web-search MCP. Use <strong>your own self-host</strong> (clone <code style={{ fontSize: "11px" }}>mcp-web-search</code>, expose via Tailscale Funnel) or <strong>LeanZero&apos;s hosted demo</strong> — <ExtLink href="https://leanzero.atlascrafted.com/portfolio/mcp-web-search#get-key" style={{ color: "var(--success-color)", fontWeight: 600 }}>get a free demo key →</ExtLink>. Independent from doc-processor (separate URL + Bearer). The MCP is keyless, so also paste a Serper key (free tier at <ExtLink href="https://serper.dev" style={{ color: "var(--success-color)", fontWeight: 600 }}>serper.dev</ExtLink>) — it powers every search.
@@ -1241,9 +1241,9 @@ export default function OpenAIConfig({ invoke }) {
 
                   {/* Provider-specific guidance for what happens once saved */}
                   {provider === "anthropic" && (
-                    <div style={{ padding: "8px 10px", marginBottom: "10px", background: "rgba(37, 99, 235, 0.08)", border: "1px solid rgba(37, 99, 235, 0.4)", borderRadius: "6px", fontSize: "11px" }}>
+                    <div style={{ padding: "8px 10px", marginBottom: "10px", background: "var(--card-bg)", border: "2px solid var(--primary-color)", boxShadow: "0 4px 12px -4px rgba(37, 99, 235, 0.35)", borderRadius: "6px", fontSize: "11px" }}>
                       <strong>Anthropic native MCP:</strong> when this MCP is on AND the hosted web-search above is configured, CogniRunner attaches it to every Messages API request via the <code style={{ fontSize: "11px" }}>mcp_servers</code> field. Claude itself dispatches tool calls.
-                      <div style={{ marginTop: "6px", padding: "6px 8px", background: "rgba(245, 158, 11, 0.10)", border: "1px solid rgba(245, 158, 11, 0.3)", borderRadius: "4px", color: "var(--text-secondary)" }}>
+                      <div style={{ marginTop: "6px", padding: "6px 8px", background: "var(--card-bg)", border: "2px solid #d97706", boxShadow: "0 4px 12px -4px rgba(217, 119, 6, 0.35)", borderRadius: "4px", color: "var(--text-secondary)" }}>
                         ⚠ <strong>Cost note:</strong> Anthropic's <code style={{ fontSize: "11px" }}>mcp_toolset</code> shape doesn't support per-server <code style={{ fontSize: "11px" }}>allowed_tools</code>, so the model sees ALL ~11 tools the web-search server registers (including expensive ones like <code style={{ fontSize: "11px" }}>progressive-web-search</code> 20s and <code style={{ fontSize: "11px" }}>research_and_save_to_markdown</code> multi-URL crawl). LM Studio filters to a 4-tool subset; Anthropic doesn't. If you need to restrict, configure a per-tenant tool allowlist on the web-search server itself.
                       </div>
                     </div>
@@ -1254,7 +1254,7 @@ export default function OpenAIConfig({ invoke }) {
                     </div>
                   )}
                   {isAtlassian && (
-                    <div style={{ padding: "8px 10px", marginBottom: "10px", background: "rgba(245, 158, 11, 0.08)", border: "1px solid rgba(245, 158, 11, 0.4)", borderRadius: "6px", fontSize: "11px" }}>
+                    <div style={{ padding: "8px 10px", marginBottom: "10px", background: "var(--card-bg)", border: "2px solid #d97706", boxShadow: "0 4px 12px -4px rgba(217, 119, 6, 0.35)", borderRadius: "6px", fontSize: "11px" }}>
                       <strong>Atlassian Forge LLM: works via the CogniRunner MCP bridge.</strong> The model can't reach MCP servers itself, but CogniRunner exposes the hosted web-search tools as function tools and proxies the calls from the Forge backend. Configure the hosted web-search above and enable this toggle.
                     </div>
                   )}
@@ -1327,7 +1327,7 @@ npm install && npm run build`}
                       natively (mcp_servers field) and by LM Studio when its
                       local mcp.json is the remote variant. Saved bearer is
                       never sent back from the backend; we only show "saved". */}
-                  <div style={{ padding: "10px 12px", marginBottom: "10px", background: "rgba(34, 197, 94, 0.06)", border: "1px solid rgba(34, 197, 94, 0.4)", borderRadius: "6px", fontSize: "11px" }}>
+                  <div style={{ padding: "10px 12px", marginBottom: "10px", background: "var(--card-bg)", border: "2px solid var(--success-color)", boxShadow: "0 4px 12px -4px rgba(22, 163, 106, 0.35)", borderRadius: "6px", fontSize: "11px" }}>
                     <strong>Hosted doc-processor (remote MCP)</strong>
                     <div style={{ marginTop: "4px", color: "var(--text-secondary)" }}>
                       Point this at a doc-processor MCP. Use <strong>your own self-host</strong> (clone <code style={{ fontSize: "11px" }}>leanzero-mcp-doc-processor</code>, expose via Tailscale Funnel) or <strong>LeanZero&apos;s hosted demo</strong> on our Mac Studio — <ExtLink href="https://leanzero.atlascrafted.com/portfolio/mcp-doc-processor#get-key" style={{ color: "var(--success-color)", fontWeight: 600 }}>get a free demo key →</ExtLink>. Paste the Service URL + Bearer below. LM Studio can alternatively point its <code style={{ fontSize: "11px" }}>mcp.json</code> at the same URL (see below).
@@ -1403,7 +1403,7 @@ npm install && npm run build`}
 
                   {/* Provider-specific guidance for what happens once saved */}
                   {provider === "anthropic" && (
-                    <div style={{ padding: "8px 10px", marginBottom: "10px", background: "rgba(37, 99, 235, 0.08)", border: "1px solid rgba(37, 99, 235, 0.4)", borderRadius: "6px", fontSize: "11px" }}>
+                    <div style={{ padding: "8px 10px", marginBottom: "10px", background: "var(--card-bg)", border: "2px solid var(--primary-color)", boxShadow: "0 4px 12px -4px rgba(37, 99, 235, 0.35)", borderRadius: "6px", fontSize: "11px" }}>
                       <strong>Anthropic native MCP:</strong> when this MCP is on AND the hosted doc-processor above is configured, CogniRunner attaches it to every Messages API request via the <code style={{ fontSize: "11px" }}>mcp_servers</code> field with the beta header <code style={{ fontSize: "11px" }}>anthropic-beta: mcp-client-2025-11-20</code>. Claude itself dispatches tool calls — no per-tool plumbing on our side. Single-use upload capability for each Jira issue is bound server-side and passed in the system prompt; the model cannot redirect uploads.
                     </div>
                   )}
@@ -1413,18 +1413,18 @@ npm install && npm run build`}
                     </div>
                   )}
                   {isAtlassian && (
-                    <div style={{ padding: "8px 10px", marginBottom: "10px", background: "rgba(245, 158, 11, 0.08)", border: "1px solid rgba(245, 158, 11, 0.4)", borderRadius: "6px", fontSize: "11px" }}>
+                    <div style={{ padding: "8px 10px", marginBottom: "10px", background: "var(--card-bg)", border: "2px solid #d97706", boxShadow: "0 4px 12px -4px rgba(217, 119, 6, 0.35)", borderRadius: "6px", fontSize: "11px" }}>
                       <strong>Atlassian Forge LLM: works via the CogniRunner MCP bridge.</strong> Doc-reader tools are exposed as function tools and proxied from the Forge backend. Note: Forge LLM accepts no inline file input, so direct attachment analysis is skipped — the model reads attachments through doc-reader's URL variant instead.
                     </div>
                   )}
                   {isLmStudio && (
-                    <div style={{ padding: "8px 10px", marginBottom: "10px", background: "rgba(37, 99, 235, 0.08)", border: "1px solid rgba(37, 99, 235, 0.4)", borderRadius: "6px", fontSize: "11px" }}>
+                    <div style={{ padding: "8px 10px", marginBottom: "10px", background: "var(--card-bg)", border: "2px solid var(--primary-color)", boxShadow: "0 4px 12px -4px rgba(37, 99, 235, 0.35)", borderRadius: "6px", fontSize: "11px" }}>
                       <strong>Jira attachments:</strong> when this MCP is on, the validator mints a one-shot URL + Bearer token for each attachment and feeds them to the model, so it can call <code style={{ fontSize: "11px" }}>read-doc</code> with <code style={{ fontSize: "11px" }}>url</code> + <code style={{ fontSize: "11px" }}>authHeader</code>. Two ways to wire LM Studio to doc-processor: (a) <strong>local stdio</strong> — clone the repo and run <code style={{ fontSize: "11px" }}>node src/index.js</code> from <code style={{ fontSize: "11px" }}>mcp.json</code>; (b) <strong>remote HTTP</strong> (LM Studio &ge;0.3.17) — point <code style={{ fontSize: "11px" }}>mcp.json</code> at the hosted URL above with the Bearer in headers. Either way, the entry name in <code style={{ fontSize: "11px" }}>mcp.json</code> <strong>must</strong> be <code style={{ fontSize: "11px" }}>doc-reader</code>.
                     </div>
                   )}
 
                   {/* docWriter sub-toggle — applies to ALL providers when doc-reader is on */}
-                  <div style={{ padding: "8px 10px", marginBottom: "10px", background: "rgba(220, 38, 38, 0.06)", border: "1px solid rgba(220, 38, 38, 0.3)", borderRadius: "6px", fontSize: "11px" }}>
+                  <div style={{ padding: "8px 10px", marginBottom: "10px", background: "var(--card-bg)", border: "2px solid var(--error-color)", boxShadow: "0 4px 12px -4px rgba(220, 38, 38, 0.35)", borderRadius: "6px", fontSize: "11px" }}>
                     <label style={{ display: "flex", alignItems: "center", gap: "8px", cursor: mcpEnabled.docReader ? "pointer" : "not-allowed", opacity: mcpEnabled.docReader ? 1 : 0.5 }}>
                       <input
                         type="checkbox"

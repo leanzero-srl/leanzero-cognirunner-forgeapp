@@ -876,8 +876,8 @@ const injectStyles = () => {
       background-color: var(--hover-bg);
     }
     .dropdown-item.dropdown-selected {
-      background-color: rgba(37, 99, 235, 0.08);
-      color: var(--primary-color);
+      background-color: var(--primary-color);
+      color: #ffffff;
     }
     .dropdown-item.dropdown-selected::after {
       content: '';
@@ -886,12 +886,12 @@ const injectStyles = () => {
       width: 6px;
       height: 6px;
       border-radius: 50%;
-      background-color: var(--primary-color);
+      background-color: #ffffff;
     }
     .dropdown-item-icon { display: inline-flex; align-items: center; flex-shrink: 0; line-height: 0; }
     .dropdown-item-icon svg { width: 16px; height: 16px; }
     .dropdown-item-name { font-size: 13px; color: var(--text-color); flex-shrink: 0; }
-    .dropdown-item.dropdown-selected .dropdown-item-name { color: var(--primary-color); font-weight: 500; }
+    .dropdown-item.dropdown-selected .dropdown-item-name { color: #ffffff; font-weight: 500; }
     .dropdown-item-meta {
       font-size: 11px;
       color: var(--text-muted);
@@ -2777,6 +2777,14 @@ const injectCopiedComponentStyles = () => {
       background: var(--code-bg);
       font-size: 10px;
       flex-shrink: 0;
+    }
+    .issue-picker-validated-ok .issue-picker-validated-status {
+      background: #ffffff;
+      color: var(--success-color);
+    }
+    .issue-picker-validated-err .issue-picker-validated-status {
+      background: #ffffff;
+      color: var(--error-color);
     }
 
     .issue-picker-dropdown {

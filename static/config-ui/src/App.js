@@ -1468,6 +1468,14 @@ const injectStyles = () => {
       font-size: 10px;
       flex-shrink: 0;
     }
+    .issue-picker-validated-ok .issue-picker-validated-status {
+      background: #ffffff;
+      color: var(--success-color);
+    }
+    .issue-picker-validated-err .issue-picker-validated-status {
+      background: #ffffff;
+      color: var(--error-color);
+    }
 
     .issue-picker-dropdown {
       position: absolute;

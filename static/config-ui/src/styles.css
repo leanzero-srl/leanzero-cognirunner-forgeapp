@@ -378,7 +378,9 @@ html[data-color-mode="dark"] .dropdown-panel {
 .dropdown-item:hover,
 .dropdown-item.dropdown-highlighted { background-color: var(--code-bg); }
 
-.dropdown-item.dropdown-selected { background-color: var(--icon-bg); }
+.dropdown-item.dropdown-selected { background-color: var(--primary-color); }
+.dropdown-item.dropdown-selected .dropdown-item-name,
+.dropdown-item.dropdown-selected .dropdown-item-meta { color: #ffffff; }
 
 .dropdown-item-name {
   font-size: 14px;

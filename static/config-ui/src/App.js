@@ -294,8 +294,11 @@ const injectStyles = () => {
     .dropdown-item.dropdown-highlighted { background-color: var(--code-bg); }
 
     .dropdown-item.dropdown-selected {
-      background: linear-gradient(90deg, rgba(37, 99, 235, 0.1), rgba(37, 99, 235, 0.03));
-      border-left: 3px solid var(--primary-color);
+      background: var(--primary-color);
+    }
+    .dropdown-item.dropdown-selected .dropdown-item-name,
+    .dropdown-item.dropdown-selected .dropdown-item-meta {
+      color: #ffffff;
     }
 
     .dropdown-item-name {
@@ -571,14 +574,14 @@ const injectStyles = () => {
 
     .pf-type-active {
       border-color: var(--primary-color);
-      background: linear-gradient(135deg, rgba(37, 99, 235, 0.06), rgba(37, 99, 235, 0.02));
-      box-shadow: 0 0 20px rgba(37, 99, 235, 0.15);
+      background: var(--card-bg);
+      box-shadow: 0 0 0 1px var(--primary-color), 0 8px 28px -8px rgba(37, 99, 235, 0.45);
       animation: cardGlow 3s ease-in-out infinite;
     }
 
     @keyframes cardGlow {
-      0%, 100% { box-shadow: 0 0 20px rgba(37, 99, 235, 0.15); }
-      50% { box-shadow: 0 0 28px rgba(37, 99, 235, 0.25); }
+      0%, 100% { box-shadow: 0 0 0 1px var(--primary-color), 0 8px 28px -8px rgba(37, 99, 235, 0.45); }
+      50% { box-shadow: 0 0 0 1px var(--primary-color), 0 10px 32px -8px rgba(37, 99, 235, 0.6); }
     }
 
     .pf-type-header {
@@ -726,8 +729,9 @@ const injectStyles = () => {
       box-shadow: none;
     }
     .btn-generate-secondary:hover:not(:disabled) {
-      background: linear-gradient(135deg, rgba(37, 99, 235, 0.08), transparent);
-      box-shadow: 0 2px 8px rgba(37, 99, 235, 0.15);
+      background: var(--primary-color);
+      color: #ffffff;
+      box-shadow: 0 4px 12px -4px rgba(37, 99, 235, 0.45);
       transform: translateY(-1px);
     }
 
@@ -799,9 +803,9 @@ const injectStyles = () => {
     }
     .btn-add-function:hover:not(:disabled) {
       border-color: var(--primary-color);
-      color: var(--primary-color);
-      background: linear-gradient(135deg, rgba(37, 99, 235, 0.04), transparent);
-      box-shadow: 0 2px 8px rgba(37, 99, 235, 0.08);
+      color: #ffffff;
+      background: var(--primary-color);
+      box-shadow: 0 4px 12px -4px rgba(37, 99, 235, 0.45);
     }
     .btn-add-function:disabled { opacity: 0.5; cursor: default; }
 
@@ -902,8 +906,8 @@ const injectStyles = () => {
     .doc-error {
       padding: 6px 10px;
       border-radius: 4px;
-      background: rgba(220, 38, 38, 0.08);
-      color: var(--error-color);
+      background: var(--error-color);
+      color: #ffffff;
       font-size: 12px;
     }
 
@@ -923,8 +927,8 @@ const injectStyles = () => {
     .doc-item:last-child { border-bottom: none; }
     .doc-item:hover { background: var(--code-bg); }
 
-    .doc-selected { background: rgba(37, 99, 235, 0.06); }
-    .doc-selected:hover { background: rgba(37, 99, 235, 0.1); }
+    .doc-selected { background: var(--icon-bg); box-shadow: inset 0 0 0 2px var(--primary-color); }
+    .doc-selected:hover { background: var(--icon-bg); }
 
     .doc-item-row {
       display: flex;
@@ -1018,15 +1022,13 @@ const injectStyles = () => {
     }
 
     .doc-validation-error {
-      background: rgba(220, 38, 38, 0.08);
-      color: var(--error-color);
-      border: 1px solid rgba(220, 38, 38, 0.2);
+      background: var(--error-color);
+      color: #ffffff;
     }
 
     .doc-validation-ok {
-      background: rgba(22, 163, 106, 0.08);
-      color: var(--success-color);
-      border: 1px solid rgba(22, 163, 106, 0.2);
+      background: var(--success-color);
+      color: #ffffff;
     }
 
     .doc-selection-info {
@@ -1042,9 +1044,9 @@ const injectStyles = () => {
       padding: 12px 14px;
       margin-bottom: 14px;
       border-radius: 10px;
-      background: linear-gradient(135deg, rgba(37, 99, 235, 0.06), rgba(37, 99, 235, 0.02));
-      border: 1px solid rgba(37, 99, 235, 0.2);
-      box-shadow: 0 2px 8px rgba(37, 99, 235, 0.06);
+      background: var(--card-bg);
+      border: 2px solid var(--primary-color);
+      box-shadow: 0 4px 12px -4px rgba(37, 99, 235, 0.35);
     }
 
     .prior-vars-header {
@@ -1138,8 +1140,9 @@ const injectStyles = () => {
       margin-top: 8px;
       padding: 10px 12px;
       border-radius: 8px;
-      background: linear-gradient(135deg, rgba(37, 99, 235, 0.06), transparent);
-      border: 1px solid rgba(37, 99, 235, 0.15);
+      background: var(--card-bg);
+      border: 2px solid var(--primary-color);
+      box-shadow: 0 4px 12px -4px rgba(37, 99, 235, 0.35);
       font-size: 12px;
       line-height: 1.5;
     }
@@ -1268,7 +1271,7 @@ const injectStyles = () => {
       border-color: var(--success-color);
       color: var(--success-color);
     }
-    .btn-test-run:hover { background: rgba(22, 163, 106, 0.1); }
+    .btn-test-run:hover { background: var(--success-color); color: #ffffff; }
     .btn-test-run:disabled { opacity: 0.5; cursor: default; }
 
     /* API Reference panel */
@@ -1328,11 +1331,11 @@ const injectStyles = () => {
     /* Test panel */
     .test-panel {
       margin-top: 10px;
-      border: 1px solid rgba(22, 163, 106, 0.2);
+      border: 2px solid var(--success-color);
       border-radius: 10px;
       overflow: hidden;
-      background: linear-gradient(135deg, var(--input-bg), rgba(22, 163, 106, 0.02));
-      box-shadow: 0 2px 8px rgba(22, 163, 106, 0.06);
+      background: var(--input-bg);
+      box-shadow: 0 4px 12px -4px rgba(22, 163, 106, 0.35);
     }
 
     .test-panel-header {
@@ -1441,20 +1444,18 @@ const injectStyles = () => {
     }
 
     .issue-picker-validated-ok {
-      background: rgba(22, 163, 106, 0.06);
-      color: var(--success-color);
-      border: 1px solid rgba(22, 163, 106, 0.15);
+      background: var(--success-color);
+      color: #ffffff;
     }
 
     .issue-picker-validated-err {
-      background: rgba(220, 38, 38, 0.06);
-      color: var(--error-color);
-      border: 1px solid rgba(220, 38, 38, 0.15);
+      background: var(--error-color);
+      color: #ffffff;
     }
 
-    .issue-picker-validated strong { color: var(--text-color); }
+    .issue-picker-validated strong { color: #ffffff; }
     .issue-picker-validated-summary {
-      color: var(--text-secondary);
+      color: rgba(255, 255, 255, 0.85);
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
@@ -1554,7 +1555,7 @@ const injectStyles = () => {
     .test-result {
       margin-top: 10px;
       border-radius: 6px;
-      border: 1px solid;
+      border: 2px solid;
       overflow: hidden;
     }
 
@@ -1569,8 +1570,12 @@ const injectStyles = () => {
       font-size: 12px;
     }
 
-    .test-pass .test-result-header { background: rgba(22, 163, 106, 0.08); }
-    .test-fail .test-result-header { background: rgba(220, 38, 38, 0.08); }
+    .test-pass .test-result-header { background: var(--success-color); color: #ffffff; }
+    .test-fail .test-result-header { background: var(--error-color); color: #ffffff; }
+    .test-pass .test-result-header .test-result-meta,
+    .test-fail .test-result-header .test-result-meta,
+    .test-pass .test-result-header .test-dismiss,
+    .test-fail .test-result-header .test-dismiss { color: rgba(255, 255, 255, 0.9); }
 
     .test-badge {
       padding: 2px 6px;
@@ -1579,8 +1584,8 @@ const injectStyles = () => {
       font-weight: 700;
       text-transform: uppercase;
     }
-    .test-badge-pass { background: rgba(22, 163, 106, 0.15); color: var(--success-color); }
-    .test-badge-fail { background: rgba(220, 38, 38, 0.15); color: var(--error-color); }
+    .test-badge-pass { background: #ffffff; color: var(--success-color); }
+    .test-badge-fail { background: #ffffff; color: var(--error-color); }
 
     .test-result-meta { color: var(--text-muted); font-size: 11px; }
     .test-dismiss {
@@ -1625,11 +1630,10 @@ const injectStyles = () => {
       gap: 8px;
       padding: 10px 16px;
       margin: 0;
-      background: rgba(220, 38, 38, 0.06);
-      border-bottom: 1px solid rgba(220, 38, 38, 0.15);
-      border-left: 3px solid var(--error-color);
-      color: var(--error-color);
+      background: var(--error-color);
+      color: #ffffff;
       font-size: 12px;
+      font-weight: 600;
     }
 
     /* Skeleton loading — hardcoded colors to avoid CSS variable timing issues */
@@ -1790,10 +1794,10 @@ const injectStyles = () => {
 
     .review-item-icon { flex-shrink: 0; }
 
-    .review-item-success { background: rgba(22, 163, 106, 0.06); color: var(--text-color); }
-    .review-item-warning { background: rgba(217, 119, 6, 0.06); color: var(--text-color); }
-    .review-item-error { background: rgba(220, 38, 38, 0.06); color: var(--text-color); }
-    .review-item-tip { background: rgba(37, 99, 235, 0.06); color: var(--text-color); }
+    .review-item-success { background: var(--success-color); color: #ffffff; }
+    .review-item-warning { background: #d97706; color: #ffffff; }
+    .review-item-error { background: var(--error-color); color: #ffffff; }
+    .review-item-tip { background: var(--primary-color); color: #ffffff; }
 
     .review-meta {
       margin-top: 4px;
@@ -1832,18 +1836,19 @@ const injectStyles = () => {
       transition: all 0.25s ease;
     }
     .btn-semantic-test-toggle:hover {
-      background: rgba(22, 163, 106, 0.08);
-      box-shadow: 0 2px 8px rgba(22, 163, 106, 0.15);
+      background: var(--success-color);
+      color: #ffffff;
+      box-shadow: 0 4px 12px -4px rgba(22, 163, 106, 0.45);
       transform: translateY(-1px);
     }
 
     .semantic-test-panel {
       margin-top: 10px;
-      border: 1px solid rgba(22, 163, 106, 0.2);
+      border: 2px solid var(--success-color);
       border-radius: 10px;
       overflow: hidden;
-      background: linear-gradient(135deg, var(--input-bg), rgba(22, 163, 106, 0.02));
-      box-shadow: 0 2px 8px rgba(22, 163, 106, 0.06);
+      background: var(--input-bg);
+      box-shadow: 0 4px 12px -4px rgba(22, 163, 106, 0.35);
     }
 
     .semantic-test-header {

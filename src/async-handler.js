@@ -20,6 +20,8 @@
 // Aliased back to `storage` so the existing call sites stay unchanged.
 import storage from "@forge/kvs";
 import api, { route, fetch } from "@forge/api";
+// Atlassian-hosted Forge LLMs (Preview) — used when the active provider is "atlassian".
+import { chat as forgeLlmChatApi } from "@forge/llm";
 
 const TASK_PREFIX = "async_task:";
 const TASK_TTL_HOURS = 1; // Results expire after 1 hour
@@ -35,6 +37,12 @@ const getOpenAIKey = async () => {
   if (_cachedKeyChecked) return _cachedKey || process.env.OPENAI_API_KEY;
   try {
     const { provider } = await getProviderConfig();
+    // Forge LLM needs no API key — sentinel keeps `if (!apiKey)` call sites working.
+    if (provider === "atlassian") {
+      _cachedKeyChecked = true;
+      _cachedKey = "atlassian-forge-llm";
+      return _cachedKey;
+    }
     let byokKey = await storage.get(providerKeySlot(provider));
     // Legacy migration fallback
     if (!byokKey) {
@@ -48,14 +56,24 @@ const getOpenAIKey = async () => {
   return process.env.OPENAI_API_KEY;
 };
 
+const PROVIDER_DEFAULT_MODELS = {
+  openrouter: "openai/gpt-5.4-mini",
+  anthropic: "claude-haiku-4-5-20251001",
+  atlassian: "claude-haiku-4-5-20251001",
+};
+
 const getOpenAIModel = async () => {
   try {
     const { provider } = await getProviderConfig();
-    const byokKey = await storage.get(providerKeySlot(provider));
-    if (byokKey) {
-      const savedModel = await storage.get(providerModelSlot(provider));
-      if (savedModel) return savedModel;
+    // Read the saved model unconditionally — keyless providers (LM Studio, Forge LLM)
+    // have no BYOK key, and gating on one made their saved model invisible here.
+    const savedModel = await storage.get(providerModelSlot(provider));
+    if (savedModel) return savedModel;
+    // OPENAI_MODEL env var only makes sense for OpenAI-style factory deployments.
+    if (process.env.OPENAI_MODEL && (provider === "openai" || provider === "azure")) {
+      return process.env.OPENAI_MODEL;
     }
+    if (PROVIDER_DEFAULT_MODELS[provider]) return PROVIDER_DEFAULT_MODELS[provider];
   } catch (e) { /* fall through */ }
   return process.env.OPENAI_MODEL || "gpt-5.4-mini";
 };
@@ -66,6 +84,7 @@ const PROVIDERS = {
   openrouter: { baseUrl: "https://openrouter.ai/api/v1" },
   anthropic: { baseUrl: "https://api.anthropic.com" },
   lmstudio: { baseUrl: null }, // user-supplied tunnel root (no /v1)
+  atlassian: { baseUrl: null }, // Forge LLM — served by @forge/llm, no HTTP base URL
 };
 
 const getProviderConfig = async () => {
@@ -142,6 +161,33 @@ const callLmStudioNativeSimple = async ({ apiKey, model, systemPrompt, userMessa
 
 const callAIChatSimple = async ({ apiKey, model, systemPrompt, userMessage, jsonMode }) => {
   const { provider, baseUrl } = await getProviderConfig();
+
+  // Atlassian-hosted Forge LLM — chat() is OpenAI-chat-completions-shaped.
+  // No response_format: JSON mode is enforced via the system message.
+  if (provider === "atlassian") {
+    try {
+      let sys = systemPrompt || "";
+      if (jsonMode) {
+        sys += (sys ? "\n\n" : "")
+          + "Respond with ONLY a valid JSON object. No markdown fences, no surrounding prose.";
+      }
+      const messages = [];
+      if (sys) messages.push({ role: "system", content: sys });
+      messages.push({ role: "user", content: userMessage });
+      const response = await forgeLlmChatApi({ model, messages, max_completion_tokens: 4096 });
+      const message = response?.choices?.[0]?.message || {};
+      let content = message.content;
+      if (Array.isArray(content)) {
+        content = content.filter((p) => p?.type === "text").map((p) => p.text || "").join("");
+      }
+      const tokens = response?.usage?.total_tokens
+        || ((response?.usage?.input_tokens || 0) + (response?.usage?.output_tokens || 0));
+      return { ok: true, content, tokens };
+    } catch (err) {
+      const detail = err?.context?.responseText || err?.message || String(err);
+      return { ok: false, status: err?.context?.status || 500, error: String(detail).substring(0, 300) };
+    }
+  }
 
   if (provider === "anthropic") {
     const response = await fetch(`${baseUrl}/v1/messages`, {

@@ -17,6 +17,10 @@
  */
 
 import api, { route, fetch, getAppContext, webTrigger } from "@forge/api";
+// Atlassian-hosted LLMs (Forge LLMs, Preview since 2026-06-01). Requires the `llm`
+// module in manifest.yml. chat() is OpenAI-chat-completions-shaped; list() returns
+// the supported models. No API key and no egress — billing goes to the app vendor.
+import { chat as forgeLlmChatApi, list as forgeLlmListApi } from "@forge/llm";
 // `storage` was deprecated from @forge/api — migrated to @forge/kvs.
 // Aliased back to `storage` so the existing get/set/delete call sites stay unchanged.
 import storage from "@forge/kvs";
@@ -521,6 +525,22 @@ resolver.define("enableRule", async ({ payload, context }) => {
  * Requires read:workflow:jira scope (already in manifest).
  * Returns { transitionRules: Map<string, { validators, conditions }>|null, error: string|null }
  */
+/**
+ * Flatten a ConditionGroupConfiguration tree into a flat array of rule configurations.
+ * The v3 workflows API models transition conditions as a recursive tree:
+ *   { operation: "ANY"|"ALL", conditions: [WorkflowRuleConfiguration], conditionGroups: [nested trees] }
+ * Tolerates a legacy flat-array shape and null/undefined.
+ */
+const flattenConditionRules = (node) => {
+  if (!node) return [];
+  if (Array.isArray(node)) return node;
+  const rules = [...(node.conditions || [])];
+  for (const group of (node.conditionGroups || [])) {
+    rules.push(...flattenConditionRules(group));
+  }
+  return rules;
+};
+
 async function fetchWorkflowTransitions(workflowName) {
   console.log(`fetchWorkflowTransitions: workflowName="${workflowName}"`);
 
@@ -547,11 +567,9 @@ async function fetchWorkflowTransitions(workflowName) {
     for (const t of transitions) {
       if (t.id !== undefined) {
         const validators = t.validators || [];
-        // Conditions can be a nested object { conditions: [...] } or an array
-        const rawConditions = t.conditions || [];
-        const conditions = Array.isArray(rawConditions)
-          ? rawConditions
-          : (rawConditions.conditions || []);
+        // Conditions are a recursive group tree — flatten (covers rules nested in groups)
+        const conditions = flattenConditionRules(t.conditions);
+        // Post-functions are exposed as `actions` in the v3 workflows API
         const postFunctions = t.actions || t.postFunctions || [];
         transitionRules.set(String(t.id), {
           validators,
@@ -1345,10 +1363,11 @@ resolver.define("getWorkflowTransitions", async ({ payload, context }) => {
     console.log(`getWorkflowTransitions: statusMap has ${statusMap.size} entries, transitions: ${(workflow.transitions || []).length}`);
 
     const transitions = (workflow.transitions || []).map((t) => {
-      const rules = t.rules || {};
-      const validators = rules.validators || [];
-      const conditions = rules.conditions || [];
-      const postFunctions = rules.postFunctions || rules.actions || t.actions || [];
+      // Rules are TOP-LEVEL fields on the transition in the v3 workflows API
+      // (validators[], actions[] for post-functions, conditions as a group tree).
+      const validators = t.validators || [];
+      const conditions = flattenConditionRules(t.conditions);
+      const postFunctions = t.actions || [];
 
       const hasCogniValidator = validators.some((r) => r.parameters?.key?.includes(APP_ID));
       const hasCogniCondition = conditions.some((r) => r.parameters?.key?.includes(APP_ID));
@@ -1429,9 +1448,9 @@ const discoverEnvironmentId = async () => {
     for (const wf of (data.values || [])) {
       for (const t of (wf.transitions || [])) {
         const allRules = [
-          ...(t.rules?.validators || []),
-          ...(t.rules?.conditions || []),
-          ...(t.rules?.postFunctions || []),
+          ...(t.validators || []),
+          ...flattenConditionRules(t.conditions),
+          ...(t.actions || []),
         ];
         for (const rule of allRules) {
           const key = rule.parameters?.key;
@@ -1505,13 +1524,15 @@ resolver.define("injectWorkflowRule", async ({ payload, context }) => {
       return { success: false, error: `Transition ${transitionId} not found in workflow` };
     }
 
-    // Check if our app already has a rule of this type on this transition
-    const rules = targetTransition.rules || {};
-    const ruleArray = ruleType === "condition" ? "conditions"
-      : ruleType === "validator" ? "validators"
-      : "postFunctions";
-
-    const existing = (rules[ruleArray] || []);
+    // Check if our app already has a rule of this type on this transition.
+    // Rules live TOP-LEVEL on the transition in the v3 workflows API:
+    // validators[], actions[] (post-functions), and conditions as a
+    // { operation, conditions[], conditionGroups[] } tree — there is NO `rules` wrapper.
+    const existing = ruleType === "condition"
+      ? flattenConditionRules(targetTransition.conditions)
+      : ruleType === "validator"
+        ? (targetTransition.validators || [])
+        : (targetTransition.actions || []);
     const alreadyHas = existing.some((r) =>
       r.parameters?.key?.includes(APP_ID) && r.parameters?.key?.includes(ruleInfo.moduleKey)
     );
@@ -1523,10 +1544,8 @@ resolver.define("injectWorkflowRule", async ({ payload, context }) => {
     const extensionKey = `ari:cloud:ecosystem::extension/${APP_ID}/${envId}/static/${ruleInfo.moduleKey}`;
     const ruleId = crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).substring(2, 10)}`;
 
-    // Add the new rule
-    if (!targetTransition.rules) targetTransition.rules = {};
-    if (!targetTransition.rules[ruleArray]) targetTransition.rules[ruleArray] = [];
-    targetTransition.rules[ruleArray].push({
+    // Add the new rule into the correct top-level slot
+    const newRule = {
       ruleKey: ruleInfo.ruleKey,
       parameters: {
         key: extensionKey,
@@ -1534,7 +1553,25 @@ resolver.define("injectWorkflowRule", async ({ payload, context }) => {
         id: ruleId,
         disabled: "false",
       },
-    });
+    };
+    if (ruleType === "validator") {
+      if (!Array.isArray(targetTransition.validators)) targetTransition.validators = [];
+      targetTransition.validators.push(newRule);
+    } else if (ruleType === "condition") {
+      // Conditions are a group tree; `operation` is REQUIRED by the update DTO.
+      const tree = targetTransition.conditions;
+      if (tree && typeof tree === "object" && !Array.isArray(tree)) {
+        if (!Array.isArray(tree.conditions)) tree.conditions = [];
+        tree.conditions.push(newRule);
+        if (!tree.operation) tree.operation = "ALL";
+      } else {
+        targetTransition.conditions = { operation: "ALL", conditions: [newRule], conditionGroups: [] };
+      }
+    } else {
+      // Post-functions are `actions` in the v3 workflows API
+      if (!Array.isArray(targetTransition.actions)) targetTransition.actions = [];
+      targetTransition.actions.push(newRule);
+    }
 
     // Step 4: Build the update payload
     // We must send the FULL workflow definition including ALL statuses and transitions
@@ -1749,6 +1786,9 @@ resolver.define("saveOpenAIKey", async ({ payload, context }) => {
       return { success: false, error: "Invalid API key format" };
     }
     const provider = (await storage.get("COGNIRUNNER_AI_PROVIDER")) || "openai";
+    if (provider === "atlassian") {
+      return { success: false, error: "Atlassian Forge LLM does not use an API key — inference runs on the Atlassian platform." };
+    }
     if (provider === "openai" && !key.startsWith("sk-")) {
       return { success: false, error: "OpenAI API keys must start with sk-" };
     }
@@ -1768,6 +1808,10 @@ resolver.define("getOpenAIKey", async () => {
   try {
     const provider = (await storage.get("COGNIRUNNER_AI_PROVIDER")) || "openai";
     const byokKey = await storage.get(providerKeySlot(provider));
+    if (provider === "atlassian") {
+      // Forge LLM: always "configured" — no key exists. isByok unlocks the model picker.
+      return { success: true, hasKey: true, isByok: true, noKeyNeeded: true };
+    }
     if (provider === "lmstudio") {
       // LM Studio: "configured" once a baseUrl is set; auth is optional.
       // Always BYOK semantics (never falls back to factory env var).
@@ -1963,7 +2007,7 @@ resolver.define("saveProvider", async ({ payload, context }) => {
   try {
     const { provider, baseUrl } = payload;
     if (!provider || !PROVIDERS[provider]) {
-      return { success: false, error: "Invalid provider. Choose: openai, azure, openrouter, anthropic, lmstudio" };
+      return { success: false, error: "Invalid provider. Choose: openai, azure, openrouter, anthropic, lmstudio, atlassian" };
     }
     if (provider === "azure" && baseUrl && !baseUrl.includes(".openai.azure.com")) {
       return { success: false, error: "Azure endpoint must contain .openai.azure.com (e.g. https://myresource.openai.azure.com/openai/v1)" };
@@ -2038,6 +2082,25 @@ resolver.define("getOpenAIModels", async () => {
   try {
     const activeProvider = (await storage.get("COGNIRUNNER_AI_PROVIDER")) || "openai";
     const byokKey = await storage.get(providerKeySlot(activeProvider));
+
+    // Forge LLM: no key — list models via @forge/llm's list(). Fall back to the
+    // documented Preview model ids if list() fails (e.g. llm module not yet approved).
+    if (activeProvider === "atlassian") {
+      try {
+        // ModelListResponse: { models: [{ model: string, status: "active"|"deprecated" }] }
+        const resp = await forgeLlmListApi();
+        const raw = Array.isArray(resp) ? resp : (resp?.models || []);
+        let ids = raw
+          .filter((m) => typeof m === "string" || m?.status !== "deprecated")
+          .map((m) => (typeof m === "string" ? m : m?.model))
+          .filter(Boolean);
+        if (ids.length === 0) ids = [...FORGE_LLM_FALLBACK_MODELS];
+        return { success: true, models: ids, isByok: true };
+      } catch (e) {
+        console.warn("Forge LLM list() failed — using documented fallback models:", e?.message);
+        return { success: true, models: [...FORGE_LLM_FALLBACK_MODELS], isByok: true };
+      }
+    }
 
     // LM Studio: auth is optional, baseUrl is required. Always treated as BYOK.
     // Tries the native /api/v1/models (richest metadata) first, falls back to /api/v0/models,
@@ -2251,8 +2314,8 @@ resolver.define("saveOpenAIModel", async ({ payload, context }) => {
     }
     const provider = (await storage.get("COGNIRUNNER_AI_PROVIDER")) || "openai";
     const byokKey = await storage.get(providerKeySlot(provider));
-    // LM Studio doesn't require a key (auth is optional) — allow model save with just baseUrl.
-    if (!byokKey && provider !== "lmstudio") {
+    // LM Studio doesn't require a key (auth is optional); Forge LLM never has one.
+    if (!byokKey && provider !== "lmstudio" && provider !== "atlassian") {
       return { success: false, error: "Model selection requires an API key" };
     }
     if (provider === "lmstudio") {
@@ -2277,6 +2340,11 @@ resolver.define("getOpenAIModelFromKVS", async () => {
   try {
     const provider = (await storage.get("COGNIRUNNER_AI_PROVIDER")) || "openai";
     const byokKey = await storage.get(providerKeySlot(provider));
+    // Forge LLM: no key — saved model (or provider default) with model picker unlocked.
+    if (provider === "atlassian") {
+      const savedModel = await storage.get(providerModelSlot(provider));
+      return { success: true, model: savedModel || PROVIDERS.atlassian.defaultModel, isByok: true };
+    }
     // LM Studio is always BYOK semantics — auth is optional, baseUrl is the gating config.
     if (provider === "lmstudio") {
       const lmBaseUrl = await storage.get("COGNIRUNNER_AI_BASE_URL");
@@ -3622,7 +3690,8 @@ const results = await api.searchJql('project = PROJ AND labels = "critical"');
 // results.issues[0].key = "PROJ-1"
 // results.issues[0].fields.summary = "Issue title"
 // results.issues[0].fields.status.name = "To Do"
-// results.total = 42 (total matches, not just returned)
+// results.nextPageToken = "..." (present only when more pages exist)
+// NOTE: there is NO results.total — use results.issues.length
 \`\`\`
 
 ### api.transitionIssue(issueKey, transitionId) → { success: true }
@@ -3696,7 +3765,7 @@ const projectKey = api.context.issueKey.split("-")[0];
 const results = await api.searchJql(
   \`project = \${projectKey} AND summary ~ "\${issue.fields.summary.replace(/"/g, '\\\\"')}" AND key != \${api.context.issueKey}\`
 );
-api.log(\`Found \${results.total} potential duplicates\`);
+api.log(\`Found \${results.issues.length} potential duplicates\`);
 return results.issues.map(i => ({ key: i.key, summary: i.fields.summary }));
 \`\`\`
 
@@ -4574,12 +4643,149 @@ export const handler = resolver.getDefinitions();
 const PROVIDERS = {
   openai: { label: "OpenAI", baseUrl: "https://api.openai.com/v1", defaultModel: "gpt-5.4-mini" },
   azure: { label: "Azure OpenAI", baseUrl: null, defaultModel: "gpt-5.4-mini" }, // user must provide URL
-  openrouter: { label: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", defaultModel: "openai/gpt-4o-mini" },
+  openrouter: { label: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", defaultModel: "openai/gpt-5.4-mini" },
   anthropic: { label: "Anthropic", baseUrl: "https://api.anthropic.com", defaultModel: "claude-haiku-4-5-20251001" },
   // LM Studio: user-hosted OpenAI-compatible server. baseUrl is the user's Tailscale Funnel
   // root (e.g. https://your-machine.tailXXXX.ts.net); we append /v1 for inference and /api/v1
   // for model lifecycle. Tailscale Funnel is the only tunnel provider allowlisted in manifest.
   lmstudio: { label: "LM Studio", baseUrl: null, defaultModel: null },
+  // Atlassian-hosted Forge LLMs (Preview): Claude models served inside the Atlassian
+  // platform via @forge/llm. No API key, no egress, no BYOK — token costs are billed
+  // to the app vendor's Forge bill. Text-only (no image/file input yet).
+  atlassian: { label: "Atlassian (Forge LLM)", baseUrl: null, defaultModel: "claude-haiku-4-5-20251001" },
+};
+
+// Sentinel returned by getOpenAIKey() when the active provider is Forge LLM —
+// keeps every `if (!apiKey) fail` call site working without a real secret.
+const FORGE_LLM_SENTINEL = "atlassian-forge-llm";
+// Documented model ids as of the June 2026 Preview — used as a fallback when list() fails.
+const FORGE_LLM_FALLBACK_MODELS = [
+  "claude-haiku-4-5-20251001",
+  "claude-sonnet-4-5-20250929",
+  "claude-opus-4-6",
+];
+
+/**
+ * Forge LLM adapter: translate our internal OpenAI chat-completions shape to
+ * @forge/llm's chat() and back. Deltas vs OpenAI (verified against @forge/llm 0.6.7
+ * type definitions):
+ *   - tool-result messages take a content string/parts plus the tool `name`
+ *   - ToolCall.function.arguments is an OBJECT (OpenAI uses a JSON string) — we
+ *     parse on the way in and stringify on the way out so the agentic loop's
+ *     JSON.parse(toolCall.function.arguments) keeps working
+ *   - text-only: image_url / file content parts are dropped with an inline note
+ *   - no response_format — JSON mode is enforced via the system message
+ * Errors carry the response body at err.context.responseText.
+ */
+const callForgeLlmChat = async ({ model, messages, tools, tool_choice, jsonMode }) => {
+  try {
+    // Map tool_call_id → tool name (Forge LLM wants `name` on tool-result messages).
+    const toolNameById = new Map();
+    for (const msg of messages || []) {
+      if (msg.role === "assistant" && Array.isArray(msg.tool_calls)) {
+        for (const tc of msg.tool_calls) toolNameById.set(tc.id, tc.function?.name);
+      }
+    }
+
+    const outMessages = [];
+    let jsonInstructionAdded = false;
+    for (const msg of messages || []) {
+      if (msg.role === "tool") {
+        outMessages.push({
+          role: "tool",
+          tool_call_id: msg.tool_call_id,
+          name: toolNameById.get(msg.tool_call_id) || "tool",
+          content: [{
+            type: "text",
+            text: typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content),
+          }],
+        });
+        continue;
+      }
+      // Flatten multimodal content to plain text — Forge LLMs are text-only in Preview.
+      let content = msg.content;
+      if (Array.isArray(content)) {
+        const dropped = content.filter((p) => p && p.type !== "text").length;
+        content = content.filter((p) => p?.type === "text").map((p) => p.text || "").join("\n");
+        if (dropped > 0) {
+          content += `\n\n[${dropped} attachment(s) omitted — Atlassian Forge LLM supports text input only. Treat them as present but unread.]`;
+        }
+      }
+      const out = { role: msg.role, content: content ?? "" };
+      if (msg.role === "system" && jsonMode && !jsonInstructionAdded) {
+        out.content += "\n\nRespond with ONLY a valid JSON object. No markdown fences, no surrounding prose, no explanation outside the JSON.";
+        jsonInstructionAdded = true;
+      }
+      if (msg.role === "assistant" && Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) {
+        // Forge LLM wants arguments as an OBJECT and an index per tool call.
+        out.tool_calls = msg.tool_calls.map((tc, i) => ({
+          id: tc.id,
+          type: "function",
+          index: typeof tc.index === "number" ? tc.index : i,
+          function: {
+            name: tc.function?.name,
+            arguments: typeof tc.function?.arguments === "string"
+              ? (() => { try { return JSON.parse(tc.function.arguments); } catch { return {}; } })()
+              : (tc.function?.arguments || {}),
+          },
+        }));
+      }
+      outMessages.push(out);
+    }
+    if (jsonMode && !jsonInstructionAdded) {
+      outMessages.unshift({
+        role: "system",
+        content: "Respond with ONLY a valid JSON object. No markdown fences, no surrounding prose, no explanation outside the JSON.",
+      });
+    }
+
+    const prompt = { model, messages: outMessages, max_completion_tokens: 4096 };
+    if (tools && tools.length > 0) {
+      prompt.tools = tools;
+      if (tool_choice) prompt.tool_choice = tool_choice;
+    }
+
+    const response = await forgeLlmChatApi(prompt);
+
+    const choice = response?.choices?.[0] || {};
+    const message = choice.message || {};
+    let content = message.content;
+    if (Array.isArray(content)) {
+      content = content.filter((p) => p?.type === "text").map((p) => p.text || "").join("");
+    }
+    const inputTokens = response?.usage?.input_tokens || 0;
+    const outputTokens = response?.usage?.output_tokens || 0;
+    const openAIData = {
+      choices: [{
+        index: 0,
+        message: { role: "assistant", content: content ?? null },
+        finish_reason: choice.finish_reason || "stop",
+      }],
+      usage: {
+        prompt_tokens: inputTokens,
+        completion_tokens: outputTokens,
+        total_tokens: response?.usage?.total_tokens || (inputTokens + outputTokens),
+      },
+    };
+    if (Array.isArray(message.tool_calls) && message.tool_calls.length > 0) {
+      // Back to OpenAI shape: arguments must be a JSON STRING for the agentic loop.
+      openAIData.choices[0].message.tool_calls = message.tool_calls.map((tc) => ({
+        id: tc.id,
+        type: "function",
+        function: {
+          name: tc.function?.name,
+          arguments: typeof tc.function?.arguments === "string"
+            ? tc.function.arguments
+            : JSON.stringify(tc.function?.arguments || {}),
+        },
+      }));
+    }
+    return { ok: true, status: 200, data: openAIData };
+  } catch (err) {
+    const detail = err?.context?.responseText || err?.message || String(err);
+    console.error("Forge LLM error:", detail);
+    return { ok: false, status: err?.context?.status || 500, data: null, error: String(detail).substring(0, 500) };
+  }
 };
 
 /**
@@ -4812,7 +5018,12 @@ const callAIChat = async (opts) => {
   const { provider, baseUrl } = await getProviderConfig();
 
   if (provider === "anthropic") {
-    return callAnthropicChat({ apiKey, model, messages, tools, tool_choice, baseUrl });
+    return callAnthropicChat({ apiKey, model, messages, tools, tool_choice, baseUrl, jsonMode });
+  }
+
+  // Atlassian-hosted Forge LLM (Preview): no API key, no egress — served by @forge/llm.
+  if (provider === "atlassian") {
+    return callForgeLlmChat({ model, messages, tools, tool_choice, jsonMode });
   }
 
   // LM Studio: prefer native /api/v1/chat when no custom tools are needed.
@@ -4936,7 +5147,7 @@ const callAIChat = async (opts) => {
 /**
  * Call Anthropic Messages API, translating from/to OpenAI format.
  */
-const callAnthropicChat = async ({ apiKey, model, messages, tools, tool_choice, baseUrl }) => {
+const callAnthropicChat = async ({ apiKey, model, messages, tools, tool_choice, baseUrl, jsonMode }) => {
   // 1. Extract system prompt from messages
   let systemText = "";
   const filteredMessages = [];
@@ -4946,6 +5157,11 @@ const callAnthropicChat = async ({ apiKey, model, messages, tools, tool_choice, 
     } else {
       filteredMessages.push(msg);
     }
+  }
+  // Anthropic has no response_format — JSON mode is enforced via the system prompt only.
+  if (jsonMode) {
+    systemText += (systemText ? "\n\n" : "")
+      + "Respond with ONLY a valid JSON object. No markdown fences, no surrounding prose, no explanation outside the JSON.";
   }
 
   // 2. Convert messages content (images, files, tool results)
@@ -5175,13 +5391,22 @@ const convertContentBlock = (block) => {
     return { type: "image", source: { type: "url", url } };
   }
 
-  // OpenAI file → Anthropic document
+  // OpenAI file → Anthropic document.
+  // Anthropic's base64 document blocks support PDF ONLY (media_type application/pdf).
+  // DOCX/XLSX/PPTX/etc. would fail the ENTIRE request with a 400 — convert those to a
+  // text note instead so validation can still proceed on the remaining content.
   if (block.type === "file" && block.file?.file_data) {
     const dataUriMatch = block.file.file_data.match(/^data:([^;]+);base64,(.+)$/);
     if (dataUriMatch) {
+      if (dataUriMatch[1].toLowerCase() === "application/pdf") {
+        return {
+          type: "document",
+          source: { type: "base64", media_type: "application/pdf", data: dataUriMatch[2] },
+        };
+      }
       return {
-        type: "document",
-        source: { type: "base64", media_type: dataUriMatch[1], data: dataUriMatch[2] },
+        type: "text",
+        text: `[Attachment "${block.file.filename || "unnamed"}" (${dataUriMatch[1]}) could not be analyzed inline — Anthropic accepts only PDF documents. Treat it as present but unread.]`,
       };
     }
   }
@@ -5291,6 +5516,13 @@ const getOpenAIKey = async () => {
   if (_cachedKeyChecked) return _cachedKey || process.env.OPENAI_API_KEY;
   try {
     const { provider } = await getProviderConfig();
+    // Forge LLM needs no API key — auth IS the Forge platform. Return a sentinel so
+    // every `if (!apiKey) bail` call site treats the provider as configured.
+    if (provider === "atlassian") {
+      _cachedKeyChecked = true;
+      _cachedKey = FORGE_LLM_SENTINEL;
+      return _cachedKey;
+    }
     // Try per-provider slot
     let byokKey = await storage.get(providerKeySlot(provider));
     // Migrate: if no per-provider key, check legacy slot (one-time migration)
@@ -5323,30 +5555,36 @@ const getOpenAIModel = async () => {
 
   try {
     const { provider } = await getProviderConfig();
-    // Try per-provider slot
-    const byokKey = await storage.get(providerKeySlot(provider));
-    if (byokKey) {
-      let savedModel = await storage.get(providerModelSlot(provider));
-      // Migrate: check legacy model slot
-      if (!savedModel) {
+    // Read the saved per-provider model UNCONDITIONALLY. Gating this on a BYOK key
+    // broke keyless providers: LM Studio (auth optional) and Forge LLM (no key at all)
+    // would silently ignore the admin's saved model and fall through to a default
+    // that doesn't exist on those providers. The slot is cleared when reverting to
+    // factory (removeOpenAIKey deletes it), so reading it is always safe.
+    let savedModel = await storage.get(providerModelSlot(provider));
+    if (!savedModel) {
+      // Migrate: check legacy model slot (only meaningful when a key exists)
+      const byokKey = await storage.get(providerKeySlot(provider));
+      if (byokKey) {
         savedModel = await storage.get("COGNIRUNNER_OPENAI_MODEL");
         if (savedModel) {
           await storage.set(providerModelSlot(provider), savedModel);
           console.log(`Migrated legacy model to ${providerModelSlot(provider)}`);
         }
       }
-      if (savedModel) { _cachedModel = savedModel; return savedModel; }
     }
+    if (savedModel) { _cachedModel = savedModel; return savedModel; }
   } catch (error) {
     console.error("Error reading model from storage:", error);
   }
 
-  // Use env var, or provider-specific default
-  if (process.env.OPENAI_MODEL) {
+  // Use env var (factory OpenAI-style deployments only), or provider-specific default.
+  // The OPENAI_MODEL env var names an OpenAI model — applying it to Anthropic,
+  // LM Studio, or Forge LLM would 404 at inference time.
+  const { provider } = await getProviderConfig();
+  if (process.env.OPENAI_MODEL && (provider === "openai" || provider === "azure")) {
     _cachedModel = process.env.OPENAI_MODEL;
     return _cachedModel;
   }
-  const { provider } = await getProviderConfig();
   const model = (PROVIDERS[provider] && PROVIDERS[provider].defaultModel) || "gpt-5.4-mini";
   _cachedModel = model;
   return model;
@@ -6625,6 +6863,10 @@ const formatValueForField = (value, fieldMeta) => {
         // Labels: array of strings
         return value.split(",").map((v) => v.trim()).filter(Boolean);
       }
+      if (fieldMeta.schema.items === "user") {
+        // Multi-user picker — Jira expects [{accountId}] (the prompt asks the AI for accountIds)
+        return value.split(",").map((v) => ({ accountId: v.trim() })).filter((v) => v.accountId);
+      }
       // Components, fixVersions, versions, groups — Jira accepts {name: "..."}.
       // Single string → one-element array; comma-separated → multi-element.
       if (["component", "version", "group"].includes(fieldMeta.schema.items)) {
@@ -6645,9 +6887,13 @@ const formatValueForField = (value, fieldMeta) => {
     case "project":
       // Single-value reference fields — Jira accepts {name: "..."}
       return { name: value };
+    case "user":
+      // User picker — Jira expects {accountId: "..."}. The prompt instructs the AI to
+      // return an accountId string; sending it raw would 400.
+      return { accountId: value.trim() };
     default:
-      // string, date, datetime, user (needs accountId — can't auto-derive from name)
-      // — plain string is either correct or will be rejected by Jira with a clear error.
+      // string, date, datetime — plain string is either correct or will be
+      // rejected by Jira with a clear error.
       return value;
   }
 };
@@ -6781,13 +7027,32 @@ export const validate = async (args) => {
     return { result: true };
   }
 
-  // KVS disabled check: if this rule is marked disabled in the config registry, skip validation
+  // KVS disabled check: if THIS rule is marked disabled in the config registry, skip validation.
+  // Match by rule identity (ruleId → workflow+transition → fieldId+prompt), never by fieldId
+  // alone — two different rules can watch the same field, and disabling one must not
+  // silently disable the other.
   try {
     const configs = (await storage.get(CONFIG_REGISTRY_KEY)) || [];
-    const matchingConfig = configs.find((c) =>
-      c.fieldId === (configuration?.fieldId || process.env.VALIDATE_FIELD_ID || "description")
-      && c.disabled === true
-    );
+    const ruleId = configuration?.ruleId || configuration?.id || null;
+    let matchingConfig = null;
+    if (ruleId) {
+      matchingConfig = configs.find((c) => c.id === ruleId && c.disabled === true);
+    }
+    if (!matchingConfig && configuration?.workflow?.workflowName && configuration?.workflow?.transitionId) {
+      matchingConfig = configs.find((c) =>
+        c.disabled === true
+        && c.workflow?.workflowName === configuration.workflow.workflowName
+        && String(c.workflow?.transitionId) === String(configuration.workflow.transitionId)
+      );
+    }
+    if (!matchingConfig && !ruleId && !configuration?.workflow && configuration?.fieldId && configuration?.prompt) {
+      // Legacy configs without rule identity: require fieldId AND prompt to match
+      // (registry stores the prompt truncated to 200 chars).
+      const promptKey = String(configuration.prompt).substring(0, 200);
+      matchingConfig = configs.find((c) =>
+        c.disabled === true && c.fieldId === configuration.fieldId && c.prompt === promptKey
+      );
+    }
     if (matchingConfig) {
       console.log(`Rule "${matchingConfig.id}" is disabled in KVS — skipping AI validation`);
       return { result: true };
@@ -7103,12 +7368,17 @@ export const validate = async (args) => {
     ruleWorkflow: configuration?.workflow || null,
   };
   if (validationResult.toolMeta) {
+    // Defensive defaults: some skip paths (e.g. the LM Studio non-tool-model gate)
+    // return a toolMeta without queries/totalResults — never crash the validator on logging.
     logEntry.toolMeta = {
-      toolsUsed: validationResult.toolMeta.toolsUsed,
-      toolRounds: validationResult.toolMeta.toolRounds,
-      queries: validationResult.toolMeta.queries.map((q) => q.substring(0, 150)),
-      totalResults: validationResult.toolMeta.totalResults,
+      toolsUsed: validationResult.toolMeta.toolsUsed === true,
+      toolRounds: validationResult.toolMeta.toolRounds || 0,
+      queries: (validationResult.toolMeta.queries || []).map((q) => String(q).substring(0, 150)),
+      totalResults: validationResult.toolMeta.totalResults || 0,
     };
+    if (validationResult.toolMeta.skippedReason) {
+      logEntry.toolMeta.skippedReason = validationResult.toolMeta.skippedReason;
+    }
   }
   if (contextDocsText) {
     logEntry.docsUsed = true;
@@ -7722,9 +7992,14 @@ const executeStaticPostFunction = async (issueKey, config) => {
 
       // Execute in sandbox via Function constructor. `vars` is passed as a real
       // argument (H3) so user code references chained values via vars[...] instead
-      // of having them spliced into the source.
+      // of having them spliced into the source. Prior-step variables are ALSO
+      // exposed as named parameters in real scope — the code-generation prompt
+      // tells the AI "reference them directly by name", so a bare
+      // `searchResults.issues` must resolve.
       const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-      const sandboxFn = new AsyncFunction("api", "vars", code);
+      const scopeVarNames = Object.keys(variables)
+        .filter((n) => /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(n) && n !== "api" && n !== "vars");
+      const sandboxFn = new AsyncFunction("api", "vars", ...scopeVarNames, code);
 
       // H2: per-step timeout. Bounds a single async step (e.g. a slow network/MCP
       // call) so one hung step can't consume the whole 25s budget. Note: a purely
@@ -7734,7 +8009,7 @@ const executeStaticPostFunction = async (issueKey, config) => {
       const stepBudgetMs = Math.max(2000, Math.min(15000, 25000 - elapsed - 2000));
       const TIMED_OUT = Symbol("step-timeout");
       const result = await Promise.race([
-        Promise.resolve(sandboxFn(sandboxApi, variables)),
+        Promise.resolve(sandboxFn(sandboxApi, variables, ...scopeVarNames.map((n) => variables[n]))),
         new Promise((resolve) => setTimeout(() => resolve(TIMED_OUT), stepBudgetMs)),
       ]);
       if (result === TIMED_OUT) throw new Error(`Step exceeded its ${Math.round(stepBudgetMs / 1000)}s time budget`);

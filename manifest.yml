@@ -91,6 +91,16 @@ modules:
       resolver:
         function: resolver
 
+  # Atlassian-hosted LLMs (Forge LLMs, Preview since 2026-06-01). Enables the
+  # "Atlassian (Forge LLM)" provider: Claude models served inside the Atlassian
+  # platform via @forge/llm — no API key, no egress. NOTE: adding this module is a
+  # MAJOR version upgrade; existing installations must approve the update, and all
+  # token usage is billed to the vendor's Forge bill (no free quota).
+  llm:
+    - key: cogni-llm
+      model:
+        - claude
+
   # Async event consumer for long-running AI tasks
   consumer:
     - key: async-ai-consumer

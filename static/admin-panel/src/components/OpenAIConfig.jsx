@@ -29,6 +29,7 @@ const PROVIDER_OPTIONS = [
   { value: "openrouter", label: "OpenRouter", icon: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M16.778 1.844v1.919q-.569-.026-1.138-.032-.708-.008-1.415.037c-1.93.126-4.023.728-6.149 2.237-2.911 2.066-2.731 1.95-4.14 2.75-.396.223-1.342.574-2.185.798-.841.225-1.753.333-1.751.333v4.229s.768.108 1.61.333c.842.224 1.789.575 2.185.799 1.41.798 1.228.683 4.14 2.75 2.126 1.509 4.22 2.11 6.148 2.236.88.058 1.716.041 2.555.005v1.918l7.222-4.168-7.222-4.17v2.176c-.86.038-1.611.065-2.278.021-1.364-.09-2.417-.357-3.979-1.465-2.244-1.593-2.866-2.027-3.68-2.508.889-.518 1.449-.906 3.822-2.59 1.56-1.109 2.614-1.377 3.978-1.466.667-.044 1.418-.017 2.278.02v2.176L24 6.014Z"/></svg>' },
   { value: "anthropic", label: "Anthropic", icon: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M17.3041 3.541h-3.6718l6.696 16.918H24Zm-10.6082 0L0 20.459h3.7442l1.3693-3.5527h7.0052l1.3693 3.5528h3.7442L10.5363 3.5409Zm-.3712 10.2232 2.2914-5.9456 2.2914 5.9456Z"/></svg>' },
   { value: "lmstudio", label: "LM Studio", icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="14" rx="2"/><path d="M8 21h8M12 17v4"/><path d="M7 8h2v3H7zM11 8h2v3h-2zM15 8h2v3h-2z"/></svg>' },
+  { value: "atlassian", label: "Atlassian (Forge LLM)", icon: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M7.12 11.084c-.282-.302-.717-.284-.92.072L.123 23.305a.585.585 0 0 0 .523.847h8.46a.563.563 0 0 0 .523-.323c1.825-3.772.719-9.508-2.51-12.745zM11.434.323c-3.022 4.785-2.822 10.085-.831 14.066l4.079 8.157a.585.585 0 0 0 .523.323h8.46a.585.585 0 0 0 .523-.847S12.81 1.255 12.524.685c-.256-.51-.865-.518-1.09-.362z"/></svg>' },
 ];
 
 const PROVIDER_HELP = {
@@ -43,6 +44,9 @@ const PROVIDER_HELP = {
     endpointPlaceholder: "https://your-machine.tailXXXX.ts.net",
     keyOptional: true,
   },
+  // Forge LLM is Atlassian-hosted: no API key, no endpoint. Inference runs inside
+  // the Atlassian platform (data never leaves it) and is billed to the app vendor.
+  atlassian: { keyPlaceholder: "", keyLabel: "API Key", endpointNeeded: false, noKey: true },
 };
 
 export default function OpenAIConfig({ invoke }) {
@@ -109,6 +113,7 @@ export default function OpenAIConfig({ invoke }) {
 
   const pHelp = PROVIDER_HELP[provider] || PROVIDER_HELP.openai;
   const isLmStudio = provider === "lmstudio";
+  const isAtlassian = provider === "atlassian";
 
   // For LM Studio, find metadata for the currently-selected model so we can show
   // "Loaded" / "Cold" badge + enable/disable the Load button.
@@ -669,8 +674,17 @@ export default function OpenAIConfig({ invoke }) {
               </p>
             )}
             <p style={{ margin: "4px 0 0 0", fontSize: "11px", color: "var(--text-muted)" }}>
-              All providers support chat completions, tool calling, and vision capabilities.
+              All providers support chat completions and tool calling. Vision (image attachments) requires OpenAI, Azure, OpenRouter, Anthropic, or a vision-capable LM Studio model — Atlassian Forge LLM is text-only for now.
             </p>
+            {isAtlassian && (
+              <div style={{ marginTop: "8px", padding: "8px 10px", background: "rgba(37, 99, 235, 0.08)", border: "1px solid rgba(37, 99, 235, 0.4)", borderRadius: "6px", fontSize: "11px", color: "var(--text-secondary)" }}>
+                <strong>Atlassian-hosted Claude (Forge LLMs, Preview).</strong> No API key and no
+                egress — prompts and field data never leave the Atlassian platform. Token usage is
+                billed to the app vendor (LeanZero), not to your site. Supports tool calling (JQL
+                agentic search works); image/file attachments are not analyzed yet. Requests pass
+                Atlassian's AI moderation checks.
+              </div>
+            )}
           </div>
 
           {/* Azure Endpoint — only for Azure */}
@@ -837,12 +851,16 @@ export default function OpenAIConfig({ invoke }) {
                   <strong style={{ fontSize: "13px" }}>
                     {isLmStudio
                       ? lmStatusTitle
-                      : (isByok ? `Using your ${providerLabel} key` : "Using factory key")}
+                      : isAtlassian
+                        ? "Atlassian-hosted — ready, no key needed"
+                        : (isByok ? `Using your ${providerLabel} key` : "Using factory key")}
                   </strong>
                 </div>
                 <p style={{ margin: 0, fontSize: "12px", color: "var(--text-secondary)" }}>
                   {isLmStudio
                     ? lmStatusBody
+                    : isAtlassian
+                    ? "Claude models served inside the Atlassian platform. Pick a model below and you're done."
                     : isByok
                       ? `Connected to ${providerLabel}. You can select from available models. Remove the key to revert to the factory key.`
                       : hasKey
@@ -854,7 +872,8 @@ export default function OpenAIConfig({ invoke }) {
             );
           })()}
 
-          {/* API Key Input */}
+          {/* API Key Input — hidden entirely for Forge LLM (no key exists) */}
+          {!isAtlassian && (
           <div style={{ marginBottom: "16px" }}>
             <label style={{ display: "flex", alignItems: "center", fontSize: "12px", fontWeight: "600", color: "var(--text-secondary)", marginBottom: "6px" }}>
               {pHelp.keyLabel}
@@ -945,6 +964,7 @@ export default function OpenAIConfig({ invoke }) {
               </div>
             )}
           </div>
+          )}
 
           {/* Model Selection — only when BYOK */}
           {isByok && (
@@ -1233,6 +1253,11 @@ export default function OpenAIConfig({ invoke }) {
                       <strong>{provider === "azure" ? "Azure OpenAI" : provider === "openrouter" ? "OpenRouter" : "OpenAI"} support: enabled.</strong> These APIs have no native remote-MCP, so CogniRunner bridges it: during agentic validation it lists the enabled hosted MCP tools, exposes them to the model as function tools, and proxies the tool calls to the hosted server. Configure the Service URL + Bearer (+ the Serper key for web-search) above and toggle the MCP on.
                     </div>
                   )}
+                  {isAtlassian && (
+                    <div style={{ padding: "8px 10px", marginBottom: "10px", background: "rgba(245, 158, 11, 0.08)", border: "1px solid rgba(245, 158, 11, 0.4)", borderRadius: "6px", fontSize: "11px" }}>
+                      <strong>Atlassian Forge LLM: works via the CogniRunner MCP bridge.</strong> The model can't reach MCP servers itself, but CogniRunner exposes the hosted web-search tools as function tools and proxies the calls from the Forge backend. Configure the hosted web-search above and enable this toggle.
+                    </div>
+                  )}
 
                   {/* LM Studio-only setup snippets — two ways: local stdio OR remote HTTP via mcp.json */}
                   {isLmStudio && (
@@ -1385,6 +1410,11 @@ npm install && npm run build`}
                   {(provider === "openai" || provider === "azure" || provider === "openrouter") && (
                     <div style={{ padding: "8px 10px", marginBottom: "10px", background: "rgba(34, 197, 94, 0.08)", border: "1px solid rgba(34, 197, 94, 0.4)", borderRadius: "6px", fontSize: "11px" }}>
                       <strong>{provider === "azure" ? "Azure OpenAI" : provider === "openrouter" ? "OpenRouter" : "OpenAI"} support: enabled.</strong> These APIs have no native remote-MCP, so CogniRunner bridges it: during agentic validation it lists the enabled doc-reader tools, exposes them to the model, and proxies the tool calls to the hosted doc-processor. Configure the URL + Bearer above and enable doc-reader (and doc-writer for the create/edit tools).
+                    </div>
+                  )}
+                  {isAtlassian && (
+                    <div style={{ padding: "8px 10px", marginBottom: "10px", background: "rgba(245, 158, 11, 0.08)", border: "1px solid rgba(245, 158, 11, 0.4)", borderRadius: "6px", fontSize: "11px" }}>
+                      <strong>Atlassian Forge LLM: works via the CogniRunner MCP bridge.</strong> Doc-reader tools are exposed as function tools and proxied from the Forge backend. Note: Forge LLM accepts no inline file input, so direct attachment analysis is skipped — the model reads attachments through doc-reader's URL variant instead.
                     </div>
                   )}
                   {isLmStudio && (

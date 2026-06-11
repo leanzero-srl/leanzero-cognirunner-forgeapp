@@ -184,13 +184,13 @@ const injectStyles = () => {
     }
 
     .log-status.valid {
-      background: rgba(0, 102, 68, 0.1);
-      color: var(--success-color);
+      background: var(--success-color);
+      color: #ffffff;
     }
 
     .log-status.invalid {
-      background: rgba(222, 53, 11, 0.1);
-      color: var(--error-color);
+      background: var(--error-color);
+      color: #ffffff;
     }
 
     .log-time {
@@ -228,8 +228,8 @@ const injectStyles = () => {
       border-radius: 3px;
       font-size: 10px;
       font-weight: 600;
-      background: rgba(37, 99, 235, 0.1);
-      color: var(--primary-color);
+      background: var(--primary-color);
+      color: #ffffff;
       text-transform: uppercase;
       letter-spacing: 0.3px;
     }
@@ -240,13 +240,13 @@ const injectStyles = () => {
       border-radius: 3px;
       font-size: 10px;
       font-weight: 600;
-      background: rgba(0, 82, 204, 0.1);
-      color: var(--primary-color);
+      background: var(--primary-color);
+      color: #ffffff;
       margin-right: 6px;
     }
 
     html[data-color-mode="dark"] .log-tools-badge {
-      background: rgba(87, 157, 255, 0.15);
+      background: var(--primary-color);
     }
 
     .log-queries {
@@ -265,10 +265,11 @@ const injectStyles = () => {
       align-items: flex-start;
       gap: 6px;
       margin-top: 6px;
-      padding: 6px 8px;
-      border-radius: 4px;
-      background: rgba(37, 99, 235, 0.06);
-      border-left: 3px solid var(--primary-color);
+      padding: 8px 10px;
+      border-radius: 6px;
+      background: var(--card-bg);
+      border: 2px solid var(--primary-color);
+      box-shadow: 0 4px 12px -4px rgba(37, 99, 235, 0.35);
       font-size: 11px;
       line-height: 1.5;
       color: var(--text-color);

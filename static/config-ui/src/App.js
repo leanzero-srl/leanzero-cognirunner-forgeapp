@@ -2312,15 +2312,21 @@ function App() {
 
             // Resolve a stable ruleId. Order:
             // 1. Existing config.id (loaded on edit) — most stable across re-saves
-            // 2. workflowName::transitionId — deterministic when Forge supplies both
+            // 2. type::workflowName::transitionId — deterministic AND unique per rule
+            //    type (legacy un-namespaced ids collided when a validator, condition,
+            //    and post-function shared a transition — disabling one muted the others)
             // 3. ext.entryPoint / ext.key — Forge-provided per-instance identifier
             // 4. Date.now() — last resort; warn so we can spot bad embeds in field reports
+            const idTypePrefix = isPostFn
+              ? ((currentManagedConfig && currentManagedConfig.type)
+                  || (currentPostFunctionType === "static" ? "postfunction-static" : "postfunction-semantic"))
+              : (ext.type === "jira:workflowCondition" ? "condition" : "validator");
             let ruleId = currentExistingRuleId;
             if (!ruleId) {
               if (workflowContext.workflowName && workflowContext.transitionId) {
-                ruleId = `${workflowContext.workflowName}::${workflowContext.transitionId}`;
+                ruleId = `${idTypePrefix}::${workflowContext.workflowName}::${workflowContext.transitionId}`;
               } else if (ext.entryPoint || ext.key) {
-                ruleId = ext.entryPoint || ext.key;
+                ruleId = `${idTypePrefix}::${ext.entryPoint || ext.key}`;
               } else {
                 ruleId = Date.now().toString();
                 console.warn("[CogniRunner] Falling back to timestamp ruleId — Forge context missing workflow/transition. Edits will create new registry entries.");

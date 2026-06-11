@@ -1109,8 +1109,8 @@ const injectStyles = () => {
     .wiz-test-result {
       margin-top: 8px; padding: 10px 12px; border-radius: 8px;
     }
-    .wiz-test-pass { border: 1px solid var(--success-color); background: rgba(22,163,106,0.06); }
-    .wiz-test-fail { border: 1px solid var(--error-color); background: rgba(220,38,38,0.06); }
+    .wiz-test-pass { border: 2px solid var(--success-color); background: var(--card-bg); box-shadow: 0 4px 12px -4px rgba(22, 163, 106, 0.35); }
+    .wiz-test-fail { border: 2px solid var(--error-color); background: var(--card-bg); box-shadow: 0 4px 12px -4px rgba(220, 38, 38, 0.35); }
     .wiz-test-skip { border: 1px solid var(--primary-color); background: rgba(37,99,235,0.06); }
     .wiz-test-header { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
     .wiz-test-dismiss { margin-left: auto; background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 16px; }

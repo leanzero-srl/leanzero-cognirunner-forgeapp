@@ -410,19 +410,34 @@ resolver.define("registerConfig", async ({ payload, context }) => {
     if (wf.transitionToName) workflowData.transitionToName = wf.transitionToName;
     if (wf.siteUrl) workflowData.siteUrl = wf.siteUrl;
 
-    // Match by id first; fall back to workflow context (same workflow + transition = same rule)
-    let existingIndex = configs.findIndex((c) => c.id === id);
+    // Match by id first; fall back to workflow context (same workflow + transition = same rule).
+    // Family rule: validator/condition rows must never claim or be claimed by post-function
+    // rows — legacy un-namespaced ids (`workflow::transition`) collide across rule types.
+    const isPfType = (t) => String(t || "").startsWith("postfunction");
+    const sameFamily = (c) => isPfType(c.type) === isPfType(type || "validator");
+    let existingIndex = configs.findIndex((c) => c.id === id && sameFamily(c));
     if (existingIndex < 0 && workflowData.workflowName && workflowData.transitionId) {
+      // Exact-type match on workflow context first…
       existingIndex = configs.findIndex((c) =>
-        c.workflow?.workflowName === workflowData.workflowName
+        (c.type || "validator") === (type || "validator")
+        && c.workflow?.workflowName === workflowData.workflowName
         && String(c.workflow?.transitionId) === String(workflowData.transitionId)
       );
+      // …then claim a same-family LEGACY row (pre-namespacing id) and upgrade it.
+      if (existingIndex < 0) {
+        const legacyId = `${workflowData.workflowName}::${workflowData.transitionId}`;
+        existingIndex = configs.findIndex((c) => c.id === legacyId && sameFamily(c));
+      }
     }
+    // If a different-family row already holds this exact id (legacy collision),
+    // namespace ours so registry ids stay unique.
+    const otherFamilyHoldsId = configs.some((c, i) => c.id === id && i !== existingIndex);
+    const effectiveId = otherFamilyHoldsId ? `${type || "validator"}::${id}` : id;
 
     if (existingIndex >= 0) {
       configs[existingIndex] = {
         ...configs[existingIndex],
-        id, // Update to the new stable id format
+        id: effectiveId, // Upgrade to the current stable id format
         type: type || configs[existingIndex].type,
         fieldId,
         prompt: (prompt || "").substring(0, 200),
@@ -433,7 +448,7 @@ resolver.define("registerConfig", async ({ payload, context }) => {
       };
     } else {
       configs.push({
-        id,
+        id: effectiveId,
         type: type || "validator",
         fieldId,
         prompt: (prompt || "").substring(0, 200),
@@ -723,9 +738,19 @@ resolver.define("getRuleStatus", async ({ payload }) => {
     const { id, fieldId, prompt, workflow, conditionPrompt, actionPrompt, type } = payload;
     const configs = (await storage.get(CONFIG_REGISTRY_KEY)) || [];
 
-    // Strategy 1: match by rule ID (if it's not "view" or "create" entry points)
+    // Strategy 1: match by rule ID (if it's not "view" or "create" entry points).
+    // Old embedded configs carry un-namespaced ids; registry rows may have been
+    // upgraded to `<type>::<id>` — try the plausible variants for this panel type.
     if (id && id !== "view" && id !== "create" && id !== "edit") {
-      const config = configs.find((c) => c.id === id);
+      const candidates = [id];
+      if (type) {
+        candidates.push(`${type}::${id}`);
+      } else if (conditionPrompt || actionPrompt) {
+        candidates.push(`postfunction-semantic::${id}`, `postfunction-static::${id}`);
+      } else {
+        candidates.push(`validator::${id}`, `condition::${id}`);
+      }
+      const config = configs.find((c) => candidates.includes(c.id));
       if (config) {
         return { found: true, disabled: config.disabled === true, registryId: config.id };
       }
@@ -733,8 +758,16 @@ resolver.define("getRuleStatus", async ({ payload }) => {
 
     // Strategy 2: match by workflow context (most reliable for view panels)
     if (workflow?.workflowName && workflow?.transitionId) {
-      const ruleId = `${workflow.workflowName}::${workflow.transitionId}`;
-      const config = configs.find((c) => c.id === ruleId);
+      const legacyId = `${workflow.workflowName}::${workflow.transitionId}`;
+      const candidates = [legacyId];
+      if (type) {
+        candidates.unshift(`${type}::${legacyId}`);
+      } else if (conditionPrompt || actionPrompt) {
+        candidates.push(`postfunction-semantic::${legacyId}`, `postfunction-static::${legacyId}`);
+      } else {
+        candidates.push(`validator::${legacyId}`, `condition::${legacyId}`);
+      }
+      const config = configs.find((c) => candidates.includes(c.id));
       if (config) {
         return { found: true, disabled: config.disabled === true, registryId: config.id };
       }
@@ -3198,14 +3231,24 @@ resolver.define("registerPostFunction", async ({ payload, context }) => {
 
     let configs = (await storage.get(CONFIG_REGISTRY_KEY)) || [];
 
-    const existing = configs.findIndex((c) => c.id === id);
+    // Family rule: only post-function rows may be claimed — a legacy validator row
+    // sharing the un-namespaced `workflow::transition` id must not be overwritten.
+    const isPfRow = (c) => String(c.type || "").startsWith("postfunction");
+    let existing = configs.findIndex((c) => c.id === id && isPfRow(c));
+    if (existing < 0 && workflow?.workflowName && workflow?.transitionId) {
+      const legacyId = `${workflow.workflowName}::${workflow.transitionId}`;
+      existing = configs.findIndex((c) => c.id === legacyId && isPfRow(c));
+    }
     // On update: verify the caller has editor rights on the existing record. Other PF resolvers
     // (remove/disable/enable) already do this; the create/update path was an oversight.
     if (existing >= 0 && !(await canActOnConfig(context.accountId, configs[existing], "editor"))) {
       return { success: false, error: "You don't have permission to modify this post-function" };
     }
+    // If a different-family row already holds this exact id, namespace ours.
+    const otherFamilyHoldsId = configs.some((c, i) => c.id === id && i !== existing);
+    const effectiveId = otherFamilyHoldsId ? `${type}::${id}` : id;
     const entry = {
-      id,
+      id: effectiveId,
       type,
       fieldId: fieldId || "",
       prompt: prompt || "",
@@ -7067,7 +7110,12 @@ export const validate = async (args) => {
     const isValidatorRow = (c) => !String(c.type || "validator").startsWith("postfunction");
     let matchingConfig = null;
     if (ruleId) {
-      matchingConfig = configs.find((c) => c.id === ruleId && c.disabled === true && isValidatorRow(c));
+      // Accept both legacy embedded ids and the type-namespaced registry variant
+      // (`<type>::<workflow>::<transition>`).
+      const invocationType = String(args?.context?.extension?.type || "").includes("Condition")
+        ? "condition" : "validator";
+      const idCandidates = new Set([ruleId, `${invocationType}::${ruleId}`]);
+      matchingConfig = configs.find((c) => idCandidates.has(c.id) && c.disabled === true && isValidatorRow(c));
     }
     if (!matchingConfig && configuration?.workflow?.workflowName && configuration?.workflow?.transitionId) {
       matchingConfig = configs.find((c) =>
@@ -8225,12 +8273,22 @@ export const executePostFunction = async (args) => {
     return { result: true };
   }
 
-  // Check if disabled in KVS
+  // Check if disabled in KVS. Accept both the id embedded in the (possibly old)
+  // workflow-rule config and its type-namespaced registry variant, and only let
+  // post-function rows mute a post-function invocation.
   try {
     const configs = (await storage.get(CONFIG_REGISTRY_KEY)) || [];
     const ruleId = config.ruleId || config.id;
     if (ruleId) {
-      const match = configs.find((c) => c.id === ruleId);
+      let pfType = config.type || "";
+      if (!pfType && extensionKey) {
+        if (extensionKey.includes("semantic")) pfType = "postfunction-semantic";
+        else if (extensionKey.includes("static")) pfType = "postfunction-static";
+      }
+      const idCandidates = new Set([ruleId]);
+      if (pfType) idCandidates.add(`${pfType}::${ruleId}`);
+      const match = configs.find((c) =>
+        idCandidates.has(c.id) && String(c.type || "").startsWith("postfunction"));
       if (match?.disabled) {
         console.log(`Post-function "${ruleId}" is disabled — skipping`);
         await logSkip(

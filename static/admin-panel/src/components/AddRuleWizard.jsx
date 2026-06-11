@@ -187,7 +187,9 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
     setError(null);
 
     const isPostFunction = ruleType.startsWith("postfunction");
-    const ruleId = `${selectedWorkflow.name}::${selectedTransition.id}`;
+    // Type-namespaced id — unique per rule type on the same transition (legacy
+    // `workflow::transition` ids collided across validator/condition/PF rows).
+    const ruleId = `${ruleType}::${selectedWorkflow.name}::${selectedTransition.id}`;
     const workflowData = {
       workflowName: selectedWorkflow.name,
       workflowId: selectedWorkflow.id,
@@ -220,6 +222,9 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
                   ? { type: ruleType, fieldId: fieldId || "description", prompt: subtaskPrompt, subtaskPrompt, selectedDocIds, workflow: workflowData }
                   : { type: ruleType, fieldId: fieldId || "description", prompt: prompt || conditionPrompt, conditionPrompt, actionPrompt, actionFieldId, selectedDocIds, crossCheckClaims, workflow: workflowData }
         : { type: ruleType, fieldId: fieldId || "description", prompt, enableTools, selectedDocIds, workflow: workflowData };
+      // Embed the id so the runtime executor and view panels resolve the registry
+      // row directly instead of falling back to workflow-context matching.
+      configPayload.id = ruleId;
 
       if (isPostFunction) {
         result = await invoke("registerPostFunction", {

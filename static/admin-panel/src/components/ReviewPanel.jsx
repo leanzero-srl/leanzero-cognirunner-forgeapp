@@ -10,9 +10,9 @@ import { invoke } from "@forge/bridge";
 import AILoadingState from "./AILoadingState";
 
 const VERDICT_STYLES = {
-  good: { color: "var(--success-color)", bg: "rgba(22, 163, 106, 0.06)", border: "var(--success-color)", icon: "\u2705" },
-  needs_attention: { color: "#d97706", bg: "rgba(217, 119, 6, 0.06)", border: "#d97706", icon: "\u26A0\uFE0F" },
-  has_issues: { color: "var(--error-color)", bg: "rgba(220, 38, 38, 0.06)", border: "var(--error-color)", icon: "\u274C" },
+  good: { color: "var(--success-color)", bg: "var(--card-bg)", border: "var(--success-color)", icon: "\u2705" },
+  needs_attention: { color: "#d97706", bg: "var(--card-bg)", border: "#d97706", icon: "\u26A0\uFE0F" },
+  has_issues: { color: "var(--error-color)", bg: "var(--card-bg)", border: "var(--error-color)", icon: "\u274C" },
 };
 
 const ITEM_ICONS = { success: "\u2705", warning: "\u26A0\uFE0F", error: "\u274C", tip: "\uD83D\uDCA1" };
@@ -125,6 +125,7 @@ export default function ReviewPanel({ configType, config }) {
                 style={{
                   background: VERDICT_STYLES[result.review.verdict]?.bg || VERDICT_STYLES.good.bg,
                   borderColor: VERDICT_STYLES[result.review.verdict]?.border || VERDICT_STYLES.good.border,
+                  borderWidth: "2px",
                 }}
               >
                 <span className="review-verdict-icon">

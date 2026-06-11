@@ -683,6 +683,14 @@ export default function OpenAIConfig({ invoke }) {
                 billed to the app vendor (LeanZero), not to your site. Supports tool calling (JQL
                 agentic search works); image/file attachments are not analyzed yet. Requests pass
                 Atlassian's AI moderation checks.
+                <div style={{ marginTop: "6px" }}>
+                  <strong>Cost shape.</strong> While a rule waits for a model response, the app also
+                  consumes Forge compute time, which is billed to the vendor as well — long AI waits
+                  cost more than tokens alone. The default model (Claude Haiku) keeps responses fast,
+                  and heavy steps such as document generation, research, and fact-checked rules
+                  automatically run in the background queue. Nothing to configure on your side — this
+                  is simply why the fast default model is recommended.
+                </div>
               </div>
             )}
           </div>

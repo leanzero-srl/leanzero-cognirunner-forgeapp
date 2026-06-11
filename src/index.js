@@ -58,6 +58,14 @@ const CONFIG_REGISTRY_KEY = "config_registry";
 // precise per-instance check to them and the conservative legacy check to
 // everything else.
 const INSTANCED_ID_RE = /::i-[a-z0-9]{6}$/;
+// The precise (id-matching) orphan check only applies to rows older than this.
+// Registration happens at DRAFT-save time but the workflows API only shows
+// PUBLISHED workflows, so a freshly saved rule looks unambiguously orphaned
+// until the admin publishes — without the grace window, merely opening the
+// Rules tab during that window would delete the new rule's row (losing its
+// disable identity). Zombie rows from abandoned drafts still get cleaned once
+// they age past the window.
+const ORPHAN_PRECISE_MIN_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 const REGISTRY_CACHE_TTL_MS = 30000;
 let _registryCache = null;
@@ -652,7 +660,7 @@ resolver.define("clearLogs", async ({ context }) => {
  */
 resolver.define("registerConfig", async ({ payload, context }) => {
   try {
-    const { id, type, fieldId, prompt, workflow } = payload;
+    const { id, type, fieldId, prompt, workflow, legacyUpgrade } = payload;
     if (!id || !fieldId) {
       return { success: false, error: "Missing required fields" };
     }
@@ -677,14 +685,21 @@ resolver.define("registerConfig", async ({ payload, context }) => {
     const isPfType = (t) => String(t || "").startsWith("postfunction");
     const sameFamily = (c) => isPfType(c.type) === isPfType(type || "validator");
     let existingIndex = configs.findIndex((c) => c.id === id && sameFamily(c));
-    if (existingIndex < 0 && workflowData.workflowName && workflowData.transitionId) {
-      // Exact-type match on workflow context first… but NEVER claim an
-      // instanced row this way: instanced ids are stable (they travel in the
-      // embedded config and tier-1 id matching catches their re-saves), so a
-      // context match against one means we're a DIFFERENT rule instance on the
-      // same transition — claiming it would merge two rules into one row, the
-      // exact collapse the instance suffix exists to prevent. Claiming a
-      // non-instanced row here is the legacy-upgrade path and stays.
+    // Claim-by-context fallbacks — for upgrading LEGACY rows (pre-id-embedding
+    // configs whose re-save can't tier-1 match) only. A fresh instanced mint
+    // must NEVER claim a row this way: the claim renames the row's id to the
+    // new suffixed id, which the EXISTING rule's embedded id can no longer
+    // reach — stranding its disable state and handing its row to a different
+    // rule. So the fallbacks run only when the client says this save IS a
+    // legacy-rule edit (legacyUpgrade), or when the incoming id is itself
+    // non-instanced (old frontend builds — their deterministic ids keep the
+    // pre-existing claiming semantics, where the rename stays reachable).
+    const mayClaimByContext = legacyUpgrade === true || !INSTANCED_ID_RE.test(id);
+    if (existingIndex < 0 && mayClaimByContext && workflowData.workflowName && workflowData.transitionId) {
+      // Exact-type match on workflow context first… but never claim an
+      // instanced row even then: its identity always travels in its embedded
+      // config, so a context match against one is by definition a DIFFERENT
+      // rule instance on the same transition.
       existingIndex = configs.findIndex((c) =>
         (c.type || "validator") === (type || "validator")
         && c.instanced !== true
@@ -979,7 +994,11 @@ resolver.define("getConfigs", async ({ payload, context }) => {
         // parameters.config embeds its id; keep the row only if its id appears
         // on the transition. Every ambiguity defaults to KEEP: a false-kept
         // zombie is cosmetic, a false removal loses the rule's disable-state.
-        if (keep && config.instanced === true) {
+        // Rows younger than the grace window are exempt — they may live in an
+        // unpublished draft the workflows API can't see (see the constant).
+        const rowAgeMs = Date.now() - Date.parse(config.updatedAt || config.createdAt || "");
+        const oldEnoughForPreciseCheck = Number.isFinite(rowAgeMs) && rowAgeMs > ORPHAN_PRECISE_MIN_AGE_MS;
+        if (keep && config.instanced === true && oldEnoughForPreciseCheck) {
           let sawUnreadableConfig = false;
           const embeddedIds = new Set();
           for (const r of ourRules) {
@@ -3553,7 +3572,7 @@ export const serveAttachmentUpload = async (req) => {
  */
 resolver.define("registerPostFunction", async ({ payload, context }) => {
   try {
-    const { id, type, fieldId, prompt, conditionPrompt, actionPrompt, actionFieldId, functions, workflow, selectedDocIds, crossCheckClaims, docFormat, contentPrompt, docTitlePrompt, attachComment, stylePreset, researchQuery, researchTitle, autoSelectResearchDoc, commentPrompt, subtaskPrompt, requestCodeOffload } = payload;
+    const { id, type, fieldId, prompt, conditionPrompt, actionPrompt, actionFieldId, functions, workflow, selectedDocIds, crossCheckClaims, docFormat, contentPrompt, docTitlePrompt, attachComment, stylePreset, researchQuery, researchTitle, autoSelectResearchDoc, commentPrompt, subtaskPrompt, requestCodeOffload, legacyUpgrade } = payload;
     if (!id) return { success: false, error: "Missing post-function ID" };
     if (!type) return { success: false, error: "Missing post-function type" };
 
@@ -3563,7 +3582,12 @@ resolver.define("registerPostFunction", async ({ payload, context }) => {
     // sharing the un-namespaced `workflow::transition` id must not be overwritten.
     const isPfRow = (c) => String(c.type || "").startsWith("postfunction");
     let existing = configs.findIndex((c) => c.id === id && isPfRow(c));
-    if (existing < 0 && workflow?.workflowName && workflow?.transitionId) {
+    // Legacy-id claim — only for legacy-rule edits (client-flagged) or
+    // non-instanced incoming ids (old frontend builds). A fresh instanced mint
+    // claiming this row would rename its id beyond the existing rule's
+    // embedded-id reach, stranding its disable state (see registerConfig).
+    if (existing < 0 && (legacyUpgrade === true || !INSTANCED_ID_RE.test(id))
+        && workflow?.workflowName && workflow?.transitionId) {
       const legacyId = `${workflow.workflowName}::${workflow.transitionId}`;
       existing = configs.findIndex((c) => c.id === legacyId && isPfRow(c));
     }
@@ -7537,10 +7561,21 @@ export const validate = async (args) => {
       const idCandidates = new Set([ruleId, `${invocationType}::${ruleId}`]);
       matchingConfig = configs.find((c) => idCandidates.has(c.id) && c.disabled === true && isValidatorRow(c));
     }
-    if (!matchingConfig && configuration?.workflow?.workflowName && configuration?.workflow?.transitionId) {
+    // Context fallback — for LEGACY identities only. An instanced rule's id
+    // always travels in its embedded config and resolves via the id tier
+    // above, so (a) an invocation whose own id is instanced must never be
+    // muted by context, and (b) an instanced row must never mute anything by
+    // context — either would let one sibling's disable flag silently
+    // fail-open the OTHER same-type rule on the transition (the exact
+    // collapse per-instance ids exist to prevent; mirrors registerConfig's
+    // fallback guard).
+    const invocationIsInstanced = ruleId && INSTANCED_ID_RE.test(String(ruleId));
+    if (!matchingConfig && !invocationIsInstanced
+        && configuration?.workflow?.workflowName && configuration?.workflow?.transitionId) {
       matchingConfig = configs.find((c) =>
         c.disabled === true
         && isValidatorRow(c)
+        && c.instanced !== true
         && c.workflow?.workflowName === configuration.workflow.workflowName
         && String(c.workflow?.transitionId) === String(configuration.workflow.transitionId)
       );

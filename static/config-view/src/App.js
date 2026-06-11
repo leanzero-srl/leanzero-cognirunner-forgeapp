@@ -645,7 +645,10 @@ function App() {
     const checkStatus = async () => {
       try {
         const result = await invoke("getRuleStatus", {
-          id: ruleId,
+          // The embedded config.id is the registry row's exact id (required for
+          // instanced ::i-… ids, which the backend's context tier can't
+          // reconstruct); ext.entryPoint gives "view", which tier-1 skips.
+          id: config?.id || ruleId,
           fieldId: config?.fieldId,
           prompt: config?.prompt,
           conditionPrompt: config?.conditionPrompt,

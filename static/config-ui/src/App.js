@@ -1990,6 +1990,12 @@ let currentValidatorDocIds = [];
 // Stable rule id — loaded from existing config on edit so we don't generate a fresh one each time
 // (avoids orphan registry rows when Forge context lacks workflowName/transitionId).
 let currentExistingRuleId = null;
+// True only when we LOADED an existing config that carried no id — i.e. an
+// edit of a pre-id-embedding legacy rule. Only then may the backend's
+// claim-by-context fallback adopt an existing registry row; for a brand-new
+// rule that same fallback would hijack a sibling's row (rename its id to our
+// fresh instanced id, stranding the sibling's disable state).
+let currentIsLegacyEdit = false;
 
 function App() {
   const [fieldId, setFieldId] = useState("");
@@ -2222,6 +2228,7 @@ function App() {
             // Without this, edits where Forge omits workflowName/transitionId would generate a
             // fresh Date.now() id every save and orphan the previous registry entry.
             if (config.id) currentExistingRuleId = config.id;
+            else currentIsLegacyEdit = true; // existing rule, pre-id-embedding build
 
             // Safety: declarative action types created in the admin panel (generate-doc /
             // research / comment) reuse the semantic module but aren't editable here yet.
@@ -2496,6 +2503,7 @@ function App() {
                   functions: currentFunctions,
                   workflow: workflowContext,
                   requestCodeOffload: wantOffload,
+                  legacyUpgrade: currentIsLegacyEdit,
                 });
               } else {
                 const moduleType = ext.type === "jira:workflowCondition" ? "condition" : "validator";
@@ -2505,6 +2513,7 @@ function App() {
                   fieldId: config.fieldId,
                   prompt: config.prompt,
                   workflow: workflowContext,
+                  legacyUpgrade: currentIsLegacyEdit,
                 });
               }
             } catch (netErr) {

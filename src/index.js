@@ -7385,7 +7385,14 @@ const formatValueForField = (value, fieldMeta) => {
   // ADF (doc) fields need full validation regardless of the value's type — the AI
   // sometimes returns an object that LOOKS like ADF but isn't structurally valid
   // (missing version, content not an array, etc.). Always run the doc coercion path.
-  if (schemaType === "doc") {
+  // NOT all rich-text fields declare type "doc" in editmeta: some sites report
+  // system description/environment as type "string" (observed in production —
+  // the v3 PUT then 400s with "must be an Atlassian Document"). Detect by field
+  // identity too, not just by declared schema type.
+  const isRichText = schemaType === "doc"
+    || ["description", "environment"].includes(fieldMeta.schema.system)
+    || String(fieldMeta.schema.custom || "").endsWith(":textarea");
+  if (isRichText) {
     return coerceToAdf(value);
   }
 
@@ -8246,9 +8253,22 @@ const executeSemanticPostFunction = async (issueKey, config, deadline = Date.now
         await new Promise((r) => setTimeout(r, waitMs));
         updateResponse = await doUpdate();
       }
+      // Self-heal for fields that demand ADF without declaring type "doc" in
+      // editmeta (the proactive detection above covers description/environment/
+      // textarea; this catches anything else): convert the text and retry once.
+      let stashedErrBody = null;
+      if (!updateResponse.ok && updateResponse.status === 400 && typeof result.value === "string") {
+        stashedErrBody = await updateResponse.text().catch(() => "");
+        if (/atlassian document/i.test(stashedErrBody)) {
+          trace.push(`Jira requires ADF for "${actionFieldId}" — converting the text and retrying...`);
+          updateBody.fields[actionFieldId] = coerceToAdf(result.value);
+          updateResponse = await doUpdate();
+          stashedErrBody = null; // fresh response — the error composer re-reads
+        }
+      }
       if (!updateResponse.ok) {
         const errStatus = updateResponse.status;
-        const errBody = await updateResponse.text().catch(() => "");
+        const errBody = stashedErrBody ?? await updateResponse.text().catch(() => "");
         let jiraError = "";
         try {
           const errJson = JSON.parse(errBody);
@@ -8261,7 +8281,7 @@ const executeSemanticPostFunction = async (issueKey, config, deadline = Date.now
           ? `Jira rejected the value for "${actionFieldId}": ${jiraError}\n\n`
             + `Common fixes:\n`
             + `- Text fields: Send a plain string value\n`
-            + `- Rich text fields (description, etc.): Send an ADF document object, not plain text. Add "format the value as plain text, not ADF" to your action prompt.\n`
+            + `- Rich text fields (description, etc.): plain text is converted to ADF automatically — if you still see an ADF error here, the AI returned a malformed document object; add "return plain text only, no formatting objects" to your action prompt.\n`
             + `- Select/dropdown fields: Send {value: "Option Name"} or {id: "10001"}, not a plain string\n`
             + `- Multi-select fields: Send an array of {value: "..."} objects\n`
             + `- User fields: Send {accountId: "..."}\n`

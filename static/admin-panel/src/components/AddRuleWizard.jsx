@@ -7,6 +7,15 @@
 
 import React, { useState, useEffect } from "react";
 import CustomSelect from "./CustomSelect";
+
+// Static-PF code offload (mirrors config-ui): the workflow editor caps a rule's
+// embedded config at ~32KB. Above the threshold the step code moves to app
+// storage and the injected config carries only a codeRef pointer.
+const CONFIG_OFFLOAD_THRESHOLD_BYTES = 28672;
+const SLIM_CONFIG_MAX_BYTES = 30720;
+const stepMeta = (fns) => (fns || []).map((f) => ({
+  id: f.id, name: f.name, operationType: f.operationType, variableName: f.variableName,
+}));
 // Shared components — these are the SAME ones used by config-ui (the workflow-menu
 // flow). Keeping them in one place ensures rule-creation options + logic are
 // identical across both entry points.
@@ -239,6 +248,27 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
       // Simulation mode applies to all post-function types (validators don't write).
       if (isPostFunction && simulationMode) configPayload.simulationMode = true;
 
+      // Static-PF code offload: measure the config as it would be embedded in the
+      // workflow rule; above the threshold the backend stores the step code in
+      // KVS and we inject a slim pointer config. If even slim is too big, block
+      // the save before any backend write.
+      let wantOffload = false;
+      if (ruleType === "postfunction-static" && Array.isArray(functions) && functions.length > 0) {
+        const fullBytes = new TextEncoder().encode(JSON.stringify(configPayload)).length;
+        if (fullBytes > CONFIG_OFFLOAD_THRESHOLD_BYTES) {
+          const slimPreview = { ...configPayload, functions: undefined,
+            functionsMeta: stepMeta(functions), codeRef: "x".repeat(200) };
+          const slimBytes = new TextEncoder().encode(JSON.stringify(slimPreview)).length;
+          if (slimBytes > SLIM_CONFIG_MAX_BYTES) {
+            const sizeKb = Math.ceil(slimBytes / 1024);
+            setError(`This rule is too large to save. Jira limits each workflow rule's configuration to 32 KB, and this rule is ${sizeKb} KB even after moving step code to app storage. Remove or shorten some steps, or split them across two CogniRunner post-functions on this transition.`);
+            setSaving(false);
+            return;
+          }
+          wantOffload = true;
+        }
+      }
+
       if (isPostFunction) {
         result = await invoke("registerPostFunction", {
           id: ruleId,
@@ -246,6 +276,7 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
           ...configPayload,
           functions: ruleType === "postfunction-static" ? functions : [],
           workflow: workflowData,
+          requestCodeOffload: wantOffload,
         });
       } else {
         result = await invoke("registerConfig", {
@@ -260,6 +291,14 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
         setError(result.error || "Failed to save rule config");
         setSaving(false);
         return;
+      }
+
+      // Swap to the slim pointer config — the backend stored the step code in
+      // KVS and returned its exact key (never re-derived client-side).
+      if (wantOffload && result.codeKey) {
+        delete configPayload.functions;
+        configPayload.codeRef = result.codeKey;
+        configPayload.functionsMeta = stepMeta(functions);
       }
 
       // Step B: Inject the rule into the actual Jira workflow

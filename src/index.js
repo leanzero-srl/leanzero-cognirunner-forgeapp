@@ -25,7 +25,7 @@ import { chat as forgeLlmChatApi, list as forgeLlmListApi } from "@forge/llm";
 // Aliased back to `storage` so the existing get/set/delete call sites stay unchanged.
 import storage from "@forge/kvs";
 import Resolver from "@forge/resolver";
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import path from "node:path";
 import FormData from "form-data";
 
@@ -35,6 +35,22 @@ const resolver = new Resolver();
 const MAX_LOGS = 50;
 const LOGS_STORAGE_KEY = "validation_logs";
 const CONFIG_REGISTRY_KEY = "config_registry";
+// Static post-function code offload. The new workflow editor caps a rule's
+// embedded configuration at ~32KB; AI-generated step code can cross it. Large
+// `functions` arrays move into their own KVS entry (pf_code:<id>:<hash>) and
+// the rule config carries only a codeRef pointer — this also relieves the
+// 200KB single-value registry cap. Inline functions in old configs always win;
+// codeRef is consulted only when functions is empty.
+const PF_CODE_PREFIX = "pf_code:";
+const PF_FUNCTIONS_OFFLOAD_BYTES = 24576;   // registry copy auto-offloads above this
+const PF_CODE_VALUE_MAX_BYTES = 225280;     // 220KiB — margin under the ~240KiB KVS value cap
+const WORKFLOW_CONFIG_MAX_BYTES = 32768;    // Jira workflow-editor rule-config ceiling
+
+// Deterministic per registry row: re-saves overwrite in place (no garbage);
+// the hash suffix disambiguates ids that sanitize to the same string.
+const pfCodeKeyFor = (effectiveId) => PF_CODE_PREFIX
+  + String(effectiveId).replace(/[^a-zA-Z0-9:._#-]/g, "-").slice(0, 160)
+  + ":" + createHash("sha256").update(String(effectiveId)).digest("hex").slice(0, 8);
 // UUID from manifest.yml app.id — used to identify our rules in workflow transition data.
 // Forge context doesn't expose the app UUID at runtime; only environmentId and installContext
 // are available, neither of which matches the app UUID in rule parameters.key.
@@ -610,6 +626,9 @@ resolver.define("removeConfig", async ({ payload, context }) => {
     }
     configs = configs.filter((c) => c.id !== id);
     await storage.set(CONFIG_REGISTRY_KEY, configs);
+    if (target?.codeRef) {
+      try { await storage.delete(target.codeRef); } catch (e) { console.warn("pf_code cleanup failed:", e?.message); }
+    }
     return { success: true };
   } catch (error) {
     console.error("Failed to remove config:", error);
@@ -834,6 +853,14 @@ resolver.define("getConfigs", async ({ payload, context }) => {
       console.log(`Orphan cleanup: removed ${removed.length} stale config(s):`,
         removed.map((c) => c.id));
       await storage.set(CONFIG_REGISTRY_KEY, surviving);
+      // Offloaded step-code bundles die with their registry row — this is the
+      // cleanup path that matters in practice (the remove resolvers have no
+      // frontend callers today).
+      for (const c of removed) {
+        if (c.codeRef) {
+          try { await storage.delete(c.codeRef); } catch { /* best-effort */ }
+        }
+      }
     }
 
     if (hadApiError) {
@@ -1647,6 +1674,16 @@ resolver.define("injectWorkflowRule", async ({ payload, context }) => {
   const ruleInfo = RULE_KEY_MAP[ruleType];
   if (!ruleInfo) return { success: false, error: `Unknown rule type: ${ruleType}` };
 
+  // The workflow editor caps a rule's embedded configuration at ~32KB — an
+  // oversized config fails or truncates silently downstream. Defense in depth:
+  // the wizard offloads static-PF code before calling this, so tripping here
+  // means even the slim config is too big.
+  const configStr = typeof config === "string" ? config : JSON.stringify(config || {});
+  if (Buffer.byteLength(configStr, "utf8") > WORKFLOW_CONFIG_MAX_BYTES) {
+    const sizeKb = Math.ceil(Buffer.byteLength(configStr, "utf8") / 1024);
+    return { success: false, error: `This rule's configuration is ${sizeKb} KB — Jira limits workflow rule configurations to 32 KB. Remove or shorten some steps, or split them across two post-functions on this transition.` };
+  }
+
   try {
     // Step 1: Get the environment ID via getAppContext() from @forge/api
     let envId = null;
@@ -1713,7 +1750,7 @@ resolver.define("injectWorkflowRule", async ({ payload, context }) => {
       ruleKey: ruleInfo.ruleKey,
       parameters: {
         key: extensionKey,
-        config: typeof config === "string" ? config : JSON.stringify(config || {}),
+        config: configStr,
         id: ruleId,
         disabled: "false",
       },
@@ -3359,7 +3396,7 @@ export const serveAttachmentUpload = async (req) => {
  */
 resolver.define("registerPostFunction", async ({ payload, context }) => {
   try {
-    const { id, type, fieldId, prompt, conditionPrompt, actionPrompt, actionFieldId, functions, workflow, selectedDocIds, crossCheckClaims, docFormat, contentPrompt, docTitlePrompt, attachComment, stylePreset, researchQuery, researchTitle, autoSelectResearchDoc, commentPrompt, subtaskPrompt } = payload;
+    const { id, type, fieldId, prompt, conditionPrompt, actionPrompt, actionFieldId, functions, workflow, selectedDocIds, crossCheckClaims, docFormat, contentPrompt, docTitlePrompt, attachComment, stylePreset, researchQuery, researchTitle, autoSelectResearchDoc, commentPrompt, subtaskPrompt, requestCodeOffload } = payload;
     if (!id) return { success: false, error: "Missing post-function ID" };
     if (!type) return { success: false, error: "Missing post-function type" };
 
@@ -3388,6 +3425,27 @@ resolver.define("registerPostFunction", async ({ payload, context }) => {
     // If a different-family row already holds this exact id, namespace ours.
     const otherFamilyHoldsId = configs.some((c, i) => c.id === id && i !== existing);
     const effectiveId = otherFamilyHoldsId ? `${type}::${id}` : id;
+
+    // Code offload: move large static-PF step code into its own KVS entry.
+    // The client requests it when the embedded workflow config would cross the
+    // 32KB editor ceiling; the backend additionally force-offloads the REGISTRY
+    // copy above 24KB so stale frontend builds still relieve the 200KB registry
+    // cap (they ignore codeKey and keep returning inline workflow configs).
+    const fnBytes = Buffer.byteLength(JSON.stringify(functions || []), "utf8");
+    if (fnBytes > PF_CODE_VALUE_MAX_BYTES) {
+      return { success: false, error: "The step code in this rule exceeds the app storage limit (220 KB). Shorten or remove some steps, or split them across two post-functions." };
+    }
+    const shouldOffload = (requestCodeOffload === true || fnBytes > PF_FUNCTIONS_OFFLOAD_BYTES)
+      && Array.isArray(functions) && functions.length > 0;
+    let codeKey = null;
+    if (shouldOffload) {
+      codeKey = pfCodeKeyFor(effectiveId);
+      await storage.set(codeKey, {
+        v: 1, ruleId: effectiveId, functions, updatedAt: new Date().toISOString(),
+      });
+    }
+    const prevCodeRef = existing >= 0 ? configs[existing].codeRef : null;
+
     const entry = {
       id: effectiveId,
       type,
@@ -3408,7 +3466,13 @@ resolver.define("registerPostFunction", async ({ payload, context }) => {
       autoSelectResearchDoc: !!autoSelectResearchDoc,
       commentPrompt: (commentPrompt || "").substring(0, 1000),
       subtaskPrompt: (subtaskPrompt || "").substring(0, 1000),
-      functions: functions || [],
+      functions: codeKey ? [] : (functions || []),
+      ...(codeKey ? {
+        codeRef: codeKey,
+        functionsMeta: functions.map((f) => ({
+          id: f.id, name: f.name, operationType: f.operationType, variableName: f.variableName,
+        })),
+      } : {}),
       workflow: workflow || {},
       disabled: existing >= 0 ? configs[existing].disabled : false,
       createdBy: existing >= 0 ? (configs[existing].createdBy || context.accountId) : context.accountId,
@@ -3423,7 +3487,15 @@ resolver.define("registerPostFunction", async ({ payload, context }) => {
     }
 
     await storage.set(CONFIG_REGISTRY_KEY, configs);
-    return { success: true };
+    // Stale-bundle cleanup AFTER the registry save: a mid-save crash must leave
+    // an orphan bundle (harmless, overwritten on retry) rather than a registry
+    // row pointing at a deleted one. Covers offloaded→inline shrink + id changes.
+    if (prevCodeRef && prevCodeRef !== codeKey) {
+      try { await storage.delete(prevCodeRef); } catch (e) { console.warn("pf_code cleanup failed:", e?.message); }
+    }
+    // codeKey tells a current-build client to return a slim config with codeRef;
+    // old clients ignore it and keep embedding inline functions (status quo).
+    return { success: true, codeKey };
   } catch (error) {
     console.error("Failed to register post-function:", error);
     return { success: false, error: error.message };
@@ -3443,6 +3515,9 @@ resolver.define("removePostFunction", async ({ payload, context }) => {
     }
     configs = configs.filter((c) => c.id !== id);
     await storage.set(CONFIG_REGISTRY_KEY, configs);
+    if (target?.codeRef) {
+      try { await storage.delete(target.codeRef); } catch (e) { console.warn("pf_code cleanup failed:", e?.message); }
+    }
     return { success: true };
   } catch (error) {
     console.error("Failed to remove post-function:", error);
@@ -3506,6 +3581,26 @@ resolver.define("getPostFunctionStatus", async ({ payload }) => {
     return { success: true, exists: true, disabled: config.disabled === true };
   } catch (error) {
     console.error("Failed to get post-function status:", error);
+    return { success: false, error: error.message };
+  }
+});
+
+/**
+ * Fetch an offloaded static-PF code bundle for the edit screen. The prefix
+ * whitelist prevents a crafted codeRef from reading arbitrary KVS entries.
+ */
+resolver.define("getPostFunctionCode", async ({ payload }) => {
+  const { codeRef } = payload || {};
+  if (typeof codeRef !== "string" || !codeRef.startsWith(PF_CODE_PREFIX)) {
+    return { success: false, error: "Invalid code reference" };
+  }
+  try {
+    const bundle = await storage.get(codeRef);
+    if (!bundle || !Array.isArray(bundle.functions)) {
+      return { success: false, error: "Code bundle not found" };
+    }
+    return { success: true, functions: bundle.functions };
+  } catch (error) {
     return { success: false, error: error.message };
   }
 });
@@ -8390,9 +8485,31 @@ const SANDBOX_RESERVED_WORDS = new Set([
  * Each function block runs sequentially; results are shared via variable chaining.
  */
 const executeStaticPostFunction = async (issueKey, config, deadline = Date.now() + PF_BUDGET_MS) => {
-  const functions = config.functions || [];
+  let functions = config.functions || [];
+  // Code offload: large rules carry a codeRef pointer instead of inline step
+  // code (32KB workflow-config ceiling). Inline functions ALWAYS win — legacy
+  // configs execute byte-for-byte as before. Missing/invalid bundle is
+  // fail-closed for the rule (execute nothing, log loudly via dispatch's
+  // isValid:false path) and fail-open for the transition.
+  if (functions.length === 0 && typeof config.codeRef === "string" && config.codeRef.startsWith(PF_CODE_PREFIX)) {
+    const missingRec = "Open the rule in the workflow editor and click Save to re-publish its code. This usually means the rule's stored code was deleted (for example by removing the rule in another tab) while the workflow still references it.";
+    try {
+      const bundle = await storage.get(config.codeRef);
+      if (bundle && Array.isArray(bundle.functions) && bundle.functions.length > 0) {
+        functions = bundle.functions;
+      } else {
+        return { success: false, stepsTotal: 0, changes: [],
+          logs: [`ERROR: this rule's step code could not be loaded from app storage (key ${config.codeRef} not found)`],
+          recommendation: missingRec };
+      }
+    } catch (e) {
+      return { success: false, stepsTotal: 0, changes: [],
+        logs: [`ERROR: could not load this rule's step code from app storage (${e.message})`],
+        recommendation: missingRec };
+    }
+  }
   if (functions.length === 0) {
-    return { success: true, changes: [], logs: ["No function blocks to execute"],
+    return { success: true, stepsTotal: 0, changes: [], logs: ["No function blocks to execute"],
       recommendation: "No code steps configured. Go to Edit and add at least one function block with code." };
   }
 
@@ -8618,6 +8735,7 @@ const executeStaticPostFunction = async (issueKey, config, deadline = Date.now()
 
   return {
     success: !failedStep,
+    stepsTotal: functions.length,
     changes,
     logs: executionLogs,
     executionTimeMs: totalMs,
@@ -8953,7 +9071,9 @@ export const dispatchPostFunction = async (issueKey, config, extensionKey, pfDea
         isValid: result.success,
         executionTimeMs: Date.now() - pfStartTime,
         changes: result.changes?.length || 0,
-        steps: config.functions?.length || 0,
+        // Offloaded rules carry a slim config (functions: []) — the executor
+        // reports the real count after codeRef resolution.
+        steps: result.stepsTotal ?? config.functions?.length ?? 0,
         // Rule identity
         ruleId: config.ruleId || config.id || null,
         ruleName: config.workflow?.workflowName
@@ -8963,7 +9083,7 @@ export const dispatchPostFunction = async (issueKey, config, extensionKey, pfDea
       };
       if (result.success) {
         const summary = (result.logs || []).slice(-1)[0] || "completed";
-        logEntry.reason = `${result.stepResults?.filter((s) => s.status === "success").length || 0}/${config.functions?.length || 0} steps OK: ${summary}`;
+        logEntry.reason = `${result.stepResults?.filter((s) => s.status === "success").length || 0}/${result.stepsTotal ?? config.functions?.length ?? 0} steps OK: ${summary}`;
       } else {
         logEntry.reason = result.failedStep
           ? `Failed at "${result.failedStep}": ${result.stepResults?.find((s) => s.error)?.error || "unknown"}`

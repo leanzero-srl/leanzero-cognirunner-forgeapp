@@ -758,6 +758,9 @@ function App() {
     </>
   );
 
+  // Offloaded static rules carry a slim config — step names live in functionsMeta.
+  const staticSteps = (config?.functions?.length ? config.functions : config?.functionsMeta) || [];
+
   // Check if config has any meaningful data (validator/condition OR post-function)
   const hasConfig = config && (
     config.fieldId || config.prompt ||
@@ -918,9 +921,9 @@ function App() {
           </div>
           <div className="config-item">
             <span className="label">Steps:</span>
-            <span className="prompt-value">{config.functions?.length || 0} function block{(config.functions?.length || 0) !== 1 ? "s" : ""}</span>
+            <span className="prompt-value">{staticSteps.length} function block{staticSteps.length !== 1 ? "s" : ""}</span>
           </div>
-          {config.functions?.map((fn, i) => (
+          {staticSteps.map((fn, i) => (
             <div key={i} className="config-item" style={{ paddingLeft: "12px" }}>
               <span className="label">#{i + 1}:</span>
               <span className="prompt-value">

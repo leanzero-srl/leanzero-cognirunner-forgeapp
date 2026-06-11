@@ -26,6 +26,17 @@ import DocRepository from "./components/DocRepository";
 import ReviewPanel from "./components/ReviewPanel";
 import { ConfigSkeleton } from "./components/Skeleton";
 
+// Static-PF code offload: the workflow editor caps a rule's embedded config at
+// ~32KB. Above the threshold the step code moves to app storage (KVS) and the
+// rule config carries only a codeRef pointer. 4KB margin absorbs Forge-side
+// wrapping/escaping; if even the slim config exceeds the second limit, the
+// save is blocked with a hard error.
+const CONFIG_OFFLOAD_THRESHOLD_BYTES = 28672;
+const SLIM_CONFIG_MAX_BYTES = 30720;
+const stepMeta = (fns) => (fns || []).map((f) => ({
+  id: f.id, name: f.name, operationType: f.operationType, variableName: f.variableName,
+}));
+
 // Inject styles directly - more reliable in Forge iframe
 const injectStyles = () => {
   if (document.getElementById("app-styles")) return;
@@ -2243,6 +2254,15 @@ function App() {
             if (config.functions && Array.isArray(config.functions) && config.functions.length > 0) {
               setFunctions(config.functions);
               currentFunctions = config.functions;
+            } else if (config.codeRef) {
+              // Offloaded rule — hydrate the step code from app storage.
+              const codeResult = await invoke("getPostFunctionCode", { codeRef: config.codeRef });
+              if (codeResult?.success && Array.isArray(codeResult.functions) && codeResult.functions.length > 0) {
+                setFunctions(codeResult.functions);
+                currentFunctions = codeResult.functions;
+              } else {
+                setError("This rule's step code could not be loaded from app storage. Its steps are shown empty — re-add or regenerate the code, then Save to re-publish.");
+              }
             }
             // Load saved doc IDs for validators/conditions
             if (config.selectedDocIds && Array.isArray(config.selectedDocIds)) {
@@ -2412,6 +2432,29 @@ function App() {
               config.simulationMode = true;
             }
 
+            // Static-PF code offload: measure the FULL config as it would be
+            // embedded in the workflow rule; above the threshold ask the backend
+            // to store the step code in KVS and embed a slim pointer config
+            // instead. If even the slim config is too big, block the save HERE —
+            // before any backend write, so registry and workflow never diverge.
+            let wantOffload = false;
+            if (isPostFn && currentPostFunctionType === "static"
+                && Array.isArray(config.functions) && config.functions.length > 0) {
+              const fullBytes = new TextEncoder().encode(JSON.stringify(config)).length;
+              if (fullBytes > CONFIG_OFFLOAD_THRESHOLD_BYTES) {
+                const slimPreview = { ...config, functions: undefined,
+                  functionsMeta: stepMeta(config.functions), codeRef: "x".repeat(200) };
+                const slimBytes = new TextEncoder().encode(JSON.stringify(slimPreview)).length;
+                if (slimBytes > SLIM_CONFIG_MAX_BYTES) {
+                  const sizeKb = Math.ceil(slimBytes / 1024);
+                  console.warn("[CogniRunner] Save blocked: rule config too large even after code offload");
+                  setError(`This rule is too large to save. Jira limits each workflow rule's configuration to 32 KB, and this rule is ${sizeKb} KB even after moving step code to app storage. Remove or shorten some steps, or split them across two CogniRunner post-functions on this transition.`);
+                  return undefined;
+                }
+                wantOffload = true;
+              }
+            }
+
             console.log("Saving configuration:", config);
 
             // Register in admin registry. CRITICAL: if the registry write fails, throw — partial
@@ -2432,6 +2475,7 @@ function App() {
                   actionFieldId: config.actionFieldId || "",
                   functions: currentFunctions,
                   workflow: workflowContext,
+                  requestCodeOffload: wantOffload,
                 });
               } else {
                 const moduleType = ext.type === "jira:workflowCondition" ? "condition" : "validator";
@@ -2454,6 +2498,14 @@ function App() {
               console.error("[CogniRunner] Registry returned failure:", registryResult);
               setError(msg);
               throw new Error(msg);
+            }
+
+            // Swap to the slim pointer config — the backend stored the step code
+            // in KVS and returned its exact key (never re-derived client-side).
+            if (wantOffload && registryResult?.codeKey) {
+              delete config.functions;
+              config.codeRef = registryResult.codeKey;
+              config.functionsMeta = stepMeta(currentFunctions);
             }
 
             // Track the id so a subsequent re-save in the same session reuses the same row.

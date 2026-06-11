@@ -35,6 +35,35 @@ const resolver = new Resolver();
 const MAX_LOGS = 50;
 const LOGS_STORAGE_KEY = "validation_logs";
 const CONFIG_REGISTRY_KEY = "config_registry";
+
+// Module-level registry cache — used ONLY by the two hot-path disabled-checks
+// (validate, executePostFunction), which otherwise re-read the registry on
+// EVERY invocation and burn the 4000 KVS ops/min budget during bulk
+// transitions. Treat the returned array as read-only. Bounded staleness is
+// acceptable here: worst case, a just-disabled rule runs (or a just-enabled
+// rule skips) for up to REGISTRY_CACHE_TTL_MS in a warm container that didn't
+// see the resolver-side invalidation — observable in the logs and low blast
+// radius. Contrast async-handler.js getOpenAIKey: provider KEYS are
+// deliberately uncached there because a stale credential is binary-wrong
+// (guaranteed failure for the Forge LLM sentinel, possible use of a revoked
+// secret) — no TTL makes a wrong credential acceptable.
+const REGISTRY_CACHE_TTL_MS = 30000;
+let _registryCache = null;
+const getRegistryForRuleCheck = async () => {
+  if (_registryCache && Date.now() - _registryCache.fetchedAt < REGISTRY_CACHE_TTL_MS) {
+    return _registryCache.value;
+  }
+  const value = (await storage.get(CONFIG_REGISTRY_KEY)) || [];
+  _registryCache = { value, fetchedAt: Date.now() };
+  return value;
+};
+// ALL registry writes go through here — the same warm container can serve a
+// later execution, so every write must invalidate its cache instance.
+const saveRegistry = async (configs) => {
+  await storage.set(CONFIG_REGISTRY_KEY, configs);
+  _registryCache = null;
+};
+
 // Static post-function code offload. The new workflow editor caps a rule's
 // embedded configuration at ~32KB; AI-generated step code can cross it. Large
 // `functions` arrays move into their own KVS entry (pf_code:<id>:<hash>) and
@@ -198,15 +227,42 @@ const PF_BRAKE_MAX_PER_BUCKET = 10;
 const PF_TIMED_OUT = Symbol("pf-deadline");
 const raceDeadline = async (promise, deadline, label) => {
   const ms = deadline - Date.now();
-  if (ms <= 0) throw new Error(`${label} skipped — post-function time budget exhausted`);
+  if (ms <= 0) {
+    // pfDeadline tags both deadline throws so retry logic can distinguish
+    // budget exhaustion (never retry) from a thrown network error (retry once).
+    const err = new Error(`${label} skipped — post-function time budget exhausted`);
+    err.pfDeadline = true;
+    throw err;
+  }
   const raced = await Promise.race([
     promise,
     new Promise((resolve) => setTimeout(() => resolve(PF_TIMED_OUT), ms)),
   ]);
   if (raced === PF_TIMED_OUT) {
-    throw new Error(`${label} timed out after ${Math.round(ms / 1000)}s (post-function time budget)`);
+    const err = new Error(`${label} timed out after ${Math.round(ms / 1000)}s (post-function time budget)`);
+    err.pfDeadline = true;
+    throw err;
   }
   return raced;
+};
+
+// ECO-516: ECONNRESET on Forge egress is real and Atlassian's guidance is
+// "retry". Provider calls return {ok, status} for HTTP errors — a THROW is
+// transport-level. Deliberate whitelist rather than retry-any-throw: an
+// unconditional retry would double token cost on permanently-failing
+// executions and mask code bugs in traces. UND_ERR_* included because the
+// Forge native runtime's fetch is undici-based and surfaces those on
+// err.cause.code.
+const TRANSIENT_NETWORK_CODES = new Set([
+  "ECONNRESET", "ETIMEDOUT", "EPIPE", "ECONNREFUSED", "EAI_AGAIN",
+  "ECONNABORTED", "UND_ERR_SOCKET", "UND_ERR_CONNECT_TIMEOUT",
+]);
+const isTransientNetworkError = (err) => {
+  if (!err || err.pfDeadline === true) return false; // deadline exhaustion: never retry
+  const code = err.code || err.cause?.code || err.errno;
+  if (code && TRANSIENT_NETWORK_CODES.has(String(code))) return true;
+  const msg = String(err.message || "");
+  return /fetch failed|socket hang up|ECONNRESET|ETIMEDOUT|premature close|other side closed|network (error|timeout)|terminated/i.test(msg);
 };
 
 /**
@@ -404,6 +460,16 @@ const logEntryKey = () =>
   + String(1e13 - Date.now()).padStart(13, "0")
   + "_" + Math.random().toString(36).slice(2, 8);
 
+// One bounded retry before accepting log loss: under bulk-transition bursts
+// KVS returns TOO_MANY_REQUESTS and the entry would silently vanish from the
+// Logs tab. Worst-case added latency (~1s) fits the headroom every caller
+// reserves for the final log write. Transient classification mirrors the
+// pf_exec conflict-detection style.
+const LOG_RETRY_DELAY_MS = 400;
+const isTransientKvsError = (e) =>
+  /429|RATE_?LIMIT|TOO_?MANY|TIMEOUT|ECONNRESET|EAI_AGAIN|50[0-4]/i
+    .test(`${e?.code} ${e?.responseDetails?.status} ${e?.message}`);
+
 const storeLog = async (logEntry) => {
   try {
     const entry = {
@@ -411,12 +477,28 @@ const storeLog = async (logEntry) => {
       timestamp: new Date().toISOString(),
       id: Date.now().toString() + Math.random().toString(36).slice(2, 6),
     };
+    const writeEntry = async () => {
+      try {
+        await storage.set(logEntryKey(), entry, { ttl: { value: 30, unit: "DAYS" } });
+      } catch (e) {
+        // Transient errors bubble up for the single delayed retry; anything
+        // else means the TTL option was rejected — store without it (the
+        // prune below still bounds growth).
+        if (isTransientKvsError(e)) throw e;
+        await storage.set(logEntryKey(), entry);
+      }
+    };
+    let retriedWrite = false;
     try {
-      await storage.set(logEntryKey(), entry, { ttl: { value: 30, unit: "DAYS" } });
+      await writeEntry();
     } catch {
-      // TTL option rejected — store without it; the prune below still bounds growth.
-      await storage.set(logEntryKey(), entry);
+      retriedWrite = true;
+      await new Promise((r) => setTimeout(r, LOG_RETRY_DELAY_MS));
+      await writeEntry(); // a second failure falls to the outer silent catch — bounded loss
     }
+    // Don't add the prune's query+batchDelete ops during the very rate-limit
+    // storm that forced the retry.
+    if (retriedWrite) return;
     // Probabilistic prune (~10% of writes): delete entries beyond MAX_LOGS so a
     // busy site doesn't accumulate 30 days of entries against the storage quota.
     // Query result ORDER is undocumented — sort client-side by key (fixed-width
@@ -616,7 +698,7 @@ resolver.define("registerConfig", async ({ payload, context }) => {
       });
     }
 
-    await storage.set(CONFIG_REGISTRY_KEY, configs);
+    await saveRegistry(configs);
     return { success: true };
   } catch (error) {
     console.error("Failed to register config:", error);
@@ -636,7 +718,7 @@ resolver.define("removeConfig", async ({ payload, context }) => {
       return { success: false, error: "You don't have permission to remove this rule" };
     }
     configs = configs.filter((c) => c.id !== id);
-    await storage.set(CONFIG_REGISTRY_KEY, configs);
+    await saveRegistry(configs);
     if (target?.codeRef) {
       try { await storage.delete(target.codeRef); } catch (e) { console.warn("pf_code cleanup failed:", e?.message); }
     }
@@ -663,7 +745,7 @@ resolver.define("disableRule", async ({ payload, context }) => {
       return { success: false, error: "You don't have permission to manage this rule" };
     }
     configs = configs.map((c) => c.id === id ? { ...c, disabled: true, updatedAt: new Date().toISOString() } : c);
-    await storage.set(CONFIG_REGISTRY_KEY, configs);
+    await saveRegistry(configs);
     return { success: true, disabled: true };
   } catch (error) {
     console.error("Failed to disable rule:", error);
@@ -686,7 +768,7 @@ resolver.define("enableRule", async ({ payload, context }) => {
       return { success: false, error: "You don't have permission to manage this rule" };
     }
     configs = configs.map((c) => c.id === id ? { ...c, disabled: false, updatedAt: new Date().toISOString() } : c);
-    await storage.set(CONFIG_REGISTRY_KEY, configs);
+    await saveRegistry(configs);
     return { success: true, disabled: false };
   } catch (error) {
     console.error("Failed to enable rule:", error);
@@ -863,7 +945,7 @@ resolver.define("getConfigs", async ({ payload, context }) => {
     if (removed.length > 0) {
       console.log(`Orphan cleanup: removed ${removed.length} stale config(s):`,
         removed.map((c) => c.id));
-      await storage.set(CONFIG_REGISTRY_KEY, surviving);
+      await saveRegistry(surviving);
       // Offloaded step-code bundles die with their registry row — this is the
       // cleanup path that matters in practice (the remove resolvers have no
       // frontend callers today).
@@ -3497,7 +3579,7 @@ resolver.define("registerPostFunction", async ({ payload, context }) => {
       configs.push(entry);
     }
 
-    await storage.set(CONFIG_REGISTRY_KEY, configs);
+    await saveRegistry(configs);
     // Stale-bundle cleanup AFTER the registry save: a mid-save crash must leave
     // an orphan bundle (harmless, overwritten on retry) rather than a registry
     // row pointing at a deleted one. Covers offloaded→inline shrink + id changes.
@@ -3525,7 +3607,7 @@ resolver.define("removePostFunction", async ({ payload, context }) => {
       return { success: false, error: "You don't have permission to remove this post-function" };
     }
     configs = configs.filter((c) => c.id !== id);
-    await storage.set(CONFIG_REGISTRY_KEY, configs);
+    await saveRegistry(configs);
     if (target?.codeRef) {
       try { await storage.delete(target.codeRef); } catch (e) { console.warn("pf_code cleanup failed:", e?.message); }
     }
@@ -3550,7 +3632,7 @@ resolver.define("disablePostFunction", async ({ payload, context }) => {
     }
     configs[idx].disabled = true;
     configs[idx].updatedAt = new Date().toISOString();
-    await storage.set(CONFIG_REGISTRY_KEY, configs);
+    await saveRegistry(configs);
     return { success: true, disabled: true };
   } catch (error) {
     console.error("Failed to disable post-function:", error);
@@ -3572,7 +3654,7 @@ resolver.define("enablePostFunction", async ({ payload, context }) => {
     }
     configs[idx].disabled = false;
     configs[idx].updatedAt = new Date().toISOString();
-    await storage.set(CONFIG_REGISTRY_KEY, configs);
+    await saveRegistry(configs);
     return { success: true, disabled: false };
   } catch (error) {
     console.error("Failed to enable post-function:", error);
@@ -7378,7 +7460,7 @@ export const validate = async (args) => {
   // alone — two different rules can watch the same field, and disabling one must not
   // silently disable the other.
   try {
-    const configs = (await storage.get(CONFIG_REGISTRY_KEY)) || [];
+    const configs = await getRegistryForRuleCheck();
     const ruleId = configuration?.ruleId || configuration?.id || null;
     // Registry ids are shared across rule types on the same transition (legacy format
     // has no type component), so a row whose type is a post-function must never mute
@@ -7874,10 +7956,23 @@ const executeSemanticPostFunction = async (issueKey, config, deadline = Date.now
         { role: "user", content: userContent },
       ],
     });
-    let aiResult = await raceDeadline(semanticAiCall(), deadline - 5000, "Semantic AI evaluation");
-    // One retry on transient provider errors (rate limit / 5xx) when the budget allows —
-    // a single 429 should not cost the tenant the whole automation run.
-    if (!aiResult.ok && [429, 500, 502, 503, 529].includes(aiResult.status) && deadline - Date.now() > 12000) {
+    // One retry total on transient failures when the budget allows — a single
+    // 429 or egress ECONNRESET should not cost the tenant the whole automation
+    // run. The `retried` flag means throw-retry and status-retry can never
+    // BOTH fire; a deadline throw (err.pfDeadline) is never retried.
+    let retried = false;
+    let aiResult;
+    try {
+      aiResult = await raceDeadline(semanticAiCall(), deadline - 5000, "Semantic AI evaluation");
+    } catch (err) {
+      if (!isTransientNetworkError(err) || deadline - Date.now() <= 12000) throw err;
+      retried = true;
+      trace.push(`Transient network error (${err?.cause?.code || err?.code || String(err?.message || "").substring(0, 80)}) — retrying once...`);
+      await new Promise((r) => setTimeout(r, 1500));
+      // A throw here propagates to the outer catch — never a second retry.
+      aiResult = await raceDeadline(semanticAiCall(), deadline - 5000, "Semantic AI evaluation (retry)");
+    }
+    if (!retried && !aiResult.ok && [429, 500, 502, 503, 529].includes(aiResult.status) && deadline - Date.now() > 12000) {
       trace.push(`Transient AI error (HTTP ${aiResult.status}) — retrying once...`);
       await new Promise((r) => setTimeout(r, 1500));
       aiResult = await raceDeadline(semanticAiCall(), deadline - 5000, "Semantic AI evaluation (retry)");
@@ -8203,7 +8298,7 @@ const executeResearchPostFunction = async (issueKey, config, deadline = Date.now
         if (idx >= 0) {
           const sel = new Set([...(configs[idx].selectedDocIds || []), saved.id]);
           configs[idx].selectedDocIds = [...sel];
-          await storage.set(CONFIG_REGISTRY_KEY, configs);
+          await saveRegistry(configs);
           trace.push("Auto-selected the research doc for this rule");
         }
       }
@@ -8953,7 +9048,7 @@ export const executePostFunction = async (args) => {
   // workflow-rule config and its type-namespaced registry variant, and only let
   // post-function rows mute a post-function invocation.
   try {
-    const configs = (await storage.get(CONFIG_REGISTRY_KEY)) || [];
+    const configs = await getRegistryForRuleCheck();
     const ruleId = config.ruleId || config.id;
     if (ruleId) {
       let pfType = config.type || "";

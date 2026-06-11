@@ -145,6 +145,14 @@ export default function OpenAIConfig({ invoke }) {
             ? (providerResult.baseUrl || "")
             : ""
         );
+        // Restore live connection status after a refresh. pingResult is plain
+        // component state, so without this the panel falls back to "URL saved —
+        // not yet tested" on every reload even when the connection was verified
+        // moments ago. Silent ping, not awaited; the backend falls back to the
+        // saved token when no key is passed.
+        if (p === "lmstudio" && providerResult.baseUrl) {
+          runLmStudioPing({ baseUrlOverride: providerResult.baseUrl, silent: true });
+        }
       }
       if (keyResult.success) {
         setHasKey(keyResult.hasKey);

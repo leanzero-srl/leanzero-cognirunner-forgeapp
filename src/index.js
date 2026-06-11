@@ -9277,9 +9277,21 @@ export const executePostFunction = async (args) => {
   // Heavy, MCP-backed types cannot reliably fit the platform's 25s inline cap —
   // offload them to the async consumer (120s timeout). Queue failure falls back
   // to an inline run under the tight budget (graceful degradation, never a no-op).
+  // Self-hosted LM Studio additionally makes EVERY AI-calling type heavy: a
+  // large local model over a tunnel routinely exceeds the ~16s inline AI slice
+  // (observed: 35B model timing out at the budget), while the consumer's 110s
+  // fits it comfortably. Static PFs run sandbox code, not chat AI — they stay
+  // inline. Provider read is the 30s-cached config — ~0 extra KVS cost.
+  let slowProvider = false;
+  if (/semantic|comment|subtask|link/.test(pfType)) {
+    try {
+      slowProvider = (await getProviderConfig()).provider === "lmstudio";
+    } catch { /* provider unknown — assume fast, keep inline */ }
+  }
   const isHeavyPf = pfType.includes("generate-doc")
     || pfType.includes("research")
-    || (pfType.includes("semantic") && config.crossCheckClaims === true);
+    || (pfType.includes("semantic") && config.crossCheckClaims === true)
+    || slowProvider;
   const queuePayloadTaskId = `pf_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   if (isHeavyPf) {
     try {

@@ -75,11 +75,21 @@ const PF_FUNCTIONS_OFFLOAD_BYTES = 24576;   // registry copy auto-offloads above
 const PF_CODE_VALUE_MAX_BYTES = 225280;     // 220KiB — margin under the ~240KiB KVS value cap
 const WORKFLOW_CONFIG_MAX_BYTES = 32768;    // Jira workflow-editor rule-config ceiling
 
-// Deterministic per registry row: re-saves overwrite in place (no garbage);
-// the hash suffix disambiguates ids that sanitize to the same string.
-const pfCodeKeyFor = (effectiveId) => PF_CODE_PREFIX
+// CONTENT-ADDRESSED and immutable once written: the hash covers id + step
+// code, so every content-changing save writes a NEW key and a published
+// workflow config keeps executing its own snapshot (draft/publish semantics
+// preserved; a draft edit or shrink-to-inline can never break or hijack the
+// live rule). Two same-id rules with different code get different bundles.
+// Superseded bundles are deliberately NEVER deleted synchronously — a
+// published config (or a workflow copy) may still reference them and there is
+// no publish hook to know when it stops. Accepted GC debt: orphans accrue one
+// per content-changing save of a >24KB rule, bounded in practice by the
+// 500-rule registry cap; bundles carry ruleId/updatedAt for a future sweeper.
+const pfCodeKeyFor = (effectiveId, functions) => PF_CODE_PREFIX
   + String(effectiveId).replace(/[^a-zA-Z0-9:._#-]/g, "-").slice(0, 160)
-  + ":" + createHash("sha256").update(String(effectiveId)).digest("hex").slice(0, 8);
+  + ":" + createHash("sha256")
+    .update(String(effectiveId) + "\n" + JSON.stringify(functions || []))
+    .digest("hex").slice(0, 12);
 // UUID from manifest.yml app.id — used to identify our rules in workflow transition data.
 // Forge context doesn't expose the app UUID at runtime; only environmentId and installContext
 // are available, neither of which matches the app UUID in rule parameters.key.
@@ -210,8 +220,11 @@ const QUEUE_DELAY_NOTE_THRESHOLD_MS = 60000;
 // legitimate re-fires. When neither exists we fall back to a windowed
 // rule+issue key; the window is enforced by comparing claimedAt at conflict
 // time, NOT via TTL, because KVS deletes expired keys lazily (up to 48h).
+// Window is deliberately tight: real gateway twins arrive ~1s apart, and a
+// wide window would suppress legitimate rapid re-fires of the same rule on
+// the same issue (self-transition buttons, automation-driven repeats).
 const PF_INV_CLAIM_PREFIX = "pf_inv:";
-const PF_DEDUP_FALLBACK_WINDOW_MS = 30000;
+const PF_DEDUP_FALLBACK_WINDOW_MS = 5000;
 
 // Per-issue execution brake — storm/loop protection. A static PF calling
 // transitionIssue() can fire other workflows' rules, which transition again,
@@ -724,9 +737,8 @@ resolver.define("removeConfig", async ({ payload, context }) => {
     }
     configs = configs.filter((c) => c.id !== id);
     await saveRegistry(configs);
-    if (target?.codeRef) {
-      try { await storage.delete(target.codeRef); } catch (e) { console.warn("pf_code cleanup failed:", e?.message); }
-    }
+    // The row's codeRef bundle is deliberately left in place — the workflow
+    // rule (or a copy) may still reference it (see pfCodeKeyFor).
     return { success: true };
   } catch (error) {
     console.error("Failed to remove config:", error);
@@ -951,14 +963,13 @@ resolver.define("getConfigs", async ({ payload, context }) => {
       console.log(`Orphan cleanup: removed ${removed.length} stale config(s):`,
         removed.map((c) => c.id));
       await saveRegistry(surviving);
-      // Offloaded step-code bundles die with their registry row — this is the
-      // cleanup path that matters in practice (the remove resolvers have no
-      // frontend callers today).
-      for (const c of removed) {
-        if (c.codeRef) {
-          try { await storage.delete(c.codeRef); } catch { /* best-effort */ }
-        }
-      }
+      // NEVER delete codeRef bundles here: this orphan heuristic only sees
+      // PUBLISHED workflows, so a rule saved into an unpublished draft (or a
+      // renamed workflow, or the wizard's register→inject window) is falsely
+      // classified as orphaned — deleting its bundle would permanently destroy
+      // the only copy of the user's step code while the workflow still
+      // references it. Registry-row removal is cosmetic; bundle deletion is
+      // not. Orphaned bundles are accepted GC debt (see pfCodeKeyFor).
     }
 
     if (hadApiError) {
@@ -3537,12 +3548,11 @@ resolver.define("registerPostFunction", async ({ payload, context }) => {
       && Array.isArray(functions) && functions.length > 0;
     let codeKey = null;
     if (shouldOffload) {
-      codeKey = pfCodeKeyFor(effectiveId);
+      codeKey = pfCodeKeyFor(effectiveId, functions);
       await storage.set(codeKey, {
         v: 1, ruleId: effectiveId, functions, updatedAt: new Date().toISOString(),
       });
     }
-    const prevCodeRef = existing >= 0 ? configs[existing].codeRef : null;
 
     const entry = {
       id: effectiveId,
@@ -3585,12 +3595,10 @@ resolver.define("registerPostFunction", async ({ payload, context }) => {
     }
 
     await saveRegistry(configs);
-    // Stale-bundle cleanup AFTER the registry save: a mid-save crash must leave
-    // an orphan bundle (harmless, overwritten on retry) rather than a registry
-    // row pointing at a deleted one. Covers offloaded→inline shrink + id changes.
-    if (prevCodeRef && prevCodeRef !== codeKey) {
-      try { await storage.delete(prevCodeRef); } catch (e) { console.warn("pf_code cleanup failed:", e?.message); }
-    }
+    // No stale-bundle deletion here: the PUBLISHED workflow config (or a
+    // workflow copy) may still reference the previous bundle — this resolver
+    // runs at draft-save time, and deleting/overwriting a referenced bundle
+    // would silently break or hijack the live rule (see pfCodeKeyFor).
     // codeKey tells a current-build client to return a slim config with codeRef;
     // old clients ignore it and keep embedding inline functions (status quo).
     return { success: true, codeKey };
@@ -3613,9 +3621,8 @@ resolver.define("removePostFunction", async ({ payload, context }) => {
     }
     configs = configs.filter((c) => c.id !== id);
     await saveRegistry(configs);
-    if (target?.codeRef) {
-      try { await storage.delete(target.codeRef); } catch (e) { console.warn("pf_code cleanup failed:", e?.message); }
-    }
+    // The row's codeRef bundle is deliberately left in place — the workflow
+    // rule (or a copy) may still reference it (see pfCodeKeyFor).
     return { success: true };
   } catch (error) {
     console.error("Failed to remove post-function:", error);
@@ -8887,11 +8894,21 @@ const executeStaticPostFunction = async (issueKey, config, deadline = Date.now()
  */
 const claimPfInvocation = async (args, config, extensionKey, issueKey, pfType) => {
   // KVS keys accept a restricted charset — sanitize or storage.set throws and
-  // dedup silently never works. The rule id MUST be in the key: two rules on
-  // the same transition share one executionId.
+  // dedup silently never works. The rule id alone is NOT enough identity: both
+  // frontends mint ids deterministically per type+transition, so two same-type
+  // rules on one transition share an id (and legacy configs without ids fall
+  // back to the shared module key). A config-content hash is therefore ALWAYS
+  // appended — duplicate platform deliveries carry a byte-identical
+  // configuration, while two distinct rules necessarily differ. (Two
+  // byte-identical rules on one transition stay indistinguishable, which is
+  // fine: they'd perform identical side effects.)
+  const rawCfg = typeof args?.configuration === "string"
+    ? args.configuration
+    : JSON.stringify(args?.configuration || {});
+  const cfgHash = createHash("sha256").update(rawCfg).digest("hex").slice(0, 12);
   const safeRuleId = String(config.ruleId || config.id || extensionKey || pfType || "pf")
     .replace(/[^a-zA-Z0-9:._#-]/g, "_")
-    .slice(0, 120);
+    .slice(0, 100) + "." + cfgHash;
   const isClaimConflict = (e) => e?.code === "KEY_ALREADY_EXISTS"
     || e?.responseDetails?.status === 409
     || /already\s*exist/i.test(String(e?.message));
@@ -8907,7 +8924,7 @@ const claimPfInvocation = async (args, config, extensionKey, issueKey, pfType) =
       }, { keyPolicy: "FAIL_IF_EXISTS", ttl: { value: 6, unit: "HOURS" } });
       return { proceed: true };
     } catch (e) {
-      if (isClaimConflict(e)) return { proceed: false, deduped: true };
+      if (isClaimConflict(e)) return { proceed: false, deduped: true, tier: "instance" };
       console.warn("[pf] invocation claim errored (continuing):", e?.message);
       return { proceed: true };
     }
@@ -8931,7 +8948,7 @@ const claimPfInvocation = async (args, config, extensionKey, issueKey, pfType) =
       const existing = await storage.get(fbKey);
       const age = Date.now() - Date.parse(existing?.claimedAt);
       if (Number.isFinite(age) && age < PF_DEDUP_FALLBACK_WINDOW_MS) {
-        return { proceed: false, deduped: true };
+        return { proceed: false, deduped: true, tier: "fallback" };
       }
       // Stale claim (lazy deletion or an old transition) — take it over.
       await storage.set(fbKey, { issueKey, claimedAt: new Date().toISOString() },
@@ -8957,11 +8974,16 @@ const readPfBrake = async (issueKey) => {
     return { key, count };
   } catch (e) {
     console.warn("[pf] brake read errored (continuing):", e?.message);
-    return { key, count: 0 };
+    // readFailed: fail open for THIS run only — bumpPfBrake must not write
+    // count+1 (= 1) over an unknown stored value, or a single transient read
+    // error during a storm would un-trip an active brake and re-fire the
+    // once-per-bucket loud log.
+    return { key, count: 0, readFailed: true };
   }
 };
 
 const bumpPfBrake = async (brake) => {
+  if (brake.readFailed) return;
   try {
     await storage.set(brake.key, brake.count + 1, { ttl: { value: 15, unit: "MINUTES" } });
   } catch (e) {
@@ -9081,11 +9103,36 @@ export const executePostFunction = async (args) => {
 
   const pfType = resolvePfType(config, extensionKey);
 
-  // (1) Per-issue execution brake — checked at production time, so it covers
+  // (1) Invocation-level dedup — the platform delivers successful invocations
+  // at-least-once (~1s twins, Atlassian-confirmed June 2026). This must run
+  // BEFORE the queue push (a duplicated heavy invocation would enqueue a
+  // second event under a fresh taskId, sailing past the pf_exec consumer
+  // dedup) and BEFORE any brake counting, so a deduped twin never inflates
+  // the count nor consumes the once-per-bucket loud trip log. Placed after
+  // the cheap skip checks so skipped invocations cost zero extra KVS ops.
+  const brake = await readPfBrake(issue.key);
+  const claim = await claimPfInvocation(args, config, extensionKey, issue.key, pfType);
+  if (!claim.proceed) {
+    console.log(`[pf] duplicate invocation for ${issue.key} — suppressed`);
+    // The instance tier (executionId/changelog) is a CONFIRMED double
+    // delivery; the windowed fallback can only call it probable — a
+    // deliberate back-to-back re-fire inside the window looks identical.
+    await logSkip(
+      claim.tier === "fallback"
+        ? `Skipped: a second invocation of this rule on this issue arrived within ${Math.round(PF_DEDUP_FALLBACK_WINDOW_MS / 1000)} seconds of the previous one — suppressed as a probable duplicate platform delivery.`
+        : "Skipped: duplicate platform delivery suppressed. Jira delivered this transition's post-function invocation more than once (at-least-once delivery); the first delivery already ran this rule.",
+      claim.tier === "fallback"
+        ? "Real duplicate deliveries arrive about a second apart. If this was a deliberate rapid re-run of the same transition on this issue, wait a few seconds and run it again — only back-to-back repeats inside the window are suppressed."
+        : "No action needed — this protection prevents double field updates, comments, and attachments. If you believe a real run was missed, look for this rule's other log entry on the same issue within the last few seconds.",
+      { ruleId: config.ruleId || config.id || null, ruleWorkflow: config.workflow },
+    );
+    return { result: true };
+  }
+
+  // (2) Per-issue execution brake — checked at production time, so it covers
   // inline runs AND queue enqueues (the consumer never re-checks). On trip we
   // keep incrementing so the loud log fires exactly once per bucket instead of
   // flooding all 50 log slots during a storm.
-  const brake = await readPfBrake(issue.key);
   if (brake.count >= PF_BRAKE_MAX_PER_BUCKET) {
     console.warn(`[pf] brake active on ${issue.key} — execution suppressed (${brake.count} in window)`);
     await bumpPfBrake(brake);
@@ -9106,24 +9153,6 @@ export const executePostFunction = async (args) => {
         moduleKey: extensionKey,
       });
     }
-    return { result: true };
-  }
-
-  // (2) Invocation-level dedup — the platform delivers successful invocations
-  // at-least-once (~1s twins, Atlassian-confirmed June 2026). This must run
-  // BEFORE the queue push: a duplicated heavy invocation would enqueue a
-  // second event under a fresh taskId, sailing past the pf_exec consumer
-  // dedup. Placed after the cheap skip checks so skipped invocations cost
-  // zero extra KVS ops; placed before the brake increment so deduped twins
-  // never inflate the count.
-  const claim = await claimPfInvocation(args, config, extensionKey, issue.key, pfType);
-  if (!claim.proceed) {
-    console.log(`[pf] duplicate invocation for ${issue.key} — suppressed`);
-    await logSkip(
-      "Skipped: duplicate platform delivery suppressed. Jira delivered this transition's post-function invocation more than once (at-least-once delivery); the first delivery already ran this rule.",
-      "No action needed — this protection prevents double field updates, comments, and attachments. If you believe a real run was missed, look for this rule's other log entry on the same issue within the last few seconds.",
-      { ruleId: config.ruleId || config.id || null, ruleWorkflow: config.workflow },
-    );
     return { result: true };
   }
 

@@ -22,6 +22,10 @@ import storage from "@forge/kvs";
 import api, { route, fetch } from "@forge/api";
 // Atlassian-hosted Forge LLMs (Preview) — used when the active provider is "atlassian".
 import { chat as forgeLlmChatApi } from "@forge/llm";
+// Heavy post-functions (MCP-backed: generate-doc, research, fact-checked semantics)
+// are queued by executePostFunction and run HERE under this consumer's 120s timeout —
+// the inline jira:workflowPostFunction invocation is hard-capped at 25s by the platform.
+import { dispatchPostFunction } from "./index";
 
 const TASK_PREFIX = "async_task:";
 const TASK_TTL_HOURS = 1; // Results expire after 1 hour
@@ -394,10 +398,31 @@ Respond with ONLY valid JSON:
   return { success: true, review: parsed, tokens: result.tokens };
 };
 
+/**
+ * Run a queued post-function with the long budget. dispatchPostFunction routes to
+ * the per-type executor and writes the result log itself — nothing polls this task,
+ * so the generic async_task status bookkeeping is skipped for it (see handler()).
+ */
+const executeQueuedPostFunction = async (params) => {
+  const { issueKey, config, extensionKey } = params || {};
+  if (!issueKey || !config) {
+    console.error("Queued post-function missing issueKey/config — dropping");
+    return { success: false };
+  }
+  // 110s budget under the consumer's 120s platform timeout.
+  await dispatchPostFunction(issueKey, config, extensionKey || null, Date.now() + 110000);
+  return { success: true };
+};
+
 // === Task registry — add new async task types here ===
 const TASK_HANDLERS = {
   "review": executeReview,
+  "postfunction": executeQueuedPostFunction,
 };
+
+// Task types with no poller — skip async_task:* status rows (they'd never be
+// cleaned up: getAsyncTaskResult deletes rows only when something polls them).
+const UNPOLLED_TASKS = new Set(["postfunction"]);
 
 /**
  * Main async event handler. Routes to the correct task handler.
@@ -418,18 +443,19 @@ export async function handler(event) {
     return;
   }
 
+  const polled = !UNPOLLED_TASKS.has(taskType);
   try {
-    // Mark as processing
-    await storage.set(`${TASK_PREFIX}${taskId}`, { status: "processing" });
+    // Mark as processing (only for tasks something will poll)
+    if (polled) await storage.set(`${TASK_PREFIX}${taskId}`, { status: "processing" });
 
     // Execute the task
     const result = await taskHandler(params);
 
     // Store result
-    await storage.set(`${TASK_PREFIX}${taskId}`, { status: "done", result });
+    if (polled) await storage.set(`${TASK_PREFIX}${taskId}`, { status: "done", result });
     console.log(`Async handler: ${taskType} (${taskId}) completed`);
   } catch (error) {
     console.error(`Async handler error (${taskType}):`, error);
-    await storage.set(`${TASK_PREFIX}${taskId}`, { status: "error", error: error.message });
+    if (polled) await storage.set(`${TASK_PREFIX}${taskId}`, { status: "error", error: error.message });
   }
 }

@@ -139,6 +139,35 @@ const buildModelParams = () => ({});
 const MAX_JQL_RESULTS = 10;
 const AGENTIC_TIMEOUT_MS = 22000; // 22s budget within Forge's 25s validator limit
 
+// Post-function execution budgets. The platform hard-kills jira:workflowPostFunction
+// invocations at 25s (custom timeoutSeconds is NOT allowed for this module type —
+// forge lint rejects it; only consumers/scheduled triggers may extend). A hard kill
+// mid-flight leaves half-applied side effects with zero observability, so:
+//   - inline runs self-impose a 22s budget (3s headroom for the final log write)
+//   - HEAVY types (MCP-backed: generate-doc, research, fact-checked semantics) are
+//     offloaded to the async-ai-queue consumer (120s platform timeout, 110s budget)
+const PF_BUDGET_MS = 22000;
+const PF_QUEUED_BUDGET_MS = 110000;
+
+/**
+ * Race a promise against the post-function deadline. Throws a labeled Error on
+ * timeout or when the budget is already exhausted, so call sites surface a clear
+ * reason in the execution trace instead of being killed silently by the platform.
+ */
+const PF_TIMED_OUT = Symbol("pf-deadline");
+const raceDeadline = async (promise, deadline, label) => {
+  const ms = deadline - Date.now();
+  if (ms <= 0) throw new Error(`${label} skipped — post-function time budget exhausted`);
+  const raced = await Promise.race([
+    promise,
+    new Promise((resolve) => setTimeout(() => resolve(PF_TIMED_OUT), ms)),
+  ]);
+  if (raced === PF_TIMED_OUT) {
+    throw new Error(`${label} timed out after ${Math.round(ms / 1000)}s (post-function time budget)`);
+  }
+  return raced;
+};
+
 /**
  * Detects whether the user's condition prompt is one of the well-known "always run"
  * shortcuts. When true, we skip the AI condition check and go straight to value
@@ -7488,7 +7517,7 @@ export const validate = async (args) => {
  * Execute a semantic post-function: AI evaluates condition, then updates target field.
  * Returns { success, decision, value?, reason } — never throws.
  */
-const executeSemanticPostFunction = async (issueKey, config) => {
+const executeSemanticPostFunction = async (issueKey, config, deadline = Date.now() + PF_BUDGET_MS) => {
   const { conditionPrompt, actionPrompt, actionFieldId, fieldId } = config;
   const trace = []; // Execution trace for detailed logging
   const sourceFieldId = fieldId || "description";
@@ -7544,9 +7573,15 @@ const executeSemanticPostFunction = async (issueKey, config) => {
   // timeout, fail-open — never blocks the transition.
   let factCheckText = "";
   if (config.crossCheckClaims && fieldValue && fieldValue.trim()) {
-    if ((await mcpEnabled("docReader")) && (await mcpEnabled("webSearch"))) {
+    // Reserve ≥15s after the fact-check for the AI call + Jira PUT + log write.
+    // Fact-check fans out one web search per claim — the queued path (110s budget)
+    // can give it up to 30s; the inline fallback skips it gracefully.
+    const fcBudget = Math.min(30000, deadline - Date.now() - 15000);
+    if (fcBudget < 3000) {
+      trace.push("Fact-check skipped — not enough time budget left for it plus the AI call");
+    } else if ((await mcpEnabled("docReader")) && (await mcpEnabled("webSearch"))) {
       trace.push("Cross-checking claims against the web (fact-check MCP)...");
-      const fc = await runFactCheck(fieldValue, { maxClaims: 6, timeoutMs: 12000 });
+      const fc = await runFactCheck(fieldValue, { maxClaims: 6, timeoutMs: fcBudget });
       if (fc.ok) {
         factCheckText = buildFactCheckBlock(fc);
         trace.push(`Fact-check: ${fc.claimsChecked} claim(s) checked against the web`);
@@ -7583,14 +7618,19 @@ const executeSemanticPostFunction = async (issueKey, config) => {
     // (OpenAI/Azure/LM Studio). Matches the dry-run resolver's call exactly.
     trace.push("Evaluating condition with AI...");
     const aiStart = Date.now();
-    const aiResult = await callAIChat({
-      apiKey, model,
-      jsonMode: true,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userContent },
-      ],
-    });
+    // Reserve 5s after the AI call for the Jira PUT + log write.
+    const aiResult = await raceDeadline(
+      callAIChat({
+        apiKey, model,
+        jsonMode: true,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: userContent },
+        ],
+      }),
+      deadline - 5000,
+      "Semantic AI evaluation",
+    );
     const aiTimeMs = Date.now() - aiStart;
 
     if (!aiResult.ok) {
@@ -7752,7 +7792,7 @@ const executeSemanticPostFunction = async (issueKey, config) => {
  * a document body from the issue content + instruction, then doc-processor creates the
  * file and attaches it to the issue via the upload bridge. Single-shot, fail-open.
  */
-const executeGenerateDocPostFunction = async (issueKey, config) => {
+const executeGenerateDocPostFunction = async (issueKey, config, deadline = Date.now() + PF_BUDGET_MS) => {
   const trace = [];
   const sourceFieldId = config.fieldId || "description";
   const format = DOC_FORMAT_TOOL[config.docFormat] ? config.docFormat : "pdf";
@@ -7770,8 +7810,21 @@ const executeGenerateDocPostFunction = async (issueKey, config) => {
   ]);
   if (!apiKey) return { success: true, decision: "SKIP", reason: "No API key configured", trace };
 
-  // 1) AI authors {title, content} markdown.
-  const gen = await generateDocContent({ fieldValue, contextDocsText, contentPrompt: config.contentPrompt, titlePrompt: config.docTitlePrompt, sourceFieldId, apiKey, model });
+  // 1) AI authors {title, content} markdown. Authoring gets half the remaining
+  // budget; create+attach gets the rest (proportional, so the inline-fallback
+  // 22s budget degrades gracefully instead of always skipping).
+  let gen;
+  try {
+    const authoringBudget = Math.max(3000, Math.floor((deadline - Date.now()) * 0.5));
+    gen = await raceDeadline(
+      generateDocContent({ fieldValue, contextDocsText, contentPrompt: config.contentPrompt, titlePrompt: config.docTitlePrompt, sourceFieldId, apiKey, model }),
+      Date.now() + authoringBudget,
+      "Document authoring",
+    );
+  } catch (e) {
+    trace.push(e.message);
+    return { success: true, decision: "SKIP", reason: e.message, trace };
+  }
   if (!gen.ok) { trace.push(`Content generation failed: ${gen.reason}`); return { success: true, decision: "SKIP", reason: gen.reason, trace }; }
   trace.push(`Authored "${gen.title}" (${gen.content.length} chars) for a ${format} document`);
 
@@ -7783,7 +7836,8 @@ const executeGenerateDocPostFunction = async (issueKey, config) => {
       recommendation: "Ensure the attachment-upload web trigger is provisioned (re-deploy the app)." };
   }
   trace.push(`Creating + attaching ${format} via doc-processor...`);
-  const created = await callDocProcessorCreate(format, { title: gen.title, content: gen.content, stylePreset: config.stylePreset }, uploadCap);
+  const createBudget = Math.max(3000, Math.min(18000, deadline - Date.now() - 3000));
+  const created = await callDocProcessorCreate(format, { title: gen.title, content: gen.content, stylePreset: config.stylePreset }, uploadCap, { timeoutMs: createBudget });
   if (!created.ok) {
     trace.push(`Create/attach failed: ${created.error || created.message}`);
     return { success: false, decision: "GENERATE", reason: `Document generation/attachment failed: ${created.error || created.message}`, trace };
@@ -7803,7 +7857,7 @@ const executeGenerateDocPostFunction = async (issueKey, config) => {
  * web-search MCP and saves the results into the shared DocRepository as a reusable
  * Research doc (dedup-updated). Single-shot, fail-open.
  */
-const executeResearchPostFunction = async (issueKey, config) => {
+const executeResearchPostFunction = async (issueKey, config, deadline = Date.now() + PF_BUDGET_MS) => {
   const trace = [];
   const sourceFieldId = config.fieldId || "description";
   if (!(await mcpEnabled("webSearch"))) {
@@ -7820,7 +7874,11 @@ const executeResearchPostFunction = async (issueKey, config) => {
   if (!query) return { success: true, decision: "SKIP", reason: "No research query (set a query, or ensure the source field has content).", trace };
 
   trace.push(`Researching: "${query.slice(0, 120)}"`);
-  const res = await runWebResearch(query, { timeoutMs: 18000 });
+  // Leave ~5s after the search for the doc-repo write + log write. Full web
+  // searches realistically take 30-90s — the queued path (110s budget) can absorb
+  // that; the inline fallback degrades to ~17s.
+  const researchBudget = Math.max(3000, Math.min(90000, deadline - Date.now() - 5000));
+  const res = await runWebResearch(query, { timeoutMs: researchBudget });
   if (!res.ok) { trace.push(`Research failed: ${res.reason}`); return { success: true, decision: "SKIP", reason: res.reason, trace }; }
 
   const title = String(config.researchTitle || query).slice(0, 100);
@@ -7835,7 +7893,9 @@ const executeResearchPostFunction = async (issueKey, config) => {
       const ruleId = config.ruleId || config.id;
       if (ruleId) {
         const configs = (await storage.get(CONFIG_REGISTRY_KEY)) || [];
-        const idx = configs.findIndex((c) => c.id === ruleId);
+        // Accept legacy embedded ids and the type-namespaced registry variant.
+        const cand = new Set([ruleId, `${config.type || "postfunction-research"}::${ruleId}`]);
+        const idx = configs.findIndex((c) => cand.has(c.id));
         if (idx >= 0) {
           const sel = new Set([...(configs[idx].selectedDocIds || []), saved.id]);
           configs[idx].selectedDocIds = [...sel];
@@ -7864,7 +7924,7 @@ const draftComment = async ({ fieldValue, contextDocsText, commentPrompt, source
  * Execute an "add comment" post-function (native toolbox): the AI drafts a comment
  * from the issue content + instruction and posts it. Single-shot, fail-open.
  */
-const executeCommentPostFunction = async (issueKey, config) => {
+const executeCommentPostFunction = async (issueKey, config, deadline = Date.now() + PF_BUDGET_MS) => {
   const trace = [];
   const sourceFieldId = config.fieldId || "description";
   const [fieldValue, contextDocsText, apiKey, model] = await Promise.all([
@@ -7875,7 +7935,18 @@ const executeCommentPostFunction = async (issueKey, config) => {
   ]);
   if (!apiKey) return { success: true, decision: "SKIP", reason: "No API key configured", trace };
   trace.push("Drafting comment with AI...");
-  const draft = await draftComment({ fieldValue, contextDocsText, commentPrompt: config.commentPrompt, sourceFieldId, apiKey, model });
+  let draft;
+  try {
+    // Reserve 4s for the comment POST + log write.
+    draft = await raceDeadline(
+      draftComment({ fieldValue, contextDocsText, commentPrompt: config.commentPrompt, sourceFieldId, apiKey, model }),
+      deadline - 4000,
+      "Comment drafting",
+    );
+  } catch (e) {
+    trace.push(e.message);
+    return { success: true, decision: "SKIP", reason: e.message, trace };
+  }
   if (!draft.ok) { trace.push(`Draft failed: ${draft.reason}`); return { success: true, decision: "SKIP", reason: draft.reason, trace }; }
   trace.push(`Drafted comment (${draft.text.length} chars)`);
   const ok = await postIssueComment(issueKey, draft.text);
@@ -7912,7 +7983,7 @@ const resolveSubtaskTypeId = async (projectId) => {
  * sub-task from the parent content and creates it under the issue. Single-shot,
  * fail-open. The canonical ScriptRunner capability, AI-assisted.
  */
-const executeSubtaskPostFunction = async (issueKey, config) => {
+const executeSubtaskPostFunction = async (issueKey, config, deadline = Date.now() + PF_BUDGET_MS) => {
   const trace = [];
   const sourceFieldId = config.fieldId || "description";
   // 1) Parent → project + sub-task issue type.
@@ -7932,7 +8003,18 @@ const executeSubtaskPostFunction = async (issueKey, config) => {
     getFieldValue(issueKey, sourceFieldId, null), fetchContextDocs(config.selectedDocIds), getOpenAIKey(), getOpenAIModel(),
   ]);
   if (!apiKey) return { success: true, decision: "SKIP", reason: "No API key configured", trace };
-  const gen = await generateSubtaskFields({ fieldValue, contextDocsText, subtaskPrompt: config.subtaskPrompt, sourceFieldId, apiKey, model });
+  let gen;
+  try {
+    // Reserve 6s for the issue POST + log write.
+    gen = await raceDeadline(
+      generateSubtaskFields({ fieldValue, contextDocsText, subtaskPrompt: config.subtaskPrompt, sourceFieldId, apiKey, model }),
+      deadline - 6000,
+      "Sub-task drafting",
+    );
+  } catch (e) {
+    trace.push(e.message);
+    return { success: true, decision: "SKIP", reason: e.message, trace };
+  }
   if (!gen.ok) { trace.push(`Draft failed: ${gen.reason}`); return { success: true, decision: "SKIP", reason: gen.reason, trace }; }
   trace.push(`Drafted sub-task "${gen.summary}"`);
 
@@ -7967,7 +8049,7 @@ const SANDBOX_RESERVED_WORDS = new Set([
  * Execute a static post-function: runs sandboxed JavaScript code with an API surface.
  * Each function block runs sequentially; results are shared via variable chaining.
  */
-const executeStaticPostFunction = async (issueKey, config) => {
+const executeStaticPostFunction = async (issueKey, config, deadline = Date.now() + PF_BUDGET_MS) => {
   const functions = config.functions || [];
   if (functions.length === 0) {
     return { success: true, changes: [], logs: ["No function blocks to execute"],
@@ -8043,9 +8125,9 @@ const executeStaticPostFunction = async (issueKey, config) => {
     const stepTrace = { name: fnName, index: i + 1 };
 
     // Check deadline (leave 5s buffer)
-    if (Date.now() - startTime > 25000) {
+    if (Date.now() > deadline - 5000) {
       const remaining = functions.length - i;
-      executionLogs.push(`TIMEOUT: Skipping "${fnName}" and ${remaining - 1} remaining step(s). Execution exceeded 25s safety limit.`);
+      executionLogs.push(`TIMEOUT: Skipping "${fnName}" and ${remaining - 1} remaining step(s). Execution exceeded the time budget.`);
       stepTrace.status = "timeout";
       stepTrace.recommendation = `This step was skipped because earlier steps took too long. Optimize previous steps: reduce JQL result counts, avoid unnecessary getIssue calls, or split into separate post-functions.`;
       stepResults.push(stepTrace);
@@ -8108,8 +8190,7 @@ const executeStaticPostFunction = async (issueKey, config) => {
       // call) so one hung step can't consume the whole 25s budget. Note: a purely
       // synchronous infinite loop blocks the event loop and can only be bounded by
       // Forge's function-level timeout — this guards async hangs, the realistic case.
-      const elapsed = Date.now() - startTime;
-      const stepBudgetMs = Math.max(2000, Math.min(15000, 25000 - elapsed - 2000));
+      const stepBudgetMs = Math.max(2000, Math.min(15000, deadline - Date.now() - 2000));
       const TIMED_OUT = Symbol("step-timeout");
       const result = await Promise.race([
         Promise.resolve(sandboxFn(sandboxApi, variables, ...scopeVarNames.map((n) => variables[n]))),
@@ -8303,22 +8384,64 @@ export const executePostFunction = async (args) => {
     console.log("Could not check disabled status:", e);
   }
 
+  // Heavy, MCP-backed types cannot reliably fit the platform's 25s inline cap —
+  // offload them to the async consumer (120s timeout). Queue failure falls back
+  // to an inline run under the tight budget (graceful degradation, never a no-op).
+  const pfType = resolvePfType(config, extensionKey);
+  const isHeavyPf = pfType.includes("generate-doc")
+    || pfType.includes("research")
+    || (pfType.includes("semantic") && config.crossCheckClaims === true);
+  if (isHeavyPf) {
+    try {
+      const { Queue } = await import("@forge/events");
+      const queue = new Queue({ key: "async-ai-queue" });
+      await queue.push({
+        body: {
+          taskType: "postfunction",
+          taskId: `pf_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+          params: { issueKey: issue.key, config, extensionKey },
+        },
+      });
+      console.log(`[pf] queued ${pfType} on ${issue.key} for async execution (110s budget)`);
+      return { result: true };
+    } catch (e) {
+      console.warn(`[pf] queueing failed (${e.message}) — running inline with the tight budget`);
+    }
+  }
+
+  await dispatchPostFunction(issue.key, config, extensionKey, Date.now() + PF_BUDGET_MS);
+  return { result: true };
+};
+
+/** Resolve a post-function's type from config.type or the Forge module key. */
+const resolvePfType = (config, extensionKey) => {
+  let type = config?.type || "";
+  if (!type && extensionKey) {
+    if (extensionKey.includes("semantic")) type = "postfunction-semantic";
+    else if (extensionKey.includes("static")) type = "postfunction-static";
+  }
+  return type;
+};
+
+/**
+ * Shared post-function dispatcher: routes to the per-type executor and writes the
+ * result log. Called from executePostFunction (inline, 22s budget) AND from the
+ * async-ai-queue consumer (queued heavy types, 110s budget). Never throws.
+ */
+export const dispatchPostFunction = async (issueKey, config, extensionKey, pfDeadline) => {
   const pfStartTime = Date.now();
+  const issue = { key: issueKey };
   try {
     // Resolve the post-function type. Prefer config.type (set by recent onConfigure
     // callbacks) but fall back to the Forge module key for OLD configs that pre-date
     // the type-in-config change. Without this fallback, an old PF whose saved config
     // doesn't include `type` would silently no-op with "Unknown post-function type".
-    let type = config.type || "";
-    if (!type && extensionKey) {
-      if (extensionKey.includes("semantic")) type = "postfunction-semantic";
-      else if (extensionKey.includes("static")) type = "postfunction-static";
-      if (type) {
-        console.log(`Inferred post-function type "${type}" from module key "${extensionKey}" (config.type was missing)`);
-      }
+    const type = resolvePfType(config, extensionKey);
+    if (type && !config.type) {
+      console.log(`Inferred post-function type "${type}" from module key "${extensionKey}" (config.type was missing)`);
     }
     if (type.includes("semantic")) {
-      const result = await executeSemanticPostFunction(issue.key, config);
+      const result = await executeSemanticPostFunction(issue.key, config, pfDeadline);
       console.log("Semantic PF result:", result);
       const logEntry = {
         type: "postfunction-semantic",
@@ -8369,7 +8492,7 @@ export const executePostFunction = async (args) => {
       if (result.recommendation) logEntry.recommendation = result.recommendation;
       await storeLog(logEntry);
     } else if (type.includes("static")) {
-      const result = await executeStaticPostFunction(issue.key, config);
+      const result = await executeStaticPostFunction(issue.key, config, pfDeadline);
       console.log("Static PF result:", JSON.stringify(result));
       const logEntry = {
         type: "postfunction-static",
@@ -8399,7 +8522,7 @@ export const executePostFunction = async (args) => {
       if (result.stepResults) logEntry.stepResults = result.stepResults;
       await storeLog(logEntry);
     } else if (type.includes("generate-doc")) {
-      const result = await executeGenerateDocPostFunction(issue.key, config);
+      const result = await executeGenerateDocPostFunction(issue.key, config, pfDeadline);
       console.log("Generate-doc PF result:", JSON.stringify(result));
       const logEntry = {
         type: "postfunction-generate-doc",
@@ -8420,7 +8543,7 @@ export const executePostFunction = async (args) => {
       if (result.recommendation) logEntry.recommendation = result.recommendation;
       await storeLog(logEntry);
     } else if (type.includes("research")) {
-      const result = await executeResearchPostFunction(issue.key, config);
+      const result = await executeResearchPostFunction(issue.key, config, pfDeadline);
       console.log("Research PF result:", JSON.stringify(result));
       const logEntry = {
         type: "postfunction-research",
@@ -8440,7 +8563,7 @@ export const executePostFunction = async (args) => {
       if (result.trace) logEntry.trace = result.trace;
       await storeLog(logEntry);
     } else if (type.includes("comment")) {
-      const result = await executeCommentPostFunction(issue.key, config);
+      const result = await executeCommentPostFunction(issue.key, config, pfDeadline);
       console.log("Comment PF result:", JSON.stringify(result));
       const logEntry = {
         type: "postfunction-comment",
@@ -8459,7 +8582,7 @@ export const executePostFunction = async (args) => {
       if (result.trace) logEntry.trace = result.trace;
       await storeLog(logEntry);
     } else if (type.includes("subtask")) {
-      const result = await executeSubtaskPostFunction(issue.key, config);
+      const result = await executeSubtaskPostFunction(issue.key, config, pfDeadline);
       console.log("Subtask PF result:", JSON.stringify(result));
       const logEntry = {
         type: "postfunction-subtask",
@@ -8485,11 +8608,18 @@ export const executePostFunction = async (args) => {
       // didn't include `type` and the Forge module key fallback above didn't match
       // either (extension.key not containing "semantic" or "static").
       console.log("Unknown post-function type:", type, "extension.key:", extensionKey);
-      await logSkip(
-        `Skipped: could not determine post-function type. config.type=${JSON.stringify(config.type)}, module.key=${JSON.stringify(extensionKey)}.`,
-        "This usually means the rule was saved by an older build of the app. Open the workflow editor → click the rule → Edit, then Save. The save will re-serialize the config in the current schema and the next transition will execute correctly.",
-        { ruleId: config.ruleId || config.id, ruleWorkflow: config.workflow },
-      );
+      await storeLog({
+        type: "postfunction-skipped",
+        issueKey,
+        fieldId: extensionKey || "(unknown module)",
+        isValid: true,
+        reason: `Skipped: could not determine post-function type. config.type=${JSON.stringify(config.type)}, module.key=${JSON.stringify(extensionKey)}.`,
+        recommendation: "This usually means the rule was saved by an older build of the app. Open the workflow editor → click the rule → Edit, then Save. The save will re-serialize the config in the current schema and the next transition will execute correctly.",
+        executionTimeMs: 0,
+        ruleId: config.ruleId || config.id || null,
+        ruleWorkflow: config.workflow || null,
+        moduleKey: extensionKey,
+      });
     }
   } catch (error) {
     console.error("Post-function execution error:", error);

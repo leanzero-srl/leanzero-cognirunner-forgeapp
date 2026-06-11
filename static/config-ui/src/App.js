@@ -1972,6 +1972,7 @@ let currentActionPrompt = "";
 let currentActionFieldId = "";
 let currentCrossCheckClaims = false;
 let currentManagedConfig = null; // a generate-doc/research/comment config loaded on edit
+let currentSimulationMode = false; // per-rule simulation flag (set by the admin wizard)
 let currentFunctions = [];
 let currentValidatorDocIds = [];
 // Stable rule id — loaded from existing config on edit so we don't generate a fresh one each time
@@ -2211,7 +2212,7 @@ function App() {
             // Safety: declarative action types created in the admin panel (generate-doc /
             // research / comment) reuse the semantic module but aren't editable here yet.
             // Capture them so onConfigure preserves them intact instead of clobbering.
-            const MANAGED_PF_TYPES = ["postfunction-generate-doc", "postfunction-research", "postfunction-comment"];
+            const MANAGED_PF_TYPES = ["postfunction-generate-doc", "postfunction-research", "postfunction-comment", "postfunction-subtask", "postfunction-link"];
             if (MANAGED_PF_TYPES.includes(config.type)) {
               currentManagedConfig = config;
               setManagedType(config.type);
@@ -2233,6 +2234,9 @@ function App() {
             if (typeof config.crossCheckClaims === "boolean") {
               setCrossCheckClaims(config.crossCheckClaims);
               currentCrossCheckClaims = config.crossCheckClaims;
+            }
+            if (config.simulationMode === true) {
+              currentSimulationMode = true;
             }
             if (config.functions && Array.isArray(config.functions) && config.functions.length > 0) {
               setFunctions(config.functions);
@@ -2394,6 +2398,12 @@ function App() {
             // Save selected doc IDs for all module types (validators, conditions, semantic PFs)
             if (currentValidatorDocIds.length > 0) {
               config.selectedDocIds = currentValidatorDocIds;
+            }
+
+            // Preserve simulation mode across workflow-editor re-saves — the wizard
+            // sets it; this editor has no toggle for it yet, so never drop it silently.
+            if (isPostFn && currentSimulationMode) {
+              config.simulationMode = true;
             }
 
             console.log("Saving configuration:", config);

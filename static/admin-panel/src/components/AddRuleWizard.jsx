@@ -17,6 +17,7 @@ import GenerateDocConfig from "./GenerateDocConfig";
 import ResearchConfig from "./ResearchConfig";
 import CommentConfig from "./CommentConfig";
 import SubtaskConfig from "./SubtaskConfig";
+import LinkConfig from "./LinkConfig";
 import FunctionBuilder from "./FunctionBuilder";
 
 const RULE_TYPE_OPTIONS = [
@@ -27,6 +28,7 @@ const RULE_TYPE_OPTIONS = [
   { value: "postfunction-research", label: "Research & Save", desc: "Web-search a topic & save it to the doc library" },
   { value: "postfunction-comment", label: "Add Comment", desc: "AI drafts & posts a comment after transition" },
   { value: "postfunction-subtask", label: "Create Sub-task", desc: "AI drafts & creates a sub-task under the issue" },
+  { value: "postfunction-link", label: "Link Related Issues", desc: "AI finds related issues & creates issue links" },
   { value: "postfunction-static", label: "Static Post Function", desc: "Run custom code after transition" },
 ];
 
@@ -70,6 +72,12 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
   const [autoSelectResearchDoc, setAutoSelectResearchDoc] = useState(false);
   const [commentPrompt, setCommentPrompt] = useState("");
   const [subtaskPrompt, setSubtaskPrompt] = useState("");
+  const [linkPrompt, setLinkPrompt] = useState("");
+  const [linkTypeName, setLinkTypeName] = useState("Relates");
+  const [maxLinks, setMaxLinks] = useState(3);
+  // Simulation mode: the rule runs its full AI evaluation on real transitions but
+  // SKIPS all writes, logging what it WOULD do. Per-rule staging switch.
+  const [simulationMode, setSimulationMode] = useState(false);
   const [enableTools, setEnableTools] = useState(null); // null = auto, true = on, false = off
   // Doc library: selected reference docs that get fed into the AI prompt.
   // Used for validators/conditions and semantic post-functions.
@@ -181,6 +189,7 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
     if (ruleType === "postfunction-generate-doc" && !contentPrompt.trim()) return;
     if (ruleType === "postfunction-comment" && !commentPrompt.trim()) return;
     if (ruleType === "postfunction-subtask" && !subtaskPrompt.trim()) return;
+    if (ruleType === "postfunction-link" && !linkPrompt.trim()) return;
     if (ruleType === "postfunction-static" && !functions.some((f) => f.code)) return;
 
     setSaving(true);
@@ -220,11 +229,15 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
                 ? { type: ruleType, fieldId: fieldId || "description", prompt: commentPrompt, commentPrompt, selectedDocIds, workflow: workflowData }
                 : ruleType === "postfunction-subtask"
                   ? { type: ruleType, fieldId: fieldId || "description", prompt: subtaskPrompt, subtaskPrompt, selectedDocIds, workflow: workflowData }
+                : ruleType === "postfunction-link"
+                  ? { type: ruleType, fieldId: fieldId || "description", prompt: linkPrompt, linkPrompt, linkTypeName, maxLinks, selectedDocIds, workflow: workflowData }
                   : { type: ruleType, fieldId: fieldId || "description", prompt: prompt || conditionPrompt, conditionPrompt, actionPrompt, actionFieldId, selectedDocIds, crossCheckClaims, workflow: workflowData }
         : { type: ruleType, fieldId: fieldId || "description", prompt, enableTools, selectedDocIds, workflow: workflowData };
       // Embed the id so the runtime executor and view panels resolve the registry
       // row directly instead of falling back to workflow-context matching.
       configPayload.id = ruleId;
+      // Simulation mode applies to all post-function types (validators don't write).
+      if (isPostFunction && simulationMode) configPayload.simulationMode = true;
 
       if (isPostFunction) {
         result = await invoke("registerPostFunction", {
@@ -874,6 +887,39 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
                 subtaskPrompt={subtaskPrompt}
                 setSubtaskPrompt={setSubtaskPrompt}
               />
+            )}
+
+            {ruleType === "postfunction-link" && (
+              <LinkConfig
+                fieldId={fieldId}
+                setFieldId={setFieldId}
+                fields={fields}
+                loadingFields={loadingFields}
+                errorFields={null}
+                linkPrompt={linkPrompt}
+                setLinkPrompt={setLinkPrompt}
+                linkTypeName={linkTypeName}
+                setLinkTypeName={setLinkTypeName}
+                maxLinks={maxLinks}
+                setMaxLinks={setMaxLinks}
+              />
+            )}
+
+            {/* Simulation mode — all post-function types. The rule runs its full AI
+                evaluation on every real transition but skips all writes, logging what
+                it WOULD have done. Flip it off in the workflow editor once trusted. */}
+            {ruleType.startsWith("postfunction") && (
+              <div style={{ marginTop: "14px", padding: "10px 12px", background: "var(--card-bg)", border: "2px solid #d97706", borderRadius: "8px", boxShadow: "0 4px 12px -4px rgba(217, 119, 6, 0.35)" }}>
+                <label style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer", fontSize: "13px", fontWeight: 600 }}>
+                  <input type="checkbox" checked={simulationMode} onChange={(e) => setSimulationMode(e.target.checked)} />
+                  Start in Simulation Mode
+                </label>
+                <div style={{ marginTop: "4px", paddingLeft: "22px", fontSize: "11px", color: "var(--text-secondary)" }}>
+                  The rule runs on every real transition and logs exactly what it <strong>would</strong> do —
+                  but writes nothing (no field updates, comments, links, sub-tasks, or attachments).
+                  Watch the Logs tab, then re-save the rule without simulation when you trust it.
+                </div>
+              </div>
             )}
 
             {/* Static PF — uses the same FunctionBuilder component as config-ui.

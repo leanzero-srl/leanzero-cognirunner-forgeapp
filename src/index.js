@@ -2172,7 +2172,7 @@ resolver.define("saveOpenAIKey", async ({ payload, context }) => {
       return { success: false, error: "OpenAI API keys must start with sk-" };
     }
     await storage.set(providerKeySlot(provider), key);
-    _cachedKey = key; _cachedKeyChecked = true;
+    _cachedKey = key; _cachedKeyChecked = true; _cachedKeyAt = Date.now();
     return { success: true };
   } catch (error) {
     console.error("Failed to save API key:", error);
@@ -2279,6 +2279,7 @@ resolver.define("saveDocProcessorRemote", async ({ payload, context }) => {
     await storage.set(DOC_PROCESSOR_REMOTE_KVS_KEY, toStore);
     _cachedDocProcessorRemote = toStore;
     _cachedDocProcessorRemoteChecked = true;
+    _cachedDocProcessorRemoteAt = Date.now();
     console.log(`saveDocProcessorRemote: configured url=${url} bearer=${bearer.substring(0, 6)}… zai=${finalZai ? "set" : "none"}`);
     return { success: true, url, hasBearer: true, hasZaiKey: !!finalZai };
   } catch (error) {
@@ -2295,6 +2296,7 @@ resolver.define("removeDocProcessorRemote", async ({ context }) => {
     await storage.delete(DOC_PROCESSOR_REMOTE_KVS_KEY);
     _cachedDocProcessorRemote = null;
     _cachedDocProcessorRemoteChecked = true;
+    _cachedDocProcessorRemoteAt = Date.now();
     return { success: true };
   } catch (error) {
     console.error("Failed to remove doc-processor remote config:", error?.message);
@@ -2352,6 +2354,7 @@ resolver.define("saveWebSearchRemote", async ({ payload, context }) => {
     await storage.set(WEB_SEARCH_REMOTE_KVS_KEY, toStore);
     _cachedWebSearchRemote = toStore;
     _cachedWebSearchRemoteChecked = true;
+    _cachedWebSearchRemoteAt = Date.now();
     console.log(`saveWebSearchRemote: configured url=${url} bearer=${bearer.substring(0, 6)}… serper=${finalSerper ? "set" : "none"} github=${finalGithub ? "set" : "none"}`);
     return { success: true, url, hasBearer: true, hasSerperKey: !!finalSerper, hasGithubToken: !!finalGithub };
   } catch (error) {
@@ -2368,6 +2371,7 @@ resolver.define("removeWebSearchRemote", async ({ context }) => {
     await storage.delete(WEB_SEARCH_REMOTE_KVS_KEY);
     _cachedWebSearchRemote = null;
     _cachedWebSearchRemoteChecked = true;
+    _cachedWebSearchRemoteAt = Date.now();
     return { success: true };
   } catch (error) {
     console.error("Failed to remove web-search remote config:", error?.message);
@@ -5925,21 +5929,35 @@ const convertContentBlock = (block) => {
   return block; // pass through unknown types
 };
 
+// Freshness bound for ALL the module-level provider-config caches below
+// (provider/baseUrl, API key, model, remote-MCP configs). Resolver-side
+// invalidation only reaches THE CONTAINER THAT SERVED THE SAVE — workflow
+// executions run in other warm containers that would otherwise serve a stale
+// provider/key/model indefinitely (symptom: admin changes the model, the
+// panel's test works, yet real rules keep 404ing on the old model for hours
+// until AWS recycles the container). Same rationale as REGISTRY_CACHE_TTL_MS.
+// Queued executions were never affected: async-handler.js reads uncached by
+// design.
+const PROVIDER_CACHE_TTL_MS = 30000;
+const _cacheFresh = (at) => Date.now() - at < PROVIDER_CACHE_TTL_MS;
+
 // In-memory provider cache
 let _cachedProvider = null;
 let _cachedBaseUrl = null;
 let _cachedProviderChecked = false;
+let _cachedProviderAt = 0;
 
 /**
  * Get the configured AI provider info: { provider, baseUrl }.
- * Returns cached value on subsequent calls within the same invocation.
+ * Returns cached value on subsequent calls within the freshness window.
  */
 const getProviderConfig = async () => {
-  if (_cachedProviderChecked) return { provider: _cachedProvider || "openai", baseUrl: _cachedBaseUrl || PROVIDERS.openai.baseUrl };
+  if (_cachedProviderChecked && _cacheFresh(_cachedProviderAt)) return { provider: _cachedProvider || "openai", baseUrl: _cachedBaseUrl || PROVIDERS.openai.baseUrl };
   try {
     const provider = (await storage.get("COGNIRUNNER_AI_PROVIDER")) || "openai";
     const customUrl = await storage.get("COGNIRUNNER_AI_BASE_URL");
     _cachedProviderChecked = true;
+    _cachedProviderAt = Date.now();
     _cachedProvider = provider;
     _cachedBaseUrl = customUrl || (PROVIDERS[provider] && PROVIDERS[provider].baseUrl) || PROVIDERS.openai.baseUrl;
     return { provider: _cachedProvider, baseUrl: _cachedBaseUrl };
@@ -5954,8 +5972,10 @@ const providerKeySlot = (provider) => `COGNIRUNNER_KEY_${provider}`;
 const providerModelSlot = (provider) => `COGNIRUNNER_MODEL_${provider}`;
 
 // In-memory key cache — avoids KVS read on every invocation
+// (TTL-bounded via PROVIDER_CACHE_TTL_MS — see the comment there.)
 let _cachedKey = null;
 let _cachedKeyChecked = false;
+let _cachedKeyAt = 0;
 
 // === Remote doc-processor (hosted MCP) configuration ===
 //
@@ -5975,12 +5995,14 @@ let _cachedKeyChecked = false;
 const DOC_PROCESSOR_REMOTE_KVS_KEY = "COGNIRUNNER_DOC_PROCESSOR_REMOTE";
 let _cachedDocProcessorRemote = null;
 let _cachedDocProcessorRemoteChecked = false;
+let _cachedDocProcessorRemoteAt = 0; // TTL-bounded via PROVIDER_CACHE_TTL_MS
 
 const getDocProcessorRemoteConfig = async () => {
-  if (_cachedDocProcessorRemoteChecked) return _cachedDocProcessorRemote;
+  if (_cachedDocProcessorRemoteChecked && _cacheFresh(_cachedDocProcessorRemoteAt)) return _cachedDocProcessorRemote;
   try {
     const raw = await storage.get(DOC_PROCESSOR_REMOTE_KVS_KEY);
     _cachedDocProcessorRemoteChecked = true;
+    _cachedDocProcessorRemoteAt = Date.now();
     if (raw && typeof raw === "object" && raw.url && raw.bearer) {
       _cachedDocProcessorRemote = { url: String(raw.url), bearer: String(raw.bearer), zaiKey: raw.zaiKey ? String(raw.zaiKey) : undefined };
       return _cachedDocProcessorRemote;
@@ -6002,12 +6024,14 @@ const getDocProcessorRemoteConfig = async () => {
 const WEB_SEARCH_REMOTE_KVS_KEY = "COGNIRUNNER_WEB_SEARCH_REMOTE";
 let _cachedWebSearchRemote = null;
 let _cachedWebSearchRemoteChecked = false;
+let _cachedWebSearchRemoteAt = 0; // TTL-bounded via PROVIDER_CACHE_TTL_MS
 
 const getWebSearchRemoteConfig = async () => {
-  if (_cachedWebSearchRemoteChecked) return _cachedWebSearchRemote;
+  if (_cachedWebSearchRemoteChecked && _cacheFresh(_cachedWebSearchRemoteAt)) return _cachedWebSearchRemote;
   try {
     const raw = await storage.get(WEB_SEARCH_REMOTE_KVS_KEY);
     _cachedWebSearchRemoteChecked = true;
+    _cachedWebSearchRemoteAt = Date.now();
     if (raw && typeof raw === "object" && raw.url && raw.bearer) {
       _cachedWebSearchRemote = { url: String(raw.url), bearer: String(raw.bearer), serperKey: raw.serperKey ? String(raw.serperKey) : undefined, githubToken: raw.githubToken ? String(raw.githubToken) : undefined };
       return _cachedWebSearchRemote;
@@ -6024,13 +6048,14 @@ const getWebSearchRemoteConfig = async () => {
  * falls back to legacy key, then factory env var.
  */
 const getOpenAIKey = async () => {
-  if (_cachedKeyChecked) return _cachedKey || process.env.OPENAI_API_KEY;
+  if (_cachedKeyChecked && _cacheFresh(_cachedKeyAt)) return _cachedKey || process.env.OPENAI_API_KEY;
   try {
     const { provider } = await getProviderConfig();
     // Forge LLM needs no API key — auth IS the Forge platform. Return a sentinel so
     // every `if (!apiKey) bail` call site treats the provider as configured.
     if (provider === "atlassian") {
       _cachedKeyChecked = true;
+      _cachedKeyAt = Date.now();
       _cachedKey = FORGE_LLM_SENTINEL;
       return _cachedKey;
     }
@@ -6047,6 +6072,7 @@ const getOpenAIKey = async () => {
       }
     }
     _cachedKeyChecked = true;
+    _cachedKeyAt = Date.now();
     if (byokKey) { _cachedKey = byokKey; return byokKey; }
   } catch (error) {
     console.error("Error reading API key from storage:", error);
@@ -6055,14 +6081,16 @@ const getOpenAIKey = async () => {
 };
 
 // In-memory model cache — avoids KVS + /v1/models calls on every invocation
+// (TTL-bounded via PROVIDER_CACHE_TTL_MS — see the comment there.)
 let _cachedModel = null;
+let _cachedModelAt = 0;
 
 /**
  * Get the active provider's model. Checks per-provider KVS slot first,
  * falls back to legacy slot, then env var, then provider default.
  */
 const getOpenAIModel = async () => {
-  if (_cachedModel) return _cachedModel;
+  if (_cachedModel && _cacheFresh(_cachedModelAt)) return _cachedModel;
 
   try {
     const { provider } = await getProviderConfig();
@@ -6083,7 +6111,7 @@ const getOpenAIModel = async () => {
         }
       }
     }
-    if (savedModel) { _cachedModel = savedModel; return savedModel; }
+    if (savedModel) { _cachedModel = savedModel; _cachedModelAt = Date.now(); return savedModel; }
   } catch (error) {
     console.error("Error reading model from storage:", error);
   }
@@ -6094,10 +6122,12 @@ const getOpenAIModel = async () => {
   const { provider } = await getProviderConfig();
   if (process.env.OPENAI_MODEL && (provider === "openai" || provider === "azure")) {
     _cachedModel = process.env.OPENAI_MODEL;
+    _cachedModelAt = Date.now();
     return _cachedModel;
   }
   const model = (PROVIDERS[provider] && PROVIDERS[provider].defaultModel) || "gpt-5.4-mini";
   _cachedModel = model;
+  _cachedModelAt = Date.now();
   return model;
 };
 

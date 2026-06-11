@@ -149,6 +149,20 @@ const AGENTIC_TIMEOUT_MS = 22000; // 22s budget within Forge's 25s validator lim
 const PF_BUDGET_MS = 22000;
 const PF_QUEUED_BUDGET_MS = 110000;
 
+// Invocation-level dedup for post-functions. The platform delivers Forge
+// invocations at-least-once — Atlassian confirmed (June 2026) that even
+// SUCCESSFUL invocations can be delivered twice, ~1s apart. The pf_exec:
+// claims only dedup redelivery of the SAME queue event; a duplicated
+// invocation mints a fresh taskId and enqueues a SECOND event, so the claim
+// must happen up here, before the queue push. Keys are pf_inv:<instance>:<rule>
+// where <instance> is transition.executionId (or changelog.id) — minted once
+// per transition execution, shared by duplicate deliveries, distinct across
+// legitimate re-fires. When neither exists we fall back to a windowed
+// rule+issue key; the window is enforced by comparing claimedAt at conflict
+// time, NOT via TTL, because KVS deletes expired keys lazily (up to 48h).
+const PF_INV_CLAIM_PREFIX = "pf_inv:";
+const PF_DEDUP_FALLBACK_WINDOW_MS = 30000;
+
 /**
  * Race a promise against the post-function deadline. Throws a labeled Error on
  * timeout or when the budget is already exhausted, so call sites surface a clear
@@ -8614,6 +8628,73 @@ const executeStaticPostFunction = async (issueKey, config, deadline = Date.now()
 };
 
 /**
+ * Claim this post-function invocation so a duplicate platform delivery skips
+ * instead of double-applying side effects (comments, sub-tasks, field writes).
+ * Never throws; returns { proceed, deduped? }. Fail-open on claim-infrastructure
+ * errors — like pf_exec, a missed dedup beats a dropped execution. Claim-first
+ * means an invocation that crashes AFTER claiming suppresses the platform's
+ * retry of the same execution; for fail-open automations, duplicates are the
+ * worse failure (same philosophy as the pf_exec consumer claim).
+ */
+const claimPfInvocation = async (args, config, extensionKey, issueKey, pfType) => {
+  // KVS keys accept a restricted charset — sanitize or storage.set throws and
+  // dedup silently never works. The rule id MUST be in the key: two rules on
+  // the same transition share one executionId.
+  const safeRuleId = String(config.ruleId || config.id || extensionKey || pfType || "pf")
+    .replace(/[^a-zA-Z0-9:._#-]/g, "_")
+    .slice(0, 120);
+  const isClaimConflict = (e) => e?.code === "KEY_ALREADY_EXISTS"
+    || e?.responseDetails?.status === 409
+    || /already\s*exist/i.test(String(e?.message));
+  const instanceId = args?.transition?.executionId
+    || (args?.changelog?.id ? `cl-${args.changelog.id}` : null);
+
+  if (instanceId) {
+    // Perfect identity: executionId/changelog are minted once per transition
+    // execution, so the key is never reused and lazy TTL deletion is harmless.
+    try {
+      await storage.set(`${PF_INV_CLAIM_PREFIX}${instanceId}:${safeRuleId}`, {
+        issueKey, claimedAt: new Date().toISOString(),
+      }, { keyPolicy: "FAIL_IF_EXISTS", ttl: { value: 6, unit: "HOURS" } });
+      return { proceed: true };
+    } catch (e) {
+      if (isClaimConflict(e)) return { proceed: false, deduped: true };
+      console.warn("[pf] invocation claim errored (continuing):", e?.message);
+      return { proceed: true };
+    }
+  }
+
+  // Fallback: no per-execution identity in the payload — windowed rule+issue
+  // key. The window is enforced via claimedAt comparison at conflict time, NOT
+  // via TTL (KVS deletes expired keys lazily, up to 48h — TTL-only semantics
+  // would suppress legitimate re-fires for hours).
+  const fbKey = `${PF_INV_CLAIM_PREFIX}fb:${safeRuleId}:${issueKey}`;
+  try {
+    await storage.set(fbKey, { issueKey, claimedAt: new Date().toISOString() },
+      { keyPolicy: "FAIL_IF_EXISTS", ttl: { value: 10, unit: "MINUTES" } });
+    return { proceed: true };
+  } catch (e) {
+    if (!isClaimConflict(e)) {
+      console.warn("[pf] invocation claim errored (continuing):", e?.message);
+      return { proceed: true };
+    }
+    try {
+      const existing = await storage.get(fbKey);
+      const age = Date.now() - Date.parse(existing?.claimedAt);
+      if (Number.isFinite(age) && age < PF_DEDUP_FALLBACK_WINDOW_MS) {
+        return { proceed: false, deduped: true };
+      }
+      // Stale claim (lazy deletion or an old transition) — take it over.
+      await storage.set(fbKey, { issueKey, claimedAt: new Date().toISOString() },
+        { ttl: { value: 10, unit: "MINUTES" } });
+    } catch (e2) {
+      console.warn("[pf] invocation claim takeover errored (continuing):", e2?.message);
+    }
+    return { proceed: true };
+  }
+};
+
+/**
  * Post-function handler — called by Forge after a workflow transition completes.
  * Always returns { result: true } to never block transitions.
  */
@@ -8723,10 +8804,28 @@ export const executePostFunction = async (args) => {
     console.log("Could not check disabled status:", e);
   }
 
+  const pfType = resolvePfType(config, extensionKey);
+
+  // Invocation-level dedup — the platform delivers successful invocations
+  // at-least-once (~1s twins, Atlassian-confirmed June 2026). This must run
+  // BEFORE the queue push: a duplicated heavy invocation would enqueue a
+  // second event under a fresh taskId, sailing past the pf_exec consumer
+  // dedup. Placed after the cheap skip checks so skipped invocations cost
+  // zero extra KVS ops.
+  const claim = await claimPfInvocation(args, config, extensionKey, issue.key, pfType);
+  if (!claim.proceed) {
+    console.log(`[pf] duplicate invocation for ${issue.key} — suppressed`);
+    await logSkip(
+      "Skipped: duplicate platform delivery suppressed. Jira delivered this transition's post-function invocation more than once (at-least-once delivery); the first delivery already ran this rule.",
+      "No action needed — this protection prevents double field updates, comments, and attachments. If you believe a real run was missed, look for this rule's other log entry on the same issue within the last few seconds.",
+      { ruleId: config.ruleId || config.id || null, ruleWorkflow: config.workflow },
+    );
+    return { result: true };
+  }
+
   // Heavy, MCP-backed types cannot reliably fit the platform's 25s inline cap —
   // offload them to the async consumer (120s timeout). Queue failure falls back
   // to an inline run under the tight budget (graceful degradation, never a no-op).
-  const pfType = resolvePfType(config, extensionKey);
   const isHeavyPf = pfType.includes("generate-doc")
     || pfType.includes("research")
     || (pfType.includes("semantic") && config.crossCheckClaims === true);

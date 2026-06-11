@@ -87,6 +87,8 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
   // Simulation mode: the rule runs its full AI evaluation on real transitions but
   // SKIPS all writes, logging what it WOULD do. Per-rule staging switch.
   const [simulationMode, setSimulationMode] = useState(false);
+  // Per-rule notifyUsers=false on field updates (semantic + static only).
+  const [suppressNotifications, setSuppressNotifications] = useState(false);
   const [enableTools, setEnableTools] = useState(null); // null = auto, true = on, false = off
   // Doc library: selected reference docs that get fed into the AI prompt.
   // Used for validators/conditions and semantic post-functions.
@@ -247,6 +249,9 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
       configPayload.id = ruleId;
       // Simulation mode applies to all post-function types (validators don't write).
       if (isPostFunction && simulationMode) configPayload.simulationMode = true;
+      // Notification suppression — only meaningful for types that PUT issue fields.
+      const canSuppress = ruleType === "postfunction-semantic" || ruleType === "postfunction-static";
+      if (isPostFunction && canSuppress && suppressNotifications) configPayload.suppressNotifications = true;
 
       // Static-PF code offload: measure the config as it would be embedded in the
       // workflow rule; above the threshold the backend stores the step code in
@@ -957,6 +962,25 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
                   The rule runs on every real transition and logs exactly what it <strong>would</strong> do —
                   but writes nothing (no field updates, comments, links, sub-tasks, or attachments).
                   Watch the Logs tab, then re-save the rule without simulation when you trust it.
+                </div>
+              </div>
+            )}
+
+            {/* Notification suppression — semantic + static only (the two types that
+                PUT issue fields; transitions/comments/sub-tasks/links have no
+                notifyUsers equivalent). Plain option block — the amber card above is
+                the warning aesthetic reserved for simulation. */}
+            {(ruleType === "postfunction-semantic" || ruleType === "postfunction-static") && (
+              <div style={{ marginTop: "14px" }} className="form-group">
+                <label style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer", fontSize: "13px", fontWeight: 600 }}>
+                  <input type="checkbox" checked={suppressNotifications} onChange={(e) => setSuppressNotifications(e.target.checked)} />
+                  Suppress notifications for this rule's field updates
+                </label>
+                <div style={{ marginTop: "4px", paddingLeft: "22px", fontSize: "11px", color: "var(--text-secondary)" }}>
+                  Field updates made by this rule won't email watchers (Jira's notifyUsers=false).
+                  Suppression needs the app to have project admin permission — if Jira refuses, the
+                  update is retried with notifications on and the execution log notes it. Applies to
+                  field updates only: transitions, comments, sub-tasks, and links still notify as normal.
                 </div>
               </div>
             )}

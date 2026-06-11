@@ -179,6 +179,17 @@ const PF_QUEUED_BUDGET_MS = 110000;
 const PF_INV_CLAIM_PREFIX = "pf_inv:";
 const PF_DEDUP_FALLBACK_WINDOW_MS = 30000;
 
+// Per-issue execution brake — storm/loop protection. A static PF calling
+// transitionIssue() can fire other workflows' rules, which transition again,
+// and nothing else brakes the cascade before the platform's distant
+// 1000-invocation ceiling (each hop also emailing watchers). Counting is
+// approximate by design: KVS has no atomic increment, and read-modify-write
+// races only make the brake lenient — never wrongly tripped. Do not repurpose
+// this counter for billing/quotas.
+const PF_BRAKE_PREFIX = "pf_brake:";
+const PF_BRAKE_BUCKET_MS = 300000; // 5-minute fixed window (boundary leakage ≤2x — fine for a brake)
+const PF_BRAKE_MAX_PER_BUCKET = 10;
+
 /**
  * Race a promise against the post-function deadline. Throws a labeled Error on
  * timeout or when the budget is already exhausted, so call sites surface a clear
@@ -7985,13 +7996,25 @@ const executeSemanticPostFunction = async (issueKey, config, deadline = Date.now
           sourceFieldId, sourceFieldLength: fieldLen, docCount };
       }
 
-      trace.push(`Updating field "${actionFieldId}" on ${issueKey}...`);
+      // Per-rule notification suppression (notifyUsers=false). Suppression
+      // needs project-admin permission — locked-down schemes 403, in which
+      // case we retry once WITH notifications. The mutable flag means the
+      // transient retry below repeats whichever variant last passed.
+      let suppressNotifs = config.suppressNotifications === true;
+      trace.push(`Updating field "${actionFieldId}" on ${issueKey}${suppressNotifs ? " (notifications suppressed)" : ""}...`);
       const updateBody = { fields: { [actionFieldId]: result.value } };
       const doUpdate = () => api.asApp().requestJira(
-        route`/rest/api/3/issue/${issueKey}`,
+        suppressNotifs
+          ? route`/rest/api/3/issue/${issueKey}?notifyUsers=false`
+          : route`/rest/api/3/issue/${issueKey}`,
         { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(updateBody) },
       );
       let updateResponse = await doUpdate();
+      if (!updateResponse.ok && updateResponse.status === 403 && suppressNotifs) {
+        trace.push("Jira refused notifyUsers=false (HTTP 403 — suppression requires project admin permission). Retrying with notifications enabled...");
+        suppressNotifs = false;
+        updateResponse = await doUpdate();
+      }
       // One retry on Jira rate-limit / transient upstream errors, honoring
       // Retry-After within the remaining budget.
       if (!updateResponse.ok && [429, 502, 503].includes(updateResponse.status) && deadline - Date.now() > 6000) {
@@ -8536,10 +8559,18 @@ const executeStaticPostFunction = async (issueKey, config, deadline = Date.now()
         changes.push({ action: "updateIssue", key, fields, simulated: true });
         return { success: true };
       }
-      const res = await api.asApp().requestJira(
-        route`/rest/api/3/issue/${key}`,
+      // Per-rule notification suppression (notifyUsers=false) — needs project
+      // admin permission; on 403 retry once with notifications enabled.
+      const suppress = config.suppressNotifications === true;
+      const doPut = (s) => api.asApp().requestJira(
+        s ? route`/rest/api/3/issue/${key}?notifyUsers=false` : route`/rest/api/3/issue/${key}`,
         { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ fields }) },
       );
+      let res = await doPut(suppress);
+      if (!res.ok && res.status === 403 && suppress) {
+        executionLogs.push(`updateIssue("${key}"): Jira refused notifyUsers=false (403 — needs project admin). Retried with notifications enabled.`);
+        res = await doPut(false);
+      }
       if (!res.ok) throw new Error(`updateIssue failed: ${res.status}`);
       changes.push({ action: "updateIssue", key, fields });
       return { success: true };
@@ -8813,6 +8844,32 @@ const claimPfInvocation = async (args, config, extensionKey, issueKey, pfType) =
 };
 
 /**
+ * Read the per-issue brake counter for the current 5-minute bucket. The bucket
+ * index lives in the key, so keys are never reused and lazy TTL deletion is
+ * harmless. Both helpers fail open — under KVS rate-limit pressure the brake
+ * degrades to "no protection this run", never to a dropped execution.
+ */
+const readPfBrake = async (issueKey) => {
+  const bucket = Math.floor(Date.now() / PF_BRAKE_BUCKET_MS);
+  const key = `${PF_BRAKE_PREFIX}${issueKey}:${bucket}`;
+  try {
+    const count = Number(await storage.get(key)) || 0;
+    return { key, count };
+  } catch (e) {
+    console.warn("[pf] brake read errored (continuing):", e?.message);
+    return { key, count: 0 };
+  }
+};
+
+const bumpPfBrake = async (brake) => {
+  try {
+    await storage.set(brake.key, brake.count + 1, { ttl: { value: 15, unit: "MINUTES" } });
+  } catch (e) {
+    console.warn("[pf] brake write errored (continuing):", e?.message);
+  }
+};
+
+/**
  * Post-function handler — called by Forge after a workflow transition completes.
  * Always returns { result: true } to never block transitions.
  */
@@ -8924,12 +8981,41 @@ export const executePostFunction = async (args) => {
 
   const pfType = resolvePfType(config, extensionKey);
 
-  // Invocation-level dedup — the platform delivers successful invocations
+  // (1) Per-issue execution brake — checked at production time, so it covers
+  // inline runs AND queue enqueues (the consumer never re-checks). On trip we
+  // keep incrementing so the loud log fires exactly once per bucket instead of
+  // flooding all 50 log slots during a storm.
+  const brake = await readPfBrake(issue.key);
+  if (brake.count >= PF_BRAKE_MAX_PER_BUCKET) {
+    console.warn(`[pf] brake active on ${issue.key} — execution suppressed (${brake.count} in window)`);
+    await bumpPfBrake(brake);
+    if (brake.count === PF_BRAKE_MAX_PER_BUCKET) {
+      await storeLog({
+        type: "postfunction-skipped",
+        issueKey: issue.key,
+        fieldId: extensionKey || "(unknown module)",
+        isValid: false,
+        reason: `Execution brake: skipped because this issue triggered more than ${PF_BRAKE_MAX_PER_BUCKET} post-function executions in 5 minutes. This usually means an automation loop — a rule (or Jira Automation) is re-triggering transitions on this issue, and each transition fires more rules.`,
+        recommendation: "Check the rules on this issue's recent transitions — a Static post-function calling transitionIssue() that fires another workflow's rules is the most common loop. Also check Jira Automation rules reacting to this app's field updates. While you investigate, enable Simulation Mode on the suspect rule (it logs without writing). The brake lifts automatically within 5 minutes; further skipped runs in this window are not logged to avoid flooding this list.",
+        executionTimeMs: 0,
+        ruleId: config.ruleId || config.id || null,
+        ruleName: config.workflow?.workflowName
+          ? `${config.workflow.workflowName} / ${config.workflow.transitionFromName || "Any"} → ${config.workflow.transitionToName || "?"}`
+          : null,
+        ruleWorkflow: config.workflow || null,
+        moduleKey: extensionKey,
+      });
+    }
+    return { result: true };
+  }
+
+  // (2) Invocation-level dedup — the platform delivers successful invocations
   // at-least-once (~1s twins, Atlassian-confirmed June 2026). This must run
   // BEFORE the queue push: a duplicated heavy invocation would enqueue a
   // second event under a fresh taskId, sailing past the pf_exec consumer
   // dedup. Placed after the cheap skip checks so skipped invocations cost
-  // zero extra KVS ops.
+  // zero extra KVS ops; placed before the brake increment so deduped twins
+  // never inflate the count.
   const claim = await claimPfInvocation(args, config, extensionKey, issue.key, pfType);
   if (!claim.proceed) {
     console.log(`[pf] duplicate invocation for ${issue.key} — suppressed`);
@@ -8940,6 +9026,9 @@ export const executePostFunction = async (args) => {
     );
     return { result: true };
   }
+
+  // (3) Count this execution toward the brake window.
+  await bumpPfBrake(brake);
 
   // Heavy, MCP-backed types cannot reliably fit the platform's 25s inline cap —
   // offload them to the async consumer (120s timeout). Queue failure falls back

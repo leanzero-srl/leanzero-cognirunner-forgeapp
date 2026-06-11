@@ -1984,6 +1984,7 @@ let currentActionFieldId = "";
 let currentCrossCheckClaims = false;
 let currentManagedConfig = null; // a generate-doc/research/comment config loaded on edit
 let currentSimulationMode = false; // per-rule simulation flag (set by the admin wizard)
+let currentSuppressNotifications = false; // per-rule notifyUsers=false flag (semantic + static)
 let currentFunctions = [];
 let currentValidatorDocIds = [];
 // Stable rule id — loaded from existing config on edit so we don't generate a fresh one each time
@@ -2035,6 +2036,7 @@ function App() {
   const [crossCheckClaims, setCrossCheckClaims] = useState(false);
   const [managedType, setManagedType] = useState(null); // generate-doc/research/comment → managed in admin panel
   const [simulationMode, setSimulationMode] = useState(false); // per-rule simulation flag (kept in sync with currentSimulationMode)
+  const [suppressNotifications, setSuppressNotifications] = useState(false); // kept in sync with currentSuppressNotifications
   const [functions, setFunctions] = useState([{
     id: `func_${Date.now()}_initial`,
     name: "",
@@ -2251,6 +2253,10 @@ function App() {
               currentSimulationMode = true;
               setSimulationMode(true);
             }
+            if (config.suppressNotifications === true) {
+              currentSuppressNotifications = true;
+              setSuppressNotifications(true);
+            }
             if (config.functions && Array.isArray(config.functions) && config.functions.length > 0) {
               setFunctions(config.functions);
               currentFunctions = config.functions;
@@ -2430,6 +2436,12 @@ function App() {
             // sets it; this editor has no toggle for it yet, so never drop it silently.
             if (isPostFn && currentSimulationMode) {
               config.simulationMode = true;
+            }
+
+            // Notification suppression — only meaningful for types that PUT issue fields.
+            if (isPostFn && currentSuppressNotifications
+                && (currentPostFunctionType === "semantic" || currentPostFunctionType === "static")) {
+              config.suppressNotifications = true;
             }
 
             // Static-PF code offload: measure the FULL config as it would be
@@ -2671,6 +2683,32 @@ function App() {
               While ON, this rule runs its full AI evaluation on every transition and logs what it
               <strong> would</strong> do — without updating fields, posting comments, creating links/sub-tasks,
               or attaching documents. Untick and save to go live.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Notification suppression — semantic + static only (the two types that PUT
+          issue fields). Unlike simulationMode this editor offers the on-switch:
+          these rule types are fully editable here, and a wizard-only flag would be
+          unreachable for editor-created rules. Standard card, not the amber
+          warning style. */}
+      {isPostFunction && !managedType && (postFunctionType === "semantic" || postFunctionType === "static") && (
+        <div className="card">
+          <div style={{ padding: "12px 16px" }}>
+            <label style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer", fontSize: "13px", fontWeight: 600 }}>
+              <input
+                type="checkbox"
+                checked={suppressNotifications}
+                onChange={(e) => { setSuppressNotifications(e.target.checked); currentSuppressNotifications = e.target.checked; }}
+              />
+              Suppress notifications for this rule&apos;s field updates
+            </label>
+            <p style={{ margin: "4px 0 0 22px", fontSize: "11px", color: "var(--text-secondary, #5e6c84)" }}>
+              Field updates made by this rule won&apos;t email watchers (Jira&apos;s notifyUsers=false).
+              Suppression needs the app to have project admin permission — if Jira refuses, the update
+              is retried with notifications on and the execution log notes it. Applies to field updates
+              only: transitions, comments, sub-tasks, and links still notify as normal.
             </p>
           </div>
         </div>

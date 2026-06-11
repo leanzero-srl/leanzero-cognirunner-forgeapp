@@ -47,6 +47,18 @@ const CONFIG_REGISTRY_KEY = "config_registry";
 // deliberately uncached there because a stale credential is binary-wrong
 // (guaranteed failure for the Forge LLM sentinel, possible use of a revoked
 // secret) — no TTL makes a wrong credential acceptable.
+// Per-instance rule ids end with "::i-<6 alnum>", minted by the frontends for
+// NEW rules only (edits reuse the embedded config's id). Without the suffix,
+// deterministic type::workflow::transition ids collide when a second same-type
+// rule is added to one transition — the two rules' registry row, disable flag,
+// and log identity silently merge. The anchored suffix match is reliable: only
+// our mints produce it (legacy ids end with a numeric transition id or a Forge
+// entryPoint), so detecting it here beats threading a flag through every
+// caller. Rows carry `instanced: true` so orphan cleanup can apply the
+// precise per-instance check to them and the conservative legacy check to
+// everything else.
+const INSTANCED_ID_RE = /::i-[a-z0-9]{6}$/;
+
 const REGISTRY_CACHE_TTL_MS = 30000;
 let _registryCache = null;
 const getRegistryForRuleCheck = async () => {
@@ -666,9 +678,16 @@ resolver.define("registerConfig", async ({ payload, context }) => {
     const sameFamily = (c) => isPfType(c.type) === isPfType(type || "validator");
     let existingIndex = configs.findIndex((c) => c.id === id && sameFamily(c));
     if (existingIndex < 0 && workflowData.workflowName && workflowData.transitionId) {
-      // Exact-type match on workflow context first…
+      // Exact-type match on workflow context first… but NEVER claim an
+      // instanced row this way: instanced ids are stable (they travel in the
+      // embedded config and tier-1 id matching catches their re-saves), so a
+      // context match against one means we're a DIFFERENT rule instance on the
+      // same transition — claiming it would merge two rules into one row, the
+      // exact collapse the instance suffix exists to prevent. Claiming a
+      // non-instanced row here is the legacy-upgrade path and stays.
       existingIndex = configs.findIndex((c) =>
         (c.type || "validator") === (type || "validator")
+        && c.instanced !== true
         && c.workflow?.workflowName === workflowData.workflowName
         && String(c.workflow?.transitionId) === String(workflowData.transitionId)
       );
@@ -691,6 +710,7 @@ resolver.define("registerConfig", async ({ payload, context }) => {
     const otherFamilyHoldsId = configs.some((c, i) => c.id === id && i !== existingIndex);
     const effectiveId = otherFamilyHoldsId ? `${type || "validator"}::${id}` : id;
 
+    const isInstanced = INSTANCED_ID_RE.test(effectiveId);
     if (existingIndex >= 0) {
       configs[existingIndex] = {
         ...configs[existingIndex],
@@ -701,6 +721,7 @@ resolver.define("registerConfig", async ({ payload, context }) => {
         workflow: Object.keys(workflowData).length > 0
           ? workflowData
           : configs[existingIndex].workflow,
+        ...(isInstanced ? { instanced: true } : {}),
         updatedAt: now,
       };
     } else {
@@ -710,6 +731,7 @@ resolver.define("registerConfig", async ({ payload, context }) => {
         fieldId,
         prompt: (prompt || "").substring(0, 200),
         workflow: Object.keys(workflowData).length > 0 ? workflowData : undefined,
+        ...(isInstanced ? { instanced: true } : {}),
         createdBy: context.accountId || null,
         createdAt: now,
         updatedAt: now,
@@ -947,11 +969,37 @@ resolver.define("getConfigs", async ({ payload, context }) => {
           : config.type === "condition"
             ? transitionData.conditions
             : transitionData.validators;
-        const hasOurRule = ruleList.some((r) =>
+        const ourRules = ruleList.filter((r) =>
           r.parameters?.key && r.parameters.key.includes(APP_ID)
         );
-        console.log(`  config "${config.id}" on transition ${wf.transitionId}: type=${config.type}, hasOurRule=${hasOurRule}`);
-        if (hasOurRule) {
+        let keep = ourRules.length > 0;
+        // Instance-accurate check for instanced rows: with per-instance ids,
+        // "some CogniRunner rule is on the transition" is too coarse — a
+        // sibling rule would keep a zombie row alive forever. Each rule's
+        // parameters.config embeds its id; keep the row only if its id appears
+        // on the transition. Every ambiguity defaults to KEEP: a false-kept
+        // zombie is cosmetic, a false removal loses the rule's disable-state.
+        if (keep && config.instanced === true) {
+          let sawUnreadableConfig = false;
+          const embeddedIds = new Set();
+          for (const r of ourRules) {
+            const raw = r.parameters?.config;
+            if (typeof raw !== "string" || !raw) { sawUnreadableConfig = true; continue; }
+            try {
+              const cfg = JSON.parse(raw);
+              if (cfg?.id) embeddedIds.add(String(cfg.id));
+              if (cfg?.ruleId) embeddedIds.add(String(cfg.ruleId));
+              if (!cfg?.id && !cfg?.ruleId) sawUnreadableConfig = true; // old-build config without an id
+            } catch {
+              sawUnreadableConfig = true;
+            }
+          }
+          if (!sawUnreadableConfig && !embeddedIds.has(String(config.id))) {
+            keep = false;
+          }
+        }
+        console.log(`  config "${config.id}" on transition ${wf.transitionId}: type=${config.type}, keep=${keep}`);
+        if (keep) {
           surviving.push(config);
         } else {
           removed.push(config);
@@ -3582,6 +3630,8 @@ resolver.define("registerPostFunction", async ({ payload, context }) => {
         })),
       } : {}),
       workflow: workflow || {},
+      ...(INSTANCED_ID_RE.test(effectiveId) || (existing >= 0 && configs[existing].instanced === true)
+        ? { instanced: true } : {}),
       disabled: existing >= 0 ? configs[existing].disabled : false,
       createdBy: existing >= 0 ? (configs[existing].createdBy || context.accountId) : context.accountId,
       createdAt: existing >= 0 ? configs[existing].createdAt : new Date().toISOString(),

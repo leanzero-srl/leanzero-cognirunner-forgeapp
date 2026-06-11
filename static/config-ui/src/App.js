@@ -2355,10 +2355,18 @@ function App() {
               : (ext.type === "jira:workflowCondition" ? "condition" : "validator");
             let ruleId = currentExistingRuleId;
             if (!ruleId) {
+              // Fresh mints carry a per-instance suffix: a purely deterministic
+              // type::workflow::transition id collides when a SECOND same-type
+              // rule is added to one transition — the two rules' registry row,
+              // disable flag, and log identity would silently merge. Edits never
+              // reach this branch (the embedded config's id always wins above),
+              // so the suffix never churns on re-save. The backend detects the
+              // "::i-" format and applies instance-accurate orphan cleanup.
+              const instanceSuffix = `::i-${Math.random().toString(36).slice(2, 8).padEnd(6, "0")}`;
               if (workflowContext.workflowName && workflowContext.transitionId) {
-                ruleId = `${idTypePrefix}::${workflowContext.workflowName}::${workflowContext.transitionId}`;
+                ruleId = `${idTypePrefix}::${workflowContext.workflowName}::${workflowContext.transitionId}${instanceSuffix}`;
               } else if (ext.entryPoint || ext.key) {
-                ruleId = `${idTypePrefix}::${ext.entryPoint || ext.key}`;
+                ruleId = `${idTypePrefix}::${ext.entryPoint || ext.key}${instanceSuffix}`;
               } else {
                 ruleId = Date.now().toString();
                 console.warn("[CogniRunner] Falling back to timestamp ruleId — Forge context missing workflow/transition. Edits will create new registry entries.");

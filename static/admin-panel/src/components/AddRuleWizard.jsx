@@ -207,9 +207,12 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
     setError(null);
 
     const isPostFunction = ruleType.startsWith("postfunction");
-    // Type-namespaced id — unique per rule type on the same transition (legacy
-    // `workflow::transition` ids collided across validator/condition/PF rows).
-    const ruleId = `${ruleType}::${selectedWorkflow.name}::${selectedTransition.id}`;
+    // Type-namespaced id with a per-instance suffix — without it, a second
+    // same-type rule on one transition would share the first rule's registry
+    // row (one disable flag, merged logs). The wizard only creates NEW rules,
+    // so minting here never churns an existing rule's id; the backend detects
+    // the "::i-" format and applies instance-accurate orphan cleanup.
+    const ruleId = `${ruleType}::${selectedWorkflow.name}::${selectedTransition.id}::i-${Math.random().toString(36).slice(2, 8).padEnd(6, "0")}`;
     const workflowData = {
       workflowName: selectedWorkflow.name,
       workflowId: selectedWorkflow.id,

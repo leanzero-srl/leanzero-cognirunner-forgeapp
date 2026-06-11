@@ -193,6 +193,11 @@ const AGENTIC_TIMEOUT_MS = 22000; // 22s budget within Forge's 25s validator lim
 //     offloaded to the async-ai-queue consumer (120s platform timeout, 110s budget)
 const PF_BUDGET_MS = 22000;
 const PF_QUEUED_BUDGET_MS = 110000;
+// Queued runs that waited longer than this get a human-readable platform-delay
+// note appended to the log's recommendation (May 2026 queue-delay incident:
+// 40+ min delays read as "the rule didn't run"). Normal queue latency is
+// seconds — 60s separates real platform incidents from noise.
+const QUEUE_DELAY_NOTE_THRESHOLD_MS = 60000;
 
 // Invocation-level dedup for post-functions. The platform delivers Forge
 // invocations at-least-once — Atlassian confirmed (June 2026) that even
@@ -9137,7 +9142,12 @@ export const executePostFunction = async (args) => {
       const queuePayload = {
         taskType: "postfunction",
         taskId: queuePayloadTaskId,
-        params: { issueKey: issue.key, config, extensionKey },
+        params: {
+          issueKey: issue.key, config, extensionKey,
+          // Lets the consumer attribute a late execution to the platform's
+          // event queue in the log entry (~40 bytes against the 90KB guard).
+          enqueuedAt: new Date().toISOString(),
+        },
       };
       // Async events for long-timeout consumers cap at 100KB per event — an
       // oversized config degrades to an inline run instead of a rejected push.
@@ -9177,14 +9187,39 @@ const resolvePfType = (config, extensionKey) => {
   return type;
 };
 
+/** "45 seconds" / "42 minutes" / "1 h 10 min" — for queue-delay log notes. */
+const formatDurationHuman = (ms) => {
+  const totalSec = Math.round(ms / 1000);
+  if (totalSec < 90) return `${totalSec} seconds`;
+  const totalMin = Math.round(totalSec / 60);
+  if (totalMin < 90) return `${totalMin} minutes`;
+  const hours = Math.floor(totalMin / 60);
+  const min = totalMin % 60;
+  return min ? `${hours} h ${min} min` : `${hours} hours`;
+};
+
 /**
  * Shared post-function dispatcher: routes to the per-type executor and writes the
  * result log. Called from executePostFunction (inline, 22s budget) AND from the
- * async-ai-queue consumer (queued heavy types, 110s budget). Never throws.
+ * async-ai-queue consumer (queued heavy types, 110s budget — which passes
+ * meta.enqueuedAt so late deliveries are attributed to the platform queue in
+ * the log instead of reading as "the rule didn't run"). Never throws.
  */
-export const dispatchPostFunction = async (issueKey, config, extensionKey, pfDeadline) => {
+export const dispatchPostFunction = async (issueKey, config, extensionKey, pfDeadline, meta = {}) => {
   const pfStartTime = Date.now();
   const issue = { key: issueKey };
+  // Queue-delay attribution: producer/consumer clocks can skew — clamp at 0.
+  const enqueuedAtMs = meta.enqueuedAt ? Date.parse(meta.enqueuedAt) : NaN;
+  const queueDelayMs = Number.isFinite(enqueuedAtMs) ? Math.max(0, pfStartTime - enqueuedAtMs) : null;
+  const withQueueMeta = (logEntry) => {
+    if (queueDelayMs === null) return logEntry; // inline run — fields absent
+    logEntry.queueDelayMs = queueDelayMs;
+    if (queueDelayMs >= QUEUE_DELAY_NOTE_THRESHOLD_MS) {
+      const note = `This run waited ${formatDurationHuman(queueDelayMs)} in Atlassian's background event queue before executing. The delay came from the platform's event queue, not from this rule — the rule ran normally once the event was delivered.`;
+      logEntry.recommendation = logEntry.recommendation ? `${logEntry.recommendation}\n\n${note}` : note;
+    }
+    return logEntry;
+  };
   try {
     // Resolve the post-function type. Prefer config.type (set by recent onConfigure
     // callbacks) but fall back to the Forge module key for OLD configs that pre-date
@@ -9244,7 +9279,7 @@ export const dispatchPostFunction = async (issueKey, config, extensionKey, pfDea
       }
       if (result.trace) logEntry.trace = result.trace;
       if (result.recommendation) logEntry.recommendation = result.recommendation;
-      await storeLog(logEntry);
+      await storeLog(withQueueMeta(logEntry));
     } else if (type.includes("static")) {
       const result = await executeStaticPostFunction(issue.key, config, pfDeadline);
       console.log("Static PF result:", JSON.stringify(result));
@@ -9276,7 +9311,7 @@ export const dispatchPostFunction = async (issueKey, config, extensionKey, pfDea
       if (result.logs) logEntry.trace = result.logs;
       if (result.recommendation) logEntry.recommendation = result.recommendation;
       if (result.stepResults) logEntry.stepResults = result.stepResults;
-      await storeLog(logEntry);
+      await storeLog(withQueueMeta(logEntry));
     } else if (type.includes("generate-doc")) {
       const result = await executeGenerateDocPostFunction(issue.key, config, pfDeadline);
       console.log("Generate-doc PF result:", JSON.stringify(result));
@@ -9297,7 +9332,7 @@ export const dispatchPostFunction = async (issueKey, config, extensionKey, pfDea
       if (result.attachment) logEntry.attachment = result.attachment;
       if (result.trace) logEntry.trace = result.trace;
       if (result.recommendation) logEntry.recommendation = result.recommendation;
-      await storeLog(logEntry);
+      await storeLog(withQueueMeta(logEntry));
     } else if (type.includes("research")) {
       const result = await executeResearchPostFunction(issue.key, config, pfDeadline);
       console.log("Research PF result:", JSON.stringify(result));
@@ -9317,7 +9352,7 @@ export const dispatchPostFunction = async (issueKey, config, extensionKey, pfDea
       };
       if (result.docId) logEntry.docId = result.docId;
       if (result.trace) logEntry.trace = result.trace;
-      await storeLog(logEntry);
+      await storeLog(withQueueMeta(logEntry));
     } else if (type.includes("comment")) {
       const result = await executeCommentPostFunction(issue.key, config, pfDeadline);
       console.log("Comment PF result:", JSON.stringify(result));
@@ -9336,7 +9371,7 @@ export const dispatchPostFunction = async (issueKey, config, extensionKey, pfDea
         ruleWorkflow: config.workflow || null,
       };
       if (result.trace) logEntry.trace = result.trace;
-      await storeLog(logEntry);
+      await storeLog(withQueueMeta(logEntry));
     } else if (type.includes("subtask")) {
       const result = await executeSubtaskPostFunction(issue.key, config, pfDeadline);
       console.log("Subtask PF result:", JSON.stringify(result));
@@ -9357,7 +9392,7 @@ export const dispatchPostFunction = async (issueKey, config, extensionKey, pfDea
       if (result.subtask) logEntry.subtask = result.subtask;
       if (result.trace) logEntry.trace = result.trace;
       if (result.recommendation) logEntry.recommendation = result.recommendation;
-      await storeLog(logEntry);
+      await storeLog(withQueueMeta(logEntry));
     } else if (type.includes("link")) {
       const result = await executeLinkIssuesPostFunction(issueKey, config, pfDeadline);
       console.log("Link PF result:", JSON.stringify(result));
@@ -9379,14 +9414,14 @@ export const dispatchPostFunction = async (issueKey, config, extensionKey, pfDea
       if (result.linked) logEntry.linked = result.linked;
       if (result.trace) logEntry.trace = result.trace;
       if (result.recommendation) logEntry.recommendation = result.recommendation;
-      await storeLog(logEntry);
+      await storeLog(withQueueMeta(logEntry));
     } else {
       // Unknown / missing type — write a diagnostic log entry instead of silently
       // returning. Most common cause: a PF saved by an old build whose onConfigure
       // didn't include `type` and the Forge module key fallback above didn't match
       // either (extension.key not containing "semantic" or "static").
       console.log("Unknown post-function type:", type, "extension.key:", extensionKey);
-      await storeLog({
+      await storeLog(withQueueMeta({
         type: "postfunction-skipped",
         issueKey,
         fieldId: extensionKey || "(unknown module)",
@@ -9397,11 +9432,12 @@ export const dispatchPostFunction = async (issueKey, config, extensionKey, pfDea
         ruleId: config.ruleId || config.id || null,
         ruleWorkflow: config.workflow || null,
         moduleKey: extensionKey,
-      });
+      }));
     }
   } catch (error) {
     console.error("Post-function execution error:", error);
-    await storeLog({
+    // A 40-min-late run that then errors still attributes the queue delay.
+    await storeLog(withQueueMeta({
       type: "postfunction-error",
       issueKey: issue.key,
       fieldId: config.type || "unknown",
@@ -9414,7 +9450,7 @@ export const dispatchPostFunction = async (issueKey, config, extensionKey, pfDea
         ? `${config.workflow.workflowName} / ${config.workflow.transitionFromName || "Any"} → ${config.workflow.transitionToName || "?"}`
         : null,
       ruleWorkflow: config.workflow || null,
-    });
+    }));
   }
 
   return { result: true };

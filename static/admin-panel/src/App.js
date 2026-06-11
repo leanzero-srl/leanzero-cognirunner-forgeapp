@@ -3781,6 +3781,7 @@ function App() {
                         <span className="log-time">
                           {formatTime(log.timestamp)}
                           {log.executionTimeMs ? ` · ${log.executionTimeMs}ms` : ""}
+                          {log.queueDelayMs >= 60000 ? ` · waited ${Math.round(log.queueDelayMs / 60000)} min in queue` : ""}
                         </span>
                         {(userRole === "editor" || userRole === "admin") && editUrl && (
                           <button

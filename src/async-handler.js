@@ -404,7 +404,9 @@ Respond with ONLY valid JSON:
  * so the generic async_task status bookkeeping is skipped for it (see handler()).
  */
 const executeQueuedPostFunction = async (params, taskId) => {
-  const { issueKey, config, extensionKey } = params || {};
+  // enqueuedAt: producer timestamp for queue-delay attribution in the log
+  // (events from old builds lack it — delay fields are simply omitted).
+  const { issueKey, config, extensionKey, enqueuedAt } = params || {};
   if (!issueKey || !config) {
     console.error("Queued post-function missing issueKey/config — dropping");
     return { success: false };
@@ -434,7 +436,7 @@ const executeQueuedPostFunction = async (params, taskId) => {
     }
   }
   // 110s budget under the consumer's 120s platform timeout.
-  await dispatchPostFunction(issueKey, config, extensionKey || null, Date.now() + 110000);
+  await dispatchPostFunction(issueKey, config, extensionKey || null, Date.now() + 110000, { enqueuedAt });
   return { success: true };
 };
 

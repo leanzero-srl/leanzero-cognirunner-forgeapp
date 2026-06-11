@@ -2023,6 +2023,7 @@ function App() {
   const [actionFieldId, setActionFieldId] = useState("");
   const [crossCheckClaims, setCrossCheckClaims] = useState(false);
   const [managedType, setManagedType] = useState(null); // generate-doc/research/comment → managed in admin panel
+  const [simulationMode, setSimulationMode] = useState(false); // per-rule simulation flag (kept in sync with currentSimulationMode)
   const [functions, setFunctions] = useState([{
     id: `func_${Date.now()}_initial`,
     name: "",
@@ -2237,6 +2238,7 @@ function App() {
             }
             if (config.simulationMode === true) {
               currentSimulationMode = true;
+              setSimulationMode(true);
             }
             if (config.functions && Array.isArray(config.functions) && config.functions.length > 0) {
               setFunctions(config.functions);
@@ -2350,7 +2352,11 @@ function App() {
             // research / comment): config-ui doesn't render their editors yet, so re-saving
             // here must NOT downgrade them to a plain semantic rule. Return them intact.
             if (isPostFn && currentManagedConfig && currentManagedConfig.type) {
-              return { ...currentManagedConfig, id: ruleId, workflow: workflowContext };
+              const preserved = { ...currentManagedConfig, id: ruleId, workflow: workflowContext };
+              // simulationMode follows the banner toggle, not the stored value.
+              if (currentSimulationMode) preserved.simulationMode = true;
+              else delete preserved.simulationMode;
+              return preserved;
             }
 
             // Validate based on module type. Return undefined to signal "invalid" — Forge then
@@ -2591,6 +2597,30 @@ function App() {
       {isPostFunction && postFunctionType === "static" && (
         <div className="card">
           <FunctionBuilder functions={functions} setFunctions={setFunctions} />
+        </div>
+      )}
+
+      {/* Simulation mode banner — visible whenever the flag is involved, for every
+          PF type (incl. managed ones). This is the OFF-switch: the wizard can only
+          turn simulation on at creation time. Module-level ref keeps the onConfigure
+          closure in sync (house pattern). */}
+      {isPostFunction && (simulationMode || currentSimulationMode) && (
+        <div className="card" style={{ border: "2px solid #d97706", boxShadow: "0 4px 12px -4px rgba(217, 119, 6, 0.35)" }}>
+          <div style={{ padding: "12px 16px" }}>
+            <label style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer", fontSize: "13px", fontWeight: 600 }}>
+              <input
+                type="checkbox"
+                checked={simulationMode}
+                onChange={(e) => { setSimulationMode(e.target.checked); currentSimulationMode = e.target.checked; }}
+              />
+              Simulation Mode {simulationMode ? "— ON (no writes are made)" : "— will be DISABLED on save"}
+            </label>
+            <p style={{ margin: "4px 0 0 22px", fontSize: "11px", color: "var(--text-secondary, #5e6c84)" }}>
+              While ON, this rule runs its full AI evaluation on every transition and logs what it
+              <strong> would</strong> do — without updating fields, posting comments, creating links/sub-tasks,
+              or attaching documents. Untick and save to go live.
+            </p>
+          </div>
         </div>
       )}
 

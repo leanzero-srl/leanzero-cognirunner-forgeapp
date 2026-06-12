@@ -19,6 +19,7 @@
 import React, { useState, useEffect } from "react";
 import TabBar from "./components/TabBar";
 import DocsTab from "./components/DocsTab";
+import MemoriesAdminTab from "./components/MemoriesAdminTab";
 import PermissionsTab from "./components/PermissionsTab";
 import SettingsOpenAITab from "./components/SettingsOpenAITab";
 import CustomSelect from "./components/CustomSelect";
@@ -1327,6 +1328,150 @@ const injectStyles = () => {
     .sk {
       animation: skShimmer 1.5s ease-in-out infinite;
     }
+
+    /* === Memories admin tab === */
+    .memories-admin-tab {
+      animation: tabContentFade 0.2s ease both;
+    }
+
+    .memories-admin-explainer {
+      margin: 4px 0 14px;
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    .memories-admin-toggles {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      padding: 14px 16px;
+      margin-bottom: 14px;
+    }
+
+    .memories-admin-toggle-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+    }
+    .memories-admin-toggle-row input[type="checkbox"] {
+      margin: 2px 0 0;
+      width: 16px;
+      height: 16px;
+      flex-shrink: 0;
+      accent-color: #0d9488;
+      cursor: pointer;
+    }
+    .memories-admin-toggle-row input[type="checkbox"]:disabled { cursor: default; }
+
+    .memories-admin-toggle-label {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--text-color);
+      cursor: pointer;
+    }
+
+    .memories-admin-toggle-copy {
+      margin-top: 2px;
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    .memories-admin-add {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+    .memories-admin-add input {
+      flex: 1;
+      padding: 8px 10px;
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      background: var(--input-bg);
+      color: var(--text-color);
+      font-size: 13px;
+    }
+
+    .btn-add-memory {
+      padding: 8px 16px;
+      font-size: 12px;
+      font-weight: 700;
+      border: none;
+      border-radius: 6px;
+      background: #0d9488;
+      color: #ffffff;
+      cursor: pointer;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .btn-add-memory:hover:not(:disabled) { opacity: 0.85; }
+    .btn-add-memory:disabled { opacity: 0.5; cursor: default; }
+
+    .memories-admin-source-badge {
+      display: inline-block;
+      padding: 2px 10px;
+      border-radius: 10px;
+      font-size: 10px;
+      font-weight: 700;
+      color: #ffffff;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      white-space: nowrap;
+    }
+    .memories-admin-src-user { background: #2563eb; }
+    .memories-admin-src-test { background: #d97706; }
+    .memories-admin-src-fix { background: #16a34a; }
+
+    .memories-admin-divider td {
+      padding: 8px 14px;
+      background: var(--code-bg);
+    }
+    .memories-admin-archived-badge {
+      display: inline-block;
+      padding: 2px 10px;
+      border-radius: 10px;
+      font-size: 10px;
+      font-weight: 700;
+      background: #475569;
+      color: #ffffff;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .memories-admin-archived-row td { color: var(--text-muted); }
+
+    .memories-admin-reinforced {
+      margin-left: 6px;
+      font-size: 10px;
+      font-weight: 700;
+      color: #0d9488;
+      white-space: nowrap;
+    }
+
+    .memories-admin-edit-input {
+      width: 100%;
+      padding: 6px 8px;
+      border: 2px solid #0d9488;
+      border-radius: 6px;
+      background: var(--input-bg);
+      color: var(--text-color);
+      font-size: 12px;
+      font-family: inherit;
+    }
+
+    .memories-admin-empty-title {
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--text-color);
+      margin-bottom: 6px;
+    }
+
+    html[data-color-mode="dark"] .memories-admin-toggle-row input[type="checkbox"] { accent-color: #14b8a6; }
+    html[data-color-mode="dark"] .btn-add-memory { background: #14b8a6; }
+    html[data-color-mode="dark"] .memories-admin-src-user { background: #3b82f6; }
+    html[data-color-mode="dark"] .memories-admin-src-test { background: #f59e0b; }
+    html[data-color-mode="dark"] .memories-admin-src-fix { background: #22c55e; }
+    html[data-color-mode="dark"] .memories-admin-archived-badge { background: #64748b; }
+    html[data-color-mode="dark"] .memories-admin-reinforced { color: #14b8a6; }
+    html[data-color-mode="dark"] .memories-admin-edit-input { border-color: #14b8a6; }
   `;
   document.head.appendChild(style);
 };
@@ -3241,6 +3386,340 @@ const injectCopiedComponentStyles = () => {
       color: var(--success-color);
       border: 1px solid rgba(22, 163, 106, 0.2);
     }
+
+    /* === Knowledge panel (docs / skills / memories) === */
+    .knowledge-panel {
+      margin: 12px 0;
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+      overflow: hidden;
+      background: var(--card-bg);
+      box-shadow: 0 1px 4px rgba(0,0,0,0.03);
+    }
+
+    .knowledge-summary {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 12px;
+      background: var(--code-bg);
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .knowledge-title {
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+      color: var(--text-color);
+    }
+
+    .knowledge-summary-counts {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--text-secondary);
+    }
+    .kc-docs { color: #2563eb; font-weight: 700; }
+    .kc-skills { color: #7c3aed; font-weight: 700; }
+    .kc-mem { color: #0d9488; font-weight: 700; }
+
+    .knowledge-auto-chips { display: flex; gap: 6px; flex-wrap: wrap; }
+
+    .knowledge-chevron {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      color: var(--text-muted);
+      transition: transform 0.2s ease;
+    }
+    .knowledge-chevron.open { transform: rotate(180deg); }
+
+    .knowledge-tabs {
+      display: flex;
+      gap: 8px;
+      padding: 10px 12px;
+      border-top: 1px solid var(--border-color);
+    }
+
+    .knowledge-tab {
+      padding: 5px 14px;
+      font-size: 12px;
+      font-weight: 700;
+      border: 2px solid var(--border-color);
+      border-radius: 8px;
+      background: transparent;
+      color: var(--text-secondary);
+      cursor: pointer;
+    }
+    .knowledge-tab-docs.active { background: #2563eb; border-color: #2563eb; color: #ffffff; }
+    .knowledge-tab-skills.active { background: #7c3aed; border-color: #7c3aed; color: #ffffff; }
+    .knowledge-tab-memories.active { background: #0d9488; border-color: #0d9488; color: #ffffff; }
+
+    .doc-repo-embedded { padding-bottom: 4px; }
+
+    /* Skills */
+    .skill-list { max-height: 320px; overflow-y: auto; }
+
+    .skill-item {
+      border-bottom: 1px solid var(--border-color);
+      transition: background 0.1s ease;
+    }
+    .skill-item:last-child { border-bottom: none; }
+    .skill-item:hover { background: var(--code-bg); }
+
+    .skill-selected { background: var(--icon-bg); box-shadow: inset 0 0 0 2px #7c3aed; }
+    .skill-selected:hover { background: var(--icon-bg); }
+
+    .skill-item-title {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-color);
+      min-width: 0;
+    }
+
+    .skill-when {
+      font-size: 11px;
+      color: var(--text-secondary);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .skill-cat-badge {
+      padding: 1px 8px;
+      border-radius: 10px;
+      font-size: 10px;
+      font-weight: 700;
+      color: #ffffff;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .skill-cat-jira { background: #2563eb; }
+    .skill-cat-external { background: #7c3aed; }
+    .skill-cat-fields { background: #0d9488; }
+    .skill-cat-adf { background: #d97706; }
+    .skill-cat-workflow { background: #16a34a; }
+    .skill-cat-other { background: #475569; }
+
+    .skill-auto-chip {
+      padding: 1px 8px;
+      border-radius: 10px;
+      font-size: 10px;
+      font-weight: 700;
+      background: #7c3aed;
+      color: #ffffff;
+      white-space: nowrap;
+    }
+
+    .btn-save-skill {
+      padding: 5px 12px;
+      font-size: 12px;
+      font-weight: 700;
+      border: none;
+      border-radius: 6px;
+      background: #7c3aed;
+      color: #ffffff;
+      cursor: pointer;
+    }
+    .btn-save-skill:hover { opacity: 0.85; }
+
+    .builtin-badge {
+      padding: 1px 6px;
+      border-radius: 10px;
+      font-size: 10px;
+      font-weight: 700;
+      background: #475569;
+      color: #ffffff;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    /* Memories */
+    .memory-list { max-height: 280px; overflow-y: auto; }
+
+    .memory-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--border-color);
+    }
+    .memory-item:last-child { border-bottom: none; }
+
+    .memory-source-badge {
+      padding: 1px 8px;
+      border-radius: 10px;
+      font-size: 10px;
+      font-weight: 700;
+      color: #ffffff;
+      text-transform: uppercase;
+      flex-shrink: 0;
+    }
+    .memory-src-user { background: #2563eb; }
+    .memory-src-test { background: #d97706; }
+    .memory-src-fix { background: #16a34a; }
+
+    .memory-quick-add {
+      display: flex;
+      gap: 8px;
+      padding: 10px 12px;
+    }
+    .memory-quick-add .input { flex: 1; }
+
+    .btn-remember {
+      padding: 6px 14px;
+      font-size: 12px;
+      font-weight: 700;
+      border: none;
+      border-radius: 6px;
+      background: #0d9488;
+      color: #ffffff;
+      cursor: pointer;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .btn-remember:hover:not(:disabled) { opacity: 0.85; }
+    .btn-remember:disabled { opacity: 0.5; cursor: default; }
+
+    .memory-saved-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      margin-top: 8px;
+      padding: 4px 10px;
+      border-radius: 10px;
+      font-size: 11px;
+      font-weight: 700;
+      background: #0d9488;
+      color: #ffffff;
+    }
+
+    /* Dark mode — one shade lighter per hue */
+    html[data-color-mode="dark"] .kc-docs { color: #3b82f6; }
+    html[data-color-mode="dark"] .kc-skills { color: #8b5cf6; }
+    html[data-color-mode="dark"] .kc-mem { color: #14b8a6; }
+    html[data-color-mode="dark"] .knowledge-tab-docs.active { background: #3b82f6; border-color: #3b82f6; }
+    html[data-color-mode="dark"] .knowledge-tab-skills.active { background: #8b5cf6; border-color: #8b5cf6; }
+    html[data-color-mode="dark"] .knowledge-tab-memories.active { background: #14b8a6; border-color: #14b8a6; }
+    html[data-color-mode="dark"] .skill-selected { box-shadow: inset 0 0 0 2px #8b5cf6; }
+    html[data-color-mode="dark"] .skill-cat-jira { background: #3b82f6; }
+    html[data-color-mode="dark"] .skill-cat-external { background: #8b5cf6; }
+    html[data-color-mode="dark"] .skill-cat-fields { background: #14b8a6; }
+    html[data-color-mode="dark"] .skill-cat-adf { background: #f59e0b; }
+    html[data-color-mode="dark"] .skill-cat-workflow { background: #22c55e; }
+    html[data-color-mode="dark"] .skill-cat-other { background: #64748b; }
+    html[data-color-mode="dark"] .skill-auto-chip { background: #8b5cf6; }
+    html[data-color-mode="dark"] .btn-save-skill { background: #8b5cf6; }
+    html[data-color-mode="dark"] .builtin-badge { background: #64748b; }
+    html[data-color-mode="dark"] .memory-src-user { background: #3b82f6; }
+    html[data-color-mode="dark"] .memory-src-test { background: #f59e0b; }
+    html[data-color-mode="dark"] .memory-src-fix { background: #22c55e; }
+    html[data-color-mode="dark"] .btn-remember { background: #14b8a6; }
+    html[data-color-mode="dark"] .memory-saved-badge { background: #14b8a6; }
+
+    /* === AI provenance, fix loop, and editor lint/hover === */
+    .gen-meta-bar {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin: 6px 0;
+    }
+
+    .gen-meta-label {
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--text-muted);
+      letter-spacing: 0.3px;
+    }
+
+    .gen-meta-chip {
+      padding: 2px 10px;
+      border-radius: 10px;
+      font-size: 10px;
+      font-weight: 700;
+      color: #ffffff;
+      white-space: nowrap;
+    }
+    .gmc-docs { background: #2563eb; }
+    .gmc-skill { background: #7c3aed; }
+    .gmc-mem { background: #0d9488; }
+
+    .truncation-warning {
+      width: 100%;
+      margin: 6px 0;
+      padding: 8px 10px;
+      border-radius: 6px;
+      background: #d97706;
+      color: #ffffff;
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .btn-fix-ai {
+      margin-left: 8px;
+      padding: 3px 12px;
+      font-size: 11px;
+      font-weight: 700;
+      border: none;
+      border-radius: 6px;
+      background: #ffffff;
+      color: var(--error-color);
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .btn-fix-ai:hover:not(:disabled) { opacity: 0.85; }
+    .btn-fix-ai:disabled { opacity: 0.5; cursor: default; }
+
+    .fix-result {
+      margin: 8px 0;
+      padding: 10px 12px;
+      border: 2px solid var(--border-color);
+      border-radius: 10px;
+      background: var(--card-bg);
+    }
+    .fix-result.fix-verified { border-color: var(--success-color); }
+
+    .fix-undo-bar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 13px;
+    }
+    .fix-undo-bar strong { font-weight: 700; }
+
+    .fix-explanation {
+      margin: 6px 0 0;
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    .test-result-actions {
+      display: flex;
+      justify-content: flex-end;
+      padding: 8px 12px;
+      border-top: 1px solid var(--border-color);
+    }
+
+    /* CodeMirror hover docs */
+    .cm-api-hover {
+      background: var(--card-bg);
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      font-size: 12px;
+      max-width: 360px;
+      padding: 8px 10px;
+      color: var(--text-color);
+    }
+
+    html[data-color-mode="dark"] .gmc-docs { background: #3b82f6; }
+    html[data-color-mode="dark"] .gmc-skill { background: #8b5cf6; }
+    html[data-color-mode="dark"] .gmc-mem { background: #14b8a6; }
+    html[data-color-mode="dark"] .truncation-warning { background: #f59e0b; }
   `;
   document.head.appendChild(style);
 };
@@ -3252,6 +3731,7 @@ let router;
 const TABS = [
   { key: "rules", label: "Rules" },
   { key: "docs", label: "Documentation" },
+  { key: "memories", label: "Memories" },
   { key: "permissions", label: "Permissions", adminOnly: true },
   { key: "settings", label: "Settings", adminOnly: true },
 ];
@@ -3822,6 +4302,11 @@ function App() {
       {/* Documentation Tab */}
       {activeTab === "docs" && (
         <DocsTab invoke={invoke} isAdmin={isAdmin} accountId={accountId} />
+      )}
+
+      {/* Memories Tab */}
+      {activeTab === "memories" && (
+        <MemoriesAdminTab invoke={invoke} isAdmin={isAdmin} accountId={accountId} />
       )}
 
       {/* Permissions Tab (admin only) — app admin management */}

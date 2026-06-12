@@ -41,10 +41,19 @@ const TEST_MESSAGES = [
   "Preparing results...",
 ];
 
+const FIX_MESSAGES = [
+  "Reading the failure...",
+  "Checking the sandbox API spec...",
+  "Rewriting the failing section...",
+  "Validating the fix...",
+  "Saving what it learned...",
+];
+
 const MESSAGE_SETS = {
   review: REVIEW_MESSAGES,
   codegen: CODE_GEN_MESSAGES,
   test: TEST_MESSAGES,
+  fix: FIX_MESSAGES,
   default: DEFAULT_MESSAGES,
 };
 

@@ -7,8 +7,29 @@
 
 import React, { useState, useEffect, useCallback } from "react";
 import { invoke } from "@forge/bridge";
+import { javascriptLanguage } from "@codemirror/lang-javascript";
 import Tooltip from "./Tooltip";
 import CustomSelect from "./CustomSelect";
+
+// CSP-safe JavaScript syntax check: parse with Lezer (no eval / new Function,
+// which the Forge iframe CSP blocks) and look for error nodes in the tree.
+const checkJsSyntax = (content) => {
+  const tree = javascriptLanguage.parser.parse(content);
+  let errorAt = -1;
+  tree.iterate({
+    enter: (node) => {
+      if (errorAt >= 0) return false;
+      if (node.type.isError) {
+        errorAt = node.from;
+        return false;
+      }
+      return undefined;
+    },
+  });
+  if (errorAt < 0) return { ok: true };
+  const line = content.slice(0, errorAt).split("\n").length;
+  return { ok: false, line };
+};
 
 const CATEGORIES = [
   "API Documentation",
@@ -19,7 +40,7 @@ const CATEGORIES = [
   "General",
 ];
 
-export default function DocRepository({ selectedDocs, onSelectionChange }) {
+export default function DocRepository({ selectedDocs, onSelectionChange, embedded = false, onChanged = null }) {
   const [docs, setDocs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showAdd, setShowAdd] = useState(false);
@@ -72,14 +93,13 @@ export default function DocRepository({ selectedDocs, onSelectionChange }) {
     }
 
     if (category === "Code Snippets") {
-      try {
-        new Function(content);
+      const result = checkJsSyntax(content);
+      if (result.ok) {
         setValidationMsg({ type: "ok", msg: "Valid JavaScript syntax" });
         return true;
-      } catch (e) {
-        setValidationMsg({ type: "error", msg: `JS syntax error: ${e.message}` });
-        return false;
       }
+      setValidationMsg({ type: "error", msg: `JS syntax error near line ${result.line}` });
+      return false;
     }
 
     // No validation for other categories
@@ -120,6 +140,7 @@ export default function DocRepository({ selectedDocs, onSelectionChange }) {
         setNewCategory("General");
         setShowAdd(false);
         await loadDocs();
+        if (onChanged) onChanged();
       } else {
         setError(result.error || "Failed to save");
       }
@@ -137,6 +158,7 @@ export default function DocRepository({ selectedDocs, onSelectionChange }) {
         onSelectionChange(selectedDocs.filter((d) => d !== id));
       }
       await loadDocs();
+      if (onChanged) onChanged();
     } catch (e) {
       console.error("Failed to delete:", e);
     }
@@ -173,21 +195,36 @@ export default function DocRepository({ selectedDocs, onSelectionChange }) {
     return `${(len / 1024).toFixed(1)} KB`;
   };
 
+  // Hide rows the backend disabled (e.g. soft-deleted builtins)
+  const visibleDocs = docs.filter((d) => !d.disabled);
+
   return (
-    <div className="doc-repo">
-      <div className="doc-repo-header">
-        <div className="doc-repo-title-row">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M4 19.5A2.5 2.5 0 016.5 17H20" />
-            <path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z" />
-          </svg>
-          <span className="doc-repo-title">Documentation Library</span>
-          <Tooltip text="Shared reference documents available to all users. Select documents to include as context when generating code — the AI uses them to produce more accurate results." />
+    <div className={embedded ? "doc-repo-embedded" : "doc-repo"}>
+      {embedded ? (
+        // Parent (Knowledge panel) provides the chrome — just a slim toolbar.
+        <div className="doc-add-actions" style={{ padding: "8px 12px 0" }}>
+          <span className="doc-size-hint">
+            Reference documents the AI uses as context when generating code
+          </span>
+          <button className="btn-add-doc" onClick={() => setShowAdd(!showAdd)}>
+            {showAdd ? "Cancel" : "+ Add Document"}
+          </button>
         </div>
-        <button className="btn-add-doc" onClick={() => setShowAdd(!showAdd)}>
-          {showAdd ? "Cancel" : "+ Add Document"}
-        </button>
-      </div>
+      ) : (
+        <div className="doc-repo-header">
+          <div className="doc-repo-title-row">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M4 19.5A2.5 2.5 0 016.5 17H20" />
+              <path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z" />
+            </svg>
+            <span className="doc-repo-title">Documentation Library</span>
+            <Tooltip text="Shared reference documents available to all users. Select documents to include as context when generating code — the AI uses them to produce more accurate results." />
+          </div>
+          <button className="btn-add-doc" onClick={() => setShowAdd(!showAdd)}>
+            {showAdd ? "Cancel" : "+ Add Document"}
+          </button>
+        </div>
+      )}
 
       {/* Add new document form */}
       {showAdd && (
@@ -254,13 +291,13 @@ export default function DocRepository({ selectedDocs, onSelectionChange }) {
           <div className="sk sk-text" style={{ width: "60%", height: 12, marginBottom: 8 }} />
           <div className="sk sk-text" style={{ width: "40%", height: 12 }} />
         </div>
-      ) : docs.length === 0 ? (
+      ) : visibleDocs.length === 0 ? (
         <div className="doc-empty">
           No documents yet. Add API docs, schemas, or field mappings to help AI generate better code.
         </div>
       ) : (
         <div className="doc-list">
-          {docs.map((doc) => {
+          {visibleDocs.map((doc) => {
             const isSelected = selectedDocs.includes(doc.id);
             const isExpanded = expandedDoc === doc.id;
             return (
@@ -277,6 +314,7 @@ export default function DocRepository({ selectedDocs, onSelectionChange }) {
                     <span className="doc-item-title">{doc.title}</span>
                     <span className="doc-item-meta">
                       <span className="doc-category-badge">{doc.category}</span>
+                      {doc.builtin && <span className="builtin-badge">BUILT-IN</span>}
                       <span>{formatSize(doc.contentLength)}</span>
                     </span>
                   </div>
@@ -291,7 +329,7 @@ export default function DocRepository({ selectedDocs, onSelectionChange }) {
                     <button
                       className="doc-btn-delete"
                       onClick={() => handleDelete(doc.id)}
-                      title="Delete"
+                      title={doc.builtin ? "Disable" : "Delete"}
                     >
                       &times;
                     </button>

@@ -5,7 +5,8 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 
-import React from "react";
+import React, { useState, useEffect } from "react";
+import { invoke } from "@forge/bridge";
 import FunctionBlock from "./FunctionBlock";
 import Tooltip from "./Tooltip";
 import ReviewPanel from "./ReviewPanel";
@@ -13,6 +14,14 @@ import ReviewPanel from "./ReviewPanel";
 const MAX_FUNCTIONS = 50;
 
 let funcCounter = 1;
+
+// Module-level cached promise — getFields is fetched at most once per page
+// load no matter how many FunctionBuilder instances mount.
+let fieldsPromise = null;
+function loadFields() {
+  if (!fieldsPromise) fieldsPromise = invoke("getFields");
+  return fieldsPromise;
+}
 
 function createEmptyFunction() {
   const num = funcCounter++;
@@ -31,18 +40,35 @@ function createEmptyFunction() {
 }
 
 export default function FunctionBuilder({ functions, setFunctions }) {
+  // Jira fields for editor completions (custom-field write formats etc.)
+  const [fields, setFields] = useState([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    loadFields()
+      .then((result) => {
+        if (!cancelled && result && result.success) setFields(result.fields || []);
+      })
+      .catch(() => { /* completions degrade gracefully without fields */ });
+    return () => { cancelled = true; };
+  }, []);
+
+  // Functional updates — async flows (generate/fix) call onUpdate from stale
+  // closures, so updates must always be applied against the latest state.
   const addFunction = () => {
-    if (functions.length >= MAX_FUNCTIONS) return;
-    setFunctions([...functions, createEmptyFunction()]);
+    setFunctions((prev) =>
+      prev.length >= MAX_FUNCTIONS ? prev : [...prev, createEmptyFunction()],
+    );
   };
 
   const removeFunction = (id) => {
-    if (functions.length <= 1) return;
-    setFunctions(functions.filter((f) => f.id !== id));
+    setFunctions((prev) =>
+      prev.length <= 1 ? prev : prev.filter((f) => f.id !== id),
+    );
   };
 
   const updateFunction = (id, updates) => {
-    setFunctions(functions.map((f) => f.id === id ? { ...f, ...updates } : f));
+    setFunctions((prev) => prev.map((f) => f.id === id ? { ...f, ...updates } : f));
   };
 
   return (
@@ -60,7 +86,9 @@ export default function FunctionBuilder({ functions, setFunctions }) {
         <ol className="pf-how-steps">
           <li><strong>Describe</strong> what each step should do in plain language</li>
           <li><strong>Generate</strong> — AI writes the JavaScript code for you</li>
-          <li><strong>Review &amp; save</strong> — the code runs on every transition with no AI cost</li>
+          <li><strong>Test</strong> — dry-run safely against real data</li>
+          <li><strong>Fix</strong> — one-click AI repair when a test fails</li>
+          <li><strong>Learns</strong> — every fix becomes a memory that improves future generations</li>
         </ol>
       </div>
 
@@ -70,6 +98,7 @@ export default function FunctionBuilder({ functions, setFunctions }) {
           index={i}
           functionData={fn}
           priorSteps={functions.slice(0, i)}
+          fields={fields}
           onUpdate={(updates) => updateFunction(fn.id, updates)}
           onRemove={removeFunction}
           isOnly={functions.length === 1}

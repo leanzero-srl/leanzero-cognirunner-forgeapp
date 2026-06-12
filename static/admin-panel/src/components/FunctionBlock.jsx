@@ -5,15 +5,64 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 
-import React, { useState, useRef, useCallback } from "react";
+import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { invoke } from "@forge/bridge";
 import Tooltip from "./Tooltip";
 import CustomSelect from "./CustomSelect";
 import CodeEditor from "./CodeEditor";
-import DocRepository from "./DocRepository";
+import KnowledgePanel from "./KnowledgePanel";
+import SkillEditor from "./SkillEditor";
+import ApiReferencePanel from "./editor/ApiReferencePanel";
 import IssuePicker from "./IssuePicker";
 import AILoadingState from "./AILoadingState";
 import JIRA_ENDPOINTS_DATA from "../data/jira-endpoints";
+
+// Maps a step's operation type to the closest skill category for
+// the "Save as Skill" pre-fill.
+const SKILL_CATEGORY_BY_OPTYPE = {
+  work_item_query: "Jira API",
+  rest_api_internal: "Jira API",
+  rest_api_external: "External / Webhooks",
+  confluence_api: "Other",
+  log_function: "Workflow Patterns",
+};
+
+// Compacts the codegen/fix meta for persisting on the step config — titles
+// sliced so the rule config stays small.
+const sliceTitle = (t) => (t || "").slice(0, 40);
+const compactMeta = (meta) => {
+  if (!meta) return null;
+  return {
+    appliedDocs: (meta.appliedDocs || []).map((d) => ({ id: d.id, title: sliceTitle(d.title) })),
+    appliedSkills: (meta.appliedSkills || []).map((s) => ({ id: s.id, name: sliceTitle(s.name), auto: !!s.auto })),
+    appliedMemories: meta.appliedMemories || 0,
+    truncatedDocs: (meta.truncatedDocs || []).map((d) => ({ title: sliceTitle(d.title) })),
+  };
+};
+
+// Polls getAsyncTaskResult for slow providers (LM Studio) that return
+// { async: true, taskId } instead of an inline result. 40 tries * 3s = 120s.
+const pollAsyncResult = (taskId) => new Promise((resolve) => {
+  let attempts = 0;
+  const maxAttempts = 40;
+  const poll = async () => {
+    attempts++;
+    try {
+      const res = await invoke("getAsyncTaskResult", { taskId });
+      if (res.success) {
+        if (res.status === "done") { resolve(res.result); return; }
+        if (res.status === "error") { resolve({ success: false, error: res.error }); return; }
+        if (attempts < maxAttempts) { setTimeout(poll, 3000); return; }
+        resolve({ success: false, error: "AI task timed out. Try again." });
+      } else {
+        resolve({ success: false, error: res.error || "Failed to poll task status" });
+      }
+    } catch (e) {
+      resolve({ success: false, error: e.message });
+    }
+  };
+  poll();
+});
 
 const OPERATION_TYPES = [
   {
@@ -134,10 +183,11 @@ return { success: true };`)}`;
   }
 }
 
-export default function FunctionBlock({ index, functionData, priorSteps, onUpdate, onRemove, isOnly }) {
+export default function FunctionBlock({ index, functionData, priorSteps, fields = [], onUpdate, onRemove, isOnly }) {
   const [isGenerating, setIsGenerating] = useState(false);
   const [showApiRef, setShowApiRef] = useState(false);
   const [selectedDocs, setSelectedDocs] = useState(functionData.selectedDocIds || []);
+  const [selectedSkills, setSelectedSkills] = useState(functionData.selectedSkillIds || []);
   const [testRunning, setTestRunning] = useState(false);
   const [testResult, setTestResult] = useState(null);
   const [testTarget, setTestTarget] = useState("");
@@ -149,9 +199,49 @@ export default function FunctionBlock({ index, functionData, priorSteps, onUpdat
   // Non-blocking notice surfaced when AI code-gen failed and we fell back to a generic template.
   // Cleared by the user on the next Generate click or when they edit the code.
   const [generationFallback, setGenerationFallback] = useState(null);
+  // Fix-with-AI loop state
+  const [fixing, setFixing] = useState(false);
+  const [fixAttempts, setFixAttempts] = useState(0);
+  const [fixResult, setFixResult] = useState(null); // { explanation, verified, preFixCode, preFixMeta }
+  const [memorySaved, setMemorySaved] = useState(null); // { id, content }
+  const [showSkillEditor, setShowSkillEditor] = useState(false);
   const suggestTimer = useRef(null);
 
+  // Generation token — invalidates in-flight generate/fix polls. Bumped at the
+  // start of every generate and fix, on manual code edits, and on unmount, so
+  // a stale resolution can never clobber newer state with old AI output.
+  const genTokenRef = useRef(0);
+  useEffect(() => () => { genTokenRef.current += 1; }, []);
+
   const update = (field, value) => onUpdate({ [field]: value });
+
+  // Prior-step variable names for editor completions/lint. Keyed by a joined
+  // string so the editor extensions only rebuild when names actually change.
+  const priorVarsKey = (priorSteps || [])
+    .filter((s) => s.variableName)
+    .map((s) => s.variableName)
+    .join(",");
+  const priorVariables = useMemo(
+    () => (priorVarsKey ? priorVarsKey.split(",") : []),
+    [priorVarsKey],
+  );
+
+  // Project key derived from the test target issue (PROJ-123 -> PROJ);
+  // scopes auto-matched memories/skills on the backend.
+  const deriveProjectKey = () => {
+    const target = testTarget.trim();
+    return /^[A-Z]+-\d+$/i.test(target) ? target.split("-")[0].toUpperCase() : null;
+  };
+
+  // Prior steps payload shared by generate + fix calls.
+  const buildPriorStepsPayload = () => (priorSteps || [])
+    .filter((s) => s.variableName)
+    .map((s, i) => ({
+      step: i + 1,
+      name: s.name || `Step ${i + 1}`,
+      variable: s.variableName,
+      description: s.operationPrompt || "",
+    }));
 
   const handleEndpointSuggest = async () => {
     if (!endpointQuery.trim()) return;
@@ -206,43 +296,35 @@ export default function FunctionBlock({ index, functionData, priorSteps, onUpdat
   };
 
   const handleGenerate = async () => {
+    genTokenRef.current += 1;
+    const token = genTokenRef.current;
     setIsGenerating(true);
     setGenerationFallback(null);
     try {
-      // Fetch selected doc contents
-      let contextDocs = functionData.contextDocs || "";
-      if (selectedDocs.length > 0) {
-        const docContents = await Promise.all(
-          selectedDocs.map((id) => invoke("getContextDocContent", { id })),
-        );
-        const docsText = docContents
-          .filter((r) => r.success && r.doc)
-          .map((r) => `### ${r.doc.title}\n${r.doc.content}`)
-          .join("\n\n---\n\n");
-        contextDocs = contextDocs ? `${contextDocs}\n\n${docsText}` : docsText;
-      }
-
-      // Build prior steps context so the AI knows what variables are available
-      const priorVars = (priorSteps || [])
-        .filter((s) => s.variableName)
-        .map((s, i) => ({
-          step: i + 1,
-          name: s.name || `Step ${i + 1}`,
-          variable: s.variableName,
-          description: s.operationPrompt || "",
-        }));
-
-      const result = await invoke("generatePostFunctionCode", {
+      // The backend resolves selected docs/skills/memories itself; the inline
+      // "Additional Context" textarea is the only client-supplied text.
+      let result = await invoke("generatePostFunctionCode", {
         prompt: functionData.operationPrompt,
         operationType: functionData.operationType || "work_item_query",
         endpoint: functionData.endpoint || "",
         method: functionData.method || "GET",
         includeBackoff: functionData.includeBackoff || false,
-        contextDocs,
-        priorSteps: priorVars,
+        contextDocs: functionData.contextDocs || "",
+        priorSteps: buildPriorStepsPayload(),
+        selectedDocIds: selectedDocs,
+        selectedSkillIds: selectedSkills,
+        autoMatch: true,
+        projectKey: deriveProjectKey(),
       });
-      if (result.success && result.code) {
-        onUpdate({ code: result.code });
+      // Slow self-hosted providers (LM Studio) queue the task instead.
+      if (result.async && result.taskId) {
+        result = await pollAsyncResult(result.taskId);
+      }
+      // Stale resolution (user edited code / started another op / unmounted):
+      // discard the result — never clobber the newer state.
+      if (genTokenRef.current !== token) return;
+      if (result && result.success && result.code) {
+        onUpdate({ code: result.code, generationMeta: compactMeta(result.meta) });
       } else {
         // Fallback to local template if AI fails. Surface a notice so the user knows
         // they're looking at a generic template, not AI-tailored code.
@@ -253,11 +335,12 @@ export default function FunctionBlock({ index, functionData, priorSteps, onUpdat
           functionData.method,
           functionData.includeBackoff,
         );
-        onUpdate({ code });
-        setGenerationFallback(result.error || "AI generation failed");
-        console.warn("AI generation failed, used template:", result.error);
+        onUpdate({ code, generationMeta: null });
+        setGenerationFallback(result?.error || "AI generation failed");
+        console.warn("AI generation failed, used template:", result?.error);
       }
     } catch (e) {
+      if (genTokenRef.current !== token) return;
       // Fallback to local template on network error
       const code = generateCode(
         functionData.operationType,
@@ -266,11 +349,157 @@ export default function FunctionBlock({ index, functionData, priorSteps, onUpdat
         functionData.method,
         functionData.includeBackoff,
       );
-      onUpdate({ code });
+      onUpdate({ code, generationMeta: null });
       setGenerationFallback(e.message || "Network error");
       console.warn("AI generation error, used template:", e.message);
+    } finally {
+      // Always clear the busy flag — a stale token here can only mean a manual
+      // edit or unmount (the Generate/Fix buttons are mutually excluded), so
+      // resetting never stomps another op's spinner.
+      setIsGenerating(false);
     }
-    setIsGenerating(false);
+  };
+
+  // Run the dry-run test. Accepts a code override so the fix loop can re-run
+  // immediately after applying new code (the functionData prop is still stale
+  // inside that closure). Returns the result for callers that need it.
+  const runTest = async (codeOverride) => {
+    const codeToRun = codeOverride !== undefined ? codeOverride : functionData.code;
+    setTestRunning(true);
+    setTestResult(null);
+    let result;
+    try {
+      const target = testTarget.trim();
+      const isKey = /^[A-Z]+-\d+$/i.test(target);
+      result = await invoke("testPostFunction", {
+        code: codeToRun,
+        issueKey: isKey ? target : undefined,
+        jql: target && !isKey ? target : undefined,
+      });
+    } catch (e) {
+      result = { success: false, logs: ["Test error: " + e.message] };
+    }
+    setTestResult(result);
+    setTestRunning(false);
+    if (result && result.success) setFixAttempts(0); // successful run resets the fix guard
+    return result;
+  };
+
+  // One-click AI repair: send the failing code + logs, apply the fixed code,
+  // auto re-run the test, and persist what the AI learned as a memory when
+  // the re-run passes.
+  const handleFixWithAI = async () => {
+    if (fixing || fixAttempts >= 2) return;
+    genTokenRef.current += 1;
+    const token = genTokenRef.current;
+    const failedResult = testResult;
+    setFixAttempts((n) => n + 1);
+    setFixing(true);
+    setMemorySaved(null);
+    try {
+      const logs = failedResult?.logs || [];
+      const firstError = logs.find((l) => /error|fail|exception|denied|invalid|timeout/i.test(l));
+      const error = firstError || logs.slice(-5).join("\n") || "Test failed with no logs";
+
+      let result = await invoke("fixPostFunctionCode", {
+        code: functionData.code,
+        error,
+        logs: logs.slice(-20),
+        prompt: functionData.operationPrompt,
+        operationType: functionData.operationType || "work_item_query",
+        selectedSkillIds: selectedSkills,
+        selectedDocIds: selectedDocs,
+        projectKey: deriveProjectKey(),
+        priorSteps: buildPriorStepsPayload(),
+      });
+      if (result.async && result.taskId) {
+        result = await pollAsyncResult(result.taskId);
+      }
+      // Stale resolution (user edited code / started another op / unmounted):
+      // discard the fix — only clear the busy flag.
+      if (genTokenRef.current !== token) {
+        setFixing(false);
+        return;
+      }
+
+      if (result && result.success && result.code) {
+        const preFixCode = functionData.code;
+        const preFixMeta = functionData.generationMeta || null;
+        onUpdate({ code: result.code, generationMeta: compactMeta(result.meta) });
+        setTestResult(null);
+        setFixResult({
+          explanation: result.explanation || "",
+          verified: false,
+          preFixCode,
+          preFixMeta,
+        });
+        setFixing(false);
+
+        // Auto re-run against the fixed code
+        const rerun = await runTest(result.code);
+        if (genTokenRef.current !== token) return;
+        if (rerun && rerun.success) {
+          setFixResult((prev) => (prev ? { ...prev, verified: true } : prev));
+          // Persist the fix-derived memory only once the fix is verified
+          if (result.memoryCandidate && result.memoryCandidate.content) {
+            try {
+              const memRes = await invoke("addMemory", {
+                content: result.memoryCandidate.content,
+                projectKey: result.memoryCandidate.projectScoped ? deriveProjectKey() : null,
+                source: "fix",
+              });
+              if (genTokenRef.current !== token) return;
+              if (memRes.success) {
+                setMemorySaved({ id: memRes.id, content: result.memoryCandidate.content });
+              }
+            } catch (e) {
+              console.warn("Memory save failed:", e.message);
+            }
+          }
+        }
+      } else {
+        setFixing(false);
+        setTestResult(failedResult ? { ...failedResult, fixError: result?.error || "AI fix failed" } : null);
+      }
+    } catch (e) {
+      setFixing(false);
+      if (genTokenRef.current !== token) return;
+      setTestResult((prev) => (prev ? { ...prev, fixError: e.message } : { success: false, logs: ["Fix error: " + e.message] }));
+    }
+  };
+
+  const handleUndoFix = () => {
+    if (!fixResult) return;
+    onUpdate({ code: fixResult.preFixCode, generationMeta: fixResult.preFixMeta });
+    setFixResult(null);
+    // Clear the (now stale) PASS from the fixed code's auto re-run — the
+    // restored code was never verified by that run.
+    setTestResult(null);
+    // Keep memorySaved: the learned memory is already persisted, so the badge
+    // (and its veto button) must stay available after the undo.
+  };
+
+  const handleVetoMemory = async () => {
+    if (!memorySaved) return;
+    try {
+      await invoke("deleteMemory", { id: memorySaved.id });
+    } catch (e) {
+      console.warn("Memory delete failed:", e.message);
+    }
+    setMemorySaved(null);
+  };
+
+  // Manual edits dismiss the fix card and reset the fix-attempt guard.
+  // (External value updates don't trigger CodeMirror's onChange, so applying
+  // an AI fix doesn't immediately dismiss its own card.)
+  const handleCodeChange = (v) => {
+    // A manual edit takes ownership of the code — invalidate any in-flight
+    // generate/fix so its eventual result is discarded.
+    genTokenRef.current += 1;
+    update("code", v);
+    if (fixResult) setFixResult(null);
+    if (fixAttempts !== 0) setFixAttempts(0);
+    if (generationFallback) setGenerationFallback(null);
   };
 
   const hasPrompt = functionData.operationPrompt?.trim();
@@ -522,10 +751,13 @@ export default function FunctionBlock({ index, functionData, priorSteps, onUpdat
         </div>
       )}
 
-      {/* Documentation library — shared reference docs for AI code generation */}
-      <DocRepository
-        selectedDocs={selectedDocs}
-        onSelectionChange={(ids) => { setSelectedDocs(ids); onUpdate({ selectedDocIds: ids }); }}
+      {/* Knowledge panel — docs, skills, and memories the AI uses as context */}
+      <KnowledgePanel
+        selectedDocIds={selectedDocs}
+        onDocSelectionChange={(ids) => { setSelectedDocs(ids); onUpdate({ selectedDocIds: ids }); }}
+        selectedSkillIds={selectedSkills}
+        onSkillSelectionChange={(ids) => { setSelectedSkills(ids); onUpdate({ selectedSkillIds: ids }); }}
+        autoAppliedSkills={(functionData.generationMeta?.appliedSkills || []).filter((s) => s.auto)}
       />
 
       {/* Inline context — for one-off notes not worth saving to the library */}
@@ -591,7 +823,7 @@ export default function FunctionBlock({ index, functionData, priorSteps, onUpdat
           <button
             className={`btn-generate ${hasCode ? "btn-generate-secondary" : ""}`}
             onClick={handleGenerate}
-            disabled={!hasPrompt}
+            disabled={!hasPrompt || fixing || testRunning}
           >
             {hasCode ? "Regenerate Code" : "Generate Code"}
           </button>
@@ -608,11 +840,12 @@ export default function FunctionBlock({ index, functionData, priorSteps, onUpdat
           style={{
             margin: "8px 0",
             padding: "8px 10px",
-            background: "rgba(217, 119, 6, 0.08)",
-            border: "1px solid rgba(217, 119, 6, 0.4)",
+            background: "#d97706",
+            border: "none",
             borderRadius: "6px",
             fontSize: "12px",
-            color: "var(--text-color)",
+            fontWeight: 600,
+            color: "#ffffff",
             display: "flex",
             alignItems: "flex-start",
             gap: "8px",
@@ -623,7 +856,7 @@ export default function FunctionBlock({ index, functionData, priorSteps, onUpdat
           </span>
           <button
             onClick={() => setGenerationFallback(null)}
-            style={{ background: "transparent", border: "none", cursor: "pointer", color: "var(--text-muted)", fontSize: "16px", lineHeight: 1, padding: 0 }}
+            style={{ background: "transparent", border: "none", cursor: "pointer", color: "#ffffff", fontSize: "16px", lineHeight: 1, padding: 0 }}
           >
             &times;
           </button>
@@ -653,118 +886,86 @@ export default function FunctionBlock({ index, functionData, priorSteps, onUpdat
             </div>
           </div>
 
-          {/* API Reference panel */}
-          {showApiRef && (
-            <div className="api-ref-panel">
-              <div className="api-ref-title">Sandbox API</div>
-              <div className="api-ref-grid">
-                <div className="api-ref-item">
-                  <code>api.getIssue(key)</code>
-                  <span>Returns: <code>{`{key, fields: {summary, status, priority, assignee, description, labels, ...}}`}</code></span>
-                </div>
-                <div className="api-ref-item">
-                  <code>api.updateIssue(key, fields)</code>
-                  <span>Fields object: <code>{`{summary: "text", priority: {name: "High"}, labels: ["a","b"]}`}</code>. ADF required for description.</span>
-                </div>
-                <div className="api-ref-item">
-                  <code>api.searchJql(jql)</code>
-                  <span>Returns: <code>{`{issues: [{key, fields}], total}`}</code>. Max 20 results. JQL operators: =, !=, ~, IN, IS EMPTY</span>
-                </div>
-                <div className="api-ref-item">
-                  <code>api.transitionIssue(key, id)</code>
-                  <span>Transition ID is a number (string). Get valid IDs from the workflow definition.</span>
-                </div>
-                <div className="api-ref-item">
-                  <code>api.log(...args)</code>
-                  <span>Logs to execution trace. Objects auto-stringified. Visible in test results and validation logs.</span>
-                </div>
-                <div className="api-ref-item">
-                  <code>api.context.issueKey</code>
-                  <span>The issue being transitioned (e.g., "PROJ-123"). Use to get the current issue key.</span>
-                </div>
-              </div>
+          {/* API Reference panel — rendered from the shared sandbox API spec */}
+          {showApiRef && <ApiReferencePanel />}
 
-              <div className="api-ref-title" style={{ marginTop: "12px" }}>Field Update Formats</div>
-              <div className="api-ref-grid">
-                <div className="api-ref-item">
-                  <code>summary</code>
-                  <span><code>{`"text string"`}</code></span>
-                </div>
-                <div className="api-ref-item">
-                  <code>priority</code>
-                  <span><code>{`{name: "High"}`}</code> or <code>{`{id: "1"}`}</code></span>
-                </div>
-                <div className="api-ref-item">
-                  <code>assignee</code>
-                  <span><code>{`{accountId: "5f..."}`}</code> — never username</span>
-                </div>
-                <div className="api-ref-item">
-                  <code>labels</code>
-                  <span><code>{`["bug", "reviewed"]`}</code> — overwrites all labels</span>
-                </div>
-                <div className="api-ref-item">
-                  <code>components</code>
-                  <span><code>{`[{id: "10001"}]`}</code> or <code>{`[{name: "Backend"}]`}</code></span>
-                </div>
-                <div className="api-ref-item">
-                  <code>description</code>
-                  <span><code>{`{type:"doc", version:1, content:[{type:"paragraph", content:[{type:"text", text:"..."}]}]}`}</code></span>
-                </div>
-                <div className="api-ref-item">
-                  <code>duedate</code>
-                  <span><code>{`"2025-12-31"`}</code> — ISO date, no time</span>
-                </div>
-                <div className="api-ref-item">
-                  <code>custom select</code>
-                  <span><code>{`{value: "Option Name"}`}</code></span>
-                </div>
-                <div className="api-ref-item">
-                  <code>custom multi-select</code>
-                  <span><code>{`[{value: "A"}, {value: "B"}]`}</code></span>
-                </div>
-              </div>
+          {/* Provenance — what knowledge the AI used for this code */}
+          {functionData.generationMeta && (
+            <div className="gen-meta-bar">
+              <span className="gen-meta-label">GENERATED WITH</span>
+              {functionData.generationMeta.appliedDocs?.length > 0 && (
+                <span className="gen-meta-chip gmc-docs">
+                  {functionData.generationMeta.appliedDocs.length} doc{functionData.generationMeta.appliedDocs.length > 1 ? "s" : ""}
+                </span>
+              )}
+              {(functionData.generationMeta.appliedSkills || []).map((s) => (
+                <span key={s.id || s.name} className="gen-meta-chip gmc-skill">
+                  {s.auto ? "✨ " : ""}{s.name}
+                </span>
+              ))}
+              {functionData.generationMeta.appliedMemories > 0 && (
+                <span className="gen-meta-chip gmc-mem">
+                  {functionData.generationMeta.appliedMemories} memor{functionData.generationMeta.appliedMemories > 1 ? "ies" : "y"}
+                </span>
+              )}
+            </div>
+          )}
 
-              <div className="api-ref-title" style={{ marginTop: "12px" }}>JQL Quick Reference</div>
-              <div className="api-ref-grid">
-                <div className="api-ref-item">
-                  <code>project = PROJ</code>
-                  <span>Filter by project key</span>
-                </div>
-                <div className="api-ref-item">
-                  <code>status = "To Do"</code>
-                  <span>Exact status match (quote multi-word)</span>
-                </div>
-                <div className="api-ref-item">
-                  <code>summary ~ "keyword"</code>
-                  <span>Contains text in summary</span>
-                </div>
-                <div className="api-ref-item">
-                  <code>text ~ "search"</code>
-                  <span>Full-text search across all fields</span>
-                </div>
-                <div className="api-ref-item">
-                  <code>created >= -7d</code>
-                  <span>Relative dates: -1d, -7d, -30d, startOfDay(), endOfWeek()</span>
-                </div>
-                <div className="api-ref-item">
-                  <code>assignee = currentUser()</code>
-                  <span>Issues assigned to current user</span>
-                </div>
-                <div className="api-ref-item">
-                  <code>labels IN ("bug","urgent")</code>
-                  <span>Multiple value match</span>
-                </div>
-                <div className="api-ref-item">
-                  <code>ORDER BY updated DESC</code>
-                  <span>Sort results (append to any JQL)</span>
-                </div>
+          {/* Context-limit truncation warnings */}
+          {(functionData.generationMeta?.truncatedDocs || []).map((d, i) => (
+            <div key={i} className="truncation-warning">
+              Doc {d.title} was truncated to fit the AI context limit - trim it in the library for best accuracy.
+            </div>
+          ))}
+
+          {/* AI fix card — shown until verified/undone/dismissed/edited */}
+          {fixResult && (
+            <div className={`fix-result${fixResult.verified ? " fix-verified" : ""}`}>
+              <div className="fix-undo-bar">
+                <strong>{fixResult.verified ? "AI fix applied & verified" : "AI fix applied"}</strong>
+                <button className="btn-add-doc" onClick={handleUndoFix}>Undo</button>
+                <button className="test-dismiss" onClick={() => { setFixResult(null); setMemorySaved(null); }}>&times;</button>
               </div>
+              {fixResult.explanation && (
+                <p className="fix-explanation">{fixResult.explanation}</p>
+              )}
+              {memorySaved && (
+                <span className="memory-saved-badge">
+                  🧠 Learned: {memorySaved.content.slice(0, 80)}
+                  <button
+                    onClick={handleVetoMemory}
+                    title="Forget this memory"
+                    style={{ background: "transparent", border: "none", cursor: "pointer", color: "#ffffff", fontSize: "14px", lineHeight: 1, padding: 0, marginLeft: "6px" }}
+                  >
+                    &times;
+                  </button>
+                </span>
+              )}
+            </div>
+          )}
+
+          {/* The memory persists even after the fix card is undone — keep the
+              badge (and its veto) visible until vetoed or dismissed. */}
+          {!fixResult && memorySaved && (
+            <div className="fix-result fix-verified">
+              <span className="memory-saved-badge">
+                🧠 Learned: {memorySaved.content.slice(0, 80)}
+                <button
+                  onClick={handleVetoMemory}
+                  title="Forget this memory"
+                  style={{ background: "transparent", border: "none", cursor: "pointer", color: "#ffffff", fontSize: "14px", lineHeight: 1, padding: 0, marginLeft: "6px" }}
+                >
+                  &times;
+                </button>
+              </span>
             </div>
           )}
 
           <CodeEditor
             value={functionData.code || ""}
-            onChange={(v) => update("code", v)}
+            onChange={handleCodeChange}
+            customFields={fields}
+            priorVariables={priorVariables}
             rows={12}
           />
 
@@ -791,24 +992,8 @@ export default function FunctionBlock({ index, functionData, priorSteps, onUpdat
                   />
                   <button
                     className="btn-run-test"
-                    onClick={async () => {
-                      setTestRunning(true);
-                      setTestResult(null);
-                      try {
-                        const target = testTarget.trim();
-                        const isKey = /^[A-Z]+-\d+$/i.test(target);
-                        const result = await invoke("testPostFunction", {
-                          code: functionData.code,
-                          issueKey: isKey ? target : undefined,
-                          jql: target && !isKey ? target : undefined,
-                        });
-                        setTestResult(result);
-                      } catch (e) {
-                        setTestResult({ success: false, logs: ["Test error: " + e.message] });
-                      }
-                      setTestRunning(false);
-                    }}
-                    disabled={testRunning || !functionData.code?.trim()}
+                    onClick={() => runTest()}
+                    disabled={testRunning || fixing || isGenerating || !functionData.code?.trim()}
                   >
                     {testRunning ? "Running..." : "Run Test"}
                   </button>
@@ -822,8 +1007,11 @@ export default function FunctionBlock({ index, functionData, priorSteps, onUpdat
                 </p>
               </div>
 
+              {/* While the AI repairs the code, the loading state replaces the result */}
+              {fixing && <AILoadingState type="fix" />}
+
               {/* Test result */}
-              {testResult && (
+              {!fixing && testResult && (
                 <div className={`test-result ${testResult.success ? "test-pass" : "test-fail"}`}>
                   <div className="test-result-header">
                     <span className={`test-badge ${testResult.success ? "test-badge-pass" : "test-badge-fail"}`}>
@@ -833,8 +1021,25 @@ export default function FunctionBlock({ index, functionData, priorSteps, onUpdat
                       {testResult.mode === "live" ? `Tested against ${testResult.issueKey}` : "Mock data"}
                       {testResult.executionTimeMs ? ` — ${testResult.executionTimeMs}ms` : ""}
                     </span>
+                    {!testResult.success && (
+                      <button
+                        className="btn-fix-ai"
+                        onClick={handleFixWithAI}
+                        disabled={fixing || isGenerating || testRunning || fixAttempts >= 2}
+                        title={fixAttempts >= 2
+                          ? "Fix attempts exhausted — edit the code manually or regenerate"
+                          : "AI repairs the code and re-runs the test automatically"}
+                      >
+                        Fix with AI
+                      </button>
+                    )}
                     <button className="test-dismiss" onClick={() => setTestResult(null)}>&times;</button>
                   </div>
+                  {testResult.fixError && (
+                    <div className="test-logs">
+                      <div className="test-log-line"><code>AI fix failed: {testResult.fixError}</code></div>
+                    </div>
+                  )}
                   {testResult.logs && testResult.logs.length > 0 && (
                     <div className="test-logs">
                       <div className="test-logs-title">Execution log:</div>
@@ -853,9 +1058,42 @@ export default function FunctionBlock({ index, functionData, priorSteps, onUpdat
                       ))}
                     </div>
                   )}
+                  {testResult.success && (
+                    <div className="test-result-actions">
+                      <button
+                        className="btn-save-skill"
+                        onClick={() => setShowSkillEditor(true)}
+                        title="Turn this working step into a reusable skill the AI applies to future generations"
+                      >
+                        Save as Skill
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
+          )}
+
+          {/* Save-as-Skill editor — pre-filled from this step */}
+          {showSkillEditor && (
+            <SkillEditor
+              initial={{
+                name: functionData.name || (functionData.operationPrompt || "").slice(0, 60),
+                category: SKILL_CATEGORY_BY_OPTYPE[opType] || "Other",
+                description: "",
+                descriptionPlaceholder: "When should the AI reuse this?",
+                instructions: functionData.operationPrompt || "",
+                examples: functionData.code || "",
+              }}
+              distillContext={{
+                prompt: functionData.operationPrompt || "",
+                code: functionData.code || "",
+                operationType: opType,
+                testLogs: testResult?.logs?.slice(-10),
+              }}
+              onSaved={() => setShowSkillEditor(false)}
+              onCancel={() => setShowSkillEditor(false)}
+            />
           )}
 
           <p className="hint">

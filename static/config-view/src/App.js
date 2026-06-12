@@ -446,6 +446,39 @@ const injectStyles = () => {
 
     .alert-dismiss:hover { opacity: 1; }
 
+    /* Generation provenance — what knowledge the AI used per step */
+    .cv-gen-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin: 0 0 6px;
+      padding-left: 12px;
+    }
+
+    .cv-gen-label {
+      font-size: 10px;
+      font-weight: 700;
+      color: var(--text-muted);
+      letter-spacing: 0.3px;
+    }
+
+    .cv-gen-chip {
+      padding: 2px 10px;
+      border-radius: 10px;
+      font-size: 10px;
+      font-weight: 700;
+      color: #ffffff;
+      white-space: nowrap;
+    }
+    .cv-gen-docs { background: #2563eb; }
+    .cv-gen-skill { background: #7c3aed; }
+    .cv-gen-mem { background: #0d9488; }
+
+    html[data-color-mode="dark"] .cv-gen-docs { background: #3b82f6; }
+    html[data-color-mode="dark"] .cv-gen-skill { background: #8b5cf6; }
+    html[data-color-mode="dark"] .cv-gen-mem { background: #14b8a6; }
+
     .sk {
       background: linear-gradient(90deg, #cbd5e1 25%, #f1f5f9 50%, #cbd5e1 75%);
       background-size: 200% 100%;
@@ -926,14 +959,47 @@ function App() {
             <span className="label">Steps:</span>
             <span className="prompt-value">{staticSteps.length} function block{staticSteps.length !== 1 ? "s" : ""}</span>
           </div>
-          {staticSteps.map((fn, i) => (
-            <div key={i} className="config-item" style={{ paddingLeft: "12px" }}>
-              <span className="label">#{i + 1}:</span>
-              <span className="prompt-value">
-                {fn.name || fn.operationPrompt?.substring(0, 80) || "(no description)"}
-              </span>
-            </div>
-          ))}
+          {staticSteps.map((fn, i) => {
+            // Provenance only exists on full configs saved after the
+            // knowledge upgrade; offloaded (codeRef) configs carry slim
+            // functionsMeta without it — render nothing in that case.
+            const meta = fn.generationMeta;
+            const hasProvenance = !!meta && (
+              meta.appliedDocs?.length > 0 ||
+              meta.appliedSkills?.length > 0 ||
+              meta.appliedMemories > 0
+            );
+            return (
+              <React.Fragment key={i}>
+                <div className="config-item" style={{ paddingLeft: "12px" }}>
+                  <span className="label">#{i + 1}:</span>
+                  <span className="prompt-value">
+                    {fn.name || fn.operationPrompt?.substring(0, 80) || "(no description)"}
+                  </span>
+                </div>
+                {hasProvenance && (
+                  <div className="cv-gen-row">
+                    <span className="cv-gen-label">GENERATED WITH</span>
+                    {meta.appliedDocs?.length > 0 && (
+                      <span className="cv-gen-chip cv-gen-docs">
+                        {meta.appliedDocs.length} doc{meta.appliedDocs.length > 1 ? "s" : ""}
+                      </span>
+                    )}
+                    {(meta.appliedSkills || []).map((s) => (
+                      <span key={s.id || s.name} className="cv-gen-chip cv-gen-skill">
+                        {s.auto ? "✨ " : ""}{s.name}
+                      </span>
+                    ))}
+                    {meta.appliedMemories > 0 && (
+                      <span className="cv-gen-chip cv-gen-mem">
+                        {meta.appliedMemories} memor{meta.appliedMemories > 1 ? "ies" : "y"}
+                      </span>
+                    )}
+                  </div>
+                )}
+              </React.Fragment>
+            );
+          })}
         </>
       )}
 

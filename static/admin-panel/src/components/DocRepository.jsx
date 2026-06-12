@@ -151,8 +151,13 @@ export default function DocRepository({ selectedDocs, onSelectionChange, embedde
   };
 
   const handleDelete = async (id) => {
+    setError(null);
     try {
-      await invoke("deleteContextDoc", { id });
+      const result = await invoke("deleteContextDoc", { id });
+      if (!result.success) {
+        setError(result.error || "Failed to delete document.");
+        return;
+      }
       // Remove from selection if selected
       if (selectedDocs.includes(id)) {
         onSelectionChange(selectedDocs.filter((d) => d !== id));
@@ -161,6 +166,7 @@ export default function DocRepository({ selectedDocs, onSelectionChange, embedde
       if (onChanged) onChanged();
     } catch (e) {
       console.error("Failed to delete:", e);
+      setError("Failed to delete: " + e.message);
     }
   };
 
@@ -223,6 +229,14 @@ export default function DocRepository({ selectedDocs, onSelectionChange, embedde
           <button className="btn-add-doc" onClick={() => setShowAdd(!showAdd)}>
             {showAdd ? "Cancel" : "+ Add Document"}
           </button>
+        </div>
+      )}
+
+      {/* Delete/list errors — the in-form line below only renders while the
+          add form is open, so surface them here too (mirrors SkillsTab). */}
+      {error && !showAdd && (
+        <div style={{ color: "var(--error-color)", fontSize: "12px", fontWeight: 600, padding: "6px 12px 0" }}>
+          {error}
         </div>
       )}
 

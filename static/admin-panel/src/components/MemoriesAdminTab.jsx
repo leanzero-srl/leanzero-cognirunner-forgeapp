@@ -259,6 +259,25 @@ export default function MemoriesAdminTab({ invoke, isAdmin }) {
               </div>
             </div>
           </div>
+          <div className="memories-admin-toggle-row">
+            <input
+              type="checkbox"
+              id="mem-runtime-injection"
+              checked={!!settings.runtimeInjection}
+              disabled={savingSettings}
+              onChange={() => handleToggleSetting("runtimeInjection")}
+            />
+            <div>
+              <label className="memories-admin-toggle-label" htmlFor="mem-runtime-injection">
+                Use memories in validators & semantic post-functions (runtime)
+              </label>
+              <div className="memories-admin-toggle-copy">
+                When enabled, project-scoped memories are added to every validator, condition,
+                and semantic post-function AI call. This adds a small token cost to every
+                workflow transition that runs AI. Off by default.
+              </div>
+            </div>
+          </div>
         </div>
       )}
 

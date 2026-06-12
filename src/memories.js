@@ -53,7 +53,9 @@ const JACCARD_DEDUP_THRESHOLD = 0.85;
 
 /**
  * Read the memory settings. Auto-capture defaults OFF (opt-in); prompt
- * injection defaults ON.
+ * injection into codegen/fix defaults ON; runtime injection (validators,
+ * conditions, semantic post-functions) defaults OFF (opt-in — it adds a
+ * token cost to every workflow transition that runs AI).
  */
 export const getMemorySettings = async () => {
   try {
@@ -62,12 +64,13 @@ export const getMemorySettings = async () => {
       return {
         autoCapture: stored.autoCapture === true,
         injection: stored.injection !== false,
+        runtimeInjection: stored.runtimeInjection === true,
       };
     }
   } catch (error) {
     console.error("Failed to read memory settings:", error);
   }
-  return { autoCapture: false, injection: true };
+  return { autoCapture: false, injection: true, runtimeInjection: false };
 };
 
 /** Merge a boolean patch into the stored settings. Returns the new settings. */
@@ -76,6 +79,7 @@ export const saveMemorySettingsInternal = async (patch = {}) => {
   const next = {
     autoCapture: patch.autoCapture !== undefined ? patch.autoCapture === true : current.autoCapture,
     injection: patch.injection !== undefined ? patch.injection !== false : current.injection,
+    runtimeInjection: patch.runtimeInjection !== undefined ? patch.runtimeInjection === true : current.runtimeInjection,
   };
   await storage.set(MEMORY_SETTINGS_KEY, next);
   return next;

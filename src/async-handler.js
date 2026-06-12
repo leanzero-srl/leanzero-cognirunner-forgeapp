@@ -697,17 +697,18 @@ export async function handler(event) {
 
   console.log(`Async handler: executing ${taskType} (${taskId})`);
 
-  const taskHandler = TASK_HANDLERS[taskType];
-  if (!taskHandler) {
-    await storage.set(`${TASK_PREFIX}${taskId}`, { status: "error", error: `Unknown task type: ${taskType}` });
-    return;
-  }
-
-  const polled = !UNPOLLED_TASKS.has(taskType);
   // TTL-bound every status row — if the poller went away (closed tab), the
   // row self-expires instead of leaking (getAsyncTaskResult only deletes
   // rows that something actually polls).
   const ttl = { ttl: { value: TASK_TTL_HOURS, unit: "HOURS" } };
+
+  const taskHandler = TASK_HANDLERS[taskType];
+  if (!taskHandler) {
+    await storage.set(`${TASK_PREFIX}${taskId}`, { status: "error", error: `Unknown task type: ${taskType}` }, ttl);
+    return;
+  }
+
+  const polled = !UNPOLLED_TASKS.has(taskType);
   try {
     // Mark as processing (only for tasks something will poll)
     if (polled) await storage.set(`${TASK_PREFIX}${taskId}`, { status: "processing" }, ttl);

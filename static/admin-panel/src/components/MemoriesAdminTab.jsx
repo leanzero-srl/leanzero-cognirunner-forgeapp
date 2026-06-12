@@ -23,7 +23,8 @@
  * view; this tab is the complete table.
  */
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
+import { showToast } from "./toast";
 
 const SOURCE_CLASS = {
   user: "memories-admin-src-user",
@@ -35,13 +36,20 @@ export default function MemoriesAdminTab({ invoke, isAdmin }) {
   const [memories, setMemories] = useState([]);
   const [settings, setSettings] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [newContent, setNewContent] = useState("");
   const [adding, setAdding] = useState(false);
-  const [savingSettings, setSavingSettings] = useState(false);
+  // Which settings key is mid-save (toggles are optimistic — this only drives
+  // the small spinner next to the row and the concurrent-edit guard).
+  const [savingSettingKey, setSavingSettingKey] = useState(null);
   const [editingId, setEditingId] = useState(null);
   const [editContent, setEditContent] = useState("");
   const [savingEdit, setSavingEdit] = useState(false);
+  // "archive:<id>" | "delete:<id>" — drives the .is-busy spinner on the
+  // clicked row button and disables the rest while the call is in flight.
+  const [working, setWorking] = useState(null);
   const [error, setError] = useState(null);
+  const hasLoadedRef = useRef(false);
 
   const loadMemories = useCallback(async () => {
     try {
@@ -49,9 +57,14 @@ export default function MemoriesAdminTab({ invoke, isAdmin }) {
       if (result.success) {
         setMemories(result.memories || []);
         setSettings(result.settings || null);
+        setLoadError(false);
+        hasLoadedRef.current = true;
+      } else if (!hasLoadedRef.current) {
+        setLoadError(true);
       }
     } catch (e) {
       console.error("Failed to load memories:", e);
+      if (!hasLoadedRef.current) setLoadError(true);
     }
     setLoading(false);
   }, [invoke]);
@@ -59,20 +72,32 @@ export default function MemoriesAdminTab({ invoke, isAdmin }) {
   useEffect(() => { loadMemories(); }, [loadMemories]);
 
   const handleToggleSetting = async (key) => {
-    if (!isAdmin || !settings || savingSettings) return;
-    setSavingSettings(true);
+    if (!isAdmin || !settings || savingSettingKey) return;
+    // Optimistic: flip immediately, revert on failure (same pattern as the
+    // MCP toggles in OpenAIConfig). All writes are functional updates touching
+    // ONLY the toggled key — a concurrent loadMemories (archive/delete/add)
+    // may replace the settings object mid-save, and a whole-object restore
+    // would clobber it.
+    const prevValue = settings[key];
+    const nextValue = !prevValue;
+    setSettings((s) => ({ ...s, [key]: nextValue }));
+    setSavingSettingKey(key);
     setError(null);
     try {
-      const result = await invoke("saveMemorySettings", { [key]: !settings[key] });
+      const result = await invoke("saveMemorySettings", { [key]: nextValue });
       if (result.success === false) {
-        setError(result.error || "Failed to save settings.");
+        setSettings((s) => ({ ...s, [key]: prevValue }));
+        showToast(result.error || "Failed to save settings", "error");
       } else {
-        setSettings((prev) => ({ ...prev, [key]: !prev[key] }));
+        // Re-assert the saved value — a stale getMemories response landing
+        // mid-save can otherwise durably show the OLD value.
+        setSettings((s) => ({ ...s, [key]: nextValue }));
       }
     } catch (e) {
-      setError(e.message);
+      setSettings((s) => ({ ...s, [key]: prevValue }));
+      showToast("Failed to save settings: " + e.message, "error");
     }
-    setSavingSettings(false);
+    setSavingSettingKey(null);
   };
 
   const handleAdd = async () => {
@@ -85,6 +110,7 @@ export default function MemoriesAdminTab({ invoke, isAdmin }) {
       if (result.success) {
         setNewContent("");
         await loadMemories();
+        showToast("Memory added");
       } else {
         setError(result.error || "Failed to add memory.");
       }
@@ -120,24 +146,40 @@ export default function MemoriesAdminTab({ invoke, isAdmin }) {
   };
 
   const handleArchive = async (mem) => {
+    if (working) return;
+    setWorking(`archive:${mem.id}`);
     setError(null);
     try {
-      await invoke("updateMemory", { id: mem.id, disabled: !mem.disabled });
-      await loadMemories();
+      const result = await invoke("updateMemory", { id: mem.id, disabled: !mem.disabled });
+      if (result && result.success === false) {
+        showToast(result.error || "Failed to update memory", "error");
+      } else {
+        await loadMemories();
+        showToast(mem.disabled ? "Memory restored" : "Memory archived");
+      }
     } catch (e) {
-      setError(e.message);
+      showToast("Failed to update memory: " + e.message, "error");
     }
+    setWorking(null);
   };
 
   const handleDelete = async (id) => {
+    if (working) return;
     if (!window.confirm("Delete this memory permanently? This cannot be undone.")) return;
+    setWorking(`delete:${id}`);
     setError(null);
     try {
-      await invoke("deleteMemory", { id });
-      await loadMemories();
+      const result = await invoke("deleteMemory", { id });
+      if (result && result.success === false) {
+        showToast(result.error || "Failed to delete memory", "error");
+      } else {
+        await loadMemories();
+        showToast("Memory deleted");
+      }
     } catch (e) {
-      setError(e.message);
+      showToast("Failed to delete memory: " + e.message, "error");
     }
+    setWorking(null);
   };
 
   const byNewest = (a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0);
@@ -162,12 +204,12 @@ export default function MemoriesAdminTab({ invoke, isAdmin }) {
               autoFocus
             />
             <button
-              className="btn-small"
+              className={`btn-small${savingEdit ? " is-busy busy-solid" : ""}`}
               onClick={saveEdit}
               disabled={savingEdit || !editContent.trim()}
               style={{ background: "#0d9488", color: "#ffffff", border: "none", fontWeight: 700 }}
             >
-              {savingEdit ? "Saving..." : "Save"}
+              Save
             </button>
             <button className="btn-small" onClick={() => { setEditingId(null); setEditContent(""); }}>
               Cancel
@@ -195,12 +237,22 @@ export default function MemoriesAdminTab({ invoke, isAdmin }) {
         {isAdmin && (
           <div className="row-actions">
             {editingId !== mem.id && (
-              <button className="btn-small" onClick={() => startEdit(mem)}>Edit</button>
+              <button className="btn-small" onClick={() => startEdit(mem)} disabled={!!working}>Edit</button>
             )}
-            <button className="btn-small" onClick={() => handleArchive(mem)}>
+            <button
+              className={`btn-small${working === `archive:${mem.id}` ? " is-busy" : ""}`}
+              onClick={() => handleArchive(mem)}
+              disabled={!!working}
+            >
               {mem.disabled ? "Restore" : "Archive"}
             </button>
-            <button className="btn-small btn-danger" onClick={() => handleDelete(mem.id)}>Delete</button>
+            <button
+              className={`btn-small btn-danger${working === `delete:${mem.id}` ? " is-busy" : ""}`}
+              onClick={() => handleDelete(mem.id)}
+              disabled={!!working}
+            >
+              Delete
+            </button>
           </div>
         )}
       </td>
@@ -223,18 +275,21 @@ export default function MemoriesAdminTab({ invoke, isAdmin }) {
       )}
 
       {isAdmin && settings && (
-        <div className="card memories-admin-toggles">
+        <div className="card memories-admin-toggles anim-rise">
           <div className="memories-admin-toggle-row">
             <input
               type="checkbox"
               id="mem-auto-capture"
               checked={!!settings.autoCapture}
-              disabled={savingSettings}
+              disabled={savingSettingKey !== null}
               onChange={() => handleToggleSetting("autoCapture")}
             />
             <div>
               <label className="memories-admin-toggle-label" htmlFor="mem-auto-capture">
                 Learn from production failures
+                {savingSettingKey === "autoCapture" && (
+                  <span className="spin-ring spin-ring-sm" style={{ marginLeft: "8px", verticalAlign: "-2px" }} />
+                )}
               </label>
               <div className="memories-admin-toggle-copy">
                 When enabled, CogniRunner distills one short memory per novel post-function failure
@@ -247,12 +302,15 @@ export default function MemoriesAdminTab({ invoke, isAdmin }) {
               type="checkbox"
               id="mem-injection"
               checked={!!settings.injection}
-              disabled={savingSettings}
+              disabled={savingSettingKey !== null}
               onChange={() => handleToggleSetting("injection")}
             />
             <div>
               <label className="memories-admin-toggle-label" htmlFor="mem-injection">
                 Inject memories into AI prompts
+                {savingSettingKey === "injection" && (
+                  <span className="spin-ring spin-ring-sm" style={{ marginLeft: "8px", verticalAlign: "-2px" }} />
+                )}
               </label>
               <div className="memories-admin-toggle-copy">
                 When enabled, active memories are included in every AI code generation and fix.
@@ -264,12 +322,15 @@ export default function MemoriesAdminTab({ invoke, isAdmin }) {
               type="checkbox"
               id="mem-runtime-injection"
               checked={!!settings.runtimeInjection}
-              disabled={savingSettings}
+              disabled={savingSettingKey !== null}
               onChange={() => handleToggleSetting("runtimeInjection")}
             />
             <div>
               <label className="memories-admin-toggle-label" htmlFor="mem-runtime-injection">
                 Use memories in validators & semantic post-functions (runtime)
+                {savingSettingKey === "runtimeInjection" && (
+                  <span className="spin-ring spin-ring-sm" style={{ marginLeft: "8px", verticalAlign: "-2px" }} />
+                )}
               </label>
               <div className="memories-admin-toggle-copy">
                 When enabled, project-scoped memories are added to every validator, condition,
@@ -289,8 +350,8 @@ export default function MemoriesAdminTab({ invoke, isAdmin }) {
           onKeyDown={(e) => { if (e.key === "Enter") handleAdd(); }}
           placeholder="Remember this about your Jira instance..."
         />
-        <button className="btn-add-memory" onClick={handleAdd} disabled={adding || !newContent.trim()}>
-          {adding ? "Saving..." : "Add Memory"}
+        <button className={`btn-add-memory${adding ? " is-busy busy-solid" : ""}`} onClick={handleAdd} disabled={adding || !newContent.trim()}>
+          Add Memory
         </button>
       </div>
 
@@ -305,6 +366,13 @@ export default function MemoriesAdminTab({ invoke, isAdmin }) {
                 <div className="sk sk-text" style={{ width: 70, height: 11 }} />
               </div>
             ))}
+          </div>
+        ) : loadError ? (
+          <div style={{ padding: "14px" }}>
+            <div className="load-error">
+              <span>Couldn't load memories.</span>
+              <button className="btn-retry" onClick={() => { setLoading(true); setLoadError(false); loadMemories(); }}>Retry</button>
+            </div>
           </div>
         ) : memories.length === 0 ? (
           <div className="empty-state">
@@ -323,7 +391,7 @@ export default function MemoriesAdminTab({ invoke, isAdmin }) {
                 <th></th>
               </tr>
             </thead>
-            <tbody>
+            <tbody className="stagger">
               {active.map(renderRow)}
               {archived.length > 0 && (
                 <tr className="memories-admin-divider">

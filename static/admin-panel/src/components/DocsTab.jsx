@@ -5,8 +5,9 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import CustomSelect from "./CustomSelect";
+import { showToast } from "./toast";
 
 const CATEGORIES = [
   "API Documentation", "Field Mappings", "JSON Schemas",
@@ -16,24 +17,54 @@ const CATEGORIES = [
 export default function DocsTab({ invoke, isAdmin, accountId }) {
   const [docs, setDocs] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [filter, setFilter] = useState(isAdmin ? "all" : "mine");
   const [showAdd, setShowAdd] = useState(false);
   const [newTitle, setNewTitle] = useState("");
   const [newContent, setNewContent] = useState("");
   const [newCategory, setNewCategory] = useState("General");
   const [saving, setSaving] = useState(false);
+  const [deletingId, setDeletingId] = useState(null);
   const [error, setError] = useState(null);
   const [expandedDoc, setExpandedDoc] = useState(null);
-  const [expandedContent, setExpandedContent] = useState("");
+  const [expandedContent, setExpandedContent] = useState(null);
+  const [expandedError, setExpandedError] = useState(null);
+  const [loadingExpanded, setLoadingExpanded] = useState(false);
+  // Tracks whether the first load has succeeded — later loads (filter change,
+  // post-save/delete re-fetch) keep the list visible under a frosted veil.
+  const hasLoadedRef = useRef(false);
+  // Mirrors expandedDoc for in-flight getContextDocContent calls — a response
+  // for a doc the user has since collapsed/switched away from is discarded.
+  const expandedDocRef = useRef(null);
+  // Monotonic token — a slow older load (rapid All/My Documents flips) must
+  // never overwrite a newer filter's rows or clear its loading/refreshing
+  // flags early. Only the latest call owns the state.
+  const loadDocsToken = useRef(0);
 
   const loadDocs = useCallback(async () => {
+    const token = ++loadDocsToken.current;
+    if (hasLoadedRef.current) setRefreshing(true);
     try {
       const result = await invoke("getContextDocs", { filter });
-      if (result.success) setDocs(result.docs || []);
+      if (token !== loadDocsToken.current) return; // stale response
+      if (result.success) {
+        setDocs(result.docs || []);
+        setLoadError(false);
+        hasLoadedRef.current = true;
+      } else if (!hasLoadedRef.current) {
+        setLoadError(true);
+      } else {
+        showToast(result.error || "Couldn't refresh documents", "error");
+      }
     } catch (e) {
+      if (token !== loadDocsToken.current) return;
       console.error("Failed to load docs:", e);
+      if (!hasLoadedRef.current) setLoadError(true);
+      else showToast("Couldn't refresh documents", "error");
     }
     setLoading(false);
+    setRefreshing(false);
   }, [invoke, filter]);
 
   useEffect(() => { loadDocs(); }, [loadDocs]);
@@ -51,6 +82,7 @@ export default function DocsTab({ invoke, isAdmin, accountId }) {
       if (result.success) {
         setNewTitle(""); setNewContent(""); setNewCategory("General"); setShowAdd(false);
         await loadDocs();
+        showToast("Document saved");
       } else {
         setError(result.error);
       }
@@ -61,23 +93,53 @@ export default function DocsTab({ invoke, isAdmin, accountId }) {
   };
 
   const handleDelete = async (id) => {
+    if (deletingId) return;
+    if (!window.confirm("Delete this document permanently? This cannot be undone.")) return;
+    setDeletingId(id);
     try {
-      await invoke("deleteContextDoc", { id });
-      await loadDocs();
+      const result = await invoke("deleteContextDoc", { id });
+      if (result && result.success === false) {
+        showToast(result.error || "Failed to delete document", "error");
+      } else {
+        await loadDocs();
+        showToast("Document deleted");
+      }
     } catch (e) {
-      console.error("Failed to delete:", e);
+      showToast("Failed to delete document: " + e.message, "error");
+    }
+    setDeletingId(null);
+  };
+
+  const fetchExpandedContent = async (id) => {
+    setExpandedContent(null);
+    setExpandedError(null);
+    setLoadingExpanded(true);
+    try {
+      const result = await invoke("getContextDocContent", { id });
+      // Stale response — the user expanded another doc (or collapsed this one)
+      // while the fetch was in flight. The newer call owns the state.
+      if (expandedDocRef.current !== id) return;
+      if (result.success) setExpandedContent(result.doc.content);
+      else setExpandedError(result.error || "Couldn't load this document's content.");
+    } catch (e) {
+      if (expandedDocRef.current !== id) return;
+      setExpandedError("Couldn't load this document's content.");
+    } finally {
+      // Only the call that still owns the expansion clears the loading flag.
+      if (expandedDocRef.current === id) setLoadingExpanded(false);
     }
   };
 
-  const handleExpand = async (id) => {
-    if (expandedDoc === id) { setExpandedDoc(null); return; }
-    setExpandedDoc(id);
-    try {
-      const result = await invoke("getContextDocContent", { id });
-      if (result.success) setExpandedContent(result.doc.content);
-    } catch (e) {
-      setExpandedContent("Failed to load");
+  const handleExpand = (id) => {
+    if (expandedDoc === id) {
+      setExpandedDoc(null);
+      expandedDocRef.current = null;
+      setLoadingExpanded(false);
+      return;
     }
+    setExpandedDoc(id);
+    expandedDocRef.current = id;
+    fetchExpandedContent(id);
   };
 
   const formatSize = (len) => len < 1024 ? `${len} B` : `${(len / 1024).toFixed(1)} KB`;
@@ -148,14 +210,14 @@ export default function DocsTab({ invoke, isAdmin, accountId }) {
               />
             </div>
           )}
-          <button className="btn-small" onClick={() => setShowAdd(!showAdd)}>
+          <button className="btn-small" onClick={() => { setShowAdd(!showAdd); setError(null); }}>
             {showAdd ? "Cancel" : "+ Add Document"}
           </button>
         </div>
       </div>
 
       {showAdd && (
-        <div className="card" style={{ marginBottom: "12px", padding: "16px" }}>
+        <div className="card anim-rise" style={{ marginBottom: "12px", padding: "16px" }}>
           {error && <div style={{ color: "var(--error-color)", fontSize: "12px", marginBottom: "8px" }}>{error}</div>}
           <input
             type="text"
@@ -194,14 +256,17 @@ export default function DocsTab({ invoke, isAdmin, accountId }) {
                 </button>
               )}
             </div>
-            <button className="btn-small" onClick={handleSave} disabled={saving || !newTitle.trim() || !newContent.trim()} style={{ background: "var(--primary-color)", color: "white", border: "none" }}>
-              {saving ? "Saving..." : "Save"}
+            <button className={`btn-small${saving ? " is-busy busy-solid" : ""}`} onClick={handleSave} disabled={saving || !newTitle.trim() || !newContent.trim()} style={{ background: "var(--primary-color)", color: "white", border: "none" }}>
+              Save
             </button>
           </div>
         </div>
       )}
 
-      <div className="card">
+      <div className="card veil-host">
+        {refreshing && (
+          <div className="veil"><span className="spin-ring" /><span className="veil-label">Refreshing…</span></div>
+        )}
         {loading ? (
           <div style={{ padding: "14px" }}>
             {[1, 2, 3].map((i) => (
@@ -216,6 +281,13 @@ export default function DocsTab({ invoke, isAdmin, accountId }) {
                 </div>
               </div>
             ))}
+          </div>
+        ) : loadError ? (
+          <div style={{ padding: "14px" }}>
+            <div className="load-error">
+              <span>Couldn't load the documentation library.</span>
+              <button className="btn-retry" onClick={() => { setLoading(true); setLoadError(false); loadDocs(); }}>Retry</button>
+            </div>
           </div>
         ) : docs.length === 0 ? (
           <div className="empty-state">
@@ -233,7 +305,7 @@ export default function DocsTab({ invoke, isAdmin, accountId }) {
                 <th></th>
               </tr>
             </thead>
-            <tbody>
+            <tbody className="stagger">
               {docs.map((doc) => {
                 const canDelete = isAdmin || doc.createdBy === accountId;
                 return (
@@ -250,7 +322,13 @@ export default function DocsTab({ invoke, isAdmin, accountId }) {
                             {expandedDoc === doc.id ? "Hide" : "View"}
                           </button>
                           {canDelete && (
-                            <button className="btn-small btn-danger" onClick={() => handleDelete(doc.id)}>Delete</button>
+                            <button
+                              className={`btn-small btn-danger${deletingId === doc.id ? " is-busy" : ""}`}
+                              onClick={() => handleDelete(doc.id)}
+                              disabled={deletingId === doc.id}
+                            >
+                              Delete
+                            </button>
                           )}
                         </div>
                       </td>
@@ -258,9 +336,22 @@ export default function DocsTab({ invoke, isAdmin, accountId }) {
                     {expandedDoc === doc.id && (
                       <tr>
                         <td colSpan={isAdmin ? 6 : 5} style={{ padding: "0 14px 14px" }}>
-                          <pre style={{ margin: 0, padding: "10px", background: "var(--code-bg)", borderRadius: "6px", fontSize: "11px", fontFamily: "SFMono-Regular, Consolas, monospace", maxHeight: "300px", overflow: "auto", whiteSpace: "pre-wrap", wordBreak: "break-word", color: "var(--text-secondary)", lineHeight: 1.5 }}>
-                            {autoFormat(expandedContent)}
-                          </pre>
+                          {loadingExpanded ? (
+                            <div style={{ padding: "10px", background: "var(--code-bg)", borderRadius: "6px" }}>
+                              <div className="sk sk-text" style={{ width: "85%", height: 11, marginBottom: 6 }} />
+                              <div className="sk sk-text" style={{ width: "70%", height: 11, marginBottom: 6 }} />
+                              <div className="sk sk-text" style={{ width: "60%", height: 11 }} />
+                            </div>
+                          ) : expandedError ? (
+                            <div className="load-error anim-rise">
+                              <span>{expandedError}</span>
+                              <button className="btn-retry" onClick={() => fetchExpandedContent(doc.id)}>Retry</button>
+                            </div>
+                          ) : (
+                            <pre className="anim-rise" style={{ margin: 0, padding: "10px", background: "var(--code-bg)", borderRadius: "6px", fontSize: "11px", fontFamily: "SFMono-Regular, Consolas, monospace", maxHeight: "300px", overflow: "auto", whiteSpace: "pre-wrap", wordBreak: "break-word", color: "var(--text-secondary)", lineHeight: 1.5 }}>
+                              {autoFormat(expandedContent || "")}
+                            </pre>
+                          )}
                         </td>
                       </tr>
                     )}

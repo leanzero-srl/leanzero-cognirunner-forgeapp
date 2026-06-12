@@ -24,6 +24,7 @@ import CustomSelect from "./components/CustomSelect";
 import IssuePicker from "./components/IssuePicker";
 import DocRepository from "./components/DocRepository";
 import ReviewPanel from "./components/ReviewPanel";
+import AILoadingState from "./components/AILoadingState";
 import { ConfigSkeleton } from "./components/Skeleton";
 
 // Static-PF code offload: the workflow editor caps a rule's embedded config at
@@ -2276,6 +2277,163 @@ const injectStyles = () => {
       color: var(--success-color);
       border: 1px solid rgba(22, 163, 106, 0.2);
     }
+
+    /* ============================================================
+       Motion & Loading System (MLS) — shared contract, keep in sync
+       across config-ui / admin-panel / config-view injectStyles().
+       Classes: .is-busy (+.busy-solid), .veil/.veil-host/.veil-fixed,
+       .spin-ring, .status-dot(-checking)/.status-settle, .anim-rise,
+       .anim-fade, .anim-pop, .stagger, .flash-success, .load-error,
+       .btn-retry, .mls-toast, .reveal
+       ============================================================ */
+    :root {
+      --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+      --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+      --dur-fast: 140ms;
+      --dur-med: 260ms;
+      --dur-slow: 420ms;
+      --frost-bg: rgba(255, 255, 255, 0.6);
+    }
+    html[data-color-mode="dark"] { --frost-bg: rgba(8, 8, 14, 0.55); }
+
+    @keyframes mlsSpin { to { transform: rotate(360deg); } }
+    @keyframes mlsFadeIn { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes mlsRiseIn { from { opacity: 0; transform: translateY(7px); } to { opacity: 1; transform: none; } }
+    @keyframes mlsPopIn { from { opacity: 0; transform: scale(0.92); } to { opacity: 1; transform: none; } }
+    @keyframes mlsDotPing {
+      0% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.55); }
+      70% { box-shadow: 0 0 0 6px rgba(59, 130, 246, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0); }
+    }
+    @keyframes mlsFlash {
+      0% { background-color: rgba(22, 163, 74, 0.35); }
+      100% { background-color: transparent; }
+    }
+    @keyframes mlsToastIn { from { opacity: 0; transform: translate(-50%, 14px) scale(0.95); } to { opacity: 1; transform: translate(-50%, 0) scale(1); } }
+    @keyframes mlsToastOut { to { opacity: 0; transform: translate(-50%, 10px) scale(0.97); } }
+
+    /* Busy buttons: keep the ORIGINAL static label in the JSX (it goes
+       transparent, preserving width — no layout shift), add .is-busy while
+       the call is in flight, plus .busy-solid on solid/filled buttons so
+       the spinner is white. */
+    .is-busy { position: relative; color: transparent !important; pointer-events: none; text-shadow: none !important; }
+    .is-busy::after {
+      content: "";
+      position: absolute;
+      width: 14px; height: 14px;
+      top: 50%; left: 50%;
+      margin: -7px 0 0 -7px;
+      border-radius: 50%;
+      border: 2px solid rgba(100, 116, 139, 0.3);
+      border-top-color: var(--primary-color);
+      animation: mlsSpin 0.7s linear infinite;
+    }
+    .busy-solid.is-busy::after { border-color: rgba(255, 255, 255, 0.4); border-top-color: #ffffff; }
+
+    .spin-ring {
+      width: 16px; height: 16px; flex: 0 0 auto;
+      border-radius: 50%;
+      border: 2px solid rgba(100, 116, 139, 0.3);
+      border-top-color: var(--primary-color);
+      animation: mlsSpin 0.7s linear infinite;
+      display: inline-block;
+    }
+    .spin-ring-sm { width: 12px; height: 12px; }
+
+    /* Frosted recalculation veil: parent gets .veil-host, overlay shows
+       while stale-but-visible content is being refreshed underneath. */
+    .veil-host { position: relative; }
+    .veil {
+      position: absolute; inset: 0; z-index: 6;
+      display: flex; align-items: center; justify-content: center; gap: 9px;
+      background: var(--frost-bg);
+      -webkit-backdrop-filter: blur(10px) saturate(160%);
+      backdrop-filter: blur(10px) saturate(160%);
+      border-radius: inherit;
+      animation: mlsFadeIn var(--dur-fast) var(--ease-out) both;
+    }
+    .veil-fixed { position: fixed; z-index: 999; }
+    .veil-label { font-size: 12.5px; font-weight: 700; color: var(--text-color); }
+
+    .status-dot { transition: background-color var(--dur-med) ease; }
+    .status-dot-checking { background: var(--primary-color) !important; animation: mlsDotPing 1.2s ease-in-out infinite; }
+    .status-settle { animation: mlsPopIn 0.3s var(--ease-spring) both; }
+
+    .anim-rise { animation: mlsRiseIn var(--dur-med) var(--ease-out) both; }
+    .anim-fade { animation: mlsFadeIn var(--dur-med) var(--ease-out) both; }
+    .anim-pop { animation: mlsPopIn var(--dur-med) var(--ease-spring) both; }
+
+    .stagger > * { animation: mlsRiseIn var(--dur-med) var(--ease-out) both; }
+    .stagger > *:nth-child(1) { animation-delay: 0ms; }
+    .stagger > *:nth-child(2) { animation-delay: 35ms; }
+    .stagger > *:nth-child(3) { animation-delay: 70ms; }
+    .stagger > *:nth-child(4) { animation-delay: 105ms; }
+    .stagger > *:nth-child(5) { animation-delay: 140ms; }
+    .stagger > *:nth-child(6) { animation-delay: 175ms; }
+    .stagger > *:nth-child(7) { animation-delay: 210ms; }
+    .stagger > *:nth-child(8) { animation-delay: 245ms; }
+    .stagger > *:nth-child(9) { animation-delay: 280ms; }
+    .stagger > *:nth-child(10) { animation-delay: 315ms; }
+    .stagger > *:nth-child(n+11) { animation-delay: 350ms; }
+
+    .flash-success { animation: mlsFlash 1.2s ease-out both; }
+
+    .load-error {
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 14px;
+      font-size: 12.5px; font-weight: 600;
+      color: #ffffff;
+      background: var(--error-color);
+      border-radius: 8px;
+      animation: mlsRiseIn var(--dur-med) var(--ease-out) both;
+    }
+    .load-error span { flex: 1; }
+    .btn-retry {
+      background: #ffffff; color: var(--error-color);
+      border: none; border-radius: 6px;
+      font-weight: 700; font-size: 12px;
+      padding: 4px 12px; cursor: pointer;
+      flex: 0 0 auto;
+    }
+    .btn-retry:hover { opacity: 0.9; }
+
+    .mls-toast {
+      position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
+      z-index: 9999;
+      display: flex; align-items: center; gap: 8px;
+      padding: 10px 18px;
+      border-radius: 999px;
+      background: var(--success-color);
+      color: #ffffff; font-size: 12.5px; font-weight: 700;
+      font-family: inherit;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.28);
+      animation: mlsToastIn 0.32s var(--ease-spring) both;
+      pointer-events: none;
+      white-space: nowrap;
+      max-width: 90vw;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .mls-toast-error { background: var(--error-color); }
+    .mls-toast-leaving { animation: mlsToastOut 0.26s ease-in both; }
+
+    /* Animated expand/collapse for always-mounted sections. */
+    .reveal { display: grid; grid-template-rows: 0fr; transition: grid-template-rows var(--dur-med) var(--ease-out); }
+    .reveal-open { grid-template-rows: 1fr; }
+    .reveal > * { overflow: hidden; min-height: 0; }
+    /* Once the expand transition settles, lift the clip so absolutely-
+       positioned dropdowns inside the revealed body aren't cut off. */
+    .reveal-settled > * { overflow: visible; }
+
+    button:active:not(:disabled):not(.is-busy) { transform: scale(0.97); }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+      }
+    }
   `;
   document.head.appendChild(style);
 };
@@ -2358,6 +2516,10 @@ function App() {
   const [validatorTestRunning, setValidatorTestRunning] = useState(false);
   const [validatorTestResult, setValidatorTestResult] = useState(null);
   const [validatorIssueValid, setValidatorIssueValid] = useState(null);
+
+  // True while onConfigure's registry writes run (Jira's Add/Update button
+  // lives outside the iframe — this drives the in-iframe frosted saving veil).
+  const [savingRule, setSavingRule] = useState(false);
 
   // Doc library for validators — persisted as selectedDocIds in config
   const [validatorDocIds, setValidatorDocIds] = useState([]);
@@ -2622,7 +2784,9 @@ function App() {
         }
       }
 
-      // Fetch ALL fields — validators and post-functions can target any field
+      // Fetch ALL fields ONCE — feeds both the validator/PF field pickers and
+      // the post-function target selector (previously two identical serial
+      // invokes that doubled field-fetch latency behind the page skeleton).
       try {
         const allResult = await invoke("getFields");
         if (allResult.success && allResult.fields?.length > 0) {
@@ -2641,31 +2805,23 @@ function App() {
         } else {
           setFieldsError("Failed to load fields");
         }
+        if (allResult.success) {
+          setAllFields(allResult.fields || []);
+        }
       } catch (e) {
         console.error("[CogniRunner] Field fetch error:", e);
         setFieldsError("Failed to load fields: " + e.message);
       } finally {
         setFieldsLoading(false);
+        setAllFieldsLoading(false);
       }
-
-      // Load ALL fields for post-function target field selector
-      // (not limited to transition screen — PFs can update any field)
-      try {
-        const allResult = await invoke("getFields");
-        if (allResult.success) {
-          setAllFields(allResult.fields || []);
-        }
-      } catch (e) {
-        console.log("Could not load all fields:", e);
-      }
-      setAllFieldsLoading(false);
 
       // Register the onConfigure callback - this is called when user clicks Add/Update button
       // The callback should return the current form state as JSON string. Returning undefined
       // signals invalid; throwing surfaces a real error to Forge so the save is blocked.
       if (workflowRules) {
         try {
-          await workflowRules.onConfigure(async () => {
+          const doConfigureSave = async () => {
             const ext = currentContext?.extension || {};
             const isPostFn = ext.type === "jira:workflowPostFunction";
 
@@ -2874,6 +3030,19 @@ function App() {
             // Track the id so a subsequent re-save in the same session reuses the same row.
             currentExistingRuleId = ruleId;
             return JSON.stringify(config);
+          };
+          await workflowRules.onConfigure(async () => {
+            // Frosted saving veil while the registry writes run — Jira's
+            // Add/Update button lives outside the iframe, so this is the only
+            // in-iframe signal that the save is in progress. Also clears any
+            // stale error from a previous failed attempt.
+            setSavingRule(true);
+            setError(null);
+            try {
+              return await doConfigureSave();
+            } finally {
+              setSavingRule(false);
+            }
           });
           console.log("onConfigure callback registered successfully");
         } catch (e) {
@@ -3305,7 +3474,7 @@ function App() {
                 <div className="test-target-row">
                   <IssuePicker value={validatorTestIssue} onChange={setValidatorTestIssue} onValidationChange={setValidatorIssueValid} />
                   <button
-                    className="btn-run-test"
+                    className={"btn-run-test busy-solid" + (validatorTestRunning ? " is-busy" : "")}
                     onClick={async () => {
                       setValidatorTestRunning(true);
                       setValidatorTestResult(null);
@@ -3325,13 +3494,19 @@ function App() {
                     }}
                     disabled={validatorTestRunning || !validatorTestIssue.trim() || !fieldId.trim() || !prompt.trim() || !validatorIssueValid?.valid}
                   >
-                    {validatorTestRunning ? "Running..." : "Run Test"}
+                    Run Test
                   </button>
                 </div>
               </div>
 
+              {validatorTestRunning && (
+                <div style={{ margin: "0 12px 10px" }}>
+                  <AILoadingState type="test" />
+                </div>
+              )}
+
               {validatorTestResult && (
-                <div className={`semantic-test-result ${validatorTestResult.success ? (validatorTestResult.isValid ? "st-update" : "st-error") : "st-error"}`}>
+                <div className={`anim-rise semantic-test-result ${validatorTestResult.success ? (validatorTestResult.isValid ? "st-update" : "st-error") : "st-error"}`}>
                   <div className="st-result-header">
                     {validatorTestResult.success ? (
                       <span className={`test-badge ${validatorTestResult.isValid ? "test-badge-pass" : "test-badge-fail"}`}>
@@ -3401,7 +3576,7 @@ function App() {
       )}
 
       {error && (
-        <div className="alert alert-error">
+        <div className="alert alert-error anim-rise">
           <svg
             width="16"
             height="16"
@@ -3418,24 +3593,54 @@ function App() {
         </div>
       )}
 
+      {/* Pristine new rules get a neutral hint; the red alert only appears once
+          the user has started filling things in (error styling as the default
+          state of an untouched form reads as "something is broken"). */}
       {!isPostFunction && (!fieldId.trim() || !prompt.trim()) && (
-        <div className="alert alert-error">
-          <svg
-            width="16"
-            height="16"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-          >
-            <circle cx="12" cy="12" r="10" />
-            <line x1="12" y1="8" x2="12" y2="12" />
-            <line x1="12" y1="16" x2="12.01" y2="16" />
-          </svg>
-          <span>
-            Please fill in both Field ID and Validation Prompt before clicking
-            Add/Update.
-          </span>
+        (fieldId.trim() || prompt.trim()) ? (
+          <div className="alert alert-error anim-rise">
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+            >
+              <circle cx="12" cy="12" r="10" />
+              <line x1="12" y1="8" x2="12" y2="12" />
+              <line x1="12" y1="16" x2="12.01" y2="16" />
+            </svg>
+            <span>
+              Please fill in both Field ID and Validation Prompt before clicking
+              Add/Update.
+            </span>
+          </div>
+        ) : (
+          <div className="alert" style={{ borderColor: "var(--primary-color)", color: "var(--text-color)" }}>
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="var(--primary-color)"
+              strokeWidth="2"
+            >
+              <circle cx="12" cy="12" r="10" />
+              <line x1="12" y1="16" x2="12" y2="12" />
+              <line x1="12" y1="8" x2="12.01" y2="8" />
+            </svg>
+            <span style={{ fontWeight: 600 }}>
+              Pick a field and write a validation prompt, then click Add to save this rule.
+            </span>
+          </div>
+        )
+      )}
+
+      {savingRule && (
+        <div className="veil veil-fixed">
+          <span className="spin-ring" />
+          <span className="veil-label">Saving rule…</span>
         </div>
       )}
     </div>

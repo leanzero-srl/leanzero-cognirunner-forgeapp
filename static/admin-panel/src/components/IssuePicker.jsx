@@ -12,6 +12,7 @@ export default function IssuePicker({ value, onChange, projectKey, onValidationC
   const [query, setQuery] = useState(value || "");
   const [results, setResults] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [validating, setValidating] = useState(false);
   const [open, setOpen] = useState(false);
   const [highlighted, setHighlighted] = useState(-1);
   const [validated, setValidated] = useState(null); // null | { valid, summary } | { valid: false, error }
@@ -19,6 +20,18 @@ export default function IssuePicker({ value, onChange, projectKey, onValidationC
   const inputRef = useRef(null);
   const searchTimer = useRef(null);
   const validateTimer = useRef(null);
+  // Request tokens — a slow older search/validate response must never
+  // overwrite the state owned by a newer request (or newer input).
+  const searchSeq = useRef(0);
+  const validateSeq = useRef(0);
+
+  // Invalidates everything in flight (typing, selecting, clearing).
+  const cancelInFlight = () => {
+    searchSeq.current++;
+    validateSeq.current++;
+    setLoading(false);
+    setValidating(false);
+  };
 
   useEffect(() => {
     const handler = (e) => {
@@ -30,26 +43,38 @@ export default function IssuePicker({ value, onChange, projectKey, onValidationC
 
   const doSearch = useCallback(async (text) => {
     if (!text || text.length < 2) { setResults([]); setOpen(false); return; }
+    const seq = ++searchSeq.current;
     setLoading(true);
     try {
       const result = await invoke("searchIssues", { query: text, projectKey });
+      // Stale — a newer search (or selection/clear) owns the state now.
+      if (seq !== searchSeq.current) return;
       if (result.success) {
         setResults(result.issues || []);
         setOpen(result.issues.length > 0);
         setHighlighted(0);
       }
-    } catch (e) { console.error("Issue search failed:", e); }
+    } catch (e) {
+      if (seq !== searchSeq.current) return;
+      console.error("Issue search failed:", e);
+    }
     setLoading(false);
   }, [projectKey]);
 
   // Validate issue key by fetching directly — not via JQL search
   const validateKey = useCallback(async (key) => {
     if (!key || !/^[A-Z]+-\d+$/i.test(key.trim())) {
+      validateSeq.current++; // anything in flight is for older input
+      setValidating(false);
       setValidated(null);
       return;
     }
+    const seq = ++validateSeq.current;
+    setValidating(true);
     try {
       const result = await invoke("validateIssue", { issueKey: key.trim().toUpperCase() });
+      // Stale — the user kept typing or picked a result; discard.
+      if (seq !== validateSeq.current) return;
       if (result.success && result.valid) {
         const v = { valid: true, summary: result.summary, status: result.status, type: result.type };
         setValidated(v);
@@ -60,10 +85,12 @@ export default function IssuePicker({ value, onChange, projectKey, onValidationC
         if (onValidationChange) onValidationChange(v);
       }
     } catch {
+      if (seq !== validateSeq.current) return;
       const v = { valid: false, error: "Could not verify issue" };
       setValidated(v);
       if (onValidationChange) onValidationChange(v);
     }
+    setValidating(false);
   }, []);
 
   const handleInputChange = (e) => {
@@ -75,12 +102,18 @@ export default function IssuePicker({ value, onChange, projectKey, onValidationC
 
     if (searchTimer.current) clearTimeout(searchTimer.current);
     if (validateTimer.current) clearTimeout(validateTimer.current);
+    cancelInFlight();
 
     searchTimer.current = setTimeout(() => doSearch(val), 400);
     validateTimer.current = setTimeout(() => validateKey(val), 800);
   };
 
   const selectIssue = (issue) => {
+    // A pending debounce or in-flight request for the typed text must not
+    // reopen the dropdown or clobber the picked issue.
+    if (searchTimer.current) clearTimeout(searchTimer.current);
+    if (validateTimer.current) clearTimeout(validateTimer.current);
+    cancelInFlight();
     setQuery(issue.key);
     onChange(issue.key);
     setOpen(false);
@@ -127,15 +160,26 @@ export default function IssuePicker({ value, onChange, projectKey, onValidationC
           onFocus={() => { if (results.length > 0) setOpen(true); }}
           placeholder="Search by key (PROJ-123) or summary text..."
         />
-        {loading && <span className="issue-picker-loading">...</span>}
-        {query && !loading && (
-          <button className="issue-picker-clear" onClick={() => { setQuery(""); onChange(""); setResults([]); setOpen(false); setValidated(null); }}>&times;</button>
+        {(loading || validating) && <span className="spin-ring spin-ring-sm" />}
+        {query && !loading && !validating && (
+          <button
+            className="issue-picker-clear"
+            onClick={() => {
+              if (searchTimer.current) clearTimeout(searchTimer.current);
+              if (validateTimer.current) clearTimeout(validateTimer.current);
+              cancelInFlight();
+              setQuery(""); onChange(""); setResults([]); setOpen(false); setValidated(null);
+              if (onValidationChange) onValidationChange(null);
+            }}
+          >
+            &times;
+          </button>
         )}
       </div>
 
       {/* Validation feedback */}
       {validated?.valid === true && (
-        <div className="issue-picker-validated issue-picker-validated-ok">
+        <div className="issue-picker-validated issue-picker-validated-ok anim-pop">
           <span>{validated.type || "Issue"}</span>
           <strong>{query}</strong>
           <span className="issue-picker-validated-summary">{validated.summary}</span>
@@ -149,7 +193,7 @@ export default function IssuePicker({ value, onChange, projectKey, onValidationC
       )}
 
       {open && results.length > 0 && (
-        <div className="issue-picker-dropdown">
+        <div className="issue-picker-dropdown anim-fade">
           {results.map((issue, i) => (
             <div
               key={issue.key}

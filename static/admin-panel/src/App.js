@@ -16,7 +16,7 @@
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import TabBar from "./components/TabBar";
 import DocsTab from "./components/DocsTab";
 import SkillsAdminTab from "./components/SkillsAdminTab";
@@ -25,6 +25,7 @@ import PermissionsTab from "./components/PermissionsTab";
 import SettingsOpenAITab from "./components/SettingsOpenAITab";
 import CustomSelect from "./components/CustomSelect";
 import AddRuleWizard from "./components/AddRuleWizard";
+import { showToast } from "./components/toast";
 
 const injectStyles = () => {
   if (document.getElementById("app-styles")) return;
@@ -1537,6 +1538,163 @@ const injectStyles = () => {
 
     html[data-color-mode="dark"] .btn-add-skill { background: #8b5cf6; }
     html[data-color-mode="dark"] .skills-admin-disabled-badge { background: #64748b; }
+
+    /* ============================================================
+       Motion & Loading System (MLS) — shared contract, keep in sync
+       across config-ui / admin-panel / config-view injectStyles().
+       Classes: .is-busy (+.busy-solid), .veil/.veil-host/.veil-fixed,
+       .spin-ring, .status-dot(-checking)/.status-settle, .anim-rise,
+       .anim-fade, .anim-pop, .stagger, .flash-success, .load-error,
+       .btn-retry, .mls-toast, .reveal
+       ============================================================ */
+    :root {
+      --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+      --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+      --dur-fast: 140ms;
+      --dur-med: 260ms;
+      --dur-slow: 420ms;
+      --frost-bg: rgba(255, 255, 255, 0.6);
+    }
+    html[data-color-mode="dark"] { --frost-bg: rgba(8, 8, 14, 0.55); }
+
+    @keyframes mlsSpin { to { transform: rotate(360deg); } }
+    @keyframes mlsFadeIn { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes mlsRiseIn { from { opacity: 0; transform: translateY(7px); } to { opacity: 1; transform: none; } }
+    @keyframes mlsPopIn { from { opacity: 0; transform: scale(0.92); } to { opacity: 1; transform: none; } }
+    @keyframes mlsDotPing {
+      0% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.55); }
+      70% { box-shadow: 0 0 0 6px rgba(59, 130, 246, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0); }
+    }
+    @keyframes mlsFlash {
+      0% { background-color: rgba(22, 163, 74, 0.35); }
+      100% { background-color: transparent; }
+    }
+    @keyframes mlsToastIn { from { opacity: 0; transform: translate(-50%, 14px) scale(0.95); } to { opacity: 1; transform: translate(-50%, 0) scale(1); } }
+    @keyframes mlsToastOut { to { opacity: 0; transform: translate(-50%, 10px) scale(0.97); } }
+
+    /* Busy buttons: keep the ORIGINAL static label in the JSX (it goes
+       transparent, preserving width — no layout shift), add .is-busy while
+       the call is in flight, plus .busy-solid on solid/filled buttons so
+       the spinner is white. */
+    .is-busy { position: relative; color: transparent !important; pointer-events: none; text-shadow: none !important; }
+    .is-busy::after {
+      content: "";
+      position: absolute;
+      width: 14px; height: 14px;
+      top: 50%; left: 50%;
+      margin: -7px 0 0 -7px;
+      border-radius: 50%;
+      border: 2px solid rgba(100, 116, 139, 0.3);
+      border-top-color: var(--primary-color);
+      animation: mlsSpin 0.7s linear infinite;
+    }
+    .busy-solid.is-busy::after { border-color: rgba(255, 255, 255, 0.4); border-top-color: #ffffff; }
+
+    .spin-ring {
+      width: 16px; height: 16px; flex: 0 0 auto;
+      border-radius: 50%;
+      border: 2px solid rgba(100, 116, 139, 0.3);
+      border-top-color: var(--primary-color);
+      animation: mlsSpin 0.7s linear infinite;
+      display: inline-block;
+    }
+    .spin-ring-sm { width: 12px; height: 12px; }
+
+    /* Frosted recalculation veil: parent gets .veil-host, overlay shows
+       while stale-but-visible content is being refreshed underneath. */
+    .veil-host { position: relative; }
+    .veil {
+      position: absolute; inset: 0; z-index: 6;
+      display: flex; align-items: center; justify-content: center; gap: 9px;
+      background: var(--frost-bg);
+      -webkit-backdrop-filter: blur(10px) saturate(160%);
+      backdrop-filter: blur(10px) saturate(160%);
+      border-radius: inherit;
+      animation: mlsFadeIn var(--dur-fast) var(--ease-out) both;
+    }
+    .veil-fixed { position: fixed; z-index: 999; }
+    .veil-label { font-size: 12.5px; font-weight: 700; color: var(--text-color); }
+
+    .status-dot { transition: background-color var(--dur-med) ease; }
+    .status-dot-checking { background: var(--primary-color) !important; animation: mlsDotPing 1.2s ease-in-out infinite; }
+    .status-settle { animation: mlsPopIn 0.3s var(--ease-spring) both; }
+
+    .anim-rise { animation: mlsRiseIn var(--dur-med) var(--ease-out) both; }
+    .anim-fade { animation: mlsFadeIn var(--dur-med) var(--ease-out) both; }
+    .anim-pop { animation: mlsPopIn var(--dur-med) var(--ease-spring) both; }
+
+    .stagger > * { animation: mlsRiseIn var(--dur-med) var(--ease-out) both; }
+    .stagger > *:nth-child(1) { animation-delay: 0ms; }
+    .stagger > *:nth-child(2) { animation-delay: 35ms; }
+    .stagger > *:nth-child(3) { animation-delay: 70ms; }
+    .stagger > *:nth-child(4) { animation-delay: 105ms; }
+    .stagger > *:nth-child(5) { animation-delay: 140ms; }
+    .stagger > *:nth-child(6) { animation-delay: 175ms; }
+    .stagger > *:nth-child(7) { animation-delay: 210ms; }
+    .stagger > *:nth-child(8) { animation-delay: 245ms; }
+    .stagger > *:nth-child(9) { animation-delay: 280ms; }
+    .stagger > *:nth-child(10) { animation-delay: 315ms; }
+    .stagger > *:nth-child(n+11) { animation-delay: 350ms; }
+
+    .flash-success { animation: mlsFlash 1.2s ease-out both; }
+
+    .load-error {
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 14px;
+      font-size: 12.5px; font-weight: 600;
+      color: #ffffff;
+      background: var(--error-color);
+      border-radius: 8px;
+      animation: mlsRiseIn var(--dur-med) var(--ease-out) both;
+    }
+    .load-error span { flex: 1; }
+    .btn-retry {
+      background: #ffffff; color: var(--error-color);
+      border: none; border-radius: 6px;
+      font-weight: 700; font-size: 12px;
+      padding: 4px 12px; cursor: pointer;
+      flex: 0 0 auto;
+    }
+    .btn-retry:hover { opacity: 0.9; }
+
+    .mls-toast {
+      position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
+      z-index: 9999;
+      display: flex; align-items: center; gap: 8px;
+      padding: 10px 18px;
+      border-radius: 999px;
+      background: var(--success-color);
+      color: #ffffff; font-size: 12.5px; font-weight: 700;
+      font-family: inherit;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.28);
+      animation: mlsToastIn 0.32s var(--ease-spring) both;
+      pointer-events: none;
+      white-space: nowrap;
+      max-width: 90vw;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .mls-toast-error { background: var(--error-color); }
+    .mls-toast-leaving { animation: mlsToastOut 0.26s ease-in both; }
+
+    /* Animated expand/collapse for always-mounted sections. */
+    .reveal { display: grid; grid-template-rows: 0fr; transition: grid-template-rows var(--dur-med) var(--ease-out); }
+    .reveal-open { grid-template-rows: 1fr; }
+    .reveal > * { overflow: hidden; min-height: 0; }
+    /* Once the expand transition settles, lift the clip so absolutely-
+       positioned dropdowns inside the revealed body aren't cut off. */
+    .reveal-settled > * { overflow: visible; }
+
+    button:active:not(:disabled):not(.is-busy) { transform: scale(0.97); }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+      }
+    }
   `;
   document.head.appendChild(style);
 };
@@ -3817,12 +3975,17 @@ function App() {
   const [rulesFilter, setRulesFilter] = useState("all");
   const [showAddWizard, setShowAddWizard] = useState(false);
   const [typeFilter, setTypeFilter] = useState("all");
+  // Monotonic token — a slow older fetch (e.g. rapid All/My Rules flips) must
+  // never overwrite a newer call's rows or drop its refresh veil early.
+  const configsFetchToken = useRef(0);
 
   const fetchConfigs = async (showLoading = false, filterOverride) => {
     if (!invoke) return;
+    const token = ++configsFetchToken.current;
     if (showLoading) setRefreshingConfigs(true);
     try {
       const result = await invoke("getConfigs", { filter: filterOverride || rulesFilter });
+      if (token !== configsFetchToken.current) return; // stale response
       if (result.success) {
         setConfigs(result.configs || []);
         if (result.removedCount > 0) {
@@ -3830,9 +3993,12 @@ function App() {
         }
       }
     } catch (e) {
+      if (token !== configsFetchToken.current) return;
       console.error("Failed to fetch configs:", e);
     }
-    if (showLoading) setRefreshingConfigs(false);
+    // Only the latest call owns the veil — a stale call clearing it would end
+    // the in-flight indicator while the newer fetch is still running.
+    if (showLoading && token === configsFetchToken.current) setRefreshingConfigs(false);
   };
 
   const fetchLogs = async () => {
@@ -3851,12 +4017,20 @@ function App() {
 
   const clearLogs = async () => {
     if (!invoke) return;
+    // Destructive and unrecoverable — never fire on a stray click.
+    if (!window.confirm("Clear ALL execution logs? This cannot be undone.")) return;
     setClearingLogs(true);
     try {
-      await invoke("clearLogs");
-      setLogs([]);
+      const result = await invoke("clearLogs");
+      if (result && result.success === false) {
+        showToast(result.error || "Failed to clear logs", "error");
+      } else {
+        setLogs([]);
+        showToast("Logs cleared");
+      }
     } catch (e) {
       console.error("Failed to clear logs:", e);
+      showToast("Failed to clear logs: " + e.message, "error");
     }
     setClearingLogs(false);
   };
@@ -3975,7 +4149,10 @@ function App() {
 
   // Re-fetch configs when filter changes
   useEffect(() => {
-    if (!loading && invoke) fetchConfigs();
+    // showLoading=true: a filter change is user-triggered — without it the
+    // stale rows for the OLD filter sit on screen with zero signal until the
+    // fetch resolves (the veil over the table is the in-flight indicator).
+    if (!loading && invoke) fetchConfigs(true);
   }, [rulesFilter]);
 
   if (loading) {
@@ -4109,8 +4286,8 @@ function App() {
                 />
               </div>
             )}
-            <button className="btn-small" onClick={() => fetchConfigs(true)} disabled={refreshingConfigs}>
-              {refreshingConfigs ? "Refreshing..." : "Refresh"}
+            <button className={"btn-small" + (refreshingConfigs ? " is-busy" : "")} onClick={() => fetchConfigs(true)} disabled={refreshingConfigs}>
+              Refresh
             </button>
             {(userRole === "editor" || userRole === "admin") && (
               <button className="btn-small btn-edit" onClick={() => setShowAddWizard(!showAddWizard)}>
@@ -4128,8 +4305,18 @@ function App() {
           />
         )}
 
-        <div className="card">
-          {refreshingConfigs ? (
+        <div className="card veil-host">
+          {/* Refresh/filter-change keeps the rows visible under a frosted veil —
+              swapping in a fixed-height skeleton made the table collapse and
+              re-expand on every refresh. Skeleton only when there is nothing
+              to show underneath yet. */}
+          {refreshingConfigs && configs.length > 0 && (
+            <div className="veil">
+              <span className="spin-ring" />
+              <span className="veil-label">Refreshing rules…</span>
+            </div>
+          )}
+          {(refreshingConfigs && configs.length === 0) ? (
             <div style={{ padding: "14px" }}>
               {[1, 2, 3].map((i) => (
                 <div key={i} style={{ display: "flex", gap: "16px", alignItems: "center", padding: "10px 0", borderBottom: i < 3 ? "1px solid var(--border-color)" : "none" }}>
@@ -4167,7 +4354,7 @@ function App() {
                   <th></th>
                 </tr>
               </thead>
-              <tbody>
+              <tbody className="stagger">
                 {filtered.map((config) => {
                   const wf = config.workflow || {};
                   const hasWorkflow = wf.workflowName || wf.workflowId;
@@ -4238,14 +4425,12 @@ function App() {
                             </button>
                           )}
                           <button
-                            className={`btn-small ${isDisabled ? "btn-enable" : "btn-danger"}`}
+                            className={`btn-small ${isDisabled ? "btn-enable" : "btn-danger"}${toggling === config.id ? " is-busy" : ""}`}
                             onClick={() => toggleRule(config.id, isDisabled)}
                             disabled={toggling === config.id}
                             title={isDisabled ? "Re-enable rule in workflow" : "Disable rule in workflow"}
                           >
-                            {toggling === config.id
-                              ? (isDisabled ? "Enabling..." : "Disabling...")
-                              : (isDisabled ? "Enable" : "Disable")}
+                            {isDisabled ? "Enable" : "Disable"}
                           </button>
                         </div>
                         )}
@@ -4270,25 +4455,34 @@ function App() {
                 setShowLogs(!showLogs);
                 if (!showLogs) fetchLogs();
               }}
+              disabled={logsLoading && !showLogs}
             >
               {showLogs ? "Hide Logs" : "Show Logs"}
             </button>
             {showLogs && logs.length > 0 && (
-              <button className="btn-small btn-danger" onClick={clearLogs} disabled={clearingLogs}>
-                {clearingLogs ? "Clearing..." : "Clear All"}
+              <button className={"btn-small btn-danger" + (clearingLogs ? " is-busy" : "")} onClick={clearLogs} disabled={clearingLogs}>
+                Clear All
               </button>
             )}
             {showLogs && (
-              <button className="btn-small" onClick={fetchLogs} disabled={logsLoading}>
-                {logsLoading ? "Refreshing..." : "Refresh"}
+              <button className={"btn-small" + (logsLoading ? " is-busy" : "")} onClick={fetchLogs} disabled={logsLoading}>
+                Refresh
               </button>
             )}
           </div>
         </div>
 
         {showLogs && (
-          <div className="card">
-            {logsLoading ? (
+          <div className="card veil-host anim-rise">
+            {/* Refresh keeps existing entries visible under a frosted veil;
+                the skeleton only covers the very first (empty) load. */}
+            {logsLoading && logs.length > 0 && (
+              <div className="veil">
+                <span className="spin-ring" />
+                <span className="veil-label">Refreshing logs…</span>
+              </div>
+            )}
+            {(logsLoading && logs.length === 0) ? (
               <div style={{ padding: "14px" }}>
                 <div style={{ display: "flex", gap: "8px", marginBottom: "12px" }}>
                   <div className="sk sk-text" style={{ width: 40, height: 14 }} />
@@ -4301,7 +4495,7 @@ function App() {
             ) : logs.length === 0 ? (
               <div className="empty-state">No execution logs yet</div>
             ) : (
-              <div className="logs-list">
+              <div className="logs-list stagger">
                 {logs.map((log) => {
                   const logType = log.type || "validation";
                   const typeBadge = logType.includes("postfunction-semantic") ? "PF: Semantic"

@@ -5,11 +5,12 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@forge/bridge";
 import { javascriptLanguage } from "@codemirror/lang-javascript";
 import Tooltip from "./Tooltip";
 import CustomSelect from "./CustomSelect";
+import { showToast } from "./toast";
 
 // CSP-safe JavaScript syntax check: parse with Lezer (no eval / new Function,
 // which the Forge iframe CSP blocks) and look for error nodes in the tree.
@@ -43,6 +44,8 @@ const CATEGORIES = [
 export default function DocRepository({ selectedDocs, onSelectionChange, embedded = false, onChanged = null }) {
   const [docs, setDocs] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(null); // mount-load failure — render retry, not "no docs"
+  const [refreshing, setRefreshing] = useState(false); // non-initial reload — veil over the visible list
   const [showAdd, setShowAdd] = useState(false);
   const [newTitle, setNewTitle] = useState("");
   const [newContent, setNewContent] = useState("");
@@ -52,19 +55,44 @@ export default function DocRepository({ selectedDocs, onSelectionChange, embedde
   const [validationMsg, setValidationMsg] = useState(null); // { type: "error"|"ok", msg }
   const [expandedDoc, setExpandedDoc] = useState(null);
   const [expandedContent, setExpandedContent] = useState("");
+  const [expandedError, setExpandedError] = useState(null);
   const [loadingContent, setLoadingContent] = useState(false);
+  const [deletingId, setDeletingId] = useState(null); // row whose delete is in flight
+  const [newDocId, setNewDocId] = useState(null); // freshly saved row — flashes green
+  // Mirrors expandedDoc for in-flight getContextDocContent calls — a response
+  // for a doc the user has since collapsed/switched away from is discarded.
+  const expandedIdRef = useRef(null);
 
   const loadDocs = useCallback(async () => {
     try {
       const result = await invoke("getContextDocs");
-      if (result.success) setDocs(result.docs || []);
+      if (result.success) {
+        setDocs(result.docs || []);
+        setLoadError(null);
+      } else {
+        setLoadError(result.error || "Failed to load documents.");
+      }
     } catch (e) {
       console.error("Failed to load docs:", e);
+      setLoadError(e.message || "Failed to load documents.");
     }
     setLoading(false);
   }, []);
 
   useEffect(() => { loadDocs(); }, [loadDocs]);
+
+  const retryLoad = () => {
+    setLoading(true);
+    setLoadError(null);
+    loadDocs();
+  };
+
+  // Reload the list while keeping the current rows visible under a veil.
+  const refreshDocs = async () => {
+    setRefreshing(true);
+    await loadDocs();
+    setRefreshing(false);
+  };
 
   // Validate content based on category
   const validateContent = useCallback((content, category) => {
@@ -139,7 +167,9 @@ export default function DocRepository({ selectedDocs, onSelectionChange, embedde
         setNewContent("");
         setNewCategory("General");
         setShowAdd(false);
-        await loadDocs();
+        await refreshDocs();
+        if (result.id) setNewDocId(result.id);
+        showToast("Document saved");
         if (onChanged) onChanged();
       } else {
         setError(result.error || "Failed to save");
@@ -151,39 +181,53 @@ export default function DocRepository({ selectedDocs, onSelectionChange, embedde
   };
 
   const handleDelete = async (id) => {
-    setError(null);
+    if (deletingId) return; // one delete at a time — no double-fires
+    setDeletingId(id);
     try {
       const result = await invoke("deleteContextDoc", { id });
       if (!result.success) {
-        setError(result.error || "Failed to delete document.");
+        showToast(result.error || "Failed to delete document.", "error");
+        setDeletingId(null);
         return;
       }
       // Remove from selection if selected
       if (selectedDocs.includes(id)) {
         onSelectionChange(selectedDocs.filter((d) => d !== id));
       }
-      await loadDocs();
+      await refreshDocs();
       if (onChanged) onChanged();
     } catch (e) {
       console.error("Failed to delete:", e);
-      setError("Failed to delete: " + e.message);
+      showToast("Failed to delete: " + e.message, "error");
     }
+    setDeletingId(null);
   };
 
   const handleExpand = async (id) => {
     if (expandedDoc === id) {
       setExpandedDoc(null);
+      expandedIdRef.current = null;
       return;
     }
     setExpandedDoc(id);
+    expandedIdRef.current = id;
+    // Clear the previous doc's content so it can never masquerade as this one's.
+    setExpandedContent("");
+    setExpandedError(null);
     setLoadingContent(true);
     try {
       const result = await invoke("getContextDocContent", { id });
+      // Stale response — the user expanded another doc (or collapsed this one)
+      // while the fetch was in flight. The newer call owns the state.
+      if (expandedIdRef.current !== id) return;
       if (result.success) {
         setExpandedContent(result.doc.content);
+      } else {
+        setExpandedError(result.error || "Failed to load content");
       }
     } catch (e) {
-      setExpandedContent("Failed to load content");
+      if (expandedIdRef.current !== id) return;
+      setExpandedError("Failed to load content: " + e.message);
     }
     setLoadingContent(false);
   };
@@ -232,17 +276,9 @@ export default function DocRepository({ selectedDocs, onSelectionChange, embedde
         </div>
       )}
 
-      {/* Delete/list errors — the in-form line below only renders while the
-          add form is open, so surface them here too (mirrors SkillsTab). */}
-      {error && !showAdd && (
-        <div style={{ color: "var(--error-color)", fontSize: "12px", fontWeight: 600, padding: "6px 12px 0" }}>
-          {error}
-        </div>
-      )}
-
       {/* Add new document form */}
       {showAdd && (
-        <div className="doc-add-form">
+        <div className="doc-add-form anim-rise">
           {error && (
             <div className="doc-error">{error}</div>
           )}
@@ -289,11 +325,11 @@ export default function DocRepository({ selectedDocs, onSelectionChange, embedde
               {newContent.length > 0 ? formatSize(newContent.length) : ""}{newContent.length > 200000 ? " (too large)" : ""}
             </span>
             <button
-              className="btn-save-doc"
+              className={`btn-save-doc${saving ? " is-busy busy-solid" : ""}`}
               onClick={handleSave}
               disabled={saving || !newTitle.trim() || !newContent.trim() || newContent.length > 200000 || validationMsg?.type === "error"}
             >
-              {saving ? "Saving..." : "Save to Library"}
+              Save to Library
             </button>
           </div>
         </div>
@@ -305,17 +341,26 @@ export default function DocRepository({ selectedDocs, onSelectionChange, embedde
           <div className="sk sk-text" style={{ width: "60%", height: 12, marginBottom: 8 }} />
           <div className="sk sk-text" style={{ width: "40%", height: 12 }} />
         </div>
+      ) : loadError ? (
+        <div className="load-error" style={{ margin: "10px 12px" }}>
+          <span>Couldn&apos;t load documents.</span>
+          <button className="btn-retry" onClick={retryLoad}>Retry</button>
+        </div>
       ) : visibleDocs.length === 0 ? (
         <div className="doc-empty">
           No documents yet. Add API docs, schemas, or field mappings to help AI generate better code.
         </div>
       ) : (
-        <div className="doc-list">
+        <div className="veil-host">
+        {refreshing && (
+          <div className="veil"><span className="spin-ring" /><span className="veil-label">Refreshing…</span></div>
+        )}
+        <div className="doc-list stagger">
           {visibleDocs.map((doc) => {
             const isSelected = selectedDocs.includes(doc.id);
             const isExpanded = expandedDoc === doc.id;
             return (
-              <div key={doc.id} className={`doc-item ${isSelected ? "doc-selected" : ""}`}>
+              <div key={doc.id} className={`doc-item ${isSelected ? "doc-selected" : ""}${doc.id === newDocId ? " flash-success" : ""}`}>
                 <div className="doc-item-row">
                   <label className="doc-checkbox">
                     <input
@@ -341,8 +386,9 @@ export default function DocRepository({ selectedDocs, onSelectionChange, embedde
                       {isExpanded ? "▲" : "▼"}
                     </button>
                     <button
-                      className="doc-btn-delete"
+                      className={`doc-btn-delete${deletingId === doc.id ? " is-busy" : ""}`}
                       onClick={() => handleDelete(doc.id)}
+                      disabled={deletingId === doc.id}
                       title={doc.builtin ? "Disable" : "Delete"}
                     >
                       &times;
@@ -351,14 +397,25 @@ export default function DocRepository({ selectedDocs, onSelectionChange, embedde
                 </div>
                 {isExpanded && (
                   <div className="doc-preview">
-                    {loadingContent ? "Loading..." : (
-                      <pre className="doc-preview-content">{expandedContent}</pre>
+                    {loadingContent ? (
+                      <>
+                        <div className="sk sk-text" style={{ width: "90%", height: 10, marginBottom: 6 }} />
+                        <div className="sk sk-text" style={{ width: "75%", height: 10, marginBottom: 6 }} />
+                        <div className="sk sk-text" style={{ width: "55%", height: 10 }} />
+                      </>
+                    ) : expandedError ? (
+                      <div style={{ color: "var(--error-color)", fontSize: "12px", fontWeight: 600 }}>
+                        {expandedError}
+                      </div>
+                    ) : (
+                      <pre className="doc-preview-content anim-rise">{expandedContent}</pre>
                     )}
                   </div>
                 )}
               </div>
             );
           })}
+        </div>
         </div>
       )}
 

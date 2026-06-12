@@ -5,13 +5,14 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 
-import React, { useState } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { invoke } from "@forge/bridge";
 import Tooltip from "./Tooltip";
 import CustomSelect from "./CustomSelect";
 import IssuePicker from "./IssuePicker";
 import DocRepository from "./DocRepository";
 import ReviewPanel from "./ReviewPanel";
+import AILoadingState from "./AILoadingState";
 
 // Fields Jira cannot set via the issue-edit PUT that post-functions use —
 // offering them as targets guarantees a runtime failure (status needs the
@@ -56,11 +57,21 @@ export default function SemanticConfig({
   const [issueValid, setIssueValid] = useState(null); // null | { valid: true } | { valid: false }
   const [testResult, setTestResult] = useState(null);
 
+  // A verdict belongs to the exact prompts/fields it ran against — editing
+  // any of them invalidates the displayed result AND any run still in flight.
+  const testSeq = useRef(0);
+  useEffect(() => {
+    testSeq.current++;
+    setTestResult(null);
+  }, [conditionPrompt, actionPrompt, fieldId, actionFieldId]);
+
   const handleTest = async () => {
+    const seq = ++testSeq.current;
     setTestRunning(true);
     setTestResult(null);
+    let result;
     try {
-      const result = await invoke("testSemanticPostFunction", {
+      result = await invoke("testSemanticPostFunction", {
         issueKey: testIssue.trim(),
         fieldId: fieldId || "description",
         conditionPrompt,
@@ -69,11 +80,12 @@ export default function SemanticConfig({
         selectedDocIds: selectedDocIds || [],
         crossCheckClaims: !!crossCheckClaims,
       });
-      setTestResult(result);
     } catch (e) {
-      setTestResult({ success: false, error: e.message, logs: [] });
+      result = { success: false, error: e.message, logs: [] };
     }
     setTestRunning(false);
+    // Discard a result the user has already invalidated by editing the config.
+    if (seq === testSeq.current) setTestResult(result);
   };
 
   return (
@@ -265,18 +277,21 @@ export default function SemanticConfig({
               <div className="test-target-row">
                 <IssuePicker value={testIssue} onChange={setTestIssue} onValidationChange={setIssueValid} />
                 <button
-                  className="btn-run-test"
+                  className={`btn-run-test${testRunning ? " is-busy busy-solid" : ""}`}
                   onClick={handleTest}
                   disabled={testRunning || !testIssue.trim() || !conditionPrompt.trim() || !issueValid?.valid}
                 >
-                  {testRunning ? "Running..." : "Run Test"}
+                  Run Test
                 </button>
               </div>
             </div>
 
+            {/* The AI round-trip takes a while — fill the result area while it runs */}
+            {testRunning && <AILoadingState type="test" />}
+
             {/* Result */}
-            {testResult && (
-              <div className={`semantic-test-result ${testResult.success ? (testResult.decision === "UPDATE" ? "st-update" : "st-skip") : "st-error"}`}>
+            {!testRunning && testResult && (
+              <div className={`semantic-test-result anim-rise ${testResult.success ? (testResult.decision === "UPDATE" ? "st-update" : "st-skip") : "st-error"}`}>
                 <div className="st-result-header">
                   {testResult.success ? (
                     <span className={`test-badge ${testResult.decision === "UPDATE" ? "test-badge-pass" : "test-badge-skip"}`}>

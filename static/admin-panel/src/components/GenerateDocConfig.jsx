@@ -11,6 +11,7 @@ import Tooltip from "./Tooltip";
 import CustomSelect from "./CustomSelect";
 import IssuePicker from "./IssuePicker";
 import DocRepository from "./DocRepository";
+import AILoadingState from "./AILoadingState";
 
 const FORMAT_OPTIONS = [
   { value: "pdf", label: "PDF (.pdf)" },
@@ -42,6 +43,9 @@ export default function GenerateDocConfig({
   const [testRunning, setTestRunning] = useState(false);
   const [issueValid, setIssueValid] = useState(null);
   const [testResult, setTestResult] = useState(null);
+  // Required-field error styling is gated on blur — a pristine form must not
+  // open covered in red.
+  const [promptTouched, setPromptTouched] = useState(false);
 
   const handleTest = async () => {
     setTestRunning(true);
@@ -122,8 +126,9 @@ export default function GenerateDocConfig({
         <textarea
           value={contentPrompt}
           onChange={(e) => setContentPrompt(e.target.value)}
+          onBlur={() => setPromptTouched(true)}
           placeholder={'Example: "Write a stakeholder summary: problem, proposed solution, timeline, and open risks."'}
-          className={`textarea ${!contentPrompt.trim() ? "input-error" : ""}`}
+          className={`textarea ${promptTouched && !contentPrompt.trim() ? "input-error" : ""}`}
           rows={5}
         />
       </div>
@@ -182,14 +187,16 @@ export default function GenerateDocConfig({
               <label className="label" style={{ fontSize: "11px", marginBottom: "4px" }}>Test against issue</label>
               <div className="test-target-row">
                 <IssuePicker value={testIssue} onChange={setTestIssue} onValidationChange={setIssueValid} />
-                <button className="btn-run-test" onClick={handleTest} disabled={testRunning || !testIssue.trim() || !contentPrompt.trim() || !issueValid?.valid}>
-                  {testRunning ? "Running..." : "Run Test"}
+                <button className={`btn-run-test${testRunning ? " is-busy busy-solid" : ""}`} onClick={handleTest} disabled={testRunning || !testIssue.trim() || !contentPrompt.trim() || !issueValid?.valid}>
+                  Run Test
                 </button>
               </div>
             </div>
 
+            {testRunning && <AILoadingState type="test" />}
+
             {testResult && (
-              <div className={`semantic-test-result ${testResult.success ? "st-update" : "st-error"}`}>
+              <div className={`semantic-test-result anim-rise ${testResult.success ? "st-update" : "st-error"}`}>
                 <div className="st-result-header">
                   {testResult.success
                     ? <span className="test-badge test-badge-pass">{testResult.decision || "GENERATE"}</span>

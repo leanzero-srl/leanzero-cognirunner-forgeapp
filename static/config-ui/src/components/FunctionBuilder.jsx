@@ -16,10 +16,22 @@ const MAX_FUNCTIONS = 50;
 let funcCounter = 1;
 
 // Module-level cached promise — getFields is fetched at most once per page
-// load no matter how many FunctionBuilder instances mount.
+// load no matter how many FunctionBuilder instances mount. A failure must
+// NOT stay cached (it would kill field completions for the whole session),
+// so the cache is cleared and the next mount retries.
 let fieldsPromise = null;
 function loadFields() {
-  if (!fieldsPromise) fieldsPromise = invoke("getFields");
+  if (!fieldsPromise) {
+    fieldsPromise = invoke("getFields")
+      .then((result) => {
+        if (!result || !result.success) fieldsPromise = null;
+        return result;
+      })
+      .catch((e) => {
+        fieldsPromise = null;
+        throw e;
+      });
+  }
   return fieldsPromise;
 }
 

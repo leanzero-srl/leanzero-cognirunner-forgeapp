@@ -28,6 +28,8 @@ import { invoke } from "@forge/bridge";
 import Tooltip from "./Tooltip";
 import CustomSelect from "./CustomSelect";
 import CodeEditor from "./CodeEditor";
+import AILoadingState from "./AILoadingState";
+import { showToast } from "./toast";
 
 export const SKILL_CATEGORIES = [
   "Jira API",
@@ -96,6 +98,7 @@ export default function SkillEditor({
         examples,
       });
       if (result.success) {
+        showToast("Skill saved");
         onSaved && onSaved(result.id);
       } else {
         setError(result.error || "Failed to save skill");
@@ -123,6 +126,9 @@ export default function SkillEditor({
         result = await pollAsyncResult(result.taskId);
       }
       if (result.success) {
+        // The editor closes immediately on success — confirm WHAT was saved.
+        const savedName = result.skill?.name || name.trim() || "new skill";
+        showToast("Skill saved: " + savedName);
         onSaved && onSaved(result.id);
       } else {
         setError(result.error || "AI could not distill the skill");
@@ -178,10 +184,11 @@ export default function SkillEditor({
         Examples (code)
       </label>
       <CodeEditor value={examples} onChange={setExamples} />
+      {/* The distill round-trip can take up to 120s on slow self-hosted
+          providers — show a real loading state, not just a busy button. */}
+      {distilling && <AILoadingState type="codegen" statusOverride="AI is writing the skill…" />}
       <div className="doc-add-actions">
-        <span className="doc-size-hint">
-          {distilling ? "AI is writing the skill..." : ""}
-        </span>
+        <span className="doc-size-hint" />
         <div style={{ display: "flex", gap: "8px" }}>
           {onCancel && (
             <button className="btn-add-doc" onClick={onCancel} disabled={saving || distilling}>
@@ -190,20 +197,20 @@ export default function SkillEditor({
           )}
           {distillContext && (
             <button
-              className="btn-add-doc"
+              className={`btn-add-doc${distilling ? " is-busy" : ""}`}
               onClick={handleDistill}
               disabled={saving || distilling}
               title="One AI call writes the description, instructions, and examples from this step's prompt, code, and test logs"
             >
-              {distilling ? "Distilling..." : "Let AI write it"}
+              Let AI write it
             </button>
           )}
           <button
-            className="btn-save-doc"
+            className={`btn-save-doc${saving ? " is-busy busy-solid" : ""}`}
             onClick={handleSave}
             disabled={saving || distilling || !name.trim() || !instructions.trim()}
           >
-            {saving ? "Saving..." : "Save Skill"}
+            Save Skill
           </button>
         </div>
       </div>

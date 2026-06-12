@@ -10,6 +10,7 @@ import { invoke } from "@forge/bridge";
 import Tooltip from "./Tooltip";
 import CustomSelect from "./CustomSelect";
 import IssuePicker from "./IssuePicker";
+import AILoadingState from "./AILoadingState";
 
 export default function ResearchConfig({
   fieldId,
@@ -140,14 +141,16 @@ export default function ResearchConfig({
               <label className="label" style={{ fontSize: "11px", marginBottom: "4px" }}>Test against issue</label>
               <div className="test-target-row">
                 <IssuePicker value={testIssue} onChange={setTestIssue} onValidationChange={setIssueValid} />
-                <button className="btn-run-test" onClick={handleTest} disabled={testRunning || !testIssue.trim() || !issueValid?.valid}>
-                  {testRunning ? "Running..." : "Run Test"}
+                <button className={`btn-run-test${testRunning ? " is-busy busy-solid" : ""}`} onClick={handleTest} disabled={testRunning || !testIssue.trim() || !issueValid?.valid}>
+                  Run Test
                 </button>
               </div>
             </div>
 
+            {testRunning && <AILoadingState type="test" />}
+
             {testResult && (
-              <div className={`semantic-test-result ${testResult.success ? "st-update" : "st-error"}`}>
+              <div className={`semantic-test-result anim-rise ${testResult.success ? "st-update" : "st-error"}`}>
                 <div className="st-result-header">
                   {testResult.success
                     ? <span className="test-badge test-badge-pass">{testResult.decision || "RESEARCH"}</span>

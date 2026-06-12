@@ -5,8 +5,9 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import CustomSelect from "./CustomSelect";
+import AILoadingState from "./AILoadingState";
 
 // Static-PF code offload (mirrors config-ui): the workflow editor caps a rule's
 // embedded config at ~32KB. Above the threshold the step code moves to app
@@ -116,6 +117,11 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
   const [testResult, setTestResult] = useState(null);
   const [created, setCreated] = useState(false);
   const [submitted, setSubmitted] = useState(false); // for field validation
+  // Monotonic tokens — going back via the breadcrumb and re-picking while a
+  // fetch is in flight must not render the previous selection's results or
+  // clear the newer call's loading skeleton early.
+  const workflowsFetchToken = useRef(0);
+  const transitionsFetchToken = useRef(0);
 
   // Load projects on mount
   useEffect(() => {
@@ -129,8 +135,11 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
     })();
   }, []);
 
-  // Load workflows when project selected
+  // Load workflows when project selected. Advance the step BEFORE the fetch —
+  // the step-2 skeleton is the loading feedback; setting it after the await
+  // left the user staring at the old step with zero signal.
   const handleProjectSelect = async (project) => {
+    const token = ++workflowsFetchToken.current;
     setSelectedProject(project);
     setSelectedWorkflow(null);
     setSelectedTransition(null);
@@ -138,29 +147,38 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
     setTransitions([]);
     setLoadingWorkflows(true);
     setError(null);
+    setStep(2);
     try {
       const result = await invoke("getProjectWorkflows", { projectKey: project.key, projectId: project.id });
+      if (token !== workflowsFetchToken.current) return; // stale response
       if (result.success) setWorkflows(result.workflows || []);
-      else setError(result.error);
-    } catch (e) { setError("Failed to load workflows"); }
+      else setError(result.error || "Failed to load workflows");
+    } catch (e) {
+      if (token !== workflowsFetchToken.current) return;
+      setError("Failed to load workflows");
+    }
     setLoadingWorkflows(false);
-    setStep(2);
   };
 
-  // Load transitions when workflow selected
+  // Load transitions when workflow selected (same step-first pattern as above).
   const handleWorkflowSelect = async (workflow) => {
+    const token = ++transitionsFetchToken.current;
     setSelectedWorkflow(workflow);
     setSelectedTransition(null);
     setTransitions([]);
     setLoadingTransitions(true);
     setError(null);
+    setStep(3);
     try {
       const result = await invoke("getWorkflowTransitions", { workflowName: workflow.name });
+      if (token !== transitionsFetchToken.current) return; // stale response
       if (result.success) setTransitions(result.transitions || []);
-      else setError(result.error);
-    } catch (e) { setError("Failed to load transitions"); }
+      else setError(result.error || "Failed to load transitions");
+    } catch (e) {
+      if (token !== transitionsFetchToken.current) return;
+      setError("Failed to load transitions");
+    }
     setLoadingTransitions(false);
-    setStep(3);
   };
 
   // Select transition
@@ -171,6 +189,7 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
 
   // Select rule type and load fields
   const handleTypeSelect = async (type) => {
+    setError(null);
     setRuleType(type);
     setStep(5);
     // Only fetch fields if not already loaded
@@ -181,10 +200,12 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
         if (result.success) {
           setFields(result.fields || []);
         } else {
-          console.error("getFields failed:", result.error);
+          // Empty field pickers with no explanation are worse than an error —
+          // fields stays [] so re-picking the rule type retries the fetch.
+          setError("Failed to load Jira fields" + (result.error ? `: ${result.error}` : "") + ". Change the rule type and re-select it to retry.");
         }
       } catch (e) {
-        console.error("getFields error:", e);
+        setError("Failed to load Jira fields. Change the rule type and re-select it to retry.");
       }
       setLoadingFields(false);
     }
@@ -196,11 +217,29 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
     // Validate required fields
     if (ruleType === "validator" && (!fieldId || !prompt.trim())) return;
     if (ruleType === "condition" && (!fieldId || !prompt.trim())) return;
-    if (ruleType === "postfunction-semantic" && !conditionPrompt.trim()) return;
-    if (ruleType === "postfunction-generate-doc" && !contentPrompt.trim()) return;
-    if (ruleType === "postfunction-comment" && !commentPrompt.trim()) return;
-    if (ruleType === "postfunction-subtask" && !subtaskPrompt.trim()) return;
-    if (ruleType === "postfunction-link" && !linkPrompt.trim()) return;
+    // Required-prompt gaps must surface in the wizard error banner — the
+    // touched-gated field styling means a never-blurred empty field shows no
+    // red, so a silent return here reads as a dead Create button.
+    if (ruleType === "postfunction-semantic" && !conditionPrompt.trim()) {
+      setError("Write the condition before creating the rule.");
+      return;
+    }
+    if (ruleType === "postfunction-generate-doc" && !contentPrompt.trim()) {
+      setError("Write the document instructions before creating the rule.");
+      return;
+    }
+    if (ruleType === "postfunction-comment" && !commentPrompt.trim()) {
+      setError("Write the comment instructions before creating the rule.");
+      return;
+    }
+    if (ruleType === "postfunction-subtask" && !subtaskPrompt.trim()) {
+      setError("Write the sub-task instructions before creating the rule.");
+      return;
+    }
+    if (ruleType === "postfunction-link" && !linkPrompt.trim()) {
+      setError("Write the relation criteria before creating the rule.");
+      return;
+    }
     if (ruleType === "postfunction-static" && !functions.some((f) => f.code)) return;
 
     setSaving(true);
@@ -373,6 +412,8 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
               setFieldId(""); setPrompt(""); setConditionPrompt(""); setActionPrompt(""); setActionFieldId(""); setCrossCheckClaims(false);
               setDocFormat("pdf"); setContentPrompt(""); setDocTitlePrompt(""); setAttachComment(false);
               setResearchQuery(""); setResearchTitle(""); setAutoSelectResearchDoc(false); setCommentPrompt(""); setSubtaskPrompt("");
+              setLinkPrompt(""); setLinkTypeName("Relates"); setMaxLinks(3);
+              setSimulationMode(false); setSuppressNotifications(false); setEnableTools(null);
               setSelectedDocIds([]);
               setTestResult(null); setTestIssue("");
               setFunctions([{
@@ -790,7 +831,7 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
                       style={{ flex: 1 }}
                     />
                     <button
-                      className="btn-small btn-edit"
+                      className={`btn-small btn-edit${testRunning ? " is-busy" : ""}`}
                       disabled={testRunning || !testIssue.trim() || !fieldId || !prompt.trim()}
                       onClick={async () => {
                         setTestRunning(true);
@@ -810,15 +851,21 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
                         setTestRunning(false);
                       }}
                     >
-                      {testRunning ? "Running..." : "Run Test"}
+                      Run Test
                     </button>
                   </div>
                   <p style={{ margin: "4px 0 0 0", fontSize: "11px", color: "var(--text-muted)" }}>
                     Dry run — no transition is blocked. Tests the validation against a real issue.
                   </p>
 
+                  {testRunning && (
+                    <div style={{ marginTop: "8px" }}>
+                      <AILoadingState type="test" />
+                    </div>
+                  )}
+
                   {testResult && (
-                    <div style={{
+                    <div className="anim-rise" style={{
                       marginTop: "8px", padding: "10px 12px", borderRadius: "8px",
                       border: `1px solid ${testResult.success ? (testResult.isValid ? "var(--success-color)" : "var(--error-color)") : "var(--error-color)"}`,
                       background: testResult.success ? (testResult.isValid ? "rgba(22,163,106,0.06)" : "rgba(220,38,38,0.06)") : "rgba(220,38,38,0.06)",
@@ -1013,11 +1060,11 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
           <div className="wiz-footer-actions">
             <button className="btn-small" onClick={onClose}>Cancel</button>
             <button
-              className="btn-small btn-edit"
+              className={`btn-small btn-edit${saving ? " is-busy" : ""}`}
               onClick={handleSave}
               disabled={saving}
             >
-              {saving ? "Creating..." : "Create Rule"}
+              Create Rule
             </button>
           </div>
         </div>

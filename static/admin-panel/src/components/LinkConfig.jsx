@@ -10,6 +10,7 @@ import { invoke } from "@forge/bridge";
 import Tooltip from "./Tooltip";
 import CustomSelect from "./CustomSelect";
 import IssuePicker from "./IssuePicker";
+import AILoadingState from "./AILoadingState";
 
 export default function LinkConfig({
   fieldId,
@@ -29,6 +30,9 @@ export default function LinkConfig({
   const [testRunning, setTestRunning] = useState(false);
   const [issueValid, setIssueValid] = useState(null);
   const [testResult, setTestResult] = useState(null);
+  // Required-field error styling is gated on blur — a pristine form must not
+  // open covered in red.
+  const [promptTouched, setPromptTouched] = useState(false);
 
   const handleTest = async () => {
     setTestRunning(true);
@@ -97,8 +101,9 @@ export default function LinkConfig({
         <textarea
           value={linkPrompt || ""}
           onChange={(e) => setLinkPrompt(e.target.value)}
+          onBlur={() => setPromptTouched(true)}
           placeholder={'Example: "Link issues that report the same defect or are clearly blocked by this work. Same feature area alone is not enough."'}
-          className={`textarea ${!linkPrompt || !linkPrompt.trim() ? "input-error" : ""}`}
+          className={`textarea ${promptTouched && (!linkPrompt || !linkPrompt.trim()) ? "input-error" : ""}`}
           rows={4}
         />
       </div>
@@ -148,14 +153,16 @@ export default function LinkConfig({
               <label className="label" style={{ fontSize: "11px", marginBottom: "4px" }}>Test against issue</label>
               <div className="test-target-row">
                 <IssuePicker value={testIssue} onChange={setTestIssue} onValidationChange={setIssueValid} />
-                <button className="btn-run-test" onClick={handleTest} disabled={testRunning || !testIssue.trim() || !(linkPrompt || "").trim() || !issueValid?.valid}>
-                  {testRunning ? "Running..." : "Run Test"}
+                <button className={`btn-run-test${testRunning ? " is-busy busy-solid" : ""}`} onClick={handleTest} disabled={testRunning || !testIssue.trim() || !(linkPrompt || "").trim() || !issueValid?.valid}>
+                  Run Test
                 </button>
               </div>
             </div>
 
+            {testRunning && <AILoadingState type="test" />}
+
             {testResult && (
-              <div className={`semantic-test-result ${testResult.success ? "st-update" : "st-error"}`}>
+              <div className={`semantic-test-result anim-rise ${testResult.success ? "st-update" : "st-error"}`}>
                 <div className="st-result-header">
                   {testResult.success
                     ? <span className="test-badge test-badge-pass">{testResult.decision || "LINK"}</span>

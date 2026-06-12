@@ -15,6 +15,7 @@ import SkillEditor from "./SkillEditor";
 import ApiReferencePanel from "./editor/ApiReferencePanel";
 import IssuePicker from "./IssuePicker";
 import AILoadingState from "./AILoadingState";
+import { showToast } from "./toast";
 import JIRA_ENDPOINTS_DATA from "../data/jira-endpoints";
 
 // Maps a step's operation type to the closest skill category for
@@ -204,8 +205,16 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
   const [fixAttempts, setFixAttempts] = useState(0);
   const [fixResult, setFixResult] = useState(null); // { explanation, verified, preFixCode, preFixMeta }
   const [memorySaved, setMemorySaved] = useState(null); // { id, content }
+  // Bumped after flows OUTSIDE the knowledge panel persist/delete a memory
+  // (fix-derived save, veto) so the panel's counts and list refresh.
+  const [knowledgeRefresh, setKnowledgeRefresh] = useState(0);
+  const [vetoingMemory, setVetoingMemory] = useState(false);
   const [showSkillEditor, setShowSkillEditor] = useState(false);
   const suggestTimer = useRef(null);
+  // Timer for the transient "auto-detected" badge — cleared before re-arming
+  // (rapid re-suggestions must not race) and on unmount.
+  const opBadgeTimer = useRef(null);
+  useEffect(() => () => { if (opBadgeTimer.current) clearTimeout(opBadgeTimer.current); }, []);
 
   // Generation token — invalidates in-flight generate/fix polls. Bumped at the
   // start of every generate and fix, on manual code edits, and on unmount, so
@@ -282,7 +291,8 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
       onUpdate({ operationType: suggested });
       setOpSuggested(true);
       // Clear the "suggested" badge after 4 seconds
-      setTimeout(() => setOpSuggested(false), 4000);
+      if (opBadgeTimer.current) clearTimeout(opBadgeTimer.current);
+      opBadgeTimer.current = setTimeout(() => setOpSuggested(false), 4000);
     }
   }, [functionData.operationType, onUpdate]);
 
@@ -300,6 +310,8 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
     const token = genTokenRef.current;
     setIsGenerating(true);
     setGenerationFallback(null);
+    // A verdict earned by the OLD code must not stand against the new code.
+    setTestResult(null);
     try {
       // The backend resolves selected docs/skills/memories itself; the inline
       // "Additional Context" textarea is the only client-supplied text.
@@ -365,6 +377,10 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
   // inside that closure). Returns the result for callers that need it.
   const runTest = async (codeOverride) => {
     const codeToRun = codeOverride !== undefined ? codeOverride : functionData.code;
+    // A verdict belongs to the exact code it ran against: if the user edits
+    // the code while this run is in flight (handleCodeChange bumps the token),
+    // the result must not be displayed as if it applied to the edited code.
+    const token = genTokenRef.current;
     setTestRunning(true);
     setTestResult(null);
     let result;
@@ -379,8 +395,9 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
     } catch (e) {
       result = { success: false, logs: ["Test error: " + e.message] };
     }
-    setTestResult(result);
     setTestRunning(false);
+    if (genTokenRef.current !== token) return result; // stale — caller still gets it
+    setTestResult(result);
     if (result && result.success) setFixAttempts(0); // successful run resets the fix guard
     return result;
   };
@@ -451,6 +468,8 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
               if (genTokenRef.current !== token) return;
               if (memRes.success) {
                 setMemorySaved({ id: memRes.id, content: result.memoryCandidate.content });
+                setKnowledgeRefresh((n) => n + 1);
+                showToast("Fix verified — memory saved");
               }
             } catch (e) {
               console.warn("Memory save failed:", e.message);
@@ -480,13 +499,23 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
   };
 
   const handleVetoMemory = async () => {
-    if (!memorySaved) return;
+    if (!memorySaved || vetoingMemory) return;
+    setVetoingMemory(true);
     try {
-      await invoke("deleteMemory", { id: memorySaved.id });
+      const res = await invoke("deleteMemory", { id: memorySaved.id });
+      if (res && res.success) {
+        // Only clear the badge once the delete is confirmed — a failed delete
+        // must never look like a successful veto.
+        setMemorySaved(null);
+        setKnowledgeRefresh((n) => n + 1);
+      } else {
+        showToast(res?.error || "Couldn't forget the memory", "error");
+      }
     } catch (e) {
       console.warn("Memory delete failed:", e.message);
+      showToast("Couldn't forget the memory: " + e.message, "error");
     }
-    setMemorySaved(null);
+    setVetoingMemory(false);
   };
 
   // Manual edits dismiss the fix card and reset the fix-attempt guard.
@@ -500,6 +529,8 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
     if (fixResult) setFixResult(null);
     if (fixAttempts !== 0) setFixAttempts(0);
     if (generationFallback) setGenerationFallback(null);
+    // The verdict belongs to the pre-edit code — clear it.
+    if (testResult) setTestResult(null);
   };
 
   const hasPrompt = functionData.operationPrompt?.trim();
@@ -603,16 +634,16 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
                 onKeyDown={(e) => { if (e.key === "Enter") handleEndpointSuggest(); }}
               />
               <button
-                className="btn-generate"
+                className={`btn-generate${suggestingEndpoint ? " is-busy busy-solid" : ""}`}
                 style={{ whiteSpace: "nowrap", flexShrink: 0 }}
                 onClick={handleEndpointSuggest}
                 disabled={suggestingEndpoint || !endpointQuery.trim()}
               >
-                {suggestingEndpoint ? "Finding..." : "Suggest"}
+                Suggest
               </button>
             </div>
             {endpointSuggestion?.explanation && (
-              <div className="endpoint-suggestion">
+              <div className="endpoint-suggestion anim-rise">
                 <p className="endpoint-suggestion-text">{endpointSuggestion.explanation}</p>
                 {endpointSuggestion.unparsed && !endpointSuggestion.path && (
                   <p style={{ margin: "4px 0 0", fontSize: "11px", color: "var(--text-muted)" }}>
@@ -758,6 +789,7 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
         selectedSkillIds={selectedSkills}
         onSkillSelectionChange={(ids) => { setSelectedSkills(ids); onUpdate({ selectedSkillIds: ids }); }}
         autoAppliedSkills={(functionData.generationMeta?.appliedSkills || []).filter((s) => s.auto)}
+        refreshKey={knowledgeRefresh}
       />
 
       {/* Inline context — for one-off notes not worth saving to the library */}
@@ -837,6 +869,7 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
           User should know they're not looking at AI-tailored code. */}
       {generationFallback && !isGenerating && (
         <div
+          className="anim-rise"
           style={{
             margin: "8px 0",
             padding: "8px 10px",
@@ -887,7 +920,7 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
           </div>
 
           {/* API Reference panel — rendered from the shared sandbox API spec */}
-          {showApiRef && <ApiReferencePanel />}
+          {showApiRef && <div className="anim-rise"><ApiReferencePanel /></div>}
 
           {/* Provenance — what knowledge the AI used for this code */}
           {functionData.generationMeta && (
@@ -913,14 +946,14 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
 
           {/* Context-limit truncation warnings */}
           {(functionData.generationMeta?.truncatedDocs || []).map((d, i) => (
-            <div key={i} className="truncation-warning">
+            <div key={i} className="truncation-warning anim-rise">
               Doc {d.title} was truncated to fit the AI context limit - trim it in the library for best accuracy.
             </div>
           ))}
 
           {/* AI fix card — shown until verified/undone/dismissed/edited */}
           {fixResult && (
-            <div className={`fix-result${fixResult.verified ? " fix-verified" : ""}`}>
+            <div className={`fix-result anim-rise${fixResult.verified ? " fix-verified" : ""}`}>
               <div className="fix-undo-bar">
                 <strong>{fixResult.verified ? "AI fix applied & verified" : "AI fix applied"}</strong>
                 <button className="btn-add-doc" onClick={handleUndoFix}>Undo</button>
@@ -933,7 +966,9 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
                 <span className="memory-saved-badge">
                   🧠 Learned: {memorySaved.content.slice(0, 80)}
                   <button
+                    className={vetoingMemory ? "is-busy busy-solid" : ""}
                     onClick={handleVetoMemory}
+                    disabled={vetoingMemory}
                     title="Forget this memory"
                     style={{ background: "transparent", border: "none", cursor: "pointer", color: "#ffffff", fontSize: "14px", lineHeight: 1, padding: 0, marginLeft: "6px" }}
                   >
@@ -947,11 +982,13 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
           {/* The memory persists even after the fix card is undone — keep the
               badge (and its veto) visible until vetoed or dismissed. */}
           {!fixResult && memorySaved && (
-            <div className="fix-result fix-verified">
+            <div className="fix-result fix-verified anim-rise">
               <span className="memory-saved-badge">
                 🧠 Learned: {memorySaved.content.slice(0, 80)}
                 <button
+                  className={vetoingMemory ? "is-busy busy-solid" : ""}
                   onClick={handleVetoMemory}
+                  disabled={vetoingMemory}
                   title="Forget this memory"
                   style={{ background: "transparent", border: "none", cursor: "pointer", color: "#ffffff", fontSize: "14px", lineHeight: 1, padding: 0, marginLeft: "6px" }}
                 >
@@ -971,7 +1008,7 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
 
           {/* Test panel */}
           {showTestPanel && (
-            <div className="test-panel">
+            <div className="test-panel anim-rise">
               <div className="test-panel-header">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                   <polygon points="5 3 19 12 5 21 5 3" />
@@ -991,11 +1028,11 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
                     onChange={setTestTarget}
                   />
                   <button
-                    className="btn-run-test"
+                    className={`btn-run-test${testRunning ? " is-busy busy-solid" : ""}`}
                     onClick={() => runTest()}
                     disabled={testRunning || fixing || isGenerating || !functionData.code?.trim()}
                   >
-                    {testRunning ? "Running..." : "Run Test"}
+                    Run Test
                   </button>
                 </div>
                 <p className="hint" style={{ marginTop: "4px" }}>
@@ -1010,9 +1047,13 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
               {/* While the AI repairs the code, the loading state replaces the result */}
               {fixing && <AILoadingState type="fix" />}
 
+              {/* The sandbox run can take ~22s — fill the void left by the
+                  cleared previous result while it's in flight */}
+              {!fixing && testRunning && <AILoadingState type="test" />}
+
               {/* Test result */}
               {!fixing && testResult && (
-                <div className={`test-result ${testResult.success ? "test-pass" : "test-fail"}`}>
+                <div className={`test-result anim-rise ${testResult.success ? "test-pass" : "test-fail"}`}>
                   <div className="test-result-header">
                     <span className={`test-badge ${testResult.success ? "test-badge-pass" : "test-badge-fail"}`}>
                       {testResult.success ? "PASS" : "FAIL"}
@@ -1076,24 +1117,26 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
 
           {/* Save-as-Skill editor — pre-filled from this step */}
           {showSkillEditor && (
-            <SkillEditor
-              initial={{
-                name: functionData.name || (functionData.operationPrompt || "").slice(0, 60),
-                category: SKILL_CATEGORY_BY_OPTYPE[opType] || "Other",
-                description: "",
-                descriptionPlaceholder: "When should the AI reuse this?",
-                instructions: functionData.operationPrompt || "",
-                examples: functionData.code || "",
-              }}
-              distillContext={{
-                prompt: functionData.operationPrompt || "",
-                code: functionData.code || "",
-                operationType: opType,
-                testLogs: testResult?.logs?.slice(-10),
-              }}
-              onSaved={() => setShowSkillEditor(false)}
-              onCancel={() => setShowSkillEditor(false)}
-            />
+            <div className="anim-rise">
+              <SkillEditor
+                initial={{
+                  name: functionData.name || (functionData.operationPrompt || "").slice(0, 60),
+                  category: SKILL_CATEGORY_BY_OPTYPE[opType] || "Other",
+                  description: "",
+                  descriptionPlaceholder: "When should the AI reuse this?",
+                  instructions: functionData.operationPrompt || "",
+                  examples: functionData.code || "",
+                }}
+                distillContext={{
+                  prompt: functionData.operationPrompt || "",
+                  code: functionData.code || "",
+                  operationType: opType,
+                  testLogs: testResult?.logs?.slice(-10),
+                }}
+                onSaved={() => setShowSkillEditor(false)}
+                onCancel={() => setShowSkillEditor(false)}
+              />
+            </div>
           )}
 
           <p className="hint">

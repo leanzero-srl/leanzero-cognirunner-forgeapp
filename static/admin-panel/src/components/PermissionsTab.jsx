@@ -5,8 +5,9 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import CustomSelect from "./CustomSelect";
+import { showToast } from "./toast";
 
 const ROLE_OPTIONS = [
   { value: "viewer", label: "Viewer" },
@@ -33,36 +34,73 @@ const scopeLabel = (role, scope) => {
 export default function PermissionsTab({ invoke }) {
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState([]);
   const [searching, setSearching] = useState(false);
+  const [searchedEmpty, setSearchedEmpty] = useState(false);
   const [adding, setAdding] = useState(null);
   const [addRole, setAddRole] = useState("viewer");
   const [addScope, setAddScope] = useState("own");
   const [removing, setRemoving] = useState(null);
   const [changingRole, setChangingRole] = useState(null);
+  // accountId of a just-added user — drives the one-shot .flash-success on its card
+  const [flashId, setFlashId] = useState(null);
   const [error, setError] = useState(null);
   const searchTimer = useRef(null);
+  // Monotonic token — a slow older search response must never overwrite the
+  // results of a newer one.
+  const searchTokenRef = useRef(0);
 
-  useEffect(() => {
-    const load = async () => {
-      try {
-        const result = await invoke("getAppAdmins");
-        if (result.success) setUsers(result.admins || []);
-      } catch (e) { console.error("Failed to load users:", e); }
-      setLoading(false);
-    };
-    load();
+  const loadUsers = useCallback(async () => {
+    try {
+      const result = await invoke("getAppAdmins");
+      if (result.success) {
+        setUsers(result.admins || []);
+        setLoadError(false);
+      } else {
+        setLoadError(true);
+      }
+    } catch (e) {
+      console.error("Failed to load users:", e);
+      setLoadError(true);
+    }
+    setLoading(false);
   }, [invoke]);
 
+  useEffect(() => { loadUsers(); }, [loadUsers]);
+
+  // Pending debounce must not fire into an unmounted component.
+  useEffect(() => () => {
+    if (searchTimer.current) clearTimeout(searchTimer.current);
+  }, []);
+
   const doSearch = async (query) => {
-    if (!query || query.length < 2) { setSearchResults([]); return; }
+    const token = ++searchTokenRef.current;
+    if (!query || query.length < 2) {
+      setSearchResults([]);
+      setSearchedEmpty(false);
+      setSearching(false);
+      return;
+    }
+    // Clear stale results immediately — they must not stay clickable while
+    // the new search is in flight.
+    setSearchResults([]);
+    setSearchedEmpty(false);
     setSearching(true);
     try {
       const result = await invoke("searchUsers", { query });
-      if (result.success) setSearchResults(result.users || []);
-    } catch (e) { console.error("User search failed:", e); }
-    setSearching(false);
+      if (token !== searchTokenRef.current) return; // stale response
+      if (result.success) {
+        const found = result.users || [];
+        setSearchResults(found);
+        setSearchedEmpty(found.length === 0);
+      }
+    } catch (e) {
+      if (token !== searchTokenRef.current) return;
+      console.error("User search failed:", e);
+    }
+    if (token === searchTokenRef.current) setSearching(false);
   };
 
   const handleSearchChange = (e) => {
@@ -82,14 +120,19 @@ export default function PermissionsTab({ invoke }) {
         setUsers([...users, { accountId: user.accountId, displayName: user.displayName, avatarUrl: user.avatarUrl, role: addRole, scope: effectiveScope }]);
         setSearchQuery("");
         setSearchResults([]);
+        setSearchedEmpty(false);
+        setFlashId(user.accountId);
+        showToast("Admin added");
       } else {
-        setError(result.error);
+        showToast(result.error || "Failed to add user", "error");
       }
-    } catch (e) { setError("Failed to add user: " + e.message); }
+    } catch (e) { showToast("Failed to add user: " + e.message, "error"); }
     setAdding(null);
   };
 
   const handleRemove = async (accountId) => {
+    if (removing) return;
+    if (!window.confirm("Remove this user's CogniRunner access?")) return;
     setRemoving(accountId);
     setError(null);
     try {
@@ -97,28 +140,36 @@ export default function PermissionsTab({ invoke }) {
       if (result.success) {
         setUsers(users.filter((a) => (typeof a === "string" ? a : a.accountId) !== accountId));
       } else {
-        setError(result.error);
+        showToast(result.error || "Failed to remove user", "error");
       }
-    } catch (e) { setError("Failed to remove user: " + e.message); }
+    } catch (e) { showToast("Failed to remove user: " + e.message, "error"); }
     setRemoving(null);
   };
 
   const handleRoleChange = async (accountId, newRole, newScope) => {
+    if (changingRole) return;
+    const effectiveScope = newRole === "admin" ? "all" : (newScope || "own");
+    // Optimistic: the select reflects the choice immediately. On failure revert
+    // ONLY this user's role/scope — restoring a whole-list snapshot would wipe
+    // users added/removed concurrently.
+    const uid = (u) => (typeof u === "string" ? u : u.accountId);
+    const target = users.find((u) => uid(u) === accountId);
+    const prevRole = target && typeof target !== "string" ? target.role : undefined;
+    const prevScope = target && typeof target !== "string" ? target.scope : undefined;
+    setUsers((cur) => cur.map((u) => (uid(u) === accountId ? { ...u, role: newRole, scope: effectiveScope } : u)));
+    const revert = () => setUsers((cur) => cur.map((u) => (uid(u) === accountId ? { ...u, role: prevRole, scope: prevScope } : u)));
     setChangingRole(accountId);
     setError(null);
     try {
-      const effectiveScope = newRole === "admin" ? "all" : (newScope || "own");
       const result = await invoke("updateUserRole", { accountId, role: newRole, scope: effectiveScope });
-      if (result.success) {
-        setUsers(users.map((u) => {
-          const uid = typeof u === "string" ? u : u.accountId;
-          if (uid === accountId) return { ...u, role: newRole, scope: effectiveScope };
-          return u;
-        }));
-      } else {
-        setError(result.error);
+      if (!result.success) {
+        revert();
+        showToast(result.error || "Failed to update role", "error");
       }
-    } catch (e) { setError("Failed to update role: " + e.message); }
+    } catch (e) {
+      revert();
+      showToast("Failed to update role: " + e.message, "error");
+    }
     setChangingRole(null);
   };
 
@@ -191,9 +242,9 @@ export default function PermissionsTab({ invoke }) {
               onChange={handleSearchChange}
               placeholder="Search by name to add a user..."
             />
-            {searching && <span className="perm-search-loading">Searching...</span>}
+            {searching && <span className="spin-ring spin-ring-sm" />}
             {searchQuery && !searching && (
-              <button className="perm-search-clear" onClick={() => { setSearchQuery(""); setSearchResults([]); }}>&times;</button>
+              <button className="perm-search-clear" onClick={() => { searchTokenRef.current++; setSearchQuery(""); setSearchResults([]); setSearchedEmpty(false); }}>&times;</button>
             )}
           </div>
           <div style={{ width: "110px" }}>
@@ -233,7 +284,12 @@ export default function PermissionsTab({ invoke }) {
                   )}
                   <span className="perm-search-name">{user.displayName}</span>
                   {already && <span className="perm-search-badge">Already added</span>}
-                  {isAdding && <span className="perm-search-badge">Adding as {addRole}...</span>}
+                  {isAdding && (
+                    <span className="perm-search-badge" style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
+                      <span className="spin-ring spin-ring-sm" />
+                      Adding as {addRole}
+                    </span>
+                  )}
                   {!already && !isAdding && (
                     <span style={{ marginLeft: "auto", fontSize: "11px", color: "var(--text-muted)" }}>Add as {addRole}</span>
                   )}
@@ -242,10 +298,17 @@ export default function PermissionsTab({ invoke }) {
             })}
           </div>
         )}
+
+        {/* Completed search with zero matches — say so instead of staying silent */}
+        {searchedEmpty && !searching && (
+          <div className="anim-fade" style={{ padding: "8px 4px", fontSize: "12px", fontWeight: 600, color: "var(--text-secondary)" }}>
+            No users found for &ldquo;{searchQuery}&rdquo;
+          </div>
+        )}
       </div>
 
       {/* Current users list */}
-      <div className="perm-list">
+      <div className="perm-list stagger">
         {loading ? (
           <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
             {[1, 2, 3].map((i) => (
@@ -263,6 +326,11 @@ export default function PermissionsTab({ invoke }) {
                 </div>
               </div>
             ))}
+          </div>
+        ) : loadError ? (
+          <div className="load-error">
+            <span>Couldn't load users.</span>
+            <button className="btn-retry" onClick={() => { setLoading(true); setLoadError(false); loadUsers(); }}>Retry</button>
           </div>
         ) : users.length === 0 ? (
           <div className="perm-empty">
@@ -282,7 +350,7 @@ export default function PermissionsTab({ invoke }) {
             const isRemoving = removing === id;
             const isChanging = changingRole === id;
             return (
-              <div key={id} className="perm-admin-card">
+              <div key={id} className={`perm-admin-card${flashId === id ? " flash-success" : ""}`}>
                 <div className="perm-admin-info">
                   {avatar ? (
                     <img className="perm-avatar" src={avatar} alt="" />
@@ -304,7 +372,7 @@ export default function PermissionsTab({ invoke }) {
                     />
                   </div>
                   {role !== "admin" && (
-                    <div style={{ width: "120px" }}>
+                    <div className="anim-rise" style={{ width: "120px" }}>
                       <CustomSelect
                         value={scope}
                         onChange={(newScope) => handleRoleChange(id, role, newScope)}
@@ -314,11 +382,11 @@ export default function PermissionsTab({ invoke }) {
                     </div>
                   )}
                   <button
-                    className="perm-remove-btn"
+                    className={`perm-remove-btn${isRemoving ? " is-busy" : ""}`}
                     onClick={() => handleRemove(id)}
                     disabled={isRemoving}
                   >
-                    {isRemoving ? "..." : "Remove"}
+                    Remove
                   </button>
                 </div>
               </div>

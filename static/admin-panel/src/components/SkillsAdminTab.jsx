@@ -26,6 +26,7 @@
 
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import SkillEditor from "./SkillEditor";
+import { showToast } from "./toast";
 
 const CATEGORY_CLASS = {
   "Jira API": "skill-cat-jira",
@@ -39,40 +40,45 @@ const CATEGORY_CLASS = {
 export default function SkillsAdminTab({ invoke, isAdmin }) {
   const [skills, setSkills] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
   const [expandedId, setExpandedId] = useState(null);
   const [expandedContent, setExpandedContent] = useState(null);
+  const [expandedError, setExpandedError] = useState(null);
   const [loadingContent, setLoadingContent] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [editingInitial, setEditingInitial] = useState(null);
   const [loadingEditId, setLoadingEditId] = useState(null);
   const [togglingId, setTogglingId] = useState(null);
+  const [deletingId, setDeletingId] = useState(null);
   const [error, setError] = useState(null);
   // Mirrors expandedId for in-flight getSkillContent calls — a response for
   // a skill the user has since collapsed/switched away from is discarded.
   const expandedIdRef = useRef(null);
+  const hasLoadedRef = useRef(false);
 
   const loadSkills = useCallback(async () => {
     try {
       const result = await invoke("getSkills");
-      if (result.success) setSkills(result.skills || []);
+      if (result.success) {
+        setSkills(result.skills || []);
+        setLoadError(false);
+        hasLoadedRef.current = true;
+      } else if (!hasLoadedRef.current) {
+        setLoadError(true);
+      }
     } catch (e) {
       console.error("Failed to load skills:", e);
+      if (!hasLoadedRef.current) setLoadError(true);
     }
     setLoading(false);
   }, [invoke]);
 
   useEffect(() => { loadSkills(); }, [loadSkills]);
 
-  const handleView = async (id) => {
-    if (expandedId === id) {
-      setExpandedId(null);
-      expandedIdRef.current = null;
-      return;
-    }
-    setExpandedId(id);
-    expandedIdRef.current = id;
+  const fetchSkillContent = async (id) => {
     setExpandedContent(null);
+    setExpandedError(null);
     setLoadingContent(true);
     try {
       const result = await invoke("getSkillContent", { id });
@@ -80,12 +86,29 @@ export default function SkillsAdminTab({ invoke, isAdmin }) {
       // one) while the fetch was in flight. The newer call owns the state.
       if (expandedIdRef.current !== id) return;
       if (result.success) setExpandedContent(result.skill);
-      else setExpandedContent({ description: result.error || "Failed to load skill content" });
+      else setExpandedError(result.error || "Couldn't load this skill's content.");
     } catch (e) {
       if (expandedIdRef.current !== id) return;
-      setExpandedContent({ description: "Failed to load skill content" });
+      setExpandedError("Couldn't load this skill's content.");
+    } finally {
+      // Only the call that still owns the expansion clears the loading flag —
+      // a stale response must not wipe the newer call's spinner.
+      if (expandedIdRef.current === id) setLoadingContent(false);
     }
-    setLoadingContent(false);
+  };
+
+  const handleView = (id) => {
+    if (expandedId === id) {
+      setExpandedId(null);
+      expandedIdRef.current = null;
+      // Collapsing while a fetch is in flight must not leave the loading
+      // flag stuck on — the stale-guard above intentionally won't clear it.
+      setLoadingContent(false);
+      return;
+    }
+    setExpandedId(id);
+    expandedIdRef.current = id;
+    fetchSkillContent(id);
   };
 
   const handleEdit = async (skill) => {
@@ -143,27 +166,35 @@ export default function SkillsAdminTab({ invoke, isAdmin }) {
           enabled: enable,
         });
       }
-      if (result.success) await loadSkills();
-      else setError(result.error || (enable ? "Failed to enable skill." : "Failed to disable skill."));
+      if (result.success) {
+        await loadSkills();
+        showToast(enable ? "Skill enabled" : "Skill disabled");
+      } else {
+        showToast(result.error || (enable ? "Failed to enable skill" : "Failed to disable skill"), "error");
+      }
     } catch (e) {
-      setError(e.message);
+      showToast((enable ? "Failed to enable skill: " : "Failed to disable skill: ") + e.message, "error");
     }
     setTogglingId(null);
   };
 
   const handleDelete = async (skill) => {
+    if (deletingId) return;
     if (!window.confirm("Delete this skill permanently? This cannot be undone.")) return;
+    setDeletingId(skill.id);
     setError(null);
     try {
       const result = await invoke("deleteSkill", { id: skill.id });
       if (result.success === false) {
-        setError(result.error || "Failed to delete skill.");
+        showToast(result.error || "Failed to delete skill", "error");
       } else {
         await loadSkills();
+        showToast("Skill deleted");
       }
     } catch (e) {
-      setError(e.message);
+      showToast("Failed to delete skill: " + e.message, "error");
     }
+    setDeletingId(null);
   };
 
   const byNewest = (a, b) =>
@@ -207,25 +238,29 @@ export default function SkillsAdminTab({ invoke, isAdmin }) {
                 {isExpanded ? "Hide" : "View"}
               </button>
               <button
-                className="btn-small"
+                className={`btn-small${loadingEditId === skill.id ? " is-busy" : ""}`}
                 onClick={() => handleEdit(skill)}
                 disabled={builtinLocked || loadingEditId === skill.id}
                 title={builtinLocked ? "Only admins can edit built-in skills" : undefined}
               >
-                {loadingEditId === skill.id ? "Loading..." : "Edit"}
+                Edit
               </button>
               <button
-                className="btn-small"
+                className={`btn-small${togglingId === skill.id ? " is-busy" : ""}`}
                 onClick={() => handleToggleEnabled(skill)}
                 disabled={builtinLocked || togglingId === skill.id}
                 title={builtinLocked
                   ? `Only admins can ${isDisabled ? "enable" : "disable"} built-in skills`
                   : undefined}
               >
-                {togglingId === skill.id ? "Saving..." : isDisabled ? "Enable" : "Disable"}
+                {isDisabled ? "Enable" : "Disable"}
               </button>
               {skill.builtin !== true && (
-                <button className="btn-small btn-danger" onClick={() => handleDelete(skill)}>
+                <button
+                  className={`btn-small btn-danger${deletingId === skill.id ? " is-busy" : ""}`}
+                  onClick={() => handleDelete(skill)}
+                  disabled={deletingId === skill.id}
+                >
                   Delete
                 </button>
               )}
@@ -236,8 +271,21 @@ export default function SkillsAdminTab({ invoke, isAdmin }) {
           <tr>
             <td colSpan={colCount} style={{ padding: 0 }}>
               <div className="doc-preview" style={{ borderTop: "none", padding: "10px 14px" }}>
-                {loadingContent ? "Loading..." : expandedContent ? (
-                  <>
+                {loadingContent ? (
+                  <div>
+                    <div className="sk sk-text" style={{ width: "85%", height: 11, marginBottom: 6 }} />
+                    <div className="sk sk-text" style={{ width: "70%", height: 11, marginBottom: 6 }} />
+                    <div className="sk sk-text" style={{ width: "60%", height: 11 }} />
+                  </div>
+                ) : expandedError ? (
+                  <div className="load-error anim-rise">
+                    <span>{expandedError}</span>
+                    <button className="btn-retry" onClick={() => fetchSkillContent(skill.id)}>
+                      Retry
+                    </button>
+                  </div>
+                ) : expandedContent ? (
+                  <div className="anim-rise">
                     {expandedContent.description && (
                       <p style={{ margin: "0 0 6px", fontSize: "12px" }}>{expandedContent.description}</p>
                     )}
@@ -247,7 +295,7 @@ export default function SkillsAdminTab({ invoke, isAdmin }) {
                     {expandedContent.examples && (
                       <pre className="doc-preview-content" style={{ marginTop: "6px" }}>{expandedContent.examples}</pre>
                     )}
-                  </>
+                  </div>
                 ) : "No content"}
               </div>
             </td>
@@ -262,6 +310,7 @@ export default function SkillsAdminTab({ invoke, isAdmin }) {
                   setEditingId(null);
                   setEditingInitial(null);
                   await loadSkills();
+                  showToast("Skill saved");
                 }}
                 onCancel={() => { setEditingId(null); setEditingInitial(null); }}
               />
@@ -298,6 +347,7 @@ export default function SkillsAdminTab({ invoke, isAdmin }) {
             onSaved={async () => {
               setShowAdd(false);
               await loadSkills();
+              showToast("Skill saved");
             }}
             onCancel={() => setShowAdd(false)}
           />
@@ -316,6 +366,13 @@ export default function SkillsAdminTab({ invoke, isAdmin }) {
               </div>
             ))}
           </div>
+        ) : loadError ? (
+          <div style={{ padding: "14px" }}>
+            <div className="load-error">
+              <span>Couldn't load skills.</span>
+              <button className="btn-retry" onClick={() => { setLoading(true); setLoadError(false); loadSkills(); }}>Retry</button>
+            </div>
+          </div>
         ) : skills.length === 0 ? (
           <div className="empty-state">
             <div className="skills-admin-empty-title">No skills yet</div>
@@ -332,7 +389,7 @@ export default function SkillsAdminTab({ invoke, isAdmin }) {
                 <th></th>
               </tr>
             </thead>
-            <tbody>
+            <tbody className="stagger">
               {enabledRows.map(renderRow)}
               {disabledRows.length > 0 && (
                 <tr className="skills-admin-divider">

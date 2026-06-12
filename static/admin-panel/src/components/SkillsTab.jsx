@@ -25,6 +25,7 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@forge/bridge";
 import SkillEditor from "./SkillEditor";
+import { showToast } from "./toast";
 
 const MAX_SELECTED_SKILLS = 4;
 
@@ -40,11 +41,14 @@ const CATEGORY_CLASS = {
 export default function SkillsTab({ selectedSkills, onSkillSelectionChange, onChanged = null }) {
   const [skills, setSkills] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(null); // mount-load failure — render retry, not "no skills"
+  const [refreshing, setRefreshing] = useState(false); // non-initial reload — veil over the visible list
   const [showAdd, setShowAdd] = useState(false);
   const [expandedSkill, setExpandedSkill] = useState(null);
   const [expandedContent, setExpandedContent] = useState(null);
   const [loadingContent, setLoadingContent] = useState(false);
-  const [error, setError] = useState(null);
+  const [deletingId, setDeletingId] = useState(null); // row whose delete is in flight
+  const [newSkillId, setNewSkillId] = useState(null); // freshly saved row — flashes green
   // Mirrors expandedSkill for in-flight getSkillContent calls — a response for
   // a skill the user has since collapsed/switched away from is discarded.
   const expandedIdRef = useRef(null);
@@ -52,14 +56,33 @@ export default function SkillsTab({ selectedSkills, onSkillSelectionChange, onCh
   const loadSkills = useCallback(async () => {
     try {
       const result = await invoke("getSkills");
-      if (result.success) setSkills(result.skills || []);
+      if (result.success) {
+        setSkills(result.skills || []);
+        setLoadError(null);
+      } else {
+        setLoadError(result.error || "Failed to load skills.");
+      }
     } catch (e) {
       console.error("Failed to load skills:", e);
+      setLoadError(e.message || "Failed to load skills.");
     }
     setLoading(false);
   }, []);
 
   useEffect(() => { loadSkills(); }, [loadSkills]);
+
+  const retryLoad = () => {
+    setLoading(true);
+    setLoadError(null);
+    loadSkills();
+  };
+
+  // Reload the list while keeping the current rows visible under a veil.
+  const refreshSkills = async () => {
+    setRefreshing(true);
+    await loadSkills();
+    setRefreshing(false);
+  };
 
   // Disabled builtins come back in the index but must not render.
   const visibleSkills = skills.filter((s) => s.enabled !== false);
@@ -74,22 +97,24 @@ export default function SkillsTab({ selectedSkills, onSkillSelectionChange, onCh
   };
 
   const handleDelete = async (id) => {
-    setError(null);
+    if (deletingId) return; // one delete at a time — no double-fires
+    setDeletingId(id);
     try {
       const result = await invoke("deleteSkill", { id });
       if (result.success) {
         if (selectedSkills.includes(id)) {
           onSkillSelectionChange(selectedSkills.filter((s) => s !== id));
         }
-        await loadSkills();
+        await refreshSkills();
         if (onChanged) onChanged();
       } else {
-        setError(result.error || "Failed to delete skill.");
+        showToast(result.error || "Failed to delete skill.", "error");
       }
     } catch (e) {
       console.error("Failed to delete skill:", e);
-      setError("Failed to delete skill: " + e.message);
+      showToast("Failed to delete skill: " + e.message, "error");
     }
+    setDeletingId(null);
   };
 
   const handleExpand = async (id) => {
@@ -128,17 +153,18 @@ export default function SkillsTab({ selectedSkills, onSkillSelectionChange, onCh
         </button>
       </div>
 
-      {error && (
-        <div style={{ color: "var(--error-color)", fontSize: "12px", fontWeight: 600, padding: "6px 12px 0" }}>
-          {error}
-        </div>
-      )}
-
       {showAdd && (
-        <SkillEditor
-          onSaved={async () => { setShowAdd(false); await loadSkills(); if (onChanged) onChanged(); }}
-          onCancel={() => setShowAdd(false)}
-        />
+        <div className="anim-rise">
+          <SkillEditor
+            onSaved={async (id) => {
+              setShowAdd(false);
+              await refreshSkills();
+              if (id) setNewSkillId(id);
+              if (onChanged) onChanged();
+            }}
+            onCancel={() => setShowAdd(false)}
+          />
+        </div>
       )}
 
       {loading ? (
@@ -146,18 +172,27 @@ export default function SkillsTab({ selectedSkills, onSkillSelectionChange, onCh
           <div className="sk sk-text" style={{ width: "60%", height: 12, marginBottom: 8 }} />
           <div className="sk sk-text" style={{ width: "40%", height: 12 }} />
         </div>
+      ) : loadError ? (
+        <div className="load-error" style={{ margin: "10px 12px" }}>
+          <span>Couldn&apos;t load skills.</span>
+          <button className="btn-retry" onClick={retryLoad}>Retry</button>
+        </div>
       ) : visibleSkills.length === 0 ? (
         <div className="doc-empty">
           No skills yet. Save a tested step as a skill, or add one manually.
         </div>
       ) : (
-        <div className="skill-list">
+        <div className="veil-host">
+        {refreshing && (
+          <div className="veil"><span className="spin-ring" /><span className="veil-label">Refreshing…</span></div>
+        )}
+        <div className="skill-list stagger">
           {visibleSkills.map((skill) => {
             const isSelected = selectedSkills.includes(skill.id);
             const isExpanded = expandedSkill === skill.id;
             const checkboxDisabled = !isSelected && atMax;
             return (
-              <div key={skill.id} className={`skill-item ${isSelected ? "skill-selected" : ""}`}>
+              <div key={skill.id} className={`skill-item ${isSelected ? "skill-selected" : ""}${skill.id === newSkillId ? " flash-success" : ""}`}>
                 <div className="doc-item-row">
                   <label className="doc-checkbox" title={checkboxDisabled ? `Maximum ${MAX_SELECTED_SKILLS} skills per step` : undefined}>
                     <input
@@ -188,8 +223,9 @@ export default function SkillsTab({ selectedSkills, onSkillSelectionChange, onCh
                       {isExpanded ? "▲" : "▼"}
                     </button>
                     <button
-                      className="doc-btn-delete"
+                      className={`doc-btn-delete${deletingId === skill.id ? " is-busy" : ""}`}
                       onClick={() => handleDelete(skill.id)}
+                      disabled={deletingId === skill.id}
                       title={skill.builtin ? "Disable" : "Delete"}
                     >
                       &times;
@@ -216,6 +252,7 @@ export default function SkillsTab({ selectedSkills, onSkillSelectionChange, onCh
               </div>
             );
           })}
+        </div>
         </div>
       )}
 

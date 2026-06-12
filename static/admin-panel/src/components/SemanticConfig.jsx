@@ -5,13 +5,14 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 
-import React, { useState } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { invoke } from "@forge/bridge";
 import Tooltip from "./Tooltip";
 import CustomSelect from "./CustomSelect";
 import IssuePicker from "./IssuePicker";
 import DocRepository from "./DocRepository";
 import ReviewPanel from "./ReviewPanel";
+import AILoadingState from "./AILoadingState";
 
 export default function SemanticConfig({
   conditionPrompt,
@@ -35,12 +36,26 @@ export default function SemanticConfig({
   const [testRunning, setTestRunning] = useState(false);
   const [issueValid, setIssueValid] = useState(null); // null | { valid: true } | { valid: false }
   const [testResult, setTestResult] = useState(null);
+  // Required-field error styling is gated on blur — a pristine form must not
+  // open covered in red.
+  const [conditionTouched, setConditionTouched] = useState(false);
+
+  // A dry-run result describes the prompts/fields it was run with — once any
+  // of those change, the old result is misleading. Clear it AND invalidate
+  // any run still in flight.
+  const testSeq = useRef(0);
+  useEffect(() => {
+    testSeq.current++;
+    setTestResult(null);
+  }, [conditionPrompt, actionPrompt, fieldId, actionFieldId]);
 
   const handleTest = async () => {
+    const seq = ++testSeq.current;
     setTestRunning(true);
     setTestResult(null);
+    let result;
     try {
-      const result = await invoke("testSemanticPostFunction", {
+      result = await invoke("testSemanticPostFunction", {
         issueKey: testIssue.trim(),
         fieldId: fieldId || "description",
         conditionPrompt,
@@ -49,11 +64,12 @@ export default function SemanticConfig({
         selectedDocIds: selectedDocIds || [],
         crossCheckClaims: !!crossCheckClaims,
       });
-      setTestResult(result);
     } catch (e) {
-      setTestResult({ success: false, error: e.message, logs: [] });
+      result = { success: false, error: e.message, logs: [] };
     }
     setTestRunning(false);
+    // Discard a result the user has already invalidated by editing the config.
+    if (seq === testSeq.current) setTestResult(result);
   };
 
   return (
@@ -122,8 +138,9 @@ export default function SemanticConfig({
         <textarea
           value={conditionPrompt}
           onChange={(e) => setConditionPrompt(e.target.value)}
+          onBlur={() => setConditionTouched(true)}
           placeholder={'Example: "Run when the description mentions a bug or defect"'}
-          className={`textarea ${!conditionPrompt.trim() ? "input-error" : ""}`}
+          className={`textarea ${conditionTouched && !conditionPrompt.trim() ? "input-error" : ""}`}
           rows={4}
         />
       </div>
@@ -245,18 +262,20 @@ export default function SemanticConfig({
               <div className="test-target-row">
                 <IssuePicker value={testIssue} onChange={setTestIssue} onValidationChange={setIssueValid} />
                 <button
-                  className="btn-run-test"
+                  className={`btn-run-test${testRunning ? " is-busy busy-solid" : ""}`}
                   onClick={handleTest}
                   disabled={testRunning || !testIssue.trim() || !conditionPrompt.trim() || !issueValid?.valid}
                 >
-                  {testRunning ? "Running..." : "Run Test"}
+                  Run Test
                 </button>
               </div>
             </div>
 
+            {testRunning && <AILoadingState type="test" />}
+
             {/* Result */}
             {testResult && (
-              <div className={`semantic-test-result ${testResult.success ? (testResult.decision === "UPDATE" ? "st-update" : "st-skip") : "st-error"}`}>
+              <div className={`semantic-test-result anim-rise ${testResult.success ? (testResult.decision === "UPDATE" ? "st-update" : "st-skip") : "st-error"}`}>
                 <div className="st-result-header">
                   {testResult.success ? (
                     <span className={`test-badge ${testResult.decision === "UPDATE" ? "test-badge-pass" : "test-badge-skip"}`}>

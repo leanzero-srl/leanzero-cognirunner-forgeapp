@@ -5,7 +5,7 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 
-import React, { useState, useRef, useCallback } from "react";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import { invoke } from "@forge/bridge";
 import AILoadingState from "./AILoadingState";
 
@@ -22,6 +22,14 @@ export default function ReviewPanel({ configType, config }) {
   const [result, setResult] = useState(null);
   const [statusText, setStatusText] = useState("");
   const pollRef = useRef(null);
+  // Polling outlives renders — never setState (or schedule another poll)
+  // after the panel unmounts.
+  const mountedRef = useRef(true);
+
+  useEffect(() => () => {
+    mountedRef.current = false;
+    if (pollRef.current) clearTimeout(pollRef.current);
+  }, []);
 
   const pollForResult = useCallback((taskId) => {
     let attempts = 0;
@@ -31,6 +39,7 @@ export default function ReviewPanel({ configType, config }) {
       attempts++;
       try {
         const res = await invoke("getAsyncTaskResult", { taskId });
+        if (!mountedRef.current) return;
         if (res.success) {
           if (res.status === "done") {
             setResult(res.result);
@@ -53,8 +62,14 @@ export default function ReviewPanel({ configType, config }) {
             setReviewing(false);
             setStatusText("");
           }
+        } else {
+          // success === false — stop polling instead of spinning forever
+          setResult({ success: false, error: res.error || "Review failed" });
+          setReviewing(false);
+          setStatusText("");
         }
       } catch (e) {
+        if (!mountedRef.current) return;
         setResult({ success: false, error: e.message });
         setReviewing(false);
         setStatusText("");
@@ -74,6 +89,7 @@ export default function ReviewPanel({ configType, config }) {
 
     try {
       const res = await invoke("reviewConfig", { configType, config });
+      if (!mountedRef.current) return;
 
       if (res.async && res.taskId) {
         // Async mode — start polling
@@ -90,17 +106,23 @@ export default function ReviewPanel({ configType, config }) {
         setStatusText("");
       }
     } catch (e) {
+      if (!mountedRef.current) return;
       setResult({ success: false, error: e.message });
       setReviewing(false);
       setStatusText("");
     }
   };
 
+  // The button stays in place (with a busy spinner) during the submit
+  // round-trip; once the task is queued the animated loading state takes over
+  // and shows live poll progress ("Queued..." / "AI is reviewing...").
+  const submitting = reviewing && statusText === "Submitting...";
+
   return (
     <div className="review-panel">
-      {!reviewing && (
+      {(!reviewing || submitting) && (
         <button
-          className="btn-review"
+          className={`btn-review${submitting ? " is-busy" : ""}`}
           onClick={handleReview}
           disabled={reviewing}
         >
@@ -112,12 +134,12 @@ export default function ReviewPanel({ configType, config }) {
         </button>
       )}
 
-      {reviewing && (
-        <AILoadingState type="review" statusOverride={statusText === "Submitting..." ? statusText : null} />
+      {reviewing && !submitting && (
+        <AILoadingState type="review" statusOverride={statusText || null} />
       )}
 
       {result && (
-        <div className="review-result">
+        <div className="review-result anim-rise">
           {result.success && result.review ? (
             <>
               <div

@@ -5,7 +5,7 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 
-import React, { useState, useRef, useCallback } from "react";
+import React, { useState, useRef, useEffect, useCallback } from "react";
 import { invoke } from "@forge/bridge";
 import AILoadingState from "./AILoadingState";
 
@@ -19,9 +19,18 @@ const ITEM_ICONS = { success: "\u2705", warning: "\u26A0\uFE0F", error: "\u274C"
 
 export default function ReviewPanel({ configType, config }) {
   const [reviewing, setReviewing] = useState(false);
+  // True only while the initial reviewConfig call is in flight — the button
+  // stays visible with a busy spinner until the task is actually queued.
+  const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState(null);
   const [statusText, setStatusText] = useState("");
   const pollRef = useRef(null);
+  // Guards setState after unmount — the polling chain outlives fast navigations.
+  const mountedRef = useRef(true);
+  useEffect(() => () => {
+    mountedRef.current = false;
+    if (pollRef.current) clearTimeout(pollRef.current);
+  }, []);
 
   const pollForResult = useCallback((taskId) => {
     let attempts = 0;
@@ -31,6 +40,7 @@ export default function ReviewPanel({ configType, config }) {
       attempts++;
       try {
         const res = await invoke("getAsyncTaskResult", { taskId });
+        if (!mountedRef.current) return;
         if (res.success) {
           if (res.status === "done") {
             setResult(res.result);
@@ -53,8 +63,15 @@ export default function ReviewPanel({ configType, config }) {
             setReviewing(false);
             setStatusText("");
           }
+        } else {
+          // Poll itself failed — stop, surface the error, restore the button
+          // (leaving reviewing=true here would spin forever with no way out).
+          setResult({ success: false, error: res.error || "Failed to poll review status" });
+          setReviewing(false);
+          setStatusText("");
         }
       } catch (e) {
+        if (!mountedRef.current) return;
         setResult({ success: false, error: e.message });
         setReviewing(false);
         setStatusText("");
@@ -66,6 +83,7 @@ export default function ReviewPanel({ configType, config }) {
 
   const handleReview = async () => {
     setReviewing(true);
+    setSubmitting(true);
     setResult(null);
     setStatusText("Submitting...");
 
@@ -74,22 +92,22 @@ export default function ReviewPanel({ configType, config }) {
 
     try {
       const res = await invoke("reviewConfig", { configType, config });
+      if (!mountedRef.current) return;
+      setSubmitting(false);
 
       if (res.async && res.taskId) {
         // Async mode — start polling
         setStatusText("Queued...");
         pollForResult(res.taskId);
-      } else if (res.success) {
-        // Sync fallback (shouldn't happen but handle gracefully)
-        setResult(res);
-        setReviewing(false);
-        setStatusText("");
       } else {
+        // Sync fallback (shouldn't happen but handle gracefully)
         setResult(res);
         setReviewing(false);
         setStatusText("");
       }
     } catch (e) {
+      if (!mountedRef.current) return;
+      setSubmitting(false);
       setResult({ success: false, error: e.message });
       setReviewing(false);
       setStatusText("");
@@ -98,9 +116,9 @@ export default function ReviewPanel({ configType, config }) {
 
   return (
     <div className="review-panel">
-      {!reviewing && (
+      {(!reviewing || submitting) && (
         <button
-          className="btn-review"
+          className={`btn-review${submitting ? " is-busy" : ""}`}
           onClick={handleReview}
           disabled={reviewing}
         >
@@ -112,12 +130,12 @@ export default function ReviewPanel({ configType, config }) {
         </button>
       )}
 
-      {reviewing && (
-        <AILoadingState type="review" statusOverride={statusText === "Submitting..." ? statusText : null} />
+      {reviewing && !submitting && (
+        <AILoadingState type="review" statusOverride={statusText || null} />
       )}
 
       {result && (
-        <div className="review-result">
+        <div className="review-result anim-rise">
           {result.success && result.review ? (
             <>
               <div

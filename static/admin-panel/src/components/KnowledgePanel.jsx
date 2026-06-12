@@ -35,9 +35,24 @@ export default function KnowledgePanel({
   selectedSkillIds,
   onSkillSelectionChange,
   autoAppliedSkills = [],
+  // Bump to force a counts refresh from the parent (e.g. after a flow outside
+  // the panel persisted a memory).
+  refreshKey = 0,
 }) {
   const [open, setOpen] = useState(false);
+  // The body mounts on FIRST open and then stays mounted (collapsed via the
+  // .reveal grid) so reopening never refetches or loses child state.
+  const [openedOnce, setOpenedOnce] = useState(false);
+  // True once the expand transition has finished — lifts the reveal clip so
+  // dropdowns can overflow the panel; reset the moment a collapse starts.
+  const [revealSettled, setRevealSettled] = useState(false);
+  useEffect(() => {
+    if (!open) setRevealSettled(false);
+  }, [open]);
   const [activeTab, setActiveTab] = useState("docs");
+  // Tab panels also mount on first activation and stay mounted (display:none
+  // when inactive) so revisiting a tab doesn't refetch its list.
+  const [activatedTabs, setActivatedTabs] = useState({ docs: true });
   const [counts, setCounts] = useState(null); // { docs, skills, memories } | null
 
   // Loaded on mount AND re-invoked by the tabs after any successful
@@ -52,13 +67,29 @@ export default function KnowledgePanel({
       .catch(() => { /* fail-soft to em-dashes */ });
   }, []);
 
-  useEffect(() => { loadCounts(); }, [loadCounts]);
+  useEffect(() => { loadCounts(); }, [loadCounts, refreshKey]);
+
+  const toggleOpen = () => {
+    setOpen((prev) => !prev);
+    if (!openedOnce) setOpenedOnce(true);
+  };
+
+  const selectTab = (tab) => {
+    setActiveTab(tab);
+    setActivatedTabs((prev) => (prev[tab] ? prev : { ...prev, [tab]: true }));
+  };
+
+  // Inactive panels stay mounted but hidden; the active one fades in.
+  const panelProps = (tab) => ({
+    className: activeTab === tab ? "anim-fade" : "",
+    style: activeTab === tab ? undefined : { display: "none" },
+  });
 
   const memCount = counts ? counts.memories : "—";
 
   return (
     <div className="knowledge-panel">
-      <div className="knowledge-summary" onClick={() => setOpen(!open)}>
+      <div className="knowledge-summary" onClick={toggleOpen}>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
           <path d="M4 19.5A2.5 2.5 0 016.5 17H20" />
           <path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z" />
@@ -88,47 +119,68 @@ export default function KnowledgePanel({
         </span>
       </div>
 
-      {open && (
-        <>
-          <div className="knowledge-tabs">
-            <button
-              className={`knowledge-tab knowledge-tab-docs${activeTab === "docs" ? " active" : ""}`}
-              onClick={() => setActiveTab("docs")}
-            >
-              Documentation
-            </button>
-            <button
-              className={`knowledge-tab knowledge-tab-skills${activeTab === "skills" ? " active" : ""}`}
-              onClick={() => setActiveTab("skills")}
-            >
-              Skills
-            </button>
-            <button
-              className={`knowledge-tab knowledge-tab-memories${activeTab === "memories" ? " active" : ""}`}
-              onClick={() => setActiveTab("memories")}
-            >
-              Memories
-            </button>
-          </div>
+      {/* Animated expand/collapse — children persist across collapses so their
+          fetched lists and form state survive (mounted on first open only).
+          reveal-settled lifts the overflow:hidden clip once the expand finishes,
+          so absolutely-positioned dropdowns near the bottom aren't cut off. */}
+      <div
+        className={"reveal" + (open ? " reveal-open" : "") + (revealSettled ? " reveal-settled" : "")}
+        onTransitionEnd={(e) => {
+          if (e.propertyName === "grid-template-rows" && open) setRevealSettled(true);
+        }}
+      >
+        <div>
+          {openedOnce && (
+            <>
+              <div className="knowledge-tabs">
+                <button
+                  className={`knowledge-tab knowledge-tab-docs${activeTab === "docs" ? " active" : ""}`}
+                  onClick={() => selectTab("docs")}
+                >
+                  Documentation
+                </button>
+                <button
+                  className={`knowledge-tab knowledge-tab-skills${activeTab === "skills" ? " active" : ""}`}
+                  onClick={() => selectTab("skills")}
+                >
+                  Skills
+                </button>
+                <button
+                  className={`knowledge-tab knowledge-tab-memories${activeTab === "memories" ? " active" : ""}`}
+                  onClick={() => selectTab("memories")}
+                >
+                  Memories
+                </button>
+              </div>
 
-          {activeTab === "docs" && (
-            <DocRepository
-              embedded
-              selectedDocs={selectedDocIds}
-              onSelectionChange={onDocSelectionChange}
-              onChanged={loadCounts}
-            />
+              {activatedTabs.docs && (
+                <div {...panelProps("docs")}>
+                  <DocRepository
+                    embedded
+                    selectedDocs={selectedDocIds}
+                    onSelectionChange={onDocSelectionChange}
+                    onChanged={loadCounts}
+                  />
+                </div>
+              )}
+              {activatedTabs.skills && (
+                <div {...panelProps("skills")}>
+                  <SkillsTab
+                    selectedSkills={selectedSkillIds}
+                    onSkillSelectionChange={onSkillSelectionChange}
+                    onChanged={loadCounts}
+                  />
+                </div>
+              )}
+              {activatedTabs.memories && (
+                <div {...panelProps("memories")}>
+                  <MemoriesTab onChanged={loadCounts} />
+                </div>
+              )}
+            </>
           )}
-          {activeTab === "skills" && (
-            <SkillsTab
-              selectedSkills={selectedSkillIds}
-              onSkillSelectionChange={onSkillSelectionChange}
-              onChanged={loadCounts}
-            />
-          )}
-          {activeTab === "memories" && <MemoriesTab onChanged={loadCounts} />}
-        </>
-      )}
+        </div>
+      </div>
     </div>
   );
 }

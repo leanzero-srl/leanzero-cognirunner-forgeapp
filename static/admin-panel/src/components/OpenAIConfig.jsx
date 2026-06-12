@@ -5,10 +5,11 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { router } from "@forge/bridge";
 import CustomSelect from "./CustomSelect";
 import Tooltip from "./Tooltip";
+import { showToast } from "./toast";
 
 // Forge Custom UI runs in a sandboxed iframe — plain <a target="_blank"> links
 // are blocked (nothing happens on click). router.open() is the supported way to
@@ -67,6 +68,11 @@ export default function OpenAIConfig({ invoke }) {
   const [selectedModel, setSelectedModel] = useState("");
   const [factoryModel, setFactoryModel] = useState("");
   const [loading, setLoading] = useState(true);
+  // Mount-load failure: render an explicit error + Retry instead of pretending
+  // the useState defaults (provider=openai, "No API key configured") are real.
+  const [loadError, setLoadError] = useState(null);
+  // Post-save re-fetch in progress — drives the frosted veil over the card.
+  const [refreshing, setRefreshing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [savingProvider, setSavingProvider] = useState(false);
   const [savingModel, setSavingModel] = useState(false);
@@ -76,6 +82,10 @@ export default function OpenAIConfig({ invoke }) {
   // LM Studio: connection test + model load
   const [pinging, setPinging] = useState(false);
   const [pingResult, setPingResult] = useState(null); // { ok, modelCount, authOk, message } | { error }
+  // True while ANY ping (silent or explicit) is running — drives the
+  // "Testing connection…" status so the silent auto-ping after load/save
+  // never shows a stale "not yet tested" state while the test runs.
+  const [pingInFlight, setPingInFlight] = useState(false);
   const [loadingLmModel, setLoadingLmModel] = useState(false);
   // LM Studio MCP integrations — fixed set of 3 (context7, web-search, doc-reader).
   // Other MCPs in the user's mcp.json are NOT exposed by us per design.
@@ -121,8 +131,24 @@ export default function OpenAIConfig({ invoke }) {
     ? modelDetails.find((m) => m.id === selectedModel)
     : null;
 
-  const loadStatus = async () => {
+  // Refresh-veil bookkeeping: a depth counter so nested refresh scopes (e.g.
+  // the provider-switch chain wrapping loadStatus) keep the veil up until the
+  // OUTERMOST scope completes instead of dropping it mid-chain.
+  const refreshDepth = useRef(0);
+  const beginRefresh = () => {
+    refreshDepth.current += 1;
+    setRefreshing(true);
+  };
+  const endRefresh = () => {
+    refreshDepth.current = Math.max(0, refreshDepth.current - 1);
+    if (refreshDepth.current === 0) setRefreshing(false);
+  };
+
+  // asRefresh: post-save re-fetch — keep current content visible under the
+  // frosted veil instead of the full-card mount skeleton (driven by `loading`).
+  const loadStatus = async ({ asRefresh = false } = {}) => {
     if (!invoke) return;
+    if (asRefresh) beginRefresh();
     try {
       const [keyResult, modelsResult, modelKvs, providerResult, mcpsResult, docProcResult, webSearchResult] = await Promise.all([
         invoke("getOpenAIKey"),
@@ -196,8 +222,24 @@ export default function OpenAIConfig({ invoke }) {
       }
     } catch (e) {
       console.error("Failed to load AI config status:", e);
+      if (asRefresh) {
+        // Refresh failure: the previously-loaded data on screen is still
+        // valid — surface the problem instead of failing silently.
+        showToast("Failed to refresh settings: " + (e.message || e), "error");
+      } else {
+        // Mount-load failure: show an explicit error + Retry, never the defaults.
+        setLoadError(e.message || String(e));
+      }
+    } finally {
+      if (asRefresh) endRefresh();
+      setLoading(false);
     }
-    setLoading(false);
+  };
+
+  const handleRetryLoad = () => {
+    setLoadError(null);
+    setLoading(true);
+    loadStatus();
   };
 
   // Toggle one MCP — saves immediately so the user doesn't have to click an
@@ -217,13 +259,16 @@ export default function OpenAIConfig({ invoke }) {
     try {
       const result = await invoke("saveLmStudioMcps", { enabled: next });
       if (!result.success) {
-        // Revert on failure
+        // Revert on failure. The banner renders at the very top of the section,
+        // far from the toggle — toast at the trigger too.
         setMcpEnabled(mcpEnabled);
         setError(result.error || "Failed to save MCP setting");
+        showToast(result.error || "Failed to save MCP setting", "error");
       }
     } catch (e) {
       setMcpEnabled(mcpEnabled);
       setError("Failed to save MCP setting: " + e.message);
+      showToast("Failed to save MCP setting: " + e.message, "error");
     }
     setMcpSavingKey(null);
   };
@@ -253,7 +298,8 @@ export default function OpenAIConfig({ invoke }) {
   const handleSaveDocProcRemote = async () => {
     if (!invoke) return;
     if (!docProcUrl.trim() || !docProcBearerInput.trim()) return;
-    setDocProcSaving(true);
+    // "save" vs "clear" so only the clicked button shows the busy spinner.
+    setDocProcSaving("save");
     setError(null);
     try {
       const result = await invoke("saveDocProcessorRemote", {
@@ -268,18 +314,22 @@ export default function OpenAIConfig({ invoke }) {
         setDocProcHasZai(!!result.hasZaiKey);
         setDocProcZaiInput("");
         setDocProcShowZaiInput(false);
+        showToast("Doc-processor settings saved");
       } else {
+        // Banner is at the top of the section, far from this deep panel — toast too.
         setError(result.error || "Failed to save doc-processor remote config");
+        showToast(result.error || "Failed to save doc-processor remote config", "error");
       }
     } catch (e) {
       setError("Failed to save doc-processor remote config: " + e.message);
+      showToast("Failed to save doc-processor remote config: " + e.message, "error");
     }
     setDocProcSaving(false);
   };
 
   const handleRemoveDocProcRemote = async () => {
     if (!invoke) return;
-    setDocProcSaving(true);
+    setDocProcSaving("clear");
     setError(null);
     try {
       const result = await invoke("removeDocProcessorRemote");
@@ -291,11 +341,14 @@ export default function OpenAIConfig({ invoke }) {
         setDocProcHasZai(false);
         setDocProcZaiInput("");
         setDocProcShowZaiInput(false);
+        showToast("Doc-processor settings cleared");
       } else {
         setError(result.error || "Failed to remove doc-processor remote config");
+        showToast(result.error || "Failed to remove doc-processor remote config", "error");
       }
     } catch (e) {
       setError("Failed to remove doc-processor remote config: " + e.message);
+      showToast("Failed to remove doc-processor remote config: " + e.message, "error");
     }
     setDocProcSaving(false);
   };
@@ -303,7 +356,8 @@ export default function OpenAIConfig({ invoke }) {
   const handleSaveWebSearchRemote = async () => {
     if (!invoke) return;
     if (!webSearchUrl.trim() || !webSearchBearerInput.trim()) return;
-    setWebSearchSaving(true);
+    // "save" vs "clear" so only the clicked button shows the busy spinner.
+    setWebSearchSaving("save");
     setError(null);
     try {
       const result = await invoke("saveWebSearchRemote", {
@@ -322,18 +376,22 @@ export default function OpenAIConfig({ invoke }) {
         setWebSearchHasGithub(!!result.hasGithubToken);
         setWebSearchGithubInput("");
         setWebSearchShowGithubInput(false);
+        showToast("Web-search settings saved");
       } else {
+        // Banner is at the top of the section, far from this deep panel — toast too.
         setError(result.error || "Failed to save web-search remote config");
+        showToast(result.error || "Failed to save web-search remote config", "error");
       }
     } catch (e) {
       setError("Failed to save web-search remote config: " + e.message);
+      showToast("Failed to save web-search remote config: " + e.message, "error");
     }
     setWebSearchSaving(false);
   };
 
   const handleRemoveWebSearchRemote = async () => {
     if (!invoke) return;
-    setWebSearchSaving(true);
+    setWebSearchSaving("clear");
     setError(null);
     try {
       const result = await invoke("removeWebSearchRemote");
@@ -348,11 +406,14 @@ export default function OpenAIConfig({ invoke }) {
         setWebSearchHasGithub(false);
         setWebSearchGithubInput("");
         setWebSearchShowGithubInput(false);
+        showToast("Web-search settings cleared");
       } else {
         setError(result.error || "Failed to remove web-search remote config");
+        showToast(result.error || "Failed to remove web-search remote config", "error");
       }
     } catch (e) {
       setError("Failed to remove web-search remote config: " + e.message);
+      showToast("Failed to remove web-search remote config: " + e.message, "error");
     }
     setWebSearchSaving(false);
   };
@@ -376,26 +437,38 @@ export default function OpenAIConfig({ invoke }) {
       if (result.success) {
         setSavedProvider(provider);
         setKeyInput("");
-        await new Promise((r) => setTimeout(r, 500));
-        await loadStatus();
-        // For LM Studio: auto-ping right after switch so the user sees actual
-        // connection state (including 401 → "token required") instead of a
-        // misleading "Switched successfully" message followed by a broken UI.
-        if (provider === "lmstudio") {
-          const ping = await runLmStudioPing({ silent: true });
-          if (ping?.success && ping.ok && ping.authOk) {
-            setSuccess(`Switched to LM Studio — connected, ${ping.modelCount || 0} model(s) found.`);
-          } else if (ping?.tokenRequired) {
-            setError(ping.error);
-          } else if (ping?.tokenInvalid) {
-            setError(ping.error);
-          } else if (ping && !ping.success) {
-            setError(ping.error || "Switched to LM Studio but connection test failed.");
+        // Hold the refresh veil for the WHOLE switch chain (KVS settle delay,
+        // status re-fetch, LM Studio auto-ping) so stale pre-switch data never
+        // reads as live while the chain runs.
+        beginRefresh();
+        try {
+          await new Promise((r) => setTimeout(r, 500));
+          await loadStatus({ asRefresh: true });
+          // For LM Studio: auto-ping right after switch so the user sees actual
+          // connection state (including 401 → "token required") instead of a
+          // misleading "Switched successfully" message followed by a broken UI.
+          if (provider === "lmstudio") {
+            const ping = await runLmStudioPing({ silent: true });
+            if (ping?.success && ping.ok && ping.authOk) {
+              setSuccess(`Switched to LM Studio — connected, ${ping.modelCount || 0} model(s) found.`);
+              showToast("Provider switched to LM Studio");
+            } else if (ping?.tokenRequired) {
+              setError(ping.error);
+            } else if (ping?.tokenInvalid) {
+              setError(ping.error);
+            } else if (ping && !ping.success) {
+              setError(ping.error || "Switched to LM Studio but connection test failed.");
+            } else {
+              setSuccess("Switched to LM Studio.");
+              showToast("Provider switched to LM Studio");
+            }
           } else {
-            setSuccess("Switched to LM Studio.");
+            const label = PROVIDER_OPTIONS.find((p) => p.value === provider)?.label || provider;
+            setSuccess(`Switched to ${label}`);
+            showToast(`Provider switched to ${label}`);
           }
-        } else {
-          setSuccess(`Switched to ${PROVIDER_OPTIONS.find((p) => p.value === provider)?.label || provider}`);
+        } finally {
+          endRefresh();
         }
       } else {
         setError(result.error || "Failed to save provider");
@@ -415,7 +488,7 @@ export default function OpenAIConfig({ invoke }) {
     try {
       const result = await invoke("saveProvider", { provider, baseUrl: endpointInput.trim() });
       if (result.success) {
-        await loadStatus();
+        await loadStatus({ asRefresh: true });
         // For LM Studio, immediately verify connectivity so the user knows whether
         // their token (or lack of one) is accepted. The status block + token field
         // both react to the ping result.
@@ -451,6 +524,9 @@ export default function OpenAIConfig({ invoke }) {
   const runLmStudioPing = async ({ baseUrlOverride, tokenOverride, silent } = {}) => {
     const url = (baseUrlOverride ?? endpointInput).trim();
     if (!url) return null;
+    // Set for silent pings too — the status block switches to the pulsing
+    // "Testing connection…" state instead of the stale "not yet tested" grey.
+    setPingInFlight(true);
     if (!silent) {
       setPinging(true);
       setError(null);
@@ -482,6 +558,7 @@ export default function OpenAIConfig({ invoke }) {
       if (!silent) setError("Test failed: " + e.message);
       return null;
     } finally {
+      setPingInFlight(false);
       if (!silent) setPinging(false);
     }
   };
@@ -499,7 +576,7 @@ export default function OpenAIConfig({ invoke }) {
       if (result.success) {
         setSuccess(result.message || `Loaded "${selectedModel}"`);
         // Refresh model state so the badge updates.
-        await loadStatus();
+        await loadStatus({ asRefresh: true });
       } else {
         setError(result.error || "Failed to load model");
       }
@@ -519,25 +596,35 @@ export default function OpenAIConfig({ invoke }) {
       const result = await invoke("saveOpenAIKey", { key: tokenJustSaved });
       if (result.success) {
         setKeyInput("");
-        // Brief delay to let KVS propagate, then reload status + models
-        await new Promise((r) => setTimeout(r, 500));
-        await loadStatus();
+        // Brief delay to let KVS propagate, then reload status + models —
+        // veiled so the stale pre-save status never reads as live.
+        beginRefresh();
+        try {
+          await new Promise((r) => setTimeout(r, 500));
+          await loadStatus({ asRefresh: true });
+        } finally {
+          endRefresh();
+        }
         // For LM Studio, re-ping with the just-saved token to confirm it works
         // and surface the actual model count. Using tokenOverride because keyInput
-        // was just cleared above.
+        // was just cleared above. (Runs outside the veil so the status block's
+        // "Testing connection…" state stays fully visible.)
         if (isLmStudio) {
           const ping = await runLmStudioPing({ tokenOverride: tokenJustSaved, silent: true });
           if (ping?.success && ping.ok && ping.authOk) {
             setSuccess(`Token saved — connected, ${ping.modelCount || 0} model(s) found.`);
+            showToast("Token saved");
           } else if (ping?.tokenInvalid) {
             setError(ping.error);
           } else if (ping && !ping.success) {
             setError(ping.error || "Token saved but connection test failed.");
           } else {
             setSuccess("Token saved.");
+            showToast("Token saved");
           }
         } else {
           setSuccess("API key saved successfully");
+          showToast("API key saved");
         }
       } else {
         setError(result.error || "Failed to save key");
@@ -556,10 +643,11 @@ export default function OpenAIConfig({ invoke }) {
       const result = await invoke("removeOpenAIKey");
       if (result.success) {
         setSuccess("Reverted to factory key");
+        showToast("Key removed — reverted to factory key");
         setModels([]);
         setCurrentModel(null);
         setSelectedModel("");
-        await loadStatus();
+        await loadStatus({ asRefresh: true });
       } else {
         setError(result.error || "Failed to remove key");
       }
@@ -579,6 +667,7 @@ export default function OpenAIConfig({ invoke }) {
       if (result.success) {
         setCurrentModel(selectedModel);
         setSuccess("Model saved: " + selectedModel);
+        showToast("Model saved");
       } else {
         setError(result.error || "Failed to save model");
       }
@@ -623,6 +712,27 @@ export default function OpenAIConfig({ invoke }) {
     );
   }
 
+  // Mount load failed — the state below still holds useState defaults
+  // (provider=openai, "No API key configured"), which would read as real
+  // data. Render an honest error + Retry instead of the fake defaults.
+  if (loadError) {
+    return (
+      <div className="section">
+        <div className="section-header">
+          <span className="section-title">AI Provider Configuration</span>
+        </div>
+        <div className="card">
+          <div style={{ padding: "16px" }}>
+            <div className="load-error">
+              <span>Couldn&apos;t load AI provider settings.</span>
+              <button className="btn-retry" onClick={handleRetryLoad}>Retry</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   const providerLabel = PROVIDER_OPTIONS.find((p) => p.value === provider)?.label || provider;
 
   return (
@@ -632,19 +742,25 @@ export default function OpenAIConfig({ invoke }) {
       </div>
 
       {error && (
-        <div className="alert alert-error">
+        <div className="alert alert-error anim-rise">
           <span>{error}</span>
           <button className="alert-dismiss" onClick={() => setError(null)}>&times;</button>
         </div>
       )}
       {success && (
-        <div className="alert alert-success">
+        <div className="alert alert-success anim-rise">
           <span>{success}</span>
           <button className="alert-dismiss" onClick={() => setSuccess(null)}>&times;</button>
         </div>
       )}
 
-      <div className="card">
+      <div className="card veil-host">
+        {refreshing && (
+          <div className="veil">
+            <span className="spin-ring" />
+            <span className="veil-label">Syncing settings…</span>
+          </div>
+        )}
         <div style={{ padding: "16px" }}>
           {/* Provider Selector */}
           <div style={{ marginBottom: "16px" }}>
@@ -662,7 +778,7 @@ export default function OpenAIConfig({ invoke }) {
               </div>
               {provider !== savedProvider && (
                 <button
-                  className="btn-small btn-edit"
+                  className={"btn-small btn-edit" + (savingProvider ? " is-busy" : "")}
                   onClick={handleSaveProvider}
                   // For LM Studio, the backend requires a baseUrl on switch — disable
                   // the button until the user enters one so they don't get the
@@ -672,7 +788,7 @@ export default function OpenAIConfig({ invoke }) {
                     ? "Enter your Tailscale Funnel URL below first"
                     : undefined}
                 >
-                  {savingProvider ? "Switching..." : "Switch Provider"}
+                  Switch Provider
                 </button>
               )}
             </div>
@@ -685,7 +801,7 @@ export default function OpenAIConfig({ invoke }) {
               All providers support chat completions and tool calling. Vision (image attachments) requires OpenAI, Azure, OpenRouter, Anthropic, or a vision-capable LM Studio model — Atlassian Forge LLM is text-only for now.
             </p>
             {isAtlassian && (
-              <div style={{ marginTop: "8px", padding: "8px 10px", background: "var(--card-bg)", border: "2px solid var(--primary-color)", boxShadow: "0 4px 12px -4px rgba(37, 99, 235, 0.35)", borderRadius: "6px", fontSize: "11px", color: "var(--text-secondary)" }}>
+              <div className="anim-rise" style={{ marginTop: "8px", padding: "8px 10px", background: "var(--card-bg)", border: "2px solid var(--primary-color)", boxShadow: "0 4px 12px -4px rgba(37, 99, 235, 0.35)", borderRadius: "6px", fontSize: "11px", color: "var(--text-secondary)" }}>
                 <strong>Atlassian-hosted Claude (Forge LLMs, Preview).</strong> No API key and no
                 egress — prompts and field data never leave the Atlassian platform. Token usage is
                 billed to the app vendor (LeanZero), not to your site. Supports tool calling (JQL
@@ -705,7 +821,7 @@ export default function OpenAIConfig({ invoke }) {
 
           {/* Azure Endpoint — only for Azure */}
           {provider === "azure" && (
-            <div style={{ marginBottom: "16px" }}>
+            <div className="anim-rise" style={{ marginBottom: "16px" }}>
               <label style={{ display: "flex", alignItems: "center", fontSize: "12px", fontWeight: "600", color: "var(--text-secondary)", marginBottom: "6px" }}>
                 Azure Endpoint
                 <Tooltip text={
@@ -737,8 +853,8 @@ export default function OpenAIConfig({ invoke }) {
                   }}
                   onKeyDown={(e) => e.key === "Enter" && handleSaveEndpoint()}
                 />
-                <button className="btn-small btn-edit" onClick={handleSaveEndpoint} disabled={savingProvider || !endpointInput.trim()}>
-                  {savingProvider ? "Saving..." : "Save"}
+                <button className={"btn-small btn-edit" + (savingProvider ? " is-busy" : "")} onClick={handleSaveEndpoint} disabled={savingProvider || !endpointInput.trim()}>
+                  Save
                 </button>
               </div>
               <p style={{ margin: "4px 0 0 0", fontSize: "11px", color: "var(--text-muted)" }}>
@@ -752,7 +868,7 @@ export default function OpenAIConfig({ invoke }) {
               can enter the URL BEFORE clicking "Switch Provider". Without this,
               switching fails because the backend requires a baseUrl to validate. */}
           {isLmStudio && (
-            <div style={{ marginBottom: "16px" }}>
+            <div className="anim-rise" style={{ marginBottom: "16px" }}>
               <label style={{ display: "flex", alignItems: "center", fontSize: "12px", fontWeight: "600", color: "var(--text-secondary)", marginBottom: "6px" }}>
                 LM Studio Public URL
                 <Tooltip text={
@@ -786,15 +902,15 @@ export default function OpenAIConfig({ invoke }) {
                   onKeyDown={(e) => e.key === "Enter" && handleSaveEndpoint()}
                 />
                 <button
-                  className="btn-small"
+                  className={"btn-small" + (pinging ? " is-busy" : "")}
                   onClick={handleTestConnection}
                   disabled={pinging || !endpointInput.trim()}
                   style={{ padding: "6px 10px" }}
                 >
-                  {pinging ? "Testing..." : "Test"}
+                  Test
                 </button>
-                <button className="btn-small btn-edit" onClick={handleSaveEndpoint} disabled={savingProvider || !endpointInput.trim()}>
-                  {savingProvider ? "Saving..." : "Save"}
+                <button className={"btn-small btn-edit" + (savingProvider ? " is-busy" : "")} onClick={handleSaveEndpoint} disabled={savingProvider || !endpointInput.trim()}>
+                  Save
                 </button>
               </div>
               <p style={{ margin: "4px 0 0 0", fontSize: "11px", color: "var(--text-muted)" }}>
@@ -812,22 +928,30 @@ export default function OpenAIConfig({ invoke }) {
             </div>
           )}
 
-          {/* Key/Model section — only show for the saved (active) provider */}
+          {/* Key/Model section — only show for the saved (active) provider.
+              Keyed on the provider so swapping providers replays the rise-in. */}
           {provider !== savedProvider ? (
-            <div style={{ padding: "12px 0", textAlign: "center", color: "var(--text-muted)", fontSize: "13px" }}>
+            <div className="anim-rise" style={{ padding: "12px 0", textAlign: "center", color: "var(--text-muted)", fontSize: "13px" }}>
               Click <strong>Switch Provider</strong> to activate {PROVIDER_OPTIONS.find((p) => p.value === provider)?.label || provider} and manage its API key.
             </div>
-          ) : (<>
+          ) : (<div className="anim-rise" key={provider}>
 
           {/* Status — for LM Studio, reflect ACTUAL ping result instead of just
               "URL is set". A green dot only when we've confirmed the server responds
               and accepts our auth (or has no auth requirement). */}
           {(() => {
-            // Compute LM Studio status from pingResult
+            // Compute LM Studio status from pingResult. While a ping is in
+            // flight (silent OR explicit), say so — the old grey "not yet
+            // tested" state was a lie during the auto-ping after page load.
+            const checking = isLmStudio && hasKey && pingInFlight;
             let lmStatusColor = "var(--text-muted)";
             let lmStatusTitle = "LM Studio URL not set";
             let lmStatusBody = "Set the Tailscale Funnel URL above (https://*.ts.net pointing at your LM Studio server) to get started.";
-            if (isLmStudio && hasKey) {
+            if (checking) {
+              lmStatusColor = "var(--primary-color)";
+              lmStatusTitle = "Testing connection…";
+              lmStatusBody = "Contacting your LM Studio server — verifying reachability and auth.";
+            } else if (isLmStudio && hasKey) {
               if (!pingResult) {
                 lmStatusColor = "var(--text-muted)";
                 lmStatusTitle = "URL saved — not yet tested";
@@ -854,36 +978,43 @@ export default function OpenAIConfig({ invoke }) {
                 lmStatusBody = "Inference and field data stay on your machine. Pick a model below.";
               }
             }
+            const statusTitle = isLmStudio
+              ? lmStatusTitle
+              : isAtlassian
+                ? "Atlassian-hosted — ready, no key needed"
+                : (isByok ? `Using your ${providerLabel} key` : "Using factory key");
             return (
               <div className="openai-status" style={{ marginBottom: "16px" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px" }}>
-                  <span style={{
-                    display: "inline-block",
-                    width: "8px",
-                    height: "8px",
-                    borderRadius: "50%",
-                    background: isLmStudio ? lmStatusColor : (hasKey ? "var(--success-color)" : "var(--error-color)"),
-                  }} />
-                  <strong style={{ fontSize: "13px" }}>
+                {/* Keyed on the resolved title: status changes fade in instead
+                    of snapping, and the dot+title row pops (.status-settle)
+                    when a ping resolves. */}
+                <div key={statusTitle} className="anim-fade">
+                  <div className={checking ? undefined : "status-settle"} style={{ display: "flex", alignItems: "center", gap: "8px", marginBottom: "4px" }}>
+                    <span
+                      className={checking ? "status-dot status-dot-checking" : "status-dot"}
+                      style={{
+                        display: "inline-block",
+                        width: "8px",
+                        height: "8px",
+                        borderRadius: "50%",
+                        background: isLmStudio ? lmStatusColor : (hasKey ? "var(--success-color)" : "var(--error-color)"),
+                      }}
+                    />
+                    <strong style={{ fontSize: "13px" }}>{statusTitle}</strong>
+                  </div>
+                  <p style={{ margin: 0, fontSize: "12px", color: "var(--text-secondary)" }}>
                     {isLmStudio
-                      ? lmStatusTitle
+                      ? lmStatusBody
                       : isAtlassian
-                        ? "Atlassian-hosted — ready, no key needed"
-                        : (isByok ? `Using your ${providerLabel} key` : "Using factory key")}
-                  </strong>
+                      ? "Claude models served inside the Atlassian platform. Pick a model below and you're done."
+                      : isByok
+                        ? `Connected to ${providerLabel}. You can select from available models. Remove the key to revert to the factory key.`
+                        : hasKey
+                          ? `Factory model: ${factoryModel || "gpt-5.4-mini"}. Provide your own ${providerLabel} key to unlock model selection.`
+                          : `No API key configured. Provide your ${providerLabel} API key to get started.`
+                    }
+                  </p>
                 </div>
-                <p style={{ margin: 0, fontSize: "12px", color: "var(--text-secondary)" }}>
-                  {isLmStudio
-                    ? lmStatusBody
-                    : isAtlassian
-                    ? "Claude models served inside the Atlassian platform. Pick a model below and you're done."
-                    : isByok
-                      ? `Connected to ${providerLabel}. You can select from available models. Remove the key to revert to the factory key.`
-                      : hasKey
-                        ? `Factory model: ${factoryModel || "gpt-5.4-mini"}. Provide your own ${providerLabel} key to unlock model selection.`
-                        : `No API key configured. Provide your ${providerLabel} API key to get started.`
-                  }
-                </p>
               </div>
             );
           })()}
@@ -951,8 +1082,8 @@ export default function OpenAIConfig({ invoke }) {
                 }}>
                   ••••••••••••••••
                 </span>
-                <button className="btn-small btn-danger" onClick={handleRemoveKey} disabled={removing}>
-                  {removing ? "Removing..." : "Remove Key"}
+                <button className={"btn-small btn-danger" + (removing ? " is-busy" : "")} onClick={handleRemoveKey} disabled={removing}>
+                  Remove Key
                 </button>
               </div>
             ) : (
@@ -974,8 +1105,8 @@ export default function OpenAIConfig({ invoke }) {
                   }}
                   onKeyDown={(e) => e.key === "Enter" && handleSaveKey()}
                 />
-                <button className="btn-small btn-edit" onClick={handleSaveKey} disabled={saving || !keyInput.trim()}>
-                  {saving ? "Saving..." : "Save Key"}
+                <button className={"btn-small btn-edit" + (saving ? " is-busy" : "")} onClick={handleSaveKey} disabled={saving || !keyInput.trim()}>
+                  Save Key
                 </button>
               </div>
             )}
@@ -1023,20 +1154,20 @@ export default function OpenAIConfig({ invoke }) {
                   </div>
                   {isLmStudio && selectedModelMeta?.state === "not-loaded" && (
                     <button
-                      className="btn-small"
+                      className={"btn-small" + (loadingLmModel ? " is-busy" : "")}
                       onClick={handleLoadLmModel}
                       disabled={loadingLmModel || !selectedModel}
                       style={{ padding: "6px 10px" }}
                     >
-                      {loadingLmModel ? "Loading..." : "Load"}
+                      Load
                     </button>
                   )}
                   <button
-                    className="btn-small btn-edit"
+                    className={"btn-small btn-edit" + (savingModel ? " is-busy" : "")}
                     onClick={handleSaveModel}
                     disabled={savingModel || !selectedModel || selectedModel === currentModel}
                   >
-                    {savingModel ? "Saving..." : "Save Model"}
+                    Save Model
                   </button>
                 </div>
               )}
@@ -1063,7 +1194,7 @@ export default function OpenAIConfig({ invoke }) {
               )}
             </div>
           )}
-          </>)}
+          </div>)}
         </div>
       </div>
 
@@ -1239,15 +1370,17 @@ export default function OpenAIConfig({ invoke }) {
                       <div style={{ display: "flex", gap: "6px" }}>
                         <button
                           type="button"
+                          className={webSearchSaving === "save" ? "is-busy busy-solid" : undefined}
                           onClick={handleSaveWebSearchRemote}
-                          disabled={webSearchSaving || !webSearchUrl.trim() || (!webSearchHasBearer && !webSearchBearerInput.trim()) || (webSearchShowBearerInput && !webSearchBearerInput.trim())}
+                          disabled={!!webSearchSaving || !webSearchUrl.trim() || (!webSearchHasBearer && !webSearchBearerInput.trim()) || (webSearchShowBearerInput && !webSearchBearerInput.trim())}
                           style={{ fontSize: "11px", padding: "5px 10px", border: "1px solid var(--success-color)", borderRadius: "4px", background: "var(--success-color)", color: "white", cursor: "pointer" }}
-                        >{webSearchSaving ? "Saving…" : "Save"}</button>
+                        >Save</button>
                         {(webSearchHasBearer || webSearchUrl) && (
                           <button
                             type="button"
+                            className={webSearchSaving === "clear" ? "is-busy" : undefined}
                             onClick={handleRemoveWebSearchRemote}
-                            disabled={webSearchSaving}
+                            disabled={!!webSearchSaving}
                             style={{ fontSize: "11px", padding: "5px 10px", border: "1px solid var(--border-color)", borderRadius: "4px", background: "var(--input-bg)", color: "var(--text-color)", cursor: "pointer" }}
                           >Clear</button>
                         )}
@@ -1401,15 +1534,17 @@ npm install && npm run build`}
                       <div style={{ display: "flex", gap: "6px" }}>
                         <button
                           type="button"
+                          className={docProcSaving === "save" ? "is-busy busy-solid" : undefined}
                           onClick={handleSaveDocProcRemote}
-                          disabled={docProcSaving || !docProcUrl.trim() || (!docProcHasBearer && !docProcBearerInput.trim()) || (docProcShowBearerInput && !docProcBearerInput.trim())}
+                          disabled={!!docProcSaving || !docProcUrl.trim() || (!docProcHasBearer && !docProcBearerInput.trim()) || (docProcShowBearerInput && !docProcBearerInput.trim())}
                           style={{ fontSize: "11px", padding: "5px 10px", border: "1px solid var(--success-color)", borderRadius: "4px", background: "var(--success-color)", color: "white", cursor: "pointer" }}
-                        >{docProcSaving ? "Saving…" : "Save"}</button>
+                        >Save</button>
                         {(docProcHasBearer || docProcUrl) && (
                           <button
                             type="button"
+                            className={docProcSaving === "clear" ? "is-busy" : undefined}
                             onClick={handleRemoveDocProcRemote}
-                            disabled={docProcSaving}
+                            disabled={!!docProcSaving}
                             style={{ fontSize: "11px", padding: "5px 10px", border: "1px solid var(--border-color)", borderRadius: "4px", background: "var(--input-bg)", color: "var(--text-color)", cursor: "pointer" }}
                           >Clear</button>
                         )}
@@ -1539,6 +1674,7 @@ function McpCard({ mcpKey, title, subtitle, tools, enabled, saving, expanded, pi
           </label>
           {enabled && (
             <button
+              className={ping?.loading ? "is-busy" : undefined}
               onClick={onPing}
               disabled={ping?.loading}
               style={{
@@ -1551,14 +1687,14 @@ function McpCard({ mcpKey, title, subtitle, tools, enabled, saving, expanded, pi
                 cursor: ping?.loading ? "default" : "pointer",
               }}
             >
-              {ping?.loading ? "Testing…" : "Test"}
+              Test
             </button>
           )}
         </div>
       </div>
 
       {ping && !ping.loading && (
-        <div style={{
+        <div className="anim-pop" style={{
           marginTop: "8px",
           padding: "6px 10px",
           fontSize: "11px",
@@ -1587,7 +1723,7 @@ function McpCard({ mcpKey, title, subtitle, tools, enabled, saving, expanded, pi
         {expanded ? "▾ Hide setup" : "▸ Show setup instructions"}
       </button>
       {expanded && (
-        <div style={{ marginTop: "10px", paddingTop: "10px", borderTop: "1px solid var(--border-color)" }}>
+        <div className="anim-rise" style={{ marginTop: "10px", paddingTop: "10px", borderTop: "1px solid var(--border-color)" }}>
           {setupBlock}
         </div>
       )}

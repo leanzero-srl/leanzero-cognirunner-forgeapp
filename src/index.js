@@ -4115,7 +4115,7 @@ resolver.define("saveSkill", async ({ payload, context }) => {
     return { success: false, error: "Editor access required" };
   }
   try {
-    const { id, name, category, description, tags, operationTypes, instructions, examples } = payload || {};
+    const { id, name, category, description, tags, operationTypes, instructions, examples, enabled } = payload || {};
     if (!name || !instructions) {
       return { success: false, error: "Name and instructions are required" };
     }
@@ -4130,7 +4130,14 @@ resolver.define("saveSkill", async ({ payload, context }) => {
       }
     }
     const result = await saveSkillInternal(
-      { id, name, category, description, tags, operationTypes, createdBy: context.accountId || null },
+      {
+        id, name, category, description, tags, operationTypes,
+        // Explicit boolean only — anything else preserves the stored enabled
+        // flag. This is the admin panel's re-enable path for disabled skills
+        // (the builtin/ownership gates above already cover who may flip it).
+        ...(enabled === true || enabled === false ? { enabled } : {}),
+        createdBy: context.accountId || null,
+      },
       { instructions, examples },
     );
     if (!result.success) return { success: false, error: result.error };

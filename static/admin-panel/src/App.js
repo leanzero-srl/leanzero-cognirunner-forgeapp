@@ -19,6 +19,7 @@
 import React, { useState, useEffect } from "react";
 import TabBar from "./components/TabBar";
 import DocsTab from "./components/DocsTab";
+import SkillsAdminTab from "./components/SkillsAdminTab";
 import MemoriesAdminTab from "./components/MemoriesAdminTab";
 import PermissionsTab from "./components/PermissionsTab";
 import SettingsOpenAITab from "./components/SettingsOpenAITab";
@@ -1472,6 +1473,70 @@ const injectStyles = () => {
     html[data-color-mode="dark"] .memories-admin-archived-badge { background: #64748b; }
     html[data-color-mode="dark"] .memories-admin-reinforced { color: #14b8a6; }
     html[data-color-mode="dark"] .memories-admin-edit-input { border-color: #14b8a6; }
+
+    /* === Skills admin tab === */
+    .skills-admin-tab {
+      animation: tabContentFade 0.2s ease both;
+    }
+
+    .skills-admin-explainer {
+      margin: 4px 0 14px;
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    .btn-add-skill {
+      padding: 8px 16px;
+      font-size: 12px;
+      font-weight: 700;
+      border: none;
+      border-radius: 6px;
+      background: #7c3aed;
+      color: #ffffff;
+      cursor: pointer;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .btn-add-skill:hover:not(:disabled) { opacity: 0.85; }
+    .btn-add-skill:disabled { opacity: 0.5; cursor: default; }
+
+    .skills-admin-desc {
+      display: inline-block;
+      max-width: 320px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      vertical-align: middle;
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    .skills-admin-divider td {
+      padding: 8px 14px;
+      background: var(--code-bg);
+    }
+    .skills-admin-disabled-badge {
+      display: inline-block;
+      padding: 2px 10px;
+      border-radius: 10px;
+      font-size: 10px;
+      font-weight: 700;
+      background: #475569;
+      color: #ffffff;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .skills-admin-disabled-row td { color: var(--text-muted); }
+
+    .skills-admin-empty-title {
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--text-color);
+      margin-bottom: 6px;
+    }
+
+    html[data-color-mode="dark"] .btn-add-skill { background: #8b5cf6; }
+    html[data-color-mode="dark"] .skills-admin-disabled-badge { background: #64748b; }
   `;
   document.head.appendChild(style);
 };
@@ -3731,6 +3796,7 @@ let router;
 const TABS = [
   { key: "rules", label: "Rules" },
   { key: "docs", label: "Documentation" },
+  { key: "skills", label: "Skills" },
   { key: "memories", label: "Memories" },
   { key: "permissions", label: "Permissions", adminOnly: true },
   { key: "settings", label: "Settings", adminOnly: true },
@@ -4302,6 +4368,11 @@ function App() {
       {/* Documentation Tab */}
       {activeTab === "docs" && (
         <DocsTab invoke={invoke} isAdmin={isAdmin} accountId={accountId} />
+      )}
+
+      {/* Skills Tab */}
+      {activeTab === "skills" && (
+        <SkillsAdminTab invoke={invoke} isAdmin={isAdmin} accountId={accountId} />
       )}
 
       {/* Memories Tab */}

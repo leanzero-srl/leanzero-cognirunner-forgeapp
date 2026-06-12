@@ -345,17 +345,38 @@ const buildSemanticAIRequest = ({ conditionPrompt, actionPrompt, fieldValue, con
     } else if (schemaType === "number") {
       lines.push("- Format: return a number (not a string). Decimals allowed.");
     } else if (schemaType === "date") {
-      lines.push("- Format: ISO date string \"YYYY-MM-DD\" (e.g. \"2025-12-31\").");
+      lines.push("- Format: ISO date string \"YYYY-MM-DD\" (e.g. \"2025-12-31\"). Never return a datetime or a relative date (\"tomorrow\", \"next Friday\").");
     } else if (schemaType === "datetime") {
       lines.push("- Format: ISO datetime string with timezone (e.g. \"2025-12-31T15:00:00.000+0000\").");
     } else if (schemaType === "user") {
-      lines.push("- Format: an accountId string (NOT a display name). If you don't know the accountId, return SKIP and explain.");
+      lines.push("- Format: an accountId if you know it; otherwise the EXACT display name or email of ONE user — it is resolved automatically, but only when it matches exactly one user (ambiguous names cause a SKIP).");
+    } else if (schemaType === "option") {
+      lines.push("- Format: return exactly ONE of the allowed values listed below, verbatim.");
+    } else if (schemaType === "option-with-child") {
+      lines.push("- Format: cascading select — return \"Parent > Child\" using the allowed values below (or just \"Parent\" if no child applies).");
+    } else if (schemaType === "array") {
+      const isLabels = targetFieldMeta.schema.system === "labels"
+        || String(targetFieldMeta.schema.custom || "").endsWith(":labels");
+      if (schemaItems === "option") {
+        lines.push("- Format: a comma-separated subset of the allowed values listed below.");
+      } else if (schemaItems === "user") {
+        lines.push("- Format: comma-separated accountIds or EXACT display names — each must match exactly one user.");
+      } else if (isLabels) {
+        lines.push("- Format: comma-separated labels — lowercase, hyphenated, NO spaces inside a label.");
+      }
     }
     // Allowed values — for option / single-select / array of option / known reference fields
     if (Array.isArray(targetFieldMeta.allowedValues) && targetFieldMeta.allowedValues.length > 0) {
       const allowed = targetFieldMeta.allowedValues
         .slice(0, 30)
-        .map((v) => v.value || v.name || v.id)
+        .map((v) => {
+          const label = v.value || v.name || v.id;
+          // Cascading select parents carry a children list — show it so the AI
+          // can compose a valid "Parent > Child" pair.
+          return label && Array.isArray(v.children) && v.children.length > 0
+            ? `${label} > [${v.children.slice(0, 10).map((c) => c.value).filter(Boolean).join(" | ")}]`
+            : label;
+        })
         .filter(Boolean);
       if (allowed.length > 0) {
         const isMulti = schemaType === "array";
@@ -4183,11 +4204,17 @@ The current issue being transitioned. Always available.
 | Assignee | \`issue.fields.assignee?.accountId\` | \`{ assignee: { accountId: "..." } }\` |
 | Labels | \`issue.fields.labels\` (string[]) | \`{ labels: ["a","b"] }\` (overwrites all) |
 | Components | \`issue.fields.components\` ({name,id}[]) | \`{ components: [{ id: "..." }] }\` |
-| Due date | \`issue.fields.duedate\` ("YYYY-MM-DD") | \`{ duedate: "2025-12-31" }\` |
+| Due date | \`issue.fields.duedate\` ("YYYY-MM-DD") | \`{ duedate: "2025-12-31" }\` — strictly YYYY-MM-DD, never a datetime |
 | Custom text | \`issue.fields.customfield_XXXXX\` | \`{ customfield_XXXXX: "value" }\` |
 | Custom select | \`issue.fields.customfield_XXXXX.value\` | \`{ customfield_XXXXX: { value: "Option" } }\` |
 | Custom multi-select | \`.customfield_XXXXX[].value\` | \`{ customfield_XXXXX: [{ value: "A" }, { value: "B" }] }\` |
 | Custom user | \`.customfield_XXXXX.accountId\` | \`{ customfield_XXXXX: { accountId: "..." } }\` |
+| Cascading select | \`.customfield_XXXXX.value\` + \`.customfield_XXXXX.child.value\` | \`{ customfield_XXXXX: { value: "Parent", child: { value: "Child" } } }\` |
+| Group picker | \`.customfield_XXXXX.name\` | \`{ customfield_XXXXX: { name: "group-name" } }\` — group NAME only, never an id |
+| Custom date | \`"YYYY-MM-DD"\` string | \`{ customfield_XXXXX: "2025-12-31" }\` — strictly YYYY-MM-DD |
+| Custom datetime | ISO string | \`{ customfield_XXXXX: "2025-12-31T15:00:00.000+0000" }\` — timezone offset REQUIRED |
+| Custom number | \`issue.fields.customfield_XXXXX\` (number) | \`{ customfield_XXXXX: 42 }\` — a JSON number, never a string |
+| Sprint | \`.customfield_XXXXX\` (array, read-only here) | NOT writable via updateIssue — needs the Jira Agile API (unavailable in this sandbox); tell the user |
 
 ## EXTRACTING TEXT FROM ADF DESCRIPTION
 ADF is a nested tree. To get plain text from a description:
@@ -4245,6 +4272,7 @@ return results.issues.map(i => ({ key: i.key, summary: i.fields.summary }));
 - For description/comment fields, always use ADF format (never plain strings).
 - When searching by text, escape quotes in the search string.
 - Use \`accountId\` for user references, never \`username\` or \`emailAddress\`.
+- Labels must not contain spaces — use hyphens ("needs-review", not "needs review").
 ${includeBackoff ? `- Include an exponential backoff retry wrapper with jitter (3 retries, base delay 1s, max 8s, jitter ±30%). Wrap all API calls in it.` : ""}
 ${operationType === "rest_api_internal" ? `- The user wants a Jira REST API operation. Method: ${method || "GET"}. Endpoint hint: ${endpoint || "not specified"}.` : ""}
 ${operationType === "rest_api_external" ? `- The user wants to call an external API. URL hint: ${endpoint || "not specified"}. Note: external domains must be whitelisted in manifest.yml.` : ""}
@@ -4636,6 +4664,17 @@ resolver.define("testSemanticPostFunction", async ({ payload }) => {
       const schemaSystem = targetFieldMeta.schema?.system || "";
       const schemaItems = targetFieldMeta.schema?.items ? `, items: ${targetFieldMeta.schema.items}` : "";
       logs.push(`Target field "${targetFieldId}" is editable (type: ${schemaType}${schemaSystem ? `, system: ${schemaSystem}` : ""}${schemaItems})`);
+      // Parity with real execution: the PUT "fields" syntax requires "set".
+      if (Array.isArray(targetFieldMeta.operations) && !targetFieldMeta.operations.includes("set")) {
+        logs.push(`FAIL: Field "${targetFieldId}" does not support the "set" operation (supports: ${targetFieldMeta.operations.join(", ") || "none"})`);
+        return {
+          success: false,
+          error: `Target field "${targetFieldId}" cannot be set directly`,
+          logs,
+          recommendation: `"${targetFieldId}" supports operations [${targetFieldMeta.operations.join(", ")}] but not "set", so it cannot be a semantic post-function target — fields like comments, worklogs, or issue links need dedicated endpoints. Choose a different target field.`,
+          executionTimeMs: Date.now() - startTime,
+        };
+      }
 
       // Log allowed values if it's a select/option field
       if (targetFieldMeta.allowedValues && targetFieldMeta.allowedValues.length > 0) {
@@ -4734,33 +4773,26 @@ resolver.define("testSemanticPostFunction", async ({ payload }) => {
       const rawProposed = result.value;
       logs.push(`Proposed raw value: ${typeof rawProposed === "string" ? rawProposed.substring(0, 200) : JSON.stringify(rawProposed).substring(0, 200)}`);
 
-      // Auto-format value (same as real execution)
+      // Prepare via the SHARED pipeline (schema coercion → user resolution →
+      // allowedValues validation → strict scalar checks) — IDENTICAL to real
+      // execution so the Test Run faithfully predicts a SKIP-on-invalid (or a
+      // normalization). User resolution only does read-only GETs — dry-run safe.
       if (targetFieldMeta) {
-        const formatted = formatValueForField(rawProposed, targetFieldMeta);
-        if (formatted !== rawProposed) {
-          logs.push(`Auto-formatted for ${targetFieldMeta.schema?.type} field: ${JSON.stringify(formatted).substring(0, 200)}`);
-          result.value = formatted;
-        }
-
-        // H1 parity: validate against allowedValues exactly as real execution does,
-        // so the Test Run faithfully predicts a SKIP-on-invalid (or a normalization).
-        const check = validateValueAgainstField(result.value, targetFieldMeta);
-        if (!check.ok) {
-          logs.push(`WARNING: ${check.reason} — a real execution would SKIP (not update) and would not block the transition.`);
+        const prep = await prepareSemanticValue({
+          rawValue: rawProposed, fieldMeta: targetFieldMeta, issueKey,
+          deadline: Date.now() + 15000,
+        });
+        for (const n of prep.notes) logs.push(n);
+        if (!prep.ok) {
+          logs.push(`WARNING: ${prep.reason} — a real execution would SKIP (not update) and would not block the transition.`);
         } else {
-          if (check.value !== result.value) {
-            logs.push(`Normalized to the canonical allowed option: ${JSON.stringify(check.value)}`);
-            result.value = check.value;
+          if (prep.value !== rawProposed) {
+            logs.push(`Final value after formatting/validation: ${JSON.stringify(prep.value).substring(0, 200)}`);
           }
+          result.value = prep.value;
           if (Array.isArray(targetFieldMeta.allowedValues) && targetFieldMeta.allowedValues.length > 0) {
             logs.push("Value matches the field's allowed options");
           }
-        }
-
-        // Number fields aren't allowedValues-constrained — keep the numeric sanity warning.
-        const schemaType = targetFieldMeta.schema?.type;
-        if (schemaType === "number" && typeof rawProposed === "string" && isNaN(Number(rawProposed))) {
-          logs.push(`WARNING: "${rawProposed}" is not a valid number — this field requires a numeric value`);
         }
       }
 
@@ -6239,6 +6271,12 @@ const extractFieldDisplayValue = (value) => {
 
   // Simple string or number
   if (typeof value === "string" || typeof value === "number") {
+    // Legacy sprint toString blob (older Jira/GreenHopper serialization):
+    // "com.atlassian.greenhopper.service.sprint.Sprint@1a2b[id=1,name=Sprint 3,state=ACTIVE,...]"
+    if (typeof value === "string" && value.startsWith("com.atlassian.greenhopper.service.sprint.Sprint")) {
+      const m = value.match(/name=([^,\]]+)/);
+      if (m) return m[1];
+    }
     return String(value);
   }
 
@@ -6301,8 +6339,12 @@ const extractFieldDisplayValue = (value) => {
     }
 
     // Sprint field (from Jira Software) — must come before generic value.name
-    // Format: { id: 1, name: "Sprint 1", state: "active" }
-    if (value.name && value.state) {
+    // Format: { id: 1, name: "Sprint 1", state: "active", boardId: 1, goal: "..." }
+    // Detection keys on any sprint-distinctive property — shapes vary by Jira
+    // version and a miss would fall through to the raw JSON.stringify fallback.
+    if (value.name && (value.state !== undefined || value.boardId !== undefined
+      || value.goal !== undefined || value.originBoardId !== undefined
+      || (value.startDate !== undefined && value.endDate !== undefined))) {
       return value.name;
     }
 
@@ -7375,10 +7417,104 @@ const coerceToAdf = (value) => {
 };
 
 /**
+ * Split a comma-separated multi-value string, allowedValues-aware: option labels
+ * may themselves contain commas ("Yes, totally"), so a naive split corrupts them.
+ * Greedy longest-match re-joins adjacent comma tokens against the canonical labels.
+ */
+const splitByAllowedValues = (str, allowedValues) => {
+  const trimmed = String(str).trim();
+  const tokens = trimmed.split(",").map((t) => t.trim()).filter(Boolean);
+  const allowed = Array.isArray(allowedValues) ? allowedValues : [];
+  if (allowed.length === 0) return tokens;
+  const labels = new Set();
+  for (const a of allowed) for (const k of [a.value, a.name]) if (k) labels.add(String(k).toLowerCase());
+  if (labels.has(trimmed.toLowerCase())) return [trimmed];
+  const out = [];
+  let i = 0;
+  while (i < tokens.length) {
+    let matchedEnd = 0;
+    for (let j = tokens.length; j > i; j--) {
+      if (labels.has(tokens.slice(i, j).join(", ").toLowerCase())) { matchedEnd = j; break; }
+    }
+    if (matchedEnd > 0) { out.push(tokens.slice(i, matchedEnd).join(", ")); i = matchedEnd; }
+    else { out.push(tokens[i]); i += 1; }
+  }
+  return out;
+};
+
+/**
+ * Parse an AI-produced cascading-select value into {value, child:{value}}.
+ * Accepts JSON ({value, child}), "Parent > Child" / "Parent / Child" / "Parent -> Child",
+ * or a bare parent. allowedValues-first matching sidesteps separator ambiguity when
+ * a parent label itself contains ">" or "/".
+ */
+const formatCascadingValue = (value, fieldMeta, notes) => {
+  const str = String(value).trim();
+  if (str.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(str);
+      if (parsed && typeof parsed === "object" && (parsed.value || parsed.id)) return parsed;
+    } catch { /* not JSON — treat as text */ }
+  }
+  const allowed = Array.isArray(fieldMeta.allowedValues) ? fieldMeta.allowedValues : [];
+  if (allowed.length > 0) {
+    const whole = allowed.find((p) => p.value && String(p.value).toLowerCase() === str.toLowerCase());
+    if (whole) return { value: whole.value };
+    const matches = [];
+    for (const p of allowed) {
+      if (!p.value || !str.toLowerCase().startsWith(String(p.value).toLowerCase())) continue;
+      const m = str.slice(String(p.value).length).match(/^\s*(?:->|→|[>/])\s*(.+)$/);
+      if (m) matches.push({ parent: p.value, child: m[1].trim() });
+    }
+    if (matches.length === 1) {
+      notes.push(`Parsed cascading value: "${matches[0].parent}" > "${matches[0].child}"`);
+      return { value: matches[0].parent, child: { value: matches[0].child } };
+    }
+  }
+  // No allowedValues to anchor on — split on the first separator. A parent label
+  // containing " / " would mis-split here, but validation can't run either way
+  // and Jira's 400 is surfaced verbatim.
+  for (const sep of [" > ", " -> ", " → ", " / ", ">"]) {
+    const idx = str.indexOf(sep);
+    if (idx > 0) {
+      const parent = str.slice(0, idx).trim();
+      const child = str.slice(idx + sep.length).trim();
+      if (parent && child) {
+        notes.push(`Parsed cascading value: "${parent}" > "${child}"`);
+        return { value: parent, child: { value: child } };
+      }
+    }
+  }
+  return { value: str };
+};
+
+/**
+ * Strict post-coercion checks for scalar fields. Where formatValueForField could
+ * not produce a valid value (relative dates, non-numeric text), SKIP with an
+ * actionable reason instead of letting Jira reject the PUT with a confusing 400.
+ */
+const checkScalarFormat = (value, fieldMeta) => {
+  const schemaType = fieldMeta?.schema?.type;
+  if (typeof value !== "string") return { ok: true };
+  const preview = value.substring(0, 50);
+  if (schemaType === "number") {
+    return { ok: false, reason: `"${preview}" is not a number — this field requires a numeric value (e.g. 42 or 3.14)` };
+  }
+  if (schemaType === "date" && !/^\d{4}-\d{2}-\d{2}$/.test(value.trim())) {
+    return { ok: false, reason: `"${preview}" is not a valid date — date fields require "YYYY-MM-DD" (relative dates like "next Friday" are not supported)` };
+  }
+  if (schemaType === "datetime" && !/^\d{4}-\d{2}-\d{2}T/.test(value.trim())) {
+    return { ok: false, reason: `"${preview}" is not a valid datetime — expected ISO 8601 like "2026-06-12T15:00:00.000+0000"` };
+  }
+  return { ok: true };
+};
+
+/**
  * Auto-format an AI-generated value to match the Jira field's expected schema.
  * Prevents common 400 errors by converting plain strings to the right structure.
+ * Pushes human-readable transformation notes into `notes` (shown in trace/logs).
  */
-const formatValueForField = (value, fieldMeta) => {
+const formatValueForField = (value, fieldMeta, notes = []) => {
   if (!fieldMeta || !fieldMeta.schema) return value;
   const schemaType = fieldMeta.schema.type;
 
@@ -7400,34 +7536,91 @@ const formatValueForField = (value, fieldMeta) => {
   // AI (or a prior step) got it right — Jira will validate when we PUT.
   if (typeof value !== "string") return value;
 
+  // Cascading select — schema type "option-with-child"; the custom-key fallback
+  // covers sites where editmeta under-declares the type (same class of problem
+  // as the rich-text "string" mis-declaration above).
+  if (schemaType === "option-with-child"
+    || String(fieldMeta.schema.custom || "").endsWith(":cascadingselect")) {
+    return formatCascadingValue(value, fieldMeta, notes);
+  }
+
   switch (schemaType) {
     case "option":
       // Single select/radio — wrap string in {value: "..."} if not already an object
       return { value };
-    case "array":
+    case "array": {
+      const items = fieldMeta.schema.items;
       // Multi-select, labels, components — depends on items type
-      if (fieldMeta.schema.items === "option") {
-        // Multi-select: split comma-separated values into array of {value: "..."}
-        return value.split(",").map((v) => ({ value: v.trim() })).filter((v) => v.value);
+      if (items === "option") {
+        // Multi-select: split into array of {value} — allowedValues-aware, since
+        // option labels may themselves contain commas
+        return splitByAllowedValues(value, fieldMeta.allowedValues).map((v) => ({ value: v }));
       }
-      if (fieldMeta.schema.items === "string") {
-        // Labels: array of strings
-        return value.split(",").map((v) => v.trim()).filter(Boolean);
+      if (items === "string") {
+        const parts = value.split(",").map((v) => v.trim()).filter(Boolean);
+        // Labels reject spaces — hyphenate (Jira convention) rather than SKIP the
+        // whole automation over a cosmetic issue; the note keeps it auditable.
+        const isLabels = fieldMeta.schema.system === "labels"
+          || String(fieldMeta.schema.custom || "").endsWith(":labels");
+        if (isLabels && parts.some((p) => /\s/.test(p))) {
+          const sanitized = parts.map((p) => p.replace(/\s+/g, "-"));
+          notes.push(`Labels cannot contain spaces — hyphenated: ${sanitized.join(", ")}`);
+          return sanitized;
+        }
+        return parts;
       }
-      if (fieldMeta.schema.items === "user") {
-        // Multi-user picker — Jira expects [{accountId}] (the prompt asks the AI for accountIds)
+      if (items === "user") {
+        // Multi-user picker — Jira expects [{accountId}]; display names are
+        // resolved to accountIds downstream in prepareSemanticValue
         return value.split(",").map((v) => ({ accountId: v.trim() })).filter((v) => v.accountId);
       }
       // Components, fixVersions, versions, groups — Jira accepts {name: "..."}.
       // Single string → one-element array; comma-separated → multi-element.
-      if (["component", "version", "group"].includes(fieldMeta.schema.items)) {
-        return value.split(",").map((v) => ({ name: v.trim() })).filter((v) => v.name);
+      if (["component", "version", "group"].includes(items)) {
+        return splitByAllowedValues(value, fieldMeta.allowedValues).map((v) => ({ name: v }));
       }
-      return value;
+      // Unknown/missing items type (broken or under-documented field schema):
+      // a raw string always 400s on an array field — map conservatively from the
+      // allowedValues shape instead.
+      const sample = Array.isArray(fieldMeta.allowedValues) ? fieldMeta.allowedValues[0] : null;
+      const parts = splitByAllowedValues(value, fieldMeta.allowedValues);
+      notes.push(`Field declares an array of unknown item type "${items || "(none)"}" — applied conservative mapping`);
+      if (sample && sample.value !== undefined) return parts.map((v) => ({ value: v }));
+      if (sample && sample.name !== undefined) return parts.map((v) => ({ name: v }));
+      return parts;
+    }
     case "number": {
-      // Number fields
+      // Number fields — non-numeric strings are rejected later by checkScalarFormat
       const num = Number(value);
       return isNaN(num) ? value : num;
+    }
+    case "date": {
+      const s = value.trim();
+      if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+      if (/^\d{4}-\d{2}-\d{2}[T ]/.test(s)) {
+        // Truncating a non-UTC datetime can shift the calendar day vs. the
+        // author's timezone — auditable via the note; better than a 400.
+        notes.push(`Truncated datetime "${s.substring(0, 30)}" to "${s.substring(0, 10)}" (date-only field)`);
+        return s.substring(0, 10);
+      }
+      return value; // unparseable → checkScalarFormat SKIPs with a clear reason
+    }
+    case "datetime": {
+      const s = value.trim();
+      if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d{1,3})?)?(Z|[+-]\d{2}:?\d{2})$/.test(s)) return s;
+      if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+        notes.push(`Expanded date "${s}" to "${s}T00:00:00.000+0000" (UTC midnight)`);
+        return `${s}T00:00:00.000+0000`;
+      }
+      // Offset missing: the site/user timezone is unknowable without extra API
+      // calls — UTC is deterministic and the note makes the assumption auditable.
+      const m = s.match(/^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})(:\d{2})?(\.\d{1,3})?$/);
+      if (m) {
+        const normalized = `${m[1]}T${m[2]}${m[3] || ":00"}${m[4] || ".000"}+0000`;
+        notes.push(`No timezone on "${s}" — interpreted as UTC: "${normalized}"`);
+        return normalized;
+      }
+      return value; // unparseable → checkScalarFormat SKIPs with a clear reason
     }
     case "priority":
     case "issuetype":
@@ -7462,6 +7655,7 @@ const validateValueAgainstField = (formatted, fieldMeta) => {
   const schemaType = fieldMeta.schema?.type;
   const itemType = fieldMeta.schema?.items;
   const constrained = schemaType === "option"
+    || schemaType === "option-with-child"
     || (schemaType === "array" && (itemType === "option" || ["version", "component", "group"].includes(itemType)))
     || ["priority", "resolution", "issuetype", "version", "component", "group", "project"].includes(schemaType);
   if (!constrained) return { ok: true, value: formatted };
@@ -7493,6 +7687,31 @@ const validateValueAgainstField = (formatted, fieldMeta) => {
   };
   const fail = (bad) => ({ ok: false, reason: `value ${JSON.stringify(bad)} is not allowed for this field. Allowed: ${labels.slice(0, 20).map((l) => `"${l}"`).join(", ")}${labels.length > 20 ? ", …" : ""}.` });
 
+  // Cascading select: validate/case-correct the parent; validate the child only
+  // when editmeta exposes the children list (it may omit it — then Jira validates
+  // the pair on PUT and the 400 is surfaced verbatim).
+  if (schemaType === "option-with-child") {
+    if (!formatted || typeof formatted !== "object" || typeof formatted.value !== "string") {
+      return { ok: true, value: formatted }; // {id} or unexpected shape — trust it
+    }
+    const parentLabel = canon.get(formatted.value.toLowerCase());
+    if (!parentLabel) return fail(formatted.value);
+    const corrected = { ...formatted, value: parentLabel };
+    const parentMeta = allowed.find((a) => (a.value || a.name) === parentLabel);
+    const child = corrected.child;
+    if (child && typeof child === "object" && typeof child.value === "string"
+      && Array.isArray(parentMeta?.children) && parentMeta.children.length > 0) {
+      const childHit = parentMeta.children.find((c) =>
+        [c.value, c.id].filter(Boolean).some((t) => String(t).toLowerCase() === child.value.toLowerCase()));
+      if (!childHit) {
+        const childLabels = parentMeta.children.map((c) => c.value).filter(Boolean);
+        return { ok: false, reason: `child value ${JSON.stringify(child.value)} is not allowed under "${parentLabel}". Allowed children: ${childLabels.slice(0, 20).map((l) => `"${l}"`).join(", ")}${childLabels.length > 20 ? ", …" : ""}.` };
+      }
+      corrected.child = { ...child, value: childHit.value || child.value };
+    }
+    return { ok: true, value: corrected };
+  }
+
   if (Array.isArray(formatted)) {
     const out = [];
     for (const el of formatted) {
@@ -7504,6 +7723,106 @@ const validateValueAgainstField = (formatted, fieldMeta) => {
   }
   const r = correctOne(formatted);
   return r.ok ? { ok: true, value: r.value } : fail(r.bad);
+};
+
+// Jira Cloud accountIds look like "5b10a2844c20165700ede21g" or "712020:uuid" —
+// never contain spaces or "@". Display names and emails do.
+const looksLikeAccountId = (s) => !/[\s@]/.test(s) && /^[A-Za-z0-9:_-]{16,128}$/.test(s);
+
+/**
+ * Resolve a display name or email to an accountId via user search (read:jira-user).
+ * Cloud user fields accept ONLY accountIds — names/emails 400. Resolution must be
+ * UNAMBIGUOUS: 0 or >1 candidates → refuse, never write the wrong person.
+ * Note: emailAddress is hidden (null) for most users under GDPR privacy controls,
+ * so disambiguation usually rides on exact displayName matches.
+ */
+const resolveUserToAccountId = async ({ query, issueKey, assignable }) => {
+  try {
+    const resp = await api.asApp().requestJira(
+      assignable
+        ? route`/rest/api/3/user/assignable/search?issueKey=${issueKey}&query=${query}&maxResults=20`
+        : route`/rest/api/3/user/search?query=${query}&maxResults=20`,
+      { headers: { Accept: "application/json" } },
+    );
+    if (!resp.ok) return { ok: false, reason: `user search for "${query}" failed (HTTP ${resp.status})` };
+    const users = (await resp.json()).filter((u) => u.active !== false);
+    if (users.length === 1) return { ok: true, accountId: users[0].accountId, displayName: users[0].displayName };
+    if (users.length > 1) {
+      const q = query.toLowerCase();
+      const exact = users.filter((u) =>
+        String(u.displayName || "").toLowerCase() === q
+        || String(u.emailAddress || "").toLowerCase() === q);
+      if (exact.length === 1) return { ok: true, accountId: exact[0].accountId, displayName: exact[0].displayName };
+      return { ok: false, reason: `"${query}" matches ${users.length} users and none uniquely by exact display name — refusing to guess. Put the accountId in the prompt or use the full unique display name.` };
+    }
+    return { ok: false, reason: `no active user matches "${query}". Use the exact display name or an accountId.` };
+  } catch (e) {
+    return { ok: false, reason: `user search for "${query}" failed: ${e.message}` };
+  }
+};
+
+/**
+ * Shared value-preparation pipeline for semantic post-functions:
+ *   schema coercion → user resolution → allowedValues validation → strict scalar checks.
+ * Used by BOTH the real executor and the dry-run test resolver — any drift between
+ * the two is a foundational control bug (Test Run must predict production exactly).
+ * Returns { ok:true, value, notes } or { ok:false, reason, notes }; on !ok the
+ * caller SKIPs fail-open with the reason. `notes` are trace/log lines.
+ */
+const prepareSemanticValue = async ({ rawValue, fieldMeta, issueKey, deadline }) => {
+  const notes = [];
+  if (!fieldMeta) return { ok: true, value: rawValue, notes };
+
+  let value = formatValueForField(rawValue, fieldMeta, notes);
+  if (value !== rawValue && notes.length === 0) {
+    notes.push(`Auto-formatted value for ${fieldMeta.schema?.type || "unknown"} field`);
+  }
+
+  // User fields: resolve display names/emails → accountIds (unambiguous-only).
+  const schemaType = fieldMeta.schema?.type;
+  const isUserField = schemaType === "user"
+    || (schemaType === "array" && fieldMeta.schema?.items === "user");
+  if (isUserField && issueKey) {
+    const assignable = fieldMeta.schema?.system === "assignee";
+    const resolveOne = async (el) => {
+      const id = el && typeof el === "object" ? el.accountId : el;
+      if (typeof id !== "string" || looksLikeAccountId(id)) return { ok: true, value: el };
+      if (deadline - Date.now() < 4000) {
+        return { ok: false, reason: `not enough time budget left to resolve "${id}" to an accountId` };
+      }
+      const r = await resolveUserToAccountId({ query: id, issueKey, assignable });
+      if (!r.ok) return r;
+      notes.push(`Resolved "${id}" → ${r.displayName} (${r.accountId})`);
+      return { ok: true, value: { accountId: r.accountId } };
+    };
+    if (Array.isArray(value)) {
+      if (value.length > 10) return { ok: false, reason: `too many users (${value.length}) — max 10 per update`, notes };
+      const resolved = [];
+      for (const el of value) {
+        const r = await resolveOne(el);
+        // Any failure skips the ENTIRE write — never a partial or wrong user list
+        if (!r.ok) return { ok: false, reason: r.reason, notes };
+        resolved.push(r.value);
+      }
+      value = resolved;
+    } else {
+      const r = await resolveOne(value);
+      if (!r.ok) return { ok: false, reason: r.reason, notes };
+      value = r.value;
+    }
+  }
+
+  const check = validateValueAgainstField(value, fieldMeta);
+  if (!check.ok) return { ok: false, reason: check.reason, notes };
+  if (check.value !== value) {
+    notes.push("Normalized value to the canonical allowed option");
+    value = check.value;
+  }
+
+  const scalar = checkScalarFormat(value, fieldMeta);
+  if (!scalar.ok) return { ok: false, reason: scalar.reason, notes };
+
+  return { ok: true, value, notes };
 };
 
 const getFieldValue = async (issueKey, fieldId, modifiedFields) => {
@@ -8027,6 +8346,13 @@ const executeSemanticPostFunction = async (issueKey, config, deadline = Date.now
     const schemaType = targetFieldMeta.schema?.type || "unknown";
     const schemaSystem = targetFieldMeta.schema?.system || "";
     trace.push(`Field "${actionFieldId}" is editable (type: ${schemaType}${schemaSystem ? `, system: ${schemaSystem}` : ""})`);
+    // The PUT "fields" syntax requires the "set" operation — fields that only
+    // support add/remove/edit (comments, worklogs, links) would 400. Fail fast.
+    if (Array.isArray(targetFieldMeta.operations) && !targetFieldMeta.operations.includes("set")) {
+      trace.push(`ERROR: Field "${actionFieldId}" does not support the "set" operation (supports: ${targetFieldMeta.operations.join(", ") || "none"})`);
+      return { success: false, decision: "SKIP", reason: `Field "${actionFieldId}" cannot be set directly`, trace,
+        recommendation: `"${actionFieldId}" supports operations [${targetFieldMeta.operations.join(", ")}] but not "set", so it cannot be a semantic post-function target — fields like comments, worklogs, or issue links need dedicated endpoints. Choose a different target field.` };
+    }
   } else if (actionFieldId && editMetaResp && !editMetaResp.ok) {
     trace.push(`Warning: Could not check editmeta (HTTP ${editMetaResp.status}) — proceeding without schema hints`);
   }
@@ -8166,31 +8492,22 @@ const executeSemanticPostFunction = async (issueKey, config, deadline = Date.now
     // Step 7: Execute update if decision is UPDATE.
     // editmeta + targetFieldMeta were fetched upfront — no second editmeta call here.
     if (result.decision === "UPDATE" && actionFieldId && result.value !== undefined) {
-      // Auto-format the value based on field schema (ADF, allowed values, etc.)
-      const rawValue = result.value;
-      if (targetFieldMeta) {
-        const formattedValue = formatValueForField(rawValue, targetFieldMeta);
-        if (formattedValue !== rawValue) {
-          trace.push(`Auto-formatted value for ${targetFieldMeta.schema?.type || "unknown"} field`);
-        }
-        result.value = formattedValue;
-
-        // H1: validate against allowedValues BEFORE the PUT. A hallucinated option
-        // would otherwise reach Jira and 400 with a confusing error. SKIP cleanly
-        // (fail-open — never block the transition) with an actionable reason instead.
-        const check = validateValueAgainstField(result.value, targetFieldMeta);
-        if (!check.ok) {
-          trace.push(`Rejected value: ${check.reason}`);
-          return { success: true, decision: "SKIP",
-            reason: `AI produced an invalid value for "${actionFieldId}" — ${check.reason}`,
-            trace, aiTimeMs, tokens, sourceFieldId, sourceFieldLength: fieldLen, docCount,
-            recommendation: `The AI returned a value that isn't permitted for "${actionFieldId}". Refine the Action prompt to steer it toward the allowed options, or choose a different target field.` };
-        }
-        if (check.value !== result.value) {
-          trace.push("Normalized value to the canonical allowed option");
-          result.value = check.value;
-        }
+      // Prepare the value via the SHARED pipeline (schema coercion → user
+      // resolution → allowedValues validation → strict scalar checks). The
+      // dry-run resolver calls the same helper — Test Run predicts production.
+      // On !ok: SKIP cleanly (fail-open — never block the transition).
+      const prep = await prepareSemanticValue({
+        rawValue: result.value, fieldMeta: targetFieldMeta, issueKey, deadline,
+      });
+      for (const n of prep.notes) trace.push(n);
+      if (!prep.ok) {
+        trace.push(`Rejected value: ${prep.reason}`);
+        return { success: true, decision: "SKIP",
+          reason: `AI produced an invalid value for "${actionFieldId}" — ${prep.reason}`,
+          trace, aiTimeMs, tokens, sourceFieldId, sourceFieldLength: fieldLen, docCount,
+          recommendation: `The AI returned a value that isn't usable for "${actionFieldId}". Refine the Action prompt to steer it toward an accepted value, or choose a different target field.` };
       }
+      result.value = prep.value;
 
       // No-op detection — when source field == target field and the formatted value is
       // a string equal to the current value, skip the write. Avoids triggering Jira's
@@ -8253,15 +8570,36 @@ const executeSemanticPostFunction = async (issueKey, config, deadline = Date.now
         await new Promise((r) => setTimeout(r, waitMs));
         updateResponse = await doUpdate();
       }
-      // Self-heal for fields that demand ADF without declaring type "doc" in
-      // editmeta (the proactive detection above covers description/environment/
-      // textarea; this catches anything else): convert the text and retry once.
+      // Reactive self-heal ladder (ONE shape-retry max): some format requirements
+      // only surface in Jira's 400 — editmeta can under-describe the field (e.g.
+      // description reporting type "string", commit 2fc35e9), and the proactive
+      // path can't run at all when the editmeta fetch failed. Allowlist-only:
+      // VALUE errors (invalid option, unknown user) are never retried — those are
+      // AI mistakes to surface, not shapes to fix. Jira's error text is only
+      // semi-stable, so each rule keys on its narrowest reliable signal, requires
+      // the error to be about OUR field (or a global errorMessages mention), and
+      // preconditions on the value actually sent. A misfire costs one extra PUT
+      // that 400s identically — and is visible in the trace.
       let stashedErrBody = null;
-      if (!updateResponse.ok && updateResponse.status === 400 && typeof result.value === "string") {
+      if (!updateResponse.ok && updateResponse.status === 400 && deadline - Date.now() > 4000) {
         stashedErrBody = await updateResponse.text().catch(() => "");
-        if (/atlassian document/i.test(stashedErrBody)) {
-          trace.push(`Jira requires ADF for "${actionFieldId}" — converting the text and retrying...`);
-          updateBody.fields[actionFieldId] = coerceToAdf(result.value);
+        let fieldErr = stashedErrBody;
+        try {
+          const errJson = JSON.parse(stashedErrBody);
+          fieldErr = String(errJson.errors?.[actionFieldId] || (errJson.errorMessages || []).join("; ") || "");
+        } catch { /* non-JSON — match on the raw body, as the original ADF heal did */ }
+        const sent = updateBody.fields[actionFieldId];
+        let healed = null;
+        if (/atlassian document/i.test(fieldErr) && typeof sent === "string") {
+          healed = { value: coerceToAdf(sent), note: `Jira requires ADF for "${actionFieldId}" — converting the text and retrying...` };
+        } else if (/specify a number|must be a number/i.test(fieldErr) && typeof sent === "string" && Number.isFinite(Number(sent))) {
+          healed = { value: Number(sent), note: `Jira requires a number for "${actionFieldId}" — sending ${Number(sent)} and retrying...` };
+        } else if (/yyyy-mm-dd/i.test(fieldErr) && typeof sent === "string" && /^\d{4}-\d{2}-\d{2}[T ]/.test(sent)) {
+          healed = { value: sent.substring(0, 10), note: `Jira requires a date-only value for "${actionFieldId}" — truncating to "${sent.substring(0, 10)}" and retrying...` };
+        }
+        if (healed) {
+          trace.push(healed.note);
+          updateBody.fields[actionFieldId] = healed.value;
           updateResponse = await doUpdate();
           stashedErrBody = null; // fresh response — the error composer re-reads
         }
@@ -8803,18 +9141,65 @@ const executeStaticPostFunction = async (issueKey, config, deadline = Date.now()
       }
       // Per-rule notification suppression (notifyUsers=false) — needs project
       // admin permission; on 403 retry once with notifications enabled.
-      const suppress = config.suppressNotifications === true;
-      const doPut = (s) => api.asApp().requestJira(
-        s ? route`/rest/api/3/issue/${key}?notifyUsers=false` : route`/rest/api/3/issue/${key}`,
-        { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ fields }) },
+      let suppress = config.suppressNotifications === true;
+      let sentFields = fields;
+      const doPut = () => api.asApp().requestJira(
+        suppress ? route`/rest/api/3/issue/${key}?notifyUsers=false` : route`/rest/api/3/issue/${key}`,
+        { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ fields: sentFields }) },
       );
-      let res = await doPut(suppress);
+      let res = await doPut();
       if (!res.ok && res.status === 403 && suppress) {
         executionLogs.push(`updateIssue("${key}"): Jira refused notifyUsers=false (403 — needs project admin). Retried with notifications enabled.`);
-        res = await doPut(false);
+        suppress = false;
+        res = await doPut();
       }
-      if (!res.ok) throw new Error(`updateIssue failed: ${res.status}`);
-      changes.push({ action: "updateIssue", key, fields });
+      // One retry on rate-limit / transient upstream errors (parity with the
+      // semantic post-function), honoring Retry-After within the remaining budget.
+      if (!res.ok && [429, 502, 503].includes(res.status) && deadline - Date.now() > 6000) {
+        const retryAfterSec = Number(res.headers?.get?.("retry-after")) || 2;
+        const waitMs = Math.max(500, Math.min(retryAfterSec * 1000, deadline - Date.now() - 4000, 5000));
+        executionLogs.push(`updateIssue("${key}"): Jira returned ${res.status} — retrying after ${Math.round(waitMs / 1000)}s...`);
+        await new Promise((r) => setTimeout(r, waitMs));
+        res = await doPut();
+      }
+      if (!res.ok) {
+        // Surface Jira's per-field error body — a bare "updateIssue failed: 400"
+        // is undebuggable (the body says WHICH field and WHY). Plus ONE narrow
+        // self-heal mirroring the semantic PF: a plain string sent to a field
+        // demanding ADF is converted and retried once. No other user-script
+        // values are ever rewritten.
+        let errors = null;
+        let errorMessages = null;
+        const readBody = async () => {
+          const text = await res.text().catch(() => "");
+          try {
+            const j = JSON.parse(text);
+            errors = j.errors || null;
+            errorMessages = j.errorMessages || null;
+          } catch { /* non-JSON body */ }
+          return text;
+        };
+        let errBody = await readBody();
+        if (res.status === 400 && errors) {
+          const adfField = Object.keys(errors).find((f) =>
+            /atlassian document/i.test(String(errors[f])) && typeof sentFields[f] === "string");
+          if (adfField) {
+            executionLogs.push(`updateIssue("${key}"): "${adfField}" requires ADF — auto-converted the text, retrying once...`);
+            sentFields = { ...sentFields, [adfField]: coerceToAdf(sentFields[adfField]) };
+            res = await doPut();
+            if (res.ok) {
+              changes.push({ action: "updateIssue", key, fields: sentFields, coercedFields: [adfField] });
+              return { success: true };
+            }
+            errBody = await readBody(); // fresh failure — report the retry's errors
+          }
+        }
+        const detail = errors ? Object.entries(errors).map(([k, v]) => `${k}: ${v}`).join("; ")
+          : errorMessages && errorMessages.length ? errorMessages.join("; ")
+          : errBody.substring(0, 200);
+        throw new Error(`updateIssue failed: ${res.status}${detail ? ` — ${detail}` : ""}`);
+      }
+      changes.push({ action: "updateIssue", key, fields: sentFields });
       return { success: true };
     },
     searchJql: async (jql) => {
@@ -8976,7 +9361,7 @@ const executeStaticPostFunction = async (issueKey, config, deadline = Date.now()
       } else if (error.message.includes("getIssue failed: 403")) {
         rec = `Permission denied reading issue. The app needs read:jira-work scope. Contact your Jira admin.`;
       } else if (error.message.includes("updateIssue failed: 400")) {
-        rec = `Invalid field update. The field value format is wrong. Text fields need strings, select fields need {value: "..."}, ADF fields need document objects.`;
+        rec = `Invalid field update — the error above names the rejected field and why. Common formats: text fields need strings, select fields {value: "..."}, cascading selects {value: "Parent", child: {value: "Child"}}, user fields {accountId: "..."}, dates "YYYY-MM-DD", rich text ADF documents (plain strings are auto-converted once).`;
       } else if (error.message.includes("updateIssue failed")) {
         rec = `Failed to update issue. Check the field ID is correct and the app has write:jira-work permission.`;
       } else if (error.message.includes("searchJql failed")) {

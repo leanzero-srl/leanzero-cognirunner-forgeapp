@@ -13,6 +13,26 @@ import IssuePicker from "./IssuePicker";
 import DocRepository from "./DocRepository";
 import ReviewPanel from "./ReviewPanel";
 
+// Fields Jira cannot set via the issue-edit PUT that post-functions use —
+// offering them as targets guarantees a runtime failure (status needs the
+// transitions endpoint; comments/worklogs/links have dedicated endpoints;
+// the rest are computed/read-only). They stay valid as SOURCE fields.
+const NEVER_WRITABLE_TARGETS = new Set([
+  "status", "created", "updated", "creator", "resolutiondate", "lastViewed",
+  "votes", "watches", "worklog", "attachment", "issuelinks", "subtasks",
+  "comment", "workratio", "statuscategorychangedate", "thumbnail",
+  "timespent", "timeoriginalestimate", "timeestimate",
+  "aggregatetimespent", "aggregatetimeoriginalestimate", "aggregatetimeestimate",
+  "progress", "aggregateprogress", "issuerestriction", "parent",
+]);
+// Agile-managed custom fields — writable only via the Jira Agile API.
+const NEVER_WRITABLE_CUSTOM_TYPES = new Set([
+  "com.pyxis.greenhopper.jira:gh-sprint",
+  "com.pyxis.greenhopper.jira:gh-lexo-rank",
+]);
+const isWritableTarget = (f) =>
+  !NEVER_WRITABLE_TARGETS.has(f.id) && !NEVER_WRITABLE_CUSTOM_TYPES.has(f.schema?.custom);
+
 export default function SemanticConfig({
   conditionPrompt,
   setConditionPrompt,
@@ -170,7 +190,7 @@ export default function SemanticConfig({
             searchable
             searchPlaceholder="Search fields..."
             error={!actionFieldId}
-            options={fields.map((f) => ({
+            options={fields.filter(isWritableTarget).map((f) => ({
               value: f.id,
               label: f.name,
               meta: f.id,
@@ -184,7 +204,7 @@ export default function SemanticConfig({
           />
         )}
         <p className="hint">
-          The AI will update this field when the condition is met. All system and custom fields are available. Works best with text-based fields.
+          The AI will update this field when the condition is met. Works best with text-based fields. Fields that can&apos;t be written this way (Status, Sprint, Parent, comments, links, time tracking) aren&apos;t listed — Status changes need a workflow transition, Sprint the Agile API.
         </p>
       </div>
 

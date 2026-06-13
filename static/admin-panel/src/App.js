@@ -294,24 +294,17 @@ const injectStyles = () => {
       letter-spacing: 0.5px;
     }
 
-    .type-validator {
-      background: rgba(37, 99, 235, 0.1);
-      color: var(--primary-color);
-    }
-
-    .type-condition {
-      background: rgba(22, 163, 106, 0.1);
-      color: var(--success-color);
-    }
-
-    .type-postfunction {
-      background: rgba(168, 85, 247, 0.1);
-      color: #a855f7;
-    }
-    html[data-color-mode="dark"] .type-postfunction {
-      background: rgba(168, 85, 247, 0.15);
-      color: #c084fc;
-    }
+    /* Solid hue-coded fills (white text) matching the execution-log badge
+       system: validator blue, condition purple, PF semantic teal, PF static
+       slate. One shade lighter in dark mode. */
+    .type-validator { background: #2563eb; color: #ffffff; }
+    .type-condition { background: #7c3aed; color: #ffffff; }
+    .type-postfunction { background: #0d9488; color: #ffffff; }
+    .type-pf-static { background: #475569; color: #ffffff; }
+    html[data-color-mode="dark"] .type-validator { background: #3b82f6; }
+    html[data-color-mode="dark"] .type-condition { background: #8b5cf6; }
+    html[data-color-mode="dark"] .type-postfunction { background: #14b8a6; }
+    html[data-color-mode="dark"] .type-pf-static { background: #64748b; }
 
     .field-id {
       font-family: SFMono-Regular, Consolas, monospace;
@@ -341,7 +334,7 @@ const injectStyles = () => {
     }
 
     .log-entry {
-      padding: 8px 14px;
+      padding: 12px 14px;
       border-bottom: 1px solid var(--border-color);
       font-size: 12px;
     }
@@ -351,51 +344,173 @@ const injectStyles = () => {
     .log-header {
       display: flex;
       align-items: center;
+      flex-wrap: wrap;
       gap: 8px;
-      margin-bottom: 4px;
+      margin-bottom: 6px;
     }
 
     .log-status {
-      padding: 2px 6px;
-      border-radius: 3px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 46px;
+      padding: 2px 8px;
+      border-radius: 6px;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.6px;
+      text-transform: uppercase;
+      color: #ffffff;
+      flex-shrink: 0;
+    }
+
+    .log-status.valid { background: #16a34a; }
+    .log-status.invalid { background: #dc2626; }
+    .log-status.skip { background: #475569; }
+    html[data-color-mode="dark"] .log-status.valid { background: #22c55e; }
+    html[data-color-mode="dark"] .log-status.invalid { background: #ef4444; }
+    html[data-color-mode="dark"] .log-status.skip { background: #64748b; }
+
+    /* Hue-coded solid type badges — logs context only
+       (the rules table keeps its own .type-badge styling) */
+    .log-type-badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 2px 8px;
+      border-radius: 6px;
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+      color: #ffffff;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .lt-validator { background: #2563eb; }
+    .lt-condition { background: #7c3aed; }
+    .lt-pf, .lt-pf-semantic { background: #0d9488; }
+    .lt-pf-static { background: #475569; }
+    html[data-color-mode="dark"] .lt-validator { background: #3b82f6; }
+    html[data-color-mode="dark"] .lt-condition { background: #8b5cf6; }
+    html[data-color-mode="dark"] .lt-pf, html[data-color-mode="dark"] .lt-pf-semantic { background: #14b8a6; }
+    html[data-color-mode="dark"] .lt-pf-static { background: #64748b; }
+
+    .log-issue {
+      font-family: SFMono-Regular, Consolas, monospace;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--primary-color);
+    }
+
+    .log-meta {
+      margin-left: auto;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      white-space: nowrap;
+    }
+
+    .log-ms {
+      font-family: SFMono-Regular, Consolas, monospace;
       font-size: 10px;
       font-weight: 600;
-      text-transform: uppercase;
-    }
-
-    .log-status.valid {
-      background: rgba(22, 163, 106, 0.1);
-      color: var(--success-color);
-    }
-
-    .log-status.invalid {
-      background: rgba(220, 38, 38, 0.1);
-      color: var(--error-color);
+      font-variant-numeric: tabular-nums;
+      padding: 1px 6px;
+      border-radius: 4px;
+      background: var(--code-bg);
+      color: var(--text-secondary);
     }
 
     .log-time {
       color: var(--text-muted);
       font-size: 10px;
+      font-weight: 500;
+      font-variant-numeric: tabular-nums;
     }
 
-    .log-issue {
-      font-weight: 600;
-      color: var(--primary-color);
+    .log-details {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 4px 16px;
+      margin: 2px 0;
+      color: var(--text-secondary);
     }
 
-    .log-details { color: var(--text-secondary); }
+    .log-kv {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .log-kv-label {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      color: var(--text-muted);
+    }
+
+    .log-section-label {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      color: var(--text-muted);
+      margin: 8px 0 3px;
+    }
 
     .log-reason {
-      margin-top: 4px;
-      padding: 4px 8px;
+      padding: 8px 10px;
       background: var(--code-bg);
-      border-radius: 3px;
+      border-radius: 8px;
       color: var(--text-color);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .log-foot {
+      margin-top: 6px;
+      font-size: 10px;
+      font-variant-numeric: tabular-nums;
+      color: var(--text-muted);
     }
 
     .logs-list {
       max-height: 400px;
       overflow-y: auto;
+      border-radius: inherit;
+    }
+
+    /* Designed empty state for the logs card */
+    .logs-empty {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+      padding: 36px 20px;
+      text-align: center;
+    }
+    .logs-empty-icon {
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      background: #2563eb;
+      color: #ffffff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 6px;
+    }
+    html[data-color-mode="dark"] .logs-empty-icon { background: #3b82f6; }
+    .logs-empty-title {
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--text-color);
+    }
+    .logs-empty-caption {
+      font-size: 12px;
+      color: var(--text-secondary);
     }
 
     .loading-spinner {
@@ -4366,7 +4481,7 @@ function App() {
                   return (
                     <tr key={config.id} className={isDisabled ? "row-disabled" : ""}>
                       <td>
-                        <span className={`type-badge type-${config.type?.startsWith("postfunction") ? "postfunction" : config.type}`}>
+                        <span className={`type-badge ${config.type === "postfunction-static" ? "type-pf-static" : config.type?.startsWith("postfunction") ? "type-postfunction" : `type-${config.type}`}`}>
                           {config.type === "postfunction-semantic" ? "PF: Semantic"
                             : config.type === "postfunction-static" ? "PF: Static"
                             : config.type}
@@ -4493,7 +4608,17 @@ function App() {
                 <div className="sk sk-block" style={{ width: "95%", height: 28, marginBottom: 16 }} />
               </div>
             ) : logs.length === 0 ? (
-              <div className="empty-state">No execution logs yet</div>
+              <div className="logs-empty">
+                <div className="logs-empty-icon">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" />
+                    <rect x="8" y="2" width="8" height="4" rx="1" />
+                    <polyline points="8 14 10 14 11 11.5 13 16.5 14 14 16 14" />
+                  </svg>
+                </div>
+                <div className="logs-empty-title">No execution logs yet</div>
+                <div className="logs-empty-caption">Runs of your validators, conditions, and post functions will show up here.</div>
+              </div>
             ) : (
               <div className="logs-list stagger">
                 {logs.map((log) => {
@@ -4503,9 +4628,11 @@ function App() {
                     : logType.includes("postfunction") ? "Post Function"
                     : logType === "condition" ? "Condition"
                     : "Validator";
-                  const typeBadgeClass = logType.includes("postfunction") ? "type-postfunction"
-                    : logType === "condition" ? "type-condition"
-                    : "type-validator";
+                  const typeBadgeClass = logType.includes("postfunction-semantic") ? "lt-pf-semantic"
+                    : logType.includes("postfunction-static") ? "lt-pf-static"
+                    : logType.includes("postfunction") ? "lt-pf"
+                    : logType === "condition" ? "lt-condition"
+                    : "lt-validator";
                   const editUrl = log.ruleWorkflow?.workflowId && log.ruleWorkflow?.siteUrl
                     ? `${log.ruleWorkflow.siteUrl}/jira/settings/issues/workflows/${log.ruleWorkflow.workflowId}`
                     : null;
@@ -4513,20 +4640,22 @@ function App() {
                   return (
                     <div key={log.id} className="log-entry">
                       <div className="log-header">
-                        <span className={`log-status ${log.isValid ? "valid" : "invalid"}`}>
+                        <span className={`log-status ${log.isValid ? "valid" : (log.decision === "SKIP" ? "skip" : "invalid")}`}>
                           {log.isValid ? "PASS" : (log.decision === "SKIP" ? "SKIP" : "ERR")}
                         </span>
-                        <span className={`type-badge ${typeBadgeClass}`} style={{ fontSize: "9px" }}>{typeBadge}</span>
+                        <span className={`log-type-badge ${typeBadgeClass}`}>{typeBadge}</span>
                         <span className="log-issue">{log.issueKey}</span>
-                        <span className="log-time">
-                          {formatTime(log.timestamp)}
-                          {log.executionTimeMs ? ` · ${log.executionTimeMs}ms` : ""}
-                          {log.queueDelayMs >= 60000 ? ` · waited ${Math.round(log.queueDelayMs / 60000)} min in queue` : ""}
+                        <span className="log-meta">
+                          {log.executionTimeMs ? <span className="log-ms">{log.executionTimeMs}ms</span> : null}
+                          <span className="log-time">
+                            {formatTime(log.timestamp)}
+                            {log.queueDelayMs >= 60000 ? ` · waited ${Math.round(log.queueDelayMs / 60000)} min in queue` : ""}
+                          </span>
                         </span>
                         {(userRole === "editor" || userRole === "admin") && editUrl && (
                           <button
                             className="btn-small btn-edit"
-                            style={{ fontSize: "10px", padding: "2px 6px", marginLeft: "auto" }}
+                            style={{ fontSize: "10px", padding: "2px 6px" }}
                             onClick={() => router && router.open(editUrl)}
                             title="Edit this rule in workflow editor"
                           >
@@ -4535,17 +4664,33 @@ function App() {
                         )}
                       </div>
                       {log.ruleName && (
-                        <div style={{ fontSize: "11px", color: "var(--text-muted)", marginBottom: "2px" }}>
-                          Rule: {log.ruleName}
+                        <div className="log-details">
+                          <span className="log-kv">
+                            <span className="log-kv-label">Rule</span>
+                            <span>{log.ruleName}</span>
+                          </span>
                         </div>
                       )}
                       <div className="log-details">
-                        Field: <code className="field-id">{log.fieldId}</code>
-                        {log.decision && <span style={{ marginLeft: "8px" }}>Decision: <strong>{log.decision}</strong></span>}
+                        <span className="log-kv">
+                          <span className="log-kv-label">Field</span>
+                          <code className="field-id">{log.fieldId}</code>
+                        </span>
+                        {log.decision && (
+                          <span className="log-kv">
+                            <span className="log-kv-label">Decision</span>
+                            <strong>{log.decision}</strong>
+                          </span>
+                        )}
                       </div>
-                      <div className="log-reason">{log.reason}</div>
+                      {log.reason && (
+                        <>
+                          <div className="log-section-label">AI reason</div>
+                          <div className="log-reason">{log.reason}</div>
+                        </>
+                      )}
                       {log.tokens && (
-                        <div style={{ fontSize: "10px", color: "var(--text-muted)", marginTop: "2px" }}>
+                        <div className="log-foot">
                           AI: {log.aiTimeMs || log.executionTimeMs}ms · {log.tokens} tokens
                         </div>
                       )}

@@ -154,14 +154,19 @@ const injectStyles = () => {
       max-height: 300px;
       overflow-y: auto;
       border: 1px solid var(--border-color);
-      border-radius: 4px;
+      border-radius: 8px;
       background: var(--card-bg);
     }
 
     .log-entry {
-      padding: 8px 10px;
+      padding: 12px;
       border-bottom: 1px solid var(--border-color);
-      font-size: 11px;
+      font-size: 12px;
+      transition: background-color 0.15s ease;
+    }
+
+    .log-entry:hover {
+      background-color: var(--code-bg);
     }
 
     .log-entry:last-child {
@@ -171,75 +176,171 @@ const injectStyles = () => {
     .log-header {
       display: flex;
       align-items: center;
+      flex-wrap: wrap;
       gap: 8px;
-      margin-bottom: 4px;
+      margin-bottom: 6px;
     }
 
     .log-status {
-      padding: 2px 6px;
-      border-radius: 3px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 46px;
+      padding: 2px 8px;
+      border-radius: 6px;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.6px;
+      text-transform: uppercase;
+      color: #ffffff;
+      flex-shrink: 0;
+    }
+
+    .log-status.valid { background: #16a34a; }
+    .log-status.invalid { background: #dc2626; }
+    .log-status.skip { background: #475569; }
+    html[data-color-mode="dark"] .log-status.valid { background: #22c55e; }
+    html[data-color-mode="dark"] .log-status.invalid { background: #ef4444; }
+    html[data-color-mode="dark"] .log-status.skip { background: #64748b; }
+
+    .log-meta {
+      margin-left: auto;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      white-space: nowrap;
+    }
+
+    .log-ms {
+      font-family: SFMono-Regular, Consolas, monospace;
       font-size: 10px;
       font-weight: 600;
-      text-transform: uppercase;
-    }
-
-    .log-status.valid {
-      background: var(--success-color);
-      color: #ffffff;
-    }
-
-    .log-status.invalid {
-      background: var(--error-color);
-      color: #ffffff;
+      font-variant-numeric: tabular-nums;
+      padding: 1px 6px;
+      border-radius: 4px;
+      background: var(--code-bg);
+      color: var(--text-secondary);
     }
 
     .log-time {
       color: var(--text-muted);
       font-size: 10px;
+      font-weight: 500;
+      font-variant-numeric: tabular-nums;
     }
 
     .log-issue {
+      font-family: SFMono-Regular, Consolas, monospace;
+      font-size: 11px;
       font-weight: 600;
       color: var(--primary-color);
     }
 
     .log-details {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 4px 14px;
+      margin-top: 4px;
       color: var(--text-secondary);
-      margin-top: 4px;
+      font-size: 12px;
     }
 
-    .log-reason {
-      margin-top: 4px;
-      padding: 4px 8px;
+    .log-details code {
+      font-family: SFMono-Regular, Consolas, monospace;
+      font-size: 11px;
+      padding: 1px 5px;
+      border-radius: 4px;
       background: var(--code-bg);
-      border-radius: 3px;
-      color: var(--text-color);
+      color: var(--primary-color);
     }
 
-    .log-tools {
-      margin-top: 4px;
+    .log-kv {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .log-kv-label {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      color: var(--text-muted);
+    }
+
+    .log-section-label {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      color: var(--text-muted);
+      margin: 8px 0 3px;
+    }
+
+    .log-mode {
       font-size: 10px;
       color: var(--text-muted);
     }
 
-    .log-type-badge {
-      display: inline-block;
-      padding: 1px 5px;
-      border-radius: 3px;
+    .log-docs-flag {
       font-size: 10px;
       font-weight: 600;
-      background: var(--primary-color);
-      color: #ffffff;
-      text-transform: uppercase;
-      letter-spacing: 0.3px;
+      color: var(--primary-color);
     }
+
+    .log-reason {
+      padding: 8px 10px;
+      background: var(--code-bg);
+      border-radius: 8px;
+      color: var(--text-color);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .log-foot {
+      margin-top: 6px;
+      font-size: 10px;
+      font-variant-numeric: tabular-nums;
+      color: var(--text-muted);
+    }
+
+    .log-tools {
+      margin-top: 6px;
+      font-size: 10px;
+      color: var(--text-muted);
+    }
+
+    /* Hue-coded solid type badges — shared hue map with the admin panel */
+    .log-type-badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 2px 8px;
+      border-radius: 6px;
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+      color: #ffffff;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .lt-validator { background: #2563eb; }
+    .lt-condition { background: #7c3aed; }
+    .lt-pf, .lt-pf-semantic { background: #0d9488; }
+    .lt-pf-static { background: #475569; }
+    html[data-color-mode="dark"] .lt-validator { background: #3b82f6; }
+    html[data-color-mode="dark"] .lt-condition { background: #8b5cf6; }
+    html[data-color-mode="dark"] .lt-pf, html[data-color-mode="dark"] .lt-pf-semantic { background: #14b8a6; }
+    html[data-color-mode="dark"] .lt-pf-static { background: #64748b; }
 
     .log-tools-badge {
       display: inline-block;
-      padding: 1px 5px;
-      border-radius: 3px;
+      padding: 1px 6px;
+      border-radius: 4px;
       font-size: 10px;
-      font-weight: 600;
+      font-weight: 700;
+      letter-spacing: 0.3px;
       background: var(--primary-color);
       color: #ffffff;
       margin-right: 6px;
@@ -250,10 +351,10 @@ const injectStyles = () => {
     }
 
     .log-queries {
-      margin-top: 3px;
-      padding: 3px 6px;
+      margin-top: 4px;
+      padding: 6px 8px;
       background: var(--code-bg);
-      border-radius: 3px;
+      border-radius: 8px;
       font-family: SFMono-Regular, Consolas, monospace;
       font-size: 10px;
       word-break: break-all;
@@ -264,13 +365,13 @@ const injectStyles = () => {
       display: flex;
       align-items: flex-start;
       gap: 6px;
-      margin-top: 6px;
+      margin-top: 8px;
       padding: 8px 10px;
-      border-radius: 6px;
+      border-radius: 8px;
       background: var(--card-bg);
       border: 2px solid var(--primary-color);
       box-shadow: 0 4px 12px -4px rgba(37, 99, 235, 0.35);
-      font-size: 11px;
+      font-size: 12px;
       line-height: 1.5;
       color: var(--text-color);
       white-space: pre-line;
@@ -279,24 +380,45 @@ const injectStyles = () => {
     .log-rec-icon { flex-shrink: 0; font-size: 13px; }
 
     .log-trace {
-      margin-top: 6px;
+      margin-top: 8px;
     }
 
     .log-trace-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 10px;
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      background: var(--card-bg);
+      color: var(--text-secondary);
       font-size: 10px;
-      color: var(--text-muted);
+      font-weight: 600;
+      letter-spacing: 0.3px;
       cursor: pointer;
       user-select: none;
+      list-style: none;
     }
-    .log-trace-toggle:hover { color: var(--text-secondary); }
+    .log-trace-toggle::-webkit-details-marker { display: none; }
+    .log-trace-toggle::before {
+      content: "\\25B8";
+      font-size: 9px;
+      line-height: 1;
+      transition: transform 0.15s ease;
+    }
+    .log-trace[open] > .log-trace-toggle::before { transform: rotate(90deg); }
+    .log-trace-toggle:hover {
+      border-color: var(--primary-color);
+      color: var(--text-color);
+    }
 
     .log-trace-content {
-      margin-top: 4px;
-      padding: 6px 8px;
+      margin-top: 6px;
+      padding: 8px 10px;
       background: var(--code-bg);
-      border-radius: 4px;
+      border-radius: 8px;
       font-family: SFMono-Regular, Consolas, monospace;
-      font-size: 10px;
+      font-size: 11px;
       line-height: 1.6;
       max-height: 200px;
       overflow-y: auto;
@@ -310,6 +432,37 @@ const injectStyles = () => {
     .log-trace-error {
       color: var(--error-color);
       font-weight: 600;
+    }
+
+    /* Designed empty state inside the logs list */
+    .logs-empty {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+      padding: 28px 16px;
+      text-align: center;
+    }
+    .logs-empty-icon {
+      width: 36px;
+      height: 36px;
+      border-radius: 50%;
+      background: #2563eb;
+      color: #ffffff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 6px;
+    }
+    html[data-color-mode="dark"] .logs-empty-icon { background: #3b82f6; }
+    .logs-empty-title {
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--text-color);
+    }
+    .logs-empty-caption {
+      font-size: 12px;
+      color: var(--text-secondary);
     }
 
     .no-logs {
@@ -1111,7 +1264,17 @@ function App() {
               ) : logsLoadError && logs.length === 0 ? (
                 logsLoadErrorBlock
               ) : logs.length === 0 ? (
-                <div className="no-logs">No validation logs yet</div>
+                <div className="logs-empty">
+                  <div className="logs-empty-icon">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" />
+                      <rect x="8" y="2" width="8" height="4" rx="1" />
+                      <polyline points="8 14 10 14 11 11.5 13 16.5 14 14 16 14" />
+                    </svg>
+                  </div>
+                  <div className="logs-empty-title">No validation logs yet</div>
+                  <div className="logs-empty-caption">Entries appear after this rule runs on a transition.</div>
+                </div>
               ) : (
                 logs.map((log) => (
                   <div key={log.id} className="log-entry">
@@ -1122,14 +1285,24 @@ function App() {
                         {log.isValid ? "PASS" : "FAIL"}
                       </span>
                       <span className="log-issue">{log.issueKey}</span>
-                      <span className="log-time">
-                        {formatTime(log.timestamp)}
+                      <span className="log-meta">
+                        <span className="log-time">
+                          {formatTime(log.timestamp)}
+                        </span>
                       </span>
                     </div>
                     <div className="log-details">
-                      Field: <code>{log.fieldId}</code>
+                      <span className="log-kv">
+                        <span className="log-kv-label">Field</span>
+                        <code>{log.fieldId}</code>
+                      </span>
                     </div>
-                    <div className="log-reason">{log.reason}</div>
+                    {log.reason && (
+                      <>
+                        <div className="log-section-label">AI reason</div>
+                        <div className="log-reason">{log.reason}</div>
+                      </>
+                    )}
                     {log.toolMeta?.toolsUsed && (
                       <div className="log-tools">
                         <span className="log-tools-badge">JQL</span>
@@ -1319,7 +1492,17 @@ function App() {
             ) : logsLoadError && logs.length === 0 ? (
               logsLoadErrorBlock
             ) : logs.length === 0 ? (
-              <div className="no-logs">No validation logs yet</div>
+              <div className="logs-empty">
+                <div className="logs-empty-icon">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" />
+                    <rect x="8" y="2" width="8" height="4" rx="1" />
+                    <polyline points="8 14 10 14 11 11.5 13 16.5 14 14 16 14" />
+                  </svg>
+                </div>
+                <div className="logs-empty-title">No validation logs yet</div>
+                <div className="logs-empty-caption">Entries appear after this rule runs on a transition.</div>
+              </div>
             ) : (
               logs.map((log) => (
                 <div key={log.id} className="log-entry">
@@ -1330,34 +1513,55 @@ function App() {
                         : (log.isValid ? "PASS" : "FAIL")}
                     </span>
                     {log.type && log.type !== "validation" && (
-                      <span className="log-type-badge">{log.type.replace("postfunction-", "PF: ")}</span>
+                      <span className={`log-type-badge ${
+                        log.type === "postfunction-semantic" ? "lt-pf-semantic"
+                          : log.type === "postfunction-static" ? "lt-pf-static"
+                          : log.type === "condition" ? "lt-condition"
+                          : "lt-validator"
+                      }`}>{log.type.replace("postfunction-", "PF: ")}</span>
                     )}
                     <span className="log-issue">{log.issueKey}</span>
-                    <span className="log-time">{formatTime(log.timestamp)}</span>
-                    {log.executionTimeMs && (
-                      <span className="log-time">{log.executionTimeMs}ms</span>
-                    )}
+                    <span className="log-meta">
+                      {log.executionTimeMs ? (
+                        <span className="log-ms">{log.executionTimeMs}ms</span>
+                      ) : null}
+                      <span className="log-time">{formatTime(log.timestamp)}</span>
+                    </span>
                   </div>
                   {log.fieldId && log.fieldId !== "static-code" && (
                     <div className="log-details">
-                      Field: <code>{log.fieldId}</code>
-                      {log.mode && <span style={{ marginLeft: "8px", fontSize: "10px", color: "var(--text-muted)" }}>({log.mode})</span>}
-                      {log.docsUsed && <span style={{ marginLeft: "4px", fontSize: "10px", color: "var(--primary-color)" }}>+ docs</span>}
+                      <span className="log-kv">
+                        <span className="log-kv-label">Field</span>
+                        <code>{log.fieldId}</code>
+                      </span>
+                      {log.mode && <span className="log-mode">({log.mode})</span>}
+                      {log.docsUsed && <span className="log-docs-flag">+ docs</span>}
                     </div>
                   )}
                   {log.decision && (
                     <div className="log-details">
-                      Decision: <strong>{log.decision}</strong>
-                      {log.changes !== undefined && <span> | {log.changes} change{log.changes !== 1 ? "s" : ""}</span>}
-                      {log.steps && <span> | {log.steps} step{log.steps !== 1 ? "s" : ""}</span>}
+                      <span className="log-kv">
+                        <span className="log-kv-label">Decision</span>
+                        <strong>{log.decision}</strong>
+                      </span>
+                      {log.changes !== undefined && <span>{log.changes} change{log.changes !== 1 ? "s" : ""}</span>}
+                      {log.steps && <span>{log.steps} step{log.steps !== 1 ? "s" : ""}</span>}
                     </div>
                   )}
                   {log.workflowName && (
-                    <div className="log-details" style={{ fontSize: "10px", color: "var(--text-muted)" }}>
-                      Transition: {log.workflowName}{log.transitionName ? ` (${log.transitionName})` : ""}
+                    <div className="log-details">
+                      <span className="log-kv">
+                        <span className="log-kv-label">Transition</span>
+                        <span>{log.workflowName}{log.transitionName ? ` (${log.transitionName})` : ""}</span>
+                      </span>
                     </div>
                   )}
-                  <div className="log-reason">{log.reason}</div>
+                  {log.reason && (
+                    <>
+                      <div className="log-section-label">AI reason</div>
+                      <div className="log-reason">{log.reason}</div>
+                    </>
+                  )}
                   {log.toolMeta?.toolsUsed && (
                     <div className="log-tools">
                       <span className="log-tools-badge">JQL</span>
@@ -1388,7 +1592,7 @@ function App() {
                     </details>
                   )}
                   {log.aiTimeMs && (
-                    <div className="log-details" style={{ fontSize: "10px", color: "var(--text-muted)" }}>
+                    <div className="log-foot">
                       AI: {log.aiTimeMs}ms{log.tokens ? ` · ${log.tokens} tokens` : ""}{log.docCount ? ` · ${log.docCount} doc(s)` : ""}
                     </div>
                   )}

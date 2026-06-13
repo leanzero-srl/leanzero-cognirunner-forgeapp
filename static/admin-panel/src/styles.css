@@ -2072,7 +2072,190 @@ html[data-color-mode="dark"] .alert-warning {
       color: var(--success-color);
       border: 1px solid rgba(22, 163, 106, 0.2);
     }
-  
+
+
+/* ============================================================
+   Execution Logs — redesigned entries (mirror of injectStyles)
+   ============================================================ */
+.log-entry {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border-color);
+  font-size: 12px;
+}
+
+.log-entry:last-child { border-bottom: none; }
+
+.log-header {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.log-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 46px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: #ffffff;
+  flex-shrink: 0;
+}
+
+.log-status.valid { background: #16a34a; }
+.log-status.invalid { background: #dc2626; }
+.log-status.skip { background: #475569; }
+html[data-color-mode="dark"] .log-status.valid { background: #22c55e; }
+html[data-color-mode="dark"] .log-status.invalid { background: #ef4444; }
+html[data-color-mode="dark"] .log-status.skip { background: #64748b; }
+
+/* Hue-coded solid type badges — logs context only
+   (the rules table keeps its own .type-badge styling) */
+.log-type-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: #ffffff;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.lt-validator { background: #2563eb; }
+.lt-condition { background: #7c3aed; }
+.lt-pf, .lt-pf-semantic { background: #0d9488; }
+.lt-pf-static { background: #475569; }
+html[data-color-mode="dark"] .lt-validator { background: #3b82f6; }
+html[data-color-mode="dark"] .lt-condition { background: #8b5cf6; }
+html[data-color-mode="dark"] .lt-pf, html[data-color-mode="dark"] .lt-pf-semantic { background: #14b8a6; }
+html[data-color-mode="dark"] .lt-pf-static { background: #64748b; }
+
+.log-issue {
+  font-family: SFMono-Regular, Consolas, monospace;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--primary-color);
+}
+
+.log-meta {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.log-ms {
+  font-family: SFMono-Regular, Consolas, monospace;
+  font-size: 10px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--code-bg);
+  color: var(--text-secondary);
+}
+
+.log-time {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.log-details {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 16px;
+  margin: 2px 0;
+  color: var(--text-secondary);
+}
+
+.log-kv {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.log-kv-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-muted);
+}
+
+.log-section-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-muted);
+  margin: 8px 0 3px;
+}
+
+.log-reason {
+  padding: 8px 10px;
+  background: var(--code-bg);
+  border-radius: 8px;
+  color: var(--text-color);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.log-foot {
+  margin-top: 6px;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+
+.logs-list {
+  max-height: 400px;
+  overflow-y: auto;
+  border-radius: inherit;
+}
+
+/* Designed empty state for the logs card */
+.logs-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 36px 20px;
+  text-align: center;
+}
+.logs-empty-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: #2563eb;
+  color: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 6px;
+}
+html[data-color-mode="dark"] .logs-empty-icon { background: #3b82f6; }
+.logs-empty-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-color);
+}
+.logs-empty-caption {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
 
 
 /* ============================================================
@@ -2231,3 +2414,14 @@ button:active:not(:disabled):not(.is-busy) { transform: scale(0.97); }
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Rules-table type badges — solid hue-coded fills (white text), matching the
+   execution-log badge system. Mirrors injectStyles in App.js. */
+.type-validator { background: #2563eb; color: #ffffff; }
+.type-condition { background: #7c3aed; color: #ffffff; }
+.type-postfunction { background: #0d9488; color: #ffffff; }
+.type-pf-static { background: #475569; color: #ffffff; }
+html[data-color-mode="dark"] .type-validator { background: #3b82f6; }
+html[data-color-mode="dark"] .type-condition { background: #8b5cf6; }
+html[data-color-mode="dark"] .type-postfunction { background: #14b8a6; }
+html[data-color-mode="dark"] .type-pf-static { background: #64748b; }

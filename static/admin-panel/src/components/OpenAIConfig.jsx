@@ -1006,7 +1006,7 @@ export default function OpenAIConfig({ invoke }) {
                     {isLmStudio
                       ? lmStatusBody
                       : isAtlassian
-                      ? "Claude models served inside the Atlassian platform. Pick a model below and you're done."
+                      ? "Claude served inside the Atlassian platform — no key, no egress."
                       : isByok
                         ? `Connected to ${providerLabel}. You can select from available models. Remove the key to revert to the factory key.`
                         : hasKey
@@ -1014,6 +1014,13 @@ export default function OpenAIConfig({ invoke }) {
                           : `No API key configured. Provide your ${providerLabel} API key to get started.`
                     }
                   </p>
+                  {isAtlassian && (
+                    <p style={{ margin: "6px 0 0", fontSize: "12px", color: "var(--text-secondary)" }}>
+                      <strong style={{ color: "var(--primary-color)" }}>Only Claude Haiku is available</strong> on this
+                      provider right now — larger models are billed to the app vendor. Claude Sonnet is planned as part
+                      of the app's upcoming <strong>Advanced</strong> option.
+                    </p>
+                  )}
                 </div>
               </div>
             );

@@ -2580,7 +2580,8 @@ resolver.define("getOpenAIModels", async () => {
         let ids = raw
           .filter((m) => typeof m === "string" || m?.status !== "deprecated")
           .map((m) => (typeof m === "string" ? m : m?.model))
-          .filter(Boolean);
+          .filter(Boolean)
+          .filter(isForgeLlmModelAllowed); // Haiku-only policy (vendor-billed tokens)
         if (ids.length === 0) ids = [...FORGE_LLM_FALLBACK_MODELS];
         return { success: true, models: ids, isByok: true };
       } catch (e) {
@@ -2811,6 +2812,9 @@ resolver.define("saveOpenAIModel", async ({ payload, context }) => {
         return { success: false, error: "Set the LM Studio base URL before selecting a model." };
       }
     }
+    if (provider === "atlassian" && !isForgeLlmModelAllowed(model)) {
+      return { success: false, error: "Only Claude Haiku is available on Atlassian (Forge LLM) right now." };
+    }
     await storage.set(providerModelSlot(provider), model);
     _cachedModel = null; // invalidate cache
     return { success: true };
@@ -2828,9 +2832,12 @@ resolver.define("getOpenAIModelFromKVS", async () => {
     const provider = (await storage.get("COGNIRUNNER_AI_PROVIDER")) || "openai";
     const byokKey = await storage.get(providerKeySlot(provider));
     // Forge LLM: no key — saved model (or provider default) with model picker unlocked.
+    // A saved model from before the Haiku-only policy is clamped to the default so
+    // the UI never claims a model the chat adapter would refuse to bill.
     if (provider === "atlassian") {
       const savedModel = await storage.get(providerModelSlot(provider));
-      return { success: true, model: savedModel || PROVIDERS.atlassian.defaultModel, isByok: true };
+      const effective = isForgeLlmModelAllowed(savedModel) ? savedModel : PROVIDERS.atlassian.defaultModel;
+      return { success: true, model: effective, isByok: true };
     }
     // LM Studio is always BYOK semantics — auth is optional, baseUrl is the gating config.
     if (provider === "lmstudio") {
@@ -5804,11 +5811,14 @@ const PROVIDERS = {
 // Sentinel returned by getOpenAIKey() when the active provider is Forge LLM —
 // keeps every `if (!apiKey) fail` call site working without a real secret.
 const FORGE_LLM_SENTINEL = "atlassian-forge-llm";
+// POLICY: only Claude Haiku is offered on Forge LLM — Sonnet/Opus token costs
+// are billed to the vendor's Forge bill, so the larger models are reserved for
+// a future paid "Advanced" tier. Enforced in list/save/load AND at the chat
+// adapter, so a stale saved model can never bill a larger model.
+const isForgeLlmModelAllowed = (id) => /haiku/i.test(String(id || ""));
 // Documented model ids as of the June 2026 Preview — used as a fallback when list() fails.
 const FORGE_LLM_FALLBACK_MODELS = [
   "claude-haiku-4-5-20251001",
-  "claude-sonnet-4-5-20250929",
-  "claude-opus-4-6",
 ];
 
 /**
@@ -5825,6 +5835,12 @@ const FORGE_LLM_FALLBACK_MODELS = [
  * (the response body is folded into .message — there is no .context property).
  */
 const callForgeLlmChat = async ({ model, messages, tools, tool_choice, jsonMode }) => {
+  // Billing backstop for the Haiku-only policy: whatever a stale config or
+  // caller passes, never let a larger (vendor-billed) model through.
+  if (!isForgeLlmModelAllowed(model)) {
+    console.warn(`Forge LLM model "${model}" not allowed — clamping to ${PROVIDERS.atlassian.defaultModel}`);
+    model = PROVIDERS.atlassian.defaultModel;
+  }
   try {
     // Map tool_call_id → tool name (Forge LLM wants `name` on tool-result messages).
     const toolNameById = new Map();

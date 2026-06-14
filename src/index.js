@@ -238,6 +238,33 @@ const buildModelParams = () => ({});
 const MAX_JQL_RESULTS = 10;
 const AGENTIC_TIMEOUT_MS = 22000; // 22s budget within Forge's 25s validator limit
 
+// A transient AI/provider error (rate limit, server error, timeout, network) —
+// as opposed to a real "invalid" verdict. Validators fail OPEN on these so a
+// provider hiccup (e.g. 429 under a bulk transition) doesn't block legitimate
+// work; they still fail closed on a genuine isValid:false verdict.
+const isTransientAIError = (status, error = "") =>
+  status === 429 || status === 408 || (typeof status === "number" && status >= 500) ||
+  /\b(429|rate.?limit|timed?.?out|timeout|network|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|aborted|socket hang up)\b/i.test(String(error));
+
+// Observability hook: when a rule's config sets `debugTrace: true`, the
+// validator/PF mirrors its execution detail (verdict, reason, mode, agentic
+// toolMeta, tokens, decision/trace) to a REST-readable issue entity property so
+// an external test harness can assert on internals it otherwise can't see
+// (toolMeta and token usage are not surfaced to the workflow result). Strictly
+// opt-in per rule, best-effort, and never affects the verdict/transition.
+const HARNESS_DEBUG_PROP = "cogni-debug";
+const writeDebugTrace = async (issueKey, payload) => {
+  if (!issueKey) return;
+  try {
+    await api.asApp().requestJira(
+      route`/rest/api/3/issue/${issueKey}/properties/${HARNESS_DEBUG_PROP}`,
+      { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) },
+    );
+  } catch (e) {
+    console.log(`debugTrace write skipped: ${e.message}`);
+  }
+};
+
 // Post-function execution budgets. The platform hard-kills jira:workflowPostFunction
 // invocations at 25s (custom timeoutSeconds is NOT allowed for this module type —
 // forge lint rejects it; only consumers/scheduled triggers may extend). A hard kill
@@ -5919,7 +5946,21 @@ const callForgeLlmChat = async ({ model, messages, tools, tool_choice, jsonMode 
       if (tool_choice) prompt.tool_choice = tool_choice;
     }
 
-    const response = await forgeLlmChatApi(prompt);
+    // Retry transient errors (429/5xx) with bounded backoff before giving up —
+    // a hard fail then triggers the validator/PF fail-open (F9).
+    let response;
+    for (let attempt = 1; ; attempt++) {
+      try {
+        response = await forgeLlmChatApi(prompt);
+        break;
+      } catch (err) {
+        if (attempt <= 3 && isTransientAIError(err?.status, err?.message)) {
+          await new Promise((r) => setTimeout(r, Math.min(2000, 400 * 2 ** (attempt - 1))));
+          continue;
+        }
+        throw err;
+      }
+    }
 
     const choice = response?.choices?.[0] || {};
     const message = choice.message || {};
@@ -6290,11 +6331,20 @@ const callAIChat = async (opts) => {
     ? `${baseUrl}/v1/chat/completions`
     : `${baseUrl}/chat/completions`;
 
-  const response = await fetch(inferenceUrl, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(requestBody),
-  });
+  // Retry transient errors (429/5xx) honoring Retry-After before giving up;
+  // a hard fail then triggers the validator/PF fail-open (F9).
+  let response;
+  for (let attempt = 1; ; attempt++) {
+    response = await fetch(inferenceUrl, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(requestBody),
+    });
+    if (response.ok || attempt > 3 || !isTransientAIError(response.status)) break;
+    const ra = parseInt(response.headers.get("Retry-After") || "", 10);
+    const waitMs = Number.isFinite(ra) ? Math.min(5000, ra * 1000) : Math.min(2000, 400 * 2 ** (attempt - 1));
+    await new Promise((r) => setTimeout(r, waitMs));
+  }
 
   if (!response.ok) {
     const errText = await response.text().catch(() => "");
@@ -7357,6 +7407,15 @@ Respond with JSON only.`;
 
     if (!result.ok) {
       console.error("AI validation error:", result.status, result.error);
+      if (isTransientAIError(result.status, result.error)) {
+        // Transient provider error → fail OPEN so a rate limit / outage doesn't
+        // block legitimate transitions (especially under bulk operations).
+        return {
+          isValid: true,
+          reason: `AI service temporarily unavailable (${result.status}) — transition allowed (fail-open).`,
+          transientError: true,
+        };
+      }
       return {
         isValid: false,
         reason: `AI service error: ${result.status}`,
@@ -7854,6 +7913,9 @@ RESPONSE FORMAT:
 
       if (!aiResult.ok) {
         console.error("AI error (agentic):", aiResult.status, aiResult.error);
+        if (isTransientAIError(aiResult.status, aiResult.error)) {
+          return { isValid: true, reason: `AI service temporarily unavailable (${aiResult.status}) — transition allowed (fail-open).`, transientError: true, toolMeta };
+        }
         return { isValid: false, reason: `AI service error: ${aiResult.status}`, toolMeta };
       }
 
@@ -8916,7 +8978,11 @@ export const validate = async (args) => {
   if (contextDocsText) {
     logEntry.docsUsed = true;
   }
+  if (validationResult.transientError) logEntry.transientError = true;
   await storeLog(logEntry);
+  if (configuration?.debugTrace) {
+    await writeDebugTrace(issue.key, { ...logEntry, at: new Date().toISOString() });
+  }
 
   if (validationResult.isValid) {
     return {
@@ -9611,10 +9677,20 @@ const findRelatedIssues = async ({ issueKey, config, deadline, trace }) => {
   ]);
   if (!apiKey) return { ok: false, reason: "No API key configured" };
 
-  // 2) Deterministic candidate search (text match on the summary, project-scoped).
+  // 2) Deterministic candidate search. Build the text clause from salient TERMS
+  // (OR'd), not the whole summary as one phrase — a phrase match misses
+  // differently-worded duplicates ("Login button 500 on Safari" vs "Safari sign-in
+  // returns 500"). The AI step below still filters to genuinely related issues.
   const escaped = summary.replace(/["\\]/g, " ").trim().slice(0, 150);
   if (!escaped) return { ok: false, reason: "Parent issue has no summary to search with" };
-  const jql = `${projectKey ? `project = ${projectKey} AND ` : ""}key != ${issueKey} AND text ~ "${escaped}" ORDER BY updated DESC`;
+  const STOP = new Set(["the", "a", "an", "and", "or", "of", "to", "in", "on", "for", "with", "is", "are", "was", "were", "be", "by", "at", "it", "this", "that", "when", "from", "as", "not", "no", "but", "has", "have"]);
+  const terms = [...new Set(
+    summary.toLowerCase().replace(/[^a-z0-9\s]/g, " ").split(/\s+/).filter((w) => w.length >= 4 && !STOP.has(w))
+  )].slice(0, 6).map((t) => t.replace(/["\\]/g, ""));
+  const textClause = terms.length
+    ? "(" + terms.map((t) => `text ~ "${t}"`).join(" OR ") + ")"
+    : `text ~ "${escaped}"`;
+  const jql = `${projectKey ? `project = ${projectKey} AND ` : ""}key != ${issueKey} AND ${textClause} ORDER BY updated DESC`;
   trace.push(`Searching candidates: ${jql.slice(0, 140)}`);
   let candidates = [];
   try {
@@ -10440,6 +10516,13 @@ export const dispatchPostFunction = async (issueKey, config, extensionKey, pfDea
     }
     return logEntry;
   };
+  // Persist the log AND (opt-in) mirror it to a REST-readable issue property so a
+  // test harness can assert on PF decision/trace/tokens. See writeDebugTrace.
+  const logAndTrace = async (logEntry) => {
+    const entry = withQueueMeta(logEntry);
+    await storeLog(entry);
+    if (config?.debugTrace) await writeDebugTrace(issue.key, { ...entry, at: new Date().toISOString() });
+  };
   try {
     // Resolve the post-function type. Prefer config.type (set by recent onConfigure
     // callbacks) but fall back to the Forge module key for OLD configs that pre-date
@@ -10499,7 +10582,7 @@ export const dispatchPostFunction = async (issueKey, config, extensionKey, pfDea
       }
       if (result.trace) logEntry.trace = result.trace;
       if (result.recommendation) logEntry.recommendation = result.recommendation;
-      await storeLog(withQueueMeta(logEntry));
+      await logAndTrace(logEntry);
     } else if (type.includes("static")) {
       const result = await executeStaticPostFunction(issue.key, config, pfDeadline);
       console.log("Static PF result:", JSON.stringify(result));
@@ -10531,7 +10614,7 @@ export const dispatchPostFunction = async (issueKey, config, extensionKey, pfDea
       if (result.logs) logEntry.trace = result.logs;
       if (result.recommendation) logEntry.recommendation = result.recommendation;
       if (result.stepResults) logEntry.stepResults = result.stepResults;
-      await storeLog(withQueueMeta(logEntry));
+      await logAndTrace(logEntry);
       // OPT-IN runtime auto-capture: distill a reusable memory from a failed
       // step (default OFF — settings.autoCapture). A repeat of a known failure
       // signature reinforces the existing memory with NO AI call; a new
@@ -10596,7 +10679,7 @@ export const dispatchPostFunction = async (issueKey, config, extensionKey, pfDea
       if (result.attachment) logEntry.attachment = result.attachment;
       if (result.trace) logEntry.trace = result.trace;
       if (result.recommendation) logEntry.recommendation = result.recommendation;
-      await storeLog(withQueueMeta(logEntry));
+      await logAndTrace(logEntry);
     } else if (type.includes("research")) {
       const result = await executeResearchPostFunction(issue.key, config, pfDeadline);
       console.log("Research PF result:", JSON.stringify(result));
@@ -10616,7 +10699,7 @@ export const dispatchPostFunction = async (issueKey, config, extensionKey, pfDea
       };
       if (result.docId) logEntry.docId = result.docId;
       if (result.trace) logEntry.trace = result.trace;
-      await storeLog(withQueueMeta(logEntry));
+      await logAndTrace(logEntry);
     } else if (type.includes("comment")) {
       const result = await executeCommentPostFunction(issue.key, config, pfDeadline);
       console.log("Comment PF result:", JSON.stringify(result));
@@ -10635,7 +10718,7 @@ export const dispatchPostFunction = async (issueKey, config, extensionKey, pfDea
         ruleWorkflow: config.workflow || null,
       };
       if (result.trace) logEntry.trace = result.trace;
-      await storeLog(withQueueMeta(logEntry));
+      await logAndTrace(logEntry);
     } else if (type.includes("subtask")) {
       const result = await executeSubtaskPostFunction(issue.key, config, pfDeadline);
       console.log("Subtask PF result:", JSON.stringify(result));
@@ -10656,7 +10739,7 @@ export const dispatchPostFunction = async (issueKey, config, extensionKey, pfDea
       if (result.subtask) logEntry.subtask = result.subtask;
       if (result.trace) logEntry.trace = result.trace;
       if (result.recommendation) logEntry.recommendation = result.recommendation;
-      await storeLog(withQueueMeta(logEntry));
+      await logAndTrace(logEntry);
     } else if (type.includes("link")) {
       const result = await executeLinkIssuesPostFunction(issueKey, config, pfDeadline);
       console.log("Link PF result:", JSON.stringify(result));
@@ -10678,7 +10761,7 @@ export const dispatchPostFunction = async (issueKey, config, extensionKey, pfDea
       if (result.linked) logEntry.linked = result.linked;
       if (result.trace) logEntry.trace = result.trace;
       if (result.recommendation) logEntry.recommendation = result.recommendation;
-      await storeLog(withQueueMeta(logEntry));
+      await logAndTrace(logEntry);
     } else {
       // Unknown / missing type — write a diagnostic log entry instead of silently
       // returning. Most common cause: a PF saved by an old build whose onConfigure

@@ -1,15 +1,15 @@
 # CogniRunner — At-Scale Runtime Test Report
 
 **Instance:** wolfaenpak.atlassian.net · **Project:** COGTEST (10014) · **Provider:** Forge LLM (Claude Haiku, confirmed via logs)
-**Generated:** 2026-06-14T05:28:26.820Z
+**Generated:** 2026-06-14T06:01:01.344Z
 
-Black-box test of CogniRunner's runtime surface (validators, conditions, semantic & static post-functions) by attaching 27 rules via the workflow REST API onto self-loop transitions and firing 168 (rule × issue) cases against a fabricated 475-issue adversarial corpus. Everything was driven through the real Jira workflow engine — not the app's test resolvers.
+Black-box test of CogniRunner's runtime surface (validators, conditions, semantic & static post-functions) by attaching 40 rules via the workflow REST API onto self-loop transitions and firing 183 (rule × issue) cases against a fabricated 491-issue adversarial corpus. Everything was driven through the real Jira workflow engine — not the app's test resolvers.
 
 > This run was taken AFTER the F1/F2/F5/F6 fixes were applied and deployed. The findings below are marked FIXED+VERIFIED or OPEN accordingly. See FINDINGS.md.
 
 ## Headline
 
-- **Overall: 156/168 cases behaved as expected (92.9%).** Every miss is explained: injection-*embedded* (real-task nuance) and the condition REST-bypass (F3). No unexplained failures.
+- **Overall: 171/183 cases behaved as expected (93.4%).** Every miss is explained: injection-*embedded* (real-task nuance) and the condition REST-bypass (F3). No unexplained failures.
 - **🟢 Prompt-injection resistance: strong.** Pure injection payloads blocked 100.0% (naive) / 100.0% (hardened). Validator inputs are now fence+defang wrapped (F5 fix).
 - **🟢 Agentic (JQL tool-calling) now works on Forge LLM (F1 FIXED+VERIFIED)** — multi-round search returns real verdicts (duplicate detection blocks, unique passes, release-gate blocks→allows). Root cause was tool-call `arguments` sent as an object; Forge LLM requires a string.
 - **🟢 Static-PF sandbox is now isolated (F2 FIXED+VERIFIED)** — `process.env`/`fetch`/`globalThis` are shadowed; the probe reports `reach=none`.
@@ -21,14 +21,16 @@ Black-box test of CogniRunner's runtime surface (validators, conditions, semanti
 
 | Study | Correct | Latency p50 / p90 / max (ms) |
 |---|---|---|
-| injection | 105/116 (90.5%) | 1853 / 2210 / 2832 |
-| robustness | 25/25 (100.0%) | 1850 / 2750 / 2976 |
-| condition | 1/2 (50.0%) | 189 / 189 / 189 |
-| agentic | 4/4 (100.0%) | 6555 / 6555 / 6555 |
-| semantic | 7/7 (100.0%) | 18615 / 18745 / 18745 |
-| static | 6/6 (100.0%) | 3806 / 18601 / 18601 |
-| policy | 3/3 (100.0%) | 2226 / 2343 / 2343 |
-| pf-flavors | 5/5 (100.0%) | 6904 / 18678 / 18678 |
+| injection | 105/116 (90.5%) | 2082 / 2512 / 4548 |
+| robustness | 25/25 (100.0%) | 2035 / 2882 / 3069 |
+| condition | 1/2 (50.0%) | 236 / 236 / 236 |
+| agentic | 4/4 (100.0%) | 6046 / 6046 / 6046 |
+| semantic | 8/8 (100.0%) | 18538 / 18789 / 18789 |
+| static | 6/6 (100.0%) | 3861 / 18844 / 18844 |
+| policy | 3/3 (100.0%) | 1935 / 2350 / 2350 |
+| pf-flavors | 5/5 (100.0%) | 6862 / 18577 / 18577 |
+| action | 10/10 (100.0%) | 3642 / 3710 / 3710 |
+| fields | 4/4 (100.0%) | 1976 / 2237 / 2237 |
 
 ## Prompt-injection study (the headline)
 
@@ -50,6 +52,13 @@ Two validators with identical intent ("is this a real software task?") but diffe
 | V-agentic-gate GATE-STORY | open-bug | BLOCKED | no |
 | V-agentic-gate GATE-STORY | bug-closed | ALLOWED | no |
 
+**Runtime observability (NEW):** with `debugTrace` enabled, validators mirror their execution detail to the `cogni-debug` issue property, so the harness can now read agentic `toolMeta` at runtime via REST — previously impossible black-box:
+
+| Case | Tool rounds | JQL queries | Results | Verdict |
+|---|---|---|---|---|
+| V-agentic-dup DUP-NEW | 1 | 3 | 8 | BLOCKED |
+| V-agentic-dup REL-NEW | 1 | 3 | 3 | ALLOWED |
+
 Post-fix, the agentic loop completes multi-round JQL searches and returns real verdicts (duplicate detection blocks the newest dup; a unique issue passes after a 2-round search; the release gate blocks while a labelled bug is open and allows once it is Done). Pre-fix every tool-result round 400'd (`arguments` sent as an object; Forge LLM requires a string). See FINDINGS.md (F1).
 
 ## Bulk-transition stress (60 issues)
@@ -68,7 +77,7 @@ Validators block synchronously on the AI call (higher latency); post-functions r
 
 | Rule | Expected | Actual | Correct | Detail |
 |---|---|---|---|---|
-| S1-text | MUTATED | MUTATED | ✓ | value="Intermittent 500 errors during checkout with saved cards affect |
+| S1-text | MUTATED | MUTATED | ✓ | value="Intermittent 500 errors during checkout with saved cards after  |
 | S2-select | MUTATED | MUTATED | ✓ | option=High |
 | S3-badoption | SAFE | SAFE | ✓ | option=High |
 | S4-number | MUTATED | MUTATED | ✓ | number=8 |
@@ -81,6 +90,17 @@ Validators block synchronously on the AI call (higher latency); post-functions r
 | T4-jqlcap | MUTATED | MUTATED | ✓ | value=jql=20 |
 | T5-asynchang | MUTATED | MUTATED | ✓ | labels=cogni-hang,cogtest-harness,cogtest-static,ctid-STAT-T5 |
 | T6-updatefield | MUTATED | MUTATED | ✓ | value="static-ok" |
+| A-number | MUTATED | MUTATED | ✓ | number=42 |
+| A-date | MUTATED | MUTATED | ✓ | value="2026-03-15" |
+| A-select | MUTATED | MUTATED | ✓ | option=Security |
+| A-labels | MUTATED | MUTATED | ✓ | labels=cogni-action,cogtest-action,cogtest-harness,ctid-ACT-labels |
+| A-user | MUTATED | MUTATED | ✓ | user=712020:937bc860-eec2-4294-a65d-8e0fe7c45086 |
+| A-readcompute | MUTATED | MUTATED | ✓ | number=281 |
+| A-conditional | MUTATED | MUTATED | ✓ | option=High |
+| A-multistep | MUTATED | MUTATED | ✓ | value="len=5842" |
+| A-jqlwrite | MUTATED | MUTATED | ✓ | value="total=20" |
+| A-transition | MUTATED | MUTATED | ✓ | value="transitioned COGTEST-494" |
+| S8-date | MUTATED | MUTATED | ✓ | value="2026-06-28" |
 
 Sandbox isolation probe (T3-escape) wrote: `none`. See FINDINGS.md (F2).
 
@@ -114,6 +134,19 @@ Sandbox isolation probe (T3-escape) wrote: `none`. See FINDINGS.md (F2).
 | P-gendoc | generate-doc | pf-flavors | 1/1 |  |
 | P-link | link | pf-flavors | 1/1 |  |
 | P-research | research | pf-flavors | 1/1 |  |
+| A-number | static | action | 1/1 |  |
+| A-date | static | action | 1/1 |  |
+| A-select | static | action | 1/1 |  |
+| A-labels | static | action | 1/1 |  |
+| A-user | static | action | 1/1 |  |
+| A-readcompute | static | action | 1/1 |  |
+| A-conditional | static | action | 1/1 |  |
+| A-multistep | static | action | 1/1 |  |
+| A-jqlwrite | static | action | 1/1 |  |
+| A-transition | static | action | 1/1 |  |
+| V-number | validator | fields | 2/2 |  |
+| V-labels | validator | fields | 2/2 |  |
+| S8-date | semantic | semantic | 1/1 |  |
 | V-agentic-gate | validator | agentic | 2/2 |  |
 
 ## Method & caveats
@@ -123,6 +156,6 @@ Sandbox isolation probe (T3-escape) wrote: `none`. See FINDINGS.md (F2).
 - Post-functions asserted by re-reading the issue (poll up to 45s) since PFs may run async.
 - **Conditions could not be asserted black-box** (not evaluated on the REST path — itself finding F3).
 - **Token usage is not observable black-box** (only latency); the runtime validator never surfaces `toolMeta` outside logs.
-- Corpus is parameterizable via `COGTEST_ISSUE_COUNT` (this run: 475 issues).
+- Corpus is parameterizable via `COGTEST_ISSUE_COUNT` (this run: 491 issues).
 
 See **FINDINGS.md** for severity-ranked findings with reproduction and proposed code-level fixes.

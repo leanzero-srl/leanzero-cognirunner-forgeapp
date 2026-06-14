@@ -104,6 +104,16 @@ W(`| Case | Phase | Outcome | AI error? |`);
 W(`|---|---|---|---|`);
 for (const r of agentic) W(`| ${r.ruleKey} ${r.issueId} | ${r.phase || "-"} | ${r.actual} | ${r.aiError ? "yes" : "no"} |`);
 W();
+// Runtime observability: toolMeta captured from the cogni-debug issue property
+const agToolMeta = agentic.filter((r) => r.toolMeta);
+if (agToolMeta.length) {
+  W(`**Runtime observability (NEW):** with \`debugTrace\` enabled, validators mirror their execution detail to the \`cogni-debug\` issue property, so the harness can now read agentic \`toolMeta\` at runtime via REST — previously impossible black-box:`);
+  W();
+  W(`| Case | Tool rounds | JQL queries | Results | Verdict |`);
+  W(`|---|---|---|---|---|`);
+  for (const r of agToolMeta) W(`| ${r.ruleKey} ${r.issueId} | ${r.toolMeta.toolRounds} | ${(r.toolMeta.queries || []).length} | ${r.toolMeta.totalResults} | ${r.actual} |`);
+  W();
+}
 W(`Post-fix, the agentic loop completes multi-round JQL searches and returns real verdicts (duplicate detection blocks the newest dup; a unique issue passes after a 2-round search; the release gate blocks while a labelled bug is open and allows once it is Done). Pre-fix every tool-result round 400'd (\`arguments\` sent as an object; Forge LLM requires a string). See FINDINGS.md (F1).`);
 W();
 // Bulk section

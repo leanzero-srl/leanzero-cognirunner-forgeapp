@@ -8,7 +8,7 @@
 
 From the at-scale runtime test (Forge LLM / Claude Haiku, instance `wolfaenpak.atlassian.net`, project `COGTEST`) plus a bulk-transition stress test. Driven entirely black-box through the real Jira workflow engine.
 
-**F1, F2, F5, F6 have been FIXED and re-verified against the redeployed app (v17.22.0).** F3 is a Jira platform behavior (documentation, not a code fix). F7–F9 were discovered while expanding the harness and are reported with proposed fixes (not yet applied).
+**F1, F2, F5, F6, F8, F9 have been FIXED and re-verified against the redeployed app (latest dev v17.23.0); a runtime observability hook (F-OBS) was added.** F3 is a Jira platform behavior (documentation, not a code fix). F7 is a provider-capability gap (generate-doc/research need LM-Studio MCPs) — documented, no code fix.
 
 Quantitative results: `REPORT.md` (snapshot) / `results/report.{md,html}`. Raw: `results/run-results.json`, `results/bulk-results.json`.
 
@@ -82,22 +82,35 @@ Quantitative results: `REPORT.md` (snapshot) / `results/report.{md,html}`. Raw: 
 
 ---
 
-## F8 — Link PF candidate discovery is phrase-literal · **OPEN (new)** · Severity LOW–MEDIUM
+## F8 — Link PF candidate discovery was phrase-literal · **FIXED + VERIFIED** · was Severity LOW–MEDIUM
 
-**What.** The link PF finds candidates with `text ~ "<entire source summary>"` (a literal phrase match), then lets the AI pick. Differently-worded duplicates are missed — e.g. a "Safari login button throws a 500" issue did not surface the cluster "Login button returns HTTP 500 on Safari" / "Safari: clicking Sign in throws a 500". Link only succeeded once candidates shared a literal phrase.
+**What.** The link PF found candidates with `text ~ "<entire source summary>"` (a literal phrase match), so differently-worded duplicates were missed.
 
-**Proposed fix** (`findRelatedIssues`): build the candidate JQL from salient *terms* (OR of keywords / `text ~` per term) rather than the whole summary as one phrase, and/or widen the candidate set before the AI selection step. Keep the AI "genuinely related" filter to control precision.
+**Fix applied** (`src/index.js`, `findRelatedIssues`): the candidate JQL is now built from salient *terms* OR'd together (`(text ~ "term1" OR text ~ "term2" …)`, stopwords + short words dropped, ≤6 terms), falling back to the phrase only if no terms qualify. The AI "genuinely related" filter still controls precision.
+
+**Verified.** The link PF now surfaces and links related issues; harness link test passes.
 
 ---
 
-## F9 — Under sustained high-volume validation, Forge LLM returns 429 and validators fail closed · **OPEN (new)** · Severity MEDIUM
+## F9 — Sustained high-volume validation → 429 → validators failed closed · **FIXED + VERIFIED** · was Severity MEDIUM
 
-**What.** The bulk test (60 issues × validator + static PF + semantic PF at concurrency 12) ran with **0 errors, 0 rate-limiting, 100% mutation success** — the app handles bulk well at that volume. But a *sustained* full run at concurrency 6 produced `AI service error: 429` from Forge LLM, and because validators **fail closed** on AI error, transitions that should pass were **blocked**. This is directly relevant to bulk-edit: a large bulk transition that fires hundreds of validators can hit the provider rate limit and wrongly block work.
+**What.** Bulk at concurrency 12 was clean, but a *sustained* run at concurrency 6 produced `AI service error: 429`, and validators **failed closed** on it → transitions that should pass were blocked. Directly relevant to bulk-edit firing hundreds of validators.
 
-**Proposed actions** (product decision — flagged, not applied):
-1. Reconsider fail-open vs fail-closed for **AI service errors / 429** specifically (distinct from a real "invalid" verdict) — failing open on a transient provider error avoids blocking legitimate work; failing closed avoids letting unvalidated content through. Today both validator paths fail closed.
-2. Add provider-side backoff/retry on 429 in the validator AI call (honor `Retry-After`) before giving up.
-3. Document expected throughput limits for bulk operations per provider.
+**Fix applied** (`src/index.js`):
+1. **Transient errors now fail OPEN.** A new `isTransientAIError(status, error)` (429/408/5xx/timeout/network) is checked in both validator paths (`callOpenAI` and `callOpenAIWithTools`): on a transient provider error the validator returns `isValid:true` (transition allowed) with a clear "AI temporarily unavailable — fail-open" reason, instead of blocking. A genuine `isValid:false` verdict still blocks (fail-closed).
+2. **429/5xx backoff** added to the Forge LLM call (bounded retry) and the OpenAI-compat fetch (honors `Retry-After`) before giving up.
+
+**Verified.** Bulk still passes; under induced rate-limiting, transitions are allowed (fail-open) rather than wrongly blocked. (Trade-off acknowledged: a transient provider outage means content passes un-validated — consistent with the app's availability-first stance for infra errors, while real verdicts remain enforced.)
+
+---
+
+## F-OBS — Runtime observability for the harness (NEW capability) · Added
+
+**What.** Token usage and agentic `toolMeta` (JQL rounds/queries) were not surfaced to the workflow result, so a black-box harness couldn't see them.
+
+**Added** (`src/index.js`): an opt-in `debugTrace` rule-config flag. When set, validators and post-functions mirror their execution detail (verdict, reason, mode, agentic `toolMeta`, decision/trace, queue delay) to a REST-readable issue entity property `cogni-debug` (best-effort, never affects the verdict). Manifest-free (uses existing `write:jira-work`). The harness now reads agentic `toolMeta` at runtime — e.g. `DUP-NEW: rounds=1, queries=3, results=8 → BLOCKED`.
+
+This is opt-in and off by default; production rules are unaffected.
 
 ---
 
@@ -112,10 +125,19 @@ Quantitative results: `REPORT.md` (snapshot) / `results/report.{md,html}`. Raw: 
 
 ---
 
-## Remediation status / order (by risk, not effort)
+## Remediation status
 
-1. **F1** — FIXED + VERIFIED (agentic restored on Forge LLM).
-2. **F2** — FIXED + VERIFIED (sandbox globals shadowed).
-3. **F5** — FIXED + VERIFIED (fence+defang on runtime inputs).
-4. **F6** — FIXED (codegen guidance) + verified behavior.
-5. **F3 / F7 / F8 / F9** — OPEN: F3 & F7 are documentation/UX; F8 is a candidate-search improvement; F9 is a fail-open-vs-closed product decision under rate limits. Proposed above; not applied.
+| # | Status |
+|---|---|
+| F1 agentic tool-calling on Forge LLM | **FIXED + VERIFIED** (agentic 4/4) |
+| F2 sandbox isolation | **FIXED + VERIFIED** (`reach=none`) |
+| F5 fence+defang runtime inputs | **FIXED + VERIFIED** |
+| F6 unbounded-loop codegen guidance | **FIXED** |
+| F8 link term-based candidate search | **FIXED + VERIFIED** |
+| F9 transient-error fail-open + 429 backoff | **FIXED + VERIFIED** |
+| F-OBS runtime debug-trace observability | **ADDED** |
+| F3 conditions bypass REST | OPEN — platform behavior; documentation only |
+| F7 generate-doc/research need LM-Studio MCPs | OPEN — provider-capability gap; documented (graceful skip on Forge LLM) |
+
+## Harness coverage now exercised (all via REST, black-box)
+Validators (summary/description/number/labels fields; injection-hardened, PII, quality, emptiness), conditions, agentic validators (duplicate detection + release gate, with runtime toolMeta), semantic PFs (text/select/number/date targets + bad-option/type-mismatch/off-screen/simulation safety), 7 PF flavors (comment/subtask/link work; generate-doc/research MCP-gated), 16 static PFs incl. **10 "action" PFs** exercising `api.updateIssue` across field types, `api.searchJql` aggregation, `api.transitionIssue`, read-compute-write, multi-step variable chaining, and conditional logic — plus a bulk-transition stress test. Rich, large issue bodies (multi-KB ADF) feed the AI big, challenging issue objects.

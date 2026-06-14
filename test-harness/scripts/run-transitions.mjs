@@ -10,7 +10,7 @@
 // from errorMessages). Conditions -> visibility via getTransitions. PFs -> fire
 // then poll the issue for the expected mutation. Special two-phase agentic gate.
 
-import { getIssue, getTransitions, doTransition, mapLimit, sleep } from "../lib/jira.mjs";
+import { get, getIssue, getTransitions, doTransition, mapLimit, sleep } from "../lib/jira.mjs";
 import { buildRules } from "../fixtures/rules.mjs";
 import { loadState, writeResult } from "../lib/state.mjs";
 
@@ -36,6 +36,17 @@ function pfFields(state) {
   return ["labels", "updated", "comment", "subtasks", "issuelinks", "attachment", ...ids].join(",");
 }
 
+// Read the opt-in cogni-debug issue property (set by debugTrace) for runtime
+// internals the workflow result can't surface — esp. agentic toolMeta + tokens.
+async function readDebugTrace(key) {
+  try {
+    const r = await get(`/rest/api/3/issue/${key}/properties/cogni-debug`);
+    return r?.value || null;
+  } catch {
+    return null;
+  }
+}
+
 async function runValidator(rule, tid, issue) {
   const t0 = Date.now();
   const res = await doTransition(issue.key, tid);
@@ -45,7 +56,14 @@ async function runValidator(rule, tid, issue) {
   const expected = rule.expect(issue);
   const reason = blocked ? parseReason(res.text) : "";
   const aiError = /ai\s*(service\s*)?error|service error|timed out|timeout/i.test(reason);
-  return { kind: "validator", expected, actual, correct: actual === expected, aiError, http: res.status, reason, latencyMs };
+  const out = { kind: "validator", expected, actual, correct: actual === expected, aiError, http: res.status, reason, latencyMs };
+  // Agentic observability: pull toolMeta from the debug property if enabled.
+  if (rule.config?.enableTools) {
+    const trace = await readDebugTrace(issue.key);
+    if (trace?.toolMeta) out.toolMeta = trace.toolMeta;
+    if (trace && !out.reason) out.reason = String(trace.reason || "").slice(0, 200);
+  }
+  return out;
 }
 
 async function runCondition(rule, tid, issue) {

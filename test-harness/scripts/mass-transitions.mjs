@@ -53,9 +53,10 @@ async function main() {
   if (!s.workflowName) throw new Error("Run setup first.");
   await attachLifecyclePf(s.workflowName);
 
-  // ALL issues in the project (drain the whole backlog).
-  console.log(`Fetching all issues in ${s.projectKey}...`);
-  const all = await searchJql(`project = ${s.projectKey} ORDER BY created ASC`, ["status"], 100);
+  // Issues to march (MASS_JQL scopes the wave; default = whole project).
+  const jql = process.env.MASS_JQL || `project = ${s.projectKey} ORDER BY created ASC`;
+  console.log(`Fetching issues: ${jql}`);
+  const all = await searchJql(jql, ["status"], 100);
   let keys = all.map((i) => i.key);
   if (COUNT > 0) keys = keys.slice(0, COUNT);
   console.log(`Marching ${keys.length} issues forward (${TARGET_MODE}) at concurrency ${CONCURRENCY}.`);

@@ -26,7 +26,8 @@
     "throttle": "node scripts/throttle-probe.mjs",
     "agile-setup": "node scripts/agile-setup.mjs",
     "agile": "node scripts/agile-test.mjs",
-    "pack": "node scripts/pack-transitions.mjs"
+    "pack": "node scripts/pack-transitions.mjs",
+    "seed-bulk": "node scripts/seed-bulk.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.48.0"

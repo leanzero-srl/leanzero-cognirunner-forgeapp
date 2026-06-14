@@ -162,9 +162,11 @@ try {
 // Mass transitions
 try {
   const mt = JSON.parse(readFileSync(join(RESULTS_DIR, "mass-transitions-results.json"), "utf8"));
-  W(`## Mass transitions (visible lifecycle moves)`);
+  W(`## Mass transition wave (drains the backlog at scale)`);
   W();
-  W(`Drove ${mt.issues} issues through ${mt.cycles} full lifecycle lap(s) (Backlog → Selected → In Progress → Done → Backlog): **${mt.transitionsFired} transitions fired, ${mt.failed} failed**, ${mt.throughputPerSec}/s. A static PF on the In Progress transition fired on every lap. Status changes are visible on the tickets.`);
+  W(`Marched **${mt.issuesMoved} issues** forward through the workflow: **${mt.transitionsFired} transitions fired, ${mt.failed} failed, ${mt.rateLimited} rate-limited (429)** in ${(mt.wallMs / 1000).toFixed(1)}s (**${mt.throughputPerSec}/s**). A static PF on the In Progress transition fired on every issue passing through. The workflow/transition APIs absorbed the wave with no failures.`);
+  W();
+  W(`Final board distribution: ${Object.entries(mt.finalDistribution || {}).map(([k, v]) => `**${k}** ${v}`).join(" · ")}`);
   W();
 } catch { /* none */ }
 

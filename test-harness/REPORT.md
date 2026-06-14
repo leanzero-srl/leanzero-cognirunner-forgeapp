@@ -1,7 +1,7 @@
 # CogniRunner — At-Scale Runtime Test Report
 
 **Instance:** wolfaenpak.atlassian.net · **Project:** COGTEST (10014) · **Provider:** Forge LLM (Claude Haiku, confirmed via logs)
-**Generated:** 2026-06-14T08:54:38.382Z
+**Generated:** 2026-06-14T09:00:33.195Z
 
 Black-box test of CogniRunner's runtime surface (validators, conditions, semantic & static post-functions) by attaching 41 rules via the workflow REST API onto self-loop transitions and firing 188 (rule × issue) cases against a fabricated 491-issue adversarial corpus. Everything was driven through the real Jira workflow engine — not the app's test resolvers.
 
@@ -133,9 +133,11 @@ Every standard custom field type, exercised end-to-end through the workflow engi
 | multiversion | ✓ | ✓ | v1.0-cogtest |
 | project | ✓ | ✓ | CogniRunner Test Harness (COGTEST) |
 
-## Mass transitions (visible lifecycle moves)
+## Mass transition wave (drains the backlog at scale)
 
-Drove 40 issues through 2 full lifecycle lap(s) (Backlog → Selected → In Progress → Done → Backlog): **320 transitions fired, 0 failed**, 12.72/s. A static PF on the In Progress transition fired on every lap. Status changes are visible on the tickets.
+Marched **601 issues** forward through the workflow: **1381 transitions fired, 0 failed, 0 rate-limited (429)** in 43.5s (**31.73/s**). A static PF on the In Progress transition fired on every issue passing through. The workflow/transition APIs absorbed the wave with no failures.
+
+Final board distribution: **Selected for Development** 121 · **Done** 300 · **In Progress** 180
 
 ## Exotic sandbox capabilities (added to the app)
 

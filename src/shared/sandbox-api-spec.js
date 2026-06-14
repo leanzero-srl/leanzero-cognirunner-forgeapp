@@ -371,6 +371,7 @@ export const SANDBOX_RULES = [
   "Use `return` to pass results to the next step in the chain.",
   "Runtime: Node.js 22 (Forge). No browser APIs, no `require`, no file I/O.",
   "Post-functions run AFTER transition succeeds. Errors don't block the workflow.",
+  "Never write unbounded loops (`while(true)`, `for(;;)`). A synchronous infinite loop cannot be interrupted, hits the function timeout, and may be retried — always give every loop a clear exit condition and bound its iterations.",
   "Never hardcode issue keys — use `api.context.issueKey` for the current issue.",
   "For description/comment fields, always use ADF format (never plain strings).",
   "When searching by text, escape quotes in the search string.",

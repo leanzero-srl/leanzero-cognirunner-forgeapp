@@ -14,7 +14,8 @@ import { getIssue, getTransitions, doTransition, mapLimit, sleep } from "../lib/
 import { buildRules } from "../fixtures/rules.mjs";
 import { loadState, writeResult } from "../lib/state.mjs";
 
-const CONCURRENCY = 3;
+const CONCURRENCY = parseInt(process.env.RUN_CONCURRENCY || "3", 10);
+const MAX_PER_CLASS = parseInt(process.env.RUN_MAX_PER_CLASS || "0", 10); // 0 = unlimited
 const POLL_MS = 3000;
 const MUTATE_TIMEOUT = 45000;
 const SKIP_WAIT = 18000;
@@ -32,7 +33,7 @@ function parseReason(text) {
 
 function pfFields(state) {
   const ids = Object.values(state.customFields).map((f) => f.id);
-  return ["labels", "updated", ...ids].join(",");
+  return ["labels", "updated", "comment", "subtasks", "issuelinks", "attachment", ...ids].join(",");
 }
 
 async function runValidator(rule, tid, issue) {
@@ -110,6 +111,13 @@ async function twoPhaseGate(rule, tid, state) {
   const bug4 = Object.entries(state.issues).find(([id]) => id === "GATE-BUG-4")?.[1];
   if (!story) return [];
   const out = [];
+  // Ensure GATE-BUG-4 is OPEN before phase 1 (earlier runs may have closed it),
+  // so the block→allow transition is actually exercised.
+  if (bug4) {
+    const tr0 = await getTransitions(bug4.key);
+    const reopen = (tr0.transitions || []).find((t) => /backlog|to do|open|in progress/i.test(t.name));
+    if (reopen) { await doTransition(bug4.key, reopen.id); await sleep(4000); }
+  }
   const p1 = await doTransition(story.key, tid);
   out.push({ ruleKey: rule.key, ruleName: rule.name, type: "validator", study: "agentic", issueId: "GATE-STORY", issueKey: story.key, cls: "agentic-gate", kind: "validator", phase: "open-bug", expected: "BLOCKED", actual: p1.status >= 400 ? "BLOCKED" : "ALLOWED", correct: p1.status >= 400, http: p1.status, reason: p1.status >= 400 ? parseReason(p1.text) : "" });
 
@@ -145,7 +153,9 @@ async function main() {
     if (rule.twoPhaseGate) continue; // handled separately
     const classes = rule.appliesTo || [];
     for (const cls of classes) {
-      for (const issue of byCls[cls] || []) {
+      let pool = byCls[cls] || [];
+      if (MAX_PER_CLASS > 0) pool = pool.slice(0, MAX_PER_CLASS);
+      for (const issue of pool) {
         cases.push({ rule, tid: tinfo.transitionId, issueId: issue.id, issue });
       }
     }

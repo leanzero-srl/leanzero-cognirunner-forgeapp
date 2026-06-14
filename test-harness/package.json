@@ -11,6 +11,7 @@
     "attach": "node scripts/attach-rules.mjs",
     "seed": "node scripts/seed-issues.mjs",
     "run": "node scripts/run-transitions.mjs",
+    "bulk": "node scripts/bulk-transitions.mjs",
     "report": "node report/aggregate.mjs",
     "teardown": "node scripts/teardown.mjs",
     "probe": "node scripts/probe.mjs",

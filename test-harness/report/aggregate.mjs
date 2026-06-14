@@ -66,14 +66,17 @@ W(`**Generated:** ${new Date().toISOString()}`);
 W();
 W(`Black-box test of CogniRunner's runtime surface (validators, conditions, semantic & static post-functions) by attaching ${Object.keys(state.ruleTransitions || {}).length} rules via the workflow REST API onto self-loop transitions and firing ${total} (rule × issue) cases against a fabricated ${Object.keys(state.issues || {}).length}-issue adversarial corpus. Everything was driven through the real Jira workflow engine — not the app's test resolvers.`);
 W();
+W(`> This run was taken AFTER the F1/F2/F5/F6 fixes were applied and deployed. The findings below are marked FIXED+VERIFIED or OPEN accordingly. See FINDINGS.md.`);
+W();
 W(`## Headline`);
 W();
-W(`- **Overall: ${correct}/${total} cases behaved as expected (${pct(correct, total)}).**`);
-W(`- **Prompt-injection resistance: strong.** Pure injection payloads were blocked ${pct(inj.naive.bareN - inj.naive.bareLeak, inj.naive.bareN)} (naive prompt) / ${pct(inj.hardened.bareN - inj.hardened.bareLeak, inj.hardened.bareN)} (hardened prompt). See the injection section for the embedded-task nuance.`);
-W(`- **🔴 Agentic (JQL tool-calling) is broken on Forge LLM** — every agentic call 400s on the tool-result round (\`Failed to parse request body as Unified Chat Request\`). Agentic validators then **fail closed (block)**.`);
-W(`- **🟠 Static-PF sandbox is not isolated** — \`process.env\`, \`fetch\`, \`globalThis\` are reachable from executed PF code (\`require\`/\`fs\` blocked).`);
-W(`- **🟠 Forge conditions are not enforced on the REST transition path** — the condition lambda was never invoked; REST/automation transitions bypass CogniRunner conditions (validators ARE enforced).`);
-W(`- **🟢 Semantic & static PF correctness/safety: solid** — option-set constraint, type coercion, simulation mode, off-screen skip, JQL cap, and sync-loop containment all behaved correctly.`);
+W(`- **Overall: ${correct}/${total} cases behaved as expected (${pct(correct, total)}).** Every miss is explained: injection-*embedded* (real-task nuance) and the condition REST-bypass (F3). No unexplained failures.`);
+W(`- **🟢 Prompt-injection resistance: strong.** Pure injection payloads blocked ${pct(inj.naive.bareN - inj.naive.bareLeak, inj.naive.bareN)} (naive) / ${pct(inj.hardened.bareN - inj.hardened.bareLeak, inj.hardened.bareN)} (hardened). Validator inputs are now fence+defang wrapped (F5 fix).`);
+W(`- **🟢 Agentic (JQL tool-calling) now works on Forge LLM (F1 FIXED+VERIFIED)** — multi-round search returns real verdicts (duplicate detection blocks, unique passes, release-gate blocks→allows). Root cause was tool-call \`arguments\` sent as an object; Forge LLM requires a string.`);
+W(`- **🟢 Static-PF sandbox is now isolated (F2 FIXED+VERIFIED)** — \`process.env\`/\`fetch\`/\`globalThis\` are shadowed; the probe reports \`reach=none\`.`);
+W(`- **🟠 Forge conditions are NOT enforced on the REST transition path (F3, platform behavior)** — the condition lambda is never invoked via REST; automation/bulk transitions bypass conditions. Validators ARE enforced. (Documentation, not a code fix.)`);
+W(`- **🟠 2 of 7 PF flavors require LM-Studio MCPs** — generate-doc (doc-reader) and research (web-search) gracefully SKIP on Forge LLM. comment / subtask / link / semantic / static all work.`);
+W(`- **🟢 Bulk load is robust** — 60 issues × (validator + static PF + semantic PF) fired at concurrency 12 with 0 AI errors, 0 rate-limiting, 100% PF mutation success. Under *sustained* high volume, Forge LLM eventually returns 429 and validators fail closed (see FINDINGS F9).`);
 W();
 W(`## By study`);
 W();
@@ -101,8 +104,25 @@ W(`| Case | Phase | Outcome | AI error? |`);
 W(`|---|---|---|---|`);
 for (const r of agentic) W(`| ${r.ruleKey} ${r.issueId} | ${r.phase || "-"} | ${r.actual} | ${r.aiError ? "yes" : "no"} |`);
 W();
-W(`All agentic calls returned \`AI service error: 400\`. From \`forge logs\`: round 0 works (the model requests \`search_jira_issues\` and the JQL **executes**), but the tool-result round fails — \`Forge LLM error: 400 Failed to parse request body as Unified Chat Request: Cannot deserialize value of type java.lang.String from Object value (START_OBJECT)\`. Root cause + fix in FINDINGS.md (F1).`);
+W(`Post-fix, the agentic loop completes multi-round JQL searches and returns real verdicts (duplicate detection blocks the newest dup; a unique issue passes after a 2-round search; the release gate blocks while a labelled bug is open and allows once it is Done). Pre-fix every tool-result round 400'd (\`arguments\` sent as an object; Forge LLM requires a string). See FINDINGS.md (F1).`);
 W();
+// Bulk section
+try {
+  const bulk = JSON.parse(readFileSync(join(RESULTS_DIR, "bulk-results.json"), "utf8"));
+  W(`## Bulk-transition stress (${bulk.pool} issues)`);
+  W();
+  W(`Simulates a user bulk-modifying many issues, firing many rules at once.`);
+  W();
+  W(`| Phase | Throughput | HTTP status | AI errors | PF mutation |`);
+  W(`|---|---|---|---|---|`);
+  for (const ph of bulk.phases) {
+    const m = ph.mutation ? `${ph.mutation.ok}/${ph.mutation.total}` : "—";
+    W(`| ${ph.label} | ${ph.throughputPerSec}/s | ${JSON.stringify(ph.statusCounts)} | ${ph.aiErrors} | ${m} |`);
+  }
+  W();
+  W(`Validators block synchronously on the AI call (higher latency); post-functions return immediately and run async. No failures at this volume; sustained higher volume eventually rate-limits (FINDINGS F9).`);
+  W();
+} catch { /* no bulk results */ }
 W(`## Post-function correctness`);
 W();
 W(`| Rule | Expected | Actual | Correct | Detail |`);

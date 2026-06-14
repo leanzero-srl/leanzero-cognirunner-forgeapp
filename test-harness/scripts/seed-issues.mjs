@@ -15,7 +15,7 @@ import { loadState, patchState } from "../lib/state.mjs";
 
 const TARGET = parseInt(process.env.COGTEST_ISSUE_COUNT || "0", 10);
 
-async function createIssue(spec, projectKey) {
+async function createIssue(spec, projectKey, customFields) {
   const fields = {
     project: { key: projectKey },
     issuetype: { id: spec.issueType },
@@ -23,6 +23,18 @@ async function createIssue(spec, projectKey) {
     labels: [...(spec.labels || []), `ctid-${spec.id}`],
   };
   if (spec.description) fields.description = spec.description;
+  // Populate custom fields from the spec's `cf` map (role -> value), so issue
+  // objects carry realistic, dense data.
+  if (spec.cf && customFields) {
+    for (const [role, val] of Object.entries(spec.cf)) {
+      const f = customFields[role];
+      if (!f) continue;
+      if (role === "select") fields[f.id] = { value: val };
+      else if (role === "number") fields[f.id] = val;
+      else if (role === "user") fields[f.id] = { accountId: val };
+      else fields[f.id] = val; // text, date (string)
+    }
+  }
   const res = await post("/rest/api/3/issue", { fields });
   return res.key;
 }
@@ -64,7 +76,7 @@ async function main() {
   let created = 0, failed = 0;
   const results = await mapLimit(toCreate, 5, async (spec) => {
     try {
-      const key = await createIssue(spec, s.projectKey);
+      const key = await createIssue(spec, s.projectKey, s.customFields);
       created++;
       if (created % 25 === 0) console.log(`  created ${created}/${toCreate.length}...`);
       return { id: spec.id, key, cls: spec.cls, toDone: !!spec.toDone };

@@ -23,17 +23,31 @@ export const APP_ID = "36415848-6868-4697-9554-3c3ad87b8da9";
 export const ENV_ID = "989ecaa0-261b-406e-b444-78c01c0d7772";
 export const WORKFLOW_CONFIG_MAX_BYTES = 32768;
 
+// All post-function flavors share one ruleKey (forge:workflow-post-function)
+// and are routed at runtime by config.type — so any PF module ARI works; we use
+// the static module's ARI for static and the semantic module's ARI otherwise.
 export const MODULE = {
   validator: "ai-text-field-validator",
   condition: "ai-text-field-condition",
-  semantic: "ai-semantic-post-function",
   static: "ai-static-post-function",
+  // every other PF flavor -> semantic module ARI (routing is by config.type)
+  semantic: "ai-semantic-post-function",
+  comment: "ai-semantic-post-function",
+  subtask: "ai-semantic-post-function",
+  "generate-doc": "ai-semantic-post-function",
+  link: "ai-semantic-post-function",
+  research: "ai-semantic-post-function",
 };
 export const RULE_KEY = {
   validator: "forge:expression-validator",
   condition: "forge:expression-condition",
-  semantic: "forge:workflow-post-function",
   static: "forge:workflow-post-function",
+  semantic: "forge:workflow-post-function",
+  comment: "forge:workflow-post-function",
+  subtask: "forge:workflow-post-function",
+  "generate-doc": "forge:workflow-post-function",
+  link: "forge:workflow-post-function",
+  research: "forge:workflow-post-function",
 };
 
 const ari = (moduleKey) =>

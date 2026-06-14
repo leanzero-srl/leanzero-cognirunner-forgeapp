@@ -20,7 +20,10 @@
     "pw": "playwright test",
     "mass": "node scripts/mass-transitions.mjs",
     "verify-memories": "node scripts/verify-memories.mjs",
-    "exotic": "node scripts/exotic-pf.mjs"
+    "exotic": "node scripts/exotic-pf.mjs",
+    "actions": "node scripts/actions-test.mjs",
+    "audit": "node scripts/audit-rules.mjs",
+    "throttle": "node scripts/throttle-probe.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.48.0"

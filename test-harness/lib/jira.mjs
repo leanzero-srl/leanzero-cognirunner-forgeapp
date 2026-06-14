@@ -19,6 +19,12 @@ const AUTH = "Basic " + Buffer.from(`${EMAIL}:${TOKEN}`).toString("base64");
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// Throttle instrumentation — the client transparently retries 429/5xx, so the
+// raw counts here are how a caller detects rate-limiting that callers otherwise
+// never see. Reset around a measured window with resetStats().
+export const stats = { requests: 0, status429: 0, status5xx: 0, retries: 0, retryAfterMsTotal: 0 };
+export function resetStats() { stats.requests = 0; stats.status429 = 0; stats.status5xx = 0; stats.retries = 0; stats.retryAfterMsTotal = 0; }
+
 const MAX_RETRIES = 6;
 let VERBOSE = process.env.HARNESS_VERBOSE === "1";
 export function setVerbose(v) {
@@ -62,9 +68,15 @@ export async function request(method, path, opts = {}) {
       continue;
     }
 
+    stats.requests++;
+    if (res.status === 429) stats.status429++;
+    else if (res.status >= 500) stats.status5xx++;
+
     // Rate limit / transient server errors -> backoff & retry
     if ((res.status === 429 || res.status >= 500) && attempt <= MAX_RETRIES) {
+      stats.retries++;
       const ra = parseInt(res.headers.get("Retry-After") || "", 10);
+      stats.retryAfterMsTotal += Number.isFinite(ra) ? ra * 1000 : 0;
       const wait = Number.isFinite(ra)
         ? ra * 1000
         : Math.min(30000, 500 * 2 ** (attempt - 1));

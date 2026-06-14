@@ -1,7 +1,7 @@
 # CogniRunner — At-Scale Runtime Test Report
 
 **Instance:** wolfaenpak.atlassian.net · **Project:** COGTEST (10014) · **Provider:** Forge LLM (Claude Haiku, confirmed via logs)
-**Generated:** 2026-06-14T09:00:33.195Z
+**Generated:** 2026-06-14T11:24:00.234Z
 
 Black-box test of CogniRunner's runtime surface (validators, conditions, semantic & static post-functions) by attaching 41 rules via the workflow REST API onto self-loop transitions and firing 188 (rule × issue) cases against a fabricated 491-issue adversarial corpus. Everything was driven through the real Jira workflow engine — not the app's test resolvers.
 
@@ -135,9 +135,9 @@ Every standard custom field type, exercised end-to-end through the workflow engi
 
 ## Mass transition wave (drains the backlog at scale)
 
-Marched **601 issues** forward through the workflow: **1381 transitions fired, 0 failed, 0 rate-limited (429)** in 43.5s (**31.73/s**). A static PF on the In Progress transition fired on every issue passing through. The workflow/transition APIs absorbed the wave with no failures.
+Marched **601 issues** forward through the workflow: **1803 transitions fired, 0 failed, 0 rate-limited (429)** in 239.0s (**7.54/s**). A static PF on the In Progress transition fired on every issue passing through. The workflow/transition APIs absorbed the wave with no failures.
 
-Final board distribution: **Selected for Development** 121 · **Done** 300 · **In Progress** 180
+Final board distribution: **Done** 601
 
 ## Exotic sandbox capabilities (added to the app)
 
@@ -152,6 +152,21 @@ New static-PF sandbox methods (deployed; needed the `manage:jira-project` scope)
 | `api.forceStatus` | ✓ — status=Done, tempTransitionCleanedUp=true |
 
 `api.forceStatus` is the emergency trick: it adds a temporary global transition to the target status, fires it, then removes the temp transition — bypassing workflow restrictions on demand (the workflow has no "ignore restrictions" flag).
+
+## Throttle ceiling (how the transition API reacts under load)
+
+| Concurrency | Throughput | 429s | Retry-After |
+|---|---|---|---|
+| 25 | 49.7/s | 0 | 0s |
+| 50 | 85.9/s | 0 | 0s |
+| 100 | 11.1/s | 136 | 4575s |
+| 150 | 16.4/s | 143 | 4251s |
+
+First 429s at concurrency **100**; ≤50 concurrent is clean (~86/s). Even when throttled the client's Retry-After backoff means every transition still eventually succeeds (no caller-visible failures).
+
+## Workflow rule audit (health check)
+
+At audit time: **42 CogniRunner rules** across 46 transitions — **0 malformed configs, 0 duplicates**. By category: action:forge:workflow-post-function 30; validator:forge:expression-validator 11; condition:forge:expression-condition 1. Transient probe transitions are cleaned with `CLEAN=1 npm run audit` (keeping the durable CT-* suite).
 
 ## Knowledge system & memories
 

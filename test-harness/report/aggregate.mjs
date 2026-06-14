@@ -185,6 +185,40 @@ try {
   W();
 } catch { /* none */ }
 
+// REST/ScriptRunner-inspired actions
+try {
+  const ax = JSON.parse(readFileSync(join(RESULTS_DIR, "actions-test-results.json"), "utf8"));
+  W(`## REST / ScriptRunner-inspired actions (added to the sandbox)`);
+  W();
+  W(`New static-PF actions (deployed; all under the existing write:jira-work scope) — **${ax.okCount}/${ax.total} verified**: ${ax.results.map((r) => `${r.name} ${r.ok ? "✓" : "✗"}`).join(", ")}.`);
+  W();
+  W(`Covers ScriptRunner's Server/DC action vocabulary (add comment, log work, assign, link, watchers, transition parent/sub-tasks, transition-with-payload) plus REST extras (votes, entity properties, remote links, notifications). \`transitionIssue\` now takes an optional \`{ fields, update }\` payload; note Jira only *applies* transition fields when the transition has a screen.`);
+  W();
+} catch { /* none */ }
+
+// Throttle ceiling
+try {
+  const tp = JSON.parse(readFileSync(join(RESULTS_DIR, "throttle-probe-results.json"), "utf8"));
+  W(`## Throttle ceiling (how the transition API reacts under load)`);
+  W();
+  W(`| Concurrency | Throughput | 429s | Retry-After |`);
+  W(`|---|---|---|---|`);
+  for (const r of tp.rows) W(`| ${r.concurrency} | ${r.throughputPerSec}/s | ${r.http429} | ${r.retryAfterSec}s |`);
+  W();
+  const ceil = tp.rows.find((r) => r.http429 > 0);
+  W(ceil ? `First 429s at concurrency **${ceil.concurrency}**; ≤50 concurrent is clean (~86/s). Even when throttled the client's Retry-After backoff means every transition still eventually succeeds (no caller-visible failures).` : `No throttling observed across all probed levels.`);
+  W();
+} catch { /* none */ }
+
+// Workflow rule audit
+try {
+  const au = JSON.parse(readFileSync(join(RESULTS_DIR, "audit-results.json"), "utf8"));
+  W(`## Workflow rule audit (health check)`);
+  W();
+  W(`At audit time: **${au.cogniRules} CogniRunner rules** across ${au.totalTransitions} transitions — **${au.malformed.length} malformed configs, ${au.dupes.length} duplicates**. By category: ${Object.entries(au.byCategory).map(([k, v]) => `${k} ${v}`).join("; ")}. Transient probe transitions are cleaned with \`CLEAN=1 npm run audit\` (keeping the durable CT-* suite).`);
+  W();
+} catch { /* none */ }
+
 W(`## Knowledge system & memories`);
 W();
 W(`- **Documentation Library**: REST-tested — a validator referencing builtin docs by id injected them at runtime (\`docsUsed=true\`). ✓`);

@@ -9858,7 +9858,7 @@ const executeStaticPostFunction = async (issueKey, config, deadline = Date.now()
   const simulated = config.simulationMode === true;
 
   // Build API surface for sandbox
-  const createApi = () => ({
+  const createApi = () => { const this_api = {
     getIssue: async (key) => {
       const res = await api.asApp().requestJira(route`/rest/api/3/issue/${key}`);
       if (!res.ok) throw new Error(`getIssue failed: ${res.status}`);
@@ -9954,19 +9954,124 @@ const executeStaticPostFunction = async (issueKey, config, deadline = Date.now()
       if (!res.ok) throw new Error(`searchJql failed: ${res.status}`);
       return res.json();
     },
-    transitionIssue: async (key, transitionId) => {
+    // Transition — now accepts optional { fields, update } to set resolution /
+    // add a comment / set fields in the SAME call (transition-with-screen).
+    transitionIssue: async (key, transitionId, extra = {}) => {
       if (simulated) {
-        executionLogs.push(`[SIMULATION] transitionIssue("${key}", "${transitionId}") — transition skipped`);
-        changes.push({ action: "transitionIssue", key, transitionId, simulated: true });
+        executionLogs.push(`[SIMULATION] transitionIssue("${key}", "${transitionId}"${extra.fields || extra.update ? " +fields/update" : ""}) — transition skipped`);
+        changes.push({ action: "transitionIssue", key, transitionId, extra, simulated: true });
         return { success: true };
       }
+      const body = { transition: { id: String(transitionId) } };
+      if (extra.fields) body.fields = extra.fields;
+      if (extra.update) body.update = extra.update;
       const res = await api.asApp().requestJira(
         route`/rest/api/3/issue/${key}/transitions`,
-        { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ transition: { id: transitionId } }) },
+        { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
       );
-      if (!res.ok) throw new Error(`transitionIssue failed: ${res.status}`);
+      if (!res.ok) throw new Error(`transitionIssue failed: ${res.status} — ${(await res.text()).slice(0, 200)}`);
       changes.push({ action: "transitionIssue", key, transitionId });
       return { success: true };
+    },
+    // Resolve a transition by NAME on the issue, then execute it (optionally with fields/update).
+    transitionByName: async (key, name, extra = {}) => {
+      const tr = await (await api.asApp().requestJira(route`/rest/api/3/issue/${key}/transitions`, { headers: { Accept: "application/json" } })).json();
+      const t = (tr.transitions || []).find((x) => String(x.name).toLowerCase() === String(name).toLowerCase());
+      if (!t) throw new Error(`transitionByName: "${name}" not available on ${key} (have: ${(tr.transitions || []).map((x) => x.name).join(", ")})`);
+      return this_api.transitionIssue(key, t.id, extra);
+    },
+    // Transition all sub-tasks of the current issue by transition name (ScriptRunner "Transition sub-tasks").
+    transitionSubtasks: async (name) => {
+      const iss = await (await api.asApp().requestJira(route`/rest/api/3/issue/${issueKey}?fields=subtasks`, { headers: { Accept: "application/json" } })).json();
+      const subs = iss.fields?.subtasks || [];
+      let moved = 0;
+      for (const st of subs) {
+        try { await this_api.transitionByName(st.key, name); moved++; } catch (e) { executionLogs.push(`transitionSubtasks: ${st.key} — ${e.message}`); }
+      }
+      executionLogs.push(`transitionSubtasks("${name}"): moved ${moved}/${subs.length}`);
+      changes.push({ action: "transitionSubtasks", name, moved, total: subs.length });
+      return { moved, total: subs.length };
+    },
+    // Transition the parent of the current issue (ScriptRunner "Transition parent").
+    transitionParent: async (name) => {
+      const iss = await (await api.asApp().requestJira(route`/rest/api/3/issue/${issueKey}?fields=parent`, { headers: { Accept: "application/json" } })).json();
+      const parent = iss.fields?.parent?.key;
+      if (!parent) { executionLogs.push("transitionParent: no parent"); return { moved: 0 }; }
+      await this_api.transitionByName(parent, name);
+      changes.push({ action: "transitionParent", parent, name });
+      return { moved: 1, parent };
+    },
+    addComment: async (body, opts = {}) => {
+      const adf = typeof body === "string" ? coerceToAdf(body) : body;
+      const payload = { body: adf };
+      if (opts.visibility) payload.visibility = opts.visibility;
+      if (simulated) { executionLogs.push(`[SIMULATION] addComment`); changes.push({ action: "addComment", key: issueKey, simulated: true }); return { simulated: true }; }
+      const res = await api.asApp().requestJira(route`/rest/api/3/issue/${issueKey}/comment`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      if (!res.ok) throw new Error(`addComment failed: ${res.status} — ${(await res.text()).slice(0, 200)}`);
+      const c = await res.json(); changes.push({ action: "addComment", key: issueKey, id: c.id }); executionLogs.push(`addComment: ${c.id}`); return { id: c.id };
+    },
+    setAssignee: async (accountId) => {
+      if (simulated) { executionLogs.push(`[SIMULATION] setAssignee(${accountId})`); changes.push({ action: "setAssignee", key: issueKey, accountId, simulated: true }); return { simulated: true }; }
+      const res = await api.asApp().requestJira(route`/rest/api/3/issue/${issueKey}/assignee`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ accountId: accountId === "unassigned" ? null : accountId }) });
+      if (!res.ok) throw new Error(`setAssignee failed: ${res.status} — ${(await res.text()).slice(0, 200)}`);
+      changes.push({ action: "setAssignee", key: issueKey, accountId }); executionLogs.push(`setAssignee: ${accountId}`); return { success: true };
+    },
+    addWorklog: async (timeSpentSeconds, comment) => {
+      const payload = { timeSpentSeconds: Number(timeSpentSeconds), started: new Date().toISOString().replace("Z", "+0000") };
+      if (comment) payload.comment = typeof comment === "string" ? coerceToAdf(comment) : comment;
+      if (simulated) { executionLogs.push(`[SIMULATION] addWorklog(${timeSpentSeconds}s)`); changes.push({ action: "addWorklog", key: issueKey, simulated: true }); return { simulated: true }; }
+      const res = await api.asApp().requestJira(route`/rest/api/3/issue/${issueKey}/worklog`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      if (!res.ok) throw new Error(`addWorklog failed: ${res.status} — ${(await res.text()).slice(0, 200)}`);
+      const w = await res.json(); changes.push({ action: "addWorklog", key: issueKey, id: w.id }); executionLogs.push(`addWorklog: ${w.id}`); return { id: w.id };
+    },
+    createIssueLink: async (outwardKey, typeName = "Relates") => {
+      if (simulated) { executionLogs.push(`[SIMULATION] createIssueLink(${issueKey} ${typeName} ${outwardKey})`); changes.push({ action: "createIssueLink", from: issueKey, to: outwardKey, type: typeName, simulated: true }); return { simulated: true }; }
+      const res = await api.asApp().requestJira(route`/rest/api/3/issueLink`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ type: { name: typeName }, inwardIssue: { key: issueKey }, outwardIssue: { key: outwardKey } }) });
+      if (!res.ok) throw new Error(`createIssueLink failed: ${res.status} — ${(await res.text()).slice(0, 200)}`);
+      changes.push({ action: "createIssueLink", from: issueKey, to: outwardKey, type: typeName }); executionLogs.push(`createIssueLink: ${issueKey} ${typeName} ${outwardKey}`); return { success: true };
+    },
+    addWatcher: async (accountId) => {
+      if (simulated) { executionLogs.push(`[SIMULATION] addWatcher(${accountId})`); changes.push({ action: "addWatcher", key: issueKey, accountId, simulated: true }); return { simulated: true }; }
+      // NB: the body is the bare accountId as a raw JSON string.
+      const res = await api.asApp().requestJira(route`/rest/api/3/issue/${issueKey}/watchers`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(accountId) });
+      if (!res.ok) throw new Error(`addWatcher failed: ${res.status} — ${(await res.text()).slice(0, 200)}`);
+      changes.push({ action: "addWatcher", key: issueKey, accountId }); executionLogs.push(`addWatcher: ${accountId}`); return { success: true };
+    },
+    removeWatcher: async (accountId) => {
+      if (simulated) { executionLogs.push(`[SIMULATION] removeWatcher(${accountId})`); changes.push({ action: "removeWatcher", key: issueKey, accountId, simulated: true }); return { simulated: true }; }
+      const res = await api.asApp().requestJira(route`/rest/api/3/issue/${issueKey}/watchers?accountId=${accountId}`, { method: "DELETE" });
+      if (!res.ok) throw new Error(`removeWatcher failed: ${res.status}`);
+      changes.push({ action: "removeWatcher", key: issueKey, accountId }); return { success: true };
+    },
+    addVote: async () => {
+      if (simulated) { executionLogs.push(`[SIMULATION] addVote`); changes.push({ action: "addVote", key: issueKey, simulated: true }); return { simulated: true }; }
+      const res = await api.asApp().requestJira(route`/rest/api/3/issue/${issueKey}/votes`, { method: "POST" });
+      if (!res.ok) throw new Error(`addVote failed: ${res.status}`);
+      changes.push({ action: "addVote", key: issueKey }); return { success: true };
+    },
+    setProperty: async (propKey, value) => {
+      if (simulated) { executionLogs.push(`[SIMULATION] setProperty(${propKey})`); changes.push({ action: "setProperty", key: issueKey, propKey, simulated: true }); return { simulated: true }; }
+      const res = await api.asApp().requestJira(route`/rest/api/3/issue/${issueKey}/properties/${propKey}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(value) });
+      if (!res.ok) throw new Error(`setProperty failed: ${res.status}`);
+      changes.push({ action: "setProperty", key: issueKey, propKey }); executionLogs.push(`setProperty: ${propKey}`); return { success: true };
+    },
+    getProperty: async (propKey) => {
+      const res = await api.asApp().requestJira(route`/rest/api/3/issue/${issueKey}/properties/${propKey}`, { headers: { Accept: "application/json" } });
+      if (res.status === 404) return null;
+      if (!res.ok) throw new Error(`getProperty failed: ${res.status}`);
+      return (await res.json()).value;
+    },
+    addRemoteLink: async (url, title) => {
+      if (simulated) { executionLogs.push(`[SIMULATION] addRemoteLink(${title})`); changes.push({ action: "addRemoteLink", key: issueKey, url, simulated: true }); return { simulated: true }; }
+      const res = await api.asApp().requestJira(route`/rest/api/3/issue/${issueKey}/remotelink`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ object: { url, title: title || url } }) });
+      if (!res.ok) throw new Error(`addRemoteLink failed: ${res.status} — ${(await res.text()).slice(0, 200)}`);
+      const r = await res.json(); changes.push({ action: "addRemoteLink", key: issueKey, id: r.id }); executionLogs.push(`addRemoteLink: ${title}`); return { id: r.id };
+    },
+    sendNotification: async (subject, textBody, to = { assignee: true, reporter: true }) => {
+      if (simulated) { executionLogs.push(`[SIMULATION] sendNotification("${subject}")`); changes.push({ action: "sendNotification", key: issueKey, simulated: true }); return { simulated: true }; }
+      const res = await api.asApp().requestJira(route`/rest/api/3/issue/${issueKey}/notify`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ subject, textBody, to }) });
+      if (!res.ok) throw new Error(`sendNotification failed: ${res.status} — ${(await res.text()).slice(0, 200)}`);
+      changes.push({ action: "sendNotification", key: issueKey, subject }); executionLogs.push(`sendNotification: ${subject}`); return { success: true };
     },
     // --- Exotic actions: create project-level entities, clone issues, and force
     // a status via a temporary transition. All respect simulation mode. ---
@@ -10052,7 +10157,7 @@ const executeStaticPostFunction = async (issueKey, config, deadline = Date.now()
       executionLogs.push(msg);
     },
     context: { issueKey },
-  });
+  }; return this_api; };
 
   executionLogs.push(`Starting ${functions.length} step(s) for ${issueKey}`);
 

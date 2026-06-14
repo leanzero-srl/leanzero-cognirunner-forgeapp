@@ -8533,35 +8533,48 @@ const getFieldValue = async (issueKey, fieldId, modifiedFields) => {
     );
     return null;
   } else {
-    // Otherwise, fetch the current issue data with renderedFields as fallback
-    try {
-      const response = await api
-        .asApp()
-        .requestJira(route`/rest/api/3/issue/${issueKey}?fields=${fieldId}&expand=renderedFields`);
-
-      if (!response.ok) {
-        console.error("Failed to fetch issue:", response.status);
-        return null;
+    // Fetch the current issue, RETRYING transient throttling (429/5xx, honoring
+    // Retry-After). If the read still can't complete because of throttling, THROW
+    // a tagged error so the validator fails OPEN — otherwise a throttled read
+    // returns null and "reject if empty" rules wrongly block the transition (F11).
+    let response;
+    for (let attempt = 1; ; attempt++) {
+      try {
+        response = await api
+          .asApp()
+          .requestJira(route`/rest/api/3/issue/${issueKey}?fields=${fieldId}&expand=renderedFields`);
+      } catch (error) {
+        if (attempt <= 3) { await new Promise((r) => setTimeout(r, Math.min(2000, 400 * 2 ** (attempt - 1)))); continue; }
+        console.error("Error fetching issue:", error);
+        throw new Error("__FIELD_READ_TRANSIENT__:network");
       }
+      if (response.ok) break;
+      if ((response.status === 429 || response.status >= 500) && attempt <= 3) {
+        const ra = parseInt(response.headers.get("Retry-After") || "", 10);
+        await new Promise((r) => setTimeout(r, Number.isFinite(ra) ? Math.min(5000, ra * 1000) : Math.min(2000, 400 * 2 ** (attempt - 1))));
+        continue;
+      }
+      if (response.status === 429 || response.status >= 500) {
+        console.error("Failed to fetch issue (transient, exhausted retries):", response.status);
+        throw new Error(`__FIELD_READ_TRANSIENT__:${response.status}`);
+      }
+      console.error("Failed to fetch issue:", response.status);
+      return null; // genuine non-transient failure (e.g. 404) — treat as absent
+    }
 
-      const issue = await response.json();
-      rawValue = issue.fields?.[fieldId];
+    const issue = await response.json();
+    rawValue = issue.fields?.[fieldId];
 
-      // If the raw value is complex (ADF/object), try renderedFields as a pre-rendered HTML fallback
-      if (rawValue && typeof rawValue === "object" && issue.renderedFields?.[fieldId]) {
-        const rendered = issue.renderedFields[fieldId];
-        if (typeof rendered === "string" && rendered.length > 0) {
-          // Strip HTML tags to get plain text — use as fallback only if ADF extraction yields nothing
-          const adfResult = extractFieldDisplayValue(rawValue);
-          if (!adfResult || adfResult === "[Complex value]") {
-            return rendered.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
-          }
-          return adfResult;
+    // If the raw value is complex (ADF/object), try renderedFields as a pre-rendered HTML fallback
+    if (rawValue && typeof rawValue === "object" && issue.renderedFields?.[fieldId]) {
+      const rendered = issue.renderedFields[fieldId];
+      if (typeof rendered === "string" && rendered.length > 0) {
+        const adfResult = extractFieldDisplayValue(rawValue);
+        if (!adfResult || adfResult === "[Complex value]") {
+          return rendered.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
         }
+        return adfResult;
       }
-    } catch (error) {
-      console.error("Error fetching issue:", error);
-      return null;
     }
   }
 
@@ -8922,18 +8935,29 @@ export const validate = async (args) => {
         : await callOpenAI(textContext, validationPrompt, attParts, contextDocsText, memorySection);
     }
   } else {
-    // Standard field validation — get text value and validate
-    const fieldValue = await getFieldValue(issue.key, fieldId, modifiedFields);
-    logFieldValue = fieldValue || "";
-
-    console.log(
-      `Field value (first 100 chars):`,
-      String(fieldValue || "").substring(0, 100),
-    );
-
-    validationResult = useTools
-      ? await callOpenAIWithTools(fieldValue, validationPrompt, undefined, issueContext, projectKey, fieldId, deadline, contextDocsText, memorySection)
-      : await callOpenAI(fieldValue, validationPrompt, undefined, contextDocsText, memorySection);
+    // Standard field validation — get text value and validate. A throttled field
+    // read (429 after retries) fails OPEN rather than being mistaken for an empty
+    // field (F11) — don't block a transition because Jira was rate-limiting.
+    let fieldValue;
+    try {
+      fieldValue = await getFieldValue(issue.key, fieldId, modifiedFields);
+    } catch (e) {
+      if (String(e?.message || "").includes("__FIELD_READ_TRANSIENT__")) {
+        validationResult = { isValid: true, reason: "Field could not be read (Jira throttled the request) — transition allowed (fail-open).", transientError: true };
+      } else {
+        throw e;
+      }
+    }
+    if (!validationResult) {
+      logFieldValue = fieldValue || "";
+      console.log(
+        `Field value (first 100 chars):`,
+        String(fieldValue || "").substring(0, 100),
+      );
+      validationResult = useTools
+        ? await callOpenAIWithTools(fieldValue, validationPrompt, undefined, issueContext, projectKey, fieldId, deadline, contextDocsText, memorySection)
+        : await callOpenAI(fieldValue, validationPrompt, undefined, contextDocsText, memorySection);
+    }
   }
 
   console.log("Validation result:", validationResult);

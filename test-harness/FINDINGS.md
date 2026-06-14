@@ -114,7 +114,11 @@ This is opt-in and off by default; production rules are unaffected.
 
 ---
 
-## F11 — Chalk-full AI transitions don't scale to mass bulk operations (load multiplication) · **OPEN (new)** · Severity MEDIUM
+## F11 — Chalk-full AI transitions don't scale to mass bulk operations (load multiplication) · **FIXED + VERIFIED (graceful degradation)** · was Severity MEDIUM
+
+**Fix applied (v19.x).** `getFieldValue` now retries the Jira REST field-read on 429/5xx (honoring Retry-After) and, if it still can't read, **throws a tagged transient error instead of returning null** — and the validator catches it and **fails OPEN** (rather than mistaking a throttled read for an empty field and blocking). Combined with F9 (AI 429 fail-open), a chalk-full wave now **degrades gracefully**: re-running the exact config that collapsed before (1000-issue wave, chalk-full lifecycle, concurrency 20) now **drains to Done instead of failing ~53%** — transitions proceed under throttle. The operational guidance below still holds (AI-heavy transitions cap throughput at the AI rate limit; pace bulk for best throughput) — but the system no longer *fails* transitions under load, it slows.
+
+### (original)
 
 **What.** A 1000-issue wave through lifecycle transitions packed with AI validators (2–3 each) + ~7 post-functions, at transition-concurrency 20, **collapsed under throttling — ~53% of transitions failed** (211/399). Root cause: each chalk-full transition fans out to ~10 backend ops (AI validations + PF REST calls), so concurrency 20 produced an effective request rate far above the ~50–100 ceiling → cascading `429 Too Many Requests` from BOTH Forge LLM and the Jira REST API.
 

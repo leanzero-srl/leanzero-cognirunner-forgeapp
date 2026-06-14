@@ -8978,6 +8978,7 @@ export const validate = async (args) => {
   if (contextDocsText) {
     logEntry.docsUsed = true;
   }
+  if (memorySection) logEntry.memoriesUsed = true;
   if (validationResult.transientError) logEntry.transientError = true;
   await storeLog(logEntry);
   if (configuration?.debugTrace) {

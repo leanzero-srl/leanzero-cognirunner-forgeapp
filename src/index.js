@@ -10094,6 +10094,17 @@ const executeStaticPostFunction = async (issueKey, config, deadline = Date.now()
       if (!res.ok) throw new Error(`rankIssue failed: ${res.status} — ${(await res.text()).slice(0, 200)}`);
       changes.push({ action: "rankIssue", key: issueKey, relativeToKey }); executionLogs.push(`rankIssue: ${opts.after ? "after" : "before"} ${relativeToKey}`); return { success: true };
     },
+    // --- Additive edits (Jira `update` ops) — safe for concurrent post-functions
+    // on one transition. Unlike updateIssue (full-field REPLACE), these merge
+    // server-side so two PFs each adding to the same array field don't clobber.
+    editIssue: async (key, update) => {
+      if (simulated) { executionLogs.push(`[SIMULATION] editIssue("${key}", update ${JSON.stringify(update).slice(0, 200)})`); changes.push({ action: "editIssue", key, update, simulated: true }); return { simulated: true }; }
+      const res = await api.asApp().requestJira(route`/rest/api/3/issue/${key}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ update }) });
+      if (!res.ok) throw new Error(`editIssue failed: ${res.status} — ${(await res.text()).slice(0, 200)}`);
+      changes.push({ action: "editIssue", key, update }); return { success: true };
+    },
+    addLabels: async (...labels) => this_api.editIssue(issueKey, { labels: labels.flat().filter(Boolean).map((l) => ({ add: l })) }),
+    removeLabels: async (...labels) => this_api.editIssue(issueKey, { labels: labels.flat().filter(Boolean).map((l) => ({ remove: l })) }),
     // --- Exotic actions: create project-level entities, clone issues, and force
     // a status via a temporary transition. All respect simulation mode. ---
     createVersion: async (name, extra = {}) => {

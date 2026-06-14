@@ -24,16 +24,25 @@ function isPacked(rule) {
   if (!String(rule?.parameters?.key || "").includes(APP_ID)) return false;
   try { return JSON.parse(rule.parameters.config || "{}").pack === true; } catch { return false; }
 }
+// Also strip the legacy read-modify-write "mass-touched" PF — it does a full
+// labels REPLACE and clobbers additive label writers (the F10 root cause).
+const isLegacyClobber = (rule) => String(rule?.parameters?.config || "").includes("mass-touched");
 function stripPacked(t) {
   if (Array.isArray(t.validators)) t.validators = t.validators.filter((r) => !isPacked(r));
-  if (Array.isArray(t.actions)) t.actions = t.actions.filter((r) => !isPacked(r));
+  if (Array.isArray(t.actions)) t.actions = t.actions.filter((r) => !isPacked(r) && !isLegacyClobber(r));
   if (t.conditions && Array.isArray(t.conditions.conditions)) t.conditions.conditions = t.conditions.conditions.filter((r) => !isPacked(r));
 }
 
-const addLabel = (label) => `const i = await api.getIssue(api.context.issueKey);\nconst l = Array.isArray(i.fields.labels) ? i.fields.labels : [];\nif (!l.includes("${label}")) await api.updateIssue(api.context.issueKey, { labels: [...l, "${label}"] });\napi.log("packed: ${label}");`;
+// F10 fix in practice: do same-field writes in ONE additive call (api.addLabels
+// adds both labels via update.add) — never two PFs racing on the same field. Each
+// PF below targets a DISTINCT field/entity so concurrent post-functions can't
+// clobber each other.
+const addBothLabels = (a, b) => `await api.addLabels("${a}", "${b}");\napi.log("packed labels: ${a}, ${b}");`;
 const setText = (id, v) => `await api.updateIssue(api.context.issueKey, { ${JSON.stringify(id)}: ${JSON.stringify(v)} });`;
 const setSelect = (id) => `await api.updateIssue(api.context.issueKey, { ${JSON.stringify(id)}: { value: "High" } });`;
 const comment = (text) => `await api.addComment(${JSON.stringify(text)});`;
+const setProp = (key) => `await api.setProperty(${JSON.stringify(key)}, { packedAt: ${JSON.stringify(key)}, ts: api.context.issueKey });`;
+const worklog = () => `await api.addWorklog(600, "packed work log");`;
 
 // Two lenient validators (always pass a real issue) + a lenient condition.
 const vLenient = (n) => ({ pack: true, fieldId: "summary", prompt: `Advisory check #${n}: respond isValid=true unless the summary is literally empty. This is a non-blocking quality note.`, enableTools: false });
@@ -45,21 +54,23 @@ function stackFor(name, cf) {
   const staticPf = (code) => ({ pack: true, type: "postfunction-static", functions: [{ name: "pk", code, variableName: "step1" }] });
   const semantic = () => ({ pack: true, type: "postfunction-semantic", fieldId: "description", conditionPrompt: "Run every time", actionPrompt: "Write a one-line status note for this issue.", actionFieldId: textId });
 
-  // common rich stack
+  // Chalk-full stack — each PF targets a DISTINCT field/entity (labels / property /
+  // comment / worklog / text / select / semantic) so concurrent PFs never clobber.
   const stack = [
     { type: "validator", config: vLenient(1) },
     { type: "validator", config: vLenient(2) },
     { type: "condition", config: cLenient() },
-    { type: "static", config: staticPf(addLabel(`pk-${slug}-1`)) },
-    { type: "static", config: staticPf(addLabel(`pk-${slug}-2`)) },
-    { type: "static", config: staticPf(setText(textId, `packed @ ${name}`)) },
-    { type: "static", config: staticPf(comment(`CogniRunner packed post-function ran on the '${name}' transition.`)) },
+    { type: "static", config: staticPf(addBothLabels(`pk-${slug}-1`, `pk-${slug}-2`)) }, // labels
+    { type: "static", config: staticPf(setProp(`pk-${slug}`)) },                          // entity property
+    { type: "static", config: staticPf(comment(`CogniRunner packed PF ran on the '${name}' transition.`)) }, // comment
+    { type: "static", config: staticPf(worklog()) },                                       // worklog
   ];
-  if (name === "Done") {
-    stack.push({ type: "static", config: staticPf(setSelect(selectId)) });
-    stack.push({ type: "semantic", config: semantic() });
-  }
+  if (name !== "Done") stack.push({ type: "static", config: staticPf(setText(textId, `packed @ ${name}`)) }); // text (single writer)
   if (name === "In Progress") stack.push({ type: "validator", config: vLenient(3) });
+  if (name === "Done") {
+    stack.push({ type: "static", config: staticPf(setSelect(selectId)) }); // select
+    stack.push({ type: "semantic", config: semantic() });                  // text via AI (sole text writer on Done)
+  }
   return stack;
 }
 

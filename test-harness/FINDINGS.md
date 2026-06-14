@@ -149,7 +149,11 @@ This is opt-in and off by default; production rules are unaffected.
 - **Agile (Jira Software) sandbox actions** (v19.0.0; added `write:sprint:jira-software`, `write:board-scope:jira-software`, `write:issue:jira-software` scopes + admin re-consent): `moveToSprint`, `moveToBacklog`, `rankIssue` — **3/3 verified** against a scrum board + sprint stood up over COGTEST (`agile-setup.mjs` / `agile-test.mjs`).
 - **Packed lifecycle transitions** (`pack-transitions.mjs`): each real lifecycle transition (Backlog/Selected/In Progress/Done) now carries a **rich stack of 7–9 CogniRunner rules** (multiple validators + condition + several post-functions + semantic on Done) — 31 rules total. Verified the full stacks fire end-to-end (validators pass, post-functions set labels/text/select + comment on each transition).
 
-## F10 — Concurrent post-functions on one transition lose updates (read-modify-write race) · **OPEN (new)** · Severity MEDIUM
+## F10 — Concurrent post-functions on one transition lose updates (read-modify-write race) · **FIXED + VERIFIED** · was Severity MEDIUM
+
+**Fix applied (v19.x).** Added additive `api.editIssue(key, update)` + `api.addLabels(...)`/`api.removeLabels(...)` using Jira's `update.add`/`update.remove` ops (merge server-side, not full-field replace), documented in the spec with guidance to prefer them when multiple PFs touch the same field. Verified: with each transition using a single additive label writer (and the legacy read-modify-write `mass-touched` PF removed), all **8/8 packed labels survive** across the lifecycle (was 5/8). Residual note: two *independent* PFs both doing full-field `updateIssue` on the same array still race — the durable pattern is additive ops + one writer per field (or, for hard guarantees, app-level per-issue write serialization, not implemented).
+
+### (original)
 
 **What.** When several static post-functions on the SAME transition each read-modify-write the same array field, writes are lost. Packing two "append a label" PFs on each lifecycle transition produced only **5 of 8** expected labels — each transition kept just one of its two labels (last-writer-wins). Comments (separate objects) and scalar fields were unaffected; only the shared array field clobbered.
 

@@ -29,13 +29,14 @@ async function attachLifecyclePf(workflowName) {
   const { top, wf } = await readWorkflow(workflowName);
   const t = (wf.transitions || []).find((x) => x.name === "In Progress");
   if (!t) return;
-  const has = (t.actions || []).some((a) => String(a.parameters?.config || "").includes("mass-touched"));
-  if (!has) {
-    const code = `const i = await api.getIssue(api.context.issueKey);\nconst labels = Array.isArray(i.fields.labels) ? i.fields.labels : [];\nif (!labels.includes("mass-touched")) await api.updateIssue(api.context.issueKey, { labels: [...labels, "mass-touched"] });\napi.log("mass-touched");`;
-    attachRuleToTransition(t, "static", buildRule("static", { type: "postfunction-static", functions: [{ name: "touch", code, variableName: "step1" }] }));
-    await updateWorkflow(top, wf);
-    console.log('Attached "mass-touched" static PF to the In Progress transition.');
-  }
+  // Remove any prior mass-touched PF and (re)add an ADDITIVE one (api.addLabels)
+  // so it can't clobber other label writers on the transition (F10).
+  const before = (t.actions || []).length;
+  t.actions = (t.actions || []).filter((a) => !String(a.parameters?.config || "").includes("mass-touched"));
+  const code = `await api.addLabels("mass-touched");\napi.log("mass-touched");`;
+  attachRuleToTransition(t, "static", buildRule("static", { type: "postfunction-static", functions: [{ name: "touch", code, variableName: "step1" }] }));
+  await updateWorkflow(top, wf);
+  if ((t.actions || []).length !== before) console.log('Replaced "mass-touched" PF with an additive (api.addLabels) version on In Progress.');
 }
 
 // How many forward steps to take for this issue (1=Selected, 2=In Progress, 3=Done).

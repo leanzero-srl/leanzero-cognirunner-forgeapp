@@ -9968,6 +9968,85 @@ const executeStaticPostFunction = async (issueKey, config, deadline = Date.now()
       changes.push({ action: "transitionIssue", key, transitionId });
       return { success: true };
     },
+    // --- Exotic actions: create project-level entities, clone issues, and force
+    // a status via a temporary transition. All respect simulation mode. ---
+    createVersion: async (name, extra = {}) => {
+      if (simulated) { executionLogs.push(`[SIMULATION] createVersion("${name}")`); changes.push({ action: "createVersion", name, simulated: true }); return { simulated: true, name }; }
+      const iss = await api.asApp().requestJira(route`/rest/api/3/issue/${issueKey}?fields=project`, { headers: { Accept: "application/json" } });
+      const projectId = (await iss.json()).fields?.project?.id;
+      const res = await api.asApp().requestJira(route`/rest/api/3/version`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ projectId: Number(projectId), name, ...extra }) });
+      if (!res.ok) throw new Error(`createVersion failed: ${res.status} — ${(await res.text()).slice(0, 200)}`);
+      const v = await res.json(); changes.push({ action: "createVersion", id: v.id, name: v.name }); executionLogs.push(`createVersion: ${v.name} (${v.id})`); return { id: v.id, name: v.name };
+    },
+    createComponent: async (name, extra = {}) => {
+      if (simulated) { executionLogs.push(`[SIMULATION] createComponent("${name}")`); changes.push({ action: "createComponent", name, simulated: true }); return { simulated: true, name }; }
+      const projectKey = String(issueKey).split("-")[0];
+      const res = await api.asApp().requestJira(route`/rest/api/3/component`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ project: projectKey, name, ...extra }) });
+      if (!res.ok) throw new Error(`createComponent failed: ${res.status} — ${(await res.text()).slice(0, 200)}`);
+      const c = await res.json(); changes.push({ action: "createComponent", id: c.id, name: c.name }); executionLogs.push(`createComponent: ${c.name} (${c.id})`); return { id: c.id, name: c.name };
+    },
+    createIssue: async (fields) => {
+      if (simulated) { executionLogs.push(`[SIMULATION] createIssue(${JSON.stringify(fields).slice(0, 200)})`); changes.push({ action: "createIssue", fields, simulated: true }); return { simulated: true }; }
+      const res = await api.asApp().requestJira(route`/rest/api/3/issue`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ fields }) });
+      if (!res.ok) throw new Error(`createIssue failed: ${res.status} — ${(await res.text()).slice(0, 200)}`);
+      const c = await res.json(); changes.push({ action: "createIssue", key: c.key }); executionLogs.push(`createIssue: ${c.key}`); return { key: c.key };
+    },
+    cloneIssue: async (overrides = {}) => {
+      const src = await (await api.asApp().requestJira(route`/rest/api/3/issue/${issueKey}`, { headers: { Accept: "application/json" } })).json();
+      const f = src.fields || {};
+      const fields = { project: { id: f.project?.id }, issuetype: { id: f.issuetype?.id }, summary: `CLONE of ${issueKey}: ${String(f.summary || "").slice(0, 200)}`, ...(f.description ? { description: f.description } : {}), ...overrides };
+      if (simulated) { executionLogs.push(`[SIMULATION] cloneIssue -> ${fields.summary}`); changes.push({ action: "cloneIssue", from: issueKey, simulated: true }); return { simulated: true }; }
+      const res = await api.asApp().requestJira(route`/rest/api/3/issue`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ fields }) });
+      if (!res.ok) throw new Error(`cloneIssue failed: ${res.status} — ${(await res.text()).slice(0, 200)}`);
+      const c = await res.json(); changes.push({ action: "cloneIssue", from: issueKey, key: c.key }); executionLogs.push(`cloneIssue: ${issueKey} -> ${c.key}`); return { key: c.key };
+    },
+    // Emergency status change: the workflow has no "ignore restrictions" flag, so
+    // we make our own — add a TEMP global transition to the target status, fire
+    // it, then remove the temp transition (best-effort cleanup). The target
+    // status must already exist in the workflow. Needs manage:jira-configuration.
+    forceStatus: async (targetStatusName, opts = {}) => {
+      const wfName = opts.workflowName || config.workflow?.workflowName;
+      if (!wfName) throw new Error("forceStatus needs a workflowName (opts.workflowName or config.workflow.workflowName)");
+      if (simulated) { executionLogs.push(`[SIMULATION] forceStatus("${targetStatusName}") via temp transition`); changes.push({ action: "forceStatus", key: issueKey, target: targetStatusName, simulated: true }); return { simulated: true, target: targetStatusName }; }
+      const readWf = async () => {
+        const r = await api.asApp().requestJira(route`/rest/api/3/workflows/search?queryString=${wfName}&expand=values.transitions`, { headers: { Accept: "application/json" } });
+        const d = await r.json(); const wf = (d.values || []).find((w) => w.name === wfName);
+        if (!wf) throw new Error(`forceStatus: workflow not found: ${wfName}`);
+        return { d, wf };
+      };
+      const payloadFor = (d, wf, transitions) => ({
+        statuses: (d.statuses || []).map((s) => ({ statusReference: s.statusReference, id: s.id, name: s.name, statusCategory: s.statusCategory })),
+        workflows: [{ id: wf.id, version: { id: wf.version.id, versionNumber: wf.version.versionNumber }, statuses: (wf.statuses || []).map((s) => ({ statusReference: s.statusReference })), transitions }],
+      });
+      const { d, wf } = await readWf();
+      const target = (d.statuses || []).find((st) => String(st.name || "").toLowerCase() === String(targetStatusName).toLowerCase());
+      if (!target) throw new Error(`forceStatus: target status "${targetStatusName}" not in workflow "${wfName}"`);
+      const targetRef = String(target.statusReference);
+      const tempId = String(99000 + Math.floor(Math.random() * 900));
+      const tempName = `CogniRunner Emergency ${tempId}`;
+      const tempTransition = { id: tempId, type: "GLOBAL", toStatusReference: targetRef, links: [], name: tempName, description: "temporary emergency transition", actions: [], validators: [], triggers: [], properties: {} };
+      // 1) add temp transition
+      let r1 = await api.asApp().requestJira(route`/rest/api/3/workflows/update`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payloadFor(d, wf, [...wf.transitions, tempTransition])) });
+      if (!r1.ok) throw new Error(`forceStatus: add temp transition failed ${r1.status} — ${(await r1.text()).slice(0, 200)}`);
+      executionLogs.push(`forceStatus: added temp transition ${tempId} -> ${targetStatusName}`);
+      // 2) fire it on the issue
+      let moved = false;
+      try {
+        const tr = await api.asApp().requestJira(route`/rest/api/3/issue/${issueKey}/transitions`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ transition: { id: tempId } }) });
+        moved = tr.ok;
+        executionLogs.push(`forceStatus: emergency transition ${moved ? "succeeded" : "returned " + tr.status}`);
+      } finally {
+        // 3) remove the temp transition (re-read for a fresh version number)
+        try {
+          const { d: d2, wf: wf2 } = await readWf();
+          const clean = (wf2.transitions || []).filter((t) => String(t.id) !== tempId && t.name !== tempName);
+          await api.asApp().requestJira(route`/rest/api/3/workflows/update`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payloadFor(d2, wf2, clean)) });
+          executionLogs.push(`forceStatus: removed temp transition ${tempId}`);
+        } catch (e) { executionLogs.push(`forceStatus: temp transition cleanup failed (${e.message}) — remove "${tempName}" manually`); }
+      }
+      changes.push({ action: "forceStatus", key: issueKey, target: targetStatusName, moved });
+      return { success: moved, target: targetStatusName, tempTransition: tempId };
+    },
     log: (...args) => {
       const msg = args.map((a) => typeof a === "object" ? JSON.stringify(a) : String(a)).join(" ");
       executionLogs.push(msg);

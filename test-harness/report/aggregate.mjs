@@ -159,6 +159,30 @@ try {
   W();
 } catch { /* no field matrix */ }
 
+// Mass transitions
+try {
+  const mt = JSON.parse(readFileSync(join(RESULTS_DIR, "mass-transitions-results.json"), "utf8"));
+  W(`## Mass transitions (visible lifecycle moves)`);
+  W();
+  W(`Drove ${mt.issues} issues through ${mt.cycles} full lifecycle lap(s) (Backlog → Selected → In Progress → Done → Backlog): **${mt.transitionsFired} transitions fired, ${mt.failed} failed**, ${mt.throughputPerSec}/s. A static PF on the In Progress transition fired on every lap. Status changes are visible on the tickets.`);
+  W();
+} catch { /* none */ }
+
+// Exotic capabilities
+try {
+  const ex = JSON.parse(readFileSync(join(RESULTS_DIR, "exotic-pf-results.json"), "utf8"));
+  W(`## Exotic sandbox capabilities (added to the app)`);
+  W();
+  W(`New static-PF sandbox methods (deployed; needed the \`manage:jira-project\` scope) — **${ex.okCount}/${ex.total} verified**:`);
+  W();
+  W(`| Capability | Result |`);
+  W(`|---|---|`);
+  for (const [name, r] of Object.entries(ex.results)) W(`| \`api.${name}\` | ${r.ok ? "✓" : "✗"} — ${r.detail} |`);
+  W();
+  W(`\`api.forceStatus\` is the emergency trick: it adds a temporary global transition to the target status, fires it, then removes the temp transition — bypassing workflow restrictions on demand (the workflow has no "ignore restrictions" flag).`);
+  W();
+} catch { /* none */ }
+
 W(`## Knowledge system & memories`);
 W();
 W(`- **Documentation Library**: REST-tested — a validator referencing builtin docs by id injected them at runtime (\`docsUsed=true\`). ✓`);

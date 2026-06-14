@@ -19,7 +19,8 @@
     "probe": "node scripts/probe.mjs",
     "pw": "playwright test",
     "mass": "node scripts/mass-transitions.mjs",
-    "verify-memories": "node scripts/verify-memories.mjs"
+    "verify-memories": "node scripts/verify-memories.mjs",
+    "exotic": "node scripts/exotic-pf.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.48.0"

@@ -139,6 +139,12 @@ This is opt-in and off by default; production rules are unaffected.
 | F3 conditions bypass REST | OPEN — platform behavior; documentation only |
 | F7 generate-doc/research need LM-Studio MCPs | OPEN — provider-capability gap; documented (graceful skip on Forge LLM) |
 
+## New app capabilities added (this round)
+
+- **Exotic static-PF sandbox methods** (`src/index.js` `createApi`, documented in `src/shared/sandbox-api-spec.js`): `api.createVersion`, `api.createComponent`, `api.createIssue`, `api.cloneIssue`, and **`api.forceStatus`** — the emergency trick that adds a temporary global transition to a target status, fires it, then removes the temp transition (bypasses workflow restrictions on demand, since the workflow has no "ignore restrictions" flag). **5/5 verified.**
+- **Manifest scope added: `manage:jira-project`** — required by `createVersion`/`createComponent` (flagged: this is a manifest/permission change; admin re-consent was applied via `forge install --upgrade`, app v18.0.0). All methods respect simulation mode and the sandbox isolation (F2).
+- **Mass-transition driver**: marches issues through the real lifecycle so status changes are visible on tickets (0 self-loop "nothing happening").
+
 ## Harness coverage now exercised (all via REST, black-box; assessed via forge logs + changelog + properties)
 Validators (summary/description/number/labels fields; injection-hardened, PII, quality, emptiness), conditions, agentic validators (duplicate detection + release gate, with runtime toolMeta), semantic PFs (text/select/number/date targets + bad-option/type-mismatch/off-screen/simulation safety), 7 PF flavors (comment/subtask/link work; generate-doc/research MCP-gated), static PFs incl. **10 "action" PFs** exercising `api.updateIssue` across field types, `api.searchJql` aggregation, `api.transitionIssue`, read-compute-write, multi-step variable chaining, and conditional logic — plus a bulk-transition stress test. Rich, large issue bodies (multi-KB ADF) feed the AI big, challenging issue objects.
 

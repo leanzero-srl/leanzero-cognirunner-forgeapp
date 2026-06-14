@@ -173,6 +173,56 @@ Executes a workflow transition. The transitionId is a number (as string).
 **Note:** You cannot look up transitions in the sandbox. If the user provides a transition name, include a comment explaining they need the numeric ID.`,
   },
   {
+    name: "createVersion",
+    signature: "api.createVersion(name, extra?)",
+    returns: "{ id, name }",
+    summary: "Creates a fix/affects version in the current issue's project. Use the returned id to set fixVersions via api.updateIssue.",
+    detail: "(name, extra?) → { id, name }",
+    example: 'const v = await api.createVersion("2.4.0"); await api.updateIssue(api.context.issueKey, { fixVersions: [{ id: v.id }] });',
+    promptDoc: `### api.createVersion(name, extra?) → { id, name }
+Creates a project version (fix/affects version). \`extra\` may include \`description\`, \`released\`, \`releaseDate\`. Then reference it via \`api.updateIssue(key, { fixVersions: [{ id: v.id }] })\`.`,
+  },
+  {
+    name: "createComponent",
+    signature: "api.createComponent(name, extra?)",
+    returns: "{ id, name }",
+    summary: "Creates a component in the current issue's project.",
+    detail: "(name, extra?) → { id, name }",
+    example: 'const c = await api.createComponent("Payments"); await api.updateIssue(api.context.issueKey, { components: [{ id: c.id }] });',
+    promptDoc: `### api.createComponent(name, extra?) → { id, name }
+Creates a project component. \`extra\` may include \`description\`, \`leadAccountId\`, \`assigneeType\`. Reference via \`api.updateIssue(key, { components: [{ id: c.id }] })\`.`,
+  },
+  {
+    name: "createIssue",
+    signature: "api.createIssue(fields)",
+    returns: "{ key }",
+    summary: "Creates a new issue. `fields` must include project, issuetype and summary.",
+    detail: "(fields) → { key }",
+    example: 'const child = await api.createIssue({ project: { key: "PROJ" }, issuetype: { name: "Task" }, summary: "Follow-up" });',
+    promptDoc: `### api.createIssue(fields) → { key }
+Creates an issue. \`fields\` must include \`project\`, \`issuetype\`, \`summary\` (ADF for description). For sub-tasks add \`parent: { key }\` and a sub-task issue type.`,
+  },
+  {
+    name: "cloneIssue",
+    signature: "api.cloneIssue(overrides?)",
+    returns: "{ key }",
+    summary: "Clones the current issue (copies project, type, summary, description). Pass overrides to change fields on the clone.",
+    detail: "(overrides?) → { key }",
+    example: 'const dup = await api.cloneIssue({ summary: "Backport: same bug on 2.3" });',
+    promptDoc: `### api.cloneIssue(overrides?) → { key }
+Creates a copy of the current issue. \`overrides\` is merged over the copied fields (e.g. \`{ summary, assignee, labels }\`).`,
+  },
+  {
+    name: "forceStatus",
+    signature: "api.forceStatus(targetStatusName, opts?)",
+    returns: "{ success, target, tempTransition }",
+    summary: "Emergency status change: adds a TEMP transition to the target status, fires it, then removes it. The target status must already exist in the workflow. Needs manage:jira-configuration.",
+    detail: "(targetStatusName, opts?) → { success, target }",
+    example: 'await api.forceStatus("Done");',
+    promptDoc: `### api.forceStatus(targetStatusName, opts?) → { success, target }
+Forces the current issue into a status even when no normal transition path exists, by creating a temporary global transition, executing it, then removing it. The target status must already be part of the issue's workflow. \`opts.workflowName\` overrides the workflow (otherwise taken from the rule config). HEAVY: performs two workflow updates — use sparingly.`,
+  },
+  {
     name: "log",
     signature: "api.log(...args)",
     returns: "void",

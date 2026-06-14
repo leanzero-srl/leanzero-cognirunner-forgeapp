@@ -1,7 +1,7 @@
 # CogniRunner — At-Scale Runtime Test Report
 
 **Instance:** wolfaenpak.atlassian.net · **Project:** COGTEST (10014) · **Provider:** Forge LLM (Claude Haiku, confirmed via logs)
-**Generated:** 2026-06-14T06:57:21.089Z
+**Generated:** 2026-06-14T07:24:42.655Z
 
 Black-box test of CogniRunner's runtime surface (validators, conditions, semantic & static post-functions) by attaching 41 rules via the workflow REST API onto self-loop transitions and firing 188 (rule × issue) cases against a fabricated 491-issue adversarial corpus. Everything was driven through the real Jira workflow engine — not the app's test resolvers.
 
@@ -132,6 +132,24 @@ Every standard custom field type, exercised end-to-end through the workflow engi
 | version | ✓ | ✓ | v1.0-cogtest |
 | multiversion | ✓ | ✓ | v1.0-cogtest |
 | project | ✓ | ✓ | CogniRunner Test Harness (COGTEST) |
+
+## Mass transitions (visible lifecycle moves)
+
+Drove 40 issues through 2 full lifecycle lap(s) (Backlog → Selected → In Progress → Done → Backlog): **320 transitions fired, 0 failed**, 12.72/s. A static PF on the In Progress transition fired on every lap. Status changes are visible on the tickets.
+
+## Exotic sandbox capabilities (added to the app)
+
+New static-PF sandbox methods (deployed; needed the `manage:jira-project` scope) — **5/5 verified**:
+
+| Capability | Result |
+|---|---|
+| `api.createVersion` | ✓ — fixVersion=hv-COGTEST-592 |
+| `api.createComponent` | ✓ — component=hc-COGTEST-593 |
+| `api.cloneIssue` | ✓ — clone=COGTEST-595 |
+| `api.createIssue` | ✓ — child=COGTEST-597 |
+| `api.forceStatus` | ✓ — status=Done, tempTransitionCleanedUp=true |
+
+`api.forceStatus` is the emergency trick: it adds a temporary global transition to the target status, fires it, then removes the temp transition — bypassing workflow restrictions on demand (the workflow has no "ignore restrictions" flag).
 
 ## Knowledge system & memories
 

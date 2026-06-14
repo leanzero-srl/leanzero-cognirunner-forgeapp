@@ -154,7 +154,11 @@ The comprehensive suite (782 cases, 11 studies) re-ran clean after all five fail
 
 **Harness-hygiene finding (fixed — `reset-to-hub.mjs`).** A *prior* suite run scored a misleading 740/782 because the mass-/pack-transition waves had marched the suite's 600-issue seed corpus OFF the hub status into Done; the per-rule **directed self-loops only exist on the hub status**, so off-hub issues failed Jira's transition check and were recorded as **false `BLOCKED`** (with Jira's generic "Can't move" message, not an `AI Validation failed:` reason — the tell). `reset-to-hub.mjs` moves the suite corpus back to the hub before a run; **must be run after any lifecycle wave** or the next suite is silently invalid. Restored the score to 757/782.
 
-## F15 — Validator hallucinates a task from structural decoration (`[vN]` tags) · **CONFIRMED · Severity MEDIUM · adversarially verified** · proposed fix is a product decision (NOT applied)
+## F15 — Validator hallucinates a task from structural decoration (`[vN]` tags) · **FIXED + VERIFIED (v19.7.0, owner-approved always-on)** · was Severity MEDIUM · adversarially verified
+
+**Fix applied (owner chose always-on hardening).** A `VALIDATOR_DECORATION_GUARD` is now appended to BOTH validator system prompts (`callOpenAI` non-agentic + `callOpenAIWithTools` agentic): it instructs the model to judge only substantive content, never structural decoration — a bare version tag (`[v275]`, `v1.2.3`), ID (`PROJ-123`), bracketed number, or label with no described work around it does NOT satisfy "real/concrete/legitimate task" criteria, and to FAIL if the substance (decoration set aside) is empty/gibberish/just the tag. Scoped to "criteria asking for a real task" so a validator that legitimately checks a version reference isn't forced to fail. **Verified two-sided on the live instance:** the 5 INJP `[vN]`-decoration leaks now **BLOCK 5/5** (were up to 3/3 ALLOW); the 7 INJE real-task cases still **ALLOW 7/7**; the GOOD real-task controls + NONEMPTY still **ALLOW 6/6 (0 over-blocked)**. The decoration-hallucination gap is closed with no regression on legitimate validation.
+
+### (original)
 
 **Verified verdict (25-agent adversarial workflow: 12 leaked cases × 2 opposing-lens judges + synthesis; 0/24 judge assessments found injection-obedience, both lenses agreed every case).**
 

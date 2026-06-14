@@ -260,6 +260,16 @@ const isTransientStepError = (error = "") => {
     /<!DOCTYPE html|Oops - an error has occurred/i.test(s);
 };
 
+// F15 (owner-approved, always-on hardening): a validator must not infer substance
+// from structural decoration alone. Without this, the model hallucinates e.g. a
+// "version 275 release task" from a bare "[v275]" tag and PASSES otherwise content-
+// free input, defeating "is this a real task?" criteria. Appended to BOTH validator
+// system prompts (agentic + non-agentic). Scoped to "criteria asking for a real
+// task/item/description" so a validator that legitimately checks a version/ID
+// reference is not forced to fail it.
+const VALIDATOR_DECORATION_GUARD =
+  "\n\nIMPORTANT — judge only substantive content, never structural decoration: a bare version tag (e.g. [v275], v1.2.3), an issue ID (e.g. PROJ-123), a bracketed number, a label, or a similar tag with no described work or content around it does NOT by itself satisfy criteria asking for a real, concrete, or legitimate task/item/description. Never invent a task (such as a \"version release\") from such a tag. If, after setting aside any such decoration, the substantive content is empty, gibberish, or merely the tag itself, FAIL.";
+
 // Observability hook: when a rule's config sets `debugTrace: true`, the
 // validator/PF mirrors its execution detail (verdict, reason, mode, agentic
 // toolMeta, tokens, decision/trace) to a REST-readable issue entity property so
@@ -7361,7 +7371,7 @@ const callOpenAI = async (fieldValue, validationPrompt, attachmentParts, context
 
   const hasAttachments = attachmentParts && attachmentParts.length > 0;
 
-  const systemPrompt = hasAttachments
+  const systemPrompt = (hasAttachments
     ? `You are a validation assistant. Your job is to validate content (text, documents, images, and attachments) against specific criteria.
 You must respond with ONLY a JSON object in this exact format:
 {"isValid": true, "reason": "Brief explanation"}
@@ -7378,7 +7388,7 @@ or
 
 Do not include any other text, markdown, or explanation outside the JSON object.`
   + (contextDocsText ? `\n\n## Reference Documentation\nUse the following documentation to inform your validation decisions:\n\n${contextDocsText.substring(0, 30000)}` : "")
-  + (memorySection || "");
+  + (memorySection || "")) + VALIDATOR_DECORATION_GUARD;
 
   // Build user message content — multimodal when attachments are present
   let userContent;
@@ -7872,7 +7882,8 @@ RESPONSE FORMAT:
 - On pass, a simple confirmation is sufficient.
 - Do not include any text outside the JSON object.`
   + (contextDocsText ? `\n\n## Reference Documentation\nUse the following documentation to inform your validation decisions:\n\n${contextDocsText.substring(0, 30000)}` : "")
-  + (memorySection || "");
+  + (memorySection || "")
+  + VALIDATOR_DECORATION_GUARD;
 
   // Build initial user message
   let userContent;

@@ -33,9 +33,12 @@ npm install                    # only needed for the (optional) Playwright specs
 npm run probe          # smoke-test auth + confirm the app's forge rules are attachable
 npm run setup          # create COGTEST project + discover workflow/hub status
 node scripts/setup-fields.mjs   # create + wire the COGTEST_* custom fields
+node scripts/setup-fields-all.mjs  # create ALL 20 Atlassian custom field types
 npm run attach         # attach the full rule set (idempotent) as self-loop transitions
 npm run seed           # seed the adversarial corpus (COGTEST_ISSUE_COUNT controls volume)
 npm run run            # fire every (rule x issue) case, score black-box -> results/run-results.json
+npm run bulk           # bulk-transition stress test (BULK_CONCURRENCY controls load)
+npm run field-matrix   # write+read EVERY field type; verify via changelog + cogni-debug property
 npm run report         # aggregate -> results/report.md + results/report.html
 CONFIRM=1 npm run teardown      # delete project + COGTEST_* fields when done
 ```

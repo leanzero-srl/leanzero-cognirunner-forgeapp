@@ -246,6 +246,20 @@ const isTransientAIError = (status, error = "") =>
   status === 429 || status === 408 || (typeof status === "number" && status >= 500) ||
   /\b(429|rate.?limit|timed?.?out|timeout|network|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|aborted|socket hang up)\b/i.test(String(error));
 
+// F13: a transient/infrastructure static-PF step failure (throttle, gateway,
+// step-timeout from a slow upstream, Jira's HTML error page) — as opposed to a
+// real, reusable code/logic mistake. Runtime memory auto-capture SKIPS these:
+// they teach nothing reusable, and queueing a distill (one AI call each) for
+// every throttled step during a bulk wave creates a self-amplifying loop
+// (throttle → timeouts → distill-storm → more AI load → more throttle).
+const isTransientStepError = (error = "") => {
+  const s = String(error);
+  return /\b(429|502|503|504)\b/.test(s) ||
+    /too many requests|rate.?limit|bad gateway|service unavailable|gateway time-?out/i.test(s) ||
+    /exceeded its .* time budget|time budget exhausted|timed?.?out|ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|socket hang up|aborted/i.test(s) ||
+    /<!DOCTYPE html|Oops - an error has occurred/i.test(s);
+};
+
 // Observability hook: when a rule's config sets `debugTrace: true`, the
 // validator/PF mirrors its execution detail (verdict, reason, mode, agentic
 // toolMeta, tokens, decision/trace) to a REST-readable issue entity property so
@@ -9881,8 +9895,42 @@ const executeStaticPostFunction = async (issueKey, config, deadline = Date.now()
   // Simulation mode: reads stay live, writes are recorded but never executed.
   const simulated = config.simulationMode === true;
 
-  // Build API surface for sandbox
-  const createApi = () => { const this_api = {
+  // Build API surface for sandbox.
+  // F12: shadow the Jira client inside createApi with a transient-retry wrapper so
+  // EVERY sandbox REST call (updateIssue, editIssue, transitionIssue, addComment,
+  // the agile / exotic actions...) retries 429/5xx under load instead of throwing
+  // on the first throttle and silently losing the write. Honors Retry-After within
+  // the step's remaining time budget; non-transient statuses (400/403/404) pass
+  // straight through to each method's own handling. Call sites stay byte-identical
+  // (the shadow makes every `api.asApp().requestJira` resolve to the wrapper).
+  const appJiraClient = api.asApp();
+  // F12: per-step deadline the retry wrapper must respect. The step loop sets this
+  // to (now + stepBudgetMs) before each step; it defaults to the overall PF
+  // deadline for any call outside a step. Retries that would run past it are
+  // skipped so a throttled write fails fast WITH budget to spare, instead of
+  // burning the whole step budget on retries — which under a flood just keeps the
+  // function alive longer and amplifies the throttle (a retry storm).
+  let stepDeadline = deadline;
+  const createApi = () => {
+    const TRANSIENT_REST = [429, 502, 503, 504];
+    const retryingRequestJira = async (routeArg, opts) => {
+      let res = await appJiraClient.requestJira(routeArg, opts);
+      let attempt = 0;
+      while (!res.ok && TRANSIENT_REST.includes(res.status) && attempt < 3) {
+        const retryAfterSec = Number(res.headers?.get?.("retry-after")) || (attempt + 1);
+        const waitMs = Math.max(300, Math.min(retryAfterSec * 1000, 3000));
+        // Only retry if ≥3.5s of step budget will remain AFTER the wait to issue
+        // the request and surface its result; otherwise give up now (fast fail).
+        if (stepDeadline - Date.now() - waitMs < 3500) break;
+        executionLogs.push(`Jira ${res.status} (transient) — retry ${attempt + 1}/3 in ${Math.round(waitMs / 1000)}s...`);
+        await new Promise((r) => setTimeout(r, waitMs));
+        res = await appJiraClient.requestJira(routeArg, opts);
+        attempt++;
+      }
+      return res;
+    };
+    const api = { asApp: () => ({ requestJira: retryingRequestJira }) };
+    const this_api = {
     getIssue: async (key) => {
       const res = await api.asApp().requestJira(route`/rest/api/3/issue/${key}`);
       if (!res.ok) throw new Error(`getIssue failed: ${res.status}`);
@@ -10295,6 +10343,7 @@ const executeStaticPostFunction = async (issueKey, config, deadline = Date.now()
       // synchronous infinite loop blocks the event loop and can only be bounded by
       // Forge's function-level timeout — this guards async hangs, the realistic case.
       const stepBudgetMs = Math.max(2000, Math.min(15000, deadline - Date.now() - 2000));
+      stepDeadline = Date.now() + stepBudgetMs; // F12: scope sandbox-API transient retries to this step's budget
       const TIMED_OUT = Symbol("step-timeout");
       const result = await Promise.race([
         Promise.resolve(sandboxFn(sandboxApi, variables, ...scopeVarNames.map((n) => variables[n]), ...blockedGlobals.map(() => undefined))),
@@ -10866,7 +10915,10 @@ export const dispatchPostFunction = async (issueKey, config, extensionKey, pfDea
           const memorySettings = await getMemorySettings();
           if (memorySettings.autoCapture === true) {
             const stepError = result.stepResults?.find((s) => s.error)?.error || "";
-            if (stepError) {
+            // F13: never learn from transient/infrastructure failures (429,
+            // gateway, step-timeout under throttle). They aren't reusable lessons
+            // and distilling each one amplifies a throttle storm with more AI calls.
+            if (stepError && !isTransientStepError(stepError)) {
               const errorSig = errorSignature(stepError);
               const memories = await loadMemories();
               const known = memories.find((m) => m.meta?.errorSig === errorSig);

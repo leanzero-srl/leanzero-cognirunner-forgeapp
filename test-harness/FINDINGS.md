@@ -116,7 +116,7 @@ This is opt-in and off by default; production rules are unaffected.
 
 ## F11 — Chalk-full AI transitions don't scale to mass bulk operations (load multiplication) · **FIXED + VERIFIED (graceful degradation)** · was Severity MEDIUM
 
-**Fix applied (v19.x).** `getFieldValue` now retries the Jira REST field-read on 429/5xx (honoring Retry-After) and, if it still can't read, **throws a tagged transient error instead of returning null** — and the validator catches it and **fails OPEN** (rather than mistaking a throttled read for an empty field and blocking). Combined with F9 (AI 429 fail-open), a chalk-full wave now **degrades gracefully**: re-running the exact config that collapsed before (1000-issue wave, chalk-full lifecycle, concurrency 20) now **drains to Done instead of failing ~53%** — transitions proceed under throttle. The operational guidance below still holds (AI-heavy transitions cap throughput at the AI rate limit; pace bulk for best throughput) — but the system no longer *fails* transitions under load, it slows.
+**Fix applied (v19.x) + VERIFIED.** `getFieldValue` now retries the Jira REST field-read on 429/5xx (honoring Retry-After) and, if it still can't read, **throws a tagged transient error instead of returning null** — and the validator catches it and **fails OPEN** (rather than mistaking a throttled read for an empty field and blocking). Combined with F9 (AI 429 fail-open), a chalk-full wave now **degrades gracefully**. **Verification: the exact config that collapsed before (chalk-full lifecycle, transition-concurrency 20) re-ran as 900 transitions across 300 issues with `0 failed, 0 rate-limited`** (was ~53% failures). Throughput drops (0.69/s — the retry waits out the throttle) but reliability is total: the system no longer *fails* transitions under load, it *slows*. The operational guidance below still holds (AI-heavy transitions cap throughput at the AI rate limit; pace bulk for best throughput).
 
 ### (original)
 
@@ -129,6 +129,24 @@ This is opt-in and off by default; production rules are unaffected.
 **Proposed actions.**
 1. Extend transient-error handling (F9) to **Jira REST field-reads** in validators — retry `getFieldValue` on 429 (honor Retry-After) and/or fail-open on read errors, so a transition isn't blocked by a throttled field fetch.
 2. Operational guidance: **AI-heavy ("chalk-full") transitions don't scale to mass bulk operations** — the AI rate limit caps throughput. For bulk/automation paths, keep AI rules off the highest-volume transitions, or pace bulk transitions to keep the effective op-rate under the throttle ceiling (≤~50 concurrent here). Paced (concurrency ≤4–5), the same wave completes.
+
+## F12 — Static-PF sandbox write actions threw on the first Jira 429 (lost writes under load) · **FIXED (v19.4.0)** · was Severity MEDIUM
+
+**What.** Surfaced by reading `forge logs` during the F11 wave: a static PF doing `api.addLabels("mass-touched")` logged `editIssue failed: 429 — <!DOCTYPE html>…Oops` → `0/1 step(s) succeeded`. Only `updateIssue` had a 429 retry; the other ~25 sandbox write methods (`editIssue`/`addLabels`/`removeLabels`, `transitionIssue`/`transitionByName`, `addComment`, `setAssignee`, `addWorklog`, `createIssueLink`, the agile `moveToSprint`/`rankIssue` and exotic `createVersion`/`cloneIssue`/`forceStatus` actions…) called `api.asApp().requestJira` directly and **threw on the first throttle, silently dropping the write** — the static-PF analog of F11.
+
+**Fix.** Inside `createApi()` the Jira client is now **shadowed** by a thin transient-retry wrapper: every `api.asApp().requestJira` call retries 429/502/503/504 (up to 3×, honoring `Retry-After`) within the step's remaining time budget; non-transient statuses (400/403/404) pass straight through to each method's existing per-field error handling (so `getProperty`'s 404→null, `updateIssue`'s ADF-coerce/403-notify logic, etc. are untouched). The shadow keeps all 32 call sites byte-identical. **Smoke-verified 13/13 sandbox actions still pass** after the change; load-verified that throttled writes recover instead of dropping.
+
+## F13 — Memory auto-capture distilled from transient failures → self-amplifying "distill storm" · **FIXED (v19.6.0)** · was Severity MEDIUM
+
+**What.** Surfaced by reading `forge logs` during the bulk waves: with auto-capture ON, **every** failed static-PF step queued a `memory_distill` task — including throttle-induced failures (`429`, `Step exceeded its 15s time budget`). The logs showed a flood of `memory_distill` tasks executing in tight succession. Two harms: (1) **pollution** — a 429/timeout is not a reusable code lesson (the AI prompt *might* `{skip:true}`, but only after burning an AI call to decide); (2) **a feedback loop** — under a throttle storm, each transient failure spawns a distill (1 AI call), which adds AI load, which causes more 429s, which causes more failures and more distills.
+
+**Fix.** A new `isTransientStepError(msg)` classifier (parallel to `isTransientAIError`) gates the auto-capture trigger: transient/infrastructure errors (429/502/503/504, `too many requests`, gateway, `time budget`, `ECONNRESET`/`ETIMEDOUT`/`socket hang up`, Jira's HTML error page) are **neither reinforced nor distilled** — the whole capture block is skipped. Genuine, reusable failures (a 400 field-type error, an unavailable transition, a 404, a `TypeError`, a 410 gone endpoint) still distill. **Unit-verified 6/6 transient → skip, 5/5 real lessons → distill.**
+
+## F14 — Transition 400s under PEAK concurrent validator load (Jira-layer) · **OPEN (low-confidence / not reproduced in isolation)** · Severity LOW
+
+**What.** During the 150-issue × concurrency-22 chalk-full wave (validators healthy and actively running, not failing open), a contiguous block of `POST /issue/{key}/transitions` returned **HTTP 400** (not 429). **What I could establish:** the CogniRunner backend logs show those validators returning `isValid:true` with **no errors** — so this is **not** a rule-logic block or a CogniRunner exception. **What I could NOT do: reproduce it at moderate load** — single-shot transitions (204), a 227-issue single-transition burst at concurrency 25 (0 failed), and a 120-step rapid sequential march at concurrency 20 (0 failed) were all clean. The 400 appears only at the *peak* of sustained high-concurrency validator pressure.
+
+**Honest assessment (flagged: my confidence on the exact trigger is LOW).** Most likely a **Jira-platform-layer rejection** when validator Forge-function invocations are under heavy concurrent pressure (the workflow engine fails *closed* — 400 — if a validator invocation is killed/errors at the platform level, which the in-code fail-open of F9/F11 cannot catch because the code never runs). This is the same operating regime as F11 ("chalk-full doesn't scale to extreme concurrency"). **Action:** folded into F11's operational guidance (don't pack many AI validators on transitions used for high-concurrency bulk; pace bulk). Needs a dedicated repro (reset ~150 issues to Backlog and re-run the exact wave with per-transition `debugTrace` to see whether the validate function ran) before it can be raised above LOW / confirmed as a distinct platform finding.
 
 ## Positives confirmed under adversarial + bulk load
 
@@ -151,6 +169,9 @@ This is opt-in and off by default; production rules are unaffected.
 | F6 unbounded-loop codegen guidance | **FIXED** |
 | F8 link term-based candidate search | **FIXED + VERIFIED** |
 | F9 transient-error fail-open + 429 backoff | **FIXED + VERIFIED** |
+| F10 concurrent-PF additive writes | **FIXED + VERIFIED** (8/8 labels survive) |
+| F11 field-read 429 retry + fail-open | **FIXED + VERIFIED** (900 transitions @ concurrency 20, 0 failed) |
+| F12 sandbox write-action transient retry | **FIXED** (v19.4.0; 13/13 actions smoke-pass) |
 | F-OBS runtime debug-trace observability | **ADDED** |
 | F3 conditions bypass REST | OPEN — platform behavior; documentation only |
 | F7 generate-doc/research need LM-Studio MCPs | OPEN — provider-capability gap; documented (graceful skip on Forge LLM) |

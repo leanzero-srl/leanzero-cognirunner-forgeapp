@@ -27,6 +27,7 @@ const ExtLink = ({ href, children, style }) => (
 const PROVIDER_OPTIONS = [
   { value: "openai", label: "OpenAI", icon: '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M14.949 6.547a3.94 3.94 0 0 0-.348-3.273 4.11 4.11 0 0 0-4.4-1.934 4.1 4.1 0 0 0-1.778-.14 4.15 4.15 0 0 0-2.118-.114 4.1 4.1 0 0 0-1.891.948 4.04 4.04 0 0 0-1.158 1.753 4.1 4.1 0 0 0-1.563.679 4 4 0 0 0-1.14 1.253.99 3.99 0 0 0 .502 4.731 3.94 3.94 0 0 0 .346 3.274 4.11 4.11 0 0 0 4.402 1.933c.382.425.852.764 1.377.995.526.231 1.095.35 1.67.346 1.78.002 3.358-1.132 3.901-2.804a4.1 4.1 0 0 0 1.563-.68 4 4 0 0 0 1.14-1.253 3.99 3.99 0 0 0-.506-4.716m-6.097 8.406a3.05 3.05 0 0 1-1.945-.694l.096-.054 3.23-1.838a.53.53 0 0 0 .265-.455v-4.49l1.366.778q.02.011.025.035v3.722c-.003 1.653-1.361 2.992-3.037 2.996m-6.53-2.75a2.95 2.95 0 0 1-.36-2.01l.095.057L5.29 12.09a.53.53 0 0 0 .527 0l3.949-2.246v1.555a.05.05 0 0 1-.022.041L6.473 13.3c-1.454.826-3.311.335-4.15-1.098m-.85-6.94A3.02 3.02 0 0 1 3.07 3.949v3.785a.51.51 0 0 0 .262.451l3.93 2.237-1.366.779a.05.05 0 0 1-.048 0L2.585 9.342a2.98 2.98 0 0 1-1.113-4.094zm11.216 2.571L8.747 5.576l1.362-.776a.05.05 0 0 1 .048 0l3.265 1.86a3 3 0 0 1 1.173 1.207 2.96 2.96 0 0 1-.27 3.2 3.05 3.05 0 0 1-1.36.997V8.279a.52.52 0 0 0-.276-.445m1.36-2.015-.097-.057-3.226-1.855a.53.53 0 0 0-.53 0L6.249 6.153V4.598a.04.04 0 0 1 .019-.04L9.533 2.7a3.07 3.07 0 0 1 3.257.139c.474.325.843.778 1.066 1.303.223.526.289 1.103.191 1.664zM5.503 8.575 4.139 7.8a.05.05 0 0 1-.026-.037V4.049c0-.57.166-1.127.476-1.607s.752-.864 1.275-1.105a3.08 3.08 0 0 1 3.234.41l-.096.054-3.23 1.838a.53.53 0 0 0-.265.455zm.742-1.577 1.758-1 1.762 1v2l-1.755 1-1.762-1z"/></svg>' },
   { value: "azure", label: "Azure OpenAI", icon: '<svg viewBox="0 0 96 96" fill="currentColor"><path d="M33.338 6.544h26.038l-27.03 80.087a4.152 4.152 0 0 1-3.933 2.824H8.149a4.145 4.145 0 0 1-3.928-5.47L29.404 9.368a4.152 4.152 0 0 1 3.934-2.825z" opacity="0.8"/><path d="M71.175 60.261h-41.29a1.911 1.911 0 0 0-1.305 3.309l26.532 24.764a4.171 4.171 0 0 0 2.846 1.121h23.38z" opacity="0.6"/><path d="M33.338 6.544a4.118 4.118 0 0 0-3.943 2.879L4.252 83.917a4.14 4.14 0 0 0 3.908 5.538h20.787a4.443 4.443 0 0 0 3.41-2.9l5.014-14.777 17.91 16.705a4.237 4.237 0 0 0 2.666.972H81.24L71.024 60.261l-29.781.007L59.47 6.544z" opacity="0.9"/></svg>' },
+  { value: "openrouter", label: "OpenRouter", icon: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M16.778 1.844v1.919q-.569-.026-1.138-.032-.708-.008-1.415.037c-1.93.126-4.023.728-6.149 2.237-2.911 2.066-2.731 1.95-4.14 2.75-.396.223-1.342.574-2.185.798-.841.225-1.753.333-1.751.333v4.229s.768.108 1.61.333c.842.224 1.789.575 2.185.799 1.41.798 1.228.683 4.14 2.75 2.126 1.509 4.22 2.11 6.148 2.236.88.058 1.716.041 2.555.005v1.918l7.222-4.168-7.222-4.17v2.176c-.86.038-1.611.065-2.278.021-1.364-.09-2.417-.357-3.979-1.465-2.244-1.593-2.866-2.027-3.68-2.508.889-.518 1.449-.906 3.822-2.59 1.56-1.109 2.614-1.377 3.978-1.466.667-.044 1.418-.017 2.278.02v2.176L24 6.014Z"/></svg>' },
   { value: "anthropic", label: "Anthropic", icon: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M17.3041 3.541h-3.6718l6.696 16.918H24Zm-10.6082 0L0 20.459h3.7442l1.3693-3.5527h7.0052l1.3693 3.5528h3.7442L10.5363 3.5409Zm-.3712 10.2232 2.2914-5.9456 2.2914 5.9456Z"/></svg>' },
   { value: "lmstudio", label: "LM Studio", icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="14" rx="2"/><path d="M8 21h8M12 17v4"/><path d="M7 8h2v3H7zM11 8h2v3h-2zM15 8h2v3h-2z"/></svg>' },
   { value: "atlassian", label: "Atlassian (Forge LLM)", icon: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M7.12 11.084c-.282-.302-.717-.284-.92.072L.123 23.305a.585.585 0 0 0 .523.847h8.46a.563.563 0 0 0 .523-.323c1.825-3.772.719-9.508-2.51-12.745zM11.434.323c-3.022 4.785-2.822 10.085-.831 14.066l4.079 8.157a.585.585 0 0 0 .523.323h8.46a.585.585 0 0 0 .523-.847S12.81 1.255 12.524.685c-.256-.51-.865-.518-1.09-.362z"/></svg>' },
@@ -36,6 +37,7 @@ const PROVIDER_HELP = {
   openai: { keyPlaceholder: "sk-...", keyLabel: "OpenAI API Key", endpointNeeded: false },
   // Azure OpenAI rides the same OpenAI-compatible path as OpenAI; it is mostly untested end-to-end.
   azure: { keyPlaceholder: "Enter your Azure OpenAI API key...", keyLabel: "Azure API Key", endpointNeeded: true, endpointPlaceholder: "https://myresource.openai.azure.com/openai/v1", note: "Azure OpenAI is mostly untested — verify your deployment before relying on it." },
+  openrouter: { keyPlaceholder: "sk-or-...", keyLabel: "OpenRouter API Key", endpointNeeded: false },
   anthropic: { keyPlaceholder: "sk-ant-...", keyLabel: "Anthropic API Key", endpointNeeded: false },
   lmstudio: {
     keyPlaceholder: "Optional: Bearer token from LM Studio Developer page",
@@ -862,7 +864,7 @@ export default function OpenAIConfig({ invoke }) {
               </p>
             )}
             <p style={{ margin: "4px 0 0 0", fontSize: "11px", color: "var(--text-muted)" }}>
-              All providers support chat completions and tool calling. Vision (image attachments) requires OpenAI, Azure, Anthropic, or a vision-capable LM Studio model — Atlassian Forge LLM is text-only for now.
+              All providers support chat completions and tool calling. Vision (image attachments) requires OpenAI, Azure, OpenRouter, Anthropic, or a vision-capable LM Studio model — Atlassian Forge LLM is text-only for now.
             </p>
             {isAtlassian && (
               <div className="anim-rise" style={{ marginTop: "8px", padding: "8px 10px", background: "var(--card-bg)", border: "2px solid var(--primary-color)", boxShadow: "0 4px 12px -4px rgba(37, 99, 235, 0.35)", borderRadius: "6px", fontSize: "11px", color: "var(--text-secondary)" }}>
@@ -1105,6 +1107,15 @@ export default function OpenAIConfig({ invoke }) {
                   "The key is a 32-character hex string (no 'sk-' prefix). Keep it secret — anyone with this key can use your Azure OpenAI quota."
                 } />
               )}
+              {provider === "openrouter" && (
+                <Tooltip text={
+                  "How to get your OpenRouter API key:\n\n" +
+                  "1. Go to openrouter.ai and sign in\n" +
+                  "2. Click your profile icon > 'Keys'\n" +
+                  "3. Click 'Create Key', give it a name, and copy it\n\n" +
+                  "OpenRouter keys start with 'sk-or-'. You'll need credits in your account to make API calls."
+                } />
+              )}
               {provider === "anthropic" && (
                 <Tooltip text={
                   "How to get your Anthropic API key:\n\n" +
@@ -1262,7 +1273,7 @@ export default function OpenAIConfig({ invoke }) {
 
       {/* MCP Integrations.
           CogniRunner is the MIDDLE LAYER: on every hosted provider (OpenAI / Azure /
-          Anthropic / Forge LLM) the app itself dials the MCP's URL and runs
+          OpenRouter / Anthropic / Forge LLM) the app itself dials the MCP's URL and runs
           the tool calls — the AI provider never sees the URL or touches the MCP. Each
           MCP is configured like an mcp.json entry (a URL + optional key). LM Studio is
           the local-only alternative (the MCP runs on the user's machine via stdio). All
@@ -1277,7 +1288,7 @@ export default function OpenAIConfig({ invoke }) {
               <p style={{ margin: 0, fontSize: "12px", color: "var(--text-secondary)" }}>
                 {isLmStudio
                   ? <>Extra tools the model can call via your LM Studio's <code style={{ fontSize: "11px" }}>mcp.json</code> (local, runs on your machine). Enable each and follow the setup steps. JQL agentic search is unaffected — it runs on a separate code path.</>
-                  : <><strong>CogniRunner is the middle layer.</strong> Paste each MCP's hosted URL below and CogniRunner connects to it directly and runs the tool calls — your AI provider never sees the URL. Works the same on OpenAI / Azure / Anthropic / Forge LLM. All three MCPs (<code style={{ fontSize: "11px" }}>context7</code>, <code style={{ fontSize: "11px" }}>web-search</code>, <code style={{ fontSize: "11px" }}>doc-reader</code>) are supported.</>
+                  : <><strong>CogniRunner is the middle layer.</strong> Paste each MCP's hosted URL below and CogniRunner connects to it directly and runs the tool calls — your AI provider never sees the URL. Works the same on OpenAI / Azure / OpenRouter / Anthropic / Forge LLM. All three MCPs (<code style={{ fontSize: "11px" }}>context7</code>, <code style={{ fontSize: "11px" }}>web-search</code>, <code style={{ fontSize: "11px" }}>doc-reader</code>) are supported.</>
                 }
               </p>
             </div>
@@ -1390,7 +1401,7 @@ export default function OpenAIConfig({ invoke }) {
             />
 
             {/* web-search — visible for ALL providers. On every hosted provider
-                (OpenAI / Azure / Anthropic / Forge LLM) CogniRunner is
+                (OpenAI / Azure / OpenRouter / Anthropic / Forge LLM) CogniRunner is
                 the MCP client and proxies the tool calls; LM Studio loads it from
                 local/remote mcp.json. */}
             <McpCard
@@ -1508,9 +1519,9 @@ export default function OpenAIConfig({ invoke }) {
                   </div>
 
                   {/* Provider-specific guidance for what happens once saved */}
-                  {(provider === "anthropic" || provider === "openai" || provider === "azure") && (
+                  {(provider === "anthropic" || provider === "openai" || provider === "azure" || provider === "openrouter") && (
                     <div style={{ padding: "8px 10px", marginBottom: "10px", background: "rgba(34, 197, 94, 0.08)", border: "1px solid rgba(34, 197, 94, 0.4)", borderRadius: "6px", fontSize: "11px" }}>
-                      <strong>{provider === "anthropic" ? "Anthropic" : provider === "azure" ? "Azure OpenAI" : "OpenAI"} support: enabled.</strong> CogniRunner is the MCP client: during agentic validation it lists the enabled web-search tools, exposes the curated subset to the model as function tools, and proxies each tool call to the hosted server. Your AI provider never sees the URL. Configure the Service URL + Bearer (+ the Serper key) above and toggle the MCP on.
+                      <strong>{provider === "anthropic" ? "Anthropic" : provider === "azure" ? "Azure OpenAI" : provider === "openrouter" ? "OpenRouter" : "OpenAI"} support: enabled.</strong> CogniRunner is the MCP client: during agentic validation it lists the enabled web-search tools, exposes the curated subset to the model as function tools, and proxies each tool call to the hosted server. Your AI provider never sees the URL. Configure the Service URL + Bearer (+ the Serper key) above and toggle the MCP on.
                     </div>
                   )}
                   {isAtlassian && (
@@ -1566,7 +1577,7 @@ npm install && npm run build`}
             />
 
             {/* doc-reader — visible for ALL providers. On every hosted provider
-                (OpenAI / Azure / Anthropic / Forge LLM) CogniRunner is
+                (OpenAI / Azure / OpenRouter / Anthropic / Forge LLM) CogniRunner is
                 the MCP client and proxies the tool calls; LM Studio loads it from
                 local/remote mcp.json. */}
             <McpCard
@@ -1664,9 +1675,9 @@ npm install && npm run build`}
                   </div>
 
                   {/* Provider-specific guidance for what happens once saved */}
-                  {(provider === "anthropic" || provider === "openai" || provider === "azure") && (
+                  {(provider === "anthropic" || provider === "openai" || provider === "azure" || provider === "openrouter") && (
                     <div style={{ padding: "8px 10px", marginBottom: "10px", background: "rgba(34, 197, 94, 0.08)", border: "1px solid rgba(34, 197, 94, 0.4)", borderRadius: "6px", fontSize: "11px" }}>
-                      <strong>{provider === "anthropic" ? "Anthropic" : provider === "azure" ? "Azure OpenAI" : "OpenAI"} support: enabled.</strong> CogniRunner is the MCP client: during agentic validation it lists the enabled doc-reader tools, exposes them to the model as function tools, and proxies the tool calls to the hosted doc-processor. Your AI provider never sees the URL. Configure the URL + Bearer above and enable doc-reader (and doc-writer for the create/edit tools). The single-use upload capability for each Jira issue is bound server-side — the model cannot redirect uploads.
+                      <strong>{provider === "anthropic" ? "Anthropic" : provider === "azure" ? "Azure OpenAI" : provider === "openrouter" ? "OpenRouter" : "OpenAI"} support: enabled.</strong> CogniRunner is the MCP client: during agentic validation it lists the enabled doc-reader tools, exposes them to the model as function tools, and proxies the tool calls to the hosted doc-processor. Your AI provider never sees the URL. Configure the URL + Bearer above and enable doc-reader (and doc-writer for the create/edit tools). The single-use upload capability for each Jira issue is bound server-side — the model cannot redirect uploads.
                     </div>
                   )}
                   {isAtlassian && (

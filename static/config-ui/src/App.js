@@ -3059,7 +3059,7 @@ function App() {
         ]);
         if (keyStatus?.isByok) setIsByok(true);
         if (providerResult?.success) {
-          const labels = { openai: "OpenAI", azure: "Azure OpenAI", anthropic: "Anthropic" };
+          const labels = { openai: "OpenAI", azure: "Azure OpenAI", openrouter: "OpenRouter", anthropic: "Anthropic" };
           setProviderLabel(labels[providerResult.provider] || providerResult.provider || "AI");
         }
       } catch (e) {

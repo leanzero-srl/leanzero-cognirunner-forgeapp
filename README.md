@@ -153,7 +153,8 @@ CogniRunner supports **four AI providers** via Bring Your Own Key. Each provider
 | Provider | Default Model | Auth | Endpoint |
 |----------|--------------|------|----------|
 | **OpenAI** | `gpt-5.4-mini` | `Authorization: Bearer` | `api.openai.com/v1` |
-| **Azure OpenAI** | `gpt-5.4-mini` | `api-key` header | Custom: `{resource}.openai.azure.com/openai/v1` _(mostly untested)_ |
+| **Azure OpenAI** _(mostly untested)_ | `gpt-5.4-mini` | `api-key` header | Custom: `{resource}.openai.azure.com/openai/v1` |
+| **OpenRouter** | `openai/gpt-4o-mini` | `Authorization: Bearer` + attribution headers | `openrouter.ai/api/v1` |
 | **Anthropic** | `claude-haiku-4-5` | `x-api-key` + `anthropic-version` | `api.anthropic.com/v1` |
 
 **How it works:**
@@ -175,7 +176,7 @@ Accessible via **Apps > CogniRunner** in the Jira sidebar. Four tabs:
 | **Rules** | All configured validators, conditions, and post-functions across all workflows. Type filter (All/Validators/Conditions/Post Functions) + ownership filter (All Rules/My Rules). Enable/disable toggles per rule. |
 | **Documentation** | Shared document library. Upload API docs, JSON schemas, business rules, or code snippets. Attach them to any rule so the AI has context during validation. Auto-format for JSON, XML, YAML, JavaScript. |
 | **Permissions** | Add users with roles (Viewer/Editor/Admin) and scope (Own Rules/All Rules). Search Jira users by name. Role dropdown + scope dropdown per user. Last admin protection. |
-| **Settings** | AI provider configuration. Provider selector with official brand icons (OpenAI, Azure, Anthropic). API key management with per-provider storage. Model selection dropdown. |
+| **Settings** | AI provider configuration. Provider selector with official brand icons (OpenAI, Azure, Anthropic, OpenRouter). API key management with per-provider storage. Model selection dropdown. |
 
 #### Execution Logs
 
@@ -281,7 +282,7 @@ Single file containing all server-side logic:
 |-----------|---------|
 | **`validate()`** | Workflow validator/condition handler. Extracts field value, routes to standard or agentic AI validation, returns pass/fail. |
 | **`executePostFunction()`** | Post-function handler. Routes to semantic or static execution. Always returns `{ result: true }` (never blocks). |
-| **`callAIChat()`** | Unified AI adapter. Normalizes between OpenAI/Azure (pass-through) and Anthropic (full request/response translation). |
+| **`callAIChat()`** | Unified AI adapter. Normalizes between OpenAI/Azure/OpenRouter (pass-through) and Anthropic (full request/response translation). |
 | **`callAnthropicChat()`** | Anthropic translation layer. Extracts system prompt, converts images/docs/tools/tool-results between formats. |
 | **`callOpenAI()`** | Standard single-turn validation. Field content + prompt -> `{ isValid, reason }`. |
 | **`callOpenAIWithTools()`** | Agentic multi-turn validation with tool-calling loop (up to 3 rounds, 22s budget). |
@@ -389,7 +390,7 @@ Admin/Editor clicks "+ Add Rule" in admin panel
 - **Node.js 22+** (Forge runtime is `nodejs22.x`)
 - **Atlassian Forge CLI** (`npm install -g @forge/cli`)
 - **An Atlassian Cloud developer site** ([get one free](https://developer.atlassian.com/platform/forge/getting-started/))
-- **An AI API key** from any supported provider (OpenAI, Azure OpenAI, or Anthropic) — or use the zero-key Atlassian Forge LLM
+- **An AI API key** from any supported provider (OpenAI, Azure OpenAI, OpenRouter, or Anthropic)
 
 ### Setup
 
@@ -514,7 +515,7 @@ Set via `forge variables set KEY value`.
 | `validation_logs` | Last 50 execution log entries (FIFO) |
 | `config_registry` | Array of all registered rule configs |
 | `app_admins` | User permissions: `[{ accountId, role, scope }]` |
-| `COGNIRUNNER_AI_PROVIDER` | Active provider name (`openai`, `azure`, `anthropic`, `lmstudio`, `atlassian`) |
+| `COGNIRUNNER_AI_PROVIDER` | Active provider name (`openai`, `azure`, `openrouter`, `anthropic`) |
 | `COGNIRUNNER_AI_BASE_URL` | Custom endpoint URL (Azure) |
 | `COGNIRUNNER_KEY_{provider}` | Per-provider API key |
 | `COGNIRUNNER_MODEL_{provider}` | Per-provider model selection |
@@ -564,6 +565,7 @@ Set via `forge variables set KEY value`.
 |--------|-----------|---------|
 | `api.openai.com` | Backend + Client | OpenAI API calls |
 | `*.openai.azure.com` | Backend + Client | Azure OpenAI Service (customer endpoints) |
+| `openrouter.ai` | Backend + Client | OpenRouter aggregator API |
 | `api.anthropic.com` | Backend + Client | Anthropic Messages API |
 | `*.atlassian.net` | Images (CSP) | Project avatars and Jira icons |
 

@@ -2609,7 +2609,7 @@ resolver.define("saveProvider", async ({ payload, context }) => {
   try {
     const { provider, baseUrl } = payload;
     if (!provider || !PROVIDERS[provider]) {
-      return { success: false, error: "Invalid provider. Choose: openai, azure, anthropic, lmstudio, atlassian" };
+      return { success: false, error: "Invalid provider. Choose: openai, azure, openrouter, anthropic, lmstudio, atlassian" };
     }
     if (provider === "azure" && baseUrl && !baseUrl.includes(".openai.azure.com")) {
       return { success: false, error: "Azure endpoint must contain .openai.azure.com (e.g. https://myresource.openai.azure.com/openai/v1)" };
@@ -2868,6 +2868,10 @@ resolver.define("getOpenAIModels", async () => {
       } else {
         modelHeaders["Authorization"] = `Bearer ${byokKey}`;
       }
+      if (provider === "openrouter") {
+        modelHeaders["HTTP-Referer"] = "https://leanzero.atlascrafted.com";
+        modelHeaders["X-Title"] = "CogniRunner";
+      }
       response = await fetch(`${baseUrl}/models`, {
         method: "GET",
         headers: modelHeaders,
@@ -2884,6 +2888,9 @@ resolver.define("getOpenAIModels", async () => {
     // Provider-specific filtering
     if (provider === "openai") {
       chatModels = chatModels.filter((id) => /^(gpt-5|o3-|o4-)/.test(id));
+    } else if (provider === "openrouter") {
+      // Show popular providers — OpenAI, Anthropic, Google, Meta
+      chatModels = chatModels.filter((id) => /^(openai\/|anthropic\/|google\/|meta-llama\/)/.test(id));
     } else if (provider === "anthropic") {
       chatModels = chatModels.filter((id) => /^claude-/.test(id));
     }
@@ -5962,10 +5969,11 @@ export const handler = resolver.getDefinitions();
 const PROVIDERS = {
   openai: { label: "OpenAI", baseUrl: "https://api.openai.com/v1", defaultModel: "gpt-5.4-mini" },
   // Azure OpenAI rides the same OpenAI-compatible request path as `openai` (differs only by
-  // the `api-key` auth header and the admin-supplied deployment baseUrl). Any hardening applied
-  // to the OpenAI path therefore also covers Azure. NOTE: Azure OpenAI is MOSTLY UNTESTED end-to-end
-  // (no live deployment in the test harness) — treat its runtime behavior as unverified.
+  // the `api-key` auth header and the admin-supplied deployment baseUrl), so OpenAI hardening
+  // also covers it. NOTE: Azure OpenAI is MOSTLY UNTESTED end-to-end (no live deployment in the
+  // test harness) — treat its runtime behavior as unverified.
   azure: { label: "Azure OpenAI", baseUrl: null, defaultModel: "gpt-5.4-mini" }, // user must provide URL; mostly untested
+  openrouter: { label: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", defaultModel: "openai/gpt-5.4-mini" },
   anthropic: { label: "Anthropic", baseUrl: "https://api.anthropic.com", defaultModel: "claude-haiku-4-5-20251001" },
   // LM Studio: user-hosted OpenAI-compatible server. baseUrl is the user's Tailscale Funnel
   // root (e.g. https://your-machine.tailXXXX.ts.net); we append /v1 for inference and /api/v1
@@ -6355,7 +6363,7 @@ const callLmStudioNative = async ({ apiKey, model, messages, jsonMode, baseUrl }
 /**
  * Unified AI API adapter. Translates between OpenAI format (used internally)
  * and Anthropic Messages API format when the provider is Anthropic.
- * For OpenAI/Azure, it's a pass-through.
+ * For OpenAI/Azure/OpenRouter, it's a pass-through.
  * For LM Studio: routes to native /api/v1/chat unless custom tools are needed.
  *
  * @param {object} opts
@@ -6390,7 +6398,7 @@ const callAIChat = async (opts) => {
     console.log("LM Studio: tools requested → using OpenAI-compat /v1/chat/completions instead of native /api/v1/chat (native does not support custom tools, only MCP)");
   }
 
-  // OpenAI-compatible providers (OpenAI, Azure, LM Studio)
+  // OpenAI-compatible providers (OpenAI, Azure, OpenRouter, LM Studio)
   // For LM Studio: strip OpenAI's `type:"file"` content blocks (PDFs/DOCX/XLSX/etc.).
   // LM Studio's REST API does NOT accept that content type — its document-RAG support is
   // GUI-only. Vision (image_url blocks on a VLM) DOES work and is preserved. Without this
@@ -6421,12 +6429,13 @@ const callAIChat = async (opts) => {
     // LM Studio's tools docs don't document tool_choice, so passing the OpenAI
     // default ("auto") may behave inconsistently between Native-tool models and
     // Default-fallback models. Omit when "auto" — that's the implicit default
-    // anywhere tools are accepted, so this is a no-op for OpenAI/Azure
+    // anywhere tools are accepted, so this is a no-op for OpenAI/Azure/OpenRouter
     // (we still emit non-auto values like "required"/{type:"function",...}).
     const omitToolChoice = provider === "lmstudio" && tool_choice === "auto";
     if (tool_choice && !omitToolChoice) requestBody.tool_choice = tool_choice;
   }
   // Constrain to JSON only on providers that reliably honor response_format.
+  // Skip openrouter (passes through; many upstream models reject the field).
   // For Anthropic we already returned above — its JSON mode is via system prompt only.
   //
   // Use the json_schema form rather than json_object: LM Studio rejects json_object
@@ -6455,6 +6464,11 @@ const callAIChat = async (opts) => {
     if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
   } else {
     headers["Authorization"] = `Bearer ${apiKey}`;
+  }
+  // OpenRouter requires attribution headers
+  if (provider === "openrouter") {
+    headers["HTTP-Referer"] = "https://leanzero.atlascrafted.com";
+    headers["X-Title"] = "CogniRunner";
   }
 
   // LM Studio's baseUrl is the tunnel root (no /v1) so we append the OpenAI-compat path here.
@@ -7583,7 +7597,7 @@ Respond with JSON only.`;
 // ============================================================================
 //
 // CogniRunner is the MCP CLIENT for EVERY hosted (non-LM-Studio) provider — OpenAI,
-// Azure, Anthropic, and Forge LLM alike. None of them dial the MCP: the
+// Azure, OpenRouter, Anthropic, and Forge LLM alike. None of them dial the MCP: the
 // app lists the enabled hosted MCP tools, exposes them to the model as function tools,
 // and proxies tool calls over the MCP Streamable-HTTP protocol using plain fetch (no
 // SDK — Forge-friendly). LM Studio is the exception — it loads the MCPs locally from
@@ -8906,7 +8920,7 @@ export const validate = async (args) => {
       //   - Anthropic / Forge LLM: reach doc-reader through the cross-provider
       //     bridge (read-doc proxied as a function tool) — both require the
       //     hosted doc-processor remote URL+bearer configured.
-      //   - OpenAI / Azure: inline file path (they accept type:"file"),
+      //   - OpenAI / OpenRouter: inline file path (they accept type:"file"),
       //     so no URL bridge needed here.
       //
       // useUrlBridge fires when the model can read attachments via the bridge
@@ -8933,7 +8947,7 @@ export const validate = async (args) => {
         const remote = await getDocProcessorRemoteConfig();
         providerSupportsBridge = !!(remote && remote.url && remote.bearer);
       }
-      // OpenAI + Azure: providerSupportsBridge stays false → inline file path
+      // OpenAI + OpenRouter: providerSupportsBridge stays false → inline file path
       // (both accept type:"file" content natively).
 
       const useUrlBridge = providerSupportsBridge && docReaderEnabled;

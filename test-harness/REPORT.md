@@ -1,7 +1,7 @@
 # CogniRunner — At-Scale Runtime Test Report
 
 **Instance:** wolfaenpak.atlassian.net · **Project:** COGTEST (10014) · **Provider:** Forge LLM (Claude Haiku, confirmed via logs)
-**Generated:** 2026-06-14T07:24:42.655Z
+**Generated:** 2026-06-14T08:54:38.382Z
 
 Black-box test of CogniRunner's runtime surface (validators, conditions, semantic & static post-functions) by attaching 41 rules via the workflow REST API onto self-loop transitions and firing 188 (rule × issue) cases against a fabricated 491-issue adversarial corpus. Everything was driven through the real Jira workflow engine — not the app's test resolvers.
 
@@ -154,7 +154,7 @@ New static-PF sandbox methods (deployed; needed the `manage:jira-project` scope)
 ## Knowledge system & memories
 
 - **Documentation Library**: REST-tested — a validator referencing builtin docs by id injected them at runtime (`docsUsed=true`). ✓
-- **Memories (runtime injection)**: OFF by default (`runtimeInjection` is opt-in, admin-only). The harness's `memoriesUsed` flag + forge logs confirm no injection until an admin enables it + adds memories; once enabled it is REST-verifiable (flag flips true). Mechanism wired, awaiting admin opt-in.
+- **Memories (runtime injection)**: VERIFIED end-to-end. With the admin's Memories toggles on, a novel post-function failure was auto-distilled into a memory and then injected into a later validator's prompt — confirmed by `memoriesUsed=true` (cogni-debug property) and the validator echoing the memory content verbatim. Full learn→inject loop works. (`runtimeInjection` is opt-in/default-OFF by design.)
 - **Skills**: codegen-only (design-time) — no runtime or REST path; exercised only through the code-generation UI. Not reachable by this transition-driven harness.
 
 ## Per-rule

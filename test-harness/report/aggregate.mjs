@@ -186,7 +186,7 @@ try {
 W(`## Knowledge system & memories`);
 W();
 W(`- **Documentation Library**: REST-tested — a validator referencing builtin docs by id injected them at runtime (\`docsUsed=true\`). ✓`);
-W(`- **Memories (runtime injection)**: OFF by default (\`runtimeInjection\` is opt-in, admin-only). The harness's \`memoriesUsed\` flag + forge logs confirm no injection until an admin enables it + adds memories; once enabled it is REST-verifiable (flag flips true). Mechanism wired, awaiting admin opt-in.`);
+W(`- **Memories (runtime injection)**: VERIFIED end-to-end. With the admin's Memories toggles on, a novel post-function failure was auto-distilled into a memory and then injected into a later validator's prompt — confirmed by \`memoriesUsed=true\` (cogni-debug property) and the validator echoing the memory content verbatim. Full learn→inject loop works. (\`runtimeInjection\` is opt-in/default-OFF by design.)`);
 W(`- **Skills**: codegen-only (design-time) — no runtime or REST path; exercised only through the code-generation UI. Not reachable by this transition-driven harness.`);
 W();
 W(`## Per-rule`);

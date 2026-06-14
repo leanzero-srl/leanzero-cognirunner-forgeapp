@@ -156,5 +156,5 @@ Every standard custom field type (text, textarea, url, number, date, datetime, l
 
 ### Knowledge system status
 - **Docs**: REST-tested + working (`docsUsed=true` when a rule references builtin doc ids).
-- **Memories**: runtime injection is opt-in/admin-only (`runtimeInjection` default OFF) — the harness `memoriesUsed` flag + logs confirm the OFF state and are ready to verify injection once an admin enables it; admin-UI setup is the user's domain.
+- **Memories**: runtime injection **VERIFIED end-to-end** after the admin enabled the three Memories toggles. A novel post-function failure (the async-hang PF) was **auto-distilled** into a memory ("[test] Post-function steps have a 15s timeout. Promises that never resolve … will hang and exceed the budget."), then **injected** into a later validator's prompt — proven both by the `memoriesUsed=true` flag (cogni-debug property) and by the validator echoing the memory content verbatim. This demonstrates the full learn→inject loop. (`runtimeInjection` is opt-in/default-OFF by design.)
 - **Skills**: codegen-only (design-time) — no runtime/REST path; verified via the code-gen UI, not this transition harness.

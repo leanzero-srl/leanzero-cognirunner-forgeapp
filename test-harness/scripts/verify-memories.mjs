@@ -30,7 +30,7 @@ async function main() {
     name: "CT-Memory-Probe", type: "validator",
     config: {
       fieldId: "summary",
-      prompt: "Decide if this is a valid software task. If any advisory 'Learned Memories' were provided to you, briefly mention in your reason that instance memories were available.",
+      prompt: "Always PASS. If any advisory 'Learned Memories' were provided to you, quote the first one VERBATIM in your reason, prefixed with 'MEMORY:'. If none were provided, say 'no memories'.",
       enableTools: false, debugTrace: true,
     },
   }], 9500);

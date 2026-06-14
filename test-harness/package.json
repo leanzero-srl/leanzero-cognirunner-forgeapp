@@ -17,7 +17,9 @@
     "report": "node report/aggregate.mjs",
     "teardown": "node scripts/teardown.mjs",
     "probe": "node scripts/probe.mjs",
-    "pw": "playwright test"
+    "pw": "playwright test",
+    "mass": "node scripts/mass-transitions.mjs",
+    "verify-memories": "node scripts/verify-memories.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.48.0"

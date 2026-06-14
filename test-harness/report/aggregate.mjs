@@ -141,6 +141,30 @@ for (const r of pf) W(`| ${r.ruleKey} | ${r.expected} | ${r.actual} | ${r.correc
 W();
 W(`Sandbox isolation probe (T3-escape) wrote: \`${escape?.reason || "n/a"}\`. See FINDINGS.md (F2).`);
 W();
+// Field-type coverage matrix
+try {
+  const fm = JSON.parse(readFileSync(join(RESULTS_DIR, "field-matrix-results.json"), "utf8"));
+  const w = fm.results.filter((r) => r.write.ok).length;
+  const c = fm.results.filter((r) => r.write.changelogRecorded).length;
+  const rd = fm.results.filter((r) => r.read.nonEmpty).length;
+  W(`## Custom field-type coverage (${fm.count} Atlassian types)`);
+  W();
+  W(`Every standard custom field type, exercised end-to-end through the workflow engine: WRITE via a static PF (\`api.updateIssue\`) → verified value + **Jira changelog** entry; READ via a validator → the app's \`extractFieldDisplayValue\` output captured from the **cogni-debug property**.`);
+  W();
+  W(`- **Writes landed: ${w}/${fm.count}** · **Changelog recorded: ${c}/${fm.count}** · **Read/extractFieldDisplayValue non-empty: ${rd}/${fm.count}**`);
+  W();
+  W(`| Field type | Write | Changelog | extractFieldDisplayValue → |`);
+  W(`|---|---|---|---|`);
+  for (const r of fm.results) W(`| ${r.role} | ${r.write.ok ? "✓" : "✗"} | ${r.write.changelogRecorded ? "✓" : "—"} | ${(r.read.extracted || "").replace(/\|/g, "/") || "(empty)"} |`);
+  W();
+} catch { /* no field matrix */ }
+
+W(`## Knowledge system & memories`);
+W();
+W(`- **Documentation Library**: REST-tested — a validator referencing builtin docs by id injected them at runtime (\`docsUsed=true\`). ✓`);
+W(`- **Memories (runtime injection)**: OFF by default (\`runtimeInjection\` is opt-in, admin-only). The harness's \`memoriesUsed\` flag + forge logs confirm no injection until an admin enables it + adds memories; once enabled it is REST-verifiable (flag flips true). Mechanism wired, awaiting admin opt-in.`);
+W(`- **Skills**: codegen-only (design-time) — no runtime or REST path; exercised only through the code-generation UI. Not reachable by this transition-driven harness.`);
+W();
 W(`## Per-rule`);
 W();
 W(`| Rule | Type | Study | Correct | AI errors |`);

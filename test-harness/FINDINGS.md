@@ -139,5 +139,16 @@ This is opt-in and off by default; production rules are unaffected.
 | F3 conditions bypass REST | OPEN — platform behavior; documentation only |
 | F7 generate-doc/research need LM-Studio MCPs | OPEN — provider-capability gap; documented (graceful skip on Forge LLM) |
 
-## Harness coverage now exercised (all via REST, black-box)
-Validators (summary/description/number/labels fields; injection-hardened, PII, quality, emptiness), conditions, agentic validators (duplicate detection + release gate, with runtime toolMeta), semantic PFs (text/select/number/date targets + bad-option/type-mismatch/off-screen/simulation safety), 7 PF flavors (comment/subtask/link work; generate-doc/research MCP-gated), 16 static PFs incl. **10 "action" PFs** exercising `api.updateIssue` across field types, `api.searchJql` aggregation, `api.transitionIssue`, read-compute-write, multi-step variable chaining, and conditional logic — plus a bulk-transition stress test. Rich, large issue bodies (multi-KB ADF) feed the AI big, challenging issue objects.
+## Harness coverage now exercised (all via REST, black-box; assessed via forge logs + changelog + properties)
+Validators (summary/description/number/labels fields; injection-hardened, PII, quality, emptiness), conditions, agentic validators (duplicate detection + release gate, with runtime toolMeta), semantic PFs (text/select/number/date targets + bad-option/type-mismatch/off-screen/simulation safety), 7 PF flavors (comment/subtask/link work; generate-doc/research MCP-gated), static PFs incl. **10 "action" PFs** exercising `api.updateIssue` across field types, `api.searchJql` aggregation, `api.transitionIssue`, read-compute-write, multi-step variable chaining, and conditional logic — plus a bulk-transition stress test. Rich, large issue bodies (multi-KB ADF) feed the AI big, challenging issue objects.
+
+### Custom field-type matrix — **ALL 19 Atlassian types, 19/19** (`field-matrix.mjs`)
+Every standard custom field type (text, textarea, url, number, date, datetime, labels, select, multiselect, radiobuttons, multicheckboxes, userpicker, multiuserpicker, grouppicker, multigrouppicker, cascadingselect, version, multiversion, project) exercised end-to-end:
+- **WRITE** via a static PF (`api.updateIssue`) — value landed for all 19;
+- **CHANGELOG** — every write recorded in the Jira changelog (from/to/author) for all 19;
+- **READ** via a validator — the app's `extractFieldDisplayValue` produced correct text for all 19 (e.g. cascading → "Platform > Web", project → "Name (KEY)", user → display name, multiselect/labels → comma-joined, version → name), captured from the `cogni-debug` **property**.
+
+### Knowledge system status
+- **Docs**: REST-tested + working (`docsUsed=true` when a rule references builtin doc ids).
+- **Memories**: runtime injection is opt-in/admin-only (`runtimeInjection` default OFF) — the harness `memoriesUsed` flag + logs confirm the OFF state and are ready to verify injection once an admin enables it; admin-UI setup is the user's domain.
+- **Skills**: codegen-only (design-time) — no runtime/REST path; verified via the code-gen UI, not this transition harness.

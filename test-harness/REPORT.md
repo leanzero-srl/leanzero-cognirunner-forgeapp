@@ -1,7 +1,7 @@
 # CogniRunner — At-Scale Runtime Test Report
 
 **Instance:** wolfaenpak.atlassian.net · **Project:** COGTEST (10014) · **Provider:** Forge LLM (Claude Haiku, confirmed via logs)
-**Generated:** 2026-06-14T06:09:36.289Z
+**Generated:** 2026-06-14T06:57:21.089Z
 
 Black-box test of CogniRunner's runtime surface (validators, conditions, semantic & static post-functions) by attaching 41 rules via the workflow REST API onto self-loop transitions and firing 188 (rule × issue) cases against a fabricated 491-issue adversarial corpus. Everything was driven through the real Jira workflow engine — not the app's test resolvers.
 
@@ -104,6 +104,40 @@ Validators block synchronously on the AI call (higher latency); post-functions r
 | S8-date | MUTATED | MUTATED | ✓ | value="2026-06-28" |
 
 Sandbox isolation probe (T3-escape) wrote: `none`. See FINDINGS.md (F2).
+
+## Custom field-type coverage (19 Atlassian types)
+
+Every standard custom field type, exercised end-to-end through the workflow engine: WRITE via a static PF (`api.updateIssue`) → verified value + **Jira changelog** entry; READ via a validator → the app's `extractFieldDisplayValue` output captured from the **cogni-debug property**.
+
+- **Writes landed: 19/19** · **Changelog recorded: 19/19** · **Read/extractFieldDisplayValue non-empty: 19/19**
+
+| Field type | Write | Changelog | extractFieldDisplayValue → |
+|---|---|---|---|
+| url | ✓ | ✓ | https://example.com/cogtest |
+| text | ✓ | ✓ | harness text |
+| textarea | ✓ | ✓ | harness textarea body |
+| number | ✓ | ✓ | 7 |
+| date | ✓ | ✓ | 2026-03-15 |
+| datetime | ✓ | ✓ | 2026-03-15T12:30:00.000+0200 |
+| clabels | ✓ | ✓ | alpha, beta |
+| select | ✓ | ✓ | Low |
+| multiselect | ✓ | ✓ | Backend, Frontend |
+| radio | ✓ | ✓ | Yes |
+| checkboxes | ✓ | ✓ | A11y, Perf |
+| user | ✓ | ✓ | Mihai Perdum |
+| multiuser | ✓ | ✓ | Mihai Perdum |
+| group | ✓ | ✓ | cogtest-group |
+| multigroup | ✓ | ✓ | cogtest-group |
+| cascading | ✓ | ✓ | Platform > Web |
+| version | ✓ | ✓ | v1.0-cogtest |
+| multiversion | ✓ | ✓ | v1.0-cogtest |
+| project | ✓ | ✓ | CogniRunner Test Harness (COGTEST) |
+
+## Knowledge system & memories
+
+- **Documentation Library**: REST-tested — a validator referencing builtin docs by id injected them at runtime (`docsUsed=true`). ✓
+- **Memories (runtime injection)**: OFF by default (`runtimeInjection` is opt-in, admin-only). The harness's `memoriesUsed` flag + forge logs confirm no injection until an admin enables it + adds memories; once enabled it is REST-verifiable (flag flips true). Mechanism wired, awaiting admin opt-in.
+- **Skills**: codegen-only (design-time) — no runtime or REST path; exercised only through the code-generation UI. Not reachable by this transition-driven harness.
 
 ## Per-rule
 

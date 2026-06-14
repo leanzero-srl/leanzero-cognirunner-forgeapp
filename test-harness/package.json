@@ -1,0 +1,22 @@
+{
+  "name": "cognirunner-test-harness",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "license": "AGPL-3.0-or-later",
+  "description": "Real at-scale E2E test & hardening harness for CogniRunner (validators, conditions, post-functions, providers) against a live Jira Cloud instance.",
+  "scripts": {
+    "setup": "node scripts/setup-testbed.mjs",
+    "record-replay": "node scripts/record-replay.mjs",
+    "attach": "node scripts/attach-rules.mjs",
+    "seed": "node scripts/seed-issues.mjs",
+    "run": "node scripts/run-transitions.mjs",
+    "report": "node report/aggregate.mjs",
+    "teardown": "node scripts/teardown.mjs",
+    "probe": "node scripts/probe.mjs",
+    "pw": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.0"
+  }
+}

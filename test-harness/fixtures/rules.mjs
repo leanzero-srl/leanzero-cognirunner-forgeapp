@@ -324,6 +324,19 @@ export function buildRules(state) {
       study: "fields",
     },
 
+    // ---- Knowledge system: Documentation Library runtime injection ----
+    // Builtin docs have deterministic ids (doc_repo:builtin_doc_*) so the docs
+    // layer is REST-testable: the rule references them via selectedDocIds and the
+    // debug trace's docsUsed flag confirms they were injected at runtime.
+    {
+      key: "K-docs", name: "CT-Knowledge-Docs", type: "validator",
+      config: { fieldId: "summary", prompt: "Using the reference documentation provided, confirm this is a valid software task summary.", enableTools: false, selectedDocIds: ["builtin_doc_jql", "builtin_doc_field_formats"] },
+      appliesTo: ["control-good"],
+      expect: () => "ALLOWED",
+      checkDocsUsed: true,
+      study: "knowledge",
+    },
+
     // ---- Semantic write to a DATE target ----
     {
       key: "S8-date", name: "CT-Semantic-Date", type: "semantic",

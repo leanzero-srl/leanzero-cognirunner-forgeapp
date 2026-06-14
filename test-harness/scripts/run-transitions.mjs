@@ -57,11 +57,18 @@ async function runValidator(rule, tid, issue) {
   const reason = blocked ? parseReason(res.text) : "";
   const aiError = /ai\s*(service\s*)?error|service error|timed out|timeout/i.test(reason);
   const out = { kind: "validator", expected, actual, correct: actual === expected, aiError, http: res.status, reason, latencyMs };
-  // Agentic observability: pull toolMeta from the debug property if enabled.
-  if (rule.config?.enableTools) {
+  // Observability: pull toolMeta / docsUsed from the debug property if relevant.
+  if (rule.config?.enableTools || rule.checkDocsUsed) {
     const trace = await readDebugTrace(issue.key);
     if (trace?.toolMeta) out.toolMeta = trace.toolMeta;
     if (trace && !out.reason) out.reason = String(trace.reason || "").slice(0, 200);
+    if (rule.checkDocsUsed) {
+      // Documentation Library injection: the verdict must be right AND the doc
+      // must actually have been injected at runtime (docsUsed flag in the trace).
+      out.docsUsed = trace?.docsUsed === true;
+      out.correct = out.correct && out.docsUsed;
+      out.reason = `docsUsed=${out.docsUsed}; ${out.reason || ""}`.slice(0, 200);
+    }
   }
   return out;
 }

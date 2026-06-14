@@ -93,9 +93,9 @@ export default function OpenAIConfig({ invoke }) {
   const [mcpSavingKey, setMcpSavingKey] = useState(null); // which key is currently saving
   const [mcpExpanded, setMcpExpanded] = useState({}); // which setup panels are open
   const [mcpPingState, setMcpPingState] = useState({}); // {[key]: {loading, ok, error}}
-  // Hosted doc-processor (remote MCP). Used by Anthropic natively (mcp_servers
-  // field) and by LM Studio when the user's mcp.json is the remote variant
-  // (no CogniRunner code change for that case — just the same URL+bearer).
+  // Hosted doc-processor (remote MCP). The cross-provider bridge dials this URL on
+  // every hosted provider; LM Studio can also point its own mcp.json at the same
+  // URL+bearer (no CogniRunner code change for that case).
   const [docProcUrl, setDocProcUrl] = useState("");
   const [docProcBearerInput, setDocProcBearerInput] = useState("");
   const [docProcHasBearer, setDocProcHasBearer] = useState(false);
@@ -120,6 +120,13 @@ export default function OpenAIConfig({ invoke }) {
   const [webSearchGithubInput, setWebSearchGithubInput] = useState("");
   const [webSearchHasGithub, setWebSearchHasGithub] = useState(false);
   const [webSearchShowGithubInput, setWebSearchShowGithubInput] = useState(false);
+  // Hosted context7 (remote MCP). Same pattern, but the API key is OPTIONAL (keyless
+  // works) and is context7's own CONTEXT7_API_KEY header — not a Bearer.
+  const [context7Url, setContext7Url] = useState("");
+  const [context7ApiKeyInput, setContext7ApiKeyInput] = useState("");
+  const [context7HasApiKey, setContext7HasApiKey] = useState(false);
+  const [context7Saving, setContext7Saving] = useState(false);
+  const [context7ShowApiKeyInput, setContext7ShowApiKeyInput] = useState(false);
 
   const pHelp = PROVIDER_HELP[provider] || PROVIDER_HELP.openai;
   const isLmStudio = provider === "lmstudio";
@@ -150,7 +157,7 @@ export default function OpenAIConfig({ invoke }) {
     if (!invoke) return;
     if (asRefresh) beginRefresh();
     try {
-      const [keyResult, modelsResult, modelKvs, providerResult, mcpsResult, docProcResult, webSearchResult] = await Promise.all([
+      const [keyResult, modelsResult, modelKvs, providerResult, mcpsResult, docProcResult, webSearchResult, context7Result] = await Promise.all([
         invoke("getOpenAIKey"),
         invoke("getOpenAIModels"),
         invoke("getOpenAIModelFromKVS"),
@@ -158,6 +165,7 @@ export default function OpenAIConfig({ invoke }) {
         invoke("getLmStudioMcps").catch(() => ({ success: false })),
         invoke("getDocProcessorRemote").catch(() => ({ success: false })),
         invoke("getWebSearchRemote").catch(() => ({ success: false })),
+        invoke("getContext7Remote").catch(() => ({ success: false })),
       ]);
 
       if (providerResult.success) {
@@ -220,6 +228,10 @@ export default function OpenAIConfig({ invoke }) {
         setWebSearchHasSerper(!!webSearchResult.hasSerperKey);
         setWebSearchHasGithub(!!webSearchResult.hasGithubToken);
       }
+      if (context7Result && context7Result.success) {
+        setContext7Url(context7Result.url || "");
+        setContext7HasApiKey(!!context7Result.hasApiKey);
+      }
     } catch (e) {
       console.error("Failed to load AI config status:", e);
       if (asRefresh) {
@@ -277,7 +289,10 @@ export default function OpenAIConfig({ invoke }) {
     if (!invoke) return;
     setMcpPingState((prev) => ({ ...prev, [mcpKey]: { loading: true } }));
     try {
-      const result = await invoke("pingLmStudioMcp", { mcpKey });
+      // LM Studio uses the local-plugin probe (mcp.json reachability). Every other
+      // provider tests the real bridge runtime path — tools/list against the
+      // configured remote URL. Both return { success, ok, error, message }.
+      const result = await invoke(isLmStudio ? "pingLmStudioMcp" : "testMcpConnection", { mcpKey });
       setMcpPingState((prev) => ({
         ...prev,
         [mcpKey]: {
@@ -416,6 +431,56 @@ export default function OpenAIConfig({ invoke }) {
       showToast("Failed to remove web-search remote config: " + e.message, "error");
     }
     setWebSearchSaving(false);
+  };
+
+  const handleSaveContext7Remote = async () => {
+    if (!invoke) return;
+    // Key is OPTIONAL (keyless context7 works) — Save needs only the URL.
+    if (!context7Url.trim()) return;
+    setContext7Saving("save");
+    setError(null);
+    try {
+      const result = await invoke("saveContext7Remote", {
+        url: context7Url.trim(),
+        apiKey: context7ApiKeyInput.trim(),
+      });
+      if (result.success) {
+        setContext7HasApiKey(!!result.hasApiKey);
+        setContext7ApiKeyInput("");
+        setContext7ShowApiKeyInput(false);
+        showToast("context7 settings saved");
+      } else {
+        setError(result.error || "Failed to save context7 remote config");
+        showToast(result.error || "Failed to save context7 remote config", "error");
+      }
+    } catch (e) {
+      setError("Failed to save context7 remote config: " + e.message);
+      showToast("Failed to save context7 remote config: " + e.message, "error");
+    }
+    setContext7Saving(false);
+  };
+
+  const handleRemoveContext7Remote = async () => {
+    if (!invoke) return;
+    setContext7Saving("clear");
+    setError(null);
+    try {
+      const result = await invoke("removeContext7Remote");
+      if (result.success) {
+        setContext7Url("");
+        setContext7HasApiKey(false);
+        setContext7ApiKeyInput("");
+        setContext7ShowApiKeyInput(false);
+        showToast("context7 settings cleared");
+      } else {
+        setError(result.error || "Failed to remove context7 remote config");
+        showToast(result.error || "Failed to remove context7 remote config", "error");
+      }
+    } catch (e) {
+      setError("Failed to remove context7 remote config: " + e.message);
+      showToast("Failed to remove context7 remote config: " + e.message, "error");
+    }
+    setContext7Saving(false);
   };
 
   useEffect(() => {
@@ -1206,13 +1271,12 @@ export default function OpenAIConfig({ invoke }) {
       </div>
 
       {/* MCP Integrations.
-          - context7 is LM-Studio-only (requires a local stdio MCP process — not
-            exposed via a hosted URL we can proxy).
-          - doc-reader + web-search work on LM Studio (mcp.json), Anthropic
-            (native mcp_servers field), AND OpenAI / Azure / OpenRouter, where
-            CogniRunner acts as the MCP client and bridges the tool calls
-            (the cross-provider hosted-MCP bridge). They need the hosted URL +
-            bearer below (+ a Serper key for web-search). */}
+          CogniRunner is the MIDDLE LAYER: on every hosted provider (OpenAI / Azure /
+          OpenRouter / Anthropic / Forge LLM) the app itself dials the MCP's URL and runs
+          the tool calls — the AI provider never sees the URL or touches the MCP. Each
+          MCP is configured like an mcp.json entry (a URL + optional key). LM Studio is
+          the local-only alternative (the MCP runs on the user's machine via stdio). All
+          three MCPs (context7 / web-search / doc-reader) work this way on every provider. */}
       {provider === savedProvider && (
         <div className="card" style={{ marginTop: "16px" }}>
           <div style={{ padding: "16px" }}>
@@ -1222,8 +1286,8 @@ export default function OpenAIConfig({ invoke }) {
               </h3>
               <p style={{ margin: 0, fontSize: "12px", color: "var(--text-secondary)" }}>
                 {isLmStudio
-                  ? <>Extra tools the model can call via your LM Studio's <code style={{ fontSize: "11px" }}>mcp.json</code>. Enable each and follow the setup steps. JQL agentic search is unaffected — it runs on a separate code path.</>
-                  : <>Tools the model can call. Configure the hosted <code style={{ fontSize: "11px" }}>doc-processor</code> / <code style={{ fontSize: "11px" }}>web-search</code> below, then enable doc-reader / web-search — they work on Anthropic (native) and on OpenAI / Azure / OpenRouter, where CogniRunner bridges the tool calls. Only <code style={{ fontSize: "11px" }}>context7</code> stays LM-Studio-only (it needs a local process).</>
+                  ? <>Extra tools the model can call via your LM Studio's <code style={{ fontSize: "11px" }}>mcp.json</code> (local, runs on your machine). Enable each and follow the setup steps. JQL agentic search is unaffected — it runs on a separate code path.</>
+                  : <><strong>CogniRunner is the middle layer.</strong> Paste each MCP's hosted URL below and CogniRunner connects to it directly and runs the tool calls — your AI provider never sees the URL. Works the same on OpenAI / Azure / OpenRouter / Anthropic / Forge LLM. All three MCPs (<code style={{ fontSize: "11px" }}>context7</code>, <code style={{ fontSize: "11px" }}>web-search</code>, <code style={{ fontSize: "11px" }}>doc-reader</code>) are supported.</>
                 }
               </p>
             </div>
@@ -1232,15 +1296,14 @@ export default function OpenAIConfig({ invoke }) {
             <div style={{ padding: "10px 12px", marginBottom: "12px", background: "rgba(37, 99, 235, 0.06)", border: "1px solid rgba(37, 99, 235, 0.35)", borderRadius: "6px", fontSize: "11px", color: "var(--text-secondary)" }}>
               <strong style={{ color: "var(--text-color)" }}>Three ways to connect an MCP:</strong>
               <ul style={{ margin: "6px 0 0", paddingLeft: "18px", display: "flex", flexDirection: "column", gap: "4px" }}>
-                <li><strong>Your own self-hosted server</strong> — clone the open-source repo, run it (e.g. behind Tailscale Funnel), and paste its Service URL + Bearer in the card below. Works on Anthropic and on OpenAI / Azure / OpenRouter (CogniRunner bridges the tool calls).</li>
-                <li><strong>LeanZero&apos;s hosted demo</strong> — use our Mac Studio instance; click the &ldquo;get a free demo key&rdquo; link in a card below. Rate-limited, for evaluation. Same providers as above.</li>
-                <li><strong>LM Studio (local stdio)</strong> — run the server locally and point LM Studio&apos;s <code style={{ fontSize: "11px" }}>mcp.json</code> at it. LM Studio provider only; <code style={{ fontSize: "11px" }}>context7</code> works this way only.</li>
+                <li><strong>LeanZero&apos;s hosted demo</strong> — point <code style={{ fontSize: "11px" }}>web-search</code> / <code style={{ fontSize: "11px" }}>doc-processor</code> at our Mac Studio instance; grab a free demo key at <ExtLink href="https://leanzero.atlascrafted.com" style={{ color: "var(--text-color)", fontWeight: 600 }}>leanzero.atlascrafted.com</ExtLink> (links in the cards below). Rate-limited, for evaluation. Works on every provider — CogniRunner connects to it for you.</li>
+                <li><strong>Your own self-hosted server</strong> — clone the open-source repo, run it (e.g. behind Tailscale Funnel), and paste its Service URL + Bearer in the card below. Same: CogniRunner is the client on every hosted provider.</li>
+                <li><strong>LM Studio (local stdio)</strong> — run the server locally and point LM Studio&apos;s <code style={{ fontSize: "11px" }}>mcp.json</code> at it. The MCP runs on your machine — the secure, local-only option (LM Studio provider).</li>
               </ul>
-              <div style={{ marginTop: "6px" }}>Bring your own service keys: <strong>web-search</strong> needs a Serper key; <strong>doc-processor</strong> needs a Z.AI key only for scanned-PDF OCR. Both are entered in the cards below.</div>
+              <div style={{ marginTop: "6px" }}>Service keys (web-search&apos;s Serper key, doc-processor&apos;s Z.AI OCR key) live on the MCP server — LeanZero&apos;s hosted demo manages them for you, so you only need the URL + Bearer. Self-hosters can also pass their own per-tenant keys in the cards below.</div>
             </div>
 
-            {/* context7 — LM Studio only */}
-            {isLmStudio && (
+            {/* context7 — hosted on every provider via the bridge; LM Studio can run it locally */}
             <McpCard
               mcpKey="context7"
               title="context7"
@@ -1255,32 +1318,89 @@ export default function OpenAIConfig({ invoke }) {
               onPing={() => handleMcpPing("context7")}
               setupBlock={(
                 <>
-                  <p style={{ margin: "0 0 8px", fontSize: "12px", color: "var(--text-secondary)" }}>
-                    Get a free API key at <code style={{ fontSize: "11px" }}>context7.com/dashboard</code> (higher rate limits — works without one too).
-                  </p>
-                  <p style={{ margin: "0 0 8px", fontSize: "12px", color: "var(--text-secondary)" }}>
-                    Add this to your LM Studio <code style={{ fontSize: "11px" }}>mcp.json</code> (the entry name <strong>must</strong> be <code style={{ fontSize: "11px" }}>context7</code> so our app can find it):
-                  </p>
-                  <pre style={{ margin: 0, padding: "10px", background: "var(--code-bg)", borderRadius: "6px", fontSize: "11px", overflow: "auto", color: "var(--text-color)" }}>
+                  {/* Hosted context7 remote config — URL + OPTIONAL api key (keyless works). */}
+                  <div style={{ padding: "10px 12px", marginBottom: "10px", background: "var(--card-bg)", border: "2px solid var(--success-color)", boxShadow: "0 4px 12px -4px rgba(22, 163, 106, 0.35)", borderRadius: "6px", fontSize: "11px" }}>
+                    <strong>Hosted context7 (remote MCP)</strong>
+                    <div style={{ marginTop: "4px", color: "var(--text-secondary)" }}>
+                      Use the <strong>official hosted endpoint</strong> <code style={{ fontSize: "11px" }}>https://mcp.context7.com/mcp</code> (works without a key — a key only raises rate limits; grab one at <ExtLink href="https://context7.com/dashboard" style={{ color: "var(--success-color)", fontWeight: 600 }}>context7.com/dashboard</ExtLink>), or your own self-host behind Tailscale Funnel. CogniRunner connects to it for you on every provider.
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: "6px", marginTop: "8px" }}>
+                      <input
+                        type="text"
+                        placeholder="https://mcp.context7.com/mcp"
+                        value={context7Url}
+                        onChange={(e) => setContext7Url(e.target.value)}
+                        style={{ padding: "5px 8px", border: "1px solid var(--border-color)", borderRadius: "4px", background: "var(--input-bg)", color: "var(--text-color)", fontSize: "11px" }}
+                      />
+                      {context7HasApiKey && !context7ShowApiKeyInput ? (
+                        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                          <span style={{ flex: 1, padding: "5px 8px", border: "1px solid var(--border-color)", borderRadius: "4px", background: "var(--input-bg)", color: "var(--text-muted)", fontFamily: "monospace", fontSize: "11px" }}>
+                            ••••••••  (API key saved)
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setContext7ShowApiKeyInput(true)}
+                            disabled={context7Saving}
+                            style={{ fontSize: "10px", padding: "4px 8px", border: "1px solid var(--border-color)", borderRadius: "4px", background: "var(--input-bg)", color: "var(--text-color)", cursor: "pointer" }}
+                          >Replace</button>
+                        </div>
+                      ) : (
+                        <input
+                          type="password"
+                          placeholder="CONTEXT7_API_KEY — OPTIONAL (keyless works; a key raises rate limits)"
+                          value={context7ApiKeyInput}
+                          onChange={(e) => setContext7ApiKeyInput(e.target.value)}
+                          style={{ padding: "5px 8px", border: "1px solid var(--border-color)", borderRadius: "4px", background: "var(--input-bg)", color: "var(--text-color)", fontSize: "11px", fontFamily: "monospace" }}
+                        />
+                      )}
+                      <div style={{ display: "flex", gap: "6px" }}>
+                        <button
+                          type="button"
+                          className={context7Saving === "save" ? "is-busy busy-solid" : undefined}
+                          onClick={handleSaveContext7Remote}
+                          disabled={!!context7Saving || !context7Url.trim()}
+                          style={{ fontSize: "11px", padding: "5px 10px", border: "1px solid var(--success-color)", borderRadius: "4px", background: "var(--success-color)", color: "white", cursor: "pointer" }}
+                        >Save</button>
+                        {(context7HasApiKey || context7Url) && (
+                          <button
+                            type="button"
+                            className={context7Saving === "clear" ? "is-busy" : undefined}
+                            onClick={handleRemoveContext7Remote}
+                            disabled={!!context7Saving}
+                            style={{ fontSize: "11px", padding: "5px 10px", border: "1px solid var(--border-color)", borderRadius: "4px", background: "var(--input-bg)", color: "var(--text-color)", cursor: "pointer" }}
+                          >Clear</button>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* LM Studio alternative — run context7 locally via mcp.json. */}
+                  {isLmStudio && (
+                    <>
+                      <p style={{ margin: "0 0 8px", fontSize: "12px", color: "var(--text-secondary)" }}>
+                        <strong>LM Studio alternative (local):</strong> add this to your <code style={{ fontSize: "11px" }}>mcp.json</code> (the entry name <strong>must</strong> be <code style={{ fontSize: "11px" }}>context7</code> so our app can find it):
+                      </p>
+                      <pre style={{ margin: 0, padding: "10px", background: "var(--code-bg)", borderRadius: "6px", fontSize: "11px", overflow: "auto", color: "var(--text-color)" }}>
 {`"context7": {
   "url": "https://mcp.context7.com/mcp",
   "headers": {
     "CONTEXT7_API_KEY": "YOUR_API_KEY_HERE"
   }
 }`}
-                  </pre>
-                  <p style={{ margin: "8px 0 0", fontSize: "11px", color: "var(--text-muted)" }}>
-                    GitHub: <code style={{ fontSize: "11px" }}>github.com/upstash/context7</code>
-                  </p>
+                      </pre>
+                      <p style={{ margin: "8px 0 0", fontSize: "11px", color: "var(--text-muted)" }}>
+                        GitHub: <code style={{ fontSize: "11px" }}>github.com/upstash/context7</code>
+                      </p>
+                    </>
+                  )}
                 </>
               )}
             />
-            )}
 
-            {/* web-search — visible for ALL providers (LM Studio uses local
-                or remote mcp.json; Anthropic uses native mcp_servers; OpenAI /
-                Azure / OpenRouter use the cross-provider bridge — CogniRunner
-                proxies the tool calls). */}
+            {/* web-search — visible for ALL providers. On every hosted provider
+                (OpenAI / Azure / OpenRouter / Anthropic / Forge LLM) CogniRunner is
+                the MCP client and proxies the tool calls; LM Studio loads it from
+                local/remote mcp.json. */}
             <McpCard
               mcpKey="webSearch"
               title="web-search"
@@ -1396,22 +1516,14 @@ export default function OpenAIConfig({ invoke }) {
                   </div>
 
                   {/* Provider-specific guidance for what happens once saved */}
-                  {provider === "anthropic" && (
-                    <div style={{ padding: "8px 10px", marginBottom: "10px", background: "var(--card-bg)", border: "2px solid var(--primary-color)", boxShadow: "0 4px 12px -4px rgba(37, 99, 235, 0.35)", borderRadius: "6px", fontSize: "11px" }}>
-                      <strong>Anthropic native MCP:</strong> when this MCP is on AND the hosted web-search above is configured, CogniRunner attaches it to every Messages API request via the <code style={{ fontSize: "11px" }}>mcp_servers</code> field. Claude itself dispatches tool calls.
-                      <div style={{ marginTop: "6px", padding: "6px 8px", background: "var(--card-bg)", border: "2px solid #d97706", boxShadow: "0 4px 12px -4px rgba(217, 119, 6, 0.35)", borderRadius: "4px", color: "var(--text-secondary)" }}>
-                        ⚠ <strong>Cost note:</strong> Anthropic's <code style={{ fontSize: "11px" }}>mcp_toolset</code> shape doesn't support per-server <code style={{ fontSize: "11px" }}>allowed_tools</code>, so the model sees ALL ~11 tools the web-search server registers (including expensive ones like <code style={{ fontSize: "11px" }}>progressive-web-search</code> 20s and <code style={{ fontSize: "11px" }}>research_and_save_to_markdown</code> multi-URL crawl). LM Studio filters to a 4-tool subset; Anthropic doesn't. If you need to restrict, configure a per-tenant tool allowlist on the web-search server itself.
-                      </div>
-                    </div>
-                  )}
-                  {(provider === "openai" || provider === "azure" || provider === "openrouter") && (
+                  {(provider === "anthropic" || provider === "openai" || provider === "azure" || provider === "openrouter") && (
                     <div style={{ padding: "8px 10px", marginBottom: "10px", background: "rgba(34, 197, 94, 0.08)", border: "1px solid rgba(34, 197, 94, 0.4)", borderRadius: "6px", fontSize: "11px" }}>
-                      <strong>{provider === "azure" ? "Azure OpenAI" : provider === "openrouter" ? "OpenRouter" : "OpenAI"} support: enabled.</strong> These APIs have no native remote-MCP, so CogniRunner bridges it: during agentic validation it lists the enabled hosted MCP tools, exposes them to the model as function tools, and proxies the tool calls to the hosted server. Configure the Service URL + Bearer (+ the Serper key for web-search) above and toggle the MCP on.
+                      <strong>{provider === "anthropic" ? "Anthropic" : provider === "azure" ? "Azure OpenAI" : provider === "openrouter" ? "OpenRouter" : "OpenAI"} support: enabled.</strong> CogniRunner is the MCP client: during agentic validation it lists the enabled web-search tools, exposes the curated subset to the model as function tools, and proxies each tool call to the hosted server. Your AI provider never sees the URL. Configure the Service URL + Bearer (+ the Serper key) above and toggle the MCP on.
                     </div>
                   )}
                   {isAtlassian && (
                     <div style={{ padding: "8px 10px", marginBottom: "10px", background: "var(--card-bg)", border: "2px solid #d97706", boxShadow: "0 4px 12px -4px rgba(217, 119, 6, 0.35)", borderRadius: "6px", fontSize: "11px" }}>
-                      <strong>Atlassian Forge LLM: works via the CogniRunner MCP bridge.</strong> The model can't reach MCP servers itself, but CogniRunner exposes the hosted web-search tools as function tools and proxies the calls from the Forge backend. Configure the hosted web-search above and enable this toggle.
+                      <strong>Atlassian Forge LLM: works via the CogniRunner MCP bridge.</strong> The model can&apos;t reach MCP servers itself, but CogniRunner exposes the hosted web-search tools as function tools and proxies the calls from the Forge backend. Configure the hosted web-search above and enable this toggle.
                     </div>
                   )}
 
@@ -1461,10 +1573,10 @@ npm install && npm run build`}
               )}
             />
 
-            {/* doc-reader — visible for ALL providers (LM Studio uses local
-                or remote mcp.json; Anthropic uses native mcp_servers; OpenAI /
-                Azure / OpenRouter use the cross-provider bridge — CogniRunner
-                proxies the tool calls). */}
+            {/* doc-reader — visible for ALL providers. On every hosted provider
+                (OpenAI / Azure / OpenRouter / Anthropic / Forge LLM) CogniRunner is
+                the MCP client and proxies the tool calls; LM Studio loads it from
+                local/remote mcp.json. */}
             <McpCard
               mcpKey="docReader"
               title="doc-reader"
@@ -1479,10 +1591,10 @@ npm install && npm run build`}
               onPing={() => handleMcpPing("docReader")}
               setupBlock={(
                 <>
-                  {/* Hosted doc-processor remote config — used by Anthropic
-                      natively (mcp_servers field) and by LM Studio when its
-                      local mcp.json is the remote variant. Saved bearer is
-                      never sent back from the backend; we only show "saved". */}
+                  {/* Hosted doc-processor remote config — the bridge dials this URL
+                      on every hosted provider; LM Studio can also point its local
+                      mcp.json at the same URL. Saved bearer is never sent back from
+                      the backend; we only show "saved". */}
                   <div style={{ padding: "10px 12px", marginBottom: "10px", background: "var(--card-bg)", border: "2px solid var(--success-color)", boxShadow: "0 4px 12px -4px rgba(22, 163, 106, 0.35)", borderRadius: "6px", fontSize: "11px" }}>
                     <strong>Hosted doc-processor (remote MCP)</strong>
                     <div style={{ marginTop: "4px", color: "var(--text-secondary)" }}>
@@ -1560,14 +1672,9 @@ npm install && npm run build`}
                   </div>
 
                   {/* Provider-specific guidance for what happens once saved */}
-                  {provider === "anthropic" && (
-                    <div style={{ padding: "8px 10px", marginBottom: "10px", background: "var(--card-bg)", border: "2px solid var(--primary-color)", boxShadow: "0 4px 12px -4px rgba(37, 99, 235, 0.35)", borderRadius: "6px", fontSize: "11px" }}>
-                      <strong>Anthropic native MCP:</strong> when this MCP is on AND the hosted doc-processor above is configured, CogniRunner attaches it to every Messages API request via the <code style={{ fontSize: "11px" }}>mcp_servers</code> field with the beta header <code style={{ fontSize: "11px" }}>anthropic-beta: mcp-client-2025-11-20</code>. Claude itself dispatches tool calls — no per-tool plumbing on our side. Single-use upload capability for each Jira issue is bound server-side and passed in the system prompt; the model cannot redirect uploads.
-                    </div>
-                  )}
-                  {(provider === "openai" || provider === "azure" || provider === "openrouter") && (
+                  {(provider === "anthropic" || provider === "openai" || provider === "azure" || provider === "openrouter") && (
                     <div style={{ padding: "8px 10px", marginBottom: "10px", background: "rgba(34, 197, 94, 0.08)", border: "1px solid rgba(34, 197, 94, 0.4)", borderRadius: "6px", fontSize: "11px" }}>
-                      <strong>{provider === "azure" ? "Azure OpenAI" : provider === "openrouter" ? "OpenRouter" : "OpenAI"} support: enabled.</strong> These APIs have no native remote-MCP, so CogniRunner bridges it: during agentic validation it lists the enabled doc-reader tools, exposes them to the model, and proxies the tool calls to the hosted doc-processor. Configure the URL + Bearer above and enable doc-reader (and doc-writer for the create/edit tools).
+                      <strong>{provider === "anthropic" ? "Anthropic" : provider === "azure" ? "Azure OpenAI" : provider === "openrouter" ? "OpenRouter" : "OpenAI"} support: enabled.</strong> CogniRunner is the MCP client: during agentic validation it lists the enabled doc-reader tools, exposes them to the model as function tools, and proxies the tool calls to the hosted doc-processor. Your AI provider never sees the URL. Configure the URL + Bearer above and enable doc-reader (and doc-writer for the create/edit tools). The single-use upload capability for each Jira issue is bound server-side — the model cannot redirect uploads.
                     </div>
                   )}
                   {isAtlassian && (

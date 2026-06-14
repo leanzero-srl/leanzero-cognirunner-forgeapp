@@ -2462,10 +2462,9 @@ resolver.define("removeDocProcessorRemote", async ({ context }) => {
 // === Hosted web-search (remote MCP) resolvers ===
 //
 // Mirror of the doc-processor trio above — separate KVS slot, same admin
-// gate, same masked-bearer surface. Two callers consume this today:
-//   - Anthropic Messages API → mcp_servers entry attached natively
-//   - LM Studio              → user's mcp.json points at the same URL+bearer
-//                              (no CogniRunner code change for that path)
+// gate, same masked-bearer surface. Consumed by the cross-provider bridge on
+// every hosted provider (the app dials the URL); LM Studio can also point its
+// own mcp.json at the same URL+bearer (no CogniRunner code change for that path).
 
 resolver.define("getWebSearchRemote", async () => {
   try {
@@ -2530,6 +2529,71 @@ resolver.define("removeWebSearchRemote", async ({ context }) => {
     return { success: true };
   } catch (error) {
     console.error("Failed to remove web-search remote config:", error?.message);
+    return { success: false, error: error.message };
+  }
+});
+
+// === Hosted context7 (remote MCP) resolvers ===
+//
+// Mirror of the doc-processor/web-search trios, with one difference: context7's
+// API key is OPTIONAL (keyless works), so Save requires only the URL. The key is
+// context7's own header (CONTEXT7_API_KEY), never returned to the UI.
+
+resolver.define("getContext7Remote", async () => {
+  try {
+    const raw = await storage.get(CONTEXT7_REMOTE_KVS_KEY);
+    if (raw && typeof raw === "object" && raw.url) {
+      return { success: true, url: String(raw.url), hasApiKey: !!raw.apiKey };
+    }
+    return { success: true, url: "", hasApiKey: false };
+  } catch (error) {
+    console.error("Failed to read context7 remote config:", error?.message);
+    return { success: false, error: error.message };
+  }
+});
+
+resolver.define("saveContext7Remote", async ({ payload, context }) => {
+  if (!(await requireAdmin(context.accountId))) {
+    return { success: false, error: "Admin access required" };
+  }
+  try {
+    const url = (payload?.url || "").trim();
+    if (!url) return { success: false, error: "Service URL is required" };
+    if (!/^https:\/\//i.test(url)) {
+      return { success: false, error: "Service URL must start with https:// (MCP clients require HTTPS)" };
+    }
+    // API key is OPTIONAL — keyless context7 works; a key only raises rate limits.
+    // Preserve an existing key when the field is left blank, so editing the URL
+    // doesn't wipe it.
+    const apiKey = (payload?.apiKey || "").trim();
+    const existing = await storage.get(CONTEXT7_REMOTE_KVS_KEY);
+    const finalApiKey = apiKey || (existing && existing.apiKey) || "";
+    const toStore = { url };
+    if (finalApiKey) toStore.apiKey = finalApiKey;
+    await storage.set(CONTEXT7_REMOTE_KVS_KEY, toStore);
+    _cachedContext7Remote = toStore;
+    _cachedContext7RemoteChecked = true;
+    _cachedContext7RemoteAt = Date.now();
+    console.log(`saveContext7Remote: configured url=${url} apiKey=${finalApiKey ? "set" : "none"}`);
+    return { success: true, url, hasApiKey: !!finalApiKey };
+  } catch (error) {
+    console.error("Failed to save context7 remote config:", error?.message);
+    return { success: false, error: error.message };
+  }
+});
+
+resolver.define("removeContext7Remote", async ({ context }) => {
+  if (!(await requireAdmin(context.accountId))) {
+    return { success: false, error: "Admin access required" };
+  }
+  try {
+    await storage.delete(CONTEXT7_REMOTE_KVS_KEY);
+    _cachedContext7Remote = null;
+    _cachedContext7RemoteChecked = true;
+    _cachedContext7RemoteAt = Date.now();
+    return { success: true };
+  } catch (error) {
+    console.error("Failed to remove context7 remote config:", error?.message);
     return { success: false, error: error.message };
   }
 });
@@ -3071,16 +3135,16 @@ resolver.define("loadLmStudioModel", async ({ payload, context }) => {
 //
 // LM Studio's /api/v1/chat endpoint accepts an `integrations` array that lets the
 // model invoke MCP servers configured in the user's local mcp.json. We expose a
-// FIXED set of three MCPs (no other mcp.json entries leak into our app's surface):
+// FIXED set of three curated MCPs (no other mcp.json entries leak into our surface):
 //
-//   - context7   (upstash)       — library/framework docs lookup
-//   - web-search (leanzero-srl)  — multi-engine web search (default Bing)
-//   - doc-reader (leanzero-srl)  — PDF/DOCX/Excel processing (local file paths only)
+//   - context7   (upstash)       — library/framework/SDK docs lookup (hosted, stateful)
+//   - web-search (leanzero-srl)  — multi-engine web search (hosted)
+//   - doc-reader (leanzero-srl)  — PDF/DOCX/Excel/PPTX read + doc creation (hosted)
 //
-// allowed_tools is curated per-MCP so the model isn't drowned in tool defs.
-// Routing rule (set by callAIChat earlier): MCPs are sent ONLY on the native
-// /api/v1/chat path. The agentic JQL tool keeps its own /v1/chat/completions
-// path with no MCP integrations — JQL is never replaced or competed-with.
+// allowedTools is curated per-MCP so the model isn't drowned in tool defs.
+// Exposure: on every NON-LM-Studio provider these are bridged by CogniRunner itself
+// (the app is the MCP client — see buildBridgeMcpTools), and on LM Studio they load
+// as native plugins. The agentic JQL tool is a separate code path — never competed-with.
 const SUPPORTED_MCPS = {
   context7: {
     label: "context7",
@@ -3247,6 +3311,60 @@ resolver.define("pingLmStudioMcp", async ({ payload, context }) => {
   } catch (error) {
     console.error("MCP ping failed:", error);
     return { success: false, error: error.message };
+  }
+});
+
+/**
+ * Provider-agnostic MCP connectivity test for the cross-provider bridge. Probes the
+ * EXACT runtime path: resolves the configured remote (url + auth headers) via
+ * getBridgeMcp and runs `tools/list` over the same transport the bridge uses
+ * (session handshake for context7, single-POST for doc-reader/web-search), then
+ * reports which curated tools the server returned. Used by the admin Test button on
+ * every NON-LM-Studio provider (LM Studio keeps pingLmStudioMcp's local-plugin probe).
+ */
+resolver.define("testMcpConnection", async ({ payload, context }) => {
+  if (!(await requireAdmin(context.accountId))) {
+    return { success: false, error: "Admin access required" };
+  }
+  try {
+    const { mcpKey } = payload || {};
+    const mcp = SUPPORTED_MCPS[mcpKey];
+    if (!mcp) return { success: false, error: `Unknown MCP key: ${mcpKey}` };
+
+    const cfg = await getBridgeMcp(mcpKey);
+    if (!cfg) {
+      const need = mcpKey === "context7" ? "Service URL (key optional)" : "Service URL + Bearer";
+      return { success: true, ok: false, error: `${mcp.label} is not configured — set its ${need} above.` };
+    }
+
+    // Mirror buildBridgeMcpTools' allow-list (incl. writeTools when docWriter is on).
+    let allow = mcp.allowedTools || [];
+    const enabled = (await storage.get(LMSTUDIO_MCPS_KVS_KEY)) || {};
+    if (mcpKey === "docReader" && enabled.docWriter === true && Array.isArray(mcp.writeTools)) {
+      allow = [...allow, ...mcp.writeTools];
+    }
+
+    const listBody = { jsonrpc: "2.0", id: 1, method: "tools/list" };
+    const r = cfg.stateful ? await mcpRpcSession(cfg.url, cfg.headers, listBody) : await mcpRpc(cfg.url, cfg.headers, listBody);
+    if (r.json?.error) {
+      return { success: true, ok: false, error: `MCP error: ${r.json.error.message || "tools/list failed"}` };
+    }
+    const returned = r.json?.result?.tools || [];
+    const allowSet = new Set(allow);
+    const names = returned.map((t) => t.name).filter((n) => allowSet.has(n));
+    if (names.length === 0) {
+      return {
+        success: true,
+        ok: false,
+        error: returned.length > 0
+          ? `Reachable, but none of the expected tools were returned (server has ${returned.length}). Check the URL points at this MCP.`
+          : `Reachable but returned no tools (HTTP ${r.status}). Check the URL and credentials.`,
+      };
+    }
+    return { success: true, ok: true, message: `${mcp.label} reachable — tools: ${names.join(", ")}` };
+  } catch (error) {
+    console.error("testMcpConnection failed:", error?.message);
+    return { success: true, ok: false, error: `Unreachable: ${error.message}` };
   }
 });
 
@@ -6499,63 +6617,18 @@ const callAnthropicChat = async ({ apiKey, model, messages, tools, tool_choice, 
     // Anthropic defaults to "auto" when tools are present, matching OpenAI's behavior.
   }
 
-  // Native remote MCP support. Anthropic's Messages API can dispatch tool calls
-  // directly to a hosted MCP server when:
-  //   - body.mcp_servers describes the server(s) (url + raw bearer; Anthropic
-  //     adds the "Bearer " prefix when calling our server)
-  //   - body.tools includes one {type:"mcp_toolset", mcp_server_name} entry per
-  //     server to EXPOSE its tools to the model (without it, the server is
-  //     registered but unused)
-  //   - the beta header anthropic-beta: mcp-client-2025-11-20 is sent (without
-  //     it, mcp_servers is silently ignored)
-  // Composes any combination of doc-reader + web-search depending on which
-  // toggles are on AND have a hosted URL+bearer configured. Single beta
-  // header enables MCP support for all attached servers.
+  // Hosted MCPs: Anthropic reaches context7 / doc-reader / web-search through the
+  // CogniRunner cross-provider bridge — same as every other provider. The enabled
+  // MCP tools arrive here as ordinary function tools in body.tools (converted above);
+  // the agentic loop proxies each tool_use to the hosted server via callBridgeTool.
+  // Anthropic's native mcp_servers connector is intentionally NOT used (it forwards
+  // only the bearer, so per-tenant service keys never reach the server, and it would
+  // double-expose tools that are already function tools).
   const headers = {
     "Content-Type": "application/json",
     "x-api-key": apiKey,
     "anthropic-version": "2023-06-01",
   };
-  try {
-    const enabledMcps = (await storage.get(LMSTUDIO_MCPS_KVS_KEY)) || {};
-    const mcpServers = [];
-    const mcpToolsets = [];
-
-    if (enabledMcps.docReader === true) {
-      const remote = await getDocProcessorRemoteConfig();
-      if (remote && remote.url && remote.bearer) {
-        mcpServers.push({
-          type: "url",
-          url: remote.url,
-          name: "doc-reader",
-          authorization_token: remote.bearer,
-        });
-        mcpToolsets.push({ type: "mcp_toolset", mcp_server_name: "doc-reader" });
-      }
-    }
-
-    if (enabledMcps.webSearch === true) {
-      const remote = await getWebSearchRemoteConfig();
-      if (remote && remote.url && remote.bearer) {
-        mcpServers.push({
-          type: "url",
-          url: remote.url,
-          name: "web-search",
-          authorization_token: remote.bearer,
-        });
-        mcpToolsets.push({ type: "mcp_toolset", mcp_server_name: "web-search" });
-      }
-    }
-
-    if (mcpServers.length > 0) {
-      body.mcp_servers = mcpServers;
-      body.tools = [...(body.tools || []), ...mcpToolsets];
-      headers["anthropic-beta"] = "mcp-client-2025-11-20";
-      console.log(`Anthropic: attached ${mcpServers.length} hosted MCP server(s): ${mcpServers.map((s) => s.name).join(", ")}`);
-    }
-  } catch (e) {
-    console.warn("Anthropic: failed to read MCP config (continuing without remote MCP):", e?.message);
-  }
 
   const response = await fetch(`${baseUrl}/v1/messages`, {
     method: "POST",
@@ -6712,15 +6785,12 @@ let _cachedKeyAt = 0;
 
 // === Remote doc-processor (hosted MCP) configuration ===
 //
-// When set, CogniRunner can route doc-reader / create-* tool calls to a
-// hosted doc-processor instance (typically the operator's own Mac exposed
-// via Tailscale Funnel — see plan in /Users/mihaiperdum/.claude/plans/).
-// Two providers consume this natively today:
-//   - Anthropic Messages API → mcp_servers + mcp_toolset (beta header)
-//   - LM Studio              → user's ~/.lmstudio/mcp.json points at the
-//                              same URL with the bearer in headers (no
-//                              CogniRunner code change for that path)
-// OpenAI (Responses API) and OpenRouter are deferred follow-ups.
+// When set, CogniRunner routes doc-reader / create-* tool calls to a hosted
+// doc-processor instance (typically the operator's own Mac exposed via Tailscale
+// Funnel — see plan in /Users/mihaiperdum/.claude/plans/). The cross-provider
+// bridge consumes this on EVERY hosted provider (the app is the MCP client — it
+// dials the URL). LM Studio can alternatively point its own ~/.lmstudio/mcp.json
+// at the same URL+bearer (no CogniRunner code change for that path).
 //
 // Bearer is stored plaintext in KVS (Forge KVS is the security boundary,
 // same model as provider API keys above). Resolver-level admin gate keeps
@@ -6750,10 +6820,9 @@ const getDocProcessorRemoteConfig = async () => {
 // === Hosted web-search (remote MCP) configuration ===
 //
 // Same pattern as DOC_PROCESSOR_REMOTE — separate KVS slot so the two
-// services can be hosted at different URLs with different bearers.
-// Consumers: Anthropic (mcp_servers field) and LM Studio (when the user's
-// mcp.json is the remote variant). OpenAI Responses API + OpenRouter are
-// deferred follow-ups.
+// services can be hosted at different URLs with different bearers. Consumed by
+// the cross-provider bridge on every hosted provider (the app dials the URL);
+// LM Studio can also point its own mcp.json at the remote variant.
 const WEB_SEARCH_REMOTE_KVS_KEY = "COGNIRUNNER_WEB_SEARCH_REMOTE";
 let _cachedWebSearchRemote = null;
 let _cachedWebSearchRemoteChecked = false;
@@ -6773,6 +6842,35 @@ const getWebSearchRemoteConfig = async () => {
     console.error("Error reading web-search remote config:", error?.message);
   }
   _cachedWebSearchRemote = null;
+  return null;
+};
+
+// === Hosted context7 (remote MCP) configuration ===
+//
+// context7 (library/framework/SDK docs) is a hosted, STATEFUL Streamable-HTTP MCP
+// (official endpoint https://mcp.context7.com/mcp, or a self-hosted *.ts.net URL).
+// Consumed by the cross-provider bridge on every provider. Unlike doc-processor /
+// web-search, its API key is OPTIONAL (keyless works; a key only raises rate limits)
+// and is sent as context7's own header `CONTEXT7_API_KEY` — NOT a Bearer.
+const CONTEXT7_REMOTE_KVS_KEY = "COGNIRUNNER_CONTEXT7_REMOTE";
+let _cachedContext7Remote = null;
+let _cachedContext7RemoteChecked = false;
+let _cachedContext7RemoteAt = 0; // TTL-bounded via PROVIDER_CACHE_TTL_MS
+
+const getContext7RemoteConfig = async () => {
+  if (_cachedContext7RemoteChecked && _cacheFresh(_cachedContext7RemoteAt)) return _cachedContext7Remote;
+  try {
+    const raw = await storage.get(CONTEXT7_REMOTE_KVS_KEY);
+    _cachedContext7RemoteChecked = true;
+    _cachedContext7RemoteAt = Date.now();
+    if (raw && typeof raw === "object" && raw.url) {
+      _cachedContext7Remote = { url: String(raw.url), apiKey: raw.apiKey ? String(raw.apiKey) : undefined };
+      return _cachedContext7Remote;
+    }
+  } catch (error) {
+    console.error("Error reading context7 remote config:", error?.message);
+  }
+  _cachedContext7Remote = null;
   return null;
 };
 
@@ -7494,16 +7592,19 @@ Respond with JSON only.`;
 // Cross-provider hosted-MCP bridge
 // ============================================================================
 //
-// Anthropic reaches the hosted MCPs via its native mcp_servers connector, and LM
-// Studio loads them as plugins. The OpenAI-compatible providers (OpenAI, Azure,
-// OpenRouter) have NO native MCP support — so for those, CogniRunner acts as the
-// MCP CLIENT itself: it lists the enabled hosted MCP tools, exposes them to the
-// model as function tools, and proxies tool calls over the MCP Streamable-HTTP
-// protocol using plain fetch (no SDK — Forge-friendly; the servers are stateless
-// so no session handshake is needed). doc-reader needs only its tenant Bearer;
-// the keyless web-search MCP gets its Serper key from the hosted web-search
-// config the ADMIN sets in the admin panel (stored alongside url + bearer).
-// Egress to *.ts.net is already allowlisted in manifest.yml.
+// CogniRunner is the MCP CLIENT for EVERY hosted (non-LM-Studio) provider — OpenAI,
+// Azure, OpenRouter, Anthropic, and Forge LLM alike. None of them dial the MCP: the
+// app lists the enabled hosted MCP tools, exposes them to the model as function tools,
+// and proxies tool calls over the MCP Streamable-HTTP protocol using plain fetch (no
+// SDK — Forge-friendly). LM Studio is the exception — it loads the MCPs locally from
+// the user's mcp.json (stdio), so the app doesn't bridge for it.
+//
+// Transport: doc-reader/web-search are STATELESS (single POST — mcpRpc). context7 is
+// STATEFUL (initialize → mcp-session-id → notifications/initialized → call —
+// mcpRpcSession). Auth: doc-reader/web-search use a tenant Bearer (+ optional per-tenant
+// service keys as headers: X-Serper-Key, X-GitHub-Token, X-ZAI-Key); context7 uses its
+// own CONTEXT7_API_KEY header (optional — keyless works).
+// Egress: *.ts.net (LeanZero Funnel hosts, incl. :8443/:10000) + mcp.context7.com.
 
 // Parse a Streamable-HTTP response body (JSON or SSE) into its JSON-RPC message.
 const parseMcpBody = (contentType, text) => {
@@ -7518,13 +7619,34 @@ const parseMcpBody = (contentType, text) => {
   try { return JSON.parse(text); } catch { return null; }
 };
 
-// One JSON-RPC POST to a hosted MCP (uses @forge/api fetch).
+// One JSON-RPC POST to a STATELESS hosted MCP (uses @forge/api fetch).
 const mcpRpc = async (url, headers, body) => {
   const res = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json", "Accept": "application/json, text/event-stream", ...headers },
     body: JSON.stringify(body),
   });
+  const text = await res.text();
+  return { status: res.status, json: parseMcpBody(res.headers.get("content-type"), text) };
+};
+
+// One JSON-RPC call to a STATEFUL hosted MCP (e.g. context7) that requires an MCP
+// session handshake before tool calls: initialize → capture the `mcp-session-id`
+// response header → notifications/initialized → the real call, all carrying the
+// `MCP-Session-Id` header. Done as a tight init→call sequence per request (sessions
+// expire — never cached). Falls back to a single stateless POST if the server
+// returns no session id. Returns the same { status, json } shape as mcpRpc.
+const mcpRpcSession = async (url, headers, body, { timeoutMs = 12000 } = {}) => {
+  const base = { "Content-Type": "application/json", "Accept": "application/json, text/event-stream", ...headers };
+  const sig = () => (typeof AbortSignal !== "undefined" && AbortSignal.timeout ? AbortSignal.timeout(timeoutMs) : undefined);
+  const post = (b, extra) => fetch(url, { method: "POST", headers: { ...base, ...(extra || {}) }, body: JSON.stringify(b), signal: sig() });
+  const init = await post({ jsonrpc: "2.0", id: 0, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "cognirunner", version: "1" } } });
+  const sid = init.headers.get("mcp-session-id");
+  await init.text().catch(() => {}); // drain the init body regardless of whether we need it
+  if (!sid) return mcpRpc(url, headers, body); // server isn't session-based after all
+  const sh = { "MCP-Session-Id": sid };
+  try { await post({ jsonrpc: "2.0", method: "notifications/initialized" }, sh); } catch { /* 202, best-effort */ }
+  const res = await post(body, sh);
   const text = await res.text();
   return { status: res.status, json: parseMcpBody(res.headers.get("content-type"), text) };
 };
@@ -7548,6 +7670,14 @@ const getBridgeMcp = async (mcpKey) => {
     if (r.githubToken) headers["X-GitHub-Token"] = r.githubToken;
     return { url: r.url, headers };
   }
+  if (mcpKey === "context7") {
+    const r = await getContext7RemoteConfig();
+    if (!r) return null;
+    // context7 auth is its OWN header (CONTEXT7_API_KEY) — NOT a Bearer. Key is
+    // optional (keyless works). stateful: true routes through mcpRpcSession.
+    const headers = r.apiKey ? { CONTEXT7_API_KEY: r.apiKey } : {};
+    return { url: r.url, headers, stateful: true };
+  }
   return null;
 };
 
@@ -7555,20 +7685,23 @@ const getBridgeMcp = async (mcpKey) => {
 const callBridgeTool = async (mcpKey, toolName, args) => {
   const cfg = await getBridgeMcp(mcpKey);
   if (!cfg) return JSON.stringify({ error: `MCP "${mcpKey}" not configured` });
-  const r = await mcpRpc(cfg.url, cfg.headers, { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: toolName, arguments: args || {} } });
+  const body = { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: toolName, arguments: args || {} } };
+  const r = cfg.stateful ? await mcpRpcSession(cfg.url, cfg.headers, body) : await mcpRpc(cfg.url, cfg.headers, body);
   if (r.json?.error) return JSON.stringify({ error: r.json.error.message || "MCP tool error" });
   const content = r.json?.result?.content || [];
   const text = content.filter((b) => b && b.type === "text").map((b) => b.text).join("\n");
   return text || JSON.stringify(r.json?.result ?? { ok: false });
 };
 
-// Build OpenAI function tools for the enabled hosted MCPs (doc-reader + web-search),
-// filtered to the curated allow-list. Returns { tools, index: { toolName -> mcpKey } }.
-// Best-effort: a tools/list failure for one MCP just omits it.
+// Build OpenAI function tools for the enabled hosted MCPs (context7 + doc-reader +
+// web-search), filtered to the curated allow-list. Returns { tools, index: { toolName
+// -> mcpKey } }. Best-effort: a tools/list failure for one MCP just omits it. The live
+// tools/list ∩ allow-list means only tools the deployed server actually exposes appear,
+// so a curated allow-list superset is safe (extra entries never surface a missing tool).
 const buildBridgeMcpTools = async () => {
   const enabled = (await storage.get(LMSTUDIO_MCPS_KVS_KEY)) || {};
   const result = { tools: [], index: {} };
-  for (const mcpKey of ["docReader", "webSearch"]) {
+  for (const mcpKey of ["context7", "docReader", "webSearch"]) {
     if (enabled[mcpKey] !== true) continue;
     const info = SUPPORTED_MCPS[mcpKey];
     let allow = info.allowedTools || [];
@@ -7578,7 +7711,8 @@ const buildBridgeMcpTools = async () => {
     try {
       const cfg = await getBridgeMcp(mcpKey);
       if (!cfg) continue;
-      const r = await mcpRpc(cfg.url, cfg.headers, { jsonrpc: "2.0", id: 1, method: "tools/list" });
+      const listBody = { jsonrpc: "2.0", id: 1, method: "tools/list" };
+      const r = cfg.stateful ? await mcpRpcSession(cfg.url, cfg.headers, listBody) : await mcpRpc(cfg.url, cfg.headers, listBody);
       const allowSet = new Set(allow);
       for (const t of (r.json?.result?.tools || [])) {
         if (!allowSet.has(t.name) || result.index[t.name]) continue;
@@ -7599,15 +7733,14 @@ const buildBridgeMcpTools = async () => {
   return result;
 };
 
-// True when the bridge should engage: a non-Anthropic provider (Anthropic uses
-// its native connector) with doc-reader or web-search enabled. Used to also flip
-// validation into the agentic tool loop so the MCP tools are actually offered.
+// True when the bridge should engage: any hosted MCP (context7 / doc-reader /
+// web-search) is enabled. Used to flip validation into the agentic tool loop so the
+// MCP tools are actually offered. Provider-agnostic — CogniRunner is the MCP client
+// for every provider (Anthropic included; its native connector was removed).
 const mcpBridgeActive = async () => {
   try {
-    const { provider } = await getProviderConfig();
-    if (provider === "anthropic") return false;
     const enabled = (await storage.get(LMSTUDIO_MCPS_KVS_KEY)) || {};
-    return enabled.docReader === true || enabled.webSearch === true;
+    return enabled.context7 === true || enabled.docReader === true || enabled.webSearch === true;
   } catch {
     return false;
   }
@@ -7830,19 +7963,18 @@ const callOpenAIWithTools = async (fieldValue, validationPrompt, attachmentParts
   // Build tool definitions from registry
   const tools = Object.values(TOOL_REGISTRY).map((t) => t.definition);
 
-  // Cross-provider hosted-MCP bridge: for non-Anthropic providers (Anthropic gets
-  // the MCPs natively), expose the enabled hosted MCP tools as function tools and
-  // proxy their execution below. Best-effort — never blocks validation.
+  // Cross-provider hosted-MCP bridge: on EVERY provider, expose the enabled hosted
+  // MCP tools as function tools and proxy their execution below. CogniRunner is the
+  // MCP client for all providers (Anthropic included — its native connector was
+  // removed). Best-effort — never blocks validation.
   let mcpBridgeIndex = {};
   try {
     const { provider: bridgeProvider } = await getProviderConfig();
-    if (bridgeProvider !== "anthropic") {
-      const bridge = await buildBridgeMcpTools();
-      if (bridge.tools.length > 0) {
-        tools.push(...bridge.tools);
-        mcpBridgeIndex = bridge.index;
-        console.log(`[mcp-bridge] exposed ${bridge.tools.length} hosted MCP tool(s) to ${bridgeProvider}: ${Object.keys(bridge.index).join(", ")}`);
-      }
+    const bridge = await buildBridgeMcpTools();
+    if (bridge.tools.length > 0) {
+      tools.push(...bridge.tools);
+      mcpBridgeIndex = bridge.index;
+      console.log(`[mcp-bridge] exposed ${bridge.tools.length} hosted MCP tool(s) to ${bridgeProvider}: ${Object.keys(bridge.index).join(", ")}`);
     }
   } catch (e) {
     console.warn("[mcp-bridge] setup skipped:", e.message);
@@ -8781,12 +8913,14 @@ export const validate = async (args) => {
       //   - LM Studio: doc-reader is reachable via the user's local mcp.json
       //     (stdio) OR by editing it to point at the hosted Funnel URL.
       //     CogniRunner doesn't care which — same code path.
-      //   - Anthropic: requires the hosted doc-processor remote URL+bearer
-      //     (callAnthropicChat injects mcp_servers natively when configured).
-      //   - OpenAI / OpenRouter: NOT YET — deferred follow-up.
+      //   - Anthropic / Forge LLM: reach doc-reader through the cross-provider
+      //     bridge (read-doc proxied as a function tool) — both require the
+      //     hosted doc-processor remote URL+bearer configured.
+      //   - OpenAI / OpenRouter: inline file path (they accept type:"file"),
+      //     so no URL bridge needed here.
       //
-      // useUrlBridge fires when the model can read attachments via the
-      // bridge URL (LM Studio always, Anthropic when remote configured).
+      // useUrlBridge fires when the model can read attachments via the bridge
+      // URL (LM Studio always; Anthropic / Forge LLM when remote configured).
       // useUploadBridge fires when the model can also create+upload docs.
       const { provider: aiProvider } = await getProviderConfig();
       let docReaderEnabled = false;
@@ -8802,10 +8936,10 @@ export const validate = async (args) => {
       // to be configured — without it there's nowhere for the model to call.
       let providerSupportsBridge = aiProvider === "lmstudio";
       if (aiProvider === "anthropic" || aiProvider === "atlassian") {
-        // Anthropic reaches doc-reader natively (mcp_servers); Forge LLM reaches it
-        // through the cross-provider MCP bridge (read-doc proxied as a function tool).
-        // Both need the hosted doc-processor configured. Forge LLM additionally NEEDS
-        // the URL bridge for documents — it has no inline file input at all.
+        // Anthropic and Forge LLM both reach doc-reader through the cross-provider
+        // bridge (read-doc proxied as a function tool), so both need the hosted
+        // doc-processor configured. Forge LLM additionally NEEDS the URL bridge for
+        // documents — it has no inline file input at all.
         const remote = await getDocProcessorRemoteConfig();
         providerSupportsBridge = !!(remote && remote.url && remote.bearer);
       }

@@ -184,15 +184,27 @@ permissions:
         - address: "*.openai.azure.com"
         - address: https://openrouter.ai
         - address: https://api.anthropic.com
-        # LM Studio: user-hosted servers exposed via Tailscale Funnel
+        # Hosted MCP servers exposed via Tailscale Funnel (LM Studio + the
+        # cross-provider bridge). Funnel only serves on 443 / 8443 / 10000;
+        # the portless rule covers 443, the explicit entries cover the rest.
         - address: "*.ts.net"
+        - address: "*.ts.net:8443"
+        - address: "*.ts.net:10000"
+        # context7 hosted MCP (library/SDK docs)
+        - address: https://mcp.context7.com
       backend:
         - address: https://api.openai.com
         - address: "*.openai.azure.com"
         - address: https://openrouter.ai
         - address: https://api.anthropic.com
-        # LM Studio: user-hosted servers exposed via Tailscale Funnel
+        # Hosted MCP servers exposed via Tailscale Funnel (LM Studio + the
+        # cross-provider bridge). Funnel only serves on 443 / 8443 / 10000;
+        # the portless rule covers 443, the explicit entries cover the rest.
         - address: "*.ts.net"
+        - address: "*.ts.net:8443"
+        - address: "*.ts.net:10000"
+        # context7 hosted MCP (library/SDK docs)
+        - address: https://mcp.context7.com
 
 app:
   runtime:

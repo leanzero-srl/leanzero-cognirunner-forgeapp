@@ -337,10 +337,9 @@ callAIChat({ apiKey, model, messages, tools, tool_choice })
   │       ├─ POST /v1/messages with x-api-key + anthropic-version headers
   │       └─ Translate response back to OpenAI format
   │
-  └─ else (OpenAI, Azure, OpenRouter):
+  └─ else (OpenAI, Azure):
       ├─ Build headers:
       │   ├─ Azure: api-key header
-      │   ├─ OpenRouter: Bearer + HTTP-Referer + X-OpenRouter-Title
       │   └─ OpenAI: Bearer
       ├─ POST {baseUrl}/chat/completions
       └─ Return { ok, status, data } in OpenAI format

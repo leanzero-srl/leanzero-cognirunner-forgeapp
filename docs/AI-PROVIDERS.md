@@ -1,25 +1,25 @@
 # CogniRunner AI Provider Integration Guide
 
-> How CogniRunner connects to OpenAI, Azure OpenAI, OpenRouter, and Anthropic. Covers authentication, request/response translation, per-provider key storage, and the unified adapter layer.
+> How CogniRunner connects to OpenAI, Azure OpenAI, and Anthropic (plus LM Studio and the zero-key Atlassian Forge LLM). Covers authentication, request/response translation, per-provider key storage, and the unified adapter layer. **Note: Azure OpenAI rides the same OpenAI-compatible path as OpenAI and is mostly untested end-to-end.**
 
 ---
 
 ## Provider Comparison
 
-| | OpenAI | Azure OpenAI | OpenRouter | Anthropic |
-|---|---|---|---|---|
-| **Base URL** | `api.openai.com/v1` | `{resource}.openai.azure.com/openai/v1` | `openrouter.ai/api/v1` | `api.anthropic.com` |
-| **Chat endpoint** | `/chat/completions` | `/chat/completions` | `/chat/completions` | `/v1/messages` |
-| **Models endpoint** | `/models` | `/models` | `/models` | `/v1/models` |
-| **Auth header** | `Authorization: Bearer` | `api-key: KEY` | `Authorization: Bearer` | `x-api-key: KEY` |
-| **Extra headers** | — | — | `HTTP-Referer` + `X-OpenRouter-Title` | `anthropic-version: 2023-06-01` |
-| **System prompt** | `{role: "system"}` in messages | Same as OpenAI | Same as OpenAI | Top-level `system` field |
-| **max_tokens** | Optional | Optional | Optional | **Required** |
-| **Request body** | OpenAI standard | Identical to OpenAI | Identical to OpenAI | Different (Messages API) |
-| **Response body** | `choices[0].message.content` | Same | Same | `content[].text` |
-| **Tool calling** | `tools` + `tool_calls` | Same | Same | `tools` + `tool_use` content blocks |
-| **Image format** | `{type: "image_url"}` | Same | Same | `{type: "image", source: {type: "base64"}}` |
-| **Default model** | `gpt-5.4-mini` | `gpt-5.4-mini` | `openai/gpt-4o-mini` | `claude-haiku-4-5-20251001` |
+| | OpenAI | Azure OpenAI _(mostly untested)_ | Anthropic |
+|---|---|---|---|
+| **Base URL** | `api.openai.com/v1` | `{resource}.openai.azure.com/openai/v1` | `api.anthropic.com` |
+| **Chat endpoint** | `/chat/completions` | `/chat/completions` | `/v1/messages` |
+| **Models endpoint** | `/models` | `/models` | `/v1/models` |
+| **Auth header** | `Authorization: Bearer` | `api-key: KEY` | `x-api-key: KEY` |
+| **Extra headers** | — | — | `anthropic-version: 2023-06-01` |
+| **System prompt** | `{role: "system"}` in messages | Same as OpenAI | Top-level `system` field |
+| **max_tokens** | Optional | Optional | **Required** |
+| **Request body** | OpenAI standard | Identical to OpenAI | Different (Messages API) |
+| **Response body** | `choices[0].message.content` | Same | `content[].text` |
+| **Tool calling** | `tools` + `tool_calls` | Same | `tools` + `tool_use` content blocks |
+| **Image format** | `{type: "image_url"}` | Same | `{type: "image", source: {type: "base64"}}` |
+| **Default model** | `gpt-5.4-mini` | `gpt-5.4-mini` | `claude-haiku-4-5-20251001` |
 
 ---
 
@@ -37,7 +37,7 @@ Caller (any resolver/handler)
       ├─ provider === "anthropic"?
       │   └─ callAnthropicChat() → translates request/response
       │
-      └─ else (OpenAI, Azure, OpenRouter)
+      └─ else (OpenAI, Azure)
           └─ Direct POST to {baseUrl}/chat/completions
               with provider-specific headers
 ```
@@ -62,6 +62,8 @@ Caller (any resolver/handler)
 
 ### Azure OpenAI (v1 API)
 
+> **Mostly untested.** Azure rides the same OpenAI-compatible code path as OpenAI (only the auth header and base URL differ), so OpenAI hardening covers it — but there is no live Azure deployment in the test harness, so treat its end-to-end behavior as unverified.
+
 **Auth:** `api-key: KEY` (NOT `Authorization: Bearer` — that's for Entra ID tokens only)
 
 **Base URL:** User must provide. Format: `https://{resource-name}.openai.azure.com/openai/v1`
@@ -71,22 +73,6 @@ Caller (any resolver/handler)
 **No api-version parameter** needed for v1 API (GA since August 2025).
 
 **Model listing:** No filter — shows all available deployments.
-
-### OpenRouter
-
-**Auth:** `Authorization: Bearer sk-or-...`
-
-**Required attribution headers:**
-```
-HTTP-Referer: https://leanzero.atlascrafted.com
-X-OpenRouter-Title: CogniRunner
-```
-
-Without these, requests may be rejected or throttled.
-
-**Model listing filter:** `openai/|anthropic/|google/|meta-llama/` prefix (popular providers)
-
-**Model ID format:** `provider/model-name` (e.g., `openai/gpt-4o`, `anthropic/claude-3.5-sonnet`)
 
 ### Anthropic
 
@@ -174,7 +160,6 @@ Each provider has a different model listing approach:
 |---|---|---|---|
 | OpenAI | `GET /v1/models` | `gpt-5\|o3-\|o4-` | Latest models only |
 | Azure | `GET /openai/v1/models` | No filter | Shows all deployments |
-| OpenRouter | `GET /api/v1/models` | `openai/\|anthropic/\|google/\|meta-llama/` | Popular providers |
 | Anthropic | `GET /v1/models` | `claude-` prefix | All Claude models |
 
 **Max models returned:** 50 (capped to avoid UI overload)

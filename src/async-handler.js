@@ -80,7 +80,6 @@ const getOpenAIKey = async () => {
 };
 
 const PROVIDER_DEFAULT_MODELS = {
-  openrouter: "openai/gpt-5.4-mini",
   anthropic: "claude-haiku-4-5-20251001",
   atlassian: "claude-haiku-4-5-20251001",
   lmstudio: "gpt-5.4-mini", // placeholder — LM Studio admins always save a model
@@ -104,8 +103,7 @@ const getOpenAIModel = async () => {
 
 const PROVIDERS = {
   openai: { baseUrl: "https://api.openai.com/v1" },
-  azure: { baseUrl: null },
-  openrouter: { baseUrl: "https://openrouter.ai/api/v1" },
+  azure: { baseUrl: null }, // Azure OpenAI: same OpenAI-compatible path as openai; mostly untested
   anthropic: { baseUrl: "https://api.anthropic.com" },
   lmstudio: { baseUrl: null }, // user-supplied tunnel root (no /v1)
   atlassian: { baseUrl: null }, // Forge LLM — served by @forge/llm, no HTTP base URL
@@ -129,7 +127,7 @@ const getProviderConfig = async () => {
  * @param {boolean} [opts.jsonMode] — for OpenAI/Azure/LM Studio, sends
  *   `response_format: { type: "json_object" }` to constrain output. Silently
  *   skipped for providers that don't support it (Anthropic uses its system
- *   prompt; OpenRouter passes through and not all upstream models accept it).
+ *   prompt).
  */
 // Send a one-shot request to LM Studio's NATIVE /api/v1/chat endpoint.
 // Mirror of callLmStudioNative in src/index.js but specialized for the simple
@@ -245,18 +243,14 @@ const callAIChatSimple = async ({ apiKey, model, systemPrompt, userMessage, json
     return callLmStudioNativeSimple({ apiKey, model, systemPrompt, userMessage, jsonMode, baseUrl });
   }
 
-  // OpenAI-compatible (OpenAI, Azure, OpenRouter)
+  // OpenAI-compatible (OpenAI, Azure)
   const openaiHeaders = { "Content-Type": "application/json" };
   if (provider === "azure") {
     openaiHeaders["api-key"] = apiKey;
   } else {
     openaiHeaders["Authorization"] = `Bearer ${apiKey}`;
   }
-  if (provider === "openrouter") {
-    openaiHeaders["HTTP-Referer"] = "https://leanzero.atlascrafted.com";
-    openaiHeaders["X-Title"] = "CogniRunner";
-  }
-  // OpenAI/Azure/OpenRouter all expect baseUrl ending in /v1 (PROVIDERS already
+  // OpenAI/Azure both expect baseUrl ending in /v1 (PROVIDERS already
   // configured that way). LM Studio is handled by the native path above.
   const requestBody = {
     model,
@@ -266,7 +260,6 @@ const callAIChatSimple = async ({ apiKey, model, systemPrompt, userMessage, json
     ],
   };
   // Constrain to JSON on providers that reliably honor response_format.
-  // Skip for openrouter (passes through; many upstream models reject the field).
   if (jsonMode && (provider === "openai" || provider === "azure")) {
     requestBody.response_format = {
       type: "json_schema",

@@ -10073,6 +10073,27 @@ const executeStaticPostFunction = async (issueKey, config, deadline = Date.now()
       if (!res.ok) throw new Error(`sendNotification failed: ${res.status} — ${(await res.text()).slice(0, 200)}`);
       changes.push({ action: "sendNotification", key: issueKey, subject }); executionLogs.push(`sendNotification: ${subject}`); return { success: true };
     },
+    // --- Agile (Jira Software) actions: sprint / backlog / rank (needs jira-software scope) ---
+    moveToSprint: async (sprintId) => {
+      if (simulated) { executionLogs.push(`[SIMULATION] moveToSprint(${sprintId})`); changes.push({ action: "moveToSprint", key: issueKey, sprintId, simulated: true }); return { simulated: true }; }
+      const res = await api.asApp().requestJira(route`/rest/agile/1.0/sprint/${sprintId}/issue`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ issues: [issueKey] }) });
+      if (!res.ok) throw new Error(`moveToSprint failed: ${res.status} — ${(await res.text()).slice(0, 200)}`);
+      changes.push({ action: "moveToSprint", key: issueKey, sprintId }); executionLogs.push(`moveToSprint: ${sprintId}`); return { success: true };
+    },
+    moveToBacklog: async () => {
+      if (simulated) { executionLogs.push(`[SIMULATION] moveToBacklog`); changes.push({ action: "moveToBacklog", key: issueKey, simulated: true }); return { simulated: true }; }
+      const res = await api.asApp().requestJira(route`/rest/agile/1.0/backlog/issue`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ issues: [issueKey] }) });
+      if (!res.ok) throw new Error(`moveToBacklog failed: ${res.status} — ${(await res.text()).slice(0, 200)}`);
+      changes.push({ action: "moveToBacklog", key: issueKey }); executionLogs.push(`moveToBacklog`); return { success: true };
+    },
+    rankIssue: async (relativeToKey, opts = {}) => {
+      if (simulated) { executionLogs.push(`[SIMULATION] rankIssue(${opts.after ? "after" : "before"} ${relativeToKey})`); changes.push({ action: "rankIssue", key: issueKey, relativeToKey, simulated: true }); return { simulated: true }; }
+      const body = { issues: [issueKey] };
+      if (opts.after) body.rankAfterIssue = relativeToKey; else body.rankBeforeIssue = relativeToKey;
+      const res = await api.asApp().requestJira(route`/rest/agile/1.0/issue/rank`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      if (!res.ok) throw new Error(`rankIssue failed: ${res.status} — ${(await res.text()).slice(0, 200)}`);
+      changes.push({ action: "rankIssue", key: issueKey, relativeToKey }); executionLogs.push(`rankIssue: ${opts.after ? "after" : "before"} ${relativeToKey}`); return { success: true };
+    },
     // --- Exotic actions: create project-level entities, clone issues, and force
     // a status via a temporary transition. All respect simulation mode. ---
     createVersion: async (name, extra = {}) => {

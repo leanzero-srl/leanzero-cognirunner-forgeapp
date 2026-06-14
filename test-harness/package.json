@@ -23,7 +23,10 @@
     "exotic": "node scripts/exotic-pf.mjs",
     "actions": "node scripts/actions-test.mjs",
     "audit": "node scripts/audit-rules.mjs",
-    "throttle": "node scripts/throttle-probe.mjs"
+    "throttle": "node scripts/throttle-probe.mjs",
+    "agile-setup": "node scripts/agile-setup.mjs",
+    "agile": "node scripts/agile-test.mjs",
+    "pack": "node scripts/pack-transitions.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.48.0"

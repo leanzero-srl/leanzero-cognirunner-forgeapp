@@ -172,6 +172,9 @@ permissions:
     - manage:jira-configuration
     - read:screenable-field:jira
     - manage:jira-project
+    - write:sprint:jira-software
+    - write:board-scope:jira-software
+    - write:issue:jira-software
   external:
     images:
       - address: "*.atlassian.net"

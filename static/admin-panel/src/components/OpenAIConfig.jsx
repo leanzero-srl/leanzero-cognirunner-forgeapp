@@ -279,6 +279,16 @@ export default function OpenAIConfig({ invoke }) {
       showToast("Failed to save MCP setting: " + e.message, "error");
     }
     setMcpSavingKey(null);
+    // On the hosted-bridge path (every non-LM-Studio provider), fetch the live tool
+    // list the moment an MCP is enabled so the card shows what it can actually use.
+    // docWriter widens doc-reader's tools, so re-fetch doc-reader when it flips.
+    if (!isLmStudio) {
+      if (mcpKey === "docWriter") {
+        if (next.docReader) handleMcpPing("docReader");
+      } else if (mcpKey !== "localMode" && next[mcpKey] === true) {
+        handleMcpPing(mcpKey);
+      }
+    }
   };
 
   const handleMcpPing = async (mcpKey) => {
@@ -296,6 +306,9 @@ export default function OpenAIConfig({ invoke }) {
           ok: result.success && result.ok,
           error: result.error,
           message: result.message,
+          // Live, vetted tool list the server actually exposes (∩ what CogniRunner
+          // uses). testMcpConnection returns it; LM Studio's local probe does not.
+          tools: Array.isArray(result.tools) ? result.tools : undefined,
         },
       }));
     } catch (e) {
@@ -1585,7 +1598,7 @@ npm install && npm run build`}
               mcpKey="docReader"
               title="doc-reader"
               subtitle="Read PDF / DOCX / Excel / PowerPoint, and (with doc-writer) create / edit DOCX, PDF, Excel, Markdown, PPTX, plus fact-check"
-              tools={["read-doc", "detect-format", "list-documents", "list-templates", "create-doc", "create-markdown", "create-excel", "create-pdf", "create-pptx", "edit-pptx", "fact-check"]}
+              tools={["read-doc", "create-doc", "create-markdown", "create-excel", "create-pdf", "create-pptx", "fact-check", "list-templates"]}
               enabled={mcpEnabled.docReader}
               saving={mcpSavingKey === "docReader"}
               hostedGreyed={isLmStudio && mcpEnabled.localMode}
@@ -1760,9 +1773,27 @@ function McpCard({ mcpKey, title, subtitle, tools, enabled, saving, expanded, pi
             {saving && <span style={{ fontSize: "10px", color: "var(--text-muted)" }}>saving…</span>}
           </div>
           <p style={{ margin: "0 0 4px", fontSize: "11px", color: "var(--text-secondary)" }}>{subtitle}</p>
-          <p style={{ margin: 0, fontSize: "10px", color: "var(--text-muted)" }}>
-            Tools exposed: {tools.map((t) => <code key={t} style={{ fontSize: "10px", marginRight: "6px" }}>{t}</code>)}
-          </p>
+          {/* Live, vetted tool list. Once an MCP is enabled we fetch the tools the
+              server ACTUALLY exposes (∩ what CogniRunner uses) and show them as solid
+              chips. Before that / on the LM-Studio path we show the curated set muted. */}
+          {(() => {
+            const live = Array.isArray(ping?.tools) ? ping.tools : null;
+            const shown = live && live.length ? live : tools;
+            return (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: "5px", alignItems: "center", marginTop: "1px" }}>
+                <span style={{ fontSize: "10px", color: "var(--text-muted)", marginRight: "1px" }}>
+                  {ping?.loading ? "Loading tools…" : live ? "Tools in use:" : "Tools available:"}
+                </span>
+                {shown.map((t) => (
+                  <span
+                    key={t}
+                    className={live ? "mcp-tool-chip" : undefined}
+                    style={live ? undefined : { fontSize: "10px", fontWeight: 600, padding: "2px 8px", borderRadius: "10px", background: "var(--input-bg)", color: "var(--text-secondary)", border: "1px solid var(--border-color)" }}
+                  >{t}</span>
+                ))}
+              </div>
+            );
+          })()}
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: "4px", alignItems: "flex-end" }}>
           <label style={{ display: "flex", alignItems: "center", gap: "6px", cursor: "pointer", fontSize: "11px", color: "var(--text-secondary)" }}>

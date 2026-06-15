@@ -4079,6 +4079,14 @@ const injectCopiedComponentStyles = () => {
     .provider-down-recheck:disabled { opacity: 0.6; cursor: default; }
     html[data-color-mode="dark"] .provider-down-banner { background: #ef4444; }
     html[data-color-mode="dark"] .provider-down-recheck { color: #dc2626; }
+
+    /* Live MCP tool chips (solid blue, white text — what an enabled MCP can actually use) */
+    .mcp-tool-chip {
+      display: inline-block; font-size: 10px; font-weight: 600; line-height: 1.5;
+      padding: 2px 8px; border-radius: 10px; background: #2563eb; color: #fff;
+      letter-spacing: 0.1px;
+    }
+    html[data-color-mode="dark"] .mcp-tool-chip { background: #3b82f6; }
   `;
   document.head.appendChild(style);
 };

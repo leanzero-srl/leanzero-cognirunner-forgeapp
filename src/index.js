@@ -3383,15 +3383,20 @@ const SUPPORTED_MCPS = {
   },
   docReader: {
     label: "doc-reader",
-    allowedTools: ["read-doc", "list-documents"],
+    // Trimmed: `list-documents` removed — read-doc is driven by minted single-use
+    // capability URLs handed to the model, so there is never anything to enumerate.
+    allowedTools: ["read-doc"],
     // Composed onto allowedTools by buildLmStudioIntegrations only when the
     // docWriter sub-toggle is on AND docReader is on. Tenant defaults: OFF.
-    writeTools: ["create-doc", "create-markdown", "create-excel", "create-pdf", "create-pptx", "edit-pptx", "fact-check", "detect-format", "list-templates"],
+    // Trimmed: `edit-pptx` (needs a pre-existing .pptx — impossible single-shot, no
+    // PF caller) and `detect-format` (the app already knows each attachment's mime
+    // type) removed — neither was reachable in CogniRunner's runtime.
+    writeTools: ["create-doc", "create-markdown", "create-excel", "create-pdf", "create-pptx", "fact-check", "list-templates"],
     guidance: "Use to read PDF, DOCX, or Excel content. Two input variants: (a) `filePath` for files on the LM Studio host, or (b) `url` + `authHeader` for remote files (Jira attachments come this way — the user prompt lists them). Use the URL variant EXACTLY as shown — don't modify it, don't retry on 404 (the capability is single-use). Action selection: `summary` for \"is this document about X?\" (cheapest); `focused` with a `query` when you need a specific fact; `indepth` ONLY when you need full extraction. The filename's extension determines which parser runs — don't override it. Hard cap of 50 MB per file on the doc-processor side.",
     // Appended to the MCP system-prompt block ONLY when docWriter is on (see
     // buildMcpSystemPrompt). The user-prompt also carries the bound uploadUrl
     // + uploadAuthHeader for THIS issue (see textContextParts assembly).
-    writeGuidance: "When you need to PRODUCE a document for the user, choose by content type AND intent: `create-markdown` for technical / code-heavy / implementation docs (READMEs, specs); `create-doc` for stakeholder / business / legal / report docs the user may keep EDITING (DOCX, modern claude-like style); `create-pdf` for FINAL / printable / send-as-PDF deliverables — invoices, letters, resumes, official or sign-ready documents (PDF, same 8 presets; pass toc:true for a clickable table of contents); `create-excel` for tabular / numeric / financial data (XLSX); `create-pptx` for a slide deck / presentation / pitch deck the user wants as editable PowerPoint (PPTX — one '## ' heading per slide, the title becomes the title slide); `edit-pptx` to append or replace slides in an EXISTING .pptx (actions: preview / append-slides / replace-slide); `fact-check` to verify a document's factual claims against the LIVE web — it is a cross-MCP tool that calls the web-search MCP, so it ALSO needs `webSearchBearer` + `serperKey` and should only be used when those are present in your context. Key nuance: DOCX = editable, PDF = final/print/send, PPTX = editable slides. For each call you MUST pass the EXACT `uploadUrl` and `uploadAuthHeader` provided in the user prompt — they are bound to THIS issue and are single-use (do NOT retry on 404). Use clientHint:\"interactive\" so the response is concise.",
+    writeGuidance: "When you need to PRODUCE a document for the user, choose by content type AND intent: `create-markdown` for technical / code-heavy / implementation docs (READMEs, specs); `create-doc` for stakeholder / business / legal / report docs the user may keep EDITING (DOCX, modern claude-like style); `create-pdf` for FINAL / printable / send-as-PDF deliverables — invoices, letters, resumes, official or sign-ready documents (PDF, same 8 presets; pass toc:true for a clickable table of contents); `create-excel` for tabular / numeric / financial data (XLSX); `create-pptx` for a slide deck / presentation / pitch deck the user wants as editable PowerPoint (PPTX — one '## ' heading per slide, the title becomes the title slide); `fact-check` to verify a document's factual claims against the LIVE web — it is a cross-MCP tool that calls the web-search MCP, so it ALSO needs `webSearchBearer` + `serperKey` and should only be used when those are present in your context. Key nuance: DOCX = editable, PDF = final/print/send, PPTX = editable slides. For each call you MUST pass the EXACT `uploadUrl` and `uploadAuthHeader` provided in the user prompt — they are bound to THIS issue and are single-use (do NOT retry on 404). Use clientHint:\"interactive\" so the response is concise.",
   },
 };
 const LMSTUDIO_MCPS_KVS_KEY = "COGNIRUNNER_LMSTUDIO_MCPS";
@@ -3589,17 +3594,21 @@ resolver.define("testMcpConnection", async ({ payload, context }) => {
     }
     const returned = r.json?.result?.tools || [];
     const allowSet = new Set(allow);
-    const names = returned.map((t) => t.name).filter((n) => allowSet.has(n));
+    // The usable set = what this server exposes ∩ what CogniRunner curates (incl.
+    // writeTools when docWriter is on). Deduped + returned so the admin UI can show
+    // the LIVE list of tools it will actually use from this MCP.
+    const names = [...new Set(returned.map((t) => t.name).filter((n) => allowSet.has(n)))];
     if (names.length === 0) {
       return {
         success: true,
         ok: false,
+        tools: [],
         error: returned.length > 0
           ? `Reachable, but none of the expected tools were returned (server has ${returned.length}). Check the URL points at this MCP.`
           : `Reachable but returned no tools (HTTP ${r.status}). Check the URL and credentials.`,
       };
     }
-    return { success: true, ok: true, message: `${mcp.label} reachable — tools: ${names.join(", ")}` };
+    return { success: true, ok: true, tools: names, message: `${mcp.label} reachable — tools: ${names.join(", ")}` };
   } catch (error) {
     console.error("testMcpConnection failed:", error?.message);
     return { success: true, ok: false, error: `Unreachable: ${error.message}` };

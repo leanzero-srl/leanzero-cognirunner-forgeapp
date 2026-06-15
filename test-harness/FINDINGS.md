@@ -10,6 +10,40 @@ From the at-scale runtime test (instance `wolfaenpak.atlassian.net`, project `CO
 
 ---
 
+## Session round N+2 (2026-06-15, dev v22.x) — AWS Bedrock added as a BYOK provider + full barrage
+
+**New provider: AWS Bedrock (BYOK).** Bearer-token auth (no SigV4) over the unified **Converse API**
+(`bedrock-runtime.<region>.amazonaws.com/model/<id>/converse`), region eu-west-2, mirroring the
+Anthropic translation layer. Live model listing via the control plane; Anthropic models gated behind
+AWS's one-time use-case form (surfaced via an admin acknowledgment). Same 782-case suite, owner set
+Bedrock active (a Claude-on-Bedrock `eu.anthropic` profile — coherent Claude-style verdicts; logs
+don't echo the id).
+
+**Comprehensive suite under AWS Bedrock: 764/782** — on par with the other hosted providers (766
+baseline), **0 AI errors across all 782 cases** (the Converse + `parseAIJson` path is solid). Misses
+(18): injection 16 (11 = the injection-embedded-in-a-real-task nuance, ~5 = V-hardened injection
+judgment variance), robustness 1 (over-cautious on a whitespace+instruction field — blocked vs allow),
+condition 1 (**F3** — conditions not enforced on the REST path). No new failure class.
+
+| Provider · Model | Total | agentic (JQL tool-calling) | robustness | injection | other studies | AI errors |
+|---|---|---|---|---|---|---|
+| **AWS Bedrock · Claude-on-Bedrock (eu.anthropic, BYOK)** | **764/782** | **4/4 ✓** | 24/25 | 694/710 | semantic 8/8, static 6/6, action 10/10, fields 4/4, knowledge 5/5, policy 3/3, pf-flavors 5/5 — all clean; F3 condition | **0** |
+
+- **Converse tool-calling validated three ways:** agentic JQL validators **4/4 ✓** (dup-check +
+  release-gate), **gendoc** MCP round-trip (authored+attached `RCA for checkout incident.md` via the
+  hosted doc-reader on :443), and **research-doc** (web+context7 → authored `Express error-handling
+  middleware brief.md`, 2604b, attached). The `tool_choice:"none"` final-round forcing and the
+  literal model-id path (encoding `:` 404s) both hold in practice.
+- **MCP bridge works on Bedrock** — gendoc + research-doc PASS; the plain research semantic-PF SKIP'd
+  (web-search MCP disabled in that path — environmental, not Bedrock).
+- Bedrock lands in the hosted-provider band (764 vs 766) with agentic 4/4 — the 2-case delta is pure
+  injection judgment variance on the hardest cases, not a capability gap. Closes Bedrock onto the matrix.
+- Same session: reworked the admin provider flow so any provider's config is viewable/editable without
+  activating it (resolvers take an optional `provider`; `saveProvider` gains `activate:false`; dropdown
+  marks the active provider; a separate "Set as active" button is the only activation path).
+
+---
+
 ## Session round N+1 (2026-06-15, dev v20–v21.x) — provider cleanup, rule visibility, MCP egress, same-issue races
 
 **⚠️ BASELINE CORRECTION — the active provider was NOT Forge LLM.** It was **OpenRouter running on a factory key** (an `sk-or-…` token stored in the `OPENAI_API_KEY` Forge variable) the whole time — proven when removing the factory key 403'd every validator with a Forge **egress** error to `openrouter.ai`. The owner then set OpenRouter BYOK + model `google/gemma-4-31b-it`. **Provider config (KVS) is admin-only / not REST-readable**, so "which provider is active" must be confirmed with the owner — don't trust the brief.

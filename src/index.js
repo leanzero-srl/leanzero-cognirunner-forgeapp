@@ -2699,13 +2699,19 @@ resolver.define("removeWebSearchRemote", async ({ context }) => {
 resolver.define("getContext7Remote", async () => {
   try {
     const raw = await storage.get(CONTEXT7_REMOTE_KVS_KEY);
-    if (raw && typeof raw === "object" && raw.url) {
-      return { success: true, url: String(raw.url), hasApiKey: !!raw.apiKey };
-    }
-    return { success: true, url: "", hasApiKey: false };
+    const savedUrl = (raw && typeof raw === "object" && raw.url) ? String(raw.url) : "";
+    // Pre-fill the official endpoint when nothing is saved — context7 works out of
+    // the box; the admin only changes the URL to point at a self-host. isDefault
+    // tells the UI this is the built-in endpoint (not an admin-saved override).
+    return {
+      success: true,
+      url: savedUrl || CONTEXT7_DEFAULT_URL,
+      hasApiKey: !!(raw && typeof raw === "object" && raw.apiKey),
+      isDefault: !savedUrl,
+    };
   } catch (error) {
     console.error("Failed to read context7 remote config:", error?.message);
-    return { success: false, error: error.message };
+    return { success: true, url: CONTEXT7_DEFAULT_URL, hasApiKey: false, isDefault: true };
   }
 });
 
@@ -7118,6 +7124,10 @@ const getWebSearchRemoteConfig = async () => {
 // web-search, its API key is OPTIONAL (keyless works; a key only raises rate limits)
 // and is sent as context7's own header `CONTEXT7_API_KEY` — NOT a Bearer.
 const CONTEXT7_REMOTE_KVS_KEY = "COGNIRUNNER_CONTEXT7_REMOTE";
+// context7 is a well-known PUBLIC hosted MCP that works keyless — so it is ALWAYS
+// configured by default at this URL. The admin only overrides it to point at a
+// self-host; the key only ever raises rate limits.
+const CONTEXT7_DEFAULT_URL = "https://mcp.context7.com/mcp";
 let _cachedContext7Remote = null;
 let _cachedContext7RemoteChecked = false;
 let _cachedContext7RemoteAt = 0; // TTL-bounded via PROVIDER_CACHE_TTL_MS
@@ -7128,18 +7138,20 @@ const getContext7RemoteConfig = async () => {
     const raw = await storage.get(CONTEXT7_REMOTE_KVS_KEY);
     _cachedContext7RemoteChecked = true;
     _cachedContext7RemoteAt = Date.now();
-    // context7 is keyless-capable and has a well-known official endpoint, so a
-    // saved API key alone is enough — default the URL to the hosted endpoint
-    // when the admin left it blank (the field shows it as a placeholder).
-    if (raw && typeof raw === "object" && (raw.url || raw.apiKey)) {
-      _cachedContext7Remote = { url: String(raw.url || "https://mcp.context7.com/mcp"), apiKey: raw.apiKey ? String(raw.apiKey) : undefined };
-      return _cachedContext7Remote;
-    }
+    // context7 is ALWAYS configured: it has a public keyless endpoint. Use the
+    // admin's saved URL when present (a self-host override), otherwise the official
+    // hosted endpoint. The key is optional (raises rate limits) — never required.
+    _cachedContext7Remote = {
+      url: (raw && typeof raw === "object" && raw.url) ? String(raw.url) : CONTEXT7_DEFAULT_URL,
+      apiKey: (raw && typeof raw === "object" && raw.apiKey) ? String(raw.apiKey) : undefined,
+    };
+    return _cachedContext7Remote;
   } catch (error) {
     console.error("Error reading context7 remote config:", error?.message);
+    // Even on a storage hiccup the public endpoint is reachable — fall back to it
+    // (don't cache, so a transient KVS error retries on the next call).
+    return { url: CONTEXT7_DEFAULT_URL, apiKey: undefined };
   }
-  _cachedContext7Remote = null;
-  return null;
 };
 
 /**

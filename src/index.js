@@ -1215,6 +1215,161 @@ resolver.define("getConfigs", async ({ payload, context }) => {
 });
 
 /**
+ * Resolver: Discover CogniRunner rules ATTACHED to workflow transitions that are
+ * NOT in the config registry — so they execute at runtime but never appear in the
+ * admin rules table (and can't be disabled/removed there). This happens when a
+ * rule is attached OUTSIDE the Custom-UI save flow: a REST-driven
+ * /workflows/update call, an imported or copied workflow, or a rule whose
+ * post-attach registerConfig failed. READ-ONLY — never mutates anything.
+ *
+ * Identity: a Custom-UI rule tags itself with an embedded config id (cfg.id /
+ * cfg.ruleId) that the registry matches on. Rules attached without an embedded
+ * id (REST/imported) are keyed by their workflow rule instance UUID
+ * (parameters.id) and reported as discovered. The scan is bounded so a large
+ * instance can't exceed the 25s resolver budget; truncation is reported.
+ */
+resolver.define("discoverWorkflowRules", async ({ context }) => {
+  if (!(await requireAdmin(context.accountId))) {
+    return { success: false, error: "Admin access required" };
+  }
+  try {
+    const registry = (await storage.get(CONFIG_REGISTRY_KEY)) || [];
+    const registeredIds = new Set(registry.map((c) => String(c.id)));
+
+    const typeForRule = (rule, cfg) => {
+      const rk = String(rule.ruleKey || "");
+      if (rk.endsWith("expression-validator")) return "validator";
+      if (rk.endsWith("expression-condition")) return "condition";
+      // post-function: prefer the embedded flavor (postfunction-static/-semantic/…)
+      return (cfg && typeof cfg.type === "string" && cfg.type) || "postfunction";
+    };
+
+    const discovered = [];
+    let scannedWorkflows = 0;
+    let totalCogniRules = 0;
+    let registeredMatched = 0;
+    let truncated = false;
+
+    const MAX_WORKFLOWS = 300;
+    const pageSize = 50;
+    let startAt = 0;
+    for (;;) {
+      const resp = await api.asApp().requestJira(
+        route`/rest/api/3/workflows/search?startAt=${startAt}&maxResults=${pageSize}&expand=values.transitions`,
+        { headers: { Accept: "application/json" } },
+      );
+      if (!resp.ok) {
+        if (startAt === 0) return { success: false, error: `Workflow search failed (${resp.status})` };
+        break; // partial result is still useful
+      }
+      const data = await resp.json();
+      const values = data.values || [];
+      for (const wf of values) {
+        scannedWorkflows++;
+        const wfName = wf.name || "";
+        for (const t of (wf.transitions || [])) {
+          const slotRules = [
+            ...(t.validators || []),
+            ...flattenConditionRules(t.conditions),
+            ...(t.actions || []),
+          ];
+          for (const rule of slotRules) {
+            const key = rule.parameters?.key;
+            if (!key || !key.includes(APP_ID)) continue;
+            totalCogniRules++;
+            let cfg = {};
+            try { cfg = JSON.parse(rule.parameters?.config || "{}"); } catch { /* unreadable config */ }
+            const embeddedId = cfg.id || cfg.ruleId || null;
+            const instanceId = rule.parameters?.id || rule.id || null;
+            if (embeddedId && registeredIds.has(String(embeddedId))) { registeredMatched++; continue; }
+            if (instanceId && registeredIds.has(String(instanceId))) { registeredMatched++; continue; }
+            discovered.push({
+              instanceId,
+              type: typeForRule(rule, cfg),
+              fieldId: cfg.fieldId || null,
+              prompt: typeof cfg.prompt === "string" ? cfg.prompt.slice(0, 120) : null,
+              packTagged: cfg.pack === true,
+              workflowName: wfName,
+              transitionId: t.id != null ? String(t.id) : null,
+              transitionName: t.name || null,
+            });
+          }
+        }
+        if (scannedWorkflows >= MAX_WORKFLOWS) { truncated = true; break; }
+      }
+      const isLast = data.isLast === true
+        || values.length < pageSize
+        || (typeof data.total === "number" && startAt + values.length >= data.total);
+      if (truncated || isLast || values.length === 0) break;
+      startAt += pageSize;
+    }
+
+    console.log(`discoverWorkflowRules: scanned ${scannedWorkflows} workflow(s), ${totalCogniRules} CogniRunner rule(s), ${registeredMatched} already registered, ${discovered.length} unregistered${truncated ? " (TRUNCATED)" : ""}`);
+    return { success: true, discovered, discoveredCount: discovered.length, scannedWorkflows, totalCogniRules, registeredMatched, truncated };
+  } catch (error) {
+    console.error("discoverWorkflowRules failed:", error);
+    return { success: false, error: error.message };
+  }
+});
+
+/**
+ * Resolver: Claim discovered (attached-but-unregistered) rules into the config
+ * registry so they appear in the admin rules table and can be disabled/removed.
+ * Accepts { rules: [{ instanceId, type, fieldId, prompt, workflowName,
+ * transitionId, transitionName }] }. Rows are keyed by instanceId and flagged
+ * `discovered: true`. Idempotent: re-claiming an existing instanceId updates in
+ * place. Never sets `instanced` — these rows carry no embedded id, so the
+ * getConfigs orphan check keeps them via its coarse rule-on-transition test.
+ */
+resolver.define("registerDiscoveredRules", async ({ payload, context }) => {
+  if (!(await requireAdmin(context.accountId))) {
+    return { success: false, error: "Admin access required" };
+  }
+  try {
+    const items = Array.isArray(payload?.rules) ? payload.rules : [];
+    if (!items.length) return { success: false, error: "No rules provided" };
+    let configs = (await storage.get(CONFIG_REGISTRY_KEY)) || [];
+    const now = new Date().toISOString();
+    let added = 0, updated = 0, skipped = 0;
+    for (const it of items) {
+      const id = String(it.instanceId || "").trim();
+      if (!id) { skipped++; continue; }
+      const workflow = {};
+      if (it.workflowName) workflow.workflowName = it.workflowName;
+      if (it.transitionId) workflow.transitionId = String(it.transitionId);
+      if (it.transitionName) workflow.transitionToName = it.transitionName;
+      const idx = configs.findIndex((c) => String(c.id) === id);
+      const row = {
+        id,
+        type: it.type || "validator",
+        fieldId: it.fieldId || null,
+        prompt: typeof it.prompt === "string" ? it.prompt.slice(0, 200) : "",
+        workflow: Object.keys(workflow).length ? workflow : undefined,
+        discovered: true,
+        updatedAt: now,
+      };
+      if (idx >= 0) {
+        configs[idx] = { ...configs[idx], ...row };
+        updated++;
+      } else {
+        if (configs.length >= 500) { skipped++; continue; }
+        configs.push({ ...row, createdBy: context.accountId || null, createdAt: now });
+        added++;
+      }
+    }
+    if (JSON.stringify(configs).length > 230000) {
+      return { success: false, error: "Rule registry is near the storage size limit. Remove unused rules first." };
+    }
+    await saveRegistry(configs);
+    console.log(`registerDiscoveredRules: +${added} added, ${updated} updated, ${skipped} skipped`);
+    return { success: true, added, updated, skipped };
+  } catch (error) {
+    console.error("registerDiscoveredRules failed:", error);
+    return { success: false, error: error.message };
+  }
+});
+
+/**
  * Resolver: Get the disabled status of a rule from KVS.
  * Lookup strategy (in order):
  * 1. By rule ID in KVS registry

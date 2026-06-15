@@ -4116,6 +4116,48 @@ function App() {
     if (showLoading && token === configsFetchToken.current) setRefreshingConfigs(false);
   };
 
+  // --- Workstream R: discover CogniRunner rules ATTACHED to workflows but not in
+  // the registry (REST automation, imported/copied workflows, failed register).
+  // They execute at runtime but never appear under Configured Rules until claimed.
+  const [discovered, setDiscovered] = useState(null); // null = not yet scanned
+  const [discMeta, setDiscMeta] = useState(null);
+  const [discovering, setDiscovering] = useState(false);
+  const [registeringDisc, setRegisteringDisc] = useState(false);
+
+  const scanDiscoveredRules = async () => {
+    if (!invoke) return;
+    setDiscovering(true);
+    try {
+      const r = await invoke("discoverWorkflowRules");
+      if (r && r.success) {
+        setDiscovered(r.discovered || []);
+        setDiscMeta({ scannedWorkflows: r.scannedWorkflows, totalCogniRules: r.totalCogniRules, registeredMatched: r.registeredMatched, truncated: r.truncated });
+      } else {
+        setDiscovered([]);
+        setDiscMeta({ error: (r && r.error) || "Scan failed" });
+      }
+    } catch (e) {
+      setDiscovered([]);
+      setDiscMeta({ error: e.message });
+    }
+    setDiscovering(false);
+  };
+
+  const registerAllDiscovered = async () => {
+    if (!invoke || !discovered || !discovered.length) return;
+    setRegisteringDisc(true);
+    try {
+      const r = await invoke("registerDiscoveredRules", { rules: discovered });
+      if (r && r.success) {
+        await scanDiscoveredRules(); // now-registered rows drop out
+        await fetchConfigs(true);    // refresh the managed list
+      }
+    } catch (e) {
+      console.error("registerDiscoveredRules failed:", e);
+    }
+    setRegisteringDisc(false);
+  };
+
   const fetchLogs = async () => {
     if (!invoke) return;
     setLogsLoading(true);
@@ -4373,6 +4415,71 @@ function App() {
 
       {/* Configured Rules Section */}
       {activeTab === "rules" && (<>
+      {/* Workstream R: rules attached to workflows but not in the registry —
+          they execute on transitions but won't appear under Configured Rules
+          until claimed. Surfacing them closes the discoverability gap. */}
+      <div className="section">
+        <div className="section-header">
+          <span className="section-title">Attached rules not in registry</span>
+          <div className="section-actions">
+            <button className={"btn-small" + (discovering ? " is-busy" : "")} onClick={scanDiscoveredRules} disabled={discovering}>
+              {discovering ? "Scanning…" : "Scan workflows"}
+            </button>
+            {discovered && discovered.length > 0 && (userRole === "editor" || userRole === "admin") && (
+              <button className={"btn-small btn-edit" + (registeringDisc ? " is-busy" : "")} onClick={registerAllDiscovered} disabled={registeringDisc}>
+                {registeringDisc ? "Registering…" : `Register all (${discovered.length})`}
+              </button>
+            )}
+          </div>
+        </div>
+        <div className="card" style={{ padding: "14px 16px" }}>
+          {discovered === null && (
+            <p style={{ margin: 0, fontSize: "13px", color: "var(--text-secondary)" }}>
+              CogniRunner rules can be attached to workflows outside this panel (REST automation, imported or copied workflows, or a rule whose registration didn't complete). They run on transitions but won't show under <strong>Configured Rules</strong> until claimed. Click <strong>Scan workflows</strong> to find them.
+            </p>
+          )}
+          {discMeta && discMeta.error && (
+            <p style={{ margin: 0, fontSize: "13px", color: "#dc2626", fontWeight: 600 }}>Scan failed: {discMeta.error}</p>
+          )}
+          {discovered && discMeta && !discMeta.error && (<>
+            <p style={{ margin: "0 0 10px 0", fontSize: "13px", color: "var(--text-secondary)" }}>
+              Scanned <strong>{discMeta.scannedWorkflows}</strong> workflow(s): <strong>{discMeta.totalCogniRules}</strong> CogniRunner rule(s) attached, <strong>{discMeta.registeredMatched}</strong> already registered, <strong style={{ color: discovered.length ? "#7c3aed" : "inherit" }}>{discovered.length}</strong> not registered{discMeta.truncated ? " — scan truncated (large instance)" : ""}.
+            </p>
+            {discovered.length === 0 ? (
+              <p style={{ margin: 0, fontSize: "13px", color: "var(--text-secondary)" }}>Every attached rule is registered. ✓</p>
+            ) : (
+              <div style={{ maxHeight: "260px", overflowY: "auto", border: "1px solid var(--border-color, #e2e8f0)", borderRadius: "6px" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
+                  <thead>
+                    <tr style={{ textAlign: "left", color: "var(--text-secondary)" }}>
+                      <th style={{ padding: "6px 10px" }}>Type</th>
+                      <th style={{ padding: "6px 10px" }}>Workflow</th>
+                      <th style={{ padding: "6px 10px" }}>Transition</th>
+                      <th style={{ padding: "6px 10px" }}>Field</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {discovered.slice(0, 200).map((d, i) => (
+                      <tr key={d.instanceId || i} style={{ borderTop: "1px solid var(--border-color, #e2e8f0)" }}>
+                        <td style={{ padding: "6px 10px" }}>
+                          <span style={{ background: "#7c3aed", color: "#fff", fontWeight: 600, fontSize: "11px", padding: "2px 8px", borderRadius: "10px", whiteSpace: "nowrap" }}>{d.type}</span>
+                        </td>
+                        <td style={{ padding: "6px 10px" }}>{d.workflowName}</td>
+                        <td style={{ padding: "6px 10px" }}>{d.transitionName || d.transitionId || "—"}</td>
+                        <td style={{ padding: "6px 10px" }}>{d.fieldId || "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {discovered.length > 200 && (
+                  <p style={{ margin: 0, padding: "6px 10px", fontSize: "12px", color: "var(--text-secondary)" }}>…and {discovered.length - 200} more.</p>
+                )}
+              </div>
+            )}
+          </>)}
+        </div>
+      </div>
+
       <div className="section">
         <div className="section-header">
           <span className="section-title">Configured Rules</span>

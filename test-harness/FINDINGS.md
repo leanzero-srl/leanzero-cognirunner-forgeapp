@@ -16,6 +16,15 @@ From the at-scale runtime test (instance `wolfaenpak.atlassian.net`, project `CO
 
 **Comprehensive suite under OpenRouter/`gemma-4-31b`: 766/782** (injection 697/710, robustness 24/25, semantic/static/policy/pf-flavors/action/fields/knowledge all clean; misses = F3 condition + agentic gate strictness + injection A/B nuance). **No regression vs the prior 757/782** — a mid-size open model handles the validation tasks well, and the provider/factory-key changes broke nothing.
 
+**BYOK provider matrix (Workstream P — owner-coordinated handshake; same 782-case suite per provider):**
+
+| Provider · Model | Total | agentic (JQL tool-calling) | robustness | injection | other studies | AI errors |
+|---|---|---|---|---|---|---|
+| OpenRouter · `gemma-4-31b` | **766/782** | 3/4 | 24/25 | 697/710 | all clean | 1 |
+| Anthropic · `claude-haiku-4-5` | **766/782** | **3/4 ✓** | 25/25 | 696/710 | all clean | 4 (transient, fail-open) |
+
+Headline: **Anthropic's request/response translation layer is healthy** — agentic JQL (the `/v1/messages` + `tool_use`-block round-trip that broke as F1 on Forge LLM) works correctly (3/4, the 1 miss is the strict GATE-STORY expectation, not a tool bug). Both providers land 766/782 with all PF/semantic/field/knowledge studies clean; the per-study deltas (robustness 25 vs 24, AI-errors 4 vs 1) confirm genuine distinct runs. The ~0.8% transient Anthropic AI-errors failed open (F9) — no wrongful blocks. (Azure = mostly untested / no deployment; LM Studio + Forge LLM pending.) **Provider switching is admin-only / not REST-driveable — each provider runs as an owner handshake.**
+
 ### Provider cleanup (owner-directed)
 - **Factory / out-of-the-box key REMOVED — pure BYOK** (`getOpenAIKey` no longer falls back to `process.env.OPENAI_API_KEY` in index.js + async-handler.js; UI/docs "factory key" framing stripped; `OPENAI_API_KEY` Forge variable unset on dev **and** prod). Forge LLM still works (sentinel). The exposed `sk-or-…` key must be revoked at OpenRouter.
 - **OpenRouter model list un-filtered** — the resolver only showed `openai/anthropic/google/meta` prefixes, hiding 300+ models (minimax/mistral/qwen/…); filter removed, cap raised to 1000.

@@ -4150,6 +4150,9 @@ function App() {
   // They execute at runtime but never appear under Configured Rules until claimed.
   const [discovered, setDiscovered] = useState(null); // null = not yet scanned
   const [discMeta, setDiscMeta] = useState(null);
+  // This site's base URL (from the Forge context) — used to build the "Edit" deep-link to the
+  // Jira workflow editor for rules whose stored config has no siteUrl (e.g. discovered rules).
+  const [siteUrl, setSiteUrl] = useState("");
   const [discovering, setDiscovering] = useState(false);
   const [registeringDisc, setRegisteringDisc] = useState(false);
 
@@ -4191,7 +4194,10 @@ function App() {
     if (!invoke || !discovered || !discovered.length) return;
     setRegisteringDisc(true);
     try {
-      const r = await invoke("registerDiscoveredRules", { rules: discovered });
+      // Stamp this site's base URL onto each discovered rule so its stored config can build the
+      // Edit deep-link (the backend scan can't know the site's URL; the frontend can).
+      const rules = siteUrl ? discovered.map((d) => ({ ...d, siteUrl })) : discovered;
+      const r = await invoke("registerDiscoveredRules", { rules });
       if (r && r.success) {
         await scanDiscoveredRules(); // now-registered rows drop out
         await fetchConfigs(true);    // refresh the managed list
@@ -4296,6 +4302,7 @@ function App() {
 
         // Check license
         const context = await bridge.view.getContext();
+        if (context?.siteUrl) setSiteUrl(String(context.siteUrl).replace(/\/+$/, ""));
         const ctxLicense = context?.license?.active;
         if (ctxLicense !== undefined) {
           setLicenseActive(ctxLicense);
@@ -4656,8 +4663,11 @@ function App() {
                 {filtered.map((config) => {
                   const wf = config.workflow || {};
                   const hasWorkflow = wf.workflowName || wf.workflowId;
-                  const editUrl = wf.workflowId && wf.siteUrl
-                    ? `${wf.siteUrl}/jira/settings/issues/workflows/${wf.workflowId}`
+                  // Fall back to this site's base URL (from context) when the rule's stored
+                  // config has no siteUrl — e.g. discovered rules, which only need workflowId.
+                  const ruleSiteUrl = wf.siteUrl || siteUrl;
+                  const editUrl = wf.workflowId && ruleSiteUrl
+                    ? `${ruleSiteUrl}/jira/settings/issues/workflows/${wf.workflowId}`
                     : null;
                   const isDisabled = config.disabled === true;
 

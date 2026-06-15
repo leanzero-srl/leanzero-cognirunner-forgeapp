@@ -1234,7 +1234,8 @@ resolver.define("discoverWorkflowRules", async ({ context }) => {
   }
   try {
     const registry = (await storage.get(CONFIG_REGISTRY_KEY)) || [];
-    const registeredIds = new Set(registry.map((c) => String(c.id)));
+    const registeredById = new Map(registry.map((c) => [String(c.id), c]));
+    let backfilled = 0; // existing discovered rows we patch in place with a now-known workflowId
 
     const typeForRule = (rule, cfg) => {
       const rk = String(rule.ruleKey || "");
@@ -1281,14 +1282,33 @@ resolver.define("discoverWorkflowRules", async ({ context }) => {
             try { cfg = JSON.parse(rule.parameters?.config || "{}"); } catch { /* unreadable config */ }
             const embeddedId = cfg.id || cfg.ruleId || null;
             const instanceId = rule.parameters?.id || rule.id || null;
-            if (embeddedId && registeredIds.has(String(embeddedId))) { registeredMatched++; continue; }
-            if (instanceId && registeredIds.has(String(instanceId))) { registeredMatched++; continue; }
+            const wfId = wf.id != null ? String(wf.id) : null;
+            const matchId = (embeddedId && registeredById.has(String(embeddedId))) ? String(embeddedId)
+              : (instanceId && registeredById.has(String(instanceId))) ? String(instanceId)
+              : null;
+            if (matchId) {
+              registeredMatched++;
+              // Back-fill: an already-claimed DISCOVERED row that predates workflowId capture
+              // can't render an Edit link. Now that the scan knows the workflow id, patch it in
+              // place (also fill the transition id if missing) so Edit appears after this scan.
+              const row = registeredById.get(matchId);
+              if (row && row.discovered === true && wfId && !(row.workflow && row.workflow.workflowId)) {
+                row.workflow = {
+                  ...(row.workflow || {}),
+                  workflowId: wfId,
+                  transitionId: row.workflow?.transitionId || (t.id != null ? String(t.id) : undefined),
+                };
+                backfilled++;
+              }
+              continue;
+            }
             discovered.push({
               instanceId,
               type: typeForRule(rule, cfg),
               fieldId: cfg.fieldId || null,
               prompt: typeof cfg.prompt === "string" ? cfg.prompt.slice(0, 120) : null,
               packTagged: cfg.pack === true,
+              workflowId: wfId,
               workflowName: wfName,
               transitionId: t.id != null ? String(t.id) : null,
               transitionName: t.name || null,
@@ -1304,8 +1324,12 @@ resolver.define("discoverWorkflowRules", async ({ context }) => {
       startAt += pageSize;
     }
 
-    console.log(`discoverWorkflowRules: scanned ${scannedWorkflows} workflow(s), ${totalCogniRules} CogniRunner rule(s), ${registeredMatched} already registered, ${discovered.length} unregistered${truncated ? " (TRUNCATED)" : ""}`);
-    return { success: true, discovered, discoveredCount: discovered.length, scannedWorkflows, totalCogniRules, registeredMatched, truncated };
+    // Persist any in-place workflowId back-fills so existing discovered rules gain an Edit link.
+    if (backfilled > 0) {
+      try { await saveRegistry(registry); } catch (e) { console.warn("discoverWorkflowRules backfill save failed:", e.message); }
+    }
+    console.log(`discoverWorkflowRules: scanned ${scannedWorkflows} workflow(s), ${totalCogniRules} CogniRunner rule(s), ${registeredMatched} already registered (${backfilled} back-filled), ${discovered.length} unregistered${truncated ? " (TRUNCATED)" : ""}`);
+    return { success: true, discovered, discoveredCount: discovered.length, scannedWorkflows, totalCogniRules, registeredMatched, backfilled, truncated };
   } catch (error) {
     console.error("discoverWorkflowRules failed:", error);
     return { success: false, error: error.message };
@@ -1335,9 +1359,11 @@ resolver.define("registerDiscoveredRules", async ({ payload, context }) => {
       const id = String(it.instanceId || "").trim();
       if (!id) { skipped++; continue; }
       const workflow = {};
+      if (it.workflowId) workflow.workflowId = String(it.workflowId);
       if (it.workflowName) workflow.workflowName = it.workflowName;
       if (it.transitionId) workflow.transitionId = String(it.transitionId);
       if (it.transitionName) workflow.transitionToName = it.transitionName;
+      if (it.siteUrl) workflow.siteUrl = String(it.siteUrl);
       const idx = configs.findIndex((c) => String(c.id) === id);
       const row = {
         id,

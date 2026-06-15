@@ -2714,8 +2714,10 @@ resolver.define("saveContext7Remote", async ({ payload, context }) => {
     return { success: false, error: "Admin access required" };
   }
   try {
-    const url = (payload?.url || "").trim();
-    if (!url) return { success: false, error: "Service URL is required" };
+    // context7 has a well-known official endpoint, so default it when the admin
+    // leaves the URL blank and just pastes a key (a common point of confusion —
+    // local LM Studio uses a stdio command, but CogniRunner dials the HTTP URL).
+    const url = (payload?.url || "").trim() || "https://mcp.context7.com/mcp";
     if (!/^https:\/\//i.test(url)) {
       return { success: false, error: "Service URL must start with https:// (MCP clients require HTTPS)" };
     }
@@ -7026,8 +7028,11 @@ const getContext7RemoteConfig = async () => {
     const raw = await storage.get(CONTEXT7_REMOTE_KVS_KEY);
     _cachedContext7RemoteChecked = true;
     _cachedContext7RemoteAt = Date.now();
-    if (raw && typeof raw === "object" && raw.url) {
-      _cachedContext7Remote = { url: String(raw.url), apiKey: raw.apiKey ? String(raw.apiKey) : undefined };
+    // context7 is keyless-capable and has a well-known official endpoint, so a
+    // saved API key alone is enough — default the URL to the hosted endpoint
+    // when the admin left it blank (the field shows it as a placeholder).
+    if (raw && typeof raw === "object" && (raw.url || raw.apiKey)) {
+      _cachedContext7Remote = { url: String(raw.url || "https://mcp.context7.com/mcp"), apiKey: raw.apiKey ? String(raw.apiKey) : undefined };
       return _cachedContext7Remote;
     }
   } catch (error) {
@@ -7795,6 +7800,10 @@ const mcpRpc = async (url, headers, body) => {
     body: JSON.stringify(body),
   });
   const text = await res.text();
+  // Observability: surface the body of any non-2xx MCP response so an admin can
+  // tell a Forge EGRESS block ("URL not included in the external fetch backend
+  // permissions") apart from a SERVER auth rejection (the server's own JSON).
+  if (!res.ok) console.warn(`mcpRpc ${url} -> HTTP ${res.status}: ${String(text).slice(0, 220)}`);
   return { status: res.status, json: parseMcpBody(res.headers.get("content-type"), text) };
 };
 
@@ -7816,6 +7825,7 @@ const mcpRpcSession = async (url, headers, body, { timeoutMs = 12000 } = {}) => 
   try { await post({ jsonrpc: "2.0", method: "notifications/initialized" }, sh); } catch { /* 202, best-effort */ }
   const res = await post(body, sh);
   const text = await res.text();
+  if (!res.ok) console.warn(`mcpRpcSession ${url} -> HTTP ${res.status}: ${String(text).slice(0, 220)}`);
   return { status: res.status, json: parseMcpBody(res.headers.get("content-type"), text) };
 };
 

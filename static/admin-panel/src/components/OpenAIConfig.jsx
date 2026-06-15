@@ -102,10 +102,6 @@ export default function OpenAIConfig({ invoke }) {
   const [docProcHasBearer, setDocProcHasBearer] = useState(false);
   const [docProcSaving, setDocProcSaving] = useState(false);
   const [docProcShowBearerInput, setDocProcShowBearerInput] = useState(false);
-  // Z.AI key for the doc-processor MCP — only needed for OCR of scanned PDFs.
-  const [docProcZaiInput, setDocProcZaiInput] = useState("");
-  const [docProcHasZai, setDocProcHasZai] = useState(false);
-  const [docProcShowZaiInput, setDocProcShowZaiInput] = useState(false);
   // Hosted web-search (remote MCP). Same pattern as docProc above; separate KVS
   // slot so each MCP service can be hosted at a different URL/Bearer.
   const [webSearchUrl, setWebSearchUrl] = useState("");
@@ -221,7 +217,6 @@ export default function OpenAIConfig({ invoke }) {
       if (docProcResult && docProcResult.success) {
         setDocProcUrl(docProcResult.url || "");
         setDocProcHasBearer(!!docProcResult.hasBearer);
-        setDocProcHasZai(!!docProcResult.hasZaiKey);
       }
       if (webSearchResult && webSearchResult.success) {
         setWebSearchUrl(webSearchResult.url || "");
@@ -313,7 +308,9 @@ export default function OpenAIConfig({ invoke }) {
 
   const handleSaveDocProcRemote = async () => {
     if (!invoke) return;
-    if (!docProcUrl.trim() || !docProcBearerInput.trim()) return;
+    // Allow saving when a Bearer is already saved (masked) — only require a fresh
+    // Bearer on first setup. Re-entering the key just to edit the URL was the bug.
+    if (!docProcUrl.trim() || (!docProcHasBearer && !docProcBearerInput.trim())) return;
     // "save" vs "clear" so only the clicked button shows the busy spinner.
     setDocProcSaving("save");
     setError(null);
@@ -321,15 +318,11 @@ export default function OpenAIConfig({ invoke }) {
       const result = await invoke("saveDocProcessorRemote", {
         url: docProcUrl.trim(),
         bearer: docProcBearerInput.trim(),
-        zaiKey: docProcZaiInput.trim(),
       });
       if (result.success) {
         setDocProcHasBearer(true);
         setDocProcBearerInput("");
         setDocProcShowBearerInput(false);
-        setDocProcHasZai(!!result.hasZaiKey);
-        setDocProcZaiInput("");
-        setDocProcShowZaiInput(false);
         showToast("Doc-processor settings saved");
       } else {
         // Banner is at the top of the section, far from this deep panel — toast too.
@@ -354,9 +347,6 @@ export default function OpenAIConfig({ invoke }) {
         setDocProcHasBearer(false);
         setDocProcBearerInput("");
         setDocProcShowBearerInput(false);
-        setDocProcHasZai(false);
-        setDocProcZaiInput("");
-        setDocProcShowZaiInput(false);
         showToast("Doc-processor settings cleared");
       } else {
         setError(result.error || "Failed to remove doc-processor remote config");
@@ -371,7 +361,10 @@ export default function OpenAIConfig({ invoke }) {
 
   const handleSaveWebSearchRemote = async () => {
     if (!invoke) return;
-    if (!webSearchUrl.trim() || !webSearchBearerInput.trim()) return;
+    // Allow saving the URL/Serper edits when a Bearer is already saved (masked);
+    // only require a fresh Bearer on first setup. (The "save didn't work unless I
+    // changed the key" bug.)
+    if (!webSearchUrl.trim() || (!webSearchHasBearer && !webSearchBearerInput.trim())) return;
     // "save" vs "clear" so only the clicked button shows the busy spinner.
     setWebSearchSaving("save");
     setError(null);
@@ -1301,7 +1294,7 @@ export default function OpenAIConfig({ invoke }) {
               </ul>
               <div style={{ marginTop: "8px", padding: "8px 10px", background: "var(--card-bg)", border: "2px solid #d97706", boxShadow: "0 4px 12px -4px rgba(217, 119, 6, 0.35)", borderRadius: "6px", color: "var(--text-secondary)" }}>
                 <strong style={{ color: "var(--text-color)" }}>⚠ The addresses CogniRunner may reach are fixed by the installed app.</strong> It can only connect to an MCP on a <code style={{ fontSize: "11px" }}>*.ts.net</code> Tailscale&nbsp;Funnel URL on <strong>port 443</strong> (Forge egress reaches only the default HTTPS port — <strong>8443 / 10000 are blocked</strong>, so serve your Funnel on 443) or to context7&apos;s <code style={{ fontSize: "11px" }}>mcp.context7.com</code>. That allow-list ships inside the app and <strong>can&apos;t be changed without re-deploying CogniRunner itself</strong> — which you can&apos;t do as an installer. So to self-host web-search / doc-processor you <strong>must run them behind your own Tailscale Funnel</strong> (any tailnet works — it&apos;s a wildcard); an arbitrary URL like <code style={{ fontSize: "11px" }}>https://mycompany.com/mcp</code> will be blocked. Don&apos;t want to run a Funnel? Use LeanZero&apos;s hosted demo above.</div>
-              <div style={{ marginTop: "6px" }}>Service keys (web-search&apos;s Serper key, doc-processor&apos;s Z.AI OCR key) live on the MCP server — LeanZero&apos;s hosted demo manages them for you, so you only need the URL + Bearer. Self-hosters can also pass their own per-tenant keys in the cards below.</div>
+              <div style={{ marginTop: "6px" }}>Service keys (web-search&apos;s Serper key) live on the MCP server — LeanZero&apos;s hosted demo manages them for you, so you only need the URL + Bearer. Self-hosters can also pass their own per-tenant key in the card below.</div>
             </div>
 
             {/* context7 — hosted on every provider via the bridge; LM Studio can run it locally */}
@@ -1630,27 +1623,6 @@ npm install && npm run build`}
                           style={{ padding: "5px 8px", border: "1px solid var(--border-color)", borderRadius: "4px", background: "var(--input-bg)", color: "var(--text-color)", fontSize: "11px", fontFamily: "monospace" }}
                         />
                       )}
-                      {docProcHasZai && !docProcShowZaiInput ? (
-                        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                          <span style={{ flex: 1, padding: "5px 8px", border: "1px solid var(--border-color)", borderRadius: "4px", background: "var(--input-bg)", color: "var(--text-muted)", fontFamily: "monospace", fontSize: "11px" }}>
-                            ••••••••  (Z.AI key saved)
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => setDocProcShowZaiInput(true)}
-                            disabled={docProcSaving}
-                            style={{ fontSize: "10px", padding: "4px 8px", border: "1px solid var(--border-color)", borderRadius: "4px", background: "var(--input-bg)", color: "var(--text-color)", cursor: "pointer" }}
-                          >Replace</button>
-                        </div>
-                      ) : (
-                        <input
-                          type="password"
-                          placeholder="Z.AI key — OPTIONAL, only for OCR of scanned PDFs (z.ai)"
-                          value={docProcZaiInput}
-                          onChange={(e) => setDocProcZaiInput(e.target.value)}
-                          style={{ padding: "5px 8px", border: "1px solid var(--border-color)", borderRadius: "4px", background: "var(--input-bg)", color: "var(--text-color)", fontSize: "11px", fontFamily: "monospace" }}
-                        />
-                      )}
                       <div style={{ display: "flex", gap: "6px" }}>
                         <button
                           type="button"
@@ -1740,7 +1712,6 @@ npm install`}
 }`}
                       </pre>
                       <p style={{ margin: "8px 0 0", fontSize: "11px", color: "var(--text-muted)" }}>
-                        Optional env <code style={{ fontSize: "11px" }}>Z_AI_API_KEY</code> for vision OCR.{" "}
                         GitHub: <code style={{ fontSize: "11px" }}>github.com/leanzero-srl/leanzero-mcp-doc-processor</code>
                       </p>
                     </>

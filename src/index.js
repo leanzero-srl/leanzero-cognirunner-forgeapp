@@ -2557,9 +2557,9 @@ resolver.define("getDocProcessorRemote", async () => {
   try {
     const raw = await storage.get(DOC_PROCESSOR_REMOTE_KVS_KEY);
     if (raw && typeof raw === "object" && raw.url) {
-      return { success: true, url: String(raw.url), hasBearer: !!raw.bearer, hasZaiKey: !!raw.zaiKey };
+      return { success: true, url: String(raw.url), hasBearer: !!raw.bearer };
     }
-    return { success: true, url: "", hasBearer: false, hasZaiKey: false };
+    return { success: true, url: "", hasBearer: false };
   } catch (error) {
     console.error("Failed to read doc-processor remote config:", error?.message);
     return { success: false, error: error.message };
@@ -2577,23 +2577,22 @@ resolver.define("saveDocProcessorRemote", async ({ payload, context }) => {
     if (!/^https:\/\//i.test(url)) {
       return { success: false, error: "Service URL must start with https:// (Anthropic and OpenAI MCP clients require HTTPS)" };
     }
-    if (!bearer) return { success: false, error: "Tenant Bearer is required" };
-    if (bearer.length < 16) {
+    // Preserve the saved Bearer when the field is left blank (it's masked once
+    // saved) so editing just the URL doesn't force re-entering the key.
+    const existing = await storage.get(DOC_PROCESSOR_REMOTE_KVS_KEY);
+    const finalBearer = bearer || (existing && existing.bearer) || "";
+    if (!finalBearer) return { success: false, error: "Tenant Bearer is required" };
+    if (bearer && bearer.length < 16) {
       return { success: false, error: "Tenant Bearer looks too short (expected ≥16 chars)" };
     }
-    // Z.AI key is optional — only needed for OCR of scanned (image-based) PDFs.
-    // The admin supplies it here; preserve an existing key when left blank.
-    const zaiKey = (payload?.zaiKey || "").trim();
-    const existing = await storage.get(DOC_PROCESSOR_REMOTE_KVS_KEY);
-    const finalZai = zaiKey || (existing && existing.zaiKey) || "";
-    const toStore = { url, bearer };
-    if (finalZai) toStore.zaiKey = finalZai;
+    // (Z.AI OCR key removed — no longer used by the doc-processor MCP.)
+    const toStore = { url, bearer: finalBearer };
     await storage.set(DOC_PROCESSOR_REMOTE_KVS_KEY, toStore);
     _cachedDocProcessorRemote = toStore;
     _cachedDocProcessorRemoteChecked = true;
     _cachedDocProcessorRemoteAt = Date.now();
-    console.log(`saveDocProcessorRemote: configured url=${url} bearer=${bearer.substring(0, 6)}… zai=${finalZai ? "set" : "none"}`);
-    return { success: true, url, hasBearer: true, hasZaiKey: !!finalZai };
+    console.log(`saveDocProcessorRemote: configured url=${url} bearer=set`);
+    return { success: true, url, hasBearer: true };
   } catch (error) {
     console.error("Failed to save doc-processor remote config:", error?.message);
     return { success: false, error: error.message };
@@ -2647,19 +2646,20 @@ resolver.define("saveWebSearchRemote", async ({ payload, context }) => {
     if (!/^https:\/\//i.test(url)) {
       return { success: false, error: "Service URL must start with https:// (Anthropic and OpenAI MCP clients require HTTPS)" };
     }
-    if (!bearer) return { success: false, error: "Tenant Bearer is required" };
-    if (bearer.length < 16) {
-      return { success: false, error: "Tenant Bearer looks too short (expected ≥16 chars)" };
-    }
-    // Serper key is optional and the web-search MCP is keyless, so supplying it is
-    // the ADMIN's responsibility (this panel). Preserve an existing key when the
-    // field is left blank, so editing URL/Bearer doesn't wipe it.
+    // Serper key + Bearer are optional-to-re-enter: preserve the saved values
+    // when their fields are left blank (they're masked once saved), so editing
+    // just the URL doesn't force re-entering the key — the save-button bug.
     const serperKey = (payload?.serperKey || "").trim();
     const githubToken = (payload?.githubToken || "").trim();
     const existing = await storage.get(WEB_SEARCH_REMOTE_KVS_KEY);
+    const finalBearer = bearer || (existing && existing.bearer) || "";
+    if (!finalBearer) return { success: false, error: "Tenant Bearer is required" };
+    if (bearer && bearer.length < 16) {
+      return { success: false, error: "Tenant Bearer looks too short (expected ≥16 chars)" };
+    }
     const finalSerper = serperKey || (existing && existing.serperKey) || "";
     const finalGithub = githubToken || (existing && existing.githubToken) || "";
-    const toStore = { url, bearer };
+    const toStore = { url, bearer: finalBearer };
     if (finalSerper) toStore.serperKey = finalSerper;
     if (finalGithub) toStore.githubToken = finalGithub;
     await storage.set(WEB_SEARCH_REMOTE_KVS_KEY, toStore);
@@ -3468,14 +3468,21 @@ resolver.define("pingLmStudioMcp", async ({ payload, context }) => {
     }
     if (!resp.ok) {
       const errText = await resp.text().catch(() => "");
+      const permissionDenied = /permission denied|necessary permission/i.test(errText);
       const looksLikeMissingPlugin = /plugin|integration|mcp|unknown|not.found/i.test(errText);
-      return {
-        success: true,
-        ok: false,
-        error: looksLikeMissingPlugin
-          ? `LM Studio rejected the integration "${mcp.label}". Most likely cause: it's not in your mcp.json (or the label doesn't match). Raw: HTTP ${resp.status} ${errText.substring(0, 200)}`
-          : `HTTP ${resp.status}: ${errText.substring(0, 300)}`,
-      };
+      // Validation is NOT affected by this — CogniRunner now drops a rejected
+      // plugin and proceeds (F20). A failing test only means the MODEL can't
+      // call this MCP's tools; it does not block validators/post-functions.
+      const stillWorks = " (Validation still works — CogniRunner proceeds without the rejected plugin; this only limits the model's ability to CALL this MCP.)";
+      let error;
+      if (permissionDenied) {
+        error = `LM Studio has the "${mcp.label}" plugin but it is NOT PERMITTED. In LM Studio, grant the mcp/${mcp.label} plugin permission (or use a token with access) and restart LM Studio.${stillWorks} Raw: HTTP ${resp.status} ${errText.substring(0, 160)}`;
+      } else if (looksLikeMissingPlugin) {
+        error = `LM Studio has no mcp.json entry named "${mcp.label}" (or the label doesn't match). Add it (see the setup panel) and restart LM Studio.${stillWorks} Raw: HTTP ${resp.status} ${errText.substring(0, 160)}`;
+      } else {
+        error = `HTTP ${resp.status}: ${errText.substring(0, 300)}`;
+      }
+      return { success: true, ok: false, error };
     }
     return { success: true, ok: true, message: `MCP "${mcp.label}" is reachable from LM Studio.` };
   } catch (error) {
@@ -6997,7 +7004,7 @@ const getDocProcessorRemoteConfig = async () => {
     _cachedDocProcessorRemoteChecked = true;
     _cachedDocProcessorRemoteAt = Date.now();
     if (raw && typeof raw === "object" && raw.url && raw.bearer) {
-      _cachedDocProcessorRemote = { url: String(raw.url), bearer: String(raw.bearer), zaiKey: raw.zaiKey ? String(raw.zaiKey) : undefined };
+      _cachedDocProcessorRemote = { url: String(raw.url), bearer: String(raw.bearer) };
       return _cachedDocProcessorRemote;
     }
   } catch (error) {
@@ -7800,7 +7807,7 @@ Respond with JSON only.`;
 // Transport: doc-reader/web-search are STATELESS (single POST — mcpRpc). context7 is
 // STATEFUL (initialize → mcp-session-id → notifications/initialized → call —
 // mcpRpcSession). Auth: doc-reader/web-search use a tenant Bearer (+ optional per-tenant
-// service keys as headers: X-Serper-Key, X-GitHub-Token, X-ZAI-Key); context7 uses its
+// service keys as headers: X-Serper-Key, X-GitHub-Token); context7 uses its
 // own CONTEXT7_API_KEY header (optional — keyless works).
 // Egress: *.ts.net (LeanZero Funnel hosts, incl. :8443/:10000) + mcp.context7.com.
 
@@ -7860,7 +7867,6 @@ const getBridgeMcp = async (mcpKey) => {
     const r = await getDocProcessorRemoteConfig();
     if (!r) return null;
     const headers = { Authorization: `Bearer ${r.bearer}` };
-    if (r.zaiKey) headers["X-ZAI-Key"] = r.zaiKey;  // only used for scanned-PDF OCR
     return { url: r.url, headers };
   }
   if (mcpKey === "webSearch") {

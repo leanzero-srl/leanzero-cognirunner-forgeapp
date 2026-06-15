@@ -39,6 +39,12 @@ Adversarial battery (`mcp-attach-security.mjs`) against `serveAttachment` (GET) 
 - **Per-issue PF brake** — `[pf] brake active on COGTEST-1694 — execution suppressed (N in window)` (`PF_BRAKE_MAX_PER_BUCKET=10` per issue per 5-min bucket, `src/index.js:324`).
 **Verdict.** **No double-PF execution and no uncontrolled lost-update race** under same-issue concurrency — the two mechanisms suppress the storm by design (a positive for the "double-execution / runaway" concern). The brake/dedup confound a clean pure-RMW-race measurement (executions are suppressed before they can race), so F10's additive guidance for genuinely INDEPENDENT slow concurrent writes remains the documented pattern; that case is unchanged. Tradeoff noted: the 5s fallback dedup suppresses *legitimate* rapid distinct REST/automation re-fires of one rule on one issue (no executionId to tell them apart) — acceptable (better than double-executing).
 
+### F18 — Validator robustness round 2 (post-F15 evasion + over-block) · **VERIFIED CLEAN (two-sided, deterministic)** · Frontier #4
+`validator-robustness-r2.mjs` — two-sided corpus against the live hardened validator (debugTrace self-loop), each fired ×2 (flake check), under OpenRouter/`gemma-4-31b`:
+- **EVADE → BLOCK 8/8** (0A/2B each): decoration / non-tasks obfuscated with homoglyphs (`[ѵ275]`), zero-width padding, RTL override, a bracketed ID, a bare `v1.2.3`, Japanese "version 2.0", gibberish+injection, and homoglyph gibberish — all blocked.
+- **CONTROL → ALLOW 7/7** (2A/0B each): GENUINE tasks obfuscated the same ways — homoglyph/zero-width "Add CSV export", Spanish/Japanese/German real tasks, and `[v275] Add CSV export.` — all allowed, **zero over-blocking**.
+**Verdict.** The F15 decoration guard + the validator's judgment are robust to unicode obfuscation (homoglyph/RTL/zero-width) and multi-language, with no new bypass and no new over-block. Deterministic across attempts. **No validator-prompt change needed** (no danger-zone edit, no owner gate triggered). (Result reflects the current provider/model; re-run under a different BYOK model would re-confirm per-model.)
+
 ---
 
 ### (prior round) From the at-scale runtime test (Forge LLM / Claude Haiku)

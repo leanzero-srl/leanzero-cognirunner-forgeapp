@@ -6,7 +6,42 @@
 
 # CogniRunner — Hardening Findings
 
-From the at-scale runtime test (Forge LLM / Claude Haiku, instance `wolfaenpak.atlassian.net`, project `COGTEST`) plus a bulk-transition stress test. Driven entirely black-box through the real Jira workflow engine.
+From the at-scale runtime test (instance `wolfaenpak.atlassian.net`, project `COGTEST`) plus a bulk-transition stress test. Driven entirely black-box through the real Jira workflow engine.
+
+---
+
+## Session round N+1 (2026-06-15, dev v20–v21.x) — provider cleanup, rule visibility, MCP egress, same-issue races
+
+**⚠️ BASELINE CORRECTION — the active provider was NOT Forge LLM.** It was **OpenRouter running on a factory key** (an `sk-or-…` token stored in the `OPENAI_API_KEY` Forge variable) the whole time — proven when removing the factory key 403'd every validator with a Forge **egress** error to `openrouter.ai`. The owner then set OpenRouter BYOK + model `google/gemma-4-31b-it`. **Provider config (KVS) is admin-only / not REST-readable**, so "which provider is active" must be confirmed with the owner — don't trust the brief.
+
+**Comprehensive suite under OpenRouter/`gemma-4-31b`: 766/782** (injection 697/710, robustness 24/25, semantic/static/policy/pf-flavors/action/fields/knowledge all clean; misses = F3 condition + agentic gate strictness + injection A/B nuance). **No regression vs the prior 757/782** — a mid-size open model handles the validation tasks well, and the provider/factory-key changes broke nothing.
+
+### Provider cleanup (owner-directed)
+- **Factory / out-of-the-box key REMOVED — pure BYOK** (`getOpenAIKey` no longer falls back to `process.env.OPENAI_API_KEY` in index.js + async-handler.js; UI/docs "factory key" framing stripped; `OPENAI_API_KEY` Forge variable unset on dev **and** prod). Forge LLM still works (sentinel). The exposed `sk-or-…` key must be revoked at OpenRouter.
+- **OpenRouter model list un-filtered** — the resolver only showed `openai/anthropic/google/meta` prefixes, hiding 300+ models (minimax/mistral/qwen/…); filter removed, cap raised to 1000.
+- OpenRouter kept as a BYOK provider; Azure annotated "mostly untested".
+
+### F16 — Admin UI rule inventory is registry-only; workflow-attached rules are invisible · **FIXED (discovery feature)** · Severity LOW–MEDIUM (UX/discoverability)
+**What.** The admin rules table reads only the KVS `config_registry` (`getConfigs`), and a rule registers **only** via the Custom-UI save flow (`registerConfig`). Rules attached any other way — REST `/workflows/update`, imported/copied workflows, or a failed post-attach registration — **execute on transitions but never appear in the UI** and can't be disabled/removed there. **Reproduced on COGTEST: 96 CogniRunner rules attached (`audit-rules.mjs`), ~6 registered**; all 96 are UUID-only with no embedded config id, so the registry can never match them — the deeper reason they don't show.
+**Fix.** New admin-only `discoverWorkflowRules` (bounded, READ-ONLY workflow scan → unregistered attached rules with context) + `registerDiscoveredRules` (claim into the registry, keyed by instance UUID, `discovered:true`), and an admin Rules-tab panel "Attached rules not in registry" (Scan → Register all). The "harness self-registers" half of the owner's "Both" was **not viable** (the harness is an external REST client — it can't invoke Forge resolvers, and PFs have no `fieldId` for `registerConfig`); the discovery panel's "Register all" achieves the same outcome. Backend scan logic confirmed against the live workflow (96 rules); UI is owner-verified.
+
+### F-MCP-EGRESS — Forge egress only honors port 443; self-hosted MCPs on :8443/:10000 are unreachable · **OPEN (Forge platform limit) + app/UI corrected** · Severity MEDIUM (MCP feature blocker)
+**What.** web-search (`*.ts.net:8443`) and doc-processor (`*.ts.net:10000`) MCP "Test" returns HTTP 403. **Confirmed via diagnostic logging** (`mcpRpc` now logs non-2xx bodies): the body is Forge's `URL not included in the external fetch backend permissions: …:8443`. Direct curl to the Funnel URLs returns **401** for bad/missing auth (servers fine); the app's **403 is a Forge egress block** before the call leaves. Per the Forge egress docs, addresses follow CSP and the runtime **only honors the default HTTPS port (443)** — the manifest's `*.ts.net:8443`/`:10000` entries pass validation but are dropped at runtime. **No app/manifest change can fix this.**
+**App-side done.** Removed the dead `*.ts.net:8443`/`:10000` manifest entries (kept `*.ts.net` for :443 + `mcp.context7.com`); corrected the admin-UI MCP setup copy (was "443/8443/10000 work" → "**443 only**, 8443/10000 are blocked by Forge"); added `mcpRpc`/`mcpRpcSession` non-2xx body logging (permanent observability). **context7 fixed** (URL now defaults to `https://mcp.context7.com/mcp` on save+read, so pasting only the key works; it's on :443 so egress is fine).
+**Fix (server-side, owner):** re-expose the self-hosted MCPs on Tailscale Funnel **:443** (path-routed for both). Until then, live MCP end-to-end (Workstream M3 / F7 re-status) is blocked.
+
+### F-MCP-M1 — attachment-bridge web-trigger security · **VERIFIED (9/9)**
+Adversarial battery (`mcp-attach-security.mjs`) against `serveAttachment` (GET) + `serveAttachmentUpload` (POST): missing / garbage / shape-valid-nonexistent capability tokens are all **rejected (401 = bearer missing, 404 = token absent)** before any body processing, no information leak. The upload body is never parsed/size-checked pre-auth. (401/413/415/single-use-replay paths need a real minted token — deferred to M3.) Observation: GET error paths return `text/plain` while upload returns JSON — cosmetic contract nit.
+
+### F17 — Concurrent same-issue transitions are storm-protected (no race, no double-execution) · **VERIFIED (positive)** · Frontier #1
+**What.** Fired the SAME static-PF self-loop **10× concurrently on ONE issue** (`race-same-issue.mjs`), three patterns: counter (read-modify-write `updateIssue`), additive (`api.addLabels`), clobber (full-field RMW labels). All 30 transitions returned 204, but few executions persisted (counter 2/10, additive 3/10, clobber 0/10). **The logs show this is INTENTIONAL storm protection, not a race:**
+- **`claimPfInvocation` dedup** — REST-fired transitions carry no distinct execution id, so the **5s fallback window** (keyed per-rule-per-issue) treats rapid same-rule/same-issue fires as duplicates and suppresses them.
+- **Per-issue PF brake** — `[pf] brake active on COGTEST-1694 — execution suppressed (N in window)` (`PF_BRAKE_MAX_PER_BUCKET=10` per issue per 5-min bucket, `src/index.js:324`).
+**Verdict.** **No double-PF execution and no uncontrolled lost-update race** under same-issue concurrency — the two mechanisms suppress the storm by design (a positive for the "double-execution / runaway" concern). The brake/dedup confound a clean pure-RMW-race measurement (executions are suppressed before they can race), so F10's additive guidance for genuinely INDEPENDENT slow concurrent writes remains the documented pattern; that case is unchanged. Tradeoff noted: the 5s fallback dedup suppresses *legitimate* rapid distinct REST/automation re-fires of one rule on one issue (no executionId to tell them apart) — acceptable (better than double-executing).
+
+---
+
+### (prior round) From the at-scale runtime test (Forge LLM / Claude Haiku)
 
 **F1, F2, F5, F6, F8, F9 have been FIXED and re-verified against the redeployed app (latest dev v17.23.0); a runtime observability hook (F-OBS) was added.** F3 is a Jira platform behavior (documentation, not a code fix). F7 is a provider-capability gap (generate-doc/research need LM-Studio MCPs) — documented, no code fix.
 

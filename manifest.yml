@@ -185,11 +185,11 @@ permissions:
         - address: https://openrouter.ai
         - address: https://api.anthropic.com
         # Hosted MCP servers exposed via Tailscale Funnel (LM Studio + the
-        # cross-provider bridge). Funnel only serves on 443 / 8443 / 10000;
-        # the portless rule covers 443, the explicit entries cover the rest.
+        # cross-provider bridge). Forge runtime egress follows CSP and only
+        # honors the DEFAULT HTTPS port (443) — non-standard ports (8443/10000)
+        # are blocked at runtime even if listed, so self-hosted MCPs MUST be
+        # served on Funnel port 443. This wildcard matches nested *.ts.net hosts.
         - address: "*.ts.net"
-        - address: "*.ts.net:8443"
-        - address: "*.ts.net:10000"
         # context7 hosted MCP (library/SDK docs)
         - address: https://mcp.context7.com
       backend:
@@ -198,11 +198,11 @@ permissions:
         - address: https://openrouter.ai
         - address: https://api.anthropic.com
         # Hosted MCP servers exposed via Tailscale Funnel (LM Studio + the
-        # cross-provider bridge). Funnel only serves on 443 / 8443 / 10000;
-        # the portless rule covers 443, the explicit entries cover the rest.
+        # cross-provider bridge). Forge runtime egress follows CSP and only
+        # honors the DEFAULT HTTPS port (443) — non-standard ports (8443/10000)
+        # are blocked at runtime even if listed, so self-hosted MCPs MUST be
+        # served on Funnel port 443. This wildcard matches nested *.ts.net hosts.
         - address: "*.ts.net"
-        - address: "*.ts.net:8443"
-        - address: "*.ts.net:10000"
         # context7 hosted MCP (library/SDK docs)
         - address: https://mcp.context7.com
 

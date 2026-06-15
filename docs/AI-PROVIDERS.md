@@ -86,7 +86,7 @@ X-OpenRouter-Title: CogniRunner
 
 Without these, requests may be rejected or throttled.
 
-**Model listing filter:** `openai/|anthropic/|google/|meta-llama/` prefix (popular providers)
+**Model listing:** No filter — the full OpenRouter catalogue (300+ models from many vendors: minimax, mistral, qwen, deepseek, …) is exposed; the picker has client-side search.
 
 **Model ID format:** `provider/model-name` (e.g., `openai/gpt-4o`, `anthropic/claude-3.5-sonnet`)
 
@@ -177,10 +177,10 @@ Each provider has a different model listing approach:
 |---|---|---|---|
 | OpenAI | `GET /v1/models` | `gpt-5\|o3-\|o4-` | Latest models only |
 | Azure | `GET /openai/v1/models` | No filter | Shows all deployments |
-| OpenRouter | `GET /api/v1/models` | `openai/\|anthropic/\|google/\|meta-llama/` | Popular providers |
+| OpenRouter | `GET /api/v1/models` | None | Full catalogue (300+ models) |
 | Anthropic | `GET /v1/models` | `claude-` prefix | All Claude models |
 
-**Max models returned:** 50 (capped to avoid UI overload)
+**Max models returned:** 50 for OpenAI/Azure/Anthropic; 1000 for OpenRouter (its catalogue is large and the picker has client-side search).
 
 ---
 

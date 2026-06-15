@@ -3045,15 +3045,17 @@ resolver.define("getOpenAIModels", async () => {
     // Provider-specific filtering
     if (provider === "openai") {
       chatModels = chatModels.filter((id) => /^(gpt-5|o3-|o4-)/.test(id));
-    } else if (provider === "openrouter") {
-      // Show popular providers — OpenAI, Anthropic, Google, Meta
-      chatModels = chatModels.filter((id) => /^(openai\/|anthropic\/|google\/|meta-llama\/)/.test(id));
     } else if (provider === "anthropic") {
       chatModels = chatModels.filter((id) => /^claude-/.test(id));
     }
-    // Azure: no filtering — show all available deployments
+    // OpenRouter & Azure: NO filtering — expose the provider's full model list.
+    // OpenRouter aggregates 300+ models from many vendors (minimax, mistral,
+    // qwen, deepseek, …); the old openai/anthropic/google/meta-only filter
+    // silently hid most of them. The model picker has client-side search, so a
+    // long list is fine — cap generously so nothing the user wants is dropped.
+    const cap = provider === "openrouter" ? 1000 : 50;
 
-    return { success: true, models: chatModels.slice(0, 50), isByok: true };
+    return { success: true, models: chatModels.slice(0, cap), isByok: true };
   } catch (error) {
     console.error("Failed to get models:", error);
     return { success: false, error: error.message, models: [], isByok: false };

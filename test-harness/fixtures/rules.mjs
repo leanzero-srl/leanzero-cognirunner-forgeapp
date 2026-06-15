@@ -67,6 +67,11 @@ const actJqlWrite = (textId) => `const r = await api.searchJql("project = COGTES
 const actTransition = (textId) => `const r = await api.searchJql('project = COGTEST AND labels = "cogtest-satellite"');\nconst sat = (r.issues || [])[0];\nif (sat) { try { await api.transitionIssue(sat.key, "41"); api.log("transitioned " + sat.key); } catch (e) { api.log("transition err: " + e.message); } await api.updateIssue(api.context.issueKey, { "${textId}": "transitioned " + sat.key }); } else { api.log("no satellite found"); }`;
 const actMultiStep1 = `const i = await api.getIssue(api.context.issueKey);\nreturn { len: JSON.stringify(i.fields.description || "").length };`;
 const actMultiStep2 = (textId) => `await api.updateIssue(api.context.issueKey, { "${textId}": "len=" + (info && info.len ? info.len : 0) });\napi.log("multistep wrote len");`;
+// --- Action generators for additional custom field types (exact, reliable writes) ---
+const actMultiUser = (id, accountId) => `await api.updateIssue(api.context.issueKey, { "${id}": [{ accountId: "${accountId}" }] });\napi.log("set multiuser");`;
+const actUrl = (id) => `await api.updateIssue(api.context.issueKey, { "${id}": "https://leanzero.example/tickets/cogtest" });\napi.log("set url");`;
+const actDatetime = (id) => `await api.updateIssue(api.context.issueKey, { "${id}": "2026-03-15T09:30:00.000+0000" });\napi.log("set datetime");`;
+const actCascading = (id) => `await api.updateIssue(api.context.issueKey, { "${id}": { value: "Platform", child: { value: "Web" } } });\napi.log("set cascading");`;
 
 export function buildRules(state) {
   const cf = state.customFields;
@@ -77,6 +82,16 @@ export function buildRules(state) {
   const offId = cf.offscreen.id;
   const userId = cf.user.id;
   const dateId = cf.date.id;
+  // Additional custom field types (optional-chained — older testbeds may lack them; the
+  // extended rules below are only appended when their field id is present).
+  const radioId = cf.radio?.id;
+  const msId = cf.multiselect?.id;
+  const cbId = cf.checkboxes?.id;
+  const taId = cf.textarea?.id;
+  const muId = cf.multiuser?.id;
+  const urlId = cf.url?.id;
+  const dtId = cf.datetime?.id;
+  const cascId = cf.cascading?.id;
 
   const rules = [
     // ---- Validators: the injection A/B (read summary) ----
@@ -347,6 +362,67 @@ export function buildRules(state) {
     },
   ];
 
+  // ---- Extended coverage: more rule types targeting MORE custom field types ----
+  // Semantic PFs (the AI writes; the backend coerces against each field's allowedValues) onto
+  // radio / multiselect / checkboxes / textarea, plus static-action exact writes onto
+  // multiuser / url / datetime / cascading. Each appends only when its field id is present.
+  if (radioId) rules.push({
+    key: "S9-radio", name: "CT-Semantic-Radio", type: "semantic",
+    config: { type: "postfunction-semantic", fieldId: "description", conditionPrompt: "Run every time", actionPrompt: "Decide whether this issue is a release blocker. Answer with exactly one of: Yes, No, Maybe.", actionFieldId: radioId },
+    appliesTo: ["semantic-S9"], expectPf: "MUTATED",
+    assert: (s, b, a) => okOption(a, radioId, ["Yes", "No", "Maybe"]),
+    study: "semantic",
+  });
+  if (msId) rules.push({
+    key: "S10-multiselect", name: "CT-Semantic-MultiSelect", type: "semantic",
+    config: { type: "postfunction-semantic", fieldId: "description", conditionPrompt: "Run every time", actionPrompt: "Tag the engineering areas this issue touches. Choose one or more of exactly: Backend, Frontend, Infra, Security.", actionFieldId: msId },
+    appliesTo: ["semantic-S10"], expectPf: "MUTATED",
+    assert: (s, b, a) => okMultiOption(a, msId, ["Backend", "Frontend", "Infra", "Security"]),
+    study: "semantic",
+  });
+  if (cbId) rules.push({
+    key: "S11-checkboxes", name: "CT-Semantic-Checkboxes", type: "semantic",
+    config: { type: "postfunction-semantic", fieldId: "description", conditionPrompt: "Run every time", actionPrompt: "Which review concerns apply to this issue? Choose one or more of exactly: A11y, Perf, Docs, Tests.", actionFieldId: cbId },
+    appliesTo: ["semantic-S11"], expectPf: "MUTATED",
+    assert: (s, b, a) => okMultiOption(a, cbId, ["A11y", "Perf", "Docs", "Tests"]),
+    study: "semantic",
+  });
+  if (taId) rules.push({
+    key: "S12-textarea", name: "CT-Semantic-TextArea", type: "semantic",
+    config: { type: "postfunction-semantic", fieldId: "description", conditionPrompt: "Run every time", actionPrompt: "Write a 2-3 sentence plain-text technical summary of this issue.", actionFieldId: taId },
+    appliesTo: ["semantic-S12"], expectPf: "MUTATED",
+    assert: (s, b, a) => okStr(a, taId),
+    study: "semantic",
+  });
+  if (muId) rules.push({
+    key: "A-multiuser", name: "CT-Action-MultiUser", type: "static",
+    config: { type: "postfunction-static", functions: [{ name: "mu", code: actMultiUser(muId, lead), variableName: "step1" }] },
+    appliesTo: ["static-action-multiuser"], expectPf: "MUTATED",
+    assert: (s, b, a) => arrayNonEmpty(a, muId),
+    study: "action",
+  });
+  if (urlId) rules.push({
+    key: "A-url", name: "CT-Action-Url", type: "static",
+    config: { type: "postfunction-static", functions: [{ name: "u", code: actUrl(urlId), variableName: "step1" }] },
+    appliesTo: ["static-action-url"], expectPf: "MUTATED",
+    assert: (s, b, a) => containsStr(a, urlId, "https://"),
+    study: "action",
+  });
+  if (dtId) rules.push({
+    key: "A-datetime", name: "CT-Action-DateTime", type: "static",
+    config: { type: "postfunction-static", functions: [{ name: "dt", code: actDatetime(dtId), variableName: "step1" }] },
+    appliesTo: ["static-action-datetime"], expectPf: "MUTATED",
+    assert: (s, b, a) => okStr(a, dtId),
+    study: "action",
+  });
+  if (cascId) rules.push({
+    key: "A-cascading", name: "CT-Action-Cascading", type: "static",
+    config: { type: "postfunction-static", functions: [{ name: "c", code: actCascading(cascId), variableName: "step1" }] },
+    appliesTo: ["static-action-cascading"], expectPf: "MUTATED",
+    assert: (s, b, a) => okCascading(a, cascId, "Platform", "Web"),
+    study: "action",
+  });
+
   // Opt-in observability: mirror every rule's execution detail (verdict, reason,
   // agentic toolMeta, decision/trace) to the issue's cogni-debug property so the
   // harness can assert on internals (esp. agentic toolMeta) via REST.
@@ -391,6 +467,22 @@ function equalsField(after, id, expected) {
   const v = fieldVal(after, id);
   const s = typeof v === "string" ? v : extractAdfText(v);
   return { pass: s === expected, detail: `value=${JSON.stringify(s)}` };
+}
+function okMultiOption(after, id, opts) {
+  const v = fieldVal(after, id);
+  if (!Array.isArray(v) || v.length === 0) return { pass: false, detail: `value=${JSON.stringify(v)?.slice(0, 80)}` };
+  const names = v.map((o) => o?.value || o?.name).filter(Boolean);
+  return { pass: names.length > 0 && names.every((n) => opts.includes(n)), detail: `options=${names.join(",")}` };
+}
+function arrayNonEmpty(after, id) {
+  const v = fieldVal(after, id);
+  return { pass: Array.isArray(v) && v.length > 0, detail: `len=${Array.isArray(v) ? v.length : "n/a"}` };
+}
+function okCascading(after, id, parent, child) {
+  const v = fieldVal(after, id);
+  const pv = v?.value;
+  const cv = v?.child?.value;
+  return { pass: pv === parent && (child == null || cv === child), detail: `parent=${pv} child=${cv}` };
 }
 function onlyValidOption(after, id, opts) {
   const v = fieldVal(after, id);

@@ -10,6 +10,36 @@ From the at-scale runtime test (instance `wolfaenpak.atlassian.net`, project `CO
 
 ---
 
+## Session round N+3 (2026-06-16, dev v22.x) — broadened barrage (8 new field types) + LM Studio validation
+
+**Barrage broadened to more rule types + custom fields.** Added 8 rules covering previously
+rule-untargeted custom field types (fixtures/rules.mjs + corpus.mjs; auto-flow through
+attach-rules / seed-issues / run-transitions, all idempotent):
+- **Semantic PFs** (the AI writes; backend coerces to the field's allowedValues): **radio,
+  multiselect, checkboxes, textarea** (S9–S12).
+- **Static-action PFs** (exact sandbox `api.updateIssue` writes): **multiuser, url, datetime,
+  cascading** (A-multiuser/url/datetime/cascading).
+Rule-targeted custom field types went from 5 → 13. Semantic study 8→12 rules, action study 10→14.
+
+**Validated on LM Studio** (owner-set active provider — self-hosted, so a **capped** run:
+`RUN_MAX_PER_CLASS=3` → 97 cases, matching the reduced LM Studio battery convention; the full 782
+is impractical on the slow self-hosted model). Result: **84/97, 0 AI errors.**
+
+| Run | Total | semantic | action | injection | robustness | agentic | knowledge | condition |
+|---|---|---|---|---|---|---|---|---|
+| **LM Studio · capped (RUN_MAX_PER_CLASS=3)** | **84/97** | **12/12 ✓** | **14/14 ✓** | 20/26 | 16/18 | 2/4 | 1/3 | 1/2 (F3) |
+
+- **All 8 new rules passed 100%** — semantic option-mapping works on radio/multiselect/checkboxes/
+  textarea, and the sandbox writes multiuser/url/datetime/cascading correctly, even on a self-hosted
+  model. Confirms the generic allowedValues coercion (index.js) handles every option field type.
+- The 13 misses are **entirely LM Studio's documented-weak areas** — injection-embedded ×6, the
+  empty-check ×2, agentic JQL tool-calling ×2 (the prior LM Studio 2/4), knowledge/docs ×2 (the prior
+  "knowledge 0/2" flag) — plus the expected F3 condition. **None from the new rules.**
+- Same session: admin panel now shows **Edit** for scanned/discovered rules (workflowId captured in
+  the scan + back-filled for existing rows; siteUrl from context).
+
+---
+
 ## Session round N+2 (2026-06-15, dev v22.x) — AWS Bedrock added as a BYOK provider + full barrage
 
 **New provider: AWS Bedrock (BYOK).** Bearer-token auth (no SigV4) over the unified **Converse API**

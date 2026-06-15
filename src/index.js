@@ -2775,11 +2775,17 @@ resolver.define("saveProvider", async ({ payload, context }) => {
     }
 
     let normalizedBaseUrl = baseUrl;
+    // Switching back to a provider WITHOUT re-entering its URL: restore the URL
+    // it was last saved with (the bug the owner hit — LM Studio kept re-asking).
+    if ((!normalizedBaseUrl || !String(normalizedBaseUrl).trim()) && (provider === "lmstudio" || provider === "azure")) {
+      const savedUrl = await storage.get(providerBaseUrlSlot(provider));
+      if (savedUrl) normalizedBaseUrl = savedUrl;
+    }
     if (provider === "lmstudio") {
-      if (!baseUrl || !String(baseUrl).trim()) {
+      if (!normalizedBaseUrl || !String(normalizedBaseUrl).trim()) {
         return { success: false, error: "LM Studio requires a public base URL (e.g. https://your-machine.tailXXXX.ts.net). Expose your LM Studio server via Tailscale Funnel." };
       }
-      const trimmed = String(baseUrl).trim();
+      const trimmed = String(normalizedBaseUrl).trim();
       if (!/^https:\/\//i.test(trimmed)) {
         return { success: false, error: "LM Studio URL must use https:// — Forge cannot reach plain HTTP endpoints from the cloud." };
       }
@@ -2796,7 +2802,10 @@ resolver.define("saveProvider", async ({ payload, context }) => {
     await storage.set("COGNIRUNNER_AI_PROVIDER", provider);
 
     if (normalizedBaseUrl) {
-      await storage.set("COGNIRUNNER_AI_BASE_URL", String(normalizedBaseUrl).replace(/\/+$/, ""));
+      const clean = String(normalizedBaseUrl).replace(/\/+$/, "");
+      await storage.set("COGNIRUNNER_AI_BASE_URL", clean);
+      // Remember it per-provider so a later switch restores it without re-prompting.
+      await storage.set(providerBaseUrlSlot(provider), clean);
     } else if (PROVIDERS[provider].baseUrl) {
       await storage.set("COGNIRUNNER_AI_BASE_URL", PROVIDERS[provider].baseUrl);
     } else {
@@ -6468,15 +6477,27 @@ const callLmStudioNative = async ({ apiKey, model, messages, jsonMode, baseUrl }
   //    support the requested option; on a 400 mentioning reasoning, retry without it.
   const url = `${baseUrl}/api/v1/chat`;
   let response = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
-  if (response.status === 400) {
+  // Graceful fallbacks — LM Studio rejects unsupported params/plugins with 400/403.
+  //  (1) `reasoning` param on a model that doesn't support it (400).
+  //  (2) an MCP `integrations` plugin that isn't loaded/permitted on the LM Studio
+  //      side ("Permission denied to use plugin …" 403 / "unknown plugin" 400).
+  //      The runtime/validator path here is the NO-TOOLS path — it doesn't need
+  //      MCP — so dropping the integration lets the call succeed instead of
+  //      failing closed and blocking EVERY transition (F19 family). Agentic/
+  //      gendoc/research use other paths and are unaffected.
+  if (!response.ok && (response.status === 400 || response.status === 403)) {
     const errText = await response.text().catch(() => "");
-    if (/reasoning/i.test(errText)) {
+    let retry = false;
+    if (/reasoning/i.test(errText) && "reasoning" in body) {
       console.log(`LM Studio native: model "${model}" does not support reasoning param — retrying without`);
-      delete body.reasoning;
-      response = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
-    } else {
-      return { ok: false, status: 400, data: null, error: errText };
+      delete body.reasoning; retry = true;
     }
+    if (/plugin|integration|mcp/i.test(errText) && body.integrations) {
+      console.warn(`LM Studio native: MCP integration rejected (${response.status}) — retrying WITHOUT it so validation isn't blocked: ${String(errText).slice(0, 120)}`);
+      delete body.integrations; delete body.context_length; retry = true;
+    }
+    if (retry) response = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
+    else return { ok: false, status: response.status, data: null, error: errText };
   }
   if (!response.ok) {
     const errText = await response.text().catch(() => "");
@@ -6941,6 +6962,10 @@ const getProviderConfig = async () => {
 // Per-provider KVS key helpers
 const providerKeySlot = (provider) => `COGNIRUNNER_KEY_${provider}`;
 const providerModelSlot = (provider) => `COGNIRUNNER_MODEL_${provider}`;
+// Per-provider base URL — so switching to a provider restores its saved URL
+// instead of re-prompting (LM Studio / Azure carry a custom endpoint). The
+// active provider's URL is still mirrored to COGNIRUNNER_AI_BASE_URL for runtime.
+const providerBaseUrlSlot = (provider) => `COGNIRUNNER_BASEURL_${provider}`;
 
 // In-memory key cache — avoids KVS read on every invocation
 // (TTL-bounded via PROVIDER_CACHE_TTL_MS — see the comment there.)

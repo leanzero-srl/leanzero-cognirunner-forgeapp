@@ -2844,6 +2844,55 @@ resolver.define("getProvider", async () => {
 });
 
 /**
+ * F19 — Active health probe for the active AI provider, driving the admin
+ * "AI provider unreachable" banner. Sends ONE minimal completion to whatever
+ * provider is currently active and classifies the outcome the same way the
+ * validator path does:
+ *   ok:true             → provider answered; validators/conditions work normally.
+ *   ok:false transient  → 429/408/5xx/timeout — validators FAIL OPEN (transitions
+ *                          still pass, just degraded); the banner does NOT alarm.
+ *   ok:false config     → 401/403/404/400 — a persistent, non-content error.
+ *                          Validators/conditions FAIL CLOSED, so EVERY AI-guarded
+ *                          transition is blocked until the admin fixes the
+ *                          key/URL/model. This is the case the banner shouts about.
+ * Read-only + admin-gated. Costs one tiny "OK" completion; the admin panel calls
+ * it on load (when admin) and on manual re-check. No change to validation behavior.
+ */
+resolver.define("checkProviderHealth", async ({ context }) => {
+  if (!(await requireAdmin(context.accountId))) {
+    return { success: false, error: "Admin access required" };
+  }
+  const { provider } = await getProviderConfig();
+  const providerLabel = (PROVIDERS[provider] && PROVIDERS[provider].label) || provider;
+  try {
+    const apiKey = await getOpenAIKey();
+    const model = await getOpenAIModel();
+    const result = await callAIChat({
+      apiKey,
+      model,
+      messages: [{ role: "user", content: "Reply with the single word: OK" }],
+    });
+    if (result && result.ok) {
+      return { success: true, ok: true, provider, providerLabel, model };
+    }
+    const status = (result && result.status) || null;
+    const errText = (result && result.error) || "";
+    const transient = isTransientAIError(status, errText);
+    return {
+      success: true, ok: false, transient, provider, providerLabel, model,
+      status, message: String(errText).replace(/\s+/g, " ").slice(0, 160),
+    };
+  } catch (e) {
+    const transient = isTransientAIError(e && e.status, (e && e.message) || "");
+    return {
+      success: true, ok: false, transient, provider, providerLabel,
+      status: (e && e.status) || null,
+      message: String((e && e.message) || "probe failed").replace(/\s+/g, " ").slice(0, 160),
+    };
+  }
+});
+
+/**
  * Get available models from the configured provider.
  * - If BYOK: fetches from the provider's /models endpoint.
  * - If factory: returns empty array (no model choice — factory model is fixed).
@@ -3980,7 +4029,13 @@ export const serveAttachmentUpload = async (req) => {
         {
           method: "POST",
           body: form,
-          headers: { Accept: "application/json", "X-Atlassian-Token": "no-check" },
+          // CRITICAL: spread form.getHeaders() so the multipart Content-Type WITH the
+          // boundary is sent. Without it Jira's /attachments endpoint can't parse the
+          // body and rejects the upload with HTTP 415 (Unsupported Media Type) — the
+          // docWriter "create document & attach" feature silently fails (only surfaced
+          // once the doc-processor MCP became reachable on Funnel :443). Accept and
+          // X-Atlassian-Token come first so getHeaders' content-type is authoritative.
+          headers: { Accept: "application/json", "X-Atlassian-Token": "no-check", ...form.getHeaders() },
         },
       );
     } catch (e) {

@@ -4058,6 +4058,27 @@ const injectCopiedComponentStyles = () => {
     html[data-color-mode="dark"] .gmc-skill { background: #8b5cf6; }
     html[data-color-mode="dark"] .gmc-mem { background: #14b8a6; }
     html[data-color-mode="dark"] .truncation-warning { background: #f59e0b; }
+
+    /* F19 — AI provider unreachable banner (solid red, white text, no left rail) */
+    .provider-down-banner {
+      display: flex; align-items: flex-start; gap: 12px;
+      background: #dc2626; color: #fff;
+      border-radius: 10px; padding: 14px 16px; margin: 0 0 16px;
+      box-shadow: 0 2px 10px rgba(220, 38, 38, 0.35);
+    }
+    .provider-down-banner > svg { flex: 0 0 auto; margin-top: 1px; color: #fff; }
+    .provider-down-text { display: flex; flex-direction: column; gap: 4px; flex: 1 1 auto; min-width: 0; }
+    .provider-down-text strong { font-weight: 700; font-size: 14px; color: #fff; }
+    .provider-down-text span { font-size: 12.5px; line-height: 1.5; color: #fff; }
+    .provider-down-recheck {
+      flex: 0 0 auto; align-self: center;
+      background: #fff; color: #b91c1c; border: none;
+      font-weight: 700; font-size: 12px; padding: 7px 14px; border-radius: 6px; cursor: pointer;
+    }
+    .provider-down-recheck:hover { background: #f3f4f6; }
+    .provider-down-recheck:disabled { opacity: 0.6; cursor: default; }
+    html[data-color-mode="dark"] .provider-down-banner { background: #ef4444; }
+    html[data-color-mode="dark"] .provider-down-recheck { color: #dc2626; }
   `;
   document.head.appendChild(style);
 };
@@ -4143,6 +4164,21 @@ function App() {
     setDiscovering(false);
   };
 
+  // F19 — active AI-provider health probe driving the "provider unreachable" banner.
+  const checkProviderHealth = async () => {
+    if (!invoke) return;
+    setHealthChecking(true);
+    try {
+      const r = await invoke("checkProviderHealth");
+      setProviderHealth(r && r.success ? r : null);
+    } catch (e) {
+      // Probe itself failed (e.g. resolver timeout on a very slow self-hosted model) —
+      // treat as unknown rather than alarming; the banner only fires on a clear config error.
+      setProviderHealth(null);
+    }
+    setHealthChecking(false);
+  };
+
   const registerAllDiscovered = async () => {
     if (!invoke || !discovered || !discovered.length) return;
     setRegisteringDisc(true);
@@ -4193,6 +4229,8 @@ function App() {
   };
 
   const [removedCount, setRemovedCount] = useState(0);
+  const [providerHealth, setProviderHealth] = useState(null); // { ok, transient, providerLabel, model, status, message }
+  const [healthChecking, setHealthChecking] = useState(false);
   const [refreshingConfigs, setRefreshingConfigs] = useState(false);
   const [clearingLogs, setClearingLogs] = useState(false);
   const [toggling, setToggling] = useState(null);
@@ -4300,6 +4338,8 @@ function App() {
       setRulesFilter(defaultFilter);
       await fetchConfigs(false, defaultFilter);
       setLoading(false);
+      // F19 — probe the active provider once admin is established (admin-gated resolver).
+      if (userIsAdmin) checkProviderHealth();
     };
     init();
   }, []);
@@ -4375,6 +4415,34 @@ function App() {
       </div>
 
       {licenseBanner}
+
+      {/* F19 — a misconfigured/unreachable provider returns a persistent config error
+          (401/403/404). Validators & conditions FAIL CLOSED on it, so every AI-guarded
+          transition silently blocks. Surface that loudly so the admin knows WHY nothing
+          is transitioning. Transient (429/5xx/timeout) outages fail OPEN — not shown. */}
+      {providerHealth && providerHealth.ok === false && !providerHealth.transient && (
+        <div className="provider-down-banner" role="alert">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
+            <line x1="12" y1="9" x2="12" y2="13" />
+            <line x1="12" y1="17" x2="12.01" y2="17" />
+          </svg>
+          <div className="provider-down-text">
+            <strong>AI provider unreachable — workflow validations are blocking every transition.</strong>
+            <span>
+              {providerHealth.providerLabel}
+              {providerHealth.model ? ` (${providerHealth.model})` : ""} returned{" "}
+              {providerHealth.status ? `HTTP ${providerHealth.status}` : "an error"}. Validators and
+              conditions fail closed on a configuration error, so any transition guarded by an AI rule
+              is blocked until you fix the key, base URL, or model in Settings.
+              {providerHealth.message ? ` — ${providerHealth.message}` : ""}
+            </span>
+          </div>
+          <button className="provider-down-recheck" onClick={checkProviderHealth} disabled={healthChecking}>
+            {healthChecking ? "Checking…" : "Re-check"}
+          </button>
+        </div>
+      )}
 
       <TabBar tabs={TABS} activeTab={activeTab} onTabChange={setActiveTab} isAdmin={isAdmin} />
 

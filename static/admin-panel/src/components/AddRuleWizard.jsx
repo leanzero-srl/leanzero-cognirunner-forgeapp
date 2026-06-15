@@ -25,6 +25,7 @@ import ReviewPanel from "./ReviewPanel";
 import SemanticConfig from "./SemanticConfig";
 import GenerateDocConfig from "./GenerateDocConfig";
 import ResearchConfig from "./ResearchConfig";
+import ResearchDocConfig from "./ResearchDocConfig";
 import CommentConfig from "./CommentConfig";
 import SubtaskConfig from "./SubtaskConfig";
 import LinkConfig from "./LinkConfig";
@@ -36,6 +37,7 @@ const RULE_TYPE_OPTIONS = [
   { value: "postfunction-semantic", label: "Semantic Post Function", desc: "AI modifies a field after transition" },
   { value: "postfunction-generate-doc", label: "Generate Document", desc: "AI writes a doc & attaches it to the issue" },
   { value: "postfunction-research", label: "Research & Save", desc: "Web-search a topic & save it to the doc library" },
+  { value: "postfunction-research-doc", label: "Research & Document", desc: "Research (web + library docs) & attach a brief to the issue" },
   { value: "postfunction-comment", label: "Add Comment", desc: "AI drafts & posts a comment after transition" },
   { value: "postfunction-subtask", label: "Create Sub-task", desc: "AI drafts & creates a sub-task under the issue" },
   { value: "postfunction-link", label: "Link Related Issues", desc: "AI finds related issues & creates issue links" },
@@ -80,6 +82,11 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
   const [researchQuery, setResearchQuery] = useState("");
   const [researchTitle, setResearchTitle] = useState("");
   const [autoSelectResearchDoc, setAutoSelectResearchDoc] = useState(false);
+  // Research & Document flavor: which sources to gather from + an optional context7
+  // library hint + whether to also keep a copy in the doc library.
+  const [researchSources, setResearchSources] = useState(["web"]);
+  const [libraryName, setLibraryName] = useState("");
+  const [alsoSaveToLibrary, setAlsoSaveToLibrary] = useState(false);
   const [commentPrompt, setCommentPrompt] = useState("");
   const [subtaskPrompt, setSubtaskPrompt] = useState("");
   const [linkPrompt, setLinkPrompt] = useState("");
@@ -278,6 +285,8 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
             ? { type: ruleType, fieldId: fieldId || "description", prompt: contentPrompt, contentPrompt, docFormat, docTitlePrompt, attachComment, selectedDocIds, workflow: workflowData }
             : ruleType === "postfunction-research"
               ? { type: ruleType, fieldId: fieldId || "description", prompt: researchQuery, researchQuery, researchTitle, autoSelectResearchDoc, workflow: workflowData }
+              : ruleType === "postfunction-research-doc"
+              ? { type: ruleType, fieldId: fieldId || "description", prompt: researchQuery, researchQuery, researchTitle, researchSources, libraryName, docFormat, contentPrompt, attachComment, alsoSaveToLibrary, selectedDocIds, workflow: workflowData }
               : ruleType === "postfunction-comment"
                 ? { type: ruleType, fieldId: fieldId || "description", prompt: commentPrompt, commentPrompt, selectedDocIds, workflow: workflowData }
                 : ruleType === "postfunction-subtask"
@@ -956,6 +965,32 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
                 setResearchTitle={setResearchTitle}
                 autoSelectResearchDoc={autoSelectResearchDoc}
                 setAutoSelectResearchDoc={setAutoSelectResearchDoc}
+              />
+            )}
+
+            {ruleType === "postfunction-research-doc" && (
+              <ResearchDocConfig
+                fieldId={fieldId}
+                setFieldId={setFieldId}
+                fields={fields}
+                loadingFields={loadingFields}
+                errorFields={null}
+                researchSources={researchSources}
+                setResearchSources={setResearchSources}
+                libraryName={libraryName}
+                setLibraryName={setLibraryName}
+                researchQuery={researchQuery}
+                setResearchQuery={setResearchQuery}
+                researchTitle={researchTitle}
+                setResearchTitle={setResearchTitle}
+                docFormat={docFormat}
+                setDocFormat={setDocFormat}
+                contentPrompt={contentPrompt}
+                setContentPrompt={setContentPrompt}
+                attachComment={attachComment}
+                setAttachComment={setAttachComment}
+                alsoSaveToLibrary={alsoSaveToLibrary}
+                setAlsoSaveToLibrary={setAlsoSaveToLibrary}
               />
             )}
 

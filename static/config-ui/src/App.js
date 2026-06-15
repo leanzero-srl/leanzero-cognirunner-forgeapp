@@ -2729,7 +2729,7 @@ function App() {
             // Safety: declarative action types created in the admin panel (generate-doc /
             // research / comment) reuse the semantic module but aren't editable here yet.
             // Capture them so onConfigure preserves them intact instead of clobbering.
-            const MANAGED_PF_TYPES = ["postfunction-generate-doc", "postfunction-research", "postfunction-comment", "postfunction-subtask", "postfunction-link"];
+            const MANAGED_PF_TYPES = ["postfunction-generate-doc", "postfunction-research", "postfunction-research-doc", "postfunction-comment", "postfunction-subtask", "postfunction-link"];
             if (MANAGED_PF_TYPES.includes(config.type)) {
               currentManagedConfig = config;
               setManagedType(config.type);
@@ -3241,6 +3241,7 @@ function App() {
             <h3 style={{ margin: "0 0 6px", fontSize: "14px", fontWeight: 600 }}>
               {managedType === "postfunction-generate-doc" ? "Generate Document"
                 : managedType === "postfunction-research" ? "Research & Save"
+                : managedType === "postfunction-research-doc" ? "Research & Document"
                 : "Add Comment"} rule
             </h3>
             <p style={{ margin: 0, fontSize: "12px", color: "var(--text-secondary, #5e6c84)" }}>

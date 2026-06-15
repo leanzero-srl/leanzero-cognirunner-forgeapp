@@ -5921,6 +5921,57 @@ resolver.define("testResearchPostFunction", async ({ payload }) => {
   }
 });
 
+// Dry-run for "research & document": gathers evidence (web + context7) and authors the
+// brief, but does NOT create or attach a file. Mirrors the live executor's gather→author.
+resolver.define("testResearchDocPostFunction", async ({ payload }) => {
+  const startTime = Date.now();
+  const logs = [];
+  try {
+    const { issueKey, fieldId, researchQuery, researchTitle, researchSources, libraryName, contentPrompt } = payload;
+    const sourceFieldId = fieldId || "description";
+    const sources = Array.isArray(researchSources) && researchSources.length ? researchSources : ["web"];
+    const useWeb = sources.includes("web");
+    const useContext7 = sources.includes("context7");
+    if (!(await mcpEnabled("docReader"))) logs.push("NOTE: doc-reader MCP is not enabled — a real run would SKIP (it creates + attaches the file).");
+    const [fieldValue, apiKey, model] = await Promise.all([getFieldValue(issueKey, sourceFieldId, null), getOpenAIKey(), getOpenAIModel()]);
+    if (!apiKey) return { success: false, error: "No API key configured", logs };
+    let query = String(researchQuery || "").trim();
+    if (query.includes("${")) query = query.replace(/\$\{(\w+)\}/g, (_, f) => (f === sourceFieldId || f === "field" ? (fieldValue || "") : "")).trim();
+    if (!query) query = String(fieldValue || "").slice(0, 300).trim();
+    if (!query) return { success: false, error: "No research query (set a query or ensure the source field has content).", logs };
+    logs.push(`Query: "${query.slice(0, 120)}"  (sources: ${sources.join(", ")})`);
+    const gatherDeadline = Date.now() + 30000;
+    const evidence = [];
+    if (useWeb) {
+      const w = await runWebResearch(query, { timeoutMs: 20000 });
+      if (w.ok) { evidence.push({ src: "web-search", text: w.text }); logs.push(`web-search: ${w.text.length} chars`); }
+      else logs.push(`web-search skipped: ${w.reason}`);
+    }
+    if (useContext7) {
+      const c = await gatherContext7Evidence(libraryName || query, query, { deadline: gatherDeadline });
+      if (c.ok) { evidence.push({ src: "context7", text: c.text }); logs.push(`context7: ${c.text.length} chars (${c.libraryId})`); }
+      else logs.push(`context7 skipped: ${c.reason}`);
+    }
+    if (evidence.length === 0) return { success: false, error: "No research evidence gathered (check the web-search / context7 MCP config and the Serper key).", logs, executionTimeMs: Date.now() - startTime };
+    const title = String(researchTitle || query).slice(0, 100);
+    const authored = await authorResearchBrief({ query, title, evidence, contentPrompt, apiKey, model });
+    if (!authored.ok) return { success: false, error: authored.reason, logs, executionTimeMs: Date.now() - startTime };
+    logs.push(`Authored "${authored.title}" (${authored.content.length} chars) from ${evidence.map((e) => e.src).join(" + ")}`);
+    logs.push("DRY RUN — no file was created or attached.");
+    return {
+      success: true, decision: "RESEARCH_DOC",
+      title: authored.title,
+      proposedValue: authored.content.slice(0, 8000),
+      targetField: "Issue attachment",
+      sourceField: sourceFieldId,
+      reason: `Would author and attach "${authored.title}".`,
+      logs, executionTimeMs: Date.now() - startTime,
+    };
+  } catch (e) {
+    return { success: false, error: e.message, logs };
+  }
+});
+
 // Dry-run for the "add comment" action: drafts the comment but does NOT post it.
 resolver.define("testCommentPostFunction", async ({ payload }) => {
   const startTime = Date.now();

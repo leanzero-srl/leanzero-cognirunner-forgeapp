@@ -37,6 +37,7 @@ export const MODULE = {
   "generate-doc": "ai-semantic-post-function",
   link: "ai-semantic-post-function",
   research: "ai-semantic-post-function",
+  "research-doc": "ai-semantic-post-function",
 };
 export const RULE_KEY = {
   validator: "forge:expression-validator",
@@ -48,6 +49,7 @@ export const RULE_KEY = {
   "generate-doc": "forge:workflow-post-function",
   link: "forge:workflow-post-function",
   research: "forge:workflow-post-function",
+  "research-doc": "forge:workflow-post-function",
 };
 
 const ari = (moduleKey) =>

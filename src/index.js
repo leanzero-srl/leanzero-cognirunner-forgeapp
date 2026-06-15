@@ -3487,6 +3487,22 @@ const SUPPORTED_MCPS = {
 };
 const LMSTUDIO_MCPS_KVS_KEY = "COGNIRUNNER_LMSTUDIO_MCPS";
 
+// Per-MCP "served locally by LM Studio (mcp.json)" flags. Each enabled MCP is EITHER a local
+// LM Studio native plugin OR routed through the hosted cross-provider bridge — chosen per MCP.
+// Replaces the old single global `localMode` flag, which is still read here purely for one-time
+// migration (a tenant that had localMode:true reads as all-local until they next save).
+const MCP_LOCAL_FLAG = { context7: "localContext7", webSearch: "localWebSearch", docReader: "localDocReader" };
+const mcpStoredLocal = (stored, key) => stored[MCP_LOCAL_FLAG[key]] === true || stored.localMode === true;
+// LM Studio can't mix native plugins (local MCPs) and hosted-bridge function tools in one
+// request — a single call is EITHER native (no function tools) OR OpenAI-compat (function tools).
+// So local routing is honored only when EVERY enabled MCP is local; a mixed config routes ALL
+// enabled MCPs through the hosted bridge (the admin panel warns about this). Prevents silently
+// dropping a local MCP's plugin when a co-enabled hosted MCP forces the agentic/compat path.
+const allEnabledMcpsLocal = (stored) => {
+  const enabledKeys = ["context7", "webSearch", "docReader"].filter((k) => stored[k] === true);
+  return enabledKeys.length > 0 && enabledKeys.every((k) => mcpStoredLocal(stored, k));
+};
+
 /**
  * Get the user's MCP enable flags + the static catalog of supported MCPs.
  * UI uses this to render the three cards with their current state.
@@ -3502,9 +3518,11 @@ resolver.define("getLmStudioMcps", async () => {
       // create-markdown / create-excel / create-pdf and have the resulting file
       // attached to the issue under validation. Defaults OFF for ALL existing tenants.
       docWriter: stored.docWriter === true,
-      // LM-Studio-only: load the enabled MCPs from LM Studio's local mcp.json
-      // instead of the hosted bridge. Default OFF (hosted, like every provider).
-      localMode: stored.localMode === true,
+      // Per-MCP "run locally via LM Studio (mcp.json)" flags (LM Studio only; default OFF =
+      // hosted bridge). Migrated from the retired global localMode (true → all-local once).
+      localContext7: mcpStoredLocal(stored, "context7"),
+      localWebSearch: mcpStoredLocal(stored, "webSearch"),
+      localDocReader: mcpStoredLocal(stored, "docReader"),
     };
     const supported = Object.entries(SUPPORTED_MCPS).map(([key, info]) => ({
       key,
@@ -3537,9 +3555,12 @@ resolver.define("saveLmStudioMcps", async ({ payload, context }) => {
       // greys out the sub-toggle when docReader is off, and this clamp ensures
       // a malformed/legacy payload can't smuggle docWriter past that gate.
       docWriter: incoming.docWriter === true && docReader,
-      // LM-Studio-only local-MCP flag (default OFF). Governs whether LM Studio
-      // loads MCPs from its own mcp.json vs the hosted bridge.
-      localMode: incoming.localMode === true,
+      // Per-MCP "run locally via LM Studio (mcp.json)" flags (default OFF = hosted bridge).
+      // Retires the single global localMode (cleared here; getLmStudioMcps migrates it once).
+      localContext7: incoming.localContext7 === true,
+      localWebSearch: incoming.localWebSearch === true,
+      localDocReader: incoming.localDocReader === true,
+      localMode: false,
     };
     await storage.set(LMSTUDIO_MCPS_KVS_KEY, next);
     return { success: true, enabled: next };
@@ -6580,11 +6601,10 @@ const callForgeLlmChat = async ({ model, messages, tools, tool_choice, jsonMode 
 const buildLmStudioIntegrations = async () => {
   try {
     const stored = (await storage.get(LMSTUDIO_MCPS_KVS_KEY)) || {};
-    // LM-Studio-only "use local MCPs" flag (default OFF). Local MCPs are loaded
-    // from LM Studio's own mcp.json and are an explicit opt-in; when OFF, LM Studio
-    // uses the HOSTED bridge like every other provider, so emit no local plugins
-    // (also avoids forcing an absent plugin → the F20 403).
-    if (stored.localMode !== true) return [];
+    // Native plugins are emitted only when EVERY enabled MCP is local (LM Studio can't mix
+    // native + hosted in one request). A mixed/hosted config emits none here and routes through
+    // the hosted bridge instead (also avoids forcing an absent plugin → the F20 403).
+    if (!allEnabledMcpsLocal(stored)) return [];
     const integrations = [];
     for (const [key, info] of Object.entries(SUPPORTED_MCPS)) {
       if (stored[key] !== true) continue;
@@ -8426,29 +8446,33 @@ const callBridgeTool = async (mcpKey, toolName, args) => {
 // -> mcpKey } }. Best-effort: a tools/list failure for one MCP just omits it. The live
 // tools/list ∩ allow-list means only tools the deployed server actually exposes appear,
 // so a curated allow-list superset is safe (extra entries never surface a missing tool).
-// True only when the ACTIVE provider is LM Studio AND its "use local MCPs" flag is
-// ON. In that mode LM Studio loads MCPs from its own mcp.json (local), so the HOSTED
-// bridge is bypassed for it. Every other provider — and LM Studio with the flag OFF
-// — uses the hosted bridge. (JQL agentic search is a custom tool, not MCP, and is
-// unaffected by this.)
-const lmStudioLocalMcpOn = async () => {
+// True when MCP <key> is served by LM Studio's local mcp.json (a native plugin) rather than the
+// hosted bridge: only when LM Studio is the active provider AND that MCP's per-MCP local flag
+// (migrated from the old global localMode) is on. Every other provider — and LM Studio with the
+// flag off for that MCP — routes it through the hosted bridge. (JQL agentic search is a custom
+// tool, not an MCP, and is unaffected.)
+const mcpRoutedLocal = async (key) => {
   try {
     const { provider } = await getProviderConfig();
     if (provider !== "lmstudio") return false;
-    const enabled = (await storage.get(LMSTUDIO_MCPS_KVS_KEY)) || {};
-    return enabled.localMode === true;
+    const stored = (await storage.get(LMSTUDIO_MCPS_KVS_KEY)) || {};
+    // Only honor local routing when the WHOLE enabled set is local (see allEnabledMcpsLocal) —
+    // a mixed config falls back to the hosted bridge for everything to avoid silently dropping
+    // a local MCP's native plugin when a co-enabled hosted MCP forces the compat/agentic path.
+    if (!allEnabledMcpsLocal(stored)) return false;
+    return stored[key] === true && mcpStoredLocal(stored, key);
   } catch {
     return false;
   }
 };
 
 const buildBridgeMcpTools = async () => {
-  // LM Studio in local-MCP mode uses its own mcp.json — don't offer hosted tools.
-  if (await lmStudioLocalMcpOn()) return { tools: [], index: {} };
   const enabled = (await storage.get(LMSTUDIO_MCPS_KVS_KEY)) || {};
   const result = { tools: [], index: {} };
   for (const mcpKey of ["context7", "docReader", "webSearch"]) {
     if (enabled[mcpKey] !== true) continue;
+    // LM Studio serving this MCP locally (mcp.json) → it's a native plugin, not a bridge tool.
+    if (await mcpRoutedLocal(mcpKey)) continue;
     const info = SUPPORTED_MCPS[mcpKey];
     let allow = info.allowedTools || [];
     if (mcpKey === "docReader" && enabled.docWriter === true && Array.isArray(info.writeTools)) {
@@ -8485,12 +8509,14 @@ const buildBridgeMcpTools = async () => {
 // for every provider (Anthropic included; its native connector was removed).
 const mcpBridgeActive = async () => {
   try {
-    // LM Studio in local-MCP mode doesn't use the hosted bridge, so it shouldn't
-    // flip validation into the agentic loop FOR a hosted MCP (JQL agentic still
-    // engages on its own via promptRequiresTools).
-    if (await lmStudioLocalMcpOn()) return false;
+    // The bridge engages only for HOSTED MCPs. An MCP that LM Studio serves locally (mcp.json)
+    // doesn't flip validation into the hosted agentic loop (JQL agentic still engages on its own
+    // via promptRequiresTools).
     const enabled = (await storage.get(LMSTUDIO_MCPS_KVS_KEY)) || {};
-    return enabled.context7 === true || enabled.docReader === true || enabled.webSearch === true;
+    for (const key of ["context7", "docReader", "webSearch"]) {
+      if (enabled[key] === true && !(await mcpRoutedLocal(key))) return true;
+    }
+    return false;
   } catch {
     return false;
   }

@@ -74,6 +74,29 @@ const BEDROCK_REGIONS = [
   { value: "ca-central-1", label: "ca-central-1 · Canada" },
 ];
 
+// Built-in, always-available descriptions of every MCP tool CogniRunner can use. Shown as a
+// hover tooltip on each tool chip so admins understand what a tool does even before (or without)
+// a live server connection. A live server description, when fetched, overrides the static text.
+const TOOL_DESCRIPTIONS = {
+  // context7
+  "resolve-library-id": "Resolve a library/framework/SDK name to its context7 ID so its docs can be fetched.",
+  "query-docs": "Fetch current, version-accurate documentation for a resolved library/framework/SDK.",
+  // web-search
+  "get-web-search-summaries": "Return short summaries of the top web results for a query (cheap, fast).",
+  "full-web-search": "Run a full web search and return ranked results with snippets and source URLs.",
+  "get-single-web-page-content": "Fetch one web page and extract its readable text content.",
+  "get-pdf-content": "Download a PDF by URL and extract its text content.",
+  // doc-processor / doc-reader (+ docWriter create-* tools)
+  "read-doc": "Read and extract text from an attached document (PDF / DOCX / XLSX / etc.).",
+  "create-doc": "Generate a Word (.docx) document from authored content and attach it to the issue.",
+  "create-markdown": "Generate a Markdown (.md) document from authored content and attach it.",
+  "create-excel": "Generate an Excel (.xlsx) spreadsheet from structured data and attach it.",
+  "create-pdf": "Generate a PDF document from authored content and attach it.",
+  "create-pptx": "Generate a PowerPoint (.pptx) deck from authored content and attach it.",
+  "fact-check": "Extract factual claims from text and check each against live web sources.",
+  "list-templates": "List the document templates / style presets the doc server offers.",
+};
+
 export default function OpenAIConfig({ invoke }) {
   const [provider, setProvider] = useState("openai");
   const [activeProvider, setActiveProvider] = useState("openai"); // what's actually saved in KVS
@@ -120,7 +143,7 @@ export default function OpenAIConfig({ invoke }) {
   const [loadingLmModel, setLoadingLmModel] = useState(false);
   // LM Studio MCP integrations — fixed set of 3 (context7, web-search, doc-reader).
   // Other MCPs in the user's mcp.json are NOT exposed by us per design.
-  const [mcpEnabled, setMcpEnabled] = useState({ context7: false, webSearch: false, docReader: false, docWriter: false, localMode: false });
+  const [mcpEnabled, setMcpEnabled] = useState({ context7: false, webSearch: false, docReader: false, docWriter: false, localContext7: false, localWebSearch: false, localDocReader: false });
   const [mcpSavingKey, setMcpSavingKey] = useState(null); // which key is currently saving
   const [mcpExpanded, setMcpExpanded] = useState({}); // which setup panels are open
   const [mcpPingState, setMcpPingState] = useState({}); // {[key]: {loading, ok, error}}
@@ -163,6 +186,15 @@ export default function OpenAIConfig({ invoke }) {
   // doesn't let a slow in-flight load() overwrite the newer provider's state.
   const providerRef = useRef("openai");
   const providerLabelFor = (p) => PROVIDER_OPTIONS.find((o) => o.value === p)?.label || p;
+
+  // "Unchanged" flags so Save buttons disable when there's nothing to save (no confusing
+  // always-active Save). baseUrl holds the VIEWED provider's saved URL (set by loadProviderConfig).
+  const bedrockSavedRegion = (() => {
+    const m = (baseUrl || "").match(/bedrock-runtime\.([a-z0-9-]+)\.amazonaws\.com/i);
+    return m ? m[1].toLowerCase() : null;
+  })();
+  const bedrockRegionUnchanged = bedrockRegion === bedrockSavedRegion;
+  const endpointUnchanged = endpointInput.trim() === (baseUrl || "").trim();
 
   // For LM Studio, find metadata for the currently-selected model so we can show
   // "Loaded" / "Cold" badge + enable/disable the Load button.
@@ -265,7 +297,7 @@ export default function OpenAIConfig({ invoke }) {
         setBedrockAck(!!providerResult.bedrockAck);
       }
       if (mcpsResult && mcpsResult.success) {
-        setMcpEnabled(mcpsResult.enabled || { context7: false, webSearch: false, docReader: false, docWriter: false });
+        setMcpEnabled(mcpsResult.enabled || { context7: false, webSearch: false, docReader: false, docWriter: false, localContext7: false, localWebSearch: false, localDocReader: false });
       }
       if (docProcResult && docProcResult.success) {
         setDocProcUrl(docProcResult.url || "");
@@ -332,7 +364,7 @@ export default function OpenAIConfig({ invoke }) {
     if (!isLmStudio) {
       if (mcpKey === "docWriter") {
         if (next.docReader) handleMcpPing("docReader");
-      } else if (mcpKey !== "localMode" && next[mcpKey] === true) {
+      } else if (!mcpKey.startsWith("local") && next[mcpKey] === true) {
         handleMcpPing(mcpKey);
       }
     }
@@ -1060,7 +1092,7 @@ export default function OpenAIConfig({ invoke }) {
                   }}
                   onKeyDown={(e) => e.key === "Enter" && handleSaveEndpoint()}
                 />
-                <button className={"btn-small btn-edit" + (savingProvider ? " is-busy" : "")} onClick={handleSaveEndpoint} disabled={savingProvider || !endpointInput.trim()}>
+                <button className={"btn-small btn-edit" + (savingProvider ? " is-busy" : "")} onClick={handleSaveEndpoint} disabled={savingProvider || !endpointInput.trim() || endpointUnchanged}>
                   Save
                 </button>
               </div>
@@ -1116,7 +1148,7 @@ export default function OpenAIConfig({ invoke }) {
                 >
                   Test
                 </button>
-                <button className={"btn-small btn-edit" + (savingProvider ? " is-busy" : "")} onClick={handleSaveEndpoint} disabled={savingProvider || !endpointInput.trim()}>
+                <button className={"btn-small btn-edit" + (savingProvider ? " is-busy" : "")} onClick={handleSaveEndpoint} disabled={savingProvider || !endpointInput.trim() || endpointUnchanged}>
                   Save
                 </button>
               </div>
@@ -1160,7 +1192,7 @@ export default function OpenAIConfig({ invoke }) {
                   />
                 </div>
                 {/* Save the region for the viewed Bedrock config (does not activate it). */}
-                <button className={"btn-small btn-edit" + (savingProvider ? " is-busy" : "")} onClick={handleSaveBedrockRegion} disabled={savingProvider}>
+                <button className={"btn-small btn-edit" + (savingProvider ? " is-busy" : "")} onClick={handleSaveBedrockRegion} disabled={savingProvider || bedrockRegionUnchanged} title={bedrockRegionUnchanged ? "Region already saved" : `Save region ${bedrockRegion}`}>
                   Save Region
                 </button>
               </div>
@@ -1453,7 +1485,7 @@ export default function OpenAIConfig({ invoke }) {
                       style={{ flex: 1, padding: "8px 12px", border: "1px solid var(--border-color)", borderRadius: "4px", background: "var(--input-bg)", color: "var(--text-color)", fontSize: "13px", fontFamily: "SFMono-Regular, Consolas, monospace" }}
                       onKeyDown={(e) => e.key === "Enter" && handleSaveCustomModel()}
                     />
-                    <button className={"btn-small btn-edit" + (savingModel ? " is-busy" : "")} onClick={handleSaveCustomModel} disabled={savingModel || !customModelInput.trim()}>
+                    <button className={"btn-small btn-edit" + (savingModel ? " is-busy" : "")} onClick={handleSaveCustomModel} disabled={savingModel || !customModelInput.trim() || customModelInput.trim() === currentModel}>
                       Use this model
                     </button>
                   </div>
@@ -1511,12 +1543,12 @@ export default function OpenAIConfig({ invoke }) {
               </p>
             </div>
 
-            {/* LM-Studio-only: use local MCPs (mcp.json) vs the hosted bridge. */}
+            {/* LM-Studio-only: per-MCP local routing now lives on each card below (the
+                "Run locally via LM Studio" toggle), replacing the old single global flag. */}
             {isLmStudio && (
-              <label style={{ display: "flex", alignItems: "flex-start", gap: "8px", margin: "0 0 12px", padding: "10px 12px", background: "var(--card-bg)", border: `2px solid ${mcpEnabled.localMode ? "#0d9488" : "var(--border-color)"}`, borderRadius: "6px", cursor: "pointer", fontSize: "12px", color: "var(--text-secondary)" }}>
-                <input type="checkbox" checked={!!mcpEnabled.localMode} disabled={mcpSavingKey === "localMode"} onChange={() => handleMcpToggle("localMode")} style={{ marginTop: "2px" }} />
-                <span><strong style={{ color: "var(--text-color)" }}>Use LM Studio&apos;s local MCPs (mcp.json)</strong> — load the enabled MCPs from LM Studio on your machine instead of the hosted bridge. When on, the hosted Service URL / Bearer fields below are <strong>not used</strong> and grey out. LM Studio is the only provider that supports local MCPs; every other provider always uses the hosted bridge.</span>
-              </label>
+              <div style={{ margin: "0 0 12px", padding: "10px 12px", background: "var(--card-bg)", border: "2px solid #0d9488", borderRadius: "6px", fontSize: "12px", color: "var(--text-secondary)" }}>
+                <strong style={{ color: "var(--text-color)" }}>LM Studio: choose per MCP where it runs.</strong> Each card below has a <strong>“Run locally via LM Studio (mcp.json)”</strong> toggle — turn it on to load that MCP from LM Studio on your machine, or leave it off to use the hosted bridge (its Service URL / Bearer fields). Only LM Studio supports local MCPs; every other provider always uses the hosted bridge. <strong>Keep all enabled MCPs on the same side:</strong> LM Studio can’t combine local and hosted tools in one request, so if you mix them CogniRunner routes them ALL through the hosted bridge (a “local” MCP would then also need its hosted Service URL / Bearer below).
+              </div>
             )}
 
             {/* How to connect — the three modes, made explicit. */}
@@ -1540,7 +1572,11 @@ export default function OpenAIConfig({ invoke }) {
               tools={["resolve-library-id", "query-docs"]}
               enabled={mcpEnabled.context7}
               saving={mcpSavingKey === "context7"}
-              hostedGreyed={isLmStudio && mcpEnabled.localMode}
+              isLmStudio={isLmStudio}
+              local={!!mcpEnabled.localContext7}
+              localSaving={mcpSavingKey === "localContext7"}
+              onToggleLocal={() => handleMcpToggle("localContext7")}
+              hostedGreyed={isLmStudio && mcpEnabled.localContext7}
               expanded={!!mcpExpanded.context7}
               ping={mcpPingState.context7}
               onToggle={() => handleMcpToggle("context7")}
@@ -1638,7 +1674,11 @@ export default function OpenAIConfig({ invoke }) {
               tools={["get-web-search-summaries", "full-web-search", "get-single-web-page-content", "get-pdf-content"]}
               enabled={mcpEnabled.webSearch}
               saving={mcpSavingKey === "webSearch"}
-              hostedGreyed={isLmStudio && mcpEnabled.localMode}
+              isLmStudio={isLmStudio}
+              local={!!mcpEnabled.localWebSearch}
+              localSaving={mcpSavingKey === "localWebSearch"}
+              onToggleLocal={() => handleMcpToggle("localWebSearch")}
+              hostedGreyed={isLmStudio && mcpEnabled.localWebSearch}
               expanded={!!mcpExpanded.webSearch}
               ping={mcpPingState.webSearch}
               onToggle={() => handleMcpToggle("webSearch")}
@@ -1815,7 +1855,11 @@ npm install && npm run build`}
               tools={["read-doc", "create-doc", "create-markdown", "create-excel", "create-pdf", "create-pptx", "fact-check", "list-templates"]}
               enabled={mcpEnabled.docReader}
               saving={mcpSavingKey === "docReader"}
-              hostedGreyed={isLmStudio && mcpEnabled.localMode}
+              isLmStudio={isLmStudio}
+              local={!!mcpEnabled.localDocReader}
+              localSaving={mcpSavingKey === "localDocReader"}
+              onToggleLocal={() => handleMcpToggle("localDocReader")}
+              hostedGreyed={isLmStudio && mcpEnabled.localDocReader}
               expanded={!!mcpExpanded.docReader}
               ping={mcpPingState.docReader}
               onToggle={() => handleMcpToggle("docReader")}
@@ -1965,7 +2009,7 @@ npm install`}
 }
 
 // Single MCP card — toggle, status pill, collapsible setup block, Test button.
-function McpCard({ mcpKey, title, subtitle, tools, enabled, saving, expanded, ping, onToggle, onExpand, onPing, setupBlock, hostedGreyed }) {
+function McpCard({ mcpKey, title, subtitle, tools, enabled, saving, expanded, ping, onToggle, onExpand, onPing, setupBlock, hostedGreyed, isLmStudio, local, localSaving, onToggleLocal }) {
   const pillStyle = enabled
     ? { background: "rgba(22, 163, 106, 0.12)", color: "var(--success-color)", border: "1px solid rgba(22, 163, 106, 0.4)" }
     : { background: "var(--input-bg)", color: "var(--text-muted)", border: "1px solid var(--border-color)" };
@@ -2001,15 +2045,19 @@ function McpCard({ mcpKey, title, subtitle, tools, enabled, saving, expanded, pi
                   {ping?.loading ? "Loading tools…" : live ? "Tools in use:" : "Tools available:"}
                 </span>
                 {shown.map((t) => {
+                  // Prefer the live server description; fall back to the built-in static one so
+                  // EVERY tool always has a hover tooltip explaining what it does.
+                  const desc = t.description || TOOL_DESCRIPTIONS[t.name];
                   const chip = (
                     <span
                       className={live ? "mcp-tool-chip" : undefined}
-                      style={live ? { cursor: t.description ? "help" : "default" } : { fontSize: "10px", fontWeight: 600, padding: "2px 8px", borderRadius: "10px", background: "var(--input-bg)", color: "var(--text-secondary)", border: "1px solid var(--border-color)" }}
+                      style={live
+                        ? { cursor: desc ? "help" : "default" }
+                        : { fontSize: "10px", fontWeight: 600, padding: "2px 8px", borderRadius: "10px", background: "var(--input-bg)", color: "var(--text-secondary)", border: "1px solid var(--border-color)", cursor: desc ? "help" : "default" }}
                     >{t.name}</span>
                   );
-                  // A description tooltip shows what CogniRunner tells the AI about the tool.
-                  return t.description
-                    ? <Tooltip key={t.name} text={t.description}>{chip}</Tooltip>
+                  return desc
+                    ? <Tooltip key={t.name} text={desc}>{chip}</Tooltip>
                     : <span key={t.name}>{chip}</span>;
                 })}
               </div>
@@ -2041,6 +2089,20 @@ function McpCard({ mcpKey, title, subtitle, tools, enabled, saving, expanded, pi
           )}
         </div>
       </div>
+
+      {/* LM-Studio-only per-MCP routing: local (mcp.json) vs the hosted bridge. */}
+      {isLmStudio && enabled && (
+        <label style={{ display: "flex", alignItems: "center", gap: "8px", marginTop: "8px", padding: "8px 10px", borderRadius: "6px", border: `2px solid ${local ? "#0d9488" : "var(--border-color)"}`, background: "var(--card-bg)", cursor: "pointer", fontSize: "11px", color: "var(--text-secondary)" }}>
+          <input type="checkbox" checked={!!local} disabled={localSaving} onChange={onToggleLocal} />
+          <span>
+            <strong style={{ color: local ? "#0d9488" : "var(--text-color)" }}>Run locally via LM Studio (mcp.json)</strong>
+            {local
+              ? " — served by LM Studio on your machine; the hosted Service URL / Bearer below are unused."
+              : " — off: uses the hosted bridge (configure the Service URL / Bearer below)."}
+          </span>
+          {localSaving && <span style={{ color: "var(--text-muted)" }}>saving…</span>}
+        </label>
+      )}
 
       {ping && !ping.loading && (
         <div className="anim-pop" style={{
@@ -2075,7 +2137,7 @@ function McpCard({ mcpKey, title, subtitle, tools, enabled, saving, expanded, pi
         <div className="anim-rise" style={{ marginTop: "10px", paddingTop: "10px", borderTop: "1px solid var(--border-color)" }}>
           {hostedGreyed && (
             <p style={{ margin: "0 0 8px", fontSize: "11px", color: "#0d9488", fontWeight: 600 }}>
-              Local MCP mode is on — this {title} loads from LM Studio&apos;s mcp.json. The hosted URL/Bearer below are not used.
+              This {title} runs locally via LM Studio (mcp.json) — the hosted URL / Bearer below are not used. Turn off &quot;Run locally&quot; above to use the hosted bridge instead.
             </p>
           )}
           <div style={{ opacity: hostedGreyed ? 0.4 : 1, pointerEvents: hostedGreyed ? "none" : "auto" }} aria-disabled={hostedGreyed}>

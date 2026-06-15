@@ -6,21 +6,20 @@
  */
 
 import React, { useState, useRef, useEffect, useCallback } from "react";
+import { createPortal } from "react-dom";
 
 /**
  * Custom dropdown select matching the LeanZero design system.
- * Automatically flips to open upward when near the bottom of the viewport.
+ *
+ * The open panel is rendered in a PORTAL to document.body with position:fixed and a
+ * computed position, so it is never clipped by an ancestor's overflow, never drawn under
+ * sibling cards (high z-index, body-level), and always scrolls long lists (max-height +
+ * overflow-y). It flips above the trigger when there isn't room below, and repositions on
+ * scroll/resize while open.
  *
  * Props:
- *   value        - currently selected value
- *   onChange      - (value) => void
- *   options       - array of { value, label, meta?, group? } or strings
- *   groups        - optional array of { label, filter: (opt) => bool } for grouping
- *   placeholder   - text when nothing selected
- *   searchable    - show search input (default: false for <10 options, true for >=10)
- *   searchPlaceholder - placeholder for search input
- *   error         - show error border
- *   disabled      - disable interaction
+ *   value, onChange(value), options ([{value,label,meta?,icon?,type?}] or strings),
+ *   groups ([{label, filter}]), placeholder, searchable, searchPlaceholder, error, disabled
  */
 export default function CustomSelect({
   value,
@@ -36,7 +35,8 @@ export default function CustomSelect({
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
   const [highlighted, setHighlighted] = useState(-1);
-  const [flipUp, setFlipUp] = useState(false);
+  // Fixed-position coordinates for the portalled panel.
+  const [coords, setCoords] = useState(null); // { left, width, top|bottom, maxHeight, flipUp }
   const wrapRef = useRef(null);
   const panelRef = useRef(null);
   const searchRef = useRef(null);
@@ -63,41 +63,50 @@ export default function CustomSelect({
   // Find selected option's label
   const selectedOpt = normalized.find((o) => o.value === value);
 
-  // Measure available space and decide direction
-  const measureDirection = useCallback(() => {
+  // Measure the trigger, decide direction, and compute fixed coords for the portal panel.
+  const measure = useCallback(() => {
     if (!wrapRef.current) return;
-    const triggerRect = wrapRef.current.getBoundingClientRect();
-    const panelHeight = 280; // max-height of dropdown-panel
-    const spaceBelow = window.innerHeight - triggerRect.bottom - 8;
-    const spaceAbove = triggerRect.top - 8;
-
-    if (spaceBelow < panelHeight && spaceAbove > spaceBelow) {
-      setFlipUp(true);
-    } else {
-      setFlipUp(false);
-    }
+    const r = wrapRef.current.getBoundingClientRect();
+    const PANEL_MAX = 300;
+    const GAP = 4;
+    const spaceBelow = window.innerHeight - r.bottom - 8;
+    const spaceAbove = r.top - 8;
+    const flipUp = spaceBelow < PANEL_MAX && spaceAbove > spaceBelow;
+    setCoords({
+      left: Math.round(r.left),
+      width: Math.round(r.width),
+      top: flipUp ? undefined : Math.round(r.bottom + GAP),
+      bottom: flipUp ? Math.round(window.innerHeight - r.top + GAP) : undefined,
+      maxHeight: Math.max(160, Math.min(PANEL_MAX, (flipUp ? spaceAbove : spaceBelow))),
+      flipUp,
+    });
   }, []);
 
-  // Close on outside click
+  // Close on outside click — the panel is portalled OUT of wrapRef, so check it separately.
   useEffect(() => {
     const handler = (e) => {
-      if (wrapRef.current && !wrapRef.current.contains(e.target)) {
-        setOpen(false);
-      }
+      if (wrapRef.current && wrapRef.current.contains(e.target)) return;
+      if (panelRef.current && panelRef.current.contains(e.target)) return;
+      setOpen(false);
     };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, []);
 
-  // Measure direction and focus search on open
+  // On open: measure + focus search; keep the panel pinned to the trigger on scroll/resize.
   useEffect(() => {
-    if (open) {
-      measureDirection();
-      if (showSearch && searchRef.current) {
-        searchRef.current.focus();
-      }
-    }
-  }, [open, showSearch, measureDirection]);
+    if (!open) return;
+    measure();
+    if (showSearch && searchRef.current) searchRef.current.focus();
+    const reposition = () => measure();
+    // capture:true so we also catch scrolling of inner scroll containers (cards/tab panes).
+    window.addEventListener("scroll", reposition, true);
+    window.addEventListener("resize", reposition);
+    return () => {
+      window.removeEventListener("scroll", reposition, true);
+      window.removeEventListener("resize", reposition);
+    };
+  }, [open, showSearch, measure]);
 
   // Reset highlight on search change
   useEffect(() => { setHighlighted(0); }, [search]);
@@ -140,26 +149,6 @@ export default function CustomSelect({
     setSearch("");
   };
 
-  // Render grouped or flat
-  const renderItems = () => {
-    if (groups && groups.length > 0) {
-      return groups.map((g) => {
-        const groupItems = filtered.filter(g.filter);
-        if (groupItems.length === 0) return null;
-        return (
-          <React.Fragment key={g.label}>
-            <div className="dropdown-group-label">{g.label}</div>
-            {groupItems.map((opt) => {
-              const flatIdx = filtered.indexOf(opt);
-              return renderItem(opt, flatIdx);
-            })}
-          </React.Fragment>
-        );
-      });
-    }
-    return filtered.map((opt, i) => renderItem(opt, i));
-  };
-
   const renderItem = (opt, idx) => (
     <div
       key={opt.value}
@@ -174,6 +163,58 @@ export default function CustomSelect({
       {opt.type && <span className="dropdown-item-type">{opt.type}</span>}
     </div>
   );
+
+  const renderItems = () => {
+    if (groups && groups.length > 0) {
+      return groups.map((g) => {
+        const groupItems = filtered.filter(g.filter);
+        if (groupItems.length === 0) return null;
+        return (
+          <React.Fragment key={g.label}>
+            <div className="dropdown-group-label">{g.label}</div>
+            {groupItems.map((opt) => renderItem(opt, filtered.indexOf(opt)))}
+          </React.Fragment>
+        );
+      });
+    }
+    return filtered.map((opt, i) => renderItem(opt, i));
+  };
+
+  // The open panel, portalled to <body> with fixed positioning (never clipped / under siblings).
+  const panel = open && coords ? (
+    <div
+      className={`dropdown-panel${coords.flipUp ? " dropdown-panel-up" : ""}`}
+      ref={panelRef}
+      style={{
+        position: "fixed",
+        left: coords.left,
+        right: "auto", // override the class's right:0 so left+width define the box
+        width: coords.width,
+        ...(coords.flipUp ? { bottom: coords.bottom } : { top: coords.top }),
+        maxHeight: coords.maxHeight, // inner .dropdown-list (flex:1, overflow-y:auto) scrolls
+        zIndex: 100000,
+      }}
+    >
+      {showSearch && (
+        <div className="dropdown-search">
+          <input
+            ref={searchRef}
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder={searchPlaceholder}
+          />
+        </div>
+      )}
+      <div className="dropdown-list" ref={listRef}>
+        {filtered.length === 0 ? (
+          <div className="dropdown-empty">No results found</div>
+        ) : (
+          renderItems()
+        )}
+      </div>
+    </div>
+  ) : null;
 
   return (
     <div className="dropdown" ref={wrapRef} onKeyDown={handleKeyDown}>
@@ -197,31 +238,7 @@ export default function CustomSelect({
           </svg>
         </span>
       </button>
-      {open && (
-        <div
-          className={`dropdown-panel${flipUp ? " dropdown-panel-up" : ""}`}
-          ref={panelRef}
-        >
-          {showSearch && (
-            <div className="dropdown-search">
-              <input
-                ref={searchRef}
-                type="text"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder={searchPlaceholder}
-              />
-            </div>
-          )}
-          <div className="dropdown-list" ref={listRef}>
-            {filtered.length === 0 ? (
-              <div className="dropdown-empty">No results found</div>
-            ) : (
-              renderItems()
-            )}
-          </div>
-        </div>
-      )}
+      {typeof document !== "undefined" && createPortal(panel, document.body)}
     </div>
   );
 }

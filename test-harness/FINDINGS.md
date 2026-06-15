@@ -20,10 +20,17 @@ From the at-scale runtime test (instance `wolfaenpak.atlassian.net`, project `CO
 
 | Provider · Model | Total | agentic (JQL tool-calling) | robustness | injection | other studies | AI errors |
 |---|---|---|---|---|---|---|
-| OpenRouter · `gemma-4-31b` | **766/782** | 3/4 | 24/25 | 697/710 | all clean | 1 |
-| Anthropic · `claude-haiku-4-5` | **766/782** | **3/4 ✓** | 25/25 | 696/710 | all clean | 4 (transient, fail-open) |
+| OpenRouter · `gemma-4-31b` (BYOK) | **766/782** | 3/4 | 24/25 | 697/710 | all clean | 1 |
+| Anthropic · `claude-haiku-4-5` (BYOK) | **766/782** | **3/4 ✓** | 25/25 | 696/710 | all clean | 4 (transient, fail-open) |
+| Forge LLM · Haiku (zero-key) | **766/782** | **3/4 ✓ (F1 path)** | 25/25 | 696/710 | all clean | 0 (F1 signals: 0) |
 
-Headline: **Anthropic's request/response translation layer is healthy** — agentic JQL (the `/v1/messages` + `tool_use`-block round-trip that broke as F1 on Forge LLM) works correctly (3/4, the 1 miss is the strict GATE-STORY expectation, not a tool bug). Both providers land 766/782 with all PF/semantic/field/knowledge studies clean; the per-study deltas (robustness 25 vs 24, AI-errors 4 vs 1) confirm genuine distinct runs. The ~0.8% transient Anthropic AI-errors failed open (F9) — no wrongful blocks. (Azure = mostly untested / no deployment; LM Studio + Forge LLM pending.) **Provider switching is admin-only / not REST-driveable — each provider runs as an owner handshake.**
+Headline: **all three providers land 766/782 with every PF/semantic/field/knowledge/policy study clean and agentic JQL working.**
+- **Anthropic translation layer healthy** — `/v1/messages` + `tool_use`-block round-trip (the F1 shape) works (3/4); the 1 agentic miss is the strict GATE-STORY expectation, not a tool bug.
+- **F1 re-validated on the real Forge LLM path** — the `@forge/llm` agentic run had **0** `AI service error: 400` / `START_OBJECT` / parse-body errors (the exact symptoms F1 fixed) and passed agentic 3/4.
+- **Zero-key Forge LLM = paid BYOK** — Forge LLM/Haiku produced byte-identical study numbers to BYOK Anthropic/Haiku (same model), confirming the `@forge/llm` transport + the F1 string-args fix behave exactly like a direct Anthropic key, and the out-of-box experience matches paid keys.
+- Per-study deltas (gemma robustness 24 vs Claude 25; AI-errors 1/4/0) confirm genuine distinct runs, not stale-cache repeats. Transient AI-errors fail open (F9) — no wrongful blocks.
+
+(Azure = mostly untested / no deployment; LM Studio pending — tied to the Mac Studio.) **Provider switching is admin-only / not REST-driveable — each provider runs as an owner handshake.**
 
 ### Provider cleanup (owner-directed)
 - **Factory / out-of-the-box key REMOVED — pure BYOK** (`getOpenAIKey` no longer falls back to `process.env.OPENAI_API_KEY` in index.js + async-handler.js; UI/docs "factory key" framing stripped; `OPENAI_API_KEY` Forge variable unset on dev **and** prod). Forge LLM still works (sentinel). The exposed `sk-or-…` key must be revoked at OpenRouter.

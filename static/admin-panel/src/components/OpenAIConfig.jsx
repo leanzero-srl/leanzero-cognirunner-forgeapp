@@ -1365,14 +1365,15 @@ export default function OpenAIConfig({ invoke }) {
               details”</strong>, then complete the form. Other families (Amazon Nova, Llama, Mistral) don't require this.
               <label style={{ display: "flex", alignItems: "flex-start", gap: "8px", marginTop: "10px", cursor: "pointer" }}>
                 <input type="checkbox" checked={bedrockAck} disabled={savingAck} onChange={(e) => handleSaveBedrockAck(e.target.checked)} style={{ marginTop: "2px" }} />
-                <span><strong style={{ color: "var(--text-color)" }}>I've submitted Anthropic use-case details in the AWS console</strong> (or I only use non-Anthropic models). Check this to load the model list.</span>
+                <span><strong style={{ color: "var(--text-color)" }}>I've submitted Anthropic use-case details in the AWS console</strong> (or I only use non-Anthropic models). Acknowledgment only — the model list below works either way.</span>
               </label>
             </div>
           )}
 
-          {/* Model Selection — only when BYOK. For Bedrock, additionally gated on the
-              Anthropic use-case acknowledgment above. */}
-          {isByok && (!isBedrock || bedrockAck) && (
+          {/* Model Selection — only when BYOK. For Bedrock the picker shows as soon as the
+              key is set; the Anthropic acknowledgment above is an awareness formality, NOT a
+              gate (model listing works regardless — listing != invoking). */}
+          {isByok && (
             <div>
               <label style={{ display: "block", fontSize: "12px", fontWeight: "600", color: "var(--text-secondary)", marginBottom: "6px" }}>
                 Model

@@ -3356,6 +3356,9 @@ resolver.define("getLmStudioMcps", async () => {
       // create-markdown / create-excel / create-pdf and have the resulting file
       // attached to the issue under validation. Defaults OFF for ALL existing tenants.
       docWriter: stored.docWriter === true,
+      // LM-Studio-only: load the enabled MCPs from LM Studio's local mcp.json
+      // instead of the hosted bridge. Default OFF (hosted, like every provider).
+      localMode: stored.localMode === true,
     };
     const supported = Object.entries(SUPPORTED_MCPS).map(([key, info]) => ({
       key,
@@ -3388,6 +3391,9 @@ resolver.define("saveLmStudioMcps", async ({ payload, context }) => {
       // greys out the sub-toggle when docReader is off, and this clamp ensures
       // a malformed/legacy payload can't smuggle docWriter past that gate.
       docWriter: incoming.docWriter === true && docReader,
+      // LM-Studio-only local-MCP flag (default OFF). Governs whether LM Studio
+      // loads MCPs from its own mcp.json vs the hosted bridge.
+      localMode: incoming.localMode === true,
     };
     await storage.set(LMSTUDIO_MCPS_KVS_KEY, next);
     return { success: true, enabled: next };
@@ -6350,6 +6356,11 @@ const callForgeLlmChat = async ({ model, messages, tools, tool_choice, jsonMode 
 const buildLmStudioIntegrations = async () => {
   try {
     const stored = (await storage.get(LMSTUDIO_MCPS_KVS_KEY)) || {};
+    // LM-Studio-only "use local MCPs" flag (default OFF). Local MCPs are loaded
+    // from LM Studio's own mcp.json and are an explicit opt-in; when OFF, LM Studio
+    // uses the HOSTED bridge like every other provider, so emit no local plugins
+    // (also avoids forcing an absent plugin → the F20 403).
+    if (stored.localMode !== true) return [];
     const integrations = [];
     for (const [key, info] of Object.entries(SUPPORTED_MCPS)) {
       if (stored[key] !== true) continue;
@@ -6427,9 +6438,11 @@ const callLmStudioNative = async ({ apiKey, model, messages, jsonMode, baseUrl }
       + "Respond with ONLY a valid JSON object. No markdown fences, no surrounding prose, no explanation outside the JSON.";
   }
 
-  // 3b. MCP integrations — read enabled MCPs from KVS, append usage guidance
-  //     to system_prompt so the model knows when to reach for each tool.
-  //     `integrations` (sent below in the body) tells LM Studio to load the plugins.
+  // 3b. MCP integrations — LM Studio loads the enabled MCP plugins from its local
+  //     mcp.json so the model can call them autonomously. buildLmStudioIntegrations
+  //     returns [] unless the LM-Studio-only "use local MCPs" flag is ON, so this is
+  //     an explicit opt-in (no forced plugins → no F20 403). The hosted bridge is
+  //     used for every OTHER provider, and for LM Studio when the flag is OFF.
   const integrations = await buildLmStudioIntegrations();
   if (integrations.length > 0) {
     systemPrompt = (systemPrompt ? systemPrompt : "") + (await buildMcpSystemPrompt(integrations));
@@ -7907,7 +7920,25 @@ const callBridgeTool = async (mcpKey, toolName, args) => {
 // -> mcpKey } }. Best-effort: a tools/list failure for one MCP just omits it. The live
 // tools/list ∩ allow-list means only tools the deployed server actually exposes appear,
 // so a curated allow-list superset is safe (extra entries never surface a missing tool).
+// True only when the ACTIVE provider is LM Studio AND its "use local MCPs" flag is
+// ON. In that mode LM Studio loads MCPs from its own mcp.json (local), so the HOSTED
+// bridge is bypassed for it. Every other provider — and LM Studio with the flag OFF
+// — uses the hosted bridge. (JQL agentic search is a custom tool, not MCP, and is
+// unaffected by this.)
+const lmStudioLocalMcpOn = async () => {
+  try {
+    const { provider } = await getProviderConfig();
+    if (provider !== "lmstudio") return false;
+    const enabled = (await storage.get(LMSTUDIO_MCPS_KVS_KEY)) || {};
+    return enabled.localMode === true;
+  } catch {
+    return false;
+  }
+};
+
 const buildBridgeMcpTools = async () => {
+  // LM Studio in local-MCP mode uses its own mcp.json — don't offer hosted tools.
+  if (await lmStudioLocalMcpOn()) return { tools: [], index: {} };
   const enabled = (await storage.get(LMSTUDIO_MCPS_KVS_KEY)) || {};
   const result = { tools: [], index: {} };
   for (const mcpKey of ["context7", "docReader", "webSearch"]) {
@@ -7948,6 +7979,10 @@ const buildBridgeMcpTools = async () => {
 // for every provider (Anthropic included; its native connector was removed).
 const mcpBridgeActive = async () => {
   try {
+    // LM Studio in local-MCP mode doesn't use the hosted bridge, so it shouldn't
+    // flip validation into the agentic loop FOR a hosted MCP (JQL agentic still
+    // engages on its own via promptRequiresTools).
+    if (await lmStudioLocalMcpOn()) return false;
     const enabled = (await storage.get(LMSTUDIO_MCPS_KVS_KEY)) || {};
     return enabled.context7 === true || enabled.docReader === true || enabled.webSearch === true;
   } catch {

@@ -90,7 +90,7 @@ export default function OpenAIConfig({ invoke }) {
   const [loadingLmModel, setLoadingLmModel] = useState(false);
   // LM Studio MCP integrations — fixed set of 3 (context7, web-search, doc-reader).
   // Other MCPs in the user's mcp.json are NOT exposed by us per design.
-  const [mcpEnabled, setMcpEnabled] = useState({ context7: false, webSearch: false, docReader: false, docWriter: false });
+  const [mcpEnabled, setMcpEnabled] = useState({ context7: false, webSearch: false, docReader: false, docWriter: false, localMode: false });
   const [mcpSavingKey, setMcpSavingKey] = useState(null); // which key is currently saving
   const [mcpExpanded, setMcpExpanded] = useState({}); // which setup panels are open
   const [mcpPingState, setMcpPingState] = useState({}); // {[key]: {loading, ok, error}}
@@ -1284,6 +1284,14 @@ export default function OpenAIConfig({ invoke }) {
               </p>
             </div>
 
+            {/* LM-Studio-only: use local MCPs (mcp.json) vs the hosted bridge. */}
+            {isLmStudio && (
+              <label style={{ display: "flex", alignItems: "flex-start", gap: "8px", margin: "0 0 12px", padding: "10px 12px", background: "var(--card-bg)", border: `2px solid ${mcpEnabled.localMode ? "#0d9488" : "var(--border-color)"}`, borderRadius: "6px", cursor: "pointer", fontSize: "12px", color: "var(--text-secondary)" }}>
+                <input type="checkbox" checked={!!mcpEnabled.localMode} disabled={mcpSavingKey === "localMode"} onChange={() => handleMcpToggle("localMode")} style={{ marginTop: "2px" }} />
+                <span><strong style={{ color: "var(--text-color)" }}>Use LM Studio&apos;s local MCPs (mcp.json)</strong> — load the enabled MCPs from LM Studio on your machine instead of the hosted bridge. When on, the hosted Service URL / Bearer fields below are <strong>not used</strong> and grey out. LM Studio is the only provider that supports local MCPs; every other provider always uses the hosted bridge.</span>
+              </label>
+            )}
+
             {/* How to connect — the three modes, made explicit. */}
             <div style={{ padding: "10px 12px", marginBottom: "12px", background: "rgba(37, 99, 235, 0.06)", border: "1px solid rgba(37, 99, 235, 0.35)", borderRadius: "6px", fontSize: "11px", color: "var(--text-secondary)" }}>
               <strong style={{ color: "var(--text-color)" }}>Three ways to connect an MCP:</strong>
@@ -1305,6 +1313,7 @@ export default function OpenAIConfig({ invoke }) {
               tools={["resolve-library-id", "query-docs"]}
               enabled={mcpEnabled.context7}
               saving={mcpSavingKey === "context7"}
+              hostedGreyed={isLmStudio && mcpEnabled.localMode}
               expanded={!!mcpExpanded.context7}
               ping={mcpPingState.context7}
               onToggle={() => handleMcpToggle("context7")}
@@ -1402,6 +1411,7 @@ export default function OpenAIConfig({ invoke }) {
               tools={["get-web-search-summaries", "full-web-search", "get-single-web-page-content", "get-pdf-content"]}
               enabled={mcpEnabled.webSearch}
               saving={mcpSavingKey === "webSearch"}
+              hostedGreyed={isLmStudio && mcpEnabled.localMode}
               expanded={!!mcpExpanded.webSearch}
               ping={mcpPingState.webSearch}
               onToggle={() => handleMcpToggle("webSearch")}
@@ -1578,6 +1588,7 @@ npm install && npm run build`}
               tools={["read-doc", "detect-format", "list-documents", "list-templates", "create-doc", "create-markdown", "create-excel", "create-pdf", "create-pptx", "edit-pptx", "fact-check"]}
               enabled={mcpEnabled.docReader}
               saving={mcpSavingKey === "docReader"}
+              hostedGreyed={isLmStudio && mcpEnabled.localMode}
               expanded={!!mcpExpanded.docReader}
               ping={mcpPingState.docReader}
               onToggle={() => handleMcpToggle("docReader")}
@@ -1727,7 +1738,7 @@ npm install`}
 }
 
 // Single MCP card — toggle, status pill, collapsible setup block, Test button.
-function McpCard({ mcpKey, title, subtitle, tools, enabled, saving, expanded, ping, onToggle, onExpand, onPing, setupBlock }) {
+function McpCard({ mcpKey, title, subtitle, tools, enabled, saving, expanded, ping, onToggle, onExpand, onPing, setupBlock, hostedGreyed }) {
   const pillStyle = enabled
     ? { background: "rgba(22, 163, 106, 0.12)", color: "var(--success-color)", border: "1px solid rgba(22, 163, 106, 0.4)" }
     : { background: "var(--input-bg)", color: "var(--text-muted)", border: "1px solid var(--border-color)" };
@@ -1810,7 +1821,14 @@ function McpCard({ mcpKey, title, subtitle, tools, enabled, saving, expanded, pi
       </button>
       {expanded && (
         <div className="anim-rise" style={{ marginTop: "10px", paddingTop: "10px", borderTop: "1px solid var(--border-color)" }}>
-          {setupBlock}
+          {hostedGreyed && (
+            <p style={{ margin: "0 0 8px", fontSize: "11px", color: "#0d9488", fontWeight: 600 }}>
+              Local MCP mode is on — this {title} loads from LM Studio&apos;s mcp.json. The hosted URL/Bearer below are not used.
+            </p>
+          )}
+          <div style={{ opacity: hostedGreyed ? 0.4 : 1, pointerEvents: hostedGreyed ? "none" : "auto" }} aria-disabled={hostedGreyed}>
+            {setupBlock}
+          </div>
         </div>
       )}
     </div>

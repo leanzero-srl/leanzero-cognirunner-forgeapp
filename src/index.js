@@ -2775,7 +2775,7 @@ resolver.define("saveProvider", async ({ payload, context }) => {
   try {
     const { provider, baseUrl } = payload;
     if (!provider || !PROVIDERS[provider]) {
-      return { success: false, error: "Invalid provider. Choose: openai, azure, openrouter, anthropic, lmstudio, atlassian" };
+      return { success: false, error: "Invalid provider. Choose: openai, azure, openrouter, anthropic, lmstudio, bedrock, atlassian" };
     }
     if (provider === "azure" && baseUrl && !baseUrl.includes(".openai.azure.com")) {
       return { success: false, error: "Azure endpoint must contain .openai.azure.com (e.g. https://myresource.openai.azure.com/openai/v1)" };
@@ -2784,9 +2784,27 @@ resolver.define("saveProvider", async ({ payload, context }) => {
     let normalizedBaseUrl = baseUrl;
     // Switching back to a provider WITHOUT re-entering its URL: restore the URL
     // it was last saved with (the bug the owner hit — LM Studio kept re-asking).
-    if ((!normalizedBaseUrl || !String(normalizedBaseUrl).trim()) && (provider === "lmstudio" || provider === "azure")) {
+    if ((!normalizedBaseUrl || !String(normalizedBaseUrl).trim()) && (provider === "lmstudio" || provider === "azure" || provider === "bedrock")) {
       const savedUrl = await storage.get(providerBaseUrlSlot(provider));
       if (savedUrl) normalizedBaseUrl = savedUrl;
+    }
+    if (provider === "bedrock") {
+      // The UI sends an AWS region; we store the full Converse runtime host as the base URL so
+      // the existing per-provider baseUrl plumbing carries the region (no separate region slot).
+      const region = (payload.region || "").toString().trim().toLowerCase();
+      if (region) {
+        if (!/^[a-z]{2}-[a-z]+-\d$/.test(region)) {
+          return { success: false, error: "Invalid AWS region (e.g. eu-west-2, us-east-1)." };
+        }
+        normalizedBaseUrl = `https://bedrock-runtime.${region}.amazonaws.com`;
+      }
+      if (!normalizedBaseUrl || !String(normalizedBaseUrl).trim()) {
+        return { success: false, error: "AWS Bedrock requires a region (e.g. eu-west-2). Select one and save." };
+      }
+      normalizedBaseUrl = String(normalizedBaseUrl).trim().replace(/\/+$/, "");
+      if (!/^https:\/\/bedrock-runtime\.[a-z0-9-]+\.amazonaws\.com$/i.test(normalizedBaseUrl)) {
+        return { success: false, error: "Bedrock base URL must be https://bedrock-runtime.<region>.amazonaws.com" };
+      }
     }
     if (provider === "lmstudio") {
       if (!normalizedBaseUrl || !String(normalizedBaseUrl).trim()) {
@@ -2838,15 +2856,38 @@ resolver.define("getProvider", async () => {
   try {
     const provider = (await storage.get("COGNIRUNNER_AI_PROVIDER")) || "openai";
     const baseUrl = await storage.get("COGNIRUNNER_AI_BASE_URL");
+    // bedrockAck: whether the admin confirmed submitting Anthropic's one-per-account use-case
+    // form in the AWS console (a UX gate that reveals the Bedrock model picker — not auth).
+    const bedrockAck = !!(await storage.get("COGNIRUNNER_BEDROCK_ACK"));
     return {
       success: true,
       provider,
       baseUrl: baseUrl || (PROVIDERS[provider] && PROVIDERS[provider].baseUrl) || PROVIDERS.openai.baseUrl,
       providers: Object.entries(PROVIDERS).map(([key, val]) => ({ key, label: val.label, hasDefaultUrl: !!val.baseUrl })),
+      bedrockAck,
     };
   } catch (error) {
     console.error("Failed to get provider:", error);
     return { success: false, provider: "openai", baseUrl: PROVIDERS.openai.baseUrl };
+  }
+});
+
+/**
+ * Bedrock-only: persist the admin's acknowledgment that they submitted Anthropic's one-time
+ * "use case details" form in the AWS console. Anthropic-on-Bedrock invocations 403 for
+ * first-time customers until that account-level form is done; this checkbox is purely a UX
+ * gate on our side that reveals the model picker. Does NOT affect auth or runtime calls.
+ */
+resolver.define("setBedrockAck", async ({ payload, context }) => {
+  if (!(await requireAdmin(context.accountId))) {
+    return { success: false, error: "Admin access required" };
+  }
+  try {
+    await storage.set("COGNIRUNNER_BEDROCK_ACK", payload && payload.acknowledged === true);
+    return { success: true };
+  } catch (error) {
+    console.error("Failed to save Bedrock acknowledgment:", error);
+    return { success: false, error: error.message };
   }
 });
 
@@ -3077,6 +3118,42 @@ resolver.define("getOpenAIModels", async () => {
 
     // Fetch models from the configured provider's endpoint
     const { provider, baseUrl } = await getProviderConfig();
+
+    // AWS Bedrock: model listing hits the CONTROL-PLANE host (bedrock.<region>, not
+    // bedrock-runtime.<region>) and returns a bespoke shape — not the generic data.data[].id
+    // every other provider uses. The Bedrock API key works on both planes, but the attached
+    // IAM policy may not grant List* → fail SOFT so the admin can still free-text a model id.
+    // We list inference profiles (the invokable eu./us. cross-region ids) AND on-demand
+    // foundation models, preferring the profile ids.
+    if (provider === "bedrock") {
+      const controlHost = baseUrl.replace("bedrock-runtime.", "bedrock.");
+      const bedHeaders = { Authorization: `Bearer ${byokKey}`, Accept: "application/json" };
+      const ids = new Set();
+      try {
+        const pr = await fetch(`${controlHost}/inference-profiles?maxResults=1000`, { method: "GET", headers: bedHeaders });
+        if (pr.ok) {
+          const pd = await pr.json();
+          for (const p of (pd.inferenceProfileSummaries || [])) {
+            if (p.inferenceProfileId) ids.add(p.inferenceProfileId);
+          }
+        }
+      } catch { /* ignore — fall through to foundation models / free-text */ }
+      try {
+        const fr = await fetch(`${controlHost}/foundation-models?byOutputModality=TEXT`, { method: "GET", headers: bedHeaders });
+        if (fr.ok) {
+          const fd = await fr.json();
+          for (const m of (fd.modelSummaries || [])) {
+            // Bare model ids only invoke when ON_DEMAND is supported; models needing a profile
+            // are already captured above. Skip when the model lists supported types without it.
+            const onDemand = !Array.isArray(m.inferenceTypesSupported) || m.inferenceTypesSupported.includes("ON_DEMAND");
+            if (m.modelId && onDemand) ids.add(m.modelId);
+          }
+        }
+      } catch { /* ignore */ }
+      const models = [...ids].sort();
+      // listUnavailable lets the UI explain "couldn't list — enter a model id manually".
+      return { success: true, models, isByok: true, listUnavailable: models.length === 0 };
+    }
 
     // Provider-specific model listing
     let response;
@@ -6296,6 +6373,15 @@ const PROVIDERS = {
   // platform via @forge/llm. No API key, no egress, no BYOK — token costs are billed
   // to the app vendor's Forge bill. Text-only (no image/file input yet).
   atlassian: { label: "Atlassian (Forge LLM)", baseUrl: null, defaultModel: "claude-haiku-4-5-20251001" },
+  // AWS Bedrock (BYOK): authenticated with a Bedrock API key as a plain bearer token
+  // (Authorization: Bearer …) — NO AWS SigV4 signing. baseUrl is region-derived and stored
+  // as a full URL (https://bedrock-runtime.<region>.amazonaws.com) by saveProvider, so the
+  // existing per-provider baseUrl plumbing carries the region. We call the unified Converse
+  // API (/model/<id>/converse), which works across all Bedrock models and supports tool use.
+  // defaultModel is an EU cross-region inference-profile id (the test account is in eu-west-2,
+  // which belongs to the `eu.` profile group); it is a fallback only — admins pick a model in
+  // the panel. Bare model ids 403 for many models, so profile ids (eu./us.) are preferred.
+  bedrock: { label: "AWS Bedrock", baseUrl: null, defaultModel: "eu.anthropic.claude-sonnet-4-6" },
 };
 
 // Sentinel returned by getOpenAIKey() when the active provider is Forge LLM —
@@ -6714,6 +6800,12 @@ const callAIChat = async (opts) => {
     return callAnthropicChat({ apiKey, model, messages, tools, tool_choice, baseUrl, jsonMode });
   }
 
+  // AWS Bedrock (BYOK): bearer-token auth + the unified Converse API. Translated to/from
+  // OpenAI shape the same way Anthropic is (Converse is structurally close to the Messages API).
+  if (provider === "bedrock") {
+    return callBedrockChat({ apiKey, model, messages, tools, tool_choice, baseUrl, jsonMode });
+  }
+
   // Atlassian-hosted Forge LLM (Preview): no API key, no egress — served by @forge/llm.
   if (provider === "atlassian") {
     return callForgeLlmChat({ model, messages, tools, tool_choice, jsonMode });
@@ -7069,6 +7161,258 @@ const convertContentBlock = (block) => {
   }
 
   return block; // pass through unknown types
+};
+
+/**
+ * Call AWS Bedrock via the unified Converse API, translating from/to OpenAI format.
+ *
+ * Bedrock API keys authenticate as plain bearer tokens (no SigV4). The model id rides the URL
+ * path; many models require a cross-region inference-profile id (eu./us. prefix) rather than the
+ * bare model id. Converse is structurally close to Anthropic's Messages API, so this mirrors
+ * callAnthropicChat with Converse field names:
+ *   system             → [{ text }]
+ *   messages[].content → [{ text } | { image } | { document } | { toolUse } | { toolResult }]
+ *   tools              → toolConfig.tools[].toolSpec{ name, description, inputSchema.json }
+ *   tool_choice        → toolConfig.toolChoice ({auto:{}} | {any:{}} | {tool:{name}})
+ *   inferenceConfig    → { maxTokens, ... }
+ * Response: output.message.content[] (+ stopReason, usage{inputTokens,outputTokens}).
+ */
+const callBedrockChat = async ({ apiKey, model, messages, tools, tool_choice, baseUrl, jsonMode }) => {
+  // 1. Extract system prompt(s) — Converse takes them in a separate `system` array.
+  const systemBlocks = [];
+  const filteredMessages = [];
+  for (const msg of messages) {
+    if (msg.role === "system") {
+      const text = typeof msg.content === "string" ? msg.content : (msg.content || []).map((c) => c.text || "").join("\n");
+      if (text) systemBlocks.push({ text });
+    } else {
+      filteredMessages.push(msg);
+    }
+  }
+  // Converse has no response_format — JSON mode is enforced via the system prompt only.
+  if (jsonMode) {
+    systemBlocks.push({ text: "Respond with ONLY a valid JSON object. No markdown fences, no surrounding prose, no explanation outside the JSON." });
+  }
+  // Converse has NO tool_choice "none". The agentic loop's final round passes "none" (with
+  // tools still attached) to force a final text answer — but Converse REQUIRES toolConfig once
+  // the message history contains toolUse/toolResult blocks (omitting it 400s), so we cannot
+  // simply drop the tools. Approximate "none" with a hard directive instead; the tool_choice
+  // mapping below leaves toolChoice unset (= auto) so toolConfig stays valid.
+  if (tool_choice === "none" && tools && tools.length > 0) {
+    systemBlocks.push({ text: "You now have all the information you need. Do NOT call any more tools. Respond now with your final answer." });
+  }
+
+  // 2. Convert messages. Converse content is ALWAYS an array of typed blocks, and roles must
+  //    strictly alternate user/assistant — OpenAI tool results (role:"tool") go back as a USER
+  //    message carrying a toolResult block (mirrors the Anthropic user/tool_result hop).
+  const bedrockMessages = [];
+  for (const msg of filteredMessages) {
+    if (msg.role === "tool") {
+      const toolResultBlock = {
+        toolResult: {
+          toolUseId: msg.tool_call_id,
+          content: [{ text: typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content) }],
+        },
+      };
+      const lastMsg = bedrockMessages[bedrockMessages.length - 1];
+      if (lastMsg && lastMsg.role === "user") {
+        lastMsg.content.push(toolResultBlock);
+      } else {
+        bedrockMessages.push({ role: "user", content: [toolResultBlock] });
+      }
+      continue;
+    }
+
+    const content = [];
+    if (typeof msg.content === "string") {
+      if (msg.content) content.push({ text: msg.content });
+    } else if (Array.isArray(msg.content)) {
+      for (const block of msg.content) {
+        const converted = convertContentBlockBedrock(block);
+        if (converted) content.push(converted);
+      }
+    }
+    // assistant tool_calls → toolUse content blocks
+    if (msg.role === "assistant" && msg.tool_calls && msg.tool_calls.length > 0) {
+      for (const tc of msg.tool_calls) {
+        content.push({
+          toolUse: {
+            toolUseId: tc.id,
+            name: tc.function.name,
+            input: typeof tc.function.arguments === "string" ? JSON.parse(tc.function.arguments) : tc.function.arguments,
+          },
+        });
+      }
+    }
+    // Converse rejects an empty content array — skip a message that converted to nothing.
+    if (content.length === 0) continue;
+    bedrockMessages.push({ role: msg.role, content });
+  }
+
+  // 3. Build request body.
+  const body = {
+    messages: bedrockMessages,
+    inferenceConfig: { maxTokens: 4096 },
+  };
+  if (systemBlocks.length > 0) body.system = systemBlocks;
+
+  // 4. Tools → toolConfig.
+  if (tools && tools.length > 0) {
+    body.toolConfig = {
+      tools: tools.map((t) => {
+        const fn = t.function || t;
+        return {
+          toolSpec: {
+            name: fn.name,
+            description: fn.description || "",
+            inputSchema: { json: fn.parameters || fn.input_schema || { type: "object", properties: {} } },
+          },
+        };
+      }),
+    };
+    // tool_choice → Converse toolChoice. NOT all Bedrock models support toolChoice, so omit it
+    // on the default "auto" (auto is the implicit default and avoids 400s on strict models).
+    //   "required"/"any"                       → { any: {} }
+    //   {type:"function", function:{name:"X"}} → { tool: { name: "X" } }
+    //   "auto"/"none"/undefined                → omitted
+    if (tool_choice === "required" || tool_choice === "any") {
+      body.toolConfig.toolChoice = { any: {} };
+    } else if (tool_choice && typeof tool_choice === "object" && tool_choice.type === "function" && tool_choice.function?.name) {
+      body.toolConfig.toolChoice = { tool: { name: tool_choice.function.name } };
+    }
+  }
+
+  const headers = {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${apiKey}`,
+  };
+
+  // Model id rides the URL path LITERALLY. Bedrock model / inference-profile ids contain only
+  // path-safe chars ([A-Za-z0-9.:_-]), and the ':' in on-demand ids (e.g. …-v1:0) MUST stay
+  // literal — encodeURIComponent turns it into %3A and Bedrock 404s the route. Verified against
+  // eu-west-2 (global.amazon.nova-2-lite-v1:0 succeeds with a literal path).
+  const inferenceUrl = `${baseUrl}/model/${model}/converse`;
+
+  // Retry transient errors (429/5xx) honoring Retry-After — same policy as callAIChat.
+  let response;
+  for (let attempt = 1; ; attempt++) {
+    response = await fetch(inferenceUrl, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    });
+    if (response.ok || attempt > 3 || !isTransientAIError(response.status)) break;
+    const ra = parseInt(response.headers.get("Retry-After") || "", 10);
+    const waitMs = Number.isFinite(ra) ? Math.min(5000, ra * 1000) : Math.min(2000, 400 * 2 ** (attempt - 1));
+    await new Promise((r) => setTimeout(r, waitMs));
+  }
+
+  if (!response.ok) {
+    const errText = await response.text().catch(() => "");
+    return { ok: false, status: response.status, data: null, error: errText };
+  }
+
+  const bedrockData = await response.json();
+
+  // 5. Convert the Converse response envelope to OpenAI shape.
+  const textParts = [];
+  const toolCalls = [];
+  const outContent = bedrockData.output?.message?.content || [];
+  for (const block of outContent) {
+    if (typeof block.text === "string") textParts.push(block.text);
+    if (block.toolUse) {
+      toolCalls.push({
+        id: block.toolUse.toolUseId,
+        type: "function",
+        function: {
+          name: block.toolUse.name,
+          arguments: JSON.stringify(block.toolUse.input || {}),
+        },
+      });
+    }
+  }
+
+  // end_turn / stop_sequence / content_filtered / guardrail_intervened → "stop"
+  const finishReason = bedrockData.stopReason === "tool_use" ? "tool_calls"
+    : bedrockData.stopReason === "max_tokens" ? "length"
+    : "stop";
+
+  const inputTokens = bedrockData.usage?.inputTokens || 0;
+  const outputTokens = bedrockData.usage?.outputTokens || 0;
+
+  const openAIData = {
+    choices: [{
+      index: 0,
+      message: {
+        role: "assistant",
+        content: textParts.join("") || null,
+      },
+      finish_reason: finishReason,
+    }],
+    usage: {
+      prompt_tokens: inputTokens,
+      completion_tokens: outputTokens,
+      total_tokens: bedrockData.usage?.totalTokens || (inputTokens + outputTokens),
+    },
+  };
+
+  if (toolCalls.length > 0) {
+    openAIData.choices[0].message.tool_calls = toolCalls;
+  }
+
+  return { ok: true, status: 200, data: openAIData };
+};
+
+/**
+ * Convert a single OpenAI content block to a Bedrock Converse content block.
+ * Returns null for blocks that can't be represented (the caller skips those).
+ */
+const convertContentBlockBedrock = (block) => {
+  if (block == null) return null;
+  if (typeof block === "string") return block ? { text: block } : null;
+  if (block.type === "text") return block.text ? { text: block.text } : null;
+
+  // OpenAI image_url → Converse image { format, source: { bytes } }. Converse expects a
+  // base64 string in `bytes` (the JSON wire form of a blob) + a format enum, NOT a data URI.
+  // URL-only images carry no bytes → fall back to a text note.
+  if (block.type === "image_url" && block.image_url?.url) {
+    const m = block.image_url.url.match(/^data:image\/([^;]+);base64,(.+)$/);
+    if (m) {
+      const fmt = m[1].toLowerCase() === "jpg" ? "jpeg" : m[1].toLowerCase();
+      if (["png", "jpeg", "gif", "webp"].includes(fmt)) {
+        return { image: { format: fmt, source: { bytes: m[2] } } };
+      }
+    }
+    return { text: "[An image attachment could not be inlined for this model. Treat it as present but unread.]" };
+  }
+
+  // OpenAI file → Converse document { format, name, source: { bytes } }. Converse document
+  // names allow only letters/digits/whitespace/hyphens/parens/brackets — sanitize accordingly.
+  // Unknown / non-base64 → text note (mirrors the Anthropic non-PDF fallback).
+  if (block.type === "file" && block.file?.file_data) {
+    const m = block.file.file_data.match(/^data:([^;]+);base64,(.+)$/);
+    if (m) {
+      const fmtMap = {
+        "application/pdf": "pdf",
+        "text/plain": "txt",
+        "text/csv": "csv",
+        "text/html": "html",
+        "text/markdown": "md",
+        "application/msword": "doc",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+        "application/vnd.ms-excel": "xls",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+      };
+      const fmt = fmtMap[m[1].toLowerCase()];
+      if (fmt) {
+        const name = (block.file.filename || "document").replace(/[^a-zA-Z0-9\- ]/g, " ").replace(/\s+/g, " ").trim().slice(0, 200) || "document";
+        return { document: { format: fmt, name, source: { bytes: m[2] } } };
+      }
+    }
+    return { text: `[Attachment "${block.file.filename || "unnamed"}" could not be analyzed inline. Treat it as present but unread.]` };
+  }
+
+  return null; // unknown / unsupported block type
 };
 
 // Freshness bound for ALL the module-level provider-config caches below

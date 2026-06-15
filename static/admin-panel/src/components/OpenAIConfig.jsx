@@ -31,6 +31,7 @@ const PROVIDER_OPTIONS = [
   { value: "anthropic", label: "Anthropic", icon: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M17.3041 3.541h-3.6718l6.696 16.918H24Zm-10.6082 0L0 20.459h3.7442l1.3693-3.5527h7.0052l1.3693 3.5528h3.7442L10.5363 3.5409Zm-.3712 10.2232 2.2914-5.9456 2.2914 5.9456Z"/></svg>' },
   { value: "lmstudio", label: "LM Studio", icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="14" rx="2"/><path d="M8 21h8M12 17v4"/><path d="M7 8h2v3H7zM11 8h2v3h-2zM15 8h2v3h-2z"/></svg>' },
   { value: "atlassian", label: "Atlassian (Forge LLM)", icon: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M7.12 11.084c-.282-.302-.717-.284-.92.072L.123 23.305a.585.585 0 0 0 .523.847h8.46a.563.563 0 0 0 .523-.323c1.825-3.772.719-9.508-2.51-12.745zM11.434.323c-3.022 4.785-2.822 10.085-.831 14.066l4.079 8.157a.585.585 0 0 0 .523.323h8.46a.585.585 0 0 0 .523-.847S12.81 1.255 12.524.685c-.256-.51-.865-.518-1.09-.362z"/></svg>' },
+  { value: "bedrock", label: "AWS Bedrock", icon: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M19.35 10.04A7.49 7.49 0 0 0 12 4C9.11 4 6.6 5.64 5.35 8.04A5.994 5.994 0 0 0 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5z"/></svg>' },
 ];
 
 const PROVIDER_HELP = {
@@ -49,7 +50,29 @@ const PROVIDER_HELP = {
   // Forge LLM is Atlassian-hosted: no API key, no endpoint. Inference runs inside
   // the Atlassian platform (data never leaves it) and is billed to the app vendor.
   atlassian: { keyPlaceholder: "", keyLabel: "API Key", endpointNeeded: false, noKey: true },
+  // AWS Bedrock: the API key is a plain bearer token (no SigV4). No endpoint URL —
+  // the region (picked below) determines the Converse host. regionNeeded shows the picker.
+  bedrock: { keyPlaceholder: "Bedrock API key (bearer token)", keyLabel: "Bedrock API Key", endpointNeeded: false, regionNeeded: true },
 };
+
+// AWS Bedrock regions. Bedrock endpoints are region-specific and model availability
+// varies by region. eu-west-2 (London) is the test account's region; it is in the EU
+// cross-region inference group (Anthropic models use eu.* inference-profile ids there).
+const BEDROCK_REGIONS = [
+  { value: "us-east-1", label: "us-east-1 · N. Virginia" },
+  { value: "us-east-2", label: "us-east-2 · Ohio" },
+  { value: "us-west-2", label: "us-west-2 · Oregon" },
+  { value: "eu-west-1", label: "eu-west-1 · Ireland" },
+  { value: "eu-west-2", label: "eu-west-2 · London" },
+  { value: "eu-west-3", label: "eu-west-3 · Paris" },
+  { value: "eu-central-1", label: "eu-central-1 · Frankfurt" },
+  { value: "eu-north-1", label: "eu-north-1 · Stockholm" },
+  { value: "ap-northeast-1", label: "ap-northeast-1 · Tokyo" },
+  { value: "ap-southeast-1", label: "ap-southeast-1 · Singapore" },
+  { value: "ap-southeast-2", label: "ap-southeast-2 · Sydney" },
+  { value: "ap-south-1", label: "ap-south-1 · Mumbai" },
+  { value: "ca-central-1", label: "ca-central-1 · Canada" },
+];
 
 export default function OpenAIConfig({ invoke }) {
   const [provider, setProvider] = useState("openai");
@@ -65,8 +88,15 @@ export default function OpenAIConfig({ invoke }) {
   const [endpointInput, setEndpointInput] = useState("");
   const [models, setModels] = useState([]);
   const [modelDetails, setModelDetails] = useState([]); // LM Studio enriched metadata
+  const [listUnavailable, setListUnavailable] = useState(false); // Bedrock: live list returned nothing
   const [currentModel, setCurrentModel] = useState(null);
   const [selectedModel, setSelectedModel] = useState("");
+  // AWS Bedrock: region rides the base URL; ack is the Anthropic use-case gate; the
+  // free-text field lets the admin paste any model / inference-profile id directly.
+  const [bedrockRegion, setBedrockRegion] = useState("eu-west-2");
+  const [bedrockAck, setBedrockAck] = useState(false);
+  const [savingAck, setSavingAck] = useState(false);
+  const [customModelInput, setCustomModelInput] = useState("");
   const [factoryModel, setFactoryModel] = useState("");
   const [loading, setLoading] = useState(true);
   // Mount-load failure: render an explicit error + Retry instead of pretending
@@ -128,6 +158,7 @@ export default function OpenAIConfig({ invoke }) {
   const pHelp = PROVIDER_HELP[provider] || PROVIDER_HELP.openai;
   const isLmStudio = provider === "lmstudio";
   const isAtlassian = provider === "atlassian";
+  const isBedrock = provider === "bedrock";
 
   // For LM Studio, find metadata for the currently-selected model so we can show
   // "Loaded" / "Cold" badge + enable/disable the Load button.
@@ -184,6 +215,13 @@ export default function OpenAIConfig({ invoke }) {
         if (p === "lmstudio" && providerResult.baseUrl) {
           runLmStudioPing({ baseUrlOverride: providerResult.baseUrl, silent: true });
         }
+        // Bedrock: recover the region from the saved base URL, and the Anthropic
+        // use-case acknowledgment flag (gates the model picker).
+        setBedrockAck(!!providerResult.bedrockAck);
+        if (p === "bedrock") {
+          const m = (providerResult.baseUrl || "").match(/bedrock-runtime\.([a-z0-9-]+)\.amazonaws\.com/i);
+          if (m) setBedrockRegion(m[1].toLowerCase());
+        }
       }
       if (keyResult.success) {
         setHasKey(keyResult.hasKey);
@@ -195,6 +233,7 @@ export default function OpenAIConfig({ invoke }) {
       if (modelsResult.success) {
         setModels(modelsResult.models || []);
         setModelDetails(modelsResult.modelDetails || []);
+        setListUnavailable(!!modelsResult.listUnavailable);
         if (!modelsResult.isByok) {
           setFactoryModel(modelsResult.currentModel || "");
         }
@@ -505,6 +544,10 @@ export default function OpenAIConfig({ invoke }) {
       if ((provider === "azure" || provider === "lmstudio") && endpointInput.trim()) {
         payload.baseUrl = endpointInput.trim();
       }
+      // Bedrock: the region (not a URL) determines the Converse host; backend builds the URL.
+      if (provider === "bedrock") {
+        payload.region = bedrockRegion;
+      }
       const result = await invoke("saveProvider", payload);
       if (result.success) {
         setSavedProvider(provider);
@@ -739,6 +782,89 @@ export default function OpenAIConfig({ invoke }) {
       if (result.success) {
         setCurrentModel(selectedModel);
         setSuccess("Model saved: " + selectedModel);
+        showToast("Model saved");
+      } else {
+        setError(result.error || "Failed to save model");
+      }
+    } catch (e) {
+      setError("Failed to save model: " + e.message);
+    }
+    setSavingModel(false);
+  };
+
+  // Bedrock: re-save the provider with the chosen region (constructs the Converse host
+  // server-side). Used by the region picker's Save button when already on Bedrock.
+  const handleSaveBedrockRegion = async () => {
+    setSavingProvider(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      const result = await invoke("saveProvider", { provider: "bedrock", region: bedrockRegion });
+      if (result.success) {
+        beginRefresh();
+        try {
+          await new Promise((r) => setTimeout(r, 500));
+          await loadStatus({ asRefresh: true });
+        } finally {
+          endRefresh();
+        }
+        setSuccess(`Bedrock region set to ${bedrockRegion}`);
+        showToast("Bedrock region saved");
+      } else {
+        setError(result.error || "Failed to save region");
+      }
+    } catch (e) {
+      setError("Failed to save region: " + e.message);
+    }
+    setSavingProvider(false);
+  };
+
+  // Bedrock: persist the Anthropic use-case acknowledgment, then reload so the model
+  // picker (gated on the ack) appears / hides and the live list is fetched.
+  const handleSaveBedrockAck = async (checked) => {
+    setSavingAck(true);
+    setBedrockAck(checked); // optimistic
+    try {
+      const result = await invoke("setBedrockAck", { acknowledged: checked });
+      if (result.success) {
+        // Settle delay before re-fetch: loadStatus unconditionally re-reads bedrockAck
+        // from KVS, and Forge KVS isn't read-after-write consistent — without the pause a
+        // stale `false` would revert the optimistic check and re-hide the model picker.
+        // Mirrors handleSaveProvider / handleSaveBedrockRegion.
+        beginRefresh();
+        try {
+          await new Promise((r) => setTimeout(r, 500));
+          await loadStatus({ asRefresh: true });
+        } finally {
+          endRefresh();
+        }
+      } else {
+        setBedrockAck(!checked); // revert
+        setError(result.error || "Failed to save acknowledgment");
+      }
+    } catch (e) {
+      setBedrockAck(!checked);
+      setError("Failed to save acknowledgment: " + e.message);
+    }
+    setSavingAck(false);
+  };
+
+  // Bedrock (and any provider): save a free-text model / inference-profile id the admin
+  // pasted, instead of picking from the dropdown. Many Bedrock models need a profile id
+  // (eu./us.) that the live list may not surface, so manual entry is always available.
+  const handleSaveCustomModel = async () => {
+    const model = customModelInput.trim();
+    if (!model) return;
+    setSavingModel(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      const result = await invoke("saveOpenAIModel", { model });
+      if (result.success) {
+        setCurrentModel(model);
+        setSelectedModel(model);
+        setCustomModelInput("");
+        setSuccess("Model saved: " + model);
         showToast("Model saved");
       } else {
         setError(result.error || "Failed to save model");
@@ -1000,6 +1126,44 @@ export default function OpenAIConfig({ invoke }) {
             </div>
           )}
 
+          {/* AWS Bedrock region — shown whenever Bedrock is selected so the region can be
+              picked BEFORE switching (the backend needs it to build the Converse host). */}
+          {isBedrock && (
+            <div className="anim-rise" style={{ marginBottom: "16px" }}>
+              <label style={{ display: "flex", alignItems: "center", fontSize: "12px", fontWeight: "600", color: "var(--text-secondary)", marginBottom: "6px" }}>
+                AWS Region
+                <Tooltip text={
+                  "AWS Bedrock endpoints are region-specific, and model availability varies by region.\n\n" +
+                  "1. Pick the region where your Bedrock API key and model access are set up.\n" +
+                  "2. In that region's AWS console → Bedrock → Model access, request access to the models you want.\n\n" +
+                  "Note: in EU regions (e.g. eu-west-2 London), Anthropic Claude models are invoked via 'eu.' cross-region inference-profile ids; US regions use 'us.'. The model picker below lists the ids your account can use."
+                } />
+              </label>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <div style={{ maxWidth: "280px", flex: "0 0 280px" }}>
+                  <CustomSelect
+                    value={bedrockRegion}
+                    onChange={setBedrockRegion}
+                    options={BEDROCK_REGIONS}
+                    searchable
+                    searchPlaceholder="Search regions..."
+                    disabled={savingProvider}
+                  />
+                </div>
+                {/* Already on Bedrock → re-save the region. Before switching, the
+                    "Switch Provider" button carries the region instead. */}
+                {provider === savedProvider && (
+                  <button className={"btn-small btn-edit" + (savingProvider ? " is-busy" : "")} onClick={handleSaveBedrockRegion} disabled={savingProvider}>
+                    Save Region
+                  </button>
+                )}
+              </div>
+              <p style={{ margin: "4px 0 0 0", fontSize: "11px", color: "var(--text-muted)" }}>
+                Authenticated with a Bedrock API key (bearer token) — no AWS access-key signing. Endpoint: <code style={{ fontSize: "11px" }}>bedrock-runtime.{bedrockRegion}.amazonaws.com</code>
+              </p>
+            </div>
+          )}
+
           {/* Key/Model section — only show for the saved (active) provider.
               Keyed on the provider so swapping providers replays the rise-in. */}
           {provider !== savedProvider ? (
@@ -1190,8 +1354,25 @@ export default function OpenAIConfig({ invoke }) {
           </div>
           )}
 
-          {/* Model Selection — only when BYOK */}
-          {isByok && (
+          {/* Bedrock-only: Anthropic use-case acknowledgment. Amazon Bedrock requires a
+              one-per-AWS-account console form before Anthropic models can be invoked; this
+              checkbox is purely a UX gate that reveals the model picker. */}
+          {isBedrock && isByok && (
+            <div className="anim-rise" style={{ marginBottom: "16px", padding: "10px 12px", background: "var(--card-bg)", border: "2px solid var(--primary-color)", boxShadow: "0 4px 12px -4px rgba(37, 99, 235, 0.35)", borderRadius: "6px", fontSize: "12px", color: "var(--text-secondary)" }}>
+              <strong style={{ color: "var(--text-color)" }}>Anthropic models need a one-time account setup.</strong> Amazon Bedrock
+              requires first-time customers to submit use-case details before Anthropic (Claude) models can be invoked — once per
+              AWS account. In the AWS console, open <strong>Bedrock → Model catalog</strong> and click <strong>“Submit use case
+              details”</strong>, then complete the form. Other families (Amazon Nova, Llama, Mistral) don't require this.
+              <label style={{ display: "flex", alignItems: "flex-start", gap: "8px", marginTop: "10px", cursor: "pointer" }}>
+                <input type="checkbox" checked={bedrockAck} disabled={savingAck} onChange={(e) => handleSaveBedrockAck(e.target.checked)} style={{ marginTop: "2px" }} />
+                <span><strong style={{ color: "var(--text-color)" }}>I've submitted Anthropic use-case details in the AWS console</strong> (or I only use non-Anthropic models). Check this to load the model list.</span>
+              </label>
+            </div>
+          )}
+
+          {/* Model Selection — only when BYOK. For Bedrock, additionally gated on the
+              Anthropic use-case acknowledgment above. */}
+          {isByok && (!isBedrock || bedrockAck) && (
             <div>
               <label style={{ display: "block", fontSize: "12px", fontWeight: "600", color: "var(--text-secondary)", marginBottom: "6px" }}>
                 Model
@@ -1200,7 +1381,11 @@ export default function OpenAIConfig({ invoke }) {
                 <p style={{ margin: 0, fontSize: "12px", color: "var(--text-muted)" }}>
                   {isLmStudio
                     ? "No models found. Make sure LM Studio has at least one LLM downloaded, then click Test above to retry."
-                    : "No chat models found. Check your API key and try again."}
+                    : isBedrock
+                      ? (listUnavailable
+                          ? "Couldn't list models from AWS — your API key's IAM policy may not allow listing, or no models are enabled in this region. Enter a model or inference-profile id manually below."
+                          : "No models found in this region. Enter a model or inference-profile id manually below.")
+                      : "No chat models found. Check your API key and try again."}
                 </p>
               ) : (
                 <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
@@ -1248,6 +1433,31 @@ export default function OpenAIConfig({ invoke }) {
                   </button>
                 </div>
               )}
+              {/* Bedrock free-text entry — always available so the admin can paste any
+                  model / inference-profile id the live list didn't surface. */}
+              {isBedrock && (
+                <div style={{ marginTop: models.length === 0 ? "8px" : "10px" }}>
+                  <label style={{ display: "block", fontSize: "11px", fontWeight: 600, color: "var(--text-secondary)", marginBottom: "4px" }}>
+                    Or enter a model / inference-profile id
+                  </label>
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                    <input
+                      type="text"
+                      value={customModelInput}
+                      onChange={(e) => setCustomModelInput(e.target.value)}
+                      placeholder="e.g. eu.anthropic.claude-sonnet-4-6"
+                      style={{ flex: 1, padding: "8px 12px", border: "1px solid var(--border-color)", borderRadius: "4px", background: "var(--input-bg)", color: "var(--text-color)", fontSize: "13px", fontFamily: "SFMono-Regular, Consolas, monospace" }}
+                      onKeyDown={(e) => e.key === "Enter" && handleSaveCustomModel()}
+                    />
+                    <button className={"btn-small btn-edit" + (savingModel ? " is-busy" : "")} onClick={handleSaveCustomModel} disabled={savingModel || !customModelInput.trim()}>
+                      Use this model
+                    </button>
+                  </div>
+                  <p style={{ margin: "4px 0 0 0", fontSize: "11px", color: "var(--text-muted)" }}>
+                    Many Bedrock models require a cross-region inference-profile id (<code style={{ fontSize: "11px" }}>eu.</code> / <code style={{ fontSize: "11px" }}>us.</code> prefix) rather than the bare model id.
+                  </p>
+                </div>
+              )}
               {isLmStudio && selectedModelMeta && (
                 <p style={{ margin: "4px 0 0 0", fontSize: "11px", color: "var(--text-muted)" }}>
                   {selectedModelMeta.state === "loaded"
@@ -1292,7 +1502,7 @@ export default function OpenAIConfig({ invoke }) {
               <p style={{ margin: 0, fontSize: "12px", color: "var(--text-secondary)" }}>
                 {isLmStudio
                   ? <>Extra tools the model can call via your LM Studio's <code style={{ fontSize: "11px" }}>mcp.json</code> (local, runs on your machine). Enable each and follow the setup steps. JQL agentic search is unaffected — it runs on a separate code path.</>
-                  : <><strong>CogniRunner is the middle layer.</strong> Paste each MCP's hosted URL below and CogniRunner connects to it directly and runs the tool calls — your AI provider never sees the URL. Works the same on OpenAI / Azure / OpenRouter / Anthropic / Forge LLM. All three MCPs (<code style={{ fontSize: "11px" }}>context7</code>, <code style={{ fontSize: "11px" }}>web-search</code>, <code style={{ fontSize: "11px" }}>doc-reader</code>) are supported.</>
+                  : <><strong>CogniRunner is the middle layer.</strong> Paste each MCP's hosted URL below and CogniRunner connects to it directly and runs the tool calls — your AI provider never sees the URL. Works the same on OpenAI / Azure / OpenRouter / Anthropic / AWS Bedrock / Forge LLM. All three MCPs (<code style={{ fontSize: "11px" }}>context7</code>, <code style={{ fontSize: "11px" }}>web-search</code>, <code style={{ fontSize: "11px" }}>doc-reader</code>) are supported.</>
                 }
               </p>
             </div>
@@ -1414,7 +1624,7 @@ export default function OpenAIConfig({ invoke }) {
             />
 
             {/* web-search — visible for ALL providers. On every hosted provider
-                (OpenAI / Azure / OpenRouter / Anthropic / Forge LLM) CogniRunner is
+                (OpenAI / Azure / OpenRouter / Anthropic / AWS Bedrock / Forge LLM) CogniRunner is
                 the MCP client and proxies the tool calls; LM Studio loads it from
                 local/remote mcp.json. */}
             <McpCard
@@ -1591,7 +1801,7 @@ npm install && npm run build`}
             />
 
             {/* doc-reader — visible for ALL providers. On every hosted provider
-                (OpenAI / Azure / OpenRouter / Anthropic / Forge LLM) CogniRunner is
+                (OpenAI / Azure / OpenRouter / Anthropic / AWS Bedrock / Forge LLM) CogniRunner is
                 the MCP client and proxies the tool calls; LM Studio loads it from
                 local/remote mcp.json. */}
             <McpCard

@@ -1,6 +1,6 @@
 # CogniRunner AI Provider Integration Guide
 
-> How CogniRunner connects to OpenAI, Azure OpenAI, OpenRouter, and Anthropic. Covers authentication, request/response translation, per-provider key storage, and the unified adapter layer.
+> How CogniRunner connects to OpenAI, Azure OpenAI, OpenRouter, Anthropic, and AWS Bedrock. Covers authentication, request/response translation, per-provider key storage, and the unified adapter layer. (LM Studio and Atlassian Forge LLM are additional providers configured the same way.)
 
 ---
 
@@ -36,6 +36,9 @@ Caller (any resolver/handler)
       │
       ├─ provider === "anthropic"?
       │   └─ callAnthropicChat() → translates request/response
+      │
+      ├─ provider === "bedrock"?
+      │   └─ callBedrockChat() → translates to/from the Converse API
       │
       └─ else (OpenAI, Azure, OpenRouter)
           └─ Direct POST to {baseUrl}/chat/completions
@@ -114,6 +117,36 @@ Without these, requests may be rejected or throttled.
 | `finish_reason: "tool_calls"` | `stop_reason: "tool_use"` |
 | `usage.total_tokens` | Computed: `input_tokens + output_tokens` |
 
+### AWS Bedrock
+
+**Auth:** `Authorization: Bearer <bedrock-api-key>` — the Bedrock API key is a plain bearer token; **no AWS SigV4 signing** is performed (or needed) in the Forge sandbox.
+
+**Endpoint:** `POST {baseUrl}/model/{modelId}/converse` — the unified **Converse API**, which works across all Bedrock models (Claude, Nova, Llama, …). `baseUrl` is `https://bedrock-runtime.<region>.amazonaws.com`, built from the admin-selected region and stored in the per-provider base-URL slot (no separate region key). The model id is URL-encoded into the path.
+
+**Region & inference profiles:** Endpoints are region-specific. Many models cannot be invoked by their bare model id and require a **cross-region inference-profile id** — `eu.anthropic.…` in EU regions (e.g. eu-west-2), `us.anthropic.…` in US regions. The model picker lists profile ids; admins can also free-text any id.
+
+**Anthropic use-case form:** Anthropic-on-Bedrock invocations `403` for first-time customers until a one-per-account *"use case details"* form is submitted in the AWS console (Bedrock → Model catalog). The admin panel surfaces this with an acknowledgment checkbox (`COGNIRUNNER_BEDROCK_ACK`) that gates the model picker — a UX gate only; it does not change auth.
+
+**Required field:** `inferenceConfig.maxTokens: 4096`. **JSON mode:** no native `response_format` — enforced via the system prompt (same as Anthropic).
+
+**Translation layer (`callBedrockChat`) handles:**
+
+| OpenAI Format | Bedrock Converse Format |
+|---|---|
+| `{role: "system", content: "..."}` in messages | Top-level `system: [{text: "..."}]` array |
+| `{role: "user", content: "..."}` | `content: [{text: "..."}]` (always an array of typed blocks) |
+| `{type: "image_url", image_url: {url: "data:image/...;base64,..."}}` | `{image: {format, source: {bytes: "<base64>"}}}` |
+| `{type: "file", file: {file_data: "data:...;base64,..."}}` | `{document: {format, name, source: {bytes: "<base64>"}}}` |
+| `tools: [{type: "function", function: {name, parameters}}]` | `toolConfig.tools: [{toolSpec: {name, description, inputSchema: {json}}}]` |
+| `tool_choice: "required"` | `toolConfig.toolChoice: {any: {}}` (auto/none omitted — not all models accept it) |
+| `{role: "tool", tool_call_id, content}` | `{role: "user", content: [{toolResult: {toolUseId, content, status}}]}` |
+| Response: `choices[0].message.content` | Response: `output.message.content[].text` (concatenated) |
+| Response: `tool_calls[].function.arguments` (string) | Response: `output.message.content[].toolUse.input` (object) |
+| `finish_reason: "tool_calls"` | `stopReason: "tool_use"` |
+| `usage.total_tokens` | `usage.totalTokens` (or `inputTokens + outputTokens`) |
+
+**Egress:** `*.amazonaws.com` — Forge egress wildcards are leftmost-only (no mid-segment `*`) and a single `*` matches nested subdomains, so one entry covers both `bedrock-runtime.<region>` (inference) and `bedrock.<region>` (control-plane model listing) across every region.
+
 ---
 
 ## Per-Provider Key Storage
@@ -130,6 +163,9 @@ COGNIRUNNER_KEY_anthropic   → "sk-ant-..."             (Anthropic key — acti
 COGNIRUNNER_KEY_azure       → "abc123..."              (Azure key — preserved)
 COGNIRUNNER_MODEL_openai    → "gpt-5.4-mini"           (OpenAI model — preserved)
 COGNIRUNNER_MODEL_anthropic → "claude-haiku-4-5-20251001"  (Anthropic model — active)
+COGNIRUNNER_KEY_bedrock     → "bedrock-api-key"        (Bedrock bearer token — preserved)
+COGNIRUNNER_BASEURL_bedrock → "https://bedrock-runtime.eu-west-2.amazonaws.com"  (region carrier)
+COGNIRUNNER_BEDROCK_ACK     → true                     (Anthropic use-case acknowledgment)
 ```
 
 ### Key Retrieval with Migration
@@ -179,6 +215,7 @@ Each provider has a different model listing approach:
 | Azure | `GET /openai/v1/models` | No filter | Shows all deployments |
 | OpenRouter | `GET /api/v1/models` | None | Full catalogue (300+ models) |
 | Anthropic | `GET /v1/models` | `claude-` prefix | All Claude models |
+| Bedrock | `GET /foundation-models` + `/inference-profiles` (control plane `bedrock.<region>`) | none | Merges on-demand model ids + invokable inference-profile ids; fails soft → free-text fallback |
 
 **Max models returned:** 50 for OpenAI/Azure/Anthropic; 1000 for OpenRouter (its catalogue is large and the picker has client-side search).
 
@@ -221,4 +258,4 @@ To add a new OpenAI-compatible provider:
 
 6. Add provider validation in `saveProvider` resolver (if needed)
 
-For **non-OpenAI-compatible providers** (like Anthropic), you'd need to add a translation layer similar to `callAnthropicChat()`.
+For **non-OpenAI-compatible providers** (like Anthropic or AWS Bedrock), you'd need to add a translation layer similar to `callAnthropicChat()` / `callBedrockChat()`. Such providers must ALSO be mirrored in `src/async-handler.js` (the `PROVIDERS` map, `PROVIDER_DEFAULT_MODELS`, and a branch in `callAIChatSimple`) — the async queue consumer reads provider config uncached and has its own simplified chat path, so a provider added only in `index.js` will fail on queued/background tasks.

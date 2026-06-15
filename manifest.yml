@@ -184,6 +184,11 @@ permissions:
         - address: "*.openai.azure.com"
         - address: https://openrouter.ai
         - address: https://api.anthropic.com
+        # AWS Bedrock (BYOK): Converse runtime (inference) at bedrock-runtime.<region>.amazonaws.com
+        # + control plane (model listing) at bedrock.<region>.amazonaws.com. Forge egress wildcards
+        # are leftmost-only (no mid-segment '*'), and a single '*' matches nested subdomains (same as
+        # '*.ts.net' above), so one wildcard covers both Bedrock hosts across every region selected.
+        - address: "*.amazonaws.com"
         # Hosted MCP servers exposed via Tailscale Funnel (LM Studio + the
         # cross-provider bridge). Forge runtime egress follows CSP and only
         # honors the DEFAULT HTTPS port (443) — non-standard ports (8443/10000)
@@ -197,6 +202,11 @@ permissions:
         - address: "*.openai.azure.com"
         - address: https://openrouter.ai
         - address: https://api.anthropic.com
+        # AWS Bedrock (BYOK): Converse runtime (inference) at bedrock-runtime.<region>.amazonaws.com
+        # + control plane (model listing) at bedrock.<region>.amazonaws.com. Forge egress wildcards
+        # are leftmost-only (no mid-segment '*'), and a single '*' matches nested subdomains (same as
+        # '*.ts.net' above), so one wildcard covers both Bedrock hosts across every region selected.
+        - address: "*.amazonaws.com"
         # Hosted MCP servers exposed via Tailscale Funnel (LM Studio + the
         # cross-provider bridge). Forge runtime egress follows CSP and only
         # honors the DEFAULT HTTPS port (443) — non-standard ports (8443/10000)

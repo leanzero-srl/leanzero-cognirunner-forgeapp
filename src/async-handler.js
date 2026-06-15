@@ -86,6 +86,7 @@ const PROVIDER_DEFAULT_MODELS = {
   anthropic: "claude-haiku-4-5-20251001",
   atlassian: "claude-haiku-4-5-20251001",
   lmstudio: "gpt-5.4-mini", // placeholder — LM Studio admins always save a model
+  bedrock: "eu.anthropic.claude-sonnet-4-6", // EU inference-profile id (fallback; admins pick a model)
 };
 
 const getOpenAIModel = async () => {
@@ -111,6 +112,7 @@ const PROVIDERS = {
   anthropic: { baseUrl: "https://api.anthropic.com" },
   lmstudio: { baseUrl: null }, // user-supplied tunnel root (no /v1)
   atlassian: { baseUrl: null }, // Forge LLM — served by @forge/llm, no HTTP base URL
+  bedrock: { baseUrl: null }, // AWS Bedrock — region-derived https://bedrock-runtime.<region>.amazonaws.com
 };
 
 const getProviderConfig = async () => {
@@ -238,6 +240,34 @@ const callAIChatSimple = async ({ apiKey, model, systemPrompt, userMessage, json
     const data = await response.json();
     const text = (data.content || []).filter((b) => b.type === "text").map((b) => b.text).join("");
     const tokens = (data.usage?.input_tokens || 0) + (data.usage?.output_tokens || 0);
+    return { ok: true, content: text, tokens };
+  }
+
+  // AWS Bedrock: unified Converse API, bearer auth, no tools on this simple path.
+  // (Mirror of callBedrockChat's chat translation in src/index.js, minus tools/attachments.)
+  if (provider === "bedrock") {
+    let sys = systemPrompt || "";
+    if (jsonMode) {
+      sys += (sys ? "\n\n" : "") + "Respond with ONLY a valid JSON object. No markdown fences, no surrounding prose.";
+    }
+    const body = {
+      messages: [{ role: "user", content: [{ text: userMessage }] }],
+      inferenceConfig: { maxTokens: 4096 },
+    };
+    if (sys) body.system = [{ text: sys }];
+    // Literal model id in the path — encodeURIComponent breaks ids containing ':' (…-v1:0).
+    const response = await fetch(`${baseUrl}/model/${model}/converse`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) {
+      const errBody = await response.text().catch(() => "");
+      return { ok: false, status: response.status, error: errBody };
+    }
+    const data = await response.json();
+    const text = (data.output?.message?.content || []).filter((b) => typeof b.text === "string").map((b) => b.text).join("");
+    const tokens = (data.usage?.inputTokens || 0) + (data.usage?.outputTokens || 0);
     return { ok: true, content: text, tokens };
   }
 

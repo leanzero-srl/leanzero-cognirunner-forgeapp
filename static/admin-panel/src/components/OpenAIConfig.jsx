@@ -76,7 +76,7 @@ const BEDROCK_REGIONS = [
 
 export default function OpenAIConfig({ invoke }) {
   const [provider, setProvider] = useState("openai");
-  const [savedProvider, setSavedProvider] = useState("openai"); // what's actually saved in KVS
+  const [activeProvider, setActiveProvider] = useState("openai"); // what's actually saved in KVS
   const [baseUrl, setBaseUrl] = useState("");
   const [isByok, setIsByok] = useState(false);
   const [hasKey, setHasKey] = useState(false);
@@ -159,6 +159,10 @@ export default function OpenAIConfig({ invoke }) {
   const isLmStudio = provider === "lmstudio";
   const isAtlassian = provider === "atlassian";
   const isBedrock = provider === "bedrock";
+  // Tracks the provider whose config is currently being loaded, so a fast switch
+  // doesn't let a slow in-flight load() overwrite the newer provider's state.
+  const providerRef = useRef("openai");
+  const providerLabelFor = (p) => PROVIDER_OPTIONS.find((o) => o.value === p)?.label || p;
 
   // For LM Studio, find metadata for the currently-selected model so we can show
   // "Loaded" / "Cold" badge + enable/disable the Load button.
@@ -179,16 +183,73 @@ export default function OpenAIConfig({ invoke }) {
     if (refreshDepth.current === 0) setRefreshing(false);
   };
 
-  // asRefresh: post-save re-fetch — keep current content visible under the
-  // frosted veil instead of the full-card mount skeleton (driven by `loading`).
-  const loadStatus = async ({ asRefresh = false } = {}) => {
+  // Load the per-provider config for the provider being VIEWED. Passing {provider} lets the
+  // admin browse/edit ANY provider's stored config (key status, models, saved model, URL/region)
+  // WITHOUT activating it. Guarded by providerRef so a fast switch isn't clobbered by a slow
+  // in-flight load.
+  const loadProviderConfig = async (target, { asRefresh = false } = {}) => {
     if (!invoke) return;
+    providerRef.current = target;
     if (asRefresh) beginRefresh();
     try {
-      const [keyResult, modelsResult, modelKvs, providerResult, mcpsResult, docProcResult, webSearchResult, context7Result] = await Promise.all([
-        invoke("getOpenAIKey"),
-        invoke("getOpenAIModels"),
-        invoke("getOpenAIModelFromKVS"),
+      const [keyResult, modelsResult, modelKvs] = await Promise.all([
+        invoke("getOpenAIKey", { provider: target }),
+        invoke("getOpenAIModels", { provider: target }),
+        invoke("getOpenAIModelFromKVS", { provider: target }),
+      ]);
+      // A newer switch superseded this load — drop the stale result.
+      if (providerRef.current !== target) return;
+
+      if (keyResult.success) {
+        setHasKey(keyResult.hasKey);
+        setIsByok(keyResult.isByok);
+        // For LM Studio, hasToken reflects whether a Bearer token is actually saved
+        // (separate from isByok which just means "URL is configured").
+        setHasToken(!!keyResult.hasToken);
+        // The viewed provider's OWN base URL → populate the endpoint (azure/lmstudio) and
+        // region (bedrock) fields for whichever provider is being viewed, not just the active.
+        const b = keyResult.baseUrl || "";
+        setBaseUrl(b);
+        setEndpointInput((target === "azure" || target === "lmstudio") ? b : "");
+        if (target === "bedrock") {
+          const m = b.match(/bedrock-runtime\.([a-z0-9-]+)\.amazonaws\.com/i);
+          setBedrockRegion(m ? m[1].toLowerCase() : "eu-west-2");
+        }
+        // LM Studio: silent auto-ping for live status; clear any stale ping otherwise.
+        if (target === "lmstudio" && b) {
+          runLmStudioPing({ baseUrlOverride: b, silent: true });
+        } else {
+          setPingResult(null);
+        }
+      }
+      if (modelsResult.success) {
+        setModels(modelsResult.models || []);
+        setModelDetails(modelsResult.modelDetails || []);
+        setListUnavailable(!!modelsResult.listUnavailable);
+        if (!modelsResult.isByok) setFactoryModel(modelsResult.currentModel || "");
+      }
+      if (modelKvs.success) {
+        setCurrentModel(modelKvs.model);
+        setSelectedModel(modelKvs.model || "");
+        if (!modelKvs.isByok) setFactoryModel(modelKvs.model || "");
+      }
+      setCustomModelInput("");
+    } catch (e) {
+      console.error("Failed to load provider config:", e);
+      if (asRefresh) showToast("Failed to load provider config: " + (e.message || e), "error");
+      else setLoadError(e.message || String(e));
+    } finally {
+      if (asRefresh) endRefresh();
+    }
+  };
+
+  // Mount load: global/active state (active provider, Anthropic ack, MCP/remote configs) PLUS
+  // the active provider's own config. The dropdown then loads other providers on demand via
+  // loadProviderConfig — viewing a provider never changes which one is active.
+  const loadStatus = async () => {
+    if (!invoke) return;
+    try {
+      const [providerResult, mcpsResult, docProcResult, webSearchResult, context7Result] = await Promise.all([
         invoke("getProvider"),
         invoke("getLmStudioMcps").catch(() => ({ success: false })),
         invoke("getDocProcessorRemote").catch(() => ({ success: false })),
@@ -196,59 +257,12 @@ export default function OpenAIConfig({ invoke }) {
         invoke("getContext7Remote").catch(() => ({ success: false })),
       ]);
 
+      let initial = "openai";
       if (providerResult.success) {
-        const p = providerResult.provider || "openai";
-        setProvider(p);
-        setSavedProvider(p);
-        setBaseUrl(providerResult.baseUrl || "");
-        // Both Azure and LM Studio use a user-supplied base URL — show it in the input.
-        setEndpointInput(
-          (providerResult.provider === "azure" || providerResult.provider === "lmstudio")
-            ? (providerResult.baseUrl || "")
-            : ""
-        );
-        // Restore live connection status after a refresh. pingResult is plain
-        // component state, so without this the panel falls back to "URL saved —
-        // not yet tested" on every reload even when the connection was verified
-        // moments ago. Silent ping, not awaited; the backend falls back to the
-        // saved token when no key is passed.
-        if (p === "lmstudio" && providerResult.baseUrl) {
-          runLmStudioPing({ baseUrlOverride: providerResult.baseUrl, silent: true });
-        }
-        // Bedrock: recover the region from the saved base URL, and the Anthropic
-        // use-case acknowledgment flag (gates the model picker).
+        initial = providerResult.provider || "openai";
+        setActiveProvider(initial);
+        setProvider(initial);
         setBedrockAck(!!providerResult.bedrockAck);
-        if (p === "bedrock") {
-          const m = (providerResult.baseUrl || "").match(/bedrock-runtime\.([a-z0-9-]+)\.amazonaws\.com/i);
-          if (m) setBedrockRegion(m[1].toLowerCase());
-        }
-      }
-      if (keyResult.success) {
-        setHasKey(keyResult.hasKey);
-        setIsByok(keyResult.isByok);
-        // For LM Studio, hasToken reflects whether a Bearer token is actually saved
-        // (separate from isByok which just means "URL is configured").
-        setHasToken(!!keyResult.hasToken);
-      }
-      if (modelsResult.success) {
-        setModels(modelsResult.models || []);
-        setModelDetails(modelsResult.modelDetails || []);
-        setListUnavailable(!!modelsResult.listUnavailable);
-        if (!modelsResult.isByok) {
-          setFactoryModel(modelsResult.currentModel || "");
-        }
-      }
-      if (modelKvs.success) {
-        setCurrentModel(modelKvs.model);
-        // Always reset selectedModel to the saved value (or empty) — without an else
-        // branch, a stale value from a previous provider would persist after switching.
-        setSelectedModel(modelKvs.model || "");
-        if (modelKvs.model) {
-          /* keep parity with the unconditional set above */
-        }
-        if (!modelKvs.isByok) {
-          setFactoryModel(modelKvs.model || "");
-        }
       }
       if (mcpsResult && mcpsResult.success) {
         setMcpEnabled(mcpsResult.enabled || { context7: false, webSearch: false, docReader: false, docWriter: false });
@@ -267,18 +281,12 @@ export default function OpenAIConfig({ invoke }) {
         setContext7Url(context7Result.url || "");
         setContext7HasApiKey(!!context7Result.hasApiKey);
       }
+      // Show the active provider's config first.
+      await loadProviderConfig(initial);
     } catch (e) {
       console.error("Failed to load AI config status:", e);
-      if (asRefresh) {
-        // Refresh failure: the previously-loaded data on screen is still
-        // valid — surface the problem instead of failing silently.
-        showToast("Failed to refresh settings: " + (e.message || e), "error");
-      } else {
-        // Mount-load failure: show an explicit error + Retry, never the defaults.
-        setLoadError(e.message || String(e));
-      }
+      setLoadError(e.message || String(e));
     } finally {
-      if (asRefresh) endRefresh();
       setLoading(false);
     }
   };
@@ -533,63 +541,70 @@ export default function OpenAIConfig({ invoke }) {
     loadStatus();
   }, []);
 
-  const handleSaveProvider = async () => {
+  // Switch which provider's config is being VIEWED — does NOT activate it. Loads that
+  // provider's stored config so the admin can inspect/edit any provider without changing
+  // which one runs AI.
+  const handleSelectProvider = (p) => {
+    if (p === provider) return;
+    setProvider(p);
+    providerRef.current = p;
+    setError(null);
+    setSuccess(null);
+    setPingResult(null);
+    setKeyInput("");
+    setCustomModelInput("");
+    loadProviderConfig(p, { asRefresh: true });
+  };
+
+  // Make the VIEWED provider the ACTIVE one (the provider inference uses). Persists any
+  // endpoint/region currently entered, then activates. This is the ONLY path that changes
+  // the active provider — editing a provider's key/model/URL leaves the active one untouched.
+  const handleSetActive = async () => {
     setSavingProvider(true);
     setError(null);
     setSuccess(null);
     setPingResult(null);
     try {
-      const payload = { provider };
-      // Both Azure and LM Studio require a user-supplied base URL.
+      const payload = { provider }; // activate defaults to true
+      // Azure / LM Studio carry a user-supplied base URL; Bedrock a region.
       if ((provider === "azure" || provider === "lmstudio") && endpointInput.trim()) {
         payload.baseUrl = endpointInput.trim();
       }
-      // Bedrock: the region (not a URL) determines the Converse host; backend builds the URL.
-      if (provider === "bedrock") {
-        payload.region = bedrockRegion;
-      }
+      if (provider === "bedrock") payload.region = bedrockRegion;
       const result = await invoke("saveProvider", payload);
       if (result.success) {
-        setSavedProvider(provider);
-        setKeyInput("");
-        // Hold the refresh veil for the WHOLE switch chain (KVS settle delay,
-        // status re-fetch, LM Studio auto-ping) so stale pre-switch data never
-        // reads as live while the chain runs.
+        setActiveProvider(provider);
+        const label = providerLabelFor(provider);
+        // Hold the veil over the settle delay + re-fetch so stale data never reads as live.
         beginRefresh();
         try {
           await new Promise((r) => setTimeout(r, 500));
-          await loadStatus({ asRefresh: true });
-          // For LM Studio: auto-ping right after switch so the user sees actual
-          // connection state (including 401 → "token required") instead of a
-          // misleading "Switched successfully" message followed by a broken UI.
+          // asRefresh so a transient reload failure shows a toast over the (still-valid) panel
+          // instead of nuking the whole card to the fatal loadError screen — activation succeeded.
+          await loadProviderConfig(provider, { asRefresh: true });
           if (provider === "lmstudio") {
             const ping = await runLmStudioPing({ silent: true });
             if (ping?.success && ping.ok && ping.authOk) {
-              setSuccess(`Switched to LM Studio — connected, ${ping.modelCount || 0} model(s) found.`);
-              showToast("Provider switched to LM Studio");
-            } else if (ping?.tokenRequired) {
-              setError(ping.error);
-            } else if (ping?.tokenInvalid) {
+              setSuccess(`${label} is now active — connected, ${ping.modelCount || 0} model(s) found.`);
+            } else if (ping?.tokenRequired || ping?.tokenInvalid) {
               setError(ping.error);
             } else if (ping && !ping.success) {
-              setError(ping.error || "Switched to LM Studio but connection test failed.");
+              setError(ping.error || `${label} is now active, but the connection test failed.`);
             } else {
-              setSuccess("Switched to LM Studio.");
-              showToast("Provider switched to LM Studio");
+              setSuccess(`${label} is now the active provider.`);
             }
           } else {
-            const label = PROVIDER_OPTIONS.find((p) => p.value === provider)?.label || provider;
-            setSuccess(`Switched to ${label}`);
-            showToast(`Provider switched to ${label}`);
+            setSuccess(`${label} is now the active provider.`);
           }
         } finally {
           endRefresh();
         }
+        showToast(`${label} set as active`);
       } else {
-        setError(result.error || "Failed to save provider");
+        setError(result.error || "Failed to set active provider");
       }
     } catch (e) {
-      setError("Failed to save provider: " + e.message);
+      setError("Failed to set active provider: " + e.message);
     }
     setSavingProvider(false);
   };
@@ -601,9 +616,11 @@ export default function OpenAIConfig({ invoke }) {
     setSuccess(null);
     setPingResult(null);
     try {
-      const result = await invoke("saveProvider", { provider, baseUrl: endpointInput.trim() });
+      // activate:false — saving the endpoint edits this provider's config WITHOUT making it
+      // the active provider (use "Set as active" for that).
+      const result = await invoke("saveProvider", { provider, baseUrl: endpointInput.trim(), activate: false });
       if (result.success) {
-        await loadStatus({ asRefresh: true });
+        await loadProviderConfig(provider, { asRefresh: true });
         // For LM Studio, immediately verify connectivity so the user knows whether
         // their token (or lack of one) is accepted. The status block + token field
         // both react to the ping result.
@@ -691,7 +708,7 @@ export default function OpenAIConfig({ invoke }) {
       if (result.success) {
         setSuccess(result.message || `Loaded "${selectedModel}"`);
         // Refresh model state so the badge updates.
-        await loadStatus({ asRefresh: true });
+        await loadProviderConfig(provider, { asRefresh: true });
       } else {
         setError(result.error || "Failed to load model");
       }
@@ -708,15 +725,16 @@ export default function OpenAIConfig({ invoke }) {
     setSuccess(null);
     try {
       const tokenJustSaved = keyInput.trim();
-      const result = await invoke("saveOpenAIKey", { key: tokenJustSaved });
+      // Save to the VIEWED provider's slot (not necessarily the active one).
+      const result = await invoke("saveOpenAIKey", { key: tokenJustSaved, provider });
       if (result.success) {
         setKeyInput("");
-        // Brief delay to let KVS propagate, then reload status + models —
+        // Brief delay to let KVS propagate, then reload this provider's config —
         // veiled so the stale pre-save status never reads as live.
         beginRefresh();
         try {
           await new Promise((r) => setTimeout(r, 500));
-          await loadStatus({ asRefresh: true });
+          await loadProviderConfig(provider, { asRefresh: true });
         } finally {
           endRefresh();
         }
@@ -755,14 +773,14 @@ export default function OpenAIConfig({ invoke }) {
     setError(null);
     setSuccess(null);
     try {
-      const result = await invoke("removeOpenAIKey");
+      const result = await invoke("removeOpenAIKey", { provider });
       if (result.success) {
         setSuccess("Key removed");
         showToast("Key removed — enter your own key to use this provider");
         setModels([]);
         setCurrentModel(null);
         setSelectedModel("");
-        await loadStatus({ asRefresh: true });
+        await loadProviderConfig(provider, { asRefresh: true });
       } else {
         setError(result.error || "Failed to remove key");
       }
@@ -778,7 +796,7 @@ export default function OpenAIConfig({ invoke }) {
     setError(null);
     setSuccess(null);
     try {
-      const result = await invoke("saveOpenAIModel", { model: selectedModel });
+      const result = await invoke("saveOpenAIModel", { model: selectedModel, provider });
       if (result.success) {
         setCurrentModel(selectedModel);
         setSuccess("Model saved: " + selectedModel);
@@ -792,19 +810,19 @@ export default function OpenAIConfig({ invoke }) {
     setSavingModel(false);
   };
 
-  // Bedrock: re-save the provider with the chosen region (constructs the Converse host
-  // server-side). Used by the region picker's Save button when already on Bedrock.
+  // Bedrock: save the chosen region (the backend constructs the Converse host from it).
+  // activate:false — editing the region does NOT activate Bedrock.
   const handleSaveBedrockRegion = async () => {
     setSavingProvider(true);
     setError(null);
     setSuccess(null);
     try {
-      const result = await invoke("saveProvider", { provider: "bedrock", region: bedrockRegion });
+      const result = await invoke("saveProvider", { provider: "bedrock", region: bedrockRegion, activate: false });
       if (result.success) {
         beginRefresh();
         try {
           await new Promise((r) => setTimeout(r, 500));
-          await loadStatus({ asRefresh: true });
+          await loadProviderConfig("bedrock", { asRefresh: true });
         } finally {
           endRefresh();
         }
@@ -819,26 +837,14 @@ export default function OpenAIConfig({ invoke }) {
     setSavingProvider(false);
   };
 
-  // Bedrock: persist the Anthropic use-case acknowledgment, then reload so the model
-  // picker (gated on the ack) appears / hides and the live list is fetched.
+  // Bedrock: persist the Anthropic use-case acknowledgment. Purely informational — it no
+  // longer gates anything, so no reload is needed (and the optimistic value is what we keep).
   const handleSaveBedrockAck = async (checked) => {
     setSavingAck(true);
     setBedrockAck(checked); // optimistic
     try {
       const result = await invoke("setBedrockAck", { acknowledged: checked });
-      if (result.success) {
-        // Settle delay before re-fetch: loadStatus unconditionally re-reads bedrockAck
-        // from KVS, and Forge KVS isn't read-after-write consistent — without the pause a
-        // stale `false` would revert the optimistic check and re-hide the model picker.
-        // Mirrors handleSaveProvider / handleSaveBedrockRegion.
-        beginRefresh();
-        try {
-          await new Promise((r) => setTimeout(r, 500));
-          await loadStatus({ asRefresh: true });
-        } finally {
-          endRefresh();
-        }
-      } else {
+      if (!result.success) {
         setBedrockAck(!checked); // revert
         setError(result.error || "Failed to save acknowledgment");
       }
@@ -859,7 +865,7 @@ export default function OpenAIConfig({ invoke }) {
     setError(null);
     setSuccess(null);
     try {
-      const result = await invoke("saveOpenAIModel", { model });
+      const result = await invoke("saveOpenAIModel", { model, provider });
       if (result.success) {
         setCurrentModel(model);
         setSelectedModel(model);
@@ -969,32 +975,35 @@ export default function OpenAIConfig({ invoke }) {
               <div style={{ maxWidth: "280px", flex: "0 0 280px" }}>
                 <CustomSelect
                   value={provider}
-                  onChange={setProvider}
-                  options={PROVIDER_OPTIONS}
+                  onChange={handleSelectProvider}
+                  // Mark the active provider right in the dropdown so it's always clear
+                  // which one runs AI, even while browsing another's config.
+                  options={PROVIDER_OPTIONS.map((o) => o.value === activeProvider ? { ...o, label: `${o.label}  •  Active` } : o)}
                   disabled={savingProvider}
                 />
               </div>
-              {provider !== savedProvider && (
+              {provider !== activeProvider && (
                 <button
                   className={"btn-small btn-edit" + (savingProvider ? " is-busy" : "")}
-                  onClick={handleSaveProvider}
-                  // For LM Studio, the backend requires a baseUrl on switch — disable
-                  // the button until the user enters one so they don't get the
-                  // "LM Studio requires a public base URL" error after clicking.
+                  onClick={handleSetActive}
+                  // LM Studio needs a baseUrl before it can be activated — disable until set.
                   disabled={savingProvider || (provider === "lmstudio" && !endpointInput.trim())}
                   title={provider === "lmstudio" && !endpointInput.trim()
                     ? "Enter your Tailscale Funnel URL below first"
-                    : undefined}
+                    : `Make ${providerLabelFor(provider)} the provider used for AI`}
                 >
-                  Switch Provider
+                  Set as active
                 </button>
               )}
             </div>
-            {provider !== savedProvider && (
-              <p style={{ margin: "4px 0 0 0", fontSize: "11px", color: "var(--primary-color)" }}>
-                Your keys are saved per provider. Switching back will restore your previous key.
-              </p>
-            )}
+            {/* Always show which provider is active (and, when browsing, which you're viewing). */}
+            <p style={{ margin: "6px 0 0 0", fontSize: "11px", color: "var(--text-secondary)", display: "flex", alignItems: "center", gap: "6px", flexWrap: "wrap" }}>
+              <span style={{ display: "inline-block", width: "8px", height: "8px", borderRadius: "50%", background: "var(--success-color)" }} />
+              Active: <strong style={{ color: "var(--text-color)" }}>{providerLabelFor(activeProvider)}</strong>
+              {provider !== activeProvider && (
+                <span style={{ color: "var(--text-muted)" }}>· Viewing <strong style={{ color: "var(--text-color)" }}>{providerLabelFor(provider)}</strong> (not active — its config is shown below; “Set as active” to use it)</span>
+              )}
+            </p>
             <p style={{ margin: "4px 0 0 0", fontSize: "11px", color: "var(--text-muted)" }}>
               All providers support chat completions and tool calling. Vision (image attachments) requires OpenAI, Azure, OpenRouter, Anthropic, or a vision-capable LM Studio model — Atlassian Forge LLM is text-only for now.
             </p>
@@ -1150,13 +1159,10 @@ export default function OpenAIConfig({ invoke }) {
                     disabled={savingProvider}
                   />
                 </div>
-                {/* Already on Bedrock → re-save the region. Before switching, the
-                    "Switch Provider" button carries the region instead. */}
-                {provider === savedProvider && (
-                  <button className={"btn-small btn-edit" + (savingProvider ? " is-busy" : "")} onClick={handleSaveBedrockRegion} disabled={savingProvider}>
-                    Save Region
-                  </button>
-                )}
+                {/* Save the region for the viewed Bedrock config (does not activate it). */}
+                <button className={"btn-small btn-edit" + (savingProvider ? " is-busy" : "")} onClick={handleSaveBedrockRegion} disabled={savingProvider}>
+                  Save Region
+                </button>
               </div>
               <p style={{ margin: "4px 0 0 0", fontSize: "11px", color: "var(--text-muted)" }}>
                 Authenticated with a Bedrock API key (bearer token) — no AWS access-key signing. Endpoint: <code style={{ fontSize: "11px" }}>bedrock-runtime.{bedrockRegion}.amazonaws.com</code>
@@ -1164,13 +1170,10 @@ export default function OpenAIConfig({ invoke }) {
             </div>
           )}
 
-          {/* Key/Model section — only show for the saved (active) provider.
-              Keyed on the provider so swapping providers replays the rise-in. */}
-          {provider !== savedProvider ? (
-            <div className="anim-rise" style={{ padding: "12px 0", textAlign: "center", color: "var(--text-muted)", fontSize: "13px" }}>
-              Click <strong>Switch Provider</strong> to activate {PROVIDER_OPTIONS.find((p) => p.value === provider)?.label || provider} and manage its API key.
-            </div>
-          ) : (<div className="anim-rise" key={provider}>
+          {/* Key/Model section — shown for whichever provider is being VIEWED, so the admin can
+              inspect/edit any provider's config without activating it. Keyed on the provider so
+              swapping replays the rise-in. */}
+          <div className="anim-rise" key={provider}>
 
           {/* Status — for LM Studio, reflect ACTUAL ping result instead of just
               "URL is set". A green dot only when we've confirmed the server responds
@@ -1482,7 +1485,7 @@ export default function OpenAIConfig({ invoke }) {
               )}
             </div>
           )}
-          </div>)}
+          </div>
         </div>
       </div>
 
@@ -1493,7 +1496,7 @@ export default function OpenAIConfig({ invoke }) {
           MCP is configured like an mcp.json entry (a URL + optional key). LM Studio is
           the local-only alternative (the MCP runs on the user's machine via stdio). All
           three MCPs (context7 / web-search / doc-reader) work this way on every provider. */}
-      {provider === savedProvider && (
+      {provider === activeProvider && (
         <div className="card" style={{ marginTop: "16px" }}>
           <div style={{ padding: "16px" }}>
             <div style={{ marginBottom: "12px" }}>

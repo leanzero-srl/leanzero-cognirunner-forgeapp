@@ -2475,7 +2475,7 @@ resolver.define("saveOpenAIKey", async ({ payload, context }) => {
     if (!key || typeof key !== "string" || key.trim().length < 8) {
       return { success: false, error: "Invalid API key format" };
     }
-    const provider = (await storage.get("COGNIRUNNER_AI_PROVIDER")) || "openai";
+    const provider = await resolveTargetProvider(payload);
     if (provider === "atlassian") {
       return { success: false, error: "Atlassian Forge LLM does not use an API key — inference runs on the Atlassian platform." };
     }
@@ -2483,7 +2483,9 @@ resolver.define("saveOpenAIKey", async ({ payload, context }) => {
       return { success: false, error: "OpenAI API keys must start with sk-" };
     }
     await storage.set(providerKeySlot(provider), key);
-    _cachedKey = key; _cachedKeyChecked = true; _cachedKeyAt = Date.now();
+    // Only bust the inference key cache when we changed the ACTIVE provider's key —
+    // saving a key for a non-active provider must not corrupt the cached active key.
+    if (provider === (await activeProviderId())) { _cachedKey = null; _cachedKeyChecked = false; }
     return { success: true };
   } catch (error) {
     console.error("Failed to save API key:", error);
@@ -2494,34 +2496,25 @@ resolver.define("saveOpenAIKey", async ({ payload, context }) => {
 /**
  * Get BYOK status. Never returns the actual key to the frontend.
  */
-resolver.define("getOpenAIKey", async () => {
+resolver.define("getOpenAIKey", async ({ payload }) => {
   try {
-    const provider = (await storage.get("COGNIRUNNER_AI_PROVIDER")) || "openai";
+    const provider = await resolveTargetProvider(payload);
     const byokKey = await storage.get(providerKeySlot(provider));
+    // The viewed provider's own base URL (lmstudio/azure/bedrock carry a custom one) so the
+    // admin panel can populate the endpoint/region fields for ANY provider, not just the active.
+    const baseUrl = await providerBaseUrlFor(provider);
     if (provider === "atlassian") {
       // Forge LLM: always "configured" — no key exists. isByok unlocks the model picker.
-      return { success: true, hasKey: true, isByok: true, noKeyNeeded: true };
+      return { success: true, provider, baseUrl, hasKey: true, isByok: true, noKeyNeeded: true };
     }
     if (provider === "lmstudio") {
       // LM Studio: "configured" once a baseUrl is set; auth is optional.
-      // Always BYOK semantics (never falls back to factory env var).
       // hasToken vs isByok: isByok gates the model picker (true once URL is set);
       // hasToken gates the token input vs masked-display (true only when a token is saved).
-      const lmBaseUrl = await storage.get("COGNIRUNNER_AI_BASE_URL");
-      return {
-        success: true,
-        hasKey: !!lmBaseUrl,
-        isByok: !!lmBaseUrl,
-        hasToken: !!byokKey,
-      };
+      return { success: true, provider, baseUrl, hasKey: !!baseUrl, isByok: !!baseUrl, hasToken: !!byokKey };
     }
-    // BYOK only — no factory/out-of-the-box key, so "configured" means the user
-    // has supplied their own key for this provider.
-    return {
-      success: true,
-      hasKey: !!byokKey,
-      isByok: !!byokKey,
-    };
+    // BYOK only — "configured" means the user supplied their own key for this provider.
+    return { success: true, provider, baseUrl, hasKey: !!byokKey, isByok: !!byokKey };
   } catch (error) {
     console.error("Failed to check API key:", error);
     return { success: false, hasKey: false, isByok: false };
@@ -2532,15 +2525,16 @@ resolver.define("getOpenAIKey", async () => {
  * Remove the BYOK key for the active provider (clears it — there is no factory
  * key to fall back to). Also clears the saved model selection.
  */
-resolver.define("removeOpenAIKey", async ({ context }) => {
+resolver.define("removeOpenAIKey", async ({ payload, context }) => {
   if (!(await requireAdmin(context.accountId))) {
     return { success: false, error: "Admin access required" };
   }
   try {
-    const provider = (await storage.get("COGNIRUNNER_AI_PROVIDER")) || "openai";
+    const provider = await resolveTargetProvider(payload);
     await storage.delete(providerKeySlot(provider));
     await storage.delete(providerModelSlot(provider));
-    _cachedKey = null; _cachedKeyChecked = false; _cachedModel = null;
+    // Bust the inference caches only if we cleared the ACTIVE provider's key/model.
+    if (provider === (await activeProviderId())) { _cachedKey = null; _cachedKeyChecked = false; _cachedModel = null; }
     return { success: true };
   } catch (error) {
     console.error("Failed to remove API key:", error);
@@ -2824,25 +2818,31 @@ resolver.define("saveProvider", async ({ payload, context }) => {
       normalizedBaseUrl = trimmed.replace(/\/+$/, "").replace(/\/v1$/i, "");
     }
 
-    await storage.set("COGNIRUNNER_AI_PROVIDER", provider);
-
-    if (normalizedBaseUrl) {
-      const clean = String(normalizedBaseUrl).replace(/\/+$/, "");
-      await storage.set("COGNIRUNNER_AI_BASE_URL", clean);
-      // Remember it per-provider so a later switch restores it without re-prompting.
-      await storage.set(providerBaseUrlSlot(provider), clean);
-    } else if (PROVIDERS[provider].baseUrl) {
-      await storage.set("COGNIRUNNER_AI_BASE_URL", PROVIDERS[provider].baseUrl);
-    } else {
-      // Provider has no default and no override — clear any stale URL so we don't leak Azure/etc.
-      await storage.delete("COGNIRUNNER_AI_BASE_URL");
+    // Persist the per-provider base URL slot regardless of activation, so the admin panel
+    // can save a (non-active) provider's URL/region while just editing it (activate:false).
+    const cleanBaseUrl = normalizedBaseUrl ? String(normalizedBaseUrl).replace(/\/+$/, "") : null;
+    if (cleanBaseUrl) {
+      await storage.set(providerBaseUrlSlot(provider), cleanBaseUrl);
     }
 
-    // Invalidate all caches — new provider may have different key/model
-    _cachedKey = null; _cachedKeyChecked = false; _cachedModel = null;
-    _cachedProviderChecked = false; _cachedProvider = null; _cachedBaseUrl = null;
+    // activate !== false → make this the ACTIVE provider (the one inference uses). The admin
+    // panel passes activate:false when it's only editing a provider it isn't switching to.
+    if (payload.activate !== false) {
+      await storage.set("COGNIRUNNER_AI_PROVIDER", provider);
+      if (cleanBaseUrl) {
+        await storage.set("COGNIRUNNER_AI_BASE_URL", cleanBaseUrl);
+      } else if (PROVIDERS[provider].baseUrl) {
+        await storage.set("COGNIRUNNER_AI_BASE_URL", PROVIDERS[provider].baseUrl);
+      } else {
+        // Provider has no default and no override — clear any stale URL so we don't leak Azure/etc.
+        await storage.delete("COGNIRUNNER_AI_BASE_URL");
+      }
+      // Invalidate all caches — new active provider may have different key/model/url.
+      _cachedKey = null; _cachedKeyChecked = false; _cachedModel = null;
+      _cachedProviderChecked = false; _cachedProvider = null; _cachedBaseUrl = null;
+    }
 
-    return { success: true };
+    return { success: true, activated: payload.activate !== false };
   } catch (error) {
     console.error("Failed to save provider:", error);
     return { success: false, error: error.message };
@@ -2945,14 +2945,17 @@ resolver.define("checkProviderHealth", async ({ context }) => {
  * - If BYOK: fetches from the provider's /models endpoint.
  * - If factory: returns empty array (no model choice — factory model is fixed).
  */
-resolver.define("getOpenAIModels", async () => {
+resolver.define("getOpenAIModels", async ({ payload }) => {
   try {
-    const activeProvider = (await storage.get("COGNIRUNNER_AI_PROVIDER")) || "openai";
-    const byokKey = await storage.get(providerKeySlot(activeProvider));
+    // The provider being VIEWED (may differ from the active one — the admin panel browses
+    // any provider's models without activating it). baseUrl is that provider's own URL.
+    const provider = await resolveTargetProvider(payload);
+    const byokKey = await storage.get(providerKeySlot(provider));
+    const baseUrl = await providerBaseUrlFor(provider);
 
     // Forge LLM: no key — list models via @forge/llm's list(). Fall back to the
     // documented Preview model ids if list() fails (e.g. llm module not yet approved).
-    if (activeProvider === "atlassian") {
+    if (provider === "atlassian") {
       try {
         // ModelListResponse: { models: [{ model: string, status: "active"|"deprecated" }] }
         const resp = await forgeLlmListApi();
@@ -2976,8 +2979,7 @@ resolver.define("getOpenAIModels", async () => {
     //
     // Critical: each endpoint returns a DIFFERENT JSON schema (verified against a live
     // LM Studio 0.4+ server). The normalize step below converts all three to a common shape.
-    if (activeProvider === "lmstudio") {
-      const { baseUrl } = await getProviderConfig();
+    if (provider === "lmstudio") {
       if (!baseUrl) {
         return { success: false, error: "LM Studio base URL not configured. Set it in Provider Configuration.", models: [], isByok: true };
       }
@@ -3116,8 +3118,7 @@ resolver.define("getOpenAIModels", async () => {
       return { success: true, models: [], isByok: false, currentModel: factoryModel };
     }
 
-    // Fetch models from the configured provider's endpoint
-    const { provider, baseUrl } = await getProviderConfig();
+    // Fetch models from the viewed provider's endpoint (provider + baseUrl resolved at the top).
 
     // AWS Bedrock: model listing hits the CONTROL-PLANE host (bedrock.<region>, not
     // bedrock-runtime.<region>) and returns a bespoke shape — not the generic data.data[].id
@@ -3126,6 +3127,11 @@ resolver.define("getOpenAIModels", async () => {
     // We list inference profiles (the invokable eu./us. cross-region ids) AND on-demand
     // foundation models, preferring the profile ids.
     if (provider === "bedrock") {
+      // A Bedrock key can be saved before a region is (saveOpenAIKey doesn't set a baseUrl),
+      // so baseUrl may be null here. Soft-fail to manual entry instead of crashing on .replace.
+      if (!baseUrl) {
+        return { success: true, models: [], isByok: true, listUnavailable: true };
+      }
       const controlHost = baseUrl.replace("bedrock-runtime.", "bedrock.");
       const bedHeaders = { Authorization: `Bearer ${byokKey}`, Accept: "application/json" };
       const ids = new Set();
@@ -3218,14 +3224,14 @@ resolver.define("saveOpenAIModel", async ({ payload, context }) => {
     if (!model || typeof model !== "string") {
       return { success: false, error: "Invalid model selection" };
     }
-    const provider = (await storage.get("COGNIRUNNER_AI_PROVIDER")) || "openai";
+    const provider = await resolveTargetProvider(payload);
     const byokKey = await storage.get(providerKeySlot(provider));
     // LM Studio doesn't require a key (auth is optional); Forge LLM never has one.
     if (!byokKey && provider !== "lmstudio" && provider !== "atlassian") {
       return { success: false, error: "Model selection requires an API key" };
     }
     if (provider === "lmstudio") {
-      const lmBaseUrl = await storage.get("COGNIRUNNER_AI_BASE_URL");
+      const lmBaseUrl = await providerBaseUrlFor(provider);
       if (!lmBaseUrl) {
         return { success: false, error: "Set the LM Studio base URL before selecting a model." };
       }
@@ -3234,7 +3240,7 @@ resolver.define("saveOpenAIModel", async ({ payload, context }) => {
       return { success: false, error: "Only Claude Haiku is available on Atlassian (Forge LLM) right now." };
     }
     await storage.set(providerModelSlot(provider), model);
-    _cachedModel = null; // invalidate cache
+    if (provider === (await activeProviderId())) { _cachedModel = null; } // invalidate active cache
     return { success: true };
   } catch (error) {
     console.error("Failed to save model:", error);
@@ -3245,9 +3251,9 @@ resolver.define("saveOpenAIModel", async ({ payload, context }) => {
 /**
  * Get the currently saved model from KVS (or null if factory).
  */
-resolver.define("getOpenAIModelFromKVS", async () => {
+resolver.define("getOpenAIModelFromKVS", async ({ payload }) => {
   try {
-    const provider = (await storage.get("COGNIRUNNER_AI_PROVIDER")) || "openai";
+    const provider = await resolveTargetProvider(payload);
     const byokKey = await storage.get(providerKeySlot(provider));
     // Forge LLM: no key — saved model (or provider default) with model picker unlocked.
     // A saved model from before the Haiku-only policy is clamped to the default so
@@ -3259,12 +3265,14 @@ resolver.define("getOpenAIModelFromKVS", async () => {
     }
     // LM Studio is always BYOK semantics — auth is optional, baseUrl is the gating config.
     if (provider === "lmstudio") {
-      const lmBaseUrl = await storage.get("COGNIRUNNER_AI_BASE_URL");
+      const lmBaseUrl = await providerBaseUrlFor(provider);
       const savedModel = await storage.get(providerModelSlot(provider));
       return { success: true, model: savedModel || null, isByok: !!lmBaseUrl };
     }
     if (!byokKey) {
-      const factoryModel = await getOpenAIModel();
+      // No key: the env-var factory model only applies to the ACTIVE provider; for a
+      // non-active provider being browsed there is no model to report.
+      const factoryModel = provider === (await activeProviderId()) ? await getOpenAIModel() : null;
       return { success: true, model: factoryModel, isByok: false };
     }
     const savedModel = await storage.get(providerModelSlot(provider));
@@ -7460,6 +7468,24 @@ const providerModelSlot = (provider) => `COGNIRUNNER_MODEL_${provider}`;
 // instead of re-prompting (LM Studio / Azure carry a custom endpoint). The
 // active provider's URL is still mirrored to COGNIRUNNER_AI_BASE_URL for runtime.
 const providerBaseUrlSlot = (provider) => `COGNIRUNNER_BASEURL_${provider}`;
+
+// The currently-active provider (the one inference actually uses).
+const activeProviderId = async () => (await storage.get("COGNIRUNNER_AI_PROVIDER")) || "openai";
+// Which provider a UI-facing resolver should act on: an explicit, valid payload.provider
+// lets the admin panel VIEW/EDIT any provider's stored config without making it active;
+// otherwise fall back to the active provider. Inference is unaffected — it always reads the
+// active provider via getProviderConfig().
+const resolveTargetProvider = async (payload) => {
+  const p = payload && payload.provider;
+  if (p && PROVIDERS[p]) return p;
+  return activeProviderId();
+};
+// A provider's base URL independent of which one is active: its saved per-provider slot
+// (lmstudio / azure / bedrock carry a custom URL) or the registry default.
+const providerBaseUrlFor = async (provider) => {
+  const saved = await storage.get(providerBaseUrlSlot(provider));
+  return saved || (PROVIDERS[provider] && PROVIDERS[provider].baseUrl) || null;
+};
 
 // In-memory key cache — avoids KVS read on every invocation
 // (TTL-bounded via PROVIDER_CACHE_TTL_MS — see the comment there.)

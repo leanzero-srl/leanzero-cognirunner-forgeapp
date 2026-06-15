@@ -150,8 +150,9 @@ const getOpenAIKey = async () => {
     }
   }
   
-  // 3. Factory key fallback
-  return key || process.env.OPENAI_API_KEY;
+  // BYOK only — no factory / out-of-the-box key fallback. Returns null when the
+  // active BYOK provider has no key (callers bail). Forge LLM uses a sentinel.
+  return key || null;
 };
 ```
 

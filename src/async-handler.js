@@ -76,7 +76,9 @@ const getOpenAIKey = async () => {
     }
     if (byokKey) return byokKey;
   } catch (e) { /* fall through */ }
-  return process.env.OPENAI_API_KEY;
+  // BYOK only — no factory / out-of-the-box key fallback (removed by owner
+  // direction). Return null so callers bail with a "configure a key" message.
+  return null;
 };
 
 const PROVIDER_DEFAULT_MODELS = {

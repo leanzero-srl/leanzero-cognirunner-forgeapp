@@ -708,8 +708,8 @@ export default function OpenAIConfig({ invoke }) {
     try {
       const result = await invoke("removeOpenAIKey");
       if (result.success) {
-        setSuccess("Reverted to factory key");
-        showToast("Key removed — reverted to factory key");
+        setSuccess("Key removed");
+        showToast("Key removed — enter your own key to use this provider");
         setModels([]);
         setCurrentModel(null);
         setSelectedModel("");
@@ -1048,7 +1048,7 @@ export default function OpenAIConfig({ invoke }) {
               ? lmStatusTitle
               : isAtlassian
                 ? "Atlassian-hosted — ready, no key needed"
-                : (isByok ? `Using your ${providerLabel} key` : "Using factory key");
+                : (isByok ? `Using your ${providerLabel} key` : "No key configured");
             return (
               <div className="openai-status" style={{ marginBottom: "16px" }}>
                 {/* Keyed on the resolved title: status changes fade in instead
@@ -1074,10 +1074,8 @@ export default function OpenAIConfig({ invoke }) {
                       : isAtlassian
                       ? "Claude served inside the Atlassian platform — no key, no egress."
                       : isByok
-                        ? `Connected to ${providerLabel}. You can select from available models. Remove the key to revert to the factory key.`
-                        : hasKey
-                          ? `Factory model: ${factoryModel || "gpt-5.4-mini"}. Provide your own ${providerLabel} key to unlock model selection.`
-                          : `No API key configured. Provide your ${providerLabel} API key to get started.`
+                        ? `Connected to ${providerLabel}. You can select from available models. Remove the key to clear it.`
+                        : `No API key configured. Provide your ${providerLabel} API key to get started.`
                     }
                   </p>
                   {isAtlassian && (

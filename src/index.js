@@ -2514,20 +2514,22 @@ resolver.define("getOpenAIKey", async () => {
         hasToken: !!byokKey,
       };
     }
+    // BYOK only — no factory/out-of-the-box key, so "configured" means the user
+    // has supplied their own key for this provider.
     return {
       success: true,
-      hasKey: !!byokKey || !!process.env.OPENAI_API_KEY,
+      hasKey: !!byokKey,
       isByok: !!byokKey,
     };
   } catch (error) {
     console.error("Failed to check API key:", error);
-    return { success: false, hasKey: !!process.env.OPENAI_API_KEY, isByok: false };
+    return { success: false, hasKey: false, isByok: false };
   }
 });
 
 /**
- * Remove the BYOK key, reverting to factory key.
- * Also clears the saved model selection since factory key has no model choice.
+ * Remove the BYOK key for the active provider (clears it — there is no factory
+ * key to fall back to). Also clears the saved model selection.
  */
 resolver.define("removeOpenAIKey", async ({ context }) => {
   if (!(await requireAdmin(context.accountId))) {
@@ -7034,11 +7036,15 @@ const getContext7RemoteConfig = async () => {
 };
 
 /**
- * Get the active provider's API key. Checks per-provider KVS slot first,
- * falls back to legacy key, then factory env var.
+ * Get the active provider's API key. Checks the per-provider KVS slot, with a
+ * one-time migration from the legacy slot. BYOK ONLY — there is no factory /
+ * out-of-the-box key fallback (removed by owner direction: users supply their
+ * own keys, or use the zero-key Atlassian Forge LLM). Returns null when the
+ * active BYOK provider has no key configured; callers then bail with a clear
+ * "configure a key" message.
  */
 const getOpenAIKey = async () => {
-  if (_cachedKeyChecked && _cacheFresh(_cachedKeyAt)) return _cachedKey || process.env.OPENAI_API_KEY;
+  if (_cachedKeyChecked && _cacheFresh(_cachedKeyAt)) return _cachedKey || null;
   try {
     const { provider } = await getProviderConfig();
     // Forge LLM needs no API key — auth IS the Forge platform. Return a sentinel so
@@ -7063,11 +7069,12 @@ const getOpenAIKey = async () => {
     }
     _cachedKeyChecked = true;
     _cachedKeyAt = Date.now();
-    if (byokKey) { _cachedKey = byokKey; return byokKey; }
+    _cachedKey = byokKey || null; // BYOK only — no factory env-var fallback
+    return _cachedKey;
   } catch (error) {
     console.error("Error reading API key from storage:", error);
   }
-  return process.env.OPENAI_API_KEY;
+  return null;
 };
 
 // In-memory model cache — avoids KVS + /v1/models calls on every invocation

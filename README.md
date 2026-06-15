@@ -158,10 +158,10 @@ CogniRunner supports **four AI providers** via Bring Your Own Key. Each provider
 | **Anthropic** | `claude-haiku-4-5` | `x-api-key` + `anthropic-version` | `api.anthropic.com/v1` |
 
 **How it works:**
-1. **Factory key (default)** -- the app uses `process.env.OPENAI_API_KEY` set via `forge variables`. No model selection.
-2. **BYOK key** -- user provides their own key in the Settings tab. Unlocks model selection from the provider's model list.
-3. **Provider switching** -- select a new provider, click "Switch Provider". Your previous provider's key is preserved.
-4. **Remove key** -- only deletes the active provider's key. Other providers' keys are untouched.
+1. **Bring your own key (BYOK)** -- each admin supplies their own key for the active provider in the Settings tab. There is **no factory / out-of-the-box key**: the app ships with no embedded API key, so AI features require either a BYOK key or the zero-key **Atlassian Forge LLM** provider.
+2. **Model selection** -- providing a BYOK key unlocks model selection from the provider's model list.
+3. **Provider switching** -- select a new provider, click "Switch Provider". Your previous provider's key is preserved per-provider.
+4. **Remove key** -- deletes the active provider's key (nothing to fall back to). Other providers' keys are untouched.
 
 The app includes a **unified AI adapter** (`callAIChat`) that normalizes between OpenAI-compatible APIs and the Anthropic Messages API. Tool calling, multimodal content (images, PDFs), and response parsing are handled transparently -- all callers use the same OpenAI message format.
 
@@ -489,8 +489,8 @@ forge logs
 
 | Variable | Required | Default | Purpose |
 |----------|----------|---------|---------|
-| `OPENAI_API_KEY` | Yes* | -- | Factory AI API key. Not needed if all users provide BYOK keys. |
-| `OPENAI_MODEL` | No | `gpt-5.4-mini` | Factory model. Used when no BYOK key is configured. Provider-specific defaults are used when a BYOK key is active (e.g., `claude-haiku-4-5` for Anthropic). |
+| `OPENAI_API_KEY` | No | -- | **Removed — no factory key.** The app ships with no embedded API key; admins supply their own BYOK key, or use the zero-key Atlassian Forge LLM provider. |
+| `OPENAI_MODEL` | No | `gpt-5.4-mini` | Optional default model name for OpenAI/Azure when a BYOK key is active and no model is saved. Provider-specific defaults apply otherwise (e.g., `claude-haiku-4-5` for Anthropic). |
 | `VALIDATE_FIELD_ID` | No | `description` | Fallback field ID if not configured in UI. |
 | `VALIDATION_PROMPT` | No | *(generic quality check)* | Fallback prompt if not configured in UI. |
 

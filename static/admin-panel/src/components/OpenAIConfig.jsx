@@ -1774,23 +1774,30 @@ function McpCard({ mcpKey, title, subtitle, tools, enabled, saving, expanded, pi
           </div>
           <p style={{ margin: "0 0 4px", fontSize: "11px", color: "var(--text-secondary)" }}>{subtitle}</p>
           {/* Live, vetted tool list. Once an MCP is enabled we fetch the tools the
-              server ACTUALLY exposes (∩ what CogniRunner uses) and show them as solid
-              chips. Before that / on the LM-Studio path we show the curated set muted. */}
+              server ACTUALLY exposes (∩ what CogniRunner uses) as { name, description }
+              and show them as solid chips. HOVER a chip for the server's own description
+              — the SAME text the model receives. Before fetch / on LM Studio: curated set. */}
           {(() => {
+            // live = [{name, description}]; static fallback = ["name", ...] → normalize.
             const live = Array.isArray(ping?.tools) ? ping.tools : null;
-            const shown = live && live.length ? live : tools;
+            const shown = (live && live.length ? live : tools).map((t) => (typeof t === "string" ? { name: t } : t));
             return (
               <div style={{ display: "flex", flexWrap: "wrap", gap: "5px", alignItems: "center", marginTop: "1px" }}>
                 <span style={{ fontSize: "10px", color: "var(--text-muted)", marginRight: "1px" }}>
                   {ping?.loading ? "Loading tools…" : live ? "Tools in use:" : "Tools available:"}
                 </span>
-                {shown.map((t) => (
-                  <span
-                    key={t}
-                    className={live ? "mcp-tool-chip" : undefined}
-                    style={live ? undefined : { fontSize: "10px", fontWeight: 600, padding: "2px 8px", borderRadius: "10px", background: "var(--input-bg)", color: "var(--text-secondary)", border: "1px solid var(--border-color)" }}
-                  >{t}</span>
-                ))}
+                {shown.map((t) => {
+                  const chip = (
+                    <span
+                      className={live ? "mcp-tool-chip" : undefined}
+                      style={live ? { cursor: t.description ? "help" : "default" } : { fontSize: "10px", fontWeight: 600, padding: "2px 8px", borderRadius: "10px", background: "var(--input-bg)", color: "var(--text-secondary)", border: "1px solid var(--border-color)" }}
+                    >{t.name}</span>
+                  );
+                  // A description tooltip shows what CogniRunner tells the AI about the tool.
+                  return t.description
+                    ? <Tooltip key={t.name} text={t.description}>{chip}</Tooltip>
+                    : <span key={t.name}>{chip}</span>;
+                })}
               </div>
             );
           })()}

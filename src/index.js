@@ -3596,10 +3596,18 @@ resolver.define("testMcpConnection", async ({ payload, context }) => {
     const returned = r.json?.result?.tools || [];
     const allowSet = new Set(allow);
     // The usable set = what this server exposes ∩ what CogniRunner curates (incl.
-    // writeTools when docWriter is on). Deduped + returned so the admin UI can show
-    // the LIVE list of tools it will actually use from this MCP.
-    const names = [...new Set(returned.map((t) => t.name).filter((n) => allowSet.has(n)))];
-    if (names.length === 0) {
+    // writeTools when docWriter is on). Returned as { name, description } where the
+    // description is the server's OWN tool description — the SAME text the model
+    // receives (buildBridgeMcpTools passes it as the function-tool description), so
+    // the admin UI tooltip shows exactly what CogniRunner tells the AI about the tool.
+    const seen = new Set();
+    const tools = [];
+    for (const t of returned) {
+      if (!allowSet.has(t.name) || seen.has(t.name)) continue;
+      seen.add(t.name);
+      tools.push({ name: t.name, description: String(t.description || "").replace(/\s+/g, " ").trim().slice(0, 400) });
+    }
+    if (tools.length === 0) {
       return {
         success: true,
         ok: false,
@@ -3609,7 +3617,7 @@ resolver.define("testMcpConnection", async ({ payload, context }) => {
           : `Reachable but returned no tools (HTTP ${r.status}). Check the URL and credentials.`,
       };
     }
-    return { success: true, ok: true, tools: names, message: `${mcp.label} reachable — tools: ${names.join(", ")}` };
+    return { success: true, ok: true, tools, message: `${mcp.label} reachable — tools: ${tools.map((t) => t.name).join(", ")}` };
   } catch (error) {
     console.error("testMcpConnection failed:", error?.message);
     return { success: true, ok: false, error: `Unreachable: ${error.message}` };

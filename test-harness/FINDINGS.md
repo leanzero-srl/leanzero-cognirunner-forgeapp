@@ -23,6 +23,7 @@ From the at-scale runtime test (instance `wolfaenpak.atlassian.net`, project `CO
 | OpenRouter · `gemma-4-31b` (BYOK) | **766/782** | 3/4 | 24/25 | 697/710 | all clean | 1 |
 | Anthropic · `claude-haiku-4-5` (BYOK) | **766/782** | **3/4 ✓** | 25/25 | 696/710 | all clean | 4 (transient, fail-open) |
 | Forge LLM · Haiku (zero-key) | **766/782** | **3/4 ✓ (F1 path)** | 25/25 | 696/710 | all clean | 0 (F1 signals: 0) |
+| LM Studio · self-hosted *(modest 76-case battery)* | **69/76** | 2/4 (weaker tool-calling — model) | 14/14 | 16/18 | semantic/static/policy/pf-flavors/action/fields all clean; **knowledge 0/2** (flag) | 0 (F20 fallback absorbed MCP) |
 
 Headline: **all three providers land 766/782 with every PF/semantic/field/knowledge/policy study clean and agentic JQL working.**
 - **Anthropic translation layer healthy** — `/v1/messages` + `tool_use`-block round-trip (the F1 shape) works (3/4); the 1 agentic miss is the strict GATE-STORY expectation, not a tool bug.

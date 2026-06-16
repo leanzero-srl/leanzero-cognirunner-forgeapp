@@ -16,7 +16,7 @@ import { loadState, writeResult } from "../lib/state.mjs";
 
 const CLEAN = process.env.CLEAN === "1";
 // Transient transitions created by probe scripts — safe to remove on CLEAN.
-const TRANSIENT = [/^FM-(write|read)-/, /^EX-/, /^ACTX-/, /^CT-Memory-/, /^GATE Validator/, /^CogniRunner Emergency/, /^DISCO-/, /^CMIRROR-/];
+const TRANSIENT = [/^FM-(write|read)-/, /^EX-/, /^ACTX-/, /^CT-Memory-/, /^GATE Validator/, /^CogniRunner Emergency/, /^DISCO-/, /^CMIRROR-/, /^CL-/];
 
 function collectRules(t) {
   const out = [];

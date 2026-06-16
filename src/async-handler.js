@@ -150,9 +150,22 @@ const getProviderConfig = async () => {
 // system+user shape callAIChatSimple uses (no multimodal, no tools possible).
 // Always preferred for LM Studio since callAIChatSimple never sends tools.
 // Models whose LM Studio build rejects the native `reasoning` param (400) — learned on first
-// use and cached per warm container so we skip it up front instead of paying a failed call +
-// retry every time. (Mirrors the same cache in src/index.js's callLmStudioNative.)
+// use and PERSISTED to KVS (shared with src/index.js via the same key) so cold containers skip
+// it up front instead of paying a failed call + retry every time.
 const _lmStudioNoReasoning = new Set();
+const LM_NO_REASONING_KEY = "COGNIRUNNER_LMSTUDIO_NO_REASONING";
+let _noReasoningLoaded = false;
+const loadNoReasoning = async () => {
+  if (_noReasoningLoaded) return;
+  _noReasoningLoaded = true;
+  try {
+    const arr = await storage.get(LM_NO_REASONING_KEY);
+    if (Array.isArray(arr)) arr.forEach((m) => _lmStudioNoReasoning.add(m));
+  } catch { /* best-effort */ }
+};
+const persistNoReasoning = () => {
+  storage.set(LM_NO_REASONING_KEY, Array.from(_lmStudioNoReasoning)).catch(() => {});
+};
 const callLmStudioNativeSimple = async ({ apiKey, model, systemPrompt, userMessage, jsonMode, baseUrl }) => {
   let prompt = systemPrompt || "";
   if (jsonMode) {
@@ -166,6 +179,7 @@ const callLmStudioNativeSimple = async ({ apiKey, model, systemPrompt, userMessa
     store: false,
   };
   // Skip reasoning:"off" for models we've learned reject it (avoids a wasted call + retry each time).
+  await loadNoReasoning();
   if (!_lmStudioNoReasoning.has(model)) body.reasoning = "off";
   if (prompt) body.system_prompt = prompt;
 
@@ -179,6 +193,7 @@ const callLmStudioNativeSimple = async ({ apiKey, model, systemPrompt, userMessa
     const errText = await response.text().catch(() => "");
     if (/reasoning/i.test(errText) && "reasoning" in body) {
       _lmStudioNoReasoning.add(model);
+      persistNoReasoning();
       delete body.reasoning;
       response = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
     } else {

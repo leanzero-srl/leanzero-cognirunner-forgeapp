@@ -410,3 +410,41 @@ Every standard custom field type (text, textarea, url, number, date, datetime, l
 - **Docs**: REST-tested + working (`docsUsed=true` when a rule references builtin doc ids).
 - **Memories**: runtime injection **VERIFIED end-to-end** after the admin enabled the three Memories toggles. A novel post-function failure (the async-hang PF) was **auto-distilled** into a memory ("[test] Post-function steps have a 15s timeout. Promises that never resolve … will hang and exceed the budget."), then **injected** into a later validator's prompt — proven both by the `memoriesUsed=true` flag (cogni-debug property) and by the validator echoing the memory content verbatim. This demonstrates the full learn→inject loop. (`runtimeInjection` is opt-in/default-OFF by design.)
 - **Skills**: codegen-only (design-time) — no runtime/REST path; verified via the code-gen UI, not this transition harness.
+
+## LM Studio — full suite + multi-model worker map (dev v22.16.0–22.18.0)
+
+Provider: **LM Studio** (Tailscale Funnel), **3 models loaded** across 2 devices —
+`qwen/qwen3.6-27b` + `qwen/qwen3.6-35b-a3b` (fast) and `qwopus3.6-35b-a3b-v1-mtp`
+(slow, ~16–27s/call). Configured/primary model: qwopus.
+
+**Full ~790-case barrage: 771/790 (97.6%)** — at/above the cloud baseline, and the
+FIRST full-suite LM Studio run (previously only a 76-case subset, 69/76, because the
+single slow model timed out). By study: injection 695/710, robustness 24/25,
+semantic 12/12, static 6/6, action 14/14, fields 4/4, knowledge 5/5, policy 3/3,
+pf-flavors 5/5, condition 1/2 (F3), agentic 2/4. gendoc live PASS, research-doc PASS.
+Of 19 misses, only **2** are validator timeouts; the rest are the known injection-
+nuance (F15 family) + F3 (conditions not REST-enforced) + agentic tool-calling.
+
+**Multi-model WORKER MAP (the real allocation fix).** Symptom (owner-observed in LM
+Studio's UI): the configured model `qwopus` sat at GEN(+10 QUEUED) while both qwen
+models idled. Round-robin (the first attempt) balanced by COUNT, so the slow model
+got an equal share and backed up while the fast ones cleared and idled. LM Studio's
+API exposes **no live busy/queue state** (verified — `/api/v1/models` is static
+config only, incl. `config.parallel`), so the app now keeps its **own worker map in
+KVS**: per loaded model a list of in-flight claims `{id, ts}`; every AI call
+ACQUIRES the least-loaded model, runs, RELEASES (stale claims >40s swept so a
+25s-killed function never wedges a worker — and a timing-out model stays "busy" →
+avoided). Single choke point in `callAIChat` (`lmAcquireWorker`); the agentic loop +
+async consumer pick least-loaded too. **Full-run dispatch over 766 AI calls: 380/269/117
+(qwen-35b-a3b 50% / qwen-27b 35% / qwopus 15%)** — load proportional to throughput,
+all three worked hard, timeouts 14/766 (~1.8%, down from a storm). Admin toggle
+"Run on all loaded models (not just the primary)" gates it (`COGNIRUNNER_LMSTUDIO_POOL`,
+default ON); off pins everything to the primary model.
+
+**Residual / minor:** the slow qwopus still occasionally exceeds the platform's 25s
+validator cap on its ~15% share (the 14 timeouts; fail-closed by the platform → a
+false BLOCK that happens to be correct on injection cases). The `reasoning:"off"`
+param it rejects is now learned + **persisted to KVS** (`COGNIRUNNER_LMSTUDIO_NO_REASONING`)
+so cold containers skip the wasted call+retry (was relearned per-container, 18× in one
+run). Further timeout reduction would mean weighting qwopus down more or excluding
+very-slow models from the validator pool.

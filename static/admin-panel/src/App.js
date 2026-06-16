@@ -25,6 +25,7 @@ import PermissionsTab from "./components/PermissionsTab";
 import SettingsOpenAITab from "./components/SettingsOpenAITab";
 import CustomSelect from "./components/CustomSelect";
 import AddRuleWizard from "./components/AddRuleWizard";
+import Tooltip from "./components/Tooltip";
 import { showToast } from "./components/toast";
 
 const injectStyles = () => {
@@ -5366,6 +5367,7 @@ function App() {
               {(jobs.queued.length + jobs.running.length) > 0 && (
                 <span className="job-count-chip">{jobs.queued.length + jobs.running.length}</span>
               )}
+              <Tooltip text="Queued + running async AI jobs (LM Studio post-functions, code-gen, reviews). Validators & conditions run synchronously and never appear here. When a job finishes it drops to “Recently completed” under Execution Logs and clears automatically after ~20 minutes." />
             </span>
             <div className="section-actions">
               <button className={"btn-small" + (jobsLoading ? " is-busy" : "")} onClick={() => fetchJobs()} disabled={jobsLoading}>
@@ -5379,19 +5381,18 @@ function App() {
             </div>
           </div>
           <div className="card veil-host anim-rise">
-            {jobsLoading && (jobs.running.length + jobs.queued.length + jobs.recent.length) > 0 && (
+            {jobsLoading && (jobs.running.length + jobs.queued.length) > 0 && (
               <div className="veil"><span className="spin-ring" /><span className="veil-label">Refreshing jobs…</span></div>
             )}
-            {(jobs.running.length + jobs.queued.length + jobs.recent.length) === 0 ? (
+            {(jobs.running.length + jobs.queued.length) === 0 ? (
               <div className="logs-empty">
                 <div className="logs-empty-title">No active jobs</div>
-                <div className="logs-empty-caption">Queued and running AI jobs (LM Studio code-gen, reviews, heavy post-functions) appear here while they run.</div>
+                <div className="logs-empty-caption">Queued and running async AI jobs (LM Studio post-functions, code-gen, reviews) appear here while they run. Validators &amp; conditions run synchronously and don't queue; finished jobs move to “Recently completed” under Execution Logs.</div>
               </div>
             ) : (
               <div className="jobs-list stagger">
                 {jobs.running.map((j) => renderJobRow(j))}
                 {jobs.queued.map((j) => renderJobRow(j))}
-                {jobs.recent.map((j) => renderJobRow(j))}
               </div>
             )}
           </div>
@@ -5434,6 +5435,16 @@ function App() {
               )}
             </div>
           </div>
+
+          {jobs.recent.length > 0 && (
+            <div className="card anim-rise" style={{ marginBottom: 10, padding: "10px 12px" }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: "#64748b", marginBottom: 8, display: "flex", alignItems: "center", gap: 6 }}>
+                Recently completed jobs
+                <Tooltip text="Async jobs that have finished. They stay here for reference and clear automatically after ~20 minutes." />
+              </div>
+              <div className="jobs-list">{jobs.recent.map((j) => renderJobRow(j))}</div>
+            </div>
+          )}
 
           {showLogs && (
             <div className="card veil-host anim-rise">

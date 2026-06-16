@@ -237,6 +237,12 @@ const MAX_TOOL_ROUNDS = 3;
 const buildModelParams = () => ({});
 const MAX_JQL_RESULTS = 10;
 const AGENTIC_TIMEOUT_MS = 22000; // 22s budget within Forge's 25s validator limit
+// Non-agentic validator AI calls have no inner budget; under provider load they can
+// exceed Forge's hard 25s sync limit → the platform KILLS validate() and Jira shows
+// "error in validator" (ungraceful, effectively fail-closed). Bound the call below
+// 25s so it returns a graceful fail-open instead (consistent with the transient
+// fail-open policy). 23s leaves headroom for logging before the platform limit.
+const VALIDATOR_AI_DEADLINE_MS = 23000;
 
 // A transient AI/provider error (rate limit, server error, timeout, network) —
 // as opposed to a real "invalid" verdict. Validators fail OPEN on these so a
@@ -614,14 +620,23 @@ export const parseAIJson = (raw) => {
   const closeChar = openChar === "{" ? "}" : "]";
   const end = cleaned.lastIndexOf(closeChar);
   if (end > start) {
-    try { return JSON.parse(cleaned.substring(start, end + 1)); } catch { /* fall through to repair */ }
+    const block = cleaned.substring(start, end + 1);
+    try { return JSON.parse(block); } catch { /* fall through */ }
+    // Recover UNESCAPED double-quotes inside string values — a very common
+    // weak-model error (e.g. {"reason": "a version tag "[v1]" appears"}). Only
+    // reached after a normal parse already failed, so it can only RECOVER.
+    try { return JSON.parse(repairUnescapedQuotes(block)); } catch { /* fall through to repair */ }
   }
   // Last resort: REPAIR a truncated object/array. A model that hit its token or time
   // budget mid-JSON leaves an unterminated string and unclosed brackets (e.g.
   // `{"isValid": false, "reason": "…version tag and.`). Closing them recovers the
   // verdict + partial reason instead of discarding the whole response (which would
   // otherwise fall through to isValid:false and FALSELY block valid content).
-  return repairTruncatedJson(cleaned, start);
+  const repaired = repairTruncatedJson(cleaned, start);
+  if (repaired) return repaired;
+  // Final: a value that is BOTH truncated AND has unescaped inner quotes —
+  // re-escape the strays, then close the truncation.
+  return repairTruncatedJson(repairUnescapedQuotes(cleaned.slice(start)), 0);
 };
 
 // Close an unterminated string and any open {}/[] brackets in a truncated JSON snippet so
@@ -653,6 +668,46 @@ const repairTruncatedJson = (s, start) => {
   }
   for (let i = stack.length - 1; i >= 0; i--) out += stack[i] === "{" ? "}" : "]";
   try { return JSON.parse(out); } catch { return null; }
+};
+
+// Re-escape stray double-quotes INSIDE JSON string values — a common weak-model
+// error (`{"reason": "a version tag "[v1]" appears"}`). A quote only CLOSES a
+// string when the next non-space char is a JSON structural follower (, } ] : or
+// end-of-input); otherwise it is a literal quote and gets escaped. Only invoked
+// as a last-resort salvage (after a normal parse already failed), so it can only
+// recover an otherwise-discarded response — never corrupt one that already parsed.
+const repairUnescapedQuotes = (s) => {
+  let out = "", inStr = false, esc = false;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (!inStr) { out += ch; if (ch === '"') inStr = true; continue; }
+    if (esc) { out += ch; esc = false; continue; }
+    if (ch === "\\") { out += ch; esc = true; continue; }
+    if (ch === '"') {
+      let j = i + 1;
+      while (j < s.length && /\s/.test(s[j])) j++;
+      const nx = s[j];
+      if (nx === undefined || nx === "," || nx === "}" || nx === "]" || nx === ":") { out += '"'; inStr = false; }
+      else { out += '\\"'; }
+      continue;
+    }
+    out += ch;
+  }
+  return out;
+};
+
+// Schema-aware recovery for the validator verdict {"isValid": bool, "reason": "..."}.
+// When parseAIJson fails because of unescaped quotes/commas/newlines INSIDE the
+// reason (which a generic repair can't always disambiguate), extract the boolean
+// (unambiguous) and capture the reason greedily to the final closing quote — so a
+// malformed reason can never discard an otherwise-clear verdict. null if absent.
+const recoverValidatorVerdict = (content) => {
+  const m = String(content || "").match(/"isValid"\s*:\s*(true|false)/i);
+  if (!m) return null;
+  const rm = String(content).match(/"reason"\s*:\s*"([\s\S]*)"\s*\}?\s*$/);
+  let reason = rm ? rm[1] : "";
+  reason = reason.replace(/\\"/g, '"').replace(/\\n/g, " ").replace(/\s+/g, " ").trim().slice(0, 500);
+  return { isValid: m[1].toLowerCase() === "true", reason: reason || "Recovered verdict (response JSON was malformed)." };
 };
 
 // Prompt patterns that signal the need for JQL search tools.
@@ -8802,14 +8857,16 @@ Respond with JSON only.`;
   }
 
   try {
-    const result = await callAIChat({
+    // Bound below Forge's 25s validator limit so a slow provider fails OPEN
+    // gracefully instead of the platform killing validate() ("error in validator").
+    const result = await raceDeadline(callAIChat({
       apiKey, model,
       jsonMode: true,
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: userContent },
       ],
-    });
+    }), Date.now() + VALIDATOR_AI_DEADLINE_MS, "AI validation");
     // The model that actually served this call (the acquired LM Studio worker, or
     // the configured model for other providers) — for the cogni-debug trace.
     const servedModel = result.modelUsed || model;
@@ -8846,6 +8903,10 @@ Respond with JSON only.`;
     // Tolerant parse: handles markdown fences, prose-wrapped JSON, etc.
     const parsed = parseAIJson(content);
     if (!parsed) {
+      // Generic parse failed — try the schema-aware verdict recovery before
+      // discarding the response (which would FALSELY fail-closed / leak "malformed").
+      const recovered = recoverValidatorVerdict(content);
+      if (recovered) return { ...recovered, modelUsed: servedModel };
       return {
         isValid: false,
         reason: `AI returned malformed JSON: ${content.substring(0, 120)}`,
@@ -8858,6 +8919,18 @@ Respond with JSON only.`;
       modelUsed: servedModel,
     };
   } catch (error) {
+    if (error && error.pfDeadline) {
+      // Hit the 23s internal deadline before the 25s platform kill — fail OPEN
+      // (same policy as a transient provider error) so the transition isn't blocked
+      // by an ungraceful platform timeout.
+      console.warn("AI validation exceeded its time budget — failing open (transition allowed).");
+      return {
+        isValid: true,
+        reason: "AI validation timed out — transition allowed (fail-open).",
+        transientError: true,
+        modelUsed: model,
+      };
+    }
     console.error("Error calling AI:", error);
     return {
       isValid: false,
@@ -9397,12 +9470,22 @@ RESPONSE FORMAT:
       const callTools = tools;
       const callToolChoice = exhausted ? "none" : "auto";
 
-      const aiResult = await callAIChat({
-        apiKey, model, messages,
-        preResolvedModel: true, // pinned above for the whole agentic loop — don't re-pool per round
-        tools: callTools,
-        tool_choice: callToolChoice,
-      });
+      let aiResult;
+      try {
+        // Bound each round by the agentic deadline so a single slow round can't blow
+        // Forge's 25s limit (which surfaces as an ungraceful "error in validator").
+        aiResult = await raceDeadline(callAIChat({
+          apiKey, model, messages,
+          preResolvedModel: true, // pinned above for the whole agentic loop — don't re-pool per round
+          tools: callTools,
+          tool_choice: callToolChoice,
+        }), deadline, "Agentic validation round");
+      } catch (e) {
+        if (e && e.pfDeadline) {
+          return { isValid: true, reason: "Validation timed out while gathering context. Transition allowed.", transientError: true, toolMeta };
+        }
+        throw e;
+      }
 
       if (!aiResult.ok) {
         console.error("AI error (agentic):", aiResult.status, aiResult.error);
@@ -9481,6 +9564,8 @@ RESPONSE FORMAT:
       // so the model is more likely to wrap the final JSON in prose or markdown.
       const result = parseAIJson(content);
       if (!result) {
+        const recovered = recoverValidatorVerdict(content);
+        if (recovered) return { ...recovered, toolMeta };
         return {
           isValid: false,
           reason: `AI returned malformed JSON after ${round} round(s): ${content.substring(0, 120)}`,
@@ -9778,8 +9863,14 @@ const formatValueForField = (value, fieldMeta, notes = []) => {
       return parts;
     }
     case "number": {
-      // Number fields — non-numeric strings are rejected later by checkScalarFormat
-      const num = Number(value);
+      // Number fields — non-numeric strings are rejected later by checkScalarFormat.
+      // Number("")/Number("  ")/Number("\n") ALL === 0, so an empty/blank AI value
+      // (e.g. the model returning nothing for a paragraph→number mismatch) would
+      // SILENTLY become 0 and pass every downstream check. Keep blank as a string
+      // so checkScalarFormat rejects it and the PF SKIPs instead of writing a bogus 0.
+      const trimmed = value.trim();
+      if (trimmed === "") return value;
+      const num = Number(trimmed);
       return isNaN(num) ? value : num;
     }
     case "date": {

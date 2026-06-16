@@ -25,6 +25,10 @@ const RE_TOOLSHAPE = /tool.?call|tool ?arguments|function\.arguments|tool_use|in
 const RE_TRANSIENT = /temporarily unavailable|rate ?limit|too many requests|429|timdevice|timed out|timeout|service (is )?(unavailable|down)|ai service error|503|502|upstream/i;
 const RE_EMPTY = /empty response from ai|no response from (the )?ai|empty ai response/i;
 const RE_FENCE = /```|<<<|source_field|field_value|system_prompt|<\|.*\|>|"isvalid"\s*:/i;
+// Jira's generic message when a Forge validate()/condition function THROWS or runs
+// past the platform limit without returning a graceful verdict — a system bug, not
+// a verdict. (Found by the weak-model run: number-field + agentic validators.)
+const RE_VALIDATOR_CRASH = /error in (validator|condition)|bug in the app that provided|workflow (validator|condition).*(failed|error)/i;
 
 // signal -> the src/index.js function(s) a fix would most likely touch.
 export const HARDENING_TARGETS = {
@@ -35,6 +39,7 @@ export const HARDENING_TARGETS = {
   fenceLeak: "output-side defang on written values + buildSemanticAIRequest (defangFence currently guards inputs only)",
   emptyEcho: "callLmStudioNative extraction fallbacks (src/index.js ~7037/7347) — empty-after-fallback must fail-open transient, not block",
   transientMishandled: "isTransientAIError (src/index.js ~245) + fail-open branches in callOpenAI/agentic",
+  validatorCrash: "validate() top-level try/catch + agentic loop time-bounding — must always return a graceful {result, errorMessage}, never throw/time out to Jira",
 };
 
 /**
@@ -62,6 +67,9 @@ export function triageCase(c) {
   // ---- Bucket A: system bug (first match wins) ----
   if (typeof c.http === "number" && c.http >= 500) {
     return mk("A", "http5xx", `transition POST returned HTTP ${c.http}`);
+  }
+  if (RE_VALIDATOR_CRASH.test(lc)) {
+    return mk("A", "validatorCrash", `validate()/condition threw or timed out ungracefully (Jira reported a validator error): "${snippet(reason)}"`);
   }
   if (RE_PARSE.test(lc)) {
     return mk("A", "parseLeak", `parse/deserialize error surfaced in verdict: "${snippet(reason)}"`);

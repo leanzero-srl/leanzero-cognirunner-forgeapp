@@ -2465,17 +2465,21 @@ const injectStyles = () => {
 
     button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible,
     select:focus-visible, [tabindex]:focus-visible, .dropdown-trigger:focus-visible {
-      outline: none; box-shadow: var(--lz-ring); border-radius: 6px;
+      outline: none; box-shadow: var(--lz-ring);
     }
 
-    .card {
+    /* The 'html ' prefix raises specificity to (0,1,1) so these win over
+       admin-panel's injectCopiedComponentStyles (which loads AFTER injectStyles
+       and otherwise reverts .card/.icon-wrapper/.title) — keeps all three apps
+       visually consistent. Harmless higher-than-needed specificity elsewhere. */
+    html .card {
       box-shadow: var(--lz-card-shadow);
       transition: box-shadow var(--dur-med) var(--lz-ease), border-color var(--dur-fast) ease;
     }
     .card:hover { box-shadow: var(--lz-card-shadow-hover); border-color: rgba(37, 99, 235, 0.35); }
     html[data-color-mode="dark"] .card:hover { border-color: rgba(96, 165, 250, 0.40); }
 
-    .icon-wrapper {
+    html .icon-wrapper {
       background: linear-gradient(135deg, #2563eb, #1d4ed8);
       color: #ffffff;
       box-shadow: 0 6px 18px -6px rgba(37, 99, 235, 0.55);
@@ -2485,7 +2489,7 @@ const injectStyles = () => {
       box-shadow: 0 0 20px rgba(59, 130, 246, 0.40);
     }
 
-    .title { letter-spacing: -0.02em; font-weight: 700; }
+    html .title { letter-spacing: -0.02em; font-weight: 700; }
 
     .btn-small {
       transition: background var(--dur-fast) ease, box-shadow var(--dur-fast) ease,

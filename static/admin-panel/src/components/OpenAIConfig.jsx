@@ -774,9 +774,13 @@ export default function OpenAIConfig({ invoke }) {
           setLmConcurrency(r.limit || 0);
           setLmConcurrencyInput(r.limit ? String(r.limit) : "");
         }
+      } catch (e) { /* non-fatal — cap is optional */ }
+      // Independent of the cap load: a concurrency-resolver failure must not
+      // hide the saved pool value (defaults ON if this also fails).
+      try {
         const rp = await invoke("getLmStudioPool");
         if (!cancelled && rp && rp.success) setLmPool(rp.enabled !== false);
-      } catch (e) { /* non-fatal — cap + pool are optional */ }
+      } catch (e) { /* non-fatal — pool defaults ON */ }
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps

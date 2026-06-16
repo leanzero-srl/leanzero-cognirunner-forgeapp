@@ -481,6 +481,25 @@ const injectStyles = () => {
       overflow-y: auto;
       border-radius: inherit;
     }
+    /* Paginated logs (Logs tab): no inner scroll — the page bounds the height,
+       and the pagination control pages through the 50-entry window. */
+    .logs-list-paged { border-radius: inherit; }
+    .logs-pagination {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      padding: 10px 14px;
+      border-top: 1px solid var(--border-color);
+    }
+    .logs-pagination-info {
+      font-size: 12px;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      color: var(--text-secondary);
+      min-width: 90px;
+      text-align: center;
+    }
 
     /* === Active Jobs (queued + ongoing async work) === */
     .jobs-list { max-height: 420px; overflow-y: auto; border-radius: inherit; }
@@ -4263,6 +4282,10 @@ const TABS = [
   { key: "settings", label: "Settings", adminOnly: true },
 ];
 
+// Execution Logs page size (logs are capped at 50 server-side, so this paginates
+// the recent window client-side).
+const LOGS_PAGE_SIZE = 10;
+
 // Map a task type to a short human label + the badge hue class used in the
 // Active Jobs panel and per-rule chips.
 const JOB_TYPE_LABEL = {
@@ -4291,7 +4314,8 @@ function App() {
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [logsLoading, setLogsLoading] = useState(false);
-  const [showLogs, setShowLogs] = useState(false);
+  const [showLogs, setShowLogs] = useState(true);
+  const [logsPage, setLogsPage] = useState(0);
   const [licenseActive, setLicenseActive] = useState(null);
   const [isAdmin, setIsAdmin] = useState(false);
   const [userRole, setUserRole] = useState(null); // "viewer" | "editor" | "admin" | null
@@ -4397,6 +4421,7 @@ function App() {
       const result = await invoke("getLogs");
       if (result.success) {
         setLogs(result.logs || []);
+        setLogsPage(0); // newest page after a (re)fetch
       }
     } catch (e) {
       console.error("Failed to fetch logs:", e);
@@ -4534,7 +4559,15 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab]);
 
+  // Execution Logs are expanded by default — auto-load them when the Logs tab
+  // opens (fresh data each visit, same as clicking Refresh).
+  useEffect(() => {
+    if (activeTab === "logs" && showLogs) fetchLogs();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab]);
+
   const canKill = userRole === "editor" || userRole === "admin";
+  const totalLogPages = Math.max(1, Math.ceil(logs.length / LOGS_PAGE_SIZE));
 
   // Group active (queued + running) jobs by ruleId for the per-rule chips.
   const jobsByRule = {};
@@ -5279,9 +5312,32 @@ function App() {
                   <div className="logs-empty-caption">Runs of your validators, conditions, and post functions will show up here.</div>
                 </div>
               ) : (
-                <div className="logs-list stagger">
-                  {logs.map((log) => renderLogEntry(log))}
-                </div>
+                <>
+                  <div className="logs-list-paged stagger">
+                    {logs.slice(logsPage * LOGS_PAGE_SIZE, (logsPage + 1) * LOGS_PAGE_SIZE).map((log) => renderLogEntry(log))}
+                  </div>
+                  {logs.length > LOGS_PAGE_SIZE && (
+                    <div className="logs-pagination">
+                      <button
+                        className="btn-small"
+                        onClick={() => setLogsPage((p) => Math.max(0, p - 1))}
+                        disabled={logsPage === 0}
+                      >
+                        ‹ Prev
+                      </button>
+                      <span className="logs-pagination-info">
+                        {logsPage * LOGS_PAGE_SIZE + 1}–{Math.min((logsPage + 1) * LOGS_PAGE_SIZE, logs.length)} of {logs.length}
+                      </span>
+                      <button
+                        className="btn-small"
+                        onClick={() => setLogsPage((p) => Math.min(totalLogPages - 1, p + 1))}
+                        disabled={logsPage >= totalLogPages - 1}
+                      >
+                        Next ›
+                      </button>
+                    </div>
+                  )}
+                </>
               )}
             </div>
           )}

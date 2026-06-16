@@ -5964,6 +5964,32 @@ resolver.define("saveLmStudioConcurrency", async ({ payload, context }) => {
   }
 });
 
+// LM Studio multi-model pool toggle — when ON (default), runtime validator /
+// condition AI calls spread across all loaded models (capability-aware). A no-op
+// unless 2+ models are loaded. See resolveLmStudioModel.
+resolver.define("getLmStudioPool", async () => {
+  try {
+    return { success: true, enabled: await isLmStudioPoolEnabled() };
+  } catch (error) {
+    return { success: false, error: error.message, enabled: true };
+  }
+});
+
+resolver.define("saveLmStudioPool", async ({ payload, context }) => {
+  if (!(await requireRole(context.accountId, "admin"))) {
+    return { success: false, error: "Admin access required" };
+  }
+  const enabled = payload?.enabled !== false;
+  try {
+    await storage.set(LMSTUDIO_POOL_KEY, enabled);
+    _cachedPoolEnabled = enabled; // refresh this instance's cache immediately
+    _cachedPoolEnabledAt = Date.now();
+    return { success: true, enabled };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
 // Old synchronous reviewConfig removed — now handled by async-handler.js
 
 /**
@@ -6053,6 +6079,7 @@ resolver.define("testValidation", async ({ payload }) => {
       issueSummary: issue.fields?.summary,
       toolInfo,
       mode: useTools ? "agentic" : "standard",
+      modelUsed: validationResult.modelUsed || validationResult.toolMeta?.modelUsed || null,
       logs,
       executionTimeMs: Date.now() - startTime,
     };
@@ -8086,6 +8113,107 @@ const getLmStudioModelDetail = async (modelId) => {
   }
 };
 
+// --- LM Studio multi-model pool ---------------------------------------------
+// When the LM Studio provider has 2+ models loaded, spread runtime AI calls
+// (validators / conditions / semantic post-functions) across all of them so
+// concurrent transitions exercise every loaded model instance — and, with LM
+// Link, every linked device — instead of pinning all load to the single
+// configured model. Capability-aware: agentic (tool) calls only target
+// tool-trained models; vision calls only target VLMs. This is a no-op unless
+// 2+ models are loaded, so single-model setups behave exactly as before.
+//
+// Opt-out via COGNIRUNNER_LMSTUDIO_POOL === false (default ON). The model that
+// actually served each call is mirrored to the cogni-debug issue property when
+// debugTrace is on, so the test harness can prove the spread is real.
+const LMSTUDIO_POOL_KEY = "COGNIRUNNER_LMSTUDIO_POOL";
+let _cachedPoolEnabled = null;
+let _cachedPoolEnabledAt = 0;
+const isLmStudioPoolEnabled = async () => {
+  if (_cachedPoolEnabled !== null && _cacheFresh(_cachedPoolEnabledAt)) return _cachedPoolEnabled;
+  let v;
+  try { v = await storage.get(LMSTUDIO_POOL_KEY); } catch { v = undefined; }
+  _cachedPoolEnabled = v !== false; // default ON; only an explicit false disables it
+  _cachedPoolEnabledAt = Date.now();
+  return _cachedPoolEnabled;
+};
+
+// Short-TTL cache of currently-loaded LM Studio models (id + capabilities +
+// device). Only /api/v1/models exposes loaded_instances + capabilities, so the
+// pool requires that endpoint; older builds (api/v0, v1) simply never pool.
+let _cachedLoadedModels = null;
+let _cachedLoadedModelsAt = 0;
+const LOADED_MODELS_TTL_MS = 15000;
+const getLmStudioLoadedModels = async () => {
+  if (_cachedLoadedModels && Date.now() - _cachedLoadedModelsAt < LOADED_MODELS_TTL_MS) {
+    return _cachedLoadedModels;
+  }
+  let loaded = [];
+  try {
+    const { provider, baseUrl } = await getProviderConfig();
+    if (provider === "lmstudio" && baseUrl) {
+      const apiKey = await storage.get(providerKeySlot("lmstudio"));
+      const headers = { Accept: "application/json" };
+      if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
+      const resp = await fetch(`${baseUrl}/api/v1/models`, { method: "GET", headers });
+      if (resp.ok) {
+        const data = await resp.json();
+        const items = Array.isArray(data.models) ? data.models : [];
+        loaded = items
+          .filter((m) => Array.isArray(m.loaded_instances) && m.loaded_instances.length > 0)
+          .filter((m) => { const t = m.type || "llm"; return t !== "embedding" && t !== "embeddings"; })
+          .map((m) => {
+            const inst = m.loaded_instances[0] || {};
+            return {
+              id: m.key || m.id,
+              vision: !!(m.capabilities && m.capabilities.vision),
+              toolUse: !!(m.capabilities && m.capabilities.trained_for_tool_use),
+              device: inst.device || inst.host || inst.node || inst.machine || inst.instance_name || inst.device_name || m.device || null,
+              instances: m.loaded_instances.length,
+            };
+          })
+          .filter((m) => m.id);
+        // Stable order → deterministic round-robin within a warm function instance.
+        loaded.sort((a, b) => String(a.id).localeCompare(String(b.id)));
+      }
+    }
+  } catch (e) {
+    console.log("getLmStudioLoadedModels skipped:", e.message);
+    loaded = [];
+  }
+  _cachedLoadedModels = loaded;
+  _cachedLoadedModelsAt = Date.now();
+  return loaded;
+};
+
+// Round-robin cursor, seeded randomly per Forge function instance so that
+// concurrent instances start on different models (Math.random is fine in app
+// code — only the Workflow orchestration sandbox forbids it).
+let _lmPoolCursor = Math.floor(Math.random() * 997);
+
+// Resolve which LM Studio model should serve a single runtime AI call. Returns
+// `requestedModel` unchanged unless pooling applies: provider === lmstudio, the
+// pool is enabled, 2+ models are loaded, and at least one fits the requested
+// capabilities. Best-effort — any error falls back to the configured model.
+const resolveLmStudioModel = async (requestedModel, opts = {}) => {
+  try {
+    const { provider } = await getProviderConfig();
+    if (provider !== "lmstudio") return requestedModel;
+    if (!(await isLmStudioPoolEnabled())) return requestedModel;
+    const loaded = await getLmStudioLoadedModels();
+    if (loaded.length < 2) return requestedModel;
+    let pool = loaded;
+    if (opts.needsTools) pool = pool.filter((m) => m.toolUse);
+    if (opts.needsVision) pool = pool.filter((m) => m.vision);
+    if (pool.length === 0) return requestedModel; // capability requirement unmet → keep configured model
+    if (pool.length === 1) return pool[0].id;
+    const idx = (((_lmPoolCursor++) % pool.length) + pool.length) % pool.length;
+    return pool[idx].id;
+  } catch (e) {
+    console.log("resolveLmStudioModel fallback:", e.message);
+    return requestedModel;
+  }
+};
+
 /**
  * Extract plain text from Atlassian Document Format (ADF)
  * Used for description and other rich text fields
@@ -8554,9 +8682,11 @@ const callOpenAI = async (fieldValue, validationPrompt, attachmentParts, context
     };
   }
 
-  const model = await getOpenAIModel();
-
+  const baseModel = await getOpenAIModel();
   const hasAttachments = attachmentParts && attachmentParts.length > 0;
+  // LM Studio multi-model pool: spread non-agentic validations across loaded
+  // models (vision-capable ones when attachments are present). No-op elsewhere.
+  const model = await resolveLmStudioModel(baseModel, { needsVision: hasAttachments });
 
   const systemPrompt = (hasAttachments
     ? `You are a validation assistant. Your job is to validate content (text, documents, images, and attachments) against specific criteria.
@@ -8625,11 +8755,13 @@ Respond with JSON only.`;
           isValid: true,
           reason: `AI service temporarily unavailable (${result.status}) — transition allowed (fail-open).`,
           transientError: true,
+          modelUsed: model,
         };
       }
       return {
         isValid: false,
         reason: `AI service error: ${result.status}`,
+        modelUsed: model,
       };
     }
 
@@ -8639,6 +8771,7 @@ Respond with JSON only.`;
       return {
         isValid: false,
         reason: "Empty response from AI service",
+        modelUsed: model,
       };
     }
 
@@ -8648,17 +8781,20 @@ Respond with JSON only.`;
       return {
         isValid: false,
         reason: `AI returned malformed JSON: ${content.substring(0, 120)}`,
+        modelUsed: model,
       };
     }
     return {
       isValid: parsed.isValid === true,
       reason: typeof parsed.reason === "string" ? parsed.reason : "No reason provided",
+      modelUsed: model,
     };
   } catch (error) {
     console.error("Error calling AI:", error);
     return {
       isValid: false,
       reason: `AI validation error: ${error.message}`,
+      modelUsed: model,
     };
   }
 };
@@ -9053,7 +9189,11 @@ const callOpenAIWithTools = async (fieldValue, validationPrompt, attachmentParts
     };
   }
 
-  const model = await getOpenAIModel();
+  const baseModel = await getOpenAIModel();
+  // LM Studio multi-model pool: pin one tool-capable loaded model for the whole
+  // agentic loop (so the multi-round conversation stays on one model). No-op
+  // unless 2+ tool-capable models are loaded.
+  const model = await resolveLmStudioModel(baseModel, { needsTools: true });
 
   // LM Studio capability gate: refuse the agentic loop when the chosen model
   // wasn't trained for tool use. Per LM Studio docs, only "Native"-supported
@@ -9071,7 +9211,7 @@ const callOpenAIWithTools = async (fieldValue, validationPrompt, attachmentParts
       if (modelsResult && modelsResult.toolUse === false) {
         const reason = `Cannot run agentic validation: LM Studio model "${model}" is not trained for tool use. Pick a Native-tool model (Qwen2.5-7B+, Llama-3.1+, Llama-3.2+, Ministral-8B+) in CogniRunner Settings, or remove duplicate-detection wording from your validation prompt to use standard validation instead.`;
         console.warn(reason);
-        return { isValid: true, reason, toolMeta: { toolsUsed: false, skippedReason: "lmstudio-non-tool-model" } };
+        return { isValid: true, reason, toolMeta: { toolsUsed: false, skippedReason: "lmstudio-non-tool-model", modelUsed: model } };
       }
     }
   } catch (e) {
@@ -9161,6 +9301,7 @@ RESPONSE FORMAT:
     toolRounds: 0,
     queries: [],    // JQL queries executed
     totalResults: 0, // total Jira issues returned across all queries
+    modelUsed: model, // which (pooled) LM Studio model served this validation
   };
 
   // Agentic loop: up to MAX_TOOL_ROUNDS tool-call iterations + 1 final answer iteration
@@ -10279,6 +10420,10 @@ export const validate = async (args) => {
       logEntry.toolMeta.skippedReason = validationResult.toolMeta.skippedReason;
     }
   }
+  // Which model actually served this validation (LM Studio pool observability —
+  // surfaced to the cogni-debug property so the harness can prove the spread).
+  const servedModel = validationResult.modelUsed || validationResult.toolMeta?.modelUsed || null;
+  if (servedModel) logEntry.modelUsed = servedModel;
   if (contextDocsText) {
     logEntry.docsUsed = true;
   }

@@ -332,6 +332,88 @@ const PF_BRAKE_PREFIX = "pf_brake:";
 const PF_BRAKE_BUCKET_MS = 300000; // 5-minute fixed window (boundary leakage ≤2x — fine for a brake)
 const PF_BRAKE_MAX_PER_BUCKET = 10;
 
+// === Async job tracking (operational visibility + kill switch) ===
+// A durable row PER queued async job, SEPARATE from async_task:{id} (the poll/
+// delete result cache that only exists post-start, is deleted on poll, and is
+// never written for fire-and-forget tasks). Written at enqueue ("queued"),
+// updated by the consumer ("running" -> "done"/"error"/"cancelled"). TTL: 2h
+// while active (caps hung jobs — the consumer hard-stops at 120s, so >10min
+// "running" is flagged stalled by getAsyncJobs), 20min once terminal (recent
+// strip, then auto-expire — no sweeper needed). EVERY write is best-effort:
+// a missing/failed job row must NEVER break enqueue or task execution.
+const JOB_PREFIX = "async_job:";
+export const JOB_TTL_ACTIVE = { ttl: { value: 2, unit: "HOURS" } };
+export const JOB_TTL_DONE = { ttl: { value: 20, unit: "MINUTES" } };
+
+export const writeAsyncJob = async (row, ttlOpt = JOB_TTL_ACTIVE) => {
+  try {
+    if (!row || !row.taskId) return;
+    await storage.set(`${JOB_PREFIX}${row.taskId}`, row, ttlOpt);
+  } catch (e) { /* best-effort: operational metadata is never load-bearing */ }
+};
+
+// Read-merge-write so the consumer updates status without losing enqueue
+// metadata. If the enqueue row never landed (best-effort write failed), `base`
+// seeds a minimal row so the job still appears in the UI.
+export const updateAsyncJob = async (taskId, patch, ttlOpt = JOB_TTL_ACTIVE, base = {}) => {
+  try {
+    if (!taskId) return;
+    const existing = (await storage.get(`${JOB_PREFIX}${taskId}`)) || base;
+    // "cancelled" is a STICKY TERMINAL status. Once set, NO later update from the
+    // still-finishing consumer (running / done / error — each a separate KVS
+    // round-trip that can race a cancel) may resurrect the row OR re-extend its
+    // TTL: the operator stopped it, so the UI must keep showing it stopped and it
+    // must still age out on the short terminal TTL, not the 2h active one.
+    if (existing.status === "cancelled" && patch.status !== "cancelled") {
+      await storage.set(`${JOB_PREFIX}${taskId}`, { ...existing, ...patch, status: "cancelled", taskId }, JOB_TTL_DONE);
+      return;
+    }
+    await storage.set(`${JOB_PREFIX}${taskId}`, { ...existing, ...patch, taskId }, ttlOpt);
+  } catch (e) { /* best-effort */ }
+};
+
+// Cooperative cancellation. Forge's native queue.getJob(jobId).cancel() stops
+// not-yet-started events but CANNOT interrupt a running invocation, so we pair
+// it with a KVS flag the consumer checks at its checkpoint and every runtime
+// write site checks before mutating Jira — guaranteeing no side-effects land
+// after a cancel even if the in-flight AI call finishes. Fail-open on read
+// error (never block a legitimate write because a KVS read hiccuped).
+const CANCEL_PREFIX = "pf_cancel:";
+const CANCEL_EPOCH_KEY = "pf_cancel_epoch";
+const CANCEL_TTL = { ttl: { value: 2, unit: "HOURS" } };
+
+export const isJobCancelled = async (taskId, enqueuedAt) => {
+  try {
+    if (taskId) {
+      const flag = await storage.get(`${CANCEL_PREFIX}${taskId}`);
+      if (flag) return true;
+    }
+    if (enqueuedAt) {
+      const epoch = await storage.get(CANCEL_EPOCH_KEY);
+      if (epoch && Date.parse(enqueuedAt) <= Date.parse(epoch)) return true;
+    }
+  } catch (e) { /* fail-open */ }
+  return false;
+};
+
+// Per-provider concurrency cap for LM Studio. Forge runs queue events in
+// parallel by default; a concurrency key+limit bounds how many LM Studio jobs
+// run at once (the owner's "N threads" control — keeps slow self-hosted models
+// from thrashing a device). 0/unset => uncapped. Clamped to a sane ceiling.
+const LMSTUDIO_CONCURRENCY_KEY = "COGNIRUNNER_LMSTUDIO_CONCURRENCY";
+const getLmStudioConcurrencyLimit = async () => {
+  try {
+    const n = Number(await storage.get(LMSTUDIO_CONCURRENCY_KEY));
+    return Number.isFinite(n) && n > 0 ? Math.min(Math.floor(n), 50) : 0;
+  } catch (e) { return 0; }
+};
+// Wrap a push event with the configured concurrency cap. `key` is constant so
+// the limit pools across ALL LM Studio jobs app-wide.
+const withLmStudioConcurrency = async (event) => {
+  const limit = await getLmStudioConcurrencyLimit();
+  return limit > 0 ? { ...event, concurrency: { key: "lmstudio", limit } } : event;
+};
+
 /**
  * Race a promise against the post-function deadline. Throws a labeled Error on
  * timeout or when the budget is already exhausted, so call sites surface a clear
@@ -765,22 +847,25 @@ const storeLog = async (logEntry) => {
  * Read the most recent log entries (newest first). Merges the legacy single-key
  * array (pre-migration entries) with the per-entry keys, capped at MAX_LOGS.
  */
-const readLogs = async () => {
+const readLogs = async (ruleId = null) => {
   // Fetch a full page (max 100) and sort client-side — query result order is
   // undocumented. Keys are fixed-width inverted timestamps, so ascending
-  // lexicographic order = newest first.
+  // lexicographic order = newest first. When ruleId is given (per-rule
+  // accordion), filter BEFORE the MAX_LOGS slice so a rule's entries aren't
+  // crowded out of the global top-N.
   const page = await storage.query()
     .where("key", { condition: "BEGINS_WITH", values: [LOG_ENTRY_PREFIX] })
     .limit(100)
     .getMany();
-  let logs = (page.results || [])
+  const sorted = (page.results || [])
     .slice()
     .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
-    .slice(0, MAX_LOGS)
     .map((r) => r.value);
+  let logs = (ruleId ? sorted.filter((l) => l && l.ruleId === ruleId) : sorted).slice(0, MAX_LOGS);
   if (logs.length < MAX_LOGS) {
     try {
-      const legacy = (await storage.get(LOGS_STORAGE_KEY)) || [];
+      const legacyAll = (await storage.get(LOGS_STORAGE_KEY)) || [];
+      const legacy = ruleId ? legacyAll.filter((l) => l && l.ruleId === ruleId) : legacyAll;
       if (Array.isArray(legacy) && legacy.length > 0) {
         logs = [...logs, ...legacy].slice(0, MAX_LOGS);
       }
@@ -807,9 +892,9 @@ resolver.define("checkLicense", ({ context }) => {
 /**
  * Resolver: Get validation logs
  */
-resolver.define("getLogs", async () => {
+resolver.define("getLogs", async ({ payload }) => {
   try {
-    const logs = await readLogs();
+    const logs = await readLogs(payload?.ruleId || null);
     return { success: true, logs };
   } catch (error) {
     console.error("Failed to get logs:", error);
@@ -3113,12 +3198,22 @@ resolver.define("getOpenAIModels", async ({ payload }) => {
       const enriched = rawItems
         .map((m) => {
           if (schemaSource === "api/v1") {
+            // LM Link device label (probe-gated): when a model is loaded on a
+            // REMOTE linked device, LM Studio MAY tag the loaded instance with a
+            // device/host identifier. The exact field name is unverified until
+            // tested on the real multi-Mac rig — so we read a set of plausible
+            // candidates defensively and fall back to null (flat list, no
+            // regression) when none are present.
+            const inst = Array.isArray(m.loaded_instances) && m.loaded_instances.length > 0 ? m.loaded_instances[0] : null;
+            const device = (inst && (inst.device || inst.host || inst.node || inst.machine || inst.instance_name || inst.device_name))
+              || m.device || m.host || m.machine || null;
             return {
               id: m.key || m.id,
               type: m.type || "llm",
               vision: !!(m.capabilities && m.capabilities.vision),
               toolUse: !!(m.capabilities && m.capabilities.trained_for_tool_use),
               state: Array.isArray(m.loaded_instances) && m.loaded_instances.length > 0 ? "loaded" : "not-loaded",
+              device: device || null,
               quantization: m.quantization && (m.quantization.name || m.quantization) || null,
               max_context_length: m.max_context_length || null,
               arch: m.architecture || m.arch || null,
@@ -3134,6 +3229,7 @@ resolver.define("getOpenAIModels", async ({ payload }) => {
               vision: m.type === "vlm",
               toolUse: false, // v0 doesn't expose this
               state: m.state || null,
+              device: null, // v0 has no device/LM Link field
               quantization: m.quantization || null,
               max_context_length: m.max_context_length || null,
               arch: m.arch || null,
@@ -3149,6 +3245,7 @@ resolver.define("getOpenAIModels", async ({ payload }) => {
             vision: false,
             toolUse: false,
             state: null,
+            device: null,
             quantization: null,
             max_context_length: null,
             arch: null,
@@ -5433,7 +5530,21 @@ const queueCodegenTask = async (taskType, payload = {}) => {
     if (Buffer.byteLength(JSON.stringify(body), "utf8") > 180000) {
       return { success: false, error: "Request too large to queue for the LM Studio provider — shorten the description, code, or inline context." };
     }
-    await queue.push({ body });
+    // This helper is only reached when the active provider is LM Studio, so a
+    // per-provider concurrency cap keeps slow self-hosted jobs from thrashing
+    // the device (Forge processes queue events in parallel by default).
+    const pushResult = await queue.push(await withLmStudioConcurrency({ body }));
+    await writeAsyncJob({
+      taskId, jobId: pushResult?.jobId || null,
+      taskType, status: "queued",
+      ruleId: payload.ruleId || null,
+      ruleName: params.name || taskType,
+      issueKey: null,
+      provider: "lmstudio",
+      model: null,
+      accountId: payload.accountId || null,
+      enqueuedAt: new Date().toISOString(),
+    });
     return { success: true, async: true, taskId };
   } catch (error) {
     console.error(`Failed to queue ${taskType} task:`, error);
@@ -5633,7 +5744,7 @@ resolver.define("searchIssues", async ({ payload }) => {
  * Submit an async AI review task. Returns immediately with a taskId.
  * Frontend polls getAsyncTaskResult to get the result.
  */
-resolver.define("reviewConfig", async ({ payload }) => {
+resolver.define("reviewConfig", async ({ payload, context }) => {
   const { configType, config } = payload;
   if (!configType || !config) {
     return { success: false, error: "No configuration to review" };
@@ -5643,6 +5754,8 @@ resolver.define("reviewConfig", async ({ payload }) => {
     const { Queue } = await import("@forge/events");
     const queue = new Queue({ key: "async-ai-queue" });
     const taskId = `review_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    let reviewProvider = null;
+    try { reviewProvider = (await getProviderConfig()).provider; } catch { /* provider unknown */ }
 
     // Trim config to avoid exceeding Queue payload size limit (200KB)
     const trimmedConfig = { ...config };
@@ -5657,8 +5770,20 @@ resolver.define("reviewConfig", async ({ payload }) => {
     if (trimmedConfig.conditionPrompt) trimmedConfig.conditionPrompt = trimmedConfig.conditionPrompt.substring(0, 1000);
     if (trimmedConfig.actionPrompt) trimmedConfig.actionPrompt = trimmedConfig.actionPrompt.substring(0, 1000);
 
-    await queue.push({
-      body: { taskType: "review", taskId, params: { configType, config: trimmedConfig } },
+    const reviewEvent = { body: { taskType: "review", taskId, params: { configType, config: trimmedConfig } } };
+    const pushResult = await queue.push(
+      reviewProvider === "lmstudio" ? await withLmStudioConcurrency(reviewEvent) : reviewEvent,
+    );
+    await writeAsyncJob({
+      taskId, jobId: pushResult?.jobId || null,
+      taskType: "review", status: "queued",
+      ruleId: config.ruleId || config.id || null,
+      ruleName: `${configType} review`,
+      issueKey: null,
+      provider: reviewProvider,
+      model: null,
+      accountId: context?.accountId || null,
+      enqueuedAt: new Date().toISOString(),
     });
 
     return { success: true, taskId, async: true };
@@ -5689,6 +5814,151 @@ resolver.define("getAsyncTaskResult", async ({ payload }) => {
       return { success: true, status: "error", error: result.error };
     }
     return { success: true, status: "unknown" };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+/**
+ * List queued + ongoing + recently-finished async jobs for the operational
+ * Jobs panel (Logs tab) and per-rule chips (Rules tab). Reads the durable
+ * async_job:{id} rows (separate from the async_task poll cache). Ungated read,
+ * mirroring getLogs (the panel lives in the same Logs tab and surfaces the same
+ * class of data); the destructive cancel resolvers below are editor-gated.
+ * Optional { ruleId } filter drives the per-rule accordion.
+ */
+resolver.define("getAsyncJobs", async ({ payload }) => {
+  const ruleId = payload?.ruleId || null;
+  try {
+    const page = await storage.query()
+      .where("key", { condition: "BEGINS_WITH", values: [JOB_PREFIX] })
+      .limit(100)
+      .getMany();
+    const now = Date.now();
+    let rows = (page.results || []).map((r) => r.value).filter(Boolean);
+    if (ruleId) rows = rows.filter((j) => j.ruleId === ruleId);
+    // A "running" row older than 10min is definitively dead (the consumer's
+    // hard cap is 120s) — flag it stalled so the UI shows it without it
+    // masquerading as live work until the 2h TTL reaps it.
+    for (const j of rows) {
+      if (j.status === "running" && j.startedAt && now - Date.parse(j.startedAt) > 10 * 60 * 1000) {
+        j.stalled = true;
+      }
+    }
+    const byNewest = (field) => (a, b) =>
+      (a[field] || "") < (b[field] || "") ? 1 : (a[field] || "") > (b[field] || "") ? -1 : 0;
+    const queued = rows.filter((j) => j.status === "queued").sort(byNewest("enqueuedAt"));
+    const running = rows.filter((j) => j.status === "running").sort(byNewest("startedAt"));
+    const recent = rows
+      .filter((j) => j.status === "done" || j.status === "error" || j.status === "cancelled")
+      .sort(byNewest("finishedAt"))
+      .slice(0, 15);
+    return {
+      success: true,
+      jobs: { queued, running, recent },
+      activeCount: queued.length + running.length,
+    };
+  } catch (error) {
+    console.error("Failed to list async jobs:", error);
+    return { success: false, error: error.message, jobs: { queued: [], running: [], recent: [] }, activeCount: 0 };
+  }
+});
+
+/**
+ * Stop a single async job. Native Forge cancel (stops not-yet-started events) +
+ * a cooperative pf_cancel flag that the consumer checkpoint and every runtime
+ * write site honor — guaranteeing no further Jira writes even if an in-flight
+ * AI call finishes. Editor-gated (destructive).
+ */
+resolver.define("cancelJob", async ({ payload, context }) => {
+  if (!(await requireRole(context.accountId, "editor"))) {
+    return { success: false, error: "Editor access required" };
+  }
+  const { taskId } = payload || {};
+  if (!taskId) return { success: false, error: "No taskId" };
+  try {
+    const row = await storage.get(`${JOB_PREFIX}${taskId}`);
+    // Cooperative flag FIRST — closes the write window before touching the queue.
+    await storage.set(`${CANCEL_PREFIX}${taskId}`, true, CANCEL_TTL);
+    if (row?.jobId) {
+      try {
+        const { Queue } = await import("@forge/events");
+        const queue = new Queue({ key: "async-ai-queue" });
+        await queue.getJob(row.jobId).cancel();
+      } catch (e) { console.warn(`[cancelJob] native cancel failed for ${taskId}:`, e?.message); }
+    }
+    await updateAsyncJob(taskId, { status: "cancelled", finishedAt: new Date().toISOString() }, JOB_TTL_DONE,
+      { taskId, status: "cancelled" });
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+/**
+ * Kill switch: cancel ALL queued + running jobs. Sets a global cancel epoch
+ * (backstop for jobs whose row write was lost), a per-job flag for each known
+ * job, native-cancels each job's queue events, and marks the rows cancelled.
+ * Editor-gated (destructive).
+ */
+resolver.define("cancelAllQueuedJobs", async ({ context }) => {
+  if (!(await requireRole(context.accountId, "editor"))) {
+    return { success: false, error: "Editor access required" };
+  }
+  try {
+    const nowIso = new Date().toISOString();
+    // Epoch backstop: the consumer cancels any job enqueued at/before this.
+    await storage.set(CANCEL_EPOCH_KEY, nowIso, CANCEL_TTL);
+    const page = await storage.query()
+      .where("key", { condition: "BEGINS_WITH", values: [JOB_PREFIX] })
+      .limit(100)
+      .getMany();
+    const rows = (page.results || []).map((r) => r.value).filter(Boolean)
+      .filter((j) => j.status === "queued" || j.status === "running");
+    let queue = null;
+    try {
+      const { Queue } = await import("@forge/events");
+      queue = new Queue({ key: "async-ai-queue" });
+    } catch (e) { /* native cancel is best-effort; the flag + epoch still apply */ }
+    let cancelled = 0;
+    for (const j of rows) {
+      try {
+        await storage.set(`${CANCEL_PREFIX}${j.taskId}`, true, CANCEL_TTL);
+        if (queue && j.jobId) {
+          try { await queue.getJob(j.jobId).cancel(); } catch (e) { /* best-effort */ }
+        }
+        await updateAsyncJob(j.taskId, { status: "cancelled", finishedAt: nowIso }, JOB_TTL_DONE);
+        cancelled++;
+      } catch (e) { /* continue cancelling the rest */ }
+    }
+    return { success: true, cancelled };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+/**
+ * Max-concurrent LM Studio jobs cap (the owner's "N threads" control). Forge
+ * runs queued events in parallel by default; this bounds how many LM Studio
+ * jobs run at once via Forge's per-event concurrency key. 0 = uncapped.
+ */
+resolver.define("getLmStudioConcurrency", async () => {
+  try {
+    return { success: true, limit: await getLmStudioConcurrencyLimit() };
+  } catch (error) {
+    return { success: false, error: error.message, limit: 0 };
+  }
+});
+
+resolver.define("saveLmStudioConcurrency", async ({ payload, context }) => {
+  if (!(await requireRole(context.accountId, "admin"))) {
+    return { success: false, error: "Admin access required" };
+  }
+  const raw = Number(payload?.limit);
+  const limit = Number.isFinite(raw) && raw > 0 ? Math.min(Math.floor(raw), 50) : 0;
+  try {
+    await storage.set(LMSTUDIO_CONCURRENCY_KEY, limit);
+    return { success: true, limit };
   } catch (error) {
     return { success: false, error: error.message };
   }
@@ -10037,7 +10307,7 @@ export const validate = async (args) => {
  * Execute a semantic post-function: AI evaluates condition, then updates target field.
  * Returns { success, decision, value?, reason } — never throws.
  */
-const executeSemanticPostFunction = async (issueKey, config, deadline = Date.now() + PF_BUDGET_MS) => {
+const executeSemanticPostFunction = async (issueKey, config, deadline = Date.now() + PF_BUDGET_MS, cancelToken = null) => {
   const { conditionPrompt, actionPrompt, actionFieldId, fieldId } = config;
   const trace = []; // Execution trace for detailed logging
   const sourceFieldId = fieldId || "description";
@@ -10300,6 +10570,15 @@ const executeSemanticPostFunction = async (issueKey, config, deadline = Date.now
           : route`/rest/api/3/issue/${issueKey}`,
         { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(updateBody) },
       );
+      // KILL SWITCH (write boundary) — last check before the only Jira write a
+      // semantic PF performs. A job stopped mid AI-call lands here and skips
+      // the write entirely; the guarantee ("no further Jira change") holds.
+      if (cancelToken && await isJobCancelled(cancelToken)) {
+        trace.push("Job cancelled — field update skipped (no Jira write performed).");
+        return { success: false, decision: result.decision, value: result.value, cancelled: true,
+          reason: "Cancelled before write — no Jira change was made.", trace,
+          aiTimeMs, tokens, sourceFieldId, docCount };
+      }
       let updateResponse = await doUpdate();
       if (!updateResponse.ok && updateResponse.status === 403 && suppressNotifs) {
         trace.push("Jira refused notifyUsers=false (HTTP 403 — suppression requires project admin permission). Retrying with notifications enabled...");
@@ -10408,7 +10687,7 @@ const executeSemanticPostFunction = async (issueKey, config, deadline = Date.now
  * a document body from the issue content + instruction, then doc-processor creates the
  * file and attaches it to the issue via the upload bridge. Single-shot, fail-open.
  */
-const executeGenerateDocPostFunction = async (issueKey, config, deadline = Date.now() + PF_BUDGET_MS) => {
+const executeGenerateDocPostFunction = async (issueKey, config, deadline = Date.now() + PF_BUDGET_MS, cancelToken = null) => {
   const trace = [];
   const sourceFieldId = config.fieldId || "description";
   const format = DOC_FORMAT_TOOL[config.docFormat] ? config.docFormat : "pdf";
@@ -10450,6 +10729,13 @@ const executeGenerateDocPostFunction = async (issueKey, config, deadline = Date.
       reason: `[SIMULATION] Would generate and attach "${gen.title}.${DOC_FORMAT_EXT[format]}" (${gen.content.length} chars authored)`, trace };
   }
 
+  // KILL SWITCH — a cancel during the slow AI authoring above must skip every
+  // remaining write (attachment + linking comment). No change lands after a stop.
+  if (cancelToken && await isJobCancelled(cancelToken)) {
+    trace.push("Job cancelled — document creation/attachment skipped (no change made).");
+    return { success: false, decision: "GENERATE", cancelled: true, reason: "Cancelled before write — no change was made.", trace };
+  }
+
   // 2) Mint upload cap + create + attach.
   const uploadCap = await mintPfUploadCap(issueKey, config.actorAccountId);
   if (!uploadCap) {
@@ -10466,8 +10752,9 @@ const executeGenerateDocPostFunction = async (issueKey, config, deadline = Date.
   }
   trace.push(`Attached "${created.filename}"`);
 
-  // 3) Optional linking comment.
-  if (config.attachComment) {
+  // 3) Optional linking comment (re-check the kill switch — keeps "no further
+  // writes after a stop" airtight even in the ms window past the attachment).
+  if (config.attachComment && !(cancelToken && await isJobCancelled(cancelToken))) {
     const ok = await postIssueComment(issueKey, `📎 CogniRunner generated and attached "${created.filename}".`);
     trace.push(ok ? "Posted a linking comment" : "Linking comment failed (non-fatal)");
   }
@@ -10479,7 +10766,7 @@ const executeGenerateDocPostFunction = async (issueKey, config, deadline = Date.
  * web-search MCP and saves the results into the shared DocRepository as a reusable
  * Research doc (dedup-updated). Single-shot, fail-open.
  */
-const executeResearchPostFunction = async (issueKey, config, deadline = Date.now() + PF_BUDGET_MS) => {
+const executeResearchPostFunction = async (issueKey, config, deadline = Date.now() + PF_BUDGET_MS, cancelToken = null) => {
   const trace = [];
   const sourceFieldId = config.fieldId || "description";
   if (!(await mcpEnabled("webSearch"))) {
@@ -10512,6 +10799,12 @@ const executeResearchPostFunction = async (issueKey, config, deadline = Date.now
       reason: `[SIMULATION] Researched "${query.slice(0, 80)}" (${res.text.length} chars) — not saved`, trace };
   }
 
+  // KILL SWITCH — skip the doc-library write if the job was stopped during the
+  // (slow) web research above.
+  if (cancelToken && await isJobCancelled(cancelToken)) {
+    trace.push("Job cancelled — research not saved (no change made).");
+    return { success: false, decision: "RESEARCH", cancelled: true, reason: "Cancelled before write — research was not saved.", trace };
+  }
   const saved = await persistResearchDoc({ title, markdown, category: "Research", actorAccountId: config.actorAccountId });
   if (!saved.ok) { trace.push(`Save failed: ${saved.reason}`); return { success: false, decision: "RESEARCH", reason: `Saving research to the doc library failed: ${saved.reason}`, trace }; }
   trace.push(`${saved.updated ? "Updated" : "Saved"} research doc "${title}" (id ${saved.id})`);
@@ -10593,7 +10886,7 @@ const authorResearchBrief = async ({ query, title, evidence, contentPrompt, apiK
  * Distinct from "research & save" (which only writes to the doc library). Heavy → queued
  * (110s budget). Single-shot, fail-open: any gap degrades to SKIP, never blocks.
  */
-const executeResearchDocPostFunction = async (issueKey, config, deadline = Date.now() + PF_BUDGET_MS) => {
+const executeResearchDocPostFunction = async (issueKey, config, deadline = Date.now() + PF_BUDGET_MS, cancelToken = null) => {
   const trace = [];
   const sourceFieldId = config.fieldId || "description";
   const format = DOC_FORMAT_TOOL[config.docFormat] ? config.docFormat : "markdown";
@@ -10661,6 +10954,12 @@ const executeResearchDocPostFunction = async (issueKey, config, deadline = Date.
       reason: `[SIMULATION] Would research "${query.slice(0, 80)}" and attach "${authored.title}.${DOC_FORMAT_EXT[format]}"`, trace };
   }
 
+  // KILL SWITCH — skip every remaining write (attachment, comment, library copy)
+  // if the job was stopped during evidence gathering or authoring above.
+  if (cancelToken && await isJobCancelled(cancelToken)) {
+    trace.push("Job cancelled — document creation/attachment skipped (no change made).");
+    return { success: false, decision: "RESEARCH_DOC", cancelled: true, reason: "Cancelled before write — no change was made.", trace };
+  }
   // 3) Mint upload cap + create + attach (same pipeline as gendoc — inherits the F24 fix).
   const uploadCap = await mintPfUploadCap(issueKey, config.actorAccountId);
   if (!uploadCap) {
@@ -10677,13 +10976,16 @@ const executeResearchDocPostFunction = async (issueKey, config, deadline = Date.
   }
   trace.push(`Attached "${created.filename}"`);
 
-  // 4) Optional linking comment + optional copy into the doc library.
-  if (config.attachComment) {
+  // 4) Optional linking comment + optional copy into the doc library. Re-check
+  // the kill switch before each so a stop lands no further writes (the ms window
+  // past the attachment above).
+  const cancelledNow = cancelToken && await isJobCancelled(cancelToken);
+  if (config.attachComment && !cancelledNow) {
     const ok = await postIssueComment(issueKey, `📎 CogniRunner researched and attached "${created.filename}".`);
     trace.push(ok ? "Posted a linking comment" : "Linking comment failed (non-fatal)");
   }
   let docId = null;
-  if (config.alsoSaveToLibrary) {
+  if (config.alsoSaveToLibrary && !cancelledNow) {
     const saved = await persistResearchDoc({ title, markdown: `# ${authored.title}\n\n${authored.content}`, category: "Research", actorAccountId: config.actorAccountId });
     if (saved.ok) { docId = saved.id; trace.push(`Also saved to the doc library (id ${saved.id})`); }
     else trace.push(`Library save skipped: ${saved.reason}`);
@@ -10707,7 +11009,7 @@ const draftComment = async ({ fieldValue, contextDocsText, commentPrompt, source
  * Execute an "add comment" post-function (native toolbox): the AI drafts a comment
  * from the issue content + instruction and posts it. Single-shot, fail-open.
  */
-const executeCommentPostFunction = async (issueKey, config, deadline = Date.now() + PF_BUDGET_MS) => {
+const executeCommentPostFunction = async (issueKey, config, deadline = Date.now() + PF_BUDGET_MS, cancelToken = null) => {
   const trace = [];
   const sourceFieldId = config.fieldId || "description";
   const [fieldValue, contextDocsText, apiKey, model] = await Promise.all([
@@ -10739,6 +11041,11 @@ const executeCommentPostFunction = async (issueKey, config, deadline = Date.now(
       reason: `[SIMULATION] Drafted a ${draft.text.length}-char comment — not posted`, trace };
   }
 
+  // KILL SWITCH — skip the comment POST if the job was stopped while drafting.
+  if (cancelToken && await isJobCancelled(cancelToken)) {
+    trace.push("Job cancelled — comment not posted (no change made).");
+    return { success: false, decision: "COMMENT", cancelled: true, reason: "Cancelled before write — no comment was posted.", trace };
+  }
   const ok = await postIssueComment(issueKey, draft.text);
   if (!ok) { trace.push("Posting the comment failed"); return { success: false, decision: "COMMENT", reason: "Failed to post the comment", trace }; }
   trace.push("Posted comment");
@@ -10773,7 +11080,7 @@ const resolveSubtaskTypeId = async (projectId) => {
  * sub-task from the parent content and creates it under the issue. Single-shot,
  * fail-open. The canonical ScriptRunner capability, AI-assisted.
  */
-const executeSubtaskPostFunction = async (issueKey, config, deadline = Date.now() + PF_BUDGET_MS) => {
+const executeSubtaskPostFunction = async (issueKey, config, deadline = Date.now() + PF_BUDGET_MS, cancelToken = null) => {
   const trace = [];
   const sourceFieldId = config.fieldId || "description";
   // 1) Parent → project + sub-task issue type.
@@ -10814,6 +11121,11 @@ const executeSubtaskPostFunction = async (issueKey, config, deadline = Date.now(
       reason: `[SIMULATION] Would create sub-task "${gen.summary}"`, trace };
   }
 
+  // KILL SWITCH — skip sub-task creation if the job was stopped while drafting.
+  if (cancelToken && await isJobCancelled(cancelToken)) {
+    trace.push("Job cancelled — sub-task not created (no change made).");
+    return { success: false, decision: "SUBTASK", cancelled: true, reason: "Cancelled before write — no sub-task was created.", trace };
+  }
   // 3) Create it.
   try {
     const body = { fields: { project: { id: projectId }, issuetype: { id: subtaskTypeId }, parent: { key: issueKey }, summary: gen.summary, description: coerceToAdf(gen.description || gen.summary) } };
@@ -10930,7 +11242,7 @@ const resolveLinkType = async (wanted) => {
  * candidate search + conservative AI selection + issue links of the configured type.
  * Single-shot, fail-open. Honors config.simulationMode.
  */
-const executeLinkIssuesPostFunction = async (issueKey, config, deadline = Date.now() + PF_BUDGET_MS) => {
+const executeLinkIssuesPostFunction = async (issueKey, config, deadline = Date.now() + PF_BUDGET_MS, cancelToken = null) => {
   const trace = [];
   try {
     const found = await findRelatedIssues({ issueKey, config, deadline, trace });
@@ -10960,6 +11272,9 @@ const executeLinkIssuesPostFunction = async (issueKey, config, deadline = Date.n
     const failed = [];
     for (const p of found.picks) {
       if (Date.now() > deadline - 3000) { trace.push("Time budget reached — stopping link creation"); break; }
+      // KILL SWITCH — re-check before EACH link so a mid-loop stop creates no
+      // further links (already-created ones predate the cancel).
+      if (cancelToken && await isJobCancelled(cancelToken)) { trace.push("Job cancelled — stopping link creation (no further links made)."); break; }
       try {
         const lr = await api.asApp().requestJira(route`/rest/api/3/issueLink`, {
           method: "POST",
@@ -11006,7 +11321,7 @@ const SANDBOX_BLOCKED_GLOBALS = [
  * Execute a static post-function: runs sandboxed JavaScript code with an API surface.
  * Each function block runs sequentially; results are shared via variable chaining.
  */
-const executeStaticPostFunction = async (issueKey, config, deadline = Date.now() + PF_BUDGET_MS) => {
+const executeStaticPostFunction = async (issueKey, config, deadline = Date.now() + PF_BUDGET_MS, cancelToken = null) => {
   let functions = config.functions || [];
   // Code offload: large rules carry a codeRef pointer instead of inline step
   // code (32KB workflow-config ceiling). Inline functions ALWAYS win — legacy
@@ -11064,6 +11379,21 @@ const executeStaticPostFunction = async (issueKey, config, deadline = Date.now()
   const createApi = () => {
     const TRANSIENT_REST = [429, 502, 503, 504];
     const retryingRequestJira = async (routeArg, opts) => {
+      // KILL SWITCH (write boundary). Every sandbox WRITE funnels through here,
+      // so one method-gated check covers all 20+ mutators with no risk of
+      // missing one. Only mutating verbs are gated; GET reads always pass, and
+      // searchJql (a read over POST) bypasses this wrapper via appJiraClient.
+      const httpMethod = String(opts?.method || "GET").toUpperCase();
+      if (cancelToken && httpMethod !== "GET" && await isJobCancelled(cancelToken)) {
+        executionLogs.push(`[CANCELLED] ${httpMethod} ${typeof routeArg === "string" ? routeArg : "request"} — write skipped (job was stopped)`);
+        changes.push({ action: "cancelled-write", method: httpMethod });
+        return {
+          ok: false, status: 409, statusText: "Cancelled",
+          headers: { get: () => null },
+          text: async () => "Job was cancelled — write skipped by CogniRunner kill switch.",
+          json: async () => ({ errorMessages: ["Job cancelled — write skipped."] }),
+        };
+      }
       let res = await appJiraClient.requestJira(routeArg, opts);
       let attempt = 0;
       while (!res.ok && TRANSIENT_REST.includes(res.status) && attempt < 3) {
@@ -11161,7 +11491,10 @@ const executeStaticPostFunction = async (issueKey, config, deadline = Date.now()
       // (issues array) but `total` is NOT returned — pagination is via nextPageToken.
       // Always request `summary` + `status` so user code has something to work with;
       // otherwise the new endpoint returns minimal fields by default.
-      const res = await api.asApp().requestJira(
+      // NB: calls appJiraClient directly (not the shadowed `api`) — this is a
+      // READ that happens to use POST, so it must bypass the kill-switch
+      // write-guard in retryingRequestJira (which gates all non-GET verbs).
+      const res = await appJiraClient.requestJira(
         route`/rest/api/3/search/jql`,
         {
           method: "POST",
@@ -11395,12 +11728,16 @@ const executeStaticPostFunction = async (issueKey, config, deadline = Date.now()
         moved = tr.ok;
         executionLogs.push(`forceStatus: emergency transition ${moved ? "succeeded" : "returned " + tr.status}`);
       } finally {
-        // 3) remove the temp transition (re-read for a fresh version number)
+        // 3) remove the temp transition (re-read for a fresh version number).
+        // Use appJiraClient directly (NOT the gated `api`) so the kill switch can
+        // never strand this workflow-config change: if a cancel landed after the
+        // add above, the gated wrapper would 409 this cleanup and leak the temp
+        // transition. Cleanup must always run regardless of cancellation.
         try {
           const { d: d2, wf: wf2 } = await readWf();
           const clean = (wf2.transitions || []).filter((t) => String(t.id) !== tempId && t.name !== tempName);
-          await api.asApp().requestJira(route`/rest/api/3/workflows/update`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payloadFor(d2, wf2, clean)) });
-          executionLogs.push(`forceStatus: removed temp transition ${tempId}`);
+          const cr = await appJiraClient.requestJira(route`/rest/api/3/workflows/update`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payloadFor(d2, wf2, clean)) });
+          executionLogs.push(cr.ok ? `forceStatus: removed temp transition ${tempId}` : `forceStatus: temp transition removal returned ${cr.status} — remove "${tempName}" manually`);
         } catch (e) { executionLogs.push(`forceStatus: temp transition cleanup failed (${e.message}) — remove "${tempName}" manually`); }
       }
       changes.push({ action: "forceStatus", key: issueKey, target: targetStatusName, moved });
@@ -11893,7 +12230,22 @@ export const executePostFunction = async (args) => {
       }
       const { Queue } = await import("@forge/events");
       const queue = new Queue({ key: "async-ai-queue" });
-      await queue.push({ body: queuePayload });
+      const heavyEvent = { body: queuePayload };
+      const pushResult = await queue.push(slowProvider ? await withLmStudioConcurrency(heavyEvent) : heavyEvent);
+      await writeAsyncJob({
+        taskId: queuePayloadTaskId, jobId: pushResult?.jobId || null,
+        taskType: "postfunction", status: "queued",
+        ruleId: config.ruleId || config.id || null,
+        ruleName: config.workflow?.workflowName
+          ? `${config.workflow.workflowName} / ${config.workflow.transitionFromName || "Any"} → ${config.workflow.transitionToName || "?"}`
+          : (config.name || pfType),
+        issueKey: issue.key || null,
+        provider: slowProvider ? "lmstudio" : null,
+        model: null,
+        accountId: null,
+        pfType,
+        enqueuedAt: new Date().toISOString(),
+      });
       console.log(`[pf] queued ${pfType} on ${issue.key} for async execution (110s budget)`);
       return { result: true };
     } catch (e) {
@@ -11972,8 +12324,29 @@ export const dispatchPostFunction = async (issueKey, config, extensionKey, pfDea
     if (type && !config.type) {
       console.log(`Inferred post-function type "${type}" from module key "${extensionKey}" (config.type was missing)`);
     }
+    // Kill switch — a queued job carries its taskId in meta. Check once here
+    // (covers a job cancelled before its executor starts, for ALL pf types) and
+    // again at the terminal write inside semantic/static (covers a cancel that
+    // lands mid AI-call). Inline runs have no taskId -> cancelToken null -> no-op.
+    const cancelToken = meta.taskId || null;
+    if (cancelToken && await isJobCancelled(cancelToken)) {
+      await logAndTrace({
+        type: "postfunction-cancelled",
+        issueKey: issue.key,
+        fieldId: "",
+        isValid: false,
+        reason: "Job cancelled before execution — no Jira write performed.",
+        executionTimeMs: Date.now() - pfStartTime,
+        ruleId: config.ruleId || config.id || null,
+        ruleName: config.workflow?.workflowName
+          ? `${config.workflow.workflowName} / ${config.workflow.transitionFromName || "Any"} → ${config.workflow.transitionToName || "?"}`
+          : null,
+        ruleWorkflow: config.workflow || null,
+      });
+      return;
+    }
     if (type.includes("semantic")) {
-      const result = await executeSemanticPostFunction(issue.key, config, pfDeadline);
+      const result = await executeSemanticPostFunction(issue.key, config, pfDeadline, cancelToken);
       console.log("Semantic PF result:", result);
       const logEntry = {
         type: "postfunction-semantic",
@@ -12024,7 +12397,7 @@ export const dispatchPostFunction = async (issueKey, config, extensionKey, pfDea
       if (result.recommendation) logEntry.recommendation = result.recommendation;
       await logAndTrace(logEntry);
     } else if (type.includes("static")) {
-      const result = await executeStaticPostFunction(issue.key, config, pfDeadline);
+      const result = await executeStaticPostFunction(issue.key, config, pfDeadline, cancelToken);
       console.log("Static PF result:", JSON.stringify(result));
       const logEntry = {
         type: "postfunction-static",
@@ -12060,7 +12433,10 @@ export const dispatchPostFunction = async (issueKey, config, extensionKey, pfDea
       // signature reinforces the existing memory with NO AI call; a new
       // signature queues a memory_distill task. Entirely fail-open and
       // fire-and-forget — memory plumbing must never affect the PF outcome.
-      if (!result.success && result.failedStep) {
+      // A step that "failed" only because the kill switch skipped its write is
+      // NOT a reusable lesson — skip auto-capture entirely for a cancelled job
+      // so we don't distill a bogus memory (or burn an AI call) from a stop.
+      if (!result.success && result.failedStep && !(cancelToken && await isJobCancelled(cancelToken))) {
         try {
           const memorySettings = await getMemorySettings();
           if (memorySettings.autoCapture === true) {
@@ -12082,9 +12458,10 @@ export const dispatchPostFunction = async (issueKey, config, extensionKey, pfDea
                 const failedFn = (config.functions || []).find((f, i) => (f.name || `Step ${i + 1}`) === result.failedStep);
                 const { Queue } = await import("@forge/events");
                 const queue = new Queue({ key: "async-ai-queue" });
-                await queue.push({ body: {
+                const memDistillTaskId = `memdistill_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+                const memPushResult = await queue.push({ body: {
                   taskType: "memory_distill",
-                  taskId: `memdistill_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+                  taskId: memDistillTaskId,
                   params: {
                     error: String(stepError).substring(0, 2000),
                     recommendation: result.recommendation ? String(result.recommendation).substring(0, 800) : null,
@@ -12095,6 +12472,17 @@ export const dispatchPostFunction = async (issueKey, config, extensionKey, pfDea
                     errorSig,
                   },
                 } });
+                await writeAsyncJob({
+                  taskId: memDistillTaskId, jobId: memPushResult?.jobId || null,
+                  taskType: "memory_distill", status: "queued",
+                  ruleId: config.ruleId || config.id || null,
+                  ruleName: config.workflow?.workflowName
+                    ? `${config.workflow.workflowName} / ${config.workflow.transitionFromName || "Any"} → ${config.workflow.transitionToName || "?"}`
+                    : (config.name || "memory distill"),
+                  issueKey: issueKey || null,
+                  provider: null, model: null, accountId: null,
+                  enqueuedAt: new Date().toISOString(),
+                });
               }
             }
           }
@@ -12103,7 +12491,7 @@ export const dispatchPostFunction = async (issueKey, config, extensionKey, pfDea
         }
       }
     } else if (type.includes("generate-doc")) {
-      const result = await executeGenerateDocPostFunction(issue.key, config, pfDeadline);
+      const result = await executeGenerateDocPostFunction(issue.key, config, pfDeadline, cancelToken);
       console.log("Generate-doc PF result:", JSON.stringify(result));
       const logEntry = {
         type: "postfunction-generate-doc",
@@ -12127,7 +12515,7 @@ export const dispatchPostFunction = async (issueKey, config, extensionKey, pfDea
       // MUST precede the `research` branch: "research-doc".includes("research") is
       // true, so without this ordering the new flavor would be silently routed to
       // executeResearchPostFunction (the substring-dispatch trap the audit flagged).
-      const result = await executeResearchDocPostFunction(issue.key, config, pfDeadline);
+      const result = await executeResearchDocPostFunction(issue.key, config, pfDeadline, cancelToken);
       console.log("Research-doc PF result:", JSON.stringify(result));
       const logEntry = {
         type: "postfunction-research-doc",
@@ -12149,7 +12537,7 @@ export const dispatchPostFunction = async (issueKey, config, extensionKey, pfDea
       if (result.recommendation) logEntry.recommendation = result.recommendation;
       await logAndTrace(logEntry);
     } else if (type.includes("research")) {
-      const result = await executeResearchPostFunction(issue.key, config, pfDeadline);
+      const result = await executeResearchPostFunction(issue.key, config, pfDeadline, cancelToken);
       console.log("Research PF result:", JSON.stringify(result));
       const logEntry = {
         type: "postfunction-research",
@@ -12169,7 +12557,7 @@ export const dispatchPostFunction = async (issueKey, config, extensionKey, pfDea
       if (result.trace) logEntry.trace = result.trace;
       await logAndTrace(logEntry);
     } else if (type.includes("comment")) {
-      const result = await executeCommentPostFunction(issue.key, config, pfDeadline);
+      const result = await executeCommentPostFunction(issue.key, config, pfDeadline, cancelToken);
       console.log("Comment PF result:", JSON.stringify(result));
       const logEntry = {
         type: "postfunction-comment",
@@ -12188,7 +12576,7 @@ export const dispatchPostFunction = async (issueKey, config, extensionKey, pfDea
       if (result.trace) logEntry.trace = result.trace;
       await logAndTrace(logEntry);
     } else if (type.includes("subtask")) {
-      const result = await executeSubtaskPostFunction(issue.key, config, pfDeadline);
+      const result = await executeSubtaskPostFunction(issue.key, config, pfDeadline, cancelToken);
       console.log("Subtask PF result:", JSON.stringify(result));
       const logEntry = {
         type: "postfunction-subtask",
@@ -12209,7 +12597,7 @@ export const dispatchPostFunction = async (issueKey, config, extensionKey, pfDea
       if (result.recommendation) logEntry.recommendation = result.recommendation;
       await logAndTrace(logEntry);
     } else if (type.includes("link")) {
-      const result = await executeLinkIssuesPostFunction(issueKey, config, pfDeadline);
+      const result = await executeLinkIssuesPostFunction(issueKey, config, pfDeadline, cancelToken);
       console.log("Link PF result:", JSON.stringify(result));
       const logEntry = {
         type: "postfunction-link",

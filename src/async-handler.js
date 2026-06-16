@@ -37,6 +37,10 @@ import {
   stripCodeFences,
   parseFixResponse,
   parseAIJson,
+  updateAsyncJob,
+  isJobCancelled,
+  JOB_TTL_ACTIVE,
+  JOB_TTL_DONE,
 } from "./index";
 // Learned memories — injected into static-PF reviews and persisted by the
 // memory_distill task (runtime auto-capture, opt-in). defangFence neutralizes
@@ -513,8 +517,10 @@ const executeQueuedPostFunction = async (params, taskId) => {
       console.warn("[pf] dedup claim errored (continuing):", e?.message);
     }
   }
-  // 110s budget under the consumer's 120s platform timeout.
-  await dispatchPostFunction(issueKey, config, extensionKey || null, Date.now() + 110000, { enqueuedAt });
+  // 110s budget under the consumer's 120s platform timeout. taskId rides in
+  // meta so the runtime write paths can honor the kill switch (skip Jira writes
+  // if this job was stopped mid-run).
+  await dispatchPostFunction(issueKey, config, extensionKey || null, Date.now() + 110000, { enqueuedAt, taskId });
   return { success: true };
 };
 
@@ -743,8 +749,34 @@ export async function handler(event) {
   const taskHandler = TASK_HANDLERS[taskType];
   if (!taskHandler) {
     await storage.set(`${TASK_PREFIX}${taskId}`, { status: "error", error: `Unknown task type: ${taskType}` }, ttl);
+    await updateAsyncJob(taskId, { status: "error", error: `Unknown task type: ${taskType}`, finishedAt: new Date().toISOString() }, JOB_TTL_DONE);
     return;
   }
+
+  // Read the enqueue-time job row once: drives the kill-switch epoch check and
+  // seeds the "running" update if the enqueue write was lost (best-effort).
+  let jobRow = null;
+  try { jobRow = await storage.get(`async_job:${taskId}`); } catch { /* best-effort */ }
+
+  // KILL SWITCH checkpoint — if this job was cancelled (per-job flag, or the
+  // global kill-all epoch covering its enqueue time) BEFORE the consumer ran,
+  // do NO AI work and NO Jira writes. Catches jobs the platform still delivers
+  // after a native cancel (cancel only stops not-yet-STARTED events).
+  if (await isJobCancelled(taskId, jobRow?.enqueuedAt)) {
+    console.log(`Async handler: ${taskType} (${taskId}) cancelled before start — skipping`);
+    if (!UNPOLLED_TASKS.has(taskType)) {
+      await storage.set(`${TASK_PREFIX}${taskId}`, { status: "error", error: "Cancelled" }, ttl);
+    }
+    await updateAsyncJob(taskId, { status: "cancelled", finishedAt: new Date().toISOString() }, JOB_TTL_DONE);
+    return;
+  }
+
+  const startedAt = new Date().toISOString();
+  const startMs = Date.now();
+  // Operational job row -> running. ALL task types (incl. UNPOLLED
+  // postfunction/memory_distill) get a row — that's the whole point of the view.
+  await updateAsyncJob(taskId, { status: "running", startedAt }, JOB_TTL_ACTIVE,
+    { taskId, taskType, status: "running", enqueuedAt: startedAt });
 
   const polled = !UNPOLLED_TASKS.has(taskType);
   try {
@@ -756,9 +788,11 @@ export async function handler(event) {
 
     // Store result
     if (polled) await storage.set(`${TASK_PREFIX}${taskId}`, { status: "done", result }, ttl);
+    await updateAsyncJob(taskId, { status: "done", finishedAt: new Date().toISOString(), durationMs: Date.now() - startMs }, JOB_TTL_DONE);
     console.log(`Async handler: ${taskType} (${taskId}) completed`);
   } catch (error) {
     console.error(`Async handler error (${taskType}):`, error);
     if (polled) await storage.set(`${TASK_PREFIX}${taskId}`, { status: "error", error: error.message }, ttl);
+    await updateAsyncJob(taskId, { status: "error", finishedAt: new Date().toISOString(), durationMs: Date.now() - startMs, error: String(error?.message || error).slice(0, 300) }, JOB_TTL_DONE);
   }
 }

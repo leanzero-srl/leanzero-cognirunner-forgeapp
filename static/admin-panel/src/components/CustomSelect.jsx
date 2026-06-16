@@ -160,6 +160,9 @@ export default function CustomSelect({
       {opt.icon && <span className="dropdown-item-icon" dangerouslySetInnerHTML={{ __html: opt.icon }} />}
       <span className="dropdown-item-name">{opt.label}</span>
       {opt.meta && <span className="dropdown-item-meta">{opt.meta}</span>}
+      {Array.isArray(opt.badges) && opt.badges.map((b, bi) => (
+        <span key={bi} className={`dropdown-item-badge dib-${b.tone || "neutral"}`}>{b.text}</span>
+      ))}
       {opt.type && <span className="dropdown-item-type">{opt.type}</span>}
     </div>
   );

@@ -141,6 +141,11 @@ export default function OpenAIConfig({ invoke }) {
   // never shows a stale "not yet tested" state while the test runs.
   const [pingInFlight, setPingInFlight] = useState(false);
   const [loadingLmModel, setLoadingLmModel] = useState(false);
+  // LM Studio: model-picker "loaded only" filter + the max-concurrent-jobs cap.
+  const [lmLoadedOnly, setLmLoadedOnly] = useState(false);
+  const [lmConcurrency, setLmConcurrency] = useState(0);
+  const [lmConcurrencyInput, setLmConcurrencyInput] = useState("");
+  const [savingConcurrency, setSavingConcurrency] = useState(false);
   // LM Studio MCP integrations — fixed set of 3 (context7, web-search, doc-reader).
   // Other MCPs in the user's mcp.json are NOT exposed by us per design.
   const [mcpEnabled, setMcpEnabled] = useState({ context7: false, webSearch: false, docReader: false, docWriter: false, localContext7: false, localWebSearch: false, localDocReader: false });
@@ -180,6 +185,10 @@ export default function OpenAIConfig({ invoke }) {
 
   const pHelp = PROVIDER_HELP[provider] || PROVIDER_HELP.openai;
   const isLmStudio = provider === "lmstudio";
+  // Distinct LM Link device labels surfaced by getOpenAIModels (probe-gated:
+  // empty until LM Studio actually tags remote-device instances). When present,
+  // the model picker groups models by device.
+  const lmDevices = [...new Set((modelDetails || []).map((m) => m.device).filter(Boolean))];
   const isAtlassian = provider === "atlassian";
   const isBedrock = provider === "bedrock";
   // Tracks the provider whose config is currently being loaded, so a fast switch
@@ -748,6 +757,44 @@ export default function OpenAIConfig({ invoke }) {
       setError("Failed to load model: " + e.message);
     }
     setLoadingLmModel(false);
+  };
+
+  // Load the saved max-concurrent-LM-Studio-jobs cap when viewing LM Studio.
+  useEffect(() => {
+    if (!isLmStudio || !invoke) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await invoke("getLmStudioConcurrency");
+        if (!cancelled && r && r.success) {
+          setLmConcurrency(r.limit || 0);
+          setLmConcurrencyInput(r.limit ? String(r.limit) : "");
+        }
+      } catch (e) { /* non-fatal — cap is optional */ }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isLmStudio]);
+
+  const handleSaveConcurrency = async () => {
+    const n = lmConcurrencyInput.trim() === "" ? 0 : Number(lmConcurrencyInput);
+    if (!Number.isFinite(n) || n < 0) { setError("Enter a non-negative number (0 = uncapped)."); return; }
+    setSavingConcurrency(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      const r = await invoke("saveLmStudioConcurrency", { limit: Math.floor(n) });
+      if (r && r.success) {
+        setLmConcurrency(r.limit || 0);
+        setLmConcurrencyInput(r.limit ? String(r.limit) : "");
+        setSuccess(r.limit ? `Capped at ${r.limit} concurrent LM Studio job(s).` : "LM Studio concurrency uncapped.");
+      } else {
+        setError((r && r.error) || "Failed to save concurrency cap");
+      }
+    } catch (e) {
+      setError("Failed to save concurrency cap: " + e.message);
+    }
+    setSavingConcurrency(false);
   };
 
   const handleSaveKey = async () => {
@@ -1424,6 +1471,13 @@ export default function OpenAIConfig({ invoke }) {
                       : "No chat models found. Check your API key and try again."}
                 </p>
               ) : (
+                <>
+                {isLmStudio && modelDetails.some((m) => m.state === "not-loaded") && (
+                  <label style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", color: "var(--text-secondary)", marginBottom: "8px", cursor: "pointer", userSelect: "none" }}>
+                    <input type="checkbox" checked={lmLoadedOnly} onChange={(e) => setLmLoadedOnly(e.target.checked)} />
+                    Show loaded models only
+                  </label>
+                )}
                 <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                   <div style={{ flex: 1 }}>
                     <CustomSelect
@@ -1433,21 +1487,26 @@ export default function OpenAIConfig({ invoke }) {
                       searchable
                       searchPlaceholder="Search models..."
                       options={isLmStudio && modelDetails.length > 0
-                        ? modelDetails.map((m) => {
-                            const parts = [];
-                            // Capability badges — the parser normalizes vision/toolUse
-                            // from LM Studio's capabilities object so we can show them
-                            // regardless of which schema (api/v1, api/v0, v1) was used.
-                            if (m.vision) parts.push("👁 vision");
-                            if (m.toolUse) parts.push("🛠 tools");
-                            if (m.state === "loaded") parts.push("loaded");
-                            else if (m.state === "not-loaded") parts.push("cold");
-                            if (m.quantization) parts.push(m.quantization);
-                            if (m.max_context_length) parts.push(`${Math.round(m.max_context_length / 1024)}K ctx`);
-                            const suffix = parts.length > 0 ? ` · ${parts.join(" · ")}` : "";
-                            return { value: m.id, label: `${m.id}${suffix}` };
+                        ? (lmLoadedOnly ? modelDetails.filter((m) => m.state === "loaded") : modelDetails).map((m) => {
+                            // Subtle secondary text (quant / context window).
+                            const meta = [];
+                            if (m.quantization) meta.push(m.quantization);
+                            if (m.max_context_length) meta.push(`${Math.round(m.max_context_length / 1024)}K ctx`);
+                            // Solid saturated badges (mandate: no faded tints). loaded=green,
+                            // cold=slate, capabilities=teal, device=slate.
+                            const badges = [];
+                            if (m.state === "loaded") badges.push({ text: "loaded", tone: "loaded" });
+                            else if (m.state === "not-loaded") badges.push({ text: "cold", tone: "cold" });
+                            if (m.vision) badges.push({ text: "vision", tone: "info" });
+                            if (m.toolUse) badges.push({ text: "tools", tone: "info" });
+                            if (m.device) badges.push({ text: m.device, tone: "device" });
+                            return { value: m.id, label: m.id, meta: meta.join(" · ") || undefined, badges, group: m.device || "This machine" };
                           })
                         : models.map((m) => ({ value: m, label: m }))}
+                      groups={isLmStudio && lmDevices.length > 0
+                        ? [...lmDevices, "This machine"].filter((d, i, a) => a.indexOf(d) === i)
+                            .map((d) => ({ label: d, filter: (o) => (o.group || "This machine") === d }))
+                        : undefined}
                     />
                   </div>
                   {isLmStudio && selectedModelMeta?.state === "not-loaded" && (
@@ -1468,6 +1527,7 @@ export default function OpenAIConfig({ invoke }) {
                     Save Model
                   </button>
                 </div>
+                </>
               )}
               {/* Bedrock free-text entry — always available so the admin can paste any
                   model / inference-profile id the live list didn't surface. */}
@@ -1514,6 +1574,34 @@ export default function OpenAIConfig({ invoke }) {
                 <p style={{ margin: "4px 0 0 0", fontSize: "11px", color: "var(--text-muted)" }}>
                   Currently active: <strong>{currentModel}</strong>
                 </p>
+              )}
+              {isLmStudio && (
+                <div style={{ marginTop: "14px", paddingTop: "14px", borderTop: "1px solid var(--border-color)" }}>
+                  <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "var(--text-color)", marginBottom: "4px" }}>
+                    Max concurrent LM Studio jobs
+                  </label>
+                  <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                    <input
+                      type="number"
+                      min="0"
+                      value={lmConcurrencyInput}
+                      onChange={(e) => setLmConcurrencyInput(e.target.value)}
+                      placeholder="0 = uncapped"
+                      style={{ width: "120px", padding: "8px 12px", border: "1px solid var(--border-color)", borderRadius: "4px", background: "var(--input-bg)", color: "var(--text-color)", fontSize: "13px" }}
+                      onKeyDown={(e) => e.key === "Enter" && handleSaveConcurrency()}
+                    />
+                    <button
+                      className={"btn-small btn-edit" + (savingConcurrency ? " is-busy" : "")}
+                      onClick={handleSaveConcurrency}
+                      disabled={savingConcurrency || String(lmConcurrency) === (lmConcurrencyInput.trim() === "" ? "0" : lmConcurrencyInput.trim())}
+                    >
+                      Save cap
+                    </button>
+                  </div>
+                  <p style={{ margin: "4px 0 0 0", fontSize: "11px", color: "var(--text-muted)" }}>
+                    Forge runs queued jobs in parallel by default. This caps how many LM Studio jobs run at once (app-wide) — set it to roughly your device count × LM Studio's per-model concurrency to spread work without thrashing a machine. <strong>0 = uncapped.</strong>
+                  </p>
+                </div>
               )}
             </div>
           )}

@@ -482,6 +482,143 @@ const injectStyles = () => {
       border-radius: inherit;
     }
 
+    /* === Active Jobs (queued + ongoing async work) === */
+    .jobs-list { max-height: 420px; overflow-y: auto; border-radius: inherit; }
+    .job-entry {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border-color);
+    }
+    .job-entry:last-child { border-bottom: none; }
+    .job-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      color: #fff;
+      padding: 2px 8px;
+      border-radius: 5px;
+      white-space: nowrap;
+    }
+    .job-status.queued { background: #0891b2; }
+    .job-status.running { background: #06b6d4; }
+    .job-status.done { background: #16a34a; }
+    .job-status.error { background: #dc2626; }
+    .job-status.cancelled { background: #475569; }
+    .job-status.stalled { background: #d97706; }
+    html[data-color-mode="dark"] .job-status.queued { background: #22d3ee; color: #06283d; }
+    html[data-color-mode="dark"] .job-status.running { background: #22d3ee; color: #06283d; }
+    html[data-color-mode="dark"] .job-status.done { background: #22c55e; }
+    html[data-color-mode="dark"] .job-status.error { background: #ef4444; }
+    html[data-color-mode="dark"] .job-status.cancelled { background: #64748b; }
+    html[data-color-mode="dark"] .job-status.stalled { background: #f59e0b; color: #2a1602; }
+    .job-type-badge {
+      font-size: 10px;
+      font-weight: 700;
+      color: #fff;
+      background: #0d9488;
+      padding: 2px 8px;
+      border-radius: 5px;
+      white-space: nowrap;
+    }
+    html[data-color-mode="dark"] .job-type-badge { background: #14b8a6; }
+    .job-rule {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-color);
+      max-width: 280px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .job-issue {
+      font-family: SFMono-Regular, Consolas, monospace;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--primary-color);
+    }
+    .job-provider {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #fff;
+      background: #475569;
+      padding: 1px 7px;
+      border-radius: 4px;
+    }
+    html[data-color-mode="dark"] .job-provider { background: #64748b; }
+    .job-time {
+      font-size: 10px;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+      color: var(--text-muted);
+      margin-left: auto;
+      white-space: nowrap;
+    }
+    .job-error { font-size: 11px; color: #dc2626; font-weight: 600; width: 100%; }
+    html[data-color-mode="dark"] .job-error { color: #f87171; }
+    .job-stop { font-size: 10px; padding: 2px 8px; }
+    .job-count-chip {
+      display: inline-block;
+      margin-left: 8px;
+      min-width: 18px;
+      text-align: center;
+      font-size: 11px;
+      font-weight: 700;
+      color: #fff;
+      background: #06b6d4;
+      padding: 1px 7px;
+      border-radius: 10px;
+      vertical-align: middle;
+    }
+    html[data-color-mode="dark"] .job-count-chip { background: #22d3ee; color: #06283d; }
+
+    /* Per-rule job chips on a rule row */
+    .rule-job-chip {
+      display: inline-block;
+      margin-left: 6px;
+      font-size: 10px;
+      font-weight: 700;
+      color: #fff;
+      padding: 1px 7px;
+      border-radius: 9px;
+      white-space: nowrap;
+    }
+    .rule-job-chip.running { background: #06b6d4; }
+    .rule-job-chip.queued { background: #0891b2; }
+    html[data-color-mode="dark"] .rule-job-chip.running { background: #22d3ee; color: #06283d; }
+    html[data-color-mode="dark"] .rule-job-chip.queued { background: #22d3ee; color: #06283d; }
+
+    /* Per-rule expand caret + accordion panel */
+    .rule-expand-btn {
+      background: none;
+      border: none;
+      cursor: pointer;
+      color: var(--text-muted);
+      padding: 2px 6px;
+      font-size: 12px;
+      display: inline-flex;
+      align-items: center;
+      transition: transform var(--dur-fast, 140ms) ease;
+    }
+    .rule-expand-btn.open { transform: rotate(90deg); color: var(--primary-color); }
+    .rule-accordion-cell { padding: 0 !important; background: var(--code-bg); }
+    .rule-accordion-inner { padding: 12px 16px; }
+    .rule-accordion-title {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      color: var(--text-muted);
+      margin: 0 0 8px;
+    }
+
     /* Designed empty state for the logs card */
     .logs-empty {
       display: flex;
@@ -1028,6 +1165,27 @@ const injectStyles = () => {
       color: var(--text-muted);
     }
     .dropdown-item.dropdown-selected .dropdown-item-type { background-color: rgba(37, 99, 235, 0.06); }
+    /* Solid saturated state/capability badges in option rows (LM Studio model
+       picker). No faded tints — white text on saturated fills per the mandate. */
+    .dropdown-item-badge {
+      flex-shrink: 0;
+      margin-left: 4px;
+      font-size: 10px;
+      font-weight: 700;
+      padding: 1px 7px;
+      border-radius: 5px;
+      color: #fff;
+      white-space: nowrap;
+    }
+    .dropdown-item-badge:first-of-type ~ .dropdown-item-badge { margin-left: 4px; }
+    .dib-loaded { background: #16a34a; }
+    .dib-cold { background: #475569; }
+    .dib-info { background: #0d9488; }
+    .dib-device { background: #334155; }
+    html[data-color-mode="dark"] .dib-loaded { background: #22c55e; color: #052e16; }
+    html[data-color-mode="dark"] .dib-cold { background: #64748b; }
+    html[data-color-mode="dark"] .dib-info { background: #14b8a6; color: #042f2a; }
+    html[data-color-mode="dark"] .dib-device { background: #475569; }
     .dropdown-empty { padding: 16px 12px; text-align: center; color: var(--text-muted); font-size: 13px; }
 
     /* === Tooltip === */
@@ -4097,12 +4255,36 @@ let router;
 
 const TABS = [
   { key: "rules", label: "Rules" },
+  { key: "logs", label: "Execution Logs" },
   { key: "docs", label: "Documentation" },
   { key: "skills", label: "Skills" },
   { key: "memories", label: "Memories" },
   { key: "permissions", label: "Permissions", adminOnly: true },
   { key: "settings", label: "Settings", adminOnly: true },
 ];
+
+// Map a task type to a short human label + the badge hue class used in the
+// Active Jobs panel and per-rule chips.
+const JOB_TYPE_LABEL = {
+  review: "Review", codegen: "Codegen", fixcode: "Fix Code",
+  skilldistill: "Skill", postfunction: "Post Function", memory_distill: "Memory",
+};
+const jobTypeLabel = (t) => JOB_TYPE_LABEL[t] || t || "Job";
+// Human elapsed/queued/duration string for a job row.
+const jobTimeText = (j) => {
+  try {
+    if (j.status === "queued" && j.enqueuedAt) {
+      const s = Math.max(0, Math.round((Date.now() - Date.parse(j.enqueuedAt)) / 1000));
+      return `waiting ${s}s`;
+    }
+    if (j.status === "running" && j.startedAt) {
+      const s = Math.max(0, Math.round((Date.now() - Date.parse(j.startedAt)) / 1000));
+      return `running ${s}s`;
+    }
+    if (typeof j.durationMs === "number") return `took ${Math.round(j.durationMs / 1000)}s`;
+  } catch { /* ignore */ }
+  return "";
+};
 
 function App() {
   const [configs, setConfigs] = useState([]);
@@ -4283,6 +4465,209 @@ function App() {
       return new Date(timestamp).toLocaleString();
     } catch {
       return timestamp;
+    }
+  };
+
+  // === Async jobs (queued + ongoing) — operational view in the Logs tab and
+  // per-rule chips in the Rules tab. Polls getAsyncJobs while either tab is open
+  // (tight cadence when work is active, relaxed when idle); stops on other tabs.
+  const [jobs, setJobs] = useState({ queued: [], running: [], recent: [] });
+  const [jobsLoading, setJobsLoading] = useState(false);
+  const [killingAll, setKillingAll] = useState(false);
+  const jobsRef = useRef({ queued: [], running: [], recent: [] });
+  const jobsPollRef = useRef(null);
+
+  const fetchJobs = async (silent = false) => {
+    if (!invoke) return;
+    if (!silent) setJobsLoading(true);
+    try {
+      const r = await invoke("getAsyncJobs");
+      if (r && r.success) {
+        const next = r.jobs || { queued: [], running: [], recent: [] };
+        jobsRef.current = next;
+        setJobs(next);
+      }
+    } catch (e) {
+      console.error("Failed to fetch jobs:", e);
+    }
+    if (!silent) setJobsLoading(false);
+  };
+
+  const cancelJob = async (taskId) => {
+    if (!invoke) return;
+    try {
+      const r = await invoke("cancelJob", { taskId });
+      if (r && r.success) { showToast("Job stopped"); fetchJobs(true); }
+      else showToast((r && r.error) || "Failed to stop job", "error");
+    } catch (e) { showToast("Failed to stop job: " + e.message, "error"); }
+  };
+
+  const cancelAllQueued = async () => {
+    if (!invoke) return;
+    // Destructive — confirm. Honest about the guarantee: queued jobs die outright,
+    // running jobs are stopped before any further Jira write (the in-flight AI
+    // call may finish but makes no change).
+    if (!window.confirm("Stop ALL queued and running jobs?\n\nQueued jobs are cancelled outright. Jobs already running are stopped before any further Jira changes are made (an in-flight AI call may finish but will not write anything).")) return;
+    setKillingAll(true);
+    try {
+      const r = await invoke("cancelAllQueuedJobs");
+      if (r && r.success) { showToast(`Stopped ${r.cancelled || 0} job(s)`); fetchJobs(true); }
+      else showToast((r && r.error) || "Failed to stop jobs", "error");
+    } catch (e) { showToast("Failed to stop jobs: " + e.message, "error"); }
+    setKillingAll(false);
+  };
+
+  // Poll while the Logs or Rules tab is open; tighten when active, relax when idle.
+  useEffect(() => {
+    const watch = activeTab === "logs" || activeTab === "rules";
+    if (!watch) { if (jobsPollRef.current) clearTimeout(jobsPollRef.current); return; }
+    let stopped = false;
+    const tick = async () => {
+      await fetchJobs(true);
+      if (stopped) return;
+      const j = jobsRef.current;
+      const active = (j.queued?.length || 0) + (j.running?.length || 0);
+      jobsPollRef.current = setTimeout(tick, active > 0 ? 3500 : 10000);
+    };
+    tick();
+    return () => { stopped = true; if (jobsPollRef.current) clearTimeout(jobsPollRef.current); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab]);
+
+  const canKill = userRole === "editor" || userRole === "admin";
+
+  // Group active (queued + running) jobs by ruleId for the per-rule chips.
+  const jobsByRule = {};
+  for (const j of [...(jobs.running || []), ...(jobs.queued || [])]) {
+    if (!j.ruleId) continue;
+    (jobsByRule[j.ruleId] = jobsByRule[j.ruleId] || []).push(j);
+  }
+
+  // One job row, shared by the Active Jobs panel and the per-rule accordion.
+  const renderJobRow = (j) => {
+    const statusClass = j.stalled ? "stalled" : j.status;
+    const statusLabel = j.stalled ? "STALLED"
+      : j.status === "queued" ? "QUEUED"
+      : j.status === "running" ? "RUNNING"
+      : j.status === "done" ? "DONE"
+      : j.status === "error" ? "ERROR"
+      : j.status === "cancelled" ? "CANCELLED" : String(j.status || "").toUpperCase();
+    const active = j.status === "queued" || j.status === "running";
+    return (
+      <div key={j.taskId} className="job-entry">
+        <span className={`job-status ${statusClass}`}>
+          {j.status === "running" && !j.stalled && <span className="status-dot-checking" />}
+          {statusLabel}
+        </span>
+        <span className="job-type-badge">{jobTypeLabel(j.taskType)}</span>
+        {j.ruleName && <span className="job-rule" title={j.ruleName}>{j.ruleName}</span>}
+        {j.issueKey && <span className="job-issue">{j.issueKey}</span>}
+        {j.provider && <span className="job-provider">{j.provider}</span>}
+        <span className="job-time">{jobTimeText(j)}</span>
+        {j.status === "error" && j.error && <span className="job-error" title={j.error}>{String(j.error).slice(0, 80)}</span>}
+        {canKill && active && (
+          <button className="btn-small btn-danger job-stop" onClick={() => cancelJob(j.taskId)} title="Stop this job">
+            Stop
+          </button>
+        )}
+      </div>
+    );
+  };
+
+  // One execution-log entry, shared by the global Logs list and the per-rule
+  // accordion. Extracted so both render identically.
+  const renderLogEntry = (log) => {
+    const logType = log.type || "validation";
+    const typeBadge = logType.includes("postfunction-semantic") ? "PF: Semantic"
+      : logType.includes("postfunction-static") ? "PF: Static"
+      : logType.includes("postfunction") ? "Post Function"
+      : logType === "condition" ? "Condition"
+      : logType === "postfunction-cancelled" ? "Cancelled"
+      : "Validator";
+    const typeBadgeClass = logType.includes("postfunction-semantic") ? "lt-pf-semantic"
+      : logType.includes("postfunction-static") ? "lt-pf-static"
+      : logType.includes("postfunction") ? "lt-pf"
+      : logType === "condition" ? "lt-condition"
+      : "lt-validator";
+    const editUrl = log.ruleWorkflow?.workflowId && log.ruleWorkflow?.siteUrl
+      ? `${log.ruleWorkflow.siteUrl}/jira/settings/issues/workflows/${log.ruleWorkflow.workflowId}`
+      : null;
+    return (
+      <div key={log.id} className="log-entry">
+        <div className="log-header">
+          <span className={`log-status ${log.isValid ? "valid" : (log.decision === "SKIP" ? "skip" : "invalid")}`}>
+            {log.isValid ? "PASS" : (log.decision === "SKIP" ? "SKIP" : "ERR")}
+          </span>
+          <span className={`log-type-badge ${typeBadgeClass}`}>{typeBadge}</span>
+          <span className="log-issue">{log.issueKey}</span>
+          <span className="log-meta">
+            {log.executionTimeMs ? <span className="log-ms">{log.executionTimeMs}ms</span> : null}
+            <span className="log-time">
+              {formatTime(log.timestamp)}
+              {log.queueDelayMs >= 60000 ? ` · waited ${Math.round(log.queueDelayMs / 60000)} min in queue` : ""}
+            </span>
+          </span>
+          {(userRole === "editor" || userRole === "admin") && editUrl && (
+            <button
+              className="btn-small btn-edit"
+              style={{ fontSize: "10px", padding: "2px 6px" }}
+              onClick={() => router && router.open(editUrl)}
+              title="Edit this rule in workflow editor"
+            >
+              Edit Rule
+            </button>
+          )}
+        </div>
+        {log.ruleName && (
+          <div className="log-details">
+            <span className="log-kv">
+              <span className="log-kv-label">Rule</span>
+              <span>{log.ruleName}</span>
+            </span>
+          </div>
+        )}
+        <div className="log-details">
+          <span className="log-kv">
+            <span className="log-kv-label">Field</span>
+            <code className="field-id">{log.fieldId}</code>
+          </span>
+          {log.decision && (
+            <span className="log-kv">
+              <span className="log-kv-label">Decision</span>
+              <strong>{log.decision}</strong>
+            </span>
+          )}
+        </div>
+        {log.reason && (
+          <>
+            <div className="log-section-label">AI reason</div>
+            <div className="log-reason">{log.reason}</div>
+          </>
+        )}
+        {log.tokens && (
+          <div className="log-foot">
+            AI: {log.aiTimeMs || log.executionTimeMs}ms · {log.tokens} tokens
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // Per-rule execution-log accordion state.
+  const [expandedRuleId, setExpandedRuleId] = useState(null);
+  const [ruleLogs, setRuleLogs] = useState({}); // { [ruleId]: log[] }
+  const [ruleLogsLoading, setRuleLogsLoading] = useState(false);
+
+  const toggleRuleExpand = async (ruleId) => {
+    if (expandedRuleId === ruleId) { setExpandedRuleId(null); return; }
+    setExpandedRuleId(ruleId);
+    if (!ruleLogs[ruleId] && invoke) {
+      setRuleLogsLoading(true);
+      try {
+        const r = await invoke("getLogs", { ruleId });
+        if (r && r.success) setRuleLogs((prev) => ({ ...prev, [ruleId]: r.logs || [] }));
+      } catch (e) { console.error("Failed to fetch rule logs:", e); }
+      setRuleLogsLoading(false);
     }
   };
 
@@ -4670,15 +5055,28 @@ function App() {
                     ? `${ruleSiteUrl}/jira/settings/issues/workflows/${wf.workflowId}`
                     : null;
                   const isDisabled = config.disabled === true;
+                  const ruleJobs = jobsByRule[config.id] || [];
+                  const runningCount = ruleJobs.filter((j) => j.status === "running").length;
+                  const queuedCount = ruleJobs.filter((j) => j.status === "queued").length;
+                  const isExpanded = expandedRuleId === config.id;
 
                   return (
-                    <tr key={config.id} className={isDisabled ? "row-disabled" : ""}>
+                    <React.Fragment key={config.id}>
+                    <tr className={isDisabled ? "row-disabled" : ""}>
                       <td>
+                        <button
+                          className={"rule-expand-btn" + (isExpanded ? " open" : "")}
+                          onClick={() => toggleRuleExpand(config.id)}
+                          title={isExpanded ? "Hide execution history" : "Show execution history & jobs"}
+                          aria-label="Toggle rule details"
+                        >▶</button>
                         <span className={`type-badge ${config.type === "postfunction-static" ? "type-pf-static" : config.type?.startsWith("postfunction") ? "type-postfunction" : `type-${config.type}`}`}>
                           {config.type === "postfunction-semantic" ? "PF: Semantic"
                             : config.type === "postfunction-static" ? "PF: Static"
                             : config.type}
                         </span>
+                        {runningCount > 0 && <span className="rule-job-chip running">{runningCount} running</span>}
+                        {queuedCount > 0 && <span className="rule-job-chip queued">{queuedCount} queued</span>}
                         {isDisabled && (
                           <span className="status-badge status-disabled">Disabled</span>
                         )}
@@ -4744,6 +5142,32 @@ function App() {
                         )}
                       </td>
                     </tr>
+                    {isExpanded && (
+                      <tr className="rule-accordion-row">
+                        <td className="rule-accordion-cell" colSpan={6}>
+                          <div className="rule-accordion-inner anim-rise">
+                            {ruleJobs.length > 0 && (
+                              <>
+                                <div className="rule-accordion-title">Active jobs for this rule</div>
+                                <div className="jobs-list">{ruleJobs.map((j) => renderJobRow(j))}</div>
+                              </>
+                            )}
+                            <div className="rule-accordion-title" style={{ marginTop: ruleJobs.length > 0 ? "14px" : 0 }}>Execution history</div>
+                            {ruleLogsLoading && !ruleLogs[config.id] ? (
+                              <div style={{ padding: "8px 0" }}>
+                                <div className="sk sk-text" style={{ width: "80%", height: 12, marginBottom: 8 }} />
+                                <div className="sk sk-block" style={{ width: "90%", height: 24 }} />
+                              </div>
+                            ) : (ruleLogs[config.id] && ruleLogs[config.id].length > 0) ? (
+                              <div className="logs-list">{ruleLogs[config.id].map((log) => renderLogEntry(log))}</div>
+                            ) : (
+                              <div className="logs-empty-caption" style={{ padding: "6px 0" }}>No execution logs yet for this rule.</div>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                    </React.Fragment>
                   );
                 })}
               </tbody>
@@ -4752,149 +5176,116 @@ function App() {
         </div>
       </div>
 
-      {/* Execution Logs Section */}
-      <div className="section">
-        <div className="section-header">
-          <span className="section-title">Execution Logs</span>
-          <div className="section-actions">
-            <button
-              className="btn-small"
-              onClick={() => {
-                setShowLogs(!showLogs);
-                if (!showLogs) fetchLogs();
-              }}
-              disabled={logsLoading && !showLogs}
-            >
-              {showLogs ? "Hide Logs" : "Show Logs"}
-            </button>
-            {showLogs && logs.length > 0 && (
-              <button className={"btn-small btn-danger" + (clearingLogs ? " is-busy" : "")} onClick={clearLogs} disabled={clearingLogs}>
-                Clear All
-              </button>
-            )}
-            {showLogs && (
-              <button className={"btn-small" + (logsLoading ? " is-busy" : "")} onClick={fetchLogs} disabled={logsLoading}>
+      </>)}
+
+      {/* Execution Logs Tab — global log stream + the Active Jobs panel (queued
+          and ongoing async work) + the kill switch. Moved out of the Rules tab. */}
+      {activeTab === "logs" && (<>
+        {/* Active Jobs panel */}
+        <div className="section">
+          <div className="section-header">
+            <span className="section-title">
+              Active Jobs
+              {(jobs.queued.length + jobs.running.length) > 0 && (
+                <span className="job-count-chip">{jobs.queued.length + jobs.running.length}</span>
+              )}
+            </span>
+            <div className="section-actions">
+              <button className={"btn-small" + (jobsLoading ? " is-busy" : "")} onClick={() => fetchJobs()} disabled={jobsLoading}>
                 Refresh
               </button>
+              {canKill && (jobs.queued.length + jobs.running.length) > 0 && (
+                <button className={"btn-small btn-danger" + (killingAll ? " is-busy" : "")} onClick={cancelAllQueued} disabled={killingAll}>
+                  Kill All
+                </button>
+              )}
+            </div>
+          </div>
+          <div className="card veil-host anim-rise">
+            {jobsLoading && (jobs.running.length + jobs.queued.length + jobs.recent.length) > 0 && (
+              <div className="veil"><span className="spin-ring" /><span className="veil-label">Refreshing jobs…</span></div>
+            )}
+            {(jobs.running.length + jobs.queued.length + jobs.recent.length) === 0 ? (
+              <div className="logs-empty">
+                <div className="logs-empty-title">No active jobs</div>
+                <div className="logs-empty-caption">Queued and running AI jobs (LM Studio code-gen, reviews, heavy post-functions) appear here while they run.</div>
+              </div>
+            ) : (
+              <div className="jobs-list stagger">
+                {jobs.running.map((j) => renderJobRow(j))}
+                {jobs.queued.map((j) => renderJobRow(j))}
+                {jobs.recent.map((j) => renderJobRow(j))}
+              </div>
             )}
           </div>
         </div>
 
-        {showLogs && (
-          <div className="card veil-host anim-rise">
-            {/* Refresh keeps existing entries visible under a frosted veil;
-                the skeleton only covers the very first (empty) load. */}
-            {logsLoading && logs.length > 0 && (
-              <div className="veil">
-                <span className="spin-ring" />
-                <span className="veil-label">Refreshing logs…</span>
-              </div>
-            )}
-            {(logsLoading && logs.length === 0) ? (
-              <div style={{ padding: "14px" }}>
-                <div style={{ display: "flex", gap: "8px", marginBottom: "12px" }}>
-                  <div className="sk sk-text" style={{ width: 40, height: 14 }} />
-                  <div className="sk sk-text" style={{ width: 60, height: 14 }} />
-                  <div className="sk sk-text" style={{ width: 120, height: 12 }} />
-                </div>
-                <div className="sk sk-text" style={{ width: "90%", height: 12, marginBottom: 8 }} />
-                <div className="sk sk-block" style={{ width: "95%", height: 28, marginBottom: 16 }} />
-              </div>
-            ) : logs.length === 0 ? (
-              <div className="logs-empty">
-                <div className="logs-empty-icon">
-                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" />
-                    <rect x="8" y="2" width="8" height="4" rx="1" />
-                    <polyline points="8 14 10 14 11 11.5 13 16.5 14 14 16 14" />
-                  </svg>
-                </div>
-                <div className="logs-empty-title">No execution logs yet</div>
-                <div className="logs-empty-caption">Runs of your validators, conditions, and post functions will show up here.</div>
-              </div>
-            ) : (
-              <div className="logs-list stagger">
-                {logs.map((log) => {
-                  const logType = log.type || "validation";
-                  const typeBadge = logType.includes("postfunction-semantic") ? "PF: Semantic"
-                    : logType.includes("postfunction-static") ? "PF: Static"
-                    : logType.includes("postfunction") ? "Post Function"
-                    : logType === "condition" ? "Condition"
-                    : "Validator";
-                  const typeBadgeClass = logType.includes("postfunction-semantic") ? "lt-pf-semantic"
-                    : logType.includes("postfunction-static") ? "lt-pf-static"
-                    : logType.includes("postfunction") ? "lt-pf"
-                    : logType === "condition" ? "lt-condition"
-                    : "lt-validator";
-                  const editUrl = log.ruleWorkflow?.workflowId && log.ruleWorkflow?.siteUrl
-                    ? `${log.ruleWorkflow.siteUrl}/jira/settings/issues/workflows/${log.ruleWorkflow.workflowId}`
-                    : null;
-
-                  return (
-                    <div key={log.id} className="log-entry">
-                      <div className="log-header">
-                        <span className={`log-status ${log.isValid ? "valid" : (log.decision === "SKIP" ? "skip" : "invalid")}`}>
-                          {log.isValid ? "PASS" : (log.decision === "SKIP" ? "SKIP" : "ERR")}
-                        </span>
-                        <span className={`log-type-badge ${typeBadgeClass}`}>{typeBadge}</span>
-                        <span className="log-issue">{log.issueKey}</span>
-                        <span className="log-meta">
-                          {log.executionTimeMs ? <span className="log-ms">{log.executionTimeMs}ms</span> : null}
-                          <span className="log-time">
-                            {formatTime(log.timestamp)}
-                            {log.queueDelayMs >= 60000 ? ` · waited ${Math.round(log.queueDelayMs / 60000)} min in queue` : ""}
-                          </span>
-                        </span>
-                        {(userRole === "editor" || userRole === "admin") && editUrl && (
-                          <button
-                            className="btn-small btn-edit"
-                            style={{ fontSize: "10px", padding: "2px 6px" }}
-                            onClick={() => router && router.open(editUrl)}
-                            title="Edit this rule in workflow editor"
-                          >
-                            Edit Rule
-                          </button>
-                        )}
-                      </div>
-                      {log.ruleName && (
-                        <div className="log-details">
-                          <span className="log-kv">
-                            <span className="log-kv-label">Rule</span>
-                            <span>{log.ruleName}</span>
-                          </span>
-                        </div>
-                      )}
-                      <div className="log-details">
-                        <span className="log-kv">
-                          <span className="log-kv-label">Field</span>
-                          <code className="field-id">{log.fieldId}</code>
-                        </span>
-                        {log.decision && (
-                          <span className="log-kv">
-                            <span className="log-kv-label">Decision</span>
-                            <strong>{log.decision}</strong>
-                          </span>
-                        )}
-                      </div>
-                      {log.reason && (
-                        <>
-                          <div className="log-section-label">AI reason</div>
-                          <div className="log-reason">{log.reason}</div>
-                        </>
-                      )}
-                      {log.tokens && (
-                        <div className="log-foot">
-                          AI: {log.aiTimeMs || log.executionTimeMs}ms · {log.tokens} tokens
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            )}
+        {/* Execution Logs Section */}
+        <div className="section">
+          <div className="section-header">
+            <span className="section-title">Execution Logs</span>
+            <div className="section-actions">
+              <button
+                className="btn-small"
+                onClick={() => {
+                  setShowLogs(!showLogs);
+                  if (!showLogs) fetchLogs();
+                }}
+                disabled={logsLoading && !showLogs}
+              >
+                {showLogs ? "Hide Logs" : "Show Logs"}
+              </button>
+              {showLogs && logs.length > 0 && canKill && (
+                <button className={"btn-small btn-danger" + (clearingLogs ? " is-busy" : "")} onClick={clearLogs} disabled={clearingLogs}>
+                  Clear All
+                </button>
+              )}
+              {showLogs && (
+                <button className={"btn-small" + (logsLoading ? " is-busy" : "")} onClick={fetchLogs} disabled={logsLoading}>
+                  Refresh
+                </button>
+              )}
+            </div>
           </div>
-        )}
-      </div>
+
+          {showLogs && (
+            <div className="card veil-host anim-rise">
+              {logsLoading && logs.length > 0 && (
+                <div className="veil">
+                  <span className="spin-ring" />
+                  <span className="veil-label">Refreshing logs…</span>
+                </div>
+              )}
+              {(logsLoading && logs.length === 0) ? (
+                <div style={{ padding: "14px" }}>
+                  <div style={{ display: "flex", gap: "8px", marginBottom: "12px" }}>
+                    <div className="sk sk-text" style={{ width: 40, height: 14 }} />
+                    <div className="sk sk-text" style={{ width: 60, height: 14 }} />
+                    <div className="sk sk-text" style={{ width: 120, height: 12 }} />
+                  </div>
+                  <div className="sk sk-text" style={{ width: "90%", height: 12, marginBottom: 8 }} />
+                  <div className="sk sk-block" style={{ width: "95%", height: 28, marginBottom: 16 }} />
+                </div>
+              ) : logs.length === 0 ? (
+                <div className="logs-empty">
+                  <div className="logs-empty-icon">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2" />
+                      <rect x="8" y="2" width="8" height="4" rx="1" />
+                      <polyline points="8 14 10 14 11 11.5 13 16.5 14 14 14" />
+                    </svg>
+                  </div>
+                  <div className="logs-empty-title">No execution logs yet</div>
+                  <div className="logs-empty-caption">Runs of your validators, conditions, and post functions will show up here.</div>
+                </div>
+              ) : (
+                <div className="logs-list stagger">
+                  {logs.map((log) => renderLogEntry(log))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </>)}
 
       {/* Documentation Tab */}

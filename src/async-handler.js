@@ -41,11 +41,12 @@ import {
   isJobCancelled,
   JOB_TTL_ACTIVE,
   JOB_TTL_DONE,
-  // LM Studio multi-model pool: spread queued AI work across loaded models too.
-  // dispatchPostFunction (the queued semantic/doc PFs) already pools internally
-  // because it runs index.js code (callAIChat) here; this import covers the
-  // consumer's OWN tasks (review / codegen / fix / distill) via callAIChatSimple.
-  resolveLmStudioModel,
+  // LM Studio worker map: spread queued AI work across loaded models too.
+  // dispatchPostFunction (the queued semantic/doc PFs) already balances because it
+  // runs index.js's callAIChat here (which acquires from the shared KVS worker map);
+  // this import covers the consumer's OWN tasks (review / codegen / fix / distill)
+  // via callAIChatSimple.
+  lmAcquireWorker,
 } from "./index";
 // Learned memories — injected into static-PF reviews and persisted by the
 // memory_distill task (runtime auto-capture, opt-in). defangFence neutralizes
@@ -205,15 +206,16 @@ const callLmStudioNativeSimple = async ({ apiKey, model, systemPrompt, userMessa
 const callAIChatSimple = async ({ apiKey, model: requestedModel, systemPrompt, userMessage, jsonMode }) => {
   const { provider, baseUrl } = await getProviderConfig();
 
-  // LM Studio multi-model pool: spread this queued AI call across loaded models
-  // (these consumer tasks are all single-shot — no agentic loop — so pool freely).
-  // No-op for non-LM-Studio providers or when the pool is off / <2 models loaded.
+  // LM Studio worker map: pick the least-loaded loaded model for this queued task,
+  // then release immediately (these consumer tasks — review / codegen / fix /
+  // distill — are single-shot and occasional, so we use the map only to CHOOSE a
+  // free worker). No-op for non-LM-Studio providers or pool off / <2 models loaded.
   let model = requestedModel;
   if (provider === "lmstudio") {
     try {
-      const picked = await resolveLmStudioModel(requestedModel, {});
-      if (picked && picked !== requestedModel) console.log(`[lm-pool] async call → ${picked} (configured: ${requestedModel})`);
-      model = picked;
+      const acq = await lmAcquireWorker(requestedModel, {});
+      model = acq.model;
+      await acq.release();
     } catch (e) { /* best-effort — fall back to the configured model */ }
   }
 

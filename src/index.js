@@ -5966,7 +5966,7 @@ resolver.define("saveLmStudioConcurrency", async ({ payload, context }) => {
 
 // LM Studio multi-model pool toggle — when ON (default), runtime validator /
 // condition AI calls spread across all loaded models (capability-aware). A no-op
-// unless 2+ models are loaded. See resolveLmStudioModel.
+// unless 2+ models are loaded. See lmAcquireWorker (least-loaded worker map).
 resolver.define("getLmStudioPool", async () => {
   try {
     return { success: true, enabled: await isLmStudioPoolEnabled() };
@@ -7196,164 +7196,147 @@ const callAIChat = async (opts) => {
   const { apiKey, model: requestedModel, messages, tools, tool_choice, jsonMode, preResolvedModel } = opts;
   const { provider, baseUrl } = await getProviderConfig();
 
-  // LM Studio multi-model pool — the SINGLE choke point. Every non-agentic LM
-  // Studio AI call flows through here (validators, semantic / doc-gen / comment /
-  // subtask post-functions, codegen, fix, review), so pooling here spreads ALL of
-  // them across the loaded models. The agentic validator loop sets preResolvedModel
-  // (it pins one model up front so the multi-round conversation stays consistent),
-  // and callOpenAI also pre-resolves (so its cogni-debug modelUsed stays accurate) —
-  // both opt out here to avoid double-picking. No-op for non-LM-Studio providers.
-  let model = requestedModel;
-  if (provider === "lmstudio" && !preResolvedModel) {
-    const needsTools = !!(tools && tools.length > 0);
-    const needsVision = (messages || []).some(
-      (m) => Array.isArray(m.content) && m.content.some((p) => p && (p.type === "image_url" || p.type === "image")),
-    );
-    const picked = await resolveLmStudioModel(requestedModel, { needsTools, needsVision });
-    if (picked && picked !== requestedModel) console.log(`[lm-pool] routing call → ${picked} (configured: ${requestedModel})`);
-    model = picked;
-  }
-
   if (provider === "anthropic") {
-    return callAnthropicChat({ apiKey, model, messages, tools, tool_choice, baseUrl, jsonMode });
+    return callAnthropicChat({ apiKey, model: requestedModel, messages, tools, tool_choice, baseUrl, jsonMode });
   }
 
   // AWS Bedrock (BYOK): bearer-token auth + the unified Converse API. Translated to/from
   // OpenAI shape the same way Anthropic is (Converse is structurally close to the Messages API).
   if (provider === "bedrock") {
-    return callBedrockChat({ apiKey, model, messages, tools, tool_choice, baseUrl, jsonMode });
+    return callBedrockChat({ apiKey, model: requestedModel, messages, tools, tool_choice, baseUrl, jsonMode });
   }
 
   // Atlassian-hosted Forge LLM (Preview): no API key, no egress — served by @forge/llm.
   if (provider === "atlassian") {
-    return callForgeLlmChat({ model, messages, tools, tool_choice, jsonMode });
+    return callForgeLlmChat({ model: requestedModel, messages, tools, tool_choice, jsonMode });
   }
 
-  // LM Studio: prefer native /api/v1/chat when no custom tools are needed.
-  // Native gives us real `reasoning: "off"` control and cleaner image handling, but
-  // doesn't support custom tools (only MCP). When tools are present, fall through to
-  // the OpenAI-compat /v1/chat/completions path below.
-  if (provider === "lmstudio" && (!tools || tools.length === 0)) {
-    return callLmStudioNative({ apiKey, model, messages, jsonMode, baseUrl });
-  }
-  if (provider === "lmstudio" && tools && tools.length > 0) {
-    console.log("LM Studio: tools requested → using OpenAI-compat /v1/chat/completions instead of native /api/v1/chat (native does not support custom tools, only MCP)");
-  }
-
-  // OpenAI-compatible providers (OpenAI, Azure, OpenRouter, LM Studio)
-  // For LM Studio: strip OpenAI's `type:"file"` content blocks (PDFs/DOCX/XLSX/etc.).
-  // LM Studio's REST API does NOT accept that content type — its document-RAG support is
-  // GUI-only. Vision (image_url blocks on a VLM) DOES work and is preserved. Without this
-  // filter, requests to LM Studio with PDF attachments fail with HTTP 400 / unknown content
-  // type errors.
-  let outboundMessages = messages;
-  if (provider === "lmstudio") {
-    let strippedFiles = 0;
-    outboundMessages = messages.map((msg) => {
-      if (!Array.isArray(msg.content)) return msg;
-      const filtered = msg.content.filter((part) => {
-        if (part && part.type === "file") {
-          strippedFiles++;
-          return false;
-        }
-        return true;
-      });
-      return filtered.length === msg.content.length ? msg : { ...msg, content: filtered };
-    });
-    if (strippedFiles > 0) {
-      console.warn(`LM Studio: stripped ${strippedFiles} file attachment block(s) — LM Studio's REST API does not support OpenAI's type:"file" content type. Use a VLM with image attachments instead, or process documents externally.`);
-    }
+  // LM Studio — the SINGLE dispatch choke point. ACQUIRE the least-loaded loaded
+  // model (assign each job to a free worker; see lmAcquireWorker), run, then RELEASE
+  // in a finally so the worker frees for the next job. Every non-agentic LM Studio
+  // AI call flows through here (validators, semantic / doc-gen / comment / subtask
+  // post-functions, codegen, fix, review). The agentic loop and callOpenAI pin their
+  // own worker and pass preResolvedModel so they don't re-acquire here. No-op for
+  // OpenAI / Azure / OpenRouter (release is a noop; model stays as requested).
+  let model = requestedModel;
+  let releaseWorker = NOOP_RELEASE;
+  if (provider === "lmstudio" && !preResolvedModel) {
+    const needsTools = !!(tools && tools.length > 0);
+    const needsVision = (messages || []).some(
+      (m) => Array.isArray(m.content) && m.content.some((p) => p && (p.type === "image_url" || p.type === "image")),
+    );
+    const acq = await lmAcquireWorker(requestedModel, { needsTools, needsVision });
+    model = acq.model;
+    releaseWorker = acq.release;
   }
 
-  const requestBody = { model, ...buildModelParams(), messages: outboundMessages };
-  if (tools && tools.length > 0) {
-    requestBody.tools = tools;
-    // LM Studio's tools docs don't document tool_choice, so passing the OpenAI
-    // default ("auto") may behave inconsistently between Native-tool models and
-    // Default-fallback models. Omit when "auto" — that's the implicit default
-    // anywhere tools are accepted, so this is a no-op for OpenAI/Azure/OpenRouter
-    // (we still emit non-auto values like "required"/{type:"function",...}).
-    const omitToolChoice = provider === "lmstudio" && tool_choice === "auto";
-    if (tool_choice && !omitToolChoice) requestBody.tool_choice = tool_choice;
-  }
-  // Constrain to JSON only on providers that reliably honor response_format.
-  // Skip openrouter (passes through; many upstream models reject the field).
-  // For Anthropic we already returned above — its JSON mode is via system prompt only.
-  //
-  // Use the json_schema form rather than json_object: LM Studio rejects json_object
-  // outright ('response_format.type must be json_schema or text') and the json_schema
-  // form is also supported on OpenAI/Azure. Permissive schema (no required keys,
-  // strict: false) so reasoning models (Qwen3, etc.) don't get rejected for emitting
-  // extra fields and so we don't have to thread per-call-site schemas through here.
-  if (jsonMode && (provider === "openai" || provider === "azure" || provider === "lmstudio")) {
-    requestBody.response_format = {
-      type: "json_schema",
-      json_schema: {
-        name: "response",
-        strict: false,
-        schema: { type: "object" },
-      },
-    };
-  }
-
-  const headers = { "Content-Type": "application/json" };
-  // Provider-specific auth headers
-  if (provider === "azure") {
-    headers["api-key"] = apiKey;
-  } else if (provider === "lmstudio") {
-    // LM Studio: auth is optional. Only send Authorization when a token is set —
-    // some LM Studio builds 401 on `Bearer ` with an empty token.
-    if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
-  } else {
-    headers["Authorization"] = `Bearer ${apiKey}`;
-  }
-  // OpenRouter requires attribution headers
-  if (provider === "openrouter") {
-    headers["HTTP-Referer"] = "https://leanzero.atlascrafted.com";
-    headers["X-Title"] = "CogniRunner";
-  }
-
-  // LM Studio's baseUrl is the tunnel root (no /v1) so we append the OpenAI-compat path here.
-  // For other providers, baseUrl already ends in /v1.
-  const inferenceUrl = provider === "lmstudio"
-    ? `${baseUrl}/v1/chat/completions`
-    : `${baseUrl}/chat/completions`;
-
-  // Retry transient errors (429/5xx) honoring Retry-After before giving up;
-  // a hard fail then triggers the validator/PF fail-open (F9).
-  let response;
-  for (let attempt = 1; ; attempt++) {
-    response = await fetch(inferenceUrl, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(requestBody),
-    });
-    if (response.ok || attempt > 3 || !isTransientAIError(response.status)) break;
-    const ra = parseInt(response.headers.get("Retry-After") || "", 10);
-    const waitMs = Number.isFinite(ra) ? Math.min(5000, ra * 1000) : Math.min(2000, 400 * 2 ** (attempt - 1));
-    await new Promise((r) => setTimeout(r, waitMs));
-  }
-
-  if (!response.ok) {
-    const errText = await response.text().catch(() => "");
-    return { ok: false, status: response.status, data: null, error: errText };
-  }
-
-  const data = await response.json();
-  // Reasoning-model fallback: some models (Qwen3 family, DeepSeek-R1, etc.) emit
-  // their entire output into `message.reasoning_content` and leave `message.content`
-  // empty — even when response_format.type=json_schema is set. LM Studio passes this
-  // through verbatim. Patch the data object so downstream callers (which all read
-  // `choices[0].message.content`) get the actual text without needing to know about
-  // reasoning models. Tested: passing reasoning:"off" / enable_thinking:false in the
-  // request did NOT redirect output for qwen/qwen3.6-35b-a3b — must do this client-side.
   try {
-    const msg = data?.choices?.[0]?.message;
-    if (msg && (!msg.content || !msg.content.trim()) && typeof msg.reasoning_content === "string" && msg.reasoning_content.trim()) {
-      msg.content = msg.reasoning_content;
+    // LM Studio: prefer native /api/v1/chat when no custom tools are needed. Native
+    // gives real `reasoning: "off"` control + cleaner image handling but no custom
+    // tools (MCP only); with tools, fall through to the OpenAI-compat path below.
+    if (provider === "lmstudio" && (!tools || tools.length === 0)) {
+      const r = await callLmStudioNative({ apiKey, model, messages, jsonMode, baseUrl });
+      return { ...r, modelUsed: model };
     }
-  } catch { /* leave data unchanged on any unexpected shape */ }
-  return { ok: true, status: 200, data };
+    if (provider === "lmstudio" && tools && tools.length > 0) {
+      console.log("LM Studio: tools requested → using OpenAI-compat /v1/chat/completions instead of native /api/v1/chat (native does not support custom tools, only MCP)");
+    }
+
+    // OpenAI-compatible providers (OpenAI, Azure, OpenRouter, LM Studio)
+    // For LM Studio: strip OpenAI's `type:"file"` content blocks (PDFs/DOCX/XLSX/etc.).
+    // LM Studio's REST API does NOT accept that content type — its document-RAG support is
+    // GUI-only. Vision (image_url blocks on a VLM) DOES work and is preserved.
+    let outboundMessages = messages;
+    if (provider === "lmstudio") {
+      let strippedFiles = 0;
+      outboundMessages = messages.map((msg) => {
+        if (!Array.isArray(msg.content)) return msg;
+        const filtered = msg.content.filter((part) => {
+          if (part && part.type === "file") {
+            strippedFiles++;
+            return false;
+          }
+          return true;
+        });
+        return filtered.length === msg.content.length ? msg : { ...msg, content: filtered };
+      });
+      if (strippedFiles > 0) {
+        console.warn(`LM Studio: stripped ${strippedFiles} file attachment block(s) — LM Studio's REST API does not support OpenAI's type:"file" content type. Use a VLM with image attachments instead, or process documents externally.`);
+      }
+    }
+
+    const requestBody = { model, ...buildModelParams(), messages: outboundMessages };
+    if (tools && tools.length > 0) {
+      requestBody.tools = tools;
+      // LM Studio's tools docs don't document tool_choice, so passing the OpenAI
+      // default ("auto") may behave inconsistently. Omit when "auto" (the implicit
+      // default) — no-op for OpenAI/Azure/OpenRouter (we still emit non-auto values).
+      const omitToolChoice = provider === "lmstudio" && tool_choice === "auto";
+      if (tool_choice && !omitToolChoice) requestBody.tool_choice = tool_choice;
+    }
+    // Constrain to JSON only on providers that reliably honor response_format.
+    // Use the json_schema form (LM Studio rejects json_object; permissive schema so
+    // reasoning models aren't rejected for extra fields).
+    if (jsonMode && (provider === "openai" || provider === "azure" || provider === "lmstudio")) {
+      requestBody.response_format = {
+        type: "json_schema",
+        json_schema: { name: "response", strict: false, schema: { type: "object" } },
+      };
+    }
+
+    const headers = { "Content-Type": "application/json" };
+    if (provider === "azure") {
+      headers["api-key"] = apiKey;
+    } else if (provider === "lmstudio") {
+      // LM Studio: auth is optional. Only send Authorization when a token is set.
+      if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
+    } else {
+      headers["Authorization"] = `Bearer ${apiKey}`;
+    }
+    if (provider === "openrouter") {
+      headers["HTTP-Referer"] = "https://leanzero.atlascrafted.com";
+      headers["X-Title"] = "CogniRunner";
+    }
+
+    // LM Studio's baseUrl is the tunnel root (no /v1); other providers' baseUrl already ends in /v1.
+    const inferenceUrl = provider === "lmstudio"
+      ? `${baseUrl}/v1/chat/completions`
+      : `${baseUrl}/chat/completions`;
+
+    // Retry transient errors (429/5xx) honoring Retry-After before giving up;
+    // a hard fail then triggers the validator/PF fail-open (F9).
+    let response;
+    for (let attempt = 1; ; attempt++) {
+      response = await fetch(inferenceUrl, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(requestBody),
+      });
+      if (response.ok || attempt > 3 || !isTransientAIError(response.status)) break;
+      const ra = parseInt(response.headers.get("Retry-After") || "", 10);
+      const waitMs = Number.isFinite(ra) ? Math.min(5000, ra * 1000) : Math.min(2000, 400 * 2 ** (attempt - 1));
+      await new Promise((r) => setTimeout(r, waitMs));
+    }
+
+    if (!response.ok) {
+      const errText = await response.text().catch(() => "");
+      return { ok: false, status: response.status, data: null, error: errText, modelUsed: model };
+    }
+
+    const data = await response.json();
+    // Reasoning-model fallback: some models (Qwen3 / DeepSeek-R1) emit their answer
+    // into `message.reasoning_content` and leave `message.content` empty. Patch it so
+    // downstream callers (which read choices[0].message.content) get the actual text.
+    try {
+      const msg = data?.choices?.[0]?.message;
+      if (msg && (!msg.content || !msg.content.trim()) && typeof msg.reasoning_content === "string" && msg.reasoning_content.trim()) {
+        msg.content = msg.reasoning_content;
+      }
+    } catch { /* leave data unchanged on any unexpected shape */ }
+    return { ok: true, status: 200, data, modelUsed: model };
+  } finally {
+    await releaseWorker();
+  }
 };
 
 /**
@@ -8201,32 +8184,82 @@ const getLmStudioLoadedModels = async () => {
   return loaded;
 };
 
-// Round-robin cursor, seeded randomly per Forge function instance so that
-// concurrent instances start on different models (Math.random is fine in app
-// code — only the Workflow orchestration sandbox forbids it).
-let _lmPoolCursor = Math.floor(Math.random() * 997);
+// --- LM Studio worker map (least-loaded dispatch) ---------------------------
+// LM Studio's API exposes NO live per-model busy/queue state (verified: /api/v1/
+// models returns only static config), so we keep our OWN worker map in KVS: per
+// loaded model, a list of in-flight job claims {id, ts}. Each AI call ACQUIRES the
+// least-loaded model (fewest live claims, random tie-break so idle workers share
+// evenly), runs, then RELEASES. This balances by AVAILABILITY, not count — the
+// slow model accrues live claims and is skipped while free/fast workers pick up the
+// next jobs, i.e. "assign each job to a free worker" rather than blind round-robin
+// (which piles equal counts onto a slow model until it queues).
+//
+// Robustness in a stateless, ephemeral runtime:
+//  • per-model KVS keys → concurrent claims to DIFFERENT models never clobber;
+//  • a claim older than LM_CLAIM_STALE_MS is swept on read, so a function the
+//    platform hard-kills at the 25s cap never wedges a worker forever (and a model
+//    that's timing out keeps live claims → looks busy → gets avoided, which is what
+//    we want);
+//  • all KVS ops are best-effort — any hiccup falls back to the configured model.
+// Gated by COGNIRUNNER_LMSTUDIO_POOL (the admin "run on all loaded models" toggle).
+const LM_BUSY_PREFIX = "lmbusy:";
+const LM_CLAIM_STALE_MS = 40000; // > the 25s function cap + margin; sweeps leaked claims
+const LM_CLAIM_TTL = { ttl: { value: 5, unit: "MINUTES" } };
+const lmBusyKey = (id) => LM_BUSY_PREFIX + String(id).replace(/[^a-zA-Z0-9._:-]/g, "_").slice(0, 110);
+const NOOP_RELEASE = async () => {};
 
-// Resolve which LM Studio model should serve a single runtime AI call. Returns
-// `requestedModel` unchanged unless pooling applies: provider === lmstudio, the
-// pool is enabled, 2+ models are loaded, and at least one fits the requested
-// capabilities. Best-effort — any error falls back to the configured model.
-export const resolveLmStudioModel = async (requestedModel, opts = {}) => {
+// Acquire the least-loaded loaded model for one AI call. Returns { model, release }.
+// `release()` is idempotent + best-effort; ALWAYS call it (a `finally`) so the
+// worker is freed. Falls back to { requestedModel, NOOP_RELEASE } whenever pooling
+// doesn't apply (non-LM-Studio, pool off, <2 loaded, or no capability-fit model).
+export const lmAcquireWorker = async (requestedModel, opts = {}) => {
   try {
     const { provider } = await getProviderConfig();
-    if (provider !== "lmstudio") return requestedModel;
-    if (!(await isLmStudioPoolEnabled())) return requestedModel;
+    if (provider !== "lmstudio") return { model: requestedModel, release: NOOP_RELEASE };
+    if (!(await isLmStudioPoolEnabled())) return { model: requestedModel, release: NOOP_RELEASE };
     const loaded = await getLmStudioLoadedModels();
-    if (loaded.length < 2) return requestedModel;
+    if (loaded.length < 2) return { model: requestedModel, release: NOOP_RELEASE };
     let pool = loaded;
     if (opts.needsTools) pool = pool.filter((m) => m.toolUse);
     if (opts.needsVision) pool = pool.filter((m) => m.vision);
-    if (pool.length === 0) return requestedModel; // capability requirement unmet → keep configured model
-    if (pool.length === 1) return pool[0].id;
-    const idx = (((_lmPoolCursor++) % pool.length) + pool.length) % pool.length;
-    return pool[idx].id;
+    if (pool.length === 0) return { model: requestedModel, release: NOOP_RELEASE };
+    if (pool.length === 1) return { model: pool[0].id, release: NOOP_RELEASE };
+
+    const now = Date.now();
+    // Live in-flight count per candidate (stale claims swept out).
+    const counts = await Promise.all(pool.map(async (m) => {
+      let claims = [];
+      try { claims = (await storage.get(lmBusyKey(m.id))) || []; } catch { claims = []; }
+      const live = Array.isArray(claims) ? claims.filter((c) => c && now - c.ts < LM_CLAIM_STALE_MS) : [];
+      return { id: m.id, live };
+    }));
+    // Pick the least-loaded; random tie-break so concurrent claims to equally-idle
+    // workers fan out instead of herding onto the first one.
+    const minN = Math.min(...counts.map((c) => c.live.length));
+    const candidates = counts.filter((c) => c.live.length === minN);
+    const chosen = candidates[Math.floor(Math.random() * candidates.length)];
+
+    const claimId = `${now.toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    const key = lmBusyKey(chosen.id);
+    const next = chosen.live.concat([{ id: claimId, ts: now }]);
+    try { await storage.set(key, next, LM_CLAIM_TTL); } catch { /* best-effort */ }
+    console.log(`[lm-pool] worker=${chosen.id} inflight ${chosen.live.length}→${next.length} (configured: ${requestedModel})`);
+
+    let released = false;
+    const release = async () => {
+      if (released) return;
+      released = true;
+      try {
+        const cur = (await storage.get(key)) || [];
+        const t = Date.now();
+        const pruned = (Array.isArray(cur) ? cur : []).filter((c) => c && c.id !== claimId && t - c.ts < LM_CLAIM_STALE_MS);
+        await storage.set(key, pruned, LM_CLAIM_TTL);
+      } catch { /* best-effort — the staleness sweep cleans leaked claims */ }
+    };
+    return { model: chosen.id, release };
   } catch (e) {
-    console.log("resolveLmStudioModel fallback:", e.message);
-    return requestedModel;
+    console.log("lmAcquireWorker fallback:", e.message);
+    return { model: requestedModel, release: NOOP_RELEASE };
   }
 };
 
@@ -8698,11 +8731,10 @@ const callOpenAI = async (fieldValue, validationPrompt, attachmentParts, context
     };
   }
 
-  const baseModel = await getOpenAIModel();
+  // The configured model. For LM Studio, callAIChat ACQUIRES the least-loaded
+  // loaded worker (see lmAcquireWorker) and reports it back as result.modelUsed.
+  const model = await getOpenAIModel();
   const hasAttachments = attachmentParts && attachmentParts.length > 0;
-  // LM Studio multi-model pool: spread non-agentic validations across loaded
-  // models (vision-capable ones when attachments are present). No-op elsewhere.
-  const model = await resolveLmStudioModel(baseModel, { needsVision: hasAttachments });
 
   const systemPrompt = (hasAttachments
     ? `You are a validation assistant. Your job is to validate content (text, documents, images, and attachments) against specific criteria.
@@ -8755,13 +8787,15 @@ Respond with JSON only.`;
   try {
     const result = await callAIChat({
       apiKey, model,
-      preResolvedModel: true, // model already pooled above; keep modelUsed accurate
       jsonMode: true,
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: userContent },
       ],
     });
+    // The model that actually served this call (the acquired LM Studio worker, or
+    // the configured model for other providers) — for the cogni-debug trace.
+    const servedModel = result.modelUsed || model;
 
     if (!result.ok) {
       console.error("AI validation error:", result.status, result.error);
@@ -8772,13 +8806,13 @@ Respond with JSON only.`;
           isValid: true,
           reason: `AI service temporarily unavailable (${result.status}) — transition allowed (fail-open).`,
           transientError: true,
-          modelUsed: model,
+          modelUsed: servedModel,
         };
       }
       return {
         isValid: false,
         reason: `AI service error: ${result.status}`,
-        modelUsed: model,
+        modelUsed: servedModel,
       };
     }
 
@@ -8788,7 +8822,7 @@ Respond with JSON only.`;
       return {
         isValid: false,
         reason: "Empty response from AI service",
-        modelUsed: model,
+        modelUsed: servedModel,
       };
     }
 
@@ -8798,13 +8832,13 @@ Respond with JSON only.`;
       return {
         isValid: false,
         reason: `AI returned malformed JSON: ${content.substring(0, 120)}`,
-        modelUsed: model,
+        modelUsed: servedModel,
       };
     }
     return {
       isValid: parsed.isValid === true,
       reason: typeof parsed.reason === "string" ? parsed.reason : "No reason provided",
-      modelUsed: model,
+      modelUsed: servedModel,
     };
   } catch (error) {
     console.error("Error calling AI:", error);
@@ -9207,10 +9241,15 @@ const callOpenAIWithTools = async (fieldValue, validationPrompt, attachmentParts
   }
 
   const baseModel = await getOpenAIModel();
-  // LM Studio multi-model pool: pin one tool-capable loaded model for the whole
-  // agentic loop (so the multi-round conversation stays on one model). No-op
-  // unless 2+ tool-capable models are loaded.
-  const model = await resolveLmStudioModel(baseModel, { needsTools: true });
+  // LM Studio worker map: pick the least-loaded TOOL-CAPABLE loaded model, then
+  // release the claim immediately — agentic validations are rare (tool-calling
+  // prompts only), so we use the map only to CHOOSE a free worker; the multi-round
+  // loop below pins this model via preResolvedModel. (Holding the claim across the
+  // whole loop would need wrapping its many returns; not worth it for a rare path —
+  // a stray claim would self-heal via the staleness sweep anyway.)
+  const _agenticAcq = await lmAcquireWorker(baseModel, { needsTools: true });
+  const model = _agenticAcq.model;
+  await _agenticAcq.release();
 
   // LM Studio capability gate: refuse the agentic loop when the chosen model
   // wasn't trained for tool use. Per LM Studio docs, only "Native"-supported

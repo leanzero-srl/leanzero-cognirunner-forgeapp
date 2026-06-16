@@ -34,6 +34,10 @@ const RESULTS_DIR = join(HARNESS_ROOT, "results");
 const WAIT = parseInt(process.env.BARRAGE_WAIT || "35", 10);
 const SKIP_MCP = process.env.BARRAGE_SKIP_MCP === "1";
 const SMOKE = process.env.BARRAGE_SMOKE === "1";
+// Deep mode: graded run-deep + the every-real-rule discovery sweep + coverage
+// report, instead of the binary run-transitions suite. Built for the weak-model
+// forcing-function loop. Default OFF — the classic barrage is unchanged.
+const DEEP = process.env.BARRAGE_DEEP === "1";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const bold = (s) => `\x1b[1m${s}\x1b[0m`;
@@ -61,13 +65,22 @@ async function main() {
   const steps = [];
   steps.push(run("STEP 0a — reset to hub", "reset-to-hub.mjs"));
   steps.push(run("STEP 0b — provider smoke (live + real verdicts?)", "_smoke-provider.mjs"));
-  steps.push(run(`STEP 1 — comprehensive suite${SMOKE ? " (SMOKE — one case/rule)" : " (~782 cases)"}`,
-    "run-transitions.mjs", SMOKE ? { SMOKE: "1" } : {}));
+  if (DEEP) {
+    steps.push(run(`STEP 1 — DEEP graded suite${SMOKE ? " (SMOKE — one case/rule)" : ""}`,
+      "run-deep.mjs", SMOKE ? { SMOKE: "1" } : {}));
+    steps.push(run("STEP 1b — exercise EVERY deployed rule (discovery sweep)", "exercise-discovered.mjs"));
+  } else {
+    steps.push(run(`STEP 1 — comprehensive suite${SMOKE ? " (SMOKE — one case/rule)" : " (~782 cases)"}`,
+      "run-transitions.mjs", SMOKE ? { SMOKE: "1" } : {}));
+  }
   if (!SKIP_MCP) {
     steps.push(run("STEP 2a — live MCP e2e (gendoc must attach)", "mcp-live-e2e.mjs"));
     steps.push(run("STEP 2b — Research & Document flavor", "research-doc-test.mjs", { CLEAN: "1" }));
   } else {
     console.log("\n(BARRAGE_SKIP_MCP=1 — skipping the live-MCP steps 2a/2b.)");
+  }
+  if (DEEP) {
+    steps.push(run("STEP 3 — coverage report (PASS/SOFT/HARD + A/B/C + worklist)", "coverage-report.mjs"));
   }
 
   console.log(`\n${bold("=== BARRAGE SUMMARY ===")}`);

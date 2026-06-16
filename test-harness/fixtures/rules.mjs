@@ -423,6 +423,40 @@ export function buildRules(state) {
     study: "action",
   });
 
+  // ---- Deep-assertion metadata (graded PASS/SOFT/HARD in lib/grade.mjs) ----
+  // Attached by key; the legacy expect()/assert()/expectPf above are UNTOUCHED so
+  // the binary 766–770/782 baseline keeps computing. These only drive the graded
+  // layer: reasonMustCite (validator reason rubric), plausibleSet/expectRange/
+  // overlapTokens/valueOracle (semantic value quality), expectExact (deterministic
+  // static writes — a mismatch is a system bug, never model roughness).
+  const DEEP = {
+    "V-naive": { reasonMustCite: [["gibberish", "not a real", "not a valid", "empty", "nonsense", "injection", "instruction", "decoration"]] },
+    "V-hardened": { reasonMustCite: [["gibberish", "not a real", "not a valid", "empty", "nonsense", "injection", "instruction", "ignore", "decoration", "version"]] },
+    "V-quality-desc": { reasonMustCite: [["instruction", "not a real", "influence", "untrusted", "note", "task"]] },
+    "V-empty": { reasonMustCite: [["empty", "blank", "whitespace"]] },
+    "V-rich-quality": { reasonMustCite: [["reproduction", "repro", "impact", "acceptance", "steps", "thin", "vague"]] },
+    "V-pii": { reasonMustCite: [["email", "phone", "ssn", "card", "key", "pii", "secret", "personal", "credit"]] },
+    "V-number": { reasonMustCite: [["100", "exceed", "estimate", "high", "unreasonable", "story"]] },
+    "V-labels": { reasonMustCite: [["wontfix", "duplicate", "label"]] },
+    "V-agentic-dup": { reasonMustCite: [["duplicate", "already", "exists", "unique"]] },
+    "V-agentic-gate": { reasonMustCite: [["bug", "open", "gate", "release", "blocker", "not done"]] },
+    "K-docs": { reasonMustCite: [["jql", "field", "format", "valid", "task", "documentation", "reference"]] },
+    "S1-text": { valueOracle: "overlap", overlapTokens: ["checkout", "500", "card", "payment", "saved", "refresh", "session", "v2"] },
+    "S12-textarea": { valueOracle: "overlap", overlapTokens: ["checkout", "500", "card", "payment", "saved", "refresh", "session", "v2"] },
+    "S2-select": { valueOracle: "closed-label", plausibleSet: { plausible: ["Medium", "High", "Security"], hard: ["Low"] } },
+    "S9-radio": { valueOracle: "closed-label", plausibleSet: { plausible: ["Yes", "Maybe"], hard: [] } },
+    "S4-number": { valueOracle: "schema", expectRange: [1, 13] },
+    "A-number": { expectExact: 42, targetField: numberId },
+    "A-date": { expectExact: "2026-03-15", targetField: dateId },
+    "A-select": { expectExact: "Security", targetField: selectId },
+    "A-url": { expectExact: "https://leanzero.example/tickets/cogtest", targetField: urlId },
+    "T6-updatefield": { expectExact: "static-ok", targetField: textId },
+  };
+  for (const r of rules) {
+    const d = DEEP[r.key];
+    if (d) Object.assign(r, d);
+  }
+
   // Opt-in observability: mirror every rule's execution detail (verdict, reason,
   // agentic toolMeta, decision/trace) to the issue's cogni-debug property so the
   // harness can assert on internals (esp. agentic toolMeta) via REST.

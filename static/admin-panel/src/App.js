@@ -2070,14 +2070,16 @@ const injectStyles = () => {
 
     .dropdown-item { transition: background var(--dur-fast) ease, color var(--dur-fast) ease; }
 
-    /* Tabs: hover lifts only INACTIVE tabs (the active blue never washes to grey);
-       keyboard focus uses an INSET outline so it can't clip against the bar the way
-       a box-shadow ring does — tabs have a negative margin-bottom. The active tab
-       gets a soft accent glow on its label. */
-    .tab-btn { transition: color var(--dur-fast) ease, border-color var(--dur-fast) ease, background var(--dur-fast) ease; border-radius: 7px 7px 0 0; }
-    .tab-btn:hover:not(.tab-active) { background: var(--hover-bg); color: var(--text-color); }
+    /* Tabs — clean, UNDERLINE-only states. No filled hover background and no
+       focus box: both render as ugly rounded blobs on a tab row (the negative
+       margin-bottom + rounded fill never align with the bar). Instead: hover just
+       lightens the label, keyboard focus shows an accent underline (the natural
+       tab affordance, via the already-present transparent 2px border-bottom — so
+       nothing shifts), and the active tab keeps its blue underline + bold + a soft
+       glow and never washes to grey on hover. */
+    .tab-btn { transition: color var(--dur-fast) ease, border-color var(--dur-fast) ease; }
     .tab-btn.tab-active:hover { color: var(--primary-color); }
-    .tab-btn:focus-visible { outline: 2px solid var(--primary-color); outline-offset: -4px; }
+    .tab-btn:focus-visible { outline: none; border-bottom-color: var(--primary-color); }
     .tab-active { text-shadow: 0 0 12px rgba(37, 99, 235, 0.28); }
     html[data-color-mode="dark"] .tab-active { text-shadow: 0 0 14px rgba(96, 165, 250, 0.45); }
 

@@ -8114,13 +8114,16 @@ const getLmStudioModelDetail = async (modelId) => {
 };
 
 // --- LM Studio multi-model pool ---------------------------------------------
-// When the LM Studio provider has 2+ models loaded, spread runtime AI calls
-// (validators / conditions / semantic post-functions) across all of them so
-// concurrent transitions exercise every loaded model instance — and, with LM
-// Link, every linked device — instead of pinning all load to the single
-// configured model. Capability-aware: agentic (tool) calls only target
+// When the LM Studio provider has 2+ models loaded, spread runtime VALIDATOR /
+// CONDITION AI calls across all of them so concurrent transitions exercise
+// every loaded model instance — and, since those models may be hosted on
+// different LM Link devices, every device — instead of pinning all load to the
+// single configured model. Capability-aware: agentic (tool) calls only target
 // tool-trained models; vision calls only target VLMs. This is a no-op unless
 // 2+ models are loaded, so single-model setups behave exactly as before.
+// (Semantic / doc-gen post-functions are NOT pooled here — for LM Studio those
+// run on the async queue, a different load path; only the synchronous validator
+// path is pooled.)
 //
 // Opt-out via COGNIRUNNER_LMSTUDIO_POOL === false (default ON). The model that
 // actually served each call is mirrored to the cogni-debug issue property when
@@ -8161,16 +8164,11 @@ const getLmStudioLoadedModels = async () => {
         loaded = items
           .filter((m) => Array.isArray(m.loaded_instances) && m.loaded_instances.length > 0)
           .filter((m) => { const t = m.type || "llm"; return t !== "embedding" && t !== "embeddings"; })
-          .map((m) => {
-            const inst = m.loaded_instances[0] || {};
-            return {
-              id: m.key || m.id,
-              vision: !!(m.capabilities && m.capabilities.vision),
-              toolUse: !!(m.capabilities && m.capabilities.trained_for_tool_use),
-              device: inst.device || inst.host || inst.node || inst.machine || inst.instance_name || inst.device_name || m.device || null,
-              instances: m.loaded_instances.length,
-            };
-          })
+          .map((m) => ({
+            id: m.key || m.id,
+            vision: !!(m.capabilities && m.capabilities.vision),
+            toolUse: !!(m.capabilities && m.capabilities.trained_for_tool_use),
+          }))
           .filter((m) => m.id);
         // Stable order → deterministic round-robin within a warm function instance.
         loaded.sort((a, b) => String(a.id).localeCompare(String(b.id)));

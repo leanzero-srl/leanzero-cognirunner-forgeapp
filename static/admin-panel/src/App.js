@@ -500,6 +500,18 @@ const injectStyles = () => {
       min-width: 90px;
       text-align: center;
     }
+    /* Inline free-text filter for the Rules table + Execution Logs lists. */
+    .list-search {
+      width: 200px;
+      padding: 6px 10px;
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      background: var(--input-bg);
+      color: var(--text-color);
+      font-size: 13px;
+    }
+    .list-search::placeholder { color: var(--text-muted); }
+    .list-search:focus { outline: none; border-color: var(--primary-color); }
 
     /* === Active Jobs (queued + ongoing async work) === */
     .jobs-list { max-height: 420px; overflow-y: auto; border-radius: inherit; }
@@ -4286,6 +4298,23 @@ const TABS = [
 // the recent window client-side).
 const LOGS_PAGE_SIZE = 10;
 
+// Free-text filters (case-insensitive) for the Rules table and Execution Logs.
+// q is expected pre-lowercased + trimmed by the caller.
+const ruleMatchesQuery = (c, q) => {
+  if (!q) return true;
+  const wf = c.workflow || {};
+  return [
+    c.type, c.fieldId, c.actionFieldId, c.prompt, c.conditionPrompt, c.actionPrompt,
+    wf.workflowName, wf.workflowId, wf.transitionFromName, wf.transitionToName,
+  ].filter(Boolean).join(" ").toLowerCase().includes(q);
+};
+const logMatchesQuery = (l, q) => {
+  if (!q) return true;
+  return [
+    l.issueKey, l.ruleName, l.fieldId, l.reason, l.type, l.decision, l.recommendation,
+  ].filter(Boolean).join(" ").toLowerCase().includes(q);
+};
+
 // Map a task type to a short human label + the badge hue class used in the
 // Active Jobs panel and per-rule chips.
 const JOB_TYPE_LABEL = {
@@ -4316,6 +4345,8 @@ function App() {
   const [logsLoading, setLogsLoading] = useState(false);
   const [showLogs, setShowLogs] = useState(true);
   const [logsPage, setLogsPage] = useState(0);
+  const [logsSearch, setLogsSearch] = useState("");
+  const [rulesSearch, setRulesSearch] = useState("");
   const [licenseActive, setLicenseActive] = useState(null);
   const [isAdmin, setIsAdmin] = useState(false);
   const [userRole, setUserRole] = useState(null); // "viewer" | "editor" | "admin" | null
@@ -4567,7 +4598,9 @@ function App() {
   }, [activeTab]);
 
   const canKill = userRole === "editor" || userRole === "admin";
-  const totalLogPages = Math.max(1, Math.ceil(logs.length / LOGS_PAGE_SIZE));
+  const logsQuery = logsSearch.trim().toLowerCase();
+  const filteredLogs = logsQuery ? logs.filter((l) => logMatchesQuery(l, logsQuery)) : logs;
+  const totalLogPages = Math.max(1, Math.ceil(filteredLogs.length / LOGS_PAGE_SIZE));
 
   // Group active (queued + running) jobs by ruleId for the per-rule chips.
   const jobsByRule = {};
@@ -4985,6 +5018,14 @@ function App() {
         <div className="section-header">
           <span className="section-title">Configured Rules</span>
           <div className="section-actions">
+            <input
+              type="text"
+              className="list-search"
+              value={rulesSearch}
+              onChange={(e) => setRulesSearch(e.target.value)}
+              placeholder="Search rules…"
+              aria-label="Search rules"
+            />
             <div style={{ width: "160px" }}>
               <CustomSelect
                 value={typeFilter}
@@ -5056,14 +5097,18 @@ function App() {
               ))}
             </div>
           ) : (() => {
-            const filtered = typeFilter === "all" ? configs
+            const typed = typeFilter === "all" ? configs
               : typeFilter === "postfunction" ? configs.filter((c) => c.type && c.type.startsWith("postfunction"))
               : configs.filter((c) => c.type === typeFilter);
+            const rulesQuery = rulesSearch.trim().toLowerCase();
+            const filtered = rulesQuery ? typed.filter((c) => ruleMatchesQuery(c, rulesQuery)) : typed;
             return filtered.length === 0 ? (
             <div className="empty-state">
               {configs.length === 0
                 ? "No rules configured yet. Add one from a workflow transition."
-                : `No ${typeFilter === "postfunction" ? "post functions" : typeFilter + "s"} found.`}
+                : rulesQuery
+                  ? `No rules match “${rulesSearch.trim()}”.`
+                  : `No ${typeFilter === "postfunction" ? "post functions" : typeFilter + "s"} found.`}
             </div>
           ) : (
             <table className="table">
@@ -5258,6 +5303,16 @@ function App() {
           <div className="section-header">
             <span className="section-title">Execution Logs</span>
             <div className="section-actions">
+              {showLogs && (
+                <input
+                  type="text"
+                  className="list-search"
+                  value={logsSearch}
+                  onChange={(e) => { setLogsSearch(e.target.value); setLogsPage(0); }}
+                  placeholder="Search logs…"
+                  aria-label="Search execution logs"
+                />
+              )}
               <button
                 className="btn-small"
                 onClick={() => {
@@ -5311,12 +5366,17 @@ function App() {
                   <div className="logs-empty-title">No execution logs yet</div>
                   <div className="logs-empty-caption">Runs of your validators, conditions, and post functions will show up here.</div>
                 </div>
+              ) : filteredLogs.length === 0 ? (
+                <div className="logs-empty">
+                  <div className="logs-empty-title">No matching logs</div>
+                  <div className="logs-empty-caption">No execution logs match “{logsSearch.trim()}”.</div>
+                </div>
               ) : (
                 <>
                   <div className="logs-list-paged stagger">
-                    {logs.slice(logsPage * LOGS_PAGE_SIZE, (logsPage + 1) * LOGS_PAGE_SIZE).map((log) => renderLogEntry(log))}
+                    {filteredLogs.slice(logsPage * LOGS_PAGE_SIZE, (logsPage + 1) * LOGS_PAGE_SIZE).map((log) => renderLogEntry(log))}
                   </div>
-                  {logs.length > LOGS_PAGE_SIZE && (
+                  {filteredLogs.length > LOGS_PAGE_SIZE && (
                     <div className="logs-pagination">
                       <button
                         className="btn-small"
@@ -5326,7 +5386,7 @@ function App() {
                         ‹ Prev
                       </button>
                       <span className="logs-pagination-info">
-                        {logsPage * LOGS_PAGE_SIZE + 1}–{Math.min((logsPage + 1) * LOGS_PAGE_SIZE, logs.length)} of {logs.length}
+                        {logsPage * LOGS_PAGE_SIZE + 1}–{Math.min((logsPage + 1) * LOGS_PAGE_SIZE, filteredLogs.length)} of {filteredLogs.length}
                       </span>
                       <button
                         className="btn-small"

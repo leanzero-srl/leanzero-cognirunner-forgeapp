@@ -139,6 +139,10 @@ const getProviderConfig = async () => {
 // Mirror of callLmStudioNative in src/index.js but specialized for the simple
 // system+user shape callAIChatSimple uses (no multimodal, no tools possible).
 // Always preferred for LM Studio since callAIChatSimple never sends tools.
+// Models whose LM Studio build rejects the native `reasoning` param (400) — learned on first
+// use and cached per warm container so we skip it up front instead of paying a failed call +
+// retry every time. (Mirrors the same cache in src/index.js's callLmStudioNative.)
+const _lmStudioNoReasoning = new Set();
 const callLmStudioNativeSimple = async ({ apiKey, model, systemPrompt, userMessage, jsonMode, baseUrl }) => {
   let prompt = systemPrompt || "";
   if (jsonMode) {
@@ -150,8 +154,9 @@ const callLmStudioNativeSimple = async ({ apiKey, model, systemPrompt, userMessa
     model,
     input: userMessage,
     store: false,
-    reasoning: "off",
   };
+  // Skip reasoning:"off" for models we've learned reject it (avoids a wasted call + retry each time).
+  if (!_lmStudioNoReasoning.has(model)) body.reasoning = "off";
   if (prompt) body.system_prompt = prompt;
 
   const headers = { "Content-Type": "application/json", Accept: "application/json" };
@@ -159,10 +164,11 @@ const callLmStudioNativeSimple = async ({ apiKey, model, systemPrompt, userMessa
 
   const url = `${baseUrl}/api/v1/chat`;
   let response = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
-  // Retry without `reasoning` if the model rejects it (per LM Studio docs).
+  // Retry without `reasoning` if the model rejects it (per LM Studio docs), and remember it.
   if (response.status === 400) {
     const errText = await response.text().catch(() => "");
-    if (/reasoning/i.test(errText)) {
+    if (/reasoning/i.test(errText) && "reasoning" in body) {
+      _lmStudioNoReasoning.add(model);
       delete body.reasoning;
       response = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
     } else {

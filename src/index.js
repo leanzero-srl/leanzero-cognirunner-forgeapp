@@ -6716,6 +6716,13 @@ const buildMcpSystemPrompt = async (integrations) => {
   return lines.join("\n");
 };
 
+// Models whose LM Studio build rejects the native `reasoning` param with a 400. Learned on the
+// first call and cached per warm container, so we skip the param up front on every subsequent
+// call instead of paying a failed request + retry EACH time (the param is rejected identically
+// for a given model). This roughly halves the round-trips on a self-hosted model that doesn't
+// support it. Cleared on container recycle — cheap to relearn.
+const _lmStudioNoReasoning = new Set();
+
 const callLmStudioNative = async ({ apiKey, model, messages, jsonMode, baseUrl }) => {
   // 1. Strip file blocks (LM Studio's REST API doesn't accept type:"file" anywhere
   //    — its document support is GUI-only via RAG).
@@ -6788,8 +6795,11 @@ const callLmStudioNative = async ({ apiKey, model, messages, jsonMode, baseUrl }
     model,
     input: inputField,
     store: false,
-    reasoning: "off",
   };
+  // reasoning:"off" keeps the answer out of reasoning blocks — but some LM Studio models reject
+  // the param (400). Skip it for models we've already learned don't support it (avoids the
+  // wasted first call + retry on every request).
+  if (!_lmStudioNoReasoning.has(model)) body.reasoning = "off";
   if (systemPrompt) body.system_prompt = systemPrompt;
   // When MCPs are enabled, attach them and bump context_length per LM Studio's
   // recommendation (MCP tool defs eat into context).
@@ -6817,7 +6827,8 @@ const callLmStudioNative = async ({ apiKey, model, messages, jsonMode, baseUrl }
     const errText = await response.text().catch(() => "");
     let retry = false;
     if (/reasoning/i.test(errText) && "reasoning" in body) {
-      console.log(`LM Studio native: model "${model}" does not support reasoning param — retrying without`);
+      console.log(`LM Studio native: model "${model}" does not support reasoning param — caching + retrying without (future calls skip it)`);
+      _lmStudioNoReasoning.add(model); // skip the param on this model from now on
       delete body.reasoning; retry = true;
     }
     if (/plugin|integration|mcp/i.test(errText) && body.integrations) {

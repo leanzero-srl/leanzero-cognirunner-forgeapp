@@ -1646,11 +1646,11 @@ export default function OpenAIConfig({ invoke }) {
                     />
                     <span>
                       <span style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "var(--text-color)" }}>
-                        Spread runtime validations across all loaded models
+                        Run on all loaded models (not just the primary)
                         {savingPool && <span className="spin-ring spin-ring-sm" style={{ marginLeft: "8px", verticalAlign: "middle" }} />}
                       </span>
                       <span style={{ display: "block", fontSize: "11px", color: "var(--text-muted)", marginTop: "3px" }}>
-                        With 2+ models loaded, each transition&apos;s validation is routed to a different loaded model (round-robin, capability-aware — agentic calls only go to tool-trained models, vision calls only to VLMs) so concurrent work uses every model — and every device they sit on — instead of hammering one. No-op when a single model is loaded; off pins everything to the selected model.
+                        <strong style={{ color: "var(--text-color)" }}>On</strong> (needs 2+ models loaded): every AI call — validators, conditions, <em>and</em> post-functions — is spread across all loaded models (round-robin, capability-aware: agentic calls only go to tool-trained models, vision only to VLMs), so all your devices work in parallel instead of one being hammered while the others idle. <strong style={{ color: "var(--text-color)" }}>Off</strong>: everything uses only the primary model selected above. No-op when a single model is loaded.
                       </span>
                     </span>
                   </label>

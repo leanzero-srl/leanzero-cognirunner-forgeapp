@@ -7193,8 +7193,26 @@ const callLmStudioNative = async ({ apiKey, model, messages, jsonMode, baseUrl }
  * @returns {Promise<{ok: boolean, status: number, data: object}>} - Normalized response in OpenAI format
  */
 const callAIChat = async (opts) => {
-  const { apiKey, model, messages, tools, tool_choice, jsonMode } = opts;
+  const { apiKey, model: requestedModel, messages, tools, tool_choice, jsonMode, preResolvedModel } = opts;
   const { provider, baseUrl } = await getProviderConfig();
+
+  // LM Studio multi-model pool — the SINGLE choke point. Every non-agentic LM
+  // Studio AI call flows through here (validators, semantic / doc-gen / comment /
+  // subtask post-functions, codegen, fix, review), so pooling here spreads ALL of
+  // them across the loaded models. The agentic validator loop sets preResolvedModel
+  // (it pins one model up front so the multi-round conversation stays consistent),
+  // and callOpenAI also pre-resolves (so its cogni-debug modelUsed stays accurate) —
+  // both opt out here to avoid double-picking. No-op for non-LM-Studio providers.
+  let model = requestedModel;
+  if (provider === "lmstudio" && !preResolvedModel) {
+    const needsTools = !!(tools && tools.length > 0);
+    const needsVision = (messages || []).some(
+      (m) => Array.isArray(m.content) && m.content.some((p) => p && (p.type === "image_url" || p.type === "image")),
+    );
+    const picked = await resolveLmStudioModel(requestedModel, { needsTools, needsVision });
+    if (picked && picked !== requestedModel) console.log(`[lm-pool] routing call → ${picked} (configured: ${requestedModel})`);
+    model = picked;
+  }
 
   if (provider === "anthropic") {
     return callAnthropicChat({ apiKey, model, messages, tools, tool_choice, baseUrl, jsonMode });
@@ -8192,7 +8210,7 @@ let _lmPoolCursor = Math.floor(Math.random() * 997);
 // `requestedModel` unchanged unless pooling applies: provider === lmstudio, the
 // pool is enabled, 2+ models are loaded, and at least one fits the requested
 // capabilities. Best-effort — any error falls back to the configured model.
-const resolveLmStudioModel = async (requestedModel, opts = {}) => {
+export const resolveLmStudioModel = async (requestedModel, opts = {}) => {
   try {
     const { provider } = await getProviderConfig();
     if (provider !== "lmstudio") return requestedModel;
@@ -8737,6 +8755,7 @@ Respond with JSON only.`;
   try {
     const result = await callAIChat({
       apiKey, model,
+      preResolvedModel: true, // model already pooled above; keep modelUsed accurate
       jsonMode: true,
       messages: [
         { role: "system", content: systemPrompt },
@@ -9324,6 +9343,7 @@ RESPONSE FORMAT:
 
       const aiResult = await callAIChat({
         apiKey, model, messages,
+        preResolvedModel: true, // pinned above for the whole agentic loop — don't re-pool per round
         tools: callTools,
         tool_choice: callToolChoice,
       });

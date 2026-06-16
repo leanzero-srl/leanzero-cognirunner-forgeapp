@@ -41,6 +41,11 @@ import {
   isJobCancelled,
   JOB_TTL_ACTIVE,
   JOB_TTL_DONE,
+  // LM Studio multi-model pool: spread queued AI work across loaded models too.
+  // dispatchPostFunction (the queued semantic/doc PFs) already pools internally
+  // because it runs index.js code (callAIChat) here; this import covers the
+  // consumer's OWN tasks (review / codegen / fix / distill) via callAIChatSimple.
+  resolveLmStudioModel,
 } from "./index";
 // Learned memories — injected into static-PF reviews and persisted by the
 // memory_distill task (runtime auto-capture, opt-in). defangFence neutralizes
@@ -197,8 +202,20 @@ const callLmStudioNativeSimple = async ({ apiKey, model, systemPrompt, userMessa
   return { ok: true, content, tokens };
 };
 
-const callAIChatSimple = async ({ apiKey, model, systemPrompt, userMessage, jsonMode }) => {
+const callAIChatSimple = async ({ apiKey, model: requestedModel, systemPrompt, userMessage, jsonMode }) => {
   const { provider, baseUrl } = await getProviderConfig();
+
+  // LM Studio multi-model pool: spread this queued AI call across loaded models
+  // (these consumer tasks are all single-shot — no agentic loop — so pool freely).
+  // No-op for non-LM-Studio providers or when the pool is off / <2 models loaded.
+  let model = requestedModel;
+  if (provider === "lmstudio") {
+    try {
+      const picked = await resolveLmStudioModel(requestedModel, {});
+      if (picked && picked !== requestedModel) console.log(`[lm-pool] async call → ${picked} (configured: ${requestedModel})`);
+      model = picked;
+    } catch (e) { /* best-effort — fall back to the configured model */ }
+  }
 
   // Atlassian-hosted Forge LLM — chat() is OpenAI-chat-completions-shaped.
   // No response_format: JSON mode is enforced via the system message.

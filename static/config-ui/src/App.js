@@ -503,28 +503,28 @@ const injectStyles = () => {
       position: absolute;
       transform: translateX(-50%);
       z-index: 99999;
-      padding: 10px 14px;
-      border-radius: 8px;
+      padding: 9px 12px;
+      border-radius: 9px;
       background: #0f172a;
-      color: #e2e8f0;
-      font-size: 12px;
+      color: #f1f5f9;
+      font-size: 12.5px;
       font-weight: 400;
       font-style: normal;
       line-height: 1.5;
       letter-spacing: normal;
       text-transform: none;
       white-space: normal;
-      width: 280px;
-      max-width: calc(100vw - 32px);
+      width: max-content;
+      max-width: min(300px, calc(100vw - 32px));
       pointer-events: none;
-      box-shadow: 0 8px 24px rgba(0,0,0,0.25), 0 0 0 1px rgba(255,255,255,0.06);
+      box-shadow: 0 10px 28px -6px rgba(15, 23, 42, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.10);
       animation: tooltipFadeIn 0.15s ease;
     }
 
     html[data-color-mode="dark"] .tooltip-portal {
       background: #1e293b;
-      color: #e2e8f0;
-      box-shadow: 0 8px 24px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.08);
+      color: #f1f5f9;
+      box-shadow: 0 12px 32px -6px rgba(0,0,0,0.7), 0 0 0 1px rgba(255,255,255,0.12);
     }
 
     /* Arrow */
@@ -2463,7 +2463,7 @@ const injectStyles = () => {
 
     ::selection { background: var(--lz-sel-bg); color: var(--lz-sel-fg); }
 
-    button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible,
+    button:not(.tab-btn):focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible,
     select:focus-visible, [tabindex]:focus-visible, .dropdown-trigger:focus-visible {
       outline: none; box-shadow: var(--lz-ring);
     }
@@ -2505,8 +2505,16 @@ const injectStyles = () => {
 
     .dropdown-item { transition: background var(--dur-fast) ease, color var(--dur-fast) ease; }
 
-    .tab-btn { transition: color var(--dur-fast) ease, border-color var(--dur-fast) ease, background var(--dur-fast) ease; }
-    .tab-btn:hover:not(.tab-active) { background: var(--hover-bg); }
+    /* Tabs: hover lifts only INACTIVE tabs (the active blue never washes to grey);
+       keyboard focus uses an INSET outline so it can't clip against the bar the way
+       a box-shadow ring does — tabs have a negative margin-bottom. The active tab
+       gets a soft accent glow on its label. */
+    .tab-btn { transition: color var(--dur-fast) ease, border-color var(--dur-fast) ease, background var(--dur-fast) ease; border-radius: 7px 7px 0 0; }
+    .tab-btn:hover:not(.tab-active) { background: var(--hover-bg); color: var(--text-color); }
+    .tab-btn.tab-active:hover { color: var(--primary-color); }
+    .tab-btn:focus-visible { outline: 2px solid var(--primary-color); outline-offset: -4px; }
+    .tab-active { text-shadow: 0 0 12px rgba(37, 99, 235, 0.28); }
+    html[data-color-mode="dark"] .tab-active { text-shadow: 0 0 14px rgba(96, 165, 250, 0.45); }
 
     .dib-loaded { box-shadow: 0 1px 6px -1px rgba(22, 163, 74, 0.5); }
     html[data-color-mode="dark"] .dib-loaded { box-shadow: 0 1px 8px -1px rgba(34, 197, 94, 0.55); }

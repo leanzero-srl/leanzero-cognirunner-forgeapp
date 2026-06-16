@@ -1683,10 +1683,8 @@ export default function OpenAIConfig({ invoke }) {
                 </h3>
                 <p style={{ margin: 0, fontSize: "12px", color: "var(--text-secondary)" }}>
                   {isLmStudio
-                    ? <>Extra tools the model can call via your LM Studio&apos;s <code style={{ fontSize: "11px" }}>mcp.json</code> — enable each below and follow its setup.{" "}
-                        <Tooltip text="Local — the MCP runs on your machine. JQL agentic search is unaffected; it runs on a separate code path from these MCP tools.">Local to your machine.</Tooltip></>
-                    : <><strong>CogniRunner is the middle layer</strong> — it dials each MCP&apos;s URL and runs the tool calls; your AI provider never sees the URL.{" "}
-                        <Tooltip text="Works the same on OpenAI / Azure / OpenRouter / Anthropic / AWS Bedrock / Forge LLM. All three MCPs — context7, web-search, doc-reader — are supported on every provider.">Works on every provider.</Tooltip></>
+                    ? <>Extra tools the model can call via your LM Studio&apos;s <code style={{ fontSize: "11px" }}>mcp.json</code> — local to your machine; enable each below and follow its setup.<Tooltip text="JQL agentic search is unaffected — it runs on a separate code path from these MCP tools." /></>
+                    : <><strong>CogniRunner is the middle layer</strong> — it dials each MCP&apos;s URL and runs the tool calls; your AI provider never sees the URL.<Tooltip text="Works the same on OpenAI / Azure / OpenRouter / Anthropic / AWS Bedrock / Forge LLM. All three MCPs — context7, web-search, doc-reader — are supported on every provider." /></>
                   }
                 </p>
               </div>

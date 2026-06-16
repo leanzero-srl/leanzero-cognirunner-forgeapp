@@ -531,8 +531,46 @@ export const parseAIJson = (raw) => {
   const openChar = cleaned[start];
   const closeChar = openChar === "{" ? "}" : "]";
   const end = cleaned.lastIndexOf(closeChar);
-  if (end <= start) return null;
-  try { return JSON.parse(cleaned.substring(start, end + 1)); } catch { return null; }
+  if (end > start) {
+    try { return JSON.parse(cleaned.substring(start, end + 1)); } catch { /* fall through to repair */ }
+  }
+  // Last resort: REPAIR a truncated object/array. A model that hit its token or time
+  // budget mid-JSON leaves an unterminated string and unclosed brackets (e.g.
+  // `{"isValid": false, "reason": "…version tag and.`). Closing them recovers the
+  // verdict + partial reason instead of discarding the whole response (which would
+  // otherwise fall through to isValid:false and FALSELY block valid content).
+  return repairTruncatedJson(cleaned, start);
+};
+
+// Close an unterminated string and any open {}/[] brackets in a truncated JSON snippet so
+// JSON.parse can recover the (partial) object. Conservative: only runs after a direct parse
+// and a balanced-block salvage both fail; returns null if the result is still unparseable
+// (so a verdict is never fabricated from JSON truncated before its value was written).
+const repairTruncatedJson = (s, start) => {
+  if (start == null || start < 0) return null;
+  const stack = [];
+  let inStr = false, esc = false, out = "";
+  for (let i = start; i < s.length; i++) {
+    const ch = s[i];
+    out += ch;
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === "\\") esc = true;
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') inStr = true;
+    else if (ch === "{" || ch === "[") stack.push(ch);
+    else if (ch === "}" || ch === "]") stack.pop();
+  }
+  if (inStr) {
+    out += '"'; // close the unterminated string
+  } else {
+    out = out.replace(/,\s*$/, "");        // drop a trailing comma with no following value
+    if (/:\s*$/.test(out)) out += "null";  // dangling "key": -> "key": null
+  }
+  for (let i = stack.length - 1; i >= 0; i--) out += stack[i] === "{" ? "}" : "]";
+  try { return JSON.parse(out); } catch { return null; }
 };
 
 // Prompt patterns that signal the need for JQL search tools.

@@ -793,6 +793,91 @@ const injectStyles = () => {
 
     button:active:not(:disabled):not(.is-busy) { transform: scale(0.97); }
 
+    /* ===================================================================
+       LeanZero design refresh — ports the leanzero.* website look (blue/cyan/
+       purple accent system, focus rings, text selection, soft depth + hover
+       glow, vivid header tile) into the app. Additive layer: reuses the
+       existing tokens (--primary-color, --hover-bg, --ease-out, --dur-*) and
+       the MLS classes. Owner UI mandate honored — NO left accent rails, solid
+       saturated colors (no faded tints), every hue has a dark-mode value, and
+       motion is gentle + respects prefers-reduced-motion (guard below). No
+       transform on CONTAINER cards (it would trap CustomSelect dropdowns in a
+       new stacking context — the documented MLS gotcha); transforms only on
+       leaf controls (buttons, chips).
+       =================================================================== */
+    :root {
+      --lz-ease: cubic-bezier(0.22, 1, 0.36, 1);
+      --lz-cyan: #0891b2;
+      --lz-purple: #7c3aed;
+      --lz-ring: 0 0 0 3px rgba(37, 99, 235, 0.32);
+      --lz-card-shadow: 0 1px 2px rgba(18, 42, 66, 0.06), 0 5px 16px -8px rgba(18, 42, 66, 0.14);
+      --lz-card-shadow-hover: 0 12px 30px -12px rgba(29, 78, 216, 0.28), 0 3px 10px rgba(18, 42, 66, 0.10);
+      --lz-glow: 0 8px 22px -6px rgba(37, 99, 235, 0.42);
+      --lz-sel-bg: rgba(37, 99, 235, 0.26);
+      --lz-sel-fg: #0f172a;
+    }
+    html[data-color-mode="dark"] {
+      --lz-cyan: #22d3ee;
+      --lz-purple: #a855f7;
+      --lz-ring: 0 0 0 3px rgba(96, 165, 250, 0.45);
+      --lz-card-shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 6px 20px -10px rgba(0, 0, 0, 0.55);
+      --lz-card-shadow-hover: 0 0 26px rgba(59, 130, 246, 0.30), 0 8px 24px -10px rgba(0, 0, 0, 0.55);
+      --lz-glow: 0 0 24px rgba(59, 130, 246, 0.42);
+      --lz-sel-bg: rgba(96, 165, 250, 0.42);
+      --lz-sel-fg: #f8fafc;
+    }
+
+    ::selection { background: var(--lz-sel-bg); color: var(--lz-sel-fg); }
+
+    button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible,
+    select:focus-visible, [tabindex]:focus-visible, .dropdown-trigger:focus-visible {
+      outline: none; box-shadow: var(--lz-ring); border-radius: 6px;
+    }
+
+    .card {
+      box-shadow: var(--lz-card-shadow);
+      transition: box-shadow var(--dur-med) var(--lz-ease), border-color var(--dur-fast) ease;
+    }
+    .card:hover { box-shadow: var(--lz-card-shadow-hover); border-color: rgba(37, 99, 235, 0.35); }
+    html[data-color-mode="dark"] .card:hover { border-color: rgba(96, 165, 250, 0.40); }
+
+    .icon-wrapper {
+      background: linear-gradient(135deg, #2563eb, #1d4ed8);
+      color: #ffffff;
+      box-shadow: 0 6px 18px -6px rgba(37, 99, 235, 0.55);
+    }
+    html[data-color-mode="dark"] .icon-wrapper {
+      background: linear-gradient(135deg, #3b82f6, #2563eb);
+      box-shadow: 0 0 20px rgba(59, 130, 246, 0.40);
+    }
+
+    .title { letter-spacing: -0.02em; font-weight: 700; }
+
+    .btn-small {
+      transition: background var(--dur-fast) ease, box-shadow var(--dur-fast) ease,
+                  transform var(--dur-fast) var(--lz-ease), border-color var(--dur-fast) ease;
+    }
+    .btn-small:hover:not(:disabled) { transform: translateY(-1px); }
+    .btn-edit:hover:not(:disabled) { box-shadow: 0 4px 14px -4px rgba(37, 99, 235, 0.45); border-color: var(--primary-color); }
+    .btn-danger:hover:not(:disabled) { box-shadow: 0 4px 14px -4px rgba(220, 38, 38, 0.40); }
+
+    input:focus, textarea:focus, select:focus {
+      border-color: var(--primary-color); box-shadow: var(--lz-ring); outline: none;
+    }
+
+    .dropdown-item { transition: background var(--dur-fast) ease, color var(--dur-fast) ease; }
+
+    .tab-btn { transition: color var(--dur-fast) ease, border-color var(--dur-fast) ease, background var(--dur-fast) ease; }
+    .tab-btn:hover:not(.tab-active) { background: var(--hover-bg); }
+
+    .dib-loaded { box-shadow: 0 1px 6px -1px rgba(22, 163, 74, 0.5); }
+    html[data-color-mode="dark"] .dib-loaded { box-shadow: 0 1px 8px -1px rgba(34, 197, 94, 0.55); }
+
+    .mcp-tool-chip { transition: transform var(--dur-fast) var(--lz-ease), box-shadow var(--dur-fast) ease; }
+    .mcp-tool-chip:hover { transform: translateY(-1px); box-shadow: 0 3px 10px -3px rgba(37, 99, 235, 0.5); }
+
+    .section { margin-bottom: 28px; }
+
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after {
         animation-duration: 0.01ms !important;

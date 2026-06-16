@@ -146,11 +146,15 @@ export default function OpenAIConfig({ invoke }) {
   const [lmConcurrency, setLmConcurrency] = useState(0);
   const [lmConcurrencyInput, setLmConcurrencyInput] = useState("");
   const [savingConcurrency, setSavingConcurrency] = useState(false);
+  // LM Studio multi-model pool: spread runtime validations across all loaded models (default ON).
+  const [lmPool, setLmPool] = useState(true);
+  const [savingPool, setSavingPool] = useState(false);
   // LM Studio MCP integrations — fixed set of 3 (context7, web-search, doc-reader).
   // Other MCPs in the user's mcp.json are NOT exposed by us per design.
   const [mcpEnabled, setMcpEnabled] = useState({ context7: false, webSearch: false, docReader: false, docWriter: false, localContext7: false, localWebSearch: false, localDocReader: false });
   const [mcpSavingKey, setMcpSavingKey] = useState(null); // which key is currently saving
   const [mcpExpanded, setMcpExpanded] = useState({}); // which setup panels are open
+  const [showMcpHelp, setShowMcpHelp] = useState(false); // collapsible "how MCP connections work" guide
   const [mcpPingState, setMcpPingState] = useState({}); // {[key]: {loading, ok, error}}
   // Hosted doc-processor (remote MCP). The cross-provider bridge dials this URL on
   // every hosted provider; LM Studio can also point its own mcp.json at the same
@@ -770,7 +774,9 @@ export default function OpenAIConfig({ invoke }) {
           setLmConcurrency(r.limit || 0);
           setLmConcurrencyInput(r.limit ? String(r.limit) : "");
         }
-      } catch (e) { /* non-fatal — cap is optional */ }
+        const rp = await invoke("getLmStudioPool");
+        if (!cancelled && rp && rp.success) setLmPool(rp.enabled !== false);
+      } catch (e) { /* non-fatal — cap + pool are optional */ }
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -795,6 +801,27 @@ export default function OpenAIConfig({ invoke }) {
       setError("Failed to save concurrency cap: " + e.message);
     }
     setSavingConcurrency(false);
+  };
+
+  const handleTogglePool = async () => {
+    const next = !lmPool;
+    setSavingPool(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      const r = await invoke("saveLmStudioPool", { enabled: next });
+      if (r && r.success) {
+        setLmPool(r.enabled !== false);
+        setSuccess(r.enabled
+          ? "Runtime validations will spread across all loaded models."
+          : "Runtime validations pinned to the selected model.");
+      } else {
+        setError((r && r.error) || "Failed to save model-pool setting");
+      }
+    } catch (e) {
+      setError("Failed to save model-pool setting: " + e.message);
+    }
+    setSavingPool(false);
   };
 
   const handleSaveKey = async () => {
@@ -1603,6 +1630,28 @@ export default function OpenAIConfig({ invoke }) {
                   </p>
                 </div>
               )}
+              {isLmStudio && (
+                <div style={{ marginTop: "14px", paddingTop: "14px", borderTop: "1px solid var(--border-color)" }}>
+                  <label style={{ display: "flex", alignItems: "flex-start", gap: "10px", cursor: savingPool ? "default" : "pointer" }}>
+                    <input
+                      type="checkbox"
+                      checked={lmPool}
+                      disabled={savingPool}
+                      onChange={handleTogglePool}
+                      style={{ marginTop: "2px", width: "16px", height: "16px", accentColor: "var(--primary-color)", cursor: "inherit" }}
+                    />
+                    <span>
+                      <span style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "var(--text-color)" }}>
+                        Spread runtime validations across all loaded models
+                        {savingPool && <span className="spin-ring spin-ring-sm" style={{ marginLeft: "8px", verticalAlign: "middle" }} />}
+                      </span>
+                      <span style={{ display: "block", fontSize: "11px", color: "var(--text-muted)", marginTop: "3px" }}>
+                        With 2+ models loaded, each transition&apos;s validation is routed to a different loaded model (round-robin, capability-aware — agentic calls only go to tool-trained models, vision calls only to VLMs) so concurrent work uses every model — and every device they sit on — instead of hammering one. No-op when a single model is loaded; off pins everything to the selected model.
+                      </span>
+                    </span>
+                  </label>
+                </div>
+              )}
             </div>
           )}
           </div>
@@ -1619,18 +1668,40 @@ export default function OpenAIConfig({ invoke }) {
       {provider === activeProvider && (
         <div className="card" style={{ marginTop: "16px" }}>
           <div style={{ padding: "16px" }}>
-            <div style={{ marginBottom: "12px" }}>
-              <h3 style={{ margin: "0 0 4px 0", fontSize: "14px", fontWeight: 600, color: "var(--text-color)" }}>
-                MCP Integrations
-              </h3>
-              <p style={{ margin: 0, fontSize: "12px", color: "var(--text-secondary)" }}>
-                {isLmStudio
-                  ? <>Extra tools the model can call via your LM Studio's <code style={{ fontSize: "11px" }}>mcp.json</code> (local, runs on your machine). Enable each and follow the setup steps. JQL agentic search is unaffected — it runs on a separate code path.</>
-                  : <><strong>CogniRunner is the middle layer.</strong> Paste each MCP's hosted URL below and CogniRunner connects to it directly and runs the tool calls — your AI provider never sees the URL. Works the same on OpenAI / Azure / OpenRouter / Anthropic / AWS Bedrock / Forge LLM. All three MCPs (<code style={{ fontSize: "11px" }}>context7</code>, <code style={{ fontSize: "11px" }}>web-search</code>, <code style={{ fontSize: "11px" }}>doc-reader</code>) are supported.</>
-                }
-              </p>
+            {/* Compact header: a one-line summary (detail in tooltips) + a toggle
+                that reveals the full connection guide. All the original copy is
+                preserved below — just tucked behind "How it works" so the section
+                can breathe (owner: "no room to breathe"). */}
+            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: "12px", marginBottom: "12px" }}>
+              <div>
+                <h3 style={{ margin: "0 0 4px 0", fontSize: "14px", fontWeight: 600, color: "var(--text-color)" }}>
+                  MCP Integrations
+                </h3>
+                <p style={{ margin: 0, fontSize: "12px", color: "var(--text-secondary)" }}>
+                  {isLmStudio
+                    ? <>Extra tools the model can call via your LM Studio&apos;s <code style={{ fontSize: "11px" }}>mcp.json</code> — enable each below and follow its setup.{" "}
+                        <Tooltip text="Local — the MCP runs on your machine. JQL agentic search is unaffected; it runs on a separate code path from these MCP tools.">Local to your machine.</Tooltip></>
+                    : <><strong>CogniRunner is the middle layer</strong> — it dials each MCP&apos;s URL and runs the tool calls; your AI provider never sees the URL.{" "}
+                        <Tooltip text="Works the same on OpenAI / Azure / OpenRouter / Anthropic / AWS Bedrock / Forge LLM. All three MCPs — context7, web-search, doc-reader — are supported on every provider.">Works on every provider.</Tooltip></>
+                  }
+                </p>
+              </div>
+              <button
+                type="button"
+                className="btn-small btn-edit"
+                onClick={() => setShowMcpHelp((v) => !v)}
+                aria-expanded={showMcpHelp}
+                style={{ flexShrink: 0, whiteSpace: "nowrap" }}
+              >
+                {showMcpHelp ? "Hide guide" : "How it works"}
+              </button>
             </div>
 
+            {/* Full connection guide — collapsed by default. Nothing is removed;
+                this is the de-densified home for the three connection modes, the
+                egress restriction, and (for LM Studio) the per-MCP routing note. */}
+            {showMcpHelp && (
+            <div className="anim-rise">
             {/* LM-Studio-only: per-MCP local routing now lives on each card below (the
                 "Run locally via LM Studio" toggle), replacing the old single global flag. */}
             {isLmStudio && (
@@ -1639,8 +1710,9 @@ export default function OpenAIConfig({ invoke }) {
               </div>
             )}
 
-            {/* How to connect — the three modes, made explicit. */}
-            <div style={{ padding: "10px 12px", marginBottom: "12px", background: "rgba(37, 99, 235, 0.06)", border: "1px solid rgba(37, 99, 235, 0.35)", borderRadius: "6px", fontSize: "11px", color: "var(--text-secondary)" }}>
+            {/* How to connect — the three modes, made explicit. Solid neutral
+                surface (not a faded tint) per the owner UI mandate. */}
+            <div style={{ padding: "10px 12px", marginBottom: "12px", background: "var(--code-bg)", border: "1px solid var(--border-color)", borderRadius: "6px", fontSize: "11px", color: "var(--text-secondary)" }}>
               <strong style={{ color: "var(--text-color)" }}>Three ways to connect an MCP:</strong>
               <ul style={{ margin: "6px 0 0", paddingLeft: "18px", display: "flex", flexDirection: "column", gap: "4px" }}>
                 <li><strong>LeanZero&apos;s hosted demo</strong> — point <code style={{ fontSize: "11px" }}>web-search</code> / <code style={{ fontSize: "11px" }}>doc-processor</code> at our Mac Studio instance; grab a free demo key at <ExtLink href="https://leanzero.atlascrafted.com" style={{ color: "var(--text-color)", fontWeight: 600 }}>leanzero.atlascrafted.com</ExtLink> (links in the cards below). Rate-limited, for evaluation. Works on every provider — CogniRunner connects to it for you.</li>
@@ -1651,6 +1723,8 @@ export default function OpenAIConfig({ invoke }) {
                 <strong style={{ color: "var(--text-color)" }}>⚠ The addresses CogniRunner may reach are fixed by the installed app.</strong> It can only connect to an MCP on a <code style={{ fontSize: "11px" }}>*.ts.net</code> Tailscale&nbsp;Funnel URL on <strong>port 443</strong> (Forge egress reaches only the default HTTPS port — <strong>8443 / 10000 are blocked</strong>, so serve your Funnel on 443) or to context7&apos;s <code style={{ fontSize: "11px" }}>mcp.context7.com</code>. That allow-list ships inside the app and <strong>can&apos;t be changed without re-deploying CogniRunner itself</strong> — which you can&apos;t do as an installer. So to self-host web-search / doc-processor you <strong>must run them behind your own Tailscale Funnel</strong> (any tailnet works — it&apos;s a wildcard); an arbitrary URL like <code style={{ fontSize: "11px" }}>https://mycompany.com/mcp</code> will be blocked. Don&apos;t want to run a Funnel? Use LeanZero&apos;s hosted demo above.</div>
               <div style={{ marginTop: "6px" }}>Service keys (web-search&apos;s Serper key) live on the MCP server — LeanZero&apos;s hosted demo manages them for you, so you only need the URL + Bearer. Self-hosters can also pass their own per-tenant key in the card below.</div>
             </div>
+            </div>
+            )}
 
             {/* context7 — hosted on every provider via the bridge; LM Studio can run it locally */}
             <McpCard

@@ -40,14 +40,16 @@ export function pollForgeLogs(extraArgs = []) {
 }
 
 // Log-line signatures → triage-style signal name (shared HARDENING_TARGETS map).
+// Patterns are deliberately CONTEXTUAL (not bare numbers) so ISO-8601 millisecond
+// timestamps (".526+0300"), UUIDs, and success lines don't trip false positives.
 const SIGNALS = [
-  { re: /\b5\d\d\b|internal server error|unhandled|uncaught|TypeError|ReferenceError|stack trace|at Object\.<anonymous>|at async /i, signal: "http5xx" },
-  { re: /malformed json|not valid json|cannot deserialize|unexpected token|failed to parse|JSON\.parse|after \d+ round/i, signal: "parseLeak" },
-  { re: /tool.?call|function\.arguments|tool_use|invalid tool|tool result/i, signal: "toolShape" },
-  { re: /allowedvalues|out of (the )?allowed|invalid option|not a valid option|coerc/i, signal: "outOfSchema" },
-  { re: /```|<<<|source_field|field_value|system_prompt/i, signal: "fenceLeak" },
-  { re: /empty response|no response from (the )?ai/i, signal: "emptyEcho" },
-  { re: /temporarily unavailable|rate ?limit|\b429\b|timed out|timeout|ECONNRESET|ETIMEDOUT|\b503\b|\b502\b/i, signal: "transientMishandled" },
+  { re: /internal server error|unhandled (promise )?(rejection|exception)|uncaught\b|\b(Type|Reference|Range|Syntax)Error\b|cannot read propert|is not a function|is not defined|\bat async \b|at Object\.<anonymous>|status(Code)?["' :=]{1,3}5\d\d|"status"\s*:\s*5\d\d|\bHTTP\/?\s?5\d\d\b/i, signal: "http5xx" },
+  { re: /malformed json|not valid json|cannot deserialize|unexpected token|failed to parse|JSON\.parse|parse error|after \d+ round\(s\)/i, signal: "parseLeak" },
+  { re: /function\.arguments|tool_use|invalid tool|malformed tool|tool[- ]call (error|fail|shape)/i, signal: "toolShape" },
+  { re: /allowedvalues|out of (the )?allowed|invalid option|not a valid option|could not coerce|coercion failed/i, signal: "outOfSchema" },
+  { re: /```|<<<[A-Z_]|source_field|field_value|system_prompt/i, signal: "fenceLeak" },
+  { re: /empty response from (the )?ai|no response from (the )?ai|ai returned (an )?empty/i, signal: "emptyEcho" },
+  { re: /temporarily unavailable|rate ?limit|too many requests|ai service error|service (is )?(unavailable|down)|ECONNRESET|ETIMEDOUT|\btimed out\b|gateway time-?out/i, signal: "transientMishandled" },
   { re: /\[mcp-bridge\].*(fail|error)|tools\/list.*(fail|error)/i, signal: "mcpBridge" },
 ];
 

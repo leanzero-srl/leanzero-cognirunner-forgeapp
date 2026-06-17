@@ -1684,21 +1684,37 @@ export default function OpenAIConfig({ invoke }) {
                       <div style={{ fontSize: "11px", color: "var(--text-muted)", marginBottom: "8px" }}>
                         Mark a slower device to receive proportionally less work — a <strong style={{ color: "var(--text-color)" }}>Slow</strong> model gets ~1 job for every 3 a normal one gets, <strong style={{ color: "var(--text-color)" }}>Very slow</strong> ~1 in 6. Stops a slow box backing up while a fast one idles.
                       </div>
-                      {lmWeightModels.map((id) => (
-                        <div key={id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px", padding: "4px 0" }}>
-                          <span title={id} style={{ fontSize: "12px", color: "var(--text-color)", fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{id}</span>
-                          <select
-                            value={String(lmWeights[id] || 1)}
-                            disabled={savingWeights}
-                            onChange={(e) => handleSetWeight(id, Number(e.target.value))}
-                            style={{ flexShrink: 0, fontSize: "12px", padding: "3px 8px", borderRadius: "6px", border: "1px solid var(--border-color)", background: "var(--input-bg, #fff)", color: "var(--text-color)", cursor: "pointer" }}
-                          >
-                            <option value="1">Normal</option>
-                            <option value="3">Slow (⅓ work)</option>
-                            <option value="6">Very slow (⅙ work)</option>
-                          </select>
-                        </div>
-                      ))}
+                      {lmWeightModels.map((m) => {
+                        // Backend returns rich objects {id, quants[], ctx}; tolerate
+                        // a bare-string shape from an older backend during deploy.
+                        const id = typeof m === "string" ? m : m.id;
+                        const quants = (m && m.quants) || [];
+                        const ctx = m && m.ctx;
+                        const metaParts = [];
+                        if (quants.length) metaParts.push(quants.join(", "));
+                        if (ctx) metaParts.push(`${Math.round(ctx / 1024)}K ctx`);
+                        const meta = metaParts.join(" · ");
+                        return (
+                          <div key={id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px", padding: "5px 0" }}>
+                            <span style={{ minWidth: 0, display: "flex", flexDirection: "column", gap: "1px" }}>
+                              <span title={id} style={{ fontSize: "12px", color: "var(--text-color)", fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{id}</span>
+                              {meta && <span style={{ fontSize: "11px", color: "var(--text-muted)" }}>{meta}</span>}
+                            </span>
+                            <div style={{ width: "164px", flexShrink: 0 }}>
+                              <CustomSelect
+                                value={String(lmWeights[id] || 1)}
+                                disabled={savingWeights}
+                                onChange={(v) => handleSetWeight(id, Number(v))}
+                                options={[
+                                  { value: "1", label: "Normal" },
+                                  { value: "3", label: "Slow (⅓ work)" },
+                                  { value: "6", label: "Very slow (⅙ work)" },
+                                ]}
+                              />
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
                   )}
                 </div>

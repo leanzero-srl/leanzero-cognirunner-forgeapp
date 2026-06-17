@@ -8,6 +8,7 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import CustomSelect from "./CustomSelect";
 import { showToast } from "./toast";
+import { confirmDialog } from "../confirmDialog";
 
 const CATEGORIES = [
   "API Documentation", "Field Mappings", "JSON Schemas",
@@ -94,7 +95,7 @@ export default function DocsTab({ invoke, isAdmin, accountId }) {
 
   const handleDelete = async (id) => {
     if (deletingId) return;
-    if (!window.confirm("Delete this document permanently? This cannot be undone.")) return;
+    if (!(await confirmDialog("This permanently deletes the document and cannot be undone.", { title: "Delete this document?", confirmLabel: "Delete" }))) return;
     setDeletingId(id);
     try {
       const result = await invoke("deleteContextDoc", { id });

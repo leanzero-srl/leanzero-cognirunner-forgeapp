@@ -17,6 +17,7 @@
  */
 
 import React, { useState, useEffect } from "react";
+import { confirmDialog } from "./confirmDialog";
 
 // Inject styles directly
 const injectStyles = () => {
@@ -976,7 +977,7 @@ function App() {
     if (!invoke || clearingLogs) return;
     // The clearLogs resolver wipes execution logs globally, while this list
     // only shows the current rule's entries — warn before destroying data.
-    if (!window.confirm("This clears execution logs for ALL rules on this site, not just this one. Continue?")) {
+    if (!(await confirmDialog("This clears execution logs for ALL rules on this site, not just this one.", { title: "Clear all execution logs?", confirmLabel: "Clear all" }))) {
       return;
     }
     setClearingLogs(true);

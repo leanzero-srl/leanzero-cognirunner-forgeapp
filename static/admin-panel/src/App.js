@@ -27,33 +27,7 @@ import CustomSelect from "./components/CustomSelect";
 import AddRuleWizard from "./components/AddRuleWizard";
 import Tooltip from "./components/Tooltip";
 import { showToast } from "./components/toast";
-
-// DOM-based confirm dialog (a sibling of showToast) so destructive actions use a
-// styled in-app modal instead of the browser's native confirm(). Returns a Promise
-// that resolves true (confirmed) / false (cancelled). Esc/backdrop = cancel, Enter = confirm.
-function confirmDialog(message, { title = "Please confirm", confirmLabel = "Confirm", danger = true } = {}) {
-  return new Promise((resolve) => {
-    document.querySelectorAll(".cr-confirm-overlay").forEach((el) => el.remove());
-    const overlay = document.createElement("div");
-    overlay.className = "cr-confirm-overlay";
-    const box = document.createElement("div");
-    box.className = "cr-confirm";
-    const h = document.createElement("div"); h.className = "cr-confirm-title"; h.textContent = title;
-    const p = document.createElement("div"); p.className = "cr-confirm-msg"; p.textContent = message;
-    const actions = document.createElement("div"); actions.className = "cr-confirm-actions";
-    const cancelBtn = document.createElement("button"); cancelBtn.type = "button"; cancelBtn.className = "btn-small"; cancelBtn.textContent = "Cancel";
-    const okBtn = document.createElement("button"); okBtn.type = "button"; okBtn.className = "btn-small" + (danger ? " btn-danger" : ""); okBtn.textContent = confirmLabel;
-    let done = false;
-    const close = (val) => { if (done) return; done = true; document.removeEventListener("keydown", onKey); overlay.remove(); resolve(val); };
-    const onKey = (e) => { if (e.key === "Escape") close(false); else if (e.key === "Enter") close(true); };
-    cancelBtn.onclick = () => close(false);
-    okBtn.onclick = () => close(true);
-    overlay.addEventListener("mousedown", (e) => { if (e.target === overlay) close(false); });
-    document.addEventListener("keydown", onKey);
-    actions.append(cancelBtn, okBtn); box.append(h, p, actions); overlay.append(box); document.body.append(overlay);
-    setTimeout(() => okBtn.focus(), 0);
-  });
-}
+import { confirmDialog } from "./confirmDialog";
 
 const injectStyles = () => {
   if (document.getElementById("app-styles")) return;

@@ -6083,7 +6083,18 @@ resolver.define("saveLmStudioPool", async ({ payload, context }) => {
 resolver.define("getLmStudioWeights", async () => {
   try {
     const [weights, loaded] = await Promise.all([getLmStudioWeightsMap(), getLmStudioLoadedModels()]);
-    return { success: true, weights, models: loaded.map((m) => m.id) };
+    // Dedupe by addressable id: LM Studio routes chat by model key, so two loaded
+    // quants that share one key are ONE dispatch target (one busy-key, one weight)
+    // — collapse them into a single row and list every loaded quant + ctx so the
+    // row stays distinguishable (the issue: two identical "qwen3.6-35b-a3b" rows).
+    const byId = new Map();
+    for (const m of loaded) {
+      const e = byId.get(m.id) || { id: m.id, quants: [], ctx: m.ctx || null };
+      if (m.quant && !e.quants.includes(m.quant)) e.quants.push(m.quant);
+      if (!e.ctx && m.ctx) e.ctx = m.ctx;
+      byId.set(m.id, e);
+    }
+    return { success: true, weights, models: Array.from(byId.values()) };
   } catch (error) {
     return { success: false, error: error.message, weights: {}, models: [] };
   }
@@ -8323,6 +8334,10 @@ const getLmStudioLoadedModels = async () => {
             id: m.key || m.id,
             vision: !!(m.capabilities && m.capabilities.vision),
             toolUse: !!(m.capabilities && m.capabilities.trained_for_tool_use),
+            // Surfaced to the admin weights UI so two loaded quants of one model
+            // (same id) are still distinguishable (the picker shows the same).
+            quant: (m.quantization && (m.quantization.name || m.quantization)) || null,
+            ctx: m.max_context_length || null,
           }))
           .filter((m) => m.id);
         // Stable order → deterministic round-robin within a warm function instance.

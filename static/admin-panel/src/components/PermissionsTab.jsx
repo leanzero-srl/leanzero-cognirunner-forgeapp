@@ -8,6 +8,7 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import CustomSelect from "./CustomSelect";
 import { showToast } from "./toast";
+import { confirmDialog } from "../confirmDialog";
 
 const ROLE_OPTIONS = [
   { value: "viewer", label: "Viewer" },
@@ -132,7 +133,7 @@ export default function PermissionsTab({ invoke }) {
 
   const handleRemove = async (accountId) => {
     if (removing) return;
-    if (!window.confirm("Remove this user's CogniRunner access?")) return;
+    if (!(await confirmDialog("This user will lose CogniRunner access.", { title: "Remove user access?", confirmLabel: "Remove" }))) return;
     setRemoving(accountId);
     setError(null);
     try {

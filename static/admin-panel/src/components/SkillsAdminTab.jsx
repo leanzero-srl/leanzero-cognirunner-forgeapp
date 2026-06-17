@@ -27,6 +27,7 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import SkillEditor from "./SkillEditor";
 import { showToast } from "./toast";
+import { confirmDialog } from "../confirmDialog";
 
 const CATEGORY_CLASS = {
   "Jira API": "skill-cat-jira",
@@ -180,7 +181,7 @@ export default function SkillsAdminTab({ invoke, isAdmin }) {
 
   const handleDelete = async (skill) => {
     if (deletingId) return;
-    if (!window.confirm("Delete this skill permanently? This cannot be undone.")) return;
+    if (!(await confirmDialog("This permanently deletes the skill and cannot be undone.", { title: "Delete this skill?", confirmLabel: "Delete" }))) return;
     setDeletingId(skill.id);
     setError(null);
     try {

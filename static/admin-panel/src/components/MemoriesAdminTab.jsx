@@ -25,6 +25,7 @@
 
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { showToast } from "./toast";
+import { confirmDialog } from "../confirmDialog";
 
 const SOURCE_CLASS = {
   user: "memories-admin-src-user",
@@ -165,7 +166,7 @@ export default function MemoriesAdminTab({ invoke, isAdmin }) {
 
   const handleDelete = async (id) => {
     if (working) return;
-    if (!window.confirm("Delete this memory permanently? This cannot be undone.")) return;
+    if (!(await confirmDialog("This permanently deletes the memory and cannot be undone.", { title: "Delete this memory?", confirmLabel: "Delete" }))) return;
     setWorking(`delete:${id}`);
     setError(null);
     try {

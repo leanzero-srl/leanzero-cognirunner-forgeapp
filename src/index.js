@@ -5364,17 +5364,23 @@ Respond with ONLY a valid JSON object:
  * (LM Studio) codegen handler in src/async-handler.js parses identically.
  */
 export const stripCodeFences = (raw) => {
-  let code = String(raw || "").trim();
-  // Remove any leading prose up to the first fence or first code-looking line
-  const fenceStart = code.search(/^```/m);
-  if (fenceStart > 0 && /^[a-z]/i.test(code)) {
-    // Has prose before the fence — drop it
-    code = code.substring(fenceStart);
-  }
-  return code
-    .replace(/^```[a-z]*\s*\n?/i, "")
-    .replace(/\n?```\s*$/i, "")
-    .trim();
+  const text = String(raw || "").trim();
+  if (!text) return text;
+  const lines = text.split("\n");
+  // Identify a WRAPPER fence only: an opening ``` as the first non-empty line, or as the
+  // SECOND line after a single short prose intro ("Here's the code:"). A ``` deep in the
+  // body (e.g. inside a block comment or a generated markdown/Confluence string) is DATA,
+  // not the wrapper — the old `search(/^```/m)` + substring deleted everything before such
+  // a fence, corrupting valid code.
+  let openIdx = -1;
+  if (/^```/.test(lines[0])) openIdx = 0;
+  else if (lines.length > 1 && /^```/.test(lines[1]) && /^[A-Za-z].{0,80}$/.test(lines[0].trim())) openIdx = 1;
+  if (openIdx === -1) return text; // no wrapper fence → return as-is (preserve inner ``` data)
+  // Closing fence = the LAST standalone ``` line after the opener (so inner data fences survive).
+  let closeIdx = -1;
+  for (let i = lines.length - 1; i > openIdx; i--) { if (/^```\s*$/.test(lines[i])) { closeIdx = i; break; } }
+  const body = closeIdx === -1 ? lines.slice(openIdx + 1) : lines.slice(openIdx + 1, closeIdx);
+  return body.join("\n").trim();
 };
 
 /**
@@ -9405,7 +9411,9 @@ const buildFactCheckBlock = (fc) => {
   const lines = fc.results.slice(0, 8).map((r, i) => {
     const pct = Math.round((r.supportScore || 0) * 100);
     const srcs = (r.sources || []).slice(0, 3).join(", ");
-    return `${i + 1}. "${String(r.claim).slice(0, 240)}" — keyword support ${pct}%${srcs ? `; sources: ${srcs}` : "; no sources retrieved"}`;
+    // Defang claim + sources: claims derive from the untrusted field and sources are
+    // untrusted web URLs — both land inside the <<<FACTCHECK_EVIDENCE>>> fence.
+    return `${i + 1}. "${defangFence(String(r.claim).slice(0, 240))}" — keyword support ${pct}%${srcs ? `; sources: ${defangFence(srcs)}` : "; no sources retrieved"}`;
   });
   return `Claims extracted from the content were checked against the live web. The "keyword support %" is a ROUGH heuristic over retrieved snippets — NOT a verdict; weigh the sources yourself:\n${lines.join("\n")}`;
 };
@@ -12873,13 +12881,24 @@ export const executePostFunction = async (args) => {
     } catch (e) {
       console.warn(`[pf] queueing failed (${e.message}) — running inline with the tight budget`);
       // The push outcome can be AMBIGUOUS (network error after the platform accepted
-      // the event). Best-effort claim of the task id so an actually-enqueued duplicate
-      // dedupes in the consumer instead of double-applying side effects.
+      // the event). Claim the task id; if the claim CONFLICTS, an enqueued copy already
+      // ran (or is running) in the consumer — do NOT also run inline (that would
+      // double-apply the side effects: duplicate comment/subtask/link/field write).
+      let claimConflict = false;
       try {
         await storage.set(`pf_exec:${queuePayloadTaskId}`, {
           issueKey: issue.key, claimedAt: new Date().toISOString(), claimedBy: "inline-fallback",
         }, { keyPolicy: "FAIL_IF_EXISTS", ttl: { value: 6, unit: "HOURS" } });
-      } catch { /* best-effort */ }
+      } catch (ce) {
+        const msg = String(ce?.message || ce);
+        if (ce?.code === "KEY_ALREADY_EXISTS" || ce?.status === 409 || /already exist|conflict/i.test(msg)) claimConflict = true;
+        // A non-conflict claim error (transient KVS) → proceed inline: the event most
+        // likely never enqueued, so running once is better than skipping entirely.
+      }
+      if (claimConflict) {
+        console.log(`[pf] inline-fallback suppressed — ${queuePayloadTaskId} already claimed (enqueued copy owns the execution)`);
+        return { result: true };
+      }
     }
   }
 

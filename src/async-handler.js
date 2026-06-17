@@ -797,7 +797,7 @@ export async function handler(event) {
   // global kill-all epoch covering its enqueue time) BEFORE the consumer ran,
   // do NO AI work and NO Jira writes. Catches jobs the platform still delivers
   // after a native cancel (cancel only stops not-yet-STARTED events).
-  if (await isJobCancelled(taskId, jobRow?.enqueuedAt)) {
+  if (await isJobCancelled(taskId, jobRow?.enqueuedAt || params?.enqueuedAt)) {
     console.log(`Async handler: ${taskType} (${taskId}) cancelled before start — skipping`);
     if (!UNPOLLED_TASKS.has(taskType)) {
       await storage.set(`${TASK_PREFIX}${taskId}`, { status: "error", error: "Cancelled" }, ttl);

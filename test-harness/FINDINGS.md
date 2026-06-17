@@ -864,3 +864,31 @@ update the FunctionBuilder tooltip; has backward-compat risk for saved PFs, so o
 All backend-only, deployed v22.38.0, verified 14/14 (`_verify-f47.mjs`). The two
 adversarial workflows together found 8 real bugs that 15 black-box rounds missed —
 adversarial code-grounded review is the highest-yield verification tool here.
+
+## F48 — 3rd adversarial hunt (async/dispatch/idempotency) found 4 more bugs (fixed, dev v22.39.0)
+
+6-agent hunt; 2 clean (dispatch-offload routing, registry lookup), 4 reals fixed:
+  1. **Kill-all bypass (async-handler.js).** The cancel checkpoint passed only
+     `jobRow?.enqueuedAt` to isJobCancelled, so when the best-effort job-row write was
+     lost (KVS throttle), the global kill-all EPOCH branch was skipped and a cancelled PF
+     still ran its Jira writes. Fix: `jobRow?.enqueuedAt || params?.enqueuedAt` (the
+     event body always carries enqueuedAt; the staleness check 2 lines down already did this).
+  2. **Double-execution (idempotency).** On an ambiguous queue push (platform accepted,
+     client rejected), the consumer claims+runs the PF; the producer's inline-fallback
+     then claimed pf_exec, SWALLOWED the FAIL_IF_EXISTS conflict, and ran inline ANYWAY →
+     duplicate comment/subtask/link/field write. Fix: on a claim conflict the inline
+     fallback now stands down (return) — the enqueued copy owns the execution.
+  3. **Fact-check evidence undefanged.** buildFactCheckBlock injected the (untrusted)
+     claim text + web source URLs into <<<FACTCHECK_EVIDENCE>>> without defangFence (same
+     class as F47). Fix: defang claim + sources.
+  4. **stripCodeFences corrupted valid code.** `search(/^```/m)` + substring treated the
+     FIRST column-0 ``` anywhere as the wrapper, so valid generated code containing an
+     inner ``` (markdown/template-literal body, block comment) had everything before it
+     DELETED → corrupted code saved/run. Fix: strip only a true WRAPPER fence (opening as
+     the first/second line) to the LAST closing fence; inner data fences preserved.
+Verified 7/7 (`_verify-f48.mjs`, incl. the inner-fence-preservation case).
+
+THREE adversarial hunts → **12 real bugs** found+fixed that 15 black-box rounds never
+surfaced. The campaign's headline lesson: black-box rounds confirm the common path;
+code-grounded adversarial review (refute-each-finding + hunt-each-path) is the
+highest-yield way to find the security/data-loss/edge defects.

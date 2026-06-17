@@ -5896,13 +5896,34 @@ resolver.define("getAsyncJobs", async ({ payload }) => {
     const now = Date.now();
     let rows = (page.results || []).map((r) => r.value).filter(Boolean);
     if (ruleId) rows = rows.filter((j) => j.ruleId === ruleId);
-    // A "running" row older than 10min is definitively dead (the consumer's
-    // hard cap is 120s) — flag it stalled so the UI shows it without it
-    // masquerading as live work until the 2h TTL reaps it.
+    // Self-heal stuck "running" rows. The consumer's hard cap is 120s, so a row
+    // still "running" well past that means its invocation was KILLED at the 120s
+    // platform limit (or its terminal done/error KVS write was throttled under
+    // load) before it could report a terminal status. Such rows would otherwise
+    // masquerade as live work for the full 2h active-TTL. REAP them to "error" so
+    // they leave the active count, drop to "recently completed", and age out on
+    // the short terminal TTL. (A hard-killed invocation can never run cleanup, so a
+    // reaper on read is the only recovery — found via the stress test, which left
+    // ~100 zombie "running" rows.)
+    const JOB_REAP_MS = 180000;   // 3 min — safely past the 120s consumer budget
+    const JOB_STALL_MS = 130000;  // suspect window: past 120s but not yet reaped
+    const toReap = [];
     for (const j of rows) {
-      if (j.status === "running" && j.startedAt && now - Date.parse(j.startedAt) > 10 * 60 * 1000) {
+      if (j.status !== "running" || !j.startedAt) continue;
+      const age = now - Date.parse(j.startedAt);
+      if (age > JOB_REAP_MS) {
+        j.status = "error";
+        j.stalled = true;
+        j.error = `Reaped: no completion reported within the 120s consumer budget (killed or throttled under load after ${Math.round(age / 1000)}s).`;
+        j.finishedAt = new Date(now).toISOString();
+        toReap.push(j);
+      } else if (age > JOB_STALL_MS) {
         j.stalled = true;
       }
+    }
+    // Persist the reaps (best-effort) so they stay terminal across polls + age out fast.
+    for (const j of toReap) {
+      try { await storage.set(`${JOB_PREFIX}${j.taskId}`, j, JOB_TTL_DONE); } catch (e) { /* best-effort self-heal */ }
     }
     const byNewest = (field) => (a, b) =>
       (a[field] || "") < (b[field] || "") ? 1 : (a[field] || "") > (b[field] || "") ? -1 : 0;

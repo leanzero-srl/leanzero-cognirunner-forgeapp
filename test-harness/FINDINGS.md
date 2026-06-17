@@ -828,3 +828,39 @@ All backend-only, deployed v22.37.0, verified by 13/13 deterministic unit checks
 (`_verify-f46.mjs`) covering the bug triggers AND the happy paths. **Lesson: black-box
 rounds confirm the common path; adversarial code-grounded review catches the adjacent
 edge cases — run it.**
+
+## F47 — 2nd adversarial hunt (fresh code paths) found 5 more real bugs (fixed, dev v22.38.0)
+
+A second 8-agent hunt over UN-reviewed paths (value pipeline, JSON parsers, provider
+extractors, agentic tool-args, ADF extraction, defang sites, sandbox writes, SKIP/write
+decision). It also caught that the F46 #2 fix was the WRONG direction. Fixed:
+
+  1. **recoverValidatorVerdict was STILL exploitable (F46 #2 made it worse).** "Last"
+     loses to an injection quoted AFTER the real verdict (isValid is naturally the first
+     key; reason follows). A flat regex can't tell a structural key from a quoted one.
+     Fix: recover ONLY when there's exactly ONE isValid AND the content has a `{` (a real
+     verdict has braces; reasoning prose doesn't); MULTIPLE tokens → FAIL CLOSED (block).
+     Closes the bypass in both directions + the reasoning-only mis-recovery (area #3).
+  2. **Silent field-clear (general).** A semantic PF whose value coerced to empty (empty
+     array from a garbage multiselect/labels/components string, "", null) WROTE [] / null
+     → silently WIPED the field while reporting success (the array analog of the number
+     bug). Fix: central guard in prepareSemanticValue — effectively-empty value → SKIP
+     (a semantic PF derives a value, it must never clear the target).
+  3. **Undefanged prompt-injection sites.** Four semantic action helpers (generateDoc-
+     Content, draftComment, generateSubtaskFields, pickRelatedIssues) AND the agentic JQL
+     tool-result feedback injected raw untrusted content into <<<fences>>> WITHOUT
+     defangFence (unlike buildSemanticAIRequest). A crafted field/summary/issue-summary
+     could break out / inject. Fix: defangFence at all five sites (source, summary,
+     candidates JSON, tool result).
+  4. **ADF crash-not-failopen.** extractFieldDisplayValue's Okapya-checklist branch did
+     value[0].name with no null guard → an array starting with null throws TypeError →
+     transition blocked. Fix: guard value[0].
+
+NOT auto-fixed (flagged for owner — product decision): the static-PF `${var}` step-var
+substitution corrupts JS template literals (the tooltip's documented syntax breaks the
+natural `\`...${var}...\`` pattern). Fix = deprecate `${var}` for bare-name scope vars +
+update the FunctionBuilder tooltip; has backward-compat risk for saved PFs, so owner's call.
+
+All backend-only, deployed v22.38.0, verified 14/14 (`_verify-f47.mjs`). The two
+adversarial workflows together found 8 real bugs that 15 black-box rounds missed —
+adversarial code-grounded review is the highest-yield verification tool here.

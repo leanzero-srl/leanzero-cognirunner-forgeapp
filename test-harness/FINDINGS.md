@@ -802,3 +802,29 @@ added to the INITIAL "Create" transition correctly enforced on POST /issue —
 The validator read the field from modifiedFields (no issue.key yet). Cleanup VERIFIED:
 INITIAL validators restored 1/1. scripts/round15-create.mjs (snapshot/restore/verify
 pattern + lenient prompt to bound blast radius).
+
+## F46 — Adversarial review of the campaign found 3 REAL bugs (fixed, dev v22.37.0)
+
+An 8-agent adversarial workflow re-examined every "not-a-bug" triage from rounds 1–15
+and REFUTED three (5 held: cascading-reject, agentic-failopen, static-continue-on-error,
+controlchars-nowrite, dispatch-overhaul). The black-box rounds missed these because they
+test the verdict, not adjacent inputs:
+
+  1. **Wrong-person assignment** — `resolveUserToAccountId` accepted a SINGLE Jira
+     user-search result without an exact check. Search prefix-matches, so a model
+     returning "Alex" resolves to the lone "Alexandra Smith" → PF silently assigns the
+     WRONG human (worse than the SKIP my round-5 test saw at 3 matches). Fix: accept only
+     an EXACT display-name/email match; prefix-only → SKIP. (accountIds short-circuit upstream.)
+  2. **Injection bypass via the recovery path** — `recoverValidatorVerdict` (used when
+     parseAIJson fails on a malformed agentic response) returned the FIRST "isValid"; if
+     the model quotes the field's injected {"isValid":true} before its real verdict, a
+     BLOCK flips to ALLOW. Fix: pick the LAST "isValid" (the genuine final verdict).
+  3. **Silent number-field clear** — a non-finite value ("1e400"→Infinity, or an
+     overflowing JSON number literal) survived coercion; JSON.stringify(Infinity)===null
+     silently WIPED the field while reporting success. Fix: keep non-finite as a string
+     (formatValueForField) + reject non-finite numbers (checkScalarFormat) → clean SKIP.
+
+All backend-only, deployed v22.37.0, verified by 13/13 deterministic unit checks
+(`_verify-f46.mjs`) covering the bug triggers AND the happy paths. **Lesson: black-box
+rounds confirm the common path; adversarial code-grounded review catches the adjacent
+edge cases — run it.**

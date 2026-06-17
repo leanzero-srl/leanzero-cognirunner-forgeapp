@@ -657,3 +657,21 @@ skipped. New harness: scripts/round5-schemas.mjs.
     is a library doc, not an issue attachment. ✅
 Net: 0 system bugs. New harness: scripts/round6-flavors.mjs (research metric is a
 known harness gap — it writes a library doc, not an attachment).
+
+## F37 — Round 7: static PF execution engine (verified; 2 UX nuances)
+
+Deterministic sandbox probes — all correct with proper usage:
+  • 3-step chain (7→×6→write) = "chain=42" ✅  • sandbox searchJql → "found=20" ✅
+  • conditional branch on issue content = "cond=BUG" ✅  • getIssue+log+updateIssue ✅
+0 system bugs. Two NON-bug nuances surfaced (flagged for the owner, NOT changed
+autonomously — both debatable design/UX choices):
+  • A — variable chaining: prior-step results are injected as REAL scope variables;
+    reference them by BARE NAME (what codegen emits). The `${variableName}` text-replace
+    (a security measure → vars["x"]) is fragile INSIDE JS string/template literals and
+    conflicts with JS `${}`. The FunctionBuilder tooltip ("use ${variableName}") can
+    mislead a manual author. Candidate: update the hint to "reference by bare name".
+  • B — continue-on-error: a thrown step does NOT halt the chain; the engine records
+    failedStep + success:false and runs remaining steps (dependent ones then fail with a
+    clear "X is not defined" rec). Defensible (run-all + report); a chain-halt option
+    could be offered. Behavior also interacts with the per-step budget (a late step may
+    be skipped for lack of time).

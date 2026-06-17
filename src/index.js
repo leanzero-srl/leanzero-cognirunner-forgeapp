@@ -11995,6 +11995,7 @@ const executeStaticPostFunction = async (issueKey, config, deadline = Date.now()
   }
 
   const executionLogs = [];
+  const MAX_EXEC_LOGS = 5000; // cap user api.log() volume so a runaway loop can't OOM the function
   const changes = [];
   const variables = {};
   const startTime = Date.now();
@@ -12388,8 +12389,15 @@ const executeStaticPostFunction = async (issueKey, config, deadline = Date.now()
       return { success: moved, target: targetStatusName, tempTransition: tempId };
     },
     log: (...args) => {
+      // Bound user logging: a runaway api.log() loop (malicious OR an accidental
+      // generated-code bug) would otherwise grow executionLogs without limit and
+      // OOM-crash the function before the next between-step deadline check fires.
+      if (executionLogs.length >= MAX_EXEC_LOGS) {
+        if (executionLogs.length === MAX_EXEC_LOGS) executionLogs.push(`[api.log output capped at ${MAX_EXEC_LOGS} entries — further log() calls suppressed to protect the function from running out of memory]`);
+        return;
+      }
       const msg = args.map((a) => typeof a === "object" ? JSON.stringify(a) : String(a)).join(" ");
-      executionLogs.push(msg);
+      executionLogs.push(msg.length > 4000 ? msg.slice(0, 4000) + "…[truncated]" : msg);
     },
     context: { issueKey },
   }; return this_api; };

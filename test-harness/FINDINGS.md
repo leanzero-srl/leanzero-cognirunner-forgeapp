@@ -982,3 +982,57 @@ RE-FLAGGED (real exposure, fix is an agentic-behavior change = owner's call):
 FIVE adversarial hunts total → **20 real bugs** (17 fixed + 3 flagged: confused-deputy JQL,
 MCP host-pin, read-resolver gates) across security, data-loss, double-execution, crashes,
 code-corruption, and now provider-response parsing — none surfaced by 15 black-box rounds.
+
+## F51 — 6th adversarial hunt (static-PF sandbox): 1 reliability fix + a sandbox-hardening decision flagged (dev v22.42.0)
+
+5-finder hunt over executeStaticPostFunction / createApi / the AsyncFunction sandbox / pf_code
+offload / api.* privilege. 3-skeptic refute panel → **14 of 41 survived**. CRITICAL framing the
+finders/skeptics under-weighted: static-PF code is **editor-authored / AI-generated then
+editor-approved** (editors already configure asApp() rules), and **Forge's FaaS platform is the
+real isolation boundary** (manifest-pinned egress, hardened runtime). Triaged against the actual
+code, that reduces the 14 to ONE genuine reliability fix; the rest are defense-in-depth,
+intentional-feature tradeoffs, or architecturally unfixable on Forge.
+
+FIXED:
+  1. **Unbounded api.log() → OOM (reliability).** `api.log()` (index.js ~12390) pushed to
+     executionLogs with no count/size cap; the deadline check is only BETWEEN steps, so a runaway
+     log loop in one step (malicious OR an accidental generated-code bug) grows the array until the
+     function OOM-crashes before the sync loop yields. Fix: cap at 5000 entries (then a one-time
+     "capped" notice, suppress the rest) + per-message 4000-char truncation. Converts an OOM crash
+     into a clean Forge timeout; zero feature impact. Deployed v22.42.0.
+
+DISPROVEN on a deeper read (survived the panel but the actual code refutes them):
+  • "Scope-var collision overrides blocked globals → inject require/Function" (HIGH, 3/3): the
+    call site (~12486) passes `scopeVarNames.map(n => variables[n])` for chained vars and
+    `undefined` for blocked globals. If an editor names a chained var `require`, that name is
+    shadowed with **sandbox-produced data**, NOT the host global — no escape, no new capability.
+  • "Step result storage unbounded" (refuted): already capped at 256KB (~12496).
+  • Simulation findings (cloneIssue/transitionSubtasks/transitionParent "read before sim check"):
+    reads are LIVE in simulation BY DESIGN (comment ~12004); the WRITES delegate to the
+    sim-guarded updateIssue/transitionIssue/transitionByName. Not write-leaks.
+  • searchJql in the sandbox is bounded to maxResults:20 (~12148); pf_code offload load is
+    fail-closed (missing bundle → success:false + clear recommendation, ~11982).
+
+FLAGGED for the owner — a single "static-PF sandbox hardening" decision (NOT auto-applied;
+threat = trusted editor code, blast radius = Forge-bounded):
+  • **Sandbox is param-shadowing, not a true isolate** (the code already says so, ~11958). The
+    `Function` constructor stays reachable via `(()=>{}).constructor.constructor` etc., and regex
+    aliasing checks can't catch every path. The only real fix is isolated-vm / Worker isolation,
+    which **Forge does not provide**. Decision: accept the documented limitation, or invest in a
+    different execution model.
+  • **Prototype pollution** (`Object.prototype.x=1` in a step persists in the warm container).
+    Fix = Object.freeze(global prototypes) = HIGH blast-radius (could break the app's own code /
+    libs). Owner's call — I will not freeze global prototypes autonomously.
+  • **Confused-deputy "arbitrary key"** on updateIssue/editIssue/transitionByName: real that they
+    accept any issue key — but this is the app's INTENTIONAL cross-issue design (cloneIssue,
+    createIssueLink, transitionParent/Subtasks all operate on related issues by design). Removing
+    the key param would break shipped features. Owner must decide the threat model: confine static
+    PFs to the triggering issue (safer/weaker) vs. keep cross-issue (current/powerful). Residual
+    real risk only if generated code derives the target key from UNTRUSTED field data.
+  • **Argument micro-clamps** (addWorklog negative/huge, removeWatcher arbitrary accountId): Jira
+    validates server-side and errors are surfaced; constraining breaks legit watcher/worklog mgmt.
+    Low value; owner's call.
+
+SIX adversarial hunts total → **21 real fixes deployed** (v22.37→22.42) + a consolidated set of
+sandbox-hardening DECISIONS flagged for the owner (true-isolate model, prototype freeze,
+cross-issue threat model) that require product/architecture judgment, not a code patch.

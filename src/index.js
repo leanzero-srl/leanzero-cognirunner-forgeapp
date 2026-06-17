@@ -6083,18 +6083,12 @@ resolver.define("saveLmStudioPool", async ({ payload, context }) => {
 resolver.define("getLmStudioWeights", async () => {
   try {
     const [weights, loaded] = await Promise.all([getLmStudioWeightsMap(), getLmStudioLoadedModels()]);
-    // Dedupe by addressable id: LM Studio routes chat by model key, so two loaded
-    // quants that share one key are ONE dispatch target (one busy-key, one weight)
-    // — collapse them into a single row and list every loaded quant + ctx so the
-    // row stays distinguishable (the issue: two identical "qwen3.6-35b-a3b" rows).
-    const byId = new Map();
-    for (const m of loaded) {
-      const e = byId.get(m.id) || { id: m.id, quants: [], ctx: m.ctx || null };
-      if (m.quant && !e.quants.includes(m.quant)) e.quants.push(m.quant);
-      if (!e.ctx && m.ctx) e.ctx = m.ctx;
-      byId.set(m.id, e);
-    }
-    return { success: true, weights, models: Array.from(byId.values()) };
+    // One row PER loaded instance — do NOT collapse. Two quants of one model share
+    // the LM Studio `key` but are distinct workers on distinct machines (verified:
+    // 8bit + 6bit qwen3.6-35b-a3b on two Macs). Key each by wkey (id::quant) so they
+    // weight independently; the UI shows quant + ctx to tell them apart.
+    const models = loaded.map((m) => ({ wkey: m.wkey, id: m.id, quant: m.quant || null, ctx: m.ctx || null }));
+    return { success: true, weights, models };
   } catch (error) {
     return { success: false, error: error.message, weights: {}, models: [] };
   }
@@ -8330,18 +8324,26 @@ const getLmStudioLoadedModels = async () => {
         loaded = items
           .filter((m) => Array.isArray(m.loaded_instances) && m.loaded_instances.length > 0)
           .filter((m) => { const t = m.type || "llm"; return t !== "embedding" && t !== "embeddings"; })
-          .map((m) => ({
-            id: m.key || m.id,
-            vision: !!(m.capabilities && m.capabilities.vision),
-            toolUse: !!(m.capabilities && m.capabilities.trained_for_tool_use),
-            // Surfaced to the admin weights UI so two loaded quants of one model
-            // (same id) are still distinguishable (the picker shows the same).
-            quant: (m.quantization && (m.quantization.name || m.quantization)) || null,
-            ctx: m.max_context_length || null,
-          }))
+          .map((m) => {
+            const id = m.key || m.id;
+            const quant = (m.quantization && (m.quantization.name || m.quantization)) || null;
+            return {
+              id,
+              // Per-INSTANCE dispatch + weight key. Two quants of one model share
+              // the LM Studio `key` (verified live: 8bit + 6bit qwen3.6-35b-a3b on
+              // two Macs both report key "qwen/qwen3.6-35b-a3b"), so the bare id
+              // collides — quant disambiguates them into separate weightable
+              // workers. quant/ctx are also surfaced to the admin weights UI.
+              wkey: quant ? `${id}::${quant}` : id,
+              vision: !!(m.capabilities && m.capabilities.vision),
+              toolUse: !!(m.capabilities && m.capabilities.trained_for_tool_use),
+              quant,
+              ctx: m.max_context_length || null,
+            };
+          })
           .filter((m) => m.id);
         // Stable order → deterministic round-robin within a warm function instance.
-        loaded.sort((a, b) => String(a.id).localeCompare(String(b.id)));
+        loaded.sort((a, b) => String(a.wkey).localeCompare(String(b.wkey)));
       }
     }
   } catch (e) {
@@ -8406,11 +8408,17 @@ export const lmAcquireWorker = async (requestedModel, opts = {}) => {
     // dispatch weight: effective load = live × weight, so a slower device weighted
     // 3 receives ~1 job per 3 a normal model gets.
     const counts = await Promise.all(pool.map(async (m) => {
+      // Track + weight per INSTANCE (wkey = id::quant): same-key quants on different
+      // machines are distinct workers. The chat call still sends the bare id (LM
+      // Studio exposes no per-instance address — both quants answer to one key), so
+      // for two instances sharing a key the weight biases OUR selection while LM
+      // Studio's balancer has the final say on which machine runs it.
+      const wkey = m.wkey || m.id;
       let claims = [];
-      try { claims = (await storage.get(lmBusyKey(m.id))) || []; } catch { claims = []; }
+      try { claims = (await storage.get(lmBusyKey(wkey))) || []; } catch { claims = []; }
       const live = Array.isArray(claims) ? claims.filter((c) => c && now - c.ts < LM_CLAIM_STALE_MS) : [];
-      const weight = Math.max(1, Number(weights[m.id]) || 1);
-      return { id: m.id, live, weight, eff: live.length * weight };
+      const weight = Math.max(1, Number(weights[wkey]) || 1);
+      return { id: m.id, wkey, live, weight, eff: live.length * weight };
     }));
     // Pick the least WEIGHTED-loaded; random tie-break so concurrent claims to
     // equally-idle workers fan out instead of herding onto the first one.
@@ -8419,10 +8427,10 @@ export const lmAcquireWorker = async (requestedModel, opts = {}) => {
     const chosen = candidates[Math.floor(Math.random() * candidates.length)];
 
     const claimId = `${now.toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-    const key = lmBusyKey(chosen.id);
+    const key = lmBusyKey(chosen.wkey);
     const next = chosen.live.concat([{ id: claimId, ts: now }]);
     try { await storage.set(key, next, LM_CLAIM_TTL); } catch { /* best-effort */ }
-    console.log(`[lm-pool] worker=${chosen.id} inflight ${chosen.live.length}→${next.length} (configured: ${requestedModel})`);
+    console.log(`[lm-pool] worker=${chosen.wkey} inflight ${chosen.live.length}→${next.length} (model=${chosen.id}, configured: ${requestedModel})`);
 
     let released = false;
     const release = async () => {

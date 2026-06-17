@@ -792,3 +792,13 @@ Conclusion: the v22.30→v22.36 dispatch/staleness/sync-reserve/agentic-routing/
 overhaul did NOT regress verdict correctness. The app honors Conditions/Validations/Post-
 functions correctly + securely on the weakest LM Studio model; the only real soft spot is
 agentic latency on slow self-hosted models (graceful fail-open; cloud unaffected).
+
+## F45 — Round 15: create-transition (modifiedFields) validator (0 system bugs)
+
+The issue.key-null / modifiedFields path (untested until now): a validator temporarily
+added to the INITIAL "Create" transition correctly enforced on POST /issue —
+  • gibberish summary → BLOCKED 400 ("random keyboard strokes, no meaningful content")
+  • real-task summary → created 201
+The validator read the field from modifiedFields (no issue.key yet). Cleanup VERIFIED:
+INITIAL validators restored 1/1. scripts/round15-create.mjs (snapshot/restore/verify
+pattern + lenient prompt to bound blast radius).

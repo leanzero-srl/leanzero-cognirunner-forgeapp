@@ -643,3 +643,17 @@ Semantic PFs into the hardest field types (poll for the async write):
     → SKIP with a clear reason. ✅ ambiguity safety.
 Net: 0 system bugs, 0 garbage writes — valid values written, bad/ambiguous ones safely
 skipped. New harness: scripts/round5-schemas.mjs.
+
+## F36 — Round 6: semantic PF flavors (all 5 honored)
+
+  • comment → posted a 248-char triage comment ✅
+  • subtask → created COGTEST-2074 (sub-task on a Task parent) ✅
+  • link → linked a related issue (Relates) ✅
+  • generate-doc → attached "RCA ….md" (markdown via the attachment bridge) ✅
+  • research → success:true, created a research DOC in the Documentation Library
+    (docId …phymmf) — used the MCP web-search tools, which the app correctly routes
+    to LM Studio's OpenAI-compat /v1/chat/completions (native LM Studio rejects
+    custom tools). The test's "attach" metric looked in the wrong place; the artifact
+    is a library doc, not an issue attachment. ✅
+Net: 0 system bugs. New harness: scripts/round6-flavors.mjs (research metric is a
+known harness gap — it writes a library doc, not an attachment).

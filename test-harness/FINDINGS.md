@@ -571,3 +571,62 @@ distinct issues (dodging the per-issue 10/5min PF brake). Findings:
     Verified across three builds: **5 kills (v22.20.0) → 1 (v22.21.0) → 0 (v22.22.0)**
     over a 300-fire conc-10 flood, with the graceful "timed out — transition allowed"
     fail-open carrying the load (35 transient). Deployed v22.22.0.
+
+---
+
+## F33 — LM Studio multi-Mac dispatch overhaul (v22.30 → v22.36)
+
+**What:** Under load the pool flooded one device's local queue (+59 queued) while
+another sat idle, "queued" jobs zombied for the 2h TTL, and a down-weighted box was
+either starved or hammered. Root causes + fixes, each verified by re-running the
+moderate stress (110 heavy fires, conc 12) and reading the `[lm-pool]` logs + LM
+Studio panel:
+  • **No per-device capacity cap** → flooding. Added `parallel`-aware dispatch and
+    capped Forge async concurrency at the pool's real slot count (Σ parallel/weight)
+    so overflow waits in the CENTRAL Forge queue, not on devices.
+  • **Weight was only a tiebreak** → slow box didn't actually do less. Made weight a
+    **capacity divisor** (effective slots = parallel/weight).
+  • **The herd: KVS claim model couldn't enforce a per-device cap.** A single array
+    per device CLOBBERED concurrent claims (undercount → herd); a per-claim-key +
+    prefix-query rewrite then failed because the query index LAGS writes (rank always
+    0 → 27b hit +14 while two boxes idled). **Final design: ATOMIC SLOT CLAIMING** —
+    each device exposes `capacity` slot keys; a claim is a conditional write
+    (`keyPolicy: FAIL_IF_EXISTS`), server-side atomic, so only `capacity` concurrent
+    jobs hold a device and the rest bounce. HARD per-device cap, no clobber, no lag.
+    Verified: ~0 overflow, all loaded machines used in proportion to real throughput,
+    Mac.lan (down-weighted) capped at 1.
+  • **Zombie queued rows** → `STALE_JOB_MS` (15min): getAsyncJobs reaps stale queued
+    rows; the consumer skips jobs queued past the window (no work, no write).
+  • **Sync starvation** → reserve ~1/4 of pool capacity below the PF concurrency cap so
+    inline validators/conditions always get a worker (don't fail open behind a PF flood).
+  • **Settings auth-test** falsely reported "can't reach" when the server was merely
+    saturated → bounded inference probe (12s) + a distinct "reachable but busy" state.
+
+**Honest residual:** on a stateless + eventually-consistent platform there is no
+central scheduler; the slot model gives a hard per-device cap, but deep queue + some
+fail-opens are inherent under an extreme burst on 3 slow Macs (physics, not a bug).
+
+**Hard LM Studio limit confirmed (verified live via /api/v1/models + lms ps):** two
+quants of one model share the LM Studio `key` and have NO per-instance address, so
+they cannot be individually weighted/targeted — load each on its machine with a
+distinct identifier to make them separately addressable.
+
+## F34 — Qualitative rule rounds on LM Studio (weak model honors all 3 kinds)
+
+Four rounds creating + firing fresh rules and checking the app honors each request:
+  • **Round 1 (creative-lab, 19 rules):** 5 validators, 2 conditions, 6 semantic PFs,
+    6 static PFs — ALL correct, 0 system bugs. Type coercion (number range, multiselect
+    option-match, radio closed-label, date format) clamped cleanly.
+  • **Round 2 (adversarial):** injection-against-verdict 0/9 obeyed; evasion 8/8 blocked
+    (homoglyph/zero-width/RTL/non-Latin/gibberish), over-block controls 7/7 allowed.
+  • **Round 3 (exotic sandbox):** createVersion/Component/clone/createIssue/forceStatus
+    5/5. injection-deepdive: the 6 "leaks" were FALSE POSITIVES of the verdict-only
+    classifier — reason traces show the model ALLOWED real tasks while explicitly
+    disregarding the embedded injection ("ignored as per security guidelines"); pure
+    injection non-tasks BLOCKED. Zero true obedience. (Harness TODO: adjudicate
+    deepdive by reason, not verdict.)
+  • **Round 4 (agentic, new harness agentic-lab.mjs):** JQL tool-calling WORKS — valid
+    queries emitted, executed, reasoned correctly (blocked an exact duplicate;
+    distinguished similar-but-different). BUT ~50% of fires timed out on a slow 35B
+    (multi-round gen > ~20s sync budget) → graceful fail-open. Model/hardware limit,
+    not a system bug. Fix: route agentic off down-weighted (slow) devices (v22.36).

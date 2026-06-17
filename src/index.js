@@ -6078,6 +6078,38 @@ resolver.define("saveLmStudioPool", async ({ payload, context }) => {
   }
 });
 
+// Per-model dispatch weights (down-weight slow devices). Returns the currently
+// loaded models so the admin can set a weight per device.
+resolver.define("getLmStudioWeights", async () => {
+  try {
+    const [weights, loaded] = await Promise.all([getLmStudioWeightsMap(), getLmStudioLoadedModels()]);
+    return { success: true, weights, models: loaded.map((m) => m.id) };
+  } catch (error) {
+    return { success: false, error: error.message, weights: {}, models: [] };
+  }
+});
+
+resolver.define("saveLmStudioWeights", async ({ payload, context }) => {
+  if (!(await requireRole(context.accountId, "admin"))) {
+    return { success: false, error: "Admin access required" };
+  }
+  const raw = (payload && payload.weights && typeof payload.weights === "object") ? payload.weights : {};
+  // Clamp to integers 1..20; keep only >1 entries (1 = default, no down-weighting).
+  const weights = {};
+  for (const [id, w] of Object.entries(raw)) {
+    const n = Math.round(Number(w));
+    if (Number.isFinite(n) && n > 1) weights[String(id)] = Math.min(20, n);
+  }
+  try {
+    await storage.set(LMSTUDIO_WEIGHTS_KEY, weights);
+    _cachedWeights = weights;
+    _cachedWeightsAt = Date.now();
+    return { success: true, weights };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
 // Old synchronous reviewConfig removed — now handled by async-handler.js
 
 /**
@@ -8246,6 +8278,23 @@ const isLmStudioPoolEnabled = async () => {
   return _cachedPoolEnabled;
 };
 
+// Per-model dispatch WEIGHT (admin-configurable). A model's effective load in the
+// least-loaded picker = liveClaims × weight, so a SLOW device set to weight 3 only
+// receives ~1 job for every 3 a normal model gets — the owner's "down-weight the
+// slower device" control (e.g. a slow MTP box that backs up +70 while a fast box
+// idles). Default weight 1 (no change). { modelId: number }.
+const LMSTUDIO_WEIGHTS_KEY = "COGNIRUNNER_LMSTUDIO_WEIGHTS";
+let _cachedWeights = null;
+let _cachedWeightsAt = 0;
+const getLmStudioWeightsMap = async () => {
+  if (_cachedWeights !== null && _cacheFresh(_cachedWeightsAt)) return _cachedWeights;
+  let v;
+  try { v = await storage.get(LMSTUDIO_WEIGHTS_KEY); } catch { v = null; }
+  _cachedWeights = (v && typeof v === "object" && !Array.isArray(v)) ? v : {};
+  _cachedWeightsAt = Date.now();
+  return _cachedWeights;
+};
+
 // Short-TTL cache of currently-loaded LM Studio models (id + capabilities +
 // device). Only /api/v1/models exposes loaded_instances + capabilities, so the
 // pool requires that endpoint; older builds (api/v0, v1) simply never pool.
@@ -8308,7 +8357,13 @@ const getLmStudioLoadedModels = async () => {
 //  • all KVS ops are best-effort — any hiccup falls back to the configured model.
 // Gated by COGNIRUNNER_LMSTUDIO_POOL (the admin "run on all loaded models" toggle).
 const LM_BUSY_PREFIX = "lmbusy:";
-const LM_CLAIM_STALE_MS = 40000; // > the 25s function cap + margin; sweeps leaked claims
+// Sweep window for leaked claims. MUST exceed the LONGEST legitimate job, else a
+// slow model's still-running jobs get swept and it looks perpetually idle → the
+// least-loaded picker keeps piling work on it (the observed "qwopus +70 queued
+// while a fast model sits idle" bug). Queued PFs run up to the consumer's 120s, so
+// 130s keeps their claims counted for the job's real duration. Leaked claims (a
+// hard-killed function) just linger a bit longer before the sweep reaps them.
+const LM_CLAIM_STALE_MS = 130000;
 const LM_CLAIM_TTL = { ttl: { value: 5, unit: "MINUTES" } };
 const lmBusyKey = (id) => LM_BUSY_PREFIX + String(id).replace(/[^a-zA-Z0-9._:-]/g, "_").slice(0, 110);
 const NOOP_RELEASE = async () => {};
@@ -8331,17 +8386,21 @@ export const lmAcquireWorker = async (requestedModel, opts = {}) => {
     if (pool.length === 1) return { model: pool[0].id, release: NOOP_RELEASE };
 
     const now = Date.now();
-    // Live in-flight count per candidate (stale claims swept out).
+    const weights = await getLmStudioWeightsMap();
+    // Live in-flight count per candidate (stale claims swept out), plus the admin
+    // dispatch weight: effective load = live × weight, so a slower device weighted
+    // 3 receives ~1 job per 3 a normal model gets.
     const counts = await Promise.all(pool.map(async (m) => {
       let claims = [];
       try { claims = (await storage.get(lmBusyKey(m.id))) || []; } catch { claims = []; }
       const live = Array.isArray(claims) ? claims.filter((c) => c && now - c.ts < LM_CLAIM_STALE_MS) : [];
-      return { id: m.id, live };
+      const weight = Math.max(1, Number(weights[m.id]) || 1);
+      return { id: m.id, live, weight, eff: live.length * weight };
     }));
-    // Pick the least-loaded; random tie-break so concurrent claims to equally-idle
-    // workers fan out instead of herding onto the first one.
-    const minN = Math.min(...counts.map((c) => c.live.length));
-    const candidates = counts.filter((c) => c.live.length === minN);
+    // Pick the least WEIGHTED-loaded; random tie-break so concurrent claims to
+    // equally-idle workers fan out instead of herding onto the first one.
+    const minE = Math.min(...counts.map((c) => c.eff));
+    const candidates = counts.filter((c) => c.eff === minE);
     const chosen = candidates[Math.floor(Math.random() * candidates.length)];
 
     const claimId = `${now.toString(36)}_${Math.random().toString(36).slice(2, 8)}`;

@@ -149,6 +149,10 @@ export default function OpenAIConfig({ invoke }) {
   // LM Studio multi-model pool: spread runtime validations across all loaded models (default ON).
   const [lmPool, setLmPool] = useState(true);
   const [savingPool, setSavingPool] = useState(false);
+  // Per-model dispatch weights (down-weight slower devices). { modelId: weight }.
+  const [lmWeights, setLmWeights] = useState({});
+  const [lmWeightModels, setLmWeightModels] = useState([]);
+  const [savingWeights, setSavingWeights] = useState(false);
   // LM Studio MCP integrations — fixed set of 3 (context7, web-search, doc-reader).
   // Other MCPs in the user's mcp.json are NOT exposed by us per design.
   const [mcpEnabled, setMcpEnabled] = useState({ context7: false, webSearch: false, docReader: false, docWriter: false, localContext7: false, localWebSearch: false, localDocReader: false });
@@ -781,6 +785,10 @@ export default function OpenAIConfig({ invoke }) {
         const rp = await invoke("getLmStudioPool");
         if (!cancelled && rp && rp.success) setLmPool(rp.enabled !== false);
       } catch (e) { /* non-fatal — pool defaults ON */ }
+      try {
+        const rw = await invoke("getLmStudioWeights");
+        if (!cancelled && rw && rw.success) { setLmWeights(rw.weights || {}); setLmWeightModels(rw.models || []); }
+      } catch (e) { /* non-fatal — weights default to 1 */ }
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -826,6 +834,19 @@ export default function OpenAIConfig({ invoke }) {
       setError("Failed to save model-pool setting: " + e.message);
     }
     setSavingPool(false);
+  };
+
+  const handleSetWeight = async (modelId, weight) => {
+    const next = { ...lmWeights };
+    if (Number(weight) > 1) next[modelId] = Number(weight); else delete next[modelId];
+    setLmWeights(next);
+    setSavingWeights(true); setError(null); setSuccess(null);
+    try {
+      const r = await invoke("saveLmStudioWeights", { weights: next });
+      if (r && r.success) { setLmWeights(r.weights || {}); setSuccess("Device dispatch weights updated."); }
+      else setError((r && r.error) || "Failed to save weights");
+    } catch (e) { setError("Failed to save weights: " + e.message); }
+    setSavingWeights(false);
   };
 
   const handleSaveKey = async () => {
@@ -1654,6 +1675,32 @@ export default function OpenAIConfig({ invoke }) {
                       </span>
                     </span>
                   </label>
+                  {lmPool && lmWeightModels.length >= 2 && (
+                    <div style={{ marginTop: "12px", paddingTop: "12px", borderTop: "1px solid var(--border-color)" }}>
+                      <div style={{ fontSize: "12px", fontWeight: 600, color: "var(--text-color)", marginBottom: "4px" }}>
+                        Device dispatch weight
+                        {savingWeights && <span className="spin-ring spin-ring-sm" style={{ marginLeft: "8px", verticalAlign: "middle" }} />}
+                      </div>
+                      <div style={{ fontSize: "11px", color: "var(--text-muted)", marginBottom: "8px" }}>
+                        Mark a slower device to receive proportionally less work — a <strong style={{ color: "var(--text-color)" }}>Slow</strong> model gets ~1 job for every 3 a normal one gets, <strong style={{ color: "var(--text-color)" }}>Very slow</strong> ~1 in 6. Stops a slow box backing up while a fast one idles.
+                      </div>
+                      {lmWeightModels.map((id) => (
+                        <div key={id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "10px", padding: "4px 0" }}>
+                          <span title={id} style={{ fontSize: "12px", color: "var(--text-color)", fontFamily: "monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{id}</span>
+                          <select
+                            value={String(lmWeights[id] || 1)}
+                            disabled={savingWeights}
+                            onChange={(e) => handleSetWeight(id, Number(e.target.value))}
+                            style={{ flexShrink: 0, fontSize: "12px", padding: "3px 8px", borderRadius: "6px", border: "1px solid var(--border-color)", background: "var(--input-bg, #fff)", color: "var(--text-color)", cursor: "pointer" }}
+                          >
+                            <option value="1">Normal</option>
+                            <option value="3">Slow (⅓ work)</option>
+                            <option value="6">Very slow (⅙ work)</option>
+                          </select>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
             </div>

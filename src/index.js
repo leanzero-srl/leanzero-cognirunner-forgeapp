@@ -6120,8 +6120,17 @@ export const sweepPostFunctionJobs = async () => {
         // pf_exec claim AT EXECUTION dedups any duplicate delivery — the first event to run claims;
         // the rest conflict and skip. A killed "running" job stays blocked by its held pf_exec;
         // honoring THAT safely needs a generation-marker (DEFERRED) — this MVP guarantees the
-        // dropped-event case with ZERO double-exec risk. (Killed/running rows are reaped to a
-        // visible "error" by getAsyncJobs, never silently lost.)
+        // dropped-event case with ZERO double-exec risk.
+        // Reap KILLED "running" zombies (past the 120s consumer hard cap → the invocation is dead)
+        // to a VISIBLE "error" so they don't pile up headlessly — the getAsyncJobs reaper only runs
+        // when an admin opens the Jobs tab, so a headless night would otherwise accumulate zombies
+        // (owner: "no zombies left"). This MARKS STATUS ONLY — it never re-executes, so there is no
+        // double-exec. (Re-DRIVING a killed job to honor it needs a generation-marker — deferred.)
+        if (j.status === "running" && j.startedAt && (now - Date.parse(j.startedAt)) > 180000) {
+          await updateAsyncJob(j.taskId, { status: "error", stalled: true, finishedAt: new Date(now).toISOString(), error: `Reaped by sweeper: no completion within the 120s consumer budget (killed/throttled). Honoring (re-drive) of killed jobs is deferred — generation-marker.` }, JOB_TTL_DONE);
+          abandoned++;
+          continue;
+        }
         if (j.status !== "queued") { skipped++; continue; }
         if ((now - (Date.parse(j.enqueuedAt || "") || now)) <= STALE_JOB_MS) { skipped++; continue; }
 

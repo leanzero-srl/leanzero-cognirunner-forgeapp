@@ -26,7 +26,9 @@ const decide = (j, { hasPfDone = false, cancelled = false } = {}) => {
   const baseline = j.firstEnqueuedAt || j.enqueuedAt || new Date(NOW).toISOString();
   const firstAt = Date.parse(baseline) || NOW;
   if ((j.redriveCount || 0) >= 3 || (NOW - firstAt) > 3600000) return "abandon";
-  if (j.status !== "queued") return "skip-fresh"; // killed "running" NOT re-driven (deferred; no double-exec)
+  // killed "running" zombie (past 120s cap) → REAP to error (status-only, no re-exec); not re-driven.
+  if (j.status === "running" && j.startedAt && (NOW - Date.parse(j.startedAt)) > 180000) return "reap";
+  if (j.status !== "queued") return "skip-fresh";
   const stale = (NOW - (Date.parse(j.enqueuedAt || "") || NOW)) > STALE_JOB_MS;
   return stale ? "redrive" : "skip-fresh";
 };
@@ -45,9 +47,9 @@ ok("DROPPED queued >15min → RE-DRIVE (the core guarantee)",
   decide({ status: "queued", eventBody: EB, enqueuedAt: iso(16 * 60000), firstEnqueuedAt: iso(16 * 60000) }) === "redrive");
 ok("queued only 5min → skip-fresh (no premature re-drive)",
   decide({ status: "queued", eventBody: EB, enqueuedAt: iso(5 * 60000), firstEnqueuedAt: iso(5 * 60000) }) === "skip-fresh");
-ok("KILLED running >180s → NOT re-driven (deferred; deleting pf_exec races a redelivery → double-exec)",
-  decide({ status: "running", eventBody: EB, startedAt: iso(200000), firstEnqueuedAt: iso(5 * 60000) }) === "skip-fresh");
-ok("any 'running' row → never re-driven (only DROPPED queued is safe without a gen-marker)",
+ok("KILLED running >180s → REAPED to error (status-only, no re-exec; not re-driven)",
+  decide({ status: "running", eventBody: EB, startedAt: iso(200000), firstEnqueuedAt: iso(5 * 60000) }) === "reap");
+ok("running 100s (within 120s budget) → skip-fresh (still alive, not reaped, no double-exec)",
   decide({ status: "running", eventBody: EB, startedAt: iso(100000), firstEnqueuedAt: iso(2 * 60000) }) === "skip-fresh");
 ok("'error' row → never re-driven (failure-retry not in this MVP)",
   decide({ status: "error", eventBody: EB, enqueuedAt: iso(20 * 60000), firstEnqueuedAt: iso(20 * 60000) }) === "skip-fresh");

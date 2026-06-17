@@ -30,6 +30,7 @@ import { chat as forgeLlmChatApi } from "@forge/llm";
 // these queued LM Studio variants alike.
 import {
   dispatchPostFunction,
+  sweepPostFunctionJobs,
   buildCodegenRequest,
   buildFixRequest,
   buildSkillDistillRequest,
@@ -811,7 +812,14 @@ export async function handler(event) {
   // do NO work. A PF meant to run "a few seconds later" is pointless 15min on (the
   // issue has moved on), and skipping frees LM Studio time for fresh jobs instead of
   // burning it on stale ones. Mirrors the queued-row reaper in getAsyncJobs.
-  const enqAt = jobRow?.enqueuedAt || params?.enqueuedAt;
+  // For post-functions, prefer the EVENT's own enqueuedAt: the always-honor sweeper
+  // re-drives a dropped PF by re-pushing with a FRESH params.enqueuedAt, so a re-driven
+  // event must be judged by its own (fresh) timestamp, not a possibly-stale row read —
+  // otherwise the re-drive would be instantly re-skipped here. Other task types keep the
+  // row-first precedence (their rows are authoritative + they're not re-driven).
+  const enqAt = taskType === "postfunction"
+    ? (params?.enqueuedAt || jobRow?.enqueuedAt)
+    : (jobRow?.enqueuedAt || params?.enqueuedAt);
   if (enqAt) {
     const queuedMs = Date.now() - Date.parse(enqAt);
     if (Number.isFinite(queuedMs) && queuedMs > STALE_JOB_MS) {
@@ -847,5 +855,15 @@ export async function handler(event) {
     console.error(`Async handler error (${taskType}):`, error);
     if (polled) await storage.set(`${TASK_PREFIX}${taskId}`, { status: "error", error: error.message }, ttl);
     await updateAsyncJob(taskId, { status: "error", finishedAt: new Date().toISOString(), durationMs: Date.now() - startMs, error: String(error?.message || error).slice(0, 300) }, JOB_TTL_DONE);
+  }
+
+  // Best-effort always-honor: after a PF job runs, opportunistically sweep for DROPPED/
+  // killed PF jobs and re-drive them. The sweeper is advisory-locked (90s TTL) so this
+  // does real work only ~once/90s no matter how many consumer invocations call it; all
+  // others return {skipped} immediately. Awaited (not fire-and-forget) so Forge doesn't
+  // kill the work when the handler returns. The scheduledTrigger CRON (pending owner
+  // approval) is the idle-time guarantee; this covers active periods at zero extra infra.
+  if (taskType === "postfunction") {
+    try { await sweepPostFunctionJobs(); } catch { /* best-effort — never fail a completed job on the sweep */ }
   }
 }

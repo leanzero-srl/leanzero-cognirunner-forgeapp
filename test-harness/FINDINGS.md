@@ -1089,3 +1089,60 @@ PASS incl. all static PFs (eval shadow did not break sandbox execution).
 OUTCOME: both highest-confidence flags resolved (v22.43.0). The remaining flagged items
 (prototype-freeze, cross-issue "arbitrary key" threat-model, MCP host-pin, read-resolver gates,
 the unclosable `.constructor` residual) stay owner-decisions, documented above.
+
+## NIGHT — LM Studio load-balancing study (3 stress runs, honest outcome)
+
+Owner flagged load-balancing for "much more tweaking" (screenshot: one box +42 queued, another
++34, a third idle). Investigated empirically with new `[lm-pool]` observability logging.
+
+GROUND TRUTH (forge logs `[lm-pool] loaded(3)`): the dispatcher DOES see all 3 models —
+`qwen/qwen3.6-35b-a3b::6bit`, `…holo3…::8bit`, `qwopus…v1-mtp::Q8_0`, each cap4/inst1, tools+vis.
+So Mac.lan is NOT missing from the pool; it gets a SMALL share (it's down-weighted by the owner +
+genuinely slow + excluded from agentic calls which filter to full-weight models). The screenshot's
+"idle" was a snapshot between its slow generations.
+
+TRIED + REVERTED (the data killed them): (a) uniform-shuffle first-pass order and (b) a bounded
+slot-wait before overflow. Across 3 runs (500/220/260 heavy fires @ conc 32): baseline avg/max
+queue delay 42s/256s → uniform-order 68s/393s — uniform order + bounded-wait made throughput
+WORSE (they send first-tries to the slow box and add ~1s/dispatch). Reverted to capacity-weighted
+order (throughput-optimal): an idle FAST box should be used before a SLOW one, which weighting does;
+a slow box is still reached when the fast ones saturate (first-pass tries the whole order).
+
+KEPT: capacity = Σ(parallel) across ALL loaded_instances (was instances[0] only — undercounts a
+Link-spread model) + the `[lm-pool]` pool/worker logging (now any starvation is diagnosable from
+logs alone). Config smell surfaced: the admin's configured model `qwen/qwen3.6-27b` matches NO
+loaded model (all loaded are 35b-a3b variants) — worth the owner aligning.
+
+HONEST CONCLUSION: the dispatch works as configured; Mac.lan's low share is BY DESIGN (down-weight
++ slow + agentic-exclude), not a bug. The deep queue delay under a 260-500 heavy burst is the
+cluster being throughput-saturated (≈9 concurrent slots vs a 500-job flood), NOT a dispatch defect.
+LEVERS for the owner: raise Mac.lan's weight (trades throughput for utilization), raise per-box
+`parallel`, or align the configured model. No dispatch-algorithm change beat the baseline.
+
+## F53 — "Always-honor" post-function durability MVP (dev v22.46.0)
+
+Owner ask: a queued PF must ALWAYS eventually execute unless explicitly stopped. Designed via a
+3-design + red-team workflow; the synthesis found the ONLY real gap is the 15-min staleness DROP
+for PFs (consumer crash / Forge drop / OOM are already covered by Forge auto-redelivery + the
+existing `pf_exec:` claim dedup). MVP shipped (non-manifest parts):
+  1. **eventBody storage** on the queued `async_job` row (+ firstEnqueuedAt, redriveCount) — the
+     full event (incl. config) so a dropped PF can be re-pushed.
+  2. **pf_done sentinel** written at the end of dispatchPostFunction's try block (a branch finished
+     without throwing) — proves completion so a finished PF is never re-driven.
+  3. **sweepPostFunctionJobs** — re-drives DROPPED (queued >15min) + KILLED (running >180s, past the
+     120s consumer cap = dead) PF rows: release the stale `pf_exec`, re-push the SAME taskId with a
+     fresh enqueuedAt. Skips done/cancelled/completed/ineligible; abandons at 3 attempts OR >1h
+     (poison cap, marked terminal — never a silent drop). Advisory-locked (90s) against concurrent
+     sweeps. Deliberately does NOT re-drive "error" rows (failure-retry is a separate nice-to-have).
+  4. **consumer staleness flip** — for postfunctions, judge staleness by the EVENT's (sweeper-
+     refreshed) enqueuedAt, so a re-driven event isn't instantly re-skipped.
+  5. **Firing:** a `sweepPostFunctionJobs` admin resolver + a best-effort piggyback at the end of
+     every PF consumer invocation (lock-throttled to ~once/90s). Covers ACTIVE periods.
+GUARANTEE: at-least-once with single-execution on every path except a post-Jira-write/pre-sentinel
+crash followed by a re-drive (the unavoidable Forge boundary — field writes are idempotent,
+transitions usually no-op, bounded by the 3-attempt cap). Verified: `_verify-f53.mjs` 12/12.
+
+DEFERRED for owner approval (manifest change — per the always-ask rule): a `scheduledTrigger` CRON
+running sweepPostFunctionJobs every 5min (or hourly if Forge gates sub-hour) is the IDLE-TIME
+guarantee (the piggyback only fires during activity). It's additive (no new scopes) but needs
+`forge install --upgrade`. Proposed manifest block is ready — see the morning summary.

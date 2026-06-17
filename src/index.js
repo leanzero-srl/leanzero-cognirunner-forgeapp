@@ -6054,6 +6054,98 @@ resolver.define("getAsyncJobs", async ({ payload }) => {
   }
 });
 
+// --- Always-honor sweeper: re-drive dropped/killed post-function jobs ------------
+// A POST-FUNCTION, once queued, must ALWAYS eventually execute unless explicitly
+// cancelled. The only gap is a job whose Forge event was DROPPED (consumer silent
+// past the staleness window) or whose consumer was KILLED mid-run (status stuck
+// "running" past the 120s hard cap). This sweeper re-drives those: re-push the
+// STORED eventBody with the SAME taskId (so pf_exec dedups any straggler delivery and
+// pf_cancel still gates it), capped at 3 attempts / 1h to bound poison. Idempotency:
+// - "queued" stale: never consumed → no pf_exec claimed yet → re-push self-dedups when
+//   one copy finally claims pf_exec at execution; deleting pf_exec is a safe no-op.
+// - "running" >180s: past the 120s consumer hard cap → the original is dead (Forge
+//   killed it) → safe to release its claim and re-drive. (A side effect that landed
+//   before the kill can duplicate — the unavoidable at-least-once boundary, bounded by
+//   the 3-attempt cap; field writes are idempotent, transitions usually no-op.)
+// We DELIBERATELY do NOT re-drive "error" rows in this MVP (failure-retry is murkier).
+// Advisory-locked + best-effort + NEVER throws.
+const PF_SWEEP_LOCK = "pf_sweep_lock";
+export const sweepPostFunctionJobs = async () => {
+  let locked = false;
+  try {
+    try {
+      await storage.set(PF_SWEEP_LOCK, { at: Date.now() }, { keyPolicy: "FAIL_IF_EXISTS", ttl: { value: 90, unit: "SECONDS" } });
+      locked = true;
+    } catch { return { skipped: true, reason: "another sweep in progress" }; }
+
+    const page = await storage.query().where("key", { condition: "BEGINS_WITH", values: [JOB_PREFIX] }).limit(100).getMany();
+    const now = Date.now();
+    const rows = (page.results || []).map((r) => r.value).filter((j) => j && j.taskType === "postfunction");
+    let scanned = 0, redriven = 0, abandoned = 0, skipped = 0;
+    const { Queue } = await import("@forge/events");
+    const queue = new Queue({ key: "async-ai-queue" });
+
+    for (const j of rows) {
+      scanned++;
+      if (j.status === "done") { skipped++; continue; }
+      // pf_done sentinel: side effects already completed → reconcile, never re-drive.
+      try { if (await storage.get(`pf_done:${j.taskId}`)) { if (j.status !== "done") await updateAsyncJob(j.taskId, { status: "done", finishedAt: new Date(now).toISOString() }, JOB_TTL_DONE); skipped++; continue; } } catch { /* fall through */ }
+      // Cancelled (sticky status OR kill-switch, checked against the ORIGINAL enqueue
+      // so a "stop all" epoch set after enqueue still cancels a re-drive) → never re-drive.
+      if (j.status === "cancelled" || await isJobCancelled(j.taskId, j.firstEnqueuedAt || j.enqueuedAt)) { skipped++; continue; }
+      // Re-drive-ineligible: oversized config never stored an eventBody (ran inline instead).
+      if (!j.eventBody || !j.eventBody.params) { skipped++; continue; }
+      // Poison / absolute give-up: cap attempts AND a 1h horizon. Mark terminal (visible
+      // in the Jobs tab) — never a silent drop.
+      const firstAt = Date.parse(j.firstEnqueuedAt || j.enqueuedAt || "") || now;
+      if ((j.redriveCount || 0) >= 3 || (now - firstAt) > 3600000) {
+        if (!j.abandoned) { await updateAsyncJob(j.taskId, { status: "error", abandoned: true, finishedAt: new Date(now).toISOString(), error: `Abandoned after ${j.redriveCount || 0} re-drive(s) / >1h — likely a permanently failing config or unreachable issue. Check the rule and the issue.` }, JOB_TTL_DONE); abandoned++; }
+        continue;
+      }
+      // Staleness gate — only re-drive genuinely stuck jobs (MVP: queued-dropped + running-killed).
+      let stale = false;
+      if (j.status === "queued") stale = (now - (Date.parse(j.enqueuedAt || "") || now)) > STALE_JOB_MS;
+      else if (j.status === "running") stale = !!j.startedAt && (now - Date.parse(j.startedAt)) > 180000;
+      if (!stale) { skipped++; continue; }
+
+      // RE-DRIVE: release any stale claim so the SAME-taskId event can re-claim, then re-push.
+      try { await storage.delete(`pf_exec:${j.taskId}`); } catch { /* best-effort */ }
+      const nextCount = (j.redriveCount || 0) + 1;
+      const refreshedAt = new Date(now).toISOString();
+      const body = { ...j.eventBody, params: { ...j.eventBody.params, enqueuedAt: refreshedAt } };
+      try {
+        const slow = j.provider === "lmstudio";
+        const pr = await queue.push(slow ? await withLmStudioConcurrency({ body }) : { body });
+        await updateAsyncJob(j.taskId, { status: "queued", enqueuedAt: refreshedAt, redriveCount: nextCount, firstEnqueuedAt: j.firstEnqueuedAt || j.enqueuedAt, jobId: pr?.jobId || j.jobId, startedAt: null, stalled: false }, JOB_TTL_ACTIVE);
+        redriven++;
+        console.log(`[pf-sweeper] re-drove ${j.taskId} (${j.pfType || "pf"} on ${j.issueKey}) attempt ${nextCount}/3`);
+      } catch (e) { console.warn(`[pf-sweeper] re-push failed for ${j.taskId}: ${e.message}`); }
+    }
+    if (redriven || abandoned) console.log(`[pf-sweeper] scanned ${scanned} PF rows → re-drove ${redriven}, abandoned ${abandoned}`);
+    return { success: true, scanned, redriven, abandoned, skipped };
+  } catch (e) {
+    console.error("[pf-sweeper] failed:", e.message);
+    return { success: false, error: e.message };
+  } finally {
+    if (locked) { try { await storage.delete(PF_SWEEP_LOCK); } catch { /* 90s TTL backstop */ } }
+  }
+};
+
+resolver.define("sweepPostFunctionJobs", async ({ context }) => {
+  if (!(await requireAdmin(context.accountId))) return { success: false, error: "Admin access required" };
+  return sweepPostFunctionJobs();
+});
+
+// Scheduled-trigger entrypoint for the always-honor sweeper. Plain function (not a
+// resolver) so it can be a Forge function handler. Wiring it as a `scheduledTrigger`
+// in manifest.yml is the IDLE-TIME guarantee (the consumer piggyback only fires during
+// activity) — DEFERRED pending owner approval (manifest change + forge install --upgrade).
+// Harmless until wired; never throws.
+export const sweepPostFunctionScheduled = async () => {
+  try { return await sweepPostFunctionJobs(); }
+  catch (e) { console.error("[pf-sweeper] scheduled run failed:", e.message); return { success: false, error: e.message }; }
+};
+
 /**
  * Stop a single async job. Native Forge cancel (stops not-yet-started events) +
  * a cooperative pf_cancel flag that the consumer checkpoint and every runtime
@@ -8433,8 +8525,16 @@ const getLmStudioLoadedModels = async () => {
           .map((m) => {
             const id = m.key || m.id;
             const quant = (m.quantization && (m.quantization.name || m.quantization)) || null;
-            const inst = Array.isArray(m.loaded_instances) && m.loaded_instances[0];
-            const parallel = inst && inst.config && Number(inst.config.parallel);
+            // Capacity = SUM of `parallel` across ALL loaded instances of this model,
+            // not just instances[0]. LM Studio Link spreads one model across several
+            // cluster nodes (e.g. the holo model showed 4 concurrent generations); using
+            // only instances[0].parallel undercounts a multi-instance model's true
+            // concurrency, starving it of slots while its real capacity sits unused.
+            const instances = Array.isArray(m.loaded_instances) ? m.loaded_instances : [];
+            const parallelSum = instances.reduce((sum, ins) => {
+              const p = ins && ins.config && Number(ins.config.parallel);
+              return sum + (Number.isFinite(p) && p > 0 ? p : 1);
+            }, 0);
             return {
               id,
               // Per-INSTANCE dispatch + weight key. Two quants of one model share
@@ -8447,17 +8547,21 @@ const getLmStudioLoadedModels = async () => {
               toolUse: !!(m.capabilities && m.capabilities.trained_for_tool_use),
               quant,
               ctx: m.max_context_length || null,
-              // Per-device concurrency capacity (LM Studio `parallel`): how many
-              // predictions this instance runs at once. We treat it as the device's
-              // free-slot count and never dispatch past it while another device has
-              // room — so an idle box is used before piling onto a busy one (the
-              // "Mac.lan idle while two devices hold +59 queued" starvation).
-              capacity: Number.isFinite(parallel) && parallel > 0 ? parallel : 4,
+              instanceCount: instances.length,
+              // Total concurrency = Σ(parallel) across ALL loaded instances of this model.
+              // Treated as the model's free-slot count; we never dispatch past it while
+              // another model has room — so an idle box is used before piling onto a busy
+              // one (the "Mac.lan idle while two devices hold +42 queued" starvation).
+              capacity: parallelSum > 0 ? parallelSum : 4,
             };
           })
           .filter((m) => m.id);
         // Stable order → deterministic round-robin within a warm function instance.
         loaded.sort((a, b) => String(a.wkey).localeCompare(String(b.wkey)));
+        // Pool visibility: log the FULL set of models the dispatcher can see + their
+        // computed capacity/instances/caps every refresh (~15s), so a starved/idle box
+        // (e.g. one never receiving jobs) is diagnosable from forge logs alone.
+        console.log(`[lm-pool] loaded(${loaded.length}): ` + loaded.map((m) => `${m.wkey}[cap${m.capacity}/inst${m.instanceCount}${m.toolUse ? ",tools" : ""}${m.vision ? ",vis" : ""}]`).join(" "));
       }
     }
   } catch (e) {
@@ -8533,8 +8637,14 @@ export const lmAcquireWorker = async (requestedModel, opts = {}) => {
     const capOf = (m) => Math.max(1, Math.round((m.capacity || 4) / Math.max(1, Number(weights[m.wkey || m.id]) || 1)));
     const slots = pool.map((m) => ({ id: m.id, wkey: m.wkey || m.id, capacity: capOf(m) }));
 
-    // Weighted-random pick: scatter concurrent dispatches in proportion to free
-    // capacity instead of herding onto one "most free" device.
+    // Weighted-random pick: scatter dispatches in proportion to capacity. Verified
+    // (3 overnight stress runs) to beat a uniform shuffle: a uniform first-try order
+    // sends work to the SLOW/down-weighted box as often as the fast boxes, which raises
+    // queue delay (the slow box's jobs take longer) for no real gain — an idle fast box
+    // should be used before a slow one, which capacity-weighting does. A genuinely idle
+    // slow box is still reached because the first-pass loop tries the WHOLE order until a
+    // free slot is grabbed; it just isn't FAVORED. (Under-use of a slow box is correct,
+    // not starvation — see FINDINGS night LB notes.)
     const pickWeighted = (list, weightOf) => {
       const total = list.reduce((s, c) => s + Math.max(0, weightOf(c)), 0);
       if (total <= 0) return list[Math.floor(Math.random() * list.length)];
@@ -8566,7 +8676,9 @@ export const lmAcquireWorker = async (requestedModel, opts = {}) => {
       return null; // device at capacity
     };
     // Capacity-weighted draw-without-replacement → device try-order. Each dispatch
-    // tends to try a different device first, spreading a concurrent burst.
+    // tends to try a higher-capacity (faster/fuller-weight) device first, which is the
+    // throughput-optimal choice; a slow box is still reached when the faster ones are
+    // saturated (the first-pass loop tries the whole order).
     const order = [];
     const remaining = slots.slice();
     while (remaining.length) {
@@ -8584,6 +8696,8 @@ export const lmAcquireWorker = async (requestedModel, opts = {}) => {
       // Every device is at capacity (cluster genuinely saturated — rare once the Forge
       // concurrency cap matches pool capacity). Overflow to a capacity-weighted pick
       // WITHOUT holding a slot; accept brief device-side queueing rather than block.
+      // (A bounded slot-wait was trialled overnight and REMOVED: it added ~1s/dispatch
+      // latency under saturation and worsened queue delay for no throughput gain.)
       chosen = pickWeighted(slots, (c) => c.capacity);
     }
     console.log(`[lm-pool] worker=${chosen.wkey}${slotHeld ? "" : " (overflow/no-slot)"} (model=${chosen.id}, configured: ${requestedModel})`);
@@ -12969,7 +13083,15 @@ export const executePostFunction = async (args) => {
         model: null,
         accountId: null,
         pfType,
-        enqueuedAt: new Date().toISOString(),
+        // Always-honor durability: persist the EXACT queue event body so the sweeper can
+        // re-drive a dropped/stale PF (the config lives in the event, not elsewhere).
+        // firstEnqueuedAt = absolute give-up clock (preserved across re-drives);
+        // redriveCount caps poison retries. enqueuedAt matches the payload so the
+        // consumer's per-event staleness math is consistent with what was pushed.
+        eventBody: queuePayload,
+        firstEnqueuedAt: queuePayload.params.enqueuedAt,
+        redriveCount: 0,
+        enqueuedAt: queuePayload.params.enqueuedAt,
       });
       console.log(`[pf] queued ${pfType} on ${issue.key} for async execution (110s budget)`);
       return { result: true };
@@ -13372,6 +13494,14 @@ export const dispatchPostFunction = async (issueKey, config, extensionKey, pfDea
         ruleWorkflow: config.workflow || null,
         moduleKey: extensionKey,
       }));
+    }
+    // Always-honor sentinel: a branch finished WITHOUT throwing, so the dispatch ran to
+    // completion. Mark the job DONE so the sweeper never re-drives a PF that already
+    // executed. Queued runs only (inline runs carry no taskId). Best-effort: a missed
+    // sentinel only risks an idempotent re-drive, never a lost execution. (A throw skips
+    // this → the catch logs the error → the job has no pf_done → it stays re-drivable.)
+    if (meta.taskId) {
+      try { await storage.set(`pf_done:${meta.taskId}`, { at: new Date().toISOString() }, { ttl: { value: 6, unit: "HOURS" } }); } catch { /* best-effort */ }
     }
   } catch (error) {
     console.error("Post-function execution error:", error);

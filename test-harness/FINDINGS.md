@@ -448,3 +448,83 @@ param it rejects is now learned + **persisted to KVS** (`COGNIRUNNER_LMSTUDIO_NO
 so cold containers skip the wasted call+retry (was relearned per-container, 18× in one
 run). Further timeout reduction would mean weighting qwopus down more or excluding
 very-slow models from the validator pool.
+
+---
+
+## 2026-06-16/17 — Harness evolution + weak-model hardening loop (LM Studio)
+
+Evolved the harness from a fixed ~20-rule synthetic suite into: (1) **universal
+discovery** — every CogniRunner rule deployed anywhere on the instance
+(`lib/discover.mjs`, `npm run discover`); found **111 rules across 6 workflows**;
+(2) an **every-real-rule exercise** (`exercise-discovered.mjs`, replay-with-trace +
+in-place GLOBAL) — **111/111 rules confirmed executed** (the owner's "zero-execution"
+rules now all have a run); (3) a **deepened graded runner** (`run-deep.mjs`,
+PASS/SOFT/HARD via `lib/grade.mjs`, keeps `legacyCorrect`); (4) a **system-vs-model
+triage** (`lib/triage.mjs`, A=bug / B=model / C=expected) so weak-model roughness
+never masquerades as a bug; (5) a **constant forge-logs monitor** (`_forge-logs.mjs`,
+`--review`); (6) a **mega volume pass** over all instance issues; (7) a **creative
+lab** (novel rule types) and (8) an **aggressive stress test** (stages built; see
+incident below). The weak LM Studio pool (qwen3.6-27b / qwen3.6-35b-a3b / qwopus)
+was used as a forcing function: harden until the dumbest model passes ⇒ strong
+cloud models are guaranteed. Run-deep 790 cases, exercise-discovered 111/111, mega
+~1,551 real fires (before the wipe below) — **all triaged 0 Bucket-A on the hardened
+build**.
+
+**F26 — `parseAIJson` discarded recoverable verdicts (unescaped inner quotes).**
+Severity MEDIUM. Root cause: the weak model emits JSON with unescaped `"` inside a
+string value (`{"reason":"a version tag "[v188]" appears"}`) — and unescaped inner
+quotes/commas/newlines; `JSON.parse` fails and `repairTruncatedJson` only closes
+truncation, so the verdict was dropped → "AI returned malformed JSON" leaked + a
+false fail-closed BLOCK. Fix: `repairUnescapedQuotes` (re-escape strays that aren't
+followed by a JSON structural char) PLUS a schema-aware `recoverValidatorVerdict`
+(extract the boolean + greedily capture the reason to the final quote) wired into
+`callOpenAI` and the agentic final parse — last-resort only, can only recover.
+Evidence: the exact failing payload now parses (unit-verified); benefits every
+provider. Deployed v22.20.0.
+
+**F27 — non-agentic validator AI call had no inner deadline → 25s platform kill.**
+Severity MEDIUM (resolves the residual "14 timeouts, fail-closed" noted above).
+Root cause: `callOpenAI` (non-agentic) had no budget and the agentic loop only
+checked its 22s deadline BETWEEN rounds, so under LM Studio load a call exceeding
+Forge's hard 25s sync limit was killed by the platform → Jira "error in validator"
+(ungraceful, effectively fail-CLOSED). Fix: wrap the validator AI call (and each
+agentic round) with `raceDeadline(VALIDATOR_AI_DEADLINE_MS=23s)` → graceful FAIL-OPEN
+(consistent with the existing transient policy) before the platform kill. Evidence:
+re-run turned "error in validator" (NUM-LOW / GATE-STORY) into
+"AI validation timed out — transition allowed (fail-open)"; NUM-LOW now PASS.
+Deployed v22.19.0. Tradeoff (noted): strict validators fail OPEN under saturation —
+the owner's existing fail-open-on-transient policy, extended.
+
+**F28 — semantic write to a number field coerced empty/blank → 0.** Severity MEDIUM.
+Root cause: `formatValueForField` number branch did `Number(value)`, but
+`Number("")`/`Number("  ")` === 0, so when the model returned an empty value on a
+paragraph→number mismatch the field was silently set to 0 instead of SKIPPED. Fix:
+keep blank as a string so `checkScalarFormat` rejects it → PF SKIPs. Evidence:
+S5-mismatch went from `before=4 after=0` (HARD) to PASS (unchanged). Deployed v22.20.0.
+
+**F29 (harness) — triage false-negative: validator crash filed as "model".** The
+classifier had no signal for Jira's "error in validator … bug in the app" message,
+so the F27 crashes were initially bucketed B (model). Added a `validatorCrash`
+signal → Bucket A. (Exactly the system-vs-model risk flagged in the plan; the
+forcing function's value is partly in hardening the *triage* too.)
+
+**F30 (admin UI) — "Active Jobs" showed completed jobs for 20 min + no context.**
+Owner-reported. Validators/conditions run synchronously and static PFs run inline,
+so none queue → during a validator-heavy run the panel looked dead; then it filled
+with DONE jobs (the 20-min `recent` strip) under an "Active" header. Fix (per owner:
+keep 20-min retention): Active Jobs now shows only running/queued; completed jobs
+moved to a "Recently completed" strip under Execution Logs; tooltips explain that
+validators run synchronously and don't queue. Admin rebuilt + deployed.
+
+**INCIDENT — overnight test-instance wipe + API-token 401 (environmental).** During
+the conc-16 mega, all issues across ALL projects (incl. untouched WFH/DFD) dropped
+to 0 and authenticated REST began returning 401 ("Client must be authenticated")
+while `/serverInfo` (unauthenticated) still worked — i.e. the API token/account auth
+was invalidated (revoked/expired or a security lockout after the heavy burst). The
+static-PF sandbox has no delete and the harness does not bulk-delete issues, so this
+is not harness-caused. Effect: the mega's later fires 404'd (6,052 of 7,603) and the
+**creative-lab + stress-test stages are DEFERRED** until the owner refreshes the
+`test-harness/.env` API token (or reactivates the account). Both stages are built,
+committed, and ready (`npm run creative`, `npm run stress`); re-seed the testbed
+(`npm run setup … && npm run attach && npm run seed && npm run reset-to-hub`) once
+auth is restored, then run them.

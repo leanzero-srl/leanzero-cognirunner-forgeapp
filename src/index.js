@@ -8957,16 +8957,67 @@ const buildAttachmentContentParts = (downloadedAttachments) => {
 
 // === Agentic tool infrastructure ===
 
+// Project keys are ASCII (Forge cloud): a letter then letters/digits/underscore.
+// This gates the "${key}" interpolation below, so it is injection-load-bearing.
+const PROJECT_KEY_RE = /^[A-Za-z][A-Za-z0-9_]{0,254}$/;
+
+// Balanced-paren check that ignores parens inside JQL "..." string literals. Used to
+// reject a model query whose parens would desync the confinement wrap (the ONLY way a
+// trailing `AND project = "KEY"` can fail to confine every row).
+const jqlParensBalancedOutsideStrings = (s) => {
+  let depth = 0, inStr = false, esc = false;
+  for (const ch of String(s)) {
+    if (inStr) { if (esc) esc = false; else if (ch === "\\") esc = true; else if (ch === '"') inStr = false; continue; }
+    if (ch === '"') inStr = true;
+    else if (ch === "(") depth++;
+    else if (ch === ")") { if (--depth < 0) return false; }
+  }
+  return depth === 0 && !inStr;
+};
+
+// Confine a MODEL-AUTHORED JQL query to one project. The agentic validator's
+// search_jira_issues tool runs model-generated JQL via asApp() (broad scope); an
+// injected model could otherwise read other projects' data into the verdict. We wrap
+// the model's whole expression in parens and append `AND project = "KEY"` at the top
+// level — a trailing top-level AND confines EVERY returned row to the project no matter
+// what OR/NOT/IN logic sits inside the parens. The only defeat is unbalanced parens in
+// the model's clause (which would desync the grouping); we reject that, and any invalid
+// key, by FAILING CLOSED (refuse the search) rather than ever running unscoped.
+const confineJqlToProject = (rawJql, projectKey) => {
+  if (!projectKey || !PROJECT_KEY_RE.test(projectKey)) return { ok: false, reason: "project scope could not be determined" };
+  const raw = String(rawJql || "").trim();
+  const om = raw.match(/\s+order\s+by\s+/i); // ORDER BY must remain last — confine only the WHERE body
+  const where = om ? raw.slice(0, om.index).trim() : raw;
+  const order = om ? " " + raw.slice(om.index).trim() : "";
+  if (!jqlParensBalancedOutsideStrings(where)) return { ok: false, reason: "search query had unbalanced parentheses" };
+  const body = where ? `(${where}) AND project = "${projectKey}"` : `project = "${projectKey}"`;
+  return { ok: true, jql: body + order };
+};
+
 /**
  * Execute a JQL search against Jira and return results as a JSON string.
  * Used as a tool executor in the agentic validation loop.
  *
  * @param {object} args - Tool arguments from the model
  * @param {string} args.jql - JQL query string
+ * @param {string} [args.confineToProject] - When present (agentic path), the rule's project key:
+ *   the query is confined to it and the call FAILS CLOSED on a bad/missing key. Omitted by the
+ *   semantic-PF caller, whose JQL is code-built and already project-scoped.
  * @param {string} [validatedFieldId] - The Jira field being validated; included in results so the model can compare field values
  */
-const executeJqlSearch = async ({ jql }, validatedFieldId) => {
+const executeJqlSearch = async ({ jql, confineToProject }, validatedFieldId) => {
   try {
+    let effectiveJql = jql;
+    // Enforce project confinement when the caller requested it (confineToProject present —
+    // including null). Fail closed: a bad key or unbalanced query refuses the search rather
+    // than leaking cross-project data. `undefined` means "not requested" (semantic-PF path).
+    if (confineToProject !== undefined) {
+      const conf = confineJqlToProject(jql, confineToProject);
+      if (!conf.ok) {
+        return JSON.stringify({ error: `Search refused — ${conf.reason}. Validate from the issue's own content instead.`, issues: [] });
+      }
+      effectiveJql = conf.jql;
+    }
     // Always request summary + status; also request the validated field if it's not already summary
     const fields = ["summary", "status"];
     if (validatedFieldId && validatedFieldId !== "summary" && validatedFieldId !== "status") {
@@ -8982,7 +9033,7 @@ const executeJqlSearch = async ({ jql }, validatedFieldId) => {
           Accept: "application/json",
         },
         body: JSON.stringify({
-          jql,
+          jql: effectiveJql,
           fields,
           maxResults: MAX_JQL_RESULTS,
         }),
@@ -9687,8 +9738,6 @@ const callOpenAIWithTools = async (fieldValue, validationPrompt, attachmentParts
     console.warn("[mcp-bridge] setup skipped:", e.message);
   }
 
-  const projectScope = projectKey ? `project = ${projectKey}` : null;
-
   const systemPrompt = `You are a Jira workflow validation gate. You evaluate field content against criteria and return a pass/fail JSON verdict. Be concise, factual, and non-confrontational — users seeing a rejection are already frustrated.
 
 CONTEXT:
@@ -9701,7 +9750,7 @@ DECISION FRAMEWORK — when to use tools:
 - The criteria is about the quality, format, or completeness of THIS content alone → validate directly, do NOT search.
 
 SEARCH STRATEGY (when searching):
-- Always scope JQL to the project: ${projectScope ? `use "${projectScope} AND ..."` : "include a project clause if you can infer the project key from the issue context"}.
+- Your search is AUTOMATICALLY confined to ${projectKey ? `this issue's project (${projectKey})` : "this issue's project"} by the system — do NOT add a project clause or any cross-project filter; just write the search criteria.${projectKey ? "" : " If the project cannot be determined, search is unavailable — validate from the content alone."}
 - The field being validated is "${validatedFieldId}". When the criteria is about comparing that field's content, prefer \`${validatedFieldId} ~ "phrase"\` over \`text ~ "phrase"\` so results are scoped to the same field. Use \`text ~\` only when you need broader cross-field coverage.
 - Try multiple approaches: first search by key phrases from the content, then by broader topic terms.
 - Extract 2-3 distinct concepts and build targeted queries. Combine with OR for broader coverage.
@@ -9836,6 +9885,11 @@ RESPONSE FORMAT:
           } else {
             try {
               const args = JSON.parse(toolCall.function.arguments || "{}");
+              // Agentic JQL is model-generated from untrusted field content — confine the
+              // search_jira_issues tool to the rule's project so an injected model can't
+              // exfiltrate other projects' data into the verdict. Always-on; the executor
+              // fails closed if the project key can't be determined (e.g. issue CREATE).
+              if (toolName === "search_jira_issues") args.confineToProject = projectKey ?? null;
               console.log(`Executing tool "${toolName}":`, JSON.stringify(args));
               toolResult = await tool.execute(args, validatedFieldId);
 
@@ -11951,14 +12005,23 @@ const SANDBOX_RESERVED_WORDS = new Set([
   "var", "void", "while", "with", "yield", "arguments", "eval",
 ]);
 
-// Host globals shadowed (bound to `undefined`) inside the sandbox so generated
-// step code cannot reach the Node runtime. `new Function`/`AsyncFunction` only
-// isolate LOCAL scope — globals stay visible unless shadowed as parameters.
-// The intended surface is `api.*` only; these have no legitimate use in PF code.
-// (Defense-in-depth, not a true isolate — Forge has no isolated-vm.)
+// Host globals shadowed (bound to `undefined`) as AsyncFunction params so generated
+// step code can't reach them by bare name. This is DEFENSE-IN-DEPTH against accidental
+// footguns and casual misuse — NOT a hermetic isolate. A determined author can still
+// reach Function/globalThis via the `.constructor` chain (`({}).constructor.constructor`),
+// which no parameter-shadowing or static regex can close, and Forge provides no
+// isolated-vm. The REAL security boundary is threefold: (1) Forge's FaaS platform
+// already neuters require/process/network/filesystem; (2) the api.* write-gate +
+// kill-switch bound the Jira blast radius; (3) static-PF code is author-TRUSTED (editor
+// role + human-approved / AI-generated-then-reviewed). Shadowing only removes the easy
+// bare-name paths. `eval` is shadowed so the obvious `eval(String.fromCharCode(...))`
+// route is gone; `Function`/`Reflect`/`setTimeout` are intentionally NOT shadowed —
+// `Function` is one-hop-defeated via `.constructor` (and would collide with chained var
+// names), while `Reflect`/timers have legitimate uses in generated step code.
 const SANDBOX_BLOCKED_GLOBALS = [
   "process", "require", "fetch", "globalThis", "global", "Buffer", "module",
   "exports", "XMLHttpRequest", "WebSocket", "importScripts", "__dirname", "__filename",
+  "eval",
 ];
 
 /**

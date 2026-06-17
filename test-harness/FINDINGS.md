@@ -1036,3 +1036,56 @@ threat = trusted editor code, blast radius = Forge-bounded):
 SIX adversarial hunts total → **21 real fixes deployed** (v22.37→22.42) + a consolidated set of
 sandbox-hardening DECISIONS flagged for the owner (true-isolate model, prototype freeze,
 cross-issue threat model) that require product/architecture judgment, not a code patch.
+
+## F52 — Owner resolved flagged items 1 & 2 (highest-confidence) — design-reviewed, verified (dev v22.43.0)
+
+Owner: "resolve 1 and 2 where your confidence is highest." Both implemented through an
+adversarial DESIGN review (6 reviewers + synthesis) BEFORE coding, then an adversarial
+VERIFY pass on the shipped patch (3 reviewers), plus deterministic + live regression. The
+design review materially changed both fixes — it caught a regex I proposed that would have
+BROKEN legit code, and confirmed the JQL "bypasses" were precedence errors.
+
+### Item 1 — agentic-validator JQL confined to the rule's project (was the confused-deputy flag)
+ROOT: `executeJqlSearch` ran model-authored JQL via asApp() with NO project scope (advisory
+only in the prompt) → an injected model could read other projects' data into the verdict.
+FIX (index.js): `confineJqlToProject(rawJql, projectKey)` wraps the model's whole expression
+and appends `AND project = "KEY"` at the TOP LEVEL — a trailing top-level AND confines EVERY
+returned row regardless of inner OR/NOT/IN logic (the reviewers' "OR escapes the wrap" claims
+were precedence errors; the outer AND dominates the parenthesized body). Threaded via a NAMED
+arg `confineToProject` (not positional) so the semantic-PF caller opts out visibly; that caller
+(~11842) is untouched — its JQL is code-built and already project-scoped. FAIL CLOSED on a bad/
+missing key or unbalanced parens (the ONE real bypass — a stray `)` that desyncs the wrap):
+refuse the search, never run unscoped. `PROJECT_KEY_RE` gates the interpolation. Mandatory (no
+per-rule opt-out — a toggle on an injection-reachable boundary is a footgun; the legit cross-
+project case is served by the admin-configured semantic-PF link path). Prompt reworded: the
+model is told the search is auto-confined.
+VERIFIED: `_verify-f52.mjs` 12/12 (OR/NOT/IN attempts confined, ORDER BY preserved, unbalanced→
+refused, string-paren ignored, injection key→refused, null/undefined→refused); adversarial
+verify 0 bypasses / 0 regressions across 14 payloads; LIVE agentic fire (agentic-lab) — loop
+fires, tools work, queries run project-scoped to COGTEST, no regression.
+
+### Item 2 — static-PF sandbox hardened honestly (was the "not a true isolate" flag)
+The design review SHREDDED my first proposal and I dropped two layers:
+  • DROPPED a `.constructor.constructor` reject-regex — bypassable via aliasing AND it false-
+    rejects ubiquitous legit code (`arr.constructor === Array`, `obj?.constructor?.name`). A
+    control that's both leaky and breaks honest code is negative value.
+  • DROPPED a `"use strict"` prepend — gives ZERO defense against the real `.constructor`
+    master-key, and would have CONFLICTED with the eval block (strict mode forbids `eval` as a
+    param name; the sandbox body is sloppy by design).
+SHIPPED (index.js): added only `eval` to `SANDBOX_BLOCKED_GLOBALS` (shadowed undefined at BOTH
+the test-run ~6944 and execute ~12475 sites; `eval` is already in SANDBOX_RESERVED_WORDS so it
+can never be a chained var name → always shadows). Kept `Function`/`Reflect`/`setTimeout`
+UNshadowed (Function is one-hop-defeated via `.constructor` + collides with var names; Reflect/
+timers have legit uses). Rewrote the doc to state the HONEST boundary: this is defense-in-depth,
+NOT a hermetic isolate; the `.constructor` master-key (`({}).constructor.constructor`) remains
+reachable and is UNCLOSEABLE on Forge (no isolated-vm); the real security wall is (1) Forge FaaS
+already neutering require/process/network/fs, (2) the api.* write-gate + kill-switch, (3) static-
+PF code being author-TRUSTED (editor role + human-approved). `eval` shadowing just removes the
+easy `eval(String.fromCharCode(...))` route.
+VERIFIED: `_verify-f52.mjs` (eval constructs + is undefined inside); adversarial verify 0
+regressions (only residual = the documented/accepted `.constructor`); LIVE creative-lab 19/19
+PASS incl. all static PFs (eval shadow did not break sandbox execution).
+
+OUTCOME: both highest-confidence flags resolved (v22.43.0). The remaining flagged items
+(prototype-freeze, cross-issue "arbitrary key" threat-model, MCP host-pin, read-resolver gates,
+the unclosable `.constructor` residual) stay owner-decisions, documented above.

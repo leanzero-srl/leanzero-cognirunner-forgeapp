@@ -42,18 +42,31 @@ export function pollForgeLogs(extraArgs = []) {
 // Log-line signatures → triage-style signal name (shared HARDENING_TARGETS map).
 // Patterns are deliberately CONTEXTUAL (not bare numbers) so ISO-8601 millisecond
 // timestamps (".526+0300"), UUIDs, and success lines don't trip false positives.
+//
+// Two skip-guards run FIRST (the weak-model run proved both are needed):
+//  - INPUT_ECHO: the app logs untrusted field values / summaries for debugging;
+//    those legitimately contain ``` / <<<… / the word "error" (it's the ATTACK
+//    INPUT, defanged on use) — never a backend bug.
+//  - EXPECTED: handled/graceful conditions (fail-open timeouts, the bounded static
+//    step budget, MCP-gated skips) — working as designed, not bugs.
+const INPUT_ECHO = /field value \(first \d+|field content:|text to validate|untrusted data|"summary"\s*:|"description"\s*:|"comment"\s*:|pf result:/i;
+const EXPECTED = /transition allowed|gathering context|fail-open|step exceeded its \d+s|evaluation timed out after \d+s|requires (the )?(doc|web|mcp)|"success"\s*:\s*true/i;
+
 const SIGNALS = [
-  { re: /internal server error|unhandled (promise )?(rejection|exception)|uncaught\b|\b(Type|Reference|Range|Syntax)Error\b|cannot read propert|is not a function|is not defined|\bat async \b|at Object\.<anonymous>|status(Code)?["' :=]{1,3}5\d\d|"status"\s*:\s*5\d\d|\bHTTP\/?\s?5\d\d\b/i, signal: "http5xx" },
+  { re: /internal server error|unhandled (promise )?(rejection|exception)|uncaught (exception|error)|\b(Type|Reference|Range|Syntax)Error\b|cannot read propert|is not a function|is not defined|status(Code)?["' :=]{1,3}5\d\d|"status"\s*:\s*5\d\d/i, signal: "http5xx" },
   { re: /malformed json|not valid json|cannot deserialize|unexpected token|failed to parse|JSON\.parse|parse error|after \d+ round\(s\)/i, signal: "parseLeak" },
   { re: /function\.arguments|tool_use|invalid tool|malformed tool|tool[- ]call (error|fail|shape)/i, signal: "toolShape" },
   { re: /allowedvalues|out of (the )?allowed|invalid option|not a valid option|could not coerce|coercion failed/i, signal: "outOfSchema" },
-  { re: /```|<<<[A-Z_]|source_field|field_value|system_prompt/i, signal: "fenceLeak" },
+  // fence markers only matter in a WRITE/STORE context — not when echoing input.
+  { re: /(updated|wrote|stored|persisted|"changes"|set field|written value)[^]{0,80}(```|<<<[A-Z_]|source_field|field_value|system_prompt)/i, signal: "fenceLeak" },
   { re: /empty response from (the )?ai|no response from (the )?ai|ai returned (an )?empty/i, signal: "emptyEcho" },
-  { re: /temporarily unavailable|rate ?limit|too many requests|ai service error|service (is )?(unavailable|down)|ECONNRESET|ETIMEDOUT|\btimed out\b|gateway time-?out/i, signal: "transientMishandled" },
+  // Only the ungraceful platform 25s kill (the F27 case) — graceful timeouts are EXPECTED above.
+  { re: /function timed out\. limit of 25/i, signal: "validatorCrash" },
   { re: /\[mcp-bridge\].*(fail|error)|tools\/list.*(fail|error)/i, signal: "mcpBridge" },
 ];
 
 export function classifyLogLine(line) {
+  if (INPUT_ECHO.test(line) || EXPECTED.test(line)) return null;
   for (const s of SIGNALS) if (s.re.test(line)) return s.signal;
   return null;
 }

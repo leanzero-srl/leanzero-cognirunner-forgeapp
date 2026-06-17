@@ -630,3 +630,16 @@ Four rounds creating + firing fresh rules and checking the app honors each reque
     distinguished similar-but-different). BUT ~50% of fires timed out on a slow 35B
     (multi-round gen > ~20s sync budget) → graceful fail-open. Model/hardware limit,
     not a system bug. Fix: route agentic off down-weighted (slow) devices (v22.36).
+
+## F35 — Round 5: hard output schemas (clamp/coercion held)
+
+Semantic PFs into the hardest field types (poll for the async write):
+  • datetime+TZ → `2026-06-19T18:00:00.000+0300` ✅  • url → `https://react.dev/` ✅
+  • checkboxes → `A11y,Perf,Tests` (valid subset) ✅  • multi-step static (${step1}) ✅
+  • cascading → one run wrote `Platform > Web`; another the weak model returned the
+    option LIST as the child ("[iOS | Web]") → backend REJECTED ("not allowed under
+    Platform") → SKIP, no garbage write. ✅ clamp held.
+  • user → model extracted the right name but it matched 3 users → app REFUSED to guess
+    → SKIP with a clear reason. ✅ ambiguity safety.
+Net: 0 system bugs, 0 garbage writes — valid values written, bad/ambiguous ones safely
+skipped. New harness: scripts/round5-schemas.mjs.

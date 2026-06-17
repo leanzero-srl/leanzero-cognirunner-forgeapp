@@ -1112,6 +1112,12 @@ resolver.define("registerConfig", async ({ payload, context }) => {
 
     const isInstanced = INSTANCED_ID_RE.test(effectiveId);
     if (existingIndex >= 0) {
+      // Authz on UPDATE — mirrors registerPostFunction: a user may only overwrite a rule
+      // config they're allowed to act on (role + scope/ownership). Without this any caller
+      // could overwrite another user's validator/condition rule.
+      if (!(await canActOnConfig(context.accountId, configs[existingIndex], "editor"))) {
+        return { success: false, error: "You don't have permission to modify this rule." };
+      }
       configs[existingIndex] = {
         ...configs[existingIndex],
         id: effectiveId, // Upgrade to the current stable id format
@@ -3201,7 +3207,14 @@ resolver.define("checkProviderHealth", async ({ context }) => {
  * - If BYOK: fetches from the provider's /models endpoint.
  * - If factory: returns empty array (no model choice — factory model is fixed).
  */
-resolver.define("getOpenAIModels", async ({ payload }) => {
+resolver.define("getOpenAIModels", async ({ payload, context }) => {
+  // Admin gate: this resolver reads the stored BYOK key and makes an outbound, key-
+  // authenticated call to the provider's /models. Without it any authenticated user could
+  // spend the admin's API key + enumerate provider config. Admin-only (the model browser
+  // lives in the admin panel; config-ui never calls this).
+  if (!(await requireAdmin(context.accountId))) {
+    return { success: false, error: "Admin access required" };
+  }
   try {
     // The provider being VIEWED (may differ from the active one — the admin panel browses
     // any provider's models without activating it). baseUrl is that provider's own URL.
@@ -4798,6 +4811,13 @@ const seedBuiltinDocs = async () => {
  * Save a reference document to the shared repository.
  */
 resolver.define("saveContextDoc", async ({ payload, context }) => {
+  // Editor gate — mirrors saveSkill/addMemory. Without it any licensed Jira user could
+  // (via the global page iframe) write into the org-wide Documentation Library, which is
+  // fence-injected as untrusted REFERENCE_DOCS into AI prompts (prompt-injection seeding)
+  // and can evict legit custom docs (capDocIndex DoS).
+  if (!(await requireRole(context.accountId, "editor"))) {
+    return { success: false, error: "Editor access required" };
+  }
   try {
     const { title, content, category } = payload;
     if (!title || !content) {

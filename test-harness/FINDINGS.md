@@ -892,3 +892,39 @@ THREE adversarial hunts → **12 real bugs** found+fixed that 15 black-box round
 surfaced. The campaign's headline lesson: black-box rounds confirm the common path;
 code-grounded adversarial review (refute-each-finding + hunt-each-path) is the
 highest-yield way to find the security/data-loss/edge defects.
+
+## F49 — 4th adversarial hunt (security boundary): 3 authz fixes + 3 flagged (dev v22.40.0)
+
+6-agent security hunt. attachment-webtrigger CLEAN. 5 reals; 3 FIXED (clear authz gaps,
+each mirroring a proven working sibling so editors aren't locked out), 3 FLAGGED:
+
+FIXED:
+  1. **saveContextDoc — no auth gate (HIGH).** Any licensed Jira user could (via the
+     global-page iframe) write into the org-wide Documentation Library → prompt-injection
+     seeding into AI prompts (fenced REFERENCE_DOCS) + evict legit docs. Fix: requireRole
+     "editor" (mirrors saveSkill/addMemory).
+  2. **registerConfig — no authz on UPDATE (HIGH).** A user could OVERWRITE another's
+     validator/condition rule. Fix: canActOnConfig(...,"editor") on the existingIndex
+     branch (mirrors registerPostFunction).
+  3. **getOpenAIModels — no auth gate (MEDIUM).** Read the admin's BYOK key + made an
+     outbound key-authenticated /models call on any caller's behalf (key-spend abuse +
+     provider-config enumeration; key bytes NOT leaked). Fix: requireAdmin (config-ui
+     never calls it; admin model-browser only).
+
+FLAGGED for the owner (not auto-applied — risk/scoping I can't validate live):
+  • **confused-deputy JQL (HIGH).** The agentic validator runs AI-authored JQL verbatim
+    via asApp() (broad scope) → an induced model could search OTHER projects and leak
+    results in the verdict reason. Fix: thread the rule's projectKey into executeJqlSearch
+    and wrap the AI JQL with `AND project = <key>`. Not auto-applied: multi-hop threading
+    + could over-constrain a legit cross-project search — needs a live test.
+  • **MCP save resolvers only check https:// (host not pinned).** Defense-in-depth only:
+    manifest egress is already pinned to *.ts.net + mcp.context7.com, so Forge BLOCKS any
+    other host at fetch time, and these resolvers are admin-gated. Recommend adding a
+    host-allowlist check for a clearer error + belt-and-suspenders.
+  • **getProvider/getOpenAIKey/getOpenAIModelFromKVS read gates (LOW).** config-ui (editor)
+    calls getProvider+getOpenAIKey; they return only provider name + presence flags (no key
+    bytes), so disclosure is low and gating risks the editor UI for users whose CogniRunner
+    role is uncertain — owner's call on the role model.
+
+FOUR adversarial hunts total → **15 real bugs** (12 fixed + 3 flagged) across security,
+data-loss, double-execution, crashes, code-corruption — none surfaced by 15 black-box rounds.

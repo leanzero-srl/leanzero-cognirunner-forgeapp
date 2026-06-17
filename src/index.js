@@ -355,6 +355,14 @@ const JOB_PREFIX = "async_job:";
 export const JOB_TTL_ACTIVE = { ttl: { value: 2, unit: "HOURS" } };
 export const JOB_TTL_DONE = { ttl: { value: 20, unit: "MINUTES" } };
 
+// Task ids carry an INVERTED-timestamp prefix so the async_job:{taskId} rows sort
+// NEWEST-FIRST in the ascending-key getAsyncJobs query. Without this, a large
+// backlog of old rows fills the limit(100) window and the live jobs (newest keys)
+// are never fetched — the "No active jobs during a heavy flood" bug. (Same trick
+// the execution-log keys use.) 16-digit inverted ms stays fixed-width for ~millennia.
+const makeTaskId = (kind) =>
+  `${(1e16 - Date.now()).toString().padStart(16, "0")}_${kind}_${Math.random().toString(36).slice(2, 8)}`;
+
 export const writeAsyncJob = async (row, ttlOpt = JOB_TTL_ACTIVE) => {
   try {
     if (!row || !row.taskId) return;
@@ -5567,7 +5575,7 @@ const queueCodegenTask = async (taskType, payload = {}) => {
   try {
     const { Queue } = await import("@forge/events");
     const queue = new Queue({ key: "async-ai-queue" });
-    const taskId = `${taskType}_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    const taskId = makeTaskId(taskType);
 
     const params = { ...payload };
     if (params.name) params.name = String(params.name).substring(0, 80);
@@ -5812,7 +5820,7 @@ resolver.define("reviewConfig", async ({ payload, context }) => {
   try {
     const { Queue } = await import("@forge/events");
     const queue = new Queue({ key: "async-ai-queue" });
-    const taskId = `review_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    const taskId = makeTaskId("review");
     let reviewProvider = null;
     try { reviewProvider = (await getProviderConfig()).provider; } catch { /* provider unknown */ }
 
@@ -12171,7 +12179,13 @@ const executeStaticPostFunction = async (issueKey, config, deadline = Date.now()
       // call) so one hung step can't consume the whole 25s budget. Note: a purely
       // synchronous infinite loop blocks the event loop and can only be bounded by
       // Forge's function-level timeout — this guards async hangs, the realistic case.
-      const stepBudgetMs = Math.max(2000, Math.min(15000, deadline - Date.now() - 2000));
+      // Each step gets the full REMAINING budget (minus a 2s reserve for the next
+      // step's setup + result write), not an artificial 15s cap. Static PFs run
+      // INLINE, bounded by PF_BUDGET_MS within Forge's hard 25s platform limit, so a
+      // single-step PF now gets ~20s instead of 15s; multi-step PFs share what's
+      // left. (A static PF that genuinely needs more than the inline window would
+      // have to run on the 110s async consumer — an eventually-consistent route.)
+      const stepBudgetMs = Math.max(2000, deadline - Date.now() - 2000);
       stepDeadline = Date.now() + stepBudgetMs; // F12: scope sandbox-API transient retries to this step's budget
       const TIMED_OUT = Symbol("step-timeout");
       const result = await Promise.race([
@@ -12551,7 +12565,7 @@ export const executePostFunction = async (args) => {
     || pfType.includes("research")
     || (pfType.includes("semantic") && config.crossCheckClaims === true)
     || slowProvider;
-  const queuePayloadTaskId = `pf_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const queuePayloadTaskId = makeTaskId("pf");
   if (isHeavyPf) {
     try {
       const queuePayload = {
@@ -12800,7 +12814,7 @@ export const dispatchPostFunction = async (issueKey, config, extensionKey, pfDea
                 const failedFn = (config.functions || []).find((f, i) => (f.name || `Step ${i + 1}`) === result.failedStep);
                 const { Queue } = await import("@forge/events");
                 const queue = new Queue({ key: "async-ai-queue" });
-                const memDistillTaskId = `memdistill_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+                const memDistillTaskId = makeTaskId("memdistill");
                 const memPushResult = await queue.push({ body: {
                   taskType: "memory_distill",
                   taskId: memDistillTaskId,

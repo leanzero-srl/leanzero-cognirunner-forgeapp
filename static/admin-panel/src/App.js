@@ -28,6 +28,33 @@ import AddRuleWizard from "./components/AddRuleWizard";
 import Tooltip from "./components/Tooltip";
 import { showToast } from "./components/toast";
 
+// DOM-based confirm dialog (a sibling of showToast) so destructive actions use a
+// styled in-app modal instead of the browser's native confirm(). Returns a Promise
+// that resolves true (confirmed) / false (cancelled). Esc/backdrop = cancel, Enter = confirm.
+function confirmDialog(message, { title = "Please confirm", confirmLabel = "Confirm", danger = true } = {}) {
+  return new Promise((resolve) => {
+    document.querySelectorAll(".cr-confirm-overlay").forEach((el) => el.remove());
+    const overlay = document.createElement("div");
+    overlay.className = "cr-confirm-overlay";
+    const box = document.createElement("div");
+    box.className = "cr-confirm";
+    const h = document.createElement("div"); h.className = "cr-confirm-title"; h.textContent = title;
+    const p = document.createElement("div"); p.className = "cr-confirm-msg"; p.textContent = message;
+    const actions = document.createElement("div"); actions.className = "cr-confirm-actions";
+    const cancelBtn = document.createElement("button"); cancelBtn.type = "button"; cancelBtn.className = "btn-small"; cancelBtn.textContent = "Cancel";
+    const okBtn = document.createElement("button"); okBtn.type = "button"; okBtn.className = "btn-small" + (danger ? " btn-danger" : ""); okBtn.textContent = confirmLabel;
+    let done = false;
+    const close = (val) => { if (done) return; done = true; document.removeEventListener("keydown", onKey); overlay.remove(); resolve(val); };
+    const onKey = (e) => { if (e.key === "Escape") close(false); else if (e.key === "Enter") close(true); };
+    cancelBtn.onclick = () => close(false);
+    okBtn.onclick = () => close(true);
+    overlay.addEventListener("mousedown", (e) => { if (e.target === overlay) close(false); });
+    document.addEventListener("keydown", onKey);
+    actions.append(cancelBtn, okBtn); box.append(h, p, actions); overlay.append(box); document.body.append(overlay);
+    setTimeout(() => okBtn.focus(), 0);
+  });
+}
+
 const injectStyles = () => {
   if (document.getElementById("app-styles")) return;
 
@@ -1963,6 +1990,21 @@ const injectStyles = () => {
     }
     .btn-retry:hover { opacity: 0.9; }
 
+    .cr-confirm-overlay {
+      position: fixed; inset: 0; z-index: 10000; display: flex; align-items: center; justify-content: center;
+      background: rgba(15, 23, 42, 0.55); backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px);
+      animation: crConfirmFade 0.12s ease;
+    }
+    @keyframes crConfirmFade { from { opacity: 0; } to { opacity: 1; } }
+    .cr-confirm {
+      width: min(460px, 92vw); background: #ffffff; color: #0f172a; border: 1px solid #e2e8f0;
+      border-radius: 12px; padding: 20px 22px; box-shadow: 0 18px 50px rgba(15, 23, 42, 0.35);
+    }
+    html[data-color-mode="dark"] .cr-confirm { background: #1e293b; color: #e2e8f0; border-color: #334155; }
+    .cr-confirm-title { font-size: 15px; font-weight: 700; margin-bottom: 8px; }
+    .cr-confirm-msg { font-size: 13px; line-height: 1.5; color: #475569; white-space: pre-wrap; }
+    html[data-color-mode="dark"] .cr-confirm-msg { color: #94a3b8; }
+    .cr-confirm-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
     .mls-toast {
       position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
       z-index: 9999;
@@ -4563,7 +4605,7 @@ function App() {
   const clearLogs = async () => {
     if (!invoke) return;
     // Destructive and unrecoverable — never fire on a stray click.
-    if (!window.confirm("Clear ALL execution logs? This cannot be undone.")) return;
+    if (!(await confirmDialog("This permanently deletes every execution log entry and cannot be undone.", { title: "Clear all execution logs?", confirmLabel: "Clear all", danger: true }))) return;
     setClearingLogs(true);
     try {
       const result = await invoke("clearLogs");
@@ -4663,7 +4705,7 @@ function App() {
     // Destructive — confirm. Honest about the guarantee: queued jobs die outright,
     // running jobs are stopped before any further Jira write (the in-flight AI
     // call may finish but makes no change).
-    if (!window.confirm("Stop ALL queued and running jobs?\n\nQueued jobs are cancelled outright. Jobs already running are stopped before any further Jira changes are made (an in-flight AI call may finish but will not write anything).")) return;
+    if (!(await confirmDialog("Queued jobs are cancelled outright. Jobs already running are stopped before any further Jira changes are made (an in-flight AI call may finish but will not write anything).", { title: "Stop all queued and running jobs?", confirmLabel: "Stop all", danger: true }))) return;
     setKillingAll(true);
     try {
       const r = await invoke("cancelAllQueuedJobs");
@@ -4730,7 +4772,7 @@ function App() {
         {j.issueKey && <span className="job-issue">{j.issueKey}</span>}
         {j.provider && <span className="job-provider">{j.provider}</span>}
         <span className="job-time">{jobTimeText(j)}</span>
-        {j.status === "error" && j.error && <span className="job-error" title={j.error}>{String(j.error).slice(0, 80)}</span>}
+        {j.status === "error" && j.error && <span className="job-error" title={j.error}>{j.error}</span>}
         {canKill && active && (
           <button className="btn-small btn-danger job-stop" onClick={() => cancelJob(j.taskId)} title="Stop this job">
             Stop

@@ -9371,23 +9371,54 @@ const callDocProcessorCreate = async (format, { title, content, stylePreset }, u
 
 // Single-shot web research via the web-search MCP (full-web-search). The Serper key
 // is injected by the bridge from the admin web-search config (X-Serper-Key header).
+// Classify a web-search failure precisely instead of always blaming the Serper key.
+// callBridgeTool returns an {"error":"…"} envelope on MCP errors (incl. the hosted
+// server's per-tenant rate limit, which the app trips as a heavy caller). A short
+// non-error result is simply a niche query with no hits — NOT a key problem.
+const RE_WS_RATE = /rate.?limit|too many requests|\b429\b|throttl|quota/i;
+const RE_WS_AUTH = /\b401\b|\b403\b|unauthorized|forbidden|invalid (api )?key|missing (api )?key|serper/i;
 const runWebResearch = async (query, { timeoutMs = 18000 } = {}) => {
   const q = String(query || "").trim();
   if (!q) return { ok: false, reason: "empty research query" };
   if (!(await mcpEnabled("webSearch"))) return { ok: false, reason: "web-search MCP not enabled" };
-  try {
-    const TIMED_OUT = Symbol("research-timeout");
-    const raced = await Promise.race([
-      callBridgeTool("webSearch", "full-web-search", { query: q }),
-      new Promise((resolve) => setTimeout(() => resolve(TIMED_OUT), timeoutMs)),
-    ]);
-    if (raced === TIMED_OUT) return { ok: false, reason: `web research timed out after ${Math.round(timeoutMs / 1000)}s` };
-    const text = typeof raced === "string" ? raced : "";
-    if (text.trim().length < 80) return { ok: false, reason: "web-search returned no usable content (check the Serper key in Settings)", raw: text.slice(0, 200) };
-    return { ok: true, text };
-  } catch (e) {
-    return { ok: false, reason: e.message };
+  const deadline = Date.now() + timeoutMs;
+  let lastErr = "";
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const remaining = deadline - Date.now();
+    if (remaining < 2500) break;
+    try {
+      const TIMED_OUT = Symbol("research-timeout");
+      const raced = await Promise.race([
+        callBridgeTool("webSearch", "full-web-search", { query: q }),
+        new Promise((resolve) => setTimeout(() => resolve(TIMED_OUT), remaining)),
+      ]);
+      if (raced === TIMED_OUT) return { ok: false, reason: `web research timed out after ${Math.round(timeoutMs / 1000)}s` };
+      const text = typeof raced === "string" ? raced : "";
+      // Detect the {"error":"…"} envelope and classify it.
+      let errMsg = "";
+      if (text.trim().startsWith("{") && text.includes('"error"')) {
+        try { errMsg = String(JSON.parse(text).error || ""); } catch { errMsg = ""; }
+      }
+      if (errMsg) {
+        lastErr = errMsg;
+        if (RE_WS_RATE.test(errMsg)) {
+          // The app is a heavy tenant — back off and retry once within the budget.
+          if (attempt < 2 && (deadline - Date.now()) > 5000) { await new Promise((r) => setTimeout(r, 2500)); continue; }
+          return { ok: false, reason: "web-search is rate-limited right now (too many requests in a short window) — it will recover shortly.", rateLimited: true };
+        }
+        if (RE_WS_AUTH.test(errMsg)) return { ok: false, reason: "web-search rejected the credentials — check the web-search Bearer/Serper key in Settings." };
+        return { ok: false, reason: `web-search error: ${errMsg.slice(0, 160)}` };
+      }
+      if (text.trim().length < 80) return { ok: false, reason: "web-search found no usable results for this query (niche or no coverage) — not a configuration error.", raw: text.slice(0, 200) };
+      return { ok: true, text };
+    } catch (e) {
+      lastErr = e.message || String(e);
+      if (RE_WS_RATE.test(lastErr) && attempt < 2 && (deadline - Date.now()) > 5000) { await new Promise((r) => setTimeout(r, 2500)); continue; }
+      if (RE_WS_AUTH.test(lastErr)) return { ok: false, reason: "web-search rejected the credentials — check the web-search Bearer/Serper key in Settings." };
+      return { ok: false, reason: lastErr };
+    }
   }
+  return { ok: false, reason: lastErr ? `web-search unavailable: ${lastErr.slice(0, 140)}` : "web-search unavailable" };
 };
 
 // Persist research markdown into the shared DocRepository (dedup-update by title +
@@ -12623,6 +12654,10 @@ export const executePostFunction = async (args) => {
   const isHeavyPf = pfType.includes("generate-doc")
     || pfType.includes("research")
     || (pfType.includes("semantic") && config.crossCheckClaims === true)
+    // Static PFs run inline (25s) by default; opt-in runAsync routes them to the
+    // 110s async consumer for heavy multi-call logic (eventually-consistent: the
+    // transition returns immediately, the steps run a few seconds later).
+    || (pfType.includes("static") && config.runAsync === true)
     || slowProvider;
   const queuePayloadTaskId = makeTaskId("pf");
   if (isHeavyPf) {

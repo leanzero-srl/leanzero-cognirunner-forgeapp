@@ -6078,55 +6078,76 @@ export const sweepPostFunctionJobs = async () => {
       locked = true;
     } catch { return { skipped: true, reason: "another sweep in progress" }; }
 
-    const page = await storage.query().where("key", { condition: "BEGINS_WITH", values: [JOB_PREFIX] }).limit(100).getMany();
     const now = Date.now();
-    const rows = (page.results || []).map((r) => r.value).filter((j) => j && j.taskType === "postfunction");
-    let scanned = 0, redriven = 0, abandoned = 0, skipped = 0;
+    const MAX_REDRIVES_PER_CYCLE = 25;   // bound re-push work so a sweep stays well under the 90s lock TTL
+    const MAX_PAGES = 8;                  // scan up to ~800 PF rows/cycle (PAGINATED — no >100 starvation)
+    let scanned = 0, redriven = 0, abandoned = 0, skipped = 0, pages = 0;
     const { Queue } = await import("@forge/events");
     const queue = new Queue({ key: "async-ai-queue" });
 
-    for (const j of rows) {
-      scanned++;
-      if (j.status === "done") { skipped++; continue; }
-      // pf_done sentinel: side effects already completed → reconcile, never re-drive.
-      try { if (await storage.get(`pf_done:${j.taskId}`)) { if (j.status !== "done") await updateAsyncJob(j.taskId, { status: "done", finishedAt: new Date(now).toISOString() }, JOB_TTL_DONE); skipped++; continue; } } catch { /* fall through */ }
-      // Cancelled (sticky status OR kill-switch, checked against the ORIGINAL enqueue
-      // so a "stop all" epoch set after enqueue still cancels a re-drive) → never re-drive.
-      if (j.status === "cancelled" || await isJobCancelled(j.taskId, j.firstEnqueuedAt || j.enqueuedAt)) { skipped++; continue; }
-      // Re-drive-ineligible: oversized config never stored an eventBody (ran inline instead).
-      if (!j.eventBody || !j.eventBody.params) { skipped++; continue; }
-      // Poison / absolute give-up: cap attempts AND a 1h horizon. Mark terminal (visible
-      // in the Jobs tab) — never a silent drop.
-      const firstAt = Date.parse(j.firstEnqueuedAt || j.enqueuedAt || "") || now;
-      if ((j.redriveCount || 0) >= 3 || (now - firstAt) > 3600000) {
-        if (!j.abandoned) { await updateAsyncJob(j.taskId, { status: "error", abandoned: true, finishedAt: new Date(now).toISOString(), error: `Abandoned after ${j.redriveCount || 0} re-drive(s) / >1h — likely a permanently failing config or unreachable issue. Check the rule and the issue.` }, JOB_TTL_DONE); abandoned++; }
-        continue;
-      }
-      // Staleness gate — only re-drive genuinely stuck jobs (MVP: queued-dropped + running-killed).
-      let stale = false;
-      if (j.status === "queued") stale = (now - (Date.parse(j.enqueuedAt || "") || now)) > STALE_JOB_MS;
-      else if (j.status === "running") stale = !!j.startedAt && (now - Date.parse(j.startedAt)) > 180000;
-      if (!stale) { skipped++; continue; }
+    let cursor;
+    pageLoop:
+    while (pages < MAX_PAGES) {
+      let q = storage.query().where("key", { condition: "BEGINS_WITH", values: [JOB_PREFIX] }).limit(100);
+      if (cursor) q = q.cursor(cursor);
+      const page = await q.getMany();
+      pages++;
+      const rows = (page.results || []).map((r) => r.value).filter((j) => j && j.taskType === "postfunction");
+      for (const j of rows) {
+        scanned++;
+        if (j.status === "done") { skipped++; continue; }
+        // pf_done sentinel: side effects already completed → reconcile, never re-drive.
+        try { if (await storage.get(`pf_done:${j.taskId}`)) { if (j.status !== "done") await updateAsyncJob(j.taskId, { status: "done", finishedAt: new Date(now).toISOString() }, JOB_TTL_DONE); skipped++; continue; } } catch { /* fall through */ }
+        // Cancelled (sticky status OR kill-switch, checked against the ORIGINAL enqueue so a
+        // "stop all" epoch set after enqueue still cancels a re-drive) → never re-drive.
+        if (j.status === "cancelled" || await isJobCancelled(j.taskId, j.firstEnqueuedAt || j.enqueuedAt)) { skipped++; continue; }
+        // Re-drive-ineligible: oversized config never stored an eventBody (ran inline instead).
+        if (!j.eventBody || !j.eventBody.params) { skipped++; continue; }
+        // firstEnqueuedAt is the IMMUTABLE original-enqueue clock. Compute a stable baseline and
+        // NEVER let it reset to the refreshed enqueuedAt (that would bypass the 1h poison horizon).
+        const baseline = j.firstEnqueuedAt || j.enqueuedAt || new Date(now).toISOString();
+        const firstAt = Date.parse(baseline) || now;
+        // Poison / absolute give-up: cap attempts AND a 1h horizon. Mark terminal (visible in the
+        // Jobs tab) — never a silent drop.
+        if ((j.redriveCount || 0) >= 3 || (now - firstAt) > 3600000) {
+          if (!j.abandoned) { await updateAsyncJob(j.taskId, { status: "error", abandoned: true, finishedAt: new Date(now).toISOString(), error: `Abandoned after ${j.redriveCount || 0} re-drive(s) / >1h — likely a permanently failing config or unreachable issue. Check the rule and the issue.` }, JOB_TTL_DONE); abandoned++; }
+          continue;
+        }
+        // SAFE re-drive — ONLY a DROPPED "queued" job (event never delivered/consumed). We do NOT
+        // delete pf_exec and do NOT re-drive "running" jobs: an adversarial review proved that
+        // deleting the claim races the original Forge redelivery into a DOUBLE-EXECUTION (duplicate
+        // comment/transition/link). Re-pushing the SAME taskId is safe because the consumer's
+        // pf_exec claim AT EXECUTION dedups any duplicate delivery — the first event to run claims;
+        // the rest conflict and skip. A killed "running" job stays blocked by its held pf_exec;
+        // honoring THAT safely needs a generation-marker (DEFERRED) — this MVP guarantees the
+        // dropped-event case with ZERO double-exec risk. (Killed/running rows are reaped to a
+        // visible "error" by getAsyncJobs, never silently lost.)
+        if (j.status !== "queued") { skipped++; continue; }
+        if ((now - (Date.parse(j.enqueuedAt || "") || now)) <= STALE_JOB_MS) { skipped++; continue; }
 
-      // RE-DRIVE: release any stale claim so the SAME-taskId event can re-claim, then re-push.
-      try { await storage.delete(`pf_exec:${j.taskId}`); } catch { /* best-effort */ }
-      const nextCount = (j.redriveCount || 0) + 1;
-      const refreshedAt = new Date(now).toISOString();
-      const body = { ...j.eventBody, params: { ...j.eventBody.params, enqueuedAt: refreshedAt } };
-      try {
-        const slow = j.provider === "lmstudio";
-        const pr = await queue.push(slow ? await withLmStudioConcurrency({ body }) : { body });
-        await updateAsyncJob(j.taskId, { status: "queued", enqueuedAt: refreshedAt, redriveCount: nextCount, firstEnqueuedAt: j.firstEnqueuedAt || j.enqueuedAt, jobId: pr?.jobId || j.jobId, startedAt: null, stalled: false }, JOB_TTL_ACTIVE);
-        redriven++;
-        console.log(`[pf-sweeper] re-drove ${j.taskId} (${j.pfType || "pf"} on ${j.issueKey}) attempt ${nextCount}/3`);
-      } catch (e) { console.warn(`[pf-sweeper] re-push failed for ${j.taskId}: ${e.message}`); }
+        const nextCount = (j.redriveCount || 0) + 1;
+        const refreshedAt = new Date(now).toISOString();
+        const body = { ...j.eventBody, params: { ...j.eventBody.params, enqueuedAt: refreshedAt } };
+        try {
+          const slow = j.provider === "lmstudio";
+          const pr = await queue.push(slow ? await withLmStudioConcurrency({ body }) : { body });
+          await updateAsyncJob(j.taskId, { status: "queued", enqueuedAt: refreshedAt, redriveCount: nextCount, firstEnqueuedAt: baseline, jobId: pr?.jobId || j.jobId, startedAt: null, stalled: false }, JOB_TTL_ACTIVE);
+          redriven++;
+          console.log(`[pf-sweeper] re-drove ${j.taskId} (${j.pfType || "pf"} on ${j.issueKey}) attempt ${nextCount}/3`);
+        } catch (e) { console.warn(`[pf-sweeper] re-push failed for ${j.taskId}: ${e.message}`); }
+        if (redriven >= MAX_REDRIVES_PER_CYCLE) break pageLoop; // bound per-cycle work under the lock TTL
+      }
+      cursor = page.nextCursor;
+      if (!cursor) break;
     }
-    if (redriven || abandoned) console.log(`[pf-sweeper] scanned ${scanned} PF rows → re-drove ${redriven}, abandoned ${abandoned}`);
-    return { success: true, scanned, redriven, abandoned, skipped };
+    if (redriven || abandoned) console.log(`[pf-sweeper] scanned ${scanned} PF rows (${pages} page(s)) → re-drove ${redriven}, abandoned ${abandoned}`);
+    return { success: true, scanned, redriven, abandoned, skipped, pages };
   } catch (e) {
     console.error("[pf-sweeper] failed:", e.message);
     return { success: false, error: e.message };
   } finally {
+    // The 90s lock TTL is the PRIMARY release (a hard Forge termination can skip this finally);
+    // the explicit delete just frees it sooner on the normal path.
     if (locked) { try { await storage.delete(PF_SWEEP_LOCK); } catch { /* 90s TTL backstop */ } }
   }
 };

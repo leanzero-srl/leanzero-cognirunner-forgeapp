@@ -16,17 +16,18 @@ const NOW = 1_700_000_000_000;
 const iso = (msAgo) => new Date(NOW - msAgo).toISOString();
 const EB = { params: { issueKey: "X-1", config: {}, extensionKey: "k" } }; // a valid stored eventBody
 
-// Exact decision logic copied from the sweeper.
+// Exact decision logic copied from the SAFE sweeper (queued-only, no pf_exec delete,
+// no "running" re-drive — the double-exec-prone paths were removed after adversarial review).
 const decide = (j, { hasPfDone = false, cancelled = false } = {}) => {
   if (j.status === "done") return "skip";
   if (hasPfDone) return "reconcile-done";
   if (j.status === "cancelled" || cancelled) return "skip-cancelled";
   if (!j.eventBody || !j.eventBody.params) return "skip-ineligible";
-  const firstAt = Date.parse(j.firstEnqueuedAt || j.enqueuedAt || "") || NOW;
+  const baseline = j.firstEnqueuedAt || j.enqueuedAt || new Date(NOW).toISOString();
+  const firstAt = Date.parse(baseline) || NOW;
   if ((j.redriveCount || 0) >= 3 || (NOW - firstAt) > 3600000) return "abandon";
-  let stale = false;
-  if (j.status === "queued") stale = (NOW - (Date.parse(j.enqueuedAt || "") || NOW)) > STALE_JOB_MS;
-  else if (j.status === "running") stale = !!j.startedAt && (NOW - Date.parse(j.startedAt)) > 180000;
+  if (j.status !== "queued") return "skip-fresh"; // killed "running" NOT re-driven (deferred; no double-exec)
+  const stale = (NOW - (Date.parse(j.enqueuedAt || "") || NOW)) > STALE_JOB_MS;
   return stale ? "redrive" : "skip-fresh";
 };
 
@@ -44,10 +45,12 @@ ok("DROPPED queued >15min → RE-DRIVE (the core guarantee)",
   decide({ status: "queued", eventBody: EB, enqueuedAt: iso(16 * 60000), firstEnqueuedAt: iso(16 * 60000) }) === "redrive");
 ok("queued only 5min → skip-fresh (no premature re-drive)",
   decide({ status: "queued", eventBody: EB, enqueuedAt: iso(5 * 60000), firstEnqueuedAt: iso(5 * 60000) }) === "skip-fresh");
-ok("KILLED running >180s → RE-DRIVE (consumer past 120s hard cap = dead)",
-  decide({ status: "running", eventBody: EB, startedAt: iso(200000), firstEnqueuedAt: iso(5 * 60000) }) === "redrive");
-ok("running 100s (within 120s budget) → skip-fresh (still alive, no double-exec)",
+ok("KILLED running >180s → NOT re-driven (deferred; deleting pf_exec races a redelivery → double-exec)",
+  decide({ status: "running", eventBody: EB, startedAt: iso(200000), firstEnqueuedAt: iso(5 * 60000) }) === "skip-fresh");
+ok("any 'running' row → never re-driven (only DROPPED queued is safe without a gen-marker)",
   decide({ status: "running", eventBody: EB, startedAt: iso(100000), firstEnqueuedAt: iso(2 * 60000) }) === "skip-fresh");
+ok("'error' row → never re-driven (failure-retry not in this MVP)",
+  decide({ status: "error", eventBody: EB, enqueuedAt: iso(20 * 60000), firstEnqueuedAt: iso(20 * 60000) }) === "skip-fresh");
 
 ok("poison: redriveCount=3 → abandon (bounded, not infinite)",
   decide({ status: "queued", eventBody: EB, enqueuedAt: iso(16 * 60000), firstEnqueuedAt: iso(40 * 60000), redriveCount: 3 }) === "abandon");

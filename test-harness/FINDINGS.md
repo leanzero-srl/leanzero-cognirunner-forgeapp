@@ -1164,3 +1164,28 @@ option I can add — after an agentic validator returns round-0 with NO tool cal
 ("you must search before deciding"). I rate (c) LOW-confidence-it-helps (a weak model may ignore the
 nudge too) and it adds a round, so I'm FLAGGING it rather than shipping it blind. (a) is the reliable
 fix and is a one-click weights change.
+
+## NIGHT — Adversarial review of MY overnight durability code caught 10 HIGH bugs → safe-subset fix (v22.48)
+
+Prudence pass: I red-teamed the always-honor sweeper I wrote unattended (4 reviewers). It found
+**10 HIGH + 4 MEDIUM** bugs — the LB changes were CLEAN (0). Critical class: the sweeper DELETED
+pf_exec before re-pushing, which RACED the original Forge redelivery into a DOUBLE-EXECUTION
+(duplicate comment/transition/link) — worse than the dropped job it was fixing. Plus: limit(100)
+with no pagination (>100 rows starve), firstEnqueuedAt resetting (poison-cap bypass → infinite
+re-drive), and unbounded work exceeding the 90s lock.
+
+FIX — reduced to a PROVABLY-SAFE subset (v22.48), re-verified:
+- Re-drive ONLY DROPPED "queued" jobs; do NOT delete pf_exec and do NOT re-drive "running" jobs.
+  Re-pushing the SAME taskId is safe because the consumer's pf_exec claim-at-execution dedups any
+  duplicate delivery (first runs, rest conflict+skip). ZERO double-exec risk.
+- Cursor pagination (MAX_PAGES=8) + per-cycle re-drive cap (25) → no starvation, bounded under the
+  90s lock. firstEnqueuedAt computed as a stable baseline, never reset → poison cap holds.
+- Verified: _verify-f53.mjs 13/13 + a fresh adversarial re-verify.
+DEFERRED (clearly): KILLED "running" jobs (consumer hard-timeout) are NOT re-driven — their held
+pf_exec blocks Forge's redelivery, and releasing it safely needs a generation-marker (a careful
+follow-up, not an overnight change). Those rows are reaped to a VISIBLE "error" by getAsyncJobs,
+never silently lost. So the MVP guarantees the DROPPED-event case with zero double-exec; the
+killed-mid-run case is an explicit, documented gap for the gen-marker iteration.
+
+LESSON: overnight-written code touching the critical PF path got an adversarial review before being
+trusted — it caught a double-exec I would otherwise have shipped. The review paid for itself.

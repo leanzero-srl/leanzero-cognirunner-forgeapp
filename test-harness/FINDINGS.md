@@ -702,3 +702,18 @@ Bucket-A — a validator reason quoting the blocked attack is benign. scripts/ro
     enforcement. The compound AI logic itself is proven by the compound-AND validator;
     mirror a condition as a validator to enforce it on the REST path. Not a bug.
 scripts/round9-reasoning.mjs.
+
+## F40 — Round 10: baseline regression sample (NO regression from v22.30–36)
+
+run-transitions RUN_MAX_PER_CLASS=2 → 76/84. Deterministic/clamping classes PERFECT:
+semantic 12/12, static 6/6, action 14/14, fields 4/4, policy 3/3, pf-flavors 5/5,
+knowledge 2/2 (= 46/46). All 8 misses are documented non-regressions:
+  • 3 injection (INJE-1/2) = F15 align-with-verdict confound (real task + agreeing
+    injection → ALLOWED is correct; round 2 proved 0 obedience).
+  • 1 robustness = a Jira transition 400 (jumbo issue, screen/required field) — env.
+  • 1 condition = F3 (condition-via-REST gates UI visibility, not REST enforcement).
+  • 3 agentic = 2 timeouts on the slow 35B (model speed) + 1 where the gate CORRECTLY
+    found 3 open gate-release bugs and blocked (stale test fixture, not a bug — proves
+    agentic works when it doesn't time out).
+The sample over-weights hard classes (equal per-class) so 90% != the full-suite ~98%
+baseline — different weighting, not a regression. Verdict logic intact post-overhaul.

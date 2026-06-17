@@ -1258,9 +1258,9 @@ export default function OpenAIConfig({ invoke }) {
                 <p style={{
                   margin: "6px 0 0 0",
                   fontSize: "11px",
-                  color: pingResult.authOk ? "var(--success-color)" : "var(--error-color)",
+                  color: pingResult.busy ? "#d97706" : pingResult.authOk ? "var(--success-color)" : "var(--error-color)",
                 }}>
-                  {pingResult.authOk ? "✓ " : "⚠ "}{pingResult.message}
+                  {pingResult.busy ? "⚠ " : pingResult.authOk ? "✓ " : "⚠ "}{pingResult.message}
                 </p>
               )}
             </div>
@@ -1338,6 +1338,10 @@ export default function OpenAIConfig({ invoke }) {
                 lmStatusColor = "var(--error-color)";
                 lmStatusTitle = "Cannot reach your LM Studio server";
                 lmStatusBody = pingResult.error || "Check that the tunnel is up and the URL is correct.";
+              } else if (pingResult.busy) {
+                lmStatusColor = "#d97706";
+                lmStatusTitle = `Reachable — ${pingResult.modelCount || 0} model(s), but busy`;
+                lmStatusBody = "The server is saturated right now, so the inference check timed out. This is not a connection problem — it'll pass once the queue clears.";
               } else if (!pingResult.authOk) {
                 lmStatusColor = "#d97706";
                 lmStatusTitle = "Reachable, but inference test failed";

@@ -428,7 +428,16 @@ const getLmStudioConcurrencyLimit = async () => {
 // Wrap a push event with the configured concurrency cap. `key` is constant so
 // the limit pools across ALL LM Studio jobs app-wide.
 const withLmStudioConcurrency = async (event) => {
-  const limit = await getLmStudioConcurrencyLimit();
+  // Cap concurrent LM Studio jobs at the pool's REAL slot count (sum of parallel /
+  // weight) so the excess queues CENTRALLY in Forge instead of flooding each device's
+  // local queue. A lower admin "max concurrent jobs" still wins if explicitly set;
+  // if pool capacity can't be read, fall back to the admin limit (legacy: 0 = uncapped).
+  const adminLimit = await getLmStudioConcurrencyLimit();
+  const poolCap = await getLmStudioPoolCapacity();
+  let limit = 0;
+  if (poolCap > 0 && adminLimit > 0) limit = Math.min(poolCap, adminLimit);
+  else if (poolCap > 0) limit = poolCap;
+  else limit = adminLimit;
   return limit > 0 ? { ...event, concurrency: { key: "lmstudio", limit } } : event;
 };
 
@@ -3569,9 +3578,28 @@ resolver.define("pingLmStudio", async ({ payload, context }) => {
     // ensures we don't burn tokens on chain-of-thought; max_output_tokens:1
     // makes the ping cheap.
     let authOk = true;
+    let busy = false;
     let pingError = null;
     if (modelCount > 0) {
       const firstModel = modelsData.data[0]?.id;
+      // Bound the inference ping. A SATURATED server (deep request queue across the
+      // pool) can take far longer than the 25s resolver cap to answer even a 1-token
+      // chat — without a timeout the whole resolver hangs and the UI shows a false
+      // "can't reach LM Studio". On timeout we report reachable-but-BUSY (auth was
+      // already proven by /v1/models above), which is NOT a connection/auth failure.
+      const PING_TIMEOUT_MS = 12000;
+      const doChat = async (body) => {
+        const ac = new AbortController();
+        const timer = setTimeout(() => ac.abort(), PING_TIMEOUT_MS);
+        try {
+          return await fetch(`${baseUrl}/api/v1/chat`, {
+            method: "POST",
+            headers: { ...headers, "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+            signal: ac.signal,
+          });
+        } finally { clearTimeout(timer); }
+      };
       try {
         const chatBody = {
           model: firstModel,
@@ -3580,21 +3608,13 @@ resolver.define("pingLmStudio", async ({ payload, context }) => {
           reasoning: "off",
           max_output_tokens: 1,
         };
-        let chatResp = await fetch(`${baseUrl}/api/v1/chat`, {
-          method: "POST",
-          headers: { ...headers, "Content-Type": "application/json" },
-          body: JSON.stringify(chatBody),
-        });
+        let chatResp = await doChat(chatBody);
         // Retry without `reasoning` if the model rejects it (per LM Studio docs).
         if (chatResp.status === 400) {
           const errText = await chatResp.text().catch(() => "");
           if (/reasoning/i.test(errText)) {
             delete chatBody.reasoning;
-            chatResp = await fetch(`${baseUrl}/api/v1/chat`, {
-              method: "POST",
-              headers: { ...headers, "Content-Type": "application/json" },
-              body: JSON.stringify(chatBody),
-            });
+            chatResp = await doChat(chatBody);
           } else {
             authOk = false;
             pingError = `HTTP 400: ${errText.substring(0, 150)}`;
@@ -3606,8 +3626,15 @@ resolver.define("pingLmStudio", async ({ payload, context }) => {
           pingError = `HTTP ${chatResp.status}: ${body.substring(0, 150)}`;
         }
       } catch (e) {
-        authOk = false;
-        pingError = e.message;
+        // Our AbortController timeout = server reachable (models listed fine) but too
+        // busy to answer a ping in time. Distinct from an auth/connection failure.
+        if (e.name === "AbortError") {
+          busy = true;
+          pingError = `inference check timed out after ${PING_TIMEOUT_MS / 1000}s (server busy/saturated)`;
+        } else {
+          authOk = false;
+          pingError = e.message;
+        }
       }
     }
 
@@ -3616,10 +3643,13 @@ resolver.define("pingLmStudio", async ({ payload, context }) => {
       ok: true,
       modelCount,
       authOk,
+      busy,
       pingError,
-      message: authOk
-        ? `Connected. Found ${modelCount} model${modelCount === 1 ? "" : "s"}.`
-        : `Reachable but inference failed: ${pingError || "unknown"}.`,
+      message: busy
+        ? `Reachable — ${modelCount} model${modelCount === 1 ? "" : "s"} found. Inference check timed out because the server is busy right now (not a connection problem).`
+        : authOk
+          ? `Connected. Found ${modelCount} model${modelCount === 1 ? "" : "s"}.`
+          : `Reachable but inference failed: ${pingError || "unknown"}.`,
     };
   } catch (error) {
     console.error("LM Studio ping failed:", error);
@@ -8327,6 +8357,8 @@ const getLmStudioLoadedModels = async () => {
           .map((m) => {
             const id = m.key || m.id;
             const quant = (m.quantization && (m.quantization.name || m.quantization)) || null;
+            const inst = Array.isArray(m.loaded_instances) && m.loaded_instances[0];
+            const parallel = inst && inst.config && Number(inst.config.parallel);
             return {
               id,
               // Per-INSTANCE dispatch + weight key. Two quants of one model share
@@ -8339,6 +8371,12 @@ const getLmStudioLoadedModels = async () => {
               toolUse: !!(m.capabilities && m.capabilities.trained_for_tool_use),
               quant,
               ctx: m.max_context_length || null,
+              // Per-device concurrency capacity (LM Studio `parallel`): how many
+              // predictions this instance runs at once. We treat it as the device's
+              // free-slot count and never dispatch past it while another device has
+              // room — so an idle box is used before piling onto a busy one (the
+              // "Mac.lan idle while two devices hold +59 queued" starvation).
+              capacity: Number.isFinite(parallel) && parallel > 0 ? parallel : 4,
             };
           })
           .filter((m) => m.id);
@@ -8385,6 +8423,24 @@ const LM_CLAIM_TTL = { ttl: { value: 5, unit: "MINUTES" } };
 const lmBusyKey = (id) => LM_BUSY_PREFIX + String(id).replace(/[^a-zA-Z0-9._:-]/g, "_").slice(0, 110);
 const NOOP_RELEASE = async () => {};
 
+// Total concurrent jobs the loaded pool can run at once = sum of (parallel / weight)
+// across loaded models. Used to cap Forge async concurrency so we never run MORE LM
+// Studio jobs at once than there are device slots — excess then waits in the CENTRAL
+// Forge queue (the Active Jobs list) instead of flooding each device's local queue
+// (the "everything thrown on devices, idle box ignored" problem). 0 = unknown/none.
+const getLmStudioPoolCapacity = async () => {
+  try {
+    const [loaded, weights] = await Promise.all([getLmStudioLoadedModels(), getLmStudioWeightsMap()]);
+    if (!loaded.length) return 0;
+    let total = 0;
+    for (const m of loaded) {
+      const w = Math.max(1, Number(weights[m.wkey || m.id]) || 1);
+      total += Math.max(1, Math.round((m.capacity || 4) / w));
+    }
+    return total;
+  } catch { return 0; }
+};
+
 // Acquire the least-loaded loaded model for one AI call. Returns { model, release }.
 // `release()` is idempotent + best-effort; ALWAYS call it (a `finally`) so the
 // worker is freed. Falls back to { requestedModel, NOOP_RELEASE } whenever pooling
@@ -8418,13 +8474,28 @@ export const lmAcquireWorker = async (requestedModel, opts = {}) => {
       try { claims = (await storage.get(lmBusyKey(wkey))) || []; } catch { claims = []; }
       const live = Array.isArray(claims) ? claims.filter((c) => c && now - c.ts < LM_CLAIM_STALE_MS) : [];
       const weight = Math.max(1, Number(weights[wkey]) || 1);
-      return { id: m.id, wkey, live, weight, eff: live.length * weight };
+      // Effective capacity = parallel / weight: a down-weighted slow box accepts
+      // proportionally fewer concurrent jobs (does less work AND never backs up
+      // past a shallow queue). Free slots left = capacity - current live claims.
+      const capacity = Math.max(1, Math.round((m.capacity || 4) / weight));
+      return { id: m.id, wkey, live, weight, capacity, freeSlots: capacity - live.length };
     }));
-    // Pick the least WEIGHTED-loaded; random tie-break so concurrent claims to
-    // equally-idle workers fan out instead of herding onto the first one.
-    const minE = Math.min(...counts.map((c) => c.eff));
-    const candidates = counts.filter((c) => c.eff === minE);
-    const chosen = candidates[Math.floor(Math.random() * candidates.length)];
+    // Prefer a device with a FREE effective slot — an idle/under-capacity box is
+    // always chosen over a full one (fixes the "idle device while others hold +59
+    // queued" starvation); among free devices the one with the MOST free slots wins
+    // so load spreads evenly. Only when EVERY device is at capacity do we overflow
+    // to the least saturated (live/capacity) — the concurrency cap makes that rare.
+    const withFree = counts.filter((c) => c.freeSlots > 0);
+    let chosen;
+    if (withFree.length) {
+      const maxFree = Math.max(...withFree.map((c) => c.freeSlots));
+      const top = withFree.filter((c) => c.freeSlots === maxFree);
+      chosen = top[Math.floor(Math.random() * top.length)];
+    } else {
+      const minRatio = Math.min(...counts.map((c) => c.live.length / c.capacity));
+      const top = counts.filter((c) => c.live.length / c.capacity === minRatio);
+      chosen = top[Math.floor(Math.random() * top.length)];
+    }
 
     const claimId = `${now.toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
     const key = lmBusyKey(chosen.wkey);

@@ -145,28 +145,33 @@ async function ensureExperimentIssueType(projectKey) {
 // ---- new workflow (best-effort, capability API) ---------------------------
 
 async function attemptNewWorkflow() {
-  // The new workflows/create capability API is intricate and site-config-dependent;
-  // attempt a minimal 2-status workflow and report the outcome rather than failing.
+  // VERIFIED working payload for /rest/api/3/workflows/create: it needs a top-level
+  // `scope`, statusReferences that are UUIDs (not arbitrary strings), and EVERY
+  // transition (incl. INITIAL) must carry a `links` array (empty for INITIAL).
   try {
+    const { randomUUID } = await import("node:crypto");
+    const o = randomUUID(), d = randomUUID();
     const payload = {
-      scope: { type: "GLOBAL" }, // required by /workflows/create (was the 400 "Missing required field 'scope'")
+      scope: { type: "GLOBAL" },
       statuses: [
-        { statusReference: "ref-open", name: "CL Open", statusCategory: "TODO" },
-        { statusReference: "ref-done", name: "CL Done", statusCategory: "DONE" },
+        { statusReference: o, name: "CL Open", statusCategory: "TODO" },
+        { statusReference: d, name: "CL Done", statusCategory: "DONE" },
       ],
       workflows: [{
         name: "CL-Creative-Workflow",
         description: "CogniRunner creative-lab workflow",
-        statuses: [{ statusReference: "ref-open", layout: { x: 0, y: 0 } }, { statusReference: "ref-done", layout: { x: 200, y: 0 } }],
+        statuses: [{ statusReference: o, layout: { x: 0, y: 0 } }, { statusReference: d, layout: { x: 200, y: 0 } }],
         transitions: [
-          { name: "Create", type: "INITIAL", toStatusReference: "ref-open", id: "1" },
-          { name: "Finish", type: "DIRECTED", toStatusReference: "ref-done", links: [{ fromStatusReference: "ref-open", fromPort: 0, toPort: 1 }], id: "11" },
+          { name: "Create", type: "INITIAL", toStatusReference: o, id: "1", links: [] },
+          { name: "Finish", type: "DIRECTED", toStatusReference: d, id: "11", links: [{ fromStatusReference: o, fromPort: 0, toPort: 1 }] },
         ],
       }],
     };
     const res = await post("/rest/api/3/workflows/create", payload, { raw: true });
-    if (res.status < 400) { console.log("  ✓ created new workflow CL-Creative-Workflow"); return { ok: true }; }
-    return { ok: false, status: res.status, body: res.text.slice(0, 200) };
+    if (res.status < 400) { console.log("  ✓ created new workflow CL-Creative-Workflow (2 statuses, 2 transitions)"); return { ok: true }; }
+    // already-exists (409) is fine on a re-run
+    if (res.status === 409 || /already exists/i.test(res.text || "")) { console.log("  workflow CL-Creative-Workflow already exists"); return { ok: true, existing: true }; }
+    return { ok: false, status: res.status, body: (res.text || "").slice(0, 200) };
   } catch (e) { return { ok: false, error: e.message.slice(0, 160) }; }
 }
 

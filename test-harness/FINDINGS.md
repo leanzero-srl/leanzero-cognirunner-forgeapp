@@ -690,3 +690,15 @@ Validator + semantic PF fed hostile/degenerate inputs:
   • nested code-fence + markers → task recognized, no leak. ✅
 6/6 robust. Harness note: grade only a WRITTEN-value marker leak or a parse-failure as
 Bucket-A — a validator reason quoting the blocked attack is benign. scripts/round8-edge.mjs.
+
+## F39 — Round 9: reasoning depth + multilingual (0 system bugs)
+
+  • compound-AND validator (needs BOTH rollback + test plan) → fail BLOCKED, pass ALLOWED ✅
+  • negation/tense validator (FAIL if already done) → correctly split future vs completed ✅
+  • multilingual semantic output: Spanish ✅, French same-as-input ✅, Japanese ✅
+    ("v2.3リリース後…アイデンポテンシーキー…") — non-English generation + unicode write path hold.
+  • compound CONDITION attached as a real condition → fail ALLOWED (did not block) = the
+    documented F3 limitation: conditions gate UI transition VISIBILITY, not REST
+    enforcement. The compound AI logic itself is proven by the compound-AND validator;
+    mirror a condition as a validator to enforce it on the REST path. Not a bug.
+scripts/round9-reasoning.mjs.

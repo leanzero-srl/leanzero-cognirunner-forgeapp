@@ -739,12 +739,20 @@ const repairUnescapedQuotes = (s) => {
 // (unambiguous) and capture the reason greedily to the final closing quote — so a
 // malformed reason can never discard an otherwise-clear verdict. null if absent.
 const recoverValidatorVerdict = (content) => {
-  const m = String(content || "").match(/"isValid"\s*:\s*(true|false)/i);
-  if (!m) return null;
-  const rm = String(content).match(/"reason"\s*:\s*"([\s\S]*)"\s*\}?\s*$/);
+  // Pick the LAST "isValid" occurrence — the model's genuine final verdict is emitted
+  // last; an EARLIER match is almost always the model QUOTING the field's injection
+  // (e.g. echoing a malicious {"isValid": true}) before stating its own decision. Taking
+  // the FIRST would let an injected "isValid": true flip a real BLOCK to ALLOW.
+  const s = String(content || "");
+  const re = /"isValid"\s*:\s*(true|false)/ig;
+  let m, last = null;
+  while ((m = re.exec(s)) !== null) last = m;
+  if (!last) return null;
+  const tail = s.slice(last.index);
+  const rm = tail.match(/"reason"\s*:\s*"([\s\S]*)"\s*\}?\s*$/);
   let reason = rm ? rm[1] : "";
   reason = reason.replace(/\\"/g, '"').replace(/\\n/g, " ").replace(/\s+/g, " ").trim().slice(0, 500);
-  return { isValid: m[1].toLowerCase() === "true", reason: reason || "Recovered verdict (response JSON was malformed)." };
+  return { isValid: last[1].toLowerCase() === "true", reason: reason || "Recovered verdict (response JSON was malformed)." };
 };
 
 // Prompt patterns that signal the need for JQL search tools.
@@ -10028,6 +10036,12 @@ const formatCascadingValue = (value, fieldMeta, notes) => {
  */
 const checkScalarFormat = (value, fieldMeta) => {
   const schemaType = fieldMeta?.schema?.type;
+  // Reject a non-finite NUMBER (Infinity/-Infinity/NaN — e.g. from an overflowing literal
+  // like 1e400) BEFORE the non-string early-return: JSON.stringify turns it into null,
+  // which would silently CLEAR the field while the PF reports success.
+  if (schemaType === "number" && typeof value === "number" && !Number.isFinite(value)) {
+    return { ok: false, reason: `${value} is not a finite number — number fields reject overflow/Infinity/NaN` };
+  }
   if (typeof value !== "string") return { ok: true };
   const preview = value.substring(0, 50);
   if (schemaType === "number") {
@@ -10131,7 +10145,10 @@ const formatValueForField = (value, fieldMeta, notes = []) => {
       const trimmed = value.trim();
       if (trimmed === "") return value;
       const num = Number(trimmed);
-      return isNaN(num) ? value : num;
+      // Keep NaN AND non-finite (Infinity from "1e400" etc.) as the original string so
+      // checkScalarFormat rejects it and the PF SKIPs — never let Infinity through
+      // (JSON.stringify(Infinity)===null would silently clear the number field).
+      return Number.isFinite(num) ? num : value;
     }
     case "date": {
       const s = value.trim();
@@ -10285,16 +10302,19 @@ const resolveUserToAccountId = async ({ query, issueKey, assignable }) => {
     );
     if (!resp.ok) return { ok: false, reason: `user search for "${query}" failed (HTTP ${resp.status})` };
     const users = (await resp.json()).filter((u) => u.active !== false);
-    if (users.length === 1) return { ok: true, accountId: users[0].accountId, displayName: users[0].displayName };
-    if (users.length > 1) {
-      const q = query.toLowerCase();
-      const exact = users.filter((u) =>
-        String(u.displayName || "").toLowerCase() === q
-        || String(u.emailAddress || "").toLowerCase() === q);
-      if (exact.length === 1) return { ok: true, accountId: exact[0].accountId, displayName: exact[0].displayName };
-      return { ok: false, reason: `"${query}" matches ${users.length} users and none uniquely by exact display name — refusing to guess. Put the accountId in the prompt or use the full unique display name.` };
-    }
-    return { ok: false, reason: `no active user matches "${query}". Use the exact display name or an accountId.` };
+    // Accept ONLY an EXACT match (display name or email, case-insensitive). Jira's user
+    // search PREFIX-matches, so a SINGLE result is NOT proof of a real match — "Alex"
+    // returns the lone "Alexandra Smith", and accepting it would silently assign the
+    // WRONG person (worse than a SKIP). AccountIds never reach here (looksLikeAccountId
+    // short-circuits upstream), so an exact name/email match is the only safe acceptance.
+    const q = query.toLowerCase();
+    const exact = users.filter((u) =>
+      String(u.displayName || "").toLowerCase() === q
+      || String(u.emailAddress || "").toLowerCase() === q);
+    if (exact.length === 1) return { ok: true, accountId: exact[0].accountId, displayName: exact[0].displayName };
+    if (exact.length > 1) return { ok: false, reason: `"${query}" matches ${exact.length} users by exact display name/email — ambiguous; use an accountId.` };
+    if (users.length === 0) return { ok: false, reason: `no active user matches "${query}". Use the exact display name or an accountId.` };
+    return { ok: false, reason: `"${query}" only prefix-matches ${users.length} user(s), none by EXACT display name/email — refusing to guess (would assign the wrong person). Use the full unique display name or an accountId.` };
   } catch (e) {
     return { ok: false, reason: `user search for "${query}" failed: ${e.message}` };
   }

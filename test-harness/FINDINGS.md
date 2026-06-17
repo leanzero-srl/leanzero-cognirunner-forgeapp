@@ -516,15 +516,15 @@ keep 20-min retention): Active Jobs now shows only running/queued; completed job
 moved to a "Recently completed" strip under Execution Logs; tooltips explain that
 validators run synchronously and don't queue. Admin rebuilt + deployed.
 
-**INCIDENT — overnight test-instance wipe + API-token 401 (environmental).** During
-the conc-16 mega, all issues across ALL projects (incl. untouched WFH/DFD) dropped
-to 0 and authenticated REST began returning 401 ("Client must be authenticated")
-while `/serverInfo` (unauthenticated) still worked — i.e. the API token/account auth
-was invalidated (revoked/expired or a security lockout after the heavy burst). The
-static-PF sandbox has no delete and the harness does not bulk-delete issues, so this
-is not harness-caused. Effect: the mega's later fires 404'd (6,052 of 7,603) and the
-**creative-lab + stress-test stages are DEFERRED** until the owner refreshes the
-`test-harness/.env` API token (or reactivates the account). Both stages are built,
-committed, and ready (`npm run creative`, `npm run stress`); re-seed the testbed
-(`npm run setup … && npm run attach && npm run seed && npm run reset-to-hub`) once
-auth is restored, then run them.
+**INCIDENT — mid-mega API-token expiry (NO data loss; initially misdiagnosed as a
+wipe).** During the conc-16 mega the `.env` API token expired: authenticated REST
+began returning 401 ("Client must be authenticated") while `/serverInfo`
+(unauthenticated) still worked. Failing auth made `search` return EMPTY and `GET
+/issue` return 404, which *looked* like every project had been wiped to 0 — but it
+was the credential, not the data. A fresh token confirmed everything intact (COGTEST
+1,899 issues, all 12 projects). So the mega's "6,052 of 7,603 404s" were auth
+failures after the token died (the first ~1,551 fires landed real, **0 Bucket-A**),
+NOT deletions — the static-PF sandbox has no delete and the harness never bulk-
+deletes. Lesson: treat a sudden instance-wide "0 issues / 404" with `/serverInfo`
+still up as a TOKEN failure, not a wipe. On the new token the creative-lab + stress-
+test stages resumed (no re-seed needed — the testbed survived).

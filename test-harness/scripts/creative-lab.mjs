@@ -149,6 +149,7 @@ async function attemptNewWorkflow() {
   // attempt a minimal 2-status workflow and report the outcome rather than failing.
   try {
     const payload = {
+      scope: { type: "GLOBAL" }, // required by /workflows/create (was the 400 "Missing required field 'scope'")
       statuses: [
         { statusReference: "ref-open", name: "CL Open", statusCategory: "TODO" },
         { statusReference: "ref-done", name: "CL Done", statusCategory: "DONE" },
@@ -202,19 +203,30 @@ async function fireValidator(rule, tid, key, value, label) {
 }
 
 async function firePf(rule, tid, key) {
-  const watch = ["labels", "comment", "attachment", "updated", rule.config.actionFieldId, cfText].filter(Boolean).join(",");
+  const af = rule.config.actionFieldId;
+  const watch = ["labels", "comment", "attachment", "issuelinks", "subtasks", "updated", af, cfText].filter(Boolean).join(",");
   const before = await getIssue(key, watch);
+  // Type-AWARE mutation detection: compare RAW field values (number/option/array
+  // fields aren't text, so the old fText-only check reported false "no mutation"),
+  // plus comment/subtask/link/attachment counts, plus the trace's own write signal.
+  const rawAf = (i) => (af ? JSON.stringify(i.fields?.[af] ?? null) : null);
+  const rawText = (i) => JSON.stringify(i.fields?.[cfText] ?? null);
+  const rawLabels = (i) => JSON.stringify(i.fields?.labels || []);
+  const counts = (i) => ({ c: i?.fields?.comment?.comments?.length ?? i?.fields?.comment?.total ?? 0, s: (i?.fields?.subtasks || []).length, l: (i?.fields?.issuelinks || []).length, a: (i?.fields?.attachment || []).length });
+  const b = { af: rawAf(before), text: rawText(before), labels: rawLabels(before), ...counts(before) };
+  const WROTE_RE = /\b[1-9]\d* change\(s\) made|updated "|posted a comment|created .*subtask|added .*(link|label)|attached/i;
   const res = await doTransition(key, tid);
-  let after = before, mutated = false, written = "";
+  let after = before, mutated = false, written = "", trace = null;
   const deadline = Date.now() + MUTATE_TIMEOUT;
   do {
-    await sleep(POLL_MS); after = await getIssue(key, watch);
-    const tgt = rule.config.actionFieldId ? fText(after, rule.config.actionFieldId) : "";
-    const labelsChanged = JSON.stringify(after.fields.labels || []) !== JSON.stringify(before.fields.labels || []);
-    if ((tgt && tgt !== (rule.config.actionFieldId ? fText(before, rule.config.actionFieldId) : "")) || labelsChanged) { mutated = true; written = tgt || JSON.stringify(after.fields.labels || []); break; }
+    await sleep(POLL_MS); after = await getIssue(key, watch); trace = await readTrace(key);
+    const a = { af: rawAf(after), text: rawText(after), labels: rawLabels(after), ...counts(after) };
+    const fieldChanged = (af && a.af !== b.af) || a.text !== b.text || a.labels !== b.labels;
+    const countChanged = a.c > b.c || a.s > b.s || a.l > b.l || a.a > b.a;
+    const traceWrote = trace && WROTE_RE.test(String(trace.reason || ""));
+    if (fieldChanged || countChanged || traceWrote) { mutated = true; written = af && a.af !== b.af ? a.af : (a.text !== b.text ? a.text : (trace?.reason || "changed")); break; }
   } while (Date.now() < deadline);
-  await sleep(200);
-  const trace = await readTrace(key);
+  if (!trace) { await sleep(200); trace = await readTrace(key); }
   const reason = trace?.reason || (res.status >= 400 ? parseReason(res.text) : "");
   const grade = gradeOf(res.status, reason, written);
   const c = { type: rule.type, http: res.status, reason, writtenValue: written, cogniDebug: trace, grade };

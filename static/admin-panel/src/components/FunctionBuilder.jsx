@@ -51,7 +51,7 @@ function createEmptyFunction() {
   };
 }
 
-export default function FunctionBuilder({ functions, setFunctions }) {
+export default function FunctionBuilder({ functions, setFunctions, runAsync = false, setRunAsync }) {
   // Jira fields for editor completions (custom-field write formats etc.)
   const [fields, setFields] = useState([]);
 
@@ -134,6 +134,24 @@ export default function FunctionBuilder({ functions, setFunctions }) {
           </Tooltip>
           {" "}to pass results between steps.
         </p>
+      )}
+
+      {/* Run-in-background (async) option — for heavy multi-step / many-call logic */}
+      {typeof setRunAsync === "function" && (
+        <label style={{ display: "flex", alignItems: "flex-start", gap: "10px", marginTop: "14px", paddingTop: "14px", borderTop: "1px solid var(--border-color, #e2e8f0)", cursor: "pointer" }}>
+          <input
+            type="checkbox"
+            checked={!!runAsync}
+            onChange={(e) => setRunAsync(e.target.checked)}
+            style={{ marginTop: "2px", width: "16px", height: "16px", flexShrink: 0 }}
+          />
+          <span>
+            <span style={{ display: "block", fontSize: "13px", fontWeight: 600 }}>Run in the background (longer budget)</span>
+            <span style={{ display: "block", fontSize: "12px", color: "var(--text-muted, #64748b)", marginTop: "3px" }}>
+              <strong>Off</strong> (default): runs inline during the transition, bounded by Jira's hard ~25&nbsp;s post-function limit. <strong>On</strong>: runs on the async queue with up to ~110&nbsp;s — for heavy multi-step or many-call logic. The transition completes immediately and the steps finish a few seconds later (eventually consistent).
+            </span>
+          </span>
+        </label>
       )}
 
       {/* AI Review for the entire static post-function */}

@@ -75,6 +75,7 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
   const [actionPrompt, setActionPrompt] = useState("");
   const [actionFieldId, setActionFieldId] = useState("");
   const [crossCheckClaims, setCrossCheckClaims] = useState(false);
+  const [runAsync, setRunAsync] = useState(false); // static PF: background execution (110s) toggle
   const [docFormat, setDocFormat] = useState("pdf");
   const [contentPrompt, setContentPrompt] = useState("");
   const [docTitlePrompt, setDocTitlePrompt] = useState("");
@@ -303,6 +304,8 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
       // Notification suppression — only meaningful for types that PUT issue fields.
       const canSuppress = ruleType === "postfunction-semantic" || ruleType === "postfunction-static";
       if (isPostFunction && canSuppress && suppressNotifications) configPayload.suppressNotifications = true;
+      // Background execution — static PFs only; queues on the async consumer (110s) instead of inline (25s).
+      if (ruleType === "postfunction-static" && runAsync) configPayload.runAsync = true;
 
       // Static-PF code offload: measure the config as it would be embedded in the
       // workflow rule; above the threshold the backend stores the step code in
@@ -423,6 +426,7 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
               setResearchQuery(""); setResearchTitle(""); setAutoSelectResearchDoc(false); setCommentPrompt(""); setSubtaskPrompt("");
               setLinkPrompt(""); setLinkTypeName("Relates"); setMaxLinks(3);
               setSimulationMode(false); setSuppressNotifications(false); setEnableTools(null);
+              setRunAsync(false);
               setSelectedDocIds([]);
               setTestResult(null); setTestIssue("");
               setFunctions([{
@@ -1080,6 +1084,8 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
               <FunctionBuilder
                 functions={functions}
                 setFunctions={setFunctions}
+                runAsync={runAsync}
+                setRunAsync={setRunAsync}
               />
             )}
 

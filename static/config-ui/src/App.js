@@ -2573,6 +2573,7 @@ let currentConditionPrompt = "";
 let currentActionPrompt = "";
 let currentActionFieldId = "";
 let currentCrossCheckClaims = false;
+let currentRunAsync = false; // static PF: run on the async queue (110s budget) instead of inline (25s)
 let currentManagedConfig = null; // a generate-doc/research/comment config loaded on edit
 let currentSimulationMode = false; // per-rule simulation flag (set by the admin wizard)
 let currentSuppressNotifications = false; // per-rule notifyUsers=false flag (semantic + static)
@@ -2635,6 +2636,7 @@ function App() {
   const [actionPrompt, setActionPrompt] = useState("");
   const [actionFieldId, setActionFieldId] = useState("");
   const [crossCheckClaims, setCrossCheckClaims] = useState(false);
+  const [runAsync, setRunAsync] = useState(false); // static PF: background execution toggle
   const [managedType, setManagedType] = useState(null); // generate-doc/research/comment → managed in admin panel
   const [simulationMode, setSimulationMode] = useState(false); // per-rule simulation flag (kept in sync with currentSimulationMode)
   const [suppressNotifications, setSuppressNotifications] = useState(false); // kept in sync with currentSuppressNotifications
@@ -2670,6 +2672,7 @@ function App() {
   useEffect(() => { currentActionPrompt = actionPrompt; }, [actionPrompt]);
   useEffect(() => { currentActionFieldId = actionFieldId; }, [actionFieldId]);
   useEffect(() => { currentCrossCheckClaims = crossCheckClaims; }, [crossCheckClaims]);
+  useEffect(() => { currentRunAsync = runAsync; }, [runAsync]);
   useEffect(() => { currentFunctions = functions; }, [functions]);
   useEffect(() => { currentValidatorDocIds = validatorDocIds; }, [validatorDocIds]);
 
@@ -2851,6 +2854,10 @@ function App() {
               setCrossCheckClaims(config.crossCheckClaims);
               currentCrossCheckClaims = config.crossCheckClaims;
             }
+            if (typeof config.runAsync === "boolean") {
+              setRunAsync(config.runAsync);
+              currentRunAsync = config.runAsync;
+            }
             if (config.simulationMode === true) {
               currentSimulationMode = true;
               setSimulationMode(true);
@@ -3023,6 +3030,7 @@ function App() {
               }
               config.type = "postfunction-static";
               config.functions = currentFunctions;
+              config.runAsync = currentRunAsync;
             } else {
               // Standard validator/condition
               if (!currentFieldId.trim() || !currentPrompt.trim()) return undefined;
@@ -3279,7 +3287,7 @@ function App() {
       {/* Static post-function: FunctionBuilder (replaces the standard form) */}
       {isPostFunction && postFunctionType === "static" && (
         <div className="card">
-          <FunctionBuilder functions={functions} setFunctions={setFunctions} />
+          <FunctionBuilder functions={functions} setFunctions={setFunctions} runAsync={runAsync} setRunAsync={setRunAsync} />
         </div>
       )}
 

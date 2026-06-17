@@ -765,3 +765,11 @@ ${variableName} hint vs bare-name scope vars; continue-on-error vs chain-halt.
     empty → app correctly reported "field value is empty" / "No source data". App read
     path fine; a harness write-restriction, not a bug.
 scripts/round12-crossfield.mjs.
+
+## F43 — Round 13: exotic validators + PF composition (0 system bugs)
+
+  • PII detector → BLOCKED content with email/phone/card/SSN, ALLOWED clean ✅
+  • tone validator → BLOCKED hostile/insulting, ALLOWED professional ✅
+  • PF composition: TWO semantic PFs on ONE transition both ran + wrote (text + number)
+    on a single fire ✅
+scripts/round13-exotic.mjs.

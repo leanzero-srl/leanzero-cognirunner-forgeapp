@@ -8469,12 +8469,19 @@ export const lmAcquireWorker = async (requestedModel, opts = {}) => {
     const loaded = await getLmStudioLoadedModels();
     if (loaded.length < 2) return { model: requestedModel, release: NOOP_RELEASE };
     let pool = loaded;
-    if (opts.needsTools) pool = pool.filter((m) => m.toolUse);
+    const weights = await getLmStudioWeightsMap();
+    if (opts.needsTools) {
+      pool = pool.filter((m) => m.toolUse);
+      // Agentic calls have a TIGHT sync budget (multi-round generation) and fail OPEN
+      // on timeout. Keep them off operator-flagged slow (down-weighted) devices when a
+      // full-weight one is loaded — verified: agentic on the down-weighted box timed
+      // out, while a full-weight box completed and blocked the duplicate correctly.
+      const fast = pool.filter((m) => (Number(weights[m.wkey || m.id]) || 1) <= 1);
+      if (fast.length) pool = fast;
+    }
     if (opts.needsVision) pool = pool.filter((m) => m.vision);
     if (pool.length === 0) return { model: requestedModel, release: NOOP_RELEASE };
     if (pool.length === 1) return { model: pool[0].id, release: NOOP_RELEASE };
-
-    const weights = await getLmStudioWeightsMap();
     // Per-INSTANCE effective capacity = parallel / weight (wkey = id::quant): a
     // down-weighted slow box accepts proportionally fewer concurrent jobs. The chat
     // call always sends the bare id (LM Studio has no per-instance address).

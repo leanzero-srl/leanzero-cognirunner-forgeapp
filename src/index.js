@@ -441,9 +441,19 @@ const withLmStudioConcurrency = async (event) => {
   const adminLimit = await getLmStudioConcurrencyLimit();
   const poolCap = await getLmStudioPoolCapacity();
   let limit = 0;
-  if (poolCap > 0 && adminLimit > 0) limit = Math.min(poolCap, adminLimit);
-  else if (poolCap > 0) limit = poolCap;
-  else limit = adminLimit;
+  if (poolCap > 0) {
+    // RESERVE a slice of pool capacity for SYNCHRONOUS calls — validators and
+    // conditions run inline with a hard ~21s budget and FAIL OPEN if they can't get
+    // a worker in time. Queued PFs are background + tolerant, so we cap them BELOW
+    // the pool (reserve ~1/4, >=1, leaving >=1 for PFs) so a PF flood can never grab
+    // every slot and starve a user-facing validator into bypassing. The slot model
+    // then keeps those reserved slots genuinely free for the sync path.
+    const reserve = Math.min(poolCap - 1, Math.max(1, Math.round(poolCap * 0.25)));
+    const pfCap = Math.max(1, poolCap - reserve);
+    limit = adminLimit > 0 ? Math.min(adminLimit, pfCap) : pfCap;
+  } else {
+    limit = adminLimit;
+  }
   return limit > 0 ? { ...event, concurrency: { key: "lmstudio", limit } } : event;
 };
 

@@ -753,3 +753,15 @@ Real limitations (model/platform, not bugs): agentic on slow self-hosted models 
 marginal (sync-budget timeouts → fail-open); conditions gate UI visibility not REST (F3);
 same-key LM Studio quants aren't separately addressable. UX candidates flagged: the
 ${variableName} hint vs bare-name scope vars; continue-on-error vs chain-halt.
+
+## F42 — Round 12: cross-field source extraction (0 system bugs)
+
+  • validator sourcing a NUMBER field (story points): 5→ALLOWED, 21→BLOCKED — non-
+    description extraction works ✅
+  • data-quality validator (placeholder TODO/TBD/lorem/XXX → BLOCKED; substantive →
+    ALLOWED) ✅
+  • textarea-source validator + semantic: harness PUT to set the custom textarea
+    returned 400 (field not on the edit screen for the default issue type) → source
+    empty → app correctly reported "field value is empty" / "No source data". App read
+    path fine; a harness write-restriction, not a bug.
+scripts/round12-crossfield.mjs.

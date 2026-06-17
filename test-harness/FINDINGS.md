@@ -528,3 +528,46 @@ NOT deletions — the static-PF sandbox has no delete and the harness never bulk
 deletes. Lesson: treat a sudden instance-wide "0 issues / 404" with `/serverInfo`
 still up as a TOKEN failure, not a wipe. On the new token the creative-lab + stress-
 test stages resumed (no re-seed needed — the testbed survived).
+
+## 2026-06-17 — Stage 2 (creative lab) + Stage 3 (aggressive stress) + optimize
+
+**F31 (creative lab) — 19 invented rule types, 0 app bugs.** `scripts/creative-lab.mjs`
+exercised novel rules across all four types against tailor-made issues: validators
+(English-only, profanity/toxicity, secret-scanner, acceptance-criteria,
+**Fibonacci** numeric reasoning), conditions (customer-named, repro-steps),
+semantic PFs (action-item extraction, TL;DR, risk-score, area-tag, due-date,
+blocker), static PFs (reading-time, keyword auto-label, risk-matrix, checklist,
+sibling-count, fingerprint). Every validator/condition gated correctly
+(fail→BLOCKED / pass→ALLOWED) and the semantic generators produced sensible output
+(bullet action lists, a real TL;DR, due-date 2026-07-13, auto-label `auto-bug`).
+Also created a new **"Experiment" issue type** (+ wired into the COGTEST scheme) and
+a new **workflow** (`CL-Creative-Workflow`) — the latter exposed the `/workflows/create`
+contract (needs top-level `scope`, UUID statusReferences, and a `links` array on
+EVERY transition incl. INITIAL). A harness observation bug (the mutation check only
+read text/ADF fields, reporting false "no mutation" for 8 PFs that actually wrote
+number/option/array values) was fixed with type-aware raw-value + count + trace
+detection. Net: the app handled all 19 inventive rules with **0 system bugs**.
+
+**F32 — aggressive LM Studio stress test (Stage 3) + the optimizations it drove.**
+`scripts/stress-lmstudio.mjs` floods the async queue with heavy PFs (semantic, fact-
+checked, comment, subtask, generate-doc, research) + agentic validators across many
+distinct issues (dodging the per-issue 10/5min PF brake). Findings:
+  • **Jira REST rate limit is the firing bottleneck, not LM Studio.** At concurrency
+    32 the transition POSTs hit 429 with `Retry-After: 59s` → the harness self-stalls
+    (up to 6 retries). Optimization: concurrency ~10 sustains a DEEPER queue (firing
+    ≫ the pool's drain rate) with **zero 429s**. The app/async-queue is unaffected;
+    this is purely the harness's REST call rate.
+  • **The worker pool holds up under stress.** Backend `[lm-pool]` logs show all
+    three models served with up to **~21 concurrent inflight** (qwen-27b / qwen-35b-a3b
+    / qwopus). NOTE: the stress summary's "model spread from traces" is a biased
+    sample (cogni-debug shows only each issue's LAST PF) — the authoritative spread is
+    the `[lm-pool]` log, which is healthy across all 3.
+  • **Residual validator platform-kills under extreme load → FIXED (F27 follow-up).**
+    The 23s/22s deadlines only bounded the AI CALL, but agentic tool execution + result
+    logging run after it inside the same 25s wall, so ~0.4–0.8% still hit the platform
+    kill. Two changes: (1) more headroom — `VALIDATOR_AI_DEADLINE_MS` 23→**21s**,
+    `AGENTIC_TIMEOUT_MS` 22→**20s**; (2) a **pre-tool deadline guard** — the agentic loop
+    won't START a tool round within ~4s of the budget; it fails open gracefully instead.
+    Verified across three builds: **5 kills (v22.20.0) → 1 (v22.21.0) → 0 (v22.22.0)**
+    over a 300-fire conc-10 flood, with the graceful "timed out — transition allowed"
+    fail-open carrying the load (35 transient). Deployed v22.22.0.

@@ -236,13 +236,17 @@ const MAX_TOOL_ROUNDS = 3;
 // issues across model families. Omitting them works universally.
 const buildModelParams = () => ({});
 const MAX_JQL_RESULTS = 10;
-const AGENTIC_TIMEOUT_MS = 22000; // 22s budget within Forge's 25s validator limit
+// 20s agentic budget — the deadline only bounds the AI CALL, but tool execution
+// (JQL) + the final result logging run AFTER it inside the same 25s wall. The
+// stress test showed 22s left too little headroom (~0.8% still hit the platform's
+// 25s kill); 20s reserves ~5s for tools+logging so the loop always returns gracefully.
+const AGENTIC_TIMEOUT_MS = 20000;
 // Non-agentic validator AI calls have no inner budget; under provider load they can
 // exceed Forge's hard 25s sync limit → the platform KILLS validate() and Jira shows
 // "error in validator" (ungraceful, effectively fail-closed). Bound the call below
 // 25s so it returns a graceful fail-open instead (consistent with the transient
-// fail-open policy). 23s leaves headroom for logging before the platform limit.
-const VALIDATOR_AI_DEADLINE_MS = 23000;
+// fail-open policy). 21s reserves ~4s for storeLog + the debug-trace write.
+const VALIDATOR_AI_DEADLINE_MS = 21000;
 
 // A transient AI/provider error (rate limit, server error, timeout, network) —
 // as opposed to a real "invalid" verdict. Validators fail OPEN on these so a
@@ -9503,6 +9507,13 @@ RESPONSE FORMAT:
 
       // Check if the model wants to call tools
       if (message.tool_calls && message.tool_calls.length > 0) {
+        // Don't START a tool round we can't finish: tool execution (JQL) + the
+        // next AI round + final logging must all fit inside Forge's 25s wall. If
+        // we're within ~4s of the budget, stop and fail open gracefully instead of
+        // overrunning into a platform kill ("error in validator").
+        if (Date.now() >= deadline - 4000) {
+          return { isValid: true, reason: "Validation timed out while gathering context. Transition allowed.", transientError: true, toolMeta };
+        }
         toolMeta.toolsUsed = true;
         toolMeta.toolRounds++;
         console.log(`Agentic round ${round}: model requested ${message.tool_calls.length} tool call(s)`);

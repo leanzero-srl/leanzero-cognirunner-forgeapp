@@ -773,3 +773,22 @@ scripts/round12-crossfield.mjs.
   • PF composition: TWO semantic PFs on ONE transition both ran + wrote (text + number)
     on a single fire ✅
 scripts/round13-exotic.mjs.
+
+## F44 — Regression capstone (RUN_MAX_PER_CLASS=8, 121/132) — NO regression, 0 system bugs
+
+Deterministic classes PERFECT (static/policy/pf-flavors/action/fields/knowledge = 37/37);
+robustness 24/25, semantic 11/12. ZERO system-error rows (no 5xx/parse/crash). All 11
+misses are documented non-regressions:
+  • 6 injection = INJE-1..7 F15 align-with-verdict confound (real task + agreeing
+    injection → ALLOWED correct; round 3 adjudication proved 0 obedience).
+  • 1 robustness = Jira transition 400 on a jumbo issue (screen/required field) — env.
+  • 1 condition = F3 (condition gates UI visibility, not REST).
+  • 2 agentic = 1 timeout (slow-35B sync budget) + 1 where the gate CORRECTLY found 3 open
+    gate-release bugs and blocked (stale fixture — proves agentic works).
+  • 1 semantic = S5-mismatch wrote a valid NUMBER (1) to a number field — the model
+    adapted to the field-type hint instead of writing the requested paragraph; clamp held,
+    no garbage. The corpus's expectPf:"SKIPPED" is a stale assumption (dumber model).
+Conclusion: the v22.30→v22.36 dispatch/staleness/sync-reserve/agentic-routing/auth-test
+overhaul did NOT regress verdict correctness. The app honors Conditions/Validations/Post-
+functions correctly + securely on the weakest LM Studio model; the only real soft spot is
+agentic latency on slow self-hosted models (graceful fail-open; cloud unaffected).

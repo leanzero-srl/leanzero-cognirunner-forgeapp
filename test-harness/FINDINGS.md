@@ -717,3 +717,39 @@ knowledge 2/2 (= 46/46). All 8 misses are documented non-regressions:
     agentic works when it doesn't time out).
 The sample over-weights hard classes (equal per-class) so 90% != the full-suite ~98%
 baseline — different weighting, not a regression. Verdict logic intact post-overhaul.
+
+## F41 — Round 11: system-field semantic writes (0 system bugs)
+
+  • priority (system option) → "Medium" — valid value written (model-judgment nuance: a
+    "critical" incident arguably warrants Highest; not a system bug). ✅
+  • labels (system array) → "checkout,payments,regression-test,revenue-impact" ✅
+  • summary (system text overwrite) → concise one-line title ✅
+System fields use different write shapes than custom fields (round 5) — all held.
+scripts/round11-systemfields.mjs.
+
+---
+
+## CAMPAIGN SUMMARY — qualitative rounds on LM Studio (weak-model forcing function)
+
+11 rounds + a regression sample, all on the self-hosted LM Studio cluster. The app
+HONORS Conditions, Validations, and Post-functions correctly and securely on the
+weakest/slowest model. **0 confirmed system (Bucket-A) bugs.** Every non-PASS triaged
+to correct app behavior or a harness/test artifact:
+  R1 canonical (V/C/semantic/static) — 19/19.  R2 injection/evasion — 0 obedience, 0 leaks.
+  R3 exotic sandbox 5/5 + injection-at-scale (0 true leaks, adjudicated by reason).
+  R4 agentic JQL tool-calling — works + reasons correctly; ~50% timeout on slow 35B →
+     graceful fail-open (model speed; cloud unaffected). Fix: route agentic off slow boxes.
+  R5 hard custom schemas (cascading/datetime/user/url/checkboxes/multistep) — valid writes
+     or correct safe-SKIPs (bad/ambiguous values rejected, never garbage).
+  R6 PF flavors (comment/subtask/link/generate-doc/research) — 5/5, MCP tools routed via
+     OpenAI-compat on LM Studio.
+  R7 static engine (bare-name chaining/searchJql/conditional/full-API) — verified.
+  R8 edge inputs (fence-markers/JSON-masquerade/empty/huge/control-chars/nested-fence) —
+     6/6 robust, defang + parsing held.
+  R9 reasoning (compound/negation) + multilingual (ES/FR/JA incl. CJK unicode) — solid.
+  R10 regression — deterministic classes 46/46; misses are documented (F15/F3/agentic-speed/env).
+  R11 system fields (priority/labels/summary) — 3/3.
+Real limitations (model/platform, not bugs): agentic on slow self-hosted models is
+marginal (sync-budget timeouts → fail-open); conditions gate UI visibility not REST (F3);
+same-key LM Studio quants aren't separately addressable. UX candidates flagged: the
+${variableName} hint vs bare-name scope vars; continue-on-error vs chain-halt.

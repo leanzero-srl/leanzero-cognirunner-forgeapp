@@ -7387,7 +7387,9 @@ const callLmStudioNative = async ({ apiKey, model, messages, jsonMode, baseUrl }
   // 7. Translate native response → OpenAI shape. output[] is an array of typed blocks
   //    ({type:"message"|"reasoning"|"tool_call"|"invalid_tool_call"}); we're not
   //    requesting tools so message + reasoning are the only expected types here.
-  const native = await response.json();
+  let native;
+  try { native = await response.json(); }
+  catch (e) { return { ok: false, status: 200, data: null, error: `LM Studio returned a non-JSON body: ${e.message}` }; }
   const blocks = Array.isArray(native.output) ? native.output : [];
   const messageBlocks = blocks.filter((b) => b?.type === "message" && typeof b.content === "string");
   const reasoningBlocks = blocks.filter((b) => b?.type === "reasoning" && typeof b.content === "string");
@@ -7727,7 +7729,7 @@ const callAnthropicChat = async ({ apiKey, model, messages, tools, tool_choice, 
         type: "function",
         function: {
           name: block.name,
-          arguments: JSON.stringify(block.input),
+          arguments: JSON.stringify(block.input ?? {}),
         },
       });
     }
@@ -7957,7 +7959,9 @@ const callBedrockChat = async ({ apiKey, model, messages, tools, tool_choice, ba
     return { ok: false, status: response.status, data: null, error: errText };
   }
 
-  const bedrockData = await response.json();
+  let bedrockData;
+  try { bedrockData = await response.json(); }
+  catch (e) { return { ok: false, status: 200, data: null, error: `Bedrock returned a non-JSON body: ${e.message}` }; }
 
   // 5. Convert the Converse response envelope to OpenAI shape.
   const textParts = [];
@@ -7965,7 +7969,7 @@ const callBedrockChat = async ({ apiKey, model, messages, tools, tool_choice, ba
   const outContent = bedrockData.output?.message?.content || [];
   for (const block of outContent) {
     if (typeof block.text === "string") textParts.push(block.text);
-    if (block.toolUse) {
+    if (block.toolUse && block.toolUse.name) {
       toolCalls.push({
         id: block.toolUse.toolUseId,
         type: "function",
@@ -9831,7 +9835,7 @@ RESPONSE FORMAT:
             toolResult = JSON.stringify({ error: "Timeout: cannot execute tool" });
           } else {
             try {
-              const args = JSON.parse(toolCall.function.arguments);
+              const args = JSON.parse(toolCall.function.arguments || "{}");
               console.log(`Executing tool "${toolName}":`, JSON.stringify(args));
               toolResult = await tool.execute(args, validatedFieldId);
 

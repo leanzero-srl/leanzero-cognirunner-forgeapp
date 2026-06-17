@@ -928,3 +928,57 @@ FLAGGED for the owner (not auto-applied — risk/scoping I can't validate live):
 
 FOUR adversarial hunts total → **15 real bugs** (12 fixed + 3 flagged) across security,
 data-loss, double-execution, crashes, code-corruption — none surfaced by 15 black-box rounds.
+
+## F50 — 5th adversarial hunt (multi-provider chat dispatch + tool-arg parsing): 5 fixes (dev v22.41.0)
+
+6-finder hunt over callForgeLlmChat / callLmStudioNative / callAnthropicChat / callBedrockChat /
+the agentic tool loop (callOpenAIWithTools + executeJqlSearch) / the shared JSON primitives
+(parseAIJson, repairTruncatedJson, parseFixResponse, callAIChat). Each finding was refuted by a
+3-skeptic panel; **10 of 24 survived**, triaged against the real code → **5 FIXED**, 4 skipped
+(by-design / already-defended), 1 RE-FLAGGED. Verified by `_verify-f50.mjs` (16/16). The 4
+"repairTruncatedJson/parseFixResponse semantic-corruption" claims were all REFUTED — confirming
+the F48 stripCodeFences + repair work held up.
+
+FIXED (defensive guards on provider-response extraction; weak/off-spec models + user-configurable
+proxy baseUrls make these reachable):
+  1. **Agentic registry-path tool args — unguarded JSON.parse (MEDIUM).** `JSON.parse(toolCall.
+     function.arguments)` threw on an empty/undefined args string (the sibling MCP path already
+     did `|| "{}"`); caught but mislabeled as a generic "Tool execution error". Fix: `|| "{}"`
+     to match the MCP path (index.js ~9834).
+  2. **LM Studio `response.json()` uncaught (MEDIUM).** HTTP 200 + a malformed/HTML body threw
+     past the `{ok:false}` contract. Fix: try-catch → structured `{ok:false, error}` (~7390).
+  3. **Anthropic `JSON.stringify(block.input)` (HIGH).** When a tool_use block's `input` is
+     undefined, `JSON.stringify(undefined)` is the VALUE undefined → downstream `JSON.parse`
+     throws. Fix: `block.input ?? {}` (~7730).
+  4. **Bedrock `response.json()` uncaught (HIGH).** Same class as #2 — Converse body parse threw
+     past the contract. Fix: try-catch → `{ok:false}` (~7960).
+  5. **Bedrock null tool name (MEDIUM).** A toolUse block with null/missing `name` reached the
+     agentic loop → `TOOL_REGISTRY[null]` → wasted "Unknown tool: null" round. Fix: only push
+     when `block.toolUse.name` is present (the line already guarded `input || {}`) (~7973).
+
+SKIPPED (survived the panel but not real / already defended — traced against the code):
+  • LM Studio reasoning-block fallback (`!content && reasoningBlocks`): BY-DESIGN, comment-
+    documented retry-without-reasoning path; both branches fail-closed identically via
+    parseAIJson→null, and it AIDS weak reasoning models (the LM Studio use case).
+  • Anthropic max_tokens clearing tool_calls: truncation already handled by repairTruncatedJson
+    + the F46/F47 verdict guards; clearing is a debatable agentic-flow change for no real gain.
+  • Agentic `tool_calls` existence check (~9801): the finder's OWN note says "already guarded
+    correctly" — self-admitted false positive.
+  • Tool-result injection into the final verdict (~9870): already DEFENDED. parseAIJson direct-
+    parses a clean single verdict object; the lastIndexOf salvage only runs on malformed input,
+    which then falls to recoverValidatorVerdict where the F46/F47 **multiple-isValid → fail-closed
+    (BLOCK)** branch catches the realistic injection (model echoes attacker JSON beside its own
+    verdict). Changing parseAIJson = high blast-radius on the 766–770/782 baseline. No change.
+
+RE-FLAGGED (real exposure, fix is an agentic-behavior change = owner's call):
+  • **confused-deputy JQL scope (HIGH) — now TRIPLE-confirmed (3/3 skeptics).** Re-confirms the
+    F49 flag: executeJqlSearch (index.js ~8964) runs AI-authored JQL via asApp() with NO project
+    scope and `projectKey` is not even threaded in → an induced model emitting `project != CURRENT`
+    can read summaries/field-values from ANY project into the verdict. Confidence it's a real
+    EXPOSURE: HIGH. Confidence the FIX is safe: MEDIUM — injecting `AND project = <key>` when the
+    JQL names no project would break a legit "search anywhere" validator. Safest form: thread
+    projectKey, inject ONLY when available AND no project named, never reject. Awaiting owner.
+
+FIVE adversarial hunts total → **20 real bugs** (17 fixed + 3 flagged: confused-deputy JQL,
+MCP host-pin, read-resolver gates) across security, data-loss, double-execution, crashes,
+code-corruption, and now provider-response parsing — none surfaced by 15 black-box rounds.

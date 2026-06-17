@@ -354,6 +354,12 @@ const PF_BRAKE_MAX_PER_BUCKET = 10;
 const JOB_PREFIX = "async_job:";
 export const JOB_TTL_ACTIVE = { ttl: { value: 2, unit: "HOURS" } };
 export const JOB_TTL_DONE = { ttl: { value: 20, unit: "MINUTES" } };
+// Staleness window for queued async jobs. A post-function is "eventually
+// consistent" — meant to run a few seconds after the transition. If it's still
+// QUEUED past this, running it is pointless (the issue state has moved on) and
+// usually means its Forge event was dropped under load. Both the consumer (skip
+// on pickup) and getAsyncJobs (reap zombie queued rows) use this single window.
+export const STALE_JOB_MS = 15 * 60 * 1000; // 15 min
 
 // Task ids carry an INVERTED-timestamp prefix so the async_job:{taskId} rows sort
 // NEWEST-FIRST in the ascending-key getAsyncJobs query. Without this, a large
@@ -5947,16 +5953,31 @@ resolver.define("getAsyncJobs", async ({ payload }) => {
     const JOB_STALL_MS = 130000;  // suspect window: past 120s but not yet reaped
     const toReap = [];
     for (const j of rows) {
-      if (j.status !== "running" || !j.startedAt) continue;
-      const age = now - Date.parse(j.startedAt);
-      if (age > JOB_REAP_MS) {
-        j.status = "error";
-        j.stalled = true;
-        j.error = `Reaped: no completion reported within the 120s consumer budget (killed or throttled under load after ${Math.round(age / 1000)}s).`;
-        j.finishedAt = new Date(now).toISOString();
-        toReap.push(j);
-      } else if (age > JOB_STALL_MS) {
-        j.stalled = true;
+      if (j.status === "running" && j.startedAt) {
+        const age = now - Date.parse(j.startedAt);
+        if (age > JOB_REAP_MS) {
+          j.status = "error";
+          j.stalled = true;
+          j.error = `Reaped: no completion reported within the 120s consumer budget (killed or throttled under load after ${Math.round(age / 1000)}s).`;
+          j.finishedAt = new Date(now).toISOString();
+          toReap.push(j);
+        } else if (age > JOB_STALL_MS) {
+          j.stalled = true;
+        }
+      } else if (j.status === "queued" && j.enqueuedAt) {
+        // Reap zombie QUEUED rows: a job still queued past the staleness window was
+        // never consumed — its Forge event was dropped after retries under load (the
+        // consumer goes silent), or the backlog is so deep that running it this late
+        // is useless. Either way, clear it instead of letting it sit the 2h active
+        // TTL (the "stable stale queued jobs that never drain" pile).
+        const qage = now - Date.parse(j.enqueuedAt);
+        if (qage > STALE_JOB_MS) {
+          j.status = "error";
+          j.stalled = true;
+          j.error = `Expired: still queued ${Math.round(qage / 1000)}s after enqueue, past the ${Math.round(STALE_JOB_MS / 60000)}min staleness window (event dropped under load, or backlog too deep to run this late).`;
+          j.finishedAt = new Date(now).toISOString();
+          toReap.push(j);
+        }
       }
     }
     // Persist the reaps (best-effort) so they stay terminal across polls + age out fast.

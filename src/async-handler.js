@@ -41,6 +41,7 @@ import {
   isJobCancelled,
   JOB_TTL_ACTIVE,
   JOB_TTL_DONE,
+  STALE_JOB_MS,
   // LM Studio worker map: spread queued AI work across loaded models too.
   // dispatchPostFunction (the queued semantic/doc PFs) already balances because it
   // runs index.js's callAIChat here (which acquires from the shared KVS worker map);
@@ -803,6 +804,24 @@ export async function handler(event) {
     }
     await updateAsyncJob(taskId, { status: "cancelled", finishedAt: new Date().toISOString() }, JOB_TTL_DONE);
     return;
+  }
+
+  // STALENESS checkpoint — if the platform delivered this event long after enqueue
+  // (redelivered after retries, or a deep backlog drained past the useful window),
+  // do NO work. A PF meant to run "a few seconds later" is pointless 15min on (the
+  // issue has moved on), and skipping frees LM Studio time for fresh jobs instead of
+  // burning it on stale ones. Mirrors the queued-row reaper in getAsyncJobs.
+  const enqAt = jobRow?.enqueuedAt || params?.enqueuedAt;
+  if (enqAt) {
+    const queuedMs = Date.now() - Date.parse(enqAt);
+    if (Number.isFinite(queuedMs) && queuedMs > STALE_JOB_MS) {
+      console.log(`Async handler: ${taskType} (${taskId}) expired — queued ${Math.round(queuedMs / 1000)}s (> ${Math.round(STALE_JOB_MS / 60000)}min) — skipping`);
+      if (!UNPOLLED_TASKS.has(taskType)) {
+        await storage.set(`${TASK_PREFIX}${taskId}`, { status: "error", error: "Expired (queued past the staleness window)" }, ttl);
+      }
+      await updateAsyncJob(taskId, { status: "error", finishedAt: new Date().toISOString(), error: `Expired — sat queued ${Math.round(queuedMs / 1000)}s before the consumer ran it, past the ${Math.round(STALE_JOB_MS / 60000)}min staleness window.` }, JOB_TTL_DONE);
+      return;
+    }
   }
 
   const startedAt = new Date().toISOString();

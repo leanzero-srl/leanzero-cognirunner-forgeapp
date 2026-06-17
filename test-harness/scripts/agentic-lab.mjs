@@ -25,10 +25,13 @@ import { adfDoc } from "../lib/synthesize.mjs";
 
 const ATTEMPTS = parseInt(process.env.AGENTIC_ATTEMPTS || "2", 10);
 const AG_LABEL = "cogtest-agentic";
-// A distinctive phrase so the duplicate search is unambiguous (unlikely to collide
-// with the existing corpus).
-const CANARY = "Implement SAML SSO for the Zarquon enterprise tenant onboarding portal";
-const UNIQUE = "Add a CSV export button to the quarterly Glorptastic analytics dashboard";
+// A distinctive phrase so the duplicate search is unambiguous. A per-RUN random token
+// is embedded as the SALIENT term so prior runs' undeletable issues (COGTEST can't be
+// cleared — 403 on delete) don't false-collide: the canary+dup share this run's token
+// (they ARE duplicates), while the unique issue's fresh token has no prior match.
+const RUN = Math.random().toString(36).slice(2, 7).toUpperCase();
+const CANARY = `Integrate the ${RUN}QX single-sign-on bridge for the ${RUN}ZV tenant onboarding portal`;
+const UNIQUE = `Provision the ${RUN}PL analytics export pipeline for the ${RUN}WB reporting console`;
 
 async function seedIssue(projectKey, typeId, summary) {
   const body = { fields: { project: { key: projectKey }, issuetype: { id: String(typeId) }, summary, labels: [AG_LABEL], description: adfDoc("Agentic-lab probe issue.") } };

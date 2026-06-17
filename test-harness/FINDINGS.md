@@ -1146,3 +1146,21 @@ DEFERRED for owner approval (manifest change — per the always-ask rule): a `sc
 running sweepPostFunctionJobs every 5min (or hourly if Forge gates sub-hour) is the IDLE-TIME
 guarantee (the piggyback only fires during activity). It's additive (no new scopes) but needs
 `forge install --upgrade`. Proposed manifest block is ready — see the morning summary.
+
+## NIGHT — Agentic reliability finding: qwopus-v1-mtp claims tool-use but doesn't search
+
+agentic-lab on v22.47 (per-run random tokens to dodge the undeletable COGTEST pollution):
+- JQL CONFINEMENT CONFIRMED LIVE: agentic queries run `project = COGTEST AND summary ~ "…"` (F52).
+- DUPLICATE test split by model: on `…holo3…` → tools=true, rounds=1, searched, BLOCKED (correct);
+  on `qwopus3.6-35b-a3b-v1-mtp` → **tools=false, rounds=0, q=[]** — returned a verdict WITHOUT
+  searching → ALLOWED (wrong). The model's `capabilities.trained_for_tool_use` is true (so it's in
+  the agentic pool) but it does not actually emit tool calls. Since agentic dispatch spreads across
+  both tool-models, ~50% of agentic validations land on the non-searching one → unreliable verdicts.
+- No zombies, no sweeper re-drives, no real backend errors observed.
+ROOT: model capability lie (flag says tool-capable; behaviour isn't), not a CogniRunner bug.
+LEVERS (owner): (a) down-weight qwopus-v1-mtp so the agentic filter (weight<=1 only) EXCLUDES it →
+agentic runs only on holo3 → reliable; (b) fix qwopus-v1's tool-calling in LM Studio; or (c) CODE
+option I can add — after an agentic validator returns round-0 with NO tool call, re-prompt once
+("you must search before deciding"). I rate (c) LOW-confidence-it-helps (a weak model may ignore the
+nudge too) and it adds a round, so I'm FLAGGING it rather than shipping it blind. (a) is the reliable
+fix and is a one-click weights change.

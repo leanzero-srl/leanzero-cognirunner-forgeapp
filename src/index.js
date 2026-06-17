@@ -8414,33 +8414,19 @@ const getLmStudioLoadedModels = async () => {
   return loaded;
 };
 
-// --- LM Studio worker map (least-loaded dispatch) ---------------------------
+// --- LM Studio worker map (atomic slot-based dispatch) ----------------------
 // LM Studio's API exposes NO live per-model busy/queue state (verified: /api/v1/
-// models returns only static config), so we keep our OWN worker map in KVS: per
-// loaded model, a list of in-flight job claims {id, ts}. Each AI call ACQUIRES the
-// least-loaded model (fewest live claims, random tie-break so idle workers share
-// evenly), runs, then RELEASES. This balances by AVAILABILITY, not count — the
-// slow model accrues live claims and is skipped while free/fast workers pick up the
-// next jobs, i.e. "assign each job to a free worker" rather than blind round-robin
-// (which piles equal counts onto a slow model until it queues).
-//
-// Robustness in a stateless, ephemeral runtime:
-//  • per-model KVS keys → concurrent claims to DIFFERENT models never clobber;
-//  • a claim older than LM_CLAIM_STALE_MS is swept on read, so a function the
-//    platform hard-kills at the 25s cap never wedges a worker forever (and a model
-//    that's timing out keeps live claims → looks busy → gets avoided, which is what
-//    we want);
-//  • all KVS ops are best-effort — any hiccup falls back to the configured model.
+// models returns only static config), so we keep our OWN worker map in KVS. Each
+// loaded model exposes exactly `capacity` (= parallel / weight) SLOT keys; a claim
+// is an ATOMIC conditional write (keyPolicy FAIL_IF_EXISTS) on a free slot, so only
+// `capacity` concurrent jobs can hold a device at once and the rest bounce to a
+// device with room. This is "assign each job to a free worker" with a HARD per-device
+// cap — no clobber and no dependence on read/query propagation lag (both of which
+// previously produced a thundering herd that piled everything onto one box while
+// others idled). Slot keys carry a TTL so a hard-killed function's leaked slot frees
+// itself; all KVS ops are best-effort (a hiccup falls back to the configured model).
 // Gated by COGNIRUNNER_LMSTUDIO_POOL (the admin "run on all loaded models" toggle).
 const LM_BUSY_PREFIX = "lmbusy:";
-// Sweep window for leaked claims. MUST exceed the LONGEST legitimate job, else a
-// slow model's still-running jobs get swept and it looks perpetually idle → the
-// least-loaded picker keeps piling work on it (the observed "qwopus +70 queued
-// while a fast model sits idle" bug). Queued PFs run up to the consumer's 120s, so
-// 130s keeps their claims counted for the job's real duration. Leaked claims (a
-// hard-killed function) just linger a bit longer before the sweep reaps them.
-const LM_CLAIM_STALE_MS = 130000;
-const LM_CLAIM_TTL = { ttl: { value: 5, unit: "MINUTES" } };
 const NOOP_RELEASE = async () => {};
 
 // Total concurrent jobs the loaded pool can run at once = sum of (parallel / weight)
@@ -8495,70 +8481,57 @@ export const lmAcquireWorker = async (requestedModel, opts = {}) => {
       return list[list.length - 1];
     };
 
-    // CLAIM MODEL: one KVS key PER claim ("lmbusy:{claimId}", value {cid,wkey,ts}),
-    // NOT one array per device. The old single-array-per-device clobbered concurrent
-    // claims (last-writer-wins -> undercount -> herd/overshoot). Independent per-claim
-    // keys never clobber, so the live count per device is accurate. We read all live
-    // claims with ONE prefix query and bucket them by wkey.
-    const claimId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-    const myKey = `${LM_BUSY_PREFIX}${claimId}`;
+    // ATOMIC SLOT CLAIMING: each device exposes exactly `capacity` slot keys
+    // ("lmbusy:{wkey}#{i}"). A claim is a CONDITIONAL write (keyPolicy FAIL_IF_EXISTS)
+    // on a slot — server-side atomic, so only `capacity` concurrent claims can hold a
+    // device at once; the (capacity+1)th claim FAILS and bounces to another device.
+    // This is a HARD per-device cap with no clobber and no dependence on read/query
+    // propagation lag — the array-clobber (undercount) and query-lag (rank always 0)
+    // both produced the herd that piled everything onto one box. Devices are tried in
+    // a capacity-weighted-random order so a burst fills them in proportion to capacity;
+    // slots within a device are tried in random order to cut contention on slot 0.
     const claimTs = Date.now();
-    const snapshot = async () => {
-      const byWkey = {};
-      try {
-        const page = await storage.query()
-          .where("key", { condition: "BEGINS_WITH", values: [LM_BUSY_PREFIX] })
-          .limit(400).getMany();
-        const t = Date.now();
-        for (const r of (page.results || [])) {
-          const v = r && r.value;
-          if (v && v.wkey && typeof v.ts === "number" && t - v.ts < LM_CLAIM_STALE_MS) {
-            (byWkey[v.wkey] || (byWkey[v.wkey] = [])).push({ cid: v.cid, ts: v.ts });
-          }
-        }
-      } catch { /* best-effort: fall back to empty (treat all as free) */ }
-      return byWkey;
+    const SLOT_TTL = { ttl: { value: 3, unit: "MINUTES" } }; // > 120s consumer budget; reaps leaks
+    const shuffle = (arr) => { for (let i = arr.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); const tmp = arr[i]; arr[i] = arr[j]; arr[j] = tmp; } return arr; };
+    const slotKey = (wkey, i) => `${LM_BUSY_PREFIX}${String(wkey).replace(/[^a-zA-Z0-9._:-]/g, "_").slice(0, 100)}#${i}`;
+    const grabSlot = async (m) => {
+      for (const i of shuffle([...Array(m.capacity).keys()])) {
+        try {
+          await storage.set(slotKey(m.wkey, i), { ts: claimTs }, { keyPolicy: "FAIL_IF_EXISTS", ...SLOT_TTL });
+          return slotKey(m.wkey, i); // won this slot atomically
+        } catch { /* slot taken (or transient) — try the next */ }
+      }
+      return null; // device at capacity
     };
-    const countOf = (snap, wkey) => (snap[wkey] || []).length;
-    // My rank among a device's live claims by (ts, cid). rank < capacity => I fit.
-    const myRank = (snap, wkey) => (snap[wkey] || []).filter(
-      (c) => c.cid !== claimId && (c.ts < claimTs || (c.ts === claimTs && String(c.cid) < String(claimId))),
-    ).length;
-    const pickFrom = (snap, exclude) => {
-      const cand = slots.filter((c) => !exclude.has(c.wkey));
-      if (!cand.length) return null;
-      const withRoom = cand.filter((c) => countOf(snap, c.wkey) < c.capacity);
-      if (withRoom.length) return pickWeighted(withRoom, (c) => c.capacity - countOf(snap, c.wkey));
-      return pickWeighted(cand, (c) => c.capacity / (countOf(snap, c.wkey) + 1));
-    };
-
-    // CLAIM-AND-VERIFY: pick by current counts, write our claim, then re-read. If too
-    // many claims landed ahead of ours on that device (rank >= capacity), re-point our
-    // claim at another device with room. Others' claims may still lag, so this tightens
-    // the per-device cap rather than guaranteeing it. Bounded to 3 tries.
-    let snap = await snapshot();
-    const tried = new Set();
+    // Capacity-weighted draw-without-replacement → device try-order. Each dispatch
+    // tends to try a different device first, spreading a concurrent burst.
+    const order = [];
+    const remaining = slots.slice();
+    while (remaining.length) {
+      const pick = pickWeighted(remaining, (c) => c.capacity);
+      order.push(pick);
+      remaining.splice(remaining.indexOf(pick), 1);
+    }
     let chosen = null;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      const cand = pickFrom(snap, tried);
-      if (!cand) break;
-      tried.add(cand.wkey);
-      chosen = cand; // last pick is the overflow fallback even if it doesn't verify
-      try { await storage.set(myKey, { cid: claimId, wkey: cand.wkey, ts: claimTs }, LM_CLAIM_TTL); } catch { /* best-effort */ }
-      snap = await snapshot();
-      if (myRank(snap, cand.wkey) < cand.capacity) break; // within capacity — keep it
+    let slotHeld = null;
+    for (const m of order) {
+      const k = await grabSlot(m);
+      if (k) { chosen = m; slotHeld = k; break; }
     }
     if (!chosen) {
-      chosen = pickWeighted(slots, (c) => c.capacity / (countOf(snap, c.wkey) + 1));
-      try { await storage.set(myKey, { cid: claimId, wkey: chosen.wkey, ts: claimTs }, LM_CLAIM_TTL); } catch { /* best-effort */ }
+      // Every device is at capacity (cluster genuinely saturated — rare once the Forge
+      // concurrency cap matches pool capacity). Overflow to a capacity-weighted pick
+      // WITHOUT holding a slot; accept brief device-side queueing rather than block.
+      chosen = pickWeighted(slots, (c) => c.capacity);
     }
-    console.log(`[lm-pool] worker=${chosen.wkey} rank=${myRank(snap, chosen.wkey)}/${chosen.capacity} (model=${chosen.id}, configured: ${requestedModel})`);
+    console.log(`[lm-pool] worker=${chosen.wkey}${slotHeld ? "" : " (overflow/no-slot)"} (model=${chosen.id}, configured: ${requestedModel})`);
 
     let released = false;
     const release = async () => {
       if (released) return;
       released = true;
-      try { await storage.delete(myKey); } catch { /* best-effort — the 5min TTL reaps leaked claims */ }
+      if (!slotHeld) return; // overflow claim held no slot to free
+      try { await storage.delete(slotHeld); } catch { /* best-effort — the 3min TTL reaps leaked slots */ }
     };
     return { model: chosen.id, release };
   } catch (e) {

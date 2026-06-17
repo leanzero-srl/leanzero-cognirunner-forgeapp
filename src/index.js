@@ -8441,7 +8441,6 @@ const LM_BUSY_PREFIX = "lmbusy:";
 // hard-killed function) just linger a bit longer before the sweep reaps them.
 const LM_CLAIM_STALE_MS = 130000;
 const LM_CLAIM_TTL = { ttl: { value: 5, unit: "MINUTES" } };
-const lmBusyKey = (id) => LM_BUSY_PREFIX + String(id).replace(/[^a-zA-Z0-9._:-]/g, "_").slice(0, 110);
 const NOOP_RELEASE = async () => {};
 
 // Total concurrent jobs the loaded pool can run at once = sum of (parallel / weight)
@@ -8479,40 +8478,15 @@ export const lmAcquireWorker = async (requestedModel, opts = {}) => {
     if (pool.length === 0) return { model: requestedModel, release: NOOP_RELEASE };
     if (pool.length === 1) return { model: pool[0].id, release: NOOP_RELEASE };
 
-    const now = Date.now();
     const weights = await getLmStudioWeightsMap();
-    // Live in-flight count per candidate (stale claims swept out), plus the admin
-    // dispatch weight: effective load = live × weight, so a slower device weighted
-    // 3 receives ~1 job per 3 a normal model gets.
-    const counts = await Promise.all(pool.map(async (m) => {
-      // Track + weight per INSTANCE (wkey = id::quant): same-key quants on different
-      // machines are distinct workers. The chat call still sends the bare id (LM
-      // Studio exposes no per-instance address — both quants answer to one key), so
-      // for two instances sharing a key the weight biases OUR selection while LM
-      // Studio's balancer has the final say on which machine runs it.
-      const wkey = m.wkey || m.id;
-      let claims = [];
-      try { claims = (await storage.get(lmBusyKey(wkey))) || []; } catch { claims = []; }
-      const live = Array.isArray(claims) ? claims.filter((c) => c && now - c.ts < LM_CLAIM_STALE_MS) : [];
-      const weight = Math.max(1, Number(weights[wkey]) || 1);
-      // Effective capacity = parallel / weight: a down-weighted slow box accepts
-      // proportionally fewer concurrent jobs (does less work AND never backs up
-      // past a shallow queue). Free slots left = capacity - current live claims.
-      const capacity = Math.max(1, Math.round((m.capacity || 4) / weight));
-      return { id: m.id, wkey, live, weight, capacity, freeSlots: capacity - live.length };
-    }));
-    // Prefer a device with a FREE effective slot — an idle/under-capacity box is
-    // always chosen over a full one (fixes the "idle device while others hold +59
-    // queued" starvation); among free devices the one with the MOST free slots wins
-    // so load spreads evenly. Only when EVERY device is at capacity do we overflow
-    // to the least saturated (live/capacity) — the concurrency cap makes that rare.
-    // Weighted-random pick to SCATTER concurrent dispatches instead of herding.
-    // KVS claims are eventually consistent, so many consumers firing at once all
-    // read the same "most free" device and pile onto it before each other's claims
-    // register (observed: one box hit 6 inflight / capacity 4 while another idled).
-    // Picking in proportion to each device's FREE slots spreads a burst across
-    // devices by real capacity — a 4-free box is 4x as likely as a 1-free
-    // (down-weighted) one — so the herd self-distributes.
+    // Per-INSTANCE effective capacity = parallel / weight (wkey = id::quant): a
+    // down-weighted slow box accepts proportionally fewer concurrent jobs. The chat
+    // call always sends the bare id (LM Studio has no per-instance address).
+    const capOf = (m) => Math.max(1, Math.round((m.capacity || 4) / Math.max(1, Number(weights[m.wkey || m.id]) || 1)));
+    const slots = pool.map((m) => ({ id: m.id, wkey: m.wkey || m.id, capacity: capOf(m) }));
+
+    // Weighted-random pick: scatter concurrent dispatches in proportion to free
+    // capacity instead of herding onto one "most free" device.
     const pickWeighted = (list, weightOf) => {
       const total = list.reduce((s, c) => s + Math.max(0, weightOf(c)), 0);
       if (total <= 0) return list[Math.floor(Math.random() * list.length)];
@@ -8520,32 +8494,71 @@ export const lmAcquireWorker = async (requestedModel, opts = {}) => {
       for (const c of list) { r -= Math.max(0, weightOf(c)); if (r <= 0) return c; }
       return list[list.length - 1];
     };
-    const withFree = counts.filter((c) => c.freeSlots > 0);
-    let chosen;
-    if (withFree.length) {
-      chosen = pickWeighted(withFree, (c) => c.freeSlots);
-    } else {
-      // All at capacity — overflow toward the device with the most headroom by
-      // capacity (capacity / (live+1)), still scattered to avoid a fresh herd.
-      chosen = pickWeighted(counts, (c) => c.capacity / (c.live.length + 1));
-    }
 
-    const claimId = `${now.toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-    const key = lmBusyKey(chosen.wkey);
-    const next = chosen.live.concat([{ id: claimId, ts: now }]);
-    try { await storage.set(key, next, LM_CLAIM_TTL); } catch { /* best-effort */ }
-    console.log(`[lm-pool] worker=${chosen.wkey} inflight ${chosen.live.length}→${next.length} (model=${chosen.id}, configured: ${requestedModel})`);
+    // CLAIM MODEL: one KVS key PER claim ("lmbusy:{claimId}", value {cid,wkey,ts}),
+    // NOT one array per device. The old single-array-per-device clobbered concurrent
+    // claims (last-writer-wins -> undercount -> herd/overshoot). Independent per-claim
+    // keys never clobber, so the live count per device is accurate. We read all live
+    // claims with ONE prefix query and bucket them by wkey.
+    const claimId = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+    const myKey = `${LM_BUSY_PREFIX}${claimId}`;
+    const claimTs = Date.now();
+    const snapshot = async () => {
+      const byWkey = {};
+      try {
+        const page = await storage.query()
+          .where("key", { condition: "BEGINS_WITH", values: [LM_BUSY_PREFIX] })
+          .limit(400).getMany();
+        const t = Date.now();
+        for (const r of (page.results || [])) {
+          const v = r && r.value;
+          if (v && v.wkey && typeof v.ts === "number" && t - v.ts < LM_CLAIM_STALE_MS) {
+            (byWkey[v.wkey] || (byWkey[v.wkey] = [])).push({ cid: v.cid, ts: v.ts });
+          }
+        }
+      } catch { /* best-effort: fall back to empty (treat all as free) */ }
+      return byWkey;
+    };
+    const countOf = (snap, wkey) => (snap[wkey] || []).length;
+    // My rank among a device's live claims by (ts, cid). rank < capacity => I fit.
+    const myRank = (snap, wkey) => (snap[wkey] || []).filter(
+      (c) => c.cid !== claimId && (c.ts < claimTs || (c.ts === claimTs && String(c.cid) < String(claimId))),
+    ).length;
+    const pickFrom = (snap, exclude) => {
+      const cand = slots.filter((c) => !exclude.has(c.wkey));
+      if (!cand.length) return null;
+      const withRoom = cand.filter((c) => countOf(snap, c.wkey) < c.capacity);
+      if (withRoom.length) return pickWeighted(withRoom, (c) => c.capacity - countOf(snap, c.wkey));
+      return pickWeighted(cand, (c) => c.capacity / (countOf(snap, c.wkey) + 1));
+    };
+
+    // CLAIM-AND-VERIFY: pick by current counts, write our claim, then re-read. If too
+    // many claims landed ahead of ours on that device (rank >= capacity), re-point our
+    // claim at another device with room. Others' claims may still lag, so this tightens
+    // the per-device cap rather than guaranteeing it. Bounded to 3 tries.
+    let snap = await snapshot();
+    const tried = new Set();
+    let chosen = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const cand = pickFrom(snap, tried);
+      if (!cand) break;
+      tried.add(cand.wkey);
+      chosen = cand; // last pick is the overflow fallback even if it doesn't verify
+      try { await storage.set(myKey, { cid: claimId, wkey: cand.wkey, ts: claimTs }, LM_CLAIM_TTL); } catch { /* best-effort */ }
+      snap = await snapshot();
+      if (myRank(snap, cand.wkey) < cand.capacity) break; // within capacity — keep it
+    }
+    if (!chosen) {
+      chosen = pickWeighted(slots, (c) => c.capacity / (countOf(snap, c.wkey) + 1));
+      try { await storage.set(myKey, { cid: claimId, wkey: chosen.wkey, ts: claimTs }, LM_CLAIM_TTL); } catch { /* best-effort */ }
+    }
+    console.log(`[lm-pool] worker=${chosen.wkey} rank=${myRank(snap, chosen.wkey)}/${chosen.capacity} (model=${chosen.id}, configured: ${requestedModel})`);
 
     let released = false;
     const release = async () => {
       if (released) return;
       released = true;
-      try {
-        const cur = (await storage.get(key)) || [];
-        const t = Date.now();
-        const pruned = (Array.isArray(cur) ? cur : []).filter((c) => c && c.id !== claimId && t - c.ts < LM_CLAIM_STALE_MS);
-        await storage.set(key, pruned, LM_CLAIM_TTL);
-      } catch { /* best-effort — the staleness sweep cleans leaked claims */ }
+      try { await storage.delete(myKey); } catch { /* best-effort — the 5min TTL reaps leaked claims */ }
     };
     return { model: chosen.id, release };
   } catch (e) {

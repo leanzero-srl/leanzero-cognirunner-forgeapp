@@ -8506,16 +8506,28 @@ export const lmAcquireWorker = async (requestedModel, opts = {}) => {
     // queued" starvation); among free devices the one with the MOST free slots wins
     // so load spreads evenly. Only when EVERY device is at capacity do we overflow
     // to the least saturated (live/capacity) — the concurrency cap makes that rare.
+    // Weighted-random pick to SCATTER concurrent dispatches instead of herding.
+    // KVS claims are eventually consistent, so many consumers firing at once all
+    // read the same "most free" device and pile onto it before each other's claims
+    // register (observed: one box hit 6 inflight / capacity 4 while another idled).
+    // Picking in proportion to each device's FREE slots spreads a burst across
+    // devices by real capacity — a 4-free box is 4x as likely as a 1-free
+    // (down-weighted) one — so the herd self-distributes.
+    const pickWeighted = (list, weightOf) => {
+      const total = list.reduce((s, c) => s + Math.max(0, weightOf(c)), 0);
+      if (total <= 0) return list[Math.floor(Math.random() * list.length)];
+      let r = Math.random() * total;
+      for (const c of list) { r -= Math.max(0, weightOf(c)); if (r <= 0) return c; }
+      return list[list.length - 1];
+    };
     const withFree = counts.filter((c) => c.freeSlots > 0);
     let chosen;
     if (withFree.length) {
-      const maxFree = Math.max(...withFree.map((c) => c.freeSlots));
-      const top = withFree.filter((c) => c.freeSlots === maxFree);
-      chosen = top[Math.floor(Math.random() * top.length)];
+      chosen = pickWeighted(withFree, (c) => c.freeSlots);
     } else {
-      const minRatio = Math.min(...counts.map((c) => c.live.length / c.capacity));
-      const top = counts.filter((c) => c.live.length / c.capacity === minRatio);
-      chosen = top[Math.floor(Math.random() * top.length)];
+      // All at capacity — overflow toward the device with the most headroom by
+      // capacity (capacity / (live+1)), still scattered to avoid a fresh herd.
+      chosen = pickWeighted(counts, (c) => c.capacity / (c.live.length + 1));
     }
 
     const claimId = `${now.toString(36)}_${Math.random().toString(36).slice(2, 8)}`;

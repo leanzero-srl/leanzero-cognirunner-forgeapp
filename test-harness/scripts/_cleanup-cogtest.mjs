@@ -49,8 +49,17 @@ try {
   console.log(`  Workflow strip skipped/failed: ${e.message.slice(0, 200)}`);
 }
 
-// ---- 2. Bulk-delete all COGTEST issues (paginate via nextPageToken) ----
-console.log(`\nCollecting all ${PROJECT} issue keys…`);
+// ---- 2. Bulk-delete all COGTEST issues — GATED behind a SEPARATE explicit flag ----
+// HARD RULE: never delete all issues unless the human SPECIFICALLY requests it. Default
+// cleanup strips RULES only (above). Issue deletion requires DELETE_ISSUES=1 in addition
+// to CONFIRM=1, so it can never run as an incidental part of "cleanup".
+if (process.env.DELETE_ISSUES !== "1") {
+  console.log(`\n[skip] Issue deletion is OFF by default (rule: never delete all issues unless specifically requested).`);
+  console.log(`       Rules were stripped above. To ALSO delete every ${PROJECT} issue, re-run with:  CONFIRM=1 DELETE_ISSUES=1 node scripts/_cleanup-cogtest.mjs`);
+  console.log(`\n=== COGTEST cleanup done (rules only) ===\n  rules stripped: ${removed}`);
+  process.exit(0);
+}
+console.log(`\nCollecting all ${PROJECT} issue keys (DELETE_ISSUES=1 — human-requested bulk delete)…`);
 const keys = [];
 let nextPageToken;
 for (;;) {

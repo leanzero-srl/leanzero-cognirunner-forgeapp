@@ -1,0 +1,9 @@
+# Secrets & generated artifacts — never commit
+.env
+.env.*
+!.env.example
+.auth/
+results/
+node_modules/
+playwright-report/
+test-results/

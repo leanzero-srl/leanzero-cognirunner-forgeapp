@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0065FF"/>
+      <stop offset="100%" style="stop-color:#4C9AFF"/>
+    </linearGradient>
+    <linearGradient id="accentGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#FFFFFF"/>
+      <stop offset="100%" style="stop-color:#DEEBFF"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Rounded square background -->
+  <rect x="4" y="4" width="120" height="120" rx="24" ry="24" fill="url(#bgGrad)"/>
+
+  <!-- Stylized brain/circuit left hemisphere -->
+  <path d="M44 42 C44 34, 52 28, 58 28 C62 28, 64 30, 64 34 L64 64"
+        stroke="url(#accentGrad)" stroke-width="5" fill="none" stroke-linecap="round"/>
+  <path d="M38 52 C32 52, 28 58, 28 64 C28 72, 34 78, 42 78 L64 78"
+        stroke="url(#accentGrad)" stroke-width="5" fill="none" stroke-linecap="round"/>
+  <path d="M48 36 C48 36, 42 42, 42 50"
+        stroke="url(#accentGrad)" stroke-width="4" fill="none" stroke-linecap="round"/>
+
+  <!-- Stylized brain/circuit right hemisphere -->
+  <path d="M84 42 C84 34, 76 28, 70 28 C66 28, 64 30, 64 34"
+        stroke="url(#accentGrad)" stroke-width="5" fill="none" stroke-linecap="round"/>
+  <path d="M90 52 C96 52, 100 58, 100 64 C100 72, 94 78, 86 78 L64 78"
+        stroke="url(#accentGrad)" stroke-width="5" fill="none" stroke-linecap="round"/>
+  <path d="M80 36 C80 36, 86 42, 86 50"
+        stroke="url(#accentGrad)" stroke-width="4" fill="none" stroke-linecap="round"/>
+
+  <!-- Neural connection dots -->
+  <circle cx="44" cy="50" r="3.5" fill="#FFFFFF" opacity="0.9"/>
+  <circle cx="84" cy="50" r="3.5" fill="#FFFFFF" opacity="0.9"/>
+  <circle cx="64" cy="34" r="3.5" fill="#FFFFFF" opacity="0.9"/>
+  <circle cx="42" cy="78" r="3.5" fill="#FFFFFF" opacity="0.9"/>
+  <circle cx="86" cy="78" r="3.5" fill="#FFFFFF" opacity="0.9"/>
+
+  <!-- Central AI "eye" / validation checkpoint -->
+  <circle cx="64" cy="58" r="10" fill="none" stroke="#FFFFFF" stroke-width="4"/>
+  <circle cx="64" cy="58" r="4" fill="#FFFFFF"/>
+
+  <!-- Forward arrow / "runner" element emerging from brain -->
+  <path d="M56 92 L72 92 L72 86 L88 96 L72 106 L72 100 L56 100 Z"
+        fill="#FFFFFF" opacity="0.95"/>
+</svg>

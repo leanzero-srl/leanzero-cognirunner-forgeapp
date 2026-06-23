@@ -3,8 +3,7 @@ modules:
   jira:workflowValidator:
     - key: ai-text-field-validator
       name: CogniRunner Field Validator
-      description:
-        Validates a text field value against a custom AI prompt on workflow
+      description: Validates a text field value against a custom AI prompt on workflow
         transition.
       function: validate
       resolver:
@@ -38,20 +37,109 @@ modules:
         - company-managed
         - team-managed
 
-  # Admin page - global overview of all app usages
-  jira:adminPage:
-    - key: cognirunner-admin-panel
-      resource: admin-panel-resource
-      title: CogniRunner Admin
+  # Workflow Post Functions - execute after transition
+  jira:workflowPostFunction:
+    - key: ai-semantic-post-function
+      name: CogniRunner Semantic Post Function
+      description: AI evaluates a condition and modifies a target field after workflow
+        transition.
+      function: executePostFunction
       resolver:
         function: resolver
+      create:
+        resource: config-ui-resource
+      edit:
+        resource: config-ui-resource
+      view:
+        resource: config-view-resource
+      projectTypes:
+        - company-managed
+        - team-managed
+
+    - key: ai-static-post-function
+      name: CogniRunner Static Post Function
+      description: Chains multiple operations with AI-generated code after workflow
+        transition.
+      function: executePostFunction
+      resolver:
+        function: resolver
+      create:
+        resource: config-ui-resource
+      edit:
+        resource: config-ui-resource
+      view:
+        resource: config-view-resource
+      projectTypes:
+        - company-managed
+        - team-managed
+
+  # Global page - shows under Apps in Jira sidebar navigation
+  jira:globalPage:
+    - key: cognirunner-global-page
+      resource: admin-panel-resource
+      title: CogniRunner
+      icon: resource:icon-resource;icon.svg
+      resolver:
+        function: resolver
+
+  # Admin page - Jira admin settings (guaranteed access for site admins)
+  jira:adminPage:
+    - key: cognirunner-admin-settings
+      resource: admin-panel-resource
+      title: CogniRunner Settings
+      icon: resource:icon-resource;icon.svg
+      resolver:
+        function: resolver
+
+  # Atlassian-hosted LLMs (Forge LLMs, Preview since 2026-06-01). Enables the
+  # "Atlassian (Forge LLM)" provider: Claude models served inside the Atlassian
+  # platform via @forge/llm — no API key, no egress. NOTE: adding this module is a
+  # MAJOR version upgrade; existing installations must approve the update, and all
+  # token usage is billed to the vendor's Forge bill (no free quota).
+  llm:
+    - key: cogni-llm
+      model:
+        - claude
+
+  # Async event consumer for long-running AI tasks
+  consumer:
+    - key: async-ai-consumer
+      queue: async-ai-queue
+      function: async-ai-handler
+
+  # Web trigger: serves a single Jira attachment as base64 JSON behind a one-shot
+  # capability token (URL token + Authorization bearer). Used by leanzero-mcp-doc-processor
+  # so an LM Studio model can read Jira attachments via doc-reader's URL variant.
+  # Security model documented in src/index.js (serveAttachment + mintAttachmentToken).
+  webtrigger:
+    - key: attachment-bridge
+      function: serveAttachment
+      response:
+        type: dynamic
+    # Symmetric WRITE side of attachment-bridge: doc-processor POSTs a JSON
+    # envelope ({data:base64, filename, mimeType, size}) here under a one-shot
+    # capability (?t=token + Authorization: Bearer <bearer>); we attach the
+    # bytes to the bound issueKey via api.asApp().requestJira().
+    - key: attachment-upload
+      function: serveAttachmentUpload
+      response:
+        type: dynamic
 
   # Lambda function for validation logic
   function:
     - key: validate
       handler: index.validate
+    - key: executePostFunction
+      handler: index.executePostFunction
+    - key: async-ai-handler
+      handler: async-handler.handler
+      timeoutSeconds: 120
     - key: resolver
       handler: index.handler
+    - key: serveAttachment
+      handler: index.serveAttachment
+    - key: serveAttachmentUpload
+      handler: index.serveAttachmentUpload
 
 resources:
   - key: config-ui-resource
@@ -63,25 +151,70 @@ resources:
   - key: admin-panel-resource
     path: static/admin-panel/build
 
+  - key: icon-resource
+    path: static/icons
+
 permissions:
   content:
     styles:
-      - "unsafe-inline"
+      - unsafe-inline
   scopes:
     - read:jira-work
+    - write:jira-work
+    - read:jira-user
     - read:workflow:jira
+    - write:workflow:jira
     - read:project:jira
     - storage:app
     - read:issue-type-screen-scheme:jira
     - read:screen-scheme:jira
     - read:screen-tab:jira
+    - manage:jira-configuration
     - read:screenable-field:jira
+    - manage:jira-project
+    - write:sprint:jira-software
+    - write:board-scope:jira-software
+    - write:issue:jira-software
   external:
+    images:
+      - address: "*.atlassian.net"
     fetch:
       client:
         - address: https://api.openai.com
+        - address: "*.openai.azure.com"
+        - address: https://openrouter.ai
+        - address: https://api.anthropic.com
+        # AWS Bedrock (BYOK): Converse runtime (inference) at bedrock-runtime.<region>.amazonaws.com
+        # + control plane (model listing) at bedrock.<region>.amazonaws.com. Forge egress wildcards
+        # are leftmost-only (no mid-segment '*'), and a single '*' matches nested subdomains (same as
+        # '*.ts.net' above), so one wildcard covers both Bedrock hosts across every region selected.
+        - address: "*.amazonaws.com"
+        # Hosted MCP servers exposed via Tailscale Funnel (LM Studio + the
+        # cross-provider bridge). Forge runtime egress follows CSP and only
+        # honors the DEFAULT HTTPS port (443) — non-standard ports (8443/10000)
+        # are blocked at runtime even if listed, so self-hosted MCPs MUST be
+        # served on Funnel port 443. This wildcard matches nested *.ts.net hosts.
+        - address: "*.ts.net"
+        # context7 hosted MCP (library/SDK docs)
+        - address: https://mcp.context7.com
       backend:
         - address: https://api.openai.com
+        - address: "*.openai.azure.com"
+        - address: https://openrouter.ai
+        - address: https://api.anthropic.com
+        # AWS Bedrock (BYOK): Converse runtime (inference) at bedrock-runtime.<region>.amazonaws.com
+        # + control plane (model listing) at bedrock.<region>.amazonaws.com. Forge egress wildcards
+        # are leftmost-only (no mid-segment '*'), and a single '*' matches nested subdomains (same as
+        # '*.ts.net' above), so one wildcard covers both Bedrock hosts across every region selected.
+        - address: "*.amazonaws.com"
+        # Hosted MCP servers exposed via Tailscale Funnel (LM Studio + the
+        # cross-provider bridge). Forge runtime egress follows CSP and only
+        # honors the DEFAULT HTTPS port (443) — non-standard ports (8443/10000)
+        # are blocked at runtime even if listed, so self-hosted MCPs MUST be
+        # served on Funnel port 443. This wildcard matches nested *.ts.net hosts.
+        - address: "*.ts.net"
+        # context7 hosted MCP (library/SDK docs)
+        - address: https://mcp.context7.com
 
 app:
   runtime:

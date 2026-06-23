@@ -1,0 +1,166 @@
+/*
+ * CogniRunner - AI-powered workflow validation for Jira
+ * Copyright (C) 2025 LeanZero
+ *
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ */
+
+import React, { useState } from "react";
+import { invoke } from "@forge/bridge";
+import Tooltip from "./Tooltip";
+import CustomSelect from "./CustomSelect";
+import IssuePicker from "./IssuePicker";
+import AILoadingState from "./AILoadingState";
+
+export default function SubtaskConfig({
+  fieldId,
+  setFieldId,
+  fields,
+  loadingFields,
+  errorFields,
+  subtaskPrompt,
+  setSubtaskPrompt,
+}) {
+  const [showTest, setShowTest] = useState(false);
+  const [testIssue, setTestIssue] = useState("");
+  const [testRunning, setTestRunning] = useState(false);
+  const [issueValid, setIssueValid] = useState(null);
+  const [testResult, setTestResult] = useState(null);
+  // Required-field error styling is gated on blur — a pristine form must not
+  // open covered in red.
+  const [promptTouched, setPromptTouched] = useState(false);
+
+  const handleTest = async () => {
+    setTestRunning(true);
+    setTestResult(null);
+    try {
+      const result = await invoke("testSubtaskPostFunction", {
+        issueKey: testIssue.trim(),
+        fieldId: fieldId || "description",
+        subtaskPrompt,
+      });
+      setTestResult(result);
+    } catch (e) {
+      setTestResult({ success: false, error: e.message, logs: [] });
+    }
+    setTestRunning(false);
+  };
+
+  return (
+    <div className="semantic-config">
+      <div className="pf-how-it-works">
+        <div className="pf-how-header">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <circle cx="12" cy="12" r="10" />
+            <line x1="12" y1="16" x2="12" y2="12" />
+            <line x1="12" y1="8" x2="12.01" y2="8" />
+          </svg>
+          <strong>How it works</strong>
+        </div>
+        <ol className="pf-how-steps">
+          <li><strong>Read</strong> — AI reads the parent issue&apos;s source field</li>
+          <li><strong>Draft</strong> — AI writes a sub-task summary + description from your instructions</li>
+          <li>The sub-task is created under the issue automatically after the transition</li>
+        </ol>
+        <p className="hint" style={{ margin: "6px 0 0" }}>
+          Requires sub-tasks to be enabled on the project. (If they&apos;re disabled, the rule safely skips.)
+        </p>
+      </div>
+
+      <div className="form-group">
+        <label className="label">
+          Source Field
+          <Tooltip text="The parent field the AI reads to draft the sub-task. Defaults to Description." />
+        </label>
+        {loadingFields ? (
+          <div className="sk sk-block" style={{ height: 42 }} />
+        ) : errorFields || !setFieldId ? (
+          <input type="text" value={fieldId || ""} onChange={(e) => setFieldId && setFieldId(e.target.value)} placeholder="description" className="input" />
+        ) : (
+          <CustomSelect
+            value={fieldId || "description"}
+            onChange={setFieldId}
+            placeholder="Source field..."
+            searchable
+            searchPlaceholder="Search fields..."
+            options={fields.map((f) => ({ value: f.id, label: f.name, meta: f.id, type: f.type?.replace(/^(System|Custom) \(|\)$/g, ""), custom: f.custom }))}
+            groups={[
+              { label: "System Fields", filter: (o) => !o.custom },
+              { label: "Custom Fields", filter: (o) => !!o.custom },
+            ]}
+          />
+        )}
+      </div>
+
+      <div className="form-group">
+        <label className="label">
+          Sub-task instructions <span className="required">*</span>
+          <Tooltip text="What sub-task to create. e.g. 'Create a QA verification sub-task listing the acceptance criteria to test.'" />
+        </label>
+        <textarea
+          value={subtaskPrompt || ""}
+          onChange={(e) => setSubtaskPrompt(e.target.value)}
+          onBlur={() => setPromptTouched(true)}
+          placeholder={'Example: "Create a documentation sub-task summarizing what needs to be written for this change."'}
+          className={`textarea ${promptTouched && (!subtaskPrompt || !subtaskPrompt.trim()) ? "input-error" : ""}`}
+          rows={4}
+        />
+      </div>
+
+      <div className="semantic-test-section">
+        <button className="btn-semantic-test-toggle" onClick={() => setShowTest(!showTest)}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <polygon points="5 3 19 12 5 21 5 3" />
+          </svg>
+          <span>{showTest ? "Hide Test" : "Test Run"}</span>
+          <Tooltip text="Drafts the sub-task from a real issue — it does NOT create anything. Completely safe." />
+        </button>
+
+        {showTest && (
+          <div className="semantic-test-panel">
+            <div className="semantic-test-header">
+              <span className="test-panel-badge">Dry run — no sub-task is created</span>
+            </div>
+            <div className="form-group" style={{ margin: "10px 0 8px" }}>
+              <label className="label" style={{ fontSize: "11px", marginBottom: "4px" }}>Test against issue</label>
+              <div className="test-target-row">
+                <IssuePicker value={testIssue} onChange={setTestIssue} onValidationChange={setIssueValid} />
+                <button className={`btn-run-test${testRunning ? " is-busy busy-solid" : ""}`} onClick={handleTest} disabled={testRunning || !testIssue.trim() || !(subtaskPrompt || "").trim() || !issueValid?.valid}>
+                  Run Test
+                </button>
+              </div>
+            </div>
+
+            {testRunning && <AILoadingState type="test" />}
+
+            {testResult && (
+              <div className={`semantic-test-result anim-rise ${testResult.success ? "st-update" : "st-error"}`}>
+                <div className="st-result-header">
+                  {testResult.success
+                    ? <span className="test-badge test-badge-pass">{testResult.decision || "SUBTASK"}</span>
+                    : <span className="test-badge test-badge-fail">ERROR</span>}
+                  <span className="test-result-meta">{testResult.executionTimeMs ? `${testResult.executionTimeMs}ms` : ""}</span>
+                  <button className="test-dismiss" onClick={() => setTestResult(null)}>&times;</button>
+                </div>
+                {testResult.error && <div className="st-section"><strong>Error:</strong> {testResult.error}</div>}
+                {testResult.proposedValue !== undefined && (
+                  <div className="st-section">
+                    <div className="st-section-label">Drafted sub-task{testResult.title ? ` — "${testResult.title}"` : ""}</div>
+                    <pre className="st-value st-proposed">{typeof testResult.proposedValue === "string" ? testResult.proposedValue : JSON.stringify(testResult.proposedValue, null, 2)}</pre>
+                    <p className="hint" style={{ margin: "4px 0 0" }}>This was NOT created. Dry run only.</p>
+                  </div>
+                )}
+                {testResult.logs && testResult.logs.length > 0 && (
+                  <div className="st-section">
+                    <div className="st-section-label">Execution Log</div>
+                    {testResult.logs.map((log, i) => (<div key={i} className="test-log-line"><code>{log}</code></div>))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

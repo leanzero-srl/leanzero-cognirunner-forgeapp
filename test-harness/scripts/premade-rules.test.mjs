@@ -26,9 +26,11 @@ const runV = (cfg, { mf = {}, issueKey = "T-1", store = {} } = {}) =>
   executePremadeRule(cfg, { issue: { key: issueKey }, modifiedFields: mf }, "validator", {
     readField: async (_k, f) => store[f],
   });
-const runC = (cfg, { issueKey = "T-1", store = {} } = {}) =>
+const runC = (cfg, { issueKey = "T-1", store = {}, user = null, groups = [] } = {}) =>
   executePremadeRule(cfg, { issue: { key: issueKey } }, "condition", {
     readField: async (_k, f) => store[f],
+    actingUser: user,
+    readUserGroups: async () => groups,
   });
 
 // expect: { result: bool, hasMsg?: bool }
@@ -153,7 +155,19 @@ async function main() {
   await check("condition reader throws → fail-open show",
     executePremadeRule({ ruleType: "field-has-value", fieldId: "cf" }, { issue: { key: "T-1" } }, "condition", { readField: async () => { throw new Error("boom"); } }),
     { result: true });
-  await check("unknown/unavailable ruleType (condition) → show", runC({ ruleType: "user-in-group", groupName: "x" }), { result: true });
+
+  // ---- recovered acting-user conditions (user.accountId from the payload) ----
+  await check("current-user-is-assignee match → show", runC({ ruleType: "current-user-is-assignee" }, { store: { assignee: { accountId: "acc-1" } }, user: "acc-1" }), { result: true });
+  await check("current-user-is-assignee mismatch → hide", runC({ ruleType: "current-user-is-assignee" }, { store: { assignee: { accountId: "acc-2" } }, user: "acc-1" }), { result: false });
+  await check("current-user-is-assignee no acting user → show (fail-open)", runC({ ruleType: "current-user-is-assignee" }, { store: { assignee: { accountId: "acc-2" } }, user: null }), { result: true });
+  await check("current-user-is-reporter match → show", runC({ ruleType: "current-user-is-reporter" }, { store: { reporter: { accountId: "acc-9" } }, user: "acc-9" }), { result: true });
+  await check("current-user-is-reporter mismatch → hide", runC({ ruleType: "current-user-is-reporter" }, { store: { reporter: { accountId: "acc-9" } }, user: "acc-1" }), { result: false });
+  await check("user-in-field match → show", runC({ ruleType: "user-in-field", fieldId: "approver" }, { store: { approver: { accountId: "acc-5" } }, user: "acc-5" }), { result: true });
+  await check("user-in-field mismatch → hide", runC({ ruleType: "user-in-field", fieldId: "approver" }, { store: { approver: { accountId: "acc-5" } }, user: "acc-1" }), { result: false });
+  await check("user-in-group member → show", runC({ ruleType: "user-in-group", groupName: "QA" }, { user: "acc-1", groups: ["developers", "qa"] }), { result: true });
+  await check("user-in-group non-member → hide", runC({ ruleType: "user-in-group", groupName: "admins" }, { user: "acc-1", groups: ["developers", "qa"] }), { result: false });
+  await check("user-in-group no acting user → show (fail-open)", runC({ ruleType: "user-in-group", groupName: "QA" }, { user: null, groups: [] }), { result: true });
+  await check("unknown/unavailable ruleType (user-in-role) → show", runC({ ruleType: "user-in-role", roleName: "x" }), { result: true });
 
   // ---- report ----
   const total = passed + failures.length;

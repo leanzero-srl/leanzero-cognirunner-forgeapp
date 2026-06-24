@@ -2153,12 +2153,13 @@ resolver.define("getRuleLists", async ({ context }) => {
       .sort()
       .map((n) => ({ value: n, label: n }));
   try {
-    const [its, sts, res, lts, prs] = await Promise.all([
+    const [its, sts, res, lts, prs, grp] = await Promise.all([
       j(route`/rest/api/3/issuetype`),
       j(route`/rest/api/3/status`),
       j(route`/rest/api/3/resolution`),
       j(route`/rest/api/3/issueLinkType`),
       j(route`/rest/api/3/priority`),
+      j(route`/rest/api/3/group/bulk?maxResults=50`),
     ]);
     return {
       success: true,
@@ -2168,6 +2169,7 @@ resolver.define("getRuleLists", async ({ context }) => {
         resolutions: uniqNames(res),
         linktypes: uniqNames(lts && lts.issueLinkTypes), // GET /issueLinkType → { issueLinkTypes:[{name}] }
         priorities: uniqNames(prs),
+        groups: uniqNames(grp && grp.values), // GET /group/bulk → { values:[{name}] } (user-in-group picker)
       },
     };
   } catch (error) {

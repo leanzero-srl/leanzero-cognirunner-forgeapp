@@ -30,6 +30,7 @@ import CommentConfig from "./CommentConfig";
 import SubtaskConfig from "./SubtaskConfig";
 import LinkConfig from "./LinkConfig";
 import FunctionBuilder from "./FunctionBuilder";
+import PremadeRuleForm from "./PremadeRuleForm";
 
 const RULE_TYPE_OPTIONS = [
   { value: "validator", label: "Validator", desc: "Block transition if validation fails" },
@@ -71,6 +72,10 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
   const [loadingFields, setLoadingFields] = useState(false);
   const [fieldId, setFieldId] = useState("");
   const [prompt, setPrompt] = useState("");
+  // Premade (non-AI) rule state — for the validator/condition rule types.
+  const [ruleKind, setRuleKind] = useState("ai"); // "ai" | "premade"
+  const [premadeConfig, setPremadeConfig] = useState({});
+  const [premadeValid, setPremadeValid] = useState(false);
   const [conditionPrompt, setConditionPrompt] = useState("");
   const [actionPrompt, setActionPrompt] = useState("");
   const [actionFieldId, setActionFieldId] = useState("");
@@ -223,8 +228,13 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
   const handleSave = async () => {
     setSubmitted(true);
     // Validate required fields
-    if (ruleType === "validator" && (!fieldId || !prompt.trim())) return;
-    if (ruleType === "condition" && (!fieldId || !prompt.trim())) return;
+    const isValOrCond = ruleType === "validator" || ruleType === "condition";
+    if (isValOrCond && ruleKind === "premade" && !premadeValid) {
+      setError("Complete the premade rule's details before creating the rule.");
+      return;
+    }
+    if (ruleType === "validator" && ruleKind === "ai" && (!fieldId || !prompt.trim())) return;
+    if (ruleType === "condition" && ruleKind === "ai" && (!fieldId || !prompt.trim())) return;
     // Required-prompt gaps must surface in the wizard error banner — the
     // touched-gated field styling means a never-blurred empty field shows no
     // red, so a silent return here reads as a dead Create button.
@@ -295,7 +305,17 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
                 : ruleType === "postfunction-link"
                   ? { type: ruleType, fieldId: fieldId || "description", prompt: linkPrompt, linkPrompt, linkTypeName, maxLinks, selectedDocIds, workflow: workflowData }
                   : { type: ruleType, fieldId: fieldId || "description", prompt: prompt || conditionPrompt, conditionPrompt, actionPrompt, actionFieldId, selectedDocIds, crossCheckClaims, workflow: workflowData }
-        : { type: ruleType, fieldId: fieldId || "description", prompt, enableTools, selectedDocIds, workflow: workflowData };
+        : ruleKind === "premade"
+          ? {
+              // Premade (non-AI) validator/condition. Carries ruleType (catalog key) + params;
+              // no AI prompt. fieldId is the rule's field or a synthetic value for issue-level rules.
+              type: ruleType,
+              ...premadeConfig,
+              ruleKind: "premade",
+              fieldId: premadeConfig.fieldId || `premade:${premadeConfig.ruleType}`,
+              workflow: workflowData,
+            }
+          : { type: ruleType, fieldId: fieldId || "description", prompt, enableTools, selectedDocIds, workflow: workflowData };
       // Embed the id so the runtime executor and view panels resolve the registry
       // row directly instead of falling back to workflow-context matching.
       configPayload.id = ruleId;
@@ -343,6 +363,7 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
           type: ruleType,
           ...configPayload,
           workflow: workflowData,
+          premadeRuleType: ruleKind === "premade" ? premadeConfig.ruleType : undefined,
         });
       }
 
@@ -746,11 +767,36 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
                   </svg>
                   <div style={{ fontSize: "12px", color: "var(--text-secondary)" }}>
                     {ruleType === "condition"
-                      ? "Hides or shows the transition button based on AI evaluation. Does not block — just controls visibility."
-                      : "Blocks the transition if the AI determines the field content does not meet your criteria."
+                      ? "Hides or shows the transition button. Premade rules evaluate deterministically (no AI); AI rules use your prompt."
+                      : "Blocks the transition when the rule isn't met. Premade rules evaluate deterministically (no AI); AI rules use your prompt."
                     }
                   </div>
                 </div>
+
+                {/* Rule kind: AI prompt (default) vs a premade, non-AI catalog rule. */}
+                <div className="form-group">
+                  <label className="label">Rule kind</label>
+                  <div className="rulekind-toggle">
+                    <button type="button" className={`rulekind-opt${ruleKind === "ai" ? " active" : ""}`} onClick={() => setRuleKind("ai")}>
+                      <span className="rulekind-opt-title">AI prompt</span>
+                      <span className="rulekind-opt-sub">Describe the check in words; AI evaluates each transition</span>
+                    </button>
+                    <button type="button" className={`rulekind-opt${ruleKind === "premade" ? " active" : ""}`} onClick={() => setRuleKind("premade")}>
+                      <span className="rulekind-opt-title">Premade rule</span>
+                      <span className="rulekind-opt-sub">Pick a ready-made check — no AI, instant, zero cost</span>
+                    </button>
+                  </div>
+                </div>
+
+                {ruleKind === "premade" ? (
+                  <PremadeRuleForm
+                    mode={ruleType === "condition" ? "condition" : "validator"}
+                    fields={fields}
+                    initial={null}
+                    onChange={(cfg, valid) => { setPremadeConfig(cfg); setPremadeValid(valid); }}
+                  />
+                ) : (
+                <>
 
                 {/* Field selector */}
                 <div style={{ marginBottom: "14px" }}>
@@ -909,6 +955,8 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
                     </div>
                   )}
                 </div>
+                </>
+                )}
               </>
             )}
 

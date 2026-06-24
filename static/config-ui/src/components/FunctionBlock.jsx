@@ -17,6 +17,9 @@ import IssuePicker from "./IssuePicker";
 import AILoadingState from "./AILoadingState";
 import { showToast } from "./toast";
 import JIRA_ENDPOINTS_DATA from "../data/jira-endpoints";
+// Premade post-function recipes — ready-made, no-AI code templates.
+import { BUILTIN_RECIPES, getRecipeByKey } from "../../../../src/shared/builtin-recipes.js";
+import { KNOWN_API_MEMBERS } from "../../../../src/shared/sandbox-api-spec.js";
 
 // Maps a step's operation type to the closest skill category for
 // the "Save as Skill" pre-fill.
@@ -210,6 +213,10 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
   const [knowledgeRefresh, setKnowledgeRefresh] = useState(0);
   const [vetoingMemory, setVetoingMemory] = useState(false);
   const [showSkillEditor, setShowSkillEditor] = useState(false);
+  // Recipe picker state — "Start from a recipe" inserts ready-made, no-AI code.
+  const [showRecipes, setShowRecipes] = useState(false);
+  const [recipeKey, setRecipeKey] = useState("");
+  const [recipeParams, setRecipeParams] = useState({});
   const suggestTimer = useRef(null);
   // Timer for the transient "auto-detected" badge — cleared before re-arming
   // (rapid re-suggestions must not race) and on unmount.
@@ -560,6 +567,95 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
         )}
       </div>
 
+      {/* Start from a recipe — a ready-made, no-AI step. Alternative to describe → Generate. */}
+      <div className="recipe-bar">
+        <button type="button" className="recipe-bar-toggle" onClick={() => setShowRecipes((v) => !v)}>
+          <span className="recipe-bar-icon">{showRecipes ? "▾" : "▸"}</span>
+          <span>Start from a recipe</span>
+          <span className="recipe-bar-sub">ready-made · no AI</span>
+        </button>
+        {showRecipes && (
+          <div className="recipe-bar-body anim-rise">
+            <CustomSelect
+              value={recipeKey}
+              onChange={(k) => { setRecipeKey(k); setRecipeParams({}); }}
+              searchable
+              placeholder="Choose a recipe…"
+              options={BUILTIN_RECIPES.map((r) => {
+                const supported = (r.apiMembers || []).every((m) => KNOWN_API_MEMBERS.includes(m));
+                return { value: r.key, label: r.label, meta: supported ? r.category : "needs newer sandbox", type: r.category };
+              })}
+            />
+            {recipeKey && (() => {
+              const recipe = getRecipeByKey(recipeKey);
+              if (!recipe) return null;
+              const supported = (recipe.apiMembers || []).every((m) => KNOWN_API_MEMBERS.includes(m));
+              const missing = recipe.params.filter((pp) => pp.required && !String(recipeParams[pp.name] ?? "").trim());
+              return (
+                <>
+                  <p className="recipe-desc">{recipe.description}</p>
+                  {recipe.params.map((pp) => (
+                    <div className="form-group" key={pp.name}>
+                      <label className="label">{pp.label}{pp.required && <span className="required"> *</span>}</label>
+                      {pp.type === "field" ? (
+                        <CustomSelect
+                          value={recipeParams[pp.name] || ""}
+                          onChange={(v) => setRecipeParams((s) => ({ ...s, [pp.name]: v }))}
+                          searchable
+                          placeholder="Choose a field…"
+                          options={fields.map((f) => ({ value: f.id, label: f.name, meta: f.id }))}
+                        />
+                      ) : pp.type === "select" || pp.type === "operator" ? (
+                        <CustomSelect
+                          value={recipeParams[pp.name] ?? pp.default ?? ""}
+                          onChange={(v) => setRecipeParams((s) => ({ ...s, [pp.name]: v }))}
+                          options={pp.options || []}
+                        />
+                      ) : pp.type === "number" ? (
+                        <input
+                          className="input"
+                          type="number"
+                          value={recipeParams[pp.name] ?? pp.default ?? ""}
+                          onChange={(e) => setRecipeParams((s) => ({ ...s, [pp.name]: e.target.value }))}
+                        />
+                      ) : (
+                        <input
+                          className="input"
+                          value={recipeParams[pp.name] || ""}
+                          onChange={(e) => setRecipeParams((s) => ({ ...s, [pp.name]: e.target.value }))}
+                          placeholder={pp.hint || ""}
+                        />
+                      )}
+                      {pp.hint && <p className="hint">{pp.hint}</p>}
+                    </div>
+                  ))}
+                  {!supported && (
+                    <div className="recipe-note">This recipe needs sandbox methods not yet enabled in this build.</div>
+                  )}
+                  <button
+                    type="button"
+                    className="btn-generate"
+                    disabled={!supported || missing.length > 0}
+                    onClick={() => {
+                      const params = {};
+                      for (const pp of recipe.params) params[pp.name] = recipeParams[pp.name] ?? pp.default ?? "";
+                      onUpdate({
+                        code: recipe.build(params),
+                        operationType: recipe.operationType || functionData.operationType,
+                        generationMeta: { source: "recipe", recipeKey: recipe.key, recipeLabel: recipe.label, recipeParams: params },
+                      });
+                      setShowRecipes(false);
+                    }}
+                  >
+                    Insert recipe
+                  </button>
+                </>
+              );
+            })()}
+          </div>
+        )}
+      </div>
+
       {/* Available variables from prior steps */}
       {priorSteps && priorSteps.filter((s) => s.variableName).length > 0 && (
         <div className="prior-vars-bar">
@@ -782,15 +878,18 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
         </div>
       )}
 
-      {/* Knowledge panel — docs, skills, and memories the AI uses as context */}
-      <KnowledgePanel
-        selectedDocIds={selectedDocs}
-        onDocSelectionChange={(ids) => { setSelectedDocs(ids); onUpdate({ selectedDocIds: ids }); }}
-        selectedSkillIds={selectedSkills}
-        onSkillSelectionChange={(ids) => { setSelectedSkills(ids); onUpdate({ selectedSkillIds: ids }); }}
-        autoAppliedSkills={(functionData.generationMeta?.appliedSkills || []).filter((s) => s.auto)}
-        refreshKey={knowledgeRefresh}
-      />
+      {/* Knowledge panel — docs, skills, and memories the AI uses as context.
+          Hidden for recipe-sourced steps (deterministic code; no AI input). */}
+      {functionData.generationMeta?.source !== "recipe" && (
+        <KnowledgePanel
+          selectedDocIds={selectedDocs}
+          onDocSelectionChange={(ids) => { setSelectedDocs(ids); onUpdate({ selectedDocIds: ids }); }}
+          selectedSkillIds={selectedSkills}
+          onSkillSelectionChange={(ids) => { setSelectedSkills(ids); onUpdate({ selectedSkillIds: ids }); }}
+          autoAppliedSkills={(functionData.generationMeta?.appliedSkills || []).filter((s) => s.auto)}
+          refreshKey={knowledgeRefresh}
+        />
+      )}
 
       {/* Inline context — for one-off notes not worth saving to the library */}
       <div className="form-group">
@@ -922,8 +1021,16 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
           {/* API Reference panel — rendered from the shared sandbox API spec */}
           {showApiRef && <div className="anim-rise"><ApiReferencePanel /></div>}
 
-          {/* Provenance — what knowledge the AI used for this code */}
-          {functionData.generationMeta && (
+          {/* Provenance — recipe origin, or what knowledge the AI used for this code */}
+          {functionData.generationMeta?.source === "recipe" && (
+            <div className="gen-meta-bar">
+              <span className="gen-meta-label">FROM RECIPE</span>
+              <span className="gen-meta-chip gmc-recipe">
+                {functionData.generationMeta.recipeLabel || functionData.generationMeta.recipeKey}
+              </span>
+            </div>
+          )}
+          {functionData.generationMeta && functionData.generationMeta.source !== "recipe" && (
             <div className="gen-meta-bar">
               <span className="gen-meta-label">GENERATED WITH</span>
               {functionData.generationMeta.appliedDocs?.length > 0 && (

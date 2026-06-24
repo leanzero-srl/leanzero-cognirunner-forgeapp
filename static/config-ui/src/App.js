@@ -21,6 +21,7 @@ import { invoke } from "@forge/bridge";
 import SemanticConfig from "./components/SemanticConfig";
 import FunctionBuilder from "./components/FunctionBuilder";
 import CustomSelect from "./components/CustomSelect";
+import PremadeRuleForm from "./components/PremadeRuleForm";
 import IssuePicker from "./components/IssuePicker";
 import DocRepository from "./components/DocRepository";
 import ReviewPanel from "./components/ReviewPanel";
@@ -2526,6 +2527,48 @@ const injectStyles = () => {
 
     .section { margin-bottom: 28px; }
 
+    /* Premade (non-AI) rule editor */
+    .rulekind-toggle { display: flex; gap: 10px; }
+    .rulekind-opt {
+      flex: 1; text-align: left; cursor: pointer;
+      display: flex; flex-direction: column; gap: 3px;
+      padding: 10px 12px; border: 1px solid var(--border-color);
+      border-radius: 8px; background: var(--input-bg); color: var(--text-color);
+      transition: border-color .15s, background .15s;
+    }
+    .rulekind-opt:hover { border-color: var(--primary-color); }
+    .rulekind-opt.active { background: var(--primary-color); border-color: var(--primary-color); color: #fff; }
+    .rulekind-opt-title { font-weight: 700; font-size: 13px; }
+    .rulekind-opt-sub { font-size: 11.5px; color: var(--text-secondary); }
+    .rulekind-opt.active .rulekind-opt-sub { color: rgba(255,255,255,.85); }
+
+    .pr-form { margin-top: 4px; }
+    .pr-row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .pr-opt { font-weight: 400; font-size: 11px; color: var(--text-muted); }
+    .pr-mono { font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace; font-size: 12.5px; }
+    .pr-note {
+      background: #b45309; color: #fff; font-weight: 600; font-size: 12.5px;
+      padding: 9px 12px; border-radius: 8px; margin-bottom: 16px; line-height: 1.45;
+    }
+    html[data-color-mode="dark"] .pr-note { background: #d97706; }
+    .pr-foot { font-style: italic; }
+
+    /* Premade recipe picker (FunctionBlock "Start from a recipe") */
+    .recipe-bar { margin-bottom: 14px; border: 1px solid var(--border-color); border-radius: 8px; overflow: hidden; }
+    .recipe-bar-toggle {
+      width: 100%; display: flex; align-items: center; gap: 8px; padding: 9px 12px;
+      background: var(--input-bg); border: none; cursor: pointer; color: var(--text-color);
+      font-weight: 600; font-size: 13px;
+    }
+    .recipe-bar-icon { color: var(--text-secondary); }
+    .recipe-bar-sub { margin-left: auto; font-weight: 400; font-size: 11px; color: var(--text-muted); }
+    .recipe-bar-body { padding: 12px; border-top: 1px solid var(--border-color); }
+    .recipe-desc { margin: 0 0 12px 0; font-size: 12px; color: var(--text-secondary); }
+    .recipe-note { background: #b45309; color: #fff; font-weight: 600; font-size: 12px; padding: 8px 10px; border-radius: 6px; margin-bottom: 10px; }
+    html[data-color-mode="dark"] .recipe-note { background: #d97706; }
+    .gen-meta-chip.gmc-recipe { background: #4f46e5; color: #fff; }
+    html[data-color-mode="dark"] .gen-meta-chip.gmc-recipe { background: #6366f1; }
+
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after {
         animation-duration: 0.01ms !important;
@@ -2588,6 +2631,10 @@ let currentExistingRuleId = null;
 // rule that same fallback would hijack a sibling's row (rename its id to our
 // fresh instanced id, stranding the sibling's disable state).
 let currentIsLegacyEdit = false;
+// Premade (non-AI) rule refs — onConfigure reads these to assemble a premade config.
+let currentRuleKind = "ai"; // "ai" | "premade"
+let currentPremadeConfig = {}; // { ruleType, ...params } produced by PremadeRuleForm
+let currentPremadeValid = false;
 
 function App() {
   const [fieldId, setFieldId] = useState("");
@@ -2631,6 +2678,12 @@ function App() {
   // Post-function state
   const [isPostFunction, setIsPostFunction] = useState(false);
   const [isCondition, setIsCondition] = useState(false);
+  // Premade (non-AI) rule state. ruleKind toggles the validator/condition editor between
+  // "ai" (prompt-based, the default) and "premade" (a deterministic catalog rule).
+  const [ruleKind, setRuleKind] = useState("ai");
+  const [premadeInitial, setPremadeInitial] = useState(null); // saved premade config to hydrate
+  const [premadeConfig, setPremadeConfig] = useState({});
+  const [premadeValid, setPremadeValid] = useState(false);
   const [postFunctionType, setPostFunctionType] = useState(null); // null | "semantic" | "static"
   const [conditionPrompt, setConditionPrompt] = useState("");
   const [actionPrompt, setActionPrompt] = useState("");
@@ -2675,6 +2728,9 @@ function App() {
   useEffect(() => { currentRunAsync = runAsync; }, [runAsync]);
   useEffect(() => { currentFunctions = functions; }, [functions]);
   useEffect(() => { currentValidatorDocIds = validatorDocIds; }, [validatorDocIds]);
+  useEffect(() => { currentRuleKind = ruleKind; }, [ruleKind]);
+  useEffect(() => { currentPremadeConfig = premadeConfig; }, [premadeConfig]);
+  useEffect(() => { currentPremadeValid = premadeValid; }, [premadeValid]);
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -2884,6 +2940,13 @@ function App() {
               setValidatorDocIds(config.selectedDocIds);
               currentValidatorDocIds = config.selectedDocIds;
             }
+            // Premade (non-AI) rule: flip the editor into premade mode and hand the
+            // saved config to PremadeRuleForm to hydrate.
+            if (config.ruleKind === "premade") {
+              setRuleKind("premade");
+              currentRuleKind = "premade";
+              setPremadeInitial(config);
+            }
           }
         } catch (e) {
           console.log("Could not load existing config:", e);
@@ -3031,6 +3094,17 @@ function App() {
               config.type = "postfunction-static";
               config.functions = currentFunctions;
               config.runAsync = currentRunAsync;
+            } else if (currentRuleKind === "premade") {
+              // Premade (non-AI) validator/condition. Assemble from the catalog form's
+              // config (ruleType + params). No AI prompt; fieldId only when the rule uses one.
+              if (!currentPremadeValid) {
+                setError("Complete the premade rule's details before saving.");
+                return undefined;
+              }
+              delete config.prompt;
+              delete config.fieldId;
+              Object.assign(config, currentPremadeConfig);
+              config.ruleKind = "premade";
             } else {
               // Standard validator/condition
               if (!currentFieldId.trim() || !currentPrompt.trim()) return undefined;
@@ -3104,13 +3178,18 @@ function App() {
                 });
               } else {
                 const moduleType = ext.type === "jira:workflowCondition" ? "condition" : "validator";
+                const isPremade = config.ruleKind === "premade";
                 registryResult = await invoke("registerConfig", {
                   id: ruleId,
                   type: moduleType,
-                  fieldId: config.fieldId,
-                  prompt: config.prompt,
+                  // Issue-level premade rules have no field — pass a synthetic non-empty
+                  // value so registerConfig's `!fieldId` guard passes (also a fine display value).
+                  fieldId: config.fieldId || (isPremade ? `premade:${config.ruleType}` : config.fieldId),
+                  prompt: isPremade ? "" : config.prompt,
                   workflow: workflowContext,
                   legacyUpgrade: currentIsLegacyEdit,
+                  ruleKind: config.ruleKind,
+                  premadeRuleType: isPremade ? config.ruleType : undefined,
                 });
               }
             } catch (netErr) {
@@ -3403,6 +3482,44 @@ function App() {
             <span>Uses your {providerLabel} API key. Each validation consumes tokens from your account.</span>
           </div>
         )}
+
+        {/* Rule kind: AI prompt (default) vs a premade, non-AI catalog rule. */}
+        <div className="form-group">
+          <label className="label">Rule kind</label>
+          <div className="rulekind-toggle">
+            <button
+              type="button"
+              className={`rulekind-opt${ruleKind === "ai" ? " active" : ""}`}
+              onClick={() => setRuleKind("ai")}
+            >
+              <span className="rulekind-opt-title">AI prompt</span>
+              <span className="rulekind-opt-sub">Describe the check in words; AI evaluates each transition</span>
+            </button>
+            <button
+              type="button"
+              className={`rulekind-opt${ruleKind === "premade" ? " active" : ""}`}
+              onClick={() => setRuleKind("premade")}
+            >
+              <span className="rulekind-opt-title">Premade rule</span>
+              <span className="rulekind-opt-sub">Pick a ready-made check — no AI, instant, zero cost</span>
+            </button>
+          </div>
+        </div>
+
+        {ruleKind === "premade" ? (
+          <PremadeRuleForm
+            mode={isCondition ? "condition" : "validator"}
+            fields={fields}
+            initial={premadeInitial}
+            onChange={(cfg, valid) => {
+              setPremadeConfig(cfg);
+              setPremadeValid(valid);
+              currentPremadeConfig = cfg;
+              currentPremadeValid = valid;
+            }}
+          />
+        ) : (
+        <>
         <div className="form-group">
           <label className="label">
             Field to Validate <span className="required">*</span>
@@ -3680,6 +3797,8 @@ function App() {
             </div>
           )}
         </div>
+        </>
+        )}
       </div>
       )}
 
@@ -3704,7 +3823,7 @@ function App() {
       {/* Pristine new rules get a neutral hint; the red alert only appears once
           the user has started filling things in (error styling as the default
           state of an untouched form reads as "something is broken"). */}
-      {!isPostFunction && (!fieldId.trim() || !prompt.trim()) && (
+      {!isPostFunction && ruleKind === "ai" && (!fieldId.trim() || !prompt.trim()) && (
         (fieldId.trim() || prompt.trim()) ? (
           <div className="alert alert-error anim-rise">
             <svg

@@ -35,7 +35,12 @@
     "agile-setup": "node scripts/agile-setup.mjs",
     "agile": "node scripts/agile-test.mjs",
     "pack": "node scripts/pack-transitions.mjs",
-    "seed-bulk": "node scripts/seed-bulk.mjs"
+    "seed-bulk": "node scripts/seed-bulk.mjs",
+    "test:premade": "node scripts/premade-rules.test.mjs",
+    "test:recipes": "node scripts/recipes.test.mjs",
+    "test:parity": "node scripts/premade-parity.mjs",
+    "test:offline": "node scripts/premade-parity.mjs && node scripts/premade-rules.test.mjs && node scripts/recipes.test.mjs",
+    "test:premade-e2e": "node scripts/premade-e2e.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.48.0"

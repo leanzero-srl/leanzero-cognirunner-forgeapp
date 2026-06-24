@@ -18,6 +18,27 @@
 
 import React, { useState, useEffect } from "react";
 import { confirmDialog } from "./confirmDialog";
+import { findRule, opLabel } from "../../../src/shared/premade-rules-catalog.js";
+
+// Human-readable summary rows for a premade (non-AI) rule in the read-only view.
+const premadeRuleLabel = (key) =>
+  (findRule("validator", key) || findRule("condition", key) || {}).label || key;
+const premadeSummaryRows = (config) => {
+  const rows = [{ label: "Premade rule:", value: premadeRuleLabel(config.ruleType) }];
+  if (config.fieldId) rows.push({ label: "Field:", value: config.fieldId, code: true });
+  if (config.op) rows.push({ label: "Condition:", value: `${opLabel(config.op)} “${config.compareValue ?? ""}”` });
+  if (config.regex) rows.push({ label: "Pattern:", value: config.regex, code: true });
+  if (config.allowedValues) rows.push({ label: "Allowed:", value: config.allowedValues });
+  if (config.value != null && config.value !== "") rows.push({ label: "Equals:", value: String(config.value) });
+  if (config.min != null) rows.push({ label: "Min:", value: String(config.min) });
+  if (config.max != null) rows.push({ label: "Max:", value: String(config.max) });
+  if (config.mode) rows.push({ label: "When:", value: config.mode === "within" ? `within ${config.days} day(s)` : "in the future" });
+  for (const k of ["issueTypeName", "statusName", "resolutionName", "linkTypeName", "priorityName"]) {
+    if (config[k]) rows.push({ label: "Value:", value: config[k] });
+  }
+  if (config.errorMessage) rows.push({ label: "Message:", value: config.errorMessage });
+  return rows;
+};
 
 // Inject styles directly
 const injectStyles = () => {
@@ -628,10 +649,12 @@ const injectStyles = () => {
     .cv-gen-docs { background: #2563eb; }
     .cv-gen-skill { background: #7c3aed; }
     .cv-gen-mem { background: #0d9488; }
+    .cv-gen-recipe { background: #4f46e5; }
 
     html[data-color-mode="dark"] .cv-gen-docs { background: #3b82f6; }
     html[data-color-mode="dark"] .cv-gen-skill { background: #8b5cf6; }
     html[data-color-mode="dark"] .cv-gen-mem { background: #14b8a6; }
+    html[data-color-mode="dark"] .cv-gen-recipe { background: #6366f1; }
 
     .sk {
       background: linear-gradient(90deg, #cbd5e1 25%, #f1f5f9 50%, #cbd5e1 75%);
@@ -1475,7 +1498,8 @@ function App() {
             // knowledge upgrade; offloaded (codeRef) configs carry slim
             // functionsMeta without it — render nothing in that case.
             const meta = fn.generationMeta;
-            const hasProvenance = !!meta && (
+            const isRecipe = meta?.source === "recipe";
+            const hasProvenance = !!meta && !isRecipe && (
               meta.appliedDocs?.length > 0 ||
               meta.appliedSkills?.length > 0 ||
               meta.appliedMemories > 0
@@ -1488,6 +1512,12 @@ function App() {
                     {fn.name || fn.operationPrompt?.substring(0, 80) || "(no description)"}
                   </span>
                 </div>
+                {isRecipe && (
+                  <div className="cv-gen-row">
+                    <span className="cv-gen-label">FROM RECIPE</span>
+                    <span className="cv-gen-chip cv-gen-recipe">{meta.recipeLabel || meta.recipeKey}</span>
+                  </div>
+                )}
                 {hasProvenance && (
                   <div className="cv-gen-row">
                     <span className="cv-gen-label">GENERATED WITH</span>
@@ -1516,6 +1546,18 @@ function App() {
 
       {/* Validator / Condition (original) */}
       {!config.type?.includes("postfunction") && (
+        config.ruleKind === "premade" ? (
+          <>
+            {premadeSummaryRows(config).map((r, i) => (
+              <div className="config-item" key={i}>
+                <span className="label">{r.label}</span>
+                {r.code
+                  ? <code className="value">{r.value}</code>
+                  : <span className="prompt-value">{r.value}</span>}
+              </div>
+            ))}
+          </>
+        ) : (
         <>
           {config.fieldId && (
             <div className="config-item">
@@ -1546,6 +1588,7 @@ function App() {
             </div>
           )}
         </>
+        )
       )}
 
       {/* Logs section */}

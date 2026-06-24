@@ -41,7 +41,7 @@ const F = { text: CF.text.id, num: CF.number.id, date: CF.date.id, sel: CF.selec
 // =========================================================== the realistic rule set
 // Each: { name (realistic), kind, config }. Validators carry a `probe` {pass, block}
 // describing how to make an issue pass/block (used to generate execution logs).
-function ruleSet() {
+export function ruleSet() {
   const V = [
     // field-required ×2
     { name: "WF-Gate: Summary is required", config: pm("field-required", { fieldId: "summary", fieldName: "Summary" }), probe: { passSummary: "has a summary", blockField: null } },
@@ -254,4 +254,7 @@ async function main() {
   console.log("\nReport -> results/full-workflow. Rules left in place for inspection in the Jira workflow editor + admin panel execution logs.");
 }
 
-main().catch((e) => { console.error("FULL WORKFLOW FAILED:", e.message); if (e.body) console.error(JSON.stringify(e.body, null, 2)); process.exit(1); });
+// Run only when invoked directly (so other scripts can import ruleSet()).
+if (process.argv[1] && process.argv[1].endsWith("full-workflow.mjs")) {
+  main().catch((e) => { console.error("FULL WORKFLOW FAILED:", e.message); if (e.body) console.error(JSON.stringify(e.body, null, 2)); process.exit(1); });
+}

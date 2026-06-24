@@ -46,6 +46,22 @@ CONFIRM=1 npm run teardown      # delete project + COGTEST_* fields when done
 `SMOKE=1 npm run run` fires one case per rule (fast sanity check).
 `HARNESS_VERBOSE=1` logs all Jira calls.
 
+## Premade rules & recipes (non-AI)
+
+CogniRunner ships **premade** (deterministic, no-AI) validators/conditions and **post-function recipes**. These have offline unit tests — no Jira, no provider, no deploy needed — plus a live E2E for the validator path.
+
+```bash
+npm run test:offline        # parity + executor (69 assertions) + recipes (174 checks)
+npm run test:premade        # executor: every premade validator/condition + edge cases
+npm run test:recipes        # every recipe: build() output parses, uses only real api.*, escapes params
+npm run test:parity         # catalog ⇄ executor lockstep lint
+npm run test:premade-e2e    # LIVE: attach premade validators, fire transitions, assert BLOCK/ALLOW
+```
+
+- `test:offline` imports `src/premade-rules.js` directly with an **injected field reader** (`opts.readField`), so it covers all 22 wired rules + fail-OPEN / CREATE / array / date / ADF edge cases without a live instance.
+- `test:premade-e2e` needs the **deployed app** (with the premade branch in `validate()`) + a testbed (`npm run setup`). Premade validators are deterministic, so this works **with no AI provider configured** (unlike `gate-verify.mjs`). Conditions are **not** exercised here — Jira doesn't evaluate conditions on the REST transition path (see "Why black-box"); their logic is covered by the offline executor test.
+- Recipe code runs in the static-PF sandbox; the offline test compiles each recipe's generated JS (parse-only) and asserts it uses only documented `api.*` methods and safely escapes interpolated params.
+
 ## Layout
 
 | Path | Purpose |

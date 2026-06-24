@@ -32,6 +32,9 @@ import FormData from "form-data";
 import { buildSystemPromptApiSection, API_USAGE_GUARD, getApiMethodNames } from "./shared/sandbox-api-spec.js";
 import { buildEndpointPromptBlock } from "./shared/jira-endpoints.js";
 import { DOC_SEED_VERSION, BUILTIN_DOCS } from "./shared/builtin-docs.js";
+// Premade (non-AI, "static") rule executor — runs deterministic validators/conditions
+// chosen from the premade catalog, short-circuiting the AI path in validate().
+import { executePremadeRule } from "./premade-rules.js";
 // Skill repository (skill packs injected into codegen/fix prompts).
 import {
   SKILL_INDEX_KEY,
@@ -1045,10 +1048,13 @@ resolver.define("clearLogs", async ({ context }) => {
  */
 resolver.define("registerConfig", async ({ payload, context }) => {
   try {
-    const { id, type, fieldId, prompt, workflow, legacyUpgrade } = payload;
+    const { id, type, fieldId, prompt, workflow, legacyUpgrade, ruleKind, premadeRuleType } = payload;
     if (!id || !fieldId) {
       return { success: false, error: "Missing required fields" };
     }
+    // Premade (non-AI) rule metadata for admin-panel labelling. `ruleKind` is
+    // "premade" or "ai"; `premadeRuleType` is the catalog key (e.g. "field-required").
+    const isPremade = ruleKind === "premade";
 
     let configs = (await storage.get(CONFIG_REGISTRY_KEY)) || [];
     const now = new Date().toISOString();
@@ -1127,6 +1133,8 @@ resolver.define("registerConfig", async ({ payload, context }) => {
         workflow: Object.keys(workflowData).length > 0
           ? workflowData
           : configs[existingIndex].workflow,
+        ruleKind: ruleKind || configs[existingIndex].ruleKind || "ai",
+        premadeRuleType: isPremade ? premadeRuleType : undefined,
         ...(isInstanced ? { instanced: true } : {}),
         updatedAt: now,
       };
@@ -1137,6 +1145,8 @@ resolver.define("registerConfig", async ({ payload, context }) => {
         fieldId,
         prompt: (prompt || "").substring(0, 200),
         workflow: Object.keys(workflowData).length > 0 ? workflowData : undefined,
+        ruleKind: ruleKind || "ai",
+        premadeRuleType: isPremade ? premadeRuleType : undefined,
         ...(isInstanced ? { instanced: true } : {}),
         createdBy: context.accountId || null,
         createdAt: now,
@@ -2113,6 +2123,55 @@ resolver.define("getFields", async () => {
   } catch (error) {
     console.error("Failed to get fields:", error);
     return { success: false, error: error.message, fields: [] };
+  }
+});
+
+/**
+ * Lists backing the premade (non-AI) rule pickers — issue types, statuses,
+ * resolutions, link types, priorities. One round-trip (Promise.all). Each list is
+ * a deduped, sorted [{ value, label }] of names. A 4xx/5xx on any one list yields
+ * an empty list (the form then shows "None available — check your permissions"),
+ * never an exception. (Group/role lists are intentionally omitted — only the
+ * acting-user rules need them, and those are unavailable in app conditions.)
+ */
+resolver.define("getRuleLists", async ({ context }) => {
+  if (!(await requireRole(context.accountId, "editor"))) {
+    return { success: false, error: "Editor access required" };
+  }
+  // requestJira resolves (doesn't throw) on 4xx/5xx, so a 403 (no permission) would
+  // otherwise parse an error body — return null on !ok so it reads as an empty list.
+  const j = async (r) => {
+    try {
+      const resp = await api.asApp().requestJira(r, { headers: { Accept: "application/json" } });
+      return resp.ok ? await resp.json() : null;
+    } catch {
+      return null;
+    }
+  };
+  const uniqNames = (arr) =>
+    [...new Set((Array.isArray(arr) ? arr : []).map((x) => x && x.name).filter(Boolean))]
+      .sort()
+      .map((n) => ({ value: n, label: n }));
+  try {
+    const [its, sts, res, lts, prs] = await Promise.all([
+      j(route`/rest/api/3/issuetype`),
+      j(route`/rest/api/3/status`),
+      j(route`/rest/api/3/resolution`),
+      j(route`/rest/api/3/issueLinkType`),
+      j(route`/rest/api/3/priority`),
+    ]);
+    return {
+      success: true,
+      lists: {
+        issuetypes: uniqNames(its),
+        statuses: uniqNames(sts),
+        resolutions: uniqNames(res),
+        linktypes: uniqNames(lts && lts.issueLinkTypes), // GET /issueLinkType → { issueLinkTypes:[{name}] }
+        priorities: uniqNames(prs),
+      },
+    };
+  } catch (error) {
+    return { success: false, error: error.message, lists: {} };
   }
 });
 
@@ -3116,7 +3175,7 @@ resolver.define("saveProvider", async ({ payload, context }) => {
  */
 resolver.define("getProvider", async () => {
   try {
-    const provider = (await storage.get("COGNIRUNNER_AI_PROVIDER")) || "openai";
+    const provider = (await storage.get("COGNIRUNNER_AI_PROVIDER")) || "atlassian";
     const baseUrl = await storage.get("COGNIRUNNER_AI_BASE_URL");
     // bedrockAck: whether the admin confirmed submitting Anthropic's one-per-account use-case
     // form in the AWS console (a UX gate that reveals the Bedrock model picker — not auth).
@@ -7039,6 +7098,59 @@ resolver.define("testPostFunction", async ({ payload }) => {
       testLogs.push(msg);
     },
 
+    // Write-mutators used by premade recipes & richer generated code. All DRY-RUN here
+    // (the Test panel never mutates Jira). createIssue/cloneIssue return a plausible fake
+    // key so chained code (`dup.key`) doesn't NPE during the test.
+    editIssue: async (key, update) => {
+      testLogs.push(`editIssue("${key}", ${JSON.stringify(update)}) — DRY RUN, no changes made`);
+      testChanges.push({ action: "editIssue", key, update });
+      return { success: true };
+    },
+    addLabels: async (...labels) => {
+      const flat = labels.flat().filter(Boolean);
+      testLogs.push(`addLabels(${JSON.stringify(flat)}) — DRY RUN`);
+      testChanges.push({ action: "addLabels", key: resolvedKey, labels: flat });
+      return { success: true };
+    },
+    removeLabels: async (...labels) => {
+      const flat = labels.flat().filter(Boolean);
+      testLogs.push(`removeLabels(${JSON.stringify(flat)}) — DRY RUN`);
+      testChanges.push({ action: "removeLabels", key: resolvedKey, labels: flat });
+      return { success: true };
+    },
+    addComment: async () => {
+      testLogs.push(`addComment(...) — DRY RUN, no comment posted`);
+      testChanges.push({ action: "addComment", key: resolvedKey });
+      return { id: "DRYRUN-COMMENT" };
+    },
+    createIssueLink: async (outwardKey, typeName = "Relates") => {
+      testLogs.push(`createIssueLink("${resolvedKey}" ${typeName} "${outwardKey}") — DRY RUN`);
+      testChanges.push({ action: "createIssueLink", from: resolvedKey, to: outwardKey, type: typeName });
+      return { success: true };
+    },
+    createIssue: async (fields) => {
+      const fakeKey = `${(resolvedKey || "MOCK-1").split("-")[0]}-DRYRUN`;
+      testLogs.push(`createIssue(${JSON.stringify(fields)}) — DRY RUN, returns ${fakeKey}`);
+      testChanges.push({ action: "createIssue", fields });
+      return { key: fakeKey, id: "0" };
+    },
+    cloneIssue: async (overrides = {}) => {
+      const fakeKey = `${(resolvedKey || "MOCK-1").split("-")[0]}-DRYRUN`;
+      testLogs.push(`cloneIssue(${JSON.stringify(overrides)}) — DRY RUN, returns ${fakeKey}`);
+      testChanges.push({ action: "cloneIssue", overrides });
+      return { key: fakeKey, id: "0" };
+    },
+    getProperty: async (propKey) => {
+      // Dry-run: always "not set" so idempotency-marker code takes its happy path during a test.
+      testLogs.push(`getProperty("${propKey}") — DRY RUN, returns null`);
+      return null;
+    },
+    setProperty: async (propKey) => {
+      testLogs.push(`setProperty("${propKey}", ...) — DRY RUN`);
+      testChanges.push({ action: "setProperty", key: resolvedKey, propKey });
+      return { success: true };
+    },
+
     context: { issueKey: resolvedKey },
   };
 
@@ -8209,9 +8321,9 @@ let _cachedProviderAt = 0;
  * Returns cached value on subsequent calls within the freshness window.
  */
 const getProviderConfig = async () => {
-  if (_cachedProviderChecked && _cacheFresh(_cachedProviderAt)) return { provider: _cachedProvider || "openai", baseUrl: _cachedBaseUrl || PROVIDERS.openai.baseUrl };
+  if (_cachedProviderChecked && _cacheFresh(_cachedProviderAt)) return { provider: _cachedProvider || "atlassian", baseUrl: _cachedBaseUrl || PROVIDERS.openai.baseUrl };
   try {
-    const provider = (await storage.get("COGNIRUNNER_AI_PROVIDER")) || "openai";
+    const provider = (await storage.get("COGNIRUNNER_AI_PROVIDER")) || "atlassian";
     const customUrl = await storage.get("COGNIRUNNER_AI_BASE_URL");
     _cachedProviderChecked = true;
     _cachedProviderAt = Date.now();
@@ -8220,7 +8332,7 @@ const getProviderConfig = async () => {
     return { provider: _cachedProvider, baseUrl: _cachedBaseUrl };
   } catch (error) {
     console.error("Error reading provider config:", error);
-    return { provider: "openai", baseUrl: PROVIDERS.openai.baseUrl };
+    return { provider: "atlassian", baseUrl: PROVIDERS.atlassian.baseUrl };
   }
 };
 
@@ -8233,7 +8345,7 @@ const providerModelSlot = (provider) => `COGNIRUNNER_MODEL_${provider}`;
 const providerBaseUrlSlot = (provider) => `COGNIRUNNER_BASEURL_${provider}`;
 
 // The currently-active provider (the one inference actually uses).
-const activeProviderId = async () => (await storage.get("COGNIRUNNER_AI_PROVIDER")) || "openai";
+const activeProviderId = async () => (await storage.get("COGNIRUNNER_AI_PROVIDER")) || "atlassian";
 // Which provider a UI-facing resolver should act on: an explicit, valid payload.provider
 // lets the admin panel VIEW/EDIT any provider's stored config without making it active;
 // otherwise fall back to the active provider. Inference is unaffected — it always reads the
@@ -10774,6 +10886,56 @@ export const validate = async (args) => {
     }
   } catch (e) {
     console.log("Could not check disabled status, proceeding with validation:", e);
+  }
+
+  // Premade (non-AI, "static") rule short-circuit. When the rule was configured
+  // as a premade catalog rule, run the deterministic check and return BEFORE any
+  // provider/credential/doc-fetch/AI work — zero AI cost, zero latency. Both
+  // validators (block + message) and conditions (hide silently) route here; the
+  // executor is fail-OPEN so a bug never traps (or silently hides) a transition.
+  if (configuration?.ruleKind === "premade" && configuration?.ruleType) {
+    const premadeStart = Date.now();
+    const invocationType = String(args?.context?.extension?.type || "").includes("Condition")
+      ? "condition"
+      : "validator";
+    const out = await executePremadeRule(configuration, args, invocationType);
+    // Slim execution log (metadata only — never field VALUES) so premade runs
+    // still appear in the admin panel's execution history alongside AI rules.
+    try {
+      await storeLog({
+        type: invocationType,
+        ruleKind: "premade",
+        premadeRuleType: configuration.ruleType,
+        issueKey: issue?.key || "(new issue)",
+        fieldId: configuration.fieldId || null,
+        fieldValue: "",
+        isValid: out?.result !== false,
+        reason:
+          out?.result === false
+            ? out.errorMessage || "Condition not met (transition hidden)"
+            : "Passed",
+        executionTimeMs: Date.now() - premadeStart,
+        mode: "premade",
+        ruleId: configuration?.ruleId || configuration?.id || null,
+        ruleName: configuration?.workflow?.workflowName
+          ? `${configuration.workflow.workflowName} / ${configuration.workflow.transitionFromName || "Any"} → ${configuration.workflow.transitionToName || "?"}`
+          : null,
+        ruleWorkflow: configuration?.workflow || null,
+      });
+    } catch (e) {
+      console.log("Premade rule log skipped:", e?.message);
+    }
+    if (configuration?.debugTrace) {
+      try {
+        await writeDebugTrace(issue?.key, {
+          ruleKind: "premade",
+          ruleType: configuration.ruleType,
+          result: out?.result,
+          at: new Date().toISOString(),
+        });
+      } catch { /* best-effort */ }
+    }
+    return out;
   }
 
   // modifiedFields comes directly from args, not from transition

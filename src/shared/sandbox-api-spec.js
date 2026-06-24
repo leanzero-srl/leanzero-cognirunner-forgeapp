@@ -430,20 +430,18 @@ The current issue being transitioned. Always available.`,
 
 // The only members generated code may use on `api`. Used by the editor lint
 // rule AND by the prompt guard line — keep in lockstep with createApi().
-export const KNOWN_API_MEMBERS = [
-  "getIssue",
-  "updateIssue",
-  "searchJql",
-  "transitionIssue",
-  "log",
-  "context",
-];
+// Lint allowlist — DERIVED from the documented method table so the editor lint,
+// completions, hover, the API Reference panel, and the production `createApi()`
+// surface all agree. (Previously a hardcoded 6-name subset that red-flagged real,
+// working methods like api.addComment / api.cloneIssue and told the AI they "throw".)
+export const KNOWN_API_MEMBERS = SANDBOX_API_METHODS.map((m) => m.name);
 
 export const getApiMethodNames = () =>
   SANDBOX_API_METHODS.filter((m) => m.name !== "context").map((m) => m.name);
 
-// The lead guard paragraph (verbatim from the system prompt).
-export const API_USAGE_GUARD = `You must ONLY use these methods on the \`api\` object: \`getIssue\`, \`updateIssue\`, \`searchJql\`, \`transitionIssue\`, \`log\`, and the \`api.context\` accessor. Never invent other methods (\`api.deleteIssue\`, \`api.addComment\`, \`api.batch\`, etc. do NOT exist and will throw at runtime).`;
+// The lead guard paragraph (verbatim from the system prompt). Names the real surface
+// instead of falsely denying documented methods.
+export const API_USAGE_GUARD = `You must ONLY use methods that exist on the \`api\` object (the methods documented in the API reference below). Never invent methods — anything not documented (e.g. \`api.deleteIssue\`, \`api.batch\`) does NOT exist and will throw at runtime.`;
 
 // === Field type reference ====================================================
 // One row per Jira field type: how to read it, how to write it. Renders both

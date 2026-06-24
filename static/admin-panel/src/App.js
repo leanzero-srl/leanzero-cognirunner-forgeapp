@@ -24,6 +24,7 @@ import MemoriesAdminTab from "./components/MemoriesAdminTab";
 import PermissionsTab from "./components/PermissionsTab";
 import SettingsOpenAITab from "./components/SettingsOpenAITab";
 import CustomSelect from "./components/CustomSelect";
+import { findRule as findPremadeRule } from "../../../src/shared/premade-rules-catalog.js";
 import AddRuleWizard from "./components/AddRuleWizard";
 import Tooltip from "./components/Tooltip";
 import { showToast } from "./components/toast";
@@ -4392,6 +4393,48 @@ const injectCopiedComponentStyles = () => {
       letter-spacing: 0.1px;
     }
     html[data-color-mode="dark"] .mcp-tool-chip { background: #3b82f6; }
+
+    /* Premade (non-AI) rule editor — mirrors config-ui injectStyles() */
+    .rulekind-toggle { display: flex; gap: 10px; }
+    .rulekind-opt {
+      flex: 1; text-align: left; cursor: pointer;
+      display: flex; flex-direction: column; gap: 3px;
+      padding: 10px 12px; border: 1px solid var(--border-color);
+      border-radius: 8px; background: var(--input-bg); color: var(--text-color);
+      transition: border-color .15s, background .15s;
+    }
+    .rulekind-opt:hover { border-color: var(--primary-color); }
+    .rulekind-opt.active { background: var(--primary-color); border-color: var(--primary-color); color: #fff; }
+    .rulekind-opt-title { font-weight: 700; font-size: 13px; }
+    .rulekind-opt-sub { font-size: 11.5px; color: var(--text-secondary); }
+    .rulekind-opt.active .rulekind-opt-sub { color: rgba(255,255,255,.85); }
+
+    .pr-form { margin-top: 4px; }
+    .pr-row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+    .pr-opt { font-weight: 400; font-size: 11px; color: var(--text-muted); }
+    .pr-mono { font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace; font-size: 12.5px; }
+    .pr-note {
+      background: #b45309; color: #fff; font-weight: 600; font-size: 12.5px;
+      padding: 9px 12px; border-radius: 8px; margin-bottom: 16px; line-height: 1.45;
+    }
+    html[data-color-mode="dark"] .pr-note { background: #d97706; }
+    .pr-foot { font-style: italic; }
+
+    /* Premade recipe picker (FunctionBlock "Start from a recipe") */
+    .recipe-bar { margin-bottom: 14px; border: 1px solid var(--border-color); border-radius: 8px; overflow: hidden; }
+    .recipe-bar-toggle {
+      width: 100%; display: flex; align-items: center; gap: 8px; padding: 9px 12px;
+      background: var(--input-bg); border: none; cursor: pointer; color: var(--text-color);
+      font-weight: 600; font-size: 13px;
+    }
+    .recipe-bar-icon { color: var(--text-secondary); }
+    .recipe-bar-sub { margin-left: auto; font-weight: 400; font-size: 11px; color: var(--text-muted); }
+    .recipe-bar-body { padding: 12px; border-top: 1px solid var(--border-color); }
+    .recipe-desc { margin: 0 0 12px 0; font-size: 12px; color: var(--text-secondary); }
+    .recipe-note { background: #b45309; color: #fff; font-weight: 600; font-size: 12px; padding: 8px 10px; border-radius: 6px; margin-bottom: 10px; }
+    html[data-color-mode="dark"] .recipe-note { background: #d97706; }
+    .gen-meta-chip.gmc-recipe { background: #4f46e5; color: #fff; }
+    html[data-color-mode="dark"] .gen-meta-chip.gmc-recipe { background: #6366f1; }
   `;
   document.head.appendChild(style);
 };
@@ -5269,6 +5312,9 @@ function App() {
                             : config.type === "postfunction-static" ? "PF: Static"
                             : config.type}
                         </span>
+                        {config.ruleKind === "premade" && (
+                          <span style={{ display: "inline-block", marginLeft: "6px", fontSize: "10px", fontWeight: 700, padding: "2px 7px", borderRadius: "10px", background: "#475569", color: "#fff" }}>Premade</span>
+                        )}
                         {runningCount > 0 && <span className="rule-job-chip running">{runningCount} running</span>}
                         {queuedCount > 0 && <span className="rule-job-chip queued">{queuedCount} queued</span>}
                         {isDisabled && (
@@ -5301,7 +5347,9 @@ function App() {
                       </td>
                       <td>
                         <span className="prompt-text">
-                          {config.type && config.type.startsWith("postfunction")
+                          {config.ruleKind === "premade"
+                            ? ((findPremadeRule("validator", config.premadeRuleType) || findPremadeRule("condition", config.premadeRuleType) || {}).label || config.premadeRuleType || "Premade rule")
+                            : config.type && config.type.startsWith("postfunction")
                             ? (() => {
                                 const text = config.conditionPrompt || config.actionPrompt || config.prompt || "";
                                 return text.length > 80 ? text.substring(0, 80) + "..." : text;

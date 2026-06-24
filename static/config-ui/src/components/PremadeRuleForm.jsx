@@ -1,0 +1,332 @@
+/*
+ * CogniRunner - AI-powered workflow validation for Jira
+ * Copyright (C) 2025 LeanZero
+ *
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ */
+
+/**
+ * PremadeRuleForm — the catalog-driven config form for premade (non-AI) workflow
+ * validators/conditions. Picks a rule type from the shared catalog, renders the
+ * inputs that rule needs, and reports the assembled config + validity to the
+ * parent via `onChange(config, valid)`.
+ *
+ * Self-contained (no imports from App.js) so it can be byte-copied to
+ * static/admin-panel/src/components/. Imports only React, @forge/bridge,
+ * CustomSelect, and the shared catalog. REST-backed picker lists are fetched
+ * once via the getRuleLists resolver.
+ *
+ * Props:
+ *   mode      "validator" | "condition" — which catalog half to show.
+ *   fields    [{ id, name, ... }] — the issue fields (loaded by the parent).
+ *   initial   the saved premade config to hydrate on edit (or null for new).
+ *   onChange  (config, valid) => void — config is { ruleType, ...params }.
+ */
+import { useState, useEffect, useRef } from "react";
+import { invoke } from "@forge/bridge";
+import CustomSelect from "./CustomSelect";
+import { getCatalog, findRule, COMPARE_OPS } from "../../../../src/shared/premade-rules-catalog.js";
+
+export default function PremadeRuleForm({ mode = "validator", fields = [], initial, onChange }) {
+  const catalog = getCatalog(mode);
+
+  const [ruleType, setRuleType] = useState("");
+  const [fieldId, setFieldId] = useState("");
+  const [regex, setRegex] = useState("");
+  const [allowedValues, setAllowedValues] = useState("");
+  const [op, setOp] = useState("eq");
+  const [compareValue, setCompareValue] = useState("");
+  const [value, setValue] = useState("");
+  const [pickerValue, setPickerValue] = useState(""); // backs a `picker` param
+  const [minLen, setMinLen] = useState("");
+  const [maxLen, setMaxLen] = useState("");
+  const [dateMode, setDateMode] = useState("future");
+  const [days, setDays] = useState("");
+  const [errorMessage, setErrorMessage] = useState("");
+  const [lists, setLists] = useState({});
+  const hydratedRef = useRef(false);
+
+  // Fetch REST-backed picker lists once (issue types / statuses / resolutions / link types / priorities).
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await invoke("getRuleLists");
+        if (res?.success) setLists(res.lists || {});
+      } catch {
+        /* leave empty → the picker shows "None available" */
+      }
+    })();
+  }, []);
+
+  // Hydrate from a saved config exactly once (on edit).
+  useEffect(() => {
+    if (hydratedRef.current || !initial) return;
+    hydratedRef.current = true;
+    const rt = initial.ruleType || "";
+    setRuleType(rt);
+    setFieldId(initial.fieldId || "");
+    setRegex(initial.regex || "");
+    setAllowedValues(initial.allowedValues || "");
+    setOp(initial.op || "eq");
+    setCompareValue(initial.compareValue || "");
+    setValue(initial.value || "");
+    const pk = findRule(mode, rt)?.params?.picker?.key;
+    setPickerValue(pk ? initial[pk] || "" : "");
+    setMinLen(initial.min != null ? String(initial.min) : "");
+    setMaxLen(initial.max != null ? String(initial.max) : "");
+    setDateMode(initial.mode || "future");
+    setDays(initial.days != null ? String(initial.days) : "");
+    setErrorMessage(initial.errorMessage || "");
+  }, [initial, mode]);
+
+  const rule = findRule(mode, ruleType);
+  const p = rule?.params || {};
+  const unavailable = rule?.availability === "unavailable";
+
+  // Build the config object + validity from the current state.
+  const fieldName = (fields.find((f) => f.id === fieldId) || {}).name || "";
+  const config = { ruleType };
+  if (p.field) {
+    config.fieldId = fieldId;
+    config.fieldName = fieldName;
+  }
+  if (p.regex) config.regex = regex.trim();
+  if (p.allowed) config.allowedValues = allowedValues.trim();
+  if (p.opValue) {
+    config.op = op;
+    config.compareValue = compareValue.trim();
+  }
+  if (p.value) config.value = value.trim();
+  // Set the picker key ONLY when chosen — an optional picker (link type) left blank must OMIT the key
+  // so the executor's "any" branch (config.x == null) fires (an empty string would not equal null).
+  if (p.picker && pickerValue.trim()) config[p.picker.key] = pickerValue.trim();
+  if (p.lengthBounds) {
+    if (minLen.trim() !== "") config.min = Number(minLen);
+    if (maxLen.trim() !== "") config.max = Number(maxLen);
+  }
+  if (p.dateRel) {
+    config.mode = dateMode;
+    if (dateMode === "within" && days.trim() !== "") config.days = Number(days);
+  }
+  if (mode === "validator" && errorMessage.trim()) config.errorMessage = errorMessage.trim();
+
+  let valid = !!ruleType && !unavailable;
+  if (p.field && !fieldId) valid = false;
+  if (p.regex && !regex.trim()) valid = false;
+  if (p.allowed && !allowedValues.trim()) valid = false;
+  if (p.opValue && !compareValue.trim()) valid = false;
+  if (p.value && !value.trim()) valid = false;
+  if (p.picker && !p.picker.optional && !pickerValue.trim()) valid = false;
+  if (p.lengthBounds && minLen.trim() === "" && maxLen.trim() === "") valid = false; // need at least one bound
+  if (p.dateRel && dateMode === "within" && !(Number(days) > 0)) valid = false; // within needs a positive day count
+
+  // Report up whenever config/valid actually change. Use a ref for onChange so the
+  // effect doesn't loop on the parent's inline callback identity.
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+  const configKey = JSON.stringify({ config, valid });
+  useEffect(() => {
+    onChangeRef.current?.(config, valid);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [configKey]);
+
+  // Switching the rule type clears params that don't apply (the error message persists — it's a
+  // validator-wide message, not rule-specific).
+  const onRuleType = (v) => {
+    setRuleType(v);
+    setFieldId("");
+    setRegex("");
+    setAllowedValues("");
+    setOp("eq");
+    setCompareValue("");
+    setValue("");
+    setPickerValue("");
+    setMinLen("");
+    setMaxLen("");
+    setDateMode("future");
+    setDays("");
+  };
+
+  return (
+    <div className="pr-form">
+      <div className="form-group">
+        <label className="label">Rule <span className="required">*</span></label>
+        <CustomSelect
+          value={ruleType}
+          onChange={onRuleType}
+          searchable
+          placeholder="Choose a premade rule…"
+          options={catalog.map((r) => ({
+            value: r.key,
+            label: r.label,
+            meta: r.availability === "unavailable" ? "Use a Jira built-in" : undefined,
+          }))}
+        />
+        {rule && !unavailable && <p className="hint">{rule.help}</p>}
+      </div>
+
+      {unavailable && (
+        <div className="pr-note">{rule.unavailableReason}</div>
+      )}
+
+      {!unavailable && mode === "validator" && ruleType === "field-changed" && (
+        <div className="pr-note">
+          The field must be on this transition's screen. If it isn't, the transition is blocked for
+          everyone — choose a field shown on the transition screen.
+        </div>
+      )}
+      {!unavailable && mode === "validator" && ruleType === "comment-required" && (
+        <div className="pr-note">
+          The Comment field must be on this transition's screen, or no comment can be entered and it
+          blocks for everyone.
+        </div>
+      )}
+      {!unavailable && mode === "condition" && ruleType === "field-equals" && (
+        <p className="hint">
+          Compares a single value (case-insensitive). For a multi-value field like Labels, use “Field
+          has a value” instead.
+        </p>
+      )}
+
+      {!unavailable && p.field && (
+        <div className="form-group">
+          <label className="label">Field <span className="required">*</span></label>
+          <CustomSelect
+            value={fieldId}
+            onChange={setFieldId}
+            searchable
+            placeholder="Choose a field…"
+            options={fields.map((f) => ({ value: f.id, label: f.name, meta: f.id }))}
+          />
+        </div>
+      )}
+
+      {!unavailable && p.regex && (
+        <div className="form-group">
+          <label className="label">Pattern (regular expression) <span className="required">*</span></label>
+          <input
+            className="input pr-mono"
+            placeholder="e.g. ^[A-Z]{2,4}-\d+$"
+            value={regex}
+            onChange={(e) => setRegex(e.target.value)}
+          />
+        </div>
+      )}
+
+      {!unavailable && p.allowed && (
+        <div className="form-group">
+          <label className="label">
+            Allowed values <span className="pr-opt">comma-separated</span> <span className="required">*</span>
+          </label>
+          <input
+            className="input"
+            placeholder="e.g. Approved, Signed off, Released"
+            value={allowedValues}
+            onChange={(e) => setAllowedValues(e.target.value)}
+          />
+        </div>
+      )}
+
+      {!unavailable && p.opValue && (
+        <div className="pr-row2">
+          <div className="form-group">
+            <label className="label">Operator</label>
+            <CustomSelect value={op} onChange={setOp} options={COMPARE_OPS} />
+          </div>
+          <div className="form-group">
+            <label className="label">Value <span className="required">*</span></label>
+            <input className="input" placeholder="e.g. 1" value={compareValue} onChange={(e) => setCompareValue(e.target.value)} />
+          </div>
+        </div>
+      )}
+
+      {!unavailable && p.value && (
+        <div className="form-group">
+          <label className="label">Value <span className="pr-opt">case-insensitive</span> <span className="required">*</span></label>
+          <input className="input" placeholder="e.g. Approved" value={value} onChange={(e) => setValue(e.target.value)} />
+        </div>
+      )}
+
+      {!unavailable && p.lengthBounds && (
+        <div className="pr-row2">
+          <div className="form-group">
+            <label className="label">Min <span className="pr-opt">optional</span></label>
+            <input className="input" type="number" min="0" placeholder="e.g. 10" value={minLen} onChange={(e) => setMinLen(e.target.value)} />
+          </div>
+          <div className="form-group">
+            <label className="label">Max <span className="pr-opt">optional</span></label>
+            <input className="input" type="number" min="0" placeholder="e.g. 255" value={maxLen} onChange={(e) => setMaxLen(e.target.value)} />
+          </div>
+        </div>
+      )}
+
+      {!unavailable && p.dateRel && (
+        <>
+          <div className="pr-row2">
+            <div className="form-group">
+              <label className="label">Must be</label>
+              <CustomSelect
+                value={dateMode}
+                onChange={setDateMode}
+                options={[
+                  { value: "future", label: "in the future" },
+                  { value: "within", label: "within N days" },
+                ]}
+              />
+            </div>
+            {dateMode === "within" && (
+              <div className="form-group">
+                <label className="label">Days from today <span className="required">*</span></label>
+                <input className="input" type="number" min="1" placeholder="e.g. 30" value={days} onChange={(e) => setDays(e.target.value)} />
+              </div>
+            )}
+          </div>
+          <p className="hint">Pick a date or date-time field above. Times are compared in UTC by calendar day.</p>
+        </>
+      )}
+
+      {!unavailable && p.picker && (() => {
+        const opts = lists[p.picker.source] || [];
+        // A saved value missing from the freshly-fetched list (perms/pagination) would render as the
+        // placeholder — keep it visible + selected so an edit doesn't look blank or lose the value.
+        const shown = pickerValue && !opts.some((o) => o.value === pickerValue)
+          ? [{ value: pickerValue, label: `${pickerValue} (saved)` }, ...opts]
+          : opts;
+        return (
+          <div className="form-group">
+            <label className="label">
+              {p.picker.label} {p.picker.optional ? <span className="pr-opt">optional</span> : <span className="required">*</span>}
+            </label>
+            <CustomSelect
+              value={pickerValue}
+              onChange={setPickerValue}
+              searchable
+              options={shown}
+              placeholder={!opts.length ? "None available — check your permissions" : p.picker.ph}
+            />
+          </div>
+        );
+      })()}
+
+      {!unavailable && mode === "validator" && (
+        <div className="form-group">
+          <label className="label">Error message <span className="pr-opt">shown to the user if blocked</span></label>
+          <input
+            className="input"
+            placeholder={`Default: “${fieldName || "This field"} …”`}
+            value={errorMessage}
+            onChange={(e) => setErrorMessage(e.target.value)}
+          />
+        </div>
+      )}
+
+      {!unavailable && !valid && ruleType && <p className="hint">Fill in the rule's details to finish.</p>}
+
+      <p className="hint pr-foot">
+        {mode === "condition"
+          ? "If the rule isn't met — or can't be evaluated — the transition is hidden (no message). No AI is used."
+          : "If the rule isn't met, the transition is blocked and your message is shown. If the check can't run, the transition is allowed (it never traps the issue). No AI is used."}
+      </p>
+    </div>
+  );
+}

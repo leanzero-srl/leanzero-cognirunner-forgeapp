@@ -215,31 +215,38 @@ export const PREMADE_CONDITIONS = [
     params: { picker: { key: "priorityName", label: "Priority", source: "priorities", ph: "Choose a priority…" } },
     availability: "available",
   },
-  // --- Unavailable: depend on the ACTING user, which Forge does not pass to app
-  //     validators/conditions. Jira ships native built-in conditions for these. ---
+  // --- Acting-user conditions. The acting user's accountId IS present in the rule
+  //     payload (args.user.accountId — confirmed live), so these are supported.
+  //     NOTE: app conditions are evaluated by Jira in the UI, not on the REST
+  //     transition-listing path, so their effect is UI-only (same as every other
+  //     CogniRunner condition). ---
   {
     key: "current-user-is-assignee",
     label: "User is the assignee",
-    help: "Only show this transition to the issue assignee.",
+    help: "Only show this transition to the issue's current assignee.",
     params: {},
-    availability: "unavailable",
-    unavailableReason: "Jira doesn't pass the acting user to app conditions. Use Jira's built-in “Only Assignee Condition” instead.",
+    availability: "available",
   },
   {
     key: "current-user-is-reporter",
     label: "User is the reporter",
-    help: "Only show this transition to the issue reporter.",
+    help: "Only show this transition to the issue's reporter.",
     params: {},
-    availability: "unavailable",
-    unavailableReason: "Jira doesn't pass the acting user to app conditions. Use Jira's built-in “Only Reporter Condition” instead.",
+    availability: "available",
+  },
+  {
+    key: "user-in-field",
+    label: "User is in a user field",
+    help: "Only show this transition to the person named in the chosen single-user field (e.g. an Approver field). Field-relative, so it survives reassignment.",
+    params: { field: true },
+    availability: "available",
   },
   {
     key: "user-in-group",
     label: "User is in a group",
     help: "Only show this transition to members of the named group.",
     params: { picker: { key: "groupName", label: "Group", source: "groups", ph: "Choose a group…" } },
-    availability: "unavailable",
-    unavailableReason: "Jira doesn't pass the acting user to app conditions. Use Jira's built-in “User Is In Group” condition instead.",
+    availability: "available",
   },
   {
     key: "user-in-role",
@@ -247,15 +254,7 @@ export const PREMADE_CONDITIONS = [
     help: "Only show this transition to members of the named project role.",
     params: { picker: { key: "roleName", label: "Project role", source: "roles", ph: "Choose a role…" } },
     availability: "unavailable",
-    unavailableReason: "Jira doesn't pass the acting user to app conditions. Use Jira's built-in “User Is In Project Role” condition instead.",
-  },
-  {
-    key: "user-in-field",
-    label: "User is in a user field",
-    help: "Only show this transition to the person named in the chosen single-user field (e.g. an Approver field).",
-    params: { field: true },
-    availability: "unavailable",
-    unavailableReason: "Jira doesn't pass the acting user to app conditions, so we can't compare them to a user field. Use a Jira built-in condition instead.",
+    unavailableReason: "Deferred — needs project-role-actor resolution and only resolves in company-managed projects. Use Jira's built-in “User Is In Project Role” condition.",
   },
 ];
 

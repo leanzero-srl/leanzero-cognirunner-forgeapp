@@ -66,6 +66,18 @@ async function getRawField(issueKey, fieldId) {
   return (data?.fields || {})[fieldId];
 }
 
+/** Group names the given user belongs to (for the user-in-group condition). */
+async function getUserGroups(accountId) {
+  const res = await api.asApp().requestJira(
+    route`/rest/api/3/user/groups?accountId=${accountId}`,
+    { headers: { Accept: "application/json" } },
+  );
+  if (!res.ok) throw new Error(`user groups read ${res.status}`);
+  const data = await res.json();
+  // GET /user/groups returns an array of { name, ... }.
+  return (Array.isArray(data) ? data : data?.items || []).map((g) => g && g.name).filter(Boolean);
+}
+
 /** Flatten an ADF (rich-text) doc to its text content. */
 function adfText(node) {
   if (!node || typeof node !== "object") return "";
@@ -243,7 +255,7 @@ async function runValidator(cfg, mf, issueKey, read) {
  * Reads persisted issue fields via REST (one targeted read per rule). On CREATE (no issue) → SHOW.
  * Re-expressed from the manifest condition expression; the 5 acting-user conditions are omitted.
  */
-async function runCondition(cfg, issueKey, read) {
+async function runCondition(cfg, issueKey, read, actingUser, readUserGroups) {
   // CREATE (no persisted issue) → SHOW. A persisted-issue condition has nothing to evaluate yet.
   if (!issueKey) return true;
   switch (cfg.ruleType) {
@@ -298,6 +310,28 @@ async function runCondition(cfg, issueKey, read) {
       if (cfg.linkTypeName == null) return arr.every(done); // any link type
       return arr.filter((l) => norm(l?.type?.name ?? "") === norm(cfg.linkTypeName)).every(done);
     }
+    // --- Acting-user conditions. actingUser = the accountId from args.user (present
+    //     in the rule payload). If it's unavailable we SHOW (fail-OPEN). ---
+    case "current-user-is-assignee": {
+      if (!actingUser) return true;
+      const a = await read(issueKey, "assignee");
+      return a?.accountId === actingUser;
+    }
+    case "current-user-is-reporter": {
+      if (!actingUser) return true;
+      const r = await read(issueKey, "reporter");
+      return r?.accountId === actingUser;
+    }
+    case "user-in-field": {
+      if (!cfg.fieldId || !actingUser) return true;
+      const u = await read(issueKey, cfg.fieldId);
+      return u?.accountId === actingUser;
+    }
+    case "user-in-group": {
+      if (cfg.groupName == null || !actingUser) return true;
+      const groups = await readUserGroups(actingUser);
+      return (Array.isArray(groups) ? groups : []).some((g) => norm(g) === norm(cfg.groupName));
+    }
     default:
       return true; // unknown / unavailable rule type → SHOW (fail-OPEN)
   }
@@ -314,12 +348,15 @@ export async function executePremadeRule(config, args, invocationType, opts = {}
   const mf = args?.modifiedFields || args?.transition?.modifiedFields || {};
   // Field reader is injectable for offline unit testing (defaults to the live REST read).
   const read = opts.readField || getRawField;
+  // Acting user (for the user-conditions) — present in the rule payload as args.user.accountId.
+  const actingUser = opts.actingUser ?? args?.user?.accountId ?? args?.context?.accountId ?? null;
+  const readUserGroups = opts.readUserGroups || getUserGroups;
   let out;
   try {
     if (!cfg.ruleType) {
       out = PASS;
     } else if (invocationType === "condition") {
-      out = (await runCondition(cfg, issueKey, read)) ? PASS : { result: false }; // hide silently — no message
+      out = (await runCondition(cfg, issueKey, read, actingUser, readUserGroups)) ? PASS : { result: false }; // hide silently — no message
     } else {
       out = await runValidator(cfg, mf, issueKey, read);
     }

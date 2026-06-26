@@ -7208,6 +7208,9 @@ resolver.define("testPostFunction", async ({ payload }) => {
 
 export const handler = resolver.getDefinitions();
 
+// DEV-ONLY harness test-state web trigger (gated by HARNESS_SECRET; 404 in prod)
+export { testStateTrigger } from "./test-hook";
+
 // === Provider definitions ===
 const PROVIDERS = {
   openai: { label: "OpenAI", baseUrl: "https://api.openai.com/v1", defaultModel: "gpt-5.4-mini" },

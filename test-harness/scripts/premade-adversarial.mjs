@@ -183,8 +183,7 @@ function buildRuleSpecs(ctx) {
     r("filled", "PRIMARY", { put: put(F.TXT, "a clear value"), expected: "allow", why: "isEmpty false :160" }),
     r("empty-str", "PRIMARY", { put: put(F.TXT, ""), expected: "block", why: 'isEmpty("") :91' }),
     r("null", "PRIMARY", { put: put(F.TXT, null), expected: "block", why: "isEmpty(null) :91" }),
-    r("whitespace", "PRIMARY", { put: put(F.TXT, "   "), expected: "block", why: 'catalog "has a value" — whitespace should not count',
-      expectedActual: "allow", findingId: "BEHAVIOR", note: 'isEmpty does not trim strings (:91) → "   " passes' }),
+    r("whitespace", "PRIMARY", { put: put(F.TXT, "   "), expected: "block", why: "FIXED B1: isEmpty trims strings → '   ' empty :91" }),
   ]);
   V("field-required/desc", "field-required", { fieldId: F.DESC.id, fieldName: "Description" }, [
     r("adf-empty", "PRIMARY", { put: put(F.DESC, adfDoc("")), expected: "block", why: "adfText blank → isEmpty :94" }),
@@ -240,7 +239,7 @@ function buildRuleSpecs(ctx) {
     r("match", "PRIMARY", { put: put(F.TXT, "ABC-12"), expected: "allow", why: "re.test :196" }),
     r("nomatch", "PRIMARY", { put: put(F.TXT, "abc"), expected: "block", why: "no match" }),
     r("empty", "PRIMARY", { put: put(F.TXT, ""), expected: "allow", why: "isEmpty → PASS :194" }),
-    r("whitespace", "PRIMARY", { put: put(F.TXT, "   "), expected: "block", why: "non-empty '   ' tested, fails ^[A-Z]{3} :196" }),
+    r("whitespace", "PRIMARY", { put: put(F.TXT, "   "), expected: "allow", why: "FIXED B1 cross-effect: isEmpty('   ') now true → regex skips empty (PASS) :194" }),
   ]);
   V("field-regex/bad", "field-regex", { fieldId: F.TXT.id, fieldName: "Text", regex: "[" }, [
     r("badpat", "PRIMARY", { put: put(F.TXT, "anything"), expected: "allow", why: "RegExp throws → fail-open :195" }),
@@ -271,8 +270,7 @@ function buildRuleSpecs(ctx) {
     r("6", "PRIMARY", { put: put(F.TXT, "abcdef"), expected: "block", why: "6>5" }),
   ]);
   V("text-length/max1-emoji", "text-length", { fieldId: F.TXT.id, fieldName: "Text", min: "", max: "1" }, [
-    r("emoji", "PRIMARY", { put: put(F.TXT, "😀"), expected: "allow", why: 'user sees 1 char',
-      expectedActual: "block", findingId: "BEHAVIOR", note: "String.length counts UTF-16 code units → emoji = 2 (:212)" }),
+    r("emoji", "PRIMARY", { put: put(F.TXT, "😀"), expected: "allow", why: "FIXED B2: [...text].length counts code points → emoji=1 :212" }),
   ]);
   V("text-length/nogate", "text-length", { fieldId: F.TXT.id, fieldName: "Text", min: "", max: "" }, [
     r("any", "PRIMARY", { put: put(F.TXT, "whatever length"), expected: "allow", why: "hasMin/hasMax false :214" }),
@@ -337,8 +335,7 @@ function buildRuleSpecs(ctx) {
   C("field-has-value", "field-has-value", { fieldId: F.TXT.id }, [
     r("set", "PRIMARY", { put: put(F.TXT, "x"), expected: "show", why: "!isEmpty :264" }),
     r("cleared", "PRIMARY", { put: put(F.TXT, null), expected: "hide", why: "isEmpty" }),
-    r("whitespace", "PRIMARY", { put: put(F.TXT, "   "), expected: "hide", why: 'user expects whitespace ≠ value',
-      expectedActual: "show", findingId: "BEHAVIOR", note: "isEmpty('   ') false (:91) → shows" }),
+    r("whitespace", "PRIMARY", { put: put(F.TXT, "   "), expected: "hide", why: "FIXED B1: isEmpty trims → '   ' empty → hide :264" }),
   ]);
   C("field-empty", "field-empty", { fieldId: F.TXT.id }, [
     r("cleared", "PRIMARY", { put: put(F.TXT, null), expected: "show", why: "isEmpty :268" }),
@@ -349,8 +346,7 @@ function buildRuleSpecs(ctx) {
     r("no", "PRIMARY", { put: put(F.SEL, "Low"), expected: "hide", why: "≠" }),
   ]);
   C("field-equals/num", "field-equals", { fieldId: F.NUM.id, value: "5.0" }, [
-    r("numeric", "PRIMARY", { put: put(F.NUM, 5), expected: "show", why: 'user expects 5 == 5.0',
-      expectedActual: "hide", findingId: "BEHAVIOR", note: "field-equals has no numeric coercion: fieldText(5)='5' ≠ '5.0' (:272), unlike field-comparison eq" }),
+    r("numeric", "PRIMARY", { put: put(F.NUM, 5), expected: "show", why: "FIXED B3: numeric coercion → 5 == 5.0 :272" }),
   ]);
   C("field-equals/multi", "field-equals", { fieldId: F.MSEL.id, value: "Backend" }, [
     r("joined", "PRIMARY", { put: put(F.MSEL, ["Backend", "Security"]), expected: "hide", why: "fieldText joins → 'Backend, Security' ≠ 'Backend' :272 (≠ field-comparison .some)" }),

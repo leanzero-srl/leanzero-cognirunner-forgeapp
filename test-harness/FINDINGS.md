@@ -1209,8 +1209,9 @@ accumulate, never delete; honors the issue-delete-403 rule), per-PUT **read-back
 (quirk vs. bug), a **3× flakiness gate**, and `ZHARNESS`-prefix detach/teardown so re-runs leave the
 workflow and pool unchanged.
 
-**Result (3×, dev v22.56): 114/114 stable, 0 flaky, 0 lane-divergences** (live == executor on every
-validator → deployed build matches src), **1 fixed + 4 locked behavior findings**. The matrix itself
+**Final result (3×, dev v22.57): 114/114 stable, 0 flaky, 0 lane-divergences, 0 locked** (live ==
+executor on every validator → deployed build matches src; every row asserts the spec). The matrix
+surfaced 5 candidate behaviors: **4 fixed** (F-UIF1 + B1–B3) and **1 left as by-design** (B4). It also
 caught one *test* wiring bug first (ADF rows pointed at a text-field rule → attributed via read-back
 to a wrong `fieldId`, not the executor; fixed the row). Report: `results/premade-adversarial.json`.
 
@@ -1230,38 +1231,48 @@ sibling regression (`user-in-field/single` self/other/cleared all still correct)
 the row now asserts spec as a self-clearing tripwire. (Catalog help still says "single-user field";
 left as-is to avoid a 3-frontend rebuild — a doc nicety, not wrong.)
 
-### Documented behavior findings — LOCKED to actual (green-but-visible), NOT fixed
-Each is a real, stable sharp edge surfaced by the matrix. I am **not** fixing these this pass —
-flagged by confidence + blast radius, per the owner mandate (don't fix low-confidence / broad-reach
-changes blindly). Each row asserts ACTUAL via `expectedActual` so the suite stays green and the edge
-stays visible; flip the lock when/if the owner decides to act.
+### B1 — whitespace-only counted as "present" (FIXED, v22.57)
+ROOT: `isEmpty` (`:90-98`) never trimmed strings, so `"   "` passed `field-required` (allow),
+`field-has-value` (show), `field-changed`, and read non-empty for `field-empty` — while `field-regex`
+*evaluated* the whitespace and `comment-required`/ADF `field-required` *trimmed* it. Asymmetric.
+FIX (scoped, broad-reach): `if (typeof v === "string") return v.trim() === ""` in `isEmpty`.
+Whitespace-only is now empty everywhere. Confidence: MEDIUM-it-was-a-bug, but the fix is HIGH-reach
+(`isEmpty` gates ~8 branches) — applied with the owner's explicit go-ahead.
+CROSS-EFFECT (called out, verified): `field-regex`/`field-comparison` now *skip* a whitespace-only
+value (PASS) instead of evaluating it — consistent with how they already skip truly-empty values
+(emptiness is `field-required`'s job). The matrix row `field-regex/text/whitespace` was re-baselined
+block→allow accordingly.
+VERIFIED: `field-required/text/whitespace`→block, `field-has-value/whitespace`→hide,
+`field-regex/text/whitespace`→allow; 3× stable; non-whitespace rows unchanged. Contained to
+`premade-rules.js` (module-private `isEmpty`; no other consumer).
 
-- **B1 — whitespace-only counts as "present".** `isEmpty` (`:90-98`) never trims strings, so `"   "`
-  passes `field-required` (allow), `field-has-value` (show), `field-changed`, and reads non-empty for
-  `field-empty` — yet `field-regex` *evaluates* the whitespace (can block) and `comment-required`
-  *trims* (blocks), and ADF `field-required` trims (blocks). Asymmetry is the sharp edge.
-  Confidence it's a bug: **MEDIUM** (whitespace-as-present is a defensible convention). Blast radius
-  of a fix (trim in `isEmpty`): **HIGH** — `isEmpty` gates ~8 rule branches; trimming would also make
-  `field-regex`/`field-comparison` *skip* whitespace instead of evaluating it. Recommend: leave as-is
-  or change deliberately with a full-matrix re-verify.
-- **B2 — text length counts UTF-16 code units.** `text-length`/`comment-required` use
-  `String.length` (`:212`, `:147`), so `"😀"` = 2 and astral chars over-count vs. what a user sees.
-  Confidence it's a bug: **LOW** (conventional JS; most systems behave similarly). A grapheme/codepoint
-  count is a real semantic change to all length rules. Recommend: leave as-is unless emoji-heavy text
-  is a real use case.
-- **B3 — `field-equals` has no numeric coercion.** `field-equals(value:"5.0")` vs a stored `5`
-  compares `fieldText(5)="5"` ≠ `"5.0"` → hide (`:272`), while `field-comparison op=eq` *does* coerce
-  (`5===5`). Two premade rules disagree on numeric equality. Confidence it's a bug: **LOW-MEDIUM**
-  (catalog scopes `field-equals` to *case-insensitive text* equality; "5.0" vs "5" is a niche input).
-  Recommend: leave as-is, or add coercion to `field-equals` to match `field-comparison` (narrow).
-- **B4 — `field-equals` joins multi-value; `field-comparison eq` uses `.some`.** A multiselect
-  `[Backend, Security]` makes `field-equals(value:"Backend")` hide (joined "Backend, Security") but
-  `field-comparison(eq, "Backend")` allow (`.some` per element, `:190`). Both behaviors are
-  *intentional* per the code comments; locked as documented, asserted to actual. Confidence it's a
-  bug: **LOW** (by-design fork). Captured so any future change to either is caught.
+### B2 — text length counted UTF-16 code units (FIXED, v22.57)
+ROOT: `text-length` (`:212`) and `comment-required` minLen (`:147`) used `String.length`, so `"😀"` = 2
+and astral chars over-counted vs. what a user sees.
+FIX: count code points — `[...text].length` / `[...t].length`. Confidence it was a bug: LOW
+(conventional JS), but the owner opted to fix; the change is contained to the two length rules and
+ASCII is unaffected.
+VERIFIED: `text-length/max1-emoji`→allow; ASCII length rows unchanged; 3× stable. (Code points, not
+full grapheme clusters — combining/ZWJ sequences still count >1; sufficient for the common emoji case.)
 
-LESSON: the executor is robust — across a 114-row adversarial matrix the only genuine reachable bug
-was the multi-user footgun (fixed); the rest are documented, defensible sharp edges now locked as a
-green regression net. The suite also caught its OWN wiring error first (wrong `fieldId`), which the
-read-back attribution correctly classified as a test bug, not an app bug — the discipline of "read
-back and attribute before claiming a bug" paid for itself.
+### B3 — `field-equals` had no numeric coercion (FIXED, v22.57)
+ROOT: `field-equals(value:"5.0")` vs a stored `5` compared `fieldText(5)="5"` ≠ `"5.0"` → hide
+(`:272`), while `field-comparison op=eq` coerced (`5===5`). The two rules disagreed on numeric equality.
+FIX (narrow): coerce both sides numerically (mirroring `field-comparison`'s `num()`); fall back to
+case-insensitive text equality for non-numbers and multi-value joins. Confidence: HIGH the fix is
+clean; consistency with `field-comparison eq` is the win.
+VERIFIED: `field-equals/num`→show; text equality (`High`==`high`) and multi-value still correct; 3× stable.
+
+### B4 — `field-equals` joins multi-value; `field-comparison eq` uses `.some` (NOT fixed — by design)
+A multiselect `[Backend, Security]` makes `field-equals(value:"Backend")` hide (joined
+"Backend, Security") but `field-comparison(eq, "Backend")` allow (`.some` per element, `:190`). Both
+behaviors are intentional per the code comments — a genuine semantic fork, not a bug. Left as-is and
+asserted to ACTUAL in the matrix so any future change to either rule is caught. Confidence it's a
+bug: LOW.
+
+LESSON: the executor was already robust — across a 114-row adversarial matrix only one genuine
+reachable bug (the multi-user footgun) plus three sharp edges turned out worth fixing once flagged by
+confidence + blast radius; one fork (B4) is by-design. The suite also caught its OWN wiring error
+first (wrong `fieldId`), which read-back attribution correctly classified as a test bug, not an app
+bug — the discipline of "read back and attribute before claiming a bug" paid for itself. End state:
+114/114 green with every row asserting the spec (0 locks), a self-clearing regression net.

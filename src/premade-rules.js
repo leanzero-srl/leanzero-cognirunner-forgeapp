@@ -88,7 +88,8 @@ function adfText(node) {
 
 /** Empty = absent, null, '', empty array, ADF with no text, or {} — mirrors the form's intent. */
 function isEmpty(v) {
-  if (v === null || v === undefined || v === "") return true;
+  if (v === null || v === undefined) return true;
+  if (typeof v === "string") return v.trim() === ""; // whitespace-only counts as empty ("has a value")
   if (Array.isArray(v)) return v.length === 0;
   if (typeof v === "object") {
     if (Array.isArray(v.content)) return adfText(v).trim() === ""; // ADF rich text
@@ -144,7 +145,7 @@ async function runValidator(cfg, mf, issueKey, read) {
     const t = text.trim();
     if (t === "") return fail("Add a comment to make this transition.");
     const min = cfg.minLen === "" || cfg.minLen == null ? NaN : Number(cfg.minLen); // presence-gated like text-length
-    if (Number.isFinite(min) && t.length < min) return fail(`Your comment must be at least ${min} characters.`);
+    if (Number.isFinite(min) && [...t].length < min) return fail(`Your comment must be at least ${min} characters.`); // code points, not UTF-16 units
     return PASS;
   }
 
@@ -209,7 +210,7 @@ async function runValidator(cfg, mf, issueKey, read) {
       else if (value && typeof value === "object" && value.type === "doc") text = adfText(value);
       else if (value == null) text = "";
       else return PASS; // unexpected shape → fail-open
-      const len = text.length;
+      const len = [...text].length; // count Unicode code points (an emoji/astral char = 1, not 2 UTF-16 units)
       // Presence-gate: Number('')/Number(null) are 0 (finite) — only Number(undefined) is NaN.
       const hasMin = cfg.min !== "" && cfg.min != null, hasMax = cfg.max !== "" && cfg.max != null;
       const min = Number(cfg.min), max = Number(cfg.max);
@@ -269,7 +270,13 @@ async function runCondition(cfg, issueKey, read, actingUser, readUserGroups) {
     }
     case "field-equals": {
       if (!cfg.fieldId || cfg.value == null) return true;
-      return norm(fieldText(await read(issueKey, cfg.fieldId))) === norm(cfg.value);
+      const got = fieldText(await read(issueKey, cfg.fieldId));
+      // Numeric coercion to match field-comparison's eq (so 5 equals "5.0"); falls back to
+      // case-insensitive text equality for non-numbers (and multi-value joins → text path).
+      const numOf = (x) => { const t = String(x).trim(); return t !== "" && Number.isFinite(Number(t)) ? Number(t) : NaN; };
+      const a = numOf(got), b = numOf(cfg.value);
+      if (!Number.isNaN(a) && !Number.isNaN(b)) return a === b;
+      return norm(got) === norm(cfg.value);
     }
     case "issue-type-is": {
       if (cfg.issueTypeName == null) return true;

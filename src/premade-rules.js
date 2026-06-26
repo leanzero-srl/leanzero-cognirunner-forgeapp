@@ -325,7 +325,11 @@ async function runCondition(cfg, issueKey, read, actingUser, readUserGroups) {
     case "user-in-field": {
       if (!cfg.fieldId || !actingUser) return true;
       const u = await read(issueKey, cfg.fieldId);
-      return u?.accountId === actingUser;
+      // Single-user fields read as { accountId }; multi-user fields as [{ accountId }, …].
+      // Handle both so pointing this at a multi-user field (e.g. Approvers) matches any member
+      // instead of silently hiding for everyone.
+      const ids = Array.isArray(u) ? u.map((x) => x && x.accountId) : [u && u.accountId];
+      return ids.includes(actingUser);
     }
     case "user-in-group": {
       if (cfg.groupName == null || !actingUser) return true;

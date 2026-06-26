@@ -1189,3 +1189,79 @@ killed-mid-run case is an explicit, documented gap for the gen-marker iteration.
 
 LESSON: overnight-written code touching the critical PF path got an adversarial review before being
 trusted — it caught a double-exec I would otherwise have shipped. The review paid for itself.
+
+## Session round (2026-06-26, dev v22.55→22.56) — Adversarial premade-rule edge-case suite (`premade-adversarial.mjs`)
+
+**A bug-finding (not happy-path) suite for the 11 premade validators + 15 conditions.** New
+`test-harness/scripts/premade-adversarial.mjs` + `lib/harness-pool.mjs`. Drives a **114-row
+edge-case matrix** (every expectation cited to a branch line in `src/premade-rules.js`) two ways:
+- **Lane 1** — live enforcement on the real Jira transition path: `ZHARNESS-<i>-<ruleType>` self-
+  loops on the Backlog hub, PUT the controlled field, READ BACK the stored shape, fire → HTTP
+  204/400 (the 9 field/issue-level validators; `field-changed`/`comment-required` are Lane-2-only
+  because screenless self-loops can't carry modifiedFields).
+- **Lane 2** — the real `executePremadeRule` with a REST-backed `readField` (+ injected
+  `actingUser`/`readUserGroups`), covering BOTH validators and conditions (conditions never fire on
+  the REST path). Lane 2 IS the executor → a stable Lane-2-vs-spec mismatch is the finding; Lane 1
+  corroborates the live path.
+
+Determinism: a **bounded find-or-create marker pool** (16 `ZHARNESS-*` issues, reused — never
+accumulate, never delete; honors the issue-delete-403 rule), per-PUT **read-back attribution**
+(quirk vs. bug), a **3× flakiness gate**, and `ZHARNESS`-prefix detach/teardown so re-runs leave the
+workflow and pool unchanged.
+
+**Result (3×, dev v22.56): 114/114 stable, 0 flaky, 0 lane-divergences** (live == executor on every
+validator → deployed build matches src), **1 fixed + 4 locked behavior findings**. The matrix itself
+caught one *test* wiring bug first (ADF rows pointed at a text-field rule → attributed via read-back
+to a wrong `fieldId`, not the executor; fixed the row). Report: `results/premade-adversarial.json`.
+
+### F-UIF1 — `user-in-field` silently hides for multi-user fields (FIXED, v22.56)
+ROOT: `src/premade-rules.js` `user-in-field` did `u?.accountId === actingUser`. A multi-user
+(`multiuserpicker`) field reads as an **array** `[{accountId}, …]`, so `u?.accountId` is `undefined`
+→ the condition returns false → the transition is **silently hidden for everyone**. Confirmed
+reachable: the config-ui field picker (`PremadeRuleForm.jsx`) is the generic all-fields picker with
+**no single-vs-multi-user filter**, and the catalog entry carries no `fieldType` restriction — a
+user can pick a multi-user "Approvers" field and get a silent always-hide.
+FIX (scoped, narrow, additive): normalize to an id list —
+`const ids = Array.isArray(u) ? u.map(x => x && x.accountId) : [u && u.accountId]; return ids.includes(actingUser);`.
+Single-user path is byte-for-byte equivalent (`[u.accountId].includes(x)` ≡ `u.accountId === x`);
+multi-user now matches any member. Confidence: HIGH (reachable footgun; zero single-user regression).
+VERIFIED: `premade-adversarial.mjs` row `user-in-field/multi` flipped hide→show, 3× stable, no
+sibling regression (`user-in-field/single` self/other/cleared all still correct). Lock removed →
+the row now asserts spec as a self-clearing tripwire. (Catalog help still says "single-user field";
+left as-is to avoid a 3-frontend rebuild — a doc nicety, not wrong.)
+
+### Documented behavior findings — LOCKED to actual (green-but-visible), NOT fixed
+Each is a real, stable sharp edge surfaced by the matrix. I am **not** fixing these this pass —
+flagged by confidence + blast radius, per the owner mandate (don't fix low-confidence / broad-reach
+changes blindly). Each row asserts ACTUAL via `expectedActual` so the suite stays green and the edge
+stays visible; flip the lock when/if the owner decides to act.
+
+- **B1 — whitespace-only counts as "present".** `isEmpty` (`:90-98`) never trims strings, so `"   "`
+  passes `field-required` (allow), `field-has-value` (show), `field-changed`, and reads non-empty for
+  `field-empty` — yet `field-regex` *evaluates* the whitespace (can block) and `comment-required`
+  *trims* (blocks), and ADF `field-required` trims (blocks). Asymmetry is the sharp edge.
+  Confidence it's a bug: **MEDIUM** (whitespace-as-present is a defensible convention). Blast radius
+  of a fix (trim in `isEmpty`): **HIGH** — `isEmpty` gates ~8 rule branches; trimming would also make
+  `field-regex`/`field-comparison` *skip* whitespace instead of evaluating it. Recommend: leave as-is
+  or change deliberately with a full-matrix re-verify.
+- **B2 — text length counts UTF-16 code units.** `text-length`/`comment-required` use
+  `String.length` (`:212`, `:147`), so `"😀"` = 2 and astral chars over-count vs. what a user sees.
+  Confidence it's a bug: **LOW** (conventional JS; most systems behave similarly). A grapheme/codepoint
+  count is a real semantic change to all length rules. Recommend: leave as-is unless emoji-heavy text
+  is a real use case.
+- **B3 — `field-equals` has no numeric coercion.** `field-equals(value:"5.0")` vs a stored `5`
+  compares `fieldText(5)="5"` ≠ `"5.0"` → hide (`:272`), while `field-comparison op=eq` *does* coerce
+  (`5===5`). Two premade rules disagree on numeric equality. Confidence it's a bug: **LOW-MEDIUM**
+  (catalog scopes `field-equals` to *case-insensitive text* equality; "5.0" vs "5" is a niche input).
+  Recommend: leave as-is, or add coercion to `field-equals` to match `field-comparison` (narrow).
+- **B4 — `field-equals` joins multi-value; `field-comparison eq` uses `.some`.** A multiselect
+  `[Backend, Security]` makes `field-equals(value:"Backend")` hide (joined "Backend, Security") but
+  `field-comparison(eq, "Backend")` allow (`.some` per element, `:190`). Both behaviors are
+  *intentional* per the code comments; locked as documented, asserted to actual. Confidence it's a
+  bug: **LOW** (by-design fork). Captured so any future change to either is caught.
+
+LESSON: the executor is robust — across a 114-row adversarial matrix the only genuine reachable bug
+was the multi-user footgun (fixed); the rest are documented, defensible sharp edges now locked as a
+green regression net. The suite also caught its OWN wiring error first (wrong `fieldId`), which the
+read-back attribution correctly classified as a test bug, not an app bug — the discipline of "read
+back and attribute before claiming a bug" paid for itself.

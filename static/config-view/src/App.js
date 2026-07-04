@@ -40,6 +40,48 @@ const premadeSummaryRows = (config) => {
   return rows;
 };
 
+// Compact rule facts for the "Explain this rule" assist — the SAME data the summary
+// card shows (no hidden fields). For static PFs only step NAMES exist post-offload
+// (functionsMeta); the backend prompt restates them without inferring code. Lengths
+// are bounded here and again (+ defanged) server-side.
+const buildFactsText = (config, staticSteps) => {
+  const lines = [];
+  const push = (label, value) => {
+    if (value == null || value === "") return;
+    lines.push(`${label}: ${String(value).slice(0, 220)}`);
+  };
+  if (config.type === "postfunction-semantic") {
+    push("When", config.conditionPrompt);
+    push("Action", config.actionPrompt);
+    push("Target field", config.actionFieldId);
+  } else if (config.type === "postfunction-static") {
+    push("Steps", `${staticSteps.length} automated step(s)`);
+    staticSteps.forEach((s, i) => push(`Step ${i + 1}`, s.name || s.operationPrompt || "(unnamed)"));
+  } else if (config.ruleKind === "premade") {
+    premadeSummaryRows(config).forEach((r) => push(r.label.replace(/:$/, ""), r.value));
+  } else {
+    push("Field", config.fieldId);
+    push("Prompt", config.prompt);
+    push("Agentic JQL search", config.enableTools ? "enabled" : "disabled");
+  }
+  return lines.join("\n").slice(0, 1500);
+};
+
+// The rule kind the explain prompt keys its behavior line on. Uses the authoritative
+// module signal (ruleModule from extension.type); for premade only asserts
+// validator-vs-condition when that signal is present, else the soft "premade" kind
+// (so an ambiguous legacy config never gets a confident BLOCK-vs-HIDE claim).
+const ruleKindEnum = (config, ruleModule, isCondition) => {
+  if (config.type === "postfunction-semantic") return "semantic-pf";
+  if (config.type === "postfunction-static") return "static-pf";
+  if (config.ruleKind === "premade") {
+    if (ruleModule === "condition") return "premade-condition";
+    if (ruleModule === "validator") return "premade-validator";
+    return "premade";
+  }
+  return isCondition ? "condition" : "validator";
+};
+
 // Inject styles directly
 const injectStyles = () => {
   if (document.getElementById("app-styles")) return;
@@ -232,6 +274,55 @@ const injectStyles = () => {
       font-weight: 800;
       letter-spacing: var(--track-tight);
       color: var(--ink);
+    }
+
+    /* "Explain this rule" assist — solid accent trigger, inset result card. Only
+       existing tokens (each with a dark override) so dark parity is automatic. No
+       left rail, no faded tint. */
+    .cv-explain { margin-top: 12px; }
+    .cv-explain-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      color: #ffffff;
+      background: var(--accent);
+      border: none;
+      border-radius: var(--r-sm);
+      cursor: pointer;
+      transition: background var(--dur-fast) var(--ease-out);
+    }
+    .cv-explain-btn:hover:not(:disabled) { background: var(--accent-deep); }
+    .cv-explain-btn:disabled { opacity: 0.7; cursor: default; }
+    .cv-explain-card {
+      margin-top: 10px;
+      padding: 10px 12px;
+      background: var(--surface-sunken);
+      border: 1px solid var(--line);
+      border-radius: var(--r-lg);
+    }
+    .cv-explain-eyebrow {
+      font-family: SFMono-Regular, Consolas, monospace;
+      font-size: var(--fs-eyebrow);
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: var(--track-eyebrow);
+      color: var(--accent);
+      margin-bottom: 5px;
+    }
+    .cv-explain-text {
+      font-size: 13px;
+      line-height: 1.5;
+      color: var(--text-color);
+    }
+    .cv-explain-note {
+      margin-top: 10px;
+      margin-bottom: 8px;
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--accent-slate);
     }
 
     .label {
@@ -1089,6 +1180,10 @@ function App() {
   // True once getRuleStatus has completed (found or not) — keeps the banner
   // placeholder honest: it only shows while a check is genuinely in flight.
   const [statusChecked, setStatusChecked] = useState(false);
+  // "Explain this rule" assist: idle | loading | done | degraded | error.
+  const [explainState, setExplainState] = useState("idle");
+  const [explanation, setExplanation] = useState("");
+  const [explainReason, setExplainReason] = useState("");
 
   const fetchLogs = async () => {
     if (!invoke) return;
@@ -1147,6 +1242,29 @@ function App() {
       showToast("Failed to clear logs", "error");
     }
     setClearingLogs(false);
+  };
+
+  // One AI call per explicit click. The server bounds cost (sig-cache + short
+  // negative-cache); the UI never calls this on mount/theme/config-load.
+  const runExplain = async ({ kind, ruleTypeLabel, factsText }) => {
+    if (!invoke || explainState === "loading") return;
+    setExplainState("loading");
+    try {
+      const result = await invoke("explainRule", { kind, ruleTypeLabel, factsText });
+      if (result?.degraded) {
+        setExplainReason(result.reason || "error");
+        setExplainState("degraded");
+      } else if (result?.success && result.explanation) {
+        setExplanation(result.explanation);
+        setExplainState("done");
+      } else {
+        setExplainReason(result?.error || "");
+        setExplainState("error");
+      }
+    } catch (e) {
+      console.error("Explain rule failed:", e);
+      setExplainState("error");
+    }
   };
 
   const [toggleError, setToggleError] = useState(null);
@@ -1748,6 +1866,46 @@ function App() {
         </>
         )
       )}
+
+      {(() => {
+        const explainKind = ruleKindEnum(config, ruleModule, isCondition);
+        const explainFacts = buildFactsText(config, staticSteps);
+        const trigger = (
+          <button
+            className={`cv-explain-btn${explainState === "loading" ? " is-busy busy-solid" : ""}`}
+            onClick={() => runExplain({ kind: explainKind, ruleTypeLabel: explainKind === "premade" ? "Premade rule" : ruleView.title, factsText: explainFacts })}
+            disabled={explainState === "loading"}
+          >
+            ✦ Explain this rule in plain English
+          </button>
+        );
+        const showTrigger =
+          explainState === "idle" || explainState === "loading" || explainState === "error" ||
+          (explainState === "degraded" && explainReason === "timeout");
+        return (
+          <div className="cv-explain">
+            {explainState === "done" && (
+              <div className="cv-explain-card">
+                <div className="cv-explain-eyebrow">§ IN PLAIN ENGLISH</div>
+                <div className="cv-explain-text">{explanation}</div>
+              </div>
+            )}
+            {explainState === "degraded" && (
+              <div className="cv-explain-note">
+                {explainReason === "lmstudio"
+                  ? "Plain-English explanations aren't available with the self-hosted LM Studio provider — switch to a hosted provider in CogniRunner Settings."
+                  : explainReason === "timeout"
+                  ? "The AI provider didn't respond in time — try again in a moment."
+                  : "Couldn't generate an explanation right now — try again in a moment."}
+              </div>
+            )}
+            {explainState === "error" && (
+              <div className="cv-explain-note">Couldn't generate an explanation.</div>
+            )}
+            {showTrigger && trigger}
+          </div>
+        );
+      })()}
       </div>
 
       {/* Logs section */}

@@ -129,12 +129,12 @@ const PROVIDERS = {
 
 const getProviderConfig = async () => {
   try {
-    const provider = (await storage.get("COGNIRUNNER_AI_PROVIDER")) || "openai";
+    const provider = (await storage.get("COGNIRUNNER_AI_PROVIDER")) || "atlassian";
     const customUrl = await storage.get("COGNIRUNNER_AI_BASE_URL");
     const baseUrl = customUrl || (PROVIDERS[provider] && PROVIDERS[provider].baseUrl) || PROVIDERS.openai.baseUrl;
     return { provider, baseUrl };
   } catch (e) {
-    return { provider: "openai", baseUrl: PROVIDERS.openai.baseUrl };
+    return { provider: "atlassian", baseUrl: PROVIDERS.atlassian.baseUrl };
   }
 };
 

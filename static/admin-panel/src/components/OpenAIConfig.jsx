@@ -98,8 +98,8 @@ const TOOL_DESCRIPTIONS = {
 };
 
 export default function OpenAIConfig({ invoke }) {
-  const [provider, setProvider] = useState("openai");
-  const [activeProvider, setActiveProvider] = useState("openai"); // what's actually saved in KVS
+  const [provider, setProvider] = useState("atlassian");
+  const [activeProvider, setActiveProvider] = useState("atlassian"); // what's actually saved in KVS
   const [baseUrl, setBaseUrl] = useState("");
   const [isByok, setIsByok] = useState(false);
   const [hasKey, setHasKey] = useState(false);
@@ -201,7 +201,7 @@ export default function OpenAIConfig({ invoke }) {
   const isBedrock = provider === "bedrock";
   // Tracks the provider whose config is currently being loaded, so a fast switch
   // doesn't let a slow in-flight load() overwrite the newer provider's state.
-  const providerRef = useRef("openai");
+  const providerRef = useRef("atlassian");
   const providerLabelFor = (p) => PROVIDER_OPTIONS.find((o) => o.value === p)?.label || p;
 
   // "Unchanged" flags so Save buttons disable when there's nothing to save (no confusing
@@ -306,9 +306,9 @@ export default function OpenAIConfig({ invoke }) {
         invoke("getContext7Remote").catch(() => ({ success: false })),
       ]);
 
-      let initial = "openai";
+      let initial = "atlassian";
       if (providerResult.success) {
-        initial = providerResult.provider || "openai";
+        initial = providerResult.provider || "atlassian";
         setActiveProvider(initial);
         setProvider(initial);
         setBedrockAck(!!providerResult.bedrockAck);

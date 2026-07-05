@@ -18,69 +18,8 @@
 
 import React, { useState, useEffect } from "react";
 import { confirmDialog } from "./confirmDialog";
-import { findRule, opLabel } from "../../../src/shared/premade-rules-catalog.js";
-
-// Human-readable summary rows for a premade (non-AI) rule in the read-only view.
-const premadeRuleLabel = (key) =>
-  (findRule("validator", key) || findRule("condition", key) || {}).label || key;
-const premadeSummaryRows = (config) => {
-  const rows = [{ label: "Premade rule:", value: premadeRuleLabel(config.ruleType) }];
-  if (config.fieldId) rows.push({ label: "Field:", value: config.fieldId, code: true });
-  if (config.op) rows.push({ label: "Condition:", value: `${opLabel(config.op)} “${config.compareValue ?? ""}”` });
-  if (config.regex) rows.push({ label: "Pattern:", value: config.regex, code: true });
-  if (config.allowedValues) rows.push({ label: "Allowed:", value: config.allowedValues });
-  if (config.value != null && config.value !== "") rows.push({ label: "Equals:", value: String(config.value) });
-  if (config.min != null) rows.push({ label: "Min:", value: String(config.min) });
-  if (config.max != null) rows.push({ label: "Max:", value: String(config.max) });
-  if (config.mode) rows.push({ label: "When:", value: config.mode === "within" ? `within ${config.days} day(s)` : "in the future" });
-  for (const k of ["issueTypeName", "statusName", "resolutionName", "linkTypeName", "priorityName"]) {
-    if (config[k]) rows.push({ label: "Value:", value: config[k] });
-  }
-  if (config.errorMessage) rows.push({ label: "Message:", value: config.errorMessage });
-  return rows;
-};
-
-// Compact rule facts for the "Explain this rule" assist — the SAME data the summary
-// card shows (no hidden fields). For static PFs only step NAMES exist post-offload
-// (functionsMeta); the backend prompt restates them without inferring code. Lengths
-// are bounded here and again (+ defanged) server-side.
-const buildFactsText = (config, staticSteps) => {
-  const lines = [];
-  const push = (label, value) => {
-    if (value == null || value === "") return;
-    lines.push(`${label}: ${String(value).slice(0, 220)}`);
-  };
-  if (config.type === "postfunction-semantic") {
-    push("When", config.conditionPrompt);
-    push("Action", config.actionPrompt);
-    push("Target field", config.actionFieldId);
-  } else if (config.type === "postfunction-static") {
-    push("Steps", `${staticSteps.length} automated step(s)`);
-    staticSteps.forEach((s, i) => push(`Step ${i + 1}`, s.name || s.operationPrompt || "(unnamed)"));
-  } else if (config.ruleKind === "premade") {
-    premadeSummaryRows(config).forEach((r) => push(r.label.replace(/:$/, ""), r.value));
-  } else {
-    push("Field", config.fieldId);
-    push("Prompt", config.prompt);
-    push("Agentic JQL search", config.enableTools ? "enabled" : "disabled");
-  }
-  return lines.join("\n").slice(0, 1500);
-};
-
-// The rule kind the explain prompt keys its behavior line on. Uses the authoritative
-// module signal (ruleModule from extension.type); for premade only asserts
-// validator-vs-condition when that signal is present, else the soft "premade" kind
-// (so an ambiguous legacy config never gets a confident BLOCK-vs-HIDE claim).
-const ruleKindEnum = (config, ruleModule, isCondition) => {
-  if (config.type === "postfunction-semantic") return "semantic-pf";
-  if (config.type === "postfunction-static") return "static-pf";
-  if (config.ruleKind === "premade") {
-    if (ruleModule === "condition") return "premade-condition";
-    if (ruleModule === "validator") return "premade-validator";
-    return "premade";
-  }
-  return isCondition ? "condition" : "validator";
-};
+import { findRule } from "../../../src/shared/premade-rules-catalog.js";
+import { premadeSummaryRows, buildFactsText, ruleKindEnum } from "../../../src/shared/explain-facts.js";
 
 // Inject styles directly
 const injectStyles = () => {

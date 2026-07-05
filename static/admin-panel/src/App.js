@@ -25,6 +25,7 @@ import PermissionsTab from "./components/PermissionsTab";
 import SettingsOpenAITab from "./components/SettingsOpenAITab";
 import CustomSelect from "./components/CustomSelect";
 import { findRule as findPremadeRule } from "../../../src/shared/premade-rules-catalog.js";
+import { buildFactsText, ruleKindEnum } from "../../../src/shared/explain-facts.js";
 import AddRuleWizard from "./components/AddRuleWizard";
 import Tooltip from "./components/Tooltip";
 import { showToast } from "./components/toast";
@@ -251,6 +252,46 @@ const injectStyles = () => {
     .row-actions {
       display: flex;
       gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    /* Per-rule "Explain this rule" in the Rules table — solid accent button, an
+       independent full-width explanation row with an inset card. Admin tokens only
+       (each has a dark variant), so both themes are covered. No left rail/faded tint. */
+    .rule-explain-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      color: #ffffff;
+      background: var(--primary-color);
+      border-color: var(--primary-color);
+    }
+    .rule-explain-btn:hover:not(:disabled) { opacity: 0.9; }
+    .rule-explain-row td { padding: 0 12px 10px; }
+    .rule-explain-card {
+      padding: 10px 12px;
+      background: var(--code-bg);
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+    }
+    .rule-explain-eyebrow {
+      font-family: SFMono-Regular, Consolas, monospace;
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.14em;
+      color: var(--primary-color);
+      margin-bottom: 5px;
+    }
+    .rule-explain-text {
+      font-size: 13px;
+      line-height: 1.5;
+      color: var(--text-color);
+    }
+    .rule-explain-note {
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--text-secondary);
     }
 
     .row-disabled td {
@@ -4963,6 +5004,9 @@ function App() {
   const [expandedRuleId, setExpandedRuleId] = useState(null);
   const [ruleLogs, setRuleLogs] = useState({}); // { [ruleId]: log[] }
   const [ruleLogsLoading, setRuleLogsLoading] = useState(false);
+  // Per-rule "Explain this rule" state, keyed by config.id so rows explain
+  // independently: { [id]: { open, status: idle|loading|done|degraded|error, text, reason } }
+  const [explain, setExplain] = useState({});
 
   const toggleRuleExpand = async (ruleId) => {
     if (expandedRuleId === ruleId) { setExpandedRuleId(null); return; }
@@ -4974,6 +5018,53 @@ function App() {
         if (r && r.success) setRuleLogs((prev) => ({ ...prev, [ruleId]: r.logs || [] }));
       } catch (e) { console.error("Failed to fetch rule logs:", e); }
       setRuleLogsLoading(false);
+    }
+  };
+
+  // App-authored monumental label per kind (the resolver defangs + clamps to 60).
+  const explainLabelFor = (kind) => {
+    if (kind === "semantic-pf") return "AI Semantic Post-Function";
+    if (kind === "static-pf") return "AI Static Post-Function";
+    if (kind === "premade-condition" || kind === "premade-validator" || kind === "premade") return "Premade rule";
+    return kind === "condition" ? "AI Condition" : "AI Validator";
+  };
+
+  // One explainRule call per rule, on explicit click. Registry config.type is
+  // explicit (condition/validator/postfunction-*) so the kind is unambiguous.
+  const runExplainFor = async (config) => {
+    const id = config.id;
+    if (explain[id] && explain[id].status === "loading") return;
+    setExplain((prev) => ({ ...prev, [id]: { ...(prev[id] || {}), open: true, status: "loading" } }));
+    try {
+      const kind = ruleKindEnum(config, config.type, config.type === "condition");
+      const factsText = buildFactsText(config, config.functions?.length ? config.functions : (config.functionsMeta || []));
+      const result = await invoke("explainRule", { kind, ruleTypeLabel: explainLabelFor(kind), factsText });
+      // degraded and success co-occur on the resolver's timeout/error path — test degraded FIRST.
+      if (result && result.degraded) {
+        setExplain((prev) => ({ ...prev, [id]: { open: true, status: "degraded", reason: result.reason || "error" } }));
+      } else if (result && result.success && result.explanation) {
+        setExplain((prev) => ({ ...prev, [id]: { open: true, status: "done", text: result.explanation } }));
+      } else {
+        setExplain((prev) => ({ ...prev, [id]: { open: true, status: "error" } }));
+      }
+    } catch (e) {
+      console.error("Explain rule failed:", e);
+      setExplain((prev) => ({ ...prev, [id]: { open: true, status: "error" } }));
+    }
+  };
+
+  // Toggle the explanation row; fetch only the first time it's opened (cached after).
+  const toggleExplain = (config) => {
+    const id = config.id;
+    const cur = explain[id];
+    if (cur && cur.open) {
+      setExplain((prev) => ({ ...prev, [id]: { ...prev[id], open: false } }));
+    } else if (cur && (cur.status === "done" || (cur.status === "degraded" && cur.reason === "lmstudio"))) {
+      // Re-show only the PERMANENT results without a refetch; timeout/error degrades
+      // fall through so a click retries them (once the 2-min negative cache expires).
+      setExplain((prev) => ({ ...prev, [id]: { ...prev[id], open: true } }));
+    } else {
+      runExplainFor(config);
     }
   };
 
@@ -5442,29 +5533,64 @@ function App() {
                       </td>
                       <td><span className="timestamp">{formatTime(config.updatedAt)}</span></td>
                       <td>
-                        {(userRole === "editor" || userRole === "admin") && (
                         <div className="row-actions">
-                          {editUrl && (
-                            <button
-                              className="btn-small btn-edit"
-                              onClick={() => router && router.open(editUrl)}
-                              title="Open workflow editor"
-                            >
-                              Edit
-                            </button>
-                          )}
+                          {/* Explain is ungated (matches the resolver) so viewers can use it too. */}
                           <button
-                            className={`btn-small ${isDisabled ? "btn-enable" : "btn-danger"}${toggling === config.id ? " is-busy" : ""}`}
-                            onClick={() => toggleRule(config.id, isDisabled)}
-                            disabled={toggling === config.id}
-                            title={isDisabled ? "Re-enable rule in workflow" : "Disable rule in workflow"}
+                            className={`btn-small rule-explain-btn${explain[config.id]?.status === "loading" ? " is-busy busy-solid" : ""}`}
+                            onClick={() => toggleExplain(config)}
+                            disabled={explain[config.id]?.status === "loading"}
+                            title="Explain this rule in plain English"
                           >
-                            {isDisabled ? "Enable" : "Disable"}
+                            ✦ Explain
                           </button>
+                          {(userRole === "editor" || userRole === "admin") && (
+                          <>
+                            {editUrl && (
+                              <button
+                                className="btn-small btn-edit"
+                                onClick={() => router && router.open(editUrl)}
+                                title="Open workflow editor"
+                              >
+                                Edit
+                              </button>
+                            )}
+                            <button
+                              className={`btn-small ${isDisabled ? "btn-enable" : "btn-danger"}${toggling === config.id ? " is-busy" : ""}`}
+                              onClick={() => toggleRule(config.id, isDisabled)}
+                              disabled={toggling === config.id}
+                              title={isDisabled ? "Re-enable rule in workflow" : "Disable rule in workflow"}
+                            >
+                              {isDisabled ? "Enable" : "Disable"}
+                            </button>
+                          </>
+                          )}
                         </div>
-                        )}
                       </td>
                     </tr>
+                    {explain[config.id]?.open && (
+                      <tr className="rule-explain-row">
+                        <td className="rule-explain-cell" colSpan={6}>
+                          {explain[config.id].status === "done" ? (
+                            <div className="rule-explain-card anim-rise">
+                              <div className="rule-explain-eyebrow">§ IN PLAIN ENGLISH</div>
+                              <div className="rule-explain-text">{explain[config.id].text}</div>
+                            </div>
+                          ) : explain[config.id].status === "degraded" ? (
+                            <div className="rule-explain-note">
+                              {explain[config.id].reason === "lmstudio"
+                                ? "Plain-English explanations aren't available with the self-hosted LM Studio provider — switch to a hosted provider in Settings."
+                                : explain[config.id].reason === "timeout"
+                                ? "The AI provider didn't respond in time — try again in a moment."
+                                : "Couldn't generate an explanation right now — try again in a moment."}
+                            </div>
+                          ) : explain[config.id].status === "error" ? (
+                            <div className="rule-explain-note">Couldn't generate an explanation.</div>
+                          ) : (
+                            <div className="rule-explain-note">Generating…</div>
+                          )}
+                        </td>
+                      </tr>
+                    )}
                     {isExpanded && (
                       <tr className="rule-accordion-row">
                         <td className="rule-accordion-cell" colSpan={6}>

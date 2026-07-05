@@ -294,6 +294,19 @@ const injectStyles = () => {
       color: var(--text-secondary);
     }
 
+    /* Per-tab intro banner — one plain "what this is" line so the concept-heavy
+       admin panel reads clearly. Inset card + mono eyebrow; no left rail, no faded tint. */
+    .tab-intro {
+      display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+      padding: 10px 14px; margin: 14px 0 2px;
+      background: var(--code-bg); border: 1px solid var(--border-color); border-radius: 8px;
+    }
+    .tab-intro-eyebrow {
+      font-family: SFMono-Regular, Consolas, monospace; font-size: 10px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0.14em; color: var(--primary-color); flex-shrink: 0;
+    }
+    .tab-intro-what { font-size: 12.5px; line-height: 1.5; color: var(--text-secondary); }
+
     .row-disabled td {
       opacity: 0.55;
     }
@@ -4616,6 +4629,18 @@ const TABS = [
   { key: "settings", label: "Settings", adminOnly: true },
 ];
 
+// One-line "what this is / when to use it" per tab — the single copy source so the
+// concept-heavy admin panel stays coherent for non-technical admins.
+const SURFACES = {
+  rules: { eyebrow: "RULES", what: "Every AI validator, condition, and post-function you've configured, across all workflows — toggle, edit, or explain any rule from here." },
+  logs: { eyebrow: "EXECUTION LOGS", what: "A running history of what your rules did on real transitions: pass or fail, the AI's reasoning, and any changes a post-function made." },
+  docs: { eyebrow: "DOCUMENTATION", what: "Reference docs the AI reads when it generates code and validates fields. Add your own API notes or conventions; the built-in guides come seeded." },
+  skills: { eyebrow: "SKILLS", what: "Reusable instruction packs the AI applies when generating post-function code — auto-matched by keyword, or picked per step." },
+  memories: { eyebrow: "MEMORIES", what: "Short facts this instance has learned from fixes and your corrections. They sharpen future AI output; runtime use is opt-in (per-transition token cost)." },
+  permissions: { eyebrow: "PERMISSIONS", what: "Who can create and edit CogniRunner rules on this site. App admins manage the roster; editors manage rules." },
+  settings: { eyebrow: "SETTINGS", what: "Your AI provider, API key, and model, plus the MCP tools the agent can call. Keys are stored in Forge storage, never in environment variables." },
+};
+
 // Execution Logs page size (logs are capped at 50 server-side, so this paginates
 // the recent window client-side).
 const LOGS_PAGE_SIZE = 10;
@@ -5283,6 +5308,13 @@ function App() {
       )}
 
       <TabBar tabs={TABS} activeTab={activeTab} onTabChange={setActiveTab} isAdmin={isAdmin} />
+
+      {SURFACES[activeTab] && (
+        <div className="tab-intro">
+          <span className="tab-intro-eyebrow">§ {SURFACES[activeTab].eyebrow}</span>
+          <span className="tab-intro-what">{SURFACES[activeTab].what}</span>
+        </div>
+      )}
 
       {toggleError && (
         <div className="alert alert-error">

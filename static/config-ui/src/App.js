@@ -2634,6 +2634,47 @@ const injectStyles = () => {
     html[data-color-mode="dark"] .pr-note { background: #d97706; }
     .pr-foot { font-style: italic; }
 
+    /* NL-to-rule builder ("Build from a description") — solid accent button, inset
+       result card. Existing tokens only (dark variants present); no left rail/tint. */
+    .br-bar { margin-bottom: 14px; }
+    .br-toggle {
+      display: inline-flex; align-items: center; gap: 6px;
+      background: none; border: none; padding: 4px 0; cursor: pointer;
+      font-size: 12.5px; font-weight: 600; color: var(--primary-color);
+    }
+    .br-toggle-caret { display: inline-block; transition: transform 0.15s ease; font-size: 10px; }
+    .br-toggle.open .br-toggle-caret { transform: rotate(90deg); }
+    .br-toggle-hint { font-weight: 400; color: var(--text-muted); font-size: 11px; }
+    .br-body { margin-top: 8px; }
+    .br-input {
+      width: 100%; box-sizing: border-box; resize: vertical;
+      padding: 8px 10px; font-size: 13px; font-family: inherit;
+      border: 1px solid var(--border-color); border-radius: 8px;
+      background: var(--card-bg); color: var(--text-color); margin-bottom: 8px;
+    }
+    .br-input:focus { outline: none; border-color: var(--primary-color); }
+    .br-btn {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 6px 12px; font-size: 12px; font-weight: 600;
+      color: #fff; background: var(--primary-color); border: none;
+      border-radius: 6px; cursor: pointer;
+    }
+    .br-btn:hover:not(:disabled) { opacity: 0.9; }
+    .br-btn:disabled { opacity: 0.6; cursor: default; }
+    .br-card {
+      margin-top: 10px; padding: 10px 12px;
+      background: var(--code-bg); border: 1px solid var(--border-color); border-radius: 10px;
+    }
+    .br-eyebrow {
+      font-family: 'SFMono-Regular', Consolas, monospace; font-size: 10px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0.14em; color: var(--primary-color); margin-bottom: 5px;
+    }
+    .br-summary { font-size: 13px; line-height: 1.5; color: var(--text-color); }
+    .br-applied { font-size: 12px; color: var(--text-secondary); margin-top: 6px; }
+    .br-hint { font-size: 12px; color: #b45309; margin-top: 6px; font-weight: 600; }
+    html[data-color-mode="dark"] .br-hint { color: #f59e0b; }
+    .br-note { margin-top: 10px; font-size: 12px; line-height: 1.5; color: var(--text-secondary); }
+
     /* Premade recipe picker (FunctionBlock "Start from a recipe") */
     .recipe-bar { margin-bottom: 14px; border: 1px solid var(--border-color); border-radius: 8px; overflow: hidden; }
     .recipe-bar-toggle {

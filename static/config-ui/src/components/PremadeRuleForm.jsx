@@ -22,7 +22,7 @@
  *   initial   the saved premade config to hydrate on edit (or null for new).
  *   onChange  (config, valid) => void — config is { ruleType, ...params }.
  */
-import { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { invoke } from "@forge/bridge";
 import CustomSelect from "./CustomSelect";
 import { getCatalog, findRule, COMPARE_OPS } from "../../../../src/shared/premade-rules-catalog.js";
@@ -45,6 +45,13 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
   const [errorMessage, setErrorMessage] = useState("");
   const [lists, setLists] = useState({});
   const hydratedRef = useRef(false);
+  // NL-to-rule builder ("Build from a description"), collapsed by default.
+  const [brOpen, setBrOpen] = useState(false);
+  const [nlText, setNlText] = useState("");
+  const [buildState, setBuildState] = useState("idle"); // idle | loading | done | degraded | error
+  const [buildExplanation, setBuildExplanation] = useState("");
+  const [buildReason, setBuildReason] = useState("");
+  const [buildUnresolved, setBuildUnresolved] = useState([]);
 
   // Fetch REST-backed picker lists once (issue types / statuses / resolutions / link types / priorities).
   useEffect(() => {
@@ -147,8 +154,109 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
     setDays("");
   };
 
+  // Apply a validated AI draft to the form via the setters (never saves). Numerics
+  // are String()-coerced to match the string-typed state (min/max/days render via
+  // .trim()) — mirrors the hydrate effect; a number here would crash the render.
+  const applyDraft = (built) => {
+    setRuleType(built.ruleType || "");
+    setFieldId(built.fieldId || "");
+    setRegex(built.regex || "");
+    setAllowedValues(built.allowedValues || "");
+    setOp(built.op || "eq");
+    setCompareValue(built.compareValue || "");
+    setValue(built.value || "");
+    setPickerValue(built.pickerValue || "");
+    setMinLen(built.min != null ? String(built.min) : "");
+    setMaxLen(built.max != null ? String(built.max) : "");
+    setDateMode(built.dateMode || "future");
+    setDays(built.days != null ? String(built.days) : "");
+    // errorMessage persists (validator-wide) — not cleared.
+  };
+
+  // One AI call per explicit Build click. Grounds the AI on exactly the field/list
+  // options the user's own dropdowns show, so it can only reference real values.
+  const runBuild = async () => {
+    if (buildState === "loading" || nlText.trim().length < 5) return;
+    setBuildState("loading");
+    setBuildExplanation("");
+    setBuildUnresolved([]);
+    try {
+      const result = await invoke("buildRule", {
+        mode,
+        description: nlText,
+        fields: fields.map((f) => ({ id: f.id, name: f.name })),
+        lists,
+      });
+      if (result && result.degraded) {
+        setBuildReason(result.reason || "error");
+        setBuildState("degraded");
+      } else if (result && result.success && result.built) {
+        applyDraft(result.built);
+        setBuildExplanation(result.explanation || "");
+        setBuildUnresolved(Array.isArray(result.unresolved) ? result.unresolved : []);
+        setBuildState("done");
+      } else {
+        setBuildReason((result && result.error) || "");
+        setBuildState("error");
+      }
+    } catch (e) {
+      console.error("Build rule failed:", e);
+      setBuildState("error");
+    }
+  };
+
   return (
     <div className="pr-form">
+      {/* Build from a description (NL-to-rule) — collapsed by default; applies a
+          reviewable draft to the form below, never saves. */}
+      <div className="br-bar">
+        <button type="button" className={`br-toggle${brOpen ? " open" : ""}`} onClick={() => setBrOpen((o) => !o)}>
+          <span className="br-toggle-caret">▸</span> Build from a description
+          <span className="br-toggle-hint">let AI pick the rule for you</span>
+        </button>
+        {brOpen && (
+          <div className="br-body">
+            <textarea
+              className="br-input"
+              value={nlText}
+              onChange={(e) => setNlText(e.target.value)}
+              placeholder="Describe the rule in plain English, e.g. “require the Rollback Plan field to be filled in”…"
+              rows={2}
+            />
+            <button
+              type="button"
+              className={`br-btn${buildState === "loading" ? " is-busy busy-solid" : ""}`}
+              onClick={runBuild}
+              disabled={buildState === "loading" || nlText.trim().length < 5}
+            >
+              ✦ Build rule
+            </button>
+            {buildState === "done" && (
+              <div className="br-card">
+                <div className="br-eyebrow">§ WHAT I BUILT</div>
+                {buildExplanation && <div className="br-summary">{buildExplanation}</div>}
+                <div className="br-applied">Applied below — review and save.</div>
+                {buildUnresolved.length > 0 && (
+                  <div className="br-hint">Still needs: {buildUnresolved.join(", ")}.</div>
+                )}
+              </div>
+            )}
+            {buildState === "degraded" && (
+              <div className="br-note">
+                {buildReason === "lmstudio"
+                  ? "Rule-building isn't available with the self-hosted LM Studio provider — switch to a hosted provider in CogniRunner Settings."
+                  : buildReason === "timeout"
+                  ? "The AI provider didn't respond in time — try again in a moment."
+                  : "Couldn't build a rule right now — try again in a moment."}
+              </div>
+            )}
+            {buildState === "error" && (
+              <div className="br-note">{buildReason || "Couldn't match a premade rule to that description — try rephrasing."}</div>
+            )}
+          </div>
+        )}
+      </div>
+
       <div className="form-group">
         <label className="label">Rule <span className="required">*</span></label>
         <CustomSelect

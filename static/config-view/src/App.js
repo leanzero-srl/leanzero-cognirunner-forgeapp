@@ -1944,7 +1944,7 @@ function App() {
                         <strong>{log.decision}</strong>
                       </span>
                       {log.changes !== undefined && <span>{log.changes} change{log.changes !== 1 ? "s" : ""}</span>}
-                      {log.steps && <span>{log.steps} step{log.steps !== 1 ? "s" : ""}</span>}
+                      {log.steps > 0 && <span>{log.steps} step{log.steps !== 1 ? "s" : ""}</span>}
                     </div>
                   )}
                   {log.workflowName && (
@@ -1990,7 +1990,7 @@ function App() {
                       </div>
                     </details>
                   )}
-                  {log.aiTimeMs && (
+                  {log.aiTimeMs > 0 && (
                     <div className="log-foot">
                       AI: {log.aiTimeMs}ms{log.tokens ? ` · ${log.tokens} tokens` : ""}{log.docCount ? ` · ${log.docCount} doc(s)` : ""}
                     </div>

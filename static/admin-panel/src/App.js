@@ -390,13 +390,28 @@ const injectStyles = () => {
       font-size: 13px;
     }
 
+    /* Vivid status cards — each log entry's border + hue shadow encode pass/fail/skip
+       at a glance (matches config-view). Dark keeps the hue border (functional color). */
     .log-entry {
       padding: 12px 14px;
-      border-bottom: 1px solid var(--border-color);
+      background: var(--card-bg);
+      border: 2px solid var(--border-color);
+      border-radius: 8px;
+      box-shadow: 0 1px 2px rgba(18, 42, 66, 0.06), 0 4px 14px -8px rgba(18, 42, 66, 0.12);
       font-size: 12px;
+      transition: box-shadow 0.2s ease;
     }
-
-    .log-entry:last-child { border-bottom: none; }
+    .log-entry:hover { box-shadow: 0 8px 22px -10px rgba(29, 78, 216, 0.25); }
+    .log-entry.cv-log-pass { border-color: #16a34a; box-shadow: 0 4px 14px -6px rgba(22, 163, 74, 0.30); }
+    .log-entry.cv-log-fail { border-color: #dc2626; box-shadow: 0 4px 14px -6px rgba(220, 38, 38, 0.30); }
+    .log-entry.cv-log-skip { border-color: #475569; box-shadow: 0 4px 14px -6px rgba(71, 85, 105, 0.26); }
+    html[data-color-mode="dark"] .log-entry {
+      border-width: 1px;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 6px 20px -12px rgba(0, 0, 0, 0.5);
+    }
+    html[data-color-mode="dark"] .log-entry.cv-log-pass { border-color: #22c55e; }
+    html[data-color-mode="dark"] .log-entry.cv-log-fail { border-color: #ef4444; }
+    html[data-color-mode="dark"] .log-entry.cv-log-skip { border-color: #64748b; }
 
     .log-header {
       display: flex;
@@ -536,11 +551,14 @@ const injectStyles = () => {
     .logs-list {
       max-height: 400px;
       overflow-y: auto;
-      border-radius: inherit;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 8px;
     }
     /* Paginated logs (Logs tab): no inner scroll — the page bounds the height,
        and the pagination control pages through the 50-entry window. */
-    .logs-list-paged { border-radius: inherit; }
+    .logs-list-paged { display: flex; flex-direction: column; gap: 8px; padding: 8px; }
     .logs-pagination {
       display: flex;
       align-items: center;
@@ -1632,13 +1650,9 @@ const injectStyles = () => {
       to { opacity: 1; transform: translateY(0); }
     }
 
-    /* Log entry entrance — subtle stagger effect */
+    /* Log entry entrance — subtle fade (the card border/shadow is defined above). */
     .log-entry {
       animation: logEntryFade 0.2s ease both;
-      transition: background-color 0.15s ease;
-    }
-    .log-entry:hover {
-      background-color: var(--hover-bg);
     }
     @keyframes logEntryFade {
       from { opacity: 0; }
@@ -5006,7 +5020,7 @@ function App() {
       ? `${log.ruleWorkflow.siteUrl}/jira/settings/issues/workflows/${log.ruleWorkflow.workflowId}`
       : null;
     return (
-      <div key={log.id} className="log-entry">
+      <div key={log.id} className={`log-entry ${log.isValid ? "cv-log-pass" : (log.decision === "SKIP" ? "cv-log-skip" : "cv-log-fail")}`}>
         <div className="log-header">
           <span className={`log-status ${log.isValid ? "valid" : (log.decision === "SKIP" ? "skip" : "invalid")}`}>
             {log.isValid ? "PASS" : (log.decision === "SKIP" ? "SKIP" : "ERR")}
@@ -5057,7 +5071,7 @@ function App() {
             <div className="log-reason">{log.reason}</div>
           </>
         )}
-        {log.tokens && (
+        {log.tokens > 0 && (
           <div className="log-foot">
             AI: {log.aiTimeMs || log.executionTimeMs}ms · {log.tokens} tokens
           </div>

@@ -1962,6 +1962,87 @@ const injectStyles = () => {
       border-top: 1px solid var(--border-color);
     }
 
+    /* Narrate dry-run: deterministic count chips + AI "what this would do" card.
+       Solid saturated chips, white text; accent button; inset card. No left rail,
+       no faded tint. The slate count chip carries an explicit dark override. */
+    .ndr-chips {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 6px;
+    }
+    .ndr-count {
+      padding: 2px 10px;
+      border-radius: 999px;
+      font-size: 10px;
+      font-weight: 700;
+      color: #ffffff;
+      background: #475569;
+      white-space: nowrap;
+    }
+    html[data-color-mode="dark"] .ndr-count { background: #64748b; }
+    .ndr-verb {
+      padding: 2px 10px;
+      border-radius: 999px;
+      font-size: 10px;
+      font-weight: 700;
+      color: #ffffff;
+      background: var(--primary-color);
+      white-space: nowrap;
+    }
+    .ndr { padding: 0 12px 10px; }
+    .ndr-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      color: #ffffff;
+      background: var(--primary-color);
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    .ndr-btn:hover:not(:disabled) { opacity: 0.9; }
+    .ndr-btn:disabled { opacity: 0.7; cursor: default; }
+    .ndr-card {
+      margin-bottom: 10px;
+      padding: 10px 12px;
+      background: var(--code-bg);
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+    }
+    .ndr-eyebrow {
+      font-family: SFMono-Regular, Consolas, monospace;
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.14em;
+      color: var(--primary-color);
+      margin-bottom: 5px;
+    }
+    .ndr-summary {
+      font-size: 13px;
+      line-height: 1.5;
+      color: var(--text-color);
+    }
+    .ndr-verify {
+      margin: 8px 0 0;
+      padding-left: 18px;
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--text-secondary);
+    }
+    .ndr-verify li { margin: 2px 0; }
+    .ndr-note {
+      padding: 8px 0 0;
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--text-secondary);
+    }
+
     /* CodeMirror hover docs */
     .cm-api-hover {
       background: var(--card-bg);

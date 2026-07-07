@@ -49,6 +49,7 @@ import {
   // this import covers the consumer's OWN tasks (review / codegen / fix / distill)
   // via callAIChatSimple.
   lmAcquireWorker,
+  recordAiUsage,
 } from "./index";
 // Learned memories — injected into static-PF reviews and persisted by the
 // memory_distill task (runtime auto-capture, opt-in). defangFence neutralizes
@@ -220,7 +221,20 @@ const callLmStudioNativeSimple = async ({ apiKey, model, systemPrompt, userMessa
   return { ok: true, content, tokens };
 };
 
-const callAIChatSimple = async ({ apiKey, model: requestedModel, systemPrompt, userMessage, jsonMode }) => {
+// Metered wrapper for the async consumer's own dispatch (review / codegen / fix /
+// distill). Meters after the raw call, fail-open, using this handler's OWN uncached
+// getProviderConfig (the async no-cache policy). The consumer is the 120s path (not
+// a raced transition), so metering in the wrapper is fine here.
+const callAIChatSimple = async (opts) => {
+  const res = await callAIChatSimpleRaw(opts);
+  try {
+    const { provider } = await getProviderConfig();
+    await recordAiUsage({ provider, usageLike: res && res.tokens });
+  } catch (e) { /* fail-open */ }
+  return res;
+};
+
+const callAIChatSimpleRaw = async ({ apiKey, model: requestedModel, systemPrompt, userMessage, jsonMode }) => {
   const { provider, baseUrl } = await getProviderConfig();
 
   // LM Studio worker map: pick the least-loaded loaded model for this queued task,

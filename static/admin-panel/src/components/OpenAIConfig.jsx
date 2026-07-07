@@ -114,6 +114,10 @@ export default function OpenAIConfig({ invoke }) {
   const [listUnavailable, setListUnavailable] = useState(false); // Bedrock: live list returned nothing
   const [currentModel, setCurrentModel] = useState(null);
   const [selectedModel, setSelectedModel] = useState("");
+  // AI usage meter (admin-only). Best-effort under-count of AI calls + tokens.
+  const [usage, setUsage] = useState(null);
+  const [usageConfirmReset, setUsageConfirmReset] = useState(false);
+  const [usageResetting, setUsageResetting] = useState(false);
   // AWS Bedrock: region rides the base URL; ack is the Anthropic use-case gate; the
   // free-text field lets the admin paste any model / inference-profile id directly.
   const [bedrockRegion, setBedrockRegion] = useState("eu-west-2");
@@ -298,13 +302,15 @@ export default function OpenAIConfig({ invoke }) {
   const loadStatus = async () => {
     if (!invoke) return;
     try {
-      const [providerResult, mcpsResult, docProcResult, webSearchResult, context7Result] = await Promise.all([
+      const [providerResult, mcpsResult, docProcResult, webSearchResult, context7Result, usageResult] = await Promise.all([
         invoke("getProvider"),
         invoke("getLmStudioMcps").catch(() => ({ success: false })),
         invoke("getDocProcessorRemote").catch(() => ({ success: false })),
         invoke("getWebSearchRemote").catch(() => ({ success: false })),
         invoke("getContext7Remote").catch(() => ({ success: false })),
+        invoke("getAiUsage").catch(() => ({ success: false })),
       ]);
+      if (usageResult && usageResult.success) setUsage(usageResult.usage);
 
       let initial = "atlassian";
       if (providerResult.success) {
@@ -1070,11 +1076,61 @@ export default function OpenAIConfig({ invoke }) {
 
   const providerLabel = PROVIDER_OPTIONS.find((p) => p.value === provider)?.label || provider;
 
+  const resetUsage = async () => {
+    setUsageResetting(true);
+    try {
+      const r = await invoke("resetAiUsage");
+      if (r && r.success) {
+        const u = await invoke("getAiUsage").catch(() => null);
+        if (u && u.success) setUsage(u.usage);
+      }
+    } catch (e) { /* ignore */ }
+    setUsageResetting(false);
+    setUsageConfirmReset(false);
+  };
+
+  const usageProviderMax = usage ? Math.max(1, ...Object.values(usage.month.byProvider || {}).map((x) => x.total || 0)) : 1;
+
   return (
     <div className="section">
       <div className="section-header">
         <span className="section-title">AI Provider Configuration</span>
       </div>
+
+      {usage && (
+        <div className="usage-card">
+          <div className="usage-head">
+            <span className="usage-eyebrow">§ AI USAGE</span>
+            {usageConfirmReset ? (
+              <span className="usage-reset-confirm">
+                Reset all counts?
+                <button className={`btn-small btn-danger${usageResetting ? " is-busy" : ""}`} onClick={resetUsage} disabled={usageResetting}>Reset</button>
+                <button className="btn-small" onClick={() => setUsageConfirmReset(false)} disabled={usageResetting}>Cancel</button>
+              </span>
+            ) : (
+              <button className="btn-small" onClick={() => setUsageConfirmReset(true)}>Reset</button>
+            )}
+          </div>
+          <div className="usage-stats">
+            <div className="usage-stat"><span className="usage-num">{usage.month.calls.toLocaleString()}</span><span className="usage-lbl">calls this month</span></div>
+            <div className="usage-stat"><span className="usage-num">{usage.month.total.toLocaleString()}</span><span className="usage-lbl">tokens this month</span></div>
+            <div className="usage-stat"><span className="usage-num">{usage.today.calls.toLocaleString()}</span><span className="usage-lbl">calls today</span></div>
+            <div className="usage-stat"><span className="usage-num">{usage.today.total.toLocaleString()}</span><span className="usage-lbl">tokens today</span></div>
+          </div>
+          {Object.keys(usage.month.byProvider || {}).length > 0 && (
+            <div className="usage-providers">
+              {Object.entries(usage.month.byProvider).sort((a, b) => (b[1].total || 0) - (a[1].total || 0)).map(([prov, v]) => (
+                <div className="usage-prov-row" key={prov}>
+                  <span className="usage-prov-name">{prov}</span>
+                  <span className="usage-prov-bar"><span className="usage-prov-fill" style={{ width: `${Math.round(((v.total || 0) / usageProviderMax) * 100)}%` }} /></span>
+                  <span className="usage-prov-val">{(v.total || 0).toLocaleString()} tok · {v.calls} calls</span>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="usage-foot">Best-effort under-count across all AI calls (validators, post-functions, and design-time tools). Not a billing ledger.</div>
+        </div>
+      )}
 
       {error && (
         <div className="alert alert-error anim-rise">

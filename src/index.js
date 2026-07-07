@@ -34,6 +34,7 @@ import { buildEndpointPromptBlock } from "./shared/jira-endpoints.js";
 import { DOC_SEED_VERSION, BUILTIN_DOCS } from "./shared/builtin-docs.js";
 import { clampNarrateLine } from "./shared/narrate-utils.js";
 import { buildCatalogPromptBlock, validateBuiltRule } from "./shared/build-rule.js";
+import { normalizeUsage, emptyState, bumpCounters, summarizeState } from "./shared/usage-meter.js";
 // Premade (non-AI, "static") rule executor — runs deterministic validators/conditions
 // chosen from the premade catalog, short-circuiting the AI path in validate().
 import { executePremadeRule } from "./premade-rules.js";
@@ -5317,6 +5318,32 @@ resolver.define("getMemorySettings", async () => {
   }
 });
 
+// AI usage meter (admin-only). Read-only summary of AI calls + tokens (this month,
+// today, per-provider, 6-month history). Best-effort under-count, not an exact ledger.
+resolver.define("getAiUsage", async ({ context }) => {
+  if (!(await requireAdmin(context.accountId))) {
+    return { success: false, error: "Admin access required" };
+  }
+  try {
+    const state = (await storage.get(USAGE_KEY)) || emptyState();
+    return { success: true, usage: summarizeState(state, Date.now()) };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+resolver.define("resetAiUsage", async ({ context }) => {
+  if (!(await requireAdmin(context.accountId))) {
+    return { success: false, error: "Admin access required" };
+  }
+  try {
+    await storage.set(USAGE_KEY, emptyState());
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
 resolver.define("saveMemorySettings", async ({ payload, context }) => {
   if (!(await requireAdmin(context.accountId))) {
     return { success: false, error: "Admin access required" };
@@ -7981,7 +8008,34 @@ const callLmStudioNative = async ({ apiKey, model, messages, jsonMode, baseUrl }
  * @param {string} [opts.tool_choice] - Tool choice ("auto", "none", etc.)
  * @returns {Promise<{ok: boolean, status: number, data: object}>} - Normalized response in OpenAI format
  */
+// AI usage meter (BYOK cost visibility). Single bounded KVS key, best-effort
+// re-read+add (no CAS → concurrent writers only UNDER-count, acceptable for a
+// meter). Fail-open in every branch: a metering fault must NEVER surface an error
+// to an AI call or block a Jira transition. Exported so the async consumer records
+// through the ONE implementation. NOTE: called AFTER any raceDeadline at runtime
+// seams (never inside the race), so metering latency can't flip a completed verdict.
+export const USAGE_KEY = "COGNIRUNNER_USAGE";
+export const recordAiUsage = async ({ provider, usageLike }) => {
+  try {
+    const state = (await storage.get(USAGE_KEY)) || emptyState();
+    await storage.set(USAGE_KEY, bumpCounters(state, { provider: provider || "unknown", usage: normalizeUsage(usageLike), nowMs: Date.now() }));
+  } catch (e) { /* metering is best-effort — never throw into an AI call */ }
+};
+
+// Metered wrapper — the name every non-raced caller already uses. Meters AFTER the
+// raw call resolves, fail-open. The two RUNTIME hot seams (non-agentic + agentic
+// validators) call callAIChatRaw directly inside raceDeadline and meter after the
+// race instead, so metering never sits inside a transition's deadline race.
 const callAIChat = async (opts) => {
+  const res = await callAIChatRaw(opts);
+  try {
+    const { provider } = await getProviderConfig();
+    await recordAiUsage({ provider, usageLike: res && res.data && res.data.usage });
+  } catch (e) { /* fail-open */ }
+  return res;
+};
+
+const callAIChatRaw = async (opts) => {
   const { apiKey, model: requestedModel, messages, tools, tool_choice, jsonMode, preResolvedModel } = opts;
   const { provider, baseUrl } = await getProviderConfig();
 
@@ -9742,7 +9796,7 @@ Respond with JSON only.`;
   try {
     // Bound below Forge's 25s validator limit so a slow provider fails OPEN
     // gracefully instead of the platform killing validate() ("error in validator").
-    const result = await raceDeadline(callAIChat({
+    const result = await raceDeadline(callAIChatRaw({
       apiKey, model,
       jsonMode: true,
       messages: [
@@ -9750,6 +9804,9 @@ Respond with JSON only.`;
         { role: "user", content: userContent },
       ],
     }), Date.now() + VALIDATOR_AI_DEADLINE_MS, "AI validation");
+    // Meter AFTER the race (never inside it) so metering latency can't flip a
+    // completed AI verdict to fail-open.
+    try { const { provider } = await getProviderConfig(); await recordAiUsage({ provider, usageLike: result && result.data && result.data.usage }); } catch (e) { /* fail-open */ }
     // The model that actually served this call (the acquired LM Studio worker, or
     // the configured model for other providers) — for the cogni-debug trace.
     const servedModel = result.modelUsed || model;
@@ -10388,12 +10445,14 @@ RESPONSE FORMAT:
       try {
         // Bound each round by the agentic deadline so a single slow round can't blow
         // Forge's 25s limit (which surfaces as an ungraceful "error in validator").
-        aiResult = await raceDeadline(callAIChat({
+        aiResult = await raceDeadline(callAIChatRaw({
           apiKey, model, messages,
           preResolvedModel: true, // pinned above for the whole agentic loop — don't re-pool per round
           tools: callTools,
           tool_choice: callToolChoice,
         }), deadline, "Agentic validation round");
+        // Meter each completed round AFTER its race (never inside it).
+        try { const { provider } = await getProviderConfig(); await recordAiUsage({ provider, usageLike: aiResult && aiResult.data && aiResult.data.usage }); } catch (e) { /* fail-open */ }
       } catch (e) {
         if (e && e.pfDeadline) {
           return { isValid: true, reason: "Validation timed out while gathering context. Transition allowed.", transientError: true, toolMeta };
@@ -11736,7 +11795,7 @@ const executeSemanticPostFunction = async (issueKey, config, deadline = Date.now
     trace.push("Evaluating condition with AI...");
     const aiStart = Date.now();
     // Reserve 5s after the AI call for the Jira PUT + log write.
-    const semanticAiCall = () => callAIChat({
+    const semanticAiCall = () => callAIChatRaw({
       apiKey, model,
       jsonMode: true,
       messages: [
@@ -11765,6 +11824,8 @@ const executeSemanticPostFunction = async (issueKey, config, deadline = Date.now
       await new Promise((r) => setTimeout(r, 1500));
       aiResult = await raceDeadline(semanticAiCall(), deadline - 5000, "Semantic AI evaluation (retry)");
     }
+    // Meter AFTER the race(s) — the final aiResult only (retries share one logical call).
+    try { const { provider } = await getProviderConfig(); await recordAiUsage({ provider, usageLike: aiResult && aiResult.data && aiResult.data.usage }); } catch (e) { /* fail-open */ }
     const aiTimeMs = Date.now() - aiStart;
 
     if (!aiResult.ok) {

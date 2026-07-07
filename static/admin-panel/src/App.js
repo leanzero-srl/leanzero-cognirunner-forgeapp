@@ -315,6 +315,32 @@ const injectStyles = () => {
     }
     .term-chip:hover { background: var(--primary-color); color: #ffffff; }
 
+    /* AI usage meter — bold saturated numbers, solid cyan provider bars. Inset card,
+       no left rail, no faded tint. Meter hue is distinct from docs/skills/memories. */
+    .usage-card {
+      margin-bottom: 20px; padding: 14px 16px;
+      background: var(--code-bg); border: 1px solid var(--border-color); border-radius: 10px;
+    }
+    .usage-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; gap: 10px; flex-wrap: wrap; }
+    .usage-eyebrow {
+      font-family: SFMono-Regular, Consolas, monospace; font-size: 10px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0.14em; color: #0891b2;
+    }
+    html[data-color-mode="dark"] .usage-eyebrow { color: #22d3ee; }
+    .usage-reset-confirm { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-secondary); }
+    .usage-stats { display: flex; gap: 28px; flex-wrap: wrap; margin-bottom: 14px; }
+    .usage-stat { display: flex; flex-direction: column; }
+    .usage-num { font-size: 22px; font-weight: 800; letter-spacing: -0.02em; color: var(--text-color); font-variant-numeric: tabular-nums; }
+    .usage-lbl { font-size: 11px; color: var(--text-secondary); margin-top: 2px; }
+    .usage-providers { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+    .usage-prov-row { display: grid; grid-template-columns: 92px 1fr auto; align-items: center; gap: 10px; font-size: 11px; }
+    .usage-prov-name { font-weight: 600; color: var(--text-color); text-transform: capitalize; }
+    .usage-prov-bar { height: 8px; background: var(--border-color); border-radius: 999px; overflow: hidden; }
+    .usage-prov-fill { display: block; height: 100%; background: #0891b2; border-radius: 999px; }
+    html[data-color-mode="dark"] .usage-prov-fill { background: #22d3ee; }
+    .usage-prov-val { color: var(--text-secondary); white-space: nowrap; font-variant-numeric: tabular-nums; }
+    .usage-foot { font-size: 11px; color: var(--text-muted); font-style: italic; }
+
     .row-disabled td {
       opacity: 0.55;
     }

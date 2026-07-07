@@ -306,6 +306,14 @@ const injectStyles = () => {
       text-transform: uppercase; letter-spacing: 0.14em; color: var(--primary-color); flex-shrink: 0;
     }
     .tab-intro-what { font-size: 12.5px; line-height: 1.5; color: var(--text-secondary); }
+    .tab-intro-terms { display: inline-flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+    .term-chip {
+      display: inline-block; padding: 1px 9px; border-radius: 999px;
+      font-size: 11px; font-weight: 600; color: var(--primary-color);
+      border: 1px dashed var(--primary-color); cursor: help; white-space: nowrap;
+      transition: background 0.15s ease, color 0.15s ease;
+    }
+    .term-chip:hover { background: var(--primary-color); color: #ffffff; }
 
     .row-disabled td {
       opacity: 0.55;
@@ -4646,13 +4654,24 @@ const TABS = [
 // One-line "what this is / when to use it" per tab — the single copy source so the
 // concept-heavy admin panel stays coherent for non-technical admins.
 const SURFACES = {
-  rules: { eyebrow: "RULES", what: "Every AI validator, condition, and post-function you've configured, across all workflows — toggle, edit, or explain any rule from here." },
+  rules: { eyebrow: "RULES", what: "Every AI validator, condition, and post-function you've configured, across all workflows — toggle, edit, or explain any rule from here.",
+    terms: [{ label: "post-function", def: "A rule that runs AFTER a transition completes — it writes a field with AI, posts a comment, or runs saved sandboxed JavaScript." }] },
   logs: { eyebrow: "EXECUTION LOGS", what: "A running history of what your rules did on real transitions: pass or fail, the AI's reasoning, and any changes a post-function made." },
-  docs: { eyebrow: "DOCUMENTATION", what: "Reference docs the AI reads when it generates code and validates fields. Add your own API notes or conventions; the built-in guides come seeded." },
-  skills: { eyebrow: "SKILLS", what: "Reusable instruction packs the AI applies when generating post-function code — auto-matched by keyword, or picked per step." },
-  memories: { eyebrow: "MEMORIES", what: "Short facts this instance has learned from fixes and your corrections. They sharpen future AI output; runtime use is opt-in (per-transition token cost)." },
+  docs: { eyebrow: "DOCUMENTATION", what: "Reference docs the AI reads when it generates code and validates fields. Add your own API notes or conventions; the built-in guides come seeded.",
+    terms: [{ label: "provenance", def: "The record of exactly which docs, skills, and memories the AI drew on when it generated a step's code — shown as chips on each rule." }] },
+  skills: { eyebrow: "SKILLS", what: "Reusable instruction packs the AI applies when generating post-function code — auto-matched by keyword, or picked per step.",
+    terms: [{ label: "auto-match", def: "On top of any skills you pick, the AI automatically applies up to 2 whose keywords match your step's description." }] },
+  memories: { eyebrow: "MEMORIES", what: "Short facts this instance has learned from fixes and your corrections. They sharpen future AI output; runtime use is opt-in (per-transition token cost).",
+    terms: [
+      { label: "distill", def: "When a production failure is new, the AI writes a short (≤400-char) lesson from it and saves it as a memory — no repeat AI cost for known errors." },
+      { label: "runtime injection", def: "Feeding memories into live validators and post-functions on every transition. Opt-in, because it adds tokens to each run." },
+    ] },
   permissions: { eyebrow: "PERMISSIONS", what: "Who can create and edit CogniRunner rules on this site. App admins manage the roster; editors manage rules." },
-  settings: { eyebrow: "SETTINGS", what: "Your AI provider, API key, and model, plus the MCP tools the agent can call. Keys are stored in Forge storage, never in environment variables." },
+  settings: { eyebrow: "SETTINGS", what: "Your AI provider, API key, and model, plus the MCP tools the agent can call. Keys are stored in Forge storage, never in environment variables.",
+    terms: [
+      { label: "MCP", def: "Model Context Protocol — external tool servers (web search, library docs, doc-reader) that CogniRunner lets the AI agent call mid-run." },
+      { label: "agentic", def: "When a validator lets the AI run tools (JQL search, web search) to gather evidence before it decides pass or fail." },
+    ] },
 };
 
 // Execution Logs page size (logs are capped at 50 server-side, so this paginates
@@ -5327,6 +5346,15 @@ function App() {
         <div className="tab-intro">
           <span className="tab-intro-eyebrow">§ {SURFACES[activeTab].eyebrow}</span>
           <span className="tab-intro-what">{SURFACES[activeTab].what}</span>
+          {SURFACES[activeTab].terms && (
+            <span className="tab-intro-terms">
+              {SURFACES[activeTab].terms.map((t) => (
+                <Tooltip key={t.label} text={t.def}>
+                  <span className="term-chip">{t.label}</span>
+                </Tooltip>
+              ))}
+            </span>
+          )}
         </div>
       )}
 

@@ -35,6 +35,7 @@ import { DOC_SEED_VERSION, BUILTIN_DOCS } from "./shared/builtin-docs.js";
 import { clampNarrateLine } from "./shared/narrate-utils.js";
 import { buildCatalogPromptBlock, validateBuiltRule } from "./shared/build-rule.js";
 import { normalizeUsage, emptyState, bumpCounters, summarizeState } from "./shared/usage-meter.js";
+import { deriveLogFlags } from "./shared/log-flags.js";
 // Premade (non-AI, "static") rule executor — runs deterministic validators/conditions
 // chosen from the premade catalog, short-circuiting the AI path in validate().
 import { executePremadeRule } from "./premade-rules.js";
@@ -900,6 +901,9 @@ const storeLog = async (logEntry) => {
   try {
     const entry = {
       ...logEntry,
+      // Every entry carries a source; default to runtime so no entry is sourceless
+      // and pre-feature entries render correctly (async ones self-identify downstream).
+      source: logEntry.source || "runtime",
       timestamp: new Date().toISOString(),
       id: Date.now().toString() + Math.random().toString(36).slice(2, 6),
     };
@@ -11661,6 +11665,9 @@ export const validate = async (args) => {
   }
   if (memorySection) logEntry.memoriesUsed = true;
   if (validationResult.transientError) logEntry.transientError = true;
+  // Surface the honesty flags on validator/condition logs too (validate() writes
+  // directly, not through logAndTrace). source defaults to "runtime" in storeLog.
+  try { const fl = deriveLogFlags(logEntry, null); if (fl.length) logEntry.flags = fl; } catch (e) { /* advisory */ }
   await storeLog(logEntry);
   if (configuration?.debugTrace) {
     await writeDebugTrace(issue.key, { ...logEntry, at: new Date().toISOString() });
@@ -13731,6 +13738,9 @@ export const dispatchPostFunction = async (issueKey, config, extensionKey, pfDea
   const enqueuedAtMs = meta.enqueuedAt ? Date.parse(meta.enqueuedAt) : NaN;
   const queueDelayMs = Number.isFinite(enqueuedAtMs) ? Math.max(0, pfStartTime - enqueuedAtMs) : null;
   const withQueueMeta = (logEntry) => {
+    // Tag the whole PF family's source once: inline (runtime transition) vs the
+    // async consumer (queued). Set before the early-return so inline runs get it too.
+    logEntry.source = queueDelayMs === null ? "runtime" : "async";
     if (queueDelayMs === null) return logEntry; // inline run — fields absent
     logEntry.queueDelayMs = queueDelayMs;
     if (queueDelayMs >= QUEUE_DELAY_NOTE_THRESHOLD_MS) {
@@ -13743,6 +13753,9 @@ export const dispatchPostFunction = async (issueKey, config, extensionKey, pfDea
   // test harness can assert on PF decision/trace/tokens. See writeDebugTrace.
   const logAndTrace = async (logEntry) => {
     const entry = withQueueMeta(logEntry);
+    // Surface honest flags (simulated / transientError / capped) computed from
+    // signals already on the entry + this run's config. Fail-open — advisory only.
+    try { const fl = deriveLogFlags(entry, config); if (fl.length) entry.flags = fl; } catch (e) { /* advisory */ }
     await storeLog(entry);
     if (config?.debugTrace) await writeDebugTrace(issue.key, { ...entry, at: new Date().toISOString() });
   };

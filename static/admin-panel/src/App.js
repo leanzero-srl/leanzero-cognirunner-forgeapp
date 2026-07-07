@@ -26,6 +26,7 @@ import SettingsOpenAITab from "./components/SettingsOpenAITab";
 import CustomSelect from "./components/CustomSelect";
 import { findRule as findPremadeRule } from "../../../src/shared/premade-rules-catalog.js";
 import { buildFactsText, ruleKindEnum } from "../../../src/shared/explain-facts.js";
+import { logSourceOf, SOURCE_LABEL, FLAG_LABEL } from "../../../src/shared/log-flags.js";
 import AddRuleWizard from "./components/AddRuleWizard";
 import Tooltip from "./components/Tooltip";
 import { showToast } from "./components/toast";
@@ -492,6 +493,25 @@ const injectStyles = () => {
       white-space: nowrap;
       flex-shrink: 0;
     }
+    /* Execution-log source + honesty flag chips — solid saturated fills, white text,
+       same idiom as .log-type-badge. Source = where it ran; flags = honest truths. */
+    .log-src, .log-flag {
+      display: inline-flex; align-items: center; padding: 2px 7px; border-radius: 6px;
+      font-size: 9px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase;
+      color: #ffffff; white-space: nowrap; flex-shrink: 0;
+    }
+    .log-src-runtime { background: #475569; }
+    .log-src-async   { background: #4f46e5; }
+    .log-src-test    { background: #d97706; }
+    .log-flag-simulated      { background: #0891b2; }
+    .log-flag-transientError { background: #dc2626; }
+    .log-flag-capped         { background: #ea580c; }
+    html[data-color-mode="dark"] .log-src-runtime { background: #64748b; }
+    html[data-color-mode="dark"] .log-src-async   { background: #6366f1; }
+    html[data-color-mode="dark"] .log-src-test    { background: #f59e0b; }
+    html[data-color-mode="dark"] .log-flag-simulated      { background: #22d3ee; }
+    html[data-color-mode="dark"] .log-flag-transientError { background: #ef4444; }
+    html[data-color-mode="dark"] .log-flag-capped         { background: #fb923c; }
     .lt-validator { background: #2563eb; }
     .lt-condition { background: #7c3aed; }
     .lt-pf, .lt-pf-semantic { background: #0d9488; }
@@ -5072,6 +5092,10 @@ function App() {
             {log.isValid ? "PASS" : (log.decision === "SKIP" ? "SKIP" : "ERR")}
           </span>
           <span className={`log-type-badge ${typeBadgeClass}`}>{typeBadge}</span>
+          <span className={`log-src log-src-${logSourceOf(log)}`}>{SOURCE_LABEL[logSourceOf(log)]}</span>
+          {(log.flags || []).map((f) => FLAG_LABEL[f] ? (
+            <span key={f} className={`log-flag log-flag-${f}`}>{FLAG_LABEL[f]}</span>
+          ) : null)}
           <span className="log-issue">{log.issueKey}</span>
           <span className="log-meta">
             {log.executionTimeMs ? <span className="log-ms">{log.executionTimeMs}ms</span> : null}

@@ -20,6 +20,7 @@ import React, { useState, useEffect } from "react";
 import { confirmDialog } from "./confirmDialog";
 import { findRule } from "../../../src/shared/premade-rules-catalog.js";
 import { premadeSummaryRows, buildFactsText, ruleKindEnum } from "../../../src/shared/explain-facts.js";
+import { logSourceOf, SOURCE_LABEL, FLAG_LABEL } from "../../../src/shared/log-flags.js";
 
 // Inject styles directly
 const injectStyles = () => {
@@ -522,6 +523,24 @@ const injectStyles = () => {
     .lt-condition { background: var(--accent-skills); }
     .lt-pf, .lt-pf-semantic { background: var(--accent-memories); }
     .lt-pf-static { background: var(--accent-slate); }
+    /* Execution-log source + honesty flag chips — solid saturated, white text. */
+    .log-src, .log-flag {
+      display: inline-flex; align-items: center; padding: 2px 7px; border-radius: var(--r-sm);
+      font-size: 9px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase;
+      color: #ffffff; white-space: nowrap; flex-shrink: 0;
+    }
+    .log-src-runtime { background: #475569; }
+    .log-src-async   { background: #4f46e5; }
+    .log-src-test    { background: #d97706; }
+    .log-flag-simulated      { background: #0891b2; }
+    .log-flag-transientError { background: #dc2626; }
+    .log-flag-capped         { background: #ea580c; }
+    html[data-color-mode="dark"] .log-src-runtime { background: #64748b; }
+    html[data-color-mode="dark"] .log-src-async   { background: #6366f1; }
+    html[data-color-mode="dark"] .log-src-test    { background: #f59e0b; }
+    html[data-color-mode="dark"] .log-flag-simulated      { background: #22d3ee; }
+    html[data-color-mode="dark"] .log-flag-transientError { background: #ef4444; }
+    html[data-color-mode="dark"] .log-flag-capped         { background: #fb923c; }
 
     .log-tools-badge {
       display: inline-block;
@@ -1919,6 +1938,10 @@ function App() {
                           : "lt-validator"
                       }`}>{log.type.replace("postfunction-", "PF: ")}</span>
                     )}
+                    <span className={`log-src log-src-${logSourceOf(log)}`}>{SOURCE_LABEL[logSourceOf(log)]}</span>
+                    {(log.flags || []).map((f) => FLAG_LABEL[f] ? (
+                      <span key={f} className={`log-flag log-flag-${f}`}>{FLAG_LABEL[f]}</span>
+                    ) : null)}
                     <span className="log-issue">{log.issueKey}</span>
                     <span className="log-meta">
                       {log.executionTimeMs ? (

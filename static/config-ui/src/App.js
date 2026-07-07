@@ -2316,9 +2316,10 @@ const injectStyles = () => {
     .st-error .st-result-header { background: rgba(220, 38, 38, 0.06); }
 
     .test-badge-skip {
-      background: rgba(37, 99, 235, 0.15);
-      color: var(--primary-color);
+      background: #475569;
+      color: #ffffff;
     }
+    html[data-color-mode="dark"] .test-badge-skip { background: #64748b; }
 
     .st-section {
       padding: 8px 12px;

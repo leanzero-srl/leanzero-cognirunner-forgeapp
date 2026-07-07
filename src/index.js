@@ -12193,9 +12193,15 @@ const executeResearchPostFunction = async (issueKey, config, deadline = Date.now
     try {
       const ruleId = config.ruleId || config.id;
       if (ruleId) {
-        const configs = (await storage.get(CONFIG_REGISTRY_KEY)) || [];
         // Accept legacy embedded ids and the type-namespaced registry variant.
         const cand = new Set([ruleId, `${config.type || "postfunction-research"}::${ruleId}`]);
+        // This runs at RUNTIME (on a transition) and rewrites the whole shared
+        // registry array. KVS has no CAS, so read the FRESHEST registry immediately
+        // before the write and mutate ONLY this rule's selectedDocIds on it — that
+        // way a concurrent admin save of a DIFFERENT rule isn't clobbered by writing
+        // back a stale snapshot. (A tiny residual window remains for the same rule;
+        // acceptable — this is an advisory auto-select, and the delta is idempotent.)
+        const configs = (await storage.get(CONFIG_REGISTRY_KEY)) || [];
         const idx = configs.findIndex((c) => cand.has(c.id));
         if (idx >= 0) {
           const sel = new Set([...(configs[idx].selectedDocIds || []), saved.id]);

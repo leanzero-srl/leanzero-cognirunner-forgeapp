@@ -2297,7 +2297,7 @@ npm install`}
 // Single MCP card — toggle, status pill, collapsible setup block, Test button.
 function McpCard({ mcpKey, title, subtitle, tools, enabled, saving, expanded, ping, onToggle, onExpand, onPing, setupBlock, hostedGreyed, isLmStudio, local, localSaving, onToggleLocal }) {
   const pillStyle = enabled
-    ? { background: "rgba(22, 163, 106, 0.12)", color: "var(--success-color)", border: "1px solid rgba(22, 163, 106, 0.4)" }
+    ? { background: "#16a34a", color: "#ffffff", border: "1px solid #16a34a" }
     : { background: "var(--input-bg)", color: "var(--text-muted)", border: "1px solid var(--border-color)" };
   return (
     <div style={{

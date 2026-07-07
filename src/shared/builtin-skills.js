@@ -29,7 +29,7 @@
  *   a multi-word tag to be present in the prompt).
  */
 
-export const SKILL_SEED_VERSION = 2;
+export const SKILL_SEED_VERSION = 3;
 
 export const BUILTIN_SKILLS = [
   {
@@ -212,38 +212,29 @@ return { ok, failed, remaining };`,
   },
   {
     id: "builtin_skill_sandbox_limits",
-    name: "Sandbox Limits & Honest Fallbacks",
+    name: "Sandbox API — What's Available & the Real Limits",
     category: "Jira API",
-    description: "Requests that need comments, issue links, worklogs, sprints, watchers, or issue creation — operations outside the five-method sandbox, and what to do instead.",
-    tags: ["limit", "sandbox", "comment", "link", "sprint", "create", "worklog", "unsupported", "cannot"],
+    description: "The sandbox exposes a RICH api.* surface (comments, links, worklogs, sub-tasks, sprints, watchers, and more). This covers what IS available and the few operations that genuinely are not — so you use the real method, not a workaround.",
+    tags: ["limit", "sandbox", "comment", "link", "sprint", "create", "worklog", "watcher", "api", "unsupported"],
     operationTypes: ["rest_api_internal", "confluence_api", "rest_api_external"],
-    instructions: `The sandbox exposes EXACTLY five methods — api.getIssue, api.updateIssue, api.searchJql, api.transitionIssue, api.log — plus the api.context accessor ({ issueKey }). Nothing else exists: no addComment, createIssue, deleteIssue, linkIssues, logWork, moveToSprint, addWatcher, uploadAttachment, and no fetch/raw HTTP. Inventing a method throws at runtime.
-What the full Jira REST API would use, and the honest sandbox fallback:
-- Comments — REST: POST /rest/api/3/issue/{key}/comment with an ADF body. Fallback: append an ADF paragraph or panel to the description, and api.log the text.
-- Issue creation / subtasks — REST: POST /rest/api/3/issue. Fallback: add a marker label (e.g. "needs-subtask") and log the intended summary.
-- Issue links — REST: POST /rest/api/3/issueLink. Fallback: record the relation in the description or a text field; existing links CAN be read via issue.fields.issuelinks.
-- Worklogs — REST: POST /rest/api/3/issue/{key}/worklog. No write fallback; log the intended time entry.
-- Watchers/votes, attachments, sprint moves (Jira Agile API) — not reachable; say so plainly.
-Discipline when a request needs an unavailable operation:
-1. Implement the parts that ARE possible with the five methods.
-2. For the unavailable part, emit a clearly-marked code comment naming the exact REST endpoint a full implementation would need.
-3. Offer the nearest substitute when one exists, and make it idempotent — check for an existing marker before appending again.
-4. NEVER silently skip — always api.log the limitation so it shows up in test runs and execution logs.
-Also remember: test runs are dry runs (reads are real, writes are logged but not executed), and the whole chain shares a ~22s budget.`,
+    instructions: `The sandbox api.* surface is RICH — NOT limited to a handful of read methods. Beyond api.getIssue / updateIssue / searchJql / transitionIssue / log / context, first-class WRITE methods exist and should be used DIRECTLY: api.addComment, api.createIssue, api.cloneIssue, api.createIssueLink, api.addWorklog, api.moveToSprint / api.moveToBacklog, api.addWatcher / api.removeWatcher, api.addVote, api.setAssignee, api.addLabels / api.removeLabels, api.editIssue, api.forceStatus, api.transitionByName / transitionSubtasks / transitionParent, api.setProperty / getProperty, api.addRemoteLink, api.sendNotification, api.rankIssue, api.createVersion / createComponent. The authoritative, always-current list is the API Reference panel (derived from src/shared/sandbox-api-spec.js) — consult it rather than guessing. Do NOT reach for a description-append or a marker-label WORKAROUND when a real method exists (e.g. call api.addComment(key, text) — never "append to the description because comments aren't supported").
+What is genuinely NOT available, and the honest fallback:
+- Deleting an issue — no api.deleteIssue. Transition it to a closed/cancelled status instead, or log the intent.
+- Uploading a file attachment — not writable from the sandbox. Log the intent; attachment READING (vision/doc) happens via the validator/PF field path, not here.
+- Raw fetch / arbitrary HTTP / arbitrary REST endpoints — not exposed. Use the typed api.* methods; if an operation truly has no method, say so plainly and api.log it.
+Discipline:
+1. Prefer the real typed method — check the API Reference panel first.
+2. Make writes idempotent (check for an existing marker / link / comment before adding again) since a transition can fire more than once.
+3. For a genuinely-unavailable operation, emit a clearly-marked comment naming the REST endpoint a full implementation would need, and api.log the limitation so it surfaces in test runs.
+Also: test runs are dry runs (reads real, writes logged not executed), and the whole chain shares a ~22s budget.`,
     examples: `// User asked: "comment on the issue when a duplicate is found"
-// Sandbox cannot add comments (REST would need POST /rest/api/3/issue/{key}/comment).
-// Substitute: append to the description ONCE (idempotent), and log the limitation.
+// api.addComment IS a real method — use it directly, no description-append workaround.
 const issue = await api.getIssue(api.context.issueKey);
-const doc = issue.fields.description || { type: "doc", version: 1, content: [] };
-const marker = "Possible duplicate detected by automation.";
-const already = JSON.stringify(doc).includes(marker);
-if (!already) {
-  doc.content.push({ type: "paragraph", content: [
-    { type: "text", text: marker, marks: [{ type: "strong" }] }
-  ] });
-  await api.updateIssue(api.context.issueKey, { description: doc });
-}
-api.log("NOTE: sandbox cannot add comments — " + (already ? "marker already present, skipped re-append." : "appended to the description instead."));`,
+const results = await api.searchJql(\`project = \${api.context.issueKey.split("-")[0]} AND summary ~ "\${(issue.fields.summary || "").replace(/"/g, " ")}" AND key != \${api.context.issueKey}\`);
+if (results.issues && results.issues.length > 0) {
+  await api.addComment(api.context.issueKey, "Possible duplicate of " + results.issues[0].key + " — please review before proceeding.");
+  api.log("Added duplicate-review comment referencing " + results.issues[0].key + ".");
+}`,
   },
   {
     id: "builtin_skill_transitions",

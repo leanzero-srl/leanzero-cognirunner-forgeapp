@@ -22,7 +22,7 @@
 
 import { FIELD_TYPE_TABLE, SANDBOX_RULES, JQL_REFERENCE } from "./sandbox-api-spec.js";
 
-export const DOC_SEED_VERSION = 2;
+export const DOC_SEED_VERSION = 3;
 
 const fieldMatrix = FIELD_TYPE_TABLE.map(
   (r) => `${r.fieldType}\n  read:  ${r.read.replace(/`/g, "")}\n  write: ${r.write.replace(/`/g, "")}`,
@@ -201,25 +201,23 @@ GENERAL
     category: "Business Rules",
     content: `The static post-function sandbox: what runs, what doesn't.
 
-API SURFACE — exactly five methods plus context:
-api.getIssue(key), api.updateIssue(key, fields), api.searchJql(jql), api.transitionIssue(key, id), api.log(...args), api.context.issueKey
-There is NO addComment, createIssue, linkIssues, logWork, sprint operations, or raw fetch. Calling an invented method throws at runtime.
+API SURFACE — a RICH set of typed methods (see the API Reference panel for the authoritative, always-current list; do NOT assume it is only a few read methods):
+Reads/writes: api.getIssue, api.updateIssue, api.editIssue, api.searchJql, api.transitionIssue, api.transitionByName, api.transitionSubtasks, api.transitionParent, api.forceStatus, api.createIssue, api.cloneIssue, api.addComment, api.createIssueLink, api.addWorklog, api.addWatcher, api.removeWatcher, api.addVote, api.setAssignee, api.addLabels, api.removeLabels, api.moveToSprint, api.moveToBacklog, api.rankIssue, api.setProperty, api.getProperty, api.addRemoteLink, api.sendNotification, api.createVersion, api.createComponent, api.log, plus api.context.issueKey.
+Use the REAL method — e.g. api.addComment(key, text), NOT a description-append workaround. Calling an invented/undocumented method throws at runtime.
 
-SIGNATURES AND RETURNS
+CORE SIGNATURES (the rest are in the API Reference panel)
 - api.getIssue(issueKey) → full issue object (issue.key; issue.fields.summary, .description as ADF, .status.name, .assignee?.accountId, .labels, .components, .fixVersions, .duedate, .resolution, .comment.comments, .issuelinks, .subtasks, .parent?.key, customfield_XXXXX...).
-- api.updateIssue(issueKey, fieldsObject) → { success: true }. Plain field sets only — no add/remove verbs.
+- api.updateIssue(issueKey, fieldsObject) → { success: true }. Plain field sets; use api.addLabels/removeLabels for label add/remove verbs.
 - api.searchJql(jqlQuery) → { issues: [...], nextPageToken?: string }. At most 20 results.
-- api.transitionIssue(issueKey, transitionId) → { success: true }. transitionId is a number as a string; transitions CANNOT be looked up in the sandbox — if the user gives a transition name, the code must explain that the numeric id is required.
+- api.transitionIssue(issueKey, transitionId) → { success: true }. transitionId is a number as a string; if the user gives a transition NAME, use api.transitionByName(key, name) instead.
+- api.addComment(issueKey, text) → posts a comment (ADF built for you).
 - api.log(...args) → void. Objects are JSON-serialized; output shows in test results and execution logs.
 - api.context → { issueKey: string } only.
 
-MISSING CAPABILITIES — HONEST FALLBACKS
-- Comments: cannot be posted. Existing comments are readable at issue.fields.comment.comments. Surface information via api.log() or by appending an ADF paragraph to the description.
-- Issue links: readable at issue.fields.issuelinks; cannot be created or deleted. Report intended links in the return value.
-- Worklogs: cannot be written.
-- Sprint / rank / board operations: the Jira Agile API is unreachable; the Sprint field is read-only here.
-- Creating or deleting issues: not possible.
-- No fetch, no require, no file I/O, no browser APIs.
+GENUINELY NOT AVAILABLE — HONEST FALLBACKS
+- Deleting an issue: no api.deleteIssue. Transition to a closed/cancelled status, or log the intent.
+- Uploading a file attachment: not writable here (attachment READING happens on the validator/PF field path). Log the intent.
+- Raw fetch / require / arbitrary HTTP / file I/O / browser APIs: not exposed. Use the typed api.* methods.
 
 EXECUTION
 - Runs AFTER the workflow transition succeeds; errors never block the transition.

@@ -64,10 +64,27 @@ const injectStyles = () => {
       --alert-success-bg: #f0fdf4;
       --alert-success-border: #bbf7d0;
       --button-disabled-bg: #93c5fd;
+      /* Canonical LeanZero design tokens (unified with config-view) — mandate hue map,
+         radius ladder, blue-black card shadows. Additive; existing vars unchanged. */
+      --accent: #2563eb; --accent-deep: #1d4ed8;
+      --accent-docs: #2563eb; --accent-skills: #7c3aed; --accent-memories: #0d9488;
+      --accent-test: #d97706; --accent-fix: #16a34a; --accent-slate: #475569;
+      --accent-cyan: #0891b2; --accent-indigo: #4f46e5;
+      --r-sm: 6px; --r-md: 8px; --r-lg: 12px; --r-pill: 999px;
+      --shadow-card: 0 1px 2px rgba(18,42,66,0.06), 0 5px 16px -8px rgba(18,42,66,0.14);
+      --shadow-card-hover: 0 12px 30px -12px rgba(29,78,216,0.28), 0 3px 10px rgba(18,42,66,0.10);
+      --glow: 0 8px 22px -6px rgba(37,99,235,0.42);
     }
 
     html[data-color-mode="dark"] {
       --bg-color: transparent;
+      --accent: #3b82f6; --accent-deep: #3b82f6;
+      --accent-docs: #3b82f6; --accent-skills: #8b5cf6; --accent-memories: #14b8a6;
+      --accent-test: #f59e0b; --accent-fix: #22c55e; --accent-slate: #64748b;
+      --accent-cyan: #22d3ee; --accent-indigo: #6366f1;
+      --shadow-card: 0 1px 2px rgba(0,0,0,0.4), 0 5px 16px -8px rgba(0,0,0,0.6);
+      --shadow-card-hover: 0 12px 30px -12px rgba(0,0,0,0.7), 0 3px 10px rgba(0,0,0,0.5);
+      --glow: 0 8px 22px -6px rgba(59,130,246,0.5);
       --text-color: #F5F5F7;
       --text-secondary: #A0A0B0;
       --text-muted: #71717a;
@@ -136,12 +153,12 @@ const injectStyles = () => {
 
     .card {
       padding: 20px;
-      border-radius: 12px;
+      border-radius: var(--r-lg);
       border: 1px solid var(--border-color);
       background-color: var(--card-bg);
       margin-bottom: 16px;
-      box-shadow: 0 1px 4px rgba(0,0,0,0.03);
-      transition: box-shadow 0.3s ease;
+      box-shadow: var(--shadow-card);
+      transition: box-shadow var(--dur-med) var(--ease-out);
     }
 
     .form-group { margin-bottom: 20px; }
@@ -2370,7 +2387,7 @@ const injectStyles = () => {
        .btn-retry, .mls-toast, .reveal
        ============================================================ */
     :root {
-      --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+      --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
       --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
       --dur-fast: 140ms;
       --dur-med: 260ms;

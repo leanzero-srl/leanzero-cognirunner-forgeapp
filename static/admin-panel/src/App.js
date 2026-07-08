@@ -29,6 +29,7 @@ import { buildFactsText, ruleKindEnum } from "../../../src/shared/explain-facts.
 import { logSourceOf, SOURCE_LABEL, FLAG_LABEL } from "../../../src/shared/log-flags.js";
 import AddRuleWizard from "./components/AddRuleWizard";
 import Tooltip from "./components/Tooltip";
+import RulePortabilityDialog from "./components/RulePortabilityDialog";
 import { showToast } from "./components/toast";
 import { confirmDialog } from "./confirmDialog";
 
@@ -358,6 +359,44 @@ const injectStyles = () => {
     html[data-color-mode="dark"] .usage-prov-fill { background: #22d3ee; }
     .usage-prov-val { color: var(--text-secondary); white-space: nowrap; font-variant-numeric: tabular-nums; }
     .usage-foot { font-size: 11px; color: var(--text-muted); font-style: italic; }
+
+    /* Rule export / import dialog — solid status chips, canonical tokens, no left rail. */
+    .pf-modal-overlay {
+      position: fixed; inset: 0; z-index: 9998; background: rgba(15, 23, 42, 0.55);
+      display: flex; align-items: flex-start; justify-content: center; padding: 48px 16px; overflow-y: auto;
+    }
+    .pf-modal.port-dialog {
+      background: var(--card-bg); border: 1px solid var(--border-color);
+      border-radius: var(--r-lg, 12px); box-shadow: var(--shadow-card-hover); width: 100%; max-width: 640px; padding: 20px;
+    }
+    .port-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+    .port-tabs { display: flex; gap: 10px; margin-bottom: 16px; border-bottom: 1px solid var(--border-color); }
+    .port-tab { background: none; border: none; padding: 8px 4px; margin-bottom: -1px; font-size: 13px; font-weight: 600; color: var(--text-secondary); cursor: pointer; border-bottom: 2px solid transparent; }
+    .port-tab.is-active { color: var(--primary-color); border-bottom-color: var(--primary-color); }
+    .port-hint { font-size: 12.5px; color: var(--text-secondary); line-height: 1.5; margin: 0 0 12px; }
+    .port-selectall { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; margin-bottom: 8px; cursor: pointer; }
+    .port-rulelist { max-height: 280px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); }
+    .port-ruleitem { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--border-color); font-size: 13px; cursor: pointer; }
+    .port-ruleitem:last-child { border-bottom: none; }
+    .port-rulename { flex: 1; color: var(--text-color); }
+    .port-ruletype { font-size: 11px; color: var(--text-muted); }
+    .port-empty { padding: 16px; text-align: center; color: var(--text-muted); font-size: 13px; }
+    .port-actions { margin-top: 14px; display: flex; justify-content: flex-end; }
+    .port-file { display: block; margin-bottom: 10px; font-size: 12px; }
+    .port-textarea { width: 100%; box-sizing: border-box; font-family: SFMono-Regular, Consolas, monospace; font-size: 12px; padding: 10px; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); background: var(--input-bg); color: var(--text-color); resize: vertical; }
+    .port-plan { margin-top: 16px; }
+    .port-plan-head { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-secondary); margin-bottom: 8px; }
+    .port-plan-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border-color); font-size: 13px; flex-wrap: wrap; }
+    .port-plan-name { flex: 1; font-weight: 600; color: var(--text-color); }
+    .port-plan-type { font-size: 11px; color: var(--text-muted); }
+    .port-plan-note { flex-basis: 100%; font-size: 11px; color: #d97706; }
+    html[data-color-mode="dark"] .port-plan-note { color: #f59e0b; }
+    .port-status { display: inline-flex; padding: 2px 8px; border-radius: var(--r-sm, 6px); font-size: 9px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; color: #fff; white-space: nowrap; }
+    .port-status-ready { background: #16a34a; }
+    .port-status-needs-rebind { background: #d97706; }
+    .port-status-conflict { background: #4f46e5; }
+    .port-status-invalid { background: #dc2626; }
+    .port-commit-note { margin-top: 14px; padding: 10px 12px; background: var(--code-bg); border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); font-size: 12px; color: var(--text-secondary); line-height: 1.5; }
 
     .row-disabled td {
       opacity: 0.55;
@@ -4799,6 +4838,7 @@ function App() {
   const [activeTab, setActiveTab] = useState("rules");
   const [rulesFilter, setRulesFilter] = useState("all");
   const [showAddWizard, setShowAddWizard] = useState(false);
+  const [showPortability, setShowPortability] = useState(false);
   const [typeFilter, setTypeFilter] = useState("all");
   // Monotonic token — a slow older fetch (e.g. rapid All/My Rules flips) must
   // never overwrite a newer call's rows or drop its refresh veil early.
@@ -5462,6 +5502,9 @@ function App() {
       )}
 
       {/* Configured Rules Section */}
+      {activeTab === "rules" && showPortability && (
+        <RulePortabilityDialog rules={configs} onClose={() => setShowPortability(false)} />
+      )}
       {activeTab === "rules" && (<>
       {/* Workstream R: rules attached to workflows but not in the registry —
           they execute on transitions but won't appear under Configured Rules
@@ -5570,6 +5613,11 @@ function App() {
             {(userRole === "editor" || userRole === "admin") && (
               <button className="btn-small btn-edit" onClick={() => setShowAddWizard(!showAddWizard)}>
                 {showAddWizard ? "Cancel" : "+ Add Rule"}
+              </button>
+            )}
+            {(userRole === "editor" || userRole === "admin") && (
+              <button className="btn-small" onClick={() => setShowPortability(true)} title="Export rules to a file, or preview an import">
+                ⤓ Export / Import
               </button>
             )}
           </div>

@@ -36,6 +36,7 @@ import { clampNarrateLine } from "./shared/narrate-utils.js";
 import { buildCatalogPromptBlock, validateBuiltRule } from "./shared/build-rule.js";
 import { normalizeUsage, emptyState, bumpCounters, summarizeState } from "./shared/usage-meter.js";
 import { deriveLogFlags } from "./shared/log-flags.js";
+import { serializeRule, buildExportEnvelope, validateImportSchema, resolveBindings, containsSecretKey, EXPORT_CAPS } from "./shared/rule-portability.js";
 // Premade (non-AI, "static") rule executor — runs deterministic validators/conditions
 // chosen from the premade catalog, short-circuiting the AI path in validate().
 import { executePremadeRule } from "./premade-rules.js";
@@ -4801,6 +4802,113 @@ resolver.define("getPostFunctionCode", async ({ payload }) => {
       return { success: false, error: "Code bundle not found" };
     }
     return { success: true, functions: bundle.functions };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+// === Rule export / import (same-site, file-based, match-by-value) ===
+// Shared portability engine (serialize/validate/resolveBindings) lives in
+// src/shared/rule-portability.js — emit-only + untrusted-input-safe by construction.
+
+// Read a rule's AUTHORITATIVE full config from its workflow transition params
+// (registry rows are slim for validators/conditions/premade). Returns null if unreadable.
+const readAuthoritativeConfig = async (row, wfCache) => {
+  const wfName = row.workflow?.workflowName;
+  const transitionId = row.workflow?.transitionId;
+  if (wfName && transitionId) {
+    if (!(wfName in wfCache)) wfCache[wfName] = await fetchWorkflowTransitions(wfName).catch(() => null);
+    const wf = wfCache[wfName];
+    const td = wf?.transitionRules?.get(String(transitionId));
+    if (td) {
+      const isPf = String(row.type || "").startsWith("postfunction");
+      const list = isPf ? (td.postFunctions || []) : row.type === "condition" ? (td.conditions || []) : (td.validators || []);
+      const ours = list.filter((r) => r.parameters?.key && r.parameters.key.includes(APP_ID));
+      for (const r of ours) {
+        try { const c = JSON.parse(r.parameters?.config || "{}"); if (String(c.id) === String(row.id) || String(c.ruleId) === String(row.id)) return c; } catch (e) { /* skip */ }
+      }
+      if (ours.length === 1) { try { return JSON.parse(ours[0].parameters?.config || "{}"); } catch (e) { /* skip */ } }
+    }
+  }
+  // Fallback: PF registry rows carry the full config inline.
+  if (String(row.type || "").startsWith("postfunction")) return row;
+  return null;
+};
+
+// id -> {name, type} for every field on the site (for export by-name + import re-bind).
+const buildFieldMap = async () => {
+  const map = {};
+  try {
+    const r = await api.asApp().requestJira(route`/rest/api/3/field`, { headers: { Accept: "application/json" } });
+    if (r.ok) { const all = await r.json(); for (const f of all) map[f.id] = { name: f.name, type: f.schema?.type || "" }; }
+  } catch (e) { /* best-effort */ }
+  return map;
+};
+
+resolver.define("exportRules", async ({ payload, context }) => {
+  if (!(await requireRole(context.accountId, "editor"))) return { success: false, error: "Editor access required" };
+  const ids = Array.isArray(payload?.ids) ? payload.ids.slice(0, EXPORT_CAPS.maxRules) : [];
+  if (!ids.length) return { success: false, error: "No rules selected" };
+  try {
+    const configs = (await storage.get(CONFIG_REGISTRY_KEY)) || [];
+    const fieldMap = await buildFieldMap();
+    const docMap = {};
+    try { const idx = (await storage.get(DOC_REPO_INDEX_KEY)) || []; for (const d of idx) docMap[d.id] = d.title; } catch (e) { /* best-effort */ }
+    const wfCache = {};
+    const rules = []; const skipped = [];
+    for (const id of ids) {
+      const row = configs.find((c) => c.id === id);
+      if (!row) { skipped.push({ id, reason: "not found in registry" }); continue; }
+      const cfg = await readAuthoritativeConfig(row, wfCache);
+      if (!cfg) { skipped.push({ id, reason: "config not readable" }); continue; }
+      // Inline offloaded static-PF code so the export is self-contained.
+      let functions = Array.isArray(cfg.functions) && cfg.functions.length ? cfg.functions : [];
+      const codeRef = cfg.codeRef || row.codeRef;
+      if (!functions.length && typeof codeRef === "string" && codeRef.startsWith(PF_CODE_PREFIX)) {
+        try { const bundle = await storage.get(codeRef); if (bundle && Array.isArray(bundle.functions)) functions = bundle.functions; } catch (e) { /* skip */ }
+      }
+      // Static PF with offloaded code we couldn't read → fail loudly (never emit empty).
+      if (String(row.type) === "postfunction-static" && !functions.length) { skipped.push({ id, reason: "static-PF code bundle unreadable" }); continue; }
+      // Resolve names for match-by-value.
+      const fieldMeta = {};
+      if (cfg.fieldId && fieldMap[cfg.fieldId]) { fieldMeta.fieldName = fieldMap[cfg.fieldId].name; fieldMeta.fieldType = fieldMap[cfg.fieldId].type; }
+      if (cfg.actionFieldId && fieldMap[cfg.actionFieldId]) fieldMeta.actionFieldName = fieldMap[cfg.actionFieldId].name;
+      const docNames = (Array.isArray(cfg.selectedDocIds) ? cfg.selectedDocIds : []).map((d) => docMap[d]).filter(Boolean);
+      const fnsWithNames = functions.map((f) => ({ ...f, docNames: (Array.isArray(f.selectedDocIds) ? f.selectedDocIds : []).map((d) => docMap[d]).filter(Boolean) }));
+      rules.push(serializeRule({
+        config: cfg,
+        workflowContext: { workflowName: row.workflow?.workflowName || "" },
+        fieldMeta, docNames, functions: fnsWithNames,
+      }));
+    }
+    if (!rules.length) return { success: false, error: "No exportable rules", skipped };
+    const envelope = buildExportEnvelope(rules, { appVersion: "1.0.0", exportedAt: new Date().toISOString() });
+    // Defensive belt-and-suspenders: never return an export carrying a secret/PII key.
+    if (containsSecretKey(envelope)) return { success: false, error: "Export blocked — sensitive data detected in payload" };
+    return { success: true, envelope, skipped };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+// Read-only dry-run: parse + validate + resolve bindings against the target site.
+// Writes NOTHING. Returns a per-rule plan the UI renders before any commit.
+resolver.define("previewImport", async ({ payload, context }) => {
+  if (!(await requireRole(context.accountId, "editor"))) return { success: false, error: "Editor access required" };
+  const text = typeof payload?.json === "string" ? payload.json : "";
+  if (!text) return { success: false, error: "No import text provided" };
+  if (text.length > EXPORT_CAPS.maxBytes) return { success: false, error: "Import file is too large." };
+  let parsed;
+  try { parsed = JSON.parse(text); } catch (e) { return { success: false, error: "That file isn't valid JSON." }; }
+  const v = validateImportSchema(parsed);
+  if (!v.ok) return { success: false, error: v.error };
+  try {
+    const fieldMap = await buildFieldMap();
+    const fields = Object.entries(fieldMap).map(([id, m]) => ({ id, name: m.name, type: m.type }));
+    const docNamesToId = {};
+    try { const idx = (await storage.get(DOC_REPO_INDEX_KEY)) || []; for (const d of idx) { docNamesToId[d.title] = d.id; docNamesToId[String(d.title).toLowerCase()] = d.id; } } catch (e) { /* best-effort */ }
+    const plan = v.rules.map((rule) => resolveBindings(rule, { fields, docNamesToId }));
+    return { success: true, plan, ruleCount: v.rules.length };
   } catch (error) {
     return { success: false, error: error.message };
   }

@@ -1161,8 +1161,16 @@ function App() {
             (l.fieldId === actionField || l.fieldId === "static-code" || pfType.includes("static"))
           );
         } else if (config?.fieldId) {
-          // Validator/condition: match by field ID
-          allLogs = allLogs.filter((l) => l.fieldId === config.fieldId && (!l.type || l.type === "validation"));
+          // Validator/condition: match by field ID AND this rule's own type. The backend
+          // writes type "validator"/"condition" (index.js validate); accepting only the
+          // legacy "validation" dropped EVERY current-format log, so the viewer showed
+          // empty despite real runs. ruleModule is the authoritative module signal
+          // (config.type never carries "condition"); when it's unknown, accept both.
+          const wantTypes = ruleModule === "condition" ? ["condition"]
+            : ruleModule === "validator" ? ["validator"]
+            : ["validator", "condition"];
+          allLogs = allLogs.filter((l) => l.fieldId === config.fieldId
+            && (!l.type || l.type === "validation" || wantTypes.includes(l.type)));
         }
         setLogs(allLogs);
       } else if (logs.length > 0) {

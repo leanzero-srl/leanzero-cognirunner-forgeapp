@@ -515,6 +515,9 @@ const injectStyles = () => {
     }
 
     .tooltip-wrap:hover .tooltip-icon { opacity: 1; }
+    /* Keyboard focus indicator — the trigger is now focusable (a11y). */
+    .tooltip-wrap:focus-visible { outline: 2px solid var(--primary-color); outline-offset: 2px; border-radius: 4px; }
+    .tooltip-wrap:focus-visible .tooltip-icon { opacity: 1; }
 
     /* Portal-rendered tooltip (escapes overflow:hidden) */
     .tooltip-portal {

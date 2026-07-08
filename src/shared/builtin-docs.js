@@ -22,7 +22,7 @@
 
 import { FIELD_TYPE_TABLE, SANDBOX_RULES, JQL_REFERENCE } from "./sandbox-api-spec.js";
 
-export const DOC_SEED_VERSION = 3;
+export const DOC_SEED_VERSION = 4;
 
 const fieldMatrix = FIELD_TYPE_TABLE.map(
   (r) => `${r.fieldType}\n  read:  ${r.read.replace(/`/g, "")}\n  write: ${r.write.replace(/`/g, "")}`,
@@ -203,14 +203,14 @@ GENERAL
 
 API SURFACE — a RICH set of typed methods (see the API Reference panel for the authoritative, always-current list; do NOT assume it is only a few read methods):
 Reads/writes: api.getIssue, api.updateIssue, api.editIssue, api.searchJql, api.transitionIssue, api.transitionByName, api.transitionSubtasks, api.transitionParent, api.forceStatus, api.createIssue, api.cloneIssue, api.addComment, api.createIssueLink, api.addWorklog, api.addWatcher, api.removeWatcher, api.addVote, api.setAssignee, api.addLabels, api.removeLabels, api.moveToSprint, api.moveToBacklog, api.rankIssue, api.setProperty, api.getProperty, api.addRemoteLink, api.sendNotification, api.createVersion, api.createComponent, api.log, plus api.context.issueKey.
-Use the REAL method — e.g. api.addComment(key, text), NOT a description-append workaround. Calling an invented/undocumented method throws at runtime.
+Use the REAL method — e.g. api.addComment("your text") on the current issue, NOT a description-append workaround. Calling an invented/undocumented method throws at runtime.
 
 CORE SIGNATURES (the rest are in the API Reference panel)
 - api.getIssue(issueKey) → full issue object (issue.key; issue.fields.summary, .description as ADF, .status.name, .assignee?.accountId, .labels, .components, .fixVersions, .duedate, .resolution, .comment.comments, .issuelinks, .subtasks, .parent?.key, customfield_XXXXX...).
 - api.updateIssue(issueKey, fieldsObject) → { success: true }. Plain field sets; use api.addLabels/removeLabels for label add/remove verbs.
 - api.searchJql(jqlQuery) → { issues: [...], nextPageToken?: string }. At most 20 results.
 - api.transitionIssue(issueKey, transitionId) → { success: true }. transitionId is a number as a string; if the user gives a transition NAME, use api.transitionByName(key, name) instead.
-- api.addComment(issueKey, text) → posts a comment (ADF built for you).
+- api.addComment(text) → posts a comment on the CURRENT issue (string auto-converted to ADF; optional 2nd arg opts.visibility = { type, value }). Takes NO issueKey — always targets the issue the PF runs on.
 - api.log(...args) → void. Objects are JSON-serialized; output shows in test results and execution logs.
 - api.context → { issueKey: string } only.
 
@@ -423,7 +423,7 @@ Agile endpoints live under /rest/agile/1.0/ (NOT /rest/api/3) and use OFFSET pag
 
 SPRINT
 - Reads as an ARRAY on a custom field (the field id is instance-specific).
-- NOT writable via PUT /rest/api/3/issue or api.updateIssue — sprint membership is managed through the Jira Agile API, not a field write. In the sandbox the Sprint field is strictly read-only; tell the user when a request needs sprint moves.
+- NOT writable via PUT /rest/api/3/issue or api.updateIssue — sprint membership is managed through the Jira Agile API, not a field write. In the sandbox, use api.moveToSprint(sprintId) / api.moveToBacklog() (they call the Agile API for you) — the Sprint FIELD is read-only but sprint membership IS manageable.
 
 STORY POINTS
 - A number custom field — commonly customfield_10016, but the id is instance-specific; resolve it by name via GET /rest/api/3/field before writing.
@@ -435,7 +435,7 @@ START DATE
 RANK (Lexorank)
 - NEVER write the Rank custom field directly — ranking goes through the Agile API:
 PUT /rest/agile/1.0/issue/rank body { "issues": ["PROJ-5", "PROJ-6"], "rankBeforeIssue": "PROJ-1" } (or "rankAfterIssue": "PROJ-9" — exactly ONE anchor).
-- Unreachable from the sandbox.
+- In the sandbox use api.rankIssue(relativeToKey, { after }) — it performs the Lexorank reorder for you.
 
 RESOLVING AGILE FIELD IDS
 Sprint, story points, and start date are ordinary custom fields with per-instance ids. REST integrations resolve them by name via GET /rest/api/3/field (entries carry name, custom flag, schema.type) or map ids to display names with expand=names on GET /issue. Never copy a customfield id from one site to another.
@@ -457,7 +457,7 @@ PARENT AND HIERARCHY
 - Epic-link write shapes differ by instance and project type (company-managed reports style "classic" vs team-managed in /rest/api/3/project/search results) and are not covered here — verify on the target instance before generating epic writes.
 
 SANDBOX REALITY
-Only the five api methods exist — the Agile API cannot be called. Possible: read sprint / story points / parent via api.getIssue; write story points and date fields via api.updateIssue with the shapes above. Impossible: sprint moves, ranking, board operations — say so plainly instead of inventing calls.`,
+The sandbox exposes a rich api.* surface INCLUDING agile operations (they call /rest/agile/1.0 for you): api.moveToSprint(sprintId) and api.moveToBacklog() manage sprint membership, and api.rankIssue(relativeToKey, { after }) does Lexorank reordering. Read sprint / story points / parent via api.getIssue; write story points and date fields via api.updateIssue with the shapes above. Genuinely NOT reachable: arbitrary /rest/agile REST calls, board create/config, and epic-link writes — say so plainly for THOSE instead of inventing calls. (Authoritative method list: the API Reference panel / src/shared/sandbox-api-spec.js.)`,
   },
   {
     id: "builtin_doc_collab",
@@ -473,7 +473,7 @@ COMMENTS (REST)
 - Comment properties (app metadata invisible in the UI): PUT/GET/DELETE /rest/api/3/comment/{commentId}/properties/{propertyKey} with arbitrary JSON, e.g. { "processed_by_app": true, "sync_id": "sync-abc-123" }.
 - Dedup guard before bot comments: read the most recent comment(s) and skip when an own marker string was posted within 24h.
 - Timestamps look like "2024-01-01T12:00:00.000+0000".
-SANDBOX FALLBACK: There is NO api.addComment. Comments are read-only at issue.fields.comment.comments ([{ body: ADF, author, created }]). To surface information, api.log() it or append an ADF paragraph to the description.
+SANDBOX: api.addComment("your text") posts a comment on the current issue (string auto-converted to ADF; optional 2nd arg opts.visibility) — use it directly, no description-append workaround. Existing comments are readable at issue.fields.comment.comments ([{ body: ADF, author, created }]).
 
 ISSUE LINKS (REST)
 - Create: POST /rest/api/3/issueLink body { "type": { "name": "Blocks" }, "inwardIssue": { "key": "A" }, "outwardIssue": { "key": "B" } } → 201 with an EMPTY body — the API returns nothing on link creation; to get the link id, re-read either issue with ?fields=issuelinks (the same lookup the delete flow below uses).
@@ -482,7 +482,7 @@ ISSUE LINKS (REST)
 - Delete needs the numeric link id: GET /rest/api/3/issue/{key}?fields=issuelinks, find the entry matching type + other key (check both directions), then DELETE /rest/api/3/issueLink/{linkId} → 204, empty body.
 - Default link types (name / inward / outward): Blocks / is blocked by / blocks; Cloners / is cloned by / clones; Duplicate / is duplicated by / duplicates; Relates / relates to / relates to.
 - Remote (web) links: POST /rest/api/3/issue/{key}/remotelink body { "object": { "url": "https://...", "title": "Display title" } } — object.url and object.title required; optional icon is { "icon": { "url16x16": "..." } } (the Icon schema has url16x16/title/link — no "url" property). List: GET same path (plain array). Delete: DELETE .../remotelink/{linkId}.
-SANDBOX FALLBACK: There is NO api.linkIssues. Links are readable via api.getIssue at issue.fields.issuelinks; creating or deleting them is impossible — report intended links via api.log() or the step's return value.
+SANDBOX: api.createIssueLink(outwardKey, typeName?) links the CURRENT issue (the inward side) to outwardKey (e.g. api.createIssueLink("PROJ-42", "Blocks") means current-issue blocks PROJ-42). Existing links are readable via api.getIssue at issue.fields.issuelinks. (Deleting a link has no sandbox method — report that if needed.)
 
 WORKLOGS (REST)
 - Create: POST /rest/api/3/issue/{key}/worklog. Time spent: EITHER "timeSpentSeconds": 3600 (integer seconds) OR "timeSpent": "2h 30m" (duration string) — provide one. "started": "2023-10-27T10:00:00.000+0000" — Jira timestamp with a numeric offset, NOT a bare ISO "Z". "comment" is an ADF doc.
@@ -490,7 +490,7 @@ WORKLOGS (REST)
 - Move between issues: POST /rest/api/3/issue/{key}/worklog/move body { "ids": [10101], "issueIdOrKey": "PROJ-456" } — an ARRAY of integer worklog ids plus the destination (experimental; max 5000 ids; moved worklogs trigger no notifications and write no history).
 - Worklog properties: PUT/GET/DELETE /rest/api/3/issue/{key}/worklog/{worklogId}/properties/{propertyKey}.
 - 400 = malformed time format. Time tracking must be enabled instance-wide: GET /rest/api/3/configuration → timeTrackingEnabled plus timeTrackingConfiguration { defaultUnit, timeFormat, workingDaysPerWeek: 5.0, workingHoursPerDay: 8.0 } — these settings change how "1d" parses.
-SANDBOX FALLBACK: There is NO api.logWork — worklogs cannot be written from the sandbox; tell the user instead of inventing a method.
+SANDBOX: api.addWorklog(timeSpentSeconds, comment?) logs work on the current issue — time is an INTEGER of SECONDS, not a duration string (e.g. api.addWorklog(9000, "Investigated the race") for 2h30m). Read existing worklogs via api.getIssue.
 
 ISSUE PROPERTIES (hidden state for automations)
 Arbitrary JSON on an issue, invisible in the UI — ideal for processed-flags and sync ids instead of polluting visible fields: GET /rest/api/3/issue/{key}/properties (list keys); GET/PUT/DELETE /rest/api/3/issue/{key}/properties/{propertyKey} (PUT body = the raw JSON value). Bulk: POST /rest/api/3/issue/properties/multi body { "issues": [{ "issueID": 10001, "properties": { "external-id": "ext-999", "status": "synced" } }] } (issueID is numeric; up to 10 properties per issue, up to 100 issues per request; the call is async — Jira returns a task to poll). Unreachable from the sandbox.`,

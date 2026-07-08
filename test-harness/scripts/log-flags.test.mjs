@@ -22,17 +22,15 @@ ok(eq(deriveLogFlags({}, { simulationMode: false }), []), "simulationMode false 
 // --- transientError (already persisted) ---
 ok(eq(deriveLogFlags({ transientError: true }, null), ["transientError"]), "transientError → flag");
 
-// --- capped: ONLY genuine runtime caps ---
-ok(eq(deriveLogFlags({ trace: ["step 1 ok", "[api.log output capped at 5000 entries]"] }, null), ["capped"]), "trace 'output capped' sentinel → capped");
-ok(eq(deriveLogFlags({ stepResults: [{ __truncated: true }] }, null), ["capped"]), "step __truncated → capped");
-ok(eq(deriveLogFlags({ valueTruncated: true }, null), ["capped"]), "executor valueTruncated → capped");
-// The critique's BLOCKER: the 500-char DISPLAY clip must NOT read as a runtime cap.
-ok(eq(deriveLogFlags({ updatedValue: "a very long ADF value that got display-clipped…" }, null), []), "updatedValue ending in … is NOT capped (display clip)");
-ok(eq(deriveLogFlags({ attemptedValue: "x…" }, null), []), "attemptedValue ending in … is NOT capped");
+// --- capped REMOVED (unreliable — dead/wrong-object/spoofable signals). Assert it
+//     never emits, so a truncation-shaped entry does NOT get a lying badge. ---
+ok(eq(deriveLogFlags({ trace: ["[api.log output capped at 5000 entries]"] }, null), []), "trace 'output capped' → no capped flag (removed)");
+ok(eq(deriveLogFlags({ valueTruncated: true }, null), []), "valueTruncated → no capped flag (removed)");
+ok(eq(deriveLogFlags({ updatedValue: "a very long ADF value that got display-clipped…" }, null), []), "display-clipped value → no flag");
 
 // --- empty / combined / bounds ---
 ok(eq(deriveLogFlags({}, null), []), "empty entry → no flags");
-ok(eq(deriveLogFlags({ simulated: true, transientError: true, valueTruncated: true }, null), ["simulated", "transientError", "capped"]), "all three combine in order");
+ok(eq(deriveLogFlags({ simulated: true, transientError: true }, null), ["simulated", "transientError"]), "both accurate flags combine in order");
 ok(deriveLogFlags(null, null).length === 0, "null entry → [] (fail-safe)");
 ok(deriveLogFlags({ simulated: true }, null).every((f) => FLAG_ENUM.includes(f)), "only enum flags emitted");
 

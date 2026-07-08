@@ -21,11 +21,15 @@
 export const LOG_SOURCES = ["runtime", "async", "test"];
 export const SOURCE_LABEL = { runtime: "LIVE", async: "QUEUED", test: "TEST" };
 
-// Bounded, fixed flag vocabulary. timedOut is intentionally absent from v1 (executors
-// swallow their own pfDeadline before dispatch, so it would be a dead flag without
-// per-executor tagging; transientError already covers validator fail-open timeouts).
-export const FLAG_ENUM = ["simulated", "transientError", "capped"];
-export const FLAG_LABEL = { simulated: "DRY-RUN", transientError: "FAIL-OPEN", capped: "CAPPED" };
+// Bounded, fixed flag vocabulary — ONLY flags that map to a truth the runtime
+// reliably computes. `timedOut` and `capped` are intentionally absent: executors
+// swallow their own pfDeadline before dispatch (timedOut would be dead), and every
+// available `capped` signal is either dead (valueTruncated has no producer), reads
+// the wrong object (stepResults), or false-fires on user-controlled api.log content
+// — a flag that lies is worse than none. `transientError` already covers fail-open
+// timeouts; `simulated` is authoritative from config.simulationMode.
+export const FLAG_ENUM = ["simulated", "transientError"];
+export const FLAG_LABEL = { simulated: "DRY-RUN", transientError: "FAIL-OPEN" };
 
 // Render-time source fallback: a pre-feature entry has no `source`, but an async one
 // self-identifies from its existing queueDelayMs; everything else is honestly runtime.
@@ -36,22 +40,14 @@ export const logSourceOf = (log) => {
 };
 
 // Derive the honesty flags from signals ALREADY on the entry + this run's config.
-// Pure + fail-safe. capped is derived ONLY from genuine runtime caps — the api.log
-// volume-cap sentinel in the trace, a step result too large to chain (__truncated),
-// or an executor's own valueTruncated boolean — NEVER the 500-char display clip on
-// updatedValue/attemptedValue (that "…" is cosmetic, not a real cap).
+// Pure + fail-safe. Only surfaces flags the runtime reliably computes (simulated,
+// transientError) — never a guessed/spoofable signal.
 export const deriveLogFlags = (entry, config) => {
   const flags = [];
   try {
     if (!entry || typeof entry !== "object") return [];
     if ((config && config.simulationMode === true) || entry.simulated === true) flags.push("simulated");
     if (entry.transientError === true) flags.push("transientError");
-    const trace = Array.isArray(entry.trace) ? entry.trace : [];
-    const steps = Array.isArray(entry.stepResults) ? entry.stepResults : [];
-    const capped = entry.valueTruncated === true
-      || trace.some((l) => typeof l === "string" && l.includes("output capped"))
-      || steps.some((s) => s && s.__truncated === true);
-    if (capped) flags.push("capped");
   } catch (e) { /* advisory — flags never break a log write */ }
   return flags.filter((f) => FLAG_ENUM.includes(f)).slice(0, 6);
 };

@@ -9880,10 +9880,15 @@ Respond with JSON only.`;
         modelUsed: model,
       };
     }
-    console.error("Error calling AI:", error);
+    // A thrown transport/network fault (provider unreachable, LM Studio tunnel down,
+    // DNS/TLS/ECONNRESET) is an internal/infra fault, NOT a content-validation
+    // failure — FAIL OPEN (mirrors the non-transient {ok:false} HTTP branch above)
+    // so a provider outage never blocks a Jira transition.
+    console.error("Error calling AI (failing open):", error);
     return {
-      isValid: false,
-      reason: `AI validation error: ${error.message}`,
+      isValid: true,
+      reason: `AI service error — transition allowed (fail-open): ${error.message}`,
+      transientError: true,
       modelUsed: model,
     };
   }
@@ -10474,7 +10479,10 @@ RESPONSE FORMAT:
         if (isTransientAIError(aiResult.status, aiResult.error)) {
           return { isValid: true, reason: `AI service temporarily unavailable (${aiResult.status}) — transition allowed (fail-open).`, transientError: true, toolMeta };
         }
-        return { isValid: false, reason: `AI service error: ${aiResult.status}`, toolMeta };
+        // Non-transient provider/config error (bad key = 401, malformed = 400) — an
+        // internal fault, not a content-validation failure. FAIL OPEN (mirrors the
+        // non-agentic path) so a misconfigured provider never blocks a transition.
+        return { isValid: true, reason: `AI service error (${aiResult.status}) — transition allowed (fail-open). Check the AI provider/key in CogniRunner settings.`, transientError: true, toolMeta };
       }
 
       const choice = aiResult.data.choices[0];
@@ -10574,8 +10582,11 @@ RESPONSE FORMAT:
         toolMeta,
       };
     } catch (error) {
-      console.error(`Error in agentic loop round ${round}:`, error);
-      return { isValid: false, reason: `AI validation error: ${error.message}`, toolMeta };
+      // Thrown transport/network fault in the agentic loop — infra fault, not a
+      // content-validation failure. FAIL OPEN so a provider outage never blocks a
+      // transition (mirrors the non-agentic path + the {ok:false} branch above).
+      console.error(`Error in agentic loop round ${round} (failing open):`, error);
+      return { isValid: true, reason: `AI service error — transition allowed (fail-open): ${error.message}`, transientError: true, toolMeta };
     }
   }
 

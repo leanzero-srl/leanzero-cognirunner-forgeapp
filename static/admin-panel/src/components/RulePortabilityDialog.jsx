@@ -5,13 +5,14 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { invoke } from "@forge/bridge";
+import CustomSelect from "./CustomSelect";
 
 // Same-site rule export / import. Export downloads a self-contained JSON (no egress,
-// no secrets). Import previews a dry-run plan (zero writes). The COMMIT step is gated
-// pending a live cross-workflow smoke — the button says so plainly rather than pretend.
-const STATUS_LABEL = { ready: "READY", "needs-rebind": "NEEDS REBIND", conflict: "CONFLICT", invalid: "INVALID" };
+// no secrets). Import previews a dry-run plan (zero writes), then commits one rule at a
+// time onto a chosen target transition via commitImport (re-validated server-side).
+const STATUS_LABEL = { ready: "READY", "needs-rebind": "NEEDS REBIND", conflict: "CONFLICT", invalid: "INVALID", committed: "IMPORTED", error: "ERROR" };
 
 export default function RulePortabilityDialog({ rules, onClose }) {
   const [mode, setMode] = useState("export");
@@ -21,6 +22,30 @@ export default function RulePortabilityDialog({ rules, onClose }) {
   const [notice, setNotice] = useState(null);
   const [importText, setImportText] = useState("");
   const [plan, setPlan] = useState(null);
+  const [parsedRules, setParsedRules] = useState([]);
+  // Target project → workflow → transition cascade for the commit step.
+  const [projects, setProjects] = useState([]);
+  const [tProject, setTProject] = useState("");
+  const [workflows, setWorkflows] = useState([]);
+  const [tWorkflow, setTWorkflow] = useState("");
+  const [transitions, setTransitions] = useState([]);
+  const [tTransition, setTTransition] = useState("");
+  const [rowState, setRowState] = useState({}); // idx -> { status, msg }
+
+  useEffect(() => {
+    invoke("listProjects").then((r) => { if (r && r.success) setProjects(r.projects || []); }).catch(() => {});
+  }, []);
+  const onPickProject = async (key) => {
+    setTProject(key); setTWorkflow(""); setWorkflows([]); setTransitions([]); setTTransition("");
+    const p = projects.find((x) => x.key === key);
+    const r = await invoke("getProjectWorkflows", { projectKey: key, projectId: p?.id }).catch(() => null);
+    if (r && r.success) setWorkflows(r.workflows || []);
+  };
+  const onPickWorkflow = async (name) => {
+    setTWorkflow(name); setTransitions([]); setTTransition("");
+    const r = await invoke("getWorkflowTransitions", { workflowName: name }).catch(() => null);
+    if (r && r.success) setTransitions(r.transitions || []);
+  };
 
   const list = Array.isArray(rules) ? rules : [];
   const toggle = (id) => setSelected((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
@@ -52,12 +77,33 @@ export default function RulePortabilityDialog({ rules, onClose }) {
   };
 
   const doPreview = async () => {
-    setBusy(true); setError(null); setNotice(null); setPlan(null);
+    setBusy(true); setError(null); setNotice(null); setPlan(null); setRowState({});
     try {
       const res = await invoke("previewImport", { json: importText });
       if (!res || !res.success) { setError((res && res.error) || "Preview failed"); setBusy(false); return; }
       setPlan(res.plan || []);
+      // Keep the parsed source rules aligned with the plan rows for the commit step.
+      let parsed = []; try { parsed = (JSON.parse(importText).rules) || []; } catch (e) { /* preview already validated */ }
+      setParsedRules(parsed);
     } catch (e) { setError(e.message); }
+    setBusy(false);
+  };
+
+  const commitRow = async (idx) => {
+    if (!tWorkflow || !tTransition) { setError("Pick a target workflow and transition first."); return; }
+    setRowState((s) => ({ ...s, [idx]: { status: "busy" } }));
+    try {
+      const res = await invoke("commitImport", { rule: parsedRules[idx], targetWorkflowName: tWorkflow, targetTransitionId: tTransition });
+      if (res && res.success) setRowState((s) => ({ ...s, [idx]: { status: "committed", msg: "Imported" } }));
+      else setRowState((s) => ({ ...s, [idx]: { status: res && res.status === "conflict" ? "conflict" : "error", msg: (res && res.error) || "Import failed" } }));
+    } catch (e) { setRowState((s) => ({ ...s, [idx]: { status: "error", msg: e.message } })); }
+  };
+
+  const commitAllReady = async () => {
+    setBusy(true); setError(null);
+    for (let i = 0; i < (plan || []).length; i++) {
+      if (plan[i].status === "ready" && rowState[i]?.status !== "committed") await commitRow(i);
+    }
     setBusy(false);
   };
 
@@ -112,16 +158,40 @@ export default function RulePortabilityDialog({ rules, onClose }) {
             {plan && (
               <div className="port-plan">
                 <div className="port-plan-head">Import plan ({plan.length} rule{plan.length !== 1 ? "s" : ""})</div>
-                {plan.map((row, i) => (
-                  <div className="port-plan-row" key={i}>
-                    <span className={`port-status port-status-${row.status}`}>{STATUS_LABEL[row.status] || row.status}</span>
-                    <span className="port-plan-name">{row.ruleName}</span>
-                    <span className="port-plan-type">{(row.type || "").replace("postfunction-", "PF: ")}</span>
-                    {row.notes && row.notes.length > 0 && <span className="port-plan-note">{row.notes.join(" · ")}</span>}
+                {/* Target: where the ready rules get created. */}
+                <div className="port-target">
+                  <span className="port-target-lbl">Import into</span>
+                  <div className="port-target-picks">
+                    <CustomSelect value={tProject} onChange={onPickProject} placeholder="Project…"
+                      options={projects.map((p) => ({ value: p.key, label: p.name || p.key }))} />
+                    <CustomSelect value={tWorkflow} onChange={onPickWorkflow} placeholder="Workflow…" disabled={!tProject}
+                      options={workflows.map((w) => ({ value: w.name, label: w.name }))} />
+                    <CustomSelect value={tTransition} onChange={setTTransition} placeholder="Transition…" disabled={!tWorkflow}
+                      options={transitions.map((t) => ({ value: String(t.id), label: t.name || t.toName || String(t.id) }))} />
                   </div>
-                ))}
+                </div>
+                {plan.map((row, i) => {
+                  const rs = rowState[i];
+                  const shown = rs && rs.status !== "busy" ? rs.status : row.status;
+                  return (
+                    <div className="port-plan-row" key={i}>
+                      <span className={`port-status port-status-${shown}`}>{STATUS_LABEL[shown] || shown}</span>
+                      <span className="port-plan-name">{row.ruleName}</span>
+                      <span className="port-plan-type">{(row.type || "").replace("postfunction-", "PF: ")}</span>
+                      {row.status === "ready" && (!rs || rs.status === "error" || rs.status === "conflict") && (
+                        <button className={`btn-small${rs && rs.status === "busy" ? " is-busy" : ""}`} onClick={() => commitRow(i)} disabled={!tTransition || (rs && rs.status === "busy")}>Import</button>
+                      )}
+                      {(rs?.msg || (row.notes && row.notes.length > 0)) && <span className="port-plan-note">{rs?.msg || row.notes.join(" · ")}</span>}
+                    </div>
+                  );
+                })}
+                <div className="port-actions">
+                  <button className={`btn-edit${busy ? " is-busy" : ""}`} onClick={commitAllReady} disabled={busy || !tTransition || !plan.some((r) => r.status === "ready")}>
+                    Import all ready
+                  </button>
+                </div>
                 <div className="port-commit-note">
-                  Creating the imported rules on a target transition is the next step — it's gated on a short live verification with the maintainer, so the one-click commit isn't enabled here yet.
+                  Each rule is re-validated server-side and created with a fresh id. A transition already holding a rule of the same type is reported as a conflict, never overwritten.
                 </div>
               </div>
             )}

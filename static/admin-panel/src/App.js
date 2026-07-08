@@ -393,9 +393,14 @@ const injectStyles = () => {
     html[data-color-mode="dark"] .port-plan-note { color: #f59e0b; }
     .port-status { display: inline-flex; padding: 2px 8px; border-radius: var(--r-sm, 6px); font-size: 9px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; color: #fff; white-space: nowrap; }
     .port-status-ready { background: #16a34a; }
+    .port-status-committed { background: #16a34a; }
     .port-status-needs-rebind { background: #d97706; }
     .port-status-conflict { background: #4f46e5; }
     .port-status-invalid { background: #dc2626; }
+    .port-status-error { background: #dc2626; }
+    .port-target { margin: 4px 0 14px; }
+    .port-target-lbl { display: block; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-secondary); margin-bottom: 6px; }
+    .port-target-picks { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
     .port-commit-note { margin-top: 14px; padding: 10px 12px; background: var(--code-bg); border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); font-size: 12px; color: var(--text-secondary); line-height: 1.5; }
 
     .row-disabled td {

@@ -965,7 +965,7 @@ const storeLog = async (logEntry) => {
  * Read the most recent log entries (newest first). Merges the legacy single-key
  * array (pre-migration entries) with the per-entry keys, capped at MAX_LOGS.
  */
-const readLogs = async (ruleId = null) => {
+export const readLogs = async (ruleId = null) => {
   // Fetch a full page (max 100) and sort client-side — query result order is
   // undocumented. Keys are fixed-width inverted timestamps, so ascending
   // lexicographic order = newest first. When ruleId is given (per-rule

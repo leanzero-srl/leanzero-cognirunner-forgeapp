@@ -56,6 +56,8 @@ export async function testStateTrigger(req) {
     if (what === "registry") return json(200, { registry: (await storage.get("config_registry")) || [] });
     if (what === "provider") return json(200, { provider: (await storage.get("COGNIRUNNER_AI_PROVIDER")) || "atlassian" });
     if (what === "logs") return json(200, { logs: (await storage.get("validation_logs")) || [] });
+    // Real execution logs live under per-entry log_entry:* keys (NOT validation_logs).
+    if (what === "execlogs") { const { readLogs } = await import("./index.js"); return json(200, { logs: await readLogs(q(req, "ruleId") || null) }); }
     if (what === "kvs") {
       const key = q(req, "key");
       if (!key) return json(400, { error: "key required" });

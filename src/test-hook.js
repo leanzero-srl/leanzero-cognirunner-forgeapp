@@ -32,6 +32,25 @@ export async function testStateTrigger(req) {
   const provided = typeof auth === "string" ? auth.replace(/^Bearer\s+/i, "").trim() : "";
   if (!provided || provided !== secret) return notFound();
 
+  // Dev-gated POST action for the it12 import-commit smoke. Runs the SAME
+  // commitImportCore the resolver uses (dynamic import avoids the index<->test-hook
+  // top-level cycle; resolves the already-loaded module at call time). accountId:null
+  // is safe — the HARNESS_SECRET Bearer gate above is the authorization.
+  if (String((req && req.method) || "GET").toUpperCase() === "POST") {
+    let body = {};
+    try { body = JSON.parse((req && req.body) || "{}"); } catch (e) { return json(400, { error: "invalid JSON body" }); }
+    if (body.action === "commit") {
+      try {
+        const { commitImportCore } = await import("./index.js");
+        const r = await commitImportCore({ rule: body.rule, targetWorkflowName: body.targetWorkflowName, targetTransitionId: body.targetTransitionId, bindings: body.bindings || {}, accountId: null });
+        return json(200, r);
+      } catch (e) {
+        return json(500, { error: String((e && e.message) || e) });
+      }
+    }
+    return json(400, { error: `unknown POST action=${body.action}` });
+  }
+
   const what = q(req, "what") || "registry";
   try {
     if (what === "registry") return json(200, { registry: (await storage.get("config_registry")) || [] });

@@ -2430,15 +2430,15 @@ resolver.define("getWorkflowTransitions", async ({ payload, context }) => {
 const RULE_KEY_MAP = {
   validator: { ruleKey: "forge:expression-validator", moduleKey: "ai-text-field-validator" },
   condition: { ruleKey: "forge:expression-condition", moduleKey: "ai-text-field-condition" },
-  "postfunction-semantic": { ruleKey: "forge:expression-post-function", moduleKey: "ai-semantic-post-function" },
+  "postfunction-semantic": { ruleKey: "forge:workflow-post-function", moduleKey: "ai-semantic-post-function" },
   // generate-doc + research (+ research-doc) reuse the semantic PF module; config.type drives dispatch.
-  "postfunction-generate-doc": { ruleKey: "forge:expression-post-function", moduleKey: "ai-semantic-post-function" },
-  "postfunction-research": { ruleKey: "forge:expression-post-function", moduleKey: "ai-semantic-post-function" },
-  "postfunction-research-doc": { ruleKey: "forge:expression-post-function", moduleKey: "ai-semantic-post-function" },
-  "postfunction-comment": { ruleKey: "forge:expression-post-function", moduleKey: "ai-semantic-post-function" },
-  "postfunction-subtask": { ruleKey: "forge:expression-post-function", moduleKey: "ai-semantic-post-function" },
-  "postfunction-link": { ruleKey: "forge:expression-post-function", moduleKey: "ai-semantic-post-function" },
-  "postfunction-static": { ruleKey: "forge:expression-post-function", moduleKey: "ai-static-post-function" },
+  "postfunction-generate-doc": { ruleKey: "forge:workflow-post-function", moduleKey: "ai-semantic-post-function" },
+  "postfunction-research": { ruleKey: "forge:workflow-post-function", moduleKey: "ai-semantic-post-function" },
+  "postfunction-research-doc": { ruleKey: "forge:workflow-post-function", moduleKey: "ai-semantic-post-function" },
+  "postfunction-comment": { ruleKey: "forge:workflow-post-function", moduleKey: "ai-semantic-post-function" },
+  "postfunction-subtask": { ruleKey: "forge:workflow-post-function", moduleKey: "ai-semantic-post-function" },
+  "postfunction-link": { ruleKey: "forge:workflow-post-function", moduleKey: "ai-semantic-post-function" },
+  "postfunction-static": { ruleKey: "forge:workflow-post-function", moduleKey: "ai-static-post-function" },
 };
 
 /**
@@ -2481,11 +2481,12 @@ const discoverEnvironmentId = async () => {
  * Inject a CogniRunner rule into a workflow transition via REST API.
  * This performs a full workflow update (GET + modify + POST).
  */
-resolver.define("injectWorkflowRule", async ({ payload, context }) => {
-  if (!(await requireRole(context.accountId, "editor"))) {
-    return { success: false, error: "Editor access required" };
-  }
-  const { workflowName, transitionId, ruleType, config } = payload;
+// Core registration logic — extracted from the injectWorkflowRule resolver so both
+// the resolver (AddRuleWizard) AND commitImport (rule import) call ONE implementation.
+// Context-free (the editor gate lives in the resolver). Does GET workflows/search →
+// mutate the transition slot → POST workflows/update. Returns {success, ruleId} or
+// {success:false, error, conflict?}.
+const injectWorkflowRuleCore = async ({ workflowName, transitionId, ruleType, config }) => {
   if (!workflowName || !transitionId || !ruleType) {
     return { success: false, error: "Missing required fields: workflowName, transitionId, ruleType" };
   }
@@ -2556,7 +2557,7 @@ resolver.define("injectWorkflowRule", async ({ payload, context }) => {
       r.parameters?.key?.includes(APP_ID) && r.parameters?.key?.includes(ruleInfo.moduleKey)
     );
     if (alreadyHas) {
-      return { success: false, error: `This transition already has a CogniRunner ${ruleType} rule. Edit the existing one instead.` };
+      return { success: false, conflict: true, error: `This transition already has a CogniRunner ${ruleType} rule. Edit the existing one instead.` };
     }
 
     // Build the extension ARI
@@ -2572,6 +2573,8 @@ resolver.define("injectWorkflowRule", async ({ payload, context }) => {
         id: ruleId,
         disabled: "false",
       },
+      // Top-level id too — matches the live-confirmed rule shape (harness buildRule).
+      id: ruleId,
     };
     if (ruleType === "validator") {
       if (!Array.isArray(targetTransition.validators)) targetTransition.validators = [];
@@ -2595,9 +2598,15 @@ resolver.define("injectWorkflowRule", async ({ payload, context }) => {
     }
 
     // Step 4: Build the update payload
-    // We must send the FULL workflow definition including ALL statuses and transitions
+    // We must send the FULL workflow definition including ALL statuses and transitions.
+    // The workflow's OWN statuses array is reference-only in the search response (no
+    // name/category); the FULL status objects live at the top-level getData.statuses.
+    // Use those so the update's required statuses[].name is never missing.
+    const statusDetails = (Array.isArray(getData.statuses) && getData.statuses.length)
+      ? getData.statuses
+      : (workflow.statuses || []);
     const updatePayload = {
-      statuses: (workflow.statuses || []).map((s) => ({
+      statuses: statusDetails.map((s) => ({
         id: s.id,
         name: s.name,
         statusCategory: s.statusCategory,
@@ -2609,7 +2618,7 @@ resolver.define("injectWorkflowRule", async ({ payload, context }) => {
           id: workflow.version.id,
           versionNumber: workflow.version.versionNumber,
         },
-        statuses: (workflow.statuses || []).map((s) => ({
+        statuses: statusDetails.map((s) => ({
           statusReference: s.statusReference,
         })),
         transitions: workflow.transitions,
@@ -2645,6 +2654,15 @@ resolver.define("injectWorkflowRule", async ({ payload, context }) => {
     console.error("injectWorkflowRule error:", error);
     return { success: false, error: error.message };
   }
+};
+
+// Thin resolver — editor gate then delegate to the shared core. Behavior unchanged
+// for AddRuleWizard (the only caller).
+resolver.define("injectWorkflowRule", async ({ payload, context }) => {
+  if (!(await requireRole(context.accountId, "editor"))) {
+    return { success: false, error: "Editor access required" };
+  }
+  return injectWorkflowRuleCore(payload);
 });
 
 // === Admin & Permission Resolvers ===
@@ -4926,6 +4944,87 @@ resolver.define("previewImport", async ({ payload, context }) => {
   } catch (error) {
     return { success: false, error: error.message };
   }
+});
+
+// Import COMMIT — register ONE re-validated rule onto a target transition. Reuses the
+// proven injectWorkflowRuleCore. Re-validates + re-resolves server-side (never trusts the
+// client), mints a fresh instanced id, injects FIRST, then writes the registry row only on
+// inject success. One rule per invoke (client loops) to stay under the 25s cap. Exported
+// so the dev-gated harness webtrigger can drive an autonomous smoke through the same code.
+const IMPORT_META_KEYS = new Set(["docNames", "functions", "workflowName", "transitionFromName", "transitionToName", "fieldName", "fieldType", "actionFieldName", "actionFieldType"]);
+export const commitImportCore = async ({ rule, targetWorkflowName, targetTransitionId, bindings, accountId }) => {
+  try {
+    if (!rule || typeof rule !== "object") return { success: false, status: "error", error: "No rule provided" };
+    if (!targetWorkflowName || !targetTransitionId) return { success: false, status: "error", error: "Target workflow and transition are required" };
+    // 1. RE-VALIDATE server-side through the untrusted-safe pure module — never trust the client rule.
+    const v = validateImportSchema({ kind: "cognirunner-rules-export", schemaVersion: 1, rules: [rule] });
+    if (!v.ok) return { success: false, status: "invalid", error: v.error };
+    const clean = v.rules[0];
+    const ruleType = clean.type;
+    if (!RULE_KEY_MAP[ruleType]) return { success: false, status: "invalid", error: `Unsupported rule type: ${ruleType}` };
+    // 2. RE-RESOLVE bindings against FRESH target-site maps; accept client picks but validate they exist.
+    const fieldMap = await buildFieldMap();
+    const fields = Object.entries(fieldMap).map(([id, m]) => ({ id, name: m.name, type: m.type }));
+    const docNamesToId = {};
+    try { const idx = (await storage.get(DOC_REPO_INDEX_KEY)) || []; for (const d of idx) { docNamesToId[d.title] = d.id; docNamesToId[String(d.title).toLowerCase()] = d.id; } } catch (e) { /* best-effort */ }
+    const plan = resolveBindings(clean, { fields, docNamesToId });
+    const b = bindings && typeof bindings === "object" ? bindings : {};
+    const fieldId = plan.fieldId || (b.fieldId && fieldMap[b.fieldId] ? b.fieldId : null);
+    const actionFieldId = plan.actionFieldId || (b.actionFieldId && fieldMap[b.actionFieldId] ? b.actionFieldId : null);
+    if ((clean.fieldName || clean.fieldId) && !fieldId) return { success: false, status: "needs-rebind", error: "Pick a valid target field before importing.", unresolved: plan.unresolved || ["field"], notes: plan.notes || [] };
+    if ((clean.actionFieldName || clean.actionFieldId) && !actionFieldId) return { success: false, status: "needs-rebind", error: "Pick a valid target (action) field before importing.", unresolved: ["target field"], notes: plan.notes || [] };
+    // 3. Mint a FRESH instanced id (matches INSTANCED_ID_RE ::i-[a-z0-9]{6}$; brand-new so it claims no existing row).
+    const freshId = `${ruleType}::${targetWorkflowName}::${targetTransitionId}::i-${Math.random().toString(36).slice(2, 8).padEnd(6, "0")}`;
+    // 4. Build the runtime config from ONLY the re-validated rule + the resolved ids.
+    const cfg = {};
+    for (const k of Object.keys(clean)) { if (IMPORT_META_KEYS.has(k)) continue; cfg[k] = clean[k]; }
+    cfg.type = ruleType;
+    cfg.id = freshId;
+    cfg.workflow = { workflowName: targetWorkflowName, transitionId: String(targetTransitionId) };
+    if (fieldId) cfg.fieldId = fieldId; else delete cfg.fieldId;
+    if (actionFieldId) cfg.actionFieldId = actionFieldId; else delete cfg.actionFieldId;
+    if (Array.isArray(plan.selectedDocIds) && plan.selectedDocIds.length) cfg.selectedDocIds = plan.selectedDocIds; else delete cfg.selectedDocIds;
+    // 5. Static-PF code: carry inline, offload if the slim config would exceed the cap.
+    let functions = Array.isArray(clean.functions) ? clean.functions.map((f) => ({ name: f.name, operationType: f.operationType, variableName: f.variableName, code: f.code, description: f.description })) : [];
+    if (functions.length) {
+      if (ruleType === "postfunction-static" && Buffer.byteLength(JSON.stringify({ ...cfg, functions }), "utf8") > PF_FUNCTIONS_OFFLOAD_BYTES) {
+        const codeRef = pfCodeKeyFor(freshId, functions);
+        await storage.set(codeRef, { v: 1, ruleId: freshId, functions, updatedAt: new Date().toISOString() });
+        cfg.functions = []; cfg.codeRef = codeRef;
+        cfg.functionsMeta = functions.map((f) => ({ id: f.name, name: f.name, operationType: f.operationType, variableName: f.variableName }));
+      } else {
+        cfg.functions = functions;
+      }
+    }
+    // 6. INJECT via the proven core.
+    const injected = await injectWorkflowRuleCore({ workflowName: targetWorkflowName, transitionId: String(targetTransitionId), ruleType, config: cfg });
+    if (!injected.success) {
+      if (injected.conflict) return { success: false, status: "conflict", error: injected.error };
+      return { success: false, status: "error", error: injected.error };
+    }
+    // 7. Register the row ONLY after inject success. A failed write here leaves the rule
+    //    LIVE but unregistered — surfaced (not swallowed); discoverWorkflowRules reconciles it.
+    try {
+      const configs = (await storage.get(CONFIG_REGISTRY_KEY)) || [];
+      const now = new Date().toISOString();
+      const isPf = ruleType.startsWith("postfunction");
+      const row = isPf
+        ? { ...cfg, instanced: true, disabled: false, createdBy: accountId || null, createdAt: now, updatedAt: now }
+        : { id: freshId, type: ruleType, fieldId: cfg.fieldId, prompt: typeof cfg.prompt === "string" ? cfg.prompt.slice(0, 200) : "", workflow: cfg.workflow, ruleKind: cfg.ruleKind, premadeRuleType: cfg.premadeRuleType, instanced: true, disabled: false, createdBy: accountId || null, createdAt: now, updatedAt: now };
+      configs.push(row);
+      await saveRegistry(configs);
+    } catch (e) {
+      return { success: false, status: "error", error: "Rule was created on the workflow but the registry write failed — run Scan workflows to reconcile it.", ruleId: injected.ruleId };
+    }
+    return { success: true, status: "committed", ruleId: freshId };
+  } catch (error) {
+    return { success: false, status: "error", error: error.message };
+  }
+};
+
+resolver.define("commitImport", async ({ payload, context }) => {
+  if (!(await requireRole(context.accountId, "editor"))) return { success: false, error: "Editor access required" };
+  return commitImportCore({ ...payload, accountId: context.accountId });
 });
 
 // === Shared Documentation Repository ===

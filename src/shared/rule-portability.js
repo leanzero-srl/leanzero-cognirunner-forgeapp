@@ -43,7 +43,7 @@ export const RULE_EMIT_KEYS = [
   // identity / kind
   "type", "ruleKind", "ruleType", "premadeRuleType",
   // field bindings (id is a same-site hint; name+type drive match-by-value)
-  "fieldId", "fieldName", "fieldType", "actionFieldId", "actionFieldName",
+  "fieldId", "fieldName", "fieldType", "actionFieldId", "actionFieldName", "actionFieldType",
   // prompts
   "prompt", "conditionPrompt", "actionPrompt", "contentPrompt", "docTitlePrompt",
   "commentPrompt", "subtaskPrompt", "linkPrompt",
@@ -86,6 +86,7 @@ export const serializeRule = (input) => {
   if (fm.fieldName) out.fieldName = clampStr(fm.fieldName, EXPORT_CAPS.maxStringChars);
   if (fm.fieldType) out.fieldType = clampStr(fm.fieldType, EXPORT_CAPS.maxStringChars);
   if (fm.actionFieldName) out.actionFieldName = clampStr(fm.actionFieldName, EXPORT_CAPS.maxStringChars);
+  if (fm.actionFieldType) out.actionFieldType = clampStr(fm.actionFieldType, EXPORT_CAPS.maxStringChars);
   // Knowledge as NAMES (instance-local ids don't travel).
   if (Array.isArray(input && input.docNames)) out.docNames = input.docNames.slice(0, EXPORT_CAPS.maxArrayItems).map((s) => clampStr(String(s), 300));
   // Static-PF steps: inlined, offload-free.
@@ -216,7 +217,10 @@ export const resolveBindings = (rule, maps) => {
   if (f.status === "ready") { if (f.fieldId) plan.fieldId = f.fieldId; } else { unresolved.push("field"); notes.push(f.reason); }
   // action field (semantic PF target)
   if (rule.actionFieldId || rule.actionFieldName) {
-    const af = resolveField(rule, "actionFieldId", "actionFieldName", "fieldType", m.fields);
+    // Use the ACTION field's own type (not the source field's) — matching the target
+    // by the source type wrongly rejects a present typed field (e.g. read text → write
+    // user-picker). Old exports lack actionFieldType → falls back to name-only match.
+    const af = resolveField(rule, "actionFieldId", "actionFieldName", "actionFieldType", m.fields);
     if (af.status === "ready") { if (af.fieldId) plan.actionFieldId = af.fieldId; } else { unresolved.push("target field"); notes.push(af.reason); }
   }
   // docs by name (dangling names are dropped with a note, never fail the rule)

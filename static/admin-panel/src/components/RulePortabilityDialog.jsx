@@ -18,6 +18,7 @@ export default function RulePortabilityDialog({ rules, onClose }) {
   const [selected, setSelected] = useState(() => new Set());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
+  const [notice, setNotice] = useState(null);
   const [importText, setImportText] = useState("");
   const [plan, setPlan] = useState(null);
 
@@ -26,7 +27,7 @@ export default function RulePortabilityDialog({ rules, onClose }) {
   const allSelected = list.length > 0 && selected.size === list.length;
 
   const doExport = async () => {
-    setBusy(true); setError(null);
+    setBusy(true); setError(null); setNotice(null);
     try {
       const ids = [...selected];
       const res = await invoke("exportRules", { ids });
@@ -37,7 +38,7 @@ export default function RulePortabilityDialog({ rules, onClose }) {
       a.href = url; a.download = `cognirunner-rules-${res.envelope.ruleCount}.json`;
       document.body.appendChild(a); a.click(); document.body.removeChild(a);
       URL.revokeObjectURL(url);
-      if (res.skipped && res.skipped.length) setError(`Exported ${res.envelope.ruleCount}. Skipped ${res.skipped.length}: ${res.skipped.map((s) => s.reason).join(", ")}`);
+      if (res.skipped && res.skipped.length) setNotice(`Exported ${res.envelope.ruleCount} rule${res.envelope.ruleCount !== 1 ? "s" : ""}. Skipped ${res.skipped.length}: ${res.skipped.map((s) => s.reason).join(", ")}`);
     } catch (e) { setError(e.message); }
     setBusy(false);
   };
@@ -51,7 +52,7 @@ export default function RulePortabilityDialog({ rules, onClose }) {
   };
 
   const doPreview = async () => {
-    setBusy(true); setError(null); setPlan(null);
+    setBusy(true); setError(null); setNotice(null); setPlan(null);
     try {
       const res = await invoke("previewImport", { json: importText });
       if (!res || !res.success) { setError((res && res.error) || "Preview failed"); setBusy(false); return; }
@@ -73,6 +74,7 @@ export default function RulePortabilityDialog({ rules, onClose }) {
         </div>
 
         {error && <div className="alert alert-error anim-rise" style={{ marginBottom: "12px" }}><span>{error}</span></div>}
+        {notice && <div className="alert alert-warning anim-rise" style={{ marginBottom: "12px" }}><span>{notice}</span></div>}
 
         {mode === "export" && (
           <div className="port-body">

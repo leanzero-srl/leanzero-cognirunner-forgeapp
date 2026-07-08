@@ -91,6 +91,10 @@ const readyPlan = resolveBindings({ type: "postfunction-semantic", fieldName: "S
 ok(readyPlan.status === "ready" && readyPlan.fieldId === "customfield_10042", "exact name+type match → ready + resolved id");
 const missPlan = resolveBindings({ type: "validator", fieldName: "Nonexistent Field" }, { fields });
 ok(missPlan.status === "needs-rebind", "unknown field → needs-rebind, never guessed");
+// Action field matches by its OWN type, not the source field's (read text → write user-picker).
+const typedFields = [{ id: "cf_sum", name: "Summary", type: "string" }, { id: "cf_rev", name: "Reviewer", type: "user" }];
+const actionPlan = resolveBindings({ type: "postfunction-semantic", fieldName: "Summary", fieldType: "string", actionFieldName: "Reviewer", actionFieldType: "user" }, { fields: typedFields });
+ok(actionPlan.status === "ready" && actionPlan.actionFieldId === "cf_rev", "action field matched by its own type (user), not the source type (string)");
 const dupFields = [{ id: "cf_1", name: "Owner", type: "string" }, { id: "cf_2", name: "Owner", type: "string" }];
 const ambigPlan = resolveBindings({ type: "validator", fieldName: "Owner" }, { fields: dupFields });
 ok(ambigPlan.status === "needs-rebind", "ambiguous (2 same-name) → needs-rebind, never guessed");

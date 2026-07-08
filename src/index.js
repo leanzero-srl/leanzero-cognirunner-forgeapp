@@ -4827,7 +4827,21 @@ const readAuthoritativeConfig = async (row, wfCache) => {
       for (const r of ours) {
         try { const c = JSON.parse(r.parameters?.config || "{}"); if (String(c.id) === String(row.id) || String(c.ruleId) === String(row.id)) return c; } catch (e) { /* skip */ }
       }
-      if (ours.length === 1) { try { return JSON.parse(ours[0].parameters?.config || "{}"); } catch (e) { /* skip */ } }
+      // Sole-candidate fallback ONLY for genuinely legacy configs (no embedded id) or a
+      // legacy workflow::transition id — NEVER blindly return the only rule on the
+      // transition, else a STALE registry row (rule deleted + a different one added in
+      // the workflow editor) would export the WRONG rule's content. For PFs also require
+      // the flavor (static/semantic) to match so a static row can't grab a semantic rule.
+      if (ours.length === 1) {
+        try {
+          const c = JSON.parse(ours[0].parameters?.config || "{}");
+          const labeled = c.id || c.ruleId;
+          const legacyId = `${wfName}::${transitionId}`;
+          const idOk = !labeled || String(c.id) === legacyId || String(c.ruleId) === legacyId;
+          const flavorOk = !isPf || String(c.type || row.type) === String(row.type);
+          if (idOk && flavorOk) return c;
+        } catch (e) { /* skip */ }
+      }
     }
   }
   // Fallback: PF registry rows carry the full config inline.
@@ -4872,7 +4886,7 @@ resolver.define("exportRules", async ({ payload, context }) => {
       // Resolve names for match-by-value.
       const fieldMeta = {};
       if (cfg.fieldId && fieldMap[cfg.fieldId]) { fieldMeta.fieldName = fieldMap[cfg.fieldId].name; fieldMeta.fieldType = fieldMap[cfg.fieldId].type; }
-      if (cfg.actionFieldId && fieldMap[cfg.actionFieldId]) fieldMeta.actionFieldName = fieldMap[cfg.actionFieldId].name;
+      if (cfg.actionFieldId && fieldMap[cfg.actionFieldId]) { fieldMeta.actionFieldName = fieldMap[cfg.actionFieldId].name; fieldMeta.actionFieldType = fieldMap[cfg.actionFieldId].type; }
       const docNames = (Array.isArray(cfg.selectedDocIds) ? cfg.selectedDocIds : []).map((d) => docMap[d]).filter(Boolean);
       const fnsWithNames = functions.map((f) => ({ ...f, docNames: (Array.isArray(f.selectedDocIds) ? f.selectedDocIds : []).map((d) => docMap[d]).filter(Boolean) }));
       rules.push(serializeRule({

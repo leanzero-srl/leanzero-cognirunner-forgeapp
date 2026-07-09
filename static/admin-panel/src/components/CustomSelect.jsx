@@ -8,6 +8,10 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import { createPortal } from "react-dom";
 
+// Stable per-instance id base for the listbox/option ids that aria-controls +
+// aria-activedescendant reference (module counter — unique enough within a page).
+let _csSeq = 0;
+
 /**
  * Custom dropdown select matching the LeanZero design system.
  *
@@ -31,6 +35,7 @@ export default function CustomSelect({
   searchPlaceholder = "Search...",
   error,
   disabled,
+  ariaLabel,
 }) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
@@ -41,6 +46,10 @@ export default function CustomSelect({
   const panelRef = useRef(null);
   const searchRef = useRef(null);
   const listRef = useRef(null);
+  const idRef = useRef(null);
+  if (idRef.current === null) idRef.current = `cs${++_csSeq}`;
+  const listboxId = `${idRef.current}-lb`;
+  const optionId = (idx) => `${idRef.current}-o${idx}`;
 
   // Normalize options to { value, label, meta, group }
   const normalized = options.map((o) =>
@@ -62,6 +71,9 @@ export default function CustomSelect({
 
   // Find selected option's label
   const selectedOpt = normalized.find((o) => o.value === value);
+
+  // The active-descendant option id (for the SR to announce the highlighted option).
+  const activeId = open && highlighted >= 0 && highlighted < filtered.length ? optionId(highlighted) : undefined;
 
   // Measure the trigger, decide direction, and compute fixed coords for the portal panel.
   const measure = useCallback(() => {
@@ -133,6 +145,12 @@ export default function CustomSelect({
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
       setHighlighted((p) => Math.max(p - 1, 0));
+    } else if (e.key === "Home") {
+      e.preventDefault();
+      setHighlighted(0);
+    } else if (e.key === "End") {
+      e.preventDefault();
+      setHighlighted(filtered.length - 1);
     } else if (e.key === "Enter") {
       e.preventDefault();
       if (highlighted >= 0 && highlighted < filtered.length) {
@@ -152,6 +170,9 @@ export default function CustomSelect({
   const renderItem = (opt, idx) => (
     <div
       key={opt.value}
+      id={optionId(idx)}
+      role="option"
+      aria-selected={opt.value === value}
       data-idx={idx}
       className={`dropdown-item${opt.value === value ? " dropdown-selected" : ""}${idx === highlighted ? " dropdown-highlighted" : ""}`}
       onClick={() => selectOption(opt)}
@@ -203,13 +224,19 @@ export default function CustomSelect({
           <input
             ref={searchRef}
             type="text"
+            role="combobox"
+            aria-expanded={open}
+            aria-controls={listboxId}
+            aria-activedescendant={activeId}
+            aria-autocomplete="list"
+            aria-label={ariaLabel || searchPlaceholder}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder={searchPlaceholder}
           />
         </div>
       )}
-      <div className="dropdown-list" ref={listRef}>
+      <div className="dropdown-list" ref={listRef} id={listboxId} role="listbox" aria-label={ariaLabel || placeholder}>
         {filtered.length === 0 ? (
           <div className="dropdown-empty">No results found</div>
         ) : (
@@ -224,6 +251,12 @@ export default function CustomSelect({
       <button
         type="button"
         className={`dropdown-trigger${open ? " dropdown-open" : ""}${error ? " dropdown-error" : ""}${disabled ? " dropdown-disabled" : ""}`}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls={open ? listboxId : undefined}
+        // With no search box, focus stays on the trigger, so it carries activedescendant.
+        aria-activedescendant={!showSearch ? activeId : undefined}
+        aria-label={ariaLabel || undefined}
         onClick={() => { if (!disabled) { setOpen((o) => !o); setSearch(""); } }}
         disabled={disabled}
       >

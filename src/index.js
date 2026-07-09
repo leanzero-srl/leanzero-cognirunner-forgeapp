@@ -13034,9 +13034,19 @@ const executeStaticPostFunction = async (issueKey, config, deadline = Date.now()
           json: async () => ({ errorMessages: ["Job cancelled — write skipped."] }),
         };
       }
+      // Retry safety by idempotency. A non-idempotent write (POST) must NOT be retried on
+      // 502/503/504: those can be returned AFTER Jira already committed the write, so a retry
+      // would DUPLICATE it (a second comment / worklog / issue / link / notification). 429 is
+      // always safe — the request was throttled, i.e. rejected BEFORE processing, so nothing
+      // was committed. GET/PUT/DELETE retry on any transient status as before — treated as
+      // idempotent, with one known exception tracked in CORRECTNESS-BACKLOG D2: editIssue's PUT
+      // with an `update:{comment|worklog:[{add}]}` op appends (the common add-* helpers use POST
+      // and ARE covered here). Verb-level is the right coverage/complexity trade-off for now.
+      const isRetriable = (status) =>
+        httpMethod === "POST" ? status === 429 : TRANSIENT_REST.includes(status);
       let res = await appJiraClient.requestJira(routeArg, opts);
       let attempt = 0;
-      while (!res.ok && TRANSIENT_REST.includes(res.status) && attempt < 3) {
+      while (!res.ok && isRetriable(res.status) && attempt < 3) {
         const retryAfterSec = Number(res.headers?.get?.("retry-after")) || (attempt + 1);
         const waitMs = Math.max(300, Math.min(retryAfterSec * 1000, 3000));
         // Only retry if ≥3.5s of step budget will remain AFTER the wait to issue

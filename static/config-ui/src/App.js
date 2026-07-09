@@ -3424,15 +3424,18 @@ function App() {
     return <ConfigSkeleton />;
   }
 
-  // First-run guardrail: an admin who hasn't set up an AI provider key can still create an
-  // AI rule that then silently no-ops at runtime — validate() fails OPEN (returns allow) when
-  // the AI call can't run — so the transition is never actually checked. Warn at the point of
-  // need. Never fires for Forge LLM (hasKey:true / noKeyNeeded).
-  const providerWarning = (
+  // First-run guardrail: an admin who hasn't set up an AI provider key can still create an AI
+  // rule that then silently no-ops at runtime (the AI call can't run). Warn at the point of need.
+  // Never fires for Forge LLM (hasKey:true / noKeyNeeded). The consequence differs per surface —
+  // a validator/condition fails OPEN (allows the transition), a semantic post-function just
+  // produces no output — so the copy is accurate per surface, not reused verbatim.
+  const providerWarningWith = (consequence) => (
     <div className="provider-warning" role="alert">
-      No AI provider key is set up yet. Add one in the CogniRunner admin (Apps → CogniRunner → Settings) — until then this AI rule can't run: it fails open, allowing the transition without checking.
+      No AI provider key is set up yet. Add one in the CogniRunner admin (Apps → CogniRunner → Settings) — {consequence}
     </div>
   );
+  const providerWarning = providerWarningWith("until then this AI rule can't run: it fails open, allowing the transition without checking.");
+  const providerWarningPf = providerWarningWith("until then this AI post-function can't run and will make no changes.");
 
   return (
     <div className="container">
@@ -3597,6 +3600,7 @@ function App() {
       {isPostFunction && managedType && (
         <div className="card">
           <div style={{ padding: "16px" }}>
+            {!providerReady && providerWarningPf}
             <h3 style={{ margin: "0 0 6px", fontSize: "14px", fontWeight: 600 }}>
               {managedType === "postfunction-generate-doc" ? "Generate Document"
                 : managedType === "postfunction-research" ? "Research & Save"
@@ -3612,6 +3616,7 @@ function App() {
 
       {isPostFunction && postFunctionType === "semantic" && !managedType && (
         <div className="card">
+          {!providerReady && providerWarningPf}
           {isByok && (
             <div className="byok-cost-notice">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">

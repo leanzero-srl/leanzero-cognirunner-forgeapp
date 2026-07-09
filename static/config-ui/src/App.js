@@ -2092,6 +2092,20 @@ const injectStyles = () => {
       font-weight: 600;
     }
 
+    /* First-run no-provider-key warning (solid amber, white text — no faded tint / no rail). */
+    .provider-warning {
+      display: flex;
+      gap: 8px;
+      padding: 10px 14px;
+      margin: 0 0 14px;
+      border-radius: 8px;
+      background: #d97706;
+      color: #ffffff;
+      font-size: 12.5px;
+      font-weight: 600;
+      line-height: 1.45;
+    }
+
     /* Skeleton loading — hardcoded colors to avoid CSS variable timing issues */
     .sk {
       background: linear-gradient(90deg, #cbd5e1 25%, #f1f5f9 50%, #cbd5e1 75%);
@@ -2817,6 +2831,9 @@ function App() {
   // BYOK state — used to show cost notice when user's own key is active
   const [isByok, setIsByok] = useState(false);
   const [providerLabel, setProviderLabel] = useState("AI");
+  // hasKey !== false ⇒ ready. Defaults true so no warning flashes before the fetch resolves;
+  // Forge LLM reports hasKey:true (noKeyNeeded) so a keyless-but-valid provider never warns.
+  const [providerReady, setProviderReady] = useState(true);
 
   // Post-function state
   const [isPostFunction, setIsPostFunction] = useState(false);
@@ -3387,6 +3404,9 @@ function App() {
           invoke("getProvider"),
         ]);
         if (keyStatus?.isByok) setIsByok(true);
+        // hasKey is present on every getOpenAIKey result (false only when no key is stored);
+        // Forge LLM returns hasKey:true (noKeyNeeded).
+        setProviderReady(keyStatus?.hasKey !== false);
         if (providerResult?.success) {
           const labels = { openai: "OpenAI", azure: "Azure OpenAI", openrouter: "OpenRouter", anthropic: "Anthropic" };
           setProviderLabel(labels[providerResult.provider] || providerResult.provider || "AI");
@@ -3403,6 +3423,16 @@ function App() {
   if (loading) {
     return <ConfigSkeleton />;
   }
+
+  // First-run guardrail: an admin who hasn't set up an AI provider key can still create an
+  // AI rule that then silently no-ops at runtime — validate() fails OPEN (returns allow) when
+  // the AI call can't run — so the transition is never actually checked. Warn at the point of
+  // need. Never fires for Forge LLM (hasKey:true / noKeyNeeded).
+  const providerWarning = (
+    <div className="provider-warning" role="alert">
+      No AI provider key is set up yet. Add one in the CogniRunner admin (Apps → CogniRunner → Settings) — until then this AI rule can't run: it fails open, allowing the transition without checking.
+    </div>
+  );
 
   return (
     <div className="container">
@@ -3615,6 +3645,7 @@ function App() {
       {/* Standard validator/condition form */}
       {!isPostFunction && (
       <div className="card">
+        {!providerReady && ruleKind === "ai" && providerWarning}
         {isByok && (
           <div className="byok-cost-notice">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">

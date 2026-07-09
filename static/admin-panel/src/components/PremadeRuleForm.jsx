@@ -44,6 +44,7 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
   const [days, setDays] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
   const [lists, setLists] = useState({});
+  const [listsError, setListsError] = useState(false); // fetch failure — kept distinct from a genuinely-empty list
   const hydratedRef = useRef(false);
   // NL-to-rule builder ("Build from a description"), collapsed by default.
   const [brOpen, setBrOpen] = useState(false);
@@ -54,16 +55,15 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
   const [buildUnresolved, setBuildUnresolved] = useState([]);
 
   // Fetch REST-backed picker lists once (issue types / statuses / resolutions / link types / priorities).
-  useEffect(() => {
-    (async () => {
-      try {
-        const res = await invoke("getRuleLists");
-        if (res?.success) setLists(res.lists || {});
-      } catch {
-        /* leave empty → the picker shows "None available" */
-      }
-    })();
-  }, []);
+  // A fetch failure is kept distinct from a genuinely-empty list so the picker can offer Retry
+  // instead of silently reading as "None available" (which would look like the list has no options).
+  const loadLists = () => {
+    setListsError(false);
+    invoke("getRuleLists")
+      .then((res) => { if (res?.success) setLists(res.lists || {}); else setListsError(true); })
+      .catch(() => setListsError(true));
+  };
+  useEffect(() => { loadLists(); }, []);
 
   // Hydrate from a saved config exactly once (on edit).
   useEffect(() => {
@@ -410,8 +410,14 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
               onChange={setPickerValue}
               searchable
               options={shown}
-              placeholder={!opts.length ? "None available — check your permissions" : p.picker.ph}
+              placeholder={listsError ? "Couldn't load options — Retry below" : (!opts.length ? "None available — check your permissions" : p.picker.ph)}
             />
+            {listsError && (
+              <div style={{ display: "flex", alignItems: "center", gap: "8px", marginTop: "6px", fontSize: "12px", color: "var(--error-color)" }}>
+                <span>Couldn't load these options.</span>
+                <button type="button" className="btn-retry" onClick={loadLists}>Retry</button>
+              </div>
+            )}
           </div>
         );
       })()}

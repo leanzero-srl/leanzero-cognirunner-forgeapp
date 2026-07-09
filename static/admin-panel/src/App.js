@@ -167,6 +167,11 @@ const injectStyles = () => {
       align-items: center;
       justify-content: space-between;
       margin-bottom: 12px;
+      /* Wrap the action controls below the title on narrow widths (e.g. a 1024px
+         screen with Jira's sidebar) instead of forcing horizontal PAGE scroll that
+         pushes primary actions off-screen. No-op when everything fits. */
+      flex-wrap: wrap;
+      gap: 8px 12px;
     }
 
     .section-title {
@@ -180,6 +185,7 @@ const injectStyles = () => {
     .section-actions {
       display: flex;
       gap: 8px;
+      flex-wrap: wrap;
     }
 
     .btn-small {

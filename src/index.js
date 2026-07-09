@@ -9450,7 +9450,7 @@ export const lmAcquireWorker = async (requestedModel, opts = {}) => {
  * Extract plain text from Atlassian Document Format (ADF)
  * Used for description and other rich text fields
  */
-const extractTextFromADF = (adfContent) => {
+export const extractTextFromADF = (adfContent) => {
   if (!adfContent) return "";
   if (typeof adfContent === "string") return adfContent;
 
@@ -9463,6 +9463,9 @@ const extractTextFromADF = (adfContent) => {
     "orderedList", "listItem", "table", "tableRow",
     "tableHeader", "tableCell", "panel", "decisionList",
     "decisionItem", "taskList", "taskItem", "expand",
+    // Block-level smart links (a pasted URL rendered as a Card/Embed). Their URL is
+    // extracted below; list them here so they get a separating newline like other blocks.
+    "blockCard", "embedCard",
   ]);
 
   const extractFromNode = (node) => {
@@ -9478,7 +9481,10 @@ const extractTextFromADF = (adfContent) => {
       parts.push(node.attrs.text);
     } else if (node.type === "emoji" && node.attrs?.shortName) {
       parts.push(node.attrs.shortName);
-    } else if (node.type === "inlineCard" && node.attrs?.url) {
+    } else if ((node.type === "inlineCard" || node.type === "blockCard" || node.type === "embedCard") && node.attrs?.url) {
+      // Smart links (inline OR block/embed card). Previously only inlineCard was handled, so
+      // a card-rendered link silently lost its URL — a validator prompt like "does the
+      // description link to the design doc?" then judged text that never contained the link.
       parts.push(node.attrs.url);
     } else if (node.type === "date" && node.attrs?.timestamp) {
       // Convert Unix timestamp to readable date

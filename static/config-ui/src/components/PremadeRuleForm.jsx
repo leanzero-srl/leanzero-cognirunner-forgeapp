@@ -438,7 +438,7 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
 
       <p className="hint pr-foot">
         {mode === "condition"
-          ? "If the rule isn't met — or can't be evaluated — the transition is hidden (no message). No AI is used."
+          ? "If the rule isn't met, the transition is hidden (no message). If the check can't run, the transition is shown (it never silently hides one). No AI is used."
           : "If the rule isn't met, the transition is blocked and your message is shown. If the check can't run, the transition is allowed (it never traps the issue). No AI is used."}
       </p>
     </div>

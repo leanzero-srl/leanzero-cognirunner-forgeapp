@@ -119,6 +119,59 @@ try {
     } catch (e) { fail++; console.log("  ✗ J18 threw: " + e.message.split("\n")[0]); }
     await closeEditor(env);
   }
+
+  /* ---------------- J17 — SEMANTIC post-function editor ---------------- */
+  {
+    console.log("J17 semantic-PF editor (cfg-semantic)");
+    const env = await openEditor(browser, "config-ui", "cfg-semantic");
+    const { page } = env;
+    try {
+      const condEl = page.locator('textarea[placeholder*="mentions a bug or defect"]').first();
+      const actEl = page.locator('textarea[placeholder*="2-3 bullet points"]').first();
+      ok(/customer-facing bug/i.test(await condEl.inputValue()), "J17 run-condition prompt hydrated from config");
+      ok(/executive summary/i.test(await actEl.inputValue()), "J17 action prompt hydrated from config");
+      // Cross-check claims (fact-check MCP) toggle seeded on.
+      ok(await page.locator('input[type="checkbox"]:checked').count() >= 1, "J17 cross-check-claims toggle seeded on");
+      // Action prompt is editable.
+      await actEl.fill((await actEl.inputValue()) + " Keep it factual.");
+      ok((await actEl.inputValue()).includes("Keep it factual."), "J17 action prompt is editable");
+      // Test Run → the AI writes a proposed value for the target field.
+      await page.locator("button.btn-semantic-test-toggle", { hasText: "Test Run" }).click();
+      await page.waitForSelector(".semantic-test-panel", { timeout: 8000 });
+      await page.locator("input.issue-picker-input").fill("PROJ-42");
+      await page.waitForSelector(".issue-picker-valid", { timeout: 8000 });
+      await page.locator("button.btn-run-test", { hasText: "Run Test" }).click();
+      await page.waitForSelector(".semantic-test-result", { timeout: 10000 });
+      ok(await page.locator(".test-badge", { hasText: "UPDATE" }).count() >= 1, "J17 Test Run returns an UPDATE decision");
+      const st = await page.locator(".semantic-test-result").first().innerText();
+      ok(/coupon|checkout|customer impact/i.test(st), "J17 result renders the AI's proposed value");
+    } catch (e) { fail++; console.log("  ✗ J17 threw: " + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
+  /* ---------------- J15 — AI CONDITION editor (same form, condition mode) ---------------- */
+  {
+    console.log("J15 AI condition editor (cfg-condition)");
+    const env = await openEditor(browser, "config-ui", "cfg-condition");
+    const { page } = env;
+    try {
+      ok(await page.getByText("AI Condition Configuration").count() >= 1, "J15 renders in Condition mode (not Validator)");
+      ok(await page.locator(".dropdown-trigger", { hasText: "Acceptance Criteria" }).count() > 0, "J15 field picker shows the seeded field (Acceptance Criteria)");
+      const promptEl = page.locator("textarea").first();
+      ok(/testable, measurable criterion/i.test(await promptEl.inputValue()), "J15 condition prompt hydrated from config");
+      await promptEl.fill((await promptEl.inputValue()) + " Non-empty.");
+      ok((await promptEl.inputValue()).includes("Non-empty."), "J15 condition prompt is editable");
+      // Same dry-run Test flow as the validator.
+      await page.locator("button.btn-semantic-test-toggle", { hasText: /Test/ }).click();
+      await page.waitForSelector(".semantic-test-panel", { timeout: 8000 });
+      await page.locator("input.issue-picker-input").fill("PROJ-42");
+      await page.waitForSelector(".issue-picker-valid", { timeout: 8000 });
+      await page.locator("button.btn-run-test", { hasText: "Run Test" }).click();
+      await page.waitForSelector(".semantic-test-result", { timeout: 10000 });
+      ok(await page.locator(".test-badge-pass, .test-badge-fail").count() >= 1, "J15 dry-run Test returns a verdict");
+    } catch (e) { fail++; console.log("  ✗ J15 threw: " + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
 } finally {
   await browser.close();
 }

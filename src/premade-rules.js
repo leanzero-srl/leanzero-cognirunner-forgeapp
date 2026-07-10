@@ -78,17 +78,28 @@ async function getUserGroups(accountId) {
   return (Array.isArray(data) ? data : data?.items || []).map((g) => g && g.name).filter(Boolean);
 }
 
-/** Flatten an ADF (rich-text) doc to its text content. */
+/** Flatten an ADF (rich-text) doc to its text content. Inline NON-text nodes (mentions, emoji,
+ *  dates, smart-link cards) carry their visible text in `attrs`, not `node.text` — emit it so
+ *  isEmpty / text-length / fieldText don't undercount rich content (e.g. a description made only
+ *  of an @mention + emoji must NOT read as empty). Mirrors index.js extractTextFromADF. */
 function adfText(node) {
   if (!node || typeof node !== "object") return "";
   let t = typeof node.text === "string" ? node.text : "";
+  if (!t && node.attrs) {
+    const a = node.attrs;
+    if (node.type === "mention" || node.type === "status") t = a.text || "";
+    else if (node.type === "emoji") t = a.text || a.shortName || "";
+    else if (node.type === "date") t = a.timestamp != null ? String(a.timestamp) : "";
+    else if (node.type === "inlineCard" || node.type === "blockCard" || node.type === "embedCard") t = a.url || "";
+  }
   for (const c of node.content || []) t += adfText(c);
   return t;
 }
 
 /** Empty = absent, null, '', empty array, ADF with no text, or {} — mirrors the form's intent. */
 function isEmpty(v) {
-  if (v === null || v === undefined || v === "") return true;
+  if (v === null || v === undefined) return true;
+  if (typeof v === "string") return v.trim() === ""; // whitespace-only counts as empty ("has a value")
   if (Array.isArray(v)) return v.length === 0;
   if (typeof v === "object") {
     if (Array.isArray(v.content)) return adfText(v).trim() === ""; // ADF rich text
@@ -144,7 +155,7 @@ async function runValidator(cfg, mf, issueKey, read) {
     const t = text.trim();
     if (t === "") return fail("Add a comment to make this transition.");
     const min = cfg.minLen === "" || cfg.minLen == null ? NaN : Number(cfg.minLen); // presence-gated like text-length
-    if (Number.isFinite(min) && t.length < min) return fail(`Your comment must be at least ${min} characters.`);
+    if (Number.isFinite(min) && [...t].length < min) return fail(`Your comment must be at least ${min} characters.`); // code points, not UTF-16 units
     return PASS;
   }
 
@@ -209,7 +220,7 @@ async function runValidator(cfg, mf, issueKey, read) {
       else if (value && typeof value === "object" && value.type === "doc") text = adfText(value);
       else if (value == null) text = "";
       else return PASS; // unexpected shape → fail-open
-      const len = text.length;
+      const len = [...text].length; // count Unicode code points (an emoji/astral char = 1, not 2 UTF-16 units)
       // Presence-gate: Number('')/Number(null) are 0 (finite) — only Number(undefined) is NaN.
       const hasMin = cfg.min !== "" && cfg.min != null, hasMax = cfg.max !== "" && cfg.max != null;
       const min = Number(cfg.min), max = Number(cfg.max);
@@ -269,7 +280,13 @@ async function runCondition(cfg, issueKey, read, actingUser, readUserGroups) {
     }
     case "field-equals": {
       if (!cfg.fieldId || cfg.value == null) return true;
-      return norm(fieldText(await read(issueKey, cfg.fieldId))) === norm(cfg.value);
+      const got = fieldText(await read(issueKey, cfg.fieldId));
+      // Numeric coercion to match field-comparison's eq (so 5 equals "5.0"); falls back to
+      // case-insensitive text equality for non-numbers (and multi-value joins → text path).
+      const numOf = (x) => { const t = String(x).trim(); return t !== "" && Number.isFinite(Number(t)) ? Number(t) : NaN; };
+      const a = numOf(got), b = numOf(cfg.value);
+      if (!Number.isNaN(a) && !Number.isNaN(b)) return a === b;
+      return norm(got) === norm(cfg.value);
     }
     case "issue-type-is": {
       if (cfg.issueTypeName == null) return true;
@@ -325,7 +342,11 @@ async function runCondition(cfg, issueKey, read, actingUser, readUserGroups) {
     case "user-in-field": {
       if (!cfg.fieldId || !actingUser) return true;
       const u = await read(issueKey, cfg.fieldId);
-      return u?.accountId === actingUser;
+      // Single-user fields read as { accountId }; multi-user fields as [{ accountId }, …].
+      // Handle both so pointing this at a multi-user field (e.g. Approvers) matches any member
+      // instead of silently hiding for everyone.
+      const ids = Array.isArray(u) ? u.map((x) => x && x.accountId) : [u && u.accountId];
+      return ids.includes(actingUser);
     }
     case "user-in-group": {
       if (cfg.groupName == null || !actingUser) return true;

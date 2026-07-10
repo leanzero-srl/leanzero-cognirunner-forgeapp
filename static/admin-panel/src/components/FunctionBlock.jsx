@@ -20,6 +20,7 @@ import JIRA_ENDPOINTS_DATA from "../data/jira-endpoints";
 // Premade post-function recipes — ready-made, no-AI code templates.
 import { BUILTIN_RECIPES, getRecipeByKey } from "../../../../src/shared/builtin-recipes.js";
 import { KNOWN_API_MEMBERS } from "../../../../src/shared/sandbox-api-spec.js";
+import { buildDryRunFacts, countChangeVerbs, CHANGE_VERB_LABEL } from "../../../../src/shared/narrate-utils.js";
 
 // Maps a step's operation type to the closest skill category for
 // the "Save as Skill" pre-fill.
@@ -195,6 +196,10 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
   const [testRunning, setTestRunning] = useState(false);
   const [testResult, setTestResult] = useState(null);
   const [testTarget, setTestTarget] = useState("");
+  // "Explain these changes" narrate assist: idle | loading | done | degraded | error.
+  const [narrateState, setNarrateState] = useState("idle");
+  const [narration, setNarration] = useState(null);
+  const [narrateReason, setNarrateReason] = useState("");
   const [showTestPanel, setShowTestPanel] = useState(false);
   const [opSuggested, setOpSuggested] = useState(false);
   const [endpointQuery, setEndpointQuery] = useState("");
@@ -227,6 +232,11 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
   // start of every generate and fix, on manual code edits, and on unmount, so
   // a stale resolution can never clobber newer state with old AI output.
   const genTokenRef = useRef(0);
+  // Separate cancellation token for the narrate call. A plain "Run test" re-run
+  // does NOT bump genTokenRef, so narrate needs its own — bumped in resetNarrate
+  // (which runTest, the fix-loop re-run, and handleCodeChange all call) so a slow
+  // narration for a superseded dry-run can never overwrite a newer result.
+  const narrateTokenRef = useRef(0);
   useEffect(() => () => { genTokenRef.current += 1; }, []);
 
   const update = (field, value) => onUpdate({ [field]: value });
@@ -382,6 +392,43 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
   // Run the dry-run test. Accepts a code override so the fix loop can re-run
   // immediately after applying new code (the functionData prop is still stale
   // inside that closure). Returns the result for callers that need it.
+  const resetNarrate = () => {
+    narrateTokenRef.current += 1; // invalidate any in-flight narrate
+    setNarrateState("idle");
+    setNarration(null);
+    setNarrateReason("");
+  };
+
+  // Plain-English summary of what the last dry-run WOULD change. One AI call per
+  // explicit click; the backend bounds cost (sig-cache + short negative cache).
+  const runNarrate = async () => {
+    if (narrateState === "loading" || !(testResult && testResult.changes && testResult.changes.length)) return;
+    const token = narrateTokenRef.current;
+    setNarrateState("loading");
+    try {
+      const result = await invoke("narrateDryRun", {
+        changesText: buildDryRunFacts(testResult.changes),
+        total: testResult.changes.length,
+        mode: testResult.mode || "mock",
+      });
+      // A newer run/edit/fix superseded this narration while it was in flight — drop it.
+      if (narrateTokenRef.current !== token) return;
+      if (result && result.degraded) {
+        setNarrateReason(result.reason || "error");
+        setNarrateState("degraded");
+      } else if (result && result.success && result.summary) {
+        setNarration({ summary: result.summary, verify: result.verify || [] });
+        setNarrateState("done");
+      } else {
+        setNarrateReason((result && result.error) || "");
+        setNarrateState("error");
+      }
+    } catch (e) {
+      console.error("Narrate dry-run failed:", e);
+      if (narrateTokenRef.current === token) setNarrateState("error");
+    }
+  };
+
   const runTest = async (codeOverride) => {
     const codeToRun = codeOverride !== undefined ? codeOverride : functionData.code;
     // A verdict belongs to the exact code it ran against: if the user edits
@@ -390,6 +437,7 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
     const token = genTokenRef.current;
     setTestRunning(true);
     setTestResult(null);
+    resetNarrate(); // a new run (incl. the fix-loop auto re-run, which calls runTest) invalidates any prior narration
     let result;
     try {
       const target = testTarget.trim();
@@ -538,6 +586,7 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
     if (generationFallback) setGenerationFallback(null);
     // The verdict belongs to the pre-edit code — clear it.
     if (testResult) setTestResult(null);
+    if (narrateState !== "idle") resetNarrate();
   };
 
   const hasPrompt = functionData.operationPrompt?.trim();
@@ -1198,12 +1247,55 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
                   )}
                   {testResult.changes && testResult.changes.length > 0 && (
                     <div className="test-logs">
-                      <div className="test-logs-title">Changes that would be made:</div>
+                      <div className="ndr-chips">
+                        <span className="ndr-count">{testResult.changes.length} write{testResult.changes.length !== 1 ? "s" : ""} staged</span>
+                        {Object.entries(countChangeVerbs(testResult.changes)).map(([verb, n]) => (
+                          <span key={verb} className="ndr-verb">{CHANGE_VERB_LABEL[verb] || verb}{n > 1 ? ` ×${n}` : ""}</span>
+                        ))}
+                      </div>
                       {testResult.changes.map((c, i) => (
                         <div key={i} className="test-log-line">
                           <code>{c.action}({c.key}{c.fields ? ", " + JSON.stringify(c.fields) : ""})</code>
                         </div>
                       ))}
+                    </div>
+                  )}
+                  {/* Narrate: plain-English summary of what the dry-run would change */}
+                  {testResult.success && testResult.changes && testResult.changes.length > 0 && (
+                    <div className="ndr">
+                      {narrateState === "done" && narration && (
+                        <div className="ndr-card">
+                          <div className="ndr-eyebrow">§ WHAT THIS WOULD DO</div>
+                          <div className="ndr-summary">{narration.summary}</div>
+                          {narration.verify && narration.verify.length > 0 && (
+                            <ul className="ndr-verify">
+                              {narration.verify.map((v, i) => <li key={i}>{v}</li>)}
+                            </ul>
+                          )}
+                        </div>
+                      )}
+                      {narrateState === "degraded" && (
+                        <div className="ndr-note">
+                          {narrateReason === "lmstudio"
+                            ? "Plain-English summaries aren't available with the self-hosted LM Studio provider — switch to a hosted provider in CogniRunner Settings."
+                            : narrateReason === "timeout"
+                            ? "The AI provider didn't respond in time — try again in a moment."
+                            : "Couldn't summarize the changes right now — try again in a moment."}
+                        </div>
+                      )}
+                      {narrateState === "error" && (
+                        <div className="ndr-note">Couldn't summarize the changes.</div>
+                      )}
+                      {(narrateState === "idle" || narrateState === "loading" || narrateState === "error" ||
+                        (narrateState === "degraded" && narrateReason === "timeout")) && (
+                        <button
+                          className={`ndr-btn${narrateState === "loading" ? " is-busy busy-solid" : ""}`}
+                          onClick={runNarrate}
+                          disabled={narrateState === "loading"}
+                        >
+                          ✦ Explain these changes in plain English
+                        </button>
+                      )}
                     </div>
                   )}
                   {testResult.success && (

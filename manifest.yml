@@ -112,6 +112,9 @@ modules:
   # so an LM Studio model can read Jira attachments via doc-reader's URL variant.
   # Security model documented in src/index.js (serveAttachment + mintAttachmentToken).
   webtrigger:
+    # DEV-ONLY harness test-state endpoint (gated by HARNESS_SECRET; 404 in prod).
+    - key: harness-test-state
+      function: testStateFn
     - key: attachment-bridge
       function: serveAttachment
       response:
@@ -127,6 +130,8 @@ modules:
 
   # Lambda function for validation logic
   function:
+    - key: testStateFn
+      handler: index.testStateTrigger
     - key: validate
       handler: index.validate
     - key: executePostFunction

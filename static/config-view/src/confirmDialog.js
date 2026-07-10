@@ -27,7 +27,7 @@ function ensureStyles() {
     @keyframes crConfirmFade { from { opacity: 0; } to { opacity: 1; } }
     .cr-confirm {
       width: min(460px, 92vw); background: #ffffff; color: #0f172a; border: 1px solid #e2e8f0;
-      border-radius: 12px; padding: 20px 22px; box-shadow: 0 18px 50px rgba(15, 23, 42, 0.35);
+      border-radius: 12px; padding: 20px 22px; box-shadow: 0 18px 50px rgba(18, 42, 66, 0.35);
     }
     html[data-color-mode="dark"] .cr-confirm { background: #1e293b; color: #e2e8f0; border-color: #334155; }
     .cr-confirm-title { font-size: 15px; font-weight: 700; margin-bottom: 8px; }

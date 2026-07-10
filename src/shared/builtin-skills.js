@@ -15,9 +15,9 @@
  * "Workflow Patterns", "Other".
  *
  * Content discipline:
- * - Examples use ONLY the five sandbox methods (getIssue, updateIssue,
- *   searchJql, transitionIssue, log) plus api.context — every sandbox claim
- *   must agree with src/shared/sandbox-api-spec.js.
+ * - Examples use ONLY real sandbox api.* methods — every sandbox claim (which
+ *   methods exist, their signatures) must agree with the single source of truth,
+ *   src/shared/sandbox-api-spec.js. Never deny a method that spec lists.
  * - Where the full Jira REST API can do more (comments, links, worklogs,
  *   sprint moves), skills state the REST fact AND teach the honest sandbox
  *   fallback explicitly. Never pretend an unavailable operation exists.
@@ -29,7 +29,7 @@
  *   a multi-word tag to be present in the prompt).
  */
 
-export const SKILL_SEED_VERSION = 2;
+export const SKILL_SEED_VERSION = 4;
 
 export const BUILTIN_SKILLS = [
   {
@@ -212,38 +212,29 @@ return { ok, failed, remaining };`,
   },
   {
     id: "builtin_skill_sandbox_limits",
-    name: "Sandbox Limits & Honest Fallbacks",
+    name: "Sandbox API — What's Available & the Real Limits",
     category: "Jira API",
-    description: "Requests that need comments, issue links, worklogs, sprints, watchers, or issue creation — operations outside the five-method sandbox, and what to do instead.",
-    tags: ["limit", "sandbox", "comment", "link", "sprint", "create", "worklog", "unsupported", "cannot"],
+    description: "The sandbox exposes a RICH api.* surface (comments, links, worklogs, sub-tasks, sprints, watchers, and more). This covers what IS available and the few operations that genuinely are not — so you use the real method, not a workaround.",
+    tags: ["limit", "sandbox", "comment", "link", "sprint", "create", "worklog", "watcher", "api", "unsupported"],
     operationTypes: ["rest_api_internal", "confluence_api", "rest_api_external"],
-    instructions: `The sandbox exposes EXACTLY five methods — api.getIssue, api.updateIssue, api.searchJql, api.transitionIssue, api.log — plus the api.context accessor ({ issueKey }). Nothing else exists: no addComment, createIssue, deleteIssue, linkIssues, logWork, moveToSprint, addWatcher, uploadAttachment, and no fetch/raw HTTP. Inventing a method throws at runtime.
-What the full Jira REST API would use, and the honest sandbox fallback:
-- Comments — REST: POST /rest/api/3/issue/{key}/comment with an ADF body. Fallback: append an ADF paragraph or panel to the description, and api.log the text.
-- Issue creation / subtasks — REST: POST /rest/api/3/issue. Fallback: add a marker label (e.g. "needs-subtask") and log the intended summary.
-- Issue links — REST: POST /rest/api/3/issueLink. Fallback: record the relation in the description or a text field; existing links CAN be read via issue.fields.issuelinks.
-- Worklogs — REST: POST /rest/api/3/issue/{key}/worklog. No write fallback; log the intended time entry.
-- Watchers/votes, attachments, sprint moves (Jira Agile API) — not reachable; say so plainly.
-Discipline when a request needs an unavailable operation:
-1. Implement the parts that ARE possible with the five methods.
-2. For the unavailable part, emit a clearly-marked code comment naming the exact REST endpoint a full implementation would need.
-3. Offer the nearest substitute when one exists, and make it idempotent — check for an existing marker before appending again.
-4. NEVER silently skip — always api.log the limitation so it shows up in test runs and execution logs.
-Also remember: test runs are dry runs (reads are real, writes are logged but not executed), and the whole chain shares a ~22s budget.`,
+    instructions: `The sandbox api.* surface is RICH — NOT limited to a handful of read methods. Beyond api.getIssue / updateIssue / searchJql / transitionIssue / log / context, first-class WRITE methods exist and should be used DIRECTLY: api.addComment, api.createIssue, api.cloneIssue, api.createIssueLink, api.addWorklog, api.moveToSprint / api.moveToBacklog, api.addWatcher / api.removeWatcher, api.addVote, api.setAssignee, api.addLabels / api.removeLabels, api.editIssue, api.forceStatus, api.transitionByName / transitionSubtasks / transitionParent, api.setProperty / getProperty, api.addRemoteLink, api.sendNotification, api.rankIssue, api.createVersion / createComponent. The authoritative, always-current list is the API Reference panel (derived from src/shared/sandbox-api-spec.js) — consult it rather than guessing. Do NOT reach for a description-append or a marker-label WORKAROUND when a real method exists (e.g. call api.addComment("your text") — which posts on the CURRENT issue; never "append to the description because comments aren't supported"). Note addComment takes NO issueKey — it always targets the issue the post-function runs on.
+What is genuinely NOT available, and the honest fallback:
+- Deleting an issue — no api.deleteIssue. Transition it to a closed/cancelled status instead, or log the intent.
+- Uploading a file attachment — not writable from the sandbox. Log the intent; attachment READING (vision/doc) happens via the validator/PF field path, not here.
+- Raw fetch / arbitrary HTTP / arbitrary REST endpoints — not exposed. Use the typed api.* methods; if an operation truly has no method, say so plainly and api.log it.
+Discipline:
+1. Prefer the real typed method — check the API Reference panel first.
+2. Make writes idempotent (check for an existing marker / link / comment before adding again) since a transition can fire more than once.
+3. For a genuinely-unavailable operation, emit a clearly-marked comment naming the REST endpoint a full implementation would need, and api.log the limitation so it surfaces in test runs.
+Also: test runs are dry runs (reads real, writes logged not executed), and the whole chain shares a ~22s budget.`,
     examples: `// User asked: "comment on the issue when a duplicate is found"
-// Sandbox cannot add comments (REST would need POST /rest/api/3/issue/{key}/comment).
-// Substitute: append to the description ONCE (idempotent), and log the limitation.
+// api.addComment IS a real method — use it directly, no description-append workaround.
 const issue = await api.getIssue(api.context.issueKey);
-const doc = issue.fields.description || { type: "doc", version: 1, content: [] };
-const marker = "Possible duplicate detected by automation.";
-const already = JSON.stringify(doc).includes(marker);
-if (!already) {
-  doc.content.push({ type: "paragraph", content: [
-    { type: "text", text: marker, marks: [{ type: "strong" }] }
-  ] });
-  await api.updateIssue(api.context.issueKey, { description: doc });
-}
-api.log("NOTE: sandbox cannot add comments — " + (already ? "marker already present, skipped re-append." : "appended to the description instead."));`,
+const results = await api.searchJql(\`project = \${api.context.issueKey.split("-")[0]} AND summary ~ "\${(issue.fields.summary || "").replace(/"/g, " ")}" AND key != \${api.context.issueKey}\`);
+if (results.issues && results.issues.length > 0) {
+  await api.addComment("Possible duplicate of " + results.issues[0].key + " — please review before proceeding.");
+  api.log("Added duplicate-review comment referencing " + results.issues[0].key + ".");
+}`,
   },
   {
     id: "builtin_skill_transitions",
@@ -493,19 +484,16 @@ return { ok, failed, remaining };`,
     id: "builtin_skill_agile_fields",
     name: "Agile Fields: Sprint, Epic, Rank & Story Points",
     category: "Fields & Data",
-    description: "What is and is not writable on agile boards — sprint/epic/rank need the Jira Agile API (unavailable here); story points are a plain number field; honest fallbacks for the rest.",
+    description: "What is and is not writable on agile boards — sprint moves (api.moveToSprint/moveToBacklog) and rank (api.rankIssue) ARE available; story points are a plain number field; epic re-parenting is the honest limit.",
     tags: ["sprint", "epic", "rank", "backlog", "board", "agile", "story-points", "points", "estimate"],
     operationTypes: ["rest_api_internal", "work_item_query"],
     instructions: `Agile-managed fields are the most common silent failure in generated code. Ground truth:
-- Sprint is NOT writable via api.updateIssue — moving an issue into or out of a sprint needs the Jira Agile API (under /rest/agile/1.0/, e.g. POST /rest/agile/1.0/sprint/{sprintId}/issue), which the sandbox cannot reach. READING is fine: the sprint custom field is an array (entries expose name and state) — treat it as read-only.
-- Rank is Lexorank — NEVER write the Rank custom field. Even the full REST API ranks via PUT /rest/agile/1.0/issue/rank with a rankBeforeIssue/rankAfterIssue anchor. No sandbox equivalent; do not attempt.
+- Sprint is NOT writable via api.updateIssue (the field is read-only), BUT sprint membership IS manageable from the sandbox: api.moveToSprint(sprintId) and api.moveToBacklog() call the Agile API for you. READING is fine too: the sprint custom field is an array (entries expose name and state).
+- Rank is Lexorank — NEVER write the Rank custom field directly, but api.rankIssue(relativeToKey, opts?) performs the Lexorank reorder for you (it calls PUT /rest/agile/1.0/issue/rank internally). Use it instead of a field write.
 - Epic membership / re-parenting differs between company-managed and team-managed projects and is not reliably writable here — reading issue.fields.parent is safe; treat re-parenting as unavailable.
 - Story points ARE writable: it is an ordinary custom NUMBER field (commonly customfield_10016, but the id is instance-specific — use the field configured for this step). Write a JSON number: { customfield_10016: 5 } — never "5".
 - JQL CAN filter agile concepts even where writes cannot change them: sprint in openSprints(), sprint is EMPTY, "Epic Link" = PROJ-100 (company-managed) or parent = PROJ-100 (newer hierarchy).
-Honest fallback when asked to move issues between sprints, re-rank, or re-parent:
-1. Do the writable part (story points, labels, due dates).
-2. Add a clear code comment naming the Agile API endpoint a full implementation would need.
-3. Mark affected issues with a label (e.g. "sprint-move-requested") and api.log the intended change so a human or external automation can act on it.`,
+Sprint moves (api.moveToSprint/moveToBacklog) and re-ranking (api.rankIssue) ARE available — use them directly. The genuine limit is EPIC re-parenting (differs by project type): do the writable part, add a comment naming the endpoint a full implementation would need, and api.log the intended change so a human or external automation can act on it.`,
     examples: `// Asked: "move this to the active sprint and set story points to 5"
 const key = api.context.issueKey;
 const issue = await api.getIssue(key);

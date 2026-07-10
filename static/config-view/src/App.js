@@ -18,27 +18,9 @@
 
 import React, { useState, useEffect } from "react";
 import { confirmDialog } from "./confirmDialog";
-import { findRule, opLabel } from "../../../src/shared/premade-rules-catalog.js";
-
-// Human-readable summary rows for a premade (non-AI) rule in the read-only view.
-const premadeRuleLabel = (key) =>
-  (findRule("validator", key) || findRule("condition", key) || {}).label || key;
-const premadeSummaryRows = (config) => {
-  const rows = [{ label: "Premade rule:", value: premadeRuleLabel(config.ruleType) }];
-  if (config.fieldId) rows.push({ label: "Field:", value: config.fieldId, code: true });
-  if (config.op) rows.push({ label: "Condition:", value: `${opLabel(config.op)} “${config.compareValue ?? ""}”` });
-  if (config.regex) rows.push({ label: "Pattern:", value: config.regex, code: true });
-  if (config.allowedValues) rows.push({ label: "Allowed:", value: config.allowedValues });
-  if (config.value != null && config.value !== "") rows.push({ label: "Equals:", value: String(config.value) });
-  if (config.min != null) rows.push({ label: "Min:", value: String(config.min) });
-  if (config.max != null) rows.push({ label: "Max:", value: String(config.max) });
-  if (config.mode) rows.push({ label: "When:", value: config.mode === "within" ? `within ${config.days} day(s)` : "in the future" });
-  for (const k of ["issueTypeName", "statusName", "resolutionName", "linkTypeName", "priorityName"]) {
-    if (config[k]) rows.push({ label: "Value:", value: config[k] });
-  }
-  if (config.errorMessage) rows.push({ label: "Message:", value: config.errorMessage });
-  return rows;
-};
+import { findRule } from "../../../src/shared/premade-rules-catalog.js";
+import { premadeSummaryRows, buildFactsText, ruleKindEnum } from "../../../src/shared/explain-facts.js";
+import { logSourceOf, SOURCE_LABEL, FLAG_LABEL } from "../../../src/shared/log-flags.js";
 
 // Inject styles directly
 const injectStyles = () => {
@@ -47,30 +29,106 @@ const injectStyles = () => {
   const style = document.createElement("style");
   style.id = "app-styles";
   style.textContent = `
+    /* ============================================================
+       CANONICAL LEANZERO TOKEN BLOCK — the single source of truth for
+       config-view's palette, type scale, radius ladder, and effects.
+       Iterations port this same block to config-ui / admin-panel.
+       Legacy aliases (--text-*, --primary-color, --card-bg, --border-color,
+       --success-color, --error-color, --code-bg) map onto the canonical
+       tokens so every existing consumer resolves unchanged.
+       ============================================================ */
     :root {
+      /* surfaces */
+      --surface: #ffffff;
+      --surface-sunken: #f8fafc;
+      --surface-raised: #f1f5f9;
+      --frost: rgba(255, 255, 255, 0.6);
+      /* ink ladder (content floor deepened slate-500 -> slate-600) */
+      --ink: #0f172a;
+      --ink-secondary: #475569;
+      --ink-muted: #94a3b8;
+      /* lines */
+      --line: #cbd5e1;
+      --line-strong: #94a3b8;
+      /* accent + mandate hue map (docs/skills/memories/test/fix/slate + extensions) */
+      --accent: #2563eb;
+      --accent-deep: #1d4ed8;
+      --accent-docs: #2563eb;
+      --accent-skills: #7c3aed;
+      --accent-memories: #0d9488;
+      --accent-test: #d97706;
+      --accent-fix: #16a34a;
+      --accent-slate: #475569;
+      --accent-cyan: #0891b2;
+      --accent-indigo: #4f46e5;
+      /* semantic */
+      --danger: #dc2626;
+      --success: #16a34a;
+      --warning: #d97706;
+      /* effects — blue-black shadows, never pure black in light */
+      --ring: 0 0 0 3px rgba(37, 99, 235, 0.32);
+      --shadow-card: 0 1px 2px rgba(18, 42, 66, 0.06), 0 5px 16px -8px rgba(18, 42, 66, 0.14);
+      --shadow-card-hover: 0 12px 30px -12px rgba(29, 78, 216, 0.28), 0 3px 10px rgba(18, 42, 66, 0.10);
+      --glow: 0 8px 22px -6px rgba(37, 99, 235, 0.42);
+      --shadow-pop: 0 10px 30px rgba(18, 42, 66, 0.28);
+      --sel-bg: rgba(37, 99, 235, 0.26);
+      --sel-fg: #0f172a;
+      /* radius ladder + type scale */
+      --r-sm: 6px;
+      --r-md: 8px;
+      --r-lg: 12px;
+      --r-pill: 999px;
+      --fs-eyebrow: 10px;
+      --fs-label: 12px;
+      --fs-body: 13px;
+      --fs-title: 15px;
+      --track-tight: -0.022em;
+      --track-eyebrow: 0.14em;
+      /* legacy aliases — keep every existing consumer resolving unchanged */
       --bg-color: transparent;
-      --text-color: #0f172a;
-      --text-secondary: #64748b;
-      --text-muted: #94a3b8;
-      --primary-color: #2563eb;
+      --text-color: var(--ink);
+      --text-secondary: var(--ink-secondary);
+      --text-muted: var(--ink-muted);
+      --primary-color: var(--accent);
+      --card-bg: var(--surface);
       --code-bg: #f1f5f9;
-      --success-color: #16a34a;
-      --error-color: #dc2626;
-      --border-color: #cbd5e1;
-      --card-bg: #ffffff;
+      --success-color: var(--success);
+      --error-color: var(--danger);
+      --border-color: var(--line);
     }
 
     html[data-color-mode="dark"] {
+      --surface: #13131A;
+      --surface-sunken: #0A0A0F;
+      --surface-raised: #1f1f2e;
+      --frost: rgba(8, 8, 14, 0.55);
+      --ink: #F5F5F7;
+      --ink-secondary: #A0A0B0;
+      --ink-muted: #71717a;
+      --line: #334155;
+      --line-strong: #475569;
+      --accent: #3b82f6;
+      --accent-deep: #2563eb;
+      --accent-docs: #3b82f6;
+      --accent-skills: #8b5cf6;
+      --accent-memories: #14b8a6;
+      --accent-test: #f59e0b;
+      --accent-fix: #22c55e;
+      --accent-slate: #64748b;
+      --accent-cyan: #22d3ee;
+      --accent-indigo: #6366f1;
+      --danger: #ef4444;
+      --success: #22c55e;
+      --warning: #f59e0b;
+      --ring: 0 0 0 3px rgba(96, 165, 250, 0.45);
+      --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.5), 0 6px 20px -10px rgba(0, 0, 0, 0.55);
+      --shadow-card-hover: 0 0 26px rgba(59, 130, 246, 0.30), 0 8px 24px -10px rgba(0, 0, 0, 0.55);
+      --glow: 0 0 24px rgba(59, 130, 246, 0.42);
+      --shadow-pop: 0 10px 30px rgba(0, 0, 0, 0.5);
+      --sel-bg: rgba(96, 165, 250, 0.42);
+      --sel-fg: #f8fafc;
       --bg-color: transparent;
-      --text-color: #F5F5F7;
-      --text-secondary: #A0A0B0;
-      --text-muted: #71717a;
-      --primary-color: #3b82f6;
       --code-bg: #0A0A0F;
-      --success-color: #22c55e;
-      --error-color: #ef4444;
-      --border-color: #374151;
-      --card-bg: #13131A;
     }
 
     *, *::before, *::after { box-sizing: border-box; }
@@ -103,6 +161,110 @@ const injectStyles = () => {
 
     .config-item:last-child { margin-bottom: 0; }
 
+    /* Vivid summary card — the rule summary reads as a LeanZero card whose
+       2px border + colored eyebrow/top-strip encode the rule TYPE. Emphasis is
+       a FULL-WIDTH TOP gradient strip + full border, never a left rail. Dark
+       keeps the hue border (color is functional here, so it is NOT flattened
+       to neutral) at a lighter weight per the dark idiom. */
+    .cv-summary-card {
+      position: relative;
+      margin-bottom: 14px;
+      padding: 14px 14px 12px;
+      background: var(--surface);
+      border: 2px solid var(--cv-hue, var(--line));
+      border-radius: var(--r-lg);
+      box-shadow: var(--shadow-card);
+      overflow: hidden;
+    }
+    .cv-summary-card::before {
+      content: "";
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 2px;
+      background: linear-gradient(90deg, var(--cv-hue, var(--accent)), transparent);
+    }
+    html[data-color-mode="dark"] .cv-summary-card { border-width: 1px; }
+    .cv-rule-validator { --cv-hue: var(--accent-docs); }
+    .cv-rule-condition { --cv-hue: var(--accent-skills); }
+    .cv-rule-semantic  { --cv-hue: var(--accent-memories); }
+    .cv-rule-static    { --cv-hue: var(--accent-slate); }
+    .cv-rule-premade   { --cv-hue: var(--accent-indigo); }
+
+    .cv-summary-head {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+      margin-bottom: 12px;
+      flex-wrap: wrap;
+    }
+    /* Drafting eyebrow — mono stamp. Slate (not the card hue) so it always
+       clears WCAG AA; the card border + title carry the type color. */
+    .cv-eyebrow {
+      font-family: SFMono-Regular, Consolas, monospace;
+      font-size: var(--fs-eyebrow);
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: var(--track-eyebrow);
+      color: var(--accent-slate);
+    }
+    /* Monumental title — weight 800 + tight tracking is the editorial signature,
+       not merely bigger bold text. */
+    .cv-summary-title {
+      font-size: var(--fs-title);
+      font-weight: 800;
+      letter-spacing: var(--track-tight);
+      color: var(--ink);
+    }
+
+    /* "Explain this rule" assist — solid accent trigger, inset result card. Only
+       existing tokens (each with a dark override) so dark parity is automatic. No
+       left rail, no faded tint. */
+    .cv-explain { margin-top: 12px; }
+    .cv-explain-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      color: #ffffff;
+      background: var(--accent);
+      border: none;
+      border-radius: var(--r-sm);
+      cursor: pointer;
+      transition: background var(--dur-fast) var(--ease-out);
+    }
+    .cv-explain-btn:hover:not(:disabled) { background: var(--accent-deep); }
+    .cv-explain-btn:disabled { opacity: 0.7; cursor: default; }
+    .cv-explain-card {
+      margin-top: 10px;
+      padding: 10px 12px;
+      background: var(--surface-sunken);
+      border: 1px solid var(--line);
+      border-radius: var(--r-lg);
+    }
+    .cv-explain-eyebrow {
+      font-family: SFMono-Regular, Consolas, monospace;
+      font-size: var(--fs-eyebrow);
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: var(--track-eyebrow);
+      color: var(--accent);
+      margin-bottom: 5px;
+    }
+    .cv-explain-text {
+      font-size: 13px;
+      line-height: 1.5;
+      color: var(--text-color);
+    }
+    .cv-explain-note {
+      margin-top: 10px;
+      margin-bottom: 8px;
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--accent-slate);
+    }
+
     .label {
       font-weight: 600;
       font-size: 12px;
@@ -113,7 +275,7 @@ const injectStyles = () => {
 
     .value {
       padding: 2px 8px;
-      border-radius: 3px;
+      border-radius: var(--r-sm);
       font-size: 12px;
       font-family: SFMono-Regular, Consolas, monospace;
       background-color: var(--code-bg);
@@ -145,11 +307,12 @@ const injectStyles = () => {
     }
 
     .logs-title {
-      font-weight: 600;
-      font-size: 12px;
+      font-family: SFMono-Regular, Consolas, monospace;
+      font-weight: 700;
+      font-size: var(--fs-eyebrow);
       text-transform: uppercase;
-      letter-spacing: 0.5px;
-      color: var(--text-secondary);
+      letter-spacing: var(--track-eyebrow);
+      color: var(--accent-slate);
     }
 
     .logs-actions {
@@ -161,7 +324,7 @@ const injectStyles = () => {
       padding: 4px 8px;
       font-size: 11px;
       border: 1px solid var(--border-color);
-      border-radius: 3px;
+      border-radius: var(--r-sm);
       background: var(--card-bg);
       color: var(--text-color);
       cursor: pointer;
@@ -175,25 +338,35 @@ const injectStyles = () => {
     .logs-list {
       max-height: 300px;
       overflow-y: auto;
-      border: 1px solid var(--border-color);
-      border-radius: 8px;
-      background: var(--card-bg);
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 2px;
+      background: transparent;
     }
 
+    /* Each log entry is a vivid card whose border + hue shadow encode its
+       STATUS at a glance (pass=green, fail=red, skip=slate). Dark keeps the
+       hue border so status-as-color survives in both themes. */
     .log-entry {
       padding: 12px;
-      border-bottom: 1px solid var(--border-color);
+      background: var(--surface);
+      border: 2px solid var(--line);
+      border-radius: var(--r-md);
+      box-shadow: var(--shadow-card);
       font-size: 12px;
-      transition: background-color 0.15s ease;
+      transition: box-shadow var(--dur-med) var(--ease-out);
     }
-
     .log-entry:hover {
-      background-color: var(--code-bg);
+      box-shadow: var(--shadow-card-hover);
     }
-
-    .log-entry:last-child {
-      border-bottom: none;
-    }
+    .log-entry.cv-log-pass { border-color: var(--success); box-shadow: 0 4px 14px -6px rgba(22, 163, 74, 0.32); }
+    .log-entry.cv-log-fail { border-color: var(--danger); box-shadow: 0 4px 14px -6px rgba(220, 38, 38, 0.32); }
+    .log-entry.cv-log-skip { border-color: var(--accent-slate); box-shadow: 0 4px 14px -6px rgba(71, 85, 105, 0.28); }
+    html[data-color-mode="dark"] .log-entry { border-width: 1px; box-shadow: var(--shadow-card); }
+    html[data-color-mode="dark"] .log-entry.cv-log-pass,
+    html[data-color-mode="dark"] .log-entry.cv-log-fail,
+    html[data-color-mode="dark"] .log-entry.cv-log-skip { box-shadow: var(--shadow-card); }
 
     .log-header {
       display: flex;
@@ -209,7 +382,7 @@ const injectStyles = () => {
       justify-content: center;
       min-width: 46px;
       padding: 2px 8px;
-      border-radius: 6px;
+      border-radius: var(--r-sm);
       font-size: 10px;
       font-weight: 700;
       letter-spacing: 0.6px;
@@ -218,12 +391,9 @@ const injectStyles = () => {
       flex-shrink: 0;
     }
 
-    .log-status.valid { background: #16a34a; }
-    .log-status.invalid { background: #dc2626; }
-    .log-status.skip { background: #475569; }
-    html[data-color-mode="dark"] .log-status.valid { background: #22c55e; }
-    html[data-color-mode="dark"] .log-status.invalid { background: #ef4444; }
-    html[data-color-mode="dark"] .log-status.skip { background: #64748b; }
+    .log-status.valid { background: var(--success); }
+    .log-status.invalid { background: var(--danger); }
+    .log-status.skip { background: var(--accent-slate); }
 
     .log-meta {
       margin-left: auto;
@@ -284,19 +454,21 @@ const injectStyles = () => {
     }
 
     .log-kv-label {
+      font-family: SFMono-Regular, Consolas, monospace;
       font-size: 10px;
       font-weight: 700;
       text-transform: uppercase;
-      letter-spacing: 0.6px;
-      color: var(--text-muted);
+      letter-spacing: var(--track-eyebrow);
+      color: var(--ink-muted);
     }
 
     .log-section-label {
+      font-family: SFMono-Regular, Consolas, monospace;
       font-size: 10px;
       font-weight: 700;
       text-transform: uppercase;
-      letter-spacing: 0.6px;
-      color: var(--text-muted);
+      letter-spacing: var(--track-eyebrow);
+      color: var(--accent-slate);
       margin: 8px 0 3px;
     }
 
@@ -314,7 +486,7 @@ const injectStyles = () => {
     .log-reason {
       padding: 8px 10px;
       background: var(--code-bg);
-      border-radius: 8px;
+      border-radius: var(--r-md);
       color: var(--text-color);
       font-size: 12px;
       line-height: 1.5;
@@ -338,7 +510,7 @@ const injectStyles = () => {
       display: inline-flex;
       align-items: center;
       padding: 2px 8px;
-      border-radius: 6px;
+      border-radius: var(--r-sm);
       font-size: 9px;
       font-weight: 700;
       letter-spacing: 0.5px;
@@ -347,36 +519,46 @@ const injectStyles = () => {
       white-space: nowrap;
       flex-shrink: 0;
     }
-    .lt-validator { background: #2563eb; }
-    .lt-condition { background: #7c3aed; }
-    .lt-pf, .lt-pf-semantic { background: #0d9488; }
-    .lt-pf-static { background: #475569; }
-    html[data-color-mode="dark"] .lt-validator { background: #3b82f6; }
-    html[data-color-mode="dark"] .lt-condition { background: #8b5cf6; }
-    html[data-color-mode="dark"] .lt-pf, html[data-color-mode="dark"] .lt-pf-semantic { background: #14b8a6; }
-    html[data-color-mode="dark"] .lt-pf-static { background: #64748b; }
+    .lt-validator { background: var(--accent-docs); }
+    .lt-condition { background: var(--accent-skills); }
+    .lt-pf, .lt-pf-semantic { background: var(--accent-memories); }
+    .lt-pf-static { background: var(--accent-slate); }
+    /* Execution-log source + honesty flag chips — solid saturated, white text. */
+    .log-src, .log-flag {
+      display: inline-flex; align-items: center; padding: 2px 7px; border-radius: var(--r-sm);
+      font-size: 9px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase;
+      color: #ffffff; white-space: nowrap; flex-shrink: 0;
+    }
+    .log-src-runtime { background: #475569; }
+    .log-src-async   { background: #4f46e5; }
+    .log-src-test    { background: #d97706; }
+    .log-flag-simulated      { background: #0891b2; }
+    .log-flag-transientError { background: #dc2626; }
+    .log-flag-capped         { background: #ea580c; }
+    html[data-color-mode="dark"] .log-src-runtime { background: #64748b; }
+    html[data-color-mode="dark"] .log-src-async   { background: #6366f1; }
+    html[data-color-mode="dark"] .log-src-test    { background: #f59e0b; }
+    html[data-color-mode="dark"] .log-flag-simulated      { background: #22d3ee; }
+    html[data-color-mode="dark"] .log-flag-transientError { background: #ef4444; }
+    html[data-color-mode="dark"] .log-flag-capped         { background: #fb923c; }
 
     .log-tools-badge {
       display: inline-block;
       padding: 1px 6px;
-      border-radius: 4px;
+      border-radius: var(--r-sm);
       font-size: 10px;
       font-weight: 700;
       letter-spacing: 0.3px;
-      background: var(--primary-color);
+      background: var(--accent);
       color: #ffffff;
       margin-right: 6px;
-    }
-
-    html[data-color-mode="dark"] .log-tools-badge {
-      background: var(--primary-color);
     }
 
     .log-queries {
       margin-top: 4px;
       padding: 6px 8px;
       background: var(--code-bg);
-      border-radius: 8px;
+      border-radius: var(--r-md);
       font-family: SFMono-Regular, Consolas, monospace;
       font-size: 10px;
       word-break: break-all;
@@ -389,10 +571,10 @@ const injectStyles = () => {
       gap: 6px;
       margin-top: 8px;
       padding: 8px 10px;
-      border-radius: 8px;
+      border-radius: var(--r-md);
       background: var(--card-bg);
-      border: 2px solid var(--primary-color);
-      box-shadow: 0 4px 12px -4px rgba(37, 99, 235, 0.35);
+      border: 2px solid var(--accent);
+      box-shadow: var(--glow);
       font-size: 12px;
       line-height: 1.5;
       color: var(--text-color);
@@ -411,7 +593,7 @@ const injectStyles = () => {
       gap: 6px;
       padding: 3px 10px;
       border: 1px solid var(--border-color);
-      border-radius: 6px;
+      border-radius: var(--r-sm);
       background: var(--card-bg);
       color: var(--text-secondary);
       font-size: 10px;
@@ -438,7 +620,7 @@ const injectStyles = () => {
       margin-top: 6px;
       padding: 8px 10px;
       background: var(--code-bg);
-      border-radius: 8px;
+      border-radius: var(--r-md);
       font-family: SFMono-Regular, Consolas, monospace;
       font-size: 11px;
       line-height: 1.6;
@@ -469,14 +651,13 @@ const injectStyles = () => {
       width: 36px;
       height: 36px;
       border-radius: 50%;
-      background: #2563eb;
+      background: var(--accent-docs);
       color: #ffffff;
       display: flex;
       align-items: center;
       justify-content: center;
       margin-bottom: 6px;
     }
-    html[data-color-mode="dark"] .logs-empty-icon { background: #3b82f6; }
     .logs-empty-title {
       font-size: 14px;
       font-weight: 700;
@@ -596,15 +777,19 @@ const injectStyles = () => {
       box-shadow: 0 4px 12px -4px rgba(220, 38, 38, 0.35);
     }
 
+    /* Warning uses the mandate warning hue on the 2px border + hue shadow; body
+       text stays high-contrast --ink (white-on-warning and warning-on-white both
+       fail WCAG AA at this size, so the hue lives on the border, not the text). */
     .alert-warning {
-      background: rgba(255, 153, 31, 0.08);
-      border-color: #FF991F;
-      color: #FF991F;
+      background: var(--card-bg);
+      border-color: var(--warning);
+      border-width: 2px;
+      color: var(--ink);
+      box-shadow: 0 4px 12px -4px rgba(217, 119, 6, 0.32);
     }
 
     html[data-color-mode="dark"] .alert-warning {
-      color: #F5CD47;
-      border-color: #F5CD47;
+      box-shadow: 0 4px 12px -4px rgba(245, 158, 11, 0.32);
     }
 
     .alert-dismiss {
@@ -632,29 +817,26 @@ const injectStyles = () => {
     }
 
     .cv-gen-label {
+      font-family: SFMono-Regular, Consolas, monospace;
       font-size: 10px;
       font-weight: 700;
-      color: var(--text-muted);
-      letter-spacing: 0.3px;
+      text-transform: uppercase;
+      color: var(--accent-slate);
+      letter-spacing: var(--track-eyebrow);
     }
 
     .cv-gen-chip {
       padding: 2px 10px;
-      border-radius: 10px;
+      border-radius: var(--r-sm);
       font-size: 10px;
       font-weight: 700;
       color: #ffffff;
       white-space: nowrap;
     }
-    .cv-gen-docs { background: #2563eb; }
-    .cv-gen-skill { background: #7c3aed; }
-    .cv-gen-mem { background: #0d9488; }
-    .cv-gen-recipe { background: #4f46e5; }
-
-    html[data-color-mode="dark"] .cv-gen-docs { background: #3b82f6; }
-    html[data-color-mode="dark"] .cv-gen-skill { background: #8b5cf6; }
-    html[data-color-mode="dark"] .cv-gen-mem { background: #14b8a6; }
-    html[data-color-mode="dark"] .cv-gen-recipe { background: #6366f1; }
+    .cv-gen-docs { background: var(--accent-docs); }
+    .cv-gen-skill { background: var(--accent-skills); }
+    .cv-gen-mem { background: var(--accent-memories); }
+    .cv-gen-recipe { background: var(--accent-indigo); }
 
     .sk {
       background: linear-gradient(90deg, #cbd5e1 25%, #f1f5f9 50%, #cbd5e1 75%);
@@ -677,7 +859,9 @@ const injectStyles = () => {
        .btn-retry, .mls-toast, .reveal
        ============================================================ */
     :root {
-      --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+      /* Unified on the LeanZero house curve (was 0.16,1,0.3,1). One ease-out
+         for the whole file; --lz-ease below is the same value. */
+      --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
       --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
       --dur-fast: 140ms;
       --dur-med: 260ms;
@@ -796,7 +980,7 @@ const injectStyles = () => {
       background: var(--success-color);
       color: #ffffff; font-size: 12.5px; font-weight: 700;
       font-family: inherit;
-      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.28);
+      box-shadow: var(--shadow-pop);
       animation: mlsToastIn 0.32s var(--ease-spring) both;
       pointer-events: none;
       white-space: nowrap;
@@ -831,24 +1015,15 @@ const injectStyles = () => {
        =================================================================== */
     :root {
       --lz-ease: cubic-bezier(0.22, 1, 0.36, 1);
-      --lz-cyan: #0891b2;
-      --lz-purple: #7c3aed;
-      --lz-ring: 0 0 0 3px rgba(37, 99, 235, 0.32);
-      --lz-card-shadow: 0 1px 2px rgba(18, 42, 66, 0.06), 0 5px 16px -8px rgba(18, 42, 66, 0.14);
-      --lz-card-shadow-hover: 0 12px 30px -12px rgba(29, 78, 216, 0.28), 0 3px 10px rgba(18, 42, 66, 0.10);
-      --lz-glow: 0 8px 22px -6px rgba(37, 99, 235, 0.42);
-      --lz-sel-bg: rgba(37, 99, 235, 0.26);
-      --lz-sel-fg: #0f172a;
-    }
-    html[data-color-mode="dark"] {
-      --lz-cyan: #22d3ee;
-      --lz-purple: #a855f7;
-      --lz-ring: 0 0 0 3px rgba(96, 165, 250, 0.45);
-      --lz-card-shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 6px 20px -10px rgba(0, 0, 0, 0.55);
-      --lz-card-shadow-hover: 0 0 26px rgba(59, 130, 246, 0.30), 0 8px 24px -10px rgba(0, 0, 0, 0.55);
-      --lz-glow: 0 0 24px rgba(59, 130, 246, 0.42);
-      --lz-sel-bg: rgba(96, 165, 250, 0.42);
-      --lz-sel-fg: #f8fafc;
+      --lz-cyan: var(--accent-cyan);
+      --lz-purple: var(--accent-skills);
+      /* Effect tokens alias onto the canonical set — one source, same names. */
+      --lz-ring: var(--ring);
+      --lz-card-shadow: var(--shadow-card);
+      --lz-card-shadow-hover: var(--shadow-card-hover);
+      --lz-glow: var(--glow);
+      --lz-sel-bg: var(--sel-bg);
+      --lz-sel-fg: var(--sel-fg);
     }
 
     ::selection { background: var(--lz-sel-bg); color: var(--lz-sel-fg); }
@@ -949,6 +1124,10 @@ function App() {
   const [licenseActive, setLicenseActive] = useState(null);
   const [ruleDisabled, setRuleDisabled] = useState(null);
   const [ruleId, setRuleId] = useState(null);
+  // Which module context delivered the config — the authoritative
+  // validator vs condition vs post-function signal (the extension key that
+  // matched). "configuration"/"config" fallbacks are ambiguous -> null.
+  const [ruleModule, setRuleModule] = useState(null);
   const [workflowContext, setWorkflowContext] = useState(null);
   const [toggling, setToggling] = useState(false);
   const [clearingLogs, setClearingLogs] = useState(false);
@@ -959,6 +1138,10 @@ function App() {
   // True once getRuleStatus has completed (found or not) — keeps the banner
   // placeholder honest: it only shows while a check is genuinely in flight.
   const [statusChecked, setStatusChecked] = useState(false);
+  // "Explain this rule" assist: idle | loading | done | degraded | error.
+  const [explainState, setExplainState] = useState("idle");
+  const [explanation, setExplanation] = useState("");
+  const [explainReason, setExplainReason] = useState("");
 
   const fetchLogs = async () => {
     if (!invoke) return;
@@ -978,8 +1161,16 @@ function App() {
             (l.fieldId === actionField || l.fieldId === "static-code" || pfType.includes("static"))
           );
         } else if (config?.fieldId) {
-          // Validator/condition: match by field ID
-          allLogs = allLogs.filter((l) => l.fieldId === config.fieldId && (!l.type || l.type === "validation"));
+          // Validator/condition: match by field ID AND this rule's own type. The backend
+          // writes type "validator"/"condition" (index.js validate); accepting only the
+          // legacy "validation" dropped EVERY current-format log, so the viewer showed
+          // empty despite real runs. ruleModule is the authoritative module signal
+          // (config.type never carries "condition"); when it's unknown, accept both.
+          const wantTypes = ruleModule === "condition" ? ["condition"]
+            : ruleModule === "validator" ? ["validator"]
+            : ["validator", "condition"];
+          allLogs = allLogs.filter((l) => l.fieldId === config.fieldId
+            && (!l.type || l.type === "validation" || wantTypes.includes(l.type)));
         }
         setLogs(allLogs);
       } else if (logs.length > 0) {
@@ -1017,6 +1208,29 @@ function App() {
       showToast("Failed to clear logs", "error");
     }
     setClearingLogs(false);
+  };
+
+  // One AI call per explicit click. The server bounds cost (sig-cache + short
+  // negative-cache); the UI never calls this on mount/theme/config-load.
+  const runExplain = async ({ kind, ruleTypeLabel, factsText }) => {
+    if (!invoke || explainState === "loading") return;
+    setExplainState("loading");
+    try {
+      const result = await invoke("explainRule", { kind, ruleTypeLabel, factsText });
+      if (result?.degraded) {
+        setExplainReason(result.reason || "error");
+        setExplainState("degraded");
+      } else if (result?.success && result.explanation) {
+        setExplanation(result.explanation);
+        setExplainState("done");
+      } else {
+        setExplainReason(result?.error || "");
+        setExplainState("error");
+      }
+    } catch (e) {
+      console.error("Explain rule failed:", e);
+      setExplainState("error");
+    }
   };
 
   const [toggleError, setToggleError] = useState(null);
@@ -1081,6 +1295,20 @@ function App() {
           context?.extension?.conditionConfig ||
           context?.extension?.configuration ||
           context?.extension?.config;
+
+        // Which module delivered this config — the authoritative validator vs
+        // condition vs post-function signal (config.type never carries
+        // "condition"). Prefer extension.type (the same signal the config-ui
+        // editor trusts); fall back to which *Config payload key matched, so
+        // a config arriving via the generic configuration/config keys still
+        // resolves rather than mislabelling.
+        const extType = context?.extension?.type;
+        if (extType === "jira:workflowCondition") setRuleModule("condition");
+        else if (extType === "jira:workflowValidator") setRuleModule("validator");
+        else if (extType === "jira:workflowPostFunction") setRuleModule("postfunction");
+        else if (context?.extension?.postFunctionConfig) setRuleModule("postfunction");
+        else if (context?.extension?.validatorConfig) setRuleModule("validator");
+        else if (context?.extension?.conditionConfig) setRuleModule("condition");
 
         if (possibleConfig) {
           // Config is stored as JSON string, parse it
@@ -1346,7 +1574,7 @@ function App() {
         {/* Still show logs section even without config */}
         <div className="logs-section">
           <div className="logs-header">
-            <span className="logs-title">{config?.type?.includes("postfunction") ? "Execution Logs" : "Validation Logs"}</span>
+            <span className="logs-title">{config?.type?.includes("postfunction") ? "§ LOG · EXECUTION" : "§ LOG · VALIDATION"}</span>
             <div className="logs-actions">
               <button
                 className="btn-small"
@@ -1400,7 +1628,7 @@ function App() {
                 </div>
               ) : (
                 logs.map((log) => (
-                  <div key={log.id} className="log-entry">
+                  <div key={log.id} className={`log-entry ${log.isValid ? "cv-log-pass" : "cv-log-fail"}`}>
                     <div className="log-header">
                       <span
                         className={`log-status ${log.isValid ? "valid" : "invalid"}`}
@@ -1448,19 +1676,37 @@ function App() {
     );
   }
 
+  // Summary-card identity: hue class + drafting eyebrow + monumental title.
+  // isCondition uses the authoritative module signal; for premade it falls back
+  // to catalog membership. It never labels a rule a type it cannot back up.
+  const isCondition =
+    ruleModule === "condition" ? true :
+    ruleModule === "validator" ? false :
+    (config.ruleKind === "premade" && !findRule("validator", config.ruleType) && !!findRule("condition", config.ruleType));
+  const ruleView =
+    config.type === "postfunction-semantic"
+      ? { cls: "cv-rule-semantic", eyebrow: "§ POST-FUNCTION", title: "Semantic Post Function" }
+    : config.type === "postfunction-static"
+      ? { cls: "cv-rule-static", eyebrow: "§ POST-FUNCTION", title: "Static Post Function" }
+    : config.ruleKind === "premade"
+      ? { cls: "cv-rule-premade", eyebrow: "§ RULE", title: `Premade ${isCondition ? "Condition" : "Validator"}` }
+    : { cls: isCondition ? "cv-rule-condition" : "cv-rule-validator", eyebrow: "§ RULE", title: `AI ${isCondition ? "Condition" : "Validator"}` };
+
   return (
     <div className="container">
       {licenseBanner}
       {statusBanner}
       {toggleAlerts}
 
+      <div className={`cv-summary-card ${ruleView.cls}`}>
+        <div className="cv-summary-head">
+          <span className="cv-eyebrow">{ruleView.eyebrow}</span>
+          <span className="cv-summary-title">{ruleView.title}</span>
+        </div>
+
       {/* Post-function: Semantic */}
       {config.type === "postfunction-semantic" && (
         <>
-          <div className="config-item">
-            <span className="label">Type:</span>
-            <span className="prompt-value">Semantic Post Function</span>
-          </div>
           {config.conditionPrompt && (
             <div className="config-item">
               <span className="label">Condition:</span>
@@ -1485,10 +1731,6 @@ function App() {
       {/* Post-function: Static */}
       {config.type === "postfunction-static" && (
         <>
-          <div className="config-item">
-            <span className="label">Type:</span>
-            <span className="prompt-value">Static Post Function</span>
-          </div>
           <div className="config-item">
             <span className="label">Steps:</span>
             <span className="prompt-value">{staticSteps.length} function block{staticSteps.length !== 1 ? "s" : ""}</span>
@@ -1591,10 +1833,51 @@ function App() {
         )
       )}
 
+      {(() => {
+        const explainKind = ruleKindEnum(config, ruleModule, isCondition);
+        const explainFacts = buildFactsText(config, staticSteps);
+        const trigger = (
+          <button
+            className={`cv-explain-btn${explainState === "loading" ? " is-busy busy-solid" : ""}`}
+            onClick={() => runExplain({ kind: explainKind, ruleTypeLabel: explainKind === "premade" ? "Premade rule" : ruleView.title, factsText: explainFacts })}
+            disabled={explainState === "loading"}
+          >
+            ✦ Explain this rule in plain English
+          </button>
+        );
+        const showTrigger =
+          explainState === "idle" || explainState === "loading" || explainState === "error" ||
+          (explainState === "degraded" && explainReason === "timeout");
+        return (
+          <div className="cv-explain">
+            {explainState === "done" && (
+              <div className="cv-explain-card">
+                <div className="cv-explain-eyebrow">§ IN PLAIN ENGLISH</div>
+                <div className="cv-explain-text">{explanation}</div>
+              </div>
+            )}
+            {explainState === "degraded" && (
+              <div className="cv-explain-note">
+                {explainReason === "lmstudio"
+                  ? "Plain-English explanations aren't available with the self-hosted LM Studio provider — switch to a hosted provider in CogniRunner Settings."
+                  : explainReason === "timeout"
+                  ? "The AI provider didn't respond in time — try again in a moment."
+                  : "Couldn't generate an explanation right now — try again in a moment."}
+              </div>
+            )}
+            {explainState === "error" && (
+              <div className="cv-explain-note">Couldn't generate an explanation.</div>
+            )}
+            {showTrigger && trigger}
+          </div>
+        );
+      })()}
+      </div>
+
       {/* Logs section */}
       <div className="logs-section">
         <div className="logs-header">
-          <span className="logs-title">{config?.type?.includes("postfunction") ? "Execution Logs" : "Validation Logs"}</span>
+          <span className="logs-title">{config?.type?.includes("postfunction") ? "§ LOG · EXECUTION" : "§ LOG · VALIDATION"}</span>
           <div className="logs-actions">
             <button
               className="btn-small"
@@ -1648,7 +1931,7 @@ function App() {
               </div>
             ) : (
               logs.map((log) => (
-                <div key={log.id} className="log-entry">
+                <div key={log.id} className={`log-entry ${log.isValid ? "cv-log-pass" : "cv-log-fail"}`}>
                   <div className="log-header">
                     <span className={`log-status ${log.isValid ? "valid" : "invalid"}`}>
                       {log.type === "postfunction-semantic" ? (log.isValid ? "OK" : "ERR")
@@ -1663,6 +1946,10 @@ function App() {
                           : "lt-validator"
                       }`}>{log.type.replace("postfunction-", "PF: ")}</span>
                     )}
+                    <span className={`log-src log-src-${logSourceOf(log)}`}>{SOURCE_LABEL[logSourceOf(log)]}</span>
+                    {(log.flags || []).map((f) => FLAG_LABEL[f] ? (
+                      <span key={f} className={`log-flag log-flag-${f}`}>{FLAG_LABEL[f]}</span>
+                    ) : null)}
                     <span className="log-issue">{log.issueKey}</span>
                     <span className="log-meta">
                       {log.executionTimeMs ? (
@@ -1688,7 +1975,7 @@ function App() {
                         <strong>{log.decision}</strong>
                       </span>
                       {log.changes !== undefined && <span>{log.changes} change{log.changes !== 1 ? "s" : ""}</span>}
-                      {log.steps && <span>{log.steps} step{log.steps !== 1 ? "s" : ""}</span>}
+                      {log.steps > 0 && <span>{log.steps} step{log.steps !== 1 ? "s" : ""}</span>}
                     </div>
                   )}
                   {log.workflowName && (
@@ -1734,7 +2021,7 @@ function App() {
                       </div>
                     </details>
                   )}
-                  {log.aiTimeMs && (
+                  {log.aiTimeMs > 0 && (
                     <div className="log-foot">
                       AI: {log.aiTimeMs}ms{log.tokens ? ` · ${log.tokens} tokens` : ""}{log.docCount ? ` · ${log.docCount} doc(s)` : ""}
                     </div>

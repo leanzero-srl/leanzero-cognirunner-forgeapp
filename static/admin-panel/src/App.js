@@ -25,8 +25,11 @@ import PermissionsTab from "./components/PermissionsTab";
 import SettingsOpenAITab from "./components/SettingsOpenAITab";
 import CustomSelect from "./components/CustomSelect";
 import { findRule as findPremadeRule } from "../../../src/shared/premade-rules-catalog.js";
+import { buildFactsText, ruleKindEnum } from "../../../src/shared/explain-facts.js";
+import { logSourceOf, SOURCE_LABEL, FLAG_LABEL } from "../../../src/shared/log-flags.js";
 import AddRuleWizard from "./components/AddRuleWizard";
 import Tooltip from "./components/Tooltip";
+import RulePortabilityDialog from "./components/RulePortabilityDialog";
 import { showToast } from "./components/toast";
 import { confirmDialog } from "./confirmDialog";
 
@@ -50,10 +53,27 @@ const injectStyles = () => {
       --code-bg: #f1f5f9;
       --icon-bg: #dbeafe;
       --hover-bg: #f1f5f9;
+      /* Canonical LeanZero design tokens (unified with config-view) — mandate hue map,
+         radius ladder, blue-black card shadows. Additive; existing vars unchanged. */
+      --accent: #2563eb; --accent-deep: #1d4ed8;
+      --accent-docs: #2563eb; --accent-skills: #7c3aed; --accent-memories: #0d9488;
+      --accent-test: #d97706; --accent-fix: #16a34a; --accent-slate: #475569;
+      --accent-cyan: #0891b2; --accent-indigo: #4f46e5;
+      --r-sm: 6px; --r-md: 8px; --r-lg: 12px; --r-pill: 999px;
+      --shadow-card: 0 1px 2px rgba(18,42,66,0.06), 0 5px 16px -8px rgba(18,42,66,0.14);
+      --shadow-card-hover: 0 12px 30px -12px rgba(29,78,216,0.28), 0 3px 10px rgba(18,42,66,0.10);
+      --glow: 0 8px 22px -6px rgba(37,99,235,0.42);
     }
 
     html[data-color-mode="dark"] {
       --bg-color: transparent;
+      --accent: #3b82f6; --accent-deep: #3b82f6;
+      --accent-docs: #3b82f6; --accent-skills: #8b5cf6; --accent-memories: #14b8a6;
+      --accent-test: #f59e0b; --accent-fix: #22c55e; --accent-slate: #64748b;
+      --accent-cyan: #22d3ee; --accent-indigo: #6366f1;
+      --shadow-card: 0 1px 2px rgba(0,0,0,0.4), 0 5px 16px -8px rgba(0,0,0,0.6);
+      --shadow-card-hover: 0 12px 30px -12px rgba(0,0,0,0.7), 0 3px 10px rgba(0,0,0,0.5);
+      --glow: 0 8px 22px -6px rgba(59,130,246,0.5);
       --text-color: #F5F5F7;
       --text-secondary: #A0A0B0;
       --text-muted: #71717a;
@@ -147,6 +167,11 @@ const injectStyles = () => {
       align-items: center;
       justify-content: space-between;
       margin-bottom: 12px;
+      /* Wrap the action controls below the title on narrow widths (e.g. a 1024px
+         screen with Jira's sidebar) instead of forcing horizontal PAGE scroll that
+         pushes primary actions off-screen. No-op when everything fits. */
+      flex-wrap: wrap;
+      gap: 8px 12px;
     }
 
     .section-title {
@@ -160,6 +185,7 @@ const injectStyles = () => {
     .section-actions {
       display: flex;
       gap: 8px;
+      flex-wrap: wrap;
     }
 
     .btn-small {
@@ -251,7 +277,137 @@ const injectStyles = () => {
     .row-actions {
       display: flex;
       gap: 6px;
+      flex-wrap: wrap;
     }
+
+    /* Per-rule "Explain this rule" in the Rules table — solid accent button, an
+       independent full-width explanation row with an inset card. Admin tokens only
+       (each has a dark variant), so both themes are covered. No left rail/faded tint. */
+    .rule-explain-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      color: #ffffff;
+      background: var(--primary-color);
+      border-color: var(--primary-color);
+    }
+    .rule-explain-btn:hover:not(:disabled) { opacity: 0.9; }
+    .rule-explain-row td { padding: 0 12px 10px; }
+    .rule-explain-card {
+      padding: 10px 12px;
+      background: var(--code-bg);
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+    }
+    .rule-explain-eyebrow {
+      font-family: SFMono-Regular, Consolas, monospace;
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.14em;
+      color: var(--primary-color);
+      margin-bottom: 5px;
+    }
+    .rule-explain-text {
+      font-size: 13px;
+      line-height: 1.5;
+      color: var(--text-color);
+    }
+    .rule-explain-note {
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--text-secondary);
+    }
+
+    /* Per-tab intro banner — one plain "what this is" line so the concept-heavy
+       admin panel reads clearly. Inset card + mono eyebrow; no left rail, no faded tint. */
+    .tab-intro {
+      display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+      padding: 10px 14px; margin: 14px 0 2px;
+      background: var(--code-bg); border: 1px solid var(--border-color); border-radius: 8px;
+    }
+    .tab-intro-eyebrow {
+      font-family: SFMono-Regular, Consolas, monospace; font-size: 10px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0.14em; color: var(--primary-color); flex-shrink: 0;
+    }
+    .tab-intro-what { font-size: 12.5px; line-height: 1.5; color: var(--text-secondary); }
+    .tab-intro-terms { display: inline-flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+    .term-chip {
+      display: inline-block; padding: 1px 9px; border-radius: 999px;
+      font-size: 11px; font-weight: 600; color: var(--primary-color);
+      border: 1px dashed var(--primary-color); cursor: help; white-space: nowrap;
+      transition: background 0.15s ease, color 0.15s ease;
+    }
+    .term-chip:hover { background: var(--primary-color); color: #ffffff; }
+
+    /* AI usage meter — bold saturated numbers, solid cyan provider bars. Inset card,
+       no left rail, no faded tint. Meter hue is distinct from docs/skills/memories. */
+    .usage-card {
+      margin-bottom: 20px; padding: 14px 16px;
+      background: var(--code-bg); border: 1px solid var(--border-color); border-radius: 10px;
+    }
+    .usage-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; gap: 10px; flex-wrap: wrap; }
+    .usage-eyebrow {
+      font-family: SFMono-Regular, Consolas, monospace; font-size: 10px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0.14em; color: #0891b2;
+    }
+    html[data-color-mode="dark"] .usage-eyebrow { color: #22d3ee; }
+    .usage-reset-confirm { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-secondary); }
+    .usage-stats { display: flex; gap: 28px; flex-wrap: wrap; margin-bottom: 14px; }
+    .usage-stat { display: flex; flex-direction: column; }
+    .usage-num { font-size: 22px; font-weight: 800; letter-spacing: -0.02em; color: var(--text-color); font-variant-numeric: tabular-nums; }
+    .usage-lbl { font-size: 11px; color: var(--text-secondary); margin-top: 2px; }
+    .usage-providers { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+    .usage-prov-row { display: grid; grid-template-columns: 92px 1fr auto; align-items: center; gap: 10px; font-size: 11px; }
+    .usage-prov-name { font-weight: 600; color: var(--text-color); text-transform: capitalize; }
+    .usage-prov-bar { height: 8px; background: var(--border-color); border-radius: 999px; overflow: hidden; }
+    .usage-prov-fill { display: block; height: 100%; background: #0891b2; border-radius: 999px; }
+    html[data-color-mode="dark"] .usage-prov-fill { background: #22d3ee; }
+    .usage-prov-val { color: var(--text-secondary); white-space: nowrap; font-variant-numeric: tabular-nums; }
+    .usage-foot { font-size: 11px; color: var(--text-muted); font-style: italic; }
+
+    /* Rule export / import dialog — solid status chips, canonical tokens, no left rail. */
+    .pf-modal-overlay {
+      position: fixed; inset: 0; z-index: 9998; background: rgba(15, 23, 42, 0.55);
+      display: flex; align-items: flex-start; justify-content: center; padding: 48px 16px; overflow-y: auto;
+    }
+    .pf-modal.port-dialog {
+      background: var(--card-bg); border: 1px solid var(--border-color);
+      border-radius: var(--r-lg, 12px); box-shadow: var(--shadow-card-hover); width: 100%; max-width: 640px; padding: 20px;
+    }
+    .port-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+    .port-tabs { display: flex; gap: 10px; margin-bottom: 16px; border-bottom: 1px solid var(--border-color); }
+    .port-tab { background: none; border: none; padding: 8px 4px; margin-bottom: -1px; font-size: 13px; font-weight: 600; color: var(--text-secondary); cursor: pointer; border-bottom: 2px solid transparent; }
+    .port-tab.is-active { color: var(--primary-color); border-bottom-color: var(--primary-color); }
+    .port-hint { font-size: 12.5px; color: var(--text-secondary); line-height: 1.5; margin: 0 0 12px; }
+    .port-selectall { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; margin-bottom: 8px; cursor: pointer; }
+    .port-rulelist { max-height: 280px; overflow-y: auto; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); }
+    .port-ruleitem { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--border-color); font-size: 13px; cursor: pointer; }
+    .port-ruleitem:last-child { border-bottom: none; }
+    .port-rulename { flex: 1; color: var(--text-color); }
+    .port-ruletype { font-size: 11px; color: var(--text-muted); }
+    .port-empty { padding: 16px; text-align: center; color: var(--text-muted); font-size: 13px; }
+    .port-actions { margin-top: 14px; display: flex; justify-content: flex-end; }
+    .port-file { display: block; margin-bottom: 10px; font-size: 12px; }
+    .port-textarea { width: 100%; box-sizing: border-box; font-family: SFMono-Regular, Consolas, monospace; font-size: 12px; padding: 10px; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); background: var(--input-bg); color: var(--text-color); resize: vertical; }
+    .port-plan { margin-top: 16px; }
+    .port-plan-head { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-secondary); margin-bottom: 8px; }
+    .port-plan-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--border-color); font-size: 13px; flex-wrap: wrap; }
+    .port-plan-name { flex: 1; font-weight: 600; color: var(--text-color); }
+    .port-plan-type { font-size: 11px; color: var(--text-muted); }
+    .port-plan-note { flex-basis: 100%; font-size: 11px; color: #d97706; }
+    html[data-color-mode="dark"] .port-plan-note { color: #f59e0b; }
+    .port-status { display: inline-flex; padding: 2px 8px; border-radius: var(--r-sm, 6px); font-size: 9px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; color: #fff; white-space: nowrap; }
+    .port-status-ready { background: #16a34a; }
+    .port-status-committed { background: #16a34a; }
+    .port-status-needs-rebind { background: #d97706; }
+    .port-status-conflict { background: #4f46e5; }
+    .port-status-invalid { background: #dc2626; }
+    .port-status-error { background: #dc2626; }
+    .port-target { margin: 4px 0 14px; }
+    .port-target-lbl { display: block; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-secondary); margin-bottom: 6px; }
+    .port-target-picks { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+    .port-commit-note { margin-top: 14px; padding: 10px 12px; background: var(--code-bg); border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); font-size: 12px; color: var(--text-secondary); line-height: 1.5; }
 
     .row-disabled td {
       opacity: 0.55;
@@ -336,13 +492,28 @@ const injectStyles = () => {
       font-size: 13px;
     }
 
+    /* Vivid status cards — each log entry's border + hue shadow encode pass/fail/skip
+       at a glance (matches config-view). Dark keeps the hue border (functional color). */
     .log-entry {
       padding: 12px 14px;
-      border-bottom: 1px solid var(--border-color);
+      background: var(--card-bg);
+      border: 2px solid var(--border-color);
+      border-radius: 8px;
+      box-shadow: 0 1px 2px rgba(18, 42, 66, 0.06), 0 4px 14px -8px rgba(18, 42, 66, 0.12);
       font-size: 12px;
+      transition: box-shadow 0.2s ease;
     }
-
-    .log-entry:last-child { border-bottom: none; }
+    .log-entry:hover { box-shadow: 0 8px 22px -10px rgba(29, 78, 216, 0.25); }
+    .log-entry.cv-log-pass { border-color: #16a34a; box-shadow: 0 4px 14px -6px rgba(22, 163, 74, 0.30); }
+    .log-entry.cv-log-fail { border-color: #dc2626; box-shadow: 0 4px 14px -6px rgba(220, 38, 38, 0.30); }
+    .log-entry.cv-log-skip { border-color: #475569; box-shadow: 0 4px 14px -6px rgba(71, 85, 105, 0.26); }
+    html[data-color-mode="dark"] .log-entry {
+      border-width: 1px;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.5), 0 6px 20px -12px rgba(0, 0, 0, 0.5);
+    }
+    html[data-color-mode="dark"] .log-entry.cv-log-pass { border-color: #22c55e; }
+    html[data-color-mode="dark"] .log-entry.cv-log-fail { border-color: #ef4444; }
+    html[data-color-mode="dark"] .log-entry.cv-log-skip { border-color: #64748b; }
 
     .log-header {
       display: flex;
@@ -389,6 +560,25 @@ const injectStyles = () => {
       white-space: nowrap;
       flex-shrink: 0;
     }
+    /* Execution-log source + honesty flag chips — solid saturated fills, white text,
+       same idiom as .log-type-badge. Source = where it ran; flags = honest truths. */
+    .log-src, .log-flag {
+      display: inline-flex; align-items: center; padding: 2px 7px; border-radius: 6px;
+      font-size: 9px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase;
+      color: #ffffff; white-space: nowrap; flex-shrink: 0;
+    }
+    .log-src-runtime { background: #475569; }
+    .log-src-async   { background: #4f46e5; }
+    .log-src-test    { background: #d97706; }
+    .log-flag-simulated      { background: #0891b2; }
+    .log-flag-transientError { background: #dc2626; }
+    .log-flag-capped         { background: #ea580c; }
+    html[data-color-mode="dark"] .log-src-runtime { background: #64748b; }
+    html[data-color-mode="dark"] .log-src-async   { background: #6366f1; }
+    html[data-color-mode="dark"] .log-src-test    { background: #f59e0b; }
+    html[data-color-mode="dark"] .log-flag-simulated      { background: #22d3ee; }
+    html[data-color-mode="dark"] .log-flag-transientError { background: #ef4444; }
+    html[data-color-mode="dark"] .log-flag-capped         { background: #fb923c; }
     .lt-validator { background: #2563eb; }
     .lt-condition { background: #7c3aed; }
     .lt-pf, .lt-pf-semantic { background: #0d9488; }
@@ -482,11 +672,14 @@ const injectStyles = () => {
     .logs-list {
       max-height: 400px;
       overflow-y: auto;
-      border-radius: inherit;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 8px;
     }
     /* Paginated logs (Logs tab): no inner scroll — the page bounds the height,
        and the pagination control pages through the 50-entry window. */
-    .logs-list-paged { border-radius: inherit; }
+    .logs-list-paged { display: flex; flex-direction: column; gap: 8px; padding: 8px; }
     .logs-pagination {
       display: flex;
       align-items: center;
@@ -1247,6 +1440,9 @@ const injectStyles = () => {
       transition: opacity 0.15s ease;
     }
     .tooltip-wrap:hover .tooltip-icon { opacity: 1; }
+    /* Keyboard focus indicator — the trigger is now focusable (a11y). */
+    .tooltip-wrap:focus-visible { outline: 2px solid var(--primary-color); outline-offset: 2px; border-radius: 4px; }
+    .tooltip-wrap:focus-visible .tooltip-icon { opacity: 1; }
     .tooltip-portal {
       position: absolute;
       transform: translateX(-50%);
@@ -1578,13 +1774,9 @@ const injectStyles = () => {
       to { opacity: 1; transform: translateY(0); }
     }
 
-    /* Log entry entrance — subtle stagger effect */
+    /* Log entry entrance — subtle fade (the card border/shadow is defined above). */
     .log-entry {
       animation: logEntryFade 0.2s ease both;
-      transition: background-color 0.15s ease;
-    }
-    .log-entry:hover {
-      background-color: var(--hover-bg);
     }
     @keyframes logEntryFade {
       from { opacity: 0; }
@@ -1855,7 +2047,7 @@ const injectStyles = () => {
        .btn-retry, .mls-toast, .reveal
        ============================================================ */
     :root {
-      --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+      --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
       --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
       --dur-fast: 140ms;
       --dur-med: 260ms;
@@ -2583,6 +2775,9 @@ const injectCopiedComponentStyles = () => {
     }
 
     .tooltip-wrap:hover .tooltip-icon { opacity: 1; }
+    /* Keyboard focus indicator — the trigger is now focusable (a11y). */
+    .tooltip-wrap:focus-visible { outline: 2px solid var(--primary-color); outline-offset: 2px; border-radius: 4px; }
+    .tooltip-wrap:focus-visible .tooltip-icon { opacity: 1; }
 
     /* Portal-rendered tooltip (escapes overflow:hidden) */
     .tooltip-portal {
@@ -3987,9 +4182,10 @@ const injectCopiedComponentStyles = () => {
     .st-error .st-result-header { background: rgba(220, 38, 38, 0.06); }
 
     .test-badge-skip {
-      background: rgba(37, 99, 235, 0.15);
-      color: var(--primary-color);
+      background: #475569;
+      color: #ffffff;
     }
+    html[data-color-mode="dark"] .test-badge-skip { background: #64748b; }
 
     .st-section {
       padding: 8px 12px;
@@ -4349,6 +4545,87 @@ const injectCopiedComponentStyles = () => {
       border-top: 1px solid var(--border-color);
     }
 
+    /* Narrate dry-run: deterministic count chips + AI "what this would do" card.
+       Solid saturated chips, white text; accent button; inset card. No left rail,
+       no faded tint. The slate count chip carries an explicit dark override. */
+    .ndr-chips {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 6px;
+    }
+    .ndr-count {
+      padding: 2px 10px;
+      border-radius: 999px;
+      font-size: 10px;
+      font-weight: 700;
+      color: #ffffff;
+      background: #475569;
+      white-space: nowrap;
+    }
+    html[data-color-mode="dark"] .ndr-count { background: #64748b; }
+    .ndr-verb {
+      padding: 2px 10px;
+      border-radius: 999px;
+      font-size: 10px;
+      font-weight: 700;
+      color: #ffffff;
+      background: var(--primary-color);
+      white-space: nowrap;
+    }
+    .ndr { padding: 0 12px 10px; }
+    .ndr-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      color: #ffffff;
+      background: var(--primary-color);
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    .ndr-btn:hover:not(:disabled) { opacity: 0.9; }
+    .ndr-btn:disabled { opacity: 0.7; cursor: default; }
+    .ndr-card {
+      margin-bottom: 10px;
+      padding: 10px 12px;
+      background: var(--code-bg);
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+    }
+    .ndr-eyebrow {
+      font-family: SFMono-Regular, Consolas, monospace;
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.14em;
+      color: var(--primary-color);
+      margin-bottom: 5px;
+    }
+    .ndr-summary {
+      font-size: 13px;
+      line-height: 1.5;
+      color: var(--text-color);
+    }
+    .ndr-verify {
+      margin: 8px 0 0;
+      padding-left: 18px;
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--text-secondary);
+    }
+    .ndr-verify li { margin: 2px 0; }
+    .ndr-note {
+      padding: 8px 0 0;
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--text-secondary);
+    }
+
     /* CodeMirror hover docs */
     .cm-api-hover {
       background: var(--card-bg);
@@ -4420,6 +4697,47 @@ const injectCopiedComponentStyles = () => {
     html[data-color-mode="dark"] .pr-note { background: #d97706; }
     .pr-foot { font-style: italic; }
 
+    /* NL-to-rule builder ("Build from a description") — solid accent button, inset
+       result card. Existing tokens only (dark variants present); no left rail/tint. */
+    .br-bar { margin-bottom: 14px; }
+    .br-toggle {
+      display: inline-flex; align-items: center; gap: 6px;
+      background: none; border: none; padding: 4px 0; cursor: pointer;
+      font-size: 12.5px; font-weight: 600; color: var(--primary-color);
+    }
+    .br-toggle-caret { display: inline-block; transition: transform 0.15s ease; font-size: 10px; }
+    .br-toggle.open .br-toggle-caret { transform: rotate(90deg); }
+    .br-toggle-hint { font-weight: 400; color: var(--text-muted); font-size: 11px; }
+    .br-body { margin-top: 8px; }
+    .br-input {
+      width: 100%; box-sizing: border-box; resize: vertical;
+      padding: 8px 10px; font-size: 13px; font-family: inherit;
+      border: 1px solid var(--border-color); border-radius: 8px;
+      background: var(--card-bg); color: var(--text-color); margin-bottom: 8px;
+    }
+    .br-input:focus { outline: none; border-color: var(--primary-color); }
+    .br-btn {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 6px 12px; font-size: 12px; font-weight: 600;
+      color: #fff; background: var(--primary-color); border: none;
+      border-radius: 6px; cursor: pointer;
+    }
+    .br-btn:hover:not(:disabled) { opacity: 0.9; }
+    .br-btn:disabled { opacity: 0.6; cursor: default; }
+    .br-card {
+      margin-top: 10px; padding: 10px 12px;
+      background: var(--code-bg); border: 1px solid var(--border-color); border-radius: 10px;
+    }
+    .br-eyebrow {
+      font-family: 'SFMono-Regular', Consolas, monospace; font-size: 10px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0.14em; color: var(--primary-color); margin-bottom: 5px;
+    }
+    .br-summary { font-size: 13px; line-height: 1.5; color: var(--text-color); }
+    .br-applied { font-size: 12px; color: var(--text-secondary); margin-top: 6px; }
+    .br-hint { font-size: 12px; color: #b45309; margin-top: 6px; font-weight: 600; }
+    html[data-color-mode="dark"] .br-hint { color: #f59e0b; }
+    .br-note { margin-top: 10px; font-size: 12px; line-height: 1.5; color: var(--text-secondary); }
+
     /* Premade recipe picker (FunctionBlock "Start from a recipe") */
     .recipe-bar { margin-bottom: 14px; border: 1px solid var(--border-color); border-radius: 8px; overflow: hidden; }
     .recipe-bar-toggle {
@@ -4452,6 +4770,29 @@ const TABS = [
   { key: "permissions", label: "Permissions", adminOnly: true },
   { key: "settings", label: "Settings", adminOnly: true },
 ];
+
+// One-line "what this is / when to use it" per tab — the single copy source so the
+// concept-heavy admin panel stays coherent for non-technical admins.
+const SURFACES = {
+  rules: { eyebrow: "RULES", what: "Every AI validator, condition, and post-function you've configured, across all workflows — toggle, edit, or explain any rule from here.",
+    terms: [{ label: "post-function", def: "A rule that runs AFTER a transition completes — it writes a field with AI, posts a comment, or runs saved sandboxed JavaScript." }] },
+  logs: { eyebrow: "EXECUTION LOGS", what: "A running history of what your rules did on real transitions: pass or fail, the AI's reasoning, and any changes a post-function made." },
+  docs: { eyebrow: "DOCUMENTATION", what: "Reference docs the AI reads when it generates code and validates fields. Add your own API notes or conventions; the built-in guides come seeded.",
+    terms: [{ label: "provenance", def: "The record of exactly which docs, skills, and memories the AI drew on when it generated a step's code — shown as chips on each rule." }] },
+  skills: { eyebrow: "SKILLS", what: "Reusable instruction packs the AI applies when generating post-function code — auto-matched by keyword, or picked per step.",
+    terms: [{ label: "auto-match", def: "On top of any skills you pick, the AI automatically applies up to 2 whose keywords match your step's description." }] },
+  memories: { eyebrow: "MEMORIES", what: "Short facts this instance has learned from fixes and your corrections. They sharpen future AI output; runtime use is opt-in (per-transition token cost).",
+    terms: [
+      { label: "distill", def: "When a production failure is new, the AI writes a short (≤400-char) lesson from it and saves it as a memory — no repeat AI cost for known errors." },
+      { label: "runtime injection", def: "Feeding memories into live validators and post-functions on every transition. Opt-in, because it adds tokens to each run." },
+    ] },
+  permissions: { eyebrow: "PERMISSIONS", what: "Who can create and edit CogniRunner rules on this site. App admins manage the roster; editors manage rules." },
+  settings: { eyebrow: "SETTINGS", what: "Your AI provider, API key, and model, plus the MCP tools the agent can call. Keys are stored in Forge storage, never in environment variables.",
+    terms: [
+      { label: "MCP", def: "Model Context Protocol — external tool servers (web search, library docs, doc-reader) that CogniRunner lets the AI agent call mid-run." },
+      { label: "agentic", def: "When a validator lets the AI run tools (JQL search, web search) to gather evidence before it decides pass or fail." },
+    ] },
+};
 
 // Execution Logs page size (logs are capped at 50 server-side, so this paginates
 // the recent window client-side).
@@ -4514,6 +4855,7 @@ function App() {
   const [activeTab, setActiveTab] = useState("rules");
   const [rulesFilter, setRulesFilter] = useState("all");
   const [showAddWizard, setShowAddWizard] = useState(false);
+  const [showPortability, setShowPortability] = useState(false);
   const [typeFilter, setTypeFilter] = useState("all");
   // Monotonic token — a slow older fetch (e.g. rapid All/My Rules flips) must
   // never overwrite a newer call's rows or drop its refresh veil early.
@@ -4818,12 +5160,16 @@ function App() {
       ? `${log.ruleWorkflow.siteUrl}/jira/settings/issues/workflows/${log.ruleWorkflow.workflowId}`
       : null;
     return (
-      <div key={log.id} className="log-entry">
+      <div key={log.id} className={`log-entry ${log.isValid ? "cv-log-pass" : (log.decision === "SKIP" ? "cv-log-skip" : "cv-log-fail")}`}>
         <div className="log-header">
           <span className={`log-status ${log.isValid ? "valid" : (log.decision === "SKIP" ? "skip" : "invalid")}`}>
             {log.isValid ? "PASS" : (log.decision === "SKIP" ? "SKIP" : "ERR")}
           </span>
           <span className={`log-type-badge ${typeBadgeClass}`}>{typeBadge}</span>
+          <span className={`log-src log-src-${logSourceOf(log)}`}>{SOURCE_LABEL[logSourceOf(log)]}</span>
+          {(log.flags || []).map((f) => FLAG_LABEL[f] ? (
+            <span key={f} className={`log-flag log-flag-${f}`}>{FLAG_LABEL[f]}</span>
+          ) : null)}
           <span className="log-issue">{log.issueKey}</span>
           <span className="log-meta">
             {log.executionTimeMs ? <span className="log-ms">{log.executionTimeMs}ms</span> : null}
@@ -4869,7 +5215,7 @@ function App() {
             <div className="log-reason">{log.reason}</div>
           </>
         )}
-        {log.tokens && (
+        {log.tokens > 0 && (
           <div className="log-foot">
             AI: {log.aiTimeMs || log.executionTimeMs}ms · {log.tokens} tokens
           </div>
@@ -4882,6 +5228,9 @@ function App() {
   const [expandedRuleId, setExpandedRuleId] = useState(null);
   const [ruleLogs, setRuleLogs] = useState({}); // { [ruleId]: log[] }
   const [ruleLogsLoading, setRuleLogsLoading] = useState(false);
+  // Per-rule "Explain this rule" state, keyed by config.id so rows explain
+  // independently: { [id]: { open, status: idle|loading|done|degraded|error, text, reason } }
+  const [explain, setExplain] = useState({});
 
   const toggleRuleExpand = async (ruleId) => {
     if (expandedRuleId === ruleId) { setExpandedRuleId(null); return; }
@@ -4893,6 +5242,53 @@ function App() {
         if (r && r.success) setRuleLogs((prev) => ({ ...prev, [ruleId]: r.logs || [] }));
       } catch (e) { console.error("Failed to fetch rule logs:", e); }
       setRuleLogsLoading(false);
+    }
+  };
+
+  // App-authored monumental label per kind (the resolver defangs + clamps to 60).
+  const explainLabelFor = (kind) => {
+    if (kind === "semantic-pf") return "AI Semantic Post-Function";
+    if (kind === "static-pf") return "AI Static Post-Function";
+    if (kind === "premade-condition" || kind === "premade-validator" || kind === "premade") return "Premade rule";
+    return kind === "condition" ? "AI Condition" : "AI Validator";
+  };
+
+  // One explainRule call per rule, on explicit click. Registry config.type is
+  // explicit (condition/validator/postfunction-*) so the kind is unambiguous.
+  const runExplainFor = async (config) => {
+    const id = config.id;
+    if (explain[id] && explain[id].status === "loading") return;
+    setExplain((prev) => ({ ...prev, [id]: { ...(prev[id] || {}), open: true, status: "loading" } }));
+    try {
+      const kind = ruleKindEnum(config, config.type, config.type === "condition");
+      const factsText = buildFactsText(config, config.functions?.length ? config.functions : (config.functionsMeta || []));
+      const result = await invoke("explainRule", { kind, ruleTypeLabel: explainLabelFor(kind), factsText });
+      // degraded and success co-occur on the resolver's timeout/error path — test degraded FIRST.
+      if (result && result.degraded) {
+        setExplain((prev) => ({ ...prev, [id]: { open: true, status: "degraded", reason: result.reason || "error" } }));
+      } else if (result && result.success && result.explanation) {
+        setExplain((prev) => ({ ...prev, [id]: { open: true, status: "done", text: result.explanation } }));
+      } else {
+        setExplain((prev) => ({ ...prev, [id]: { open: true, status: "error" } }));
+      }
+    } catch (e) {
+      console.error("Explain rule failed:", e);
+      setExplain((prev) => ({ ...prev, [id]: { open: true, status: "error" } }));
+    }
+  };
+
+  // Toggle the explanation row; fetch only the first time it's opened (cached after).
+  const toggleExplain = (config) => {
+    const id = config.id;
+    const cur = explain[id];
+    if (cur && cur.open) {
+      setExplain((prev) => ({ ...prev, [id]: { ...prev[id], open: false } }));
+    } else if (cur && (cur.status === "done" || (cur.status === "degraded" && cur.reason === "lmstudio"))) {
+      // Re-show only the PERMANENT results without a refetch; timeout/error degrades
+      // fall through so a click retries them (once the 2-min negative cache expires).
+      setExplain((prev) => ({ ...prev, [id]: { ...prev[id], open: true } }));
+    } else {
+      runExplainFor(config);
     }
   };
 
@@ -5071,6 +5467,22 @@ function App() {
 
       <TabBar tabs={TABS} activeTab={activeTab} onTabChange={setActiveTab} isAdmin={isAdmin} />
 
+      {SURFACES[activeTab] && (
+        <div className="tab-intro">
+          <span className="tab-intro-eyebrow">§ {SURFACES[activeTab].eyebrow}</span>
+          <span className="tab-intro-what">{SURFACES[activeTab].what}</span>
+          {SURFACES[activeTab].terms && (
+            <span className="tab-intro-terms">
+              {SURFACES[activeTab].terms.map((t) => (
+                <Tooltip key={t.label} text={t.def}>
+                  <span className="term-chip">{t.label}</span>
+                </Tooltip>
+              ))}
+            </span>
+          )}
+        </div>
+      )}
+
       {toggleError && (
         <div className="alert alert-error">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -5107,6 +5519,9 @@ function App() {
       )}
 
       {/* Configured Rules Section */}
+      {activeTab === "rules" && showPortability && (
+        <RulePortabilityDialog rules={configs} onClose={() => setShowPortability(false)} />
+      )}
       {activeTab === "rules" && (<>
       {/* Workstream R: rules attached to workflows but not in the registry —
           they execute on transitions but won't appear under Configured Rules
@@ -5215,6 +5630,11 @@ function App() {
             {(userRole === "editor" || userRole === "admin") && (
               <button className="btn-small btn-edit" onClick={() => setShowAddWizard(!showAddWizard)}>
                 {showAddWizard ? "Cancel" : "+ Add Rule"}
+              </button>
+            )}
+            {(userRole === "editor" || userRole === "admin") && (
+              <button className="btn-small" onClick={() => setShowPortability(true)} title="Export rules to a file, or preview an import">
+                ⤓ Export / Import
               </button>
             )}
           </div>
@@ -5361,29 +5781,64 @@ function App() {
                       </td>
                       <td><span className="timestamp">{formatTime(config.updatedAt)}</span></td>
                       <td>
-                        {(userRole === "editor" || userRole === "admin") && (
                         <div className="row-actions">
-                          {editUrl && (
-                            <button
-                              className="btn-small btn-edit"
-                              onClick={() => router && router.open(editUrl)}
-                              title="Open workflow editor"
-                            >
-                              Edit
-                            </button>
-                          )}
+                          {/* Explain is ungated (matches the resolver) so viewers can use it too. */}
                           <button
-                            className={`btn-small ${isDisabled ? "btn-enable" : "btn-danger"}${toggling === config.id ? " is-busy" : ""}`}
-                            onClick={() => toggleRule(config.id, isDisabled)}
-                            disabled={toggling === config.id}
-                            title={isDisabled ? "Re-enable rule in workflow" : "Disable rule in workflow"}
+                            className={`btn-small rule-explain-btn${explain[config.id]?.status === "loading" ? " is-busy busy-solid" : ""}`}
+                            onClick={() => toggleExplain(config)}
+                            disabled={explain[config.id]?.status === "loading"}
+                            title="Explain this rule in plain English"
                           >
-                            {isDisabled ? "Enable" : "Disable"}
+                            ✦ Explain
                           </button>
+                          {(userRole === "editor" || userRole === "admin") && (
+                          <>
+                            {editUrl && (
+                              <button
+                                className="btn-small btn-edit"
+                                onClick={() => router && router.open(editUrl)}
+                                title="Open workflow editor"
+                              >
+                                Edit
+                              </button>
+                            )}
+                            <button
+                              className={`btn-small ${isDisabled ? "btn-enable" : "btn-danger"}${toggling === config.id ? " is-busy" : ""}`}
+                              onClick={() => toggleRule(config.id, isDisabled)}
+                              disabled={toggling === config.id}
+                              title={isDisabled ? "Re-enable rule in workflow" : "Disable rule in workflow"}
+                            >
+                              {isDisabled ? "Enable" : "Disable"}
+                            </button>
+                          </>
+                          )}
                         </div>
-                        )}
                       </td>
                     </tr>
+                    {explain[config.id]?.open && (
+                      <tr className="rule-explain-row">
+                        <td className="rule-explain-cell" colSpan={6}>
+                          {explain[config.id].status === "done" ? (
+                            <div className="rule-explain-card anim-rise">
+                              <div className="rule-explain-eyebrow">§ IN PLAIN ENGLISH</div>
+                              <div className="rule-explain-text">{explain[config.id].text}</div>
+                            </div>
+                          ) : explain[config.id].status === "degraded" ? (
+                            <div className="rule-explain-note">
+                              {explain[config.id].reason === "lmstudio"
+                                ? "Plain-English explanations aren't available with the self-hosted LM Studio provider — switch to a hosted provider in Settings."
+                                : explain[config.id].reason === "timeout"
+                                ? "The AI provider didn't respond in time — try again in a moment."
+                                : "Couldn't generate an explanation right now — try again in a moment."}
+                            </div>
+                          ) : explain[config.id].status === "error" ? (
+                            <div className="rule-explain-note">Couldn't generate an explanation.</div>
+                          ) : (
+                            <div className="rule-explain-note">Generating…</div>
+                          )}
+                        </td>
+                      </tr>
+                    )}
                     {isExpanded && (
                       <tr className="rule-accordion-row">
                         <td className="rule-accordion-cell" colSpan={6}>

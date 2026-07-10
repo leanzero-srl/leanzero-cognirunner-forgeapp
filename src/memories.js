@@ -47,7 +47,11 @@ export const MEMORY_SETTINGS_KEY = "COGNIRUNNER_MEMORY_SETTINGS";
 export const defangFence = (s) => String(s ?? "").replace(/<<<+/g, "<<").replace(/>>>+/g, ">>");
 
 const MAX_MEMORIES = 200;
-const MAX_SERIALIZED_CHARS = 200000; // guard well under the KVS single-value cap
+// Guard on real UTF-8 BYTES, not UTF-16 chars — the KVS value cap is 240KiB (245760
+// bytes), and multibyte content (emoji, CJK) is up to ~3-4 bytes/char, so a char
+// count would let a value blow past the byte cap and throw. Keep a safety margin.
+const MAX_SERIALIZED_BYTES = 230000;
+const utf8Len = (s) => { try { return new TextEncoder().encode(s).length; } catch (e) { return String(s).length * 4; } };
 const MEMORY_CONTENT_MAX = 400;
 const JACCARD_DEDUP_THRESHOLD = 0.85;
 
@@ -150,7 +154,7 @@ const pruneOne = (arr) => {
 export const saveMemories = async (arr) => {
   let out = Array.isArray(arr) ? arr.slice() : [];
   while (out.length > MAX_MEMORIES) out = pruneOne(out);
-  while (out.length > 0 && JSON.stringify(out).length >= MAX_SERIALIZED_CHARS) out = pruneOne(out);
+  while (out.length > 0 && utf8Len(JSON.stringify(out)) >= MAX_SERIALIZED_BYTES) out = pruneOne(out);
   await storage.set(MEMORIES_KEY, out);
   return out;
 };

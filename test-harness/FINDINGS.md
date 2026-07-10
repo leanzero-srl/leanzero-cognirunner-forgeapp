@@ -1189,3 +1189,90 @@ killed-mid-run case is an explicit, documented gap for the gen-marker iteration.
 
 LESSON: overnight-written code touching the critical PF path got an adversarial review before being
 trusted — it caught a double-exec I would otherwise have shipped. The review paid for itself.
+
+## Session round (2026-06-26, dev v22.55→22.56) — Adversarial premade-rule edge-case suite (`premade-adversarial.mjs`)
+
+**A bug-finding (not happy-path) suite for the 11 premade validators + 15 conditions.** New
+`test-harness/scripts/premade-adversarial.mjs` + `lib/harness-pool.mjs`. Drives a **114-row
+edge-case matrix** (every expectation cited to a branch line in `src/premade-rules.js`) two ways:
+- **Lane 1** — live enforcement on the real Jira transition path: `ZHARNESS-<i>-<ruleType>` self-
+  loops on the Backlog hub, PUT the controlled field, READ BACK the stored shape, fire → HTTP
+  204/400 (the 9 field/issue-level validators; `field-changed`/`comment-required` are Lane-2-only
+  because screenless self-loops can't carry modifiedFields).
+- **Lane 2** — the real `executePremadeRule` with a REST-backed `readField` (+ injected
+  `actingUser`/`readUserGroups`), covering BOTH validators and conditions (conditions never fire on
+  the REST path). Lane 2 IS the executor → a stable Lane-2-vs-spec mismatch is the finding; Lane 1
+  corroborates the live path.
+
+Determinism: a **bounded find-or-create marker pool** (16 `ZHARNESS-*` issues, reused — never
+accumulate, never delete; honors the issue-delete-403 rule), per-PUT **read-back attribution**
+(quirk vs. bug), a **3× flakiness gate**, and `ZHARNESS`-prefix detach/teardown so re-runs leave the
+workflow and pool unchanged.
+
+**Final result (3×, dev v22.57): 114/114 stable, 0 flaky, 0 lane-divergences, 0 locked** (live ==
+executor on every validator → deployed build matches src; every row asserts the spec). The matrix
+surfaced 5 candidate behaviors: **4 fixed** (F-UIF1 + B1–B3) and **1 left as by-design** (B4). It also
+caught one *test* wiring bug first (ADF rows pointed at a text-field rule → attributed via read-back
+to a wrong `fieldId`, not the executor; fixed the row). Report: `results/premade-adversarial.json`.
+
+### F-UIF1 — `user-in-field` silently hides for multi-user fields (FIXED, v22.56)
+ROOT: `src/premade-rules.js` `user-in-field` did `u?.accountId === actingUser`. A multi-user
+(`multiuserpicker`) field reads as an **array** `[{accountId}, …]`, so `u?.accountId` is `undefined`
+→ the condition returns false → the transition is **silently hidden for everyone**. Confirmed
+reachable: the config-ui field picker (`PremadeRuleForm.jsx`) is the generic all-fields picker with
+**no single-vs-multi-user filter**, and the catalog entry carries no `fieldType` restriction — a
+user can pick a multi-user "Approvers" field and get a silent always-hide.
+FIX (scoped, narrow, additive): normalize to an id list —
+`const ids = Array.isArray(u) ? u.map(x => x && x.accountId) : [u && u.accountId]; return ids.includes(actingUser);`.
+Single-user path is byte-for-byte equivalent (`[u.accountId].includes(x)` ≡ `u.accountId === x`);
+multi-user now matches any member. Confidence: HIGH (reachable footgun; zero single-user regression).
+VERIFIED: `premade-adversarial.mjs` row `user-in-field/multi` flipped hide→show, 3× stable, no
+sibling regression (`user-in-field/single` self/other/cleared all still correct). Lock removed →
+the row now asserts spec as a self-clearing tripwire. (Catalog help still says "single-user field";
+left as-is to avoid a 3-frontend rebuild — a doc nicety, not wrong.)
+
+### B1 — whitespace-only counted as "present" (FIXED, v22.57)
+ROOT: `isEmpty` (`:90-98`) never trimmed strings, so `"   "` passed `field-required` (allow),
+`field-has-value` (show), `field-changed`, and read non-empty for `field-empty` — while `field-regex`
+*evaluated* the whitespace and `comment-required`/ADF `field-required` *trimmed* it. Asymmetric.
+FIX (scoped, broad-reach): `if (typeof v === "string") return v.trim() === ""` in `isEmpty`.
+Whitespace-only is now empty everywhere. Confidence: MEDIUM-it-was-a-bug, but the fix is HIGH-reach
+(`isEmpty` gates ~8 branches) — applied with the owner's explicit go-ahead.
+CROSS-EFFECT (called out, verified): `field-regex`/`field-comparison` now *skip* a whitespace-only
+value (PASS) instead of evaluating it — consistent with how they already skip truly-empty values
+(emptiness is `field-required`'s job). The matrix row `field-regex/text/whitespace` was re-baselined
+block→allow accordingly.
+VERIFIED: `field-required/text/whitespace`→block, `field-has-value/whitespace`→hide,
+`field-regex/text/whitespace`→allow; 3× stable; non-whitespace rows unchanged. Contained to
+`premade-rules.js` (module-private `isEmpty`; no other consumer).
+
+### B2 — text length counted UTF-16 code units (FIXED, v22.57)
+ROOT: `text-length` (`:212`) and `comment-required` minLen (`:147`) used `String.length`, so `"😀"` = 2
+and astral chars over-counted vs. what a user sees.
+FIX: count code points — `[...text].length` / `[...t].length`. Confidence it was a bug: LOW
+(conventional JS), but the owner opted to fix; the change is contained to the two length rules and
+ASCII is unaffected.
+VERIFIED: `text-length/max1-emoji`→allow; ASCII length rows unchanged; 3× stable. (Code points, not
+full grapheme clusters — combining/ZWJ sequences still count >1; sufficient for the common emoji case.)
+
+### B3 — `field-equals` had no numeric coercion (FIXED, v22.57)
+ROOT: `field-equals(value:"5.0")` vs a stored `5` compared `fieldText(5)="5"` ≠ `"5.0"` → hide
+(`:272`), while `field-comparison op=eq` coerced (`5===5`). The two rules disagreed on numeric equality.
+FIX (narrow): coerce both sides numerically (mirroring `field-comparison`'s `num()`); fall back to
+case-insensitive text equality for non-numbers and multi-value joins. Confidence: HIGH the fix is
+clean; consistency with `field-comparison eq` is the win.
+VERIFIED: `field-equals/num`→show; text equality (`High`==`high`) and multi-value still correct; 3× stable.
+
+### B4 — `field-equals` joins multi-value; `field-comparison eq` uses `.some` (NOT fixed — by design)
+A multiselect `[Backend, Security]` makes `field-equals(value:"Backend")` hide (joined
+"Backend, Security") but `field-comparison(eq, "Backend")` allow (`.some` per element, `:190`). Both
+behaviors are intentional per the code comments — a genuine semantic fork, not a bug. Left as-is and
+asserted to ACTUAL in the matrix so any future change to either rule is caught. Confidence it's a
+bug: LOW.
+
+LESSON: the executor was already robust — across a 114-row adversarial matrix only one genuine
+reachable bug (the multi-user footgun) plus three sharp edges turned out worth fixing once flagged by
+confidence + blast radius; one fork (B4) is by-design. The suite also caught its OWN wiring error
+first (wrong `fieldId`), which read-back attribution correctly classified as a test bug, not an app
+bug — the discipline of "read back and attribute before claiming a bug" paid for itself. End state:
+114/114 green with every row asserting the spec (0 locks), a self-clearing regression net.

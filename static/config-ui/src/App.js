@@ -64,10 +64,27 @@ const injectStyles = () => {
       --alert-success-bg: #f0fdf4;
       --alert-success-border: #bbf7d0;
       --button-disabled-bg: #93c5fd;
+      /* Canonical LeanZero design tokens (unified with config-view) — mandate hue map,
+         radius ladder, blue-black card shadows. Additive; existing vars unchanged. */
+      --accent: #2563eb; --accent-deep: #1d4ed8;
+      --accent-docs: #2563eb; --accent-skills: #7c3aed; --accent-memories: #0d9488;
+      --accent-test: #d97706; --accent-fix: #16a34a; --accent-slate: #475569;
+      --accent-cyan: #0891b2; --accent-indigo: #4f46e5;
+      --r-sm: 6px; --r-md: 8px; --r-lg: 12px; --r-pill: 999px;
+      --shadow-card: 0 1px 2px rgba(18,42,66,0.06), 0 5px 16px -8px rgba(18,42,66,0.14);
+      --shadow-card-hover: 0 12px 30px -12px rgba(29,78,216,0.28), 0 3px 10px rgba(18,42,66,0.10);
+      --glow: 0 8px 22px -6px rgba(37,99,235,0.42);
     }
 
     html[data-color-mode="dark"] {
       --bg-color: transparent;
+      --accent: #3b82f6; --accent-deep: #3b82f6;
+      --accent-docs: #3b82f6; --accent-skills: #8b5cf6; --accent-memories: #14b8a6;
+      --accent-test: #f59e0b; --accent-fix: #22c55e; --accent-slate: #64748b;
+      --accent-cyan: #22d3ee; --accent-indigo: #6366f1;
+      --shadow-card: 0 1px 2px rgba(0,0,0,0.4), 0 5px 16px -8px rgba(0,0,0,0.6);
+      --shadow-card-hover: 0 12px 30px -12px rgba(0,0,0,0.7), 0 3px 10px rgba(0,0,0,0.5);
+      --glow: 0 8px 22px -6px rgba(59,130,246,0.5);
       --text-color: #F5F5F7;
       --text-secondary: #A0A0B0;
       --text-muted: #71717a;
@@ -136,12 +153,12 @@ const injectStyles = () => {
 
     .card {
       padding: 20px;
-      border-radius: 12px;
+      border-radius: var(--r-lg);
       border: 1px solid var(--border-color);
       background-color: var(--card-bg);
       margin-bottom: 16px;
-      box-shadow: 0 1px 4px rgba(0,0,0,0.03);
-      transition: box-shadow 0.3s ease;
+      box-shadow: var(--shadow-card);
+      transition: box-shadow var(--dur-med) var(--ease-out);
     }
 
     .form-group { margin-bottom: 20px; }
@@ -498,6 +515,9 @@ const injectStyles = () => {
     }
 
     .tooltip-wrap:hover .tooltip-icon { opacity: 1; }
+    /* Keyboard focus indicator — the trigger is now focusable (a11y). */
+    .tooltip-wrap:focus-visible { outline: 2px solid var(--primary-color); outline-offset: 2px; border-radius: 4px; }
+    .tooltip-wrap:focus-visible .tooltip-icon { opacity: 1; }
 
     /* Portal-rendered tooltip (escapes overflow:hidden) */
     .tooltip-portal {
@@ -1962,6 +1982,87 @@ const injectStyles = () => {
       border-top: 1px solid var(--border-color);
     }
 
+    /* Narrate dry-run: deterministic count chips + AI "what this would do" card.
+       Solid saturated chips, white text; accent button; inset card. No left rail,
+       no faded tint. The slate count chip carries an explicit dark override. */
+    .ndr-chips {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 6px;
+    }
+    .ndr-count {
+      padding: 2px 10px;
+      border-radius: 999px;
+      font-size: 10px;
+      font-weight: 700;
+      color: #ffffff;
+      background: #475569;
+      white-space: nowrap;
+    }
+    html[data-color-mode="dark"] .ndr-count { background: #64748b; }
+    .ndr-verb {
+      padding: 2px 10px;
+      border-radius: 999px;
+      font-size: 10px;
+      font-weight: 700;
+      color: #ffffff;
+      background: var(--primary-color);
+      white-space: nowrap;
+    }
+    .ndr { padding: 0 12px 10px; }
+    .ndr-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      color: #ffffff;
+      background: var(--primary-color);
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    .ndr-btn:hover:not(:disabled) { opacity: 0.9; }
+    .ndr-btn:disabled { opacity: 0.7; cursor: default; }
+    .ndr-card {
+      margin-bottom: 10px;
+      padding: 10px 12px;
+      background: var(--code-bg);
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+    }
+    .ndr-eyebrow {
+      font-family: SFMono-Regular, Consolas, monospace;
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.14em;
+      color: var(--primary-color);
+      margin-bottom: 5px;
+    }
+    .ndr-summary {
+      font-size: 13px;
+      line-height: 1.5;
+      color: var(--text-color);
+    }
+    .ndr-verify {
+      margin: 8px 0 0;
+      padding-left: 18px;
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--text-secondary);
+    }
+    .ndr-verify li { margin: 2px 0; }
+    .ndr-note {
+      padding: 8px 0 0;
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--text-secondary);
+    }
+
     /* CodeMirror hover docs */
     .cm-api-hover {
       background: var(--card-bg);
@@ -1989,6 +2090,20 @@ const injectStyles = () => {
       color: #ffffff;
       font-size: 12px;
       font-weight: 600;
+    }
+
+    /* First-run no-provider-key warning (solid amber, white text — no faded tint / no rail). */
+    .provider-warning {
+      display: flex;
+      gap: 8px;
+      padding: 10px 14px;
+      margin: 0 0 14px;
+      border-radius: 8px;
+      background: #d97706;
+      color: #ffffff;
+      font-size: 12.5px;
+      font-weight: 600;
+      line-height: 1.45;
     }
 
     /* Skeleton loading — hardcoded colors to avoid CSS variable timing issues */
@@ -2235,9 +2350,10 @@ const injectStyles = () => {
     .st-error .st-result-header { background: rgba(220, 38, 38, 0.06); }
 
     .test-badge-skip {
-      background: rgba(37, 99, 235, 0.15);
-      color: var(--primary-color);
+      background: #475569;
+      color: #ffffff;
     }
+    html[data-color-mode="dark"] .test-badge-skip { background: #64748b; }
 
     .st-section {
       padding: 8px 12px;
@@ -2288,7 +2404,7 @@ const injectStyles = () => {
        .btn-retry, .mls-toast, .reveal
        ============================================================ */
     :root {
-      --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+      --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
       --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
       --dur-fast: 140ms;
       --dur-med: 260ms;
@@ -2553,6 +2669,47 @@ const injectStyles = () => {
     html[data-color-mode="dark"] .pr-note { background: #d97706; }
     .pr-foot { font-style: italic; }
 
+    /* NL-to-rule builder ("Build from a description") — solid accent button, inset
+       result card. Existing tokens only (dark variants present); no left rail/tint. */
+    .br-bar { margin-bottom: 14px; }
+    .br-toggle {
+      display: inline-flex; align-items: center; gap: 6px;
+      background: none; border: none; padding: 4px 0; cursor: pointer;
+      font-size: 12.5px; font-weight: 600; color: var(--primary-color);
+    }
+    .br-toggle-caret { display: inline-block; transition: transform 0.15s ease; font-size: 10px; }
+    .br-toggle.open .br-toggle-caret { transform: rotate(90deg); }
+    .br-toggle-hint { font-weight: 400; color: var(--text-muted); font-size: 11px; }
+    .br-body { margin-top: 8px; }
+    .br-input {
+      width: 100%; box-sizing: border-box; resize: vertical;
+      padding: 8px 10px; font-size: 13px; font-family: inherit;
+      border: 1px solid var(--border-color); border-radius: 8px;
+      background: var(--card-bg); color: var(--text-color); margin-bottom: 8px;
+    }
+    .br-input:focus { outline: none; border-color: var(--primary-color); }
+    .br-btn {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 6px 12px; font-size: 12px; font-weight: 600;
+      color: #fff; background: var(--primary-color); border: none;
+      border-radius: 6px; cursor: pointer;
+    }
+    .br-btn:hover:not(:disabled) { opacity: 0.9; }
+    .br-btn:disabled { opacity: 0.6; cursor: default; }
+    .br-card {
+      margin-top: 10px; padding: 10px 12px;
+      background: var(--code-bg); border: 1px solid var(--border-color); border-radius: 10px;
+    }
+    .br-eyebrow {
+      font-family: 'SFMono-Regular', Consolas, monospace; font-size: 10px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0.14em; color: var(--primary-color); margin-bottom: 5px;
+    }
+    .br-summary { font-size: 13px; line-height: 1.5; color: var(--text-color); }
+    .br-applied { font-size: 12px; color: var(--text-secondary); margin-top: 6px; }
+    .br-hint { font-size: 12px; color: #b45309; margin-top: 6px; font-weight: 600; }
+    html[data-color-mode="dark"] .br-hint { color: #f59e0b; }
+    .br-note { margin-top: 10px; font-size: 12px; line-height: 1.5; color: var(--text-secondary); }
+
     /* Premade recipe picker (FunctionBlock "Start from a recipe") */
     .recipe-bar { margin-bottom: 14px; border: 1px solid var(--border-color); border-radius: 8px; overflow: hidden; }
     .recipe-bar-toggle {
@@ -2674,6 +2831,9 @@ function App() {
   // BYOK state — used to show cost notice when user's own key is active
   const [isByok, setIsByok] = useState(false);
   const [providerLabel, setProviderLabel] = useState("AI");
+  // hasKey !== false ⇒ ready. Defaults true so no warning flashes before the fetch resolves;
+  // Forge LLM reports hasKey:true (noKeyNeeded) so a keyless-but-valid provider never warns.
+  const [providerReady, setProviderReady] = useState(true);
 
   // Post-function state
   const [isPostFunction, setIsPostFunction] = useState(false);
@@ -3244,6 +3404,9 @@ function App() {
           invoke("getProvider"),
         ]);
         if (keyStatus?.isByok) setIsByok(true);
+        // hasKey is present on every getOpenAIKey result (false only when no key is stored);
+        // Forge LLM returns hasKey:true (noKeyNeeded).
+        setProviderReady(keyStatus?.hasKey !== false);
         if (providerResult?.success) {
           const labels = { openai: "OpenAI", azure: "Azure OpenAI", openrouter: "OpenRouter", anthropic: "Anthropic" };
           setProviderLabel(labels[providerResult.provider] || providerResult.provider || "AI");
@@ -3260,6 +3423,19 @@ function App() {
   if (loading) {
     return <ConfigSkeleton />;
   }
+
+  // First-run guardrail: an admin who hasn't set up an AI provider key can still create an AI
+  // rule that then silently no-ops at runtime (the AI call can't run). Warn at the point of need.
+  // Never fires for Forge LLM (hasKey:true / noKeyNeeded). The consequence differs per surface —
+  // a validator/condition fails OPEN (allows the transition), a semantic post-function just
+  // produces no output — so the copy is accurate per surface, not reused verbatim.
+  const providerWarningWith = (consequence) => (
+    <div className="provider-warning" role="alert">
+      No AI provider key is set up yet. Add one in the CogniRunner admin (Apps → CogniRunner → Settings) — {consequence}
+    </div>
+  );
+  const providerWarning = providerWarningWith("until then this AI rule can't run: it fails open, allowing the transition without checking.");
+  const providerWarningPf = providerWarningWith("until then this AI post-function can't run and will make no changes.");
 
   return (
     <div className="container">
@@ -3424,6 +3600,7 @@ function App() {
       {isPostFunction && managedType && (
         <div className="card">
           <div style={{ padding: "16px" }}>
+            {!providerReady && providerWarningPf}
             <h3 style={{ margin: "0 0 6px", fontSize: "14px", fontWeight: 600 }}>
               {managedType === "postfunction-generate-doc" ? "Generate Document"
                 : managedType === "postfunction-research" ? "Research & Save"
@@ -3439,6 +3616,7 @@ function App() {
 
       {isPostFunction && postFunctionType === "semantic" && !managedType && (
         <div className="card">
+          {!providerReady && providerWarningPf}
           {isByok && (
             <div className="byok-cost-notice">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -3472,6 +3650,7 @@ function App() {
       {/* Standard validator/condition form */}
       {!isPostFunction && (
       <div className="card">
+        {!providerReady && ruleKind === "ai" && providerWarning}
         {isByok && (
           <div className="byok-cost-notice">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">

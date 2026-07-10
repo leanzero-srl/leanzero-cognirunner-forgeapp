@@ -161,7 +161,7 @@ export default function ReviewPanel({ configType, config }) {
                   ))}
                 </div>
               )}
-              {result.tokens && (
+              {result.tokens > 0 && (
                 <div className="review-meta">{result.tokens} tokens used</div>
               )}
             </>

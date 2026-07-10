@@ -98,8 +98,8 @@ const TOOL_DESCRIPTIONS = {
 };
 
 export default function OpenAIConfig({ invoke }) {
-  const [provider, setProvider] = useState("openai");
-  const [activeProvider, setActiveProvider] = useState("openai"); // what's actually saved in KVS
+  const [provider, setProvider] = useState("atlassian");
+  const [activeProvider, setActiveProvider] = useState("atlassian"); // what's actually saved in KVS
   const [baseUrl, setBaseUrl] = useState("");
   const [isByok, setIsByok] = useState(false);
   const [hasKey, setHasKey] = useState(false);
@@ -114,6 +114,10 @@ export default function OpenAIConfig({ invoke }) {
   const [listUnavailable, setListUnavailable] = useState(false); // Bedrock: live list returned nothing
   const [currentModel, setCurrentModel] = useState(null);
   const [selectedModel, setSelectedModel] = useState("");
+  // AI usage meter (admin-only). Best-effort under-count of AI calls + tokens.
+  const [usage, setUsage] = useState(null);
+  const [usageConfirmReset, setUsageConfirmReset] = useState(false);
+  const [usageResetting, setUsageResetting] = useState(false);
   // AWS Bedrock: region rides the base URL; ack is the Anthropic use-case gate; the
   // free-text field lets the admin paste any model / inference-profile id directly.
   const [bedrockRegion, setBedrockRegion] = useState("eu-west-2");
@@ -201,7 +205,7 @@ export default function OpenAIConfig({ invoke }) {
   const isBedrock = provider === "bedrock";
   // Tracks the provider whose config is currently being loaded, so a fast switch
   // doesn't let a slow in-flight load() overwrite the newer provider's state.
-  const providerRef = useRef("openai");
+  const providerRef = useRef("atlassian");
   const providerLabelFor = (p) => PROVIDER_OPTIONS.find((o) => o.value === p)?.label || p;
 
   // "Unchanged" flags so Save buttons disable when there's nothing to save (no confusing
@@ -298,17 +302,19 @@ export default function OpenAIConfig({ invoke }) {
   const loadStatus = async () => {
     if (!invoke) return;
     try {
-      const [providerResult, mcpsResult, docProcResult, webSearchResult, context7Result] = await Promise.all([
+      const [providerResult, mcpsResult, docProcResult, webSearchResult, context7Result, usageResult] = await Promise.all([
         invoke("getProvider"),
         invoke("getLmStudioMcps").catch(() => ({ success: false })),
         invoke("getDocProcessorRemote").catch(() => ({ success: false })),
         invoke("getWebSearchRemote").catch(() => ({ success: false })),
         invoke("getContext7Remote").catch(() => ({ success: false })),
+        invoke("getAiUsage").catch(() => ({ success: false })),
       ]);
+      if (usageResult && usageResult.success) setUsage(usageResult.usage);
 
-      let initial = "openai";
+      let initial = "atlassian";
       if (providerResult.success) {
-        initial = providerResult.provider || "openai";
+        initial = providerResult.provider || "atlassian";
         setActiveProvider(initial);
         setProvider(initial);
         setBedrockAck(!!providerResult.bedrockAck);
@@ -1070,11 +1076,61 @@ export default function OpenAIConfig({ invoke }) {
 
   const providerLabel = PROVIDER_OPTIONS.find((p) => p.value === provider)?.label || provider;
 
+  const resetUsage = async () => {
+    setUsageResetting(true);
+    try {
+      const r = await invoke("resetAiUsage");
+      if (r && r.success) {
+        const u = await invoke("getAiUsage").catch(() => null);
+        if (u && u.success) setUsage(u.usage);
+      }
+    } catch (e) { /* ignore */ }
+    setUsageResetting(false);
+    setUsageConfirmReset(false);
+  };
+
+  const usageProviderMax = usage ? Math.max(1, ...Object.values(usage.month.byProvider || {}).map((x) => x.total || 0)) : 1;
+
   return (
     <div className="section">
       <div className="section-header">
         <span className="section-title">AI Provider Configuration</span>
       </div>
+
+      {usage && (
+        <div className="usage-card">
+          <div className="usage-head">
+            <span className="usage-eyebrow">§ AI USAGE</span>
+            {usageConfirmReset ? (
+              <span className="usage-reset-confirm">
+                Reset all counts?
+                <button className={`btn-small btn-danger${usageResetting ? " is-busy" : ""}`} onClick={resetUsage} disabled={usageResetting}>Reset</button>
+                <button className="btn-small" onClick={() => setUsageConfirmReset(false)} disabled={usageResetting}>Cancel</button>
+              </span>
+            ) : (
+              <button className="btn-small" onClick={() => setUsageConfirmReset(true)}>Reset</button>
+            )}
+          </div>
+          <div className="usage-stats">
+            <div className="usage-stat"><span className="usage-num">{usage.month.calls.toLocaleString()}</span><span className="usage-lbl">calls this month</span></div>
+            <div className="usage-stat"><span className="usage-num">{usage.month.total.toLocaleString()}</span><span className="usage-lbl">tokens this month</span></div>
+            <div className="usage-stat"><span className="usage-num">{usage.today.calls.toLocaleString()}</span><span className="usage-lbl">calls today</span></div>
+            <div className="usage-stat"><span className="usage-num">{usage.today.total.toLocaleString()}</span><span className="usage-lbl">tokens today</span></div>
+          </div>
+          {Object.keys(usage.month.byProvider || {}).length > 0 && (
+            <div className="usage-providers">
+              {Object.entries(usage.month.byProvider).sort((a, b) => (b[1].total || 0) - (a[1].total || 0)).map(([prov, v]) => (
+                <div className="usage-prov-row" key={prov}>
+                  <span className="usage-prov-name">{prov}</span>
+                  <span className="usage-prov-bar"><span className="usage-prov-fill" style={{ width: `${Math.round(((v.total || 0) / usageProviderMax) * 100)}%` }} /></span>
+                  <span className="usage-prov-val">{(v.total || 0).toLocaleString()} tok · {v.calls} calls</span>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="usage-foot">Best-effort under-count across all AI calls (validators, post-functions, and design-time tools). Not a billing ledger.</div>
+        </div>
+      )}
 
       {error && (
         <div className="alert alert-error anim-rise">
@@ -2241,7 +2297,7 @@ npm install`}
 // Single MCP card — toggle, status pill, collapsible setup block, Test button.
 function McpCard({ mcpKey, title, subtitle, tools, enabled, saving, expanded, ping, onToggle, onExpand, onPing, setupBlock, hostedGreyed, isLmStudio, local, localSaving, onToggleLocal }) {
   const pillStyle = enabled
-    ? { background: "rgba(22, 163, 106, 0.12)", color: "var(--success-color)", border: "1px solid rgba(22, 163, 106, 0.4)" }
+    ? { background: "#16a34a", color: "#ffffff", border: "1px solid #16a34a" }
     : { background: "var(--input-bg)", color: "var(--text-muted)", border: "1px solid var(--border-color)" };
   return (
     <div style={{

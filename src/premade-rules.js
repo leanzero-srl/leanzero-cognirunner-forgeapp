@@ -52,8 +52,12 @@
  * `availability:'unavailable'` in the catalog and never reach here).
  */
 import api, { route } from "@forge/api";
+import { redosRisk } from "./shared/regex-safety.js";
 
 const PASS = { result: true };
+// Cap the length of the value fed to a user regex — defense-in-depth so a pattern the ReDoS
+// heuristic doesn't catch (e.g. overlapping-alternation) still can't run away on a 32KB field.
+const REGEX_INPUT_CAP = 8000;
 
 /** Read a single persisted field via REST. Throws on a non-OK response (→ fail-OPEN upstream). */
 async function getRawField(issueKey, fieldId) {
@@ -203,8 +207,14 @@ async function runValidator(cfg, mf, issueKey, read) {
     }
     case "field-regex": {
       if (isEmpty(value)) return PASS; // emptiness is the required rule's job — don't double-enforce
+      // ReDoS guard: NEVER execute a nested-unbounded-quantifier pattern (e.g. ^(a+)+$) — synchronous
+      // catastrophic backtracking can blow the 25s sync-validator budget on reporter-controlled input,
+      // hanging the transition for everyone. Fail-OPEN (allow) instead of running it. This also protects
+      // rules that were saved before the config-time guard existed.
+      if (redosRisk(cfg.regex)) { console.warn("[cognirunner:premade] field-regex skipped — pattern risks catastrophic backtracking (ReDoS); failing open"); return PASS; }
       let re; try { re = new RegExp(cfg.regex || ""); } catch { return PASS; } // bad pattern → fail-open
-      return re.test(fieldText(value)) ? PASS : fail(`${label} must match the required format.`);
+      // Cap the tested length (defense-in-depth) so a shape the heuristic misses can't run away.
+      return re.test(fieldText(value).slice(0, REGEX_INPUT_CAP)) ? PASS : fail(`${label} must match the required format.`);
     }
     case "allowed-values": {
       const allowed = String(cfg.allowedValues || "").split(",").map((s) => s.trim()).filter(Boolean);

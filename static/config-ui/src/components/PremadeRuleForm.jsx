@@ -26,6 +26,7 @@ import React, { useState, useEffect, useRef } from "react";
 import { invoke } from "@forge/bridge";
 import CustomSelect from "./CustomSelect";
 import { getCatalog, findRule, COMPARE_OPS } from "../../../../src/shared/premade-rules-catalog.js";
+import { redosRisk } from "../../../../src/shared/regex-safety.js";
 
 export default function PremadeRuleForm({ mode = "validator", fields = [], initial, onChange }) {
   const catalog = getCatalog(mode);
@@ -117,9 +118,14 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
   }
   if (mode === "validator" && errorMessage.trim()) config.errorMessage = errorMessage.trim();
 
+  // ReDoS guard: block saving a catastrophic-backtracking pattern (e.g. (a+)+) — it would hang the
+  // 25s validator budget for every reporter at runtime.
+  const regexRisk = p.regex && regex.trim() ? redosRisk(regex.trim()) : null;
+
   let valid = !!ruleType && !unavailable;
   if (p.field && !fieldId) valid = false;
   if (p.regex && !regex.trim()) valid = false;
+  if (regexRisk) valid = false;
   if (p.allowed && !allowedValues.trim()) valid = false;
   if (p.opValue && !compareValue.trim()) valid = false;
   if (p.value && !value.trim()) valid = false;
@@ -318,6 +324,11 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
             value={regex}
             onChange={(e) => setRegex(e.target.value)}
           />
+          {regexRisk && (
+            <div style={{ marginTop: "6px", fontSize: "12px", fontWeight: 600, color: "var(--error-color)" }}>
+              {regexRisk}
+            </div>
+          )}
         </div>
       )}
 

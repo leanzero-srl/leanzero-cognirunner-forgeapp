@@ -21,6 +21,7 @@
 
 import { getCatalog, findRule, COMPARE_OPS } from "./premade-rules-catalog.js";
 import { clampNarrateLine } from "./narrate-utils.js";
+import { redosRisk } from "./regex-safety.js";
 
 // The param types this module knows how to prompt for and validate. The offline
 // test asserts every "available" catalog rule uses only these — so an unhandled
@@ -83,7 +84,9 @@ export const validateBuiltRule = (mode, aiOutput, ctx = {}) => {
   if (p.regex) {
     const rx = clampStr(raw.regex, 500);
     let good = false;
-    try { if (rx) { new RegExp(rx); good = true; } } catch (e) { good = false; }
+    // Reject compile-invalid AND catastrophic-backtracking (ReDoS) patterns — a nested-unbounded
+    // quantifier from the model would hang the 25s validator budget at runtime. Left "unresolved".
+    try { if (rx && !redosRisk(rx)) { new RegExp(rx); good = true; } } catch (e) { good = false; }
     if (good) built.regex = rx; else unresolved.push("pattern");
   }
   if (p.allowed) {

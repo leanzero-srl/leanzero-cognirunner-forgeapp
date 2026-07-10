@@ -78,10 +78,20 @@ async function getUserGroups(accountId) {
   return (Array.isArray(data) ? data : data?.items || []).map((g) => g && g.name).filter(Boolean);
 }
 
-/** Flatten an ADF (rich-text) doc to its text content. */
+/** Flatten an ADF (rich-text) doc to its text content. Inline NON-text nodes (mentions, emoji,
+ *  dates, smart-link cards) carry their visible text in `attrs`, not `node.text` — emit it so
+ *  isEmpty / text-length / fieldText don't undercount rich content (e.g. a description made only
+ *  of an @mention + emoji must NOT read as empty). Mirrors index.js extractTextFromADF. */
 function adfText(node) {
   if (!node || typeof node !== "object") return "";
   let t = typeof node.text === "string" ? node.text : "";
+  if (!t && node.attrs) {
+    const a = node.attrs;
+    if (node.type === "mention" || node.type === "status") t = a.text || "";
+    else if (node.type === "emoji") t = a.text || a.shortName || "";
+    else if (node.type === "date") t = a.timestamp != null ? String(a.timestamp) : "";
+    else if (node.type === "inlineCard" || node.type === "blockCard" || node.type === "embedCard") t = a.url || "";
+  }
   for (const c of node.content || []) t += adfText(c);
   return t;
 }

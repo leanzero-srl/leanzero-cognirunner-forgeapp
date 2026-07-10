@@ -9991,11 +9991,18 @@ const TOOL_REGISTRY = {
 const callOpenAI = async (fieldValue, validationPrompt, attachmentParts, contextDocsText, memorySection) => {
   const apiKey = await getOpenAIKey();
   if (!apiKey) {
-    console.error("OpenAI API key not configured");
+    console.error("AI validation not configured — no provider API key set");
+    // FAIL OPEN, not closed: a missing BYOK key is an internal CogniRunner/provider
+    // CONFIG fault, not a validation failure of the field content. Mirrors the 401
+    // branch below and the first-run UI warning — both promise the transition is
+    // allowed when the AI can't run. Returning isValid:false here would silently
+    // BLOCK every transition on the whole workflow the moment a provider is selected
+    // before its key is stored (openai/azure/openrouter/anthropic, and keyless LM Studio).
     return {
-      isValid: false,
+      isValid: true,
       reason:
-        "AI validation not configured. Please set OPENAI_API_KEY environment variable.",
+        "AI validation is not configured (no provider API key) — transition allowed (fail-open). Set the provider API key in CogniRunner settings.",
+      transientError: true,
     };
   }
 
@@ -10119,7 +10126,9 @@ Respond with JSON only.`;
     }
     return {
       isValid: parsed.isValid === true,
-      reason: typeof parsed.reason === "string" ? parsed.reason : "No reason provided",
+      // Clamp the model-authored reason (it lands in errorMessage + the unbounded logEntry.reason);
+      // mirrors recoverValidatorVerdict's 500-char cap so a runaway generation can't bloat the log/UI.
+      reason: typeof parsed.reason === "string" ? parsed.reason.slice(0, 500) : "No reason provided",
       modelUsed: servedModel,
     };
   } catch (error) {
@@ -10565,10 +10574,14 @@ const persistResearchDoc = async ({ title, markdown, category = "Research", acto
 const callOpenAIWithTools = async (fieldValue, validationPrompt, attachmentParts, issueContext, projectKey, validatedFieldId, deadline, contextDocsText, memorySection) => {
   const apiKey = await getOpenAIKey();
   if (!apiKey) {
-    console.error("OpenAI API key not configured");
+    console.error("AI validation not configured — no provider API key set");
+    // FAIL OPEN (see the non-agentic callOpenAI no-key branch): a missing key is a
+    // config fault, not a content failure — allow the transition rather than block
+    // the whole workflow. Mirrors the 401 branch + the first-run UI warning.
     return {
-      isValid: false,
-      reason: "AI validation not configured. Please set OPENAI_API_KEY environment variable.",
+      isValid: true,
+      reason: "AI validation is not configured (no provider API key) — transition allowed (fail-open). Set the provider API key in CogniRunner settings.",
+      transientError: true,
     };
   }
 
@@ -10833,7 +10846,7 @@ RESPONSE FORMAT:
       }
       return {
         isValid: result.isValid === true,
-        reason: typeof result.reason === "string" ? result.reason : "No reason provided",
+        reason: typeof result.reason === "string" ? result.reason.slice(0, 500) : "No reason provided",
         toolMeta,
       };
     } catch (error) {

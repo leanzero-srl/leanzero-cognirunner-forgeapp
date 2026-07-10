@@ -1,0 +1,10 @@
+{
+  "name": "cognirunner-screenshot-harness",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "UNTRACKED throwaway harness to screenshot/record the CogniRunner UIs standalone.",
+  "dependencies": {
+    "playwright": "^1.57.0"
+  }
+}

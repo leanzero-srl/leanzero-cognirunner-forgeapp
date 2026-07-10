@@ -1,0 +1,7 @@
+# Dev-only mock-bridge harness — ignore installed deps + generated artifacts.
+node_modules/
+out/
+clips/
+*.webm
+*.png
+package-lock.json

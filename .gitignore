@@ -1,6 +1,9 @@
 # Dependencies
 node_modules/
 
+# Dev-only screenshot/test harness build output (rebuilt via webpack.screenshot.js)
+build-shot/
+
 # OS files
 .DS_Store
 Thumbs.db

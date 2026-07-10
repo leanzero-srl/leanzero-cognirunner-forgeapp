@@ -39,7 +39,7 @@
     "test:premade": "node scripts/premade-rules.test.mjs",
     "test:recipes": "node scripts/recipes.test.mjs",
     "test:parity": "node scripts/premade-parity.mjs",
-    "test:offline": "node scripts/premade-parity.mjs && node scripts/premade-rules.test.mjs && node scripts/recipes.test.mjs && node scripts/regex-safety.test.mjs",
+    "test:offline": "node scripts/premade-parity.mjs && node scripts/premade-rules.test.mjs && node scripts/recipes.test.mjs && node scripts/regex-safety.test.mjs && node scripts/skills-scorer.test.mjs && node scripts/defang-fence.test.mjs",
     "test:premade-e2e": "node scripts/premade-e2e.mjs"
   },
   "devDependencies": {

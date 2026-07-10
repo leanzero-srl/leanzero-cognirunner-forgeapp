@@ -1683,9 +1683,23 @@ function App() {
     ruleModule === "condition" ? true :
     ruleModule === "validator" ? false :
     (config.ruleKind === "premade" && !findRule("validator", config.ruleType) && !!findRule("condition", config.ruleType));
+  // The AI-writing post-function family: the base semantic PF + the 5 managed flavors. They all reuse the
+  // ai-semantic-post-function module and are dispatched by config.type (index.js), so config-view must name
+  // + render EACH — otherwise a comment/subtask/doc/research/link rule was mislabelled "AI Validator" with
+  // an empty body. (Static PF is separate; premade/AI validators & conditions are the non-postfunction path.)
+  const PF_TITLES = {
+    "postfunction-semantic": "Semantic Post Function",
+    "postfunction-comment": "Comment Post Function",
+    "postfunction-subtask": "Sub-task Post Function",
+    "postfunction-generate-doc": "Doc-Generation Post Function",
+    "postfunction-research": "Research Post Function",
+    "postfunction-research-doc": "Research-Doc Post Function",
+    "postfunction-link": "Issue-Link Post Function",
+  };
+  const isSemanticFamily = !!PF_TITLES[config.type];
   const ruleView =
-    config.type === "postfunction-semantic"
-      ? { cls: "cv-rule-semantic", eyebrow: "§ POST-FUNCTION", title: "Semantic Post Function" }
+    isSemanticFamily
+      ? { cls: "cv-rule-semantic", eyebrow: "§ POST-FUNCTION", title: PF_TITLES[config.type] }
     : config.type === "postfunction-static"
       ? { cls: "cv-rule-static", eyebrow: "§ POST-FUNCTION", title: "Static Post Function" }
     : config.ruleKind === "premade"
@@ -1704,9 +1718,15 @@ function App() {
           <span className="cv-summary-title">{ruleView.title}</span>
         </div>
 
-      {/* Post-function: Semantic */}
-      {config.type === "postfunction-semantic" && (
+      {/* Post-function: Semantic + managed flavors (comment / subtask / doc / research / link) */}
+      {isSemanticFamily && (
         <>
+          {config.fieldId && (
+            <div className="config-item">
+              <span className="label">Source:</span>
+              <code className="value">{config.fieldId}</code>
+            </div>
+          )}
           {config.conditionPrompt && (
             <div className="config-item">
               <span className="label">Condition:</span>
@@ -1717,6 +1737,54 @@ function App() {
             <div className="config-item">
               <span className="label">Action:</span>
               <span className="prompt-value">{config.actionPrompt}</span>
+            </div>
+          )}
+          {config.commentPrompt && (
+            <div className="config-item">
+              <span className="label">Comment:</span>
+              <span className="prompt-value">{config.commentPrompt}</span>
+            </div>
+          )}
+          {config.subtaskPrompt && (
+            <div className="config-item">
+              <span className="label">Sub-task:</span>
+              <span className="prompt-value">{config.subtaskPrompt}</span>
+            </div>
+          )}
+          {config.contentPrompt && (
+            <div className="config-item">
+              <span className="label">Content:</span>
+              <span className="prompt-value">{config.contentPrompt}</span>
+            </div>
+          )}
+          {config.docTitlePrompt && (
+            <div className="config-item">
+              <span className="label">Doc title:</span>
+              <span className="prompt-value">{config.docTitlePrompt}</span>
+            </div>
+          )}
+          {config.researchQuery && (
+            <div className="config-item">
+              <span className="label">Research:</span>
+              <span className="prompt-value">{config.researchQuery}</span>
+            </div>
+          )}
+          {config.researchTitle && (
+            <div className="config-item">
+              <span className="label">Research title:</span>
+              <span className="prompt-value">{config.researchTitle}</span>
+            </div>
+          )}
+          {config.docFormat && (
+            <div className="config-item">
+              <span className="label">Format:</span>
+              <code className="value">{config.docFormat}</code>
+            </div>
+          )}
+          {config.crossCheckClaims && (
+            <div className="config-item">
+              <span className="label">Fact-check:</span>
+              <span className="prompt-value">on</span>
             </div>
           )}
           {config.actionFieldId && (

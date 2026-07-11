@@ -487,6 +487,52 @@ try {
       await closeEditor(env);
     }
   }
+
+  /* ---------------- J8 — AddRuleWizard non-managed rule types (static + semantic config) ---------------- */
+  {
+    console.log("J8 AddRuleWizard non-managed types (admin)");
+    const ADMIN_TYPES = [
+      { type: "Static Post Function", marker: ".function-block", label: "static → FunctionBuilder" },
+      { type: "Semantic Post Function", marker: 'textarea[placeholder*="2-3 bullet points"]', label: "semantic → SemanticConfig" },
+    ];
+    for (const t of ADMIN_TYPES) {
+      const env = await openEditor(browser, "admin-panel", "admin");
+      const { page } = env;
+      try {
+        await page.locator("button", { hasText: /Add Rule/ }).first().click();
+        const wiz = page.locator(".wizard");
+        await wiz.waitFor({ timeout: 10000 });
+        await wiz.locator("button", { hasText: "Demo Project" }).first().click();
+        await wiz.locator("button", { hasText: "Software Simplified Workflow" }).first().click();
+        await wiz.locator("button", { hasText: "Submit for Review" }).first().click();
+        await wiz.locator("button", { hasText: t.type }).first().click();
+        await wiz.locator(t.marker).first().waitFor({ timeout: 8000 });
+        ok(await wiz.locator(t.marker).count() > 0, `J8 "${t.type}" → its config renders at step 5 (${t.label})`);
+      } catch (e) { fail++; console.log(`  ✗ J8 ${t.type} threw: ` + e.message.split("\n")[0]); }
+      await closeEditor(env);
+    }
+  }
+
+  /* ---------------- E10 — rule import preview (needs-rebind / notes) ---------------- */
+  {
+    console.log("E10 rule import preview (admin RulePortabilityDialog)");
+    const env = await openEditor(browser, "admin-panel", "admin");
+    const { page } = env;
+    try {
+      await page.locator("button", { hasText: "Export / Import" }).first().click();
+      const dlg = page.locator(".port-dialog");
+      await dlg.waitFor({ timeout: 8000 });
+      await dlg.locator("button.port-tab", { hasText: "Import" }).click();
+      await dlg.locator("textarea.port-textarea").fill('{"rules":[{},{},{}]}');
+      await dlg.locator("button", { hasText: "Preview import" }).click();
+      await dlg.locator(".port-plan").waitFor({ timeout: 8000 });
+      ok(await dlg.getByText(/Import plan \(3 rule/i).count() > 0, "E10 import preview shows a 3-rule dry-run plan");
+      ok(await dlg.locator(".port-status", { hasText: "NEEDS REBIND" }).count() > 0, "E10 a needs-rebind row is flagged");
+      ok(await dlg.locator(".port-status", { hasText: /^READY$/ }).count() >= 2, "E10 the ready rows are flagged READY");
+      ok(await dlg.getByText(/Steps to Reproduce|Internal Orders API/i).count() > 0, "E10 the plan surfaces the rebind/dropped-doc note");
+    } catch (e) { fail++; console.log("  ✗ E10 threw: " + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
 } finally {
   await browser.close();
 }

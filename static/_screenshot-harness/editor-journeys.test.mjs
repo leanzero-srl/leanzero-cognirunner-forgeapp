@@ -455,6 +455,38 @@ try {
     } catch (e) { fail++; console.log("  ✗ E12 threw: " + e.message.split("\n")[0]); }
     await closeEditor(env);
   }
+
+  /* ---------------- J19-admin — the 6 MANAGED flavor CONFIG forms (admin AddRuleWizard) ---------------- */
+  {
+    console.log("J19-admin managed flavor config forms (admin AddRuleWizard)");
+    // The full flavor config UIs live in the ADMIN panel (config-ui only shows a notice — see J19). Drive
+    // the AddRuleWizard project→workflow→transition→type→config and assert each flavor's config component
+    // renders its distinctive field.
+    const ADMIN_FLAVORS = [
+      { type: "Add Comment", field: /Comment instructions/i },
+      { type: "Create Sub-task", field: /Sub-task instructions/i },
+      { type: "Generate Document", field: /Document instructions/i },
+      { type: "Research & Save", field: /Research query/i },
+      { type: "Research & Document", field: /Research sources/i },
+      { type: "Link Related Issues", field: /Relation criteria/i },
+    ];
+    for (const f of ADMIN_FLAVORS) {
+      const env = await openEditor(browser, "admin-panel", "admin");
+      const { page } = env;
+      try {
+        await page.locator("button", { hasText: /Add Rule/ }).first().click();
+        const wiz = page.locator(".wizard");
+        await wiz.waitFor({ timeout: 10000 });
+        await wiz.locator("button", { hasText: "Demo Project" }).first().click();
+        await wiz.locator("button", { hasText: "Software Simplified Workflow" }).first().click();
+        await wiz.locator("button", { hasText: "Submit for Review" }).first().click();
+        await wiz.locator("button", { hasText: f.type }).first().click();
+        await wiz.getByText(f.field).first().waitFor({ timeout: 8000 });
+        ok(await wiz.getByText(f.field).count() > 0, `J19-admin "${f.type}" → its config form renders`);
+      } catch (e) { fail++; console.log(`  ✗ J19-admin ${f.type} threw: ` + e.message.split("\n")[0]); }
+      await closeEditor(env);
+    }
+  }
 } finally {
   await browser.close();
 }

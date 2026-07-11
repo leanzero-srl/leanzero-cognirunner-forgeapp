@@ -172,6 +172,51 @@ try {
     } catch (e) { fail++; console.log("  ✗ J15 threw: " + e.message.split("\n")[0]); }
     await closeEditor(env);
   }
+
+  /* ---------------- J16 — PREMADE (zero-AI) rule editor ---------------- */
+  {
+    console.log("J16 premade rule editor (cfg-premade)");
+    const env = await openEditor(browser, "config-ui", "cfg-premade");
+    const { page } = env;
+    try {
+      // Premade mode: the catalog "Rule" picker hydrates to the saved ruleType.
+      ok(await page.locator(".dropdown-trigger", { hasText: "Issue type is" }).count() > 0, "J16 Rule picker hydrated to the saved premade type (Issue type is…)");
+      // Zero-AI: a premade rule has NO AI validation-prompt textarea.
+      ok(await page.locator("textarea[placeholder*='makes the field value valid']").count() === 0, "J16 premade form shows NO AI validation prompt (zero-AI)");
+      ok(await page.locator("select").count() === 0, "J16 no native <select> — custom dropdowns only");
+      // The REST-backed issue-type picker lists options from getRuleLists (Bug/Task) and is selectable.
+      const picker = page.locator(".dropdown-trigger", { hasText: "Choose an issue type" });
+      ok(await picker.count() > 0, "J16 issue-type picker renders with its placeholder");
+      await picker.first().click();
+      await page.waitForSelector(".dropdown-panel", { timeout: 6000 });
+      ok(await page.locator(".dropdown-panel .dropdown-item", { hasText: "Bug" }).count() > 0, "J16 picker lists getRuleLists options (Bug)");
+      await page.locator(".dropdown-panel .dropdown-item", { hasText: "Bug" }).first().click();
+      ok(await page.locator(".dropdown-trigger", { hasText: "Bug" }).count() > 0, "J16 selecting an issue type updates the picker");
+    } catch (e) { fail++; console.log("  ✗ J16 threw: " + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
+  /* ---------------- J18b — static-PF DRIVE: Regenerate + dry-run Test ---------------- */
+  {
+    console.log("J18b static-PF drive (regenerate + test run)");
+    const env = await openEditor(browser, "config-ui", "cfg-static");
+    const { page } = env;
+    try {
+      const firstBlock = page.locator(".function-block").first();
+      // Seeded provenance on step 1: 2 memories.
+      ok(/2 memor/i.test(await firstBlock.locator(".gmc-mem").first().innerText()), "J18b step 1 seeded with a '2 memories' provenance chip");
+      // Regenerate → generatePostFunctionCode mock (appliedMemories:1) rewrites the provenance.
+      await firstBlock.locator(".btn-generate", { hasText: "Regenerate Code" }).first().click();
+      await firstBlock.locator(".gmc-mem", { hasText: "1 memor" }).first().waitFor({ timeout: 8000 });
+      ok(true, "J18b Regenerate Code runs generatePostFunctionCode → provenance updates (2 → 1 memory)");
+      // Dry-run Test Run → testPostFunction mock → a PASS with the proposed changes.
+      await firstBlock.locator(".btn-test-run", { hasText: /Test Run/ }).click();
+      await firstBlock.locator(".btn-run-test", { hasText: "Run Test" }).click();
+      await firstBlock.locator(".test-result", { hasText: /PROJ-42|priority|updateIssue/i }).first().waitFor({ timeout: 10000 });
+      ok(await firstBlock.locator(".test-result.test-pass").count() > 0, "J18b Test Run returns a PASS dry-run with proposed changes");
+    } catch (e) { fail++; console.log("  ✗ J18b threw: " + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
 } finally {
   await browser.close();
 }

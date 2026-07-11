@@ -435,6 +435,26 @@ try {
     } catch (e) { fail++; console.log("  ✗ E5 threw: " + e.message.split("\n")[0]); }
     await closeEditor(env);
   }
+
+  /* ---------------- E12 — keyboard-only CustomSelect operation ---------------- */
+  {
+    console.log("E12 keyboard-only CustomSelect (cfg-validator agentic select)");
+    const env = await openEditor(browser, "config-ui", "cfg-validator");
+    const { page } = env;
+    try {
+      // The "Jira Search (JQL)" agentic CustomSelect (seeded "Auto-detect from prompt").
+      const trigger = page.locator(".dropdown-trigger", { hasText: "Auto-detect from prompt" }).first();
+      await trigger.focus();
+      await page.keyboard.press("Enter"); // open via keyboard
+      await page.locator(".dropdown-panel").first().waitFor({ timeout: 6000 });
+      ok(true, "E12 CustomSelect opens via keyboard (Enter)");
+      await page.keyboard.press("End");   // highlight last option
+      await page.keyboard.press("Enter"); // select the highlighted option
+      await page.locator(".dropdown-trigger", { hasText: "Always disabled" }).first().waitFor({ timeout: 6000 });
+      ok(await page.locator(".dropdown-trigger", { hasText: "Always disabled" }).count() > 0, "E12 keyboard nav (End→Enter) selects an option — no mouse");
+    } catch (e) { fail++; console.log("  ✗ E12 threw: " + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
 } finally {
   await browser.close();
 }

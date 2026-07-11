@@ -347,6 +347,50 @@ try {
     } catch (e) { fail++; console.log("  ✗ E13 threw: " + e.message.split("\n")[0]); }
     await closeEditor(env);
   }
+
+  /* ---------------- E4 — KnowledgePanel load failure → error + Retry ---------------- */
+  {
+    console.log("E4 KnowledgePanel load failure + Retry");
+    // Docs tab is the default → getContextDocs failing shows the load-error immediately.
+    {
+      const env = await openEditor(browser, "config-ui", "cfg-static", "light", { __FAIL__: ["getContextDocs"] });
+      const { page } = env;
+      try {
+        const kp = page.locator(".knowledge-panel").first();
+        if (!(await kp.locator(".knowledge-tabs").isVisible().catch(() => false))) await kp.locator(".knowledge-summary").click();
+        await kp.locator(".knowledge-tab-docs").click();
+        await kp.locator(".load-error").first().waitFor({ timeout: 8000 });
+        ok(await kp.getByText(/Couldn.t load documents/i).count() > 0, "E4 Documentation load failure shows the error");
+        ok(await kp.locator(".btn-retry", { hasText: "Retry" }).count() > 0, "E4 Documentation load failure offers Retry");
+      } catch (e) { fail++; console.log("  ✗ E4 docs threw: " + e.message.split("\n")[0]); }
+      await closeEditor(env);
+    }
+    // Skills tab failing → its own load-error + Retry (not a bare "no skills" empty state).
+    {
+      const env = await openEditor(browser, "config-ui", "cfg-static", "light", { __FAIL__: ["getSkills"] });
+      const { page } = env;
+      try {
+        const kp = page.locator(".knowledge-panel").first();
+        if (!(await kp.locator(".knowledge-tabs").isVisible().catch(() => false))) await kp.locator(".knowledge-summary").click();
+        await kp.locator(".knowledge-tab-skills").click();
+        await kp.locator(".load-error").first().waitFor({ timeout: 8000 });
+        ok(await kp.locator(".btn-retry", { hasText: "Retry" }).count() > 0, "E4 Skills load failure shows load-error + Retry");
+      } catch (e) { fail++; console.log("  ✗ E4 skills threw: " + e.message.split("\n")[0]); }
+      await closeEditor(env);
+    }
+  }
+
+  /* ---------------- E1 — no provider key → amber warning on the form ---------------- */
+  {
+    console.log("E1 no-key provider warning (cfg-validator)");
+    const env = await openEditor(browser, "config-ui", "cfg-validator", "light", { __NOKEY__: true });
+    const { page } = env;
+    try {
+      await page.locator(".provider-warning").first().waitFor({ timeout: 8000 });
+      ok(await page.locator(".provider-warning", { hasText: /No AI provider key is set up/i }).count() > 0, "E1 the no-key provider warning renders on the AI validator form");
+    } catch (e) { fail++; console.log("  ✗ E1 threw: " + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
 } finally {
   await browser.close();
 }

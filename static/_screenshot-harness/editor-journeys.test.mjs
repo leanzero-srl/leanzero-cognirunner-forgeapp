@@ -307,6 +307,46 @@ try {
     } catch (e) { fail++; console.log("  ✗ J22 threw: " + e.message.split("\n")[0]); }
     await closeEditor(env);
   }
+
+  /* ---------------- J19 — MANAGED semantic flavors (config-ui = read-only admin notice) ---------------- */
+  {
+    console.log("J19 managed semantic flavors (cfg-managed)");
+    // In the config-ui workflow editor, managed flavors are NOT editable — the editor recognizes the
+    // managed type and shows an "edit in the admin panel" notice (the flavor config forms live in the
+    // admin AddRuleWizard, not config-ui). This verifies that recognition + notice across all 6 flavors.
+    const FLAVORS = [
+      { type: "postfunction-generate-doc", header: /Generate Document/i },
+      { type: "postfunction-research", header: /Research & Save/i },
+      { type: "postfunction-research-doc", header: /Research & Document/i },
+      { type: "postfunction-comment", header: /Add Comment/i },
+      { type: "postfunction-subtask", header: /Add Comment/i },
+      { type: "postfunction-link", header: /Add Comment/i },
+    ];
+    for (const f of FLAVORS) {
+      const env = await openEditor(browser, "config-ui", "cfg-managed", "light", { __MANAGED__: f.type });
+      const { page } = env;
+      try {
+        await page.getByText(/configured in the/i).first().waitFor({ timeout: 8000 });
+        ok(await page.getByText(/CogniRunner admin panel/i).count() > 0, `J19 ${f.type}: managed 'edit in admin' notice renders`);
+        ok(await page.locator("h3", { hasText: f.header }).count() > 0, `J19 ${f.type}: correct flavor header`);
+        ok(await page.locator('textarea[placeholder*="2-3 bullet points"]').count() === 0, `J19 ${f.type}: no editable semantic form (managed)`);
+      } catch (e) { fail++; console.log(`  ✗ J19 ${f.type} threw: ` + e.message.split("\n")[0]); }
+      await closeEditor(env);
+    }
+  }
+
+  /* ---------------- E13 — dark theme renders the editor (house rule: both themes) ---------------- */
+  {
+    console.log("E13 dark theme (cfg-validator)");
+    const env = await openEditor(browser, "config-ui", "cfg-validator", "dark");
+    const { page } = env;
+    try {
+      const mode = await page.evaluate(() => document.documentElement.getAttribute("data-color-mode"));
+      ok(mode === "dark", "E13 documentElement is in dark mode");
+      ok(await page.locator(".dropdown-trigger", { hasText: "Description" }).count() > 0, "E13 the editor still renders (no white-screen) in dark mode");
+    } catch (e) { fail++; console.log("  ✗ E13 threw: " + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
 } finally {
   await browser.close();
 }

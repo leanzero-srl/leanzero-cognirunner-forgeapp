@@ -363,6 +363,21 @@ function getContext() {
     return { accountId: ACCT, siteUrl: SITE, license: { active: true, type: "PAID" }, extension: { ...baseExt, type: "jira:workflowCondition", key: "ai-text-field-condition", transitionContext: { id: "31", from: { id: "4", name: "In Review" }, to: { id: "5", name: "Done" } }, conditionConfig: JSON.stringify(CFG_PREMADE_COND) } };
   if (s === "cfg-semantic")
     return { accountId: ACCT, siteUrl: SITE, license: { active: true, type: "PAID" }, extension: { ...baseExt, type: "jira:workflowPostFunction", key: "ai-semantic-post-function", transitionContext: { id: "21", from: { id: "3", name: "In Progress" }, to: { id: "4", name: "In Review" } }, postFunctionConfig: JSON.stringify(CFG_SEMANTIC) } };
+  if (s === "cfg-managed") {
+    // A MANAGED semantic flavor (comment/subtask/generate-doc/research/research-doc/link). The
+    // flavor type is chosen via window.__MANAGED__. The config-ui workflow editor is READ-ONLY for
+    // these — it shows an "edit this in the admin panel" notice (they are configured in AddRuleWizard).
+    const mt = (typeof window !== "undefined" && window.__MANAGED__) || "postfunction-comment";
+    const managedCfg = {
+      id: "postfunction-managed::Software Simplified Workflow::21::i-mng", type: mt,
+      workflow: { workflowId: "wf-software-simplified-12345", workflowName: "Software Simplified Workflow", transitionId: "21" },
+      fieldId: "description",
+      commentPrompt: "Post a friendly status update summarizing what changed and the next step.",
+      docTitlePrompt: "A concise title for the generated document", docFormat: "markdown",
+      researchQuery: "Latest known issues for the components mentioned in this ticket",
+    };
+    return { accountId: ACCT, siteUrl: SITE, license: { active: true, type: "PAID" }, extension: { ...baseExt, type: "jira:workflowPostFunction", key: "ai-semantic-post-function", transitionContext: { id: "21", from: { id: "3", name: "In Progress" }, to: { id: "4", name: "In Review" } }, postFunctionConfig: JSON.stringify(managedCfg) } };
+  }
   if (s === "cfg-static")
     return { accountId: ACCT, siteUrl: SITE, license: { active: true, type: "PAID" }, extension: { ...baseExt, type: "jira:workflowPostFunction", key: "ai-static-post-function", transitionContext: { id: "11", from: { id: "1", name: "To Do" }, to: { id: "3", name: "In Progress" } }, postFunctionConfig: JSON.stringify(CFG_STATIC) } };
   if (s === "view-active" || s === "view-disabled")

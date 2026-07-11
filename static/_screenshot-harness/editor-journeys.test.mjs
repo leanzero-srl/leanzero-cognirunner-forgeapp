@@ -42,12 +42,15 @@ function serve(root) {
 let pass = 0, fail = 0;
 const ok = (cond, msg) => { if (cond) { pass++; } else { fail++; console.log("  ✗ " + msg); } };
 
-async function openEditor(browser, app, shot, theme = "light") {
+async function openEditor(browser, app, shot, theme = "light", extraInit = null) {
   const root = path.join(STATIC, app, "build-shot");
   if (!fs.existsSync(path.join(root, "index.html"))) throw new Error(`no build-shot for ${app} — build it first (webpack.screenshot.js)`);
   const { s, port } = await serve(root);
   const ctx = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
-  await ctx.addInitScript(([sh, th]) => { window.__SHOT__ = sh; window.__THEME__ = th; }, [shot, theme]);
+  await ctx.addInitScript(([sh, th, extra]) => {
+    window.__SHOT__ = sh; window.__THEME__ = th;
+    if (extra) for (const k in extra) window[k] = extra[k];
+  }, [shot, theme, extraInit]);
   const page = await ctx.newPage();
   await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: "domcontentloaded" });
   // App mounted into .container with no skeletons left.
@@ -264,6 +267,44 @@ try {
       ok(await page.locator(".br-eyebrow", { hasText: /WHAT I BUILT/i }).count() > 0, "J20 Build produces a 'what I built' draft card");
       ok(/Blocks the transition unless the Description field/i.test(await page.locator(".br-summary").first().innerText()), "J20 the built rule's explanation renders");
     } catch (e) { fail++; console.log("  ✗ J20 threw: " + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
+  /* ---------------- J18c — static-PF Fix-with-AI (fail → fix → verify) ---------------- */
+  {
+    console.log("J18c static-PF Fix-with-AI (cfg-static)");
+    const env = await openEditor(browser, "config-ui", "cfg-static", "light", { __TESTFAIL_ONCE__: true });
+    const { page } = env;
+    try {
+      const firstBlock = page.locator(".function-block").first();
+      // Force a FAILING dry-run (one-shot: this first testPostFunction call fails).
+      await firstBlock.locator(".btn-test-run", { hasText: /Test Run/ }).click();
+      await firstBlock.locator(".btn-run-test", { hasText: "Run Test" }).click();
+      await firstBlock.locator(".test-result.test-fail").waitFor({ timeout: 10000 });
+      ok(await firstBlock.locator(".test-badge-fail", { hasText: "FAIL" }).count() > 0, "J18c dry-run FAILs on the seeded error");
+      ok(await firstBlock.locator(".btn-fix-ai", { hasText: "Fix with AI" }).count() > 0, "J18c 'Fix with AI' is offered on a failed test");
+      // Fix with AI → fixPostFunctionCode → apply → auto re-run (now passes) → verified.
+      await firstBlock.locator(".btn-fix-ai", { hasText: "Fix with AI" }).click();
+      await firstBlock.locator(".fix-result.fix-verified").waitFor({ timeout: 12000 });
+      ok(true, "J18c fix applied + auto re-run PASSES → 'applied & verified'");
+      ok(/Renamed the undefined/i.test(await firstBlock.locator(".fix-explanation").first().innerText()), "J18c the AI fix explanation renders");
+    } catch (e) { fail++; console.log("  ✗ J18c threw: " + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
+  /* ---------------- J22 — AI Review (ReviewPanel over the whole static PF) ---------------- */
+  {
+    console.log("J22 AI Review (cfg-static)");
+    const env = await openEditor(browser, "config-ui", "cfg-static");
+    const { page } = env;
+    try {
+      const btn = page.locator("button.btn-review", { hasText: "AI Review" });
+      ok(await btn.count() > 0, "J22 AI Review button present");
+      await btn.first().click();
+      await page.locator(".review-result").waitFor({ timeout: 10000 });
+      ok(/two improvements suggested/i.test(await page.locator(".review-verdict-text").first().innerText()), "J22 review verdict summary renders");
+      ok(await page.locator(".review-item").count() >= 2, "J22 review findings (items) render");
+    } catch (e) { fail++; console.log("  ✗ J22 threw: " + e.message.split("\n")[0]); }
     await closeEditor(env);
   }
 } finally {

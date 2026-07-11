@@ -217,6 +217,55 @@ try {
     } catch (e) { fail++; console.log("  ✗ J18b threw: " + e.message.split("\n")[0]); }
     await closeEditor(env);
   }
+
+  /* ---------------- J21 — KnowledgePanel (docs / skills / memories tabs) ---------------- */
+  {
+    console.log("J21 KnowledgePanel (cfg-static)");
+    const env = await openEditor(browser, "config-ui", "cfg-static");
+    const { page } = env;
+    try {
+      const kp = page.locator(".knowledge-panel").first();
+      ok(await kp.count() > 0, "J21 KnowledgePanel renders on a static-PF step");
+      // Collapsed by default — open it (robust to initial state).
+      if (!(await kp.locator(".knowledge-tabs").isVisible().catch(() => false))) {
+        await kp.locator(".knowledge-summary").click();
+      }
+      await kp.locator(".knowledge-tabs").waitFor({ timeout: 6000 });
+      ok(await kp.locator(".knowledge-tab").count() >= 3, "J21 opens to 3 tabs (Documentation / Skills / Memories)");
+      // Skills tab → seeded skills (getSkills mock).
+      await kp.locator(".knowledge-tab-skills").click();
+      await kp.getByText("Create a linked issue").first().waitFor({ timeout: 6000 });
+      ok(true, "J21 Skills tab lists the seeded skills (getSkills)");
+      // Memories tab → seeded memories (getMemories mock).
+      await kp.locator(".knowledge-tab-memories").click();
+      ok(await kp.getByText(/customfield_10003|resolution|Risk Level/i).count() > 0, "J21 Memories tab lists the seeded memories (getMemories)");
+      // Documentation tab → seeded docs (getContextDocs mock).
+      await kp.locator(".knowledge-tab-docs").click();
+      ok(await kp.getByText("Jira Field Reference").count() > 0, "J21 Documentation tab lists the seeded docs (getContextDocs)");
+    } catch (e) { fail++; console.log("  ✗ J21 threw: " + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
+  /* ---------------- J20 — NL-to-rule ("Build from a description") ---------------- */
+  {
+    console.log("J20 NL-to-rule builder (cfg-premade)");
+    const env = await openEditor(browser, "config-ui", "cfg-premade");
+    const { page } = env;
+    try {
+      // The NL builder is collapsed by default — expand it.
+      await page.locator("button.br-toggle", { hasText: "Build from a description" }).click();
+      const nl = page.locator("textarea.br-input");
+      await nl.waitFor({ timeout: 6000 });
+      ok(true, "J20 'Build from a description' expands a plain-English input");
+      await nl.fill("require the Description field to be filled in");
+      // Build rule → buildRule mock → a reviewable draft card with the explanation.
+      await page.locator("button.br-btn", { hasText: "Build rule" }).click();
+      await page.locator(".br-card").waitFor({ timeout: 8000 });
+      ok(await page.locator(".br-eyebrow", { hasText: /WHAT I BUILT/i }).count() > 0, "J20 Build produces a 'what I built' draft card");
+      ok(/Blocks the transition unless the Description field/i.test(await page.locator(".br-summary").first().innerText()), "J20 the built rule's explanation renders");
+    } catch (e) { fail++; console.log("  ✗ J20 threw: " + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
 } finally {
   await browser.close();
 }

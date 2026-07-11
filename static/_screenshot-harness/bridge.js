@@ -464,10 +464,10 @@ function invoke(name, payload) {
     case "getLmStudioWeights": return Promise.resolve({ success: true, weights: { "qwen/qwen3.6-35b-a3b": "3" }, models: LM_WEIGHT_MODELS });
     case "getAppAdmins": return Promise.resolve(ADMINS);
     case "searchUsers": return Promise.resolve({ success: true, users: [{ accountId: "557058:55555555-5555-5555-5555-555555555555", displayName: "Alex Newman", avatarUrl: "https://secure.gravatar.com/avatar/ddd?d=identicon&s=24" }, { accountId: "557058:66666666-6666-6666-6666-666666666666", displayName: "Jordan Lee", avatarUrl: null }] });
-    case "getContextDocs": return Promise.resolve(DOCS);
+    case "getContextDocs": return Promise.resolve((typeof window !== "undefined" && window.__EMPTY__) ? { success: true, docs: [] } : DOCS);
     case "getContextDocContent": return Promise.resolve({ success: true, doc: { content: '{\n  "orders": { "GET /v2/orders": "List orders" }\n}' } });
     case "getKnowledgeCounts": return Promise.resolve({ success: true, docs: 4, skills: 6, memories: 12 });
-    case "getSkills": return Promise.resolve({ success: true, skills: [
+    case "getSkills": if (typeof window !== "undefined" && window.__EMPTY__) return Promise.resolve({ success: true, skills: [] }); return Promise.resolve({ success: true, skills: [
       { id: "sk1", name: "Create a linked issue", category: "Jira API", builtin: true, description: "Create and link a sub-task or related issue via the REST API." },
       { id: "sk2", name: "Find duplicates by summary", category: "Workflow Patterns", builtin: true, description: "Search the project with JQL for issues with a similar summary." },
       { id: "sk3", name: "Build an ADF comment", category: "ADF & Formatting", builtin: true, description: "Construct a valid Atlassian Document Format comment body." },
@@ -475,7 +475,7 @@ function invoke(name, payload) {
       { id: "sk5", name: "Post to an external webhook", category: "External / Webhooks", builtin: false, description: "Notify an external service on a transition." },
       { id: "sk6", name: "Summarize a description", category: "Other", builtin: false, description: "Condense a long description into a short, structured summary." },
     ] });
-    case "getMemories": return Promise.resolve({ success: true, memories: [
+    case "getMemories": if (typeof window !== "undefined" && window.__EMPTY__) return Promise.resolve({ success: true, memories: [] }); return Promise.resolve({ success: true, memories: [
       { id: "m1", content: "This instance stores the team in customfield_10003 (Team), not Components.", source: "learned", createdAt: "2026-06-14T10:00:00Z" },
       { id: "m2", content: "Release Notes is customfield_10042 and accepts plain text.", source: "learned", createdAt: "2026-06-12T09:00:00Z" },
       { id: "m3", content: "Transitions to Done require a non-empty resolution.", source: "user", createdAt: "2026-06-10T08:00:00Z" },

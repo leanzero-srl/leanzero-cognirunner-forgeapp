@@ -391,6 +391,50 @@ try {
     } catch (e) { fail++; console.log("  ✗ E1 threw: " + e.message.split("\n")[0]); }
     await closeEditor(env);
   }
+
+  /* ---------------- E2 — premade picker list-load failure → error + Retry ---------------- */
+  {
+    console.log("E2 getRuleLists failure + Retry (cfg-premade)");
+    const env = await openEditor(browser, "config-ui", "cfg-premade", "light", { __FAIL__: ["getRuleLists"] });
+    const { page } = env;
+    try {
+      await page.getByText(/Couldn.t load options/i).first().waitFor({ timeout: 8000 });
+      ok(await page.getByText(/Couldn.t load options/i).count() > 0, "E2 getRuleLists failure shows 'Couldn't load options' on the picker");
+      ok(await page.locator(".btn-retry", { hasText: "Retry" }).count() > 0, "E2 offers Retry for the failed picker list");
+    } catch (e) { fail++; console.log("  ✗ E2 threw: " + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
+  /* ---------------- E3 — field-list load failure → manual field-id entry ---------------- */
+  {
+    console.log("E3 getFields failure → manual entry (cfg-validator)");
+    const env = await openEditor(browser, "config-ui", "cfg-validator", "light", { __FAIL__: ["getFields", "getScreenFields"] });
+    const { page } = env;
+    try {
+      await page.getByText(/Could not load fields/i).first().waitFor({ timeout: 8000 });
+      ok(await page.getByText(/Enter field ID manually/i).count() > 0, "E3 field-load failure prompts manual field-id entry");
+      ok(await page.locator('input[placeholder*="customfield_10001"]').count() > 0, "E3 a manual field-id text input is offered");
+    } catch (e) { fail++; console.log("  ✗ E3 threw: " + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
+  /* ---------------- E5 — empty knowledge states (no docs / skills / memories) ---------------- */
+  {
+    console.log("E5 empty knowledge states (cfg-static)");
+    const env = await openEditor(browser, "config-ui", "cfg-static", "light", { __EMPTY__: true });
+    const { page } = env;
+    try {
+      const kp = page.locator(".knowledge-panel").first();
+      if (!(await kp.locator(".knowledge-tabs").isVisible().catch(() => false))) await kp.locator(".knowledge-summary").click();
+      await kp.locator(".knowledge-tab-docs").click();
+      ok(await kp.getByText(/No documents yet/i).count() > 0, "E5 Documentation empty-state copy");
+      await kp.locator(".knowledge-tab-skills").click();
+      ok(await kp.getByText(/No skills yet/i).count() > 0, "E5 Skills empty-state copy");
+      await kp.locator(".knowledge-tab-memories").click();
+      ok(await kp.getByText(/No memories yet/i).count() > 0, "E5 Memories empty-state copy");
+    } catch (e) { fail++; console.log("  ✗ E5 threw: " + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
 } finally {
   await browser.close();
 }

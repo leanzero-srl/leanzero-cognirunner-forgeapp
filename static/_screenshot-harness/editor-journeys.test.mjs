@@ -533,6 +533,37 @@ try {
     } catch (e) { fail++; console.log("  ✗ E10 threw: " + e.message.split("\n")[0]); }
     await closeEditor(env);
   }
+
+  /* ---------------- E11 — offloaded static rule (config-view, functionsMeta name-only) ---------------- */
+  {
+    console.log("E11 offloaded static rule (config-view)");
+    const env = await openEditor(browser, "config-view", "view-static-offloaded");
+    const { page } = env;
+    try {
+      // An offloaded static PF carries functions:[] + name-only functionsMeta. config-view must render the
+      // step NAMES from functionsMeta (never the full details, which live in the pf_code bundle).
+      await page.getByText(/function block/i).first().waitFor({ timeout: 10000 });
+      ok(await page.getByText(/2 function blocks/i).count() > 0, "E11 offloaded rule shows its step count from functionsMeta");
+      ok(await page.getByText("Escalate priority to High").count() > 0, "E11 step 1 name renders from functionsMeta");
+      ok(await page.getByText("Add on-call watcher").count() > 0, "E11 step 2 name renders from functionsMeta");
+    } catch (e) { fail++; console.log("  ✗ E11 threw: " + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
+  /* ---------------- J23 — config-view read-only rule summary + execution logs ---------------- */
+  {
+    console.log("J23 config-view rule summary + logs (view-active)");
+    const env = await openEditor(browser, "config-view", "view-active");
+    const { page } = env;
+    try {
+      ok(await page.getByText(/customer impact and a rollback plan/i).count() > 0, "J23 config-view renders the read-only rule summary (validator prompt)");
+      await page.locator("button", { hasText: /Show Logs/i }).first().click();
+      await page.locator(".log-entry").first().waitFor({ timeout: 8000 });
+      ok(await page.locator(".log-entry").count() > 0, "J23 Show Logs renders execution-log entries");
+      ok(await page.getByText(/PROJ-481|PROJ-479|PROJ-512/).count() > 0, "J23 log entries show real issue keys + reasons");
+    } catch (e) { fail++; console.log("  ✗ J23 threw: " + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
 } finally {
   await browser.close();
 }

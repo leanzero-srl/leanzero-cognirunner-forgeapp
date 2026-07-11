@@ -380,6 +380,10 @@ function getContext() {
   }
   if (s === "cfg-static")
     return { accountId: ACCT, siteUrl: SITE, license: { active: true, type: "PAID" }, extension: { ...baseExt, type: "jira:workflowPostFunction", key: "ai-static-post-function", transitionContext: { id: "11", from: { id: "1", name: "To Do" }, to: { id: "3", name: "In Progress" } }, postFunctionConfig: JSON.stringify(CFG_STATIC) } };
+  if (s === "view-static-offloaded")
+    // An OFFLOADED static PF (config >24KB → code moved to pf_code): functions:[] + name-only functionsMeta.
+    // config-view must render the step NAMES from functionsMeta (never the full details). E11 path.
+    return { accountId: ACCT, siteUrl: SITE, license: { active: true }, extension: { ...baseExt, type: "jira:workflowPostFunction", key: "ai-static-post-function", entryPoint: "view", transitionContext: { id: "81", from: { name: "Triaged" }, to: { name: "Mitigating" } }, postFunctionConfig: JSON.stringify({ id: "postfunction-static::Incident::81::i-offload", type: "postfunction-static", fieldId: "", functions: [], functionsMeta: [{ id: "s1", name: "Escalate priority to High", operationType: "rest_api_internal", variableName: "r1" }, { id: "s2", name: "Add on-call watcher", operationType: "rest_api_internal", variableName: "r2" }], workflow: { workflowId: "wf-incident-007", workflowName: "Incident Response", transitionId: "81", siteUrl: SITE } }) } };
   if (s === "view-active" || s === "view-disabled")
     return { accountId: ACCT, siteUrl: SITE, license: { active: true }, extension: { ...baseExt, type: "jira:workflowValidator", key: "cognirunner-validator", entryPoint: "view", transitionContext: { id: "21", from: { name: "In Progress" }, to: { name: "Done" } }, validatorConfig: VIEW_VALIDATOR_CONFIG } };
   // default: admin global page (auto-admin via jira:adminPage)

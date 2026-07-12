@@ -43,6 +43,30 @@ ok(jac.merged === true && load().length === 1, "near-identical (Jaccard >= 0.85,
 const diff = await saveMemoryCandidate({ content: "sprint velocity should exclude spillover stories", source: "user" });
 ok(diff.merged === false && load().length === 2, "a dissimilar memory is added as new");
 
+// --- CHARACTERIZATION: dedup is scope-BLIND — it matches on TEXT only, never projectKey. ---
+// This LOCKS the current behavior so any future scope-aware change is a deliberate red->green edit.
+// FLAGGED as a design question (see FEATURE_LEDGER "dedup ignores projectKey"): a fact re-learned in a
+// DIFFERENT project — or a GLOBAL fact — merges into whatever text-matching memory exists first and
+// inherits THAT memory's scope. Not asserting this is "right"; asserting what the code does today.
+// (1) cross-project candidate merges into an existing project-scoped memory, keeping that scope.
+reset([{ id: "pa", content: "the deploy gate needs a QA signoff", source: "user", projectKey: "PROJA", confidence: 0.5, reinforcements: 0, disabled: false, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" }]);
+const xProj = await saveMemoryCandidate({ content: "the deploy gate needs a QA signoff", source: "test", projectKey: "PROJB" });
+ok(xProj.merged === true && load().length === 1, "cross-project candidate (PROJB) merges into the existing PROJA memory — no separate PROJB memory is created");
+ok(load()[0].projectKey === "PROJA", "the merged memory KEEPS projectKey PROJA (candidate's PROJB scope is dropped)");
+ok(load()[0].reinforcements === 1, "cross-project match still reinforces");
+const blkB = await buildMemoryBlock({ projectKey: "PROJB" });
+ok(!blkB.text.includes("QA signoff"), "CONSEQUENCE: PROJB does NOT get the merged memory injected (scoped to PROJA) — the learning is effectively lost for PROJB");
+const blkA = await buildMemoryBlock({ projectKey: "PROJA" });
+ok(blkA.text.includes("QA signoff"), "PROJA still gets it");
+// (2) a GLOBAL candidate merging into a project-scoped memory is NARROWED to that project (worst case).
+reset([{ id: "pa2", content: "close stale bugs after ninety days", source: "user", projectKey: "PROJA", confidence: 0.5, reinforcements: 0, disabled: false, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" }]);
+const gCand = await saveMemoryCandidate({ content: "close stale bugs after ninety days", source: "user", projectKey: null });
+ok(gCand.merged === true && load()[0].projectKey === "PROJA", "a GLOBAL candidate (projectKey null) merges into a PROJA memory and STAYS scoped to PROJA — never injected globally (worst-case narrowing)");
+// (3) a project candidate merging into a GLOBAL memory keeps it GLOBAL (this direction is benign).
+reset([{ id: "g1", content: "prefer squash merges on the main branch", source: "user", projectKey: null, confidence: 0.5, reinforcements: 0, disabled: false, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" }]);
+const aCand = await saveMemoryCandidate({ content: "prefer squash merges on the main branch", source: "user", projectKey: "PROJA" });
+ok(aCand.merged === true && load()[0].projectKey === null, "a PROJA candidate merging into a GLOBAL memory keeps it GLOBAL — benign; the fact stays broadly injected");
+
 // --- THE BUG: a USER re-add of a DISABLED memory must RE-ENABLE it (else silent no-op / invisible) ---
 reset([{ id: "m1", content: "the login retry needs exponential backoff", source: "user", confidence: 1, reinforcements: 0, disabled: true, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" }]);
 const re = await saveMemoryCandidate({ content: "the login retry needs exponential backoff", source: "user" });

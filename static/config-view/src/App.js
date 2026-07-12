@@ -21,6 +21,7 @@ import { confirmDialog } from "./confirmDialog";
 import { findRule } from "../../../src/shared/premade-rules-catalog.js";
 import { premadeSummaryRows, buildFactsText, ruleKindEnum } from "../../../src/shared/explain-facts.js";
 import { logSourceOf, SOURCE_LABEL, FLAG_LABEL } from "../../../src/shared/log-flags.js";
+import { codeFingerprint } from "../../../src/shared/code-fingerprint.js";
 
 // Inject styles directly
 const injectStyles = () => {
@@ -833,6 +834,20 @@ const injectStyles = () => {
       color: #ffffff;
       white-space: nowrap;
     }
+    /* Tested-state chip (read-only mirror of the editor's) — solid hue, white text, no rail/tint. */
+    .pf-test-chip {
+      margin-left: 8px;
+      padding: 2px 10px;
+      border-radius: var(--r-sm);
+      font-size: 10px;
+      font-weight: 700;
+      color: #ffffff;
+      white-space: nowrap;
+    }
+    .pf-test-pass { background: #16a34a; }
+    .pf-test-stale { background: #d97706; }
+    html[data-color-mode="dark"] .pf-test-pass { background: #22c55e; }
+    html[data-color-mode="dark"] .pf-test-stale { background: #f59e0b; }
     .cv-gen-docs { background: var(--accent-docs); }
     .cv-gen-skill { background: var(--accent-skills); }
     .cv-gen-mem { background: var(--accent-memories); }
@@ -1821,6 +1836,13 @@ function App() {
                   <span className="prompt-value">
                     {fn.name || fn.operationPrompt?.substring(0, 80) || "(no description)"}
                   </span>
+                  {/* Tested-state chip — only when a tested fingerprint was stored (a rule saved before this
+                      feature, or an offloaded name-only step, has none → no chip, never a fabricated state). */}
+                  {fn.code && fn.testedFingerprint != null && (
+                    <span className={`pf-test-chip pf-test-${fn.testedFingerprint === codeFingerprint(fn.code) ? "pass" : "stale"}`}>
+                      {fn.testedFingerprint === codeFingerprint(fn.code) ? "Tested ✓" : "Edited since tested"}
+                    </span>
+                  )}
                 </div>
                 {isRecipe && (
                   <div className="cv-gen-row">

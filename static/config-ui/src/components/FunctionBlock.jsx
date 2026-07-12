@@ -21,15 +21,7 @@ import JIRA_ENDPOINTS_DATA from "../data/jira-endpoints";
 import { BUILTIN_RECIPES, getRecipeByKey } from "../../../../src/shared/builtin-recipes.js";
 import { KNOWN_API_MEMBERS } from "../../../../src/shared/sandbox-api-spec.js";
 import { buildDryRunFacts, countChangeVerbs, CHANGE_VERB_LABEL } from "../../../../src/shared/narrate-utils.js";
-
-// Cheap fingerprint of the code a dry-run test PASSED against. The tested-state chip compares it to the
-// CURRENT code, so "edited since tested" (stale) and undo are DERIVED — never a stored flag that can drift.
-const codeFingerprint = (s) => {
-  const str = String(s || "");
-  let h = 0;
-  for (let i = 0; i < str.length; i++) h = ((h << 5) - h + str.charCodeAt(i)) | 0;
-  return `${str.length}:${h}`;
-};
+import { codeFingerprint } from "../../../../src/shared/code-fingerprint.js";
 
 // Maps a step's operation type to the closest skill category for
 // the "Save as Skill" pre-fill.

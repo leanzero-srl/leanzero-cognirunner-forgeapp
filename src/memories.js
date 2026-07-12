@@ -252,7 +252,10 @@ export const buildMemoryBlock = async ({ projectKey = null, capBytes = 8192 } = 
   for (const m of eligible) {
     const line = `- [${m.source || "user"}] ${defangFence(m.content)}`;
     const candidate = text ? `${text}\n${line}` : line;
-    if (candidate.length > capBytes) break;
+    // capBytes is a BYTE budget — measure UTF-8 bytes (multibyte CJK/emoji count as
+    // 3-4B each), not UTF-16 char length, so the block can't overshoot the intended
+    // prompt budget. utf8Len is the same helper the hard KVS guard uses.
+    if (utf8Len(candidate) > capBytes) break;
     text = candidate;
     count++;
   }

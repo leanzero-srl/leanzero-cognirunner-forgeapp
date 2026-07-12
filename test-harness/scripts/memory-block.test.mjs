@@ -124,6 +124,19 @@ ok(b.count === 0 && b.text === "", "capBytes below one line → empty block (no 
 b = await buildMemoryBlock({});
 ok(b.count === 3, "default cap (8192) admits all three lines");
 
+// MULTIBYTE: capBytes is a BYTE budget, measured in UTF-8 — not UTF-16 char length.
+// Each CJK char is 1 UTF-16 unit but 3 UTF-8 bytes, so a line "- [user] " (9B) + 20 CJK
+// = 29 chars but 69 bytes. Under the old `candidate.length > capBytes` check two such
+// lines (59 chars) slipped under an 80-byte cap and the block ballooned to 139 bytes.
+const u8 = (s) => new TextEncoder().encode(s).length;
+seed([
+  mk({ id: "j1", content: "日".repeat(20), confidence: 0.9 }),
+  mk({ id: "j2", content: "月".repeat(20), confidence: 0.8 }),
+]);
+b = await buildMemoryBlock({ capBytes: 80 });
+ok(u8(b.text) <= 80, `multibyte block respects the BYTE cap (${u8(b.text)} <= 80) — measured in UTF-8, not UTF-16 length`);
+ok(b.count === 1, "only the first CJK line (69B) fits an 80-byte cap; the second (→139B) is dropped whole");
+
 // ===================== getMemorySettings =====================
 
 // unset → documented defaults

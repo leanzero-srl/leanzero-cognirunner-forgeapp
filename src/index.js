@@ -10487,8 +10487,14 @@ const callDocProcessorCreate = async (format, { title, content, stylePreset }, u
     if (raced === TIMED_OUT) return { ok: false, error: `${tool} timed out after ${Math.round(timeoutMs / 1000)}s` };
     let parsed = null;
     try { parsed = JSON.parse(raced); } catch { /* human text */ }
-    const message = (parsed && (parsed.message || parsed.note)) || (typeof raced === "string" ? raced.slice(0, 400) : "");
-    const ok = parsed ? parsed.success !== false : !/\b(error|failed)\b/i.test(message);
+    // The bridge returns a {"error":"…"} envelope on an MCP error (rate limit, tool
+    // throw, null bridge). That parses as valid JSON with no `success` field, so a
+    // bare `success !== false` check would read it as a phantom SUCCESS — emitting a
+    // false "Attached" trace + Jira comment for a document that was never created.
+    // The sibling runWebResearch classifies the identical envelope; treat a truthy
+    // `error` as failure here too.
+    const message = (parsed && (parsed.message || parsed.note || parsed.error)) || (typeof raced === "string" ? raced.slice(0, 400) : "");
+    const ok = parsed ? (parsed.success !== false && !parsed.error) : !/\b(error|failed)\b/i.test(message);
     return { ok, message, filename, raw: parsed || String(raced).slice(0, 400) };
   } catch (e) {
     return { ok: false, error: e.message };
@@ -11649,25 +11655,53 @@ export const validate = async (args) => {
   let validationResult;
   let logFieldValue = "";
   if (fieldId === "attachment" && issue.key) {
-    // Fetch attachment metadata from the issue
+    // Fetch attachment metadata from the issue, RETRYING transient throttling
+    // (429/5xx, honoring Retry-After). A throttled read must fail OPEN — otherwise a
+    // "reject unless attached" rule wrongly blocks a transition on an issue that DOES
+    // have the attachment, mistaking a 429 for "no attachments". This mirrors the
+    // standard-field read's __FIELD_READ_TRANSIENT__ fail-open policy (F11).
     let attachments = [];
-    try {
-      const issueResponse = await api.asApp().requestJira(
-        route`/rest/api/3/issue/${issue.key}?fields=attachment`,
-      );
+    let attachmentReadTransient = false;
+    for (let attempt = 1; ; attempt++) {
+      let issueResponse;
+      try {
+        issueResponse = await api.asApp().requestJira(
+          route`/rest/api/3/issue/${issue.key}?fields=attachment`,
+        );
+      } catch (error) {
+        if (attempt <= 3) { await new Promise((r) => setTimeout(r, Math.min(2000, 400 * 2 ** (attempt - 1)))); continue; }
+        console.error("Error fetching attachments (transient, exhausted retries):", error);
+        attachmentReadTransient = true;
+        break;
+      }
       if (issueResponse.ok) {
         const issueData = await issueResponse.json();
         attachments = issueData.fields?.attachment || [];
+        break;
+      }
+      if ((issueResponse.status === 429 || issueResponse.status >= 500) && attempt <= 3) {
+        const ra = parseInt(issueResponse.headers.get("Retry-After") || "", 10);
+        await new Promise((r) => setTimeout(r, Number.isFinite(ra) ? Math.min(5000, ra * 1000) : Math.min(2000, 400 * 2 ** (attempt - 1))));
+        continue;
+      }
+      if (issueResponse.status === 429 || issueResponse.status >= 500) {
+        console.error("Failed to fetch attachments (transient, exhausted retries):", issueResponse.status);
+        attachmentReadTransient = true;
       } else {
+        // Genuine non-transient failure (e.g. 404/permission) — treat as absent.
         console.error("Failed to fetch attachments:", issueResponse.status);
       }
-    } catch (error) {
-      console.error("Error fetching attachments:", error);
+      break;
     }
 
     console.log(`Found ${attachments.length} attachment(s) on ${issue.key}`);
 
-    if (attachments.length === 0) {
+    if (attachmentReadTransient) {
+      // Fail OPEN on a throttled read (F11) — don't block a transition because Jira
+      // was rate-limiting the attachment metadata fetch.
+      logFieldValue = "(attachment read throttled)";
+      validationResult = { isValid: true, reason: "Attachments could not be read (Jira throttled the request) — transition allowed (fail-open).", transientError: true };
+    } else if (attachments.length === 0) {
       // No attachments — send empty to OpenAI for prompt-based validation
       logFieldValue = "(no attachments)";
       validationResult = useTools

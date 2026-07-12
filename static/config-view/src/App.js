@@ -1168,13 +1168,20 @@ function App() {
         let allLogs = result.logs || [];
         // Filter to only show logs for this specific rule
         if (config?.type?.includes("postfunction")) {
-          // Post-function: match by type and action field
+          // Post-function: prefer an EXACT per-rule match by ruleId. The old
+          // `pfType.includes("static")` clause was unconditionally true for any
+          // static PF, bypassing the field gate so a static rule's view vacuumed
+          // up every other PF rule's logs. New log entries carry a ruleId; match on
+          // it, and fall back to the type+field heuristic only for legacy entries
+          // that predate ruleId-stamping.
           const pfType = config.type;
           const actionField = config.actionFieldId || config.fieldId || "";
-          allLogs = allLogs.filter((l) =>
-            (l.type && l.type.includes("postfunction")) &&
-            (l.fieldId === actionField || l.fieldId === "static-code" || pfType.includes("static"))
-          );
+          const myRuleId = config?.ruleId || config?.id || ruleId || null;
+          allLogs = allLogs.filter((l) => {
+            if (!(l.type && l.type.includes("postfunction"))) return false;
+            if (myRuleId && l.ruleId) return l.ruleId === myRuleId;
+            return l.fieldId === actionField || l.fieldId === "static-code" || pfType.includes("static");
+          });
         } else if (config?.fieldId) {
           // Validator/condition: match by field ID AND this rule's own type. The backend
           // writes type "validator"/"condition" (index.js validate); accepting only the

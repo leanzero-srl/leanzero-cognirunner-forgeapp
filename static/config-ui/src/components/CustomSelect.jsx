@@ -41,6 +41,7 @@ export default function CustomSelect({
   const [highlighted, setHighlighted] = useState(-1);
   const [coords, setCoords] = useState(null); // { left, width, top|bottom, maxHeight, flipUp }
   const wrapRef = useRef(null);
+  const triggerRef = useRef(null);
   const panelRef = useRef(null);
   const searchRef = useRef(null);
   const listRef = useRef(null);
@@ -135,7 +136,7 @@ export default function CustomSelect({
       }
       return;
     }
-    if (e.key === "Escape") { e.preventDefault(); setOpen(false); return; }
+    if (e.key === "Escape") { e.preventDefault(); setOpen(false); triggerRef.current?.focus(); return; }
     if (e.key === "ArrowDown") {
       e.preventDefault();
       setHighlighted((p) => Math.min(p + 1, filtered.length - 1));
@@ -154,6 +155,7 @@ export default function CustomSelect({
         onChange(filtered[highlighted].value);
         setOpen(false);
         setSearch("");
+        triggerRef.current?.focus();
       }
     }
   };
@@ -162,6 +164,8 @@ export default function CustomSelect({
     onChange(opt.value);
     setOpen(false);
     setSearch("");
+    // Return focus to the trigger so keyboard users don't get dumped at <body> top.
+    triggerRef.current?.focus();
   };
 
   const renderItem = (opt, idx) => (
@@ -243,6 +247,7 @@ export default function CustomSelect({
     <div className="dropdown" ref={wrapRef} onKeyDown={handleKeyDown}>
       <button
         type="button"
+        ref={triggerRef}
         className={`dropdown-trigger${open ? " dropdown-open" : ""}${error ? " dropdown-error" : ""}${disabled ? " dropdown-disabled" : ""}`}
         aria-haspopup="listbox"
         aria-expanded={open}

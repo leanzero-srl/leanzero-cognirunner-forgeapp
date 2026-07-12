@@ -2282,7 +2282,8 @@ const injectStyles = () => {
     .review-item-icon { flex-shrink: 0; }
 
     .review-item-success { background: var(--success-color); color: #ffffff; }
-    .review-item-warning { background: #d97706; color: #ffffff; }
+    .review-item-warning { background: #d97706; color: #2a1602; }
+    html[data-color-mode="dark"] .review-item-warning { background: #f59e0b; color: #2a1602; }
     .review-item-error { background: var(--error-color); color: #ffffff; }
     .review-item-tip { background: var(--primary-color); color: #ffffff; }
 

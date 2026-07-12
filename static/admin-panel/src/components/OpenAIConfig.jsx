@@ -638,6 +638,10 @@ export default function OpenAIConfig({ invoke }) {
     setError(null);
     setSuccess(null);
     setPingResult(null);
+    // Drop any stale health verdict — the chip must only ever reflect a live probe of
+    // the CURRENTLY-active provider, never carry a "Connected" over from a prior one.
+    setHealthState("idle");
+    setHealthResult(null);
     setKeyInput("");
     setCustomModelInput("");
     loadProviderConfig(p, { asRefresh: true });
@@ -651,6 +655,9 @@ export default function OpenAIConfig({ invoke }) {
     setError(null);
     setSuccess(null);
     setPingResult(null);
+    // Changing the active provider invalidates any prior health verdict.
+    setHealthState("idle");
+    setHealthResult(null);
     try {
       const payload = { provider }; // activate defaults to true
       // Azure / LM Studio carry a user-supplied base URL; Bedrock a region.

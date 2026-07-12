@@ -131,6 +131,10 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
   if (p.value && !value.trim()) valid = false;
   if (p.picker && !p.picker.optional && !pickerValue.trim()) valid = false;
   if (p.lengthBounds && minLen.trim() === "" && maxLen.trim() === "") valid = false; // need at least one bound
+  // Both bounds present but inverted (min > max) matches NOTHING at runtime → the validator
+  // would block EVERY value on every transition. Refuse to save it (a common transposed-numbers slip).
+  const boundsInverted = p.lengthBounds && minLen.trim() !== "" && maxLen.trim() !== "" && Number(minLen) > Number(maxLen);
+  if (boundsInverted) valid = false;
   if (p.dateRel && dateMode === "within" && !(Number(days) > 0)) valid = false; // within needs a positive day count
 
   // Report up whenever config/valid actually change. Use a ref for onChange so the
@@ -367,16 +371,19 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
       )}
 
       {!unavailable && p.lengthBounds && (
-        <div className="pr-row2">
-          <div className="form-group">
-            <label className="label">Min <span className="pr-opt">optional</span></label>
-            <input className="input" type="number" min="0" placeholder="e.g. 10" value={minLen} onChange={(e) => setMinLen(e.target.value)} />
+        <>
+          <div className="pr-row2">
+            <div className="form-group">
+              <label className="label">Min <span className="pr-opt">optional</span></label>
+              <input className={`input ${boundsInverted ? "input-error" : ""}`} type="number" min="0" placeholder="e.g. 10" value={minLen} onChange={(e) => setMinLen(e.target.value)} />
+            </div>
+            <div className="form-group">
+              <label className="label">Max <span className="pr-opt">optional</span></label>
+              <input className={`input ${boundsInverted ? "input-error" : ""}`} type="number" min="0" placeholder="e.g. 255" value={maxLen} onChange={(e) => setMaxLen(e.target.value)} />
+            </div>
           </div>
-          <div className="form-group">
-            <label className="label">Max <span className="pr-opt">optional</span></label>
-            <input className="input" type="number" min="0" placeholder="e.g. 255" value={maxLen} onChange={(e) => setMaxLen(e.target.value)} />
-          </div>
-        </div>
+          {boundsInverted && <div className="br-hint">Min must not be greater than Max — a rule with Min above Max matches nothing and would block every transition.</div>}
+        </>
       )}
 
       {!unavailable && p.dateRel && (

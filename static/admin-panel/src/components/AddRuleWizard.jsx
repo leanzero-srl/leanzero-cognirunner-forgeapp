@@ -664,16 +664,15 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
                         <span style={{ fontWeight: 600 }}>{t.name}</span>
                         <span style={{ display: "inline-flex", alignItems: "center", gap: "6px", fontSize: "11px", color: "var(--text-muted)" }}>
                           <span style={{
-                            padding: "2px 6px", borderRadius: "4px", fontSize: "10px", fontWeight: 500,
-                            background: t.type === "initial" ? "rgba(22,163,106,0.1)" : "rgba(100,116,139,0.1)",
-                            color: t.type === "initial" ? "var(--success-color)" : "var(--text-secondary)",
+                            padding: "2px 6px", borderRadius: "4px", fontSize: "10px", fontWeight: 600,
+                            background: t.type === "initial" ? "#16a34a" : "#475569", color: "#fff",
                           }}>
                             {t.fromName || "Any"}
                           </span>
                           <span style={{ color: "var(--text-muted)" }}>&rarr;</span>
                           <span style={{
-                            padding: "2px 6px", borderRadius: "4px", fontSize: "10px", fontWeight: 500,
-                            background: "rgba(37,99,235,0.1)", color: "var(--primary-color)",
+                            padding: "2px 6px", borderRadius: "4px", fontSize: "10px", fontWeight: 600,
+                            background: "#2563eb", color: "#fff",
                           }}>
                             {t.toName || "?"}
                           </span>
@@ -682,8 +681,8 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
                       <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                         {(t.hasCogniValidator || t.hasCogniCondition || t.hasCogniPostFunction) && (
                           <span style={{
-                            fontSize: "9px", padding: "2px 6px", borderRadius: "4px", fontWeight: 600,
-                            background: "rgba(37,99,235,0.12)", color: "var(--primary-color)", letterSpacing: "0.3px",
+                            fontSize: "9px", padding: "2px 6px", borderRadius: "4px", fontWeight: 700,
+                            background: "#2563eb", color: "#fff", letterSpacing: "0.3px",
                           }}>
                             COGNIRUNNER
                           </span>

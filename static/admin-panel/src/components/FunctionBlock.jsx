@@ -781,7 +781,14 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
         </label>
         <CustomSelect
           value={opType}
-          onChange={(v) => update("operationType", v)}
+          onChange={(v) => {
+            // A manual pick wins: cancel any pending debounced auto-detect (armed by
+            // the last keystroke, closed over a now-stale operationType) so it can't
+            // fire 800ms later and revert the user's choice. Also drop the badge.
+            if (suggestTimer.current) { clearTimeout(suggestTimer.current); suggestTimer.current = null; }
+            setOpSuggested(false);
+            update("operationType", v);
+          }}
           options={OPERATION_TYPES}
         />
       </div>

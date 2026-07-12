@@ -405,10 +405,16 @@ const injectStyles = () => {
     .port-status { display: inline-flex; padding: 2px 8px; border-radius: var(--r-sm, 6px); font-size: 9px; font-weight: 700; letter-spacing: 0.5px; text-transform: uppercase; color: #fff; white-space: nowrap; }
     .port-status-ready { background: #16a34a; }
     .port-status-committed { background: #16a34a; }
-    .port-status-needs-rebind { background: #d97706; }
+    .port-status-needs-rebind { background: #d97706; color: #2a1602; }
     .port-status-conflict { background: #4f46e5; }
     .port-status-invalid { background: #dc2626; }
     .port-status-error { background: #dc2626; }
+    html[data-color-mode="dark"] .port-status-ready,
+    html[data-color-mode="dark"] .port-status-committed { background: #22c55e; }
+    html[data-color-mode="dark"] .port-status-needs-rebind { background: #f59e0b; color: #2a1602; }
+    html[data-color-mode="dark"] .port-status-conflict { background: #6366f1; }
+    html[data-color-mode="dark"] .port-status-invalid,
+    html[data-color-mode="dark"] .port-status-error { background: #ef4444; }
     .port-target { margin: 4px 0 14px; }
     .port-target-lbl { display: block; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-secondary); margin-bottom: 6px; }
     .port-target-picks { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
@@ -4162,7 +4168,8 @@ const injectCopiedComponentStyles = () => {
     .review-item-icon { flex-shrink: 0; }
 
     .review-item-success { background: var(--success-color); color: #ffffff; }
-    .review-item-warning { background: #d97706; color: #ffffff; }
+    .review-item-warning { background: #d97706; color: #2a1602; }
+    html[data-color-mode="dark"] .review-item-warning { background: #f59e0b; color: #2a1602; }
     .review-item-error { background: var(--error-color); color: #ffffff; }
     .review-item-tip { background: var(--primary-color); color: #ffffff; }
 

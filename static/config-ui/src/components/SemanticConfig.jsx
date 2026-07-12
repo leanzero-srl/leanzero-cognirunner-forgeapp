@@ -51,6 +51,7 @@ export default function SemanticConfig({
   crossCheckClaims,
   setCrossCheckClaims,
 }) {
+  const [conditionTouched, setConditionTouched] = useState(false);
   const [showTest, setShowTest] = useState(false);
   const [testIssue, setTestIssue] = useState("");
   const [testRunning, setTestRunning] = useState(false);
@@ -154,8 +155,9 @@ export default function SemanticConfig({
         <textarea
           value={conditionPrompt}
           onChange={(e) => setConditionPrompt(e.target.value)}
+          onBlur={() => setConditionTouched(true)}
           placeholder={'Example: "Run when the description mentions a bug or defect"'}
-          className={`textarea ${!conditionPrompt.trim() ? "input-error" : ""}`}
+          className={`textarea ${conditionTouched && !conditionPrompt.trim() ? "input-error" : ""}`}
           rows={4}
         />
       </div>

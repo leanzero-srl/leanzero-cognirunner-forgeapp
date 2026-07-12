@@ -22,6 +22,15 @@ import { BUILTIN_RECIPES, getRecipeByKey } from "../../../../src/shared/builtin-
 import { KNOWN_API_MEMBERS } from "../../../../src/shared/sandbox-api-spec.js";
 import { buildDryRunFacts, countChangeVerbs, CHANGE_VERB_LABEL } from "../../../../src/shared/narrate-utils.js";
 
+// Cheap fingerprint of the code a dry-run test PASSED against. The tested-state chip compares it to the
+// CURRENT code, so "edited since tested" (stale) and undo are DERIVED — never a stored flag that can drift.
+const codeFingerprint = (s) => {
+  const str = String(s || "");
+  let h = 0;
+  for (let i = 0; i < str.length; i++) h = ((h << 5) - h + str.charCodeAt(i)) | 0;
+  return `${str.length}:${h}`;
+};
+
 // Maps a step's operation type to the closest skill category for
 // the "Save as Skill" pre-fill.
 const SKILL_CATEGORY_BY_OPTYPE = {
@@ -453,7 +462,12 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
     setTestRunning(false);
     if (genTokenRef.current !== token) return result; // stale — caller still gets it
     setTestResult(result);
-    if (result && result.success) setFixAttempts(0); // successful run resets the fix guard
+    if (result && result.success) {
+      setFixAttempts(0); // successful run resets the fix guard
+      // Stamp the tested-state: this exact code now passed a dry-run (covers the fix-loop re-run too,
+      // which calls runTest with the fixed code). A later edit changes the fingerprint → chip goes stale.
+      onUpdate({ testedFingerprint: codeFingerprint(codeToRun) });
+    }
     return result;
   };
 
@@ -591,6 +605,14 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
 
   const hasPrompt = functionData.operationPrompt?.trim();
   const hasCode = functionData.code?.trim();
+  // Tested-state chip (INFORMATIONAL, never a save-gate — Formality≠Gate). Derived from the fingerprint of
+  // the code that last passed a dry-run vs the current code: untested (never passed) / pass (current code is
+  // the tested code) / stale (edited or undone since the last pass). Airtight — no flag to get out of sync.
+  const testState = !hasCode
+    ? null
+    : (functionData.testedFingerprint == null
+        ? "untested"
+        : (functionData.testedFingerprint === codeFingerprint(functionData.code) ? "pass" : "stale"));
   const opType = functionData.operationType || "work_item_query";
 
   return (
@@ -605,6 +627,18 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
           onChange={(e) => update("name", e.target.value)}
           placeholder={`Step ${index + 1} name (optional)`}
         />
+        {testState && (
+          <span
+            className={`pf-test-chip pf-test-${testState}`}
+            title={testState === "pass"
+              ? "This step's current code passed a dry-run test"
+              : testState === "stale"
+              ? "The code was edited (or a fix undone) after its last passing test — run Test again to verify"
+              : "This step hasn't passed a dry-run test yet"}
+          >
+            {testState === "pass" ? "Tested ✓" : testState === "stale" ? "Edited since tested" : "Untested"}
+          </span>
+        )}
         {!isOnly && (
           <button
             className="btn-remove"

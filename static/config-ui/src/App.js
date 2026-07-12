@@ -719,6 +719,23 @@ const injectStyles = () => {
       font-size: 13px;
     }
 
+    /* Tested-state chip on a static-PF step — solid hue, white text, no rail/tint. */
+    .pf-test-chip {
+      font-size: 10px;
+      font-weight: 700;
+      padding: 1px 8px;
+      border-radius: 10px;
+      color: #ffffff;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .pf-test-pass { background: #16a34a; }
+    .pf-test-stale { background: #d97706; }
+    .pf-test-untested { background: #475569; }
+    html[data-color-mode="dark"] .pf-test-pass { background: #22c55e; }
+    html[data-color-mode="dark"] .pf-test-stale { background: #f59e0b; }
+    html[data-color-mode="dark"] .pf-test-untested { background: #64748b; }
+
     .btn-remove {
       background: none;
       border: 1px solid var(--border-color);

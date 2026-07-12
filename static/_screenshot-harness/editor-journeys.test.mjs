@@ -217,6 +217,9 @@ try {
       await firstBlock.locator(".btn-run-test", { hasText: "Run Test" }).click();
       await firstBlock.locator(".test-result", { hasText: /PROJ-42|priority|updateIssue/i }).first().waitFor({ timeout: 10000 });
       ok(await firstBlock.locator(".test-result.test-pass").count() > 0, "J18b Test Run returns a PASS dry-run with proposed changes");
+      // it76: a passing dry-run stamps the step's tested-state chip (Untested → Tested ✓).
+      await firstBlock.locator(".pf-test-chip.pf-test-pass").waitFor({ timeout: 6000 });
+      ok(await firstBlock.locator(".pf-test-chip.pf-test-pass", { hasText: "Tested" }).count() > 0, "J18b step flips to 'Tested ✓' after a passing dry-run");
     } catch (e) { fail++; console.log("  ✗ J18b threw: " + e.message.split("\n")[0]); }
     await closeEditor(env);
   }

@@ -4727,6 +4727,22 @@ const injectCopiedComponentStyles = () => {
     .provider-down-recheck:disabled { opacity: 0.6; cursor: default; }
     html[data-color-mode="dark"] .provider-down-banner { background: #ef4444; }
     html[data-color-mode="dark"] .provider-down-recheck { color: #dc2626; }
+    /* Active-provider connection HealthChip verdicts — solid hue, white text, no rail/tint. */
+    .hc-chip {
+      font-size: 10px;
+      font-weight: 700;
+      padding: 2px 9px;
+      border-radius: 10px;
+      color: #ffffff;
+      white-space: nowrap;
+    }
+    .hc-ok { background: #16a34a; }
+    .hc-warn { background: #d97706; }
+    .hc-err { background: #dc2626; }
+    html[data-color-mode="dark"] .hc-ok { background: #22c55e; }
+    html[data-color-mode="dark"] .hc-warn { background: #f59e0b; }
+    html[data-color-mode="dark"] .hc-err { background: #ef4444; }
+    .hc-hint { font-size: 11px; color: var(--text-secondary); }
 
     /* Live MCP tool chips (solid blue, white text — what an enabled MCP can actually use) */
     .mcp-tool-chip {

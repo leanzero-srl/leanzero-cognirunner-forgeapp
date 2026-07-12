@@ -516,6 +516,23 @@ try {
     }
   }
 
+  /* ---------------- HealthChip — admin Settings connection test (it78) ---------------- */
+  {
+    console.log("HealthChip admin Settings Test connection");
+    const env = await openEditor(browser, "admin-panel", "admin");
+    const { page } = env;
+    try {
+      await page.locator(".tab-btn", { hasText: /^\s*Settings\s*$/ }).first().click();
+      const testBtn = page.locator("button", { hasText: "Test connection" });
+      await testBtn.first().waitFor({ timeout: 12000 });
+      ok(await testBtn.count() > 0, "HealthChip: Settings shows a 'Test connection' button");
+      await testBtn.first().click();
+      await page.locator(".hc-chip.hc-ok", { hasText: "Connected" }).first().waitFor({ timeout: 8000 });
+      ok(await page.locator(".hc-chip.hc-ok", { hasText: "Connected" }).count() > 0, "HealthChip: Test connection → 'Connected' verdict chip (checkProviderHealth)");
+    } catch (e) { fail++; console.log("  ✗ HealthChip threw: " + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
   /* ---------------- E10 — rule import preview (needs-rebind / notes) ---------------- */
   {
     console.log("E10 rule import preview (admin RulePortabilityDialog)");

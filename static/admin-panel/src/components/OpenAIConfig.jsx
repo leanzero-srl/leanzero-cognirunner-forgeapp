@@ -97,6 +97,23 @@ const TOOL_DESCRIPTIONS = {
   "list-templates": "List the document templates / style presets the doc server offers.",
 };
 
+// Map a checkProviderHealth result to a connection-verdict chip. Keyed on HTTP STATUS (uniform across
+// providers) + a network-error signal (uniform) — never provider-specific error BODIES — so a wrong
+// "Connected" is structurally avoided (only ok:true → Connected). Hue: ok=green, warn=amber (temporary),
+// err=red (needs a fix).
+const healthVerdict = (r) => {
+  if (!r) return null;
+  if (r.ok) return { label: "Connected", hue: "ok", hint: "The active provider answered a live test call." };
+  const status = r.status;
+  const msg = String(r.message || "");
+  if (status === 401 || status === 403) return { label: "Auth failed", hue: "err", hint: "The API key was rejected — check the key below." };
+  if (status === 404) return { label: "Model / endpoint not found", hue: "warn", hint: "The base URL or model may be wrong for this provider." };
+  if (status === 429) return { label: "Rate-limited", hue: "warn", hint: "The provider is throttling — temporary; validators fail OPEN meanwhile." };
+  if (typeof status === "number" && status >= 500) return { label: "Provider error", hue: "warn", hint: `The provider returned a server error${status ? ` (HTTP ${status})` : ""} — usually temporary.` };
+  if (!status && /ETIMEDOUT|ECONNRESET|ECONNREFUSED|EAI_AGAIN|network|timed?.?out|timeout|aborted|socket hang up/i.test(msg)) return { label: "Unreachable", hue: "err", hint: "Couldn't reach the host — check the base URL, egress, and that the service is up." };
+  return { label: `Error${status ? ` (HTTP ${status})` : ""}`, hue: "err", hint: msg.slice(0, 140) };
+};
+
 export default function OpenAIConfig({ invoke }) {
   const [provider, setProvider] = useState("atlassian");
   const [activeProvider, setActiveProvider] = useState("atlassian"); // what's actually saved in KVS
@@ -131,6 +148,21 @@ export default function OpenAIConfig({ invoke }) {
   const [loadError, setLoadError] = useState(null);
   // Post-save re-fetch in progress — drives the frosted veil over the card.
   const [refreshing, setRefreshing] = useState(false);
+  // Active-provider connection HealthChip — a user-initiated live probe (reuses the checkProviderHealth
+  // resolver: a cheap 1-token completion). idle | testing | done; result maps to a verdict chip.
+  const [healthState, setHealthState] = useState("idle");
+  const [healthResult, setHealthResult] = useState(null);
+  const runHealthCheck = async () => {
+    setHealthState("testing");
+    setHealthResult(null);
+    try {
+      const r = await invoke("checkProviderHealth");
+      setHealthResult(r && r.success !== false ? r : { ok: false, message: (r && r.error) || "Health check failed" });
+    } catch (e) {
+      setHealthResult({ ok: false, message: (e && e.message) || "Health check failed" });
+    }
+    setHealthState("done");
+  };
   const [saving, setSaving] = useState(false);
   const [savingProvider, setSavingProvider] = useState(false);
   const [savingModel, setSavingModel] = useState(false);
@@ -1191,6 +1223,27 @@ export default function OpenAIConfig({ invoke }) {
                 <span style={{ color: "var(--text-muted)" }}>· Viewing <strong style={{ color: "var(--text-color)" }}>{providerLabelFor(provider)}</strong> (not active — its config is shown below; “Set as active” to use it)</span>
               )}
             </p>
+            {/* Active-provider connection HealthChip — user-initiated live probe + a clear verdict. */}
+            <div style={{ margin: "8px 0 0 0", display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
+              <button
+                type="button"
+                className={"btn-small" + (healthState === "testing" ? " is-busy" : "")}
+                onClick={runHealthCheck}
+                disabled={healthState === "testing"}
+                title="Run a live 1-token call to the active provider and report the connection verdict"
+              >
+                {healthState === "testing" ? "Testing…" : "Test connection"}
+              </button>
+              {healthState === "done" && (() => {
+                const v = healthVerdict(healthResult);
+                return v ? (
+                  <>
+                    <span className={`hc-chip hc-${v.hue}`}>{v.label}</span>
+                    {v.hint && <span className="hc-hint">{v.hint}</span>}
+                  </>
+                ) : null;
+              })()}
+            </div>
             <p style={{ margin: "4px 0 0 0", fontSize: "11px", color: "var(--text-muted)" }}>
               All providers support chat completions and tool calling. Vision (image attachments) requires OpenAI, Azure, OpenRouter, Anthropic, or a vision-capable LM Studio model — Atlassian Forge LLM is text-only for now.
             </p>

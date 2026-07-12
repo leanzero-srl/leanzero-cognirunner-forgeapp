@@ -1889,6 +1889,37 @@ const injectStyles = () => {
       color: var(--text-secondary);
     }
 
+    /* Two-gate narration — where memories actually go given the current toggle state.
+       Solid hue border + solid eyebrow chip (white text), never a left rail / faded tint. */
+    .mem-gate-banner {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      padding: 10px 14px;
+      margin-bottom: 4px;
+      border: 2px solid var(--mem-gate-hue);
+      border-radius: 8px;
+      background: var(--card-bg);
+    }
+    .mem-gate-eyebrow {
+      align-self: flex-start;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.5px;
+      color: #ffffff;
+      background: var(--mem-gate-hue);
+      padding: 2px 8px;
+      border-radius: 10px;
+    }
+    .mem-gate-label { font-size: 13px; font-weight: 700; color: var(--text-color); }
+    .mem-gate-text { font-size: 12px; color: var(--text-secondary); }
+    .mem-gate-both { --mem-gate-hue: #0d9488; }
+    .mem-gate-design { --mem-gate-hue: #d97706; }
+    .mem-gate-off { --mem-gate-hue: #475569; }
+    html[data-color-mode="dark"] .mem-gate-both { --mem-gate-hue: #14b8a6; }
+    html[data-color-mode="dark"] .mem-gate-design { --mem-gate-hue: #f59e0b; }
+    html[data-color-mode="dark"] .mem-gate-off { --mem-gate-hue: #64748b; }
+
     .memories-admin-add {
       display: flex;
       gap: 8px;

@@ -277,6 +277,31 @@ export default function MemoriesAdminTab({ invoke, isAdmin }) {
 
       {isAdmin && settings && (
         <div className="card memories-admin-toggles anim-rise">
+          {(() => {
+            // Narrate the two-gate chain, accurate to the backend (index.js:863): memories reach RUNTIME
+            // (validators/conditions/semantic PFs) only when BOTH "Inject into AI" (master) AND runtime
+            // injection are ON; design-time codegen/fix is gated on the master alone.
+            const inj = !!settings.injection;
+            const rt = !!settings.runtimeInjection;
+            const state = !inj ? "off" : (rt ? "both" : "design");
+            const COPY = {
+              off: { cls: "mem-gate-off", label: "Memories aren’t being used anywhere",
+                text: rt
+                  ? "“Inject memories into AI prompts” is off, so no memories reach any AI path — runtime injection below has no effect until you turn it on."
+                  : "“Inject memories into AI prompts” is off — turn it on to feed active memories into every AI code generation and fix." },
+              design: { cls: "mem-gate-design", label: "Memories improve code generation only",
+                text: "They are NOT used at runtime — validators, conditions, and semantic post-functions run without them. Turn on runtime injection below to also use memories on live transitions (adds tokens per run)." },
+              both: { cls: "mem-gate-both", label: "Memories are active everywhere",
+                text: "Included in every AI code generation and fix, AND in validators, conditions, and semantic post-functions on every live transition." },
+            }[state];
+            return (
+              <div className={`mem-gate-banner ${COPY.cls}`} role="status">
+                <span className="mem-gate-eyebrow">§ WHERE MEMORIES GO</span>
+                <span className="mem-gate-label">{COPY.label}</span>
+                <span className="mem-gate-text">{COPY.text}</span>
+              </div>
+            );
+          })()}
           <div className="memories-admin-toggle-row">
             <input
               type="checkbox"

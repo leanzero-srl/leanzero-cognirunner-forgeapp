@@ -594,6 +594,18 @@ const injectStyles = () => {
       font-weight: 600;
       color: var(--primary-color);
     }
+    /* Clickable issue key — jump to the Jira issue a log fired on (debug-from-log).
+       An inline link affordance (bottom underline on hover), never a left rail/tint. */
+    .log-issue-link {
+      background: none;
+      border: none;
+      border-bottom: 1px solid transparent;
+      padding: 0;
+      cursor: pointer;
+      transition: border-color 0.15s ease, opacity 0.15s ease;
+    }
+    .log-issue-link:hover { border-bottom-color: var(--primary-color); opacity: 0.85; }
+    .log-issue-link:focus-visible { outline: 2px solid var(--primary-color); outline-offset: 2px; border-radius: 2px; }
 
     .log-meta {
       margin-left: auto;
@@ -5170,7 +5182,18 @@ function App() {
           {(log.flags || []).map((f) => FLAG_LABEL[f] ? (
             <span key={f} className={`log-flag log-flag-${f}`}>{FLAG_LABEL[f]}</span>
           ) : null)}
-          <span className="log-issue">{log.issueKey}</span>
+          {siteUrl && log.issueKey ? (
+            <button
+              type="button"
+              className="log-issue log-issue-link"
+              onClick={() => router && router.open(`${siteUrl}/browse/${log.issueKey}`)}
+              title={`Open ${log.issueKey} in Jira`}
+            >
+              {log.issueKey}
+            </button>
+          ) : (
+            <span className="log-issue">{log.issueKey}</span>
+          )}
           <span className="log-meta">
             {log.executionTimeMs ? <span className="log-ms">{log.executionTimeMs}ms</span> : null}
             <span className="log-time">

@@ -67,6 +67,18 @@ reset([{ id: "g1", content: "prefer squash merges on the main branch", source: "
 const aCand = await saveMemoryCandidate({ content: "prefer squash merges on the main branch", source: "user", projectKey: "PROJA" });
 ok(aCand.merged === true && load()[0].projectKey === null, "a PROJA candidate merging into a GLOBAL memory keeps it GLOBAL — benign; the fact stays broadly injected");
 
+// --- CHARACTERIZATION: normalizeMemoryText masks 4+ digit runs to "N", so two memories about ---
+// DIFFERENT customfield ids collapse in dedup and the second merges into the first (its distinct id
+// is dropped). This is the DOCUMENTED anti-bloat trade-off (normalizeMemoryText docstring 92-97) and
+// the it80 finding #8 (characterize-only). Locked here so any future change is a deliberate red->green
+// edit. Asserts what the code does today, not that it's necessarily desired.
+reset([]);
+const cf1 = await saveMemoryCandidate({ content: "the Rollout field customfield_10040 is required on release", source: "user" });
+ok(cf1.merged === false && load().length === 1, "first customfield memory is created");
+const cf2 = await saveMemoryCandidate({ content: "the Rollout field customfield_10099 is required on release", source: "user" });
+ok(cf2.merged === true && load().length === 1, "a memory about a DIFFERENT customfield id (10099 vs 10040) collapses via digit-masking dedup — no second memory created");
+ok(load()[0].content.includes("10040") && !load()[0].content.includes("10099"), "the surviving memory keeps the FIRST id; the distinct second id is dropped (documented digit-mask trade-off)");
+
 // --- THE BUG: a USER re-add of a DISABLED memory must RE-ENABLE it (else silent no-op / invisible) ---
 reset([{ id: "m1", content: "the login retry needs exponential backoff", source: "user", confidence: 1, reinforcements: 0, disabled: true, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" }]);
 const re = await saveMemoryCandidate({ content: "the login retry needs exponential backoff", source: "user" });

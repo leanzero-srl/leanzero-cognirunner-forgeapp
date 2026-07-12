@@ -326,6 +326,11 @@ const injectStyles = () => {
       padding: 10px 14px; margin: 14px 0 2px;
       background: var(--code-bg); border: 1px solid var(--border-color); border-radius: 8px;
     }
+    /* Re-keyed tab panel entrance — a light fade-up replays on each tab switch. MLS-compliant:
+       ends at transform:none, disabled under prefers-reduced-motion. */
+    .tab-panel { animation: tabPanelFadeUp 0.26s cubic-bezier(0.22, 1, 0.36, 1); }
+    @keyframes tabPanelFadeUp { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+    @media (prefers-reduced-motion: reduce) { .tab-panel { animation: none; } }
     .tab-intro-eyebrow {
       font-family: SFMono-Regular, Consolas, monospace; font-size: 10px; font-weight: 700;
       text-transform: uppercase; letter-spacing: 0.14em; color: var(--primary-color); flex-shrink: 0;
@@ -5521,6 +5526,11 @@ function App() {
 
       <TabBar tabs={TABS} activeTab={activeTab} onTabChange={setActiveTab} isAdmin={isAdmin} />
 
+      {/* Re-keyed tab panel — a light fade-up replays on each tab switch (MLS: prefers-reduced-motion
+          guarded, ends transform:none). Jobs-poll + log-pagination state lives in App, OUTSIDE this
+          wrapper, so it is not remounted; the tab blocks below already mount/unmount by activeTab. */}
+      <div className="tab-panel" key={activeTab}>
+
       {SURFACES[activeTab] && (
         <div className="tab-intro">
           <span className="tab-intro-eyebrow">§ {SURFACES[activeTab].eyebrow}</span>
@@ -6111,6 +6121,7 @@ function App() {
       {activeTab === "settings" && isAdmin && (
         <SettingsOpenAITab invoke={invoke} />
       )}
+      </div>
     </div>
   );
 }

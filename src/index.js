@@ -993,6 +993,85 @@ export const readLogs = async (ruleId = null) => {
 };
 
 /**
+ * Pure: filter raw log rows to ONE issue and shape them for the read-only issue-context
+ * glance (jira:issueContext panel). Deliberately EXCLUDES the raw field VALUE the logs store
+ * (fieldValue/logFieldValue) and any prompt — the glance surfaces the DECISION + the AI's REASON,
+ * not field content — so it stays an observability surface, not a data dump. Exported for offline
+ * testing (the resolver adds the asUser view-permission gate + the KVS query around it).
+ */
+export const shapeIssueActivity = (rows, issueKey, cap = 20) => {
+  const key = String(issueKey || "");
+  if (!key) return [];
+  return (Array.isArray(rows) ? rows : [])
+    .filter((l) => l && l.issueKey === key)
+    .slice(0, cap)
+    .map((l) => {
+      const type = String(l.type || "");
+      let kind = "validator";
+      let decision = l.isValid === false ? "Blocked" : "Allowed";
+      if (type.includes("skipped")) {
+        kind = "skipped";
+        decision = "Skipped";
+      } else if (type.includes("postfunction")) {
+        kind = "post-function";
+        decision = l.isValid === false ? "No change" : "Ran";
+      } else if (type === "condition" || String(l.moduleKey || "").includes("condition")) {
+        kind = "condition";
+        decision = l.isValid === false ? "Transition hidden" : "Transition shown";
+      }
+      return {
+        kind,
+        label: l.ruleName || (l.premadeRuleType ? `Premade check: ${l.premadeRuleType}` : (l.moduleKey || "CogniRunner rule")),
+        decision,
+        // verdictOk drives a glyph+label badge (status by glyph + text, never colour alone).
+        verdictOk: l.isValid !== false && !type.includes("skipped"),
+        reason: String(l.reason || "").slice(0, 400),
+        premadeRuleType: l.premadeRuleType || null,
+        ruleId: l.ruleId || null,
+        timestamp: l.timestamp || null,
+      };
+    });
+};
+
+/**
+ * Resolver: recent CogniRunner activity for ONE issue (the jira:issueContext glance).
+ * Read-only. Gated by an asUser view-check — resolvers are directly invokable, so a caller
+ * must be able to actually SEE the issue (fail-closed) before its rule decisions are returned.
+ */
+resolver.define("getIssueActivity", async ({ payload }) => {
+  const issueKey = String(payload?.issueKey || "").trim();
+  if (!issueKey) return { success: false, error: "No issue key", items: [] };
+  // View-permission gate: asUser runs with the CALLER's Jira permissions; a non-ok read
+  // (401/403/404) means they can't see this issue → return nothing (never leak another
+  // issue's rule activity to someone who can't open it).
+  try {
+    const vr = await api.asUser().requestJira(route`/rest/api/3/issue/${issueKey}?fields=key`);
+    if (!vr.ok) return { success: true, issueKey, items: [], notVisible: true };
+  } catch (e) {
+    return { success: true, issueKey, items: [], notVisible: true };
+  }
+  try {
+    // Full page (100) sorted newest-first (inverted-ts keys), filtered to this issue.
+    const page = await storage.query()
+      .where("key", { condition: "BEGINS_WITH", values: [LOG_ENTRY_PREFIX] })
+      .limit(100)
+      .getMany();
+    let rows = (page.results || [])
+      .slice()
+      .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
+      .map((r) => r.value);
+    // Legacy single-array fallback (pre-migration entries) so old activity still shows.
+    if (rows.filter((l) => l && l.issueKey === issueKey).length < 20) {
+      try { const legacy = (await storage.get(LOGS_STORAGE_KEY)) || []; if (Array.isArray(legacy)) rows = [...rows, ...legacy]; } catch { /* best-effort */ }
+    }
+    const items = shapeIssueActivity(rows, issueKey, 20);
+    return { success: true, issueKey, items, count: items.length };
+  } catch (error) {
+    return { success: false, error: error.message, items: [] };
+  }
+});
+
+/**
  * Resolver: Check license status
  * Returns whether the app has an active license.
  * Used by the frontend to display license state and by the validator

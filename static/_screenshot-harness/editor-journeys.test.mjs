@@ -584,6 +584,37 @@ try {
     } catch (e) { fail++; console.log("  ✗ J23 threw: " + e.message.split("\n")[0]); }
     await closeEditor(env);
   }
+
+  /* ---------------- J24 — jira:issueContext "CogniRunner on this issue" glance ---------------- */
+  {
+    console.log("J24 issue-context glance (issue-glance)");
+    const env = await openEditor(browser, "issue-glance", "issue-glance");
+    const { page } = env;
+    try {
+      await page.locator(".glance-item").first().waitFor({ timeout: 8000 });
+      ok(await page.getByText(/CogniRunner on this issue/i).count() > 0, "J24 glance header renders");
+      ok(await page.locator(".glance-item").count() === 4, "J24 renders all 4 activity items from getIssueActivity");
+      ok(await page.locator(".glance-badge.g-block", { hasText: "Blocked" }).count() > 0, "J24 blocked validator → g-block badge WITH glyph+label (status not colour-alone)");
+      ok(await page.locator(".glance-badge.g-ok").count() >= 2, "J24 passing rows → g-ok badges");
+      ok(await page.locator(".glance-badge.g-skip", { hasText: "Skipped" }).count() > 0, "J24 skipped row → g-skip badge");
+      ok(await page.getByText(/acceptance criteria/i).count() > 0, "J24 the AI reason renders on the card");
+      ok(await page.getByText(/ago/).count() > 0, "J24 relative timestamps render");
+    } catch (e) { fail++; console.log("  ✗ J24 threw: " + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
+  /* ---------------- E14 — issue-glance honest empty state ---------------- */
+  {
+    console.log("E14 issue-glance empty state (issue-glance-empty)");
+    const env = await openEditor(browser, "issue-glance", "issue-glance-empty");
+    const { page } = env;
+    try {
+      await page.getByText(/No CogniRunner activity recorded/i).waitFor({ timeout: 8000 });
+      ok(await page.getByText(/No CogniRunner activity recorded/i).count() > 0, "E14 empty issue → honest empty state");
+      ok(await page.locator(".glance-item").count() === 0, "E14 no activity items rendered");
+    } catch (e) { fail++; console.log("  ✗ E14 threw: " + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
 } finally {
   await browser.close();
 }

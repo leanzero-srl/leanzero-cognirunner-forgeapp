@@ -91,6 +91,19 @@ modules:
       resolver:
         function: resolver
 
+  # Issue-context glance - read-only "CogniRunner on this issue" right-rail panel.
+  # Shows recent validator/condition/post-function activity for the open issue. Reuses the
+  # shared resolver (getIssueActivity, gated by an asUser view-check). No new scopes
+  # (read:jira-work already present). Adding this module requires forge install --upgrade.
+  jira:issueContext:
+    - key: cognirunner-issue-glance
+      resource: issue-glance-resource
+      resolver:
+        function: resolver
+      title: CogniRunner
+      label: CogniRunner
+      icon: resource:icon-resource;icon.svg
+
   # Atlassian-hosted LLMs (Forge LLMs, Preview since 2026-06-01). Enables the
   # "Atlassian (Forge LLM)" provider: Claude models served inside the Atlassian
   # platform via @forge/llm — no API key, no egress. NOTE: adding this module is a
@@ -155,6 +168,8 @@ resources:
 
   - key: admin-panel-resource
     path: static/admin-panel/build
+  - key: issue-glance-resource
+    path: static/issue-glance/build
 
   - key: icon-resource
     path: static/icons

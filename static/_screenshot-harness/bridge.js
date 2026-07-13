@@ -386,6 +386,9 @@ function getContext() {
     return { accountId: ACCT, siteUrl: SITE, license: { active: true }, extension: { ...baseExt, type: "jira:workflowPostFunction", key: "ai-static-post-function", entryPoint: "view", transitionContext: { id: "81", from: { name: "Triaged" }, to: { name: "Mitigating" } }, postFunctionConfig: JSON.stringify({ id: "postfunction-static::Incident::81::i-offload", type: "postfunction-static", fieldId: "", functions: [], functionsMeta: [{ id: "s1", name: "Escalate priority to High", operationType: "rest_api_internal", variableName: "r1" }, { id: "s2", name: "Add on-call watcher", operationType: "rest_api_internal", variableName: "r2" }], workflow: { workflowId: "wf-incident-007", workflowName: "Incident Response", transitionId: "81", siteUrl: SITE } }) } };
   if (s === "view-active" || s === "view-disabled")
     return { accountId: ACCT, siteUrl: SITE, license: { active: true }, extension: { ...baseExt, type: "jira:workflowValidator", key: "cognirunner-validator", entryPoint: "view", transitionContext: { id: "21", from: { name: "In Progress" }, to: { name: "Done" } }, validatorConfig: VIEW_VALIDATOR_CONFIG } };
+  if (s === "issue-glance" || s === "issue-glance-empty")
+    // The jira:issueContext "CogniRunner on this issue" glance — the platform gives the open issue.
+    return { accountId: ACCT, siteUrl: SITE, license: { active: true }, theme: { colorMode: theme() }, extension: { type: "jira:issueContext", key: "cognirunner-issue-glance", issue: { id: "10042", key: "DEMO-42" }, project: { id: "10000", key: "DEMO" } } };
   // default: admin global page (auto-admin via jira:adminPage)
   return { extension: { type: "jira:adminPage", key: "cognirunner-admin-page" }, license: { active: true, isActive: true }, siteUrl: SITE, accountId: ACCT, cloudId: "00000000-aaaa-bbbb-cccc-000000000000", localId: "mock-local-id", theme: { colorMode: theme() }, locale: "en-US" };
 }
@@ -400,6 +403,14 @@ function invoke(name, payload) {
     return Promise.reject(new Error("Simulated network failure (harness __FAIL__)"));
   }
   switch (name) {
+    case "getIssueActivity": return Promise.resolve((typeof window !== "undefined" && window.__SHOT__ === "issue-glance-empty")
+      ? { success: true, issueKey: "DEMO-42", items: [], count: 0 }
+      : { success: true, issueKey: "DEMO-42", count: 4, items: [
+          { kind: "validator", label: "Description completeness", decision: "Blocked", verdictOk: false, reason: "The description is missing acceptance criteria and a reproduction steps section.", timestamp: new Date(Date.now() - 3 * 60000).toISOString() },
+          { kind: "condition", label: "Requires linked incident", decision: "Transition shown", verdictOk: true, reason: "A linked incident (INC-88) was found.", timestamp: new Date(Date.now() - 42 * 60000).toISOString() },
+          { kind: "post-function", label: "Risk summary writer", decision: "Ran", verdictOk: true, reason: 'Updated "Risk" field with a 2-sentence summary.', timestamp: new Date(Date.now() - 3 * 3600000).toISOString() },
+          { kind: "skipped", label: "On-call escalation", decision: "Skipped", verdictOk: false, reason: "Duplicate platform delivery suppressed.", timestamp: new Date(Date.now() - 26 * 3600000).toISOString() },
+        ] });
     case "checkLicense": return Promise.resolve({ isActive: true });
     case "checkIsAdmin": return Promise.resolve({ success: true, isAdmin: true, role: "admin", scope: "all", accountId: ACCT });
     case "checkProviderHealth": return Promise.resolve({ success: true, ok: true, provider: "anthropic", providerLabel: "Anthropic", model: "claude-haiku-4-5-20251001" });

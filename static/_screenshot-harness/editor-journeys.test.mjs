@@ -159,6 +159,10 @@ try {
     const { page } = env;
     try {
       ok(await page.getByText("AI Condition Configuration").count() >= 1, "J15 renders in Condition mode (not Validator)");
+      // Condition safety callout (Altomata #3): a condition hides the transition silently on fail + fails open.
+      ok(await page.locator(".condition-hide-note").count() === 1, "J15 shows the condition silent-hide safety callout");
+      ok(await page.getByText(/hides the transition silently/i).count() > 0, "J15 callout warns the transition hides silently on fail");
+      ok(await page.getByText(/fails open/i).count() > 0, "J15 callout explains conditions fail OPEN on error");
       ok(await page.locator(".dropdown-trigger", { hasText: "Acceptance Criteria" }).count() > 0, "J15 field picker shows the seeded field (Acceptance Criteria)");
       const promptEl = page.locator("textarea").first();
       ok(/testable, measurable criterion/i.test(await promptEl.inputValue()), "J15 condition prompt hydrated from config");

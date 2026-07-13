@@ -632,6 +632,36 @@ const injectStyles = () => {
       color: var(--text-secondary);
     }
 
+    /* Condition safety callout — solid amber glyph (caution), full border, no left rail, no faded tint. */
+    .condition-hide-note {
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+      padding: 10px 12px;
+      margin-bottom: 16px;
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      background: var(--card-bg);
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--text-secondary);
+    }
+    .condition-hide-note .chn-glyph {
+      flex-shrink: 0;
+      width: 20px;
+      height: 20px;
+      border-radius: 5px;
+      background: #d97706;
+      color: #2a1602;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 800;
+      font-size: 14px;
+    }
+    html[data-color-mode="dark"] .condition-hide-note .chn-glyph { background: #f59e0b; color: #2a1602; }
+    .condition-hide-note strong { color: var(--text-color); }
+
     .pf-type-tag {
       display: inline-block;
       padding: 2px 8px;
@@ -3513,6 +3543,17 @@ function App() {
               : "Blocks the transition if the AI determines the field content does not meet your criteria."
             }
           </p>
+        </div>
+      )}
+
+      {/* Condition safety callout — a condition SILENTLY hides the transition on fail (no message),
+          unlike a validator; and fails OPEN on error so a hiccup never hides a legit transition. */}
+      {!isPostFunction && isCondition && (
+        <div className="condition-hide-note" role="note">
+          <span className="chn-glyph" aria-hidden="true">!</span>
+          <div>
+            <strong>A failed condition hides the transition silently.</strong> When the AI evaluates to false, the transition button just doesn&apos;t appear — the user sees no message or reason (a Validator instead blocks the transition with your error text). If the AI or a service errors, the condition <strong>fails open</strong> — the transition stays visible — so a hiccup never hides a legitimate transition.
+          </div>
         </div>
       )}
 

@@ -5426,6 +5426,18 @@ function App() {
         if (moduleType === "jira:adminPage") {
           setIsAdmin(true);
         }
+
+        // One-shot UI-intent handoff: another surface (config-view) may have stashed a
+        // "jump to this tab / rule" intent before navigating here. Consume it once and open
+        // the right tab (pre-expanding that rule's logs). Best-effort — a miss just lands on
+        // the default tab.
+        try {
+          const ui = await invoke("takeUiIntent");
+          if (ui?.success && ui.intent?.tab) {
+            setActiveTab(ui.intent.tab);
+            if (ui.intent.ruleId && ui.intent.tab === "rules") toggleRuleExpand(ui.intent.ruleId);
+          }
+        } catch (e) { /* intent handoff is best-effort */ }
       } catch (e) {
         console.log("Bridge not available:", e);
       }

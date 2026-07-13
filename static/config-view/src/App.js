@@ -1118,6 +1118,23 @@ const injectStyles = () => {
 };
 
 let invoke;
+let router;
+let viewApi;
+
+// Open the CogniRunner admin panel (global page), handing off a one-shot "which tab / rule" intent
+// via KVS so the admin lands in the right place. Forge-native module nav first; if unavailable, build
+// the deep-link from the running module's context — appId from the localId ARI
+// (ari:cloud:ecosystem::extension/{appId}/{environmentId}/…) + environmentId — so it works in any
+// environment with no hardcoded ids. Never a bare /jira/apps (404s). Mirrors Altomata's proven openHub.
+async function openAdmin(tab, ruleId) {
+  try { await invoke("setUiIntent", { tab, ruleId }); } catch { /* best-effort tab hint */ }
+  try { if (router) { await router.navigate({ target: "module", moduleKey: "cognirunner-global-page" }); return; } } catch { /* fall through to the deep-link */ }
+  try {
+    const c = viewApi ? await viewApi.getContext() : null;
+    const appId = (String(c?.localId).match(/\/extension\/([^/]+)\//) || [])[1];
+    if (router && appId && c?.environmentId) await router.open(`/jira/apps/${appId}/${c.environmentId}`);
+  } catch { /* both nav paths unavailable — do nothing rather than a dead page */ }
+}
 
 // Minimal DOM-based toast — config-view has no components/toast.js, so the
 // helper lives here. Styling comes from the .mls-toast rules injected above.
@@ -1301,6 +1318,8 @@ function App() {
       try {
         const bridge = await import("@forge/bridge");
         invoke = bridge.invoke;
+        router = bridge.router;
+        viewApi = bridge.view;
 
         // Enable theming for dark mode support
         if (bridge.view && bridge.view.theme && bridge.view.theme.enable) {
@@ -1598,6 +1617,15 @@ function App() {
           <div className="logs-header">
             <span className="logs-title">{config?.type?.includes("postfunction") ? "§ LOG · EXECUTION" : "§ LOG · VALIDATION"}</span>
             <div className="logs-actions">
+              {ruleId && (
+                <button
+                  className="btn-small"
+                  onClick={() => openAdmin("rules", ruleId)}
+                  title="Open this rule in the CogniRunner admin panel — full execution logs, provenance, and settings."
+                >
+                  Open in admin →
+                </button>
+              )}
               <button
                 className="btn-small"
                 onClick={() => {
@@ -1976,6 +2004,15 @@ function App() {
         <div className="logs-header">
           <span className="logs-title">{config?.type?.includes("postfunction") ? "§ LOG · EXECUTION" : "§ LOG · VALIDATION"}</span>
           <div className="logs-actions">
+            {ruleId && (
+              <button
+                className="btn-small"
+                onClick={() => openAdmin("rules", ruleId)}
+                title="Open this rule in the CogniRunner admin panel — full execution logs, provenance, and settings."
+              >
+                Open in admin →
+              </button>
+            )}
             <button
               className="btn-small"
               onClick={() => {

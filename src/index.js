@@ -5705,6 +5705,47 @@ resolver.define("getKnowledgeCounts", async () => {
   }
 });
 
+// === One-shot UI-intent handoff (config-view → admin panel) ===
+// A user viewing a rule in config-view (the read-only workflow rule view) has no path to the
+// admin panel where the logs/docs/skills/settings live. setUiIntent stores a tiny per-user,
+// TTL'd, one-shot hint (which tab + optionally which rule); the admin consumes it once on mount
+// and opens the right tab (pre-expanding that rule's logs). No data exposure — just a tab name +
+// a rule id the caller already sees. Pure sanitizer exported for offline testing.
+const UI_INTENT_PREFIX = "ui_intent:";
+const UI_INTENT_TABS = new Set(["rules", "logs", "docs", "skills", "memories", "settings", "permissions"]);
+export const sanitizeUiIntent = (payload) => {
+  const tab = String(payload?.tab || "").trim();
+  if (!UI_INTENT_TABS.has(tab)) return null;
+  const ruleId = payload?.ruleId != null ? String(payload.ruleId).slice(0, 200) : null;
+  return { tab, ruleId };
+};
+
+resolver.define("setUiIntent", async ({ payload, context }) => {
+  const accountId = context?.accountId;
+  if (!accountId) return { success: false, error: "No account" };
+  const intent = sanitizeUiIntent(payload);
+  if (!intent) return { success: false, error: "Invalid intent" };
+  try {
+    await storage.set(`${UI_INTENT_PREFIX}${accountId}`, { ...intent, at: Date.now() }, { ttl: { value: 5, unit: "MINUTES" } });
+    return { success: true };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+});
+
+resolver.define("takeUiIntent", async ({ context }) => {
+  const accountId = context?.accountId;
+  if (!accountId) return { success: true, intent: null };
+  const key = `${UI_INTENT_PREFIX}${accountId}`;
+  try {
+    const intent = await storage.get(key);
+    if (intent) { try { await storage.delete(key); } catch { /* one-shot delete is best-effort */ } }
+    return { success: true, intent: intent || null };
+  } catch (e) {
+    return { success: true, intent: null };
+  }
+});
+
 /**
  * Generate JavaScript code for a static post-function using OpenAI.
  * The AI knows the full sandbox API surface and generates working code

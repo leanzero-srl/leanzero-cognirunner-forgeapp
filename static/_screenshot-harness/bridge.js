@@ -403,6 +403,13 @@ function invoke(name, payload) {
     return Promise.reject(new Error("Simulated network failure (harness __FAIL__)"));
   }
   switch (name) {
+    case "setUiIntent":
+      if (typeof window !== "undefined") window.__SET_INTENT__ = payload;
+      return Promise.resolve({ success: true });
+    case "takeUiIntent":
+      return Promise.resolve((typeof window !== "undefined" && window.__PENDING_INTENT__)
+        ? { success: true, intent: window.__PENDING_INTENT__ }
+        : { success: true, intent: null });
     case "getIssueActivity": return Promise.resolve((typeof window !== "undefined" && window.__SHOT__ === "issue-glance-empty")
       ? { success: true, issueKey: "DEMO-42", items: [], count: 0 }
       : { success: true, issueKey: "DEMO-42", count: 4, items: [
@@ -510,7 +517,12 @@ const view = {
   getContext: async () => getContext(),
   theme: { enable: async () => { applyTheme(); } },
 };
-const router = { open: () => {}, navigate: () => {} };
+// Record router calls so tests can assert a handoff navigated (window.__ROUTER_CALLS__).
+const _recordRouter = (fn, arg) => {
+  if (typeof window !== "undefined") { window.__ROUTER_CALLS__ = window.__ROUTER_CALLS__ || []; window.__ROUTER_CALLS__.push({ fn, arg }); }
+  return Promise.resolve();
+};
+const router = { open: (url) => _recordRouter("open", url), navigate: (arg) => _recordRouter("navigate", arg) };
 const requestJira = async () => ({ ok: true, json: async () => ({}) });
 
 export { invoke, view, router, requestJira };

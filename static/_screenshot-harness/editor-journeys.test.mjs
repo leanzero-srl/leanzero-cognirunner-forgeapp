@@ -619,6 +619,38 @@ try {
     } catch (e) { fail++; console.log("  ✗ E14 threw: " + e.message.split("\n")[0]); }
     await closeEditor(env);
   }
+
+  /* ---------------- J25 — config-view → admin UI-intent handoff (Altomata #10) ---------------- */
+  {
+    console.log("J25 config-view Open-in-admin handoff (view-active)");
+    const env = await openEditor(browser, "config-view", "view-active");
+    const { page } = env;
+    try {
+      const btn = page.locator("button", { hasText: /Open in admin/i }).first();
+      await btn.waitFor({ timeout: 8000 });
+      ok(await btn.count() > 0, "J25 config-view shows an 'Open in admin →' button for the rule");
+      await btn.click();
+      await page.waitForFunction(() => window.__SET_INTENT__ && Array.isArray(window.__ROUTER_CALLS__) && window.__ROUTER_CALLS__.length > 0, null, { timeout: 5000 });
+      const intent = await page.evaluate(() => window.__SET_INTENT__);
+      const calls = await page.evaluate(() => window.__ROUTER_CALLS__);
+      ok(intent && intent.tab === "rules" && !!intent.ruleId, "J25 click stashes a { tab:'rules', ruleId } intent via setUiIntent");
+      ok(calls.some((c) => c.fn === "navigate" && c.arg && c.arg.moduleKey === "cognirunner-global-page"), "J25 click navigates to the admin global-page module");
+    } catch (e) { fail++; console.log("  ✗ J25 threw: " + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
+  /* ---------------- E15 — admin consumes a pending UI-intent on mount ---------------- */
+  {
+    console.log("E15 admin consumes UI-intent on mount (opens Settings)");
+    const env = await openEditor(browser, "admin-panel", "admin", "light", { __PENDING_INTENT__: { tab: "settings" } });
+    const { page } = env;
+    try {
+      // The admin init effect calls takeUiIntent → setActiveTab('settings') with NO click.
+      await page.locator("button", { hasText: "Test connection" }).first().waitFor({ timeout: 12000 });
+      ok(await page.locator("button", { hasText: "Test connection" }).count() > 0, "E15 a pending {tab:'settings'} intent auto-opens the Settings tab on mount (no click)");
+    } catch (e) { fail++; console.log("  ✗ E15 threw: " + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
 } finally {
   await browser.close();
 }

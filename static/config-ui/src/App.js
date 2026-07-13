@@ -3552,7 +3552,7 @@ function App() {
         <div className="condition-hide-note" role="note">
           <span className="chn-glyph" aria-hidden="true">!</span>
           <div>
-            <strong>A failed condition hides the transition silently.</strong> When the AI evaluates to false, the transition button just doesn&apos;t appear — the user sees no message or reason (a Validator instead blocks the transition with your error text). If the AI or a service errors, the condition <strong>fails open</strong> — the transition stays visible — so a hiccup never hides a legitimate transition.
+            <strong>Jira doesn&apos;t enforce Forge conditions on every surface.</strong> The new issue-view transition menu and REST- or automation-driven transitions ignore workflow conditions, so this condition may not hide the transition — the button can still appear and the transition run. For gating you can rely on everywhere, use a <strong>Validator</strong> instead: it blocks the transition (with your error message) on all surfaces.
           </div>
         </div>
       )}

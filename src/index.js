@@ -1111,6 +1111,12 @@ resolver.define("registerConfig", async ({ payload, context }) => {
         existingIndex = configs.findIndex((c) => c.id === legacyId && sameFamily(c));
       }
     }
+    // Authz on CREATE — a new registry row requires at least the editor role. The UPDATE
+    // branch below gates via canActOnConfig; without this symmetric check the create branch
+    // was ungated, so any licensed site user could seed rows and fill the shared registry (DoS).
+    if (existingIndex < 0 && !(await requireRole(context.accountId, "editor"))) {
+      return { success: false, error: "You don't have permission to create a rule." };
+    }
     // Scale guard: the registry lives in ONE KVS value (hard cap ~240KB) — refuse
     // unbounded growth with a clear message instead of corrupting at the limit.
     if (existingIndex < 0 && configs.length >= 500) {
@@ -3010,7 +3016,7 @@ resolver.define("saveWebSearchRemote", async ({ payload, context }) => {
     _cachedWebSearchRemote = toStore;
     _cachedWebSearchRemoteChecked = true;
     _cachedWebSearchRemoteAt = Date.now();
-    console.log(`saveWebSearchRemote: configured url=${url} bearer=${bearer.substring(0, 6)}… serper=${finalSerper ? "set" : "none"} github=${finalGithub ? "set" : "none"}`);
+    console.log(`saveWebSearchRemote: configured url=${url} bearer=${finalBearer ? "set" : "none"} serper=${finalSerper ? "set" : "none"} github=${finalGithub ? "set" : "none"}`);
     return { success: true, url, hasBearer: true, hasSerperKey: !!finalSerper, hasGithubToken: !!finalGithub };
   } catch (error) {
     console.error("Failed to save web-search remote config:", error?.message);
@@ -4636,6 +4642,13 @@ resolver.define("registerPostFunction", async ({ payload, context }) => {
     // (remove/disable/enable) already do this; the create/update path was an oversight.
     if (existing >= 0 && !(await canActOnConfig(context.accountId, configs[existing], "editor"))) {
       return { success: false, error: "You don't have permission to modify this post-function" };
+    }
+    // Authz on CREATE — mirror the update gate: a new registry row (and its offloaded pf_code
+    // bundle written below) requires at least the editor role. The create branch was ungated, so
+    // any licensed site user could seed rows + arbitrary pf_code bundles and fill the shared
+    // registry (DoS). Gate BEFORE the scale guard and the offload storage.set.
+    if (existing < 0 && !(await requireRole(context.accountId, "editor"))) {
+      return { success: false, error: "You don't have permission to create a post-function" };
     }
     // Scale guard — same single-KVS-value limit as registerConfig.
     if (existing < 0 && configs.length >= 500) {

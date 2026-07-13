@@ -4874,8 +4874,15 @@ const readAuthoritativeConfig = async (row, wfCache) => {
         } catch (e) { /* skip */ }
       }
     }
+    // Bound but not authoritatively readable (transient Forge-read failure, or the rule is no
+    // longer on the transition): do NOT fall back to the slim registry row for a PF — it lacks
+    // the runtime flags (simulationMode / suppressNotifications / runAsync), so exporting it
+    // would silently turn a dry-run rule into one that performs LIVE writes on re-import (and
+    // could export a stale ghost). Skip it — exportRules reports "config not readable" and the
+    // user retries. Validators/conditions already fall through to null here.
+    if (String(row.type || "").startsWith("postfunction")) return null;
   }
-  // Fallback: PF registry rows carry the full config inline.
+  // No workflow binding at all → genuinely legacy/inline PF; the registry row is all we have.
   if (String(row.type || "").startsWith("postfunction")) return row;
   return null;
 };

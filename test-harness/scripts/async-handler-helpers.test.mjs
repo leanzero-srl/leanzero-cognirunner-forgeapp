@@ -141,5 +141,27 @@ ok([...UNPOLLED_TASKS].every((t) => handlerKeys.includes(t)), "every UNPOLLED ta
 ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS.has(t)),
    "polled tasks (review/codegen/fixcode/skilldistill) are NOT in UNPOLLED_TASKS");
 
+// --- it81a: provider SNAPSHOT threading. getOpenAIKey(providerOverride) must pin the key to the
+//     snapshot provider even if the ACTIVE provider switches mid-task (the wrong-vendor-key race).
+//     fs+eval the arrow with its module-scope deps stubbed in this block. ---
+{
+  let activeProvider = "openai";
+  // eslint-disable-next-line no-unused-vars
+  const getProviderConfig = async () => ({ provider: activeProvider, baseUrl: "https://x" });
+  // eslint-disable-next-line no-unused-vars
+  const providerKeySlot = (p) => `KEY_${p}`;
+  // eslint-disable-next-line no-unused-vars
+  const storage = { get: async (k) => (k === "KEY_openai" ? "sk-openai" : k === "KEY_anthropic" ? "sk-anthropic" : null) };
+  const m = asyncSrc.match(/const getOpenAIKey = async \(providerOverride = null\) => \{[\s\S]*?\n\};/);
+  ok(!!m, "getOpenAIKey accepts a providerOverride param (snapshot threading present)");
+  // eslint-disable-next-line no-eval
+  const getOpenAIKey = eval("(" + m[0].replace("const getOpenAIKey = async ", "async ").replace(/;\s*$/, "") + ")");
+  ok((await getOpenAIKey()) === "sk-openai", "no override → resolves the ACTIVE provider's key");
+  ok((await getOpenAIKey("anthropic")) === "sk-anthropic", "override → resolves THAT provider's key, not the active one");
+  activeProvider = "anthropic"; // simulate an admin provider-switch AFTER the per-task snapshot was taken
+  ok((await getOpenAIKey("openai")) === "sk-openai",
+    "override pins the key to the SNAPSHOT provider even after the active provider switched mid-task (it81a fix)");
+}
+
 console.log(`\nasync-handler-helpers: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

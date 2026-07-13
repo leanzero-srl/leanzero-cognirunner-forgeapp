@@ -76,9 +76,11 @@ const providerModelSlot = (provider) => `COGNIRUNNER_MODEL_${provider}`;
 // on provider switch — a stale key paired with a freshly-read provider sends the
 // wrong credential (guaranteed wrong for the Forge LLM sentinel). One KVS read per
 // queued task is cheap; correctness wins.
-const getOpenAIKey = async () => {
+const getOpenAIKey = async (providerOverride = null) => {
   try {
-    const { provider } = await getProviderConfig();
+    // Use the caller's provider SNAPSHOT (taken once per task) when supplied, so the key and the
+    // eventual routing can't desync if an admin switches provider mid-task. Falls back to a fresh read.
+    const provider = providerOverride || (await getProviderConfig()).provider;
     // Forge LLM needs no API key — sentinel keeps `if (!apiKey)` call sites working.
     if (provider === "atlassian") return "atlassian-forge-llm";
     let byokKey = await storage.get(providerKeySlot(provider));
@@ -102,9 +104,9 @@ const PROVIDER_DEFAULT_MODELS = {
   bedrock: "eu.anthropic.claude-sonnet-4-6", // EU inference-profile id (fallback; admins pick a model)
 };
 
-const getOpenAIModel = async () => {
+const getOpenAIModel = async (providerOverride = null) => {
   try {
-    const { provider } = await getProviderConfig();
+    const provider = providerOverride || (await getProviderConfig()).provider;
     // Read the saved model unconditionally — keyless providers (LM Studio, Forge LLM)
     // have no BYOK key, and gating on one made their saved model invisible here.
     const savedModel = await storage.get(providerModelSlot(provider));
@@ -228,14 +230,22 @@ const callLmStudioNativeSimple = async ({ apiKey, model, systemPrompt, userMessa
 const callAIChatSimple = async (opts) => {
   const res = await callAIChatSimpleRaw(opts);
   try {
-    const { provider } = await getProviderConfig();
+    // Attribute usage to the SAME provider the call routed to (the snapshot), not a fresh read
+    // that could have changed mid-task.
+    const provider = (opts && opts.provider) || (await getProviderConfig()).provider;
     await recordAiUsage({ provider, usageLike: res && res.tokens });
   } catch (e) { /* fail-open */ }
   return res;
 };
 
-const callAIChatSimpleRaw = async ({ apiKey, model: requestedModel, systemPrompt, userMessage, jsonMode }) => {
-  const { provider, baseUrl } = await getProviderConfig();
+const callAIChatSimpleRaw = async ({ apiKey, model: requestedModel, systemPrompt, userMessage, jsonMode, provider: providerOverride, baseUrl: baseUrlOverride }) => {
+  // Route to the caller's provider SNAPSHOT when supplied (taken once per task alongside the key),
+  // so a mid-task admin provider-switch can't send provider A's key to provider B's endpoint. When
+  // no snapshot is threaded, read fresh (old behavior). baseUrl is legitimately null for some
+  // providers, so it rides with the provider override rather than being independently defaulted.
+  let provider = providerOverride || null;
+  let baseUrl = baseUrlOverride || null;
+  if (!provider) { const pc = await getProviderConfig(); provider = pc.provider; baseUrl = pc.baseUrl; }
 
   // LM Studio worker map: pick the least-loaded loaded model for this queued task,
   // then release immediately (these consumer tasks — review / codegen / fix /
@@ -396,9 +406,11 @@ const callAIChatSimpleRaw = async ({ apiKey, model: requestedModel, systemPrompt
  */
 const executeReview = async (params) => {
   const { configType, config } = params;
-  const apiKey = await getOpenAIKey();
+  // Snapshot the provider ONCE and thread it through key/model/routing so they can't desync.
+  const { provider, baseUrl } = await getProviderConfig();
+  const apiKey = await getOpenAIKey(provider);
   if (!apiKey) return { success: false, error: "No API key configured" };
-  const model = await getOpenAIModel();
+  const model = await getOpenAIModel(provider);
 
   let configDescription = "";
 
@@ -475,7 +487,7 @@ Respond with ONLY valid JSON:
   const result = await callAIChatSimple({
     apiKey, model, systemPrompt,
     userMessage: `Review this configuration:\n\n${configDescription}`,
-    jsonMode: true,
+    jsonMode: true, provider, baseUrl,
   });
 
   if (!result.ok) {
@@ -581,19 +593,19 @@ const executeQueuedPostFunction = async (params, taskId) => {
  * sync resolver returns: { success, code, meta }.
  */
 const executeCodegen = async (params) => {
-  const { provider } = await getProviderConfig();
-  const apiKey = await getOpenAIKey();
+  const { provider, baseUrl } = await getProviderConfig();
+  const apiKey = await getOpenAIKey(provider);
   // LM Studio auth is optional — only the other providers hard-require a key.
   if (!apiKey && provider !== "lmstudio") {
     return { success: false, error: "No API key configured" };
   }
-  const model = await getOpenAIModel();
+  const model = await getOpenAIModel(provider);
 
   const { messages, meta } = await buildCodegenRequest(params || {});
   const systemPrompt = messages.filter((m) => m.role === "system").map((m) => m.content).join("\n\n");
   const userMessage = messages.filter((m) => m.role === "user").map((m) => m.content).join("\n\n");
 
-  const result = await callAIChatSimple({ apiKey, model, systemPrompt, userMessage });
+  const result = await callAIChatSimple({ apiKey, model, systemPrompt, userMessage, provider, baseUrl });
   if (!result.ok) {
     return { success: false, error: `AI error (${result.status}). ${(result.error || "").substring(0, 200)}` };
   }
@@ -609,18 +621,18 @@ const executeCodegen = async (params) => {
  * { success, code, explanation, memoryCandidate, meta }.
  */
 const executeFixcode = async (params) => {
-  const { provider } = await getProviderConfig();
-  const apiKey = await getOpenAIKey();
+  const { provider, baseUrl } = await getProviderConfig();
+  const apiKey = await getOpenAIKey(provider);
   if (!apiKey && provider !== "lmstudio") {
     return { success: false, error: "No API key configured" };
   }
-  const model = await getOpenAIModel();
+  const model = await getOpenAIModel(provider);
 
   const { messages, meta } = await buildFixRequest(params || {});
   const systemPrompt = messages.filter((m) => m.role === "system").map((m) => m.content).join("\n\n");
   const userMessage = messages.filter((m) => m.role === "user").map((m) => m.content).join("\n\n");
 
-  const result = await callAIChatSimple({ apiKey, model, systemPrompt, userMessage, jsonMode: true });
+  const result = await callAIChatSimple({ apiKey, model, systemPrompt, userMessage, jsonMode: true, provider, baseUrl });
   if (!result.ok) {
     return { success: false, error: `AI error (${result.status}). ${(result.error || "").substring(0, 200)}` };
   }
@@ -638,18 +650,18 @@ const executeFixcode = async (params) => {
  * Same contract shape as the sync resolver: { success, id, skill, tokens }.
  */
 const executeSkillDistill = async (params) => {
-  const { provider } = await getProviderConfig();
-  const apiKey = await getOpenAIKey();
+  const { provider, baseUrl } = await getProviderConfig();
+  const apiKey = await getOpenAIKey(provider);
   if (!apiKey && provider !== "lmstudio") {
     return { success: false, error: "No API key configured" };
   }
-  const model = await getOpenAIModel();
+  const model = await getOpenAIModel(provider);
 
   const { messages } = buildSkillDistillRequest(params || {});
   const systemPrompt = messages.filter((m) => m.role === "system").map((m) => m.content).join("\n\n");
   const userMessage = messages.filter((m) => m.role === "user").map((m) => m.content).join("\n\n");
 
-  const result = await callAIChatSimple({ apiKey, model, systemPrompt, userMessage, jsonMode: true });
+  const result = await callAIChatSimple({ apiKey, model, systemPrompt, userMessage, jsonMode: true, provider, baseUrl });
   if (!result.ok) {
     return { success: false, error: `AI error (${result.status}). ${(result.error || "").substring(0, 200)}` };
   }
@@ -673,12 +685,12 @@ const executeMemoryDistill = async (params) => {
   const settings = await getMemorySettings();
   if (settings.autoCapture !== true) return { success: true, skipped: "auto-capture disabled" };
 
-  const { provider } = await getProviderConfig();
-  const apiKey = await getOpenAIKey();
+  const { provider, baseUrl } = await getProviderConfig();
+  const apiKey = await getOpenAIKey(provider);
   if (!apiKey && provider !== "lmstudio") {
     return { success: false, error: "No API key configured" };
   }
-  const model = await getOpenAIModel();
+  const model = await getOpenAIModel(provider);
 
   // The 10 nearest existing memories by token overlap with the failure text —
   // lets the model merge instead of accumulating near-duplicates.
@@ -713,7 +725,7 @@ ${nearest.map((m) => `${m.id}: ${defangFence(m.content)}`).join("\n") || "(none)
   const userMessage = `Failed step: ${defangFence(stepName || "(unnamed)")}
 Error: ${defangFence(String(error).substring(0, 2000))}${recommendation ? `\nRecommendation shown to the user: ${defangFence(String(recommendation).substring(0, 800))}` : ""}${codeExcerpt ? `\n\nCode excerpt:\n${defangFence(String(codeExcerpt).substring(0, 1500))}` : ""}`;
 
-  const result = await callAIChatSimple({ apiKey, model, systemPrompt, userMessage, jsonMode: true });
+  const result = await callAIChatSimple({ apiKey, model, systemPrompt, userMessage, jsonMode: true, provider, baseUrl });
   if (!result.ok || !result.content) {
     return { success: false, error: `AI error (${result?.status || "?"})` };
   }

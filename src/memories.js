@@ -195,6 +195,14 @@ export const saveMemoryCandidate = async ({ content, source = "user", projectKey
       m.reinforcements = (Number(m.reinforcements) || 0) + 1;
       m.confidence = Math.max(Number(m.confidence) || 0, Number(confidence) || 0);
       m.updatedAt = now;
+      // Scope WIDENS on merge, never narrows: if the candidate's project differs from the
+      // matched memory's (either is global, or two different projects), the fact has now been
+      // seen beyond one project → promote it to GLOBAL so it injects everywhere. This fixes the
+      // old scope-blind behavior where a global candidate could be narrowed into a project-scoped
+      // memory (lost globally) and a project-B fact merged into a project-A memory never reached
+      // project B. Same-project re-adds keep their scope. (null = broadest.)
+      const candScope = projectKey || null;
+      if ((m.projectKey || null) !== candScope) m.projectKey = null;
       // A DELIBERATE user re-add of an ARCHIVED (disabled) memory means the user wants it active
       // again — re-enable it. Otherwise the re-add is a silent no-op: dedup merges into the disabled
       // row but it stays hidden from injection (buildMemoryBlock filters disabled). An AUTO (test/fix)

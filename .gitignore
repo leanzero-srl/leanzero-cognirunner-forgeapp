@@ -37,3 +37,6 @@ openapi-jira.json
 
 # Empty directories
 src/frontend/
+
+# issue-glance shares config-view node_modules via symlink (not a dir → global node_modules/ misses it)
+static/issue-glance/node_modules

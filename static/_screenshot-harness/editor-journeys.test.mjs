@@ -53,8 +53,9 @@ async function openEditor(browser, app, shot, theme = "light", extraInit = null)
   }, [shot, theme, extraInit]);
   const page = await ctx.newPage();
   await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: "domcontentloaded" });
-  // App mounted into .container with no skeletons left.
-  await page.waitForFunction(() => !!document.querySelector(".container") && !document.querySelector(".container .sk"), { timeout: 15000 }).catch(() => {});
+  // App mounted into its root with no skeletons left (issue-glance uses .glance, not .container).
+  const rootSel = app === "issue-glance" ? ".glance" : ".container";
+  await page.waitForFunction((rs) => !!document.querySelector(rs) && !document.querySelector(rs + " .sk"), { timeout: 15000 }, rootSel).catch(() => {});
   return { page, ctx, s };
 }
 async function closeEditor(env) { await env.ctx.close(); await new Promise((r) => env.s.close(r)); }
@@ -604,6 +605,8 @@ try {
       ok(await page.locator(".glance-badge.g-skip", { hasText: "Skipped" }).count() > 0, "J24 skipped row → g-skip badge");
       ok(await page.getByText(/acceptance criteria/i).count() > 0, "J24 the AI reason renders on the card");
       ok(await page.getByText(/ago/).count() > 0, "J24 relative timestamps render");
+      const kinds = await page.locator(".glance-kind").allTextContents();
+      ok(kinds.includes("Post-function"), "J24 kind label is humanized ('Post-function', not the raw 'post-function' enum)");
     } catch (e) { fail++; console.log("  ✗ J24 threw: " + e.message.split("\n")[0]); }
     await closeEditor(env);
   }
@@ -618,6 +621,32 @@ try {
       ok(await page.getByText(/No CogniRunner activity recorded/i).count() > 0, "E14 empty issue → honest empty state");
       ok(await page.locator(".glance-item").count() === 0, "E14 no activity items rendered");
     } catch (e) { fail++; console.log("  ✗ E14 threw: " + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
+  /* ---------------- E16 — issue-glance error state (getIssueActivity fails) ---------------- */
+  {
+    console.log("E16 issue-glance error state");
+    const env = await openEditor(browser, "issue-glance", "issue-glance", "light", { __FAIL__: ["getIssueActivity"] });
+    const { page } = env;
+    try {
+      await page.locator(".glance-err").waitFor({ timeout: 10000 });
+      ok(await page.locator(".glance-err").count() > 0, "E16 getIssueActivity failure → honest error state (.glance-err)");
+      ok(await page.locator(".glance-item").count() === 0, "E16 no activity items on error");
+    } catch (e) { fail++; console.log("  ✗ E16 threw: " + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
+  /* ---------------- E17 — issue-glance loading state (activity never resolves) ---------------- */
+  {
+    console.log("E17 issue-glance loading state");
+    const env = await openEditor(browser, "issue-glance", "issue-glance-loading");
+    const { page } = env;
+    try {
+      await page.locator(".glance-spinner").waitFor({ timeout: 10000 });
+      ok(await page.locator(".glance-spinner").count() > 0, "E17 pending activity → loading spinner");
+      ok(await page.locator(".glance-item").count() === 0, "E17 no items while loading");
+    } catch (e) { fail++; console.log("  ✗ E17 threw: " + e.message.split("\n")[0]); }
     await closeEditor(env);
   }
 

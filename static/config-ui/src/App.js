@@ -415,16 +415,23 @@ const injectStyles = () => {
       border: 1px solid;
     }
 
+    /* Accessible alert idiom (mirrors config-view): neutral card + 2px hue border + hue
+       shadow. Green/amber fail WCAG as text, so success/warning body text is --text-color;
+       error keeps red text (passes). No pastel washes. */
     .alert-error {
-      background-color: var(--alert-error-bg);
-      border-color: var(--alert-error-border);
+      background: var(--card-bg);
+      border-color: var(--error-color);
+      border-width: 2px;
       color: var(--error-color);
+      box-shadow: 0 4px 12px -4px rgba(220, 38, 38, 0.35);
     }
 
     .alert-success {
-      background-color: var(--alert-success-bg);
-      border-color: var(--alert-success-border);
-      color: var(--success-color);
+      background: var(--card-bg);
+      border-color: var(--success-color);
+      border-width: 2px;
+      color: var(--text-color);
+      box-shadow: 0 4px 12px -4px rgba(22, 163, 106, 0.35);
     }
 
     .actions { display: flex; justify-content: flex-start; }
@@ -760,10 +767,10 @@ const injectStyles = () => {
       flex-shrink: 0;
     }
     .pf-test-pass { background: #16a34a; }
-    .pf-test-stale { background: #d97706; }
+    .pf-test-stale { background: #d97706; color: #2a1602; }
     .pf-test-untested { background: #475569; }
     html[data-color-mode="dark"] .pf-test-pass { background: #22c55e; }
-    html[data-color-mode="dark"] .pf-test-stale { background: #f59e0b; }
+    html[data-color-mode="dark"] .pf-test-stale { background: #f59e0b; color: #2a1602; }
     html[data-color-mode="dark"] .pf-test-untested { background: #64748b; }
 
     .btn-remove {
@@ -1114,8 +1121,8 @@ const injectStyles = () => {
     .doc-selection-info {
       padding: 8px 12px;
       font-size: 11px;
-      color: var(--success-color);
-      background: rgba(22, 163, 106, 0.06);
+      color: var(--text-secondary);
+      background: var(--input-bg);
       border-top: 1px solid var(--border-color);
     }
 
@@ -1233,7 +1240,7 @@ const injectStyles = () => {
     .skill-cat-jira { background: #2563eb; }
     .skill-cat-external { background: #7c3aed; }
     .skill-cat-fields { background: #0d9488; }
-    .skill-cat-adf { background: #d97706; }
+    .skill-cat-adf { background: #d97706; color: #2a1602; }
     .skill-cat-workflow { background: #16a34a; }
     .skill-cat-other { background: #475569; }
 
@@ -1292,7 +1299,7 @@ const injectStyles = () => {
       flex-shrink: 0;
     }
     .memory-src-user { background: #2563eb; }
-    .memory-src-test { background: #d97706; }
+    .memory-src-test { background: #d97706; color: #2a1602; }
     .memory-src-fix { background: #16a34a; }
 
     .memory-quick-add {
@@ -1341,14 +1348,14 @@ const injectStyles = () => {
     html[data-color-mode="dark"] .skill-cat-jira { background: #3b82f6; }
     html[data-color-mode="dark"] .skill-cat-external { background: #8b5cf6; }
     html[data-color-mode="dark"] .skill-cat-fields { background: #14b8a6; }
-    html[data-color-mode="dark"] .skill-cat-adf { background: #f59e0b; }
+    html[data-color-mode="dark"] .skill-cat-adf { background: #f59e0b; color: #2a1602; }
     html[data-color-mode="dark"] .skill-cat-workflow { background: #22c55e; }
     html[data-color-mode="dark"] .skill-cat-other { background: #64748b; }
     html[data-color-mode="dark"] .skill-auto-chip { background: #8b5cf6; }
     html[data-color-mode="dark"] .btn-save-skill { background: #8b5cf6; }
     html[data-color-mode="dark"] .builtin-badge { background: #64748b; }
     html[data-color-mode="dark"] .memory-src-user { background: #3b82f6; }
-    html[data-color-mode="dark"] .memory-src-test { background: #f59e0b; }
+    html[data-color-mode="dark"] .memory-src-test { background: #f59e0b; color: #2a1602; }
     html[data-color-mode="dark"] .memory-src-fix { background: #22c55e; }
     html[data-color-mode="dark"] .btn-remember { background: #14b8a6; }
     html[data-color-mode="dark"] .memory-saved-badge { background: #14b8a6; }
@@ -1979,7 +1986,7 @@ const injectStyles = () => {
       padding: 8px 10px;
       border-radius: 6px;
       background: #d97706;
-      color: #ffffff;
+      color: #2a1602;
       font-size: 12px;
       font-weight: 600;
     }
@@ -2124,7 +2131,7 @@ const injectStyles = () => {
     html[data-color-mode="dark"] .gmc-docs { background: #3b82f6; }
     html[data-color-mode="dark"] .gmc-skill { background: #8b5cf6; }
     html[data-color-mode="dark"] .gmc-mem { background: #14b8a6; }
-    html[data-color-mode="dark"] .truncation-warning { background: #f59e0b; }
+    html[data-color-mode="dark"] .truncation-warning { background: #f59e0b; color: #2a1602; }
 
     /* BYOK cost notice */
     .byok-cost-notice {
@@ -2147,11 +2154,12 @@ const injectStyles = () => {
       margin: 0 0 14px;
       border-radius: 8px;
       background: #d97706;
-      color: #ffffff;
+      color: #2a1602;
       font-size: 12.5px;
       font-weight: 600;
       line-height: 1.45;
     }
+    html[data-color-mode="dark"] .provider-warning { background: #f59e0b; color: #2a1602; }
 
     /* Skeleton loading — hardcoded colors to avoid CSS variable timing issues */
     .sk {
@@ -2393,9 +2401,17 @@ const injectStyles = () => {
       font-size: 12px;
     }
 
-    .st-update .st-result-header { background: rgba(22, 163, 106, 0.06); }
-    .st-skip .st-result-header { background: rgba(37, 99, 235, 0.06); }
-    .st-error .st-result-header { background: rgba(220, 38, 38, 0.06); }
+    /* Solid status headers (matches .test-result-header). Skip = primary blue, not slate:
+       the .test-badge-skip inside is slate #475569 and would vanish on a slate header. */
+    .st-update .st-result-header { background: var(--success-color); color: #ffffff; }
+    .st-skip .st-result-header { background: var(--primary-color); color: #ffffff; }
+    .st-error .st-result-header { background: var(--error-color); color: #ffffff; }
+    .st-update .st-result-header .test-result-meta,
+    .st-skip .st-result-header .test-result-meta,
+    .st-error .st-result-header .test-result-meta,
+    .st-update .st-result-header .test-dismiss,
+    .st-skip .st-result-header .test-dismiss,
+    .st-error .st-result-header .test-dismiss { color: rgba(255, 255, 255, 0.9); }
 
     .test-badge-skip {
       background: #475569;
@@ -2711,10 +2727,10 @@ const injectStyles = () => {
     .pr-opt { font-weight: 400; font-size: 11px; color: var(--text-muted); }
     .pr-mono { font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace; font-size: 12.5px; }
     .pr-note {
-      background: #b45309; color: #fff; font-weight: 600; font-size: 12.5px;
+      background: #d97706; color: #2a1602; font-weight: 600; font-size: 12.5px;
       padding: 9px 12px; border-radius: 8px; margin-bottom: 16px; line-height: 1.45;
     }
-    html[data-color-mode="dark"] .pr-note { background: #d97706; }
+    html[data-color-mode="dark"] .pr-note { background: #f59e0b; color: #2a1602; }
     .pr-foot { font-style: italic; }
 
     /* NL-to-rule builder ("Build from a description") — solid accent button, inset
@@ -2769,8 +2785,8 @@ const injectStyles = () => {
     .recipe-bar-sub { margin-left: auto; font-weight: 400; font-size: 11px; color: var(--text-muted); }
     .recipe-bar-body { padding: 12px; border-top: 1px solid var(--border-color); }
     .recipe-desc { margin: 0 0 12px 0; font-size: 12px; color: var(--text-secondary); }
-    .recipe-note { background: #b45309; color: #fff; font-weight: 600; font-size: 12px; padding: 8px 10px; border-radius: 6px; margin-bottom: 10px; }
-    html[data-color-mode="dark"] .recipe-note { background: #d97706; }
+    .recipe-note { background: #d97706; color: #2a1602; font-weight: 600; font-size: 12px; padding: 8px 10px; border-radius: 6px; margin-bottom: 10px; }
+    html[data-color-mode="dark"] .recipe-note { background: #f59e0b; color: #2a1602; }
     .gen-meta-chip.gmc-recipe { background: #4f46e5; color: #fff; }
     html[data-color-mode="dark"] .gen-meta-chip.gmc-recipe { background: #6366f1; }
 

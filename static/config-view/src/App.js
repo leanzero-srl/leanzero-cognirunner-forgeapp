@@ -532,16 +532,17 @@ const injectStyles = () => {
     }
     .log-src-runtime { background: #475569; }
     .log-src-async   { background: #4f46e5; }
-    .log-src-test    { background: #d97706; }
-    .log-flag-simulated      { background: #0891b2; }
+    /* amber/orange/cyan need dark ink for WCAG AA — white fails on these hues at 9px. */
+    .log-src-test    { background: #d97706; color: #2a1602; }
+    .log-flag-simulated      { background: #0891b2; color: #04141d; }
     .log-flag-transientError { background: #dc2626; }
-    .log-flag-capped         { background: #ea580c; }
+    .log-flag-capped         { background: #ea580c; color: #2a1602; }
     html[data-color-mode="dark"] .log-src-runtime { background: #64748b; }
     html[data-color-mode="dark"] .log-src-async   { background: #6366f1; }
-    html[data-color-mode="dark"] .log-src-test    { background: #f59e0b; }
-    html[data-color-mode="dark"] .log-flag-simulated      { background: #22d3ee; }
+    html[data-color-mode="dark"] .log-src-test    { background: #f59e0b; color: #2a1602; }
+    html[data-color-mode="dark"] .log-flag-simulated      { background: #22d3ee; color: #04141d; }
     html[data-color-mode="dark"] .log-flag-transientError { background: #ef4444; }
-    html[data-color-mode="dark"] .log-flag-capped         { background: #fb923c; }
+    html[data-color-mode="dark"] .log-flag-capped         { background: #fb923c; color: #2a1602; }
 
     .log-tools-badge {
       display: inline-block;
@@ -793,6 +794,14 @@ const injectStyles = () => {
       box-shadow: 0 4px 12px -4px rgba(245, 158, 11, 0.32);
     }
 
+    .alert-success {
+      background: var(--card-bg);
+      border-color: var(--success-color);
+      border-width: 2px;
+      color: var(--text-color);
+      box-shadow: 0 4px 12px -4px rgba(22, 163, 106, 0.35);
+    }
+
     .alert-dismiss {
       margin-left: auto;
       background: none;
@@ -845,9 +854,9 @@ const injectStyles = () => {
       white-space: nowrap;
     }
     .pf-test-pass { background: #16a34a; }
-    .pf-test-stale { background: #d97706; }
+    .pf-test-stale { background: #d97706; color: #2a1602; }
     html[data-color-mode="dark"] .pf-test-pass { background: #22c55e; }
-    html[data-color-mode="dark"] .pf-test-stale { background: #f59e0b; }
+    html[data-color-mode="dark"] .pf-test-stale { background: #f59e0b; color: #2a1602; }
     .cv-gen-docs { background: var(--accent-docs); }
     .cv-gen-skill { background: var(--accent-skills); }
     .cv-gen-mem { background: var(--accent-memories); }

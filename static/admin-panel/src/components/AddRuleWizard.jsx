@@ -428,7 +428,7 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
       <div className="card wizard">
         <div className="wiz-success">
           <div className="wiz-success-icon">
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--success-color)" strokeWidth="2">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2">
               <path d="M20 6L9 17l-5-5" />
             </svg>
           </div>

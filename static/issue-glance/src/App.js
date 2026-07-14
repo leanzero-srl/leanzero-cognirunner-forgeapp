@@ -34,6 +34,7 @@ const injectStyles = () => {
     .glance-item { border: 1px solid var(--border-color); border-radius: 8px; background: var(--card-bg); padding: 9px 11px; opacity: 0; transform: translateY(4px); animation: glanceRise 0.28s ease forwards; }
     .glance-item:nth-child(2) { animation-delay: 0.04s; } .glance-item:nth-child(3) { animation-delay: 0.08s; }
     .glance-item:nth-child(4) { animation-delay: 0.12s; } .glance-item:nth-child(5) { animation-delay: 0.16s; }
+    .glance-item:nth-child(n+6) { animation-delay: 0.2s; }
     @keyframes glanceRise { to { opacity: 1; transform: none; } }
     @media (prefers-reduced-motion: reduce) { .glance-item { animation: none; opacity: 1; transform: none; } }
     .glance-item-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -67,6 +68,16 @@ const relTime = (iso) => {
   return new Date(t).toLocaleDateString();
 };
 
+// Humanise the internal activity kind for the category eyebrow (never show the raw enum).
+const KIND_LABEL = {
+  validator: "Validator",
+  condition: "Condition",
+  "post-function": "Post-function",
+  postfunction: "Post-function",
+  skipped: "Skipped",
+};
+const kindLabel = (k) => KIND_LABEL[k] || (k ? k.charAt(0).toUpperCase() + k.slice(1) : "");
+
 // Map a shaped activity item to its status badge (glyph + label + solid hue).
 const badgeFor = (it) => {
   if (it.kind === "skipped") return { cls: "g-skip", glyph: "⊘", text: it.decision || "Skipped" };
@@ -87,7 +98,16 @@ export default function App() {
     injectStyles();
     let cancelled = false;
     (async () => {
-      try { await view.theme.enable(); } catch (e) { /* theming best-effort */ }
+      try {
+        await view.theme.enable();
+      } catch (e) {
+        // theming best-effort — if it fails, honour the OS scheme so a dark Jira
+        // doesn't render a light card on dark chrome (index.html tokens default to light).
+        try {
+          const prefersDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+          document.documentElement.setAttribute("data-color-mode", prefersDark ? "dark" : "light");
+        } catch (_) { /* no matchMedia — CSS prefers-color-scheme fallback still applies */ }
+      }
       try {
         const ctx = await view.getContext();
         const issueKey = ctx?.extension?.issue?.key || ctx?.extension?.issueKey
@@ -124,7 +144,7 @@ export default function App() {
               <div className="glance-item" key={i}>
                 <div className="glance-item-top">
                   <span className={`glance-badge ${b.cls}`}><span className="g-glyph" aria-hidden="true">{b.glyph}</span>{b.text}</span>
-                  <span className="glance-kind">{it.kind}</span>
+                  <span className="glance-kind">{kindLabel(it.kind)}</span>
                   <span className="glance-label">{it.label}</span>
                 </div>
                 {it.reason && <div className="glance-reason">{it.reason}</div>}

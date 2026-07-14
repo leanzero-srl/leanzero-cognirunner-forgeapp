@@ -146,16 +146,22 @@ const injectStyles = () => {
       border: 1px solid;
     }
 
+    /* Accessible banner idiom (matches config-view): neutral card + 2px hue border + hue
+       shadow, not a faded tint fill. */
     .license-active {
-      background: rgba(22, 163, 106, 0.1);
+      background: var(--card-bg);
       border-color: var(--success-color);
+      border-width: 2px;
       color: var(--success-color);
+      box-shadow: 0 4px 12px -4px rgba(22, 163, 106, 0.35);
     }
 
     .license-inactive {
-      background: rgba(220, 38, 38, 0.1);
+      background: var(--card-bg);
       border-color: var(--error-color);
+      border-width: 2px;
       color: var(--error-color);
+      box-shadow: 0 4px 12px -4px rgba(220, 38, 38, 0.35);
     }
 
     .section {
@@ -580,16 +586,18 @@ const injectStyles = () => {
     }
     .log-src-runtime { background: #475569; }
     .log-src-async   { background: #4f46e5; }
-    .log-src-test    { background: #d97706; }
-    .log-flag-simulated      { background: #0891b2; }
+    /* amber/orange/cyan need dark ink for WCAG AA — white fails on these hues at 9px
+       (same decision the repo already made for .job-status.* dark below). */
+    .log-src-test    { background: #d97706; color: #2a1602; }
+    .log-flag-simulated      { background: #0891b2; color: #04141d; }
     .log-flag-transientError { background: #dc2626; }
-    .log-flag-capped         { background: #ea580c; }
+    .log-flag-capped         { background: #ea580c; color: #2a1602; }
     html[data-color-mode="dark"] .log-src-runtime { background: #64748b; }
     html[data-color-mode="dark"] .log-src-async   { background: #6366f1; }
-    html[data-color-mode="dark"] .log-src-test    { background: #f59e0b; }
-    html[data-color-mode="dark"] .log-flag-simulated      { background: #22d3ee; }
+    html[data-color-mode="dark"] .log-src-test    { background: #f59e0b; color: #2a1602; }
+    html[data-color-mode="dark"] .log-flag-simulated      { background: #22d3ee; color: #04141d; }
     html[data-color-mode="dark"] .log-flag-transientError { background: #ef4444; }
-    html[data-color-mode="dark"] .log-flag-capped         { background: #fb923c; }
+    html[data-color-mode="dark"] .log-flag-capped         { background: #fb923c; color: #2a1602; }
     .lt-validator { background: #2563eb; }
     .lt-condition { background: #7c3aed; }
     .lt-pf, .lt-pf-semantic { background: #0d9488; }
@@ -755,12 +763,12 @@ const injectStyles = () => {
       border-radius: 5px;
       white-space: nowrap;
     }
-    .job-status.queued { background: #0891b2; }
-    .job-status.running { background: #06b6d4; }
+    .job-status.queued { background: #0891b2; color: #04141d; }
+    .job-status.running { background: #06b6d4; color: #04141d; }
     .job-status.done { background: #16a34a; }
     .job-status.error { background: #dc2626; }
     .job-status.cancelled { background: #475569; }
-    .job-status.stalled { background: #d97706; }
+    .job-status.stalled { background: #d97706; color: #2a1602; }
     html[data-color-mode="dark"] .job-status.queued { background: #22d3ee; color: #06283d; }
     html[data-color-mode="dark"] .job-status.running { background: #22d3ee; color: #06283d; }
     html[data-color-mode="dark"] .job-status.done { background: #22c55e; }
@@ -821,7 +829,7 @@ const injectStyles = () => {
       text-align: center;
       font-size: 11px;
       font-weight: 700;
-      color: #fff;
+      color: #04141d;
       background: #06b6d4;
       padding: 1px 7px;
       border-radius: 10px;
@@ -840,8 +848,8 @@ const injectStyles = () => {
       border-radius: 9px;
       white-space: nowrap;
     }
-    .rule-job-chip.running { background: #06b6d4; }
-    .rule-job-chip.queued { background: #0891b2; }
+    .rule-job-chip.running { background: #06b6d4; color: #04141d; }
+    .rule-job-chip.queued { background: #0891b2; color: #04141d; }
     html[data-color-mode="dark"] .rule-job-chip.running { background: #22d3ee; color: #06283d; }
     html[data-color-mode="dark"] .rule-job-chip.queued { background: #22d3ee; color: #06283d; }
 
@@ -934,27 +942,37 @@ const injectStyles = () => {
       border: 1px solid;
     }
 
+    /* Accessible alert idiom (mirrors config-view): neutral card + 2px hue border + hue
+       shadow; no pastel/ADG washes. error/success here are overridden by the copied-component
+       block below but kept on-palette so injection order can never resurface a faded tint.
+       .alert-warning is the LIVE warning (not in the copied block) — documented amber, ink text. */
     .alert-error {
-      background: rgba(222, 53, 11, 0.08);
+      background: var(--card-bg);
       border-color: var(--error-color);
+      border-width: 2px;
       color: var(--error-color);
+      box-shadow: 0 4px 12px -4px rgba(220, 38, 38, 0.35);
     }
 
     .alert-success {
-      background: rgba(0, 102, 68, 0.08);
+      background: var(--card-bg);
       border-color: var(--success-color);
-      color: var(--success-color);
+      border-width: 2px;
+      color: var(--text-color);
+      box-shadow: 0 4px 12px -4px rgba(22, 163, 106, 0.35);
     }
 
     .alert-warning {
-      background: rgba(255, 153, 31, 0.08);
-      border-color: #FF991F;
-      color: #FF991F;
+      background: var(--card-bg);
+      border-color: #d97706;
+      border-width: 2px;
+      color: var(--text-color);
+      box-shadow: 0 4px 12px -4px rgba(217, 119, 6, 0.32);
     }
 
     html[data-color-mode="dark"] .alert-warning {
-      color: #F5CD47;
-      border-color: #F5CD47;
+      border-color: #f59e0b;
+      box-shadow: 0 4px 12px -4px rgba(245, 158, 11, 0.32);
     }
 
     .alert-dismiss {
@@ -1566,12 +1584,12 @@ const injectStyles = () => {
     .wiz-status-pill {
       display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 500;
     }
-    .wiz-status-from { background: rgba(100,116,139,0.1); color: var(--text-secondary); }
-    .wiz-status-to { background: rgba(37,99,235,0.1); color: var(--primary-color); }
-    .wiz-status-initial { background: rgba(22,163,106,0.1); color: var(--success-color); }
+    .wiz-status-from { background: var(--input-bg); color: var(--text-secondary); border: 1px solid var(--border-color); }
+    .wiz-status-to { background: var(--primary-color); color: #fff; }
+    .wiz-status-initial { background: var(--success-color); color: #fff; }
     .wiz-cogni-badge {
       font-size: 9px; padding: 2px 6px; border-radius: 4px; font-weight: 600;
-      background: rgba(37,99,235,0.12); color: var(--primary-color); letter-spacing: 0.3px;
+      background: var(--primary-color); color: #fff; letter-spacing: 0.3px;
     }
     .wiz-type-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
     .wiz-type-card {
@@ -1617,8 +1635,8 @@ const injectStyles = () => {
       border-bottom: 1px solid var(--border-color);
     }
     .wiz-step-badge {
-      font-size: 11px; font-weight: 700; color: var(--primary-color);
-      background: rgba(37,99,235,0.1); padding: 2px 8px; border-radius: 4px;
+      font-size: 11px; font-weight: 700; color: #fff;
+      background: var(--primary-color); padding: 2px 8px; border-radius: 4px;
     }
     .wiz-step-name {
       flex: 1; padding: 4px 8px; border: 1px solid transparent; border-radius: 4px;
@@ -1629,18 +1647,19 @@ const injectStyles = () => {
     .wiz-step-body { padding: 12px 14px; }
     .wiz-prior-vars {
       margin-bottom: 10px; padding: 6px 10px; border-radius: 6px;
-      background: rgba(37,99,235,0.04); border: 1px solid rgba(37,99,235,0.1);
+      background: var(--input-bg); border: 1px solid var(--border-color);
     }
     .wiz-prior-var {
       font-size: 11px; padding: 2px 6px; border-radius: 3px;
-      background: var(--code-bg); color: var(--primary-color);
+      background: var(--code-bg); color: var(--text-color);
     }
     .wiz-test-result {
       margin-top: 8px; padding: 10px 12px; border-radius: 8px;
     }
     .wiz-test-pass { border: 2px solid var(--success-color); background: var(--card-bg); box-shadow: 0 4px 12px -4px rgba(22, 163, 106, 0.35); }
     .wiz-test-fail { border: 2px solid var(--error-color); background: var(--card-bg); box-shadow: 0 4px 12px -4px rgba(220, 38, 38, 0.35); }
-    .wiz-test-skip { border: 1px solid var(--primary-color); background: rgba(37,99,235,0.06); }
+    .wiz-test-skip { border: 2px solid #475569; background: var(--card-bg); }
+    html[data-color-mode="dark"] .wiz-test-skip { border-color: #64748b; }
     .wiz-test-header { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
     .wiz-test-dismiss { margin-left: auto; background: none; border: none; color: var(--text-muted); cursor: pointer; font-size: 16px; }
     .wiz-test-section { margin-bottom: 6px; }
@@ -1667,7 +1686,7 @@ const injectStyles = () => {
     }
     .wiz-success-icon {
       width: 48px; height: 48px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
-      background: rgba(22,163,106,0.1); margin-bottom: 12px;
+      background: var(--success-color); margin-bottom: 12px;
     }
     .wiz-success-title { font-size: 16px; font-weight: 700; margin-bottom: 4px; }
     .wiz-success-text { font-size: 13px; color: var(--text-secondary); margin-bottom: 16px; }
@@ -1676,7 +1695,7 @@ const injectStyles = () => {
       border-radius: 8px; background: transparent; color: var(--text-secondary);
       cursor: pointer; font-size: 12px; transition: all 0.15s ease;
     }
-    .wiz-add-step-btn:hover { border-color: var(--primary-color); color: var(--primary-color); background: rgba(37,99,235,0.04); }
+    .wiz-add-step-btn:hover { border-color: var(--primary-color); color: var(--primary-color); background: var(--hover-bg); }
     .wiz-add-step-btn:disabled { opacity: 0.4; cursor: default; }
     .wiz-divider { border-top: 1px solid var(--border-color); padding-top: 12px; margin-bottom: 14px; }
 
@@ -1973,7 +1992,7 @@ const injectStyles = () => {
       white-space: nowrap;
     }
     .memories-admin-src-user { background: #2563eb; }
-    .memories-admin-src-test { background: #d97706; }
+    .memories-admin-src-test { background: #d97706; color: #2a1602; }
     .memories-admin-src-fix { background: #16a34a; }
 
     .memories-admin-divider td {
@@ -2022,7 +2041,7 @@ const injectStyles = () => {
     html[data-color-mode="dark"] .memories-admin-toggle-row input[type="checkbox"] { accent-color: #14b8a6; }
     html[data-color-mode="dark"] .btn-add-memory { background: #14b8a6; }
     html[data-color-mode="dark"] .memories-admin-src-user { background: #3b82f6; }
-    html[data-color-mode="dark"] .memories-admin-src-test { background: #f59e0b; }
+    html[data-color-mode="dark"] .memories-admin-src-test { background: #f59e0b; color: #2a1602; }
     html[data-color-mode="dark"] .memories-admin-src-fix { background: #22c55e; }
     html[data-color-mode="dark"] .memories-admin-archived-badge { background: #64748b; }
     html[data-color-mode="dark"] .memories-admin-reinforced { color: #14b8a6; }
@@ -2729,16 +2748,23 @@ const injectCopiedComponentStyles = () => {
       border: 1px solid;
     }
 
+    /* Accessible alert idiom (mirrors config-view): neutral card + 2px hue border + hue
+       shadow. Green/amber fail WCAG as text, so success/warning body text is --text-color;
+       error keeps red text (passes). No pastel washes. */
     .alert-error {
-      background-color: var(--alert-error-bg);
-      border-color: var(--alert-error-border);
+      background: var(--card-bg);
+      border-color: var(--error-color);
+      border-width: 2px;
       color: var(--error-color);
+      box-shadow: 0 4px 12px -4px rgba(220, 38, 38, 0.35);
     }
 
     .alert-success {
-      background-color: var(--alert-success-bg);
-      border-color: var(--alert-success-border);
-      color: var(--success-color);
+      background: var(--card-bg);
+      border-color: var(--success-color);
+      border-width: 2px;
+      color: var(--text-color);
+      box-shadow: 0 4px 12px -4px rgba(22, 163, 106, 0.35);
     }
 
     .actions { display: flex; justify-content: flex-start; }
@@ -3045,10 +3071,10 @@ const injectCopiedComponentStyles = () => {
       flex-shrink: 0;
     }
     .pf-test-pass { background: #16a34a; }
-    .pf-test-stale { background: #d97706; }
+    .pf-test-stale { background: #d97706; color: #2a1602; }
     .pf-test-untested { background: #475569; }
     html[data-color-mode="dark"] .pf-test-pass { background: #22c55e; }
-    html[data-color-mode="dark"] .pf-test-stale { background: #f59e0b; }
+    html[data-color-mode="dark"] .pf-test-stale { background: #f59e0b; color: #2a1602; }
     html[data-color-mode="dark"] .pf-test-untested { background: #64748b; }
 
     .btn-remove {
@@ -3399,8 +3425,8 @@ const injectCopiedComponentStyles = () => {
     .doc-selection-info {
       padding: 8px 12px;
       font-size: 11px;
-      color: var(--success-color);
-      background: rgba(22, 163, 106, 0.06);
+      color: var(--text-secondary);
+      background: var(--input-bg);
       border-top: 1px solid var(--border-color);
     }
 
@@ -4249,9 +4275,17 @@ const injectCopiedComponentStyles = () => {
       font-size: 12px;
     }
 
-    .st-update .st-result-header { background: rgba(22, 163, 106, 0.06); }
-    .st-skip .st-result-header { background: rgba(37, 99, 235, 0.06); }
-    .st-error .st-result-header { background: rgba(220, 38, 38, 0.06); }
+    /* Solid status headers (matches .test-result-header). Skip = primary blue, not slate:
+       the .test-badge-skip inside is slate #475569 and would vanish on a slate header. */
+    .st-update .st-result-header { background: var(--success-color); color: #ffffff; }
+    .st-skip .st-result-header { background: var(--primary-color); color: #ffffff; }
+    .st-error .st-result-header { background: var(--error-color); color: #ffffff; }
+    .st-update .st-result-header .test-result-meta,
+    .st-skip .st-result-header .test-result-meta,
+    .st-error .st-result-header .test-result-meta,
+    .st-update .st-result-header .test-dismiss,
+    .st-skip .st-result-header .test-dismiss,
+    .st-error .st-result-header .test-dismiss { color: rgba(255, 255, 255, 0.9); }
 
     .test-badge-skip {
       background: #475569;
@@ -4413,7 +4447,7 @@ const injectCopiedComponentStyles = () => {
     .skill-cat-jira { background: #2563eb; }
     .skill-cat-external { background: #7c3aed; }
     .skill-cat-fields { background: #0d9488; }
-    .skill-cat-adf { background: #d97706; }
+    .skill-cat-adf { background: #d97706; color: #2a1602; }
     .skill-cat-workflow { background: #16a34a; }
     .skill-cat-other { background: #475569; }
 
@@ -4472,7 +4506,7 @@ const injectCopiedComponentStyles = () => {
       flex-shrink: 0;
     }
     .memory-src-user { background: #2563eb; }
-    .memory-src-test { background: #d97706; }
+    .memory-src-test { background: #d97706; color: #2a1602; }
     .memory-src-fix { background: #16a34a; }
 
     .memory-quick-add {
@@ -4521,14 +4555,14 @@ const injectCopiedComponentStyles = () => {
     html[data-color-mode="dark"] .skill-cat-jira { background: #3b82f6; }
     html[data-color-mode="dark"] .skill-cat-external { background: #8b5cf6; }
     html[data-color-mode="dark"] .skill-cat-fields { background: #14b8a6; }
-    html[data-color-mode="dark"] .skill-cat-adf { background: #f59e0b; }
+    html[data-color-mode="dark"] .skill-cat-adf { background: #f59e0b; color: #2a1602; }
     html[data-color-mode="dark"] .skill-cat-workflow { background: #22c55e; }
     html[data-color-mode="dark"] .skill-cat-other { background: #64748b; }
     html[data-color-mode="dark"] .skill-auto-chip { background: #8b5cf6; }
     html[data-color-mode="dark"] .btn-save-skill { background: #8b5cf6; }
     html[data-color-mode="dark"] .builtin-badge { background: #64748b; }
     html[data-color-mode="dark"] .memory-src-user { background: #3b82f6; }
-    html[data-color-mode="dark"] .memory-src-test { background: #f59e0b; }
+    html[data-color-mode="dark"] .memory-src-test { background: #f59e0b; color: #2a1602; }
     html[data-color-mode="dark"] .memory-src-fix { background: #22c55e; }
     html[data-color-mode="dark"] .btn-remember { background: #14b8a6; }
     html[data-color-mode="dark"] .memory-saved-badge { background: #14b8a6; }
@@ -4567,7 +4601,7 @@ const injectCopiedComponentStyles = () => {
       padding: 8px 10px;
       border-radius: 6px;
       background: #d97706;
-      color: #ffffff;
+      color: #2a1602;
       font-size: 12px;
       font-weight: 600;
     }
@@ -4712,7 +4746,7 @@ const injectCopiedComponentStyles = () => {
     html[data-color-mode="dark"] .gmc-docs { background: #3b82f6; }
     html[data-color-mode="dark"] .gmc-skill { background: #8b5cf6; }
     html[data-color-mode="dark"] .gmc-mem { background: #14b8a6; }
-    html[data-color-mode="dark"] .truncation-warning { background: #f59e0b; }
+    html[data-color-mode="dark"] .truncation-warning { background: #f59e0b; color: #2a1602; }
 
     /* F19 — AI provider unreachable banner (solid red, white text, no left rail) */
     .provider-down-banner {
@@ -4744,10 +4778,10 @@ const injectCopiedComponentStyles = () => {
       white-space: nowrap;
     }
     .hc-ok { background: #16a34a; }
-    .hc-warn { background: #d97706; }
+    .hc-warn { background: #d97706; color: #2a1602; }
     .hc-err { background: #dc2626; }
     html[data-color-mode="dark"] .hc-ok { background: #22c55e; }
-    html[data-color-mode="dark"] .hc-warn { background: #f59e0b; }
+    html[data-color-mode="dark"] .hc-warn { background: #f59e0b; color: #2a1602; }
     html[data-color-mode="dark"] .hc-err { background: #ef4444; }
     .hc-hint { font-size: 11px; color: var(--text-secondary); }
 
@@ -4779,10 +4813,10 @@ const injectCopiedComponentStyles = () => {
     .pr-opt { font-weight: 400; font-size: 11px; color: var(--text-muted); }
     .pr-mono { font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace; font-size: 12.5px; }
     .pr-note {
-      background: #b45309; color: #fff; font-weight: 600; font-size: 12.5px;
+      background: #d97706; color: #2a1602; font-weight: 600; font-size: 12.5px;
       padding: 9px 12px; border-radius: 8px; margin-bottom: 16px; line-height: 1.45;
     }
-    html[data-color-mode="dark"] .pr-note { background: #d97706; }
+    html[data-color-mode="dark"] .pr-note { background: #f59e0b; color: #2a1602; }
     .pr-foot { font-style: italic; }
 
     /* NL-to-rule builder ("Build from a description") — solid accent button, inset
@@ -4837,8 +4871,8 @@ const injectCopiedComponentStyles = () => {
     .recipe-bar-sub { margin-left: auto; font-weight: 400; font-size: 11px; color: var(--text-muted); }
     .recipe-bar-body { padding: 12px; border-top: 1px solid var(--border-color); }
     .recipe-desc { margin: 0 0 12px 0; font-size: 12px; color: var(--text-secondary); }
-    .recipe-note { background: #b45309; color: #fff; font-weight: 600; font-size: 12px; padding: 8px 10px; border-radius: 6px; margin-bottom: 10px; }
-    html[data-color-mode="dark"] .recipe-note { background: #d97706; }
+    .recipe-note { background: #d97706; color: #2a1602; font-weight: 600; font-size: 12px; padding: 8px 10px; border-radius: 6px; margin-bottom: 10px; }
+    html[data-color-mode="dark"] .recipe-note { background: #f59e0b; color: #2a1602; }
     .gen-meta-chip.gmc-recipe { background: #4f46e5; color: #fff; }
     html[data-color-mode="dark"] .gen-meta-chip.gmc-recipe { background: #6366f1; }
   `;

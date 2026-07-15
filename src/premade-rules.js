@@ -267,6 +267,10 @@ async function runValidator(cfg, mf, issueKey, read) {
       return PASS;
     }
     default:
+      // Observability: a premade validator with an unrecognized ruleType does NOTHING (fail-open).
+      // Without this line that is invisible — the rule silently allows every transition and looks
+      // like it "passed". Surfacing it makes a misconfigured rule debuggable in forge logs.
+      console.warn(`[cognirunner:premade] unrecognized validator ruleType ${JSON.stringify(cfg.ruleType)} — failing OPEN (allowing every transition). Check the rule's premade config.`);
       return PASS; // unknown rule type → fail-open
   }
 }
@@ -364,6 +368,7 @@ async function runCondition(cfg, issueKey, read, actingUser, readUserGroups) {
       return (Array.isArray(groups) ? groups : []).some((g) => norm(g) === norm(cfg.groupName));
     }
     default:
+      console.warn(`[cognirunner:premade] unrecognized condition ruleType ${JSON.stringify(cfg.ruleType)} — failing OPEN (showing the transition). Check the rule's premade config.`);
       return true; // unknown / unavailable rule type → SHOW (fail-OPEN)
   }
 }

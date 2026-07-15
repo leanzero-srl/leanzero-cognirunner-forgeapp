@@ -84,6 +84,17 @@ export async function testStateTrigger(req) {
         return json(500, { error: String((e && e.message) || e) });
       }
     }
+    // At-scale campaign: claim a batch of attached-but-unregistered rules into the registry (the
+    // admin "Configured Rules" table) — the same "Scan → Register all" the admin UI does, 500-capped.
+    if (body.action === "registerRules") {
+      try {
+        const { registerDiscoveredRulesCore } = await import("./index.js");
+        const r = await registerDiscoveredRulesCore(Array.isArray(body.rules) ? body.rules : [], null);
+        return json(200, r);
+      } catch (e) {
+        return json(500, { error: String((e && e.message) || e) });
+      }
+    }
     return json(400, { error: `unknown POST action=${body.action}` });
   }
 

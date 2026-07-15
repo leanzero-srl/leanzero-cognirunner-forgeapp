@@ -1684,12 +1684,11 @@ resolver.define("discoverWorkflowRules", async ({ context }) => {
  * place. Never sets `instanced` — these rows carry no embedded id, so the
  * getConfigs orphan check keeps them via its coarse rule-on-transition test.
  */
-resolver.define("registerDiscoveredRules", async ({ payload, context }) => {
-  if (!(await requireAdmin(context.accountId))) {
-    return { success: false, error: "Admin access required" };
-  }
+// Core — extracted so a dev-gated test-hook can claim attached-but-unregistered rules into the
+// registry (the admin table) without a resolver context. KVS-only, no api dependency.
+export const registerDiscoveredRulesCore = async (rules, accountId = null) => {
   try {
-    const items = Array.isArray(payload?.rules) ? payload.rules : [];
+    const items = Array.isArray(rules) ? rules : [];
     if (!items.length) return { success: false, error: "No rules provided" };
     let configs = (await storage.get(CONFIG_REGISTRY_KEY)) || [];
     const now = new Date().toISOString();
@@ -1718,7 +1717,7 @@ resolver.define("registerDiscoveredRules", async ({ payload, context }) => {
         updated++;
       } else {
         if (configs.length >= 500) { skipped++; continue; }
-        configs.push({ ...row, createdBy: context.accountId || null, createdAt: now });
+        configs.push({ ...row, createdBy: accountId || null, createdAt: now });
         added++;
       }
     }
@@ -1732,6 +1731,12 @@ resolver.define("registerDiscoveredRules", async ({ payload, context }) => {
     console.error("registerDiscoveredRules failed:", error);
     return { success: false, error: error.message };
   }
+};
+resolver.define("registerDiscoveredRules", async ({ payload, context }) => {
+  if (!(await requireAdmin(context.accountId))) {
+    return { success: false, error: "Admin access required" };
+  }
+  return registerDiscoveredRulesCore(Array.isArray(payload?.rules) ? payload.rules : [], context.accountId);
 });
 
 /**

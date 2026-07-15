@@ -3562,13 +3562,14 @@ function App() {
         </div>
       )}
 
-      {/* Condition safety callout — a condition SILENTLY hides the transition on fail (no message),
-          unlike a validator; and fails OPEN on error so a hiccup never hides a legit transition. */}
+      {/* Condition DEPRECATION callout — a Forge condition uses a static expression:"true", so
+          validate() never runs and the condition gates nothing on ANY surface (confirmed live).
+          The rule type is no longer offered for new rules; recommend a Validator. */}
       {!isPostFunction && isCondition && (
         <div className="condition-hide-note" role="note">
           <span className="chn-glyph" aria-hidden="true">!</span>
           <div>
-            <strong>Jira doesn&apos;t enforce Forge conditions on every surface.</strong> The new issue-view transition menu and REST- or automation-driven transitions ignore workflow conditions, so this condition may not hide the transition — the button can still appear and the transition run. For gating you can rely on everywhere, use a <strong>Validator</strong> instead: it blocks the transition (with your error message) on all surfaces.
+            <strong>Conditions are deprecated and are not enforced.</strong> Jira never runs a Forge condition on REST, automation, or the new issue-view transition menu, so this condition does not hide the transition — the button still appears and the transition still runs. It has no effect. To actually gate a transition, delete this rule and create a <strong>Validator</strong> instead: a validator blocks the transition (with your message) on every surface.
           </div>
         </div>
       )}

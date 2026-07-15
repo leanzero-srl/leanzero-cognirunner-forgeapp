@@ -48,6 +48,42 @@ export async function testStateTrigger(req) {
         return json(500, { error: String((e && e.message) || e) });
       }
     }
+    // Knowledge-injection A/B (dev-gated): seed a skill carrying a nonce directive, run codegen
+    // WITH vs WITHOUT it selected, then delete the skill. Touches only design-time codegen + the
+    // knowledge store (test data) — NOT the runtime validator/condition/PF decision path.
+    if (body.action === "seedSkill") {
+      try {
+        const { saveSkillInternal } = await import("./skills.js");
+        const r = await saveSkillInternal(
+          { id: body.id, name: body.name, category: body.category || "Other", description: body.description || "", tags: body.tags || [], operationTypes: body.operationTypes || [], enabled: body.enabled !== false, builtin: false, createdBy: null },
+          { instructions: body.instructions || "", examples: body.examples || "" },
+        );
+        return json(200, r);
+      } catch (e) {
+        return json(500, { error: String((e && e.message) || e) });
+      }
+    }
+    if (body.action === "runCodegen") {
+      try {
+        const { runCodegenCore } = await import("./index.js");
+        const r = await runCodegenCore({ prompt: body.prompt, operationType: body.operationType, selectedSkillIds: body.selectedSkillIds || [], autoMatch: body.autoMatch === true, projectKey: body.projectKey || null });
+        return json(200, r);
+      } catch (e) {
+        return json(500, { error: String((e && e.message) || e) });
+      }
+    }
+    if (body.action === "deleteSkill") {
+      try {
+        const { SKILL_INDEX_KEY, SKILL_PREFIX } = await import("./skills.js");
+        const idx = (await storage.get(SKILL_INDEX_KEY)) || [];
+        const next = idx.filter((s) => s.id !== body.id);
+        await storage.set(SKILL_INDEX_KEY, next);
+        await storage.delete(SKILL_PREFIX + body.id);
+        return json(200, { success: true, removed: idx.length - next.length });
+      } catch (e) {
+        return json(500, { error: String((e && e.message) || e) });
+      }
+    }
     return json(400, { error: `unknown POST action=${body.action}` });
   }
 

@@ -6161,7 +6161,10 @@ const queueCodegenTask = async (taskType, payload = {}) => {
   }
 };
 
-resolver.define("generatePostFunctionCode", async ({ payload }) => {
+// Core codegen — extracted from the resolver so a dev-gated test-hook can invoke it
+// server-side (the AI-call chain getProviderConfig/getOpenAIKey/callAIChat is module-private).
+// Byte-faithful with the resolver; the resolver just delegates. Behavior-preserving.
+export const runCodegenCore = async (payload = {}) => {
   const { prompt } = payload || {};
   if (!prompt || typeof prompt !== "string") {
     return { success: false, error: "Please describe what this step should do" };
@@ -6202,7 +6205,9 @@ resolver.define("generatePostFunctionCode", async ({ payload }) => {
     console.error("Code generation error:", error);
     return { success: false, error: error.message };
   }
-});
+};
+
+resolver.define("generatePostFunctionCode", async ({ payload }) => runCodegenCore(payload));
 
 /**
  * Fix a failing static post-function step with AI. Returns the corrected code,

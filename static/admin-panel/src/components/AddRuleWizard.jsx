@@ -34,7 +34,9 @@ import PremadeRuleForm from "./PremadeRuleForm";
 
 const RULE_TYPE_OPTIONS = [
   { value: "validator", label: "Validator", desc: "Block transition if validation fails" },
-  { value: "condition", label: "Condition", desc: "Hide transition if condition not met" },
+  // Condition rule type intentionally NOT offered: Forge conditions use a static expression:"true",
+  // so validate() never runs and the condition gates NOTHING on any surface (confirmed live). Use a
+  // Validator instead. Existing conditions still render/edit; the module stays for backward-compat.
   { value: "postfunction-semantic", label: "Semantic Post Function", desc: "AI modifies a field after transition" },
   { value: "postfunction-generate-doc", label: "Generate Document", desc: "AI writes a doc & attaches it to the issue" },
   { value: "postfunction-research", label: "Research & Save", desc: "Web-search a topic & save it to the doc library" },

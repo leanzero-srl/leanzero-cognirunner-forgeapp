@@ -10353,19 +10353,37 @@ const parseMcpBody = (contentType, text) => {
   try { return JSON.parse(text); } catch { return null; }
 };
 
-// One JSON-RPC POST to a STATELESS hosted MCP (uses @forge/api fetch).
+// doc-processor WRITE tools: a lost response on these could duplicate the created/attached
+// file, so they are NEVER retried. Everything else (read-doc, fact-check, web-search,
+// context7 resolve/query, tools/list, ...) is idempotent → safe to retry a transient blip.
+const MCP_WRITE_TOOLS = new Set(["create-doc", "create-markdown", "create-excel", "create-pdf", "create-pptx"]);
+
+// One JSON-RPC POST to a STATELESS hosted MCP (uses @forge/api fetch). Retries transient GATEWAY /
+// rate errors (429/502/503/504) a bounded number of times for READ/idempotent calls — a single
+// doc-processor blip under load previously dropped the whole tool call (agentic verdict then made
+// WITHOUT that tool's data). Bounded (≤2 retries, short backoff) so it never blows the ~20s agentic
+// budget; write tools get exactly one attempt to avoid duplicate creates.
+const MCP_TRANSIENT = new Set([429, 502, 503, 504]);
 const mcpRpc = async (url, headers, body) => {
-  const res = await fetch(url, {
+  const isWrite = body?.method === "tools/call" && MCP_WRITE_TOOLS.has(body?.params?.name);
+  const maxAttempts = isWrite ? 1 : 3;
+  const opts = {
     method: "POST",
     headers: { "Content-Type": "application/json", "Accept": "application/json, text/event-stream", ...headers },
     body: JSON.stringify(body),
-  });
-  const text = await res.text();
-  // Observability: surface the body of any non-2xx MCP response so an admin can
-  // tell a Forge EGRESS block ("URL not included in the external fetch backend
-  // permissions") apart from a SERVER auth rejection (the server's own JSON).
-  if (!res.ok) console.warn(`mcpRpc ${url} -> HTTP ${res.status}: ${String(text).slice(0, 220)}`);
-  return { status: res.status, json: parseMcpBody(res.headers.get("content-type"), text) };
+  };
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const res = await fetch(url, opts);
+    const text = await res.text();
+    if (res.ok || attempt === maxAttempts || !MCP_TRANSIENT.has(res.status)) {
+      // Observability: surface the body of any non-2xx MCP response so an admin can tell a Forge
+      // EGRESS block apart from a SERVER auth rejection (the server's own JSON).
+      if (!res.ok) console.warn(`mcpRpc ${url} -> HTTP ${res.status}${attempt > 1 ? ` (after ${attempt} attempts)` : ""}: ${String(text).slice(0, 220)}`);
+      return { status: res.status, json: parseMcpBody(res.headers.get("content-type"), text) };
+    }
+    console.warn(`mcpRpc ${url} -> HTTP ${res.status} (transient) — retry ${attempt}/${maxAttempts - 1}`);
+    await new Promise((r) => setTimeout(r, 400 * attempt));
+  }
 };
 
 // One JSON-RPC call to a STATEFUL hosted MCP (e.g. context7) that requires an MCP

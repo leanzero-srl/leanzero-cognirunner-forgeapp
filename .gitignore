@@ -40,3 +40,10 @@ src/frontend/
 
 # issue-glance shares config-view node_modules via symlink (not a dir → global node_modules/ misses it)
 static/issue-glance/node_modules
+
+# Tool cache (Playwright MCP session data) — not project source
+.playwright-mcp/
+
+# Raw video working files for the demo (large binaries; keep out of git history)
+static/submission-material/video-src/
+static/submission-material/cognirunner-demo-90s.mp4

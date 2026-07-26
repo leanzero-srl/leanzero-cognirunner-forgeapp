@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>CogniRunner Banner</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,700;12..96,800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@600&display=swap');
+  *,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+  body{width:1120px;height:548px;overflow:hidden;color:#fff;font-family:'IBM Plex Sans',sans-serif;
+    background:radial-gradient(700px 540px at 74% 46%, rgba(59,130,246,0.20) 0%, transparent 58%),linear-gradient(140deg,#0A0E16 0%,#0B1120 60%,#080B13 100%)}
+  .s{position:relative;width:1120px;height:548px}
+  .s::before{content:'';position:absolute;inset:0;background-image:linear-gradient(rgba(120,160,230,0.05) 1px,transparent 1px),linear-gradient(90deg,rgba(120,160,230,0.05) 1px,transparent 1px);background-size:46px 46px;mask-image:linear-gradient(105deg,#000 30%,transparent 72%)}
+  .left{position:absolute;left:60px;top:0;height:548px;width:470px;display:flex;flex-direction:column;justify-content:center;z-index:5}
+  .brand{display:flex;align-items:center;gap:13px;margin-bottom:22px}
+  .mk{width:50px;height:50px;border-radius:13px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.10);display:flex;align-items:center;justify-content:center}
+  .mk svg{width:31px;height:31px}.wm{font-weight:600;font-size:24px;letter-spacing:-0.3px}
+  h1{font-family:'Bricolage Grotesque',sans-serif;font-weight:800;font-size:38px;line-height:1.08;letter-spacing:-1px;max-width:430px;margin-bottom:20px}
+  h1 .a{color:#7DA9FF}
+  .feats{display:flex;flex-direction:column;gap:10px;margin-bottom:22px}
+  .feat{display:flex;align-items:center;gap:11px;font-size:15px;font-weight:500;color:#BFCDE3}
+  .tick{width:18px;height:18px;border-radius:5px;flex-shrink:0;display:flex;align-items:center;justify-content:center;background:rgba(59,130,246,0.22);border:1px solid rgba(59,130,246,0.5)}
+  .tick svg{width:11px;height:11px;stroke:#7DA9FF}
+  .badges{display:flex;gap:9px}
+  .badge{display:inline-flex;align-items:center;gap:7px;padding:7px 13px;border-radius:999px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.10);font-size:12px;font-weight:600;color:#90A4C2}
+  .badge svg{width:14px;height:14px}
+  .win{position:absolute;left:556px;top:50%;transform:translateY(-50%);width:660px;border-radius:13px;overflow:hidden;background:#0d0d14;border:1px solid rgba(255,255,255,0.09);box-shadow:0 18px 44px rgba(0,0,0,0.45),0 50px 110px rgba(0,0,0,0.55);z-index:3}
+  .bar{height:38px;background:#15151f;display:flex;align-items:center;gap:7px;padding:0 14px;border-bottom:1px solid rgba(255,255,255,0.05)}
+  .bar i{width:11px;height:11px;border-radius:50%}.r{background:#ff5f57}.y{background:#febc2e}.g{background:#28c840}
+  .u{margin-left:14px;flex:1;height:22px;border-radius:6px;background:#0a0a12;display:flex;align-items:center;padding:0 12px;font-family:'IBM Plex Mono',monospace;font-size:12px;color:#5f718c}
+  .win img{display:block;width:100%;height:auto}
+</style>
+</head>
+<body>
+<div class="s">
+  <div class="left">
+    <div class="brand">
+      <div class="mk"><svg viewBox="0 0 128 128" fill="none"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0065FF"/><stop offset="1" stop-color="#4C9AFF"/></linearGradient></defs><rect x="4" y="4" width="120" height="120" rx="26" fill="url(#g)"/><path d="M44 42C44 34 52 28 58 28C62 28 64 30 64 34L64 64" stroke="#fff" stroke-width="5" stroke-linecap="round"/><path d="M38 52C32 52 28 58 28 64C28 72 34 78 42 78L64 78" stroke="#fff" stroke-width="5" stroke-linecap="round"/><path d="M84 42C84 34 76 28 70 28C66 28 64 30 64 34" stroke="#fff" stroke-width="5" stroke-linecap="round"/><path d="M90 52C96 52 100 58 100 64C100 72 94 78 86 78L64 78" stroke="#fff" stroke-width="5" stroke-linecap="round"/><circle cx="64" cy="58" r="10" stroke="#fff" stroke-width="4"/><circle cx="64" cy="58" r="4" fill="#fff"/><path d="M56 92L72 92L72 86L88 96L72 106L72 100L56 100Z" fill="#fff"/></svg></div>
+      <div class="wm">CogniRunner</div>
+    </div>
+    <h1>AI workflow automation for Jira — <span class="a">validate, decide &amp; act</span></h1>
+    <div class="feats">
+      <div class="feat"><span class="tick"><svg viewBox="0 0 24 24" fill="none" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>Validators, conditions &amp; AI post-functions</div>
+      <div class="feat"><span class="tick"><svg viewBox="0 0 24 24" fill="none" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>Agentic duplicate detection &amp; attachment analysis</div>
+      <div class="feat"><span class="tick"><svg viewBox="0 0 24 24" fill="none" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>Bring your own AI key — OpenAI, Anthropic &amp; more</div>
+    </div>
+    <div class="badges">
+      <div class="badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>Built on Atlassian Forge</div>
+      <div class="badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M8 12l3 3 5-6"/></svg>Open Source (Apache-2.0)</div>
+    </div>
+  </div>
+  <div class="win">
+    <div class="bar"><i class="r"></i><i class="y"></i><i class="g"></i><div class="u" id="url">your-site.atlassian.net</div></div>
+    <img id="shot" alt="" />
+  </div>
+</div>
+<script>
+  const p=new URLSearchParams(location.search);
+  if(p.get('img'))document.getElementById('shot').src=p.get('img');
+  if(p.get('url'))document.getElementById('url').textContent=p.get('url');
+</script>
+</body>
+</html>

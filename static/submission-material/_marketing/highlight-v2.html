@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>CogniRunner Highlight</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500;600&display=swap');
+  *,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+  :root{--accent:#3B82F6;--accent2:#7DA9FF}
+  body{width:1840px;height:900px;overflow:hidden;color:#fff;
+    font-family:'IBM Plex Sans',sans-serif;
+    background:
+      radial-gradient(1100px 800px at 72% 42%, color-mix(in srgb,var(--accent) 20%,transparent) 0%, transparent 58%),
+      linear-gradient(140deg,#0A0E16 0%,#0B1120 60%,#080B13 100%);}
+  .stage{position:relative;width:1840px;height:900px}
+  /* blueprint grid */
+  .stage::before{content:'';position:absolute;inset:0;
+    background-image:linear-gradient(rgba(120,160,230,0.05) 1px,transparent 1px),linear-gradient(90deg,rgba(120,160,230,0.05) 1px,transparent 1px);
+    background-size:56px 56px;mask-image:linear-gradient(105deg,#000 35%,transparent 75%)}
+  /* grain */
+  .grain{position:absolute;inset:0;opacity:0.045;pointer-events:none;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")}
+
+  .left{position:absolute;left:104px;top:0;height:900px;width:640px;display:flex;flex-direction:column;justify-content:center;z-index:5}
+  .brand{display:flex;align-items:center;gap:14px;margin-bottom:38px}
+  .brand .mk{width:50px;height:50px;border-radius:13px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.10);display:flex;align-items:center;justify-content:center}
+  .brand .mk svg{width:31px;height:31px}
+  .brand .wm{font-weight:600;font-size:23px;letter-spacing:-0.2px}
+  .eyebrow{display:inline-flex;align-items:center;gap:8px;align-self:flex-start;padding:7px 15px;border-radius:8px;
+    font-family:'IBM Plex Mono',monospace;font-weight:600;font-size:15px;letter-spacing:1.5px;text-transform:uppercase;
+    color:var(--accent2);background:color-mix(in srgb,var(--accent) 14%,transparent);border:1px solid color-mix(in srgb,var(--accent) 45%,transparent);margin-bottom:26px}
+  h1{font-family:'Bricolage Grotesque',sans-serif;font-weight:800;font-size:64px;line-height:1.02;letter-spacing:-2px;max-width:580px;margin-bottom:22px}
+  .sub{font-size:22px;line-height:1.5;color:#97A6C2;max-width:540px}
+  .feats{margin-top:38px;display:flex;flex-direction:column;gap:15px}
+  .feat{display:flex;align-items:center;gap:13px;font-size:18px;font-weight:500;color:#C6D2E6}
+  .feat .tick{width:22px;height:22px;border-radius:6px;flex-shrink:0;display:flex;align-items:center;justify-content:center;
+    background:color-mix(in srgb,var(--accent) 22%,transparent);border:1px solid color-mix(in srgb,var(--accent) 50%,transparent)}
+  .feat .tick svg{width:13px;height:13px;stroke:var(--accent2)}
+
+  /* flat window, bleeds slightly off the right edge */
+  .win{position:absolute;left:760px;top:50%;transform:translateY(-50%);width:1140px;border-radius:15px;overflow:hidden;
+    background:#0d0d14;border:1px solid rgba(255,255,255,0.09);
+    box-shadow:0 20px 50px rgba(0,0,0,0.45),0 60px 130px rgba(0,0,0,0.55);z-index:3}
+  .bar{height:46px;background:#15151f;display:flex;align-items:center;gap:9px;padding:0 18px;border-bottom:1px solid rgba(255,255,255,0.05)}
+  .bar i{width:13px;height:13px;border-radius:50%}
+  .bar .r{background:#ff5f57}.bar .y{background:#febc2e}.bar .g{background:#28c840}
+  .bar .u{margin-left:18px;flex:1;height:26px;border-radius:7px;background:#0a0a12;display:flex;align-items:center;padding:0 14px;font-family:'IBM Plex Mono',monospace;font-size:13px;color:#5f718c}
+  .win img{display:block;width:100%;height:auto}
+  /* annotation callout (full border, no left rail) */
+  .note{position:absolute;z-index:6;display:flex;align-items:center;gap:12px;padding:14px 18px;border-radius:13px;
+    background:rgba(13,15,22,0.92);backdrop-filter:blur(6px);border:1.5px solid var(--accent);
+    box-shadow:0 14px 40px rgba(0,0,0,0.5);font-size:18px;font-weight:600;color:#EAF1FF;white-space:nowrap}
+  .note .ic{width:30px;height:30px;border-radius:8px;flex-shrink:0;display:flex;align-items:center;justify-content:center;background:var(--accent);color:#fff}
+  .note .ic svg{width:17px;height:17px}
+  .note small{display:block;font-weight:500;font-size:13px;color:var(--accent2);font-family:'IBM Plex Mono',monospace;letter-spacing:0.3px}
+</style>
+</head>
+<body>
+<div class="stage">
+  <div class="grain"></div>
+  <div class="left">
+    <div class="brand">
+      <div class="mk"><svg viewBox="0 0 128 128" fill="none"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#0065FF"/><stop offset="1" stop-color="#4C9AFF"/></linearGradient></defs><rect x="4" y="4" width="120" height="120" rx="26" fill="url(#g)"/><path d="M44 42C44 34 52 28 58 28C62 28 64 30 64 34L64 64" stroke="#fff" stroke-width="5" stroke-linecap="round"/><path d="M38 52C32 52 28 58 28 64C28 72 34 78 42 78L64 78" stroke="#fff" stroke-width="5" stroke-linecap="round"/><path d="M84 42C84 34 76 28 70 28C66 28 64 30 64 34" stroke="#fff" stroke-width="5" stroke-linecap="round"/><path d="M90 52C96 52 100 58 100 64C100 72 94 78 86 78L64 78" stroke="#fff" stroke-width="5" stroke-linecap="round"/><circle cx="64" cy="58" r="10" stroke="#fff" stroke-width="4"/><circle cx="64" cy="58" r="4" fill="#fff"/><path d="M56 92L72 92L72 86L88 96L72 106L72 100L56 100Z" fill="#fff"/></svg></div>
+      <div class="wm">CogniRunner</div>
+    </div>
+    <div class="eyebrow" id="eyebrow">Forge App for Jira</div>
+    <h1 id="title">Title</h1>
+    <div class="sub" id="sub">Subtitle</div>
+    <div class="feats" id="feats"></div>
+  </div>
+  <div class="win" id="win">
+    <div class="bar"><i class="r"></i><i class="y"></i><i class="g"></i><div class="u" id="url">your-site.atlassian.net</div></div>
+    <img id="shot" alt="" />
+  </div>
+  <div class="note" id="note" style="display:none">
+    <span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>
+    <span><span id="noteMain">Done</span><small id="noteSub"></small></span>
+  </div>
+</div>
+<script>
+  const p=new URLSearchParams(location.search);
+  const set=(id,v)=>{if(v!=null)document.getElementById(id).textContent=v};
+  if(p.get('accent'))document.documentElement.style.setProperty('--accent',p.get('accent'));
+  if(p.get('accent2'))document.documentElement.style.setProperty('--accent2',p.get('accent2'));
+  set('eyebrow',p.get('eyebrow'));set('title',p.get('title'));set('sub',p.get('sub'));
+  if(p.get('url'))set('url',p.get('url'));
+  if(p.get('img'))document.getElementById('shot').src=p.get('img');
+  const feats=(p.get('feats')||'').split('|').filter(Boolean);
+  document.getElementById('feats').innerHTML=feats.map(f=>`<div class="feat"><span class="tick"><svg viewBox="0 0 24 24" fill="none" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></span>${f}</div>`).join('');
+  if(p.get('note')){document.getElementById('note').style.display='flex';set('noteMain',p.get('note'));set('noteSub',p.get('noteSub'));
+    const win=document.getElementById('win');const note=document.getElementById('note');
+    // place note near bottom-left of the window once laid out
+    requestAnimationFrame(()=>{const r=win.getBoundingClientRect();note.style.left=(r.left-40)+'px';note.style.top=(r.bottom-90)+'px';});}
+</script>
+</body>
+</html>

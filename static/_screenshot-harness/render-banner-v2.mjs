@@ -1,0 +1,13 @@
+import { chromium } from "playwright";
+import path from "node:path"; import fs from "node:fs";
+const MK="/Users/mihaiperdum/Projects/CogniRunner/static/submission-material/_marketing";
+const browser=await chromium.launch();
+const ctx=await browser.newContext({deviceScaleFactor:2});
+const page=await ctx.newPage(); await page.setViewportSize({width:1120,height:548});
+const q=new URLSearchParams({img:"file://"+path.join(MK,"focus","validate.png")}).toString();
+await page.goto("file://"+path.join(MK,"banner-v2.html")+"?"+q,{waitUntil:"domcontentloaded"});
+await page.evaluate(async()=>{try{await document.fonts.ready}catch(e){}});
+await page.waitForFunction(()=>{const i=document.getElementById("shot");return i&&i.complete&&i.naturalWidth>0},{timeout:15000}).catch(()=>{});
+await page.waitForTimeout(400);
+await page.screenshot({path:path.join(MK,"out","banner2_2x.png"),clip:{x:0,y:0,width:1120,height:548}});
+await browser.close(); console.log("banner rendered");

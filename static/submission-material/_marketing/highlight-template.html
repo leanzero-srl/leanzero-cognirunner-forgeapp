@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>CogniRunner Highlight</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+  *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+  :root { --accent: #2684FF; --accent-2: #4C9AFF; }
+  body {
+    width: 1840px; height: 900px; overflow: hidden;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background:
+      radial-gradient(1200px 700px at 78% 30%, color-mix(in srgb, var(--accent) 16%, transparent) 0%, transparent 60%),
+      linear-gradient(160deg, #0C1626 0%, #080E1A 55%, #070B14 100%);
+    color: #fff;
+  }
+  .stage { position: relative; width: 1840px; height: 900px; display: flex; align-items: center; }
+  /* dot grid */
+  .stage::before {
+    content: ''; position: absolute; inset: 0;
+    background-image: radial-gradient(circle, rgba(120,160,220,0.06) 1.5px, transparent 1.5px);
+    background-size: 34px 34px; pointer-events: none;
+  }
+  .left { position: relative; z-index: 3; width: 760px; min-width: 760px; padding: 0 0 0 96px; }
+  .brandrow { display: flex; align-items: center; gap: 16px; margin-bottom: 40px; }
+  .logo { width: 60px; height: 60px; border-radius: 16px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.10); display: flex; align-items: center; justify-content: center; }
+  .logo svg { width: 36px; height: 36px; }
+  .wordmark { font-size: 26px; font-weight: 700; letter-spacing: -0.4px; }
+  .eyebrow {
+    display: inline-flex; align-items: center; gap: 8px; padding: 8px 16px; border-radius: 999px;
+    background: color-mix(in srgb, var(--accent) 18%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
+    color: var(--accent-2); font-size: 16px; font-weight: 600; letter-spacing: 0.3px; margin-bottom: 26px;
+  }
+  h1 { font-size: 62px; line-height: 1.05; font-weight: 800; letter-spacing: -1.5px; margin-bottom: 24px; max-width: 620px; }
+  .sub { font-size: 23px; line-height: 1.5; color: #9DB2CE; max-width: 600px; font-weight: 400; }
+  .feats { display: flex; flex-direction: column; gap: 14px; margin-top: 40px; }
+  .feat { display: flex; align-items: center; gap: 12px; font-size: 17px; font-weight: 500; color: #C4D2E6; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex-shrink: 0; box-shadow: 0 0 12px var(--accent); }
+
+  /* right: browser-framed screenshot */
+  .right { position: relative; z-index: 2; flex: 1; height: 100%; display: flex; align-items: center; justify-content: center; }
+  .glow { position: absolute; width: 760px; height: 760px; border-radius: 50%; background: radial-gradient(circle, color-mix(in srgb, var(--accent) 22%, transparent) 0%, transparent 62%); }
+  .window {
+    position: relative; width: 1000px; height: 720px; border-radius: 16px; overflow: hidden;
+    background: #fff;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.30), 0 40px 90px rgba(0,0,0,0.45), 0 0 0 1px rgba(255,255,255,0.06);
+    transform: perspective(2200px) rotateY(-7deg) rotateX(2deg);
+  }
+  .winbar { height: 44px; background: #1b2433; display: flex; align-items: center; gap: 8px; padding: 0 18px; }
+  .winbar i { width: 12px; height: 12px; border-radius: 50%; display: inline-block; }
+  .winbar .r { background: #ff5f57; } .winbar .y { background: #febc2e; } .winbar .g { background: #28c840; }
+  .urlbar { margin-left: 16px; flex: 1; height: 24px; border-radius: 6px; background: #0f1622; color: #6f8198; font-size: 12.5px; display: flex; align-items: center; padding: 0 12px; }
+  .shot { width: 100%; height: calc(720px - 44px); overflow: hidden; background: #f1f2f4; }
+  .shot img { width: 100%; display: block; object-fit: cover; object-position: top; height: 100%; }
+</style>
+</head>
+<body>
+<div class="stage">
+  <div class="left">
+    <div class="brandrow">
+      <div class="logo">
+        <svg viewBox="0 0 128 128" fill="none">
+          <defs><linearGradient id="g" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" style="stop-color:#0065FF"/><stop offset="100%" style="stop-color:#4C9AFF"/></linearGradient></defs>
+          <rect x="4" y="4" width="120" height="120" rx="26" fill="url(#g)"/>
+          <path d="M44 42C44 34 52 28 58 28C62 28 64 30 64 34L64 64" stroke="white" stroke-width="5" stroke-linecap="round"/>
+          <path d="M38 52C32 52 28 58 28 64C28 72 34 78 42 78L64 78" stroke="white" stroke-width="5" stroke-linecap="round"/>
+          <path d="M84 42C84 34 76 28 70 28C66 28 64 30 64 34" stroke="white" stroke-width="5" stroke-linecap="round"/>
+          <path d="M90 52C96 52 100 58 100 64C100 72 94 78 86 78L64 78" stroke="white" stroke-width="5" stroke-linecap="round"/>
+          <circle cx="64" cy="58" r="10" stroke="white" stroke-width="4"/><circle cx="64" cy="58" r="4" fill="white"/>
+          <path d="M56 92L72 92L72 86L88 96L72 106L72 100L56 100Z" fill="white" opacity="0.95"/>
+        </svg>
+      </div>
+      <div class="wordmark">CogniRunner</div>
+    </div>
+    <div class="eyebrow" id="eyebrow">Forge App for Jira</div>
+    <h1 id="title">Title goes here</h1>
+    <p class="sub" id="sub">Subtitle goes here.</p>
+    <div class="feats" id="feats"></div>
+  </div>
+  <div class="right">
+    <div class="glow"></div>
+    <div class="window">
+      <div class="winbar"><i class="r"></i><i class="y"></i><i class="g"></i><div class="urlbar" id="url">your-site.atlassian.net</div></div>
+      <div class="shot"><img id="shot" alt="" /></div>
+    </div>
+  </div>
+</div>
+<script>
+  const p = new URLSearchParams(location.search);
+  const set = (id, v) => { if (v != null) document.getElementById(id).textContent = v; };
+  if (p.get('accent')) document.documentElement.style.setProperty('--accent', p.get('accent'));
+  if (p.get('accent2')) document.documentElement.style.setProperty('--accent-2', p.get('accent2'));
+  set('eyebrow', p.get('eyebrow'));
+  set('title', p.get('title'));
+  set('sub', p.get('sub'));
+  if (p.get('url')) set('url', p.get('url'));
+  if (p.get('img')) document.getElementById('shot').src = p.get('img');
+  const feats = (p.get('feats') || '').split('|').filter(Boolean);
+  document.getElementById('feats').innerHTML = feats.map(f => `<div class="feat"><span class="dot"></span>${f}</div>`).join('');
+</script>
+</body>
+</html>

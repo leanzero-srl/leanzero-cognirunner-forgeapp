@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "license": "AGPL-3.0-or-later",
+  "license": "Apache-2.0",
   "description": "Real at-scale E2E test & hardening harness for CogniRunner (validators, conditions, post-functions, providers) against a live Jira Cloud instance.",
   "scripts": {
     "setup": "node scripts/setup-testbed.mjs",

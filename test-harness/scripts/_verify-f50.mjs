@@ -1,7 +1,7 @@
 /*
  * CogniRunner - AI-powered workflow validation for Jira
  * Copyright (C) 2025 LeanZero
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: Apache-2.0
  */
 // Deterministic unit checks for the F50 (hunt-5) provider-dispatch fixes. Copies the FIXED
 // logic from src/index.js and runs the exact malformed provider-response shapes the skeptic

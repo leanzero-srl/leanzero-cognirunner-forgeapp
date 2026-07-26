@@ -2,7 +2,7 @@
  * CogniRunner - AI-powered workflow validation for Jira
  * Copyright (C) 2025 LeanZero
  *
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 // Runs the ENTIRE offline unit suite: auto-discovers every scripts/*.test.mjs and runs each with the

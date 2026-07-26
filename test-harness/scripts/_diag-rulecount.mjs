@@ -1,7 +1,7 @@
 /*
  * CogniRunner - AI-powered workflow validation for Jira
  * Copyright (C) 2025 LeanZero
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: Apache-2.0
  */
 // DIAGNOSTIC: independently paginate /rest/api/3/workflows/search (NO caps) and count
 // every attached CogniRunner rule, to verify the admin "100 rules" figure is real and

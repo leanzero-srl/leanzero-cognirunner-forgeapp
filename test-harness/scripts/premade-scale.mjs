@@ -2,7 +2,7 @@
  * CogniRunner - AI-powered workflow validation for Jira
  * Copyright (C) 2025 LeanZero
  *
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 // AT-SCALE premade-rule run — the deterministic analogue of the ~782-case AI

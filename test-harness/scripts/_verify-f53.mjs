@@ -1,7 +1,7 @@
 /*
  * CogniRunner - AI-powered workflow validation for Jira
  * Copyright (C) 2025 LeanZero
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: Apache-2.0
  */
 // Deterministic unit checks for the F53 "always-honor" PF sweeper decision logic
 // (mirrors sweepPostFunctionJobs in src/index.js). Proves: dropped/killed PF jobs are

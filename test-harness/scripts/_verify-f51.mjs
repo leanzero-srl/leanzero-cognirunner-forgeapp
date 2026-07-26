@@ -1,7 +1,7 @@
 /*
  * CogniRunner - AI-powered workflow validation for Jira
  * Copyright (C) 2025 LeanZero
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: Apache-2.0
  */
 // Deterministic unit check for the F51 (hunt-6) fix: api.log() is bounded so a runaway
 // log loop can't grow executionLogs without limit (OOM). Copies the FIXED log() logic.

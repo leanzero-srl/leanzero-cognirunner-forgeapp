@@ -2,7 +2,7 @@
  * CogniRunner - AI-powered workflow validation for Jira
  * Copyright (C) 2025 LeanZero
  *
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: Apache-2.0
  *
  * CREATIVE LAB — invent NEW, more interesting rule types and see how they behave.
  * Diverse validators / conditions / semantic PFs / static PFs with novel prompts

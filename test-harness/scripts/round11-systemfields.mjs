@@ -2,7 +2,7 @@
  * CogniRunner - AI-powered workflow validation for Jira
  * Copyright (C) 2025 LeanZero
  *
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: Apache-2.0
  */
 
 // ROUND 11 — SYSTEM-FIELD semantic writes. Round 5 covered CUSTOM fields; this targets

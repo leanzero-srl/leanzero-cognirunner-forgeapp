@@ -1,7 +1,7 @@
 CogniRunner
 Copyright (C) 2025 LeanZero
 
-This product is licensed under the GNU Affero General Public License v3.0.
+This product is licensed under the Apache License, Version 2.0.
 See the LICENSE file for the full license text.
 
 ================================================================================
@@ -9,7 +9,7 @@ TRADEMARK NOTICE
 ================================================================================
 
 "CogniRunner" is a trademark of LeanZero. The name "CogniRunner", the
-CogniRunner logo, and associated branding are NOT covered by the AGPL-3.0
+CogniRunner logo, and associated branding are NOT covered by the Apache-2.0
 license and may NOT be used by third parties without explicit written permission.
 
 If you create a derivative work based on this software, you MUST:
@@ -30,7 +30,7 @@ This project was created and is maintained by Mihai Perdum.
 When redistributing this software or derivative works, you must:
   - Retain this NOTICE file
   - Retain all copyright headers in source files
-  - Include the full text of the AGPL-3.0 license
+  - Include the full text of the Apache-2.0 license
 
 ================================================================================
 THIRD-PARTY DEPENDENCIES

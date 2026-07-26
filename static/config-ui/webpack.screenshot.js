@@ -2,7 +2,7 @@
  * CogniRunner - AI-powered workflow validation for Jira
  * Copyright (C) 2025 LeanZero
  *
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: Apache-2.0
  *
  * Dev-only screenshot/test harness webpack config. Builds the app standalone with
  * @forge/bridge (+ @forge/jira-bridge) aliased to local mocks, output to build-shot/.

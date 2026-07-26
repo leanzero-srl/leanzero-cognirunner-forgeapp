@@ -2,7 +2,7 @@
  * CogniRunner - AI-powered workflow validation for Jira
  * Copyright (C) 2025 LeanZero
  *
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: Apache-2.0
  *
  * STAGE 3 — AGGRESSIVE LM STUDIO STRESS TEST.
  * The normal suites are tame: validators run sync and only ~1 PF queues per issue.

@@ -1,7 +1,7 @@
 <!--
  CogniRunner - AI-powered workflow validation for Jira
  Copyright (C) 2025 LeanZero
- SPDX-License-Identifier: AGPL-3.0-or-later
+ SPDX-License-Identifier: Apache-2.0
 -->
 
 # CogniRunner — Testing Recipes (reusable runbook)
@@ -27,7 +27,7 @@ A catalog of the test-harness "recipes" (what each script tests, when to use it)
    **mirroring** its `{fieldId,prompt}` as a temporary validator (same shared `validate()` path).
 4. **Provider switch is admin-only** (no REST path). To test a specific provider, ask the human to
    switch it in admin → Settings, wait ~35s (30s config cache), then run.
-5. **Commit as `leanzero.srl`**, never credit Claude; AGPL header on every new file.
+5. **Commit as `leanzero.srl`**, never credit Claude; Apache-2.0 header on every new file.
 
 ---
 

@@ -1,7 +1,7 @@
 /*
  * CogniRunner - AI-powered workflow validation for Jira
  * Copyright (C) 2025 LeanZero
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: Apache-2.0
  *
  * OFFLINE unit test for extractTextFromADF (src/index.js). The whole index.js can't be
  * imported in bare node (it uses an extensionless internal import), so this extracts the

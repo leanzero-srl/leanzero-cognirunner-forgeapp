@@ -1,7 +1,7 @@
 /*
  * CogniRunner - AI-powered workflow validation for Jira
  * Copyright (C) 2025 LeanZero
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: Apache-2.0
  */
 // Deterministic unit checks for the 3 adversarial-found fixes (F46). Copies the FIXED
 // logic from src/index.js and runs the exact bug-trigger inputs (the live weak model

@@ -1,7 +1,7 @@
 /*
  * CogniRunner - AI-powered workflow validation for Jira
  * Copyright (C) 2025 LeanZero
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: Apache-2.0
  */
 // Unit checks for F48 (hunt-3) fixes — focus on the riskiest: stripCodeFences must strip
 // only a WRAPPER fence and never corrupt valid code that contains an inner ``` as data.

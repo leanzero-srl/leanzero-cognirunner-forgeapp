@@ -6,7 +6,7 @@ Part of the [LeanZero](https://leanzero.atlascrafted.com) ecosystem.
 
 **[Live on the Atlassian Marketplace](https://marketplace.atlassian.com/apps/298437877/cognirunner?hosting=cloud&tab=overview)** -- install it directly into your Jira Cloud instance.
 
-CogniRunner is the **first open-source Atlassian Forge app**, licensed under [AGPL-3.0](LICENSE). It brings semantic intelligence to Jira workflows -- what was previously impossible to assess (the actual meaning of a text field, the content of an attached document, the quality of a description) is now child's play. Write a plain-English prompt, pick a field, and CogniRunner handles the rest.
+CogniRunner is the **first open-source Atlassian Forge app**, licensed under [Apache-2.0](LICENSE). It brings semantic intelligence to Jira workflows -- what was previously impossible to assess (the actual meaning of a text field, the content of an attached document, the quality of a description) is now child's play. Write a plain-English prompt, pick a field, and CogniRunner handles the rest.
 
 ---
 
@@ -269,7 +269,7 @@ CogniRunner/
 │       │   └── components/       # TabBar, OpenAIConfig, PermissionsTab, DocsTab,
 │       │                         #   SettingsOpenAITab, AddRuleWizard, CustomSelect, Tooltip, Skeleton
 │       └── build/
-├── LICENSE                       # AGPL-3.0
+├── LICENSE                       # Apache-2.0
 ├── NOTICE                        # Trademark + attribution
 └── README.md
 ```
@@ -589,7 +589,7 @@ Contributions are welcome and encouraged. This is the first open-source Forge ap
 5. Test via `forge tunnel` or `forge deploy` on a development site
 6. Submit a pull request
 
-By contributing, you agree that your contributions will be licensed under AGPL-3.0.
+By contributing, you agree that your contributions will be licensed under Apache-2.0.
 
 **Please note:** The "CogniRunner" name and branding are trademarked. See [NOTICE](NOTICE) for details. Derivative works must use a different name.
 
@@ -605,22 +605,21 @@ CogniRunner's Marketplace listing will never have a per-user license cost that e
 
 Copyright (C) 2025 LeanZero
 
-This program is free software: you can redistribute it and/or modify it under the terms of the **GNU Affero General Public License** as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version.
+Licensed under the Apache License, Version 2.0. You may obtain a copy at http://www.apache.org/licenses/LICENSE-2.0.
 
 See [LICENSE](LICENSE) for the full text.
 
-### What AGPL-3.0 means for you
+### What Apache-2.0 means for you
 
-- **You can** use, modify, and distribute this software freely
-- **You must** share your source code if you distribute or run a modified version as a network service
-- **You must** keep the copyright notices and license intact
+- **You can** use, modify, and distribute this software freely, including inside your own Forge apps
+- **You must** keep the copyright notices and the NOTICE file intact in redistributions
 - **You cannot** use the "CogniRunner" name/branding for derivative works (see [NOTICE](NOTICE))
 
-This is the first Forge app released under an open-source license. The AGPL was chosen deliberately: it ensures that any derivative work must also be open-source, while allowing the community to learn from, build on, and improve the codebase.
+CogniRunner was originally released under AGPL-3.0 and moved to Apache-2.0 so it can actually be reused in Forge apps, since Atlassian forbids copyleft licenses on the platform. The permissive license lets the community learn from, build on, and ship the code.
 
 ### Trademark
 
-"CogniRunner" is a trademark of LeanZero. The name and branding are **not** covered by the AGPL license. If you fork this project, you must use a different name and branding. See [NOTICE](NOTICE) for full details.
+"CogniRunner" is a trademark of LeanZero. The name and branding are **not** covered by the Apache-2.0 license. If you fork this project, you must use a different name and branding. See [NOTICE](NOTICE) for full details.
 
 ---
 

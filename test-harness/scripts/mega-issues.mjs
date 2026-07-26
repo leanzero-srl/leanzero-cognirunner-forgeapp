@@ -2,7 +2,7 @@
  * CogniRunner - AI-powered workflow validation for Jira
  * Copyright (C) 2025 LeanZero
  *
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: Apache-2.0
  *
  * MEGA volume pass — run the active (weak) model over EVERY issue on the instance
  * through the OWNER'S REAL deployed rules, in place. For each project that has

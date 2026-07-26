@@ -1,7 +1,7 @@
 /*
  * CogniRunner - AI-powered workflow validation for Jira
  * Copyright (C) 2025 LeanZero
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: Apache-2.0
  */
 // Targeted COGTEST debris cleanup (disposable test project): strips every CogniRunner
 // rule from the COGTEST workflow's transitions AND bulk-deletes all COGTEST issues —

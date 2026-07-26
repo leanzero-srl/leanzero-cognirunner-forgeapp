@@ -1,7 +1,7 @@
 /*
  * CogniRunner - AI-powered workflow validation for Jira
  * Copyright (C) 2025 LeanZero
- * SPDX-License-Identifier: AGPL-3.0-or-later
+ * SPDX-License-Identifier: Apache-2.0
  *
  * OFFLINE unit test for enrichFactsWithFieldNames (src/index.js) — the "Explain this rule"
  * fix that resolves opaque customfield_* ids to their display names so the AI explanation is

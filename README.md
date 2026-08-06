@@ -2,7 +2,7 @@
 
 **AI-powered workflow automation for Jira -- validators, conditions, and post-functions.**
 
-Part of the [LeanZero](https://leanzero.atlascrafted.com) ecosystem.
+Part of the [LeanZero](https://leanzero.net) ecosystem.
 
 **[Live on the Atlassian Marketplace](https://marketplace.atlassian.com/apps/298437877/cognirunner?hosting=cloud&tab=overview)** -- install it directly into your Jira Cloud instance.
 
@@ -623,4 +623,4 @@ CogniRunner was originally released under AGPL-3.0 and moved to Apache-2.0 so it
 
 ---
 
-Part of [LeanZero](https://leanzero.atlascrafted.com) by Mihai Perdum.
+Part of [LeanZero](https://leanzero.net) by Mihai Perdum.

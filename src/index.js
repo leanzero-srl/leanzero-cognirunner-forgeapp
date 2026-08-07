@@ -3633,7 +3633,7 @@ resolver.define("getOpenAIModels", async ({ payload, context }) => {
         modelHeaders["Authorization"] = `Bearer ${byokKey}`;
       }
       if (provider === "openrouter") {
-        modelHeaders["HTTP-Referer"] = "https://leanzero.atlascrafted.com";
+        modelHeaders["HTTP-Referer"] = "https://leanzero.net";
         modelHeaders["X-Title"] = "CogniRunner";
       }
       response = await fetch(`${baseUrl}/models`, {
@@ -8539,7 +8539,7 @@ const callAIChatRaw = async (opts) => {
       headers["Authorization"] = `Bearer ${apiKey}`;
     }
     if (provider === "openrouter") {
-      headers["HTTP-Referer"] = "https://leanzero.atlascrafted.com";
+      headers["HTTP-Referer"] = "https://leanzero.net";
       headers["X-Title"] = "CogniRunner";
     }
 

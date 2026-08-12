@@ -34,9 +34,12 @@ import PremadeRuleForm from "./PremadeRuleForm";
 
 const RULE_TYPE_OPTIONS = [
   { value: "validator", label: "Validator", desc: "Block transition if validation fails" },
-  // Condition rule type intentionally NOT offered: Forge conditions use a static expression:"true",
-  // so validate() never runs and the condition gates NOTHING on any surface (confirmed live). Use a
-  // Validator instead. Existing conditions still render/edit; the module stays for backward-compat.
+  // Conditions are back, and they now actually work. They were dropped when the app
+  // believed a Forge condition ran validate() — it never did; the module shipped a
+  // fixed expression:"true". Jira evaluates a condition as a Jira EXPRESSION, which
+  // has no network, so a condition can never use AI. It CAN run the deterministic
+  // catalog checks, which cost nothing per transition and are enforced everywhere.
+  { value: "condition", label: "Condition", desc: "Hide the transition unless the issue qualifies — no AI cost" },
   { value: "postfunction-semantic", label: "Semantic Post Function", desc: "AI modifies a field after transition" },
   { value: "postfunction-generate-doc", label: "Generate Document", desc: "AI writes a doc & attaches it to the issue" },
   { value: "postfunction-research", label: "Research & Save", desc: "Web-search a topic & save it to the doc library" },
@@ -206,6 +209,9 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
   const handleTypeSelect = async (type) => {
     setError(null);
     setRuleType(type);
+    // A condition is always a deterministic catalog rule — Jira evaluates it as a
+    // Jira expression, so there is no AI path for it to take.
+    if (type === "condition") setRuleKind("premade");
     setStep(5);
     // Only fetch fields if not already loaded
     if (fields.length === 0) {
@@ -307,10 +313,12 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
                 : ruleType === "postfunction-link"
                   ? { type: ruleType, fieldId: fieldId || "description", prompt: linkPrompt, linkPrompt, linkTypeName, maxLinks, selectedDocIds, workflow: workflowData }
                   : { type: ruleType, fieldId: fieldId || "description", prompt: prompt || conditionPrompt, conditionPrompt, actionPrompt, actionFieldId, selectedDocIds, crossCheckClaims, workflow: workflowData }
-        : ruleKind === "premade"
+        : (ruleKind === "premade" || ruleType === "condition")
           ? {
               // Premade (non-AI) validator/condition. Carries ruleType (catalog key) + params;
               // no AI prompt. fieldId is the rule's field or a synthetic value for issue-level rules.
+              // For a condition, premadeConfig also carries conditionKind:"deterministic",
+              // which is what tells the manifest's Jira expression to evaluate it.
               type: ruleType,
               ...premadeConfig,
               ruleKind: "premade",
@@ -785,13 +793,16 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
                   </svg>
                   <div style={{ fontSize: "12px", color: "var(--text-secondary)" }}>
                     {ruleType === "condition"
-                      ? "Hides or shows the transition button. Premade rules evaluate deterministically (no AI); AI rules use your prompt."
+                      ? "Hides the transition unless the issue qualifies. Jira evaluates conditions itself, in a sandbox with no network — so a condition can't use AI, costs nothing per transition, and is enforced on every surface."
                       : "Blocks the transition when the rule isn't met. Premade rules evaluate deterministically (no AI); AI rules use your prompt."
                     }
                   </div>
                 </div>
 
-                {/* Rule kind: AI prompt (default) vs a premade, non-AI catalog rule. */}
+                {/* Rule kind: AI prompt (default) vs a premade, non-AI catalog rule.
+                    Hidden for conditions — a Jira expression cannot call a model, so
+                    offering the AI option there would be offering something broken. */}
+                {ruleType !== "condition" && (
                 <div className="form-group">
                   <label className="label">Rule kind</label>
                   <div className="rulekind-toggle">
@@ -805,8 +816,9 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
                     </button>
                   </div>
                 </div>
+                )}
 
-                {ruleKind === "premade" ? (
+                {ruleKind === "premade" || ruleType === "condition" ? (
                   <PremadeRuleForm
                     mode={ruleType === "condition" ? "condition" : "validator"}
                     fields={fields}

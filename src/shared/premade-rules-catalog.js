@@ -137,6 +137,35 @@ export const PREMADE_VALIDATORS = [
   },
 ];
 
+/**
+ * Condition rule types the Jira EXPRESSION in manifest.yml actually implements.
+ *
+ * A Forge condition is not a lambda — Jira evaluates it itself as a Jira
+ * expression, so `src/premade-rules.js` never runs for a condition. Only what the
+ * expression can compute is real; everything else would silently allow every
+ * transition, which is worse than not offering it. The form greys out the rest.
+ *
+ * Keep this list in lockstep with the `expression:` block in manifest.yml, and
+ * with test-harness/scripts/reg-conditions-enforce.mjs, which proves each one
+ * both allows and blocks against a live instance.
+ */
+export const EXPRESSION_BACKED_CONDITIONS = [
+  "field-has-value",
+  "field-empty",
+  "field-equals",
+  "issue-type-is",
+  "issue-is-resolved",
+  "resolution-is",
+  "priority-is",
+  "parent-status-is",
+  "current-user-is-assignee",
+  "current-user-is-reporter",
+];
+
+/** Why a condition type isn't offered — shown in the picker. */
+export const CONDITION_NOT_EXPRESSIBLE_REASON =
+  "Not available as a condition: Jira evaluates conditions itself, in a sandbox that can't read related issues, attachments or group membership. Use a validator for this check.";
+
 export const PREMADE_CONDITIONS = [
   {
     key: "field-has-value",

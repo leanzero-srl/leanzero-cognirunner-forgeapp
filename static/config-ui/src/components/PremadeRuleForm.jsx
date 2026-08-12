@@ -25,7 +25,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { invoke } from "@forge/bridge";
 import CustomSelect from "./CustomSelect";
-import { getCatalog, findRule, COMPARE_OPS } from "../../../../src/shared/premade-rules-catalog.js";
+import { getCatalog, findRule, COMPARE_OPS, EXPRESSION_BACKED_CONDITIONS, CONDITION_NOT_EXPRESSIBLE_REASON } from "../../../../src/shared/premade-rules-catalog.js";
 import { redosRisk } from "../../../../src/shared/regex-safety.js";
 
 export default function PremadeRuleForm({ mode = "validator", fields = [], initial, onChange }) {
@@ -89,11 +89,19 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
 
   const rule = findRule(mode, ruleType);
   const p = rule?.params || {};
-  const unavailable = rule?.availability === "unavailable";
+  // A condition is evaluated by Jira as a Jira expression, not by our backend, so
+  // only the types the manifest expression implements are real. Offering any other
+  // one would silently allow every transition.
+  const notExpressible = mode === "condition" && !!ruleType && !EXPRESSION_BACKED_CONDITIONS.includes(ruleType);
+  const unavailable = rule?.availability === "unavailable" || notExpressible;
+  const unavailableWhy = notExpressible ? CONDITION_NOT_EXPRESSIBLE_REASON : rule?.unavailableReason;
 
   // Build the config object + validity from the current state.
   const fieldName = (fields.find((f) => f.id === fieldId) || {}).name || "";
-  const config = { ruleType };
+  // conditionKind tells the manifest expression this config is one it should
+  // evaluate. Without it the expression falls through to "allow" — which is what
+  // keeps every pre-existing condition behaving exactly as before.
+  const config = mode === "condition" ? { ruleType, conditionKind: "deterministic" } : { ruleType };
   if (p.field) {
     config.fieldId = fieldId;
     config.fieldName = fieldName;
@@ -284,7 +292,7 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
       </div>
 
       {unavailable && (
-        <div className="pr-note">{rule.unavailableReason}</div>
+        <div className="pr-note">{unavailableWhy}</div>
       )}
 
       {!unavailable && mode === "validator" && ruleType === "field-changed" && (

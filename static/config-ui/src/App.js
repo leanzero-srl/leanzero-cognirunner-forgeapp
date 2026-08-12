@@ -2901,6 +2901,10 @@ function App() {
   // Post-function state
   const [isPostFunction, setIsPostFunction] = useState(false);
   const [isCondition, setIsCondition] = useState(false);
+  // A condition is always a deterministic catalog rule — Jira evaluates it as a
+  // Jira expression, so the AI path is not reachable for it. Force the editor onto
+  // the premade form as soon as we know this is a condition.
+  useEffect(() => { if (isCondition) setRuleKind("premade"); }, [isCondition]);
   // Premade (non-AI) rule state. ruleKind toggles the validator/condition editor between
   // "ai" (prompt-based, the default) and "premade" (a deterministic catalog rule).
   const [ruleKind, setRuleKind] = useState("ai");
@@ -3521,14 +3525,14 @@ function App() {
         <div>
           <h3 className="title">
             {isPostFunction ? "Post Function Configuration"
-              : isCondition ? "AI Condition Configuration"
+              : isCondition ? "Condition Configuration"
               : "AI Validator Configuration"}
           </h3>
           <p className="subtitle">
             {isPostFunction
               ? "The workflow AI agent for Jira - it builds, tests, fixes, and learns."
               : isCondition
-                ? "Configure AI-powered condition for this workflow transition"
+                ? "Hide this transition unless the issue meets your criteria — no AI cost"
                 : "Configure AI-powered field validation for this workflow transition"
             }
           </p>
@@ -3550,25 +3554,29 @@ function App() {
               </svg>
             )}
             <strong>{isCondition ? "Condition" : "Validator"}</strong>
-            {isByok && <span className="pf-type-tag pf-tag-semantic" style={{ marginLeft: "auto" }}>AI cost per run</span>}
+            {isByok && !isCondition && <span className="pf-type-tag pf-tag-semantic" style={{ marginLeft: "auto" }}>AI cost per run</span>}
+            {isCondition && <span className="pf-type-tag pf-tag-static" style={{ marginLeft: "auto" }}>No AI cost</span>}
           </div>
           <p className="pf-type-desc" style={{ margin: 0 }}>
             {isCondition
-              ? "Hides or shows the transition button based on AI evaluation. Does not block — just controls visibility."
+              ? "Hides the transition unless the issue meets your criteria. Enforced everywhere — the issue view, REST, automation and bulk changes."
               : "Blocks the transition if the AI determines the field content does not meet your criteria."
             }
           </p>
         </div>
       )}
 
-      {/* Condition DEPRECATION callout — a Forge condition uses a static expression:"true", so
-          validate() never runs and the condition gates nothing on ANY surface (confirmed live).
-          The rule type is no longer offered for new rules; recommend a Validator. */}
+      {/* Why a condition can't use AI. Jira evaluates a Forge condition as a Jira
+          EXPRESSION in its own sandbox — no network, no app storage, no await — so
+          a model call is impossible from one, permanently. (This replaces a
+          "conditions are deprecated and are not enforced" notice: conditions ARE
+          enforced, on every surface. What was broken was our own manifest, which
+          shipped a fixed `expression: "true"`.) */}
       {!isPostFunction && isCondition && (
         <div className="condition-hide-note" role="note">
-          <span className="chn-glyph" aria-hidden="true">!</span>
+          <span className="chn-glyph" aria-hidden="true">i</span>
           <div>
-            <strong>Conditions are deprecated and are not enforced.</strong> Jira never runs a Forge condition on REST, automation, or the new issue-view transition menu, so this condition does not hide the transition — the button still appears and the transition still runs. It has no effect. To actually gate a transition, delete this rule and create a <strong>Validator</strong> instead: a validator blocks the transition (with your message) on every surface.
+            <strong>Conditions run without AI.</strong> Jira evaluates a condition itself, in a sandbox with no network access, so a condition can't call a model. Pick a check below — it runs instantly, costs nothing per transition, and is enforced on every surface. If you need the AI to judge free text, use a <strong>Validator</strong> instead: it blocks the transition and shows your message.
           </div>
         </div>
       )}
@@ -3737,7 +3745,12 @@ function App() {
           </div>
         )}
 
-        {/* Rule kind: AI prompt (default) vs a premade, non-AI catalog rule. */}
+        {/* Rule kind: AI prompt (default) vs a premade, non-AI catalog rule.
+            Conditions have no such choice — Jira evaluates them as a sandboxed
+            Jira expression with no network, so an AI condition cannot exist. The
+            toggle is hidden rather than shown-and-disabled so we're not offering
+            something that can never work. */}
+        {!isCondition && (
         <div className="form-group">
           <label className="label">Rule kind</label>
           <div className="rulekind-toggle">
@@ -3759,6 +3772,7 @@ function App() {
             </button>
           </div>
         </div>
+        )}
 
         {ruleKind === "premade" ? (
           <PremadeRuleForm

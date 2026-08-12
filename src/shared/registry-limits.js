@@ -29,6 +29,13 @@
 /** Hard row cap for the registry. A create/claim at or above this is refused. */
 export const REGISTRY_MAX_ROWS = 500;
 
+/**
+ * The real ceiling: Forge stores one KVS value up to 240KiB. Crossing this is
+ * not a policy choice, it is data corruption. Everything below is headroom
+ * management beneath it.
+ */
+export const REGISTRY_HARD_MAX_BYTES = 240 * 1024;
+
 /** Serialized-byte ceiling for MINTING a new rule (create paths). */
 export const REGISTRY_CREATE_MAX_BYTES = 200000;
 
@@ -53,9 +60,20 @@ export const REGISTRY_FULL_AT = 0.9;
  * Accepts either the registry array or a precomputed `{ count, bytes }` so the
  * caller can avoid a second JSON.stringify on a hot path.
  *
- * Returns { count, bytes, max, maxBytes, rowPct, bytePct, pct, level } where
- * `pct` is the binding constraint (whichever of rows/bytes is closer to its
- * ceiling) and `level` is "ok" | "warn" | "full".
+ * Two different numbers, and conflating them produced a meter that read
+ * "219 / 200 KB" — a usage bar reporting a value past its own maximum, which
+ * tells a user nothing except that the number is wrong:
+ *
+ *   CAPACITY  = REGISTRY_HARD_MAX_BYTES. What the meter measures against. Going
+ *               past it corrupts the registry, so it is the only honest "out of".
+ *   REFUSAL   = REGISTRY_CREATE_MAX_BYTES. Where the app stops accepting NEW
+ *               rules, deliberately below capacity so there is room to
+ *               re-save and delete existing ones. Being past it is normal and
+ *               recoverable — it is a state to report, not a maximum breached.
+ *
+ * Returns { count, bytes, max, maxBytes, refuseAtBytes, rowPct, bytePct, pct,
+ * level, refusing } where `pct` is the binding constraint and `level` is
+ * "ok" | "warn" | "full".
  */
 export function registryPressure(input) {
   let count = 0;
@@ -72,17 +90,25 @@ export function registryPressure(input) {
     bytes = Number(input.bytes) || 0;
   }
   const rowPct = REGISTRY_MAX_ROWS > 0 ? count / REGISTRY_MAX_ROWS : 0;
-  const bytePct = REGISTRY_CREATE_MAX_BYTES > 0 ? bytes / REGISTRY_CREATE_MAX_BYTES : 0;
+  // Measured against CAPACITY, so the fraction can never exceed 1 in normal use.
+  const bytePct = REGISTRY_HARD_MAX_BYTES > 0 ? bytes / REGISTRY_HARD_MAX_BYTES : 0;
   const pct = Math.max(rowPct, bytePct);
-  const level = pct >= REGISTRY_FULL_AT ? "full" : pct >= REGISTRY_WARN_AT ? "warn" : "ok";
+  // Refusing is a fact about the app's behaviour, not a percentage — a user at
+  // 201 KB is refused just as firmly as one at 239 KB, and needs to be told so.
+  const refusing = count >= REGISTRY_MAX_ROWS || bytes > REGISTRY_CREATE_MAX_BYTES;
+  const level = refusing || pct >= REGISTRY_FULL_AT ? "full"
+    : pct >= REGISTRY_WARN_AT ? "warn"
+      : "ok";
   return {
     count,
     bytes,
     max: REGISTRY_MAX_ROWS,
-    maxBytes: REGISTRY_CREATE_MAX_BYTES,
+    maxBytes: REGISTRY_HARD_MAX_BYTES,
+    refuseAtBytes: REGISTRY_CREATE_MAX_BYTES,
     rowPct,
     bytePct,
     pct,
     level,
+    refusing,
   };
 }

@@ -27,6 +27,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import {
   REGISTRY_MAX_ROWS,
+  REGISTRY_HARD_MAX_BYTES,
   REGISTRY_CREATE_MAX_BYTES,
   REGISTRY_CLAIM_MAX_BYTES,
   REGISTRY_FULL_MESSAGE,
@@ -70,9 +71,27 @@ ok(REGISTRY_FULL_MESSAGE.includes(String(REGISTRY_MAX_ROWS)),
   // The BINDING constraint must win. A post-function row is ~1KB, so a PF-heavy
   // install hits the byte ceiling long before the row cap — if pressure reported
   // rows only, the meter would read green right up to a refused save.
-  const byBytes = registryPressure({ count: 40, bytes: Math.round(REGISTRY_CREATE_MAX_BYTES * 0.95) });
+  const byBytes = registryPressure({ count: 40, bytes: REGISTRY_CREATE_MAX_BYTES + 1 });
   ok(byBytes.level === "full", `bytes must drive the level when they bind (got ${byBytes.level})`);
+  ok(byBytes.refusing === true, "past the create threshold, the meter must report that new rules are refused");
   ok(byBytes.pct >= byBytes.rowPct, "pct is the max of the row and byte fractions");
+
+  // THE BUG THIS PINS: the meter used to measure bytes against the CREATE
+  // REFUSAL threshold and print it as the maximum, so a real instance rendered
+  // "219 / 200 KB" — a usage bar past its own ceiling, which reads as broken.
+  // Usage must be measured against CAPACITY, which usage cannot exceed.
+  ok(REGISTRY_HARD_MAX_BYTES > REGISTRY_CREATE_MAX_BYTES,
+    "capacity must exceed the refusal threshold, or there is no room left to edit and delete existing rules");
+  const real = registryPressure({ count: 498, bytes: 219040 }); // measured on a live instance
+  ok(real.maxBytes === REGISTRY_HARD_MAX_BYTES, "the meter's denominator is CAPACITY, not the refusal threshold");
+  ok(real.bytes <= real.maxBytes, "usage must never exceed the number shown as the maximum");
+  ok(real.bytePct <= 1, `bytePct must not exceed 1 (got ${real.bytePct.toFixed(3)})`);
+  ok(real.refusing === true, "a real at-the-limit instance must be reported as refusing new rules");
+  ok(real.refuseAtBytes === REGISTRY_CREATE_MAX_BYTES, "the refusal point is exposed separately so the UI can explain it");
+
+  // Row cap alone must also trip "refusing", even with plenty of bytes spare.
+  const byRows = registryPressure({ count: REGISTRY_MAX_ROWS, bytes: 1000 });
+  ok(byRows.refusing === true, "hitting the row cap refuses new rules even when bytes are fine");
 
   // Must never throw on a read path.
   const circular = {}; circular.self = circular;

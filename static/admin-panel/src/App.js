@@ -457,6 +457,8 @@ const injectStyles = () => {
     .reg-meter-bytes { color: var(--text-muted); }
     .reg-meter-flag { margin-left: 8px; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 700; color: #fff; background: #dc2626; }
     .reg-meter-bar { height: 8px; background: var(--border-color); border-radius: 999px; overflow: hidden; }
+    .reg-meter-hint { margin-top: 6px; font-size: 12px; line-height: 1.5; color: var(--text-secondary); }
+    .reg-meter-hint strong { color: var(--text-color); font-weight: 700; }
     .reg-meter-fill { height: 100%; background: #16a34a; border-radius: 999px; transition: width 0.3s ease; }
     .reg-warn .reg-meter-fill { background: #d97706; }
     .reg-full .reg-meter-fill { background: #dc2626; }
@@ -5934,20 +5936,42 @@ function App() {
         {/* Registry pressure. The whole registry lives in ONE storage value, so the
             cap is shared site-wide — this reads the true totals even while the
             "My Rules" filter is narrowing the table below. */}
-        {isAdmin && registryMeter && (
-          <Tooltip text={`All rules on this site share one registry entry, capped at ${registryMeter.max} rules and ${Math.round(registryMeter.maxBytes / 1000)} KB. Delete rules you no longer need to reclaim space.`}>
-            <div className={`reg-meter reg-${registryMeter.level}`}>
-              <div className="reg-meter-label">
-                <strong>{registryMeter.count} / {registryMeter.max}</strong> rules
-                <span className="reg-meter-bytes"> · {Math.round(registryMeter.bytes / 1000)} / {Math.round(registryMeter.maxBytes / 1000)} KB</span>
-                {registryMeter.level === "full" && <span className="reg-meter-flag">registry nearly full</span>}
+        {isAdmin && registryMeter && (() => {
+          const kb = (b) => Math.round(b / 1000);
+          // Measure against CAPACITY (what Jira can actually store), and report
+          // REFUSAL as a state rather than a second maximum. Showing usage over
+          // the refusal threshold read as "219 / 200 KB" — a bar past its own
+          // maximum, which just looks broken.
+          const overBytes = registryMeter.bytes > registryMeter.refuseAtBytes;
+          const overRows = registryMeter.count >= registryMeter.max;
+          const toFree = overBytes ? Math.ceil((registryMeter.bytes - registryMeter.refuseAtBytes) / (registryMeter.bytes / Math.max(1, registryMeter.count))) : 0;
+          return (
+            <Tooltip text={`Every rule on this site shares one storage entry. Jira caps that entry at ${kb(registryMeter.maxBytes)} KB, and CogniRunner stops accepting new rules above ${kb(registryMeter.refuseAtBytes)} KB (or ${registryMeter.max} rules) so there is always room to edit and delete the ones you have. Deleting rules is what reclaims space.`}>
+              <div className={`reg-meter reg-${registryMeter.level}`}>
+                <div className="reg-meter-label">
+                  <strong>{registryMeter.count} / {registryMeter.max}</strong> rules
+                  <span className="reg-meter-bytes"> · {kb(registryMeter.bytes)} KB of {kb(registryMeter.maxBytes)} KB</span>
+                  {registryMeter.refusing && <span className="reg-meter-flag">new rules refused</span>}
+                </div>
+                <div className="reg-meter-bar">
+                  <div className="reg-meter-fill" style={{ width: `${Math.max(2, Math.min(100, Math.round(registryMeter.pct * 100)))}%` }} />
+                </div>
+                {/* Say what to do, and how much of it. "Full" without a number
+                    leaves the admin guessing how many rules to delete — and
+                    deleting one is not enough when it's the bytes that bind. */}
+                {registryMeter.refusing && (
+                  <div className="reg-meter-hint">
+                    {overBytes
+                      ? <>Delete about <strong>{Math.max(1, toFree)}</strong> more rule{Math.max(1, toFree) === 1 ? "" : "s"} to get back under {kb(registryMeter.refuseAtBytes)} KB — size is what's binding here, so removing a single rule won't be enough.</>
+                      : overRows
+                        ? <>Delete at least one rule to get back under {registryMeter.max}.</>
+                        : null}
+                  </div>
+                )}
               </div>
-              <div className="reg-meter-bar">
-                <div className="reg-meter-fill" style={{ width: `${Math.min(100, Math.round(registryMeter.pct * 100))}%` }} />
-              </div>
-            </div>
-          </Tooltip>
-        )}
+            </Tooltip>
+          );
+        })()}
 
         {selectedRuleIds.size > 0 && (
           <div className="rules-bulkbar">

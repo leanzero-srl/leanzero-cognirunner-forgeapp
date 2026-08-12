@@ -143,7 +143,11 @@ async function main() {
     const row = reg.find((c) => String(c.id) === ruleConfigId);
     ok(!!row, "a registry row keyed by the rule's EMBEDDED id must exist (not the instance UUID)");
     ok(row?.ruleInstanceId === instanceId, "the row must record ruleInstanceId so deletion can match exactly");
-    ok(row?.createdBy === null, "a claimed rule must NOT be attributed to whoever claimed it");
+    // "Not attributed" is the invariant — the stored form may OMIT createdBy (the
+    // registry slims null fields out) or hold null; both mean ownerless everywhere
+    // that reads it (filterConfigsForUser, the ownership repair, the UI all test
+    // truthiness). Asserting exactly === null would pin the storage shape, not the rule.
+    ok(!row?.createdBy, "a claimed rule must NOT be attributed to whoever claimed it (createdBy absent or null)");
     ok(row?.workflow?.transitionName === T_NAME, "transition NAME must be stored as the name");
     ok(row?.workflow?.transitionToName === "Backlog", "transition destination STATUS must not be the transition name");
   }

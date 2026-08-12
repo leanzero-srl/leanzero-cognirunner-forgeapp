@@ -43,7 +43,11 @@ import {
   REGISTRY_CLAIM_MAX_BYTES,
   REGISTRY_FULL_MESSAGE,
   REGISTRY_SIZE_MESSAGE,
+  REGISTRY_FUNCTIONS_OFFLOAD_BYTES,
+  REGISTRY_UPDATE_MAX_BYTES,
   registryPressure,
+  registrySerializedBytes,
+  slimRegistryRow,
 } from "./shared/registry-limits.js";
 // Premade (non-AI, "static") rule executor — runs deterministic validators/conditions
 // chosen from the premade catalog, short-circuiting the AI path in validate().
@@ -119,10 +123,18 @@ const getRegistryForRuleCheck = async () => {
 };
 // ALL registry writes go through here — the same warm container can serve a
 // later execution, so every write must invalidate its cache instance.
+// Every row is slimmed on the way in (drop empties/defaults, epoch timestamps,
+// no siteUrl — see slimRegistryRow in src/shared/registry-limits.js): the one
+// choke point means no write site can reintroduce the fat shape.
 const saveRegistry = async (configs) => {
-  await storage.set(CONFIG_REGISTRY_KEY, configs);
+  await storage.set(CONFIG_REGISTRY_KEY, Array.isArray(configs) ? configs.map(slimRegistryRow) : configs);
   _registryCache = null;
 };
+
+// Registry timestamps may be epoch-ms numbers (slim form) or ISO strings
+// (pre-slim rows, and any row not yet re-saved). Date.parse(number) is NaN,
+// so every backend read of createdAt/updatedAt/claimedAt goes through this.
+const rowTimeMs = (v) => (typeof v === "number" ? v : Date.parse(v || ""));
 
 // Static post-function code offload. The new workflow editor caps a rule's
 // embedded configuration at ~32KB; AI-generated step code can cross it. Large
@@ -1149,11 +1161,30 @@ resolver.define("checkLicense", ({ context }) => {
 });
 
 /**
- * Resolver: Get validation logs
+ * Resolver: Get validation logs.
+ *
+ * Gated + scope-filtered. Log entries carry the rule's prompt and raw issue
+ * field content, so an ungated read leaks exactly the data the getConfigs
+ * visibility filter hides: any user could read every rule's activity. Viewer
+ * role (or Jira site admin, which getUserPermissions resolves to admin) is the
+ * floor; scope-"own" users see only entries for rules the Rules table would
+ * show them (own + unowned), mirroring filterConfigsForUser's enforcement arm.
  */
-resolver.define("getLogs", async ({ payload }) => {
+resolver.define("getLogs", async ({ payload, context }) => {
   try {
-    const logs = await readLogs(payload?.ruleId || null);
+    const perms = await getUserPermissions(context?.accountId);
+    if (!perms) return { success: false, error: "You don't have access to execution logs.", logs: [] };
+    let logs = await readLogs(payload?.ruleId || null);
+    if (perms.role !== "admin" && perms.scope === "own") {
+      const configs = (await storage.get(CONFIG_REGISTRY_KEY)) || [];
+      const ownerOf = new Map(configs.map((c) => [String(c.id), c.createdBy || null]));
+      logs = logs.filter((l) => {
+        const owner = ownerOf.get(String(l.ruleId));
+        // Entries for deleted rules keep no owner to check — visible, like
+        // unowned rows. Owned rules' entries are visible to their owner only.
+        return owner === undefined || owner === null || owner === context.accountId;
+      });
+    }
     return { success: true, logs };
   } catch (error) {
     console.error("Failed to get logs:", error);
@@ -1269,7 +1300,7 @@ resolver.define("registerConfig", async ({ payload, context }) => {
     if (existingIndex < 0 && configs.length >= REGISTRY_MAX_ROWS) {
       return { success: false, error: REGISTRY_FULL_MESSAGE };
     }
-    if (existingIndex < 0 && JSON.stringify(configs).length > REGISTRY_CREATE_MAX_BYTES) {
+    if (existingIndex < 0 && registrySerializedBytes(configs) > REGISTRY_CREATE_MAX_BYTES) {
       return { success: false, error: REGISTRY_SIZE_MESSAGE };
     }
     // If a different-family row already holds this exact id (legacy collision),
@@ -1284,6 +1315,11 @@ resolver.define("registerConfig", async ({ payload, context }) => {
       // could overwrite another user's validator/condition rule.
       if (!(await canActOnConfig(context.accountId, configs[existingIndex], "editor"))) {
         return { success: false, error: "You don't have permission to modify this rule." };
+      }
+      // UPDATE growth guard (see registerPostFunction): updates bypass the create
+      // checks, so refuse only if this edit would push the value near the hard cap.
+      if (registrySerializedBytes(configs) > REGISTRY_UPDATE_MAX_BYTES) {
+        return { success: false, error: REGISTRY_SIZE_MESSAGE };
       }
       configs[existingIndex] = {
         ...configs[existingIndex],
@@ -1363,14 +1399,36 @@ resolver.define("removeConfig", async ({ payload, context }) => {
  * half-applied disable (panel says off, Jira still hiding the transition) is worse
  * than a refused one.
  */
-export const setRuleDisabledCore = async ({ id, disabled, accountId, bypassAuthz = false }) => {
+export const setRuleDisabledCore = async ({ id, disabled, accountId, bypassAuthz = false, family = null }) => {
   let configs = (await storage.get(CONFIG_REGISTRY_KEY)) || [];
   const config = configs.find((c) => c.id === id);
   if (!config) return { success: false, error: "Config not found in registry" };
+  // Family guard: the PF-flavoured resolvers must not flip a condition row (legacy
+  // un-namespaced ids can collide across families) — a condition flipped through a
+  // path with no workflow propagation would bring back the "Disabled but still
+  // hiding its transition" lie this core exists to prevent.
+  if (family === "postfunction" && !String(config.type || "").startsWith("postfunction")) {
+    return { success: false, error: "That id belongs to a different kind of rule." };
+  }
+  if (family === "rule" && String(config.type || "").startsWith("postfunction")) {
+    return { success: false, error: "That id belongs to a different kind of rule." };
+  }
   if (!bypassAuthz && !(await canActOnConfig(accountId, config, "editor"))) {
     return { success: false, error: "You don't have permission to manage this rule" };
   }
-  const propagation = await propagateDisabledToWorkflow(config, disabled);
+  // Identities owned by OTHER registry rows — the tier-3 fallback inside the
+  // propagation must refuse to write into a rule one of them owns, exactly as
+  // the delete path's detach does. Without this a stale identity-less row's
+  // toggle could flip disabled on a live condition belonging to a different row.
+  const otherClaims = new Set();
+  for (const c of configs) {
+    if (String(c.id) === String(id)) continue;
+    otherClaims.add(String(c.id));
+    if (c.ruleInstanceId) otherClaims.add(String(c.ruleInstanceId));
+    const stripped = String(c.id).replace(/^(validator|condition|postfunction[a-z-]*)::/, "");
+    if (stripped !== String(c.id)) otherClaims.add(stripped);
+  }
+  const propagation = await propagateDisabledToWorkflow(config, disabled, otherClaims);
   if (propagation.attempted && !propagation.ok) {
     return { success: false, error: `Couldn't ${disabled ? "disable" : "re-enable"} this condition in the workflow: ${propagation.error}. Nothing was changed.` };
   }
@@ -1630,7 +1688,7 @@ resolver.define("getConfigs", async ({ payload, context }) => {
         // zombie is cosmetic, a false removal loses the rule's disable-state.
         // Rows younger than the grace window are exempt — they may live in an
         // unpublished draft the workflows API can't see (see the constant).
-        const rowAgeMs = Date.now() - Date.parse(config.updatedAt || config.createdAt || "");
+        const rowAgeMs = Date.now() - rowTimeMs(config.updatedAt ?? config.createdAt);
         const oldEnoughForPreciseCheck = Number.isFinite(rowAgeMs) && rowAgeMs > ORPHAN_PRECISE_MIN_AGE_MS;
         if (keep && config.instanced === true && oldEnoughForPreciseCheck) {
           let sawUnreadableConfig = false;
@@ -1685,23 +1743,32 @@ resolver.define("getConfigs", async ({ payload, context }) => {
     // (registerDiscoveredRulesCore) — a hand-authored rule can never carry it.
     try {
       const migrations = (await storage.get(REGISTRY_MIGRATIONS_KEY)) || {};
-      if (!migrations.discoveredOwnershipV1) {
+      const needsOwnership = !migrations.discoveredOwnershipV1;
+      // registrySlimV1: one forced re-save so existing rows converge to the slim
+      // stored shape (saveRegistry slims every row on the way in). Without this,
+      // a registry that never changes again would keep its fat rows forever.
+      const needsSlim = !migrations.registrySlimV1;
+      if (needsOwnership || needsSlim) {
         let repaired = 0;
-        for (const c of surviving) {
-          if (c.discovered === true && c.createdBy) {
-            c.claimedBy = c.claimedBy || c.createdBy;
-            c.createdBy = null;
-            repaired++;
+        if (needsOwnership) {
+          for (const c of surviving) {
+            if (c.discovered === true && c.createdBy) {
+              c.claimedBy = c.claimedBy || c.createdBy;
+              c.createdBy = null;
+              repaired++;
+            }
           }
         }
-        if (repaired > 0) await saveRegistry(surviving);
+        if (repaired > 0 || needsSlim) await saveRegistry(surviving);
         await storage.set(REGISTRY_MIGRATIONS_KEY, {
           ...migrations,
           discoveredOwnershipV1: true,
+          registrySlimV1: true,
           at: new Date().toISOString(),
-          rows: repaired,
+          ...(needsOwnership ? { rows: repaired } : {}),
         });
         if (repaired > 0) console.log(`Ownership repair: un-attributed ${repaired} auto-claimed rule(s)`);
+        if (needsSlim) console.log("Registry slim migration: rows re-saved in slim form");
       }
     } catch (e) {
       console.log("Ownership repair skipped:", e?.message || e);
@@ -1710,11 +1777,20 @@ resolver.define("getConfigs", async ({ payload, context }) => {
     // ---- Visibility ----------------------------------------------------------------
     // Registry pressure is computed BEFORE filtering: the meter reports the shared
     // site-wide state, which does not change just because you're viewing "My Rules".
-    const pressure = registryPressure(surviving);
+    // Measured on the SLIM shape — what storage actually holds (saveRegistry slims
+    // every row), not the fat in-memory rows this pass may still be carrying.
+    const pressure = registryPressure(surviving.map(slimRegistryRow));
 
     const filter = payload?.filter;
     const accountId = context?.accountId;
     const perms = accountId ? await getUserPermissions(accountId) : null;
+    // No role at all (not in the roster, not a Jira site admin) → no rules. The
+    // scope enforcement below carves out ownerless rows for scope-"own" EDITORS;
+    // without this gate that carve-out applied to everyone with a licence.
+    // (First-ever user can't hit this: getUserPermissions bootstraps them admin.)
+    if (accountId && !perms) {
+      return { success: true, configs: [], removedCount: 0, restricted: true, registry: pressure };
+    }
     const filtered = filterConfigsForUser(surviving, {
       filter,
       accountId,
@@ -1817,7 +1893,10 @@ resolver.define("discoverWorkflowRules", async ({ context }) => {
             totalCogniRules++;
             let cfg = {};
             try { cfg = JSON.parse(rule.parameters?.config || "{}"); } catch { /* unreadable config */ }
-            const embeddedId = cfg.id || cfg.ruleId || null;
+            // ruleId FIRST — both runtime lookups prefer cfg.ruleId over cfg.id, so a
+            // config carrying both with different values must be keyed the same way
+            // here or the claimed row can never be found by the disable check.
+            const embeddedId = cfg.ruleId || cfg.id || null;
             const instanceId = rule.parameters?.id || rule.id || null;
             const wfId = wf.id != null ? String(wf.id) : null;
             // Registry rows can carry a TYPE-NAMESPACED id: registerConfig /
@@ -1852,6 +1931,21 @@ resolver.define("discoverWorkflowRules", async ({ context }) => {
                 };
                 backfilled++;
               }
+              // Label heal: rows claimed by pre-fix builds stored the transition's NAME
+              // in the destination-status position ("Any → ZSCALE-pv12"). The one-line
+              // describer fix was forward-only; the scan is the first place that knows
+              // the true edge again, so refresh stale labels here. Same-transition rows
+              // only, discovered rows only (hand-authored labels are the author's).
+              if (row && row.discovered === true && row.workflow
+                  && String(row.workflow.transitionId ?? "") === String(t.id ?? "")) {
+                const truth = { transitionName: td.name || undefined, transitionFromName: td.fromName || undefined, transitionToName: td.toName || undefined };
+                if ((truth.transitionToName && row.workflow.transitionToName !== truth.transitionToName)
+                  || (truth.transitionFromName && row.workflow.transitionFromName !== truth.transitionFromName)
+                  || (truth.transitionName && row.workflow.transitionName !== truth.transitionName)) {
+                  row.workflow = { ...row.workflow, ...truth };
+                  backfilled++;
+                }
+              }
               continue;
             }
             discovered.push({
@@ -1862,7 +1956,10 @@ resolver.define("discoverWorkflowRules", async ({ context }) => {
               embeddedId: embeddedId ? String(embeddedId) : null,
               type: ruleType,
               fieldId: cfg.fieldId || null,
-              prompt: typeof cfg.prompt === "string" ? cfg.prompt.slice(0, 120) : null,
+              // 200, not shorter: the runtime legacy disable tier compares the FULL
+              // 200-char truncation (validate's promptKey) — a shorter slice here
+              // makes a claimed id-less validator un-disable-able past that length.
+              prompt: typeof cfg.prompt === "string" ? cfg.prompt.slice(0, 200) : null,
               packTagged: cfg.pack === true,
               workflowId: wfId,
               workflowName: wfName,
@@ -1924,7 +2021,7 @@ export const registerDiscoveredRulesCore = async (rules, accountId = null) => {
     // returned success:false for the whole batch when it tripped — throwing away every
     // successful add in that batch. Estimate incrementally instead, stop adding at the
     // ceiling, and still persist the partial result. O(n) rather than O(n^2).
-    let bytes = JSON.stringify(configs).length;
+    let bytes = registrySerializedBytes(configs);
     for (const it of items) {
       // Key by the rule's own EMBEDDED id when it has one. The runtime disable check
       // looks the row up by the embedded `config.ruleId || config.id` (validate() and
@@ -1961,7 +2058,12 @@ export const registerDiscoveredRulesCore = async (rules, accountId = null) => {
         updatedAt: now,
       };
       if (idx >= 0) {
+        // Count the merge's growth against the running estimate too — an update
+        // that adds workflow-name/label fields grows the value just as an add
+        // does, and uncounted growth let the ceiling be crossed via updates.
+        const before = registrySerializedBytes(configs[idx]);
         configs[idx] = { ...configs[idx], ...row };
+        bytes += registrySerializedBytes(configs[idx]) - before;
         updated++;
       } else {
         if (configs.length >= REGISTRY_MAX_ROWS) { skipped++; continue; }
@@ -1970,7 +2072,7 @@ export const registerDiscoveredRulesCore = async (rules, accountId = null) => {
         // hundreds of machine-created rules into that admin's "My Rules". claimedBy is
         // an audit trail only and must never be read as ownership.
         const fresh = { ...row, createdBy: null, claimedBy: accountId || null, claimedAt: now, createdAt: now };
-        const cost = JSON.stringify(fresh).length + 1;
+        const cost = registrySerializedBytes(fresh) + 1;
         if (bytes + cost > REGISTRY_CLAIM_MAX_BYTES) { skippedSize++; continue; }
         configs.push(fresh);
         bytes += cost;
@@ -3358,7 +3460,7 @@ const detachWorkflowRulesCore = async ({ workflowName, workflowId, targets, othe
  * Returns { attempted, ok, error }. Callers MUST NOT flip the registry row when
  * `attempted && !ok` — a half-applied disable is worse than a refused one.
  */
-const propagateDisabledToWorkflow = async (row, disabled) => {
+const propagateDisabledToWorkflow = async (row, disabled, otherClaims = null) => {
   if (String(row?.type || "") !== "condition") return { attempted: false, ok: true };
   const wf = row.workflow || {};
   if (!wf.transitionId || (!wf.workflowName && !wf.workflowId)) {
@@ -3385,7 +3487,18 @@ const propagateDisabledToWorkflow = async (row, disabled) => {
 
     const pool = flattenConditionRules(transition.conditions);
     const exact = pool.filter(matcher.exact);
-    const family = pool.filter(matcher.family);
+    // Tier-3 fallback mirrors detachWorkflowRulesCore: unique in the slot AND not
+    // demonstrably owned by another registry row. A write into someone else's rule
+    // is the same wrong-target class as a wrong-target detach — silently flipping
+    // a live condition while its own panel row reports the opposite state.
+    const family = pool.filter(matcher.family).filter((r) => {
+      if (!otherClaims || otherClaims.size === 0) return true;
+      const inst = r.parameters?.id || r.id;
+      if (inst && otherClaims.has(String(inst))) return false;
+      let emb = null;
+      try { const c = JSON.parse(r.parameters?.config || "{}"); emb = c?.id || c?.ruleId || null; } catch { /* unreadable */ }
+      return !(emb && otherClaims.has(String(emb)));
+    });
     const target = exact.length ? exact[0] : (family.length === 1 ? family[0] : null);
     if (!target) {
       return { attempted: true, ok: false, error: family.length > 1 ? "more than one CogniRunner condition on that transition and none carry an id" : "it is no longer attached to the transition" };
@@ -3588,6 +3701,28 @@ resolver.define("previewRuleDeletion", async ({ payload, context }) => {
   const byId = new Map(configs.map((c) => [String(c.id), c]));
   const rows = ids.map((id) => byId.get(id)).filter(Boolean);
 
+  // Same otherClaims exclusion the actual delete applies — without it the
+  // preview can call a stale row "locatable" (its slot-mate is claimed by a
+  // DIFFERENT registry row) and then the delete reports not-found: the dialog
+  // must predict what removeRegistryRowsCore will do, not a laxer version.
+  const selectedIds = new Set(ids);
+  const otherClaims = new Set();
+  for (const c of configs) {
+    if (selectedIds.has(String(c.id))) continue;
+    otherClaims.add(String(c.id));
+    if (c.ruleInstanceId) otherClaims.add(String(c.ruleInstanceId));
+    const stripped = String(c.id).replace(/^(validator|condition|postfunction[a-z-]*)::/, "");
+    if (stripped !== String(c.id)) otherClaims.add(stripped);
+  }
+  const unclaimedByOthers = (r) => {
+    if (!otherClaims.size) return true;
+    const inst = r.parameters?.id || r.id;
+    if (inst && otherClaims.has(String(inst))) return false;
+    let emb = null;
+    try { const c = JSON.parse(r.parameters?.config || "{}"); emb = c?.id || c?.ruleId || null; } catch { /* unreadable */ }
+    return !(emb && otherClaims.has(String(emb)));
+  };
+
   // Read each distinct workflow once (bounded — the dialog only ever previews a
   // selection, and the client batches).
   const MAX_WORKFLOWS_PREVIEWED = 10;
@@ -3632,7 +3767,7 @@ resolver.define("previewRuleDeletion", async ({ payload, context }) => {
       ? flattenConditionRules(transition.conditions)
       : slot === "validator" ? (transition.validators || []) : (transition.actions || []);
     const exact = pool.filter(matcher.exact).length;
-    const family = pool.filter(matcher.family).length;
+    const family = pool.filter(matcher.family).filter(unclaimedByOthers).length;
     const locatable = exact > 0 || family === 1;
     items.push({
       ...base,
@@ -5644,7 +5779,7 @@ resolver.define("registerPostFunction", async ({ payload, context }) => {
     if (existing < 0 && configs.length >= REGISTRY_MAX_ROWS) {
       return { success: false, error: REGISTRY_FULL_MESSAGE };
     }
-    if (existing < 0 && JSON.stringify(configs).length > REGISTRY_CREATE_MAX_BYTES) {
+    if (existing < 0 && registrySerializedBytes(configs) > REGISTRY_CREATE_MAX_BYTES) {
       return { success: false, error: REGISTRY_SIZE_MESSAGE };
     }
     // If a different-family row already holds this exact id, namespace ours.
@@ -5653,14 +5788,17 @@ resolver.define("registerPostFunction", async ({ payload, context }) => {
 
     // Code offload: move large static-PF step code into its own KVS entry.
     // The client requests it when the embedded workflow config would cross the
-    // 32KB editor ceiling; the backend additionally force-offloads the REGISTRY
-    // copy above 24KB so stale frontend builds still relieve the 200KB registry
-    // cap (they ignore codeKey and keep returning inline workflow configs).
+    // 32KB editor ceiling; the backend additionally offloads the REGISTRY copy
+    // above REGISTRY_FUNCTIONS_OFFLOAD_BYTES (2KB — shared caps module) so step
+    // code stops eating the 240KiB shared registry value. This changes ONLY the
+    // registry row: the returned codeKey flips a client's WORKFLOW config to
+    // codeRef solely when that client asked (config-ui gates the swap on its own
+    // wantOffload), so runtime execution keeps its inline code either way.
     const fnBytes = Buffer.byteLength(JSON.stringify(functions || []), "utf8");
     if (fnBytes > PF_CODE_VALUE_MAX_BYTES) {
       return { success: false, error: "The step code in this rule exceeds the app storage limit (220 KB). Shorten or remove some steps, or split them across two post-functions." };
     }
-    const shouldOffload = (requestCodeOffload === true || fnBytes > PF_FUNCTIONS_OFFLOAD_BYTES)
+    const shouldOffload = (requestCodeOffload === true || fnBytes > REGISTRY_FUNCTIONS_OFFLOAD_BYTES)
       && Array.isArray(functions) && functions.length > 0;
     let codeKey = null;
     if (shouldOffload) {
@@ -5717,6 +5855,14 @@ resolver.define("registerPostFunction", async ({ payload, context }) => {
     };
 
     if (existing >= 0) {
+      // UPDATE growth guard — the create checks above gate on `existing < 0`, so
+      // edits used to be able to grow rows from the refusal line to the platform
+      // ceiling unchecked. Measure the post-update SLIM shape (what storage will
+      // hold) and refuse only near the hard cap, so shrinking edits always pass.
+      const predicted = configs.map((c, i) => slimRegistryRow(i === existing ? entry : c));
+      if (registrySerializedBytes(predicted) > REGISTRY_UPDATE_MAX_BYTES) {
+        return { success: false, error: REGISTRY_SIZE_MESSAGE };
+      }
       configs[existing] = entry;
     } else {
       configs.push(entry);
@@ -5764,17 +5910,9 @@ resolver.define("removePostFunction", async ({ payload, context }) => {
  */
 resolver.define("disablePostFunction", async ({ payload, context }) => {
   try {
-    const { id } = payload;
-    let configs = (await storage.get(CONFIG_REGISTRY_KEY)) || [];
-    const idx = configs.findIndex((c) => c.id === id);
-    if (idx < 0) return { success: false, error: "Post-function not found" };
-    if (!(await canActOnConfig(context.accountId, configs[idx], "editor"))) {
-      return { success: false, error: "You don't have permission to manage this post-function" };
-    }
-    configs[idx].disabled = true;
-    configs[idx].updatedAt = new Date().toISOString();
-    await saveRegistry(configs);
-    return { success: true, disabled: true };
+    // Same core as disableRule/enableRule — family-guarded so this PF-flavoured
+    // path can never flip a condition row (which needs workflow propagation).
+    return await setRuleDisabledCore({ id: payload?.id, disabled: true, accountId: context.accountId, family: "postfunction" });
   } catch (error) {
     console.error("Failed to disable post-function:", error);
     return { success: false, error: error.message };
@@ -5786,17 +5924,7 @@ resolver.define("disablePostFunction", async ({ payload, context }) => {
  */
 resolver.define("enablePostFunction", async ({ payload, context }) => {
   try {
-    const { id } = payload;
-    let configs = (await storage.get(CONFIG_REGISTRY_KEY)) || [];
-    const idx = configs.findIndex((c) => c.id === id);
-    if (idx < 0) return { success: false, error: "Post-function not found" };
-    if (!(await canActOnConfig(context.accountId, configs[idx], "editor"))) {
-      return { success: false, error: "You don't have permission to manage this post-function" };
-    }
-    configs[idx].disabled = false;
-    configs[idx].updatedAt = new Date().toISOString();
-    await saveRegistry(configs);
-    return { success: true, disabled: false };
+    return await setRuleDisabledCore({ id: payload?.id, disabled: false, accountId: context.accountId, family: "postfunction" });
   } catch (error) {
     console.error("Failed to enable post-function:", error);
     return { success: false, error: error.message };
@@ -5904,6 +6032,14 @@ resolver.define("exportRules", async ({ payload, context }) => {
   if (!ids.length) return { success: false, error: "No rules selected" };
   try {
     const configs = (await storage.get(CONFIG_REGISTRY_KEY)) || [];
+    // Per-rule visibility gate. The role check above is not enough: a scope-"own"
+    // editor could otherwise export ANY rule by id — including another user's full
+    // config with its static-PF code inlined — bypassing the getConfigs visibility
+    // filter entirely (execution logs used to leak the ids to ask for). Match the
+    // Rules-table visibility exactly: own rules plus unowned rows.
+    const perms = await getUserPermissions(context.accountId);
+    const mayExport = (row) => perms?.role === "admin" || perms?.scope === "all"
+      || !row.createdBy || row.createdBy === context.accountId;
     const fieldMap = await buildFieldMap();
     const docMap = {};
     try { const idx = (await storage.get(DOC_REPO_INDEX_KEY)) || []; for (const d of idx) docMap[d.id] = d.title; } catch (e) { /* best-effort */ }
@@ -5912,6 +6048,7 @@ resolver.define("exportRules", async ({ payload, context }) => {
     for (const id of ids) {
       const row = configs.find((c) => c.id === id);
       if (!row) { skipped.push({ id, reason: "not found in registry" }); continue; }
+      if (!mayExport(row)) { skipped.push({ id, reason: "not visible to you" }); continue; }
       const cfg = await readAuthoritativeConfig(row, wfCache);
       if (!cfg) { skipped.push({ id, reason: "config not readable" }); continue; }
       // Inline offloaded static-PF code so the export is self-contained.
@@ -6005,7 +6142,22 @@ export const commitImportCore = async ({ rule, targetWorkflowName, targetTransit
     if (fieldId) cfg.fieldId = fieldId; else delete cfg.fieldId;
     if (actionFieldId) cfg.actionFieldId = actionFieldId; else delete cfg.actionFieldId;
     if (Array.isArray(plan.selectedDocIds) && plan.selectedDocIds.length) cfg.selectedDocIds = plan.selectedDocIds; else delete cfg.selectedDocIds;
-    // 5. Static-PF code: carry inline, offload if the slim config would exceed the cap.
+    // 5. Scale guard — BEFORE the inject AND before the code-bundle write. Import was
+    //    the one create path with no cap check: at the cap it would attach a live
+    //    workflow rule and then fail to register it, manufacturing exactly the
+    //    unmanageable "attached but not in the registry" rule this release exists to
+    //    eliminate. Checking before the bundle write also stops a refused import from
+    //    orphaning a pf_code bundle it just stored.
+    {
+      const pre = (await storage.get(CONFIG_REGISTRY_KEY)) || [];
+      if (pre.length >= REGISTRY_MAX_ROWS) {
+        return { success: false, status: "error", error: REGISTRY_FULL_MESSAGE };
+      }
+      if (registrySerializedBytes(pre) > REGISTRY_CREATE_MAX_BYTES) {
+        return { success: false, status: "error", error: REGISTRY_SIZE_MESSAGE };
+      }
+    }
+    // 5b. Static-PF code: carry inline, offload if the slim config would exceed the cap.
     let functions = Array.isArray(clean.functions) ? clean.functions.map((f) => ({ name: f.name, operationType: f.operationType, variableName: f.variableName, code: f.code, description: f.description })) : [];
     if (functions.length) {
       if (ruleType === "postfunction-static" && Buffer.byteLength(JSON.stringify({ ...cfg, functions }), "utf8") > PF_FUNCTIONS_OFFLOAD_BYTES) {
@@ -6015,20 +6167,6 @@ export const commitImportCore = async ({ rule, targetWorkflowName, targetTransit
         cfg.functionsMeta = functions.map((f) => ({ id: f.name, name: f.name, operationType: f.operationType, variableName: f.variableName }));
       } else {
         cfg.functions = functions;
-      }
-    }
-    // 5b. Scale guard — BEFORE the inject, not before the registry push. Import was the
-    //     one create path with no cap check: at the cap it would attach a live workflow
-    //     rule and then fail to register it, manufacturing exactly the unmanageable
-    //     "attached but not in the registry" rule this release exists to eliminate.
-    //     Refusing early costs one extra KVS read and leaves the workflow untouched.
-    {
-      const pre = (await storage.get(CONFIG_REGISTRY_KEY)) || [];
-      if (pre.length >= REGISTRY_MAX_ROWS) {
-        return { success: false, status: "error", error: REGISTRY_FULL_MESSAGE };
-      }
-      if (JSON.stringify(pre).length > REGISTRY_CREATE_MAX_BYTES) {
-        return { success: false, status: "error", error: REGISTRY_SIZE_MESSAGE };
       }
     }
     // 6. INJECT via the proven core.
@@ -6046,9 +6184,18 @@ export const commitImportCore = async ({ rule, targetWorkflowName, targetTransit
       // Keep the workflow-rule instance id the inject just minted: it lets a later
       // delete locate this exact rule inside the transition without guessing.
       const instanceId = injected.ruleId ? { ruleInstanceId: String(injected.ruleId) } : {};
-      const row = isPf
+      let row = isPf
         ? { ...cfg, ...instanceId, instanced: true, disabled: false, createdBy: accountId || null, createdAt: now, updatedAt: now }
         : { id: freshId, type: ruleType, fieldId: cfg.fieldId, prompt: typeof cfg.prompt === "string" ? cfg.prompt.slice(0, 200) : "", workflow: cfg.workflow, ruleKind: cfg.ruleKind, premadeRuleType: cfg.premadeRuleType, ...instanceId, instanced: true, disabled: false, createdBy: accountId || null, createdAt: now, updatedAt: now };
+      // Registry-copy offload (mirrors registerPostFunction): the WORKFLOW config
+      // above decided inline-vs-codeRef at 24KB for runtime semantics; the REGISTRY
+      // row offloads at 2KB so imported step code doesn't eat the shared value.
+      if (isPf && Array.isArray(row.functions) && row.functions.length > 0
+          && Buffer.byteLength(JSON.stringify(row.functions), "utf8") > REGISTRY_FUNCTIONS_OFFLOAD_BYTES) {
+        const codeRef = row.codeRef || pfCodeKeyFor(freshId, row.functions);
+        if (!row.codeRef) await storage.set(codeRef, { v: 1, ruleId: freshId, functions: row.functions, updatedAt: now });
+        row = { ...row, functions: [], codeRef, functionsMeta: row.functions.map((f) => ({ id: f.name, name: f.name, operationType: f.operationType, variableName: f.variableName })) };
+      }
       configs.push(row);
       await saveRegistry(configs);
     } catch (e) {
@@ -12654,9 +12801,16 @@ export const validate = async (args) => {
 
   // Premade (non-AI, "static") rule short-circuit. When the rule was configured
   // as a premade catalog rule, run the deterministic check and return BEFORE any
-  // provider/credential/doc-fetch/AI work — zero AI cost, zero latency. Both
-  // validators (block + message) and conditions (hide silently) route here; the
-  // executor is fail-OPEN so a bug never traps (or silently hides) a transition.
+  // provider/credential/doc-fetch/AI work — zero AI cost, zero latency.
+  //
+  // IMPORTANT: at runtime this only ever fires for VALIDATORS. Jira evaluates a
+  // premade CONDITION via the manifest `expression:` block (manifest.yml), never
+  // by calling validate() — the condition module has no `function:` key at all.
+  // The invocationType==="condition" branch below is therefore a belt-and-suspenders
+  // fail-open path, not the live condition evaluator; the condition's real answer
+  // comes from the expression. (Keep it fail-OPEN so even that path can't trap a
+  // transition.) The single source for which condition types are real is the
+  // manifest expression + EXPRESSION_BACKED_CONDITIONS, NOT runCondition here.
   if (configuration?.ruleKind === "premade" && configuration?.ruleType) {
     const premadeStart = Date.now();
     const invocationType = String(args?.context?.extension?.type || "").includes("Condition")

@@ -38,8 +38,9 @@ modules:
   # `config.disabled == true` also allows. Jira evaluates this expression itself
   # and cannot read app storage, so the registry's disabled flag is invisible here
   # — disableRule therefore patches the flag into the workflow rule's own embedded
-  # config (see setWorkflowRuleDisabledCore in src/index.js). Without this branch a
-  # rule shown as "Disabled" in the admin panel would keep hiding the transition.
+  # config (setRuleDisabledCore → propagateDisabledToWorkflow in src/index.js).
+  # Without this branch a rule shown as "Disabled" in the admin panel would keep
+  # hiding the transition.
   #
   # ⚠️ EVERY BRANCH USES A STATIC, TYPED PROPERTY PATH ON `issue`. Do NOT add a
   # branch that indexes `issue` with a user-chosen field id (`issue?.[config.fieldId]`).

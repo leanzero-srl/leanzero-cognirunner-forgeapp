@@ -146,8 +146,13 @@ async function main() {
     const res = await doTransition(KEY, String(transitionId));
     ok(res.status < 400, `an English summary must be ALLOWED through (got HTTP ${res.status})`);
     const v = await verdictFor("english");
+    // Symmetric with the Spanish side: a PASS with NO log entry is indistinguishable
+    // from a fail-open that let everything through, so the log entry is REQUIRED, not
+    // optional. Without this the "allowed" assertion alone is satisfied by an outage.
+    ok(!!v, "an execution log entry must exist for the passing run (a PASS with no verdict could be a fail-open)");
     if (v) {
       ok(v.isValid === true, `the logged verdict for English must be a genuine PASS (isValid=${v.isValid})`);
+      ok(v.ruleKind !== "premade" && v.mode !== "premade", "the PASS must come from the AI path, not a premade short-circuit");
       ok(!FAIL_OPEN_RE.test(String(v.reason || "")), `the PASS must be a real decision, not a fail-open: "${String(v.reason || "").slice(0, 120)}"`);
     }
   }

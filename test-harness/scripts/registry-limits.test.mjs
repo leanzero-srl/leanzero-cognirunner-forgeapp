@@ -32,7 +32,11 @@ import {
   REGISTRY_CLAIM_MAX_BYTES,
   REGISTRY_FULL_MESSAGE,
   REGISTRY_SIZE_MESSAGE,
+  REGISTRY_UPDATE_MAX_BYTES,
+  REGISTRY_FUNCTIONS_OFFLOAD_BYTES,
   registryPressure,
+  registrySerializedBytes,
+  slimRegistryRow,
 } from "../../src/shared/registry-limits.js";
 
 let pass = 0, fail = 0;
@@ -44,6 +48,64 @@ ok(REGISTRY_CREATE_MAX_BYTES < REGISTRY_CLAIM_MAX_BYTES,
   "creating a NEW rule must earn less headroom than claiming an already-running one");
 ok(REGISTRY_CLAIM_MAX_BYTES < 240 * 1024,
   "both byte ceilings must stay under the 240KiB KVS value limit");
+ok(REGISTRY_UPDATE_MAX_BYTES < 240 * 1024 && REGISTRY_UPDATE_MAX_BYTES > REGISTRY_CLAIM_MAX_BYTES,
+  "the update ceiling sits between the claim ceiling and the hard cap (edits get the most headroom, but still stop before corruption)");
+ok(REGISTRY_FUNCTIONS_OFFLOAD_BYTES < 24576,
+  "the registry-copy PF offload threshold is far below the workflow-config offload (it's a storage saving, not a runtime change)");
+
+// ---- 1b. registrySerializedBytes measures UTF-8 BYTES, not UTF-16 code units ------
+// The 240KiB Forge ceiling is bytes. JSON.stringify(x).length counts code units,
+// which under-reports non-ASCII — a guard on .length can pass a write the platform
+// refuses. A row of multi-byte characters must cost MORE bytes than string length.
+{
+  const greek = [{ id: "g", prompt: "μμμμμμμμμμ" }]; // 10 chars, 2 bytes each in the value
+  const bytes = registrySerializedBytes(greek);
+  const codeUnits = JSON.stringify(greek).length;
+  ok(bytes > codeUnits, `UTF-8 bytes (${bytes}) must exceed UTF-16 length (${codeUnits}) for multi-byte content`);
+  ok(registrySerializedBytes(null) >= 0, "byte counter tolerates null without throwing");
+  const circ = {}; circ.self = circ;
+  ok(registrySerializedBytes([circ]) === 0, "byte counter never throws on unserialisable input");
+  // The meter now measures in bytes too.
+  ok(registryPressure(greek).bytes === bytes, "registryPressure's byte count uses the UTF-8 counter");
+}
+
+// ---- 1c. slimRegistryRow: drop empties/defaults, epoch timestamps, no siteUrl -----
+{
+  const fat = {
+    id: "x", type: "validator", fieldId: "", prompt: "hi", ruleKind: "ai",
+    disabled: false, discovered: false, selectedDocIds: [],
+    createdAt: "2026-04-13T17:28:48.846Z", updatedAt: "2026-04-13T17:28:48.846Z",
+    workflow: { workflowName: "W", transitionId: "11", siteUrl: "https://x.atlassian.net", transitionFromName: "" },
+    createdBy: "acct-1",
+  };
+  const slim = slimRegistryRow(fat);
+  ok(!("fieldId" in slim), "empty-string fields are dropped");
+  ok(!("ruleKind" in slim), "ruleKind:ai (the default) is dropped");
+  ok(!("disabled" in slim) && !("discovered" in slim), "false flags are dropped");
+  ok(!("selectedDocIds" in slim), "empty arrays are dropped");
+  ok(typeof slim.createdAt === "number" && slim.createdAt === Date.parse(fat.createdAt), "timestamps become epoch-ms");
+  ok(!("siteUrl" in slim.workflow), "workflow.siteUrl is dropped (identical on every row)");
+  ok(!("transitionFromName" in slim.workflow), "empty workflow sub-fields are dropped");
+  ok(slim.id === "x" && slim.type === "validator" && slim.prompt === "hi" && slim.createdBy === "acct-1",
+    "load-bearing fields survive");
+  ok(registrySerializedBytes([slim]) < registrySerializedBytes([fat]), "the slim row is smaller");
+
+  // Idempotent — slimming a slim row changes nothing.
+  ok(JSON.stringify(slimRegistryRow(slim)) === JSON.stringify(slim), "slimRegistryRow is idempotent");
+
+  // functions:[] survives ONLY next to a codeRef (there it is the offload signal).
+  const offloaded = slimRegistryRow({ id: "y", type: "postfunction-static", functions: [], codeRef: "pf_code:y:abc" });
+  ok(Array.isArray(offloaded.functions) && offloaded.functions.length === 0, "functions:[] is kept when codeRef is present");
+  const noCode = slimRegistryRow({ id: "z", type: "validator", functions: [] });
+  ok(!("functions" in noCode), "functions:[] is dropped when there is no codeRef");
+
+  // The ownership invariant is enforced on EVERY write, not just the one-shot repair:
+  // a discovered row's createdBy is moved to claimedBy and nulled (then dropped as a
+  // null value), so authorship can never re-attach even after a racing clobber.
+  const claimed = slimRegistryRow({ id: "d", type: "validator", discovered: true, createdBy: "admin-who-clicked" });
+  ok(!claimed.createdBy && claimed.claimedBy === "admin-who-clicked",
+    "a discovered row can never carry authorship — claim is moved to claimedBy at write time");
+}
 // The message has to name the escape route, because for a long time it named one
 // that did not exist ("remove unused rules from the admin panel" — there was no
 // remove control).
@@ -120,6 +182,24 @@ ok(REGISTRY_FULL_MESSAGE.includes(String(REGISTRY_MAX_ROWS)),
 
   const literalBytes = src.match(/JSON\.stringify\(\s*(?:configs|pre)\s*\)\.length\s*>\s*\d+/g) || [];
   ok(literalBytes.length === 0, `no registry guard may hardcode a byte ceiling — found: ${literalBytes.join(", ")}`);
+
+  // Byte guards must measure UTF-8 bytes (registrySerializedBytes), not .length —
+  // the whole point of 1b. A lingering JSON.stringify(configs).length > CONST guard
+  // would under-measure non-ASCII and pass a write the platform refuses.
+  const charLenGuards = src.match(/JSON\.stringify\(\s*(?:configs|pre|predicted)\s*\)\.length\s*>\s*REGISTRY_/g) || [];
+  ok(charLenGuards.length === 0, `registry byte guards must use registrySerializedBytes, not .length — found: ${charLenGuards.join(", ")}`);
+  ok(/registrySerializedBytes/.test(src), "index.js uses the shared UTF-8 byte counter for registry size guards");
+
+  // The UPDATE branches were entirely unguarded (both create checks gate on the row
+  // being NEW). An edit could grow a row from the refusal line to the ceiling. Both
+  // register* resolvers must now reference the update ceiling.
+  ok((src.match(/REGISTRY_UPDATE_MAX_BYTES/g) || []).length >= 2,
+    "both registerConfig and registerPostFunction update branches must guard growth against REGISTRY_UPDATE_MAX_BYTES");
+
+  // saveRegistry must slim on the way in — the single choke point that converges the
+  // stored shape without a per-row migration sweep.
+  ok(/const saveRegistry\s*=\s*async[^;]*slimRegistryRow/s.test(src) || /saveRegistry[\s\S]{0,200}map\(slimRegistryRow\)/.test(src),
+    "saveRegistry slims every row on write");
 
   // commitImportCore had NO cap check at all: at the cap it attached a live workflow
   // rule and then failed to register it, manufacturing an unmanageable rule. The

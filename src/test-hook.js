@@ -114,6 +114,29 @@ export async function testStateTrigger(req) {
         return json(500, { error: String((e && e.message) || e) });
       }
     }
+    // Invoke a read-only resolver through the REAL dispatcher (resolver.getDefinitions()
+    // → exported `handler`), not through an extracted core: the point is to exercise the
+    // resolver body's own wiring — filter args, context construction, sanitizeObject —
+    // which unit tests of the pure pieces cannot reach. getConfigs also carries the
+    // one-shot ownership/slim migrations, so this is how the harness fires and then
+    // verifies them on live data. Allowlisted read-only keys ONLY: this must never
+    // become a generic invoke-anything bridge.
+    if (body.action === "invokeResolver") {
+      const READ_ONLY_KEYS = new Set(["getConfigs", "getKnowledgeCounts"]);
+      if (!READ_ONLY_KEYS.has(body.functionKey)) {
+        return json(400, { error: `functionKey not allowlisted: ${body.functionKey}` });
+      }
+      try {
+        const { handler } = await import("./index.js");
+        const r = await handler(
+          { call: { functionKey: body.functionKey, payload: body.payload || {} }, context: {} },
+          { principal: body.accountId ? { accountId: body.accountId } : undefined },
+        );
+        return json(200, r);
+      } catch (e) {
+        return json(500, { error: String((e && e.message) || e) });
+      }
+    }
     if (body.action === "removeRules") {
       try {
         const { removeRegistryRowsCore } = await import("./index.js");

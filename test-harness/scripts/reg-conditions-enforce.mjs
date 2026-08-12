@@ -19,7 +19,9 @@
 // (non-AI) rule types, driven by the saved config — which arrives under `config`.
 //
 // Covers every deterministic rule type the manifest expression implements, in both
-// directions, plus the two invariants that keep this safe:
+// directions — including parent-status-is on a REAL sub-task fixture (both
+// directions), not just the no-parent allow case — plus the two invariants that
+// keep this safe:
 //   - a legacy / AI-shaped condition must stay ALLOWED (default-true; upgrading must
 //     never start hiding transitions that used to be visible)
 //   - a null field value must stay ALLOWED (emptiness is the required-rule's job —
@@ -27,7 +29,7 @@
 //
 // Run: node scripts/reg-conditions-enforce.mjs
 
-import { getTransitions, doTransition, searchJql, getIssue, get, put, getMyself } from "../lib/jira.mjs";
+import { getTransitions, doTransition, searchJql, getIssue, get, put, post, getMyself } from "../lib/jira.mjs";
 import { readWorkflow, updateWorkflow, makeSelfLoop, buildRule, attachRuleToTransition, removeTransitionsByName } from "../lib/workflow.mjs";
 import { loadState } from "../lib/state.mjs";
 
@@ -44,8 +46,18 @@ const CASES = [
     config: { type: "condition", fieldId: "summary", prompt: "some AI prompt" } },
   { name: "REGC-unknowntype", allow: true, why: "an unrecognised ruleType must fall through to allow",
     config: { conditionKind: "deterministic", ruleType: "not-a-real-rule", fieldId: "summary" } },
-  { name: "REGC-fieldtype-pending", allow: true, why: "a field-based type (not implemented in the expression) must ALLOW, never hide",
+  // The three WITHDRAWN field-based types must each fail OPEN (allow), never closed.
+  // This is the whole reason they're withdrawn: the expression can't safely index
+  // `issue` by a REST field id (system-field name mismatch + typed values → an
+  // unresolvable expression is FALSE = hides the transition). The expression doesn't
+  // implement them, so they must fall through its default-true. Proving all three
+  // ALLOW is what makes "withdrawn" a guarantee rather than a hope.
+  { name: "REGC-fieldtype-hasvalue", allow: true, why: "withdrawn field-has-value must ALLOW, never hide",
     config: { conditionKind: "deterministic", ruleType: "field-has-value", fieldId: ABSENT_FIELD } },
+  { name: "REGC-fieldtype-empty", allow: true, why: "withdrawn field-empty must ALLOW, never hide",
+    config: { conditionKind: "deterministic", ruleType: "field-empty", fieldId: ABSENT_FIELD } },
+  { name: "REGC-fieldtype-equals", allow: true, why: "withdrawn field-equals must ALLOW, never hide",
+    config: { conditionKind: "deterministic", ruleType: "field-equals", fieldId: "duedate", value: "2020-01-01" } },
   // The disabled flag has to reach Jira somehow — the expression can't read app
   // storage, so disableRule writes it into the workflow rule's embedded config.
   { name: "REGC-disabled-allows", allow: true, why: "a rule marked disabled in its embedded config must ALLOW",
@@ -73,8 +85,18 @@ const CASES = [
   { name: "REGC-prio-no", allow: false, why: "priority-is BLOCKS on a different priority",
     config: { conditionKind: "deterministic", ruleType: "priority-is", priorityName: "Highest" } },
 
-  // --- parent-status-is (top-level issue -> allowed, per the catalog's contract) --
+  // --- parent-status-is --------------------------------------------------------
+  // Three fixtures: a top-level issue (no parent -> allowed, per the catalog's
+  // contract), and a REAL sub-task in both directions. The sub-task cases are what
+  // prove `issue.parent.status?.name` actually resolves in the expression — the
+  // no-parent case alone is satisfiable by an expression that never reads parent.
   { name: "REGC-parent-none", allow: true, why: "parent-status-is allows a top-level issue (no parent)",
+    config: { conditionKind: "deterministic", ruleType: "parent-status-is", statusName: "Done" } },
+  { name: "REGC-parent-yes", allow: true, evalOn: "subtask",
+    why: "parent-status-is allows a sub-task whose parent IS in the named status",
+    config: { conditionKind: "deterministic", ruleType: "parent-status-is", statusName: "PARENT_STATUS" } },
+  { name: "REGC-parent-no", allow: false, evalOn: "subtask",
+    why: "parent-status-is BLOCKS a sub-task whose parent is NOT in the named status",
     config: { conditionKind: "deterministic", ruleType: "parent-status-is", statusName: "Done" } },
 
   // --- acting-user rules. BOTH directions matter: an expression that dropped the
@@ -100,6 +122,34 @@ async function main() {
   if (!issues.length) { console.error("no harness issue parked on the hub status"); process.exit(2); }
   const KEY = issues[0].key;
   const summary = (await getIssue(KEY, ["summary"])).fields.summary;
+
+  // --- sub-task fixture for parent-status-is -------------------------------------
+  // One reusable sub-task (bounded pool of exactly one, found by label) whose
+  // parent is the parked issue — which the JQL above just proved is in "Backlog",
+  // so the positive case's status name is known, not assumed.
+  const parentStatusName = s.hubStatusName || "Backlog";
+  for (const c of CASES) {
+    if (c.config?.statusName === "PARENT_STATUS") c.config.statusName = parentStatusName;
+  }
+  const subType = (s.issueTypes || []).find((t) => t.subtask === true);
+  if (!subType) { console.error("project has no sub-task issue type — parent-status-is stays unproven"); process.exit(2); }
+  let SUBKEY;
+  const subs = await searchJql(`parent = ${KEY} AND labels = cogtest-sub-fixture`, ["summary", "status"], 1);
+  if (subs.length) {
+    SUBKEY = subs[0].key;
+  } else {
+    const created = await post("/rest/api/3/issue", {
+      fields: {
+        project: { key: s.projectKey || "COGTEST" },
+        issuetype: { id: subType.id },
+        parent: { key: KEY },
+        summary: "REGC parent-status fixture (reused; do not delete)",
+        labels: ["cogtest-harness", "cogtest-sub-fixture"],
+      },
+    });
+    SUBKEY = created.key;
+    console.log(`created sub-task fixture ${SUBKEY} under ${KEY}`);
+  }
 
   // The acting-user rules need BOTH directions, and the negative one has to be a
   // DIFFERENT accountId — not merely an unassigned issue. An expression that
@@ -148,6 +198,7 @@ async function main() {
 
   for (const c of cases) {
     if (c.assignTo) continue; // handled below, after the assignee swap
+    if (c.evalOn === "subtask") continue; // evaluated on the sub-task fixture below
     const visible = listed.has(String(c.id));
     const rest = await doTransition(KEY, String(c.id));
     const restAllowed = rest.status < 400;
@@ -155,6 +206,36 @@ async function main() {
     // REST through would be exactly the governance hole F3 claimed existed.
     ok(visible === c.allow, `${c.name}: listed=${visible}, expected ${c.allow} — ${c.why}`);
     ok(restAllowed === c.allow, `${c.name}: REST=${rest.status}, expected ${c.allow ? "allowed" : "blocked"} — conditions must be enforced over REST too`);
+  }
+
+  // --- the sub-task cases, evaluated ON the sub-task -----------------------------
+  {
+    const subCases = cases.filter((c) => c.evalOn === "subtask");
+    const subStatus = (await getIssue(SUBKEY, ["status"])).fields.status?.name;
+    if (subStatus !== (s.hubStatusName || "Backlog")) {
+      // The sub-task must sit on the hub status to see the injected self-loops. If it
+      // drifted (a crashed earlier run), this is a loud setup failure — never a pass.
+      console.error(`sub-task fixture ${SUBKEY} is in "${subStatus}", not the hub status — reset it first`);
+      fail += subCases.length;
+    } else {
+      const subListed = new Set(((await getTransitions(SUBKEY)).transitions || []).map((t) => String(t.id)));
+      // The injected ids must be visible AT ALL to the sub-task: sub-tasks must share
+      // the harness workflow for this proof to mean anything. The allow-case id being
+      // absent is indistinguishable from "different workflow", so check explicitly
+      // against a case that must be VISIBLE.
+      const allowCase = subCases.find((c) => c.allow);
+      if (allowCase && !subListed.has(String(allowCase.id))) {
+        console.error(`sub-task ${SUBKEY} does not see transition ${allowCase.id} — sub-tasks may use a different workflow in this scheme; parent-status-is stays unproven`);
+        fail += subCases.length;
+      } else {
+        for (const c of subCases) {
+          const visible = subListed.has(String(c.id));
+          const rest = await doTransition(SUBKEY, String(c.id));
+          ok(visible === c.allow, `${c.name}: listed=${visible} on ${SUBKEY}, expected ${c.allow} — ${c.why}`);
+          ok((rest.status < 400) === c.allow, `${c.name}: REST=${rest.status} on ${SUBKEY}, expected ${c.allow ? "allowed" : "blocked"}`);
+        }
+      }
+    }
   }
 
   // Re-evaluate the acting-user negative with the issue assigned to someone else.

@@ -2863,6 +2863,14 @@ let currentExistingRuleId = null;
 // rule that same fallback would hijack a sibling's row (rename its id to our
 // fresh instanced id, stranding the sibling's disable state).
 let currentIsLegacyEdit = false;
+// Preserve a condition's disabled flag across a workflow-editor re-save. A
+// condition carries its disabled state INSIDE its embedded config (the Jira
+// expression can't read app storage — see manifest.yml + propagateDisabledToWorkflow).
+// onConfigure rebuilds the config from scratch, so without carrying this forward
+// an edit of a disabled condition would silently RE-ARM it in Jira while the admin
+// panel still shows Disabled — the exact "control that reports success and does
+// nothing" this product must never ship.
+let currentEmbeddedDisabled = false;
 // Premade (non-AI) rule refs — onConfigure reads these to assemble a premade config.
 let currentRuleKind = "ai"; // "ai" | "premade"
 let currentPremadeConfig = {}; // { ruleType, ...params } produced by PremadeRuleForm
@@ -3125,6 +3133,8 @@ function App() {
             // fresh Date.now() id every save and orphan the previous registry entry.
             if (config.id) currentExistingRuleId = config.id;
             else currentIsLegacyEdit = true; // existing rule, pre-id-embedding build
+            // Carry a disabled flag through the edit — dropping it re-arms the rule.
+            currentEmbeddedDisabled = config.disabled === true;
 
             // Safety: declarative action types created in the admin panel (generate-doc /
             // research / comment) reuse the semantic module but aren't editable here yet.
@@ -3297,6 +3307,10 @@ function App() {
               fieldId: currentFieldId.trim(),
               prompt: currentPrompt.trim(),
             };
+            // Carry a disabled condition's flag through the rebuild. For conditions
+            // this is load-bearing: the flag lives in the embedded config the Jira
+            // expression reads, so dropping it re-arms a rule shown as Disabled.
+            if (currentEmbeddedDisabled) config.disabled = true;
 
             // Preserve declarative action types created in the admin panel (generate-doc /
             // research / comment): config-ui doesn't render their editors yet, so re-saving
@@ -3306,6 +3320,7 @@ function App() {
               // simulationMode follows the banner toggle, not the stored value.
               if (currentSimulationMode) preserved.simulationMode = true;
               else delete preserved.simulationMode;
+              if (currentEmbeddedDisabled) preserved.disabled = true;
               return preserved;
             }
 

@@ -92,8 +92,9 @@ expression, in a sandbox with no network access. No app can call a model from on
 That is permanent, and it is not a CogniRunner limitation.
 
 **A deterministic condition works everywhere.** Conditions are back in the Add Rule
-wizard, offering ten checks — issue type, resolution, priority, parent status, and
-whether the current user is the assignee or reporter. They cost nothing per
+wizard, offering seven checks — issue type, whether the issue is resolved, its
+resolution, its priority, the parent's status, and whether the current user is the
+assignee or reporter. They cost nothing per
 transition, add no latency, cannot fail open on a provider outage, and are enforced
 on every surface: the issue view, REST, automation and bulk changes.
 

@@ -77,7 +77,7 @@ cogni-debug issue property — NOT the UI. The Jira token is in the gitignored t
 node scripts/run-transitions.mjs   (RUN_CONCURRENCY=3 default; writes results/run-results.json)
 This exercises EVERY advertised capability for the active provider:
   • validators  — naive / hardened / quality / rich-quality / PII / number-threshold / label-policy
-  • conditions  — customer-present (NOTE F3: conditions are NOT enforced on the REST path — expected miss)
+  • conditions  — deterministic, enforced on every surface incl. REST (F3 re-diagnosed; NOT an expected miss)
   • agentic validators (JQL tool-calling) — dup-check + release-gate (highest provider risk: tool-call
     shape differs per provider; F1 was exactly this on Forge LLM)
   • semantic PFs — text / select / number / date / mismatch / off-screen / simulation
@@ -89,7 +89,8 @@ This exercises EVERY advertised capability for the active provider:
   • policy/PII   — block PII, allow clean
   • injection (~710) + robustness (decoration / homoglyph / RTL / zero-width)
 Report per-study scores. BASELINE to beat (no regression): ~766–770/782. Expected misses only:
-F3 condition, the agentic GATE-STORY strictness, and the injection-embedded-in-a-real-task nuance.
+the agentic GATE-STORY strictness and the injection-embedded-in-a-real-task nuance. (Conditions are
+no longer an expected miss — F3 was re-diagnosed; they enforce on the REST path.)
 Any NEW failure class -> investigate; if it implicates validator framing, STOP + flag (danger zone),
 do not auto-fix.
 

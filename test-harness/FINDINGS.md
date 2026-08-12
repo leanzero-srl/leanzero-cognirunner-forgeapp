@@ -242,21 +242,61 @@ not evaluate Forge conditions. There is nothing in the app to change."
 The "REST bypasses conditions" generalisation was never tested. It **could not** be tested, because
 a constant-true expression passes everywhere and proves nothing.
 
-**Disproved.** `test-harness/scripts/reg-conditions-enforce.mjs` — 38/38 live. Every blocking case is
-absent from `GET /transitions` **and** rejected by `POST /transitions` with a 4xx. **Jira enforces
-Forge conditions on the REST path.**
+**Disproved.** `test-harness/scripts/reg-conditions-enforce.mjs` — 37/37 live (incl. a real sub-task
+fixture proving `parent-status-is` in both directions). Every blocking case is absent from
+`GET /transitions` **and** rejected by `POST /transitions` with a 4xx. **Jira enforces Forge
+conditions on the REST path.**
 
 **Fixed.** The manifest expression now evaluates the deterministic rule types from the config saved
 by our own Custom UI (which reaches the expression as `config`, parsed — proved by
-`_probe-condition-config.mjs`). Ten types are expression-backed; the rest are greyed out in the
-picker because Jira's expression sandbox can't reach related issues, attachments or group
-membership. An AI-powered condition remains **structurally impossible** — a Jira expression has no
-network, no app storage and no `await`.
+`_probe-condition-config.mjs`). SEVEN types are expression-backed (see `EXPRESSION_BACKED_CONDITIONS`
+in `src/shared/premade-rules-catalog.js`, the single source): issue-type-is, issue-is-resolved,
+resolution-is, priority-is, parent-status-is, current-user-is-assignee, current-user-is-reporter.
+The three field-based types (has-value / empty / equals) are WITHDRAWN, not shipped — they can fail
+closed on a field-name/type mismatch (see F-COND-FIELD below). Everything else is greyed out because
+Jira's expression sandbox can't reach related issues, attachments or group membership. An AI-powered
+condition remains **structurally impossible** — a Jira expression has no network, no app storage and
+no `await`.
 
 **Standing risk, now documented rather than unknown.** Per Atlassian's docs a condition module that
 cannot resolve evaluates to **false**, i.e. it BLOCKS the transition for everyone. That is why the
 expression is default-true for anything it doesn't recognise, and why removing the condition module
 is not on the table.
+
+---
+
+## F-COND-FIELD — field-based condition types WITHDRAWN (fail-closed risk) · **DELIBERATE + PROVEN BOUNDARY** · Severity MEDIUM if shipped naively
+
+**What.** Three field-based condition types — `field-has-value`, `field-empty`, `field-equals` — were
+built, then withdrawn when an adversarial review found they can fail **closed**: hide a transition on
+exactly the issues that satisfy the rule. The worst failure mode in this product (fail-open is the law
+everywhere else).
+
+**Why they're unsafe today (evidence, not assumption):**
+- **System-field name mismatch.** A Jira expression names system fields differently from the REST
+  field ids our picker produces: the expression accessor is `issue.dueDate` (camelCase), the REST id
+  is `duedate`; `issue.issueType` vs `issuetype`; `issue.attachments` vs `attachment`. Indexing
+  `issue[config.fieldId]` with the REST id reads `null` → a has-value check is FALSE → the transition
+  is hidden on issues that DO have the value. (Atlassian's own Jira-expressions docs confirm the
+  camelCase accessors.)
+- **Typed values.** Field values are typed. Probing `.length` on a Number, or comparing a select
+  field's `{value:"X"}` object to the string `"X"`, is an evaluation error; an unresolvable expression
+  is FALSE — fail-closed again.
+
+**What a safe ship would require** (tracked, not done here — confidence to do it correctly in one pass
+is LOW and the failure mode is fail-closed, so it is NOT shipped): a verified REST-id → expression-
+accessor map for every system field; a restriction of `field-has-value`/`field-empty` to CUSTOM
+fields only (where the REST id `customfield_NNNNN` IS the expression accessor and a strict `== null`
+comparison is type-agnostic); type-aware comparison for `field-equals` per field type; each proved
+live per field type before un-greying.
+
+**Proven boundary (this is what makes "withdrawn" a guarantee):**
+- `src/shared/premade-rules-catalog.js` — `CONDITION_FIELD_TYPES_PENDING` lists the three; the manifest
+  expression implements NONE of them, so they hit its default-true.
+- The picker greys them in the dropdown itself (`PremadeRuleForm.jsx` annotates condition options), so
+  a customer never selects one that silently won't gate.
+- `reg-conditions-enforce.mjs` asserts all three ALLOW (fail-OPEN), both `GET /transitions` and
+  `POST /transitions` — a regression that made any of them hide a transition fails the F3 guard.
 
 ---
 

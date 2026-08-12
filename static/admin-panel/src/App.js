@@ -4950,8 +4950,10 @@ const TABS = [
 const SURFACES = {
   // One glossary chip per rule type the table can show. The banner names all three,
   // so all three need an explanation — it previously defined only "post-function".
-  // The condition wording is kept word-for-word in step with the callout in
-  // config-ui's App.js so the two surfaces can never tell different stories.
+  // The condition chip must stay consistent in SUBSTANCE with config-ui's condition
+  // callout (App.js ~3617): both say Jira evaluates conditions itself, so they use
+  // the non-AI rule types only. The phrasings differ (this is a one-line chip, that
+  // is a full callout) — keep the claim aligned, not the words.
   rules: { eyebrow: "RULES", what: "Every AI validator, condition, and post-function you've configured, across all workflows — toggle, edit, delete, or explain any rule from here.",
     terms: [
       { label: "validator", def: "A rule that runs when someone tries to complete a transition. It can block the transition and show your message. Validators are enforced everywhere — the issue view, REST, automation and bulk changes." },
@@ -5998,7 +6000,9 @@ function App() {
                     <li>
                       A rule attached this way <strong>runs immediately, but is invisible here</strong> until you
                       claim it — come back and use <strong>Scan workflows → Register all</strong> above, or you
-                      won't be able to disable it or see its execution history.
+                      won't be able to disable it. For validators and post-functions, claiming also surfaces their
+                      execution history; a condition is evaluated by Jira itself, so it has no execution history to
+                      show — claiming a condition is purely about being able to manage and disable it.
                     </li>
                     <li>
                       Put a stable <code className="field-id">id</code> inside the rule's{" "}

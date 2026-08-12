@@ -285,11 +285,19 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
           onChange={onRuleType}
           searchable
           placeholder="Choose a premade rule…"
-          options={catalog.map((r) => ({
-            value: r.key,
-            label: r.label,
-            meta: r.availability === "unavailable" ? "Use a Jira built-in" : undefined,
-          }))}
+          options={catalog.map((r) => {
+            // Tell the story IN the dropdown, not only after selection. For a
+            // condition, any type the manifest expression can't evaluate — the
+            // withdrawn field-based trio, or anything needing related-issue /
+            // attachment / group data — is annotated as unavailable right here,
+            // so the picker never presents an option that silently won't save.
+            let meta = r.availability === "unavailable" ? "Use a Jira built-in" : undefined;
+            if (mode === "condition") {
+              if (CONDITION_FIELD_TYPES_PENDING.includes(r.key)) meta = "Not yet — use a validator";
+              else if (!EXPRESSION_BACKED_CONDITIONS.includes(r.key)) meta = "Not available as a condition";
+            }
+            return { value: r.key, label: r.label, meta };
+          })}
         />
         {rule && !unavailable && <p className="hint">{rule.help}</p>}
       </div>

@@ -71,26 +71,61 @@ validate(args) is called by Forge
 
 ### What It Does
 
-A CogniRunner condition controls **visibility** of a transition. If the AI determines the criteria isn't met, the transition button is **hidden** — the user cannot see or click it. Unlike validators, there's no error message.
+A CogniRunner condition **hides** a transition unless the issue qualifies. The user cannot see or
+click it, and there is no error message — that is a validator's job.
+
+### Conditions never use AI — and never can
+
+Jira does not call the app to evaluate a condition. It evaluates a **Jira expression** in its own
+sandbox: no network access, no app storage, no `await`. An AI-powered condition is therefore
+impossible on the Forge platform, permanently, for any vendor.
+
+The upside is real: a condition costs **nothing** per transition, adds no latency, and cannot fail
+open on a provider outage.
 
 ### Configuration
 
-Identical to validators (same field selector, prompt, JQL toggle). The only difference is behavioral: conditions hide the button, validators show an error.
+Pick a check from the catalog and fill in its parameters. There is no prompt. Ten checks are
+supported:
+
+| Check | Parameters |
+|---|---|
+| Field has a value / Field is empty | field |
+| Field equals a value | field, value |
+| Issue type is… | issue type |
+| Issue is resolved / Resolution is… | (resolution) |
+| Priority is… | priority |
+| Parent issue status is… | status (top-level issues always pass) |
+| Current user is the assignee / reporter | — |
+
+Checks that need related issues, attachments or group membership are greyed out: Jira's expression
+sandbox cannot reach them. Use a validator for those.
+
+> Note the last two. `current-user-is-assignee` / `-is-reporter` are marked *unavailable* for
+> validators, because Forge does not pass the acting user to a validator function. A Jira expression
+> **does** get the `user` binding — so those two work as conditions and only as conditions.
+
+### Where a condition is enforced
+
+Everywhere: the issue-view transition menu, REST, automation and bulk changes. A hidden transition
+is rejected with a 4xx if something tries to fire it anyway.
+
+*(An earlier version of this document, and harness finding F3, claimed conditions were "advisory UI
+gating" that REST bypassed. That was wrong — see F3 in test-harness/FINDINGS.md. The app's own
+manifest shipped a constant `expression: "true"`, so conditions passed everywhere and nothing was
+ever really tested.)*
 
 ### When to Use Conditions vs Validators
 
 | Scenario | Use |
 |----------|-----|
-| "Only managers should see the Approve transition" | Condition |
+| "Hide Approve unless the current user is the assignee" | Condition |
+| "Hide Start Work until the issue has a fix version" | Condition |
 | "Description must have acceptance criteria before moving to In Review" | Validator |
-| "Hide the Done transition until all subtasks are resolved" | Condition |
 | "The summary must not contain profanity" | Validator |
 
-**Rule of thumb:** If the user shouldn't even try → condition. If the user can try but should get feedback → validator.
-
-### Performance Note
-
-Conditions are evaluated **every time the issue is viewed** (to determine button visibility). Slow conditions delay issue rendering. Keep prompts simple for conditions — save complex agentic searches for validators.
+**Rule of thumb:** deterministic and the user shouldn't even try → condition. Needs judgement about
+free text, or the user deserves an explanation → validator.
 
 ---
 

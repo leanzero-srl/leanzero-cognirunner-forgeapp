@@ -53,7 +53,7 @@ don't echo the id).
 baseline), **0 AI errors across all 782 cases** (the Converse + `parseAIJson` path is solid). Misses
 (18): injection 16 (11 = the injection-embedded-in-a-real-task nuance, ~5 = V-hardened injection
 judgment variance), robustness 1 (over-cautious on a whitespace+instruction field — blocked vs allow),
-condition 1 (**F3** — conditions not enforced on the REST path). No new failure class.
+condition 1 (**F3** — at the time believed to be "conditions not enforced on the REST path"; RE-DIAGNOSED 2026-08-12, see F3). No new failure class.
 
 | Provider · Model | Total | agentic (JQL tool-calling) | robustness | injection | other studies | AI errors |
 |---|---|---|---|---|---|---|
@@ -214,13 +214,49 @@ Quantitative results: `REPORT.md` (snapshot) / `results/report.{md,html}`. Raw: 
 
 ---
 
-## F3 — Forge conditions are not enforced on the REST transition path · **OPEN (platform behavior)** · Severity MEDIUM
+## F3 — ~~Forge conditions are not enforced on the REST transition path~~ · **RE-DIAGNOSED + FIXED (2026-08-12)** · was Severity MEDIUM
 
-**What.** Conditions gate transition visibility in the UI, but REST-driven transitions bypass them. Both a customer-matching and a non-matching issue showed the condition transition as available, and firing it returned 204 for both; the `ai-text-field-condition` lambda was invoked **0 times** during the run (validators, by contrast, are enforced via REST).
+> ⚠️ **F3's original diagnosis was WRONG, and the wrong conclusion propagated.** The observations
+> were real; the explanation was not. Anything elsewhere in this repo citing "conditions gate UI
+> visibility, not REST" inherits the error — treat this entry as the correction.
 
-**Why it's not a code fix.** This is Jira platform behavior — `GET`/`POST /issue/{key}/transitions` does not evaluate Forge conditions. There is nothing in the app to change.
+**What was observed.** A matching and a non-matching issue both showed the condition's transition as
+available; firing it returned 204 for both; the `ai-text-field-condition` lambda was invoked **0
+times**.
 
-**Proposed action.** Document prominently that CogniRunner **conditions are advisory UI gating, not a governance control** — automation rules, bulk operations, and REST/integrations bypass them. For hard enforcement, use a **validator** (enforced on every path). Optionally offer an "also enforce as a validator" toggle that mirrors a condition's prompt.
+**What was concluded (wrong).** "Jira platform behavior — `GET`/`POST /issue/{key}/transitions` does
+not evaluate Forge conditions. There is nothing in the app to change."
+
+**What was actually true.** Both observations were caused by `manifest.yml`, not by Jira:
+
+1. The module declared **`expression: "true"`**. A Forge condition IS a Jira expression, so ours
+   evaluated to true unconditionally, on every surface. Of course both issues passed — the condition
+   was a constant.
+2. It also declared **`function: validate`**, which is **not a property of `jira:workflowCondition`
+   at all** (checked against the schema `forge deploy` validates with: the properties are
+   name/description/expression/resolver/view/edit/create/projectTypes/key, and `expression` is
+   REQUIRED). Jira ignored that key silently. That is the entire reason the lambda ran 0 times — and
+   the reason the app's own code comments, the admin wizard and this finding all assumed a lambda
+   was involved.
+
+The "REST bypasses conditions" generalisation was never tested. It **could not** be tested, because
+a constant-true expression passes everywhere and proves nothing.
+
+**Disproved.** `test-harness/scripts/reg-conditions-enforce.mjs` — 38/38 live. Every blocking case is
+absent from `GET /transitions` **and** rejected by `POST /transitions` with a 4xx. **Jira enforces
+Forge conditions on the REST path.**
+
+**Fixed.** The manifest expression now evaluates the deterministic rule types from the config saved
+by our own Custom UI (which reaches the expression as `config`, parsed — proved by
+`_probe-condition-config.mjs`). Ten types are expression-backed; the rest are greyed out in the
+picker because Jira's expression sandbox can't reach related issues, attachments or group
+membership. An AI-powered condition remains **structurally impossible** — a Jira expression has no
+network, no app storage and no `await`.
+
+**Standing risk, now documented rather than unknown.** Per Atlassian's docs a condition module that
+cannot resolve evaluates to **false**, i.e. it BLOCKS the transition for everyone. That is why the
+expression is default-true for anything it doesn't recognise, and why removing the condition module
+is not on the table.
 
 ---
 

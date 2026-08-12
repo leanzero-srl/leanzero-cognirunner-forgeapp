@@ -501,7 +501,7 @@ Set via `forge variables set KEY value`.
 | Module | Key | Type | Purpose |
 |--------|-----|------|---------|
 | Validator | `ai-text-field-validator` | `jira:workflowValidator` | Blocks transition based on AI validation |
-| Condition | `ai-text-field-condition` | `jira:workflowCondition` | Hides transition based on AI evaluation |
+| Condition | `ai-text-field-condition` | `jira:workflowCondition` | Hides a transition unless the issue qualifies (deterministic, no AI — Jira evaluates it as a Jira expression) |
 | Semantic PF | `ai-semantic-post-function` | `jira:workflowPostFunction` | AI-powered field updates after transition |
 | Static PF | `ai-static-post-function` | `jira:workflowPostFunction` | Code execution after transition |
 | Admin Panel | `cognirunner-global-page` | `jira:globalPage` | Apps sidebar dashboard |

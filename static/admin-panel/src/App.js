@@ -458,6 +458,12 @@ const injectStyles = () => {
     .reg-meter-flag { margin-left: 8px; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 700; color: #fff; background: #dc2626; }
     .reg-meter-bar { height: 8px; background: var(--border-color); border-radius: 999px; overflow: hidden; }
     .reg-meter-hint { margin-top: 6px; font-size: 12px; line-height: 1.5; color: var(--text-secondary); }
+    .api-ari { font-size: 11px; word-break: break-all; display: inline-block; max-width: 460px; }
+    .api-info-lead { font-size: 12.5px; line-height: 1.55; color: var(--text-secondary); padding: 10px 12px; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); background: var(--code-bg); }
+    .api-info-lead strong { color: var(--text-color); font-weight: 700; }
+    .api-info-warn { margin-top: 14px; padding: 12px 14px; border: 1px solid #d97706; border-radius: var(--r-md, 8px); font-size: 12.5px; color: var(--text-secondary); }
+    .api-info-warn strong { color: var(--text-color); font-weight: 700; }
+    html[data-color-mode="dark"] .api-info-warn { border-color: #f59e0b; }
     .reg-meter-hint strong { color: var(--text-color); font-weight: 700; }
     .reg-meter-fill { height: 100%; background: #16a34a; border-radius: 999px; transition: width 0.3s ease; }
     .reg-warn .reg-meter-fill { background: #d97706; }
@@ -5078,6 +5084,49 @@ function App() {
   const [siteUrl, setSiteUrl] = useState("");
   const [discovering, setDiscovering] = useState(false);
   const [registeringDisc, setRegisteringDisc] = useState(false);
+  // REST-automation reference: this install's extension ARIs and caps. Fetched
+  // lazily on first open — most admins never need it.
+  const [apiInfo, setApiInfo] = useState(null);
+  const [apiInfoOpen, setApiInfoOpen] = useState(false);
+  const [apiInfoLoading, setApiInfoLoading] = useState(false);
+  const [apiInfoError, setApiInfoError] = useState(null);
+  const [copiedAri, setCopiedAri] = useState(null);
+
+  const fetchRuleApiInfo = async () => {
+    if (!invoke) return;
+    setApiInfoLoading(true);
+    setApiInfoError(null);
+    try {
+      const r = await invoke("getRuleApiInfo");
+      if (r && r.success) setApiInfo(r);
+      else setApiInfoError(r?.error || "Couldn't read this installation's API details.");
+    } catch (e) {
+      setApiInfoError(e.message || "Couldn't read this installation's API details.");
+    }
+    setApiInfoLoading(false);
+  };
+
+  // An ARI is long and error-prone to retype, and mistyping one produces a rule
+  // that attaches fine and never runs. Clipboard access can be denied inside the
+  // Forge iframe, so fall back to selecting the text for a manual copy rather
+  // than failing silently.
+  const copyAri = async (ari) => {
+    try {
+      await navigator.clipboard.writeText(ari);
+      setCopiedAri(ari);
+      setTimeout(() => setCopiedAri((c) => (c === ari ? null : c)), 2000);
+    } catch {
+      const el = document.querySelector(`.api-ari[data-ari="${ari}"]`) || null;
+      if (el && window.getSelection) {
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+      }
+      showToast("Couldn't reach the clipboard — the ARI is selected, press ⌘C / Ctrl+C", "error");
+    }
+  };
   // What the last "Register all" actually did, including how many it had to skip.
   const [registerOutcome, setRegisterOutcome] = useState(null);
 
@@ -5803,7 +5852,7 @@ function App() {
           {discovered === null && (
             <p style={{ margin: 0, fontSize: "13px", color: "var(--text-secondary)" }}>
               CogniRunner rules can be attached to workflows outside this panel (REST automation, imported or copied workflows, or a rule whose registration didn't complete). They run on transitions but won't show under <strong>Configured Rules</strong> until claimed. Click <strong>Scan workflows</strong> to find them.
-              {" "}Attaching rules yourself over Jira's workflow REST API is supported and documented — see <strong>docs/REST-API-RULES.md</strong>, which covers the rule shape per type and the one step people miss: a REST-attached rule runs immediately but stays unmanageable here until you register it.
+              {" "}Attaching rules yourself over Jira's REST API is supported — see <strong>Automating rule creation</strong> below for this installation's ARIs and the payload shapes.
             </p>
           )}
           {discMeta && discMeta.error && (
@@ -5881,6 +5930,107 @@ function App() {
           </>)}
         </div>
       </div>
+
+      {/* Automating rule creation. The discovered-rules panel above tells admins
+          that rules can be attached "outside this panel" — this is where that
+          sentence stops being a dead end. The one input they genuinely cannot
+          work out is the extension ARI, because the environment id inside it is
+          per-installation; the app knows it, so it hands it over rather than
+          sending them off to derive it. Collapsed by default: irrelevant to most
+          admins, indispensable to the ones provisioning in bulk. */}
+      {isAdmin && (
+        <div className="section">
+          <div className="section-header">
+            <span className="section-title">Automating rule creation</span>
+            <div className="section-actions">
+              <button
+                className={"btn-small" + (apiInfoLoading ? " is-busy" : "")}
+                onClick={() => { const next = !apiInfoOpen; setApiInfoOpen(next); if (next && !apiInfo) fetchRuleApiInfo(); }}
+                aria-expanded={apiInfoOpen}
+              >
+                {apiInfoOpen ? "Hide" : "Show REST API details"}
+              </button>
+            </div>
+          </div>
+          {apiInfoOpen && (
+            <div className="card anim-rise" style={{ padding: "14px 16px" }}>
+              <p style={{ margin: "0 0 12px", fontSize: "13px", color: "var(--text-secondary)", lineHeight: 1.55 }}>
+                CogniRunner rules are ordinary Jira workflow rules, so you can attach them with Jira's own
+                workflow REST API instead of this panel — for provisioning across many projects, migrating
+                between sites, or keeping rules in version control. Read the workflow with{" "}
+                <code className="field-id">GET /rest/api/3/workflows/search</code>, add the rule to the
+                transition, and post it all back with{" "}
+                <code className="field-id">POST /rest/api/3/workflows/update</code>.
+              </p>
+
+              {apiInfoError && <div className="alert alert-error" style={{ marginBottom: "12px" }}><span>{apiInfoError}</span></div>}
+
+              {apiInfo && (<>
+                <div className="api-info-lead">
+                  Use these values for <strong>this</strong> installation. The environment id inside each ARI
+                  is specific to it — a production and a development install have different ids and separate
+                  storage, so never copy an ARI out of an example or another site.
+                </div>
+                <table className="table" style={{ marginTop: "10px" }}>
+                  <thead>
+                    <tr><th>Rule type</th><th>ruleKey</th><th>Goes in</th><th>parameters.key (ARI)</th><th></th></tr>
+                  </thead>
+                  <tbody>
+                    {apiInfo.modules.map((m) => (
+                      <tr key={m.ari}>
+                        <td style={{ fontWeight: 600 }}>{m.label}</td>
+                        <td><code className="field-id">{m.ruleKey}</code></td>
+                        <td style={{ fontSize: "12px", color: "var(--text-secondary)" }}>{m.slot}</td>
+                        <td><code className="api-ari" data-ari={m.ari}>{m.ari}</code></td>
+                        <td>
+                          <button className="btn-small" onClick={() => copyAri(m.ari)}>
+                            {copiedAri === m.ari ? "Copied" : "Copy"}
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+
+                <div className="api-info-warn">
+                  <strong>Two things that catch people out.</strong>
+                  <ol style={{ margin: "6px 0 0", paddingLeft: "18px", lineHeight: 1.6 }}>
+                    <li>
+                      A rule attached this way <strong>runs immediately, but is invisible here</strong> until you
+                      claim it — come back and use <strong>Scan workflows → Register all</strong> above, or you
+                      won't be able to disable it or see its execution history.
+                    </li>
+                    <li>
+                      Put a stable <code className="field-id">id</code> inside the rule's{" "}
+                      <code className="field-id">config</code> (e.g. <code className="field-id">acme-dod-check-v1</code>).
+                      It is optional to Jira and essential here: without it a rule can be claimed and{" "}
+                      <strong>still never be disabled</strong>, because that embedded id is the identity the
+                      runtime matches on. A stable value also makes re-running your script update the rule
+                      instead of creating a second one.
+                    </li>
+                  </ol>
+                </div>
+
+                <p style={{ margin: "12px 0 0", fontSize: "12px", color: "var(--text-secondary)", lineHeight: 1.55 }}>
+                  Limits: a rule's <code className="field-id">config</code> must stay under{" "}
+                  <strong>{Math.round(apiInfo.limits.maxRuleConfigBytes / 1024)} KB</strong> (Jira's cap), and this
+                  panel manages up to <strong>{apiInfo.limits.maxRegistryRows}</strong> rules —
+                  see the meter below. Rules beyond that still run; they just can't be managed here.
+                </p>
+                <p style={{ margin: "8px 0 0", fontSize: "12px" }}>
+                  <a href={apiInfo.docsUrl} target="_blank" rel="noopener noreferrer">
+                    Full guide: payload shapes, the config schema per rule type, and a worked example →
+                  </a>
+                </p>
+              </>)}
+
+              {!apiInfo && !apiInfoError && (
+                <div><div className="sk sk-text" style={{ width: "60%", height: 12, marginBottom: 8 }} /><div className="sk sk-block" style={{ width: "100%", height: 70 }} /></div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="section">
         <div className="section-header">

@@ -2471,3 +2471,11 @@ html[data-color-mode="dark"] .reg-meter-flag { background: #ef4444; }
 
 .reg-meter-hint { margin-top: 6px; font-size: 12px; line-height: 1.5; color: var(--text-secondary); }
 .reg-meter-hint strong { color: var(--text-color); font-weight: 700; }
+
+/* REST-automation reference panel (mirrors injectStyles). */
+.api-ari { font-size: 11px; word-break: break-all; display: inline-block; max-width: 460px; }
+.api-info-lead { font-size: 12.5px; line-height: 1.55; color: var(--text-secondary); padding: 10px 12px; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); background: var(--code-bg); }
+.api-info-lead strong { color: var(--text-color); font-weight: 700; }
+.api-info-warn { margin-top: 14px; padding: 12px 14px; border: 1px solid #d97706; border-radius: var(--r-md, 8px); font-size: 12.5px; color: var(--text-secondary); }
+.api-info-warn strong { color: var(--text-color); font-weight: 700; }
+html[data-color-mode="dark"] .api-info-warn { border-color: #f59e0b; }

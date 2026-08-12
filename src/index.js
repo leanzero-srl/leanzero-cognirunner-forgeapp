@@ -2784,6 +2784,61 @@ const discoverEnvironmentId = async () => {
 };
 
 /**
+ * Everything you need to attach a rule to a workflow yourself, over Jira's REST
+ * API, WITHOUT having to work any of it out.
+ *
+ * The one genuinely hard input is the extension ARI, because the environment id
+ * inside it is specific to THIS installation — production and development differ
+ * and have separate storage, so it cannot be documented as a constant and must not
+ * be copied out of an example. The app knows its own, so it should just hand it
+ * over rather than making an admin go and derive it from
+ * /rest/api/3/workflows/capabilities.
+ *
+ * Admin-gated: an extension ARI is not a secret (it is visible on every attached
+ * rule in the workflow XML), but this is an administrative surface and everything
+ * else on it is gated too.
+ */
+resolver.define("getRuleApiInfo", async ({ context }) => {
+  if (!(await requireAdmin(context.accountId))) {
+    return { success: false, error: "Admin access required" };
+  }
+  try {
+    let envId = null;
+    try {
+      envId = getAppContext()?.environmentAri?.environmentId || null;
+    } catch (e) {
+      console.log("getAppContext unavailable:", e?.message);
+    }
+    // Fallback for older runtimes: read the id back off any rule already attached.
+    if (!envId) envId = await discoverEnvironmentId();
+    if (!envId) {
+      return { success: false, error: "Couldn't determine this installation's environment id. Attach one rule from the workflow editor first, then reopen this panel." };
+    }
+    const ari = (moduleKey) => `ari:cloud:ecosystem::extension/${APP_ID}/${envId}/static/${moduleKey}`;
+    return {
+      success: true,
+      appId: APP_ID,
+      environmentId: envId,
+      modules: [
+        { label: "Validator", ruleKey: RULE_KEY_MAP.validator.ruleKey, slot: "validators[]", ari: ari(RULE_KEY_MAP.validator.moduleKey) },
+        { label: "Condition", ruleKey: RULE_KEY_MAP.condition.ruleKey, slot: "conditions tree", ari: ari(RULE_KEY_MAP.condition.moduleKey) },
+        { label: "Semantic post-function", ruleKey: RULE_KEY_MAP["postfunction-semantic"].ruleKey, slot: "actions[]", ari: ari(RULE_KEY_MAP["postfunction-semantic"].moduleKey) },
+        { label: "Static post-function", ruleKey: RULE_KEY_MAP["postfunction-static"].ruleKey, slot: "actions[]", ari: ari(RULE_KEY_MAP["postfunction-static"].moduleKey) },
+      ],
+      limits: {
+        maxRuleConfigBytes: WORKFLOW_CONFIG_MAX_BYTES,
+        maxRegistryRows: REGISTRY_MAX_ROWS,
+        registryRefuseAtBytes: REGISTRY_CREATE_MAX_BYTES,
+      },
+      docsUrl: "https://github.com/leanzero-srl/leanzero-cognirunner-forgeapp/blob/main/docs/REST-API-RULES.md",
+    };
+  } catch (error) {
+    console.error("getRuleApiInfo failed:", error);
+    return { success: false, error: error.message };
+  }
+});
+
+/**
  * Build the POST /rest/api/3/workflows/update body for a workflow we just read
  * from /workflows/search. SHARED by inject and detach — do not reimplement.
  *

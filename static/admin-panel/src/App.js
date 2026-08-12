@@ -29,6 +29,7 @@ import { logSourceOf, SOURCE_LABEL, FLAG_LABEL } from "../../../src/shared/log-f
 import AddRuleWizard from "./components/AddRuleWizard";
 import Tooltip from "./components/Tooltip";
 import RulePortabilityDialog from "./components/RulePortabilityDialog";
+import DeleteRulesDialog from "./components/DeleteRulesDialog";
 import { showToast } from "./components/toast";
 import { confirmDialog } from "./confirmDialog";
 
@@ -424,6 +425,50 @@ const injectStyles = () => {
     .port-target-lbl { display: block; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-secondary); margin-bottom: 6px; }
     .port-target-picks { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
     .port-commit-note { margin-top: 14px; padding: 10px 12px; background: var(--code-bg); border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); font-size: 12px; color: var(--text-secondary); line-height: 1.5; }
+
+    /* --- Rule deletion + registry pressure ------------------------------- */
+    .rule-select-th { width: 30px; }
+    .rule-select-cell input[type="checkbox"],
+    .rule-select-th input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--primary-color); cursor: pointer; }
+    .rule-select-cell input:disabled { cursor: default; opacity: 0.45; }
+    .rules-bulkbar { display: flex; align-items: center; gap: 10px; padding: 8px 12px; margin-bottom: 10px; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); background: var(--code-bg); font-size: 12px; font-weight: 700; color: var(--text-color); }
+    .del-dialog { max-width: 620px; }
+    .del-option { display: block; padding: 12px 14px; margin-top: 12px; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); cursor: pointer; }
+    .del-option.is-active { border-color: #dc2626; box-shadow: inset 0 0 0 1px #dc2626; }
+    .del-option[aria-disabled="true"] { opacity: 0.55; cursor: default; }
+    .del-option-title { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700; color: var(--text-color); }
+    .del-radio { font-size: 13px; color: #dc2626; }
+    .del-option-copy { font-size: 12px; color: var(--text-secondary); line-height: 1.5; margin-top: 4px; }
+    .del-warn { font-size: 12px; font-weight: 700; color: #d97706; margin-top: 8px; line-height: 1.45; }
+    .del-flag { font-size: 11px; font-weight: 700; color: #d97706; white-space: nowrap; }
+    .del-progress { flex: 1; font-size: 12px; color: var(--text-secondary); }
+    .del-results { margin-top: 12px; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); max-height: 140px; overflow-y: auto; }
+    .del-result-row { display: flex; align-items: center; gap: 10px; padding: 7px 12px; border-bottom: 1px solid var(--border-color); font-size: 12px; }
+    .del-result-row:last-child { border-bottom: none; }
+    .del-result-msg { color: var(--text-secondary); }
+    .port-actions { gap: 8px; align-items: center; }
+    .owner-chip { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 700; color: #fff; background: #475569; }
+    .owner-you { font-size: 12px; font-weight: 700; color: var(--primary-color); }
+    .owner-name { font-size: 12px; color: var(--text-secondary); }
+    .transition-name { font-size: 12px; font-weight: 600; color: var(--text-color); }
+    .reg-meter { margin-bottom: 12px; }
+    .reg-meter-label { font-size: 12px; color: var(--text-secondary); margin-bottom: 5px; }
+    .reg-meter-label strong { color: var(--text-color); font-weight: 700; }
+    .reg-meter-bytes { color: var(--text-muted); }
+    .reg-meter-flag { margin-left: 8px; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 700; color: #fff; background: #dc2626; }
+    .reg-meter-bar { height: 8px; background: var(--border-color); border-radius: 999px; overflow: hidden; }
+    .reg-meter-fill { height: 100%; background: #16a34a; border-radius: 999px; transition: width 0.3s ease; }
+    .reg-warn .reg-meter-fill { background: #d97706; }
+    .reg-full .reg-meter-fill { background: #dc2626; }
+    html[data-color-mode="dark"] .del-warn,
+    html[data-color-mode="dark"] .del-flag { color: #f59e0b; }
+    html[data-color-mode="dark"] .del-option.is-active { border-color: #ef4444; box-shadow: inset 0 0 0 1px #ef4444; }
+    html[data-color-mode="dark"] .del-radio { color: #ef4444; }
+    html[data-color-mode="dark"] .owner-chip { background: #64748b; }
+    html[data-color-mode="dark"] .reg-meter-fill { background: #22c55e; }
+    html[data-color-mode="dark"] .reg-warn .reg-meter-fill { background: #f59e0b; }
+    html[data-color-mode="dark"] .reg-full .reg-meter-fill,
+    html[data-color-mode="dark"] .reg-meter-flag { background: #ef4444; }
 
     .row-disabled td {
       opacity: 0.55;
@@ -4895,8 +4940,16 @@ const TABS = [
 // One-line "what this is / when to use it" per tab — the single copy source so the
 // concept-heavy admin panel stays coherent for non-technical admins.
 const SURFACES = {
-  rules: { eyebrow: "RULES", what: "Every AI validator, condition, and post-function you've configured, across all workflows — toggle, edit, or explain any rule from here.",
-    terms: [{ label: "post-function", def: "A rule that runs AFTER a transition completes — it writes a field with AI, posts a comment, or runs saved sandboxed JavaScript." }] },
+  // One glossary chip per rule type the table can show. The banner names all three,
+  // so all three need an explanation — it previously defined only "post-function".
+  // The condition wording is kept word-for-word in step with the callout in
+  // config-ui's App.js so the two surfaces can never tell different stories.
+  rules: { eyebrow: "RULES", what: "Every AI validator, condition, and post-function you've configured, across all workflows — toggle, edit, delete, or explain any rule from here.",
+    terms: [
+      { label: "validator", def: "A rule that runs when someone tries to complete a transition. It can block the transition and show your message. Validators are enforced everywhere — the issue view, REST, automation and bulk changes." },
+      { label: "condition", def: "A rule that hides a transition when its criteria aren't met. Forge conditions are evaluated by Jira itself rather than by an AI model, so conditions use the non-AI rule types only." },
+      { label: "post-function", def: "A rule that runs AFTER a transition completes — it writes a field with AI, posts a comment, or runs saved sandboxed JavaScript." },
+    ] },
   logs: { eyebrow: "EXECUTION LOGS", what: "A running history of what your rules did on real transitions: pass or fail, the AI's reasoning, and any changes a post-function made." },
   docs: { eyebrow: "DOCUMENTATION", what: "Reference docs the AI reads when it generates code and validates fields. Add your own API notes or conventions; the built-in guides come seeded.",
     terms: [{ label: "provenance", def: "The record of exactly which docs, skills, and memories the AI drew on when it generated a step's code — shown as chips on each rule." }] },
@@ -4978,6 +5031,13 @@ function App() {
   const [showAddWizard, setShowAddWizard] = useState(false);
   const [showPortability, setShowPortability] = useState(false);
   const [typeFilter, setTypeFilter] = useState("all");
+  // Site-wide registry pressure {count, max, bytes, maxBytes, level} — deliberately
+  // NOT narrowed by the "My Rules" filter: the cap is shared by everyone.
+  const [registryMeter, setRegistryMeter] = useState(null);
+  // Rules selected for bulk delete. Cleared on every refetch and on any filter
+  // change, so a row that scrolled out of the current view can never be deleted.
+  const [selectedRuleIds, setSelectedRuleIds] = useState(() => new Set());
+  const [deleteTargetIds, setDeleteTargetIds] = useState(null);
   // Monotonic token — a slow older fetch (e.g. rapid All/My Rules flips) must
   // never overwrite a newer call's rows or drop its refresh veil early.
   const configsFetchToken = useRef(0);
@@ -4991,6 +5051,8 @@ function App() {
       if (token !== configsFetchToken.current) return; // stale response
       if (result.success) {
         setConfigs(result.configs || []);
+        setSelectedRuleIds(new Set());
+        if (result.registry) setRegistryMeter(result.registry);
         if (result.removedCount > 0) {
           setRemovedCount(result.removedCount);
         }
@@ -5014,6 +5076,8 @@ function App() {
   const [siteUrl, setSiteUrl] = useState("");
   const [discovering, setDiscovering] = useState(false);
   const [registeringDisc, setRegisteringDisc] = useState(false);
+  // What the last "Register all" actually did, including how many it had to skip.
+  const [registerOutcome, setRegisterOutcome] = useState(null);
 
   const scanDiscoveredRules = async () => {
     if (!invoke) return;
@@ -5052,17 +5116,35 @@ function App() {
   const registerAllDiscovered = async () => {
     if (!invoke || !discovered || !discovered.length) return;
     setRegisteringDisc(true);
+    setRegisterOutcome(null);
     try {
       // Stamp this site's base URL onto each discovered rule so its stored config can build the
       // Edit deep-link (the backend scan can't know the site's URL; the frontend can).
       const rules = siteUrl ? discovered.map((d) => ({ ...d, siteUrl })) : discovered;
-      const r = await invoke("registerDiscoveredRules", { rules });
-      if (r && r.success) {
-        await scanDiscoveredRules(); // now-registered rows drop out
-        await fetchConfigs(true);    // refresh the managed list
+      // Chunked: one invoke per 50 rules keeps each call inside the 25s resolver
+      // budget on a large instance. Stop the moment the registry reports it is
+      // full — every further call would just be refused.
+      const CHUNK = 50;
+      const total = { added: 0, updated: 0, skipped: 0, skippedSize: 0 };
+      let capped = false;
+      for (let i = 0; i < rules.length && !capped; i += CHUNK) {
+        const r = await invoke("registerDiscoveredRules", { rules: rules.slice(i, i + CHUNK) });
+        if (!r || !r.success) throw new Error(r?.error || "register failed");
+        total.added += r.added || 0;
+        total.updated += r.updated || 0;
+        total.skipped += r.skipped || 0;
+        total.skippedSize += r.skippedSize || 0;
+        if (r.capped) capped = true;
       }
+      // Surface what actually happened. The old code discarded the whole result,
+      // so a run that silently skipped hundreds of rules at the cap looked like a
+      // clean success.
+      setRegisterOutcome({ ...total, capped });
+      await scanDiscoveredRules(); // now-registered rows drop out
+      await fetchConfigs(true);    // refresh the managed list
     } catch (e) {
       console.error("registerDiscoveredRules failed:", e);
+      setRegisterOutcome({ error: e.message || "Registering failed" });
     }
     setRegisteringDisc(false);
   };
@@ -5136,6 +5218,32 @@ function App() {
       setToggleError("Failed to communicate with the server. Please try again.");
     }
     setToggling(null);
+  };
+
+  // Mirrors the backend's canDeleteConfig, which is deliberately NARROWER than the
+  // enable/disable gate: an ownerless row (legacy, or claimed by a workflow scan)
+  // is toggleable by a scope-"own" editor but is not theirs to destroy.
+  const canDeleteRow = (config) =>
+    userRole === "admin"
+    || (userRole === "editor" && (userScope === "all" || (!!config.createdBy && config.createdBy === accountId)));
+
+  const toggleRuleSelected = (id) => {
+    setSelectedRuleIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const onDeleteDone = ({ removed, failed }) => {
+    setSelectedRuleIds(new Set());
+    if (removed > 0) {
+      showToast(`Deleted ${removed} rule${removed > 1 ? "s" : ""}${failed ? ` — ${failed} failed` : ""}`, failed ? "error" : "success");
+    }
+    fetchConfigs(true);
+    // A list-only delete moves the rule into the "attached but not registered"
+    // bucket, so the discovered panel has to be re-read to stay truthful.
+    if (discovered !== null) scanDiscoveredRules();
   };
 
   const formatTime = (timestamp) => {
@@ -5698,10 +5806,29 @@ function App() {
           {discMeta && discMeta.error && (
             <p style={{ margin: 0, fontSize: "13px", color: "#dc2626", fontWeight: 600 }}>Scan failed: {discMeta.error}</p>
           )}
+          {registerOutcome && (
+            <div className={`alert ${registerOutcome.error || registerOutcome.capped ? "alert-error" : "alert-success"} anim-rise`} style={{ marginBottom: "10px" }}>
+              <span>
+                {registerOutcome.error
+                  ? `Registering failed: ${registerOutcome.error}`
+                  : `Registered ${registerOutcome.added}${registerOutcome.updated ? ` (${registerOutcome.updated} updated)` : ""}.`}
+                {/* The old code discarded this result entirely, so a run that
+                    silently skipped hundreds of rules at the cap looked clean. */}
+                {(registerOutcome.skipped > 0 || registerOutcome.skippedSize > 0) && (
+                  <> {registerOutcome.skipped + registerOutcome.skippedSize} skipped — the registry is full. Delete rules you no longer need, then run this again.</>
+                )}
+              </span>
+            </div>
+          )}
           {discovered && discMeta && !discMeta.error && (<>
             <p style={{ margin: "0 0 10px 0", fontSize: "13px", color: "var(--text-secondary)" }}>
-              Scanned <strong>{discMeta.scannedWorkflows}</strong> workflow(s): <strong>{discMeta.totalCogniRules}</strong> CogniRunner rule(s) attached, <strong>{discMeta.registeredMatched}</strong> already registered, <strong style={{ color: discovered.length ? "#7c3aed" : "inherit" }}>{discovered.length}</strong> not registered{discMeta.truncated ? " — scan truncated (large instance)" : ""}.
+              Scanned <strong>{discMeta.scannedWorkflows}</strong> workflow(s): <strong>{discMeta.totalCogniRules}</strong> CogniRunner rule(s) attached, <strong>{discMeta.registeredMatched}</strong> already registered, <strong style={{ color: discovered.length ? "#7c3aed" : "inherit" }}>{discovered.length}</strong> not registered{discMeta.truncated ? <strong style={{ color: "#dc2626" }}> — scan truncated, this instance has more workflows than one scan covers</strong> : ""}.
             </p>
+            {discovered.length > 0 && (
+              <p style={{ margin: "0 0 10px 0", fontSize: "12.5px", color: "var(--text-secondary)", lineHeight: 1.5 }}>
+                These rules <strong>run on every matching transition</strong> and can't be disabled from this panel until they're registered. A rule whose saved configuration carries no identity can't be disabled even then — the only way to stop it is to remove it from the workflow.
+              </p>
+            )}
             {discovered.length === 0 ? (
               <p style={{ margin: 0, fontSize: "13px", color: "var(--text-secondary)" }}>Every attached rule is registered. ✓</p>
             ) : (
@@ -5722,8 +5849,23 @@ function App() {
                           <span style={{ background: "#7c3aed", color: "#fff", fontWeight: 600, fontSize: "11px", padding: "2px 8px", borderRadius: "10px", whiteSpace: "nowrap" }}>{d.type}</span>
                         </td>
                         <td style={{ padding: "6px 10px" }}>{d.workflowName}</td>
-                        <td style={{ padding: "6px 10px" }}>{d.transitionName || d.transitionId || "—"}</td>
-                        <td style={{ padding: "6px 10px" }}>{d.fieldId || "—"}</td>
+                        <td style={{ padding: "6px 10px" }}>
+                          {/* Name and status-edge are separate facts — showing the
+                              transition name as the destination status is what
+                              produced "Any → ZSCALE-pv12". */}
+                          <div>{d.transitionName || d.transitionId || "—"}</div>
+                          {(d.transitionFromName || d.transitionToName) && (
+                            <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>
+                              {d.transitionFromName || "Any"} &rarr; {d.transitionToName || "Any"}
+                            </div>
+                          )}
+                        </td>
+                        <td style={{ padding: "6px 10px" }}>
+                          {d.fieldId || "—"}
+                          {d.manageable === false && (
+                            <span className="del-flag" style={{ marginLeft: "8px" }} title="This rule's saved configuration carries no identity, so registering it won't make it disableable. Re-save it from the workflow editor, or remove it from the workflow.">can't disable</span>
+                          )}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -5789,6 +5931,43 @@ function App() {
           </div>
         </div>
 
+        {/* Registry pressure. The whole registry lives in ONE storage value, so the
+            cap is shared site-wide — this reads the true totals even while the
+            "My Rules" filter is narrowing the table below. */}
+        {isAdmin && registryMeter && (
+          <Tooltip text={`All rules on this site share one registry entry, capped at ${registryMeter.max} rules and ${Math.round(registryMeter.maxBytes / 1000)} KB. Delete rules you no longer need to reclaim space.`}>
+            <div className={`reg-meter reg-${registryMeter.level}`}>
+              <div className="reg-meter-label">
+                <strong>{registryMeter.count} / {registryMeter.max}</strong> rules
+                <span className="reg-meter-bytes"> · {Math.round(registryMeter.bytes / 1000)} / {Math.round(registryMeter.maxBytes / 1000)} KB</span>
+                {registryMeter.level === "full" && <span className="reg-meter-flag">registry nearly full</span>}
+              </div>
+              <div className="reg-meter-bar">
+                <div className="reg-meter-fill" style={{ width: `${Math.min(100, Math.round(registryMeter.pct * 100))}%` }} />
+              </div>
+            </div>
+          </Tooltip>
+        )}
+
+        {selectedRuleIds.size > 0 && (
+          <div className="rules-bulkbar">
+            <span>{selectedRuleIds.size} selected</span>
+            <button className="btn-small btn-danger" onClick={() => setDeleteTargetIds([...selectedRuleIds])}>
+              Delete…
+            </button>
+            <button className="btn-small" onClick={() => setSelectedRuleIds(new Set())}>Clear</button>
+          </div>
+        )}
+
+        {deleteTargetIds && (
+          <DeleteRulesDialog
+            invoke={invoke}
+            ids={deleteTargetIds}
+            onClose={() => setDeleteTargetIds(null)}
+            onDone={onDeleteDone}
+          />
+        )}
+
         {showAddWizard && (
           <AddRuleWizard
             invoke={invoke}
@@ -5830,6 +6009,13 @@ function App() {
               : configs.filter((c) => c.type === typeFilter);
             const rulesQuery = rulesSearch.trim().toLowerCase();
             const filtered = rulesQuery ? typed.filter((c) => ruleMatchesQuery(c, rulesQuery)) : typed;
+            const canManageRules = userRole === "editor" || userRole === "admin";
+            // Only rows that are BOTH visible under the current filter and deletable
+            // by this user can be bulk-selected.
+            const selectableShown = canManageRules ? filtered.filter(canDeleteRow) : [];
+            // One source for both spanning rows, so they can never drift apart as
+            // columns come and go.
+            const ruleColSpan = 6 + (canManageRules ? 1 : 0) + (isAdmin ? 1 : 0);
             return filtered.length === 0 ? (
             <div className="empty-state">
               {configs.length === 0
@@ -5842,11 +6028,26 @@ function App() {
             <table className="table">
               <thead>
                 <tr>
+                  {canManageRules && (
+                    <th className="rule-select-th">
+                      <input
+                        type="checkbox"
+                        aria-label="Select all rules shown"
+                        checked={selectableShown.length > 0 && selectableShown.every((c) => selectedRuleIds.has(c.id))}
+                        onChange={(e) => {
+                          // Bound to the CURRENTLY FILTERED list — never to every rule
+                          // in the registry, so a row you can't see can't be deleted.
+                          setSelectedRuleIds(e.target.checked ? new Set(selectableShown.map((c) => c.id)) : new Set());
+                        }}
+                      />
+                    </th>
+                  )}
                   <th>Type</th>
                   <th>Workflow / Transition</th>
                   <th>Field</th>
                   <th>Prompt</th>
                   <th>Updated</th>
+                  {isAdmin && <th>Owner</th>}
                   <th></th>
                 </tr>
               </thead>
@@ -5869,6 +6070,18 @@ function App() {
                   return (
                     <React.Fragment key={config.id}>
                     <tr className={isDisabled ? "row-disabled" : ""}>
+                      {canManageRules && (
+                        <td className="rule-select-cell">
+                          <input
+                            type="checkbox"
+                            aria-label={`Select rule ${config.id}`}
+                            checked={selectedRuleIds.has(config.id)}
+                            disabled={!canDeleteRow(config)}
+                            title={canDeleteRow(config) ? "" : "You can only delete rules you created"}
+                            onChange={() => toggleRuleSelected(config.id)}
+                          />
+                        </td>
+                      )}
                       <td>
                         <button
                           className={"rule-expand-btn" + (isExpanded ? " open" : "")}
@@ -5896,6 +6109,13 @@ function App() {
                             <div className="workflow-name">
                               {wf.workflowName || wf.workflowId}
                             </div>
+                            {/* The transition's NAME and the status edge it runs across
+                                are different facts. Discovery used to store the name
+                                where the destination status belongs, which rendered as
+                                "Any → ZSCALE-pv12" for a Backlog → Backlog transition. */}
+                            {wf.transitionName && (
+                              <div className="transition-name">{wf.transitionName}</div>
+                            )}
                             {(wf.transitionFromName || wf.transitionToName) && (
                               <div className="transition-info">
                                 {wf.transitionFromName || "Any"} &rarr; {wf.transitionToName || "Any"}
@@ -5929,6 +6149,15 @@ function App() {
                         </span>
                       </td>
                       <td><span className="timestamp">{formatTime(config.updatedAt)}</span></td>
+                      {isAdmin && (
+                        <td>
+                          {config.createdBy
+                            ? (config.createdBy === accountId
+                              ? <span className="owner-you">You</span>
+                              : <span className="owner-name">{config.createdByName || config.createdBy}</span>)
+                            : <span className="owner-chip" title="Claimed by a workflow scan or created before rules recorded an author — not attributed to anyone">Unowned</span>}
+                        </td>
+                      )}
                       <td>
                         <div className="row-actions">
                           {/* Explain is ungated (matches the resolver) so viewers can use it too. */}
@@ -5959,6 +6188,15 @@ function App() {
                             >
                               {isDisabled ? "Enable" : "Disable"}
                             </button>
+                            {canDeleteRow(config) && (
+                              <button
+                                className="btn-small btn-danger"
+                                onClick={() => setDeleteTargetIds([config.id])}
+                                title="Delete this rule"
+                              >
+                                Delete
+                              </button>
+                            )}
                           </>
                           )}
                         </div>
@@ -5966,7 +6204,7 @@ function App() {
                     </tr>
                     {explain[config.id]?.open && (
                       <tr className="rule-explain-row">
-                        <td className="rule-explain-cell" colSpan={6}>
+                        <td className="rule-explain-cell" colSpan={ruleColSpan}>
                           {explain[config.id].status === "done" ? (
                             <div className="rule-explain-card anim-rise">
                               <div className="rule-explain-eyebrow">§ IN PLAIN ENGLISH</div>
@@ -5990,7 +6228,7 @@ function App() {
                     )}
                     {isExpanded && (
                       <tr className="rule-accordion-row">
-                        <td className="rule-accordion-cell" colSpan={6}>
+                        <td className="rule-accordion-cell" colSpan={ruleColSpan}>
                           <div className="rule-accordion-inner anim-rise">
                             {ruleJobs.length > 0 && (
                               <>

@@ -1320,21 +1320,24 @@ resolver.define("registerConfig", async ({ payload, context }) => {
 });
 
 /**
- * Resolver: Remove a config from the registry (KVS only)
+ * Resolver: Remove a validator/condition row. Thin wrapper over the shared core
+ * (removeRegistryRowsCore) — `detach` defaults to true so "delete" means the
+ * rule actually stops running, not just that it vanishes from the admin table.
  */
 resolver.define("removeConfig", async ({ payload, context }) => {
   try {
-    const { id } = payload;
-    let configs = (await storage.get(CONFIG_REGISTRY_KEY)) || [];
-    const target = configs.find((c) => c.id === id);
-    if (target && !(await canActOnConfig(context.accountId, target, "editor"))) {
-      return { success: false, error: "You don't have permission to remove this rule" };
+    const detach = payload?.detach !== false;
+    const out = await removeRegistryRowsCore({
+      ids: [payload?.id],
+      accountId: context.accountId,
+      detach,
+      family: "rule",
+    });
+    const r = (out.results || [])[0];
+    if (!r || !r.ok) {
+      return { success: false, error: describeDeleteFailure(r), reason: r?.reason || "unknown" };
     }
-    configs = configs.filter((c) => c.id !== id);
-    await saveRegistry(configs);
-    // The row's codeRef bundle is deliberately left in place — the workflow
-    // rule (or a copy) may still reference it (see pfCodeKeyFor).
-    return { success: true };
+    return { success: true, detached: !!r.detached };
   } catch (error) {
     console.error("Failed to remove config:", error);
     return { success: false, error: error.message };
@@ -2772,6 +2775,60 @@ const discoverEnvironmentId = async () => {
 };
 
 /**
+ * Build the POST /rest/api/3/workflows/update body for a workflow we just read
+ * from /workflows/search. SHARED by inject and detach — do not reimplement.
+ *
+ * The subtlety worth preserving: `workflow.statuses` in a search response is
+ * REFERENCE-ONLY (statusReference, no name/category), while the FULL status
+ * objects live at the top level of the response. The update DTO requires
+ * statuses[].name, so we must prefer the top-level array and only fall back to
+ * the workflow's own when it is absent.
+ */
+const buildWorkflowUpdatePayload = (getData, workflow) => {
+  const statusDetails = (Array.isArray(getData?.statuses) && getData.statuses.length)
+    ? getData.statuses
+    : (workflow.statuses || []);
+  return {
+    statuses: statusDetails.map((s) => ({
+      id: s.id,
+      name: s.name,
+      statusCategory: s.statusCategory,
+      statusReference: s.statusReference,
+    })),
+    workflows: [{
+      id: workflow.id,
+      version: {
+        id: workflow.version.id,
+        versionNumber: workflow.version.versionNumber,
+      },
+      statuses: statusDetails.map((s) => ({ statusReference: s.statusReference })),
+      transitions: workflow.transitions,
+    }],
+  };
+};
+
+/** Turn a failed /workflows/update response into one readable sentence. */
+const describeWorkflowUpdateError = (status, body) => {
+  let msg = `Workflow update failed (${status})`;
+  try {
+    const j = JSON.parse(body);
+    if (j.errors) msg += ": " + Object.values(j.errors).join("; ");
+    else if (j.errorMessages) msg += ": " + j.errorMessages.join("; ");
+    else if (j.message) msg += ": " + j.message;
+  } catch {
+    if (body) msg += ": " + String(body).substring(0, 200);
+  }
+  return msg;
+};
+
+/**
+ * Does this response mean "someone else changed the workflow first"?
+ * Jira signals it as a 409, but also as a 400 whose body mentions the version.
+ */
+const isWorkflowVersionConflict = (status, body) =>
+  status === 409 || (status === 400 && /version|concurrent|modified/i.test(String(body || "")));
+
+/**
  * Inject a CogniRunner rule into a workflow transition via REST API.
  * This performs a full workflow update (GET + modify + POST).
  */
@@ -2891,33 +2948,9 @@ const injectWorkflowRuleCore = async ({ workflowName, transitionId, ruleType, co
       targetTransition.actions.push(newRule);
     }
 
-    // Step 4: Build the update payload
-    // We must send the FULL workflow definition including ALL statuses and transitions.
-    // The workflow's OWN statuses array is reference-only in the search response (no
-    // name/category); the FULL status objects live at the top-level getData.statuses.
-    // Use those so the update's required statuses[].name is never missing.
-    const statusDetails = (Array.isArray(getData.statuses) && getData.statuses.length)
-      ? getData.statuses
-      : (workflow.statuses || []);
-    const updatePayload = {
-      statuses: statusDetails.map((s) => ({
-        id: s.id,
-        name: s.name,
-        statusCategory: s.statusCategory,
-        statusReference: s.statusReference,
-      })),
-      workflows: [{
-        id: workflow.id,
-        version: {
-          id: workflow.version.id,
-          versionNumber: workflow.version.versionNumber,
-        },
-        statuses: statusDetails.map((s) => ({
-          statusReference: s.statusReference,
-        })),
-        transitions: workflow.transitions,
-      }],
-    };
+    // Step 4: Build the update payload (shared with the detach path — see
+    // buildWorkflowUpdatePayload; the statuses fallback there is subtle).
+    const updatePayload = buildWorkflowUpdatePayload(getData, workflow);
 
     // Step 5: POST the update
     const updateResp = await api.asApp().requestJira(
@@ -2932,14 +2965,7 @@ const injectWorkflowRuleCore = async ({ workflowName, transitionId, ruleType, co
     if (!updateResp.ok) {
       const errBody = await updateResp.text().catch(() => "");
       console.error("Workflow update failed:", updateResp.status, errBody);
-      let errMsg = `Workflow update failed (${updateResp.status})`;
-      try {
-        const errJson = JSON.parse(errBody);
-        if (errJson.errors) errMsg += ": " + Object.values(errJson.errors).join("; ");
-        else if (errJson.errorMessages) errMsg += ": " + errJson.errorMessages.join("; ");
-        else if (errJson.message) errMsg += ": " + errJson.message;
-      } catch { errMsg += ": " + errBody.substring(0, 200); }
-      return { success: false, error: errMsg };
+      return { success: false, error: describeWorkflowUpdateError(updateResp.status, errBody) };
     }
 
     console.log(`Injected ${ruleType} rule on "${workflowName}" transition ${transitionId}`);
@@ -2957,6 +2983,508 @@ resolver.define("injectWorkflowRule", async ({ payload, context }) => {
     return { success: false, error: "Editor access required" };
   }
   return injectWorkflowRuleCore(payload);
+});
+
+// ===========================================================================
+// DETACH — the inverse of injectWorkflowRuleCore.
+//
+// Until this existed, "removing" a rule only deleted its registry row: the rule
+// stayed on the transition and kept executing, now with no UI left to disable
+// it. Deleting a rule has to mean the rule stops running.
+// ===========================================================================
+
+/**
+ * Rebuild a transition's condition tree without the rules matching `pred`.
+ *
+ * Recurses into BOTH `conditions` and `conditionGroups` — a walker that only
+ * follows `conditions` silently leaves nested-group rules attached, and
+ * flattenConditionRules proves nested groups occur in the wild. Tolerates the
+ * legacy flat-array shape the same way injectWorkflowRuleCore does.
+ * Returns { node, removed }.
+ */
+const stripRuleFromConditions = (node, pred) => {
+  let removed = 0;
+  if (!node) return { node, removed };
+  if (Array.isArray(node)) {
+    const kept = node.filter((r) => {
+      const hit = pred(r);
+      if (hit) removed++;
+      return !hit;
+    });
+    return { node: kept, removed };
+  }
+  if (typeof node !== "object") return { node, removed };
+
+  const conditions = [];
+  for (const c of (node.conditions || [])) {
+    // A nested tree can appear inline in `conditions` as well as in `conditionGroups`.
+    if (c && (c.conditions || c.conditionGroups)) {
+      const r = stripRuleFromConditions(c, pred);
+      removed += r.removed;
+      conditions.push(r.node);
+      continue;
+    }
+    if (pred(c)) { removed++; continue; }
+    conditions.push(c);
+  }
+  const conditionGroups = [];
+  for (const g of (node.conditionGroups || [])) {
+    const r = stripRuleFromConditions(g, pred);
+    removed += r.removed;
+    conditionGroups.push(r.node);
+  }
+  return { node: { ...node, conditions, conditionGroups }, removed };
+};
+
+/**
+ * Build the predicate that decides whether a workflow rule IS the registry row
+ * we were asked to delete. Priority order matters — each tier is strictly less
+ * certain than the one above it:
+ *
+ *   1. The workflow-rule INSTANCE id. Exact, unambiguous. Available for rows
+ *      claimed by a scan and (since this release) for rules created by the
+ *      wizard or an import.
+ *   2. The rule's EMBEDDED config id, tried raw AND with a `${type}::` prefix
+ *      stripped — registerConfig/registerPostFunction rename the registry row
+ *      when a different-family row already holds the raw id, while the workflow
+ *      rule keeps the original.
+ *   3. Sole-CogniRunner-in-slot. Only accepted when exactly ONE candidate
+ *      matches; two same-family rules with no identity are reported ambiguous
+ *      rather than guessed at.
+ */
+const buildRuleMatcher = ({ ruleInstanceId, registryId, moduleKey }) => {
+  const idCandidates = new Set();
+  if (registryId) {
+    const raw = String(registryId);
+    idCandidates.add(raw);
+    // Strip a leading "<type>::" namespace ("validator::", "postfunction-static::", …).
+    const stripped = raw.replace(/^(validator|condition|postfunction[a-z-]*)::/, "");
+    if (stripped !== raw) idCandidates.add(stripped);
+  }
+
+  const embeddedIdOf = (rule) => {
+    try {
+      const cfg = JSON.parse(rule?.parameters?.config || "{}");
+      return cfg?.id || cfg?.ruleId || null;
+    } catch { return null; }
+  };
+
+  return {
+    /** Tier 1+2: a positive identity match. */
+    exact: (rule) => {
+      if (!rule?.parameters?.key?.includes(APP_ID)) return false;
+      if (ruleInstanceId) {
+        const inst = rule.parameters?.id || rule.id;
+        if (inst && String(inst) === String(ruleInstanceId)) return true;
+      }
+      const emb = embeddedIdOf(rule);
+      if (emb && idCandidates.has(String(emb))) return true;
+      return false;
+    },
+    /** Tier 3: right app, right module family — used only when unique. */
+    family: (rule) => {
+      const key = rule?.parameters?.key;
+      if (!key || !key.includes(APP_ID)) return false;
+      return moduleKey ? key.includes(moduleKey) : true;
+    },
+  };
+};
+
+/** Which slot does a rule type live in? validators[] / conditions tree / actions[]. */
+const slotForRuleType = (ruleType) =>
+  ruleType === "condition" ? "condition"
+    : ruleType === "validator" ? "validator"
+      : "action";
+
+/**
+ * Read one workflow by name (preferred) or by id. Returns { getData, workflow }
+ * or { error }. The id path has to page because /workflows/search cannot filter
+ * on id — rows claimed by a scan often carry only workflowId.
+ */
+const readWorkflowForUpdate = async ({ workflowName, workflowId }) => {
+  if (workflowName) {
+    const resp = await api.asApp().requestJira(
+      route`/rest/api/3/workflows/search?queryString=${workflowName}&expand=values.transitions`,
+      { headers: { Accept: "application/json" } },
+    );
+    if (!resp.ok) return { error: `Failed to fetch workflow (${resp.status})` };
+    const getData = await resp.json();
+    const workflow = (getData.values || []).find((w) => w.name === workflowName);
+    if (workflow) return { getData, workflow };
+    if (!workflowId) return { error: "workflow-not-found" };
+  }
+  if (!workflowId) return { error: "workflow-not-found" };
+
+  const MAX_WORKFLOWS = 300;
+  const pageSize = 50;
+  let startAt = 0;
+  let scanned = 0;
+  for (;;) {
+    const resp = await api.asApp().requestJira(
+      route`/rest/api/3/workflows/search?startAt=${startAt}&maxResults=${pageSize}&expand=values.transitions`,
+      { headers: { Accept: "application/json" } },
+    );
+    if (!resp.ok) return { error: `Failed to fetch workflow (${resp.status})` };
+    const getData = await resp.json();
+    const values = getData.values || [];
+    const workflow = values.find((w) => String(w.id) === String(workflowId));
+    if (workflow) return { getData, workflow };
+    scanned += values.length;
+    const isLast = getData.isLast === true
+      || values.length < pageSize
+      || (typeof getData.total === "number" && startAt + values.length >= getData.total);
+    if (isLast || !values.length || scanned >= MAX_WORKFLOWS) return { error: "workflow-not-found" };
+    startAt += pageSize;
+  }
+};
+
+/**
+ * Remove one or more CogniRunner rules from ONE workflow.
+ *
+ * Batched deliberately: a bulk delete of 20 rules on the same workflow is one
+ * GET + one POST, not twenty. Every attempt re-reads the workflow, because the
+ * version number is stale by definition after a conflict.
+ *
+ * targets: [{ registryId, transitionId, ruleType, ruleInstanceId? }]
+ * Returns { success, results: [{ registryId, detached, reason }], error? }
+ */
+const detachWorkflowRulesCore = async ({ workflowName, workflowId, targets }) => {
+  const list = Array.isArray(targets) ? targets.filter(Boolean) : [];
+  if (!list.length) return { success: true, results: [] };
+  if (!workflowName && !workflowId) {
+    return { success: false, error: "Missing workflow identity", results: list.map((t) => ({ registryId: t.registryId, detached: false, reason: "no-workflow" })) };
+  }
+
+  const MAX_ATTEMPTS = 3;
+  let lastError = null;
+
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    const read = await readWorkflowForUpdate({ workflowName, workflowId });
+    if (read.error) {
+      const reason = read.error === "workflow-not-found" ? "workflow-not-found" : "read-failed";
+      // A workflow we cannot see cannot be edited. Note that /workflows/search only
+      // returns PUBLISHED workflows — a rule living solely in an unpublished draft
+      // reports not-found here and reappears once the draft is published.
+      return {
+        success: reason === "workflow-not-found",
+        error: reason === "workflow-not-found" ? null : read.error,
+        results: list.map((t) => ({ registryId: t.registryId, detached: false, reason })),
+      };
+    }
+    const { getData, workflow } = read;
+    if (!workflow.version?.id || workflow.version?.versionNumber === undefined) {
+      return { success: false, error: "Workflow version info not available. The workflow may be read-only.", results: list.map((t) => ({ registryId: t.registryId, detached: false, reason: "read-only" })) };
+    }
+
+    const results = [];
+    let mutated = 0;
+
+    for (const target of list) {
+      const { registryId, transitionId, ruleType, ruleInstanceId } = target;
+      const transition = (workflow.transitions || []).find((t) => String(t.id) === String(transitionId));
+      if (!transition) { results.push({ registryId, detached: false, reason: "transition-not-found" }); continue; }
+
+      const slot = slotForRuleType(ruleType);
+      const moduleKey = RULE_KEY_MAP[ruleType]?.moduleKey || null;
+      const matcher = buildRuleMatcher({ ruleInstanceId, registryId, moduleKey });
+
+      // Candidate pool for this slot.
+      const pool = slot === "condition"
+        ? flattenConditionRules(transition.conditions)
+        : slot === "validator"
+          ? (transition.validators || [])
+          : (transition.actions || []);
+
+      const exactHits = pool.filter(matcher.exact);
+      let pred = null;
+      if (exactHits.length > 0) {
+        pred = matcher.exact;
+      } else {
+        const familyHits = pool.filter(matcher.family);
+        if (familyHits.length === 1) {
+          // Tier 3 — safe only because it is unique in this slot.
+          pred = (r) => r === familyHits[0];
+        } else if (familyHits.length > 1) {
+          results.push({ registryId, detached: false, reason: "ambiguous" });
+          continue;
+        } else {
+          // Already gone. For the caller this is the desired end state, not a failure.
+          results.push({ registryId, detached: false, reason: "not-found" });
+          continue;
+        }
+      }
+
+      let removed = 0;
+      if (slot === "condition") {
+        const r = stripRuleFromConditions(transition.conditions, pred);
+        transition.conditions = r.node;
+        removed = r.removed;
+      } else if (slot === "validator") {
+        const before = (transition.validators || []).length;
+        transition.validators = (transition.validators || []).filter((r) => !pred(r));
+        removed = before - transition.validators.length;
+      } else {
+        const before = (transition.actions || []).length;
+        transition.actions = (transition.actions || []).filter((r) => !pred(r));
+        removed = before - transition.actions.length;
+      }
+      if (removed > 0) { mutated += removed; results.push({ registryId, detached: true, reason: "detached" }); }
+      else results.push({ registryId, detached: false, reason: "not-found" });
+    }
+
+    if (mutated === 0) {
+      // Nothing to write — every target was already absent (or unresolvable).
+      return { success: true, results };
+    }
+
+    const updateResp = await api.asApp().requestJira(
+      route`/rest/api/3/workflows/update`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify(buildWorkflowUpdatePayload(getData, workflow)),
+      },
+    );
+    if (updateResp.ok) {
+      console.log(`Detached ${mutated} rule(s) from "${workflow.name}"`);
+      return { success: true, results };
+    }
+
+    const errBody = await updateResp.text().catch(() => "");
+    lastError = describeWorkflowUpdateError(updateResp.status, errBody);
+    if (!isWorkflowVersionConflict(updateResp.status, errBody) || attempt === MAX_ATTEMPTS - 1) {
+      console.error("Detach failed:", updateResp.status, errBody.slice(0, 300));
+      return { success: false, error: lastError, results: list.map((t) => ({ registryId: t.registryId, detached: false, reason: "update-failed" })) };
+    }
+    // Someone republished the workflow under us — re-read and rebuild from scratch.
+    console.log(`Detach hit a version conflict (attempt ${attempt + 1}) — re-reading workflow`);
+    await new Promise((r) => setTimeout(r, 200 + attempt * 300));
+  }
+
+  return { success: false, error: lastError || "Workflow update failed", results: list.map((t) => ({ registryId: t.registryId, detached: false, reason: "update-failed" })) };
+};
+
+/** Is this registry row a post-function (as opposed to a validator/condition)? */
+const isPostFunctionRow = (row) => String(row?.type || "").startsWith("postfunction");
+
+/** One plain sentence per delete-failure reason. */
+const describeDeleteFailure = (r) => {
+  switch (r?.reason) {
+    case "not-found": return "That rule is no longer in the registry.";
+    case "forbidden": return "You don't have permission to delete this rule.";
+    case "wrong-family": return "That id belongs to a different kind of rule.";
+    case "ambiguous": return "This transition has more than one CogniRunner rule of the same kind and none of them carry an id, so we can't tell which to remove. Open the workflow editor and delete it there.";
+    case "workflow-not-found": return "That workflow could not be read. If it has unpublished changes, publish them and try again.";
+    case "transition-not-found": return "That transition no longer exists on the workflow.";
+    case "read-only": return "That workflow is read-only.";
+    case "no-workflow": return "This rule has no workflow recorded, so it can't be removed from Jira automatically. Delete it from the workflow editor, or remove it from this list only.";
+    case "update-failed": return r?.error || "Jira rejected the workflow update.";
+    default: return r?.error || "Could not delete this rule.";
+  }
+};
+
+/**
+ * Delete registry rows — optionally detaching the rules from their workflows first.
+ *
+ * ONE implementation behind removeConfig, removePostFunction and deleteRules, so
+ * the permission gate cannot drift apart again. The old pair each wrote
+ * `if (target && !canActOnConfig(...))`, which SKIPPED the gate entirely when the
+ * id was unknown and still rewrote the whole registry — a clobber primitive
+ * available to any licensed user.
+ *
+ * Guarantees:
+ *  - unknown id  → reported, never written
+ *  - family mismatch → refused (a validator delete must not remove a PF row that
+ *    shares a legacy un-namespaced id)
+ *  - detach failure → the row STAYS, so a still-running rule never loses the UI
+ *    that could disable it
+ *  - exactly ONE saveRegistry at the end; the registry is a single non-CAS KVS
+ *    value, so N sequential writes would be N clobber windows
+ *
+ * Note `pf_code` bundles are deliberately NOT deleted (see pfCodeKeyFor): a
+ * published workflow or a workflow copy may still execute against them.
+ */
+const removeRegistryRowsCore = async ({ ids, accountId, detach = false, family = null }) => {
+  const wanted = [...new Set((Array.isArray(ids) ? ids : []).map((i) => String(i)).filter(Boolean))];
+  if (!wanted.length) return { success: false, error: "No rules specified", results: [] };
+
+  const configs = (await storage.get(CONFIG_REGISTRY_KEY)) || [];
+  const byId = new Map(configs.map((c) => [String(c.id), c]));
+  const results = [];
+  const removable = [];
+
+  for (const id of wanted) {
+    const target = byId.get(id);
+    if (!target) { results.push({ id, ok: false, reason: "not-found" }); continue; }
+    if (family === "postfunction" && !isPostFunctionRow(target)) { results.push({ id, ok: false, reason: "wrong-family" }); continue; }
+    if (family === "rule" && isPostFunctionRow(target)) { results.push({ id, ok: false, reason: "wrong-family" }); continue; }
+    if (!(await canDeleteConfig(accountId, target))) { results.push({ id, ok: false, reason: "forbidden" }); continue; }
+    removable.push(target);
+  }
+
+  // Detach first, grouped by workflow so a bulk delete is one update per workflow.
+  const detachOutcome = new Map();
+  if (detach && removable.length) {
+    const groups = new Map();
+    for (const row of removable) {
+      const wf = row.workflow || {};
+      const key = wf.workflowName || wf.workflowId || "";
+      if (!key) { detachOutcome.set(String(row.id), { detached: false, reason: "no-workflow" }); continue; }
+      if (!groups.has(key)) groups.set(key, { workflowName: wf.workflowName || null, workflowId: wf.workflowId || null, targets: [] });
+      groups.get(key).targets.push({
+        registryId: String(row.id),
+        transitionId: wf.transitionId,
+        ruleType: row.type,
+        ruleInstanceId: row.ruleInstanceId || null,
+      });
+    }
+    for (const g of groups.values()) {
+      const out = await detachWorkflowRulesCore(g);
+      for (const r of (out.results || [])) {
+        detachOutcome.set(String(r.registryId), {
+          detached: !!r.detached,
+          reason: r.reason,
+          // "not-found" means the rule is already off the workflow — the end state
+          // the caller asked for, so the row may still be removed.
+          blocked: !out.success || (!r.detached && r.reason !== "not-found"),
+          error: out.error || null,
+        });
+      }
+    }
+  }
+
+  const doomed = new Set();
+  for (const row of removable) {
+    const id = String(row.id);
+    const d = detachOutcome.get(id);
+    if (detach && d?.blocked) {
+      results.push({ id, ok: false, detached: false, reason: d.reason || "detach-failed", error: d.error || null });
+      continue;
+    }
+    doomed.add(id);
+    results.push({ id, ok: true, detached: detach ? !!d?.detached : false, reason: detach ? (d?.reason || "detached") : "removed" });
+  }
+
+  if (doomed.size) {
+    await saveRegistry(configs.filter((c) => !doomed.has(String(c.id))));
+  }
+  return { success: true, results, removed: doomed.size };
+};
+
+// Per-call id ceilings. Detaching touches Jira (1 GET + 1 POST per workflow, with
+// up to 3 attempts) and must stay inside the 25s sync resolver budget; a
+// registry-only delete is pure KVS and can take far more.
+const DELETE_MAX_IDS_DETACH = 25;
+const DELETE_MAX_IDS_REGISTRY = 200;
+
+/**
+ * Resolver: delete one or many rules. `detach: true` also removes them from
+ * their Jira workflows.
+ */
+resolver.define("deleteRules", async ({ payload, context }) => {
+  if (!(await requireRole(context.accountId, "editor"))) {
+    return { success: false, error: "Editor access required" };
+  }
+  const ids = Array.isArray(payload?.ids) ? payload.ids : [];
+  const detach = payload?.detach === true;
+  const cap = detach ? DELETE_MAX_IDS_DETACH : DELETE_MAX_IDS_REGISTRY;
+  if (ids.length > cap) {
+    return { success: false, error: `Too many rules in one request (max ${cap}). The admin panel sends them in batches.` };
+  }
+  const out = await removeRegistryRowsCore({ ids, accountId: context.accountId, detach });
+  return {
+    ...out,
+    results: (out.results || []).map((r) => (r.ok ? r : { ...r, message: describeDeleteFailure(r) })),
+  };
+});
+
+/**
+ * Resolver: dry-run a deletion so the confirm dialog can be honest about what
+ * will actually happen — whether each rule can be located on its workflow, and
+ * how many projects share that workflow.
+ */
+resolver.define("previewRuleDeletion", async ({ payload, context }) => {
+  if (!(await requireRole(context.accountId, "editor"))) {
+    return { success: false, error: "Editor access required" };
+  }
+  const ids = [...new Set((Array.isArray(payload?.ids) ? payload.ids : []).map(String))];
+  if (!ids.length) return { success: true, items: [] };
+
+  const configs = (await storage.get(CONFIG_REGISTRY_KEY)) || [];
+  const byId = new Map(configs.map((c) => [String(c.id), c]));
+  const rows = ids.map((id) => byId.get(id)).filter(Boolean);
+
+  // Read each distinct workflow once (bounded — the dialog only ever previews a
+  // selection, and the client batches).
+  const MAX_WORKFLOWS_PREVIEWED = 10;
+  const wfKeys = [...new Set(rows.map((r) => r.workflow?.workflowName || r.workflow?.workflowId || "").filter(Boolean))]
+    .slice(0, MAX_WORKFLOWS_PREVIEWED);
+  const wfCache = new Map();
+  for (const key of wfKeys) {
+    const sample = rows.find((r) => (r.workflow?.workflowName || r.workflow?.workflowId) === key);
+    const read = await readWorkflowForUpdate({
+      workflowName: sample?.workflow?.workflowName,
+      workflowId: sample?.workflow?.workflowId,
+    }).catch(() => ({ error: "read-failed" }));
+    wfCache.set(key, read);
+  }
+
+  const items = [];
+  for (const row of rows) {
+    const wf = row.workflow || {};
+    const key = wf.workflowName || wf.workflowId || "";
+    const read = wfCache.get(key);
+    const base = {
+      id: String(row.id),
+      type: row.type || "validator",
+      disabled: row.disabled === true,
+      workflowName: wf.workflowName || null,
+      transitionName: wf.transitionName || null,
+      transitionFromName: wf.transitionFromName || null,
+      transitionToName: wf.transitionToName || null,
+      prompt: typeof row.prompt === "string" ? row.prompt.slice(0, 120) : "",
+      canDelete: await canDeleteConfig(context.accountId, row),
+    };
+    if (!key) { items.push({ ...base, locatable: false, reason: "no-workflow" }); continue; }
+    if (!read || read.error) { items.push({ ...base, locatable: false, reason: read?.error === "workflow-not-found" ? "workflow-not-found" : "read-failed" }); continue; }
+
+    const transition = (read.workflow.transitions || []).find((t) => String(t.id) === String(wf.transitionId));
+    if (!transition) { items.push({ ...base, locatable: false, reason: "transition-not-found" }); continue; }
+
+    const slot = slotForRuleType(row.type);
+    const moduleKey = RULE_KEY_MAP[row.type]?.moduleKey || null;
+    const matcher = buildRuleMatcher({ ruleInstanceId: row.ruleInstanceId, registryId: row.id, moduleKey });
+    const pool = slot === "condition"
+      ? flattenConditionRules(transition.conditions)
+      : slot === "validator" ? (transition.validators || []) : (transition.actions || []);
+    const exact = pool.filter(matcher.exact).length;
+    const family = pool.filter(matcher.family).length;
+    const locatable = exact > 0 || family === 1;
+    items.push({
+      ...base,
+      locatable,
+      ambiguous: exact === 0 && family > 1,
+      reason: locatable ? null : (family > 1 ? "ambiguous" : "not-found"),
+    });
+  }
+
+  // How widely is each workflow shared? A rule removal edits the workflow for
+  // every project using it — say so before the user commits.
+  // Keyed by workflow NAME for the dialog, but looked up by workflow ID — the
+  // projectUsages endpoint takes the id.
+  const projectCounts = {};
+  for (const key of wfKeys) {
+    const read = wfCache.get(key);
+    const name = read?.workflow?.name;
+    const id = read?.workflow?.id;
+    if (!name || !id) continue;
+    try {
+      const projects = await fetchProjectsForWorkflow(String(id));
+      if (Array.isArray(projects)) projectCounts[name] = projects.length;
+    } catch { /* advisory only */ }
+  }
+
+  return { success: true, items, projectCounts, truncatedWorkflows: wfKeys.length >= MAX_WORKFLOWS_PREVIEWED };
 });
 
 // === Admin & Permission Resolvers ===
@@ -5034,17 +5562,18 @@ resolver.define("registerPostFunction", async ({ payload, context }) => {
  */
 resolver.define("removePostFunction", async ({ payload, context }) => {
   try {
-    const { id } = payload;
-    let configs = (await storage.get(CONFIG_REGISTRY_KEY)) || [];
-    const target = configs.find((c) => c.id === id);
-    if (target && !(await canActOnConfig(context.accountId, target, "editor"))) {
-      return { success: false, error: "You don't have permission to remove this post-function" };
+    const detach = payload?.detach !== false;
+    const out = await removeRegistryRowsCore({
+      ids: [payload?.id],
+      accountId: context.accountId,
+      detach,
+      family: "postfunction",
+    });
+    const r = (out.results || [])[0];
+    if (!r || !r.ok) {
+      return { success: false, error: describeDeleteFailure(r), reason: r?.reason || "unknown" };
     }
-    configs = configs.filter((c) => c.id !== id);
-    await saveRegistry(configs);
-    // The row's codeRef bundle is deliberately left in place — the workflow
-    // rule (or a copy) may still reference it (see pfCodeKeyFor).
-    return { success: true };
+    return { success: true, detached: !!r.detached };
   } catch (error) {
     console.error("Failed to remove post-function:", error);
     return { success: false, error: error.message };

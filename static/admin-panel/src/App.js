@@ -5803,6 +5803,7 @@ function App() {
           {discovered === null && (
             <p style={{ margin: 0, fontSize: "13px", color: "var(--text-secondary)" }}>
               CogniRunner rules can be attached to workflows outside this panel (REST automation, imported or copied workflows, or a rule whose registration didn't complete). They run on transitions but won't show under <strong>Configured Rules</strong> until claimed. Click <strong>Scan workflows</strong> to find them.
+              {" "}Attaching rules yourself over Jira's workflow REST API is supported and documented — see <strong>docs/REST-API-RULES.md</strong>, which covers the rule shape per type and the one step people miss: a REST-attached rule runs immediately but stays unmanageable here until you register it.
             </p>
           )}
           {discMeta && discMeta.error && (

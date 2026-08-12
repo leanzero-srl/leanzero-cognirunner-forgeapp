@@ -452,7 +452,7 @@
     <p>Four rule types cover the full loop:</p>
     <ul>
       <li><strong>Validators</strong> block a transition when field content fails your rule, showing the user the AI's reasoning.</li>
-      <li><strong>Conditions</strong> hide a transition entirely when criteria aren't met — the user never sees the button.</li>
+      <li><strong>Conditions</strong> hide a transition entirely when criteria aren't met — the user never sees the button. Conditions are evaluated by Jira itself, so they run on a deterministic check rather than an AI prompt: no per-transition cost, no latency, and enforced on every surface including REST and automation.</li>
       <li><strong>Semantic Post-Functions</strong> run after a transition: the AI reads a field, decides, generates a value, and writes a target field — e.g. summarize the work into Release Notes.</li>
       <li><strong>Static Post-Functions</strong> let the AI generate JavaScript once, then run it at zero AI cost on every transition — chaining up to 50 sandboxed steps.</li>
     </ul>

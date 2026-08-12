@@ -10,14 +10,14 @@ rationale or any "we undercut the market" framing anywhere public.
 CogniRunner
 
 ## App tagline (≤130 chars · no ending punctuation)
-> AI workflow automation for Jira — validators, conditions and post-functions, with your own AI key or zero-key Forge LLM
+> AI workflow automation for Jira — AI validators and post-functions plus zero-cost conditions, with your own AI key or zero-key Forge LLM
 
 *(119 chars. Alternates:*
-- *"AI validators, conditions and post-functions for Jira — read meaning, validate, automate, with your own AI key" — 110*
-- *"Bring AI to your Jira workflows — validators, conditions and post-functions that read meaning and act" — 101)*
+- *"AI validators and post-functions for Jira — read meaning, validate, automate, with your own AI key" — 101*
+- *"Bring AI to your Jira workflows — validators and post-functions that read meaning and act" — 89)*
 
 ## App summary (≤250 chars)
-> Add AI validators, conditions and post-functions to Jira workflows. CogniRunner reads the meaning of fields, attachments and issues, then validates, decides and acts. Bring your own AI key — or use the zero-key Atlassian Forge LLM.
+> Add AI validators and post-functions to Jira workflows, plus zero-cost conditions. CogniRunner reads the meaning of fields, attachments and issues, then validates, decides and acts. Bring your own AI key — or use the zero-key Atlassian Forge LLM.
 
 *(231 chars. Alternate, ~245: "Add AI validators, conditions and post-functions to Jira. CogniRunner reads fields, attachments and related issues to validate, catch duplicates, and act on transitions. Bring your own AI key (OpenAI, Anthropic, Azure, Bedrock) or the zero-key Forge LLM.")*
 
@@ -29,7 +29,7 @@ CogniRunner
 
 **CogniRunner brings real AI understanding to Jira workflows.** Native validators only check structure; CogniRunner reads the meaning of fields, attachments and issues — then validates, decides and acts, all in plain English.
 
-- Validators & Conditions: block or hide a transition, with the AI's reasoning shown.
+- Validators: block a transition, with the AI's reasoning shown. Conditions: hide a transition on a deterministic check — no AI, no per-transition cost.
 - Post-functions: semantic (read a field, write another) and static (AI-written code that runs at zero AI cost); plus comments, sub-tasks and generate-and-attach DOCX/PDF/PPTX.
 - Reads attachments (images, PDF, Office) and runs agentic JQL to catch duplicates.
 - Bring your own AI: Anthropic, OpenAI, Azure, OpenRouter, Bedrock — or local LM Studio, or the zero-key Atlassian Forge LLM.

@@ -11,9 +11,14 @@ Target: project **COGTEST** on `wolfaenpak.atlassian.net` (`results/testbed.json
 + issue changelog + the `cogni-debug` issue property — **not** the UI. The Jira token lives in
 the gitignored `test-harness/.env`.
 
-**Baseline to beat (no regression):** ~**766–770 / 782**. Expected misses only: F3 (conditions
-not enforced on the REST path), the agentic GATE-STORY strictness, and the
-injection-embedded-in-a-real-task nuance. Current matrix: OpenRouter/`gemma-4-31b` 766, Anthropic/
+**Baseline to beat (no regression):** ~**766–770 / 782**. Expected misses only: the agentic
+GATE-STORY strictness and the injection-embedded-in-a-real-task nuance.
+
+> **Denominator note (2026-08-12).** The old baseline listed a third expected miss, "F3 — conditions
+> not enforced on the REST path". F3 was re-diagnosed: conditions ARE enforced, and the app's own
+> conditions now work (see `reg-conditions-enforce.mjs`). The 2-case condition study is no longer an
+> expected miss. Historic rows in FINDINGS.md were scored against the OLD denominator of 782 WITH
+> that miss allowed — do not compare a new row to them without saying which denominator it used. Current matrix: OpenRouter/`gemma-4-31b` 766, Anthropic/
 `claude-haiku-4-5` 766, Forge LLM/Haiku 766, **OpenAI 770 (strongest)**, LM Studio 69/76.
 
 ---

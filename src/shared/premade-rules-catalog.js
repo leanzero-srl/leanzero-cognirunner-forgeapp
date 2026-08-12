@@ -15,24 +15,36 @@
  *
  * A "premade rule" is a deterministic check the user picks from a catalog and
  * parameterises in a small form — zero AI cost, instant, no prompt-writing.
- * Both VALIDATORS (block a transition + show a message) and CONDITIONS (hide a
- * transition silently) run through CogniRunner's one backend `validate(args)`
- * function, branching on `configuration.ruleKind === 'premade'`. Because that
- * function reads via REST on BOTH surfaces, we use the REST status name
- * (`status.statusCategory.key`) everywhere — Altomata's expression-vs-REST
- * `status.category` / `status.statusCategory` name-crossing does not apply here.
  *
- * Adding a rule type = one entry here + the matching branch in
+ * ⚠️ VALIDATORS and CONDITIONS are executed by two DIFFERENT engines. This caught
+ * the project out for a long time (see F3 in test-harness/FINDINGS.md):
+ *
+ *   VALIDATORS run in CogniRunner's own backend `validate(args)`, branching on
+ *   `configuration.ruleKind === 'premade'` → `executePremadeRule` in
+ *   src/premade-rules.js. It reads via REST, so we use the REST status name
+ *   (`status.statusCategory.key`) everywhere — Altomata's expression-vs-REST
+ *   `status.category` name-crossing does not apply here.
+ *
+ *   CONDITIONS are evaluated by JIRA, as the Jira expression in manifest.yml.
+ *   `validate()` is never called for a condition — `function` is not even a
+ *   property of the jira:workflowCondition module. So a condition rule type is
+ *   only real if the EXPRESSION implements it; see EXPRESSION_BACKED_CONDITIONS
+ *   below, which must stay in lockstep with the manifest.
+ *
+ * Adding a VALIDATOR type = one entry here + the matching branch in
  * src/premade-rules.js. The parity lint (test-harness/scripts/premade-parity.mjs)
  * asserts every `available` entry has an executor branch, and vice-versa.
+ * Adding a CONDITION type = one entry here + a branch in the manifest expression
+ * + its key in EXPRESSION_BACKED_CONDITIONS + a both-directions case in
+ * test-harness/scripts/reg-conditions-enforce.mjs.
  *
  * `availability`:
  *   'available'   — fully supported.
- *   'unavailable' — cannot be implemented as a backend condition FUNCTION because
- *                   Forge does not pass the acting user to app validators/
- *                   conditions (only Jira's native expression-based conditions get
- *                   the `user` binding). The form shows these greyed with
- *                   `unavailableReason`, pointing at Jira's native built-ins.
+ *   'unavailable' — cannot be implemented as a backend VALIDATOR function because
+ *                   Forge does not pass the acting user to one. (As CONDITIONS the
+ *                   acting-user rules DO work: Jira's expression engine supplies
+ *                   the `user` binding.) The form shows these greyed with
+ *                   `unavailableReason`.
  *
  * Param vocabulary (drives the form renderer in PremadeRuleForm.jsx):
  *   field       — field picker (writes `fieldId` + `fieldName`)
@@ -244,11 +256,14 @@ export const PREMADE_CONDITIONS = [
     params: { picker: { key: "priorityName", label: "Priority", source: "priorities", ph: "Choose a priority…" } },
     availability: "available",
   },
-  // --- Acting-user conditions. The acting user's accountId IS present in the rule
-  //     payload (args.user.accountId — confirmed live), so these are supported.
-  //     NOTE: app conditions are evaluated by Jira in the UI, not on the REST
-  //     transition-listing path, so their effect is UI-only (same as every other
-  //     CogniRunner condition). ---
+  // --- Acting-user conditions. As CONDITIONS these work because Jira's expression
+  //     engine supplies the `user` binding; the manifest expression reads
+  //     user.accountId directly. They are marked unavailable for VALIDATORS because
+  //     Forge does not pass the acting user to a validator function.
+  //     (An earlier note here claimed condition effects are "UI-only" because REST
+  //     bypasses them. That was wrong — see F3 in test-harness/FINDINGS.md. Jira
+  //     enforces conditions on the REST transition path too; our conditions did
+  //     nothing only because the manifest shipped a constant expression:"true".) ---
   {
     key: "current-user-is-assignee",
     label: "User is the assignee",

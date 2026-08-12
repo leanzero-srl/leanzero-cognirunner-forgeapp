@@ -1197,10 +1197,14 @@ resolver.define("clearLogs", async ({ context }) => {
  */
 resolver.define("registerConfig", async ({ payload, context }) => {
   try {
-    const { id, type, fieldId, prompt, workflow, legacyUpgrade, ruleKind, premadeRuleType } = payload;
+    const { id, type, fieldId, prompt, workflow, legacyUpgrade, ruleKind, premadeRuleType, ruleInstanceId } = payload;
     if (!id || !fieldId) {
       return { success: false, error: "Missing required fields" };
     }
+    // The workflow-rule instance id, when the caller knows it (the Add Rule wizard
+    // gets it back from the inject). Lets a later delete locate this exact rule
+    // inside the transition instead of inferring it.
+    const instanceIdPatch = ruleInstanceId ? { ruleInstanceId: String(ruleInstanceId) } : {};
     // Premade (non-AI) rule metadata for admin-panel labelling. `ruleKind` is
     // "premade" or "ai"; `premadeRuleType` is the catalog key (e.g. "field-required").
     const isPremade = ruleKind === "premade";
@@ -1293,6 +1297,7 @@ resolver.define("registerConfig", async ({ payload, context }) => {
         ruleKind: ruleKind || configs[existingIndex].ruleKind || "ai",
         premadeRuleType: isPremade ? premadeRuleType : undefined,
         ...(isInstanced ? { instanced: true } : {}),
+        ...instanceIdPatch,
         updatedAt: now,
       };
     } else {
@@ -1305,6 +1310,7 @@ resolver.define("registerConfig", async ({ payload, context }) => {
         ruleKind: ruleKind || "ai",
         premadeRuleType: isPremade ? premadeRuleType : undefined,
         ...(isInstanced ? { instanced: true } : {}),
+        ...instanceIdPatch,
         createdBy: context.accountId || null,
         createdAt: now,
         updatedAt: now,
@@ -5435,7 +5441,7 @@ export const serveAttachmentUpload = async (req) => {
  */
 resolver.define("registerPostFunction", async ({ payload, context }) => {
   try {
-    const { id, type, fieldId, prompt, conditionPrompt, actionPrompt, actionFieldId, functions, workflow, selectedDocIds, crossCheckClaims, docFormat, contentPrompt, docTitlePrompt, attachComment, stylePreset, researchQuery, researchTitle, autoSelectResearchDoc, commentPrompt, subtaskPrompt, requestCodeOffload, legacyUpgrade } = payload;
+    const { id, type, fieldId, prompt, conditionPrompt, actionPrompt, actionFieldId, functions, workflow, selectedDocIds, crossCheckClaims, docFormat, contentPrompt, docTitlePrompt, attachComment, stylePreset, researchQuery, researchTitle, autoSelectResearchDoc, commentPrompt, subtaskPrompt, requestCodeOffload, legacyUpgrade, ruleInstanceId } = payload;
     if (!id) return { success: false, error: "Missing post-function ID" };
     if (!type) return { success: false, error: "Missing post-function type" };
 
@@ -5524,6 +5530,11 @@ resolver.define("registerPostFunction", async ({ payload, context }) => {
         })),
       } : {}),
       workflow: workflow || {},
+      // Exact workflow-rule instance id (from the wizard's inject) so a later delete
+      // can find this rule on the transition without inferring. Preserved on edit.
+      ...(ruleInstanceId
+        ? { ruleInstanceId: String(ruleInstanceId) }
+        : (existing >= 0 && configs[existing].ruleInstanceId ? { ruleInstanceId: configs[existing].ruleInstanceId } : {})),
       ...(INSTANCED_ID_RE.test(effectiveId) || (existing >= 0 && configs[existing].instanced === true)
         ? { instanced: true } : {}),
       disabled: existing >= 0 ? configs[existing].disabled : false,
@@ -14770,6 +14781,11 @@ export const executePostFunction = async (args) => {
   try {
     const configs = await getRegistryForRuleCheck();
     const ruleId = config.ruleId || config.id;
+    // Registry ids are shared across rule families on the same transition (the legacy
+    // format has no type component), so only a post-function row may mute a
+    // post-function invocation — never a validator row, and never the reverse.
+    const isPfRow = (c) => String(c.type || "").startsWith("postfunction");
+    let match = null;
     if (ruleId) {
       let pfType = config.type || "";
       if (!pfType && extensionKey) {
@@ -14778,17 +14794,41 @@ export const executePostFunction = async (args) => {
       }
       const idCandidates = new Set([ruleId]);
       if (pfType) idCandidates.add(`${pfType}::${ruleId}`);
-      const match = configs.find((c) =>
-        idCandidates.has(c.id) && String(c.type || "").startsWith("postfunction"));
-      if (match?.disabled) {
-        console.log(`Post-function "${ruleId}" is disabled — skipping`);
-        await logSkip(
-          `Skipped: rule "${ruleId}" is disabled in the admin panel.`,
-          "Enable the rule from the admin panel's Rules tab if you want it to run again.",
-          { ruleId, ruleName: match.workflow?.workflowName, ruleWorkflow: match.workflow },
-        );
-        return { result: true };
-      }
+      match = configs.find((c) => idCandidates.has(c.id) && isPfRow(c)) || null;
+    }
+    // Context fallback — mirrors the validator path, with the SAME four guards.
+    // Without it a post-function claimed by a workflow scan could never be disabled:
+    // the scan keys its row by the workflow-rule instance id while this lookup only
+    // ever knew the embedded config id, so the two never met and "Register all"
+    // produced rows that looked manageable but weren't.
+    //
+    // The guards are load-bearing, not defensive noise:
+    //  - PF-family rows only (above), so a PF row can't mute a validator or vice versa;
+    //  - the invocation's own id must NOT be instanced — an instanced rule always
+    //    carries its id in its embedded config and resolves on the id tier;
+    //  - the ROW must not be instanced either — otherwise one sibling's disable flag
+    //    would silently mute the OTHER same-type rule on the transition, which is the
+    //    exact collapse per-instance ids exist to prevent;
+    //  - identity is workflowName + transitionId, never fieldId alone.
+    const invocationIsInstanced = ruleId && INSTANCED_ID_RE.test(String(ruleId));
+    if (!match && !invocationIsInstanced
+        && config?.workflow?.workflowName && config?.workflow?.transitionId) {
+      match = configs.find((c) =>
+        isPfRow(c)
+        && c.instanced !== true
+        && c.workflow?.workflowName === config.workflow.workflowName
+        && String(c.workflow?.transitionId) === String(config.workflow.transitionId)
+      ) || null;
+    }
+    if (match?.disabled) {
+      const shownId = ruleId || match.id;
+      console.log(`Post-function "${shownId}" is disabled — skipping`);
+      await logSkip(
+        `Skipped: rule "${shownId}" is disabled in the admin panel.`,
+        "Enable the rule from the admin panel's Rules tab if you want it to run again.",
+        { ruleId: shownId, ruleName: match.workflow?.workflowName, ruleWorkflow: match.workflow },
+      );
+      return { result: true };
     }
   } catch (e) {
     console.log("Could not check disabled status:", e);

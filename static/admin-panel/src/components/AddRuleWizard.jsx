@@ -392,6 +392,23 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
       });
 
       if (injectResult.success) {
+        // Keep the workflow-rule instance id Jira just minted. It is the only
+        // unambiguous handle on this rule inside the transition, so recording it
+        // now is what lets a later delete remove exactly this rule instead of
+        // inferring which one it was. Best-effort: the rule is already live and
+        // registered, so a failed patch must not read as a failed save.
+        if (injectResult.ruleId) {
+          try {
+            await invoke(isPostFunction ? "registerPostFunction" : "registerConfig", {
+              id: ruleId,
+              type: ruleType,
+              ...configPayload,
+              ...(isPostFunction ? { functions: ruleType === "postfunction-static" ? functions : [] } : {}),
+              workflow: workflowData,
+              ruleInstanceId: injectResult.ruleId,
+            });
+          } catch { /* the rule is live and registered; the id is an optimisation */ }
+        }
         if (onCreated) onCreated();
         setCreated(true);
       } else {

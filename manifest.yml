@@ -18,15 +18,41 @@ modules:
         - company-managed
         - team-managed
 
-  # Workflow Condition - controls visibility of transition based on AI
+  # Workflow Condition - hides a transition when its criteria aren't met.
+  #
+  # A Forge condition is a JIRA EXPRESSION, not a lambda: `function` is not a
+  # property of this module at all (it was declared here for years and silently
+  # ignored, which is why everyone believed validate() ran for conditions), and
+  # `expression` is REQUIRED by the manifest schema. Jira expressions have no
+  # network, no app storage and no await, so an AI-powered condition is
+  # structurally impossible — conditions support the deterministic rule types only.
+  #
+  # The configuration saved by the create/edit Custom UI arrives as `config`.
+  # DEFAULT-TRUE IS LOAD-BEARING: anything this expression doesn't recognise —
+  # every condition saved before this release, every AI-shaped config, and a
+  # `config` that arrives unparsed — falls through to true, i.e. exactly the
+  # previous behaviour. A condition module that cannot resolve evaluates to FALSE
+  # and blocks the transition for everyone, so failing open here is the only safe
+  # default.
   jira:workflowCondition:
     - key: ai-text-field-condition
       name: CogniRunner Field Condition
       description: Shows transition only if a text field value passes AI validation.
-      function: validate
       resolver:
         function: resolver
-      expression: "true"
+      expression: >-
+        config == null || config.conditionKind != "deterministic" || config.fieldId == null ? true :
+        config.ruleType == "field-has-value" ?
+          (issue?.[config.fieldId] != null && (issue?.[config.fieldId].length == null || issue?.[config.fieldId].length > 0)) :
+        config.ruleType == "field-regex" ?
+          (issue?.[config.fieldId] == null ? true : issue?.[config.fieldId].match(config.regex) != null) :
+        config.ruleType == "text-length" ?
+          (issue?.[config.fieldId] == null ? true :
+            (issue?.[config.fieldId].length >= (config.minLength == null ? 0 : config.minLength)
+             && (config.maxLength == null || issue?.[config.fieldId].length <= config.maxLength))) :
+        config.ruleType == "allowed-values" ?
+          (issue?.[config.fieldId] == null ? true : config.allowedList.includes(issue?.[config.fieldId])) :
+        true
       create:
         resource: config-ui-resource
       edit:

@@ -116,6 +116,37 @@ export function makeSelfLoop(hubStatusRef, name, idNum) {
   };
 }
 
+/**
+ * A GLOBAL transition — reachable from ANY status, which is what the workflow
+ * editor labels "Any status → X". Distinct from makeSelfLoop, which is DIRECTED
+ * and only available while the issue sits on the hub status.
+ *
+ * Shape notes (the update DTO is strict): `links` must be present but EMPTY —
+ * a global transition has no from-edge — and no fromStatusReference anywhere.
+ */
+export function makeGlobalTransition(toStatusRef, name, idNum) {
+  return {
+    id: String(idNum),
+    type: "GLOBAL",
+    toStatusReference: String(toStatusRef),
+    links: [],
+    name,
+    description: "",
+    actions: [],
+    validators: [],
+    triggers: [],
+    properties: {},
+  };
+}
+
+/** Remove transitions from a workflow by exact name. Returns the count removed. */
+export function removeTransitionsByName(wf, names) {
+  const doomed = new Set(names);
+  const before = (wf.transitions || []).length;
+  wf.transitions = (wf.transitions || []).filter((t) => !doomed.has(t.name));
+  return before - wf.transitions.length;
+}
+
 /** Read a workflow by exact name via the search endpoint. Returns { top, wf }. */
 export async function readWorkflow(name) {
   const d = await get(

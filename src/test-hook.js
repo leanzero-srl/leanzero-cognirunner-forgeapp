@@ -95,6 +95,26 @@ export async function testStateTrigger(req) {
         return json(500, { error: String((e && e.message) || e) });
       }
     }
+    // Delete registry rows, optionally detaching the rules from their Jira workflows —
+    // the same removeRegistryRowsCore the admin panel's Delete uses. Lets the harness
+    // assert end-to-end that "delete" actually stops a rule running, and lets a
+    // campaign reclaim registry slots it filled. bypassAuthz is safe here for the same
+    // reason the other actions run with accountId:null — the Bearer gate above IS the
+    // authorization, and this trigger returns 404 wherever HARNESS_SECRET is unset.
+    if (body.action === "removeRules") {
+      try {
+        const { removeRegistryRowsCore } = await import("./index.js");
+        const r = await removeRegistryRowsCore({
+          ids: Array.isArray(body.ids) ? body.ids : [],
+          accountId: null,
+          detach: body.detach === true,
+          bypassAuthz: true,
+        });
+        return json(200, r);
+      } catch (e) {
+        return json(500, { error: String((e && e.message) || e) });
+      }
+    }
     return json(400, { error: `unknown POST action=${body.action}` });
   }
 

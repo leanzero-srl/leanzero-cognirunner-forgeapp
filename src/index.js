@@ -3310,7 +3310,7 @@ const describeDeleteFailure = (r) => {
  * Note `pf_code` bundles are deliberately NOT deleted (see pfCodeKeyFor): a
  * published workflow or a workflow copy may still execute against them.
  */
-const removeRegistryRowsCore = async ({ ids, accountId, detach = false, family = null }) => {
+export const removeRegistryRowsCore = async ({ ids, accountId, detach = false, family = null, bypassAuthz = false }) => {
   const wanted = [...new Set((Array.isArray(ids) ? ids : []).map((i) => String(i)).filter(Boolean))];
   if (!wanted.length) return { success: false, error: "No rules specified", results: [] };
 
@@ -3324,7 +3324,10 @@ const removeRegistryRowsCore = async ({ ids, accountId, detach = false, family =
     if (!target) { results.push({ id, ok: false, reason: "not-found" }); continue; }
     if (family === "postfunction" && !isPostFunctionRow(target)) { results.push({ id, ok: false, reason: "wrong-family" }); continue; }
     if (family === "rule" && isPostFunctionRow(target)) { results.push({ id, ok: false, reason: "wrong-family" }); continue; }
-    if (!(await canDeleteConfig(accountId, target))) { results.push({ id, ok: false, reason: "forbidden" }); continue; }
+    // bypassAuthz is ONLY ever set by the dev-gated HARNESS_SECRET web trigger, where
+    // the Bearer secret is the authorization (same reasoning as its other actions).
+    // Resolvers never pass it.
+    if (!bypassAuthz && !(await canDeleteConfig(accountId, target))) { results.push({ id, ok: false, reason: "forbidden" }); continue; }
     removable.push(target);
   }
 

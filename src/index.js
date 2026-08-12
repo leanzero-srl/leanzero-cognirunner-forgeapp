@@ -36,6 +36,15 @@ import { buildCatalogPromptBlock, validateBuiltRule } from "./shared/build-rule.
 import { normalizeUsage, emptyState, bumpCounters, summarizeState } from "./shared/usage-meter.js";
 import { deriveLogFlags } from "./shared/log-flags.js";
 import { serializeRule, buildExportEnvelope, validateImportSchema, resolveBindings, containsSecretKey, EXPORT_CAPS } from "./shared/rule-portability.js";
+// Registry scale caps + pressure math — single source, shared with the admin panel.
+import {
+  REGISTRY_MAX_ROWS,
+  REGISTRY_CREATE_MAX_BYTES,
+  REGISTRY_CLAIM_MAX_BYTES,
+  REGISTRY_FULL_MESSAGE,
+  REGISTRY_SIZE_MESSAGE,
+  registryPressure,
+} from "./shared/registry-limits.js";
 // Premade (non-AI, "static") rule executor — runs deterministic validators/conditions
 // chosen from the premade catalog, short-circuiting the AI path in validate().
 import { executePremadeRule } from "./premade-rules.js";
@@ -146,6 +155,9 @@ const pfCodeKeyFor = (effectiveId, functions) => PF_CODE_PREFIX
 // are available, neither of which matches the app UUID in rule parameters.key.
 const APP_ID = "36415848-6868-4697-9554-3c3ad87b8da9";
 const APP_ADMINS_KEY = "app_admins";
+// One-shot data repairs already applied to this install's registry. Guards
+// migrations that must never run twice (see the ownership repair in getConfigs).
+const REGISTRY_MIGRATIONS_KEY = "registry_migrations";
 
 /**
  * Check if a user is an admin (Jira site admin OR app admin).
@@ -226,8 +238,59 @@ const canActOnConfig = async (accountId, config, minRole) => {
   return !config.createdBy || config.createdBy === accountId;
 };
 
+/**
+ * DESTRUCTIVE-path gate — deliberately NARROWER than canActOnConfig.
+ *
+ * canActOnConfig treats an ownerless row (`createdBy` null — legacy rows, and
+ * every rule claimed by a workflow scan) as actionable by any scope-"own"
+ * editor. That permissiveness is fine for enable/disable, which is reversible
+ * in one click. It is NOT fine for delete: it would let a scope-"own" editor
+ * destroy every machine-claimed rule on the site.
+ *
+ * Keep the two apart. If a later "consistency" refactor collapses them, this
+ * hole comes straight back.
+ */
+const canDeleteConfig = async (accountId, config) => {
+  const perms = await getUserPermissions(accountId);
+  if (!perms) return false;
+  if (perms.role === "admin") return true;
+  if (perms.role !== "editor") return false;
+  if (perms.scope === "all") return true;
+  // scope "own": genuine authorship only — ownerless is NOT yours.
+  return !!config.createdBy && config.createdBy === accountId;
+};
+
 /** Backward-compatible: requireAdmin = requireRole(id, "admin") */
 const requireAdmin = async (accountId) => requireRole(accountId, "admin");
+
+/**
+ * Decide which registry rows a caller may SEE. Pure — exported for unit tests.
+ *
+ * Two different jobs used to share one flag, and conflating them is what made
+ * "My Rules" show rules the user never created:
+ *
+ *  - SCOPE ENFORCEMENT (`scope`) is a permission. A scope-"own" editor may only
+ *    see their own rules — but ownerless rows (legacy rows predating createdBy)
+ *    stay visible, otherwise upgrading the app would blank their table.
+ *  - The "mine" FILTER is a display choice the user makes. It must be strict:
+ *    a row with no owner is not yours. The old `!c.createdBy ||` clause made
+ *    every ownerless row belong to everybody.
+ *
+ * Enforcement runs first, the display choice narrows it further.
+ */
+export const filterConfigsForUser = (configs, { filter, accountId, scope, role } = {}) => {
+  let visible = Array.isArray(configs) ? configs : [];
+  const isPrivileged = role === "admin" || scope === "all";
+  if (!isPrivileged && accountId) {
+    // Permission: own-scope users see their rules plus unowned legacy rows.
+    visible = visible.filter((c) => !c.createdBy || c.createdBy === accountId);
+  }
+  if (filter === "mine" && accountId) {
+    // Display choice: strictly authored by me.
+    visible = visible.filter((c) => c.createdBy === accountId);
+  }
+  return visible;
+};
 
 // === Agentic validation constants ===
 const MAX_TOOL_ROUNDS = 3;
@@ -1197,11 +1260,13 @@ resolver.define("registerConfig", async ({ payload, context }) => {
     }
     // Scale guard: the registry lives in ONE KVS value (hard cap ~240KB) — refuse
     // unbounded growth with a clear message instead of corrupting at the limit.
-    if (existingIndex < 0 && configs.length >= 500) {
-      return { success: false, error: "Rule registry is full (500 rules). Remove unused rules from the admin panel before adding more." };
+    // Caps + copy live in src/shared/registry-limits.js (single source; the admin
+    // panel's pressure meter reads the same numbers).
+    if (existingIndex < 0 && configs.length >= REGISTRY_MAX_ROWS) {
+      return { success: false, error: REGISTRY_FULL_MESSAGE };
     }
-    if (existingIndex < 0 && JSON.stringify(configs).length > 200000) {
-      return { success: false, error: "Rule registry is near the storage size limit. Remove unused rules from the admin panel before adding more." };
+    if (existingIndex < 0 && JSON.stringify(configs).length > REGISTRY_CREATE_MAX_BYTES) {
+      return { success: false, error: REGISTRY_SIZE_MESSAGE };
     }
     // If a different-family row already holds this exact id (legacy collision),
     // namespace ours so registry ids stay unique.
@@ -1343,6 +1408,70 @@ const flattenConditionRules = (node) => {
     rules.push(...flattenConditionRules(group));
   }
   return rules;
+};
+
+/**
+ * Build a status-reference → status-name lookup from the pieces of a
+ * /rest/api/3/workflows/search response. The response carries names in TWO
+ * places and neither is complete on its own: `workflow.statuses[]` may hold
+ * only `statusReference`, while the top-level `statuses[]` (and the global
+ * GET /status list, when the caller has it) carry `id` + `name`. Later sources
+ * win, so pass them least- to most-authoritative.
+ */
+const buildStatusMap = (...statusLists) => {
+  const statusMap = new Map();
+  for (const list of statusLists) {
+    for (const s of (list || [])) {
+      if (!s) continue;
+      if (s.statusReference && s.name) statusMap.set(String(s.statusReference), s.name);
+      if (s.id && s.name) statusMap.set(String(s.id), s.name);
+    }
+  }
+  return statusMap;
+};
+
+/**
+ * Describe one v3-workflows-API transition in human terms.
+ *
+ * SINGLE SOURCE for "what does this transition look like to a user" — used by
+ * the transition picker (getWorkflowTransitions) AND by rule discovery
+ * (discoverWorkflowRules). They disagreed before: discovery resolved nothing
+ * and stored the transition's NAME where its destination STATUS belonged, so
+ * the admin panel rendered "Any → ZSCALE-pv12" for a transition that actually
+ * runs "Backlog → Backlog". Never re-derive this at a call site.
+ *
+ * Returns { name, type, fromName, toName, isGlobal, isInitial }.
+ */
+const describeTransition = (t, statusMap) => {
+  const get = (ref) => (statusMap && statusMap.get(String(ref))) || ref;
+
+  // "to" status: `toStatusReference`, or `to` as a string / { statusReference }.
+  const toRef = t.toStatusReference || (typeof t.to === "string" ? t.to : t.to?.statusReference) || "";
+  const toName = (toRef && get(toRef)) || "?";
+
+  // "from" statuses: new API uses links[].fromStatusReference; old API a from[].
+  let fromNames = [];
+  if (t.links && t.links.length > 0) {
+    fromNames = t.links.map((l) => l.fromStatusReference).filter(Boolean).map(get);
+  } else if (Array.isArray(t.from) && t.from.length > 0) {
+    fromNames = t.from
+      .map((f) => (typeof f === "string" ? f : (f.statusReference || f.id || "")))
+      .filter(Boolean)
+      .map(get);
+  }
+
+  const type = String(t.type || "").toUpperCase();
+  const isInitial = type === "INITIAL";
+  const isGlobal = type === "GLOBAL" || (!t.links?.length && !t.from?.length && !isInitial);
+
+  return {
+    name: t.name || "",
+    type: t.type || "",
+    fromName: isInitial ? "Create" : isGlobal ? "Any status" : (fromNames.length > 0 ? fromNames.join(", ") : "Any"),
+    toName,
+    isGlobal,
+    isInitial,
+  };
 };
 
 async function fetchWorkflowTransitions(workflowName) {
@@ -1536,16 +1665,69 @@ resolver.define("getConfigs", async ({ payload, context }) => {
       console.log("Some workflow API calls failed — partial orphan cleanup only");
     }
 
-    // Apply ownership filter
-    const filter = payload?.filter;
-    const accountId = context?.accountId;
-    console.log(`getConfigs filter="${filter}", accountId="${accountId}", total=${surviving.length}, createdBys=${JSON.stringify(surviving.map((c) => c.createdBy))}`);
-    let filtered = surviving;
-    if (filter === "mine" && accountId) {
-      filtered = surviving.filter((c) => !c.createdBy || c.createdBy === accountId);
+    // ---- One-shot ownership repair -------------------------------------------------
+    // "Register all" used to stamp the clicking admin as `createdBy` on every rule it
+    // claimed, so hundreds of machine-created rules landed in that admin's "My Rules".
+    // Un-attribute them once, keeping the old value in `claimedBy` so this is
+    // reversible. Keyed on `discovered: true`, which is set in exactly one place
+    // (registerDiscoveredRulesCore) — a hand-authored rule can never carry it.
+    try {
+      const migrations = (await storage.get(REGISTRY_MIGRATIONS_KEY)) || {};
+      if (!migrations.discoveredOwnershipV1) {
+        let repaired = 0;
+        for (const c of surviving) {
+          if (c.discovered === true && c.createdBy) {
+            c.claimedBy = c.claimedBy || c.createdBy;
+            c.createdBy = null;
+            repaired++;
+          }
+        }
+        if (repaired > 0) await saveRegistry(surviving);
+        await storage.set(REGISTRY_MIGRATIONS_KEY, {
+          ...migrations,
+          discoveredOwnershipV1: true,
+          at: new Date().toISOString(),
+          rows: repaired,
+        });
+        if (repaired > 0) console.log(`Ownership repair: un-attributed ${repaired} auto-claimed rule(s)`);
+      }
+    } catch (e) {
+      console.log("Ownership repair skipped:", e?.message || e);
     }
 
-    return { success: true, configs: filtered, removedCount: removed.length };
+    // ---- Visibility ----------------------------------------------------------------
+    // Registry pressure is computed BEFORE filtering: the meter reports the shared
+    // site-wide state, which does not change just because you're viewing "My Rules".
+    const pressure = registryPressure(surviving);
+
+    const filter = payload?.filter;
+    const accountId = context?.accountId;
+    const perms = accountId ? await getUserPermissions(accountId) : null;
+    const filtered = filterConfigsForUser(surviving, {
+      filter,
+      accountId,
+      scope: perms?.scope,
+      role: perms?.role,
+    });
+    console.log(`getConfigs filter="${filter}" role=${perms?.role || "-"} scope=${perms?.scope || "-"} total=${surviving.length} shown=${filtered.length}`);
+
+    // Resolve owner display names from the existing admin roster — one KVS read, no
+    // extra scope. Enrich COPIES: `surviving` holds the very objects saveRegistry
+    // persists, so mutating them would bake derived UI fields into the registry and
+    // inflate it toward the byte cap.
+    let ownerNames = {};
+    try {
+      const roster = (await storage.get(APP_ADMINS_KEY)) || [];
+      for (const u of roster) {
+        if (u?.accountId && u?.displayName) ownerNames[u.accountId] = u.displayName;
+      }
+    } catch { /* names are cosmetic — never fail the read for them */ }
+    const enriched = filtered.map((c) => ({
+      ...c,
+      createdByName: c.createdBy ? (ownerNames[c.createdBy] || null) : null,
+    }));
+
+    return { success: true, configs: enriched, removedCount: removed.length, registry: pressure };
   } catch (error) {
     console.error("Failed to get configs:", error);
     return { success: false, error: error.message, configs: [] };
@@ -1606,7 +1788,12 @@ resolver.define("discoverWorkflowRules", async ({ context }) => {
       for (const wf of values) {
         scannedWorkflows++;
         const wfName = wf.name || "";
+        // Resolve real status names so a discovered rule records its true edge
+        // ("Backlog → Backlog") rather than the transition's name. The search
+        // response carries a top-level statuses[] alongside the workflow's own.
+        const statusMap = buildStatusMap(wf.statuses, data.statuses);
         for (const t of (wf.transitions || [])) {
+          const td = describeTransition(t, statusMap);
           const slotRules = [
             ...(t.validators || []),
             ...flattenConditionRules(t.conditions),
@@ -1621,9 +1808,24 @@ resolver.define("discoverWorkflowRules", async ({ context }) => {
             const embeddedId = cfg.id || cfg.ruleId || null;
             const instanceId = rule.parameters?.id || rule.id || null;
             const wfId = wf.id != null ? String(wf.id) : null;
-            const matchId = (embeddedId && registeredById.has(String(embeddedId))) ? String(embeddedId)
-              : (instanceId && registeredById.has(String(instanceId))) ? String(instanceId)
-              : null;
+            // Registry rows can carry a TYPE-NAMESPACED id: registerConfig /
+            // registerPostFunction rewrite `id` to `${type}::${id}` when a
+            // different-family row already holds the raw id, while the workflow
+            // rule keeps the raw value. Without trying those variants an
+            // already-registered rule is reported as unregistered on every scan,
+            // and "Register all" mints a duplicate row each cycle.
+            const ruleType = typeForRule(rule, cfg);
+            const idCandidates = [];
+            for (const base of [embeddedId, instanceId]) {
+              if (!base) continue;
+              idCandidates.push(String(base));
+              if (ruleType) idCandidates.push(`${ruleType}::${base}`);
+              // A post-function row may be namespaced under either concrete flavor.
+              if (String(ruleType).startsWith("postfunction")) {
+                idCandidates.push(`postfunction-semantic::${base}`, `postfunction-static::${base}`);
+              }
+            }
+            const matchId = idCandidates.find((c) => registeredById.has(c)) || null;
             if (matchId) {
               registeredMatched++;
               // Back-fill: an already-claimed DISCOVERED row that predates workflowId capture
@@ -1642,14 +1844,28 @@ resolver.define("discoverWorkflowRules", async ({ context }) => {
             }
             discovered.push({
               instanceId,
-              type: typeForRule(rule, cfg),
+              // The rule's own embedded identity, when it has one. This is what the
+              // runtime disable check looks a row up by, so claiming a rule without
+              // it produces a row that can never mute the rule.
+              embeddedId: embeddedId ? String(embeddedId) : null,
+              type: ruleType,
               fieldId: cfg.fieldId || null,
               prompt: typeof cfg.prompt === "string" ? cfg.prompt.slice(0, 120) : null,
               packTagged: cfg.pack === true,
               workflowId: wfId,
               workflowName: wfName,
               transitionId: t.id != null ? String(t.id) : null,
-              transitionName: t.name || null,
+              // Three DISTINCT facts. transitionName is the transition's label;
+              // From/To are the real status edge it runs across.
+              transitionName: td.name || null,
+              transitionFromName: td.fromName || null,
+              transitionToName: td.toName || null,
+              transitionType: td.type || null,
+              // Can this rule ever be disabled from the admin panel? The runtime
+              // finds a row by embedded id, or (validators/conditions only) by
+              // workflow+transition context. With neither, the ONLY way to stop it
+              // is removing it from the workflow.
+              manageable: !!embeddedId || !!(wfName && t.id != null),
             });
           }
         }
@@ -1691,15 +1907,33 @@ export const registerDiscoveredRulesCore = async (rules, accountId = null) => {
     if (!items.length) return { success: false, error: "No rules provided" };
     let configs = (await storage.get(CONFIG_REGISTRY_KEY)) || [];
     const now = new Date().toISOString();
-    let added = 0, updated = 0, skipped = 0;
+    let added = 0, updated = 0, skipped = 0, skippedSize = 0;
+    // Running byte estimate. The old code ran ONE JSON.stringify AFTER the loop and
+    // returned success:false for the whole batch when it tripped — throwing away every
+    // successful add in that batch. Estimate incrementally instead, stop adding at the
+    // ceiling, and still persist the partial result. O(n) rather than O(n^2).
+    let bytes = JSON.stringify(configs).length;
     for (const it of items) {
-      const id = String(it.instanceId || "").trim();
+      // Key by the rule's own EMBEDDED id when it has one. The runtime disable check
+      // looks the row up by the embedded `config.ruleId || config.id` (validate() and
+      // executePostFunction()), so a row keyed by the workflow-rule instance UUID could
+      // never be found — "Register all" claimed the rule into the table but the rule
+      // stayed un-disable-able. instanceId remains the fallback (and is always stored
+      // separately below, so detach can match on it exactly).
+      const embeddedId = String(it.embeddedId || "").trim();
+      const instanceId = String(it.instanceId || "").trim();
+      const id = embeddedId || instanceId;
       if (!id) { skipped++; continue; }
       const workflow = {};
       if (it.workflowId) workflow.workflowId = String(it.workflowId);
       if (it.workflowName) workflow.workflowName = it.workflowName;
       if (it.transitionId) workflow.transitionId = String(it.transitionId);
-      if (it.transitionName) workflow.transitionToName = it.transitionName;
+      // The transition's NAME is not its destination STATUS. Aliasing them made every
+      // discovered rule render as "Any → <transition name>" (e.g. "Any → ZSCALE-pv12"
+      // for a transition that actually runs Backlog → Backlog). Keep all three.
+      if (it.transitionName) workflow.transitionName = it.transitionName;
+      if (it.transitionFromName) workflow.transitionFromName = it.transitionFromName;
+      if (it.transitionToName) workflow.transitionToName = it.transitionToName;
       if (it.siteUrl) workflow.siteUrl = String(it.siteUrl);
       const idx = configs.findIndex((c) => String(c.id) === id);
       const row = {
@@ -1708,6 +1942,9 @@ export const registerDiscoveredRulesCore = async (rules, accountId = null) => {
         fieldId: it.fieldId || null,
         prompt: typeof it.prompt === "string" ? it.prompt.slice(0, 200) : "",
         workflow: Object.keys(workflow).length ? workflow : undefined,
+        // Exact workflow-rule instance id — lets deletion locate the rule inside the
+        // transition without guessing, and survives an id-namespacing rewrite.
+        ...(instanceId ? { ruleInstanceId: instanceId } : {}),
         discovered: true,
         updatedAt: now,
       };
@@ -1715,17 +1952,22 @@ export const registerDiscoveredRulesCore = async (rules, accountId = null) => {
         configs[idx] = { ...configs[idx], ...row };
         updated++;
       } else {
-        if (configs.length >= 500) { skipped++; continue; }
-        configs.push({ ...row, createdBy: accountId || null, createdAt: now });
+        if (configs.length >= REGISTRY_MAX_ROWS) { skipped++; continue; }
+        // createdBy stays NULL: claiming a rule that was attached over REST (or by
+        // someone else) is not authorship. Stamping the clicking admin here is what put
+        // hundreds of machine-created rules into that admin's "My Rules". claimedBy is
+        // an audit trail only and must never be read as ownership.
+        const fresh = { ...row, createdBy: null, claimedBy: accountId || null, claimedAt: now, createdAt: now };
+        const cost = JSON.stringify(fresh).length + 1;
+        if (bytes + cost > REGISTRY_CLAIM_MAX_BYTES) { skippedSize++; continue; }
+        configs.push(fresh);
+        bytes += cost;
         added++;
       }
     }
-    if (JSON.stringify(configs).length > 230000) {
-      return { success: false, error: "Rule registry is near the storage size limit. Remove unused rules first." };
-    }
     await saveRegistry(configs);
-    console.log(`registerDiscoveredRules: +${added} added, ${updated} updated, ${skipped} skipped`);
-    return { success: true, added, updated, skipped };
+    console.log(`registerDiscoveredRules: +${added} added, ${updated} updated, ${skipped} skipped, ${skippedSize} skipped(size)`);
+    return { success: true, added, updated, skipped, skippedSize, capped: skipped > 0 || skippedSize > 0 };
   } catch (error) {
     console.error("registerDiscoveredRules failed:", error);
     return { success: false, error: error.message };
@@ -2437,24 +2679,9 @@ resolver.define("getWorkflowTransitions", async ({ payload, context }) => {
       if (statusResp.ok) allStatuses = await statusResp.json();
     } catch (e) { console.error("Failed to fetch statuses:", e); }
 
-    // Build status lookup map
-    // Top-level statuses array has { id, name, statusReference }
-    // Workflow.statuses only has { statusReference } without names
-    // We need the top-level statuses from the search response for names
-    const statusMap = new Map();
-
-    // First: workflow.statuses (may only have statusReference, no name)
-    for (const s of (workflow.statuses || [])) {
-      if (s.statusReference && s.name) statusMap.set(s.statusReference, s.name);
-      if (s.id && s.name) statusMap.set(String(s.id), s.name);
-    }
-
-    // Second: all Jira statuses (GET /rest/api/3/status) — has id + name
-    for (const s of allStatuses) {
-      if (s.id && s.name) statusMap.set(String(s.id), s.name);
-      // statusReference often equals id for global statuses
-      if (s.statusReference) statusMap.set(s.statusReference, s.name);
-    }
+    // Status lookup: least- to most-authoritative. workflow.statuses may carry only
+    // a statusReference; the global GET /status list has id + name.
+    const statusMap = buildStatusMap(workflow.statuses, allStatuses);
 
     console.log(`getWorkflowTransitions: statusMap has ${statusMap.size} entries, transitions: ${(workflow.transitions || []).length}`);
 
@@ -2469,37 +2696,15 @@ resolver.define("getWorkflowTransitions", async ({ payload, context }) => {
       const hasCogniCondition = conditions.some((r) => r.parameters?.key?.includes(APP_ID));
       const hasCogniPostFunction = postFunctions.some((r) => r.parameters?.key?.includes(APP_ID));
 
-      // Extract "to" status: field is `toStatusReference` or `to.statusReference` or `to`
-      const toRef = t.toStatusReference || (typeof t.to === "string" ? t.to : t.to?.statusReference) || "";
-      const toName = statusMap.get(toRef) || toRef || "?";
-
-      // Extract "from" statuses: from `links[].fromStatusReference` or `from[]`
-      let fromNames = [];
-      if (t.links && t.links.length > 0) {
-        // New API format: links array with fromStatusReference
-        fromNames = t.links
-          .map((l) => l.fromStatusReference)
-          .filter(Boolean)
-          .map((ref) => statusMap.get(ref) || ref);
-      } else if (Array.isArray(t.from) && t.from.length > 0) {
-        // Old API format: from array
-        fromNames = t.from
-          .map((f) => typeof f === "string" ? f : (f.statusReference || f.id || ""))
-          .filter(Boolean)
-          .map((ref) => statusMap.get(ref) || ref);
-      }
-
-      // Determine transition type label
-      const type = (t.type || "").toUpperCase();
-      const isGlobal = type === "GLOBAL" || (!t.links?.length && !t.from?.length && type !== "INITIAL");
-      const isInitial = type === "INITIAL";
+      // From/to naming is shared with rule discovery — see describeTransition.
+      const d = describeTransition(t, statusMap);
 
       return {
         id: String(t.id),
         name: t.name,
         type: t.type || "",
-        fromName: isInitial ? "Create" : isGlobal ? "Any status" : (fromNames.length > 0 ? fromNames.join(", ") : "Any"),
-        toName,
+        fromName: d.fromName,
+        toName: d.toName,
         validatorCount: validators.length,
         conditionCount: conditions.length,
         postFunctionCount: postFunctions.length,
@@ -4733,12 +4938,12 @@ resolver.define("registerPostFunction", async ({ payload, context }) => {
     if (existing < 0 && !(await requireRole(context.accountId, "editor"))) {
       return { success: false, error: "You don't have permission to create a post-function" };
     }
-    // Scale guard — same single-KVS-value limit as registerConfig.
-    if (existing < 0 && configs.length >= 500) {
-      return { success: false, error: "Rule registry is full (500 rules). Remove unused rules from the admin panel before adding more." };
+    // Scale guard — same single-KVS-value limit as registerConfig (shared caps).
+    if (existing < 0 && configs.length >= REGISTRY_MAX_ROWS) {
+      return { success: false, error: REGISTRY_FULL_MESSAGE };
     }
-    if (existing < 0 && JSON.stringify(configs).length > 200000) {
-      return { success: false, error: "Rule registry is near the storage size limit. Remove unused rules (static post-function code is the usual culprit) before adding more." };
+    if (existing < 0 && JSON.stringify(configs).length > REGISTRY_CREATE_MAX_BYTES) {
+      return { success: false, error: REGISTRY_SIZE_MESSAGE };
     }
     // If a different-family row already holds this exact id, namespace ours.
     const otherFamilyHoldsId = configs.some((c, i) => c.id === id && i !== existing);
@@ -4794,7 +4999,12 @@ resolver.define("registerPostFunction", async ({ payload, context }) => {
       ...(INSTANCED_ID_RE.test(effectiveId) || (existing >= 0 && configs[existing].instanced === true)
         ? { instanced: true } : {}),
       disabled: existing >= 0 ? configs[existing].disabled : false,
-      createdBy: existing >= 0 ? (configs[existing].createdBy || context.accountId) : context.accountId,
+      // Only the CREATE branch stamps an owner (mirrors registerConfig). Editing an
+      // ownerless row must not silently adopt it — a bulk re-save would otherwise
+      // mass-attribute machine-claimed rules to whoever hit Save. `?? null` keeps the
+      // field's shape stable; `|| context.accountId` used to write `undefined`, which
+      // JSON.stringify drops entirely.
+      createdBy: existing >= 0 ? (configs[existing].createdBy ?? null) : (context.accountId || null),
       createdAt: existing >= 0 ? configs[existing].createdAt : new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -5099,6 +5309,20 @@ export const commitImportCore = async ({ rule, targetWorkflowName, targetTransit
         cfg.functions = functions;
       }
     }
+    // 5b. Scale guard — BEFORE the inject, not before the registry push. Import was the
+    //     one create path with no cap check: at the cap it would attach a live workflow
+    //     rule and then fail to register it, manufacturing exactly the unmanageable
+    //     "attached but not in the registry" rule this release exists to eliminate.
+    //     Refusing early costs one extra KVS read and leaves the workflow untouched.
+    {
+      const pre = (await storage.get(CONFIG_REGISTRY_KEY)) || [];
+      if (pre.length >= REGISTRY_MAX_ROWS) {
+        return { success: false, status: "error", error: REGISTRY_FULL_MESSAGE };
+      }
+      if (JSON.stringify(pre).length > REGISTRY_CREATE_MAX_BYTES) {
+        return { success: false, status: "error", error: REGISTRY_SIZE_MESSAGE };
+      }
+    }
     // 6. INJECT via the proven core.
     const injected = await injectWorkflowRuleCore({ workflowName: targetWorkflowName, transitionId: String(targetTransitionId), ruleType, config: cfg });
     if (!injected.success) {
@@ -5111,9 +5335,12 @@ export const commitImportCore = async ({ rule, targetWorkflowName, targetTransit
       const configs = (await storage.get(CONFIG_REGISTRY_KEY)) || [];
       const now = new Date().toISOString();
       const isPf = ruleType.startsWith("postfunction");
+      // Keep the workflow-rule instance id the inject just minted: it lets a later
+      // delete locate this exact rule inside the transition without guessing.
+      const instanceId = injected.ruleId ? { ruleInstanceId: String(injected.ruleId) } : {};
       const row = isPf
-        ? { ...cfg, instanced: true, disabled: false, createdBy: accountId || null, createdAt: now, updatedAt: now }
-        : { id: freshId, type: ruleType, fieldId: cfg.fieldId, prompt: typeof cfg.prompt === "string" ? cfg.prompt.slice(0, 200) : "", workflow: cfg.workflow, ruleKind: cfg.ruleKind, premadeRuleType: cfg.premadeRuleType, instanced: true, disabled: false, createdBy: accountId || null, createdAt: now, updatedAt: now };
+        ? { ...cfg, ...instanceId, instanced: true, disabled: false, createdBy: accountId || null, createdAt: now, updatedAt: now }
+        : { id: freshId, type: ruleType, fieldId: cfg.fieldId, prompt: typeof cfg.prompt === "string" ? cfg.prompt.slice(0, 200) : "", workflow: cfg.workflow, ruleKind: cfg.ruleKind, premadeRuleType: cfg.premadeRuleType, ...instanceId, instanced: true, disabled: false, createdBy: accountId || null, createdAt: now, updatedAt: now };
       configs.push(row);
       await saveRegistry(configs);
     } catch (e) {

@@ -41,17 +41,31 @@ modules:
       resolver:
         function: resolver
       expression: >-
-        config == null || config.conditionKind != "deterministic" || config.fieldId == null ? true :
+        config == null || config.conditionKind != "deterministic" ? true :
         config.ruleType == "field-has-value" ?
-          (issue?.[config.fieldId] != null && (issue?.[config.fieldId].length == null || issue?.[config.fieldId].length > 0)) :
-        config.ruleType == "field-regex" ?
-          (issue?.[config.fieldId] == null ? true : issue?.[config.fieldId].match(config.regex) != null) :
-        config.ruleType == "text-length" ?
-          (issue?.[config.fieldId] == null ? true :
-            (issue?.[config.fieldId].length >= (config.minLength == null ? 0 : config.minLength)
-             && (config.maxLength == null || issue?.[config.fieldId].length <= config.maxLength))) :
-        config.ruleType == "allowed-values" ?
-          (issue?.[config.fieldId] == null ? true : config.allowedList.includes(issue?.[config.fieldId])) :
+          (config.fieldId != null && issue?.[config.fieldId] != null
+           && (issue?.[config.fieldId].length == null || issue?.[config.fieldId].length > 0)) :
+        config.ruleType == "field-empty" ?
+          (config.fieldId == null || issue?.[config.fieldId] == null
+           || (issue?.[config.fieldId].length != null && issue?.[config.fieldId].length == 0)) :
+        config.ruleType == "field-equals" ?
+          (config.fieldId == null || issue?.[config.fieldId] == null ? true :
+            (issue?.[config.fieldId]?.name != null
+              ? issue?.[config.fieldId].name == config.value
+              : issue?.[config.fieldId] == config.value)) :
+        config.ruleType == "issue-type-is" ?
+          (config.issueTypeName == null || issue.issueType?.name == config.issueTypeName) :
+        config.ruleType == "issue-is-resolved" ? (issue.resolution != null) :
+        config.ruleType == "resolution-is" ?
+          (config.resolutionName == null || issue.resolution?.name == config.resolutionName) :
+        config.ruleType == "priority-is" ?
+          (config.priorityName == null || issue.priority?.name == config.priorityName) :
+        config.ruleType == "parent-status-is" ?
+          (issue.parent == null || config.statusName == null || issue.parent.status?.name == config.statusName) :
+        config.ruleType == "current-user-is-assignee" ?
+          (issue.assignee != null && user != null && issue.assignee.accountId == user.accountId) :
+        config.ruleType == "current-user-is-reporter" ?
+          (issue.reporter != null && user != null && issue.reporter.accountId == user.accountId) :
         true
       create:
         resource: config-ui-resource

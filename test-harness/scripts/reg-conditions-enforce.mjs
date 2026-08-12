@@ -34,48 +34,69 @@ import { loadState } from "../lib/state.mjs";
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) pass++; else { fail++; console.log("FAIL:", m); } };
 
-const NEVER_MATCHES = "^ZZZ_NEVER_MATCHES_ZZZ$";
 const ABSENT_FIELD = "customfield_99999999"; // guaranteed not on the issue
 
+// Written against the harness's parked issue: a Task, priority Medium, unresolved,
+// assigned to and reported by the harness account, no parent, summary set.
 const CASES = [
   // --- the no-regression invariants -------------------------------------------
   { name: "REGC-legacy-ai", allow: true, why: "a legacy AI-shaped condition must stay allowed",
     config: { type: "condition", fieldId: "summary", prompt: "some AI prompt" } },
-  { name: "REGC-nullfield", allow: true, why: "a null field value must not block (emptiness is the required-rule's job)",
-    config: { conditionKind: "deterministic", ruleType: "field-regex", fieldId: ABSENT_FIELD, regex: NEVER_MATCHES } },
-  { name: "REGC-nofield", allow: true, why: "a deterministic config with no fieldId must fall through to allow",
-    config: { conditionKind: "deterministic", ruleType: "field-regex", regex: NEVER_MATCHES } },
   { name: "REGC-unknowntype", allow: true, why: "an unrecognised ruleType must fall through to allow",
     config: { conditionKind: "deterministic", ruleType: "not-a-real-rule", fieldId: "summary" } },
+  { name: "REGC-nofield", allow: true, why: "field-equals with no fieldId must fall through to allow",
+    config: { conditionKind: "deterministic", ruleType: "field-equals", value: "anything" } },
+  { name: "REGC-nullfield", allow: true, why: "field-equals on an absent field must allow (emptiness is field-has-value's job)",
+    config: { conditionKind: "deterministic", ruleType: "field-equals", fieldId: ABSENT_FIELD, value: "x" } },
 
-  // --- field-has-value ----------------------------------------------------------
+  // --- field-has-value / field-empty --------------------------------------------
   { name: "REGC-has-yes", allow: true, why: "field-has-value allows when the field is set",
     config: { conditionKind: "deterministic", ruleType: "field-has-value", fieldId: "summary" } },
   { name: "REGC-has-no", allow: false, why: "field-has-value BLOCKS when the field is absent",
     config: { conditionKind: "deterministic", ruleType: "field-has-value", fieldId: ABSENT_FIELD } },
+  { name: "REGC-empty-yes", allow: true, why: "field-empty allows when the field is absent",
+    config: { conditionKind: "deterministic", ruleType: "field-empty", fieldId: ABSENT_FIELD } },
+  { name: "REGC-empty-no", allow: false, why: "field-empty BLOCKS when the field is set",
+    config: { conditionKind: "deterministic", ruleType: "field-empty", fieldId: "summary" } },
 
-  // --- field-regex --------------------------------------------------------------
-  { name: "REGC-re-yes", allow: true, why: "field-regex allows on a match",
-    config: { conditionKind: "deterministic", ruleType: "field-regex", fieldId: "summary", regex: "." } },
-  { name: "REGC-re-no", allow: false, why: "field-regex BLOCKS on no match",
-    config: { conditionKind: "deterministic", ruleType: "field-regex", fieldId: "summary", regex: NEVER_MATCHES } },
+  // --- field-equals (object-valued field compared by .name) ----------------------
+  { name: "REGC-eq-yes", allow: true, why: "field-equals matches an object field by name",
+    config: { conditionKind: "deterministic", ruleType: "field-equals", fieldId: "priority", value: "Medium" } },
+  { name: "REGC-eq-no", allow: false, why: "field-equals BLOCKS on a mismatch",
+    config: { conditionKind: "deterministic", ruleType: "field-equals", fieldId: "priority", value: "Lowest" } },
 
-  // --- text-length --------------------------------------------------------------
-  { name: "REGC-len-yes", allow: true, why: "text-length allows inside the bounds",
-    config: { conditionKind: "deterministic", ruleType: "text-length", fieldId: "summary", minLength: 1 } },
-  { name: "REGC-len-min", allow: false, why: "text-length BLOCKS below minLength",
-    config: { conditionKind: "deterministic", ruleType: "text-length", fieldId: "summary", minLength: 100000 } },
-  { name: "REGC-len-max", allow: false, why: "text-length BLOCKS above maxLength",
-    config: { conditionKind: "deterministic", ruleType: "text-length", fieldId: "summary", maxLength: 0 } },
+  // --- issue-type-is -------------------------------------------------------------
+  { name: "REGC-type-yes", allow: true, why: "issue-type-is allows on the matching type",
+    config: { conditionKind: "deterministic", ruleType: "issue-type-is", issueTypeName: "Task" } },
+  { name: "REGC-type-no", allow: false, why: "issue-type-is BLOCKS on a different type",
+    config: { conditionKind: "deterministic", ruleType: "issue-type-is", issueTypeName: "Epic" } },
 
-  // --- allowed-values -----------------------------------------------------------
-  { name: "REGC-allow-no", allow: false, why: "allowed-values BLOCKS a value not in the list",
-    config: { conditionKind: "deterministic", ruleType: "allowed-values", fieldId: "summary", allowedList: ["not-the-summary"] } },
+  // --- resolution ----------------------------------------------------------------
+  { name: "REGC-resolved-no", allow: false, why: "issue-is-resolved BLOCKS an unresolved issue",
+    config: { conditionKind: "deterministic", ruleType: "issue-is-resolved" } },
+  { name: "REGC-resis-no", allow: false, why: "resolution-is BLOCKS when there is no resolution",
+    config: { conditionKind: "deterministic", ruleType: "resolution-is", resolutionName: "Done" } },
+
+  // --- priority-is ---------------------------------------------------------------
+  { name: "REGC-prio-yes", allow: true, why: "priority-is allows on the matching priority",
+    config: { conditionKind: "deterministic", ruleType: "priority-is", priorityName: "Medium" } },
+  { name: "REGC-prio-no", allow: false, why: "priority-is BLOCKS on a different priority",
+    config: { conditionKind: "deterministic", ruleType: "priority-is", priorityName: "Highest" } },
+
+  // --- parent-status-is (top-level issue -> allowed, per the catalog's contract) --
+  { name: "REGC-parent-none", allow: true, why: "parent-status-is allows a top-level issue (no parent)",
+    config: { conditionKind: "deterministic", ruleType: "parent-status-is", statusName: "Done" } },
+
+  // --- acting-user rules ----------------------------------------------------------
+  { name: "REGC-assignee-yes", allow: true, why: "current-user-is-assignee allows when the caller is the assignee",
+    config: { conditionKind: "deterministic", ruleType: "current-user-is-assignee" } },
+  { name: "REGC-reporter-yes", allow: true, why: "current-user-is-reporter allows when the caller is the reporter",
+    config: { conditionKind: "deterministic", ruleType: "current-user-is-reporter" } },
 ];
 
 const cleanup = async (workflowName) => {
   const { top, wf } = await readWorkflow(workflowName);
-  if (removeTransitionsByName(wf, CASES.map((c) => c.name).concat(["REGC-allow-yes"])) > 0) await updateWorkflow(top, wf);
+  if (removeTransitionsByName(wf, CASES.map((c) => c.name)) > 0) await updateWorkflow(top, wf);
 };
 
 async function main() {
@@ -87,12 +108,7 @@ async function main() {
   if (!issues.length) { console.error("no harness issue parked on the hub status"); process.exit(2); }
   const KEY = issues[0].key;
   const summary = (await getIssue(KEY, ["summary"])).fields.summary;
-
-  // The positive allowed-values case needs the issue's real summary in the list.
-  const cases = CASES.concat([{
-    name: "REGC-allow-yes", allow: true, why: "allowed-values allows a value in the list",
-    config: { conditionKind: "deterministic", ruleType: "allowed-values", fieldId: "summary", allowedList: [summary, "other"] },
-  }]);
+  const cases = CASES;
 
   await cleanup(workflowName);
   {

@@ -101,6 +101,19 @@ export async function testStateTrigger(req) {
     // campaign reclaim registry slots it filled. bypassAuthz is safe here for the same
     // reason the other actions run with accountId:null — the Bearer gate above IS the
     // authorization, and this trigger returns 404 wherever HARNESS_SECRET is unset.
+    // Flip a rule's disabled flag through the SAME core the resolver uses, so the
+    // harness exercises the real path (including the workflow propagation that
+    // conditions need) rather than poking the registry directly. A raw KVS writer
+    // here would be both a dangerous primitive and a weaker test.
+    if (body.action === "setDisabled") {
+      try {
+        const { setRuleDisabledCore } = await import("./index.js");
+        const r = await setRuleDisabledCore({ id: body.id, disabled: body.disabled === true, accountId: null, bypassAuthz: true });
+        return json(200, r);
+      } catch (e) {
+        return json(500, { error: String((e && e.message) || e) });
+      }
+    }
     if (body.action === "removeRules") {
       try {
         const { removeRegistryRowsCore } = await import("./index.js");

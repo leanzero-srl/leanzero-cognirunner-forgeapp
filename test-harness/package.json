@@ -42,7 +42,7 @@
     "test:offline": "node scripts/premade-parity.mjs && node scripts/run-offline.mjs && npm run test:regression",
     "test:premade-e2e": "node scripts/premade-e2e.mjs",
     "reg": "node scripts/regression.mjs",
-    "test:regression": "node scripts/configs-filter.test.mjs"
+    "test:regression": "node scripts/configs-filter.test.mjs && node scripts/registry-limits.test.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.48.0"

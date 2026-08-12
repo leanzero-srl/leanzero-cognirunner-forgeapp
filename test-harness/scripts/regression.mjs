@@ -39,6 +39,14 @@ const GUARDS = [
     what: '"My Rules" listed rules the user never created (ownerless rows matched everyone)',
   },
   {
+    id: "F-CAP", kind: "offline", script: "registry-limits.test.mjs",
+    what: "registry caps were bare literals duplicated across six call sites, and commitImportCore had no cap check at all",
+  },
+  {
+    id: "F-PFDIS", kind: "live", script: "reg-pf-disable.mjs", needsHook: true,
+    what: "a claimed post-function could not be disabled; and the fix must not mute its siblings or a validator on the same transition",
+  },
+  {
     id: "F-DEL", kind: "live", script: "reg-delete-detaches.mjs", needsHook: true,
     what: "deleting a rule only removed its registry row; the rule stayed on the transition and kept running",
   },

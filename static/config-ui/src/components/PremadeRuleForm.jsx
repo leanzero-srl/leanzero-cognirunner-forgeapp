@@ -25,7 +25,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { invoke } from "@forge/bridge";
 import CustomSelect from "./CustomSelect";
-import { getCatalog, findRule, COMPARE_OPS, EXPRESSION_BACKED_CONDITIONS, CONDITION_NOT_EXPRESSIBLE_REASON } from "../../../../src/shared/premade-rules-catalog.js";
+import { getCatalog, findRule, COMPARE_OPS, EXPRESSION_BACKED_CONDITIONS, CONDITION_FIELD_TYPES_PENDING, CONDITION_NOT_EXPRESSIBLE_REASON, CONDITION_FIELD_PENDING_REASON } from "../../../../src/shared/premade-rules-catalog.js";
 import { redosRisk } from "../../../../src/shared/regex-safety.js";
 
 export default function PremadeRuleForm({ mode = "validator", fields = [], initial, onChange }) {
@@ -93,8 +93,11 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
   // only the types the manifest expression implements are real. Offering any other
   // one would silently allow every transition.
   const notExpressible = mode === "condition" && !!ruleType && !EXPRESSION_BACKED_CONDITIONS.includes(ruleType);
+  const fieldPending = mode === "condition" && CONDITION_FIELD_TYPES_PENDING.includes(ruleType);
   const unavailable = rule?.availability === "unavailable" || notExpressible;
-  const unavailableWhy = notExpressible ? CONDITION_NOT_EXPRESSIBLE_REASON : rule?.unavailableReason;
+  const unavailableWhy = fieldPending ? CONDITION_FIELD_PENDING_REASON
+    : notExpressible ? CONDITION_NOT_EXPRESSIBLE_REASON
+      : rule?.unavailableReason;
 
   // Build the config object + validity from the current state.
   const fieldName = (fields.find((f) => f.id === fieldId) || {}).name || "";

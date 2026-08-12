@@ -1354,20 +1354,34 @@ resolver.define("removeConfig", async ({ payload, context }) => {
  * Resolver: Disable a workflow rule via KVS flag.
  * The validate function checks this flag and skips AI validation when disabled.
  */
+/**
+ * Set (or clear) a rule's disabled flag. Shared by the disableRule/enableRule
+ * resolvers and the dev-gated test hook, so the harness exercises the REAL path —
+ * including the workflow propagation conditions need — rather than poking KVS.
+ *
+ * Refuses to flip the registry row when propagation was attempted and failed: a
+ * half-applied disable (panel says off, Jira still hiding the transition) is worse
+ * than a refused one.
+ */
+export const setRuleDisabledCore = async ({ id, disabled, accountId, bypassAuthz = false }) => {
+  let configs = (await storage.get(CONFIG_REGISTRY_KEY)) || [];
+  const config = configs.find((c) => c.id === id);
+  if (!config) return { success: false, error: "Config not found in registry" };
+  if (!bypassAuthz && !(await canActOnConfig(accountId, config, "editor"))) {
+    return { success: false, error: "You don't have permission to manage this rule" };
+  }
+  const propagation = await propagateDisabledToWorkflow(config, disabled);
+  if (propagation.attempted && !propagation.ok) {
+    return { success: false, error: `Couldn't ${disabled ? "disable" : "re-enable"} this condition in the workflow: ${propagation.error}. Nothing was changed.` };
+  }
+  configs = configs.map((c) => (c.id === id ? { ...c, disabled, updatedAt: new Date().toISOString() } : c));
+  await saveRegistry(configs);
+  return { success: true, disabled, ...(propagation.attempted ? { propagated: true } : {}) };
+};
+
 resolver.define("disableRule", async ({ payload, context }) => {
   try {
-    const { id } = payload;
-    let configs = (await storage.get(CONFIG_REGISTRY_KEY)) || [];
-    const config = configs.find((c) => c.id === id);
-    if (!config) {
-      return { success: false, error: "Config not found in registry" };
-    }
-    if (!(await canActOnConfig(context.accountId, config, "editor"))) {
-      return { success: false, error: "You don't have permission to manage this rule" };
-    }
-    configs = configs.map((c) => c.id === id ? { ...c, disabled: true, updatedAt: new Date().toISOString() } : c);
-    await saveRegistry(configs);
-    return { success: true, disabled: true };
+    return await setRuleDisabledCore({ id: payload?.id, disabled: true, accountId: context.accountId });
   } catch (error) {
     console.error("Failed to disable rule:", error);
     return { success: false, error: error.message };
@@ -1379,18 +1393,7 @@ resolver.define("disableRule", async ({ payload, context }) => {
  */
 resolver.define("enableRule", async ({ payload, context }) => {
   try {
-    const { id } = payload;
-    let configs = (await storage.get(CONFIG_REGISTRY_KEY)) || [];
-    const config = configs.find((c) => c.id === id);
-    if (!config) {
-      return { success: false, error: "Config not found in registry" };
-    }
-    if (!(await canActOnConfig(context.accountId, config, "editor"))) {
-      return { success: false, error: "You don't have permission to manage this rule" };
-    }
-    configs = configs.map((c) => c.id === id ? { ...c, disabled: false, updatedAt: new Date().toISOString() } : c);
-    await saveRegistry(configs);
-    return { success: true, disabled: false };
+    return await setRuleDisabledCore({ id: payload?.id, disabled: false, accountId: context.accountId });
   } catch (error) {
     console.error("Failed to enable rule:", error);
     return { success: false, error: error.message };
@@ -3152,9 +3155,12 @@ const readWorkflowForUpdate = async ({ workflowName, workflowId }) => {
  * version number is stale by definition after a conflict.
  *
  * targets: [{ registryId, transitionId, ruleType, ruleInstanceId? }]
+ * otherClaims: Set of embedded/instance ids owned by registry rows that are NOT
+ *   being deleted. The tier-3 fallback refuses to touch a rule in that set, so a
+ *   stale row can never strip a live rule that belongs to a different row.
  * Returns { success, results: [{ registryId, detached, reason }], error? }
  */
-const detachWorkflowRulesCore = async ({ workflowName, workflowId, targets }) => {
+const detachWorkflowRulesCore = async ({ workflowName, workflowId, targets, otherClaims = null }) => {
   const list = Array.isArray(targets) ? targets.filter(Boolean) : [];
   if (!list.length) return { success: true, results: [] };
   if (!workflowName && !workflowId) {
@@ -3206,9 +3212,21 @@ const detachWorkflowRulesCore = async ({ workflowName, workflowId, targets }) =>
       if (exactHits.length > 0) {
         pred = matcher.exact;
       } else {
-        const familyHits = pool.filter(matcher.family);
+        // Tier 3 candidates: right app, right module family. Being UNIQUE in the
+        // slot is NOT sufficient on its own — a stale registry row (its rule long
+        // since replaced) would happily "claim" whatever single CogniRunner rule
+        // now sits there and strip a live, different rule off the workflow. So
+        // exclude any candidate that another registry row demonstrably owns.
+        const familyHits = pool.filter(matcher.family).filter((r) => {
+          if (!otherClaims || otherClaims.size === 0) return true;
+          const inst = r.parameters?.id || r.id;
+          if (inst && otherClaims.has(String(inst))) return false;
+          let emb = null;
+          try { const c = JSON.parse(r.parameters?.config || "{}"); emb = c?.id || c?.ruleId || null; } catch { /* unreadable */ }
+          return !(emb && otherClaims.has(String(emb)));
+        });
         if (familyHits.length === 1) {
-          // Tier 3 — safe only because it is unique in this slot.
+          // Tier 3 — unique in the slot AND unclaimed by any other registry row.
           pred = (r) => r === familyHits[0];
         } else if (familyHits.length > 1) {
           results.push({ registryId, detached: false, reason: "ambiguous" });
@@ -3268,6 +3286,84 @@ const detachWorkflowRulesCore = async ({ workflowName, workflowId, targets }) =>
   }
 
   return { success: false, error: lastError || "Workflow update failed", results: list.map((t) => ({ registryId: t.registryId, detached: false, reason: "update-failed" })) };
+};
+
+/**
+ * Push a rule's disabled flag into its workflow rule's EMBEDDED config.
+ *
+ * Only conditions need this, and they need it absolutely. Validators and
+ * post-functions run in our own lambda, which reads the registry, so the KVS flag
+ * is enough for them. A condition is evaluated by JIRA as a Jira expression, which
+ * cannot read app storage — so without this, a condition marked "Disabled" in the
+ * admin panel would carry on hiding its transition, which is the worst kind of
+ * defect this product can have: a control that reports success and does nothing.
+ *
+ * The manifest expression allows whenever `config.disabled == true`.
+ *
+ * Returns { attempted, ok, error }. Callers MUST NOT flip the registry row when
+ * `attempted && !ok` — a half-applied disable is worse than a refused one.
+ */
+const propagateDisabledToWorkflow = async (row, disabled) => {
+  if (String(row?.type || "") !== "condition") return { attempted: false, ok: true };
+  const wf = row.workflow || {};
+  if (!wf.transitionId || (!wf.workflowName && !wf.workflowId)) {
+    return { attempted: true, ok: false, error: "this rule has no workflow recorded — re-save it from the workflow editor" };
+  }
+
+  const matcher = buildRuleMatcher({
+    ruleInstanceId: row.ruleInstanceId,
+    registryId: row.id,
+    moduleKey: RULE_KEY_MAP.condition?.moduleKey || null,
+  });
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const read = await readWorkflowForUpdate({ workflowName: wf.workflowName, workflowId: wf.workflowId });
+    if (read.error) {
+      return { attempted: true, ok: false, error: read.error === "workflow-not-found" ? "its workflow couldn't be read (unpublished changes?)" : read.error };
+    }
+    const { getData, workflow } = read;
+    if (!workflow.version?.id || workflow.version?.versionNumber === undefined) {
+      return { attempted: true, ok: false, error: "the workflow is read-only" };
+    }
+    const transition = (workflow.transitions || []).find((t) => String(t.id) === String(wf.transitionId));
+    if (!transition) return { attempted: true, ok: false, error: "its transition no longer exists" };
+
+    const pool = flattenConditionRules(transition.conditions);
+    const exact = pool.filter(matcher.exact);
+    const family = pool.filter(matcher.family);
+    const target = exact.length ? exact[0] : (family.length === 1 ? family[0] : null);
+    if (!target) {
+      return { attempted: true, ok: false, error: family.length > 1 ? "more than one CogniRunner condition on that transition and none carry an id" : "it is no longer attached to the transition" };
+    }
+
+    // Rewrite the embedded config in place. The rule object is a reference into
+    // `workflow.transitions`, so mutating it is what the update payload carries.
+    let cfg = {};
+    try { cfg = JSON.parse(target.parameters?.config || "{}"); } catch { cfg = {}; }
+    if (disabled) cfg.disabled = true; else delete cfg.disabled;
+    const nextConfig = JSON.stringify(cfg);
+    if (Buffer.byteLength(nextConfig, "utf8") > WORKFLOW_CONFIG_MAX_BYTES) {
+      return { attempted: true, ok: false, error: "the rule's configuration is at Jira's 32 KB limit" };
+    }
+    target.parameters = { ...(target.parameters || {}), config: nextConfig };
+
+    const resp = await api.asApp().requestJira(
+      route`/rest/api/3/workflows/update`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify(buildWorkflowUpdatePayload(getData, workflow)),
+      },
+    );
+    if (resp.ok) return { attempted: true, ok: true };
+
+    const body = await resp.text().catch(() => "");
+    if (!isWorkflowVersionConflict(resp.status, body) || attempt === 2) {
+      return { attempted: true, ok: false, error: describeWorkflowUpdateError(resp.status, body) };
+    }
+    await new Promise((r) => setTimeout(r, 200 + attempt * 300));
+  }
+  return { attempted: true, ok: false, error: "the workflow kept changing under us" };
 };
 
 /** Is this registry row a post-function (as opposed to a validator/condition)? */
@@ -3334,6 +3430,20 @@ export const removeRegistryRowsCore = async ({ ids, accountId, detach = false, f
   // Detach first, grouped by workflow so a bulk delete is one update per workflow.
   const detachOutcome = new Map();
   if (detach && removable.length) {
+    // Every identity still owned by a registry row we are KEEPING. The tier-3
+    // "sole CogniRunner rule in the slot" fallback must not touch these: a stale
+    // row whose own rule was replaced would otherwise adopt — and strip — the live
+    // rule that replaced it, which belongs to a different row entirely.
+    const doomedIds = new Set(removable.map((r) => String(r.id)));
+    const otherClaims = new Set();
+    for (const c of configs) {
+      if (doomedIds.has(String(c.id))) continue;
+      otherClaims.add(String(c.id));
+      if (c.ruleInstanceId) otherClaims.add(String(c.ruleInstanceId));
+      // Registry ids may be type-namespaced while the workflow rule keeps the raw id.
+      const stripped = String(c.id).replace(/^(validator|condition|postfunction[a-z-]*)::/, "");
+      if (stripped !== String(c.id)) otherClaims.add(stripped);
+    }
     const groups = new Map();
     for (const row of removable) {
       const wf = row.workflow || {};
@@ -3348,7 +3458,7 @@ export const removeRegistryRowsCore = async ({ ids, accountId, detach = false, f
       });
     }
     for (const g of groups.values()) {
-      const out = await detachWorkflowRulesCore(g);
+      const out = await detachWorkflowRulesCore({ ...g, otherClaims });
       for (const r of (out.results || [])) {
         detachOutcome.set(String(r.registryId), {
           detached: !!r.detached,

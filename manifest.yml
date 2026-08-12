@@ -34,6 +34,27 @@ modules:
   # previous behaviour. A condition module that cannot resolve evaluates to FALSE
   # and blocks the transition for everyone, so failing open here is the only safe
   # default.
+  #
+  # `config.disabled == true` also allows. Jira evaluates this expression itself
+  # and cannot read app storage, so the registry's disabled flag is invisible here
+  # — disableRule therefore patches the flag into the workflow rule's own embedded
+  # config (see setWorkflowRuleDisabledCore in src/index.js). Without this branch a
+  # rule shown as "Disabled" in the admin panel would keep hiding the transition.
+  #
+  # ⚠️ EVERY BRANCH USES A STATIC, TYPED PROPERTY PATH ON `issue`. Do NOT add a
+  # branch that indexes `issue` with a user-chosen field id (`issue?.[config.fieldId]`).
+  # Two reasons, both discovered the hard way:
+  #   - Jira expressions name system fields differently from the REST field ids our
+  #     field picker produces (`dueDate` vs `duedate`, `issueType` vs `issuetype`,
+  #     `attachments` vs `attachment`). A mismatch reads as null, which for a
+  #     has-value check means FALSE — hiding the transition on exactly the issues
+  #     that satisfy the rule.
+  #   - Field VALUES are typed. Probing `.length` on a Number, or comparing a User
+  #     object to a String, is an evaluation error, and an unresolvable expression
+  #     is FALSE. Fail-closed, in a product whose whole runtime law is fail-open.
+  # Field-based condition types are therefore NOT offered yet; they need a verified
+  # REST-id → expression-property map plus type-aware comparison, each proved live
+  # per field type. Tracked in test-harness/FINDINGS.md.
   jira:workflowCondition:
     - key: ai-text-field-condition
       name: CogniRunner Field Condition
@@ -41,18 +62,7 @@ modules:
       resolver:
         function: resolver
       expression: >-
-        config == null || config.conditionKind != "deterministic" ? true :
-        config.ruleType == "field-has-value" ?
-          (config.fieldId != null && issue?.[config.fieldId] != null
-           && (issue?.[config.fieldId].length == null || issue?.[config.fieldId].length > 0)) :
-        config.ruleType == "field-empty" ?
-          (config.fieldId == null || issue?.[config.fieldId] == null
-           || (issue?.[config.fieldId].length != null && issue?.[config.fieldId].length == 0)) :
-        config.ruleType == "field-equals" ?
-          (config.fieldId == null || issue?.[config.fieldId] == null ? true :
-            (issue?.[config.fieldId]?.name != null
-              ? issue?.[config.fieldId].name == config.value
-              : issue?.[config.fieldId] == config.value)) :
+        config == null || config.conditionKind != "deterministic" || config.disabled == true ? true :
         config.ruleType == "issue-type-is" ?
           (config.issueTypeName == null || issue.issueType?.name == config.issueTypeName) :
         config.ruleType == "issue-is-resolved" ? (issue.resolution != null) :

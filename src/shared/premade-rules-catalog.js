@@ -162,9 +162,6 @@ export const PREMADE_VALIDATORS = [
  * both allows and blocks against a live instance.
  */
 export const EXPRESSION_BACKED_CONDITIONS = [
-  "field-has-value",
-  "field-empty",
-  "field-equals",
   "issue-type-is",
   "issue-is-resolved",
   "resolution-is",
@@ -174,9 +171,31 @@ export const EXPRESSION_BACKED_CONDITIONS = [
   "current-user-is-reporter",
 ];
 
+/**
+ * Field-based condition types, deliberately NOT offered yet.
+ *
+ * They would need the expression to index `issue` with the field id our picker
+ * produces, and that is unsafe in both directions:
+ *   - Jira expressions name system fields differently from REST field ids
+ *     (`dueDate` vs `duedate`, `issueType` vs `issuetype`). A mismatch reads as
+ *     null, which for a has-value check means FALSE — hiding the transition on
+ *     exactly the issues that satisfy the rule.
+ *   - Field values are typed. Probing `.length` on a Number, or comparing a User
+ *     object to a String, is an evaluation error, and an unresolvable expression
+ *     is FALSE. That is fail-CLOSED, the inverse of this app's runtime law.
+ * Shipping them needs a verified REST-id → expression-property map and type-aware
+ * comparison, each proved live per field type. Until then they stay greyed out —
+ * a rule that silently hides a transition is worse than a rule we didn't ship.
+ */
+export const CONDITION_FIELD_TYPES_PENDING = ["field-has-value", "field-empty", "field-equals"];
+
 /** Why a condition type isn't offered — shown in the picker. */
 export const CONDITION_NOT_EXPRESSIBLE_REASON =
   "Not available as a condition: Jira evaluates conditions itself, in a sandbox that can't read related issues, attachments or group membership. Use a validator for this check.";
+
+/** Why the field-based condition types specifically are not offered yet. */
+export const CONDITION_FIELD_PENDING_REASON =
+  "Not available as a condition yet: Jira's expression engine names and types issue fields differently from the field picker, and a mismatch would hide the transition instead of showing it. Use a validator for field checks — it blocks with a message instead of hiding silently.";
 
 export const PREMADE_CONDITIONS = [
   {

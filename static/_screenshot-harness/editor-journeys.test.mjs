@@ -159,25 +159,27 @@ try {
     const env = await openEditor(browser, "config-ui", "cfg-condition");
     const { page } = env;
     try {
-      ok(await page.getByText("AI Condition Configuration").count() >= 1, "J15 renders in Condition mode (not Validator)");
-      // Condition DEPRECATION callout: conditions use expression:"true" so validate() never runs (a no-op
-      // on every surface) — the callout says they're deprecated / not enforced + recommends a Validator.
-      ok(await page.locator(".condition-hide-note").count() === 1, "J15 shows the condition deprecation callout");
-      ok(await page.getByText(/deprecated and are not enforced|has no effect/i).count() > 0, "J15 callout says conditions are deprecated / not enforced");
-      ok(await page.getByText(/create a\s*Validator/i).count() > 0, "J15 callout recommends creating a Validator instead");
-      ok(await page.locator(".dropdown-trigger", { hasText: "Acceptance Criteria" }).count() > 0, "J15 field picker shows the seeded field (Acceptance Criteria)");
-      const promptEl = page.locator("textarea").first();
-      ok(/testable, measurable criterion/i.test(await promptEl.inputValue()), "J15 condition prompt hydrated from config");
-      await promptEl.fill((await promptEl.inputValue()) + " Non-empty.");
-      ok((await promptEl.inputValue()).includes("Non-empty."), "J15 condition prompt is editable");
-      // Same dry-run Test flow as the validator.
-      await page.locator("button.btn-semantic-test-toggle", { hasText: /Test/ }).click();
-      await page.waitForSelector(".semantic-test-panel", { timeout: 8000 });
-      await page.locator("input.issue-picker-input").fill("PROJ-42");
-      await page.waitForSelector(".issue-picker-valid", { timeout: 8000 });
-      await page.locator("button.btn-run-test", { hasText: "Run Test" }).click();
-      await page.waitForSelector(".semantic-test-result", { timeout: 10000 });
-      ok(await page.locator(".test-badge-pass, .test-badge-fail").count() >= 1, "J15 dry-run Test returns a verdict");
+      ok(await page.getByText("Condition Configuration").count() >= 1, "J15 renders in Condition mode (not Validator)");
+      // Conditions are evaluated by Jira as a Jira EXPRESSION — no network, so no AI,
+      // permanently. The callout must explain that rather than the old (wrong) claim
+      // that conditions are deprecated and unenforced. See F3 in test-harness/FINDINGS.md.
+      ok(await page.getByText(/run without AI/i).count() > 0, "J15 callout explains conditions run without AI");
+      ok(await page.getByText(/deprecated and are not enforced|has no effect/i).count() === 0, "J15 callout must NOT still call conditions deprecated/unenforced");
+      ok(await page.getByText(/Validator/).count() > 0, "J15 callout points at a Validator for free-text judgement");
+      // A condition can never be an AI rule, so the AI/premade TOGGLE must not exist.
+      // (Assert the control, not the words — the conversion notice legitimately
+      //  contains the phrase "AI prompt".)
+      ok(await page.locator(".rulekind-toggle").count() === 0, "J15 does not offer the AI/premade rule-kind toggle for a condition");
+      // The fixture is a condition saved by an older build, i.e. one carrying an AI
+      // prompt that could never have run. It must be surfaced for conversion, not
+      // silently dropped — and the editor must show the deterministic check picker.
+      ok(await page.locator(".legacy-cond-prompt").count() === 1, "J15 surfaces the legacy AI prompt for conversion");
+      ok(/testable, measurable criterion/i.test(await page.locator(".legacy-cond-prompt").innerText()), "J15 shows the ORIGINAL prompt text, not a placeholder");
+      ok(await page.getByText(/never ran/i).count() > 0, "J15 says plainly that the old prompt never ran");
+      // The deterministic check picker replaces the AI prompt box. No dry-run panel
+      // here by design: there is no AI call to dry-run.
+      ok(await page.locator(".pr-form, .dropdown-trigger").count() > 0, "J15 shows the deterministic check picker");
+      ok(await page.locator("button.btn-semantic-test-toggle").count() === 0, "J15 offers no AI dry-run for a condition (nothing to run)");
     } catch (e) { fail++; console.log("  ✗ J15 threw: " + e.message.split("\n")[0]); }
     await closeEditor(env);
   }

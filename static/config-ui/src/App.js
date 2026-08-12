@@ -667,6 +667,18 @@ const injectStyles = () => {
     }
     html[data-color-mode="dark"] .condition-hide-note .chn-glyph { background: #f59e0b; color: #2a1602; }
     .condition-hide-note strong { color: var(--text-color); }
+    .legacy-cond-prompt {
+      margin-top: 8px;
+      padding: 8px 10px;
+      border-radius: 6px;
+      background: var(--code-bg, rgba(127,127,127,0.10));
+      border: 1px solid var(--border-color);
+      font-family: SFMono-Regular, Consolas, monospace;
+      font-size: 11.5px;
+      color: var(--text-color);
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
 
     .pf-type-tag {
       display: inline-block;
@@ -2901,6 +2913,9 @@ function App() {
   // Post-function state
   const [isPostFunction, setIsPostFunction] = useState(false);
   const [isCondition, setIsCondition] = useState(false);
+  // The AI prompt of a condition saved by an older version — shown for reference
+  // while the user converts it to a real check. Null for every new condition.
+  const [legacyConditionPrompt, setLegacyConditionPrompt] = useState(null);
   // A condition is always a deterministic catalog rule — Jira evaluates it as a
   // Jira expression, so the AI path is not reachable for it. Force the editor onto
   // the premade form as soon as we know this is a condition.
@@ -3173,6 +3188,14 @@ function App() {
               setRuleKind("premade");
               currentRuleKind = "premade";
               setPremadeInitial(config);
+            }
+            // A CONDITION saved by an older version carries an AI prompt. Conditions
+            // are evaluated by Jira as a Jira expression and never could run that
+            // prompt — it has been a no-op since it was saved. Surface the old text
+            // instead of silently discarding it, so the user can see what the rule was
+            // meant to do while they pick a real check.
+            if (extType === "jira:workflowCondition" && config.ruleKind !== "premade" && typeof config.prompt === "string" && config.prompt.trim()) {
+              setLegacyConditionPrompt(config.prompt.trim());
             }
           }
         } catch (e) {
@@ -3577,6 +3600,19 @@ function App() {
           <span className="chn-glyph" aria-hidden="true">i</span>
           <div>
             <strong>Conditions run without AI.</strong> Jira evaluates a condition itself, in a sandbox with no network access, so a condition can't call a model. Pick a check below — it runs instantly, costs nothing per transition, and is enforced on every surface. If you need the AI to judge free text, use a <strong>Validator</strong> instead: it blocks the transition and shows your message.
+          </div>
+        </div>
+      )}
+
+      {/* An AI prompt saved on a condition by an older build. It has never run — a
+          Jira expression cannot call a model — so this is a conversion prompt, not a
+          loss notice. Show the text so the intent isn't thrown away silently. */}
+      {!isPostFunction && isCondition && legacyConditionPrompt && (
+        <div className="condition-hide-note" role="note">
+          <span className="chn-glyph" aria-hidden="true">!</span>
+          <div>
+            <strong>This condition was saved with an AI prompt, which never ran.</strong> Pick an equivalent check below, or recreate it as a Validator if it needs the AI's judgement. The old prompt was:
+            <div className="legacy-cond-prompt">{legacyConditionPrompt}</div>
           </div>
         </div>
       )}

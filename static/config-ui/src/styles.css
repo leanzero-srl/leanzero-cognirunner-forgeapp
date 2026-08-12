@@ -918,3 +918,17 @@ button:active:not(:disabled):not(.is-busy) { transform: scale(0.97); }
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Legacy AI prompt shown when converting an old condition (mirrors injectStyles). */
+.legacy-cond-prompt {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: var(--code-bg, rgba(127,127,127,0.10));
+  border: 1px solid var(--border-color);
+  font-family: SFMono-Regular, Consolas, monospace;
+  font-size: 11.5px;
+  color: var(--text-color);
+  white-space: pre-wrap;
+  word-break: break-word;
+}

@@ -92,9 +92,14 @@ expression, in a sandbox with no network access. No app can call a model from on
 That is permanent, and it is not a CogniRunner limitation.
 
 **A deterministic condition works everywhere.** Conditions are back in the Add Rule
-wizard, offering seven checks — issue type, whether the issue is resolved, its
-resolution, its priority, the parent's status, and whether the current user is the
-assignee or reporter. They cost nothing per
+wizard, offering ten checks — issue type, whether the issue is resolved, its
+resolution, its priority, the parent's status, whether the current user is the
+assignee or reporter, and three field checks on **custom fields**: has a value, is
+empty, equals a value (case-insensitive; text, URL, date, number, select and radio
+fields — multi-value fields support has/empty). Two things worth knowing about the
+field checks: a field hidden by a field configuration reads as empty, and an empty
+field never hides an equals check (combine it with "Field has a value" if it
+should). They cost nothing per
 transition, add no latency, cannot fail open on a provider outage, and are enforced
 on every surface: the issue view, REST, automation and bulk changes.
 

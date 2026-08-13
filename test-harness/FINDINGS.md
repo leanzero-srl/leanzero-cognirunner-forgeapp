@@ -249,14 +249,14 @@ conditions on the REST path.**
 
 **Fixed.** The manifest expression now evaluates the deterministic rule types from the config saved
 by our own Custom UI (which reaches the expression as `config`, parsed — proved by
-`_probe-condition-config.mjs`). SEVEN types are expression-backed (see `EXPRESSION_BACKED_CONDITIONS`
+`_probe-condition-config.mjs`). TEN types are expression-backed (see `EXPRESSION_BACKED_CONDITIONS`
 in `src/shared/premade-rules-catalog.js`, the single source): issue-type-is, issue-is-resolved,
-resolution-is, priority-is, parent-status-is, current-user-is-assignee, current-user-is-reporter.
-The three field-based types (has-value / empty / equals) are WITHDRAWN, not shipped — they can fail
-closed on a field-name/type mismatch (see F-COND-FIELD below). Everything else is greyed out because
-Jira's expression sandbox can't reach related issues, attachments or group membership. An AI-powered
-condition remains **structurally impossible** — a Jira expression has no network, no app storage and
-no `await`.
+resolution-is, priority-is, parent-status-is, current-user-is-assignee, current-user-is-reporter,
+and — since 2026-08-13, custom fields of verified kinds only — field-has-value, field-empty,
+field-equals (see F-COND-FIELD below for the safety pattern and probe evidence). Everything else is
+greyed out because Jira's expression sandbox can't reach related issues, attachments or group
+membership. An AI-powered condition remains **structurally impossible** — a Jira expression has no
+network, no app storage and no `await`.
 
 **Standing risk, now documented rather than unknown.** Per Atlassian's docs a condition module that
 cannot resolve evaluates to **false**, i.e. it BLOCKS the transition for everyone. That is why the
@@ -265,7 +265,26 @@ is not on the table.
 
 ---
 
-## F-COND-FIELD — field-based condition types WITHDRAWN (fail-closed risk) · **DELIBERATE + PROVEN BOUNDARY** · Severity MEDIUM if shipped naively
+## F-COND-FIELD — field-based condition types · **SHIPPED-GUARDED (2026-08-13, custom fields per-kind)** · was WITHDRAWN
+
+**Shipped.** After the 41-case live probe below cleared every kind, the trio ships for
+CUSTOM fields of verified kinds only: the expression indexes `issue` solely via
+`config.exprProp` behind a `^customfield_[0-9]+$` guard (system-field name mismatch made
+structurally impossible — a hand-crafted system id falls OPEN), every typed comparison is
+gated on the `exprKind` its probe cleared, `field-equals` ALLOWS on an empty field (a
+field hidden by field configuration reads null regardless of value — null→hide would let
+a routine admin action hide transitions tenant-wide), and everything unrecognized —
+including every pre-ship saved config — falls to default-true. Single source:
+`CONDITION_FIELD_KINDS` + `conditionFieldSupport()` in `src/shared/premade-rules-catalog.js`;
+the F3 guard generates its per-kind matrix from the same function (229 assertions live,
+0 failed). Residual risks, documented not silent: a field hidden by field configuration
+(or deleted, or context-narrowed) reads null → has-value hides (said in the rule's help
+text; equals immune by design); a renamed select option stops matching until the rule is
+edited (same class as priority-is); a hand-crafted REST config whose exprKind mismatches
+the field's real kind is a typed error → fail-closed on that transition (deliberate-misuse
+surface; warned in docs/REST-API-RULES.md §6).
+
+### The original withdrawal analysis (kept for the record) · was Severity MEDIUM if shipped naively
 
 **What.** Three field-based condition types — `field-has-value`, `field-empty`, `field-equals` — were
 built, then withdrawn when an adversarial review found they can fail **closed**: hide a transition on

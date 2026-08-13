@@ -282,10 +282,51 @@ condition would block the transition for everyone.
 condition does nothing. Supported `ruleType` values are exactly:
 
 `issue-type-is` · `issue-is-resolved` · `resolution-is` · `priority-is` ·
-`parent-status-is` · `current-user-is-assignee` · `current-user-is-reporter`
+`parent-status-is` · `current-user-is-assignee` · `current-user-is-reporter` ·
+`field-has-value` · `field-empty` · `field-equals`
 
-Any other value allows the transition. Use a validator for field checks — it blocks with
-a message instead of hiding the button silently.
+Any other value allows the transition.
+
+### Field conditions — custom fields only, and the config carries the strategy
+
+The three field types work on **custom fields of verified kinds only**, and their configs
+must carry two extra keys the admin UI normally resolves for you: `exprProp` (the
+`customfield_NNNNN` id — the expression indexes the issue with this, and anything that
+isn't a `customfield_` id makes the condition allow everything) and `exprKind` (which
+comparison strategy the expression runs). Number equals also needs `valueNum` as a JSON
+**number**, not a string.
+
+```json
+{
+  "id": "acme-severity-set",
+  "type": "condition",
+  "conditionKind": "deterministic",
+  "ruleType": "field-has-value",
+  "fieldId": "customfield_10050",
+  "fieldName": "Severity",
+  "exprProp": "customfield_10050",
+  "exprKind": "nul"
+}
+```
+
+| Custom field kind | has-value / empty (`exprKind`) | equals (`exprKind`) |
+|---|---|---|
+| text (single line), URL, date | `nul` | `str` (case-insensitive; date as `YYYY-MM-DD`) |
+| number | `nul` | `num` (+ `valueNum` as a JSON number) |
+| select, radio buttons | `nul` | `opt` (compares the option's value, case-insensitive) |
+| paragraph, datetime, user, group, cascading, version, project | `nul` | — |
+| labels, multi-select, checkboxes, multi-user, multi-group, multi-version | `arr` | — |
+
+> ⚠️ **`exprKind` must match the field's real kind per this table.** Jira expressions are
+> strictly typed: a mismatched kind (say `str` on a number field) is an evaluation error,
+> and an erroring condition **hides the transition** — the one way a hand-crafted config
+> can fail closed. The admin UI can never produce this; copy its configs (§5's claim flow,
+> then Export) rather than hand-writing `exprKind` if in doubt.
+
+Two behaviors to design around: a field hidden by a field configuration (or deleted, or
+whose context doesn't cover the project) reads as **empty**; and an **empty field never
+hides an equals check** — combine with `field-has-value` when it should. Use a validator
+when you want a block with a message instead of a hidden button.
 
 ### Semantic post-function
 

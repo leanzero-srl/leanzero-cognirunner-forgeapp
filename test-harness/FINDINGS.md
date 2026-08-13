@@ -290,6 +290,34 @@ fields only (where the REST id `customfield_NNNNN` IS the expression accessor an
 comparison is type-agnostic); type-aware comparison for `field-equals` per field type; each proved
 live per field type before un-greying.
 
+**PROBED 2026-08-13 — per-field-kind semantics, live (41 cases, 0 decisive mismatches).**
+Script: `_probe-condition-fieldkinds.mjs` (probe branches keyed `conditionKind:"cogprobe"`
+temporarily appended to the dev expression as its FIRST branch, deployed, run, reverted —
+never committed; deploy sentinel `p:"deny"` guards against reading a production
+default-true as data). Evidence: `results/condition-fieldkind-probe.json`. What it pinned:
+- **All 13 scalar custom kinds** (text, textarea, url, number, date, datetime, select,
+  radio, user, group, cascading, version, project): `issue?.[<customfield id>]` resolves;
+  an UNSET field reads **null** (never ""/{}), so has-value/empty via null-check is
+  correct per kind.
+- **All 6 array custom kinds** (labels, multiselect, checkboxes, multiuser, multigroup,
+  multiversion): `.length` works on the value; an UNSET array reads **null**, not `[]`
+  (`arris0` hidden on both fixtures) — the null-or-length pattern covers both shapes.
+- **Value shapes under strict `==`**: text/url/date are plain Strings (date is REST
+  "YYYY-MM-DD" — string equality works both directions); select/radio are `{value}`
+  options (`?.value` compare works both directions); number is a Number and a JSON
+  number in `config` ARRIVES TYPED (`vn:7` matches, `vn:8` blocks). Textarea is a rich
+  object, NOT a String (`streq` hidden on a set value) → textarea equals stays out.
+- **`String.toLowerCase()` exists** (field side and option `.value` side) →
+  case-insensitive equals ships as promised by the UI copy.
+- **`null == String` is a safe false, not an error** (`nullcmp` discriminator visible on
+  the bare fixture).
+- **Both fail-closed error modes reproduced live at last**: `Number == String` hides
+  (`numeq` with a deliberately-string `vn:"7"`), and `.length` on a Number hides
+  (`errlen`) — while `nul` on the same field stays visible, proving expression errors
+  are branch-local. The risk model is no longer doc-derived.
+- **The customfield-only regex guard behaves**: `config.f.match("^customfield_[0-9]+$")`
+  accepts custom ids, rejects `duedate`.
+
 **Proven boundary (this is what makes "withdrawn" a guarantee):**
 - `src/shared/premade-rules-catalog.js` — `CONDITION_FIELD_TYPES_PENDING` lists the three; the manifest
   expression implements NONE of them, so they hit its default-true.

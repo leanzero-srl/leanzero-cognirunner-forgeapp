@@ -50,7 +50,7 @@ Each block matches its image. Image: `marketplace-highlight-{n}.png` (1840×900)
 
 **Highlight 2 — image "Your AI. Your key." (multi-provider settings)**
 - Title (33): Your AI, your key — local or cloud
-- Description (198): Bring your own key for OpenAI, Anthropic, Azure, OpenRouter or Bedrock — or run models locally with LM Studio, or use the zero-key Atlassian Forge LLM. Switching providers never loses your settings.
+- Description (198): Bring your own key for Anthropic, OpenAI, Azure, OpenRouter or Bedrock — or run models locally with LM Studio, or use the zero-key Atlassian Forge LLM. Switching providers never loses your settings.
 - Caption (200): The Settings screen with Anthropic connected and a model chosen. CogniRunner ships with no embedded key — connect any provider, point it at a local LM Studio, or pick the zero-key Atlassian Forge LLM.
 
 **Highlight 3 — image "Automate after the transition" (post-function builder)**

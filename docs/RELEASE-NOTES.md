@@ -43,8 +43,9 @@ and flags when a workflow is shared by several projects.
 
 ### The registry stops being a dead end
 
-- A usage meter on the Rules tab shows real pressure (`487 / 500 rules · 178 / 200 KB`),
-  computed site-wide rather than from whatever your current filter shows.
+- A usage meter on the Rules tab shows real pressure (`487 / 500 rules · 190 KB of 246 KB`),
+  measured in bytes against the registry's true capacity and computed site-wide
+  rather than from whatever your current filter shows.
 - **Import** now checks the cap. It previously had no check at all, so at the limit
   it would attach a live workflow rule and then fail to register it — creating
   exactly the unmanageable rule this release exists to eliminate.
@@ -108,12 +109,16 @@ on every surface: the issue view, REST, automation and bulk changes.
 > function. Jira's expression engine provides it — so those rules work as conditions
 > and only as conditions.
 
-**Field-based conditions ("field has a value", "field equals…") are deliberately not
-offered yet.** They are greyed out with an explanation. Jira's expression engine
-names and types issue fields differently from the field picker, and a mismatch would
-**hide** a transition rather than show it — failing closed, in a product whose whole
-runtime law is to fail open. They will ship when that mapping is verified per field
-type, not before.
+**The three field checks shipped the careful way.** They were originally withdrawn:
+Jira's expression engine names and types issue fields differently from the field
+picker, and a mismatch would **hide** a transition rather than show it — failing
+closed, in a product whose whole runtime law is to fail open. They now ship for
+**custom fields of verified kinds only**, after a 41-case live probe pinned the
+semantics per field kind: the expression only ever reads a field through a
+`customfield_`-guarded accessor (so the naming mismatch is structurally impossible),
+every typed comparison runs only for the field kind it was proven on, and anything
+unrecognised still falls open. System fields stay excluded until each is verified
+individually.
 
 Existing conditions are untouched: anything the new logic doesn't recognise is
 allowed through, exactly as before. Opening an old condition shows the AI prompt it

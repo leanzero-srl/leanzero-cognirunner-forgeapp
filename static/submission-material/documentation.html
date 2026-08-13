@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>CogniRunner Documentation — AI Workflow Automation for Jira</title>
-<meta name="description" content="CogniRunner brings AI understanding to Jira workflows: semantic validators, conditions, post-functions, attachment analysis, agentic duplicate detection, and declarative AI actions. Bring your own AI key or use the zero-key Atlassian Forge LLM. Open source on Forge (Apache-2.0).">
+<meta name="description" content="CogniRunner brings AI understanding to Jira workflows: semantic validators, post-functions, attachment analysis, agentic duplicate detection, and declarative AI actions — plus deterministic conditions and premade checks that run at zero AI cost. Bring your own AI provider (Anthropic, OpenAI, Azure OpenAI, OpenRouter, AWS Bedrock, local LM Studio) or use the zero-key Atlassian Forge LLM. Open source on Forge (Apache-2.0).">
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
@@ -404,7 +404,7 @@
       </svg>
     </div>
     <h1>CogniRunner</h1>
-    <p class="tagline">AI workflow automation for Jira — semantic validators, conditions, and post-functions. Validate, decide, generate, and act in plain English, on your own AI key.</p>
+    <p class="tagline">AI workflow automation for Jira — semantic validators and post-functions that validate, decide, generate, and act in plain English, on your own AI key. Plus deterministic conditions and premade checks that run at zero AI cost.</p>
     <div class="hero-badges">
       <span class="badge">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
@@ -426,7 +426,8 @@
     <ol>
       <li><a href="#overview">Overview</a></li>
       <li><a href="#getting-started">Getting Started</a></li>
-      <li><a href="#configuration">Configuring a Validator or Condition</a></li>
+      <li><a href="#configuration">Configuring a Validator</a></li>
+      <li><a href="#conditions">Deterministic Conditions</a></li>
       <li><a href="#field-selector">Field Selector</a></li>
       <li><a href="#validation-prompt">Writing Validation Prompts</a></li>
       <li><a href="#agentic">Agentic Validation &amp; Duplicate Detection</a></li>
@@ -434,8 +435,9 @@
       <li><a href="#validation-in-action">Validation in Action</a></li>
       <li><a href="#semantic-postfunctions">Semantic Post-Functions</a></li>
       <li><a href="#static-postfunctions">Static Post-Functions &amp; AI Actions</a></li>
-      <li><a href="#rule-management">Rule Management (Enable / Disable)</a></li>
+      <li><a href="#rule-management">Rule Management (Enable / Disable / Delete)</a></li>
       <li><a href="#admin-hub">Admin Hub</a></li>
+      <li><a href="#rest-provisioning">Provisioning Rules over REST</a></li>
       <li><a href="#permissions">Permissions &amp; Roles</a></li>
       <li><a href="#docs-library">Documentation Library, Skills &amp; Memories</a></li>
       <li><a href="#execution-logs">Execution Logs</a></li>
@@ -448,7 +450,7 @@
 
   <section id="overview">
     <h2>Overview</h2>
-    <p>CogniRunner brings real AI understanding to Jira workflows. Jira's built-in validators only do structural checks — "field is required", "matches regex". CogniRunner reads the actual <strong>meaning</strong> of your fields, attachments, and issues, then <strong>validates, decides, generates content, and takes action</strong> on every transition. Describe what you want in plain English — no scripting, no regex.</p>
+    <p>CogniRunner brings real AI understanding to Jira workflows. Jira's built-in validators only do structural checks — "field is required", "matches regex". CogniRunner reads the actual <strong>meaning</strong> of your fields, attachments, and issues, then <strong>validates, decides, generates content, and takes action</strong> on every transition. Describe what you want in plain English — no scripting.</p>
     <p>Four rule types cover the full loop:</p>
     <ul>
       <li><strong>Validators</strong> block a transition when field content fails your rule, showing the user the AI's reasoning.</li>
@@ -456,6 +458,7 @@
       <li><strong>Semantic Post-Functions</strong> run after a transition: the AI reads a field, decides, generates a value, and writes a target field — e.g. summarize the work into Release Notes.</li>
       <li><strong>Static Post-Functions</strong> let the AI generate JavaScript once, then run it at zero AI cost on every transition — chaining up to 50 sandboxed steps.</li>
     </ul>
+    <p>Not everything needs a model. CogniRunner also ships roughly <strong>27 premade deterministic validator and condition types</strong> — field required, field must be changed, regex pattern, length bounds, allowed values, relative dates, comment required, attachment required, all sub-tasks resolved, and more. They evaluate instantly and run at <strong>zero AI cost</strong>.</p>
     <p>CogniRunner works across company-managed and team-managed Jira projects, supports all standard, custom, and many third-party field types, analyzes the content of attached files and images, and runs on your choice of AI provider — bring your own key, or use the zero-key Atlassian Forge LLM.</p>
   </section>
 
@@ -470,11 +473,11 @@
       </li>
       <li>
         <strong>Add a new rule</strong>
-        Click the <code>+</code> button next to "Validate details" (for validators) or "Restrict transition" (for conditions). In the "Add rule" dialog, find <strong>CogniRunner Field Validator</strong> under the Marketplace Rules section.
+        Click the <code>+</code> button next to "Validate details" (for validators) or "Restrict transition" (for conditions). In the "Add rule" dialog, find <strong>CogniRunner Field Validator</strong> — or, for conditions, <strong>CogniRunner Field Condition</strong> — under the Marketplace Rules section.
       </li>
       <li>
         <strong>Pick a type and configure</strong>
-        Choose a validator, condition, or post-function. Select the field to validate, write your AI prompt in plain English, optionally attach context documents, and click Update to save.
+        For a validator or post-function, select the field, describe your criteria in plain English, and optionally attach context documents. For a condition, pick one of ten deterministic checks — no prompt, no AI (see <a href="#conditions">Deterministic Conditions</a>). Click Update to save.
       </li>
     </ol>
 
@@ -497,8 +500,8 @@
   </section>
 
   <section id="configuration">
-    <h2>Configuring a Validator or Condition</h2>
-    <p>When you add or edit a CogniRunner validator or condition, you'll see the configuration form with three core settings:</p>
+    <h2>Configuring a Validator</h2>
+    <p>When you add or edit a CogniRunner AI validator, you'll see the configuration form with three core settings:</p>
     <ol>
       <li><strong>Field to Validate</strong> — which Jira field the AI should evaluate</li>
       <li><strong>Validation Prompt</strong> — your criteria described in natural language</li>
@@ -512,16 +515,79 @@
     </figure>
   </section>
 
+  <section id="conditions">
+    <h2>Deterministic Conditions</h2>
+    <p>Conditions decide whether a transition is <em>shown</em> at all — and in CogniRunner they are fully deterministic. A condition never calls an AI: you pick one of ten checks, and <strong>Jira itself evaluates it</strong>. That means zero AI usage, zero per-transition cost, and no added latency. And because Jira does the evaluating, the condition is enforced on <strong>every surface</strong> — the issue view, the REST API, automation rules, and bulk operations alike.</p>
+
+    <p>The ten checks:</p>
+    <ul>
+      <li><strong>Issue type is…</strong></li>
+      <li><strong>Issue is resolved</strong></li>
+      <li><strong>Resolution is…</strong></li>
+      <li><strong>Priority is…</strong></li>
+      <li><strong>Parent issue status is…</strong> — works for sub-tasks too</li>
+      <li><strong>Current user is the assignee</strong></li>
+      <li><strong>Current user is the reporter</strong></li>
+      <li><strong>Field has a value</strong>, <strong>Field is empty</strong>, and <strong>Field equals a value</strong> — three checks on custom fields</li>
+    </ul>
+
+    <p>The assignee and reporter checks are a condition-only capability: Jira's expression engine sees the acting user at evaluation time, which a validator cannot.</p>
+
+    <figure class="screenshot">
+      <img src="new-screenshots/light/config-field-condition.png" alt="CogniRunner condition editor with a Field equals a value check on a custom select field and a NO AI COST chip">
+      <figcaption>The condition editor: a "Field equals a value" check on a custom select field. The NO AI COST chip and the "Conditions run without AI" callout make the contract explicit — pick a check, and Jira enforces it everywhere.</figcaption>
+    </figure>
+
+    <h3>Field checks — custom fields, per kind</h3>
+    <p>The three field checks work on <strong>custom fields</strong> of verified kinds. Equals comparisons are case-insensitive.</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Custom field kind</th><th>Has a value / is empty</th><th>Equals a value</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Text (single line), URL, date</td><td>Yes</td><td>Yes — case-insensitive; dates as <code>YYYY-MM-DD</code></td></tr>
+          <tr><td>Number</td><td>Yes</td><td>Yes — numeric comparison</td></tr>
+          <tr><td>Select, radio buttons</td><td>Yes</td><td>Yes — compares the option's value, case-insensitive</td></tr>
+          <tr><td>Paragraph, date-time, user, group, cascading select, version, project</td><td>Yes</td><td>—</td></tr>
+          <tr><td>Labels, multi-select, checkboxes, multi-user, multi-group, multi-version</td><td>Yes</td><td>—</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout callout-warning">
+      <span class="callout-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      </span>
+      <p>Two honest caveats. A field hidden by a field configuration (or whose context doesn't cover the project) reads as <strong>empty</strong>. And an empty field never hides an <em>equals</em> check — combine it with "Field has a value" when it should. When you want a blocked transition <em>with a message</em> rather than a hidden button, use a validator instead.</p>
+    </div>
+
+    <p>Because Jira evaluates conditions natively, they produce <strong>no execution-log entries</strong> — no app code runs on the transition. See <a href="#execution-logs">Execution Logs</a>.</p>
+
+    <div class="callout callout-info">
+      <span class="callout-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+      </span>
+      <p>Upgrading from an earlier version? Old AI-prompt-shaped conditions never actually gated a transition. Opening one now shows the original prompt, says plainly that it never ran, and offers a one-click conversion to a deterministic check. Existing rules are left untouched, and unrecognized configs fail open (the transition stays visible) rather than blocking anyone.</p>
+    </div>
+
+    <figure class="screenshot">
+      <img src="new-screenshots/light/config-condition.png" alt="Condition editor showing a legacy AI-prompt condition flagged as never having run, with a premade rule picker to convert it">
+      <figcaption>Opening a legacy condition: "This condition was saved with an AI prompt, which never ran." The old prompt is shown, and picking an equivalent deterministic check — or recreating it as a validator — converts it.</figcaption>
+    </figure>
+  </section>
+
   <section id="field-selector">
     <h2>Field Selector</h2>
     <p>The field selector dropdown shows all fields available on your project's edit/view screens, grouped by system fields and custom fields. Each entry shows the field name, its internal ID, and its type. The dropdown is context-aware: it resolves the project's screen scheme chain to show only the fields that are actually present on the transition screen.</p>
 
     <figure class="screenshot">
-      <img src="Screenshot 2026-02-27 at 00.07.42.jpg" alt="Field selector dropdown open showing system fields">
-      <figcaption>The field selector dropdown with system fields listed — Attachment, Description, Fix versions, Parent, Priority, Reporter — each showing their type badge.</figcaption>
+      <img src="new-screenshots/light/config-field-picker-open.png" alt="Field picker dropdown open with search, showing per-field support annotations">
+      <figcaption>The field picker open, with search. The list is context-aware per rule type — here in the condition editor, where fields a deterministic check can't evaluate are annotated "Not supported for conditions" instead of failing silently later.</figcaption>
     </figure>
 
-    <p>You can search for fields by name using the search box at the top of the dropdown. The selected field determines what content the AI receives for validation.</p>
+    <p>You can search for fields by name using the search box at the top of the dropdown. The selected field determines what content the AI receives for validation. The picker is also honest per rule type: in the condition editor, fields that deterministic conditions can't check are explicitly annotated rather than offered and ignored.</p>
 
     <div class="callout callout-info">
       <span class="callout-icon">
@@ -553,7 +619,7 @@
 
   <section id="agentic">
     <h2>Agentic Validation &amp; Duplicate Detection</h2>
-    <p>When a rule needs context beyond the field itself, CogniRunner goes agentic: the AI autonomously builds and runs JQL queries against the issue's own project — over multiple rounds — to find similar or related work before deciding. The Jira Search setting has three modes:</p>
+    <p>When a <strong>validator's</strong> rule needs context beyond the field itself, CogniRunner goes agentic: the AI autonomously builds and runs JQL queries against the issue's own project — over multiple rounds — to find similar or related work before deciding. (Agentic search is a validator capability — deterministic conditions never call an AI.) The Jira Search setting has three modes:</p>
 
     <div class="table-wrap">
       <table>
@@ -722,25 +788,35 @@
       <span class="callout-icon">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
       </span>
-      <p>The same engine powers <strong>declarative AI actions</strong> — add an AI-drafted comment, create a sub-task or linked issue, generate and attach a real DOCX/PDF/PPTX, or research a topic and save it to your knowledge base — all configured in plain English, no code required.</p>
+      <p>The same engine powers <strong>declarative AI actions</strong> — add an AI-drafted comment, create a sub-task or linked issue, generate and attach a real DOCX/PDF/PPTX, or use the <strong>Research &amp; Document</strong> flavor: it gathers evidence from web search and documentation lookups, has the AI author a grounded brief, and attaches it to the issue — all configured in plain English, no code required.</p>
     </div>
   </section>
 
   <section id="rule-management">
-    <h2>Rule Management (Enable / Disable)</h2>
-    <p>Each CogniRunner rule can be enabled or disabled without removing it from the workflow. This is useful for temporarily pausing validation during migrations, bulk updates, or troubleshooting. Disabled rules are skipped at runtime (fail-open) and their configuration is preserved.</p>
+    <h2>Rule Management (Enable / Disable / Delete)</h2>
+    <p>Each CogniRunner rule can be enabled or disabled without removing it from the workflow. This is useful for temporarily pausing validation during migrations, bulk updates, or troubleshooting. For validators and post-functions, disabled rules are skipped at runtime (fail-open) and their configuration is preserved. For conditions, the toggle goes further: because Jira itself enforces conditions, disabling one writes the disabled state <strong>into the workflow rule itself</strong> — so "Disabled" is never a lie. If that workflow write fails, the toggle refuses rather than half-applying.</p>
 
-    <h3>Active Rule</h3>
+    <h3>Delete — and actually detach</h3>
+    <p>Deleting from the Rules tab (per row, or in bulk via checkboxes) does more than remove a list entry: it also <strong>detaches the rule from its Jira workflow transition</strong>, so it genuinely stops running. Before anything happens, a preview dialog predicts the outcome per rule — flagging rules already gone from the workflow, duplicates, and workflows shared by multiple projects — and offers a lighter alternative, <em>Remove from this list only</em>, which leaves the rule attached and running.</p>
+
+    <figure class="screenshot">
+      <img src="new-screenshots/light/admin-delete-preview.png" alt="Delete rule dialog with Delete everywhere and Remove from this list only options">
+      <figcaption>The delete preview dialog. "Delete everywhere" detaches the rule from its workflow so it stops running — with a warning that this workflow is used by 3 projects — while "Remove from this list only" keeps it attached and running.</figcaption>
+    </figure>
+
+    <h3>Active / Disabled at a glance</h3>
     <figure class="screenshot">
       <img src="new-screenshots/light/view-summary-active.png" alt="Rule summary showing active state">
       <figcaption>A rule in active state. The summary shows the configured field, prompt, and tools status. Click "Disable" to pause it, or "Edit" to change the configuration.</figcaption>
     </figure>
 
-    <h3>Disabled Rule</h3>
     <figure class="screenshot">
       <img src="new-screenshots/light/view-summary-disabled.png" alt="Rule summary showing disabled state">
       <figcaption>A disabled rule. It will not run on transitions until re-enabled. The configuration is preserved — click "Enable" to reactivate it.</figcaption>
     </figure>
+
+    <h3>Import &amp; Export</h3>
+    <p>Rules travel. <strong>Export</strong> produces a self-contained JSON file — including the full JavaScript code of static post-functions — that you can keep in version control or move to another site. <strong>Import</strong> shows a preview of what will be created and lets you <strong>rebind fields</strong> to the target site's fields (custom field IDs rarely match across sites) before anything is written.</p>
   </section>
 
   <section id="admin-hub">
@@ -748,15 +824,53 @@
     <p>The CogniRunner Admin panel is the hub for every rule across your Jira workflows. Access it from <strong>Apps &rarr; CogniRunner</strong> in the Jira sidebar. It has tabs for <strong>Rules</strong>, <strong>Documentation</strong>, <strong>Skills</strong>, <strong>Memories</strong>, <strong>Permissions</strong>, and <strong>Settings</strong>, plus an <strong>Add Rule</strong> wizard.</p>
 
     <figure class="screenshot">
-      <img src="new-screenshots/light/admin-rules.png" alt="CogniRunner Admin panel Rules tab showing all configured rules with type badges">
-      <figcaption>The Rules tab lists every rule across workflows and projects. Each row shows a color-coded type badge (Validator, Condition, PF: Semantic, PF: Static), the workflow and transition, field, prompt preview, last update, and quick Edit/Disable actions.</figcaption>
+      <img src="new-screenshots/light/admin-rules.png" alt="CogniRunner Admin panel Rules tab with usage meter, Owner column, bulk selection, and per-row Delete">
+      <figcaption>The Rules tab. A byte-accurate usage meter tracks registry pressure against the 500-rule capacity; each row shows a color-coded type badge (Validator, Condition, PF: Semantic, PF: Static), the workflow and transition, field, prompt preview, last update, an Owner column, and per-row Explain / Edit / Disable / Delete — plus bulk checkboxes, Scan workflows, and Export / Import.</figcaption>
     </figure>
 
     <ul>
-      <li><strong>All rules, one place</strong> — every validator, condition, and post-function across all workflows, with type and ownership filters (All Rules / My Rules) and inline enable/disable.</li>
+      <li><strong>All rules, one place</strong> — every validator, condition, and post-function across all workflows, with type and ownership filters (All Rules / My Rules), inline enable/disable, and per-row or bulk <a href="#rule-management">Delete</a>.</li>
+      <li><strong>Registry usage meter</strong> — a byte-accurate meter shows real pressure against the registry's capacity (500 rules / 240&nbsp;KB), so imports and REST provisioning know exactly how much room is left.</li>
+      <li><strong>Owner column</strong> — every rule shows its author, and "My Rules" strictly means rules you authored. Rules claimed from workflow scans are recorded with an explicit <strong>Unowned</strong> chip rather than mis-attributed — claiming is not authoring.</li>
+      <li><strong>Scan workflows &rarr; Register all</strong> — sweeps every workflow for rules attached outside the panel (REST automation, imported or copied workflows), claims them so they can be managed, and reports anything it skipped.</li>
+      <li><strong>Automating rule creation</strong> — a panel on the Rules tab exposes everything needed to provision rules over Jira's REST API: this installation's extension ARIs with copy buttons, plus the <code>ruleKey</code> and target slot per rule type. See <a href="#rest-provisioning">Provisioning Rules over REST</a>.</li>
       <li><strong>Add Rule wizard</strong> — create a rule without touching the workflow editor: pick project, workflow, transition, and type, then configure and publish. CogniRunner injects the rule into the actual Jira workflow for you.</li>
       <li><strong>Knowledge &amp; Skills</strong> — a shared documentation library, reusable Skills, and learned Memories give the AI grounded, instance-specific context.</li>
     </ul>
+
+    <figure class="screenshot">
+      <img src="new-screenshots/light/admin-rest-panel.png" alt="The Automating rule creation panel open, showing extension ARIs with copy buttons and ruleKey plus target slot per rule type">
+      <figcaption>The "Automating rule creation" panel open on the Rules tab: this installation's extension ARIs with copy buttons, the ruleKey and target slot for each rule type, the size caps, and the two gotchas that catch people out.</figcaption>
+    </figure>
+  </section>
+
+  <section id="rest-provisioning">
+    <h2>Provisioning Rules over REST</h2>
+    <p>CogniRunner rules are ordinary Forge workflow rules, so you can attach them with <strong>Jira's own workflow REST API</strong> — using your Jira credentials, not a CogniRunner API. Read the workflow with <code>GET /rest/api/3/workflows/search</code>, add the rule to the transition, and write it back with <code>POST /rest/api/3/workflows/update</code>. That is how you bulk-provision rules across many projects, migrate them between sites, or keep them in version control.</p>
+    <p>Everything install-specific comes from the <strong>Automating rule creation</strong> panel shown above: this installation's extension ARIs (with copy buttons — the environment id inside each ARI is unique to your install, so never copy one from an example), the <code>ruleKey</code> and target slot per rule type, and the size caps (a rule's config must stay under 32&nbsp;KB, and the registry meter shows how much room is left).</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Rule type</th><th>ruleKey</th><th>Goes in</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><strong>Validator</strong></td><td><code>forge:expression-validator</code></td><td><code>transition.validators</code></td></tr>
+          <tr><td><strong>Condition</strong></td><td><code>forge:expression-condition</code></td><td>the transition's conditions tree</td></tr>
+          <tr><td><strong>Semantic &amp; static post-functions</strong></td><td><code>forge:workflow-post-function</code></td><td><code>transition.actions</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout callout-warning">
+      <span class="callout-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      </span>
+      <p>Two things catch people out. A rule attached over REST <strong>runs immediately but is invisible</strong> to the admin panel until you claim it — use <strong>Scan workflows &rarr; Register all</strong> afterwards. And every rule needs a <strong>stable id embedded in its config</strong>: without one it can be claimed but never disabled from the panel, and removing it from the workflow becomes the only off-switch.</p>
+    </div>
+
+    <p>Field-condition configs carry two extra keys the admin UI normally resolves for you: <code>exprProp</code> (the custom field id the Jira expression indexes) and <code>exprKind</code> (the comparison strategy — plus <code>valueNum</code> as a JSON number for numeric equals). A mismatched <code>exprKind</code> is the one way a hand-crafted config can fail closed and hide the transition, so copy configs the UI produced rather than hand-writing these.</p>
+    <p>The full guide — payload shapes, the config schema per rule type, and a worked end-to-end example — is in <a href="https://github.com/leanzero-srl/leanzero-cognirunner-forgeapp/blob/main/docs/REST-API-RULES.md">REST-API-RULES.md</a> in the repository.</p>
   </section>
 
   <section id="permissions">
@@ -776,7 +890,7 @@
       </table>
     </div>
 
-    <p>Each role is paired with a <strong>scope</strong> — <em>own rules</em> or <em>all rules</em> — so you can delegate without handing over the whole app. An editor scoped to "own" can only edit the rules they created; scoped to "all" they can manage everyone's.</p>
+    <p>Each role is paired with a <strong>scope</strong> — <em>own rules</em> or <em>all rules</em> — so you can delegate without handing over the whole app. An editor scoped to "own" can only edit the rules they created; scoped to "all" they can manage everyone's. Execution logs and rule export honor the same model: what you can see and export is bounded by your role and scope.</p>
 
     <figure class="screenshot">
       <img src="new-screenshots/light/admin-permissions.png" alt="CogniRunner Permissions tab with users, roles, and scopes">
@@ -803,17 +917,19 @@
 
   <section id="execution-logs">
     <h2>Execution Logs</h2>
-    <p>Every run — validator, condition, or post-function — is logged with full context: pass/skip/error status, the AI's reasoning, the JQL it ran, and an execution trace. Logs are available in both the Admin panel and the individual rule view.</p>
+    <p>Every <strong>validator and post-function</strong> run is logged with full context: pass/skip/error status, whether it ran live, from the async queue, or as a test, the AI's reasoning, the JQL it ran, and an execution trace. Deterministic conditions produce <strong>no log entries</strong> — Jira evaluates them natively, so no app code runs. Logs are available in both the Admin panel and the individual rule view.</p>
 
     <figure class="screenshot">
-      <img src="new-screenshots/light/admin-logs.png" alt="CogniRunner execution logs with status, type badges, and AI reasoning">
-      <figcaption>The Execution Logs tab. Each entry shows a status (PASS / SKIP / ERR), a type badge (Validator, Condition, PF: Semantic, PF: Static), the issue key, duration, AI reasoning, and — for agentic runs — the JQL queries and trace.</figcaption>
+      <img src="new-screenshots/light/admin-logs.png" alt="CogniRunner execution logs with status badges, LIVE/QUEUED source chips, and DRY-RUN and FAIL-OPEN flags">
+      <figcaption>The Execution Logs tab. Active and queued AI jobs stream at the top; each finished entry shows a status (PASS / SKIP / ERR), a type badge (Validator, PF: Semantic, PF: Static), a LIVE / QUEUED / TEST source chip, honesty flags like DRY-RUN and FAIL-OPEN, the issue key, duration, and the AI's reasoning.</figcaption>
     </figure>
 
     <p>Each log entry includes:</p>
     <ul>
       <li><strong>Status</strong> — PASS, SKIP, or ERR badge</li>
-      <li><strong>Rule type</strong> — Validator, Condition, or Post-Function (semantic / static)</li>
+      <li><strong>Rule type</strong> — Validator or Post-Function (semantic / static)</li>
+      <li><strong>Source chip</strong> — LIVE (a real transition), QUEUED (the async queue), or TEST (a dry run from the editor)</li>
+      <li><strong>Honesty flags</strong> — DRY-RUN when writes were simulated, FAIL-OPEN when an error let the transition through instead of blocking it</li>
       <li><strong>Issue key &amp; duration</strong> — which issue ran, and how long it took</li>
       <li><strong>AI reasoning</strong> — the full explanation from the AI</li>
       <li><strong>JQL queries</strong> — the queries executed during agentic search</li>
@@ -821,6 +937,8 @@
     </ul>
 
     <p>Logs are stored in Forge storage with a maximum of 50 entries (FIFO — oldest entries are removed when the limit is reached). Logs can be cleared from the admin panel.</p>
+
+    <p>You don't have to open the admin panel to see activity: the <strong>CogniRunner on this issue</strong> panel in the issue view shows a read-only glance of recent rule activity for the issue you're looking at.</p>
   </section>
 
   <section id="supported-fields">
@@ -906,6 +1024,7 @@
           <tr><td>JQL search rounds</td><td>3 rounds max</td><td>Each round can execute multiple JQL queries</td></tr>
           <tr><td>JQL results per query</td><td>10 issues</td><td>Top 10 matching issues returned per query</td></tr>
           <tr><td>Static post-function steps</td><td>50 steps</td><td>Chained operations per static post-function</td></tr>
+          <tr><td>Rule registry capacity</td><td>500 rules / 240 KB</td><td>Byte-accurate usage meter in the Rules tab; Import and Register all report what they skip at the cap</td></tr>
           <tr><td>Execution log history</td><td>50 entries</td><td>Oldest entries removed when limit is reached (FIFO)</td></tr>
           <tr><td>Prompt log truncation</td><td>200 characters</td><td>Field values stored in logs are truncated for storage</td></tr>
         </tbody>
@@ -922,7 +1041,7 @@
 
   <section id="ai-providers">
     <h2>Multi-Provider AI (Bring Your Own Key)</h2>
-    <p>CogniRunner ships with <strong>no embedded API key</strong>. Connect your own key from any supported provider — or use the zero-key <strong>Atlassian Forge LLM</strong> that runs inside Atlassian's platform with no external egress. Each provider stores its own key, so switching providers never loses your settings.</p>
+    <p>CogniRunner ships with <strong>no embedded API key</strong> — and no key is ever required. Connect your own provider — Anthropic, OpenAI, Azure OpenAI, OpenRouter, AWS Bedrock, or a local LM Studio — or use the zero-key <strong>Atlassian Forge LLM</strong> that runs inside Atlassian's platform with no external egress. Each provider stores its own key, so switching providers never loses your settings.</p>
 
     <div class="table-wrap">
       <table>
@@ -930,15 +1049,18 @@
           <tr><th>Provider</th><th>Notes</th></tr>
         </thead>
         <tbody>
-          <tr><td><strong>OpenAI</strong></td><td>Your OpenAI API key</td></tr>
           <tr><td><strong>Anthropic</strong></td><td>Claude models, your key</td></tr>
+          <tr><td><strong>OpenAI</strong></td><td>Your OpenAI API key</td></tr>
           <tr><td><strong>Azure OpenAI</strong></td><td>Your Azure deployment endpoint</td></tr>
           <tr><td><strong>OpenRouter</strong></td><td>One key, many models</td></tr>
           <tr><td><strong>AWS Bedrock</strong></td><td>Converse API, your account</td></tr>
+          <tr><td><strong>LM Studio</strong></td><td>Self-hosted local models on your own hardware</td></tr>
           <tr><td><strong>Atlassian Forge LLM</strong></td><td>Zero-key — runs inside Forge, no external egress</td></tr>
         </tbody>
       </table>
     </div>
+
+    <p>With LM Studio, inference runs on your own hardware — and CogniRunner's <strong>multi-model pool</strong> spreads validator calls across every model you have loaded, so no single local model becomes the bottleneck.</p>
 
     <p>Configure your provider in the <strong>Settings</strong> tab of the admin hub: choose a provider, paste your key (stored encrypted in Forge KVS and never sent to the frontend — only a masked indicator is shown), and pick a model. Providing a key unlocks model selection from that provider's model list. Removing a provider's key leaves the others untouched.</p>
 
@@ -951,14 +1073,14 @@
       <span class="callout-icon">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
       </span>
-      <p>Your field and attachment content is sent only to the AI provider you configure. With the Forge LLM provider, requests stay within Atlassian's platform — no external egress. CogniRunner stores nothing beyond the 50-entry execution log.</p>
+      <p>Your field and attachment content is sent only to the AI provider you configure. With the Forge LLM provider, requests stay within Atlassian's platform — no external egress; with LM Studio, they go to your own hardware. CogniRunner stores no issue or field content beyond short truncated excerpts in the capped 50-entry execution log — your rules, documents, skills, and memories live in Forge storage on your own site.</p>
     </div>
   </section>
 
   <hr>
 
   <footer class="footer">
-    <p>CogniRunner is the first open-source Atlassian Forge app, licensed under the <a href="https://www.apache.org/licenses/LICENSE-2.0">Apache-2.0 license</a>. Self-host or fork it freely.</p>
+    <p>CogniRunner is an open-source Atlassian Forge app, licensed under the <a href="https://www.apache.org/licenses/LICENSE-2.0">Apache-2.0 license</a>. Self-host or fork it freely.</p>
     <p>Copyright &copy; 2025 LeanZero</p>
   </footer>
 

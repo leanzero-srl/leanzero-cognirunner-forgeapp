@@ -382,7 +382,10 @@ const injectStyles = () => {
       position: fixed; inset: 0; z-index: 9998; background: rgba(15, 23, 42, 0.55);
       display: flex; align-items: flex-start; justify-content: center; padding: 48px 16px; overflow-y: auto;
     }
-    .pf-modal.port-dialog {
+    /* Base panel for EVERY .pf-modal — port-dialog AND del-dialog. This was
+       scoped to .pf-modal.port-dialog only, so the delete dialog (pf-modal
+       del-dialog) rendered as unstyled text floating over the backdrop. */
+    .pf-modal {
       background: var(--card-bg); border: 1px solid var(--border-color);
       border-radius: var(--r-lg, 12px); box-shadow: var(--shadow-card-hover); width: 100%; max-width: 640px; padding: 20px;
     }

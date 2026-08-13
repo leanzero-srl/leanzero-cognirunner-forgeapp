@@ -347,7 +347,6 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
       )}
       {!unavailable && mode === "condition" && ruleType === "field-equals" && (
         <p className="hint">
-          Compares a single value (case-insensitive). An empty field doesn't hide the transition.
           For a multi-value field like Labels, use “Field has a value” instead.
         </p>
       )}

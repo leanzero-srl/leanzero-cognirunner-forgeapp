@@ -42,20 +42,30 @@ modules:
   # Without this branch a rule shown as "Disabled" in the admin panel would keep
   # hiding the transition.
   #
-  # ⚠️ EVERY BRANCH USES A STATIC, TYPED PROPERTY PATH ON `issue`. Do NOT add a
-  # branch that indexes `issue` with a user-chosen field id (`issue?.[config.fieldId]`).
-  # Two reasons, both discovered the hard way:
-  #   - Jira expressions name system fields differently from the REST field ids our
-  #     field picker produces (`dueDate` vs `duedate`, `issueType` vs `issuetype`,
-  #     `attachments` vs `attachment`). A mismatch reads as null, which for a
-  #     has-value check means FALSE — hiding the transition on exactly the issues
-  #     that satisfy the rule.
-  #   - Field VALUES are typed. Probing `.length` on a Number, or comparing a User
-  #     object to a String, is an evaluation error, and an unresolvable expression
-  #     is FALSE. Fail-closed, in a product whose whole runtime law is fail-open.
-  # Field-based condition types are therefore NOT offered yet; they need a verified
-  # REST-id → expression-property map plus type-aware comparison, each proved live
-  # per field type. Tracked in test-harness/FINDINGS.md.
+  # ⚠️ THE FIELD-BASED BRANCHES FOLLOW A STRICT SAFETY PATTERN — keep it, exactly:
+  #   1. Dynamic indexing is allowed ONLY as `issue?.[config.exprProp]`, and only
+  #      behind the leading guard that requires exprProp to match
+  #      ^customfield_[0-9]+$ — for a CUSTOM field the expression accessor IS the
+  #      REST id, so the system-field name-mismatch class (`dueDate` vs `duedate`
+  #      reads null → hides the transition on exactly the issues that satisfy the
+  #      rule) is structurally impossible. System-field accessors stay banned
+  #      until a per-field whitelist entry is probed live (v2).
+  #   2. Every typed operation (toLowerCase on a String, ?.value on an option,
+  #      .length on an array, Number ==) is reachable ONLY behind its exprKind
+  #      gate, and every exprKind was probed live per field kind before shipping
+  #      (2026-08-13, 41 cases — _probe-condition-fieldkinds.mjs, FINDINGS
+  #      F-COND-FIELD). Expression `==` is STRICT: a cross-type compare is an
+  #      evaluation ERROR, and an erroring condition is FALSE = fail-CLOSED, the
+  #      inverse of this product's runtime law. exprKind values are written only
+  #      by conditionFieldSupport() (premade-rules-catalog.js) — the single
+  #      source; never add a branch for a kind that module doesn't vouch for.
+  #   3. field-equals ALLOWS when the field is EMPTY (null-guard before any typed
+  #      compare). Load-bearing: a field hidden by a field configuration reads
+  #      null regardless of its value, so null→hide would let a routine admin
+  #      action hide transitions tenant-wide. (field-has-value's null→hide IS its
+  #      semantics — that residual is documented in the rule's own help text.)
+  #   4. Anything unrecognised — missing exprProp/exprKind (every pre-ship saved
+  #      config), an unknown exprKind, a non-custom exprProp — falls to TRUE.
   jira:workflowCondition:
     - key: ai-text-field-condition
       name: CogniRunner Field Condition
@@ -64,6 +74,22 @@ modules:
         function: resolver
       expression: >-
         config == null || config.conditionKind != "deterministic" || config.disabled == true ? true :
+        (config.ruleType == "field-has-value" || config.ruleType == "field-empty" || config.ruleType == "field-equals")
+          && (config.exprProp == null || config.exprKind == null
+              || config.exprProp.match("^customfield_[0-9]+$") == null) ? true :
+        config.ruleType == "field-has-value" ?
+          (config.exprKind == "arr" ? (issue?.[config.exprProp] != null && issue?.[config.exprProp].length > 0) :
+           config.exprKind == "nul" ? issue?.[config.exprProp] != null : true) :
+        config.ruleType == "field-empty" ?
+          (config.exprKind == "arr" ? (issue?.[config.exprProp] == null || issue?.[config.exprProp].length == 0) :
+           config.exprKind == "nul" ? issue?.[config.exprProp] == null : true) :
+        config.ruleType == "field-equals" ?
+          (config.value == null || issue?.[config.exprProp] == null ? true :
+           config.exprKind == "str" ? issue?.[config.exprProp].toLowerCase() == config.value.toLowerCase() :
+           config.exprKind == "opt" ? (issue?.[config.exprProp]?.value == null ? true :
+             issue?.[config.exprProp].value.toLowerCase() == config.value.toLowerCase()) :
+           config.exprKind == "num" ? (config.valueNum == null ? true : issue?.[config.exprProp] == config.valueNum) :
+           true) :
         config.ruleType == "issue-type-is" ?
           (config.issueTypeName == null || issue.issueType?.name == config.issueTypeName) :
         config.ruleType == "issue-is-resolved" ? (issue.resolution != null) :

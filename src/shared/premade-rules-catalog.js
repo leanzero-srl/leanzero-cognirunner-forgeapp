@@ -169,46 +169,110 @@ export const EXPRESSION_BACKED_CONDITIONS = [
   "parent-status-is",
   "current-user-is-assignee",
   "current-user-is-reporter",
+  // Field-based types — CUSTOM fields only, per-kind (see CONDITION_FIELD_KINDS).
+  "field-has-value",
+  "field-empty",
+  "field-equals",
 ];
 
 /**
- * Field-based condition types, deliberately NOT offered yet.
+ * Field-based condition support — CUSTOM fields only, per field kind.
  *
- * They would need the expression to index `issue` with the field id our picker
- * produces, and that is unsafe in both directions:
- *   - Jira expressions name system fields differently from REST field ids
- *     (`dueDate` vs `duedate`, `issueType` vs `issuetype`). A mismatch reads as
- *     null, which for a has-value check means FALSE — hiding the transition on
- *     exactly the issues that satisfy the rule.
- *   - Field values are typed. Probing `.length` on a Number, or comparing a User
- *     object to a String, is an evaluation error, and an unresolvable expression
- *     is FALSE. That is fail-CLOSED, the inverse of this app's runtime law.
- * Shipping them needs a verified REST-id → expression-property map and type-aware
- * comparison, each proved live per field type. Until then they stay greyed out —
- * a rule that silently hides a transition is worse than a rule we didn't ship.
+ * Why custom-only: for a custom field the Jira-expression accessor IS the REST
+ * id (`issue.customfield_10010`), so the system-field name-mismatch class
+ * (`dueDate` vs `duedate` — reads null, hides the transition on exactly the
+ * issues that satisfy the rule) is structurally impossible. The manifest
+ * expression additionally enforces this with a `^customfield_[0-9]+$` guard, so
+ * even a hand-crafted config carrying a system id falls open, never null-reads.
+ * System fields are a possible v2, each behind its own live-probed whitelist
+ * entry.
+ *
+ * Why per-kind: expression `==` is STRICT — comparing a Number to a String (or
+ * probing `.length` on a Number) is an evaluation ERROR, and an erroring
+ * condition is FALSE = fail-closed. Every kind below was probed live on real
+ * fields, both directions, before being listed (2026-08-13, 41 cases, 0
+ * mismatches — `_probe-condition-fieldkinds.mjs`, FINDINGS F-COND-FIELD):
+ *   nul — scalar kinds; unset reads null → null-check has-value/empty.
+ *   arr — array kinds; unset reads null, set supports .length → null-or-length.
+ *   str — plain-String values (text/url/date; date is REST "YYYY-MM-DD");
+ *         equals folds BOTH sides with toLowerCase() in the expression engine.
+ *   opt — {value} option objects (select/radio); equals compares ?.value.
+ *   num — Number values; equals compares against `valueNum`, a JSON number in
+ *         the config, which the expression receives TYPED (probed).
+ * Kinds deliberately NOT given equals: textarea (rich object, not a String —
+ * probed), datetime (exact-millisecond match is a UX trap), user/group/
+ * version/cascading/project (object identities — v2 candidates).
+ *
+ * Keyed by the `schema.custom` suffix getFields returns for custom fields.
  */
-export const CONDITION_FIELD_TYPES_PENDING = ["field-has-value", "field-empty", "field-equals"];
+export const CONDITION_FIELD_KINDS = {
+  textfield: { presence: "nul", equals: "str" },
+  textarea: { presence: "nul", equals: null },
+  url: { presence: "nul", equals: "str" },
+  float: { presence: "nul", equals: "num" },
+  datepicker: { presence: "nul", equals: "str" },
+  datetime: { presence: "nul", equals: null },
+  select: { presence: "nul", equals: "opt" },
+  radiobuttons: { presence: "nul", equals: "opt" },
+  userpicker: { presence: "nul", equals: null },
+  grouppicker: { presence: "nul", equals: null },
+  cascadingselect: { presence: "nul", equals: null },
+  version: { presence: "nul", equals: null },
+  project: { presence: "nul", equals: null },
+  labels: { presence: "arr", equals: null },
+  multiselect: { presence: "arr", equals: null },
+  multicheckboxes: { presence: "arr", equals: null },
+  multiuserpicker: { presence: "arr", equals: null },
+  multigrouppicker: { presence: "arr", equals: null },
+  multiversion: { presence: "arr", equals: null },
+};
+
+/**
+ * Resolve whether a picked field supports a field-based condition type, and
+ * with which expression strategy. The single source for the picker, the config
+ * assembly, and the docs. `field` is a getFields row ({id, name, custom,
+ * schema}); returns { exprProp, exprKind } or { unsupported: <reason> }.
+ */
+export function conditionFieldSupport(field, ruleType) {
+  if (!field || !field.id) return { unsupported: CONDITION_FIELD_UNSUPPORTED_REASON };
+  // Custom fields only (v1) — the accessor is the REST id; system fields need a
+  // per-field verified accessor map (v2). The manifest expression enforces the
+  // same boundary with its customfield regex guard.
+  if (!/^customfield_[0-9]+$/.test(String(field.id))) {
+    return { unsupported: "System fields aren't supported for field conditions yet — Jira's expression engine names them differently from the field picker. Pick a custom field, or use a validator." };
+  }
+  const kindKey = String(field.schema?.custom || "").split(":").pop();
+  const kind = CONDITION_FIELD_KINDS[kindKey];
+  if (!kind) return { unsupported: CONDITION_FIELD_UNSUPPORTED_REASON };
+  if (ruleType === "field-equals") {
+    if (!kind.equals) {
+      return { unsupported: "This field's type doesn't support an equals check as a condition (only text, URL, date, number, select and radio fields do). Use “Field has a value”, or a validator." };
+    }
+    return { exprProp: field.id, exprKind: kind.equals };
+  }
+  return { exprProp: field.id, exprKind: kind.presence };
+}
 
 /** Why a condition type isn't offered — shown in the picker. */
 export const CONDITION_NOT_EXPRESSIBLE_REASON =
   "Not available as a condition: Jira evaluates conditions itself, in a sandbox that can't read related issues, attachments or group membership. Use a validator for this check.";
 
-/** Why the field-based condition types specifically are not offered yet. */
-export const CONDITION_FIELD_PENDING_REASON =
-  "Not available as a condition yet: Jira's expression engine names and types issue fields differently from the field picker, and a mismatch would hide the transition instead of showing it. Use a validator for field checks — it blocks with a message instead of hiding silently.";
+/** Shown when a PICKED FIELD's kind isn't supported for field conditions. */
+export const CONDITION_FIELD_UNSUPPORTED_REASON =
+  "This field's type isn't supported for conditions — only custom fields of a live-verified kind are (text, URL, date, datetime, number, select, radio, user, group, version, project, and the multi-value kinds for has/empty checks). Use a validator for anything else.";
 
 export const PREMADE_CONDITIONS = [
   {
     key: "field-has-value",
     label: "Field has a value",
-    help: "Only show this transition when the chosen field is set.",
+    help: "Only show this transition when the chosen custom field is set. A field hidden by a field configuration reads as empty.",
     params: { field: true },
     availability: "available",
   },
   {
     key: "field-equals",
     label: "Field equals a value",
-    help: "Only show this transition when a single-value field equals a value (case-insensitive).",
+    help: "Only show this transition when the chosen custom field equals a value (case-insensitive). An EMPTY field doesn't hide the transition — combine with “Field has a value” if it should.",
     params: { field: true, value: true },
     availability: "available",
   },
@@ -229,7 +293,7 @@ export const PREMADE_CONDITIONS = [
   {
     key: "field-empty",
     label: "Field is empty",
-    help: "Only show this transition when the chosen field has no value (the inverse of “Field has a value”).",
+    help: "Only show this transition when the chosen custom field has no value (the inverse of “Field has a value”). A field hidden by a field configuration reads as empty.",
     params: { field: true },
     availability: "available",
   },

@@ -20,8 +20,10 @@
 //
 // Covers every deterministic rule type the manifest expression implements, in both
 // directions — including parent-status-is on a REAL sub-task fixture (both
-// directions), not just the no-parent allow case — plus the two invariants that
-// keep this safe:
+// directions) and the field-based trio across EVERY shipped field kind (SET and
+// BARE fixture issues; the per-kind matrix is generated from the same
+// conditionFieldSupport the UI saves through, so guard and picker cannot drift
+// apart) — plus the invariants that keep this safe:
 //   - a legacy / AI-shaped condition must stay ALLOWED (default-true; upgrading must
 //     never start hiding transitions that used to be visible)
 //   - a null field value must stay ALLOWED (emptiness is the required-rule's job —
@@ -32,6 +34,7 @@
 import { getTransitions, doTransition, searchJql, getIssue, get, put, post, getMyself } from "../lib/jira.mjs";
 import { readWorkflow, updateWorkflow, makeSelfLoop, buildRule, attachRuleToTransition, removeTransitionsByName } from "../lib/workflow.mjs";
 import { loadState } from "../lib/state.mjs";
+import { conditionFieldSupport } from "../../src/shared/premade-rules-catalog.js";
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) pass++; else { fail++; console.log("FAIL:", m); } };
@@ -46,18 +49,32 @@ const CASES = [
     config: { type: "condition", fieldId: "summary", prompt: "some AI prompt" } },
   { name: "REGC-unknowntype", allow: true, why: "an unrecognised ruleType must fall through to allow",
     config: { conditionKind: "deterministic", ruleType: "not-a-real-rule", fieldId: "summary" } },
-  // The three WITHDRAWN field-based types must each fail OPEN (allow), never closed.
-  // This is the whole reason they're withdrawn: the expression can't safely index
-  // `issue` by a REST field id (system-field name mismatch + typed values → an
-  // unresolvable expression is FALSE = hides the transition). The expression doesn't
-  // implement them, so they must fall through its default-true. Proving all three
-  // ALLOW is what makes "withdrawn" a guarantee rather than a hope.
-  { name: "REGC-fieldtype-hasvalue", allow: true, why: "withdrawn field-has-value must ALLOW, never hide",
+  // --- field-based types: the FAIL-OPEN boundary -------------------------------
+  // The trio now SHIPS (custom fields of live-probed kinds, via exprProp/exprKind
+  // — see CONDITION_FIELD_KINDS). These cases pin the boundary around it: every
+  // config the expression should NOT evaluate must ALLOW, never hide.
+  { name: "REGC-fieldtype-legacy-hv", allow: true, why: "a pre-ship field-has-value config (no exprKind) must stay ALLOWED",
     config: { conditionKind: "deterministic", ruleType: "field-has-value", fieldId: ABSENT_FIELD } },
-  { name: "REGC-fieldtype-empty", allow: true, why: "withdrawn field-empty must ALLOW, never hide",
+  { name: "REGC-fieldtype-legacy-empty", allow: true, why: "a pre-ship field-empty config (no exprKind) must stay ALLOWED",
     config: { conditionKind: "deterministic", ruleType: "field-empty", fieldId: ABSENT_FIELD } },
-  { name: "REGC-fieldtype-equals", allow: true, why: "withdrawn field-equals must ALLOW, never hide",
+  { name: "REGC-fieldtype-legacy-eq", allow: true, why: "a pre-ship field-equals config (no exprKind) must stay ALLOWED",
     config: { conditionKind: "deterministic", ruleType: "field-equals", fieldId: "duedate", value: "2020-01-01" } },
+  { name: "REGC-field-systemid", allow: true, why: "a hand-crafted config with a SYSTEM id must ALLOW via the customfield regex guard",
+    config: { conditionKind: "deterministic", ruleType: "field-has-value", exprProp: "duedate", exprKind: "nul" } },
+  { name: "REGC-field-unknownkind", allow: true, why: "an unknown exprKind must ALLOW, never guess a comparison",
+    config: { conditionKind: "deterministic", ruleType: "field-equals", exprProp: "PROBE_TEXT", exprKind: "weird", value: "x" } },
+  { name: "REGC-field-eq-null-allows", allow: true, why: "field-equals on an EMPTY field must ALLOW (hidden-field-config safety)",
+    evalOn: "bareFields",
+    config: { conditionKind: "deterministic", ruleType: "field-equals", exprProp: "PROBE_TEXT", exprKind: "str", value: "anything" } },
+  { name: "REGC-field-num-untyped", allow: true, why: "number equals with NO valueNum must ALLOW (never a Number==String error)",
+    config: { conditionKind: "deterministic", ruleType: "field-equals", exprProp: "PROBE_NUMBER", exprKind: "num", value: "7" } },
+  { name: "REGC-field-disabled", allow: true, why: "a disabled field condition shaped to block must ALLOW",
+    evalOn: "bareFields",
+    config: { conditionKind: "deterministic", ruleType: "field-has-value", exprProp: "PROBE_TEXT", exprKind: "nul", disabled: true } },
+  { name: "REGC-field-absent-hv", allow: false, why: "has-value on an ABSENT custom field blocks — pinned as the documented deleted-field behavior",
+    config: { conditionKind: "deterministic", ruleType: "field-has-value", exprProp: ABSENT_FIELD, exprKind: "nul" } },
+  { name: "REGC-field-absent-empty", allow: true, why: "empty on an ABSENT custom field allows — same documented behavior, inverse type",
+    config: { conditionKind: "deterministic", ruleType: "field-empty", exprProp: ABSENT_FIELD, exprKind: "nul" } },
   // The disabled flag has to reach Jira somehow — the expression can't read app
   // storage, so disableRule writes it into the workflow rule's embedded config.
   { name: "REGC-disabled-allows", allow: true, why: "a rule marked disabled in its embedded config must ALLOW",
@@ -108,9 +125,104 @@ const CASES = [
     config: { conditionKind: "deterministic", ruleType: "current-user-is-reporter" } },
 ];
 
+// --- field-kind matrix generation ----------------------------------------------
+// One authority: the guard derives its per-kind cases from the SAME
+// conditionFieldSupport the UI saves through, over the real testbed fields. A
+// kind added to CONDITION_FIELD_KINDS without fixtures here still gets its
+// has/empty both-directions proof automatically; an equals kind gets its match
+// case from EQUALS_VALUES (extend it when a new equals kind ships).
+const EQUALS_VALUES = {
+  // role → { yes, no?, flip? } — `yes` matches the SET fixture's seeded value
+  // (field-matrix shapes); `flip` proves the case-insensitive fold; `no` the
+  // block direction (at least one per exprKind).
+  text: { yes: "harness text", no: "WRONG VALUE", flip: "HARNESS TEXT" },
+  url: { yes: "https://example.com/cogtest" },
+  date: { yes: "2026-03-15", no: "2026-03-16" },
+  number: { yes: 7, no: 8 },
+  select: { yes: "Low", no: "High" },
+  radio: { yes: "Yes" },
+};
+
+function buildFieldKindCases(cf) {
+  const out = [];
+  const add = (name, allow, evalOn, config, why) => out.push({ name, allow, evalOn, config: { conditionKind: "deterministic", ...config }, why });
+  for (const [role, f] of Object.entries(cf)) {
+    if (!f || !f.id || role === "offscreen" || role.startsWith("_")) continue;
+    // Synthesize the getFields row shape the UI resolves support from.
+    const fieldRow = { id: f.id, name: f.name, custom: true, schema: { custom: f.type } };
+    const presence = conditionFieldSupport(fieldRow, "field-has-value");
+    if (presence.unsupported) continue;
+    const base = { exprProp: presence.exprProp, exprKind: presence.exprKind };
+    add(`REGC-fk-hv-${role}-set`, true, "fieldsIssue", { ruleType: "field-has-value", ...base },
+      `has-value(${role}) allows on a set field`);
+    add(`REGC-fk-hv-${role}-bare`, false, "bareFields", { ruleType: "field-has-value", ...base },
+      `has-value(${role}) BLOCKS on an unset field`);
+    add(`REGC-fk-em-${role}-set`, false, "fieldsIssue", { ruleType: "field-empty", ...base },
+      `empty(${role}) BLOCKS on a set field`);
+    add(`REGC-fk-em-${role}-bare`, true, "bareFields", { ruleType: "field-empty", ...base },
+      `empty(${role}) allows on an unset field`);
+    const eq = conditionFieldSupport(fieldRow, "field-equals");
+    const vals = EQUALS_VALUES[role];
+    if (!eq.unsupported && vals) {
+      const eqBase = { ruleType: "field-equals", exprProp: eq.exprProp, exprKind: eq.exprKind };
+      const withVal = (v) => ({ ...eqBase, value: String(v), ...(eq.exprKind === "num" ? { valueNum: Number(v) } : {}) });
+      add(`REGC-fk-eq-${role}-yes`, true, "fieldsIssue", withVal(vals.yes), `equals(${role}) allows on the matching value`);
+      if (vals.no !== undefined) add(`REGC-fk-eq-${role}-no`, false, "fieldsIssue", withVal(vals.no), `equals(${role}) BLOCKS on a different value`);
+      if (vals.flip !== undefined) add(`REGC-fk-eq-${role}-flip`, true, "fieldsIssue", withVal(vals.flip), `equals(${role}) is case-insensitive (both sides folded in the expression)`);
+    }
+  }
+  return out;
+}
+
+// Same shapes field-matrix.mjs proved 19/19 — used to create the SET fixture.
+function fixtureValueFor(cf, role) {
+  const f = cf[role];
+  const opts = Array.isArray(f?.options) ? f.options : Object.keys(f?.options || {});
+  switch (role) {
+    case "text": return "harness text";
+    case "textarea": return { type: "doc", version: 1, content: [{ type: "paragraph", content: [{ type: "text", text: "harness textarea body" }] }] };
+    case "url": return "https://example.com/cogtest";
+    case "number": return 7;
+    case "date": return "2026-03-15";
+    case "datetime": return "2026-03-15T10:30:00.000+0000";
+    case "clabels": return ["alpha", "beta"];
+    case "select": return { value: opts[0] || "Low" };
+    case "multiselect": return (opts.length ? opts : ["Backend"]).slice(0, 2).map((v) => ({ value: v }));
+    case "radio": return { value: opts[0] || "Yes" };
+    case "checkboxes": return (opts.length ? opts : ["A11y"]).slice(0, 2).map((v) => ({ value: v }));
+    case "user": return { accountId: cf._lead };
+    case "multiuser": return [{ accountId: cf._lead }];
+    case "group": return { name: f.group };
+    case "multigroup": return [{ name: f.group }];
+    case "cascading": return { value: f.cascade.parent, child: { value: f.cascade.child } };
+    case "version": return { id: String(f.version.id) };
+    case "multiversion": return [{ id: String(f.version.id) }];
+    case "project": return { key: f.projectKey };
+    default: return null;
+  }
+}
+
+// Bounded fixture pool (shared with _probe-condition-fieldkinds.mjs): one issue
+// carrying every supported field value, one bare — found by label, reused.
+async function findOrCreateFieldsFixture(s, cf, label, withValues) {
+  const found = await searchJql(`project = ${s.projectKey} AND labels = ${label} AND status = "${s.hubStatusName || "Backlog"}" ORDER BY created ASC`, ["summary"], 1);
+  if (found.length) return found[0].key;
+  const fields = { project: { key: s.projectKey }, issuetype: { id: s.primaryIssueType.id }, summary: `Condition field-kind fixture (${withValues ? "SET" : "BARE"}; reused)`, labels: ["cogtest-harness", label] };
+  if (withValues) {
+    for (const [role, f] of Object.entries(cf)) {
+      if (!f || !f.id || role === "offscreen" || role.startsWith("_")) continue;
+      fields[f.id] = fixtureValueFor(cf, role);
+    }
+  }
+  const res = await post("/rest/api/3/issue", { fields });
+  console.log(`created ${withValues ? "SET" : "BARE"} field fixture ${res.key}`);
+  return res.key;
+}
+
+let allCaseNames = CASES.map((c) => c.name);
 const cleanup = async (workflowName) => {
   const { top, wf } = await readWorkflow(workflowName);
-  if (removeTransitionsByName(wf, CASES.map((c) => c.name)) > 0) await updateWorkflow(top, wf);
+  if (removeTransitionsByName(wf, allCaseNames) > 0) await updateWorkflow(top, wf);
 };
 
 async function main() {
@@ -173,6 +285,29 @@ async function main() {
     console.log("! no second assignable user — the accountId comparison itself stays UNPROVEN this run");
   }
 
+  // --- field-based conditions: fixtures + per-kind matrix ------------------------
+  // Every kind in CONDITION_FIELD_KINDS gets has-value AND empty, both directions
+  // (SET vs BARE fixture); every equals kind gets match / block / case-fold. If
+  // customFields is missing, the shipped types would go UNPROVEN — loud failure,
+  // never a silent narrowing.
+  let FIELDS_KEY = null, BARE_KEY = null;
+  if (!s.customFields) {
+    console.error("results/testbed.json has no customFields — run setup-fields + setup-fields-all; field-based condition types would go unproven");
+    process.exit(2);
+  }
+  {
+    const cf = { ...s.customFields, _lead: s.leadAccountId };
+    FIELDS_KEY = await findOrCreateFieldsFixture(s, cf, "cogtest-condprobe-set", true);
+    BARE_KEY = await findOrCreateFieldsFixture(s, cf, "cogtest-condprobe-bare", false);
+    // Resolve the static placeholder configs to real field ids.
+    for (const c of cases) {
+      if (c.config?.exprProp === "PROBE_TEXT") c.config.exprProp = cf.text.id;
+      if (c.config?.exprProp === "PROBE_NUMBER") c.config.exprProp = cf.number.id;
+    }
+    cases.push(...buildFieldKindCases(cf));
+    allCaseNames = cases.map((c) => c.name);
+  }
+
   await cleanup(workflowName);
   {
     const { top, wf } = await readWorkflow(workflowName);
@@ -198,7 +333,7 @@ async function main() {
 
   for (const c of cases) {
     if (c.assignTo) continue; // handled below, after the assignee swap
-    if (c.evalOn === "subtask") continue; // evaluated on the sub-task fixture below
+    if (c.evalOn) continue; // evaluated on a fixture issue below
     const visible = listed.has(String(c.id));
     const rest = await doTransition(KEY, String(c.id));
     const restAllowed = rest.status < 400;
@@ -206,6 +341,19 @@ async function main() {
     // REST through would be exactly the governance hole F3 claimed existed.
     ok(visible === c.allow, `${c.name}: listed=${visible}, expected ${c.allow} — ${c.why}`);
     ok(restAllowed === c.allow, `${c.name}: REST=${rest.status}, expected ${c.allow ? "allowed" : "blocked"} — conditions must be enforced over REST too`);
+  }
+
+  // --- the field-fixture cases, evaluated ON the SET / BARE fixtures -------------
+  for (const [target, key] of [["fieldsIssue", FIELDS_KEY], ["bareFields", BARE_KEY]]) {
+    const tCases = cases.filter((c) => c.evalOn === target);
+    if (!tCases.length) continue;
+    const tListed = new Set(((await getTransitions(key)).transitions || []).map((t) => String(t.id)));
+    for (const c of tCases) {
+      const visible = tListed.has(String(c.id));
+      const rest = await doTransition(key, String(c.id));
+      ok(visible === c.allow, `${c.name}: listed=${visible} on ${key}, expected ${c.allow} — ${c.why}`);
+      ok((rest.status < 400) === c.allow, `${c.name}: REST=${rest.status} on ${key}, expected ${c.allow ? "allowed" : "blocked"}`);
+    }
   }
 
   // --- the sub-task cases, evaluated ON the sub-task -----------------------------

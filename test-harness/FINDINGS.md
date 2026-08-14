@@ -214,13 +214,25 @@ Quantitative results: `REPORT.md` (snapshot) / `results/report.{md,html}`. Raw: 
 
 ---
 
-## F3 — Forge conditions are not enforced on the REST transition path · **OPEN (platform behavior)** · Severity MEDIUM
+## F3 — ~~Forge conditions are not enforced on the REST transition path~~ · **STRUCK 2026-08-14 — the diagnosis was WRONG** · Severity MEDIUM
 
-**What.** Conditions gate transition visibility in the UI, but REST-driven transitions bypass them. Both a customer-matching and a non-matching issue showed the condition transition as available, and firing it returned 204 for both; the `ai-text-field-condition` lambda was invoked **0 times** during the run (validators, by contrast, are enforced via REST).
+**Original claim (struck).** "Conditions gate transition visibility in the UI, but REST-driven transitions bypass them. Both a customer-matching and a non-matching issue showed the condition transition as available, and firing it returned 204 for both; the `ai-text-field-condition` lambda was invoked **0 times** during the run."
 
-**Why it's not a code fix.** This is Jira platform behavior — `GET`/`POST /issue/{key}/transitions` does not evaluate Forge conditions. There is nothing in the app to change.
+**What was actually true.** The observation was real; the inference was unsupported. The experiment drove CogniRunner's OWN condition, which declares `expression: "true"` — a tautology that passes on every surface, for reasons that have nothing to do with REST. The test could not distinguish "REST skips conditions" from "this condition allows everything".
 
-**Proposed action.** Document prominently that CogniRunner **conditions are advisory UI gating, not a governance control** — automation rules, bulk operations, and REST/integrations bypass them. For hard enforcement, use a **validator** (enforced on every path). Optionally offer an "also enforce as a validator" toggle that mirrors a condition's prompt.
+**Corrected finding (measured 2026-08-14, purpose-built probe app `LZ Condition Probe`, app `741d6811-…`).** The `jira:workflowCondition` module **has no `function` property** — the manifest reference lists only `expression`, required. So the 0 invocations were never about REST: Jira does not invoke a Forge function for a condition on ANY surface. And conditions **ARE** enforced on the REST path. With `expression: "false"` on a self-loop transition, same status as a control validator:
+
+| | condition (`expression:"false"`) | validator (`function:`) |
+|---|---|---|
+| `GET /issue/{key}/transitions` | **NOT listed** (570 others listed) | listed |
+| forced `POST .../transitions` | **HTTP 400**, issue did not move | HTTP 400 with the function's `errorMessage` |
+| `forge logs` invocations | **0** | 1 (`issue, configuration, context, user, transition, contextToken`) |
+
+`forge lint` (12.21.0 AND 13.3.0) and `forge deploy`'s server-side manifest validation both accept the illegal `function` key silently.
+
+**Action taken.** Condition authoring removed from the add-rule wizard (`f4b09a9`); editor callout rewritten; README corrected. For any real gating use a **validator**. If the transition genuinely must be HIDDEN, the working pattern is a condition expression reading a precomputed verdict from an issue entity property — measured working: property absent → hidden, `"fail"` → hidden, `"pass"` → listed and `POST` returns 204. Repro: `scripts/lz-condition-probe.mjs`.
+
+**Not measured.** The new issue-view transition menu (browser) and Jira Automation-driven transitions. REST only.
 
 ---
 

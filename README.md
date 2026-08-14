@@ -65,7 +65,7 @@ No regex, no scripting, no ScriptRunner. The field selector is context-aware -- 
 
 **Workflow Validators** block a transition if a field's content doesn't pass AI validation. The user sees a clear error message with the AI's reasoning.
 
-**Workflow Conditions** hide a transition entirely if the field doesn't meet criteria. Unlike validators, the transition button is simply not visible -- no error message needed.
+**Workflow Conditions are DEPRECATED and gate nothing.** The `jira:workflowCondition` module has no `function` property -- only a Jira `expression`, which Jira evaluates itself. Our module declares `expression: "true"`, so `validate()` is never invoked and the transition is always shown. Verified live 2026-08-14 with a purpose-built probe app: a condition declaring `expression: "false"` is withheld from `GET /issue/{key}/transitions` and rejects a forced `POST` with HTTP 400, while its declared function logs zero invocations. Condition authoring was removed from the add-rule wizard in `f4b09a9`; existing conditions still render and edit. Use a **Validator** for any real gating.
 
 **Attachment Validation** goes beyond "file exists" checks. CogniRunner downloads attached files and sends them directly to the AI for content-aware analysis:
 
@@ -501,7 +501,7 @@ Set via `forge variables set KEY value`.
 | Module | Key | Type | Purpose |
 |--------|-----|------|---------|
 | Validator | `ai-text-field-validator` | `jira:workflowValidator` | Blocks transition based on AI validation |
-| Condition | `ai-text-field-condition` | `jira:workflowCondition` | Hides transition based on AI evaluation |
+| Condition | `ai-text-field-condition` | `jira:workflowCondition` | **DEPRECATED — no-op.** `expression: "true"`; `validate()` never runs |
 | Semantic PF | `ai-semantic-post-function` | `jira:workflowPostFunction` | AI-powered field updates after transition |
 | Static PF | `ai-static-post-function` | `jira:workflowPostFunction` | Code execution after transition |
 | Admin Panel | `cognirunner-global-page` | `jira:globalPage` | Apps sidebar dashboard |

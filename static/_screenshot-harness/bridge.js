@@ -65,7 +65,7 @@ const ADMIN_CONFIGS = {
   // Registry pressure — the Rules tab's usage meter (shape = registryPressure()
   // in src/shared/registry-limits.js: measured against the REAL 240KiB capacity,
   // refusal point exposed separately).
-  registry: { count: 47, bytes: 58240, max: 500, maxBytes: 245760, refuseAtBytes: 200000, rowPct: 0.094, bytePct: 0.237, pct: 0.237, level: "ok", refusing: false },
+  registry: { count: 30, bytes: 58240, max: 500, maxBytes: 245760, refuseAtBytes: 200000, rowPct: 0.094, bytePct: 0.237, pct: 0.237, level: "ok", refusing: false },
   configs: [
     {
       id: "cr::Software Dev Workflow::21::a1b2c3", type: "validator", fieldId: "description",
@@ -86,7 +86,7 @@ const ADMIN_CONFIGS = {
       id: "provision-dod-check-v2", type: "validator", fieldId: "summary",
       prompt: "Definition-of-done gate provisioned over the REST API for every team workflow.",
       workflow: { workflowId: "wf-platform-008", workflowName: "Platform Intake", projectId: "10008", transitionId: "91", transitionFromName: "Ready", transitionToName: "In Delivery", siteUrl: SITE },
-      instanced: true, discovered: true, claimedBy: ACCT, createdAt: "2026-06-02T08:00:00.000Z", updatedAt: "2026-06-18T09:00:00.000Z", disabled: false,
+      instanced: true, discovered: true, claimedBy: "557058:33333333-3333-3333-3333-333333333333", claimedByName: "Priya Raman", createdAt: "2026-06-02T08:00:00.000Z", updatedAt: "2026-06-18T09:00:00.000Z", disabled: false,
     },
     {
       id: "cr::Release Workflow::41::a7b8c9", type: "postfunction-semantic", fieldId: "description", prompt: "",
@@ -125,6 +125,31 @@ const ADMIN_CONFIGS = {
       workflow: { workflowId: "wf-incident-007", workflowName: "Incident Response", projectId: "10007", transitionId: "81", transitionFromName: "Triaged", transitionToName: "Mitigating", siteUrl: SITE },
       instanced: true, createdBy: ACCT, createdAt: "2026-05-18T09:00:00.000Z", updatedAt: "2026-06-17T10:00:00.000Z", disabled: false,
     },
+    // --- Bulk filler so the table has MORE THAN ONE PAGE ---------------------
+    // Pagination, newest-first ordering and the sticky header are only meaningful
+    // above the page size; 8 hand-written rules could never exercise them. These
+    // carry DESCENDING updatedAt with a deliberate SHUFFLE in the source array, so
+    // a test that reads the rendered order is checking the sort, not the fixture.
+    ...(() => {
+      const rows = [];
+      for (let i = 1; i <= 22; i++) {
+        const day = String(i).padStart(2, "0");
+        rows.push({
+          id: `cr::Bulk Workflow::9${day}::bulk${day}`, type: i % 3 === 0 ? "condition" : "validator",
+          fieldId: "summary",
+          prompt: `Bulk seeded rule ${i} — checks the Summary before leaving Backlog.`,
+          workflow: { workflowId: `wf-bulk-${day}`, workflowName: `Bulk Workflow ${i}`, projectId: "10009", transitionId: `9${day}`, transitionFromName: "Backlog", transitionToName: "Selected", siteUrl: SITE },
+          instanced: true, disabled: false,
+          createdBy: ACCT, createdByName: "Mihai Perdum",
+          createdAt: `2026-01-${day}T08:00:00.000Z`,
+          // 2026-02-01 .. 2026-02-22 — all OLDER than every hand-written rule above,
+          // so the hand-written ones must occupy page 1.
+          updatedAt: `2026-02-${day}T08:00:00.000Z`,
+        });
+      }
+      // Shuffle deterministically (odd indices first) so source order != sorted order.
+      return [...rows.filter((_, i) => i % 2 === 1), ...rows.filter((_, i) => i % 2 === 0)];
+    })(),
   ],
 };
 

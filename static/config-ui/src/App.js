@@ -233,6 +233,21 @@ const injectStyles = () => {
     }
     .dropdown-trigger.dropdown-error { border-color: var(--error-color) !important; }
 
+    /* Searchable select = COMBOBOX: while the menu is open the trigger IS the search
+       box. There used to be a second search input inside the panel, so a field
+       rendered as two identical-looking bars stacked on each other and only the
+       lower one accepted typing. The wrapper keeps every .dropdown-trigger visual;
+       the input inside is chrome-free so it reads as one control, not a field
+       nested inside a field. */
+    .dropdown-trigger.dropdown-combobox { cursor: text; display: flex; align-items: center; }
+    .dropdown-combobox-input {
+      flex: 1 1 auto; min-width: 0; width: 100%;
+      border: 0; outline: none; padding: 0; margin: 0;
+      background: transparent; color: var(--text-color);
+      font: inherit; line-height: inherit;
+    }
+    .dropdown-combobox-input::placeholder { color: var(--text-muted); }
+
     .dropdown-trigger .dropdown-placeholder { color: var(--text-muted); }
 
     .dropdown-chevron {
@@ -272,26 +287,8 @@ const injectStyles = () => {
       bottom: calc(100% + 4px);
     }
 
-    .dropdown-search {
-      padding: 8px;
-      border-bottom: 1px solid var(--border-color);
-      flex-shrink: 0;
-    }
 
-    .dropdown-search input {
-      width: 100%;
-      padding: 8px 10px;
-      font-size: 13px;
-      border: 2px solid var(--border-color);
-      border-radius: 3px;
-      background-color: var(--input-bg);
-      color: var(--text-color);
-      outline: none;
-      font-family: inherit;
-    }
 
-    .dropdown-search input:focus { border-color: var(--primary-color); }
-    .dropdown-search input::placeholder { color: var(--text-muted); }
 
     .dropdown-list {
       overflow-y: auto;
@@ -1453,7 +1450,7 @@ const injectStyles = () => {
 
     @keyframes fadeInBadge {
       from { opacity: 0; transform: scale(0.8); }
-      to { opacity: 1; transform: scale(1); }
+      to { opacity: 1; transform: none; }
     }
 
     /* REST API section */
@@ -2266,7 +2263,7 @@ const injectStyles = () => {
 
     @keyframes aiTextFade {
       from { opacity: 0; transform: translateY(4px); }
-      to { opacity: 1; transform: translateY(0); }
+      to { opacity: 1; transform: none; }
     }
 
     /* AI Review panel */
@@ -2894,6 +2891,9 @@ function App() {
   const [highlightedIndex, setHighlightedIndex] = useState(-1);
   const dropdownRef = useRef(null);
   const searchInputRef = useRef(null);
+  // The closed-state trigger button. It unmounts while the combobox is open, so a
+  // focus-return has to wait for React to remount it (see closeFieldDropdown).
+  const fieldTriggerRef = useRef(null);
   const listRef = useRef(null);
   const [dropdownFlipUp, setDropdownFlipUp] = useState(false);
 
@@ -3035,6 +3035,7 @@ function App() {
     if (e.key === "Escape") {
       e.preventDefault();
       setDropdownOpen(false);
+      setTimeout(() => fieldTriggerRef.current?.focus(), 0);
       return;
     }
     if (e.key === "ArrowDown") {
@@ -3049,6 +3050,7 @@ function App() {
         setFieldId(flatFiltered[highlightedIndex].id);
         setDropdownOpen(false);
         setDropdownSearch("");
+        setTimeout(() => fieldTriggerRef.current?.focus(), 0);
       }
     }
   };
@@ -3860,31 +3862,55 @@ function App() {
             </>
           ) : (
             <div className="dropdown" ref={dropdownRef} onKeyDown={handleDropdownKeyDown}>
-              <button
-                type="button"
-                className={`dropdown-trigger${dropdownOpen ? " dropdown-open" : ""}${error && !fieldId.trim() ? " dropdown-error" : ""}`}
-                onClick={() => { setDropdownOpen((o) => !o); setDropdownSearch(""); }}
-              >
-                {fieldId && fields.find((f) => f.id === fieldId) ? (
-                  <span>{fields.find((f) => f.id === fieldId).name}</span>
-                ) : (
-                  <span className="dropdown-placeholder">Select a field...</span>
-                )}
-                <span className="dropdown-chevron">
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 9l6 6 6-6"/></svg>
-                </span>
-              </button>
+              {/* COMBOBOX, matching CustomSelect: while the menu is open the trigger
+                  IS the search box. This picker is hand-rolled rather than a
+                  CustomSelect (it groups System vs Custom fields), and it carried
+                  the same defect — a closed-looking "Select a field..." bar sitting
+                  directly on top of a "Search fields..." bar, only the second of
+                  which accepted typing. */}
+              {dropdownOpen ? (
+                <div className={`dropdown-trigger dropdown-open dropdown-combobox${error && !fieldId.trim() ? " dropdown-error" : ""}`}>
+                  <input
+                    ref={searchInputRef}
+                    type="text"
+                    className="dropdown-combobox-input"
+                    role="combobox"
+                    aria-expanded={dropdownOpen}
+                    aria-autocomplete="list"
+                    aria-label="Search fields"
+                    value={dropdownSearch}
+                    onChange={(e) => setDropdownSearch(e.target.value)}
+                    placeholder={
+                      fieldId && fields.find((f) => f.id === fieldId)
+                        ? fields.find((f) => f.id === fieldId).name
+                        : "Search fields..."
+                    }
+                  />
+                  <span className="dropdown-chevron">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 9l6 6 6-6"/></svg>
+                  </span>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  ref={fieldTriggerRef}
+                  className={`dropdown-trigger${error && !fieldId.trim() ? " dropdown-error" : ""}`}
+                  aria-haspopup="listbox"
+                  aria-expanded={dropdownOpen}
+                  onClick={() => { setDropdownOpen(true); setDropdownSearch(""); }}
+                >
+                  {fieldId && fields.find((f) => f.id === fieldId) ? (
+                    <span>{fields.find((f) => f.id === fieldId).name}</span>
+                  ) : (
+                    <span className="dropdown-placeholder">Select a field...</span>
+                  )}
+                  <span className="dropdown-chevron">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 9l6 6 6-6"/></svg>
+                  </span>
+                </button>
+              )}
               {dropdownOpen && (
                 <div className={`dropdown-panel${dropdownFlipUp ? " dropdown-panel-up" : ""}`}>
-                  <div className="dropdown-search">
-                    <input
-                      ref={searchInputRef}
-                      type="text"
-                      value={dropdownSearch}
-                      onChange={(e) => setDropdownSearch(e.target.value)}
-                      placeholder="Search fields..."
-                    />
-                  </div>
                   <div className="dropdown-list" ref={listRef}>
                     {flatFiltered.length === 0 ? (
                       <div className="dropdown-empty">No fields match your search</div>

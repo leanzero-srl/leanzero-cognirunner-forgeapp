@@ -6,6 +6,7 @@
  */
 
 import React, { useState, useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
 import CustomSelect from "./CustomSelect";
 import AILoadingState from "./AILoadingState";
 
@@ -49,6 +50,50 @@ const RULE_TYPE_OPTIONS = [
   { value: "postfunction-link", label: "Link Related Issues", desc: "AI finds related issues & creates issue links" },
   { value: "postfunction-static", label: "Static Post Function", desc: "Run custom code after transition" },
 ];
+
+/**
+ * The wizard's frame: a real modal dialog, the way Jira's own "Create issue" works.
+ *
+ * It used to render as an inline card wedged between the rules toolbar and the
+ * rules table. Two things went wrong with that. Its big "＋ Add New Rule" heading
+ * reads as a button but is only a heading, so clicking it did nothing — the actual
+ * trigger is the toolbar's "+ Add Rule". And because the wizard grows and shrinks
+ * as you move through its five steps, every step change shoved the table below it
+ * up or down, which is what made the rule list feel like it was sliding around
+ * under the cursor.
+ *
+ * As a dialog it overlays instead of displacing, so the table underneath never
+ * moves, and the heading is unambiguously the dialog's title rather than a control.
+ *
+ * The panel is capped and scrolls internally: the Forge iframe is only ~770px tall
+ * and step 5 can render a whole static-PF code editor.
+ */
+function WizardShell({ onClose, children }) {
+  // Esc closes, matching every other dialog in the app.
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  // Portalled to <body> for the same reason as every other dialog here: a
+  // `position: fixed` overlay must not be able to inherit a containing block from
+  // an animated app container. See DeleteRulesDialog for the full story.
+  return createPortal(
+    <div
+      className="pf-modal-overlay wiz-overlay"
+      role="presentation"
+      // Backdrop click closes — but only a click that STARTS on the backdrop, so a
+      // text selection dragged out of an input doesn't discard a half-filled rule.
+      onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="pf-modal wizard wiz-dialog" role="dialog" aria-modal="true" aria-label="Add new rule">
+        {children}
+      </div>
+    </div>,
+    document.body,
+  );
+}
 
 export default function AddRuleWizard({ invoke, onClose, onCreated }) {
   // Wizard steps: project -> workflow -> transition -> type -> config
@@ -452,7 +497,7 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
 
   if (created) {
     return (
-      <div className="card wizard">
+      <WizardShell onClose={onClose}>
         <div className="wiz-success">
           <div className="wiz-success-icon">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2">
@@ -492,12 +537,12 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
             }}>Add Another Rule</button>
           </div>
         </div>
-      </div>
+      </WizardShell>
     );
   }
 
   return (
-    <div className="card wizard">
+    <WizardShell onClose={onClose}>
       {/* Header */}
       <div className="wizard-header">
         <div className="wizard-header-left">
@@ -1188,6 +1233,6 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
           </div>
         </div>
       )}
-    </div>
+    </WizardShell>
   );
 }

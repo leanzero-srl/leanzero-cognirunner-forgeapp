@@ -167,6 +167,41 @@ const pfCodeKeyFor = (effectiveId, functions) => PF_CODE_PREFIX
 // are available, neither of which matches the app UUID in rule parameters.key.
 const APP_ID = "36415848-6868-4697-9554-3c3ad87b8da9";
 const APP_ADMINS_KEY = "app_admins";
+
+// Cache of accountId -> displayName for the Rules table's Owner column, so naming a
+// rule's author costs one Jira call per account EVER rather than one per page load.
+// A `null` value is a cached MISS (deleted or invisible account) — it stops us
+// re-asking about an id Jira will never resolve. Capped because it is keyed by
+// account and a long-lived site accumulates leavers.
+const OWNER_NAMES_KEY = "owner_names";
+const OWNER_NAMES_MAX = 400;
+const OWNER_LOOKUP_PER_CALL = 25;
+
+async function readOwnerNameCache() {
+  try {
+    const c = await storage.get(OWNER_NAMES_KEY);
+    return (c && typeof c === "object" && !Array.isArray(c)) ? c : {};
+  } catch { return {}; }
+}
+
+async function writeOwnerNameCache(learned) {
+  try {
+    const current = await readOwnerNameCache();
+    let next = { ...current, ...learned };
+    const keys = Object.keys(next);
+    if (keys.length > OWNER_NAMES_MAX) {
+      // Keep the entries we just learned plus enough older ones to fill the cap —
+      // an unbounded map eventually collides with the KVS value limit.
+      const keep = new Set(Object.keys(learned));
+      for (const k of keys) {
+        if (keep.size >= OWNER_NAMES_MAX) break;
+        keep.add(k);
+      }
+      next = Object.fromEntries([...keep].map((k) => [k, next[k]]));
+    }
+    await storage.set(OWNER_NAMES_KEY, next);
+  } catch { /* cosmetic cache — a failed write just means we look up again */ }
+}
 // One-shot data repairs already applied to this install's registry. Guards
 // migrations that must never run twice (see the ownership repair in getConfigs).
 const REGISTRY_MIGRATIONS_KEY = "registry_migrations";
@@ -1810,9 +1845,60 @@ resolver.define("getConfigs", async ({ payload, context }) => {
         if (u?.accountId && u?.displayName) ownerNames[u.accountId] = u.displayName;
       }
     } catch { /* names are cosmetic — never fail the read for them */ }
+
+    // Anyone who created or claimed a rule but is NOT on the app-admin roster had no
+    // name to show, so the Owner column fell back to printing a raw
+    // "557058:0e0a…-uuid" — the account id, which means nothing to a human. The
+    // roster only ever holds users granted an app ROLE; most rule authors are
+    // ordinary Jira users. Ask Jira for the rest (read:jira-user is already granted
+    // — no new scope), through a persistent cache so this costs nothing on repeat
+    // loads. Note the lookups are ONE ACCOUNT PER CALL: /user/bulk takes repeated
+    // accountId params, and `route` percent-encodes an interpolated query string
+    // (verified — "&" becomes "%26"), which would silently malform the URL.
+    ownerNames = { ...(await readOwnerNameCache()), ...ownerNames };
+    const unresolved = [...new Set(
+      filtered.flatMap((c) => [c.createdBy, c.claimedBy])
+        .filter((id) => id && ownerNames[id] === undefined),
+    )];
+    // Only ADMINS see the Owner column, so only an admin's load pays for the lookups.
+    // Everyone still benefits from the cache an admin warmed.
+    if (unresolved.length && perms?.role === "admin") {
+      const batch = unresolved.slice(0, OWNER_LOOKUP_PER_CALL);
+      if (unresolved.length > batch.length) {
+        console.log(`getConfigs: ${unresolved.length} unnamed owners, resolving ${batch.length} this pass — the rest resolve on the next load (cached)`);
+      }
+      const found = await Promise.all(batch.map(async (id) => {
+        try {
+          const resp = await api.asApp().requestJira(
+            route`/rest/api/3/user?accountId=${id}`,
+            { headers: { Accept: "application/json" } },
+          );
+          // Cache a miss ONLY for a definitive "this account does not exist / is not
+          // visible to us". A 429 or a 5xx is transient, and caching it would brand a
+          // real user as permanently unnamed on the strength of one throttled request.
+          if (resp.status === 404 || resp.status === 400) return [id, null];
+          if (!resp.ok) return [id, undefined];
+          const u = await resp.json();
+          return [id, u?.displayName || null];
+        } catch { return [id, undefined]; } // transient — do NOT cache, retry next load
+      }));
+      const learned = {};
+      for (const [id, name] of found) {
+        if (name === undefined) continue;
+        ownerNames[id] = name;
+        learned[id] = name;
+      }
+      if (Object.keys(learned).length) await writeOwnerNameCache(learned);
+    }
+
     const enriched = filtered.map((c) => ({
       ...c,
       createdByName: c.createdBy ? (ownerNames[c.createdBy] || null) : null,
+      // A rule attached over REST and later picked up by "Scan workflows → Register
+      // all" has no author, but it DOES know who claimed it. That was already stored
+      // and simply never surfaced, so every such row read "Unowned" when the app
+      // knew perfectly well whose it was.
+      claimedByName: c.claimedBy ? (ownerNames[c.claimedBy] || null) : null,
     }));
 
     return { success: true, configs: enriched, removedCount: removed.length, registry: pressure };

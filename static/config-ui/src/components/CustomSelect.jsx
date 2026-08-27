@@ -128,6 +128,12 @@ export default function CustomSelect({
     if (item) item.scrollIntoView({ block: "nearest" });
   }, [highlighted, open]);
 
+  // Focus back onto the trigger after the panel closes. While a SEARCHABLE select
+  // is open the trigger is an <input> and the <button> is unmounted, so triggerRef
+  // is null at the moment we ask for focus — defer to the next tick, once React has
+  // remounted the button, or keyboard users get dumped at the top of the document.
+  const focusTrigger = () => { setTimeout(() => triggerRef.current?.focus(), 0); };
+
   const handleKeyDown = (e) => {
     if (!open) {
       if (e.key === "Enter" || e.key === " " || e.key === "ArrowDown") {
@@ -136,7 +142,7 @@ export default function CustomSelect({
       }
       return;
     }
-    if (e.key === "Escape") { e.preventDefault(); setOpen(false); triggerRef.current?.focus(); return; }
+    if (e.key === "Escape") { e.preventDefault(); setOpen(false); focusTrigger(); return; }
     if (e.key === "ArrowDown") {
       e.preventDefault();
       setHighlighted((p) => Math.min(p + 1, filtered.length - 1));
@@ -155,7 +161,7 @@ export default function CustomSelect({
         onChange(filtered[highlighted].value);
         setOpen(false);
         setSearch("");
-        triggerRef.current?.focus();
+        focusTrigger();
       }
     }
   };
@@ -165,7 +171,7 @@ export default function CustomSelect({
     setOpen(false);
     setSearch("");
     // Return focus to the trigger so keyboard users don't get dumped at <body> top.
-    triggerRef.current?.focus();
+    focusTrigger();
   };
 
   const renderItem = (opt, idx) => (
@@ -216,23 +222,9 @@ export default function CustomSelect({
         zIndex: 100000,
       }}
     >
-      {showSearch && (
-        <div className="dropdown-search">
-          <input
-            ref={searchRef}
-            type="text"
-            role="combobox"
-            aria-expanded={open}
-            aria-controls={listboxId}
-            aria-activedescendant={activeId}
-            aria-autocomplete="list"
-            aria-label={ariaLabel || searchPlaceholder}
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder={searchPlaceholder}
-          />
-        </div>
-      )}
+      {/* No search box in here. It lives IN the trigger while the dropdown is open
+          (see below) — having both meant the field showed two identical-looking
+          bars stacked on top of each other, only one of which you could type in. */}
       <div className="dropdown-list" ref={listRef} id={listboxId} role="listbox" aria-label={ariaLabel || placeholder}>
         {filtered.length === 0 ? (
           <div className="dropdown-empty">No results found</div>
@@ -243,32 +235,65 @@ export default function CustomSelect({
     </div>
   ) : null;
 
+  const chevron = (
+    <span className="dropdown-chevron">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+        <path d="M6 9l6 6 6-6" />
+      </svg>
+    </span>
+  );
+
   return (
     <div className="dropdown" ref={wrapRef} onKeyDown={handleKeyDown}>
-      <button
-        type="button"
-        ref={triggerRef}
-        className={`dropdown-trigger${open ? " dropdown-open" : ""}${error ? " dropdown-error" : ""}${disabled ? " dropdown-disabled" : ""}`}
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        aria-controls={open ? listboxId : undefined}
-        // With no search box, focus stays on the trigger, so it carries activedescendant.
-        aria-activedescendant={!showSearch ? activeId : undefined}
-        aria-label={ariaLabel || undefined}
-        onClick={() => { if (!disabled) { setOpen((o) => !o); setSearch(""); } }}
-        disabled={disabled}
-      >
-        {selectedOpt ? (
-          <span>{selectedOpt.label}</span>
-        ) : (
-          <span className="dropdown-placeholder">{placeholder}</span>
-        )}
-        <span className="dropdown-chevron">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-            <path d="M6 9l6 6 6-6" />
-          </svg>
-        </span>
-      </button>
+      {/* A searchable select is a COMBOBOX: while it is open the trigger IS the
+          search box. There used to be a separate search input inside the panel as
+          well, which rendered as two stacked bars of identical width — the closed
+          trigger still showing "Select a field…" above a "Search fields…" input —
+          and only the lower one accepted typing. One control now, in the place the
+          user is already looking. Keyboard behaviour is unchanged: Arrow/Home/End/
+          Enter are handled on the wrapper, so they still drive the list. */}
+      {open && showSearch ? (
+        <div className={`dropdown-trigger dropdown-open dropdown-combobox${error ? " dropdown-error" : ""}`}>
+          <input
+            ref={searchRef}
+            type="text"
+            className="dropdown-combobox-input"
+            role="combobox"
+            aria-expanded={open}
+            aria-controls={listboxId}
+            aria-activedescendant={activeId}
+            aria-autocomplete="list"
+            aria-label={ariaLabel || searchPlaceholder}
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            // The current selection stays legible as the placeholder, so opening the
+            // menu never makes you forget what is already picked.
+            placeholder={selectedOpt ? selectedOpt.label : (searchPlaceholder || placeholder)}
+          />
+          {chevron}
+        </div>
+      ) : (
+        <button
+          type="button"
+          ref={triggerRef}
+          className={`dropdown-trigger${open ? " dropdown-open" : ""}${error ? " dropdown-error" : ""}${disabled ? " dropdown-disabled" : ""}`}
+          aria-haspopup="listbox"
+          aria-expanded={open}
+          aria-controls={open ? listboxId : undefined}
+          // With no search box, focus stays on the trigger, so it carries activedescendant.
+          aria-activedescendant={!showSearch ? activeId : undefined}
+          aria-label={ariaLabel || undefined}
+          onClick={() => { if (!disabled) { setOpen((o) => !o); setSearch(""); } }}
+          disabled={disabled}
+        >
+          {selectedOpt ? (
+            <span>{selectedOpt.label}</span>
+          ) : (
+            <span className="dropdown-placeholder">{placeholder}</span>
+          )}
+          {chevron}
+        </button>
+      )}
       {typeof document !== "undefined" && createPortal(panel, document.body)}
     </div>
   );

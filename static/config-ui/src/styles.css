@@ -328,26 +328,8 @@ html[data-color-mode="dark"] .dropdown-panel {
   box-shadow: 0 4px 16px rgba(0,0,0,0.4);
 }
 
-.dropdown-search {
-  padding: 8px;
-  border-bottom: 1px solid var(--border-color);
-  flex-shrink: 0;
-}
 
-.dropdown-search input {
-  width: 100%;
-  padding: 8px 10px;
-  font-size: 13px;
-  border: 2px solid var(--border-color);
-  border-radius: 3px;
-  background-color: var(--input-bg);
-  color: var(--text-color);
-  outline: none;
-  font-family: inherit;
-}
 
-.dropdown-search input:focus { border-color: var(--primary-color); }
-.dropdown-search input::placeholder { color: var(--text-muted); }
 
 .dropdown-list {
   overflow-y: auto;

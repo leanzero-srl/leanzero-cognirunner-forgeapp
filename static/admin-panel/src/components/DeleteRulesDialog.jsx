@@ -25,6 +25,21 @@
  */
 
 import React, { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
+
+// Modals render in a PORTAL to <body>, never in place.
+//
+// `position: fixed` is resolved against the nearest ancestor that has a transform,
+// filter or backdrop-filter — not against the viewport. The admin panel's `.section`
+// wrapper animates in, and while that animation runs (and, before the keyframe was
+// corrected, forever after) it carries a transform, which made it the containing
+// block for this overlay. `inset: 0` then resolved to a 76,000px-tall section and
+// the dialog opened thousands of pixels above whatever the user was looking at.
+//
+// Portalling to <body> removes the dependency entirely: no app container can be an
+// ancestor, so no future layout or animation change can capture the overlay again.
+// This is the same reason CustomSelect portals its dropdown panel.
+
 
 const typeLabel = (t) =>
   t === "postfunction-semantic" ? "PF: Semantic"
@@ -116,7 +131,7 @@ export default function DeleteRulesDialog({ invoke, ids, onClose, onDone }) {
 
   const n = ids.length;
 
-  return (
+  return createPortal(
     <div className="pf-modal-overlay" onClick={() => !busy && onClose()}>
       <div className="pf-modal del-dialog" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label={`Delete ${n} rule${n > 1 ? "s" : ""}`}>
         <div className="port-head">
@@ -238,6 +253,7 @@ export default function DeleteRulesDialog({ invoke, ids, onClose, onDone }) {
           </>
         )}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

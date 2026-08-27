@@ -713,13 +713,25 @@ try {
       const wfNames = () => page.locator("table.rules-table tbody .workflow-name").allInnerTexts();
       const p1 = await wfNames();
       ok(p1.length === 10, `R1 read a workflow name for all 10 rows (got ${p1.length})`);
-      ok(p1[0] === "Platform Intake", `R1 the most recently updated rule (2026-06-18) is first (got "${p1[0]}")`);
-      const HANDWRITTEN = ["Platform Intake", "Incident Response", "Release Workflow", "Software Dev Workflow", "Compliance", "Bug Triage", "Onboarding", "Legacy QA"];
-      for (const name of HANDWRITTEN) {
-        ok(p1.includes(name), `R1 page 1 holds the recent rule "${name}" rather than an older bulk row`);
-      }
-      ok(p1.filter((n) => /^Bulk Workflow/.test(n)).length === 2,
-        `R1 exactly the 2 newest bulk rules spill onto page 1 (got ${p1.filter((n) => /^Bulk Workflow/.test(n)).length})`);
+      // Assert the EXACT sequence, not just membership. An earlier version of this
+      // test only checked that the recent rules were somewhere on page 1, which a
+      // broken sort still satisfies — and it did: the live site ordered rows by id
+      // because the registry stores epoch-ms NUMBERS and Date.parse(number) is NaN.
+      // The fixture now carries both timestamp shapes, so this ordering is the check.
+      const EXPECTED_PAGE_1 = [
+        "Platform Intake",        // 2026-06-18  ISO
+        "Incident Response",      // 2026-06-17  epoch-ms number
+        "Release Workflow",       // 2026-06-16  epoch-ms number
+        "Software Dev Workflow",  // 2026-06-15  ISO
+        "Compliance",             // 2026-06-14  ISO
+        "Bug Triage",             // 2026-06-10  ISO
+        "Onboarding",             // 2026-06-01  ISO
+        "Legacy QA",              // 2026-05-20  ISO
+        "Bulk Workflow 22",       // 2026-02-22  epoch-ms number
+        "Bulk Workflow 21",       // 2026-02-21  epoch-ms number
+      ];
+      ok(JSON.stringify(p1) === JSON.stringify(EXPECTED_PAGE_1),
+        `R1 page 1 is in newest-first order regardless of timestamp shape\n      expected: ${JSON.stringify(EXPECTED_PAGE_1)}\n      got:      ${JSON.stringify(p1)}`);
 
       // Paging forward keeps the ordering and lands on the older rules.
       await page.locator(".rules-pager button", { hasText: "Next" }).click();

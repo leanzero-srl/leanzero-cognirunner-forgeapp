@@ -94,7 +94,7 @@ const ADMIN_CONFIGS = {
       actionPrompt: "…set the 'Risk Level' field to 'High' and summarize the breaking change.",
       actionFieldId: "customfield_10042", functions: [],
       workflow: { workflowId: "wf-release-003", workflowName: "Release Workflow", projectId: "10003", transitionId: "41", transitionFromName: "Staging", transitionToName: "Production", siteUrl: SITE },
-      instanced: true, disabled: false, createdBy: ACCT, createdAt: "2026-05-12T10:00:00.000Z", updatedAt: "2026-06-16T09:45:00.000Z",
+      instanced: true, disabled: false, createdBy: ACCT, createdAt: Date.parse("2026-05-12T10:00:00.000Z"), updatedAt: Date.parse("2026-06-16T09:45:00.000Z"),
     },
     {
       id: "cr::Onboarding::51::e1f2a3", type: "postfunction-static", fieldId: "", prompt: "",
@@ -123,7 +123,7 @@ const ADMIN_CONFIGS = {
       id: "cr::Incident::81::c3d4e5", type: "postfunction-static", fieldId: "", prompt: "", functions: [],
       functionsMeta: [{ id: "s1", name: "Escalate priority to High", operationType: "rest_api_internal", variableName: "r1" }, { id: "s2", name: "Add on-call watcher", operationType: "rest_api_internal", variableName: "r2" }],
       workflow: { workflowId: "wf-incident-007", workflowName: "Incident Response", projectId: "10007", transitionId: "81", transitionFromName: "Triaged", transitionToName: "Mitigating", siteUrl: SITE },
-      instanced: true, createdBy: ACCT, createdAt: "2026-05-18T09:00:00.000Z", updatedAt: "2026-06-17T10:00:00.000Z", disabled: false,
+      instanced: true, createdBy: ACCT, createdAt: Date.parse("2026-05-18T09:00:00.000Z"), updatedAt: Date.parse("2026-06-17T10:00:00.000Z"), disabled: false,
     },
     // --- Bulk filler so the table has MORE THAN ONE PAGE ---------------------
     // Pagination, newest-first ordering and the sticky header are only meaningful
@@ -141,10 +141,15 @@ const ADMIN_CONFIGS = {
           workflow: { workflowId: `wf-bulk-${day}`, workflowName: `Bulk Workflow ${i}`, projectId: "10009", transitionId: `9${day}`, transitionFromName: "Backlog", transitionToName: "Selected", siteUrl: SITE },
           instanced: true, disabled: false,
           createdBy: ACCT, createdByName: "Mihai Perdum",
-          createdAt: `2026-01-${day}T08:00:00.000Z`,
+          // EPOCH-MS NUMBERS, deliberately — this is what slimRegistryRow actually
+          // persists (ISO strings are halved to numbers to fit 500 rows under the
+          // KVS cap). The hand-written rules above keep ISO strings, so the fixture
+          // carries BOTH shapes and any reader that handles only one is caught here
+          // rather than on the live site.
+          createdAt: Date.parse(`2026-01-${day}T08:00:00.000Z`),
           // 2026-02-01 .. 2026-02-22 — all OLDER than every hand-written rule above,
           // so the hand-written ones must occupy page 1.
-          updatedAt: `2026-02-${day}T08:00:00.000Z`,
+          updatedAt: Date.parse(`2026-02-${day}T08:00:00.000Z`),
         });
       }
       // Shuffle deterministically (odd indices first) so source order != sorted order.

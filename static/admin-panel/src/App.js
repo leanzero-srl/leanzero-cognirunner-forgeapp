@@ -5054,8 +5054,15 @@ const RULES_PAGE_SIZE_DEFAULT = 10;
 // predate updatedAt, and the id keeps the sort stable (never NaN-shuffled) when two
 // rules share a timestamp, which bulk imports routinely produce.
 const ruleSortTime = (c) => {
-  const t = Date.parse(c?.updatedAt || c?.createdAt || "");
-  return Number.isNaN(t) ? -Infinity : t;
+  // A registry row's timestamps are epoch-ms NUMBERS, not ISO strings —
+  // slimRegistryRow rewrites them on write to halve the bytes at 500 rows (see
+  // src/shared/registry-limits.js), and rows can hold either form mid-migration.
+  // `Date.parse(1783000000000)` is NaN, which silently scored EVERY row -Infinity
+  // and left the table in id order on the real site while the mock fixture's ISO
+  // strings sorted fine. Mirror the backend's rowTimeMs: accept both.
+  const raw = c?.updatedAt ?? c?.createdAt;
+  const t = typeof raw === "number" ? raw : Date.parse(raw || "");
+  return Number.isFinite(t) ? t : -Infinity;
 };
 const byNewestFirst = (a, b) => {
   const d = ruleSortTime(b) - ruleSortTime(a);

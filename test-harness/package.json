@@ -39,8 +39,9 @@
     "test:premade": "node scripts/premade-rules.test.mjs",
     "test:recipes": "node scripts/recipes.test.mjs",
     "test:parity": "node scripts/premade-parity.mjs",
-    "test:offline": "node scripts/premade-parity.mjs && node scripts/run-offline.mjs",
-    "test:premade-e2e": "node scripts/premade-e2e.mjs"
+    "test:offline": "node scripts/premade-parity.mjs && node scripts/run-offline.mjs && node scripts/upload-contract.test.mjs",
+    "test:premade-e2e": "node scripts/premade-e2e.mjs",
+    "test:contract": "node scripts/upload-contract.test.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.48.0"

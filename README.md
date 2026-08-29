@@ -148,7 +148,7 @@ CogniRunner doesn't just evaluate text in isolation -- it can **autonomously sea
 
 ### Multi-Provider AI (BYOK)
 
-CogniRunner supports **four AI providers** via Bring Your Own Key. Each provider has its own key slot in storage -- switching providers never deletes your existing keys.
+CogniRunner supports **seven AI providers**. Five are Bring Your Own Key, one runs on a model you host yourself, and one needs no key at all. Each provider has its own key slot in storage -- switching providers never deletes your existing keys.
 
 | Provider | Default Model | Auth | Endpoint |
 |----------|--------------|------|----------|
@@ -156,6 +156,9 @@ CogniRunner supports **four AI providers** via Bring Your Own Key. Each provider
 | **Azure OpenAI** _(mostly untested)_ | `gpt-5.4-mini` | `api-key` header | Custom: `{resource}.openai.azure.com/openai/v1` |
 | **OpenRouter** | `openai/gpt-4o-mini` | `Authorization: Bearer` + attribution headers | `openrouter.ai/api/v1` |
 | **Anthropic** | `claude-haiku-4-5` | `x-api-key` + `anthropic-version` | `api.anthropic.com/v1` |
+| **AWS Bedrock** | `eu.anthropic.claude-sonnet-4-6` | `Authorization: Bearer` (Bedrock API key, **not** SigV4) | Custom |
+| **LM Studio** _(local / self-hosted)_ | host-supplied | none — reachable endpoint only | Custom: your own machine, exposed to Forge |
+| **Atlassian (Forge LLM)** | `claude-haiku-4-5-20251001` | none — zero-key | Atlassian-hosted, no egress |
 
 **How it works:**
 1. **Bring your own key (BYOK)** -- each admin supplies their own key for the active provider in the Settings tab. There is **no factory / out-of-the-box key**: the app ships with no embedded API key, so AI features require either a BYOK key or the zero-key **Atlassian Forge LLM** provider.

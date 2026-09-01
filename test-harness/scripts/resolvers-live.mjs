@@ -53,8 +53,9 @@ try {
   const draft = { name: `Resolver listener ${RUN}`, events: ["avi:jira:commented:issue"], filters: { projectKeys: [proj.key] }, functions: [{ id: "fn-1", name: "label", operationType: "work_item_query", operationPrompt: "add a label", variableName: "r1", code: `await api.addLabels("${TAG}-lst");\nreturn true;` }] };
   const t0 = await call("testListener", { listener: draft, issueKey: issue.key, eventType: "avi:jira:commented:issue" });
   ok(t0.success && t0.result && t0.result.isValid && (t0.result.changes || []).some((c) => c.simulated), `testListener on an UNSAVED draft runs in simulation: ${t0.result && t0.result.reason} (event: ${t0.result && t0.result.eventUsed})`);
-  const s1 = await call("saveListener", { listener: draft });
-  ok(s1.success && s1.listener.id && s1.listener.createdBy === ACCOUNT, `saveListener → ${s1.listener && s1.listener.id} (createdBy = principal)`);
+  ok(typeof t0.result.ruleId === "string" && t0.result.ruleId.startsWith("lst_"), "test run mints the draft's id (the UI adopts it before Save)");
+  const s1 = await call("saveListener", { listener: { ...draft, id: t0.result.ruleId } });
+  ok(s1.success && s1.listener.id === t0.result.ruleId && s1.listener.createdBy === ACCOUNT, `saveListener keeps the minted id → ${s1.listener && s1.listener.id} (createdBy = principal)`);
   created.listeners.push(s1.listener.id);
   const g1 = await call("getListener", { id: s1.listener.id });
   ok(g1.success && g1.listener.functions[0].code.includes(TAG), "getListener returns the full record with code");

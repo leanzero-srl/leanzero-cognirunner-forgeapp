@@ -131,7 +131,12 @@ export default function ListenersTab({ invoke, isAdmin, userRole, siteUrl, route
     setTesting(true); setTestResult(null);
     try {
       const r = await invoke("testListener", { listener: buildPayload(), issueKey: testKey.trim() || null, eventType: testEvent || draft.events[0] });
-      if (r.success) setTestResult(r.result); else setTestResult({ isValid: false, reason: r.error || "Test failed" });
+      if (r.success) {
+        setTestResult(r.result);
+        // An unsaved draft gets its id minted by the test run; adopt it so the later Save
+        // keeps the same identity and the test entry shows up in this listener's log history.
+        if (!draft.id && r.result && r.result.ruleId) patch({ id: r.result.ruleId });
+      } else setTestResult({ isValid: false, reason: r.error || "Test failed" });
     } catch (e) { setTestResult({ isValid: false, reason: e.message }); }
     setTesting(false);
   };

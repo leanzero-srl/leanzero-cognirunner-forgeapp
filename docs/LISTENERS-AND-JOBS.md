@@ -124,11 +124,12 @@ shows. Rows created through the API carry `createdBy: "api:<tokenId>"`.
 
 | Key | Purpose |
 |---|---|
-| `listener_index` / `listener:{id}` | slim rows (identity, events, project keys, stats) / full config incl. code (cap 200, ≤200 KB each) |
-| `job_index` / `job:{id}` | slim rows + scheduler bookkeeping (`lastCheckedAt`) / full config |
-| `job_claim:{id}:{minute}` | idempotency claim per due minute (2 h TTL) |
-| `lst_brake:{issue}:{bucket}` / `lst_brake:L:{listener}:{bucket}` | 5-minute loop / cost brakes (15 min TTL) |
-| `event_sample:{eventType}` | last-seen payload (7-day TTL, ≤20 KB) |
+| `listener_index` / `listener:{id}` | slim rows (identity, events, project keys) / full config incl. code (cap 200, ≤200 KB each; index ≤200 KB) |
+| `listener_stats` / `job_stats` | run statistics, one map per family (id → counts, last run) — written only by the consumers, never the index or the records (no lost-update race with saves) |
+| `job_index` / `job:{id}` / `job_sched` | slim rows / full config / the scheduler's own bookkeeping (id → `lastCheckedAt`; the tick is its single writer) |
+| `job_claim:{id}:{minute}` · `lst_exec:{taskId}` · `job_exec:{job}:{minute\|manual:task}` | idempotency claims: due-minute claim at the tick, execution claims in the consumer (at-least-once delivery), 2 h TTL |
+| `lst_brake:{issue}:{bucket}` / `lst_brake:L:{listener}:{bucket}` | 5-minute loop (30/issue) / cost (120/listener) brakes (15 min TTL) |
+| `event_sample:{eventType}` | last-seen payload SHAPE (7-day TTL, ≤20 KB) — captured only when a listener subscribes, with descriptions / comment bodies / rich-text fields redacted; editor-gated |
 | `api_tokens` | hashed REST tokens (≤25 live) |
 | `log_entry:*` (`type: "listener"` / `"scheduledjob"`) | execution history, shared with the Logs tab and the issue glance |
 

@@ -56,7 +56,7 @@ const INDEX_CACHE_TTL_MS = 30000;
 // Loop brakes: per issue and per listener, fixed 5-minute buckets.
 const BRAKE_PREFIX = "lst_brake:";
 const BRAKE_BUCKET_MS = 300000;
-export const BRAKE_MAX_PER_ISSUE = 10;
+export const BRAKE_MAX_PER_ISSUE = 30;
 export const BRAKE_MAX_PER_LISTENER = 120;
 const SAMPLE_TTL = { ttl: { value: 7, unit: "DAYS" } };
 const SAMPLE_MIN_INTERVAL_MS = 15 * 60 * 1000;
@@ -275,6 +275,16 @@ const jqlMatchesIssue = async (issueKey, jql) => {
   return Array.isArray(data.issues) && data.issues.some((i) => i.key === issueKey);
 };
 
+const _projectKeyCache = new Map();
+const resolveProjectKey = async (projectId) => {
+  if (_projectKeyCache.has(projectId)) return _projectKeyCache.get(projectId);
+  const res = await api.asApp().requestJira(route`/rest/api/3/project/${projectId}?properties=`);
+  if (!res.ok) return null;
+  const key = ((await res.json()) || {}).key || null;
+  if (key) _projectKeyCache.set(projectId, key);
+  return key;
+};
+
 // Resolve key/project/type for id-only payloads (worklog, link, attachment) with ONE read.
 const resolveIssueById = async (issueId) => {
   const res = await api.asApp().requestJira(route`/rest/api/3/issue/${issueId}?fields=project,issuetype`);
@@ -345,6 +355,11 @@ export async function listenerTrigger(event, context) {
   if (!ctx.issueKey && ctx.issueId) {
     try { const r = await resolveIssueById(ctx.issueId); if (r) Object.assign(ctx, r); } catch (e) { console.warn("[listener] issue resolve failed:", e && e.message); }
   }
+  // Project-scoped events that name the project by id only (versions, components by id,
+  // issue links): resolve the key so project filters can apply (cached per container).
+  if (!ctx.projectKey && ctx.projectId && candidates.some((r) => r.projectKeys && r.projectKeys.length)) {
+    try { ctx.projectKey = await resolveProjectKey(ctx.projectId); } catch (e) { console.warn("[listener] project resolve failed:", e && e.message); }
+  }
   // Pre-filter on the slim index rows before paying for full reads.
   const meta = getEvent(eventType) || {};
   const shortlisted = candidates.filter((r) => {
@@ -361,14 +376,14 @@ export async function listenerTrigger(event, context) {
     try { full = await getListener(row.id); } catch { full = null; }
     if (!full) continue;
     const st = matchListenerStatic(full, ctx, event);
-    if (!st.ok) continue;
+    if (!st.ok) { console.log(`[listener] ${eventType}: "${full.name}" (${full.id}) skipped — ${st.reason}`); continue; }
     const jql = full.filters && full.filters.jql;
     let jqlPending = false;
     if (jql) {
-      if (!ctx.issueKey) continue; // a JQL filter can only apply to issue-bound runs
+      if (!ctx.issueKey) { console.log(`[listener] ${eventType}: "${full.name}" skipped — JQL filter needs an issue`); continue; }
       try {
         if (!jqlCache.has(jql)) jqlCache.set(jql, await jqlMatchesIssue(ctx.issueKey, jql));
-        if (!jqlCache.get(jql)) continue;
+        if (!jqlCache.get(jql)) { console.log(`[listener] ${eventType}: "${full.name}" skipped — JQL did not match ${ctx.issueKey}`); continue; }
       } catch (e) {
         // Search hiccup — let the consumer re-check rather than drop the event.
         console.warn("[listener] JQL check deferred:", e && e.message);
@@ -385,7 +400,8 @@ export async function listenerTrigger(event, context) {
       if (ib.count >= BRAKE_MAX_PER_ISSUE) { await bumpBrake(ib); if (ib.count === BRAKE_MAX_PER_ISSUE) await logBrake(full, ctx, `issue ${ctx.issueKey} triggered more than ${BRAKE_MAX_PER_ISSUE} listener runs in 5 minutes`); continue; }
     }
     try {
-      await enqueueListenerRun({ listener: full, eventType, event, ctx: { ...ctx, jqlPending }, source: "event" });
+      const { taskId } = await enqueueListenerRun({ listener: full, eventType, event, ctx: { ...ctx, jqlPending }, source: "event" });
+      console.log(`[listener] ${eventType}: "${full.name}" (${full.id}) queued as ${taskId}${ctx.issueKey ? ` for ${ctx.issueKey}` : ""}`);
       queued++;
       await bumpBrake(lb);
       if (ib) await bumpBrake(ib);
@@ -511,7 +527,15 @@ export const executeListenerTask = async (params, taskId) => {
     return { skipped: true, reason: "disabled" };
   }
   const enqueuedMs = params.enqueuedAt ? Date.parse(params.enqueuedAt) : NaN;
-  const out = await runListener({ listener, eventType, event, ctx: ctx || extractEventContext(eventType, event), deadline: Date.now() + LISTENER_RUN_BUDGET_MS, cancelToken: taskId, source: "async" });
+  const started = Date.now();
+  let out;
+  try {
+    out = await runListener({ listener, eventType, event, ctx: ctx || extractEventContext(eventType, event), deadline: Date.now() + LISTENER_RUN_BUDGET_MS, cancelToken: taskId, source: "async" });
+  } catch (e) {
+    // A crash inside the run must still leave a trace — never a silent miss.
+    console.error(`[listener] ${listener.id} run crashed:`, e);
+    out = { skipped: false, log: { type: "listener", source: "async", issueKey: (ctx && ctx.issueKey) || (ctx && ctx.entityName) || "(no issue)", fieldId: eventType, isValid: false, reason: `Run crashed: ${String((e && e.message) || e).slice(0, 400)}`, recommendation: "Open the listener and use 'Test with an issue' to reproduce; check the AI provider settings if the run uses the AI condition or agent mode.", executionTimeMs: Date.now() - started, ruleId: listener.id, ruleName: listener.name, ruleWorkflow: null, eventType, mode: listener.mode } };
+  }
   const entry = out.log;
   if (Number.isFinite(enqueuedMs)) entry.queueDelayMs = Math.max(0, Date.now() - enqueuedMs);
   await m.storeLog(entry);

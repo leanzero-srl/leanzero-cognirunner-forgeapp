@@ -330,7 +330,14 @@ export const executeScheduledJobTask = async (params, taskId) => {
     return { skipped: true, reason: "disabled" };
   }
   const enqueuedMs = params.enqueuedAt ? Date.parse(params.enqueuedAt) : NaN;
-  const out = await runJob({ job, scheduledFor, missed, manual, deadline: Date.now() + JOB_RUN_BUDGET_MS, cancelToken: taskId, source: "async" });
+  const started = Date.now();
+  let out;
+  try {
+    out = await runJob({ job, scheduledFor, missed, manual, deadline: Date.now() + JOB_RUN_BUDGET_MS, cancelToken: taskId, source: "async" });
+  } catch (e) {
+    console.error(`[job] ${job.id} run crashed:`, e);
+    out = { success: false, issues: [], log: { type: "scheduledjob", source: "async", issueKey: "(no issue)", fieldId: `${job.schedule.cron} ${job.schedule.timeZone}`, isValid: false, reason: `Run crashed: ${String((e && e.message) || e).slice(0, 400)}`, recommendation: "Open the job and use 'Run now' to reproduce; check the AI provider settings if the job uses agent mode.", executionTimeMs: Date.now() - started, ruleId: job.id, ruleName: job.name, ruleWorkflow: null, mode: job.mode, scheduledFor, manual, missed } };
+  }
   const entry = out.log;
   if (Number.isFinite(enqueuedMs)) entry.queueDelayMs = Math.max(0, Date.now() - enqueuedMs);
   await m.storeLog(entry);

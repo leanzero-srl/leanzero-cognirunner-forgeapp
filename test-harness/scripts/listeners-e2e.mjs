@@ -67,10 +67,17 @@ async function main() {
   const subType = types.find((t) => t.subtask);
   const jsmProject = projects.find((p) => p.projectTypeKey === "service_desk");
 
+  // ── ledger issue: the catch-all appends one comment per caught event (append-only, no
+  // race, not subject to the app's 50-entry log window). Its own comments are app-generated
+  // (selfGenerated) and ignored by every listener (ignoreSelf), so it cannot loop. ──
+  const ledger = must(await jira("POST", "/rest/api/3/issue", { fields: { project: { id: proj.id }, issuetype: { id: stdType.id }, summary: `${TAG} event ledger` } }), "create ledger");
+  created.issues.push(ledger.key);
+  console.log(`  ledger issue ${ledger.key}`);
+
   // ── listeners ──
   const catchAll = must(await rulesApi.listeners.create({
-    name: `E2E catch-all ${RUN}`, description: "logs every event", events: EVENT_IDS, ignoreSelf: false,
-    functions: [{ name: "log", code: 'api.log("caught", api.context.eventType, api.context.issueKey || "(no issue)");\nreturn { eventType: api.context.eventType, issueKey: api.context.issueKey };' }],
+    name: `E2E catch-all ${RUN}`, description: "records every event on the ledger issue", events: EVENT_IDS, ignoreSelf: true,
+    functions: [{ name: "record", code: `await api.forIssue("${ledger.key}").addComment("caught " + api.context.eventType + " " + (api.context.issueKey || "(no issue)"));\nreturn api.context.eventType;` }],
   }).then((r) => ({ ok: r.ok, body: r.body, status: r.status })), "create catch-all").listener;
   created.listeners.push(catchAll.id);
   ok(catchAll.events.length === EVENT_IDS.length, `catch-all listener subscribed to all ${EVENT_IDS.length} events (id ${catchAll.id})`);
@@ -98,7 +105,7 @@ async function main() {
   created.listeners.push(onAgent.id);
   const onVersion = must(await rulesApi.listeners.create({
     name: `E2E version released→comment ${RUN}`, events: ["avi:jira:released:version"], filters: { projectKeys: [proj.key] },
-    functions: [{ name: "announce", code: `const v = api.context.event.version || {};\nconst r = await api.searchJql("labels = ${TAG}-created");\nfor (const i of (r.issues || []).slice(0, 1)) await api.forIssue(i.key).addComment("${TAG}: version released " + v.name);\nreturn r.issues.length;` }],
+    functions: [{ name: "announce", code: `const v = api.context.event.version || {};\nawait api.forIssue("${ledger.key}").addComment("${TAG}: version released " + v.name);\nreturn v.name;` }],
   }), "create onVersion").listener;
   created.listeners.push(onVersion.id);
   const disabledOne = must(await rulesApi.listeners.create({ name: `E2E disabled ${RUN}`, events: ["avi:jira:created:issue"], enabled: false, functions: [{ name: "x", code: `await api.addLabels("${TAG}-should-not-appear");` }] }), "create disabled").listener;
@@ -284,7 +291,8 @@ async function main() {
   ok(!labels.includes(`${TAG}-should-not-appear`), "disabled listener wrote nothing");
   ok(comments.some((c) => c.includes("priority changed")), "priority-changed comment posted (changelog read from api.context.event)");
   ok(comments.some((c) => c.includes(`${TAG} agent acknowledged`)), "AI agent acknowledgement comment posted");
-  ok(comments.some((c) => c.includes("version released")), "version-released comment posted via api.forIssue");
+  const ledgerNow = must(await jira("GET", `/rest/api/3/issue/${ledger.key}?fields=comment`), "ledger");
+  ok((ledgerNow.fields.comment.comments || []).some((c) => JSON.stringify(c.body).includes("version released")), "version-released comment posted on the ledger via api.forIssue (non-issue event)");
   // REST test action
   const t = await rulesApi.listeners.test(onCreate.id, { issueKey: issue.key, eventType: "avi:jira:created:issue" });
   ok(t.ok && t.body.result && t.body.result.isValid && (t.body.result.changes || []).some((c) => c.simulated), "POST action=test runs the listener in simulation via REST");
@@ -296,14 +304,27 @@ async function main() {
   const di = await jira("DELETE", `/rest/api/3/issue/${issue2.key}`);
   if (di.ok || di.status === 204) { fired.add("avi:jira:deleted:issue"); created.issues = created.issues.filter((k) => k !== issue2.key); } else note(`issue delete → ${di.status} (deleted:issue not fired — the API user lacks Delete Issues in ${proj.key})`);
 
-  // ── coverage matrix from the catch-all ──
-  const wc = await waitForLogs(catchAll.id, (logs) => [...fired].every((e) => logs.some((l) => l.eventType === e)), { tries: 36 });
-  const seen = new Set(wc.logs.map((l) => l.eventType));
-  console.log("\n  EVENT COVERAGE (catch-all listener; logs are capped at 50 newest entries):");
-  let hit = 0; let miss = 0;
-  for (const e of EVENT_IDS) { const f = fired.has(e); const s = seen.has(e); if (f && s) hit++; if (f && !s) miss++; console.log(`    ${s ? "✓" : f ? "✗" : "·"} ${e}${!f ? "  (not fired by this script)" : ""}`); }
-  ok(hit >= Math.min(fired.size, 40), `catch-all saw ${hit}/${fired.size} fired event types in its 50 newest log entries${miss ? ` (${miss} fired but not in the window — see note)` : ""}`);
-  if (miss) note(`${miss} fired event(s) not visible in the catch-all's log window: the app keeps the 50 newest log entries site-wide, and this run fired ${fired.size} event types + targeted listeners; re-run with fewer events to see all`);
+  // ── coverage matrix from the ledger (append-only comments written by the catch-all) ──
+  const readLedger = async () => {
+    const all = []; let start = 0;
+    for (;;) { const page = must(await jira("GET", `/rest/api/3/issue/${ledger.key}/comment?maxResults=100&startAt=${start}`), "ledger comments"); all.push(...(page.comments || [])); if (all.length >= (page.total || 0) || !(page.comments || []).length) break; start += page.comments.length; }
+    const seen = new Set();
+    for (const c of all) { const m = JSON.stringify(c.body).match(/caught (avi:[a-z0-9:_.-]+)/); if (m) seen.add(m[1]); }
+    return seen;
+  };
+  let seen = new Set(); let stable = 0; let lastSize = -1;
+  for (let i = 0; i < 40; i++) { // wait until every fired event is recorded, or the ledger stops growing for 45 s
+    seen = await readLedger();
+    if ([...fired].every((e) => seen.has(e))) break;
+    if (seen.size === lastSize) { if (++stable >= 3) break; } else { stable = 0; lastSize = seen.size; }
+    await sleep(15000);
+  }
+  console.log("\n  EVENT COVERAGE (ledger issue — one comment per event the catch-all caught):");
+  let hit = 0; const missed = [];
+  for (const e of EVENT_IDS) { const f = fired.has(e); const s = seen.has(e); if (f && s) hit++; if (f && !s) missed.push(e); console.log(`    ${s ? "✓" : f ? "✗" : "·"} ${e}${!f ? "  (not fired by this script)" : ""}`); }
+  const extra = [...seen].filter((e) => !fired.has(e));
+  if (extra.length) console.log(`    (also caught, fired implicitly by Jira: ${extra.join(", ")})`);
+  ok(missed.length === 0, `catch-all caught ${hit}/${fired.size} fired event types${missed.length ? ` — missing: ${missed.join(", ")}` : ""} (+${extra.length} caught implicitly, ${seen.size} distinct total)`);
 }
 
 async function cleanup() {

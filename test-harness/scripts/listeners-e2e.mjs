@@ -50,6 +50,10 @@ const fired = new Set(); // events we believe we fired
 async function main() {
   console.log(`LISTENERS E2E on ${BASE} (run ${RUN})`);
   const me = must(await jira("GET", "/rest/api/3/myself"), "myself");
+  // Mention events only fire when the mentioned user is notified — a self-mention is not. Pick another active human.
+  const others = (await jira("GET", "/rest/api/3/users/search?maxResults=50")).body || [];
+  const mentionee = (Array.isArray(others) ? others : []).find((u) => u.active && u.accountType === "atlassian" && u.accountId !== me.accountId) || me;
+  if (mentionee === me) note("no other active user on the site — mentions target the API user itself (mention events will not fire)");
   const who = await rulesApi.whoami();
   ok(who.ok && who.body.token, `REST API auth works (token ${who.body && who.body.token && who.body.token.prefix}…)`);
   const cat = await rulesApi.events();
@@ -129,13 +133,13 @@ async function main() {
   const prios = must(await jira("GET", "/rest/api/3/priority"), "priorities");
   const other = prios.find((p) => p.name !== "Medium") || prios[0];
   must(await jira("PUT", `/rest/api/3/issue/${issue.key}`, { fields: { priority: { id: other.id } } }), "update priority"); fired.add("avi:jira:updated:issue");
-  must(await jira("PUT", `/rest/api/3/issue/${issue.key}`, { fields: { description: { type: "doc", version: 1, content: [{ type: "paragraph", content: [{ type: "text", text: `${TAG} hello ` }, { type: "mention", attrs: { id: me.accountId, text: `@${me.displayName}` } }] }] } } }), "mention in description"); fired.add("avi:jira:mentioned:issue");
+  must(await jira("PUT", `/rest/api/3/issue/${issue.key}`, { fields: { description: { type: "doc", version: 1, content: [{ type: "paragraph", content: [{ type: "text", text: `${TAG} hello ` }, { type: "mention", attrs: { id: mentionee.accountId, text: `@${mentionee.displayName}` } }] }] } } }), "mention in description"); if (mentionee !== me) fired.add("avi:jira:mentioned:issue");
   must(await jira("PUT", `/rest/api/3/issue/${issue.key}/assignee`, { accountId: me.accountId }), "assign"); fired.add("avi:jira:assigned:issue");
   // comments: plain (refund → AI condition true), non-refund (AI condition false), agent ping, mention
   const c1 = must(await jira("POST", `/rest/api/3/issue/${issue.key}/comment`, { body: adf(`${TAG} I want my money back, please refund this order`) }), "refund comment"); fired.add("avi:jira:commented:issue");
   const c2 = must(await jira("POST", `/rest/api/3/issue/${issue.key}/comment`, { body: adf(`${TAG} thanks, all good here`) }), "non-refund comment");
   must(await jira("POST", `/rest/api/3/issue/${issue.key}/comment`, { body: adf(`${TAG}-agentping please acknowledge`) }), "agent ping comment");
-  must(await jira("POST", `/rest/api/3/issue/${issue.key}/comment`, { body: { type: "doc", version: 1, content: [{ type: "paragraph", content: [{ type: "mention", attrs: { id: me.accountId, text: `@${me.displayName}` } }, { type: "text", text: ` ${TAG} mention in comment` }] }] } }), "mention comment"); fired.add("avi:jira:mentioned:comment");
+  must(await jira("POST", `/rest/api/3/issue/${issue.key}/comment`, { body: { type: "doc", version: 1, content: [{ type: "paragraph", content: [{ type: "mention", attrs: { id: mentionee.accountId, text: `@${mentionee.displayName}` } }, { type: "text", text: ` ${TAG} mention in comment` }] }] } }), "mention comment"); if (mentionee !== me) fired.add("avi:jira:mentioned:comment");
   must(await jira("DELETE", `/rest/api/3/issue/${issue.key}/comment/${c2.id}`), "delete comment"); fired.add("avi:jira:deleted:comment");
   // worklog
   const wl = must(await jira("POST", `/rest/api/3/issue/${issue.key}/worklog`, { timeSpentSeconds: 600, comment: adf(`${TAG} worklog`) }), "worklog"); fired.add("avi:jira:created:worklog");
@@ -210,15 +214,15 @@ async function main() {
         if (oa.ok) {
           const opt = oa.body.options && oa.body.options[0];
           const dv = await jira("PUT", `/rest/api/3/field/${cf.body.id}/context/defaultValue`, { defaultValues: [{ contextId: String(nc.body.id), optionId: String(opt.id), type: "option.single" }] });
-          if (dv.ok || dv.status === 204) fired.add("avi:jira:updated:field:context:configuration"); else note(`field default value → ${dv.status} ${JSON.stringify(dv.body).slice(0, 120)}`);
+          if (dv.ok || dv.status === 204) note("set a field-context default value (avi:jira:updated:field:context:configuration is not guaranteed for REST default-value changes)"); else note(`field default value → ${dv.status} ${JSON.stringify(dv.body).slice(0, 120)}`);
         }
         const cdl = await jira("DELETE", `/rest/api/3/field/${cf.body.id}/context/${nc.body.id}`); if (cdl.ok || cdl.status === 204) fired.add("avi:jira:deleted:field:context");
       } else note(`field context create → ${nc.status} ${JSON.stringify(nc.body).slice(0, 120)}${ctx0 ? "" : " (no default context)"}`);
-      const tr = await jira("DELETE", `/rest/api/3/field/${cf.body.id}`); // moves to trash
-      if (tr.ok || tr.status === 303 || tr.status === 204 || tr.status === 202) {
+      const tr = await jira("POST", `/rest/api/3/field/${cf.body.id}/trash`);
+      if (tr.ok || tr.status === 204) {
         fired.add("avi:jira:trashed:field");
-        const rs = await jira("POST", `/rest/api/3/field/${cf.body.id}/restore`); if (rs.ok || rs.status === 204) { fired.add("avi:jira:restored:field"); const tr2 = await jira("DELETE", `/rest/api/3/field/${cf.body.id}`); if (tr2.ok || tr2.status === 303 || tr2.status === 204 || tr2.status === 202) fired.add("avi:jira:trashed:field"); }
-        note(`custom field ${cf.body.id} left in trash (permanent deletion is async / trash-only via REST — deleted:field not fired)`);
+        const rs = await jira("POST", `/rest/api/3/field/${cf.body.id}/restore`); if (rs.ok || rs.status === 204) fired.add("avi:jira:restored:field"); else note(`field restore → ${rs.status}`);
+        const del = await jira("DELETE", `/rest/api/3/field/${cf.body.id}`); if (del.ok || del.status === 303 || del.status === 204 || del.status === 202) fired.add("avi:jira:deleted:field"); else note(`field delete → ${del.status} ${JSON.stringify(del.body).slice(0, 120)}`);
       } else note(`field trash → ${tr.status} ${JSON.stringify(tr.body).slice(0, 120)}`);
     } else note(`custom field create → ${cf.status} ${JSON.stringify(cf.body).slice(0, 160)}`);
     // project lifecycle
@@ -238,7 +242,7 @@ async function main() {
       const flip = String(cur.value) === "true" ? "false" : "true";
       const set1 = await jira("PUT", "/rest/api/3/application-properties/jira.option.voting", { id: "jira.option.voting", value: flip });
       const set2 = await jira("PUT", "/rest/api/3/application-properties/jira.option.voting", { id: "jira.option.voting", value: String(cur.value) });
-      if (set1.ok && set2.ok) fired.add("avi:jira:changed:configuration"); else note(`configuration toggle → ${set1.status}/${set2.status}`);
+      if (set1.ok && set2.ok) note("toggled jira.option.voting twice (avi:jira:changed:configuration is emitted by Jira for UI changes; REST toggles may not emit it)"); else note(`configuration toggle → ${set1.status}/${set2.status}`);
     }
     const tt = await jira("GET", "/rest/api/3/configuration/timetracking");
     const ttList = await jira("GET", "/rest/api/3/configuration/timetracking/list");
@@ -262,7 +266,7 @@ async function main() {
       }
     } else note("no JSM project on the site — request-type events not fired");
   }
-  note("not fired by this script: avi:jira:viewed:issue (UI-only), user created/updated/deleted (needs user provisioning), avi:jira:failed:expression (needs a failing workflow expression), avi:jira:deleted:field (trash-only via REST)");
+  note("not fired by this script: avi:jira:viewed:issue (UI-only), user created/updated/deleted (needs user provisioning), avi:jira:failed:expression (needs a failing workflow expression), avi:jira:changed:configuration + avi:jira:updated:field:context:configuration (attempted over REST, not reliably emitted)");
 
   // ── assertions: targeted listeners' side effects ──
   console.log("  waiting for listener runs (Forge events can take up to ~3 min)…");

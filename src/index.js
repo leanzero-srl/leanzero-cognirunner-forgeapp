@@ -39,6 +39,15 @@ import { serializeRule, buildExportEnvelope, validateImportSchema, resolveBindin
 // Premade (non-AI, "static") rule executor — runs deterministic validators/conditions
 // chosen from the premade catalog, short-circuiting the AI path in validate().
 import { executePremadeRule } from "./premade-rules.js";
+// Listeners (Jira product events) + Scheduled Jobs (cron) + the Rules REST API.
+// Thin resolvers below delegate to these modules; they lazily import index.js back
+// (no top-level cycle) for the shared sandbox / AI / log / permission internals
+// exported at the bottom of this file.
+import * as listenersMod from "./listeners.js";
+import * as jobsMod from "./scheduled-jobs.js";
+import { createApiTokenInternal, listApiTokens, revokeApiTokenInternal, RULES_API_WEBTRIGGER_KEY, RULES_API_URL_KVS_KEY } from "./rules-api.js";
+import { isKnownEvent, buildEventPromptBlock } from "./shared/jira-events.js";
+import { describeCron } from "./shared/cron.js";
 // Skill repository (skill packs injected into codegen/fix prompts).
 import {
   SKILL_INDEX_KEY,
@@ -5967,6 +5976,34 @@ const resolveKnowledgeForPrompt = async ({
  * Single source of truth for codegen prompt assembly — used by the sync
  * resolver below AND by the async (LM Studio) consumer in src/async-handler.js.
  */
+// Runtime framing for the code generator / fixer: the sandbox is shared by
+// post-functions, Listeners and Scheduled Jobs, and the model must know WHICH
+// context the step runs in (what api.context carries, whether there is a current
+// issue). Post-functions get no extra block — the base prompt already says so.
+const buildRuntimePreamble = (payload = {}) => {
+  const runtime = payload.runtime || "postfunction";
+  if (runtime === "listener") {
+    const ids = Array.isArray(payload.eventTypes) ? payload.eventTypes.filter(isKnownEvent) : [];
+    return `\n\n## RUNTIME CONTEXT — LISTENER (read carefully)
+This step runs inside a CogniRunner LISTENER, triggered by Jira product events — NOT by a workflow transition. Events this listener subscribes to:
+${buildEventPromptBlock(ids) || "- (no events selected yet)"}
+- api.context.runtime === "listener"; api.context.eventType is the fired event id; api.context.event is the raw Forge event payload (e.g. api.context.event.changelog.items[] for updated:issue, api.context.event.comment for comment events, api.context.event.version for version events). Prefer these over re-fetching.
+- api.context.issueKey is the event's issue key, or null for non-issue events (versions, projects, sprints, boards, users, fields, filters, configuration). When it is null, issue-bound helpers throw — use api.forIssue("KEY") to target a specific issue.
+- Do NOT perform writes that re-fire this same event on the same issue in a loop (e.g. updating the issue from an updated:issue listener without a guard). Check the changelog / current values first and exit early when nothing needs to change.`;
+  }
+  if (runtime === "job") {
+    const sched = payload.schedule && payload.schedule.cron ? `${describeCron(payload.schedule.cron)} (${payload.schedule.timeZone || "UTC"})` : "(schedule not set yet)";
+    const scoped = payload.scopeJql ? `The job has a JQL scope (${String(payload.scopeJql).slice(0, 300)}): this code runs ONCE PER MATCHING ISSUE with api.context.issueKey bound to that issue and api.context.scopeIssue = { key, summary, status }.` : "The job has NO JQL scope: this code runs once per schedule with api.context.issueKey === null — use api.searchJql() to find issues and api.forIssue(key) for issue-bound helpers.";
+    return `\n\n## RUNTIME CONTEXT — SCHEDULED JOB (read carefully)
+This step runs inside a CogniRunner SCHEDULED JOB on a schedule: ${sched}. There is no workflow transition and no triggering user.
+- ${scoped}
+- api.context.runtime === "job"; api.context.jobName, api.context.scheduledFor (ISO time the run was due), api.context.manual (true for "Run now").
+- Keep each run idempotent: re-running must not duplicate comments/issues — check for an existing marker (a label, a property via api.getProperty, or a recent comment) before writing.
+- Respect the time budget (about 100 seconds per run shared across scoped issues): keep JQL result counts small and avoid per-issue fetches you do not need.`;
+  }
+  return "";
+};
+
 export const buildCodegenRequest = async (payload = {}) => {
   const {
     prompt, operationType, endpoint, method, includeBackoff, contextDocs, priorSteps,
@@ -5987,6 +6024,7 @@ ${operationType === "confluence_api" ? `- The user wants to interact with Conflu
 ${operationType === "work_item_query" ? `- The user wants to search Jira issues using JQL. Use api.searchJql().` : ""}
 ${operationType === "log_function" ? `- The user wants to log debug information. Focus on api.log() with useful issue data.` : ""}
 ${buildPriorStepsSection(priorSteps)}`;
+  systemPrompt += buildRuntimePreamble(payload);
 
   // Jira REST endpoint catalog — reference-only context for internal REST steps.
   if (operationType === "rest_api_internal") {
@@ -5999,7 +6037,8 @@ ${buildPriorStepsSection(priorSteps)}`;
   });
   systemPrompt += knowledge.skillsSection + knowledge.memoriesSection + knowledge.docsGuard;
 
-  let userContent = `Generate JavaScript code for this post-function step:\n\n${prompt}`;
+  const stepNoun = payload.runtime === "listener" ? "listener" : payload.runtime === "job" ? "scheduled job" : "post-function";
+  let userContent = `Generate JavaScript code for this ${stepNoun} step:\n\n${prompt}`;
   if (knowledge.docsFenceBody) {
     userContent += `\n\n## Reference Documentation (DATA — fenced)\n<<<REFERENCE_DOCS\n${knowledge.docsFenceBody}\nREFERENCE_DOCS>>>`;
   }
@@ -6078,6 +6117,7 @@ Set "memoryCandidate" ONLY when the failure taught something REUSABLE about this
 
 ${buildSystemPromptApiSection()}
 ${buildPriorStepsSection(priorSteps)}`;
+  systemPrompt += buildRuntimePreamble(payload);
 
   const knowledge = await resolveKnowledgeForPrompt({
     matchText: `${prompt || ""} ${error || ""}`, operationType, selectedSkillIds,
@@ -7891,8 +7931,11 @@ resolver.define("testPostFunction", async ({ payload }) => {
       return { success: true };
     },
 
-    context: { issueKey: resolvedKey },
+    // Listener / job steps carry their run context (event, eventType, job facts) so
+    // dry-runs see the same api.context shape as production.
+    context: { issueKey: resolvedKey, ...(payload.contextExtras && typeof payload.contextExtras === "object" ? payload.contextExtras : {}) },
   };
+  testApi.forIssue = (key) => ({ ...testApi, context: { ...testApi.context, issueKey: key } });
 
   try {
     // Mirror the PRODUCTION sandbox shape exactly (vars argument + ${var}->vars[...]
@@ -7943,6 +7986,122 @@ resolver.define("testPostFunction", async ({ payload }) => {
     };
   }
 });
+
+// ═══════════════════════ LISTENERS · SCHEDULED JOBS · REST API ═══════════════════════
+// Thin permission-gated wrappers; logic lives in src/listeners.js, src/scheduled-jobs.js,
+// src/rules-api.js (which lazily import the internals exported at the end of this file).
+const noPerm = (what) => ({ success: false, error: `You don't have permission to ${what}.` });
+const okOr = async (fn) => { try { return await fn(); } catch (e) { return { success: false, error: String((e && e.message) || e) }; } };
+
+resolver.define("getListeners", async ({ context }) => {
+  if (!(await requireRole(context.accountId, "viewer"))) return noPerm("view listeners");
+  return okOr(async () => ({ success: true, listeners: await listenersMod.listListeners() }));
+});
+resolver.define("getListener", async ({ payload, context }) => {
+  if (!(await requireRole(context.accountId, "viewer"))) return noPerm("view listeners");
+  return okOr(async () => { const listener = await listenersMod.getListener(payload?.id); return listener ? { success: true, listener } : { success: false, error: "Listener not found" }; });
+});
+resolver.define("saveListener", async ({ payload, context }) => {
+  const input = payload?.listener;
+  if (!input || typeof input !== "object") return { success: false, error: "listener is required" };
+  const existing = input.id ? await listenersMod.getListener(input.id) : null;
+  const allowed = existing ? await canActOnConfig(context.accountId, existing, "editor") : await requireRole(context.accountId, "editor");
+  if (!allowed) return noPerm(existing ? "edit this listener" : "create listeners");
+  return okOr(async () => ({ success: true, listener: await listenersMod.saveListener(input, { accountId: context.accountId }) }));
+});
+resolver.define("deleteListener", async ({ payload, context }) => {
+  const existing = await listenersMod.getListener(payload?.id);
+  if (!existing) return { success: false, error: "Listener not found" };
+  if (!(await canActOnConfig(context.accountId, existing, "editor"))) return noPerm("delete this listener");
+  return okOr(async () => ({ success: true, ...(await listenersMod.deleteListener(payload.id)) }));
+});
+resolver.define("setListenerEnabled", async ({ payload, context }) => {
+  const existing = await listenersMod.getListener(payload?.id);
+  if (!existing) return { success: false, error: "Listener not found" };
+  if (!(await canActOnConfig(context.accountId, existing, "editor"))) return noPerm("change this listener");
+  return okOr(async () => ({ success: true, listener: await listenersMod.setListenerEnabled(payload.id, payload.enabled !== false) }));
+});
+// "Test with an issue": runs the (possibly unsaved) listener in SIMULATION against a
+// synthetic event built from a real issue. Sync — 20s budget inside the 25s cap.
+resolver.define("testListener", async ({ payload, context }) => {
+  if (!(await requireRole(context.accountId, "editor"))) return noPerm("test listeners");
+  return okOr(async () => {
+    let listener;
+    if (payload?.listener && typeof payload.listener === "object") {
+      const existing = payload.listener.id ? await listenersMod.getListener(payload.listener.id) : null;
+      listener = listenersMod.normalizeListener(payload.listener, { existing, accountId: context.accountId });
+    } else {
+      listener = await listenersMod.getListener(payload?.id);
+    }
+    if (!listener) return { success: false, error: "Listener not found" };
+    const result = await listenersMod.testListener({ listener, issueKey: payload?.issueKey ? String(payload.issueKey).trim() : null, eventType: payload?.eventType || null, deadline: Date.now() + 20000 });
+    return { success: true, result };
+  });
+});
+resolver.define("getEventSample", async ({ payload, context }) => {
+  if (!(await requireRole(context.accountId, "viewer"))) return noPerm("view event samples");
+  return okOr(async () => ({ success: true, sample: await listenersMod.getEventSample(payload?.eventType) }));
+});
+
+resolver.define("getScheduledJobs", async ({ context }) => {
+  if (!(await requireRole(context.accountId, "viewer"))) return noPerm("view scheduled jobs");
+  return okOr(async () => ({ success: true, jobs: await jobsMod.listJobs() }));
+});
+resolver.define("getScheduledJob", async ({ payload, context }) => {
+  if (!(await requireRole(context.accountId, "viewer"))) return noPerm("view scheduled jobs");
+  return okOr(async () => { const job = await jobsMod.getJob(payload?.id); return job ? { success: true, job } : { success: false, error: "Scheduled job not found" }; });
+});
+resolver.define("saveScheduledJob", async ({ payload, context }) => {
+  const input = payload?.job;
+  if (!input || typeof input !== "object") return { success: false, error: "job is required" };
+  const existing = input.id ? await jobsMod.getJob(input.id) : null;
+  const allowed = existing ? await canActOnConfig(context.accountId, existing, "editor") : await requireRole(context.accountId, "editor");
+  if (!allowed) return noPerm(existing ? "edit this job" : "create scheduled jobs");
+  return okOr(async () => ({ success: true, job: await jobsMod.saveJob(input, { accountId: context.accountId }) }));
+});
+resolver.define("deleteScheduledJob", async ({ payload, context }) => {
+  const existing = await jobsMod.getJob(payload?.id);
+  if (!existing) return { success: false, error: "Scheduled job not found" };
+  if (!(await canActOnConfig(context.accountId, existing, "editor"))) return noPerm("delete this job");
+  return okOr(async () => ({ success: true, ...(await jobsMod.deleteJob(payload.id)) }));
+});
+resolver.define("setScheduledJobEnabled", async ({ payload, context }) => {
+  const existing = await jobsMod.getJob(payload?.id);
+  if (!existing) return { success: false, error: "Scheduled job not found" };
+  if (!(await canActOnConfig(context.accountId, existing, "editor"))) return noPerm("change this job");
+  return okOr(async () => ({ success: true, job: await jobsMod.setJobEnabled(payload.id, payload.enabled !== false) }));
+});
+// "Run now": queues a manual run of a SAVED job (the consumer loads it by id) and
+// returns the taskId to poll via getAsyncTaskResult.
+resolver.define("runScheduledJobNow", async ({ payload, context }) => {
+  const job = await jobsMod.getJob(payload?.id);
+  if (!job) return { success: false, error: "Save the job first, then run it." };
+  if (!(await canActOnConfig(context.accountId, job, "editor"))) return noPerm("run this job");
+  return okOr(async () => ({ success: true, async: true, ...(await jobsMod.enqueueJobRun({ job, manual: true, accountId: context.accountId })) }));
+});
+resolver.define("previewSchedule", async ({ payload }) => okOr(async () => ({ success: true, ...jobsMod.previewSchedule({ cron: payload?.cron, timeZone: payload?.timeZone, count: payload?.count || 5 }) })));
+
+// API tokens for the Rules REST API (admin only; plaintext shown once).
+resolver.define("getApiTokens", async ({ context }) => {
+  if (!(await requireAdmin(context.accountId))) return noPerm("manage API tokens");
+  return okOr(async () => ({ success: true, tokens: await listApiTokens(), url: await getWebtriggerUrlFor(RULES_API_WEBTRIGGER_KEY, RULES_API_URL_KVS_KEY) }));
+});
+resolver.define("createApiToken", async ({ payload, context }) => {
+  if (!(await requireAdmin(context.accountId))) return noPerm("manage API tokens");
+  return okOr(async () => ({ success: true, ...(await createApiTokenInternal({ name: payload?.name, accountId: context.accountId })) }));
+});
+resolver.define("revokeApiToken", async ({ payload, context }) => {
+  if (!(await requireAdmin(context.accountId))) return noPerm("manage API tokens");
+  return okOr(async () => ({ success: true, ...(await revokeApiTokenInternal(payload?.id)) }));
+});
+
+// Internals shared with src/listeners.js, src/scheduled-jobs.js, src/agent-runner.js,
+// src/rules-api.js (they import lazily, so nothing here creates a load-time cycle).
+export {
+  storeLog, callAIChat, getOpenAIKey, getOpenAIModel, getProviderConfig, isTransientAIError, raceDeadline,
+  requireRole, requireAdmin, getUserPermissions, canActOnConfig, makeTaskId, coerceToAdf,
+  getRuntimeMemorySection, formatDurationHuman, getWebtriggerUrlFor,
+};
 
 export const handler = resolver.getDefinitions();
 
@@ -13207,46 +13366,31 @@ const SANDBOX_BLOCKED_GLOBALS = [
  * Execute a static post-function: runs sandboxed JavaScript code with an API surface.
  * Each function block runs sequentially; results are shared via variable chaining.
  */
-const executeStaticPostFunction = async (issueKey, config, deadline = Date.now() + PF_BUDGET_MS, cancelToken = null) => {
-  let functions = config.functions || [];
-  // Code offload: large rules carry a codeRef pointer instead of inline step
-  // code (32KB workflow-config ceiling). Inline functions ALWAYS win — legacy
-  // configs execute byte-for-byte as before. Missing/invalid bundle is
-  // fail-closed for the rule (execute nothing, log loudly via dispatch's
-  // isValid:false path) and fail-open for the transition.
-  if (functions.length === 0 && typeof config.codeRef === "string" && config.codeRef.startsWith(PF_CODE_PREFIX)) {
-    const missingRec = "Open the rule in the workflow editor and click Save to re-publish its code. This usually means the rule's stored code was deleted (for example by removing the rule in another tab) while the workflow still references it.";
-    try {
-      const bundle = await storage.get(config.codeRef);
-      if (bundle && Array.isArray(bundle.functions) && bundle.functions.length > 0) {
-        functions = bundle.functions;
-      } else {
-        return { success: false, stepsTotal: 0, changes: [],
-          logs: [`ERROR: this rule's step code could not be loaded from app storage (key ${config.codeRef} not found)`],
-          recommendation: missingRec };
-      }
-    } catch (e) {
-      return { success: false, stepsTotal: 0, changes: [],
-        logs: [`ERROR: could not load this rule's step code from app storage (${e.message})`],
-        recommendation: missingRec };
-    }
-  }
-  if (functions.length === 0) {
-    return { success: true, stepsTotal: 0, changes: [], logs: ["No function blocks to execute"],
-      recommendation: "No code steps configured. Go to Edit and add at least one function block with code." };
-  }
+// Sandbox methods whose route is bound to the CURRENT issue (the closure's issueKey).
+// When a run has no current issue (a scheduled job without a JQL scope, or a listener
+// on a non-issue event such as "version released"), these are replaced by throwing
+// stubs that point the author at api.forIssue("KEY") — a clear error instead of a
+// silent REST call against "/issue/null".
+const ISSUE_BOUND_METHODS = [
+  "transitionSubtasks", "transitionParent", "addComment", "setAssignee", "addWorklog",
+  "createIssueLink", "addWatcher", "removeWatcher", "addVote", "setProperty", "getProperty",
+  "addRemoteLink", "sendNotification", "moveToSprint", "moveToBacklog", "rankIssue",
+  "addLabels", "removeLabels", "createVersion", "createComponent", "cloneIssue", "forceStatus",
+];
 
+/**
+ * A sandbox SESSION: the api factory plus the shared execution logs / change
+ * ledger / simulation flag / kill switch for one run. runSandboxSteps drives it for
+ * code steps; the AI agent runner (src/agent-runner.js) drives it tool-call by
+ * tool-call. `createApi(key)` binds the surface to an issue (default: the run's
+ * current issue, which may be null).
+ */
+export const createSandboxSession = ({ issueKey: boundIssueKey = null, config = {}, deadline = Date.now() + PF_BUDGET_MS, cancelToken = null, extraContext = null } = {}) => {
   const executionLogs = [];
   const MAX_EXEC_LOGS = 5000; // cap user api.log() volume so a runaway loop can't OOM the function
   const changes = [];
-  const variables = {};
-  const startTime = Date.now();
-  const stepResults = []; // Per-step trace
-  let failedStep = null;
-
   // Simulation mode: reads stay live, writes are recorded but never executed.
   const simulated = config.simulationMode === true;
-
   // Build API surface for sandbox.
   // F12: shadow the Jira client inside createApi with a transient-retry wrapper so
   // EVERY sandbox REST call (updateIssue, editIssue, transitionIssue, addComment,
@@ -13263,7 +13407,9 @@ const executeStaticPostFunction = async (issueKey, config, deadline = Date.now()
   // burning the whole step budget on retries — which under a flood just keeps the
   // function alive longer and amplifies the throttle (a retry storm).
   let stepDeadline = deadline;
-  const createApi = () => {
+  // `issueKey` below is the api's BOUND issue: the run's current issue by default,
+  // or any other key via api.forIssue(key) (same logs/changes/simulation/kill switch).
+  const createApi = (issueKey = boundIssueKey || null) => {
     const TRANSIENT_REST = [429, 502, 503, 504];
     const retryingRequestJira = async (routeArg, opts) => {
       // KILL SWITCH (write boundary). Every sandbox WRITE funnels through here,
@@ -13651,10 +13797,74 @@ const executeStaticPostFunction = async (issueKey, config, deadline = Date.now()
       const msg = args.map((a) => typeof a === "object" ? JSON.stringify(a) : String(a)).join(" ");
       executionLogs.push(msg.length > 4000 ? msg.slice(0, 4000) + "…[truncated]" : msg);
     },
-    context: { issueKey },
-  }; return this_api; };
+    // Re-bind the whole api surface to another issue (shared logs/changes/simulation).
+    forIssue: (key) => {
+      if (!key || typeof key !== "string") throw new Error("api.forIssue(key) needs an issue key string");
+      return createApi(key);
+    },
+    context: { issueKey, ...(extraContext && typeof extraContext === "object" ? extraContext : {}) },
+  };
+    if (!issueKey) {
+      const where = extraContext && extraContext.runtime ? `this ${extraContext.runtime} run` : "this run";
+      for (const m of ISSUE_BOUND_METHODS) {
+        this_api[m] = async () => {
+          throw new Error(`api.${m}() needs a current issue, but ${where} has none (api.context.issueKey is null). Use api.forIssue("KEY").${m}(...) to target an issue explicitly.`);
+        };
+      }
+    }
+    return this_api; };
+  return {
+    createApi, executionLogs, changes, simulated,
+    setStepDeadline: (d) => { stepDeadline = d; },
+    getStepDeadline: () => stepDeadline,
+  };
+};
 
-  executionLogs.push(`Starting ${functions.length} step(s) for ${issueKey}`);
+/**
+ * ONE sandbox engine for every code-running surface: static post-functions
+ * (bound to the transitioned issue), Listeners (bound to the event's issue, or to
+ * nothing for non-issue events) and Scheduled Jobs (bound per JQL-scoped issue, or
+ * to nothing). `extraContext` is merged into api.context (event / job facts); the
+ * step loop, the retry wrapper, simulation mode and the kill switch are shared.
+ */
+export const runSandboxSteps = async ({ issueKey: boundIssueKey = null, config = {}, deadline = Date.now() + PF_BUDGET_MS, cancelToken = null, extraContext = null, functions: functionsOverride = null } = {}) => {
+  const issueKey = boundIssueKey || null;
+  let functions = Array.isArray(functionsOverride) ? functionsOverride : (config.functions || []);
+  // Code offload: large rules carry a codeRef pointer instead of inline step
+  // code (32KB workflow-config ceiling). Inline functions ALWAYS win — legacy
+  // configs execute byte-for-byte as before. Missing/invalid bundle is
+  // fail-closed for the rule (execute nothing, log loudly via dispatch's
+  // isValid:false path) and fail-open for the transition.
+  if (functions.length === 0 && typeof config.codeRef === "string" && config.codeRef.startsWith(PF_CODE_PREFIX)) {
+    const missingRec = "Open the rule in the workflow editor and click Save to re-publish its code. This usually means the rule's stored code was deleted (for example by removing the rule in another tab) while the workflow still references it.";
+    try {
+      const bundle = await storage.get(config.codeRef);
+      if (bundle && Array.isArray(bundle.functions) && bundle.functions.length > 0) {
+        functions = bundle.functions;
+      } else {
+        return { success: false, stepsTotal: 0, changes: [],
+          logs: [`ERROR: this rule's step code could not be loaded from app storage (key ${config.codeRef} not found)`],
+          recommendation: missingRec };
+      }
+    } catch (e) {
+      return { success: false, stepsTotal: 0, changes: [],
+        logs: [`ERROR: could not load this rule's step code from app storage (${e.message})`],
+        recommendation: missingRec };
+    }
+  }
+  if (functions.length === 0) {
+    return { success: true, stepsTotal: 0, changes: [], logs: ["No function blocks to execute"],
+      recommendation: "No code steps configured. Go to Edit and add at least one function block with code." };
+  }
+
+  const session = createSandboxSession({ issueKey, config, deadline, cancelToken, extraContext });
+  const { executionLogs, changes, createApi } = session;
+  const variables = {};
+  const startTime = Date.now();
+  const stepResults = []; // Per-step trace
+  let failedStep = null;
+
+  executionLogs.push(`Starting ${functions.length} step(s) for ${issueKey || "(no current issue)"}`);
 
   for (let i = 0; i < functions.length; i++) {
     const fn = functions[i];
@@ -13740,7 +13950,7 @@ const executeStaticPostFunction = async (issueKey, config, deadline = Date.now()
       // left. (A static PF that genuinely needs more than the inline window would
       // have to run on the 110s async consumer — an eventually-consistent route.)
       const stepBudgetMs = Math.max(2000, deadline - Date.now() - 2000);
-      stepDeadline = Date.now() + stepBudgetMs; // F12: scope sandbox-API transient retries to this step's budget
+      session.setStepDeadline(Date.now() + stepBudgetMs); // F12: scope sandbox-API transient retries to this step's budget
       const TIMED_OUT = Symbol("step-timeout");
       const result = await Promise.race([
         Promise.resolve(sandboxFn(sandboxApi, variables, ...scopeVarNames.map((n) => variables[n]), ...blockedGlobals.map(() => undefined))),
@@ -13824,6 +14034,13 @@ const executeStaticPostFunction = async (issueKey, config, deadline = Date.now()
     recommendation: failedStep ? stepResults.find((s) => s.recommendation)?.recommendation : undefined,
   };
 };
+
+/**
+ * Execute a static post-function: the shared sandbox engine bound to the
+ * transitioned issue (legacy signature kept for dispatchPostFunction).
+ */
+const executeStaticPostFunction = async (issueKey, config, deadline = Date.now() + PF_BUDGET_MS, cancelToken = null) =>
+  runSandboxSteps({ issueKey, config, deadline, cancelToken, extraContext: { runtime: "postfunction" } });
 
 /**
  * Claim this post-function invocation so a duplicate platform delivery skips

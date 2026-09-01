@@ -51,7 +51,11 @@ function createEmptyFunction() {
   };
 }
 
-export default function FunctionBuilder({ functions, setFunctions, runAsync = false, setRunAsync }) {
+// codegenContext: extra fields spread into generate/fix payloads (runtime: "listener"|"job",
+// eventTypes, schedule, scopeJql) so the AI knows which sandbox context the steps run in.
+// testContext: spread into the dry-run's api.context (event, eventType, job facts).
+// reviewConfigType: the AI-review flavour (defaults to the static post-function).
+export default function FunctionBuilder({ functions, setFunctions, runAsync = false, setRunAsync, codegenContext = null, testContext = null, reviewConfigType = "postfunction-static", howItWorks = true }) {
   // Jira fields for editor completions (custom-field write formats etc.)
   const [fields, setFields] = useState([]);
 
@@ -86,7 +90,7 @@ export default function FunctionBuilder({ functions, setFunctions, runAsync = fa
   return (
     <div className="function-builder">
       {/* How it works banner */}
-      <div className="pf-how-it-works">
+      {howItWorks && <div className="pf-how-it-works">
         <div className="pf-how-header">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <circle cx="12" cy="12" r="10" />
@@ -102,7 +106,7 @@ export default function FunctionBuilder({ functions, setFunctions, runAsync = fa
           <li><strong>Fix</strong> — one-click AI repair when a test fails</li>
           <li><strong>Learns</strong> — every fix becomes a memory that improves future generations</li>
         </ol>
-      </div>
+      </div>}
 
       {functions.map((fn, i) => (
         <FunctionBlock
@@ -114,6 +118,8 @@ export default function FunctionBuilder({ functions, setFunctions, runAsync = fa
           onUpdate={(updates) => updateFunction(fn.id, updates)}
           onRemove={removeFunction}
           isOnly={functions.length === 1}
+          codegenContext={codegenContext}
+          testContext={testContext}
         />
       ))}
 
@@ -156,7 +162,7 @@ export default function FunctionBuilder({ functions, setFunctions, runAsync = fa
 
       {/* AI Review for the entire static post-function */}
       <ReviewPanel
-        configType="postfunction-static"
+        configType={reviewConfigType}
         config={{ functions }}
       />
     </div>

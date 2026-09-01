@@ -114,6 +114,109 @@ modules:
       model:
         - claude
 
+  # ── LISTENERS: every Jira / Jira Software / JSM product event Forge exposes ──
+  # (catalogue mirrored in src/shared/jira-events.js — keep in lockstep; the offline
+  # test-harness/scripts/jira-events.test.mjs asserts it). One handler for all:
+  # listeners.listenerTrigger matches the enabled Listeners (cached index read, so
+  # events nobody listens to cost one KVS read) and queues matching runs on the
+  # async consumer (the trigger itself is capped at 25s; runs get 120s there).
+  # NOTE: avi:jira:viewed:issue fires on EVERY issue view (invocation volume).
+  trigger:
+    - key: listener-issue-events
+      function: listener-trigger
+      events:
+        - avi:jira:created:issue
+        - avi:jira:updated:issue
+        - avi:jira:deleted:issue
+        - avi:jira:assigned:issue
+        - avi:jira:viewed:issue
+        - avi:jira:mentioned:issue
+        - avi:jira:commented:issue
+        - avi:jira:mentioned:comment
+        - avi:jira:deleted:comment
+    - key: listener-issue-child-events
+      function: listener-trigger
+      events:
+        - avi:jira:created:worklog
+        - avi:jira:updated:worklog
+        - avi:jira:deleted:worklog
+        - avi:jira:created:attachment
+        - avi:jira:deleted:attachment
+        - avi:jira:created:issuelink
+        - avi:jira:deleted:issuelink
+    - key: listener-project-events
+      function: listener-trigger
+      events:
+        - avi:jira:created:project
+        - avi:jira:updated:project
+        - avi:jira:softdeleted:project
+        - avi:jira:restored:project
+        - avi:jira:deleted:project
+        - avi:jira:archived:project
+        - avi:jira:unarchived:project
+        - avi:jira:created:version
+        - avi:jira:updated:version
+        - avi:jira:released:version
+        - avi:jira:unreleased:version
+        - avi:jira:archived:version
+        - avi:jira:unarchived:version
+        - avi:jira:moved:version
+        - avi:jira:merged:version
+        - avi:jira:deleted:version
+        - avi:jira:created:component
+        - avi:jira:updated:component
+        - avi:jira:deleted:component
+    - key: listener-software-events
+      function: listener-trigger
+      events:
+        - avi:jira-software:created:sprint
+        - avi:jira-software:started:sprint
+        - avi:jira-software:updated:sprint
+        - avi:jira-software:closed:sprint
+        - avi:jira-software:deleted:sprint
+        - avi:jira-software:created:board
+        - avi:jira-software:updated:board
+        - avi:jira-software:deleted:board
+        - avi:jira-software:configuration-changed:board
+    - key: listener-admin-events
+      function: listener-trigger
+      events:
+        - avi:jira:created:user
+        - avi:jira:updated:user
+        - avi:jira:deleted:user
+        - avi:jira:created:field
+        - avi:jira:updated:field
+        - avi:jira:trashed:field
+        - avi:jira:restored:field
+        - avi:jira:deleted:field
+        - avi:jira:created:field:context
+        - avi:jira:updated:field:context
+        - avi:jira:deleted:field:context
+        - avi:jira:updated:field:context:configuration
+        - avi:jira:created:issuetype
+        - avi:jira:updated:issuetype
+        - avi:jira:deleted:issuetype
+        - avi:jira:created:filter
+        - avi:jira:updated:filter
+        - avi:jira:deleted:filter
+        - avi:jira:changed:configuration
+        - avi:jira:timetracking:provider:changed
+        - avi:jira:failed:expression
+    - key: listener-jsm-events
+      function: listener-trigger
+      events:
+        - avi:jsm-entity:created:request-type
+        - avi:jsm-entity:updated:request-type
+        - avi:jsm-entity:deleted:request-type
+
+  # ── SCHEDULED JOBS: one 5-minute tick evaluates every job's cron (in its time
+  # zone) and queues the runs that came due on the async consumer. Effective
+  # granularity = 5 minutes. ──
+  scheduledTrigger:
+    - key: scheduled-jobs-tick
+      function: scheduled-tick
+      interval: fiveMinute
+
   # Async event consumer for long-running AI tasks
   consumer:
     - key: async-ai-consumer
@@ -140,6 +243,13 @@ modules:
       function: serveAttachmentUpload
       response:
         type: dynamic
+    # RULES REST API: push / list / run Listeners and Scheduled Jobs from CI,
+    # migration scripts or the test harness. Bearer API tokens minted by an app
+    # admin (Settings → API access); only hashes are stored. See src/rules-api.js.
+    - key: rules-api
+      function: rules-api-fn
+      response:
+        type: dynamic
 
   # Lambda function for validation logic
   function:
@@ -158,6 +268,13 @@ modules:
       handler: index.serveAttachment
     - key: serveAttachmentUpload
       handler: index.serveAttachmentUpload
+    - key: listener-trigger
+      handler: listeners.listenerTrigger
+    - key: scheduled-tick
+      handler: scheduled-jobs.scheduledTick
+      timeoutSeconds: 120
+    - key: rules-api-fn
+      handler: rules-api.rulesApiHandler
 
 resources:
   - key: config-ui-resource

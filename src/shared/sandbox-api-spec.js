@@ -416,14 +416,32 @@ api.log("Issue data:", { key: issue.key, status: issue.fields.status.name });
 \`\`\``,
   },
   {
+    name: "forIssue",
+    signature: "api.forIssue(issueKey)",
+    returns: "api bound to that issue",
+    summary: "Returns the same api surface bound to ANOTHER issue — for issue-bound helpers (addComment, addLabels, transitionByName…) on a different key, or when there is no current issue (scheduled jobs, non-issue listener events).",
+    detail: "(issueKey) → api",
+    example: 'await api.forIssue("PROJ-7").addComment("Parent was closed");',
+    promptDoc: `### api.forIssue(issueKey) → api
+Re-binds every issue-bound helper (addComment, addLabels, setAssignee, transitionByName, addWatcher, ...) to another issue. Same simulation mode, logs and change ledger.
+\`\`\`javascript
+const parent = issue.fields.parent?.key;
+if (parent) await api.forIssue(parent).addComment("Child " + api.context.issueKey + " is done");
+\`\`\`
+When \`api.context.issueKey\` is null (a scheduled job without a JQL scope, or a listener on a version/project/sprint event) the issue-bound helpers throw — always go through api.forIssue(key) there.`,
+  },
+  {
     name: "context",
     signature: "api.context",
-    returns: "{ issueKey: string }",
-    summary: "The current issue being transitioned. api.context.issueKey = 'PROJ-123'",
-    detail: "{ issueKey }",
-    example: "const key = api.context.issueKey;",
-    promptDoc: `### api.context → { issueKey: string }
-The current issue being transitioned. Always available.`,
+    returns: "{ issueKey, runtime, event?, eventType?, jobId?, scheduledFor? }",
+    summary: "Run context: issueKey (current issue or null), runtime ('postfunction' | 'listener' | 'job'), plus event / job facts.",
+    detail: "{ issueKey, runtime, eventType, event, jobId, scheduledFor }",
+    example: "const key = api.context.issueKey; // null in a job without scope",
+    promptDoc: `### api.context → { issueKey, runtime, ... }
+- \`issueKey\`: the current issue key — the transitioned issue (post-functions), the event's issue (listeners) or the scoped issue (scheduled jobs). **null** for non-issue listener events and unscoped jobs.
+- \`runtime\`: "postfunction" | "listener" | "job".
+- Listeners: \`eventType\` (e.g. "avi:jira:commented:issue"), \`event\` (the raw Forge payload: event.issue, event.changelog.items[], event.comment, event.worklog, event.version, ...), \`actorAccountId\`, \`projectKey\`.
+- Scheduled jobs: \`jobId\`, \`jobName\`, \`scheduledFor\` (ISO), \`manual\` (true for "Run now"), \`scopeIssue\` ({ key, summary, status } when running per JQL-scoped issue).`,
   },
 ];
 

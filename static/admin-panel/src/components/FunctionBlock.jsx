@@ -189,7 +189,7 @@ return { success: true };`)}`;
   }
 }
 
-export default function FunctionBlock({ index, functionData, priorSteps, fields = [], onUpdate, onRemove, isOnly }) {
+export default function FunctionBlock({ index, functionData, priorSteps, fields = [], onUpdate, onRemove, isOnly, codegenContext = null, testContext = null }) {
   const [isGenerating, setIsGenerating] = useState(false);
   const [showApiRef, setShowApiRef] = useState(false);
   const [selectedDocs, setSelectedDocs] = useState(functionData.selectedDocIds || []);
@@ -345,6 +345,7 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
         selectedSkillIds: selectedSkills,
         autoMatch: true,
         projectKey: deriveProjectKey(),
+        ...(codegenContext || {}),
       });
       // Slow self-hosted providers (LM Studio) queue the task instead.
       if (result.async && result.taskId) {
@@ -447,6 +448,7 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
         code: codeToRun,
         issueKey: isKey ? target : undefined,
         jql: target && !isKey ? target : undefined,
+        contextExtras: testContext || undefined,
       });
     } catch (e) {
       result = { success: false, logs: ["Test error: " + e.message] };
@@ -489,6 +491,7 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
         selectedDocIds: selectedDocs,
         projectKey: deriveProjectKey(),
         priorSteps: buildPriorStepsPayload(),
+        ...(codegenContext || {}),
       });
       if (result.async && result.taskId) {
         result = await pollAsyncResult(result.taskId);

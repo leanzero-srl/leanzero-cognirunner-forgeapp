@@ -11,5 +11,10 @@ export async function resolve(specifier, context, nextResolve) {
   if (specifier === "@forge/kvs") {
     return { url: new URL("./mock-kvs.mjs", import.meta.url).href, shortCircuit: true };
   }
+  // @forge/api + @forge/events → one recording mock (src/listeners.js, src/scheduled-jobs.js
+  // import them at top level; the mock never reaches the network).
+  if (specifier === "@forge/api" || specifier === "@forge/events") {
+    return { url: new URL("./mock-forge-api.mjs", import.meta.url).href, shortCircuit: true };
+  }
   return nextResolve(specifier, context);
 }

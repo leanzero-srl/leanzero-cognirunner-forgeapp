@@ -63,6 +63,8 @@ import {
   buildMemoryBlock,
   defangFence,
 } from "./memories.js";
+import { executeListenerTask } from "./listeners.js";
+import { executeScheduledJobTask } from "./scheduled-jobs.js";
 
 const TASK_PREFIX = "async_task:";
 const TASK_TTL_HOURS = 1; // Results expire after 1 hour
@@ -783,12 +785,17 @@ const TASK_HANDLERS = {
   "fixcode": executeFixcode,
   "skilldistill": executeSkillDistill,
   "memory_distill": executeMemoryDistill,
+  // Listeners (Jira product events → sandbox/agent run) and Scheduled Jobs (cron
+  // tick → run). Both write their own execution-log entry; scheduledjob is polled
+  // by "Run now" (UI + REST), listener runs are fire-and-forget.
+  "listener": executeListenerTask,
+  "scheduledjob": executeScheduledJobTask,
 };
 
 // Task types with no poller — skip async_task:* status rows (they'd never be
 // cleaned up: getAsyncTaskResult deletes rows only when something polls them).
 // codegen/fixcode ARE polled (the frontend waits on getAsyncTaskResult).
-const UNPOLLED_TASKS = new Set(["postfunction", "memory_distill"]);
+const UNPOLLED_TASKS = new Set(["postfunction", "memory_distill", "listener"]);
 
 /**
  * Main async event handler. Routes to the correct task handler.

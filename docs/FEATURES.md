@@ -19,6 +19,9 @@
 11. [Execution Logs](#execution-logs)
 12. [Add Rule Wizard](#add-rule-wizard)
 13. [Enable / Disable Rules](#enable--disable-rules)
+14. [Listeners (Jira events)](#listeners-jira-events)
+15. [Scheduled Jobs (cron)](#scheduled-jobs-cron)
+16. [Rules REST API](#rules-rest-api)
 
 ---
 
@@ -536,3 +539,46 @@ Toggle individual rules on/off without removing them from the workflow. Disabled
 3. Config-view detects rule type and routes to correct resolver:
    - Validators/conditions → `disableRule` / `enableRule`
    - Post-functions → `disablePostFunction` / `enablePostFunction`
+
+---
+
+## Listeners (Jira events)
+
+### What It Does
+
+A listener reacts to Jira **product events** instead of workflow transitions — all 68 events Forge exposes for Jira, Jira Software and JSM (see the event picker, grouped by Issues / Comments / Worklogs / Attachments / Issue links / Projects / Versions / Components / Sprints / Boards / Users / Custom fields / Issue types / Filters / Configuration / Service Management). When an event matches the listener's filters (project, issue type, JQL, changed fields, comment regex, ignore-self) and its optional **AI condition**, the listener runs either **code steps** (the same sandbox as static post-functions, bound to the event's issue, with `api.context.event` carrying the raw payload and `api.forIssue(key)` for other issues) or an **AI agent** (plain-language instructions + an allow-list of actions).
+
+### How to Configure
+
+Admin panel → **Listeners** → *Add Listener*: name, events, filters, AI condition, mode (Code steps / AI agent), simulation mode, then **Test with an issue** (builds a synthetic event from a real issue and runs everything in simulation; "Show last real payload" reveals the exact `api.context.event` shape once the event has fired on the site). Or push the same JSON through the REST API.
+
+### How It Works
+
+`trigger` modules → `listeners.listenerTrigger` (25 s: cached index read, static filters, one JQL search, brakes, queue push) → `async-ai-queue` → `executeListenerTask` (120 s: deferred JQL, AI condition, run) → execution log (`type: "listener"`) + stats. Non-issue events carrying only an issue id (worklogs, links, attachments) are resolved to a key first.
+
+### Pitfalls
+
+- Events arrive asynchronously (seconds; up to ~3 minutes worst case). A listener is eventually consistent.
+- `Issue viewed` fires on every issue view — the picker flags it HIGH VOLUME.
+- A listener whose writes re-fire its own event loops unless *ignore self-generated events* stays on; per-issue (10 / 5 min) and per-listener (120 / 5 min) brakes are the backstop and are logged once per window.
+- Listeners run as the app (`asApp`), never as the triggering user.
+
+## Scheduled Jobs (cron)
+
+### What It Does
+
+A job runs on a **cron schedule** (5-field, IANA time zone; presets from every 5 minutes to monthly; custom cron) — once per schedule, or **per issue of a JQL scope** (escalation-style, ≤100 issues per run) — executing code steps or an AI agent. "Run now" queues an immediate manual run and shows the result.
+
+### How It Works
+
+A `scheduledTrigger` (`fiveMinute`) calls `scheduled-jobs.scheduledTick`, which plans the cron minutes that came due since each job's last check (≤1 hour replay, one run per tick), claims each due minute (idempotent against duplicate ticks) and queues the run. The consumer runs the job with a ~100 s budget shared across scoped issues, logs `type: "scheduledjob"` (with `scheduledFor`, `manual`, `missed`) and updates stats (`nextRunAt`).
+
+### Pitfalls
+
+- Effective granularity is 5 minutes; `* * * * *` runs once per tick.
+- Unscoped jobs have no current issue: use `api.searchJql()` + `api.forIssue(key)` (the code generator is told this).
+- Keep runs idempotent (check for a marker before writing) — a retried or re-driven run must not duplicate comments.
+
+## Rules REST API
+
+A bearer-token web trigger for pushing and driving listeners and jobs from CI, migration scripts or the test harness. Admins mint tokens in **Settings → API access** (only SHA-256 hashes are stored; the plaintext is shown once). Resources: `events`, `actions`, `listeners`, `jobs`, `tasks`, `logs`, `samples`, `whoami`; actions: `enable`, `disable`, `test` (listeners), `run`, `preview` (jobs). Validation errors mirror the UI (`400 { error }`). Full reference: [`LISTENERS-AND-JOBS.md`](LISTENERS-AND-JOBS.md).

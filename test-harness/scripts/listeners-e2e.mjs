@@ -20,7 +20,7 @@
 // Run: node scripts/listeners-e2e.mjs            (KEEP=1 keeps the listeners + test data)
 //      SKIP_ADMIN=1 skips project/field/issue-type/config events (slower, admin-heavy).
 import { loadEnv } from "../lib/env.mjs";
-import { rulesApi, waitForLogs } from "../lib/rules-api.mjs";
+import { rulesApi, waitForLogs, ensureRulesApi } from "../lib/rules-api.mjs";
 import { EVENT_IDS } from "../../src/shared/jira-events.js";
 
 const env = loadEnv();
@@ -54,7 +54,7 @@ async function main() {
   ok(who.ok && who.body.token, `REST API auth works (token ${who.body && who.body.token && who.body.token.prefix}…)`);
   const cat = await rulesApi.events();
   ok(cat.ok && cat.body.events.length === EVENT_IDS.length, `event catalogue served over REST (${cat.body && cat.body.events && cat.body.events.length} events)`);
-  const bad = await fetch(`${(await import("../lib/rules-api.mjs")).ensureRulesApi().then((x) => x.url)}?resource=listeners`, { headers: { Authorization: "Bearer cgr_" + "0".repeat(48) } });
+  const bad = await fetch(`${(await ensureRulesApi()).url}?resource=listeners`, { headers: { Authorization: "Bearer cgr_" + "0".repeat(48) } });
   ok(bad.status === 401, "bad token → 401");
 
   // ── test bed: a project + a scrum board if possible ──
@@ -108,7 +108,7 @@ async function main() {
   const upd = await rulesApi.listeners.update(disabledOne.id, { description: "updated via PUT" });
   ok(upd.ok && upd.body.listener.description === "updated via PUT" && upd.body.listener.enabled === false, "PUT merge-updates a listener and keeps enabled=false");
   const rej = await rulesApi.listeners.create({ name: "bad", events: ["avi:jira:nope"] });
-  ok(rej.status === 400 && /events must contain/.test(rej.body.error || ""), "validation error → 400 with message");
+  ok(rej.status === 400 && /events must contain/.test(rej.body.error || (rej.body.errors && rej.body.errors[0] && rej.body.errors[0].error) || ""), `validation error → 400 with message (${rej.status})`);
   await sleep(35000); // let the trigger container's 30s index cache expire
   console.log("  listeners in place; firing events…");
 
@@ -155,8 +155,8 @@ async function main() {
   must(await jira("PUT", `/rest/api/3/version/${ver.id}`, { archived: false }), "version unarchive"); fired.add("avi:jira:unarchived:version");
   const ver2 = must(await jira("POST", "/rest/api/3/version", { name: `${TAG}-v2`, projectId: Number(proj.id) }), "version2"); created.versions.push(ver2.id);
   const mv = await jira("POST", `/rest/api/3/version/${ver2.id}/move`, { position: "First" }); if (mv.ok) fired.add("avi:jira:moved:version"); else note(`version move → ${mv.status}`);
-  const mg = await jira("PUT", `/rest/api/3/version/${ver2.id}/mergeto/${ver.id}`); if (mg.ok) { fired.add("avi:jira:merged:version"); created.versions = created.versions.filter((v) => v !== ver2.id); } else note(`version merge → ${mg.status}`);
-  const vd = await jira("DELETE", `/rest/api/3/version/${ver.id}`); if (vd.ok || vd.status === 204) { fired.add("avi:jira:deleted:version"); created.versions = created.versions.filter((v) => v !== ver.id); } else note(`version delete → ${vd.status}`);
+  const mg = await jira("POST", `/rest/api/3/version/${ver2.id}/removeAndSwap`, { moveFixIssuesTo: Number(ver.id), moveAffectedIssuesTo: Number(ver.id) }); if (mg.ok || mg.status === 204) { fired.add("avi:jira:merged:version"); fired.add("avi:jira:deleted:version"); created.versions = created.versions.filter((v) => v !== ver2.id); } else note(`version merge (removeAndSwap) → ${mg.status} ${JSON.stringify(mg.body).slice(0, 120)}`);
+  const vd = await jira("POST", `/rest/api/3/version/${ver.id}/removeAndSwap`, {}); if (vd.ok || vd.status === 204) { fired.add("avi:jira:deleted:version"); created.versions = created.versions.filter((v) => v !== ver.id); } else note(`version delete → ${vd.status} ${JSON.stringify(vd.body).slice(0, 120)}`);
   // components
   const comp = must(await jira("POST", "/rest/api/3/component", { name: `${TAG}-comp`, project: proj.key }), "component"); created.components.push(comp.id); fired.add("avi:jira:created:component");
   must(await jira("PUT", `/rest/api/3/component/${comp.id}`, { description: "updated" }), "component update"); fired.add("avi:jira:updated:component");
@@ -237,7 +237,7 @@ async function main() {
     const ttList = await jira("GET", "/rest/api/3/configuration/timetracking/list");
     if (tt.ok && ttList.ok && Array.isArray(ttList.body)) {
       const current = tt.body && tt.body.key;
-      const off = await jira("PUT", "/rest/api/3/configuration/timetracking", { key: "" }); // disable
+      const off = await jira("DELETE", "/rest/api/3/configuration/timetracking"); // disable
       const on = await jira("PUT", "/rest/api/3/configuration/timetracking", { key: current || "JIRA" });
       if ((off.ok || off.status === 204) && (on.ok || on.status === 204)) fired.add("avi:jira:timetracking:provider:changed"); else note(`time tracking toggle → ${off.status}/${on.status}`);
     }
@@ -246,7 +246,8 @@ async function main() {
       const sds = await jira("GET", "/rest/servicedeskapi/servicedesk");
       const sd = sds.ok && (sds.body.values || []).find((s) => String(s.projectId) === String(jsmProject.id));
       if (sd) {
-        const rt = await jira("POST", `/rest/servicedeskapi/servicedesk/${sd.id}/requesttype`, { issueTypeId: String((jsmProject.issueTypes || [])[0]?.id || stdType.id), name: `${TAG} request`, description: "e2e" });
+        const jsmTypes = (await jira("GET", `/rest/api/3/project/${jsmProject.id}`)).body?.issueTypes || [];
+        const rt = await jira("POST", `/rest/servicedeskapi/servicedesk/${sd.id}/requesttype`, { issueTypeId: String((jsmTypes.find((t) => !t.subtask) || {}).id || stdType.id), name: `${TAG} request`, description: "e2e" }, { "X-ExperimentalApi": "opt-in" });
         if (rt.ok) {
           fired.add("avi:jsm-entity:created:request-type");
           const rdl = await jira("DELETE", `/rest/servicedeskapi/servicedesk/${sd.id}/requesttype/${rt.body.id}`, undefined, { "X-ExperimentalApi": "opt-in" }); if (rdl.ok || rdl.status === 204) fired.add("avi:jsm-entity:deleted:request-type"); else note(`request type delete → ${rdl.status}`);
@@ -308,7 +309,7 @@ async function cleanup() {
   if (KEEP) { console.log("KEEP=1 — leaving listeners and test data in place"); return; }
   for (const id of created.listeners) await rulesApi.listeners.remove(id).catch(() => {});
   for (const k of created.issues) await jira("DELETE", `/rest/api/3/issue/${k}`).catch(() => {});
-  for (const id of created.versions) await jira("DELETE", `/rest/api/3/version/${id}`).catch(() => {});
+  for (const id of created.versions) await jira("POST", `/rest/api/3/version/${id}/removeAndSwap`, {}).catch(() => {});
   for (const id of created.components) await jira("DELETE", `/rest/api/3/component/${id}`).catch(() => {});
   for (const id of created.sprints) await jira("DELETE", `/rest/agile/1.0/sprint/${id}`).catch(() => {});
   for (const id of created.boards) await jira("DELETE", `/rest/agile/1.0/board/${id}`).catch(() => {});

@@ -193,7 +193,9 @@ const handleCollection = async ({ req, method, id, action, body, who, kind }) =>
       try { saved.push(await save(items[i], { accountId: actor })); } catch (e) { errors.push({ index: i, name: items[i] && items[i].name, error: e.message }); }
     }
     const status = saved.length ? (errors.length ? 207 : (items.length === 1 ? 201 : 200)) : 400;
-    return json(status, items.length === 1 && saved.length === 1 && !errors.length ? { [noun]: saved[0] } : { [kind]: saved, errors });
+    // Single-item ergonomics: `{ listener }` on success, `{ error }` on failure (the UI's shape).
+    if (items.length === 1) return json(status, saved.length === 1 ? { [noun]: saved[0] } : { error: errors[0] ? errors[0].error : "invalid" });
+    return json(status, { [kind]: saved, errors });
   }
   return json(405, { error: `method ${method} not allowed` });
 };

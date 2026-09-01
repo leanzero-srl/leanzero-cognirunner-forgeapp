@@ -124,6 +124,14 @@ Chain multiple operations with AI-generated JavaScript code. The AI generates th
 - `api.log(...args)` -- debug logging
 - `api.context.issueKey` -- current issue
 
+#### Listeners & Scheduled Jobs
+
+The two non-transition "ways to run" (the ScriptRunner *Script Listener* / *Scheduled Job* surfaces, rebuilt around AI):
+
+- **Listeners** subscribe to **all 68 Jira product events** Forge exposes — issue created/updated/deleted/assigned/viewed/mentioned, comments, worklogs, attachments, issue links, projects, versions, components, sprints, boards, users, custom fields (+ contexts), issue types, filters, global configuration, time tracking, JSM request types. Filter by project, issue type, JQL, changed fields (`updated:issue`) or a comment regex; ignore self-generated events (loop guard); add a plain-language **AI condition** gate. Then run **code steps** (describe → AI generates → test → fix, same sandbox `api.*` as static post-functions, plus `api.forIssue(key)` and `api.context.event`) or an **AI agent** (instructions + an allow-list of actions the model may take).
+- **Scheduled Jobs** run on a cron schedule (presets from every 5 minutes to monthly, any IANA time zone, 5-minute tick) — once, or per issue of a **JQL scope** (escalation-style) — with the same code-steps / AI-agent modes and a "Run now" button.
+- Both are managed in the admin panel and through the **Rules REST API** (`Settings → API access` mints bearer tokens; `?resource=listeners|jobs` supports create/upsert/update/delete/enable/disable/test/run, plus `events`, `actions`, `logs`, `samples`, `tasks`). Details: [`docs/LISTENERS-AND-JOBS.md`](docs/LISTENERS-AND-JOBS.md).
+
 ### Agentic Validation
 
 CogniRunner doesn't just evaluate text in isolation -- it can **autonomously search your Jira project** to make context-aware decisions. This is powered by an agentic loop where the AI model can call tools, analyze results, and iterate before rendering a final verdict.

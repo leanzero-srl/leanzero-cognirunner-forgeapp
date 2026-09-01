@@ -72,8 +72,22 @@ npm run test:premade-e2e    # LIVE: attach premade validators, fire transitions,
 | `fixtures/corpus.mjs` | Adversarial issue corpus (injection, fence, unicode, ADF, agentic webs, …) |
 | `fixtures/rules.mjs` | The 20 rules under test + per-class expected outcomes + assertions |
 | `scripts/*` | setup / setup-fields / attach / seed / run / report / teardown / scan-existing-rules |
+| `lib/rules-api.mjs` | Client for the Rules REST API web trigger (URL/token discovered + minted via the dev test-state hook) |
+| `lib/mock-forge-api.mjs` | Offline stand-in for `@forge/api` + `@forge/events` (recording mock; used with `register-mocks.mjs`) |
+| `scripts/cron.test.mjs`, `jira-events.test.mjs`, `listeners.test.mjs` | Offline tests: cron engine · 68-event catalogue ⇄ manifest lockstep · listener/job engines |
+| `scripts/listeners-e2e.mjs`, `jobs-e2e.mjs` | LIVE: push listeners/jobs over REST, fire ~55 Jira events / the real 5-minute tick, assert runs + side effects |
 | `results/` | run-results.json, report.md/html (gitignored) |
 | `FINDINGS.md` | Severity-ranked hardening findings + proposed fixes |
+
+## Listeners & Scheduled Jobs
+
+```bash
+npm run test:rules-offline    # cron (50) · event catalogue ⇄ manifest (362) · engines (60) — no Jira needed
+npm run test:listeners-e2e    # LIVE: REST-pushes a catch-all + targeted listeners, fires ~55 events, asserts runs/side effects, prints coverage
+npm run test:jobs-e2e         # LIVE: run-now (scoped AI agent), the real scheduler tick (≤12 min wait), lifecycle round-trips
+```
+
+`.env` needs `TESTSTATE_URL` + `HARNESS_SECRET` (the dev-only test-state web trigger; the scripts discover the `rules-api` URL and mint a token through it) or `RULES_API_URL` + `RULES_API_TOKEN` directly. Both scripts clean up after themselves (`KEEP=1` to keep the data). The listeners E2E lists, per run, which of the 68 events it could not fire (user events, issue viewed, failed expression, permanent field deletion) — see `docs/LISTENERS-AND-JOBS.md`.
 
 ## Scope this run
 

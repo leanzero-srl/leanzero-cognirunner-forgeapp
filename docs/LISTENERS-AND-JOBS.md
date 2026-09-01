@@ -19,7 +19,7 @@ API** (Settings → API access).
 | AI gate | **AI condition** — a plain-language yes/no the model evaluates before the run (fails closed) | — |
 | What runs | **Code steps** (describe → AI generates → test → fix; same sandbox `api.*` as static post-functions) **or** an **AI agent** (plain-language instructions + an allow-list of actions) | same |
 | Budget | 120 s on the async consumer (the 25 s trigger only matches + queues) | 120 s per run, shared across scoped issues |
-| Safety | Simulation mode, kill switch, per-issue (10 / 5 min) and per-listener (120 / 5 min) brakes, `ignoreSelf`, notification suppression | Simulation mode, kill switch, idempotent per-minute claims (duplicate ticks never double-run) |
+| Safety | Simulation mode, kill switch, per-issue (30 / 5 min) and per-listener (120 / 5 min) brakes, at-least-once execution claims, `ignoreSelf`, notification suppression | Simulation mode, kill switch, idempotent per-minute claims (duplicate ticks never double-run) |
 
 ## How a listener runs
 
@@ -36,9 +36,11 @@ Jira event ──► manifest `trigger` (listeners.listenerTrigger, 25 s)
 ```
 
 Non-issue events whose payload carries only an issue **id** (worklogs, links, attachments) are
-resolved to a key with one REST read before matching. Every fired event also leaves a
-**last-seen payload sample** (per event type, 7-day TTL) that the editor shows next to the
-code steps ("Show last real payload") — the exact shape of `api.context.event`.
+resolved to a key with one REST read before matching; project-scoped events that carry only a
+project id (versions, links) get the key resolved so project filters apply. When a listener is
+subscribed, the event also leaves a **last-seen payload sample** (per event type, 7-day TTL,
+rich-text bodies redacted) that the editor shows next to the code steps ("Show last real
+payload") — the exact shape of `api.context.event`.
 
 ## How a job runs
 

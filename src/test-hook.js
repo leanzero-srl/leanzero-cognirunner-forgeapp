@@ -106,6 +106,22 @@ export async function testStateTrigger(req) {
         return json(500, { error: String((e && e.message) || e) });
       }
     }
+    // Invoke one of the Listener / Scheduled Job / API-token resolvers with a synthetic
+    // Custom-UI context (dev-gated). Covers the resolver layer (permission gates, payload
+    // shapes) that the REST API bypasses. Allow-listed to the new resolvers only.
+    if (body.action === "invokeResolver") {
+      const ALLOWED = new Set(["getListeners", "getListener", "saveListener", "deleteListener", "setListenerEnabled", "testListener", "getEventSample",
+        "getScheduledJobs", "getScheduledJob", "saveScheduledJob", "deleteScheduledJob", "setScheduledJobEnabled", "runScheduledJobNow", "previewSchedule",
+        "getApiTokens", "createApiToken", "revokeApiToken", "getAsyncTaskResult", "getLogs", "checkIsAdmin"]);
+      if (!ALLOWED.has(body.name)) return json(400, { error: `resolver not allow-listed: ${body.name}` });
+      try {
+        const { handler } = await import("./index.js");
+        const r = await handler({ call: { functionKey: body.name, payload: body.payload || {} }, context: {} }, { principal: { accountId: body.accountId || null } });
+        return json(200, r);
+      } catch (e) {
+        return json(500, { error: String((e && e.message) || e) });
+      }
+    }
     return json(400, { error: `unknown POST action=${body.action}` });
   }
 

@@ -29,6 +29,8 @@ import { logSourceOf, SOURCE_LABEL, FLAG_LABEL } from "../../../src/shared/log-f
 import AddRuleWizard from "./components/AddRuleWizard";
 import Tooltip from "./components/Tooltip";
 import RulePortabilityDialog from "./components/RulePortabilityDialog";
+import ListenersTab from "./components/ListenersTab";
+import JobsTab from "./components/JobsTab";
 import { showToast } from "./components/toast";
 import { confirmDialog } from "./confirmDialog";
 
@@ -2380,7 +2382,198 @@ const injectStyles = () => {
         transition-duration: 0.01ms !important;
       }
     }
-  `;
+  
+    /* === Listeners · Scheduled Jobs · API access (solid hues: listeners #ea580c, jobs #0891b2, agent #7c3aed, script #475569) === */
+    .btn-solid { background: var(--primary-color); color: #fff; border-color: var(--primary-color); font-weight: 600; }
+    .btn-solid:hover { filter: brightness(1.08); color: #fff; }
+    .btn-solid:disabled { opacity: 0.6; }
+    .lst-count { display: inline-block; margin-left: 8px; padding: 1px 8px; border-radius: 999px; background: #ea580c; color: #fff; font-size: 11px; font-weight: 700; vertical-align: middle; }
+    .lst-editor .card.lst-card { padding: 20px; margin-bottom: 16px; }
+    .lst-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    @media (max-width: 900px) { .lst-grid { grid-template-columns: 1fr; } }
+    .lst-input { width: 100%; box-sizing: border-box; padding: 9px 12px; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); background: var(--input-bg); color: var(--text-color); font-size: 13px; }
+    .lst-input:focus { outline: none; border-color: var(--primary-color); box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.25); }
+    .lst-filters { display: flex; flex-direction: column; gap: 14px; padding: 14px; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); background: var(--card-bg); }
+    .lst-filter { display: flex; flex-direction: column; gap: 6px; }
+    .lst-filter-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-secondary); }
+    .lst-check { display: flex; align-items: flex-start; gap: 10px; font-size: 13px; color: var(--text-color); cursor: pointer; }
+    .lst-check input { margin-top: 3px; width: 16px; height: 16px; flex-shrink: 0; }
+    .lst-options { display: flex; flex-direction: column; gap: 10px; margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--border-color); }
+    .lst-builder { margin-top: 4px; }
+    .lst-test-head { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
+    .lst-test-row { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-end; }
+    .lst-test-field { flex: 1 1 220px; min-width: 200px; }
+    .lst-test-actions { display: flex; gap: 8px; }
+    .lst-sample { margin-top: 12px; }
+    .lst-empty { padding: 40px 24px; }
+    .lst-empty-title { font-size: 15px; font-weight: 700; color: var(--text-color); margin-bottom: 8px; }
+    .lst-table td { vertical-align: middle; }
+    .lst-row-off .lst-name { color: var(--text-muted); }
+    .lst-name { font-weight: 600; margin-right: 8px; }
+    .lst-sim, .lst-aic { display: inline-block; margin-left: 6px; padding: 2px 6px; border-radius: 3px; font-size: 9px; font-weight: 700; color: #fff; letter-spacing: 0.04em; }
+    .lst-sim { background: #d97706; }
+    .lst-aic { background: #7c3aed; }
+    .lst-evs { display: inline-flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+    .lst-more { font-size: 11px; font-weight: 700; color: var(--text-secondary); }
+    .lst-scope { font-size: 12px; color: var(--text-secondary); }
+    .type-badge.lst-mode-agent { background: #7c3aed; color: #fff; }
+    .type-badge.lst-mode-script { background: #475569; color: #fff; }
+    .job-scope { display: flex; gap: 12px; align-items: flex-end; }
+    .job-scope .lst-input { flex: 1; }
+    .job-scope-max { display: flex; flex-direction: column; gap: 4px; }
+    .job-sched { display: flex; flex-direction: column; gap: 2px; }
+    .job-sched-desc { font-weight: 600; }
+    .job-sched-zone { font-size: 11px; color: var(--text-secondary); }
+    /* log badges */
+    .log-type-badge.lt-listener { background: #ea580c; color: #fff; }
+    .log-type-badge.lt-job { background: #0891b2; color: #fff; }
+    .log-lines { margin-top: 8px; font-size: 12px; }
+    .log-lines summary { cursor: pointer; font-weight: 600; color: var(--text-secondary); }
+    .log-lines-pre { margin: 6px 0 0; padding: 10px; border-radius: var(--r-md, 8px); background: #0f172a; color: #e2e8f0; font-size: 11px; line-height: 1.45; max-height: 320px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
+    /* mode switch */
+    .mode-switch { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    @media (max-width: 700px) { .mode-switch { grid-template-columns: 1fr; } }
+    .mode-btn { display: flex; flex-direction: column; gap: 4px; padding: 14px 16px; border: 2px solid var(--border-color); border-radius: var(--r-md, 8px); background: var(--card-bg); color: var(--text-color); text-align: left; cursor: pointer; transition: border-color 0.15s, background 0.15s; }
+    .mode-btn-title { font-size: 14px; font-weight: 700; }
+    .mode-btn-sub { font-size: 12px; color: var(--text-secondary); line-height: 1.4; }
+    .mode-btn.mode-script.on { border-color: #475569; background: #475569; color: #fff; }
+    .mode-btn.mode-agent.on { border-color: #7c3aed; background: #7c3aed; color: #fff; }
+    .mode-btn.on .mode-btn-sub { color: rgba(255, 255, 255, 0.85); }
+    /* chips */
+    .chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 6px 8px; min-height: 38px; box-sizing: border-box; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); background: var(--input-bg); }
+    .chips-chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border-radius: 999px; background: #475569; color: #fff; font-size: 12px; font-weight: 600; }
+    .chips-chip-project { background: #16a34a; }
+    .chips-x { border: none; background: transparent; color: inherit; font-size: 14px; line-height: 1; cursor: pointer; padding: 0 2px; }
+    .chips-input { flex: 1; min-width: 140px; border: none; background: transparent; color: var(--text-color); font-size: 13px; outline: none; }
+    .chips-none { font-size: 12px; color: var(--text-muted); }
+    .projpick { display: flex; flex-direction: column; gap: 8px; }
+    .projpick-add { max-width: 420px; }
+    /* run stats + results */
+    .runstat { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); }
+    .runstat-never { color: var(--text-muted); }
+    .runstat-dot { width: 9px; height: 9px; border-radius: 50%; background: #64748b; }
+    .runstat-ok .runstat-dot { background: #16a34a; }
+    .runstat-err .runstat-dot { background: #dc2626; }
+    .runstat-skip .runstat-dot { background: #d97706; }
+    .runres { margin-top: 14px; padding: 14px; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); background: var(--card-bg); }
+    .runres-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+    .runres-badge { padding: 3px 9px; border-radius: 4px; font-size: 11px; font-weight: 800; letter-spacing: 0.05em; color: #fff; }
+    .runres-badge.ok { background: #16a34a; }
+    .runres-badge.skip { background: #d97706; }
+    .runres-badge.err { background: #dc2626; }
+    .runres-title { font-weight: 600; font-size: 13px; }
+    .runres-ms { font-size: 11px; color: var(--text-secondary); padding: 2px 6px; border-radius: 3px; border: 1px solid var(--border-color); }
+    .runres-reason { margin-top: 8px; font-size: 13px; line-height: 1.5; }
+    .runres-gate, .runres-rec { margin-top: 6px; font-size: 12px; color: var(--text-secondary); }
+    .runres-issues, .runres-tools { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+    .runres-issue, .runres-tool { padding: 2px 7px; border-radius: 3px; font-size: 11px; font-weight: 700; color: #fff; background: #16a34a; }
+    .runres-issue.err, .runres-tool.err { background: #dc2626; }
+    .runres-tool { background: #7c3aed; }
+    .runres-details { margin-top: 8px; font-size: 12px; }
+    .runres-details summary { cursor: pointer; font-weight: 600; color: var(--text-secondary); }
+    .runres-changes { margin: 6px 0 0; padding-left: 18px; }
+    .runres-pre { margin: 6px 0 0; padding: 10px; border-radius: var(--r-md, 8px); background: #0f172a; color: #e2e8f0; font-size: 11px; line-height: 1.45; max-height: 360px; overflow: auto; white-space: pre-wrap; word-break: break-word; }
+    .recent-logs { display: flex; flex-direction: column; }
+    .recent-logs .runres { margin-top: 8px; }
+    /* event picker */
+    .evp-selected { display: flex; flex-wrap: wrap; gap: 6px; min-height: 30px; margin-bottom: 8px; }
+    .evp-none { font-size: 12px; color: var(--text-muted); }
+    .evp-chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 999px; color: #fff; font-size: 12px; font-weight: 600; }
+    .evp-chip-sm { padding: 1px 7px; font-size: 11px; }
+    .evp-chip-vol { padding: 0 5px; border-radius: 3px; background: #dc2626; font-size: 9px; font-weight: 800; letter-spacing: 0.04em; }
+    .evp-chip-x { border: none; background: transparent; color: #fff; font-size: 14px; line-height: 1; cursor: pointer; padding: 0; }
+    .evp-search { width: 100%; box-sizing: border-box; padding: 8px 12px; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); background: var(--input-bg); color: var(--text-color); font-size: 13px; margin-bottom: 8px; }
+    .evp-groups { border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); overflow: hidden; max-height: 440px; overflow-y: auto; }
+    .evp-group + .evp-group { border-top: 1px solid var(--border-color); }
+    .evp-group-head { display: flex; align-items: center; justify-content: space-between; padding: 0 10px 0 0; background: var(--card-bg); }
+    .evp-group-toggle { flex: 1; display: flex; align-items: center; gap: 8px; padding: 9px 12px; border: none; background: transparent; color: var(--text-color); font-size: 13px; font-weight: 700; cursor: pointer; text-align: left; }
+    .evp-group-dot { width: 10px; height: 10px; border-radius: 3px; }
+    .evp-group-count { margin-left: auto; font-size: 11px; font-weight: 700; color: var(--text-secondary); }
+    .evp-caret { display: inline-block; transition: transform 0.15s; color: var(--text-muted); }
+    .evp-caret.open { transform: rotate(180deg); }
+    .evp-group-actions { display: flex; gap: 6px; }
+    .evp-link { border: none; background: transparent; color: var(--primary-color); font-size: 11px; font-weight: 700; cursor: pointer; padding: 2px 4px; }
+    .evp-rows { display: flex; flex-direction: column; }
+    .evp-row { display: grid; grid-template-columns: 22px 1fr auto auto; gap: 10px; align-items: center; padding: 7px 12px; cursor: pointer; border-top: 1px solid var(--border-color); }
+    .evp-row.on { background: rgba(37, 99, 235, 0.08); }
+    .evp-row input { width: 15px; height: 15px; margin: 0; }
+    .evp-row-main { display: flex; flex-direction: column; }
+    .evp-row-label { font-size: 13px; font-weight: 600; }
+    .evp-row-desc { font-size: 11px; color: var(--text-secondary); }
+    .evp-vol { padding: 2px 6px; border-radius: 3px; background: #dc2626; color: #fff; font-size: 9px; font-weight: 800; letter-spacing: 0.04em; }
+    .evp-row-id { font-size: 10px; color: var(--text-muted); }
+    @media (max-width: 760px) { .evp-row { grid-template-columns: 22px 1fr; } .evp-row-id, .evp-vol { display: none; } }
+    /* schedule picker */
+    .schp-row { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-end; }
+    .schp-field { display: flex; flex-direction: column; gap: 4px; }
+    .schp-preset { min-width: 200px; }
+    .schp-zone { min-width: 240px; flex: 1; }
+    .schp-num { width: 64px; padding: 8px 10px; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); background: var(--input-bg); color: var(--text-color); font-size: 13px; }
+    .schp-time { display: inline-flex; align-items: center; gap: 4px; }
+    .schp-colon { font-weight: 700; }
+    .schp-days { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+    .schp-day { padding: 6px 12px; border: 2px solid var(--border-color); border-radius: 999px; background: var(--card-bg); color: var(--text-color); font-size: 12px; font-weight: 700; cursor: pointer; }
+    .schp-day.on { background: #0891b2; border-color: #0891b2; color: #fff; }
+    .schp-custom { margin-top: 10px; }
+    .schp-cron { width: 100%; box-sizing: border-box; padding: 9px 12px; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); background: var(--input-bg); color: var(--text-color); font-family: SFMono-Regular, Consolas, monospace; font-size: 13px; }
+    .schp-cron.invalid { border-color: #dc2626; }
+    .schp-preview { margin-top: 12px; padding: 12px 14px; border-radius: var(--r-md, 8px); background: #0891b2; color: #fff; }
+    .schp-preview-error { background: #dc2626; }
+    .schp-preview-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; font-weight: 700; font-size: 14px; }
+    .schp-preview-cron { padding: 2px 6px; border-radius: 3px; background: rgba(0, 0, 0, 0.25); font-size: 12px; }
+    .schp-preview-runs { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; align-items: center; }
+    .schp-preview-label { font-size: 12px; font-weight: 600; opacity: 0.9; }
+    .schp-preview-run { padding: 2px 8px; border-radius: 999px; background: rgba(255, 255, 255, 0.2); font-size: 12px; font-weight: 600; }
+    /* agent config */
+    .agc-textarea { width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); background: var(--input-bg); color: var(--text-color); font-size: 13px; line-height: 1.5; resize: vertical; }
+    .agc-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    @media (max-width: 800px) { .agc-actions { grid-template-columns: 1fr; } }
+    .agc-col { border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); overflow: hidden; }
+    .agc-col-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--card-bg); font-size: 12px; color: var(--text-secondary); font-weight: 600; }
+    .agc-kind { padding: 2px 7px; border-radius: 3px; color: #fff; font-size: 10px; font-weight: 800; letter-spacing: 0.05em; }
+    .agc-kind-read { background: #16a34a; }
+    .agc-kind-write { background: #ea580c; }
+    .agc-action { display: grid; grid-template-columns: 20px 1fr; gap: 10px; align-items: flex-start; padding: 8px 12px; border-top: 1px solid var(--border-color); cursor: pointer; }
+    .agc-action.on { background: rgba(124, 58, 237, 0.1); }
+    .agc-action input { margin-top: 2px; }
+    .agc-action-main { display: flex; flex-direction: column; }
+    .agc-action-label { font-size: 13px; font-weight: 600; }
+    .agc-action-desc { font-size: 11px; color: var(--text-secondary); line-height: 1.4; }
+    .agc-rounds { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .agc-rounds .label { margin: 0; }
+    /* API access */
+    .apx { padding: 20px; margin-top: 20px; }
+    .apx-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+    .apx-title { font-size: 15px; font-weight: 700; }
+    .apx-sub { font-size: 12px; color: var(--text-secondary); margin-top: 4px; line-height: 1.45; }
+    .apx-badge { padding: 3px 8px; border-radius: 4px; background: #be123c; color: #fff; font-size: 10px; font-weight: 800; letter-spacing: 0.05em; flex-shrink: 0; }
+    .apx-url { margin-bottom: 14px; }
+    .apx-url-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .apx-code { padding: 6px 10px; border-radius: var(--r-md, 8px); background: #0f172a; color: #e2e8f0; font-size: 12px; word-break: break-all; }
+    .apx-secret { background: #7c3aed; color: #fff; font-weight: 700; }
+    .apx-new { display: flex; gap: 8px; margin-bottom: 12px; }
+    .apx-input { flex: 1; max-width: 360px; padding: 8px 12px; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); background: var(--input-bg); color: var(--text-color); font-size: 13px; }
+    .apx-fresh { padding: 12px 14px; border-radius: var(--r-md, 8px); background: #16a34a; color: #fff; margin-bottom: 12px; }
+    .apx-fresh-title { font-weight: 700; margin-bottom: 8px; }
+    .apx-fresh .btn-small { background: #fff; color: #0f172a; border-color: #fff; }
+    .apx-table { margin-top: 8px; }
+    .apx-examples { margin-top: 14px; font-size: 12px; }
+    .apx-examples summary { cursor: pointer; font-weight: 700; color: var(--text-secondary); }
+    .apx-pre { margin: 8px 0 0; padding: 12px; border-radius: var(--r-md, 8px); background: #0f172a; color: #e2e8f0; font-size: 11px; line-height: 1.5; overflow: auto; white-space: pre; }
+    /* dark mode — one shade lighter per hue */
+    html[data-color-mode="dark"] .lst-count { background: #f97316; }
+    html[data-color-mode="dark"] .lst-sim { background: #f59e0b; }
+    html[data-color-mode="dark"] .lst-aic, html[data-color-mode="dark"] .type-badge.lst-mode-agent, html[data-color-mode="dark"] .mode-btn.mode-agent.on, html[data-color-mode="dark"] .runres-tool, html[data-color-mode="dark"] .apx-secret { background: #8b5cf6; border-color: #8b5cf6; }
+    html[data-color-mode="dark"] .type-badge.lst-mode-script, html[data-color-mode="dark"] .mode-btn.mode-script.on, html[data-color-mode="dark"] .chips-chip { background: #64748b; border-color: #64748b; }
+    html[data-color-mode="dark"] .chips-chip-project, html[data-color-mode="dark"] .runstat-ok .runstat-dot, html[data-color-mode="dark"] .runres-badge.ok, html[data-color-mode="dark"] .runres-issue, html[data-color-mode="dark"] .agc-kind-read, html[data-color-mode="dark"] .apx-fresh { background: #22c55e; }
+    html[data-color-mode="dark"] .runres-badge.err, html[data-color-mode="dark"] .runres-issue.err, html[data-color-mode="dark"] .runres-tool.err, html[data-color-mode="dark"] .evp-vol, html[data-color-mode="dark"] .evp-chip-vol, html[data-color-mode="dark"] .schp-preview-error { background: #ef4444; }
+    html[data-color-mode="dark"] .runres-badge.skip, html[data-color-mode="dark"] .runstat-skip .runstat-dot { background: #f59e0b; }
+    html[data-color-mode="dark"] .log-type-badge.lt-listener, html[data-color-mode="dark"] .agc-kind-write { background: #f97316; }
+    html[data-color-mode="dark"] .log-type-badge.lt-job, html[data-color-mode="dark"] .schp-day.on, html[data-color-mode="dark"] .schp-preview { background: #06b6d4; border-color: #06b6d4; }
+    html[data-color-mode="dark"] .apx-badge { background: #e11d48; }
+    html[data-color-mode="dark"] .evp-row.on { background: rgba(59, 130, 246, 0.18); }
+    html[data-color-mode="dark"] .agc-action.on { background: rgba(139, 92, 246, 0.2); }
+`;
   document.head.appendChild(style);
 };
 
@@ -4884,6 +5077,8 @@ let router;
 
 const TABS = [
   { key: "rules", label: "Rules" },
+  { key: "listeners", label: "Listeners" },
+  { key: "jobs", label: "Scheduled Jobs" },
   { key: "logs", label: "Execution Logs" },
   { key: "docs", label: "Documentation" },
   { key: "skills", label: "Skills" },
@@ -4897,6 +5092,13 @@ const TABS = [
 const SURFACES = {
   rules: { eyebrow: "RULES", what: "Every AI validator, condition, and post-function you've configured, across all workflows — toggle, edit, or explain any rule from here.",
     terms: [{ label: "post-function", def: "A rule that runs AFTER a transition completes — it writes a field with AI, posts a comment, or runs saved sandboxed JavaScript." }] },
+  listeners: { eyebrow: "LISTENERS", what: "Rules that react to Jira events — issue created, comment added, sprint started, version released, 68 events in all — with AI-generated code or an AI agent. No workflow transition needed.",
+    terms: [
+      { label: "AI condition", def: "A plain-language gate (\"the comment is a customer complaint\") the AI evaluates before the listener runs — one cheap classification call." },
+      { label: "AI agent", def: "The no-code mode: you write instructions, tick the actions the agent may take, and the AI decides and acts through those actions only." },
+    ] },
+  jobs: { eyebrow: "SCHEDULED JOBS", what: "Rules that run on a cron schedule — every 5 minutes up to monthly, in any time zone — once, or per issue of a JQL scope (escalation-style). Same code steps or AI agent as listeners.",
+    terms: [{ label: "scope", def: "A JQL query the job runs against; each matching issue becomes the current issue for its own run, sharing the ~100 s budget." }] },
   logs: { eyebrow: "EXECUTION LOGS", what: "A running history of what your rules did on real transitions: pass or fail, the AI's reasoning, and any changes a post-function made." },
   docs: { eyebrow: "DOCUMENTATION", what: "Reference docs the AI reads when it generates code and validates fields. Add your own API notes or conventions; the built-in guides come seeded.",
     terms: [{ label: "provenance", def: "The record of exactly which docs, skills, and memories the AI drew on when it generated a step's code — shown as chips on each rule." }] },
@@ -4941,6 +5143,7 @@ const logMatchesQuery = (l, q) => {
 const JOB_TYPE_LABEL = {
   review: "Review", codegen: "Codegen", fixcode: "Fix Code",
   skilldistill: "Skill", postfunction: "Post Function", memory_distill: "Memory",
+  listener: "Listener", scheduledjob: "Scheduled Job",
 };
 const jobTypeLabel = (t) => JOB_TYPE_LABEL[t] || t || "Job";
 // Human elapsed/queued/duration string for a job row.
@@ -5266,13 +5469,17 @@ function App() {
   // accordion. Extracted so both render identically.
   const renderLogEntry = (log) => {
     const logType = log.type || "validation";
-    const typeBadge = logType.includes("postfunction-semantic") ? "PF: Semantic"
+    const typeBadge = logType === "listener" ? "Listener"
+      : logType === "scheduledjob" ? "Scheduled Job"
+      : logType.includes("postfunction-semantic") ? "PF: Semantic"
       : logType.includes("postfunction-static") ? "PF: Static"
       : logType.includes("postfunction") ? "Post Function"
       : logType === "condition" ? "Condition"
       : logType === "postfunction-cancelled" ? "Cancelled"
       : "Validator";
-    const typeBadgeClass = logType.includes("postfunction-semantic") ? "lt-pf-semantic"
+    const typeBadgeClass = logType === "listener" ? "lt-listener"
+      : logType === "scheduledjob" ? "lt-job"
+      : logType.includes("postfunction-semantic") ? "lt-pf-semantic"
       : logType.includes("postfunction-static") ? "lt-pf-static"
       : logType.includes("postfunction") ? "lt-pf"
       : logType === "condition" ? "lt-condition"
@@ -5331,7 +5538,7 @@ function App() {
         )}
         <div className="log-details">
           <span className="log-kv">
-            <span className="log-kv-label">Field</span>
+            <span className="log-kv-label">{logType === "listener" ? "Event" : logType === "scheduledjob" ? "Schedule" : "Field"}</span>
             <code className="field-id">{log.fieldId}</code>
           </span>
           {log.decision && (
@@ -5346,6 +5553,12 @@ function App() {
             <div className="log-section-label">AI reason</div>
             <div className="log-reason">{log.reason}</div>
           </>
+        )}
+        {Array.isArray(log.logs) && log.logs.length > 0 && (
+          <details className="log-lines">
+            <summary>{log.logs.length} execution log line{log.logs.length === 1 ? "" : "s"}{Array.isArray(log.changes) && log.changes.length ? ` · ${log.changes.length} change${log.changes.length === 1 ? "" : "s"}` : ""}</summary>
+            <pre className="log-lines-pre">{log.logs.join("\n")}</pre>
+          </details>
         )}
         {log.tokens > 0 && (
           <div className="log-foot">
@@ -6183,6 +6396,16 @@ function App() {
       </>)}
 
       {/* Documentation Tab */}
+      {/* Listeners Tab — Jira product-event rules */}
+      {activeTab === "listeners" && (
+        <ListenersTab invoke={invoke} isAdmin={isAdmin} userRole={userRole} siteUrl={siteUrl} router={router} />
+      )}
+
+      {/* Scheduled Jobs Tab — cron rules */}
+      {activeTab === "jobs" && (
+        <JobsTab invoke={invoke} isAdmin={isAdmin} userRole={userRole} />
+      )}
+
       {activeTab === "docs" && (
         <DocsTab invoke={invoke} isAdmin={isAdmin} accountId={accountId} />
       )}

@@ -95,6 +95,17 @@ export async function testStateTrigger(req) {
         return json(500, { error: String((e && e.message) || e) });
       }
     }
+    // Rules REST API token for the listeners/jobs E2E harness (dev-gated; the
+    // production path is the admin UI's Settings → API access).
+    if (body.action === "mintApiToken") {
+      try {
+        const { createApiTokenInternal } = await import("./rules-api.js");
+        const r = await createApiTokenInternal({ name: body.name || "harness", accountId: "harness" });
+        return json(200, r);
+      } catch (e) {
+        return json(500, { error: String((e && e.message) || e) });
+      }
+    }
     return json(400, { error: `unknown POST action=${body.action}` });
   }
 
@@ -105,6 +116,11 @@ export async function testStateTrigger(req) {
     if (what === "logs") return json(200, { logs: (await storage.get("validation_logs")) || [] });
     // Real execution logs live under per-entry log_entry:* keys (NOT validation_logs).
     if (what === "execlogs") { const { readLogs } = await import("./index.js"); return json(200, { logs: await readLogs(q(req, "ruleId") || null) }); }
+    if (what === "rulesApiUrl") {
+      const { webTrigger } = await import("@forge/api");
+      const r = await webTrigger.getUrl("rules-api");
+      return json(200, { url: typeof r === "string" ? r : r && r.url });
+    }
     if (what === "kvs") {
       const key = q(req, "key");
       if (!key) return json(400, { error: "key required" });

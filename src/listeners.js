@@ -337,7 +337,7 @@ export async function listenerTrigger(event, context) {
   let rows;
   try { rows = await readListenerIndex({ cached: true }); } catch (e) { console.error("[listener] index read failed:", e && e.message); return; }
   const candidates = rows.filter((r) => r.enabled !== false && Array.isArray(r.events) && r.events.includes(eventType));
-  captureSample(eventType, event); // fire-and-forget-ish (awaited below via finally? no — cheap set, errors swallowed)
+  await captureSample(eventType, event); // throttled (15 min per event type per container); errors swallowed
   if (!candidates.length) return;
 
   const ctx = extractEventContext(eventType, event);

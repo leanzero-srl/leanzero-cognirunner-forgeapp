@@ -41,10 +41,12 @@ ok(JSON.stringify(l1.filters.projectKeys) === JSON.stringify(["LZPT", "ABC"]), "
 ok(l1.functions[0].secret === undefined && l1.functions[0].variableName === "r1", "step whitelisted");
 ok(JSON.stringify(l1.agent.allowedActions) === JSON.stringify(["add_comment"]) && l1.agent.maxRounds === 8, "agent actions filtered, rounds clamped");
 ok(l1.enabled === true && l1.ignoreSelf === true && l1.mode === "script" && l1.createdBy === "acc-1", "defaults");
-const l1b = normalizeListener({ ...l1, name: "Renamed", id: "ignored-on-update", stats: { runCount: 99 } }, { existing: { ...l1, stats: { runCount: 3 } } });
-ok(l1b.id === l1.id && l1b.stats.runCount === 3 && l1b.createdBy === "acc-1" && l1b.name === "Renamed", "update keeps identity + server-side stats");
+const l1b = normalizeListener({ ...l1, name: "Renamed", id: "ignored-on-update", stats: { runCount: 99 } }, { existing: { ...l1 } });
+ok(l1b.id === l1.id && l1b.stats === undefined && l1b.createdBy === "acc-1" && l1b.name === "Renamed", "update keeps identity; client-sent stats are ignored (stats live in their own key)");
 ok(normalizeListener({ id: "my.custom_id-1", name: "n", events: ["avi:jira:created:issue"], functions: [{ code: "1" }] }).id === "my.custom_id-1", "client id honoured when well-formed");
-ok(normalizeStep({}, 2).name === "Step 3" && normalizeStep({ code: "x".repeat(30000) }).code.length === 24576, "step defaults + clamp");
+ok(normalizeStep({}, 2).name === "Step 3" && normalizeStep({ code: "x".repeat(30000) }).code.length === 30000, "step defaults + 30k code accepted");
+throws(() => normalizeStep({ code: "x".repeat(40000) }), /exceeds 32768/, "oversized step code is an ERROR, not a silent clamp");
+ok(normalizeListener({ name: "j", events: ["avi:jira:created:issue"], filters: { jql: "priority = High ORDER BY created DESC" }, functions: [{ code: "1" }] }).filters.jql === "priority = High", "trailing ORDER BY stripped from the JQL filter");
 
 // ── matchListenerStatic ───────────────────────────────────────────────────────
 const ev = (over = {}) => ({ eventType: "avi:jira:updated:issue", selfGenerated: false, issue: { id: "1", key: "LZPT-5", fields: { project: { id: "10", key: "LZPT" }, issuetype: { id: "2", name: "Bug" } } }, changelog: { items: [{ field: "priority", fieldId: "priority" }] }, ...over });
@@ -76,7 +78,8 @@ const saved = await saveListener({ name: "A", events: ["avi:jira:created:issue"]
 const saved2 = await saveListener({ name: "B", events: ["avi:jira:created:issue"], filters: { projectKeys: ["ZZZ"] }, functions: [{ code: "api.log(2)" }] }, { accountId: "u" });
 ok((await listListeners()).length === 2, "two listeners listed");
 ok((await getListener(saved.id)).functions[0].code === "api.log(1)", "full record read back");
-ok((await storage.get(LISTENER_INDEX_KEY)).every((r) => r.functions === undefined), "index rows are slim (no code)");
+ok((await storage.get(LISTENER_INDEX_KEY)).every((r) => r.functions === undefined && r.stats === undefined), "index rows are slim (no code, no stats)");
+ok((await listListeners()).every((r) => r.stats && r.stats.runCount === 0), "listed rows carry merged (empty) stats");
 await setListenerEnabled(saved2.id, false);
 ok((await getListener(saved2.id)).enabled === false && (await listListeners()).find((r) => r.id === saved2.id).enabled === false, "disable persists to record + index");
 ok((await deleteListener(saved2.id)).removed && (await listListeners()).length === 1, "delete removes both");
@@ -97,21 +100,27 @@ ok(pushed.length === 0, "disabled listener not queued");
 throws(() => normalizeJob({ name: "j" }), /schedule.cron is invalid/, "job needs a cron");
 throws(() => normalizeJob({ name: "j", schedule: { cron: "0 9 * * *" } }), /functions must contain/, "job needs a step");
 const j1 = normalizeJob({ name: "Nightly", schedule: { cron: "0 2 * * *", timeZone: "Europe/Zurich" }, scope: { jql: "project = LZPT", maxIssues: 500 }, functions: [{ code: "api.log(1)" }] });
-ok(j1.id.startsWith("job_") && j1.scope.maxIssues === 100 && j1.schedule.timeZone === "Europe/Zurich" && typeof j1.stats.nextRunAt === "string", "job normalised, scope clamped, nextRunAt computed");
+ok(j1.id.startsWith("job_") && j1.scope.maxIssues === 100 && j1.schedule.timeZone === "Europe/Zurich" && j1.stats === undefined, "job normalised, scope clamped, no stats inside the record");
 ok(normalizeJob({ name: "x", schedule: { cron: "* * * * *", timeZone: "Mars/Olympus" }, functions: [{ code: "1" }] }).schedule.timeZone === "UTC", "unknown zone → UTC");
 ok(normalizeJob({ name: "x", schedule: { cron: "* * * * *" }, scope: { jql: "   " }, functions: [{ code: "1" }] }).scope === null, "blank scope → null");
 
 // planTick: window since lastCheckedAt, one run per tick, missed count, disabled skipped, replay cap
 const now = Date.UTC(2026, 2, 9, 9, 7, 30);
 const rows = [
-  { id: "a", enabled: true, schedule: { cron: "*/5 * * * *", timeZone: "UTC" }, lastCheckedAt: new Date(Date.UTC(2026, 2, 9, 9, 2, 20)).toISOString() },
-  { id: "b", enabled: true, schedule: { cron: "* * * * *", timeZone: "UTC" }, lastCheckedAt: new Date(Date.UTC(2026, 2, 9, 9, 2, 20)).toISOString() },
-  { id: "c", enabled: false, schedule: { cron: "* * * * *", timeZone: "UTC" }, lastCheckedAt: null },
-  { id: "d", enabled: true, schedule: { cron: "0 9 * * *", timeZone: "UTC" }, lastCheckedAt: new Date(Date.UTC(2026, 2, 9, 9, 2, 20)).toISOString() },
-  { id: "e", enabled: true, schedule: { cron: "* * * * *", timeZone: "UTC" }, lastCheckedAt: new Date(Date.UTC(2026, 2, 8, 9, 0)).toISOString() },
-  { id: "f", enabled: true, schedule: { cron: "0 9 * * *", timeZone: "UTC" }, lastCheckedAt: null },
+  { id: "a", enabled: true, schedule: { cron: "*/5 * * * *", timeZone: "UTC" } },
+  { id: "b", enabled: true, schedule: { cron: "* * * * *", timeZone: "UTC" } },
+  { id: "c", enabled: false, schedule: { cron: "* * * * *", timeZone: "UTC" } },
+  { id: "d", enabled: true, schedule: { cron: "0 9 * * *", timeZone: "UTC" } },
+  { id: "e", enabled: true, schedule: { cron: "* * * * *", timeZone: "UTC" } },
+  { id: "f", enabled: true, schedule: { cron: "0 9 * * *", timeZone: "UTC" } },
 ];
-const due = planTick(rows, now);
+const sched = {
+  a: { lastCheckedAt: new Date(Date.UTC(2026, 2, 9, 9, 2, 20)).toISOString() },
+  b: { lastCheckedAt: new Date(Date.UTC(2026, 2, 9, 9, 2, 20)).toISOString() },
+  d: { lastCheckedAt: new Date(Date.UTC(2026, 2, 9, 9, 2, 20)).toISOString() },
+  e: { lastCheckedAt: new Date(Date.UTC(2026, 2, 8, 9, 0)).toISOString() },
+};
+const due = planTick(rows, sched, now);
 const byId = Object.fromEntries(due.map((d) => [d.job.id, d]));
 ok(byId.a && byId.a.fireAt === Date.UTC(2026, 2, 9, 9, 5) && byId.a.missed === 0, "a: 09:05 due once");
 ok(byId.b && byId.b.fireAt === Date.UTC(2026, 2, 9, 9, 7) && byId.b.missed === 4, "b: every-minute collapses to one run + 4 missed");
@@ -119,18 +128,20 @@ ok(!byId.c, "c: disabled skipped");
 ok(!byId.d, "d: 09:00 was before the window");
 ok(byId.e && byId.e.missed <= 60, "e: a day-old lastCheckedAt replays at most one hour");
 ok(!byId.f, "f: never checked → 6-minute lookback does NOT reach back to 09:00 from 09:07:30");
-const fresh = planTick([{ id: "g", enabled: true, schedule: { cron: "0 9 * * *", timeZone: "UTC" }, lastCheckedAt: null }], Date.UTC(2026, 2, 9, 9, 4));
+const fresh = planTick([{ id: "g", enabled: true, schedule: { cron: "0 9 * * *", timeZone: "UTC" } }], {}, Date.UTC(2026, 2, 9, 9, 4));
 ok(fresh.length === 1 && fresh[0].fireAt === Date.UTC(2026, 2, 9, 9, 0), "g: a brand-new job created just before 09:00 fires on the first tick after it");
-ok(rows.every((r) => r.lastCheckedAt === new Date(now).toISOString()), "every row's lastCheckedAt advanced (including disabled)");
+ok(rows.every((r) => sched[r.id] && sched[r.id].lastCheckedAt === new Date(now).toISOString()), "every job's bookkeeping advanced (including disabled)");
+ok(rows.every((r) => r.lastCheckedAt === undefined), "index rows are never mutated by the planner");
 
 // storage + enable bookkeeping
 storage.__reset();
 const js = await saveJob({ name: "J", schedule: { cron: "0 9 * * *" }, functions: [{ code: "1" }] });
-ok((await listJobs())[0].id === js.id && (await listJobs())[0].functions === undefined, "job index slim");
+ok((await listJobs())[0].id === js.id && (await listJobs())[0].functions === undefined && typeof (await listJobs())[0].stats.nextRunAt === "string", "job index slim; nextRunAt computed on read");
+ok((await storage.get("job_sched"))[js.id] && (await storage.get("job_sched"))[js.id].lastCheckedAt, "new job starts its window at save time (no pre-existence replay)");
 const dis = await setJobEnabled(js.id, false);
 ok(dis.enabled === false && dis.stats.nextRunAt === null, "disabled job has no next run");
 const en = await setJobEnabled(js.id, true);
-ok(en.enabled === true && en.lastCheckedAt && typeof en.stats.nextRunAt === "string", "re-enabled job resets its window and next run");
+ok(en.enabled === true && typeof en.stats.nextRunAt === "string" && (await storage.get("job_sched"))[js.id].lastCheckedAt, "re-enabled job resets its window and next run");
 const pv = previewSchedule({ cron: "0 9 * * 1-5", timeZone: "Europe/Zurich", count: 3 });
 ok(pv.ok && pv.runs.length === 3 && pv.description === "Weekdays at 09:00", "preview");
 ok(!previewSchedule({ cron: "bad" }).ok, "preview invalid");

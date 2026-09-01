@@ -150,7 +150,7 @@ export const runAgentTask = async ({
       }
       case "add_comment": {
         const key = needKey(args);
-        const opts = args.internal === true ? { visibility: undefined, properties: [{ key: "sd.public.comment", value: { internal: true } }] } : {};
+        const opts = args.internal === true ? { properties: [{ key: "sd.public.comment", value: { internal: true } }] } : {};
         return apiFor(key).addComment(String(args.text || ""), opts);
       }
       case "update_fields": {
@@ -220,7 +220,8 @@ ${simulated ? "- SIMULATION MODE: write tools are recorded but not executed; beh
       // Model answered in prose without finishing — treat as the summary.
       result.summary = String(message.content || "").slice(0, 1200);
       result.outcome = exhausted && !result.summary ? "failed" : "done";
-      result.success = true;
+      result.success = result.outcome !== "failed";
+      if (!result.success) result.error = "Agent ran out of rounds without a summary";
       log(`Agent ended without an explicit finish: ${result.summary || "(no summary)"}`);
       break;
     }
@@ -244,7 +245,8 @@ ${simulated ? "- SIMULATION MODE: write tools are recorded but not executed; beh
         result.outcome = ["done", "nothing_to_do", "failed"].includes(args.outcome) ? args.outcome : "done";
         result.success = result.outcome !== "failed";
       }
-      messages.push({ role: "tool", tool_call_id: tc.id, content: defangFence(JSON.stringify(out === undefined ? { ok: true } : out).slice(0, 12000)) });
+      const raw = JSON.stringify(out === undefined ? { ok: true } : out);
+      messages.push({ role: "tool", tool_call_id: tc.id, content: defangFence(raw.length > 12000 ? raw.slice(0, 12000) + `\n…[tool result truncated: ${raw.length - 12000} more chars]` : raw) });
     }
     if (finished) break;
     if (exhausted) { result.error = `Stopped after ${rounds} tool rounds without finish`; log(`LIMIT: ${result.error}`); break; }

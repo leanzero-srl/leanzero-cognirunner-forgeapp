@@ -860,6 +860,13 @@ export async function handler(event) {
       if (!UNPOLLED_TASKS.has(taskType)) {
         await storage.set(`${TASK_PREFIX}${taskId}`, { status: "error", error: "Expired (queued past the staleness window)" }, ttl);
       }
+      // Listener / job runs leave a visible SKIP entry — a silent miss is the worst outcome for a rule.
+      if (taskType === "listener" || taskType === "scheduledjob") {
+        try {
+          const { storeLog } = await import("./index");
+          await storeLog({ type: taskType === "listener" ? "listener" : "scheduledjob", source: "async", issueKey: params?.ctx?.issueKey || "(no issue)", fieldId: params?.eventType || (params?.jobName ? "schedule" : ""), isValid: false, decision: "SKIP", reason: `Skipped: the queued run waited ${Math.round(queuedMs / 1000)}s before the background worker picked it up (past the ${Math.round(STALE_JOB_MS / 60000)}-minute staleness window).`, recommendation: "Atlassian's event queue was backlogged. Nothing ran; re-trigger the action or run the job manually.", executionTimeMs: 0, ruleId: params?.listenerId || params?.jobId || null, ruleName: params?.listenerName || params?.jobName || null, ruleWorkflow: null, eventType: params?.eventType });
+        } catch (e) { console.warn("stale-skip log failed:", e && e.message); }
+      }
       await updateAsyncJob(taskId, { status: "error", finishedAt: new Date().toISOString(), error: `Expired — sat queued ${Math.round(queuedMs / 1000)}s before the consumer ran it, past the ${Math.round(STALE_JOB_MS / 60000)}min staleness window.` }, JOB_TTL_DONE);
       return;
     }

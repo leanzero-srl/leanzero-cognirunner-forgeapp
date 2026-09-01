@@ -45,6 +45,16 @@ const agentMod = () => import("./agent-runner.js");
 
 export const JOB_INDEX_KEY = "job_index";
 export const JOB_PREFIX = "job:";
+// Run stats and the scheduler's own bookkeeping (lastCheckedAt per job) live in
+// their own keys: the consumer never rewrites the index or a config record, and the
+// tick (single writer of `job_sched`) never rewrites the index either — so a save
+// racing either of them can no longer be lost.
+export const JOB_STATS_KEY = "job_stats";
+export const JOB_SCHED_KEY = "job_sched";
+export const EXEC_CLAIM_PREFIX = "job_exec:";
+const EXEC_CLAIM_TTL = { ttl: { value: 2, unit: "HOURS" } };
+const INDEX_MAX_BYTES = 200 * 1024;
+const NEXT_RUN_HORIZON_MIN = 60 * 24 * 60; // 60 days for list previews
 export const MAX_JOBS = 200;
 const JOB_MAX_BYTES = 200 * 1024;
 const JOB_RUN_BUDGET_MS = 105000;
@@ -85,6 +95,7 @@ export const normalizeJob = (input = {}, { existing = null, accountId = null } =
     maxRounds: clampInt(a.maxRounds, 1, MAX_AGENT_ROUNDS, DEFAULT_AGENT_ROUNDS),
   };
   if (mode === "agent" && !agent.instructions.trim()) throw new Error("agent.instructions is required in agent mode");
+  if (mode === "agent" && String(a.instructions || "").length > 6000) throw new Error("agent.instructions exceeds 6000 characters");
   if (mode === "script" && functions.length === 0) throw new Error("functions must contain at least one code step in script mode");
   const out = {
     id, name,
@@ -96,10 +107,7 @@ export const normalizeJob = (input = {}, { existing = null, accountId = null } =
     createdBy: existing ? existing.createdBy || accountId || null : accountId || null,
     createdAt: existing ? existing.createdAt || nowIso() : nowIso(),
     updatedAt: nowIso(),
-    lastCheckedAt: existing ? existing.lastCheckedAt || null : null,
-    stats: existing && existing.stats ? existing.stats : { runCount: 0, errorCount: 0, lastRunAt: null, lastStatus: null, lastError: null, nextRunAt: null },
   };
-  try { out.stats.nextRunAt = out.enabled ? (nextRuns(cron, { timeZone: schedule.timeZone, count: 1 })[0] || null) : null; } catch { out.stats.nextRunAt = null; }
   const bytes = Buffer.byteLength(JSON.stringify(out), "utf8");
   if (bytes > JOB_MAX_BYTES) throw new Error(`job is too large (${bytes} bytes > ${JOB_MAX_BYTES})`);
   return out;
@@ -108,67 +116,95 @@ export const normalizeJob = (input = {}, { existing = null, accountId = null } =
 export const toIndexRow = (full) => ({
   id: full.id, name: full.name, enabled: full.enabled !== false, schedule: full.schedule,
   scoped: Boolean(full.scope), mode: full.mode, simulationMode: full.simulationMode === true,
-  createdBy: full.createdBy || null, updatedAt: full.updatedAt, lastCheckedAt: full.lastCheckedAt || null, stats: full.stats || {},
+  createdBy: full.createdBy || null, updatedAt: full.updatedAt,
 });
+export const emptyStats = () => ({ runCount: 0, errorCount: 0, lastRunAt: null, lastStatus: null, lastError: null });
+export const nextRunOf = (row) => {
+  if (!row || row.enabled === false || !row.schedule) return null;
+  try { return nextRuns(row.schedule.cron, { timeZone: row.schedule.timeZone, count: 1, maxMinutes: NEXT_RUN_HORIZON_MIN })[0] || null; } catch { return null; }
+};
 
 // ── Storage ──────────────────────────────────────────────────────────────────
 
 export const readJobIndex = async () => { const v = (await storage.get(JOB_INDEX_KEY)) || []; return Array.isArray(v) ? v : []; };
 const writeJobIndex = async (rows) => storage.set(JOB_INDEX_KEY, rows);
-export const listJobs = async () => (await readJobIndex()).slice().sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
-export const getJob = async (id) => (id ? (await storage.get(JOB_PREFIX + safeKeyPart(id))) || null : null);
+export const readStatsMap = async () => { const v = (await storage.get(JOB_STATS_KEY)) || {}; return v && typeof v === "object" ? v : {}; };
+export const readSchedMap = async () => { const v = (await storage.get(JOB_SCHED_KEY)) || {}; return v && typeof v === "object" ? v : {}; };
+const writeSchedMap = async (m) => storage.set(JOB_SCHED_KEY, m);
+const decorate = (row, statsMap) => ({ ...row, stats: { ...((statsMap && statsMap[row.id]) || emptyStats()), nextRunAt: nextRunOf(row) } });
+
+export const listJobs = async () => {
+  const [rows, statsMap] = await Promise.all([readJobIndex(), readStatsMap()]);
+  return rows.map((r) => decorate(r, statsMap)).sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
+};
+export const getJob = async (id) => {
+  if (!id) return null;
+  const full = (await storage.get(JOB_PREFIX + safeKeyPart(id))) || null;
+  if (!full) return null;
+  let statsMap = {};
+  try { statsMap = await readStatsMap(); } catch { /* best-effort */ }
+  return decorate(full, statsMap);
+};
+
+// Mark "checked up to now" for a job (new / re-enabled) so it never replays minutes
+// from before it existed or while it was disabled. Single small RMW on the sched map.
+const touchSched = async (id) => {
+  try { const m = await readSchedMap(); m[id] = { ...(m[id] || {}), lastCheckedAt: nowIso() }; await writeSchedMap(m); } catch (e) { console.warn("[job] sched touch skipped:", e && e.message); }
+};
 
 export const saveJob = async (input, { accountId = null } = {}) => {
   const existing = input && input.id ? await getJob(input.id) : null;
   const full = normalizeJob(input, { existing, accountId });
+  delete full.stats;
   const rows = await readJobIndex();
   const at = rows.findIndex((r) => r.id === full.id);
   if (at < 0 && rows.length >= MAX_JOBS) throw new Error(`Scheduled job limit reached (${MAX_JOBS}). Delete unused jobs first.`);
-  await storage.set(JOB_PREFIX + safeKeyPart(full.id), full);
   const row = toIndexRow(full);
-  if (at >= 0) rows[at] = row; else rows.push(row);
-  await writeJobIndex(rows);
-  return full;
+  const next = rows.slice();
+  if (at >= 0) next[at] = row; else next.push(row);
+  const indexBytes = Buffer.byteLength(JSON.stringify(next), "utf8");
+  if (indexBytes > INDEX_MAX_BYTES) throw new Error(`Job index would exceed ${INDEX_MAX_BYTES} bytes (${indexBytes}). Delete unused jobs first.`);
+  if (at < 0 || (existing && existing.enabled === false && full.enabled)) await touchSched(full.id);
+  await writeJobIndex(next);
+  await storage.set(JOB_PREFIX + safeKeyPart(full.id), full);
+  return decorate(full, existing && existing.stats ? { [full.id]: existing.stats } : {});
 };
 
 export const deleteJob = async (id) => {
   const rows = await readJobIndex();
   const next = rows.filter((r) => r.id !== id);
-  await storage.delete(JOB_PREFIX + safeKeyPart(id));
   if (next.length !== rows.length) await writeJobIndex(next);
+  await storage.delete(JOB_PREFIX + safeKeyPart(id));
+  try { const m = await readStatsMap(); if (m[id]) { delete m[id]; await storage.set(JOB_STATS_KEY, m); } } catch { /* best-effort */ }
+  try { const m = await readSchedMap(); if (m[id]) { delete m[id]; await writeSchedMap(m); } } catch { /* best-effort */ }
   return { removed: next.length !== rows.length };
 };
 
 export const setJobEnabled = async (id, enabled) => {
   const full = await getJob(id);
   if (!full) throw new Error("Scheduled job not found");
+  const stats = full.stats; delete full.stats;
   full.enabled = enabled !== false; full.updatedAt = nowIso();
-  full.stats = full.stats || {};
-  try { full.stats.nextRunAt = full.enabled ? (nextRuns(full.schedule.cron, { timeZone: full.schedule.timeZone, count: 1 })[0] || null) : null; } catch { /* keep */ }
   // A re-enabled job must not replay the minutes it was disabled for.
-  if (full.enabled) full.lastCheckedAt = nowIso();
-  await storage.set(JOB_PREFIX + safeKeyPart(id), full);
+  if (full.enabled) await touchSched(id);
   const rows = await readJobIndex();
   const at = rows.findIndex((r) => r.id === id);
   if (at >= 0) rows[at] = toIndexRow(full); else rows.push(toIndexRow(full));
   await writeJobIndex(rows);
-  return full;
+  await storage.set(JOB_PREFIX + safeKeyPart(id), full);
+  return { ...full, stats: { ...(stats || emptyStats()), nextRunAt: nextRunOf(full) } };
 };
 
+// Best-effort stats update (advisory; touches ONLY the stats map).
 export const updateJobStats = async (id, { status, error = null }) => {
   try {
-    const full = await getJob(id);
-    if (!full) return;
-    const st = full.stats || { runCount: 0, errorCount: 0 };
+    const m = await readStatsMap();
+    const st = m[id] || emptyStats();
     st.runCount = (st.runCount || 0) + 1;
     if (status === "error") st.errorCount = (st.errorCount || 0) + 1;
     st.lastRunAt = nowIso(); st.lastStatus = status; st.lastError = error ? clampStr(error, 300) : null;
-    try { st.nextRunAt = full.enabled ? (nextRuns(full.schedule.cron, { timeZone: full.schedule.timeZone, count: 1 })[0] || null) : null; } catch { /* keep */ }
-    full.stats = st;
-    await storage.set(JOB_PREFIX + safeKeyPart(id), full);
-    const rows = await readJobIndex();
-    const at = rows.findIndex((r) => r.id === id);
-    if (at >= 0) { rows[at] = { ...rows[at], stats: st }; await writeJobIndex(rows); }
+    m[id] = st;
+    await storage.set(JOB_STATS_KEY, m);
   } catch (e) { console.warn("[job] stats update skipped:", e && e.message); }
 };
 
@@ -189,15 +225,17 @@ export const enqueueJobRun = async ({ job, scheduledFor, missed = 0, manual = fa
 
 /**
  * Pure planning step, exported for offline tests: which jobs are due and when.
- * Returns [{ job, fireAt, missed }] and mutates each row's lastCheckedAt to `now`.
+ * `sched` is the bookkeeping map (id → { lastCheckedAt }); it is mutated to `now`
+ * for every row. Returns [{ job, fireAt, missed }].
  */
-export const planTick = (rows, now = Date.now()) => {
+export const planTick = (rows, sched = {}, now = Date.now()) => {
   const due = [];
   for (const job of rows) {
     if (!job || !job.schedule || !job.schedule.cron) continue;
-    const lastChecked = job.lastCheckedAt ? Date.parse(job.lastCheckedAt) : NaN;
+    const bk = sched[job.id] || {};
+    const lastChecked = bk.lastCheckedAt ? Date.parse(bk.lastCheckedAt) : NaN;
     const after = Number.isFinite(lastChecked) ? Math.max(lastChecked, now - MAX_REPLAY_MS) : now - 6 * 60000;
-    job.lastCheckedAt = new Date(now).toISOString();
+    sched[job.id] = { ...bk, lastCheckedAt: new Date(now).toISOString() };
     if (job.enabled === false) continue;
     let matches = [];
     try { matches = dueInWindow(job.schedule.cron, after, now, job.schedule.timeZone); } catch { continue; }
@@ -209,14 +247,17 @@ export const planTick = (rows, now = Date.now()) => {
 
 export async function scheduledTick() {
   const started = Date.now();
-  let rows;
-  try { rows = await readJobIndex(); } catch (e) { console.error("[job] index read failed:", e && e.message); return; }
+  let rows; let sched;
+  try { [rows, sched] = await Promise.all([readJobIndex(), readSchedMap()]); } catch (e) { console.error("[job] index read failed:", e && e.message); return; }
   if (!rows.length) return;
-  const due = planTick(rows, started);
+  // Drop bookkeeping for jobs that no longer exist (keeps the map bounded).
+  const ids = new Set(rows.map((r) => r.id));
+  for (const k of Object.keys(sched)) if (!ids.has(k)) delete sched[k];
+  const due = planTick(rows, sched, started);
   // Persist lastCheckedAt for every job first — the window must advance even if
   // an enqueue below fails (otherwise a broken job would be re-planned forever).
-  for (const d of due) { try { d.job.stats = { ...(d.job.stats || {}), nextRunAt: nextRuns(d.job.schedule.cron, { timeZone: d.job.schedule.timeZone, from: d.fireAt, count: 1 })[0] || null }; } catch { /* keep */ } }
-  try { await writeJobIndex(rows); } catch (e) { console.error("[job] index write failed:", e && e.message); }
+  // Only the sched map is written here: the index and the records stay untouched.
+  try { await writeSchedMap(sched); } catch (e) { console.error("[job] sched write failed:", e && e.message); }
   let queued = 0;
   for (const d of due) {
     if (Date.now() - started > TICK_BUDGET_MS) { console.warn(`[job] tick budget hit after ${queued} enqueue(s)`); break; }
@@ -301,7 +342,7 @@ export const runJob = async ({ job, scheduledFor = null, missed = 0, manual = fa
   let changes = []; let tokens = 0; let aiTimeMs = 0; let failures = 0;
   for (let i = 0; i < issues.length; i++) {
     const remaining = deadline - Date.now();
-    if (remaining < 6000) { logs.push(`TIMEOUT: ${issues.length - i} issue(s) not processed — time budget exhausted`); failures += issues.length - i; for (const rest of issues.slice(i)) perIssue.push({ key: rest.key, success: false, reason: "not processed (time budget)" }); break; }
+    if (remaining < 8000) { logs.push(`TIMEOUT: ${issues.length - i} issue(s) not processed — time budget exhausted`); failures += issues.length - i; for (const rest of issues.slice(i)) perIssue.push({ key: rest.key, success: false, reason: "not processed (time budget)" }); break; }
     if (cancelToken && await m.isJobCancelled(cancelToken)) { logs.push("CANCELLED by operator"); break; }
     const share = Math.max(8000, Math.floor(remaining / (issues.length - i)));
     const r = await runOne(issues[i], Date.now() + Math.min(remaining - 2000, share));
@@ -329,6 +370,13 @@ export const executeScheduledJobTask = async (params, taskId) => {
     await m.storeLog({ type: "scheduledjob", source: "async", issueKey: "(no issue)", fieldId: `${job.schedule.cron} ${job.schedule.timeZone}`, isValid: true, decision: "SKIP", reason: "Skipped: job was disabled before the queued run started.", executionTimeMs: 0, ruleId: job.id, ruleName: job.name, ruleWorkflow: null });
     return { skipped: true, reason: "disabled" };
   }
+  // At-least-once delivery guard: a scheduled run is identified by job + due minute,
+  // a manual run by its task id (best-effort check-then-set; mirrors pf_exec).
+  try {
+    const claimKey = EXEC_CLAIM_PREFIX + safeKeyPart(manual ? `${job.id}:manual:${taskId}` : `${job.id}:${scheduledFor || taskId}`);
+    if (await storage.get(claimKey)) { console.log(`[job] duplicate delivery of ${taskId} suppressed`); return { skipped: true, reason: "duplicate delivery" }; }
+    await storage.set(claimKey, { at: nowIso() }, EXEC_CLAIM_TTL);
+  } catch (e) { console.warn("[job] claim failed (continuing):", e && e.message); }
   const enqueuedMs = params.enqueuedAt ? Date.parse(params.enqueuedAt) : NaN;
   const started = Date.now();
   let out;

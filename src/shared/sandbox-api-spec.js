@@ -255,7 +255,7 @@ Forces the current issue into a status even when no normal transition path exist
     summary: "Adds a comment. body may be a plain string (auto-converted to ADF) or an ADF doc. opts.visibility restricts it to a role/group.",
     detail: "(body, opts?) → { id }",
     example: 'await api.addComment("Auto-triaged: likely a session race.");',
-    promptDoc: "### api.addComment(body, opts?) → { id }\nAdds a comment to the current issue. `body` string is converted to ADF. `opts.visibility = { type: 'role'|'group', value }` restricts visibility.",
+    promptDoc: "### api.addComment(body, opts?) → { id }\nAdds a comment to the current issue. `body` string is converted to ADF. `opts.visibility = { type: 'role'|'group', value }` restricts visibility. `opts.properties = [{ key: 'sd.public.comment', value: { internal: true } }]` posts a JSM INTERNAL note (not visible to customers).",
   },
   {
     name: "setAssignee",

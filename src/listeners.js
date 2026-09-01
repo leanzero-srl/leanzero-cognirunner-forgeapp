@@ -46,6 +46,16 @@ const agentMod = () => import("./agent-runner.js");
 
 export const LISTENER_INDEX_KEY = "listener_index";
 export const LISTENER_PREFIX = "listener:";
+// Run statistics live in their OWN key (a map id → stats) so the consumers never
+// read-modify-write the index or the config record: a stats update racing a save
+// could otherwise revert the save (lost update). Stats-vs-stats races only lose a
+// count — acceptable for an advisory meter.
+export const LISTENER_STATS_KEY = "listener_stats";
+export const EXEC_CLAIM_PREFIX = "lst_exec:";
+const EXEC_CLAIM_TTL = { ttl: { value: 2, unit: "HOURS" } };
+const INDEX_MAX_BYTES = 200 * 1024;
+const STEP_CODE_MAX = 32768;
+const COMMENT_MATCH_MAX = 4000;
 export const EVENT_SAMPLE_PREFIX = "event_sample:";
 export const MAX_LISTENERS = 200;
 const LISTENER_MAX_BYTES = 200 * 1024;
@@ -93,7 +103,7 @@ export const normalizeListener = (input = {}, { existing = null, accountId = nul
   const filters = {
     projectKeys: uniqStrings(f.projectKeys, 50, (s) => s.toUpperCase()),
     issueTypes: uniqStrings(f.issueTypes, 30),
-    jql: clampStr(f.jql, 2000).trim(),
+    jql: clampStr(f.jql, 2000).trim().replace(/\s+ORDER\s+BY\s+[\s\S]*$/i, "").trim(),
     changedFields: uniqStrings(f.changedFields, 50),
     commentPattern: clampStr(f.commentPattern, 300),
   };
@@ -111,7 +121,9 @@ export const normalizeListener = (input = {}, { existing = null, accountId = nul
     maxRounds: clampInt(a.maxRounds, 1, MAX_AGENT_ROUNDS, DEFAULT_AGENT_ROUNDS),
   };
   if (mode === "agent" && !agent.instructions.trim()) throw new Error("agent.instructions is required in agent mode");
+  if (mode === "agent" && String(a.instructions || "").length > 6000) throw new Error("agent.instructions exceeds 6000 characters");
   if (mode === "script" && functions.length === 0) throw new Error("functions must contain at least one code step in script mode");
+  if (String(src.aiCondition || "").length > 1500) throw new Error("aiCondition exceeds 1500 characters");
   const out = {
     id, name,
     description: clampStr(src.description, 2000),
@@ -125,12 +137,13 @@ export const normalizeListener = (input = {}, { existing = null, accountId = nul
     createdBy: existing ? existing.createdBy || accountId || null : accountId || null,
     createdAt: existing ? existing.createdAt || nowIso() : nowIso(),
     updatedAt: nowIso(),
-    stats: existing && existing.stats ? existing.stats : { runCount: 0, errorCount: 0, lastRunAt: null, lastStatus: null, lastError: null, lastIssueKey: null },
   };
   const bytes = Buffer.byteLength(JSON.stringify(out), "utf8");
   if (bytes > LISTENER_MAX_BYTES) throw new Error(`listener is too large (${bytes} bytes > ${LISTENER_MAX_BYTES})`);
   return out;
 };
+
+export const emptyStats = () => ({ runCount: 0, errorCount: 0, lastRunAt: null, lastStatus: null, lastError: null, lastIssueKey: null });
 
 // A code step keeps the FunctionBuilder shape; strings clamped, unknown keys dropped.
 export const normalizeStep = (fn = {}, i = 0) => {
@@ -144,9 +157,10 @@ export const normalizeStep = (fn = {}, i = 0) => {
     endpoint: clampStr(s.endpoint, 500),
     method: clampStr(s.method, 10) || "GET",
     variableName: clampStr(s.variableName, 60),
-    code: clampStr(s.code, 24576),
+    code: String(s.code == null ? "" : s.code),
     includeBackoff: s.includeBackoff === true,
   };
+  if (out.code.length > STEP_CODE_MAX) throw new Error(`step "${out.name}" code exceeds ${STEP_CODE_MAX} characters (${out.code.length}) — split it into smaller steps`);
   if (Array.isArray(s.selectedDocIds)) out.selectedDocIds = uniqStrings(s.selectedDocIds, 10);
   if (Array.isArray(s.selectedSkillIds)) out.selectedSkillIds = uniqStrings(s.selectedSkillIds, 4);
   if (s.generationMeta && typeof s.generationMeta === "object") out.generationMeta = s.generationMeta;
@@ -158,7 +172,7 @@ export const toIndexRow = (full) => ({
   id: full.id, name: full.name, enabled: full.enabled !== false, events: full.events,
   projectKeys: (full.filters && full.filters.projectKeys) || [], mode: full.mode,
   hasAiCondition: Boolean(full.aiCondition), simulationMode: full.simulationMode === true,
-  createdBy: full.createdBy || null, updatedAt: full.updatedAt, stats: full.stats || {},
+  createdBy: full.createdBy || null, updatedAt: full.updatedAt,
 });
 
 // ── Storage ──────────────────────────────────────────────────────────────────
@@ -173,56 +187,72 @@ export const readListenerIndex = async ({ cached = false } = {}) => {
 };
 const writeListenerIndex = async (rows) => { await storage.set(LISTENER_INDEX_KEY, rows); _indexCache = null; };
 
-export const listListeners = async () => (await readListenerIndex()).slice().sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
-export const getListener = async (id) => (id ? (await storage.get(LISTENER_PREFIX + safeKeyPart(id))) || null : null);
+export const readStatsMap = async () => { const v = (await storage.get(LISTENER_STATS_KEY)) || {}; return v && typeof v === "object" ? v : {}; };
+const withStats = (row, statsMap) => ({ ...row, stats: (statsMap && statsMap[row.id]) || emptyStats() });
+
+export const listListeners = async () => {
+  const [rows, statsMap] = await Promise.all([readListenerIndex(), readStatsMap()]);
+  return rows.map((r) => withStats(r, statsMap)).sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")));
+};
+export const getListener = async (id) => {
+  if (!id) return null;
+  const full = (await storage.get(LISTENER_PREFIX + safeKeyPart(id))) || null;
+  if (!full) return null;
+  try { full.stats = (await readStatsMap())[id] || emptyStats(); } catch { full.stats = emptyStats(); }
+  return full;
+};
 
 export const saveListener = async (input, { accountId = null } = {}) => {
   const existing = input && input.id ? await getListener(input.id) : null;
   const full = normalizeListener(input, { existing, accountId });
+  delete full.stats; // stats live in LISTENER_STATS_KEY — never inside the record
   const rows = await readListenerIndex();
   const at = rows.findIndex((r) => r.id === full.id);
   if (at < 0 && rows.length >= MAX_LISTENERS) throw new Error(`Listener limit reached (${MAX_LISTENERS}). Delete unused listeners first.`);
-  await storage.set(LISTENER_PREFIX + safeKeyPart(full.id), full);
   const row = toIndexRow(full);
-  if (at >= 0) rows[at] = row; else rows.push(row);
-  await writeListenerIndex(rows);
-  return full;
+  const next = rows.slice();
+  if (at >= 0) next[at] = row; else next.push(row);
+  const indexBytes = Buffer.byteLength(JSON.stringify(next), "utf8");
+  if (indexBytes > INDEX_MAX_BYTES) throw new Error(`Listener index would exceed ${INDEX_MAX_BYTES} bytes (${indexBytes}). Delete unused listeners or subscribe to fewer events.`);
+  // Index first, record second: a failed record write leaves a row the trigger skips
+  // (getListener → null) instead of an orphaned record nobody can see.
+  await writeListenerIndex(next);
+  await storage.set(LISTENER_PREFIX + safeKeyPart(full.id), full);
+  return { ...full, stats: (existing && existing.stats) || emptyStats() };
 };
 
 export const deleteListener = async (id) => {
   const rows = await readListenerIndex();
   const next = rows.filter((r) => r.id !== id);
-  await storage.delete(LISTENER_PREFIX + safeKeyPart(id));
   if (next.length !== rows.length) await writeListenerIndex(next);
+  await storage.delete(LISTENER_PREFIX + safeKeyPart(id));
+  try { const m = await readStatsMap(); if (m[id]) { delete m[id]; await storage.set(LISTENER_STATS_KEY, m); } } catch { /* best-effort */ }
   return { removed: next.length !== rows.length };
 };
 
 export const setListenerEnabled = async (id, enabled) => {
   const full = await getListener(id);
   if (!full) throw new Error("Listener not found");
+  const stats = full.stats; delete full.stats;
   full.enabled = enabled !== false; full.updatedAt = nowIso();
-  await storage.set(LISTENER_PREFIX + safeKeyPart(id), full);
   const rows = await readListenerIndex();
   const at = rows.findIndex((r) => r.id === id);
   if (at >= 0) rows[at] = toIndexRow(full); else rows.push(toIndexRow(full));
   await writeListenerIndex(rows);
-  return full;
+  await storage.set(LISTENER_PREFIX + safeKeyPart(id), full);
+  return { ...full, stats };
 };
 
-// Best-effort stats update (advisory — never load-bearing).
+// Best-effort stats update (advisory — never load-bearing; touches ONLY the stats map).
 export const updateListenerStats = async (id, { status, error = null, issueKey = null }) => {
   try {
-    const full = await getListener(id);
-    if (!full) return;
-    const st = full.stats || { runCount: 0, errorCount: 0 };
+    const m = await readStatsMap();
+    const st = m[id] || emptyStats();
     st.runCount = (st.runCount || 0) + 1;
     if (status === "error") st.errorCount = (st.errorCount || 0) + 1;
     st.lastRunAt = nowIso(); st.lastStatus = status; st.lastError = error ? clampStr(error, 300) : null; st.lastIssueKey = issueKey || null;
-    full.stats = st;
-    await storage.set(LISTENER_PREFIX + safeKeyPart(id), full);
-    const rows = await readListenerIndex();
-    const at = rows.findIndex((r) => r.id === id);
-    if (at >= 0) { rows[at] = { ...rows[at], stats: st }; await writeListenerIndex(rows); }
+    m[id] = st;
+    await storage.set(LISTENER_STATS_KEY, m);
   } catch (e) { console.warn("[listener] stats update skipped:", e && e.message); }
 };
 
@@ -259,7 +289,7 @@ export const matchListenerStatic = (listener, ctx, event) => {
   if (f.commentPattern && (getEvent(ctx.eventType) || {}).entity === "comment") {
     let re;
     try { re = new RegExp(f.commentPattern, "i"); } catch { return { ok: false, reason: "comment pattern invalid" }; }
-    const text = commentTextOf(event).slice(0, 32000);
+    const text = commentTextOf(event).slice(0, COMMENT_MATCH_MAX);
     if (!re.test(text)) return { ok: false, reason: "comment does not match the pattern" };
   }
   return { ok: true };
@@ -307,12 +337,23 @@ const brakeKeys = (listenerId, issueKey) => {
 // ── Event samples (the "last seen payload" reference in the editor) ──────────
 
 const _sampleAt = new Map();
+// Samples show the SHAPE of a payload, not its content: rich-text bodies are replaced by
+// a placeholder so a sample never leaks a description or comment across project permissions.
+export const redactSample = (payload) => {
+  const red = (v) => (v == null ? v : (typeof v === "string" ? `<redacted text, ${v.length} chars>` : { type: "doc", version: 1, _redacted: true, content: [] }));
+  const p = JSON.parse(JSON.stringify(payload || {}));
+  if (p.issue && p.issue.fields) { const f = p.issue.fields; if (f.description != null) f.description = red(f.description); if (f.environment != null) f.environment = red(f.environment); if (f.comment) delete f.comment; for (const k of Object.keys(f)) if (k.startsWith("customfield_") && f[k] && typeof f[k] === "object" && f[k].type === "doc") f[k] = red(f[k]); }
+  if (p.comment && p.comment.body != null) p.comment.body = red(p.comment.body);
+  if (p.worklog && p.worklog.comment != null) p.worklog.comment = red(p.worklog.comment);
+  if (p.changelog && Array.isArray(p.changelog.items)) for (const it of p.changelog.items) { if (it && /description|comment|environment/i.test(String(it.field || ""))) { if (it.fromString != null) it.fromString = red(it.fromString); if (it.toString != null) it.toString = red(it.toString); } }
+  return p;
+};
 const captureSample = async (eventType, event) => {
   const last = _sampleAt.get(eventType) || 0;
   if (Date.now() - last < SAMPLE_MIN_INTERVAL_MS) return;
   _sampleAt.set(eventType, Date.now());
   try {
-    await storage.set(EVENT_SAMPLE_PREFIX + safeKeyPart(eventType), { eventType, capturedAt: nowIso(), payload: trimEventPayload(event, 20000) }, SAMPLE_TTL);
+    await storage.set(EVENT_SAMPLE_PREFIX + safeKeyPart(eventType), { eventType, capturedAt: nowIso(), redacted: true, payload: trimEventPayload(redactSample(event), 20000) }, SAMPLE_TTL);
   } catch { /* best-effort */ }
 };
 export const getEventSample = async (eventType) => (isKnownEvent(eventType) ? (await storage.get(EVENT_SAMPLE_PREFIX + safeKeyPart(eventType))) || null : null);
@@ -347,8 +388,8 @@ export async function listenerTrigger(event, context) {
   let rows;
   try { rows = await readListenerIndex({ cached: true }); } catch (e) { console.error("[listener] index read failed:", e && e.message); return; }
   const candidates = rows.filter((r) => r.enabled !== false && Array.isArray(r.events) && r.events.includes(eventType));
-  await captureSample(eventType, event); // throttled (15 min per event type per container); errors swallowed
   if (!candidates.length) return;
+  await captureSample(eventType, event); // only when someone listens; throttled 15 min per event type per container
 
   const ctx = extractEventContext(eventType, event);
   // id-only payloads: resolve the issue key once, only when someone listens.
@@ -526,6 +567,13 @@ export const executeListenerTask = async (params, taskId) => {
     await m.storeLog({ type: "listener", source: "async", issueKey: (ctx && ctx.issueKey) || "(no issue)", fieldId: eventType, isValid: true, decision: "SKIP", reason: "Skipped: listener was disabled before the queued run started.", executionTimeMs: 0, ruleId: listener.id, ruleName: listener.name, ruleWorkflow: null, eventType });
     return { skipped: true, reason: "disabled" };
   }
+  // At-least-once delivery guard: claim this task id before doing any work (best-effort
+  // check-then-set — KVS has no CAS; mirrors the post-function pf_exec claim).
+  try {
+    const claimKey = EXEC_CLAIM_PREFIX + safeKeyPart(taskId || `${listenerId}:${params.enqueuedAt || ""}`);
+    if (await storage.get(claimKey)) { console.log(`[listener] duplicate delivery of ${taskId} suppressed`); return { skipped: true, reason: "duplicate delivery" }; }
+    await storage.set(claimKey, { at: nowIso() }, EXEC_CLAIM_TTL);
+  } catch (e) { console.warn("[listener] claim failed (continuing):", e && e.message); }
   const enqueuedMs = params.enqueuedAt ? Date.parse(params.enqueuedAt) : NaN;
   const started = Date.now();
   let out;

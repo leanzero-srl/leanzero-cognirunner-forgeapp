@@ -154,8 +154,14 @@ export const nextRuns = (expr, { timeZone = "UTC", from = Date.now(), count = 5,
   let t = floorMinute(from instanceof Date ? from.getTime() : Number(from)) + 60000;
   for (let i = 0; i < maxMinutes && out.length < count; i++, t += 60000) {
     const parts = getTimeParts(t, tz);
-    // Fast skip: if the hour can never match, jump to the next hour boundary.
-    if (!spec.hour.set.has(parts.hour) || !spec.month.set.has(parts.month)) {
+    // Fast skips: a day that can never match (month / day-of-month / weekday) jumps to
+    // the next midnight; an hour that can never match jumps to the next hour.
+    const dayOk = spec.month.set.has(parts.month)
+      && ((spec.dom.star && spec.dow.star) || (spec.dom.star ? spec.dow.set.has(parts.dow) : spec.dow.star ? spec.dom.set.has(parts.dom) : (spec.dom.set.has(parts.dom) || spec.dow.set.has(parts.dow))));
+    if (!dayOk) {
+      const skip = (23 - parts.hour) * 60 + (59 - parts.minute); t += skip * 60000; i += skip; continue;
+    }
+    if (!spec.hour.set.has(parts.hour)) {
       const skip = 59 - parts.minute; t += skip * 60000; i += skip; continue;
     }
     if (cronMatchesParts(spec, parts)) out.push(new Date(t).toISOString());

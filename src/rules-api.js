@@ -69,7 +69,9 @@ export const listApiTokens = async () => (await readTokens()).map(publicRow);
 
 /** Mint a token; returns { token (plaintext, once), row }. */
 export const createApiTokenInternal = async ({ name, accountId }) => {
-  const rows = await readTokens();
+  // Prune revoked rows older than 30 days so the store stays bounded.
+  const cutoff = Date.now() - 30 * 86400000;
+  const rows = (await readTokens()).filter((t) => !t.revokedAt || Date.parse(t.revokedAt) > cutoff);
   if (rows.filter((t) => !t.revokedAt).length >= MAX_TOKENS) throw new Error(`Token limit reached (${MAX_TOKENS}). Revoke unused tokens first.`);
   const token = `cgr_${randomBytes(24).toString("hex")}`;
   const row = { id: `tok_${Date.now().toString(36)}${randomBytes(3).toString("hex")}`, name: String(name || "API token").slice(0, 80), hash: sha256(token), prefix: token.slice(0, 10), createdAt: nowIso(), createdBy: accountId || null, lastUsedAt: null, revokedAt: null };

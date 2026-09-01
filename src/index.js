@@ -8039,7 +8039,7 @@ resolver.define("testListener", async ({ payload, context }) => {
   });
 });
 resolver.define("getEventSample", async ({ payload, context }) => {
-  if (!(await requireRole(context.accountId, "viewer"))) return noPerm("view event samples");
+  if (!(await requireRole(context.accountId, "editor"))) return noPerm("view event samples");
   return okOr(async () => ({ success: true, sample: await listenersMod.getEventSample(payload?.eventType) }));
 });
 
@@ -8079,7 +8079,10 @@ resolver.define("runScheduledJobNow", async ({ payload, context }) => {
   if (!(await canActOnConfig(context.accountId, job, "editor"))) return noPerm("run this job");
   return okOr(async () => ({ success: true, async: true, ...(await jobsMod.enqueueJobRun({ job, manual: true, accountId: context.accountId })) }));
 });
-resolver.define("previewSchedule", async ({ payload }) => okOr(async () => ({ success: true, ...jobsMod.previewSchedule({ cron: payload?.cron, timeZone: payload?.timeZone, count: payload?.count || 5 }) })));
+resolver.define("previewSchedule", async ({ payload, context }) => {
+  if (!(await requireRole(context.accountId, "viewer"))) return noPerm("preview schedules");
+  return okOr(async () => ({ success: true, ...jobsMod.previewSchedule({ cron: payload?.cron, timeZone: payload?.timeZone, count: payload?.count || 5 }) }));
+});
 
 // API tokens for the Rules REST API (admin only; plaintext shown once).
 resolver.define("getApiTokens", async ({ context }) => {
@@ -13603,6 +13606,8 @@ export const createSandboxSession = ({ issueKey: boundIssueKey = null, config = 
       const adf = typeof body === "string" ? coerceToAdf(body) : body;
       const payload = { body: adf };
       if (opts.visibility) payload.visibility = opts.visibility;
+      // JSM internal notes etc.: { properties: [{ key: "sd.public.comment", value: { internal: true } }] }
+      if (Array.isArray(opts.properties) && opts.properties.length) payload.properties = opts.properties.slice(0, 10);
       if (simulated) { executionLogs.push(`[SIMULATION] addComment`); changes.push({ action: "addComment", key: issueKey, simulated: true }); return { simulated: true }; }
       const res = await api.asApp().requestJira(route`/rest/api/3/issue/${issueKey}/comment`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
       if (!res.ok) throw new Error(`addComment failed: ${res.status} — ${(await res.text()).slice(0, 200)}`);
@@ -13802,7 +13807,8 @@ export const createSandboxSession = ({ issueKey: boundIssueKey = null, config = 
       if (!key || typeof key !== "string") throw new Error("api.forIssue(key) needs an issue key string");
       return createApi(key);
     },
-    context: { issueKey, ...(extraContext && typeof extraContext === "object" ? extraContext : {}) },
+    // The BOUND key wins over the run-level extraContext.issueKey (api.forIssue re-binds it).
+    context: { ...(extraContext && typeof extraContext === "object" ? extraContext : {}), issueKey },
   };
     if (!issueKey) {
       const where = extraContext && extraContext.runtime ? `this ${extraContext.runtime} run` : "this run";

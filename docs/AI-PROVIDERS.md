@@ -83,7 +83,7 @@ Caller (any resolver/handler)
 
 **Required attribution headers:**
 ```
-HTTP-Referer: https://leanzero.atlascrafted.com
+HTTP-Referer: https://leanzero.net
 X-OpenRouter-Title: CogniRunner
 ```
 

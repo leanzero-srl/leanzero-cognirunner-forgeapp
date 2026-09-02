@@ -47,3 +47,6 @@ static/issue-glance/node_modules
 # Raw video working files for the demo (large binaries; keep out of git history)
 static/submission-material/video-src/
 static/submission-material/cognirunner-demo-90s.mp4
+
+# Generated marketing renders (regenerate via the cognirunner-marketing skill)
+static/submission-material/_marketing/out/

@@ -18,6 +18,8 @@
 //
 // Run: node --import ../lib/register-mocks.mjs scripts/prompt-builders.test.mjs
 import { readFileSync } from "node:fs";
+import { isKnownEvent, buildEventPromptBlock } from "../../src/shared/jira-events.js";
+import { describeCron } from "../../src/shared/cron.js";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import storage from "../lib/mock-kvs.mjs";
@@ -40,6 +42,7 @@ const grab = (re, label) => {
 const srcPriorSteps = grab(/const buildPriorStepsSection = \(priorSteps\) =>[\s\S]*?: ""\);/, "buildPriorStepsSection");
 const srcFetchDocs = grab(/const fetchContextDocsDetailed = async \(docIds[\s\S]*?\n\};/, "fetchContextDocsDetailed");
 const srcResolve = grab(/const resolveKnowledgeForPrompt = async \(\{[\s\S]*?\n\};/, "resolveKnowledgeForPrompt");
+const srcRuntime = grab(/const buildRuntimePreamble = \(payload = \{\}\) => \{[\s\S]*?\n\};/, "buildRuntimePreamble");
 const srcCodegen = grab(/export const buildCodegenRequest = async \(payload = \{\}\) => \{[\s\S]*?\n\};/, "buildCodegenRequest")
   .replace(/^export /, "");
 const srcFix = grab(/export const buildFixRequest = async \(payload = \{\}\) => \{[\s\S]*?\n\};/, "buildFixRequest")
@@ -50,8 +53,9 @@ const factory = new Function(
   "storage", "defangFence", "seedBuiltinSkills", "SKILL_INDEX_KEY",
   "autoMatchSkills", "fetchSkillsBlock", "getMemorySettings", "buildMemoryBlock",
   "buildSystemPromptApiSection", "buildEndpointPromptBlock", "API_USAGE_GUARD",
-  "getApiMethodNames", "console",
+  "getApiMethodNames", "console", "isKnownEvent", "buildEventPromptBlock", "describeCron",
   `"use strict";
+   ${srcRuntime}
    ${srcPriorSteps}
    ${srcFetchDocs}
    ${srcResolve}
@@ -63,7 +67,7 @@ const { buildCodegenRequest, buildFixRequest } = factory(
   storage, defangFence, seedBuiltinSkills, SKILL_INDEX_KEY,
   autoMatchSkills, fetchSkillsBlock, getMemorySettings, buildMemoryBlock,
   buildSystemPromptApiSection, buildEndpointPromptBlock, API_USAGE_GUARD,
-  getApiMethodNames, console,
+  getApiMethodNames, console, isKnownEvent, buildEventPromptBlock, describeCron,
 );
 
 // ---- helpers ----
@@ -243,6 +247,21 @@ reset();
   storage.__seed("doc_repo:fd", { id: "fd", title: "Fix Doc", content: "labels must be an array of strings", disabled: false });
   const { usr, meta } = await build(buildFixRequest, { prompt: "p", code: "x", error: "e", selectedDocIds: ["fd"] });
   ok(usr.includes("<<<REFERENCE_DOCS") && usr.includes("labels must be an array of strings") && meta.appliedDocs.some((d) => d.id === "fd"), "fix supports selectedDocIds → REFERENCE_DOCS fence + meta");
+}
+
+// ---- runtime preambles (Listeners / Scheduled Jobs share the sandbox) ----
+{
+  const { sys: pf, usr: pfUsr } = await build(buildCodegenRequest, { prompt: "p" });
+  ok(!pf.includes("RUNTIME CONTEXT"), "post-function codegen carries no runtime preamble");
+  ok(pfUsr.includes("post-function step"), "post-function user message keeps its noun");
+  const { sys: l, usr: lUsr } = await build(buildCodegenRequest, { prompt: "p", runtime: "listener", eventTypes: ["avi:jira:commented:issue", "bogus"] });
+  ok(l.includes("RUNTIME CONTEXT — LISTENER") && l.includes("avi:jira:commented:issue") && !l.includes("bogus") && l.includes("api.forIssue"), "listener preamble names the subscribed events (unknown ids dropped) + forIssue");
+  ok(lUsr.includes("listener step"), "listener user message noun");
+  const { sys: j, usr: jUsr } = await build(buildCodegenRequest, { prompt: "p", runtime: "job", schedule: { cron: "0 9 * * 1-5", timeZone: "Europe/Zurich" }, scopeJql: "project = X" });
+  ok(j.includes("RUNTIME CONTEXT — SCHEDULED JOB") && j.includes("Weekdays at 09:00") && j.includes("ONCE PER MATCHING ISSUE"), "job preamble describes the schedule + scope");
+  ok(jUsr.includes("scheduled job step"), "job user message noun");
+  const { sys: fx } = await build(buildFixRequest, { code: "x", error: "e", prompt: "p", runtime: "listener", eventTypes: ["avi:jira:created:issue"] });
+  ok(fx.includes("RUNTIME CONTEXT — LISTENER"), "fix request carries the runtime preamble too");
 }
 
 console.log(`\nprompt-builders: ${pass} passed, ${fail} failed`);

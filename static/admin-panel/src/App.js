@@ -31,6 +31,7 @@ import Tooltip from "./components/Tooltip";
 import RulePortabilityDialog from "./components/RulePortabilityDialog";
 import ListenersTab from "./components/ListenersTab";
 import JobsTab from "./components/JobsTab";
+import DeleteRulesDialog from "./components/DeleteRulesDialog";
 import { showToast } from "./components/toast";
 import { confirmDialog } from "./confirmDialog";
 
@@ -383,7 +384,10 @@ const injectStyles = () => {
       position: fixed; inset: 0; z-index: 9998; background: rgba(15, 23, 42, 0.55);
       display: flex; align-items: flex-start; justify-content: center; padding: 48px 16px; overflow-y: auto;
     }
-    .pf-modal.port-dialog {
+    /* Base panel for EVERY .pf-modal — port-dialog AND del-dialog. This was
+       scoped to .pf-modal.port-dialog only, so the delete dialog (pf-modal
+       del-dialog) rendered as unstyled text floating over the backdrop. */
+    .pf-modal {
       background: var(--card-bg); border: 1px solid var(--border-color);
       border-radius: var(--r-lg, 12px); box-shadow: var(--shadow-card-hover); width: 100%; max-width: 640px; padding: 20px;
     }
@@ -400,7 +404,13 @@ const injectStyles = () => {
     .port-ruletype { font-size: 11px; color: var(--text-muted); }
     .port-empty { padding: 16px; text-align: center; color: var(--text-muted); font-size: 13px; }
     .port-actions { margin-top: 14px; display: flex; justify-content: flex-end; }
-    .port-file { display: block; margin-bottom: 10px; font-size: 12px; }
+    /* File picker: our button + our label, never the browser's localized chrome.
+       The real <input type="file"> stays in the DOM (it is what opens the OS file
+       dialog) but is clipped to nothing rather than display:none, so it remains
+       programmatically clickable in every browser. */
+    .port-file { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; font-size: 12px; }
+    .port-file-input { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; border: 0; }
+    .port-file-name { color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .port-textarea { width: 100%; box-sizing: border-box; font-family: SFMono-Regular, Consolas, monospace; font-size: 12px; padding: 10px; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); background: var(--input-bg); color: var(--text-color); resize: vertical; }
     .port-plan { margin-top: 16px; }
     .port-plan-head { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-secondary); margin-bottom: 8px; }
@@ -426,6 +436,105 @@ const injectStyles = () => {
     .port-target-lbl { display: block; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-secondary); margin-bottom: 6px; }
     .port-target-picks { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
     .port-commit-note { margin-top: 14px; padding: 10px 12px; background: var(--code-bg); border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); font-size: 12px; color: var(--text-secondary); line-height: 1.5; }
+
+    /* --- Rule deletion + registry pressure ------------------------------- */
+    .rule-select-th { width: 30px; }
+    .rule-select-cell input[type="checkbox"],
+    .rule-select-th input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--primary-color); cursor: pointer; }
+    .rule-select-cell input:disabled { cursor: default; opacity: 0.45; }
+    /* Selection bar + table head both stick to the top of the Forge iframe's own
+       scroll (the iframe scrolls internally; the parent Jira page does not). The
+       bar is ABOVE the head in the DOM, so it takes top:0 and the head sits at the
+       bar's height — otherwise the two overlap the moment a row is selected. */
+    /* Fixed height, not padding: the table head below sticks at exactly this offset,
+       and a derived height would drift the moment the bar's contents change. One
+       token feeds both rules so they can never disagree. */
+    :root { --rules-bulkbar-h: 52px; }
+    .rules-bulkbar {
+      position: sticky; top: 0; z-index: 3;
+      height: var(--rules-bulkbar-h); box-sizing: border-box;
+      display: flex; align-items: center; gap: 10px; padding: 0 14px;
+      border-bottom: 1px solid var(--border-color);
+      background: var(--code-bg); font-size: 12px; font-weight: 700; color: var(--text-color);
+    }
+    .rules-table thead th {
+      position: sticky; top: 0; z-index: 2;
+      background: var(--code-bg);
+      /* A sticky <th> keeps its own background but LOSES the table's collapsed
+         border, so the header runs into the first row without this. */
+      box-shadow: inset 0 -1px 0 var(--border-color);
+    }
+    .rules-bulkbar ~ .rules-table thead th { top: var(--rules-bulkbar-h); }
+    /* Idle state: the bar still occupies its full height (so selecting never resizes
+       it) but reads as a quiet caption rather than an action bar. */
+    .rules-bulkbar-idle { font-weight: 600; color: var(--text-secondary); }
+
+    .rules-pagination {
+      display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
+      padding: 12px 14px; border-top: 1px solid var(--border-color);
+    }
+    .rules-pagesize { display: flex; align-items: center; gap: 6px; }
+    .rules-pagesize-label { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-secondary); margin-right: 2px; }
+    .rules-pagesize-btn {
+      min-width: 34px; padding: 4px 9px; border: 1px solid var(--border-color); border-radius: var(--r-sm, 6px);
+      background: var(--card-bg); color: var(--text-secondary);
+      font-family: inherit; font-size: 12px; font-weight: 700; cursor: pointer;
+      transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+    }
+    .rules-pagesize-btn:hover { background: var(--hover-bg); color: var(--text-color); }
+    .rules-pagesize-btn.is-active { background: var(--primary-color); border-color: var(--primary-color); color: #ffffff; }
+    .rules-pagesize-btn:focus-visible { outline: 2px solid var(--primary-color); outline-offset: 2px; }
+    .rules-pager { display: flex; align-items: center; gap: 10px; }
+    .rules-pagination-info { font-size: 12px; color: var(--text-secondary); font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .rules-pagination-page { color: var(--text-muted); }
+    .del-dialog { max-width: 620px; }
+    .del-option { display: block; padding: 12px 14px; margin-top: 12px; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); cursor: pointer; }
+    .del-option.is-active { border-color: #dc2626; box-shadow: inset 0 0 0 1px #dc2626; }
+    .del-option[aria-disabled="true"] { opacity: 0.55; cursor: default; }
+    .del-option-title { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700; color: var(--text-color); }
+    .del-radio { font-size: 13px; color: #dc2626; }
+    .del-option-copy { font-size: 12px; color: var(--text-secondary); line-height: 1.5; margin-top: 4px; }
+    .del-warn { font-size: 12px; font-weight: 700; color: #d97706; margin-top: 8px; line-height: 1.45; }
+    .del-flag { font-size: 11px; font-weight: 700; color: #d97706; white-space: nowrap; }
+    .del-progress { flex: 1; font-size: 12px; color: var(--text-secondary); }
+    .del-results { margin-top: 12px; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); max-height: 140px; overflow-y: auto; }
+    .del-result-row { display: flex; align-items: center; gap: 10px; padding: 7px 12px; border-bottom: 1px solid var(--border-color); font-size: 12px; }
+    .del-result-row:last-child { border-bottom: none; }
+    .del-result-msg { color: var(--text-secondary); }
+    .port-actions { gap: 8px; align-items: center; }
+    .owner-chip { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 700; color: #fff; background: #475569; }
+    .owner-you { font-size: 12px; font-weight: 700; color: var(--primary-color); }
+    .owner-name { font-size: 12px; color: var(--text-secondary); }
+    /* A claimed rule is attributed but not authored — same weight as a name, with a
+       help cursor because the distinction needs the tooltip to land. */
+    .owner-claimed { cursor: help; }
+    .transition-name { font-size: 12px; font-weight: 600; color: var(--text-color); }
+    .reg-meter { margin-bottom: 12px; }
+    .reg-meter-label { font-size: 12px; color: var(--text-secondary); margin-bottom: 5px; }
+    .reg-meter-label strong { color: var(--text-color); font-weight: 700; }
+    .reg-meter-bytes { color: var(--text-muted); }
+    .reg-meter-flag { margin-left: 8px; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 700; color: #fff; background: #dc2626; }
+    .reg-meter-bar { height: 8px; background: var(--border-color); border-radius: 999px; overflow: hidden; }
+    .reg-meter-hint { margin-top: 6px; font-size: 12px; line-height: 1.5; color: var(--text-secondary); }
+    .api-ari { font-size: 11px; word-break: break-all; display: inline-block; max-width: 460px; }
+    .api-info-lead { font-size: 12.5px; line-height: 1.55; color: var(--text-secondary); padding: 10px 12px; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); background: var(--code-bg); }
+    .api-info-lead strong { color: var(--text-color); font-weight: 700; }
+    .api-info-warn { margin-top: 14px; padding: 12px 14px; border: 1px solid #d97706; border-radius: var(--r-md, 8px); font-size: 12.5px; color: var(--text-secondary); }
+    .api-info-warn strong { color: var(--text-color); font-weight: 700; }
+    html[data-color-mode="dark"] .api-info-warn { border-color: #f59e0b; }
+    .reg-meter-hint strong { color: var(--text-color); font-weight: 700; }
+    .reg-meter-fill { height: 100%; background: #16a34a; border-radius: 999px; transition: width 0.3s ease; }
+    .reg-warn .reg-meter-fill { background: #d97706; }
+    .reg-full .reg-meter-fill { background: #dc2626; }
+    html[data-color-mode="dark"] .del-warn,
+    html[data-color-mode="dark"] .del-flag { color: #f59e0b; }
+    html[data-color-mode="dark"] .del-option.is-active { border-color: #ef4444; box-shadow: inset 0 0 0 1px #ef4444; }
+    html[data-color-mode="dark"] .del-radio { color: #ef4444; }
+    html[data-color-mode="dark"] .owner-chip { background: #64748b; }
+    html[data-color-mode="dark"] .reg-meter-fill { background: #22c55e; }
+    html[data-color-mode="dark"] .reg-warn .reg-meter-fill { background: #f59e0b; }
+    html[data-color-mode="dark"] .reg-full .reg-meter-fill,
+    html[data-color-mode="dark"] .reg-meter-flag { background: #ef4444; }
 
     .row-disabled td {
       opacity: 0.55;
@@ -1300,6 +1409,21 @@ const injectStyles = () => {
     }
     .dropdown-trigger.dropdown-error { border-color: var(--error-color); box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.1); }
     .dropdown-trigger.dropdown-disabled { opacity: 0.5; cursor: default; pointer-events: none; }
+
+    /* Searchable select = COMBOBOX: while the menu is open the trigger IS the search
+       box. There used to be a second search input inside the panel, so a field
+       rendered as two identical-looking bars stacked on each other and only the
+       lower one accepted typing. The wrapper keeps every .dropdown-trigger visual;
+       the input inside is chrome-free so it reads as one control, not a field
+       nested inside a field. */
+    .dropdown-trigger.dropdown-combobox { cursor: text; display: flex; align-items: center; }
+    .dropdown-combobox-input {
+      flex: 1 1 auto; min-width: 0; width: 100%;
+      border: 0; outline: none; padding: 0; margin: 0;
+      background: transparent; color: var(--text-color);
+      font: inherit; line-height: inherit;
+    }
+    .dropdown-combobox-input::placeholder { color: var(--text-muted); }
     .dropdown-placeholder { color: var(--text-muted); }
     .dropdown-chevron {
       display: flex; color: var(--text-muted);
@@ -1325,7 +1449,7 @@ const injectStyles = () => {
     }
     @keyframes dropdownSlideIn {
       from { opacity: 0; transform: translateY(-4px); }
-      to { opacity: 1; transform: translateY(0); }
+      to { opacity: 1; transform: none; }
     }
 
     html[data-color-mode="dark"] .dropdown-panel {
@@ -1341,31 +1465,9 @@ const injectStyles = () => {
     }
     @keyframes dropdownSlideInUp {
       from { opacity: 0; transform: translateY(4px); }
-      to { opacity: 1; transform: translateY(0); }
+      to { opacity: 1; transform: none; }
     }
 
-    .dropdown-search {
-      padding: 8px;
-      border-bottom: 1px solid var(--border-color);
-      flex-shrink: 0;
-    }
-    .dropdown-search input {
-      width: 100%;
-      padding: 8px 10px;
-      font-size: 13px;
-      border: 1px solid var(--border-color);
-      border-radius: 8px;
-      background-color: var(--input-bg);
-      color: var(--text-color);
-      outline: none;
-      font-family: inherit;
-      transition: border-color 0.15s ease, box-shadow 0.15s ease;
-    }
-    .dropdown-search input:focus {
-      border-color: var(--primary-color);
-      box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
-    }
-    .dropdown-search input::placeholder { color: var(--text-muted); }
 
     .dropdown-list {
       overflow-y: auto;
@@ -1533,7 +1635,20 @@ const injectStyles = () => {
     }
 
     /* === Add Rule Wizard === */
-    .wizard { margin-bottom: 16px; }
+    /* The wizard is a MODAL now (see WizardShell in AddRuleWizard.jsx), so it gets
+       the shared .pf-modal panel. It is wider than the delete/export dialogs
+       because step 5 hosts full rule-config forms, and it scrolls inside itself —
+       the Forge iframe viewport is only ~770px tall. */
+    .wiz-overlay { padding: 32px 16px; }
+    .wizard.wiz-dialog { margin-bottom: 0; }
+    .pf-modal.wiz-dialog {
+      max-width: 960px; padding: 0; overflow: hidden;
+      display: flex; flex-direction: column;
+      max-height: calc(100vh - 64px);
+    }
+    .wiz-dialog .wizard-header { flex: 0 0 auto; }
+    .wiz-dialog .wizard-body { flex: 1 1 auto; overflow-y: auto; }
+    .wiz-dialog .wiz-footer { flex: 0 0 auto; }
     .wizard-header {
       display: flex; justify-content: space-between; align-items: center;
       padding: 16px 20px; border-bottom: 1px solid var(--border-color);
@@ -1706,7 +1821,7 @@ const injectStyles = () => {
     .section { animation: sectionFadeIn 0.3s ease both; }
     @keyframes sectionFadeIn {
       from { opacity: 0; transform: translateY(8px); }
-      to { opacity: 1; transform: translateY(0); }
+      to { opacity: 1; transform: none; }
     }
 
     /* Card hover — subtle lift + deeper shadow */
@@ -1724,7 +1839,7 @@ const injectStyles = () => {
     .alert { animation: alertSlideIn 0.25s ease both; }
     @keyframes alertSlideIn {
       from { opacity: 0; transform: translateY(-6px); }
-      to { opacity: 1; transform: translateY(0); }
+      to { opacity: 1; transform: none; }
     }
 
     /* Button press feedback */
@@ -1763,7 +1878,7 @@ const injectStyles = () => {
     }
     @keyframes wizardSlideIn {
       from { opacity: 0; transform: translateY(-10px); }
-      to { opacity: 1; transform: translateY(0); }
+      to { opacity: 1; transform: none; }
     }
 
     /* Wizard step card entrance */
@@ -1772,7 +1887,7 @@ const injectStyles = () => {
     }
     @keyframes stepCardFadeIn {
       from { opacity: 0; transform: scale(0.98); }
-      to { opacity: 1; transform: scale(1); }
+      to { opacity: 1; transform: none; }
     }
 
     /* Wizard pick buttons */
@@ -1797,7 +1912,7 @@ const injectStyles = () => {
     }
     @keyframes successPop {
       from { opacity: 0; transform: scale(0.9); }
-      to { opacity: 1; transform: scale(1); }
+      to { opacity: 1; transform: none; }
     }
     .wiz-success-icon {
       animation: successCheckmark 0.5s ease 0.2s both;
@@ -1805,7 +1920,7 @@ const injectStyles = () => {
     @keyframes successCheckmark {
       0% { opacity: 0; transform: scale(0.5) rotate(-20deg); }
       60% { transform: scale(1.1) rotate(5deg); }
-      100% { opacity: 1; transform: scale(1) rotate(0); }
+      100% { opacity: 1; transform: none; }
     }
 
     /* Test result entrance */
@@ -1814,7 +1929,7 @@ const injectStyles = () => {
     }
     @keyframes testResultSlide {
       from { opacity: 0; transform: translateY(4px); }
-      to { opacity: 1; transform: translateY(0); }
+      to { opacity: 1; transform: none; }
     }
 
     /* Log entry entrance — subtle fade (the card border/shadow is defined above). */
@@ -1832,7 +1947,7 @@ const injectStyles = () => {
     }
     @keyframes bannerSlideIn {
       from { opacity: 0; transform: translateX(-8px); }
-      to { opacity: 1; transform: translateX(0); }
+      to { opacity: 1; transform: none; }
     }
 
     /* Permission card entrance */
@@ -2759,6 +2874,21 @@ const injectCopiedComponentStyles = () => {
     }
     .dropdown-trigger.dropdown-error { border-color: var(--error-color) !important; }
 
+    /* Searchable select = COMBOBOX: while the menu is open the trigger IS the search
+       box. There used to be a second search input inside the panel, so a field
+       rendered as two identical-looking bars stacked on each other and only the
+       lower one accepted typing. The wrapper keeps every .dropdown-trigger visual;
+       the input inside is chrome-free so it reads as one control, not a field
+       nested inside a field. */
+    .dropdown-trigger.dropdown-combobox { cursor: text; display: flex; align-items: center; }
+    .dropdown-combobox-input {
+      flex: 1 1 auto; min-width: 0; width: 100%;
+      border: 0; outline: none; padding: 0; margin: 0;
+      background: transparent; color: var(--text-color);
+      font: inherit; line-height: inherit;
+    }
+    .dropdown-combobox-input::placeholder { color: var(--text-muted); }
+
     .dropdown-trigger .dropdown-placeholder { color: var(--text-muted); }
 
     .dropdown-chevron {
@@ -2798,26 +2928,8 @@ const injectCopiedComponentStyles = () => {
       bottom: calc(100% + 4px);
     }
 
-    .dropdown-search {
-      padding: 8px;
-      border-bottom: 1px solid var(--border-color);
-      flex-shrink: 0;
-    }
 
-    .dropdown-search input {
-      width: 100%;
-      padding: 8px 10px;
-      font-size: 13px;
-      border: 2px solid var(--border-color);
-      border-radius: 3px;
-      background-color: var(--input-bg);
-      color: var(--text-color);
-      outline: none;
-      font-family: inherit;
-    }
 
-    .dropdown-search input:focus { border-color: var(--primary-color); }
-    .dropdown-search input::placeholder { color: var(--text-muted); }
 
     .dropdown-list {
       overflow-y: auto;
@@ -3704,7 +3816,7 @@ const injectCopiedComponentStyles = () => {
 
     @keyframes fadeInBadge {
       from { opacity: 0; transform: scale(0.8); }
-      to { opacity: 1; transform: scale(1); }
+      to { opacity: 1; transform: none; }
     }
 
     /* REST API section */
@@ -4321,7 +4433,7 @@ const injectCopiedComponentStyles = () => {
 
     @keyframes aiTextFade {
       from { opacity: 0; transform: translateY(4px); }
-      to { opacity: 1; transform: translateY(0); }
+      to { opacity: 1; transform: none; }
     }
 
     /* AI Review panel */
@@ -5090,8 +5202,18 @@ const TABS = [
 // One-line "what this is / when to use it" per tab — the single copy source so the
 // concept-heavy admin panel stays coherent for non-technical admins.
 const SURFACES = {
-  rules: { eyebrow: "RULES", what: "Every AI validator, condition, and post-function you've configured, across all workflows — toggle, edit, or explain any rule from here.",
-    terms: [{ label: "post-function", def: "A rule that runs AFTER a transition completes — it writes a field with AI, posts a comment, or runs saved sandboxed JavaScript." }] },
+  // One glossary chip per rule type the table can show. The banner names all three,
+  // so all three need an explanation — it previously defined only "post-function".
+  // The condition chip must stay consistent in SUBSTANCE with config-ui's condition
+  // callout (App.js ~3617): both say Jira evaluates conditions itself, so they use
+  // the non-AI rule types only. The phrasings differ (this is a one-line chip, that
+  // is a full callout) — keep the claim aligned, not the words.
+  rules: { eyebrow: "RULES", what: "Every AI validator, condition, and post-function you've configured, across all workflows — toggle, edit, delete, or explain any rule from here.",
+    terms: [
+      { label: "validator", def: "A rule that runs when someone tries to complete a transition. It can block the transition and show your message. Validators are enforced everywhere — the issue view, REST, automation and bulk changes." },
+      { label: "condition", def: "A rule that hides a transition when its criteria aren't met. Forge conditions are evaluated by Jira itself rather than by an AI model, so conditions use the non-AI rule types only." },
+      { label: "post-function", def: "A rule that runs AFTER a transition completes — it writes a field with AI, posts a comment, or runs saved sandboxed JavaScript." },
+    ] },
   listeners: { eyebrow: "LISTENERS", what: "Rules that react to Jira events — issue created, comment added, sprint started, version released, 68 events in all — with AI-generated code or an AI agent. No workflow transition needed.",
     terms: [
       { label: "AI condition", def: "A plain-language gate (\"the comment is a customer complaint\") the AI evaluates before the listener runs — one cheap classification call." },
@@ -5120,6 +5242,34 @@ const SURFACES = {
 // Execution Logs page size (logs are capped at 50 server-side, so this paginates
 // the recent window client-side).
 const LOGS_PAGE_SIZE = 10;
+
+// Configured Rules page sizes. The registry holds up to 500 rules and every row is
+// tall (four stacked actions), so rendering them all made a 76,000px page that was
+// impossible to navigate — and any layout change above the table yanked the rows
+// out from under the cursor. Fixed choices only, per the owner's spec.
+const RULES_PAGE_SIZES = [10, 20];
+const RULES_PAGE_SIZE_DEFAULT = 10;
+
+// Newest first. A rule you just created or edited must be on page 1 — the sort key
+// is the same `updatedAt` the Updated column shows, so the order is always
+// explainable from what's on screen. createdAt is the fallback for legacy rows that
+// predate updatedAt, and the id keeps the sort stable (never NaN-shuffled) when two
+// rules share a timestamp, which bulk imports routinely produce.
+const ruleSortTime = (c) => {
+  // A registry row's timestamps are epoch-ms NUMBERS, not ISO strings —
+  // slimRegistryRow rewrites them on write to halve the bytes at 500 rows (see
+  // src/shared/registry-limits.js), and rows can hold either form mid-migration.
+  // `Date.parse(1783000000000)` is NaN, which silently scored EVERY row -Infinity
+  // and left the table in id order on the real site while the mock fixture's ISO
+  // strings sorted fine. Mirror the backend's rowTimeMs: accept both.
+  const raw = c?.updatedAt ?? c?.createdAt;
+  const t = typeof raw === "number" ? raw : Date.parse(raw || "");
+  return Number.isFinite(t) ? t : -Infinity;
+};
+const byNewestFirst = (a, b) => {
+  const d = ruleSortTime(b) - ruleSortTime(a);
+  return d !== 0 ? d : String(a.id).localeCompare(String(b.id));
+};
 
 // Free-text filters (case-insensitive) for the Rules table and Execution Logs.
 // q is expected pre-lowercased + trimmed by the caller.
@@ -5181,6 +5331,18 @@ function App() {
   const [showAddWizard, setShowAddWizard] = useState(false);
   const [showPortability, setShowPortability] = useState(false);
   const [typeFilter, setTypeFilter] = useState("all");
+  // Site-wide registry pressure {count, max, bytes, maxBytes, level} — deliberately
+  // NOT narrowed by the "My Rules" filter: the cap is shared by everyone.
+  const [registryMeter, setRegistryMeter] = useState(null);
+  // Rules selected for bulk delete. Cleared on every refetch and on any filter
+  // change, so a row that scrolled out of the current view can never be deleted.
+  const [selectedRuleIds, setSelectedRuleIds] = useState(() => new Set());
+  const [deleteTargetIds, setDeleteTargetIds] = useState(null);
+  // Configured Rules pagination. Page is 0-based and is reset by every input that
+  // changes WHICH rows exist (search, type filter, scope filter, page size, a
+  // refetch) — landing on page 7 of a 2-page result shows an empty table.
+  const [rulesPage, setRulesPage] = useState(0);
+  const [rulesPageSize, setRulesPageSize] = useState(RULES_PAGE_SIZE_DEFAULT);
   // Monotonic token — a slow older fetch (e.g. rapid All/My Rules flips) must
   // never overwrite a newer call's rows or drop its refresh veil early.
   const configsFetchToken = useRef(0);
@@ -5194,6 +5356,8 @@ function App() {
       if (token !== configsFetchToken.current) return; // stale response
       if (result.success) {
         setConfigs(result.configs || []);
+        setSelectedRuleIds(new Set());
+        if (result.registry) setRegistryMeter(result.registry);
         if (result.removedCount > 0) {
           setRemovedCount(result.removedCount);
         }
@@ -5217,6 +5381,51 @@ function App() {
   const [siteUrl, setSiteUrl] = useState("");
   const [discovering, setDiscovering] = useState(false);
   const [registeringDisc, setRegisteringDisc] = useState(false);
+  // REST-automation reference: this install's extension ARIs and caps. Fetched
+  // lazily on first open — most admins never need it.
+  const [apiInfo, setApiInfo] = useState(null);
+  const [apiInfoOpen, setApiInfoOpen] = useState(false);
+  const [apiInfoLoading, setApiInfoLoading] = useState(false);
+  const [apiInfoError, setApiInfoError] = useState(null);
+  const [copiedAri, setCopiedAri] = useState(null);
+
+  const fetchRuleApiInfo = async () => {
+    if (!invoke) return;
+    setApiInfoLoading(true);
+    setApiInfoError(null);
+    try {
+      const r = await invoke("getRuleApiInfo");
+      if (r && r.success) setApiInfo(r);
+      else setApiInfoError(r?.error || "Couldn't read this installation's API details.");
+    } catch (e) {
+      setApiInfoError(e.message || "Couldn't read this installation's API details.");
+    }
+    setApiInfoLoading(false);
+  };
+
+  // An ARI is long and error-prone to retype, and mistyping one produces a rule
+  // that attaches fine and never runs. Clipboard access can be denied inside the
+  // Forge iframe, so fall back to selecting the text for a manual copy rather
+  // than failing silently.
+  const copyAri = async (ari) => {
+    try {
+      await navigator.clipboard.writeText(ari);
+      setCopiedAri(ari);
+      setTimeout(() => setCopiedAri((c) => (c === ari ? null : c)), 2000);
+    } catch {
+      const el = document.querySelector(`.api-ari[data-ari="${ari}"]`) || null;
+      if (el && window.getSelection) {
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        const sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+      }
+      showToast("Couldn't reach the clipboard — the ARI is selected, press ⌘C / Ctrl+C", "error");
+    }
+  };
+  // What the last "Register all" actually did, including how many it had to skip.
+  const [registerOutcome, setRegisterOutcome] = useState(null);
 
   const scanDiscoveredRules = async () => {
     if (!invoke) return;
@@ -5255,17 +5464,35 @@ function App() {
   const registerAllDiscovered = async () => {
     if (!invoke || !discovered || !discovered.length) return;
     setRegisteringDisc(true);
+    setRegisterOutcome(null);
     try {
       // Stamp this site's base URL onto each discovered rule so its stored config can build the
       // Edit deep-link (the backend scan can't know the site's URL; the frontend can).
       const rules = siteUrl ? discovered.map((d) => ({ ...d, siteUrl })) : discovered;
-      const r = await invoke("registerDiscoveredRules", { rules });
-      if (r && r.success) {
-        await scanDiscoveredRules(); // now-registered rows drop out
-        await fetchConfigs(true);    // refresh the managed list
+      // Chunked: one invoke per 50 rules keeps each call inside the 25s resolver
+      // budget on a large instance. Stop the moment the registry reports it is
+      // full — every further call would just be refused.
+      const CHUNK = 50;
+      const total = { added: 0, updated: 0, skipped: 0, skippedSize: 0 };
+      let capped = false;
+      for (let i = 0; i < rules.length && !capped; i += CHUNK) {
+        const r = await invoke("registerDiscoveredRules", { rules: rules.slice(i, i + CHUNK) });
+        if (!r || !r.success) throw new Error(r?.error || "register failed");
+        total.added += r.added || 0;
+        total.updated += r.updated || 0;
+        total.skipped += r.skipped || 0;
+        total.skippedSize += r.skippedSize || 0;
+        if (r.capped) capped = true;
       }
+      // Surface what actually happened. The old code discarded the whole result,
+      // so a run that silently skipped hundreds of rules at the cap looked like a
+      // clean success.
+      setRegisterOutcome({ ...total, capped });
+      await scanDiscoveredRules(); // now-registered rows drop out
+      await fetchConfigs(true);    // refresh the managed list
     } catch (e) {
       console.error("registerDiscoveredRules failed:", e);
+      setRegisterOutcome({ error: e.message || "Registering failed" });
     }
     setRegisteringDisc(false);
   };
@@ -5339,6 +5566,32 @@ function App() {
       setToggleError("Failed to communicate with the server. Please try again.");
     }
     setToggling(null);
+  };
+
+  // Mirrors the backend's canDeleteConfig, which is deliberately NARROWER than the
+  // enable/disable gate: an ownerless row (legacy, or claimed by a workflow scan)
+  // is toggleable by a scope-"own" editor but is not theirs to destroy.
+  const canDeleteRow = (config) =>
+    userRole === "admin"
+    || (userRole === "editor" && (userScope === "all" || (!!config.createdBy && config.createdBy === accountId)));
+
+  const toggleRuleSelected = (id) => {
+    setSelectedRuleIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const onDeleteDone = ({ removed, failed }) => {
+    setSelectedRuleIds(new Set());
+    if (removed > 0) {
+      showToast(`Deleted ${removed} rule${removed > 1 ? "s" : ""}${failed ? ` — ${failed} failed` : ""}`, failed ? "error" : "success");
+    }
+    fetchConfigs(true);
+    // A list-only delete moves the rule into the "attached but not registered"
+    // bucket, so the discovered panel has to be re-read to stay truthful.
+    if (discovered !== null) scanDiscoveredRules();
   };
 
   const formatTime = (timestamp) => {
@@ -5730,6 +5983,22 @@ function App() {
     if (!loading && invoke) fetchConfigs(true);
   }, [rulesFilter]);
 
+  // ONE reset for the Configured Rules page index, listing every input that can
+  // change which rows exist. Scattering `setRulesPage(0)` across the individual
+  // handlers is how a table ends up stranded on an empty page 7 after a search —
+  // any new filter added here inherits the reset for free.
+  useEffect(() => { setRulesPage(0); }, [rulesSearch, typeFilter, rulesFilter, rulesPageSize, configs]);
+
+  // A selection must never outlive the rows it points at: you cannot bulk-delete a
+  // rule you can no longer see. Paging made that reachable for the first time (select
+  // on page 1, page forward, Delete), but the same hole already existed for the
+  // client-side search and type filters — only a refetch used to clear the set. Same
+  // dependency list as above plus the page index, so every way of changing what is on
+  // screen drops the selection.
+  useEffect(() => {
+    setSelectedRuleIds(new Set());
+  }, [rulesSearch, typeFilter, rulesFilter, rulesPageSize, rulesPage, configs]);
+
   if (loading) {
     return (
       <div className="container" style={{ padding: "24px" }}>
@@ -5906,15 +6175,35 @@ function App() {
           {discovered === null && (
             <p style={{ margin: 0, fontSize: "13px", color: "var(--text-secondary)" }}>
               CogniRunner rules can be attached to workflows outside this panel (REST automation, imported or copied workflows, or a rule whose registration didn't complete). They run on transitions but won't show under <strong>Configured Rules</strong> until claimed. Click <strong>Scan workflows</strong> to find them.
+              {" "}Attaching rules yourself over Jira's REST API is supported — see <strong>Automating rule creation</strong> below for this installation's ARIs and the payload shapes.
             </p>
           )}
           {discMeta && discMeta.error && (
             <p style={{ margin: 0, fontSize: "13px", color: "#dc2626", fontWeight: 600 }}>Scan failed: {discMeta.error}</p>
           )}
+          {registerOutcome && (
+            <div className={`alert ${registerOutcome.error || registerOutcome.capped ? "alert-error" : "alert-success"} anim-rise`} style={{ marginBottom: "10px" }}>
+              <span>
+                {registerOutcome.error
+                  ? `Registering failed: ${registerOutcome.error}`
+                  : `Registered ${registerOutcome.added}${registerOutcome.updated ? ` (${registerOutcome.updated} updated)` : ""}.`}
+                {/* The old code discarded this result entirely, so a run that
+                    silently skipped hundreds of rules at the cap looked clean. */}
+                {(registerOutcome.skipped > 0 || registerOutcome.skippedSize > 0) && (
+                  <> {registerOutcome.skipped + registerOutcome.skippedSize} skipped — the registry is full. Delete rules you no longer need, then run this again.</>
+                )}
+              </span>
+            </div>
+          )}
           {discovered && discMeta && !discMeta.error && (<>
             <p style={{ margin: "0 0 10px 0", fontSize: "13px", color: "var(--text-secondary)" }}>
-              Scanned <strong>{discMeta.scannedWorkflows}</strong> workflow(s): <strong>{discMeta.totalCogniRules}</strong> CogniRunner rule(s) attached, <strong>{discMeta.registeredMatched}</strong> already registered, <strong style={{ color: discovered.length ? "#7c3aed" : "inherit" }}>{discovered.length}</strong> not registered{discMeta.truncated ? " — scan truncated (large instance)" : ""}.
+              Scanned <strong>{discMeta.scannedWorkflows}</strong> workflow(s): <strong>{discMeta.totalCogniRules}</strong> CogniRunner rule(s) attached, <strong>{discMeta.registeredMatched}</strong> already registered, <strong style={{ color: discovered.length ? "#7c3aed" : "inherit" }}>{discovered.length}</strong> not registered{discMeta.truncated ? <strong style={{ color: "#dc2626" }}> — scan truncated, this instance has more workflows than one scan covers</strong> : ""}.
             </p>
+            {discovered.length > 0 && (
+              <p style={{ margin: "0 0 10px 0", fontSize: "12.5px", color: "var(--text-secondary)", lineHeight: 1.5 }}>
+                These rules <strong>run on every matching transition</strong> and can't be disabled from this panel until they're registered. A rule whose saved configuration carries no identity can't be disabled even then — the only way to stop it is to remove it from the workflow.
+              </p>
+            )}
             {discovered.length === 0 ? (
               <p style={{ margin: 0, fontSize: "13px", color: "var(--text-secondary)" }}>Every attached rule is registered. ✓</p>
             ) : (
@@ -5935,8 +6224,23 @@ function App() {
                           <span style={{ background: "#7c3aed", color: "#fff", fontWeight: 600, fontSize: "11px", padding: "2px 8px", borderRadius: "10px", whiteSpace: "nowrap" }}>{d.type}</span>
                         </td>
                         <td style={{ padding: "6px 10px" }}>{d.workflowName}</td>
-                        <td style={{ padding: "6px 10px" }}>{d.transitionName || d.transitionId || "—"}</td>
-                        <td style={{ padding: "6px 10px" }}>{d.fieldId || "—"}</td>
+                        <td style={{ padding: "6px 10px" }}>
+                          {/* Name and status-edge are separate facts — showing the
+                              transition name as the destination status is what
+                              produced "Any → ZSCALE-pv12". */}
+                          <div>{d.transitionName || d.transitionId || "—"}</div>
+                          {(d.transitionFromName || d.transitionToName) && (
+                            <div style={{ fontSize: "11px", color: "var(--text-muted)" }}>
+                              {d.transitionFromName || "Any"} &rarr; {d.transitionToName || "Any"}
+                            </div>
+                          )}
+                        </td>
+                        <td style={{ padding: "6px 10px" }}>
+                          {d.fieldId || "—"}
+                          {d.manageable === false && (
+                            <span className="del-flag" style={{ marginLeft: "8px" }} title="This rule's saved configuration carries no identity, so registering it won't make it disableable. Re-save it from the workflow editor, or remove it from the workflow.">can't disable</span>
+                          )}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -5949,6 +6253,109 @@ function App() {
           </>)}
         </div>
       </div>
+
+      {/* Automating rule creation. The discovered-rules panel above tells admins
+          that rules can be attached "outside this panel" — this is where that
+          sentence stops being a dead end. The one input they genuinely cannot
+          work out is the extension ARI, because the environment id inside it is
+          per-installation; the app knows it, so it hands it over rather than
+          sending them off to derive it. Collapsed by default: irrelevant to most
+          admins, indispensable to the ones provisioning in bulk. */}
+      {isAdmin && (
+        <div className="section">
+          <div className="section-header">
+            <span className="section-title">Automating rule creation</span>
+            <div className="section-actions">
+              <button
+                className={"btn-small" + (apiInfoLoading ? " is-busy" : "")}
+                onClick={() => { const next = !apiInfoOpen; setApiInfoOpen(next); if (next && !apiInfo) fetchRuleApiInfo(); }}
+                aria-expanded={apiInfoOpen}
+              >
+                {apiInfoOpen ? "Hide" : "Show REST API details"}
+              </button>
+            </div>
+          </div>
+          {apiInfoOpen && (
+            <div className="card anim-rise" style={{ padding: "14px 16px" }}>
+              <p style={{ margin: "0 0 12px", fontSize: "13px", color: "var(--text-secondary)", lineHeight: 1.55 }}>
+                CogniRunner rules are ordinary Jira workflow rules, so you can attach them with Jira's own
+                workflow REST API instead of this panel — for provisioning across many projects, migrating
+                between sites, or keeping rules in version control. Read the workflow with{" "}
+                <code className="field-id">GET /rest/api/3/workflows/search</code>, add the rule to the
+                transition, and post it all back with{" "}
+                <code className="field-id">POST /rest/api/3/workflows/update</code>.
+              </p>
+
+              {apiInfoError && <div className="alert alert-error" style={{ marginBottom: "12px" }}><span>{apiInfoError}</span></div>}
+
+              {apiInfo && (<>
+                <div className="api-info-lead">
+                  Use these values for <strong>this</strong> installation. The environment id inside each ARI
+                  is specific to it — a production and a development install have different ids and separate
+                  storage, so never copy an ARI out of an example or another site.
+                </div>
+                <table className="table" style={{ marginTop: "10px" }}>
+                  <thead>
+                    <tr><th>Rule type</th><th>ruleKey</th><th>Goes in</th><th>parameters.key (ARI)</th><th></th></tr>
+                  </thead>
+                  <tbody>
+                    {apiInfo.modules.map((m) => (
+                      <tr key={m.ari}>
+                        <td style={{ fontWeight: 600 }}>{m.label}</td>
+                        <td><code className="field-id">{m.ruleKey}</code></td>
+                        <td style={{ fontSize: "12px", color: "var(--text-secondary)" }}>{m.slot}</td>
+                        <td><code className="api-ari" data-ari={m.ari}>{m.ari}</code></td>
+                        <td>
+                          <button className="btn-small" onClick={() => copyAri(m.ari)}>
+                            {copiedAri === m.ari ? "Copied" : "Copy"}
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+
+                <div className="api-info-warn">
+                  <strong>Two things that catch people out.</strong>
+                  <ol style={{ margin: "6px 0 0", paddingLeft: "18px", lineHeight: 1.6 }}>
+                    <li>
+                      A rule attached this way <strong>runs immediately, but is invisible here</strong> until you
+                      claim it — come back and use <strong>Scan workflows → Register all</strong> above, or you
+                      won't be able to disable it. For validators and post-functions, claiming also surfaces their
+                      execution history; a condition is evaluated by Jira itself, so it has no execution history to
+                      show — claiming a condition is purely about being able to manage and disable it.
+                    </li>
+                    <li>
+                      Put a stable <code className="field-id">id</code> inside the rule's{" "}
+                      <code className="field-id">config</code> (e.g. <code className="field-id">acme-dod-check-v1</code>).
+                      It is optional to Jira and essential here: without it a rule can be claimed and{" "}
+                      <strong>still never be disabled</strong>, because that embedded id is the identity the
+                      runtime matches on. A stable value also makes re-running your script update the rule
+                      instead of creating a second one.
+                    </li>
+                  </ol>
+                </div>
+
+                <p style={{ margin: "12px 0 0", fontSize: "12px", color: "var(--text-secondary)", lineHeight: 1.55 }}>
+                  Limits: a rule's <code className="field-id">config</code> must stay under{" "}
+                  <strong>{Math.round(apiInfo.limits.maxRuleConfigBytes / 1024)} KB</strong> (Jira's cap), and this
+                  panel manages up to <strong>{apiInfo.limits.maxRegistryRows}</strong> rules —
+                  see the meter below. Rules beyond that still run; they just can't be managed here.
+                </p>
+                <p style={{ margin: "8px 0 0", fontSize: "12px" }}>
+                  <a href={apiInfo.docsUrl} target="_blank" rel="noopener noreferrer">
+                    Full guide: payload shapes, the config schema per rule type, and a worked example →
+                  </a>
+                </p>
+              </>)}
+
+              {!apiInfo && !apiInfoError && (
+                <div><div className="sk sk-text" style={{ width: "60%", height: 12, marginBottom: 8 }} /><div className="sk sk-block" style={{ width: "100%", height: 70 }} /></div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       <div className="section">
         <div className="section-header">
@@ -5989,9 +6396,12 @@ function App() {
             <button className={"btn-small" + (refreshingConfigs ? " is-busy" : "")} onClick={() => fetchConfigs(true)} disabled={refreshingConfigs}>
               Refresh
             </button>
+            {/* The wizard is a modal with its own Cancel, so this stays a plain
+                "open it" action — it used to flip to "Cancel" because the wizard
+                was an inline panel this button toggled. */}
             {(userRole === "editor" || userRole === "admin") && (
-              <button className="btn-small btn-edit" onClick={() => setShowAddWizard(!showAddWizard)}>
-                {showAddWizard ? "Cancel" : "+ Add Rule"}
+              <button className="btn-small btn-edit" onClick={() => setShowAddWizard(true)}>
+                + Add Rule
               </button>
             )}
             {(userRole === "editor" || userRole === "admin") && (
@@ -6001,6 +6411,55 @@ function App() {
             )}
           </div>
         </div>
+
+        {/* Registry pressure. The whole registry lives in ONE storage value, so the
+            cap is shared site-wide — this reads the true totals even while the
+            "My Rules" filter is narrowing the table below. */}
+        {isAdmin && registryMeter && (() => {
+          const kb = (b) => Math.round(b / 1000);
+          // Measure against CAPACITY (what Jira can actually store), and report
+          // REFUSAL as a state rather than a second maximum. Showing usage over
+          // the refusal threshold read as "219 / 200 KB" — a bar past its own
+          // maximum, which just looks broken.
+          const overBytes = registryMeter.bytes > registryMeter.refuseAtBytes;
+          const overRows = registryMeter.count >= registryMeter.max;
+          const toFree = overBytes ? Math.ceil((registryMeter.bytes - registryMeter.refuseAtBytes) / (registryMeter.bytes / Math.max(1, registryMeter.count))) : 0;
+          return (
+            <Tooltip text={`Every rule on this site shares one storage entry. Jira caps that entry at ${kb(registryMeter.maxBytes)} KB, and CogniRunner stops accepting new rules above ${kb(registryMeter.refuseAtBytes)} KB (or ${registryMeter.max} rules) so there is always room to edit and delete the ones you have. Deleting rules is what reclaims space.`}>
+              <div className={`reg-meter reg-${registryMeter.level}`}>
+                <div className="reg-meter-label">
+                  <strong>{registryMeter.count} / {registryMeter.max}</strong> rules
+                  <span className="reg-meter-bytes"> · {kb(registryMeter.bytes)} KB of {kb(registryMeter.maxBytes)} KB</span>
+                  {registryMeter.refusing && <span className="reg-meter-flag">new rules refused</span>}
+                </div>
+                <div className="reg-meter-bar">
+                  <div className="reg-meter-fill" style={{ width: `${Math.max(2, Math.min(100, Math.round(registryMeter.pct * 100)))}%` }} />
+                </div>
+                {/* Say what to do, and how much of it. "Full" without a number
+                    leaves the admin guessing how many rules to delete — and
+                    deleting one is not enough when it's the bytes that bind. */}
+                {registryMeter.refusing && (
+                  <div className="reg-meter-hint">
+                    {overBytes
+                      ? <>Delete about <strong>{Math.max(1, toFree)}</strong> more rule{Math.max(1, toFree) === 1 ? "" : "s"} to get back under {kb(registryMeter.refuseAtBytes)} KB — size is what's binding here, so removing a single rule won't be enough.</>
+                      : overRows
+                        ? <>Delete at least one rule to get back under {registryMeter.max}.</>
+                        : null}
+                  </div>
+                )}
+              </div>
+            </Tooltip>
+          );
+        })()}
+
+        {deleteTargetIds && (
+          <DeleteRulesDialog
+            invoke={invoke}
+            ids={deleteTargetIds}
+            onClose={() => setDeleteTargetIds(null)}
+            onDone={onDeleteDone}
+          />
+        )}
 
         {showAddWizard && (
           <AddRuleWizard
@@ -6042,7 +6501,26 @@ function App() {
               : typeFilter === "postfunction" ? configs.filter((c) => c.type && c.type.startsWith("postfunction"))
               : configs.filter((c) => c.type === typeFilter);
             const rulesQuery = rulesSearch.trim().toLowerCase();
-            const filtered = rulesQuery ? typed.filter((c) => ruleMatchesQuery(c, rulesQuery)) : typed;
+            // Sort AFTER filtering, on a copy — `configs` is React state and
+            // Array.prototype.sort mutates in place.
+            const filtered = (rulesQuery ? typed.filter((c) => ruleMatchesQuery(c, rulesQuery)) : typed)
+              .slice()
+              .sort(byNewestFirst);
+            const canManageRules = userRole === "editor" || userRole === "admin";
+            // Paging. `rulesPage` is reset by the effect above whenever the result
+            // set changes, but clamp here too: a delete can shrink the list before
+            // that effect runs, and an out-of-range page renders a blank table.
+            const totalRulePages = Math.max(1, Math.ceil(filtered.length / rulesPageSize));
+            const safeRulesPage = Math.min(rulesPage, totalRulePages - 1);
+            const pageStart = safeRulesPage * rulesPageSize;
+            const pageRows = filtered.slice(pageStart, pageStart + rulesPageSize);
+            // Only rows that are BOTH visible under the current filter and deletable
+            // by this user can be bulk-selected. "Visible" now means ON THIS PAGE —
+            // select-all must never reach rows the user cannot see.
+            const selectableShown = canManageRules ? pageRows.filter(canDeleteRow) : [];
+            // One source for both spanning rows, so they can never drift apart as
+            // columns come and go.
+            const ruleColSpan = 6 + (canManageRules ? 1 : 0) + (isAdmin ? 1 : 0);
             return filtered.length === 0 ? (
             <div className="empty-state">
               {configs.length === 0
@@ -6052,19 +6530,60 @@ function App() {
                   : `No ${typeFilter === "postfunction" ? "post functions" : typeFilter + "s"} found.`}
             </div>
           ) : (
-            <table className="table">
+            <>
+            {/* The table's own toolbar, DOCKED to the table it acts on.
+                The selection count used to render above the whole section — hundreds
+                of pixels from the rows it referred to, and only when something was
+                selected, so ticking a checkbox INSERTED a bar and shoved every row
+                down under the cursor. It now lives at the top of the table and is
+                ALWAYS present at a fixed height: selecting swaps its contents, never
+                its size, so the list underneath cannot move. Sticky, so it stays
+                reachable while scrolling. */}
+            <div className="rules-bulkbar">
+              {selectedRuleIds.size > 0 ? (
+                <>
+                  <span>{selectedRuleIds.size} selected</span>
+                  <button className="btn-small btn-danger" onClick={() => setDeleteTargetIds([...selectedRuleIds])}>
+                    Delete…
+                  </button>
+                  <button className="btn-small" onClick={() => setSelectedRuleIds(new Set())}>Clear</button>
+                </>
+              ) : (
+                <span className="rules-bulkbar-idle">
+                  {filtered.length === configs.length
+                    ? `${configs.length} rule${configs.length === 1 ? "" : "s"}`
+                    : `${filtered.length} of ${configs.length} rules match`}
+                </span>
+              )}
+            </div>
+            <table className="table rules-table">
               <thead>
                 <tr>
+                  {canManageRules && (
+                    <th className="rule-select-th">
+                      <input
+                        type="checkbox"
+                        aria-label="Select all rules on this page"
+                        checked={selectableShown.length > 0 && selectableShown.every((c) => selectedRuleIds.has(c.id))}
+                        onChange={(e) => {
+                          // Bound to the rows ON THIS PAGE — never to every rule in
+                          // the registry, so a row you can't see can't be deleted.
+                          setSelectedRuleIds(e.target.checked ? new Set(selectableShown.map((c) => c.id)) : new Set());
+                        }}
+                      />
+                    </th>
+                  )}
                   <th>Type</th>
                   <th>Workflow / Transition</th>
                   <th>Field</th>
                   <th>Prompt</th>
                   <th>Updated</th>
+                  {isAdmin && <th>Owner</th>}
                   <th></th>
                 </tr>
               </thead>
               <tbody className="stagger">
-                {filtered.map((config) => {
+                {pageRows.map((config) => {
                   const wf = config.workflow || {};
                   const hasWorkflow = wf.workflowName || wf.workflowId;
                   // Fall back to this site's base URL (from context) when the rule's stored
@@ -6082,6 +6601,18 @@ function App() {
                   return (
                     <React.Fragment key={config.id}>
                     <tr className={isDisabled ? "row-disabled" : ""}>
+                      {canManageRules && (
+                        <td className="rule-select-cell">
+                          <input
+                            type="checkbox"
+                            aria-label={`Select rule ${config.id}`}
+                            checked={selectedRuleIds.has(config.id)}
+                            disabled={!canDeleteRow(config)}
+                            title={canDeleteRow(config) ? "" : "You can only delete rules you created"}
+                            onChange={() => toggleRuleSelected(config.id)}
+                          />
+                        </td>
+                      )}
                       <td>
                         <button
                           className={"rule-expand-btn" + (isExpanded ? " open" : "")}
@@ -6109,6 +6640,13 @@ function App() {
                             <div className="workflow-name">
                               {wf.workflowName || wf.workflowId}
                             </div>
+                            {/* The transition's NAME and the status edge it runs across
+                                are different facts. Discovery used to store the name
+                                where the destination status belongs, which rendered as
+                                "Any → ZSCALE-pv12" for a Backlog → Backlog transition. */}
+                            {wf.transitionName && (
+                              <div className="transition-name">{wf.transitionName}</div>
+                            )}
                             {(wf.transitionFromName || wf.transitionToName) && (
                               <div className="transition-info">
                                 {wf.transitionFromName || "Any"} &rarr; {wf.transitionToName || "Any"}
@@ -6142,6 +6680,28 @@ function App() {
                         </span>
                       </td>
                       <td><span className="timestamp">{formatTime(config.updatedAt)}</span></td>
+                      {isAdmin && (
+                        <td>
+                          {/* Show the most specific attribution the rule actually
+                              carries. Every one of these facts was already stored;
+                              the column just used to collapse all of them into
+                              "Unowned", which read as "nobody knows" even for a rule
+                              whose claimer we could name. Nothing here is invented —
+                              a genuinely unattributed rule still says so. */}
+                          {config.createdBy
+                            ? (config.createdBy === accountId
+                              ? <span className="owner-you">You</span>
+                              : <span className="owner-name">{config.createdByName || config.createdBy}</span>)
+                            : config.claimedBy
+                              ? <span
+                                  className="owner-name owner-claimed"
+                                  title="Attached outside CogniRunner (a REST call, or an imported or copied workflow), so it has no author. This is who claimed it here with Scan workflows → Register all."
+                                >
+                                  Claimed by {config.claimedBy === accountId ? "you" : (config.claimedByName || config.claimedBy)}
+                                </span>
+                              : <span className="owner-chip" title="Attached outside CogniRunner, or created before rules recorded an author — not attributed to anyone">Unowned</span>}
+                        </td>
+                      )}
                       <td>
                         <div className="row-actions">
                           {/* Explain is ungated (matches the resolver) so viewers can use it too. */}
@@ -6172,6 +6732,15 @@ function App() {
                             >
                               {isDisabled ? "Enable" : "Disable"}
                             </button>
+                            {canDeleteRow(config) && (
+                              <button
+                                className="btn-small btn-danger"
+                                onClick={() => setDeleteTargetIds([config.id])}
+                                title="Delete this rule"
+                              >
+                                Delete
+                              </button>
+                            )}
                           </>
                           )}
                         </div>
@@ -6179,7 +6748,7 @@ function App() {
                     </tr>
                     {explain[config.id]?.open && (
                       <tr className="rule-explain-row">
-                        <td className="rule-explain-cell" colSpan={6}>
+                        <td className="rule-explain-cell" colSpan={ruleColSpan}>
                           {explain[config.id].status === "done" ? (
                             <div className="rule-explain-card anim-rise">
                               <div className="rule-explain-eyebrow">§ IN PLAIN ENGLISH</div>
@@ -6203,7 +6772,7 @@ function App() {
                     )}
                     {isExpanded && (
                       <tr className="rule-accordion-row">
-                        <td className="rule-accordion-cell" colSpan={6}>
+                        <td className="rule-accordion-cell" colSpan={ruleColSpan}>
                           <div className="rule-accordion-inner anim-rise">
                             {ruleJobs.length > 0 && (
                               <>
@@ -6231,6 +6800,40 @@ function App() {
                 })}
               </tbody>
             </table>
+            {/* Pagination. Always rendered (even on a single page) so the row count
+                and the per-page control never appear and disappear as you filter —
+                that flicker is itself a layout jump. */}
+            <div className="rules-pagination">
+              <div className="rules-pagesize">
+                <span className="rules-pagesize-label">Rows per page</span>
+                {RULES_PAGE_SIZES.map((n) => (
+                  <button
+                    key={n}
+                    type="button"
+                    className={"rules-pagesize-btn" + (rulesPageSize === n ? " is-active" : "")}
+                    aria-pressed={rulesPageSize === n}
+                    onClick={() => setRulesPageSize(n)}
+                  >{n}</button>
+                ))}
+              </div>
+              <div className="rules-pager">
+                <button
+                  className="btn-small"
+                  onClick={() => setRulesPage(Math.max(0, safeRulesPage - 1))}
+                  disabled={safeRulesPage === 0}
+                >Previous</button>
+                <span className="rules-pagination-info">
+                  {pageStart + 1}–{Math.min(pageStart + rulesPageSize, filtered.length)} of {filtered.length}
+                  <span className="rules-pagination-page"> · page {safeRulesPage + 1} of {totalRulePages}</span>
+                </span>
+                <button
+                  className="btn-small"
+                  onClick={() => setRulesPage(Math.min(totalRulePages - 1, safeRulesPage + 1))}
+                  disabled={safeRulesPage >= totalRulePages - 1}
+                >Next</button>
+              </div>
+            </div>
+            </>
           ); })()}
         </div>
       </div>

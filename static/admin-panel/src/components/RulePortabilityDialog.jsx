@@ -5,7 +5,22 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
+import { createPortal } from "react-dom";
+
+// Modals render in a PORTAL to <body>, never in place.
+//
+// `position: fixed` is resolved against the nearest ancestor that has a transform,
+// filter or backdrop-filter — not against the viewport. The admin panel's `.section`
+// wrapper animates in, and while that animation runs (and, before the keyframe was
+// corrected, forever after) it carries a transform, which made it the containing
+// block for this overlay. `inset: 0` then resolved to a 76,000px-tall section and
+// the dialog opened thousands of pixels above whatever the user was looking at.
+//
+// Portalling to <body> removes the dependency entirely: no app container can be an
+// ancestor, so no future layout or animation change can capture the overlay again.
+// This is the same reason CustomSelect portals its dropdown panel.
+
 import { invoke } from "@forge/bridge";
 import CustomSelect from "./CustomSelect";
 
@@ -16,6 +31,8 @@ const STATUS_LABEL = { ready: "READY", "needs-rebind": "NEEDS REBIND", conflict:
 
 export default function RulePortabilityDialog({ rules, onClose }) {
   const [mode, setMode] = useState("export");
+  const fileInputRef = useRef(null);
+  const [fileName, setFileName] = useState("");
   const [selected, setSelected] = useState(() => new Set());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
@@ -71,9 +88,12 @@ export default function RulePortabilityDialog({ rules, onClose }) {
   const onFile = (e) => {
     const f = e.target.files && e.target.files[0];
     if (!f) return;
+    setFileName(f.name);
     const reader = new FileReader();
     reader.onload = () => setImportText(String(reader.result || ""));
     reader.readAsText(f);
+    // Reset the input so re-picking the SAME file after an edit still fires change.
+    e.target.value = "";
   };
 
   const doPreview = async () => {
@@ -107,7 +127,7 @@ export default function RulePortabilityDialog({ rules, onClose }) {
     setBusy(false);
   };
 
-  return (
+  return createPortal(
     <div className="pf-modal-overlay" onClick={onClose}>
       <div className="pf-modal port-dialog" onClick={(e) => e.stopPropagation()}>
         <div className="port-head">
@@ -150,7 +170,28 @@ export default function RulePortabilityDialog({ rules, onClose }) {
         {mode === "import" && (
           <div className="port-body">
             <p className="port-hint">Paste or upload a rules export. You'll see a dry-run preview with per-rule match-by-value status before anything is created.</p>
-            <input type="file" accept="application/json,.json" onChange={onFile} className="port-file" />
+            {/* A bare <input type="file"> renders the BROWSER's own button and
+                "no file selected" text, in the browser's UI language — a Romanian
+                Chrome showed "Răsfoiește… / Niciun fișier selectat" in the middle of
+                an English dialog, and none of it is styleable. The real input is
+                kept for the file dialog and screen readers, but visually hidden
+                behind our own button, which is the same rule as everywhere else in
+                this app: never ship browser-native chrome. */}
+            <div className="port-file">
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="application/json,.json"
+                onChange={onFile}
+                className="port-file-input"
+                tabIndex={-1}
+                aria-hidden="true"
+              />
+              <button type="button" className="btn-small" onClick={() => fileInputRef.current && fileInputRef.current.click()}>
+                Choose file…
+              </button>
+              <span className="port-file-name">{fileName || "No file chosen"}</span>
+            </div>
             <textarea className="port-textarea" value={importText} onChange={(e) => setImportText(e.target.value)} placeholder="…or paste the exported JSON here" rows={6} />
             <div className="port-actions">
               <button className={`btn-edit${busy ? " is-busy" : ""}`} onClick={doPreview} disabled={busy || !importText.trim()}>Preview import</button>
@@ -198,6 +239,7 @@ export default function RulePortabilityDialog({ rules, onClose }) {
           </div>
         )}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

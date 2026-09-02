@@ -106,17 +106,64 @@ export async function testStateTrigger(req) {
         return json(500, { error: String((e && e.message) || e) });
       }
     }
-    // Invoke one of the Listener / Scheduled Job / API-token resolvers with a synthetic
-    // Custom-UI context (dev-gated). Covers the resolver layer (permission gates, payload
-    // shapes) that the REST API bypasses. Allow-listed to the new resolvers only.
+    // Delete registry rows, optionally detaching the rules from their Jira workflows —
+    // the same removeRegistryRowsCore the admin panel's Delete uses. Lets the harness
+    // assert end-to-end that "delete" actually stops a rule running, and lets a
+    // campaign reclaim registry slots it filled. bypassAuthz is safe here for the same
+    // reason the other actions run with accountId:null — the Bearer gate above IS the
+    // authorization, and this trigger returns 404 wherever HARNESS_SECRET is unset.
+    // Flip a rule's disabled flag through the SAME core the resolver uses, so the
+    // harness exercises the real path (including the workflow propagation that
+    // conditions need) rather than poking the registry directly. A raw KVS writer
+    // here would be both a dangerous primitive and a weaker test.
+    if (body.action === "setDisabled") {
+      try {
+        const { setRuleDisabledCore } = await import("./index.js");
+        const r = await setRuleDisabledCore({ id: body.id, disabled: body.disabled === true, accountId: null, bypassAuthz: true });
+        return json(200, r);
+      } catch (e) {
+        return json(500, { error: String((e && e.message) || e) });
+      }
+    }
+    // Invoke a read-only resolver through the REAL dispatcher (resolver.getDefinitions()
+    // → exported `handler`), not through an extracted core: the point is to exercise the
+    // resolver body's own wiring — filter args, context construction, sanitizeObject —
+    // which unit tests of the pure pieces cannot reach. getConfigs also carries the
+    // one-shot ownership/slim migrations, so this is how the harness fires and then
+    // verifies them on live data. Allowlisted read-only keys ONLY: this must never
+    // become a generic invoke-anything bridge.
     if (body.action === "invokeResolver") {
-      const ALLOWED = new Set(["getListeners", "getListener", "saveListener", "deleteListener", "setListenerEnabled", "testListener", "getEventSample",
+      // Read-only registry keys + the Listener / Scheduled Job / API-token resolvers (the
+      // harness drives the admin-panel resolver layer — permission gates, payload shapes —
+      // that the Rules REST API bypasses). Still an allowlist, never invoke-anything.
+      const ALLOWED_KEYS = new Set(["getConfigs", "getKnowledgeCounts",
+        "getListeners", "getListener", "saveListener", "deleteListener", "setListenerEnabled", "testListener", "getEventSample",
         "getScheduledJobs", "getScheduledJob", "saveScheduledJob", "deleteScheduledJob", "setScheduledJobEnabled", "runScheduledJobNow", "previewSchedule",
         "getApiTokens", "createApiToken", "revokeApiToken", "getAsyncTaskResult", "getLogs", "checkIsAdmin"]);
-      if (!ALLOWED.has(body.name)) return json(400, { error: `resolver not allow-listed: ${body.name}` });
+      const functionKey = body.functionKey || body.name;
+      if (!ALLOWED_KEYS.has(functionKey)) {
+        return json(400, { error: `functionKey not allowlisted: ${functionKey}` });
+      }
       try {
         const { handler } = await import("./index.js");
-        const r = await handler({ call: { functionKey: body.name, payload: body.payload || {} }, context: {} }, { principal: { accountId: body.accountId || null } });
+        const r = await handler(
+          { call: { functionKey, payload: body.payload || {} }, context: {} },
+          { principal: body.accountId ? { accountId: body.accountId } : undefined },
+        );
+        return json(200, r);
+      } catch (e) {
+        return json(500, { error: String((e && e.message) || e) });
+      }
+    }
+    if (body.action === "removeRules") {
+      try {
+        const { removeRegistryRowsCore } = await import("./index.js");
+        const r = await removeRegistryRowsCore({
+          ids: Array.isArray(body.ids) ? body.ids : [],
+          accountId: null,
+          detach: body.detach === true,
+          bypassAuthz: true,
+        });
         return json(200, r);
       } catch (e) {
         return json(500, { error: String((e && e.message) || e) });

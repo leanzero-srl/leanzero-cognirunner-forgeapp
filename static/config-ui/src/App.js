@@ -233,6 +233,21 @@ const injectStyles = () => {
     }
     .dropdown-trigger.dropdown-error { border-color: var(--error-color) !important; }
 
+    /* Searchable select = COMBOBOX: while the menu is open the trigger IS the search
+       box. There used to be a second search input inside the panel, so a field
+       rendered as two identical-looking bars stacked on each other and only the
+       lower one accepted typing. The wrapper keeps every .dropdown-trigger visual;
+       the input inside is chrome-free so it reads as one control, not a field
+       nested inside a field. */
+    .dropdown-trigger.dropdown-combobox { cursor: text; display: flex; align-items: center; }
+    .dropdown-combobox-input {
+      flex: 1 1 auto; min-width: 0; width: 100%;
+      border: 0; outline: none; padding: 0; margin: 0;
+      background: transparent; color: var(--text-color);
+      font: inherit; line-height: inherit;
+    }
+    .dropdown-combobox-input::placeholder { color: var(--text-muted); }
+
     .dropdown-trigger .dropdown-placeholder { color: var(--text-muted); }
 
     .dropdown-chevron {
@@ -272,26 +287,8 @@ const injectStyles = () => {
       bottom: calc(100% + 4px);
     }
 
-    .dropdown-search {
-      padding: 8px;
-      border-bottom: 1px solid var(--border-color);
-      flex-shrink: 0;
-    }
 
-    .dropdown-search input {
-      width: 100%;
-      padding: 8px 10px;
-      font-size: 13px;
-      border: 2px solid var(--border-color);
-      border-radius: 3px;
-      background-color: var(--input-bg);
-      color: var(--text-color);
-      outline: none;
-      font-family: inherit;
-    }
 
-    .dropdown-search input:focus { border-color: var(--primary-color); }
-    .dropdown-search input::placeholder { color: var(--text-muted); }
 
     .dropdown-list {
       overflow-y: auto;
@@ -667,6 +664,18 @@ const injectStyles = () => {
     }
     html[data-color-mode="dark"] .condition-hide-note .chn-glyph { background: #f59e0b; color: #2a1602; }
     .condition-hide-note strong { color: var(--text-color); }
+    .legacy-cond-prompt {
+      margin-top: 8px;
+      padding: 8px 10px;
+      border-radius: 6px;
+      background: var(--code-bg, rgba(127,127,127,0.10));
+      border: 1px solid var(--border-color);
+      font-family: SFMono-Regular, Consolas, monospace;
+      font-size: 11.5px;
+      color: var(--text-color);
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
 
     .pf-type-tag {
       display: inline-block;
@@ -1441,7 +1450,7 @@ const injectStyles = () => {
 
     @keyframes fadeInBadge {
       from { opacity: 0; transform: scale(0.8); }
-      to { opacity: 1; transform: scale(1); }
+      to { opacity: 1; transform: none; }
     }
 
     /* REST API section */
@@ -2254,7 +2263,7 @@ const injectStyles = () => {
 
     @keyframes aiTextFade {
       from { opacity: 0; transform: translateY(4px); }
-      to { opacity: 1; transform: translateY(0); }
+      to { opacity: 1; transform: none; }
     }
 
     /* AI Review panel */
@@ -2851,6 +2860,14 @@ let currentExistingRuleId = null;
 // rule that same fallback would hijack a sibling's row (rename its id to our
 // fresh instanced id, stranding the sibling's disable state).
 let currentIsLegacyEdit = false;
+// Preserve a condition's disabled flag across a workflow-editor re-save. A
+// condition carries its disabled state INSIDE its embedded config (the Jira
+// expression can't read app storage — see manifest.yml + propagateDisabledToWorkflow).
+// onConfigure rebuilds the config from scratch, so without carrying this forward
+// an edit of a disabled condition would silently RE-ARM it in Jira while the admin
+// panel still shows Disabled — the exact "control that reports success and does
+// nothing" this product must never ship.
+let currentEmbeddedDisabled = false;
 // Premade (non-AI) rule refs — onConfigure reads these to assemble a premade config.
 let currentRuleKind = "ai"; // "ai" | "premade"
 let currentPremadeConfig = {}; // { ruleType, ...params } produced by PremadeRuleForm
@@ -2874,6 +2891,9 @@ function App() {
   const [highlightedIndex, setHighlightedIndex] = useState(-1);
   const dropdownRef = useRef(null);
   const searchInputRef = useRef(null);
+  // The closed-state trigger button. It unmounts while the combobox is open, so a
+  // focus-return has to wait for React to remount it (see closeFieldDropdown).
+  const fieldTriggerRef = useRef(null);
   const listRef = useRef(null);
   const [dropdownFlipUp, setDropdownFlipUp] = useState(false);
 
@@ -2901,6 +2921,13 @@ function App() {
   // Post-function state
   const [isPostFunction, setIsPostFunction] = useState(false);
   const [isCondition, setIsCondition] = useState(false);
+  // The AI prompt of a condition saved by an older version — shown for reference
+  // while the user converts it to a real check. Null for every new condition.
+  const [legacyConditionPrompt, setLegacyConditionPrompt] = useState(null);
+  // A condition is always a deterministic catalog rule — Jira evaluates it as a
+  // Jira expression, so the AI path is not reachable for it. Force the editor onto
+  // the premade form as soon as we know this is a condition.
+  useEffect(() => { if (isCondition) setRuleKind("premade"); }, [isCondition]);
   // Premade (non-AI) rule state. ruleKind toggles the validator/condition editor between
   // "ai" (prompt-based, the default) and "premade" (a deterministic catalog rule).
   const [ruleKind, setRuleKind] = useState("ai");
@@ -3008,6 +3035,7 @@ function App() {
     if (e.key === "Escape") {
       e.preventDefault();
       setDropdownOpen(false);
+      setTimeout(() => fieldTriggerRef.current?.focus(), 0);
       return;
     }
     if (e.key === "ArrowDown") {
@@ -3022,6 +3050,7 @@ function App() {
         setFieldId(flatFiltered[highlightedIndex].id);
         setDropdownOpen(false);
         setDropdownSearch("");
+        setTimeout(() => fieldTriggerRef.current?.focus(), 0);
       }
     }
   };
@@ -3106,6 +3135,8 @@ function App() {
             // fresh Date.now() id every save and orphan the previous registry entry.
             if (config.id) currentExistingRuleId = config.id;
             else currentIsLegacyEdit = true; // existing rule, pre-id-embedding build
+            // Carry a disabled flag through the edit — dropping it re-arms the rule.
+            currentEmbeddedDisabled = config.disabled === true;
 
             // Safety: declarative action types created in the admin panel (generate-doc /
             // research / comment) reuse the semantic module but aren't editable here yet.
@@ -3169,6 +3200,14 @@ function App() {
               setRuleKind("premade");
               currentRuleKind = "premade";
               setPremadeInitial(config);
+            }
+            // A CONDITION saved by an older version carries an AI prompt. Conditions
+            // are evaluated by Jira as a Jira expression and never could run that
+            // prompt — it has been a no-op since it was saved. Surface the old text
+            // instead of silently discarding it, so the user can see what the rule was
+            // meant to do while they pick a real check.
+            if (extType === "jira:workflowCondition" && config.ruleKind !== "premade" && typeof config.prompt === "string" && config.prompt.trim()) {
+              setLegacyConditionPrompt(config.prompt.trim());
             }
           }
         } catch (e) {
@@ -3270,6 +3309,10 @@ function App() {
               fieldId: currentFieldId.trim(),
               prompt: currentPrompt.trim(),
             };
+            // Carry a disabled condition's flag through the rebuild. For conditions
+            // this is load-bearing: the flag lives in the embedded config the Jira
+            // expression reads, so dropping it re-arms a rule shown as Disabled.
+            if (currentEmbeddedDisabled) config.disabled = true;
 
             // Preserve declarative action types created in the admin panel (generate-doc /
             // research / comment): config-ui doesn't render their editors yet, so re-saving
@@ -3279,6 +3322,7 @@ function App() {
               // simulationMode follows the banner toggle, not the stored value.
               if (currentSimulationMode) preserved.simulationMode = true;
               else delete preserved.simulationMode;
+              if (currentEmbeddedDisabled) preserved.disabled = true;
               return preserved;
             }
 
@@ -3521,14 +3565,14 @@ function App() {
         <div>
           <h3 className="title">
             {isPostFunction ? "Post Function Configuration"
-              : isCondition ? "AI Condition Configuration"
+              : isCondition ? "Condition Configuration"
               : "AI Validator Configuration"}
           </h3>
           <p className="subtitle">
             {isPostFunction
               ? "The workflow AI agent for Jira - it builds, tests, fixes, and learns."
               : isCondition
-                ? "Configure AI-powered condition for this workflow transition"
+                ? "Hide this transition unless the issue meets your criteria — no AI cost"
                 : "Configure AI-powered field validation for this workflow transition"
             }
           </p>
@@ -3550,25 +3594,42 @@ function App() {
               </svg>
             )}
             <strong>{isCondition ? "Condition" : "Validator"}</strong>
-            {isByok && <span className="pf-type-tag pf-tag-semantic" style={{ marginLeft: "auto" }}>AI cost per run</span>}
+            {isByok && !isCondition && <span className="pf-type-tag pf-tag-semantic" style={{ marginLeft: "auto" }}>AI cost per run</span>}
+            {isCondition && <span className="pf-type-tag pf-tag-static" style={{ marginLeft: "auto" }}>No AI cost</span>}
           </div>
           <p className="pf-type-desc" style={{ margin: 0 }}>
             {isCondition
-              ? "Hides or shows the transition button based on AI evaluation. Does not block — just controls visibility."
+              ? "Hides the transition unless the issue meets your criteria. Enforced everywhere — the issue view, REST, automation and bulk changes."
               : "Blocks the transition if the AI determines the field content does not meet your criteria."
             }
           </p>
         </div>
       )}
 
-      {/* Condition DEPRECATION callout — a Forge condition uses a static expression:"true", so
-          validate() never runs and the condition gates nothing on ANY surface (confirmed live).
-          The rule type is no longer offered for new rules; recommend a Validator. */}
+      {/* Why a condition can't use AI. Jira evaluates a Forge condition as a Jira
+          EXPRESSION in its own sandbox — no network, no app storage, no await — so
+          a model call is impossible from one, permanently. (This replaces a
+          "conditions are deprecated and are not enforced" notice: conditions ARE
+          enforced, on every surface. What was broken was our own manifest, which
+          shipped a fixed `expression: "true"`.) */}
       {!isPostFunction && isCondition && (
+        <div className="condition-hide-note" role="note">
+          <span className="chn-glyph" aria-hidden="true">i</span>
+          <div>
+            <strong>Conditions run without AI.</strong> Jira evaluates a condition itself, in a sandbox with no network access, so a condition can't call a model. Pick a check below — it runs instantly, costs nothing per transition, and is enforced on every surface. If you need the AI to judge free text, use a <strong>Validator</strong> instead: it blocks the transition and shows your message.
+          </div>
+        </div>
+      )}
+
+      {/* An AI prompt saved on a condition by an older build. It has never run — a
+          Jira expression cannot call a model — so this is a conversion prompt, not a
+          loss notice. Show the text so the intent isn't thrown away silently. */}
+      {!isPostFunction && isCondition && legacyConditionPrompt && (
         <div className="condition-hide-note" role="note">
           <span className="chn-glyph" aria-hidden="true">!</span>
           <div>
-            <strong>Conditions are deprecated and are not enforced.</strong> Jira never runs a Forge condition on REST, automation, or the new issue-view transition menu, so this condition does not hide the transition — the button still appears and the transition still runs. It has no effect. To actually gate a transition, delete this rule and create a <strong>Validator</strong> instead: a validator blocks the transition (with your message) on every surface.
+            <strong>This condition was saved with an AI prompt, which never ran.</strong> Pick an equivalent check below, or recreate it as a Validator if it needs the AI's judgement. The old prompt was:
+            <div className="legacy-cond-prompt">{legacyConditionPrompt}</div>
           </div>
         </div>
       )}
@@ -3737,7 +3798,12 @@ function App() {
           </div>
         )}
 
-        {/* Rule kind: AI prompt (default) vs a premade, non-AI catalog rule. */}
+        {/* Rule kind: AI prompt (default) vs a premade, non-AI catalog rule.
+            Conditions have no such choice — Jira evaluates them as a sandboxed
+            Jira expression with no network, so an AI condition cannot exist. The
+            toggle is hidden rather than shown-and-disabled so we're not offering
+            something that can never work. */}
+        {!isCondition && (
         <div className="form-group">
           <label className="label">Rule kind</label>
           <div className="rulekind-toggle">
@@ -3759,6 +3825,7 @@ function App() {
             </button>
           </div>
         </div>
+        )}
 
         {ruleKind === "premade" ? (
           <PremadeRuleForm
@@ -3795,31 +3862,55 @@ function App() {
             </>
           ) : (
             <div className="dropdown" ref={dropdownRef} onKeyDown={handleDropdownKeyDown}>
-              <button
-                type="button"
-                className={`dropdown-trigger${dropdownOpen ? " dropdown-open" : ""}${error && !fieldId.trim() ? " dropdown-error" : ""}`}
-                onClick={() => { setDropdownOpen((o) => !o); setDropdownSearch(""); }}
-              >
-                {fieldId && fields.find((f) => f.id === fieldId) ? (
-                  <span>{fields.find((f) => f.id === fieldId).name}</span>
-                ) : (
-                  <span className="dropdown-placeholder">Select a field...</span>
-                )}
-                <span className="dropdown-chevron">
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 9l6 6 6-6"/></svg>
-                </span>
-              </button>
+              {/* COMBOBOX, matching CustomSelect: while the menu is open the trigger
+                  IS the search box. This picker is hand-rolled rather than a
+                  CustomSelect (it groups System vs Custom fields), and it carried
+                  the same defect — a closed-looking "Select a field..." bar sitting
+                  directly on top of a "Search fields..." bar, only the second of
+                  which accepted typing. */}
+              {dropdownOpen ? (
+                <div className={`dropdown-trigger dropdown-open dropdown-combobox${error && !fieldId.trim() ? " dropdown-error" : ""}`}>
+                  <input
+                    ref={searchInputRef}
+                    type="text"
+                    className="dropdown-combobox-input"
+                    role="combobox"
+                    aria-expanded={dropdownOpen}
+                    aria-autocomplete="list"
+                    aria-label="Search fields"
+                    value={dropdownSearch}
+                    onChange={(e) => setDropdownSearch(e.target.value)}
+                    placeholder={
+                      fieldId && fields.find((f) => f.id === fieldId)
+                        ? fields.find((f) => f.id === fieldId).name
+                        : "Search fields..."
+                    }
+                  />
+                  <span className="dropdown-chevron">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 9l6 6 6-6"/></svg>
+                  </span>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  ref={fieldTriggerRef}
+                  className={`dropdown-trigger${error && !fieldId.trim() ? " dropdown-error" : ""}`}
+                  aria-haspopup="listbox"
+                  aria-expanded={dropdownOpen}
+                  onClick={() => { setDropdownOpen(true); setDropdownSearch(""); }}
+                >
+                  {fieldId && fields.find((f) => f.id === fieldId) ? (
+                    <span>{fields.find((f) => f.id === fieldId).name}</span>
+                  ) : (
+                    <span className="dropdown-placeholder">Select a field...</span>
+                  )}
+                  <span className="dropdown-chevron">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M6 9l6 6 6-6"/></svg>
+                  </span>
+                </button>
+              )}
               {dropdownOpen && (
                 <div className={`dropdown-panel${dropdownFlipUp ? " dropdown-panel-up" : ""}`}>
-                  <div className="dropdown-search">
-                    <input
-                      ref={searchInputRef}
-                      type="text"
-                      value={dropdownSearch}
-                      onChange={(e) => setDropdownSearch(e.target.value)}
-                      placeholder="Search fields..."
-                    />
-                  </div>
                   <div className="dropdown-list" ref={listRef}>
                     {flatFiltered.length === 0 ? (
                       <div className="dropdown-empty">No fields match your search</div>

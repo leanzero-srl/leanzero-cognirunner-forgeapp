@@ -15,6 +15,8 @@
 // Env:
 //   BARRAGE_WAIT=35        seconds to wait up front for the 30s provider cache to clear
 //   BARRAGE_SKIP_MCP=1     skip the live-MCP steps (2a/2b) — use if MCPs aren't configured
+//   BARRAGE_SKIP_REG=1     skip the regression gate (step 0c)
+//   BARRAGE_FORCE=1        run the full suite even if the regression gate fails/incomplete
 //   BARRAGE_SMOKE=1        run the comprehensive suite in SMOKE mode (one case/rule — fast,
 //                          for a quick health check, NOT a scoring run)
 //   RUN_CONCURRENCY=3      passed through to run-transitions.mjs
@@ -33,6 +35,7 @@ const RESULTS_DIR = join(HARNESS_ROOT, "results");
 
 const WAIT = parseInt(process.env.BARRAGE_WAIT || "35", 10);
 const SKIP_MCP = process.env.BARRAGE_SKIP_MCP === "1";
+const SKIP_REG = process.env.BARRAGE_SKIP_REG === "1";
 const SMOKE = process.env.BARRAGE_SMOKE === "1";
 // Deep mode: graded run-deep + the every-real-rule discovery sweep + coverage
 // report, instead of the binary run-transitions suite. Built for the weak-model
@@ -65,6 +68,32 @@ async function main() {
   const steps = [];
   steps.push(run("STEP 0a — reset to hub", "reset-to-hub.mjs"));
   steps.push(run("STEP 0b — provider smoke (live + real verdicts?)", "_smoke-provider.mjs"));
+  // Regression gate BEFORE the long suite: these guards defend defects that have
+  // already shipped once, and they finish in a couple of minutes. Failing here beats
+  // failing forty minutes later.
+  //
+  // The FULL gate runs — including F-GLOBAL, the guard for the owner's own reported
+  // bug (a validator on an 'Any status → X' GLOBAL transition). It was previously
+  // skipped here via REG_SKIP_AI, but the ~782-case suite is self-loop-only and
+  // covers no GLOBAL transition, so skipping it left the owner's exact case unguarded
+  // in every barrage. Its one AI call is negligible next to the suite. The provider
+  // smoke (0b) already proved a working provider, so it won't spuriously fail-open.
+  if (!SKIP_REG) {
+    const gate = run("STEP 0c — regression gate (bug-recurrence guards, incl. F-GLOBAL)", "regression.mjs");
+    steps.push(gate);
+    // exit 1 = a guard FAILED (regression); exit 2 = a guard was FORCED to skip
+    // (missing creds — coverage hole). Either way the build is not proven; do not
+    // burn ~40 min on the suite unless the operator forces it.
+    if (gate.code !== 0 && process.env.BARRAGE_FORCE !== "1") {
+      console.log(`\n${bold("ABORT:")} regression gate exited ${gate.code} (${gate.code === 1 ? "a guard FAILED" : "a guard could not run"}). ` +
+        "Fix it, or set BARRAGE_FORCE=1 to run the full suite anyway.");
+      console.log(`\n${bold("=== BARRAGE SUMMARY (aborted at gate) ===")}`);
+      for (const s of steps) console.log(`  ${s.code === 0 ? "✓" : "✗(" + s.code + ")"}  ${s.label}`);
+      process.exit(gate.code);
+    }
+  } else {
+    console.log("\n(BARRAGE_SKIP_REG=1 — skipping the regression gate.)");
+  }
   if (DEEP) {
     steps.push(run(`STEP 1 — DEEP graded suite${SMOKE ? " (SMOKE — one case/rule)" : ""}`,
       "run-deep.mjs", SMOKE ? { SMOKE: "1" } : {}));

@@ -218,5 +218,30 @@ await runSeg(browser, "config-ui", "cfg-static", "05-codegen", async (page) => {
   await page.mouse.wheel(0, 200); await sleep(2000);
 });
 
+// S11 — Deterministic conditions (zero AI): pick a field check, no prompt anywhere
+await runSeg(browser, "config-ui", "cfg-premade", "11-conditions", async (page) => {
+  await sleep(1200);                                      // NO-AI-COST chip + "Conditions run without AI" callout
+  await glideClick(page, '.dropdown-trigger:has-text("Issue type is")', { post: 700, centerFirst: true });
+  await glideClickText(page, ".dropdown-item", "Field equals a value", { post: 1000 });
+  await glideClick(page, '.dropdown-trigger:has-text("Choose a field")', { post: 600, centerFirst: true });
+  await sleep(1400);                                      // field picker: per-field support annotations visible
+  await glideClickText(page, ".dropdown-item", "Team", { post: 900 });
+  await typeInto(page, "input.input", "Platform", { centerFirst: true });
+  await sleep(1600);                                      // dwell: field-equals configured, footer promise visible
+});
+
+// S12 — Rule management: meter, owners, delete-that-detaches, REST provisioning
+await runSeg(browser, "admin-panel", "admin", "12-rulesmanage", async (page) => {
+  await centerOn(page, ".usage-meter, .usage-foot, table.table");
+  await sleep(1600);                                      // registry meter + Owner column
+  await glideClick(page, "table.table tbody input[type=checkbox]", { post: 700, centerFirst: true });
+  await glideClickText(page, "button", "Delete", { post: 1600 }).catch(() => {});
+  await sleep(2400);                                      // outcome-predicting dialog: everywhere vs list-only
+  await glideClickText(page, "button", "Cancel", { post: 900 }).catch(() => {});
+  await glideClickText(page, "button", "Show REST API details", { post: 1200, centerFirst: true }).catch(() => {});
+  await centerOn(page, ".api-info-warn");
+  await sleep(2600);                                      // ARIs + the two gotchas
+});
+
 await browser.close();
 console.log("\nclips ->", CLIPS);

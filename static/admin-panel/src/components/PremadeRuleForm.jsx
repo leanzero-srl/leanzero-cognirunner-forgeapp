@@ -25,7 +25,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { invoke } from "@forge/bridge";
 import CustomSelect from "./CustomSelect";
-import { getCatalog, findRule, COMPARE_OPS } from "../../../../src/shared/premade-rules-catalog.js";
+import { getCatalog, findRule, COMPARE_OPS, EXPRESSION_BACKED_CONDITIONS, CONDITION_NOT_EXPRESSIBLE_REASON, conditionFieldSupport } from "../../../../src/shared/premade-rules-catalog.js";
 import { redosRisk } from "../../../../src/shared/regex-safety.js";
 
 export default function PremadeRuleForm({ mode = "validator", fields = [], initial, onChange }) {
@@ -89,14 +89,45 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
 
   const rule = findRule(mode, ruleType);
   const p = rule?.params || {};
-  const unavailable = rule?.availability === "unavailable";
+  // A condition is evaluated by Jira as a Jira expression, not by our backend, so
+  // only the types the manifest expression implements are real. Offering any other
+  // one would silently allow every transition.
+  const notExpressible = mode === "condition" && !!ruleType && !EXPRESSION_BACKED_CONDITIONS.includes(ruleType);
+  const unavailable = rule?.availability === "unavailable" || notExpressible;
+  const unavailableWhy = notExpressible ? CONDITION_NOT_EXPRESSIBLE_REASON : rule?.unavailableReason;
+
+  // Field-based CONDITION types: the expression can only evaluate custom fields
+  // of a live-probed kind (see CONDITION_FIELD_KINDS). Resolve the picked field's
+  // support ONCE here — it drives the config keys (exprProp/exprKind), the
+  // refusal note, and validity. conditionFieldSupport is the single source.
+  const isFieldCondition = mode === "condition"
+    && (ruleType === "field-has-value" || ruleType === "field-empty" || ruleType === "field-equals");
+  const pickedField = p.field ? fields.find((f) => f.id === fieldId) : null;
+  const fieldSupport = isFieldCondition && pickedField
+    ? conditionFieldSupport(pickedField, ruleType)
+    : null;
 
   // Build the config object + validity from the current state.
-  const fieldName = (fields.find((f) => f.id === fieldId) || {}).name || "";
-  const config = { ruleType };
+  const fieldName = (pickedField || fields.find((f) => f.id === fieldId) || {}).name || "";
+  // conditionKind tells the manifest expression this config is one it should
+  // evaluate. Without it the expression falls through to "allow" — which is what
+  // keeps every pre-existing condition behaving exactly as before.
+  const config = mode === "condition" ? { ruleType, conditionKind: "deterministic" } : { ruleType };
   if (p.field) {
     config.fieldId = fieldId;
     config.fieldName = fieldName;
+  }
+  if (fieldSupport && fieldSupport.exprProp) {
+    // The expression only ever indexes `issue` with exprProp, only ever runs the
+    // typed comparison exprKind names, and falls open without both — so these
+    // keys ARE the safety contract, resolved at save time from the field schema.
+    config.exprProp = fieldSupport.exprProp;
+    config.exprKind = fieldSupport.exprKind;
+    // Number equals compares typed (expression == is strict): carry the value as
+    // a real JSON number too. The expression ignores a non-finite/absent one.
+    if (ruleType === "field-equals" && fieldSupport.exprKind === "num" && value.trim() !== "" && Number.isFinite(Number(value))) {
+      config.valueNum = Number(value);
+    }
   }
   if (p.regex) config.regex = regex.trim();
   if (p.allowed) config.allowedValues = allowedValues.trim();
@@ -124,6 +155,13 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
 
   let valid = !!ruleType && !unavailable;
   if (p.field && !fieldId) valid = false;
+  // A field condition may only save with a supported field resolved: no
+  // exprProp/exprKind means the expression would fall open — a rule that saves
+  // but never gates is exactly the fiction this feature replaced.
+  if (isFieldCondition && fieldId && (!fieldSupport || fieldSupport.unsupported)) valid = false;
+  // Number equals must carry a real number.
+  if (isFieldCondition && ruleType === "field-equals" && fieldSupport?.exprKind === "num"
+      && value.trim() !== "" && !Number.isFinite(Number(value))) valid = false;
   if (p.regex && !regex.trim()) valid = false;
   if (regexRisk) valid = false;
   if (p.allowed && !allowedValues.trim()) valid = false;
@@ -274,17 +312,25 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
           onChange={onRuleType}
           searchable
           placeholder="Choose a premade rule…"
-          options={catalog.map((r) => ({
-            value: r.key,
-            label: r.label,
-            meta: r.availability === "unavailable" ? "Use a Jira built-in" : undefined,
-          }))}
+          options={catalog.map((r) => {
+            // Tell the story IN the dropdown, not only after selection: any type
+            // the manifest expression can't evaluate — anything needing related-
+            // issue / attachment / group data — is annotated as unavailable right
+            // here, so the picker never presents an option that silently won't
+            // save. (The field-based trio now ships — its support is per FIELD,
+            // annotated in the field picker below instead.)
+            let meta = r.availability === "unavailable" ? "Use a Jira built-in" : undefined;
+            if (mode === "condition" && !EXPRESSION_BACKED_CONDITIONS.includes(r.key)) {
+              meta = "Not available as a condition";
+            }
+            return { value: r.key, label: r.label, meta };
+          })}
         />
         {rule && !unavailable && <p className="hint">{rule.help}</p>}
       </div>
 
       {unavailable && (
-        <div className="pr-note">{rule.unavailableReason}</div>
+        <div className="pr-note">{unavailableWhy}</div>
       )}
 
       {!unavailable && mode === "validator" && ruleType === "field-changed" && (
@@ -301,8 +347,7 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
       )}
       {!unavailable && mode === "condition" && ruleType === "field-equals" && (
         <p className="hint">
-          Compares a single value (case-insensitive). For a multi-value field like Labels, use “Field
-          has a value” instead.
+          For a multi-value field like Labels, use “Field has a value” instead.
         </p>
       )}
 
@@ -314,8 +359,19 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
             onChange={setFieldId}
             searchable
             placeholder="Choose a field…"
-            options={fields.map((f) => ({ value: f.id, label: f.name, meta: f.id }))}
+            options={fields.map((f) => {
+              // Field conditions support only custom fields of live-verified
+              // kinds — say so on the option itself, not after selection.
+              let meta = f.id;
+              if (isFieldCondition && conditionFieldSupport(f, ruleType).unsupported) {
+                meta = "Not supported for conditions";
+              }
+              return { value: f.id, label: f.name, meta };
+            })}
           />
+          {fieldSupport?.unsupported && (
+            <div className="pr-note">{fieldSupport.unsupported}</div>
+          )}
         </div>
       )}
 

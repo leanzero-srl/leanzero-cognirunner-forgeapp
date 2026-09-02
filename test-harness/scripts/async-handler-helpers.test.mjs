@@ -129,11 +129,11 @@ if (!unpolledMatch) { console.log("FAIL: could not locate UNPOLLED_TASKS"); proc
 // eslint-disable-next-line no-eval
 const UNPOLLED_TASKS = new Set(eval(unpolledMatch[1]));
 
-const expectedHandlers = ["review", "postfunction", "codegen", "fixcode", "skilldistill", "memory_distill"];
+const expectedHandlers = ["review", "postfunction", "codegen", "fixcode", "skilldistill", "memory_distill", "listener", "scheduledjob"];
 for (const t of expectedHandlers) ok(handlerKeys.includes(t), `TASK_HANDLERS registers "${t}"`);
 ok(handlerKeys.length === expectedHandlers.length, `TASK_HANDLERS has exactly ${expectedHandlers.length} task types (no orphans)`);
-ok(UNPOLLED_TASKS.has("postfunction") && UNPOLLED_TASKS.has("memory_distill") && UNPOLLED_TASKS.size === 2,
-   "UNPOLLED_TASKS = { postfunction, memory_distill }");
+ok(UNPOLLED_TASKS.has("postfunction") && UNPOLLED_TASKS.has("memory_distill") && UNPOLLED_TASKS.has("listener") && UNPOLLED_TASKS.size === 3,
+   "UNPOLLED_TASKS = { postfunction, memory_distill, listener } (scheduledjob is polled by Run now)");
 // Invariant: every unpolled type MUST be a registered handler (an unpolled type absent from the
 // registry could never run yet would skip its status-row write — a silent dead task).
 ok([...UNPOLLED_TASKS].every((t) => handlerKeys.includes(t)), "every UNPOLLED task is a registered TASK_HANDLER");

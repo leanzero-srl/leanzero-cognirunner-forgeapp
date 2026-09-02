@@ -59,7 +59,7 @@ npm run test:premade-e2e    # LIVE: attach premade validators, fire transitions,
 ```
 
 - `test:offline` imports `src/premade-rules.js` directly with an **injected field reader** (`opts.readField`), so it covers all 22 wired rules + fail-OPEN / CREATE / array / date / ADF edge cases without a live instance.
-- `test:premade-e2e` needs the **deployed app** (with the premade branch in `validate()`) + a testbed (`npm run setup`). Premade validators are deterministic, so this works **with no AI provider configured** (unlike `gate-verify.mjs`). Conditions are **not** exercised here — Jira doesn't evaluate conditions on the REST transition path (see "Why black-box"); their logic is covered by the offline executor test.
+- `test:premade-e2e` needs the **deployed app** (with the premade branch in `validate()`) + a testbed (`npm run setup`). Premade validators are deterministic, so this works **with no AI provider configured** (unlike `gate-verify.mjs`). Conditions are exercised by `reg-conditions-enforce.mjs` instead — Jira evaluates them itself as the manifest expression, on every surface including REST (the old "not enforced over REST" belief was disproved; see FINDINGS F3).
 - Recipe code runs in the static-PF sandbox; the offline test compiles each recipe's generated JS (parse-only) and asserts it uses only documented `api.*` methods and safely escapes interpolated params.
 
 ## Layout

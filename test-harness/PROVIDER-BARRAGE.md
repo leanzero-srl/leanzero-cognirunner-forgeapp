@@ -11,9 +11,14 @@ Target: project **COGTEST** on `wolfaenpak.atlassian.net` (`results/testbed.json
 + issue changelog + the `cogni-debug` issue property — **not** the UI. The Jira token lives in
 the gitignored `test-harness/.env`.
 
-**Baseline to beat (no regression):** ~**766–770 / 782**. Expected misses only: F3 (conditions
-not enforced on the REST path), the agentic GATE-STORY strictness, and the
-injection-embedded-in-a-real-task nuance. Current matrix: OpenRouter/`gemma-4-31b` 766, Anthropic/
+**Baseline to beat (no regression):** ~**766–770 / 782**. Expected misses only: the agentic
+GATE-STORY strictness and the injection-embedded-in-a-real-task nuance.
+
+> **Denominator note (2026-08-12).** The old baseline listed a third expected miss, "F3 — conditions
+> not enforced on the REST path". F3 was re-diagnosed: conditions ARE enforced, and the app's own
+> conditions now work (see `reg-conditions-enforce.mjs`). The 2-case condition study is no longer an
+> expected miss. Historic rows in FINDINGS.md were scored against the OLD denominator of 782 WITH
+> that miss allowed — do not compare a new row to them without saying which denominator it used. Current matrix: OpenRouter/`gemma-4-31b` 766, Anthropic/
 `claude-haiku-4-5` 766, Forge LLM/Haiku 766, **OpenAI 770 (strongest)**, LM Studio 69/76.
 
 ---
@@ -72,7 +77,7 @@ cogni-debug issue property — NOT the UI. The Jira token is in the gitignored t
 node scripts/run-transitions.mjs   (RUN_CONCURRENCY=3 default; writes results/run-results.json)
 This exercises EVERY advertised capability for the active provider:
   • validators  — naive / hardened / quality / rich-quality / PII / number-threshold / label-policy
-  • conditions  — customer-present (NOTE F3: conditions are NOT enforced on the REST path — expected miss)
+  • conditions  — deterministic, enforced on every surface incl. REST (F3 re-diagnosed; NOT an expected miss)
   • agentic validators (JQL tool-calling) — dup-check + release-gate (highest provider risk: tool-call
     shape differs per provider; F1 was exactly this on Forge LLM)
   • semantic PFs — text / select / number / date / mismatch / off-screen / simulation
@@ -84,7 +89,8 @@ This exercises EVERY advertised capability for the active provider:
   • policy/PII   — block PII, allow clean
   • injection (~710) + robustness (decoration / homoglyph / RTL / zero-width)
 Report per-study scores. BASELINE to beat (no regression): ~766–770/782. Expected misses only:
-F3 condition, the agentic GATE-STORY strictness, and the injection-embedded-in-a-real-task nuance.
+the agentic GATE-STORY strictness and the injection-embedded-in-a-real-task nuance. (Conditions are
+no longer an expected miss — F3 was re-diagnosed; they enforce on the REST path.)
 Any NEW failure class -> investigate; if it implicates validator framing, STOP + flag (danger zone),
 do not auto-fix.
 

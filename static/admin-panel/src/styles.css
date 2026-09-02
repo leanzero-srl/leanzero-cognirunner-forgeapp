@@ -383,26 +383,8 @@ html[data-color-mode="dark"] .alert-warning {
       bottom: calc(100% + 4px);
     }
 
-    .dropdown-search {
-      padding: 8px;
-      border-bottom: 1px solid var(--border-color);
-      flex-shrink: 0;
-    }
 
-    .dropdown-search input {
-      width: 100%;
-      padding: 8px 10px;
-      font-size: 13px;
-      border: 2px solid var(--border-color);
-      border-radius: 3px;
-      background-color: var(--input-bg);
-      color: var(--text-color);
-      outline: none;
-      font-family: inherit;
-    }
 
-    .dropdown-search input:focus { border-color: var(--primary-color); }
-    .dropdown-search input::placeholder { color: var(--text-muted); }
 
     .dropdown-list {
       overflow-y: auto;
@@ -2617,3 +2599,56 @@ html[data-color-mode="dark"] .log-type-badge.lt-job, html[data-color-mode="dark"
 html[data-color-mode="dark"] .apx-badge { background: #e11d48; }
 html[data-color-mode="dark"] .evp-row.on { background: rgba(59, 130, 246, 0.18); }
 html[data-color-mode="dark"] .agc-action.on { background: rgba(139, 92, 246, 0.2); }
+/* --- Rule deletion + registry pressure (mirrors injectStyles in App.js) --- */
+.rule-select-th { width: 30px; }
+.rule-select-cell input[type="checkbox"],
+.rule-select-th input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--primary-color); cursor: pointer; }
+.rule-select-cell input:disabled { cursor: default; opacity: 0.45; }
+.rules-bulkbar { display: flex; align-items: center; gap: 10px; padding: 8px 12px; margin-bottom: 10px; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); background: var(--code-bg); font-size: 12px; font-weight: 700; color: var(--text-color); }
+.del-dialog { max-width: 620px; }
+.del-option { display: block; padding: 12px 14px; margin-top: 12px; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); cursor: pointer; }
+.del-option.is-active { border-color: #dc2626; box-shadow: inset 0 0 0 1px #dc2626; }
+.del-option[aria-disabled="true"] { opacity: 0.55; cursor: default; }
+.del-option-title { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 700; color: var(--text-color); }
+.del-radio { font-size: 13px; color: #dc2626; }
+.del-option-copy { font-size: 12px; color: var(--text-secondary); line-height: 1.5; margin-top: 4px; }
+.del-warn { font-size: 12px; font-weight: 700; color: #d97706; margin-top: 8px; line-height: 1.45; }
+.del-flag { font-size: 11px; font-weight: 700; color: #d97706; white-space: nowrap; }
+.del-progress { flex: 1; font-size: 12px; color: var(--text-secondary); }
+.del-results { margin-top: 12px; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); max-height: 140px; overflow-y: auto; }
+.del-result-row { display: flex; align-items: center; gap: 10px; padding: 7px 12px; border-bottom: 1px solid var(--border-color); font-size: 12px; }
+.del-result-row:last-child { border-bottom: none; }
+.del-result-msg { color: var(--text-secondary); }
+.owner-chip { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 700; color: #fff; background: #475569; }
+.owner-you { font-size: 12px; font-weight: 700; color: var(--primary-color); }
+.owner-name { font-size: 12px; color: var(--text-secondary); }
+.transition-name { font-size: 12px; font-weight: 600; color: var(--text-color); }
+.reg-meter { margin-bottom: 12px; }
+.reg-meter-label { font-size: 12px; color: var(--text-secondary); margin-bottom: 5px; }
+.reg-meter-label strong { color: var(--text-color); font-weight: 700; }
+.reg-meter-bytes { color: var(--text-muted); }
+.reg-meter-flag { margin-left: 8px; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 700; color: #fff; background: #dc2626; }
+.reg-meter-bar { height: 8px; background: var(--border-color); border-radius: 999px; overflow: hidden; }
+.reg-meter-fill { height: 100%; background: #16a34a; border-radius: 999px; transition: width 0.3s ease; }
+.reg-warn .reg-meter-fill { background: #d97706; }
+.reg-full .reg-meter-fill { background: #dc2626; }
+html[data-color-mode="dark"] .del-warn,
+html[data-color-mode="dark"] .del-flag { color: #f59e0b; }
+html[data-color-mode="dark"] .del-option.is-active { border-color: #ef4444; box-shadow: inset 0 0 0 1px #ef4444; }
+html[data-color-mode="dark"] .del-radio { color: #ef4444; }
+html[data-color-mode="dark"] .owner-chip { background: #64748b; }
+html[data-color-mode="dark"] .reg-meter-fill { background: #22c55e; }
+html[data-color-mode="dark"] .reg-warn .reg-meter-fill { background: #f59e0b; }
+html[data-color-mode="dark"] .reg-full .reg-meter-fill,
+html[data-color-mode="dark"] .reg-meter-flag { background: #ef4444; }
+
+.reg-meter-hint { margin-top: 6px; font-size: 12px; line-height: 1.5; color: var(--text-secondary); }
+.reg-meter-hint strong { color: var(--text-color); font-weight: 700; }
+
+/* REST-automation reference panel (mirrors injectStyles). */
+.api-ari { font-size: 11px; word-break: break-all; display: inline-block; max-width: 460px; }
+.api-info-lead { font-size: 12.5px; line-height: 1.55; color: var(--text-secondary); padding: 10px 12px; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); background: var(--code-bg); }
+.api-info-lead strong { color: var(--text-color); font-weight: 700; }
+.api-info-warn { margin-top: 14px; padding: 12px 14px; border: 1px solid #d97706; border-radius: var(--r-md, 8px); font-size: 12.5px; color: var(--text-secondary); }
+.api-info-warn strong { color: var(--text-color); font-weight: 700; }
+html[data-color-mode="dark"] .api-info-warn { border-color: #f59e0b; }

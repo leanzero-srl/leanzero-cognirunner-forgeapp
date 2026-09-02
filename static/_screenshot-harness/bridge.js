@@ -62,18 +62,31 @@ const FIELDS = {
 const ADMIN_CONFIGS = {
   success: true,
   removedCount: 0,
+  // Registry pressure — the Rules tab's usage meter (shape = registryPressure()
+  // in src/shared/registry-limits.js: measured against the REAL 240KiB capacity,
+  // refusal point exposed separately).
+  registry: { count: 30, bytes: 58240, max: 500, maxBytes: 245760, refuseAtBytes: 200000, rowPct: 0.094, bytePct: 0.237, pct: 0.237, level: "ok", refusing: false },
   configs: [
     {
       id: "cr::Software Dev Workflow::21::a1b2c3", type: "validator", fieldId: "description",
       prompt: "Block this transition unless the Description contains clear, testable acceptance criteria and a rollback plan.",
       workflow: { workflowId: "wf-software-dev-001", workflowName: "Software Dev Workflow", projectId: "10001", transitionId: "21", transitionFromName: "In Progress", transitionToName: "In Review", siteUrl: SITE },
-      instanced: true, createdBy: ACCT, createdAt: "2026-05-01T09:12:00.000Z", updatedAt: "2026-06-15T14:30:00.000Z", disabled: false,
+      instanced: true, createdBy: ACCT, createdByName: "Mihai Perdum", createdAt: "2026-05-01T09:12:00.000Z", updatedAt: "2026-06-15T14:30:00.000Z", disabled: false,
     },
     {
-      id: "cr::Bug Triage::31::d4e5f6", type: "condition", fieldId: "priority",
-      prompt: "Only allow moving to 'Critical' when the issue text describes production impact affecting multiple customers.",
+      // A shipped FIELD-BASED deterministic condition (custom field, exprKind-resolved).
+      id: "cr::Bug Triage::31::d4e5f6", type: "condition", ruleKind: "premade", premadeRuleType: "field-equals",
+      fieldId: "customfield_10031", fieldName: "Severity", exprProp: "customfield_10031", exprKind: "opt", value: "Critical",
       workflow: { workflowId: "wf-bug-triage-002", workflowName: "Bug Triage", projectId: "10002", transitionId: "31", transitionFromName: "Open", transitionToName: "Escalated", siteUrl: SITE },
-      instanced: true, createdBy: "557058:22222222-2222-2222-2222-222222222222", createdAt: "2026-04-20T08:00:00.000Z", updatedAt: "2026-06-10T11:05:00.000Z", disabled: false,
+      instanced: true, createdBy: "557058:22222222-2222-2222-2222-222222222222", createdByName: "Dana Kovacs", createdAt: "2026-04-20T08:00:00.000Z", updatedAt: "2026-06-10T11:05:00.000Z", disabled: false,
+    },
+    {
+      // REST-attached, then claimed by Scan → Register all: UNOWNED (claiming is
+      // not authoring) — renders the Owner column's "Unowned" chip.
+      id: "provision-dod-check-v2", type: "validator", fieldId: "summary",
+      prompt: "Definition-of-done gate provisioned over the REST API for every team workflow.",
+      workflow: { workflowId: "wf-platform-008", workflowName: "Platform Intake", projectId: "10008", transitionId: "91", transitionFromName: "Ready", transitionToName: "In Delivery", siteUrl: SITE },
+      instanced: true, discovered: true, claimedBy: "557058:33333333-3333-3333-3333-333333333333", claimedByName: "Priya Raman", createdAt: "2026-06-02T08:00:00.000Z", updatedAt: "2026-06-18T09:00:00.000Z", disabled: false,
     },
     {
       id: "cr::Release Workflow::41::a7b8c9", type: "postfunction-semantic", fieldId: "description", prompt: "",
@@ -81,7 +94,7 @@ const ADMIN_CONFIGS = {
       actionPrompt: "…set the 'Risk Level' field to 'High' and summarize the breaking change.",
       actionFieldId: "customfield_10042", functions: [],
       workflow: { workflowId: "wf-release-003", workflowName: "Release Workflow", projectId: "10003", transitionId: "41", transitionFromName: "Staging", transitionToName: "Production", siteUrl: SITE },
-      instanced: true, disabled: false, createdBy: ACCT, createdAt: "2026-05-12T10:00:00.000Z", updatedAt: "2026-06-16T09:45:00.000Z",
+      instanced: true, disabled: false, createdBy: ACCT, createdAt: Date.parse("2026-05-12T10:00:00.000Z"), updatedAt: Date.parse("2026-06-16T09:45:00.000Z"),
     },
     {
       id: "cr::Onboarding::51::e1f2a3", type: "postfunction-static", fieldId: "", prompt: "",
@@ -89,7 +102,7 @@ const ADMIN_CONFIGS = {
       actionFieldId: "customfield_10055",
       functions: [{ id: "fn1", name: "Create onboarding subtasks", operationType: "rest_api_internal", variableName: "result" }],
       workflow: { workflowId: "wf-onboarding-004", workflowName: "Onboarding", projectId: "10004", transitionId: "51", transitionFromName: "Approved", transitionToName: "Provisioning", siteUrl: SITE },
-      instanced: true, disabled: false, createdBy: "557058:22222222-2222-2222-2222-222222222222", createdAt: "2026-03-30T07:30:00.000Z", updatedAt: "2026-06-01T16:20:00.000Z",
+      instanced: true, disabled: false, createdBy: "557058:22222222-2222-2222-2222-222222222222", createdByName: "Dana Kovacs", createdAt: "2026-03-30T07:30:00.000Z", updatedAt: "2026-06-01T16:20:00.000Z",
     },
     {
       id: "cr::Legacy QA::61::f4a5b6", type: "validator", fieldId: "summary",
@@ -110,8 +123,38 @@ const ADMIN_CONFIGS = {
       id: "cr::Incident::81::c3d4e5", type: "postfunction-static", fieldId: "", prompt: "", functions: [],
       functionsMeta: [{ id: "s1", name: "Escalate priority to High", operationType: "rest_api_internal", variableName: "r1" }, { id: "s2", name: "Add on-call watcher", operationType: "rest_api_internal", variableName: "r2" }],
       workflow: { workflowId: "wf-incident-007", workflowName: "Incident Response", projectId: "10007", transitionId: "81", transitionFromName: "Triaged", transitionToName: "Mitigating", siteUrl: SITE },
-      instanced: true, createdBy: ACCT, createdAt: "2026-05-18T09:00:00.000Z", updatedAt: "2026-06-17T10:00:00.000Z", disabled: false,
+      instanced: true, createdBy: ACCT, createdAt: Date.parse("2026-05-18T09:00:00.000Z"), updatedAt: Date.parse("2026-06-17T10:00:00.000Z"), disabled: false,
     },
+    // --- Bulk filler so the table has MORE THAN ONE PAGE ---------------------
+    // Pagination, newest-first ordering and the sticky header are only meaningful
+    // above the page size; 8 hand-written rules could never exercise them. These
+    // carry DESCENDING updatedAt with a deliberate SHUFFLE in the source array, so
+    // a test that reads the rendered order is checking the sort, not the fixture.
+    ...(() => {
+      const rows = [];
+      for (let i = 1; i <= 22; i++) {
+        const day = String(i).padStart(2, "0");
+        rows.push({
+          id: `cr::Bulk Workflow::9${day}::bulk${day}`, type: i % 3 === 0 ? "condition" : "validator",
+          fieldId: "summary",
+          prompt: `Bulk seeded rule ${i} — checks the Summary before leaving Backlog.`,
+          workflow: { workflowId: `wf-bulk-${day}`, workflowName: `Bulk Workflow ${i}`, projectId: "10009", transitionId: `9${day}`, transitionFromName: "Backlog", transitionToName: "Selected", siteUrl: SITE },
+          instanced: true, disabled: false,
+          createdBy: ACCT, createdByName: "Mihai Perdum",
+          // EPOCH-MS NUMBERS, deliberately — this is what slimRegistryRow actually
+          // persists (ISO strings are halved to numbers to fit 500 rows under the
+          // KVS cap). The hand-written rules above keep ISO strings, so the fixture
+          // carries BOTH shapes and any reader that handles only one is caught here
+          // rather than on the live site.
+          createdAt: Date.parse(`2026-01-${day}T08:00:00.000Z`),
+          // 2026-02-01 .. 2026-02-22 — all OLDER than every hand-written rule above,
+          // so the hand-written ones must occupy page 1.
+          updatedAt: Date.parse(`2026-02-${day}T08:00:00.000Z`),
+        });
+      }
+      // Shuffle deterministically (odd indices first) so source order != sorted order.
+      return [...rows.filter((_, i) => i % 2 === 1), ...rows.filter((_, i) => i % 2 === 0)];
+    })(),
   ],
 };
 
@@ -447,6 +490,39 @@ function invoke(name, payload) {
     case "checkIsAdmin": return Promise.resolve({ success: true, isAdmin: true, role: "admin", scope: "all", accountId: ACCT });
     case "checkProviderHealth": return Promise.resolve({ success: true, ok: true, provider: "anthropic", providerLabel: "Anthropic", model: "claude-haiku-4-5-20251001" });
     case "getConfigs": return Promise.resolve(ADMIN_CONFIGS);
+    case "getRuleApiInfo": return Promise.resolve({
+      success: true,
+      appId: "36415848-6868-4697-9554-3c3ad87b8da9",
+      environmentId: "989ecaa0-4d62-46d9-8f2b-6c1a52e80d11",
+      modules: [
+        { label: "Validator", ruleKey: "forge:expression-validator", slot: "validators[]", ari: "ari:cloud:ecosystem::extension/36415848-6868-4697-9554-3c3ad87b8da9/989ecaa0-4d62-46d9-8f2b-6c1a52e80d11/static/ai-text-field-validator" },
+        { label: "Condition", ruleKey: "forge:expression-condition", slot: "conditions tree", ari: "ari:cloud:ecosystem::extension/36415848-6868-4697-9554-3c3ad87b8da9/989ecaa0-4d62-46d9-8f2b-6c1a52e80d11/static/ai-text-field-condition" },
+        { label: "Semantic post-function", ruleKey: "forge:workflow-post-function", slot: "actions[]", ari: "ari:cloud:ecosystem::extension/36415848-6868-4697-9554-3c3ad87b8da9/989ecaa0-4d62-46d9-8f2b-6c1a52e80d11/static/ai-semantic-post-function" },
+        { label: "Static post-function", ruleKey: "forge:workflow-post-function", slot: "actions[]", ari: "ari:cloud:ecosystem::extension/36415848-6868-4697-9554-3c3ad87b8da9/989ecaa0-4d62-46d9-8f2b-6c1a52e80d11/static/ai-static-post-function" },
+      ],
+      limits: { maxRuleConfigBytes: 32768, maxRegistryRows: 500, registryRefuseAtBytes: 200000 },
+      docsUrl: "https://github.com/leanzero-srl/leanzero-cognirunner-forgeapp/blob/main/docs/REST-API-RULES.md",
+    });
+    case "previewRuleDeletion": return Promise.resolve({
+      success: true,
+      items: (payload?.ids || []).map((id) => {
+        const row = ADMIN_CONFIGS.configs.find((c) => c.id === id) || {};
+        return {
+          id: String(id), type: row.type || "validator", disabled: row.disabled === true,
+          workflowName: row.workflow?.workflowName || null,
+          transitionName: row.workflow?.transitionName || null,
+          transitionFromName: row.workflow?.transitionFromName || null,
+          transitionToName: row.workflow?.transitionToName || null,
+          prompt: (row.prompt || "").slice(0, 120), canDelete: true, locatable: true, ambiguous: false, reason: null,
+        };
+      }),
+      projectCounts: { "Software Dev Workflow": 3, "Bug Triage": 1 },
+      truncatedWorkflows: false,
+    });
+    case "deleteRules": return Promise.resolve({
+      success: true, removed: (payload?.ids || []).length,
+      results: (payload?.ids || []).map((id) => ({ id: String(id), ok: true, detached: true, reason: "detached" })),
+    });
     case "getLogs": return Promise.resolve(isAdmin ? ADMIN_LOGS : VIEW_LOGS);
     case "getRuleStatus": return Promise.resolve({ found: true, disabled: s === "view-disabled", registryId: "validator::cfg-abc123" });
     case "explainRule": {

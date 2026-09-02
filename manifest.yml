@@ -18,15 +18,92 @@ modules:
         - company-managed
         - team-managed
 
-  # Workflow Condition - controls visibility of transition based on AI
+  # Workflow Condition - hides a transition when its criteria aren't met.
+  #
+  # A Forge condition is a JIRA EXPRESSION, not a lambda: `function` is not a
+  # property of this module at all (it was declared here for years and silently
+  # ignored, which is why everyone believed validate() ran for conditions), and
+  # `expression` is REQUIRED by the manifest schema. Jira expressions have no
+  # network, no app storage and no await, so an AI-powered condition is
+  # structurally impossible — conditions support the deterministic rule types only.
+  #
+  # The configuration saved by the create/edit Custom UI arrives as `config`.
+  # DEFAULT-TRUE IS LOAD-BEARING: anything this expression doesn't recognise —
+  # every condition saved before this release, every AI-shaped config, and a
+  # `config` that arrives unparsed — falls through to true, i.e. exactly the
+  # previous behaviour. A condition module that cannot resolve evaluates to FALSE
+  # and blocks the transition for everyone, so failing open here is the only safe
+  # default.
+  #
+  # `config.disabled == true` also allows. Jira evaluates this expression itself
+  # and cannot read app storage, so the registry's disabled flag is invisible here
+  # — disableRule therefore patches the flag into the workflow rule's own embedded
+  # config (setRuleDisabledCore → propagateDisabledToWorkflow in src/index.js).
+  # Without this branch a rule shown as "Disabled" in the admin panel would keep
+  # hiding the transition.
+  #
+  # ⚠️ THE FIELD-BASED BRANCHES FOLLOW A STRICT SAFETY PATTERN — keep it, exactly:
+  #   1. Dynamic indexing is allowed ONLY as `issue?.[config.exprProp]`, and only
+  #      behind the leading guard that requires exprProp to match
+  #      ^customfield_[0-9]+$ — for a CUSTOM field the expression accessor IS the
+  #      REST id, so the system-field name-mismatch class (`dueDate` vs `duedate`
+  #      reads null → hides the transition on exactly the issues that satisfy the
+  #      rule) is structurally impossible. System-field accessors stay banned
+  #      until a per-field whitelist entry is probed live (v2).
+  #   2. Every typed operation (toLowerCase on a String, ?.value on an option,
+  #      .length on an array, Number ==) is reachable ONLY behind its exprKind
+  #      gate, and every exprKind was probed live per field kind before shipping
+  #      (2026-08-13, 41 cases — _probe-condition-fieldkinds.mjs, FINDINGS
+  #      F-COND-FIELD). Expression `==` is STRICT: a cross-type compare is an
+  #      evaluation ERROR, and an erroring condition is FALSE = fail-CLOSED, the
+  #      inverse of this product's runtime law. exprKind values are written only
+  #      by conditionFieldSupport() (premade-rules-catalog.js) — the single
+  #      source; never add a branch for a kind that module doesn't vouch for.
+  #   3. field-equals ALLOWS when the field is EMPTY (null-guard before any typed
+  #      compare). Load-bearing: a field hidden by a field configuration reads
+  #      null regardless of its value, so null→hide would let a routine admin
+  #      action hide transitions tenant-wide. (field-has-value's null→hide IS its
+  #      semantics — that residual is documented in the rule's own help text.)
+  #   4. Anything unrecognised — missing exprProp/exprKind (every pre-ship saved
+  #      config), an unknown exprKind, a non-custom exprProp — falls to TRUE.
   jira:workflowCondition:
     - key: ai-text-field-condition
       name: CogniRunner Field Condition
       description: Shows transition only if a text field value passes AI validation.
-      function: validate
       resolver:
         function: resolver
-      expression: "true"
+      expression: >-
+        config == null || config.conditionKind != "deterministic" || config.disabled == true ? true :
+        (config.ruleType == "field-has-value" || config.ruleType == "field-empty" || config.ruleType == "field-equals")
+          && (config.exprProp == null || config.exprKind == null
+              || config.exprProp.match("^customfield_[0-9]+$") == null) ? true :
+        config.ruleType == "field-has-value" ?
+          (config.exprKind == "arr" ? (issue?.[config.exprProp] != null && issue?.[config.exprProp].length > 0) :
+           config.exprKind == "nul" ? issue?.[config.exprProp] != null : true) :
+        config.ruleType == "field-empty" ?
+          (config.exprKind == "arr" ? (issue?.[config.exprProp] == null || issue?.[config.exprProp].length == 0) :
+           config.exprKind == "nul" ? issue?.[config.exprProp] == null : true) :
+        config.ruleType == "field-equals" ?
+          (config.value == null || issue?.[config.exprProp] == null ? true :
+           config.exprKind == "str" ? issue?.[config.exprProp].toLowerCase() == config.value.toLowerCase() :
+           config.exprKind == "opt" ? (issue?.[config.exprProp]?.value == null ? true :
+             issue?.[config.exprProp].value.toLowerCase() == config.value.toLowerCase()) :
+           config.exprKind == "num" ? (config.valueNum == null ? true : issue?.[config.exprProp] == config.valueNum) :
+           true) :
+        config.ruleType == "issue-type-is" ?
+          (config.issueTypeName == null || issue.issueType?.name == config.issueTypeName) :
+        config.ruleType == "issue-is-resolved" ? (issue.resolution != null) :
+        config.ruleType == "resolution-is" ?
+          (config.resolutionName == null || issue.resolution?.name == config.resolutionName) :
+        config.ruleType == "priority-is" ?
+          (config.priorityName == null || issue.priority?.name == config.priorityName) :
+        config.ruleType == "parent-status-is" ?
+          (issue.parent == null || config.statusName == null || issue.parent.status?.name == config.statusName) :
+        config.ruleType == "current-user-is-assignee" ?
+          (issue.assignee != null && user != null && issue.assignee.accountId == user.accountId) :
+        config.ruleType == "current-user-is-reporter" ?
+          (issue.reporter != null && user != null && issue.reporter.accountId == user.accountId) :
+        true
       create:
         resource: config-ui-resource
       edit:

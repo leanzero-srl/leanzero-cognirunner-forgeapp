@@ -357,7 +357,7 @@ const callAIChatSimpleRaw = async ({ apiKey, model: requestedModel, systemPrompt
     openaiHeaders["Authorization"] = `Bearer ${apiKey}`;
   }
   if (provider === "openrouter") {
-    openaiHeaders["HTTP-Referer"] = "https://leanzero.atlascrafted.com";
+    openaiHeaders["HTTP-Referer"] = "https://leanzero.net";
     openaiHeaders["X-Title"] = "CogniRunner";
   }
   // OpenAI/Azure/OpenRouter all expect baseUrl ending in /v1 (PROVIDERS already

@@ -2,7 +2,7 @@
 
 **AI-powered workflow automation for Jira -- validators, conditions, and post-functions.**
 
-Part of the [LeanZero](https://leanzero.atlascrafted.com) ecosystem.
+Part of the [LeanZero](https://leanzero.net) ecosystem.
 
 **[Live on the Atlassian Marketplace](https://marketplace.atlassian.com/apps/298437877/cognirunner?hosting=cloud&tab=overview)** -- install it directly into your Jira Cloud instance.
 
@@ -25,6 +25,7 @@ CogniRunner is the **first open-source Atlassian Forge app**, licensed under [Ap
 - [Getting Started](#getting-started)
 - [Development](#development)
 - [Configuration Reference](#configuration-reference)
+- [Attaching rules over the REST API](docs/REST-API-RULES.md)
 - [Known Limitations](#known-limitations)
 - [Permissions & Security](#permissions--security)
 - [Contributing](#contributing)
@@ -512,7 +513,7 @@ Set via `forge variables set KEY value`.
 | Module | Key | Type | Purpose |
 |--------|-----|------|---------|
 | Validator | `ai-text-field-validator` | `jira:workflowValidator` | Blocks transition based on AI validation |
-| Condition | `ai-text-field-condition` | `jira:workflowCondition` | **DEPRECATED — no-op.** `expression: "true"`; `validate()` never runs |
+| Condition | `ai-text-field-condition` | `jira:workflowCondition` | Hides a transition unless the issue qualifies (deterministic, no AI — Jira evaluates it as a Jira expression) |
 | Semantic PF | `ai-semantic-post-function` | `jira:workflowPostFunction` | AI-powered field updates after transition |
 | Static PF | `ai-static-post-function` | `jira:workflowPostFunction` | Code execution after transition |
 | Admin Panel | `cognirunner-global-page` | `jira:globalPage` | Apps sidebar dashboard |
@@ -536,6 +537,23 @@ Set via `forge variables set KEY value`.
 
 ---
 
+## Automating rule creation
+
+Rules are ordinary Forge workflow rules, so you can attach them with Jira's own workflow
+REST API instead of the admin panel — for bulk provisioning across projects, migrating
+between sites, or keeping rules in version control.
+
+**[docs/REST-API-RULES.md](docs/REST-API-RULES.md)** documents the exact payloads: how to
+discover your install's extension ARI, the rule object, which slot each rule type goes in,
+the config schema per type, and a runnable worked example.
+
+One thing that page stresses and is worth repeating here: a REST-attached rule **runs
+immediately but is invisible to the admin panel** until you claim it via Rules →
+**Scan workflows** → **Register all**, and it needs a stable `id` inside its config or it
+can never be disabled from the UI.
+
+---
+
 ## Known Limitations
 
 | Limitation | Details | Workaround |
@@ -547,7 +565,8 @@ Set via `forge variables set KEY value`.
 | **Agentic latency** | Multi-turn validation with JQL searches takes 5-20 seconds. | 22-second timeout ensures transitions aren't blocked indefinitely. Auto-detect mode avoids agentic flow when not needed. |
 | **Post-function fail-open** | Post-functions always return `{ result: true }`. | By design -- post-functions run after transition success and cannot roll back. Errors are logged. |
 | **Anthropic document attachments** | PDF/DOCX support depends on Anthropic model capabilities. | Images work reliably across all providers. |
-| **Workflow injection** | Programmatic rule injection requires at least one existing CogniRunner rule for environment ID discovery (first time only). | After one manual rule addition, all subsequent rules can be injected automatically. |
+| **Workflow injection** | Attaching rules over REST needs the app's per-install extension ARI. | Ask Jira for it: `GET /rest/api/3/workflows/capabilities?projectId=&issueTypeId=` lists CogniRunner's modules with their ARIs, so no existing rule is required. See [docs/REST-API-RULES.md](docs/REST-API-RULES.md). |
+| **REST-attached rules are unmanaged until claimed** | A rule attached outside the admin panel runs immediately but has no registry row, so it can't be disabled or seen in the Rules tab. | Rules tab → **Scan workflows** → **Register all**. Embed a stable `id` in the rule's config or it can be claimed but still not disabled — see [docs/REST-API-RULES.md](docs/REST-API-RULES.md). |
 
 ---
 
@@ -634,4 +653,4 @@ CogniRunner was originally released under AGPL-3.0 and moved to Apache-2.0 so it
 
 ---
 
-Part of [LeanZero](https://leanzero.atlascrafted.com) by Mihai Perdum.
+Part of [LeanZero](https://leanzero.net) by Mihai Perdum.

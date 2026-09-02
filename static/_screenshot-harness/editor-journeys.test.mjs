@@ -159,25 +159,27 @@ try {
     const env = await openEditor(browser, "config-ui", "cfg-condition");
     const { page } = env;
     try {
-      ok(await page.getByText("AI Condition Configuration").count() >= 1, "J15 renders in Condition mode (not Validator)");
-      // Condition DEPRECATION callout: conditions use expression:"true" so validate() never runs (a no-op
-      // on every surface) — the callout says they're deprecated / not enforced + recommends a Validator.
-      ok(await page.locator(".condition-hide-note").count() === 1, "J15 shows the condition deprecation callout");
-      ok(await page.getByText(/deprecated and are not enforced|has no effect/i).count() > 0, "J15 callout says conditions are deprecated / not enforced");
-      ok(await page.getByText(/create a\s*Validator/i).count() > 0, "J15 callout recommends creating a Validator instead");
-      ok(await page.locator(".dropdown-trigger", { hasText: "Acceptance Criteria" }).count() > 0, "J15 field picker shows the seeded field (Acceptance Criteria)");
-      const promptEl = page.locator("textarea").first();
-      ok(/testable, measurable criterion/i.test(await promptEl.inputValue()), "J15 condition prompt hydrated from config");
-      await promptEl.fill((await promptEl.inputValue()) + " Non-empty.");
-      ok((await promptEl.inputValue()).includes("Non-empty."), "J15 condition prompt is editable");
-      // Same dry-run Test flow as the validator.
-      await page.locator("button.btn-semantic-test-toggle", { hasText: /Test/ }).click();
-      await page.waitForSelector(".semantic-test-panel", { timeout: 8000 });
-      await page.locator("input.issue-picker-input").fill("PROJ-42");
-      await page.waitForSelector(".issue-picker-valid", { timeout: 8000 });
-      await page.locator("button.btn-run-test", { hasText: "Run Test" }).click();
-      await page.waitForSelector(".semantic-test-result", { timeout: 10000 });
-      ok(await page.locator(".test-badge-pass, .test-badge-fail").count() >= 1, "J15 dry-run Test returns a verdict");
+      ok(await page.getByText("Condition Configuration").count() >= 1, "J15 renders in Condition mode (not Validator)");
+      // Conditions are evaluated by Jira as a Jira EXPRESSION — no network, so no AI,
+      // permanently. The callout must explain that rather than the old (wrong) claim
+      // that conditions are deprecated and unenforced. See F3 in test-harness/FINDINGS.md.
+      ok(await page.getByText(/run without AI/i).count() > 0, "J15 callout explains conditions run without AI");
+      ok(await page.getByText(/deprecated and are not enforced|has no effect/i).count() === 0, "J15 callout must NOT still call conditions deprecated/unenforced");
+      ok(await page.getByText(/Validator/).count() > 0, "J15 callout points at a Validator for free-text judgement");
+      // A condition can never be an AI rule, so the AI/premade TOGGLE must not exist.
+      // (Assert the control, not the words — the conversion notice legitimately
+      //  contains the phrase "AI prompt".)
+      ok(await page.locator(".rulekind-toggle").count() === 0, "J15 does not offer the AI/premade rule-kind toggle for a condition");
+      // The fixture is a condition saved by an older build, i.e. one carrying an AI
+      // prompt that could never have run. It must be surfaced for conversion, not
+      // silently dropped — and the editor must show the deterministic check picker.
+      ok(await page.locator(".legacy-cond-prompt").count() === 1, "J15 surfaces the legacy AI prompt for conversion");
+      ok(/testable, measurable criterion/i.test(await page.locator(".legacy-cond-prompt").innerText()), "J15 shows the ORIGINAL prompt text, not a placeholder");
+      ok(await page.getByText(/never ran/i).count() > 0, "J15 says plainly that the old prompt never ran");
+      // The deterministic check picker replaces the AI prompt box. No dry-run panel
+      // here by design: there is no AI call to dry-run.
+      ok(await page.locator(".pr-form, .dropdown-trigger").count() > 0, "J15 shows the deterministic check picker");
+      ok(await page.locator("button.btn-semantic-test-toggle").count() === 0, "J15 offers no AI dry-run for a condition (nothing to run)");
     } catch (e) { fail++; console.log("  ✗ J15 threw: " + e.message.split("\n")[0]); }
     await closeEditor(env);
   }
@@ -679,6 +681,312 @@ try {
       await page.locator("button", { hasText: "Test connection" }).first().waitFor({ timeout: 12000 });
       ok(await page.locator("button", { hasText: "Test connection" }).count() > 0, "E15 a pending {tab:'settings'} intent auto-opens the Settings tab on mount (no click)");
     } catch (e) { fail++; console.log("  ✗ E15 threw: " + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
+  /* ============================================================================
+     R-series — the admin Rules table review fixes.
+     Each block names the defect it locks down so a future edit that reintroduces
+     it fails here rather than in someone's screenshot.
+     ========================================================================= */
+
+  /* ---------------- R1 — pagination, newest-first order, page size ---------------- */
+  {
+    console.log("R1 rules table pagination + newest-first ordering");
+    const env = await openEditor(browser, "admin-panel", "admin");
+    const { page } = env;
+    try {
+      await page.locator("table.rules-table tbody tr").first().waitFor({ timeout: 12000 });
+      const dataRows = () => page.locator("table.rules-table tbody tr:not(.rule-explain-row):not(.rule-accordion-row)");
+
+      // Default page size is 10 — the whole point of the fix is that a 500-rule
+      // registry no longer renders as one 76,000px page.
+      ok(await dataRows().count() === 10, `R1 default page shows 10 rows (got ${await dataRows().count()})`);
+      ok(await page.locator(".rules-pagination").count() > 0, "R1 a pagination footer renders");
+      ok(await page.locator(".rules-pagination-info", { hasText: /1–10 of 30/ }).count() > 0, "R1 the range reads 1–10 of 30");
+
+      // Newest first. The Updated column renders through toLocaleString(), whose
+      // format depends on the browser locale — so assert the ORDER by rule identity
+      // instead. The 8 hand-written fixture rules are all May/June 2026; the 22 bulk
+      // rules are February 2026 and are SHUFFLED in the source array. Page 1 must
+      // therefore be the hand-written ones, newest first.
+      const wfNames = () => page.locator("table.rules-table tbody .workflow-name").allInnerTexts();
+      const p1 = await wfNames();
+      ok(p1.length === 10, `R1 read a workflow name for all 10 rows (got ${p1.length})`);
+      // Assert the EXACT sequence, not just membership. An earlier version of this
+      // test only checked that the recent rules were somewhere on page 1, which a
+      // broken sort still satisfies — and it did: the live site ordered rows by id
+      // because the registry stores epoch-ms NUMBERS and Date.parse(number) is NaN.
+      // The fixture now carries both timestamp shapes, so this ordering is the check.
+      const EXPECTED_PAGE_1 = [
+        "Platform Intake",        // 2026-06-18  ISO
+        "Incident Response",      // 2026-06-17  epoch-ms number
+        "Release Workflow",       // 2026-06-16  epoch-ms number
+        "Software Dev Workflow",  // 2026-06-15  ISO
+        "Compliance",             // 2026-06-14  ISO
+        "Bug Triage",             // 2026-06-10  ISO
+        "Onboarding",             // 2026-06-01  ISO
+        "Legacy QA",              // 2026-05-20  ISO
+        "Bulk Workflow 22",       // 2026-02-22  epoch-ms number
+        "Bulk Workflow 21",       // 2026-02-21  epoch-ms number
+      ];
+      ok(JSON.stringify(p1) === JSON.stringify(EXPECTED_PAGE_1),
+        `R1 page 1 is in newest-first order regardless of timestamp shape\n      expected: ${JSON.stringify(EXPECTED_PAGE_1)}\n      got:      ${JSON.stringify(p1)}`);
+
+      // Paging forward keeps the ordering and lands on the older rules.
+      await page.locator(".rules-pager button", { hasText: "Next" }).click();
+      await page.waitForTimeout(250);
+      ok(await page.locator(".rules-pagination-info", { hasText: /11–20 of 30/ }).count() > 0, "R1 Next advances to 11–20 of 30");
+      const p2 = await wfNames();
+      ok(p2.length === 10 && p2.every((n) => /^Bulk Workflow/.test(n)), "R1 page 2 holds only the older bulk rules");
+      ok(!p2.some((n) => p1.includes(n)), "R1 no rule appears on two pages");
+
+      // Previous is disabled on page 1, Next on the last page — no dead-end paging.
+      await page.locator(".rules-pager button", { hasText: "Previous" }).click();
+      await page.waitForTimeout(200);
+      ok(await page.locator(".rules-pager button:disabled", { hasText: "Previous" }).count() === 1, "R1 Previous is disabled on page 1");
+
+      // Page size is fixed to the 10 / 20 choice the owner asked for.
+      const sizes = await page.locator(".rules-pagesize-btn").allInnerTexts();
+      ok(JSON.stringify(sizes.map((t) => t.trim())) === JSON.stringify(["10", "20"]), `R1 page-size choices are exactly 10 and 20 (got ${sizes})`);
+      await page.locator(".rules-pagesize-btn", { hasText: "20" }).click();
+      await page.waitForTimeout(250);
+      ok(await dataRows().count() === 20, "R1 choosing 20 renders 20 rows");
+      ok(await page.locator(".rules-pagination-info", { hasText: /1–20 of 30/ }).count() > 0, "R1 the range follows the page size");
+
+      // Searching resets to page 1 — the old code could strand you on an empty page.
+      await page.locator(".rules-pagesize-btn", { hasText: "10" }).click();
+      await page.waitForTimeout(150);
+      await page.locator(".rules-pager button", { hasText: "Next" }).click();
+      await page.waitForTimeout(200);
+      await page.locator("input.list-search").fill("Bulk seeded rule 3");
+      await page.waitForTimeout(300);
+      ok(await page.locator(".rules-pagination-info", { hasText: /^1–/ }).count() > 0, "R1 a search snaps back to page 1 (never a blank page)");
+      await page.locator("input.list-search").fill("");
+      await page.waitForTimeout(250);
+    } catch (e) { fail++; console.log("  ✗ R1 threw: " + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
+  /* ---------------- R2 — frozen header + selection bar docked to the table ---------------- */
+  {
+    console.log("R2 sticky table head + docked selection bar");
+    const env = await openEditor(browser, "admin-panel", "admin");
+    const { page } = env;
+    try {
+      await page.locator("table.rules-table tbody tr").first().waitFor({ timeout: 12000 });
+      await page.waitForTimeout(900); // .section + .stagger entry animations must settle before measuring
+
+      const headSticky = await page.locator("table.rules-table thead th").first()
+        .evaluate((el) => getComputedStyle(el).position);
+      ok(headSticky === "sticky", `R2 the table head is sticky so it stays visible while scrolling (got ${headSticky})`);
+
+      // Selecting a row must NOT move the table. The old bulk bar was rendered above
+      // the whole section, so ticking a box inserted ~50px far up the page and shoved
+      // every row down under the cursor.
+      const firstRow = page.locator("table.rules-table tbody tr").first();
+      const absTop = () => firstRow.evaluate((el) => el.getBoundingClientRect().top + window.scrollY);
+      const before = await absTop();
+      const box = page.locator("table.rules-table tbody input[type=checkbox]").first();
+      await box.check();
+      await page.waitForTimeout(300);
+      ok(await page.locator(".rules-bulkbar", { hasText: "1 selected" }).count() > 0, "R2 the selection count appears");
+
+      // The bar is INSIDE the table's card, immediately before the table.
+      const docked = await page.locator(".rules-bulkbar").evaluate((el) => ({
+        pos: getComputedStyle(el).position,
+        nextIsTable: !!el.nextElementSibling && el.nextElementSibling.tagName === "TABLE",
+        parentIsCard: !!el.parentElement && el.parentElement.className.includes("card"),
+      }));
+      ok(docked.nextIsTable, "R2 the selection bar sits directly above the table it acts on");
+      ok(docked.parentIsCard, "R2 the selection bar is inside the table card, not above the section");
+      ok(docked.pos === "sticky", "R2 the selection bar is sticky so it stays reachable while scrolling");
+
+      const after = await absTop();
+      ok(Math.abs(after - before) < 2, `R2 selecting a row does NOT shift the table (moved ${Math.round(after - before)}px)`);
+
+      await page.locator(".rules-bulkbar button", { hasText: "Clear" }).click();
+      await page.waitForTimeout(250);
+      ok(await page.locator(".rules-bulkbar").count() === 1, "R2 the bar stays (constant height is what stops the jump)");
+      ok(await page.locator(".rules-bulkbar-idle", { hasText: /30 rules/ }).count() > 0, "R2 Clear returns the bar to its idle row-count caption");
+      const cleared = await absTop();
+      ok(Math.abs(cleared - before) < 2, `R2 clearing the selection does not shift the table either (moved ${Math.round(cleared - before)}px)`);
+    } catch (e) { fail++; console.log("  ✗ R2 threw: " + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
+  /* ---------------- R3 — Add Rule is a modal, and it does not displace the table ---------------- */
+  {
+    console.log("R3 Add Rule opens a modal dialog");
+    const env = await openEditor(browser, "admin-panel", "admin");
+    const { page } = env;
+    try {
+      await page.locator("table.rules-table tbody tr").first().waitFor({ timeout: 12000 });
+      await page.waitForTimeout(900); // entry animations must settle before measuring
+      const firstRow = page.locator("table.rules-table tbody tr").first();
+      const absTop = () => firstRow.evaluate((el) => el.getBoundingClientRect().top + window.scrollY);
+      const before = await absTop();
+
+      await page.locator("button", { hasText: "+ Add Rule" }).first().click();
+      const dlg = page.locator(".wiz-dialog");
+      await dlg.waitFor({ timeout: 8000 });
+      ok(await dlg.getAttribute("role") === "dialog", "R3 the wizard renders as a dialog, not an inline card");
+      ok(await dlg.getAttribute("aria-modal") === "true", "R3 the dialog is modal");
+      ok(await page.locator(".wiz-overlay").count() > 0, "R3 the dialog has a backdrop overlay");
+      ok(await dlg.getByText("Add New Rule").count() > 0, "R3 the dialog is titled Add New Rule");
+      ok(await dlg.getByText(/1\.\s*Project/).count() > 0, "R3 it opens on the project → workflow → transition flow");
+
+      // The whole reason it became a dialog: the table underneath must not move.
+      const after = await absTop();
+      ok(Math.abs(after - before) < 2, `R3 opening the wizard does NOT displace the rules table (moved ${Math.round(after - before)}px)`);
+
+      // Escape closes it, like every other dialog in the app.
+      await page.keyboard.press("Escape");
+      await page.waitForTimeout(300);
+      ok(await page.locator(".wiz-dialog").count() === 0, "R3 Escape closes the wizard");
+    } catch (e) { fail++; console.log("  ✗ R3 threw: " + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
+  /* ---------------- R4 — modal lands in the viewport, not above it ---------------- */
+  {
+    console.log("R4 delete dialog opens in view (containing-block regression)");
+    const env = await openEditor(browser, "admin-panel", "admin");
+    const { page } = env;
+    try {
+      await page.locator("table.rules-table tbody tr").first().waitFor({ timeout: 12000 });
+
+      // The bug: `.section` carried a leftover identity transform from a keyframe that
+      // ended at translateY(0) instead of none, which made it — not the viewport —
+      // the containing block for the overlay's `position: fixed`, so the dialog
+      // rendered thousands of pixels above wherever the user was.
+      // Two independent guarantees, because the keyframe fix alone is only true once
+      // the 0.3s section animation has FINISHED — during it, .section still carries a
+      // transform. Portalling the overlay to <body> is what makes this impossible at
+      // any moment, and for any future container style.
+      await page.waitForTimeout(600); // let .section finish animating
+      const sectionTransform = await page.locator(".section").first()
+        .evaluate((el) => getComputedStyle(el).transform);
+      // Chrome keeps a finished fill-mode:both animation's OUTPUT, and `none`
+      // interpolates as the identity matrix — so a settled .section reports
+      // "matrix(1, 0, 0, 1, 0, 0)", not "none". What matters is that it settles to
+      // an IDENTITY (nothing visually displaced); the portal check below is what
+      // guarantees the dialog's position.
+      ok(sectionTransform === "none" || sectionTransform === "matrix(1, 0, 0, 1, 0, 0)",
+        `R4 .section settles to an identity transform (keyframe ends at transform:none) — got ${sectionTransform}`);
+
+      // Scroll well down the page, then open the dialog from a row that is in view.
+      await page.evaluate(() => window.scrollTo(0, 900));
+      await page.waitForTimeout(300);
+      // Pick a Delete button clear of the sticky toolbar + header; the topmost rows
+      // sit UNDER them once scrolled, so a click there is intercepted by the bar.
+      const delBtns = page.locator("table.rules-table .row-actions button", { hasText: /^Delete$/ });
+      const STICKY_H = 140;
+      let opened = false;
+      for (let i = 0; i < await delBtns.count(); i++) {
+        const bx = await delBtns.nth(i).boundingBox();
+        if (bx && bx.y > STICKY_H && bx.y < 900) { await delBtns.nth(i).click(); opened = true; break; }
+      }
+      ok(opened, "R4 found a Delete button clear of the sticky header to click");
+      const modal = page.locator(".pf-modal.del-dialog");
+      await modal.waitFor({ timeout: 8000 });
+      await page.waitForTimeout(400);
+
+      const geom = await modal.evaluate((el) => {
+        const r = el.getBoundingClientRect();
+        return { top: r.top, bottom: r.bottom, vh: window.innerHeight };
+      });
+      ok(geom.top >= 0 && geom.top < geom.vh,
+        `R4 the delete dialog opens INSIDE the viewport (top=${Math.round(geom.top)}, viewport=${geom.vh})`);
+      ok(geom.bottom > 0, "R4 the dialog is not scrolled off the top of the screen");
+
+      const overlay = await page.locator(".pf-modal-overlay").evaluate((el) => ({
+        pos: getComputedStyle(el).position,
+        parentIsBody: el.parentElement === document.body,
+      }));
+      ok(overlay.pos === "fixed", "R4 the overlay is still position: fixed (tracks the viewport)");
+      ok(overlay.parentIsBody, "R4 the overlay is portalled to <body>, so no animated container can capture its fixed positioning");
+    } catch (e) { fail++; console.log("  ✗ R4 threw: " + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
+  /* ---------------- R5 — one search bar, not two ---------------- */
+  {
+    console.log("R5 searchable select is a single combobox");
+    const env = await openEditor(browser, "config-ui", "cfg-semantic");
+    const { page } = env;
+    try {
+      // The Target Field picker is a searchable CustomSelect. Open it: there must be
+      // exactly ONE text input on screen for it — the trigger itself — not a dead
+      // "Select a field…" bar stacked on top of a live "Search fields…" bar.
+      const trigger = page.locator(".dropdown-trigger", { hasText: /Select a field|Description|Summary/ }).first();
+      await trigger.waitFor({ timeout: 12000 });
+      await trigger.click();
+      await page.locator(".dropdown-panel").first().waitFor({ timeout: 6000 });
+
+      ok(await page.locator(".dropdown-panel .dropdown-search").count() === 0,
+        "R5 the open panel no longer carries its own second search box");
+      ok(await page.locator(".dropdown-combobox input.dropdown-combobox-input").count() === 1,
+        "R5 exactly one search input exists, and it IS the trigger");
+      ok(await page.locator(".dropdown-combobox-input").first().evaluate((el) => el === document.activeElement),
+        "R5 the single search input is focused on open, so you can just type");
+
+      // Typing filters, and picking still works.
+      await page.locator(".dropdown-combobox-input").first().fill("summ");
+      await page.waitForTimeout(250);
+      const opts = await page.locator(".dropdown-panel .dropdown-item").allInnerTexts();
+      ok(opts.length > 0 && opts.every((t) => /summ/i.test(t)), `R5 typing in the trigger filters the list (${opts.length} match)`);
+      await page.locator(".dropdown-panel .dropdown-item").first().click();
+      await page.waitForTimeout(250);
+      ok(await page.locator(".dropdown-panel").count() === 0, "R5 picking an option closes the menu");
+      ok(await page.locator(".dropdown-combobox").count() === 0, "R5 the trigger reverts to a button once closed");
+    } catch (e) { fail++; console.log("  ✗ R5 threw: " + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
+  /* ---------------- R6 — import file picker is ours, and in English ---------------- */
+  {
+    console.log("R6 import file picker has no browser-native chrome");
+    const env = await openEditor(browser, "admin-panel", "admin");
+    const { page } = env;
+    try {
+      await page.locator("button", { hasText: "Export / Import" }).first().click();
+      const dlg = page.locator(".port-dialog");
+      await dlg.waitFor({ timeout: 8000 });
+      await dlg.locator("button.port-tab", { hasText: "Import" }).click();
+      await page.waitForTimeout(200);
+
+      // A bare <input type=file> paints the BROWSER's button and "no file selected"
+      // label in the BROWSER's language — a Romanian Chrome showed "Răsfoiește…" and
+      // "Niciun fișier selectat" inside an otherwise English dialog.
+      const visible = await dlg.locator("input[type=file]").first().evaluate((el) => {
+        const r = el.getBoundingClientRect();
+        return { w: r.width, h: r.height };
+      });
+      ok(visible.w <= 1 && visible.h <= 1, `R6 the native file input is visually hidden (${visible.w}x${visible.h})`);
+      ok(await dlg.locator("button", { hasText: "Choose file…" }).count() === 1, "R6 our own English 'Choose file…' button is shown instead");
+      ok(await dlg.locator(".port-file-name", { hasText: "No file chosen" }).count() === 1, "R6 the empty state is our English label");
+    } catch (e) { fail++; console.log("  ✗ R6 threw: " + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
+  /* ---------------- R7 — Owner column names real people ---------------- */
+  {
+    console.log("R7 owner column shows real attribution");
+    const env = await openEditor(browser, "admin-panel", "admin");
+    const { page } = env;
+    try {
+      await page.locator("table.rules-table tbody tr").first().waitFor({ timeout: 12000 });
+      const ownerText = (await page.locator("table.rules-table tbody tr td:nth-last-child(2)").allInnerTexts()).join(" | ");
+
+      ok(/You/.test(ownerText), "R7 a rule created by the viewer reads 'You'");
+      ok(/Dana Kovacs/.test(ownerText), "R7 another user's rule shows their display name");
+      // The claimed rule used to read "Unowned" even though the registry knew who
+      // claimed it — that attribution is now surfaced instead of discarded.
+      ok(/Claimed by Priya Raman/.test(ownerText), `R7 a claimed rule names its claimer instead of saying Unowned`);
+      // And nothing anywhere prints a raw accountId at the user.
+      ok(!/557058:/.test(ownerText), `R7 no raw accountId is ever rendered — got: ${ownerText.slice(0, 200)}`);
+    } catch (e) { fail++; console.log("  ✗ R7 threw: " + e.message.split("\n")[0]); }
     await closeEditor(env);
   }
 } finally {

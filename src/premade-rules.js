@@ -283,6 +283,15 @@ async function runCondition(cfg, issueKey, read, actingUser, readUserGroups) {
   // CREATE (no persisted issue) → SHOW. A persisted-issue condition has nothing to evaluate yet.
   if (!issueKey) return true;
   switch (cfg.ruleType) {
+    // ⚠️ FIELD TYPES — OFFLINE REFERENCE ONLY, and DELIBERATELY DIVERGENT from
+    // the live semantics. At runtime a condition is evaluated by JIRA as the
+    // manifest expression, never by this function; the expression's semantics
+    // are the product's truth: strictly typed (no numeric coercion — expression
+    // `==` errors across types), case-insensitive via toLowerCase on both sides,
+    // custom fields of verified kinds only (exprProp/exprKind — see
+    // CONDITION_FIELD_KINDS), and field-equals ALLOWS on an empty field. The
+    // looser matching below (numeric coercion, isEmpty's ADF/whitespace
+    // handling) exists for offline unit coverage of legacy shapes only.
     case "field-has-value": {
       if (!cfg.fieldId) return true;
       return !isEmpty(await read(issueKey, cfg.fieldId));

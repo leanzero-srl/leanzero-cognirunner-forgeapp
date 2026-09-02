@@ -39,7 +39,10 @@
     "test:premade": "node scripts/premade-rules.test.mjs",
     "test:recipes": "node scripts/recipes.test.mjs",
     "test:parity": "node scripts/premade-parity.mjs",
-    "test:offline": "node scripts/premade-parity.mjs && node scripts/run-offline.mjs && node scripts/upload-contract.test.mjs",
+    "test:offline": "node scripts/premade-parity.mjs && node scripts/run-offline.mjs && npm run test:regression",
+    "test:premade-e2e": "node scripts/premade-e2e.mjs",
+    "reg": "node scripts/regression.mjs",
+    "test:regression": "node scripts/configs-filter.test.mjs && node scripts/registry-limits.test.mjs",
     "test:cron": "node scripts/cron.test.mjs",
     "test:events": "node scripts/jira-events.test.mjs",
     "test:listeners": "node --import ./lib/register-mocks.mjs scripts/listeners.test.mjs",
@@ -47,9 +50,7 @@
     "test:listeners-e2e": "node scripts/listeners-e2e.mjs",
     "test:jobs-e2e": "node scripts/jobs-e2e.mjs",
     "probe:listeners": "node scripts/listeners-agent-probe.mjs",
-    "test:resolvers-live": "node scripts/resolvers-live.mjs",
-    "test:premade-e2e": "node scripts/premade-e2e.mjs",
-    "test:contract": "node scripts/upload-contract.test.mjs"
+    "test:resolvers-live": "node scripts/resolvers-live.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.48.0"

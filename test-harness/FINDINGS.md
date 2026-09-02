@@ -53,7 +53,7 @@ don't echo the id).
 baseline), **0 AI errors across all 782 cases** (the Converse + `parseAIJson` path is solid). Misses
 (18): injection 16 (11 = the injection-embedded-in-a-real-task nuance, ~5 = V-hardened injection
 judgment variance), robustness 1 (over-cautious on a whitespace+instruction field — blocked vs allow),
-condition 1 (**F3** — conditions not enforced on the REST path). No new failure class.
+condition 1 (**F3** — at the time believed to be "conditions not enforced on the REST path"; RE-DIAGNOSED 2026-08-12, see F3). No new failure class.
 
 | Provider · Model | Total | agentic (JQL tool-calling) | robustness | injection | other studies | AI errors |
 |---|---|---|---|---|---|---|
@@ -214,25 +214,136 @@ Quantitative results: `REPORT.md` (snapshot) / `results/report.{md,html}`. Raw: 
 
 ---
 
-## F3 — ~~Forge conditions are not enforced on the REST transition path~~ · **STRUCK 2026-08-14 — the diagnosis was WRONG** · Severity MEDIUM
+## F3 — ~~Forge conditions are not enforced on the REST transition path~~ · **RE-DIAGNOSED + FIXED (2026-08-12)** · was Severity MEDIUM
 
-**Original claim (struck).** "Conditions gate transition visibility in the UI, but REST-driven transitions bypass them. Both a customer-matching and a non-matching issue showed the condition transition as available, and firing it returned 204 for both; the `ai-text-field-condition` lambda was invoked **0 times** during the run."
+> ⚠️ **F3's original diagnosis was WRONG, and the wrong conclusion propagated.** The observations
+> were real; the explanation was not. Anything elsewhere in this repo citing "conditions gate UI
+> visibility, not REST" inherits the error — treat this entry as the correction.
 
-**What was actually true.** The observation was real; the inference was unsupported. The experiment drove CogniRunner's OWN condition, which declares `expression: "true"` — a tautology that passes on every surface, for reasons that have nothing to do with REST. The test could not distinguish "REST skips conditions" from "this condition allows everything".
+**What was observed.** A matching and a non-matching issue both showed the condition's transition as
+available; firing it returned 204 for both; the `ai-text-field-condition` lambda was invoked **0
+times**.
 
-**Corrected finding (measured 2026-08-14, purpose-built probe app `LZ Condition Probe`, app `741d6811-…`).** The `jira:workflowCondition` module **has no `function` property** — the manifest reference lists only `expression`, required. So the 0 invocations were never about REST: Jira does not invoke a Forge function for a condition on ANY surface. And conditions **ARE** enforced on the REST path. With `expression: "false"` on a self-loop transition, same status as a control validator:
+**What was concluded (wrong).** "Jira platform behavior — `GET`/`POST /issue/{key}/transitions` does
+not evaluate Forge conditions. There is nothing in the app to change."
 
-| | condition (`expression:"false"`) | validator (`function:`) |
-|---|---|---|
-| `GET /issue/{key}/transitions` | **NOT listed** (570 others listed) | listed |
-| forced `POST .../transitions` | **HTTP 400**, issue did not move | HTTP 400 with the function's `errorMessage` |
-| `forge logs` invocations | **0** | 1 (`issue, configuration, context, user, transition, contextToken`) |
+**What was actually true.** Both observations were caused by `manifest.yml`, not by Jira:
 
-`forge lint` (12.21.0 AND 13.3.0) and `forge deploy`'s server-side manifest validation both accept the illegal `function` key silently.
+1. The module declared **`expression: "true"`**. A Forge condition IS a Jira expression, so ours
+   evaluated to true unconditionally, on every surface. Of course both issues passed — the condition
+   was a constant.
+2. It also declared **`function: validate`**, which is **not a property of `jira:workflowCondition`
+   at all** (checked against the schema `forge deploy` validates with: the properties are
+   name/description/expression/resolver/view/edit/create/projectTypes/key, and `expression` is
+   REQUIRED). Jira ignored that key silently. That is the entire reason the lambda ran 0 times — and
+   the reason the app's own code comments, the admin wizard and this finding all assumed a lambda
+   was involved.
 
-**Action taken.** Condition authoring removed from the add-rule wizard (`f4b09a9`); editor callout rewritten; README corrected. For any real gating use a **validator**. If the transition genuinely must be HIDDEN, the working pattern is a condition expression reading a precomputed verdict from an issue entity property — measured working: property absent → hidden, `"fail"` → hidden, `"pass"` → listed and `POST` returns 204. Repro: `scripts/lz-condition-probe.mjs`.
+The "REST bypasses conditions" generalisation was never tested. It **could not** be tested, because
+a constant-true expression passes everywhere and proves nothing.
 
-**Not measured.** The new issue-view transition menu (browser) and Jira Automation-driven transitions. REST only.
+**Disproved.** `test-harness/scripts/reg-conditions-enforce.mjs` — 37/37 live (incl. a real sub-task
+fixture proving `parent-status-is` in both directions). Every blocking case is absent from
+`GET /transitions` **and** rejected by `POST /transitions` with a 4xx. **Jira enforces Forge
+conditions on the REST path.**
+
+**Fixed.** The manifest expression now evaluates the deterministic rule types from the config saved
+by our own Custom UI (which reaches the expression as `config`, parsed — proved by
+`_probe-condition-config.mjs`). TEN types are expression-backed (see `EXPRESSION_BACKED_CONDITIONS`
+in `src/shared/premade-rules-catalog.js`, the single source): issue-type-is, issue-is-resolved,
+resolution-is, priority-is, parent-status-is, current-user-is-assignee, current-user-is-reporter,
+and — since 2026-08-13, custom fields of verified kinds only — field-has-value, field-empty,
+field-equals (see F-COND-FIELD below for the safety pattern and probe evidence). Everything else is
+greyed out because Jira's expression sandbox can't reach related issues, attachments or group
+membership. An AI-powered condition remains **structurally impossible** — a Jira expression has no
+network, no app storage and no `await`.
+
+**Standing risk, now documented rather than unknown.** Per Atlassian's docs a condition module that
+cannot resolve evaluates to **false**, i.e. it BLOCKS the transition for everyone. That is why the
+expression is default-true for anything it doesn't recognise, and why removing the condition module
+is not on the table.
+
+---
+
+## F-COND-FIELD — field-based condition types · **SHIPPED-GUARDED (2026-08-13, custom fields per-kind)** · was WITHDRAWN
+
+**Shipped.** After the 41-case live probe below cleared every kind, the trio ships for
+CUSTOM fields of verified kinds only: the expression indexes `issue` solely via
+`config.exprProp` behind a `^customfield_[0-9]+$` guard (system-field name mismatch made
+structurally impossible — a hand-crafted system id falls OPEN), every typed comparison is
+gated on the `exprKind` its probe cleared, `field-equals` ALLOWS on an empty field (a
+field hidden by field configuration reads null regardless of value — null→hide would let
+a routine admin action hide transitions tenant-wide), and everything unrecognized —
+including every pre-ship saved config — falls to default-true. Single source:
+`CONDITION_FIELD_KINDS` + `conditionFieldSupport()` in `src/shared/premade-rules-catalog.js`;
+the F3 guard generates its per-kind matrix from the same function (229 assertions live,
+0 failed). Residual risks, documented not silent: a field hidden by field configuration
+(or deleted, or context-narrowed) reads null → has-value hides (said in the rule's help
+text; equals immune by design); a renamed select option stops matching until the rule is
+edited (same class as priority-is); a hand-crafted REST config whose exprKind mismatches
+the field's real kind is a typed error → fail-closed on that transition (deliberate-misuse
+surface; warned in docs/REST-API-RULES.md §6).
+
+### The original withdrawal analysis (kept for the record) · was Severity MEDIUM if shipped naively
+
+**What.** Three field-based condition types — `field-has-value`, `field-empty`, `field-equals` — were
+built, then withdrawn when an adversarial review found they can fail **closed**: hide a transition on
+exactly the issues that satisfy the rule. The worst failure mode in this product (fail-open is the law
+everywhere else).
+
+**Why they're unsafe today (evidence, not assumption):**
+- **System-field name mismatch.** A Jira expression names system fields differently from the REST
+  field ids our picker produces: the expression accessor is `issue.dueDate` (camelCase), the REST id
+  is `duedate`; `issue.issueType` vs `issuetype`; `issue.attachments` vs `attachment`. Indexing
+  `issue[config.fieldId]` with the REST id reads `null` → a has-value check is FALSE → the transition
+  is hidden on issues that DO have the value. (Atlassian's own Jira-expressions docs confirm the
+  camelCase accessors.)
+- **Typed values.** Field values are typed. Probing `.length` on a Number, or comparing a select
+  field's `{value:"X"}` object to the string `"X"`, is an evaluation error; an unresolvable expression
+  is FALSE — fail-closed again.
+
+**What a safe ship would require** (tracked, not done here — confidence to do it correctly in one pass
+is LOW and the failure mode is fail-closed, so it is NOT shipped): a verified REST-id → expression-
+accessor map for every system field; a restriction of `field-has-value`/`field-empty` to CUSTOM
+fields only (where the REST id `customfield_NNNNN` IS the expression accessor and a strict `== null`
+comparison is type-agnostic); type-aware comparison for `field-equals` per field type; each proved
+live per field type before un-greying.
+
+**PROBED 2026-08-13 — per-field-kind semantics, live (41 cases, 0 decisive mismatches).**
+Script: `_probe-condition-fieldkinds.mjs` (probe branches keyed `conditionKind:"cogprobe"`
+temporarily appended to the dev expression as its FIRST branch, deployed, run, reverted —
+never committed; deploy sentinel `p:"deny"` guards against reading a production
+default-true as data). Evidence: `results/condition-fieldkind-probe.json`. What it pinned:
+- **All 13 scalar custom kinds** (text, textarea, url, number, date, datetime, select,
+  radio, user, group, cascading, version, project): `issue?.[<customfield id>]` resolves;
+  an UNSET field reads **null** (never ""/{}), so has-value/empty via null-check is
+  correct per kind.
+- **All 6 array custom kinds** (labels, multiselect, checkboxes, multiuser, multigroup,
+  multiversion): `.length` works on the value; an UNSET array reads **null**, not `[]`
+  (`arris0` hidden on both fixtures) — the null-or-length pattern covers both shapes.
+- **Value shapes under strict `==`**: text/url/date are plain Strings (date is REST
+  "YYYY-MM-DD" — string equality works both directions); select/radio are `{value}`
+  options (`?.value` compare works both directions); number is a Number and a JSON
+  number in `config` ARRIVES TYPED (`vn:7` matches, `vn:8` blocks). Textarea is a rich
+  object, NOT a String (`streq` hidden on a set value) → textarea equals stays out.
+- **`String.toLowerCase()` exists** (field side and option `.value` side) →
+  case-insensitive equals ships as promised by the UI copy.
+- **`null == String` is a safe false, not an error** (`nullcmp` discriminator visible on
+  the bare fixture).
+- **Both fail-closed error modes reproduced live at last**: `Number == String` hides
+  (`numeq` with a deliberately-string `vn:"7"`), and `.length` on a Number hides
+  (`errlen`) — while `nul` on the same field stays visible, proving expression errors
+  are branch-local. The risk model is no longer doc-derived.
+- **The customfield-only regex guard behaves**: `config.f.match("^customfield_[0-9]+$")`
+  accepts custom ids, rejects `duedate`.
+
+**Proven boundary (this is what makes "withdrawn" a guarantee):**
+- `src/shared/premade-rules-catalog.js` — `CONDITION_FIELD_TYPES_PENDING` lists the three; the manifest
+  expression implements NONE of them, so they hit its default-true.
+- The picker greys them in the dropdown itself (`PremadeRuleForm.jsx` annotates condition options), so
+  a customer never selects one that silently won't gate.
+- `reg-conditions-enforce.mjs` asserts all three ALLOW (fail-OPEN), both `GET /transitions` and
+  `POST /transitions` — a regression that made any of them hide a transition fails the F3 guard.
 
 ---
 

@@ -24,6 +24,12 @@ const MATRIX = [
     { name: "admin-portability-export", shot: "admin", tab: "Rules", openPortability: true, wait: ".port-dialog" },
     { name: "admin-portability-import", shot: "admin", tab: "Rules", openPortability: true, portabilityImport: true, wait: ".port-plan-row" },
     { name: "admin-rules-explain", shot: "admin", tab: "Rules", clickExplainRows: true, wait: ".rule-explain-card" },
+    // The three surfaces the rules-table review touched. Each is a MODAL portalled to
+    // <body> (see DeleteRulesDialog) or the table toolbar, and each needs eyes on it
+    // in both themes.
+    { name: "admin-rules-selected", shot: "admin", tab: "Rules", selectFirstRule: true, wait: ".rules-bulkbar button" },
+    { name: "admin-delete-dialog", shot: "admin", tab: "Rules", openDeleteDialog: true, wait: ".del-dialog .del-option" },
+    { name: "admin-add-rule-wizard", shot: "admin", tab: "Rules", openAddWizard: true, wait: ".wiz-dialog .wizard-breadcrumb" },
     { name: "admin-logs", shot: "admin", tab: "Execution Logs", showLogs: true, wait: ".log-entry" },
     { name: "admin-docs", shot: "admin", tab: "Documentation", wait: ".docs-tab" },
     { name: "admin-permissions", shot: "admin", tab: "Permissions", wait: ".perm-admin-card" },
@@ -40,6 +46,10 @@ const MATRIX = [
     { name: "config-premade-lists-error", shot: "cfg-premade", failInvokes: ["getRuleLists"], wait: ".btn-retry" },
     { name: "config-validator-nokey", shot: "cfg-validator", noKey: true, wait: ".provider-warning" },
     { name: "config-semantic-nokey", shot: "cfg-semantic", noKey: true, wait: ".provider-warning" },
+    // A searchable select, OPEN. The trigger itself is the search box (combobox) —
+    // there must be exactly one input here, not a dead "Select a field…" bar sitting
+    // on top of a live "Search fields…" one.
+    { name: "config-field-combobox", shot: "cfg-semantic", openFieldPicker: true, wait: ".dropdown-combobox-input" },
   ]},
   { app: "config-view", shots: [
     { name: "view-summary-active", shot: "view-active", wait: ".config-item" },
@@ -126,6 +136,22 @@ async function run(only) {
             // Row 0 (validator → success card) and the premade-condition row (→ degraded note).
             await page.locator(".rule-explain-btn").nth(0).click({ timeout: 6000 }).catch(() => {});
             await page.locator(".rule-explain-btn").nth(5).click({ timeout: 6000 }).catch(() => {});
+          }
+          if (s.openFieldPicker) {
+            // The Target Field picker on the semantic-PF form.
+            await page.locator(".dropdown-trigger").last().click({ timeout: 6000 }).catch(() => {});
+          }
+          if (s.selectFirstRule) {
+            await page.locator("table.rules-table tbody input[type=checkbox]").first().check({ timeout: 6000 }).catch(() => {});
+          }
+          if (s.openDeleteDialog) {
+            // Pick a Delete button clear of the sticky toolbar + header, otherwise the
+            // click is intercepted by the bar sitting over the topmost rows.
+            await page.locator("table.rules-table .row-actions button", { hasText: /^Delete$/ }).nth(1)
+              .click({ timeout: 6000 }).catch(() => {});
+          }
+          if (s.openAddWizard) {
+            await page.getByRole("button", { name: /^\+ Add Rule$/ }).first().click({ timeout: 6000 }).catch(() => {});
           }
           if (s.openPortability) {
             await page.getByRole("button", { name: /Export \/ Import/ }).first().click({ timeout: 6000 }).catch(() => {});

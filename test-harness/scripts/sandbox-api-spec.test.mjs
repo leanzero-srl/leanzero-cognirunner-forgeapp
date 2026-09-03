@@ -15,12 +15,18 @@
 // detail/returns/promptDoc/example non-empty, signature = `api.<name>...`), and the prompt derivation
 // (buildSystemPromptApiSection) embeds a sampled method's verbatim promptDoc + the guard + section
 // scaffolding. Run: node --import ../lib/register-mocks.mjs scripts/sandbox-api-spec.test.mjs
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   SANDBOX_API_METHODS,
   KNOWN_API_MEMBERS,
   getApiMethodNames,
   API_USAGE_GUARD,
   buildSystemPromptApiSection,
+  ISSUE_KEY_OPTIONAL_METHODS,
+  resolveIssueKey,
+  normalizeKeyOptionalArgs,
 } from "../../src/shared/sandbox-api-spec.js";
 
 let pass = 0, fail = 0;
@@ -97,6 +103,106 @@ for (const heading of ["## SANDBOX API REFERENCE", "## FIELD TYPE REFERENCE", "#
   ok(prompt.includes(heading), `prompt contains section heading "${heading}"`);
 }
 ok(prompt.includes("| Jira Field Type |"), "prompt renders the field-type reference table header");
+
+// --- F-004: "which issue does this act on when the caller doesn't say?" -------
+// One answer (resolveIssueKey), used by production createApi() AND the dry-run testApi.
+// The regression this guards: api.getIssue() became GET /issue/undefined -> 404 in
+// production while Test Run passed, because three places answered the question differently.
+ok(Array.isArray(ISSUE_KEY_OPTIONAL_METHODS) && ISSUE_KEY_OPTIONAL_METHODS.length === 5,
+  "ISSUE_KEY_OPTIONAL_METHODS lists the 5 key-first methods");
+for (const n of ISSUE_KEY_OPTIONAL_METHODS) {
+  const entry = SANDBOX_API_METHODS.find((m) => m.name === n);
+  ok(!!entry, `key-optional method ${n} is documented in the spec`);
+  ok(entry && entry.signature.includes("issueKey?"), `api.${n} signature marks the key optional`);
+  ok(entry && entry.detail.includes("issueKey?"), `api.${n} hover detail marks the key optional`);
+  ok(entry && /key is OPTIONAL/i.test(entry.promptDoc), `api.${n} promptDoc says the key is optional`);
+}
+// createIssueLink / rankIssue / forIssue take a key first but it is NOT the bound issue.
+for (const n of ["createIssueLink", "rankIssue", "forIssue"]) {
+  ok(!ISSUE_KEY_OPTIONAL_METHODS.includes(n), `${n} is NOT key-optional (its first arg is not the bound issue)`);
+}
+ok(resolveIssueKey("PROJ-1", "PROJ-9", "getIssue") === "PROJ-1", "explicit key wins over the bound issue");
+ok(resolveIssueKey(undefined, "PROJ-9", "getIssue") === "PROJ-9", "omitted key falls back to the bound issue");
+ok(resolveIssueKey("", "PROJ-9", "getIssue") === "PROJ-9", "empty-string key falls back to the bound issue");
+ok(resolveIssueKey(null, "PROJ-9", "getIssue") === "PROJ-9", "null key falls back to the bound issue");
+ok(resolveIssueKey(10023, "PROJ-9", "getIssue") === "10023", "a numeric issue ID is accepted (issue/{idOrKey})");
+// An issue OBJECT passed where a key belongs must FAIL, never silently fall back to the
+// current issue — that would turn a caller bug into a write on the wrong issue.
+let badType = null;
+try { resolveIssueKey({ key: "PROJ-1" }, "PROJ-9", "updateIssue"); } catch (e) { badType = e.message; }
+ok(badType && /must be a string/.test(badType), "a non-string, non-numeric key throws instead of falling back");
+let threw = null;
+try { resolveIssueKey(undefined, null, "getIssue"); } catch (e) { threw = e.message; }
+ok(threw !== null, "resolveIssueKey throws when there is no explicit and no bound key");
+ok(threw && threw.includes("api.forIssue(") && threw.includes("getIssue"),
+  "the throw names the method and points at api.forIssue(key)");
+
+// The two guards must be INDISTINGUISHABLE: the key-LESS stub message template in
+// createApi() and the key-OPTIONAL resolveIssueKey() message must render identically.
+const here = path.dirname(fileURLToPath(import.meta.url));
+const indexSrc = readFileSync(path.join(here, "../../src/index.js"), "utf8");
+const stubTpl = indexSrc.match(/throw new Error\(`(api\.\$\{m\}\(\)[^`]*)`\)/);
+ok(!!stubTpl, "found the ISSUE_BOUND_METHODS throwing-stub message template in src/index.js");
+if (stubTpl) {
+  const rendered = stubTpl[1].split("${m}").join("addComment").split("${where}").join("this job run");
+  let optMsg = "";
+  try { resolveIssueKey(undefined, null, "addComment", "this job run"); } catch (e) { optMsg = e.message; }
+  ok(optMsg === rendered, "key-optional and key-less guards throw the SAME message (operator can't tell them apart)");
+}
+
+// --- ARITY: omitting the key must SHIFT the remaining arguments -------------
+// Without this, api.updateIssue({ priority }) would put the payload in `key` and PUT
+// `{ fields: undefined }` — the "optional key" promise has to hold for the 2-arg methods.
+const norm = (m, ...args) => normalizeKeyOptionalArgs(m, args);
+const fieldsObj = { priority: { name: "High" } };
+ok(norm("getIssue", "PROJ-1").key === "PROJ-1", "getIssue(key) keeps the key");
+ok(norm("getIssue").key === undefined, "getIssue() has no key (defaults later)");
+for (const m of ["updateIssue", "editIssue"]) {
+  const shifted = norm(m, fieldsObj);
+  ok(shifted.key === undefined && shifted.rest[0] === fieldsObj, `${m}(payload) shifts the payload out of the key slot`);
+  const explicit = norm(m, "PROJ-1", fieldsObj);
+  ok(explicit.key === "PROJ-1" && explicit.rest[0] === fieldsObj, `${m}(key, payload) keeps both`);
+}
+const t1 = norm("transitionIssue", "31");
+ok(t1.key === undefined && t1.rest[0] === "31", "transitionIssue(id) treats the lone argument as the transition id");
+const t2 = norm("transitionIssue", "PROJ-1", "31");
+ok(t2.key === "PROJ-1" && t2.rest[0] === "31", "transitionIssue(key, id) keeps both");
+const t3 = norm("transitionIssue", "31", { fields: {} });
+ok(t3.key === undefined && t3.rest[0] === "31" && t3.rest[1] && typeof t3.rest[1] === "object",
+  "transitionIssue(id, extra) is key-less (2nd arg is an object)");
+const n1 = norm("transitionByName", "Done");
+ok(n1.key === undefined && n1.rest[0] === "Done", "transitionByName(name) treats the lone argument as the name");
+const n2 = norm("transitionByName", "PROJ-1", "Done");
+ok(n2.key === "PROJ-1" && n2.rest[0] === "Done", "transitionByName(key, name) keeps both");
+const n3 = norm("transitionByName", "Done", { fields: {} });
+ok(n3.key === undefined && n3.rest[0] === "Done" && n3.rest[1], "transitionByName(name, extra) is key-less");
+const n4 = norm("transitionByName", "PROJ-1", "Done", { fields: {} });
+ok(n4.key === "PROJ-1" && n4.rest[0] === "Done" && n4.rest[1], "transitionByName(key, name, extra) keeps all three");
+
+// Both sandboxes must ROUTE through the helper — production createApi() and the in-UI
+// dry-run testApi (which resolves against api.context.issueKey, never the MOCK-1 fallback).
+for (const n of ISSUE_KEY_OPTIONAL_METHODS) {
+  ok(indexSrc.includes(`resolveIssueKey(key, issueKey, "${n}"`), `createApi().${n} resolves the issue through resolveIssueKey`);
+  ok(indexSrc.includes(`resolveIssueKey(key, testApi.context.issueKey, "${n}"`), `dry-run testApi.${n} resolves through resolveIssueKey against api.context.issueKey`);
+  // ...and the multi-argument ones must also SHIFT their arguments in BOTH sandboxes.
+  if (n !== "getIssue") {
+    const uses = indexSrc.split(`normalizeKeyOptionalArgs("${n}", args)`).length - 1;
+    ok(uses === 2, `${n} normalizes its arguments in BOTH createApi and the dry-run testApi (found ${uses}/2)`);
+  }
+}
+
+// Every `example` in the spec must be a call the final implementation accepts: for the
+// key-optional methods that means the explicit (key, ...) form or a valid shifted form.
+for (const n of ISSUE_KEY_OPTIONAL_METHODS) {
+  const entry = SANDBOX_API_METHODS.find((m) => m.name === n);
+  ok(entry && entry.example.includes(`api.${n}(api.context.issueKey`),
+    `api.${n} example still passes the key EXPLICITLY (the default is a safety net, not the house style)`);
+}
+// The forIssue doc promises api.forIssue("PROJ-1").transitionByName("Done") — that is the
+// 1-argument shifted form, so transitionByName must be key-optional AND arity-normalized.
+const forIssueDoc = SANDBOX_API_METHODS.find((m) => m.name === "forIssue").promptDoc;
+ok(!/transitionByName/.test(forIssueDoc) || ISSUE_KEY_OPTIONAL_METHODS.includes("transitionByName"),
+  "forIssue promptDoc only promises transitionByName because it is key-optional");
 
 console.log(`\nsandbox-api-spec: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

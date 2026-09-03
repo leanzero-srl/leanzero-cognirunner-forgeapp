@@ -22,7 +22,7 @@
 
 import { FIELD_TYPE_TABLE, SANDBOX_RULES, JQL_REFERENCE } from "./sandbox-api-spec.js";
 
-export const DOC_SEED_VERSION = 4;
+export const DOC_SEED_VERSION = 5;
 
 const fieldMatrix = FIELD_TYPE_TABLE.map(
   (r) => `${r.fieldType}\n  read:  ${r.read.replace(/`/g, "")}\n  write: ${r.write.replace(/`/g, "")}`,
@@ -205,14 +205,19 @@ API SURFACE — a RICH set of typed methods (see the API Reference panel for the
 Reads/writes: api.getIssue, api.updateIssue, api.editIssue, api.searchJql, api.transitionIssue, api.transitionByName, api.transitionSubtasks, api.transitionParent, api.forceStatus, api.createIssue, api.cloneIssue, api.addComment, api.createIssueLink, api.addWorklog, api.addWatcher, api.removeWatcher, api.addVote, api.setAssignee, api.addLabels, api.removeLabels, api.moveToSprint, api.moveToBacklog, api.rankIssue, api.setProperty, api.getProperty, api.addRemoteLink, api.sendNotification, api.createVersion, api.createComponent, api.log, plus api.context.issueKey.
 Use the REAL method — e.g. api.addComment("your text") on the current issue, NOT a description-append workaround. Calling an invented/undocumented method throws at runtime.
 
+WHICH ISSUE DOES A CALL ACT ON? Five methods take the key as their FIRST argument and it is OPTIONAL — api.getIssue, api.updateIssue, api.transitionIssue, api.transitionByName, api.editIssue. Omitted, they target the current issue (api.context.issueKey). Every other issue-bound helper (api.addComment, api.addLabels, api.setAssignee, ...) takes NO key and always targets the current issue. When the run has no current issue (a scheduled job without a JQL scope, a listener on a non-issue event) BOTH kinds throw an error naming api.forIssue("KEY") — nothing is ever sent to /issue/undefined. api.forIssue(key) re-binds the whole surface to another issue.
+
 CORE SIGNATURES (the rest are in the API Reference panel)
-- api.getIssue(issueKey) → full issue object (issue.key; issue.fields.summary, .description as ADF, .status.name, .assignee?.accountId, .labels, .components, .fixVersions, .duedate, .resolution, .comment.comments, .issuelinks, .subtasks, .parent?.key, customfield_XXXXX...).
-- api.updateIssue(issueKey, fieldsObject) → { success: true }. Plain field sets; use api.addLabels/removeLabels for label add/remove verbs.
+- api.getIssue(issueKey?) → full issue object (issue.key; issue.fields.summary, .description as ADF, .status.name, .assignee?.accountId, .labels, .components, .fixVersions, .duedate, .resolution, .comment.comments, .issuelinks, .subtasks, .parent?.key, customfield_XXXXX...).
+- api.updateIssue(issueKey?, fieldsObject) → { success: true }. Plain field sets; use api.addLabels/removeLabels for label add/remove verbs.
+- api.editIssue(issueKey?, updateOps) → { success: true }. Additive Jira update ops ({ labels: [{ add: "x" }] }) that merge server-side.
 - api.searchJql(jqlQuery) → { issues: [...], nextPageToken?: string }. At most 20 results.
-- api.transitionIssue(issueKey, transitionId) → { success: true }. transitionId is a number as a string; if the user gives a transition NAME, use api.transitionByName(key, name) instead.
+- api.transitionIssue(issueKey?, transitionId) → { success: true }. transitionId is a number as a string; if the user gives a transition NAME, use api.transitionByName(key, name) instead.
+- api.transitionByName(issueKey?, name, extra?) → { success: true }. Resolves the transition by name on the issue, then runs it.
 - api.addComment(text) → posts a comment on the CURRENT issue (string auto-converted to ADF; optional 2nd arg opts.visibility = { type, value }). Takes NO issueKey — always targets the issue the PF runs on.
 - api.log(...args) → void. Objects are JSON-serialized; output shows in test results and execution logs.
-- api.context → { issueKey: string } only.
+- api.forIssue(issueKey) → the same api surface bound to another issue (same logs, change ledger and simulation mode).
+- api.context → { issueKey, runtime, ... }: issueKey is the current issue or null; runtime is "postfunction" | "listener" | "job"; a listener run also carries event and eventType; a job run carries jobId, scheduledFor, manual and (when scoped) scopeIssue.
 
 GENUINELY NOT AVAILABLE — HONEST FALLBACKS
 - Deleting an issue: no api.deleteIssue. Transition to a closed/cancelled status, or log the intent.

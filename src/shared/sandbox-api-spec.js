@@ -35,13 +35,14 @@
 export const SANDBOX_API_METHODS = [
   {
     name: "getIssue",
-    signature: "api.getIssue(issueKey)",
+    signature: "api.getIssue(issueKey?)",
     returns: "issue object",
-    summary: "Fetches a Jira issue by key. Returns full issue with fields (summary, status, priority, etc.)",
-    detail: "(issueKey) → issue object",
+    summary: "Fetches a Jira issue by key (defaults to the current issue). Returns full issue with fields (summary, status, priority, etc.)",
+    detail: "(issueKey?) → issue object",
     example: 'const issue = await api.getIssue(api.context.issueKey);',
-    promptDoc: `### api.getIssue(issueKey) → Object
-Fetches a Jira issue via REST API v3. Returns the full issue object:
+    promptDoc: `### api.getIssue(issueKey?) → Object
+Fetches a Jira issue via REST API v3. The issue key is OPTIONAL: omit it and the call targets the current issue (\`api.context.issueKey\`); when the run has none (an unscoped scheduled job, a non-issue listener event) it throws and tells you to use \`api.forIssue(key)\`.
+Returns the full issue object:
 \`\`\`javascript
 const issue = await api.getIssue("PROJ-123");
 // issue.key = "PROJ-123"
@@ -68,13 +69,14 @@ const issue = await api.getIssue("PROJ-123");
   },
   {
     name: "updateIssue",
-    signature: "api.updateIssue(issueKey, fields)",
+    signature: "api.updateIssue(issueKey?, fields)",
     returns: "{ success: true }",
-    summary: "Updates fields on an issue. Use field IDs as keys. ADF required for description.",
-    detail: "(issueKey, fields) → { success }",
+    summary: "Updates fields on an issue (defaults to the current issue). Use field IDs as keys. ADF required for description.",
+    detail: "(issueKey?, fields) → { success }",
     example: 'await api.updateIssue(api.context.issueKey, { priority: { name: "High" } });',
-    promptDoc: `### api.updateIssue(issueKey, fieldsObject) → { success: true }
-Updates fields via PUT /rest/api/3/issue/{key}. Field value formats:
+    promptDoc: `### api.updateIssue(issueKey?, fieldsObject) → { success: true }
+Updates fields via PUT /rest/api/3/issue/{key}. The issue key is OPTIONAL: omit it and the call targets the current issue (\`api.context.issueKey\`); when the run has none (an unscoped scheduled job, a non-issue listener event) it throws and tells you to use \`api.forIssue(key)\`.
+Field value formats:
 
 **Text fields:** \`{ summary: "New title" }\`
 **Date fields:** \`{ duedate: "2025-12-31" }\` (ISO format, date only)
@@ -162,13 +164,14 @@ const results = await api.searchJql('project = PROJ AND labels = "critical"');
   },
   {
     name: "transitionIssue",
-    signature: "api.transitionIssue(issueKey, transitionId)",
+    signature: "api.transitionIssue(issueKey?, transitionId)",
     returns: "{ success: true }",
-    summary: "Moves an issue to a different status using the transition ID (a number as string). Transition IDs cannot be looked up in the sandbox.",
-    detail: "(issueKey, transitionId) → { success }",
+    summary: "Moves an issue to a different status using the transition ID (a number as string), defaulting to the current issue. Transition IDs cannot be looked up in the sandbox.",
+    detail: "(issueKey?, transitionId) → { success }",
     example: 'await api.transitionIssue(api.context.issueKey, "31");',
-    promptDoc: `### api.transitionIssue(issueKey, transitionId) → { success: true }
-Executes a workflow transition. The transitionId is a number (as string).
+    promptDoc: `### api.transitionIssue(issueKey?, transitionId) → { success: true }
+Executes a workflow transition. The transitionId is a number (as string). The issue key is OPTIONAL: omit it and the call targets the current issue (\`api.context.issueKey\`); when the run has none (an unscoped scheduled job, a non-issue listener event) it throws and tells you to use \`api.forIssue(key)\`.
+
 **Note:** You cannot look up transitions in the sandbox. If the user provides a transition name, include a comment explaining they need the numeric ID.`,
   },
   {
@@ -223,12 +226,12 @@ Forces the current issue into a status even when no normal transition path exist
   },
   {
     name: "transitionByName",
-    signature: "api.transitionByName(issueKey, name, extra?)",
+    signature: "api.transitionByName(issueKey?, name, extra?)",
     returns: "{ success: true }",
-    summary: "Resolves a transition by NAME on the issue and executes it (no numeric id needed). extra = { fields, update }.",
-    detail: "(issueKey, name, extra?) → { success }",
+    summary: "Resolves a transition by NAME on the issue (defaults to the current issue) and executes it — no numeric id needed. extra = { fields, update }.",
+    detail: "(issueKey?, name, extra?) → { success }",
     example: 'await api.transitionByName(api.context.issueKey, "Done", { fields: { resolution: { name: "Done" } } });',
-    promptDoc: "### api.transitionByName(issueKey, name, extra?) → { success }\nLooks up the transition by name on the issue, then runs it. `extra.fields`/`extra.update` set resolution, add a comment, etc. in the same call.",
+    promptDoc: "### api.transitionByName(issueKey?, name, extra?) → { success }\nLooks up the transition by name on the issue, then runs it. `extra.fields`/`extra.update` set resolution, add a comment, etc. in the same call. The issue key is OPTIONAL: omit it and the call targets the current issue (`api.context.issueKey`); when the run has none (an unscoped scheduled job, a non-issue listener event) it throws and tells you to use `api.forIssue(key)`.",
   },
   {
     name: "transitionSubtasks",
@@ -376,12 +379,12 @@ Forces the current issue into a status even when no normal transition path exist
   },
   {
     name: "editIssue",
-    signature: "api.editIssue(issueKey, update)",
+    signature: "api.editIssue(issueKey?, update)",
     returns: "{ success: true }",
     summary: "Applies Jira `update` operations (add/remove/set) that MERGE server-side. Use this instead of updateIssue when multiple post-functions on one transition touch the same array field — updateIssue REPLACES and concurrent writes clobber.",
-    detail: "(issueKey, update) → { success }",
+    detail: "(issueKey?, update) → { success }",
     example: 'await api.editIssue(api.context.issueKey, { labels: [{ add: "triaged" }], components: [{ add: { name: "API" } }] });',
-    promptDoc: "### api.editIssue(issueKey, update) → { success }\nApplies Jira `update` ops, e.g. `{ labels: [{ add: \"x\" }, { remove: \"y\" }] }`. Prefer over api.updateIssue for additive array changes and when several PFs on the same transition modify the same field (avoids lost-update clobbering).",
+    promptDoc: "### api.editIssue(issueKey?, update) → { success }\nApplies Jira `update` ops, e.g. `{ labels: [{ add: \"x\" }, { remove: \"y\" }] }`. Prefer over api.updateIssue for additive array changes and when several PFs on the same transition modify the same field (avoids lost-update clobbering). The issue key is OPTIONAL: omit it and the call targets the current issue (`api.context.issueKey`); when the run has none (an unscoped scheduled job, a non-issue listener event) it throws and tells you to use `api.forIssue(key)`.",
   },
   {
     name: "addLabels",
@@ -419,16 +422,16 @@ api.log("Issue data:", { key: issue.key, status: issue.fields.status.name });
     name: "forIssue",
     signature: "api.forIssue(issueKey)",
     returns: "api bound to that issue",
-    summary: "Returns the same api surface bound to ANOTHER issue — for issue-bound helpers (addComment, addLabels, transitionByName…) on a different key, or when there is no current issue (scheduled jobs, non-issue listener events).",
+    summary: "Returns the same api surface bound to ANOTHER issue — for issue-bound helpers (addComment, addLabels, setAssignee…) and for the key-optional methods (getIssue, updateIssue, transitionByName…) on a different key, or when there is no current issue (scheduled jobs, non-issue listener events).",
     detail: "(issueKey) → api",
     example: 'await api.forIssue("PROJ-7").addComment("Parent was closed");',
     promptDoc: `### api.forIssue(issueKey) → api
-Re-binds every issue-bound helper (addComment, addLabels, setAssignee, transitionByName, addWatcher, ...) to another issue. Same simulation mode, logs and change ledger.
+Re-binds the WHOLE surface to another issue. That covers the key-less issue-bound helpers (addComment, addLabels, setAssignee, addWatcher, ...) AND the key-optional ones, whose default issue becomes the new key (\`api.forIssue("PROJ-1").transitionByName("Done")\` transitions PROJ-1). Same simulation mode, logs and change ledger.
 \`\`\`javascript
 const parent = issue.fields.parent?.key;
 if (parent) await api.forIssue(parent).addComment("Child " + api.context.issueKey + " is done");
 \`\`\`
-When \`api.context.issueKey\` is null (a scheduled job without a JQL scope, or a listener on a version/project/sprint event) the issue-bound helpers throw — always go through api.forIssue(key) there.`,
+When \`api.context.issueKey\` is null (a scheduled job without a JQL scope, or a listener on a version/project/sprint event) every issue-bound call throws — the key-less helpers immediately, the key-optional ones when no key is passed either. Go through api.forIssue(key), or pass the key explicitly.`,
   },
   {
     name: "context",
@@ -455,6 +458,89 @@ export const KNOWN_API_MEMBERS = SANDBOX_API_METHODS.map((m) => m.name);
 
 export const getApiMethodNames = () =>
   SANDBOX_API_METHODS.filter((m) => m.name !== "context").map((m) => m.name);
+
+// === Which issue does a call act on when the caller does not say? ============
+// ONE answer, used by production (createApi in src/index.js) AND by the in-UI
+// dry-run sandbox (the testPostFunction resolver), so Test Run cannot pass code
+// that 404s in production.
+//
+// These five methods take an issue key as their FIRST argument, but the key is
+// OPTIONAL: omitted, it defaults to the run's current issue (api.context.issueKey).
+// The key-LESS issue-bound helpers (addComment, addLabels, setAssignee, ...) are a
+// SEPARATE guard — ISSUE_BOUND_METHODS in src/index.js swaps them for throwing
+// stubs when there is no current issue. Two guards, different shapes, same message.
+//
+// NOT in this list on purpose: createIssueLink / rankIssue (their first argument is
+// the OTHER end of the link / the anchor issue, never the bound issue) and forIssue
+// (which validates its own key).
+export const ISSUE_KEY_OPTIONAL_METHODS = [
+  "getIssue", "updateIssue", "transitionIssue", "transitionByName", "editIssue",
+];
+
+/**
+ * Resolve the issue a key-optional sandbox call acts on.
+ * Explicit key wins; otherwise the bound issue; otherwise THROW with the same
+ * message the key-less issue-bound stubs use, so an operator reading a failure
+ * cannot tell the two guards apart.
+ *
+ * @param {*} explicitKey  first argument the sandbox code passed (may be undefined)
+ * @param {*} boundKey     the run's current issue (api.context.issueKey), may be null
+ * @param {string} methodName  e.g. "getIssue" — named in the error
+ * @param {string} [where]  "this listener run" / "this job run"; defaults to "this run"
+ * @returns {string} the issue key to call Jira with
+ */
+export const resolveIssueKey = (explicitKey, boundKey, methodName, where = "this run") => {
+  if (typeof explicitKey === "string" && explicitKey.trim()) return explicitKey;
+  // /rest/api/3/issue/{issueIdOrKey} also takes a numeric issue ID — keep that working.
+  if (typeof explicitKey === "number" && Number.isFinite(explicitKey)) return String(explicitKey);
+  // Anything else non-nullish (an issue OBJECT, an array, a boolean) is a caller bug.
+  // It used to 404 loudly as "/issue/[object Object]"; defaulting it to the current issue
+  // would instead WRITE TO THE WRONG ISSUE in silence. Fail loudly and say what to pass.
+  if (explicitKey !== undefined && explicitKey !== null && typeof explicitKey !== "string") {
+    throw new Error(`api.${methodName}(): the issue key must be a string like "PROJ-123" (got ${typeof explicitKey}) — pass issue.key, not the issue object.`);
+  }
+  if (typeof boundKey === "string" && boundKey.trim()) return boundKey;
+  throw new Error(`api.${methodName}() needs a current issue, but ${where} has none (api.context.issueKey is null). Use api.forIssue("KEY").${methodName}(...) to target an issue explicitly.`);
+};
+
+/**
+ * Split the call arguments of a key-optional method into { key, rest }.
+ *
+ * "The key is optional" only works if OMITTING it shifts the remaining arguments —
+ * otherwise api.updateIssue({ priority }) puts the fields object in `key` and sends
+ * `{ fields: undefined }`. The split is decided by ARITY (and, where two shapes have
+ * the same length, by the TYPE of the later argument) — never by pattern-matching a
+ * string against an issue-key regex: a transition name, a label or a status can look
+ * exactly like anything else, and a guess that is wrong writes to the wrong issue.
+ * A transitionId / name / fields payload is ALWAYS required; the key never is.
+ *
+ * @param {string} methodName one of ISSUE_KEY_OPTIONAL_METHODS
+ * @param {Array|Arguments} args the raw call arguments
+ * @returns {{ key: *, rest: Array }} key may be undefined (→ resolveIssueKey defaults it)
+ */
+export const normalizeKeyOptionalArgs = (methodName, args) => {
+  const a = Array.prototype.slice.call(args || []);
+  const isObj = (v) => !!v && typeof v === "object";
+  switch (methodName) {
+    // (issueKey?) — nothing to shift.
+    case "getIssue":
+      return { key: a[0], rest: [] };
+    // (issueKey?, payloadObject) — one lone OBJECT argument is the payload.
+    case "updateIssue":
+    case "editIssue":
+      if (a.length === 1 && isObj(a[0])) return { key: undefined, rest: [a[0]] };
+      return { key: a[0], rest: a.slice(1) };
+    // (issueKey?, transitionId|name, extra?) — a lone argument is the id/name, and a
+    // 2-arg call whose SECOND argument is an object is (id|name, extra) on the bound issue.
+    case "transitionIssue":
+    case "transitionByName":
+      if (a.length === 1) return { key: undefined, rest: [a[0]] };
+      if (a.length === 2 && isObj(a[1])) return { key: undefined, rest: [a[0], a[1]] };
+      return { key: a[0], rest: a.slice(1) };
+    default:
+      return { key: a[0], rest: a.slice(1) };
+  }
+};
 
 // The lead guard paragraph (verbatim from the system prompt). Names the real surface
 // instead of falsely denying documented methods.

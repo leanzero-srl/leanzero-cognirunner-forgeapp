@@ -28,7 +28,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import path from "node:path";
 import FormData from "form-data";
 // Shared single-source-of-truth specs (also bundled into the Custom UIs).
-import { buildSystemPromptApiSection, API_USAGE_GUARD, getApiMethodNames } from "./shared/sandbox-api-spec.js";
+import { buildSystemPromptApiSection, API_USAGE_GUARD, getApiMethodNames, resolveIssueKey, normalizeKeyOptionalArgs } from "./shared/sandbox-api-spec.js";
 import { buildEndpointPromptBlock } from "./shared/jira-endpoints.js";
 import { DOC_SEED_VERSION, BUILTIN_DOCS } from "./shared/builtin-docs.js";
 import { clampNarrateLine } from "./shared/narrate-utils.js";
@@ -8958,152 +8958,187 @@ resolver.define("testPostFunction", async ({ payload }) => {
   }
 
   // Build API surface — reads are live when an issue exists, writes are always dry-run
-  const testApi = {
-    getIssue: async (key) => {
-      const lookupKey = key || resolvedKey;
-      // Always try real API if a real key is provided (not MOCK-1)
-      if (lookupKey && lookupKey !== "MOCK-1") {
-        testLogs.push(`getIssue("${lookupKey}") — fetching real data`);
+  // The dry-run answers "which issue?" the SAME way production does: a key-optional
+  // method defaults to the run's current issue via resolveIssueKey(), so Test Run can
+  // no longer pass code that becomes /issue/undefined in production. Built as a FACTORY
+  // (mirroring createApi) so api.forIssue(KEY) returns a surface whose stubs act on — and
+  // record in testChanges — the NEW key rather than the test issue.
+  const testWhere = payload.contextExtras && payload.contextExtras.runtime ? `this ${payload.contextExtras.runtime} run` : "this run";
+  const makeTestApi = (boundKey) => {
+    const testApi = {
+      getIssue: async (key) => {
+        // Key is OPTIONAL and defaults to the CONTEXT's issue — not the resolvedKey
+        // closure, which falls back to "MOCK-1" and would mask a no-issue run.
+        const lookupKey = resolveIssueKey(key, testApi.context.issueKey, "getIssue", testWhere);
+        // Always try real API if a real key is provided (not MOCK-1)
+        if (lookupKey && lookupKey !== "MOCK-1") {
+          testLogs.push(`getIssue("${lookupKey}") — fetching real data`);
+          try {
+            const res = await api.asApp().requestJira(
+              route`/rest/api/3/issue/${lookupKey}?expand=renderedFields`,
+            );
+            if (!res.ok) {
+              testLogs.push(`getIssue failed (${res.status})`);
+              return { key: lookupKey, fields: {}, error: `HTTP ${res.status}` };
+            }
+            const data = await res.json();
+            testLogs.push(`getIssue("${lookupKey}") — OK (${data.fields?.summary || "no summary"})`);
+            return data;
+          } catch (e) {
+            testLogs.push(`getIssue error: ${e.message}`);
+            return { key: lookupKey, fields: {}, error: e.message };
+          }
+        }
+        testLogs.push(`getIssue("${lookupKey}") — mock data (no real key)`);
+        return {
+          key: lookupKey || "MOCK-1",
+          fields: {
+            summary: "[Mock] Sample issue for testing",
+            status: { name: "To Do", id: "10000" },
+            issuetype: { name: "Task" },
+            priority: { name: "Medium" },
+            description: "This is mock data. Select an issue for real data.",
+            assignee: null,
+            reporter: { displayName: "Test User" },
+            labels: [],
+            created: new Date().toISOString(),
+          },
+        };
+      },
+
+      updateIssue: async (...args) => {
+        const { key, rest: [fields] } = normalizeKeyOptionalArgs("updateIssue", args);
+        const target = resolveIssueKey(key, testApi.context.issueKey, "updateIssue", testWhere);
+        testLogs.push(`updateIssue("${target}", ${JSON.stringify(fields)}) — DRY RUN, no changes made`);
+        testChanges.push({ action: "updateIssue", key: target, fields });
+        return { success: true };
+      },
+
+      searchJql: async (searchJql) => {
+        // Always run real JQL — it's a read operation and the whole point of testing.
+        // Migrated to /rest/api/3/search/jql (legacy endpoint was shut down 2025-10-31).
+        // The new endpoint does not return `total` — log the issues count instead.
+        testLogs.push(`searchJql("${searchJql}") — running real search`);
         try {
           const res = await api.asApp().requestJira(
-            route`/rest/api/3/issue/${lookupKey}?expand=renderedFields`,
+            route`/rest/api/3/search/jql`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json", Accept: "application/json" },
+              body: JSON.stringify({
+                jql: searchJql,
+                maxResults: 10,
+                fields: ["summary", "status", "issuetype", "priority", "assignee"],
+              }),
+            },
           );
           if (!res.ok) {
-            testLogs.push(`getIssue failed (${res.status})`);
-            return { key: lookupKey, fields: {}, error: `HTTP ${res.status}` };
+            testLogs.push(`searchJql failed (${res.status})`);
+            return { issues: [], total: 0 };
           }
           const data = await res.json();
-          testLogs.push(`getIssue("${lookupKey}") — OK (${data.fields?.summary || "no summary"})`);
+          const count = data.issues?.length || 0;
+          testLogs.push(`searchJql — returned ${count} issue${count === 1 ? "" : "s"}${data.nextPageToken ? " (more available — use nextPageToken to paginate)" : ""}`);
           return data;
         } catch (e) {
-          testLogs.push(`getIssue error: ${e.message}`);
-          return { key: lookupKey, fields: {}, error: e.message };
-        }
-      }
-      testLogs.push(`getIssue("${lookupKey}") — mock data (no real key)`);
-      return {
-        key: lookupKey || "MOCK-1",
-        fields: {
-          summary: "[Mock] Sample issue for testing",
-          status: { name: "To Do", id: "10000" },
-          issuetype: { name: "Task" },
-          priority: { name: "Medium" },
-          description: "This is mock data. Select an issue for real data.",
-          assignee: null,
-          reporter: { displayName: "Test User" },
-          labels: [],
-          created: new Date().toISOString(),
-        },
-      };
-    },
-
-    updateIssue: async (key, fields) => {
-      testLogs.push(`updateIssue("${key}", ${JSON.stringify(fields)}) — DRY RUN, no changes made`);
-      testChanges.push({ action: "updateIssue", key, fields });
-      return { success: true };
-    },
-
-    searchJql: async (searchJql) => {
-      // Always run real JQL — it's a read operation and the whole point of testing.
-      // Migrated to /rest/api/3/search/jql (legacy endpoint was shut down 2025-10-31).
-      // The new endpoint does not return `total` — log the issues count instead.
-      testLogs.push(`searchJql("${searchJql}") — running real search`);
-      try {
-        const res = await api.asApp().requestJira(
-          route`/rest/api/3/search/jql`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json", Accept: "application/json" },
-            body: JSON.stringify({
-              jql: searchJql,
-              maxResults: 10,
-              fields: ["summary", "status", "issuetype", "priority", "assignee"],
-            }),
-          },
-        );
-        if (!res.ok) {
-          testLogs.push(`searchJql failed (${res.status})`);
+          testLogs.push(`searchJql error: ${e.message}`);
           return { issues: [], total: 0 };
         }
-        const data = await res.json();
-        const count = data.issues?.length || 0;
-        testLogs.push(`searchJql — returned ${count} issue${count === 1 ? "" : "s"}${data.nextPageToken ? " (more available — use nextPageToken to paginate)" : ""}`);
-        return data;
-      } catch (e) {
-        testLogs.push(`searchJql error: ${e.message}`);
-        return { issues: [], total: 0 };
-      }
-    },
+      },
 
-    transitionIssue: async (key, transitionId) => {
-      testLogs.push(`transitionIssue("${key}", "${transitionId}") — DRY RUN, no transition made`);
-      testChanges.push({ action: "transitionIssue", key, transitionId });
-      return { success: true };
-    },
+      transitionIssue: async (...args) => {
+        const { key, rest: [transitionId] } = normalizeKeyOptionalArgs("transitionIssue", args);
+        const target = resolveIssueKey(key, testApi.context.issueKey, "transitionIssue", testWhere);
+        testLogs.push(`transitionIssue("${target}", "${transitionId}") — DRY RUN, no transition made`);
+        testChanges.push({ action: "transitionIssue", key: target, transitionId });
+        return { success: true };
+      },
 
-    log: (...args) => {
-      const msg = args.map((a) => typeof a === "object" ? JSON.stringify(a) : String(a)).join(" ");
-      testLogs.push(msg);
-    },
+      // Present in production (createApi) — without this stub, api.transitionByName threw
+      // "is not a function" in Test Run for code that works live. The dry-run cannot know
+      // the numeric id, so the ledger records the NAME under the same "transitionIssue"
+      // action production uses (verb counts and chips stay comparable).
+      transitionByName: async (...args) => {
+        const { key, rest: [name] } = normalizeKeyOptionalArgs("transitionByName", args);
+        const target = resolveIssueKey(key, testApi.context.issueKey, "transitionByName", testWhere);
+        testLogs.push(`transitionByName("${target}", "${name}") — DRY RUN, no transition made`);
+        testChanges.push({ action: "transitionIssue", key: target, transitionId: `(by name: ${name})` });
+        return { success: true };
+      },
 
-    // Write-mutators used by premade recipes & richer generated code. All DRY-RUN here
-    // (the Test panel never mutates Jira). createIssue/cloneIssue return a plausible fake
-    // key so chained code (`dup.key`) doesn't NPE during the test.
-    editIssue: async (key, update) => {
-      testLogs.push(`editIssue("${key}", ${JSON.stringify(update)}) — DRY RUN, no changes made`);
-      testChanges.push({ action: "editIssue", key, update });
-      return { success: true };
-    },
-    addLabels: async (...labels) => {
-      const flat = labels.flat().filter(Boolean);
-      testLogs.push(`addLabels(${JSON.stringify(flat)}) — DRY RUN`);
-      testChanges.push({ action: "addLabels", key: resolvedKey, labels: flat });
-      return { success: true };
-    },
-    removeLabels: async (...labels) => {
-      const flat = labels.flat().filter(Boolean);
-      testLogs.push(`removeLabels(${JSON.stringify(flat)}) — DRY RUN`);
-      testChanges.push({ action: "removeLabels", key: resolvedKey, labels: flat });
-      return { success: true };
-    },
-    addComment: async () => {
-      testLogs.push(`addComment(...) — DRY RUN, no comment posted`);
-      testChanges.push({ action: "addComment", key: resolvedKey });
-      return { id: "DRYRUN-COMMENT" };
-    },
-    createIssueLink: async (outwardKey, typeName = "Relates") => {
-      testLogs.push(`createIssueLink("${resolvedKey}" ${typeName} "${outwardKey}") — DRY RUN`);
-      testChanges.push({ action: "createIssueLink", from: resolvedKey, to: outwardKey, type: typeName });
-      return { success: true };
-    },
-    createIssue: async (fields) => {
-      const fakeKey = `${(resolvedKey || "MOCK-1").split("-")[0]}-DRYRUN`;
-      testLogs.push(`createIssue(${JSON.stringify(fields)}) — DRY RUN, returns ${fakeKey}`);
-      testChanges.push({ action: "createIssue", fields });
-      return { key: fakeKey, id: "0" };
-    },
-    cloneIssue: async (overrides = {}) => {
-      const fakeKey = `${(resolvedKey || "MOCK-1").split("-")[0]}-DRYRUN`;
-      testLogs.push(`cloneIssue(${JSON.stringify(overrides)}) — DRY RUN, returns ${fakeKey}`);
-      testChanges.push({ action: "cloneIssue", overrides });
-      return { key: fakeKey, id: "0" };
-    },
-    getProperty: async (propKey) => {
-      // Dry-run: always "not set" so idempotency-marker code takes its happy path during a test.
-      testLogs.push(`getProperty("${propKey}") — DRY RUN, returns null`);
-      return null;
-    },
-    setProperty: async (propKey) => {
-      testLogs.push(`setProperty("${propKey}", ...) — DRY RUN`);
-      testChanges.push({ action: "setProperty", key: resolvedKey, propKey });
-      return { success: true };
-    },
+      log: (...args) => {
+        const msg = args.map((a) => typeof a === "object" ? JSON.stringify(a) : String(a)).join(" ");
+        testLogs.push(msg);
+      },
 
-    // Listener / job steps carry their run context (event, eventType, job facts) so
-    // dry-runs see the same api.context shape as production.
-    context: { issueKey: resolvedKey, ...(payload.contextExtras && typeof payload.contextExtras === "object" ? payload.contextExtras : {}) },
+      // Write-mutators used by premade recipes & richer generated code. All DRY-RUN here
+      // (the Test panel never mutates Jira). createIssue/cloneIssue return a plausible fake
+      // key so chained code (`dup.key`) doesn't NPE during the test.
+      editIssue: async (...args) => {
+        const { key, rest: [update] } = normalizeKeyOptionalArgs("editIssue", args);
+        const target = resolveIssueKey(key, testApi.context.issueKey, "editIssue", testWhere);
+        testLogs.push(`editIssue("${target}", ${JSON.stringify(update)}) — DRY RUN, no changes made`);
+        testChanges.push({ action: "editIssue", key: target, update });
+        return { success: true };
+      },
+      addLabels: async (...labels) => {
+        const flat = labels.flat().filter(Boolean);
+        testLogs.push(`addLabels(${JSON.stringify(flat)}) — DRY RUN`);
+        testChanges.push({ action: "addLabels", key: boundKey, labels: flat });
+        return { success: true };
+      },
+      removeLabels: async (...labels) => {
+        const flat = labels.flat().filter(Boolean);
+        testLogs.push(`removeLabels(${JSON.stringify(flat)}) — DRY RUN`);
+        testChanges.push({ action: "removeLabels", key: boundKey, labels: flat });
+        return { success: true };
+      },
+      addComment: async () => {
+        testLogs.push(`addComment(...) — DRY RUN, no comment posted`);
+        testChanges.push({ action: "addComment", key: boundKey });
+        return { id: "DRYRUN-COMMENT" };
+      },
+      createIssueLink: async (outwardKey, typeName = "Relates") => {
+        testLogs.push(`createIssueLink("${boundKey}" ${typeName} "${outwardKey}") — DRY RUN`);
+        testChanges.push({ action: "createIssueLink", from: boundKey, to: outwardKey, type: typeName });
+        return { success: true };
+      },
+      createIssue: async (fields) => {
+        const fakeKey = `${(boundKey || "MOCK-1").split("-")[0]}-DRYRUN`;
+        testLogs.push(`createIssue(${JSON.stringify(fields)}) — DRY RUN, returns ${fakeKey}`);
+        testChanges.push({ action: "createIssue", fields });
+        return { key: fakeKey, id: "0" };
+      },
+      cloneIssue: async (overrides = {}) => {
+        const fakeKey = `${(boundKey || "MOCK-1").split("-")[0]}-DRYRUN`;
+        testLogs.push(`cloneIssue(${JSON.stringify(overrides)}) — DRY RUN, returns ${fakeKey}`);
+        testChanges.push({ action: "cloneIssue", overrides });
+        return { key: fakeKey, id: "0" };
+      },
+      getProperty: async (propKey) => {
+        // Dry-run: always "not set" so idempotency-marker code takes its happy path during a test.
+        testLogs.push(`getProperty("${propKey}") — DRY RUN, returns null`);
+        return null;
+      },
+      setProperty: async (propKey) => {
+        testLogs.push(`setProperty("${propKey}", ...) — DRY RUN`);
+        testChanges.push({ action: "setProperty", key: boundKey, propKey });
+        return { success: true };
+      },
+
+      // Listener / job steps carry their run context (event, eventType, job facts) so
+      // dry-runs see the same api.context shape as production.
+      // The BOUND key wins over the run-level contextExtras (api.forIssue re-binds it) —
+      // same ordering as production's createApi.
+      context: { ...(payload.contextExtras && typeof payload.contextExtras === "object" ? payload.contextExtras : {}), issueKey: boundKey },
+    };
+    testApi.forIssue = (key) => {
+      if (!key || typeof key !== "string") throw new Error("api.forIssue(key) needs an issue key string");
+      return makeTestApi(key);
+    };
+    return testApi;
   };
-  testApi.forIssue = (key) => ({ ...testApi, context: { ...testApi.context, issueKey: key } });
+  const testApi = makeTestApi(resolvedKey);
 
   try {
     // Mirror the PRODUCTION sandbox shape exactly (vars argument + ${var}->vars[...]
@@ -14544,6 +14579,18 @@ const SANDBOX_BLOCKED_GLOBALS = [
  * Execute a static post-function: runs sandboxed JavaScript code with an API surface.
  * Each function block runs sequentially; results are shared via variable chaining.
  */
+// "Which issue does this call act on when the caller doesn't say?" has TWO answers
+// here, on purpose, because the sandbox surface has two shapes — do not merge them:
+//   * key-LESS methods (below): the issue is never an argument, so with no current
+//     issue there is nothing to fall back to → swap them for a throwing stub.
+//   * key-OPTIONAL methods (ISSUE_KEY_OPTIONAL_METHODS in shared/sandbox-api-spec.js:
+//     getIssue, updateIssue, transitionIssue, transitionByName, editIssue): the key IS
+//     the first argument, so it defaults to the current issue via resolveIssueKey()
+//     and throws the SAME message only when there is none.
+// createIssueLink, rankIssue and forIssue also take a key first, but it is the OTHER
+// end of the link / the anchor / the new binding — not the bound issue — so they stay
+// key-LESS-guarded (the first two) or self-validating (forIssue).
+//
 // Sandbox methods whose route is bound to the CURRENT issue (the closure's issueKey).
 // When a run has no current issue (a scheduled job without a JQL scope, or a listener
 // on a non-issue event such as "version released"), these are replaced by throwing
@@ -14588,6 +14635,9 @@ export const createSandboxSession = ({ issueKey: boundIssueKey = null, config = 
   // `issueKey` below is the api's BOUND issue: the run's current issue by default,
   // or any other key via api.forIssue(key) (same logs/changes/simulation/kill switch).
   const createApi = (issueKey = boundIssueKey || null) => {
+    // Names the runtime in BOTH no-current-issue guards (the throwing stubs below and
+    // resolveIssueKey for the key-optional methods) so the two read identically.
+    const noIssueWhere = extraContext && extraContext.runtime ? `this ${extraContext.runtime} run` : "this run";
     const TRANSIENT_REST = [429, 502, 503, 504];
     const retryingRequestJira = async (routeArg, opts) => {
       // KILL SWITCH (write boundary). Every sandbox WRITE funnels through here,
@@ -14633,14 +14683,24 @@ export const createSandboxSession = ({ issueKey: boundIssueKey = null, config = 
     const api = { asApp: () => ({ requestJira: retryingRequestJira }) };
     const this_api = {
     getIssue: async (key) => {
-      const res = await api.asApp().requestJira(route`/rest/api/3/issue/${key}`);
+      // Key is OPTIONAL — defaults to the run's current issue (see the two-guard note
+      // above ISSUE_BOUND_METHODS). Without this, api.getIssue() hit /issue/undefined.
+      const target = resolveIssueKey(key, issueKey, "getIssue", noIssueWhere);
+      const res = await api.asApp().requestJira(route`/rest/api/3/issue/${target}`);
       if (!res.ok) throw new Error(`getIssue failed: ${res.status}`);
       return res.json();
     },
-    updateIssue: async (key, fields) => {
+    updateIssue: async (...args) => {
+      // Key is OPTIONAL — api.updateIssue(fields) targets the current issue, so the
+      // arguments SHIFT (normalizeKeyOptionalArgs), then default (resolveIssueKey).
+      // `target` (never `key`) must be used in every route, log AND change-ledger entry
+      // below: the harness reads the ledger, so an `undefined` key there hides a write
+      // that really landed.
+      const { key, rest: [fields] } = normalizeKeyOptionalArgs("updateIssue", args);
+      const target = resolveIssueKey(key, issueKey, "updateIssue", noIssueWhere);
       if (simulated) {
-        executionLogs.push(`[SIMULATION] updateIssue("${key}", ${JSON.stringify(fields).substring(0, 300)}) — write skipped`);
-        changes.push({ action: "updateIssue", key, fields, simulated: true });
+        executionLogs.push(`[SIMULATION] updateIssue("${target}", ${JSON.stringify(fields).substring(0, 300)}) — write skipped`);
+        changes.push({ action: "updateIssue", key: target, fields, simulated: true });
         return { success: true };
       }
       // Per-rule notification suppression (notifyUsers=false) — needs project
@@ -14648,12 +14708,12 @@ export const createSandboxSession = ({ issueKey: boundIssueKey = null, config = 
       let suppress = config.suppressNotifications === true;
       let sentFields = fields;
       const doPut = () => api.asApp().requestJira(
-        suppress ? route`/rest/api/3/issue/${key}?notifyUsers=false` : route`/rest/api/3/issue/${key}`,
+        suppress ? route`/rest/api/3/issue/${target}?notifyUsers=false` : route`/rest/api/3/issue/${target}`,
         { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ fields: sentFields }) },
       );
       let res = await doPut();
       if (!res.ok && res.status === 403 && suppress) {
-        executionLogs.push(`updateIssue("${key}"): Jira refused notifyUsers=false (403 — needs project admin). Retried with notifications enabled.`);
+        executionLogs.push(`updateIssue("${target}"): Jira refused notifyUsers=false (403 — needs project admin). Retried with notifications enabled.`);
         suppress = false;
         res = await doPut();
       }
@@ -14662,7 +14722,7 @@ export const createSandboxSession = ({ issueKey: boundIssueKey = null, config = 
       if (!res.ok && [429, 502, 503].includes(res.status) && deadline - Date.now() > 6000) {
         const retryAfterSec = Number(res.headers?.get?.("retry-after")) || 2;
         const waitMs = Math.max(500, Math.min(retryAfterSec * 1000, deadline - Date.now() - 4000, 5000));
-        executionLogs.push(`updateIssue("${key}"): Jira returned ${res.status} — retrying after ${Math.round(waitMs / 1000)}s...`);
+        executionLogs.push(`updateIssue("${target}"): Jira returned ${res.status} — retrying after ${Math.round(waitMs / 1000)}s...`);
         await new Promise((r) => setTimeout(r, waitMs));
         res = await doPut();
       }
@@ -14688,11 +14748,11 @@ export const createSandboxSession = ({ issueKey: boundIssueKey = null, config = 
           const adfField = Object.keys(errors).find((f) =>
             /atlassian document/i.test(String(errors[f])) && typeof sentFields[f] === "string");
           if (adfField) {
-            executionLogs.push(`updateIssue("${key}"): "${adfField}" requires ADF — auto-converted the text, retrying once...`);
+            executionLogs.push(`updateIssue("${target}"): "${adfField}" requires ADF — auto-converted the text, retrying once...`);
             sentFields = { ...sentFields, [adfField]: coerceToAdf(sentFields[adfField]) };
             res = await doPut();
             if (res.ok) {
-              changes.push({ action: "updateIssue", key, fields: sentFields, coercedFields: [adfField] });
+              changes.push({ action: "updateIssue", key: target, fields: sentFields, coercedFields: [adfField] });
               return { success: true };
             }
             errBody = await readBody(); // fresh failure — report the retry's errors
@@ -14703,7 +14763,7 @@ export const createSandboxSession = ({ issueKey: boundIssueKey = null, config = 
           : errBody.substring(0, 200);
         throw new Error(`updateIssue failed: ${res.status}${detail ? ` — ${detail}` : ""}`);
       }
-      changes.push({ action: "updateIssue", key, fields: sentFields });
+      changes.push({ action: "updateIssue", key: target, fields: sentFields });
       return { success: true };
     },
     searchJql: async (jql) => {
@@ -14732,29 +14792,42 @@ export const createSandboxSession = ({ issueKey: boundIssueKey = null, config = 
     },
     // Transition — now accepts optional { fields, update } to set resolution /
     // add a comment / set fields in the SAME call (transition-with-screen).
-    transitionIssue: async (key, transitionId, extra = {}) => {
+    transitionIssue: async (...args) => {
+      // Key is OPTIONAL — api.transitionIssue("31") transitions the current issue.
+      const { key, rest } = normalizeKeyOptionalArgs("transitionIssue", args);
+      const transitionId = rest[0];
+      const extra = rest[1] || {};
+      const target = resolveIssueKey(key, issueKey, "transitionIssue", noIssueWhere);
       if (simulated) {
-        executionLogs.push(`[SIMULATION] transitionIssue("${key}", "${transitionId}"${extra.fields || extra.update ? " +fields/update" : ""}) — transition skipped`);
-        changes.push({ action: "transitionIssue", key, transitionId, extra, simulated: true });
+        executionLogs.push(`[SIMULATION] transitionIssue("${target}", "${transitionId}"${extra.fields || extra.update ? " +fields/update" : ""}) — transition skipped`);
+        changes.push({ action: "transitionIssue", key: target, transitionId, extra, simulated: true });
         return { success: true };
       }
       const body = { transition: { id: String(transitionId) } };
       if (extra.fields) body.fields = extra.fields;
       if (extra.update) body.update = extra.update;
       const res = await api.asApp().requestJira(
-        route`/rest/api/3/issue/${key}/transitions`,
+        route`/rest/api/3/issue/${target}/transitions`,
         { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) },
       );
       if (!res.ok) throw new Error(`transitionIssue failed: ${res.status} — ${(await res.text()).slice(0, 200)}`);
-      changes.push({ action: "transitionIssue", key, transitionId });
+      changes.push({ action: "transitionIssue", key: target, transitionId });
       return { success: true };
     },
     // Resolve a transition by NAME on the issue, then execute it (optionally with fields/update).
-    transitionByName: async (key, name, extra = {}) => {
-      const tr = await (await api.asApp().requestJira(route`/rest/api/3/issue/${key}/transitions`, { headers: { Accept: "application/json" } })).json();
+    transitionByName: async (...args) => {
+      // Key is OPTIONAL — api.transitionByName("Done") transitions the current issue.
+      // NOTE: this method is key-FIRST, so it is NOT in ISSUE_BOUND_METHODS;
+      // api.forIssue(k).transitionByName("Done") works because the re-bound closure's
+      // issueKey becomes the default resolved here.
+      const { key, rest } = normalizeKeyOptionalArgs("transitionByName", args);
+      const name = rest[0];
+      const extra = rest[1] || {};
+      const target = resolveIssueKey(key, issueKey, "transitionByName", noIssueWhere);
+      const tr = await (await api.asApp().requestJira(route`/rest/api/3/issue/${target}/transitions`, { headers: { Accept: "application/json" } })).json();
       const t = (tr.transitions || []).find((x) => String(x.name).toLowerCase() === String(name).toLowerCase());
-      if (!t) throw new Error(`transitionByName: "${name}" not available on ${key} (have: ${(tr.transitions || []).map((x) => x.name).join(", ")})`);
-      return this_api.transitionIssue(key, t.id, extra);
+      if (!t) throw new Error(`transitionByName: "${name}" not available on ${target} (have: ${(tr.transitions || []).map((x) => x.name).join(", ")})`);
+      return this_api.transitionIssue(target, t.id, extra);
     },
     // Transition all sub-tasks of the current issue by transition name (ScriptRunner "Transition sub-tasks").
     transitionSubtasks: async (name) => {
@@ -14875,11 +14948,14 @@ export const createSandboxSession = ({ issueKey: boundIssueKey = null, config = 
     // --- Additive edits (Jira `update` ops) — safe for concurrent post-functions
     // on one transition. Unlike updateIssue (full-field REPLACE), these merge
     // server-side so two PFs each adding to the same array field don't clobber.
-    editIssue: async (key, update) => {
-      if (simulated) { executionLogs.push(`[SIMULATION] editIssue("${key}", update ${JSON.stringify(update).slice(0, 200)})`); changes.push({ action: "editIssue", key, update, simulated: true }); return { simulated: true }; }
-      const res = await api.asApp().requestJira(route`/rest/api/3/issue/${key}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ update }) });
+    editIssue: async (...args) => {
+      // Key is OPTIONAL — api.editIssue({ labels: [{ add: "x" }] }) edits the current issue.
+      const { key, rest: [update] } = normalizeKeyOptionalArgs("editIssue", args);
+      const target = resolveIssueKey(key, issueKey, "editIssue", noIssueWhere);
+      if (simulated) { executionLogs.push(`[SIMULATION] editIssue("${target}", update ${JSON.stringify(update).slice(0, 200)})`); changes.push({ action: "editIssue", key: target, update, simulated: true }); return { simulated: true }; }
+      const res = await api.asApp().requestJira(route`/rest/api/3/issue/${target}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ update }) });
       if (!res.ok) throw new Error(`editIssue failed: ${res.status} — ${(await res.text()).slice(0, 200)}`);
-      changes.push({ action: "editIssue", key, update }); return { success: true };
+      changes.push({ action: "editIssue", key: target, update }); return { success: true };
     },
     addLabels: async (...labels) => this_api.editIssue(issueKey, { labels: labels.flat().filter(Boolean).map((l) => ({ add: l })) }),
     removeLabels: async (...labels) => this_api.editIssue(issueKey, { labels: labels.flat().filter(Boolean).map((l) => ({ remove: l })) }),
@@ -14986,7 +15062,7 @@ export const createSandboxSession = ({ issueKey: boundIssueKey = null, config = 
     context: { ...(extraContext && typeof extraContext === "object" ? extraContext : {}), issueKey },
   };
     if (!issueKey) {
-      const where = extraContext && extraContext.runtime ? `this ${extraContext.runtime} run` : "this run";
+      const where = noIssueWhere;
       for (const m of ISSUE_BOUND_METHODS) {
         this_api[m] = async () => {
           throw new Error(`api.${m}() needs a current issue, but ${where} has none (api.context.issueKey is null). Use api.forIssue("KEY").${m}(...) to target an issue explicitly.`);

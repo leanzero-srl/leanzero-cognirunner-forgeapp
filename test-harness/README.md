@@ -88,7 +88,27 @@ npm run test:listeners-e2e    # LIVE: REST-pushes a catch-all + targeted listene
 npm run test:jobs-e2e         # LIVE: run-now (scoped AI agent), the real scheduler tick (≤12 min wait), lifecycle round-trips
 npm run probe:listeners       # LIVE, ~2 min: one script + one AI-agent + one version listener
 npm run test:resolvers-live   # LIVE: the admin resolvers (getListeners/saveListener/testListener/runScheduledJobNow/tokens…) via the dev hook
+npm run test:jsm-assets       # LIVE: JSM request-type events, a real portal request, INTERNAL notes (script + AI agent), Assets workspace/schema/objects/field
+npm run test:jsm-import       # LIVE: the rule importer end-to-end on a JSM company-managed workflow (commit → attach → fire → portable-JSON round-trip)
 ```
+
+### JSM & Assets prerequisites
+
+`test:jsm-assets` needs the API user to be a **service-desk agent AND project admin**
+on the JSM project (both scripts pick a project via `/issue/createmeta` — `mypermissions`
+lies on demo service projects). Grant it once:
+
+```
+POST /rest/api/3/project/<JSMKEY>/role/<roleId>   { "user": ["<accountId>"] }
+# roles: "Service Desk Team" and "Administrators"
+```
+
+Two things REST cannot do, and the scripts report them as explicit SKIPs rather than
+silent gaps: there is **no REST update for a request type** (`PUT` → 405, so
+`avi:jsm-entity:updated:request-type` is UI-only), and an **Assets object custom field
+cannot be given its object-schema/AQL configuration over any public REST API** — without
+that configuration a write returns 204 and stores nothing. Configure it once in
+Settings → Issues → Custom fields → Configure → Assets, then re-run for the live read.
 
 `.env` needs `TESTSTATE_URL` + `HARNESS_SECRET` (the dev-only test-state web trigger; the scripts discover the `rules-api` URL and mint a token through it) or `RULES_API_URL` + `RULES_API_TOKEN` directly. Both scripts clean up after themselves (`KEEP=1` to keep the data). The listeners E2E lists, per run, which of the 68 events it could not fire (user events, issue viewed, failed expression, permanent field deletion) — see `docs/LISTENERS-AND-JOBS.md`.
 

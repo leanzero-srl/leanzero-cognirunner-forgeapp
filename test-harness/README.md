@@ -83,7 +83,7 @@ npm run test:premade-e2e    # LIVE: attach premade validators, fire transitions,
 ## Listeners & Scheduled Jobs
 
 ```bash
-npm run test:rules-offline    # cron (50) · event catalogue ⇄ manifest (362) · engines (60) — no Jira needed
+npm run test:rules-offline    # cron (50) · event catalogue ⇄ manifest (362) · engines (74) — no Jira needed
 npm run test:listeners-e2e    # LIVE: REST-pushes a catch-all + targeted listeners, fires ~55 events, asserts runs/side effects, prints coverage
 npm run test:jobs-e2e         # LIVE: run-now (scoped AI agent), the real scheduler tick (≤12 min wait), lifecycle round-trips
 npm run probe:listeners       # LIVE, ~2 min: one script + one AI-agent + one version listener

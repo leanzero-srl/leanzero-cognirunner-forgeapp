@@ -52,7 +52,8 @@
     "probe:listeners": "node scripts/listeners-agent-probe.mjs",
     "test:resolvers-live": "node scripts/resolvers-live.mjs",
     "test:jsm-assets": "node scripts/jsm-assets-e2e.mjs",
-    "test:jsm-import": "node scripts/jsm-import-e2e.mjs"
+    "test:jsm-import": "node scripts/jsm-import-e2e.mjs",
+    "probe:jsm-entity": "node scripts/jsm-entity-probe.mjs"
   },
   "devDependencies": {
     "@playwright/test": "^1.48.0"

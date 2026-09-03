@@ -282,14 +282,40 @@ async function main() {
   // ── 6. Wait for the comment-driven listeners ────────────────────────────────
   console.log("\n  waiting for listener runs (Forge events can take ~3 min)…");
   const entityRan = await waitForLogs(entityL.id, (l) => l.length > 0, { tries: 48 });
-  if (rtId) ok(entityRan.ok, `jsm-entity request-type listener ran (${entityRan.logs.length} entries: ${entityRan.logs.map((l) => l.fieldId || l.eventType).join(", ")})`);
+  if (rtId) {
+    if (entityRan.ok) {
+      ok(true, `jsm-entity request-type listener ran (${entityRan.logs.length} entries: ${entityRan.logs.map((l) => l.fieldId || l.eventType).join(", ")})`);
+    } else {
+      // SELF-DIAGNOSING: `captureSample` in listeners.js runs BEFORE every filter, the candidate
+      // slice, the brakes and the enqueue — so a stored sample proves the trigger was invoked for
+      // this event type. No runs + no sample = Forge never delivered the event (platform, F-006).
+      // No runs + a sample = the app received it and dropped it, which IS an app bug and must fail.
+      const s = await rulesApi.sample("avi:jsm-entity:created:request-type");
+      const sampled = s.status === 200 && s.body && (s.body.sample || s.body.payload || s.body.event);
+      if (sampled) {
+        ok(false, "APP BUG: a jsm-entity payload sample was captured (so the trigger DID fire) but no listener run was queued — candidate selection or filtering dropped it");
+      } else {
+        skipped("avi:jsm-entity:created/deleted:request-type never reached the app — REST create (201) + delete (204) " +
+          "produced no listener run AND no captured payload sample, while other events in the same window did. " +
+          "Forge does not deliver these for REST-driven request-type changes (finding F-006, platform-side). " +
+          "This assertion flips to a FAILURE the moment a sample appears without a run.");
+      }
+    }
+  }
   const createdRan = await waitForLogs(createdL.id, (l) => l.length > 0, { tries: 12 });
   ok(createdRan.ok, `created:issue listener ran on the JSM project (${createdRan.logs.length} entries)`);
   const internalRan = await waitForLogs(internalL.id, (l) => l.length > 0, { tries: 24 });
   ok(internalRan.ok, `internal-note listener ran (${internalRan.logs.length} entries)`);
   const agentRan = await waitForLogs(agentL.id, (l) => l.length > 0, { tries: 24 });
   ok(agentRan.ok, `AI-agent internal-note listener ran (${agentRan.logs.length} entries)`);
-  if (agentRan.ok) note(`agent summary: ${String((agentRan.logs[0] || {}).message || (agentRan.logs[0] || {}).result || "").slice(0, 200)}`);
+  // The agent's summary rides the log entry's `reason` ("Agent done: <summary>") — there is no
+  // `message` or `result` field on a log entry (those are REST response envelopes). Reading the
+  // wrong name printed an empty summary for a run that had demonstrably worked. listeners-e2e
+  // already reads `reason`; keep the two suites reading the same field.
+  if (agentRan.ok) {
+    const summary = String((agentRan.logs[0] || {}).reason || "").slice(0, 200);
+    ok(/^Agent /.test(summary), `AI-agent run summary persisted: ${summary || "(empty)"}`);
+  }
 
   // ── 7. Assert the JSM-visible outcome (portal comment API is the real judge) ─
   const jsmComments = await jira("GET", `/rest/servicedeskapi/request/${target}/comment?expand=body&limit=50&public=true&internal=true`);

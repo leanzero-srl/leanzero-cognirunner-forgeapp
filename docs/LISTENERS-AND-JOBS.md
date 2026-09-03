@@ -157,6 +157,8 @@ cd test-harness
 npm run test:rules-offline     # cron (50) · event catalogue ⇄ manifest lockstep (362) · engines (60)
 npm run test:listeners-e2e     # LIVE: pushes listeners over REST, fires ~55 events, asserts runs + side effects
 npm run test:jobs-e2e          # LIVE: run-now (agent, scoped), real 5-minute tick, lifecycle round-trips
+npm run test:jsm-assets        # LIVE: the 3 jsm-entity request-type events, a portal request, INTERNAL
+                               #   notes (script + AI agent), and the JSM Premium Assets chain
 # isolated UI (mock bridge): cd static/admin-panel && npx webpack --config webpack.screenshot.js --mode production
 node static/_screenshot-harness/listeners-jobs.test.mjs --shots
 ```

@@ -493,10 +493,16 @@ export const resolveIssueKey = (explicitKey, boundKey, methodName, where = "this
   if (typeof explicitKey === "string" && explicitKey.trim()) return explicitKey;
   // /rest/api/3/issue/{issueIdOrKey} also takes a numeric issue ID — keep that working.
   if (typeof explicitKey === "number" && Number.isFinite(explicitKey)) return String(explicitKey);
+  // OMITTED (undefined/null) means "target the current issue" and defaults below. A key that
+  // was PASSED but is empty is a caller bug — `api.updateIssue(parent.key || "", fields)`
+  // must not quietly become a write on the bound issue. Same principle as the type check.
+  if (typeof explicitKey === "string") {
+    throw new Error(`api.${methodName}(): the issue key was an empty string — pass a key like "PROJ-123", or omit the argument to target the current issue.`);
+  }
   // Anything else non-nullish (an issue OBJECT, an array, a boolean) is a caller bug.
   // It used to 404 loudly as "/issue/[object Object]"; defaulting it to the current issue
   // would instead WRITE TO THE WRONG ISSUE in silence. Fail loudly and say what to pass.
-  if (explicitKey !== undefined && explicitKey !== null && typeof explicitKey !== "string") {
+  if (explicitKey !== undefined && explicitKey !== null) {
     throw new Error(`api.${methodName}(): the issue key must be a string like "PROJ-123" (got ${typeof explicitKey}) — pass issue.key, not the issue object.`);
   }
   if (typeof boundKey === "string" && boundKey.trim()) return boundKey;

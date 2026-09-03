@@ -121,10 +121,26 @@ for (const n of ISSUE_KEY_OPTIONAL_METHODS) {
 for (const n of ["createIssueLink", "rankIssue", "forIssue"]) {
   ok(!ISSUE_KEY_OPTIONAL_METHODS.includes(n), `${n} is NOT key-optional (its first arg is not the bound issue)`);
 }
+const norm = (m, ...args) => normalizeKeyOptionalArgs(m, args);
 ok(resolveIssueKey("PROJ-1", "PROJ-9", "getIssue") === "PROJ-1", "explicit key wins over the bound issue");
 ok(resolveIssueKey(undefined, "PROJ-9", "getIssue") === "PROJ-9", "omitted key falls back to the bound issue");
-ok(resolveIssueKey("", "PROJ-9", "getIssue") === "PROJ-9", "empty-string key falls back to the bound issue");
 ok(resolveIssueKey(null, "PROJ-9", "getIssue") === "PROJ-9", "null key falls back to the bound issue");
+// OMITTED vs EMPTY. `api.updateIssue(parent.key || "", fields)` passed a key and it is empty —
+// falling back to the bound issue there would be a WRITE ON THE WRONG ISSUE, in silence.
+for (const empty of ["", "   "]) {
+  let msg = null;
+  try { resolveIssueKey(empty, "PROJ-9", "updateIssue"); } catch (e) { msg = e.message; }
+  ok(msg && /empty string/.test(msg), `an explicitly-passed empty key (${JSON.stringify(empty)}) throws instead of targeting the bound issue`);
+  ok(msg && msg.includes("api.updateIssue()"), "the empty-key error names the method");
+  ok(msg && /omit the argument/.test(msg), "the empty-key error says how to target the current issue on purpose");
+}
+// ...and it still throws when there is no bound issue either (no accidental second path).
+let emptyNoBound = null;
+try { resolveIssueKey("", null, "getIssue"); } catch (e) { emptyNoBound = e.message; }
+ok(emptyNoBound && /empty string/.test(emptyNoBound), "an empty key throws even with no bound issue");
+// normalizeKeyOptionalArgs must not swallow it: a 2-arg call keeps "" in the key slot.
+ok(norm("updateIssue", "", { summary: "x" }).key === "", "updateIssue(\"\", fields) keeps the empty key so resolveIssueKey can reject it");
+ok(norm("editIssue", "", { labels: [] }).key === "", "editIssue(\"\", update) keeps the empty key");
 ok(resolveIssueKey(10023, "PROJ-9", "getIssue") === "10023", "a numeric issue ID is accepted (issue/{idOrKey})");
 // An issue OBJECT passed where a key belongs must FAIL, never silently fall back to the
 // current issue — that would turn a caller bug into a write on the wrong issue.
@@ -153,7 +169,6 @@ if (stubTpl) {
 // --- ARITY: omitting the key must SHIFT the remaining arguments -------------
 // Without this, api.updateIssue({ priority }) would put the payload in `key` and PUT
 // `{ fields: undefined }` — the "optional key" promise has to hold for the 2-arg methods.
-const norm = (m, ...args) => normalizeKeyOptionalArgs(m, args);
 const fieldsObj = { priority: { name: "High" } };
 ok(norm("getIssue", "PROJ-1").key === "PROJ-1", "getIssue(key) keeps the key");
 ok(norm("getIssue").key === undefined, "getIssue() has no key (defaults later)");

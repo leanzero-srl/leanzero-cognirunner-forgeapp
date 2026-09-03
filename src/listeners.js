@@ -403,10 +403,15 @@ export async function listenerTrigger(event, context) {
   }
   // Pre-filter on the slim index rows before paying for full reads.
   const meta = getEvent(eventType) || {};
-  const shortlisted = candidates.filter((r) => {
+  const matched = candidates.filter((r) => {
     if (!r.projectKeys || !r.projectKeys.length || meta.projectScoped === false) return true;
     return ctx.projectKey && r.projectKeys.map((k) => String(k).toUpperCase()).includes(String(ctx.projectKey).toUpperCase());
-  }).slice(0, MAX_CANDIDATES_PER_EVENT);
+  });
+  const shortlisted = matched.slice(0, MAX_CANDIDATES_PER_EVENT);
+  // Say it out loud when the cap bites: saveListener APPENDS to the index, so the rows
+  // this slice drops are the NEWEST ones — the listener someone just saved and is testing
+  // is the first to disappear, and silence there looks exactly like "my listener is broken".
+  if (matched.length > shortlisted.length) console.warn(`[listener] ${eventType}: ${matched.length} listeners matched but only ${MAX_CANDIDATES_PER_EVENT} run per event — ${matched.length - shortlisted.length} skipped (the index is append-ordered, so the newest listeners are the ones dropped)`);
   if (!shortlisted.length) return;
 
   const jqlCache = new Map();

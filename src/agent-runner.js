@@ -29,6 +29,7 @@
  * execution modes).
  */
 import { toolDefinitionsFor, normalizeAllowedActions, getAgentAction, DEFAULT_AGENT_ROUNDS, MAX_AGENT_ROUNDS } from "./shared/agent-actions.js";
+import { resolveIssueKey } from "./shared/sandbox-api-spec.js";
 import { defangFence } from "./memories.js";
 
 const idx = () => import("./index.js");
@@ -125,13 +126,34 @@ export const runAgentTask = async ({
 
   const baseApi = session.createApi();
   const apiFor = (key) => (key && key !== issueKey ? baseApi.forIssue(key) : baseApi);
-  const keyOf = (args) => (args && typeof args.issueKey === "string" && args.issueKey.trim()) ? args.issueKey.trim() : issueKey;
-  const needKey = (args) => { const k = keyOf(args); if (!k) throw new Error("No issue key: this run has no current issue — pass issueKey explicitly."); return k; };
+  // Hand the RAW issueKey to resolveIssueKey — never pre-swallow a bad one. This used to
+  // read `typeof args.issueKey === "string"` and fall back to the bound issue otherwise, so a
+  // model that emitted `{ issueKey: { key: "LZPT-9" } }` (easy after reading an issue object)
+  // had its argument silently discarded and the write landed on the CURRENT issue, unlogged.
+  // The shared helper's type guard exists for exactly that; let it fire. Strings are still
+  // trimmed here so the old trimming semantics are preserved.
+  const keyOf = (args) => {
+    if (!args || args.issueKey === undefined || args.issueKey === null) return undefined;
+    return typeof args.issueKey === "string" ? args.issueKey.trim() : args.issueKey;
+  };
 
   const execute = async (name, args) => {
     const a = getAgentAction(name);
     if (!a) throw new Error(`Unknown action "${name}"`);
     if (a.kind !== "control" && !allowed.includes(name)) throw new Error(`Action "${name}" is not allowed for this rule`);
+    // ONE issue-key rule, ONE message. "No current issue" is resolved (and complained
+    // about) by the SAME helper the sandbox's key-optional methods use — see
+    // resolveIssueKey in src/shared/sandbox-api-spec.js — so an operator reading a
+    // listener/job log learns a single sentence instead of one per surface. `name` is
+    // the action the model actually called, so the message names the failing tool.
+    // The agent has TOOLS, not the sandbox `api` object, so the shared helper's default
+    // "use api.forIssue(...)" remedy would be advice it cannot act on — and this string is
+    // fed back to the model as a tool result, not just to the operator's log. Same rule,
+    // wording the caller can actually follow.
+    const needKey = (callArgs) => resolveIssueKey(keyOf(callArgs), issueKey, name, "this agent run", {
+      label: name,
+      remedy: `Pass the issue key explicitly, e.g. { "issueKey": "PROJ-123" }.`,
+    });
     switch (name) {
       case "get_issue": {
         const key = needKey(args);

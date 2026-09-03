@@ -487,9 +487,15 @@ export const ISSUE_KEY_OPTIONAL_METHODS = [
  * @param {*} boundKey     the run's current issue (api.context.issueKey), may be null
  * @param {string} methodName  e.g. "getIssue" — named in the error
  * @param {string} [where]  "this listener run" / "this job run"; defaults to "this run"
+ * @param {{ label?: string, remedy?: string }} [opts]  caller-surface wording. The AI agent
+ *   reaches this helper too, and it has TOOLS, not the sandbox `api` object — telling it to
+ *   "use api.forIssue(...)" is advice it cannot act on. `label` replaces the `api.x()` prefix
+ *   and `remedy` replaces the closing sentence, so one rule can address two audiences.
  * @returns {string} the issue key to call Jira with
  */
-export const resolveIssueKey = (explicitKey, boundKey, methodName, where = "this run") => {
+export const resolveIssueKey = (explicitKey, boundKey, methodName, where = "this run", opts = {}) => {
+  const label = opts.label || `api.${methodName}()`;
+  const remedy = opts.remedy || `Use api.forIssue("KEY").${methodName}(...) to target an issue explicitly.`;
   if (typeof explicitKey === "string" && explicitKey.trim()) return explicitKey;
   // /rest/api/3/issue/{issueIdOrKey} also takes a numeric issue ID — keep that working.
   if (typeof explicitKey === "number" && Number.isFinite(explicitKey)) return String(explicitKey);
@@ -497,16 +503,16 @@ export const resolveIssueKey = (explicitKey, boundKey, methodName, where = "this
   // was PASSED but is empty is a caller bug — `api.updateIssue(parent.key || "", fields)`
   // must not quietly become a write on the bound issue. Same principle as the type check.
   if (typeof explicitKey === "string") {
-    throw new Error(`api.${methodName}(): the issue key was an empty string — pass a key like "PROJ-123", or omit the argument to target the current issue.`);
+    throw new Error(`${label}: the issue key was an empty string — pass a key like "PROJ-123", or omit the argument to target the current issue.`);
   }
   // Anything else non-nullish (an issue OBJECT, an array, a boolean) is a caller bug.
   // It used to 404 loudly as "/issue/[object Object]"; defaulting it to the current issue
   // would instead WRITE TO THE WRONG ISSUE in silence. Fail loudly and say what to pass.
   if (explicitKey !== undefined && explicitKey !== null) {
-    throw new Error(`api.${methodName}(): the issue key must be a string like "PROJ-123" (got ${typeof explicitKey}) — pass issue.key, not the issue object.`);
+    throw new Error(`${label}: the issue key must be a string like "PROJ-123" (got ${typeof explicitKey}) — pass issue.key, not the issue object.`);
   }
   if (typeof boundKey === "string" && boundKey.trim()) return boundKey;
-  throw new Error(`api.${methodName}() needs a current issue, but ${where} has none (api.context.issueKey is null). Use api.forIssue("KEY").${methodName}(...) to target an issue explicitly.`);
+  throw new Error(`${label} needs a current issue, but ${where} has none (api.context.issueKey is null). ${remedy}`);
 };
 
 /**

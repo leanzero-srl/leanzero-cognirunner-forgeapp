@@ -9,11 +9,13 @@
 // validation/normalisation (the REST contract), static event matching, the
 // scheduler's tick planner, and the trigger's cheap early exits against a mocked
 // KVS/@forge/api. Run: node --import ../lib/register-mocks.mjs scripts/listeners.test.mjs
+import { register } from "node:module";
 import storage from "../lib/mock-kvs.mjs";
 import forgeApi, { pushed } from "../lib/mock-forge-api.mjs";
 import {
   normalizeListener, normalizeStep, matchListenerStatic, toIndexRow, listenerTrigger,
   LISTENER_INDEX_KEY, LISTENER_PREFIX, saveListener, listListeners, getListener, deleteListener, setListenerEnabled,
+  BRAKE_MAX_PER_LISTENER,
 } from "../../src/listeners.js";
 import { normalizeJob, planTick, saveJob, listJobs, setJobEnabled, previewSchedule } from "../../src/scheduled-jobs.js";
 import { normalizeAllowedActions, toolDefinitionsFor } from "../../src/shared/agent-actions.js";
@@ -95,6 +97,74 @@ ok(pushed.length === 0, "unknown event ignored");
 await saveListener({ ...(await getListener(saved.id)), enabled: false }, { accountId: "u" });
 await listenerTrigger({ eventType: "avi:jira:created:issue", issue: { key: "LZPT-2", fields: {} } }, {});
 ok(pushed.length === 0, "disabled listener not queued");
+
+// ── trigger POSITIVE path: a projectScoped:false event enqueues a run ─────────
+// F-006 cost a live probe because the non-issue, non-project event families (jsm, sprints,
+// boards, users, fields, filters, issue types, configuration) had no offline proof at all.
+// The enqueue step dynamically imports src/index.js (makeTaskId + writeAsyncJob), and that
+// module cannot load offline: @forge/llm throws "Forge runtime not found" at import time and
+// `export { testStateTrigger } from "./test-hook"` is extensionless (Forge bundles it, node
+// does not resolve it). Map that ONE dynamic specifier — only the one listeners.js asks for —
+// to a two-function stub. Registered here in the body on purpose: the hook only has to exist
+// before the first listenerTrigger() call that gets as far as pushing to the queue.
+const INDEX_STUB_HOOK = `
+export async function resolve(spec, ctx, next) {
+  if (spec === "./index.js" && String(ctx.parentURL || "").endsWith("/src/listeners.js")) return { url: "cogni-mock:index", shortCircuit: true, format: "module" };
+  return next(spec, ctx);
+}
+export async function load(url, ctx, next) {
+  if (url === "cogni-mock:index") return { format: "module", shortCircuit: true, source: "let n = 0; export const makeTaskId = (p) => p + '_t' + (++n); export const writeAsyncJob = async () => {}; export const storeLog = async () => {};" };
+  return next(url, ctx);
+}`;
+register("data:text/javascript," + encodeURIComponent(INDEX_STUB_HOOK));
+
+const RT_EVENT = "avi:jsm-entity:created:request-type";
+const rtEvent = () => ({ eventType: RT_EVENT, entityId: "10101", entityType: "request-type", activationId: "act-1" });
+// NOTE: saveListener rewrites the index, which drops the trigger's 30s per-container cache —
+// that is why these fire immediately. A LIVE test must wait ~35s between save and event.
+storage.__reset(); forgeApi.__reset(); pushed.length = 0;
+const lNoFilter = await saveListener({ name: "RT any", events: [RT_EVENT], functions: [{ code: "api.log(1)" }] }, { accountId: "u" });
+await listenerTrigger(rtEvent(), {});
+ok(pushed.length === 1 && pushed[0].queue === "async-ai-queue" && pushed[0].body.taskType === "listener" && pushed[0].body.params.listenerId === lNoFilter.id, "non-issue, non-project event ENQUEUES a run");
+ok(pushed[0].body.params.ctx.issueKey === null && pushed[0].body.params.ctx.entityName === "request-type 10101" && pushed[0].body.params.event.activationId === "act-1", "queued ctx/payload carry the entity, not an issue");
+ok(forgeApi.__calls.length === 0, "entity event resolves nothing — zero Jira REST calls from the trigger");
+// A project filter must NOT gate an event Jira never scopes to a project (meta.projectScoped
+// === false bypasses the project gate in BOTH the shortlist and matchListenerStatic). This is
+// deliberate: gating here would make every such listener dead. It must not silently regress.
+forgeApi.__reset(); pushed.length = 0;
+const lProjFilter = await saveListener({ name: "RT filtered", events: [RT_EVENT], filters: { projectKeys: ["LZPT"] }, functions: [{ code: "api.log(2)" }] }, { accountId: "u" });
+await listenerTrigger(rtEvent(), {});
+ok(pushed.length === 2 && pushed.some((p) => p.body.params.listenerId === lProjFilter.id), "projectKeys filter does not gate a projectScoped:false event");
+ok(forgeApi.__calls.length === 0, "no project-key resolution REST call either (the key could not be used anyway)");
+// Brakes with no issue: the per-ISSUE loop guard is skipped (nothing to loop on), the
+// per-LISTENER cost guard still applies. Record every key the trigger reads to prove it.
+const readKeys = []; const realGet = storage.get;
+storage.get = async (k) => { readKeys.push(String(k)); return realGet.call(storage, k); };
+pushed.length = 0;
+await listenerTrigger(rtEvent(), {});
+storage.get = realGet;
+const brakeReads = readKeys.filter((k) => k.startsWith("lst_brake:"));
+ok(brakeReads.length >= 2 && brakeReads.every((k) => k.startsWith("lst_brake:L:")), "no issue key → per-issue brake never read, only per-listener brakes");
+// Take the key from what the trigger actually read (it carries the 5-minute bucket) rather
+// than recomputing the bucket here, which would flake across a bucket boundary.
+const listenerBrakeKey = brakeReads.find((k) => k.startsWith(`lst_brake:L:${lNoFilter.id}:`));
+ok(listenerBrakeKey && Number(await storage.get(listenerBrakeKey)) >= 1, "per-listener brake counts runs of a no-issue event");
+storage.__seed(listenerBrakeKey, BRAKE_MAX_PER_LISTENER);
+pushed.length = 0;
+await listenerTrigger(rtEvent(), {});
+ok(pushed.length === 1 && pushed[0].body.params.listenerId === lProjFilter.id, "per-listener brake stops the braked listener only — the cost guard applies without an issue");
+// F-010: the 25-candidate cap must SAY when it bites — it drops the TAIL of an
+// append-ordered index, i.e. the listener someone just saved. Seed 26 slim rows with no
+// `listener:{id}` records (getListener returns null and the loop skips them; the warning is
+// emitted before that) and save a 27th, which is also what drops the trigger's index cache.
+storage.__reset(); pushed.length = 0;
+storage.__seed(LISTENER_INDEX_KEY, Array.from({ length: 26 }, (_, i) => ({ id: `lst_bulk${i}`, name: `bulk ${i}`, enabled: true, events: [RT_EVENT], projectKeys: [] })));
+await saveListener({ name: "the newest one", events: [RT_EVENT], functions: [{ code: "api.log(3)" }] }, { accountId: "u" });
+const warns = []; const realWarn = console.warn;
+console.warn = (...a) => { warns.push(a.map(String).join(" ")); };
+await listenerTrigger(rtEvent(), {});
+console.warn = realWarn;
+ok(warns.some((w) => w.includes(RT_EVENT) && w.includes("27 listeners matched") && w.includes("2 skipped")), "the 25-candidate truncation logs the event, the matched count and the dropped count");
 
 // ── scheduled jobs ────────────────────────────────────────────────────────────
 throws(() => normalizeJob({ name: "j" }), /schedule.cron is invalid/, "job needs a cron");

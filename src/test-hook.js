@@ -9,7 +9,7 @@
  * DEV-ONLY test-state web trigger for the forge-live-harness E2E suite.
  * Gated by HARNESS_SECRET (set ONLY in the development environment). Returns 404
  * unless the secret is configured (absent in prod) AND matches the Bearer header.
- * Read-only.
+ * Reads and explicitly allowlisted test actions only.
  */
 import storage from "@forge/kvs";
 
@@ -102,6 +102,71 @@ export async function testStateTrigger(req) {
         const { createApiTokenInternal } = await import("./rules-api.js");
         const r = await createApiTokenInternal({ name: body.name || "harness", accountId: "harness" });
         return json(200, r);
+      } catch (e) {
+        return json(500, { error: String((e && e.message) || e) });
+      }
+    }
+    // Direct consumer concurrency proof for dedicated harness fixtures. This tests
+    // real KVS claims and sandbox writes, not Forge's product-event/queue delivery.
+    // It never accepts code, module names, arbitrary functions or raw event data.
+    if (body.action === "probeRuleDelivery") {
+      const taskType = body.taskType;
+      const validTaskId = (id) => typeof id === "string" && /^harness-claim-[A-Za-z0-9_.-]{1,60}$/.test(id);
+      if (!["listener", "scheduledjob"].includes(taskType)
+        || typeof body.ruleId !== "string" || !/^[A-Za-z0-9_.-]{3,80}$/.test(body.ruleId)
+        || !validTaskId(body.taskId)
+        || (body.manual !== undefined && typeof body.manual !== "boolean")
+        || (body.secondTaskId !== undefined && !validTaskId(body.secondTaskId))) {
+        return json(400, { error: "Expected listener or scheduledjob, a ruleId and harness-claim- task ids." });
+      }
+      const manual = body.manual !== false;
+      // Production claims retain the existing 120-character key-part limit.
+      // Reject probe identities that would truncate distinct manual task ids.
+      if (taskType === "scheduledjob" && manual
+        && [body.taskId, body.secondTaskId || body.taskId].some((id) => `${body.ruleId}:manual:${id}`.length > 120)) {
+        return json(400, { error: "Combined manual rule/task identity exceeds the claim key limit." });
+      }
+      if (taskType === "listener" && (typeof body.issueKey !== "string" || !/^[A-Z][A-Z0-9_]*-\d+$/.test(body.issueKey))) {
+        return json(400, { error: "Listener probe requires an issueKey." });
+      }
+      if (taskType === "scheduledjob" && !manual
+        && (typeof body.scheduledFor !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:00\.000Z$/.test(body.scheduledFor)
+          || !Number.isFinite(Date.parse(body.scheduledFor)) || new Date(body.scheduledFor).toISOString() !== body.scheduledFor)) {
+        return json(400, { error: "Scheduled probe requires scheduledFor as an exact UTC minute." });
+      }
+      try {
+        const mod = taskType === "listener" ? await import("./listeners.js") : await import("./scheduled-jobs.js");
+        const rule = await (taskType === "listener" ? mod.getListener(body.ruleId) : mod.getJob(body.ruleId));
+        if (!rule || rule.mode !== "script" || !rule.name.startsWith("[Harness claim]")) {
+          return json(400, { error: "Probe requires a saved script rule named [Harness claim]..." });
+        }
+        let params; let execute;
+        if (taskType === "listener") {
+          const eventType = rule.events.find((e) => ["avi:jira:created:issue", "avi:jira:updated:issue"].includes(e));
+          if (!eventType || rule.enabled === false) return json(400, { error: "Listener probe requires an enabled issue-created or issue-updated fixture." });
+          const { default: api, route } = await import("@forge/api");
+          const res = await api.asApp().requestJira(route`/rest/api/3/issue/${body.issueKey}?fields=summary,project,issuetype`);
+          if (!res.ok) return json(400, { error: `Probe issue read failed: ${res.status}` });
+          const event = { eventType, issue: await res.json(), selfGenerated: false };
+          const { extractEventContext } = await import("./shared/jira-events.js");
+          const ctx = { ...extractEventContext(eventType, event), jqlPending: Boolean(rule.filters?.jql) };
+          // The fixture must satisfy the same static filters before the consumer
+          // pair is invoked; no need to bypass matching just to exercise claims.
+          const match = mod.matchListenerStatic(rule, ctx, event);
+          if (!match.ok) return json(400, { error: `Probe fixture does not match: ${match.reason}` });
+          params = { listenerId: rule.id, eventType, event, ctx };
+          execute = mod.executeListenerTask;
+        } else {
+          if (rule.scope) return json(400, { error: "Job probe requires an unscoped fixture with explicit issue targeting." });
+          if (!manual && rule.enabled === false) return json(400, { error: "Scheduled probe requires an enabled fixture." });
+          params = { jobId: rule.id, manual, scheduledFor: manual ? null : body.scheduledFor };
+          execute = mod.executeScheduledJobTask;
+        }
+        const results = await Promise.all([
+          execute(params, body.taskId),
+          execute(params, body.secondTaskId || body.taskId),
+        ]);
+        return json(200, { directConsumerProbe: true, results });
       } catch (e) {
         return json(500, { error: String((e && e.message) || e) });
       }

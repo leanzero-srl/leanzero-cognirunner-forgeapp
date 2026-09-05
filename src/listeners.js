@@ -40,6 +40,7 @@ import {
 } from "./shared/jira-events.js";
 import { normalizeAllowedActions, DEFAULT_AGENT_ACTIONS, DEFAULT_AGENT_ROUNDS, MAX_AGENT_ROUNDS } from "./shared/agent-actions.js";
 import { redosRisk } from "./shared/regex-safety.js";
+import { claimRuleExecution } from "./shared/execution-claim.js";
 
 const idx = () => import("./index.js");
 const agentMod = () => import("./agent-runner.js");
@@ -572,13 +573,13 @@ export const executeListenerTask = async (params, taskId) => {
     await m.storeLog({ type: "listener", source: "async", issueKey: (ctx && ctx.issueKey) || "(no issue)", fieldId: eventType, isValid: true, decision: "SKIP", reason: "Skipped: listener was disabled before the queued run started.", executionTimeMs: 0, ruleId: listener.id, ruleName: listener.name, ruleWorkflow: null, eventType });
     return { skipped: true, reason: "disabled" };
   }
-  // At-least-once delivery guard: claim this task id before doing any work (best-effort
-  // check-then-set — KVS has no CAS; mirrors the post-function pf_exec claim).
-  try {
-    const claimKey = EXEC_CLAIM_PREFIX + safeKeyPart(taskId || `${listenerId}:${params.enqueuedAt || ""}`);
-    if (await storage.get(claimKey)) { console.log(`[listener] duplicate delivery of ${taskId} suppressed`); return { skipped: true, reason: "duplicate delivery" }; }
-    await storage.set(claimKey, { at: nowIso() }, EXEC_CLAIM_TTL);
-  } catch (e) { console.warn("[listener] claim failed (continuing):", e && e.message); }
+  // At-least-once delivery: atomically claim before the AI gate or sandbox. A
+  // crash after claiming is not replayed with already-completed writes intact.
+  const claimKey = EXEC_CLAIM_PREFIX + safeKeyPart(taskId || `${listenerId}:${params.enqueuedAt || ""}`);
+  if (!(await claimRuleExecution(storage, claimKey, EXEC_CLAIM_TTL, "listener"))) {
+    console.log(`[listener] duplicate delivery of ${taskId} suppressed`);
+    return { skipped: true, reason: "duplicate delivery" };
+  }
   const enqueuedMs = params.enqueuedAt ? Date.parse(params.enqueuedAt) : NaN;
   const started = Date.now();
   let out;

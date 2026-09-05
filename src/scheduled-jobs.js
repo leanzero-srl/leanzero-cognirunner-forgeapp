@@ -39,6 +39,7 @@ import api, { route } from "@forge/api";
 import { validateCron, normalizeTimeZone, dueInWindow, nextRuns, describeCron } from "./shared/cron.js";
 import { normalizeAllowedActions, DEFAULT_AGENT_ACTIONS, DEFAULT_AGENT_ROUNDS, MAX_AGENT_ROUNDS } from "./shared/agent-actions.js";
 import { normalizeStep } from "./listeners.js";
+import { claimRuleExecution } from "./shared/execution-claim.js";
 
 const idx = () => import("./index.js");
 const agentMod = () => import("./agent-runner.js");
@@ -262,10 +263,7 @@ export async function scheduledTick() {
   for (const d of due) {
     if (Date.now() - started > TICK_BUDGET_MS) { console.warn(`[job] tick budget hit after ${queued} enqueue(s)`); break; }
     const claimKey = `job_claim:${safeKeyPart(d.job.id)}:${d.fireAt}`;
-    try {
-      if (await storage.get(claimKey)) continue; // duplicate tick delivery
-      await storage.set(claimKey, { at: nowIso() }, CLAIM_TTL);
-    } catch (e) { console.warn("[job] claim failed (continuing):", e && e.message); }
+    if (!(await claimRuleExecution(storage, claimKey, CLAIM_TTL, "job"))) continue; // duplicate tick delivery
     const full = await getJob(d.job.id);
     if (!full || full.enabled === false) continue;
     try {
@@ -379,12 +377,12 @@ export const executeScheduledJobTask = async (params, taskId) => {
     return { skipped: true, reason: "disabled" };
   }
   // At-least-once delivery guard: a scheduled run is identified by job + due minute,
-  // a manual run by its task id (best-effort check-then-set; mirrors pf_exec).
-  try {
-    const claimKey = EXEC_CLAIM_PREFIX + safeKeyPart(manual ? `${job.id}:manual:${taskId}` : `${job.id}:${scheduledFor || taskId}`);
-    if (await storage.get(claimKey)) { console.log(`[job] duplicate delivery of ${taskId} suppressed`); return { skipped: true, reason: "duplicate delivery" }; }
-    await storage.set(claimKey, { at: nowIso() }, EXEC_CLAIM_TTL);
-  } catch (e) { console.warn("[job] claim failed (continuing):", e && e.message); }
+  // a manual run by its task id. The atomic claim precedes every script/AI write.
+  const claimKey = EXEC_CLAIM_PREFIX + safeKeyPart(manual ? `${job.id}:manual:${taskId}` : `${job.id}:${scheduledFor || taskId}`);
+  if (!(await claimRuleExecution(storage, claimKey, EXEC_CLAIM_TTL, "job"))) {
+    console.log(`[job] duplicate delivery of ${taskId} suppressed`);
+    return { skipped: true, reason: "duplicate delivery" };
+  }
   const enqueuedMs = params.enqueuedAt ? Date.parse(params.enqueuedAt) : NaN;
   const started = Date.now();
   let out;

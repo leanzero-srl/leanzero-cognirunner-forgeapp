@@ -13,7 +13,16 @@ const store = new Map();
 
 const storage = {
   async get(key) { return store.has(key) ? clone(store.get(key)) : undefined; },
-  async set(key, value) { store.set(key, clone(value)); return { key }; },
+  async set(key, value, options = {}) {
+    // Conditional writes must be atomic even when callers await them concurrently.
+    // Otherwise the mock hides the exact duplicate-delivery race these claims guard.
+    if (options.keyPolicy === "FAIL_IF_EXISTS" && store.has(key)) {
+      const error = new Error("Key already exists");
+      error.code = "KEY_ALREADY_EXISTS";
+      throw error;
+    }
+    store.set(key, clone(value)); return { key };
+  },
   async delete(key) { store.delete(key); },
   // test helpers (not part of the real API)
   __reset() { store.clear(); },

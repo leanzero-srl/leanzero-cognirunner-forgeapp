@@ -166,5 +166,154 @@ await check("failed step and prior writes remain represented when next issue is 
 });
 // Duplicate consumers must be suppressed before either the AI gate or sandbox
 // starts. Promise.all overlaps the actual entrypoints, not a claim-only stand-in.
+const dueAt = "2026-09-05T09:00:00.000Z";
+const claimFixture = (kind) => {
+  const state = reset();
+  if (kind === "listener") {
+    const config = listener({}, { id: "claim-listener", aiCondition: "Needs attention" });
+    storage.__seed(`listener:${config.id}`, config);
+    return { state, key: "lst_exec:claim-task", invoke: (taskId = "claim-task") => executeListenerTask({ listenerId: config.id, eventType: UPDATE, event: { issue: ISSUE }, ctx: { issueKey: ISSUE.key } }, taskId) };
+  }
+  const config = normalizeJob({ ...job(), id: "claim-job", scope: null });
+  storage.__seed(`job:${config.id}`, config);
+  const manual = kind === "manual";
+  return { state, key: manual ? "job_exec:claim-job:manual:claim-task" : `job_exec:claim-job:${dueAt}`, invoke: (taskId = "claim-task", scheduledFor = dueAt, jobId = config.id) => executeScheduledJobTask({ jobId, manual, scheduledFor }, taskId), config };
+};
+for (const kind of ["listener", "manual", "scheduled"]) {
+  await check(`${kind} concurrent identical delivery runs once`, async () => {
+    const { state, invoke, key } = claimFixture(kind);
+    const results = await Promise.all([invoke(), invoke()]);
+    assert.equal(state.runs.length, 1); assert.equal(state.logs.length, 1);
+    assert.equal(results.filter(r => r.reason === "duplicate delivery" && r.skipped).length, 1);
+    assert.equal(results.filter(r => r.success).length, 1);
+    assert.equal(state.gates.length, kind === "listener" ? 1 : 0);
+    assert.ok(storage.__raw(key)?.at);
+  });
+  await check(`${kind} existing claim prevents gate and writes`, async () => {
+    const { state, invoke, key } = claimFixture(kind);
+    storage.__seed(key, { at: dueAt });
+    const result = await invoke();
+    assert.equal(result.reason, "duplicate delivery"); assert.equal(result.skipped, true);
+    assert.equal(state.runs.length, 0); assert.equal(state.gates.length, 0); assert.equal(state.logs.length, 0);
+    assert.deepEqual(storage.__raw(key), { at: dueAt });
+  });
+  await check(`${kind} distinct execution identities both run`, async () => {
+    const { state, invoke } = claimFixture(kind);
+    const results = kind === "scheduled"
+      ? await Promise.all([invoke("first", dueAt), invoke("second", "2026-09-05T09:05:00.000Z")])
+      : await Promise.all([invoke("first"), invoke("second")]);
+    assert.equal(state.runs.length, 2); assert.ok(results.every(r => r.success));
+  });
+  for (const [label, error] of [
+    ["code", Object.assign(new Error("conflict"), { code: "KEY_ALREADY_EXISTS" })],
+    ["HTTP 409", Object.assign(new Error("conflict"), { responseDetails: { status: 409 } })],
+    ["message", new Error("Key already exists")],
+    ["infrastructure", Object.assign(new Error("service temporarily unavailable"), { code: "SERVICE_UNAVAILABLE" })],
+  ]) await check(`${kind} claim ${label} preserves failure policy and TTL`, async () => {
+    const { state, invoke, key } = claimFixture(kind);
+    const originalSet = storage.set; const originalWarn = console.warn; const warnings = []; const optionsSeen = [];
+    storage.set = async (k, value, options) => { if (k === key) { optionsSeen.push(options); throw error; } return originalSet(k, value, options); };
+    console.warn = (...args) => warnings.push(args.join(" "));
+    try {
+      const result = await invoke();
+      assert.deepEqual(optionsSeen, [{ keyPolicy: "FAIL_IF_EXISTS", ttl: { value: 2, unit: "HOURS" } }]);
+      const infrastructure = label === "infrastructure";
+      assert.equal(state.runs.length, infrastructure ? 1 : 0);
+      assert.equal(warnings.length, infrastructure ? 1 : 0);
+      if (infrastructure) { assert.equal(result.success, true); assert.match(warnings[0], /claim failed \(continuing\)/); }
+      else { assert.equal(result.skipped, true); assert.equal(result.reason, "duplicate delivery"); }
+    } finally { storage.set = originalSet; console.warn = originalWarn; }
+  });
+}
+await check("different scheduled tasks for the same job and due minute run once", async () => {
+  const { state, invoke } = claimFixture("scheduled");
+  const results = await Promise.all([invoke("first"), invoke("second")]);
+  assert.equal(state.runs.length, 1); assert.equal(results.filter(r => r.skipped).length, 1);
+});
+await check("different jobs due in the same minute both run", async () => {
+  const { state, invoke, config } = claimFixture("scheduled");
+  storage.__seed("job:another-job", { ...config, id: "another-job" });
+  const results = await Promise.all([invoke(), invoke("second", dueAt, "another-job")]);
+  assert.equal(state.runs.length, 2); assert.ok(results.every(r => r.success));
+});
+const tickFixture = () => {
+  const state = reset();
+  const config = normalizeJob({ ...job(), id: "claim-tick", scope: null, schedule: { cron: "* * * * *", timeZone: "UTC" } });
+  storage.__seed(`job:${config.id}`, config); storage.__seed("job_index", [config]);
+  storage.__seed("job_sched", { [config.id]: { lastCheckedAt: new Date(Date.now() - 120000).toISOString() } });
+  return { state, config };
+};
+await check("concurrent scheduled ticks queue a due job once", async () => {
+  tickFixture();
+  await Promise.all([scheduledTick(), scheduledTick()]);
+  assert.equal(pushed.length, 1);
+  assert.equal(pushed[0].body.params.jobId, "claim-tick");
+});
+await check("scheduled tick preserves 2h atomic options and infrastructure continue", async () => {
+  tickFixture();
+  const originalSet = storage.set; const originalWarn = console.warn; const warnings = []; const optionsSeen = [];
+  storage.set = async (key, value, options) => { if (key.startsWith("job_claim:")) { optionsSeen.push(options); throw new Error("service unavailable"); } return originalSet(key, value, options); };
+  console.warn = (...args) => warnings.push(args.join(" "));
+  try {
+    await scheduledTick(); assert.equal(pushed.length, 1);
+    assert.deepEqual(optionsSeen, [{ keyPolicy: "FAIL_IF_EXISTS", ttl: { value: 2, unit: "HOURS" } }]);
+    assert.equal(warnings.length, 1); assert.match(warnings[0], /claim failed \(continuing\)/);
+  } finally { storage.set = originalSet; console.warn = originalWarn; }
+});
+const previousSecret = process.env.HARNESS_SECRET;
+const probeBody = { action: "probeRuleDelivery", taskType: "listener", ruleId: "claim-listener", taskId: "harness-claim-offline", issueKey: ISSUE.key };
+const probe = (body = probeBody, authorization = "Bearer offline-claim-secret") => testStateTrigger({ method: "POST", headers: { authorization: [authorization] }, body: JSON.stringify(body) });
+try {
+  delete process.env.HARNESS_SECRET;
+  await check("claim probe is absent without configured secret", async () => { assert.equal((await probe()).statusCode, 404); });
+  process.env.HARNESS_SECRET = "offline-claim-secret";
+  await check("claim probe rejects missing or incorrect authentication", async () => {
+    assert.equal((await probe(probeBody, "")).statusCode, 404);
+    assert.equal((await probe(probeBody, "Bearer wrong-secret")).statusCode, 404);
+  });
+  for (const patch of [
+    { taskType: "index" }, { ruleId: "../bad" }, { taskId: "arbitrary-task" }, { secondTaskId: "arbitrary-task" },
+    { issueKey: "LZPT-2/../../" }, { manual: "false" },
+    { taskType: "scheduledjob", manual: false },
+    { taskType: "scheduledjob", manual: false, scheduledFor: "2026-02-30T09:00:00.000Z" },
+    { taskType: "scheduledjob", ruleId: "r".repeat(80), taskId: "harness-claim-" + "t".repeat(60) },
+  ]) await check(`claim probe rejects invalid input ${JSON.stringify(patch)}`, async () => {
+    const state = reset(); const response = await probe({ ...probeBody, ...patch });
+    assert.equal(response.statusCode, 400); assert.equal(state.runs.length, 0); assert.equal(forgeApi.__calls.length, 0);
+  });
+  await check("claim probe refuses non-harness rule names", async () => {
+    const { state } = claimFixture("listener");
+    assert.equal((await probe()).statusCode, 400); assert.equal(state.runs.length, 0);
+  });
+  await check("claim probe refuses agent fixtures", async () => {
+    const { state } = claimFixture("listener");
+    const config = storage.__raw("listener:claim-listener"); config.name = "[Harness claim] agent"; config.mode = "agent";
+    assert.equal((await probe()).statusCode, 400); assert.equal(state.runs.length, 0);
+  });
+  for (const kind of ["listener", "manual", "scheduled"]) await check(`${kind} claim probe invokes real consumer pair once`, async () => {
+    const { state } = claimFixture(kind);
+    const configKey = kind === "listener" ? "listener:claim-listener" : "job:claim-job";
+    storage.__raw(configKey).name = "[Harness claim] offline";
+    const body = kind === "listener" ? probeBody : { ...probeBody, taskType: "scheduledjob", ruleId: "claim-job", manual: kind === "manual", scheduledFor: dueAt, ...(kind === "scheduled" ? { secondTaskId: "harness-claim-second" } : {}) };
+    const response = await probe(body); const result = JSON.parse(response.body);
+    assert.equal(response.statusCode, 200, response.body); assert.equal(result.directConsumerProbe, true);
+    assert.equal(state.runs.length, 1); assert.equal(result.results.filter(r => r.skipped && r.reason === "duplicate delivery").length, 1);
+  });
+  await check("claim probe refuses listener filter mismatch before claim", async () => {
+    const { state } = claimFixture("listener");
+    const config = storage.__raw("listener:claim-listener"); config.name = "[Harness claim] mismatch"; config.filters.projectKeys = ["OTHER"];
+    const response = await probe(); assert.equal(response.statusCode, 400); assert.equal(state.runs.length, 0);
+    assert.equal(storage.__raw("lst_exec:harness-claim-offline"), undefined);
+  });
+  await check("claim probe refuses scoped job fixtures", async () => {
+    const { state } = claimFixture("manual");
+    const config = storage.__raw("job:claim-job"); config.name = "[Harness claim] scoped"; config.scope = { jql: "project=LZPT", maxIssues: 3 };
+    const response = await probe({ ...probeBody, taskType: "scheduledjob", ruleId: "claim-job" });
+    assert.equal(response.statusCode, 400); assert.equal(state.runs.length, 0);
+  });
+} finally {
+  if (previousSecret === undefined) delete process.env.HARNESS_SECRET;
+  else process.env.HARNESS_SECRET = previousSecret;
+}
 console.log(`RULES RUNTIME REGRESSION: ${passed} passed, ${failed} failed`);
 process.exitCode = failed ? 1 : 0;

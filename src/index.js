@@ -14978,7 +14978,6 @@ export const runSandboxSteps = async ({ issueKey: boundIssueKey = null, config =
   const variables = {};
   const startTime = Date.now();
   const stepResults = []; // Per-step trace
-  let failedStep = null;
 
   executionLogs.push(`Starting ${functions.length} step(s) for ${issueKey || "(no current issue)"}`);
 
@@ -14995,7 +14994,6 @@ export const runSandboxSteps = async ({ issueKey: boundIssueKey = null, config =
       stepTrace.status = "timeout";
       stepTrace.recommendation = `This step was skipped because earlier steps took too long. Optimize previous steps: reduce JQL result counts, avoid unnecessary getIssue calls, or split into separate post-functions.`;
       stepResults.push(stepTrace);
-      failedStep = fnName;
       break;
     }
 
@@ -15096,7 +15094,6 @@ export const runSandboxSteps = async ({ issueKey: boundIssueKey = null, config =
       stepResults.push(stepTrace);
     } catch (error) {
       const stepMs = Date.now() - stepStart;
-      failedStep = fnName;
       executionLogs.push(`"${fnName}": ERROR after ${stepMs}ms — ${error.message}`);
       console.error(`Static PF ${fnName} error:`, error);
 
@@ -15138,16 +15135,19 @@ export const runSandboxSteps = async ({ issueKey: boundIssueKey = null, config =
   const totalMs = Date.now() - startTime;
   const successCount = stepResults.filter((s) => s.status === "success").length;
   executionLogs.push(`Finished: ${successCount}/${functions.length} step(s) succeeded in ${totalMs}ms, ${changes.length} change(s) made`);
+  // Continue-on-error is intentional. Report the FIRST failure consistently with
+  // consumers' first-error summary; an empty step's advice is not failure advice.
+  const firstFailure = stepResults.find((s) => s.status === "error" || s.status === "timeout");
 
   return {
-    success: !failedStep,
+    success: !firstFailure,
     stepsTotal: functions.length,
     changes,
     logs: executionLogs,
     executionTimeMs: totalMs,
     stepResults,
-    failedStep,
-    recommendation: failedStep ? stepResults.find((s) => s.recommendation)?.recommendation : undefined,
+    failedStep: firstFailure?.name || null,
+    recommendation: firstFailure?.recommendation,
   };
 };
 

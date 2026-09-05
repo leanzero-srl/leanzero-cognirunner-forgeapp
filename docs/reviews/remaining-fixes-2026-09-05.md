@@ -2,7 +2,7 @@
 
 Continuation of [the listener/job review](listeners-jobs-2026-09-05.md). The owner authorized implementing all confirmed fixes and exercising the live harness on wolfaenpak. Final application source is `d97f90b`, development deployment **22.158.0**; harness regression additions are `f60f26b`. No production deployment, manifest change, provider change or new scopes.
 
-**Code findings: 36 fixed, 3 parked with platform evidence, 0 scheduled, 0 open across 39 retained findings. Verification is partial for successful document attachment delivery:** the configured external MCP endpoint returns HTTP502. The failure path is fixed and live-proven; a generated Jira attachment/download is not claimed as passing.
+**Code findings: 36 fixed, 3 parked with platform evidence, 0 scheduled, 0 open across 39 retained findings. The remaining positive attachment gate now passes:** the configured external connection recovered, and a real workflow created the attachment and requested comment. Jira download matched all217 source bytes, exact document facts and a second read; temporary workflow/issue cleanup was independently verified. See the [connection recovery and final acceptance receipt](attachment-recovery-2026-09-05.md). Application deployment remains22.158.0.
 
 ## Changes and their permanent homes
 
@@ -39,13 +39,13 @@ The final log window contains no new simulation errors or DEP0040 on the tested 
 
 The existing Forge live harness also passed its genuine admin deep walkthrough and Explain-this-rule journey on22.158 (`HEADLESS=1 npx playwright test scenarios/cognirunner/admin-ui-deep.spec.ts --project=chromium`,1/1 journey). [Receipt](evidence/2026-09-05-remaining/admin-deep.txt).
 
-## Attachment verification remains blocked by the external connection
+## Earlier attachment connection failure (subsequently recovered)
 
 The actual workflow attachment harness first observed zero Jira attachments despite a success-shaped “Generated and attached” result. The shared helper accepted ambiguous `{ok:false}`/missing-success envelopes as well as the MCP's local-success/upload-failure shape. Both are now rejected. On22.156 the real workflow correctly reported failure after the document endpoint returned HTTP502. Final22.158 proof on JT-70 explicitly read zero attachments and zero comments before and after the failed workflow; the result reported `Document generation/attachment failed: MCP HTTP 502`. Temporary transition and issue were removed and reread absent. This is a passing failure-path assertion and a failed positive attachment acceptance test. [Failure receipt](evidence/2026-09-05-remaining/attachment-positive-failure.json), [initial fixed runtime](evidence/2026-09-05-remaining/attachment-failure-runtime.txt), [final runtime](evidence/2026-09-05-remaining/attachment-failure-final.txt).
 
 The configured `https://worksmacstudio.tailfc4700.ts.net/docproc/mcp` endpoint repeatedly returned502 through the genuine authenticated admin MCP Test action. On the workhorse, the document process was healthy at loopback10000, with17 tools, and unauthenticated MCP POST returned401. Its public alternate port10000 was explicitly blocked by Forge's existing egress permissions. No permission was added. A temporary443 path to that same already-published authenticated service also returned502. The temporary path was removed; the complete Funnel configuration was compared equal to its captured baseline. The test-site MCP URL and existing bearer presence were restored and reread exactly. No server source, service restart, auth change or other route change was retained. [Port probe](evidence/2026-09-05-remaining/mcp-port-probe.json), [temporary route probe](evidence/2026-09-05-remaining/mcp-route-probe.json), [before](evidence/2026-09-05-remaining/funnel-before.json), [restored](evidence/2026-09-05-remaining/funnel-restored.json).
 
-**Remaining acceptance gate:** after the configured443 endpoint is reachable, run `node test-harness/scripts/attachment-positive-live.mjs`. It must create one actual attachment through a real workflow, download it, compare declared size and exact document facts, reread its ID, and verify workflow/issue cleanup. Until that passes, positive live multipart/upload delivery is unverified. Offline transport tests and nine unauthenticated rejection checks do not replace this gate.
+**Acceptance gate subsequently closed:** `node test-harness/scripts/attachment-positive-live.mjs` passed on JT-73 after public443 connectivity recovered. It created one actual attachment and exactly one requested comment, downloaded and verified the document, reread both IDs/content, then verified workflow/issue cleanup before declaring PASS. The [follow-up](attachment-recovery-2026-09-05.md) retains the intervening failures and states the exact tested scope.
 
 ## Parked platform findings and fixture restoration
 

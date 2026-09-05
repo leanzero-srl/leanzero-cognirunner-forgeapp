@@ -1,0 +1,155 @@
+[
+  {
+    "scenario": "healthy",
+    "pass": true,
+    "exitCode": 0,
+    "issueReads": 3,
+    "cleanup": [
+      {
+        "transitionId": "9870",
+        "absent": true
+      },
+      {
+        "key": "JT-987654",
+        "absent": true
+      }
+    ],
+    "error": null
+  },
+  {
+    "scenario": "late-comment",
+    "pass": true,
+    "exitCode": 0,
+    "issueReads": 6,
+    "cleanup": [
+      {
+        "transitionId": "9870",
+        "absent": true
+      },
+      {
+        "key": "JT-987654",
+        "absent": true
+      }
+    ],
+    "error": null
+  },
+  {
+    "scenario": "missing-comment",
+    "pass": false,
+    "exitCode": 1,
+    "issueReads": 41,
+    "cleanup": [
+      {
+        "transitionId": "9870",
+        "absent": true
+      },
+      {
+        "key": "JT-987654",
+        "absent": true
+      }
+    ],
+    "error": "AssertionError [ERR_ASSERTION]: exactly one requested attachment comment required"
+  },
+  {
+    "scenario": "wrong-comment",
+    "pass": false,
+    "exitCode": 1,
+    "issueReads": 41,
+    "cleanup": [
+      {
+        "transitionId": "9870",
+        "absent": true
+      },
+      {
+        "key": "JT-987654",
+        "absent": true
+      }
+    ],
+    "error": "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:"
+  },
+  {
+    "scenario": "changed-second-comment",
+    "pass": false,
+    "exitCode": 1,
+    "issueReads": 3,
+    "cleanup": [
+      {
+        "transitionId": "9870",
+        "absent": true
+      },
+      {
+        "key": "JT-987654",
+        "absent": true
+      }
+    ],
+    "error": "AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:"
+  },
+  {
+    "scenario": "delete-fails",
+    "pass": false,
+    "exitCode": 1,
+    "issueReads": 3,
+    "cleanup": [
+      {
+        "transitionId": "9870",
+        "absent": true
+      },
+      {
+        "key": "JT-987654",
+        "error": "forbidden"
+      }
+    ],
+    "error": null
+  },
+  {
+    "scenario": "issue-still-readable",
+    "pass": false,
+    "exitCode": 1,
+    "issueReads": 3,
+    "cleanup": [
+      {
+        "transitionId": "9870",
+        "absent": true
+      },
+      {
+        "key": "JT-987654",
+        "error": "Missing expected rejection."
+      }
+    ],
+    "error": null
+  },
+  {
+    "scenario": "transition-stays",
+    "pass": false,
+    "exitCode": 1,
+    "issueReads": 3,
+    "cleanup": [
+      {
+        "transitionId": "9870",
+        "error": "The expression evaluated to a falsy value:\n\n  assert.ok(!(await readWorkflow(workflowName)).wf.transitions.some(t => t.id === transitionId && t.name === tag))\n"
+      },
+      {
+        "key": "JT-987654",
+        "absent": true
+      }
+    ],
+    "error": null
+  },
+  {
+    "scenario": "bad-content",
+    "pass": false,
+    "exitCode": 1,
+    "issueReads": 2,
+    "cleanup": [
+      {
+        "transitionId": "9870",
+        "absent": true
+      },
+      {
+        "key": "JT-987654",
+        "absent": true
+      }
+    ],
+    "error": "AssertionError [ERR_ASSERTION]: missing exact document fact cgr-attachment-mtonere3"
+  }
+]

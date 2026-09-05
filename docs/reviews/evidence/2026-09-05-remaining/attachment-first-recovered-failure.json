@@ -1,0 +1,110 @@
+{
+  "tag": "cgr-attachment-mton9rka",
+  "cleanup": [
+    {
+      "transitionId": "9870",
+      "absent": true
+    },
+    {
+      "key": "JT-71",
+      "absent": true
+    }
+  ],
+  "issue": "JT-71",
+  "before": {
+    "attachments": [],
+    "comments": {
+      "comments": [],
+      "self": "https://wolfaenpak.atlassian.net/rest/api/3/issue/24892/comment",
+      "maxResults": 0,
+      "total": 0,
+      "startAt": 0
+    }
+  },
+  "after": {
+    "attachments": [
+      {
+        "self": "https://wolfaenpak.atlassian.net/rest/api/3/attachment/11490",
+        "id": "11490",
+        "filename": "cgr-attachment-mton9rka.md",
+        "author": {
+          "self": "https://wolfaenpak.atlassian.net/rest/api/3/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+          "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+          "avatarUrls": {
+            "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/48",
+            "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/24",
+            "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/16",
+            "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/32"
+          },
+          "displayName": "CogniRunner",
+          "active": true,
+          "timeZone": "Europe/Bucharest",
+          "accountType": "app"
+        },
+        "created": "2026-09-05T20:16:28.105+0300",
+        "size": 269,
+        "mimeType": "text/markdown",
+        "content": "https://wolfaenpak.atlassian.net/rest/api/3/attachment/content/11490"
+      }
+    ],
+    "comments": {
+      "comments": [
+        {
+          "self": "https://wolfaenpak.atlassian.net/rest/api/3/issue/24892/comment/16063",
+          "id": "16063",
+          "author": {
+            "self": "https://wolfaenpak.atlassian.net/rest/api/3/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "avatarUrls": {
+              "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/48",
+              "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/24",
+              "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/16",
+              "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/32"
+            },
+            "displayName": "CogniRunner",
+            "active": true,
+            "timeZone": "Europe/Bucharest",
+            "accountType": "app"
+          },
+          "body": {
+            "type": "doc",
+            "version": 1,
+            "content": [
+              {
+                "type": "paragraph",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "📎 CogniRunner generated and attached \"cgr-attachment-mton9rka.md\"."
+                  }
+                ]
+              }
+            ]
+          },
+          "updateAuthor": {
+            "self": "https://wolfaenpak.atlassian.net/rest/api/3/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "avatarUrls": {
+              "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/48",
+              "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/24",
+              "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/16",
+              "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/32"
+            },
+            "displayName": "CogniRunner",
+            "active": true,
+            "timeZone": "Europe/Bucharest",
+            "accountType": "app"
+          },
+          "created": "2026-09-05T20:16:29.467+0300",
+          "updated": "2026-09-05T20:16:29.467+0300",
+          "jsdPublic": true
+        }
+      ],
+      "self": "https://wolfaenpak.atlassian.net/rest/api/3/issue/24892/comment",
+      "maxResults": 1,
+      "total": 1,
+      "startAt": 0
+    }
+  },
+  "error": "AssertionError [ERR_ASSERTION]: missing exact document fact transport=multipart\n    at file:///Users/mihaiperdum/Projects/CogniRunner/test-harness/scripts/attachment-positive-live.mjs:52:103\n    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)"
+}

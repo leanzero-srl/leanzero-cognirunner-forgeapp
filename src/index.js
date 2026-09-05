@@ -5783,7 +5783,10 @@ export const serveAttachmentUpload = async (req) => {
         route`/rest/api/3/issue/${record.issueKey}/attachments`,
         {
           method: "POST",
-          body: form,
+          // Forge's current fetch client accepts WHATWG body types, not the
+          // form-data package's legacy Node stream. The upload is already a
+          // bounded in-memory Buffer; serialize it with its matching boundary.
+          body: form.getBuffer(),
           // CRITICAL: spread form.getHeaders() so the multipart Content-Type WITH the
           // boundary is sent. Without it Jira's /attachments endpoint can't parse the
           // body and rejects the upload with HTTP 415 (Unsupported Media Type) — the

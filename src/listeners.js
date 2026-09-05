@@ -330,11 +330,15 @@ const brakeKeys = (listenerId, issueKey) => {
 // ── Event samples (the "last seen payload" reference in the editor) ──────────
 
 const _sampleAt = new Map();
+// Samples are references for the editor/REST, not execution payloads. Strip Forge
+// context tokens at every depth on capture AND read, including legacy cached rows.
+// JSON cloning keeps this idempotent and never mutates the raw event used by a run.
+const cloneSampleWithoutContextTokens = (value) => JSON.parse(JSON.stringify(value, (key, child) => key === "contextToken" ? undefined : child));
 // Samples show the SHAPE of a payload, not its content: rich-text bodies are replaced by
 // a placeholder so a sample never leaks a description or comment across project permissions.
 export const redactSample = (payload) => {
   const red = (v) => (v == null ? v : (typeof v === "string" ? `<redacted text, ${v.length} chars>` : { type: "doc", version: 1, _redacted: true, content: [] }));
-  const p = JSON.parse(JSON.stringify(payload || {}));
+  const p = cloneSampleWithoutContextTokens(payload || {});
   if (p.issue && p.issue.fields) { const f = p.issue.fields; if (f.description != null) f.description = red(f.description); if (f.environment != null) f.environment = red(f.environment); if (f.comment) delete f.comment; for (const k of Object.keys(f)) if (k.startsWith("customfield_") && f[k] && typeof f[k] === "object" && f[k].type === "doc") f[k] = red(f[k]); }
   if (p.comment && p.comment.body != null) p.comment.body = red(p.comment.body);
   if (p.worklog && p.worklog.comment != null) p.worklog.comment = red(p.worklog.comment);
@@ -349,7 +353,12 @@ const captureSample = async (eventType, event) => {
     await storage.set(EVENT_SAMPLE_PREFIX + safeKeyPart(eventType), { eventType, capturedAt: nowIso(), redacted: true, payload: trimEventPayload(redactSample(event), 20000) }, SAMPLE_TTL);
   } catch { /* best-effort */ }
 };
-export const getEventSample = async (eventType) => (isKnownEvent(eventType) ? (await storage.get(EVENT_SAMPLE_PREFIX + safeKeyPart(eventType))) || null : null);
+export const getEventSample = async (eventType) => {
+  if (!isKnownEvent(eventType)) return null;
+  const sample = (await storage.get(EVENT_SAMPLE_PREFIX + safeKeyPart(eventType))) || null;
+  // Do not reapply rich-text redaction: its placeholders would change on each read.
+  return sample ? cloneSampleWithoutContextTokens(sample) : null;
+};
 
 // ── Queue ────────────────────────────────────────────────────────────────────
 

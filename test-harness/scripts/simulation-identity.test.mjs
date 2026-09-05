@@ -12,7 +12,7 @@ const clone = await api.cloneIssue(); await api.forIssue(clone.key).addLabels('c
 return {child:child.key,clone:clone.key};`;
 for (const runtime of ["postfunction", "listener", "job"]) {
   jira.__calls.length = 0;
-  const result = await handler({ call: { functionKey: "testPostFunction", payload: { code, issueKey: "ABC-1", runtime } }, context: {} }, {});
+  const result = await handler({ call: { functionKey: "testPostFunction", payload: { code, issueKey: "ABC-1", contextExtras: { runtime } } }, context: {} }, {});
   assert.equal(result.success, true, JSON.stringify(result));
   const [child, update, clone, label] = result.changes;
   assert.equal(child.action, "createIssue"); assert.equal(update.key, child.key);

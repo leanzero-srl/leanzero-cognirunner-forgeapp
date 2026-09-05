@@ -7,7 +7,7 @@
 
 // Dependency-free so the shared module remains safe for both bundlers. The
 // caller supplies KVS and its existing key/TTL; claim identity is never changed.
-export const claimRuleExecution = async (storage, key, ttl, source) => {
+export const claimRuleExecution = async (storage, key, ttl, source, { failClosed = false } = {}) => {
   try {
     // One conditional write, not get-then-set: concurrent deliveries must have
     // exactly one owner before either one reaches the AI gate or Jira writes.
@@ -18,6 +18,9 @@ export const claimRuleExecution = async (storage, key, ttl, source) => {
       || e?.responseDetails?.status === 409
       || /already\s*exist/i.test(String(e?.message));
     if (conflict) return false;
+    // Capability handlers require ownership before serving data or uploading;
+    // unlike rule delivery, their documented single-use contract is fail-closed.
+    if (failClosed) throw e;
     // Preserve the existing availability policy: a KVS infrastructure failure
     // permits execution and can therefore permit duplicates. Never hide it.
     console.warn(`[${source}] claim failed (continuing):`, e?.message);

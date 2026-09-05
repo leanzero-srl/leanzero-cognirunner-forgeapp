@@ -35,6 +35,7 @@ import { clampNarrateLine } from "./shared/narrate-utils.js";
 import { buildCatalogPromptBlock, validateBuiltRule } from "./shared/build-rule.js";
 import { normalizeUsage, emptyState, bumpCounters, summarizeState } from "./shared/usage-meter.js";
 import { deriveLogFlags } from "./shared/log-flags.js";
+import { claimRuleExecution } from "./shared/execution-claim.js";
 import { serializeRule, buildExportEnvelope, validateImportSchema, resolveBindings, containsSecretKey, EXPORT_CAPS } from "./shared/rule-portability.js";
 // Registry scale caps + pressure math — single source, shared with the admin panel.
 import {
@@ -5583,15 +5584,13 @@ export const serveAttachment = async (req) => {
       return { statusCode: 401, headers: { "Content-Type": ["text/plain"] }, body: "unauthorized" };
     }
 
-    // 5. Burn the token BEFORE the Jira fetch (see security header rationale)
-    try {
-      await storage.delete(ATTACHMENT_TOKEN_PREFIX + token);
-    } catch (e) {
-      console.error(
-        `serveAttachment: KVS delete failed for token=${redactSecret(token)} (continuing):`,
-        e?.message,
-      );
+    // 5. Claim atomically before burning: concurrent requests may both have read
+    // the capability. Storage failures stop the fetch; availability never wins
+    // over this capability's documented single-use guarantee.
+    if (!(await claimRuleExecution(storage, ATTACHMENT_TOKEN_PREFIX + token + ":used", JOB_TTL_ACTIVE, "attachment", { failClosed: true }))) {
+      return { statusCode: 404, headers: { "Content-Type": ["text/plain"] }, body: "not found" };
     }
+    await storage.delete(ATTACHMENT_TOKEN_PREFIX + token);
 
     // 6. Fetch the attachment binary as the app
     let jiraResp;
@@ -5718,17 +5717,12 @@ export const serveAttachmentUpload = async (req) => {
       return jsonResp(401, { success: false, error: "unauthorized" });
     }
 
-    // 5. Burn the token BEFORE Jira upload (single-use guarantee — same
-    // tradeoff serveAttachment makes: a Jira upstream failure consumes the
-    // capability, but a leaked token can never be replayed).
-    try {
-      await storage.delete(UPLOAD_TOKEN_PREFIX + token);
-    } catch (e) {
-      console.error(
-        `serveAttachmentUpload: KVS delete failed for token=${redactSecret(token)} (continuing):`,
-        e?.message,
-      );
+    // 5. Claim atomically, then burn BEFORE upload. Both read and write
+    // capabilities use the same claim primitive and fail-closed storage policy.
+    if (!(await claimRuleExecution(storage, UPLOAD_TOKEN_PREFIX + token + ":used", JOB_TTL_ACTIVE, "upload", { failClosed: true }))) {
+      return jsonResp(404, { success: false, error: "not found" });
     }
+    await storage.delete(UPLOAD_TOKEN_PREFIX + token);
 
     // 6. Parse JSON body
     let payload;

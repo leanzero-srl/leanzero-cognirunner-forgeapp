@@ -26,7 +26,7 @@ forgeApi.__respond(async (url, options) => {
 
 const token = "offline-upload-token";
 const bearer = "offline-upload-bearer";
-const seed = () => storage.__seed(`upload_token:${token}`, { issueKey: "ABC-1", bearer, expiresAt: Date.now() + 60000 });
+const seed = () => { storage.__reset(); storage.__seed(`upload_token:${token}`, { issueKey: "ABC-1", bearer, expiresAt: Date.now() + 60000 }); };
 const req = (overrides = {}) => ({
   queryParameters: { t: [token] }, headers: { authorization: [`Bearer ${bearer}`] },
   body: JSON.stringify({ filename: "binary.pptx", mimeType: "application/vnd.openxmlformats-officedocument.presentationml.presentation", data: bytes.toString("base64"), issueKey: "OTHER-2" }),

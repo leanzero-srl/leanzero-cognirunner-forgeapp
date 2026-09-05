@@ -1,0 +1,30 @@
+[
+  {
+    "kind": "scheduledjob",
+    "response": {
+      "success": false,
+      "error": "TOO_MANY_REQUESTS 429 for cleanup receipt"
+    },
+    "ruleAfter": null,
+    "indexAfter": [],
+    "statsAfter": {
+      "delete-witness": {
+        "runCount": 2
+      }
+    }
+  },
+  {
+    "kind": "listener",
+    "response": {
+      "success": false,
+      "error": "TOO_MANY_REQUESTS 429 for cleanup receipt"
+    },
+    "ruleAfter": null,
+    "indexAfter": [],
+    "statsAfter": {
+      "delete-witness": {
+        "runCount": 2
+      }
+    }
+  }
+]

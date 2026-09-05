@@ -1,0 +1,163 @@
+[
+  {
+    "kind": "scheduledjob",
+    "response": {
+      "success": false,
+      "error": "TOO_MANY_REQUESTS 429 for cleanup receipt transaction"
+    },
+    "ruleAfter": {
+      "id": "delete-witness",
+      "name": "Delete witness",
+      "description": "",
+      "enabled": true,
+      "schedule": {
+        "cron": "*/5 * * * *",
+        "timeZone": "UTC"
+      },
+      "scope": null,
+      "mode": "script",
+      "functions": [
+        {
+          "id": "step-1",
+          "name": "Step 1",
+          "operationType": "work_item_query",
+          "operationPrompt": "",
+          "conditionPrompt": "",
+          "endpoint": "",
+          "method": "GET",
+          "variableName": "",
+          "code": "return 1;",
+          "includeBackoff": false
+        }
+      ],
+      "agent": {
+        "instructions": "",
+        "allowedActions": [
+          "get_issue",
+          "search_issues",
+          "add_comment"
+        ],
+        "maxRounds": 5
+      },
+      "simulationMode": false,
+      "suppressNotifications": false,
+      "createdBy": null,
+      "createdAt": "2026-09-05T18:26:00.013Z",
+      "updatedAt": "2026-09-05T18:26:00.014Z",
+      "stats": {
+        "runCount": 2,
+        "errorCount": 0,
+        "lastRunAt": null,
+        "lastStatus": null,
+        "lastError": null,
+        "nextRunAt": "2026-09-05T18:30:00.000Z"
+      }
+    },
+    "indexAfter": [
+      {
+        "id": "delete-witness",
+        "name": "Delete witness",
+        "enabled": true,
+        "schedule": {
+          "cron": "*/5 * * * *",
+          "timeZone": "UTC"
+        },
+        "scoped": false,
+        "mode": "script",
+        "simulationMode": false,
+        "createdBy": null,
+        "createdAt": "2026-09-05T18:26:00.013Z",
+        "updatedAt": "2026-09-05T18:26:00.014Z"
+      }
+    ],
+    "statsAfter": {
+      "delete-witness": {
+        "runCount": 2
+      }
+    }
+  },
+  {
+    "kind": "listener",
+    "response": {
+      "success": false,
+      "error": "TOO_MANY_REQUESTS 429 for cleanup receipt transaction"
+    },
+    "ruleAfter": {
+      "id": "delete-witness",
+      "name": "Delete witness",
+      "description": "",
+      "enabled": true,
+      "events": [
+        "avi:jira:created:issue"
+      ],
+      "filters": {
+        "projectKeys": [],
+        "issueTypes": [],
+        "jql": "",
+        "changedFields": [],
+        "commentPattern": ""
+      },
+      "ignoreSelf": true,
+      "aiCondition": "",
+      "mode": "script",
+      "functions": [
+        {
+          "id": "step-1",
+          "name": "Step 1",
+          "operationType": "work_item_query",
+          "operationPrompt": "",
+          "conditionPrompt": "",
+          "endpoint": "",
+          "method": "GET",
+          "variableName": "",
+          "code": "return 1;",
+          "includeBackoff": false
+        }
+      ],
+      "agent": {
+        "instructions": "",
+        "allowedActions": [
+          "get_issue",
+          "search_issues",
+          "add_comment"
+        ],
+        "maxRounds": 5
+      },
+      "simulationMode": false,
+      "suppressNotifications": false,
+      "createdBy": null,
+      "createdAt": "2026-09-05T18:26:00.024Z",
+      "updatedAt": "2026-09-05T18:26:00.024Z",
+      "stats": {
+        "runCount": 2,
+        "errorCount": 0,
+        "lastRunAt": null,
+        "lastStatus": null,
+        "lastError": null,
+        "lastIssueKey": null
+      }
+    },
+    "indexAfter": [
+      {
+        "id": "delete-witness",
+        "name": "Delete witness",
+        "enabled": true,
+        "events": [
+          "avi:jira:created:issue"
+        ],
+        "projectKeys": [],
+        "mode": "script",
+        "hasAiCondition": false,
+        "simulationMode": false,
+        "createdBy": null,
+        "createdAt": "2026-09-05T18:26:00.024Z",
+        "updatedAt": "2026-09-05T18:26:00.024Z"
+      }
+    ],
+    "statsAfter": {
+      "delete-witness": {
+        "runCount": 2
+      }
+    }
+  }
+]

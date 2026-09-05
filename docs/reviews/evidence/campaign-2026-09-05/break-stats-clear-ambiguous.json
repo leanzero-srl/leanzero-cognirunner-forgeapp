@@ -1,0 +1,30 @@
+{
+  "receiptKey": "log_entry:8211367283447_uoyna0dy",
+  "clearResult": {
+    "success": true
+  },
+  "afterClear": {
+    "runCount": 1,
+    "errorCount": 0,
+    "lastRunAt": "2026-09-05T18:25:16.553Z",
+    "lastStatus": "ok",
+    "lastError": null,
+    "nextRunAt": null
+  },
+  "receiptAfterClear": {
+    "id": "1788632716553u54q",
+    "statsOnly": true,
+    "statsReceipt": {
+      "kind": "scheduledjob",
+      "applied": true
+    }
+  },
+  "final": {
+    "runCount": 1,
+    "errorCount": 0,
+    "lastRunAt": "2026-09-05T18:25:16.553Z",
+    "lastStatus": "ok",
+    "lastError": null,
+    "nextRunAt": null
+  }
+}

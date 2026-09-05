@@ -1,0 +1,38 @@
+{
+  "commit": "43fdfc6",
+  "count": 8,
+  "evidence": [
+    {
+      "name": "first failure remains first when a later step exhausts the total deadline",
+      "passed": true
+    },
+    {
+      "name": "independent thrown-value control Object.create(null)",
+      "passed": true
+    },
+    {
+      "name": "independent thrown-value control new Proxy({}, {get(){throw \"no getter\";}})",
+      "passed": true
+    },
+    {
+      "name": "independent thrown-value control ({message: Symbol(\"symbol message\")})",
+      "passed": true
+    },
+    {
+      "name": "offloaded duplicate names preserve correct excerpt and exclude it from log transport",
+      "passed": true
+    },
+    {
+      "name": "missing offload runs no steps and never learns from nonexistent code",
+      "passed": true
+    },
+    {
+      "name": "attachment created preserves raw event fields while extracting authoritative outer context",
+      "passed": true
+    },
+    {
+      "name": "attachment deleted preserves raw event fields while extracting authoritative outer context",
+      "passed": true
+    }
+  ]
+}

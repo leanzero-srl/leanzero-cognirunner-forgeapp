@@ -1,0 +1,10 @@
+{
+  "receipts": 100,
+  "pushDelayMs": 300,
+  "elapsedMs": 605,
+  "calls": 2,
+  "finished": true,
+  "result": {
+    "success": true
+  }
+}

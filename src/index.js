@@ -14448,6 +14448,10 @@ export const createSandboxSession = ({ issueKey: boundIssueKey = null, config = 
   const changes = [];
   // Simulation mode: reads stay live, writes are recorded but never executed.
   const simulated = config.simulationMode === true;
+  let simulatedIssueCount = 0;
+  // A staged issue has an identity, but no Jira record to read. Never return an
+  // absent key that key-optional helpers would reinterpret as the current issue.
+  const simulatedIssueKey = () => `__COGNIRUNNER_SIMULATED_ISSUE_${++simulatedIssueCount}__`;
   // Build API surface for sandbox.
   // F12: shadow the Jira client inside createApi with a transient-retry wrapper so
   // EVERY sandbox REST call (updateIssue, editIssue, transitionIssue, addComment,
@@ -14472,6 +14476,10 @@ export const createSandboxSession = ({ issueKey: boundIssueKey = null, config = 
     const noIssueWhere = extraContext && extraContext.runtime ? `this ${extraContext.runtime} run` : "this run";
     const TRANSIENT_REST = [429, 502, 503, 504];
     const retryingRequestJira = async (routeArg, opts) => {
+      const requestPath = typeof routeArg === "string" ? routeArg : routeArg?.value;
+      if (simulated && String(requestPath).includes("__COGNIRUNNER_SIMULATED_ISSUE_")) {
+        throw new Error("Cannot read an issue created only in simulation. Its key can be used for staged writes, but Jira has no record to read until a real run creates it.");
+      }
       // KILL SWITCH (write boundary). Every sandbox WRITE funnels through here,
       // so one method-gated check covers all 20+ mutators with no risk of
       // missing one. Only mutating verbs are gated; GET reads always pass, and
@@ -14513,6 +14521,11 @@ export const createSandboxSession = ({ issueKey: boundIssueKey = null, config = 
       return res;
     };
     const api = { asApp: () => ({ requestJira: retryingRequestJira }) };
+    const readJson = async (path, operation) => {
+      const response = await api.asApp().requestJira(path, { headers: { Accept: "application/json" } });
+      if (!response.ok) throw new Error(`${operation} failed: ${response.status}`);
+      return response.json();
+    };
     const this_api = {
     getIssue: async (key) => {
       // Key is OPTIONAL — defaults to the run's current issue (see the two-guard note
@@ -14662,14 +14675,14 @@ export const createSandboxSession = ({ issueKey: boundIssueKey = null, config = 
       const name = rest[0];
       const extra = rest[1] || {};
       const target = resolveIssueKey(key, issueKey, "transitionByName", noIssueWhere);
-      const tr = await (await api.asApp().requestJira(route`/rest/api/3/issue/${target}/transitions`, { headers: { Accept: "application/json" } })).json();
+      const tr = await readJson(route`/rest/api/3/issue/${target}/transitions`, "transitionByName");
       const t = (tr.transitions || []).find((x) => String(x.name).toLowerCase() === String(name).toLowerCase());
       if (!t) throw new Error(`transitionByName: "${name}" not available on ${target} (have: ${(tr.transitions || []).map((x) => x.name).join(", ")})`);
       return this_api.transitionIssue(target, t.id, extra);
     },
     // Transition all sub-tasks of the current issue by transition name (ScriptRunner "Transition sub-tasks").
     transitionSubtasks: async (name) => {
-      const iss = await (await api.asApp().requestJira(route`/rest/api/3/issue/${issueKey}?fields=subtasks`, { headers: { Accept: "application/json" } })).json();
+      const iss = await readJson(route`/rest/api/3/issue/${issueKey}?fields=subtasks`, "transitionSubtasks");
       const subs = iss.fields?.subtasks || [];
       let moved = 0;
       for (const st of subs) {
@@ -14681,7 +14694,7 @@ export const createSandboxSession = ({ issueKey: boundIssueKey = null, config = 
     },
     // Transition the parent of the current issue (ScriptRunner "Transition parent").
     transitionParent: async (name) => {
-      const iss = await (await api.asApp().requestJira(route`/rest/api/3/issue/${issueKey}?fields=parent`, { headers: { Accept: "application/json" } })).json();
+      const iss = await readJson(route`/rest/api/3/issue/${issueKey}?fields=parent`, "transitionParent");
       const parent = iss.fields?.parent?.key;
       if (!parent) { executionLogs.push("transitionParent: no parent"); return { moved: 0 }; }
       await this_api.transitionByName(parent, name);
@@ -14815,16 +14828,16 @@ export const createSandboxSession = ({ issueKey: boundIssueKey = null, config = 
       const c = await res.json(); changes.push({ action: "createComponent", id: c.id, name: c.name }); executionLogs.push(`createComponent: ${c.name} (${c.id})`); return { id: c.id, name: c.name };
     },
     createIssue: async (fields) => {
-      if (simulated) { executionLogs.push(`[SIMULATION] createIssue(${JSON.stringify(fields).slice(0, 200)})`); changes.push({ action: "createIssue", fields, simulated: true }); return { simulated: true }; }
+      if (simulated) { const key = simulatedIssueKey(); executionLogs.push(`[SIMULATION] createIssue -> ${key} (${JSON.stringify(fields).slice(0, 200)})`); changes.push({ action: "createIssue", key, fields, simulated: true }); return { key, simulated: true }; }
       const res = await api.asApp().requestJira(route`/rest/api/3/issue`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ fields }) });
       if (!res.ok) throw new Error(`createIssue failed: ${res.status} — ${(await res.text()).slice(0, 200)}`);
       const c = await res.json(); changes.push({ action: "createIssue", key: c.key }); executionLogs.push(`createIssue: ${c.key}`); return { key: c.key };
     },
     cloneIssue: async (overrides = {}) => {
-      const src = await (await api.asApp().requestJira(route`/rest/api/3/issue/${issueKey}`, { headers: { Accept: "application/json" } })).json();
+      const src = await readJson(route`/rest/api/3/issue/${issueKey}`, "cloneIssue");
       const f = src.fields || {};
       const fields = { project: { id: f.project?.id }, issuetype: { id: f.issuetype?.id }, summary: `CLONE of ${issueKey}: ${String(f.summary || "").slice(0, 200)}`, ...(f.description ? { description: f.description } : {}), ...overrides };
-      if (simulated) { executionLogs.push(`[SIMULATION] cloneIssue -> ${fields.summary}`); changes.push({ action: "cloneIssue", from: issueKey, simulated: true }); return { simulated: true }; }
+      if (simulated) { const key = simulatedIssueKey(); executionLogs.push(`[SIMULATION] cloneIssue -> ${key}: ${fields.summary}`); changes.push({ action: "cloneIssue", from: issueKey, key, fields, simulated: true }); return { key, simulated: true }; }
       const res = await api.asApp().requestJira(route`/rest/api/3/issue`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ fields }) });
       if (!res.ok) throw new Error(`cloneIssue failed: ${res.status} — ${(await res.text()).slice(0, 200)}`);
       const c = await res.json(); changes.push({ action: "cloneIssue", from: issueKey, key: c.key }); executionLogs.push(`cloneIssue: ${issueKey} -> ${c.key}`); return { key: c.key };

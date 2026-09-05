@@ -202,7 +202,7 @@ Creates a project component. \`extra\` may include \`description\`, \`leadAccoun
     detail: "(fields) → { key }",
     example: 'const child = await api.createIssue({ project: { key: "PROJ" }, issuetype: { name: "Task" }, summary: "Follow-up" });',
     promptDoc: `### api.createIssue(fields) → { key }
-Creates an issue. \`fields\` must include \`project\`, \`issuetype\`, \`summary\` (ADF for description). For sub-tasks add \`parent: { key }\` and a sub-task issue type.`,
+Creates an issue. \`fields\` must include \`project\`, \`issuetype\`, \`summary\` (ADF for description). For sub-tasks add \`parent: { key }\` and a sub-task issue type. Simulation returns a distinct placeholder key for chained staged writes; reading that uncreated issue fails explicitly.`,
   },
   {
     name: "cloneIssue",
@@ -212,7 +212,7 @@ Creates an issue. \`fields\` must include \`project\`, \`issuetype\`, \`summary\
     detail: "(overrides?) → { key }",
     example: 'const dup = await api.cloneIssue({ summary: "Backport: same bug on 2.3" });',
     promptDoc: `### api.cloneIssue(overrides?) → { key }
-Creates a copy of the current issue. \`overrides\` is merged over the copied fields (e.g. \`{ summary, assignee, labels }\`).`,
+Creates a copy of the current issue. \`overrides\` is merged over the copied fields (e.g. \`{ summary, assignee, labels }\`). Simulation reads the source and returns a distinct placeholder key for chained staged writes; reading the uncreated clone fails explicitly.`,
   },
   {
     name: "forceStatus",

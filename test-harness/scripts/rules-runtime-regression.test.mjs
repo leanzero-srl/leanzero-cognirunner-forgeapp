@@ -128,5 +128,43 @@ await check("agent filter miss prevents both AI gate and agent actions", async (
   assert.equal(result.skipped, true); assert.equal(state.runs.length, 0); assert.equal(state.gates.length, 0);
 });
 
+const job = (mode = "script") => normalizeJob({ name: "Scoped job", schedule: { cron: "*/5 * * * *" }, scope: { jql: "project = LZPT", maxIssues: 3 }, mode, agent: { instructions: "Read each issue" }, functions: [{ code: "api.log(1)" }] });
+const scope = [ISSUE, { ...ISSUE, key: "LZPT-3" }, { ...ISSUE, key: "LZPT-4" }];
+for (const mode of ["script", "agent"]) for (const completed of [0, 1]) await check(`${mode} cancellation after ${completed} issues`, async () => {
+  const state = reset(); state.cancel = () => state.runs.length >= completed;
+  forgeApi.__respond(() => forgeApi.__response(200, { issues: scope }));
+  const result = await runJob({ job: job(mode), cancelToken: "cancel-token" });
+  assert.equal(result.success, false); assert.equal(result.log.isValid, false); assert.equal(state.runs.length, completed);
+  assert.equal(result.issues.length, scope.length); assert.match(result.log.reason, new RegExp(`^${completed}/3 issue`)); assert.match(result.log.reason, /cancelled/);
+  assert.equal(result.issues.filter(i => i.success).length, completed);
+  assert.ok(result.issues.slice(completed).every(i => !i.success && /cancelled/.test(i.reason)));
+  assert.equal(result.log.changes.length, mode === "script" ? completed : 0);
+});
+await check("normal scoped completion", async () => {
+  const state = reset(); forgeApi.__respond(() => forgeApi.__response(200, { issues: scope }));
+  const result = await runJob({ job: job(), cancelToken: "not-cancelled" });
+  assert.equal(result.success, true); assert.match(result.log.reason, /^3\/3 issue/); assert.equal(state.runs.length, 3);
+});
+await check("empty scope remains successful and does no work", async () => {
+  const state = reset(); forgeApi.__respond(() => forgeApi.__response(200, { issues: [] }));
+  const result = await runJob({ job: job(), cancelToken: "not-cancelled" });
+  assert.equal(result.success, true); assert.match(result.log.reason, /^0\/0 issue/); assert.equal(state.runs.length, 0);
+});
+await check("exhausted scoped budget lists every unfinished issue", async () => {
+  const state = reset(); forgeApi.__respond(() => forgeApi.__response(200, { issues: scope }));
+  const result = await runJob({ job: job(), deadline: Date.now() + 1000 });
+  assert.equal(result.success, false); assert.match(result.log.reason, /^0\/3 issue/); assert.equal(state.runs.length, 0);
+  assert.equal(result.issues.length, 3); assert.ok(result.issues.every(i => !i.success && /time budget/.test(i.reason)));
+});
+await check("failed step and prior writes remain represented when next issue is cancelled", async () => {
+  const state = reset(); state.cancel = () => state.runs.length === 1;
+  state.sandbox = (args) => { state.runs.push(args); return { success: false, failedStep: "Step 2", changes: [{ simulated: true }], logs: ["partial write"], stepResults: [{ status: "error", error: "failed after write" }] }; };
+  forgeApi.__respond(() => forgeApi.__response(200, { issues: scope }));
+  const result = await runJob({ job: job(), cancelToken: "cancel-token" });
+  assert.equal(result.success, false); assert.match(result.log.reason, /^0\/3 issue/); assert.match(result.log.reason, /1 failed, 2 cancelled/);
+  assert.equal(result.issues.length, 3); assert.match(result.issues[0].reason, /failed after write/); assert.equal(result.log.changes.length, 1);
+});
+// Duplicate consumers must be suppressed before either the AI gate or sandbox
+// starts. Promise.all overlaps the actual entrypoints, not a claim-only stand-in.
 console.log(`RULES RUNTIME REGRESSION: ${passed} passed, ${failed} failed`);
 process.exitCode = failed ? 1 : 0;

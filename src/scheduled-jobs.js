@@ -339,11 +339,18 @@ export const runJob = async ({ job, scheduledFor = null, missed = 0, manual = fa
   }
   const perIssue = [];
   const logs = [`Scope "${job.scope.jql}" matched ${issues.length} issue(s) (cap ${job.scope.maxIssues})`];
-  let changes = []; let tokens = 0; let aiTimeMs = 0; let failures = 0;
+  let changes = []; let tokens = 0; let aiTimeMs = 0; let failures = 0; let cancelled = 0;
   for (let i = 0; i < issues.length; i++) {
     const remaining = deadline - Date.now();
     if (remaining < 8000) { logs.push(`TIMEOUT: ${issues.length - i} issue(s) not processed — time budget exhausted`); failures += issues.length - i; for (const rest of issues.slice(i)) perIssue.push({ key: rest.key, success: false, reason: "not processed (time budget)" }); break; }
-    if (cancelToken && await m.isJobCancelled(cancelToken)) { logs.push("CANCELLED by operator"); break; }
+    if (cancelToken && await m.isJobCancelled(cancelToken)) {
+      // Cancellation preserves completed work, but every untouched issue must have
+      // an outcome: a partial run must never claim the entire scope processed OK.
+      cancelled = issues.length - i;
+      logs.push(`CANCELLED by operator: ${cancelled} issue(s) not processed`);
+      for (const rest of issues.slice(i)) perIssue.push({ key: rest.key, success: false, reason: "not processed (cancelled)" });
+      break;
+    }
     const share = Math.max(8000, Math.floor(remaining / (issues.length - i)));
     const r = await runOne(issues[i], Date.now() + Math.min(remaining - 2000, share));
     perIssue.push({ key: issues[i].key, success: r.success, reason: String(r.reason || "").slice(0, 200) });
@@ -353,9 +360,10 @@ export const runJob = async ({ job, scheduledFor = null, missed = 0, manual = fa
     logs.push(`--- ${issues[i].key}: ${r.success ? "OK" : "FAILED"} — ${r.reason}`);
     for (const l of (r.logs || []).slice(-12)) logs.push(`    ${String(l).slice(0, 240)}`);
   }
-  const success = failures === 0;
+  const processedOk = perIssue.filter((r) => r.success).length;
+  const success = processedOk === issues.length;
   return {
-    log: { ...base, issueKey: `${issues.length} issue(s)`, isValid: success, reason: `${issues.length - failures}/${issues.length} issue(s) processed OK, ${changes.length} change(s)${failures ? `, ${failures} failed` : ""}`, recommendation: success ? undefined : "Open the job's log details for the per-issue failures.", executionTimeMs: Date.now() - started, changes: changes.slice(0, 30), logs: logs.slice(-120).map((s) => String(s).slice(0, 300)), tokens, aiTimeMs, perIssue: perIssue.slice(0, 100) },
+    log: { ...base, issueKey: `${issues.length} issue(s)`, isValid: success, reason: `${processedOk}/${issues.length} issue(s) processed OK, ${changes.length} change(s)${failures ? `, ${failures} failed` : ""}${cancelled ? `, ${cancelled} cancelled` : ""}`, recommendation: success ? undefined : "Open the job's log details for the per-issue outcomes.", executionTimeMs: Date.now() - started, changes: changes.slice(0, 30), logs: logs.slice(-120).map((s) => String(s).slice(0, 300)), tokens, aiTimeMs, perIssue: perIssue.slice(0, 100) },
     success, issues: perIssue,
   };
 };

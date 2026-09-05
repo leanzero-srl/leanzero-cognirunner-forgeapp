@@ -80,6 +80,26 @@ A Forge web trigger (`rules-api`). Mint a bearer token in **Settings → API acc
 only; only the SHA-256 hash is stored, the plaintext is shown once). Send it as
 `Authorization: Bearer cgr_…` (or `X-Api-Key`).
 
+Use the Rules API URL shown for the target installation in API access. Workflow rules
+continue to attach through Jira's workflow REST API; listeners and jobs belong to the
+CogniRunner installation and use this URL. For example, save either configuration below
+as a JSON file and send it with the token from that installation:
+
+```bash
+curl --fail-with-body "$RULES_API_URL?resource=listeners" \
+  -H "Authorization: Bearer $RULES_API_TOKEN" -H 'Content-Type: application/json' \
+  --data-binary @listener.json
+curl --fail-with-body "$RULES_API_URL?resource=jobs" \
+  -H "Authorization: Bearer $RULES_API_TOKEN" -H 'Content-Type: application/json' \
+  --data-binary @job.json
+```
+
+Read the returned ID with `GET ?resource=listeners&id=...` or `GET ?resource=jobs&id=...`
+to verify the complete saved configuration. For provisioning reruns, include that ID and
+the complete configuration in POST to update the same rule. Use PUT for a partial update.
+An array can provision several rules in one request; HTTP207 means some rows failed, so
+inspect both the saved rows and the indexed `errors` array before marking the batch done.
+
 | Method | Query | Body | Result |
 |---|---|---|---|
 | GET | `?resource=events` / `?resource=actions` | — | catalogues |

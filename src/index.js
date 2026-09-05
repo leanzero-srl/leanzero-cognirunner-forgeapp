@@ -11850,14 +11850,17 @@ const callDocProcessorCreate = async (format, { title, content, stylePreset }, u
     if (raced === TIMED_OUT) return { ok: false, error: `${tool} timed out after ${Math.round(timeoutMs / 1000)}s` };
     let parsed = null;
     try { parsed = JSON.parse(raced); } catch { /* human text */ }
-    // The bridge returns a {"error":"…"} envelope on an MCP error (rate limit, tool
-    // throw, null bridge). That parses as valid JSON with no `success` field, so a
-    // bare `success !== false` check would read it as a phantom SUCCESS — emitting a
-    // false "Attached" trace + Jira comment for a document that was never created.
-    // The sibling runWebResearch classifies the identical envelope; treat a truthy
-    // `error` as failure here too.
-    const message = (parsed && (parsed.message || parsed.note || parsed.error)) || (typeof raced === "string" ? raced.slice(0, 400) : "");
-    const ok = parsed ? (parsed.success !== false && !parsed.error) : !/\b(error|failed)\b/i.test(message);
+    // All five creators distinguish local creation from upload: success:true can
+    // accompany uploaded:false/uploadError. Only a confirmed receiver attachment
+    // may produce the callers' "Attached" trace, linking comment and library copy.
+    const uploaded = parsed?.uploaded === true && Number.isInteger(parsed.uploadStatus)
+      && parsed.uploadStatus >= 200 && parsed.uploadStatus < 300
+      && /^(?:[1-9][0-9]*)$/.test(String(parsed.uploadAttachment?.id || ""));
+    const ok = parsed?.success === true && !parsed.error && !parsed.uploadError && (!uploadCap || uploaded);
+    const message = String(parsed?.uploadError || parsed?.error
+      || (!ok ? "Document upload was not confirmed by the attachment service." : parsed?.message || parsed?.note || ""))
+      .replaceAll(uploadCap?.uploadUrl || "\u0000", "[upload capability]")
+      .replaceAll(uploadCap?.uploadAuthHeader || "\u0000", "[upload authorization]").slice(0, 400);
     return { ok, message, filename, raw: parsed || String(raced).slice(0, 400) };
   } catch (e) {
     return { ok: false, error: e.message };

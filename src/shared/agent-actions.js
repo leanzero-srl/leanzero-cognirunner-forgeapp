@@ -28,7 +28,10 @@
  */
 
 const P = (properties, required) => ({ type: "object", properties, required, additionalProperties: false });
-const KEY = { type: "string", description: "Issue key, e.g. PROJ-123. Omit to use the current issue." };
+// Issue references are named tool arguments, not the sandbox's overloaded
+// positional arguments. Accept Jira keys (case preserved) or numeric ID strings.
+export const ISSUE_REFERENCE_SCHEMA = Object.freeze({ type: "string", pattern: "^(?:[A-Za-z][A-Za-z0-9_]*-[0-9]+|[0-9]+)$" });
+const KEY = { ...ISSUE_REFERENCE_SCHEMA, description: "Issue key, e.g. PROJ-123, or numeric issue ID as a string. Omit to use the current issue." };
 
 export const AGENT_ACTIONS = [
   {
@@ -77,14 +80,14 @@ export const AGENT_ACTIONS = [
     parameters: P({
       projectKey: { type: "string" }, issueType: { type: "string", description: "Issue type name, e.g. Task, Bug, Sub-task" },
       summary: { type: "string" }, description: { type: "string", description: "Plain-text description" },
-      parentKey: { type: "string", description: "Parent issue key for sub-tasks / child issues" },
+      parentKey: { ...ISSUE_REFERENCE_SCHEMA, description: "Parent issue key or numeric issue ID string for sub-tasks / child issues" },
       labels: { type: "array", items: { type: "string" } }, priority: { type: "string", description: "Priority name" },
     }, ["projectKey", "issueType", "summary"]),
   },
   {
     id: "link_issues", kind: "write", label: "Link issues",
     description: "Create an issue link from the issue to another issue (link type name e.g. Relates, Blocks, Duplicate).",
-    parameters: P({ issueKey: KEY, otherIssueKey: { type: "string" }, linkType: { type: "string", description: "Link type name, default Relates" } }, ["otherIssueKey"]),
+    parameters: P({ issueKey: KEY, otherIssueKey: { ...ISSUE_REFERENCE_SCHEMA }, linkType: { type: "string", description: "Link type name, default Relates" } }, ["otherIssueKey"]),
   },
   {
     id: "add_watcher", kind: "write", label: "Add a watcher",
@@ -133,3 +136,21 @@ export const toolDefinitionsFor = (ids) => {
 };
 
 export const hasWriteActions = (ids) => normalizeAllowedActions(ids).some((id) => (BY_ID.get(id) || {}).kind === "write");
+
+// Providers may ignore schema patterns or serialize an issue object into a string.
+// Validate before dispatch so neither shape can become a Jira path or fall back
+// to the current issue. Missing optional references alone mean "not supplied".
+export const normalizeAgentIssueReferences = (action, args) => {
+  if (!args || typeof args !== "object" || Array.isArray(args)) throw new Error(`${action.id}: tool arguments must be a JSON object`);
+  const normalized = { ...args };
+  for (const [name, schema] of Object.entries(action.parameters.properties)) {
+    if (schema.pattern !== ISSUE_REFERENCE_SCHEMA.pattern) continue;
+    const value = args[name];
+    if (value === undefined && !action.parameters.required.includes(name)) continue;
+    if (typeof value !== "string" || !(new RegExp(schema.pattern)).test(value.trim())) {
+      throw new Error(`${action.id}: ${name} must be an issue key like "PROJ-123" or a numeric issue ID string; pass the key, not an issue object.`);
+    }
+    normalized[name] = value.trim();
+  }
+  return normalized;
+};

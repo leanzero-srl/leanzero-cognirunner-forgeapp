@@ -28,7 +28,7 @@
  * Also hosts the AI CONDITION evaluator (a one-shot yes/no gate shared by both
  * execution modes).
  */
-import { toolDefinitionsFor, normalizeAllowedActions, getAgentAction, DEFAULT_AGENT_ROUNDS, MAX_AGENT_ROUNDS } from "./shared/agent-actions.js";
+import { toolDefinitionsFor, normalizeAllowedActions, getAgentAction, normalizeAgentIssueReferences, DEFAULT_AGENT_ROUNDS, MAX_AGENT_ROUNDS } from "./shared/agent-actions.js";
 import { resolveIssueKey } from "./shared/sandbox-api-spec.js";
 import { defangFence } from "./memories.js";
 
@@ -126,21 +126,15 @@ export const runAgentTask = async ({
 
   const baseApi = session.createApi();
   const apiFor = (key) => (key && key !== issueKey ? baseApi.forIssue(key) : baseApi);
-  // Hand the RAW issueKey to resolveIssueKey — never pre-swallow a bad one. This used to
-  // read `typeof args.issueKey === "string"` and fall back to the bound issue otherwise, so a
-  // model that emitted `{ issueKey: { key: "LZPT-9" } }` (easy after reading an issue object)
-  // had its argument silently discarded and the write landed on the CURRENT issue, unlogged.
-  // The shared helper's type guard exists for exactly that; let it fire. Strings are still
-  // trimmed here so the old trimming semantics are preserved.
-  const keyOf = (args) => {
-    if (!args || args.issueKey === undefined || args.issueKey === null) return undefined;
-    return typeof args.issueKey === "string" ? args.issueKey.trim() : args.issueKey;
-  };
+  // Validated references retain their explicit identity; only an omitted key
+  // reaches the shared sandbox resolver's current-issue fallback.
+  const keyOf = (args) => args.issueKey;
 
   const execute = async (name, args) => {
     const a = getAgentAction(name);
     if (!a) throw new Error(`Unknown action "${name}"`);
     if (a.kind !== "control" && !allowed.includes(name)) throw new Error(`Action "${name}" is not allowed for this rule`);
+    args = normalizeAgentIssueReferences(a, args);
     // ONE issue-key rule, ONE message. "No current issue" is resolved (and complained
     // about) by the SAME helper the sandbox's key-optional methods use — see
     // resolveIssueKey in src/shared/sandbox-api-spec.js — so an operator reading a
@@ -191,12 +185,12 @@ export const runAgentTask = async ({
       case "create_issue": {
         const fields = { project: { key: String(args.projectKey || "") }, issuetype: { name: String(args.issueType || "Task") }, summary: String(args.summary || "").slice(0, 255) };
         if (args.description) fields.description = m.coerceToAdf(String(args.description));
-        if (args.parentKey) fields.parent = { key: String(args.parentKey) };
+        if (args.parentKey) fields.parent = { key: args.parentKey };
         if (Array.isArray(args.labels) && args.labels.length) fields.labels = args.labels.map(String);
         if (args.priority) fields.priority = { name: String(args.priority) };
         return baseApi.createIssue(fields);
       }
-      case "link_issues": return apiFor(needKey(args)).createIssueLink(String(args.otherIssueKey || ""), String(args.linkType || "Relates"));
+      case "link_issues": return apiFor(needKey(args)).createIssueLink(args.otherIssueKey, String(args.linkType || "Relates"));
       case "add_watcher": return apiFor(needKey(args)).addWatcher(String(args.accountId || ""));
       case "send_notification": {
         const to = { assignee: args.toAssignee !== false, reporter: args.toReporter !== false, watchers: args.toWatchers === true };
@@ -250,12 +244,13 @@ ${simulated ? "- SIMULATION MODE: write tools are recorded but not executed; beh
     let finished = false;
     for (const tc of calls) {
       const name = tc.function && tc.function.name;
-      let args = {};
-      try { args = JSON.parse((tc.function && tc.function.arguments) || "{}"); } catch { args = {}; }
+      let args = {}; let parseError = null;
+      try { args = JSON.parse((tc.function && tc.function.arguments) || "{}"); } catch { parseError = "Tool arguments must be valid JSON"; }
       const ts = Date.now();
       let out; let ok = true;
       try {
         if (Date.now() >= deadline - 2000) throw new Error("Time budget exhausted");
+        if (parseError) throw new Error(parseError);
         out = await execute(name, args);
       } catch (e) { ok = false; out = { error: String(e && e.message).slice(0, 500) }; }
       const argsShort = JSON.stringify(args).slice(0, 300);

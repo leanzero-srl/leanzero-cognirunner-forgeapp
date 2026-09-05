@@ -134,7 +134,7 @@ export default function FunctionBuilder({ functions, setFunctions, runAsync = fa
 
       {functions.length > 1 && (
         <p className="hint" style={{ marginTop: "8px", textAlign: "center" }}>
-          Steps run in order. Use{" "}
+          Steps run in order. If a step fails, later steps can still run; completed changes are not rolled back. The run is marked failed. Use{" "}
           <Tooltip text="Each step can store its return value in a named variable. Later steps can reference it using ${variableName} in their code.">
             <code style={{ cursor: "help" }}>{"${variableName}"}</code>
           </Tooltip>

@@ -12,6 +12,7 @@
 import { loadEnv } from "../lib/env.mjs";
 import { disposableProject, cleanupFixtures, deleteIssueFixture } from "../lib/fixture-cleanup.mjs";
 import { closeRulesApi, rulesApi, waitForTask } from "../lib/rules-api.mjs";
+import { objectKeyVerdict } from "../lib/object-key-verdict.mjs";
 
 try {
 const env = loadEnv();
@@ -54,18 +55,16 @@ const main = async () => {
   console.log("  task:", JSON.stringify(task).slice(0, 2500));
   console.log("  log:", JSON.stringify(log).slice(0, 3000));
 
-  const blob = JSON.stringify(task) + JSON.stringify(log);
-  const emittedObject = /"issueKey":\s*\{/.test(blob);
-  const rejected = /must be a string like/.test(blob);
   const b = await jira("GET", `/rest/api/3/issue/${bound.key}?fields=labels`);
   const o = await jira("GET", `/rest/api/3/issue/${other.key}?fields=labels`);
+  must(b, "verify bound issue"); must(o, "verify other issue");
   console.log(`  ${bound.key} labels: ${JSON.stringify(b.body?.fields?.labels)}`);
   console.log(`  ${other.key} labels: ${JSON.stringify(o.body?.fields?.labels)}`);
-  const wroteToBound = (b.body?.fields?.labels || []).includes(`${TAG}-agentwrote`);
-  console.log(`\n  emittedObjectKey=${emittedObject}  rejectedWithTypeGuard=${rejected}  wroteToBoundIssue=${wroteToBound}`);
-  if (!emittedObject) console.log("  INCONCLUSIVE: the model did not emit an object issueKey; the guard was never reached.");
-  else if (rejected && !wroteToBound) console.log("  PROVEN: the object key was rejected and NOTHING was written to the bound issue.");
-  else console.log("  FAILED: the object key was not rejected (or the write landed on the bound issue).");
+  const verdict = objectKeyVerdict(task, log, b.body.fields.labels || [], o.body.fields.labels || [], `${TAG}-agentwrote`);
+  console.log("  Object key probe:", JSON.stringify(verdict));
+  if (verdict.verdict === "PROVEN") console.log("  PROVEN: actual tool trace shows rejection and both issue reads contain no test write.");
+  else if (verdict.verdict === "FAILED") { console.log("  FAILED: a test write landed despite the malformed-argument instruction."); process.exitCode = 1; }
+  else { console.log("  INCONCLUSIVE: available tool traces do not prove the malformed call reached and was rejected by the guard."); process.exitCode = 2; }
 
 };
 try { await main(); } catch(e) { console.error("FATAL", e); process.exitCode = 2; }

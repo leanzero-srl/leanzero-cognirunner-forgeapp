@@ -34,9 +34,11 @@ try {
   const types = proj.issueTypes;
   const stdType = types.find((t) => !t.subtask && /task/i.test(t.name)) || types.find((t) => !t.subtask);
   const script = must(await rulesApi.listeners.create({ name: `Probe script ${RUN}`, events: ["avi:jira:commented:issue"], filters: { projectKeys: [proj.key], commentPattern: `${TAG}-ping` }, functions: [{ name: "label", code: `await api.addLabels("${TAG}-script");` }] }), "script").listener;
+  created.listeners.push(script.id);
   const agent = must(await rulesApi.listeners.create({ name: `Probe agent ${RUN}`, events: ["avi:jira:commented:issue"], filters: { projectKeys: [proj.key], commentPattern: `${TAG}-ping` }, mode: "agent", agent: { instructions: `Add the label "${TAG}-agent" to the issue and reply with a comment containing exactly "${TAG} agent acknowledged". Then finish.`, allowedActions: ["get_issue", "add_comment", "add_labels"], maxRounds: 4 } }), "agent").listener;
+  created.listeners.push(agent.id);
   const version = must(await rulesApi.listeners.create({ name: `Probe version ${RUN}`, events: ["avi:jira:released:version"], filters: { projectKeys: [proj.key] }, functions: [{ name: "announce", code: `const r = await api.searchJql("labels = ${TAG}-script");\nfor (const i of (r.issues || []).slice(0, 1)) await api.forIssue(i.key).addComment("${TAG}: version released " + (api.context.event.version || {}).name);\nreturn r.issues.length;` }] }), "version").listener;
-  created.listeners.push(script.id, agent.id, version.id);
+  created.listeners.push(version.id);
   console.log(`  listeners: script ${script.id}, agent ${agent.id}, version ${version.id}; waiting 35s for the trigger cache…`);
   await sleep(35000);
   const issue = must(await jira("POST", "/rest/api/3/issue", { fields: { project: { id: proj.id }, issuetype: { id: stdType.id }, summary: `${TAG} probe` } }), "issue");

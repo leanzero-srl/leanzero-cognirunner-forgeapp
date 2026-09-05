@@ -11638,9 +11638,13 @@ const callBridgeTool = async (mcpKey, toolName, args) => {
   if (!cfg) return JSON.stringify({ error: `MCP "${mcpKey}" not configured` });
   const body = { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: toolName, arguments: args || {} } };
   const r = cfg.stateful ? await mcpRpcSession(cfg.url, cfg.headers, body) : await mcpRpc(cfg.url, cfg.headers, body);
+  if (r.status < 200 || r.status >= 300) return JSON.stringify({ error: `MCP HTTP ${r.status}` });
   if (r.json?.error) return JSON.stringify({ error: r.json.error.message || "MCP tool error" });
   const content = r.json?.result?.content || [];
   const text = content.filter((b) => b && b.type === "text").map((b) => b.text).join("\n");
+  // Tool-level errors use HTTP 200 in MCP. Preserve their failure envelope so
+  // research and document callers never mistake denial text for usable output.
+  if (r.json?.result?.isError === true) return JSON.stringify({ error: text || "MCP tool error" });
   return text || JSON.stringify(r.json?.result ?? { ok: false });
 };
 

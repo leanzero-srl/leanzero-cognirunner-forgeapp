@@ -6059,7 +6059,7 @@ function App() {
         </div>
         <div>
           <h2 className="title">CogniRunner Admin</h2>
-          <p className="subtitle">Overview of all AI validators and conditions configured across your workflows</p>
+          <p className="subtitle">Manage workflow rules, listeners and scheduled jobs.</p>
         </div>
       </div>
 

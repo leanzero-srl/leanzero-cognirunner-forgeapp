@@ -22,7 +22,7 @@ try {
     assert.equal(response.status, 200);
     const sample = response.body;
     assert.equal(sample.capturedAt, previous.capturedAt, 'Verify the same cached sample');
-    assert.equal(sample.payload.contextToken, undefined);
+    assert.equal(Object.hasOwn(sample.payload, 'contextToken'), false, 'Legacy sample must omit the context token');
     assert.equal(sample.payload.fileName, previous.fileName);
     assert.equal(sample.payload.issueId, previous.issueId);
     receipt.legacy.push({ eventType: previous.eventType, capturedAt: sample.capturedAt, tokenAbsent: true, identityPreserved: true }); save();
@@ -56,7 +56,7 @@ try {
   const sample = result.body;
   assert.ok(Date.parse(sample.capturedAt) >= Date.parse(receipt.startedAt));
   assert.equal(sample.payload.fileName, filename); assert.equal(String(sample.payload.issueId), String(issue.id));
-  assert.equal(sample.payload.contextToken, undefined);
+  assert.equal(Object.hasOwn(sample.payload, 'contextToken'), false, 'Fresh sample must omit the context token');
   receipt.fresh = { capturedAt: sample.capturedAt, fileName: filename, issueId: String(issue.id), tokenAbsent: true };
   receipt.pass = true;
 } catch (error) { receipt.pass = false; receipt.error = error.stack; process.exitCode = 1; }

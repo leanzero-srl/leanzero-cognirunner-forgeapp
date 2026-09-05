@@ -147,7 +147,7 @@ shows. Rows created through the API carry `createdBy: "api:<tokenId>"`.
 | Key | Purpose |
 |---|---|
 | `listener_index` / `listener:{id}` | slim rows (identity, events, project keys) / full config incl. code (cap 200, ≤200 KB each; index ≤200 KB) |
-| `listener_stats` / `job_stats` | run statistics, one map per family (id → counts, last run) — written only by the consumers, never the index or the records (no lost-update race with saves) |
+| `listener_stats` / `job_stats` | run statistics, one map per family (id → counts, last run) — short serialized accounting tasks update these maps; rule executions remain parallel |
 | `job_index` / `job:{id}` / `job_sched` | slim rows / full config / the scheduler's own bookkeeping (id → `lastCheckedAt`; the tick is its single writer) |
 | `job_claim:{id}:{minute}` · `lst_exec:{taskId}` · `job_exec:{job}:{minute\|manual:task}` | idempotency claims: due-minute claim at the tick, execution claims in the consumer (at-least-once delivery), 2 h TTL |
 | `lst_brake:{issue}:{bucket}` / `lst_brake:L:{listener}:{bucket}` | 5-minute loop (30/issue) / cost (120/listener) brakes (15 min TTL) |
@@ -169,6 +169,9 @@ shows. Rows created through the API carry `createdBy: "api:<tokenId>"`.
 - The trigger's listener index is cached for 30 s per warm container: a freshly saved
   listener can take up to 30 s to start matching.
 - Listeners and jobs run **as the app** (`asApp`); there is no "run as user".
+- Statistics can appear shortly after the execution log while its accounting task runs.
+  Clearing history preserves run counts; it does not reset them. Retry receipts are
+  internal bookkeeping and do not appear as executions.
 
 ## Testing
 

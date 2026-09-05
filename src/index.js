@@ -15147,6 +15147,13 @@ export const runSandboxSteps = async ({ issueKey: boundIssueKey = null, config =
     executionTimeMs: totalMs,
     stepResults,
     failedStep: firstFailure?.name || null,
+    failedStepIndex: firstFailure?.index ?? null,
+    // Use the executed list, including an offloaded bundle, and its stable index.
+    // Names may repeat. Bound the learning excerpt here instead of re-finding a
+    // same-named step in the dispatcher's possibly empty inline configuration.
+    failedStepCodeExcerpt: firstFailure?.status === "error"
+      ? String(functions[firstFailure.index - 1]?.code || "").substring(0, 1500) || null
+      : null,
     recommendation: firstFailure?.recommendation,
   };
 };
@@ -15699,7 +15706,9 @@ export const dispatchPostFunction = async (issueKey, config, extensionKey, pfDea
       await logAndTrace(logEntry);
     } else if (type.includes("static")) {
       const result = await executeStaticPostFunction(issue.key, config, pfDeadline, cancelToken);
-      console.log("Static PF result:", JSON.stringify(result));
+      const failedTrace = result.stepResults?.find((s) => s.index === result.failedStepIndex);
+      // The learning excerpt is internal input, not part of the execution log.
+      console.log("Static PF result:", JSON.stringify({ ...result, failedStepCodeExcerpt: undefined }));
       const logEntry = {
         type: "postfunction-static",
         issueKey: issue.key,
@@ -15722,7 +15731,7 @@ export const dispatchPostFunction = async (issueKey, config, extensionKey, pfDea
         logEntry.reason = `${result.stepResults?.filter((s) => s.status === "success").length || 0}/${result.stepsTotal ?? config.functions?.length ?? 0} steps OK: ${summary}`;
       } else {
         logEntry.reason = result.failedStep
-          ? `Failed at "${result.failedStep}": ${result.stepResults?.find((s) => s.error)?.error || "unknown"}`
+          ? `Failed at "${result.failedStep}": ${failedTrace?.error || "unknown"}`
           : `Error: ${(result.logs || []).filter((l) => l.includes("ERROR")).join("; ") || "unknown"}`;
       }
       if (result.logs) logEntry.trace = result.logs;
@@ -15741,7 +15750,7 @@ export const dispatchPostFunction = async (issueKey, config, extensionKey, pfDea
         try {
           const memorySettings = await getMemorySettings();
           if (memorySettings.autoCapture === true) {
-            const stepError = result.stepResults?.find((s) => s.error)?.error || "";
+            const stepError = failedTrace?.error || "";
             // F13: never learn from transient/infrastructure failures (429,
             // gateway, step-timeout under throttle). They aren't reusable lessons
             // and distilling each one amplifies a throttle storm with more AI calls.
@@ -15754,9 +15763,6 @@ export const dispatchPostFunction = async (issueKey, config, extensionKey, pfDea
                 known.updatedAt = new Date().toISOString();
                 await saveMemories(memories);
               } else {
-                // Match the executor's step naming: unnamed steps fall back to
-                // "Step N+1", which is what failedStep carries.
-                const failedFn = (config.functions || []).find((f, i) => (f.name || `Step ${i + 1}`) === result.failedStep);
                 const { Queue } = await import("@forge/events");
                 const queue = new Queue({ key: "async-ai-queue" });
                 const memDistillTaskId = makeTaskId("memdistill");
@@ -15766,7 +15772,7 @@ export const dispatchPostFunction = async (issueKey, config, extensionKey, pfDea
                   params: {
                     error: String(stepError).substring(0, 2000),
                     recommendation: result.recommendation ? String(result.recommendation).substring(0, 800) : null,
-                    codeExcerpt: failedFn?.code ? String(failedFn.code).substring(0, 1500) : null,
+                    codeExcerpt: result.failedStepCodeExcerpt,
                     projectKey: String(issueKey || "").includes("-") ? String(issueKey).split("-")[0] : null,
                     ruleId: config.ruleId || config.id || null,
                     stepName: result.failedStep,

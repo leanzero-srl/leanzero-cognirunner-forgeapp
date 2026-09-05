@@ -41,6 +41,7 @@ import { normalizeAllowedActions, DEFAULT_AGENT_ACTIONS, DEFAULT_AGENT_ROUNDS, M
 import { normalizeStep } from "./listeners.js";
 import { agentResultFields, SCOPED_AGENT_SUMMARY_BUDGET_BYTES, boundScopedJobLog } from "./shared/agent-result.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
+import { JOB_STATS_KEY, statsForRule, statsReceipt, removeRuleStats, recoverRuleStats } from "./rule-stats.js";
 
 const idx = () => import("./index.js");
 const agentMod = () => import("./agent-runner.js");
@@ -51,7 +52,7 @@ export const JOB_PREFIX = "job:";
 // their own keys: the consumer never rewrites the index or a config record, and the
 // tick (single writer of `job_sched`) never rewrites the index either — so a save
 // racing either of them can no longer be lost.
-export const JOB_STATS_KEY = "job_stats";
+export { JOB_STATS_KEY };
 export const JOB_SCHED_KEY = "job_sched";
 export const EXEC_CLAIM_PREFIX = "job_exec:";
 const EXEC_CLAIM_TTL = { ttl: { value: 2, unit: "HOURS" } };
@@ -118,7 +119,7 @@ export const normalizeJob = (input = {}, { existing = null, accountId = null } =
 export const toIndexRow = (full) => ({
   id: full.id, name: full.name, enabled: full.enabled !== false, schedule: full.schedule,
   scoped: Boolean(full.scope), mode: full.mode, simulationMode: full.simulationMode === true,
-  createdBy: full.createdBy || null, updatedAt: full.updatedAt,
+  createdBy: full.createdBy || null, createdAt: full.createdAt, updatedAt: full.updatedAt,
 });
 export const emptyStats = () => ({ runCount: 0, errorCount: 0, lastRunAt: null, lastStatus: null, lastError: null });
 export const nextRunOf = (row) => {
@@ -133,7 +134,7 @@ const writeJobIndex = async (rows) => storage.set(JOB_INDEX_KEY, rows);
 export const readStatsMap = async () => { const v = (await storage.get(JOB_STATS_KEY)) || {}; return v && typeof v === "object" ? v : {}; };
 export const readSchedMap = async () => { const v = (await storage.get(JOB_SCHED_KEY)) || {}; return v && typeof v === "object" ? v : {}; };
 const writeSchedMap = async (m) => storage.set(JOB_SCHED_KEY, m);
-const decorate = (row, statsMap) => ({ ...row, stats: { ...((statsMap && statsMap[row.id]) || emptyStats()), nextRunAt: nextRunOf(row) } });
+const decorate = (row, statsMap) => ({ ...row, stats: { ...emptyStats(), ...statsForRule(statsMap && statsMap[row.id], row), nextRunAt: nextRunOf(row) } });
 
 export const listJobs = async () => {
   const [rows, statsMap] = await Promise.all([readJobIndex(), readStatsMap()]);
@@ -173,11 +174,12 @@ export const saveJob = async (input, { accountId = null } = {}) => {
 };
 
 export const deleteJob = async (id) => {
+  const full = await getJob(id);
   const rows = await readJobIndex();
   const next = rows.filter((r) => r.id !== id);
   if (next.length !== rows.length) await writeJobIndex(next);
   await storage.delete(JOB_PREFIX + safeKeyPart(id));
-  try { const m = await readStatsMap(); if (m[id]) { delete m[id]; await storage.set(JOB_STATS_KEY, m); } } catch { /* best-effort */ }
+  await removeRuleStats("scheduledjob", full);
   try { const m = await readSchedMap(); if (m[id]) { delete m[id]; await writeSchedMap(m); } } catch { /* best-effort */ }
   return { removed: next.length !== rows.length };
 };
@@ -195,19 +197,6 @@ export const setJobEnabled = async (id, enabled) => {
   await writeJobIndex(rows);
   await storage.set(JOB_PREFIX + safeKeyPart(id), full);
   return { ...full, stats: { ...(stats || emptyStats()), nextRunAt: nextRunOf(full) } };
-};
-
-// Best-effort stats update (advisory; touches ONLY the stats map).
-export const updateJobStats = async (id, { status, error = null }) => {
-  try {
-    const m = await readStatsMap();
-    const st = m[id] || emptyStats();
-    st.runCount = (st.runCount || 0) + 1;
-    if (status === "error") st.errorCount = (st.errorCount || 0) + 1;
-    st.lastRunAt = nowIso(); st.lastStatus = status; st.lastError = error ? clampStr(error, 300) : null;
-    m[id] = st;
-    await storage.set(JOB_STATS_KEY, m);
-  } catch (e) { console.warn("[job] stats update skipped:", e && e.message); }
 };
 
 // ── Queue ────────────────────────────────────────────────────────────────────
@@ -251,10 +240,12 @@ export async function scheduledTick() {
   const started = Date.now();
   let rows; let sched;
   try { [rows, sched] = await Promise.all([readJobIndex(), readSchedMap()]); } catch (e) { console.error("[job] index read failed:", e && e.message); return; }
-  if (!rows.length) return;
+  // Recover completed runs even on sites with listeners but no scheduled jobs.
+  try { sched[":statsRecovery"] = { cursor: await recoverRuleStats(sched[":statsRecovery"]?.cursor) }; }
+  catch (error) { console.warn("[stats] recovery deferred:", error?.message); }
   // Drop bookkeeping for jobs that no longer exist (keeps the map bounded).
   const ids = new Set(rows.map((r) => r.id));
-  for (const k of Object.keys(sched)) if (!ids.has(k)) delete sched[k];
+  for (const k of Object.keys(sched)) if (k !== ":statsRecovery" && !ids.has(k)) delete sched[k];
   const due = planTick(rows, sched, started);
   // Persist lastCheckedAt for every job first — the window must advance even if
   // an enqueue below fails (otherwise a broken job would be re-planned forever).
@@ -393,8 +384,7 @@ export const executeScheduledJobTask = async (params, taskId) => {
   }
   const entry = out.log;
   if (Number.isFinite(enqueuedMs)) entry.queueDelayMs = Math.max(0, Date.now() - enqueuedMs);
-  await m.storeLog(entry);
-  await updateJobStats(job.id, { status: entry.isValid ? "ok" : "error", error: entry.isValid ? null : entry.reason });
+  await m.storeLog(entry, { statsReceipt: statsReceipt("scheduledjob", job, entry) });
   return { success: entry.isValid, reason: entry.reason, changes: entry.changes, logs: entry.logs, issues: out.issues, executionTimeMs: entry.executionTimeMs, tokens: entry.tokens, agentOutcome: entry.agentOutcome, agentSummary: entry.agentSummary };
 };
 

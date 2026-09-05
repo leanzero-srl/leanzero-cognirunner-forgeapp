@@ -24,6 +24,35 @@ const storage = {
     store.set(key, clone(value)); return { key };
   },
   async delete(key) { store.delete(key); },
+  query() {
+    let prefix = ""; let cap = 10; let after = "";
+    const query = {
+      where(_field, condition) { prefix = condition.values[0]; return query; },
+      limit(value) { cap = value; return query; },
+      cursor(value) { after = value; return query; },
+      async getMany() {
+        const keys = [...store.keys()].filter(key => key.startsWith(prefix) && key > after).sort();
+        const page = keys.slice(0, cap);
+        return { results: page.map(key => ({ key, value: clone(store.get(key)) })), nextCursor: keys.length > cap ? page.at(-1) : undefined };
+      },
+    };
+    return query;
+  },
+  async batchDelete(rows) { for (const { key } of rows) store.delete(key); },
+  transact() {
+    const sets = []; const deletes = [];
+    const transaction = {
+      set(key, value, entity, options) { sets.push({ key, value, entity, options }); return transaction; },
+      delete(key) { deletes.push(key); return transaction; },
+      async execute() {
+        // No await between mutations: all-or-nothing visibility to other calls.
+        for (const { key, options } of sets) if (options?.keyPolicy === "FAIL_IF_EXISTS" && store.has(key)) throw new Error("Key already exists");
+        for (const { key, value } of sets) store.set(key, clone(value));
+        for (const key of deletes) store.delete(key);
+      },
+    };
+    return transaction;
+  },
   // test helpers (not part of the real API)
   __reset() { store.clear(); },
   __seed(key, value) { store.set(key, clone(value)); },

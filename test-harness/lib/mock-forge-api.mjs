@@ -43,6 +43,11 @@ export default api;
 export const pushed = [];
 export class Queue {
   constructor({ key }) { this.key = key; }
-  async push(ev) { pushed.push({ queue: this.key, ...ev }); return { jobId: `mockjob-${pushed.length}` }; }
+  async push(ev) { for (const event of Array.isArray(ev) ? ev : [ev]) pushed.push({ queue: this.key, ...event }); return { jobId: `mockjob-${pushed.length}` }; }
   getJob() { return { cancel: async () => {} }; }
+}
+
+export const InvocationErrorCode = { FUNCTION_RETRY_REQUEST: "FUNCTION_RETRY_REQUEST" };
+export class InvocationError {
+  constructor(retryOptions) { return { _retry: true, retryOptions }; }
 }

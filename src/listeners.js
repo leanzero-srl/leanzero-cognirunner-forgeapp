@@ -42,6 +42,7 @@ import { normalizeAllowedActions, DEFAULT_AGENT_ACTIONS, DEFAULT_AGENT_ROUNDS, M
 import { redosRisk } from "./shared/regex-safety.js";
 import { agentResultFields } from "./shared/agent-result.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
+import { LISTENER_STATS_KEY, statsForRule, statsReceipt, removeRuleStats } from "./rule-stats.js";
 
 const idx = () => import("./index.js");
 const agentMod = () => import("./agent-runner.js");
@@ -50,9 +51,9 @@ export const LISTENER_INDEX_KEY = "listener_index";
 export const LISTENER_PREFIX = "listener:";
 // Run statistics live in their OWN key (a map id → stats) so the consumers never
 // read-modify-write the index or the config record: a stats update racing a save
-// could otherwise revert the save (lost update). Stats-vs-stats races only lose a
-// count — acceptable for an advisory meter.
-export const LISTENER_STATS_KEY = "listener_stats";
+// could otherwise revert the save (lost update). The rule_stats consumer also
+// serializes stats-vs-stats writes, so simultaneous completions retain every count.
+export { LISTENER_STATS_KEY };
 export const EXEC_CLAIM_PREFIX = "lst_exec:";
 const EXEC_CLAIM_TTL = { ttl: { value: 2, unit: "HOURS" } };
 const INDEX_MAX_BYTES = 200 * 1024;
@@ -175,7 +176,7 @@ export const toIndexRow = (full) => ({
   id: full.id, name: full.name, enabled: full.enabled !== false, events: full.events,
   projectKeys: (full.filters && full.filters.projectKeys) || [], mode: full.mode,
   hasAiCondition: Boolean(full.aiCondition), simulationMode: full.simulationMode === true,
-  createdBy: full.createdBy || null, updatedAt: full.updatedAt,
+  createdBy: full.createdBy || null, createdAt: full.createdAt, updatedAt: full.updatedAt,
 });
 
 // ── Storage ──────────────────────────────────────────────────────────────────
@@ -191,7 +192,7 @@ export const readListenerIndex = async ({ cached = false } = {}) => {
 const writeListenerIndex = async (rows) => { await storage.set(LISTENER_INDEX_KEY, rows); _indexCache = null; };
 
 export const readStatsMap = async () => { const v = (await storage.get(LISTENER_STATS_KEY)) || {}; return v && typeof v === "object" ? v : {}; };
-const withStats = (row, statsMap) => ({ ...row, stats: (statsMap && statsMap[row.id]) || emptyStats() });
+const withStats = (row, statsMap) => ({ ...row, stats: { ...emptyStats(), ...statsForRule(statsMap && statsMap[row.id], row) } });
 
 export const listListeners = async () => {
   const [rows, statsMap] = await Promise.all([readListenerIndex(), readStatsMap()]);
@@ -201,7 +202,7 @@ export const getListener = async (id) => {
   if (!id) return null;
   const full = (await storage.get(LISTENER_PREFIX + safeKeyPart(id))) || null;
   if (!full) return null;
-  try { full.stats = (await readStatsMap())[id] || emptyStats(); } catch { full.stats = emptyStats(); }
+  try { full.stats = { ...emptyStats(), ...statsForRule((await readStatsMap())[id], full) }; } catch { full.stats = emptyStats(); }
   return full;
 };
 
@@ -225,11 +226,12 @@ export const saveListener = async (input, { accountId = null } = {}) => {
 };
 
 export const deleteListener = async (id) => {
+  const full = await getListener(id);
   const rows = await readListenerIndex();
   const next = rows.filter((r) => r.id !== id);
   if (next.length !== rows.length) await writeListenerIndex(next);
   await storage.delete(LISTENER_PREFIX + safeKeyPart(id));
-  try { const m = await readStatsMap(); if (m[id]) { delete m[id]; await storage.set(LISTENER_STATS_KEY, m); } } catch { /* best-effort */ }
+  await removeRuleStats("listener", full);
   return { removed: next.length !== rows.length };
 };
 
@@ -244,19 +246,6 @@ export const setListenerEnabled = async (id, enabled) => {
   await writeListenerIndex(rows);
   await storage.set(LISTENER_PREFIX + safeKeyPart(id), full);
   return { ...full, stats };
-};
-
-// Best-effort stats update (advisory — never load-bearing; touches ONLY the stats map).
-export const updateListenerStats = async (id, { status, error = null, issueKey = null }) => {
-  try {
-    const m = await readStatsMap();
-    const st = m[id] || emptyStats();
-    st.runCount = (st.runCount || 0) + 1;
-    if (status === "error") st.errorCount = (st.errorCount || 0) + 1;
-    st.lastRunAt = nowIso(); st.lastStatus = status; st.lastError = error ? clampStr(error, 300) : null; st.lastIssueKey = issueKey || null;
-    m[id] = st;
-    await storage.set(LISTENER_STATS_KEY, m);
-  } catch (e) { console.warn("[listener] stats update skipped:", e && e.message); }
 };
 
 // ── Matching (pure — exported for offline tests) ─────────────────────────────
@@ -592,8 +581,7 @@ export const executeListenerTask = async (params, taskId) => {
   }
   const entry = out.log;
   if (Number.isFinite(enqueuedMs)) entry.queueDelayMs = Math.max(0, Date.now() - enqueuedMs);
-  await m.storeLog(entry);
-  if (!out.skipped) await updateListenerStats(listener.id, { status: entry.isValid ? "ok" : "error", error: entry.isValid ? null : entry.reason, issueKey: ctx && ctx.issueKey });
+  await m.storeLog(entry, { statsReceipt: out.skipped ? null : statsReceipt("listener", listener, entry, ctx && ctx.issueKey) });
   return { skipped: out.skipped, success: entry.isValid, reason: entry.reason, changes: entry.changes, logs: entry.logs, agentOutcome: entry.agentOutcome, agentSummary: entry.agentSummary };
 };
 

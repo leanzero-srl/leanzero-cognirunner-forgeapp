@@ -65,6 +65,7 @@ import {
 } from "./memories.js";
 import { executeListenerTask } from "./listeners.js";
 import { executeScheduledJobTask } from "./scheduled-jobs.js";
+import { STATS_TASK_TYPE, processRuleStatsReceipt } from "./rule-stats.js";
 
 const TASK_PREFIX = "async_task:";
 const TASK_TTL_HOURS = 1; // Results expire after 1 hour
@@ -802,6 +803,18 @@ const UNPOLLED_TASKS = new Set(["postfunction", "memory_distill", "listener"]);
  */
 export async function handler(event) {
   const { taskType, taskId, params } = event.body || {};
+
+  // Accounting is storage-only and must survive kill-all, queue age, and
+  // application failures. It never creates another operational job or Jira write.
+  if (taskType === STATS_TASK_TYPE) {
+    try { await processRuleStatsReceipt(params); }
+    catch (error) {
+      console.warn("[stats] receipt retry requested:", error?.message);
+      const { InvocationError, InvocationErrorCode } = await import("@forge/events");
+      return new InvocationError({ retryAfter: 30, retryReason: InvocationErrorCode.FUNCTION_RETRY_REQUEST });
+    }
+    return;
+  }
 
   if (!taskType || !taskId) {
     console.error("Async handler: missing taskType or taskId");

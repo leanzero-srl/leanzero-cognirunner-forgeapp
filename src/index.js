@@ -23,6 +23,7 @@ import { chat as forgeLlmChatApi, list as forgeLlmListApi } from "@forge/llm";
 // `storage` was deprecated from @forge/api — migrated to @forge/kvs.
 // Aliased back to `storage` so the existing get/set/delete call sites stay unchanged.
 import storage from "@forge/kvs";
+import { LOG_ENTRY_PREFIX, LOG_TTL, logEntryKey, enqueueRuleStats, pendingRuleStats } from "./rule-stats.js";
 import Resolver from "@forge/resolver";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import path from "node:path";
@@ -1001,12 +1002,6 @@ const getRuntimeMemorySection = async (projectKey, capBytes = 4096) => {
  * plain ascending BEGINS_WITH query returns newest-first without sorting.
  * A 30-day TTL plus a probabilistic prune (below) bounds storage growth.
  */
-const LOG_ENTRY_PREFIX = "log_entry:";
-const logEntryKey = () =>
-  LOG_ENTRY_PREFIX
-  + String(1e13 - Date.now()).padStart(13, "0")
-  + "_" + Math.random().toString(36).slice(2, 8);
-
 // One bounded retry before accepting log loss: under bulk-transition bursts
 // KVS returns TOO_MANY_REQUESTS and the entry would silently vanish from the
 // Logs tab. Worst-case added latency (~1s) fits the headroom every caller
@@ -1017,25 +1012,34 @@ const isTransientKvsError = (e) =>
   /429|RATE_?LIMIT|TOO_?MANY|TIMEOUT|ECONNRESET|EAI_AGAIN|50[0-4]/i
     .test(`${e?.code} ${e?.responseDetails?.status} ${e?.message}`);
 
-const storeLog = async (logEntry) => {
+const storeLog = async (logEntry, { statsReceipt = null } = {}) => {
   try {
     const entry = {
       ...logEntry,
+      ...(statsReceipt ? { statsReceipt } : {}),
       // Every entry carries a source; default to runtime so no entry is sourceless
       // and pre-feature entries render correctly (async ones self-identify downstream).
       source: logEntry.source || "runtime",
       timestamp: new Date().toISOString(),
       id: Date.now().toString() + Math.random().toString(36).slice(2, 6),
     };
+    // Reuse one key through ambiguous writes/retries: one completion, one receipt.
+    const key = logEntryKey();
     const writeEntry = async () => {
       try {
-        await storage.set(logEntryKey(), entry, { ttl: { value: 30, unit: "DAYS" } });
+        await storage.set(key, entry, { ...LOG_TTL, keyPolicy: "FAIL_IF_EXISTS" });
       } catch (e) {
+        // A timed-out first write may already have been recovered and counted.
+        // Never overwrite its applied marker while retrying the original log.
+        if (e?.code === "KEY_ALREADY_EXISTS" || e?.responseDetails?.status === 409 || /already\s*exist/i.test(String(e?.message))) {
+          if ((await storage.get(key))?.id === entry.id) return;
+          throw new Error("Log receipt key collision");
+        }
         // Transient errors bubble up for the single delayed retry; anything
         // else means the TTL option was rejected — store without it (the
         // prune below still bounds growth).
         if (isTransientKvsError(e)) throw e;
-        await storage.set(logEntryKey(), entry);
+        await storage.set(key, entry, { keyPolicy: "FAIL_IF_EXISTS" });
       }
     };
     let retriedWrite = false;
@@ -1048,7 +1052,11 @@ const storeLog = async (logEntry) => {
     }
     // Don't add the prune's query+batchDelete ops during the very rate-limit
     // storm that forced the retry.
-    if (retriedWrite) return;
+    if (statsReceipt) {
+      try { await enqueueRuleStats(key, statsReceipt); }
+      catch (error) { console.warn("[stats] enqueue deferred to scheduled recovery:", error?.message); }
+    }
+    if (retriedWrite) return key;
     // Probabilistic prune (~10% of writes): delete entries beyond MAX_LOGS so a
     // busy site doesn't accumulate 30 days of entries against the storage quota.
     // Query result ORDER is undocumented — sort client-side by key (fixed-width
@@ -1061,7 +1069,7 @@ const storeLog = async (logEntry) => {
           .where("key", { condition: "BEGINS_WITH", values: [LOG_ENTRY_PREFIX] })
           .limit(100)
           .getMany();
-        const sorted = (page.results || []).map((r) => r.key).sort();
+        const sorted = (page.results || []).filter((r) => !pendingRuleStats(r.value)).map((r) => r.key).sort();
         const cutoff = Date.now() - 60 * 60 * 1000;
         const stale = sorted.slice(MAX_LOGS).filter((key) => {
           const ts = 1e13 - parseInt(key.slice(LOG_ENTRY_PREFIX.length, LOG_ENTRY_PREFIX.length + 13), 10);
@@ -1075,6 +1083,7 @@ const storeLog = async (logEntry) => {
         console.log("Log prune skipped:", e.message);
       }
     }
+    return key;
   } catch (error) {
     console.error("Failed to store log:", error);
   }
@@ -1097,7 +1106,8 @@ export const readLogs = async (ruleId = null) => {
   const sorted = (page.results || [])
     .slice()
     .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
-    .map((r) => r.value);
+    .map((r) => r.value)
+    .filter((entry) => !entry?.statsOnly);
   let logs = (ruleId ? sorted.filter((l) => l && l.ruleId === ruleId) : sorted).slice(0, MAX_LOGS);
   if (logs.length < MAX_LOGS) {
     try {
@@ -1245,19 +1255,28 @@ resolver.define("clearLogs", async ({ context }) => {
     return { success: false, error: "Editor access required" };
   }
   try {
-    // Delete per-entry keys page by page (batchDelete caps at 25 keys per call),
-    // then the legacy array key.
+    // Pending run receipts clear through the same serialized stats consumer: it
+    // counts + deletes atomically. They may remain visible briefly while queued;
+    // clearing history must never discard a completed run from its counters.
+    // Ordinary/applied entries and the legacy array can be deleted immediately.
+    let cursor = null;
     for (let i = 0; i < 40; i++) {
-      const page = await storage.query()
+      let query = storage.query()
         .where("key", { condition: "BEGINS_WITH", values: [LOG_ENTRY_PREFIX] })
-        .limit(100)
-        .getMany();
-      const keys = (page.results || []).map((r) => ({ key: r.key }));
-      if (keys.length === 0) break;
+        .limit(100);
+      if (cursor) query = query.cursor(cursor);
+      const page = await query.getMany();
+      const keys = [];
+      for (const row of page.results || []) {
+        if (pendingRuleStats(row.value)) await enqueueRuleStats(row.key, row.value.statsReceipt, true);
+        else keys.push({ key: row.key });
+      }
+      if (!(page.results || []).length) break;
       for (let j = 0; j < keys.length; j += 25) {
         await storage.batchDelete(keys.slice(j, j + 25));
       }
-      if (!page.nextCursor && keys.length < 100) break;
+      cursor = page.nextCursor || null;
+      if (!cursor) break;
     }
     await storage.set(LOGS_STORAGE_KEY, []);
     return { success: true };

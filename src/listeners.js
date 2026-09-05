@@ -600,32 +600,76 @@ export const executeListenerTask = async (params, taskId) => {
  * Editor / REST "Test with an issue": build a synthetic event from a REAL issue,
  * run the listener in SIMULATION (reads live, writes recorded) with a sync budget,
  * store a TEST-sourced log entry. Returns the log entry + gate verdict.
+ * This checks matching and execution, not delivery, brakes or the self-event guard.
+ * Without a provided payload, issue updates synthesize a summary change and comments
+ * use the issue's latest comment; neither proves a particular historical event matched.
  */
 export const testListener = async ({ listener, issueKey, eventType, syntheticEvent = null, deadline = Date.now() + 20000 }) => {
   const m = await idx();
   const ev = eventType && listener.events.includes(eventType) ? eventType : listener.events[0];
+  const meta = getEvent(ev) || {};
+  const hasIssueContext = meta.issueBound || meta.issueIdOnly;
   let event = syntheticEvent && typeof syntheticEvent === "object" ? { ...syntheticEvent, eventType: ev } : null;
+  let eventUsed = event ? "provided" : "synthetic";
+  const testNotes = ["Simulation reads Jira and records writes. Event delivery, execution brakes and the self-generated event guard are not tested."];
+  if (listener.enabled === false) testNotes.push("This disabled draft is tested as enabled.");
   if (!event) {
     const sample = await getEventSample(ev);
-    event = sample && sample.payload ? { ...sample.payload, eventType: ev, _sample: true } : { eventType: ev };
+    // A sample is a redacted shape captured for the entire event type, potentially
+    // from a different issue. Never graft its comment/changelog/linked issue onto
+    // the selected issue. An explicit REST payload can supply those test inputs.
+    if (sample && sample.payload && !(issueKey && hasIssueContext)) {
+      event = { ...sample.payload, eventType: ev, _sample: true };
+      eventUsed = "sample";
+      testNotes.push("The last captured sample has redacted text; text filters and AI conditions may differ on a real event.");
+    } else event = { eventType: ev };
   }
-  if (issueKey) {
+  if (!hasIssueContext) delete event.issue; // an issue picker must not invent an issue for a sprint/project/etc.
+  if (issueKey && hasIssueContext) {
     const res = await api.asApp().requestJira(route`/rest/api/3/issue/${issueKey}`);
     if (!res.ok) throw new Error(`Issue ${issueKey} could not be read (${res.status})`);
     const issue = await res.json();
     event.issue = { id: issue.id, key: issue.key, fields: issue.fields };
-    if ((getEvent(ev) || {}).entity === "comment" && !event.comment) {
+    // Keep the selected issue authoritative in id-only payloads as well as event.issue.
+    for (const field of ["comment", "worklog", "attachment"]) {
+      if (event[field] && event[field].issueId != null) event[field] = { ...event[field], issueId: issue.id };
+    }
+    if (meta.entity === "issueLink") {
+      if (event.issueLink) event.issueLink = { ...event.issueLink, sourceIssueId: issue.id, sourceProjectId: issue.fields?.project?.id };
+      else { event.sourceIssueId = issue.id; event.sourceProjectId = issue.fields?.project?.id; }
+    }
+    if (event.issueId != null) event.issueId = issue.id;
+    if (event.issueKey != null) event.issueKey = issue.key;
+    if (meta.entity === "comment" && !event.comment) {
       const comments = (issue.fields && issue.fields.comment && issue.fields.comment.comments) || [];
       const last = comments[comments.length - 1];
       if (last) event.comment = last;
+      testNotes.push(last ? "Uses the selected issue's latest returned comment, not a replay of a comment event." : "No comment was available on the selected issue.");
     }
-    if (ev === "avi:jira:updated:issue" && !event.changelog) event.changelog = { items: [{ field: "summary", fieldId: "summary", fromString: "(test)", toString: issue.fields && issue.fields.summary }] };
+    if (ev === "avi:jira:updated:issue" && !event.changelog) {
+      event.changelog = { items: [{ field: "summary", fieldId: "summary", fromString: "(test)", toString: issue.fields && issue.fields.summary }] };
+      testNotes.push("Uses a synthetic summary-only change, not the issue's change history.");
+    }
   }
   event.selfGenerated = false;
   event.atlassianId = event.atlassianId || null;
   const ctx = extractEventContext(ev, event);
-  const out = await runListener({ listener, eventType: ev, event, ctx, deadline, forceSimulation: true, source: "test" });
+  if (hasIssueContext && !ctx.issueKey && ctx.issueId) {
+    const resolved = await resolveIssueById(ctx.issueId);
+    if (resolved) Object.assign(ctx, resolved);
+  }
+  if (!ctx.projectKey && ctx.projectId && listener.filters?.projectKeys?.length) ctx.projectKey = await resolveProjectKey(ctx.projectId);
+  // Drafts may be disabled while being tested; all other static matcher rules are
+  // exactly the trigger's rules. No brakes/claims/stats are consumed by this dry run.
+  const match = matchListenerStatic({ ...listener, enabled: true }, ctx, event);
+  const jql = listener.filters && listener.filters.jql;
+  const skipReason = !match.ok ? `Filtered out: ${match.reason}.` : (jql && !ctx.issueKey ? "Filtered out: JQL filter needs an issue." : null);
+  const out = skipReason ? { skipped: true, log: {
+    type: "listener", source: "test", issueKey: ctx.issueKey || ctx.entityName || "(no issue)", fieldId: ev,
+    ruleId: listener.id, ruleName: listener.name, ruleWorkflow: null, eventType: ev, mode: listener.mode,
+    isValid: true, decision: "SKIP", reason: skipReason, executionTimeMs: 0,
+  } } : await runListener({ listener, eventType: ev, event, ctx: { ...ctx, jqlPending: Boolean(jql) }, deadline, forceSimulation: true, source: "test" });
   const entry = { ...out.log, testRun: true };
   await m.storeLog(entry);
-  return { ...entry, skipped: out.skipped, gate: out.gate || null, eventUsed: event._sample ? "sample" : (syntheticEvent ? "provided" : "synthetic") };
+  return { ...entry, skipped: out.skipped, gate: out.gate || null, eventUsed, testNote: testNotes.join(" ") };
 };

@@ -168,11 +168,37 @@ for (const kind of ["listener", "scheduledjob"]) for (const recreate of [false, 
   assert.ok((await readLogs()).every(entry => !entry.statsOnly));
 });
 
-await check("clearing a pending log atomically counts it then deletes it, replay stays empty", async () => {
+await check("clearing a pending log atomically counts it and retains only hidden deduplication evidence", async () => {
   const rule = seed("listener"); const { key, event, stats } = await receipt("listener", rule);
   await enqueueRuleStats(key, stats, true); const clearEvent = pushed.at(-1);
   await consume(clearEvent); await consume(event); await consume(clearEvent);
-  assert.equal(await storage.get(key), undefined); assert.equal((await getListener(rule.id)).stats.runCount, 1);
+  assert.deepEqual(await storage.get(key), { id: (await storage.get(key)).id, statsOnly: true, statsReceipt: { kind: "listener", applied: true } });
+  assert.equal((await readLogs()).length, 0); assert.equal((await getListener(rule.id)).stats.runCount, 1);
+});
+
+for (const applyFirst of [false, true]) await check(`ambiguous log write survives repeated clears of ${applyFirst ? "applied" : "pending"} receipt`, async () => {
+  const rule = seed("scheduledjob"); const set = storage.set; let intercepted = false; let receiptKey;
+  storage.set = async (key, value, options) => {
+    const result = await set(key, value, options);
+    if (!intercepted && value.statsReceipt) {
+      intercepted = true; receiptKey = key;
+      if (applyFirst) await processRuleStatsReceipt({ receiptKey: key, kind: "scheduledjob" });
+      for (let i = 0; i < 2; i++) {
+        assert.deepEqual(await resolve({ call: { functionKey: "clearLogs" } }, { principal: { accountId: "stats-test-admin" } }), { success: true });
+        await drain();
+      }
+      assert.equal((await readLogs()).length, 0);
+      assert.equal((await getJob(rule.id)).stats.runCount, 1);
+      assert.deepEqual(await storage.get(key), { id: value.id, statsOnly: true, statsReceipt: { kind: "scheduledjob", applied: true } });
+      throw new Error("TIMEOUT after log write committed");
+    }
+    return result;
+  };
+  try { await receipt("scheduledjob", rule); } finally { storage.set = set; }
+  await drain();
+  assert.equal((await getJob(rule.id)).stats.runCount, 1);
+  assert.equal((await readLogs()).length, 0);
+  assert.equal((await storage.get(receiptKey)).statsOnly, true);
 });
 
 await check("clearLogs pages past pending receipts without discarding their counts", async () => {

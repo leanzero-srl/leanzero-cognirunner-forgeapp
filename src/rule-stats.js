@@ -20,6 +20,10 @@ const FAMILIES = { listener: { map: LISTENER_STATS_KEY, prefix: "listener:" }, s
 const queue = () => new Queue({ key: "async-ai-queue" });
 export const logEntryKey = () => `${LOG_ENTRY_PREFIX}${String(1e13 - Date.now()).padStart(13, "0")}_${Math.random().toString(36).slice(2, 10)}`;
 export const pendingRuleStats = (entry) => Boolean(FAMILIES[entry?.statsReceipt?.kind] && !entry.statsReceipt.applied);
+// Keep only deduplication evidence after clearing history. An initial log write
+// can have committed while its response timed out; its bounded retry must still
+// see the same id/applied marker instead of recreating an uncounted receipt.
+const clearedReceipt = (entry) => ({ id: entry.id, statsOnly: true, statsReceipt: { kind: entry.statsReceipt.kind, applied: true } });
 
 export const statsForRule = (stats, rule) => {
   if (!stats) return {};
@@ -68,7 +72,7 @@ export const processRuleStatsReceipt = async ({ receiptKey, kind, clearAfterAppl
   const receipt = entry.statsReceipt;
   if (receipt?.kind !== kind) throw new Error("Statistics receipt family mismatch");
   if (receipt.applied) {
-    if (clearAfterApply) await storage.delete(receiptKey);
+    if (clearAfterApply && !entry.statsOnly) await storage.set(receiptKey, clearedReceipt(entry), LOG_TTL);
     return;
   }
   const family = FAMILIES[kind];
@@ -90,7 +94,8 @@ export const processRuleStatsReceipt = async ({ receiptKey, kind, clearAfterAppl
   // Atomic map + receipt completion: a lost transaction response retries as a
   // no-op instead of counting twice. KVS 1.6.x options are the FOURTH argument.
   const transaction = storage.transact().set(family.map, map);
-  if (entry.statsOnly || clearAfterApply) transaction.delete(receiptKey);
+  if (receipt.remove) transaction.delete(receiptKey);
+  else if (clearAfterApply) transaction.set(receiptKey, clearedReceipt(entry), undefined, LOG_TTL);
   else transaction.set(receiptKey, { ...entry, statsReceipt: { ...receipt, applied: true } }, undefined, LOG_TTL);
   await transaction.execute();
 };

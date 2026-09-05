@@ -1255,10 +1255,10 @@ resolver.define("clearLogs", async ({ context }) => {
     return { success: false, error: "Editor access required" };
   }
   try {
-    // Pending run receipts clear through the same serialized stats consumer: it
-    // counts + deletes atomically. They may remain visible briefly while queued;
-    // clearing history must never discard a completed run from its counters.
-    // Ordinary/applied entries and the legacy array can be deleted immediately.
+    // Run receipts clear through the same serialized stats consumer. It counts
+    // pending runs and removes history, retaining only hidden deduplication
+    // evidence for an initial log write whose response might still be retrying.
+    // Repeated clears leave that evidence to the normal age-based prune/TTL.
     let cursor = null;
     for (let i = 0; i < 40; i++) {
       let query = storage.query()
@@ -1268,7 +1268,9 @@ resolver.define("clearLogs", async ({ context }) => {
       const page = await query.getMany();
       const keys = [];
       for (const row of page.results || []) {
-        if (pendingRuleStats(row.value)) await enqueueRuleStats(row.key, row.value.statsReceipt, true);
+        if (row.value?.statsReceipt) {
+          if (!(row.value.statsOnly && row.value.statsReceipt.applied)) await enqueueRuleStats(row.key, row.value.statsReceipt, true);
+        }
         else keys.push({ key: row.key });
       }
       if (!(page.results || []).length) break;

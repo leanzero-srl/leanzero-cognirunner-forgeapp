@@ -7473,23 +7473,6 @@ resolver.define("fixPostFunctionCode", async ({ payload }) => {
 });
 
 /**
- * Test a static post-function code in dry-run mode.
- * Executes the code with a mock issue context — no actual changes are made.
- */
-/**
- * Test a static post-function code against real or mock Jira data.
- *
- * Modes:
- *   - issueKey provided: fetches REAL issue data, but write operations are
- *     intercepted and logged (dry-run). getIssue and searchJql return real data.
- *   - jql provided (no issueKey): runs the JQL, uses the first result as the test issue.
- *   - neither provided: uses mock data.
- *
- * Write operations (updateIssue, transitionIssue) are ALWAYS dry-run —
- * they log what would happen but never mutate Jira data.
- */
-
-/**
  * Search issues for the issue picker — type-ahead search by key or summary text.
  */
 /**
@@ -7798,7 +7781,8 @@ resolver.define("narrateDryRun", async ({ payload, context }) => {
   }
   const changes = defangFence(String(changesText).slice(0, 4000));
   const count = Math.max(0, Math.min(999, parseInt(total, 10) || 0));
-  const runMode = mode === "live" ? "against a real issue" : "against mock data";
+  const runMode = mode === "live" ? "using a selected issue's live data with writes simulated"
+    : mode === "mock" ? "against legacy mock data" : "with live reads, no current issue and writes simulated";
 
   const sig = hashFacts("narrate\n" + count + "\n" + runMode + "\n" + changes);
   const cacheKey = `narrate_cache:${sig}`;
@@ -8903,6 +8887,8 @@ resolver.define("testLinkPostFunction", async ({ payload }) => {
   }
 });
 
+// Test Run uses the production API with live reads and server-forced simulated writes.
+// Bind a selected issue or the first JQL match; without either, preserve null context.
 resolver.define("testPostFunction", async ({ payload }) => {
   const { code, issueKey, jql, priorVariables } = payload;
   if (!code || typeof code !== "string") {
@@ -8912,13 +8898,12 @@ resolver.define("testPostFunction", async ({ payload }) => {
   const testLogs = [];
   const testChanges = [];
   const startTime = Date.now();
-  const runtime = payload.contextExtras?.runtime;
-  const useRuntimeApi = runtime === "listener" || runtime === "job";
+  const runtime = ["listener", "job"].includes(payload.contextExtras?.runtime) ? payload.contextExtras.runtime : "postfunction";
   let targetError = null;
 
   // Resolve the test issue key
   let resolvedKey = issueKey || null;
-  let mode = useRuntimeApi ? "simulation" : "mock";
+  let mode = "simulation";
 
   if (resolvedKey) {
     mode = "live";
@@ -8942,25 +8927,13 @@ resolver.define("testPostFunction", async ({ payload }) => {
           // The new endpoint doesn't return `total` — just confirm we got a match.
           testLogs.push(`Found: ${resolvedKey}${searchData.nextPageToken ? " (more matches available)" : ""}`);
         } else {
-          if (useRuntimeApi) targetError = "JQL returned no results. Select an issue or adjust the JQL before testing.";
-          else {
-            testLogs.push("JQL returned no results. Falling back to mock data.");
-            mode = "mock";
-          }
+          targetError = "JQL returned no results. Select an issue or adjust the JQL before testing.";
         }
       } else {
-        if (useRuntimeApi) targetError = `JQL search failed (${searchRes.status}). Correct the search before testing.`;
-        else {
-          testLogs.push(`JQL search failed (${searchRes.status}). Falling back to mock data.`);
-          mode = "mock";
-        }
+        targetError = `JQL search failed (${searchRes.status}). Correct the search before testing.`;
       }
     } catch (e) {
-      if (useRuntimeApi) targetError = `JQL search error: ${e.message}`;
-      else {
-        testLogs.push(`JQL search error: ${e.message}. Falling back to mock data.`);
-        mode = "mock";
-      }
+      targetError = `JQL search error: ${e.message}`;
     }
   }
 
@@ -8969,207 +8942,21 @@ resolver.define("testPostFunction", async ({ payload }) => {
     return { success: false, mode: "simulation", issueKey: null, logs: testLogs,
       changes: testChanges, executionTimeMs: Date.now() - startTime };
   }
-  if (mode === "mock") {
-    resolvedKey = "MOCK-1";
-    testLogs.push("Using mock issue data (no issue specified).");
-  } else if (mode === "simulation") {
+  if (mode === "simulation") {
     testLogs.push(`Testing ${runtime} with no current issue. Reads are live; writes are simulated.`);
   }
 
-  // Legacy workflow preview API. Listener/job tests below use the production session
-  // so no-current-issue guards and the complete method surface cannot drift again.
-  // Reads are live when an issue exists, writes are always dry-run.
-  // The dry-run answers "which issue?" the SAME way production does: a key-optional
-  // method defaults to the run's current issue via resolveIssueKey(), so Test Run can
-  // no longer pass code that becomes /issue/undefined in production. Built as a FACTORY
-  // (mirroring createApi) so api.forIssue(KEY) returns a surface whose stubs act on — and
-  // record in testChanges — the NEW key rather than the test issue.
-  const testWhere = payload.contextExtras && payload.contextExtras.runtime ? `this ${payload.contextExtras.runtime} run` : "this run";
-  const makeTestApi = (boundKey) => {
-    const testApi = {
-      getIssue: async (key) => {
-        // Key is OPTIONAL and defaults to the CONTEXT's issue — not the resolvedKey
-        // closure, which falls back to "MOCK-1" and would mask a no-issue run.
-        const lookupKey = resolveIssueKey(key, testApi.context.issueKey, "getIssue", testWhere);
-        // Always try real API if a real key is provided (not MOCK-1)
-        if (lookupKey && lookupKey !== "MOCK-1") {
-          testLogs.push(`getIssue("${lookupKey}") — fetching real data`);
-          try {
-            const res = await api.asApp().requestJira(
-              route`/rest/api/3/issue/${lookupKey}?expand=renderedFields`,
-            );
-            if (!res.ok) {
-              testLogs.push(`getIssue failed (${res.status})`);
-              return { key: lookupKey, fields: {}, error: `HTTP ${res.status}` };
-            }
-            const data = await res.json();
-            testLogs.push(`getIssue("${lookupKey}") — OK (${data.fields?.summary || "no summary"})`);
-            return data;
-          } catch (e) {
-            testLogs.push(`getIssue error: ${e.message}`);
-            return { key: lookupKey, fields: {}, error: e.message };
-          }
-        }
-        testLogs.push(`getIssue("${lookupKey}") — mock data (no real key)`);
-        return {
-          key: lookupKey || "MOCK-1",
-          fields: {
-            summary: "[Mock] Sample issue for testing",
-            status: { name: "To Do", id: "10000" },
-            issuetype: { name: "Task" },
-            priority: { name: "Medium" },
-            description: "This is mock data. Select an issue for real data.",
-            assignee: null,
-            reporter: { displayName: "Test User" },
-            labels: [],
-            created: new Date().toISOString(),
-          },
-        };
-      },
-
-      updateIssue: async (...args) => {
-        const { key, rest: [fields] } = normalizeKeyOptionalArgs("updateIssue", args);
-        const target = resolveIssueKey(key, testApi.context.issueKey, "updateIssue", testWhere);
-        testLogs.push(`updateIssue("${target}", ${JSON.stringify(fields)}) — DRY RUN, no changes made`);
-        testChanges.push({ action: "updateIssue", key: target, fields });
-        return { success: true };
-      },
-
-      searchJql: async (searchJql) => {
-        // Always run real JQL — it's a read operation and the whole point of testing.
-        // Migrated to /rest/api/3/search/jql (legacy endpoint was shut down 2025-10-31).
-        // The new endpoint does not return `total` — log the issues count instead.
-        testLogs.push(`searchJql("${searchJql}") — running real search`);
-        try {
-          const res = await api.asApp().requestJira(
-            route`/rest/api/3/search/jql`,
-            {
-              method: "POST",
-              headers: { "Content-Type": "application/json", Accept: "application/json" },
-              body: JSON.stringify({
-                jql: searchJql,
-                maxResults: 10,
-                fields: ["summary", "status", "issuetype", "priority", "assignee"],
-              }),
-            },
-          );
-          if (!res.ok) {
-            testLogs.push(`searchJql failed (${res.status})`);
-            return { issues: [], total: 0 };
-          }
-          const data = await res.json();
-          const count = data.issues?.length || 0;
-          testLogs.push(`searchJql — returned ${count} issue${count === 1 ? "" : "s"}${data.nextPageToken ? " (more available — use nextPageToken to paginate)" : ""}`);
-          return data;
-        } catch (e) {
-          testLogs.push(`searchJql error: ${e.message}`);
-          return { issues: [], total: 0 };
-        }
-      },
-
-      transitionIssue: async (...args) => {
-        const { key, rest: [transitionId] } = normalizeKeyOptionalArgs("transitionIssue", args);
-        const target = resolveIssueKey(key, testApi.context.issueKey, "transitionIssue", testWhere);
-        testLogs.push(`transitionIssue("${target}", "${transitionId}") — DRY RUN, no transition made`);
-        testChanges.push({ action: "transitionIssue", key: target, transitionId });
-        return { success: true };
-      },
-
-      // Present in production (createApi) — without this stub, api.transitionByName threw
-      // "is not a function" in Test Run for code that works live. The dry-run cannot know
-      // the numeric id, so the ledger records the NAME under the same "transitionIssue"
-      // action production uses (verb counts and chips stay comparable).
-      transitionByName: async (...args) => {
-        const { key, rest: [name] } = normalizeKeyOptionalArgs("transitionByName", args);
-        const target = resolveIssueKey(key, testApi.context.issueKey, "transitionByName", testWhere);
-        testLogs.push(`transitionByName("${target}", "${name}") — DRY RUN, no transition made`);
-        testChanges.push({ action: "transitionIssue", key: target, transitionId: `(by name: ${name})` });
-        return { success: true };
-      },
-
-      log: (...args) => {
-        const msg = args.map((a) => typeof a === "object" ? JSON.stringify(a) : String(a)).join(" ");
-        testLogs.push(msg);
-      },
-
-      // Write-mutators used by premade recipes & richer generated code. All DRY-RUN here
-      // (the Test panel never mutates Jira). createIssue/cloneIssue return a plausible fake
-      // key so chained code (`dup.key`) doesn't NPE during the test.
-      editIssue: async (...args) => {
-        const { key, rest: [update] } = normalizeKeyOptionalArgs("editIssue", args);
-        const target = resolveIssueKey(key, testApi.context.issueKey, "editIssue", testWhere);
-        testLogs.push(`editIssue("${target}", ${JSON.stringify(update)}) — DRY RUN, no changes made`);
-        testChanges.push({ action: "editIssue", key: target, update });
-        return { success: true };
-      },
-      addLabels: async (...labels) => {
-        const flat = labels.flat().filter(Boolean);
-        testLogs.push(`addLabels(${JSON.stringify(flat)}) — DRY RUN`);
-        testChanges.push({ action: "addLabels", key: boundKey, labels: flat });
-        return { success: true };
-      },
-      removeLabels: async (...labels) => {
-        const flat = labels.flat().filter(Boolean);
-        testLogs.push(`removeLabels(${JSON.stringify(flat)}) — DRY RUN`);
-        testChanges.push({ action: "removeLabels", key: boundKey, labels: flat });
-        return { success: true };
-      },
-      addComment: async () => {
-        testLogs.push(`addComment(...) — DRY RUN, no comment posted`);
-        testChanges.push({ action: "addComment", key: boundKey });
-        return { id: "DRYRUN-COMMENT" };
-      },
-      createIssueLink: async (outwardKey, typeName = "Relates") => {
-        testLogs.push(`createIssueLink("${boundKey}" ${typeName} "${outwardKey}") — DRY RUN`);
-        testChanges.push({ action: "createIssueLink", from: boundKey, to: outwardKey, type: typeName });
-        return { success: true };
-      },
-      createIssue: async (fields) => {
-        const fakeKey = `${(boundKey || "MOCK-1").split("-")[0]}-DRYRUN`;
-        testLogs.push(`createIssue(${JSON.stringify(fields)}) — DRY RUN, returns ${fakeKey}`);
-        testChanges.push({ action: "createIssue", fields });
-        return { key: fakeKey, id: "0" };
-      },
-      cloneIssue: async (overrides = {}) => {
-        const fakeKey = `${(boundKey || "MOCK-1").split("-")[0]}-DRYRUN`;
-        testLogs.push(`cloneIssue(${JSON.stringify(overrides)}) — DRY RUN, returns ${fakeKey}`);
-        testChanges.push({ action: "cloneIssue", overrides });
-        return { key: fakeKey, id: "0" };
-      },
-      getProperty: async (propKey) => {
-        // Dry-run: always "not set" so idempotency-marker code takes its happy path during a test.
-        testLogs.push(`getProperty("${propKey}") — DRY RUN, returns null`);
-        return null;
-      },
-      setProperty: async (propKey) => {
-        testLogs.push(`setProperty("${propKey}", ...) — DRY RUN`);
-        testChanges.push({ action: "setProperty", key: boundKey, propKey });
-        return { success: true };
-      },
-
-      // Listener / job steps carry their run context (event, eventType, job facts) so
-      // dry-runs see the same api.context shape as production.
-      // The BOUND key wins over the run-level contextExtras (api.forIssue re-binds it) —
-      // same ordering as production's createApi.
-      context: { ...(payload.contextExtras && typeof payload.contextExtras === "object" ? payload.contextExtras : {}), issueKey: boundKey },
-    };
-    testApi.forIssue = (key) => {
-      if (!key || typeof key !== "string") throw new Error("api.forIssue(key) needs an issue key string");
-      return makeTestApi(key);
-    };
-    return testApi;
-  };
   // Simulation is forced by the server: no payload config can turn a Test Run into a write.
-  const session = useRuntimeApi ? createSandboxSession({
+  const session = createSandboxSession({
     issueKey: resolvedKey,
     config: { simulationMode: true },
     deadline: startTime + 20000,
-    extraContext: payload.contextExtras,
-  }) : null;
-  const testApi = session ? session.createApi() : makeTestApi(resolvedKey);
+    extraContext: { ...(payload.contextExtras || {}), runtime },
+  });
+  const testApi = session.createApi();
   let sessionCollected = false;
   const collectSession = () => {
-    if (!session || sessionCollected) return;
+    if (sessionCollected) return;
     testLogs.push(...session.executionLogs);
     testChanges.push(...session.changes);
     sessionCollected = true;
@@ -14833,6 +14620,12 @@ export const createSandboxSession = ({ issueKey: boundIssueKey = null, config = 
       // Key is OPTIONAL — api.transitionIssue("31") transitions the current issue.
       const { key, rest } = normalizeKeyOptionalArgs("transitionIssue", args);
       const transitionId = rest[0];
+      // Validate before the simulation branch as well as the live write. A missing
+      // id must never produce a successful Test Run for code Jira cannot execute.
+      if (!((typeof transitionId === "string" && transitionId.trim())
+        || (typeof transitionId === "number" && Number.isFinite(transitionId)))) {
+        throw new Error('api.transitionIssue(): transitionId must be a non-empty string or finite number. Use api.transitionByName("Done") when you have a transition name.');
+      }
       const extra = rest[1] || {};
       const target = resolveIssueKey(key, issueKey, "transitionIssue", noIssueWhere);
       if (simulated) {

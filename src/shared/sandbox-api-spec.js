@@ -164,15 +164,15 @@ const results = await api.searchJql('project = PROJ AND labels = "critical"');
   },
   {
     name: "transitionIssue",
-    signature: "api.transitionIssue(issueKey?, transitionId)",
+    signature: "api.transitionIssue(issueKey?, transitionId, extra?)",
     returns: "{ success: true }",
-    summary: "Moves an issue to a different status using the transition ID (a number as string), defaulting to the current issue. Transition IDs cannot be looked up in the sandbox.",
-    detail: "(issueKey?, transitionId) → { success }",
-    example: 'await api.transitionIssue(api.context.issueKey, "31");',
-    promptDoc: `### api.transitionIssue(issueKey?, transitionId) → { success: true }
-Executes a workflow transition. The transitionId is a number (as string). The issue key is OPTIONAL: omit it and the call targets the current issue (\`api.context.issueKey\`); when the run has none (an unscoped scheduled job, a non-issue listener event) it throws and tells you to use \`api.forIssue(key)\`.
-
-**Note:** You cannot look up transitions in the sandbox. If the user provides a transition name, include a comment explaining they need the numeric ID.`,
+    summary: "Executes a transition ID on the issue (defaults to the current issue). extra = { fields, update }. Use transitionByName when you have its name.",
+    detail: "(issueKey?, transitionId, extra?) → { success }",
+    example: 'await api.transitionIssue(api.context.issueKey, "31", { fields: { resolution: { name: "Done" } } });',
+    promptDoc: `### api.transitionIssue(issueKey?, transitionId, extra?) → { success: true }
+Executes a workflow transition. Pass a TRANSITION id, never a status id or status name. The id must be a non-empty string or finite number (e.g. "31" or 31); missing, blank or other types throw before simulation or writing. For a transition name use api.transitionByName instead.
+The issue key is OPTIONAL: api.transitionIssue("31") and api.transitionIssue("31", { fields: { resolution: { name: "Done" } } }) target the current issue. api.transitionIssue("PROJ-123", "31", extra) targets that issue. Without a current issue use an explicit key or api.forIssue("PROJ-123").
+Optional extra.fields and extra.update are sent in the SAME transition call, for example resolution or an ADF comment update. Jira's transition screen and validators decide which fields are accepted. Simulation stages the request without executing Jira validators or changing the issue.`,
   },
   {
     name: "createVersion",
@@ -231,7 +231,7 @@ Forces the current issue into a status even when no normal transition path exist
     summary: "Resolves a transition by NAME on the issue (defaults to the current issue) and executes it — no numeric id needed. extra = { fields, update }.",
     detail: "(issueKey?, name, extra?) → { success }",
     example: 'await api.transitionByName(api.context.issueKey, "Done", { fields: { resolution: { name: "Done" } } });',
-    promptDoc: "### api.transitionByName(issueKey?, name, extra?) → { success }\nLooks up the transition by name on the issue, then runs it. `extra.fields`/`extra.update` set resolution, add a comment, etc. in the same call. The issue key is OPTIONAL: omit it and the call targets the current issue (`api.context.issueKey`); when the run has none (an unscoped scheduled job, a non-issue listener event) it throws and tells you to use `api.forIssue(key)`.",
+    promptDoc: "### api.transitionByName(issueKey?, name, extra?) → { success }\nReads currently available transitions on the issue, matches the transition name case-insensitively (not the destination status name), then runs its id. An unavailable name throws, including during simulation; simulation performs the lookup but skips the write. `extra.fields`/`extra.update` set resolution, add a comment, etc. in the same call. The issue key is OPTIONAL: omit it and the call targets the current issue (`api.context.issueKey`); when the run has none (an unscoped scheduled job, a non-issue listener event) it throws and tells you to use `api.forIssue(key)`.",
   },
   {
     name: "transitionSubtasks",
@@ -456,6 +456,14 @@ When \`api.context.issueKey\` is null (a scheduled job without a JQL scope, or a
 // working methods like api.addComment / api.cloneIssue and told the AI they "throw".)
 export const KNOWN_API_MEMBERS = SANDBOX_API_METHODS.map((m) => m.name);
 
+// Builtin transition guidance consumes these same method docs as prompts and editors.
+// Keep the capability descriptions here, not copied into each seeded knowledge row.
+const methodReference = (names) => SANDBOX_API_METHODS.filter((m) => names.includes(m.name)).map((m) => m.promptDoc).join("\n\n");
+export const TRANSITION_API_REFERENCE = methodReference(["transitionIssue", "transitionByName", "transitionSubtasks", "transitionParent"]);
+export const ARRAY_FIELDS_API_REFERENCE = methodReference(["editIssue", "addLabels", "removeLabels"]);
+export const AGILE_API_REFERENCE = methodReference(["moveToSprint", "moveToBacklog", "rankIssue"]);
+export const API_SIGNATURE_REFERENCE = SANDBOX_API_METHODS.map((m) => `- ${m.signature} → ${m.returns}. ${m.summary}`).join("\n");
+
 export const getApiMethodNames = () =>
   SANDBOX_API_METHODS.filter((m) => m.name !== "context").map((m) => m.name);
 
@@ -580,7 +588,7 @@ export const FIELD_TYPE_TABLE = [
   { fieldType: "Custom date", read: '`"YYYY-MM-DD"` string', write: '`{ customfield_XXXXX: "2025-12-31" }` — strictly YYYY-MM-DD' },
   { fieldType: "Custom datetime", read: "ISO string", write: '`{ customfield_XXXXX: "2025-12-31T15:00:00.000+0000" }` — timezone offset REQUIRED' },
   { fieldType: "Custom number", read: "`issue.fields.customfield_XXXXX` (number)", write: "`{ customfield_XXXXX: 42 }` — a JSON number, never a string" },
-  { fieldType: "Sprint", read: "`.customfield_XXXXX` (array, read-only here)", write: "NOT writable via updateIssue — needs the Jira Agile API (unavailable in this sandbox); tell the user" },
+  { fieldType: "Sprint", read: "`.customfield_XXXXX` (array, read-only here)", write: "NOT writable via updateIssue — use api.moveToSprint(sprintId) or api.moveToBacklog() to change membership" },
 ];
 
 // Write-format hints keyed by the custom-field type short key

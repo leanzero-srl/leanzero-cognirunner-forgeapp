@@ -191,7 +191,6 @@ return { success: true };`)}`;
 
 export default function FunctionBlock({ index, functionData, priorSteps, fields = [], onUpdate, onRemove, isOnly, codegenContext = null, testContext = null }) {
   const runtime = codegenContext?.runtime || testContext?.runtime;
-  const isRuleRuntime = runtime === "listener" || runtime === "job";
   const executionWhen = runtime === "listener" ? "when the listener runs" : runtime === "job" ? "when the job runs" : "on every transition";
   const [isGenerating, setIsGenerating] = useState(false);
   const [showApiRef, setShowApiRef] = useState(false);
@@ -414,7 +413,7 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
       const result = await invoke("narrateDryRun", {
         changesText: buildDryRunFacts(testResult.changes),
         total: testResult.changes.length,
-        mode: testResult.mode || "mock",
+        mode: testResult.mode || "simulation",
       });
       // A newer run/edit/fix superseded this narration while it was in flight — drop it.
       if (narrateTokenRef.current !== token) return;
@@ -1231,10 +1230,10 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
                   </button>
                 </div>
                 <p className="hint" style={{ marginTop: "4px" }}>
-                  JQL searches always run against real Jira data. Writes are always safe (dry run).
+                  Reads use real Jira data; writes are simulated. Jira's write permissions, transition screens and validators are not exercised.
                   {testTarget.trim()
                     ? ` Using ${testTarget} as api.context.issueKey.`
-                    : isRuleRuntime ? " No current issue: api.context.issueKey is null. Select an issue to test issue-bound actions." : " api.context.issueKey will be MOCK-1 — select an issue to set a real one."
+                    : " No current issue: api.context.issueKey is null. Select an issue to test issue-bound actions."
                   }
                 </p>
               </div>
@@ -1254,7 +1253,7 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
                       {testResult.success ? "PASS" : "FAIL"}
                     </span>
                     <span className="test-result-meta">
-                      {testResult.mode === "simulation" ? (testResult.issueKey ? `Live reads against ${testResult.issueKey} · writes staged` : "Live reads · no current issue · writes staged") : testResult.mode === "live" ? `Tested against ${testResult.issueKey}` : "Mock data"}
+                      {testResult.issueKey ? `Live reads against ${testResult.issueKey} · writes staged` : "Live reads · no current issue · writes staged"}
                       {testResult.executionTimeMs ? ` — ${testResult.executionTimeMs}ms` : ""}
                     </span>
                     {!testResult.success && (

@@ -6,17 +6,19 @@
  */
 
 // OFFLINE regression of the in-UI dry-run (`testPostFunction`) for F-004/F-008/F-017.
-// The dev test-state hook does NOT allowlist testPostFunction, so this drives the very
-// same src/index.js resolver locally with @forge/api mocked. Run:
+// Drives the real src/index.js resolver with @forge/api mocked. Live browser tests
+// must also call the deployed resolver and independently check that Jira is unchanged. Run:
 //   node --import ./lib/register-mocks-index.mjs scripts/testpf-dryrun-probe.mjs
 import forgeApi from "@forge/api";
-import { handler } from "../../src/index.js";
+import { handler, createSandboxSession } from "../../src/index.js";
+import { getApiMethodNames } from "../../src/shared/sandbox-api-spec.js";
 
 let pass = 0; let fail = 0;
 const ok = (c, m) => { if (c) { pass++; console.log("  ✓ " + m); } else { fail++; console.log("  ✗ " + m); } };
 
 forgeApi.__respond((path) => {
   if (String(path).includes("/issue/MISSING-404")) return forgeApi.__response(404, { errorMessages: ["Issue not found"] });
+  if (String(path).endsWith("/transitions")) return forgeApi.__response(200, { transitions: [{ id: "31", name: "Done" }] });
   const m = String(path).match(/\/rest\/api\/3\/issue\/([A-Z]+-\d+)/);
   if (m) return forgeApi.__response(200, { key: m[1], id: "1", fields: { summary: `real ${m[1]}`, status: { name: "To Do" }, labels: [] } });
   return forgeApi.__response(404, { errorMessages: ["mock: not found"] });
@@ -31,7 +33,7 @@ const main = async () => {
   let r = await testPF({ issueKey: "ABC-1", code: `const i = await api.getIssue(); await api.updateIssue({ labels: ["x"] }); await api.editIssue({ labels: [{ add: "y" }] }); return i.key;` });
   ok(r.success && r.mode === "live", `live mode with a selected issue: success=${r.success} mode=${r.mode}`);
   ok(r.changes.every((c) => c.key === "ABC-1"), `key-omitted writes recorded against ABC-1: ${JSON.stringify(r.changes)}`);
-  ok(r.logs.some((l) => /getIssue\("ABC-1"\) — OK \(real ABC-1\)/.test(l)), "getIssue() with no key fetched the real selected issue");
+  ok(r.logs.includes("Return value: ABC-1"), "getIssue() with no key fetched the real selected issue");
   ok(!JSON.stringify(r.changes).includes("undefined"), "no `fields: undefined` — the arguments shifted");
 
   // 2. forIssue re-binds
@@ -40,15 +42,15 @@ const main = async () => {
 
   // 2b. forIssue also re-binds the READ (this is what the "not the resolvedKey closure" change buys)
   r = await testPF({ issueKey: "ABC-1", code: `const i = await api.forIssue("ZZZ-9").getIssue(); return i.key;` });
-  ok(r.success && r.logs.some((l) => /getIssue\("ZZZ-9"\) — OK \(real ZZZ-9\)/.test(l)), `forIssue("ZZZ-9").getIssue() reads ZZZ-9, not the selected test issue: ${r.logs.join(" | ").slice(0, 200)}`);
+  ok(r.success && r.logs.includes("Return value: ZZZ-9"), `forIssue("ZZZ-9").getIssue() reads ZZZ-9, not the selected test issue: ${r.logs.join(" | ").slice(0, 200)}`);
 
   // 3. transitionByName exists at all (it used to be missing from testApi -> "is not a function")
   r = await testPF({ issueKey: "ABC-1", code: `await api.transitionByName("Done"); return 1;` });
-  ok(r.success && r.changes.some((c) => c.key === "ABC-1" && /by name: Done/.test(String(c.transitionId))), `api.transitionByName is a function in the dry-run and targets ABC-1: ${JSON.stringify(r.changes)}`);
+  ok(r.success && r.changes.some((c) => c.key === "ABC-1" && c.transitionId === "31"), `api.transitionByName is a function in the dry-run and targets ABC-1: ${JSON.stringify(r.changes)}`);
 
   // 3b. explicit keys still win, and the arity split is right for every shape
   r = await testPF({ issueKey: "ABC-1", code: `await api.updateIssue("ABC-2", { labels: ["e"] }); await api.transitionIssue("31"); await api.transitionIssue("ABC-2", "41"); await api.editIssue("ABC-2", { labels: [{ add: "f" }] }); return 1;` });
-  ok(r.success && JSON.stringify(r.changes) === JSON.stringify([
+  ok(r.success && JSON.stringify(r.changes.map(({ simulated, extra, ...c }) => c)) === JSON.stringify([
     { action: "updateIssue", key: "ABC-2", fields: { labels: ["e"] } },
     { action: "transitionIssue", key: "ABC-1", transitionId: "31" },
     { action: "transitionIssue", key: "ABC-2", transitionId: "41" },
@@ -63,15 +65,14 @@ const main = async () => {
   r = await testPF({ issueKey: "ABC-1", code: `await api.updateIssue("", { labels: ["nope"] }); return 1;` });
   ok(!r.success && r.logs.some((l) => /empty string/.test(l)) && r.changes.length === 0, `explicit "" throws in the dry-run too and records no change: ${r.logs.filter((l) => /ERROR/.test(l))}`);
 
-  // 5. THE QUESTION: no issue selected (mock mode) — does the dry-run fail, or use MOCK-1?
+  // No runtime may invent a successful MOCK-1 issue when none was selected.
   r = await testPF({ code: `const i = await api.getIssue(); await api.updateIssue({ labels: ["z"] }); return i.key;` });
-  console.log(`  · mock mode: success=${r.success} mode=${r.mode} issueKey=${r.issueKey} changes=${JSON.stringify(r.changes)}`);
-  ok(r.mode === "mock", "no issue selected -> mode 'mock'");
-  ok(r.issueKey === "MOCK-1" && r.success === true && r.changes.every((c) => c.key === "MOCK-1"),
-    `CHARACTERISED: with no issue selected the dry-run still binds MOCK-1 and PASSES (success=${r.success}, changes on ${JSON.stringify(r.changes.map((c) => c.key))})`);
+  ok(!r.success && r.mode === "simulation" && r.issueKey === null && r.changes.length === 0, "workflow without issue fails instead of inventing MOCK-1");
+  r = await testPF({ code: `return { runtime: api.context.runtime, issueKey: api.context.issueKey, answer: 42 };` });
+  ok(r.success && r.issueKey === null && r.logs.includes('Return value: {"runtime":"postfunction","issueKey":null,"answer":42}'), "pure workflow code works without an issue and sees postfunction context");
 
   // Listener/job tests use the runtime API with real reads and server-forced simulation.
-  for (const runtime of ["job", "listener"]) {
+  for (const runtime of ["postfunction", "job", "listener"]) {
     const contextExtras = { runtime, issueKey: null, eventType: "test:event", event: { project: { key: "ABC" } }, job: { name: "Test job" } };
     for (const code of [`await api.getIssue();`, `await api.addComment("test");`, `await api.setAssignee("test-account");`]) {
       forgeApi.__calls.length = 0;
@@ -106,7 +107,7 @@ const main = async () => {
     r = await testPF({ issueKey: "ABC-1", contextExtras, code: `await api.addComment("test"); const circular = {}; circular.self = circular; return circular;` });
     ok(!r.success && r.changes.length === 1 && r.logs.filter((l) => /\[SIMULATION\]/.test(l)).length === 1, `${runtime}: unserializable return does not duplicate session evidence`);
   }
-  for (const runtime of ["job", "listener"]) {
+  for (const runtime of ["postfunction", "job", "listener"]) {
     for (const scenario of ["empty", "http", "network"]) {
       forgeApi.__respond(() => {
         if (scenario === "network") throw new Error("network unavailable");
@@ -121,7 +122,56 @@ const main = async () => {
   }
   forgeApi.__respond(() => forgeApi.__response(200, { issues: [] }));
   r = await testPF({ jql: "project = ABC", code: `return (await api.getIssue()).key;` });
-  ok(r.success && r.mode === "mock" && r.issueKey === "MOCK-1", "legacy workflow JQL fallback remains unchanged");
+  ok(!r.success && r.mode === "simulation" && r.issueKey === null, "workflow JQL never falls back to invented data");
+
+  // The complete spec surface is present in every Test Run, including workflow previews.
+  r = await testPF({ issueKey: "ABC-1", code: `return ${JSON.stringify(getApiMethodNames())}.filter((name) => typeof api[name] !== "function");` });
+  ok(r.success && r.logs.includes("Return value: []"), "workflow Test Run exposes every real sandbox method");
+  for (const runtime of [undefined, "listener", "job"]) {
+    forgeApi.__respond((path) => path.includes("/properties/")
+      ? forgeApi.__response(200, { value: { alreadyRan: true } })
+      : forgeApi.__response(403, { errorMessages: ["forbidden"] }));
+    r = await testPF({ issueKey: "ABC-1", contextExtras: { runtime }, code: `const marker = await api.getProperty("marker"); if (!marker?.alreadyRan) await api.addComment("duplicate"); return marker;` });
+    ok(r.success && r.changes.length === 0 && r.logs.includes('Return value: {"alreadyRan":true}'), `${runtime || "workflow"}: existing property gates actions using real reads`);
+    r = await testPF({ issueKey: "ABC-1", contextExtras: { runtime }, code: `await api.getIssue(); await api.addComment("must not run");` });
+    ok(!r.success && r.changes.length === 0 && r.logs.includes("ERROR: getIssue failed: 403"), `${runtime || "workflow"}: forbidden issue read fails rather than returning invented fields`);
+    r = await testPF({ issueKey: "ABC-1", contextExtras: { runtime }, code: `await api.searchJql("bad query"); await api.addComment("must not run");` });
+    ok(!r.success && r.changes.length === 0 && r.logs.includes("ERROR: searchJql failed: 403"), `${runtime || "workflow"}: script search errors fail rather than returning empty success`);
+  }
+  // Every supported transition arity preserves fields/update and exact targeting.
+  const extra = { fields: { resolution: { name: "Done" } }, update: { comment: [{ add: { body: { type: "doc", version: 1, content: [] } } }] } };
+  forgeApi.__respond((path, opts) => forgeApi.__response(200, opts.method === "POST" ? {} : { transitions: [{ id: "31", name: "Done" }] }));
+  for (const simulated of [true, false]) {
+    for (const method of ["transitionIssue", "transitionByName"]) {
+      for (const value of method === "transitionIssue" ? ["31", 31] : ["dOnE"]) {
+        for (const args of [[value], [value, extra], ["ABC-2", value], ["ABC-2", value, extra]]) {
+          forgeApi.__calls.length = 0;
+          const session = createSandboxSession({ issueKey: "ABC-1", config: { simulationMode: simulated } });
+          await session.createApi()[method](...args);
+          const target = args[0] === "ABC-2" ? "ABC-2" : "ABC-1";
+          const expectsExtra = args.at(-1) === extra;
+          const posts = forgeApi.__calls.filter((c) => c.opts.method === "POST");
+          const body = posts[0] && JSON.parse(posts[0].opts.body);
+          ok(session.changes.length === 1 && session.changes[0].key === target && String(session.changes[0].transitionId) === "31"
+            && (simulated ? posts.length === 0 && JSON.stringify(session.changes[0].extra) === JSON.stringify(expectsExtra ? extra : {})
+              : posts.length === 1 && posts[0].path.endsWith(`/issue/${target}/transitions`) && JSON.stringify(body) === JSON.stringify({ transition: { id: "31" }, ...(expectsExtra ? extra : {}) })),
+            `${simulated ? "simulated" : "live"} ${method} arity ${args.length}, ${typeof value}, target ${target}: fields/update preserved`);
+        }
+      }
+    }
+  }
+
+  // Invalid transition identifiers must fail before recording simulation or issuing a write.
+  for (const simulated of [true, false]) {
+    for (const transitionId of [undefined, null, "", "   ", {}, [], false, NaN, Infinity]) {
+      forgeApi.__calls.length = 0;
+      const session = createSandboxSession({ issueKey: "ABC-1", config: { simulationMode: simulated } });
+      let error;
+      try { await session.createApi().transitionIssue("ABC-1", transitionId, {}); } catch (e) { error = e; }
+      ok(error && /transition.*id/i.test(error.message) && session.changes.length === 0 && forgeApi.__calls.length === 0,
+        `transition id ${String(transitionId)} rejects before ${simulated ? "simulation" : "write"}`);
+    }
+  }
 
   console.log(`\n  ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);

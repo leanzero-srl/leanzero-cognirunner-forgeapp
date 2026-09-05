@@ -194,15 +194,15 @@ ok(n3.key === undefined && n3.rest[0] === "Done" && n3.rest[1], "transitionByNam
 const n4 = norm("transitionByName", "PROJ-1", "Done", { fields: {} });
 ok(n4.key === "PROJ-1" && n4.rest[0] === "Done" && n4.rest[1], "transitionByName(key, name, extra) keeps all three");
 
-// Both sandboxes must ROUTE through the helper — production createApi() and the in-UI
-// dry-run testApi (which resolves against api.context.issueKey, never the MOCK-1 fallback).
+// Test Run must reuse the production session, with no legacy factory to drift.
+const testResolver = indexSrc.slice(indexSrc.indexOf('resolver.define("testPostFunction"'), indexSrc.indexOf('// ═══════════════════════ LISTENERS'));
+ok(testResolver.includes("const session = createSandboxSession({") && testResolver.includes("config: { simulationMode: true }"), "Test Run always uses the production session with server-forced simulation");
+ok(!testResolver.includes("makeTestApi") && !testResolver.includes('"MOCK-1"'), "no second API factory or invented issue survives in Test Run");
 for (const n of ISSUE_KEY_OPTIONAL_METHODS) {
   ok(indexSrc.includes(`resolveIssueKey(key, issueKey, "${n}"`), `createApi().${n} resolves the issue through resolveIssueKey`);
-  ok(indexSrc.includes(`resolveIssueKey(key, testApi.context.issueKey, "${n}"`), `dry-run testApi.${n} resolves through resolveIssueKey against api.context.issueKey`);
-  // ...and the multi-argument ones must also SHIFT their arguments in BOTH sandboxes.
   if (n !== "getIssue") {
     const uses = indexSrc.split(`normalizeKeyOptionalArgs("${n}", args)`).length - 1;
-    ok(uses === 2, `${n} normalizes its arguments in BOTH createApi and the dry-run testApi (found ${uses}/2)`);
+    ok(uses === 1, `${n} argument normalization has one production home, reused by Test Run`);
   }
 }
 

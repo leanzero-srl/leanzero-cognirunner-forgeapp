@@ -29,7 +29,9 @@
  *   a multi-word tag to be present in the prompt).
  */
 
-export const SKILL_SEED_VERSION = 4;
+import { TRANSITION_API_REFERENCE, ARRAY_FIELDS_API_REFERENCE, AGILE_API_REFERENCE } from "./sandbox-api-spec.js";
+
+export const SKILL_SEED_VERSION = 5;
 
 export const BUILTIN_SKILLS = [
   {
@@ -243,17 +245,18 @@ if (results.issues && results.issues.length > 0) {
     description: "Moving issues to another status — transition ids vs status names, idempotent pre-checks, post-transition verification, and the resolution-on-close caveat.",
     tags: ["transition", "status", "move", "close", "resolve", "reopen", "done", "escalate"],
     operationTypes: ["rest_api_internal"],
-    instructions: `Status is READ-ONLY through api.updateIssue — { status: ... } never works. The only way to change status is api.transitionIssue(issueKey, transitionId).
-- transitionId is a TRANSITION id (a number as a string, e.g. "31"), NOT a status id and NOT a status name. Transition ids are workflow-specific: the "Done" transition has different ids in different workflows.
-- The sandbox CANNOT look up transitions. The full REST API discovers them via GET /rest/api/3/issue/{key}/transitions (returns only the transitions valid from the current status, each { id, name, to }) — unavailable here. If the user gave a name ("close it"), ask for the numeric id in a code comment; admins find it in the workflow editor (Text mode) or via that endpoint.
+    instructions: `Status is READ-ONLY through api.updateIssue — { status: ... } never works.
+${TRANSITION_API_REFERENCE}
+
+Transition ids are workflow-specific; prefer a transition name when the id is not known.
 - A transition only succeeds from a status where it is defined — calling it from the wrong status errors. Make it idempotent: read status first and skip when the issue is already in the target status.
 - Verify after transitioning: re-read with api.getIssue and api.log the new status.name. Workflow conditions and validators can still reject a transition even with a correct id.
-- Resolution is normally settable only on a transition screen (REST: POST .../transitions with fields.resolution). api.transitionIssue cannot pass fields — if the target transition requires a resolution, a validator may reject the call; otherwise it succeeds with the resolution left EMPTY unless a workflow post-function sets one. Verify and log the resolution after closing issues.
+- Verify and log the resolution after closing issues; an accepted transition does not guarantee that the workflow populated it. Test Run simulates writes, so a re-read during a test still shows the original status and resolution.
 - Do not chain several transitions in one step to "walk" an issue through the workflow — each hop can be blocked by conditions; do one hop and verify.
 - This post-function runs AFTER its own transition completed — transitioning the CURRENT issue again means a second hop. Usually the intent is to transition OTHER issues: subtasks, linked issues, duplicates.`,
-    examples: `// Close duplicate-linked issues (transition id "31" supplied by the user),
+    examples: `// Close duplicate-linked issues using the named transition available in each workflow,
 // idempotently and with post-verification.
-const TARGET_TRANSITION_ID = "31"; // from the workflow editor — ids are workflow-specific
+const TARGET_TRANSITION_NAME = "Done"; // transition name, which may differ from the destination status
 const TARGET_STATUS = "Done";
 const issue = await api.getIssue(api.context.issueKey);
 for (const link of issue.fields.issuelinks || []) {
@@ -263,11 +266,11 @@ for (const link of issue.fields.issuelinks || []) {
   const dup = await api.getIssue(other.key);
   if (dup.fields.status.name === TARGET_STATUS) { api.log(other.key + " already " + TARGET_STATUS); continue; }
   try {
-    await api.transitionIssue(other.key, TARGET_TRANSITION_ID);
+    await api.transitionByName(other.key, TARGET_TRANSITION_NAME);
     const after = await api.getIssue(other.key);
     api.log(other.key + " is now: " + after.fields.status.name);
   } catch (err) {
-    api.log("Transition failed on " + other.key + " (wrong id for this workflow, or blocked by a condition): " + err.message);
+    api.log("Transition failed on " + other.key + " (transition unavailable or blocked by a validator): " + err.message);
   }
 }`,
   },
@@ -311,12 +314,15 @@ try {
   },
   {
     id: "builtin_skill_array_fields",
-    name: "Labels, Components & Versions: Read-Modify-Write",
+    name: "Labels, Components & Versions: Safe Array Updates",
     category: "Fields & Data",
-    description: "Adding or removing one label/component/version without wiping the rest — updateIssue overwrites whole arrays, so always read-modify-write, deduplicate, and skip no-op writes.",
+    description: "Adding or removing labels, components and versions without wiping the rest — use additive operations for individual changes and replace arrays only when intended.",
     tags: ["label", "labels", "component", "components", "fixversion", "version", "tag", "append", "remove"],
     operationTypes: ["rest_api_internal"],
-    instructions: `api.updateIssue SETS array fields — { labels: [...] } replaces the ENTIRE list. (The REST update-verb form, PUT /rest/api/3/issue/{key} with { update: { labels: [{ add: "x" }] } }, appends atomically — but the sandbox only sets fields.) Therefore: read-modify-write, every time.
+    instructions: `api.updateIssue SETS array fields — { labels: [...] } replaces the ENTIRE list. Use additive operations for individual changes:
+${ARRAY_FIELDS_API_REFERENCE}
+
+When replacing the complete array intentionally:
 1. const issue = await api.getIssue(key)
 2. derive the new array from the current one
 3. write the full array back in ONE updateIssue call.
@@ -324,26 +330,16 @@ try {
 - Components: [{ id: "10001" }] or [{ name: "Backend" }]. The component must already exist in the project — an unknown name is a 400 (components are not auto-created). When writing back fetched components, map to bare ids: issue.fields.components.map(c => ({ id: c.id })).
 - fixVersions / versions: same pattern — [{ id: "..." }] or [{ name: "..." }]; the version must exist in the project.
 - Multi-select custom fields behave identically: [{ value: "A" }, { value: "B" }] overwrites all options.
-- Removal = write the filtered array: labels.filter(l => l !== "obsolete").
+- For an intentional whole-array replacement, filter the fetched array and set the result. Avoid this pattern for individual add/remove operations when concurrent rules may modify the same field.
 - api.searchJql hits do NOT include labels/components — api.getIssue(hit.key) before modifying those on a search result.
 - Idempotency: check membership first and skip the update entirely when nothing changes — saves budget and avoids pointless notifications and history entries.`,
-    examples: `// Add "triaged", remove "needs-triage", preserve everything else — one write, idempotent
-const key = api.context.issueKey;
-const issue = await api.getIssue(key);
-const current = issue.fields.labels || [];
-const next = Array.from(new Set([...current.filter(l => l !== "needs-triage"), "triaged"]));
-const changed = next.length !== current.length || next.some(l => !current.includes(l));
-if (!changed) { api.log("Labels already correct: " + current.join(", ")); return current; }
-await api.updateIssue(key, { labels: next });
-api.log("Labels: [" + current.join(", ") + "] -> [" + next.join(", ") + "]");
+    examples: `// Add/remove labels without overwriting other labels.
+await api.editIssue(api.context.issueKey, { labels: [{ add: "triaged" }, { remove: "needs-triage" }] });
+api.log("Requested triaged addition and needs-triage removal");
 
-// Add a component without dropping existing ones (the component must exist in the project)
-const comps = (issue.fields.components || []).map(c => ({ id: c.id }));
-if (!(issue.fields.components || []).some(c => c.name === "Backend")) {
-  await api.updateIssue(key, { components: [...comps, { name: "Backend" }] });
-  api.log("Added component Backend");
-}
-return next;`,
+// Add a component atomically; the component must already exist in this project.
+await api.editIssue(api.context.issueKey, { components: [{ add: { name: "Backend" } }] });
+api.log("Requested Backend component addition");`,
   },
   {
     id: "builtin_skill_dates",
@@ -420,7 +416,7 @@ return { skipped: false, priority: prio };`,
 - JQL alternative (also reaches non-subtask children in newer hierarchies): parent = PROJ-123 finds an issue's children; remember api.searchJql returns at most 20.
 - Roll-up from a just-transitioned subtask: getIssue(me) -> me.fields.parent.key -> getIssue(parent) -> inspect parent.fields.subtasks. Your own subtask already shows its NEW status there, because post-functions run after the transition completes.
 - Workflows differ per issue type — compare against an explicit done-status list instead of assuming one name: const DONE = ["Done", "Closed", "Resolved"]; DONE.includes(st.fields.status.name).
-- Transitioning the parent needs a transition id valid in the PARENT's workflow (often different from the subtask's) — it must come from the user; verify by re-reading the parent afterwards.
+- The parent can use a different workflow from the subtask. Use api.transitionParent(transitionName) or api.transitionByName(parent.key, transitionName) to resolve the parent's available transition; verify by re-reading the parent afterwards.
 - Copying fields down to subtasks: read the parent once, then one coalesced updateIssue per child, sequentially.`,
     examples: `// From a just-completed subtask: when ALL siblings are done, flag the parent
 const DONE_STATUSES = ["Done", "Closed", "Resolved"];
@@ -437,7 +433,7 @@ if (open.length > 0) {
   return { parentReady: false };
 }
 api.log("All " + subs.length + " subtasks of " + parent.key + " are done");
-// Flag the parent (transitioning it instead would need the PARENT workflow's transition id from the user)
+// Flag the parent; api.transitionParent(transitionName) can instead run a named transition on it.
 const labels = Array.from(new Set([...(parent.fields.labels || []), "subtasks-complete"]));
 await api.updateIssue(parent.key, { labels });
 return { parentReady: true, parent: parent.key };`,
@@ -487,26 +483,22 @@ return { ok, failed, remaining };`,
     description: "What is and is not writable on agile boards — sprint moves (api.moveToSprint/moveToBacklog) and rank (api.rankIssue) ARE available; story points are a plain number field; epic re-parenting is the honest limit.",
     tags: ["sprint", "epic", "rank", "backlog", "board", "agile", "story-points", "points", "estimate"],
     operationTypes: ["rest_api_internal", "work_item_query"],
-    instructions: `Agile-managed fields are the most common silent failure in generated code. Ground truth:
+    instructions: `Agile-managed fields are the most common silent failure in generated code. Available sandbox methods:
+${AGILE_API_REFERENCE}
+
+Field constraints:
 - Sprint is NOT writable via api.updateIssue (the field is read-only), BUT sprint membership IS manageable from the sandbox: api.moveToSprint(sprintId) and api.moveToBacklog() call the Agile API for you. READING is fine too: the sprint custom field is an array (entries expose name and state).
 - Rank is Lexorank — NEVER write the Rank custom field directly, but api.rankIssue(relativeToKey, opts?) performs the Lexorank reorder for you (it calls PUT /rest/agile/1.0/issue/rank internally). Use it instead of a field write.
 - Epic membership / re-parenting differs between company-managed and team-managed projects and is not reliably writable here — reading issue.fields.parent is safe; treat re-parenting as unavailable.
 - Story points ARE writable: it is an ordinary custom NUMBER field (commonly customfield_10016, but the id is instance-specific — use the field configured for this step). Write a JSON number: { customfield_10016: 5 } — never "5".
 - JQL CAN filter agile concepts even where writes cannot change them: sprint in openSprints(), sprint is EMPTY, "Epic Link" = PROJ-100 (company-managed) or parent = PROJ-100 (newer hierarchy).
 Sprint moves (api.moveToSprint/moveToBacklog) and re-ranking (api.rankIssue) ARE available — use them directly. The genuine limit is EPIC re-parenting (differs by project type): do the writable part, add a comment naming the endpoint a full implementation would need, and api.log the intended change so a human or external automation can act on it.`,
-    examples: `// Asked: "move this to the active sprint and set story points to 5"
-const key = api.context.issueKey;
-const issue = await api.getIssue(key);
-// Story points: an ordinary number custom field — writable (JSON number, never a string)
-await api.updateIssue(key, { customfield_10016: 5 });
-api.log("Story points set to 5");
-// Sprint move: NOT possible via updateIssue — would need the Jira Agile API:
-//   POST /rest/agile/1.0/sprint/{sprintId}/issue  (unavailable in this sandbox)
-const sprints = issue.fields.customfield_10020; // sprint field: read-only array here, id is instance-specific
-api.log("Current sprint field value:", sprints || "none");
-const labels = Array.from(new Set([...(issue.fields.labels || []), "sprint-move-requested"]));
-await api.updateIssue(key, { labels });
-api.log("NOTE: sandbox cannot move issues between sprints — flagged with 'sprint-move-requested' instead.");
-return { storyPoints: 5, sprintMoved: false };`,
+    examples: `// Use the sprint id supplied by the admin; ids and custom field ids vary by site.
+const TARGET_SPRINT_ID = 42; // replace with the intended sprint id
+await api.updateIssue(api.context.issueKey, { customfield_10016: 5 }); // replace with this site's Story points field
+await api.moveToSprint(TARGET_SPRINT_ID);
+api.log("Requested 5 story points and sprint membership", TARGET_SPRINT_ID);
+// Test Run stages writes. Inspect the proposed changes there; re-read Jira after a real run.
+return { requestedStoryPoints: 5, requestedSprintId: TARGET_SPRINT_ID };`,
   },
 ];

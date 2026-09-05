@@ -83,3 +83,4 @@ console.log(`\n=== ${passed}/${results.length} passed ===`);
 console.log("NOTE: the 401 (bad-bearer-with-valid-token), 413 (oversize), 415 (forbidden-ext) and");
 console.log("single-use/replay paths require a REAL minted token (live docReader flow) — deferred to M3.");
 writeResult("mcp-attach-security.json", { passed, total: results.length, results, note: "404/json/no-leak battery; 401/413/415/replay need a live mint (M3)" });
+if (passed !== results.length) process.exitCode = 1;

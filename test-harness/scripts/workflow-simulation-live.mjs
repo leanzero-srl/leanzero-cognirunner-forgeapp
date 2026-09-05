@@ -37,6 +37,29 @@ try {
   const run = async (name, code, success, expected, target = "") => {
     await editor.fill(code);
     await frame.locator(".test-panel input").fill(target);
+    const verifyPointer = name === "created and cloned targets remain distinct";
+    if (verifyPointer) {
+      // Re-focusing the previously validated key reopens cached suggestions.
+      // This is the real precondition that used to move Run Test during a click.
+      await frame.locator(".issue-picker-dropdown").waitFor({ state: "visible" });
+      await frame.locator(".test-panel").evaluate(panel => { panel.scrollTop = panel.scrollHeight; });
+      await frame.locator("body").evaluate(body => {
+        body.__cgrPointer = [];
+        for (const type of ["mousedown", "mouseup", "click"]) {
+          body.addEventListener(type, event => {
+            const button = body.querySelector(".btn-run-test");
+            const panel = body.querySelector(".test-panel");
+            body.__cgrPointer.push({
+              type,
+              target: event.target.closest("button")?.className || event.target.className,
+              buttonTop: button.getBoundingClientRect().top,
+              panelScrollTop: panel.scrollTop,
+              dropdownOpen: !!body.querySelector(".issue-picker-dropdown"),
+            });
+          }, { once: true, capture: true });
+        }
+      });
+    }
     const responsePromise = page.waitForResponse(r => (r.request().postData() || "").includes('"testPostFunction"'), { timeout: 40000 });
     await frame.locator(".btn-run-test").click();
     const response = await responsePromise;
@@ -48,6 +71,19 @@ try {
     const text = await frame.locator(".test-result").innerText();
     assert.match(text, expected, name + ": " + text);
     assert.doesNotMatch(text, /MOCK-1|Mock data/, name);
+    if (verifyPointer) {
+      const pointer = await frame.locator("body").evaluate(body => body.__cgrPointer);
+      const down = pointer.find(e => e.type === "mousedown");
+      const up = pointer.find(e => e.type === "mouseup");
+      const click = pointer.find(e => e.type === "click");
+      assert.ok(down.dropdownOpen && down.panelScrollTop > 0,
+        "positive control: dropdown open and inner test panel scrolled at mouse down");
+      assert.equal(down.target, "btn-run-test");
+      assert.equal(up.target, "btn-run-test");
+      assert.equal(click.target, "btn-run-test");
+      assert.equal(down.buttonTop, up.buttonTop, "button stays under pointer through mouseup");
+      evidence.pointer = pointer;
+    }
     evidence.checks.push({ name, text, response: data });
     console.log("PASS", name);
   };
@@ -64,7 +100,7 @@ try {
   await run("created and cloned targets remain distinct", `const a=await api.createIssue({project:{key:'JT'},issuetype:{id:'${type.id}'},summary:'staged child'}); const b=await api.cloneIssue(); if(!a.key||!b.key||a.key===b.key||a.key===api.context.issueKey) throw Error('wrong staged identity'); await api.updateIssue(a.key,{labels:['child']}); await api.forIssue(b.key).addLabels('clone'); return 'distinct staged targets';`, true, /distinct staged targets/, key);
   for (const theme of ["light", "dark"]) {
     await frame.locator("html").evaluate((html, theme) => { html.setAttribute("data-color-mode", theme); html.setAttribute("data-theme", `${theme}:${theme}`); }, theme);
-    await frame.locator(".test-panel").screenshot({ path: out + `workflow-${theme}.png` });
+    await frame.locator(".test-panel").screenshot({ path: out + `workflow-${theme}.png`, animations: "disabled" });
   }
   assert.deepEqual((await getIssue(key, fields)).fields, before.fields);
   assert.deepEqual((await get(`/rest/api/3/issue/${key}/properties/${tag}`)).value, { exists: true });

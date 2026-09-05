@@ -126,21 +126,23 @@ async function listeners() {
 }
 async function jobs() {
  const T=state.tag;
- const commentBaseline={J01:(await markerComments(state.ledger,T+'-J01')).length};
+ const auditBefore=await markerComments(state.ledger,T+'-J01');
+ const commentBaseline={J01:auditBefore.length};
  for(const code of ['J09','J10'])commentBaseline[code]=(await markerComments(state.ai,T+'-'+code+'-ack')).length;
  state.jobCommentBaseline=commentBaseline;save();
  // Every job is first exercised through the public queueing Run endpoint, sequentially.
  for(const item of state.jobs) await attempt(item.code+' manual',async()=>{
   const before=await markerComments(state.ai,T+'-'+item.code+'-ack');
+  if(['J09','J10'].includes(item.code)){await put(`/rest/api/3/issue/${state.ai}`,{update:{labels:[{remove:T+'-'+item.code}]}});assert.ok(!(await getIssue(state.ai,['labels'])).fields.labels.includes(T+'-'+item.code));}
   const queued=await rulesApi.jobs.run(item.id);assert.equal(queued.status,202);assert.ok(queued.body.taskId);item.taskId=queued.body.taskId;save();
   const task=await poll(async()=>must(await rulesApi.task(item.taskId),'task'),v=>['done','error'].includes(v.status));item.task=task;save();assert.equal(task.status,'done');
   const fail=['J05','J06','J08'].includes(item.code);assert.equal(task.result.success,!fail,JSON.stringify(task.result).slice(0,900));
   const ls=await poll(()=>logs(item.id),x=>x.some(l=>l.manual===true));item.logs=ls;save();
-  if(item.code==='J01')assert.equal((await markerComments(state.ledger,T+'-J01')).length,commentBaseline.J01+1);
-  if(['J02','J03'].includes(item.code)){assert.equal(task.result.issues.length,2);for(const key of [state.A,state.B])assert.equal((await prop(key,item.code)).key,key);assert.equal(await prop(state.C,item.code),null);}
+  if(item.code==='J01'){const all=await markerComments(state.ledger,T+'-J01');assert.equal(all.length,commentBaseline.J01+1);const added=all.filter(c=>!auditBefore.some(old=>old.id===c.id));assert.equal(added.length,1);assert.deepEqual(JSON.parse(plain(added[0].body).split(T+'-J01 ')[1]),{manual:true,scheduledFor:null,issueKey:null});item.manualCommentId=added[0].id;save();}
+  if(['J02','J03'].includes(item.code)){assert.equal(task.result.issues.length,2);for(const key of [state.A,state.B])assert.deepEqual(await prop(key,item.code),{key,manual:true,scheduledFor:null});assert.equal(await prop(state.C,item.code),null);}
   if(item.code==='J04'){assert.equal(task.result.issues.length,0);assert.equal(task.result.changes.length,0);assert.match(task.result.reason,/0\/0/);}
   if(item.code==='J05')assert.match(task.result.reason,/Scope JQL failed/);
-  if(item.code==='J06'){assert.equal(task.result.issues.length,3);assert.equal(task.result.issues.filter(x=>x.success).length,2);for(const key of [state.A,state.C])assert.equal((await prop(key,'J06')).key,key);assert.equal(await prop(state.B,'J06'),null);}
+  if(item.code==='J06'){assert.equal(task.result.issues.length,3);assert.equal(task.result.issues.filter(x=>x.success).length,2);for(const key of [state.A,state.C])assert.deepEqual(await prop(key,'J06'),{key,manual:true,scheduledFor:null});assert.equal(await prop(state.B,'J06'),null);}
   if(item.code==='J07'){assert.equal(await prop(state.C,'J07'),null);assert.ok(!(await getIssue(state.C,['labels'])).fields.labels.includes(T+'-J07-never'));assert.equal((await markerComments(state.C,T+'-J07-never')).length,0);assert.equal(task.result.changes.length,3);}
   if(item.code==='J08')assert.match(task.result.reason,/needs a current issue/);
   if(['J09','J10'].includes(item.code)){assert.ok((await getIssue(state.ai,['labels'])).fields.labels.includes(T+'-'+item.code));const after=await markerComments(state.ai,T+'-'+item.code+'-ack');assert.equal(after.length,before.length+1);if(item.code==='J09')assert.ok(task.result.issues[0].agentSummary);else assert.ok(task.result.agentSummary);}
@@ -149,6 +151,7 @@ async function jobs() {
  // A negative control: disabled jobs never ran automatically during manual verification.
  for(const item of state.jobs)assert.ok(!(await logs(item.id)).some(l=>l.manual===false));record('All ten disabled jobs had no automatic run');
  // Exercise all ten through genuine five-minute scheduling, then promptly disable each.
+ for(const code of ['J09','J10']){await put(`/rest/api/3/issue/${state.ai}`,{update:{labels:[{remove:T+'-'+code}]}});assert.ok(!(await getIssue(state.ai,['labels'])).fields.labels.includes(T+'-'+code));}
  state.tickStartedAt=new Date().toISOString();save();
  for(const item of state.jobs)must(await rulesApi.jobs.enable(item.id),'enable for actual tick');
  const pending=new Set(state.jobs.map(j=>j.id));const deadline=Date.now()+12*60*1000;
@@ -157,7 +160,7 @@ async function jobs() {
   console.log('Scheduler waiting:',pending.size,'job(s)');if(pending.size)await sleep(15000);
  }
  for(const id of pending)await attempt('missing automatic '+id,async()=>{must(await rulesApi.jobs.disable(id),'disable timeout');throw Error('No actual scheduled log within12 minutes');});
- await attempt('scheduled Jira readbacks',async()=>{const audit=await markerComments(state.ledger,T+'-J01');assert.equal(audit.length,commentBaseline.J01+2);assert.ok(audit.some(c=>plain(c.body).includes('"manual":false')));for(const code of ['J02','J03','J06'])for(const key of(code==='J06'?[state.A,state.C]:[state.A,state.B])){const p=await prop(key,code);assert.equal(p.manual,false);assert.ok(p.scheduledFor);}for(const code of ['J09','J10'])assert.equal((await markerComments(state.ai,T+'-'+code+'-ack')).length,commentBaseline[code]+2);assert.equal(await prop(state.C,'J07'),null);record('All scheduled writes independently reread; failures/simulation remain truthful');});
+ await attempt('scheduled Jira readbacks',async()=>{const audit=await markerComments(state.ledger,T+'-J01');assert.equal(audit.length,commentBaseline.J01+2);const added=audit.filter(c=>!auditBefore.some(old=>old.id===c.id)&&c.id!==row('jobs','J01').manualCommentId);assert.equal(added.length,1);assert.deepEqual(JSON.parse(plain(added[0].body).split(T+'-J01 ')[1]),{manual:false,scheduledFor:row('jobs','J01').scheduled.scheduledFor,issueKey:null});for(const code of ['J02','J03','J06'])for(const key of(code==='J06'?[state.A,state.C]:[state.A,state.B])){const p=await prop(key,code);assert.deepEqual(p,{key,manual:false,scheduledFor:row('jobs',code).scheduled.scheduledFor});}for(const code of ['J09','J10'])assert.equal((await markerComments(state.ai,T+'-'+code+'-ack')).length,commentBaseline[code]+2);assert.equal(await prop(state.C,'J07'),null);record('All scheduled writes independently reread; failures/simulation remain truthful');});
  await attempt('scheduled negative and per-issue details',async()=>{assert.equal(await prop(state.C,'J03'),null);assert.equal(await prop(state.B,'J06'),null);assert.ok(!(await getIssue(state.C,['labels'])).fields.labels.includes(T+'-J07-never'));assert.equal((await markerComments(state.C,T+'-J07-never')).length,0);for(const code of ['J02','J03','J06','J09']){const result=row('jobs',code).scheduled;assert.ok(result);const expected=code==='J06'?3:code==='J09'?1:2;assert.equal(result.perIssue.length,expected);for(const item of result.perIssue)assert.equal(item.success,!(code==='J06'&&item.key===state.B));}for(const code of ['J09','J10'])assert.ok((await getIssue(state.ai,['labels'])).fields.labels.includes(T+'-'+code));record('Scheduled excluded, failed and simulated targets unchanged; all scoped statuses exact');});
  state.jobsFinishedAt=new Date().toISOString();save();
 }

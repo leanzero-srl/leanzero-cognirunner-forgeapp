@@ -40,6 +40,7 @@ import {
 } from "./shared/jira-events.js";
 import { normalizeAllowedActions, DEFAULT_AGENT_ACTIONS, DEFAULT_AGENT_ROUNDS, MAX_AGENT_ROUNDS } from "./shared/agent-actions.js";
 import { redosRisk } from "./shared/regex-safety.js";
+import { agentResultFields } from "./shared/agent-result.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
 
 const idx = () => import("./index.js");
@@ -541,8 +542,9 @@ export const runListener = async ({ listener, eventType, event, ctx, deadline = 
       deadline, cancelToken, extraContext,
     });
     return {
-      skipped: false, result: r, gate,
+      skipped: false, result: r, gate, ...agentResultFields(r),
       log: done({
+        ...agentResultFields(r),
         isValid: r.success, reason: r.success ? `Agent ${r.outcome}: ${r.summary || "(no summary)"}` : `Agent failed: ${r.error || r.summary || "unknown"}`,
         recommendation: r.success ? undefined : "Open the listener, review the instructions and allowed actions, then use 'Test with an issue' to reproduce.",
         tokens: r.tokens, aiTimeMs: r.aiTimeMs, changes: (r.changes || []).slice(0, 20), logs: (r.logs || []).slice(-60).map((s) => String(s).slice(0, 300)),
@@ -592,7 +594,7 @@ export const executeListenerTask = async (params, taskId) => {
   if (Number.isFinite(enqueuedMs)) entry.queueDelayMs = Math.max(0, Date.now() - enqueuedMs);
   await m.storeLog(entry);
   if (!out.skipped) await updateListenerStats(listener.id, { status: entry.isValid ? "ok" : "error", error: entry.isValid ? null : entry.reason, issueKey: ctx && ctx.issueKey });
-  return { skipped: out.skipped, success: entry.isValid, reason: entry.reason, changes: entry.changes, logs: entry.logs };
+  return { skipped: out.skipped, success: entry.isValid, reason: entry.reason, changes: entry.changes, logs: entry.logs, agentOutcome: entry.agentOutcome, agentSummary: entry.agentSummary };
 };
 
 /**

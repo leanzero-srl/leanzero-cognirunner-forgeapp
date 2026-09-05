@@ -340,5 +340,42 @@ for (const [keys, projectKey, expected] of [[[], null, true], [["lzpt"], "LzPt",
   await readListenerIndex(); await listenerTrigger(event);
   assert.equal(pushed.length, expected ? 1 : 0);
 });
+// Structured agent results must survive both queue returns and persisted logs;
+// prose is display-only and remains backwards compatible.
+for (const outcome of ["done", "nothing_to_do", "failed"]) for (const family of ["listener", "unscoped job", "scoped job"]) await check(`${family} retains ${outcome} agent summary`, async () => {
+  const state = reset(); const summary = "Specific explanation " + "x".repeat(1300);
+  state.agent = args => { state.runs.push(args); return { success: outcome !== "failed", outcome, summary, error: outcome === "failed" ? "provider failure" : undefined, changes: [], logs: [] }; };
+  let result;
+  if (family === "listener") {
+    const config = listener({}, { id: "outcome-listener", mode: "agent", agent: { instructions: "Read" } });
+    storage.__seed("listener:outcome-listener", config);
+    result = await executeListenerTask({ listenerId: config.id, eventType: UPDATE, event: { issue: ISSUE }, ctx: { issueKey: ISSUE.key } }, "outcome-listener-task");
+  } else {
+    const config = { ...job("agent"), id: "outcome-job", scope: family === "scoped job" ? job().scope : null };
+    storage.__seed("job:outcome-job", config);
+    forgeApi.__respond(() => forgeApi.__response(200, { issues: [ISSUE] }));
+    result = await executeScheduledJobTask({ jobId: config.id, manual: true }, "outcome-job-task");
+  }
+  const saved = state.logs.at(-1);
+  const entries = family === "scoped job" ? [result.issues[0], saved.perIssue[0]] : [result, saved];
+  for (const entry of entries) { assert.equal(entry.agentOutcome, outcome); assert.equal(entry.agentSummary, summary.slice(0, 1200)); }
+  if (family === "scoped job") { assert.equal(result.agentSummary, undefined); assert.equal(saved.agentSummary, undefined); }
+  else if (outcome !== "failed") assert.match(result.reason, new RegExp(`^${family === "listener" ? "Agent " : ""}${outcome}: Specific explanation`));
+  else assert.match(result.reason, /provider failure/);
+});
+await check("script runs do not invent agent outcomes", async () => {
+  const { invoke, state } = claimFixture("manual"); const result = await invoke();
+  assert.equal(JSON.parse(JSON.stringify(result)).agentOutcome, undefined);
+  assert.equal(state.logs[0].agentSummary, undefined);
+});
+await check("cancelled scoped agent run only reports summaries for attempted issues", async () => {
+  const state = reset(); state.cancel = () => state.runs.length === 1;
+  state.agent = args => { state.runs.push(args); return { success: true, outcome: "nothing_to_do", summary: "No action needed", logs: [], changes: [] }; };
+  forgeApi.__respond(() => forgeApi.__response(200, { issues: scope }));
+  const result = await runJob({ job: job("agent"), cancelToken: "cancel" });
+  assert.equal(result.issues[0].agentOutcome, "nothing_to_do");
+  assert.equal(result.issues[0].agentSummary, "No action needed");
+  assert.ok(result.issues.slice(1).every(r => r.agentOutcome === undefined && r.agentSummary === undefined));
+});
 console.log(`RULES RUNTIME REGRESSION: ${passed} passed, ${failed} failed`);
 process.exitCode = failed ? 1 : 0;

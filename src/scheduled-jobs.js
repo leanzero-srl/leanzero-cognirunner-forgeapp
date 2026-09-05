@@ -39,6 +39,7 @@ import api, { route } from "@forge/api";
 import { validateCron, normalizeTimeZone, dueInWindow, nextRuns, describeCron } from "./shared/cron.js";
 import { normalizeAllowedActions, DEFAULT_AGENT_ACTIONS, DEFAULT_AGENT_ROUNDS, MAX_AGENT_ROUNDS } from "./shared/agent-actions.js";
 import { normalizeStep } from "./listeners.js";
+import { agentResultFields } from "./shared/agent-result.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
 
 const idx = () => import("./index.js");
@@ -321,7 +322,7 @@ export const runJob = async ({ job, scheduledFor = null, missed = 0, manual = fa
     if (job.mode === "agent") {
       const { runAgentTask } = await agentMod();
       const r = await runAgentTask({ instructions: job.agent.instructions, allowedActions: job.agent.allowedActions, maxRounds: job.agent.maxRounds, issueKey, config, contextTitle: "JOB CONTEXT", contextText: summarizeJobForAi(job, scheduledFor, issue), deadline: perDeadline, cancelToken, extraContext });
-      return { issueKey, success: r.success, reason: r.success ? `${r.outcome}: ${r.summary || ""}` : (r.error || "agent failed"), changes: r.changes || [], logs: r.logs || [], tokens: r.tokens || 0, aiTimeMs: r.aiTimeMs || 0 };
+      return { issueKey, ...agentResultFields(r), success: r.success, reason: r.success ? `${r.outcome}: ${r.summary || ""}` : (r.error || "agent failed"), changes: r.changes || [], logs: r.logs || [], tokens: r.tokens || 0, aiTimeMs: r.aiTimeMs || 0 };
     }
     const r = await m.runSandboxSteps({ issueKey, config, deadline: perDeadline, cancelToken, extraContext });
     return { issueKey, success: r.success, reason: r.success ? `${r.stepsTotal} step(s), ${r.changes.length} change(s)` : `step "${r.failedStep}" failed: ${(r.stepResults.find((s) => s.status === "error") || {}).error || "see logs"}`, recommendation: r.recommendation, changes: r.changes || [], logs: r.logs || [], stepResults: r.stepResults };
@@ -329,7 +330,7 @@ export const runJob = async ({ job, scheduledFor = null, missed = 0, manual = fa
 
   if (!job.scope) {
     const r = await runOne(null, deadline);
-    return { log: { ...base, issueKey: "(no issue)", isValid: r.success, reason: r.reason, recommendation: r.recommendation, executionTimeMs: Date.now() - started, changes: r.changes.slice(0, 20), logs: r.logs.slice(-60).map((s) => String(s).slice(0, 300)), tokens: r.tokens, aiTimeMs: r.aiTimeMs, stepResults: r.stepResults }, success: r.success, issues: [] };
+    return { log: { ...base, issueKey: "(no issue)", isValid: r.success, reason: r.reason, agentOutcome: r.agentOutcome, agentSummary: r.agentSummary, recommendation: r.recommendation, executionTimeMs: Date.now() - started, changes: r.changes.slice(0, 20), logs: r.logs.slice(-60).map((s) => String(s).slice(0, 300)), tokens: r.tokens, aiTimeMs: r.aiTimeMs, stepResults: r.stepResults }, success: r.success, agentOutcome: r.agentOutcome, agentSummary: r.agentSummary, issues: [] };
   }
   let issues;
   try { issues = await searchScope(job.scope); } catch (e) {
@@ -351,7 +352,7 @@ export const runJob = async ({ job, scheduledFor = null, missed = 0, manual = fa
     }
     const share = Math.max(8000, Math.floor(remaining / (issues.length - i)));
     const r = await runOne(issues[i], Date.now() + Math.min(remaining - 2000, share));
-    perIssue.push({ key: issues[i].key, success: r.success, reason: String(r.reason || "").slice(0, 200) });
+    perIssue.push({ key: issues[i].key, success: r.success, agentOutcome: r.agentOutcome, agentSummary: r.agentSummary, reason: String(r.reason || "").slice(0, 200) });
     if (!r.success) failures++;
     changes = changes.concat((r.changes || []).map((c) => ({ ...c, issue: issues[i].key })));
     tokens += r.tokens || 0; aiTimeMs += r.aiTimeMs || 0;
@@ -396,7 +397,7 @@ export const executeScheduledJobTask = async (params, taskId) => {
   if (Number.isFinite(enqueuedMs)) entry.queueDelayMs = Math.max(0, Date.now() - enqueuedMs);
   await m.storeLog(entry);
   await updateJobStats(job.id, { status: entry.isValid ? "ok" : "error", error: entry.isValid ? null : entry.reason });
-  return { success: entry.isValid, reason: entry.reason, changes: entry.changes, logs: entry.logs, issues: out.issues, executionTimeMs: entry.executionTimeMs, tokens: entry.tokens };
+  return { success: entry.isValid, reason: entry.reason, changes: entry.changes, logs: entry.logs, issues: out.issues, executionTimeMs: entry.executionTimeMs, tokens: entry.tokens, agentOutcome: entry.agentOutcome, agentSummary: entry.agentSummary };
 };
 
 /** Next firing instants for the editor preview. */

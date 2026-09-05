@@ -50,7 +50,9 @@ try {
       assert.equal(stats.lastStatus, rule.failure ? 'error' : 'ok'); assert.equal(stats.lastIssueKey, key);
       assert.ok(Date.parse(stats.lastRunAt) >= Date.parse(log.timestamp));
       if (rule.failure) assert.ok(stats.lastError.includes(rule.name+'-expected')); else assert.equal(stats.lastError, null);
-      result.outcomes.push({ id: rule.id, log, effect, stats }); save();
+      const applied = (await rulesApi.logs(rule.id)).body.logs.find(entry => entry.id === log.id);
+      assert.equal(applied.statsReceipt.applied, true); assert.equal(applied.statsReceipt.completedAt, applied.timestamp);
+      result.outcomes.push({ id: rule.id, log: applied, effect, stats }); save();
     }
     console.log(`PASS concurrent listener batch ${batch+1}: 20 exact logs, effects and counters`);
   }

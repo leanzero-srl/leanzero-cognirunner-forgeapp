@@ -213,6 +213,9 @@ async function stats() {
   assert.ok(Date.parse(current.stats.lastRunAt)>=Date.parse(item.scheduled.timestamp));
   assert.ok(Date.parse(current.stats.lastRunAt)<=Date.parse(item.scheduled.timestamp)+120000);
   if(fail)assert.ok(current.stats.lastError);else assert.equal(current.stats.lastError,null);
+  const completed=await logs(item.id);assert.equal(completed.length,2);
+  for(const log of completed){assert.equal(log.statsReceipt.kind,'scheduledjob');assert.equal(log.statsReceipt.applied,true);assert.equal(log.statsReceipt.completedAt,log.timestamp);}
+  item.logs=completed;
   item.final=current;record(item.code+' exact manual plus scheduled counters and latest outcome',{stats:current.stats});
  }
 }

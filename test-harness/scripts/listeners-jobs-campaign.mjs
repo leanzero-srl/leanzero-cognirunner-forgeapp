@@ -126,6 +126,9 @@ async function listeners() {
 }
 async function jobs() {
  const T=state.tag;
+ const commentBaseline={J01:(await markerComments(state.ledger,T+'-J01')).length};
+ for(const code of ['J09','J10'])commentBaseline[code]=(await markerComments(state.ai,T+'-'+code+'-ack')).length;
+ state.jobCommentBaseline=commentBaseline;save();
  // Every job is first exercised through the public queueing Run endpoint, sequentially.
  for(const item of state.jobs) await attempt(item.code+' manual',async()=>{
   const before=await markerComments(state.ai,T+'-'+item.code+'-ack');
@@ -133,7 +136,7 @@ async function jobs() {
   const task=await poll(async()=>must(await rulesApi.task(item.taskId),'task'),v=>['done','error'].includes(v.status));item.task=task;save();assert.equal(task.status,'done');
   const fail=['J05','J06','J08'].includes(item.code);assert.equal(task.result.success,!fail,JSON.stringify(task.result).slice(0,900));
   const ls=await poll(()=>logs(item.id),x=>x.some(l=>l.manual===true));item.logs=ls;save();
-  if(item.code==='J01')assert.equal((await markerComments(state.ledger,T+'-J01')).length,1);
+  if(item.code==='J01')assert.equal((await markerComments(state.ledger,T+'-J01')).length,commentBaseline.J01+1);
   if(['J02','J03'].includes(item.code)){assert.equal(task.result.issues.length,2);for(const key of [state.A,state.B])assert.equal((await prop(key,item.code)).key,key);assert.equal(await prop(state.C,item.code),null);}
   if(item.code==='J04'){assert.equal(task.result.issues.length,0);assert.equal(task.result.changes.length,0);assert.match(task.result.reason,/0\/0/);}
   if(item.code==='J05')assert.match(task.result.reason,/Scope JQL failed/);
@@ -154,7 +157,7 @@ async function jobs() {
   console.log('Scheduler waiting:',pending.size,'job(s)');if(pending.size)await sleep(15000);
  }
  for(const id of pending)await attempt('missing automatic '+id,async()=>{must(await rulesApi.jobs.disable(id),'disable timeout');throw Error('No actual scheduled log within12 minutes');});
- await attempt('scheduled Jira readbacks',async()=>{const audit=await markerComments(state.ledger,T+'-J01');assert.equal(audit.length,2);assert.ok(audit.some(c=>plain(c.body).includes('"manual":false')));for(const code of ['J02','J03','J06'])for(const key of(code==='J06'?[state.A,state.C]:[state.A,state.B])){const p=await prop(key,code);assert.equal(p.manual,false);assert.ok(p.scheduledFor);}for(const code of ['J09','J10'])assert.equal((await markerComments(state.ai,T+'-'+code+'-ack')).length,2);assert.equal(await prop(state.C,'J07'),null);record('All scheduled writes independently reread; failures/simulation remain truthful');});
+ await attempt('scheduled Jira readbacks',async()=>{const audit=await markerComments(state.ledger,T+'-J01');assert.equal(audit.length,commentBaseline.J01+2);assert.ok(audit.some(c=>plain(c.body).includes('"manual":false')));for(const code of ['J02','J03','J06'])for(const key of(code==='J06'?[state.A,state.C]:[state.A,state.B])){const p=await prop(key,code);assert.equal(p.manual,false);assert.ok(p.scheduledFor);}for(const code of ['J09','J10'])assert.equal((await markerComments(state.ai,T+'-'+code+'-ack')).length,commentBaseline[code]+2);assert.equal(await prop(state.C,'J07'),null);record('All scheduled writes independently reread; failures/simulation remain truthful');});
  await attempt('scheduled negative and per-issue details',async()=>{assert.equal(await prop(state.C,'J03'),null);assert.equal(await prop(state.B,'J06'),null);assert.ok(!(await getIssue(state.C,['labels'])).fields.labels.includes(T+'-J07-never'));assert.equal((await markerComments(state.C,T+'-J07-never')).length,0);for(const code of ['J02','J03','J06','J09']){const result=row('jobs',code).scheduled;assert.ok(result);const expected=code==='J06'?3:code==='J09'?1:2;assert.equal(result.perIssue.length,expected);for(const item of result.perIssue)assert.equal(item.success,!(code==='J06'&&item.key===state.B));}for(const code of ['J09','J10'])assert.ok((await getIssue(state.ai,['labels'])).fields.labels.includes(T+'-'+code));record('Scheduled excluded, failed and simulated targets unchanged; all scoped statuses exact');});
  state.jobsFinishedAt=new Date().toISOString();save();
 }
@@ -186,6 +189,30 @@ async function snapshot() {
  state.finalIssues={};for(const key of state.fixtures.issues)state.finalIssues[key]=await getIssue(key,['summary','labels','assignee','priority','comment','attachment','issuelinks']);save();
  record('Full rule, execution and Jira snapshot',{listeners:state.listeners.length,jobs:state.jobs.length});
 }
+async function freshJobs() {
+ assert.equal(state.jobs.length,10);assert.ok(!state.archivedJobs,'Only one deliberate recreation per campaign');
+ for(const item of state.jobs){const current=must(await rulesApi.jobs.get(item.id),'before recreation').job;assert.equal(current.enabled,false);item.final=current;item.logs=await logs(item.id);}
+ state.archivedJobs=structuredClone(state.jobs);state.jobs=[];save();
+ for(const item of state.archivedJobs){
+  must(await rulesApi.jobs.remove(item.id),'delete old job');assert.equal((await rulesApi.jobs.get(item.id)).status,404);item.deletedAt=new Date().toISOString();save();
+  const {id,stats,createdAt,createdBy,updatedAt,...config}=item.final;
+  const created=await newRule('jobs',item.code,'Recreated statistics witness',{...config,enabled:false});
+  assert.notEqual(created.id,item.id);assert.equal(created.stats.runCount,0);assert.equal(created.stats.errorCount,0);
+  record(item.code+' old DELETE404 and new zero-count REST record',{oldId:item.id,newId:created.id});
+ }
+}
+async function stats() {
+ for(const item of state.jobs){
+  const fail=['J05','J06','J08'].includes(item.code);
+  const current=await poll(async()=>must(await rulesApi.jobs.get(item.id),'stats read').job,j=>j.stats.runCount===2,240);
+  assert.equal(current.enabled,false);assert.equal(current.stats.errorCount,fail?2:0);
+  assert.equal(current.stats.lastStatus,fail?'error':'ok');assert.equal(current.stats.nextRunAt,null);
+  assert.ok(Date.parse(current.stats.lastRunAt)>=Date.parse(item.scheduled.timestamp));
+  assert.ok(Date.parse(current.stats.lastRunAt)<=Date.parse(item.scheduled.timestamp)+120000);
+  if(fail)assert.ok(current.stats.lastError);else assert.equal(current.stats.lastError,null);
+  item.final=current;record(item.code+' exact manual plus scheduled counters and latest outcome',{stats:current.stats});
+ }
+}
 async function cleanup() {
  for(const kind of ['listeners','jobs'])for(const item of state[kind])await attempt('DELETE '+item.code,async()=>{must(await rulesApi[kind].remove(item.id),'delete');assert.equal((await rulesApi[kind].get(item.id)).status,404);record(item.code+' REST DELETE and independent404');});
  for(const id of state.fixtures.versions)await attempt('delete version '+id,async()=>{await post(`/rest/api/3/version/${id}/removeAndSwap`,{});await assert.rejects(()=>get(`/rest/api/3/version/${id}`),e=>e.status===404);record('version removed '+id);});
@@ -194,7 +221,7 @@ async function cleanup() {
  for(const kind of ['listeners','jobs']){const list=must(await rulesApi[kind].list(),'final collection')[kind];assert.ok(!list.some(x=>state[kind].some(y=>y.id===x.id)));for(const old of state.baseline[kind])assert.ok(list.some(x=>x.id===old.id&&x.enabled===old.enabled));record(kind+' cleanup collection and unrelated state preserved');}
  state.cleanedAt=new Date().toISOString();save();
 }
-try { assert.ok(['provision','listeners','jobs','snapshot','cleanup','retryListeners'].includes(phase),'Choose provision|listeners|jobs|snapshot|cleanup|retryListeners');await ({provision,listeners,jobs,snapshot,cleanup,retryListeners})[phase](); }
+try { assert.ok(['provision','listeners','jobs','snapshot','cleanup','retryListeners','freshJobs','stats'].includes(phase),'Choose provision|listeners|jobs|snapshot|cleanup|retryListeners|freshJobs|stats');await ({provision,listeners,jobs,snapshot,cleanup,retryListeners,freshJobs,stats})[phase](); }
 catch(e){state.fatal={phase,error:e.stack};save();console.error(e.stack);process.exitCode=1;}
 finally {
  // A transport failure during a phase must not leave recurring AI jobs enabled.

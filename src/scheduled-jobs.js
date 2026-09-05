@@ -39,7 +39,7 @@ import api, { route } from "@forge/api";
 import { validateCron, normalizeTimeZone, dueInWindow, nextRuns, describeCron } from "./shared/cron.js";
 import { normalizeAllowedActions, DEFAULT_AGENT_ACTIONS, DEFAULT_AGENT_ROUNDS, MAX_AGENT_ROUNDS } from "./shared/agent-actions.js";
 import { normalizeStep } from "./listeners.js";
-import { agentResultFields } from "./shared/agent-result.js";
+import { agentResultFields, SCOPED_AGENT_SUMMARY_BUDGET_BYTES } from "./shared/agent-result.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
 
 const idx = () => import("./index.js");
@@ -322,7 +322,7 @@ export const runJob = async ({ job, scheduledFor = null, missed = 0, manual = fa
     if (job.mode === "agent") {
       const { runAgentTask } = await agentMod();
       const r = await runAgentTask({ instructions: job.agent.instructions, allowedActions: job.agent.allowedActions, maxRounds: job.agent.maxRounds, issueKey, config, contextTitle: "JOB CONTEXT", contextText: summarizeJobForAi(job, scheduledFor, issue), deadline: perDeadline, cancelToken, extraContext });
-      return { issueKey, ...agentResultFields(r), success: r.success, reason: r.success ? `${r.outcome}: ${r.summary || ""}` : (r.error || "agent failed"), changes: r.changes || [], logs: r.logs || [], tokens: r.tokens || 0, aiTimeMs: r.aiTimeMs || 0 };
+      return { issueKey, ...agentResultFields(r, { summaryMaxBytes: job.scope ? Math.floor(SCOPED_AGENT_SUMMARY_BUDGET_BYTES / MAX_SCOPE_ISSUES) : null }), success: r.success, reason: r.success ? `${r.outcome}: ${r.summary || ""}` : (r.error || "agent failed"), changes: r.changes || [], logs: r.logs || [], tokens: r.tokens || 0, aiTimeMs: r.aiTimeMs || 0 };
     }
     const r = await m.runSandboxSteps({ issueKey, config, deadline: perDeadline, cancelToken, extraContext });
     return { issueKey, success: r.success, reason: r.success ? `${r.stepsTotal} step(s), ${r.changes.length} change(s)` : `step "${r.failedStep}" failed: ${(r.stepResults.find((s) => s.status === "error") || {}).error || "see logs"}`, recommendation: r.recommendation, changes: r.changes || [], logs: r.logs || [], stepResults: r.stepResults };

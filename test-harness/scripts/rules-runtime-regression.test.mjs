@@ -358,7 +358,7 @@ for (const outcome of ["done", "nothing_to_do", "failed"]) for (const family of 
   }
   const saved = state.logs.at(-1);
   const entries = family === "scoped job" ? [result.issues[0], saved.perIssue[0]] : [result, saved];
-  for (const entry of entries) { assert.equal(entry.agentOutcome, outcome); assert.equal(entry.agentSummary, summary.slice(0, 1200)); }
+  for (const entry of entries) { assert.equal(entry.agentOutcome, outcome); if (family === "scoped job") { assert.match(entry.agentSummary, /\[truncated\]$/); assert.ok(Buffer.byteLength(JSON.stringify(entry.agentSummary), "utf8") <= 240); } else assert.equal(entry.agentSummary, summary.slice(0, 1200)); }
   if (family === "scoped job") { assert.equal(result.agentSummary, undefined); assert.equal(saved.agentSummary, undefined); }
   else if (outcome !== "failed") assert.match(result.reason, new RegExp(`^${family === "listener" ? "Agent " : ""}${outcome}: Specific explanation`));
   else assert.match(result.reason, /provider failure/);

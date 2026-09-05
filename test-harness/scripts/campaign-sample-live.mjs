@@ -20,7 +20,7 @@ try {
     assert.equal(previous.tokenPresent, true, 'Legacy exposure must have been measured before deployment');
     const response = await rulesApi.sample(previous.eventType);
     assert.equal(response.status, 200);
-    const sample = response.body.sample;
+    const sample = response.body;
     assert.equal(sample.capturedAt, previous.capturedAt, 'Verify the same cached sample');
     assert.equal(sample.payload.contextToken, undefined);
     assert.equal(sample.payload.fileName, previous.fileName);
@@ -53,7 +53,7 @@ try {
   assert.deepEqual(effect, { tokenPresent: true, fileName: filename, issueId: String(issue.id) });
   receipt.execution = { logId: log.id, timestamp: log.timestamp, effect, exactAttachmentBytes: content.length };
   const result = await rulesApi.sample(eventType); assert.equal(result.status, 200);
-  const sample = result.body.sample;
+  const sample = result.body;
   assert.ok(Date.parse(sample.capturedAt) >= Date.parse(receipt.startedAt));
   assert.equal(sample.payload.fileName, filename); assert.equal(String(sample.payload.issueId), String(issue.id));
   assert.equal(sample.payload.contextToken, undefined);

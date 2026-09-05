@@ -1,0 +1,49 @@
+{
+  "runId": "20260905-131131",
+  "status": "pass",
+  "site": "wolfaenpak.atlassian.net",
+  "steps": [
+    {
+      "name": "navigate to CogniRunner admin",
+      "status": "pass"
+    },
+    {
+      "name": "admin panel mounts (tab bar visible)",
+      "status": "pass"
+    },
+    {
+      "name": "tab: Rules",
+      "status": "pass"
+    },
+    {
+      "name": "tab: Execution Logs",
+      "status": "pass"
+    },
+    {
+      "name": "tab: Documentation",
+      "status": "pass"
+    },
+    {
+      "name": "tab: Skills",
+      "status": "pass"
+    },
+    {
+      "name": "tab: Memories",
+      "status": "pass"
+    },
+    {
+      "name": "tab: Permissions",
+      "status": "pass"
+    },
+    {
+      "name": "tab: Settings",
+      "status": "pass"
+    },
+    {
+      "name": "Explain this rule \u2014 drive + verify specificity",
+      "status": "pass"
+    }
+  ],
+  "scope": "Existing admin walkthrough; listener/job behavior is proven separately by targeted live scripts.",
+  "explainReceipt": "- row \"\u00a7 IN PLAIN ENGLISH This AI Validator rule checks the Summary field whenever someone tries to transition this issue, and blocks the transition if the Summary fails validation. For example, if someone tries to move a ticket to 'In Progress' but the Summary field is empty or contains only whitespace, the transition will be blocked until a proper summary is added.\":"
+}

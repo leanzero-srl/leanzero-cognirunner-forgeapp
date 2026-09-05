@@ -1,0 +1,186 @@
+{
+  "tag": "live-race-mto7vqb3",
+  "cleanup": [
+    {
+      "id": "lst_mto7vqo2v5v504",
+      "removed": true
+    }
+  ],
+  "before": {
+    "id": "lst_mto7vqo2v5v504",
+    "name": "live-race-mto7vqb3 saved B",
+    "description": "",
+    "enabled": false,
+    "events": [
+      "avi:jira:released:version"
+    ],
+    "filters": {
+      "projectKeys": [],
+      "issueTypes": [],
+      "jql": "",
+      "changedFields": [],
+      "commentPattern": ""
+    },
+    "ignoreSelf": true,
+    "aiCondition": "",
+    "mode": "script",
+    "functions": [
+      {
+        "id": "fn1",
+        "name": "B witness",
+        "operationType": "work_item_query",
+        "operationPrompt": "",
+        "conditionPrompt": "",
+        "endpoint": "",
+        "method": "GET",
+        "variableName": "",
+        "code": "return \"B remains B\";",
+        "includeBackoff": false
+      }
+    ],
+    "agent": {
+      "instructions": "",
+      "allowedActions": [
+        "get_issue",
+        "search_issues",
+        "add_comment"
+      ],
+      "maxRounds": 5
+    },
+    "simulationMode": false,
+    "suppressNotifications": false,
+    "createdBy": "712020:937bc860-eec2-4294-a65d-8e0fe7c45086",
+    "createdAt": "2026-09-05T10:05:24.291Z",
+    "updatedAt": "2026-09-05T10:05:24.291Z",
+    "stats": {
+      "runCount": 0,
+      "errorCount": 0,
+      "lastRunAt": null,
+      "lastStatus": null,
+      "lastError": null,
+      "lastIssueKey": null
+    }
+  },
+  "actualResponse": {
+    "status": 200,
+    "body": {
+      "success": true,
+      "result": {
+        "type": "listener",
+        "source": "test",
+        "issueKey": "version cre2ez8s2c-v1",
+        "fieldId": "avi:jira:released:version",
+        "ruleId": "lst_mto7vwp58w3fj6",
+        "ruleName": "live-race-mto7vqb3 unsaved A",
+        "ruleWorkflow": null,
+        "eventType": "avi:jira:released:version",
+        "mode": "script",
+        "executionTimeMs": 4,
+        "isValid": true,
+        "reason": "Ran 1 step(s), 0 change(s)",
+        "changes": [],
+        "logs": [
+          "Starting 1 step(s) for (no current issue)",
+          "\"Step 1\": Stored result in \"result1\" (string)",
+          "\"Step 1\": Completed in 2ms",
+          "Finished: 1/1 step(s) succeeded in 2ms, 0 change(s) made"
+        ],
+        "stepResults": [
+          {
+            "name": "Step 1",
+            "index": 1,
+            "status": "success",
+            "timeMs": 2
+          }
+        ],
+        "testRun": true,
+        "skipped": false,
+        "gate": null,
+        "eventUsed": "sample",
+        "testNote": "Simulation reads Jira and records writes. Event delivery, execution brakes and the self-generated event guard are not tested. The last captured sample has redacted text; text filters and AI conditions may differ on a real event."
+      }
+    },
+    "url": "/gateway/api/graphql/pq/17357ad13472c97d7073c2a1eb4b600d98011b17893ba0a316e9e5de283bfc82"
+  },
+  "visibleB": "TEST LISTENER\nTests the selected event data against filters, the AI condition and actions. Reads are live; writes are recorded. It does not trigger a real Jira event.\nISSUE\nThis event has no current issue. The test uses a captured sample when available.\nEVENT\nVersion released\n\u25b6 Run test\nShow last real payload",
+  "after": {
+    "agent": {
+      "allowedActions": [
+        "get_issue",
+        "search_issues",
+        "add_comment"
+      ],
+      "instructions": "",
+      "maxRounds": 5
+    },
+    "aiCondition": "",
+    "createdAt": "2026-09-05T10:05:24.291Z",
+    "createdBy": "712020:937bc860-eec2-4294-a65d-8e0fe7c45086",
+    "description": "",
+    "enabled": false,
+    "events": [
+      "avi:jira:released:version"
+    ],
+    "filters": {
+      "changedFields": [],
+      "commentPattern": "",
+      "issueTypes": [],
+      "jql": "",
+      "projectKeys": []
+    },
+    "functions": [
+      {
+        "code": "return \"B remains B\";",
+        "conditionPrompt": "",
+        "endpoint": "",
+        "id": "fn1",
+        "includeBackoff": false,
+        "method": "GET",
+        "name": "B witness",
+        "operationPrompt": "",
+        "operationType": "work_item_query",
+        "variableName": ""
+      }
+    ],
+    "id": "lst_mto7vqo2v5v504",
+    "ignoreSelf": true,
+    "mode": "script",
+    "name": "live-race-mto7vqb3 saved B verified",
+    "simulationMode": false,
+    "suppressNotifications": false,
+    "updatedAt": "2026-09-05T10:05:37.179Z",
+    "stats": {
+      "runCount": 0,
+      "errorCount": 0,
+      "lastRunAt": null,
+      "lastStatus": null,
+      "lastError": null,
+      "lastIssueKey": null
+    }
+  },
+  "taggedRows": [
+    {
+      "createdBy": "712020:937bc860-eec2-4294-a65d-8e0fe7c45086",
+      "enabled": false,
+      "events": [
+        "avi:jira:released:version"
+      ],
+      "hasAiCondition": false,
+      "id": "lst_mto7vqo2v5v504",
+      "mode": "script",
+      "name": "live-race-mto7vqb3 saved B verified",
+      "projectKeys": [],
+      "simulationMode": false,
+      "updatedAt": "2026-09-05T10:05:37.179Z",
+      "stats": {
+        "runCount": 0,
+        "errorCount": 0,
+        "lastRunAt": null,
+        "lastStatus": null,
+        "lastError": null,
+        "lastIssueKey": null
+      }
+    }
+  ],
+  "pass": true
+}

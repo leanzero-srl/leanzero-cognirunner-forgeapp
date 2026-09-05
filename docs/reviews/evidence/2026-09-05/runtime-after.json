@@ -1,0 +1,263 @@
+{
+  "tag": "cgruxmto75eka",
+  "checks": [
+    {
+      "name": "filter matching",
+      "type": "listener",
+      "source": "test",
+      "issueKey": "LZPT-273",
+      "fieldId": "avi:jira:updated:issue",
+      "ruleId": "lst_mto75kaijx5e8t",
+      "ruleName": "cgruxmto75eka filter test",
+      "ruleWorkflow": null,
+      "eventType": "avi:jira:updated:issue",
+      "mode": "script",
+      "executionTimeMs": 232,
+      "isValid": true,
+      "reason": "Ran 1 step(s), 1 change(s)",
+      "changes": [
+        {
+          "action": "editIssue",
+          "key": "LZPT-273",
+          "update": {
+            "labels": [
+              {
+                "add": "cgruxmto75eka-sim"
+              }
+            ]
+          },
+          "simulated": true
+        }
+      ],
+      "logs": [
+        "Starting 1 step(s) for LZPT-273",
+        "[SIMULATION] editIssue(\"LZPT-273\", update {\"labels\":[{\"add\":\"cgruxmto75eka-sim\"}]})",
+        "\"label\": Completed in 2ms",
+        "Finished: 1/1 step(s) succeeded in 2ms, 1 change(s) made"
+      ],
+      "stepResults": [
+        {
+          "name": "label",
+          "index": 1,
+          "status": "success",
+          "timeMs": 2
+        }
+      ],
+      "testRun": true,
+      "skipped": false,
+      "gate": null,
+      "eventUsed": "synthetic",
+      "testNote": "Simulation reads Jira and records writes. Event delivery, execution brakes and the self-generated event guard are not tested. This disabled draft is tested as enabled. Uses a synthetic summary-only change, not the issue's change history."
+    },
+    {
+      "name": "filter project",
+      "type": "listener",
+      "source": "test",
+      "issueKey": "LZPT-273",
+      "fieldId": "avi:jira:updated:issue",
+      "ruleId": "lst_mto75kzbm3p03g",
+      "ruleName": "cgruxmto75eka filter test",
+      "ruleWorkflow": null,
+      "eventType": "avi:jira:updated:issue",
+      "mode": "script",
+      "isValid": true,
+      "decision": "SKIP",
+      "reason": "Filtered out: project LZPT not in filter.",
+      "executionTimeMs": 0,
+      "testRun": true,
+      "skipped": true,
+      "gate": null,
+      "eventUsed": "synthetic",
+      "testNote": "Simulation reads Jira and records writes. Event delivery, execution brakes and the self-generated event guard are not tested. This disabled draft is tested as enabled. Uses a synthetic summary-only change, not the issue's change history."
+    },
+    {
+      "name": "filter type",
+      "type": "listener",
+      "source": "test",
+      "issueKey": "LZPT-273",
+      "fieldId": "avi:jira:updated:issue",
+      "ruleId": "lst_mto75ldcjzcxmd",
+      "ruleName": "cgruxmto75eka filter test",
+      "ruleWorkflow": null,
+      "eventType": "avi:jira:updated:issue",
+      "mode": "script",
+      "isValid": true,
+      "decision": "SKIP",
+      "reason": "Filtered out: issue type Task not in filter.",
+      "executionTimeMs": 0,
+      "testRun": true,
+      "skipped": true,
+      "gate": null,
+      "eventUsed": "synthetic",
+      "testNote": "Simulation reads Jira and records writes. Event delivery, execution brakes and the self-generated event guard are not tested. This disabled draft is tested as enabled. Uses a synthetic summary-only change, not the issue's change history."
+    },
+    {
+      "name": "filter field",
+      "type": "listener",
+      "source": "test",
+      "issueKey": "LZPT-273",
+      "fieldId": "avi:jira:updated:issue",
+      "ruleId": "lst_mto75ls0q4902g",
+      "ruleName": "cgruxmto75eka filter test",
+      "ruleWorkflow": null,
+      "eventType": "avi:jira:updated:issue",
+      "mode": "script",
+      "isValid": true,
+      "decision": "SKIP",
+      "reason": "Filtered out: none of the watched fields changed (changed: summary, summary).",
+      "executionTimeMs": 0,
+      "testRun": true,
+      "skipped": true,
+      "gate": null,
+      "eventUsed": "synthetic",
+      "testNote": "Simulation reads Jira and records writes. Event delivery, execution brakes and the self-generated event guard are not tested. This disabled draft is tested as enabled. Uses a synthetic summary-only change, not the issue's change history."
+    },
+    {
+      "name": "filter JQL",
+      "type": "listener",
+      "source": "test",
+      "issueKey": "LZPT-273",
+      "fieldId": "avi:jira:updated:issue",
+      "ruleId": "lst_mto75m68q7118y",
+      "ruleName": "cgruxmto75eka filter test",
+      "ruleWorkflow": null,
+      "eventType": "avi:jira:updated:issue",
+      "mode": "script",
+      "executionTimeMs": 160,
+      "isValid": true,
+      "decision": "SKIP",
+      "reason": "Filtered out: issue does not match the listener's JQL.",
+      "testRun": true,
+      "skipped": true,
+      "gate": null,
+      "eventUsed": "synthetic",
+      "testNote": "Simulation reads Jira and records writes. Event delivery, execution brakes and the self-generated event guard are not tested. This disabled draft is tested as enabled. Uses a synthetic summary-only change, not the issue's change history."
+    },
+    {
+      "name": "invalid JQL stops test",
+      "type": "listener",
+      "source": "test",
+      "issueKey": "LZPT-273",
+      "fieldId": "avi:jira:updated:issue",
+      "ruleId": "lst_mto75mpbi31lp6",
+      "ruleName": "cgruxmto75eka filter test",
+      "ruleWorkflow": null,
+      "eventType": "avi:jira:updated:issue",
+      "mode": "script",
+      "executionTimeMs": 115,
+      "isValid": false,
+      "decision": "SKIP",
+      "reason": "JQL filter could not be evaluated: JQL check failed: 400 {\"errorMessages\":[\"Error in the JQL Query: Expecting either 'OR' or 'AND' but got 'invalid'. (line 1, character 40)\"],\"errors\":{}}",
+      "recommendation": "Check the JQL in the listener's filters.",
+      "testRun": true,
+      "skipped": true,
+      "gate": null,
+      "eventUsed": "synthetic",
+      "testNote": "Simulation reads Jira and records writes. Event delivery, execution brakes and the self-generated event guard are not tested. This disabled draft is tested as enabled. Uses a synthetic summary-only change, not the issue's change history."
+    },
+    {
+      "name": "whole listener test wrote nothing",
+      "key": "LZPT-273",
+      "labels": [
+        "cgruxmto75eka"
+      ]
+    },
+    {
+      "name": "saved UTC visibly selected"
+    },
+    {
+      "name": "real step tester rejects null issue",
+      "text": "FAIL\nLive reads · no current issue · writes staged — 3ms\nFix with AI\n×\nEXECUTION LOG:\nTesting job with no current issue. Reads are live; writes are simulated.\nERROR: api.addComment() needs a current issue, but this job run has none (api.context.issueKey is null). Use api.forIssue(\"KEY\").addComment(...) to target an issue explicitly."
+    },
+    {
+      "name": "real step tester supports full API and explicit target",
+      "text": "PASS\nLive reads · no current issue · writes staged — 1ms\n×\nEXECUTION LOG:\nTesting job with no current issue. Reads are live; writes are simulated.\n[SIMULATION] editIssue(\"LZPT-273\", update {\"labels\":[{\"add\":\"cgruxmto75eka-sim\"}]})\n[SIMULATION] setAssignee(712020:937bc860-eec2-4294-a65d-8e0fe7c45086)\n2 writes staged\nEdit fields\nsetAssignee\neditIssue(LZPT-273)\nsetAssignee(LZPT-273)\n✦ Explain these changes in plain English\nSave as Skill"
+    },
+    {
+      "name": "step tests wrote no label, assignee or comment",
+      "fieldsUnchanged": true
+    },
+    {
+      "name": "first scoped issue write observed",
+      "key": "LZPT-273",
+      "taskId": "9998211398474856_scheduledjob_4apx7l"
+    },
+    {
+      "name": "cancelled job accounts for every issue, preserves first write and skips second",
+      "perIssue": [
+        {
+          "reason": "1 step(s), 1 change(s)",
+          "key": "LZPT-273",
+          "success": true
+        },
+        {
+          "reason": "not processed (cancelled)",
+          "key": "LZPT-274",
+          "success": false
+        }
+      ],
+      "reason": "1/2 issue(s) processed OK, 1 change(s), 1 cancelled",
+      "issueKey": "2 issue(s)",
+      "missed": 0,
+      "isValid": false,
+      "executionTimeMs": 25596,
+      "ruleWorkflow": null,
+      "changes": [
+        {
+          "action": "setProperty",
+          "issue": "LZPT-273",
+          "key": "LZPT-273",
+          "propKey": "cgruxmto75eka"
+        }
+      ],
+      "recommendation": "Open the job's log details for the per-issue outcomes.",
+      "aiTimeMs": 0,
+      "source": "async",
+      "type": "scheduledjob",
+      "manual": true,
+      "mode": "script",
+      "scheduledFor": null,
+      "ruleName": "cgruxmto75eka cancel-after-first",
+      "tokens": 0,
+      "id": "17886015543922ns4",
+      "ruleId": "job_mto760wrvd7pcu",
+      "logs": [
+        "Scope \"key in (LZPT-273,LZPT-274) ORDER BY key ASC\" matched 2 issue(s) (cap 2)",
+        "--- LZPT-273: OK — 1 step(s), 1 change(s)",
+        "    Starting 1 step(s) for LZPT-273",
+        "    setProperty: cgruxmto75eka",
+        "    \"Mark then wait\": Completed in 25262ms",
+        "    Finished: 1/1 step(s) succeeded in 25262ms, 1 change(s) made",
+        "CANCELLED by operator: 1 issue(s) not processed"
+      ],
+      "fieldId": "0 9 * * * UTC",
+      "queueDelayMs": 29247,
+      "timestamp": "2026-09-05T09:45:54.392Z"
+    },
+    {
+      "name": "listener accordion displays SKIPPED"
+    }
+  ],
+  "cleanup": [
+    {
+      "listener": "lst_mto76onqufshyx",
+      "removed": true
+    },
+    {
+      "job": "job_mto75nh8ie5x3i",
+      "removed": true
+    },
+    {
+      "job": "job_mto760wrvd7pcu",
+      "removed": true
+    },
+    {
+      "issue": "LZPT-273",
+      "removed": true
+    },
+    {
+      "issue": "LZPT-274",
+      "removed": true
+    }
+  ]
+}

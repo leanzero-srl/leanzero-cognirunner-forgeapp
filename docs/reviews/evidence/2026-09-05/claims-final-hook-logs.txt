@@ -1,0 +1,31 @@
+Warning: Your version of Forge CLI is out of date. We recommend you update to the latest version to get the latest features and bug fixes.
+Run npm install -g @forge/cli@latest to update from version 13.4.0 to 13.5.0.
+
+invocation: 70b6da95-fbff-455e-9ca0-6f599457f4d0
+INFO    10:02:54.954Z [job] duplicate delivery of harness-claim-s2-mto7s8zo suppressed
+INFO    10:02:54.924Z [job] duplicate delivery of harness-claim-s1-mto7s8zo suppressed
+
+invocation: 8148f767-7c80-40fc-81d8-f084720899af
+INFO    10:02:53.785Z [job] duplicate delivery of harness-claim-s2-mto7s8zo suppressed
+
+invocation: d2d1a1ad-5e03-42d5-bb0a-847f765b02ec
+INFO    10:02:52.831Z [job] duplicate delivery of harness-claim-d2-mto7s8zo suppressed
+INFO    10:02:52.801Z [job] duplicate delivery of harness-claim-d1-mto7s8zo suppressed
+
+invocation: 13945a65-618f-41d3-a312-73a3d0717d4e
+INFO    10:02:50.556Z [job] duplicate delivery of harness-claim-m-mto7s8zo suppressed
+INFO    10:02:50.554Z [job] duplicate delivery of harness-claim-m-mto7s8zo suppressed
+
+invocation: fc3fdbb3-b278-4a49-8ce2-b4c5f8f4004c
+INFO    10:02:49.276Z [job] duplicate delivery of harness-claim-m-mto7s8zo suppressed
+
+invocation: b546ef89-d0e6-4f8e-bba8-17ff30af538f
+INFO    10:02:47.939Z [listener] duplicate delivery of harness-claim-l-mto7s8zo suppressed
+INFO    10:02:47.922Z [listener] duplicate delivery of harness-claim-l-mto7s8zo suppressed
+
+invocation: 57760cb1-873a-4c83-8b9f-2c6f8ead282c
+INFO    10:02:46.301Z [listener] duplicate delivery of harness-claim-l-mto7s8zo suppressed
+
+invocation: abfeddbe-6516-45f1-b941-b4a2f9399d90
+ERROR   10:02:45.005Z (node:2) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+(Use `node --trace-deprecation ...` to show where the warning was created)

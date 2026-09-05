@@ -1,0 +1,173 @@
+{
+  "tag": "cgrsemanticmto7s2ex",
+  "checks": [
+    {
+      "kind": "simulated semantic gate",
+      "key": "LZPT-275",
+      "result": {
+        "type": "listener",
+        "source": "test",
+        "issueKey": "LZPT-275",
+        "fieldId": "avi:jira:updated:issue",
+        "ruleId": "lst_mto7s7y77cui5w",
+        "ruleName": "cgrsemanticmto7s2ex",
+        "ruleWorkflow": null,
+        "eventType": "avi:jira:updated:issue",
+        "mode": "script",
+        "executionTimeMs": 1606,
+        "isValid": true,
+        "reason": "Ran 1 step(s), 1 change(s)",
+        "changes": [
+          {
+            "action": "addComment",
+            "key": "LZPT-275",
+            "simulated": true
+          }
+        ],
+        "logs": [
+          "Starting 1 step(s) for LZPT-275",
+          "[SIMULATION] addComment",
+          "\"Acknowledge sign-in problem\": Completed in 2ms",
+          "Finished: 1/1 step(s) succeeded in 2ms, 1 change(s) made"
+        ],
+        "stepResults": [
+          {
+            "name": "Acknowledge sign-in problem",
+            "index": 1,
+            "status": "success",
+            "timeMs": 2
+          }
+        ],
+        "gateReason": "The issue summary 'Customer cannot sign in to the service and requests help' directly describes a customer unable to sign in who is requesting assistance.",
+        "testRun": true,
+        "skipped": false,
+        "gate": {
+          "match": true,
+          "reason": "The issue summary 'Customer cannot sign in to the service and requests help' directly describes a customer unable to sign in who is requesting assistance.",
+          "tokens": 321,
+          "aiTimeMs": 1224
+        },
+        "eventUsed": "synthetic",
+        "testNote": "Simulation reads Jira and records writes. Event delivery, execution brakes and the self-generated event guard are not tested. This disabled draft is tested as enabled. Uses a synthetic summary-only change, not the issue's change history."
+      },
+      "commentUnchanged": true
+    },
+    {
+      "kind": "simulated semantic gate",
+      "key": "LZPT-276",
+      "result": {
+        "type": "listener",
+        "source": "test",
+        "issueKey": "LZPT-276",
+        "fieldId": "avi:jira:updated:issue",
+        "ruleId": "lst_mto7s9ud395yci",
+        "ruleName": "cgrsemanticmto7s2ex",
+        "ruleWorkflow": null,
+        "eventType": "avi:jira:updated:issue",
+        "mode": "script",
+        "executionTimeMs": 1431,
+        "isValid": true,
+        "decision": "SKIP",
+        "reason": "AI condition not met: The issue summary describes a routine release announcement with all systems healthy and no user problems, not a customer sign-in issue.",
+        "tokens": 323,
+        "aiTimeMs": 1275,
+        "testRun": true,
+        "skipped": true,
+        "gate": {
+          "match": false,
+          "reason": "The issue summary describes a routine release announcement with all systems healthy and no user problems, not a customer sign-in issue.",
+          "tokens": 323,
+          "aiTimeMs": 1275
+        },
+        "eventUsed": "synthetic",
+        "testNote": "Simulation reads Jira and records writes. Event delivery, execution brakes and the self-generated event guard are not tested. This disabled draft is tested as enabled. Uses a synthetic summary-only change, not the issue's change history."
+      },
+      "commentUnchanged": true
+    },
+    {
+      "kind": "real event semantic gate",
+      "key": "LZPT-275",
+      "log": {
+        "stepResults": [
+          {
+            "name": "Acknowledge sign-in problem",
+            "index": 1,
+            "status": "success",
+            "timeMs": 352
+          }
+        ],
+        "reason": "Ran 1 step(s), 1 change(s)",
+        "issueKey": "LZPT-275",
+        "executionTimeMs": 2031,
+        "isValid": true,
+        "ruleWorkflow": null,
+        "changes": [
+          {
+            "action": "addComment",
+            "key": "LZPT-275",
+            "id": "16045"
+          }
+        ],
+        "source": "async",
+        "eventType": "avi:jira:updated:issue",
+        "type": "listener",
+        "gateReason": "The issue summary explicitly states 'Customer cannot sign in to the service and requests help', which describes a customer unable to sign in who needs assistance.",
+        "mode": "script",
+        "ruleName": "cgrsemanticmto7s2ex",
+        "id": "17886026077545lgp",
+        "ruleId": "lst_mto7sbfn5s7nf6",
+        "logs": [
+          "Starting 1 step(s) for LZPT-275",
+          "addComment: 16045",
+          "\"Acknowledge sign-in problem\": Completed in 352ms",
+          "Finished: 1/1 step(s) succeeded in 352ms, 1 change(s) made"
+        ],
+        "fieldId": "avi:jira:updated:issue",
+        "queueDelayMs": 5736,
+        "timestamp": "2026-09-05T10:03:27.754Z"
+      },
+      "matchingComments": [
+        "16045"
+      ]
+    },
+    {
+      "kind": "real event semantic gate",
+      "key": "LZPT-276",
+      "log": {
+        "reason": "AI condition not met: The issue summary describes a routine release announcement with healthy systems, not a customer sign-in problem.",
+        "issueKey": "LZPT-276",
+        "decision": "SKIP",
+        "executionTimeMs": 1520,
+        "isValid": true,
+        "ruleWorkflow": null,
+        "aiTimeMs": 1237,
+        "source": "async",
+        "eventType": "avi:jira:updated:issue",
+        "type": "listener",
+        "mode": "script",
+        "ruleName": "cgrsemanticmto7s2ex",
+        "tokens": 340,
+        "id": "1788602607666z17h",
+        "ruleId": "lst_mto7sbfn5s7nf6",
+        "fieldId": "avi:jira:updated:issue",
+        "queueDelayMs": 4990,
+        "timestamp": "2026-09-05T10:03:27.666Z"
+      },
+      "matchingComments": []
+    }
+  ],
+  "cleanup": [
+    {
+      "listener": "lst_mto7sbfn5s7nf6",
+      "removed": true
+    },
+    {
+      "issue": "LZPT-275",
+      "removed": true
+    },
+    {
+      "issue": "LZPT-276",
+      "removed": true
+    }
+  ]
+}

@@ -1,0 +1,119 @@
+{
+  "listenersAbsent": true,
+  "plansJobAbsent": true,
+  "temporaryTokens": [
+    {
+      "id": "tok_mto678sh1004cc",
+      "name": "baseline-review-2026-09-05",
+      "revokedAt": "2026-09-05T09:31:47.456Z"
+    },
+    {
+      "id": "tok_mto76mw7e0d7c0",
+      "name": "verified-assets-review-2026-09-05",
+      "revokedAt": "2026-09-05T09:51:49.730Z"
+    }
+  ],
+  "retainedIssues": [
+    {
+      "key": "COGTEST-2696",
+      "summary": "crjob647ps scheduled job bed",
+      "reason": "DELETE_ISSUES permission denied403; no permission-scheme edits performed"
+    },
+    {
+      "key": "COGTEST-2697",
+      "summary": "crjob67959 scheduled job bed",
+      "reason": "DELETE_ISSUES permission denied403; no permission-scheme edits performed"
+    }
+  ],
+  "wfh36": {
+    "customfield_10015": null
+  },
+  "ownedListeners": [
+    {
+      "id": "lst_mto6hoxlxtyxka",
+      "absent": true
+    },
+    {
+      "id": "lst_mto6hop7uwfb4a",
+      "absent": true
+    },
+    {
+      "id": "lst_mto6hog16vrk4a",
+      "absent": true
+    },
+    {
+      "id": "lst_mto6ho4vo94rjh",
+      "absent": true
+    },
+    {
+      "id": "lst_mto77n10y3k8e2",
+      "absent": true
+    },
+    {
+      "id": "lst_mto76rxmm5d95o",
+      "absent": true
+    },
+    {
+      "id": "lst_mto76ro5akpc81",
+      "absent": true
+    },
+    {
+      "id": "lst_mto76rftsv6x0i",
+      "absent": true
+    },
+    {
+      "id": "lst_mto76r337pv734",
+      "absent": true
+    },
+    {
+      "id": "lst_mto6sp6q0ftchs",
+      "absent": true
+    }
+  ],
+  "ownedJobs": [
+    {
+      "id": "job_mto67cbejatmry",
+      "absent": true
+    },
+    {
+      "id": "job_mto67ctme7ftrm",
+      "absent": true
+    },
+    {
+      "id": "job_mto785znegkpvj",
+      "absent": true
+    }
+  ],
+  "deletedIssues": [
+    {
+      "key": "JT-45",
+      "status": 404,
+      "absent": true
+    },
+    {
+      "key": "JT-46",
+      "status": 404,
+      "absent": true
+    },
+    {
+      "key": "JT-47",
+      "status": 404,
+      "absent": true
+    },
+    {
+      "key": "JT-48",
+      "status": 404,
+      "absent": true
+    },
+    {
+      "key": "JT-49",
+      "status": 404,
+      "absent": true
+    },
+    {
+      "key": "JT-50",
+      "status": 404,
+      "absent": true
+    }
+  ]
+}

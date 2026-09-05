@@ -1,0 +1,1251 @@
+{
+  "tag": "mto7s8zo",
+  "checks": [
+    {
+      "name": "listener concurrent duplicate",
+      "payload": {
+        "taskType": "listener",
+        "ruleId": "lst_mto7sbz9dga6jt",
+        "taskId": "harness-claim-l-mto7s8zo",
+        "issueKey": "LZPT-277"
+      },
+      "result": {
+        "directConsumerProbe": true,
+        "results": [
+          {
+            "skipped": false,
+            "success": true,
+            "reason": "Ran 1 step(s), 1 change(s)",
+            "changes": [
+              {
+                "action": "addComment",
+                "key": "LZPT-277",
+                "id": "16040"
+              }
+            ],
+            "logs": [
+              "Starting 1 step(s) for LZPT-277",
+              "addComment: 16040",
+              "\"Comment witness\": Completed in 314ms",
+              "Finished: 1/1 step(s) succeeded in 314ms, 1 change(s) made"
+            ]
+          },
+          {
+            "skipped": true,
+            "reason": "duplicate delivery"
+          }
+        ]
+      },
+      "beforeIds": [],
+      "after": [
+        {
+          "self": "https://wolfaenpak.atlassian.net/rest/api/3/issue/24824/comment/16040",
+          "id": "16040",
+          "author": {
+            "self": "https://wolfaenpak.atlassian.net/rest/api/3/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "avatarUrls": {
+              "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/48",
+              "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/24",
+              "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/16",
+              "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/32"
+            },
+            "displayName": "CogniRunner",
+            "active": true,
+            "timeZone": "Europe/Bucharest",
+            "accountType": "app"
+          },
+          "body": {
+            "type": "doc",
+            "version": 1,
+            "content": [
+              {
+                "type": "paragraph",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "claim-listener-mto7s8zo"
+                  }
+                ]
+              }
+            ]
+          },
+          "updateAuthor": {
+            "self": "https://wolfaenpak.atlassian.net/rest/api/3/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "avatarUrls": {
+              "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/48",
+              "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/24",
+              "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/16",
+              "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/32"
+            },
+            "displayName": "CogniRunner",
+            "active": true,
+            "timeZone": "Europe/Bucharest",
+            "accountType": "app"
+          },
+          "created": "2026-09-05T13:02:46.705+0300",
+          "updated": "2026-09-05T13:02:46.705+0300",
+          "jsdPublic": true
+        }
+      ]
+    },
+    {
+      "name": "listener sequential replay",
+      "payload": {
+        "taskType": "listener",
+        "ruleId": "lst_mto7sbz9dga6jt",
+        "taskId": "harness-claim-l-mto7s8zo",
+        "issueKey": "LZPT-277"
+      },
+      "result": {
+        "directConsumerProbe": true,
+        "results": [
+          {
+            "skipped": true,
+            "reason": "duplicate delivery"
+          },
+          {
+            "skipped": true,
+            "reason": "duplicate delivery"
+          }
+        ]
+      },
+      "beforeIds": [
+        "16040"
+      ],
+      "after": [
+        {
+          "self": "https://wolfaenpak.atlassian.net/rest/api/3/issue/24824/comment/16040",
+          "id": "16040",
+          "author": {
+            "self": "https://wolfaenpak.atlassian.net/rest/api/3/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "avatarUrls": {
+              "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/48",
+              "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/24",
+              "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/16",
+              "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/32"
+            },
+            "displayName": "CogniRunner",
+            "active": true,
+            "timeZone": "Europe/Bucharest",
+            "accountType": "app"
+          },
+          "body": {
+            "type": "doc",
+            "version": 1,
+            "content": [
+              {
+                "type": "paragraph",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "claim-listener-mto7s8zo"
+                  }
+                ]
+              }
+            ]
+          },
+          "updateAuthor": {
+            "self": "https://wolfaenpak.atlassian.net/rest/api/3/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "avatarUrls": {
+              "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/48",
+              "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/24",
+              "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/16",
+              "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/32"
+            },
+            "displayName": "CogniRunner",
+            "active": true,
+            "timeZone": "Europe/Bucharest",
+            "accountType": "app"
+          },
+          "created": "2026-09-05T13:02:46.705+0300",
+          "updated": "2026-09-05T13:02:46.705+0300",
+          "jsdPublic": true
+        }
+      ]
+    },
+    {
+      "name": "manual concurrent duplicate",
+      "payload": {
+        "taskType": "scheduledjob",
+        "ruleId": "job_mto7seaxtrx1ak",
+        "taskId": "harness-claim-m-mto7s8zo",
+        "manual": true
+      },
+      "result": {
+        "directConsumerProbe": true,
+        "results": [
+          {
+            "skipped": true,
+            "reason": "duplicate delivery"
+          },
+          {
+            "success": true,
+            "reason": "1 step(s), 1 change(s)",
+            "changes": [
+              {
+                "action": "addComment",
+                "key": "LZPT-277",
+                "id": "16041"
+              }
+            ],
+            "logs": [
+              "Starting 1 step(s) for (no current issue)",
+              "addComment: 16041",
+              "\"Comment witness\": Completed in 344ms",
+              "Finished: 1/1 step(s) succeeded in 344ms, 1 change(s) made"
+            ],
+            "issues": [],
+            "executionTimeMs": 345
+          }
+        ]
+      },
+      "beforeIds": [],
+      "after": [
+        {
+          "self": "https://wolfaenpak.atlassian.net/rest/api/3/issue/24824/comment/16041",
+          "id": "16041",
+          "author": {
+            "self": "https://wolfaenpak.atlassian.net/rest/api/3/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "avatarUrls": {
+              "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/48",
+              "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/24",
+              "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/16",
+              "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/32"
+            },
+            "displayName": "CogniRunner",
+            "active": true,
+            "timeZone": "Europe/Bucharest",
+            "accountType": "app"
+          },
+          "body": {
+            "type": "doc",
+            "version": 1,
+            "content": [
+              {
+                "type": "paragraph",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "claim-job-mto7s8zo"
+                  }
+                ]
+              }
+            ]
+          },
+          "updateAuthor": {
+            "self": "https://wolfaenpak.atlassian.net/rest/api/3/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "avatarUrls": {
+              "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/48",
+              "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/24",
+              "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/16",
+              "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/32"
+            },
+            "displayName": "CogniRunner",
+            "active": true,
+            "timeZone": "Europe/Bucharest",
+            "accountType": "app"
+          },
+          "created": "2026-09-05T13:02:49.432+0300",
+          "updated": "2026-09-05T13:02:49.432+0300",
+          "jsdPublic": true
+        }
+      ]
+    },
+    {
+      "name": "manual sequential replay",
+      "payload": {
+        "taskType": "scheduledjob",
+        "ruleId": "job_mto7seaxtrx1ak",
+        "taskId": "harness-claim-m-mto7s8zo",
+        "manual": true
+      },
+      "result": {
+        "directConsumerProbe": true,
+        "results": [
+          {
+            "skipped": true,
+            "reason": "duplicate delivery"
+          },
+          {
+            "skipped": true,
+            "reason": "duplicate delivery"
+          }
+        ]
+      },
+      "beforeIds": [
+        "16041"
+      ],
+      "after": [
+        {
+          "self": "https://wolfaenpak.atlassian.net/rest/api/3/issue/24824/comment/16041",
+          "id": "16041",
+          "author": {
+            "self": "https://wolfaenpak.atlassian.net/rest/api/3/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "avatarUrls": {
+              "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/48",
+              "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/24",
+              "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/16",
+              "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/32"
+            },
+            "displayName": "CogniRunner",
+            "active": true,
+            "timeZone": "Europe/Bucharest",
+            "accountType": "app"
+          },
+          "body": {
+            "type": "doc",
+            "version": 1,
+            "content": [
+              {
+                "type": "paragraph",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "claim-job-mto7s8zo"
+                  }
+                ]
+              }
+            ]
+          },
+          "updateAuthor": {
+            "self": "https://wolfaenpak.atlassian.net/rest/api/3/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "avatarUrls": {
+              "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/48",
+              "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/24",
+              "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/16",
+              "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/32"
+            },
+            "displayName": "CogniRunner",
+            "active": true,
+            "timeZone": "Europe/Bucharest",
+            "accountType": "app"
+          },
+          "created": "2026-09-05T13:02:49.432+0300",
+          "updated": "2026-09-05T13:02:49.432+0300",
+          "jsdPublic": true
+        }
+      ]
+    },
+    {
+      "name": "distinct manual task IDs",
+      "payload": {
+        "taskType": "scheduledjob",
+        "ruleId": "job_mto7seaxtrx1ak",
+        "taskId": "harness-claim-d1-mto7s8zo",
+        "manual": true,
+        "secondTaskId": "harness-claim-d2-mto7s8zo"
+      },
+      "result": {
+        "directConsumerProbe": true,
+        "results": [
+          {
+            "success": true,
+            "reason": "1 step(s), 1 change(s)",
+            "changes": [
+              {
+                "action": "addComment",
+                "key": "LZPT-277",
+                "id": "16043"
+              }
+            ],
+            "logs": [
+              "Starting 1 step(s) for (no current issue)",
+              "addComment: 16043",
+              "\"Comment witness\": Completed in 362ms",
+              "Finished: 1/1 step(s) succeeded in 362ms, 1 change(s) made"
+            ],
+            "issues": [],
+            "executionTimeMs": 362
+          },
+          {
+            "success": true,
+            "reason": "1 step(s), 1 change(s)",
+            "changes": [
+              {
+                "action": "addComment",
+                "key": "LZPT-277",
+                "id": "16042"
+              }
+            ],
+            "logs": [
+              "Starting 1 step(s) for (no current issue)",
+              "addComment: 16042",
+              "\"Comment witness\": Completed in 291ms",
+              "Finished: 1/1 step(s) succeeded in 291ms, 1 change(s) made"
+            ],
+            "issues": [],
+            "executionTimeMs": 292
+          }
+        ]
+      },
+      "beforeIds": [
+        "16041"
+      ],
+      "after": [
+        {
+          "self": "https://wolfaenpak.atlassian.net/rest/api/3/issue/24824/comment/16041",
+          "id": "16041",
+          "author": {
+            "self": "https://wolfaenpak.atlassian.net/rest/api/3/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "avatarUrls": {
+              "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/48",
+              "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/24",
+              "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/16",
+              "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/32"
+            },
+            "displayName": "CogniRunner",
+            "active": true,
+            "timeZone": "Europe/Bucharest",
+            "accountType": "app"
+          },
+          "body": {
+            "type": "doc",
+            "version": 1,
+            "content": [
+              {
+                "type": "paragraph",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "claim-job-mto7s8zo"
+                  }
+                ]
+              }
+            ]
+          },
+          "updateAuthor": {
+            "self": "https://wolfaenpak.atlassian.net/rest/api/3/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "avatarUrls": {
+              "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/48",
+              "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/24",
+              "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/16",
+              "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/32"
+            },
+            "displayName": "CogniRunner",
+            "active": true,
+            "timeZone": "Europe/Bucharest",
+            "accountType": "app"
+          },
+          "created": "2026-09-05T13:02:49.432+0300",
+          "updated": "2026-09-05T13:02:49.432+0300",
+          "jsdPublic": true
+        },
+        {
+          "self": "https://wolfaenpak.atlassian.net/rest/api/3/issue/24824/comment/16042",
+          "id": "16042",
+          "author": {
+            "self": "https://wolfaenpak.atlassian.net/rest/api/3/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "avatarUrls": {
+              "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/48",
+              "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/24",
+              "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/16",
+              "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/32"
+            },
+            "displayName": "CogniRunner",
+            "active": true,
+            "timeZone": "Europe/Bucharest",
+            "accountType": "app"
+          },
+          "body": {
+            "type": "doc",
+            "version": 1,
+            "content": [
+              {
+                "type": "paragraph",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "claim-job-mto7s8zo"
+                  }
+                ]
+              }
+            ]
+          },
+          "updateAuthor": {
+            "self": "https://wolfaenpak.atlassian.net/rest/api/3/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "avatarUrls": {
+              "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/48",
+              "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/24",
+              "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/16",
+              "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/32"
+            },
+            "displayName": "CogniRunner",
+            "active": true,
+            "timeZone": "Europe/Bucharest",
+            "accountType": "app"
+          },
+          "created": "2026-09-05T13:02:51.685+0300",
+          "updated": "2026-09-05T13:02:51.685+0300",
+          "jsdPublic": true
+        },
+        {
+          "self": "https://wolfaenpak.atlassian.net/rest/api/3/issue/24824/comment/16043",
+          "id": "16043",
+          "author": {
+            "self": "https://wolfaenpak.atlassian.net/rest/api/3/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "avatarUrls": {
+              "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/48",
+              "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/24",
+              "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/16",
+              "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/32"
+            },
+            "displayName": "CogniRunner",
+            "active": true,
+            "timeZone": "Europe/Bucharest",
+            "accountType": "app"
+          },
+          "body": {
+            "type": "doc",
+            "version": 1,
+            "content": [
+              {
+                "type": "paragraph",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "claim-job-mto7s8zo"
+                  }
+                ]
+              }
+            ]
+          },
+          "updateAuthor": {
+            "self": "https://wolfaenpak.atlassian.net/rest/api/3/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "avatarUrls": {
+              "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/48",
+              "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/24",
+              "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/16",
+              "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/32"
+            },
+            "displayName": "CogniRunner",
+            "active": true,
+            "timeZone": "Europe/Bucharest",
+            "accountType": "app"
+          },
+          "created": "2026-09-05T13:02:51.718+0300",
+          "updated": "2026-09-05T13:02:51.718+0300",
+          "jsdPublic": true
+        }
+      ]
+    },
+    {
+      "name": "distinct manual replay",
+      "payload": {
+        "taskType": "scheduledjob",
+        "ruleId": "job_mto7seaxtrx1ak",
+        "taskId": "harness-claim-d1-mto7s8zo",
+        "manual": true,
+        "secondTaskId": "harness-claim-d2-mto7s8zo"
+      },
+      "result": {
+        "directConsumerProbe": true,
+        "results": [
+          {
+            "skipped": true,
+            "reason": "duplicate delivery"
+          },
+          {
+            "skipped": true,
+            "reason": "duplicate delivery"
+          }
+        ]
+      },
+      "beforeIds": [
+        "16041",
+        "16042",
+        "16043"
+      ],
+      "after": [
+        {
+          "self": "https://wolfaenpak.atlassian.net/rest/api/3/issue/24824/comment/16041",
+          "id": "16041",
+          "author": {
+            "self": "https://wolfaenpak.atlassian.net/rest/api/3/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "avatarUrls": {
+              "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/48",
+              "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/24",
+              "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/16",
+              "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/32"
+            },
+            "displayName": "CogniRunner",
+            "active": true,
+            "timeZone": "Europe/Bucharest",
+            "accountType": "app"
+          },
+          "body": {
+            "type": "doc",
+            "version": 1,
+            "content": [
+              {
+                "type": "paragraph",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "claim-job-mto7s8zo"
+                  }
+                ]
+              }
+            ]
+          },
+          "updateAuthor": {
+            "self": "https://wolfaenpak.atlassian.net/rest/api/3/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "avatarUrls": {
+              "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/48",
+              "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/24",
+              "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/16",
+              "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/32"
+            },
+            "displayName": "CogniRunner",
+            "active": true,
+            "timeZone": "Europe/Bucharest",
+            "accountType": "app"
+          },
+          "created": "2026-09-05T13:02:49.432+0300",
+          "updated": "2026-09-05T13:02:49.432+0300",
+          "jsdPublic": true
+        },
+        {
+          "self": "https://wolfaenpak.atlassian.net/rest/api/3/issue/24824/comment/16042",
+          "id": "16042",
+          "author": {
+            "self": "https://wolfaenpak.atlassian.net/rest/api/3/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "avatarUrls": {
+              "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/48",
+              "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/24",
+              "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/16",
+              "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/32"
+            },
+            "displayName": "CogniRunner",
+            "active": true,
+            "timeZone": "Europe/Bucharest",
+            "accountType": "app"
+          },
+          "body": {
+            "type": "doc",
+            "version": 1,
+            "content": [
+              {
+                "type": "paragraph",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "claim-job-mto7s8zo"
+                  }
+                ]
+              }
+            ]
+          },
+          "updateAuthor": {
+            "self": "https://wolfaenpak.atlassian.net/rest/api/3/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "avatarUrls": {
+              "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/48",
+              "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/24",
+              "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/16",
+              "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/32"
+            },
+            "displayName": "CogniRunner",
+            "active": true,
+            "timeZone": "Europe/Bucharest",
+            "accountType": "app"
+          },
+          "created": "2026-09-05T13:02:51.685+0300",
+          "updated": "2026-09-05T13:02:51.685+0300",
+          "jsdPublic": true
+        },
+        {
+          "self": "https://wolfaenpak.atlassian.net/rest/api/3/issue/24824/comment/16043",
+          "id": "16043",
+          "author": {
+            "self": "https://wolfaenpak.atlassian.net/rest/api/3/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "avatarUrls": {
+              "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/48",
+              "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/24",
+              "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/16",
+              "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/32"
+            },
+            "displayName": "CogniRunner",
+            "active": true,
+            "timeZone": "Europe/Bucharest",
+            "accountType": "app"
+          },
+          "body": {
+            "type": "doc",
+            "version": 1,
+            "content": [
+              {
+                "type": "paragraph",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "claim-job-mto7s8zo"
+                  }
+                ]
+              }
+            ]
+          },
+          "updateAuthor": {
+            "self": "https://wolfaenpak.atlassian.net/rest/api/3/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "avatarUrls": {
+              "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/48",
+              "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/24",
+              "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/16",
+              "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/32"
+            },
+            "displayName": "CogniRunner",
+            "active": true,
+            "timeZone": "Europe/Bucharest",
+            "accountType": "app"
+          },
+          "created": "2026-09-05T13:02:51.718+0300",
+          "updated": "2026-09-05T13:02:51.718+0300",
+          "jsdPublic": true
+        }
+      ]
+    },
+    {
+      "name": "same scheduled minute distinct IDs",
+      "payload": {
+        "taskType": "scheduledjob",
+        "ruleId": "job_mto7seaxtrx1ak",
+        "taskId": "harness-claim-s1-mto7s8zo",
+        "secondTaskId": "harness-claim-s2-mto7s8zo",
+        "manual": false,
+        "scheduledFor": "2026-09-05T10:02:00.000Z"
+      },
+      "result": {
+        "directConsumerProbe": true,
+        "results": [
+          {
+            "success": true,
+            "reason": "1 step(s), 1 change(s)",
+            "changes": [
+              {
+                "action": "addComment",
+                "key": "LZPT-277",
+                "id": "16044"
+              }
+            ],
+            "logs": [
+              "Starting 1 step(s) for (no current issue)",
+              "addComment: 16044",
+              "\"Comment witness\": Completed in 278ms",
+              "Finished: 1/1 step(s) succeeded in 278ms, 1 change(s) made"
+            ],
+            "issues": [],
+            "executionTimeMs": 278
+          },
+          {
+            "skipped": true,
+            "reason": "duplicate delivery"
+          }
+        ]
+      },
+      "beforeIds": [
+        "16041",
+        "16042",
+        "16043"
+      ],
+      "after": [
+        {
+          "self": "https://wolfaenpak.atlassian.net/rest/api/3/issue/24824/comment/16041",
+          "id": "16041",
+          "author": {
+            "self": "https://wolfaenpak.atlassian.net/rest/api/3/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "avatarUrls": {
+              "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/48",
+              "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/24",
+              "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/16",
+              "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/32"
+            },
+            "displayName": "CogniRunner",
+            "active": true,
+            "timeZone": "Europe/Bucharest",
+            "accountType": "app"
+          },
+          "body": {
+            "type": "doc",
+            "version": 1,
+            "content": [
+              {
+                "type": "paragraph",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "claim-job-mto7s8zo"
+                  }
+                ]
+              }
+            ]
+          },
+          "updateAuthor": {
+            "self": "https://wolfaenpak.atlassian.net/rest/api/3/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "avatarUrls": {
+              "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/48",
+              "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/24",
+              "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/16",
+              "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/32"
+            },
+            "displayName": "CogniRunner",
+            "active": true,
+            "timeZone": "Europe/Bucharest",
+            "accountType": "app"
+          },
+          "created": "2026-09-05T13:02:49.432+0300",
+          "updated": "2026-09-05T13:02:49.432+0300",
+          "jsdPublic": true
+        },
+        {
+          "self": "https://wolfaenpak.atlassian.net/rest/api/3/issue/24824/comment/16042",
+          "id": "16042",
+          "author": {
+            "self": "https://wolfaenpak.atlassian.net/rest/api/3/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "avatarUrls": {
+              "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/48",
+              "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/24",
+              "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/16",
+              "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/32"
+            },
+            "displayName": "CogniRunner",
+            "active": true,
+            "timeZone": "Europe/Bucharest",
+            "accountType": "app"
+          },
+          "body": {
+            "type": "doc",
+            "version": 1,
+            "content": [
+              {
+                "type": "paragraph",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "claim-job-mto7s8zo"
+                  }
+                ]
+              }
+            ]
+          },
+          "updateAuthor": {
+            "self": "https://wolfaenpak.atlassian.net/rest/api/3/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "avatarUrls": {
+              "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/48",
+              "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/24",
+              "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/16",
+              "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/32"
+            },
+            "displayName": "CogniRunner",
+            "active": true,
+            "timeZone": "Europe/Bucharest",
+            "accountType": "app"
+          },
+          "created": "2026-09-05T13:02:51.685+0300",
+          "updated": "2026-09-05T13:02:51.685+0300",
+          "jsdPublic": true
+        },
+        {
+          "self": "https://wolfaenpak.atlassian.net/rest/api/3/issue/24824/comment/16043",
+          "id": "16043",
+          "author": {
+            "self": "https://wolfaenpak.atlassian.net/rest/api/3/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "avatarUrls": {
+              "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/48",
+              "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/24",
+              "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/16",
+              "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/32"
+            },
+            "displayName": "CogniRunner",
+            "active": true,
+            "timeZone": "Europe/Bucharest",
+            "accountType": "app"
+          },
+          "body": {
+            "type": "doc",
+            "version": 1,
+            "content": [
+              {
+                "type": "paragraph",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "claim-job-mto7s8zo"
+                  }
+                ]
+              }
+            ]
+          },
+          "updateAuthor": {
+            "self": "https://wolfaenpak.atlassian.net/rest/api/3/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "avatarUrls": {
+              "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/48",
+              "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/24",
+              "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/16",
+              "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/32"
+            },
+            "displayName": "CogniRunner",
+            "active": true,
+            "timeZone": "Europe/Bucharest",
+            "accountType": "app"
+          },
+          "created": "2026-09-05T13:02:51.718+0300",
+          "updated": "2026-09-05T13:02:51.718+0300",
+          "jsdPublic": true
+        },
+        {
+          "self": "https://wolfaenpak.atlassian.net/rest/api/3/issue/24824/comment/16044",
+          "id": "16044",
+          "author": {
+            "self": "https://wolfaenpak.atlassian.net/rest/api/3/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "avatarUrls": {
+              "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/48",
+              "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/24",
+              "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/16",
+              "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/32"
+            },
+            "displayName": "CogniRunner",
+            "active": true,
+            "timeZone": "Europe/Bucharest",
+            "accountType": "app"
+          },
+          "body": {
+            "type": "doc",
+            "version": 1,
+            "content": [
+              {
+                "type": "paragraph",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "claim-job-mto7s8zo"
+                  }
+                ]
+              }
+            ]
+          },
+          "updateAuthor": {
+            "self": "https://wolfaenpak.atlassian.net/rest/api/3/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "avatarUrls": {
+              "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/48",
+              "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/24",
+              "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/16",
+              "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/32"
+            },
+            "displayName": "CogniRunner",
+            "active": true,
+            "timeZone": "Europe/Bucharest",
+            "accountType": "app"
+          },
+          "created": "2026-09-05T13:02:53.929+0300",
+          "updated": "2026-09-05T13:02:53.929+0300",
+          "jsdPublic": true
+        }
+      ]
+    },
+    {
+      "name": "same minute sequential replay",
+      "payload": {
+        "taskType": "scheduledjob",
+        "ruleId": "job_mto7seaxtrx1ak",
+        "taskId": "harness-claim-s1-mto7s8zo",
+        "secondTaskId": "harness-claim-s2-mto7s8zo",
+        "manual": false,
+        "scheduledFor": "2026-09-05T10:02:00.000Z"
+      },
+      "result": {
+        "directConsumerProbe": true,
+        "results": [
+          {
+            "skipped": true,
+            "reason": "duplicate delivery"
+          },
+          {
+            "skipped": true,
+            "reason": "duplicate delivery"
+          }
+        ]
+      },
+      "beforeIds": [
+        "16041",
+        "16042",
+        "16043",
+        "16044"
+      ],
+      "after": [
+        {
+          "self": "https://wolfaenpak.atlassian.net/rest/api/3/issue/24824/comment/16041",
+          "id": "16041",
+          "author": {
+            "self": "https://wolfaenpak.atlassian.net/rest/api/3/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "avatarUrls": {
+              "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/48",
+              "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/24",
+              "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/16",
+              "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/32"
+            },
+            "displayName": "CogniRunner",
+            "active": true,
+            "timeZone": "Europe/Bucharest",
+            "accountType": "app"
+          },
+          "body": {
+            "type": "doc",
+            "version": 1,
+            "content": [
+              {
+                "type": "paragraph",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "claim-job-mto7s8zo"
+                  }
+                ]
+              }
+            ]
+          },
+          "updateAuthor": {
+            "self": "https://wolfaenpak.atlassian.net/rest/api/3/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "avatarUrls": {
+              "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/48",
+              "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/24",
+              "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/16",
+              "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/32"
+            },
+            "displayName": "CogniRunner",
+            "active": true,
+            "timeZone": "Europe/Bucharest",
+            "accountType": "app"
+          },
+          "created": "2026-09-05T13:02:49.432+0300",
+          "updated": "2026-09-05T13:02:49.432+0300",
+          "jsdPublic": true
+        },
+        {
+          "self": "https://wolfaenpak.atlassian.net/rest/api/3/issue/24824/comment/16042",
+          "id": "16042",
+          "author": {
+            "self": "https://wolfaenpak.atlassian.net/rest/api/3/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "avatarUrls": {
+              "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/48",
+              "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/24",
+              "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/16",
+              "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/32"
+            },
+            "displayName": "CogniRunner",
+            "active": true,
+            "timeZone": "Europe/Bucharest",
+            "accountType": "app"
+          },
+          "body": {
+            "type": "doc",
+            "version": 1,
+            "content": [
+              {
+                "type": "paragraph",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "claim-job-mto7s8zo"
+                  }
+                ]
+              }
+            ]
+          },
+          "updateAuthor": {
+            "self": "https://wolfaenpak.atlassian.net/rest/api/3/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "avatarUrls": {
+              "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/48",
+              "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/24",
+              "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/16",
+              "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/32"
+            },
+            "displayName": "CogniRunner",
+            "active": true,
+            "timeZone": "Europe/Bucharest",
+            "accountType": "app"
+          },
+          "created": "2026-09-05T13:02:51.685+0300",
+          "updated": "2026-09-05T13:02:51.685+0300",
+          "jsdPublic": true
+        },
+        {
+          "self": "https://wolfaenpak.atlassian.net/rest/api/3/issue/24824/comment/16043",
+          "id": "16043",
+          "author": {
+            "self": "https://wolfaenpak.atlassian.net/rest/api/3/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "avatarUrls": {
+              "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/48",
+              "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/24",
+              "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/16",
+              "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/32"
+            },
+            "displayName": "CogniRunner",
+            "active": true,
+            "timeZone": "Europe/Bucharest",
+            "accountType": "app"
+          },
+          "body": {
+            "type": "doc",
+            "version": 1,
+            "content": [
+              {
+                "type": "paragraph",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "claim-job-mto7s8zo"
+                  }
+                ]
+              }
+            ]
+          },
+          "updateAuthor": {
+            "self": "https://wolfaenpak.atlassian.net/rest/api/3/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "avatarUrls": {
+              "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/48",
+              "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/24",
+              "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/16",
+              "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/32"
+            },
+            "displayName": "CogniRunner",
+            "active": true,
+            "timeZone": "Europe/Bucharest",
+            "accountType": "app"
+          },
+          "created": "2026-09-05T13:02:51.718+0300",
+          "updated": "2026-09-05T13:02:51.718+0300",
+          "jsdPublic": true
+        },
+        {
+          "self": "https://wolfaenpak.atlassian.net/rest/api/3/issue/24824/comment/16044",
+          "id": "16044",
+          "author": {
+            "self": "https://wolfaenpak.atlassian.net/rest/api/3/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "avatarUrls": {
+              "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/48",
+              "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/24",
+              "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/16",
+              "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/32"
+            },
+            "displayName": "CogniRunner",
+            "active": true,
+            "timeZone": "Europe/Bucharest",
+            "accountType": "app"
+          },
+          "body": {
+            "type": "doc",
+            "version": 1,
+            "content": [
+              {
+                "type": "paragraph",
+                "content": [
+                  {
+                    "type": "text",
+                    "text": "claim-job-mto7s8zo"
+                  }
+                ]
+              }
+            ]
+          },
+          "updateAuthor": {
+            "self": "https://wolfaenpak.atlassian.net/rest/api/3/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "avatarUrls": {
+              "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/48",
+              "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/24",
+              "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/16",
+              "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/32"
+            },
+            "displayName": "CogniRunner",
+            "active": true,
+            "timeZone": "Europe/Bucharest",
+            "accountType": "app"
+          },
+          "created": "2026-09-05T13:02:53.929+0300",
+          "updated": "2026-09-05T13:02:53.929+0300",
+          "jsdPublic": true
+        }
+      ]
+    }
+  ],
+  "cleanup": [
+    {
+      "listener": "lst_mto7sbz9dga6jt",
+      "removed": true
+    },
+    {
+      "job": "job_mto7seaxtrx1ak",
+      "removed": true
+    },
+    {
+      "issue": "LZPT-277",
+      "removed": true
+    }
+  ],
+  "claims": [
+    {
+      "key": "lst_exec:harness-claim-l-mto7s8zo",
+      "value": {
+        "at": "2026-09-05T10:02:46.232Z"
+      }
+    },
+    {
+      "key": "job_exec:job_mto7seaxtrx1ak:manual:harness-claim-m-mto7s8zo",
+      "value": {
+        "at": "2026-09-05T10:02:49.186Z"
+      }
+    },
+    {
+      "key": "job_exec:job_mto7seaxtrx1ak:manual:harness-claim-d1-mto7s8zo",
+      "value": {
+        "at": "2026-09-05T10:02:51.502Z"
+      }
+    },
+    {
+      "key": "job_exec:job_mto7seaxtrx1ak:manual:harness-claim-d2-mto7s8zo",
+      "value": {
+        "at": "2026-09-05T10:02:51.462Z"
+      }
+    },
+    {
+      "key": "job_exec:job_mto7seaxtrx1ak:2026-09-05T10:02:00.000Z",
+      "value": {
+        "at": "2026-09-05T10:02:53.703Z"
+      }
+    }
+  ],
+  "pass": true
+}

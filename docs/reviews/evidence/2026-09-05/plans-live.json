@@ -1,0 +1,206 @@
+{
+  "deployment": "22.152.0",
+  "key": "WFH-36",
+  "field": "customfield_10015",
+  "temporary": "2026-09-07",
+  "startedAt": "2026-09-05T09:47:01.061Z",
+  "plan": {
+    "id": 1,
+    "name": "LZ Import Test — Projects",
+    "leadAccountId": "712020:937bc860-eec2-4294-a65d-8e0fe7c45086",
+    "lastSaved": "2026-09-03T20:22:51Z",
+    "status": "Active",
+    "scheduling": {
+      "estimation": "Days",
+      "startDate": {
+        "type": "DateCustomField",
+        "dateCustomFieldId": 10015
+      },
+      "endDate": {
+        "type": "DueDate"
+      },
+      "inferredDates": "SprintDates",
+      "dependencies": "Sequential"
+    },
+    "issueSources": [
+      {
+        "type": "Project",
+        "value": 10001
+      },
+      {
+        "type": "Project",
+        "value": 10007
+      }
+    ],
+    "crossProjectReleases": [],
+    "exclusionRules": {
+      "issueIds": [],
+      "workStatusIds": [],
+      "workStatusCategoryIds": [],
+      "issueTypeIds": [],
+      "releaseIds": []
+    },
+    "customFields": [
+      {
+        "customFieldId": 10015,
+        "filter": false
+      }
+    ],
+    "permissions": []
+  },
+  "before": {
+    "expand": "renderedFields,names,schema,operations,editmeta,changelog,versionedRepresentations",
+    "id": "10070",
+    "self": "https://wolfaenpak.atlassian.net/rest/api/3/issue/10070",
+    "key": "WFH-36",
+    "fields": {
+      "summary": "Need CI/CD quick pipeline between Bitbucket and AWS. Victory and wins.",
+      "duedate": null,
+      "status": {
+        "self": "https://wolfaenpak.atlassian.net/rest/api/3/status/10007",
+        "description": "",
+        "iconUrl": "https://wolfaenpak.atlassian.net/images/icons/statuses/generic.png",
+        "name": "Ready for estimating",
+        "id": "10007",
+        "statusCategory": {
+          "self": "https://wolfaenpak.atlassian.net/rest/api/3/statuscategory/2",
+          "id": 2,
+          "key": "new",
+          "colorName": "blue-gray",
+          "name": "To Do"
+        }
+      },
+      "customfield_10015": null
+    }
+  },
+  "uiBefore": "\nWFH-36\n, (opens new window)\nNeed CI/CD quick pipeline between Bitbucket and AWS. Victory and wins.\n\t\nMedium\n\t\n\t\n\t\nReady for estimating\n\t\n\t\nAdrian (Deactivated)\n\t\n\n",
+  "jobId": "job_mto785znegkpvj",
+  "changeRun": {
+    "success": true,
+    "status": "done",
+    "result": {
+      "changes": [
+        {
+          "action": "updateIssue",
+          "fields": {
+            "customfield_10015": "2026-09-07"
+          },
+          "issue": "WFH-36",
+          "key": "WFH-36"
+        }
+      ],
+      "executionTimeMs": 1066,
+      "issues": [
+        {
+          "key": "WFH-36",
+          "reason": "1 step(s), 1 change(s)",
+          "success": true
+        }
+      ],
+      "logs": [
+        "Scope \"key = WFH-36\" matched 1 issue(s) (cap 1)",
+        "--- WFH-36: OK — 1 step(s), 1 change(s)",
+        "    Starting 1 step(s) for WFH-36",
+        "    \"Set mapped Start date\": Completed in 597ms",
+        "    Finished: 1/1 step(s) succeeded in 597ms, 1 change(s) made"
+      ],
+      "reason": "1/1 issue(s) processed OK, 1 change(s)",
+      "success": true,
+      "tokens": 0
+    }
+  },
+  "after": {
+    "expand": "renderedFields,names,schema,operations,editmeta,changelog,versionedRepresentations",
+    "id": "10070",
+    "self": "https://wolfaenpak.atlassian.net/rest/api/3/issue/10070",
+    "key": "WFH-36",
+    "fields": {
+      "summary": "Need CI/CD quick pipeline between Bitbucket and AWS. Victory and wins.",
+      "duedate": null,
+      "status": {
+        "self": "https://wolfaenpak.atlassian.net/rest/api/3/status/10007",
+        "description": "",
+        "iconUrl": "https://wolfaenpak.atlassian.net/images/icons/statuses/generic.png",
+        "name": "Ready for estimating",
+        "id": "10007",
+        "statusCategory": {
+          "self": "https://wolfaenpak.atlassian.net/rest/api/3/statuscategory/2",
+          "id": 2,
+          "key": "new",
+          "colorName": "blue-gray",
+          "name": "To Do"
+        }
+      },
+      "customfield_10015": "2026-09-07"
+    }
+  },
+  "uiAfter": "\nWFH-36\n, (opens new window)\nNeed CI/CD quick pipeline between Bitbucket and AWS. Victory and wins.\n\t\nMedium\n\t\nSep 07, 2026\n\t\n\t\nReady for estimating\n\t\n\t\nAdrian (Deactivated)\n\t\n\n",
+  "uiShowsTemporary": true,
+  "restoreRun": {
+    "success": true,
+    "status": "done",
+    "result": {
+      "changes": [
+        {
+          "action": "updateIssue",
+          "fields": {
+            "customfield_10015": null
+          },
+          "issue": "WFH-36",
+          "key": "WFH-36"
+        }
+      ],
+      "executionTimeMs": 803,
+      "issues": [
+        {
+          "key": "WFH-36",
+          "reason": "1 step(s), 1 change(s)",
+          "success": true
+        }
+      ],
+      "logs": [
+        "Scope \"key = WFH-36\" matched 1 issue(s) (cap 1)",
+        "--- WFH-36: OK — 1 step(s), 1 change(s)",
+        "    Starting 1 step(s) for WFH-36",
+        "    \"Restore mapped Start date\": Completed in 552ms",
+        "    Finished: 1/1 step(s) succeeded in 552ms, 1 change(s) made"
+      ],
+      "reason": "1/1 issue(s) processed OK, 1 change(s)",
+      "success": true,
+      "tokens": 0
+    }
+  },
+  "restored": {
+    "expand": "renderedFields,names,schema,operations,editmeta,changelog,versionedRepresentations",
+    "id": "10070",
+    "self": "https://wolfaenpak.atlassian.net/rest/api/3/issue/10070",
+    "key": "WFH-36",
+    "fields": {
+      "summary": "Need CI/CD quick pipeline between Bitbucket and AWS. Victory and wins.",
+      "duedate": null,
+      "status": {
+        "self": "https://wolfaenpak.atlassian.net/rest/api/3/status/10007",
+        "description": "",
+        "iconUrl": "https://wolfaenpak.atlassian.net/images/icons/statuses/generic.png",
+        "name": "Ready for estimating",
+        "id": "10007",
+        "statusCategory": {
+          "self": "https://wolfaenpak.atlassian.net/rest/api/3/statuscategory/2",
+          "id": 2,
+          "key": "new",
+          "colorName": "blue-gray",
+          "name": "To Do"
+        }
+      },
+      "customfield_10015": null
+    }
+  },
+  "uiRestored": "\nWFH-36\n, (opens new window)\nNeed CI/CD quick pipeline between Bitbucket and AWS. Victory and wins.\n\t\nMedium\n\t\n\t\n\t\nReady for estimating\n\t\n\t\nAdrian (Deactivated)\n\t\n\n",
+  "restoredExactly": true,
+  "uiRestoredExactly": true,
+  "pass": true,
+  "jobCleanup": {
+    "success": true,
+    "removed": true
+  }
+}

@@ -1,0 +1,257 @@
+[
+  {
+    "name": "positive",
+    "issue": "COGTEST-2697",
+    "success": true,
+    "result": {
+      "type": "listener",
+      "source": "test",
+      "issueKey": "COGTEST-2697",
+      "fieldId": "avi:jira:updated:issue",
+      "ruleId": "lst_mto697xq2v7clc",
+      "ruleName": "UX review unsaved dry-run",
+      "ruleWorkflow": null,
+      "eventType": "avi:jira:updated:issue",
+      "mode": "script",
+      "executionTimeMs": 5,
+      "isValid": true,
+      "reason": "Ran 1 step(s), 1 change(s)",
+      "changes": [
+        {
+          "action": "editIssue",
+          "key": "COGTEST-2697",
+          "update": {
+            "labels": [
+              {
+                "add": "cgr-review-dry-never"
+              }
+            ]
+          },
+          "simulated": true
+        }
+      ],
+      "logs": [
+        "Starting 1 step(s) for COGTEST-2697",
+        "[SIMULATION] editIssue(\"COGTEST-2697\", update {\"labels\":[{\"add\":\"cgr-review-dry-never\"}]})",
+        "\"witness\": Completed in 3ms",
+        "Finished: 1/1 step(s) succeeded in 3ms, 1 change(s) made"
+      ],
+      "stepResults": [
+        {
+          "name": "witness",
+          "index": 1,
+          "status": "success",
+          "timeMs": 3
+        }
+      ],
+      "testRun": true,
+      "skipped": false,
+      "gate": null,
+      "eventUsed": "sample"
+    }
+  },
+  {
+    "name": "project mismatch",
+    "issue": "COGTEST-2697",
+    "success": true,
+    "result": {
+      "type": "listener",
+      "source": "test",
+      "issueKey": "COGTEST-2697",
+      "fieldId": "avi:jira:updated:issue",
+      "ruleId": "lst_mto698n6mfw89g",
+      "ruleName": "UX review unsaved dry-run",
+      "ruleWorkflow": null,
+      "eventType": "avi:jira:updated:issue",
+      "mode": "script",
+      "executionTimeMs": 1,
+      "isValid": true,
+      "reason": "Ran 1 step(s), 1 change(s)",
+      "changes": [
+        {
+          "action": "editIssue",
+          "key": "COGTEST-2697",
+          "update": {
+            "labels": [
+              {
+                "add": "cgr-review-dry-never"
+              }
+            ]
+          },
+          "simulated": true
+        }
+      ],
+      "logs": [
+        "Starting 1 step(s) for COGTEST-2697",
+        "[SIMULATION] editIssue(\"COGTEST-2697\", update {\"labels\":[{\"add\":\"cgr-review-dry-never\"}]})",
+        "\"witness\": Completed in 1ms",
+        "Finished: 1/1 step(s) succeeded in 1ms, 1 change(s) made"
+      ],
+      "stepResults": [
+        {
+          "name": "witness",
+          "index": 1,
+          "status": "success",
+          "timeMs": 1
+        }
+      ],
+      "testRun": true,
+      "skipped": false,
+      "gate": null,
+      "eventUsed": "sample"
+    }
+  },
+  {
+    "name": "type mismatch",
+    "issue": "COGTEST-2697",
+    "success": true,
+    "result": {
+      "type": "listener",
+      "source": "test",
+      "issueKey": "COGTEST-2697",
+      "fieldId": "avi:jira:updated:issue",
+      "ruleId": "lst_mto6990to79rzq",
+      "ruleName": "UX review unsaved dry-run",
+      "ruleWorkflow": null,
+      "eventType": "avi:jira:updated:issue",
+      "mode": "script",
+      "executionTimeMs": 0,
+      "isValid": true,
+      "reason": "Ran 1 step(s), 1 change(s)",
+      "changes": [
+        {
+          "action": "editIssue",
+          "key": "COGTEST-2697",
+          "update": {
+            "labels": [
+              {
+                "add": "cgr-review-dry-never"
+              }
+            ]
+          },
+          "simulated": true
+        }
+      ],
+      "logs": [
+        "Starting 1 step(s) for COGTEST-2697",
+        "[SIMULATION] editIssue(\"COGTEST-2697\", update {\"labels\":[{\"add\":\"cgr-review-dry-never\"}]})",
+        "\"witness\": Completed in 0ms",
+        "Finished: 1/1 step(s) succeeded in 0ms, 1 change(s) made"
+      ],
+      "stepResults": [
+        {
+          "name": "witness",
+          "index": 1,
+          "status": "success",
+          "timeMs": 0
+        }
+      ],
+      "testRun": true,
+      "skipped": false,
+      "gate": null,
+      "eventUsed": "sample"
+    }
+  },
+  {
+    "name": "watched field mismatch",
+    "issue": "COGTEST-2697",
+    "success": true,
+    "result": {
+      "type": "listener",
+      "source": "test",
+      "issueKey": "COGTEST-2697",
+      "fieldId": "avi:jira:updated:issue",
+      "ruleId": "lst_mto699s6n3qxzi",
+      "ruleName": "UX review unsaved dry-run",
+      "ruleWorkflow": null,
+      "eventType": "avi:jira:updated:issue",
+      "mode": "script",
+      "executionTimeMs": 0,
+      "isValid": true,
+      "reason": "Ran 1 step(s), 1 change(s)",
+      "changes": [
+        {
+          "action": "editIssue",
+          "key": "COGTEST-2697",
+          "update": {
+            "labels": [
+              {
+                "add": "cgr-review-dry-never"
+              }
+            ]
+          },
+          "simulated": true
+        }
+      ],
+      "logs": [
+        "Starting 1 step(s) for COGTEST-2697",
+        "[SIMULATION] editIssue(\"COGTEST-2697\", update {\"labels\":[{\"add\":\"cgr-review-dry-never\"}]})",
+        "\"witness\": Completed in 0ms",
+        "Finished: 1/1 step(s) succeeded in 0ms, 1 change(s) made"
+      ],
+      "stepResults": [
+        {
+          "name": "witness",
+          "index": 1,
+          "status": "success",
+          "timeMs": 0
+        }
+      ],
+      "testRun": true,
+      "skipped": false,
+      "gate": null,
+      "eventUsed": "sample"
+    }
+  },
+  {
+    "name": "JQL mismatch",
+    "issue": "COGTEST-2697",
+    "success": true,
+    "result": {
+      "type": "listener",
+      "source": "test",
+      "issueKey": "COGTEST-2697",
+      "fieldId": "avi:jira:updated:issue",
+      "ruleId": "lst_mto69a6d2sa3dp",
+      "ruleName": "UX review unsaved dry-run",
+      "ruleWorkflow": null,
+      "eventType": "avi:jira:updated:issue",
+      "mode": "script",
+      "executionTimeMs": 0,
+      "isValid": true,
+      "reason": "Ran 1 step(s), 1 change(s)",
+      "changes": [
+        {
+          "action": "editIssue",
+          "key": "COGTEST-2697",
+          "update": {
+            "labels": [
+              {
+                "add": "cgr-review-dry-never"
+              }
+            ]
+          },
+          "simulated": true
+        }
+      ],
+      "logs": [
+        "Starting 1 step(s) for COGTEST-2697",
+        "[SIMULATION] editIssue(\"COGTEST-2697\", update {\"labels\":[{\"add\":\"cgr-review-dry-never\"}]})",
+        "\"witness\": Completed in 0ms",
+        "Finished: 1/1 step(s) succeeded in 0ms, 1 change(s) made"
+      ],
+      "stepResults": [
+        {
+          "name": "witness",
+          "index": 1,
+          "status": "success",
+          "timeMs": 0
+        }
+      ],
+      "testRun": true,
+      "skipped": false,
+      "gate": null,
+      "eventUsed": "sample"
+    }
+  }
+]

@@ -1,0 +1,314 @@
+{
+  "deployment": "22.152.0",
+  "code": 0,
+  "run": "76n9t",
+  "request": "JT-50",
+  "ledger": "JT-49",
+  "comments": {
+    "_expands": [
+      "attachment",
+      "renderedBody"
+    ],
+    "size": 5,
+    "start": 0,
+    "limit": 50,
+    "isLastPage": true,
+    "_links": {
+      "self": "https://wolfaenpak.atlassian.net/rest/servicedeskapi/request/JT-50/comment?expand=body&limit=50&public=true&internal=true",
+      "base": "https://wolfaenpak.atlassian.net",
+      "context": ""
+    },
+    "values": [
+      {
+        "_expands": [
+          "attachment",
+          "renderedBody"
+        ],
+        "id": "16035",
+        "body": "crjsm76n9t-needsnote please investigate",
+        "public": true,
+        "author": {
+          "accountId": "712020:937bc860-eec2-4294-a65d-8e0fe7c45086",
+          "emailAddress": "mihai@wolfaenpak.com",
+          "displayName": "Mihai Perdum",
+          "active": true,
+          "timeZone": "Europe/Bucharest",
+          "_links": {
+            "jiraRest": "https://wolfaenpak.atlassian.net/rest/api/2/user?accountId=712020%3A937bc860-eec2-4294-a65d-8e0fe7c45086",
+            "avatarUrls": {
+              "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:937bc860-eec2-4294-a65d-8e0fe7c45086/027ebed2-c8ad-4f25-981b-66069ec099e4/48",
+              "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:937bc860-eec2-4294-a65d-8e0fe7c45086/027ebed2-c8ad-4f25-981b-66069ec099e4/24",
+              "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:937bc860-eec2-4294-a65d-8e0fe7c45086/027ebed2-c8ad-4f25-981b-66069ec099e4/16",
+              "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:937bc860-eec2-4294-a65d-8e0fe7c45086/027ebed2-c8ad-4f25-981b-66069ec099e4/32"
+            },
+            "self": "https://wolfaenpak.atlassian.net/rest/api/2/user?accountId=712020%3A937bc860-eec2-4294-a65d-8e0fe7c45086"
+          }
+        },
+        "created": {
+          "iso8601": "2026-09-05T12:46:37+0300",
+          "jira": "2026-09-05T12:46:37.529+0300",
+          "friendly": "Today 12:46 PM",
+          "epochMillis": 1788601597529
+        },
+        "_links": {
+          "self": "https://wolfaenpak.atlassian.net/rest/servicedeskapi/request/24816/comment/16035"
+        }
+      },
+      {
+        "_expands": [
+          "attachment",
+          "renderedBody"
+        ],
+        "id": "16036",
+        "body": "crjsm76n9t-agentnote please investigate",
+        "public": true,
+        "author": {
+          "accountId": "712020:937bc860-eec2-4294-a65d-8e0fe7c45086",
+          "emailAddress": "mihai@wolfaenpak.com",
+          "displayName": "Mihai Perdum",
+          "active": true,
+          "timeZone": "Europe/Bucharest",
+          "_links": {
+            "jiraRest": "https://wolfaenpak.atlassian.net/rest/api/2/user?accountId=712020%3A937bc860-eec2-4294-a65d-8e0fe7c45086",
+            "avatarUrls": {
+              "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:937bc860-eec2-4294-a65d-8e0fe7c45086/027ebed2-c8ad-4f25-981b-66069ec099e4/48",
+              "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:937bc860-eec2-4294-a65d-8e0fe7c45086/027ebed2-c8ad-4f25-981b-66069ec099e4/24",
+              "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:937bc860-eec2-4294-a65d-8e0fe7c45086/027ebed2-c8ad-4f25-981b-66069ec099e4/16",
+              "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:937bc860-eec2-4294-a65d-8e0fe7c45086/027ebed2-c8ad-4f25-981b-66069ec099e4/32"
+            },
+            "self": "https://wolfaenpak.atlassian.net/rest/api/2/user?accountId=712020%3A937bc860-eec2-4294-a65d-8e0fe7c45086"
+          }
+        },
+        "created": {
+          "iso8601": "2026-09-05T12:46:37+0300",
+          "jira": "2026-09-05T12:46:37.803+0300",
+          "friendly": "Today 12:46 PM",
+          "epochMillis": 1788601597803
+        },
+        "_links": {
+          "self": "https://wolfaenpak.atlassian.net/rest/servicedeskapi/request/24816/comment/16036"
+        }
+      },
+      {
+        "_expands": [
+          "attachment",
+          "renderedBody"
+        ],
+        "id": "16037",
+        "body": "crjsm76n9t internal note — agents only",
+        "public": false,
+        "author": {
+          "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+          "displayName": "CogniRunner",
+          "active": true,
+          "timeZone": "Europe/Bucharest",
+          "_links": {
+            "jiraRest": "https://wolfaenpak.atlassian.net/rest/api/2/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "avatarUrls": {
+              "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/48",
+              "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/24",
+              "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/16",
+              "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/32"
+            },
+            "self": "https://wolfaenpak.atlassian.net/rest/api/2/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38"
+          }
+        },
+        "created": {
+          "iso8601": "2026-09-05T12:46:42+0300",
+          "jira": "2026-09-05T12:46:42.871+0300",
+          "friendly": "Today 12:46 PM",
+          "epochMillis": 1788601602871
+        },
+        "_links": {
+          "self": "https://wolfaenpak.atlassian.net/rest/servicedeskapi/request/24816/comment/16037"
+        }
+      },
+      {
+        "_expands": [
+          "attachment",
+          "renderedBody"
+        ],
+        "id": "16038",
+        "body": "crjsm76n9t public reply — customer visible",
+        "public": true,
+        "author": {
+          "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+          "displayName": "CogniRunner",
+          "active": true,
+          "timeZone": "Europe/Bucharest",
+          "_links": {
+            "jiraRest": "https://wolfaenpak.atlassian.net/rest/api/2/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "avatarUrls": {
+              "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/48",
+              "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/24",
+              "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/16",
+              "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/32"
+            },
+            "self": "https://wolfaenpak.atlassian.net/rest/api/2/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38"
+          }
+        },
+        "created": {
+          "iso8601": "2026-09-05T12:46:43+0300",
+          "jira": "2026-09-05T12:46:43.215+0300",
+          "friendly": "Today 12:46 PM",
+          "epochMillis": 1788601603215
+        },
+        "_links": {
+          "self": "https://wolfaenpak.atlassian.net/rest/servicedeskapi/request/24816/comment/16038"
+        }
+      },
+      {
+        "_expands": [
+          "attachment",
+          "renderedBody"
+        ],
+        "id": "16039",
+        "body": "crjsm76n9t agent internal",
+        "public": false,
+        "author": {
+          "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+          "displayName": "CogniRunner",
+          "active": true,
+          "timeZone": "Europe/Bucharest",
+          "_links": {
+            "jiraRest": "https://wolfaenpak.atlassian.net/rest/api/2/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "avatarUrls": {
+              "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/48",
+              "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/24",
+              "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/16",
+              "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/32"
+            },
+            "self": "https://wolfaenpak.atlassian.net/rest/api/2/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38"
+          }
+        },
+        "created": {
+          "iso8601": "2026-09-05T12:46:45+0300",
+          "jira": "2026-09-05T12:46:45.118+0300",
+          "friendly": "Today 12:46 PM",
+          "epochMillis": 1788601605118
+        },
+        "_links": {
+          "self": "https://wolfaenpak.atlassian.net/rest/servicedeskapi/request/24816/comment/16039"
+        }
+      }
+    ]
+  },
+  "issue": {
+    "expand": "renderedFields,names,schema,operations,editmeta,changelog,versionedRepresentations,customfield_10010.requestTypePractice,customfield_11081.cmdb.label,customfield_11081.cmdb.objectKey,customfield_11081.cmdb.attributes",
+    "id": "24816",
+    "self": "https://wolfaenpak.atlassian.net/rest/api/3/issue/24816",
+    "key": "JT-50",
+    "fields": {
+      "customfield_10010": {
+        "_links": {
+          "jiraRest": "https://wolfaenpak.atlassian.net/rest/api/2/issue/24816",
+          "web": "https://wolfaenpak.atlassian.net/servicedesk/customer/portal/1/JT-50",
+          "agent": "https://wolfaenpak.atlassian.net/browse/JT-50",
+          "self": "https://wolfaenpak.atlassian.net/rest/servicedeskapi/request/24816"
+        },
+        "requestType": {
+          "_expands": [
+            "field"
+          ],
+          "id": "2",
+          "_links": {
+            "self": "https://wolfaenpak.atlassian.net/rest/servicedeskapi/servicedesk/1/requesttype/2"
+          },
+          "name": "Ask a question",
+          "description": "Have a question? Submit it here.",
+          "helpText": "",
+          "defaultName": "Ask a question",
+          "issueTypeId": "10019",
+          "serviceDeskId": "1",
+          "portalId": "1",
+          "groupIds": [
+            "1"
+          ],
+          "icon": {
+            "id": "10549",
+            "_links": {
+              "iconUrls": {
+                "48x48": "https://wolfaenpak.atlassian.net/rest/api/3/universal_avatar/view/type/SD_REQTYPE/avatar/10549?size=large",
+                "24x24": "https://wolfaenpak.atlassian.net/rest/api/3/universal_avatar/view/type/SD_REQTYPE/avatar/10549?size=small",
+                "16x16": "https://wolfaenpak.atlassian.net/rest/api/3/universal_avatar/view/type/SD_REQTYPE/avatar/10549?size=xsmall",
+                "32x32": "https://wolfaenpak.atlassian.net/rest/api/3/universal_avatar/view/type/SD_REQTYPE/avatar/10549?size=medium"
+              }
+            }
+          }
+        },
+        "currentStatus": {
+          "status": "To Do",
+          "statusCategory": "NEW",
+          "statusDate": {
+            "iso8601": "2026-09-05T12:46:36+0300",
+            "jira": "2026-09-05T12:46:36.843+0300",
+            "friendly": "Today 12:46 PM",
+            "epochMillis": 1788601596843
+          }
+        }
+      },
+      "customfield_11081": [
+        {
+          "workspaceId": "be9cca2f-5f41-446f-8f5c-76cda0be8417",
+          "id": "be9cca2f-5f41-446f-8f5c-76cda0be8417:71",
+          "objectId": "71"
+        }
+      ],
+      "labels": [
+        "crjsm76n9t-assetping",
+        "crjsm76n9t-created"
+      ]
+    }
+  },
+  "context": {
+    "key": "crjsm76n9t-jsm",
+    "value": {
+      "key": "JT-50",
+      "requestType": "Ask a question",
+      "reporter": "Mihai Perdum",
+      "project": "JT"
+    }
+  },
+  "assetProperty": {
+    "key": "crjsm76n9t-asset",
+    "value": {
+      "raw": [
+        {
+          "workspaceId": "be9cca2f-5f41-446f-8f5c-76cda0be8417",
+          "id": "be9cca2f-5f41-446f-8f5c-76cda0be8417:71",
+          "objectId": "71"
+        }
+      ]
+    }
+  },
+  "cleanup": [
+    {
+      "listener": "lst_mto77n10y3k8e2",
+      "status": 200
+    },
+    {
+      "listener": "lst_mto76rxmm5d95o",
+      "status": 200
+    },
+    {
+      "listener": "lst_mto76ro5akpc81",
+      "status": 200
+    },
+    {
+      "listener": "lst_mto76rftsv6x0i",
+      "status": 200
+    },
+    {
+      "listener": "lst_mto76r337pv734",
+      "status": 200
+    },
+    {
+      "issue": "JT-50",
+      "removed": true
+    },
+    {
+      "issue": "JT-49",
+      "removed": true
+    }
+  ]
+}

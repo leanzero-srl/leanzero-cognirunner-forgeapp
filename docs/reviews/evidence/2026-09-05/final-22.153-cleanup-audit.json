@@ -1,0 +1,25 @@
+{
+  "at": "2026-09-05T10:08:05.765Z",
+  "checks": [
+    {
+      "listener": "lst_mto7sbz9dga6jt",
+      "absent": true
+    },
+    {
+      "job": "job_mto7seaxtrx1ak",
+      "absent": true
+    },
+    {
+      "issue": "LZPT-277",
+      "absent": true
+    },
+    {
+      "listener": "lst_mto7vqo2v5v504",
+      "absent": true
+    },
+    {
+      "tag": "live-race-mto7vqb3",
+      "rows": 0
+    }
+  ]
+}

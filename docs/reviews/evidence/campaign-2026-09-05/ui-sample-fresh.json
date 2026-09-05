@@ -1,0 +1,91 @@
+{
+  "phase": "fresh",
+  "startedAt": "2026-09-05T18:59:04.131Z",
+  "records": [
+    {
+      "code": "L13",
+      "eventType": "avi:jira:created:attachment",
+      "capturedAt": "2026-09-05T18:57:42.167Z",
+      "fileName": "campaignmtoo1tnz-sample-mtoqvcs9.txt",
+      "issueId": "24895",
+      "attachmentId": "11497",
+      "credentialPaths": [],
+      "exactResolverRender": true,
+      "expectedIdentityPreserved": true,
+      "payload": {
+        "atlassianId": "712020:937bc860-eec2-4294-a65d-8e0fe7c45086",
+        "attachment": {
+          "author": {
+            "accountId": "712020:937bc860-eec2-4294-a65d-8e0fe7c45086"
+          },
+          "createDate": "2026-09-05 18:57:40.965",
+          "fileName": "campaignmtoo1tnz-sample-mtoqvcs9.txt",
+          "id": "11497",
+          "issueId": "24895",
+          "mimeType": "text/plain",
+          "projectId": "10153",
+          "size": "42"
+        },
+        "context": {
+          "cloudId": "049de078-bffa-42d1-bbfb-ad8db9860adb",
+          "moduleKey": "listener-issue-child-events",
+          "userAccess": {
+            "enabled": false
+          }
+        },
+        "eventType": "avi:jira:created:attachment",
+        "permissions": {
+          "external": {
+            "fetch": {
+              "backend": [
+                "*.amazonaws.com",
+                "*.openai.azure.com",
+                "*.ts.net",
+                "https://api.anthropic.com",
+                "https://api.openai.com",
+                "https://mcp.context7.com",
+                "https://openrouter.ai"
+              ],
+              "client": [
+                "*.amazonaws.com",
+                "*.openai.azure.com",
+                "*.ts.net",
+                "https://api.anthropic.com",
+                "https://api.openai.com",
+                "https://mcp.context7.com",
+                "https://openrouter.ai"
+              ]
+            },
+            "images": [
+              "*.atlassian.net"
+            ]
+          },
+          "scopes": [
+            "manage:jira-configuration",
+            "manage:jira-project",
+            "read:issue-type-screen-scheme:jira",
+            "read:jira-user",
+            "read:jira-work",
+            "read:project:jira",
+            "read:screen-scheme:jira",
+            "read:screen-tab:jira",
+            "read:screenable-field:jira",
+            "read:workflow:jira",
+            "storage:app",
+            "write:board-scope:jira-software",
+            "write:issue:jira-software",
+            "write:jira-work",
+            "write:sprint:jira-software",
+            "write:workflow:jira"
+          ]
+        },
+        "selfGenerated": false,
+        "timestamp": "1788634661412"
+      }
+    }
+  ],
+  "errors": [],
+  "mutationRequests": [],
+  "pass": true,
+  "finishedAt": "2026-09-05T18:59:12.011Z"
+}

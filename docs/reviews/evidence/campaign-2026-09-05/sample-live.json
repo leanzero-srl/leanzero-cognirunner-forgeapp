@@ -1,0 +1,47 @@
+{
+  "startedAt": "2026-09-05T18:56:59.001Z",
+  "legacy": [
+    {
+      "eventType": "avi:jira:created:attachment",
+      "capturedAt": "2026-09-05T18:32:59.645Z",
+      "tokenAbsent": true,
+      "identityPreserved": true
+    },
+    {
+      "eventType": "avi:jira:deleted:attachment",
+      "capturedAt": "2026-09-05T18:33:30.536Z",
+      "tokenAbsent": true,
+      "identityPreserved": true
+    }
+  ],
+  "cleanup": [
+    {
+      "ruleId": "lst_mtoqvhtw96t1s0",
+      "absent": true
+    },
+    {
+      "attachmentId": "11497",
+      "absent": true
+    }
+  ],
+  "ruleId": "lst_mtoqvhtw96t1s0",
+  "attachmentId": "11497",
+  "execution": {
+    "logId": "1788634666698yy8i",
+    "timestamp": "2026-09-05T18:57:46.697Z",
+    "effect": {
+      "tokenPresent": true,
+      "fileName": "campaignmtoo1tnz-sample-mtoqvcs9.txt",
+      "issueId": "24895"
+    },
+    "exactAttachmentBytes": 42
+  },
+  "fresh": {
+    "capturedAt": "2026-09-05T18:57:42.167Z",
+    "fileName": "campaignmtoo1tnz-sample-mtoqvcs9.txt",
+    "issueId": "24895",
+    "tokenAbsent": true
+  },
+  "pass": true,
+  "finishedAt": "2026-09-05T18:57:52.064Z"
+}

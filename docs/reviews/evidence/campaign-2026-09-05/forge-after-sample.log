@@ -1,0 +1,12 @@
+Warning: Your version of Forge CLI is out of date. We recommend you update to the latest version to get the latest features and bug fixes.
+Run npm install -g @forge/cli@latest to update from version 13.4.0 to 13.5.0.
+
+INFO    2026-09-05T18:53:08.023Z 86111880-73f8-4cf7-abd5-b30e9925f9a8 [job] tick: 12 job(s), 0 due, 0 queued in 260ms
+INFO    2026-09-05T18:56:22.195Z 8bec1695-78c1-4ae2-b030-b096ab28aeb3 getConfigs orphan summary: {"checked":455,"retained":455,"removed":0,"workflows":5,"failedWorkflows":0,"partial":false,"removedExamples":[],"errorExamples":[]}
+INFO    2026-09-05T18:56:22.321Z 8bec1695-78c1-4ae2-b030-b096ab28aeb3 getConfigs filter="all" role=admin scope=all total=455 shown=455
+INFO    2026-09-05T18:57:43.641Z 94101af5-99db-42db-8aca-581a97e17995 [listener] avi:jira:created:attachment: "campaignmtoo1tnz-sample-mtoqvcs9" (lst_mtoqvhtw96t1s0) queued as 9998211365336700_listener_fmumg6 for LZPT-284
+INFO    2026-09-05T18:57:43.716Z 94101af5-99db-42db-8aca-581a97e17995 [listener] avi:jira:created:attachment: queued 1 run(s) in 1660ms
+INFO    2026-09-05T18:57:45.520Z 9eff5314-7107-4f97-856f-0830529a24c5 Async handler: executing listener (9998211365336700_listener_fmumg6)
+INFO    2026-09-05T18:57:47.034Z 9eff5314-7107-4f97-856f-0830529a24c5 Async handler: listener (9998211365336700_listener_fmumg6) completed
+INFO    2026-09-05T18:59:09.419Z 9b416004-c450-4bff-a35e-26987de81294 getConfigs orphan summary: {"checked":455,"retained":455,"removed":0,"workflows":5,"failedWorkflows":0,"partial":false,"removedExamples":[],"errorExamples":[]}
+INFO    2026-09-05T18:59:09.484Z 9b416004-c450-4bff-a35e-26987de81294 getConfigs filter="all" role=admin scope=all total=455 shown=455

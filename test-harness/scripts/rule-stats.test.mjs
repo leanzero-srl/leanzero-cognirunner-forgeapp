@@ -267,6 +267,26 @@ await check("clearLogs pages past pending receipts without discarding their coun
   assert.equal((await getListener(rule.id)).stats.runCount, 1);
 });
 
+await check("clearLogs batches 100 mixed-family receipts into two bounded queue pushes", async () => {
+  const listener = seed("listener"); const job = seed("scheduledjob");
+  for (let i = 0; i < 100; i++) await receipt(i % 2 ? "listener" : "scheduledjob", i % 2 ? listener : job);
+  pushed.length = 0;
+  const push = Queue.prototype.push; const batches = [];
+  Queue.prototype.push = async function(events) {
+    assert.ok(Array.isArray(events)); batches.push(events);
+    return push.call(this, events);
+  };
+  try {
+    assert.deepEqual(await resolve({ call: { functionKey: "clearLogs" } }, { principal: { accountId: "stats-test-admin" } }), { success: true });
+  } finally { Queue.prototype.push = push; }
+  assert.deepEqual(batches.map(events => events.length), [50, 50]);
+  assert.ok(batches.flat().every(event => event.body.params.clearAfterApply === true));
+  await drain();
+  assert.equal((await getListener(listener.id)).stats.runCount, 50);
+  assert.equal((await getJob(job.id)).stats.runCount, 50);
+  assert.equal((await readLogs()).length, 0);
+});
+
 await check("pruning preserves old pending receipts and delayed deliveries after pruning never recount", async () => {
   const rule = seed("scheduledjob"); const { key, event } = await receipt("scheduledjob", rule);
   // Move the pending receipt to a key older than the one-hour prune cutoff.

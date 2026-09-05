@@ -23,7 +23,7 @@ import { chat as forgeLlmChatApi, list as forgeLlmListApi } from "@forge/llm";
 // `storage` was deprecated from @forge/api — migrated to @forge/kvs.
 // Aliased back to `storage` so the existing get/set/delete call sites stay unchanged.
 import storage from "@forge/kvs";
-import { LOG_ENTRY_PREFIX, LOG_TTL, logEntryKey, enqueueRuleStats, pendingRuleStats } from "./rule-stats.js";
+import { LOG_ENTRY_PREFIX, LOG_TTL, logEntryKey, enqueueRuleStats, enqueueRuleStatsBatch, pendingRuleStats } from "./rule-stats.js";
 import Resolver from "@forge/resolver";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import path from "node:path";
@@ -1267,13 +1267,15 @@ resolver.define("clearLogs", async ({ context }) => {
       if (cursor) query = query.cursor(cursor);
       const page = await query.getMany();
       const keys = [];
+      const receipts = [];
       for (const row of page.results || []) {
         if (row.value?.statsReceipt) {
-          if (!(row.value.statsOnly && row.value.statsReceipt.applied)) await enqueueRuleStats(row.key, row.value.statsReceipt, true);
+          if (!(row.value.statsOnly && row.value.statsReceipt.applied)) receipts.push({ key: row.key, receipt: row.value.statsReceipt });
         }
         else keys.push({ key: row.key });
       }
       if (!(page.results || []).length) break;
+      await enqueueRuleStatsBatch(receipts, true);
       for (let j = 0; j < keys.length; j += 25) {
         await storage.batchDelete(keys.slice(j, j + 25));
       }

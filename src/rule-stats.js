@@ -41,14 +41,23 @@ export const statsReceipt = (kind, rule, entry, issueKey = null) => ({
   ...(kind === "listener" ? { issueKey: issueKey || null } : {}),
 });
 
-const queueEvent = (receiptKey, receipt, clearAfterApply = false) => ({
-  body: { taskType: STATS_TASK_TYPE, taskId: receiptKey, params: { receiptKey, kind: receipt.kind, clearAfterApply } },
-  concurrency: { key: FAMILIES[receipt.kind].map, limit: 1 },
-});
+const queueEvent = (receiptKey, receipt, clearAfterApply = false) => {
+  if (!FAMILIES[receipt?.kind] || !String(receiptKey).startsWith(LOG_ENTRY_PREFIX)) throw new Error("Invalid statistics receipt");
+  return {
+    body: { taskType: STATS_TASK_TYPE, taskId: receiptKey, params: { receiptKey, kind: receipt.kind, clearAfterApply } },
+    concurrency: { key: FAMILIES[receipt.kind].map, limit: 1 },
+  };
+};
 
 export const enqueueRuleStats = async (receiptKey, receipt, clearAfterApply = false) => {
-  if (!FAMILIES[receipt?.kind] || !String(receiptKey).startsWith(LOG_ENTRY_PREFIX)) throw new Error("Invalid statistics receipt");
   await queue().push(queueEvent(receiptKey, receipt, clearAfterApply));
+};
+
+// Forge accepts at most 50 events per push. Both recovery and Clear Logs use
+// batches so one page costs two pushes, not 100 sequential network round trips.
+export const enqueueRuleStatsBatch = async (receipts, clearAfterApply = false) => {
+  const events = receipts.map(({ key, receipt }) => queueEvent(key, receipt, clearAfterApply));
+  for (let i = 0; i < events.length; i += 50) await queue().push(events.slice(i, i + 50));
 };
 
 // Delete the record/index membership and stage its cleanup receipt atomically.
@@ -112,8 +121,6 @@ export const recoverRuleStats = async (cursor = null) => {
   if (cursor) query = query.cursor(cursor);
   const page = await query.getMany();
   const pending = (page.results || []).filter(({ value }) => pendingRuleStats(value));
-  for (let i = 0; i < pending.length; i += 50) {
-    await queue().push(pending.slice(i, i + 50).map(({ key, value }) => queueEvent(key, value.statsReceipt)));
-  }
+  await enqueueRuleStatsBatch(pending.map(({ key, value }) => ({ key, receipt: value.statsReceipt })));
   return page.nextCursor || null;
 };

@@ -68,7 +68,7 @@ async function provision() {
  await add('L15','Link created endpoints','avi:jira:created:issuelink',B,{filters:{projectKeys:['LZPT'],jql:`key in (${B},${C})`}},'{source:api.context.event.sourceIssueId,destination:api.context.event.destinationIssueId}');
  await add('L16','Link deleted endpoints','avi:jira:deleted:issuelink',B,{filters:{projectKeys:['LZPT'],jql:`key in (${B},${C})`}},'{source:api.context.event.sourceIssueId,destination:api.context.event.destinationIssueId}');
  for(const[code,title,event,entity]of[['L17','Version created','avi:jira:created:version','version'],['L18','Version released','avi:jira:released:version','version'],['L19','Component created','avi:jira:created:component','component']]) await newRule('listeners',code,title,{events:[event],filters:{projectKeys:['LZPT']},functions:[{name:title,code:`if(!(api.context.event.${entity}.name||'').startsWith('${T}'))return; ${eventCode(code,ledger,`api.context.event.${entity}`)}`} ]});
- await add('L20','Failure stops following steps','avi:jira:commented:issue',A,{filters:{projectKeys:['LZPT'],jql:`key = ${A}`,commentPattern:T+'-failure'},functions:[{name:'Expected deliberate failure',code:`throw new Error('${T}-expected-failure');`},{name:'Must not execute',code:`await api.addLabels('${T}-L20-never');`}]});
+ await add('L20','Partial failure continues later steps','avi:jira:commented:issue',A,{filters:{projectKeys:['LZPT'],jql:`key = ${A}`,commentPattern:T+'-failure'},functions:[{name:'Expected deliberate failure',code:`throw new Error('${T}-expected-failure');`},{name:'Independent following step',code:`await api.addLabels('${T}-L20-continued');`}]});
  await add('L21','Simulation records no write','avi:jira:commented:issue',A,{filters:{projectKeys:['LZPT'],jql:`key = ${A}`,commentPattern:T+'-simulation'},simulationMode:true});
  await add('L22','Disabled then enabled','avi:jira:commented:issue',A,{filters:{projectKeys:['LZPT'],jql:`key = ${A}`,commentPattern:T+'-disabled'},enabled:false});
  const job=(code,title,config)=>newRule('jobs',code,title,{schedule:{cron:'*/5 * * * *',timeZone:'UTC'},...config});
@@ -115,11 +115,11 @@ async function listeners() {
  await attempt('L08 deleted issue',async()=>{const key=await createIssue('delete event');await sleep(7000);await del(`/rest/api/3/issue/${key}`);state.fixtures.issues=state.fixtures.issues.filter(k=>k!==key);save();await listenerResult('L08',ledger,{key});await assert.rejects(()=>getIssue(key,['summary']),e=>e.status===404);});
  await attempt('L09 deleted comment',async()=>{const c=await send(B,T+' delete this comment');await del(`/rest/api/3/issue/${B}/comment/${c.id}`);await listenerResult('L09',B,{id:c.id});await assert.rejects(()=>get(`/rest/api/3/issue/${B}/comment/${c.id}`),e=>e.status===404);});
  await attempt('L10 L11 L12 worklog lifecycle',async()=>{const w=await post(`/rest/api/3/issue/${B}/worklog`,{timeSpentSeconds:600,comment:adf(T+' worklog')});state.worklog=w.id;save();await listenerResult('L10',B,{id:w.id,timeSpentSeconds:600});await put(`/rest/api/3/issue/${B}/worklog/${w.id}`,{timeSpentSeconds:900});await listenerResult('L11',B,{id:w.id,timeSpentSeconds:900});assert.equal((await get(`/rest/api/3/issue/${B}/worklog/${w.id}`)).timeSpentSeconds,900);await del(`/rest/api/3/issue/${B}/worklog/${w.id}`);await listenerResult('L12',B,{id:w.id});});
- await attempt('L13 L14 attachment lifecycle',async()=>{const content=Buffer.from(T+' exact attachment bytes\n');const fd=new FormData();fd.append('file',new Blob([content],{type:'text/plain'}),T+'.txt');const {loadEnv}=await import('../lib/env.mjs');const env=loadEnv();const auth='Basic '+Buffer.from(env.JIRA_ADMIN_EMAIL+':'+env.JIRA_API_TOKEN).toString('base64');const response=await fetch(BASE+`/rest/api/3/issue/${B}/attachments`,{method:'POST',headers:{Authorization:auth,'X-Atlassian-Token':'no-check'},body:fd});assert.equal(response.status,200);const [a]=await response.json();state.attachment=a.id;save();await listenerResult('L13',B,{id:a.id,filename:T+'.txt'});const download=await fetch(BASE+`/rest/api/3/attachment/content/${a.id}`,{headers:{Authorization:auth}});assert.equal(download.status,200);assert.deepEqual(Buffer.from(await download.arrayBuffer()),content);await del(`/rest/api/3/attachment/${a.id}`);await listenerResult('L14',B,{id:a.id});});
+ await attempt('L13 L14 attachment lifecycle',async()=>{const content=Buffer.from(T+' exact attachment bytes\n');const fd=new FormData();fd.append('file',new Blob([content],{type:'text/plain'}),T+'.txt');const {loadEnv}=await import('../lib/env.mjs');const env=loadEnv();const auth='Basic '+Buffer.from(env.JIRA_ADMIN_EMAIL+':'+env.JIRA_API_TOKEN).toString('base64');const response=await fetch(BASE+`/rest/api/3/issue/${B}/attachments`,{method:'POST',headers:{Authorization:auth,'X-Atlassian-Token':'no-check'},body:fd});assert.equal(response.status,200);const [a]=await response.json();state.attachment=a.id;save();await listenerResult('L13',B,{id:a.id,fileName:T+'.txt'});const download=await fetch(BASE+`/rest/api/3/attachment/content/${a.id}`,{headers:{Authorization:auth}});assert.equal(download.status,200);assert.deepEqual(Buffer.from(await download.arrayBuffer()),content);await del(`/rest/api/3/attachment/${a.id}`);await listenerResult('L14',B,{id:a.id});});
  await attempt('L15 L16 link lifecycle',async()=>{const lt=(await get('/rest/api/3/issueLinkType')).issueLinkTypes[0];await post('/rest/api/3/issueLink',{type:{name:lt.name},inwardIssue:{key:B},outwardIssue:{key:C}});const ls=(await getIssue(B,['issuelinks'])).fields.issuelinks;const link=ls.find(l=>(l.outwardIssue||l.inwardIssue)?.key===C);assert.ok(link);state.link=link.id;save();const ids=[(await getIssue(B,['summary'])).id,(await getIssue(C,['summary'])).id];await listenerResult('L15',B);const val=await prop(B,'L15');assert.deepEqual([String(val.data.source),String(val.data.destination)].sort(),ids.sort());await del(`/rest/api/3/issueLink/${link.id}`);await listenerResult('L16',B);});
  await attempt('L17 L18 version',async()=>{const v=await post('/rest/api/3/version',{name:T+'-version',projectId:Number(state.project.id)});state.fixtures.versions.push(v.id);save();await listenerResult('L17',ledger,{id:v.id,name:v.name});await put(`/rest/api/3/version/${v.id}`,{released:true});await listenerResult('L18',ledger,{id:v.id,name:v.name,released:true});assert.equal((await get(`/rest/api/3/version/${v.id}`)).released,true);});
  await attempt('L19 component',async()=>{const c=await post('/rest/api/3/component',{name:T+'-component',project:'LZPT'});state.fixtures.components.push(c.id);save();await listenerResult('L19',ledger,{id:c.id,name:c.name});});
- await attempt('L20 expected error',async()=>{await send(A,T+'-failure');const log=await listenerResult('L20',A,{},false);assert.ok(log.reason.includes(T+'-expected-failure'));assert.ok(!(await getIssue(A,['labels'])).fields.labels.includes(T+'-L20-never'));record('L20 failed step and no downstream write');});
+ await attempt('L20 expected error',async()=>{await send(A,T+'-failure');const log=await listenerResult('L20',A,{},false);assert.ok(log.reason.includes(T+'-expected-failure'));assert.equal(log.stepResults[0].status,'error');assert.equal(log.stepResults[1].status,'success');assert.ok((await getIssue(A,['labels'])).fields.labels.includes(T+'-L20-continued'));record('L20 overall failure and later-step write are reported');});
  await attempt('L21 simulation',async()=>{await send(A,T+'-simulation');const ls=await poll(()=>logs(row('listeners','L21').id),x=>x.some(l=>l.isValid&&l.source==='async'));assert.equal(await prop(A,'L21'),null);assert.ok(ls.some(l=>l.changes?.length));row('listeners','L21').logs=ls;record('L21 real event simulation with no Jira property');});
  await attempt('L22 disabled then enabled',async()=>{await send(A,T+'-disabled');await sleep(7000);assert.equal(await prop(A,'L22'),null);assert.equal((await logs(row('listeners','L22').id)).length,0);const item=row('listeners','L22');must(await rulesApi.listeners.update(item.id,{functions:[{name:'Record enabled comment identity',code:`await api.setProperty('${T}-L22',{marker:'L22',data:{commentId:api.context.event.comment.id}});`}]}),'update enabled witness');must(await rulesApi.listeners.enable(item.id),'enable');await sleep(35000);const c=await send(A,T+'-disabled');await listenerResult('L22',A,{commentId:c.id});record('L22 negative and positive delivered event');});
  state.listenersFinishedAt=new Date().toISOString();save();
@@ -158,6 +158,29 @@ async function jobs() {
  await attempt('scheduled negative and per-issue details',async()=>{assert.equal(await prop(state.C,'J03'),null);assert.equal(await prop(state.B,'J06'),null);assert.ok(!(await getIssue(state.C,['labels'])).fields.labels.includes(T+'-J07-never'));assert.equal((await markerComments(state.C,T+'-J07-never')).length,0);for(const code of ['J02','J03','J06','J09']){const result=row('jobs',code).scheduled;assert.ok(result);const expected=code==='J06'?3:code==='J09'?1:2;assert.equal(result.perIssue.length,expected);for(const item of result.perIssue)assert.equal(item.success,!(code==='J06'&&item.key===state.B));}for(const code of ['J09','J10'])assert.ok((await getIssue(state.ai,['labels'])).fields.labels.includes(T+'-'+code));record('Scheduled excluded, failed and simulated targets unchanged; all scoped statuses exact');});
  state.jobsFinishedAt=new Date().toISOString();save();
 }
+async function retryListeners() {
+ const {tag:T,A,B}=state;
+ // Preserve the first-run failures; retry only the corrected fixture expectations.
+ const item=row('listeners','L20');
+ must(await rulesApi.listeners.update(item.id,{name:`${T} L20 Partial failure continues later steps`,functions:[{name:'Expected deliberate failure',code:`throw new Error('${T}-expected-failure');`},{name:'Independent following step',code:`await api.addLabels('${T}-L20-continued');`}]}),'rename partial failure witness');
+ for(const code of ['L13','L14','L20'])must(await rulesApi.listeners.enable(row('listeners',code).id),'enable retry');
+ await sleep(35000);
+ await attempt('L13 L14 exact Forge fileName retry',async()=>{
+  const content=Buffer.from(T+' retry exact bytes\n'), filename=T+'-retry.txt';
+  const fd=new FormData();fd.append('file',new Blob([content],{type:'text/plain'}),filename);
+  const {loadEnv}=await import('../lib/env.mjs');const e=loadEnv();const auth='Basic '+Buffer.from(e.JIRA_ADMIN_EMAIL+':'+e.JIRA_API_TOKEN).toString('base64');
+  const r=await fetch(BASE+`/rest/api/3/issue/${B}/attachments`,{method:'POST',headers:{Authorization:auth,'X-Atlassian-Token':'no-check'},body:fd});assert.equal(r.status,200);const[a]=await r.json();
+  await listenerResult('L13',B,{id:a.id,fileName:filename});
+  const d=await fetch(BASE+`/rest/api/3/attachment/content/${a.id}`,{headers:{Authorization:auth}});assert.equal(d.status,200);assert.deepEqual(Buffer.from(await d.arrayBuffer()),content);
+  await del(`/rest/api/3/attachment/${a.id}`);await listenerResult('L14',B,{id:a.id,fileName:filename});
+  await assert.rejects(()=>get(`/rest/api/3/attachment/${a.id}`),e=>e.status===404);record('L13 L14 corrected payload field and downloaded bytes');
+ });
+ await attempt('L20 established continuation contract',async()=>{
+  await post(`/rest/api/3/issue/${A}/comment`,{body:adf(T+'-failure retry')});const log=await listenerResult('L20',A,{},false);
+  assert.equal(log.stepResults[0].status,'error');assert.equal(log.stepResults[1].status,'success');assert.ok(log.reason.includes(T+'-expected-failure'));
+  assert.ok((await getIssue(A,['labels'])).fields.labels.includes(T+'-L20-continued'));record('L20 overall FAILED with independently verified later-step write');
+ });
+}
 async function snapshot() {
  for(const kind of ['listeners','jobs'])for(const item of state[kind]){item.final=must(await rulesApi[kind].get(item.id),'final GET')[kind==='listeners'?'listener':'job'];item.logs=await logs(item.id);save();}
  state.finalIssues={};for(const key of state.fixtures.issues)state.finalIssues[key]=await getIssue(key,['summary','labels','assignee','priority','comment','attachment','issuelinks']);save();
@@ -171,13 +194,13 @@ async function cleanup() {
  for(const kind of ['listeners','jobs']){const list=must(await rulesApi[kind].list(),'final collection')[kind];assert.ok(!list.some(x=>state[kind].some(y=>y.id===x.id)));for(const old of state.baseline[kind])assert.ok(list.some(x=>x.id===old.id&&x.enabled===old.enabled));record(kind+' cleanup collection and unrelated state preserved');}
  state.cleanedAt=new Date().toISOString();save();
 }
-try { assert.ok(['provision','listeners','jobs','snapshot','cleanup'].includes(phase),'Choose provision|listeners|jobs|snapshot|cleanup');await ({provision,listeners,jobs,snapshot,cleanup})[phase](); }
+try { assert.ok(['provision','listeners','jobs','snapshot','cleanup','retryListeners'].includes(phase),'Choose provision|listeners|jobs|snapshot|cleanup|retryListeners');await ({provision,listeners,jobs,snapshot,cleanup,retryListeners})[phase](); }
 catch(e){state.fatal={phase,error:e.stack};save();console.error(e.stack);process.exitCode=1;}
 finally {
  // A transport failure during a phase must not leave recurring AI jobs enabled.
  // Each owned rule gets its own cleanup attempt; one failure cannot skip siblings.
- if(phase==='jobs'||phase==='listeners'||process.exitCode){
-  const kinds=process.exitCode?['listeners','jobs']:[phase];
+ if(phase==='jobs'||phase==='listeners'||phase==='retryListeners'||process.exitCode){
+  const kinds=process.exitCode?['listeners','jobs']:[phase==='retryListeners'?'listeners':phase];
   for(const kind of kinds)for(const item of state[kind]){
    try{const response=await rulesApi[kind].disable(item.id);if(response.status!==404)must(response,'quiesce '+item.code);item.quiesced=true;save();}
    catch(e){state.checks.push({name:'quiesce '+item.code,pass:false,error:e.message});process.exitCode=1;save();}

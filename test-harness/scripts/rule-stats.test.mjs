@@ -14,8 +14,8 @@ const { default: storage } = await import("@forge/kvs");
 const { pushed, Queue, default: jira } = await import("@forge/api");
 const { handler: consume } = await import("../../src/async-handler.js");
 const { storeLog, readLogs, handler: resolve } = await import("../../src/index.js");
-const { normalizeListener, executeListenerTask, getListener, deleteListener } = await import("../../src/listeners.js");
-const { normalizeJob, executeScheduledJobTask, getJob, deleteJob, scheduledTick } = await import("../../src/scheduled-jobs.js");
+const { normalizeListener, executeListenerTask, getListener, deleteListener, toIndexRow: listenerRow, readListenerIndex } = await import("../../src/listeners.js");
+const { normalizeJob, executeScheduledJobTask, getJob, deleteJob, scheduledTick, toIndexRow: jobRow } = await import("../../src/scheduled-jobs.js");
 const { processRuleStatsReceipt, statsReceipt, enqueueRuleStats, recoverRuleStats, pendingRuleStats } = await import("../../src/rule-stats.js");
 
 let passed = 0; let failed = 0;
@@ -168,6 +168,60 @@ for (const kind of ["listener", "scheduledjob"]) for (const recreate of [false, 
   assert.ok((await readLogs()).every(entry => !entry.statsOnly));
 });
 
+for (const kind of ["listener", "scheduledjob"]) await check(`${kind} delete resolver leaves record, index and counters intact when receipt transaction fails`, async () => {
+  const rule = seed(kind); const isListener = kind === "listener";
+  const indexKey = isListener ? "listener_index" : "job_index";
+  const mapKey = isListener ? "listener_stats" : "job_stats";
+  const rows = [(isListener ? listenerRow : jobRow)(rule)];
+  storage.__seed(indexKey, rows); storage.__seed(mapKey, { [rule.id]: { runCount: 2 } });
+  if (isListener) await readListenerIndex(); // Populate the warm-container cache.
+  const transact = storage.transact; const staged = [];
+  storage.transact = () => {
+    const transaction = transact(); const set = transaction.set;
+    transaction.set = (key, value, entity, options) => { staged.push({ key, value, entity, options }); return set(key, value, entity, options); };
+    transaction.execute = async () => {
+      assert.ok(staged.some(operation => operation.value?.statsOnly));
+      throw new Error("TOO_MANY_REQUESTS 429 for atomic cleanup receipt");
+    };
+    return transaction;
+  };
+  const request = { call: { functionKey: isListener ? "deleteListener" : "deleteScheduledJob", payload: { id: rule.id } } };
+  const context = { principal: { accountId: "stats-test-admin" } };
+  try {
+    const result = await resolve(request, context);
+    assert.equal(result.success, false); assert.match(result.error, /429/);
+  } finally { storage.transact = transact; }
+  assert.deepEqual(await storage.get((isListener ? "listener:" : "job:") + rule.id), rule);
+  assert.deepEqual(await storage.get(indexKey), rows);
+  assert.deepEqual(await storage.get(mapKey), { [rule.id]: { runCount: 2 } });
+  assert.equal(pushed.length, 0);
+  assert.equal((await storage.query().where("key", { condition: "BEGINS_WITH", values: ["log_entry:"] }).limit(100).getMany()).results.length, 0);
+  if (isListener) assert.deepEqual(await readListenerIndex({ cached: true }), rows);
+  assert.equal((await resolve(request, context)).success, true);
+  assert.equal(await storage.get((isListener ? "listener:" : "job:") + rule.id), undefined);
+  assert.deepEqual(await storage.get(indexKey), []);
+  if (isListener) assert.deepEqual(await readListenerIndex({ cached: true }), []);
+  await drain(); assert.equal((await storage.get(mapKey))[rule.id], undefined);
+});
+
+for (const kind of ["listener", "scheduledjob"]) await check(`${kind} committed deletion survives cleanup enqueue failure`, async () => {
+  const rule = seed(kind); const isListener = kind === "listener";
+  const mapKey = isListener ? "listener_stats" : "job_stats";
+  storage.__seed(isListener ? "listener_index" : "job_index", [(isListener ? listenerRow : jobRow)(rule)]);
+  storage.__seed(mapKey, { [rule.id]: { runCount: 2 } });
+  const push = Queue.prototype.push;
+  Queue.prototype.push = async () => { throw new Error("queue unavailable"); };
+  try {
+    assert.equal((await resolve({ call: { functionKey: isListener ? "deleteListener" : "deleteScheduledJob", payload: { id: rule.id } } }, { principal: { accountId: "stats-test-admin" } })).success, true);
+  } finally { Queue.prototype.push = push; }
+  assert.equal(await storage.get((isListener ? "listener:" : "job:") + rule.id), undefined);
+  const rows = (await storage.query().where("key", { condition: "BEGINS_WITH", values: ["log_entry:"] }).limit(100).getMany()).results;
+  assert.equal(rows.length, 1); assert.ok(pendingRuleStats(rows[0].value));
+  assert.equal(rows[0].value.statsReceipt.remove, true);
+  await recoverRuleStats(); await drain();
+  assert.equal((await storage.get(mapKey))[rule.id], undefined);
+});
+
 await check("clearing a pending log atomically counts it and retains only hidden deduplication evidence", async () => {
   const rule = seed("listener"); const { key, event, stats } = await receipt("listener", rule);
   await enqueueRuleStats(key, stats, true); const clearEvent = pushed.at(-1);
@@ -256,6 +310,26 @@ await check("installed KVS transaction builder puts TTL in options, not custom e
     const logSet = request.set.find(operation => operation.key.startsWith("log_entry:"));
     assert.deepEqual(logSet.options, { ttl: { value: 30, unit: "DAYS" } }); assert.equal(logSet.entityName, undefined);
     assert.equal(request.set.length, 2);
+  } finally { storage.transact = transact; }
+});
+
+await check("installed KVS transaction builder stages rule/index/cleanup deletion together", async () => {
+  const require = createRequire(import.meta.url);
+  const { TransactionBuilderImpl } = require("../../node_modules/@forge/kvs/out/transaction-api.js");
+  const transact = storage.transact;
+  try {
+    for (const kind of ["listener", "scheduledjob"]) {
+      const rule = seed(kind); let request;
+      storage.transact = () => new TransactionBuilderImpl({ transact: async value => { request = value; } });
+      await (kind === "listener" ? deleteListener : deleteJob)(rule.id);
+      assert.equal(request.set.length, 2); assert.equal(request.delete.length, 1);
+      assert.equal(request.delete[0].key, (kind === "listener" ? "listener:" : "job:") + rule.id);
+      assert.deepEqual(request.set.find(operation => operation.key === (kind === "listener" ? "listener_index" : "job_index")).value, []);
+      const receiptSet = request.set.find(operation => operation.value?.statsOnly);
+      assert.equal(receiptSet.value.statsReceipt.remove, true);
+      assert.deepEqual(receiptSet.options, { ttl: { value: 30, unit: "DAYS" } }); assert.equal(receiptSet.entityName, undefined);
+      assert.ok(!request.set.some(operation => operation.key.endsWith("_stats")));
+    }
   } finally { storage.transact = transact; }
 });
 

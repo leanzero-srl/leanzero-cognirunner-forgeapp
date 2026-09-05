@@ -42,7 +42,7 @@ import { normalizeAllowedActions, DEFAULT_AGENT_ACTIONS, DEFAULT_AGENT_ROUNDS, M
 import { redosRisk } from "./shared/regex-safety.js";
 import { agentResultFields } from "./shared/agent-result.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
-import { LISTENER_STATS_KEY, statsForRule, statsReceipt, removeRuleStats } from "./rule-stats.js";
+import { LISTENER_STATS_KEY, statsForRule, statsReceipt, deleteRuleWithStats } from "./rule-stats.js";
 
 const idx = () => import("./index.js");
 const agentMod = () => import("./agent-runner.js");
@@ -229,9 +229,9 @@ export const deleteListener = async (id) => {
   const full = await getListener(id);
   const rows = await readListenerIndex();
   const next = rows.filter((r) => r.id !== id);
-  if (next.length !== rows.length) await writeListenerIndex(next);
-  await storage.delete(LISTENER_PREFIX + safeKeyPart(id));
-  await removeRuleStats("listener", full);
+  if (!full && next.length === rows.length) return { removed: false };
+  await deleteRuleWithStats({ kind: "listener", rule: full || { id, createdAt: null }, recordKey: LISTENER_PREFIX + safeKeyPart(id), indexKey: LISTENER_INDEX_KEY, indexRows: next });
+  _indexCache = null;
   return { removed: next.length !== rows.length };
 };
 

@@ -41,7 +41,7 @@ import { normalizeAllowedActions, DEFAULT_AGENT_ACTIONS, DEFAULT_AGENT_ROUNDS, M
 import { normalizeStep } from "./listeners.js";
 import { agentResultFields, SCOPED_AGENT_SUMMARY_BUDGET_BYTES, boundScopedJobLog } from "./shared/agent-result.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
-import { JOB_STATS_KEY, statsForRule, statsReceipt, removeRuleStats, recoverRuleStats } from "./rule-stats.js";
+import { JOB_STATS_KEY, statsForRule, statsReceipt, deleteRuleWithStats, recoverRuleStats } from "./rule-stats.js";
 
 const idx = () => import("./index.js");
 const agentMod = () => import("./agent-runner.js");
@@ -177,9 +177,8 @@ export const deleteJob = async (id) => {
   const full = await getJob(id);
   const rows = await readJobIndex();
   const next = rows.filter((r) => r.id !== id);
-  if (next.length !== rows.length) await writeJobIndex(next);
-  await storage.delete(JOB_PREFIX + safeKeyPart(id));
-  await removeRuleStats("scheduledjob", full);
+  if (!full && next.length === rows.length) return { removed: false };
+  await deleteRuleWithStats({ kind: "scheduledjob", rule: full || { id, createdAt: null }, recordKey: JOB_PREFIX + safeKeyPart(id), indexKey: JOB_INDEX_KEY, indexRows: next });
   try { const m = await readSchedMap(); if (m[id]) { delete m[id]; await writeSchedMap(m); } } catch { /* best-effort */ }
   return { removed: next.length !== rows.length };
 };

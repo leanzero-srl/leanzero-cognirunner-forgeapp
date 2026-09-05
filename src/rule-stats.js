@@ -51,13 +51,17 @@ export const enqueueRuleStats = async (receiptKey, receipt, clearAfterApply = fa
   await queue().push(queueEvent(receiptKey, receipt, clearAfterApply));
 };
 
-// Deletions are durable receipts too, under the existing log namespace. They are
-// bookkeeping, not execution history, and readLogs excludes them.
-export const removeRuleStats = async (kind, rule) => {
-  if (!rule) return;
+// Delete the record/index membership and stage its cleanup receipt atomically.
+// Failure to persist the receipt must not leave an already-deleted rule behind.
+// The stats map remains exclusively owned by the serialized consumer below.
+export const deleteRuleWithStats = async ({ kind, rule, recordKey, indexKey, indexRows }) => {
   const receipt = { kind, ruleId: rule.id, createdAt: rule.createdAt, remove: true };
   const key = logEntryKey();
-  await storage.set(key, { statsOnly: true, statsReceipt: receipt }, LOG_TTL);
+  await storage.transact()
+    .set(indexKey, indexRows)
+    .delete(recordKey)
+    .set(key, { statsOnly: true, statsReceipt: receipt }, undefined, LOG_TTL)
+    .execute();
   try { await enqueueRuleStats(key, receipt); }
   catch (error) { console.warn("[stats] cleanup enqueue deferred to scheduled recovery:", error?.message); }
 };
@@ -81,7 +85,7 @@ export const processRuleStatsReceipt = async ({ receiptKey, kind, clearAfterAppl
   const previous = map[receipt.ruleId];
   if (receipt.remove) {
     // A delayed deletion must not erase a new incarnation's completed runs.
-    if (previous && (previous._createdAt ? previous._createdAt === receipt.createdAt : !full || full.createdAt === receipt.createdAt || previous.lastRunAt < full.createdAt)) delete map[receipt.ruleId];
+    if (previous && (!full || (previous._createdAt ? previous._createdAt === receipt.createdAt : full.createdAt === receipt.createdAt || previous.lastRunAt < full.createdAt))) delete map[receipt.ruleId];
   } else if (full && full.createdAt === receipt.createdAt) {
     const previousVisible = statsForRule(previous, full);
     const next = { ...previousVisible, _createdAt: receipt.createdAt, runCount: (previousVisible.runCount || 0) + 1, errorCount: (previousVisible.errorCount || 0) + (receipt.status === "error" ? 1 : 0) };

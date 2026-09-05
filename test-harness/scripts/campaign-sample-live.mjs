@@ -18,18 +18,20 @@ let ruleId, attachmentId;
 try {
   for (const previous of before) {
     assert.equal(previous.tokenPresent, true, 'Legacy exposure must have been measured before deployment');
+    assert.ok(typeof previous.fileName === 'string' && previous.fileName.length > 0);
+    assert.ok(typeof previous.issueId === 'string' && previous.issueId.length > 0);
     const response = await rulesApi.sample(previous.eventType);
     assert.equal(response.status, 200);
     const sample = response.body;
     assert.equal(sample.capturedAt, previous.capturedAt, 'Verify the same cached sample');
     assert.equal(Object.hasOwn(sample.payload, 'contextToken'), false, 'Legacy sample must omit the context token');
-    assert.equal(sample.payload.fileName, previous.fileName);
-    assert.equal(sample.payload.issueId, previous.issueId);
+    assert.equal(sample.payload.attachment.fileName, previous.fileName);
+    assert.equal(String(sample.payload.attachment.issueId), previous.issueId);
     receipt.legacy.push({ eventType: previous.eventType, capturedAt: sample.capturedAt, tokenAbsent: true, identityPreserved: true }); save();
   }
   const response = await rulesApi.listeners.create({ name: witness, enabled: true,
     events: [eventType], filters: { projectKeys: ['LZPT'] },
-    functions: [{ name: 'Record event shape without its token', code: `await api.setProperty('${witness}', {tokenPresent:typeof api.context.event.contextToken==='string'&&api.context.event.contextToken.length>0,fileName:api.context.event.fileName,issueId:String(api.context.event.issueId)});` }],
+    functions: [{ name: 'Record event shape without its token', code: `await api.setProperty('${witness}', {tokenPresent:typeof api.context.event.contextToken==='string'&&api.context.event.contextToken.length>0,fileName:api.context.event.attachment.fileName,issueId:String(api.context.event.attachment.issueId)});` }],
   });
   assert.equal(response.status, 201); ruleId = response.body.listener.id; receipt.ruleId = ruleId; save();
   await sleep(35000);
@@ -55,7 +57,7 @@ try {
   const result = await rulesApi.sample(eventType); assert.equal(result.status, 200);
   const sample = result.body;
   assert.ok(Date.parse(sample.capturedAt) >= Date.parse(receipt.startedAt));
-  assert.equal(sample.payload.fileName, filename); assert.equal(String(sample.payload.issueId), String(issue.id));
+  assert.equal(sample.payload.attachment.fileName, filename); assert.equal(String(sample.payload.attachment.issueId), String(issue.id));
   assert.equal(Object.hasOwn(sample.payload, 'contextToken'), false, 'Fresh sample must omit the context token');
   receipt.fresh = { capturedAt: sample.capturedAt, fileName: filename, issueId: String(issue.id), tokenAbsent: true };
   receipt.pass = true;

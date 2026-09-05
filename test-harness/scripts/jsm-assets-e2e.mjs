@@ -226,7 +226,7 @@ async function main() {
       }
       ok(!!objType, `Assets object type Laptop present (id ${objType && objType.id})`);
       if (objType) {
-        const aql = await assets("POST", "/object/aql?startAt=0&maxResults=10", { qlQuery: `objectType = "Laptop"` });
+        const aql = await assets("POST", "/object/aql?startAt=0&maxResults=10", { qlQuery: `objectTypeId = ${objType.id}` });
         objects = (aql.body && aql.body.values) || [];
         if (!objects.length) {
           const attrs = await assets("GET", `/objecttype/${objType.id}/attributes`);
@@ -240,25 +240,30 @@ async function main() {
 
     // The Assets object CUSTOM FIELD.
     const allFields = must(await jira("GET", "/rest/api/3/field"), "fields");
-    const assetField = allFields.find((f) => f.schema && f.schema.custom === "com.atlassian.jira.plugins.cmdb:cmdb-object-cftype");
+    const assetFields = allFields.filter((f) => f.schema && f.schema.custom === "com.atlassian.jira.plugins.cmdb:cmdb-object-cftype");
+    const assetField = assetFields.find((f) => f.name === "COGTEST Asset") || assetFields[0];
     if (!ok(!!assetField, `Assets object custom field exists (${assetField && assetField.id} "${assetField && assetField.name}")`)) {
       note("create one with POST /rest/api/3/field { type: 'com.atlassian.jira.plugins.cmdb:cmdb-object-cftype' } and add it to the JSM screens");
     } else {
       ok(assetField.schema.items === "cmdb-object-field", `field schema is array/cmdb-object-field (${assetField.schema.type}/${assetField.schema.items})`);
-      // Write it on the request, then read it back. An Assets field with NO object-schema
-      // configuration silently accepts the write and stores nothing — that is the tell.
-      const objKey = objects[0] && objects[0].objectKey;
-      if (objKey) {
-        const w = await jira("PUT", `/rest/api/3/issue/${target}`, { fields: { [assetField.id]: [{ key: objKey }] } });
-        note(`assets field write [{key:"${objKey}"}] → ${w.status}`);
+      // A 204 can also hide an invalid payload: use the documented update/set identifiers,
+      // then verify the exact object. An empty read alone cannot diagnose field configuration.
+      // https://support.atlassian.com/jira/kb/format-the-payload-to-update-assets-custom-fields-via-rest-api/
+      const objectId = objects[0] && String(objects[0].id);
+      if (objectId) {
+        const expected = { workspaceId, id: `${workspaceId}:${objectId}`, objectId };
+        const w = await jira("PUT", `/rest/api/3/issue/${target}`, { update: { [assetField.id]: [{ set: [expected] }] } });
+        ok(w.ok, `Assets field update accepted (${w.status})`);
         const rb = await jira("GET", `/rest/api/3/issue/${target}?fields=${assetField.id}`);
         const value = rb.ok && rb.body.fields && rb.body.fields[assetField.id];
-        if (Array.isArray(value) && value.length) {
+        const persisted = Array.isArray(value) && value.length === 1 &&
+          Object.entries(expected).every(([key, val]) => value[0][key] === val);
+        if (ok(persisted, `Assets field persisted the exact selected object on ${target}`)) {
           ok(true, `Assets value stored on ${target}: ${JSON.stringify(value).slice(0, 200)}`);
           console.log(`  REAL ASSETS VALUE SHAPE: ${JSON.stringify(value[0])}`);
           // Prove CogniRunner reads it: a listener that extracts the field into a property.
           const assetsL = must(await rulesApi.listeners.create({
-            name: `JSM assets read ${RUN}`, events: ["avi:jira:updated:issue"], filters: { projectKeys: [proj.key], changedFields: ["labels"] },
+            name: `JSM assets read ${RUN}`, events: ["avi:jira:updated:issue"], filters: { projectKeys: [proj.key], changedFields: ["labels"], jql: `key = ${target}` },
             functions: [{ name: "readasset", code: `const f = (await api.getIssue(api.context.issueKey)).fields || {};\nawait api.setProperty("${TAG}-asset", { raw: f["${assetField.id}"] || null });\nreturn "ok";` }],
           }), "create assetsL").listener;
           created.listeners.push(assetsL.id);
@@ -267,13 +272,12 @@ async function main() {
           const seen = await waitForLogs(assetsL.id, (logs) => logs.length > 0, { tries: 24 });
           if (ok(seen.ok, "listener ran and read the Assets field through api.getIssue")) {
             const prop = await jira("GET", `/rest/api/3/issue/${target}/properties/${TAG}-asset`);
-            ok(prop.ok && prop.body.value && prop.body.value.raw, `Assets value visible inside the sandbox: ${JSON.stringify(prop.body.value && prop.body.value.raw).slice(0, 200)}`);
+            const raw = prop.body && prop.body.value && prop.body.value.raw;
+            ok(prop.ok && JSON.stringify(raw) === JSON.stringify(value), `Exact Assets value visible inside the sandbox: ${JSON.stringify(raw).slice(0, 200)}`);
           }
         } else {
-          skipped(`Assets field value did not persist (read back ${JSON.stringify(value)}). The field has no object-schema ` +
-            `configuration — that is a UI-only step (Settings → Issues → Custom fields → ${assetField.name} → Configure → Assets). ` +
-            `There is NO public REST endpoint for it (probed: /rest/api/3/field/{id}/context/{ctx}/configuration 404, ` +
-            `/rest/insight/1.0/*, /rest/servicedesk/cmdb/* 404). Configure it once and re-run for the live read assert.`);
+          note(`Assets value mismatch (GET ${rb.status}, value ${JSON.stringify(value)}). Inspect field schema/AQL, ` +
+            `screen applicability and permissions; this is a failed write proof, not evidence of a specific cause.`);
         }
       } else skipped("Assets field write — no Assets object to reference");
     }

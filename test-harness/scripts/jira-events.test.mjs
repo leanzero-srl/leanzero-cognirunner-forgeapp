@@ -51,6 +51,20 @@ ok(commentTextOf(commentEv) === "Please @Ann escalate ASAP", `comment ADF → te
 ok(commentTextOf({ comment: { body: "plain" } }) === "plain", "plain-string comment body");
 const wl = extractEventContext("avi:jira:created:worklog", { worklog: { id: "77", issueId: "10001" } });
 ok(wl.issueId === "10001" && wl.issueKey === null && wl.entityName === "worklog 77", "worklog: id-only issue");
+for (const id of ["avi:jira:created:attachment", "avi:jira:deleted:attachment"]) {
+  // Forge events use fileName; Jira REST attachment objects use filename.
+  const payload = { attachment: { id: "10", issueId: "10001", projectId: "10000", fileName: "event-file.txt", filename: "legacy-file.txt", mimeType: "text/plain", size: "17" } };
+  const before = JSON.stringify(payload);
+  const attachment = extractEventContext(id, payload);
+  ok(attachment.entityName === "attachment event-file.txt", `${id}: Forge fileName wins over legacy filename`);
+  ok(attachment.issueId === "10001" && attachment.projectId === "10000" && attachment.issueKey === null, `${id}: attachment identity preserves available issue/project ids`);
+  ok(JSON.stringify(payload) === before, `${id}: raw payload stays untouched`);
+  ok(extractEventContext(id, { attachment: { filename: "old.txt" } }).entityName === "attachment old.txt", `${id}: legacy filename still labels older samples`);
+  ok(extractEventContext(id, {}).entityName === "attachment", `${id}: missing attachment metadata is safe`);
+  const hint = buildEventPromptBlock([id]);
+  ok(hint.includes("fileName") && hint.includes("issueId") && hint.includes("projectId") && !hint.includes("filename"), `${id}: generated prompt and picker hint teach Forge payload casing`);
+  ok(hint.includes("api.context.issueKey") && !hint.includes("event.issueKey"), `${id}: resolved key is described on its actual context path`);
+}
 const link = extractEventContext("avi:jira:created:issuelink", { sourceIssueId: 1, destinationIssueId: 2, sourceProjectId: 9, issueLinkType: { name: "Blocks" } });
 ok(link.issueId === "1" && link.projectId === "9", "issue link: source ids extracted");
 const ver = extractEventContext("avi:jira:released:version", { version: { id: "3", name: "v1", projectId: 10000 } });

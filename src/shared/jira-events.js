@@ -70,6 +70,9 @@ const E = (id, category, label, description, extra = {}) => ({
   filters: extra.filters || [],
 });
 
+// Forge attachment events use fileName (Jira REST attachment responses use filename).
+const ATTACHMENT_PAYLOAD_HINT = "event.attachment {id,issueId,projectId?,fileName,mimeType,size,author}; api.context.issueKey is resolved when available";
+
 export const JIRA_EVENTS = [
   // ── Issues ──────────────────────────────────────────────────────────────
   E("avi:jira:created:issue", "issue", "Issue created", "An issue was created.", {
@@ -125,11 +128,11 @@ export const JIRA_EVENTS = [
   // ── Attachments ─────────────────────────────────────────────────────────
   E("avi:jira:created:attachment", "attachment", "Attachment added", "A file was attached to an issue.", {
     entity: "attachment", issueIdOnly: true, filters: ["projects", "jql"],
-    payloadHint: "event.attachment {id,filename,mimeType,size,author}, event.issueKey (resolved when the payload names the issue)",
+    payloadHint: ATTACHMENT_PAYLOAD_HINT,
   }),
   E("avi:jira:deleted:attachment", "attachment", "Attachment deleted", "An attachment was removed from an issue.", {
     entity: "attachment", issueIdOnly: true, filters: ["projects", "jql"],
-    payloadHint: "event.attachment, event.issueKey (resolved when available)",
+    payloadHint: ATTACHMENT_PAYLOAD_HINT,
   }),
   // ── Issue links ─────────────────────────────────────────────────────────
   E("avi:jira:created:issuelink", "issuelink", "Issue link created", "Two issues were linked.", {
@@ -291,7 +294,9 @@ export const extractEventContext = (eventType, payload) => {
     case "attachment": {
       const a = p.attachment || {};
       out.issueId = out.issueId || num(a.issueId) || null;
-      out.entityName = a.filename ? `attachment ${a.filename}` : "attachment";
+      out.projectId = out.projectId || num(a.projectId);
+      const fileName = a.fileName || a.filename;
+      out.entityName = fileName ? `attachment ${fileName}` : "attachment";
       break;
     }
     case "issueLink": {

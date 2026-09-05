@@ -27,9 +27,9 @@ storage.set = async (key, value, options) => {
   return originalSet(key, value, options);
 };
 try {
-  for (const [label, text] of [["CJK", "界".repeat(1200)], ["astral", "🌍".repeat(600)], ["mixed and JSON escaping", '界🌍"\\'.repeat(240)]]) {
+  for (const [label, text, largeChanges] of [["CJK", "界".repeat(1200)], ["astral", "🌍".repeat(600)], ["CJK controls", ("界" + String.fromCharCode(0)).repeat(600)], ["lone surrogates", String.fromCharCode(0xd800).repeat(1200)], ["mixed and JSON escaping", '界🌍"\\'.repeat(240)], ["oversized change details", "x".repeat(1200), true]]) {
     storage.__reset(); rejected = []; logKeys = [];
-    globalThis.__scopedSizeAgent = () => ({ success: true, outcome: "done", summary: text, logs: [text], changes: [] });
+    globalThis.__scopedSizeAgent = () => ({ success: true, outcome: "done", summary: text, logs: [text], changes: largeChanges ? [{ action: "updateIssue", fields: { description: "界".repeat(5000) } }] : [] });
     const issues = Array.from({ length: 100 }, (_, i) => ({ key: `LZPT-${i + 1}`, fields: { summary: `Scoped issue ${i + 1}` } }));
     jira.__respond((_path, options) => {
       const second = JSON.parse(options.body).nextPageToken === "next";
@@ -46,13 +46,17 @@ try {
     assert.equal(log.perIssue.length, 100); assert.equal(task.result.issues.length, 100);
     assert.deepEqual(log.perIssue.map(i => i.key), issues.map(i => i.key));
     assert.deepEqual(task.result.issues, log.perIssue);
+    assert.deepEqual(task.result.logs, log.logs); assert.deepEqual(task.result.changes, log.changes);
+    if (/controls|surrogates|oversized/.test(label)) assert.match(log.reason, /Display details truncated/);
+    else assert.doesNotMatch(log.reason, /Display details truncated/);
+    if (largeChanges) { assert.ok(log.changes.length < 30); assert.match(log.logs.at(-1), /change detail record\(s\) omitted/); }
     for (const issue of log.perIssue) {
       assert.equal(issue.agentOutcome, "done"); assert.equal(issue.success, true);
       assert.match(issue.agentSummary, /\[truncated\]$/);
       assert.ok(bytes(issue.agentSummary) <= 240);
       assert.ok(!/\uFFFD/.test(issue.agentSummary), "no split surrogate pairs");
     }
-    assert.ok(bytes(log) < 240 * 1024); assert.ok(bytes(task) < 240 * 1024);
+    assert.ok(bytes(log) <= 220 * 1024); assert.ok(bytes(task) <= 220 * 1024);
     console.log(`scoped agent size ${label}: 100 outcomes persisted, log=${bytes(log)}, task=${bytes(task)} bytes`);
   }
 } finally { storage.set = originalSet; }

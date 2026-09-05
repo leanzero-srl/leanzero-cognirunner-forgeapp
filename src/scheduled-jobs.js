@@ -39,7 +39,7 @@ import api, { route } from "@forge/api";
 import { validateCron, normalizeTimeZone, dueInWindow, nextRuns, describeCron } from "./shared/cron.js";
 import { normalizeAllowedActions, DEFAULT_AGENT_ACTIONS, DEFAULT_AGENT_ROUNDS, MAX_AGENT_ROUNDS } from "./shared/agent-actions.js";
 import { normalizeStep } from "./listeners.js";
-import { agentResultFields, SCOPED_AGENT_SUMMARY_BUDGET_BYTES } from "./shared/agent-result.js";
+import { agentResultFields, SCOPED_AGENT_SUMMARY_BUDGET_BYTES, boundScopedJobLog } from "./shared/agent-result.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
 
 const idx = () => import("./index.js");
@@ -361,10 +361,8 @@ export const runJob = async ({ job, scheduledFor = null, missed = 0, manual = fa
   }
   const processedOk = perIssue.filter((r) => r.success).length;
   const success = processedOk === issues.length;
-  return {
-    log: { ...base, issueKey: `${issues.length} issue(s)`, isValid: success, reason: `${processedOk}/${issues.length} issue(s) processed OK, ${changes.length} change(s)${failures ? `, ${failures} failed` : ""}${cancelled ? `, ${cancelled} cancelled` : ""}`, recommendation: success ? undefined : "Open the job's log details for the per-issue outcomes.", executionTimeMs: Date.now() - started, changes: changes.slice(0, 30), logs: logs.slice(-120).map((s) => String(s).slice(0, 300)), tokens, aiTimeMs, perIssue: perIssue.slice(0, 100) },
-    success, issues: perIssue,
-  };
+  const log = boundScopedJobLog({ ...base, issueKey: `${issues.length} issue(s)`, isValid: success, reason: `${processedOk}/${issues.length} issue(s) processed OK, ${changes.length} change(s)${failures ? `, ${failures} failed` : ""}${cancelled ? `, ${cancelled} cancelled` : ""}`, recommendation: success ? undefined : "Open the job's log details for the per-issue outcomes.", executionTimeMs: Date.now() - started, changes: changes.slice(0, 30), logs: logs.slice(-120).map((s) => String(s).slice(0, 300)), tokens, aiTimeMs, perIssue: perIssue.slice(0, 100) });
+  return { log, success, issues: log.perIssue };
 };
 
 /** Queue consumer entry: taskType "scheduledjob" (polled by "Run now"). */

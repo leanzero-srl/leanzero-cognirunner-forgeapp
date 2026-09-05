@@ -1,6 +1,6 @@
 # Extended listener and scheduled-job campaign
 
-Status: in progress. User explicitly requested at least15–20 listeners and10 jobs, actual triggers, Forge logs and UI verification, plus instance provisioning through REST. The campaign provisions22 distinct listeners and10 distinct jobs using the existing public authenticated Rules API on wolfaenpak. It does not equate configuration count with successful execution or claim all68 catalog events have passed.
+Status: final live replay in progress on development22.159.0 (runtime through e2a7aee; rebuilt UI3881b8a). The original22-listener/10-job campaign completed on22.158.0, including genuine event delivery, all ten manual runs and all ten actual scheduled runs. The campaign found issues, so those executions alone are not release acceptance. User explicitly requested at least15–20 listeners and10 jobs, actual triggers, Forge logs and UI verification, plus instance provisioning through REST. This does not claim all68 catalog events have passed.
 
 The reproducible campaign is `test-harness/scripts/listeners-jobs-campaign.mjs`, with persisted phase state in `test-harness/results/listeners-jobs-campaign/state.json`. Commands are `provision`, `listeners`, `jobs`, `snapshot`, `cleanup`. Rules/fixtures stay present for independent live UI inspection before cleanup. Each command revokes its own temporary token; execution phases disable owned rules even after a caught transport error. Existing TPP listeners and existing scheduled jobs are preserved.
 
@@ -10,4 +10,22 @@ Job coverage: explicit global target/context, two-issue scope, cap excluding a v
 
 REST coverage: single-object POST201 for all32 rules, full independent GET, collection membership, API ownership, PUT preserving nested siblings and identity, enable/disable, unauthorized creation rejection, and final DELETE followed by404 and collection absence. UI proof compares actual saved lists/editors/history against the exact rule IDs/configuration and covers both themes. Test counts and failures will be retained in the final evidence, including any changes needed to the application or harness.
 
-A preliminary independent UI review found that stored scoped results use `perIssue` while the existing result renderer reads `issues`. The narrow proposed fix reuses the existing per-issue display for both response shapes; it requires actual before/after browser proof before closure.
+Before evidence is retained in [the committed evidence directory](evidence/campaign-2026-09-05/before.json), including the original failed assertions rather than erasing them. Those two initial harness failures were corrected: Forge attachment events use `fileName` while REST uses `filename`; scripts intentionally continue after a failed step. Both corrected scenarios were retriggered and independently verified. The actual scheduled tick queued10 due jobs at17:51UTC for17:50UTC, with20 manual/scheduled terminal results and exact Jira readbacks. The initial UI inspection covered128 editor visits (all32 in two themes and two widths),3204 field assertions and256 viewport captures. It exposed hidden scoped outcomes and a624px iframe expanding to882px.
+
+Confirmed changes awaiting final live closure:
+
+| Finding | Change and evidence |
+|---|---|
+| F-040 saved history hid scoped outcomes | dc6e6ad reuses the existing renderer for `perIssue` and `issues`;26 independent browser assertions. |
+| F-041 failure identity and learning | 8d86527 and6f410d9 select the first actual failing index and bounded executed code, including duplicate names and offloaded bundles.53b0ae4 explains the existing continuation/no-rollback behavior. |
+| F-042 arbitrary thrown values | 311ab5a safely reports strings, numbers, null and hostile objects in execution and Test Run;30 actual handler/resolver cases plus independent controls. |
+| F-043 attachment context | 5048d69 derives correct Forge hints and labels from one definition; raw payload remains unchanged. |
+| F-044 narrow-frame actions/navigation | 673f20d and1a3de01 keep table scrolling inside the card and wrap navigation;54 independent narrow-frame checks. b12a8ab corrects the admin subtitle. |
+| F-045 concurrent counters | 52da1e7 through e2a7aee serialize accounting on the existing queue while runs stay parallel. Durable receipts, atomic count/application, recovery, generation-safe atomic deletion and batched history clearing;25 actual regression scenarios. Independent BREAK reproduced and refuted double-counting during ambiguous writes/clearing, partial deletion on receipt failure and100-push resolver timeout. |
+| F-046 stale replay assertions | 0df5298 requires exact fresh manual/scheduled property values, new comment IDs and absent-label preconditions.26 independent stale/fresh controls. |
+
+The final combined code passes51/51 offline suites, backend/shared syntax and Forge lint. Both affected UIs were rebuilt with matching shared component copies. Independent BREAK is [retained here](evidence/campaign-2026-09-05/independent-break.md); it does not substitute for the pending deployed replay.
+
+REST provisioning is already proven on all32 records: single POST201/full GET and complete collection membership; partial PUT preserves siblings/identity; enable/disable;13 additional auth/invalid-write/revocation checks. Bulk replay of22 listeners and10 jobs preserves full configuration/ownership with no duplicates; mixed valid/invalid arrays return207 with the exact rejected index. Every temporary token is revoked in its phase's finally block. Public DELETE/404 and final UI absence remain cleanup gates.
+
+Final replay mechanism: preserve original job records/evidence, delete and recreate the ten scenarios with zero counters, repeat manual and genuine scheduled runs, then require exactly two runs and correct errors/latest outcome/applied receipt for each. Twenty additional temporary listeners receive two real comments on separate fixture issues, producing40 concurrent completions below the existing per-issue brake. Their exact properties, expected failures, counters and receipt application are independently read before removal. The final live UI harness then rechecks all32 saved configurations, exact statistics, scoped history and normal pointer actions in both themes. No production or manifest changes.

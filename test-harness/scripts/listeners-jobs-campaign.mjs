@@ -12,7 +12,7 @@ const file = new URL('state.json', dir), phase = process.argv[2];
 const state = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file)) : { tag: 'campaign'+Date.now().toString(36), startedAt:new Date().toISOString(), listeners:[], jobs:[], fixtures:{issues:[],versions:[],components:[]}, checks:[] };
 const save = () => fs.writeFileSync(file, JSON.stringify(state,null,2));
 const record = (name, data={}) => { state.checks.push({name,at:new Date().toISOString(),pass:true,...data});save();console.log('PASS',name); };
-const attempt = async (name, fn) => { try { await fn(); } catch(e) { state.checks.push({name,at:new Date().toISOString(),pass:false,error:e.stack});save();console.error('FAIL',name,e.message);process.exitCode=1; } };
+const attempt = async (name, fn) => { state.activeTriggerAt=Date.now();save();try { await fn(); } catch(e) { state.checks.push({name,at:new Date().toISOString(),pass:false,error:e.stack});save();console.error('FAIL',name,e.message);process.exitCode=1; } };
 const must = (r, what) => { assert.ok(r.ok,`${what}: HTTP${r.status} ${JSON.stringify(r.body).slice(0,500)}`);return r.body; };
 const adf = text => ({type:'doc',version:1,content:[{type:'paragraph',content:[{type:'text',text}]}]});
 const plain = n => typeof n?.text==='string'?n.text:(n?.content||[]).map(plain).join('');
@@ -96,8 +96,9 @@ async function provision() {
  state.provisionedAt=new Date().toISOString();save();
 }
 async function listenerResult(code,target,expected={}, valid=true) {
- const item=row('listeners',code);const entries=await poll(()=>logs(item.id),x=>x.some(l=>l.source==='async'&&l.isValid===valid));
- const log=entries.find(l=>l.source==='async'&&l.isValid===valid);item.logs=entries;save();
+ const item=row('listeners',code);const fresh=l=>l.source==='async'&&l.isValid===valid&&new Date(l.timestamp).getTime()>=state.activeTriggerAt;
+ const entries=await poll(()=>logs(item.id),x=>x.some(fresh));
+ const log=entries.find(fresh);item.logs=entries;save();
  if(valid&&code!=='L07') {const value=await poll(()=>prop(target,code),x=>x?.marker===code);for(const[k,v]of Object.entries(expected)){if(/id$/i.test(k))assert.equal(String(value.data?.[k]),String(v),`${code} data.${k}`);else assert.deepEqual(value.data?.[k],v,`${code} data.${k}`);}item.effect=value;save();}
  record(`${code} actual event, persisted log and Jira readback`,{ruleId:item.id,logId:log.id,valid});return log;
 }
@@ -120,7 +121,7 @@ async function listeners() {
  await attempt('L19 component',async()=>{const c=await post('/rest/api/3/component',{name:T+'-component',project:'LZPT'});state.fixtures.components.push(c.id);save();await listenerResult('L19',ledger,{id:c.id,name:c.name});});
  await attempt('L20 expected error',async()=>{await send(A,T+'-failure');const log=await listenerResult('L20',A,{},false);assert.ok(log.reason.includes(T+'-expected-failure'));assert.ok(!(await getIssue(A,['labels'])).fields.labels.includes(T+'-L20-never'));record('L20 failed step and no downstream write');});
  await attempt('L21 simulation',async()=>{await send(A,T+'-simulation');const ls=await poll(()=>logs(row('listeners','L21').id),x=>x.some(l=>l.isValid&&l.source==='async'));assert.equal(await prop(A,'L21'),null);assert.ok(ls.some(l=>l.changes?.length));row('listeners','L21').logs=ls;record('L21 real event simulation with no Jira property');});
- await attempt('L22 disabled then enabled',async()=>{await send(A,T+'-disabled');await sleep(7000);assert.equal(await prop(A,'L22'),null);assert.equal((await logs(row('listeners','L22').id)).length,0);must(await rulesApi.listeners.enable(row('listeners','L22').id),'enable');await sleep(35000);const c=await send(A,T+'-disabled');await listenerResult('L22',A);record('L22 negative and positive delivered event');});
+ await attempt('L22 disabled then enabled',async()=>{await send(A,T+'-disabled');await sleep(7000);assert.equal(await prop(A,'L22'),null);assert.equal((await logs(row('listeners','L22').id)).length,0);const item=row('listeners','L22');must(await rulesApi.listeners.update(item.id,{functions:[{name:'Record enabled comment identity',code:`await api.setProperty('${T}-L22',{marker:'L22',data:{commentId:api.context.event.comment.id}});`}]}),'update enabled witness');must(await rulesApi.listeners.enable(item.id),'enable');await sleep(35000);const c=await send(A,T+'-disabled');await listenerResult('L22',A,{commentId:c.id});record('L22 negative and positive delivered event');});
  state.listenersFinishedAt=new Date().toISOString();save();
 }
 async function jobs() {
@@ -154,6 +155,7 @@ async function jobs() {
  }
  for(const id of pending)await attempt('missing automatic '+id,async()=>{must(await rulesApi.jobs.disable(id),'disable timeout');throw Error('No actual scheduled log within12 minutes');});
  await attempt('scheduled Jira readbacks',async()=>{const audit=await markerComments(state.ledger,T+'-J01');assert.equal(audit.length,2);assert.ok(audit.some(c=>plain(c.body).includes('"manual":false')));for(const code of ['J02','J03','J06'])for(const key of(code==='J06'?[state.A,state.C]:[state.A,state.B])){const p=await prop(key,code);assert.equal(p.manual,false);assert.ok(p.scheduledFor);}for(const code of ['J09','J10'])assert.equal((await markerComments(state.ai,T+'-'+code+'-ack')).length,2);assert.equal(await prop(state.C,'J07'),null);record('All scheduled writes independently reread; failures/simulation remain truthful');});
+ await attempt('scheduled negative and per-issue details',async()=>{assert.equal(await prop(state.C,'J03'),null);assert.equal(await prop(state.B,'J06'),null);assert.ok(!(await getIssue(state.C,['labels'])).fields.labels.includes(T+'-J07-never'));assert.equal((await markerComments(state.C,T+'-J07-never')).length,0);for(const code of ['J02','J03','J06','J09']){const result=row('jobs',code).scheduled;assert.ok(result);const expected=code==='J06'?3:code==='J09'?1:2;assert.equal(result.perIssue.length,expected);for(const item of result.perIssue)assert.equal(item.success,!(code==='J06'&&item.key===state.B));}for(const code of ['J09','J10'])assert.ok((await getIssue(state.ai,['labels'])).fields.labels.includes(T+'-'+code));record('Scheduled excluded, failed and simulated targets unchanged; all scoped statuses exact');});
  state.jobsFinishedAt=new Date().toISOString();save();
 }
 async function snapshot() {

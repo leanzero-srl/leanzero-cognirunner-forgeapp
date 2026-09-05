@@ -1,0 +1,8 @@
+{
+  "commit": "5f377e0",
+  "checks": 5,
+  "publicAndUiPaths": true,
+  "unicodeAndPrototypeFields": true,
+  "actualSandboxPreserved": true,
+  "rawEventUnmodified": true
+}

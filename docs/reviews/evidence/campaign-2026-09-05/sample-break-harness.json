@@ -1,0 +1,7 @@
+{
+  "commit": "86b9af7",
+  "correctNestedRuntimeIdentity": true,
+  "onlyTokenBooleanPersisted": true,
+  "missingLegacyIdentityRejected": true,
+  "negativeStacksContainNoToken": true
+}

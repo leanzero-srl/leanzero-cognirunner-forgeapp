@@ -57,6 +57,9 @@ html, body {
   min-height: 100%;
 }
 
+/* Mirror of the live tab-bar responsive rule in App.js. */
+.tab-bar { flex-wrap: wrap; }
+
 .workflow-info {
   font-size: 12px;
   line-height: 1.4;

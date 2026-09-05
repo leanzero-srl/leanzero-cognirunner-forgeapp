@@ -79,8 +79,20 @@ try {
           width: el.clientWidth, scrollWidth: el.scrollWidth, wrap: getComputedStyle(el).flexWrap,
           documentWidth: document.documentElement.clientWidth, documentScrollWidth: document.documentElement.scrollWidth,
         }));
+        assert.equal(navigation.documentScrollWidth, navigation.documentWidth, "listener/job page must fit its iframe"); checks++;
+        assert.equal(navigation.scrollWidth, navigation.width, "all navigation tabs must fit inside their bar"); checks++;
+        const tabBounds = await page.locator(".tab-btn").evaluateAll((buttons) => buttons.map((button) => {
+          const rect = button.getBoundingClientRect(); return { left: rect.left, right: rect.right };
+        }));
+        assert(tabBounds.every((rect) => rect.left >= 0 && rect.right <= 624), "every tab must be reachable without horizontal page scrolling"); checks++;
+        await page.locator(".tab-btn", { hasText: /^Settings$/ }).click();
+        assert.equal(await page.locator(".tab-active").textContent(), "Settings"); checks++;
+        await page.locator(".tab-btn", { hasText: new RegExp(`^\\s*${label}\\s*$`) }).click();
+        await page.locator(".lst-table").waitFor();
+        assert.equal(await page.evaluate(() => window.scrollX), 0); checks++;
         measurements.push({ theme, label, geometry, after, navigation });
         if (process.argv.includes("--shots")) {
+          await table.getByRole("button", { name: "Enable", exact: true }).click();
           const out = path.join(here, "out"); fs.mkdirSync(out, { recursive: true });
           await page.screenshot({ path: path.join(out, `rule-table-${label.replaceAll(" ", "-")}-${theme}.png`), fullPage: true, animations: "disabled" });
         }

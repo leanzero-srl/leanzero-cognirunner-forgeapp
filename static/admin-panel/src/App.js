@@ -1353,6 +1353,7 @@ const injectStyles = () => {
     /* Tab bar */
     .tab-bar {
       display: flex;
+      flex-wrap: wrap;
       gap: 0;
       margin-bottom: 20px;
       border-bottom: 2px solid var(--border-color);

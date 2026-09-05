@@ -63,6 +63,7 @@ const LISTENER_MAX_BYTES = 200 * 1024;
 const MAX_CANDIDATES_PER_EVENT = 25;
 const LISTENER_RUN_BUDGET_MS = 105000;   // inside the 120s consumer cap, with log headroom
 const TRIGGER_BUDGET_MS = 18000;         // inside the 25s trigger cap
+// A saved listener needs ~35s before live event tests: each warm container caches 30s.
 const INDEX_CACHE_TTL_MS = 30000;
 // Loop brakes: per issue and per listener, fixed 5-minute buckets.
 const BRAKE_PREFIX = "lst_brake:";
@@ -259,6 +260,13 @@ export const updateListenerStats = async (id, { status, error = null, issueKey =
 
 // ── Matching (pure — exported for offline tests) ─────────────────────────────
 
+// The slim index and the full record share this predicate. Project ids are
+// resolved to keys before matching; projectIds is not a supported config filter.
+export const matchesListenerProject = (projectKeys, ctx) => {
+  if (!projectKeys || !projectKeys.length || (getEvent(ctx.eventType) || {}).projectScoped === false) return true;
+  return Boolean(ctx.projectKey && projectKeys.some((key) => String(key).toUpperCase() === String(ctx.projectKey).toUpperCase()));
+};
+
 /**
  * Static filters that need no I/O. Returns { ok:true } or { ok:false, reason }.
  * `ctx` is extractEventContext(); `event` the raw payload.
@@ -269,13 +277,7 @@ export const matchListenerStatic = (listener, ctx, event) => {
   if (listener.ignoreSelf !== false && ctx.selfGenerated) return { ok: false, reason: "self-generated event ignored" };
   const f = listener.filters || {};
   const meta = getEvent(ctx.eventType) || {};
-  if (f.projectKeys && f.projectKeys.length && meta.projectScoped !== false) {
-    const keys = f.projectKeys.map((k) => String(k).toUpperCase());
-    const key = ctx.projectKey ? String(ctx.projectKey).toUpperCase() : null;
-    const okKey = key && keys.includes(key);
-    const okId = ctx.projectId && (f.projectIds || []).map(String).includes(String(ctx.projectId));
-    if (!okKey && !okId) return { ok: false, reason: `project ${ctx.projectKey || ctx.projectId || "(unknown)"} not in filter` };
-  }
+  if (!matchesListenerProject(f.projectKeys, ctx)) return { ok: false, reason: `project ${ctx.projectKey || ctx.projectId || "(unknown)"} not in filter` };
   if (f.issueTypes && f.issueTypes.length && meta.issueBound) {
     const want = f.issueTypes.map((t) => String(t).toLowerCase());
     const haveName = ctx.issueTypeName ? String(ctx.issueTypeName).toLowerCase() : null;
@@ -403,11 +405,7 @@ export async function listenerTrigger(event, context) {
     try { ctx.projectKey = await resolveProjectKey(ctx.projectId); } catch (e) { console.warn("[listener] project resolve failed:", e && e.message); }
   }
   // Pre-filter on the slim index rows before paying for full reads.
-  const meta = getEvent(eventType) || {};
-  const matched = candidates.filter((r) => {
-    if (!r.projectKeys || !r.projectKeys.length || meta.projectScoped === false) return true;
-    return ctx.projectKey && r.projectKeys.map((k) => String(k).toUpperCase()).includes(String(ctx.projectKey).toUpperCase());
-  });
+  const matched = candidates.filter((r) => matchesListenerProject(r.projectKeys, ctx));
   const shortlisted = matched.slice(0, MAX_CANDIDATES_PER_EVENT);
   // Say it out loud when the cap bites: saveListener APPENDS to the index, so the rows
   // this slice drops are the NEWEST ones — the listener someone just saved and is testing

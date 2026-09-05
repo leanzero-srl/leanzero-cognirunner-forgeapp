@@ -11,8 +11,9 @@ import { register } from "node:module";
 import assert from "node:assert/strict";
 import storage from "../lib/mock-kvs.mjs";
 import forgeApi, { pushed } from "../lib/mock-forge-api.mjs";
-import { normalizeListener, testListener, executeListenerTask } from "../../src/listeners.js";
+import { normalizeListener, testListener, executeListenerTask, matchListenerStatic, listenerTrigger, readListenerIndex, toIndexRow } from "../../src/listeners.js";
 import { normalizeJob, runJob, executeScheduledJobTask, scheduledTick } from "../../src/scheduled-jobs.js";
+import { JIRA_EVENTS } from "../../src/shared/jira-events.js";
 import { testStateTrigger } from "../../src/test-hook.js";
 
 register("data:text/javascript," + encodeURIComponent(`
@@ -315,5 +316,29 @@ try {
   if (previousSecret === undefined) delete process.env.HARNESS_SECRET;
   else process.env.HARNESS_SECRET = previousSecret;
 }
+// Slim index and full records must use the same project rule, including events
+// explicitly independent of projects (users, boards, sprints, field contexts).
+await check("unsupported projectIds cannot bypass a project-key mismatch", async () => {
+  const config = listener({ projectKeys: ["OTHER"] });
+  config.filters.projectIds = ["10"];
+  assert.equal(matchListenerStatic(config, { eventType: UPDATE, projectKey: "LZPT", projectId: "10" }, {}).ok, false);
+});
+for (const eventMeta of JIRA_EVENTS.filter(e => e.projectScoped === false)) await check(`global event ignores project filters in both match paths: ${eventMeta.id}`, async () => {
+  reset();
+  const config = listener({ projectKeys: ["OTHER"] }, { id: "global-match", events: [eventMeta.id] });
+  assert.equal(matchListenerStatic(config, { eventType: eventMeta.id }, {}).ok, true);
+  storage.__seed("listener:global-match", config); storage.__seed("listener_index", [toIndexRow(config)]);
+  await readListenerIndex(); // refresh this test container; live saves require ~35s for the 30s cache
+  await listenerTrigger({ eventType: eventMeta.id });
+  assert.equal(pushed.length, 1);
+});
+for (const [keys, projectKey, expected] of [[[], null, true], [["lzpt"], "LzPt", true], [["OTHER"], "LZPT", false], [["LZPT"], null, false]]) await check(`project shortlist/full parity ${JSON.stringify({ keys, projectKey })}`, async () => {
+  reset(); const config = listener({}, { id: "project-match" }); config.filters.projectKeys = keys;
+  const event = { eventType: UPDATE, issue: { fields: { project: { key: projectKey } } } };
+  assert.equal(matchListenerStatic(config, { eventType: UPDATE, projectKey }, event).ok, expected);
+  storage.__seed("listener:project-match", config); storage.__seed("listener_index", [toIndexRow(config)]);
+  await readListenerIndex(); await listenerTrigger(event);
+  assert.equal(pushed.length, expected ? 1 : 0);
+});
 console.log(`RULES RUNTIME REGRESSION: ${passed} passed, ${failed} failed`);
 process.exitCode = failed ? 1 : 0;

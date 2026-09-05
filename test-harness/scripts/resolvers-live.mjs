@@ -13,6 +13,7 @@
 // (an app admin's accountId; defaults to the forge-cli login used on wolfaenpak).
 // Run: node scripts/resolvers-live.mjs
 import { loadEnv } from "../lib/env.mjs";
+import { disposableProject, cleanupFixtures, deleteIssueFixture } from "../lib/fixture-cleanup.mjs";
 import { testState } from "../lib/rules-api.mjs";
 
 const env = loadEnv();
@@ -38,9 +39,8 @@ try {
   const who = await call("checkIsAdmin");
   ok(who && (who.isAdmin === true || who.role === "admin" || who.success), `principal resolves (${JSON.stringify(who).slice(0, 120)})`);
   // fixture issue
-  const projects = (await jira("GET", "/rest/api/3/project/search?maxResults=100")).body.values || [];
-  const proj = projects.find((p) => p.key === (env.COGTEST_PROJECT_KEY || "COGTEST")) || projects[0];
-  const types = (await jira("GET", `/rest/api/3/project/${proj.id}`)).body.issueTypes || [];
+  const proj = await disposableProject(jira, env);
+  const types = proj.issueTypes;
   const stdType = types.find((t) => !t.subtask && /task/i.test(t.name)) || types.find((t) => !t.subtask);
   const issue = (await jira("POST", "/rest/api/3/issue", { fields: { project: { id: proj.id }, issuetype: { id: stdType.id }, summary: `${TAG} resolver bed` } })).body;
   created.issues.push(issue.key);
@@ -98,11 +98,16 @@ try {
   ok(tl.success && tl.tokens.some((t) => t.id === tk.row.id && !t.hash) && typeof tl.url === "string", "getApiTokens lists it without the hash + returns the endpoint URL");
   const tv = await call("revokeApiToken", { id: tk.row.id });
   ok(tv.success && tv.revoked, "revokeApiToken");
+  if (tv.success && tv.revoked) created.tokens = created.tokens.filter(id => id !== tk.row.id);
   const nonAdmin = await call("getApiTokens", {}, "557058:00000000-0000-0000-0000-000000000000");
   ok(nonAdmin.success === false, "token management denied to a non-admin principal");
 } catch (e) { fail++; console.log("  ✗ threw: " + (e && e.stack || e)); }
-for (const id of created.listeners) await call("deleteListener", { id }).catch(() => {});
-for (const id of created.jobs) await call("deleteScheduledJob", { id }).catch(() => {});
-for (const k of created.issues) await jira("DELETE", `/rest/api/3/issue/${k}`).catch(() => {});
+const removeViaResolver = async (name, id) => { const body = await call(name, { id }); return { ok: body.success === true, status: body.success ? 200 : 400, body }; };
+fail += await cleanupFixtures([
+  ...created.listeners.map(id => [`listener ${id}`, () => removeViaResolver("deleteListener", id)]),
+  ...created.jobs.map(id => [`job ${id}`, () => removeViaResolver("deleteScheduledJob", id)]),
+  ...created.tokens.map(id => [`token ${id}`, () => removeViaResolver("revokeApiToken", id)]),
+  ...created.issues.map(key => [`issue ${key}`, () => deleteIssueFixture(jira, key)]),
+]);
 console.log(`\nRESOLVERS LIVE: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

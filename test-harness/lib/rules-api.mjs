@@ -31,9 +31,19 @@ export const testState = {
 
 let _url = env.RULES_API_URL || null;
 let _token = env.RULES_API_TOKEN || null;
+let ownedTokenId = null;
+let initializing = null;
+let closing = null;
 
 /** Resolve URL + token (mint through the dev hook when not configured). */
 export const ensureRulesApi = async () => {
+  if (closing) await closing;
+  if (initializing) return initializing;
+  initializing = initializeRulesApi();
+  try { return await initializing; } finally { initializing = null; }
+};
+
+const initializeRulesApi = async () => {
   if (!_url) {
     if (!env.TESTSTATE_URL || !env.HARNESS_SECRET) throw new Error("Set RULES_API_URL+RULES_API_TOKEN, or TESTSTATE_URL+HARNESS_SECRET so they can be discovered/minted.");
     const r = await testState.get("rulesApiUrl");
@@ -42,10 +52,29 @@ export const ensureRulesApi = async () => {
   }
   if (!_token) {
     const r = await testState.post({ action: "mintApiToken", name: `harness ${new Date().toISOString()}` });
-    if (!r.ok || !r.body || !r.body.token) throw new Error(`Could not mint an API token via the test hook: ${r.status} ${JSON.stringify(r.body)}`);
+    if (!r.ok || !r.body?.token || !r.body?.row?.id) throw new Error(`Could not mint an owned API token via the test hook: HTTP ${r.status}`);
     _token = r.body.token;
+    ownedTokenId = r.body.row.id;
   }
   return { url: _url, token: _token };
+};
+
+/** Revoke only this process's auto-minted token. Always await in a suite's finally. */
+export const closeRulesApi = async () => {
+  if (closing) return closing;
+  closing = (async () => {
+    if (initializing) await initializing;
+    if (!ownedTokenId) return; // A supplied RULES_API_TOKEN belongs to the caller.
+    const id = ownedTokenId;
+    const accountId = env.RESOLVER_ACCOUNT_ID || (await (await import("./jira.mjs")).getMyself()).accountId;
+    const r = await testState.post({ action: "invokeResolver", name: "revokeApiToken", accountId, payload: { id } });
+    if (!r.ok || r.body?.success !== true || r.body?.revoked !== true) {
+      throw new Error(`Could not revoke this suite's API token (${id}): HTTP ${r.status}`);
+    }
+    ownedTokenId = null;
+    _token = null;
+  })();
+  try { return await closing; } finally { closing = null; }
 };
 
 export const api = async (method, query, body) => {

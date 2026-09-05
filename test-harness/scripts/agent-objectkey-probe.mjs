@@ -10,8 +10,10 @@
 // Model-dependent: if the provider refuses to emit the malformed argument the probe
 // reports INCONCLUSIVE rather than a pass.
 import { loadEnv } from "../lib/env.mjs";
-import { rulesApi, waitForTask } from "../lib/rules-api.mjs";
+import { disposableProject, cleanupFixtures, deleteIssueFixture } from "../lib/fixture-cleanup.mjs";
+import { closeRulesApi, rulesApi, waitForTask } from "../lib/rules-api.mjs";
 
+try {
 const env = loadEnv();
 const BASE = env.JIRA_BASE_URL.replace(/\/$/, "");
 const AUTH = "Basic " + Buffer.from(`${env.JIRA_ADMIN_EMAIL}:${env.JIRA_API_TOKEN}`).toString("base64");
@@ -24,13 +26,15 @@ const jira = async (method, path, body) => {
 };
 const must = (r, w) => { if (!r.ok) throw new Error(`${w} -> ${r.status} ${JSON.stringify(r.body).slice(0, 300)}`); return r.body; };
 
+const created = {jobs:[],issues:[]};
 const main = async () => {
-  const projects = must(await jira("GET", "/rest/api/3/project/search?maxResults=100"), "projects").values || [];
-  const proj = projects.find((p) => p.key === (env.COGTEST_PROJECT_KEY || "COGTEST"));
-  const types = must(await jira("GET", `/rest/api/3/project/${proj.id}`), "project").issueTypes || [];
+  const proj = await disposableProject(jira, env);
+  const types = proj.issueTypes;
   const std = types.find((t) => !t.subtask && /task/i.test(t.name)) || types.find((t) => !t.subtask);
   const bound = must(await jira("POST", "/rest/api/3/issue", { fields: { project: { id: proj.id }, issuetype: { id: std.id }, summary: `${TAG} bound issue`, labels: [TAG] } }), "create bound");
+  created.issues.push(bound.key);
   const other = must(await jira("POST", "/rest/api/3/issue", { fields: { project: { id: proj.id }, issuetype: { id: std.id }, summary: `${TAG} other issue` } }), "create other");
+  created.issues.push(other.key);
   console.log(`  bound=${bound.key}  other=${other.key}`);
 
   const job = must(await rulesApi.jobs.create({
@@ -42,6 +46,7 @@ const main = async () => {
     },
   }), "create job").job;
 
+  created.jobs.push(job.id);
   const r = await rulesApi.jobs.run(job.id);
   const task = await waitForTask(r.body.taskId, { tries: 60 });
   const logs = await rulesApi.logs(job.id);
@@ -61,6 +66,13 @@ const main = async () => {
   if (!emittedObject) console.log("  INCONCLUSIVE: the model did not emit an object issueKey; the guard was never reached.");
   else if (rejected && !wroteToBound) console.log("  PROVEN: the object key was rejected and NOTHING was written to the bound issue.");
   else console.log("  FAILED: the object key was not rejected (or the write landed on the bound issue).");
-  await rulesApi.jobs.remove(job.id);
+
 };
-main().catch((e) => { console.error("FATAL", e); process.exit(2); });
+try { await main(); } catch(e) { console.error("FATAL", e); process.exitCode = 2; }
+finally {
+  await cleanupFixtures([
+    ...created.jobs.map(id => [`job ${id}`, () => rulesApi.jobs.remove(id)]),
+    ...created.issues.map(key => [`issue ${key}`, () => deleteIssueFixture(jira, key)]),
+  ]);
+}
+} finally { await closeRulesApi(); }

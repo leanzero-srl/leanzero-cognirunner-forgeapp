@@ -20,9 +20,11 @@
 // Run: node scripts/listeners-e2e.mjs            (KEEP=1 keeps the listeners + test data)
 //      SKIP_ADMIN=1 skips project/field/issue-type/config events (slower, admin-heavy).
 import { loadEnv } from "../lib/env.mjs";
-import { rulesApi, waitForLogs, ensureRulesApi } from "../lib/rules-api.mjs";
+import { disposableProject, cleanupFixtures, deleteIssueFixture } from "../lib/fixture-cleanup.mjs";
+import { closeRulesApi, rulesApi, waitForLogs, ensureRulesApi } from "../lib/rules-api.mjs";
 import { EVENT_IDS } from "../../src/shared/jira-events.js";
 
+try {
 const env = loadEnv();
 const BASE = env.JIRA_BASE_URL.replace(/\/$/, "");
 const AUTH = "Basic " + Buffer.from(`${env.JIRA_ADMIN_EMAIL}:${env.JIRA_API_TOKEN}`).toString("base64");
@@ -63,10 +65,10 @@ async function main() {
 
   // ── test bed: a project + a scrum board if possible ──
   const projects = must(await jira("GET", "/rest/api/3/project/search?maxResults=100"), "projects").values || [];
-  const proj = projects.find((p) => p.key === (env.COGTEST_PROJECT_KEY || "COGTEST")) || projects.find((p) => p.key === "LZPT") || projects.find((p) => p.projectTypeKey === "software") || projects[0];
+  const proj = await disposableProject(jira, env);
   if (!proj) throw new Error("no project available on the site");
   console.log(`  using project ${proj.key} (${proj.name}, ${proj.projectTypeKey})`);
-  const types = must(await jira("GET", `/rest/api/3/project/${proj.id}`), "project").issueTypes || [];
+  const types = proj.issueTypes;
   const stdType = types.find((t) => !t.subtask && /task/i.test(t.name)) || types.find((t) => !t.subtask);
   const subType = types.find((t) => t.subtask);
   const jsmProject = projects.find((p) => p.projectTypeKey === "service_desk");
@@ -260,6 +262,7 @@ async function main() {
         const jsmTypes = (await jira("GET", `/rest/api/3/project/${jsmProject.id}`)).body?.issueTypes || [];
         const rt = await jira("POST", `/rest/servicedeskapi/servicedesk/${sd.id}/requesttype`, { issueTypeId: String((jsmTypes.find((t) => !t.subtask) || {}).id || stdType.id), name: `${TAG} request`, description: "e2e" }, { "X-ExperimentalApi": "opt-in" });
         if (rt.ok) {
+          created.requestTypes.push({deskId:sd.id,id:rt.body.id});
           fired.add("avi:jsm-entity:created:request-type");
           const rdl = await jira("DELETE", `/rest/servicedeskapi/servicedesk/${sd.id}/requesttype/${rt.body.id}`, undefined, { "X-ExperimentalApi": "opt-in" }); if (rdl.ok || rdl.status === 204) fired.add("avi:jsm-entity:deleted:request-type"); else note(`request type delete → ${rdl.status}`);
         } else note(`request type create → ${rt.status} ${JSON.stringify(rt.body).slice(0, 120)}`);
@@ -333,19 +336,26 @@ async function main() {
 
 async function cleanup() {
   if (KEEP) { console.log("KEEP=1 — leaving listeners and test data in place"); return; }
-  for (const id of created.listeners) await rulesApi.listeners.remove(id).catch(() => {});
-  for (const k of created.issues) await jira("DELETE", `/rest/api/3/issue/${k}`).catch(() => {});
-  for (const id of created.versions) await jira("POST", `/rest/api/3/version/${id}/removeAndSwap`, {}).catch(() => {});
-  for (const id of created.components) await jira("DELETE", `/rest/api/3/component/${id}`).catch(() => {});
-  for (const id of created.sprints) await jira("DELETE", `/rest/agile/1.0/sprint/${id}`).catch(() => {});
-  for (const id of created.boards) await jira("DELETE", `/rest/agile/1.0/board/${id}`).catch(() => {});
-  for (const id of created.filters) await jira("DELETE", `/rest/api/3/filter/${id}`).catch(() => {});
-  for (const id of created.issueTypes) await jira("DELETE", `/rest/api/3/issuetype/${id}`).catch(() => {});
-  for (const id of created.projects) await jira("DELETE", `/rest/api/3/project/${id}?enableUndo=false`).catch(() => {});
-  console.log("  cleaned up listeners + test data");
+  fail += await cleanupFixtures([
+    ...created.listeners.map(id => [`listener ${id}`, () => rulesApi.listeners.remove(id)]),
+    ...created.issues.map(key => [`issue ${key}`, () => deleteIssueFixture(jira, key)]),
+    ...created.versions.map(id => [`version ${id}`, () => jira("POST", `/rest/api/3/version/${id}/removeAndSwap`, {})]),
+    ...created.components.map(id => [`component ${id}`, () => jira("DELETE", `/rest/api/3/component/${id}`)]),
+    ...created.sprints.map(id => [`sprint ${id}`, () => jira("DELETE", `/rest/agile/1.0/sprint/${id}`)]),
+    ...created.boards.map(id => [`board ${id}`, () => jira("DELETE", `/rest/agile/1.0/board/${id}`)]),
+    ...created.filters.map(id => [`filter ${id}`, () => jira("DELETE", `/rest/api/3/filter/${id}`)]),
+    ...created.issueTypes.map(id => [`issue type ${id}`, () => jira("DELETE", `/rest/api/3/issuetype/${id}`)]),
+    ...created.projects.map(id => [`project ${id}`, () => jira("DELETE", `/rest/api/3/project/${id}?enableUndo=false`)]),
+    ...created.fields.map(id => [`field ${id}`, () => jira("DELETE", `/rest/api/3/field/${id}`)]),
+    ...created.requestTypes.map(({deskId,id}) => [`request type ${id}`, () => jira("DELETE", `/rest/servicedeskapi/servicedesk/${deskId}/requesttype/${id}`, undefined, {"X-ExperimentalApi":"opt-in"})]),
+  ]);
 }
 
 try { await main(); } catch (e) { fail++; console.log("  ✗ E2E threw: " + (e && e.stack || e)); } finally { await cleanup(); }
 if (notes.length) console.log("\nNOTES:\n" + notes.map((n) => "  - " + n).join("\n"));
 console.log(`\nLISTENERS E2E: ${pass} passed, ${fail} failed`);
-process.exit(fail ? 1 : 0);
+process.exitCode = process.exitCode || (fail ? 1 : 0);
+
+} finally {
+  await closeRulesApi();
+}

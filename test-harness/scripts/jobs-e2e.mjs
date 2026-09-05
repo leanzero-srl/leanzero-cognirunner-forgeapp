@@ -15,8 +15,10 @@
 //   4. Preview, enable/disable, PUT, DELETE round-trips.
 // Run: node scripts/jobs-e2e.mjs      (KEEP=1 keeps jobs + issue; QUICK=1 skips the tick wait)
 import { loadEnv } from "../lib/env.mjs";
-import { rulesApi, waitForTask, waitForLogs } from "../lib/rules-api.mjs";
+import { disposableProject, cleanupFixtures, deleteIssueFixture } from "../lib/fixture-cleanup.mjs";
+import { closeRulesApi, rulesApi, waitForTask, waitForLogs } from "../lib/rules-api.mjs";
 
+try {
 const env = loadEnv();
 const BASE = env.JIRA_BASE_URL.replace(/\/$/, "");
 const AUTH = "Basic " + Buffer.from(`${env.JIRA_ADMIN_EMAIL}:${env.JIRA_API_TOKEN}`).toString("base64");
@@ -36,9 +38,8 @@ const created = { jobs: [], issues: [] };
 
 async function main() {
   console.log(`JOBS E2E on ${BASE} (run ${RUN})`);
-  const projects = must(await jira("GET", "/rest/api/3/project/search?maxResults=100"), "projects").values || [];
-  const proj = projects.find((p) => p.key === (env.COGTEST_PROJECT_KEY || "COGTEST")) || projects.find((p) => p.key === "LZPT") || projects[0];
-  const types = must(await jira("GET", `/rest/api/3/project/${proj.id}`), "project").issueTypes || [];
+  const proj = await disposableProject(jira, env);
+  const types = proj.issueTypes;
   const stdType = types.find((t) => !t.subtask && /task/i.test(t.name)) || types.find((t) => !t.subtask);
   const issue = must(await jira("POST", "/rest/api/3/issue", { fields: { project: { id: proj.id }, issuetype: { id: stdType.id }, summary: `${TAG} scheduled job bed`, labels: [TAG] } }), "create issue");
   created.issues.push(issue.key);
@@ -110,10 +111,15 @@ async function main() {
 }
 async function cleanup() {
   if (KEEP) { console.log("KEEP=1 — leaving jobs + issue in place"); return; }
-  for (const id of created.jobs) await rulesApi.jobs.remove(id).catch(() => {});
-  for (const k of created.issues) await jira("DELETE", `/rest/api/3/issue/${k}`).catch(() => {});
-  console.log("  cleaned up jobs + issue");
+  fail += await cleanupFixtures([
+    ...created.jobs.map(id => [`job ${id}`, () => rulesApi.jobs.remove(id)]),
+    ...created.issues.map(key => [`issue ${key}`, () => deleteIssueFixture(jira, key)]),
+  ]);
 }
 try { await main(); } catch (e) { fail++; console.log("  ✗ E2E threw: " + (e && e.stack || e)); } finally { await cleanup(); }
 console.log(`\nJOBS E2E: ${pass} passed, ${fail} failed`);
-process.exit(fail ? 1 : 0);
+process.exitCode = process.exitCode || (fail ? 1 : 0);
+
+} finally {
+  await closeRulesApi();
+}

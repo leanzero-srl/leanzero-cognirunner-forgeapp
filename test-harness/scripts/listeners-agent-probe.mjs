@@ -10,8 +10,10 @@
 // runs (execution logs via REST) and the agent's side effects land. Fast (~2 min).
 // Run: node scripts/listeners-agent-probe.mjs
 import { loadEnv } from "../lib/env.mjs";
-import { rulesApi, waitForLogs } from "../lib/rules-api.mjs";
+import { disposableProject, cleanupFixtures, deleteIssueFixture } from "../lib/fixture-cleanup.mjs";
+import { closeRulesApi, rulesApi, waitForLogs } from "../lib/rules-api.mjs";
 
+try {
 const env = loadEnv();
 const BASE = env.JIRA_BASE_URL.replace(/\/$/, "");
 const AUTH = "Basic " + Buffer.from(`${env.JIRA_ADMIN_EMAIL}:${env.JIRA_API_TOKEN}`).toString("base64");
@@ -28,9 +30,8 @@ const must = (r, what) => { if (!r.ok) throw new Error(`${what} → ${r.status} 
 const adf = (t) => ({ type: "doc", version: 1, content: [{ type: "paragraph", content: [{ type: "text", text: t }] }] });
 const created = { listeners: [], issues: [], versions: [] };
 try {
-  const projects = must(await jira("GET", "/rest/api/3/project/search?maxResults=100"), "projects").values || [];
-  const proj = projects.find((p) => p.key === (env.COGTEST_PROJECT_KEY || "COGTEST")) || projects[0];
-  const types = must(await jira("GET", `/rest/api/3/project/${proj.id}`), "project").issueTypes || [];
+  const proj = await disposableProject(jira, env);
+  const types = proj.issueTypes;
   const stdType = types.find((t) => !t.subtask && /task/i.test(t.name)) || types.find((t) => !t.subtask);
   const script = must(await rulesApi.listeners.create({ name: `Probe script ${RUN}`, events: ["avi:jira:commented:issue"], filters: { projectKeys: [proj.key], commentPattern: `${TAG}-ping` }, functions: [{ name: "label", code: `await api.addLabels("${TAG}-script");` }] }), "script").listener;
   const agent = must(await rulesApi.listeners.create({ name: `Probe agent ${RUN}`, events: ["avi:jira:commented:issue"], filters: { projectKeys: [proj.key], commentPattern: `${TAG}-ping` }, mode: "agent", agent: { instructions: `Add the label "${TAG}-agent" to the issue and reply with a comment containing exactly "${TAG} agent acknowledged". Then finish.`, allowedActions: ["get_issue", "add_comment", "add_labels"], maxRounds: 4 } }), "agent").listener;
@@ -62,8 +63,14 @@ try {
   const fin2 = must(await jira("GET", `/rest/api/3/issue/${issue.key}?fields=comment`), "issue after version");
   ok((fin2.fields.comment.comments || []).some((c) => JSON.stringify(c.body).includes("version released")), "version-released comment posted via api.forIssue");
 } catch (e) { fail++; console.log("  ✗ probe threw: " + (e && e.stack || e)); }
-for (const id of created.listeners) await rulesApi.listeners.remove(id).catch(() => {});
-for (const id of created.versions) await jira("POST", `/rest/api/3/version/${id}/removeAndSwap`, {}).catch(() => {});
-for (const k of created.issues) await jira("DELETE", `/rest/api/3/issue/${k}`).catch(() => {});
+fail += await cleanupFixtures([
+  ...created.listeners.map(id => [`listener ${id}`, () => rulesApi.listeners.remove(id)]),
+  ...created.versions.map(id => [`version ${id}`, () => jira("POST", `/rest/api/3/version/${id}/removeAndSwap`, {})]),
+  ...created.issues.map(key => [`issue ${key}`, () => deleteIssueFixture(jira, key)]),
+]);
 console.log(`\nAGENT PROBE: ${pass} passed, ${fail} failed`);
-process.exit(fail ? 1 : 0);
+process.exitCode = process.exitCode || (fail ? 1 : 0);
+
+} finally {
+  await closeRulesApi();
+}

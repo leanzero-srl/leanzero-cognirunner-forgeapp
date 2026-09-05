@@ -27,8 +27,10 @@
 //
 // Env: JIRA_* (site + admin token) and TESTSTATE_URL + HARNESS_SECRET (or RULES_API_URL/TOKEN).
 import { loadEnv } from "../lib/env.mjs";
-import { rulesApi, waitForLogs } from "../lib/rules-api.mjs";
+import { disposableProject, cleanupFixtures, deleteIssueFixture } from "../lib/fixture-cleanup.mjs";
+import { closeRulesApi, rulesApi, waitForLogs } from "../lib/rules-api.mjs";
 
+try {
 const env = loadEnv();
 const BASE = env.JIRA_BASE_URL.replace(/\/$/, "");
 const AUTH = "Basic " + Buffer.from(`${env.JIRA_ADMIN_EMAIL}:${env.JIRA_API_TOKEN}`).toString("base64");
@@ -68,30 +70,19 @@ const assets = async (method, path, body) => {
   return { status: res.status, ok: res.ok, body: json };
 };
 
+let cleanupDeskId = null;
 const created = { listeners: [], issues: [], requestTypes: [], fields: [] };
 
 async function main() {
   console.log(`JSM + ASSETS E2E on ${BASE} (run ${RUN})`);
 
   // ── 0. Project + permission gate ────────────────────────────────────────────
-  const projects = must(await jira("GET", "/rest/api/3/project/search?maxResults=100"), "projects").values || [];
-  const wanted = process.env.JSM_PROJECT_KEY || env.JSM_PROJECT_KEY || null;
-  let proj = wanted ? projects.find((p) => p.key === wanted) : null;
-  if (!proj) {
-    // mypermissions LIES on demo service projects (CREATE_ISSUES:true, create 400s).
-    // createmeta is the honest probe — it lists only what this user can really create.
-    for (const p of projects.filter((x) => x.projectTypeKey === "service_desk")) {
-      const cm = await jira("GET", `/rest/api/3/issue/createmeta/${p.key}/issuetypes`);
-      const usable = cm.ok && (cm.body.issueTypes || cm.body.values || []).filter((t) => !t.subtask);
-      if (usable && usable.length) { proj = p; break; }
-      note(`${p.key}: createmeta offers no creatable issue type for the API user — skipped`);
-    }
-  }
-  if (!proj) throw new Error("no JSM (service_desk) project this user can create issues in");
+  const proj = await disposableProject(jira, {RULES_TEST_PROJECT_KEY: env.JSM_PROJECT_KEY || "JT"});
   console.log(`  JSM project ${proj.key} (${proj.name}${proj.simplified ? ", team-managed" : ", company-managed"})`);
 
   const desks = must(await jira("GET", "/rest/servicedeskapi/servicedesk?limit=50"), "servicedesks").values || [];
   const desk = desks.find((d) => String(d.projectId) === String(proj.id) || d.projectKey === proj.key);
+  cleanupDeskId = desk?.id;
   ok(!!desk, `service desk resolved (id ${desk && desk.id})`);
 
   const perms = must(await jira("GET", `/rest/api/3/mypermissions?projectKey=${proj.key}&permissions=SERVICEDESK_AGENT,ADMINISTER_PROJECTS,CREATE_ISSUES`), "mypermissions").permissions || {};
@@ -104,7 +95,7 @@ async function main() {
       `(POST /rest/api/3/project/${proj.key}/role/{roleId} { "user": ["<accountId>"] }). Request-type events cannot fire without it.`);
   }
 
-  const types = must(await jira("GET", `/rest/api/3/project/${proj.id}`), "project").issueTypes || [];
+  const types = proj.issueTypes;
   const stdType = types.find((t) => !t.subtask && /task|request|incident/i.test(t.name)) || types.find((t) => !t.subtask);
 
   // ── ledger issue: one comment per caught event (append-only; not the 50-entry log window) ──
@@ -339,18 +330,16 @@ async function main() {
     ok(p.ok && p.body.value && p.body.value.project === proj.key, `listener saw the JSM issue context: ${JSON.stringify(p.body && p.body.value)}`);
   }
 
-  // ── cleanup ─────────────────────────────────────────────────────────────────
-  if (!KEEP) {
-    for (const id of created.listeners) await rulesApi.listeners.remove(id);
-    if (desk) for (const id of created.requestTypes) await jira("DELETE", `/rest/servicedeskapi/servicedesk/${desk.id}/requesttype/${id}`, undefined, EXP);
-    for (const k of created.issues) { const d = await jira("DELETE", `/rest/api/3/issue/${k}`); if (!d.ok) note(`issue delete ${k} → ${d.status}`); }
-    console.log("  cleaned up listeners + test data");
-  } else console.log(`  KEEP=1 — kept ${created.listeners.length} listeners, ${created.issues.length} issues`);
-
-  console.log("\nNOTES:");
-  for (const n of notes) console.log("  - " + n);
-  console.log(`\nJSM + ASSETS E2E: ${pass} passed, ${fail} failed, ${skip} skipped`);
-  process.exit(fail ? 1 : 0);
 }
-
-main().catch((e) => { console.error("FATAL:", e && e.stack || e); process.exit(1); });
+try { await main(); } catch (e) { fail++; console.error("FATAL:", e?.stack || e); }
+finally {
+  if (!KEEP) fail += await cleanupFixtures([
+    ...created.listeners.map(id => [`listener ${id}`, () => rulesApi.listeners.remove(id)]),
+    ...created.requestTypes.map(id => [`request type ${id}`, () => jira("DELETE", `/rest/servicedeskapi/servicedesk/${cleanupDeskId}/requesttype/${id}`, undefined, EXP)]),
+    ...created.issues.map(key => [`issue ${key}`, () => deleteIssueFixture(jira, key)]),
+  ]);
+  else console.log(`KEEP=1 — kept ${created.listeners.length} listeners, ${created.issues.length} issues`);
+}
+console.log(`\nJSM + ASSETS E2E: ${pass} passed, ${fail} failed, ${skip} skipped`);
+process.exitCode = process.exitCode || (fail ? 1 : 0);
+} finally { await closeRulesApi(); }

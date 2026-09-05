@@ -22,8 +22,10 @@
 //
 // Run: node scripts/issue-key-live.mjs        (KEEP=1 keeps the listeners/jobs/issues)
 import { loadEnv } from "../lib/env.mjs";
-import { rulesApi, waitForLogs, waitForTask } from "../lib/rules-api.mjs";
+import { disposableProject, cleanupFixtures, deleteIssueFixture } from "../lib/fixture-cleanup.mjs";
+import { closeRulesApi, rulesApi, waitForLogs, waitForTask } from "../lib/rules-api.mjs";
 
+try {
 const env = loadEnv();
 const BASE = env.JIRA_BASE_URL.replace(/\/$/, "");
 const AUTH = "Basic " + Buffer.from(`${env.JIRA_ADMIN_EMAIL}:${env.JIRA_API_TOKEN}`).toString("base64");
@@ -57,10 +59,9 @@ async function main() {
   const who = await rulesApi.whoami();
   ok(who.ok, `Rules REST API reachable (token ${who.body?.token?.prefix})`);
 
-  const projects = must(await jira("GET", "/rest/api/3/project/search?maxResults=100"), "projects").values || [];
-  const proj = projects.find((p) => p.key === (env.COGTEST_PROJECT_KEY || "COGTEST")) || projects.find((p) => p.projectTypeKey === "software");
+  const proj = await disposableProject(jira, env);
   if (!proj) throw new Error("no project");
-  const types = must(await jira("GET", `/rest/api/3/project/${proj.id}`), "project").issueTypes || [];
+  const types = proj.issueTypes;
   const stdType = types.find((t) => !t.subtask && /task/i.test(t.name)) || types.find((t) => !t.subtask);
   console.log(`  project ${proj.key}, issue type ${stdType.name}`);
 
@@ -269,17 +270,14 @@ return out.length;` }],
   console.log(`\n  A=${A.key} B=${B.key} C=${C.key}  listeners=${created.listeners.join(",")} job=${JOB.id}`);
 }
 
-main().then(async () => {
-  if (!KEEP) {
-    for (const id of created.listeners) await rulesApi.listeners.remove(id);
-    for (const id of created.jobs) await rulesApi.jobs.remove(id);
-    for (const k of created.issues) await jira("DELETE", `/rest/api/3/issue/${k}?deleteSubtasks=true`);
-    console.log("  cleaned up (KEEP=1 to keep)");
-  }
-  console.log(`\nRESULT: ${pass} passed, ${fail} failed`);
-  process.exit(fail ? 1 : 0);
-}).catch(async (e) => {
-  console.error("FATAL", e);
-  if (!KEEP) { for (const id of created.listeners) await rulesApi.listeners.remove(id).catch(() => {}); for (const id of created.jobs) await rulesApi.jobs.remove(id).catch(() => {}); }
-  process.exit(2);
-});
+try { await main(); } catch (e) { fail++; console.error("FATAL", e); }
+finally {
+  if (!KEEP) fail += await cleanupFixtures([
+    ...created.listeners.map(id => [`listener ${id}`, () => rulesApi.listeners.remove(id)]),
+    ...created.jobs.map(id => [`job ${id}`, () => rulesApi.jobs.remove(id)]),
+    ...created.issues.map(key => [`issue ${key}`, () => deleteIssueFixture(jira, key)]),
+  ]);
+}
+console.log(`\nRESULT: ${pass} passed, ${fail} failed`);
+process.exitCode = process.exitCode || (fail ? 1 : 0);
+} finally { await closeRulesApi(); }

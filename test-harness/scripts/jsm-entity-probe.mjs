@@ -29,9 +29,11 @@
 // Run: node scripts/jsm-entity-probe.mjs      (KEEP=1 keeps the listeners + ledger issue)
 //      JSM_PROJECT_KEY=JT overrides the project choice.
 import { loadEnv } from "../lib/env.mjs";
-import { rulesApi } from "../lib/rules-api.mjs";
+import { disposableProject, cleanupFixtures, deleteIssueFixture } from "../lib/fixture-cleanup.mjs";
+import { closeRulesApi, rulesApi } from "../lib/rules-api.mjs";
 import { EVENT_IDS } from "../../src/shared/jira-events.js";
 
+try {
 const env = loadEnv();
 const BASE = env.JIRA_BASE_URL.replace(/\/$/, "");
 const AUTH = "Basic " + Buffer.from(`${env.JIRA_ADMIN_EMAIL}:${env.JIRA_API_TOKEN}`).toString("base64");
@@ -54,32 +56,26 @@ const jira = async (method, path, body, extraHeaders = {}) => {
 };
 const must = (r, what) => { if (!r.ok) throw new Error(`${what} → ${r.status} ${JSON.stringify(r.body).slice(0, 300)}`); return r.body; };
 
+const created = {listeners:[],issues:[],requestTypes:[]};
+let cleanupDeskId;
 async function main() {
   console.log(`JSM ENTITY-EVENT PROBE on ${BASE} (run ${RUN})`);
 
-  const projects = must(await jira("GET", "/rest/api/3/project/search?maxResults=100"), "projects").values || [];
-  const wanted = process.env.JSM_PROJECT_KEY || env.JSM_PROJECT_KEY || null;
-  let proj = wanted ? projects.find((p) => p.key === wanted) : null;
-  if (!proj) {
-    for (const p of projects.filter((x) => x.projectTypeKey === "service_desk")) {
-      const cm = await jira("GET", `/rest/api/3/issue/createmeta/${p.key}/issuetypes`);
-      const usable = cm.ok && (cm.body.issueTypes || cm.body.values || []).filter((t) => !t.subtask);
-      if (usable && usable.length) { proj = p; break; }
-    }
-  }
-  if (!proj) throw new Error("no usable JSM project");
+  const proj = await disposableProject(jira, {RULES_TEST_PROJECT_KEY: env.JSM_PROJECT_KEY || "JT"});
   const desks = must(await jira("GET", "/rest/servicedeskapi/servicedesk?limit=50"), "servicedesks").values || [];
   const desk = desks.find((d) => String(d.projectId) === String(proj.id) || d.projectKey === proj.key);
   if (!desk) throw new Error(`no service desk for ${proj.key}`);
+  cleanupDeskId = desk.id;
   const perms = must(await jira("GET", `/rest/api/3/mypermissions?projectKey=${proj.key}&permissions=SERVICEDESK_AGENT,ADMINISTER_PROJECTS`), "perms").permissions || {};
   if (!(perms.SERVICEDESK_AGENT || {}).havePermission || !(perms.ADMINISTER_PROJECTS || {}).havePermission) {
     throw new Error(`API user needs SERVICEDESK_AGENT + ADMINISTER_PROJECTS on ${proj.key} — add it to "Service Desk Team" and "Administrators"`);
   }
   console.log(`  project ${proj.key}, service desk ${desk.id}`);
 
-  const types = must(await jira("GET", `/rest/api/3/project/${proj.id}`), "project").issueTypes || [];
+  const types = proj.issueTypes;
   const stdType = types.find((t) => !t.subtask);
   const ledger = must(await jira("POST", "/rest/api/3/issue", { fields: { project: { id: proj.id }, issuetype: { id: stdType.id }, summary: `${TAG} entity-event ledger` } }), "ledger");
+  created.issues.push(ledger.key);
   console.log(`  ledger ${ledger.key}`);
 
   const mk = (name, events, ignoreSelf) => rulesApi.listeners.create({
@@ -87,6 +83,7 @@ async function main() {
     functions: [{ name: "record", code: `const e = api.context.event || {};\nawait api.forIssue("${ledger.key}").addComment("${TAG} caught " + api.context.eventType + " entityId=" + (e.entityId || "?"));\nreturn api.context.eventType;` }],
   });
   const targeted = must(await mk(`${TAG} targeted jsm-entity`, JSM_EVENTS, true), "targeted").listener;
+  created.listeners.push(targeted.id);
   // The catch-all WRITES NOTHING. With ignoreSelf OFF, a listener that commented would
   // re-trigger itself on avi:jira:commented:issue and spin until the brakes cut it — the
   // execution log is evidence enough, so this step only logs and returns.
@@ -94,6 +91,7 @@ async function main() {
     name: `${TAG} catch-all ignoreSelf-off (no writes)`, events: EVENT_IDS, ignoreSelf: false,
     functions: [{ name: "observe", code: `api.log("${TAG} observed " + api.context.eventType);\nreturn api.context.eventType;` }],
   }), "catch-all").listener;
+  created.listeners.push(catchAll.id);
   console.log(`  targeted ${targeted.id} (3 events) · catch-all ${catchAll.id} (${EVENT_IDS.length} events, ignoreSelf OFF)`);
 
   console.log("  waiting 40s for the 30s listener-index cache…");
@@ -105,6 +103,7 @@ async function main() {
   await sleep(3000);
   let delStatus = null;
   if (rt.ok) {
+    created.requestTypes.push(rt.body.id);
     const d = await jira("DELETE", `/rest/servicedeskapi/servicedesk/${desk.id}/requesttype/${rt.body.id}`, undefined, EXP);
     delStatus = d.status;
     console.log(`  request type delete → ${d.status}`);
@@ -137,12 +136,13 @@ async function main() {
   else verdict = "INCONCLUSIVE — the catch-all caught nothing at all, so the probe cannot separate 'no event' from 'listener not live'. Re-run and generate unrelated traffic (create an issue) to prove the catch-all is live.";
   console.log(`\n  VERDICT: ${verdict}`);
 
-  if (!KEEP) {
-    await rulesApi.listeners.remove(targeted.id);
-    await rulesApi.listeners.remove(catchAll.id);
-    const d = await jira("DELETE", `/rest/api/3/issue/${ledger.key}`);
-    console.log(`  cleaned up (ledger delete ${d.status})`);
-  } else console.log(`  KEEP=1 — listeners + ${ledger.key} kept`);
 }
-
-main().catch((e) => { console.error("FATAL:", (e && e.stack) || e); process.exit(1); });
+try { await main(); } catch (e) { console.error("FATAL:", e?.stack || e); process.exitCode = 1; }
+finally {
+  if (!KEEP) await cleanupFixtures([
+    ...created.listeners.map(id => [`listener ${id}`, () => rulesApi.listeners.remove(id)]),
+    ...created.requestTypes.map(id => [`request type ${id}`, () => jira("DELETE", `/rest/servicedeskapi/servicedesk/${cleanupDeskId}/requesttype/${id}`, undefined, EXP)]),
+    ...created.issues.map(key => [`issue ${key}`, () => deleteIssueFixture(jira, key)]),
+  ]);
+}
+} finally { await closeRulesApi(); }

@@ -27,6 +27,10 @@ try {
   await frame.locator("label", { hasText: /^Workflow$/ }).locator("..").getByRole("button").first().click();
   await frame.locator("label", { hasText: /^Transition$/ }).locator("..").getByRole("button").first().click();
   await frame.getByRole("button", { name: /Static Post Function/ }).click();
+  await frame.locator(".recipe-bar-toggle").click();
+  await frame.locator(".recipe-bar-body .dropdown-trigger").click();
+  await frame.getByRole("option", { name: "Add / remove labels", exact: false }).click();
+  await frame.getByText("Insert recipe", { exact: true }).click();
   const editor = frame.locator(".cm-content").first();
   await editor.fill("return api.context.issueKey;");
   await frame.locator(".btn-test-run").click();
@@ -42,7 +46,7 @@ try {
     assert.ok(!request.includes('"runtime":"job"') && !request.includes('"runtime":"listener"'), "actual workflow runtime");
     await frame.locator(`.test-result.${success ? "test-pass" : "test-fail"}`).waitFor({ timeout: 40000 });
     const text = await frame.locator(".test-result").innerText();
-    assert.match(text, expected, name);
+    assert.match(text, expected, name + ": " + text);
     assert.doesNotMatch(text, /MOCK-1|Mock data/, name);
     evidence.checks.push({ name, text, response: data });
     console.log("PASS", name);
@@ -51,7 +55,7 @@ try {
   await run("null issue-bound action fails", "await api.addComment('must never write');", false, /needs a current issue/);
   await run("failed live read is visible", "await api.getIssue('JT-999999999');", false, /404|not found|does not exist/i);
   await run("invalid context JQL fails", "return 'must not run';", false, /JQL|400|Error/i, "this is invalid JQL (");
-  await run("empty context JQL fails", "return 'must not run';", false, /no issues|no.*match|zero/i, "project = JT AND key = JT-999999999");
+  await run("empty context JQL fails", "return 'must not run';", false, /no results/i, "project = JT AND key = JT-999999999");
   await run("empty transition rejected", "await api.transitionIssue('');", false, /transition.*id|non-empty/i, key);
   await run("real property gate", `const value = await api.getProperty('${tag}'); if (!value?.exists) throw Error('property missing'); return 'property gate retained';`, true, /property gate retained/, key);
   await run("full API stages writes", `await api.forIssue('${key}').setAssignee('${me.accountId}'); await api.forIssue('${key}').addLabels('${tag}-sim'); await api.forIssue('${key}').addComment('never written'); await api.forIssue('${key}').setProperty('${tag}',{exists:false}); return 'all writes staged';`, true, /all writes staged/);

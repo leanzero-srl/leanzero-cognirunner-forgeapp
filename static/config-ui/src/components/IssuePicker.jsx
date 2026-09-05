@@ -37,8 +37,10 @@ export default function IssuePicker({ value, onChange, projectKey, onValidationC
     const handler = (e) => {
       if (wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false);
     };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
+    // Dismiss after the target's click. Removing this dropdown on mousedown can
+    // shrink a scrolled test panel and move Run Test away before mouseup.
+    document.addEventListener("click", handler);
+    return () => document.removeEventListener("click", handler);
   }, []);
 
   const doSearch = useCallback(async (text) => {

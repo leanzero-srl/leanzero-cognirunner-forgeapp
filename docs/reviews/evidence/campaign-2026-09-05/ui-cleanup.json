@@ -1,0 +1,49 @@
+{
+  "startedAt": "2026-09-05T19:01:31.806Z",
+  "records": [
+    {
+      "kind": "listeners",
+      "baselineIds": [
+        "lst_mtlignixtp9wzc",
+        "lst_mtlhkfoyg8bzgg",
+        "lst_mtlg3c8hkhihbr"
+      ],
+      "actualIds": [
+        "lst_mtlignixtp9wzc",
+        "lst_mtlhkfoyg8bzgg",
+        "lst_mtlg3c8hkhihbr"
+      ],
+      "visibleNames": [
+        "Auto-triage & quality check on issue creation",
+        "Test 1",
+        "Escalate Issue and Add Flag"
+      ],
+      "originalMetadataUnchanged": true,
+      "campaignAbsent": true,
+      "emptyMessage": "No listener matches your search.",
+      "clearSearchRestoresBaseline": true
+    },
+    {
+      "kind": "jobs",
+      "baselineIds": [
+        "job_mtlj8odbts255d",
+        "job_mtliu28arma6uc"
+      ],
+      "actualIds": [
+        "job_mtlj8odbts255d",
+        "job_mtliu28arma6uc"
+      ],
+      "visibleNames": [
+        "Alert unassigned open tickets",
+        "Nudge stale in-progress tickets"
+      ],
+      "originalMetadataUnchanged": true,
+      "campaignAbsent": true,
+      "emptyMessage": "No job matches your search.",
+      "clearSearchRestoresBaseline": true
+    }
+  ],
+  "errors": [],
+  "pass": true,
+  "finishedAt": "2026-09-05T19:01:38.068Z"
+}

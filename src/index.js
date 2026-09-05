@@ -1588,8 +1588,8 @@ const describeTransition = (t, statusMap) => {
   };
 };
 
-async function fetchWorkflowTransitions(workflowName) {
-  console.log(`fetchWorkflowTransitions: workflowName="${workflowName}"`);
+async function fetchWorkflowTransitions(workflowName, { log = true } = {}) {
+  if (log) console.log(`fetchWorkflowTransitions: workflowName="${workflowName}"`);
 
   const url = route`/rest/api/3/workflows/search?queryString=${workflowName}&expand=values.transitions`;
 
@@ -1599,7 +1599,7 @@ async function fetchWorkflowTransitions(workflowName) {
 
   if (!response.ok) {
     const errorBody = await response.text();
-    console.error("fetchWorkflowTransitions failed:", response.status, errorBody);
+    if (log) console.error("fetchWorkflowTransitions failed:", response.status, errorBody);
     return { transitionRules: null, error: `Jira API returned ${response.status}` };
   }
 
@@ -1627,7 +1627,7 @@ async function fetchWorkflowTransitions(workflowName) {
     }
   }
 
-  console.log(`fetchWorkflowTransitions: "${workflowName}" → ${transitionRules.size} transitions`);
+  if (log) console.log(`fetchWorkflowTransitions: "${workflowName}" → ${transitionRules.size} transitions`);
   return { transitionRules, error: null };
 }
 
@@ -1689,7 +1689,6 @@ resolver.define("getConfigs", async ({ payload, context }) => {
 
     for (const config of configs) {
       const wf = config.workflow || {};
-      console.log(`getConfigs orphan check: id="${config.id}", workflowName="${wf.workflowName}", transitionId="${wf.transitionId}"`);
 
       if (!wf.workflowName || !wf.transitionId) {
         surviving.push(config);
@@ -1698,7 +1697,9 @@ resolver.define("getConfigs", async ({ payload, context }) => {
 
       let result = workflowCache.get(wf.workflowName);
       if (!result) {
-        result = await fetchWorkflowTransitions(wf.workflowName);
+        // One bounded summary below keeps a full registry from exhausting Forge's
+        // per-invocation log allowance before a useful failure can be recorded.
+        result = await fetchWorkflowTransitions(wf.workflowName, { log: false });
         workflowCache.set(wf.workflowName, result);
       }
 
@@ -1753,7 +1754,6 @@ resolver.define("getConfigs", async ({ payload, context }) => {
             keep = false;
           }
         }
-        console.log(`  config "${config.id}" on transition ${wf.transitionId}: type=${config.type}, keep=${keep}`);
         if (keep) {
           surviving.push(config);
         } else {
@@ -1763,8 +1763,6 @@ resolver.define("getConfigs", async ({ payload, context }) => {
     }
 
     if (removed.length > 0) {
-      console.log(`Orphan cleanup: removed ${removed.length} stale config(s):`,
-        removed.map((c) => c.id));
       await saveRegistry(surviving);
       // NEVER delete codeRef bundles here: this orphan heuristic only sees
       // PUBLISHED workflows, so a rule saved into an unpublished draft (or a
@@ -1775,9 +1773,16 @@ resolver.define("getConfigs", async ({ payload, context }) => {
       // not. Orphaned bundles are accepted GC debt (see pfCodeKeyFor).
     }
 
-    if (hadApiError) {
-      console.log("Some workflow API calls failed — partial orphan cleanup only");
-    }
+    const failedWorkflows = [...workflowCache].filter(([, result]) => result.error || !result.transitionRules);
+    console.log("getConfigs orphan summary:", JSON.stringify({
+      checked: configs.length, retained: surviving.length, removed: removed.length,
+      workflows: workflowCache.size, failedWorkflows: failedWorkflows.length,
+      partial: hadApiError,
+      removedExamples: removed.slice(0, 5).map((c) => String(c.id).slice(0, 120)),
+      errorExamples: failedWorkflows.slice(0, 5).map(([name, result]) => ({
+        workflow: String(name).slice(0, 120), error: String(result.error || "Missing transitions").slice(0, 160),
+      })),
+    }));
 
     // ---- One-shot ownership repair -------------------------------------------------
     // "Register all" used to stamp the clicking admin as `createdBy` on every rule it

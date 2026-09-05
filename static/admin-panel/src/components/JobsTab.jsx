@@ -24,7 +24,7 @@ const emptyDraft = () => ({
   agent: { instructions: "", allowedActions: DEFAULT_AGENT_ACTIONS, maxRounds: DEFAULT_AGENT_ROUNDS },
   simulationMode: false, suppressNotifications: false,
 });
-const fmtTime = (iso) => { try { return new Date(iso).toLocaleString(); } catch { return iso || "—"; } };
+const fmtTime = (iso, timeZone) => { try { return new Date(iso).toLocaleString(undefined, { timeZone }); } catch { return iso || "—"; } };
 
 export default function JobsTab({ invoke, isAdmin, userRole }) {
   const canEdit = isAdmin || userRole === "editor" || userRole === "admin";
@@ -42,6 +42,8 @@ export default function JobsTab({ invoke, isAdmin, userRole }) {
   const [runResult, setRunResult] = useState(null);
   const loadToken = useRef(0);
   const pollRef = useRef(0);
+  const editorToken = useRef(0);
+  const expandToken = useRef(0);
 
   const load = useCallback(async () => {
     const token = ++loadToken.current;
@@ -52,7 +54,7 @@ export default function JobsTab({ invoke, isAdmin, userRole }) {
     } catch (e) { if (token === loadToken.current) setLoadError(e.message); }
     if (token === loadToken.current) setLoading(false);
   }, [invoke]);
-  useEffect(() => { load(); return () => { pollRef.current += 1; }; }, [load]);
+  useEffect(() => { load(); return () => { pollRef.current += 1; editorToken.current += 1; expandToken.current += 1; }; }, [load]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -73,50 +75,59 @@ export default function JobsTab({ invoke, isAdmin, userRole }) {
     setBusyId(null);
   };
   const expand = async (row) => {
+    const token = ++expandToken.current;
     if (expandedId === row.id) { setExpandedId(null); return; }
     setExpandedId(row.id);
     setExpandedLogs({ loading: true, logs: [] });
-    try { const r = await invoke("getLogs", { ruleId: row.id }); setExpandedLogs({ loading: false, logs: (r && r.logs) || [] }); } catch { setExpandedLogs({ loading: false, logs: [] }); }
+    try { const r = await invoke("getLogs", { ruleId: row.id }); if (token === expandToken.current) setExpandedLogs({ loading: false, logs: (r && r.logs) || [] }); } catch { if (token === expandToken.current) setExpandedLogs({ loading: false, logs: [] }); }
   };
 
   // Run now: queue a manual run of a SAVED job and poll every 3s (≤40 tries) —
   // the same getAsyncTaskResult contract FunctionBlock uses for LM Studio codegen.
   const runNow = async (id) => {
     const token = ++pollRef.current;
-    setRunning({ id, status: "queuing" }); setRunResult(null);
+    const editor = editorToken.current;
+    const showResult = (value) => { if (editor === editorToken.current) setRunResult(value); };
+    setRunning({ id, status: "queuing" }); showResult(null);
     try {
       const r = await invoke("runScheduledJobNow", { id });
+      if (token !== pollRef.current) return;
       if (!r.success) { showToast(r.error || "Could not start the job", "error"); setRunning(null); return; }
       setRunning({ id, taskId: r.taskId, status: "queued" });
       for (let i = 0; i < 40; i++) {
         await new Promise((res) => setTimeout(res, 3000));
         if (token !== pollRef.current) return;
         const p = await invoke("getAsyncTaskResult", { taskId: r.taskId });
+        if (token !== pollRef.current) return;
         if (!p.success) continue;
-        if (p.status === "done") { setRunResult({ ...(p.result || {}), isValid: p.result ? p.result.success !== false : true }); setRunning(null); showToast("Run finished"); load(); return; }
-        if (p.status === "error") { setRunResult({ isValid: false, reason: p.error || "Run failed" }); setRunning(null); load(); return; }
+        if (p.status === "cancelled") { showResult({ ...(p.result || {}), skipped: true, decision: "SKIP", reason: p.error || p.result?.reason || "Run cancelled by an operator." }); setRunning(null); load(); return; }
+        if (p.status === "done") { showResult({ ...(p.result || {}), isValid: p.result ? p.result.success !== false : true }); setRunning(null); showToast("Run finished"); load(); return; }
+        if (p.status === "error") { showResult({ isValid: false, reason: p.error || "Run failed" }); setRunning(null); load(); return; }
         setRunning({ id, taskId: r.taskId, status: p.status === "processing" ? "running" : "queued" });
       }
-      setRunResult({ isValid: false, reason: "Timed out waiting for the run (2 min). Check the Execution Logs tab — the run may still complete." });
+      showResult({ isValid: false, reason: "Timed out waiting for the run (2 min). Check the Execution Logs tab — the run may still complete." });
       setRunning(null);
-    } catch (e) { showToast(e.message, "error"); setRunning(null); }
+    } catch (e) { if (token === pollRef.current) { showToast(e.message, "error"); setRunning(null); } }
   };
 
   // editor
-  const openNew = () => { setDraft(emptyDraft()); setFunctions([newStep()]); setRunResult(null); };
+  const resetEditor = () => { editorToken.current += 1; setSaving(false); setBusyId(null); return editorToken.current; };
+  const openNew = () => { resetEditor(); setDraft(emptyDraft()); setFunctions([newStep()]); setRunResult(null); };
   const openEdit = async (row) => {
+    const token = resetEditor();
     setBusyId(row.id);
     try {
       const r = await invoke("getScheduledJob", { id: row.id });
+      if (token !== editorToken.current) return;
       if (!r.success) { showToast(r.error || "Could not open job", "error"); setBusyId(null); return; }
       const j = r.job;
       setDraft({ ...emptyDraft(), ...j, schedule: { ...emptyDraft().schedule, ...(j.schedule || {}) }, scope: j.scope ? { maxIssues: 50, ...j.scope } : { jql: "", maxIssues: 50 }, agent: { ...emptyDraft().agent, ...(j.agent || {}) } });
       setFunctions(Array.isArray(j.functions) && j.functions.length ? j.functions : [newStep()]);
       setRunResult(null);
-    } catch (e) { showToast(e.message, "error"); }
-    setBusyId(null);
+    } catch (e) { if (token === editorToken.current) showToast(e.message, "error"); }
+    if (token === editorToken.current) setBusyId(null);
   };
-  const closeEditor = () => { setDraft(null); load(); };
+  const closeEditor = () => { resetEditor(); setDraft(null); setRunResult(null); load(); };
   const patch = (p) => setDraft((d) => ({ ...d, ...p }));
   const buildPayload = () => ({ ...draft, scope: draft.scope && draft.scope.jql && draft.scope.jql.trim() ? draft.scope : null, functions: draft.mode === "script" ? functions : [] });
   const validateDraft = () => {
@@ -130,13 +141,15 @@ export default function JobsTab({ invoke, isAdmin, userRole }) {
   const save = async (andClose = false) => {
     const err = validateDraft();
     if (err) { showToast(err, "error"); return null; }
+    const token = editorToken.current;
     setSaving(true);
     try {
       const r = await invoke("saveScheduledJob", { job: buildPayload() });
+      if (token !== editorToken.current) return null;
       if (r.success) { setDraft((d) => ({ ...d, id: r.job.id, stats: r.job.stats })); showToast("Job saved"); if (andClose) closeEditor(); return r.job; }
       showToast(r.error || "Save failed", "error");
-    } catch (e) { showToast(e.message, "error"); }
-    finally { setSaving(false); }
+    } catch (e) { if (token === editorToken.current) showToast(e.message, "error"); }
+    finally { if (token === editorToken.current) setSaving(false); }
     return null;
   };
   const saveAndRun = async () => { const j = await save(false); if (j) runNow(j.id); };
@@ -152,11 +165,12 @@ export default function JobsTab({ invoke, isAdmin, userRole }) {
           <span className="section-title">{draft.id ? "Edit scheduled job" : "New scheduled job"}</span>
           <div className="section-actions">
             <button type="button" className="btn-small" onClick={closeEditor}>← Back to jobs</button>
-            <button type="button" className="btn-small" onClick={saveAndRun} disabled={saving || !!running || !canEdit}>{running ? `Running (${running.status})…` : "Save & run now"}</button>
+            <button type="button" className="btn-small" onClick={saveAndRun} disabled={saving || !!running || !canEdit}>{running ? (running.id === draft.id ? `Running (${running.status})…` : "Another job is running") : "Save & run now"}</button>
             <button type="button" className="btn-small btn-edit" onClick={() => save(false)} disabled={saving || !canEdit}>{saving ? "Saving…" : "Save"}</button>
             <button type="button" className="btn-small btn-solid" onClick={() => save(true)} disabled={saving || !canEdit}>Save &amp; close</button>
           </div>
         </div>
+        <p className="hint">{draft.simulationMode ? "Save & run now simulates this job: live reads, writes recorded." : "Save & run now executes this job with real Jira writes. Enable Simulation mode below to record writes instead."}</p>
         <div className="card lst-card">
           <div className="lst-grid">
             <div className="form-group">
@@ -178,10 +192,11 @@ export default function JobsTab({ invoke, isAdmin, userRole }) {
               <input type="text" className="lst-input" value={draft.scope.jql} onChange={(e) => patch({ scope: { ...draft.scope, jql: e.target.value } })} placeholder='e.g. project = LZPT AND status = "In Progress" AND updated <= -7d' spellCheck={false} />
               <span className="job-scope-max"><span className="label">Max issues</span><input type="number" min="1" max="100" className="schp-num" value={draft.scope.maxIssues} onChange={(e) => patch({ scope: { ...draft.scope, maxIssues: Math.min(100, Math.max(1, parseInt(e.target.value, 10) || 50)) } })} /></span>
             </div>
-            <span className="hint">{scoped ? "Escalation-style: each matching issue becomes the current issue (api.context.issueKey) for its own run, sharing the ~100 s budget." : "Leave empty to run the steps once per schedule with no current issue (use api.searchJql / api.forIssue)."}</span>
+            <span className="hint">{scoped ? "Runs once for each matching issue, sharing the job runtime budget. Write actions for the current issue; the job already iterates this JQL scope." : "Runs once per schedule with no current issue. Search for issues in the code or AI instructions if needed, then act on those results."}</span>
           </div>
           <div className="form-group">
             <span className="label">What happens</span>
+            <p className="hint">Actions run as the CogniRunner app, using its Jira permissions.</p>
             <ModeSwitch value={draft.mode} onChange={(mode) => patch({ mode })} />
           </div>
           {draft.mode === "script" ? (
@@ -189,7 +204,7 @@ export default function JobsTab({ invoke, isAdmin, userRole }) {
               <FunctionBuilder functions={functions} setFunctions={setFunctions} codegenContext={codegenContext} testContext={testContext} reviewConfigType="postfunction-static" howItWorks={false} />
             </div>
           ) : (
-            <AgentConfig value={draft.agent} onChange={(agent) => patch({ agent })} runtime="job" />
+            <AgentConfig value={draft.agent} onChange={(agent) => patch({ agent })} runtime="job" scoped={!!scoped} />
           )}
           <div className="lst-options">
             <label className="lst-check"><input type="checkbox" checked={draft.simulationMode} onChange={(e) => patch({ simulationMode: e.target.checked })} /><span><strong>Simulation mode</strong> — reads are live, writes are logged but never executed.</span></label>
@@ -197,9 +212,9 @@ export default function JobsTab({ invoke, isAdmin, userRole }) {
             <label className="lst-check"><input type="checkbox" checked={draft.enabled !== false} onChange={(e) => patch({ enabled: e.target.checked })} /><span><strong>Enabled</strong> — runs on schedule. Disabled jobs can still be run manually.</span></label>
           </div>
         </div>
-        {(running || runResult) && (
+        {((running && running.id === draft.id) || runResult) && (
           <div className="card lst-card lst-test">
-            <div className="lst-test-head"><span className="section-title">Manual run</span>{running && <span className="hint">Queued on the background worker — {running.status}… (polling)</span>}</div>
+            <div className="lst-test-head"><span className="section-title">Manual run</span>{running && running.id === draft.id && <span className="hint">Queued on the background worker — {running.status}… (polling)</span>}</div>
             <RunResultView result={runResult} title="Run now" />
           </div>
         )}
@@ -217,6 +232,7 @@ export default function JobsTab({ invoke, isAdmin, userRole }) {
           {canEdit && <button type="button" className="btn-small btn-solid" onClick={openNew}>+ Add Job</button>}
         </div>
       </div>
+      <p className="hint">Run now executes the saved job, including real Jira writes. Jobs marked DRY-RUN record writes instead.</p>
       {loadError && <div className="alert alert-warning">{loadError}</div>}
       {runResult && !draft && <div className="card lst-card lst-test"><RunResultView result={runResult} title="Run now" /></div>}
       <div className="card">
@@ -248,7 +264,7 @@ export default function JobsTab({ invoke, isAdmin, userRole }) {
                       </td>
                       <td className="job-sched">
                         <span className="job-sched-desc">{row.schedule ? describeCron(row.schedule.cron) : "—"}</span>
-                        <span className="job-sched-zone">{row.schedule ? row.schedule.timeZone : ""}{row.stats && row.stats.nextRunAt && on ? ` · next ${fmtTime(row.stats.nextRunAt)}` : ""}</span>
+                        <span className="job-sched-zone">{row.schedule ? row.schedule.timeZone : ""}{row.stats && row.stats.nextRunAt && on ? ` · due ${fmtTime(row.stats.nextRunAt, row.schedule?.timeZone)}` : ""}</span>
                       </td>
                       <td className="lst-scope">{row.scoped ? "Per JQL issue" : "Once"}</td>
                       <td><span className={`type-badge ${row.mode === "agent" ? "lst-mode-agent" : "lst-mode-script"}`}>{row.mode === "agent" ? "AI agent" : "Code"}</span></td>

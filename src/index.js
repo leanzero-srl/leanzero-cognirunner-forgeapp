@@ -8912,10 +8912,13 @@ resolver.define("testPostFunction", async ({ payload }) => {
   const testLogs = [];
   const testChanges = [];
   const startTime = Date.now();
+  const runtime = payload.contextExtras?.runtime;
+  const useRuntimeApi = runtime === "listener" || runtime === "job";
+  let targetError = null;
 
   // Resolve the test issue key
   let resolvedKey = issueKey || null;
-  let mode = "mock";
+  let mode = useRuntimeApi ? "simulation" : "mock";
 
   if (resolvedKey) {
     mode = "live";
@@ -8939,25 +8942,43 @@ resolver.define("testPostFunction", async ({ payload }) => {
           // The new endpoint doesn't return `total` — just confirm we got a match.
           testLogs.push(`Found: ${resolvedKey}${searchData.nextPageToken ? " (more matches available)" : ""}`);
         } else {
-          testLogs.push("JQL returned no results. Falling back to mock data.");
-          mode = "mock";
+          if (useRuntimeApi) targetError = "JQL returned no results. Select an issue or adjust the JQL before testing.";
+          else {
+            testLogs.push("JQL returned no results. Falling back to mock data.");
+            mode = "mock";
+          }
         }
       } else {
-        testLogs.push(`JQL search failed (${searchRes.status}). Falling back to mock data.`);
-        mode = "mock";
+        if (useRuntimeApi) targetError = `JQL search failed (${searchRes.status}). Correct the search before testing.`;
+        else {
+          testLogs.push(`JQL search failed (${searchRes.status}). Falling back to mock data.`);
+          mode = "mock";
+        }
       }
     } catch (e) {
-      testLogs.push(`JQL search error: ${e.message}. Falling back to mock data.`);
-      mode = "mock";
+      if (useRuntimeApi) targetError = `JQL search error: ${e.message}`;
+      else {
+        testLogs.push(`JQL search error: ${e.message}. Falling back to mock data.`);
+        mode = "mock";
+      }
     }
   }
 
+  if (targetError) {
+    testLogs.push("ERROR: " + targetError);
+    return { success: false, mode: "simulation", issueKey: null, logs: testLogs,
+      changes: testChanges, executionTimeMs: Date.now() - startTime };
+  }
   if (mode === "mock") {
     resolvedKey = "MOCK-1";
     testLogs.push("Using mock issue data (no issue specified).");
+  } else if (mode === "simulation") {
+    testLogs.push(`Testing ${runtime} with no current issue. Reads are live; writes are simulated.`);
   }
 
-  // Build API surface — reads are live when an issue exists, writes are always dry-run
+  // Legacy workflow preview API. Listener/job tests below use the production session
+  // so no-current-issue guards and the complete method surface cannot drift again.
+  // Reads are live when an issue exists, writes are always dry-run.
   // The dry-run answers "which issue?" the SAME way production does: a key-optional
   // method defaults to the run's current issue via resolveIssueKey(), so Test Run can
   // no longer pass code that becomes /issue/undefined in production. Built as a FACTORY
@@ -9138,7 +9159,21 @@ resolver.define("testPostFunction", async ({ payload }) => {
     };
     return testApi;
   };
-  const testApi = makeTestApi(resolvedKey);
+  // Simulation is forced by the server: no payload config can turn a Test Run into a write.
+  const session = useRuntimeApi ? createSandboxSession({
+    issueKey: resolvedKey,
+    config: { simulationMode: true },
+    deadline: startTime + 20000,
+    extraContext: payload.contextExtras,
+  }) : null;
+  const testApi = session ? session.createApi() : makeTestApi(resolvedKey);
+  let sessionCollected = false;
+  const collectSession = () => {
+    if (!session || sessionCollected) return;
+    testLogs.push(...session.executionLogs);
+    testChanges.push(...session.changes);
+    sessionCollected = true;
+  };
 
   try {
     // Mirror the PRODUCTION sandbox shape exactly (vars argument + ${var}->vars[...]
@@ -9166,6 +9201,7 @@ resolver.define("testPostFunction", async ({ payload }) => {
       && !new RegExp("\\b(?:const|let|var|class|function)\\s+" + g + "\\b").test(testCode));
     const sandboxFn = new AsyncFunction("api", "vars", ...scopeVarNames, ...blockedGlobals, testCode);
     const result = await sandboxFn(testApi, variables, ...scopeVarNames.map((n) => variables[n]), ...blockedGlobals.map(() => undefined));
+    collectSession();
     if (result !== undefined) {
       testLogs.push("Return value: " + (typeof result === "object" ? JSON.stringify(result) : String(result)));
     }
@@ -9178,6 +9214,7 @@ resolver.define("testPostFunction", async ({ payload }) => {
       executionTimeMs: Date.now() - startTime,
     };
   } catch (error) {
+    collectSession();
     testLogs.push("ERROR: " + error.message);
     return {
       success: false,

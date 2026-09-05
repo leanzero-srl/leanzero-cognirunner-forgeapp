@@ -7,16 +7,17 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import CustomSelect from "./CustomSelect";
+import { isSkippedLog } from "../../../../src/shared/log-flags.js";
 
 // Small building blocks shared by ListenersTab and JobsTab.
 
 /** Two big solid buttons: Code steps | AI agent. */
-export function ModeSwitch({ value, onChange, disabled = false }) {
+export function ModeSwitch({ value, onChange, disabled = false, runtime = "job" }) {
   return (
     <div className="mode-switch" role="radiogroup" aria-label="Execution mode">
       <button type="button" role="radio" aria-checked={value === "script"} className={`mode-btn mode-script ${value === "script" ? "on" : ""}`} onClick={() => onChange("script")} disabled={disabled}>
         <span className="mode-btn-title">Code steps</span>
-        <span className="mode-btn-sub">Describe → AI generates JavaScript → test → fix. Deterministic at runtime, no AI cost per run.</span>
+        <span className="mode-btn-sub">Describe → AI generates JavaScript → test → fix. Code runs without AI.{runtime === "listener" ? " An optional AI condition adds an AI call before execution." : " No AI cost per run."}</span>
       </button>
       <button type="button" role="radio" aria-checked={value === "agent"} className={`mode-btn mode-agent ${value === "agent" ? "on" : ""}`} onClick={() => onChange("agent")} disabled={disabled}>
         <span className="mode-btn-title">AI agent</span>
@@ -55,15 +56,21 @@ export function ChipsInput({ value = [], onChange, placeholder, disabled = false
 /** Project multi-picker backed by the listProjects resolver (chips + searchable dropdown). */
 export function ProjectPicker({ invoke, value = [], onChange, disabled = false }) {
   const [projects, setProjects] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     let cancelled = false;
+    setLoading(true); setError(null);
     invoke("listProjects").then((r) => {
       if (cancelled) return;
-      const rows = (r && (r.projects || r.values)) || [];
+      if (!r || r.success === false) throw new Error((r && r.error) || "Could not load projects.");
+      const rows = r.projects || r.values || [];
       setProjects(rows.map((p) => ({ key: p.key, name: p.name })).filter((p) => p.key));
-    }).catch(() => {});
+    }).catch((e) => { if (!cancelled) setError(e.message || "Could not load projects."); })
+      .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [invoke]);
+  }, [invoke, attempt]);
   const options = useMemo(() => projects.filter((p) => !value.includes(p.key)).map((p) => ({ value: p.key, label: `${p.key} — ${p.name}` })), [projects, value]);
   return (
     <div className="projpick">
@@ -72,8 +79,9 @@ export function ProjectPicker({ invoke, value = [], onChange, disabled = false }
         {value.map((k) => <span key={k} className="chips-chip chips-chip-project">{k}{!disabled && <button type="button" className="chips-x" aria-label={`Remove ${k}`} onClick={() => onChange(value.filter((x) => x !== k))}>×</button>}</span>)}
       </div>
       <div className="projpick-add">
-        <CustomSelect value="" onChange={(k) => { if (k && !value.includes(k)) onChange([...value, k]); }} options={options} placeholder={projects.length ? "Add a project…" : "Loading projects…"} searchable searchPlaceholder="Search projects…" ariaLabel="Add project filter" disabled={disabled || !projects.length} />
+        <CustomSelect value="" onChange={(k) => { if (k && !value.includes(k)) onChange([...value, k]); }} options={options} placeholder={loading ? "Loading projects…" : error ? "Projects unavailable" : !projects.length ? "No projects available" : !options.length ? "All available projects selected" : "Add a project…"} searchable searchPlaceholder="Search projects…" ariaLabel="Add project filter" disabled={disabled || loading || !!error || !options.length} />
       </div>
+      {error && <div className="hint" role="alert">{error} <button type="button" className="btn-small" onClick={() => setAttempt((n) => n + 1)} disabled={disabled || loading}>Retry projects</button></div>}
     </div>
   );
 }
@@ -96,8 +104,8 @@ export function RunStat({ stats }) {
 /** Result of a test run / run-now: verdict, reason, tool calls, changes, log lines. */
 export function RunResultView({ result, title = "Result" }) {
   if (!result) return null;
-  const ok = result.isValid === true || result.success === true;
-  const skipped = result.skipped === true || result.decision === "SKIP";
+  const skipped = isSkippedLog(result);
+  const ok = !skipped && (result.isValid === true || result.success === true);
   return (
     <div className={`runres ${ok ? "runres-ok" : skipped ? "runres-skip" : "runres-err"}`}>
       <div className="runres-head">
@@ -108,6 +116,7 @@ export function RunResultView({ result, title = "Result" }) {
         {result.eventUsed && <span className="runres-ms">event: {result.eventUsed}</span>}
       </div>
       {result.reason && <div className="runres-reason">{result.reason}</div>}
+      {result.testNote && <details className="runres-details"><summary>Test context</summary><div className="runres-reason">{result.testNote}</div></details>}
       {result.gate && <div className="runres-gate">AI condition: <strong>{result.gate.match ? "met" : "not met"}</strong> — {result.gate.reason}</div>}
       {result.recommendation && <div className="runres-rec">{result.recommendation}</div>}
       {Array.isArray(result.issues) && result.issues.length > 0 && (

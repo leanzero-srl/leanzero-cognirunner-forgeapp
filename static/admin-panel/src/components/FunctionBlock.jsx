@@ -190,6 +190,9 @@ return { success: true };`)}`;
 }
 
 export default function FunctionBlock({ index, functionData, priorSteps, fields = [], onUpdate, onRemove, isOnly, codegenContext = null, testContext = null }) {
+  const runtime = codegenContext?.runtime || testContext?.runtime;
+  const isRuleRuntime = runtime === "listener" || runtime === "job";
+  const executionWhen = runtime === "listener" ? "when the listener runs" : runtime === "job" ? "when the job runs" : "on every transition";
   const [isGenerating, setIsGenerating] = useState(false);
   const [showApiRef, setShowApiRef] = useState(false);
   const [selectedDocs, setSelectedDocs] = useState(functionData.selectedDocIds || []);
@@ -764,7 +767,7 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
       <div className="form-group">
         <label className="label">
           What should this step do?
-          <Tooltip text="Describe the action in plain language. AI will generate JavaScript code that runs automatically on every transition — no AI cost at runtime." />
+          <Tooltip text={`Describe the action in plain language. AI generates JavaScript that runs ${executionWhen}. Running the code itself uses no AI.`} />
         </label>
         <textarea
           className="textarea"
@@ -1085,7 +1088,7 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
           <div className="code-header">
             <label className="label" style={{ margin: 0 }}>
               Generated Code
-              <Tooltip text="This JavaScript runs on every workflow transition with no AI cost. You can edit it directly." />
+              <Tooltip text={`This JavaScript runs ${executionWhen} with no AI cost for the code itself. You can edit it directly.`} />
             </label>
             <div className="code-header-actions">
               <button
@@ -1231,7 +1234,7 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
                   JQL searches always run against real Jira data. Writes are always safe (dry run).
                   {testTarget.trim()
                     ? ` Using ${testTarget} as api.context.issueKey.`
-                    : " api.context.issueKey will be MOCK-1 — select an issue to set a real one."
+                    : isRuleRuntime ? " No current issue: api.context.issueKey is null. Select an issue to test issue-bound actions." : " api.context.issueKey will be MOCK-1 — select an issue to set a real one."
                   }
                 </p>
               </div>
@@ -1251,7 +1254,7 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
                       {testResult.success ? "PASS" : "FAIL"}
                     </span>
                     <span className="test-result-meta">
-                      {testResult.mode === "live" ? `Tested against ${testResult.issueKey}` : "Mock data"}
+                      {testResult.mode === "simulation" ? (testResult.issueKey ? `Live reads against ${testResult.issueKey} · writes staged` : "Live reads · no current issue · writes staged") : testResult.mode === "live" ? `Tested against ${testResult.issueKey}` : "Mock data"}
                       {testResult.executionTimeMs ? ` — ${testResult.executionTimeMs}ms` : ""}
                     </span>
                     {!testResult.success && (
@@ -1375,7 +1378,7 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
           )}
 
           <p className="hint">
-            This code runs as-is on every transition. Edit directly if needed.
+            This code runs as-is {executionWhen}. Edit directly if needed.
           </p>
         </div>
       )}

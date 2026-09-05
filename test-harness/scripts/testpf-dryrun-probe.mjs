@@ -5,10 +5,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-// OFFLINE characterisation of the in-UI dry-run (`testPostFunction` -> testApi) for F-004.
+// OFFLINE regression of the in-UI dry-run (`testPostFunction`) for F-004/F-008/F-017.
 // The dev test-state hook does NOT allowlist testPostFunction, so this drives the very
 // same src/index.js resolver locally with @forge/api mocked. Run:
-//   node --import ./lib/register-mocks.mjs scripts/testpf-dryrun-probe.mjs
+//   node --import ./lib/register-mocks-index.mjs scripts/testpf-dryrun-probe.mjs
 import forgeApi from "@forge/api";
 import { handler } from "../../src/index.js";
 
@@ -16,6 +16,7 @@ let pass = 0; let fail = 0;
 const ok = (c, m) => { if (c) { pass++; console.log("  ✓ " + m); } else { fail++; console.log("  ✗ " + m); } };
 
 forgeApi.__respond((path) => {
+  if (String(path).includes("/issue/MISSING-404")) return forgeApi.__response(404, { errorMessages: ["Issue not found"] });
   const m = String(path).match(/\/rest\/api\/3\/issue\/([A-Z]+-\d+)/);
   if (m) return forgeApi.__response(200, { key: m[1], id: "1", fields: { summary: `real ${m[1]}`, status: { name: "To Do" }, labels: [] } });
   return forgeApi.__response(404, { errorMessages: ["mock: not found"] });
@@ -69,10 +70,58 @@ const main = async () => {
   ok(r.issueKey === "MOCK-1" && r.success === true && r.changes.every((c) => c.key === "MOCK-1"),
     `CHARACTERISED: with no issue selected the dry-run still binds MOCK-1 and PASSES (success=${r.success}, changes on ${JSON.stringify(r.changes.map((c) => c.key))})`);
 
-  // 6. and with a job/listener runtime context that has a null issue?
-  r = await testPF({ code: `return await api.getIssue();`, contextExtras: { runtime: "job", issueKey: null } });
-  console.log(`  · mock mode + contextExtras{runtime:"job",issueKey:null}: success=${r.success} issueKey=${r.issueKey}`);
-  ok(r.success === true && r.issueKey === "MOCK-1", "even an explicit null issueKey in contextExtras is overridden by MOCK-1");
+  // Listener/job tests use the runtime API with real reads and server-forced simulation.
+  for (const runtime of ["job", "listener"]) {
+    const contextExtras = { runtime, issueKey: null, eventType: "test:event", event: { project: { key: "ABC" } }, job: { name: "Test job" } };
+    for (const code of [`await api.getIssue();`, `await api.addComment("test");`, `await api.setAssignee("test-account");`]) {
+      forgeApi.__calls.length = 0;
+      r = await testPF({ code, contextExtras });
+      ok(!r.success && r.mode === "simulation" && r.issueKey === null && r.logs.some((l) => /current issue.*none/.test(l)) && r.changes.length === 0,
+        `${runtime}: no issue fails explicitly for ${code}`);
+      ok(forgeApi.__calls.length === 0, `${runtime}: no Jira request without a target`);
+    }
+    forgeApi.__calls.length = 0;
+    r = await testPF({ contextExtras, simulationMode: false, config: { simulationMode: false }, code: `
+      const target = api.forIssue("ZZZ-9");
+      const issue = await target.getIssue();
+      await target.addComment("test"); await target.setAssignee("test-account");
+      api.log("rebound", issue.key, api.context.issueKey, api.context.eventType, api.context.event.project.key, api.context.job.name);
+      return issue.key;
+    ` });
+    ok(r.success && r.mode === "simulation" && r.issueKey === null && r.changes.length === 2 && r.changes.every((c) => c.key === "ZZZ-9" && c.simulated === true), `${runtime}: forIssue has real reads and simulated writes, ignores client write settings`);
+    ok(r.logs.filter((l) => /\[SIMULATION\]/.test(l)).length === 2 && r.logs.filter((l) => /rebound ZZZ-9 null test:event ABC Test job/.test(l)).length === 1, `${runtime}: returns runtime logs and context exactly once`);
+    ok(forgeApi.__calls.length === 1 && forgeApi.__calls.every((c) => !c.opts.method || c.opts.method === "GET"), `${runtime}: rebind emits no POST/PUT/DELETE`);
+
+    forgeApi.__calls.length = 0;
+    r = await testPF({ issueKey: "ABC-1", contextExtras, code: `const issue = await api.getIssue(); await api.setAssignee("test-account"); return issue.key;` });
+    ok(r.success && r.mode === "live" && r.issueKey === "ABC-1" && r.logs.includes("Return value: ABC-1") && r.changes.length === 1 && r.changes[0].key === "ABC-1" && r.changes[0].simulated === true, `${runtime}: selected issue supports previously missing setAssignee`);
+    ok(forgeApi.__calls.length === 1 && forgeApi.__calls[0].path.endsWith("/issue/ABC-1"), `${runtime}: selected issue read goes to the real target`);
+
+    r = await testPF({ issueKey: "MISSING-404", contextExtras, code: `await api.getIssue(); await api.addComment("must not run");` });
+    ok(!r.success && r.logs.includes("ERROR: getIssue failed: 404") && r.changes.length === 0, `${runtime}: missing selected issue fails before downstream writes`);
+    r = await testPF({ issueKey: "ABC-1", contextExtras, code: `api.log("before failure"); await api.addComment("test"); throw new Error("script failed");` });
+    ok(!r.success && r.logs.filter((l) => l === "before failure").length === 1 && r.logs.filter((l) => /\[SIMULATION\]/.test(l)).length === 1 && r.logs.at(-1) === "ERROR: script failed" && r.changes.length === 1, `${runtime}: failure preserves logs and changes exactly once`);
+    r = await testPF({ contextExtras, priorVariables: { previous: { key: "ABC-1" }, count: 3 }, code: 'api.log(previous.key, vars.previous.key, ${previous}.key, count, vars.count, ${count}); return api.context.issueKey;' });
+    ok(r.success && r.logs.includes("ABC-1 ABC-1 ABC-1 3 3 3") && r.logs.includes("Return value: null"), `${runtime}: named, vars and placeholder prior-variable access all survive`);
+    r = await testPF({ issueKey: "ABC-1", contextExtras, code: `await api.addComment("test"); const circular = {}; circular.self = circular; return circular;` });
+    ok(!r.success && r.changes.length === 1 && r.logs.filter((l) => /\[SIMULATION\]/.test(l)).length === 1, `${runtime}: unserializable return does not duplicate session evidence`);
+  }
+  for (const runtime of ["job", "listener"]) {
+    for (const scenario of ["empty", "http", "network"]) {
+      forgeApi.__respond(() => {
+        if (scenario === "network") throw new Error("network unavailable");
+        return forgeApi.__response(scenario === "http" ? 400 : 200, scenario === "http" ? { errorMessages: ["bad JQL"] } : { issues: [] });
+      });
+      r = await testPF({ jql: "project = ABC", contextExtras: { runtime }, code: `api.log("must not run"); return 1;` });
+      ok(!r.success && r.issueKey === null && r.changes.length === 0 && r.logs.some((l) => /ERROR: JQL/.test(l)) && !r.logs.includes("must not run"), `${runtime}: ${scenario} JQL fails explicitly without executing code`);
+    }
+    forgeApi.__respond(() => forgeApi.__response(200, { issues: [{ key: "ABC-2" }] }));
+    r = await testPF({ jql: "project = ABC", contextExtras: { runtime }, code: `await api.setAssignee("test-account"); return api.context.issueKey;` });
+    ok(r.success && r.mode === "live" && r.issueKey === "ABC-2" && r.changes[0]?.key === "ABC-2" && r.changes[0]?.simulated === true, `${runtime}: matching JQL binds its real result`);
+  }
+  forgeApi.__respond(() => forgeApi.__response(200, { issues: [] }));
+  r = await testPF({ jql: "project = ABC", code: `return (await api.getIssue()).key;` });
+  ok(r.success && r.mode === "mock" && r.issueKey === "MOCK-1", "legacy workflow JQL fallback remains unchanged");
 
   console.log(`\n  ${pass} passed, ${fail} failed`);
   process.exit(fail ? 1 : 0);

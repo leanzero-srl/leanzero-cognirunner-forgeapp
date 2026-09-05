@@ -47,6 +47,9 @@ export default function ListenersTab({ invoke, isAdmin, userRole, siteUrl, route
   const [sample, setSample] = useState(null);
   const [sampleLoading, setSampleLoading] = useState(false);
   const loadToken = useRef(0);
+  const editorToken = useRef(0);
+  const expandToken = useRef(0);
+  useEffect(() => () => { editorToken.current += 1; expandToken.current += 1; }, []);
 
   const load = useCallback(async () => {
     const token = ++loadToken.current;
@@ -82,27 +85,32 @@ export default function ListenersTab({ invoke, isAdmin, userRole, siteUrl, route
     setBusyId(null);
   };
   const expand = async (row) => {
+    const token = ++expandToken.current;
     if (expandedId === row.id) { setExpandedId(null); return; }
     setExpandedId(row.id);
     setExpandedLogs({ loading: true, logs: [] });
-    try { const r = await invoke("getLogs", { ruleId: row.id }); setExpandedLogs({ loading: false, logs: (r && r.logs) || [] }); } catch { setExpandedLogs({ loading: false, logs: [] }); }
+    try { const r = await invoke("getLogs", { ruleId: row.id }); if (token === expandToken.current) setExpandedLogs({ loading: false, logs: (r && r.logs) || [] }); } catch { if (token === expandToken.current) setExpandedLogs({ loading: false, logs: [] }); }
   };
 
   // ── editor ──
-  const openNew = () => { setDraft(emptyDraft()); setFunctions([newStep()]); setTestResult(null); setTestKey(""); setTestEvent(""); setSample(null); };
+  // Responses, especially minted IDs, belong to the editor session that requested them.
+  const resetEditor = () => { editorToken.current += 1; setSaving(false); setTesting(false); setSampleLoading(false); setBusyId(null); return editorToken.current; };
+  const openNew = () => { resetEditor(); setDraft(emptyDraft()); setFunctions([newStep()]); setTestResult(null); setTestKey(""); setTestEvent(""); setSample(null); };
   const openEdit = async (row) => {
+    const token = resetEditor();
     setBusyId(row.id);
     try {
       const r = await invoke("getListener", { id: row.id });
+      if (token !== editorToken.current) return;
       if (!r.success) { showToast(r.error || "Could not open listener", "error"); setBusyId(null); return; }
       const l = r.listener;
       setDraft({ ...emptyDraft(), ...l, filters: { ...emptyDraft().filters, ...(l.filters || {}) }, agent: { ...emptyDraft().agent, ...(l.agent || {}) } });
       setFunctions(Array.isArray(l.functions) && l.functions.length ? l.functions : [newStep()]);
       setTestResult(null); setTestKey(""); setTestEvent((l.events || [])[0] || ""); setSample(null);
-    } catch (e) { showToast(e.message, "error"); }
-    setBusyId(null);
+    } catch (e) { if (token === editorToken.current) showToast(e.message, "error"); }
+    if (token === editorToken.current) setBusyId(null);
   };
-  const closeEditor = () => { setDraft(null); load(); };
+  const closeEditor = () => { resetEditor(); setDraft(null); load(); };
   const patch = (p) => setDraft((d) => ({ ...d, ...p }));
   const patchFilters = (p) => setDraft((d) => ({ ...d, filters: { ...d.filters, ...p } }));
   const buildPayload = () => ({ ...draft, functions: draft.mode === "script" ? functions : [] });
@@ -116,41 +124,50 @@ export default function ListenersTab({ invoke, isAdmin, userRole, siteUrl, route
   const save = async (andClose = false) => {
     const err = validateDraft();
     if (err) { showToast(err, "error"); return null; }
+    const token = editorToken.current;
     setSaving(true);
     try {
       const r = await invoke("saveListener", { listener: buildPayload() });
+      if (token !== editorToken.current) return null;
       if (r.success) { setDraft((d) => ({ ...d, id: r.listener.id, stats: r.listener.stats })); showToast("Listener saved"); if (andClose) closeEditor(); return r.listener; }
       showToast(r.error || "Save failed", "error");
-    } catch (e) { showToast(e.message, "error"); }
-    finally { setSaving(false); }
+    } catch (e) { if (token === editorToken.current) showToast(e.message, "error"); }
+    finally { if (token === editorToken.current) setSaving(false); }
     return null;
   };
   const runTest = async () => {
     const err = validateDraft();
     if (err) { showToast(err, "error"); return; }
+    const token = editorToken.current;
     setTesting(true); setTestResult(null);
     try {
-      const r = await invoke("testListener", { listener: buildPayload(), issueKey: testKey.trim() || null, eventType: testEvent || draft.events[0] });
+      const r = await invoke("testListener", { listener: buildPayload(), issueKey: testHasIssue ? testKey.trim() || null : null, eventType: testEvent || draft.events[0] });
+      if (token !== editorToken.current) return;
       if (r.success) {
         setTestResult(r.result);
         // An unsaved draft gets its id minted by the test run; adopt it so the later Save
         // keeps the same identity and the test entry shows up in this listener's log history.
-        if (!draft.id && r.result && r.result.ruleId) patch({ id: r.result.ruleId });
+        if (!draft.id && r.result && r.result.ruleId) setDraft((d) => d && !d.id ? { ...d, id: r.result.ruleId } : d);
       } else setTestResult({ isValid: false, reason: r.error || "Test failed" });
-    } catch (e) { setTestResult({ isValid: false, reason: e.message }); }
-    setTesting(false);
+    } catch (e) { if (token === editorToken.current) setTestResult({ isValid: false, reason: e.message }); }
+    if (token === editorToken.current) setTesting(false);
   };
   const loadSample = async () => {
     const ev = testEvent || draft.events[0];
     if (!ev) return;
+    const token = editorToken.current;
     setSampleLoading(true);
-    try { const r = await invoke("getEventSample", { eventType: ev }); setSample(r.success ? (r.sample || { none: true, eventType: ev }) : { none: true, eventType: ev }); } catch { setSample({ none: true, eventType: ev }); }
-    setSampleLoading(false);
+    try { const r = await invoke("getEventSample", { eventType: ev }); if (token === editorToken.current) setSample(r.success ? (r.sample || { none: true, eventType: ev }) : { none: true, eventType: ev }); } catch { if (token === editorToken.current) setSample({ none: true, eventType: ev }); }
+    if (token === editorToken.current) setSampleLoading(false);
   };
 
   const relevantFilters = draft ? filtersForEvents(draft.events) : [];
+  const activeTestEvent = testEvent || draft?.events[0] || null;
+  const activeSample = sample?.eventType === activeTestEvent ? sample : null;
+  const testMeta = getEvent(activeTestEvent);
+  const testHasIssue = !!(testMeta && (testMeta.issueBound || testMeta.issueIdOnly));
   const testEventOptions = draft ? draft.events.map((id) => ({ value: id, label: eventLabel(id) })) : [];
-  const testContext = draft ? { runtime: "listener", eventType: testEvent || draft.events[0] || null, event: sample && sample.payload ? sample.payload : { eventType: testEvent || draft.events[0] || null, _note: "synthetic — no captured payload yet" } } : null;
+  const testContext = draft ? { runtime: "listener", eventType: activeTestEvent, event: activeSample?.payload || { eventType: activeTestEvent, _note: "synthetic — no captured payload yet" } } : null;
   const codegenContext = draft ? { runtime: "listener", eventTypes: draft.events } : null;
 
   // ─────────────────────────── editor view ───────────────────────────
@@ -161,8 +178,8 @@ export default function ListenersTab({ invoke, isAdmin, userRole, siteUrl, route
           <span className="section-title">{draft.id ? "Edit listener" : "New listener"}</span>
           <div className="section-actions">
             <button type="button" className="btn-small" onClick={closeEditor}>← Back to listeners</button>
-            <button type="button" className="btn-small btn-edit" onClick={() => save(false)} disabled={saving || !canEdit}>{saving ? "Saving…" : "Save"}</button>
-            <button type="button" className="btn-small btn-solid" onClick={() => save(true)} disabled={saving || !canEdit}>Save &amp; close</button>
+            <button type="button" className="btn-small btn-edit" onClick={() => save(false)} disabled={saving || testing || !canEdit}>{saving ? "Saving…" : "Save"}</button>
+            <button type="button" className="btn-small btn-solid" onClick={() => save(true)} disabled={saving || testing || !canEdit}>Save &amp; close</button>
           </div>
         </div>
         <div className="card lst-card">
@@ -224,12 +241,13 @@ export default function ListenersTab({ invoke, isAdmin, userRole, siteUrl, route
           <div className="form-group">
             <label className="label" htmlFor="lst-aicond">AI condition (optional)</label>
             <input id="lst-aicond" type="text" className="lst-input" value={draft.aiCondition} onChange={(e) => patch({ aiCondition: e.target.value })} placeholder="e.g. the comment is a customer complaint or asks for an escalation" maxLength={1500} />
-            <span className="hint">A plain-language gate the AI evaluates before running (one cheap classification call). Leave empty to always run when the filters match.</span>
+            <span className="hint">A plain-language gate the AI evaluates before running (one AI call per matching event). If the condition is not met or AI evaluation fails, the listener is skipped. Leave empty to run when the filters match.</span>
           </div>
 
           <div className="form-group">
             <span className="label">What happens</span>
-            <ModeSwitch value={draft.mode} onChange={(mode) => patch({ mode })} />
+            <p className="hint">Actions run as the CogniRunner app, using its Jira permissions.</p>
+            <ModeSwitch runtime="listener" value={draft.mode} onChange={(mode) => patch({ mode })} />
           </div>
           {draft.mode === "script" ? (
             <div className="lst-builder">
@@ -257,21 +275,21 @@ export default function ListenersTab({ invoke, isAdmin, userRole, siteUrl, route
 
         <div className="card lst-card lst-test">
           <div className="lst-test-head">
-            <span className="section-title">Test with an issue</span>
-            <span className="hint">Builds a synthetic event from a real issue and runs the whole listener in simulation — filters, AI condition, then the code steps or agent. Nothing is written.</span>
+            <span className="section-title">Test listener</span>
+            <span className="hint">Tests the selected event data against filters, the AI condition and actions. Reads are live; writes are recorded. It does not trigger a real Jira event.</span>
           </div>
           <div className="lst-test-row">
-            <div className="lst-test-field"><span className="label">Issue</span><IssuePicker value={testKey} onChange={setTestKey} /></div>
+            <div className="lst-test-field"><span className="label">Issue</span>{testHasIssue ? <IssuePicker value={testKey} onChange={setTestKey} /> : <span className="hint">{testMeta ? "This event has no current issue. The test uses a captured sample when available." : "Pick an event first."}</span>}</div>
             <div className="lst-test-field"><span className="label">Event</span><CustomSelect value={testEvent || draft.events[0] || ""} onChange={setTestEvent} options={testEventOptions} placeholder="Pick an event" ariaLabel="Test event" disabled={!draft.events.length} /></div>
             <div className="lst-test-actions">
-              <button type="button" className="btn-small btn-solid" onClick={runTest} disabled={testing || !draft.events.length}>{testing ? "Running…" : "▶ Run test"}</button>
+              <button type="button" className="btn-small btn-solid" onClick={runTest} disabled={testing || saving || !draft.events.length}>{testing ? "Running…" : "▶ Run test"}</button>
               <button type="button" className="btn-small" onClick={loadSample} disabled={sampleLoading || !draft.events.length}>{sampleLoading ? "…" : "Show last real payload"}</button>
             </div>
           </div>
-          {sample && (
+          {activeSample && (
             <div className="lst-sample">
-              {sample.none ? <span className="hint">No payload captured yet for {eventLabel(sample.eventType)} — it appears here after the event fires once on this site (the editor's test uses a synthetic event until then).</span>
-                : <><span className="hint">Captured {new Date(sample.capturedAt).toLocaleString()} — this is what <code>api.context.event</code> looks like for {eventLabel(sample.eventType)}:</span><pre className="runres-pre">{JSON.stringify(sample.payload, null, 2).slice(0, 12000)}</pre></>}
+              {activeSample.none ? <span className="hint">No payload captured yet for {eventLabel(activeSample.eventType)} — it appears here after the event fires once on this site (tests without an issue use a synthetic event until then).</span>
+                : <><span className="hint">Captured {new Date(activeSample.capturedAt).toLocaleString()} — redacted sample of <code>api.context.event</code> for {eventLabel(activeSample.eventType)}:</span><pre className="runres-pre">{JSON.stringify(activeSample.payload, null, 2).slice(0, 12000)}</pre></>}
             </div>
           )}
           <RunResultView result={testResult} title="Test run (simulated)" />

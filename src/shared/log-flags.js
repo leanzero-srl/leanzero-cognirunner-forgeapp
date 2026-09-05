@@ -51,3 +51,6 @@ export const deriveLogFlags = (entry, config) => {
   } catch (e) { /* advisory — flags never break a log write */ }
   return flags.filter((f) => FLAG_ENUM.includes(f)).slice(0, 6);
 };
+
+// A skipped execution may be valid (no error), but it did not run successfully.
+export const isSkippedLog = (log) => !!log && (log.skipped === true || log.decision === "SKIP");

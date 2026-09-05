@@ -10,7 +10,7 @@ import { AGENT_ACTIONS, DEFAULT_AGENT_ACTIONS, MAX_AGENT_ROUNDS, DEFAULT_AGENT_R
 
 // "AI agent" mode editor: plain-language instructions + the allow-list of actions
 // the agent may take (one tool each; src/shared/agent-actions.js is the single source).
-export default function AgentConfig({ value, onChange, runtime = "listener", disabled = false }) {
+export default function AgentConfig({ value, onChange, runtime = "listener", scoped = false, disabled = false }) {
   const v = value || { instructions: "", allowedActions: DEFAULT_AGENT_ACTIONS, maxRounds: DEFAULT_AGENT_ROUNDS };
   const allowed = new Set(v.allowedActions || []);
   const set = (patch) => onChange({ ...v, ...patch });
@@ -21,7 +21,9 @@ export default function AgentConfig({ value, onChange, runtime = "listener", dis
   };
   const reads = AGENT_ACTIONS.filter((a) => a.kind === "read");
   const writes = AGENT_ACTIONS.filter((a) => a.kind === "write");
-  const placeholder = runtime === "job"
+  const placeholder = runtime === "job" && scoped
+    ? "e.g. For the current issue, add a polite comment asking the assignee for an update and add the label stale. Skip it if it already has that label. The job selects each issue from the scope above."
+    : runtime === "job"
     ? "e.g. Find issues in project LZPT that have been In Progress for more than 7 days without an update. For each one, add a polite comment asking the assignee for a status update and add the label 'stale'. Skip issues that already carry the label."
     : "e.g. When the comment reads like a customer complaint or an escalation request, add the label 'escalate', set priority to Highest if it is lower, and reply with a short acknowledgement comment. Otherwise do nothing.";
 
@@ -30,7 +32,7 @@ export default function AgentConfig({ value, onChange, runtime = "listener", dis
       <div className="form-group">
         <label className="label" htmlFor="agc-instructions">Instructions for the AI agent</label>
         <textarea id="agc-instructions" className="agc-textarea" rows={6} value={v.instructions || ""} placeholder={placeholder} onChange={(e) => set({ instructions: e.target.value })} disabled={disabled} maxLength={6000} />
-        <p className="hint">Write what should happen in plain language. The agent reads the {runtime === "job" ? "job context and the issues it finds" : "event and the issue"} as untrusted data and acts ONLY through the actions you allow below, then reports what it did in the execution log.</p>
+        <p className="hint">Write what should happen in plain language. The agent reads the {runtime === "job" ? (scoped ? "job context and the current issue" : "job context and the issues it finds") : "event and the issue"} as untrusted data and acts ONLY through the actions you allow below, then reports what it did in the execution log.</p>
       </div>
       <div className="form-group">
         <span className="label">Allowed actions</span>

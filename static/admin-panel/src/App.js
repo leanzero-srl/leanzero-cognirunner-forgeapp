@@ -25,7 +25,7 @@ import SettingsOpenAITab from "./components/SettingsOpenAITab";
 import CustomSelect from "./components/CustomSelect";
 import { findRule as findPremadeRule } from "../../../src/shared/premade-rules-catalog.js";
 import { buildFactsText, ruleKindEnum } from "../../../src/shared/explain-facts.js";
-import { logSourceOf, SOURCE_LABEL, FLAG_LABEL } from "../../../src/shared/log-flags.js";
+import { logSourceOf, SOURCE_LABEL, FLAG_LABEL, isSkippedLog } from "../../../src/shared/log-flags.js";
 import AddRuleWizard from "./components/AddRuleWizard";
 import Tooltip from "./components/Tooltip";
 import RulePortabilityDialog from "./components/RulePortabilityDialog";
@@ -2681,7 +2681,7 @@ const injectStyles = () => {
     html[data-color-mode="dark"] .lst-aic, html[data-color-mode="dark"] .type-badge.lst-mode-agent, html[data-color-mode="dark"] .mode-btn.mode-agent.on, html[data-color-mode="dark"] .runres-tool, html[data-color-mode="dark"] .apx-secret { background: #8b5cf6; border-color: #8b5cf6; }
     html[data-color-mode="dark"] .type-badge.lst-mode-script, html[data-color-mode="dark"] .mode-btn.mode-script.on, html[data-color-mode="dark"] .chips-chip { background: #64748b; border-color: #64748b; }
     html[data-color-mode="dark"] .chips-chip-project, html[data-color-mode="dark"] .runstat-ok .runstat-dot, html[data-color-mode="dark"] .runres-badge.ok, html[data-color-mode="dark"] .runres-issue, html[data-color-mode="dark"] .agc-kind-read, html[data-color-mode="dark"] .apx-fresh { background: #22c55e; }
-    html[data-color-mode="dark"] .runres-badge.err, html[data-color-mode="dark"] .runres-issue.err, html[data-color-mode="dark"] .runres-tool.err, html[data-color-mode="dark"] .evp-vol, html[data-color-mode="dark"] .evp-chip-vol, html[data-color-mode="dark"] .schp-preview-error { background: #ef4444; }
+    html[data-color-mode="dark"] .runres-badge.err, html[data-color-mode="dark"] .runres-issue.err, html[data-color-mode="dark"] .runres-tool.err, html[data-color-mode="dark"] .evp-vol, html[data-color-mode="dark"] .evp-chip-vol, html[data-color-mode="dark"] .schp-preview.schp-preview-error { background: #ef4444; }
     html[data-color-mode="dark"] .runres-badge.skip, html[data-color-mode="dark"] .runstat-skip .runstat-dot { background: #f59e0b; }
     html[data-color-mode="dark"] .log-type-badge.lt-listener, html[data-color-mode="dark"] .agc-kind-write { background: #f97316; }
     html[data-color-mode="dark"] .log-type-badge.lt-job, html[data-color-mode="dark"] .schp-day.on, html[data-color-mode="dark"] .schp-preview { background: #06b6d4; border-color: #06b6d4; }
@@ -5741,10 +5741,10 @@ function App() {
       ? `${log.ruleWorkflow.siteUrl}/jira/settings/issues/workflows/${log.ruleWorkflow.workflowId}`
       : null;
     return (
-      <div key={log.id} className={`log-entry ${log.isValid ? "cv-log-pass" : (log.decision === "SKIP" ? "cv-log-skip" : "cv-log-fail")}`}>
+      <div key={log.id} className={`log-entry ${isSkippedLog(log) ? "cv-log-skip" : log.isValid ? "cv-log-pass" : "cv-log-fail"}`}>
         <div className="log-header">
-          <span className={`log-status ${log.isValid ? "valid" : (log.decision === "SKIP" ? "skip" : "invalid")}`}>
-            {log.isValid ? "PASS" : (log.decision === "SKIP" ? "SKIP" : "ERR")}
+          <span className={`log-status ${isSkippedLog(log) ? "skip" : log.isValid ? "valid" : "invalid"}`}>
+            {isSkippedLog(log) ? "SKIP" : log.isValid ? "PASS" : "ERR"}
           </span>
           <span className={`log-type-badge ${typeBadgeClass}`}>{typeBadge}</span>
           <span className={`log-src log-src-${logSourceOf(log)}`}>{SOURCE_LABEL[logSourceOf(log)]}</span>

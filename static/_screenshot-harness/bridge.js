@@ -467,6 +467,12 @@ function invoke(name, payload) {
   if (typeof window !== "undefined" && Array.isArray(window.__FAIL__) && window.__FAIL__.includes(name)) {
     return Promise.reject(new Error("Simulated network failure (harness __FAIL__)"));
   }
+  // Optional resolver fixtures for targeted browser regressions; never bundled into production.
+  if (typeof window !== "undefined" && window.__RESPONSES__) {
+    window.__CALLS__ = window.__CALLS__ || [];
+    window.__CALLS__.push({ name, payload });
+    if (Object.prototype.hasOwnProperty.call(window.__RESPONSES__, name)) return Promise.resolve(window.__RESPONSES__[name]);
+  }
   switch (name) {
     case "setUiIntent":
       if (typeof window !== "undefined") window.__SET_INTENT__ = payload;

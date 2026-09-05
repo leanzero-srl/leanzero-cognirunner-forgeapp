@@ -11,21 +11,24 @@ import { SCHEDULE_PRESETS, presetToCron, cronToPreset, validateCron, describeCro
 
 const DAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const FALLBACK_ZONES = ["UTC", "Europe/London", "Europe/Berlin", "Europe/Zurich", "Europe/Bucharest", "America/New_York", "America/Chicago", "America/Los_Angeles", "Asia/Kolkata", "Asia/Singapore", "Asia/Tokyo", "Australia/Sydney"];
-const zoneList = () => {
-  try { const z = Intl.supportedValuesOf("timeZone"); if (Array.isArray(z) && z.length) return z; } catch { /* old engines */ }
-  return FALLBACK_ZONES;
+const zoneList = (currentZone) => {
+  let zones = FALLBACK_ZONES;
+  try { const z = Intl.supportedValuesOf("timeZone"); if (Array.isArray(z) && z.length) zones = z; } catch { /* old engines */ }
+  const extra = ["UTC"];
+  try { new Intl.DateTimeFormat("en", { timeZone: currentZone }); extra.push(currentZone); } catch { /* invalid saved zone */ }
+  return [...new Set([...extra, ...zones])];
 };
 const guessZone = () => { try { return normalizeTimeZone(Intl.DateTimeFormat().resolvedOptions().timeZone); } catch { return "UTC"; } };
 
 // Friendly schedule builder ⇄ cron. `value` = { cron, timeZone }; every change
 // emits a valid cron (or the raw custom text so the user sees the validation error).
 export default function SchedulePicker({ value, onChange, disabled = false }) {
-  const cron = (value && value.cron) || "0 9 * * 1-5";
+  const cron = value?.cron ?? "0 9 * * 1-5";
   const timeZone = (value && value.timeZone) || guessZone();
   const parsed = useMemo(() => cronToPreset(cron), [cron]);
   const [preset, setPreset] = useState(parsed.preset);
   const [customText, setCustomText] = useState(parsed.preset === "custom" ? parsed.cron : cron);
-  const zones = useMemo(() => zoneList(), []);
+  const zones = useMemo(() => zoneList(timeZone), [timeZone]);
   const hour = parsed.hour ?? 9; const minute = parsed.minute ?? 0; const days = parsed.days || [1]; const dom = parsed.dom ?? 1;
   const validity = validateCron(cron);
   const preview = useMemo(() => {
@@ -102,12 +105,13 @@ export default function SchedulePicker({ value, onChange, disabled = false }) {
         <div className="schp-preview-head">{validity.ok ? describeCron(cron) : `Invalid schedule: ${validity.error}`}<code className="schp-preview-cron">{cron}</code></div>
         {validity.ok && preview.length > 0 && (
           <div className="schp-preview-runs">
-            <span className="schp-preview-label">Next runs ({timeZone}):</span>
+            <span className="schp-preview-label">Next due times ({timeZone}):</span>
             {preview.map((iso) => <span key={iso} className="schp-preview-run">{fmt(iso)}</span>)}
           </div>
         )}
         {validity.ok && preview.length === 0 && <div className="schp-preview-runs"><span className="schp-preview-label">No run in the next 400 days.</span></div>}
       </div>
+      <p className="hint">Due times follow this schedule. Execution starts after the next five-minute scheduler check, plus any queue delay.</p>
     </div>
   );
 }

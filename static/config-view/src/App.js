@@ -19,7 +19,7 @@ import React, { useState, useEffect } from "react";
 import { confirmDialog } from "./confirmDialog";
 import { findRule } from "../../../src/shared/premade-rules-catalog.js";
 import { premadeSummaryRows, buildFactsText, ruleKindEnum } from "../../../src/shared/explain-facts.js";
-import { logSourceOf, SOURCE_LABEL, FLAG_LABEL } from "../../../src/shared/log-flags.js";
+import { logSourceOf, SOURCE_LABEL, FLAG_LABEL, isSkippedLog } from "../../../src/shared/log-flags.js";
 import { codeFingerprint } from "../../../src/shared/code-fingerprint.js";
 
 // Inject styles directly
@@ -1686,12 +1686,12 @@ function App() {
                 </div>
               ) : (
                 logs.map((log) => (
-                  <div key={log.id} className={`log-entry ${log.isValid ? "cv-log-pass" : "cv-log-fail"}`}>
+                  <div key={log.id} className={`log-entry ${isSkippedLog(log) ? "cv-log-skip" : log.isValid ? "cv-log-pass" : "cv-log-fail"}`}>
                     <div className="log-header">
                       <span
-                        className={`log-status ${log.isValid ? "valid" : "invalid"}`}
+                        className={`log-status ${isSkippedLog(log) ? "skip" : log.isValid ? "valid" : "invalid"}`}
                       >
-                        {log.isValid ? "PASS" : "FAIL"}
+                        {isSkippedLog(log) ? "SKIP" : log.isValid ? "PASS" : "FAIL"}
                       </span>
                       <span className="log-issue">{log.issueKey}</span>
                       <span className="log-meta">
@@ -2073,10 +2073,10 @@ function App() {
               </div>
             ) : (
               logs.map((log) => (
-                <div key={log.id} className={`log-entry ${log.isValid ? "cv-log-pass" : "cv-log-fail"}`}>
+                <div key={log.id} className={`log-entry ${isSkippedLog(log) ? "cv-log-skip" : log.isValid ? "cv-log-pass" : "cv-log-fail"}`}>
                   <div className="log-header">
-                    <span className={`log-status ${log.isValid ? "valid" : "invalid"}`}>
-                      {log.type === "postfunction-semantic" ? (log.isValid ? "OK" : "ERR")
+                    <span className={`log-status ${isSkippedLog(log) ? "skip" : log.isValid ? "valid" : "invalid"}`}>
+                      {isSkippedLog(log) ? "SKIP" : log.type === "postfunction-semantic" ? (log.isValid ? "OK" : "ERR")
                         : log.type === "postfunction-static" ? (log.isValid ? "OK" : "ERR")
                         : (log.isValid ? "PASS" : "FAIL")}
                     </span>

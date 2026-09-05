@@ -216,6 +216,113 @@ try {
     await close(env);
   }
 
+  /* Regression states: drive the real controls, in both themes. */
+  for (const theme of ["light", "dark"]) {
+    console.log(`R1 listener/job edge states (${theme})`);
+    const note = "Uses a synthetic summary-only change, not the issue's change history. Captured text is redacted.";
+    const env = await openAdmin(browser, theme, { __FAIL__: ["listProjects"], __RESPONSES__: {
+      testListener: { success: true, result: { success: true, isValid: true, decision: "SKIP", reason: "AI condition not met", testNote: note } },
+      getLogs: { success: true, logs: [{ id: "skip-regression", isValid: true, decision: "SKIP", reason: "AI condition not met", type: "listener", timestamp: new Date().toISOString() }] },
+      testPostFunction: { success: true, mode: "simulation", issueKey: null, changes: [], logs: ["Live search completed"], executionTimeMs: 10 },
+      getAsyncTaskResult: { success: true, status: "cancelled", result: { success: true, reason: "Cancelled after one issue" } },
+    } });
+    const { page } = env;
+    try {
+      await tab(page, "Listeners");
+      await page.locator(".lst-table").waitFor();
+      await page.locator(".rule-expand-btn").first().click();
+      await page.locator(".runres-badge.skip").waitFor();
+      ok(await page.locator(".runres-badge.ok").count() === 0, "R1 valid SKIP recent log is never PASS");
+      await page.locator("tr", { hasText: "Label new bugs for triage" }).locator("button", { hasText: "Edit" }).click();
+      await page.locator(".lst-editor").waitFor();
+      await page.getByRole("button", { name: "Retry projects" }).waitFor();
+      ok((await page.locator(".projpick").innerText()).includes("Projects unavailable"), "R1 project error is distinct from loading");
+      await page.evaluate(() => { window.__FAIL__ = []; window.__RESPONSES__.listProjects = { success: true, projects: [] }; });
+      await page.getByRole("button", { name: "Retry projects" }).click();
+      await page.locator(".projpick .dropdown-trigger", { hasText: "No projects available" }).waitFor();
+      ok(true, "R1 retry resolves to honest empty project state");
+      ok(!(await page.locator(".function-block").innerText()).includes("every transition"), "R1 listener step uses listener wording");
+      await page.locator("button", { hasText: "Show last real payload" }).click();
+      await page.locator(".lst-sample .runres-pre").waitFor();
+      await page.locator(".evp-search").fill("Issue updated");
+      await page.locator(".evp-row", { hasText: "Issue updated" }).locator("input").check();
+      await page.locator(".lst-test-field .dropdown-trigger").click();
+      await page.locator(".dropdown-item", { hasText: /^Issue updated$/ }).click();
+      ok(await page.locator(".lst-sample").count() === 0, "R1 prior event sample disappears when test event changes");
+      await page.locator(".btn-test-run").click();
+      ok((await page.locator(".test-panel").innerText()).includes("No current issue"), "R1 listener dry-run has no MOCK-1 promise");
+      await page.locator(".btn-run-test").click();
+      await page.locator(".test-result").waitFor();
+      const stepContext = await page.evaluate(() => window.__CALLS__.filter((c) => c.name === "testPostFunction").at(-1).payload.contextExtras);
+      ok(stepContext.eventType === "avi:jira:updated:issue" && stepContext.event.eventType === "avi:jira:updated:issue" && !stepContext.event.issue, "R1 per-step test receives selected event only, never stale captured issue");
+      ok((await page.locator(".test-result-meta").innerText()).includes("Live reads · no current issue · writes staged"), "R1 simulation result labels live reads and absent issue");
+      await page.locator(".lst-test .btn-solid", { hasText: "Run test" }).click();
+      await page.locator(".lst-test .runres-badge.skip").waitFor();
+      await page.locator(".lst-test .runres-details summary", { hasText: "Test context" }).click();
+      ok((await page.locator(".lst-test .runres").innerText()).includes(note), "R1 backend test caveat is visible");
+      ok(await page.locator(".lst-test .runres-badge.ok").count() === 0, "R1 valid successful SKIP test is never PASS");
+      await shot(page, `R1-${theme}-listener-outcomes`);
+      await tab(page, "Execution Logs");
+      await page.locator(".log-status.skip").first().waitFor();
+      ok(await page.locator(".log-status.valid").count() === 0, "R1 global execution log uses SKIP ahead of isValid");
+      await tab(page, "Scheduled Jobs");
+      await page.locator("tr", { hasText: "Nudge stale" }).locator("button", { hasText: "Run now" }).click();
+      await page.locator(".runres-badge.skip").waitFor({ timeout: 10000 });
+      ok((await page.locator(".runres").innerText()).includes("Cancelled after one issue"), "R1 cancelled poll ends with reason");
+      ok(await page.locator("button", { hasText: "Run now" }).first().isEnabled(), "R1 cancelled run releases manual action");
+      await page.locator("tr", { hasText: "Weekly release digest" }).locator("button", { hasText: "Edit" }).click();
+      await page.locator(".schp-zone .dropdown-trigger").click();
+      await page.locator(".schp-zone .dropdown-combobox-input").fill("UTC");
+      await page.locator(".dropdown-item", { hasText: /^UTC$/ }).click();
+      ok((await page.locator(".schp-zone .dropdown-trigger").innerText()).includes("UTC"), "R1 UTC selectable and shown");
+      await page.locator(".schp-preset .dropdown-trigger").click();
+      await page.locator(".dropdown-item", { hasText: "Custom cron" }).click();
+      await page.locator(".schp-cron").fill("");
+      ok(await page.locator(".schp-preview-error").count() === 1, "R1 empty custom cron stays invalid");
+      await page.waitForFunction((th) => getComputedStyle(document.querySelector(".schp-preview-error")).backgroundColor === (th === "dark" ? "rgb(239, 68, 68)" : "rgb(220, 38, 38)"), theme);
+      ok(true, "R1 invalid schedule has a red background after rendering settles");
+      await page.locator(".schp-zone .dropdown-trigger").click();
+      await page.locator(".schp-zone .dropdown-combobox-input").fill("Europe/London");
+      await page.locator(".dropdown-item", { hasText: /^Europe\/London$/ }).click();
+      ok(await page.locator(".schp-preview-error").count() === 1 && await page.locator(".schp-preview-run").count() === 0, "R1 zone change cannot restore a fallback schedule");
+      await page.locator(".section-actions .btn-edit", { hasText: /^Save$/ }).click();
+      await page.locator(".mls-toast", { hasText: "Fix the schedule" }).waitFor();
+      ok(!(await page.evaluate(() => window.__CALLS__)).some((c) => c.name === "saveScheduledJob"), "R1 invalid schedule never saved");
+      ok((await page.locator(".schp").innerText()).includes("next five-minute scheduler check"), "R1 due times distinguish scheduler and queue delay");
+      ok(!(await page.locator(".function-block").innerText()).includes("every transition"), "R1 job step uses job wording");
+      await page.locator(".mode-btn.mode-agent").click();
+      const unscoped = await page.locator(".agc-textarea").getAttribute("placeholder");
+      await page.locator(".job-scope .lst-input").fill("project = PROJ");
+      const scoped = await page.locator(".agc-textarea").getAttribute("placeholder");
+      ok(unscoped.includes("Find issues") && scoped.includes("current issue"), "R1 job examples adapt to JQL scope without changing instructions");
+      await page.waitForFunction(() => {
+        const buttons = [...document.querySelectorAll(".mode-btn")];
+        return buttons.every((b) => b.getAnimations().every((a) => a.playState === "finished"));
+      });
+      const modeStyles = await page.locator(".mode-btn").evaluateAll((buttons) => buttons.map((b) => ({ selected: b.getAttribute("aria-checked"), background: getComputedStyle(b).backgroundColor })));
+      console.log(`  ${theme} settled modes: ${JSON.stringify(modeStyles)}`);
+      await shot(page, `R1-${theme}-job-schedule`);
+      await page.locator("button", { hasText: "Back to jobs" }).click();
+      await page.evaluate(() => { window.__RESPONSES__.getScheduledJob = { success: true, job: { id: "job_b2", name: "Saved alias job", schedule: { cron: "0 17 * * 5", timeZone: "US/Eastern" }, mode: "agent", agent: { instructions: "Read the current context", allowedActions: ["get_issue"], maxRounds: 3 }, scope: null } }; });
+      await page.locator("tr", { hasText: "Weekly release digest" }).locator("button", { hasText: "Edit" }).click();
+      await page.locator(".schp-zone .dropdown-trigger", { hasText: "US/Eastern" }).waitFor();
+      ok(true, "R1 valid saved timezone alias remains visible");
+      await page.locator(".section-actions .btn-edit", { hasText: /^Save$/ }).click();
+      await page.locator(".mls-toast", { hasText: "Job saved" }).waitFor();
+      const saved = await page.evaluate(() => window.__CALLS__.filter((c) => c.name === "saveScheduledJob").at(-1).payload.job);
+      ok(saved.schedule.timeZone === "US/Eastern" && saved.schedule.cron === "0 17 * * 5", "R1 saved alias schedule preserved exactly");
+      await tab(page, "Listeners");
+      await page.locator("button", { hasText: "+ Add Listener" }).first().click();
+      await page.locator(".lst-editor").waitFor();
+      ok((await page.locator(".lst-test").innerText()).includes("Pick an event first"), "R1 empty event selection gives a clear next step");
+      await page.locator(".evp-search").fill("Version released");
+      await page.locator(".evp-row", { hasText: "Version released" }).locator("input").check();
+      ok(await page.locator(".lst-test .issue-picker").count() === 0 && (await page.locator(".lst-test").innerText()).includes("This event has no current issue"), "R1 nonissue event removes irrelevant issue picker");
+      ok(env.errors.length === 0, "R1 no page errors: " + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  ✗ R1 threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
   /* ---------------- A1 — Settings → API access: tokens + create (shown once) ---------------- */
   {
     console.log("A1 API access panel");

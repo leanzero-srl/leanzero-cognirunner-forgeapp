@@ -1020,7 +1020,7 @@ const storeLog = async (logEntry, { statsReceipt = null } = {}) => {
       // Every entry carries a source; default to runtime so no entry is sourceless
       // and pre-feature entries render correctly (async ones self-identify downstream).
       source: logEntry.source || "runtime",
-      timestamp: new Date().toISOString(),
+      timestamp: statsReceipt?.completedAt || new Date().toISOString(),
       id: Date.now().toString() + Math.random().toString(36).slice(2, 6),
     };
     // Reuse one key through ambiguous writes/retries: one completion, one receipt.

@@ -74,6 +74,8 @@ await check("10 parallel jobs and 20 listeners keep every completion and error t
     assert.equal(full.stats.lastStatus, i % 3 === 0 ? "error" : "ok");
     assert.equal(full.stats._createdAt, undefined);
     assert.ok(full.stats.lastRunAt);
+    const completedLogs = await readLogs(full.id);
+    assert.equal(full.stats.lastRunAt, completedLogs.map(entry => entry.timestamp).sort().at(-1));
     assert.equal(Boolean(full.stats.lastError), i % 3 === 0);
     if (kind === "listener") assert.equal(full.stats.lastIssueKey, "LZPT-1");
   }
@@ -86,6 +88,7 @@ await check("out-of-order mixed runs increment counts but retain newest status a
   const older = await receipt("listener", rule, "ok", "2026-09-05T18:00:00.000Z");
   await consume(newest.event); await consume(older.event); await consume(newest.event);
   assert.deepEqual((await getListener(rule.id)).stats, { runCount: 2, errorCount: 1, lastRunAt: newest.stats.completedAt, lastStatus: "error", lastError: "deliberate failure", lastIssueKey: "LZPT-1" });
+  assert.equal((await getListener(rule.id)).stats.lastRunAt, (await storage.get(newest.key)).timestamp);
 });
 
 for (const committed of [false, true]) await check(`transaction failure ${committed ? "after" : "before"} commit retries without loss or duplication`, async () => {

@@ -1,0 +1,296 @@
+Warning: Your version of Forge CLI is out of date. We recommend you update to the latest version to get the latest features and bug fixes.
+Run npm install -g @forge/cli@latest to update from version 13.4.0 to 13.5.0.
+
+INFO    2026-09-05T17:36:02.035Z 382dc17f-2884-4b80-a16e-c6723d76a4b5 [job] tick: 2 job(s), 0 due, 0 queued in 200ms
+INFO    2026-09-05T17:40:41.905Z 53f10623-63a8-4680-9ada-8100392149e4 [listener] avi:jira:assigned:issue: "campaignmtoo1tnz L04 Assignment event" skipped — JQL did not match LZPT-289
+INFO    2026-09-05T17:40:42.835Z 4fb1101c-4c23-4dc4-b770-2d0edac20141 [listener] avi:jira:created:issue: "campaignmtoo1tnz L01 Created issue label" (lst_mtoo25lr8mk1s9) queued as 9998211369957540_listener_u2kir9 for LZPT-289
+INFO    2026-09-05T17:40:42.921Z 4fb1101c-4c23-4dc4-b770-2d0edac20141 [listener] avi:jira:created:issue: queued 1 run(s) in 1725ms
+INFO    2026-09-05T17:40:44.738Z 293d1c34-e7f5-478c-b759-7bd8003dba82 Async handler: executing listener (9998211369957540_listener_u2kir9)
+INFO    2026-09-05T17:40:46.626Z 293d1c34-e7f5-478c-b759-7bd8003dba82 Async handler: listener (9998211369957540_listener_u2kir9) completed
+INFO    2026-09-05T17:40:46.927Z f8884190-c661-4479-82bc-5158a677d260 [listener] avi:jira:updated:issue: "campaignmtoo1tnz L02 Summary and type filter" (lst_mtoo263ibv7cl8) skipped — self-generated event ignored
+INFO    2026-09-05T17:40:46.988Z f8884190-c661-4479-82bc-5158a677d260 [listener] avi:jira:updated:issue: "campaignmtoo1tnz L03 Priority change context" (lst_mtoo26lwzx52xs) skipped — self-generated event ignored
+INFO    2026-09-05T17:40:49.901Z 723a1c83-e448-4c97-a646-cf39e975e82d [listener] avi:jira:updated:issue: "campaignmtoo1tnz L02 Summary and type filter" (lst_mtoo263ibv7cl8) queued as 9998211369950376_listener_a9q4e7 for LZPT-284
+INFO    2026-09-05T17:40:50.044Z 723a1c83-e448-4c97-a646-cf39e975e82d [listener] avi:jira:updated:issue: "campaignmtoo1tnz L03 Priority change context" (lst_mtoo26lwzx52xs) skipped — none of the watched fields changed (changed: summary, summary)
+INFO    2026-09-05T17:40:50.045Z 723a1c83-e448-4c97-a646-cf39e975e82d [listener] avi:jira:updated:issue: queued 1 run(s) in 721ms
+INFO    2026-09-05T17:40:50.131Z 19f22890-9df5-4fec-840d-6c31a89d26ac Async handler: executing listener (9998211369950376_listener_a9q4e7)
+INFO    2026-09-05T17:40:50.827Z 19f22890-9df5-4fec-840d-6c31a89d26ac Async handler: listener (9998211369950376_listener_a9q4e7) completed
+INFO    2026-09-05T17:40:54.644Z fdf32011-0197-4042-9149-6bbb0818995b [listener] avi:jira:updated:issue: "campaignmtoo1tnz L02 Summary and type filter" (lst_mtoo263ibv7cl8) skipped — none of the watched fields changed (changed: priority, priority)
+INFO    2026-09-05T17:40:55.541Z fdf32011-0197-4042-9149-6bbb0818995b [listener] avi:jira:updated:issue: "campaignmtoo1tnz L03 Priority change context" (lst_mtoo26lwzx52xs) queued as 9998211369945006_listener_lkn58u for LZPT-284
+INFO    2026-09-05T17:40:55.617Z fdf32011-0197-4042-9149-6bbb0818995b [listener] avi:jira:updated:issue: queued 1 run(s) in 1161ms
+INFO    2026-09-05T17:40:56.209Z 3a799555-ef26-41d6-8936-f72f737da90e Async handler: executing listener (9998211369945006_listener_lkn58u)
+INFO    2026-09-05T17:40:56.874Z 3a799555-ef26-41d6-8936-f72f737da90e Async handler: listener (9998211369945006_listener_lkn58u) completed
+INFO    2026-09-05T17:40:58.780Z 98dbb2c7-81e4-42aa-935c-c5adcb3bac0a [listener] avi:jira:updated:issue: "campaignmtoo1tnz L02 Summary and type filter" (lst_mtoo263ibv7cl8) skipped — none of the watched fields changed (changed: assignee, assignee)
+INFO    2026-09-05T17:40:58.831Z 98dbb2c7-81e4-42aa-935c-c5adcb3bac0a [listener] avi:jira:updated:issue: "campaignmtoo1tnz L03 Priority change context" (lst_mtoo26lwzx52xs) skipped — none of the watched fields changed (changed: assignee, assignee)
+INFO    2026-09-05T17:41:00.205Z 54b44a7a-34f6-4cc5-ade9-a27e5c672604 [listener] avi:jira:assigned:issue: "campaignmtoo1tnz L04 Assignment event" (lst_mtoo2717o28y0p) queued as 9998211369940132_listener_avip6r for LZPT-284
+INFO    2026-09-05T17:41:00.285Z 54b44a7a-34f6-4cc5-ade9-a27e5c672604 [listener] avi:jira:assigned:issue: queued 1 run(s) in 1462ms
+INFO    2026-09-05T17:41:00.865Z e053c1dd-f069-4a38-bbd3-c894a30bd07f Async handler: executing listener (9998211369940132_listener_avip6r)
+INFO    2026-09-05T17:41:01.556Z e053c1dd-f069-4a38-bbd3-c894a30bd07f Async handler: listener (9998211369940132_listener_avip6r) completed
+INFO    2026-09-05T17:41:02.081Z 2f4a668c-5ff7-4a3b-8592-7991bc32ddca [job] tick: 12 job(s), 0 due, 0 queued in 125ms
+INFO    2026-09-05T17:41:04.393Z 705ad146-efd2-4706-9f20-7b3431560982 [listener] avi:jira:updated:issue: "campaignmtoo1tnz L02 Summary and type filter" (lst_mtoo263ibv7cl8) skipped — none of the watched fields changed (changed: assignee, assignee)
+INFO    2026-09-05T17:41:04.446Z 705ad146-efd2-4706-9f20-7b3431560982 [listener] avi:jira:updated:issue: "campaignmtoo1tnz L03 Priority change context" (lst_mtoo26lwzx52xs) skipped — none of the watched fields changed (changed: assignee, assignee)
+INFO    2026-09-05T17:41:04.972Z e880dc70-db43-417f-a7ab-05dcb4e936a2 [listener] avi:jira:assigned:issue: "campaignmtoo1tnz L04 Assignment event" (lst_mtoo2717o28y0p) queued as 9998211369935312_listener_jpckjq for LZPT-284
+INFO    2026-09-05T17:41:05.044Z e880dc70-db43-417f-a7ab-05dcb4e936a2 [listener] avi:jira:assigned:issue: queued 1 run(s) in 729ms
+INFO    2026-09-05T17:41:05.652Z 827dfab0-8276-455c-a239-3b95b9a520b1 Async handler: executing listener (9998211369935312_listener_jpckjq)
+INFO    2026-09-05T17:41:06.329Z 827dfab0-8276-455c-a239-3b95b9a520b1 Async handler: listener (9998211369935312_listener_jpckjq) completed
+INFO    2026-09-05T17:41:08.586Z cadaeb9c-434e-42a8-9d02-d6b5348afaa4 [listener] avi:jira:commented:issue: "campaignmtoo1tnz L05 Comment regex match" (lst_mtoo27hdek9m6d) skipped — comment does not match the pattern
+INFO    2026-09-05T17:41:08.652Z cadaeb9c-434e-42a8-9d02-d6b5348afaa4 [listener] avi:jira:commented:issue: "campaignmtoo1tnz L06 Semantic refund gate" (lst_mtoo27wn1a95d5) skipped — comment does not match the pattern
+INFO    2026-09-05T17:41:08.712Z cadaeb9c-434e-42a8-9d02-d6b5348afaa4 [listener] avi:jira:commented:issue: "campaignmtoo1tnz L07 Runtime AI actions" (lst_mtoo28advfwi2m) skipped — comment does not match the pattern
+INFO    2026-09-05T17:41:08.791Z cadaeb9c-434e-42a8-9d02-d6b5348afaa4 [listener] avi:jira:commented:issue: "campaignmtoo1tnz L20 Failure stops following steps" (lst_mtoo2di76yrm4x) skipped — comment does not match the pattern
+INFO    2026-09-05T17:41:08.875Z cadaeb9c-434e-42a8-9d02-d6b5348afaa4 [listener] avi:jira:commented:issue: "campaignmtoo1tnz L21 Simulation records no write" (lst_mtoo2dwsucu3x7) skipped — comment does not match the pattern
+INFO    2026-09-05T17:41:16.993Z dafb4590-eef8-4e05-95ca-0c38e2888588 [listener] avi:jira:commented:issue: "campaignmtoo1tnz L05 Comment regex match" (lst_mtoo27hdek9m6d) queued as 9998211369923312_listener_f6sajp for LZPT-284
+INFO    2026-09-05T17:41:17.117Z dafb4590-eef8-4e05-95ca-0c38e2888588 [listener] avi:jira:commented:issue: "campaignmtoo1tnz L06 Semantic refund gate" (lst_mtoo27wn1a95d5) skipped — comment does not match the pattern
+INFO    2026-09-05T17:41:17.181Z dafb4590-eef8-4e05-95ca-0c38e2888588 [listener] avi:jira:commented:issue: "campaignmtoo1tnz L07 Runtime AI actions" (lst_mtoo28advfwi2m) skipped — comment does not match the pattern
+INFO    2026-09-05T17:41:17.230Z dafb4590-eef8-4e05-95ca-0c38e2888588 [listener] avi:jira:commented:issue: "campaignmtoo1tnz L20 Failure stops following steps" (lst_mtoo2di76yrm4x) skipped — comment does not match the pattern
+INFO    2026-09-05T17:41:17.285Z dafb4590-eef8-4e05-95ca-0c38e2888588 [listener] avi:jira:commented:issue: "campaignmtoo1tnz L21 Simulation records no write" (lst_mtoo2dwsucu3x7) skipped — comment does not match the pattern
+INFO    2026-09-05T17:41:17.286Z dafb4590-eef8-4e05-95ca-0c38e2888588 [listener] avi:jira:commented:issue: queued 1 run(s) in 1280ms
+INFO    2026-09-05T17:41:17.298Z de52da64-f4c8-4ae7-a93c-799a8b04b730 Async handler: executing listener (9998211369923312_listener_f6sajp)
+INFO    2026-09-05T17:41:18.036Z de52da64-f4c8-4ae7-a93c-799a8b04b730 Async handler: listener (9998211369923312_listener_f6sajp) completed
+INFO    2026-09-05T17:41:20.347Z 0acaf5fe-839f-43f7-8f37-501aeb0da73b [listener] avi:jira:commented:issue: "campaignmtoo1tnz L05 Comment regex match" (lst_mtoo27hdek9m6d) skipped — comment does not match the pattern
+INFO    2026-09-05T17:41:21.221Z 0acaf5fe-839f-43f7-8f37-501aeb0da73b [listener] avi:jira:commented:issue: "campaignmtoo1tnz L06 Semantic refund gate" (lst_mtoo27wn1a95d5) queued as 9998211369919324_listener_wzo627 for LZPT-288
+INFO    2026-09-05T17:41:21.353Z 0acaf5fe-839f-43f7-8f37-501aeb0da73b [listener] avi:jira:commented:issue: "campaignmtoo1tnz L07 Runtime AI actions" (lst_mtoo28advfwi2m) skipped — comment does not match the pattern
+INFO    2026-09-05T17:41:21.403Z 0acaf5fe-839f-43f7-8f37-501aeb0da73b [listener] avi:jira:commented:issue: "campaignmtoo1tnz L20 Failure stops following steps" (lst_mtoo2di76yrm4x) skipped — comment does not match the pattern
+INFO    2026-09-05T17:41:21.459Z 0acaf5fe-839f-43f7-8f37-501aeb0da73b [listener] avi:jira:commented:issue: "campaignmtoo1tnz L21 Simulation records no write" (lst_mtoo2dwsucu3x7) skipped — comment does not match the pattern
+INFO    2026-09-05T17:41:21.460Z 0acaf5fe-839f-43f7-8f37-501aeb0da73b [listener] avi:jira:commented:issue: queued 1 run(s) in 1170ms
+INFO    2026-09-05T17:41:21.495Z 3c6f20de-331a-4074-a98d-1fb0a671bafb Async handler: executing listener (9998211369919324_listener_wzo627)
+INFO    2026-09-05T17:41:23.584Z 3c6f20de-331a-4074-a98d-1fb0a671bafb Async handler: listener (9998211369919324_listener_wzo627) completed
+INFO    2026-09-05T17:41:27.747Z d053fa72-f177-488c-815e-7abd33ed6132 [listener] avi:jira:commented:issue: "campaignmtoo1tnz L05 Comment regex match" (lst_mtoo27hdek9m6d) skipped — comment does not match the pattern
+INFO    2026-09-05T17:41:28.330Z d053fa72-f177-488c-815e-7abd33ed6132 [listener] avi:jira:commented:issue: "campaignmtoo1tnz L06 Semantic refund gate" (lst_mtoo27wn1a95d5) queued as 9998211369911960_listener_uae148 for LZPT-288
+INFO    2026-09-05T17:41:28.468Z d053fa72-f177-488c-815e-7abd33ed6132 [listener] avi:jira:commented:issue: "campaignmtoo1tnz L07 Runtime AI actions" (lst_mtoo28advfwi2m) skipped — comment does not match the pattern
+INFO    2026-09-05T17:41:28.525Z d053fa72-f177-488c-815e-7abd33ed6132 [listener] avi:jira:commented:issue: "campaignmtoo1tnz L20 Failure stops following steps" (lst_mtoo2di76yrm4x) skipped — comment does not match the pattern
+INFO    2026-09-05T17:41:28.529Z 7b3a089a-a5f2-4082-8bfd-4de56a294996 Async handler: executing listener (9998211369911960_listener_uae148)
+INFO    2026-09-05T17:41:28.585Z d053fa72-f177-488c-815e-7abd33ed6132 [listener] avi:jira:commented:issue: "campaignmtoo1tnz L21 Simulation records no write" (lst_mtoo2dwsucu3x7) skipped — comment does not match the pattern
+INFO    2026-09-05T17:41:28.586Z d053fa72-f177-488c-815e-7abd33ed6132 [listener] avi:jira:commented:issue: queued 1 run(s) in 925ms
+INFO    2026-09-05T17:41:30.211Z 7b3a089a-a5f2-4082-8bfd-4de56a294996 Async handler: listener (9998211369911960_listener_uae148) completed
+INFO    2026-09-05T17:41:31.768Z 8d768c6b-a8e7-4871-b515-53fd41578e63 [listener] avi:jira:commented:issue: "campaignmtoo1tnz L05 Comment regex match" (lst_mtoo27hdek9m6d) skipped — comment does not match the pattern
+INFO    2026-09-05T17:41:31.863Z 8d768c6b-a8e7-4871-b515-53fd41578e63 [listener] avi:jira:commented:issue: "campaignmtoo1tnz L06 Semantic refund gate" (lst_mtoo27wn1a95d5) skipped — comment does not match the pattern
+INFO    2026-09-05T17:41:32.481Z 8d768c6b-a8e7-4871-b515-53fd41578e63 [listener] avi:jira:commented:issue: "campaignmtoo1tnz L07 Runtime AI actions" (lst_mtoo28advfwi2m) queued as 9998211369907804_listener_ur9f3h for LZPT-288
+INFO    2026-09-05T17:41:32.631Z 8d768c6b-a8e7-4871-b515-53fd41578e63 [listener] avi:jira:commented:issue: "campaignmtoo1tnz L20 Failure stops following steps" (lst_mtoo2di76yrm4x) skipped — comment does not match the pattern
+INFO    2026-09-05T17:41:32.670Z 3d23ab5b-a885-47db-bf9a-a0f23b7eb2a9 Async handler: executing listener (9998211369907804_listener_ur9f3h)
+INFO    2026-09-05T17:41:32.684Z 8d768c6b-a8e7-4871-b515-53fd41578e63 [listener] avi:jira:commented:issue: "campaignmtoo1tnz L21 Simulation records no write" (lst_mtoo2dwsucu3x7) skipped — comment does not match the pattern
+INFO    2026-09-05T17:41:32.685Z 8d768c6b-a8e7-4871-b515-53fd41578e63 [listener] avi:jira:commented:issue: queued 1 run(s) in 990ms
+INFO    2026-09-05T17:41:35.619Z b4aaefc0-24d1-444a-bb14-fb84c8e62bbd [listener] avi:jira:updated:issue: "campaignmtoo1tnz L02 Summary and type filter" (lst_mtoo263ibv7cl8) skipped — self-generated event ignored
+INFO    2026-09-05T17:41:35.672Z b4aaefc0-24d1-444a-bb14-fb84c8e62bbd [listener] avi:jira:updated:issue: "campaignmtoo1tnz L03 Priority change context" (lst_mtoo26lwzx52xs) skipped — self-generated event ignored
+INFO    2026-09-05T17:41:35.853Z c2a99857-5808-46bf-9b4f-40bd367017ec [listener] avi:jira:commented:issue: "campaignmtoo1tnz L05 Comment regex match" (lst_mtoo27hdek9m6d) skipped — self-generated event ignored
+INFO    2026-09-05T17:41:35.904Z c2a99857-5808-46bf-9b4f-40bd367017ec [listener] avi:jira:commented:issue: "campaignmtoo1tnz L06 Semantic refund gate" (lst_mtoo27wn1a95d5) skipped — self-generated event ignored
+INFO    2026-09-05T17:41:35.959Z c2a99857-5808-46bf-9b4f-40bd367017ec [listener] avi:jira:commented:issue: "campaignmtoo1tnz L07 Runtime AI actions" (lst_mtoo28advfwi2m) skipped — self-generated event ignored
+INFO    2026-09-05T17:41:36.011Z c2a99857-5808-46bf-9b4f-40bd367017ec [listener] avi:jira:commented:issue: "campaignmtoo1tnz L20 Failure stops following steps" (lst_mtoo2di76yrm4x) skipped — self-generated event ignored
+INFO    2026-09-05T17:41:36.077Z c2a99857-5808-46bf-9b4f-40bd367017ec [listener] avi:jira:commented:issue: "campaignmtoo1tnz L21 Simulation records no write" (lst_mtoo2dwsucu3x7) skipped — self-generated event ignored
+INFO    2026-09-05T17:41:37.259Z 3d23ab5b-a885-47db-bf9a-a0f23b7eb2a9 Async handler: listener (9998211369907804_listener_ur9f3h) completed
+INFO    2026-09-05T17:41:40.085Z 2a8893c0-a0c6-4ea4-9621-e05befe1fdfe [listener] avi:jira:assigned:issue: "campaignmtoo1tnz L04 Assignment event" skipped — JQL did not match LZPT-290
+INFO    2026-09-05T17:41:40.445Z 942cf704-f2e9-4503-bfdf-0e11bc682207 [listener] avi:jira:created:issue: "campaignmtoo1tnz L01 Created issue label" (lst_mtoo25lr8mk1s9) queued as 9998211369899834_listener_0kuf2f for LZPT-290
+INFO    2026-09-05T17:41:40.526Z 942cf704-f2e9-4503-bfdf-0e11bc682207 [listener] avi:jira:created:issue: queued 1 run(s) in 600ms
+INFO    2026-09-05T17:41:40.688Z 6146fe9d-559d-4428-9b46-f053694015dc Async handler: executing listener (9998211369899834_listener_0kuf2f)
+INFO    2026-09-05T17:41:41.683Z 6146fe9d-559d-4428-9b46-f053694015dc Async handler: listener (9998211369899834_listener_0kuf2f) completed
+INFO    2026-09-05T17:41:41.976Z 8dfda01a-e926-4c33-8a9b-4d603bb24ac6 [listener] avi:jira:updated:issue: "campaignmtoo1tnz L02 Summary and type filter" (lst_mtoo263ibv7cl8) skipped — self-generated event ignored
+INFO    2026-09-05T17:41:42.037Z 8dfda01a-e926-4c33-8a9b-4d603bb24ac6 [listener] avi:jira:updated:issue: "campaignmtoo1tnz L03 Priority change context" (lst_mtoo26lwzx52xs) skipped — self-generated event ignored
+INFO    2026-09-05T17:41:47.654Z 2d803e02-5010-4e80-a9ec-77dff99a6a1a [listener] avi:jira:deleted:issue: "campaignmtoo1tnz L08 Deleted issue snapshot" (lst_mtoo28o9q48o9h) queued as 9998211369892660_listener_gff8y5 for LZPT-290
+INFO    2026-09-05T17:41:47.735Z 2d803e02-5010-4e80-a9ec-77dff99a6a1a [listener] avi:jira:deleted:issue: queued 1 run(s) in 577ms
+INFO    2026-09-05T17:41:47.870Z 6582d749-88cc-4d0f-b7cf-e8626a91edcd Async handler: executing listener (9998211369892660_listener_gff8y5)
+INFO    2026-09-05T17:41:48.594Z 6582d749-88cc-4d0f-b7cf-e8626a91edcd Async handler: listener (9998211369892660_listener_gff8y5) completed
+INFO    2026-09-05T17:41:48.679Z e2f40ec4-357c-49f0-9ac0-82b3b5fdf2d9 getConfigs orphan summary: {"checked":455,"retained":455,"removed":0,"workflows":5,"failedWorkflows":0,"partial":false,"removedExamples":[],"errorExamples":[]}
+INFO    2026-09-05T17:41:48.806Z e2f40ec4-357c-49f0-9ac0-82b3b5fdf2d9 getConfigs filter="all" role=admin scope=all total=455 shown=455
+INFO    2026-09-05T17:41:51.986Z 172dcc66-56ea-4309-99b1-a564f6c4e6e9 [listener] avi:jira:commented:issue: "campaignmtoo1tnz L05 Comment regex match" (lst_mtoo27hdek9m6d) skipped — comment does not match the pattern
+INFO    2026-09-05T17:41:52.047Z 172dcc66-56ea-4309-99b1-a564f6c4e6e9 [listener] avi:jira:commented:issue: "campaignmtoo1tnz L06 Semantic refund gate" (lst_mtoo27wn1a95d5) skipped — comment does not match the pattern
+INFO    2026-09-05T17:41:52.111Z 172dcc66-56ea-4309-99b1-a564f6c4e6e9 [listener] avi:jira:commented:issue: "campaignmtoo1tnz L07 Runtime AI actions" (lst_mtoo28advfwi2m) skipped — comment does not match the pattern
+INFO    2026-09-05T17:41:52.160Z 172dcc66-56ea-4309-99b1-a564f6c4e6e9 [listener] avi:jira:commented:issue: "campaignmtoo1tnz L20 Failure stops following steps" (lst_mtoo2di76yrm4x) skipped — comment does not match the pattern
+INFO    2026-09-05T17:41:52.214Z 172dcc66-56ea-4309-99b1-a564f6c4e6e9 [listener] avi:jira:commented:issue: "campaignmtoo1tnz L21 Simulation records no write" (lst_mtoo2dwsucu3x7) skipped — comment does not match the pattern
+INFO    2026-09-05T17:41:52.542Z 82da3cc4-fa4d-4d82-baad-ae28119368c7 [listener] avi:jira:updated:issue: "campaignmtoo1tnz L02 Summary and type filter" (lst_mtoo263ibv7cl8) skipped — none of the watched fields changed (changed: comment, comment)
+INFO    2026-09-05T17:41:52.591Z 82da3cc4-fa4d-4d82-baad-ae28119368c7 [listener] avi:jira:updated:issue: "campaignmtoo1tnz L03 Priority change context" (lst_mtoo26lwzx52xs) skipped — none of the watched fields changed (changed: comment, comment)
+INFO    2026-09-05T17:41:52.956Z 94964887-9756-4b52-836c-fedf2dcf65d9 [listener] avi:jira:deleted:comment: "campaignmtoo1tnz L09 Deleted comment identity" (lst_mtoo291tygxm81) queued as 9998211369887316_listener_w975ql for LZPT-285
+INFO    2026-09-05T17:41:53.020Z a50ee45c-11f0-40ee-887a-957d31a81d9d [listener] avi:jira:updated:issue: "campaignmtoo1tnz L02 Summary and type filter" (lst_mtoo263ibv7cl8) skipped — none of the watched fields changed (changed: comment, comment)
+INFO    2026-09-05T17:41:53.039Z 94964887-9756-4b52-836c-fedf2dcf65d9 [listener] avi:jira:deleted:comment: queued 1 run(s) in 716ms
+INFO    2026-09-05T17:41:53.181Z b8051f43-1393-4a99-b037-98970cdb14a5 Async handler: executing listener (9998211369887316_listener_w975ql)
+INFO    2026-09-05T17:41:53.231Z a50ee45c-11f0-40ee-887a-957d31a81d9d [listener] avi:jira:updated:issue: "campaignmtoo1tnz L03 Priority change context" (lst_mtoo26lwzx52xs) skipped — none of the watched fields changed (changed: comment, comment)
+INFO    2026-09-05T17:41:53.846Z b8051f43-1393-4a99-b037-98970cdb14a5 Async handler: listener (9998211369887316_listener_w975ql) completed
+INFO    2026-09-05T17:41:58.249Z 3776e67a-6f9b-4dc9-9ece-041c3affc5d4 [listener] avi:jira:created:worklog: "campaignmtoo1tnz L10 Created worklog identity" (lst_mtoo29i0q5zj4d) queued as 9998211369882044_listener_jy0f1q for LZPT-285
+INFO    2026-09-05T17:41:58.325Z 3776e67a-6f9b-4dc9-9ece-041c3affc5d4 [listener] avi:jira:created:worklog: queued 1 run(s) in 1565ms
+INFO    2026-09-05T17:41:58.916Z 12040a13-e4a3-4eda-9df0-759938c7ed93 Async handler: executing listener (9998211369882044_listener_jy0f1q)
+INFO    2026-09-05T17:41:59.597Z 12040a13-e4a3-4eda-9df0-759938c7ed93 Async handler: listener (9998211369882044_listener_jy0f1q) completed
+INFO    2026-09-05T17:42:01.987Z 2d729843-9d37-4e38-924b-ee14de7fd00d [listener] avi:jira:updated:worklog: "campaignmtoo1tnz L11 Updated worklog value" (lst_mtoo29vwoei8ij) queued as 9998211369878284_listener_gikf3b for LZPT-285
+INFO    2026-09-05T17:42:02.059Z 2d729843-9d37-4e38-924b-ee14de7fd00d [listener] avi:jira:updated:worklog: queued 1 run(s) in 813ms
+INFO    2026-09-05T17:42:02.581Z d24fc10a-5110-4e2d-9cdd-44249b0b409e Async handler: executing listener (9998211369878284_listener_gikf3b)
+INFO    2026-09-05T17:42:03.443Z d24fc10a-5110-4e2d-9cdd-44249b0b409e Async handler: listener (9998211369878284_listener_gikf3b) completed
+INFO    2026-09-05T17:42:06.348Z 90fe6741-64f3-44f0-929e-532870400aa4 [listener] avi:jira:deleted:worklog: "campaignmtoo1tnz L12 Deleted worklog identity" (lst_mtoo2ablwb3wc5) queued as 9998211369873924_listener_hx9rbf for LZPT-285
+INFO    2026-09-05T17:42:06.442Z 90fe6741-64f3-44f0-929e-532870400aa4 [listener] avi:jira:deleted:worklog: queued 1 run(s) in 918ms
+INFO    2026-09-05T17:42:06.549Z f25de0c0-1c7d-4a85-ab44-c011a7ce413c Async handler: executing listener (9998211369873924_listener_hx9rbf)
+INFO    2026-09-05T17:42:07.376Z f25de0c0-1c7d-4a85-ab44-c011a7ce413c Async handler: listener (9998211369873924_listener_hx9rbf) completed
+INFO    2026-09-05T17:42:10.227Z d852f8c6-9f04-4c1c-ad49-8b02aa3dad09 [listener] avi:jira:updated:issue: "campaignmtoo1tnz L02 Summary and type filter" (lst_mtoo263ibv7cl8) skipped — none of the watched fields changed (changed: attachment, attachment)
+INFO    2026-09-05T17:42:10.276Z d852f8c6-9f04-4c1c-ad49-8b02aa3dad09 [listener] avi:jira:updated:issue: "campaignmtoo1tnz L03 Priority change context" (lst_mtoo26lwzx52xs) skipped — none of the watched fields changed (changed: attachment, attachment)
+INFO    2026-09-05T17:42:10.546Z 2c6b9c21-1ff9-4cd0-a45a-e524049b9d4f [listener] avi:jira:created:attachment: "campaignmtoo1tnz L13 Attachment created identity" (lst_mtoo2aqkezki4q) queued as 9998211369869724_listener_o4rtfp for LZPT-285
+INFO    2026-09-05T17:42:10.629Z 2c6b9c21-1ff9-4cd0-a45a-e524049b9d4f [listener] avi:jira:created:attachment: queued 1 run(s) in 890ms
+INFO    2026-09-05T17:42:10.753Z 06a8d0fa-f302-40e9-bcb5-7c6e43235172 Async handler: executing listener (9998211369869724_listener_o4rtfp)
+INFO    2026-09-05T17:42:11.433Z 06a8d0fa-f302-40e9-bcb5-7c6e43235172 Async handler: listener (9998211369869724_listener_o4rtfp) completed
+INFO    2026-09-05T17:42:15.217Z a6e49a17-676b-4abe-9423-1378b9979384 [listener] avi:jira:created:issuelink: "campaignmtoo1tnz L15 Link created endpoints" (lst_mtoo2bjz97us3v) queued as 9998211369865042_listener_0ldelq for LZPT-285
+INFO    2026-09-05T17:42:15.294Z a6e49a17-676b-4abe-9423-1378b9979384 [listener] avi:jira:created:issuelink: queued 1 run(s) in 829ms
+INFO    2026-09-05T17:42:15.457Z e7845726-ac33-4ef2-850f-ab47f8d762e5 Async handler: executing listener (9998211369865042_listener_0ldelq)
+INFO    2026-09-05T17:42:16.492Z e7845726-ac33-4ef2-850f-ab47f8d762e5 Async handler: listener (9998211369865042_listener_0ldelq) completed
+INFO    2026-09-05T17:42:20.007Z d684e1d4-111d-4751-ab70-d3b93169db6f [listener] avi:jira:deleted:issuelink: "campaignmtoo1tnz L16 Link deleted endpoints" (lst_mtoo2bywd7ga76) queued as 9998211369860288_listener_m7a364 for LZPT-285
+INFO    2026-09-05T17:42:20.077Z d684e1d4-111d-4751-ab70-d3b93169db6f [listener] avi:jira:deleted:issuelink: queued 1 run(s) in 867ms
+INFO    2026-09-05T17:42:20.248Z b16a82eb-996a-429b-bfbb-40edcbd0007f Async handler: executing listener (9998211369860288_listener_m7a364)
+INFO    2026-09-05T17:42:20.924Z b16a82eb-996a-429b-bfbb-40edcbd0007f Async handler: listener (9998211369860288_listener_m7a364) completed
+INFO    2026-09-05T17:42:23.761Z 807c3f6d-09ed-4e43-bd43-e5cec75377dd [listener] avi:jira:created:version: "campaignmtoo1tnz L17 Version created" (lst_mtoo2ccoj9m2e2) queued as 9998211369856504_listener_gup17j
+INFO    2026-09-05T17:42:23.801Z 807c3f6d-09ed-4e43-bd43-e5cec75377dd [listener] avi:jira:created:version: queued 1 run(s) in 581ms
+INFO    2026-09-05T17:42:23.810Z ed2f9dd2-0141-41a7-9690-2ab0697db833 [listener] avi:jira:created:version: "campaignmtoo1tnz L17 Version created" (lst_mtoo2ccoj9m2e2) queued as 9998211369856470_listener_bfemum
+INFO    2026-09-05T17:42:23.849Z ed2f9dd2-0141-41a7-9690-2ab0697db833 [listener] avi:jira:created:version: queued 1 run(s) in 616ms
+INFO    2026-09-05T17:42:23.951Z 37919366-913e-42e2-81dc-c9fdae795179 Async handler: executing listener (9998211369856504_listener_gup17j)
+INFO    2026-09-05T17:42:24.598Z 37919366-913e-42e2-81dc-c9fdae795179 Async handler: listener (9998211369856504_listener_gup17j) completed
+INFO    2026-09-05T17:42:24.633Z 83e25cce-aed9-4b8e-9e06-ffbf719456fb Async handler: executing listener (9998211369856470_listener_bfemum)
+INFO    2026-09-05T17:42:25.437Z 83e25cce-aed9-4b8e-9e06-ffbf719456fb Async handler: listener (9998211369856470_listener_bfemum) completed
+INFO    2026-09-05T17:42:27.515Z 2ed60b8f-3917-406e-8863-91945dd56bd7 [listener] avi:jira:released:version: "campaignmtoo1tnz L18 Version released" (lst_mtoo2cqhao3sky) queued as 9998211369852760_listener_64opb3
+INFO    2026-09-05T17:42:27.560Z 2ed60b8f-3917-406e-8863-91945dd56bd7 [listener] avi:jira:released:version: queued 1 run(s) in 439ms
+INFO    2026-09-05T17:42:28.089Z 7c8dfa6d-973d-4085-b7b4-8c883f7802bd Async handler: executing listener (9998211369852760_listener_64opb3)
+INFO    2026-09-05T17:42:28.844Z 7c8dfa6d-973d-4085-b7b4-8c883f7802bd Async handler: listener (9998211369852760_listener_64opb3) completed
+INFO    2026-09-05T17:42:31.567Z 684e8973-3f95-4d68-9e8e-a12bf5f87348 [listener] avi:jira:created:component: "campaignmtoo1tnz L19 Component created" (lst_mtoo2d41kdxgvb) queued as 9998211369848714_listener_s9rjmx
+INFO    2026-09-05T17:42:31.604Z 684e8973-3f95-4d68-9e8e-a12bf5f87348 [listener] avi:jira:created:component: queued 1 run(s) in 450ms
+INFO    2026-09-05T17:42:31.756Z 2366c8fa-e354-42cb-a1ec-00f72b5ba342 Async handler: executing listener (9998211369848714_listener_s9rjmx)
+INFO    2026-09-05T17:42:32.457Z 2366c8fa-e354-42cb-a1ec-00f72b5ba342 Async handler: listener (9998211369848714_listener_s9rjmx) completed
+INFO    2026-09-05T17:42:35.248Z 90584a4f-2e08-428b-bea1-6bd30954d040 [listener] avi:jira:commented:issue: "campaignmtoo1tnz L05 Comment regex match" (lst_mtoo27hdek9m6d) skipped — comment does not match the pattern
+INFO    2026-09-05T17:42:35.298Z 90584a4f-2e08-428b-bea1-6bd30954d040 [listener] avi:jira:commented:issue: "campaignmtoo1tnz L06 Semantic refund gate" (lst_mtoo27wn1a95d5) skipped — comment does not match the pattern
+INFO    2026-09-05T17:42:35.349Z 90584a4f-2e08-428b-bea1-6bd30954d040 [listener] avi:jira:commented:issue: "campaignmtoo1tnz L07 Runtime AI actions" (lst_mtoo28advfwi2m) skipped — comment does not match the pattern
+INFO    2026-09-05T17:42:35.914Z 90584a4f-2e08-428b-bea1-6bd30954d040 [listener] avi:jira:commented:issue: "campaignmtoo1tnz L20 Failure stops following steps" (lst_mtoo2di76yrm4x) queued as 9998211369844360_listener_vx94p4 for LZPT-284
+INFO    2026-09-05T17:42:36.041Z 90584a4f-2e08-428b-bea1-6bd30954d040 [listener] avi:jira:commented:issue: "campaignmtoo1tnz L21 Simulation records no write" (lst_mtoo2dwsucu3x7) skipped — comment does not match the pattern
+INFO    2026-09-05T17:42:36.042Z 90584a4f-2e08-428b-bea1-6bd30954d040 [listener] avi:jira:commented:issue: queued 1 run(s) in 855ms
+INFO    2026-09-05T17:42:36.135Z 80066809-ed1c-4b67-85a2-ddbe6454388e Async handler: executing listener (9998211369844360_listener_vx94p4)
+ERROR   2026-09-05T17:42:37.243Z 80066809-ed1c-4b67-85a2-ddbe6454388e Static PF Expected deliberate failure error: Error: campaignmtoo1tnz-expected-failure
+    at eval (eval at runSandboxSteps (/var/task/async-handler.cjs:22291:175), <anonymous>:3:7)
+    at Module.runSandboxSteps (webpack://forge-ai-workflow-validator/src/index.js:15072:25)
+    at runListener (webpack://forge-ai-workflow-validator/src/listeners.js:555:21)
+    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+    at async executeListenerTask (webpack://forge-ai-workflow-validator/src/listeners.js:587:11)
+    at async Object.handler (webpack://forge-ai-workflow-validator/src/async-handler.js:888:20)
+    at async /mnt/wrapper/wrapper_v22_100.cjs:2:1202816
+INFO    2026-09-05T17:42:37.969Z 80066809-ed1c-4b67-85a2-ddbe6454388e Async handler: listener (9998211369844360_listener_vx94p4) completed
+INFO    2026-09-05T17:42:38.324Z c59b2aef-161a-4bce-a57e-cd1513d211a9 [listener] avi:jira:updated:issue: "campaignmtoo1tnz L02 Summary and type filter" (lst_mtoo263ibv7cl8) skipped — self-generated event ignored
+INFO    2026-09-05T17:42:38.378Z c59b2aef-161a-4bce-a57e-cd1513d211a9 [listener] avi:jira:updated:issue: "campaignmtoo1tnz L03 Priority change context" (lst_mtoo26lwzx52xs) skipped — self-generated event ignored
+INFO    2026-09-05T17:42:39.488Z ca4d7cbd-2cc5-4245-a5c6-14d640acc0e5 [listener] avi:jira:commented:issue: "campaignmtoo1tnz L05 Comment regex match" (lst_mtoo27hdek9m6d) skipped — comment does not match the pattern
+INFO    2026-09-05T17:42:39.571Z ca4d7cbd-2cc5-4245-a5c6-14d640acc0e5 [listener] avi:jira:commented:issue: "campaignmtoo1tnz L06 Semantic refund gate" (lst_mtoo27wn1a95d5) skipped — comment does not match the pattern
+INFO    2026-09-05T17:42:39.619Z ca4d7cbd-2cc5-4245-a5c6-14d640acc0e5 [listener] avi:jira:commented:issue: "campaignmtoo1tnz L07 Runtime AI actions" (lst_mtoo28advfwi2m) skipped — comment does not match the pattern
+INFO    2026-09-05T17:42:39.702Z ca4d7cbd-2cc5-4245-a5c6-14d640acc0e5 [listener] avi:jira:commented:issue: "campaignmtoo1tnz L20 Failure stops following steps" (lst_mtoo2di76yrm4x) skipped — comment does not match the pattern
+INFO    2026-09-05T17:42:40.313Z ca4d7cbd-2cc5-4245-a5c6-14d640acc0e5 [listener] avi:jira:commented:issue: "campaignmtoo1tnz L21 Simulation records no write" (lst_mtoo2dwsucu3x7) queued as 9998211369839964_listener_yww500 for LZPT-284
+INFO    2026-09-05T17:42:40.416Z ca4d7cbd-2cc5-4245-a5c6-14d640acc0e5 [listener] avi:jira:commented:issue: queued 1 run(s) in 978ms
+INFO    2026-09-05T17:42:40.530Z f14e021a-a9e5-48b0-a2bd-b9413176d00f Async handler: executing listener (9998211369839964_listener_yww500)
+INFO    2026-09-05T17:42:40.936Z f14e021a-a9e5-48b0-a2bd-b9413176d00f Async handler: listener (9998211369839964_listener_yww500) completed
+INFO    2026-09-05T17:42:43.979Z ede36088-4fed-438f-b00d-138383a4fdba [listener] avi:jira:commented:issue: "campaignmtoo1tnz L05 Comment regex match" (lst_mtoo27hdek9m6d) skipped — comment does not match the pattern
+INFO    2026-09-05T17:42:44.030Z ede36088-4fed-438f-b00d-138383a4fdba [listener] avi:jira:commented:issue: "campaignmtoo1tnz L06 Semantic refund gate" (lst_mtoo27wn1a95d5) skipped — comment does not match the pattern
+INFO    2026-09-05T17:42:44.084Z ede36088-4fed-438f-b00d-138383a4fdba [listener] avi:jira:commented:issue: "campaignmtoo1tnz L07 Runtime AI actions" (lst_mtoo28advfwi2m) skipped — comment does not match the pattern
+INFO    2026-09-05T17:42:44.140Z ede36088-4fed-438f-b00d-138383a4fdba [listener] avi:jira:commented:issue: "campaignmtoo1tnz L20 Failure stops following steps" (lst_mtoo2di76yrm4x) skipped — comment does not match the pattern
+INFO    2026-09-05T17:42:44.195Z ede36088-4fed-438f-b00d-138383a4fdba [listener] avi:jira:commented:issue: "campaignmtoo1tnz L21 Simulation records no write" (lst_mtoo2dwsucu3x7) skipped — comment does not match the pattern
+INFO    2026-09-05T17:43:28.014Z 4ade8a5b-309c-491d-ba89-0484ac182354 [listener] avi:jira:commented:issue: "campaignmtoo1tnz L05 Comment regex match" (lst_mtoo27hdek9m6d) skipped — comment does not match the pattern
+INFO    2026-09-05T17:43:28.074Z 4ade8a5b-309c-491d-ba89-0484ac182354 [listener] avi:jira:commented:issue: "campaignmtoo1tnz L06 Semantic refund gate" (lst_mtoo27wn1a95d5) skipped — comment does not match the pattern
+INFO    2026-09-05T17:43:28.133Z 4ade8a5b-309c-491d-ba89-0484ac182354 [listener] avi:jira:commented:issue: "campaignmtoo1tnz L07 Runtime AI actions" (lst_mtoo28advfwi2m) skipped — comment does not match the pattern
+INFO    2026-09-05T17:43:28.182Z 4ade8a5b-309c-491d-ba89-0484ac182354 [listener] avi:jira:commented:issue: "campaignmtoo1tnz L20 Failure stops following steps" (lst_mtoo2di76yrm4x) skipped — comment does not match the pattern
+INFO    2026-09-05T17:43:28.274Z 4ade8a5b-309c-491d-ba89-0484ac182354 [listener] avi:jira:commented:issue: "campaignmtoo1tnz L21 Simulation records no write" (lst_mtoo2dwsucu3x7) skipped — comment does not match the pattern
+INFO    2026-09-05T17:43:28.905Z 4ade8a5b-309c-491d-ba89-0484ac182354 [listener] avi:jira:commented:issue: "campaignmtoo1tnz L22 Disabled then enabled" (lst_mtoo2eax95qrbq) queued as 9998211369791414_listener_txqtxl for LZPT-284
+INFO    2026-09-05T17:43:28.988Z 4ade8a5b-309c-491d-ba89-0484ac182354 [listener] avi:jira:commented:issue: queued 1 run(s) in 1089ms
+INFO    2026-09-05T17:43:29.197Z 3d0afaaa-45c5-4bed-a338-dfec2872b874 Async handler: executing listener (9998211369791414_listener_txqtxl)
+INFO    2026-09-05T17:43:30.175Z 3d0afaaa-45c5-4bed-a338-dfec2872b874 Async handler: listener (9998211369791414_listener_txqtxl) completed
+INFO    2026-09-05T17:44:02.291Z c8eadc14-7290-46ac-93ea-99956fb185bf getConfigs orphan summary: {"checked":455,"retained":455,"removed":0,"workflows":5,"failedWorkflows":0,"partial":false,"removedExamples":[],"errorExamples":[]}
+INFO    2026-09-05T17:44:02.366Z c8eadc14-7290-46ac-93ea-99956fb185bf getConfigs filter="all" role=admin scope=all total=455 shown=455
+INFO    2026-09-05T17:46:00.084Z dfefa43d-c113-4f35-b52d-2002ef9f1d8e getConfigs orphan summary: {"checked":455,"retained":455,"removed":0,"workflows":5,"failedWorkflows":0,"partial":false,"removedExamples":[],"errorExamples":[]}
+INFO    2026-09-05T17:46:00.138Z dfefa43d-c113-4f35-b52d-2002ef9f1d8e getConfigs filter="all" role=admin scope=all total=455 shown=455
+INFO    2026-09-05T17:46:01.687Z b1cd8501-eea2-4291-9493-46fc6290470a [job] tick: 12 job(s), 0 due, 0 queued in 169ms
+INFO    2026-09-05T17:46:39.014Z 3f6f1013-3589-46a5-9b11-53f7567939a0 [listener] avi:jira:created:attachment: "campaignmtoo1tnz L13 Attachment created identity" (lst_mtoo2aqkezki4q) queued as 9998211369601302_listener_pybjfs for LZPT-285
+INFO    2026-09-05T17:46:39.108Z 3f6f1013-3589-46a5-9b11-53f7567939a0 [listener] avi:jira:created:attachment: queued 1 run(s) in 1064ms
+INFO    2026-09-05T17:46:39.376Z 2cbd6f09-c17a-4a7e-a8e2-a1306d9a28e6 Async handler: executing listener (9998211369601302_listener_pybjfs)
+INFO    2026-09-05T17:46:40.437Z 2cbd6f09-c17a-4a7e-a8e2-a1306d9a28e6 Async handler: listener (9998211369601302_listener_pybjfs) completed
+INFO    2026-09-05T17:46:43.914Z 963e0f15-a966-46a3-9f6b-7eaea9df4389 [listener] avi:jira:deleted:attachment: "campaignmtoo1tnz L14 Attachment deleted identity" (lst_mtoo2b4y1ewap9) queued as 9998211369596352_listener_q71atv for LZPT-285
+INFO    2026-09-05T17:46:43.988Z 963e0f15-a966-46a3-9f6b-7eaea9df4389 [listener] avi:jira:deleted:attachment: queued 1 run(s) in 852ms
+INFO    2026-09-05T17:46:44.110Z 97a82493-0567-4373-93c3-0ee539932723 Async handler: executing listener (9998211369596352_listener_q71atv)
+INFO    2026-09-05T17:46:44.844Z 97a82493-0567-4373-93c3-0ee539932723 Async handler: listener (9998211369596352_listener_q71atv) completed
+INFO    2026-09-05T17:46:48.487Z 85358b0c-ef0f-4f70-a3cd-776fce8d823e [listener] avi:jira:commented:issue: "campaignmtoo1tnz L20 Partial failure continues later steps" (lst_mtoo2di76yrm4x) queued as 9998211369592048_listener_nsf0ds for LZPT-284
+INFO    2026-09-05T17:46:48.579Z 85358b0c-ef0f-4f70-a3cd-776fce8d823e [listener] avi:jira:commented:issue: queued 1 run(s) in 959ms
+INFO    2026-09-05T17:46:48.710Z f9b78fe8-e286-4426-94a0-205219928f2c Async handler: executing listener (9998211369592048_listener_nsf0ds)
+ERROR   2026-09-05T17:46:48.998Z f9b78fe8-e286-4426-94a0-205219928f2c Static PF Expected deliberate failure error: Error: campaignmtoo1tnz-expected-failure
+    at eval (eval at runSandboxSteps (/var/task/async-handler.cjs:22291:175), <anonymous>:3:7)
+    at Module.runSandboxSteps (webpack://forge-ai-workflow-validator/src/index.js:15072:25)
+    at runListener (webpack://forge-ai-workflow-validator/src/listeners.js:555:21)
+    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+    at async executeListenerTask (webpack://forge-ai-workflow-validator/src/listeners.js:587:11)
+    at async Object.handler (webpack://forge-ai-workflow-validator/src/async-handler.js:888:20)
+    at async /mnt/wrapper/wrapper_v22_100.cjs:2:1202816
+INFO    2026-09-05T17:46:49.761Z f9b78fe8-e286-4426-94a0-205219928f2c Async handler: listener (9998211369592048_listener_nsf0ds) completed
+INFO    2026-09-05T17:47:33.241Z 3cfbf1ba-2bf2-4df5-8174-f12fe1ae24b8 Async handler: executing scheduledjob (9998211369547216_scheduledjob_hkppfa)
+INFO    2026-09-05T17:47:34.131Z 3cfbf1ba-2bf2-4df5-8174-f12fe1ae24b8 Async handler: scheduledjob (9998211369547216_scheduledjob_hkppfa) completed
+INFO    2026-09-05T17:47:35.127Z 0435c20b-82c5-4917-aa8b-d3814406af93 getConfigs orphan summary: {"checked":455,"retained":455,"removed":0,"workflows":5,"failedWorkflows":0,"partial":false,"removedExamples":[],"errorExamples":[]}
+INFO    2026-09-05T17:47:35.259Z 0435c20b-82c5-4917-aa8b-d3814406af93 getConfigs filter="all" role=admin scope=all total=455 shown=455
+INFO    2026-09-05T17:47:38.012Z dbba14b2-5878-4e63-8118-e29df49cb022 Async handler: executing scheduledjob (9998211369542540_scheduledjob_bsmrop)
+INFO    2026-09-05T17:47:39.197Z dbba14b2-5878-4e63-8118-e29df49cb022 Async handler: scheduledjob (9998211369542540_scheduledjob_bsmrop) completed
+INFO    2026-09-05T17:47:43.041Z de34997b-d5cc-4572-8ffc-acdadd515db1 Async handler: executing scheduledjob (9998211369537508_scheduledjob_llsggl)
+INFO    2026-09-05T17:47:44.285Z de34997b-d5cc-4572-8ffc-acdadd515db1 Async handler: scheduledjob (9998211369537508_scheduledjob_llsggl) completed
+INFO    2026-09-05T17:47:47.852Z 73db9357-a6bd-48cc-8e30-7f116a169c3e Async handler: executing scheduledjob (9998211369532632_scheduledjob_czwanl)
+INFO    2026-09-05T17:47:48.528Z 73db9357-a6bd-48cc-8e30-7f116a169c3e Async handler: scheduledjob (9998211369532632_scheduledjob_czwanl) completed
+INFO    2026-09-05T17:47:52.362Z 0e894504-8c6e-4895-9232-4fbb636c1767 Async handler: executing scheduledjob (9998211369528142_scheduledjob_lwlksh)
+INFO    2026-09-05T17:47:53.053Z 0e894504-8c6e-4895-9232-4fbb636c1767 Async handler: scheduledjob (9998211369528142_scheduledjob_lwlksh) completed
+INFO    2026-09-05T17:47:57.029Z 556c3a1c-0a2f-4a39-bbc8-2a4e99c63bd1 Async handler: executing scheduledjob (9998211369523614_scheduledjob_xqwnw9)
+ERROR   2026-09-05T17:47:57.967Z 556c3a1c-0a2f-4a39-bbc8-2a4e99c63bd1 Static PF Fail only middle issue error: Error: campaignmtoo1tnz-partial-expected
+    at eval (eval at runSandboxSteps (/var/task/async-handler.cjs:22291:175), <anonymous>:3:44)
+    at Module.runSandboxSteps (webpack://forge-ai-workflow-validator/src/index.js:15072:25)
+    at runOne (webpack://forge-ai-workflow-validator/src/scheduled-jobs.js:327:23)
+    at runJob (webpack://forge-ai-workflow-validator/src/scheduled-jobs.js:354:21)
+    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+    at async executeScheduledJobTask (webpack://forge-ai-workflow-validator/src/scheduled-jobs.js:389:11)
+    at async Object.handler (webpack://forge-ai-workflow-validator/src/async-handler.js:888:20)
+    at async /mnt/wrapper/wrapper_v22_100.cjs:2:1202816
+INFO    2026-09-05T17:47:58.479Z 556c3a1c-0a2f-4a39-bbc8-2a4e99c63bd1 Async handler: scheduledjob (9998211369523614_scheduledjob_xqwnw9) completed
+INFO    2026-09-05T17:48:01.880Z c0590a7a-7032-41b0-a106-27b3cc0b8ba1 Async handler: executing scheduledjob (9998211369518556_scheduledjob_19c9kn)
+INFO    2026-09-05T17:48:02.582Z c0590a7a-7032-41b0-a106-27b3cc0b8ba1 Async handler: scheduledjob (9998211369518556_scheduledjob_19c9kn) completed
+INFO    2026-09-05T17:48:07.428Z 7117c511-c290-425c-837c-cbda2fa2a0fe Async handler: executing scheduledjob (9998211369513638_scheduledjob_dkfjuz)
+ERROR   2026-09-05T17:48:07.735Z 7117c511-c290-425c-837c-cbda2fa2a0fe Static PF No implicit target error: Error: api.addComment() needs a current issue, but this job run has none (api.context.issueKey is null). Use api.forIssue("KEY").addComment(...) to target an issue explicitly.
+    at Object.this_api.<computed> (webpack://forge-ai-workflow-validator/src/index.js:14927:17)
+    at eval (eval at runSandboxSteps (/var/task/async-handler.cjs:22291:175), <anonymous>:3:11)
+    at Module.runSandboxSteps (webpack://forge-ai-workflow-validator/src/index.js:15072:25)
+    at runOne (webpack://forge-ai-workflow-validator/src/scheduled-jobs.js:327:23)
+    at runJob (webpack://forge-ai-workflow-validator/src/scheduled-jobs.js:332:21)
+    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+    at async executeScheduledJobTask (webpack://forge-ai-workflow-validator/src/scheduled-jobs.js:389:11)
+    at async Object.handler (webpack://forge-ai-workflow-validator/src/async-handler.js:888:20)
+    at async /mnt/wrapper/wrapper_v22_100.cjs:2:1202816
+INFO    2026-09-05T17:48:08.100Z 7117c511-c290-425c-837c-cbda2fa2a0fe Async handler: scheduledjob (9998211369513638_scheduledjob_dkfjuz) completed
+INFO    2026-09-05T17:48:11.400Z db883252-c0be-430e-b1da-664a96dbfea5 Async handler: executing scheduledjob (9998211369509066_scheduledjob_1e9qcv)
+INFO    2026-09-05T17:48:16.361Z db883252-c0be-430e-b1da-664a96dbfea5 Async handler: scheduledjob (9998211369509066_scheduledjob_1e9qcv) completed
+INFO    2026-09-05T17:48:19.924Z 509f5019-c14c-4444-ac60-bb3d462de78d Async handler: executing scheduledjob (9998211369500916_scheduledjob_rlhe4z)
+INFO    2026-09-05T17:48:24.934Z 509f5019-c14c-4444-ac60-bb3d462de78d Async handler: scheduledjob (9998211369500916_scheduledjob_rlhe4z) completed
+INFO    2026-09-05T17:49:53.109Z cba9c66e-19d8-4eca-8a0f-d27b87fc8dc1 getConfigs orphan summary: {"checked":455,"retained":455,"removed":0,"workflows":5,"failedWorkflows":0,"partial":false,"removedExamples":[],"errorExamples":[]}
+INFO    2026-09-05T17:49:53.174Z cba9c66e-19d8-4eca-8a0f-d27b87fc8dc1 getConfigs filter="all" role=admin scope=all total=455 shown=455
+INFO    2026-09-05T17:51:03.756Z 4a1da989-f244-4be7-b8a4-5a5b81c6a9b3 Async handler: executing scheduledjob (9998211369337076_scheduledjob_bnjfti)
+INFO    2026-09-05T17:51:04.787Z 4a1da989-f244-4be7-b8a4-5a5b81c6a9b3 Async handler: scheduledjob (9998211369337076_scheduledjob_bnjfti) completed
+INFO    2026-09-05T17:51:04.959Z 29120642-31fd-46a7-ae5d-abe86fb2d970 Async handler: executing scheduledjob (9998211369336582_scheduledjob_tmhqr6)
+INFO    2026-09-05T17:51:04.988Z ed2bce17-ae95-4d3e-9eb7-4f66a18ac55f Async handler: executing scheduledjob (9998211369335608_scheduledjob_ci1qf7)
+INFO    2026-09-05T17:51:05.623Z ed2bce17-ae95-4d3e-9eb7-4f66a18ac55f Async handler: scheduledjob (9998211369335608_scheduledjob_ci1qf7) completed
+INFO    2026-09-05T17:51:05.649Z 49bb40d0-827d-408c-b514-153341a4f733 Async handler: executing scheduledjob (9998211369334856_scheduledjob_jc4in7)
+INFO    2026-09-05T17:51:06.076Z 96363ea0-c6b5-4178-8ff9-bc489a825f27 Async handler: executing scheduledjob (9998211369336240_scheduledjob_c0irsm)
+ERROR   2026-09-05T17:51:06.480Z 49bb40d0-827d-408c-b514-153341a4f733 Static PF Fail only middle issue error: Error: campaignmtoo1tnz-partial-expected
+    at eval (eval at runSandboxSteps (/var/task/async-handler.cjs:22291:175), <anonymous>:3:44)
+    at Module.runSandboxSteps (webpack://forge-ai-workflow-validator/src/index.js:15072:25)
+    at runOne (webpack://forge-ai-workflow-validator/src/scheduled-jobs.js:327:23)
+    at runJob (webpack://forge-ai-workflow-validator/src/scheduled-jobs.js:354:21)
+    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+    at async executeScheduledJobTask (webpack://forge-ai-workflow-validator/src/scheduled-jobs.js:389:11)
+    at async Object.handler (webpack://forge-ai-workflow-validator/src/async-handler.js:888:20)
+    at async /mnt/wrapper/wrapper_v22_100.cjs:2:1202816
+INFO    2026-09-05T17:51:06.664Z 031b5ff8-1678-4d61-8609-3bf849a8ab8f Async handler: executing scheduledjob (9998211369335242_scheduledjob_on9920)
+INFO    2026-09-05T17:51:06.808Z b093558f-5c87-4742-9915-ef933623e382 [job] tick: 12 job(s), 10 due, 10 queued in 4828ms
+INFO    2026-09-05T17:51:06.932Z 49bb40d0-827d-408c-b514-153341a4f733 Async handler: scheduledjob (9998211369334856_scheduledjob_jc4in7) completed
+INFO    2026-09-05T17:51:06.996Z c048f9cd-fd33-4b43-8b59-001c242a9f11 Async handler: executing scheduledjob (9998211369333450_scheduledjob_183qxd)
+INFO    2026-09-05T17:51:07.124Z c7751a8d-5ca9-44e8-a79a-a42e2de18e26 Async handler: executing scheduledjob (9998211369334504_scheduledjob_jzbmsb)
+INFO    2026-09-05T17:51:07.127Z 29120642-31fd-46a7-ae5d-abe86fb2d970 Async handler: scheduledjob (9998211369336582_scheduledjob_tmhqr6) completed
+INFO    2026-09-05T17:51:07.706Z 8eb8226a-66bf-4163-b176-579c7f728da9 Async handler: executing scheduledjob (9998211369334148_scheduledjob_57y1yb)
+INFO    2026-09-05T17:51:08.071Z 031b5ff8-1678-4d61-8609-3bf849a8ab8f Async handler: scheduledjob (9998211369335242_scheduledjob_on9920) completed
+INFO    2026-09-05T17:51:08.099Z 96363ea0-c6b5-4178-8ff9-bc489a825f27 Async handler: scheduledjob (9998211369336240_scheduledjob_c0irsm) completed
+INFO    2026-09-05T17:51:08.145Z b3c08a36-7fec-490c-89d5-81f515717ef3 Async handler: executing scheduledjob (9998211369333802_scheduledjob_ejsfsq)
+INFO    2026-09-05T17:51:08.659Z c7751a8d-5ca9-44e8-a79a-a42e2de18e26 Async handler: scheduledjob (9998211369334504_scheduledjob_jzbmsb) completed
+ERROR   2026-09-05T17:51:09.184Z 8eb8226a-66bf-4163-b176-579c7f728da9 Static PF No implicit target error: Error: api.addComment() needs a current issue, but this job run has none (api.context.issueKey is null). Use api.forIssue("KEY").addComment(...) to target an issue explicitly.
+    at Object.this_api.<computed> (webpack://forge-ai-workflow-validator/src/index.js:14927:17)
+    at eval (eval at runSandboxSteps (/var/task/async-handler.cjs:22291:175), <anonymous>:3:11)
+    at Module.runSandboxSteps (webpack://forge-ai-workflow-validator/src/index.js:15072:25)
+    at runOne (webpack://forge-ai-workflow-validator/src/scheduled-jobs.js:327:23)
+    at runJob (webpack://forge-ai-workflow-validator/src/scheduled-jobs.js:332:21)
+    at process.processTicksAndRejections (node:internal/process/task_queues:103:5)
+    at async executeScheduledJobTask (webpack://forge-ai-workflow-validator/src/scheduled-jobs.js:389:11)
+    at async Object.handler (webpack://forge-ai-workflow-validator/src/async-handler.js:888:20)
+    at async /mnt/wrapper/wrapper_v22_10.cjs:2:1202816
+INFO    2026-09-05T17:51:09.595Z 8eb8226a-66bf-4163-b176-579c7f728da9 Async handler: scheduledjob (9998211369334148_scheduledjob_57y1yb) completed
+INFO    2026-09-05T17:51:11.901Z c048f9cd-fd33-4b43-8b59-001c242a9f11 Async handler: scheduledjob (9998211369333450_scheduledjob_183qxd) completed
+INFO    2026-09-05T17:51:12.398Z cb95bec2-217a-4dfc-8929-939887fbe258 getConfigs orphan summary: {"checked":455,"retained":455,"removed":0,"workflows":5,"failedWorkflows":0,"partial":false,"removedExamples":[],"errorExamples":[]}
+INFO    2026-09-05T17:51:12.459Z cb95bec2-217a-4dfc-8929-939887fbe258 getConfigs filter="all" role=admin scope=all total=455 shown=455
+INFO    2026-09-05T17:51:13.681Z b3c08a36-7fec-490c-89d5-81f515717ef3 Async handler: scheduledjob (9998211369333802_scheduledjob_ejsfsq) completed

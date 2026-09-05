@@ -8935,7 +8935,7 @@ resolver.define("testPostFunction", async ({ payload }) => {
         targetError = `JQL search failed (${searchRes.status}). Correct the search before testing.`;
       }
     } catch (e) {
-      targetError = `JQL search error: ${e.message}`;
+      targetError = `JQL search error: ${sandboxErrorMessage(e)}`;
     }
   }
 
@@ -9004,7 +9004,7 @@ resolver.define("testPostFunction", async ({ payload }) => {
     };
   } catch (error) {
     collectSession();
-    testLogs.push("ERROR: " + error.message);
+    testLogs.push("ERROR: " + sandboxErrorMessage(error));
     return {
       success: false,
       mode,
@@ -14378,6 +14378,17 @@ const executeLinkIssuesPostFunction = async (issueKey, config, deadline = Date.n
   }
 };
 
+// JavaScript can throw any value. Reporting a failure must not itself fail and
+// abort later steps; user objects can also throw from message/toString access.
+const sandboxErrorMessage = (value) => {
+  try {
+    const message = value?.message;
+    if (message != null) return String(message) || "An error with an empty message was thrown.";
+  } catch { /* try the thrown value itself */ }
+  try { return String(value) || "An empty string was thrown."; }
+  catch { return "A non-Error value was thrown and could not be described."; }
+};
+
 // Names that cannot be AsyncFunction parameters (reserved words incl. strict-mode
 // and async-context ones). Chained values with these names stay reachable via vars[...].
 const SANDBOX_RESERVED_WORDS = new Set([
@@ -15094,38 +15105,39 @@ export const runSandboxSteps = async ({ issueKey: boundIssueKey = null, config =
       stepResults.push(stepTrace);
     } catch (error) {
       const stepMs = Date.now() - stepStart;
-      executionLogs.push(`"${fnName}": ERROR after ${stepMs}ms — ${error.message}`);
-      console.error(`Static PF ${fnName} error:`, error);
+      const errorMessage = sandboxErrorMessage(error);
+      executionLogs.push(`"${fnName}": ERROR after ${stepMs}ms — ${errorMessage}`);
+      console.error(`Static PF ${fnName} error:`, errorMessage);
 
       // Generate context-specific recommendation
       let rec;
-      if (error.message.includes("SyntaxError") || error.message.includes("Unexpected token")) {
+      if (errorMessage.includes("SyntaxError") || errorMessage.includes("Unexpected token")) {
         rec = `Code syntax error in "${fnName}". Check for missing semicolons, unclosed braces, or typos. Click "Regenerate Code" to fix.`;
-      } else if (error.message.includes("getIssue failed: 404")) {
+      } else if (errorMessage.includes("getIssue failed: 404")) {
         rec = `Issue not found. The issue key might be wrong or the issue was deleted. Check your code references api.context.issueKey.`;
-      } else if (error.message.includes("getIssue failed: 403")) {
+      } else if (errorMessage.includes("getIssue failed: 403")) {
         rec = `Permission denied reading issue. The app needs read:jira-work scope. Contact your Jira admin.`;
-      } else if (error.message.includes("updateIssue failed: 400")) {
+      } else if (errorMessage.includes("updateIssue failed: 400")) {
         rec = `Invalid field update — the error above names the rejected field and why. Common formats: text fields need strings, select fields {value: "..."}, cascading selects {value: "Parent", child: {value: "Child"}}, user fields {accountId: "..."}, dates "YYYY-MM-DD", rich text ADF documents (plain strings are auto-converted once).`;
-      } else if (error.message.includes("updateIssue failed")) {
+      } else if (errorMessage.includes("updateIssue failed")) {
         rec = `Failed to update issue. Check the field ID is correct and the app has write:jira-work permission.`;
-      } else if (error.message.includes("searchJql failed")) {
+      } else if (errorMessage.includes("searchJql failed")) {
         rec = `JQL search failed. Check your JQL syntax — common issues: unescaped quotes, invalid field names, missing project clause.`;
-      } else if (error.message.includes("transitionIssue failed")) {
+      } else if (errorMessage.includes("transitionIssue failed")) {
         rec = `Workflow transition failed. The transition ID might not be valid for the current issue state. Check available transitions in the workflow.`;
-      } else if (error.message.includes("is not defined")) {
-        const match = error.message.match(/(\w+) is not defined/);
+      } else if (errorMessage.includes("is not defined")) {
+        const match = errorMessage.match(/(\w+) is not defined/);
         rec = match
           ? `Variable "${match[1]}" is not defined. If it comes from a previous step, make sure that step has a Result Variable named "${match[1]}" and completed successfully.`
           : `A variable is not defined. Check your variable references match the Result Variable names from previous steps.`;
-      } else if (error.message.includes("Cannot read propert")) {
+      } else if (errorMessage.includes("Cannot read propert")) {
         rec = `Trying to read a property of null/undefined. Add a null check: if (value && value.property) { ... }. The issue or field might not exist.`;
       } else {
-        rec = `Error in "${fnName}": ${error.message}. Use api.log() to debug values, and Test Run with a real issue to trace the problem.`;
+        rec = `Error in "${fnName}": ${errorMessage}. Use api.log() to debug values, and Test Run with a real issue to trace the problem.`;
       }
 
       stepTrace.status = "error";
-      stepTrace.error = error.message;
+      stepTrace.error = errorMessage;
       stepTrace.timeMs = stepMs;
       stepTrace.recommendation = rec;
       stepResults.push(stepTrace);

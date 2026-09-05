@@ -8,7 +8,7 @@
 // Exercise the actual sandbox and workflow handler. Only Forge platform I/O is mocked.
 import "../lib/register-mocks-index.mjs";
 import assert from "node:assert/strict";
-const { runSandboxSteps, executePostFunction } = await import("../../src/index.js");
+const { runSandboxSteps, executePostFunction, handler } = await import("../../src/index.js");
 const { default: storage } = await import("@forge/kvs");
 const { default: jira, pushed } = await import("@forge/api");
 
@@ -141,6 +141,60 @@ await check("deadline skip reports its own recommendation instead of a preceding
     assert.match(result.recommendation, /earlier steps took too long/);
   } finally { Date.now = now; jira.__reset(); }
 });
+
+for (const [thrown, expected] of [
+  ['"plain first failure"', "plain first failure"],
+  ["null", "null"],
+  ["42", "42"],
+  ["undefined", "undefined"],
+  ['""', "An empty string was thrown."],
+  ["false", "false"],
+  ['Symbol("thrown")', "Symbol(thrown)"],
+  ['new Error("normal first failure")', "normal first failure"],
+  ["({ message: 42 })", "42"],
+  ['({ get message() { throw null; }, toString() { return "fallback text"; } })', "fallback text"],
+  ['({ get message() { throw null; }, toString() { throw 42; } })', "A non-Error value was thrown and could not be described."],
+]) {
+  await check(`workflow handler preserves throw ${thrown} and continues`, async () => {
+    storage.__reset(); pushed.length = 0;
+    storage.__seed("COGNIRUNNER_MEMORY_SETTINGS", { autoCapture: true });
+    const thrownFunctions = [
+      { name: "Thrown first failure", code: `throw ${thrown};` },
+      { name: "Later failure", code: 'throw new Error("later error");' },
+      { name: "Later success", code: 'await api.updateIssue({ labels: ["continued"] });' },
+    ];
+    const entries = [];
+    const set = storage.set;
+    storage.set = async (key, value, options) => {
+      if (key.startsWith("log_entry:")) entries.push(structuredClone(value));
+      return set(key, value, options);
+    };
+    try {
+      assert.deepEqual(await executePostFunction({ issue: { key: "TEST-1" }, context: {},
+        configuration: { type: "postfunction-static", simulationMode: true, functions: thrownFunctions } }), { result: true });
+      assert.equal(entries.length, 1);
+      assert.equal(entries[0].reason, `Failed at "Thrown first failure": ${expected}`);
+      assert.equal(entries[0].isValid, false);
+      assert.deepEqual(entries[0].stepResults.map((step) => step.status), ["error", "error", "success"]);
+      assert.equal(entries[0].stepResults[0].error, expected);
+      assert.equal(entries[0].recommendation, entries[0].stepResults[0].recommendation);
+      assert.equal(entries[0].changes, 1);
+      const params = pushed.find((event) => event.body.taskType === "memory_distill")?.body.params;
+      assert.equal(params?.error, expected);
+      assert.equal(params?.codeExcerpt, thrownFunctions[0].code);
+    } finally { storage.set = set; }
+  });
+  await check(`Test Run reports throw ${thrown} and preserves preceding changes`, async () => {
+    const result = await handler({ call: { functionKey: "testPostFunction", payload: {
+      issueKey: "TEST-1", code: `api.log("before throw"); await api.addComment("dry run"); throw ${thrown};`,
+    } }, context: {} }, {});
+    assert.equal(result.success, false);
+    assert.equal(result.logs.at(-1), `ERROR: ${expected}`);
+    assert.equal(result.logs.filter((line) => line === "before throw").length, 1);
+    assert.equal(result.changes.length, 1);
+    assert.equal(result.changes[0].simulated, true);
+  });
+}
 
 console.log(`Sandbox failure reporting: ${passed} passed, ${failed} failed`);
 // Production step timers remain pending after quick runs; avoid waiting for those

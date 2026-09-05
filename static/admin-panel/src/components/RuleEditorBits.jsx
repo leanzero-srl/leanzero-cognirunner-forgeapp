@@ -106,6 +106,8 @@ export function RunResultView({ result, title = "Result" }) {
   if (!result) return null;
   const skipped = isSkippedLog(result);
   const ok = !skipped && (result.isValid === true || result.success === true);
+  // Manual runs expose issues; saved scoped-job logs retain the same outcomes as perIssue.
+  const issues = Array.isArray(result.issues) ? result.issues : result.perIssue;
   return (
     <div className={`runres ${ok ? "runres-ok" : skipped ? "runres-skip" : "runres-err"}`}>
       <div className="runres-head">
@@ -119,8 +121,8 @@ export function RunResultView({ result, title = "Result" }) {
       {result.testNote && <details className="runres-details"><summary>Test context</summary><div className="runres-reason">{result.testNote}</div></details>}
       {result.gate && <div className="runres-gate">AI condition: <strong>{result.gate.match ? "met" : "not met"}</strong> — {result.gate.reason}</div>}
       {result.recommendation && <div className="runres-rec">{result.recommendation}</div>}
-      {Array.isArray(result.issues) && result.issues.length > 0 && (
-        <div className="runres-issues">{result.issues.map((i) => <span key={i.key} className={`runres-issue ${i.success ? "ok" : "err"}`} title={i.reason}>{i.key}</span>)}</div>
+      {Array.isArray(issues) && issues.length > 0 && (
+        <div className="runres-issues">{issues.map((i) => <span key={i.key} className={`runres-issue ${i.success ? "ok" : "err"}`} title={i.reason}>{i.key}</span>)}</div>
       )}
       {Array.isArray(result.toolCalls) && result.toolCalls.length > 0 && (
         <div className="runres-tools">{result.toolCalls.map((t, i) => <span key={i} className={`runres-tool ${t.ok ? "" : "err"}`}>{t.name}</span>)}</div>

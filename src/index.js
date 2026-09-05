@@ -14443,9 +14443,15 @@ export const createSandboxSession = ({ issueKey: boundIssueKey = null, config = 
   // Simulation mode: reads stay live, writes are recorded but never executed.
   const simulated = config.simulationMode === true;
   let simulatedIssueCount = 0;
+  const simulatedIssuePrefix = `CGRSIM_${randomBytes(6).toString("hex").toUpperCase()}`;
+  const simulatedIssueKeys = new Set();
   // A staged issue has an identity, but no Jira record to read. Never return an
   // absent key that key-optional helpers would reinterpret as the current issue.
-  const simulatedIssueKey = () => `__COGNIRUNNER_SIMULATED_ISSUE_${++simulatedIssueCount}__`;
+  const simulatedIssueKey = () => {
+    const key = `${simulatedIssuePrefix}-${++simulatedIssueCount}`;
+    simulatedIssueKeys.add(key);
+    return key;
+  };
   // Build API surface for sandbox.
   // F12: shadow the Jira client inside createApi with a transient-retry wrapper so
   // EVERY sandbox REST call (updateIssue, editIssue, transitionIssue, addComment,
@@ -14471,7 +14477,8 @@ export const createSandboxSession = ({ issueKey: boundIssueKey = null, config = 
     const TRANSIENT_REST = [429, 502, 503, 504];
     const retryingRequestJira = async (routeArg, opts) => {
       const requestPath = typeof routeArg === "string" ? routeArg : routeArg?.value;
-      if (simulated && String(requestPath).includes("__COGNIRUNNER_SIMULATED_ISSUE_")) {
+      const requestIssue = String(requestPath).match(/\/issue\/([^/?#]+)/)?.[1];
+      if (simulated && requestIssue && simulatedIssueKeys.has(decodeURIComponent(requestIssue).toUpperCase())) {
         throw new Error("Cannot read an issue created only in simulation. Its key can be used for staged writes, but Jira has no record to read until a real run creates it.");
       }
       // KILL SWITCH (write boundary). Every sandbox WRITE funnels through here,

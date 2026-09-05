@@ -9,9 +9,9 @@ fs.mkdirSync(out, { recursive: true });
 const tag = "cgr-workflow-" + Date.now().toString(36), evidence = { tag, checks: [], cleanup: [] };
 let browser, key;
 try {
-  const types = await get("/rest/api/3/issue/createmeta/LZPT/issuetypes?maxResults=100");
+  const types = await get("/rest/api/3/issue/createmeta/JT/issuetypes?maxResults=100");
   const type = (types.issueTypes || types.values).find(t => !t.subtask);
-  key = (await post("/rest/api/3/issue", { fields: { project: { key: "LZPT" }, issuetype: { id: type.id }, summary: tag, labels: [tag] } })).key;
+  key = (await post("/rest/api/3/issue", { fields: { project: { key: "JT" }, issuetype: { id: type.id }, summary: tag, labels: [tag] } })).key;
   await put(`/rest/api/3/issue/${key}/properties/${tag}`, { exists: true });
   const fields = ["summary", "labels", "assignee", "comment", "status"];
   const before = await getIssue(key, fields), me = await getMyself();
@@ -23,7 +23,7 @@ try {
   await page.goto(`${BASE}/jira/apps/36415848-6868-4697-9554-3c3ad87b8da9/989ecaa0-261b-406e-b444-78c01c0d7772`, { waitUntil: "domcontentloaded" });
   const frame = page.frameLocator('iframe').first();
   await frame.getByRole("button", { name: "+ Add Rule", exact: true }).click({ timeout: 60000 });
-  await frame.getByRole("button").filter({ hasText: "LZPT" }).click();
+  await frame.getByRole("button").filter({ hasText: /JT$/ }).click();
   await frame.locator("label", { hasText: /^Workflow$/ }).locator("..").getByRole("button").first().click();
   await frame.locator("label", { hasText: /^Transition$/ }).locator("..").getByRole("button").first().click();
   await frame.getByRole("button", { name: /Static Post Function/ }).click();
@@ -49,15 +49,15 @@ try {
   };
   await run("null context remains null", "if (api.context.issueKey !== null) throw Error('invented issue'); return 'null context retained';", true, /null context retained/);
   await run("null issue-bound action fails", "await api.addComment('must never write');", false, /needs a current issue/);
-  await run("failed live read is visible", "await api.getIssue('LZPT-999999999');", false, /404|not found|does not exist/i);
+  await run("failed live read is visible", "await api.getIssue('JT-999999999');", false, /404|not found|does not exist/i);
   await run("invalid context JQL fails", "return 'must not run';", false, /JQL|400|Error/i, "this is invalid JQL (");
-  await run("empty context JQL fails", "return 'must not run';", false, /no issues|no.*match|zero/i, "project = LZPT AND key = LZPT-999999999");
+  await run("empty context JQL fails", "return 'must not run';", false, /no issues|no.*match|zero/i, "project = JT AND key = JT-999999999");
   await run("empty transition rejected", "await api.transitionIssue('');", false, /transition.*id|non-empty/i, key);
   await run("real property gate", `const value = await api.getProperty('${tag}'); if (!value?.exists) throw Error('property missing'); return 'property gate retained';`, true, /property gate retained/, key);
   await run("full API stages writes", `await api.forIssue('${key}').setAssignee('${me.accountId}'); await api.forIssue('${key}').addLabels('${tag}-sim'); await api.forIssue('${key}').addComment('never written'); await api.forIssue('${key}').setProperty('${tag}',{exists:false}); return 'all writes staged';`, true, /all writes staged/);
   const transition = transitions[0];
   await run("transition name lookup and extra fields", `await api.transitionByName(${JSON.stringify(transition.name)}); await api.transitionIssue('${transition.id}',{fields:{summary:'never written'},update:{labels:[{add:'never-written'}]}}); return 'transitions staged';`, true, /transitions staged/, key);
-  await run("created and cloned targets remain distinct", `const a=await api.createIssue({project:{key:'LZPT'},issuetype:{id:'${type.id}'},summary:'staged child'}); const b=await api.cloneIssue(); if(!a.key||!b.key||a.key===b.key||a.key===api.context.issueKey) throw Error('wrong staged identity'); await api.updateIssue(a.key,{labels:['child']}); await api.forIssue(b.key).addLabels('clone'); return 'distinct staged targets';`, true, /distinct staged targets/, key);
+  await run("created and cloned targets remain distinct", `const a=await api.createIssue({project:{key:'JT'},issuetype:{id:'${type.id}'},summary:'staged child'}); const b=await api.cloneIssue(); if(!a.key||!b.key||a.key===b.key||a.key===api.context.issueKey) throw Error('wrong staged identity'); await api.updateIssue(a.key,{labels:['child']}); await api.forIssue(b.key).addLabels('clone'); return 'distinct staged targets';`, true, /distinct staged targets/, key);
   for (const theme of ["light", "dark"]) {
     await frame.locator("html").evaluate((html, theme) => { html.setAttribute("data-color-mode", theme); html.setAttribute("data-theme", `${theme}:${theme}`); }, theme);
     await frame.locator(".test-panel").screenshot({ path: out + `workflow-${theme}.png` });

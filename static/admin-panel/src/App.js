@@ -2522,6 +2522,7 @@ const injectStyles = () => {
     .lst-sample { margin-top: 12px; }
     .lst-empty { padding: 40px 24px; }
     .lst-empty-title { font-size: 15px; font-weight: 700; color: var(--text-color); margin-bottom: 8px; }
+    .lst-table-scroll { overflow-x: auto; }
     .lst-table td { vertical-align: middle; }
     .lst-row-off .lst-name { color: var(--text-muted); }
     .lst-name { font-weight: 600; margin-right: 8px; }

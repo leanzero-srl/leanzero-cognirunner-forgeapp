@@ -235,7 +235,7 @@ export default function JobsTab({ invoke, isAdmin, userRole }) {
       <p className="hint">Run now executes the saved job, including real Jira writes. Jobs marked DRY-RUN record writes instead.</p>
       {loadError && <div className="alert alert-warning">{loadError}</div>}
       {runResult && !draft && <div className="card lst-card lst-test"><RunResultView result={runResult} title="Run now" /></div>}
-      <div className="card">
+      <div className="card lst-table-scroll" role="region" aria-label="Scheduled jobs table" tabIndex={0}>
         {loading ? (
           <div className="empty-state">Loading scheduled jobs…</div>
         ) : filtered.length === 0 ? (

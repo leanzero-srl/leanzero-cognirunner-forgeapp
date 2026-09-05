@@ -310,7 +310,7 @@ export default function ListenersTab({ invoke, isAdmin, userRole, siteUrl, route
         </div>
       </div>
       {loadError && <div className="alert alert-warning">{loadError}</div>}
-      <div className="card">
+      <div className="card lst-table-scroll" role="region" aria-label="Listeners table" tabIndex={0}>
         {loading ? (
           <div className="empty-state">Loading listeners…</div>
         ) : filtered.length === 0 ? (

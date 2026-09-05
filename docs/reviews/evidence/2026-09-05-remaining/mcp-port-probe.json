@@ -1,0 +1,34 @@
+{
+  "original": {
+    "success": true,
+    "url": "https://worksmacstudio.tailfc4700.ts.net/docproc/mcp",
+    "hasBearer": true
+  },
+  "current": {
+    "success": true,
+    "ok": false,
+    "tools": [],
+    "error": "Reachable but returned no tools (HTTP 502). Check the URL and credentials."
+  },
+  "saved": {
+    "success": true,
+    "url": "https://worksmacstudio.tailfc4700.ts.net:10000/mcp",
+    "hasBearer": true
+  },
+  "alternate": {
+    "success": true,
+    "ok": false,
+    "tools": [],
+    "error": "Reachable but returned no tools (HTTP 403). Check the URL and credentials."
+  },
+  "restored": {
+    "success": true,
+    "url": "https://worksmacstudio.tailfc4700.ts.net/docproc/mcp",
+    "hasBearer": true
+  },
+  "readback": {
+    "success": true,
+    "url": "https://worksmacstudio.tailfc4700.ts.net/docproc/mcp",
+    "hasBearer": true
+  }
+}

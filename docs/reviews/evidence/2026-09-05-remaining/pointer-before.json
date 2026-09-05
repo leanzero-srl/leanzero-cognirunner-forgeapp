@@ -1,0 +1,469 @@
+{
+  "tag": "cgr-workflow-mtolhuaq",
+  "checks": [
+    {
+      "name": "null context remains null",
+      "text": "PASS\nLive reads \u00b7 no current issue \u00b7 writes staged \u2014 1ms\n\u00d7\nEXECUTION LOG:\nTesting postfunction with no current issue. Reads are live; writes are simulated.\nReturn value: null context retained\nSave as Skill",
+      "response": {
+        "success": true,
+        "mode": "simulation",
+        "issueKey": null,
+        "logs": [
+          "Testing postfunction with no current issue. Reads are live; writes are simulated.",
+          "Return value: null context retained"
+        ],
+        "changes": [],
+        "executionTimeMs": 1
+      }
+    },
+    {
+      "name": "null issue-bound action fails",
+      "text": "FAIL\nLive reads \u00b7 no current issue \u00b7 writes staged \u2014 9ms\nFix with AI\n\u00d7\nEXECUTION LOG:\nTesting postfunction with no current issue. Reads are live; writes are simulated.\nERROR: api.addComment() needs a current issue, but this postfunction run has none (api.context.issueKey is null). Use api.forIssue(\"KEY\").addComment(...) to target an issue explicitly.",
+      "response": {
+        "success": false,
+        "mode": "simulation",
+        "issueKey": null,
+        "logs": [
+          "Testing postfunction with no current issue. Reads are live; writes are simulated.",
+          "ERROR: api.addComment() needs a current issue, but this postfunction run has none (api.context.issueKey is null). Use api.forIssue(\"KEY\").addComment(...) to target an issue explicitly."
+        ],
+        "changes": [],
+        "executionTimeMs": 9
+      }
+    },
+    {
+      "name": "failed live read is visible",
+      "text": "FAIL\nLive reads \u00b7 no current issue \u00b7 writes staged \u2014 167ms\nFix with AI\n\u00d7\nEXECUTION LOG:\nTesting postfunction with no current issue. Reads are live; writes are simulated.\nERROR: getIssue failed: 404",
+      "response": {
+        "success": false,
+        "mode": "simulation",
+        "issueKey": null,
+        "logs": [
+          "Testing postfunction with no current issue. Reads are live; writes are simulated.",
+          "ERROR: getIssue failed: 404"
+        ],
+        "changes": [],
+        "executionTimeMs": 167
+      }
+    },
+    {
+      "name": "invalid context JQL fails",
+      "text": "FAIL\nLive reads \u00b7 no current issue \u00b7 writes staged \u2014 138ms\nFix with AI\n\u00d7\nEXECUTION LOG:\nRunning JQL to find test issue: this is invalid JQL (\nERROR: JQL search failed (400). Correct the search before testing.",
+      "response": {
+        "success": false,
+        "mode": "simulation",
+        "issueKey": null,
+        "logs": [
+          "Running JQL to find test issue: this is invalid JQL (",
+          "ERROR: JQL search failed (400). Correct the search before testing."
+        ],
+        "changes": [],
+        "executionTimeMs": 138
+      }
+    },
+    {
+      "name": "empty context JQL fails",
+      "text": "FAIL\nLive reads \u00b7 no current issue \u00b7 writes staged \u2014 141ms\nFix with AI\n\u00d7\nEXECUTION LOG:\nRunning JQL to find test issue: project = JT AND key = JT-999999999\nERROR: JQL returned no results. Select an issue or adjust the JQL before testing.",
+      "response": {
+        "success": false,
+        "mode": "simulation",
+        "issueKey": null,
+        "logs": [
+          "Running JQL to find test issue: project = JT AND key = JT-999999999",
+          "ERROR: JQL returned no results. Select an issue or adjust the JQL before testing."
+        ],
+        "changes": [],
+        "executionTimeMs": 141
+      }
+    },
+    {
+      "name": "empty transition rejected",
+      "text": "FAIL\nLive reads against JT-66 \u00b7 writes staged \u2014 1ms\nFix with AI\n\u00d7\nEXECUTION LOG:\nTesting against real issue: JT-66\nERROR: api.transitionIssue(): transitionId must be a non-empty string or finite number. Use api.transitionByName(\"Done\") when you have a transition name.",
+      "response": {
+        "success": false,
+        "mode": "live",
+        "issueKey": "JT-66",
+        "logs": [
+          "Testing against real issue: JT-66",
+          "ERROR: api.transitionIssue(): transitionId must be a non-empty string or finite number. Use api.transitionByName(\"Done\") when you have a transition name."
+        ],
+        "changes": [],
+        "executionTimeMs": 1
+      }
+    },
+    {
+      "name": "real property gate",
+      "text": "PASS\nLive reads against JT-66 \u00b7 writes staged \u2014 121ms\n\u00d7\nEXECUTION LOG:\nTesting against real issue: JT-66\nReturn value: property gate retained\nSave as Skill",
+      "response": {
+        "success": true,
+        "mode": "live",
+        "issueKey": "JT-66",
+        "logs": [
+          "Testing against real issue: JT-66",
+          "Return value: property gate retained"
+        ],
+        "changes": [],
+        "executionTimeMs": 121
+      }
+    },
+    {
+      "name": "full API stages writes",
+      "text": "PASS\nLive reads \u00b7 no current issue \u00b7 writes staged \u2014 2ms\n\u00d7\nEXECUTION LOG:\nTesting postfunction with no current issue. Reads are live; writes are simulated.\n[SIMULATION] setAssignee(712020:937bc860-eec2-4294-a65d-8e0fe7c45086)\n[SIMULATION] editIssue(\"JT-66\", update {\"labels\":[{\"add\":\"cgr-workflow-mtolhuaq-sim\"}]})\n[SIMULATION] addComment\n[SIMULATION] setProperty(cgr-workflow-mtolhuaq)\nReturn value: all writes staged\n4 writes staged\nsetAssignee\nEdit fields\nAdd comment\nSet property\nsetAssignee(JT-66)\neditIssue(JT-66)\naddComment(JT-66)\nsetProperty(JT-66)\n\u2726 Explain these changes in plain English\nSave as Skill",
+      "response": {
+        "success": true,
+        "mode": "simulation",
+        "issueKey": null,
+        "logs": [
+          "Testing postfunction with no current issue. Reads are live; writes are simulated.",
+          "[SIMULATION] setAssignee(712020:937bc860-eec2-4294-a65d-8e0fe7c45086)",
+          "[SIMULATION] editIssue(\"JT-66\", update {\"labels\":[{\"add\":\"cgr-workflow-mtolhuaq-sim\"}]})",
+          "[SIMULATION] addComment",
+          "[SIMULATION] setProperty(cgr-workflow-mtolhuaq)",
+          "Return value: all writes staged"
+        ],
+        "changes": [
+          {
+            "action": "setAssignee",
+            "key": "JT-66",
+            "accountId": "712020:937bc860-eec2-4294-a65d-8e0fe7c45086",
+            "simulated": true
+          },
+          {
+            "action": "editIssue",
+            "key": "JT-66",
+            "update": {
+              "labels": [
+                {
+                  "add": "cgr-workflow-mtolhuaq-sim"
+                }
+              ]
+            },
+            "simulated": true
+          },
+          {
+            "action": "addComment",
+            "key": "JT-66",
+            "simulated": true
+          },
+          {
+            "action": "setProperty",
+            "key": "JT-66",
+            "propKey": "cgr-workflow-mtolhuaq",
+            "simulated": true
+          }
+        ],
+        "executionTimeMs": 2
+      }
+    },
+    {
+      "name": "transition name lookup and extra fields",
+      "text": "PASS\nLive reads against JT-66 \u00b7 writes staged \u2014 166ms\n\u00d7\nEXECUTION LOG:\nTesting against real issue: JT-66\n[SIMULATION] transitionIssue(\"JT-66\", \"41\") \u2014 transition skipped\n[SIMULATION] transitionIssue(\"JT-66\", \"41\" +fields/update) \u2014 transition skipped\nReturn value: transitions staged\n2 writes staged\nTransition \u00d72\ntransitionIssue(JT-66)\ntransitionIssue(JT-66)\n\u2726 Explain these changes in plain English\nSave as Skill",
+      "response": {
+        "success": true,
+        "mode": "live",
+        "issueKey": "JT-66",
+        "logs": [
+          "Testing against real issue: JT-66",
+          "[SIMULATION] transitionIssue(\"JT-66\", \"41\") \u2014 transition skipped",
+          "[SIMULATION] transitionIssue(\"JT-66\", \"41\" +fields/update) \u2014 transition skipped",
+          "Return value: transitions staged"
+        ],
+        "changes": [
+          {
+            "action": "transitionIssue",
+            "key": "JT-66",
+            "transitionId": "41",
+            "extra": {},
+            "simulated": true
+          },
+          {
+            "action": "transitionIssue",
+            "key": "JT-66",
+            "transitionId": "41",
+            "extra": {
+              "fields": {
+                "summary": "never written"
+              },
+              "update": {
+                "labels": [
+                  {
+                    "add": "never-written"
+                  }
+                ]
+              }
+            },
+            "simulated": true
+          }
+        ],
+        "executionTimeMs": 166
+      }
+    },
+    {
+      "name": "created and cloned targets remain distinct",
+      "text": "PASS\nLive reads against JT-66 \u00b7 writes staged \u2014 225ms\n\u00d7\nEXECUTION LOG:\nTesting against real issue: JT-66\n[SIMULATION] createIssue -> CGRSIM_8F24E8CCE31E-1 ({\"project\":{\"key\":\"JT\"},\"issuetype\":{\"id\":\"10005\"},\"summary\":\"staged child\"})\n[SIMULATION] cloneIssue -> CGRSIM_8F24E8CCE31E-2: CLONE of JT-66: cgr-workflow-mtolhuaq\n[SIMULATION] updateIssue(\"CGRSIM_8F24E8CCE31E-1\", {\"labels\":[\"child\"]}) \u2014 write skipped\n[SIMULATION] editIssue(\"CGRSIM_8F24E8CCE31E-2\", update {\"labels\":[{\"add\":\"clone\"}]})\nReturn value: distinct staged targets\n4 writes staged\nCreate issue\nClone issue\nUpdate fields\nEdit fields\ncreateIssue(CGRSIM_8F24E8CCE31E-1, {\"project\":{\"key\":\"JT\"},\"issuetype\":{\"id\":\"10005\"},\"summary\":\"staged child\"})\ncloneIssue(CGRSIM_8F24E8CCE31E-2, {\"project\":{\"id\":\"10008\"},\"issuetype\":{\"id\":\"10005\"},\"summary\":\"CLONE of JT-66: cgr-workflow-mtolhuaq\"})\nupdateIssue(CGRSIM_8F24E8CCE31E-1, {\"labels\":[\"child\"]})\neditIssue(CGRSIM_8F24E8CCE31E-2)\n\u2726 Explain these changes in plain English\nSave as Skill",
+      "response": {
+        "success": true,
+        "mode": "live",
+        "issueKey": "JT-66",
+        "logs": [
+          "Testing against real issue: JT-66",
+          "[SIMULATION] createIssue -> CGRSIM_8F24E8CCE31E-1 ({\"project\":{\"key\":\"JT\"},\"issuetype\":{\"id\":\"10005\"},\"summary\":\"staged child\"})",
+          "[SIMULATION] cloneIssue -> CGRSIM_8F24E8CCE31E-2: CLONE of JT-66: cgr-workflow-mtolhuaq",
+          "[SIMULATION] updateIssue(\"CGRSIM_8F24E8CCE31E-1\", {\"labels\":[\"child\"]}) \u2014 write skipped",
+          "[SIMULATION] editIssue(\"CGRSIM_8F24E8CCE31E-2\", update {\"labels\":[{\"add\":\"clone\"}]})",
+          "Return value: distinct staged targets"
+        ],
+        "changes": [
+          {
+            "action": "createIssue",
+            "key": "CGRSIM_8F24E8CCE31E-1",
+            "fields": {
+              "project": {
+                "key": "JT"
+              },
+              "issuetype": {
+                "id": "10005"
+              },
+              "summary": "staged child"
+            },
+            "simulated": true
+          },
+          {
+            "action": "cloneIssue",
+            "from": "JT-66",
+            "key": "CGRSIM_8F24E8CCE31E-2",
+            "fields": {
+              "project": {
+                "id": "10008"
+              },
+              "issuetype": {
+                "id": "10005"
+              },
+              "summary": "CLONE of JT-66: cgr-workflow-mtolhuaq"
+            },
+            "simulated": true
+          },
+          {
+            "action": "updateIssue",
+            "key": "CGRSIM_8F24E8CCE31E-1",
+            "fields": {
+              "labels": [
+                "child"
+              ]
+            },
+            "simulated": true
+          },
+          {
+            "action": "editIssue",
+            "key": "CGRSIM_8F24E8CCE31E-2",
+            "update": {
+              "labels": [
+                {
+                  "add": "clone"
+                }
+              ]
+            },
+            "simulated": true
+          }
+        ],
+        "executionTimeMs": 225
+      }
+    }
+  ],
+  "cleanup": [
+    {
+      "key": "JT-66",
+      "absent": true
+    }
+  ],
+  "pointerFailure": {
+    "name": "created and cloned targets remain distinct",
+    "error": "page.waitForResponse: Timeout 6000ms exceeded while waiting for event \"response\"",
+    "ui": "Test Run\nDry run \u2014 writes are logged, not executed\nISSUE CONTEXT (OPTIONAL)\n?\n\u00d7\nTask\nJT-66\ncgr-workflow-mtolhuaq\nOpen\nRun Test\n\nReads use real Jira data; writes are simulated. Jira's write permissions, transition screens and validators are not exercised. Using JT-66 as api.context.issueKey."
+  },
+  "keyboardRetry": true,
+  "zeroWrites": {
+    "issue": "JT-66",
+    "fields": [
+      "summary",
+      "labels",
+      "assignee",
+      "comment",
+      "status"
+    ],
+    "propertyUnchanged": true
+  },
+  "pass": true,
+  "events": [
+    {
+      "event": "console",
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 404 ()"
+    },
+    {
+      "event": "console",
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 404 ()"
+    },
+    {
+      "event": "console",
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 404 ()"
+    },
+    {
+      "event": "requestfailed",
+      "url": "https://wolfaenpak.atlassian.net/rest/internal/2/log/safe/info",
+      "error": {
+        "errorText": "net::ERR_ABORTED"
+      }
+    },
+    {
+      "event": "console",
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 404 ()"
+    },
+    {
+      "event": "console",
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 404 ()"
+    },
+    {
+      "event": "console",
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 404 ()"
+    },
+    {
+      "event": "requestfailed",
+      "url": "https://wolfaenpak.atlassian.net/rest/internal/2/log/unsafe/emau",
+      "error": {
+        "errorText": "net::ERR_ABORTED"
+      }
+    },
+    {
+      "event": "requestfailed",
+      "url": "https://api.atlassian.com/ex/jira/049de078-bffa-42d1-bbfb-ad8db9860adb/rest/api/3/universal_avatar/view/type/project/avatar/10555",
+      "error": {
+        "errorText": "net::ERR_BLOCKED_BY_ORB"
+      }
+    },
+    {
+      "event": "requestfailed",
+      "url": "https://api.atlassian.com/ex/jira/049de078-bffa-42d1-bbfb-ad8db9860adb/rest/api/3/universal_avatar/view/type/project/avatar/10553",
+      "error": {
+        "errorText": "net::ERR_BLOCKED_BY_ORB"
+      }
+    },
+    {
+      "event": "test-request",
+      "body": "{\"operationName\":\"useInvokeExtensionRelayMutation\",\"variables\":{\"input\":{\"contextIds\":[\"ari:cloud:jira:049de078-bffa-42d1-bbfb-ad8db9860adb:workspace/de27b172-aad3-4897-a5a7-d13252993e62\"],\"extensionId\":\"ari:cloud:ecosystem::extension/36415848-6868-4697-9554-3c3ad87b8da9/989ecaa0-261b-406e-b444-78c01c0d7772/static/cognirunner-global-page\",\"payload\":{\"call\":{\"functionKey\":\"testPostFunction\",\"payload\":{\"code\":\"if (api.context.issueKey !== null) throw Error('invented issue'); return 'null context retained';\"}},\"context\":{\"cloudId\":\"049de078-bffa-42d1-bbfb-ad8db9860adb\",\"localId\":\"ari:cloud:ecosystem::extension/36415848-6868-4697-9554-3c3ad87b8da9/989ecaa0-261b-406e-b444-78c01c0d7772/static/cognirunner-global-page\",\"environmentId\":\"989ecaa0-261b-406e-b444-78c01c0d7772\",\"environmentType\":\"DEVELOPMENT\",\"moduleKey\":\"cognirunner-global-page\",\"siteUrl\":\"https://wolfaenpak.atlassian.net\",\"appVersion\":\"22.157.0\",\"extension\":{\"type\":\"jira:globalPage\",\"jira\":{\"isNewNavigation\":true}}},\"contextToken\":\"[REDACTED JWT]\"},\"entryPoint\":\"resolver\"}}}"
+    },
+    {
+      "event": "test-request",
+      "body": "{\"operationName\":\"useInvokeExtensionRelayMutation\",\"variables\":{\"input\":{\"contextIds\":[\"ari:cloud:jira:049de078-bffa-42d1-bbfb-ad8db9860adb:workspace/de27b172-aad3-4897-a5a7-d13252993e62\"],\"extensionId\":\"ari:cloud:ecosystem::extension/36415848-6868-4697-9554-3c3ad87b8da9/989ecaa0-261b-406e-b444-78c01c0d7772/static/cognirunner-global-page\",\"payload\":{\"call\":{\"functionKey\":\"testPostFunction\",\"payload\":{\"code\":\"await api.addComment('must never write');\"}},\"context\":{\"cloudId\":\"049de078-bffa-42d1-bbfb-ad8db9860adb\",\"localId\":\"ari:cloud:ecosystem::extension/36415848-6868-4697-9554-3c3ad87b8da9/989ecaa0-261b-406e-b444-78c01c0d7772/static/cognirunner-global-page\",\"environmentId\":\"989ecaa0-261b-406e-b444-78c01c0d7772\",\"environmentType\":\"DEVELOPMENT\",\"moduleKey\":\"cognirunner-global-page\",\"siteUrl\":\"https://wolfaenpak.atlassian.net\",\"appVersion\":\"22.157.0\",\"extension\":{\"type\":\"jira:globalPage\",\"jira\":{\"isNewNavigation\":true}}},\"contextToken\":\"[REDACTED JWT]\"},\"entryPoint\":\"resolver\"}}}"
+    },
+    {
+      "event": "test-request",
+      "body": "{\"operationName\":\"useInvokeExtensionRelayMutation\",\"variables\":{\"input\":{\"contextIds\":[\"ari:cloud:jira:049de078-bffa-42d1-bbfb-ad8db9860adb:workspace/de27b172-aad3-4897-a5a7-d13252993e62\"],\"extensionId\":\"ari:cloud:ecosystem::extension/36415848-6868-4697-9554-3c3ad87b8da9/989ecaa0-261b-406e-b444-78c01c0d7772/static/cognirunner-global-page\",\"payload\":{\"call\":{\"functionKey\":\"testPostFunction\",\"payload\":{\"code\":\"await api.getIssue('JT-999999999');\"}},\"context\":{\"cloudId\":\"049de078-bffa-42d1-bbfb-ad8db9860adb\",\"localId\":\"ari:cloud:ecosystem::extension/36415848-6868-4697-9554-3c3ad87b8da9/989ecaa0-261b-406e-b444-78c01c0d7772/static/cognirunner-global-page\",\"environmentId\":\"989ecaa0-261b-406e-b444-78c01c0d7772\",\"environmentType\":\"DEVELOPMENT\",\"moduleKey\":\"cognirunner-global-page\",\"siteUrl\":\"https://wolfaenpak.atlassian.net\",\"appVersion\":\"22.157.0\",\"extension\":{\"type\":\"jira:globalPage\",\"jira\":{\"isNewNavigation\":true}}},\"contextToken\":\"[REDACTED JWT]\"},\"entryPoint\":\"resolver\"}}}"
+    },
+    {
+      "event": "console",
+      "type": "warning",
+      "text": "Deprecated API for given entry type."
+    },
+    {
+      "event": "requestfailed",
+      "url": "https://wolfaenpak.atlassian.net/gateway/api/watermelon/organization/containsAnyWorkspace",
+      "error": {
+        "errorText": "net::ERR_ABORTED"
+      }
+    },
+    {
+      "event": "console",
+      "type": "warning",
+      "text": "DEPRECATED JS - Cookie has been deprecated since 5.8.0 and will be removed in a future release. Use cookie instead.   \n     at b.default (https://d3a2esa6hj93h.cloudfront.net/wolfaenpak.atlassian.net/s/d41d8cd98f00b204e9800998ecf8427e-CDN/-bxy8hv/b/1/2a93a757e7029d32b858b87d0f929fad/_/download/contextbatch/js/jira.webresources:skate,jira.webresources:dialogs,jira.webresources:jira-global,jira.webresources:key-commands,com.atlassian.administration.atlassian-admin-quicksearch-jira:admin-quicksearch-webresources,com.atlassian.jira.plugins.jira-development-integration-plugin:devsummarycf-resources-init,jira.webresources:util-lite,jira.webresources:util,jira.webresources:feature-flags,com.atlassian.auiplugin:aui-spinner,com.atlassian.jira.jira-client-analytics-plugin:analytics-web-client,jira.webresources:header,jira.webresources:global-static,com.atlassian.jira.plugins.jira-development-integration-plugin:repository-shortcuts-navigation-next,com.atlassian.analytics.analytics-client:js-events,com.atlassian.jira.jira-issue-nav-plugin:stylesheets,com.atlassian.crowd.user-provisioning-vertigo-plugin:impersonation-resources,com.atlassian.jira.jira-atlaskit-plugin:overrides-general,com.atlassian.auiplugin:dialog2,com.atlassian.jira.plugins.jira-browser-metrics:contrib,com.atlassian.plugins.browser.metrics.browser-metrics-plugin:api,com.pyxis.greenhopper.jira:gh-create-board-adg3-no-condition,com.atlassian.plugins.browser.metrics.browser-metrics-plugin:impl,-jira.heritage.critical/batch.js?locale=en-US:29:209)"
+    },
+    {
+      "event": "console",
+      "type": "log",
+      "text": "Failed to run init function: TypeError: removeOldAnalytics is not a function\nfunction() {\n    \tdetermineStorageKey();\n        setTimeout(bulkPublish, 500);\n        removeOldAnalytics();\n    }"
+    },
+    {
+      "event": "console",
+      "type": "warning",
+      "text": "DEPRECATED JS - Dropdown constructor has been deprecated and will be removed in a future release. Use Dropdown2 instead.   \n     at HTMLDocument.<anonymous> (https://d3a2esa6hj93h.cloudfront.net/wolfaenpak.atlassian.net/s/d41d8cd98f00b204e9800998ecf8427e-CDN/-bxy8hv/b/1/2a93a757e7029d32b858b87d0f929fad/_/download/contextbatch/js/jira.webresources:skate,jira.webresources:dialogs,jira.webresources:jira-global,jira.webresources:key-commands,com.atlassian.administration.atlassian-admin-quicksearch-jira:admin-quicksearch-webresources,com.atlassian.jira.plugins.jira-development-integration-plugin:devsummarycf-resources-init,jira.webresources:util-lite,jira.webresources:util,jira.webresources:feature-flags,com.atlassian.auiplugin:aui-spinner,com.atlassian.jira.jira-client-analytics-plugin:analytics-web-client,jira.webresources:header,jira.webresources:global-static,com.atlassian.jira.plugins.jira-development-integration-plugin:repository-shortcuts-navigation-next,com.atlassian.analytics.analytics-client:js-events,com.atlassian.jira.jira-issue-nav-plugin:stylesheets,com.atlassian.crowd.user-provisioning-vertigo-plugin:impersonation-resources,com.atlassian.jira.jira-atlaskit-plugin:overrides-general,com.atlassian.auiplugin:dialog2,com.atlassian.jira.plugins.jira-browser-metrics:contrib,com.atlassian.plugins.browser.metrics.browser-metrics-plugin:api,com.pyxis.greenhopper.jira:gh-create-board-adg3-no-condition,com.atlassian.plugins.browser.metrics.browser-metrics-plugin:impl,-jira.heritage.critical/batch.js?locale=en-US:3629:201)"
+    },
+    {
+      "event": "console",
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 404 ()"
+    },
+    {
+      "event": "console",
+      "type": "warning",
+      "text": "Multiple versions of FeatureGateClients found on the current page.\n      The currently bound version is 0.0.0-use.local when module version 4.23.4 was loading."
+    },
+    {
+      "event": "console",
+      "type": "warning",
+      "text": "AJS's create element functionality has been deprecated since 5.9.0.\nNo alternative will be provided.\nUse document.createElement() or jQuery.parseHTML(), or preferably use a templating library."
+    },
+    {
+      "event": "console",
+      "type": "warning",
+      "text": "DEPRECATED JS - Inline dialog constructor has been deprecated and will be removed in a future release. Use inline dialog 2 instead.   \n     at l (https://d3a2esa6hj93h.cloudfront.net/wolfaenpak.atlassian.net/s/d41d8cd98f00b204e9800998ecf8427e-CDN/-bxy8hv/b/1/beb183fb8303632b5ef3e9337d0ab21a/_/download/contextbatch/js/jira.heritage.critical/batch.js:6:2054)"
+    },
+    {
+      "event": "console",
+      "type": "error",
+      "text": "Failed to load resource: the server responded with a status of 404 ()"
+    },
+    {
+      "event": "test-request",
+      "body": "{\"operationName\":\"useInvokeExtensionRelayMutation\",\"variables\":{\"input\":{\"contextIds\":[\"ari:cloud:jira:049de078-bffa-42d1-bbfb-ad8db9860adb:workspace/de27b172-aad3-4897-a5a7-d13252993e62\"],\"extensionId\":\"ari:cloud:ecosystem::extension/36415848-6868-4697-9554-3c3ad87b8da9/989ecaa0-261b-406e-b444-78c01c0d7772/static/cognirunner-global-page\",\"payload\":{\"call\":{\"functionKey\":\"testPostFunction\",\"payload\":{\"code\":\"return 'must not run';\",\"jql\":\"this is invalid JQL (\"}},\"context\":{\"cloudId\":\"049de078-bffa-42d1-bbfb-ad8db9860adb\",\"localId\":\"ari:cloud:ecosystem::extension/36415848-6868-4697-9554-3c3ad87b8da9/989ecaa0-261b-406e-b444-78c01c0d7772/static/cognirunner-global-page\",\"environmentId\":\"989ecaa0-261b-406e-b444-78c01c0d7772\",\"environmentType\":\"DEVELOPMENT\",\"moduleKey\":\"cognirunner-global-page\",\"siteUrl\":\"https://wolfaenpak.atlassian.net\",\"appVersion\":\"22.157.0\",\"extension\":{\"type\":\"jira:globalPage\",\"jira\":{\"isNewNavigation\":true}}},\"contextToken\":\"[REDACTED JWT]\"},\"entryPoint\":\"resolver\"}}}"
+    },
+    {
+      "event": "test-request",
+      "body": "{\"operationName\":\"useInvokeExtensionRelayMutation\",\"variables\":{\"input\":{\"contextIds\":[\"ari:cloud:jira:049de078-bffa-42d1-bbfb-ad8db9860adb:workspace/de27b172-aad3-4897-a5a7-d13252993e62\"],\"extensionId\":\"ari:cloud:ecosystem::extension/36415848-6868-4697-9554-3c3ad87b8da9/989ecaa0-261b-406e-b444-78c01c0d7772/static/cognirunner-global-page\",\"payload\":{\"call\":{\"functionKey\":\"testPostFunction\",\"payload\":{\"code\":\"return 'must not run';\",\"jql\":\"project = JT AND key = JT-999999999\"}},\"context\":{\"cloudId\":\"049de078-bffa-42d1-bbfb-ad8db9860adb\",\"localId\":\"ari:cloud:ecosystem::extension/36415848-6868-4697-9554-3c3ad87b8da9/989ecaa0-261b-406e-b444-78c01c0d7772/static/cognirunner-global-page\",\"environmentId\":\"989ecaa0-261b-406e-b444-78c01c0d7772\",\"environmentType\":\"DEVELOPMENT\",\"moduleKey\":\"cognirunner-global-page\",\"siteUrl\":\"https://wolfaenpak.atlassian.net\",\"appVersion\":\"22.157.0\",\"extension\":{\"type\":\"jira:globalPage\",\"jira\":{\"isNewNavigation\":true}}},\"contextToken\":\"[REDACTED JWT]\"},\"entryPoint\":\"resolver\"}}}"
+    },
+    {
+      "event": "test-request",
+      "body": "{\"operationName\":\"useInvokeExtensionRelayMutation\",\"variables\":{\"input\":{\"contextIds\":[\"ari:cloud:jira:049de078-bffa-42d1-bbfb-ad8db9860adb:workspace/de27b172-aad3-4897-a5a7-d13252993e62\"],\"extensionId\":\"ari:cloud:ecosystem::extension/36415848-6868-4697-9554-3c3ad87b8da9/989ecaa0-261b-406e-b444-78c01c0d7772/static/cognirunner-global-page\",\"payload\":{\"call\":{\"functionKey\":\"testPostFunction\",\"payload\":{\"code\":\"await api.transitionIssue('');\",\"issueKey\":\"JT-66\"}},\"context\":{\"cloudId\":\"049de078-bffa-42d1-bbfb-ad8db9860adb\",\"localId\":\"ari:cloud:ecosystem::extension/36415848-6868-4697-9554-3c3ad87b8da9/989ecaa0-261b-406e-b444-78c01c0d7772/static/cognirunner-global-page\",\"environmentId\":\"989ecaa0-261b-406e-b444-78c01c0d7772\",\"environmentType\":\"DEVELOPMENT\",\"moduleKey\":\"cognirunner-global-page\",\"siteUrl\":\"https://wolfaenpak.atlassian.net\",\"appVersion\":\"22.157.0\",\"extension\":{\"type\":\"jira:globalPage\",\"jira\":{\"isNewNavigation\":true}}},\"contextToken\":\"[REDACTED JWT]\"},\"entryPoint\":\"resolver\"}}}"
+    },
+    {
+      "event": "test-request",
+      "body": "{\"operationName\":\"useInvokeExtensionRelayMutation\",\"variables\":{\"input\":{\"contextIds\":[\"ari:cloud:jira:049de078-bffa-42d1-bbfb-ad8db9860adb:workspace/de27b172-aad3-4897-a5a7-d13252993e62\"],\"extensionId\":\"ari:cloud:ecosystem::extension/36415848-6868-4697-9554-3c3ad87b8da9/989ecaa0-261b-406e-b444-78c01c0d7772/static/cognirunner-global-page\",\"payload\":{\"call\":{\"functionKey\":\"testPostFunction\",\"payload\":{\"code\":\"const value = await api.getProperty('cgr-workflow-mtolhuaq'); if (!value?.exists) throw Error('property missing'); return 'property gate retained';\",\"issueKey\":\"JT-66\"}},\"context\":{\"cloudId\":\"049de078-bffa-42d1-bbfb-ad8db9860adb\",\"localId\":\"ari:cloud:ecosystem::extension/36415848-6868-4697-9554-3c3ad87b8da9/989ecaa0-261b-406e-b444-78c01c0d7772/static/cognirunner-global-page\",\"environmentId\":\"989ecaa0-261b-406e-b444-78c01c0d7772\",\"environmentType\":\"DEVELOPMENT\",\"moduleKey\":\"cognirunner-global-page\",\"siteUrl\":\"https://wolfaenpak.atlassian.net\",\"appVersion\":\"22.157.0\",\"extension\":{\"type\":\"jira:globalPage\",\"jira\":{\"isNewNavigation\":true}}},\"contextToken\":\"[REDACTED JWT]\"},\"entryPoint\":\"resolver\"}}}"
+    },
+    {
+      "event": "test-request",
+      "body": "{\"operationName\":\"useInvokeExtensionRelayMutation\",\"variables\":{\"input\":{\"contextIds\":[\"ari:cloud:jira:049de078-bffa-42d1-bbfb-ad8db9860adb:workspace/de27b172-aad3-4897-a5a7-d13252993e62\"],\"extensionId\":\"ari:cloud:ecosystem::extension/36415848-6868-4697-9554-3c3ad87b8da9/989ecaa0-261b-406e-b444-78c01c0d7772/static/cognirunner-global-page\",\"payload\":{\"call\":{\"functionKey\":\"testPostFunction\",\"payload\":{\"code\":\"await api.forIssue('JT-66').setAssignee('712020:937bc860-eec2-4294-a65d-8e0fe7c45086'); await api.forIssue('JT-66').addLabels('cgr-workflow-mtolhuaq-sim'); await api.forIssue('JT-66').addComment('never written'); await api.forIssue('JT-66').setProperty('cgr-workflow-mtolhuaq',{exists:false}); return 'all writes staged';\"}},\"context\":{\"cloudId\":\"049de078-bffa-42d1-bbfb-ad8db9860adb\",\"localId\":\"ari:cloud:ecosystem::extension/36415848-6868-4697-9554-3c3ad87b8da9/989ecaa0-261b-406e-b444-78c01c0d7772/static/cognirunner-global-page\",\"environmentId\":\"989ecaa0-261b-406e-b444-78c01c0d7772\",\"environmentType\":\"DEVELOPMENT\",\"moduleKey\":\"cognirunner-global-page\",\"siteUrl\":\"https://wolfaenpak.atlassian.net\",\"appVersion\":\"22.157.0\",\"extension\":{\"type\":\"jira:globalPage\",\"jira\":{\"isNewNavigation\":true}}},\"contextToken\":\"[REDACTED JWT]\"},\"entryPoint\":\"resolver\"}}}"
+    },
+    {
+      "event": "test-request",
+      "body": "{\"operationName\":\"useInvokeExtensionRelayMutation\",\"variables\":{\"input\":{\"contextIds\":[\"ari:cloud:jira:049de078-bffa-42d1-bbfb-ad8db9860adb:workspace/de27b172-aad3-4897-a5a7-d13252993e62\"],\"extensionId\":\"ari:cloud:ecosystem::extension/36415848-6868-4697-9554-3c3ad87b8da9/989ecaa0-261b-406e-b444-78c01c0d7772/static/cognirunner-global-page\",\"payload\":{\"call\":{\"functionKey\":\"testPostFunction\",\"payload\":{\"code\":\"await api.transitionByName(\\\"Pending\\\"); await api.transitionIssue('41',{fields:{summary:'never written'},update:{labels:[{add:'never-written'}]}}); return 'transitions staged';\",\"issueKey\":\"JT-66\"}},\"context\":{\"cloudId\":\"049de078-bffa-42d1-bbfb-ad8db9860adb\",\"localId\":\"ari:cloud:ecosystem::extension/36415848-6868-4697-9554-3c3ad87b8da9/989ecaa0-261b-406e-b444-78c01c0d7772/static/cognirunner-global-page\",\"environmentId\":\"989ecaa0-261b-406e-b444-78c01c0d7772\",\"environmentType\":\"DEVELOPMENT\",\"moduleKey\":\"cognirunner-global-page\",\"siteUrl\":\"https://wolfaenpak.atlassian.net\",\"appVersion\":\"22.157.0\",\"extension\":{\"type\":\"jira:globalPage\",\"jira\":{\"isNewNavigation\":true}}},\"contextToken\":\"[REDACTED JWT]\"},\"entryPoint\":\"resolver\"}}}"
+    },
+    {
+      "event": "console",
+      "type": "log",
+      "text": "UIEVENT {\"t\":\"mousedown\",\"target\":\"BUTTON\",\"cls\":\"btn-run-test\",\"text\":\"Run Test\",\"y\":486,\"button\":{\"x\":849.546875,\"y\":455.5625,\"width\":82.453125,\"height\":61,\"top\":455.5625,\"right\":932,\"bottom\":516.5625,\"left\":849.546875},\"dropdown\":{\"x\":108,\"y\":520.5625,\"width\":733.546875,\"height\":79.5,\"top\":520.5625,\"right\":841.546875,\"bottom\":600.0625,\"left\":108},\"scroll\":[{\"cls\":\"wizard-body\",\"top\":1626,\"height\":779,\"total\":2405},{\"cls\":\"test-panel anim-rise\",\"top\":36,\"height\":175,\"total\":211},{\"cls\":\"test-panel-target\",\"top\":0,\"height\":140,\"total\":176},{\"cls\":\"test-target-row\",\"top\":0,\"height\":61,\"total\":145}]}"
+    },
+    {
+      "event": "console",
+      "type": "log",
+      "text": "UIEVENT {\"t\":\"mouseup\",\"target\":\"LABEL\",\"cls\":\"label\",\"text\":\"ISSUE CONTEXT (OPTIONAL)\\n?\",\"y\":486,\"button\":{\"x\":849.546875,\"y\":491.5625,\"width\":82.453125,\"height\":61,\"top\":491.5625,\"right\":932,\"bottom\":552.5625,\"left\":849.546875},\"scroll\":[{\"cls\":\"wizard-body\",\"top\":1626,\"height\":779,\"total\":2405}]}"
+    },
+    {
+      "event": "console",
+      "type": "log",
+      "text": "UIEVENT {\"t\":\"click\",\"target\":\"DIV\",\"cls\":\"test-panel-target\",\"text\":\"ISSUE CONTEXT (OPTIONAL)\\n?\\n\u00d7\\nTask\\nJT-66\\ncgr-workfl\",\"y\":486,\"button\":{\"x\":849.546875,\"y\":491.5625,\"width\":82.453125,\"height\":61,\"top\":491.5625,\"right\":932,\"bottom\":552.5625,\"left\":849.546875},\"scroll\":[{\"cls\":\"wizard-body\",\"top\":1626,\"height\":779,\"total\":2405}]}"
+    },
+    {
+      "event": "console",
+      "type": "log",
+      "text": "UIEVENT {\"t\":\"click\",\"target\":\"BUTTON\",\"cls\":\"btn-run-test\",\"text\":\"Run Test\",\"y\":0,\"button\":{\"x\":849.546875,\"y\":491.5625,\"width\":82.453125,\"height\":61,\"top\":491.5625,\"right\":932,\"bottom\":552.5625,\"left\":849.546875},\"scroll\":[{\"cls\":\"wizard-body\",\"top\":1626,\"height\":779,\"total\":2405}]}"
+    },
+    {
+      "event": "test-request",
+      "body": "{\"operationName\":\"useInvokeExtensionRelayMutation\",\"variables\":{\"input\":{\"contextIds\":[\"ari:cloud:jira:049de078-bffa-42d1-bbfb-ad8db9860adb:workspace/de27b172-aad3-4897-a5a7-d13252993e62\"],\"extensionId\":\"ari:cloud:ecosystem::extension/36415848-6868-4697-9554-3c3ad87b8da9/989ecaa0-261b-406e-b444-78c01c0d7772/static/cognirunner-global-page\",\"payload\":{\"call\":{\"functionKey\":\"testPostFunction\",\"payload\":{\"code\":\"const a=await api.createIssue({project:{key:'JT'},issuetype:{id:'10005'},summary:'staged child'}); const b=await api.cloneIssue(); if(!a.key||!b.key||a.key===b.key||a.key===api.context.issueKey) throw Error('wrong staged identity'); await api.updateIssue(a.key,{labels:['child']}); await api.forIssue(b.key).addLabels('clone'); return 'distinct staged targets';\",\"issueKey\":\"JT-66\"}},\"context\":{\"cloudId\":\"049de078-bffa-42d1-bbfb-ad8db9860adb\",\"localId\":\"ari:cloud:ecosystem::extension/36415848-6868-4697-9554-3c3ad87b8da9/989ecaa0-261b-406e-b444-78c01c0d7772/static/cognirunner-global-page\",\"environmentId\":\"989ecaa0-261b-406e-b444-78c01c0d7772\",\"environmentType\":\"DEVELOPMENT\",\"moduleKey\":\"cognirunner-global-page\",\"siteUrl\":\"https://wolfaenpak.atlassian.net\",\"appVersion\":\"22.157.0\",\"extension\":{\"type\":\"jira:globalPage\",\"jira\":{\"isNewNavigation\":true}}},\"contextToken\":\"[REDACTED JWT]\"},\"entryPoint\":\"resolver\"}}}"
+    }
+  ]
+}

@@ -1,0 +1,5 @@
+INFO    2026-09-05T16:49:37.032Z f39d0325-11aa-4bb3-b556-2238e19de947 [pf] queued postfunction-generate-doc on JT-70 for async execution (110s budget)
+INFO    2026-09-05T16:49:38.991Z 5b593a1f-a527-4eb2-8e3d-e2679a21e665 Async handler: executing postfunction (9998211373023332_pf_ui4ua6)
+WARN    2026-09-05T16:49:44.127Z 5b593a1f-a527-4eb2-8e3d-e2679a21e665 mcpRpc https://worksmacstudio.tailfc4700.ts.net/docproc/mcp -> HTTP 502: Bad Gateway
+INFO    2026-09-05T16:49:44.128Z 5b593a1f-a527-4eb2-8e3d-e2679a21e665 Generate-doc PF result: {"success":false,"decision":"GENERATE","reason":"Document generation/attachment failed: MCP HTTP 502","trace":["Authored \"cgr-attachment-mtombe28\" (299 chars) for a markdown document","Creating + attaching markdown via doc-processor...","Create/attach failed: MCP HTTP 502"]}
+INFO    2026-09-05T16:49:44.512Z 5b593a1f-a527-4eb2-8e3d-e2679a21e665 Async handler: postfunction (9998211373023332_pf_ui4ua6) completed

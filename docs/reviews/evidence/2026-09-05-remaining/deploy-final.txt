@@ -1,0 +1,23 @@
+Warning: Your version of Forge CLI is out of date. We recommend you update to the latest version to get the latest features and bug fixes.
+Run npm install -g @forge/cli@latest to update from version 13.4.0 to 13.5.0.
+
+Deploying your app to the development environment.
+Press Ctrl+C to cancel.
+
+Running forge lint...
+No issues found.
+
+Deploying CogniRunner to development...
+
+ℹ Packaging app files
+ℹ Uploading app
+ℹ Validating manifest
+ℹ Deploying to environment
+
+✔ Deployed
+
+Deployed CogniRunner to the development environment.
+
+ℹ The version of your app [22.158.0] that was just deployed to [development] is not eligible for the Runs on Atlassian program. Run forge eligibility to know more.
+
+To know more about Runs on Atlassian, go to https://go.atlassian.com/runs-on-atlassian.

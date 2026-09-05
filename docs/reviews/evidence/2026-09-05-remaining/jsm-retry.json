@@ -1,0 +1,502 @@
+{
+  "at": "2026-09-05T15:54:48.805Z",
+  "key": "JT-53",
+  "id": "lst_mtok66g978ocob",
+  "before": {
+    "_expands": [
+      "attachment",
+      "renderedBody"
+    ],
+    "size": 5,
+    "start": 0,
+    "limit": 50,
+    "isLastPage": true,
+    "_links": {
+      "self": "https://wolfaenpak.atlassian.net/rest/servicedeskapi/request/JT-53/comment?expand=body&limit=50&public=true&internal=true",
+      "base": "https://wolfaenpak.atlassian.net",
+      "context": ""
+    },
+    "values": [
+      {
+        "_expands": [
+          "attachment",
+          "renderedBody"
+        ],
+        "id": "16051",
+        "body": "crjsmk63fd-needsnote please investigate",
+        "public": true,
+        "author": {
+          "accountId": "712020:937bc860-eec2-4294-a65d-8e0fe7c45086",
+          "emailAddress": "mihai@wolfaenpak.com",
+          "displayName": "Mihai Perdum",
+          "active": true,
+          "timeZone": "Europe/Bucharest",
+          "_links": {
+            "jiraRest": "https://wolfaenpak.atlassian.net/rest/api/2/user?accountId=712020%3A937bc860-eec2-4294-a65d-8e0fe7c45086",
+            "avatarUrls": {
+              "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:937bc860-eec2-4294-a65d-8e0fe7c45086/027ebed2-c8ad-4f25-981b-66069ec099e4/48",
+              "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:937bc860-eec2-4294-a65d-8e0fe7c45086/027ebed2-c8ad-4f25-981b-66069ec099e4/24",
+              "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:937bc860-eec2-4294-a65d-8e0fe7c45086/027ebed2-c8ad-4f25-981b-66069ec099e4/16",
+              "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:937bc860-eec2-4294-a65d-8e0fe7c45086/027ebed2-c8ad-4f25-981b-66069ec099e4/32"
+            },
+            "self": "https://wolfaenpak.atlassian.net/rest/api/2/user?accountId=712020%3A937bc860-eec2-4294-a65d-8e0fe7c45086"
+          }
+        },
+        "created": {
+          "iso8601": "2026-09-05T18:50:05+0300",
+          "jira": "2026-09-05T18:50:05.598+0300",
+          "friendly": "Today 6:50 PM",
+          "epochMillis": 1788623405598
+        },
+        "_links": {
+          "self": "https://wolfaenpak.atlassian.net/rest/servicedeskapi/request/24864/comment/16051"
+        }
+      },
+      {
+        "_expands": [
+          "attachment",
+          "renderedBody"
+        ],
+        "id": "16052",
+        "body": "crjsmk63fd-agentnote please investigate",
+        "public": true,
+        "author": {
+          "accountId": "712020:937bc860-eec2-4294-a65d-8e0fe7c45086",
+          "emailAddress": "mihai@wolfaenpak.com",
+          "displayName": "Mihai Perdum",
+          "active": true,
+          "timeZone": "Europe/Bucharest",
+          "_links": {
+            "jiraRest": "https://wolfaenpak.atlassian.net/rest/api/2/user?accountId=712020%3A937bc860-eec2-4294-a65d-8e0fe7c45086",
+            "avatarUrls": {
+              "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:937bc860-eec2-4294-a65d-8e0fe7c45086/027ebed2-c8ad-4f25-981b-66069ec099e4/48",
+              "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:937bc860-eec2-4294-a65d-8e0fe7c45086/027ebed2-c8ad-4f25-981b-66069ec099e4/24",
+              "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:937bc860-eec2-4294-a65d-8e0fe7c45086/027ebed2-c8ad-4f25-981b-66069ec099e4/16",
+              "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:937bc860-eec2-4294-a65d-8e0fe7c45086/027ebed2-c8ad-4f25-981b-66069ec099e4/32"
+            },
+            "self": "https://wolfaenpak.atlassian.net/rest/api/2/user?accountId=712020%3A937bc860-eec2-4294-a65d-8e0fe7c45086"
+          }
+        },
+        "created": {
+          "iso8601": "2026-09-05T18:50:06+0300",
+          "jira": "2026-09-05T18:50:06.052+0300",
+          "friendly": "Today 6:50 PM",
+          "epochMillis": 1788623406052
+        },
+        "_links": {
+          "self": "https://wolfaenpak.atlassian.net/rest/servicedeskapi/request/24864/comment/16052"
+        }
+      },
+      {
+        "_expands": [
+          "attachment",
+          "renderedBody"
+        ],
+        "id": "16053",
+        "body": "crjsmk63fd internal note \u2014 agents only",
+        "public": false,
+        "author": {
+          "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+          "displayName": "CogniRunner",
+          "active": true,
+          "timeZone": "Europe/Bucharest",
+          "_links": {
+            "jiraRest": "https://wolfaenpak.atlassian.net/rest/api/2/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "avatarUrls": {
+              "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/48",
+              "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/24",
+              "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/16",
+              "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/32"
+            },
+            "self": "https://wolfaenpak.atlassian.net/rest/api/2/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38"
+          }
+        },
+        "created": {
+          "iso8601": "2026-09-05T18:50:10+0300",
+          "jira": "2026-09-05T18:50:10.722+0300",
+          "friendly": "Today 6:50 PM",
+          "epochMillis": 1788623410722
+        },
+        "_links": {
+          "self": "https://wolfaenpak.atlassian.net/rest/servicedeskapi/request/24864/comment/16053"
+        }
+      },
+      {
+        "_expands": [
+          "attachment",
+          "renderedBody"
+        ],
+        "id": "16054",
+        "body": "crjsmk63fd public reply \u2014 customer visible",
+        "public": true,
+        "author": {
+          "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+          "displayName": "CogniRunner",
+          "active": true,
+          "timeZone": "Europe/Bucharest",
+          "_links": {
+            "jiraRest": "https://wolfaenpak.atlassian.net/rest/api/2/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "avatarUrls": {
+              "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/48",
+              "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/24",
+              "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/16",
+              "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/32"
+            },
+            "self": "https://wolfaenpak.atlassian.net/rest/api/2/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38"
+          }
+        },
+        "created": {
+          "iso8601": "2026-09-05T18:50:11+0300",
+          "jira": "2026-09-05T18:50:11.060+0300",
+          "friendly": "Today 6:50 PM",
+          "epochMillis": 1788623411060
+        },
+        "_links": {
+          "self": "https://wolfaenpak.atlassian.net/rest/servicedeskapi/request/24864/comment/16054"
+        }
+      },
+      {
+        "_expands": [
+          "attachment",
+          "renderedBody"
+        ],
+        "id": "16055",
+        "body": "crjsmk63fd agent internal",
+        "public": false,
+        "author": {
+          "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+          "displayName": "CogniRunner",
+          "active": true,
+          "timeZone": "Europe/Bucharest",
+          "_links": {
+            "jiraRest": "https://wolfaenpak.atlassian.net/rest/api/2/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "avatarUrls": {
+              "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/48",
+              "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/24",
+              "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/16",
+              "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/32"
+            },
+            "self": "https://wolfaenpak.atlassian.net/rest/api/2/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38"
+          }
+        },
+        "created": {
+          "iso8601": "2026-09-05T18:50:13+0300",
+          "jira": "2026-09-05T18:50:13.195+0300",
+          "friendly": "Today 6:50 PM",
+          "epochMillis": 1788623413195
+        },
+        "_links": {
+          "self": "https://wolfaenpak.atlassian.net/rest/servicedeskapi/request/24864/comment/16055"
+        }
+      }
+    ]
+  },
+  "log": {
+    "reason": "Agent done: Added one internal note to JT-53 with text \"crjsmk63fd agent internal\". No public comment was posted.",
+    "issueKey": "JT-53",
+    "executionTimeMs": 3494,
+    "isValid": true,
+    "ruleWorkflow": null,
+    "changes": [
+      {
+        "action": "addComment",
+        "key": "JT-53",
+        "id": "16059"
+      }
+    ],
+    "aiTimeMs": 2945,
+    "source": "async",
+    "eventType": "avi:jira:commented:issue",
+    "type": "listener",
+    "agentOutcome": "done",
+    "mode": "agent",
+    "ruleName": "JSM agent internal note k63fd",
+    "tokens": 3014,
+    "id": "1788623694950yamz",
+    "ruleId": "lst_mtok66g978ocob",
+    "toolCalls": [
+      {
+        "name": "add_comment",
+        "args": "{\"text\":\"crjsmk63fd agent internal\",\"internal\":true}",
+        "ok": true,
+        "ms": 372
+      },
+      {
+        "name": "finish",
+        "args": "{\"summary\":\"Added one internal note to JT-53 with text \\\"crjsmk63fd agent internal\\\". No public comment was posted.\",\"outcome\":\"done\"}",
+        "ok": true,
+        "ms": 0
+      }
+    ],
+    "agentSummary": "Added one internal note to JT-53 with text \"crjsmk63fd agent internal\". No public comment was posted.",
+    "logs": [
+      "Agent start: model=claude-haiku-4-5-20251001, actions=[get_issue, add_comment], maxRounds=3",
+      "addComment: 16059",
+      "tool add_comment({\"text\":\"crjsmk63fd agent internal\",\"internal\":true})",
+      "tool finish({\"summary\":\"Added one internal note to JT-53 with text \\\"crjsmk63fd agent internal\\\". No public comment was posted.\",\"outcome\":\"done\"})",
+      "Agent end: OK (2 round(s), 2 tool call(s), 1 change(s), 3014 tokens)"
+    ],
+    "rounds": 2,
+    "fieldId": "avi:jira:commented:issue",
+    "queueDelayMs": 4364,
+    "timestamp": "2026-09-05T15:54:54.950Z"
+  },
+  "after": {
+    "_expands": [
+      "attachment",
+      "renderedBody"
+    ],
+    "size": 7,
+    "start": 0,
+    "limit": 50,
+    "isLastPage": true,
+    "_links": {
+      "self": "https://wolfaenpak.atlassian.net/rest/servicedeskapi/request/JT-53/comment?expand=body&limit=50&public=true&internal=true",
+      "base": "https://wolfaenpak.atlassian.net",
+      "context": ""
+    },
+    "values": [
+      {
+        "_expands": [
+          "attachment",
+          "renderedBody"
+        ],
+        "id": "16051",
+        "body": "crjsmk63fd-needsnote please investigate",
+        "public": true,
+        "author": {
+          "accountId": "712020:937bc860-eec2-4294-a65d-8e0fe7c45086",
+          "emailAddress": "mihai@wolfaenpak.com",
+          "displayName": "Mihai Perdum",
+          "active": true,
+          "timeZone": "Europe/Bucharest",
+          "_links": {
+            "jiraRest": "https://wolfaenpak.atlassian.net/rest/api/2/user?accountId=712020%3A937bc860-eec2-4294-a65d-8e0fe7c45086",
+            "avatarUrls": {
+              "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:937bc860-eec2-4294-a65d-8e0fe7c45086/027ebed2-c8ad-4f25-981b-66069ec099e4/48",
+              "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:937bc860-eec2-4294-a65d-8e0fe7c45086/027ebed2-c8ad-4f25-981b-66069ec099e4/24",
+              "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:937bc860-eec2-4294-a65d-8e0fe7c45086/027ebed2-c8ad-4f25-981b-66069ec099e4/16",
+              "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:937bc860-eec2-4294-a65d-8e0fe7c45086/027ebed2-c8ad-4f25-981b-66069ec099e4/32"
+            },
+            "self": "https://wolfaenpak.atlassian.net/rest/api/2/user?accountId=712020%3A937bc860-eec2-4294-a65d-8e0fe7c45086"
+          }
+        },
+        "created": {
+          "iso8601": "2026-09-05T18:50:05+0300",
+          "jira": "2026-09-05T18:50:05.598+0300",
+          "friendly": "Today 6:50 PM",
+          "epochMillis": 1788623405598
+        },
+        "_links": {
+          "self": "https://wolfaenpak.atlassian.net/rest/servicedeskapi/request/24864/comment/16051"
+        }
+      },
+      {
+        "_expands": [
+          "attachment",
+          "renderedBody"
+        ],
+        "id": "16052",
+        "body": "crjsmk63fd-agentnote please investigate",
+        "public": true,
+        "author": {
+          "accountId": "712020:937bc860-eec2-4294-a65d-8e0fe7c45086",
+          "emailAddress": "mihai@wolfaenpak.com",
+          "displayName": "Mihai Perdum",
+          "active": true,
+          "timeZone": "Europe/Bucharest",
+          "_links": {
+            "jiraRest": "https://wolfaenpak.atlassian.net/rest/api/2/user?accountId=712020%3A937bc860-eec2-4294-a65d-8e0fe7c45086",
+            "avatarUrls": {
+              "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:937bc860-eec2-4294-a65d-8e0fe7c45086/027ebed2-c8ad-4f25-981b-66069ec099e4/48",
+              "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:937bc860-eec2-4294-a65d-8e0fe7c45086/027ebed2-c8ad-4f25-981b-66069ec099e4/24",
+              "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:937bc860-eec2-4294-a65d-8e0fe7c45086/027ebed2-c8ad-4f25-981b-66069ec099e4/16",
+              "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:937bc860-eec2-4294-a65d-8e0fe7c45086/027ebed2-c8ad-4f25-981b-66069ec099e4/32"
+            },
+            "self": "https://wolfaenpak.atlassian.net/rest/api/2/user?accountId=712020%3A937bc860-eec2-4294-a65d-8e0fe7c45086"
+          }
+        },
+        "created": {
+          "iso8601": "2026-09-05T18:50:06+0300",
+          "jira": "2026-09-05T18:50:06.052+0300",
+          "friendly": "Today 6:50 PM",
+          "epochMillis": 1788623406052
+        },
+        "_links": {
+          "self": "https://wolfaenpak.atlassian.net/rest/servicedeskapi/request/24864/comment/16052"
+        }
+      },
+      {
+        "_expands": [
+          "attachment",
+          "renderedBody"
+        ],
+        "id": "16053",
+        "body": "crjsmk63fd internal note \u2014 agents only",
+        "public": false,
+        "author": {
+          "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+          "displayName": "CogniRunner",
+          "active": true,
+          "timeZone": "Europe/Bucharest",
+          "_links": {
+            "jiraRest": "https://wolfaenpak.atlassian.net/rest/api/2/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "avatarUrls": {
+              "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/48",
+              "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/24",
+              "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/16",
+              "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/32"
+            },
+            "self": "https://wolfaenpak.atlassian.net/rest/api/2/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38"
+          }
+        },
+        "created": {
+          "iso8601": "2026-09-05T18:50:10+0300",
+          "jira": "2026-09-05T18:50:10.722+0300",
+          "friendly": "Today 6:50 PM",
+          "epochMillis": 1788623410722
+        },
+        "_links": {
+          "self": "https://wolfaenpak.atlassian.net/rest/servicedeskapi/request/24864/comment/16053"
+        }
+      },
+      {
+        "_expands": [
+          "attachment",
+          "renderedBody"
+        ],
+        "id": "16054",
+        "body": "crjsmk63fd public reply \u2014 customer visible",
+        "public": true,
+        "author": {
+          "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+          "displayName": "CogniRunner",
+          "active": true,
+          "timeZone": "Europe/Bucharest",
+          "_links": {
+            "jiraRest": "https://wolfaenpak.atlassian.net/rest/api/2/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "avatarUrls": {
+              "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/48",
+              "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/24",
+              "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/16",
+              "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/32"
+            },
+            "self": "https://wolfaenpak.atlassian.net/rest/api/2/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38"
+          }
+        },
+        "created": {
+          "iso8601": "2026-09-05T18:50:11+0300",
+          "jira": "2026-09-05T18:50:11.060+0300",
+          "friendly": "Today 6:50 PM",
+          "epochMillis": 1788623411060
+        },
+        "_links": {
+          "self": "https://wolfaenpak.atlassian.net/rest/servicedeskapi/request/24864/comment/16054"
+        }
+      },
+      {
+        "_expands": [
+          "attachment",
+          "renderedBody"
+        ],
+        "id": "16055",
+        "body": "crjsmk63fd agent internal",
+        "public": false,
+        "author": {
+          "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+          "displayName": "CogniRunner",
+          "active": true,
+          "timeZone": "Europe/Bucharest",
+          "_links": {
+            "jiraRest": "https://wolfaenpak.atlassian.net/rest/api/2/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "avatarUrls": {
+              "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/48",
+              "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/24",
+              "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/16",
+              "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/32"
+            },
+            "self": "https://wolfaenpak.atlassian.net/rest/api/2/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38"
+          }
+        },
+        "created": {
+          "iso8601": "2026-09-05T18:50:13+0300",
+          "jira": "2026-09-05T18:50:13.195+0300",
+          "friendly": "Today 6:50 PM",
+          "epochMillis": 1788623413195
+        },
+        "_links": {
+          "self": "https://wolfaenpak.atlassian.net/rest/servicedeskapi/request/24864/comment/16055"
+        }
+      },
+      {
+        "_expands": [
+          "attachment",
+          "renderedBody"
+        ],
+        "id": "16058",
+        "body": "crjsmk63fd-agentnote please investigate retry after throttle",
+        "public": true,
+        "author": {
+          "accountId": "712020:937bc860-eec2-4294-a65d-8e0fe7c45086",
+          "emailAddress": "mihai@wolfaenpak.com",
+          "displayName": "Mihai Perdum",
+          "active": true,
+          "timeZone": "Europe/Bucharest",
+          "_links": {
+            "jiraRest": "https://wolfaenpak.atlassian.net/rest/api/2/user?accountId=712020%3A937bc860-eec2-4294-a65d-8e0fe7c45086",
+            "avatarUrls": {
+              "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:937bc860-eec2-4294-a65d-8e0fe7c45086/027ebed2-c8ad-4f25-981b-66069ec099e4/48",
+              "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:937bc860-eec2-4294-a65d-8e0fe7c45086/027ebed2-c8ad-4f25-981b-66069ec099e4/24",
+              "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:937bc860-eec2-4294-a65d-8e0fe7c45086/027ebed2-c8ad-4f25-981b-66069ec099e4/16",
+              "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:937bc860-eec2-4294-a65d-8e0fe7c45086/027ebed2-c8ad-4f25-981b-66069ec099e4/32"
+            },
+            "self": "https://wolfaenpak.atlassian.net/rest/api/2/user?accountId=712020%3A937bc860-eec2-4294-a65d-8e0fe7c45086"
+          }
+        },
+        "created": {
+          "iso8601": "2026-09-05T18:54:49+0300",
+          "jira": "2026-09-05T18:54:49.853+0300",
+          "friendly": "Today 6:54 PM",
+          "epochMillis": 1788623689853
+        },
+        "_links": {
+          "self": "https://wolfaenpak.atlassian.net/rest/servicedeskapi/request/24864/comment/16058"
+        }
+      },
+      {
+        "_expands": [
+          "attachment",
+          "renderedBody"
+        ],
+        "id": "16059",
+        "body": "crjsmk63fd agent internal",
+        "public": false,
+        "author": {
+          "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+          "displayName": "CogniRunner",
+          "active": true,
+          "timeZone": "Europe/Bucharest",
+          "_links": {
+            "jiraRest": "https://wolfaenpak.atlassian.net/rest/api/2/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+            "avatarUrls": {
+              "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/48",
+              "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/24",
+              "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/16",
+              "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38/43af9356-52b7-4dc5-89af-50a17a8ff0d4/32"
+            },
+            "self": "https://wolfaenpak.atlassian.net/rest/api/2/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38"
+          }
+        },
+        "created": {
+          "iso8601": "2026-09-05T18:54:53+0300",
+          "jira": "2026-09-05T18:54:53.152+0300",
+          "friendly": "Today 6:54 PM",
+          "epochMillis": 1788623693152
+        },
+        "_links": {
+          "self": "https://wolfaenpak.atlassian.net/rest/servicedeskapi/request/24864/comment/16059"
+        }
+      }
+    ]
+  }
+}

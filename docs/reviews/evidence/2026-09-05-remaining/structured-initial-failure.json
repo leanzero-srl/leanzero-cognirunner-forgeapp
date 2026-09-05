@@ -1,0 +1,71 @@
+{
+  "tag": "crstructuredmtok6edy",
+  "checks": [
+    "listeners owned row visible before cleanup",
+    "listeners deletion second read",
+    "issue cleanup independently reread"
+  ],
+  "cleanup": [
+    {
+      "kind": "listeners",
+      "id": "lst_mtok6glop297f5",
+      "before": 200,
+      "delete": 200,
+      "after": 404
+    },
+    {
+      "key": "LZPT-281",
+      "status": 204
+    }
+  ],
+  "issue": "LZPT-281",
+  "before": {
+    "expand": "renderedFields,names,schema,operations,editmeta,changelog,versionedRepresentations",
+    "id": "24863",
+    "self": "https://wolfaenpak.atlassian.net/rest/api/3/issue/24863",
+    "key": "LZPT-281",
+    "fields": {
+      "comment": {
+        "comments": [],
+        "self": "https://wolfaenpak.atlassian.net/rest/api/3/issue/24863/comment",
+        "maxResults": 0,
+        "total": 0,
+        "startAt": 0
+      },
+      "labels": [
+        "crstructuredmtok6edy"
+      ]
+    }
+  },
+  "listener": {
+    "reason": "Agent failed: AI provider error (429): Forge LLM token usage limit exceeded. This tenant (ari:cloud:jira:049de078-bffa-42d1-bbfb-ad8db9860adb:workspace/de27b172-aad3-4897-a5a7-d13252993e62) has reached its limit of 50000 tokens for model anthropic.claude-haiku-4-5-20251001-v1:0. Please try again later.",
+    "issueKey": "LZPT-281",
+    "executionTimeMs": 3007,
+    "isValid": false,
+    "ruleWorkflow": null,
+    "changes": [],
+    "recommendation": "Open the listener, review the instructions and allowed actions, then use 'Test with an issue' to reproduce.",
+    "aiTimeMs": 2975,
+    "source": "async",
+    "eventType": "avi:jira:commented:issue",
+    "type": "listener",
+    "agentOutcome": "failed",
+    "mode": "agent",
+    "ruleName": "crstructuredmtok6edy listener",
+    "tokens": 0,
+    "id": "17886234203140r42",
+    "ruleId": "lst_mtok6glop297f5",
+    "toolCalls": [],
+    "agentSummary": "",
+    "logs": [
+      "Agent start: model=claude-haiku-4-5-20251001, actions=[add_labels], maxRounds=4",
+      "ERROR: AI provider error (429): Forge LLM token usage limit exceeded. This tenant (ari:cloud:jira:049de078-bffa-42d1-bbfb-ad8db9860adb:workspace/de27b172-aad3-4897-a5a7-d13252993e62) has reached its limit of 50000 tokens for model anthropic.claude-haiku-4-5-20251001-v1:0. Please try again later.",
+      "Agent end: FAILED (0 round(s), 0 tool call(s), 0 change(s), 0 tokens)"
+    ],
+    "rounds": 0,
+    "fieldId": "avi:jira:commented:issue",
+    "queueDelayMs": 4274,
+    "timestamp": "2026-09-05T15:50:20.314Z"
+  },
+  "error": "AssertionError [ERR_ASSERTION]: real listener async run\n    at check (file:///private/tmp/cgr-independent-remaining-structured.mjs:8:28)\n    at file:///private/tmp/cgr-independent-remaining-structured.mjs:17:140\n    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)"
+}

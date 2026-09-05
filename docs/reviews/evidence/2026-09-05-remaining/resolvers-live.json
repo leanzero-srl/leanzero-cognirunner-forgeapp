@@ -1,0 +1,464 @@
+{
+  "suite": "resolvers-live",
+  "started": "2026-09-05T15:47:54.519Z",
+  "reads": [
+    {
+      "at": "2026-09-05T15:47:56.132Z",
+      "path": "/rest/api/3/issue/createmeta/LZPT/issuetypes?maxResults=100",
+      "status": 200,
+      "body": {
+        "startAt": 0,
+        "maxResults": 100,
+        "total": 6,
+        "issueTypes": [
+          {
+            "id": "10133",
+            "description": "Epics track collections of related bugs, stories, and tasks.",
+            "iconUrl": "https://wolfaenpak.atlassian.net/rest/api/2/universal_avatar/view/type/issuetype/avatar/10307?size=medium",
+            "name": "Epic",
+            "untranslatedName": "Epic",
+            "subtask": false,
+            "hierarchyLevel": 1,
+            "scope": {
+              "type": "PROJECT",
+              "project": {
+                "id": "10153"
+              }
+            }
+          },
+          {
+            "id": "10134",
+            "description": "Subtasks track small pieces of work that are part of a larger task.",
+            "iconUrl": "https://wolfaenpak.atlassian.net/rest/api/2/universal_avatar/view/type/issuetype/avatar/10316?size=medium",
+            "name": "Subtask",
+            "untranslatedName": "Subtask",
+            "subtask": true,
+            "hierarchyLevel": -1,
+            "scope": {
+              "type": "PROJECT",
+              "project": {
+                "id": "10153"
+              }
+            }
+          },
+          {
+            "id": "10135",
+            "description": "",
+            "iconUrl": "https://wolfaenpak.atlassian.net/rest/api/2/universal_avatar/view/type/issuetype/avatar/10318?size=medium",
+            "name": "Task",
+            "untranslatedName": "Task",
+            "subtask": false,
+            "hierarchyLevel": 0,
+            "scope": {
+              "type": "PROJECT",
+              "project": {
+                "id": "10153"
+              }
+            }
+          },
+          {
+            "id": "10136",
+            "description": "",
+            "iconUrl": "https://wolfaenpak.atlassian.net/rest/api/2/universal_avatar/view/type/issuetype/avatar/10315?size=medium",
+            "name": "Story",
+            "untranslatedName": "Story",
+            "subtask": false,
+            "hierarchyLevel": 0,
+            "scope": {
+              "type": "PROJECT",
+              "project": {
+                "id": "10153"
+              }
+            }
+          },
+          {
+            "id": "10137",
+            "description": "",
+            "iconUrl": "https://wolfaenpak.atlassian.net/rest/api/2/universal_avatar/view/type/issuetype/avatar/10314?size=medium",
+            "name": "Feature",
+            "untranslatedName": "Feature",
+            "subtask": false,
+            "hierarchyLevel": 0,
+            "scope": {
+              "type": "PROJECT",
+              "project": {
+                "id": "10153"
+              }
+            }
+          },
+          {
+            "id": "10138",
+            "description": "",
+            "iconUrl": "https://wolfaenpak.atlassian.net/rest/api/2/universal_avatar/view/type/issuetype/avatar/10303?size=medium",
+            "name": "Bug",
+            "untranslatedName": "Bug",
+            "subtask": false,
+            "hierarchyLevel": 0,
+            "scope": {
+              "type": "PROJECT",
+              "project": {
+                "id": "10153"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "at": "2026-09-05T15:48:06.257Z",
+      "path": "/rest/api/3/issue/LZPT-280?fields=labels",
+      "status": 200,
+      "body": {
+        "expand": "renderedFields,names,schema,operations,editmeta,changelog,versionedRepresentations",
+        "id": "24860",
+        "key": "LZPT-280",
+        "fields": {
+          "labels": [
+            "crresk47xo-job"
+          ]
+        }
+      }
+    },
+    {
+      "at": "2026-09-05T15:48:08.909Z",
+      "path": "/rest/api/3/issue/LZPT-280?fields=summary",
+      "status": 200,
+      "body": {
+        "expand": "renderedFields,names,schema,operations,editmeta,changelog,versionedRepresentations",
+        "id": "24860",
+        "key": "LZPT-280",
+        "fields": {
+          "summary": "crresk47xo resolver bed"
+        }
+      }
+    },
+    {
+      "at": "2026-09-05T15:48:10.006Z",
+      "path": "/rest/api/3/issue/LZPT-280?fields=summary",
+      "status": 404,
+      "body": {
+        "errorMessages": [
+          "Issue does not exist or you do not have permission to see it."
+        ],
+        "errors": {}
+      }
+    }
+  ],
+  "cleanup": [
+    {
+      "path": "/rest/api/3/issue/LZPT-280",
+      "status": 204,
+      "body": null
+    }
+  ],
+  "ownedRules": [
+    {
+      "kind": "Listener",
+      "id": "lst_mtok4a4akiecia"
+    },
+    {
+      "kind": "Listener",
+      "id": "lst_mtok4a4akiecia"
+    },
+    {
+      "kind": "Listener",
+      "id": "lst_mtok4a4akiecia"
+    },
+    {
+      "kind": "ScheduledJob",
+      "id": "job_mtok4d2t9k98xm"
+    }
+  ],
+  "tokensBefore": [
+    {
+      "id": "tok_mtj79apf29b509",
+      "name": "harness 2026-09-01T21:49:06.005Z"
+    },
+    {
+      "id": "tok_mtj7aqkpc84753",
+      "name": "harness 2026-09-01T21:50:12.996Z"
+    },
+    {
+      "id": "tok_mtj7ooyub00691",
+      "name": "harness 2026-09-01T22:01:02.029Z"
+    },
+    {
+      "id": "tok_mtj7qjula09e22",
+      "name": "harness 2026-09-01T22:02:30.872Z"
+    },
+    {
+      "id": "tok_mtj80rji42d93c",
+      "name": "resolver 80e9b"
+    },
+    {
+      "id": "tok_mtj814pr784bb6",
+      "name": "harness 2026-09-01T22:10:44.677Z"
+    },
+    {
+      "id": "tok_mtj82gbqee0674",
+      "name": "resolver 828av"
+    },
+    {
+      "id": "tok_mtj88y7tb0cf13",
+      "name": "harness 2026-09-01T22:16:47.184Z"
+    },
+    {
+      "id": "tok_mtj8ctyef7fcf4",
+      "name": "harness 2026-09-01T22:19:50.176Z"
+    },
+    {
+      "id": "tok_mtj8e3k250635e",
+      "name": "harness 2026-09-01T22:20:49.546Z"
+    },
+    {
+      "id": "tok_mtjryxvc392f56",
+      "name": "resolver ry9rp"
+    },
+    {
+      "id": "tok_mtjryztb48caaf",
+      "name": "harness 2026-09-02T07:28:57.262Z"
+    },
+    {
+      "id": "tok_mtlz82mn02b4fc",
+      "name": "harness 2026-09-03T20:27:30.393Z"
+    },
+    {
+      "id": "tok_mtlz8m3rf590c1",
+      "name": "harness 2026-09-03T20:27:55.712Z"
+    },
+    {
+      "id": "tok_mtlz8t7ccdd33a",
+      "name": "harness 2026-09-03T20:28:04.929Z"
+    },
+    {
+      "id": "tok_mtlzmh7z1d41ca",
+      "name": "harness 2026-09-03T20:38:42.527Z"
+    },
+    {
+      "id": "tok_mtlzoreude6cea",
+      "name": "harness 2026-09-03T20:40:29.054Z"
+    },
+    {
+      "id": "tok_mtlztrkq75b90a",
+      "name": "harness 2026-09-03T20:44:22.558Z"
+    },
+    {
+      "id": "tok_mtlzx64vfb5bc0",
+      "name": "resolver zwxie"
+    },
+    {
+      "id": "tok_mtlzxqfwcc2628",
+      "name": "harness 2026-09-03T20:47:27.713Z"
+    },
+    {
+      "id": "tok_mtm0arhp7bf143",
+      "name": "harness 2026-09-03T20:57:35.464Z"
+    },
+    {
+      "id": "tok_mtm0md47aaf6c8",
+      "name": "harness 2026-09-03T21:06:36.738Z"
+    },
+    {
+      "id": "tok_mtm1oa7cefbce8",
+      "name": "harness 2026-09-03T21:36:05.904Z"
+    },
+    {
+      "id": "tok_mtm1sdo5edc287",
+      "name": "harness 2026-09-03T21:39:17.057Z"
+    },
+    {
+      "id": "tok_mtm1u2gw780489",
+      "name": "harness 2026-09-03T21:40:35.928Z"
+    },
+    {
+      "id": "tok_mtm1vjsza04b75",
+      "name": "harness 2026-09-03T21:41:45.001Z"
+    },
+    {
+      "id": "tok_mtm1vr55e7ca83",
+      "name": "harness 2026-09-03T21:41:54.587Z"
+    },
+    {
+      "id": "tok_mtm1zj3q8d92fa",
+      "name": "harness 2026-09-03T21:44:50.752Z"
+    },
+    {
+      "id": "tok_mtm20okw9b7be9",
+      "name": "harness 2026-09-03T21:45:44.411Z"
+    },
+    {
+      "id": "tok_mto678sh1004cc",
+      "name": "baseline-review-2026-09-05"
+    },
+    {
+      "id": "tok_mto76mw7e0d7c0",
+      "name": "verified-assets-review-2026-09-05"
+    },
+    {
+      "id": "tok_mtok29tmfae370",
+      "name": "harness 2026-09-05T15:46:24.011Z"
+    }
+  ],
+  "ruleCleanup": [
+    {
+      "kind": "Listener",
+      "id": "lst_mtok4a4akiecia",
+      "status": 200,
+      "body": {
+        "success": false,
+        "error": "Listener not found"
+      }
+    },
+    {
+      "kind": "ScheduledJob",
+      "id": "job_mtok4d2t9k98xm",
+      "status": 200,
+      "body": {
+        "success": false,
+        "error": "Scheduled job not found"
+      }
+    }
+  ],
+  "tokensAfter": [
+    {
+      "id": "tok_mtj79apf29b509",
+      "name": "harness 2026-09-01T21:49:06.005Z"
+    },
+    {
+      "id": "tok_mtj7aqkpc84753",
+      "name": "harness 2026-09-01T21:50:12.996Z"
+    },
+    {
+      "id": "tok_mtj7ooyub00691",
+      "name": "harness 2026-09-01T22:01:02.029Z"
+    },
+    {
+      "id": "tok_mtj7qjula09e22",
+      "name": "harness 2026-09-01T22:02:30.872Z"
+    },
+    {
+      "id": "tok_mtj80rji42d93c",
+      "name": "resolver 80e9b"
+    },
+    {
+      "id": "tok_mtj814pr784bb6",
+      "name": "harness 2026-09-01T22:10:44.677Z"
+    },
+    {
+      "id": "tok_mtj82gbqee0674",
+      "name": "resolver 828av"
+    },
+    {
+      "id": "tok_mtj88y7tb0cf13",
+      "name": "harness 2026-09-01T22:16:47.184Z"
+    },
+    {
+      "id": "tok_mtj8ctyef7fcf4",
+      "name": "harness 2026-09-01T22:19:50.176Z"
+    },
+    {
+      "id": "tok_mtj8e3k250635e",
+      "name": "harness 2026-09-01T22:20:49.546Z"
+    },
+    {
+      "id": "tok_mtjryxvc392f56",
+      "name": "resolver ry9rp"
+    },
+    {
+      "id": "tok_mtjryztb48caaf",
+      "name": "harness 2026-09-02T07:28:57.262Z"
+    },
+    {
+      "id": "tok_mtlz82mn02b4fc",
+      "name": "harness 2026-09-03T20:27:30.393Z"
+    },
+    {
+      "id": "tok_mtlz8m3rf590c1",
+      "name": "harness 2026-09-03T20:27:55.712Z"
+    },
+    {
+      "id": "tok_mtlz8t7ccdd33a",
+      "name": "harness 2026-09-03T20:28:04.929Z"
+    },
+    {
+      "id": "tok_mtlzmh7z1d41ca",
+      "name": "harness 2026-09-03T20:38:42.527Z"
+    },
+    {
+      "id": "tok_mtlzoreude6cea",
+      "name": "harness 2026-09-03T20:40:29.054Z"
+    },
+    {
+      "id": "tok_mtlztrkq75b90a",
+      "name": "harness 2026-09-03T20:44:22.558Z"
+    },
+    {
+      "id": "tok_mtlzx64vfb5bc0",
+      "name": "resolver zwxie"
+    },
+    {
+      "id": "tok_mtlzxqfwcc2628",
+      "name": "harness 2026-09-03T20:47:27.713Z"
+    },
+    {
+      "id": "tok_mtm0arhp7bf143",
+      "name": "harness 2026-09-03T20:57:35.464Z"
+    },
+    {
+      "id": "tok_mtm0md47aaf6c8",
+      "name": "harness 2026-09-03T21:06:36.738Z"
+    },
+    {
+      "id": "tok_mtm1oa7cefbce8",
+      "name": "harness 2026-09-03T21:36:05.904Z"
+    },
+    {
+      "id": "tok_mtm1sdo5edc287",
+      "name": "harness 2026-09-03T21:39:17.057Z"
+    },
+    {
+      "id": "tok_mtm1u2gw780489",
+      "name": "harness 2026-09-03T21:40:35.928Z"
+    },
+    {
+      "id": "tok_mtm1vjsza04b75",
+      "name": "harness 2026-09-03T21:41:45.001Z"
+    },
+    {
+      "id": "tok_mtm1vr55e7ca83",
+      "name": "harness 2026-09-03T21:41:54.587Z"
+    },
+    {
+      "id": "tok_mtm1zj3q8d92fa",
+      "name": "harness 2026-09-03T21:44:50.752Z"
+    },
+    {
+      "id": "tok_mtm20okw9b7be9",
+      "name": "harness 2026-09-03T21:45:44.411Z"
+    },
+    {
+      "id": "tok_mto678sh1004cc",
+      "name": "baseline-review-2026-09-05"
+    },
+    {
+      "id": "tok_mto76mw7e0d7c0",
+      "name": "verified-assets-review-2026-09-05"
+    },
+    {
+      "id": "tok_mtok29tmfae370",
+      "name": "harness 2026-09-05T15:46:24.011Z"
+    },
+    {
+      "id": "tok_mtok4hd197ce1b",
+      "name": "resolver k47xo"
+    }
+  ],
+  "newTokens": [
+    {
+      "id": "tok_mtok4hd197ce1b",
+      "name": "resolver k47xo"
+    }
+  ],
+  "finished": "2026-09-05T15:48:10.709Z",
+  "exitCode": 0
+}

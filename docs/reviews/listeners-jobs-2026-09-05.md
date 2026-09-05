@@ -1,5 +1,7 @@
 # Listeners and scheduled jobs review — 5 September 2026
 
+Follow-up: the scheduled fixes below are now implemented in [the remaining-fixes report](remaining-fixes-2026-09-05.md), covering development22.158.0 and the explicit external attachment verification blocker. This report retains the earlier22.153 evidence and scope.
+
 Status: implemented and verified on wolfaenpak development **22.153.0**. Independent final six-lens review found zero new high-confidence defects. Production was not deployed.
 
 Scope: next CogniRunner update, development deployment on wolfaenpak only. Preserve the existing code-step builder and AI agent mode. Evaluate novice/mid-level admin comprehension and actual runtime behavior, not counts alone.

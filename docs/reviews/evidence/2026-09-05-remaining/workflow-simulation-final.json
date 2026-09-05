@@ -1,0 +1,314 @@
+{
+  "tag": "cgr-workflow-mtolw7rg",
+  "checks": [
+    {
+      "name": "null context remains null",
+      "text": "PASS\nLive reads \u00b7 no current issue \u00b7 writes staged \u2014 1ms\n\u00d7\nEXECUTION LOG:\nTesting postfunction with no current issue. Reads are live; writes are simulated.\nReturn value: null context retained\nSave as Skill",
+      "response": {
+        "success": true,
+        "mode": "simulation",
+        "issueKey": null,
+        "logs": [
+          "Testing postfunction with no current issue. Reads are live; writes are simulated.",
+          "Return value: null context retained"
+        ],
+        "changes": [],
+        "executionTimeMs": 1
+      }
+    },
+    {
+      "name": "null issue-bound action fails",
+      "text": "FAIL\nLive reads \u00b7 no current issue \u00b7 writes staged \u2014 2ms\nFix with AI\n\u00d7\nEXECUTION LOG:\nTesting postfunction with no current issue. Reads are live; writes are simulated.\nERROR: api.addComment() needs a current issue, but this postfunction run has none (api.context.issueKey is null). Use api.forIssue(\"KEY\").addComment(...) to target an issue explicitly.",
+      "response": {
+        "success": false,
+        "mode": "simulation",
+        "issueKey": null,
+        "logs": [
+          "Testing postfunction with no current issue. Reads are live; writes are simulated.",
+          "ERROR: api.addComment() needs a current issue, but this postfunction run has none (api.context.issueKey is null). Use api.forIssue(\"KEY\").addComment(...) to target an issue explicitly."
+        ],
+        "changes": [],
+        "executionTimeMs": 2
+      }
+    },
+    {
+      "name": "failed live read is visible",
+      "text": "FAIL\nLive reads \u00b7 no current issue \u00b7 writes staged \u2014 148ms\nFix with AI\n\u00d7\nEXECUTION LOG:\nTesting postfunction with no current issue. Reads are live; writes are simulated.\nERROR: getIssue failed: 404",
+      "response": {
+        "success": false,
+        "mode": "simulation",
+        "issueKey": null,
+        "logs": [
+          "Testing postfunction with no current issue. Reads are live; writes are simulated.",
+          "ERROR: getIssue failed: 404"
+        ],
+        "changes": [],
+        "executionTimeMs": 148
+      }
+    },
+    {
+      "name": "invalid context JQL fails",
+      "text": "FAIL\nLive reads \u00b7 no current issue \u00b7 writes staged \u2014 103ms\nFix with AI\n\u00d7\nEXECUTION LOG:\nRunning JQL to find test issue: this is invalid JQL (\nERROR: JQL search failed (400). Correct the search before testing.",
+      "response": {
+        "success": false,
+        "mode": "simulation",
+        "issueKey": null,
+        "logs": [
+          "Running JQL to find test issue: this is invalid JQL (",
+          "ERROR: JQL search failed (400). Correct the search before testing."
+        ],
+        "changes": [],
+        "executionTimeMs": 103
+      }
+    },
+    {
+      "name": "empty context JQL fails",
+      "text": "FAIL\nLive reads \u00b7 no current issue \u00b7 writes staged \u2014 155ms\nFix with AI\n\u00d7\nEXECUTION LOG:\nRunning JQL to find test issue: project = JT AND key = JT-999999999\nERROR: JQL returned no results. Select an issue or adjust the JQL before testing.",
+      "response": {
+        "success": false,
+        "mode": "simulation",
+        "issueKey": null,
+        "logs": [
+          "Running JQL to find test issue: project = JT AND key = JT-999999999",
+          "ERROR: JQL returned no results. Select an issue or adjust the JQL before testing."
+        ],
+        "changes": [],
+        "executionTimeMs": 155
+      }
+    },
+    {
+      "name": "empty transition rejected",
+      "text": "FAIL\nLive reads against JT-69 \u00b7 writes staged\nFix with AI\n\u00d7\nEXECUTION LOG:\nTesting against real issue: JT-69\nERROR: api.transitionIssue(): transitionId must be a non-empty string or finite number. Use api.transitionByName(\"Done\") when you have a transition name.",
+      "response": {
+        "success": false,
+        "mode": "live",
+        "issueKey": "JT-69",
+        "logs": [
+          "Testing against real issue: JT-69",
+          "ERROR: api.transitionIssue(): transitionId must be a non-empty string or finite number. Use api.transitionByName(\"Done\") when you have a transition name."
+        ],
+        "changes": [],
+        "executionTimeMs": 0
+      }
+    },
+    {
+      "name": "real property gate",
+      "text": "PASS\nLive reads against JT-69 \u00b7 writes staged \u2014 142ms\n\u00d7\nEXECUTION LOG:\nTesting against real issue: JT-69\nReturn value: property gate retained\nSave as Skill",
+      "response": {
+        "success": true,
+        "mode": "live",
+        "issueKey": "JT-69",
+        "logs": [
+          "Testing against real issue: JT-69",
+          "Return value: property gate retained"
+        ],
+        "changes": [],
+        "executionTimeMs": 142
+      }
+    },
+    {
+      "name": "full API stages writes",
+      "text": "PASS\nLive reads \u00b7 no current issue \u00b7 writes staged \u2014 1ms\n\u00d7\nEXECUTION LOG:\nTesting postfunction with no current issue. Reads are live; writes are simulated.\n[SIMULATION] setAssignee(712020:937bc860-eec2-4294-a65d-8e0fe7c45086)\n[SIMULATION] editIssue(\"JT-69\", update {\"labels\":[{\"add\":\"cgr-workflow-mtolw7rg-sim\"}]})\n[SIMULATION] addComment\n[SIMULATION] setProperty(cgr-workflow-mtolw7rg)\nReturn value: all writes staged\n4 writes staged\nsetAssignee\nEdit fields\nAdd comment\nSet property\nsetAssignee(JT-69)\neditIssue(JT-69)\naddComment(JT-69)\nsetProperty(JT-69)\n\u2726 Explain these changes in plain English\nSave as Skill",
+      "response": {
+        "success": true,
+        "mode": "simulation",
+        "issueKey": null,
+        "logs": [
+          "Testing postfunction with no current issue. Reads are live; writes are simulated.",
+          "[SIMULATION] setAssignee(712020:937bc860-eec2-4294-a65d-8e0fe7c45086)",
+          "[SIMULATION] editIssue(\"JT-69\", update {\"labels\":[{\"add\":\"cgr-workflow-mtolw7rg-sim\"}]})",
+          "[SIMULATION] addComment",
+          "[SIMULATION] setProperty(cgr-workflow-mtolw7rg)",
+          "Return value: all writes staged"
+        ],
+        "changes": [
+          {
+            "action": "setAssignee",
+            "key": "JT-69",
+            "accountId": "712020:937bc860-eec2-4294-a65d-8e0fe7c45086",
+            "simulated": true
+          },
+          {
+            "action": "editIssue",
+            "key": "JT-69",
+            "update": {
+              "labels": [
+                {
+                  "add": "cgr-workflow-mtolw7rg-sim"
+                }
+              ]
+            },
+            "simulated": true
+          },
+          {
+            "action": "addComment",
+            "key": "JT-69",
+            "simulated": true
+          },
+          {
+            "action": "setProperty",
+            "key": "JT-69",
+            "propKey": "cgr-workflow-mtolw7rg",
+            "simulated": true
+          }
+        ],
+        "executionTimeMs": 1
+      }
+    },
+    {
+      "name": "transition name lookup and extra fields",
+      "text": "PASS\nLive reads against JT-69 \u00b7 writes staged \u2014 180ms\n\u00d7\nEXECUTION LOG:\nTesting against real issue: JT-69\n[SIMULATION] transitionIssue(\"JT-69\", \"41\") \u2014 transition skipped\n[SIMULATION] transitionIssue(\"JT-69\", \"41\" +fields/update) \u2014 transition skipped\nReturn value: transitions staged\n2 writes staged\nTransition \u00d72\ntransitionIssue(JT-69)\ntransitionIssue(JT-69)\n\u2726 Explain these changes in plain English\nSave as Skill",
+      "response": {
+        "success": true,
+        "mode": "live",
+        "issueKey": "JT-69",
+        "logs": [
+          "Testing against real issue: JT-69",
+          "[SIMULATION] transitionIssue(\"JT-69\", \"41\") \u2014 transition skipped",
+          "[SIMULATION] transitionIssue(\"JT-69\", \"41\" +fields/update) \u2014 transition skipped",
+          "Return value: transitions staged"
+        ],
+        "changes": [
+          {
+            "action": "transitionIssue",
+            "key": "JT-69",
+            "transitionId": "41",
+            "extra": {},
+            "simulated": true
+          },
+          {
+            "action": "transitionIssue",
+            "key": "JT-69",
+            "transitionId": "41",
+            "extra": {
+              "fields": {
+                "summary": "never written"
+              },
+              "update": {
+                "labels": [
+                  {
+                    "add": "never-written"
+                  }
+                ]
+              }
+            },
+            "simulated": true
+          }
+        ],
+        "executionTimeMs": 180
+      }
+    },
+    {
+      "name": "created and cloned targets remain distinct",
+      "text": "PASS\nLive reads against JT-69 \u00b7 writes staged \u2014 246ms\n\u00d7\nEXECUTION LOG:\nTesting against real issue: JT-69\n[SIMULATION] createIssue -> CGRSIM_2F5248290BC1-1 ({\"project\":{\"key\":\"JT\"},\"issuetype\":{\"id\":\"10005\"},\"summary\":\"staged child\"})\n[SIMULATION] cloneIssue -> CGRSIM_2F5248290BC1-2: CLONE of JT-69: cgr-workflow-mtolw7rg\n[SIMULATION] updateIssue(\"CGRSIM_2F5248290BC1-1\", {\"labels\":[\"child\"]}) \u2014 write skipped\n[SIMULATION] editIssue(\"CGRSIM_2F5248290BC1-2\", update {\"labels\":[{\"add\":\"clone\"}]})\nReturn value: distinct staged targets\n4 writes staged\nCreate issue\nClone issue\nUpdate fields\nEdit fields\ncreateIssue(CGRSIM_2F5248290BC1-1, {\"project\":{\"key\":\"JT\"},\"issuetype\":{\"id\":\"10005\"},\"summary\":\"staged child\"})\ncloneIssue(CGRSIM_2F5248290BC1-2, {\"project\":{\"id\":\"10008\"},\"issuetype\":{\"id\":\"10005\"},\"summary\":\"CLONE of JT-69: cgr-workflow-mtolw7rg\"})\nupdateIssue(CGRSIM_2F5248290BC1-1, {\"labels\":[\"child\"]})\neditIssue(CGRSIM_2F5248290BC1-2)\n\u2726 Explain these changes in plain English\nSave as Skill",
+      "response": {
+        "success": true,
+        "mode": "live",
+        "issueKey": "JT-69",
+        "logs": [
+          "Testing against real issue: JT-69",
+          "[SIMULATION] createIssue -> CGRSIM_2F5248290BC1-1 ({\"project\":{\"key\":\"JT\"},\"issuetype\":{\"id\":\"10005\"},\"summary\":\"staged child\"})",
+          "[SIMULATION] cloneIssue -> CGRSIM_2F5248290BC1-2: CLONE of JT-69: cgr-workflow-mtolw7rg",
+          "[SIMULATION] updateIssue(\"CGRSIM_2F5248290BC1-1\", {\"labels\":[\"child\"]}) \u2014 write skipped",
+          "[SIMULATION] editIssue(\"CGRSIM_2F5248290BC1-2\", update {\"labels\":[{\"add\":\"clone\"}]})",
+          "Return value: distinct staged targets"
+        ],
+        "changes": [
+          {
+            "action": "createIssue",
+            "key": "CGRSIM_2F5248290BC1-1",
+            "fields": {
+              "project": {
+                "key": "JT"
+              },
+              "issuetype": {
+                "id": "10005"
+              },
+              "summary": "staged child"
+            },
+            "simulated": true
+          },
+          {
+            "action": "cloneIssue",
+            "from": "JT-69",
+            "key": "CGRSIM_2F5248290BC1-2",
+            "fields": {
+              "project": {
+                "id": "10008"
+              },
+              "issuetype": {
+                "id": "10005"
+              },
+              "summary": "CLONE of JT-69: cgr-workflow-mtolw7rg"
+            },
+            "simulated": true
+          },
+          {
+            "action": "updateIssue",
+            "key": "CGRSIM_2F5248290BC1-1",
+            "fields": {
+              "labels": [
+                "child"
+              ]
+            },
+            "simulated": true
+          },
+          {
+            "action": "editIssue",
+            "key": "CGRSIM_2F5248290BC1-2",
+            "update": {
+              "labels": [
+                {
+                  "add": "clone"
+                }
+              ]
+            },
+            "simulated": true
+          }
+        ],
+        "executionTimeMs": 246
+      }
+    }
+  ],
+  "cleanup": [
+    {
+      "key": "JT-69",
+      "absent": true
+    }
+  ],
+  "pointer": [
+    {
+      "type": "mousedown",
+      "target": "btn-run-test",
+      "buttonTop": 484.5625,
+      "panelScrollTop": 36,
+      "dropdownOpen": true
+    },
+    {
+      "type": "mouseup",
+      "target": "btn-run-test",
+      "buttonTop": 484.5625,
+      "panelScrollTop": 36,
+      "dropdownOpen": true
+    },
+    {
+      "type": "click",
+      "target": "btn-run-test",
+      "buttonTop": 484.5625,
+      "panelScrollTop": 36,
+      "dropdownOpen": true
+    }
+  ],
+  "zeroWrites": {
+    "issue": "JT-69",
+    "fields": [
+      "summary",
+      "labels",
+      "assignee",
+      "comment",
+      "status"
+    ],
+    "propertyUnchanged": true
+  },
+  "pass": true
+}

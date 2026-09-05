@@ -1,0 +1,453 @@
+{
+  "tag": "cgr-ui-request-mtoi3uw5",
+  "start": "2026-09-05T14:51:39.173Z",
+  "beforeSamples": {
+    "avi:jsm-entity:created:request-type": null,
+    "avi:jsm-entity:updated:request-type": null,
+    "avi:jsm-entity:deleted:request-type": null
+  },
+  "listener": {
+    "id": "lst_mtoi3y9vdmwxy0",
+    "name": "cgr-ui-request-mtoi3uw5",
+    "description": "",
+    "enabled": true,
+    "events": [
+      "avi:jsm-entity:created:request-type",
+      "avi:jsm-entity:updated:request-type",
+      "avi:jsm-entity:deleted:request-type",
+      "avi:jira:created:issue"
+    ],
+    "filters": {
+      "projectKeys": [],
+      "issueTypes": [],
+      "jql": "",
+      "changedFields": [],
+      "commentPattern": ""
+    },
+    "ignoreSelf": false,
+    "aiCondition": "",
+    "mode": "script",
+    "functions": [
+      {
+        "id": "step-1",
+        "name": "No-write receipt",
+        "operationType": "work_item_query",
+        "operationPrompt": "",
+        "conditionPrompt": "",
+        "endpoint": "",
+        "method": "GET",
+        "variableName": "",
+        "code": "api.log(JSON.stringify({eventType:api.context.eventType,event:api.context.event,issueKey:api.context.issueKey})); return api.context.eventType;",
+        "includeBackoff": false
+      }
+    ],
+    "agent": {
+      "instructions": "",
+      "allowedActions": [
+        "get_issue",
+        "search_issues",
+        "add_comment"
+      ],
+      "maxRounds": 5
+    },
+    "simulationMode": false,
+    "suppressNotifications": false,
+    "createdBy": "712020:937bc860-eec2-4294-a65d-8e0fe7c45086",
+    "createdAt": "2026-09-05T14:51:43.576Z",
+    "updatedAt": "2026-09-05T14:51:43.595Z",
+    "stats": {
+      "runCount": 0,
+      "errorCount": 0,
+      "lastRunAt": null,
+      "lastStatus": null,
+      "lastError": null,
+      "lastIssueKey": null
+    }
+  },
+  "cogtestVisibility": {
+    "expand": "renderedFields,names,schema,operations,editmeta,changelog,versionedRepresentations",
+    "id": "24793",
+    "self": "https://wolfaenpak.atlassian.net/rest/api/3/issue/24793",
+    "key": "COGTEST-2697",
+    "fields": {
+      "summary": "crjob67959 scheduled job bed",
+      "project": {
+        "self": "https://wolfaenpak.atlassian.net/rest/api/3/project/10014",
+        "id": "10014",
+        "key": "COGTEST",
+        "name": "CogniRunner Test Harness",
+        "projectTypeKey": "software",
+        "simplified": false,
+        "avatarUrls": {
+          "48x48": "https://wolfaenpak.atlassian.net/rest/api/3/universal_avatar/view/type/project/avatar/10417",
+          "24x24": "https://wolfaenpak.atlassian.net/rest/api/3/universal_avatar/view/type/project/avatar/10417?size=small",
+          "16x16": "https://wolfaenpak.atlassian.net/rest/api/3/universal_avatar/view/type/project/avatar/10417?size=xsmall",
+          "32x32": "https://wolfaenpak.atlassian.net/rest/api/3/universal_avatar/view/type/project/avatar/10417?size=medium"
+        }
+      }
+    }
+  },
+  "cogtestPermissions": {
+    "permissions": {
+      "BROWSE_PROJECTS": {
+        "id": "10",
+        "key": "BROWSE_PROJECTS",
+        "name": "Browse Projects",
+        "type": "PROJECT",
+        "description": "Ability to browse projects and the issues within them.",
+        "havePermission": true
+      },
+      "DELETE_ISSUES": {
+        "id": "16",
+        "key": "DELETE_ISSUES",
+        "name": "Delete Issues",
+        "type": "PROJECT",
+        "description": "Ability to delete issues.",
+        "havePermission": false
+      }
+    }
+  },
+  "desk": {
+    "id": "1",
+    "projectId": "10008",
+    "projectName": "JSM Test",
+    "projectKey": "JT",
+    "projectTypeKey": "service_desk",
+    "_links": {
+      "self": "https://wolfaenpak.atlassian.net/rest/servicedeskapi/servicedesk/1"
+    }
+  },
+  "issue": {
+    "id": "24851",
+    "key": "JT-51",
+    "self": "https://wolfaenpak.atlassian.net/rest/api/3/issue/24851"
+  },
+  "afterSamples": {
+    "avi:jsm-entity:created:request-type": null,
+    "avi:jsm-entity:updated:request-type": null,
+    "avi:jsm-entity:deleted:request-type": null
+  },
+  "logs": [
+    {
+      "stepResults": [
+        {
+          "name": "No-write receipt",
+          "index": 1,
+          "status": "success",
+          "timeMs": 19
+        }
+      ],
+      "reason": "Ran 1 step(s), 0 change(s)",
+      "issueKey": "JT-51",
+      "executionTimeMs": 21,
+      "isValid": true,
+      "ruleWorkflow": null,
+      "changes": [],
+      "source": "async",
+      "eventType": "avi:jira:created:issue",
+      "type": "listener",
+      "mode": "script",
+      "ruleName": "cgr-ui-request-mtoi3uw5",
+      "id": "1788619970528khae",
+      "ruleId": "lst_mtoi3y9vdmwxy0",
+      "logs": [
+        "Starting 1 step(s) for JT-51",
+        "{\"eventType\":\"avi:jira:created:issue\",\"event\":{\"issue\":{\"id\":\"24851\",\"key\":\"JT-51\",\"fields\":{\"summary\":\"cgr-ui-request-mtoi3uw5 positive control\",\"issuetype\":{\"self\":\"https://wolfaenpak.atlassian.net/rest/api/3/issuetype/10005\",\"id\":\"10005\",\"description\":\"A small, distinct piece of work.\",\"iconUrl\":",
+        "\"No-write receipt\": Completed in 19ms",
+        "Finished: 1/1 step(s) succeeded in 19ms, 0 change(s) made"
+      ],
+      "fieldId": "avi:jira:created:issue",
+      "queueDelayMs": 3966,
+      "timestamp": "2026-09-05T14:52:50.528Z"
+    }
+  ],
+  "requestTypes": [],
+  "lastRead": "2026-09-05T15:01:54.060Z",
+  "observations": [
+    {
+      "at": "2026-09-05T14:55:04.618Z",
+      "requestTypes": [
+        {
+          "_expands": [
+            "field"
+          ],
+          "id": "341",
+          "_links": {
+            "self": "https://wolfaenpak.atlassian.net/rest/servicedeskapi/servicedesk/1/requesttype/341"
+          },
+          "name": "cgr-ui-request-mtoi3uw5",
+          "description": "Disposable CogniRunner UI event probe",
+          "helpText": "",
+          "defaultName": "cgr-ui-request-mtoi3uw5",
+          "issueTypeId": "10019",
+          "serviceDeskId": "1",
+          "portalId": "1",
+          "groupIds": [],
+          "icon": {
+            "id": "10511",
+            "_links": {
+              "iconUrls": {
+                "48x48": "https://wolfaenpak.atlassian.net/rest/api/2/universal_avatar/view/type/SD_REQTYPE/avatar/10511?size=large",
+                "24x24": "https://wolfaenpak.atlassian.net/rest/api/2/universal_avatar/view/type/SD_REQTYPE/avatar/10511?size=small",
+                "16x16": "https://wolfaenpak.atlassian.net/rest/api/2/universal_avatar/view/type/SD_REQTYPE/avatar/10511?size=xsmall",
+                "32x32": "https://wolfaenpak.atlassian.net/rest/api/2/universal_avatar/view/type/SD_REQTYPE/avatar/10511?size=medium"
+              }
+            }
+          },
+          "restrictionStatus": "OPEN",
+          "canCreateRequest": true
+        }
+      ],
+      "samples": {
+        "avi:jsm-entity:created:request-type": null,
+        "avi:jsm-entity:updated:request-type": null,
+        "avi:jsm-entity:deleted:request-type": null
+      },
+      "logs": [
+        {
+          "stepResults": [
+            {
+              "name": "No-write receipt",
+              "index": 1,
+              "status": "success",
+              "timeMs": 19
+            }
+          ],
+          "reason": "Ran 1 step(s), 0 change(s)",
+          "issueKey": "JT-51",
+          "executionTimeMs": 21,
+          "isValid": true,
+          "ruleWorkflow": null,
+          "changes": [],
+          "source": "async",
+          "eventType": "avi:jira:created:issue",
+          "type": "listener",
+          "mode": "script",
+          "ruleName": "cgr-ui-request-mtoi3uw5",
+          "id": "1788619970528khae",
+          "ruleId": "lst_mtoi3y9vdmwxy0",
+          "logs": [
+            "Starting 1 step(s) for JT-51",
+            "{\"eventType\":\"avi:jira:created:issue\",\"event\":{\"issue\":{\"id\":\"24851\",\"key\":\"JT-51\",\"fields\":{\"summary\":\"cgr-ui-request-mtoi3uw5 positive control\",\"issuetype\":{\"self\":\"https://wolfaenpak.atlassian.net/rest/api/3/issuetype/10005\",\"id\":\"10005\",\"description\":\"A small, distinct piece of work.\",\"iconUrl\":",
+            "\"No-write receipt\": Completed in 19ms",
+            "Finished: 1/1 step(s) succeeded in 19ms, 0 change(s) made"
+          ],
+          "fieldId": "avi:jira:created:issue",
+          "queueDelayMs": 3966,
+          "timestamp": "2026-09-05T14:52:50.528Z"
+        }
+      ]
+    },
+    {
+      "at": "2026-09-05T14:55:47.968Z",
+      "requestTypes": [
+        {
+          "_expands": [
+            "field"
+          ],
+          "id": "341",
+          "_links": {
+            "self": "https://wolfaenpak.atlassian.net/rest/servicedeskapi/servicedesk/1/requesttype/341"
+          },
+          "name": "cgr-ui-request-mtoi3uw5",
+          "description": "cgr-ui-request-mtoi3uw5 UPDATED via real settings UI",
+          "helpText": "",
+          "defaultName": "cgr-ui-request-mtoi3uw5",
+          "issueTypeId": "10019",
+          "serviceDeskId": "1",
+          "portalId": "1",
+          "groupIds": [],
+          "icon": {
+            "id": "10511",
+            "_links": {
+              "iconUrls": {
+                "48x48": "https://wolfaenpak.atlassian.net/rest/api/2/universal_avatar/view/type/SD_REQTYPE/avatar/10511?size=large",
+                "24x24": "https://wolfaenpak.atlassian.net/rest/api/2/universal_avatar/view/type/SD_REQTYPE/avatar/10511?size=small",
+                "16x16": "https://wolfaenpak.atlassian.net/rest/api/2/universal_avatar/view/type/SD_REQTYPE/avatar/10511?size=xsmall",
+                "32x32": "https://wolfaenpak.atlassian.net/rest/api/2/universal_avatar/view/type/SD_REQTYPE/avatar/10511?size=medium"
+              }
+            }
+          },
+          "restrictionStatus": "OPEN",
+          "canCreateRequest": true
+        }
+      ],
+      "samples": {
+        "avi:jsm-entity:created:request-type": null,
+        "avi:jsm-entity:updated:request-type": null,
+        "avi:jsm-entity:deleted:request-type": null
+      },
+      "logs": [
+        {
+          "stepResults": [
+            {
+              "name": "No-write receipt",
+              "index": 1,
+              "status": "success",
+              "timeMs": 19
+            }
+          ],
+          "reason": "Ran 1 step(s), 0 change(s)",
+          "issueKey": "JT-51",
+          "executionTimeMs": 21,
+          "isValid": true,
+          "ruleWorkflow": null,
+          "changes": [],
+          "source": "async",
+          "eventType": "avi:jira:created:issue",
+          "type": "listener",
+          "mode": "script",
+          "ruleName": "cgr-ui-request-mtoi3uw5",
+          "id": "1788619970528khae",
+          "ruleId": "lst_mtoi3y9vdmwxy0",
+          "logs": [
+            "Starting 1 step(s) for JT-51",
+            "{\"eventType\":\"avi:jira:created:issue\",\"event\":{\"issue\":{\"id\":\"24851\",\"key\":\"JT-51\",\"fields\":{\"summary\":\"cgr-ui-request-mtoi3uw5 positive control\",\"issuetype\":{\"self\":\"https://wolfaenpak.atlassian.net/rest/api/3/issuetype/10005\",\"id\":\"10005\",\"description\":\"A small, distinct piece of work.\",\"iconUrl\":",
+            "\"No-write receipt\": Completed in 19ms",
+            "Finished: 1/1 step(s) succeeded in 19ms, 0 change(s) made"
+          ],
+          "fieldId": "avi:jira:created:issue",
+          "queueDelayMs": 3966,
+          "timestamp": "2026-09-05T14:52:50.528Z"
+        }
+      ]
+    },
+    {
+      "at": "2026-09-05T14:57:02.231Z",
+      "requestTypes": [],
+      "samples": {
+        "avi:jsm-entity:created:request-type": null,
+        "avi:jsm-entity:updated:request-type": null,
+        "avi:jsm-entity:deleted:request-type": null
+      },
+      "logs": [
+        {
+          "stepResults": [
+            {
+              "name": "No-write receipt",
+              "index": 1,
+              "status": "success",
+              "timeMs": 19
+            }
+          ],
+          "reason": "Ran 1 step(s), 0 change(s)",
+          "issueKey": "JT-51",
+          "executionTimeMs": 21,
+          "isValid": true,
+          "ruleWorkflow": null,
+          "changes": [],
+          "source": "async",
+          "eventType": "avi:jira:created:issue",
+          "type": "listener",
+          "mode": "script",
+          "ruleName": "cgr-ui-request-mtoi3uw5",
+          "id": "1788619970528khae",
+          "ruleId": "lst_mtoi3y9vdmwxy0",
+          "logs": [
+            "Starting 1 step(s) for JT-51",
+            "{\"eventType\":\"avi:jira:created:issue\",\"event\":{\"issue\":{\"id\":\"24851\",\"key\":\"JT-51\",\"fields\":{\"summary\":\"cgr-ui-request-mtoi3uw5 positive control\",\"issuetype\":{\"self\":\"https://wolfaenpak.atlassian.net/rest/api/3/issuetype/10005\",\"id\":\"10005\",\"description\":\"A small, distinct piece of work.\",\"iconUrl\":",
+            "\"No-write receipt\": Completed in 19ms",
+            "Finished: 1/1 step(s) succeeded in 19ms, 0 change(s) made"
+          ],
+          "fieldId": "avi:jira:created:issue",
+          "queueDelayMs": 3966,
+          "timestamp": "2026-09-05T14:52:50.528Z"
+        }
+      ]
+    },
+    {
+      "at": "2026-09-05T14:59:43.220Z",
+      "requestTypes": [],
+      "samples": {
+        "avi:jsm-entity:created:request-type": null,
+        "avi:jsm-entity:updated:request-type": null,
+        "avi:jsm-entity:deleted:request-type": null
+      },
+      "logs": [
+        {
+          "stepResults": [
+            {
+              "name": "No-write receipt",
+              "index": 1,
+              "status": "success",
+              "timeMs": 19
+            }
+          ],
+          "reason": "Ran 1 step(s), 0 change(s)",
+          "issueKey": "JT-51",
+          "executionTimeMs": 21,
+          "isValid": true,
+          "ruleWorkflow": null,
+          "changes": [],
+          "source": "async",
+          "eventType": "avi:jira:created:issue",
+          "type": "listener",
+          "mode": "script",
+          "ruleName": "cgr-ui-request-mtoi3uw5",
+          "id": "1788619970528khae",
+          "ruleId": "lst_mtoi3y9vdmwxy0",
+          "logs": [
+            "Starting 1 step(s) for JT-51",
+            "{\"eventType\":\"avi:jira:created:issue\",\"event\":{\"issue\":{\"id\":\"24851\",\"key\":\"JT-51\",\"fields\":{\"summary\":\"cgr-ui-request-mtoi3uw5 positive control\",\"issuetype\":{\"self\":\"https://wolfaenpak.atlassian.net/rest/api/3/issuetype/10005\",\"id\":\"10005\",\"description\":\"A small, distinct piece of work.\",\"iconUrl\":",
+            "\"No-write receipt\": Completed in 19ms",
+            "Finished: 1/1 step(s) succeeded in 19ms, 0 change(s) made"
+          ],
+          "fieldId": "avi:jira:created:issue",
+          "queueDelayMs": 3966,
+          "timestamp": "2026-09-05T14:52:50.528Z"
+        }
+      ]
+    },
+    {
+      "at": "2026-09-05T15:01:54.060Z",
+      "requestTypes": [],
+      "samples": {
+        "avi:jsm-entity:created:request-type": null,
+        "avi:jsm-entity:updated:request-type": null,
+        "avi:jsm-entity:deleted:request-type": null
+      },
+      "logs": [
+        {
+          "stepResults": [
+            {
+              "name": "No-write receipt",
+              "index": 1,
+              "status": "success",
+              "timeMs": 19
+            }
+          ],
+          "reason": "Ran 1 step(s), 0 change(s)",
+          "issueKey": "JT-51",
+          "executionTimeMs": 21,
+          "isValid": true,
+          "ruleWorkflow": null,
+          "changes": [],
+          "source": "async",
+          "eventType": "avi:jira:created:issue",
+          "type": "listener",
+          "mode": "script",
+          "ruleName": "cgr-ui-request-mtoi3uw5",
+          "id": "1788619970528khae",
+          "ruleId": "lst_mtoi3y9vdmwxy0",
+          "logs": [
+            "Starting 1 step(s) for JT-51",
+            "{\"eventType\":\"avi:jira:created:issue\",\"event\":{\"issue\":{\"id\":\"24851\",\"key\":\"JT-51\",\"fields\":{\"summary\":\"cgr-ui-request-mtoi3uw5 positive control\",\"issuetype\":{\"self\":\"https://wolfaenpak.atlassian.net/rest/api/3/issuetype/10005\",\"id\":\"10005\",\"description\":\"A small, distinct piece of work.\",\"iconUrl\":",
+            "\"No-write receipt\": Completed in 19ms",
+            "Finished: 1/1 step(s) succeeded in 19ms, 0 change(s) made"
+          ],
+          "fieldId": "avi:jira:created:issue",
+          "queueDelayMs": 3966,
+          "timestamp": "2026-09-05T14:52:50.528Z"
+        }
+      ]
+    }
+  ],
+  "requestTypeDirectDeletedRead": {
+    "id": "341",
+    "status": 404,
+    "at": "2026-09-05T14:57:52.453Z"
+  },
+  "listenerRemoved": true,
+  "issueRemoved": true,
+  "requestTypesAfterCleanup": []
+}

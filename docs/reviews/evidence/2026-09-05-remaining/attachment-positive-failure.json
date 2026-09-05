@@ -1,0 +1,35 @@
+{
+  "tag": "cgr-attachment-mtombe28",
+  "cleanup": [
+    {
+      "transitionId": "9870",
+      "absent": true
+    },
+    {
+      "key": "JT-70",
+      "absent": true
+    }
+  ],
+  "issue": "JT-70",
+  "before": {
+    "attachments": [],
+    "comments": {
+      "comments": [],
+      "self": "https://wolfaenpak.atlassian.net/rest/api/3/issue/24891/comment",
+      "maxResults": 0,
+      "total": 0,
+      "startAt": 0
+    }
+  },
+  "after": {
+    "attachments": [],
+    "comments": {
+      "comments": [],
+      "self": "https://wolfaenpak.atlassian.net/rest/api/3/issue/24891/comment",
+      "maxResults": 0,
+      "total": 0,
+      "startAt": 0
+    }
+  },
+  "error": "AssertionError [ERR_ASSERTION]: exactly one actual Jira attachment required\n\n0 !== 1\n\n    at file:///Users/mihaiperdum/Projects/CogniRunner/test-harness/scripts/attachment-positive-live.mjs:43:10\n    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)"
+}

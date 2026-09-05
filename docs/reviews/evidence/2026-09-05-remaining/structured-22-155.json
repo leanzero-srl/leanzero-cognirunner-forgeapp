@@ -1,0 +1,546 @@
+{
+  "tag": "crstructuredmtokllnp",
+  "checks": [
+    "real listener async run",
+    "structured done/summary exact: crstructuredmtokllnp listener completed",
+    "listener exact label second REST read",
+    "scoped job completed",
+    "scoped job persisted log",
+    "structured done/summary exact: crstructuredmtokllnp scoped completed",
+    "structured done/summary exact: crstructuredmtokllnp scoped completed",
+    "scoped exact label second REST read",
+    "unscoped job completed",
+    "unscoped job persisted log",
+    "structured done/summary exact: crstructuredmtokllnp unscoped completed",
+    "structured done/summary exact: crstructuredmtokllnp unscoped completed",
+    "unscoped exact label second REST read",
+    "listeners owned row visible before cleanup",
+    "listeners deletion second read",
+    "jobs owned row visible before cleanup",
+    "jobs deletion second read",
+    "jobs owned row visible before cleanup",
+    "jobs deletion second read",
+    "issue cleanup independently reread"
+  ],
+  "cleanup": [
+    {
+      "kind": "listeners",
+      "id": "lst_mtoklsgyrbmy0p",
+      "before": 200,
+      "delete": 200,
+      "after": 404
+    },
+    {
+      "kind": "jobs",
+      "id": "job_mtokmussl3bkvg",
+      "before": 200,
+      "delete": 200,
+      "after": 404
+    },
+    {
+      "kind": "jobs",
+      "id": "job_mtokn8abt40ddb",
+      "before": 200,
+      "delete": 200,
+      "after": 404
+    },
+    {
+      "key": "LZPT-283",
+      "status": 204
+    }
+  ],
+  "issue": "LZPT-283",
+  "before": {
+    "expand": "renderedFields,names,schema,operations,editmeta,changelog,versionedRepresentations",
+    "id": "24875",
+    "self": "https://wolfaenpak.atlassian.net/rest/api/3/issue/24875",
+    "key": "LZPT-283",
+    "fields": {
+      "comment": {
+        "comments": [],
+        "self": "https://wolfaenpak.atlassian.net/rest/api/3/issue/24875/comment",
+        "maxResults": 0,
+        "total": 0,
+        "startAt": 0
+      },
+      "labels": [
+        "crstructuredmtokllnp"
+      ]
+    }
+  },
+  "listener": {
+    "reason": "Agent done: crstructuredmtokllnp listener completed",
+    "issueKey": "LZPT-283",
+    "executionTimeMs": 3659,
+    "isValid": true,
+    "ruleWorkflow": null,
+    "changes": [
+      {
+        "action": "editIssue",
+        "update": {
+          "labels": [
+            {
+              "add": "crstructuredmtokllnp-listener"
+            }
+          ]
+        },
+        "key": "LZPT-283"
+      }
+    ],
+    "aiTimeMs": 2740,
+    "source": "async",
+    "eventType": "avi:jira:commented:issue",
+    "type": "listener",
+    "agentOutcome": "done",
+    "mode": "agent",
+    "ruleName": "crstructuredmtokllnp listener",
+    "tokens": 2681,
+    "id": "1788624143977aiz4",
+    "ruleId": "lst_mtoklsgyrbmy0p",
+    "toolCalls": [
+      {
+        "name": "add_labels",
+        "args": "{\"labels\":[\"crstructuredmtokllnp-listener\"]}",
+        "ok": true,
+        "ms": 590
+      },
+      {
+        "name": "finish",
+        "args": "{\"outcome\":\"done\",\"summary\":\"crstructuredmtokllnp listener completed\"}",
+        "ok": true,
+        "ms": 0
+      }
+    ],
+    "agentSummary": "crstructuredmtokllnp listener completed",
+    "logs": [
+      "Agent start: model=claude-haiku-4-5-20251001, actions=[add_labels], maxRounds=4",
+      "tool add_labels({\"labels\":[\"crstructuredmtokllnp-listener\"]})",
+      "tool finish({\"outcome\":\"done\",\"summary\":\"crstructuredmtokllnp listener completed\"})",
+      "Agent end: OK (2 round(s), 2 tool call(s), 1 change(s), 2681 tokens)"
+    ],
+    "rounds": 2,
+    "fieldId": "avi:jira:commented:issue",
+    "queueDelayMs": 11648,
+    "timestamp": "2026-09-05T16:02:23.977Z"
+  },
+  "afterListener": {
+    "expand": "renderedFields,names,schema,operations,editmeta,changelog,versionedRepresentations",
+    "id": "24875",
+    "self": "https://wolfaenpak.atlassian.net/rest/api/3/issue/24875",
+    "key": "LZPT-283",
+    "fields": {
+      "comment": {
+        "comments": [
+          {
+            "self": "https://wolfaenpak.atlassian.net/rest/api/3/issue/24875/comment/16062",
+            "id": "16062",
+            "author": {
+              "self": "https://wolfaenpak.atlassian.net/rest/api/3/user?accountId=712020%3A937bc860-eec2-4294-a65d-8e0fe7c45086",
+              "accountId": "712020:937bc860-eec2-4294-a65d-8e0fe7c45086",
+              "emailAddress": "mihai@wolfaenpak.com",
+              "avatarUrls": {
+                "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:937bc860-eec2-4294-a65d-8e0fe7c45086/027ebed2-c8ad-4f25-981b-66069ec099e4/48",
+                "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:937bc860-eec2-4294-a65d-8e0fe7c45086/027ebed2-c8ad-4f25-981b-66069ec099e4/24",
+                "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:937bc860-eec2-4294-a65d-8e0fe7c45086/027ebed2-c8ad-4f25-981b-66069ec099e4/16",
+                "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:937bc860-eec2-4294-a65d-8e0fe7c45086/027ebed2-c8ad-4f25-981b-66069ec099e4/32"
+              },
+              "displayName": "Mihai Perdum",
+              "active": true,
+              "timeZone": "Europe/Bucharest",
+              "accountType": "atlassian"
+            },
+            "body": {
+              "type": "doc",
+              "version": 1,
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "crstructuredmtokllnp-ping"
+                    }
+                  ]
+                }
+              ]
+            },
+            "updateAuthor": {
+              "self": "https://wolfaenpak.atlassian.net/rest/api/3/user?accountId=712020%3A937bc860-eec2-4294-a65d-8e0fe7c45086",
+              "accountId": "712020:937bc860-eec2-4294-a65d-8e0fe7c45086",
+              "emailAddress": "mihai@wolfaenpak.com",
+              "avatarUrls": {
+                "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:937bc860-eec2-4294-a65d-8e0fe7c45086/027ebed2-c8ad-4f25-981b-66069ec099e4/48",
+                "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:937bc860-eec2-4294-a65d-8e0fe7c45086/027ebed2-c8ad-4f25-981b-66069ec099e4/24",
+                "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:937bc860-eec2-4294-a65d-8e0fe7c45086/027ebed2-c8ad-4f25-981b-66069ec099e4/16",
+                "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:937bc860-eec2-4294-a65d-8e0fe7c45086/027ebed2-c8ad-4f25-981b-66069ec099e4/32"
+              },
+              "displayName": "Mihai Perdum",
+              "active": true,
+              "timeZone": "Europe/Bucharest",
+              "accountType": "atlassian"
+            },
+            "created": "2026-09-05T19:02:10.662+0300",
+            "updated": "2026-09-05T19:02:10.662+0300",
+            "jsdPublic": true
+          }
+        ],
+        "self": "https://wolfaenpak.atlassian.net/rest/api/3/issue/24875/comment",
+        "maxResults": 1,
+        "total": 1,
+        "startAt": 0
+      },
+      "labels": [
+        "crstructuredmtokllnp",
+        "crstructuredmtokllnp-listener"
+      ]
+    }
+  },
+  "scoped": {
+    "task": {
+      "taskId": "9998211375854458_scheduledjob_1nks98",
+      "status": "done",
+      "result": {
+        "changes": [
+          {
+            "action": "editIssue",
+            "issue": "LZPT-283",
+            "key": "LZPT-283",
+            "update": {
+              "labels": [
+                {
+                  "add": "crstructuredmtokllnp-scoped"
+                }
+              ]
+            }
+          }
+        ],
+        "executionTimeMs": 3986,
+        "issues": [
+          {
+            "agentOutcome": "done",
+            "agentSummary": "crstructuredmtokllnp scoped completed",
+            "key": "LZPT-283",
+            "reason": "done: crstructuredmtokllnp scoped completed",
+            "success": true
+          }
+        ],
+        "logs": [
+          "Scope \"key = LZPT-283\" matched 1 issue(s) (cap 1)",
+          "--- LZPT-283: OK \u2014 done: crstructuredmtokllnp scoped completed",
+          "    Agent start: model=claude-haiku-4-5-20251001, actions=[add_labels], maxRounds=4",
+          "    tool add_labels({\"labels\":[\"crstructuredmtokllnp-scoped\"]})",
+          "    tool finish({\"outcome\":\"done\",\"summary\":\"crstructuredmtokllnp scoped completed\"})",
+          "    Agent end: OK (2 round(s), 2 tool call(s), 1 change(s), 2617 tokens)"
+        ],
+        "reason": "1/1 issue(s) processed OK, 1 change(s)",
+        "success": true,
+        "tokens": 2617
+      },
+      "job": {
+        "accountId": "api:tok_mtoklqiodc9a23",
+        "durationMs": 4753,
+        "enqueuedAt": "2026-09-05T16:02:25.542Z",
+        "finishedAt": "2026-09-05T16:02:38.445Z",
+        "issueKey": null,
+        "model": null,
+        "provider": null,
+        "ruleId": "job_mtokmussl3bkvg",
+        "ruleName": "crstructuredmtokllnp scoped",
+        "startedAt": "2026-09-05T16:02:33.691Z",
+        "status": "done",
+        "taskId": "9998211375854458_scheduledjob_1nks98",
+        "taskType": "scheduledjob"
+      }
+    },
+    "log": {
+      "perIssue": [
+        {
+          "reason": "done: crstructuredmtokllnp scoped completed",
+          "agentOutcome": "done",
+          "agentSummary": "crstructuredmtokllnp scoped completed",
+          "key": "LZPT-283",
+          "success": true
+        }
+      ],
+      "reason": "1/1 issue(s) processed OK, 1 change(s)",
+      "issueKey": "1 issue(s)",
+      "missed": 0,
+      "isValid": true,
+      "executionTimeMs": 3986,
+      "ruleWorkflow": null,
+      "changes": [
+        {
+          "action": "editIssue",
+          "update": {
+            "labels": [
+              {
+                "add": "crstructuredmtokllnp-scoped"
+              }
+            ]
+          },
+          "issue": "LZPT-283",
+          "key": "LZPT-283"
+        }
+      ],
+      "aiTimeMs": 2908,
+      "source": "async",
+      "type": "scheduledjob",
+      "manual": true,
+      "mode": "agent",
+      "scheduledFor": null,
+      "ruleName": "crstructuredmtokllnp scoped",
+      "tokens": 2617,
+      "id": "1788624158290duf1",
+      "ruleId": "job_mtokmussl3bkvg",
+      "logs": [
+        "Scope \"key = LZPT-283\" matched 1 issue(s) (cap 1)",
+        "--- LZPT-283: OK \u2014 done: crstructuredmtokllnp scoped completed",
+        "    Agent start: model=claude-haiku-4-5-20251001, actions=[add_labels], maxRounds=4",
+        "    tool add_labels({\"labels\":[\"crstructuredmtokllnp-scoped\"]})",
+        "    tool finish({\"outcome\":\"done\",\"summary\":\"crstructuredmtokllnp scoped completed\"})",
+        "    Agent end: OK (2 round(s), 2 tool call(s), 1 change(s), 2617 tokens)"
+      ],
+      "fieldId": "0 4 * * * UTC",
+      "queueDelayMs": 12747,
+      "timestamp": "2026-09-05T16:02:38.290Z"
+    },
+    "secondRead": {
+      "expand": "renderedFields,names,schema,operations,editmeta,changelog,versionedRepresentations",
+      "id": "24875",
+      "self": "https://wolfaenpak.atlassian.net/rest/api/3/issue/24875",
+      "key": "LZPT-283",
+      "fields": {
+        "comment": {
+          "comments": [
+            {
+              "self": "https://wolfaenpak.atlassian.net/rest/api/3/issue/24875/comment/16062",
+              "id": "16062",
+              "author": {
+                "self": "https://wolfaenpak.atlassian.net/rest/api/3/user?accountId=712020%3A937bc860-eec2-4294-a65d-8e0fe7c45086",
+                "accountId": "712020:937bc860-eec2-4294-a65d-8e0fe7c45086",
+                "emailAddress": "mihai@wolfaenpak.com",
+                "avatarUrls": {
+                  "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:937bc860-eec2-4294-a65d-8e0fe7c45086/027ebed2-c8ad-4f25-981b-66069ec099e4/48",
+                  "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:937bc860-eec2-4294-a65d-8e0fe7c45086/027ebed2-c8ad-4f25-981b-66069ec099e4/24",
+                  "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:937bc860-eec2-4294-a65d-8e0fe7c45086/027ebed2-c8ad-4f25-981b-66069ec099e4/16",
+                  "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:937bc860-eec2-4294-a65d-8e0fe7c45086/027ebed2-c8ad-4f25-981b-66069ec099e4/32"
+                },
+                "displayName": "Mihai Perdum",
+                "active": true,
+                "timeZone": "Europe/Bucharest",
+                "accountType": "atlassian"
+              },
+              "body": {
+                "type": "doc",
+                "version": 1,
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "crstructuredmtokllnp-ping"
+                      }
+                    ]
+                  }
+                ]
+              },
+              "updateAuthor": {
+                "self": "https://wolfaenpak.atlassian.net/rest/api/3/user?accountId=712020%3A937bc860-eec2-4294-a65d-8e0fe7c45086",
+                "accountId": "712020:937bc860-eec2-4294-a65d-8e0fe7c45086",
+                "emailAddress": "mihai@wolfaenpak.com",
+                "avatarUrls": {
+                  "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:937bc860-eec2-4294-a65d-8e0fe7c45086/027ebed2-c8ad-4f25-981b-66069ec099e4/48",
+                  "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:937bc860-eec2-4294-a65d-8e0fe7c45086/027ebed2-c8ad-4f25-981b-66069ec099e4/24",
+                  "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:937bc860-eec2-4294-a65d-8e0fe7c45086/027ebed2-c8ad-4f25-981b-66069ec099e4/16",
+                  "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:937bc860-eec2-4294-a65d-8e0fe7c45086/027ebed2-c8ad-4f25-981b-66069ec099e4/32"
+                },
+                "displayName": "Mihai Perdum",
+                "active": true,
+                "timeZone": "Europe/Bucharest",
+                "accountType": "atlassian"
+              },
+              "created": "2026-09-05T19:02:10.662+0300",
+              "updated": "2026-09-05T19:02:10.662+0300",
+              "jsdPublic": true
+            }
+          ],
+          "self": "https://wolfaenpak.atlassian.net/rest/api/3/issue/24875/comment",
+          "maxResults": 1,
+          "total": 1,
+          "startAt": 0
+        },
+        "labels": [
+          "crstructuredmtokllnp",
+          "crstructuredmtokllnp-listener",
+          "crstructuredmtokllnp-scoped"
+        ]
+      }
+    }
+  },
+  "unscoped": {
+    "task": {
+      "taskId": "9998211375836876_scheduledjob_n50btz",
+      "status": "done",
+      "result": {
+        "agentOutcome": "done",
+        "agentSummary": "crstructuredmtokllnp unscoped completed",
+        "changes": [
+          {
+            "action": "editIssue",
+            "key": "LZPT-283",
+            "update": {
+              "labels": [
+                {
+                  "add": "crstructuredmtokllnp-unscoped"
+                }
+              ]
+            }
+          }
+        ],
+        "executionTimeMs": 3483,
+        "issues": [],
+        "logs": [
+          "Agent start: model=claude-haiku-4-5-20251001, actions=[add_labels], maxRounds=4",
+          "tool add_labels({\"issueKey\":\"LZPT-283\",\"labels\":[\"crstructuredmtokllnp-unscoped\"]})",
+          "tool finish({\"outcome\":\"done\",\"summary\":\"crstructuredmtokllnp unscoped completed\"})",
+          "Agent end: OK (2 round(s), 2 tool call(s), 1 change(s), 2553 tokens)"
+        ],
+        "reason": "done: crstructuredmtokllnp unscoped completed",
+        "success": true,
+        "tokens": 2553
+      },
+      "job": {
+        "accountId": "api:tok_mtoklqiodc9a23",
+        "durationMs": 3838,
+        "enqueuedAt": "2026-09-05T16:02:43.124Z",
+        "finishedAt": "2026-09-05T16:02:48.299Z",
+        "issueKey": null,
+        "model": null,
+        "provider": null,
+        "ruleId": "job_mtokn8abt40ddb",
+        "ruleName": "crstructuredmtokllnp unscoped",
+        "startedAt": "2026-09-05T16:02:44.461Z",
+        "status": "done",
+        "taskId": "9998211375836876_scheduledjob_n50btz",
+        "taskType": "scheduledjob"
+      }
+    },
+    "log": {
+      "reason": "done: crstructuredmtokllnp unscoped completed",
+      "issueKey": "(no issue)",
+      "missed": 0,
+      "isValid": true,
+      "executionTimeMs": 3483,
+      "ruleWorkflow": null,
+      "changes": [
+        {
+          "action": "editIssue",
+          "update": {
+            "labels": [
+              {
+                "add": "crstructuredmtokllnp-unscoped"
+              }
+            ]
+          },
+          "key": "LZPT-283"
+        }
+      ],
+      "aiTimeMs": 2872,
+      "source": "async",
+      "type": "scheduledjob",
+      "manual": true,
+      "agentOutcome": "done",
+      "mode": "agent",
+      "scheduledFor": null,
+      "ruleName": "crstructuredmtokllnp unscoped",
+      "tokens": 2553,
+      "id": "17886241681387zu9",
+      "ruleId": "job_mtokn8abt40ddb",
+      "agentSummary": "crstructuredmtokllnp unscoped completed",
+      "logs": [
+        "Agent start: model=claude-haiku-4-5-20251001, actions=[add_labels], maxRounds=4",
+        "tool add_labels({\"issueKey\":\"LZPT-283\",\"labels\":[\"crstructuredmtokllnp-unscoped\"]})",
+        "tool finish({\"outcome\":\"done\",\"summary\":\"crstructuredmtokllnp unscoped completed\"})",
+        "Agent end: OK (2 round(s), 2 tool call(s), 1 change(s), 2553 tokens)"
+      ],
+      "fieldId": "0 4 * * * UTC",
+      "queueDelayMs": 5014,
+      "timestamp": "2026-09-05T16:02:48.138Z"
+    },
+    "secondRead": {
+      "expand": "renderedFields,names,schema,operations,editmeta,changelog,versionedRepresentations",
+      "id": "24875",
+      "self": "https://wolfaenpak.atlassian.net/rest/api/3/issue/24875",
+      "key": "LZPT-283",
+      "fields": {
+        "comment": {
+          "comments": [
+            {
+              "self": "https://wolfaenpak.atlassian.net/rest/api/3/issue/24875/comment/16062",
+              "id": "16062",
+              "author": {
+                "self": "https://wolfaenpak.atlassian.net/rest/api/3/user?accountId=712020%3A937bc860-eec2-4294-a65d-8e0fe7c45086",
+                "accountId": "712020:937bc860-eec2-4294-a65d-8e0fe7c45086",
+                "emailAddress": "mihai@wolfaenpak.com",
+                "avatarUrls": {
+                  "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:937bc860-eec2-4294-a65d-8e0fe7c45086/027ebed2-c8ad-4f25-981b-66069ec099e4/48",
+                  "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:937bc860-eec2-4294-a65d-8e0fe7c45086/027ebed2-c8ad-4f25-981b-66069ec099e4/24",
+                  "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:937bc860-eec2-4294-a65d-8e0fe7c45086/027ebed2-c8ad-4f25-981b-66069ec099e4/16",
+                  "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:937bc860-eec2-4294-a65d-8e0fe7c45086/027ebed2-c8ad-4f25-981b-66069ec099e4/32"
+                },
+                "displayName": "Mihai Perdum",
+                "active": true,
+                "timeZone": "Europe/Bucharest",
+                "accountType": "atlassian"
+              },
+              "body": {
+                "type": "doc",
+                "version": 1,
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "crstructuredmtokllnp-ping"
+                      }
+                    ]
+                  }
+                ]
+              },
+              "updateAuthor": {
+                "self": "https://wolfaenpak.atlassian.net/rest/api/3/user?accountId=712020%3A937bc860-eec2-4294-a65d-8e0fe7c45086",
+                "accountId": "712020:937bc860-eec2-4294-a65d-8e0fe7c45086",
+                "emailAddress": "mihai@wolfaenpak.com",
+                "avatarUrls": {
+                  "48x48": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:937bc860-eec2-4294-a65d-8e0fe7c45086/027ebed2-c8ad-4f25-981b-66069ec099e4/48",
+                  "24x24": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:937bc860-eec2-4294-a65d-8e0fe7c45086/027ebed2-c8ad-4f25-981b-66069ec099e4/24",
+                  "16x16": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:937bc860-eec2-4294-a65d-8e0fe7c45086/027ebed2-c8ad-4f25-981b-66069ec099e4/16",
+                  "32x32": "https://avatar-management--avatars.us-west-2.prod.public.atl-paas.net/712020:937bc860-eec2-4294-a65d-8e0fe7c45086/027ebed2-c8ad-4f25-981b-66069ec099e4/32"
+                },
+                "displayName": "Mihai Perdum",
+                "active": true,
+                "timeZone": "Europe/Bucharest",
+                "accountType": "atlassian"
+              },
+              "created": "2026-09-05T19:02:10.662+0300",
+              "updated": "2026-09-05T19:02:10.662+0300",
+              "jsdPublic": true
+            }
+          ],
+          "self": "https://wolfaenpak.atlassian.net/rest/api/3/issue/24875/comment",
+          "maxResults": 1,
+          "total": 1,
+          "startAt": 0
+        },
+        "labels": [
+          "crstructuredmtokllnp",
+          "crstructuredmtokllnp-listener",
+          "crstructuredmtokllnp-scoped",
+          "crstructuredmtokllnp-unscoped"
+        ]
+      }
+    }
+  }
+}

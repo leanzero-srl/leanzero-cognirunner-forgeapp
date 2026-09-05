@@ -1,0 +1,1828 @@
+{
+  "suite": "jsm-assets-e2e",
+  "started": "2026-09-05T15:49:22.022Z",
+  "reads": [
+    {
+      "at": "2026-09-05T15:49:23.251Z",
+      "path": "/rest/api/3/issue/createmeta/JT/issuetypes?maxResults=100",
+      "status": 200,
+      "body": {
+        "startAt": 0,
+        "maxResults": 100,
+        "total": 5,
+        "issueTypes": [
+          {
+            "id": "10005",
+            "description": "A small, distinct piece of work.",
+            "iconUrl": "https://wolfaenpak.atlassian.net/rest/api/2/universal_avatar/view/type/issuetype/avatar/10318?size=medium",
+            "name": "Task",
+            "untranslatedName": "Task",
+            "subtask": false,
+            "hierarchyLevel": 0
+          },
+          {
+            "id": "10016",
+            "description": "A small piece of work that's part of a larger task.",
+            "iconUrl": "https://wolfaenpak.atlassian.net/rest/api/2/universal_avatar/view/type/issuetype/avatar/10316?size=medium",
+            "name": "Sub-task",
+            "untranslatedName": "Sub-task",
+            "subtask": true,
+            "hierarchyLevel": -1
+          },
+          {
+            "id": "10018",
+            "description": "Submit a request or report a problem.",
+            "iconUrl": "https://wolfaenpak.atlassian.net/rest/api/2/universal_avatar/view/type/issuetype/avatar/10556?size=medium",
+            "name": "Submit a request or incident",
+            "untranslatedName": "Submit a request or incident",
+            "subtask": false,
+            "hierarchyLevel": 0
+          },
+          {
+            "id": "10019",
+            "description": "Have a question? Submit it here.",
+            "iconUrl": "https://wolfaenpak.atlassian.net/rest/api/2/universal_avatar/view/type/issuetype/avatar/10557?size=medium",
+            "name": "Ask a question",
+            "untranslatedName": "Ask a question",
+            "subtask": false,
+            "hierarchyLevel": 0
+          },
+          {
+            "id": "10020",
+            "description": "Request received from your email support channel.",
+            "iconUrl": "https://wolfaenpak.atlassian.net/rest/api/2/universal_avatar/view/type/issuetype/avatar/10558?size=medium",
+            "name": "Emailed request",
+            "untranslatedName": "Emailed request",
+            "subtask": false,
+            "hierarchyLevel": 0
+          }
+        ]
+      }
+    },
+    {
+      "at": "2026-09-05T15:50:06.568Z",
+      "path": "",
+      "status": 200,
+      "body": {
+        "values": [
+          {
+            "workspaceId": "be9cca2f-5f41-446f-8f5c-76cda0be8417",
+            "globalId": "be9cca2f-5f41-446f-8f5c-76cda0be8417:35",
+            "id": "35",
+            "name": "CogniRunner Test Assets",
+            "displayName": "CogniRunner Test Assets",
+            "objectSchemaKey": "CRT",
+            "created": "2026-09-03T20:28:57.909Z",
+            "updated": "2026-09-03T20:28:57.909Z",
+            "objectCount": 2,
+            "objectTypeCount": 1,
+            "description": "harness test schema",
+            "status": "Ok",
+            "canManage": true,
+            "crossSchemaReferencingAllowed": false
+          },
+          {
+            "workspaceId": "be9cca2f-5f41-446f-8f5c-76cda0be8417",
+            "globalId": "be9cca2f-5f41-446f-8f5c-76cda0be8417:102",
+            "id": "102",
+            "name": "Corporate Directory",
+            "displayName": "Corporate Directory",
+            "objectSchemaKey": "CORP",
+            "created": "2026-09-05T09:43:54.472Z",
+            "updated": "2026-09-05T09:43:54.472Z",
+            "objectCount": 36,
+            "objectTypeCount": 3,
+            "description": "People, organisational units and sites. Referenced by every other schema.",
+            "status": "Ok",
+            "canManage": true,
+            "crossSchemaReferencingAllowed": true
+          },
+          {
+            "workspaceId": "be9cca2f-5f41-446f-8f5c-76cda0be8417",
+            "globalId": "be9cca2f-5f41-446f-8f5c-76cda0be8417:104",
+            "id": "104",
+            "name": "ICT Third Party Risk",
+            "displayName": "ICT Third Party Risk",
+            "objectSchemaKey": "DORA",
+            "created": "2026-09-05T09:44:09.159Z",
+            "updated": "2026-09-05T09:44:09.159Z",
+            "objectCount": 50,
+            "objectTypeCount": 4,
+            "description": "DORA register: providers, ICT services, contracts.",
+            "status": "Ok",
+            "canManage": true,
+            "crossSchemaReferencingAllowed": true
+          },
+          {
+            "workspaceId": "be9cca2f-5f41-446f-8f5c-76cda0be8417",
+            "globalId": "be9cca2f-5f41-446f-8f5c-76cda0be8417:68",
+            "id": "68",
+            "name": "Information Governance",
+            "displayName": "Information Governance",
+            "objectSchemaKey": "IGOV",
+            "created": "2026-09-04T06:14:37.560Z",
+            "updated": "2026-09-04T06:14:37.560Z",
+            "objectCount": 50,
+            "objectTypeCount": 5,
+            "description": "Space and system classification register (demo)",
+            "status": "Ok",
+            "canManage": true,
+            "crossSchemaReferencingAllowed": true
+          },
+          {
+            "workspaceId": "be9cca2f-5f41-446f-8f5c-76cda0be8417",
+            "globalId": "be9cca2f-5f41-446f-8f5c-76cda0be8417:103",
+            "id": "103",
+            "name": "IT Configuration Management",
+            "displayName": "IT Configuration Management",
+            "objectSchemaKey": "CMDB",
+            "created": "2026-09-05T09:43:54.818Z",
+            "updated": "2026-09-05T09:43:54.818Z",
+            "objectCount": 122,
+            "objectTypeCount": 6,
+            "description": "The operational IT estate: services, applications, servers and databases.",
+            "status": "Ok",
+            "canManage": true,
+            "crossSchemaReferencingAllowed": true
+          },
+          {
+            "workspaceId": "be9cca2f-5f41-446f-8f5c-76cda0be8417",
+            "globalId": "be9cca2f-5f41-446f-8f5c-76cda0be8417:1",
+            "id": "1",
+            "name": "Services",
+            "displayName": "Services",
+            "objectSchemaKey": "SVC",
+            "created": "2023-11-14T02:02:43.772Z",
+            "updated": "2023-11-14T02:02:43.777Z",
+            "objectCount": 0,
+            "objectTypeCount": 4,
+            "description": "Contains the 'Service' object type and services your site uses across projects.",
+            "status": "Ok",
+            "canManage": false,
+            "crossSchemaReferencingAllowed": true
+          }
+        ],
+        "startAt": 0,
+        "maxResults": 25,
+        "total": 6,
+        "isLast": true,
+        "last": true
+      }
+    },
+    {
+      "at": "2026-09-05T15:50:06.867Z",
+      "path": "",
+      "status": 200,
+      "body": [
+        {
+          "workspaceId": "be9cca2f-5f41-446f-8f5c-76cda0be8417",
+          "globalId": "be9cca2f-5f41-446f-8f5c-76cda0be8417:43",
+          "id": "43",
+          "name": "Laptop",
+          "displayName": "Laptop",
+          "type": 0,
+          "description": "harness laptops",
+          "icon": {
+            "id": "62",
+            "name": "Laptop",
+            "url16": "https://api.atlassian.com/jsm/assets/workspace/be9cca2f-5f41-446f-8f5c-76cda0be8417/v1/objecttype/43/icon.png?size=16",
+            "url48": "https://api.atlassian.com/jsm/assets/workspace/be9cca2f-5f41-446f-8f5c-76cda0be8417/v1/objecttype/43/icon.png?size=48"
+          },
+          "position": 0,
+          "created": "2026-09-03T20:29:06.597Z",
+          "updated": "2026-09-03T20:29:06.597Z",
+          "objectCount": 0,
+          "objectSchemaId": "35",
+          "inherited": false,
+          "abstractObjectType": false,
+          "parentObjectTypeInherited": false,
+          "schemaLabel": "CogniRunner Test Assets",
+          "schemaDisplayLabel": "CogniRunner Test Assets"
+        }
+      ]
+    },
+    {
+      "at": "2026-09-05T15:50:08.674Z",
+      "path": "/rest/api/3/issue/JT-53?fields=customfield_11081",
+      "status": 200,
+      "body": {
+        "expand": "renderedFields,names,schema,operations,editmeta,changelog,versionedRepresentations,customfield_11081.cmdb.label,customfield_11081.cmdb.objectKey,customfield_11081.cmdb.attributes",
+        "id": "24864",
+        "key": "JT-53",
+        "fields": {
+          "customfield_11081": [
+            {
+              "workspaceId": "be9cca2f-5f41-446f-8f5c-76cda0be8417",
+              "id": "be9cca2f-5f41-446f-8f5c-76cda0be8417:71",
+              "objectId": "71"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "at": "2026-09-05T15:50:45.265Z",
+      "path": "?resource=logs&ruleId=lst_mtok734prul660",
+      "status": 200,
+      "body": {
+        "logs": []
+      }
+    },
+    {
+      "at": "2026-09-05T15:50:50.954Z",
+      "path": "?resource=logs&ruleId=lst_mtok734prul660",
+      "status": 200,
+      "body": {
+        "logs": [
+          {
+            "stepResults": [
+              {
+                "name": "readasset",
+                "index": 1,
+                "status": "success",
+                "timeMs": 537
+              }
+            ],
+            "reason": "Ran 1 step(s), 1 change(s)",
+            "issueKey": "JT-53",
+            "executionTimeMs": 538,
+            "isValid": true,
+            "ruleWorkflow": null,
+            "changes": [
+              {
+                "action": "setProperty",
+                "key": "JT-53",
+                "propKey": "crjsmk63fd-asset"
+              }
+            ],
+            "source": "async",
+            "eventType": "avi:jira:updated:issue",
+            "type": "listener",
+            "mode": "script",
+            "ruleName": "JSM assets read k63fd",
+            "id": "1788623447045fzee",
+            "ruleId": "lst_mtok734prul660",
+            "logs": [
+              "Starting 1 step(s) for JT-53",
+              "setProperty: crjsmk63fd-asset",
+              "\"readasset\": Completed in 537ms",
+              "Finished: 1/1 step(s) succeeded in 537ms, 1 change(s) made"
+            ],
+            "fieldId": "avi:jira:updated:issue",
+            "queueDelayMs": 1322,
+            "timestamp": "2026-09-05T15:50:47.045Z"
+          }
+        ]
+      }
+    },
+    {
+      "at": "2026-09-05T15:50:51.240Z",
+      "path": "/rest/api/3/issue/JT-53/properties/crjsmk63fd-asset",
+      "status": 200,
+      "body": {
+        "key": "crjsmk63fd-asset",
+        "value": {
+          "raw": [
+            {
+              "workspaceId": "be9cca2f-5f41-446f-8f5c-76cda0be8417",
+              "id": "be9cca2f-5f41-446f-8f5c-76cda0be8417:71",
+              "objectId": "71"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "at": "2026-09-05T15:50:51.557Z",
+      "path": "?resource=logs&ruleId=lst_mtok65mckub2xw",
+      "status": 200,
+      "body": {
+        "logs": []
+      }
+    },
+    {
+      "at": "2026-09-05T15:50:57.020Z",
+      "path": "?resource=logs&ruleId=lst_mtok65mckub2xw",
+      "status": 200,
+      "body": {
+        "logs": []
+      }
+    },
+    {
+      "at": "2026-09-05T15:51:02.554Z",
+      "path": "?resource=logs&ruleId=lst_mtok65mckub2xw",
+      "status": 200,
+      "body": {
+        "logs": []
+      }
+    },
+    {
+      "at": "2026-09-05T15:51:09.483Z",
+      "path": "?resource=logs&ruleId=lst_mtok65mckub2xw",
+      "status": 200,
+      "body": {
+        "logs": []
+      }
+    },
+    {
+      "at": "2026-09-05T15:51:15.177Z",
+      "path": "?resource=logs&ruleId=lst_mtok65mckub2xw",
+      "status": 200,
+      "body": {
+        "logs": []
+      }
+    },
+    {
+      "at": "2026-09-05T15:51:20.849Z",
+      "path": "?resource=logs&ruleId=lst_mtok65mckub2xw",
+      "status": 200,
+      "body": {
+        "logs": []
+      }
+    },
+    {
+      "at": "2026-09-05T15:51:26.258Z",
+      "path": "?resource=logs&ruleId=lst_mtok65mckub2xw",
+      "status": 200,
+      "body": {
+        "logs": []
+      }
+    },
+    {
+      "at": "2026-09-05T15:51:31.718Z",
+      "path": "?resource=logs&ruleId=lst_mtok65mckub2xw",
+      "status": 200,
+      "body": {
+        "logs": []
+      }
+    },
+    {
+      "at": "2026-09-05T15:51:37.233Z",
+      "path": "?resource=logs&ruleId=lst_mtok65mckub2xw",
+      "status": 200,
+      "body": {
+        "logs": []
+      }
+    },
+    {
+      "at": "2026-09-05T15:51:42.670Z",
+      "path": "?resource=logs&ruleId=lst_mtok65mckub2xw",
+      "status": 200,
+      "body": {
+        "logs": []
+      }
+    },
+    {
+      "at": "2026-09-05T15:51:48.089Z",
+      "path": "?resource=logs&ruleId=lst_mtok65mckub2xw",
+      "status": 200,
+      "body": {
+        "logs": []
+      }
+    },
+    {
+      "at": "2026-09-05T15:51:53.509Z",
+      "path": "?resource=logs&ruleId=lst_mtok65mckub2xw",
+      "status": 200,
+      "body": {
+        "logs": []
+      }
+    },
+    {
+      "at": "2026-09-05T15:51:58.986Z",
+      "path": "?resource=logs&ruleId=lst_mtok65mckub2xw",
+      "status": 200,
+      "body": {
+        "logs": []
+      }
+    },
+    {
+      "at": "2026-09-05T15:52:04.432Z",
+      "path": "?resource=logs&ruleId=lst_mtok65mckub2xw",
+      "status": 200,
+      "body": {
+        "logs": []
+      }
+    },
+    {
+      "at": "2026-09-05T15:52:10.041Z",
+      "path": "?resource=logs&ruleId=lst_mtok65mckub2xw",
+      "status": 200,
+      "body": {
+        "logs": []
+      }
+    },
+    {
+      "at": "2026-09-05T15:52:15.817Z",
+      "path": "?resource=logs&ruleId=lst_mtok65mckub2xw",
+      "status": 200,
+      "body": {
+        "logs": []
+      }
+    },
+    {
+      "at": "2026-09-05T15:52:21.250Z",
+      "path": "?resource=logs&ruleId=lst_mtok65mckub2xw",
+      "status": 200,
+      "body": {
+        "logs": []
+      }
+    },
+    {
+      "at": "2026-09-05T15:52:26.731Z",
+      "path": "?resource=logs&ruleId=lst_mtok65mckub2xw",
+      "status": 200,
+      "body": {
+        "logs": []
+      }
+    },
+    {
+      "at": "2026-09-05T15:52:32.153Z",
+      "path": "?resource=logs&ruleId=lst_mtok65mckub2xw",
+      "status": 200,
+      "body": {
+        "logs": []
+      }
+    },
+    {
+      "at": "2026-09-05T15:52:37.558Z",
+      "path": "?resource=logs&ruleId=lst_mtok65mckub2xw",
+      "status": 200,
+      "body": {
+        "logs": []
+      }
+    },
+    {
+      "at": "2026-09-05T15:52:42.975Z",
+      "path": "?resource=logs&ruleId=lst_mtok65mckub2xw",
+      "status": 200,
+      "body": {
+        "logs": []
+      }
+    },
+    {
+      "at": "2026-09-05T15:52:48.402Z",
+      "path": "?resource=logs&ruleId=lst_mtok65mckub2xw",
+      "status": 200,
+      "body": {
+        "logs": []
+      }
+    },
+    {
+      "at": "2026-09-05T15:52:53.881Z",
+      "path": "?resource=logs&ruleId=lst_mtok65mckub2xw",
+      "status": 200,
+      "body": {
+        "logs": []
+      }
+    },
+    {
+      "at": "2026-09-05T15:52:59.306Z",
+      "path": "?resource=logs&ruleId=lst_mtok65mckub2xw",
+      "status": 200,
+      "body": {
+        "logs": []
+      }
+    },
+    {
+      "at": "2026-09-05T15:53:04.735Z",
+      "path": "?resource=logs&ruleId=lst_mtok65mckub2xw",
+      "status": 200,
+      "body": {
+        "logs": []
+      }
+    },
+    {
+      "at": "2026-09-05T15:53:10.684Z",
+      "path": "?resource=logs&ruleId=lst_mtok65mckub2xw",
+      "status": 200,
+      "body": {
+        "logs": []
+      }
+    },
+    {
+      "at": "2026-09-05T15:53:16.135Z",
+      "path": "?resource=logs&ruleId=lst_mtok65mckub2xw",
+      "status": 200,
+      "body": {
+        "logs": []
+      }
+    },
+    {
+      "at": "2026-09-05T15:53:21.669Z",
+      "path": "?resource=logs&ruleId=lst_mtok65mckub2xw",
+      "status": 200,
+      "body": {
+        "logs": []
+      }
+    },
+    {
+      "at": "2026-09-05T15:53:27.266Z",
+      "path": "?resource=logs&ruleId=lst_mtok65mckub2xw",
+      "status": 200,
+      "body": {
+        "logs": []
+      }
+    },
+    {
+      "at": "2026-09-05T15:53:32.692Z",
+      "path": "?resource=logs&ruleId=lst_mtok65mckub2xw",
+      "status": 200,
+      "body": {
+        "logs": []
+      }
+    },
+    {
+      "at": "2026-09-05T15:53:38.111Z",
+      "path": "?resource=logs&ruleId=lst_mtok65mckub2xw",
+      "status": 200,
+      "body": {
+        "logs": []
+      }
+    },
+    {
+      "at": "2026-09-05T15:53:43.560Z",
+      "path": "?resource=logs&ruleId=lst_mtok65mckub2xw",
+      "status": 200,
+      "body": {
+        "logs": []
+      }
+    },
+    {
+      "at": "2026-09-05T15:53:48.983Z",
+      "path": "?resource=logs&ruleId=lst_mtok65mckub2xw",
+      "status": 200,
+      "body": {
+        "logs": []
+      }
+    },
+    {
+      "at": "2026-09-05T15:53:54.703Z",
+      "path": "?resource=logs&ruleId=lst_mtok65mckub2xw",
+      "status": 200,
+      "body": {
+        "logs": []
+      }
+    },
+    {
+      "at": "2026-09-05T15:54:00.192Z",
+      "path": "?resource=logs&ruleId=lst_mtok65mckub2xw",
+      "status": 200,
+      "body": {
+        "logs": []
+      }
+    },
+    {
+      "at": "2026-09-05T15:54:05.603Z",
+      "path": "?resource=logs&ruleId=lst_mtok65mckub2xw",
+      "status": 200,
+      "body": {
+        "logs": []
+      }
+    },
+    {
+      "at": "2026-09-05T15:54:11.100Z",
+      "path": "?resource=logs&ruleId=lst_mtok65mckub2xw",
+      "status": 200,
+      "body": {
+        "logs": []
+      }
+    },
+    {
+      "at": "2026-09-05T15:54:16.540Z",
+      "path": "?resource=logs&ruleId=lst_mtok65mckub2xw",
+      "status": 200,
+      "body": {
+        "logs": []
+      }
+    },
+    {
+      "at": "2026-09-05T15:54:21.968Z",
+      "path": "?resource=logs&ruleId=lst_mtok65mckub2xw",
+      "status": 200,
+      "body": {
+        "logs": []
+      }
+    },
+    {
+      "at": "2026-09-05T15:54:27.401Z",
+      "path": "?resource=logs&ruleId=lst_mtok65mckub2xw",
+      "status": 200,
+      "body": {
+        "logs": []
+      }
+    },
+    {
+      "at": "2026-09-05T15:54:32.920Z",
+      "path": "?resource=logs&ruleId=lst_mtok65mckub2xw",
+      "status": 200,
+      "body": {
+        "logs": []
+      }
+    },
+    {
+      "at": "2026-09-05T15:54:38.368Z",
+      "path": "?resource=logs&ruleId=lst_mtok65mckub2xw",
+      "status": 200,
+      "body": {
+        "logs": []
+      }
+    },
+    {
+      "at": "2026-09-05T15:54:43.846Z",
+      "path": "?resource=logs&ruleId=lst_mtok65mckub2xw",
+      "status": 200,
+      "body": {
+        "logs": []
+      }
+    },
+    {
+      "at": "2026-09-05T15:54:49.283Z",
+      "path": "?resource=logs&ruleId=lst_mtok65mckub2xw",
+      "status": 200,
+      "body": {
+        "logs": []
+      }
+    },
+    {
+      "at": "2026-09-05T15:54:54.928Z",
+      "path": "?resource=logs&ruleId=lst_mtok65mckub2xw",
+      "status": 200,
+      "body": {
+        "logs": []
+      }
+    },
+    {
+      "at": "2026-09-05T15:55:00.324Z",
+      "path": "?resource=logs&ruleId=lst_mtok65mckub2xw",
+      "status": 200,
+      "body": {
+        "logs": []
+      }
+    },
+    {
+      "at": "2026-09-05T15:55:05.901Z",
+      "path": "?resource=logs&ruleId=lst_mtok65mckub2xw",
+      "status": 200,
+      "body": {
+        "logs": []
+      }
+    },
+    {
+      "at": "2026-09-05T15:55:11.361Z",
+      "path": "?resource=logs&ruleId=lst_mtok65mckub2xw",
+      "status": 200,
+      "body": {
+        "logs": []
+      }
+    },
+    {
+      "at": "2026-09-05T15:55:17.352Z",
+      "path": "?resource=logs&ruleId=lst_mtok65v2bzhot4",
+      "status": 200,
+      "body": {
+        "logs": [
+          {
+            "stepResults": [
+              {
+                "name": "label",
+                "index": 1,
+                "status": "success",
+                "timeMs": 950
+              }
+            ],
+            "reason": "Ran 1 step(s), 2 change(s)",
+            "issueKey": "JT-57",
+            "executionTimeMs": 950,
+            "isValid": true,
+            "ruleWorkflow": null,
+            "changes": [
+              {
+                "action": "editIssue",
+                "update": {
+                  "labels": [
+                    {
+                      "add": "crjsmk63fd-created"
+                    }
+                  ]
+                },
+                "key": "JT-57"
+              },
+              {
+                "action": "setProperty",
+                "key": "JT-57",
+                "propKey": "crjsmk63fd-jsm"
+              }
+            ],
+            "source": "async",
+            "eventType": "avi:jira:created:issue",
+            "type": "listener",
+            "mode": "script",
+            "ruleName": "JSM issue created k63fd",
+            "id": "1788623634305jk8h",
+            "ruleId": "lst_mtok65v2bzhot4",
+            "logs": [
+              "Starting 1 step(s) for JT-57",
+              "setProperty: crjsmk63fd-jsm",
+              "\"label\": Completed in 950ms",
+              "Finished: 1/1 step(s) succeeded in 950ms, 2 change(s) made"
+            ],
+            "fieldId": "avi:jira:created:issue",
+            "queueDelayMs": 1745,
+            "timestamp": "2026-09-05T15:53:54.305Z"
+          },
+          {
+            "stepResults": [
+              {
+                "name": "label",
+                "index": 1,
+                "status": "success",
+                "timeMs": 939
+              }
+            ],
+            "reason": "Ran 1 step(s), 2 change(s)",
+            "issueKey": "JT-56",
+            "executionTimeMs": 939,
+            "isValid": true,
+            "ruleWorkflow": null,
+            "changes": [
+              {
+                "action": "editIssue",
+                "update": {
+                  "labels": [
+                    {
+                      "add": "crjsmk63fd-created"
+                    }
+                  ]
+                },
+                "key": "JT-56"
+              },
+              {
+                "action": "setProperty",
+                "key": "JT-56",
+                "propKey": "crjsmk63fd-jsm"
+              }
+            ],
+            "source": "async",
+            "eventType": "avi:jira:created:issue",
+            "type": "listener",
+            "mode": "script",
+            "ruleName": "JSM issue created k63fd",
+            "id": "1788623581641xg22",
+            "ruleId": "lst_mtok65v2bzhot4",
+            "logs": [
+              "Starting 1 step(s) for JT-56",
+              "setProperty: crjsmk63fd-jsm",
+              "\"label\": Completed in 939ms",
+              "Finished: 1/1 step(s) succeeded in 939ms, 2 change(s) made"
+            ],
+            "fieldId": "avi:jira:created:issue",
+            "queueDelayMs": 2156,
+            "timestamp": "2026-09-05T15:53:01.641Z"
+          },
+          {
+            "stepResults": [
+              {
+                "name": "label",
+                "index": 1,
+                "status": "success",
+                "timeMs": 998
+              }
+            ],
+            "reason": "Ran 1 step(s), 2 change(s)",
+            "issueKey": "JT-55",
+            "executionTimeMs": 998,
+            "isValid": true,
+            "ruleWorkflow": null,
+            "changes": [
+              {
+                "action": "editIssue",
+                "update": {
+                  "labels": [
+                    {
+                      "add": "crjsmk63fd-created"
+                    }
+                  ]
+                },
+                "key": "JT-55"
+              },
+              {
+                "action": "setProperty",
+                "key": "JT-55",
+                "propKey": "crjsmk63fd-jsm"
+              }
+            ],
+            "source": "async",
+            "eventType": "avi:jira:created:issue",
+            "type": "listener",
+            "mode": "script",
+            "ruleName": "JSM issue created k63fd",
+            "id": "1788623434532alnw",
+            "ruleId": "lst_mtok65v2bzhot4",
+            "logs": [
+              "Starting 1 step(s) for JT-55",
+              "setProperty: crjsmk63fd-jsm",
+              "\"label\": Completed in 998ms",
+              "Finished: 1/1 step(s) succeeded in 998ms, 2 change(s) made"
+            ],
+            "fieldId": "avi:jira:created:issue",
+            "queueDelayMs": 2422,
+            "timestamp": "2026-09-05T15:50:34.532Z"
+          },
+          {
+            "stepResults": [
+              {
+                "name": "label",
+                "index": 1,
+                "status": "success",
+                "timeMs": 974
+              }
+            ],
+            "reason": "Ran 1 step(s), 2 change(s)",
+            "issueKey": "JT-54",
+            "executionTimeMs": 975,
+            "isValid": true,
+            "ruleWorkflow": null,
+            "changes": [
+              {
+                "action": "editIssue",
+                "update": {
+                  "labels": [
+                    {
+                      "add": "crjsmk63fd-created"
+                    }
+                  ]
+                },
+                "key": "JT-54"
+              },
+              {
+                "action": "setProperty",
+                "key": "JT-54",
+                "propKey": "crjsmk63fd-jsm"
+              }
+            ],
+            "source": "async",
+            "eventType": "avi:jira:created:issue",
+            "type": "listener",
+            "mode": "script",
+            "ruleName": "JSM issue created k63fd",
+            "id": "1788623429238uyv8",
+            "ruleId": "lst_mtok65v2bzhot4",
+            "logs": [
+              "Starting 1 step(s) for JT-54",
+              "setProperty: crjsmk63fd-jsm",
+              "\"label\": Completed in 974ms",
+              "Finished: 1/1 step(s) succeeded in 974ms, 2 change(s) made"
+            ],
+            "fieldId": "avi:jira:created:issue",
+            "queueDelayMs": 1821,
+            "timestamp": "2026-09-05T15:50:29.238Z"
+          },
+          {
+            "stepResults": [
+              {
+                "name": "label",
+                "index": 1,
+                "status": "success",
+                "timeMs": 1366
+              }
+            ],
+            "reason": "Ran 1 step(s), 2 change(s)",
+            "issueKey": "JT-53",
+            "executionTimeMs": 1366,
+            "isValid": true,
+            "ruleWorkflow": null,
+            "changes": [
+              {
+                "action": "editIssue",
+                "update": {
+                  "labels": [
+                    {
+                      "add": "crjsmk63fd-created"
+                    }
+                  ]
+                },
+                "key": "JT-53"
+              },
+              {
+                "action": "setProperty",
+                "key": "JT-53",
+                "propKey": "crjsmk63fd-jsm"
+              }
+            ],
+            "source": "async",
+            "eventType": "avi:jira:created:issue",
+            "type": "listener",
+            "mode": "script",
+            "ruleName": "JSM issue created k63fd",
+            "id": "17886234093127pda",
+            "ruleId": "lst_mtok65v2bzhot4",
+            "logs": [
+              "Starting 1 step(s) for JT-53",
+              "setProperty: crjsmk63fd-jsm",
+              "\"label\": Completed in 1366ms",
+              "Finished: 1/1 step(s) succeeded in 1366ms, 2 change(s) made"
+            ],
+            "fieldId": "avi:jira:created:issue",
+            "queueDelayMs": 2453,
+            "timestamp": "2026-09-05T15:50:09.312Z"
+          }
+        ]
+      }
+    },
+    {
+      "at": "2026-09-05T15:55:17.646Z",
+      "path": "?resource=logs&ruleId=lst_mtok6643c5nxgr",
+      "status": 200,
+      "body": {
+        "logs": [
+          {
+            "stepResults": [
+              {
+                "name": "note",
+                "index": 1,
+                "status": "success",
+                "timeMs": 754
+              }
+            ],
+            "reason": "Ran 1 step(s), 2 change(s)",
+            "issueKey": "JT-53",
+            "executionTimeMs": 760,
+            "isValid": true,
+            "ruleWorkflow": null,
+            "changes": [
+              {
+                "action": "addComment",
+                "key": "JT-53",
+                "id": "16053"
+              },
+              {
+                "action": "addComment",
+                "key": "JT-53",
+                "id": "16054"
+              }
+            ],
+            "source": "async",
+            "eventType": "avi:jira:commented:issue",
+            "type": "listener",
+            "mode": "script",
+            "ruleName": "JSM internal note k63fd",
+            "id": "1788623411173uxg1",
+            "ruleId": "lst_mtok6643c5nxgr",
+            "logs": [
+              "Starting 1 step(s) for JT-53",
+              "addComment: 16053",
+              "addComment: 16054",
+              "\"note\": Completed in 754ms",
+              "Finished: 1/1 step(s) succeeded in 754ms, 2 change(s) made"
+            ],
+            "fieldId": "avi:jira:commented:issue",
+            "queueDelayMs": 4113,
+            "timestamp": "2026-09-05T15:50:11.173Z"
+          }
+        ]
+      }
+    },
+    {
+      "at": "2026-09-05T15:55:18.039Z",
+      "path": "?resource=logs&ruleId=lst_mtok66g978ocob",
+      "status": 200,
+      "body": {
+        "logs": [
+          {
+            "reason": "Agent done: Added one internal note to JT-53 with text \"crjsmk63fd agent internal\". No public comment was posted.",
+            "issueKey": "JT-53",
+            "executionTimeMs": 3494,
+            "isValid": true,
+            "ruleWorkflow": null,
+            "changes": [
+              {
+                "action": "addComment",
+                "key": "JT-53",
+                "id": "16059"
+              }
+            ],
+            "aiTimeMs": 2945,
+            "source": "async",
+            "eventType": "avi:jira:commented:issue",
+            "type": "listener",
+            "agentOutcome": "done",
+            "mode": "agent",
+            "ruleName": "JSM agent internal note k63fd",
+            "tokens": 3014,
+            "id": "1788623694950yamz",
+            "ruleId": "lst_mtok66g978ocob",
+            "toolCalls": [
+              {
+                "name": "add_comment",
+                "args": "{\"text\":\"crjsmk63fd agent internal\",\"internal\":true}",
+                "ok": true,
+                "ms": 372
+              },
+              {
+                "name": "finish",
+                "args": "{\"summary\":\"Added one internal note to JT-53 with text \\\"crjsmk63fd agent internal\\\". No public comment was posted.\",\"outcome\":\"done\"}",
+                "ok": true,
+                "ms": 0
+              }
+            ],
+            "agentSummary": "Added one internal note to JT-53 with text \"crjsmk63fd agent internal\". No public comment was posted.",
+            "logs": [
+              "Agent start: model=claude-haiku-4-5-20251001, actions=[get_issue, add_comment], maxRounds=3",
+              "addComment: 16059",
+              "tool add_comment({\"text\":\"crjsmk63fd agent internal\",\"internal\":true})",
+              "tool finish({\"summary\":\"Added one internal note to JT-53 with text \\\"crjsmk63fd agent internal\\\". No public comment was posted.\",\"outcome\":\"done\"})",
+              "Agent end: OK (2 round(s), 2 tool call(s), 1 change(s), 3014 tokens)"
+            ],
+            "rounds": 2,
+            "fieldId": "avi:jira:commented:issue",
+            "queueDelayMs": 4364,
+            "timestamp": "2026-09-05T15:54:54.950Z"
+          },
+          {
+            "reason": "Agent failed: AI provider error (429): Forge LLM token usage limit exceeded. This tenant (ari:cloud:jira:049de078-bffa-42d1-bbfb-ad8db9860adb:workspace/de27b172-aad3-4897-a5a7-d13252993e62) has reached its limit of 50000 tokens for model anthropic.claude-haiku-4-5-20251001-v1:0. Please try again later.",
+            "issueKey": "JT-53",
+            "executionTimeMs": 5279,
+            "isValid": false,
+            "ruleWorkflow": null,
+            "changes": [
+              {
+                "action": "addComment",
+                "key": "JT-53",
+                "id": "16055"
+              }
+            ],
+            "recommendation": "Open the listener, review the instructions and allowed actions, then use 'Test with an issue' to reproduce.",
+            "aiTimeMs": 4485,
+            "source": "async",
+            "eventType": "avi:jira:commented:issue",
+            "type": "listener",
+            "agentOutcome": "failed",
+            "mode": "agent",
+            "ruleName": "JSM agent internal note k63fd",
+            "tokens": 1465,
+            "id": "1788623416385ketl",
+            "ruleId": "lst_mtok66g978ocob",
+            "toolCalls": [
+              {
+                "name": "add_comment",
+                "args": "{\"issueKey\":\"JT-53\",\"text\":\"crjsmk63fd agent internal\",\"internal\":true}",
+                "ok": true,
+                "ms": 393
+              }
+            ],
+            "agentSummary": "",
+            "logs": [
+              "Agent start: model=claude-haiku-4-5-20251001, actions=[get_issue, add_comment], maxRounds=3",
+              "addComment: 16055",
+              "tool add_comment({\"issueKey\":\"JT-53\",\"text\":\"crjsmk63fd agent internal\",\"internal\":true})",
+              "ERROR: AI provider error (429): Forge LLM token usage limit exceeded. This tenant (ari:cloud:jira:049de078-bffa-42d1-bbfb-ad8db9860adb:workspace/de27b172-aad3-4897-a5a7-d13252993e62) has reached its limit of 50000 tokens for model anthropic.claude-haiku-4-5-20251001-v1:0. Please try again later.",
+              "Agent end: FAILED (1 round(s), 1 tool call(s), 1 change(s), 1465 tokens)"
+            ],
+            "rounds": 1,
+            "fieldId": "avi:jira:commented:issue",
+            "queueDelayMs": 8349,
+            "timestamp": "2026-09-05T15:50:16.385Z"
+          }
+        ]
+      }
+    },
+    {
+      "at": "2026-09-05T15:55:18.611Z",
+      "path": "/rest/servicedeskapi/request/JT-53/comment?expand=body&limit=50&public=true&internal=true",
+      "status": 200,
+      "body": {
+        "_expands": [
+          "attachment",
+          "renderedBody"
+        ],
+        "size": 7,
+        "start": 0,
+        "limit": 50,
+        "isLastPage": true,
+        "_links": {
+          "base": "https://wolfaenpak.atlassian.net",
+          "context": ""
+        },
+        "values": [
+          {
+            "_expands": [
+              "attachment",
+              "renderedBody"
+            ],
+            "id": "16051",
+            "body": "crjsmk63fd-needsnote please investigate",
+            "public": true,
+            "author": {
+              "accountId": "712020:937bc860-eec2-4294-a65d-8e0fe7c45086",
+              "displayName": "Mihai Perdum",
+              "active": true,
+              "timeZone": "Europe/Bucharest",
+              "_links": {
+                "jiraRest": "https://wolfaenpak.atlassian.net/rest/api/2/user?accountId=712020%3A937bc860-eec2-4294-a65d-8e0fe7c45086"
+              }
+            },
+            "created": {
+              "iso8601": "2026-09-05T18:50:05+0300",
+              "jira": "2026-09-05T18:50:05.598+0300",
+              "friendly": "Today 6:50 PM",
+              "epochMillis": 1788623405598
+            },
+            "_links": {}
+          },
+          {
+            "_expands": [
+              "attachment",
+              "renderedBody"
+            ],
+            "id": "16052",
+            "body": "crjsmk63fd-agentnote please investigate",
+            "public": true,
+            "author": {
+              "accountId": "712020:937bc860-eec2-4294-a65d-8e0fe7c45086",
+              "displayName": "Mihai Perdum",
+              "active": true,
+              "timeZone": "Europe/Bucharest",
+              "_links": {
+                "jiraRest": "https://wolfaenpak.atlassian.net/rest/api/2/user?accountId=712020%3A937bc860-eec2-4294-a65d-8e0fe7c45086"
+              }
+            },
+            "created": {
+              "iso8601": "2026-09-05T18:50:06+0300",
+              "jira": "2026-09-05T18:50:06.052+0300",
+              "friendly": "Today 6:50 PM",
+              "epochMillis": 1788623406052
+            },
+            "_links": {}
+          },
+          {
+            "_expands": [
+              "attachment",
+              "renderedBody"
+            ],
+            "id": "16053",
+            "body": "crjsmk63fd internal note \u2014 agents only",
+            "public": false,
+            "author": {
+              "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+              "displayName": "CogniRunner",
+              "active": true,
+              "timeZone": "Europe/Bucharest",
+              "_links": {
+                "jiraRest": "https://wolfaenpak.atlassian.net/rest/api/2/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38"
+              }
+            },
+            "created": {
+              "iso8601": "2026-09-05T18:50:10+0300",
+              "jira": "2026-09-05T18:50:10.722+0300",
+              "friendly": "Today 6:50 PM",
+              "epochMillis": 1788623410722
+            },
+            "_links": {}
+          },
+          {
+            "_expands": [
+              "attachment",
+              "renderedBody"
+            ],
+            "id": "16054",
+            "body": "crjsmk63fd public reply \u2014 customer visible",
+            "public": true,
+            "author": {
+              "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+              "displayName": "CogniRunner",
+              "active": true,
+              "timeZone": "Europe/Bucharest",
+              "_links": {
+                "jiraRest": "https://wolfaenpak.atlassian.net/rest/api/2/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38"
+              }
+            },
+            "created": {
+              "iso8601": "2026-09-05T18:50:11+0300",
+              "jira": "2026-09-05T18:50:11.060+0300",
+              "friendly": "Today 6:50 PM",
+              "epochMillis": 1788623411060
+            },
+            "_links": {}
+          },
+          {
+            "_expands": [
+              "attachment",
+              "renderedBody"
+            ],
+            "id": "16055",
+            "body": "crjsmk63fd agent internal",
+            "public": false,
+            "author": {
+              "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+              "displayName": "CogniRunner",
+              "active": true,
+              "timeZone": "Europe/Bucharest",
+              "_links": {
+                "jiraRest": "https://wolfaenpak.atlassian.net/rest/api/2/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38"
+              }
+            },
+            "created": {
+              "iso8601": "2026-09-05T18:50:13+0300",
+              "jira": "2026-09-05T18:50:13.195+0300",
+              "friendly": "Today 6:50 PM",
+              "epochMillis": 1788623413195
+            },
+            "_links": {}
+          },
+          {
+            "_expands": [
+              "attachment",
+              "renderedBody"
+            ],
+            "id": "16058",
+            "body": "crjsmk63fd-agentnote please investigate retry after throttle",
+            "public": true,
+            "author": {
+              "accountId": "712020:937bc860-eec2-4294-a65d-8e0fe7c45086",
+              "displayName": "Mihai Perdum",
+              "active": true,
+              "timeZone": "Europe/Bucharest",
+              "_links": {
+                "jiraRest": "https://wolfaenpak.atlassian.net/rest/api/2/user?accountId=712020%3A937bc860-eec2-4294-a65d-8e0fe7c45086"
+              }
+            },
+            "created": {
+              "iso8601": "2026-09-05T18:54:49+0300",
+              "jira": "2026-09-05T18:54:49.853+0300",
+              "friendly": "Today 6:54 PM",
+              "epochMillis": 1788623689853
+            },
+            "_links": {}
+          },
+          {
+            "_expands": [
+              "attachment",
+              "renderedBody"
+            ],
+            "id": "16059",
+            "body": "crjsmk63fd agent internal",
+            "public": false,
+            "author": {
+              "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+              "displayName": "CogniRunner",
+              "active": true,
+              "timeZone": "Europe/Bucharest",
+              "_links": {
+                "jiraRest": "https://wolfaenpak.atlassian.net/rest/api/2/user?accountId=712020%3A3574dbf2-b30e-4ed4-9edb-e69a50f0db38"
+              }
+            },
+            "created": {
+              "iso8601": "2026-09-05T18:54:53+0300",
+              "jira": "2026-09-05T18:54:53.152+0300",
+              "friendly": "Today 6:54 PM",
+              "epochMillis": 1788623693152
+            },
+            "_links": {}
+          }
+        ]
+      }
+    },
+    {
+      "at": "2026-09-05T15:55:18.783Z",
+      "path": "/rest/api/3/issue/JT-53/properties/crjsmk63fd-jsm",
+      "status": 200,
+      "body": {
+        "key": "crjsmk63fd-jsm",
+        "value": {
+          "key": "JT-53",
+          "requestType": "Ask a question",
+          "reporter": "Mihai Perdum",
+          "project": "JT"
+        }
+      }
+    },
+    {
+      "at": "2026-09-05T15:55:21.002Z",
+      "path": "/rest/api/3/issue/JT-52?fields=summary",
+      "status": 200,
+      "body": {
+        "expand": "renderedFields,names,schema,operations,editmeta,changelog,versionedRepresentations",
+        "id": "24862",
+        "key": "JT-52",
+        "fields": {
+          "summary": "crjsmk63fd JSM event ledger"
+        }
+      }
+    },
+    {
+      "at": "2026-09-05T15:55:22.491Z",
+      "path": "/rest/api/3/issue/JT-52?fields=summary",
+      "status": 404,
+      "body": {
+        "errorMessages": [
+          "Issue does not exist or you do not have permission to see it."
+        ],
+        "errors": {}
+      }
+    },
+    {
+      "at": "2026-09-05T15:55:22.681Z",
+      "path": "/rest/api/3/issue/JT-53?fields=summary",
+      "status": 200,
+      "body": {
+        "expand": "renderedFields,names,schema,operations,editmeta,changelog,versionedRepresentations",
+        "id": "24864",
+        "key": "JT-53",
+        "fields": {
+          "summary": "crjsmk63fd portal request"
+        }
+      }
+    },
+    {
+      "at": "2026-09-05T15:55:24.611Z",
+      "path": "/rest/api/3/issue/JT-53?fields=summary",
+      "status": 404,
+      "body": {
+        "errorMessages": [
+          "Issue does not exist or you do not have permission to see it."
+        ],
+        "errors": {}
+      }
+    }
+  ],
+  "cleanup": [
+    {
+      "path": "/rest/servicedeskapi/servicedesk/1/requesttype/342",
+      "status": 204,
+      "body": null
+    },
+    {
+      "path": "?resource=listeners&id=lst_mtok65mckub2xw",
+      "status": 200,
+      "body": {
+        "deleted": "lst_mtok65mckub2xw"
+      }
+    },
+    {
+      "path": "?resource=listeners&id=lst_mtok65v2bzhot4",
+      "status": 200,
+      "body": {
+        "deleted": "lst_mtok65v2bzhot4"
+      }
+    },
+    {
+      "path": "?resource=listeners&id=lst_mtok6643c5nxgr",
+      "status": 200,
+      "body": {
+        "deleted": "lst_mtok6643c5nxgr"
+      }
+    },
+    {
+      "path": "?resource=listeners&id=lst_mtok66g978ocob",
+      "status": 200,
+      "body": {
+        "deleted": "lst_mtok66g978ocob"
+      }
+    },
+    {
+      "path": "?resource=listeners&id=lst_mtok734prul660",
+      "status": 200,
+      "body": {
+        "deleted": "lst_mtok734prul660"
+      }
+    },
+    {
+      "path": "/rest/api/3/issue/JT-52",
+      "status": 204,
+      "body": null
+    },
+    {
+      "path": "/rest/api/3/issue/JT-53",
+      "status": 204,
+      "body": null
+    }
+  ],
+  "ownedRules": [
+    {
+      "kind": "Listener",
+      "id": "lst_mtok65mckub2xw"
+    },
+    {
+      "kind": "Listener",
+      "id": "lst_mtok65v2bzhot4"
+    },
+    {
+      "kind": "Listener",
+      "id": "lst_mtok6643c5nxgr"
+    },
+    {
+      "kind": "Listener",
+      "id": "lst_mtok66g978ocob"
+    },
+    {
+      "kind": "Listener",
+      "id": "lst_mtok734prul660"
+    }
+  ],
+  "tokensBefore": [
+    {
+      "id": "tok_mtj79apf29b509",
+      "name": "harness 2026-09-01T21:49:06.005Z",
+      "revokedAt": "2026-09-05T09:17:29.608Z"
+    },
+    {
+      "id": "tok_mtj7aqkpc84753",
+      "name": "harness 2026-09-01T21:50:12.996Z",
+      "revokedAt": "2026-09-05T09:17:29.922Z"
+    },
+    {
+      "id": "tok_mtj7ooyub00691",
+      "name": "harness 2026-09-01T22:01:02.029Z",
+      "revokedAt": "2026-09-05T09:17:30.201Z"
+    },
+    {
+      "id": "tok_mtj7qjula09e22",
+      "name": "harness 2026-09-01T22:02:30.872Z",
+      "revokedAt": "2026-09-05T09:17:30.456Z"
+    },
+    {
+      "id": "tok_mtj80rji42d93c",
+      "name": "resolver 80e9b",
+      "revokedAt": "2026-09-01T22:10:28.510Z"
+    },
+    {
+      "id": "tok_mtj814pr784bb6",
+      "name": "harness 2026-09-01T22:10:44.677Z",
+      "revokedAt": "2026-09-05T09:17:30.774Z"
+    },
+    {
+      "id": "tok_mtj82gbqee0674",
+      "name": "resolver 828av",
+      "revokedAt": "2026-09-01T22:11:47.057Z"
+    },
+    {
+      "id": "tok_mtj88y7tb0cf13",
+      "name": "harness 2026-09-01T22:16:47.184Z",
+      "revokedAt": "2026-09-05T09:17:31.065Z"
+    },
+    {
+      "id": "tok_mtj8ctyef7fcf4",
+      "name": "harness 2026-09-01T22:19:50.176Z",
+      "revokedAt": "2026-09-05T09:17:31.330Z"
+    },
+    {
+      "id": "tok_mtj8e3k250635e",
+      "name": "harness 2026-09-01T22:20:49.546Z",
+      "revokedAt": "2026-09-05T09:17:31.565Z"
+    },
+    {
+      "id": "tok_mtjryxvc392f56",
+      "name": "resolver ry9rp",
+      "revokedAt": "2026-09-02T07:28:55.617Z"
+    },
+    {
+      "id": "tok_mtjryztb48caaf",
+      "name": "harness 2026-09-02T07:28:57.262Z",
+      "revokedAt": "2026-09-05T09:17:31.823Z"
+    },
+    {
+      "id": "tok_mtlz82mn02b4fc",
+      "name": "harness 2026-09-03T20:27:30.393Z",
+      "revokedAt": "2026-09-05T09:17:32.089Z"
+    },
+    {
+      "id": "tok_mtlz8m3rf590c1",
+      "name": "harness 2026-09-03T20:27:55.712Z",
+      "revokedAt": "2026-09-05T09:17:32.365Z"
+    },
+    {
+      "id": "tok_mtlz8t7ccdd33a",
+      "name": "harness 2026-09-03T20:28:04.929Z",
+      "revokedAt": "2026-09-05T09:17:32.636Z"
+    },
+    {
+      "id": "tok_mtlzmh7z1d41ca",
+      "name": "harness 2026-09-03T20:38:42.527Z",
+      "revokedAt": "2026-09-05T09:17:32.895Z"
+    },
+    {
+      "id": "tok_mtlzoreude6cea",
+      "name": "harness 2026-09-03T20:40:29.054Z",
+      "revokedAt": "2026-09-05T09:17:33.138Z"
+    },
+    {
+      "id": "tok_mtlztrkq75b90a",
+      "name": "harness 2026-09-03T20:44:22.558Z",
+      "revokedAt": "2026-09-05T09:17:33.407Z"
+    },
+    {
+      "id": "tok_mtlzx64vfb5bc0",
+      "name": "resolver zwxie",
+      "revokedAt": "2026-09-03T20:47:02.159Z"
+    },
+    {
+      "id": "tok_mtlzxqfwcc2628",
+      "name": "harness 2026-09-03T20:47:27.713Z",
+      "revokedAt": "2026-09-05T09:17:33.694Z"
+    },
+    {
+      "id": "tok_mtm0arhp7bf143",
+      "name": "harness 2026-09-03T20:57:35.464Z",
+      "revokedAt": "2026-09-05T09:17:34.113Z"
+    },
+    {
+      "id": "tok_mtm0md47aaf6c8",
+      "name": "harness 2026-09-03T21:06:36.738Z",
+      "revokedAt": "2026-09-05T09:17:34.343Z"
+    },
+    {
+      "id": "tok_mtm1oa7cefbce8",
+      "name": "harness 2026-09-03T21:36:05.904Z",
+      "revokedAt": "2026-09-05T09:17:34.613Z"
+    },
+    {
+      "id": "tok_mtm1sdo5edc287",
+      "name": "harness 2026-09-03T21:39:17.057Z",
+      "revokedAt": "2026-09-05T09:17:34.922Z"
+    },
+    {
+      "id": "tok_mtm1u2gw780489",
+      "name": "harness 2026-09-03T21:40:35.928Z",
+      "revokedAt": "2026-09-05T09:17:35.160Z"
+    },
+    {
+      "id": "tok_mtm1vjsza04b75",
+      "name": "harness 2026-09-03T21:41:45.001Z",
+      "revokedAt": "2026-09-05T09:17:35.392Z"
+    },
+    {
+      "id": "tok_mtm1vr55e7ca83",
+      "name": "harness 2026-09-03T21:41:54.587Z",
+      "revokedAt": "2026-09-05T09:17:35.632Z"
+    },
+    {
+      "id": "tok_mtm1zj3q8d92fa",
+      "name": "harness 2026-09-03T21:44:50.752Z",
+      "revokedAt": "2026-09-05T09:17:35.866Z"
+    },
+    {
+      "id": "tok_mtm20okw9b7be9",
+      "name": "harness 2026-09-03T21:45:44.411Z",
+      "revokedAt": "2026-09-05T09:17:36.106Z"
+    },
+    {
+      "id": "tok_mto678sh1004cc",
+      "name": "baseline-review-2026-09-05",
+      "revokedAt": "2026-09-05T09:31:47.456Z"
+    },
+    {
+      "id": "tok_mto76mw7e0d7c0",
+      "name": "verified-assets-review-2026-09-05",
+      "revokedAt": "2026-09-05T09:51:49.730Z"
+    },
+    {
+      "id": "tok_mtok29tmfae370",
+      "name": "harness 2026-09-05T15:46:24.011Z",
+      "revokedAt": null
+    },
+    {
+      "id": "tok_mtok4hd197ce1b",
+      "name": "resolver k47xo",
+      "revokedAt": "2026-09-05T15:48:08.110Z"
+    }
+  ],
+  "ruleCleanup": [
+    {
+      "kind": "Listener",
+      "id": "lst_mtok65mckub2xw",
+      "status": 200,
+      "body": {
+        "success": false,
+        "error": "Listener not found"
+      }
+    },
+    {
+      "kind": "Listener",
+      "id": "lst_mtok65v2bzhot4",
+      "status": 200,
+      "body": {
+        "success": false,
+        "error": "Listener not found"
+      }
+    },
+    {
+      "kind": "Listener",
+      "id": "lst_mtok6643c5nxgr",
+      "status": 200,
+      "body": {
+        "success": false,
+        "error": "Listener not found"
+      }
+    },
+    {
+      "kind": "Listener",
+      "id": "lst_mtok66g978ocob",
+      "status": 200,
+      "body": {
+        "success": false,
+        "error": "Listener not found"
+      }
+    },
+    {
+      "kind": "Listener",
+      "id": "lst_mtok734prul660",
+      "status": 200,
+      "body": {
+        "success": false,
+        "error": "Listener not found"
+      }
+    }
+  ],
+  "tokensAfter": [
+    {
+      "id": "tok_mtj79apf29b509",
+      "name": "harness 2026-09-01T21:49:06.005Z",
+      "revokedAt": "2026-09-05T09:17:29.608Z"
+    },
+    {
+      "id": "tok_mtj7aqkpc84753",
+      "name": "harness 2026-09-01T21:50:12.996Z",
+      "revokedAt": "2026-09-05T09:17:29.922Z"
+    },
+    {
+      "id": "tok_mtj7ooyub00691",
+      "name": "harness 2026-09-01T22:01:02.029Z",
+      "revokedAt": "2026-09-05T09:17:30.201Z"
+    },
+    {
+      "id": "tok_mtj7qjula09e22",
+      "name": "harness 2026-09-01T22:02:30.872Z",
+      "revokedAt": "2026-09-05T09:17:30.456Z"
+    },
+    {
+      "id": "tok_mtj80rji42d93c",
+      "name": "resolver 80e9b",
+      "revokedAt": "2026-09-01T22:10:28.510Z"
+    },
+    {
+      "id": "tok_mtj814pr784bb6",
+      "name": "harness 2026-09-01T22:10:44.677Z",
+      "revokedAt": "2026-09-05T09:17:30.774Z"
+    },
+    {
+      "id": "tok_mtj82gbqee0674",
+      "name": "resolver 828av",
+      "revokedAt": "2026-09-01T22:11:47.057Z"
+    },
+    {
+      "id": "tok_mtj88y7tb0cf13",
+      "name": "harness 2026-09-01T22:16:47.184Z",
+      "revokedAt": "2026-09-05T09:17:31.065Z"
+    },
+    {
+      "id": "tok_mtj8ctyef7fcf4",
+      "name": "harness 2026-09-01T22:19:50.176Z",
+      "revokedAt": "2026-09-05T09:17:31.330Z"
+    },
+    {
+      "id": "tok_mtj8e3k250635e",
+      "name": "harness 2026-09-01T22:20:49.546Z",
+      "revokedAt": "2026-09-05T09:17:31.565Z"
+    },
+    {
+      "id": "tok_mtjryxvc392f56",
+      "name": "resolver ry9rp",
+      "revokedAt": "2026-09-02T07:28:55.617Z"
+    },
+    {
+      "id": "tok_mtjryztb48caaf",
+      "name": "harness 2026-09-02T07:28:57.262Z",
+      "revokedAt": "2026-09-05T09:17:31.823Z"
+    },
+    {
+      "id": "tok_mtlz82mn02b4fc",
+      "name": "harness 2026-09-03T20:27:30.393Z",
+      "revokedAt": "2026-09-05T09:17:32.089Z"
+    },
+    {
+      "id": "tok_mtlz8m3rf590c1",
+      "name": "harness 2026-09-03T20:27:55.712Z",
+      "revokedAt": "2026-09-05T09:17:32.365Z"
+    },
+    {
+      "id": "tok_mtlz8t7ccdd33a",
+      "name": "harness 2026-09-03T20:28:04.929Z",
+      "revokedAt": "2026-09-05T09:17:32.636Z"
+    },
+    {
+      "id": "tok_mtlzmh7z1d41ca",
+      "name": "harness 2026-09-03T20:38:42.527Z",
+      "revokedAt": "2026-09-05T09:17:32.895Z"
+    },
+    {
+      "id": "tok_mtlzoreude6cea",
+      "name": "harness 2026-09-03T20:40:29.054Z",
+      "revokedAt": "2026-09-05T09:17:33.138Z"
+    },
+    {
+      "id": "tok_mtlztrkq75b90a",
+      "name": "harness 2026-09-03T20:44:22.558Z",
+      "revokedAt": "2026-09-05T09:17:33.407Z"
+    },
+    {
+      "id": "tok_mtlzx64vfb5bc0",
+      "name": "resolver zwxie",
+      "revokedAt": "2026-09-03T20:47:02.159Z"
+    },
+    {
+      "id": "tok_mtlzxqfwcc2628",
+      "name": "harness 2026-09-03T20:47:27.713Z",
+      "revokedAt": "2026-09-05T09:17:33.694Z"
+    },
+    {
+      "id": "tok_mtm0arhp7bf143",
+      "name": "harness 2026-09-03T20:57:35.464Z",
+      "revokedAt": "2026-09-05T09:17:34.113Z"
+    },
+    {
+      "id": "tok_mtm0md47aaf6c8",
+      "name": "harness 2026-09-03T21:06:36.738Z",
+      "revokedAt": "2026-09-05T09:17:34.343Z"
+    },
+    {
+      "id": "tok_mtm1oa7cefbce8",
+      "name": "harness 2026-09-03T21:36:05.904Z",
+      "revokedAt": "2026-09-05T09:17:34.613Z"
+    },
+    {
+      "id": "tok_mtm1sdo5edc287",
+      "name": "harness 2026-09-03T21:39:17.057Z",
+      "revokedAt": "2026-09-05T09:17:34.922Z"
+    },
+    {
+      "id": "tok_mtm1u2gw780489",
+      "name": "harness 2026-09-03T21:40:35.928Z",
+      "revokedAt": "2026-09-05T09:17:35.160Z"
+    },
+    {
+      "id": "tok_mtm1vjsza04b75",
+      "name": "harness 2026-09-03T21:41:45.001Z",
+      "revokedAt": "2026-09-05T09:17:35.392Z"
+    },
+    {
+      "id": "tok_mtm1vr55e7ca83",
+      "name": "harness 2026-09-03T21:41:54.587Z",
+      "revokedAt": "2026-09-05T09:17:35.632Z"
+    },
+    {
+      "id": "tok_mtm1zj3q8d92fa",
+      "name": "harness 2026-09-03T21:44:50.752Z",
+      "revokedAt": "2026-09-05T09:17:35.866Z"
+    },
+    {
+      "id": "tok_mtm20okw9b7be9",
+      "name": "harness 2026-09-03T21:45:44.411Z",
+      "revokedAt": "2026-09-05T09:17:36.106Z"
+    },
+    {
+      "id": "tok_mto678sh1004cc",
+      "name": "baseline-review-2026-09-05",
+      "revokedAt": "2026-09-05T09:31:47.456Z"
+    },
+    {
+      "id": "tok_mto76mw7e0d7c0",
+      "name": "verified-assets-review-2026-09-05",
+      "revokedAt": "2026-09-05T09:51:49.730Z"
+    },
+    {
+      "id": "tok_mtok29tmfae370",
+      "name": "harness 2026-09-05T15:46:24.011Z",
+      "revokedAt": "2026-09-05T15:51:45.441Z"
+    },
+    {
+      "id": "tok_mtok4hd197ce1b",
+      "name": "resolver k47xo",
+      "revokedAt": "2026-09-05T15:48:08.110Z"
+    },
+    {
+      "id": "tok_mtok65c0d0838c",
+      "name": "harness 2026-09-05T15:49:24.867Z",
+      "revokedAt": "2026-09-05T15:55:25.210Z"
+    },
+    {
+      "id": "tok_mtok6gctd1fbb2",
+      "name": "harness 2026-09-05T15:49:39.170Z",
+      "revokedAt": "2026-09-05T15:50:24.529Z"
+    },
+    {
+      "id": "tok_mtokdtvvc0a44a",
+      "name": "harness 2026-09-05T15:55:23.290Z",
+      "revokedAt": null
+    }
+  ],
+  "newTokens": [
+    {
+      "id": "tok_mtokdtvvc0a44a",
+      "name": "harness 2026-09-05T15:55:23.290Z",
+      "revokedAt": null
+    }
+  ],
+  "finished": "2026-09-05T15:55:26.808Z",
+  "exitCode": 0
+}

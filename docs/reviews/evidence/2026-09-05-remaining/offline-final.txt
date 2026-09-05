@@ -1,0 +1,53 @@
+
+=== Offline suite: 49 test files ===
+  ✓ adf-extract.test.mjs         extractTextFromADF: 13/13 assertions passed.
+  ✓ agent-reference.test.mjs     AGENT REFERENCES: 155 passed, 0 failed
+  ✓ agent-simulation-identity.test.mjs (Use `node --trace-warnings ...` to show where the warning was created
+  ✓ async-handler-helpers.test.mjs async-handler-helpers: 60 passed, 0 failed
+  ✓ attachment-replay.test.mjs   (Use `node --trace-warnings ...` to show where the warning was created
+  ✓ attachment-transport.test.mjs (Use `node --trace-warnings ...` to show where the warning was created
+  ✓ build-rule.test.mjs          74 passed, 0 failed
+  ✓ builtin-seeds.test.mjs       builtin-seeds: 34 passed, 0 failed
+  ✓ configs-filter.test.mjs      configs-filter: 13 passed, 0 failed
+  ✓ cron.test.mjs                CRON: 50 passed, 0 failed
+  ✓ defang-fence.test.mjs        defang-fence: 19 passed, 0 failed
+  ✓ document-upload-result.test.mjs (Use `node --trace-deprecation ...` to show where the warning was crea
+  ✓ explain-enrich.test.mjs      explain-enrich: 11/11 assertions passed.
+  ✓ explain-facts.test.mjs       21 passed, 0 failed
+  ✓ harness-lifecycle.test.mjs   cleanup FAILED: denied fixture: HTTP 403
+  ✓ issue-activity.test.mjs      issue-activity: 12 passed, 0 failed
+  ✓ jira-endpoints.test.mjs      jira-endpoints: 40 passed, 0 failed
+  ✓ jira-events.test.mjs         JIRA-EVENTS: 362 passed, 0 failed
+  ✓ keyframe-containing-block.test.mjs keyframe-containing-block: 74 passed, 0 failed
+  ✓ listeners.test.mjs           LISTENERS: 74 passed, 0 failed
+  ✓ log-flags.test.mjs           18 passed, 0 failed
+  ✓ mcp-bridge-errors.test.mjs   (Use `node --trace-deprecation ...` to show where the warning was crea
+  ✓ memory-block.test.mjs        memory-block: 41 passed, 0 failed
+  ✓ memory-dedup.test.mjs        memory-dedup: 25 passed, 0 failed
+  ✓ narrate-utils.test.mjs       narrate-utils: 68 passed, 0 failed
+  ✓ object-key-verdict.test.mjs  (Use `node --trace-deprecation ...` to show where the warning was crea
+  ✓ parse-ai-json.test.mjs       parse-ai-json: 38 passed, 0 failed
+  ✓ premade-rules.test.mjs       ✓ premade-rules executor: 79/79 assertions passed.
+  ✓ prompt-builders.test.mjs     prompt-builders: 54 passed, 0 failed
+  ✓ recipes.test.mjs             ✓ recipes: 174/174 checks passed across 10 recipes.
+  ✓ recover-verdict.test.mjs     recover-verdict: 12 passed, 0 failed
+  ✓ regex-safety.test.mjs        regex-safety: 30 passed, 0 failed
+  ✓ registry-limits.test.mjs     registry-limits: 53 passed, 0 failed
+  ✓ registry-logging.test.mjs    (Use `node --trace-warnings ...` to show where the warning was created
+  ✓ rule-portability.test.mjs    40 passed, 0 failed
+  ✓ rules-runtime-regression.test.mjs RULES RUNTIME REGRESSION: 115 passed, 0 failed
+  ✓ sandbox-api-spec.test.mjs    sandbox-api-spec: 106 passed, 0 failed
+  ✓ sandbox-retry.test.mjs       sandbox retry idempotency: 36/36 assertions passed.
+  ✓ scoped-agent-result-size.test.mjs (Use `node --trace-warnings ...` to show where the warning was created
+  ✓ shared-imports.test.mjs      shared-imports: 81 passed, 0 failed
+  ✓ simulation-identity.test.mjs (Use `node --trace-warnings ...` to show where the warning was created
+  ✓ skills-scorer.test.mjs       skills-scorer: 15 passed, 0 failed
+  ✓ skills-store.test.mjs        skills-store: 76 passed, 0 failed
+  ✓ strip-fences-fix.test.mjs    strip-fences-fix: 44 passed, 0 failed
+  ✓ testpf-dryrun.test.mjs         122 passed, 0 failed
+  ✓ transition-knowledge.test.mjs (Use `node --trace-warnings ...` to show where the warning was created
+  ✓ ui-intent.test.mjs           ui-intent: 16 passed, 0 failed
+  ✓ upload-contract.test.mjs     ALL GREEN
+  ✓ usage-meter.test.mjs         26 passed, 0 failed
+
+OFFLINE SUITE: PASS (49/49)

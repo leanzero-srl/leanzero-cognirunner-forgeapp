@@ -1,0 +1,47 @@
+{
+  "beforeRole": {
+    "self": "https://wolfaenpak.atlassian.net/rest/api/3/project/10014/role/10002",
+    "name": "Administrators",
+    "id": 10002,
+    "description": "A project role that represents administrators in a project",
+    "actors": []
+  },
+  "issues": [
+    {
+      "key": "COGTEST-2696",
+      "fields": {
+        "summary": "crjob647ps scheduled job bed",
+        "labels": [
+          "crjob647ps"
+        ]
+      }
+    },
+    {
+      "key": "COGTEST-2697",
+      "fields": {
+        "summary": "crjob67959 scheduled job bed",
+        "labels": [
+          "crjob67959",
+          "crjob67959-agent"
+        ]
+      }
+    }
+  ],
+  "cleanup": [
+    {
+      "key": "COGTEST-2696",
+      "absent": true
+    },
+    {
+      "key": "COGTEST-2697",
+      "absent": true
+    }
+  ],
+  "afterRole": {
+    "self": "https://wolfaenpak.atlassian.net/rest/api/3/project/10014/role/10002",
+    "name": "Administrators",
+    "id": 10002,
+    "description": "A project role that represents administrators in a project",
+    "actors": []
+  }
+}

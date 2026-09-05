@@ -26,6 +26,8 @@ try {
   key = (await post("/rest/api/3/issue", { fields: { project: { key: "JT" }, issuetype: { id: type.id }, summary: tag,
     description: { type: "doc", version: 1, content: [{ type: "paragraph", content: [{ type: "text", text: `${tag}: attachment transport validation on the test site.` }] }] }, labels: [tag] } })).key;
   const before = await getIssue(key, ["attachment", "comment"]);
+  evidence.issue = key;
+  evidence.before = { attachments: before.fields.attachment, comments: before.fields.comment };
   assert.equal(before.fields.attachment.length, 0);
   const fired = await doTransition(key, transitionId);
   assert.ok(fired.status >= 200 && fired.status < 300, JSON.stringify(fired));
@@ -35,6 +37,9 @@ try {
     after = await getIssue(key, ["attachment", "comment"]);
     if (after.fields.attachment.length) break;
   }
+  // Retain the actual user-visible state even when the positive proof fails.
+  // An endpoint failure must not be hidden by reporting only the assertion.
+  evidence.after = { attachments: after.fields.attachment, comments: after.fields.comment };
   assert.equal(after.fields.attachment.length, 1, "exactly one actual Jira attachment required");
   const attachment = after.fields.attachment[0];
   assert.match(attachment.filename, /\.md$/);

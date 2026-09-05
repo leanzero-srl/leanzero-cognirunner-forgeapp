@@ -1,0 +1,1968 @@
+{
+  "suite": "jobs-e2e",
+  "started": "2026-09-05T15:46:19.234Z",
+  "reads": [
+    {
+      "at": "2026-09-05T15:46:22.590Z",
+      "path": "/rest/api/3/issue/createmeta/LZPT/issuetypes?maxResults=100",
+      "status": 200,
+      "body": {
+        "startAt": 0,
+        "maxResults": 100,
+        "total": 6,
+        "issueTypes": [
+          {
+            "id": "10133",
+            "description": "Epics track collections of related bugs, stories, and tasks.",
+            "iconUrl": "https://wolfaenpak.atlassian.net/rest/api/2/universal_avatar/view/type/issuetype/avatar/10307?size=medium",
+            "name": "Epic",
+            "untranslatedName": "Epic",
+            "subtask": false,
+            "hierarchyLevel": 1,
+            "scope": {
+              "type": "PROJECT",
+              "project": {
+                "id": "10153"
+              }
+            }
+          },
+          {
+            "id": "10134",
+            "description": "Subtasks track small pieces of work that are part of a larger task.",
+            "iconUrl": "https://wolfaenpak.atlassian.net/rest/api/2/universal_avatar/view/type/issuetype/avatar/10316?size=medium",
+            "name": "Subtask",
+            "untranslatedName": "Subtask",
+            "subtask": true,
+            "hierarchyLevel": -1,
+            "scope": {
+              "type": "PROJECT",
+              "project": {
+                "id": "10153"
+              }
+            }
+          },
+          {
+            "id": "10135",
+            "description": "",
+            "iconUrl": "https://wolfaenpak.atlassian.net/rest/api/2/universal_avatar/view/type/issuetype/avatar/10318?size=medium",
+            "name": "Task",
+            "untranslatedName": "Task",
+            "subtask": false,
+            "hierarchyLevel": 0,
+            "scope": {
+              "type": "PROJECT",
+              "project": {
+                "id": "10153"
+              }
+            }
+          },
+          {
+            "id": "10136",
+            "description": "",
+            "iconUrl": "https://wolfaenpak.atlassian.net/rest/api/2/universal_avatar/view/type/issuetype/avatar/10315?size=medium",
+            "name": "Story",
+            "untranslatedName": "Story",
+            "subtask": false,
+            "hierarchyLevel": 0,
+            "scope": {
+              "type": "PROJECT",
+              "project": {
+                "id": "10153"
+              }
+            }
+          },
+          {
+            "id": "10137",
+            "description": "",
+            "iconUrl": "https://wolfaenpak.atlassian.net/rest/api/2/universal_avatar/view/type/issuetype/avatar/10314?size=medium",
+            "name": "Feature",
+            "untranslatedName": "Feature",
+            "subtask": false,
+            "hierarchyLevel": 0,
+            "scope": {
+              "type": "PROJECT",
+              "project": {
+                "id": "10153"
+              }
+            }
+          },
+          {
+            "id": "10138",
+            "description": "",
+            "iconUrl": "https://wolfaenpak.atlassian.net/rest/api/2/universal_avatar/view/type/issuetype/avatar/10303?size=medium",
+            "name": "Bug",
+            "untranslatedName": "Bug",
+            "subtask": false,
+            "hierarchyLevel": 0,
+            "scope": {
+              "type": "PROJECT",
+              "project": {
+                "id": "10153"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "at": "2026-09-05T15:46:29.820Z",
+      "path": "?resource=tasks&id=9998211376810728_scheduledjob_r6tvyy",
+      "status": 200,
+      "body": {
+        "taskId": "9998211376810728_scheduledjob_r6tvyy",
+        "status": "queued",
+        "job": {
+          "accountId": "api:tok_mtok29tmfae370",
+          "enqueuedAt": "2026-09-05T15:46:29.273Z",
+          "issueKey": null,
+          "model": null,
+          "provider": null,
+          "ruleId": "job_mtok2cey3of4qq",
+          "ruleName": "E2E agent k27yd",
+          "status": "queued",
+          "taskId": "9998211376810728_scheduledjob_r6tvyy",
+          "taskType": "scheduledjob"
+        }
+      }
+    },
+    {
+      "at": "2026-09-05T15:46:33.091Z",
+      "path": "?resource=tasks&id=9998211376810728_scheduledjob_r6tvyy",
+      "status": 200,
+      "body": {
+        "taskId": "9998211376810728_scheduledjob_r6tvyy",
+        "status": "processing",
+        "job": {
+          "accountId": "api:tok_mtok29tmfae370",
+          "enqueuedAt": "2026-09-05T15:46:29.273Z",
+          "issueKey": null,
+          "model": null,
+          "provider": null,
+          "ruleId": "job_mtok2cey3of4qq",
+          "ruleName": "E2E agent k27yd",
+          "startedAt": "2026-09-05T15:46:32.029Z",
+          "status": "running",
+          "taskId": "9998211376810728_scheduledjob_r6tvyy",
+          "taskType": "scheduledjob"
+        }
+      }
+    },
+    {
+      "at": "2026-09-05T15:46:36.364Z",
+      "path": "?resource=tasks&id=9998211376810728_scheduledjob_r6tvyy",
+      "status": 200,
+      "body": {
+        "taskId": "9998211376810728_scheduledjob_r6tvyy",
+        "status": "processing",
+        "job": {
+          "accountId": "api:tok_mtok29tmfae370",
+          "enqueuedAt": "2026-09-05T15:46:29.273Z",
+          "issueKey": null,
+          "model": null,
+          "provider": null,
+          "ruleId": "job_mtok2cey3of4qq",
+          "ruleName": "E2E agent k27yd",
+          "startedAt": "2026-09-05T15:46:32.029Z",
+          "status": "running",
+          "taskId": "9998211376810728_scheduledjob_r6tvyy",
+          "taskType": "scheduledjob"
+        }
+      }
+    },
+    {
+      "at": "2026-09-05T15:46:39.697Z",
+      "path": "?resource=tasks&id=9998211376810728_scheduledjob_r6tvyy",
+      "status": 200,
+      "body": {
+        "taskId": "9998211376810728_scheduledjob_r6tvyy",
+        "status": "done",
+        "result": {
+          "changes": [
+            {
+              "action": "editIssue",
+              "issue": "LZPT-278",
+              "key": "LZPT-278",
+              "update": {
+                "labels": [
+                  {
+                    "add": "crjobk27yd-agent"
+                  }
+                ]
+              }
+            },
+            {
+              "action": "addComment",
+              "id": "16049",
+              "issue": "LZPT-278",
+              "key": "LZPT-278"
+            }
+          ],
+          "executionTimeMs": 4540,
+          "issues": [
+            {
+              "agentOutcome": "done",
+              "agentSummary": "Added label \"crjobk27yd-agent\" and posted comment \"crjobk27yd agent ran\" to issue LZPT-278.",
+              "key": "LZPT-278",
+              "reason": "done: Added label \"crjobk27yd-agent\" and posted comment \"crjobk27yd agent ran\" to issue LZPT-278.",
+              "success": true
+            }
+          ],
+          "logs": [
+            "Scope \"labels = crjobk27yd\" matched 1 issue(s) (cap 5)",
+            "--- LZPT-278: OK \u2014 done: Added label \"crjobk27yd-agent\" and posted comment \"crjobk27yd agent ran\" to issue LZPT-278.",
+            "    Agent start: model=claude-haiku-4-5-20251001, actions=[get_issue, add_comment, add_labels], maxRounds=4",
+            "    tool add_labels({\"labels\":[\"crjobk27yd-agent\"]})",
+            "    addComment: 16049",
+            "    tool add_comment({\"text\":\"crjobk27yd agent ran\"})",
+            "    tool finish({\"summary\":\"Added label \\\"crjobk27yd-agent\\\" and posted comment \\\"crjobk27yd agent ran\\\" to issue LZPT-278.\",\"outcome\":\"done\"})",
+            "    Agent end: OK (2 round(s), 3 tool call(s), 2 change(s), 3473 tokens)"
+          ],
+          "reason": "1/1 issue(s) processed OK, 2 change(s)",
+          "success": true,
+          "tokens": 3473
+        },
+        "job": {
+          "accountId": "api:tok_mtok29tmfae370",
+          "durationMs": 5293,
+          "enqueuedAt": "2026-09-05T15:46:29.273Z",
+          "finishedAt": "2026-09-05T15:46:37.328Z",
+          "issueKey": null,
+          "model": null,
+          "provider": null,
+          "ruleId": "job_mtok2cey3of4qq",
+          "ruleName": "E2E agent k27yd",
+          "startedAt": "2026-09-05T15:46:32.029Z",
+          "status": "done",
+          "taskId": "9998211376810728_scheduledjob_r6tvyy",
+          "taskType": "scheduledjob"
+        }
+      }
+    },
+    {
+      "at": "2026-09-05T15:46:40.004Z",
+      "path": "/rest/api/3/issue/LZPT-278?fields=labels,comment",
+      "status": 200,
+      "body": {
+        "expand": "renderedFields,names,schema,operations,editmeta,changelog,versionedRepresentations",
+        "id": "24857",
+        "key": "LZPT-278",
+        "fields": {
+          "comment": {
+            "comments": [
+              {
+                "id": "16049",
+                "author": {
+                  "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+                  "displayName": "CogniRunner",
+                  "active": true,
+                  "timeZone": "Europe/Bucharest",
+                  "accountType": "app"
+                },
+                "body": {
+                  "type": "doc",
+                  "version": 1,
+                  "content": [
+                    {
+                      "type": "paragraph",
+                      "content": [
+                        {
+                          "type": "text",
+                          "text": "crjobk27yd agent ran"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                "updateAuthor": {
+                  "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+                  "displayName": "CogniRunner",
+                  "active": true,
+                  "timeZone": "Europe/Bucharest",
+                  "accountType": "app"
+                },
+                "created": "2026-09-05T18:46:35.425+0300",
+                "updated": "2026-09-05T18:46:35.425+0300",
+                "jsdPublic": true
+              }
+            ],
+            "maxResults": 1,
+            "total": 1,
+            "startAt": 0
+          },
+          "labels": [
+            "crjobk27yd",
+            "crjobk27yd-agent"
+          ]
+        }
+      }
+    },
+    {
+      "at": "2026-09-05T15:46:40.299Z",
+      "path": "?resource=logs&ruleId=job_mtok2cey3of4qq",
+      "status": 200,
+      "body": {
+        "logs": [
+          {
+            "perIssue": [
+              {
+                "reason": "done: Added label \"crjobk27yd-agent\" and posted comment \"crjobk27yd agent ran\" to issue LZPT-278.",
+                "agentOutcome": "done",
+                "agentSummary": "Added label \"crjobk27yd-agent\" and posted comment \"crjobk27yd agent ran\" to issue LZPT-278.",
+                "key": "LZPT-278",
+                "success": true
+              }
+            ],
+            "reason": "1/1 issue(s) processed OK, 2 change(s)",
+            "issueKey": "1 issue(s)",
+            "missed": 0,
+            "isValid": true,
+            "executionTimeMs": 4540,
+            "ruleWorkflow": null,
+            "changes": [
+              {
+                "action": "editIssue",
+                "update": {
+                  "labels": [
+                    {
+                      "add": "crjobk27yd-agent"
+                    }
+                  ]
+                },
+                "issue": "LZPT-278",
+                "key": "LZPT-278"
+              },
+              {
+                "action": "addComment",
+                "id": "16049",
+                "issue": "LZPT-278",
+                "key": "LZPT-278"
+              }
+            ],
+            "aiTimeMs": 3218,
+            "source": "async",
+            "type": "scheduledjob",
+            "manual": true,
+            "mode": "agent",
+            "scheduledFor": null,
+            "ruleName": "E2E agent k27yd",
+            "tokens": 3473,
+            "id": "1788623197182llve",
+            "ruleId": "job_mtok2cey3of4qq",
+            "logs": [
+              "Scope \"labels = crjobk27yd\" matched 1 issue(s) (cap 5)",
+              "--- LZPT-278: OK \u2014 done: Added label \"crjobk27yd-agent\" and posted comment \"crjobk27yd agent ran\" to issue LZPT-278.",
+              "    Agent start: model=claude-haiku-4-5-20251001, actions=[get_issue, add_comment, add_labels], maxRounds=4",
+              "    tool add_labels({\"labels\":[\"crjobk27yd-agent\"]})",
+              "    addComment: 16049",
+              "    tool add_comment({\"text\":\"crjobk27yd agent ran\"})",
+              "    tool finish({\"summary\":\"Added label \\\"crjobk27yd-agent\\\" and posted comment \\\"crjobk27yd agent ran\\\" to issue LZPT-278.\",\"outcome\":\"done\"})",
+              "    Agent end: OK (2 round(s), 3 tool call(s), 2 change(s), 3473 tokens)"
+            ],
+            "fieldId": "0 3 * * * Europe/Zurich",
+            "queueDelayMs": 7909,
+            "timestamp": "2026-09-05T15:46:37.182Z"
+          }
+        ]
+      }
+    },
+    {
+      "at": "2026-09-05T15:46:41.428Z",
+      "path": "?resource=tasks&id=9998211376799136_scheduledjob_oae8b8",
+      "status": 200,
+      "body": {
+        "taskId": "9998211376799136_scheduledjob_oae8b8",
+        "status": "queued",
+        "job": {
+          "accountId": "api:tok_mtok29tmfae370",
+          "enqueuedAt": "2026-09-05T15:46:40.865Z",
+          "issueKey": null,
+          "model": null,
+          "provider": null,
+          "ruleId": "job_mtok2bwwkih0mm",
+          "ruleName": "E2E tick k27yd",
+          "status": "queued",
+          "taskId": "9998211376799136_scheduledjob_oae8b8",
+          "taskType": "scheduledjob"
+        }
+      }
+    },
+    {
+      "at": "2026-09-05T15:46:44.759Z",
+      "path": "?resource=tasks&id=9998211376799136_scheduledjob_oae8b8",
+      "status": 200,
+      "body": {
+        "taskId": "9998211376799136_scheduledjob_oae8b8",
+        "status": "done",
+        "result": {
+          "changes": [
+            {
+              "action": "addComment",
+              "id": "16050",
+              "key": "LZPT-278"
+            }
+          ],
+          "executionTimeMs": 297,
+          "issues": [],
+          "logs": [
+            "Starting 1 step(s) for (no current issue)",
+            "addComment: 16050",
+            "\"comment\": Completed in 296ms",
+            "Finished: 1/1 step(s) succeeded in 296ms, 1 change(s) made"
+          ],
+          "reason": "1 step(s), 1 change(s)",
+          "success": true
+        },
+        "job": {
+          "accountId": "api:tok_mtok29tmfae370",
+          "durationMs": 658,
+          "enqueuedAt": "2026-09-05T15:46:40.865Z",
+          "finishedAt": "2026-09-05T15:46:42.076Z",
+          "issueKey": null,
+          "model": null,
+          "provider": null,
+          "ruleId": "job_mtok2bwwkih0mm",
+          "ruleName": "E2E tick k27yd",
+          "startedAt": "2026-09-05T15:46:41.418Z",
+          "status": "done",
+          "taskId": "9998211376799136_scheduledjob_oae8b8",
+          "taskType": "scheduledjob"
+        }
+      }
+    },
+    {
+      "at": "2026-09-05T15:46:45.062Z",
+      "path": "?resource=logs&ruleId=job_mtok2bwwkih0mm",
+      "status": 200,
+      "body": {
+        "logs": [
+          {
+            "stepResults": [
+              {
+                "name": "comment",
+                "index": 1,
+                "status": "success",
+                "timeMs": 296
+              }
+            ],
+            "reason": "1 step(s), 1 change(s)",
+            "issueKey": "(no issue)",
+            "missed": 0,
+            "isValid": true,
+            "executionTimeMs": 297,
+            "ruleWorkflow": null,
+            "changes": [
+              {
+                "action": "addComment",
+                "key": "LZPT-278",
+                "id": "16050"
+              }
+            ],
+            "source": "async",
+            "type": "scheduledjob",
+            "manual": true,
+            "mode": "script",
+            "scheduledFor": null,
+            "ruleName": "E2E tick k27yd",
+            "id": "1788623201924mism",
+            "ruleId": "job_mtok2bwwkih0mm",
+            "logs": [
+              "Starting 1 step(s) for (no current issue)",
+              "addComment: 16050",
+              "\"comment\": Completed in 296ms",
+              "Finished: 1/1 step(s) succeeded in 296ms, 1 change(s) made"
+            ],
+            "fieldId": "*/5 * * * * UTC",
+            "queueDelayMs": 1059,
+            "timestamp": "2026-09-05T15:46:41.924Z"
+          }
+        ]
+      }
+    },
+    {
+      "at": "2026-09-05T15:47:00.573Z",
+      "path": "?resource=logs&ruleId=job_mtok2bwwkih0mm",
+      "status": 200,
+      "body": {
+        "logs": [
+          {
+            "stepResults": [
+              {
+                "name": "comment",
+                "index": 1,
+                "status": "success",
+                "timeMs": 296
+              }
+            ],
+            "reason": "1 step(s), 1 change(s)",
+            "issueKey": "(no issue)",
+            "missed": 0,
+            "isValid": true,
+            "executionTimeMs": 297,
+            "ruleWorkflow": null,
+            "changes": [
+              {
+                "action": "addComment",
+                "key": "LZPT-278",
+                "id": "16050"
+              }
+            ],
+            "source": "async",
+            "type": "scheduledjob",
+            "manual": true,
+            "mode": "script",
+            "scheduledFor": null,
+            "ruleName": "E2E tick k27yd",
+            "id": "1788623201924mism",
+            "ruleId": "job_mtok2bwwkih0mm",
+            "logs": [
+              "Starting 1 step(s) for (no current issue)",
+              "addComment: 16050",
+              "\"comment\": Completed in 296ms",
+              "Finished: 1/1 step(s) succeeded in 296ms, 1 change(s) made"
+            ],
+            "fieldId": "*/5 * * * * UTC",
+            "queueDelayMs": 1059,
+            "timestamp": "2026-09-05T15:46:41.924Z"
+          }
+        ]
+      }
+    },
+    {
+      "at": "2026-09-05T15:47:16.081Z",
+      "path": "?resource=logs&ruleId=job_mtok2bwwkih0mm",
+      "status": 200,
+      "body": {
+        "logs": [
+          {
+            "stepResults": [
+              {
+                "name": "comment",
+                "index": 1,
+                "status": "success",
+                "timeMs": 296
+              }
+            ],
+            "reason": "1 step(s), 1 change(s)",
+            "issueKey": "(no issue)",
+            "missed": 0,
+            "isValid": true,
+            "executionTimeMs": 297,
+            "ruleWorkflow": null,
+            "changes": [
+              {
+                "action": "addComment",
+                "key": "LZPT-278",
+                "id": "16050"
+              }
+            ],
+            "source": "async",
+            "type": "scheduledjob",
+            "manual": true,
+            "mode": "script",
+            "scheduledFor": null,
+            "ruleName": "E2E tick k27yd",
+            "id": "1788623201924mism",
+            "ruleId": "job_mtok2bwwkih0mm",
+            "logs": [
+              "Starting 1 step(s) for (no current issue)",
+              "addComment: 16050",
+              "\"comment\": Completed in 296ms",
+              "Finished: 1/1 step(s) succeeded in 296ms, 1 change(s) made"
+            ],
+            "fieldId": "*/5 * * * * UTC",
+            "queueDelayMs": 1059,
+            "timestamp": "2026-09-05T15:46:41.924Z"
+          }
+        ]
+      }
+    },
+    {
+      "at": "2026-09-05T15:47:31.657Z",
+      "path": "?resource=logs&ruleId=job_mtok2bwwkih0mm",
+      "status": 200,
+      "body": {
+        "logs": [
+          {
+            "stepResults": [
+              {
+                "name": "comment",
+                "index": 1,
+                "status": "success",
+                "timeMs": 296
+              }
+            ],
+            "reason": "1 step(s), 1 change(s)",
+            "issueKey": "(no issue)",
+            "missed": 0,
+            "isValid": true,
+            "executionTimeMs": 297,
+            "ruleWorkflow": null,
+            "changes": [
+              {
+                "action": "addComment",
+                "key": "LZPT-278",
+                "id": "16050"
+              }
+            ],
+            "source": "async",
+            "type": "scheduledjob",
+            "manual": true,
+            "mode": "script",
+            "scheduledFor": null,
+            "ruleName": "E2E tick k27yd",
+            "id": "1788623201924mism",
+            "ruleId": "job_mtok2bwwkih0mm",
+            "logs": [
+              "Starting 1 step(s) for (no current issue)",
+              "addComment: 16050",
+              "\"comment\": Completed in 296ms",
+              "Finished: 1/1 step(s) succeeded in 296ms, 1 change(s) made"
+            ],
+            "fieldId": "*/5 * * * * UTC",
+            "queueDelayMs": 1059,
+            "timestamp": "2026-09-05T15:46:41.924Z"
+          }
+        ]
+      }
+    },
+    {
+      "at": "2026-09-05T15:47:47.310Z",
+      "path": "?resource=logs&ruleId=job_mtok2bwwkih0mm",
+      "status": 200,
+      "body": {
+        "logs": [
+          {
+            "stepResults": [
+              {
+                "name": "comment",
+                "index": 1,
+                "status": "success",
+                "timeMs": 296
+              }
+            ],
+            "reason": "1 step(s), 1 change(s)",
+            "issueKey": "(no issue)",
+            "missed": 0,
+            "isValid": true,
+            "executionTimeMs": 297,
+            "ruleWorkflow": null,
+            "changes": [
+              {
+                "action": "addComment",
+                "key": "LZPT-278",
+                "id": "16050"
+              }
+            ],
+            "source": "async",
+            "type": "scheduledjob",
+            "manual": true,
+            "mode": "script",
+            "scheduledFor": null,
+            "ruleName": "E2E tick k27yd",
+            "id": "1788623201924mism",
+            "ruleId": "job_mtok2bwwkih0mm",
+            "logs": [
+              "Starting 1 step(s) for (no current issue)",
+              "addComment: 16050",
+              "\"comment\": Completed in 296ms",
+              "Finished: 1/1 step(s) succeeded in 296ms, 1 change(s) made"
+            ],
+            "fieldId": "*/5 * * * * UTC",
+            "queueDelayMs": 1059,
+            "timestamp": "2026-09-05T15:46:41.924Z"
+          }
+        ]
+      }
+    },
+    {
+      "at": "2026-09-05T15:48:02.768Z",
+      "path": "?resource=logs&ruleId=job_mtok2bwwkih0mm",
+      "status": 200,
+      "body": {
+        "logs": [
+          {
+            "stepResults": [
+              {
+                "name": "comment",
+                "index": 1,
+                "status": "success",
+                "timeMs": 296
+              }
+            ],
+            "reason": "1 step(s), 1 change(s)",
+            "issueKey": "(no issue)",
+            "missed": 0,
+            "isValid": true,
+            "executionTimeMs": 297,
+            "ruleWorkflow": null,
+            "changes": [
+              {
+                "action": "addComment",
+                "key": "LZPT-278",
+                "id": "16050"
+              }
+            ],
+            "source": "async",
+            "type": "scheduledjob",
+            "manual": true,
+            "mode": "script",
+            "scheduledFor": null,
+            "ruleName": "E2E tick k27yd",
+            "id": "1788623201924mism",
+            "ruleId": "job_mtok2bwwkih0mm",
+            "logs": [
+              "Starting 1 step(s) for (no current issue)",
+              "addComment: 16050",
+              "\"comment\": Completed in 296ms",
+              "Finished: 1/1 step(s) succeeded in 296ms, 1 change(s) made"
+            ],
+            "fieldId": "*/5 * * * * UTC",
+            "queueDelayMs": 1059,
+            "timestamp": "2026-09-05T15:46:41.924Z"
+          }
+        ]
+      }
+    },
+    {
+      "at": "2026-09-05T15:48:18.191Z",
+      "path": "?resource=logs&ruleId=job_mtok2bwwkih0mm",
+      "status": 200,
+      "body": {
+        "logs": [
+          {
+            "stepResults": [
+              {
+                "name": "comment",
+                "index": 1,
+                "status": "success",
+                "timeMs": 296
+              }
+            ],
+            "reason": "1 step(s), 1 change(s)",
+            "issueKey": "(no issue)",
+            "missed": 0,
+            "isValid": true,
+            "executionTimeMs": 297,
+            "ruleWorkflow": null,
+            "changes": [
+              {
+                "action": "addComment",
+                "key": "LZPT-278",
+                "id": "16050"
+              }
+            ],
+            "source": "async",
+            "type": "scheduledjob",
+            "manual": true,
+            "mode": "script",
+            "scheduledFor": null,
+            "ruleName": "E2E tick k27yd",
+            "id": "1788623201924mism",
+            "ruleId": "job_mtok2bwwkih0mm",
+            "logs": [
+              "Starting 1 step(s) for (no current issue)",
+              "addComment: 16050",
+              "\"comment\": Completed in 296ms",
+              "Finished: 1/1 step(s) succeeded in 296ms, 1 change(s) made"
+            ],
+            "fieldId": "*/5 * * * * UTC",
+            "queueDelayMs": 1059,
+            "timestamp": "2026-09-05T15:46:41.924Z"
+          }
+        ]
+      }
+    },
+    {
+      "at": "2026-09-05T15:48:33.647Z",
+      "path": "?resource=logs&ruleId=job_mtok2bwwkih0mm",
+      "status": 200,
+      "body": {
+        "logs": [
+          {
+            "stepResults": [
+              {
+                "name": "comment",
+                "index": 1,
+                "status": "success",
+                "timeMs": 296
+              }
+            ],
+            "reason": "1 step(s), 1 change(s)",
+            "issueKey": "(no issue)",
+            "missed": 0,
+            "isValid": true,
+            "executionTimeMs": 297,
+            "ruleWorkflow": null,
+            "changes": [
+              {
+                "action": "addComment",
+                "key": "LZPT-278",
+                "id": "16050"
+              }
+            ],
+            "source": "async",
+            "type": "scheduledjob",
+            "manual": true,
+            "mode": "script",
+            "scheduledFor": null,
+            "ruleName": "E2E tick k27yd",
+            "id": "1788623201924mism",
+            "ruleId": "job_mtok2bwwkih0mm",
+            "logs": [
+              "Starting 1 step(s) for (no current issue)",
+              "addComment: 16050",
+              "\"comment\": Completed in 296ms",
+              "Finished: 1/1 step(s) succeeded in 296ms, 1 change(s) made"
+            ],
+            "fieldId": "*/5 * * * * UTC",
+            "queueDelayMs": 1059,
+            "timestamp": "2026-09-05T15:46:41.924Z"
+          }
+        ]
+      }
+    },
+    {
+      "at": "2026-09-05T15:48:49.122Z",
+      "path": "?resource=logs&ruleId=job_mtok2bwwkih0mm",
+      "status": 200,
+      "body": {
+        "logs": [
+          {
+            "stepResults": [
+              {
+                "name": "comment",
+                "index": 1,
+                "status": "success",
+                "timeMs": 296
+              }
+            ],
+            "reason": "1 step(s), 1 change(s)",
+            "issueKey": "(no issue)",
+            "missed": 0,
+            "isValid": true,
+            "executionTimeMs": 297,
+            "ruleWorkflow": null,
+            "changes": [
+              {
+                "action": "addComment",
+                "key": "LZPT-278",
+                "id": "16050"
+              }
+            ],
+            "source": "async",
+            "type": "scheduledjob",
+            "manual": true,
+            "mode": "script",
+            "scheduledFor": null,
+            "ruleName": "E2E tick k27yd",
+            "id": "1788623201924mism",
+            "ruleId": "job_mtok2bwwkih0mm",
+            "logs": [
+              "Starting 1 step(s) for (no current issue)",
+              "addComment: 16050",
+              "\"comment\": Completed in 296ms",
+              "Finished: 1/1 step(s) succeeded in 296ms, 1 change(s) made"
+            ],
+            "fieldId": "*/5 * * * * UTC",
+            "queueDelayMs": 1059,
+            "timestamp": "2026-09-05T15:46:41.924Z"
+          }
+        ]
+      }
+    },
+    {
+      "at": "2026-09-05T15:49:04.614Z",
+      "path": "?resource=logs&ruleId=job_mtok2bwwkih0mm",
+      "status": 200,
+      "body": {
+        "logs": [
+          {
+            "stepResults": [
+              {
+                "name": "comment",
+                "index": 1,
+                "status": "success",
+                "timeMs": 296
+              }
+            ],
+            "reason": "1 step(s), 1 change(s)",
+            "issueKey": "(no issue)",
+            "missed": 0,
+            "isValid": true,
+            "executionTimeMs": 297,
+            "ruleWorkflow": null,
+            "changes": [
+              {
+                "action": "addComment",
+                "key": "LZPT-278",
+                "id": "16050"
+              }
+            ],
+            "source": "async",
+            "type": "scheduledjob",
+            "manual": true,
+            "mode": "script",
+            "scheduledFor": null,
+            "ruleName": "E2E tick k27yd",
+            "id": "1788623201924mism",
+            "ruleId": "job_mtok2bwwkih0mm",
+            "logs": [
+              "Starting 1 step(s) for (no current issue)",
+              "addComment: 16050",
+              "\"comment\": Completed in 296ms",
+              "Finished: 1/1 step(s) succeeded in 296ms, 1 change(s) made"
+            ],
+            "fieldId": "*/5 * * * * UTC",
+            "queueDelayMs": 1059,
+            "timestamp": "2026-09-05T15:46:41.924Z"
+          }
+        ]
+      }
+    },
+    {
+      "at": "2026-09-05T15:49:20.047Z",
+      "path": "?resource=logs&ruleId=job_mtok2bwwkih0mm",
+      "status": 200,
+      "body": {
+        "logs": [
+          {
+            "stepResults": [
+              {
+                "name": "comment",
+                "index": 1,
+                "status": "success",
+                "timeMs": 296
+              }
+            ],
+            "reason": "1 step(s), 1 change(s)",
+            "issueKey": "(no issue)",
+            "missed": 0,
+            "isValid": true,
+            "executionTimeMs": 297,
+            "ruleWorkflow": null,
+            "changes": [
+              {
+                "action": "addComment",
+                "key": "LZPT-278",
+                "id": "16050"
+              }
+            ],
+            "source": "async",
+            "type": "scheduledjob",
+            "manual": true,
+            "mode": "script",
+            "scheduledFor": null,
+            "ruleName": "E2E tick k27yd",
+            "id": "1788623201924mism",
+            "ruleId": "job_mtok2bwwkih0mm",
+            "logs": [
+              "Starting 1 step(s) for (no current issue)",
+              "addComment: 16050",
+              "\"comment\": Completed in 296ms",
+              "Finished: 1/1 step(s) succeeded in 296ms, 1 change(s) made"
+            ],
+            "fieldId": "*/5 * * * * UTC",
+            "queueDelayMs": 1059,
+            "timestamp": "2026-09-05T15:46:41.924Z"
+          }
+        ]
+      }
+    },
+    {
+      "at": "2026-09-05T15:49:35.483Z",
+      "path": "?resource=logs&ruleId=job_mtok2bwwkih0mm",
+      "status": 200,
+      "body": {
+        "logs": [
+          {
+            "stepResults": [
+              {
+                "name": "comment",
+                "index": 1,
+                "status": "success",
+                "timeMs": 296
+              }
+            ],
+            "reason": "1 step(s), 1 change(s)",
+            "issueKey": "(no issue)",
+            "missed": 0,
+            "isValid": true,
+            "executionTimeMs": 297,
+            "ruleWorkflow": null,
+            "changes": [
+              {
+                "action": "addComment",
+                "key": "LZPT-278",
+                "id": "16050"
+              }
+            ],
+            "source": "async",
+            "type": "scheduledjob",
+            "manual": true,
+            "mode": "script",
+            "scheduledFor": null,
+            "ruleName": "E2E tick k27yd",
+            "id": "1788623201924mism",
+            "ruleId": "job_mtok2bwwkih0mm",
+            "logs": [
+              "Starting 1 step(s) for (no current issue)",
+              "addComment: 16050",
+              "\"comment\": Completed in 296ms",
+              "Finished: 1/1 step(s) succeeded in 296ms, 1 change(s) made"
+            ],
+            "fieldId": "*/5 * * * * UTC",
+            "queueDelayMs": 1059,
+            "timestamp": "2026-09-05T15:46:41.924Z"
+          }
+        ]
+      }
+    },
+    {
+      "at": "2026-09-05T15:49:50.926Z",
+      "path": "?resource=logs&ruleId=job_mtok2bwwkih0mm",
+      "status": 200,
+      "body": {
+        "logs": [
+          {
+            "stepResults": [
+              {
+                "name": "comment",
+                "index": 1,
+                "status": "success",
+                "timeMs": 296
+              }
+            ],
+            "reason": "1 step(s), 1 change(s)",
+            "issueKey": "(no issue)",
+            "missed": 0,
+            "isValid": true,
+            "executionTimeMs": 297,
+            "ruleWorkflow": null,
+            "changes": [
+              {
+                "action": "addComment",
+                "key": "LZPT-278",
+                "id": "16050"
+              }
+            ],
+            "source": "async",
+            "type": "scheduledjob",
+            "manual": true,
+            "mode": "script",
+            "scheduledFor": null,
+            "ruleName": "E2E tick k27yd",
+            "id": "1788623201924mism",
+            "ruleId": "job_mtok2bwwkih0mm",
+            "logs": [
+              "Starting 1 step(s) for (no current issue)",
+              "addComment: 16050",
+              "\"comment\": Completed in 296ms",
+              "Finished: 1/1 step(s) succeeded in 296ms, 1 change(s) made"
+            ],
+            "fieldId": "*/5 * * * * UTC",
+            "queueDelayMs": 1059,
+            "timestamp": "2026-09-05T15:46:41.924Z"
+          }
+        ]
+      }
+    },
+    {
+      "at": "2026-09-05T15:50:06.368Z",
+      "path": "?resource=logs&ruleId=job_mtok2bwwkih0mm",
+      "status": 200,
+      "body": {
+        "logs": [
+          {
+            "stepResults": [
+              {
+                "name": "comment",
+                "index": 1,
+                "status": "success",
+                "timeMs": 296
+              }
+            ],
+            "reason": "1 step(s), 1 change(s)",
+            "issueKey": "(no issue)",
+            "missed": 0,
+            "isValid": true,
+            "executionTimeMs": 297,
+            "ruleWorkflow": null,
+            "changes": [
+              {
+                "action": "addComment",
+                "key": "LZPT-278",
+                "id": "16050"
+              }
+            ],
+            "source": "async",
+            "type": "scheduledjob",
+            "manual": true,
+            "mode": "script",
+            "scheduledFor": null,
+            "ruleName": "E2E tick k27yd",
+            "id": "1788623201924mism",
+            "ruleId": "job_mtok2bwwkih0mm",
+            "logs": [
+              "Starting 1 step(s) for (no current issue)",
+              "addComment: 16050",
+              "\"comment\": Completed in 296ms",
+              "Finished: 1/1 step(s) succeeded in 296ms, 1 change(s) made"
+            ],
+            "fieldId": "*/5 * * * * UTC",
+            "queueDelayMs": 1059,
+            "timestamp": "2026-09-05T15:46:41.924Z"
+          }
+        ]
+      }
+    },
+    {
+      "at": "2026-09-05T15:50:21.809Z",
+      "path": "?resource=logs&ruleId=job_mtok2bwwkih0mm",
+      "status": 200,
+      "body": {
+        "logs": [
+          {
+            "stepResults": [
+              {
+                "name": "comment",
+                "index": 1,
+                "status": "success",
+                "timeMs": 296
+              }
+            ],
+            "reason": "1 step(s), 1 change(s)",
+            "issueKey": "(no issue)",
+            "missed": 0,
+            "isValid": true,
+            "executionTimeMs": 297,
+            "ruleWorkflow": null,
+            "changes": [
+              {
+                "action": "addComment",
+                "key": "LZPT-278",
+                "id": "16050"
+              }
+            ],
+            "source": "async",
+            "type": "scheduledjob",
+            "manual": true,
+            "mode": "script",
+            "scheduledFor": null,
+            "ruleName": "E2E tick k27yd",
+            "id": "1788623201924mism",
+            "ruleId": "job_mtok2bwwkih0mm",
+            "logs": [
+              "Starting 1 step(s) for (no current issue)",
+              "addComment: 16050",
+              "\"comment\": Completed in 296ms",
+              "Finished: 1/1 step(s) succeeded in 296ms, 1 change(s) made"
+            ],
+            "fieldId": "*/5 * * * * UTC",
+            "queueDelayMs": 1059,
+            "timestamp": "2026-09-05T15:46:41.924Z"
+          }
+        ]
+      }
+    },
+    {
+      "at": "2026-09-05T15:50:37.262Z",
+      "path": "?resource=logs&ruleId=job_mtok2bwwkih0mm",
+      "status": 200,
+      "body": {
+        "logs": [
+          {
+            "stepResults": [
+              {
+                "name": "comment",
+                "index": 1,
+                "status": "success",
+                "timeMs": 296
+              }
+            ],
+            "reason": "1 step(s), 1 change(s)",
+            "issueKey": "(no issue)",
+            "missed": 0,
+            "isValid": true,
+            "executionTimeMs": 297,
+            "ruleWorkflow": null,
+            "changes": [
+              {
+                "action": "addComment",
+                "key": "LZPT-278",
+                "id": "16050"
+              }
+            ],
+            "source": "async",
+            "type": "scheduledjob",
+            "manual": true,
+            "mode": "script",
+            "scheduledFor": null,
+            "ruleName": "E2E tick k27yd",
+            "id": "1788623201924mism",
+            "ruleId": "job_mtok2bwwkih0mm",
+            "logs": [
+              "Starting 1 step(s) for (no current issue)",
+              "addComment: 16050",
+              "\"comment\": Completed in 296ms",
+              "Finished: 1/1 step(s) succeeded in 296ms, 1 change(s) made"
+            ],
+            "fieldId": "*/5 * * * * UTC",
+            "queueDelayMs": 1059,
+            "timestamp": "2026-09-05T15:46:41.924Z"
+          }
+        ]
+      }
+    },
+    {
+      "at": "2026-09-05T15:50:52.687Z",
+      "path": "?resource=logs&ruleId=job_mtok2bwwkih0mm",
+      "status": 200,
+      "body": {
+        "logs": [
+          {
+            "stepResults": [
+              {
+                "name": "comment",
+                "index": 1,
+                "status": "success",
+                "timeMs": 296
+              }
+            ],
+            "reason": "1 step(s), 1 change(s)",
+            "issueKey": "(no issue)",
+            "missed": 0,
+            "isValid": true,
+            "executionTimeMs": 297,
+            "ruleWorkflow": null,
+            "changes": [
+              {
+                "action": "addComment",
+                "key": "LZPT-278",
+                "id": "16050"
+              }
+            ],
+            "source": "async",
+            "type": "scheduledjob",
+            "manual": true,
+            "mode": "script",
+            "scheduledFor": null,
+            "ruleName": "E2E tick k27yd",
+            "id": "1788623201924mism",
+            "ruleId": "job_mtok2bwwkih0mm",
+            "logs": [
+              "Starting 1 step(s) for (no current issue)",
+              "addComment: 16050",
+              "\"comment\": Completed in 296ms",
+              "Finished: 1/1 step(s) succeeded in 296ms, 1 change(s) made"
+            ],
+            "fieldId": "*/5 * * * * UTC",
+            "queueDelayMs": 1059,
+            "timestamp": "2026-09-05T15:46:41.924Z"
+          }
+        ]
+      }
+    },
+    {
+      "at": "2026-09-05T15:51:08.153Z",
+      "path": "?resource=logs&ruleId=job_mtok2bwwkih0mm",
+      "status": 200,
+      "body": {
+        "logs": [
+          {
+            "stepResults": [
+              {
+                "name": "comment",
+                "index": 1,
+                "status": "success",
+                "timeMs": 296
+              }
+            ],
+            "reason": "1 step(s), 1 change(s)",
+            "issueKey": "(no issue)",
+            "missed": 0,
+            "isValid": true,
+            "executionTimeMs": 297,
+            "ruleWorkflow": null,
+            "changes": [
+              {
+                "action": "addComment",
+                "key": "LZPT-278",
+                "id": "16050"
+              }
+            ],
+            "source": "async",
+            "type": "scheduledjob",
+            "manual": true,
+            "mode": "script",
+            "scheduledFor": null,
+            "ruleName": "E2E tick k27yd",
+            "id": "1788623201924mism",
+            "ruleId": "job_mtok2bwwkih0mm",
+            "logs": [
+              "Starting 1 step(s) for (no current issue)",
+              "addComment: 16050",
+              "\"comment\": Completed in 296ms",
+              "Finished: 1/1 step(s) succeeded in 296ms, 1 change(s) made"
+            ],
+            "fieldId": "*/5 * * * * UTC",
+            "queueDelayMs": 1059,
+            "timestamp": "2026-09-05T15:46:41.924Z"
+          }
+        ]
+      }
+    },
+    {
+      "at": "2026-09-05T15:51:23.569Z",
+      "path": "?resource=logs&ruleId=job_mtok2bwwkih0mm",
+      "status": 200,
+      "body": {
+        "logs": [
+          {
+            "stepResults": [
+              {
+                "name": "comment",
+                "index": 1,
+                "status": "success",
+                "timeMs": 296
+              }
+            ],
+            "reason": "1 step(s), 1 change(s)",
+            "issueKey": "(no issue)",
+            "missed": 0,
+            "isValid": true,
+            "executionTimeMs": 297,
+            "ruleWorkflow": null,
+            "changes": [
+              {
+                "action": "addComment",
+                "key": "LZPT-278",
+                "id": "16050"
+              }
+            ],
+            "source": "async",
+            "type": "scheduledjob",
+            "manual": true,
+            "mode": "script",
+            "scheduledFor": null,
+            "ruleName": "E2E tick k27yd",
+            "id": "1788623201924mism",
+            "ruleId": "job_mtok2bwwkih0mm",
+            "logs": [
+              "Starting 1 step(s) for (no current issue)",
+              "addComment: 16050",
+              "\"comment\": Completed in 296ms",
+              "Finished: 1/1 step(s) succeeded in 296ms, 1 change(s) made"
+            ],
+            "fieldId": "*/5 * * * * UTC",
+            "queueDelayMs": 1059,
+            "timestamp": "2026-09-05T15:46:41.924Z"
+          }
+        ]
+      }
+    },
+    {
+      "at": "2026-09-05T15:51:38.979Z",
+      "path": "?resource=logs&ruleId=job_mtok2bwwkih0mm",
+      "status": 200,
+      "body": {
+        "logs": [
+          {
+            "stepResults": [
+              {
+                "name": "comment",
+                "index": 1,
+                "status": "success",
+                "timeMs": 291
+              }
+            ],
+            "reason": "1 step(s), 1 change(s)",
+            "issueKey": "(no issue)",
+            "missed": 0,
+            "isValid": true,
+            "executionTimeMs": 291,
+            "ruleWorkflow": null,
+            "changes": [
+              {
+                "action": "addComment",
+                "key": "LZPT-278",
+                "id": "16057"
+              }
+            ],
+            "source": "async",
+            "type": "scheduledjob",
+            "manual": false,
+            "mode": "script",
+            "scheduledFor": "2026-09-05T15:50:00.000Z",
+            "ruleName": "E2E tick k27yd",
+            "id": "1788623488681nfhf",
+            "ruleId": "job_mtok2bwwkih0mm",
+            "logs": [
+              "Starting 1 step(s) for (no current issue)",
+              "addComment: 16057",
+              "\"comment\": Completed in 291ms",
+              "Finished: 1/1 step(s) succeeded in 291ms, 1 change(s) made"
+            ],
+            "fieldId": "*/5 * * * * UTC",
+            "queueDelayMs": 1380,
+            "timestamp": "2026-09-05T15:51:28.681Z"
+          },
+          {
+            "stepResults": [
+              {
+                "name": "comment",
+                "index": 1,
+                "status": "success",
+                "timeMs": 296
+              }
+            ],
+            "reason": "1 step(s), 1 change(s)",
+            "issueKey": "(no issue)",
+            "missed": 0,
+            "isValid": true,
+            "executionTimeMs": 297,
+            "ruleWorkflow": null,
+            "changes": [
+              {
+                "action": "addComment",
+                "key": "LZPT-278",
+                "id": "16050"
+              }
+            ],
+            "source": "async",
+            "type": "scheduledjob",
+            "manual": true,
+            "mode": "script",
+            "scheduledFor": null,
+            "ruleName": "E2E tick k27yd",
+            "id": "1788623201924mism",
+            "ruleId": "job_mtok2bwwkih0mm",
+            "logs": [
+              "Starting 1 step(s) for (no current issue)",
+              "addComment: 16050",
+              "\"comment\": Completed in 296ms",
+              "Finished: 1/1 step(s) succeeded in 296ms, 1 change(s) made"
+            ],
+            "fieldId": "*/5 * * * * UTC",
+            "queueDelayMs": 1059,
+            "timestamp": "2026-09-05T15:46:41.924Z"
+          }
+        ]
+      }
+    },
+    {
+      "at": "2026-09-05T15:51:39.224Z",
+      "path": "/rest/api/3/issue/LZPT-278?fields=comment",
+      "status": 200,
+      "body": {
+        "expand": "renderedFields,names,schema,operations,editmeta,changelog,versionedRepresentations",
+        "id": "24857",
+        "key": "LZPT-278",
+        "fields": {
+          "comment": {
+            "comments": [
+              {
+                "id": "16049",
+                "author": {
+                  "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+                  "displayName": "CogniRunner",
+                  "active": true,
+                  "timeZone": "Europe/Bucharest",
+                  "accountType": "app"
+                },
+                "body": {
+                  "type": "doc",
+                  "version": 1,
+                  "content": [
+                    {
+                      "type": "paragraph",
+                      "content": [
+                        {
+                          "type": "text",
+                          "text": "crjobk27yd agent ran"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                "updateAuthor": {
+                  "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+                  "displayName": "CogniRunner",
+                  "active": true,
+                  "timeZone": "Europe/Bucharest",
+                  "accountType": "app"
+                },
+                "created": "2026-09-05T18:46:35.425+0300",
+                "updated": "2026-09-05T18:46:35.425+0300",
+                "jsdPublic": true
+              },
+              {
+                "id": "16050",
+                "author": {
+                  "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+                  "displayName": "CogniRunner",
+                  "active": true,
+                  "timeZone": "Europe/Bucharest",
+                  "accountType": "app"
+                },
+                "body": {
+                  "type": "doc",
+                  "version": 1,
+                  "content": [
+                    {
+                      "type": "paragraph",
+                      "content": [
+                        {
+                          "type": "text",
+                          "text": "crjobk27yd tick null (manual)"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                "updateAuthor": {
+                  "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+                  "displayName": "CogniRunner",
+                  "active": true,
+                  "timeZone": "Europe/Bucharest",
+                  "accountType": "app"
+                },
+                "created": "2026-09-05T18:46:41.810+0300",
+                "updated": "2026-09-05T18:46:41.810+0300",
+                "jsdPublic": true
+              },
+              {
+                "id": "16057",
+                "author": {
+                  "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+                  "displayName": "CogniRunner",
+                  "active": true,
+                  "timeZone": "Europe/Bucharest",
+                  "accountType": "app"
+                },
+                "body": {
+                  "type": "doc",
+                  "version": 1,
+                  "content": [
+                    {
+                      "type": "paragraph",
+                      "content": [
+                        {
+                          "type": "text",
+                          "text": "crjobk27yd tick 2026-09-05T15:50:00.000Z (scheduled)"
+                        }
+                      ]
+                    }
+                  ]
+                },
+                "updateAuthor": {
+                  "accountId": "712020:3574dbf2-b30e-4ed4-9edb-e69a50f0db38",
+                  "displayName": "CogniRunner",
+                  "active": true,
+                  "timeZone": "Europe/Bucharest",
+                  "accountType": "app"
+                },
+                "created": "2026-09-05T18:51:28.589+0300",
+                "updated": "2026-09-05T18:51:28.589+0300",
+                "jsdPublic": true
+              }
+            ],
+            "maxResults": 3,
+            "total": 3,
+            "startAt": 0
+          }
+        }
+      }
+    },
+    {
+      "at": "2026-09-05T15:51:43.296Z",
+      "path": "/rest/api/3/issue/LZPT-278?fields=summary",
+      "status": 200,
+      "body": {
+        "expand": "renderedFields,names,schema,operations,editmeta,changelog,versionedRepresentations",
+        "id": "24857",
+        "key": "LZPT-278",
+        "fields": {
+          "summary": "crjobk27yd scheduled job bed"
+        }
+      }
+    },
+    {
+      "at": "2026-09-05T15:51:44.932Z",
+      "path": "/rest/api/3/issue/LZPT-278?fields=summary",
+      "status": 404,
+      "body": {
+        "errorMessages": [
+          "Issue does not exist or you do not have permission to see it."
+        ],
+        "errors": {}
+      }
+    }
+  ],
+  "cleanup": [
+    {
+      "path": "?resource=jobs&id=job_mtok2cqxnphrsx",
+      "status": 200,
+      "body": {
+        "deleted": "job_mtok2cqxnphrsx"
+      }
+    },
+    {
+      "path": "?resource=jobs&id=job_mtok2bwwkih0mm",
+      "status": 200,
+      "body": {
+        "deleted": "job_mtok2bwwkih0mm"
+      }
+    },
+    {
+      "path": "?resource=jobs&id=job_mtok2cey3of4qq",
+      "status": 200,
+      "body": {
+        "deleted": "job_mtok2cey3of4qq"
+      }
+    },
+    {
+      "path": "/rest/api/3/issue/LZPT-278",
+      "status": 204,
+      "body": null
+    }
+  ],
+  "ownedRules": [
+    {
+      "kind": "ScheduledJob",
+      "id": "job_mtok2bwwkih0mm"
+    },
+    {
+      "kind": "ScheduledJob",
+      "id": "job_mtok2cey3of4qq"
+    },
+    {
+      "kind": "ScheduledJob",
+      "id": "job_mtok2cqxnphrsx"
+    },
+    {
+      "kind": "ScheduledJob",
+      "id": "job_mtok2bwwkih0mm"
+    },
+    {
+      "kind": "ScheduledJob",
+      "id": "job_mtok2bwwkih0mm"
+    }
+  ],
+  "tokensBefore": [
+    {
+      "id": "tok_mtj79apf29b509",
+      "name": "harness 2026-09-01T21:49:06.005Z"
+    },
+    {
+      "id": "tok_mtj7aqkpc84753",
+      "name": "harness 2026-09-01T21:50:12.996Z"
+    },
+    {
+      "id": "tok_mtj7ooyub00691",
+      "name": "harness 2026-09-01T22:01:02.029Z"
+    },
+    {
+      "id": "tok_mtj7qjula09e22",
+      "name": "harness 2026-09-01T22:02:30.872Z"
+    },
+    {
+      "id": "tok_mtj80rji42d93c",
+      "name": "resolver 80e9b"
+    },
+    {
+      "id": "tok_mtj814pr784bb6",
+      "name": "harness 2026-09-01T22:10:44.677Z"
+    },
+    {
+      "id": "tok_mtj82gbqee0674",
+      "name": "resolver 828av"
+    },
+    {
+      "id": "tok_mtj88y7tb0cf13",
+      "name": "harness 2026-09-01T22:16:47.184Z"
+    },
+    {
+      "id": "tok_mtj8ctyef7fcf4",
+      "name": "harness 2026-09-01T22:19:50.176Z"
+    },
+    {
+      "id": "tok_mtj8e3k250635e",
+      "name": "harness 2026-09-01T22:20:49.546Z"
+    },
+    {
+      "id": "tok_mtjryxvc392f56",
+      "name": "resolver ry9rp"
+    },
+    {
+      "id": "tok_mtjryztb48caaf",
+      "name": "harness 2026-09-02T07:28:57.262Z"
+    },
+    {
+      "id": "tok_mtlz82mn02b4fc",
+      "name": "harness 2026-09-03T20:27:30.393Z"
+    },
+    {
+      "id": "tok_mtlz8m3rf590c1",
+      "name": "harness 2026-09-03T20:27:55.712Z"
+    },
+    {
+      "id": "tok_mtlz8t7ccdd33a",
+      "name": "harness 2026-09-03T20:28:04.929Z"
+    },
+    {
+      "id": "tok_mtlzmh7z1d41ca",
+      "name": "harness 2026-09-03T20:38:42.527Z"
+    },
+    {
+      "id": "tok_mtlzoreude6cea",
+      "name": "harness 2026-09-03T20:40:29.054Z"
+    },
+    {
+      "id": "tok_mtlztrkq75b90a",
+      "name": "harness 2026-09-03T20:44:22.558Z"
+    },
+    {
+      "id": "tok_mtlzx64vfb5bc0",
+      "name": "resolver zwxie"
+    },
+    {
+      "id": "tok_mtlzxqfwcc2628",
+      "name": "harness 2026-09-03T20:47:27.713Z"
+    },
+    {
+      "id": "tok_mtm0arhp7bf143",
+      "name": "harness 2026-09-03T20:57:35.464Z"
+    },
+    {
+      "id": "tok_mtm0md47aaf6c8",
+      "name": "harness 2026-09-03T21:06:36.738Z"
+    },
+    {
+      "id": "tok_mtm1oa7cefbce8",
+      "name": "harness 2026-09-03T21:36:05.904Z"
+    },
+    {
+      "id": "tok_mtm1sdo5edc287",
+      "name": "harness 2026-09-03T21:39:17.057Z"
+    },
+    {
+      "id": "tok_mtm1u2gw780489",
+      "name": "harness 2026-09-03T21:40:35.928Z"
+    },
+    {
+      "id": "tok_mtm1vjsza04b75",
+      "name": "harness 2026-09-03T21:41:45.001Z"
+    },
+    {
+      "id": "tok_mtm1vr55e7ca83",
+      "name": "harness 2026-09-03T21:41:54.587Z"
+    },
+    {
+      "id": "tok_mtm1zj3q8d92fa",
+      "name": "harness 2026-09-03T21:44:50.752Z"
+    },
+    {
+      "id": "tok_mtm20okw9b7be9",
+      "name": "harness 2026-09-03T21:45:44.411Z"
+    },
+    {
+      "id": "tok_mto678sh1004cc",
+      "name": "baseline-review-2026-09-05"
+    },
+    {
+      "id": "tok_mto76mw7e0d7c0",
+      "name": "verified-assets-review-2026-09-05"
+    }
+  ],
+  "ruleCleanup": [
+    {
+      "kind": "ScheduledJob",
+      "id": "job_mtok2bwwkih0mm",
+      "status": 200,
+      "body": {
+        "success": false,
+        "error": "Scheduled job not found"
+      }
+    },
+    {
+      "kind": "ScheduledJob",
+      "id": "job_mtok2cey3of4qq",
+      "status": 200,
+      "body": {
+        "success": false,
+        "error": "Scheduled job not found"
+      }
+    },
+    {
+      "kind": "ScheduledJob",
+      "id": "job_mtok2cqxnphrsx",
+      "status": 200,
+      "body": {
+        "success": false,
+        "error": "Scheduled job not found"
+      }
+    }
+  ],
+  "tokensAfter": [
+    {
+      "id": "tok_mtj79apf29b509",
+      "name": "harness 2026-09-01T21:49:06.005Z"
+    },
+    {
+      "id": "tok_mtj7aqkpc84753",
+      "name": "harness 2026-09-01T21:50:12.996Z"
+    },
+    {
+      "id": "tok_mtj7ooyub00691",
+      "name": "harness 2026-09-01T22:01:02.029Z"
+    },
+    {
+      "id": "tok_mtj7qjula09e22",
+      "name": "harness 2026-09-01T22:02:30.872Z"
+    },
+    {
+      "id": "tok_mtj80rji42d93c",
+      "name": "resolver 80e9b"
+    },
+    {
+      "id": "tok_mtj814pr784bb6",
+      "name": "harness 2026-09-01T22:10:44.677Z"
+    },
+    {
+      "id": "tok_mtj82gbqee0674",
+      "name": "resolver 828av"
+    },
+    {
+      "id": "tok_mtj88y7tb0cf13",
+      "name": "harness 2026-09-01T22:16:47.184Z"
+    },
+    {
+      "id": "tok_mtj8ctyef7fcf4",
+      "name": "harness 2026-09-01T22:19:50.176Z"
+    },
+    {
+      "id": "tok_mtj8e3k250635e",
+      "name": "harness 2026-09-01T22:20:49.546Z"
+    },
+    {
+      "id": "tok_mtjryxvc392f56",
+      "name": "resolver ry9rp"
+    },
+    {
+      "id": "tok_mtjryztb48caaf",
+      "name": "harness 2026-09-02T07:28:57.262Z"
+    },
+    {
+      "id": "tok_mtlz82mn02b4fc",
+      "name": "harness 2026-09-03T20:27:30.393Z"
+    },
+    {
+      "id": "tok_mtlz8m3rf590c1",
+      "name": "harness 2026-09-03T20:27:55.712Z"
+    },
+    {
+      "id": "tok_mtlz8t7ccdd33a",
+      "name": "harness 2026-09-03T20:28:04.929Z"
+    },
+    {
+      "id": "tok_mtlzmh7z1d41ca",
+      "name": "harness 2026-09-03T20:38:42.527Z"
+    },
+    {
+      "id": "tok_mtlzoreude6cea",
+      "name": "harness 2026-09-03T20:40:29.054Z"
+    },
+    {
+      "id": "tok_mtlztrkq75b90a",
+      "name": "harness 2026-09-03T20:44:22.558Z"
+    },
+    {
+      "id": "tok_mtlzx64vfb5bc0",
+      "name": "resolver zwxie"
+    },
+    {
+      "id": "tok_mtlzxqfwcc2628",
+      "name": "harness 2026-09-03T20:47:27.713Z"
+    },
+    {
+      "id": "tok_mtm0arhp7bf143",
+      "name": "harness 2026-09-03T20:57:35.464Z"
+    },
+    {
+      "id": "tok_mtm0md47aaf6c8",
+      "name": "harness 2026-09-03T21:06:36.738Z"
+    },
+    {
+      "id": "tok_mtm1oa7cefbce8",
+      "name": "harness 2026-09-03T21:36:05.904Z"
+    },
+    {
+      "id": "tok_mtm1sdo5edc287",
+      "name": "harness 2026-09-03T21:39:17.057Z"
+    },
+    {
+      "id": "tok_mtm1u2gw780489",
+      "name": "harness 2026-09-03T21:40:35.928Z"
+    },
+    {
+      "id": "tok_mtm1vjsza04b75",
+      "name": "harness 2026-09-03T21:41:45.001Z"
+    },
+    {
+      "id": "tok_mtm1vr55e7ca83",
+      "name": "harness 2026-09-03T21:41:54.587Z"
+    },
+    {
+      "id": "tok_mtm1zj3q8d92fa",
+      "name": "harness 2026-09-03T21:44:50.752Z"
+    },
+    {
+      "id": "tok_mtm20okw9b7be9",
+      "name": "harness 2026-09-03T21:45:44.411Z"
+    },
+    {
+      "id": "tok_mto678sh1004cc",
+      "name": "baseline-review-2026-09-05"
+    },
+    {
+      "id": "tok_mto76mw7e0d7c0",
+      "name": "verified-assets-review-2026-09-05"
+    },
+    {
+      "id": "tok_mtok29tmfae370",
+      "name": "harness 2026-09-05T15:46:24.011Z"
+    },
+    {
+      "id": "tok_mtok4hd197ce1b",
+      "name": "resolver k47xo"
+    },
+    {
+      "id": "tok_mtok65c0d0838c",
+      "name": "harness 2026-09-05T15:49:24.867Z"
+    },
+    {
+      "id": "tok_mtok6gctd1fbb2",
+      "name": "harness 2026-09-05T15:49:39.170Z"
+    }
+  ],
+  "newTokens": [
+    {
+      "id": "tok_mtok29tmfae370",
+      "name": "harness 2026-09-05T15:46:24.011Z"
+    },
+    {
+      "id": "tok_mtok4hd197ce1b",
+      "name": "resolver k47xo"
+    },
+    {
+      "id": "tok_mtok65c0d0838c",
+      "name": "harness 2026-09-05T15:49:24.867Z"
+    },
+    {
+      "id": "tok_mtok6gctd1fbb2",
+      "name": "harness 2026-09-05T15:49:39.170Z"
+    }
+  ],
+  "finished": "2026-09-05T15:51:46.388Z",
+  "exitCode": 0
+}

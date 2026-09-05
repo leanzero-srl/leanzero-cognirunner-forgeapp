@@ -1,0 +1,136 @@
+{
+  "version": "1.176.1",
+  "results": [],
+  "errors": [],
+  "paths": {
+    "scanned": [
+      "manifest.yml",
+      "src/agent-runner.js",
+      "src/async-handler.js",
+      "src/index.js",
+      "src/listeners.js",
+      "src/memories.js",
+      "src/premade-rules.js",
+      "src/rules-api.js",
+      "src/scheduled-jobs.js",
+      "src/shared/agent-actions.js",
+      "src/shared/build-rule.js",
+      "src/shared/builtin-docs.js",
+      "src/shared/builtin-recipes.js",
+      "src/shared/builtin-skills.js",
+      "src/shared/code-fingerprint.js",
+      "src/shared/cron.js",
+      "src/shared/execution-claim.js",
+      "src/shared/explain-facts.js",
+      "src/shared/jira-endpoints.js",
+      "src/shared/jira-events.js",
+      "src/shared/log-flags.js",
+      "src/shared/narrate-utils.js",
+      "src/shared/premade-rules-catalog.js",
+      "src/shared/regex-safety.js",
+      "src/shared/registry-limits.js",
+      "src/shared/rule-portability.js",
+      "src/shared/sandbox-api-spec.js",
+      "src/shared/usage-meter.js",
+      "src/skills.js",
+      "src/test-hook.js"
+    ]
+  },
+  "time": {
+    "rules": [],
+    "rules_parse_time": 0.048062801361083984,
+    "profiling_times": {
+      "config_time": 1.3188230991363525,
+      "core_time": 19.78561520576477,
+      "ignores_time": 0.00013494491577148438,
+      "total_time": 21.111854076385498
+    },
+    "parsing_time": {
+      "total_time": 0.0,
+      "per_file_time": {
+        "mean": 0.0,
+        "std_dev": 0.0
+      },
+      "very_slow_stats": {
+        "time_ratio": 0.0,
+        "count_ratio": 0.0
+      },
+      "very_slow_files": []
+    },
+    "scanning_time": {
+      "total_time": 26.173030376434326,
+      "per_file_time": {
+        "mean": 0.29081144862704816,
+        "std_dev": 4.082731415427763
+      },
+      "very_slow_stats": {
+        "time_ratio": 0.7368694624769053,
+        "count_ratio": 0.011111111111111112
+      },
+      "very_slow_files": [
+        {
+          "fpath": "src/index.js",
+          "ftime": 19.286106824874878
+        }
+      ]
+    },
+    "matching_time": {
+      "total_time": 0.0,
+      "per_file_and_rule_time": {
+        "mean": 0.0,
+        "std_dev": 0.0
+      },
+      "very_slow_stats": {
+        "time_ratio": 0.0,
+        "count_ratio": 0.0
+      },
+      "very_slow_rules_on_files": []
+    },
+    "tainting_time": {
+      "total_time": 0.0,
+      "per_def_and_rule_time": {
+        "mean": 0.0,
+        "std_dev": 0.0
+      },
+      "very_slow_stats": {
+        "time_ratio": 0.0,
+        "count_ratio": 0.0
+      },
+      "very_slow_rules_on_defs": []
+    },
+    "fixpoint_timeouts": [
+      {
+        "error_type": "Fixpoint timeout",
+        "severity": "warn",
+        "message": "Fixpoint timeout while performing taint analysis at src/index.js:1:0 [rules: 19, first: javascript.express.security.x-frame-options-misconfiguration.x-frame-options-misconfiguration]",
+        "location": {
+          "path": "src/index.js",
+          "start": {
+            "line": 1,
+            "col": 1,
+            "offset": 0
+          },
+          "end": {
+            "line": 1,
+            "col": 1,
+            "offset": 0
+          }
+        }
+      }
+    ],
+    "prefiltering": {
+      "project_level_time": 0.0,
+      "file_level_time": 0.0,
+      "rules_with_project_prefilters_ratio": 0.0,
+      "rules_with_file_prefilters_ratio": 0.9996724533245988,
+      "rules_selected_ratio": 0.06419914837864396,
+      "rules_matched_ratio": 0.06419914837864396
+    },
+    "targets": [],
+    "total_bytes": 0,
+    "max_memory_bytes": 1363101440
+  },
+  "engine_requested": "OSS",
+  "skipped_rules": [],
+  "profiling_results": []
+}

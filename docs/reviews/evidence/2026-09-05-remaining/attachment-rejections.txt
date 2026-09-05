@@ -1,0 +1,15 @@
+=== M1: attachment-bridge web-trigger security ===
+
+✅ GET no ?t=: HTTP 404 (rejected), ct=text/plain
+✅ GET garbage ?t=: HTTP 401 (rejected), ct=text/plain
+✅ GET shape-valid nonexistent ?t=: HTTP 401 (rejected), ct=text/plain
+✅ GET nonexistent ?t= + wrong Bearer: HTTP 404 (rejected), ct=text/plain
+✅ POST upload no ?t=: HTTP 404 (rejected), ct=application/json
+✅ POST upload garbage ?t=: HTTP 401 (rejected), ct=application/json
+✅ POST upload nonexistent ?t= + forbidden ext: HTTP 401 (rejected), ct=application/json
+✅ POST upload nonexistent ?t= + malformed JSON: HTTP 401 (rejected), ct=application/json
+✅ POST upload nonexistent ?t= + Bearer: HTTP 404 (rejected), ct=application/json
+
+=== 9/9 passed ===
+NOTE: the 401 (bad-bearer-with-valid-token), 413 (oversize), 415 (forbidden-ext) and
+single-use/replay paths require a REAL minted token (live docReader flow) — deferred to M3.

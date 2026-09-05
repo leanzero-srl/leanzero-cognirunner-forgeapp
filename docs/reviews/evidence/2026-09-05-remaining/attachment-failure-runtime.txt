@@ -1,0 +1,111 @@
+Warning: Your version of Forge CLI is out of date. We recommend you update to the latest version to get the latest features and bug fixes.
+Run npm install -g @forge/cli@latest to update from version 13.4.0 to 13.5.0.
+
+INFO    2026-09-05T16:18:43.901Z d3f37776-4327-4957-8233-b54388cd225d getConfigs orphan summary: {"checked":455,"retained":455,"removed":0,"workflows":5,"failedWorkflows":0,"partial":false,"removedExamples":[],"errorExamples":[]}
+INFO    2026-09-05T16:18:44.064Z d3f37776-4327-4957-8233-b54388cd225d getConfigs filter="all" role=admin scope=all total=455 shown=455
+INFO    2026-09-05T16:18:49.831Z 7975f31d-f6de-494a-94ba-e78096c2062c getWorkflowTransitions: statusMap has 34 entries, transitions: 7
+INFO    2026-09-05T16:19:50.753Z 2c88b238-bf8e-4d5d-ab7f-88269fd900ed [job] tick: 2 job(s), 0 due, 0 queued in 552ms
+INFO    2026-09-05T16:21:40.896Z 778b925a-9e20-4e9b-bb5d-f3fc814fee93 Post-function called with args: {
+  "extensionId": "ari:cloud:ecosystem::extension/36415848-6868-4697-9554-3c3ad87b8da9/989ecaa0-261b-406e-b444-78c01c0d7772/static/ai-semantic-post-function",
+  "issue": {
+    "id": "24882",
+    "self": "https://wolfaenpak.atlassian.net/rest/api/3/issue/24882",
+    "key": "JT-64",
+    "fields": {
+      "summary": "cgr-attachment-mtolbiao",
+      "issuetype": {
+        "self": "https://wolfaenpak.atlassian.net/rest/api/3/issuetype/10005",
+        "id": "10005",
+        "name": "Task",
+        "subtask": false,
+        "avatarId": 10318,
+        "hierarchyLevel": 0
+      },
+      "creator": {
+        "accountId": "712020:937bc860-eec2-4294-a65d-8e0fe7c45086"
+      },
+      "created": "2026-09-05T19:21:37.946+0300",
+      "project": {
+        "self": "https://wolfaenpak.atlassian.net/rest/api/3/project/10008",
+        "id": "10008",
+        "key": "JT",
+        "name": "JSM Test",
+        "projectTypeKey": "service_desk",
+        "simplified": false
+      },
+      "reporter": {
+        "accountId": "712020:937bc860-eec2-4294-a65d-8e0fe7c45086"
+      },
+      "fixVersions": [],
+      "updated": "2026-09-05T19:21:38.801+0300",
+      "status": {
+        "self": "https://wolfaenpak.atlassian.net/rest/api/3/status/1",
+        "name": "Open",
+        "id": "1",
+        "statusCategory": {
+          "self": "https://wolfaenpak.atlassian.net/rest/api/3/statuscategory/2",
+          "id": 2,
+          "key": "new",
+          "colorName": "blue-gray",
+          "name": "To Do"
+        }
+      }
+    }
+  },
+  "transition": {
+    "id": "9870",
+    "name": "cgr-attachment-mtolbiao",
+    "from": {
+      "id": "1"
+    },
+    "to": {
+      "id": "1"
+    },
+    "executionId": "097b62bf-b623-49e6-84f2-6adb59bdc66b"
+  },
+  "workflow": {
+    "id": "b1d8cbf6-bc12-4861-b862-d5f08e04aa2e",
+    "name": "JT: Jira Service Management default workflow"
+  },
+  "configuration": {
+    "id": "cgr-attachment-mtolbiao",
+    "type": "postfunction-generate-doc",
+    "fieldId": "description",
+    "docFormat": "markdown",
+    "contentPrompt": "Write a short verification note containing the exact marker cgr-attachment-mtolbiao and these exact facts: transport=multipart; bytes=verified; environment=wolfaenpak.",
+    "docTitlePrompt": "cgr-attachment-mtolbiao",
+    "attachComment": true,
+    "debugTrace": true
+  },
+  "atlassianId": "712020:937bc860-eec2-4294-a65d-8e0fe7c45086",
+  "changelog": {
+    "id": "89670",
+    "items": [
+      {
+        "field": "status",
+        "fieldtype": "jira",
+        "fieldId": "status"
+      }
+    ]
+  },
+  "postFunction": {
+    "id": "d661e614-dd34-4f1f-8169-e94574201da3"
+  },
+  "context": {
+    "cloudId": "049de078-bffa-42d1-bbfb-ad8db9860adb",
+    "moduleKey": "ai-semantic-post-function",
+    "userAccess": {
+      "enabled": false
+    }
+  },
+  "contextToken": "[REDACTED JWT]"
+}
+INFO    2026-09-05T16:21:42.578Z 778b925a-9e20-4e9b-bb5d-f3fc814fee93 [pf] queued postfunction-generate-doc on JT-64 for async execution (110s budget)
+INFO    2026-09-05T16:21:44.605Z a9f04500-85a8-4091-a42b-19a22f75e83f Async handler: executing postfunction (9998211374698452_pf_hdjpju)
+INFO    2026-09-05T16:21:47.524Z a9f04500-85a8-4091-a42b-19a22f75e83f MintUploadCapability issue=JT-64 filename=(any) actor=(unknown) token=8qWXM0… bearer=rY2axA… expiresAt=2026-09-05T16:31:47.483Z
+INFO    2026-09-05T16:21:48.336Z fdeb0483-049a-42fb-a4e3-6c7598cd52a1 getConfigs orphan summary: {"checked":455,"retained":455,"removed":0,"workflows":5,"failedWorkflows":0,"partial":false,"removedExamples":[],"errorExamples":[]}
+INFO    2026-09-05T16:21:48.474Z fdeb0483-049a-42fb-a4e3-6c7598cd52a1 getConfigs filter="all" role=admin scope=all total=455 shown=455
+WARN    2026-09-05T16:21:49.704Z a9f04500-85a8-4091-a42b-19a22f75e83f mcpRpc https://worksmacstudio.tailfc4700.ts.net/docproc/mcp -> HTTP 502: Bad Gateway
+INFO    2026-09-05T16:21:49.705Z a9f04500-85a8-4091-a42b-19a22f75e83f Generate-doc PF result: {"success":false,"decision":"GENERATE","reason":"Document generation/attachment failed: Document upload was not confirmed by the attachment service.","trace":["Authored \"cgr-attachment-mtolbiao\" (263 chars) for a markdown document","Creating + attaching markdown via doc-processor...","Create/attach failed: Document upload was not confirmed by the attachment service."]}
+INFO    2026-09-05T16:21:50.149Z a9f04500-85a8-4091-a42b-19a22f75e83f Async handler: postfunction (9998211374698452_pf_hdjpju) completed
+INFO    2026-09-05T16:21:54.140Z 6918fb11-5954-4ba7-8eff-457341862027 getWorkflowTransitions: statusMap has 34 entries, transitions: 7

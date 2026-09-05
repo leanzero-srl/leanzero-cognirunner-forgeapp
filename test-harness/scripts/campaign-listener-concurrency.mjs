@@ -24,7 +24,7 @@ try {
   for (let i = 1; i <= 20; i++) {
     const failure = i % 5 === 0, name = `${tag}-${i}`;
     const response = await rulesApi.listeners.create({ name, enabled: true,
-      events: ['avi:jira:commented:issue'], filters: { projectKeys: ['LZPT'], jql: `key in (${state.A},${state.B})`, commentPattern: tag },
+      events: ['avi:jira:commented:issue'], filters: { projectKeys: ['LZPT'], commentPattern: tag },
       functions: [{ name: failure ? 'Deliberate error' : 'Record exact comment', code: failure
         ? `throw new Error('${name}-expected');`
         : `await api.setProperty('${name}', {commentId:api.context.event.comment.id,key:api.context.issueKey});` }],

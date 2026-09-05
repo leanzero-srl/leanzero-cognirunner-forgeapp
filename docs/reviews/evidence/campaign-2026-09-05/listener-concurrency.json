@@ -1,0 +1,2668 @@
+{
+  "tag": "campaignmtoo1tnz-concurrent-mtoq4guq",
+  "rules": [
+    {
+      "id": "lst_mtoq4hnnxfn3b4",
+      "name": "campaignmtoo1tnz-concurrent-mtoq4guq-1",
+      "failure": false
+    },
+    {
+      "id": "lst_mtoq4hybtxdbmy",
+      "name": "campaignmtoo1tnz-concurrent-mtoq4guq-2",
+      "failure": false
+    },
+    {
+      "id": "lst_mtoq4i62546286",
+      "name": "campaignmtoo1tnz-concurrent-mtoq4guq-3",
+      "failure": false
+    },
+    {
+      "id": "lst_mtoq4ie9mbuew0",
+      "name": "campaignmtoo1tnz-concurrent-mtoq4guq-4",
+      "failure": false
+    },
+    {
+      "id": "lst_mtoq4imfmi94zp",
+      "name": "campaignmtoo1tnz-concurrent-mtoq4guq-5",
+      "failure": true
+    },
+    {
+      "id": "lst_mtoq4iwde0fmth",
+      "name": "campaignmtoo1tnz-concurrent-mtoq4guq-6",
+      "failure": false
+    },
+    {
+      "id": "lst_mtoq4j5rov4cpp",
+      "name": "campaignmtoo1tnz-concurrent-mtoq4guq-7",
+      "failure": false
+    },
+    {
+      "id": "lst_mtoq4je60nkrfj",
+      "name": "campaignmtoo1tnz-concurrent-mtoq4guq-8",
+      "failure": false
+    },
+    {
+      "id": "lst_mtoq4kqkb0copc",
+      "name": "campaignmtoo1tnz-concurrent-mtoq4guq-9",
+      "failure": false
+    },
+    {
+      "id": "lst_mtoq4l66z01qb3",
+      "name": "campaignmtoo1tnz-concurrent-mtoq4guq-10",
+      "failure": true
+    },
+    {
+      "id": "lst_mtoq4lft1v76jc",
+      "name": "campaignmtoo1tnz-concurrent-mtoq4guq-11",
+      "failure": false
+    },
+    {
+      "id": "lst_mtoq4lrnzztzi4",
+      "name": "campaignmtoo1tnz-concurrent-mtoq4guq-12",
+      "failure": false
+    },
+    {
+      "id": "lst_mtoq4m1ty12vqi",
+      "name": "campaignmtoo1tnz-concurrent-mtoq4guq-13",
+      "failure": false
+    },
+    {
+      "id": "lst_mtoq4ma4j0etbw",
+      "name": "campaignmtoo1tnz-concurrent-mtoq4guq-14",
+      "failure": false
+    },
+    {
+      "id": "lst_mtoq4mjo1vaqgu",
+      "name": "campaignmtoo1tnz-concurrent-mtoq4guq-15",
+      "failure": true
+    },
+    {
+      "id": "lst_mtoq4msbgu86xs",
+      "name": "campaignmtoo1tnz-concurrent-mtoq4guq-16",
+      "failure": false
+    },
+    {
+      "id": "lst_mtoq4mztkvdv3v",
+      "name": "campaignmtoo1tnz-concurrent-mtoq4guq-17",
+      "failure": false
+    },
+    {
+      "id": "lst_mtoq4n7f35qp1u",
+      "name": "campaignmtoo1tnz-concurrent-mtoq4guq-18",
+      "failure": false
+    },
+    {
+      "id": "lst_mtoq4nffrrqde5",
+      "name": "campaignmtoo1tnz-concurrent-mtoq4guq-19",
+      "failure": false
+    },
+    {
+      "id": "lst_mtoq4nnd5zgyr6",
+      "name": "campaignmtoo1tnz-concurrent-mtoq4guq-20",
+      "failure": true
+    }
+  ],
+  "batches": [
+    {
+      "batch": 1,
+      "key": "LZPT-284",
+      "commentId": "16090",
+      "outcomes": [
+        {
+          "id": "lst_mtoq4hnnxfn3b4",
+          "log": {
+            "stepResults": [
+              {
+                "name": "Record exact comment",
+                "index": 1,
+                "status": "success",
+                "timeMs": 283
+              }
+            ],
+            "reason": "Ran 1 step(s), 1 change(s)",
+            "issueKey": "LZPT-284",
+            "executionTimeMs": 283,
+            "isValid": true,
+            "changes": [
+              {
+                "action": "setProperty",
+                "key": "LZPT-284",
+                "propKey": "campaignmtoo1tnz-concurrent-mtoq4guq-1"
+              }
+            ],
+            "ruleWorkflow": null,
+            "eventType": "avi:jira:commented:issue",
+            "source": "async",
+            "type": "listener",
+            "mode": "script",
+            "ruleName": "campaignmtoo1tnz-concurrent-mtoq4guq-1",
+            "id": "1788633410722zp6n",
+            "ruleId": "lst_mtoq4hnnxfn3b4",
+            "logs": [
+              "Starting 1 step(s) for LZPT-284",
+              "setProperty: campaignmtoo1tnz-concurrent-mtoq4guq-1",
+              "\"Record exact comment\": Completed in 283ms",
+              "Finished: 1/1 step(s) succeeded in 283ms, 1 change(s) made"
+            ],
+            "fieldId": "avi:jira:commented:issue",
+            "queueDelayMs": 1111,
+            "statsReceipt": {
+              "createdAt": "2026-09-05T18:36:05.603Z",
+              "completedAt": "2026-09-05T18:36:50.722Z",
+              "issueKey": "LZPT-284",
+              "applied": true,
+              "kind": "listener",
+              "error": null,
+              "ruleId": "lst_mtoq4hnnxfn3b4",
+              "status": "ok"
+            },
+            "timestamp": "2026-09-05T18:36:50.722Z"
+          },
+          "effect": {
+            "commentId": "16090",
+            "key": "LZPT-284"
+          },
+          "stats": {
+            "runCount": 1,
+            "errorCount": 0,
+            "lastRunAt": "2026-09-05T18:36:50.722Z",
+            "lastStatus": "ok",
+            "lastError": null,
+            "lastIssueKey": "LZPT-284"
+          }
+        },
+        {
+          "id": "lst_mtoq4hybtxdbmy",
+          "log": {
+            "stepResults": [
+              {
+                "name": "Record exact comment",
+                "index": 1,
+                "status": "success",
+                "timeMs": 337
+              }
+            ],
+            "reason": "Ran 1 step(s), 1 change(s)",
+            "issueKey": "LZPT-284",
+            "executionTimeMs": 339,
+            "isValid": true,
+            "changes": [
+              {
+                "action": "setProperty",
+                "key": "LZPT-284",
+                "propKey": "campaignmtoo1tnz-concurrent-mtoq4guq-2"
+              }
+            ],
+            "ruleWorkflow": null,
+            "eventType": "avi:jira:commented:issue",
+            "source": "async",
+            "type": "listener",
+            "mode": "script",
+            "ruleName": "campaignmtoo1tnz-concurrent-mtoq4guq-2",
+            "id": "17886334132366uen",
+            "ruleId": "lst_mtoq4hybtxdbmy",
+            "logs": [
+              "Starting 1 step(s) for LZPT-284",
+              "setProperty: campaignmtoo1tnz-concurrent-mtoq4guq-2",
+              "\"Record exact comment\": Completed in 337ms",
+              "Finished: 1/1 step(s) succeeded in 337ms, 1 change(s) made"
+            ],
+            "fieldId": "avi:jira:commented:issue",
+            "queueDelayMs": 3108,
+            "statsReceipt": {
+              "createdAt": "2026-09-05T18:36:05.987Z",
+              "completedAt": "2026-09-05T18:36:53.235Z",
+              "issueKey": "LZPT-284",
+              "applied": true,
+              "kind": "listener",
+              "error": null,
+              "ruleId": "lst_mtoq4hybtxdbmy",
+              "status": "ok"
+            },
+            "timestamp": "2026-09-05T18:36:53.235Z"
+          },
+          "effect": {
+            "commentId": "16090",
+            "key": "LZPT-284"
+          },
+          "stats": {
+            "runCount": 1,
+            "errorCount": 0,
+            "lastRunAt": "2026-09-05T18:36:53.235Z",
+            "lastStatus": "ok",
+            "lastError": null,
+            "lastIssueKey": "LZPT-284"
+          }
+        },
+        {
+          "id": "lst_mtoq4i62546286",
+          "log": {
+            "stepResults": [
+              {
+                "name": "Record exact comment",
+                "index": 1,
+                "status": "success",
+                "timeMs": 233
+              }
+            ],
+            "reason": "Ran 1 step(s), 1 change(s)",
+            "issueKey": "LZPT-284",
+            "executionTimeMs": 233,
+            "isValid": true,
+            "changes": [
+              {
+                "action": "setProperty",
+                "key": "LZPT-284",
+                "propKey": "campaignmtoo1tnz-concurrent-mtoq4guq-3"
+              }
+            ],
+            "ruleWorkflow": null,
+            "eventType": "avi:jira:commented:issue",
+            "source": "async",
+            "type": "listener",
+            "mode": "script",
+            "ruleName": "campaignmtoo1tnz-concurrent-mtoq4guq-3",
+            "id": "1788633411585rb68",
+            "ruleId": "lst_mtoq4i62546286",
+            "logs": [
+              "Starting 1 step(s) for LZPT-284",
+              "setProperty: campaignmtoo1tnz-concurrent-mtoq4guq-3",
+              "\"Record exact comment\": Completed in 233ms",
+              "Finished: 1/1 step(s) succeeded in 233ms, 1 change(s) made"
+            ],
+            "fieldId": "avi:jira:commented:issue",
+            "queueDelayMs": 978,
+            "statsReceipt": {
+              "createdAt": "2026-09-05T18:36:06.266Z",
+              "completedAt": "2026-09-05T18:36:51.585Z",
+              "issueKey": "LZPT-284",
+              "applied": true,
+              "kind": "listener",
+              "error": null,
+              "ruleId": "lst_mtoq4i62546286",
+              "status": "ok"
+            },
+            "timestamp": "2026-09-05T18:36:51.585Z"
+          },
+          "effect": {
+            "commentId": "16090",
+            "key": "LZPT-284"
+          },
+          "stats": {
+            "runCount": 1,
+            "errorCount": 0,
+            "lastRunAt": "2026-09-05T18:36:51.585Z",
+            "lastStatus": "ok",
+            "lastError": null,
+            "lastIssueKey": "LZPT-284"
+          }
+        },
+        {
+          "id": "lst_mtoq4ie9mbuew0",
+          "log": {
+            "stepResults": [
+              {
+                "name": "Record exact comment",
+                "index": 1,
+                "status": "success",
+                "timeMs": 265
+              }
+            ],
+            "reason": "Ran 1 step(s), 1 change(s)",
+            "issueKey": "LZPT-284",
+            "executionTimeMs": 265,
+            "isValid": true,
+            "changes": [
+              {
+                "action": "setProperty",
+                "key": "LZPT-284",
+                "propKey": "campaignmtoo1tnz-concurrent-mtoq4guq-4"
+              }
+            ],
+            "ruleWorkflow": null,
+            "eventType": "avi:jira:commented:issue",
+            "source": "async",
+            "type": "listener",
+            "mode": "script",
+            "ruleName": "campaignmtoo1tnz-concurrent-mtoq4guq-4",
+            "id": "1788633412453opvq",
+            "ruleId": "lst_mtoq4ie9mbuew0",
+            "logs": [
+              "Starting 1 step(s) for LZPT-284",
+              "setProperty: campaignmtoo1tnz-concurrent-mtoq4guq-4",
+              "\"Record exact comment\": Completed in 265ms",
+              "Finished: 1/1 step(s) succeeded in 265ms, 1 change(s) made"
+            ],
+            "fieldId": "avi:jira:commented:issue",
+            "queueDelayMs": 1374,
+            "statsReceipt": {
+              "createdAt": "2026-09-05T18:36:06.561Z",
+              "completedAt": "2026-09-05T18:36:52.453Z",
+              "issueKey": "LZPT-284",
+              "applied": true,
+              "kind": "listener",
+              "error": null,
+              "ruleId": "lst_mtoq4ie9mbuew0",
+              "status": "ok"
+            },
+            "timestamp": "2026-09-05T18:36:52.453Z"
+          },
+          "effect": {
+            "commentId": "16090",
+            "key": "LZPT-284"
+          },
+          "stats": {
+            "runCount": 1,
+            "errorCount": 0,
+            "lastRunAt": "2026-09-05T18:36:52.453Z",
+            "lastStatus": "ok",
+            "lastError": null,
+            "lastIssueKey": "LZPT-284"
+          }
+        },
+        {
+          "id": "lst_mtoq4imfmi94zp",
+          "log": {
+            "stepResults": [
+              {
+                "name": "Deliberate error",
+                "index": 1,
+                "recommendation": "Error in \"Deliberate error\": campaignmtoo1tnz-concurrent-mtoq4guq-5-expected. Use api.log() to debug values, and Test Run with a real issue to trace the problem.",
+                "error": "campaignmtoo1tnz-concurrent-mtoq4guq-5-expected",
+                "status": "error",
+                "timeMs": 19
+              }
+            ],
+            "reason": "Step \"Deliberate error\" failed: campaignmtoo1tnz-concurrent-mtoq4guq-5-expected",
+            "issueKey": "LZPT-284",
+            "executionTimeMs": 21,
+            "isValid": false,
+            "changes": [],
+            "ruleWorkflow": null,
+            "recommendation": "Error in \"Deliberate error\": campaignmtoo1tnz-concurrent-mtoq4guq-5-expected. Use api.log() to debug values, and Test Run with a real issue to trace the problem.",
+            "eventType": "avi:jira:commented:issue",
+            "source": "async",
+            "type": "listener",
+            "mode": "script",
+            "ruleName": "campaignmtoo1tnz-concurrent-mtoq4guq-5",
+            "id": "1788633414186draq",
+            "ruleId": "lst_mtoq4imfmi94zp",
+            "logs": [
+              "Starting 1 step(s) for LZPT-284",
+              "\"Deliberate error\": ERROR after 19ms — campaignmtoo1tnz-concurrent-mtoq4guq-5-expected",
+              "Finished: 0/1 step(s) succeeded in 19ms, 0 change(s) made"
+            ],
+            "fieldId": "avi:jira:commented:issue",
+            "queueDelayMs": 2391,
+            "statsReceipt": {
+              "createdAt": "2026-09-05T18:36:06.855Z",
+              "completedAt": "2026-09-05T18:36:54.185Z",
+              "issueKey": "LZPT-284",
+              "applied": true,
+              "kind": "listener",
+              "error": "Step \"Deliberate error\" failed: campaignmtoo1tnz-concurrent-mtoq4guq-5-expected",
+              "ruleId": "lst_mtoq4imfmi94zp",
+              "status": "error"
+            },
+            "timestamp": "2026-09-05T18:36:54.185Z"
+          },
+          "effect": null,
+          "stats": {
+            "runCount": 1,
+            "errorCount": 1,
+            "lastRunAt": "2026-09-05T18:36:54.185Z",
+            "lastStatus": "error",
+            "lastError": "Step \"Deliberate error\" failed: campaignmtoo1tnz-concurrent-mtoq4guq-5-expected",
+            "lastIssueKey": "LZPT-284"
+          }
+        },
+        {
+          "id": "lst_mtoq4iwde0fmth",
+          "log": {
+            "stepResults": [
+              {
+                "name": "Record exact comment",
+                "index": 1,
+                "status": "success",
+                "timeMs": 181
+              }
+            ],
+            "reason": "Ran 1 step(s), 1 change(s)",
+            "issueKey": "LZPT-284",
+            "executionTimeMs": 182,
+            "isValid": true,
+            "changes": [
+              {
+                "action": "setProperty",
+                "key": "LZPT-284",
+                "propKey": "campaignmtoo1tnz-concurrent-mtoq4guq-6"
+              }
+            ],
+            "ruleWorkflow": null,
+            "eventType": "avi:jira:commented:issue",
+            "source": "async",
+            "type": "listener",
+            "mode": "script",
+            "ruleName": "campaignmtoo1tnz-concurrent-mtoq4guq-6",
+            "id": "1788633413240rv49",
+            "ruleId": "lst_mtoq4iwde0fmth",
+            "logs": [
+              "Starting 1 step(s) for LZPT-284",
+              "setProperty: campaignmtoo1tnz-concurrent-mtoq4guq-6",
+              "\"Record exact comment\": Completed in 181ms",
+              "Finished: 1/1 step(s) succeeded in 181ms, 1 change(s) made"
+            ],
+            "fieldId": "avi:jira:commented:issue",
+            "queueDelayMs": 999,
+            "statsReceipt": {
+              "createdAt": "2026-09-05T18:36:07.213Z",
+              "completedAt": "2026-09-05T18:36:53.240Z",
+              "issueKey": "LZPT-284",
+              "applied": true,
+              "kind": "listener",
+              "error": null,
+              "ruleId": "lst_mtoq4iwde0fmth",
+              "status": "ok"
+            },
+            "timestamp": "2026-09-05T18:36:53.240Z"
+          },
+          "effect": {
+            "commentId": "16090",
+            "key": "LZPT-284"
+          },
+          "stats": {
+            "runCount": 1,
+            "errorCount": 0,
+            "lastRunAt": "2026-09-05T18:36:53.240Z",
+            "lastStatus": "ok",
+            "lastError": null,
+            "lastIssueKey": "LZPT-284"
+          }
+        },
+        {
+          "id": "lst_mtoq4j5rov4cpp",
+          "log": {
+            "stepResults": [
+              {
+                "name": "Record exact comment",
+                "index": 1,
+                "status": "success",
+                "timeMs": 290
+              }
+            ],
+            "reason": "Ran 1 step(s), 1 change(s)",
+            "issueKey": "LZPT-284",
+            "executionTimeMs": 292,
+            "isValid": true,
+            "changes": [
+              {
+                "action": "setProperty",
+                "key": "LZPT-284",
+                "propKey": "campaignmtoo1tnz-concurrent-mtoq4guq-7"
+              }
+            ],
+            "ruleWorkflow": null,
+            "eventType": "avi:jira:commented:issue",
+            "source": "async",
+            "type": "listener",
+            "mode": "script",
+            "ruleName": "campaignmtoo1tnz-concurrent-mtoq4guq-7",
+            "id": "1788633415331j3lv",
+            "ruleId": "lst_mtoq4j5rov4cpp",
+            "logs": [
+              "Starting 1 step(s) for LZPT-284",
+              "setProperty: campaignmtoo1tnz-concurrent-mtoq4guq-7",
+              "\"Record exact comment\": Completed in 290ms",
+              "Finished: 1/1 step(s) succeeded in 290ms, 1 change(s) made"
+            ],
+            "fieldId": "avi:jira:commented:issue",
+            "queueDelayMs": 2628,
+            "statsReceipt": {
+              "createdAt": "2026-09-05T18:36:07.551Z",
+              "completedAt": "2026-09-05T18:36:55.330Z",
+              "issueKey": "LZPT-284",
+              "applied": true,
+              "kind": "listener",
+              "error": null,
+              "ruleId": "lst_mtoq4j5rov4cpp",
+              "status": "ok"
+            },
+            "timestamp": "2026-09-05T18:36:55.330Z"
+          },
+          "effect": {
+            "commentId": "16090",
+            "key": "LZPT-284"
+          },
+          "stats": {
+            "runCount": 1,
+            "errorCount": 0,
+            "lastRunAt": "2026-09-05T18:36:55.330Z",
+            "lastStatus": "ok",
+            "lastError": null,
+            "lastIssueKey": "LZPT-284"
+          }
+        },
+        {
+          "id": "lst_mtoq4je60nkrfj",
+          "log": {
+            "stepResults": [
+              {
+                "name": "Record exact comment",
+                "index": 1,
+                "status": "success",
+                "timeMs": 272
+              }
+            ],
+            "reason": "Ran 1 step(s), 1 change(s)",
+            "issueKey": "LZPT-284",
+            "executionTimeMs": 272,
+            "isValid": true,
+            "changes": [
+              {
+                "action": "setProperty",
+                "key": "LZPT-284",
+                "propKey": "campaignmtoo1tnz-concurrent-mtoq4guq-8"
+              }
+            ],
+            "ruleWorkflow": null,
+            "eventType": "avi:jira:commented:issue",
+            "source": "async",
+            "type": "listener",
+            "mode": "script",
+            "ruleName": "campaignmtoo1tnz-concurrent-mtoq4guq-8",
+            "id": "1788633414224rbc6",
+            "ruleId": "lst_mtoq4je60nkrfj",
+            "logs": [
+              "Starting 1 step(s) for LZPT-284",
+              "setProperty: campaignmtoo1tnz-concurrent-mtoq4guq-8",
+              "\"Record exact comment\": Completed in 272ms",
+              "Finished: 1/1 step(s) succeeded in 272ms, 1 change(s) made"
+            ],
+            "fieldId": "avi:jira:commented:issue",
+            "queueDelayMs": 1060,
+            "statsReceipt": {
+              "createdAt": "2026-09-05T18:36:07.854Z",
+              "completedAt": "2026-09-05T18:36:54.224Z",
+              "issueKey": "LZPT-284",
+              "applied": true,
+              "kind": "listener",
+              "error": null,
+              "ruleId": "lst_mtoq4je60nkrfj",
+              "status": "ok"
+            },
+            "timestamp": "2026-09-05T18:36:54.224Z"
+          },
+          "effect": {
+            "commentId": "16090",
+            "key": "LZPT-284"
+          },
+          "stats": {
+            "runCount": 1,
+            "errorCount": 0,
+            "lastRunAt": "2026-09-05T18:36:54.224Z",
+            "lastStatus": "ok",
+            "lastError": null,
+            "lastIssueKey": "LZPT-284"
+          }
+        },
+        {
+          "id": "lst_mtoq4kqkb0copc",
+          "log": {
+            "stepResults": [
+              {
+                "name": "Record exact comment",
+                "index": 1,
+                "status": "success",
+                "timeMs": 230
+              }
+            ],
+            "reason": "Ran 1 step(s), 1 change(s)",
+            "issueKey": "LZPT-284",
+            "executionTimeMs": 230,
+            "isValid": true,
+            "changes": [
+              {
+                "action": "setProperty",
+                "key": "LZPT-284",
+                "propKey": "campaignmtoo1tnz-concurrent-mtoq4guq-9"
+              }
+            ],
+            "ruleWorkflow": null,
+            "eventType": "avi:jira:commented:issue",
+            "source": "async",
+            "type": "listener",
+            "mode": "script",
+            "ruleName": "campaignmtoo1tnz-concurrent-mtoq4guq-9",
+            "id": "1788633414589e3ye",
+            "ruleId": "lst_mtoq4kqkb0copc",
+            "logs": [
+              "Starting 1 step(s) for LZPT-284",
+              "setProperty: campaignmtoo1tnz-concurrent-mtoq4guq-9",
+              "\"Record exact comment\": Completed in 230ms",
+              "Finished: 1/1 step(s) succeeded in 230ms, 1 change(s) made"
+            ],
+            "fieldId": "avi:jira:commented:issue",
+            "queueDelayMs": 951,
+            "statsReceipt": {
+              "createdAt": "2026-09-05T18:36:09.614Z",
+              "completedAt": "2026-09-05T18:36:54.589Z",
+              "issueKey": "LZPT-284",
+              "applied": true,
+              "kind": "listener",
+              "error": null,
+              "ruleId": "lst_mtoq4kqkb0copc",
+              "status": "ok"
+            },
+            "timestamp": "2026-09-05T18:36:54.589Z"
+          },
+          "effect": {
+            "commentId": "16090",
+            "key": "LZPT-284"
+          },
+          "stats": {
+            "runCount": 1,
+            "errorCount": 0,
+            "lastRunAt": "2026-09-05T18:36:54.589Z",
+            "lastStatus": "ok",
+            "lastError": null,
+            "lastIssueKey": "LZPT-284"
+          }
+        },
+        {
+          "id": "lst_mtoq4l66z01qb3",
+          "log": {
+            "stepResults": [
+              {
+                "name": "Deliberate error",
+                "index": 1,
+                "recommendation": "Error in \"Deliberate error\": campaignmtoo1tnz-concurrent-mtoq4guq-10-expected. Use api.log() to debug values, and Test Run with a real issue to trace the problem.",
+                "error": "campaignmtoo1tnz-concurrent-mtoq4guq-10-expected",
+                "status": "error",
+                "timeMs": 1
+              }
+            ],
+            "reason": "Step \"Deliberate error\" failed: campaignmtoo1tnz-concurrent-mtoq4guq-10-expected",
+            "issueKey": "LZPT-284",
+            "executionTimeMs": 1,
+            "isValid": false,
+            "changes": [],
+            "ruleWorkflow": null,
+            "recommendation": "Error in \"Deliberate error\": campaignmtoo1tnz-concurrent-mtoq4guq-10-expected. Use api.log() to debug values, and Test Run with a real issue to trace the problem.",
+            "eventType": "avi:jira:commented:issue",
+            "source": "async",
+            "type": "listener",
+            "mode": "script",
+            "ruleName": "campaignmtoo1tnz-concurrent-mtoq4guq-10",
+            "id": "17886334148147jfk",
+            "ruleId": "lst_mtoq4l66z01qb3",
+            "logs": [
+              "Starting 1 step(s) for LZPT-284",
+              "\"Deliberate error\": ERROR after 1ms — campaignmtoo1tnz-concurrent-mtoq4guq-10-expected",
+              "Finished: 0/1 step(s) succeeded in 1ms, 0 change(s) made"
+            ],
+            "fieldId": "avi:jira:commented:issue",
+            "queueDelayMs": 725,
+            "statsReceipt": {
+              "createdAt": "2026-09-05T18:36:10.158Z",
+              "completedAt": "2026-09-05T18:36:54.814Z",
+              "issueKey": "LZPT-284",
+              "applied": true,
+              "kind": "listener",
+              "error": "Step \"Deliberate error\" failed: campaignmtoo1tnz-concurrent-mtoq4guq-10-expected",
+              "ruleId": "lst_mtoq4l66z01qb3",
+              "status": "error"
+            },
+            "timestamp": "2026-09-05T18:36:54.814Z"
+          },
+          "effect": null,
+          "stats": {
+            "runCount": 1,
+            "errorCount": 1,
+            "lastRunAt": "2026-09-05T18:36:54.814Z",
+            "lastStatus": "error",
+            "lastError": "Step \"Deliberate error\" failed: campaignmtoo1tnz-concurrent-mtoq4guq-10-expected",
+            "lastIssueKey": "LZPT-284"
+          }
+        },
+        {
+          "id": "lst_mtoq4lft1v76jc",
+          "log": {
+            "stepResults": [
+              {
+                "name": "Record exact comment",
+                "index": 1,
+                "status": "success",
+                "timeMs": 256
+              }
+            ],
+            "reason": "Ran 1 step(s), 1 change(s)",
+            "issueKey": "LZPT-284",
+            "executionTimeMs": 256,
+            "isValid": true,
+            "changes": [
+              {
+                "action": "setProperty",
+                "key": "LZPT-284",
+                "propKey": "campaignmtoo1tnz-concurrent-mtoq4guq-11"
+              }
+            ],
+            "ruleWorkflow": null,
+            "eventType": "avi:jira:commented:issue",
+            "source": "async",
+            "type": "listener",
+            "mode": "script",
+            "ruleName": "campaignmtoo1tnz-concurrent-mtoq4guq-11",
+            "id": "1788633415847c90v",
+            "ruleId": "lst_mtoq4lft1v76jc",
+            "logs": [
+              "Starting 1 step(s) for LZPT-284",
+              "setProperty: campaignmtoo1tnz-concurrent-mtoq4guq-11",
+              "\"Record exact comment\": Completed in 256ms",
+              "Finished: 1/1 step(s) succeeded in 256ms, 1 change(s) made"
+            ],
+            "fieldId": "avi:jira:commented:issue",
+            "queueDelayMs": 1290,
+            "statsReceipt": {
+              "createdAt": "2026-09-05T18:36:10.505Z",
+              "completedAt": "2026-09-05T18:36:55.847Z",
+              "issueKey": "LZPT-284",
+              "applied": true,
+              "kind": "listener",
+              "error": null,
+              "ruleId": "lst_mtoq4lft1v76jc",
+              "status": "ok"
+            },
+            "timestamp": "2026-09-05T18:36:55.847Z"
+          },
+          "effect": {
+            "commentId": "16090",
+            "key": "LZPT-284"
+          },
+          "stats": {
+            "runCount": 1,
+            "errorCount": 0,
+            "lastRunAt": "2026-09-05T18:36:55.847Z",
+            "lastStatus": "ok",
+            "lastError": null,
+            "lastIssueKey": "LZPT-284"
+          }
+        },
+        {
+          "id": "lst_mtoq4lrnzztzi4",
+          "log": {
+            "stepResults": [
+              {
+                "name": "Record exact comment",
+                "index": 1,
+                "status": "success",
+                "timeMs": 199
+              }
+            ],
+            "reason": "Ran 1 step(s), 1 change(s)",
+            "issueKey": "LZPT-284",
+            "executionTimeMs": 199,
+            "isValid": true,
+            "changes": [
+              {
+                "action": "setProperty",
+                "key": "LZPT-284",
+                "propKey": "campaignmtoo1tnz-concurrent-mtoq4guq-12"
+              }
+            ],
+            "ruleWorkflow": null,
+            "eventType": "avi:jira:commented:issue",
+            "source": "async",
+            "type": "listener",
+            "mode": "script",
+            "ruleName": "campaignmtoo1tnz-concurrent-mtoq4guq-12",
+            "id": "1788633416276mrt5",
+            "ruleId": "lst_mtoq4lrnzztzi4",
+            "logs": [
+              "Starting 1 step(s) for LZPT-284",
+              "setProperty: campaignmtoo1tnz-concurrent-mtoq4guq-12",
+              "\"Record exact comment\": Completed in 199ms",
+              "Finished: 1/1 step(s) succeeded in 199ms, 1 change(s) made"
+            ],
+            "fieldId": "avi:jira:commented:issue",
+            "queueDelayMs": 918,
+            "statsReceipt": {
+              "createdAt": "2026-09-05T18:36:10.931Z",
+              "completedAt": "2026-09-05T18:36:56.276Z",
+              "issueKey": "LZPT-284",
+              "applied": true,
+              "kind": "listener",
+              "error": null,
+              "ruleId": "lst_mtoq4lrnzztzi4",
+              "status": "ok"
+            },
+            "timestamp": "2026-09-05T18:36:56.276Z"
+          },
+          "effect": {
+            "commentId": "16090",
+            "key": "LZPT-284"
+          },
+          "stats": {
+            "runCount": 1,
+            "errorCount": 0,
+            "lastRunAt": "2026-09-05T18:36:56.276Z",
+            "lastStatus": "ok",
+            "lastError": null,
+            "lastIssueKey": "LZPT-284"
+          }
+        },
+        {
+          "id": "lst_mtoq4m1ty12vqi",
+          "log": {
+            "stepResults": [
+              {
+                "name": "Record exact comment",
+                "index": 1,
+                "status": "success",
+                "timeMs": 238
+              }
+            ],
+            "reason": "Ran 1 step(s), 1 change(s)",
+            "issueKey": "LZPT-284",
+            "executionTimeMs": 239,
+            "isValid": true,
+            "changes": [
+              {
+                "action": "setProperty",
+                "key": "LZPT-284",
+                "propKey": "campaignmtoo1tnz-concurrent-mtoq4guq-13"
+              }
+            ],
+            "ruleWorkflow": null,
+            "eventType": "avi:jira:commented:issue",
+            "source": "async",
+            "type": "listener",
+            "mode": "script",
+            "ruleName": "campaignmtoo1tnz-concurrent-mtoq4guq-13",
+            "id": "1788633416895cjy1",
+            "ruleId": "lst_mtoq4m1ty12vqi",
+            "logs": [
+              "Starting 1 step(s) for LZPT-284",
+              "setProperty: campaignmtoo1tnz-concurrent-mtoq4guq-13",
+              "\"Record exact comment\": Completed in 238ms",
+              "Finished: 1/1 step(s) succeeded in 238ms, 1 change(s) made"
+            ],
+            "fieldId": "avi:jira:commented:issue",
+            "queueDelayMs": 1092,
+            "statsReceipt": {
+              "createdAt": "2026-09-05T18:36:11.297Z",
+              "completedAt": "2026-09-05T18:36:56.895Z",
+              "issueKey": "LZPT-284",
+              "applied": true,
+              "kind": "listener",
+              "error": null,
+              "ruleId": "lst_mtoq4m1ty12vqi",
+              "status": "ok"
+            },
+            "timestamp": "2026-09-05T18:36:56.895Z"
+          },
+          "effect": {
+            "commentId": "16090",
+            "key": "LZPT-284"
+          },
+          "stats": {
+            "runCount": 1,
+            "errorCount": 0,
+            "lastRunAt": "2026-09-05T18:36:56.895Z",
+            "lastStatus": "ok",
+            "lastError": null,
+            "lastIssueKey": "LZPT-284"
+          }
+        },
+        {
+          "id": "lst_mtoq4ma4j0etbw",
+          "log": {
+            "stepResults": [
+              {
+                "name": "Record exact comment",
+                "index": 1,
+                "status": "success",
+                "timeMs": 229
+              }
+            ],
+            "reason": "Ran 1 step(s), 1 change(s)",
+            "issueKey": "LZPT-284",
+            "executionTimeMs": 230,
+            "isValid": true,
+            "changes": [
+              {
+                "action": "setProperty",
+                "key": "LZPT-284",
+                "propKey": "campaignmtoo1tnz-concurrent-mtoq4guq-14"
+              }
+            ],
+            "ruleWorkflow": null,
+            "eventType": "avi:jira:commented:issue",
+            "source": "async",
+            "type": "listener",
+            "mode": "script",
+            "ruleName": "campaignmtoo1tnz-concurrent-mtoq4guq-14",
+            "id": "1788633417571aldt",
+            "ruleId": "lst_mtoq4ma4j0etbw",
+            "logs": [
+              "Starting 1 step(s) for LZPT-284",
+              "setProperty: campaignmtoo1tnz-concurrent-mtoq4guq-14",
+              "\"Record exact comment\": Completed in 229ms",
+              "Finished: 1/1 step(s) succeeded in 229ms, 1 change(s) made"
+            ],
+            "fieldId": "avi:jira:commented:issue",
+            "queueDelayMs": 1313,
+            "statsReceipt": {
+              "createdAt": "2026-09-05T18:36:11.596Z",
+              "completedAt": "2026-09-05T18:36:57.571Z",
+              "issueKey": "LZPT-284",
+              "applied": true,
+              "kind": "listener",
+              "error": null,
+              "ruleId": "lst_mtoq4ma4j0etbw",
+              "status": "ok"
+            },
+            "timestamp": "2026-09-05T18:36:57.571Z"
+          },
+          "effect": {
+            "commentId": "16090",
+            "key": "LZPT-284"
+          },
+          "stats": {
+            "runCount": 1,
+            "errorCount": 0,
+            "lastRunAt": "2026-09-05T18:36:57.571Z",
+            "lastStatus": "ok",
+            "lastError": null,
+            "lastIssueKey": "LZPT-284"
+          }
+        },
+        {
+          "id": "lst_mtoq4mjo1vaqgu",
+          "log": {
+            "stepResults": [
+              {
+                "name": "Deliberate error",
+                "index": 1,
+                "recommendation": "Error in \"Deliberate error\": campaignmtoo1tnz-concurrent-mtoq4guq-15-expected. Use api.log() to debug values, and Test Run with a real issue to trace the problem.",
+                "error": "campaignmtoo1tnz-concurrent-mtoq4guq-15-expected",
+                "status": "error",
+                "timeMs": 0
+              }
+            ],
+            "reason": "Step \"Deliberate error\" failed: campaignmtoo1tnz-concurrent-mtoq4guq-15-expected",
+            "issueKey": "LZPT-284",
+            "executionTimeMs": 0,
+            "isValid": false,
+            "changes": [],
+            "ruleWorkflow": null,
+            "recommendation": "Error in \"Deliberate error\": campaignmtoo1tnz-concurrent-mtoq4guq-15-expected. Use api.log() to debug values, and Test Run with a real issue to trace the problem.",
+            "eventType": "avi:jira:commented:issue",
+            "source": "async",
+            "type": "listener",
+            "mode": "script",
+            "ruleName": "campaignmtoo1tnz-concurrent-mtoq4guq-15",
+            "id": "1788633417539fgcl",
+            "ruleId": "lst_mtoq4mjo1vaqgu",
+            "logs": [
+              "Starting 1 step(s) for LZPT-284",
+              "\"Deliberate error\": ERROR after 0ms — campaignmtoo1tnz-concurrent-mtoq4guq-15-expected",
+              "Finished: 0/1 step(s) succeeded in 0ms, 0 change(s) made"
+            ],
+            "fieldId": "avi:jira:commented:issue",
+            "queueDelayMs": 839,
+            "statsReceipt": {
+              "createdAt": "2026-09-05T18:36:11.940Z",
+              "completedAt": "2026-09-05T18:36:57.539Z",
+              "issueKey": "LZPT-284",
+              "applied": true,
+              "kind": "listener",
+              "error": "Step \"Deliberate error\" failed: campaignmtoo1tnz-concurrent-mtoq4guq-15-expected",
+              "ruleId": "lst_mtoq4mjo1vaqgu",
+              "status": "error"
+            },
+            "timestamp": "2026-09-05T18:36:57.539Z"
+          },
+          "effect": null,
+          "stats": {
+            "runCount": 1,
+            "errorCount": 1,
+            "lastRunAt": "2026-09-05T18:36:57.539Z",
+            "lastStatus": "error",
+            "lastError": "Step \"Deliberate error\" failed: campaignmtoo1tnz-concurrent-mtoq4guq-15-expected",
+            "lastIssueKey": "LZPT-284"
+          }
+        },
+        {
+          "id": "lst_mtoq4msbgu86xs",
+          "log": {
+            "stepResults": [
+              {
+                "name": "Record exact comment",
+                "index": 1,
+                "status": "success",
+                "timeMs": 305
+              }
+            ],
+            "reason": "Ran 1 step(s), 1 change(s)",
+            "issueKey": "LZPT-284",
+            "executionTimeMs": 305,
+            "isValid": true,
+            "changes": [
+              {
+                "action": "setProperty",
+                "key": "LZPT-284",
+                "propKey": "campaignmtoo1tnz-concurrent-mtoq4guq-16"
+              }
+            ],
+            "ruleWorkflow": null,
+            "eventType": "avi:jira:commented:issue",
+            "source": "async",
+            "type": "listener",
+            "mode": "script",
+            "ruleName": "campaignmtoo1tnz-concurrent-mtoq4guq-16",
+            "id": "1788633418243whu9",
+            "ruleId": "lst_mtoq4msbgu86xs",
+            "logs": [
+              "Starting 1 step(s) for LZPT-284",
+              "setProperty: campaignmtoo1tnz-concurrent-mtoq4guq-16",
+              "\"Record exact comment\": Completed in 305ms",
+              "Finished: 1/1 step(s) succeeded in 305ms, 1 change(s) made"
+            ],
+            "fieldId": "avi:jira:commented:issue",
+            "queueDelayMs": 1048,
+            "statsReceipt": {
+              "createdAt": "2026-09-05T18:36:12.251Z",
+              "completedAt": "2026-09-05T18:36:58.243Z",
+              "issueKey": "LZPT-284",
+              "applied": true,
+              "kind": "listener",
+              "error": null,
+              "ruleId": "lst_mtoq4msbgu86xs",
+              "status": "ok"
+            },
+            "timestamp": "2026-09-05T18:36:58.243Z"
+          },
+          "effect": {
+            "commentId": "16090",
+            "key": "LZPT-284"
+          },
+          "stats": {
+            "runCount": 1,
+            "errorCount": 0,
+            "lastRunAt": "2026-09-05T18:36:58.243Z",
+            "lastStatus": "ok",
+            "lastError": null,
+            "lastIssueKey": "LZPT-284"
+          }
+        },
+        {
+          "id": "lst_mtoq4mztkvdv3v",
+          "log": {
+            "stepResults": [
+              {
+                "name": "Record exact comment",
+                "index": 1,
+                "status": "success",
+                "timeMs": 255
+              }
+            ],
+            "reason": "Ran 1 step(s), 1 change(s)",
+            "issueKey": "LZPT-284",
+            "executionTimeMs": 255,
+            "isValid": true,
+            "changes": [
+              {
+                "action": "setProperty",
+                "key": "LZPT-284",
+                "propKey": "campaignmtoo1tnz-concurrent-mtoq4guq-17"
+              }
+            ],
+            "ruleWorkflow": null,
+            "eventType": "avi:jira:commented:issue",
+            "source": "async",
+            "type": "listener",
+            "mode": "script",
+            "ruleName": "campaignmtoo1tnz-concurrent-mtoq4guq-17",
+            "id": "1788633418703z8bm",
+            "ruleId": "lst_mtoq4mztkvdv3v",
+            "logs": [
+              "Starting 1 step(s) for LZPT-284",
+              "setProperty: campaignmtoo1tnz-concurrent-mtoq4guq-17",
+              "\"Record exact comment\": Completed in 255ms",
+              "Finished: 1/1 step(s) succeeded in 255ms, 1 change(s) made"
+            ],
+            "fieldId": "avi:jira:commented:issue",
+            "queueDelayMs": 1052,
+            "statsReceipt": {
+              "createdAt": "2026-09-05T18:36:12.521Z",
+              "completedAt": "2026-09-05T18:36:58.703Z",
+              "issueKey": "LZPT-284",
+              "applied": true,
+              "kind": "listener",
+              "error": null,
+              "ruleId": "lst_mtoq4mztkvdv3v",
+              "status": "ok"
+            },
+            "timestamp": "2026-09-05T18:36:58.703Z"
+          },
+          "effect": {
+            "commentId": "16090",
+            "key": "LZPT-284"
+          },
+          "stats": {
+            "runCount": 1,
+            "errorCount": 0,
+            "lastRunAt": "2026-09-05T18:36:58.703Z",
+            "lastStatus": "ok",
+            "lastError": null,
+            "lastIssueKey": "LZPT-284"
+          }
+        },
+        {
+          "id": "lst_mtoq4n7f35qp1u",
+          "log": {
+            "stepResults": [
+              {
+                "name": "Record exact comment",
+                "index": 1,
+                "status": "success",
+                "timeMs": 258
+              }
+            ],
+            "reason": "Ran 1 step(s), 1 change(s)",
+            "issueKey": "LZPT-284",
+            "executionTimeMs": 258,
+            "isValid": true,
+            "changes": [
+              {
+                "action": "setProperty",
+                "key": "LZPT-284",
+                "propKey": "campaignmtoo1tnz-concurrent-mtoq4guq-18"
+              }
+            ],
+            "ruleWorkflow": null,
+            "eventType": "avi:jira:commented:issue",
+            "source": "async",
+            "type": "listener",
+            "mode": "script",
+            "ruleName": "campaignmtoo1tnz-concurrent-mtoq4guq-18",
+            "id": "1788633419146n9iz",
+            "ruleId": "lst_mtoq4n7f35qp1u",
+            "logs": [
+              "Starting 1 step(s) for LZPT-284",
+              "setProperty: campaignmtoo1tnz-concurrent-mtoq4guq-18",
+              "\"Record exact comment\": Completed in 258ms",
+              "Finished: 1/1 step(s) succeeded in 258ms, 1 change(s) made"
+            ],
+            "fieldId": "avi:jira:commented:issue",
+            "queueDelayMs": 1016,
+            "statsReceipt": {
+              "createdAt": "2026-09-05T18:36:12.795Z",
+              "completedAt": "2026-09-05T18:36:59.146Z",
+              "issueKey": "LZPT-284",
+              "applied": true,
+              "kind": "listener",
+              "error": null,
+              "ruleId": "lst_mtoq4n7f35qp1u",
+              "status": "ok"
+            },
+            "timestamp": "2026-09-05T18:36:59.146Z"
+          },
+          "effect": {
+            "commentId": "16090",
+            "key": "LZPT-284"
+          },
+          "stats": {
+            "runCount": 1,
+            "errorCount": 0,
+            "lastRunAt": "2026-09-05T18:36:59.146Z",
+            "lastStatus": "ok",
+            "lastError": null,
+            "lastIssueKey": "LZPT-284"
+          }
+        },
+        {
+          "id": "lst_mtoq4nffrrqde5",
+          "log": {
+            "stepResults": [
+              {
+                "name": "Record exact comment",
+                "index": 1,
+                "status": "success",
+                "timeMs": 246
+              }
+            ],
+            "reason": "Ran 1 step(s), 1 change(s)",
+            "issueKey": "LZPT-284",
+            "executionTimeMs": 246,
+            "isValid": true,
+            "changes": [
+              {
+                "action": "setProperty",
+                "key": "LZPT-284",
+                "propKey": "campaignmtoo1tnz-concurrent-mtoq4guq-19"
+              }
+            ],
+            "ruleWorkflow": null,
+            "eventType": "avi:jira:commented:issue",
+            "source": "async",
+            "type": "listener",
+            "mode": "script",
+            "ruleName": "campaignmtoo1tnz-concurrent-mtoq4guq-19",
+            "id": "17886334196149z63",
+            "ruleId": "lst_mtoq4nffrrqde5",
+            "logs": [
+              "Starting 1 step(s) for LZPT-284",
+              "setProperty: campaignmtoo1tnz-concurrent-mtoq4guq-19",
+              "\"Record exact comment\": Completed in 246ms",
+              "Finished: 1/1 step(s) succeeded in 246ms, 1 change(s) made"
+            ],
+            "fieldId": "avi:jira:commented:issue",
+            "queueDelayMs": 1025,
+            "statsReceipt": {
+              "createdAt": "2026-09-05T18:36:13.083Z",
+              "completedAt": "2026-09-05T18:36:59.614Z",
+              "issueKey": "LZPT-284",
+              "applied": true,
+              "kind": "listener",
+              "error": null,
+              "ruleId": "lst_mtoq4nffrrqde5",
+              "status": "ok"
+            },
+            "timestamp": "2026-09-05T18:36:59.614Z"
+          },
+          "effect": {
+            "commentId": "16090",
+            "key": "LZPT-284"
+          },
+          "stats": {
+            "runCount": 1,
+            "errorCount": 0,
+            "lastRunAt": "2026-09-05T18:36:59.614Z",
+            "lastStatus": "ok",
+            "lastError": null,
+            "lastIssueKey": "LZPT-284"
+          }
+        },
+        {
+          "id": "lst_mtoq4nnd5zgyr6",
+          "log": {
+            "stepResults": [
+              {
+                "name": "Deliberate error",
+                "index": 1,
+                "recommendation": "Error in \"Deliberate error\": campaignmtoo1tnz-concurrent-mtoq4guq-20-expected. Use api.log() to debug values, and Test Run with a real issue to trace the problem.",
+                "error": "campaignmtoo1tnz-concurrent-mtoq4guq-20-expected",
+                "status": "error",
+                "timeMs": 0
+              }
+            ],
+            "reason": "Step \"Deliberate error\" failed: campaignmtoo1tnz-concurrent-mtoq4guq-20-expected",
+            "issueKey": "LZPT-284",
+            "executionTimeMs": 1,
+            "isValid": false,
+            "changes": [],
+            "ruleWorkflow": null,
+            "recommendation": "Error in \"Deliberate error\": campaignmtoo1tnz-concurrent-mtoq4guq-20-expected. Use api.log() to debug values, and Test Run with a real issue to trace the problem.",
+            "eventType": "avi:jira:commented:issue",
+            "source": "async",
+            "type": "listener",
+            "mode": "script",
+            "ruleName": "campaignmtoo1tnz-concurrent-mtoq4guq-20",
+            "id": "17886334198096u3g",
+            "ruleId": "lst_mtoq4nnd5zgyr6",
+            "logs": [
+              "Starting 1 step(s) for LZPT-284",
+              "\"Deliberate error\": ERROR after 0ms — campaignmtoo1tnz-concurrent-mtoq4guq-20-expected",
+              "Finished: 0/1 step(s) succeeded in 0ms, 0 change(s) made"
+            ],
+            "fieldId": "avi:jira:commented:issue",
+            "queueDelayMs": 755,
+            "statsReceipt": {
+              "createdAt": "2026-09-05T18:36:13.370Z",
+              "completedAt": "2026-09-05T18:36:59.809Z",
+              "issueKey": "LZPT-284",
+              "applied": true,
+              "kind": "listener",
+              "error": "Step \"Deliberate error\" failed: campaignmtoo1tnz-concurrent-mtoq4guq-20-expected",
+              "ruleId": "lst_mtoq4nnd5zgyr6",
+              "status": "error"
+            },
+            "timestamp": "2026-09-05T18:36:59.809Z"
+          },
+          "effect": null,
+          "stats": {
+            "runCount": 1,
+            "errorCount": 1,
+            "lastRunAt": "2026-09-05T18:36:59.809Z",
+            "lastStatus": "error",
+            "lastError": "Step \"Deliberate error\" failed: campaignmtoo1tnz-concurrent-mtoq4guq-20-expected",
+            "lastIssueKey": "LZPT-284"
+          }
+        }
+      ]
+    },
+    {
+      "batch": 2,
+      "key": "LZPT-285",
+      "commentId": "16091",
+      "outcomes": [
+        {
+          "id": "lst_mtoq4hnnxfn3b4",
+          "log": {
+            "stepResults": [
+              {
+                "name": "Record exact comment",
+                "index": 1,
+                "status": "success",
+                "timeMs": 257
+              }
+            ],
+            "reason": "Ran 1 step(s), 1 change(s)",
+            "issueKey": "LZPT-285",
+            "executionTimeMs": 257,
+            "isValid": true,
+            "changes": [
+              {
+                "action": "setProperty",
+                "key": "LZPT-285",
+                "propKey": "campaignmtoo1tnz-concurrent-mtoq4guq-1"
+              }
+            ],
+            "ruleWorkflow": null,
+            "eventType": "avi:jira:commented:issue",
+            "source": "async",
+            "type": "listener",
+            "mode": "script",
+            "ruleName": "campaignmtoo1tnz-concurrent-mtoq4guq-1",
+            "id": "1788633536680m352",
+            "ruleId": "lst_mtoq4hnnxfn3b4",
+            "logs": [
+              "Starting 1 step(s) for LZPT-285",
+              "setProperty: campaignmtoo1tnz-concurrent-mtoq4guq-1",
+              "\"Record exact comment\": Completed in 257ms",
+              "Finished: 1/1 step(s) succeeded in 257ms, 1 change(s) made"
+            ],
+            "fieldId": "avi:jira:commented:issue",
+            "queueDelayMs": 1024,
+            "statsReceipt": {
+              "createdAt": "2026-09-05T18:36:05.603Z",
+              "completedAt": "2026-09-05T18:38:56.680Z",
+              "issueKey": "LZPT-285",
+              "applied": true,
+              "kind": "listener",
+              "error": null,
+              "ruleId": "lst_mtoq4hnnxfn3b4",
+              "status": "ok"
+            },
+            "timestamp": "2026-09-05T18:38:56.680Z"
+          },
+          "effect": {
+            "commentId": "16091",
+            "key": "LZPT-285"
+          },
+          "stats": {
+            "runCount": 2,
+            "errorCount": 0,
+            "lastRunAt": "2026-09-05T18:38:56.680Z",
+            "lastStatus": "ok",
+            "lastError": null,
+            "lastIssueKey": "LZPT-285"
+          }
+        },
+        {
+          "id": "lst_mtoq4hybtxdbmy",
+          "log": {
+            "stepResults": [
+              {
+                "name": "Record exact comment",
+                "index": 1,
+                "status": "success",
+                "timeMs": 254
+              }
+            ],
+            "reason": "Ran 1 step(s), 1 change(s)",
+            "issueKey": "LZPT-285",
+            "executionTimeMs": 256,
+            "isValid": true,
+            "changes": [
+              {
+                "action": "setProperty",
+                "key": "LZPT-285",
+                "propKey": "campaignmtoo1tnz-concurrent-mtoq4guq-2"
+              }
+            ],
+            "ruleWorkflow": null,
+            "eventType": "avi:jira:commented:issue",
+            "source": "async",
+            "type": "listener",
+            "mode": "script",
+            "ruleName": "campaignmtoo1tnz-concurrent-mtoq4guq-2",
+            "id": "1788633537730r94t",
+            "ruleId": "lst_mtoq4hybtxdbmy",
+            "logs": [
+              "Starting 1 step(s) for LZPT-285",
+              "setProperty: campaignmtoo1tnz-concurrent-mtoq4guq-2",
+              "\"Record exact comment\": Completed in 254ms",
+              "Finished: 1/1 step(s) succeeded in 254ms, 1 change(s) made"
+            ],
+            "fieldId": "avi:jira:commented:issue",
+            "queueDelayMs": 1615,
+            "statsReceipt": {
+              "createdAt": "2026-09-05T18:36:05.987Z",
+              "completedAt": "2026-09-05T18:38:57.730Z",
+              "issueKey": "LZPT-285",
+              "applied": true,
+              "kind": "listener",
+              "error": null,
+              "ruleId": "lst_mtoq4hybtxdbmy",
+              "status": "ok"
+            },
+            "timestamp": "2026-09-05T18:38:57.730Z"
+          },
+          "effect": {
+            "commentId": "16091",
+            "key": "LZPT-285"
+          },
+          "stats": {
+            "runCount": 2,
+            "errorCount": 0,
+            "lastRunAt": "2026-09-05T18:38:57.730Z",
+            "lastStatus": "ok",
+            "lastError": null,
+            "lastIssueKey": "LZPT-285"
+          }
+        },
+        {
+          "id": "lst_mtoq4i62546286",
+          "log": {
+            "stepResults": [
+              {
+                "name": "Record exact comment",
+                "index": 1,
+                "status": "success",
+                "timeMs": 240
+              }
+            ],
+            "reason": "Ran 1 step(s), 1 change(s)",
+            "issueKey": "LZPT-285",
+            "executionTimeMs": 240,
+            "isValid": true,
+            "changes": [
+              {
+                "action": "setProperty",
+                "key": "LZPT-285",
+                "propKey": "campaignmtoo1tnz-concurrent-mtoq4guq-3"
+              }
+            ],
+            "ruleWorkflow": null,
+            "eventType": "avi:jira:commented:issue",
+            "source": "async",
+            "type": "listener",
+            "mode": "script",
+            "ruleName": "campaignmtoo1tnz-concurrent-mtoq4guq-3",
+            "id": "1788633537562uv7s",
+            "ruleId": "lst_mtoq4i62546286",
+            "logs": [
+              "Starting 1 step(s) for LZPT-285",
+              "setProperty: campaignmtoo1tnz-concurrent-mtoq4guq-3",
+              "\"Record exact comment\": Completed in 240ms",
+              "Finished: 1/1 step(s) succeeded in 240ms, 1 change(s) made"
+            ],
+            "fieldId": "avi:jira:commented:issue",
+            "queueDelayMs": 971,
+            "statsReceipt": {
+              "createdAt": "2026-09-05T18:36:06.266Z",
+              "completedAt": "2026-09-05T18:38:57.562Z",
+              "issueKey": "LZPT-285",
+              "applied": true,
+              "kind": "listener",
+              "error": null,
+              "ruleId": "lst_mtoq4i62546286",
+              "status": "ok"
+            },
+            "timestamp": "2026-09-05T18:38:57.562Z"
+          },
+          "effect": {
+            "commentId": "16091",
+            "key": "LZPT-285"
+          },
+          "stats": {
+            "runCount": 2,
+            "errorCount": 0,
+            "lastRunAt": "2026-09-05T18:38:57.562Z",
+            "lastStatus": "ok",
+            "lastError": null,
+            "lastIssueKey": "LZPT-285"
+          }
+        },
+        {
+          "id": "lst_mtoq4ie9mbuew0",
+          "log": {
+            "stepResults": [
+              {
+                "name": "Record exact comment",
+                "index": 1,
+                "status": "success",
+                "timeMs": 240
+              }
+            ],
+            "reason": "Ran 1 step(s), 1 change(s)",
+            "issueKey": "LZPT-285",
+            "executionTimeMs": 240,
+            "isValid": true,
+            "changes": [
+              {
+                "action": "setProperty",
+                "key": "LZPT-285",
+                "propKey": "campaignmtoo1tnz-concurrent-mtoq4guq-4"
+              }
+            ],
+            "ruleWorkflow": null,
+            "eventType": "avi:jira:commented:issue",
+            "source": "async",
+            "type": "listener",
+            "mode": "script",
+            "ruleName": "campaignmtoo1tnz-concurrent-mtoq4guq-4",
+            "id": "178863353802772gz",
+            "ruleId": "lst_mtoq4ie9mbuew0",
+            "logs": [
+              "Starting 1 step(s) for LZPT-285",
+              "setProperty: campaignmtoo1tnz-concurrent-mtoq4guq-4",
+              "\"Record exact comment\": Completed in 240ms",
+              "Finished: 1/1 step(s) succeeded in 240ms, 1 change(s) made"
+            ],
+            "fieldId": "avi:jira:commented:issue",
+            "queueDelayMs": 961,
+            "statsReceipt": {
+              "createdAt": "2026-09-05T18:36:06.561Z",
+              "completedAt": "2026-09-05T18:38:58.027Z",
+              "issueKey": "LZPT-285",
+              "applied": true,
+              "kind": "listener",
+              "error": null,
+              "ruleId": "lst_mtoq4ie9mbuew0",
+              "status": "ok"
+            },
+            "timestamp": "2026-09-05T18:38:58.027Z"
+          },
+          "effect": {
+            "commentId": "16091",
+            "key": "LZPT-285"
+          },
+          "stats": {
+            "runCount": 2,
+            "errorCount": 0,
+            "lastRunAt": "2026-09-05T18:38:58.027Z",
+            "lastStatus": "ok",
+            "lastError": null,
+            "lastIssueKey": "LZPT-285"
+          }
+        },
+        {
+          "id": "lst_mtoq4imfmi94zp",
+          "log": {
+            "stepResults": [
+              {
+                "name": "Deliberate error",
+                "index": 1,
+                "recommendation": "Error in \"Deliberate error\": campaignmtoo1tnz-concurrent-mtoq4guq-5-expected. Use api.log() to debug values, and Test Run with a real issue to trace the problem.",
+                "error": "campaignmtoo1tnz-concurrent-mtoq4guq-5-expected",
+                "status": "error",
+                "timeMs": 1
+              }
+            ],
+            "reason": "Step \"Deliberate error\" failed: campaignmtoo1tnz-concurrent-mtoq4guq-5-expected",
+            "issueKey": "LZPT-285",
+            "executionTimeMs": 1,
+            "isValid": false,
+            "changes": [],
+            "ruleWorkflow": null,
+            "recommendation": "Error in \"Deliberate error\": campaignmtoo1tnz-concurrent-mtoq4guq-5-expected. Use api.log() to debug values, and Test Run with a real issue to trace the problem.",
+            "eventType": "avi:jira:commented:issue",
+            "source": "async",
+            "type": "listener",
+            "mode": "script",
+            "ruleName": "campaignmtoo1tnz-concurrent-mtoq4guq-5",
+            "id": "1788633538251qcn6",
+            "ruleId": "lst_mtoq4imfmi94zp",
+            "logs": [
+              "Starting 1 step(s) for LZPT-285",
+              "\"Deliberate error\": ERROR after 1ms — campaignmtoo1tnz-concurrent-mtoq4guq-5-expected",
+              "Finished: 0/1 step(s) succeeded in 1ms, 0 change(s) made"
+            ],
+            "fieldId": "avi:jira:commented:issue",
+            "queueDelayMs": 731,
+            "statsReceipt": {
+              "createdAt": "2026-09-05T18:36:06.855Z",
+              "completedAt": "2026-09-05T18:38:58.251Z",
+              "issueKey": "LZPT-285",
+              "applied": true,
+              "kind": "listener",
+              "error": "Step \"Deliberate error\" failed: campaignmtoo1tnz-concurrent-mtoq4guq-5-expected",
+              "ruleId": "lst_mtoq4imfmi94zp",
+              "status": "error"
+            },
+            "timestamp": "2026-09-05T18:38:58.251Z"
+          },
+          "effect": null,
+          "stats": {
+            "runCount": 2,
+            "errorCount": 2,
+            "lastRunAt": "2026-09-05T18:38:58.251Z",
+            "lastStatus": "error",
+            "lastError": "Step \"Deliberate error\" failed: campaignmtoo1tnz-concurrent-mtoq4guq-5-expected",
+            "lastIssueKey": "LZPT-285"
+          }
+        },
+        {
+          "id": "lst_mtoq4iwde0fmth",
+          "log": {
+            "stepResults": [
+              {
+                "name": "Record exact comment",
+                "index": 1,
+                "status": "success",
+                "timeMs": 294
+              }
+            ],
+            "reason": "Ran 1 step(s), 1 change(s)",
+            "issueKey": "LZPT-285",
+            "executionTimeMs": 294,
+            "isValid": true,
+            "changes": [
+              {
+                "action": "setProperty",
+                "key": "LZPT-285",
+                "propKey": "campaignmtoo1tnz-concurrent-mtoq4guq-6"
+              }
+            ],
+            "ruleWorkflow": null,
+            "eventType": "avi:jira:commented:issue",
+            "source": "async",
+            "type": "listener",
+            "mode": "script",
+            "ruleName": "campaignmtoo1tnz-concurrent-mtoq4guq-6",
+            "id": "1788633539038zt0v",
+            "ruleId": "lst_mtoq4iwde0fmth",
+            "logs": [
+              "Starting 1 step(s) for LZPT-285",
+              "setProperty: campaignmtoo1tnz-concurrent-mtoq4guq-6",
+              "\"Record exact comment\": Completed in 294ms",
+              "Finished: 1/1 step(s) succeeded in 294ms, 1 change(s) made"
+            ],
+            "fieldId": "avi:jira:commented:issue",
+            "queueDelayMs": 1032,
+            "statsReceipt": {
+              "createdAt": "2026-09-05T18:36:07.213Z",
+              "completedAt": "2026-09-05T18:38:59.038Z",
+              "issueKey": "LZPT-285",
+              "applied": true,
+              "kind": "listener",
+              "error": null,
+              "ruleId": "lst_mtoq4iwde0fmth",
+              "status": "ok"
+            },
+            "timestamp": "2026-09-05T18:38:59.038Z"
+          },
+          "effect": {
+            "commentId": "16091",
+            "key": "LZPT-285"
+          },
+          "stats": {
+            "runCount": 2,
+            "errorCount": 0,
+            "lastRunAt": "2026-09-05T18:38:59.038Z",
+            "lastStatus": "ok",
+            "lastError": null,
+            "lastIssueKey": "LZPT-285"
+          }
+        },
+        {
+          "id": "lst_mtoq4j5rov4cpp",
+          "log": {
+            "stepResults": [
+              {
+                "name": "Record exact comment",
+                "index": 1,
+                "status": "success",
+                "timeMs": 213
+              }
+            ],
+            "reason": "Ran 1 step(s), 1 change(s)",
+            "issueKey": "LZPT-285",
+            "executionTimeMs": 214,
+            "isValid": true,
+            "changes": [
+              {
+                "action": "setProperty",
+                "key": "LZPT-285",
+                "propKey": "campaignmtoo1tnz-concurrent-mtoq4guq-7"
+              }
+            ],
+            "ruleWorkflow": null,
+            "eventType": "avi:jira:commented:issue",
+            "source": "async",
+            "type": "listener",
+            "mode": "script",
+            "ruleName": "campaignmtoo1tnz-concurrent-mtoq4guq-7",
+            "id": "1788633539456ip7o",
+            "ruleId": "lst_mtoq4j5rov4cpp",
+            "logs": [
+              "Starting 1 step(s) for LZPT-285",
+              "setProperty: campaignmtoo1tnz-concurrent-mtoq4guq-7",
+              "\"Record exact comment\": Completed in 213ms",
+              "Finished: 1/1 step(s) succeeded in 213ms, 1 change(s) made"
+            ],
+            "fieldId": "avi:jira:commented:issue",
+            "queueDelayMs": 990,
+            "statsReceipt": {
+              "createdAt": "2026-09-05T18:36:07.551Z",
+              "completedAt": "2026-09-05T18:38:59.456Z",
+              "issueKey": "LZPT-285",
+              "applied": true,
+              "kind": "listener",
+              "error": null,
+              "ruleId": "lst_mtoq4j5rov4cpp",
+              "status": "ok"
+            },
+            "timestamp": "2026-09-05T18:38:59.456Z"
+          },
+          "effect": {
+            "commentId": "16091",
+            "key": "LZPT-285"
+          },
+          "stats": {
+            "runCount": 2,
+            "errorCount": 0,
+            "lastRunAt": "2026-09-05T18:38:59.456Z",
+            "lastStatus": "ok",
+            "lastError": null,
+            "lastIssueKey": "LZPT-285"
+          }
+        },
+        {
+          "id": "lst_mtoq4je60nkrfj",
+          "log": {
+            "stepResults": [
+              {
+                "name": "Record exact comment",
+                "index": 1,
+                "status": "success",
+                "timeMs": 254
+              }
+            ],
+            "reason": "Ran 1 step(s), 1 change(s)",
+            "issueKey": "LZPT-285",
+            "executionTimeMs": 254,
+            "isValid": true,
+            "changes": [
+              {
+                "action": "setProperty",
+                "key": "LZPT-285",
+                "propKey": "campaignmtoo1tnz-concurrent-mtoq4guq-8"
+              }
+            ],
+            "ruleWorkflow": null,
+            "eventType": "avi:jira:commented:issue",
+            "source": "async",
+            "type": "listener",
+            "mode": "script",
+            "ruleName": "campaignmtoo1tnz-concurrent-mtoq4guq-8",
+            "id": "1788633540260rmto",
+            "ruleId": "lst_mtoq4je60nkrfj",
+            "logs": [
+              "Starting 1 step(s) for LZPT-285",
+              "setProperty: campaignmtoo1tnz-concurrent-mtoq4guq-8",
+              "\"Record exact comment\": Completed in 254ms",
+              "Finished: 1/1 step(s) succeeded in 254ms, 1 change(s) made"
+            ],
+            "fieldId": "avi:jira:commented:issue",
+            "queueDelayMs": 1338,
+            "statsReceipt": {
+              "createdAt": "2026-09-05T18:36:07.854Z",
+              "completedAt": "2026-09-05T18:39:00.260Z",
+              "issueKey": "LZPT-285",
+              "applied": true,
+              "kind": "listener",
+              "error": null,
+              "ruleId": "lst_mtoq4je60nkrfj",
+              "status": "ok"
+            },
+            "timestamp": "2026-09-05T18:39:00.260Z"
+          },
+          "effect": {
+            "commentId": "16091",
+            "key": "LZPT-285"
+          },
+          "stats": {
+            "runCount": 2,
+            "errorCount": 0,
+            "lastRunAt": "2026-09-05T18:39:00.260Z",
+            "lastStatus": "ok",
+            "lastError": null,
+            "lastIssueKey": "LZPT-285"
+          }
+        },
+        {
+          "id": "lst_mtoq4kqkb0copc",
+          "log": {
+            "stepResults": [
+              {
+                "name": "Record exact comment",
+                "index": 1,
+                "status": "success",
+                "timeMs": 251
+              }
+            ],
+            "reason": "Ran 1 step(s), 1 change(s)",
+            "issueKey": "LZPT-285",
+            "executionTimeMs": 251,
+            "isValid": true,
+            "changes": [
+              {
+                "action": "setProperty",
+                "key": "LZPT-285",
+                "propKey": "campaignmtoo1tnz-concurrent-mtoq4guq-9"
+              }
+            ],
+            "ruleWorkflow": null,
+            "eventType": "avi:jira:commented:issue",
+            "source": "async",
+            "type": "listener",
+            "mode": "script",
+            "ruleName": "campaignmtoo1tnz-concurrent-mtoq4guq-9",
+            "id": "17886335408040t2m",
+            "ruleId": "lst_mtoq4kqkb0copc",
+            "logs": [
+              "Starting 1 step(s) for LZPT-285",
+              "setProperty: campaignmtoo1tnz-concurrent-mtoq4guq-9",
+              "\"Record exact comment\": Completed in 251ms",
+              "Finished: 1/1 step(s) succeeded in 251ms, 1 change(s) made"
+            ],
+            "fieldId": "avi:jira:commented:issue",
+            "queueDelayMs": 1406,
+            "statsReceipt": {
+              "createdAt": "2026-09-05T18:36:09.614Z",
+              "completedAt": "2026-09-05T18:39:00.804Z",
+              "issueKey": "LZPT-285",
+              "applied": true,
+              "kind": "listener",
+              "error": null,
+              "ruleId": "lst_mtoq4kqkb0copc",
+              "status": "ok"
+            },
+            "timestamp": "2026-09-05T18:39:00.804Z"
+          },
+          "effect": {
+            "commentId": "16091",
+            "key": "LZPT-285"
+          },
+          "stats": {
+            "runCount": 2,
+            "errorCount": 0,
+            "lastRunAt": "2026-09-05T18:39:00.804Z",
+            "lastStatus": "ok",
+            "lastError": null,
+            "lastIssueKey": "LZPT-285"
+          }
+        },
+        {
+          "id": "lst_mtoq4l66z01qb3",
+          "log": {
+            "stepResults": [
+              {
+                "name": "Deliberate error",
+                "index": 1,
+                "recommendation": "Error in \"Deliberate error\": campaignmtoo1tnz-concurrent-mtoq4guq-10-expected. Use api.log() to debug values, and Test Run with a real issue to trace the problem.",
+                "error": "campaignmtoo1tnz-concurrent-mtoq4guq-10-expected",
+                "status": "error",
+                "timeMs": 0
+              }
+            ],
+            "reason": "Step \"Deliberate error\" failed: campaignmtoo1tnz-concurrent-mtoq4guq-10-expected",
+            "issueKey": "LZPT-285",
+            "executionTimeMs": 0,
+            "isValid": false,
+            "changes": [],
+            "ruleWorkflow": null,
+            "recommendation": "Error in \"Deliberate error\": campaignmtoo1tnz-concurrent-mtoq4guq-10-expected. Use api.log() to debug values, and Test Run with a real issue to trace the problem.",
+            "eventType": "avi:jira:commented:issue",
+            "source": "async",
+            "type": "listener",
+            "mode": "script",
+            "ruleName": "campaignmtoo1tnz-concurrent-mtoq4guq-10",
+            "id": "1788633540682gqbe",
+            "ruleId": "lst_mtoq4l66z01qb3",
+            "logs": [
+              "Starting 1 step(s) for LZPT-285",
+              "\"Deliberate error\": ERROR after 0ms — campaignmtoo1tnz-concurrent-mtoq4guq-10-expected",
+              "Finished: 0/1 step(s) succeeded in 0ms, 0 change(s) made"
+            ],
+            "fieldId": "avi:jira:commented:issue",
+            "queueDelayMs": 809,
+            "statsReceipt": {
+              "createdAt": "2026-09-05T18:36:10.158Z",
+              "completedAt": "2026-09-05T18:39:00.682Z",
+              "issueKey": "LZPT-285",
+              "applied": true,
+              "kind": "listener",
+              "error": "Step \"Deliberate error\" failed: campaignmtoo1tnz-concurrent-mtoq4guq-10-expected",
+              "ruleId": "lst_mtoq4l66z01qb3",
+              "status": "error"
+            },
+            "timestamp": "2026-09-05T18:39:00.682Z"
+          },
+          "effect": null,
+          "stats": {
+            "runCount": 2,
+            "errorCount": 2,
+            "lastRunAt": "2026-09-05T18:39:00.682Z",
+            "lastStatus": "error",
+            "lastError": "Step \"Deliberate error\" failed: campaignmtoo1tnz-concurrent-mtoq4guq-10-expected",
+            "lastIssueKey": "LZPT-285"
+          }
+        },
+        {
+          "id": "lst_mtoq4lft1v76jc",
+          "log": {
+            "stepResults": [
+              {
+                "name": "Record exact comment",
+                "index": 1,
+                "status": "success",
+                "timeMs": 218
+              }
+            ],
+            "reason": "Ran 1 step(s), 1 change(s)",
+            "issueKey": "LZPT-285",
+            "executionTimeMs": 218,
+            "isValid": true,
+            "changes": [
+              {
+                "action": "setProperty",
+                "key": "LZPT-285",
+                "propKey": "campaignmtoo1tnz-concurrent-mtoq4guq-11"
+              }
+            ],
+            "ruleWorkflow": null,
+            "eventType": "avi:jira:commented:issue",
+            "source": "async",
+            "type": "listener",
+            "mode": "script",
+            "ruleName": "campaignmtoo1tnz-concurrent-mtoq4guq-11",
+            "id": "1788633541788tq36",
+            "ruleId": "lst_mtoq4lft1v76jc",
+            "logs": [
+              "Starting 1 step(s) for LZPT-285",
+              "setProperty: campaignmtoo1tnz-concurrent-mtoq4guq-11",
+              "\"Record exact comment\": Completed in 218ms",
+              "Finished: 1/1 step(s) succeeded in 218ms, 1 change(s) made"
+            ],
+            "fieldId": "avi:jira:commented:issue",
+            "queueDelayMs": 1451,
+            "statsReceipt": {
+              "createdAt": "2026-09-05T18:36:10.505Z",
+              "completedAt": "2026-09-05T18:39:01.788Z",
+              "issueKey": "LZPT-285",
+              "applied": true,
+              "kind": "listener",
+              "error": null,
+              "ruleId": "lst_mtoq4lft1v76jc",
+              "status": "ok"
+            },
+            "timestamp": "2026-09-05T18:39:01.788Z"
+          },
+          "effect": {
+            "commentId": "16091",
+            "key": "LZPT-285"
+          },
+          "stats": {
+            "runCount": 2,
+            "errorCount": 0,
+            "lastRunAt": "2026-09-05T18:39:01.788Z",
+            "lastStatus": "ok",
+            "lastError": null,
+            "lastIssueKey": "LZPT-285"
+          }
+        },
+        {
+          "id": "lst_mtoq4lrnzztzi4",
+          "log": {
+            "stepResults": [
+              {
+                "name": "Record exact comment",
+                "index": 1,
+                "status": "success",
+                "timeMs": 237
+              }
+            ],
+            "reason": "Ran 1 step(s), 1 change(s)",
+            "issueKey": "LZPT-285",
+            "executionTimeMs": 237,
+            "isValid": true,
+            "changes": [
+              {
+                "action": "setProperty",
+                "key": "LZPT-285",
+                "propKey": "campaignmtoo1tnz-concurrent-mtoq4guq-12"
+              }
+            ],
+            "ruleWorkflow": null,
+            "eventType": "avi:jira:commented:issue",
+            "source": "async",
+            "type": "listener",
+            "mode": "script",
+            "ruleName": "campaignmtoo1tnz-concurrent-mtoq4guq-12",
+            "id": "1788633541753f08g",
+            "ruleId": "lst_mtoq4lrnzztzi4",
+            "logs": [
+              "Starting 1 step(s) for LZPT-285",
+              "setProperty: campaignmtoo1tnz-concurrent-mtoq4guq-12",
+              "\"Record exact comment\": Completed in 237ms",
+              "Finished: 1/1 step(s) succeeded in 237ms, 1 change(s) made"
+            ],
+            "fieldId": "avi:jira:commented:issue",
+            "queueDelayMs": 946,
+            "statsReceipt": {
+              "createdAt": "2026-09-05T18:36:10.931Z",
+              "completedAt": "2026-09-05T18:39:01.753Z",
+              "issueKey": "LZPT-285",
+              "applied": true,
+              "kind": "listener",
+              "error": null,
+              "ruleId": "lst_mtoq4lrnzztzi4",
+              "status": "ok"
+            },
+            "timestamp": "2026-09-05T18:39:01.753Z"
+          },
+          "effect": {
+            "commentId": "16091",
+            "key": "LZPT-285"
+          },
+          "stats": {
+            "runCount": 2,
+            "errorCount": 0,
+            "lastRunAt": "2026-09-05T18:39:01.753Z",
+            "lastStatus": "ok",
+            "lastError": null,
+            "lastIssueKey": "LZPT-285"
+          }
+        },
+        {
+          "id": "lst_mtoq4m1ty12vqi",
+          "log": {
+            "stepResults": [
+              {
+                "name": "Record exact comment",
+                "index": 1,
+                "status": "success",
+                "timeMs": 211
+              }
+            ],
+            "reason": "Ran 1 step(s), 1 change(s)",
+            "issueKey": "LZPT-285",
+            "executionTimeMs": 211,
+            "isValid": true,
+            "changes": [
+              {
+                "action": "setProperty",
+                "key": "LZPT-285",
+                "propKey": "campaignmtoo1tnz-concurrent-mtoq4guq-13"
+              }
+            ],
+            "ruleWorkflow": null,
+            "eventType": "avi:jira:commented:issue",
+            "source": "async",
+            "type": "listener",
+            "mode": "script",
+            "ruleName": "campaignmtoo1tnz-concurrent-mtoq4guq-13",
+            "id": "1788633542224pvpr",
+            "ruleId": "lst_mtoq4m1ty12vqi",
+            "logs": [
+              "Starting 1 step(s) for LZPT-285",
+              "setProperty: campaignmtoo1tnz-concurrent-mtoq4guq-13",
+              "\"Record exact comment\": Completed in 211ms",
+              "Finished: 1/1 step(s) succeeded in 211ms, 1 change(s) made"
+            ],
+            "fieldId": "avi:jira:commented:issue",
+            "queueDelayMs": 960,
+            "statsReceipt": {
+              "createdAt": "2026-09-05T18:36:11.297Z",
+              "completedAt": "2026-09-05T18:39:02.224Z",
+              "issueKey": "LZPT-285",
+              "applied": true,
+              "kind": "listener",
+              "error": null,
+              "ruleId": "lst_mtoq4m1ty12vqi",
+              "status": "ok"
+            },
+            "timestamp": "2026-09-05T18:39:02.224Z"
+          },
+          "effect": {
+            "commentId": "16091",
+            "key": "LZPT-285"
+          },
+          "stats": {
+            "runCount": 2,
+            "errorCount": 0,
+            "lastRunAt": "2026-09-05T18:39:02.224Z",
+            "lastStatus": "ok",
+            "lastError": null,
+            "lastIssueKey": "LZPT-285"
+          }
+        },
+        {
+          "id": "lst_mtoq4ma4j0etbw",
+          "log": {
+            "stepResults": [
+              {
+                "name": "Record exact comment",
+                "index": 1,
+                "status": "success",
+                "timeMs": 297
+              }
+            ],
+            "reason": "Ran 1 step(s), 1 change(s)",
+            "issueKey": "LZPT-285",
+            "executionTimeMs": 297,
+            "isValid": true,
+            "changes": [
+              {
+                "action": "setProperty",
+                "key": "LZPT-285",
+                "propKey": "campaignmtoo1tnz-concurrent-mtoq4guq-14"
+              }
+            ],
+            "ruleWorkflow": null,
+            "eventType": "avi:jira:commented:issue",
+            "source": "async",
+            "type": "listener",
+            "mode": "script",
+            "ruleName": "campaignmtoo1tnz-concurrent-mtoq4guq-14",
+            "id": "1788633543127nc99",
+            "ruleId": "lst_mtoq4ma4j0etbw",
+            "logs": [
+              "Starting 1 step(s) for LZPT-285",
+              "setProperty: campaignmtoo1tnz-concurrent-mtoq4guq-14",
+              "\"Record exact comment\": Completed in 297ms",
+              "Finished: 1/1 step(s) succeeded in 297ms, 1 change(s) made"
+            ],
+            "fieldId": "avi:jira:commented:issue",
+            "queueDelayMs": 1307,
+            "statsReceipt": {
+              "createdAt": "2026-09-05T18:36:11.596Z",
+              "completedAt": "2026-09-05T18:39:03.127Z",
+              "issueKey": "LZPT-285",
+              "applied": true,
+              "kind": "listener",
+              "error": null,
+              "ruleId": "lst_mtoq4ma4j0etbw",
+              "status": "ok"
+            },
+            "timestamp": "2026-09-05T18:39:03.127Z"
+          },
+          "effect": {
+            "commentId": "16091",
+            "key": "LZPT-285"
+          },
+          "stats": {
+            "runCount": 2,
+            "errorCount": 0,
+            "lastRunAt": "2026-09-05T18:39:03.127Z",
+            "lastStatus": "ok",
+            "lastError": null,
+            "lastIssueKey": "LZPT-285"
+          }
+        },
+        {
+          "id": "lst_mtoq4mjo1vaqgu",
+          "log": {
+            "stepResults": [
+              {
+                "name": "Deliberate error",
+                "index": 1,
+                "recommendation": "Error in \"Deliberate error\": campaignmtoo1tnz-concurrent-mtoq4guq-15-expected. Use api.log() to debug values, and Test Run with a real issue to trace the problem.",
+                "error": "campaignmtoo1tnz-concurrent-mtoq4guq-15-expected",
+                "status": "error",
+                "timeMs": 0
+              }
+            ],
+            "reason": "Step \"Deliberate error\" failed: campaignmtoo1tnz-concurrent-mtoq4guq-15-expected",
+            "issueKey": "LZPT-285",
+            "executionTimeMs": 0,
+            "isValid": false,
+            "changes": [],
+            "ruleWorkflow": null,
+            "recommendation": "Error in \"Deliberate error\": campaignmtoo1tnz-concurrent-mtoq4guq-15-expected. Use api.log() to debug values, and Test Run with a real issue to trace the problem.",
+            "eventType": "avi:jira:commented:issue",
+            "source": "async",
+            "type": "listener",
+            "mode": "script",
+            "ruleName": "campaignmtoo1tnz-concurrent-mtoq4guq-15",
+            "id": "1788633543066dwmd",
+            "ruleId": "lst_mtoq4mjo1vaqgu",
+            "logs": [
+              "Starting 1 step(s) for LZPT-285",
+              "\"Deliberate error\": ERROR after 0ms — campaignmtoo1tnz-concurrent-mtoq4guq-15-expected",
+              "Finished: 0/1 step(s) succeeded in 0ms, 0 change(s) made"
+            ],
+            "fieldId": "avi:jira:commented:issue",
+            "queueDelayMs": 774,
+            "statsReceipt": {
+              "createdAt": "2026-09-05T18:36:11.940Z",
+              "completedAt": "2026-09-05T18:39:03.066Z",
+              "issueKey": "LZPT-285",
+              "applied": true,
+              "kind": "listener",
+              "error": "Step \"Deliberate error\" failed: campaignmtoo1tnz-concurrent-mtoq4guq-15-expected",
+              "ruleId": "lst_mtoq4mjo1vaqgu",
+              "status": "error"
+            },
+            "timestamp": "2026-09-05T18:39:03.066Z"
+          },
+          "effect": null,
+          "stats": {
+            "runCount": 2,
+            "errorCount": 2,
+            "lastRunAt": "2026-09-05T18:39:03.066Z",
+            "lastStatus": "error",
+            "lastError": "Step \"Deliberate error\" failed: campaignmtoo1tnz-concurrent-mtoq4guq-15-expected",
+            "lastIssueKey": "LZPT-285"
+          }
+        },
+        {
+          "id": "lst_mtoq4msbgu86xs",
+          "log": {
+            "stepResults": [
+              {
+                "name": "Record exact comment",
+                "index": 1,
+                "status": "success",
+                "timeMs": 228
+              }
+            ],
+            "reason": "Ran 1 step(s), 1 change(s)",
+            "issueKey": "LZPT-285",
+            "executionTimeMs": 228,
+            "isValid": true,
+            "changes": [
+              {
+                "action": "setProperty",
+                "key": "LZPT-285",
+                "propKey": "campaignmtoo1tnz-concurrent-mtoq4guq-16"
+              }
+            ],
+            "ruleWorkflow": null,
+            "eventType": "avi:jira:commented:issue",
+            "source": "async",
+            "type": "listener",
+            "mode": "script",
+            "ruleName": "campaignmtoo1tnz-concurrent-mtoq4guq-16",
+            "id": "178863354373066gv",
+            "ruleId": "lst_mtoq4msbgu86xs",
+            "logs": [
+              "Starting 1 step(s) for LZPT-285",
+              "setProperty: campaignmtoo1tnz-concurrent-mtoq4guq-16",
+              "\"Record exact comment\": Completed in 228ms",
+              "Finished: 1/1 step(s) succeeded in 228ms, 1 change(s) made"
+            ],
+            "fieldId": "avi:jira:commented:issue",
+            "queueDelayMs": 959,
+            "statsReceipt": {
+              "createdAt": "2026-09-05T18:36:12.251Z",
+              "completedAt": "2026-09-05T18:39:03.730Z",
+              "issueKey": "LZPT-285",
+              "applied": true,
+              "kind": "listener",
+              "error": null,
+              "ruleId": "lst_mtoq4msbgu86xs",
+              "status": "ok"
+            },
+            "timestamp": "2026-09-05T18:39:03.730Z"
+          },
+          "effect": {
+            "commentId": "16091",
+            "key": "LZPT-285"
+          },
+          "stats": {
+            "runCount": 2,
+            "errorCount": 0,
+            "lastRunAt": "2026-09-05T18:39:03.730Z",
+            "lastStatus": "ok",
+            "lastError": null,
+            "lastIssueKey": "LZPT-285"
+          }
+        },
+        {
+          "id": "lst_mtoq4mztkvdv3v",
+          "log": {
+            "stepResults": [
+              {
+                "name": "Record exact comment",
+                "index": 1,
+                "status": "success",
+                "timeMs": 258
+              }
+            ],
+            "reason": "Ran 1 step(s), 1 change(s)",
+            "issueKey": "LZPT-285",
+            "executionTimeMs": 259,
+            "isValid": true,
+            "changes": [
+              {
+                "action": "setProperty",
+                "key": "LZPT-285",
+                "propKey": "campaignmtoo1tnz-concurrent-mtoq4guq-17"
+              }
+            ],
+            "ruleWorkflow": null,
+            "eventType": "avi:jira:commented:issue",
+            "source": "async",
+            "type": "listener",
+            "mode": "script",
+            "ruleName": "campaignmtoo1tnz-concurrent-mtoq4guq-17",
+            "id": "1788633544241dog2",
+            "ruleId": "lst_mtoq4mztkvdv3v",
+            "logs": [
+              "Starting 1 step(s) for LZPT-285",
+              "setProperty: campaignmtoo1tnz-concurrent-mtoq4guq-17",
+              "\"Record exact comment\": Completed in 258ms",
+              "Finished: 1/1 step(s) succeeded in 258ms, 1 change(s) made"
+            ],
+            "fieldId": "avi:jira:commented:issue",
+            "queueDelayMs": 1019,
+            "statsReceipt": {
+              "createdAt": "2026-09-05T18:36:12.521Z",
+              "completedAt": "2026-09-05T18:39:04.241Z",
+              "issueKey": "LZPT-285",
+              "applied": true,
+              "kind": "listener",
+              "error": null,
+              "ruleId": "lst_mtoq4mztkvdv3v",
+              "status": "ok"
+            },
+            "timestamp": "2026-09-05T18:39:04.241Z"
+          },
+          "effect": {
+            "commentId": "16091",
+            "key": "LZPT-285"
+          },
+          "stats": {
+            "runCount": 2,
+            "errorCount": 0,
+            "lastRunAt": "2026-09-05T18:39:04.241Z",
+            "lastStatus": "ok",
+            "lastError": null,
+            "lastIssueKey": "LZPT-285"
+          }
+        },
+        {
+          "id": "lst_mtoq4n7f35qp1u",
+          "log": {
+            "stepResults": [
+              {
+                "name": "Record exact comment",
+                "index": 1,
+                "status": "success",
+                "timeMs": 273
+              }
+            ],
+            "reason": "Ran 1 step(s), 1 change(s)",
+            "issueKey": "LZPT-285",
+            "executionTimeMs": 273,
+            "isValid": true,
+            "changes": [
+              {
+                "action": "setProperty",
+                "key": "LZPT-285",
+                "propKey": "campaignmtoo1tnz-concurrent-mtoq4guq-18"
+              }
+            ],
+            "ruleWorkflow": null,
+            "eventType": "avi:jira:commented:issue",
+            "source": "async",
+            "type": "listener",
+            "mode": "script",
+            "ruleName": "campaignmtoo1tnz-concurrent-mtoq4guq-18",
+            "id": "1788633544780aurc",
+            "ruleId": "lst_mtoq4n7f35qp1u",
+            "logs": [
+              "Starting 1 step(s) for LZPT-285",
+              "setProperty: campaignmtoo1tnz-concurrent-mtoq4guq-18",
+              "\"Record exact comment\": Completed in 273ms",
+              "Finished: 1/1 step(s) succeeded in 273ms, 1 change(s) made"
+            ],
+            "fieldId": "avi:jira:commented:issue",
+            "queueDelayMs": 1049,
+            "statsReceipt": {
+              "createdAt": "2026-09-05T18:36:12.795Z",
+              "completedAt": "2026-09-05T18:39:04.780Z",
+              "issueKey": "LZPT-285",
+              "applied": true,
+              "kind": "listener",
+              "error": null,
+              "ruleId": "lst_mtoq4n7f35qp1u",
+              "status": "ok"
+            },
+            "timestamp": "2026-09-05T18:39:04.780Z"
+          },
+          "effect": {
+            "commentId": "16091",
+            "key": "LZPT-285"
+          },
+          "stats": {
+            "runCount": 2,
+            "errorCount": 0,
+            "lastRunAt": "2026-09-05T18:39:04.780Z",
+            "lastStatus": "ok",
+            "lastError": null,
+            "lastIssueKey": "LZPT-285"
+          }
+        },
+        {
+          "id": "lst_mtoq4nffrrqde5",
+          "log": {
+            "stepResults": [
+              {
+                "name": "Record exact comment",
+                "index": 1,
+                "status": "success",
+                "timeMs": 246
+              }
+            ],
+            "reason": "Ran 1 step(s), 1 change(s)",
+            "issueKey": "LZPT-285",
+            "executionTimeMs": 246,
+            "isValid": true,
+            "changes": [
+              {
+                "action": "setProperty",
+                "key": "LZPT-285",
+                "propKey": "campaignmtoo1tnz-concurrent-mtoq4guq-19"
+              }
+            ],
+            "ruleWorkflow": null,
+            "eventType": "avi:jira:commented:issue",
+            "source": "async",
+            "type": "listener",
+            "mode": "script",
+            "ruleName": "campaignmtoo1tnz-concurrent-mtoq4guq-19",
+            "id": "17886335451788a4s",
+            "ruleId": "lst_mtoq4nffrrqde5",
+            "logs": [
+              "Starting 1 step(s) for LZPT-285",
+              "setProperty: campaignmtoo1tnz-concurrent-mtoq4guq-19",
+              "\"Record exact comment\": Completed in 246ms",
+              "Finished: 1/1 step(s) succeeded in 246ms, 1 change(s) made"
+            ],
+            "fieldId": "avi:jira:commented:issue",
+            "queueDelayMs": 965,
+            "statsReceipt": {
+              "createdAt": "2026-09-05T18:36:13.083Z",
+              "completedAt": "2026-09-05T18:39:05.178Z",
+              "issueKey": "LZPT-285",
+              "applied": true,
+              "kind": "listener",
+              "error": null,
+              "ruleId": "lst_mtoq4nffrrqde5",
+              "status": "ok"
+            },
+            "timestamp": "2026-09-05T18:39:05.178Z"
+          },
+          "effect": {
+            "commentId": "16091",
+            "key": "LZPT-285"
+          },
+          "stats": {
+            "runCount": 2,
+            "errorCount": 0,
+            "lastRunAt": "2026-09-05T18:39:05.178Z",
+            "lastStatus": "ok",
+            "lastError": null,
+            "lastIssueKey": "LZPT-285"
+          }
+        },
+        {
+          "id": "lst_mtoq4nnd5zgyr6",
+          "log": {
+            "stepResults": [
+              {
+                "name": "Deliberate error",
+                "index": 1,
+                "recommendation": "Error in \"Deliberate error\": campaignmtoo1tnz-concurrent-mtoq4guq-20-expected. Use api.log() to debug values, and Test Run with a real issue to trace the problem.",
+                "error": "campaignmtoo1tnz-concurrent-mtoq4guq-20-expected",
+                "status": "error",
+                "timeMs": 1
+              }
+            ],
+            "reason": "Step \"Deliberate error\" failed: campaignmtoo1tnz-concurrent-mtoq4guq-20-expected",
+            "issueKey": "LZPT-285",
+            "executionTimeMs": 1,
+            "isValid": false,
+            "changes": [],
+            "ruleWorkflow": null,
+            "recommendation": "Error in \"Deliberate error\": campaignmtoo1tnz-concurrent-mtoq4guq-20-expected. Use api.log() to debug values, and Test Run with a real issue to trace the problem.",
+            "eventType": "avi:jira:commented:issue",
+            "source": "async",
+            "type": "listener",
+            "mode": "script",
+            "ruleName": "campaignmtoo1tnz-concurrent-mtoq4guq-20",
+            "id": "1788633545370qtqq",
+            "ruleId": "lst_mtoq4nnd5zgyr6",
+            "logs": [
+              "Starting 1 step(s) for LZPT-285",
+              "\"Deliberate error\": ERROR after 1ms — campaignmtoo1tnz-concurrent-mtoq4guq-20-expected",
+              "Finished: 0/1 step(s) succeeded in 1ms, 0 change(s) made"
+            ],
+            "fieldId": "avi:jira:commented:issue",
+            "queueDelayMs": 705,
+            "statsReceipt": {
+              "createdAt": "2026-09-05T18:36:13.370Z",
+              "completedAt": "2026-09-05T18:39:05.370Z",
+              "issueKey": "LZPT-285",
+              "applied": true,
+              "kind": "listener",
+              "error": "Step \"Deliberate error\" failed: campaignmtoo1tnz-concurrent-mtoq4guq-20-expected",
+              "ruleId": "lst_mtoq4nnd5zgyr6",
+              "status": "error"
+            },
+            "timestamp": "2026-09-05T18:39:05.370Z"
+          },
+          "effect": null,
+          "stats": {
+            "runCount": 2,
+            "errorCount": 2,
+            "lastRunAt": "2026-09-05T18:39:05.370Z",
+            "lastStatus": "error",
+            "lastError": "Step \"Deliberate error\" failed: campaignmtoo1tnz-concurrent-mtoq4guq-20-expected",
+            "lastIssueKey": "LZPT-285"
+          }
+        }
+      ]
+    }
+  ],
+  "cleanup": [
+    {
+      "id": "lst_mtoq4hnnxfn3b4",
+      "deleted": true
+    },
+    {
+      "id": "lst_mtoq4hybtxdbmy",
+      "deleted": true
+    },
+    {
+      "id": "lst_mtoq4i62546286",
+      "deleted": true
+    },
+    {
+      "id": "lst_mtoq4ie9mbuew0",
+      "deleted": true
+    },
+    {
+      "id": "lst_mtoq4imfmi94zp",
+      "deleted": true
+    },
+    {
+      "id": "lst_mtoq4iwde0fmth",
+      "deleted": true
+    },
+    {
+      "id": "lst_mtoq4j5rov4cpp",
+      "deleted": true
+    },
+    {
+      "id": "lst_mtoq4je60nkrfj",
+      "deleted": true
+    },
+    {
+      "id": "lst_mtoq4kqkb0copc",
+      "deleted": true
+    },
+    {
+      "id": "lst_mtoq4l66z01qb3",
+      "deleted": true
+    },
+    {
+      "id": "lst_mtoq4lft1v76jc",
+      "deleted": true
+    },
+    {
+      "id": "lst_mtoq4lrnzztzi4",
+      "deleted": true
+    },
+    {
+      "id": "lst_mtoq4m1ty12vqi",
+      "deleted": true
+    },
+    {
+      "id": "lst_mtoq4ma4j0etbw",
+      "deleted": true
+    },
+    {
+      "id": "lst_mtoq4mjo1vaqgu",
+      "deleted": true
+    },
+    {
+      "id": "lst_mtoq4msbgu86xs",
+      "deleted": true
+    },
+    {
+      "id": "lst_mtoq4mztkvdv3v",
+      "deleted": true
+    },
+    {
+      "id": "lst_mtoq4n7f35qp1u",
+      "deleted": true
+    },
+    {
+      "id": "lst_mtoq4nffrrqde5",
+      "deleted": true
+    },
+    {
+      "id": "lst_mtoq4nnd5zgyr6",
+      "deleted": true
+    }
+  ],
+  "pass": true
+}

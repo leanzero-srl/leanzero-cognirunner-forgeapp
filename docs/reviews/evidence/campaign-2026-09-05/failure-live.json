@@ -1,0 +1,106 @@
+{
+  "id": "lst_mtoo2di76yrm4x",
+  "witness": "campaignmtoo1tnz-multi-error",
+  "checks": [
+    "Real listener preserves first failure, every thrown value and later Jira write"
+  ],
+  "log": {
+    "stepResults": [
+      {
+        "name": "Repeated name",
+        "index": 1,
+        "status": "success",
+        "timeMs": 1
+      },
+      {
+        "name": "Repeated name",
+        "index": 2,
+        "recommendation": "Error in \"Repeated name\": campaignmtoo1tnz-multi-error-first. Use api.log() to debug values, and Test Run with a real issue to trace the problem.",
+        "error": "campaignmtoo1tnz-multi-error-first",
+        "status": "error",
+        "timeMs": 0
+      },
+      {
+        "name": "Null failure",
+        "index": 3,
+        "recommendation": "Error in \"Null failure\": null. Use api.log() to debug values, and Test Run with a real issue to trace the problem.",
+        "error": "null",
+        "status": "error",
+        "timeMs": 0
+      },
+      {
+        "name": "Number failure",
+        "index": 4,
+        "recommendation": "Error in \"Number failure\": 42. Use api.log() to debug values, and Test Run with a real issue to trace the problem.",
+        "error": "42",
+        "status": "error",
+        "timeMs": 0
+      },
+      {
+        "name": "Later Error",
+        "index": 5,
+        "recommendation": "Error in \"Later Error\": campaignmtoo1tnz-multi-error-last. Use api.log() to debug values, and Test Run with a real issue to trace the problem.",
+        "error": "campaignmtoo1tnz-multi-error-last",
+        "status": "error",
+        "timeMs": 1
+      },
+      {
+        "name": "Continue and record",
+        "index": 6,
+        "status": "success",
+        "timeMs": 305
+      }
+    ],
+    "reason": "Step \"Repeated name\" failed: campaignmtoo1tnz-multi-error-first",
+    "issueKey": "LZPT-284",
+    "executionTimeMs": 307,
+    "isValid": false,
+    "changes": [
+      {
+        "action": "setProperty",
+        "key": "LZPT-284",
+        "propKey": "campaignmtoo1tnz-multi-error"
+      }
+    ],
+    "ruleWorkflow": null,
+    "recommendation": "Error in \"Repeated name\": campaignmtoo1tnz-multi-error-first. Use api.log() to debug values, and Test Run with a real issue to trace the problem.",
+    "eventType": "avi:jira:commented:issue",
+    "source": "async",
+    "type": "listener",
+    "mode": "script",
+    "ruleName": "campaignmtoo1tnz L20 Partial failure continues later steps",
+    "id": "1788633091794lfom",
+    "ruleId": "lst_mtoo2di76yrm4x",
+    "logs": [
+      "Starting 6 step(s) for LZPT-284",
+      "first step succeeds",
+      "\"Repeated name\": Completed in 1ms",
+      "\"Repeated name\": ERROR after 0ms — campaignmtoo1tnz-multi-error-first",
+      "\"Null failure\": ERROR after 0ms — null",
+      "\"Number failure\": ERROR after 0ms — 42",
+      "\"Later Error\": ERROR after 1ms — campaignmtoo1tnz-multi-error-last",
+      "setProperty: campaignmtoo1tnz-multi-error",
+      "\"Continue and record\": Completed in 305ms",
+      "Finished: 2/6 step(s) succeeded in 307ms, 1 change(s) made"
+    ],
+    "fieldId": "avi:jira:commented:issue",
+    "queueDelayMs": 1461,
+    "statsReceipt": {
+      "createdAt": "2026-09-05T17:38:27.679Z",
+      "completedAt": "2026-09-05T18:31:31.794Z",
+      "issueKey": "LZPT-284",
+      "applied": true,
+      "kind": "listener",
+      "error": "Step \"Repeated name\" failed: campaignmtoo1tnz-multi-error-first",
+      "ruleId": "lst_mtoo2di76yrm4x",
+      "status": "error"
+    },
+    "timestamp": "2026-09-05T18:31:31.794Z"
+  },
+  "effect": {
+    "commentId": "16085",
+    "key": "LZPT-284"
+  },
+  "pass": true,
+  "restored": true
+}

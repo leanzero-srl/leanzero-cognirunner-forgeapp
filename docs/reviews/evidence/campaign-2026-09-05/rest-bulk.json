@@ -1,0 +1,35 @@
+{
+  "tag": "campaignmtoo1tnz",
+  "startedAt": "2026-09-05T18:05:41.650Z",
+  "checks": [
+    {
+      "kind": "listeners",
+      "count": 22,
+      "status": 200,
+      "identicalConfigAndOwnership": true,
+      "noDuplicates": true
+    },
+    {
+      "kind": "listeners",
+      "status": 207,
+      "validCount": 1,
+      "invalidIndex": 1,
+      "refusedConfigUnchanged": true
+    },
+    {
+      "kind": "jobs",
+      "count": 10,
+      "status": 200,
+      "identicalConfigAndOwnership": true,
+      "noDuplicates": true
+    },
+    {
+      "kind": "jobs",
+      "status": 207,
+      "validCount": 1,
+      "invalidIndex": 1,
+      "refusedConfigUnchanged": true
+    }
+  ],
+  "pass": true
+}

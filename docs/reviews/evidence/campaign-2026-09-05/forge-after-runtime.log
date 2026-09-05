@@ -1,0 +1,219 @@
+Warning: Your version of Forge CLI is out of date. We recommend you update to the latest version to get the latest features and bug fixes.
+Run npm install -g @forge/cli@latest to update from version 13.4.0 to 13.5.0.
+
+INFO    2026-09-05T18:26:01.950Z d937e934-c046-43ec-b166-41c17ad95f62 [job] tick: 12 job(s), 0 due, 0 queued in 200ms
+INFO    2026-09-05T18:29:16.102Z 2ab17812-a2d9-425f-ab0d-c217b27ea2d6 [listener] avi:jira:commented:issue: "campaignmtoo1tnz L20 Partial failure continues later steps" (lst_mtoo2di76yrm4x) queued as 9998211367044356_listener_0ja8zl for LZPT-284
+INFO    2026-09-05T18:29:16.183Z 2ab17812-a2d9-425f-ab0d-c217b27ea2d6 [listener] avi:jira:commented:issue: queued 1 run(s) in 1840ms
+INFO    2026-09-05T18:29:18.022Z 93d5b674-2bcc-4711-b050-98697b3847bd Async handler: executing listener (9998211367044356_listener_0ja8zl)
+ERROR   2026-09-05T18:29:18.900Z 93d5b674-2bcc-4711-b050-98697b3847bd Static PF Repeated name error: campaignmtoo1tnz-multi-error-first
+ERROR   2026-09-05T18:29:18.901Z 93d5b674-2bcc-4711-b050-98697b3847bd Static PF Null failure error: null
+ERROR   2026-09-05T18:29:18.902Z 93d5b674-2bcc-4711-b050-98697b3847bd Static PF Number failure error: 42
+ERROR   2026-09-05T18:29:18.903Z 93d5b674-2bcc-4711-b050-98697b3847bd Static PF Later Error error: campaignmtoo1tnz-multi-error-last
+INFO    2026-09-05T18:29:19.922Z 93d5b674-2bcc-4711-b050-98697b3847bd Async handler: listener (9998211367044356_listener_0ja8zl) completed
+INFO    2026-09-05T18:31:30.659Z d76190d5-6777-49a8-a55f-7385755e9ebe [listener] avi:jira:commented:issue: "campaignmtoo1tnz L20 Partial failure continues later steps" (lst_mtoo2di76yrm4x) queued as 9998211366909668_listener_d91pup for LZPT-284
+INFO    2026-09-05T18:31:30.762Z d76190d5-6777-49a8-a55f-7385755e9ebe [listener] avi:jira:commented:issue: queued 1 run(s) in 923ms
+INFO    2026-09-05T18:31:30.985Z 1c3d466d-da3d-4896-8e54-27ea21f34307 Async handler: executing listener (9998211366909668_listener_d91pup)
+ERROR   2026-09-05T18:31:31.488Z 1c3d466d-da3d-4896-8e54-27ea21f34307 Static PF Repeated name error: campaignmtoo1tnz-multi-error-first
+ERROR   2026-09-05T18:31:31.489Z 1c3d466d-da3d-4896-8e54-27ea21f34307 Static PF Null failure error: null
+ERROR   2026-09-05T18:31:31.490Z 1c3d466d-da3d-4896-8e54-27ea21f34307 Static PF Number failure error: 42
+ERROR   2026-09-05T18:31:31.491Z 1c3d466d-da3d-4896-8e54-27ea21f34307 Static PF Later Error error: campaignmtoo1tnz-multi-error-last
+INFO    2026-09-05T18:31:32.179Z 1c3d466d-da3d-4896-8e54-27ea21f34307 Async handler: listener (9998211366909668_listener_d91pup) completed
+INFO    2026-09-05T18:31:44.784Z 2a8994bd-8d36-4839-878c-81fe84a1c17f getConfigs orphan summary: {"checked":455,"retained":455,"removed":0,"workflows":5,"failedWorkflows":0,"partial":false,"removedExamples":[],"errorExamples":[]}
+INFO    2026-09-05T18:31:44.908Z 2a8994bd-8d36-4839-878c-81fe84a1c17f getConfigs filter="all" role=admin scope=all total=455 shown=455
+INFO    2026-09-05T18:33:09.496Z 4716384c-fab0-4410-90ae-51fb63c19456 [job] tick: 12 job(s), 0 due, 0 queued in 734ms
+INFO    2026-09-05T18:33:26.210Z b0fb084f-bc26-483c-9599-0291f4ef6218 [listener] avi:jira:created:attachment: "campaignmtoo1tnz L13 Attachment created identity" (lst_mtoo2aqkezki4q) queued as 9998211366794060_listener_t2t7gv for LZPT-285
+INFO    2026-09-05T18:33:26.296Z b0fb084f-bc26-483c-9599-0291f4ef6218 [listener] avi:jira:created:attachment: queued 1 run(s) in 828ms
+INFO    2026-09-05T18:33:26.424Z 2cf2d3d2-724d-4774-a275-fcf26797f37a Async handler: executing listener (9998211366794060_listener_t2t7gv)
+INFO    2026-09-05T18:33:27.437Z 2cf2d3d2-724d-4774-a275-fcf26797f37a Async handler: listener (9998211366794060_listener_t2t7gv) completed
+INFO    2026-09-05T18:33:31.902Z ddd3de96-5e22-409e-903f-b87a3a9ab5ce [listener] avi:jira:deleted:attachment: "campaignmtoo1tnz L14 Attachment deleted identity" (lst_mtoo2b4y1ewap9) queued as 9998211366788382_listener_53blh6 for LZPT-285
+INFO    2026-09-05T18:33:31.979Z ddd3de96-5e22-409e-903f-b87a3a9ab5ce [listener] avi:jira:deleted:attachment: queued 1 run(s) in 1443ms
+INFO    2026-09-05T18:33:32.113Z 6e242ec0-c2a9-4647-b217-5200d2a1a311 Async handler: executing listener (9998211366788382_listener_53blh6)
+INFO    2026-09-05T18:33:32.951Z 6e242ec0-c2a9-4647-b217-5200d2a1a311 Async handler: listener (9998211366788382_listener_53blh6) completed
+INFO    2026-09-05T18:33:35.654Z 31834fd3-4ae2-430f-8512-de07cc3b42ea [listener] avi:jira:commented:issue: "campaignmtoo1tnz L20 Partial failure continues later steps" (lst_mtoo2di76yrm4x) queued as 9998211366784604_listener_wdk2jb for LZPT-284
+INFO    2026-09-05T18:33:35.734Z 31834fd3-4ae2-430f-8512-de07cc3b42ea [listener] avi:jira:commented:issue: queued 1 run(s) in 646ms
+INFO    2026-09-05T18:33:35.916Z 0d0e3f83-c604-4aeb-bdbc-8b6be6f9a004 Async handler: executing listener (9998211366784604_listener_wdk2jb)
+ERROR   2026-09-05T18:33:36.161Z 0d0e3f83-c604-4aeb-bdbc-8b6be6f9a004 Static PF Expected deliberate failure error: campaignmtoo1tnz-expected-failure
+INFO    2026-09-05T18:33:36.721Z 0d0e3f83-c604-4aeb-bdbc-8b6be6f9a004 Async handler: listener (9998211366784604_listener_wdk2jb) completed
+INFO    2026-09-05T18:34:24.005Z f0a58f6a-c5ab-468f-b228-a5750b6da5a7 Async handler: executing scheduledjob (9998211366736438_scheduledjob_sujuen)
+INFO    2026-09-05T18:34:25.053Z f0a58f6a-c5ab-468f-b228-a5750b6da5a7 Async handler: scheduledjob (9998211366736438_scheduledjob_sujuen) completed
+INFO    2026-09-05T18:34:29.343Z a0325ad0-37af-4851-a5ab-49e5770cecfd Async handler: executing scheduledjob (9998211366731408_scheduledjob_jsl9uj)
+INFO    2026-09-05T18:34:30.839Z a0325ad0-37af-4851-a5ab-49e5770cecfd Async handler: scheduledjob (9998211366731408_scheduledjob_jsl9uj) completed
+INFO    2026-09-05T18:34:34.257Z 11ad4025-09ba-46d1-99f3-172a67e83249 Async handler: executing scheduledjob (9998211366726232_scheduledjob_ksznl1)
+INFO    2026-09-05T18:34:35.571Z 11ad4025-09ba-46d1-99f3-172a67e83249 Async handler: scheduledjob (9998211366726232_scheduledjob_ksznl1) completed
+INFO    2026-09-05T18:34:39.481Z 4ec27256-04c2-4433-9d49-6e165066f81e Async handler: executing scheduledjob (9998211366721002_scheduledjob_kz1pzd)
+INFO    2026-09-05T18:34:40.282Z 4ec27256-04c2-4433-9d49-6e165066f81e Async handler: scheduledjob (9998211366721002_scheduledjob_kz1pzd) completed
+INFO    2026-09-05T18:34:44.421Z 449d2012-fae6-4d2d-a9be-d35160e02213 Async handler: executing scheduledjob (9998211366716300_scheduledjob_99k68a)
+INFO    2026-09-05T18:34:45.197Z 449d2012-fae6-4d2d-a9be-d35160e02213 Async handler: scheduledjob (9998211366716300_scheduledjob_99k68a) completed
+INFO    2026-09-05T18:34:49.366Z 8e3893cf-a489-4901-81fb-aad7d919bb91 Async handler: executing scheduledjob (9998211366711338_scheduledjob_812oxn)
+ERROR   2026-09-05T18:34:50.139Z 8e3893cf-a489-4901-81fb-aad7d919bb91 Static PF Fail only middle issue error: campaignmtoo1tnz-partial-expected
+INFO    2026-09-05T18:34:51.133Z 8e3893cf-a489-4901-81fb-aad7d919bb91 Async handler: scheduledjob (9998211366711338_scheduledjob_812oxn) completed
+INFO    2026-09-05T18:34:54.246Z 5bc46a51-e86b-4316-b4e5-d9c7b00a03d0 Async handler: executing scheduledjob (9998211366706260_scheduledjob_xonup9)
+INFO    2026-09-05T18:34:55.389Z 5bc46a51-e86b-4316-b4e5-d9c7b00a03d0 Async handler: scheduledjob (9998211366706260_scheduledjob_xonup9) completed
+INFO    2026-09-05T18:34:59.457Z d6b80967-0f82-4dfc-8673-12ca99c6b06b Async handler: executing scheduledjob (9998211366701044_scheduledjob_1a0e8a)
+ERROR   2026-09-05T18:34:59.717Z d6b80967-0f82-4dfc-8673-12ca99c6b06b Static PF No implicit target error: api.addComment() needs a current issue, but this job run has none (api.context.issueKey is null). Use api.forIssue("KEY").addComment(...) to target an issue explicitly.
+INFO    2026-09-05T18:35:00.069Z d6b80967-0f82-4dfc-8673-12ca99c6b06b Async handler: scheduledjob (9998211366701044_scheduledjob_1a0e8a) completed
+INFO    2026-09-05T18:35:05.122Z 3c06b79a-8ed6-41eb-b10a-ac2c5add3b10 Async handler: executing scheduledjob (9998211366695640_scheduledjob_b5gdcm)
+INFO    2026-09-05T18:35:10.563Z 3c06b79a-8ed6-41eb-b10a-ac2c5add3b10 Async handler: scheduledjob (9998211366695640_scheduledjob_b5gdcm) completed
+INFO    2026-09-05T18:35:14.422Z 5d106f81-accd-4440-8c94-6fbce2bcf1bc Async handler: executing scheduledjob (9998211366686048_scheduledjob_6c6tu2)
+INFO    2026-09-05T18:35:19.193Z 5d106f81-accd-4440-8c94-6fbce2bcf1bc Async handler: scheduledjob (9998211366686048_scheduledjob_6c6tu2) completed
+INFO    2026-09-05T18:36:49.925Z 74a05523-937f-48e1-9211-27ed0e90efc6 [listener] avi:jira:commented:issue: "campaignmtoo1tnz-concurrent-mtoq4guq-1" (lst_mtoq4hnnxfn3b4) queued as 9998211366590390_listener_bq5o6y for LZPT-284
+INFO    2026-09-05T18:36:50.162Z 53b2e66d-dfab-423f-baea-320fd1aaa24c Async handler: executing listener (9998211366590390_listener_bq5o6y)
+INFO    2026-09-05T18:36:50.401Z 74a05523-937f-48e1-9211-27ed0e90efc6 [listener] avi:jira:commented:issue: "campaignmtoo1tnz-concurrent-mtoq4guq-2" (lst_mtoq4hybtxdbmy) queued as 9998211366589872_listener_2cg2d7 for LZPT-284
+INFO    2026-09-05T18:36:50.881Z 74a05523-937f-48e1-9211-27ed0e90efc6 [listener] avi:jira:commented:issue: "campaignmtoo1tnz-concurrent-mtoq4guq-3" (lst_mtoq4i62546286) queued as 9998211366589392_listener_9q4olm for LZPT-284
+INFO    2026-09-05T18:36:51.058Z 53b2e66d-dfab-423f-baea-320fd1aaa24c Async handler: listener (9998211366590390_listener_bq5o6y) completed
+INFO    2026-09-05T18:36:51.082Z 875fe038-7af0-40ef-a0f6-9e606a2d0c39 Async handler: executing listener (9998211366589392_listener_9q4olm)
+INFO    2026-09-05T18:36:51.619Z 74a05523-937f-48e1-9211-27ed0e90efc6 [listener] avi:jira:commented:issue: "campaignmtoo1tnz-concurrent-mtoq4guq-4" (lst_mtoq4ie9mbuew0) queued as 9998211366588920_listener_4jhzom for LZPT-284
+INFO    2026-09-05T18:36:51.902Z 875fe038-7af0-40ef-a0f6-9e606a2d0c39 Async handler: listener (9998211366589392_listener_9q4olm) completed
+INFO    2026-09-05T18:36:51.927Z d46d44f5-76c1-420e-a56d-2b220012c133 Async handler: executing listener (9998211366588920_listener_4jhzom)
+INFO    2026-09-05T18:36:52.061Z 74a05523-937f-48e1-9211-27ed0e90efc6 [listener] avi:jira:commented:issue: "campaignmtoo1tnz-concurrent-mtoq4guq-5" (lst_mtoq4imfmi94zp) queued as 9998211366588206_listener_qd7r2g for LZPT-284
+INFO    2026-09-05T18:36:52.061Z e2255cfa-40df-47bb-99b7-96902c5cbb8f Async handler: executing listener (9998211366589872_listener_2cg2d7)
+INFO    2026-09-05T18:36:52.517Z 74a05523-937f-48e1-9211-27ed0e90efc6 [listener] avi:jira:commented:issue: "campaignmtoo1tnz-concurrent-mtoq4guq-6" (lst_mtoq4iwde0fmth) queued as 9998211366587760_listener_ydem1d for LZPT-284
+INFO    2026-09-05T18:36:52.783Z d46d44f5-76c1-420e-a56d-2b220012c133 Async handler: listener (9998211366588920_listener_4jhzom) completed
+INFO    2026-09-05T18:36:52.812Z 8f19ede5-ea4a-4ae8-a545-9da2072f3285 Async handler: executing listener (9998211366587760_listener_ydem1d)
+INFO    2026-09-05T18:36:52.978Z 74a05523-937f-48e1-9211-27ed0e90efc6 [listener] avi:jira:commented:issue: "campaignmtoo1tnz-concurrent-mtoq4guq-7" (lst_mtoq4j5rov4cpp) queued as 9998211366587298_listener_cvd8c0 for LZPT-284
+INFO    2026-09-05T18:36:53.344Z 4d40ffaf-197d-40f0-aded-53afcabbcf15 Async handler: executing listener (9998211366588206_listener_qd7r2g)
+INFO    2026-09-05T18:36:53.426Z 74a05523-937f-48e1-9211-27ed0e90efc6 [listener] avi:jira:commented:issue: "campaignmtoo1tnz-concurrent-mtoq4guq-8" (lst_mtoq4je60nkrfj) queued as 9998211366586836_listener_n2el8i for LZPT-284
+INFO    2026-09-05T18:36:53.556Z 8f19ede5-ea4a-4ae8-a545-9da2072f3285 Async handler: listener (9998211366587760_listener_ydem1d) completed
+INFO    2026-09-05T18:36:53.569Z e2255cfa-40df-47bb-99b7-96902c5cbb8f Async handler: listener (9998211366589872_listener_2cg2d7) completed
+INFO    2026-09-05T18:36:53.657Z c3b76b46-6a55-4b50-9659-56e6bef15923 Async handler: executing listener (9998211366586836_listener_n2el8i)
+INFO    2026-09-05T18:36:53.897Z 74a05523-937f-48e1-9211-27ed0e90efc6 [listener] avi:jira:commented:issue: "campaignmtoo1tnz-concurrent-mtoq4guq-9" (lst_mtoq4kqkb0copc) queued as 9998211366586362_listener_pqu81l for LZPT-284
+INFO    2026-09-05T18:36:54.087Z e1be6448-8a7e-4ea2-9311-6e1f0c89f70b Async handler: executing listener (9998211366586362_listener_pqu81l)
+ERROR   2026-09-05T18:36:54.185Z 4d40ffaf-197d-40f0-aded-53afcabbcf15 Static PF Deliberate error error: campaignmtoo1tnz-concurrent-mtoq4guq-5-expected
+INFO    2026-09-05T18:36:54.244Z d041c408-b0f6-43a0-9a39-7103d049f4e4 Async handler: executing listener (9998211366587298_listener_cvd8c0)
+INFO    2026-09-05T18:36:54.380Z 74a05523-937f-48e1-9211-27ed0e90efc6 [listener] avi:jira:commented:issue: "campaignmtoo1tnz-concurrent-mtoq4guq-10" (lst_mtoq4l66z01qb3) queued as 9998211366585912_listener_psr7pt for LZPT-284
+INFO    2026-09-05T18:36:54.540Z c3b76b46-6a55-4b50-9659-56e6bef15923 Async handler: listener (9998211366586836_listener_n2el8i) completed
+INFO    2026-09-05T18:36:54.581Z 8933e587-67ca-4d54-b9c8-780c92c27371 Async handler: executing listener (9998211366585912_listener_psr7pt)
+INFO    2026-09-05T18:36:54.587Z 4d40ffaf-197d-40f0-aded-53afcabbcf15 Async handler: listener (9998211366588206_listener_qd7r2g) completed
+ERROR   2026-09-05T18:36:54.814Z 8933e587-67ca-4d54-b9c8-780c92c27371 Static PF Deliberate error error: campaignmtoo1tnz-concurrent-mtoq4guq-10-expected
+INFO    2026-09-05T18:36:55.098Z 74a05523-937f-48e1-9211-27ed0e90efc6 [listener] avi:jira:commented:issue: "campaignmtoo1tnz-concurrent-mtoq4guq-11" (lst_mtoq4lft1v76jc) queued as 9998211366585444_listener_6xrfq0 for LZPT-284
+INFO    2026-09-05T18:36:55.135Z 8933e587-67ca-4d54-b9c8-780c92c27371 Async handler: listener (9998211366585912_listener_psr7pt) completed
+INFO    2026-09-05T18:36:55.195Z e1be6448-8a7e-4ea2-9311-6e1f0c89f70b Async handler: listener (9998211366586362_listener_pqu81l) completed
+INFO    2026-09-05T18:36:55.354Z 4a51f2e2-aa13-47a8-ad63-9cfa60766d9a Async handler: executing listener (9998211366585444_listener_6xrfq0)
+INFO    2026-09-05T18:36:55.629Z 74a05523-937f-48e1-9211-27ed0e90efc6 [listener] avi:jira:commented:issue: "campaignmtoo1tnz-concurrent-mtoq4guq-12" (lst_mtoq4lrnzztzi4) queued as 9998211366584644_listener_jnxw88 for LZPT-284
+INFO    2026-09-05T18:36:55.661Z d041c408-b0f6-43a0-9a39-7103d049f4e4 Async handler: listener (9998211366587298_listener_cvd8c0) completed
+INFO    2026-09-05T18:36:55.823Z 8d56539b-1b88-44d7-9cfc-75a44ca4963b Async handler: executing listener (9998211366584644_listener_jnxw88)
+INFO    2026-09-05T18:36:56.082Z 74a05523-937f-48e1-9211-27ed0e90efc6 [listener] avi:jira:commented:issue: "campaignmtoo1tnz-concurrent-mtoq4guq-13" (lst_mtoq4m1ty12vqi) queued as 9998211366584196_listener_c6gti5 for LZPT-284
+INFO    2026-09-05T18:36:56.185Z 4a51f2e2-aa13-47a8-ad63-9cfa60766d9a Async handler: listener (9998211366585444_listener_6xrfq0) completed
+INFO    2026-09-05T18:36:56.344Z e2fbd712-b519-430d-8302-a2f1e0d4dfa6 Async handler: executing listener (9998211366584196_listener_c6gti5)
+INFO    2026-09-05T18:36:56.522Z 74a05523-937f-48e1-9211-27ed0e90efc6 [listener] avi:jira:commented:issue: "campaignmtoo1tnz-concurrent-mtoq4guq-14" (lst_mtoq4ma4j0etbw) queued as 9998211366583742_listener_p5yecj for LZPT-284
+INFO    2026-09-05T18:36:56.630Z 8d56539b-1b88-44d7-9cfc-75a44ca4963b Async handler: listener (9998211366584644_listener_jnxw88) completed
+INFO    2026-09-05T18:36:56.983Z 74a05523-937f-48e1-9211-27ed0e90efc6 [listener] avi:jira:commented:issue: "campaignmtoo1tnz-concurrent-mtoq4guq-15" (lst_mtoq4mjo1vaqgu) queued as 9998211366583300_listener_eo1359 for LZPT-284
+INFO    2026-09-05T18:36:57.101Z 4997bb36-0c87-4219-9049-eb0ba1d7dd00 Async handler: executing listener (9998211366583742_listener_p5yecj)
+INFO    2026-09-05T18:36:57.221Z e2fbd712-b519-430d-8302-a2f1e0d4dfa6 Async handler: listener (9998211366584196_listener_c6gti5) completed
+INFO    2026-09-05T18:36:57.275Z 4910ef20-205b-43c9-8cb9-33ba3c01cb1b Async handler: executing listener (9998211366583300_listener_eo1359)
+INFO    2026-09-05T18:36:57.472Z 74a05523-937f-48e1-9211-27ed0e90efc6 [listener] avi:jira:commented:issue: "campaignmtoo1tnz-concurrent-mtoq4guq-16" (lst_mtoq4msbgu86xs) queued as 9998211366582804_listener_fh2jts for LZPT-284
+ERROR   2026-09-05T18:36:57.539Z 4910ef20-205b-43c9-8cb9-33ba3c01cb1b Static PF Deliberate error error: campaignmtoo1tnz-concurrent-mtoq4guq-15-expected
+INFO    2026-09-05T18:36:57.703Z 29bebf0e-cbd5-460e-9953-bc9c0806a59b Async handler: executing listener (9998211366582804_listener_fh2jts)
+INFO    2026-09-05T18:36:57.890Z 4910ef20-205b-43c9-8cb9-33ba3c01cb1b Async handler: listener (9998211366583300_listener_eo1359) completed
+INFO    2026-09-05T18:36:57.899Z 4997bb36-0c87-4219-9049-eb0ba1d7dd00 Async handler: listener (9998211366583742_listener_p5yecj) completed
+INFO    2026-09-05T18:36:57.938Z 74a05523-937f-48e1-9211-27ed0e90efc6 [listener] avi:jira:commented:issue: "campaignmtoo1tnz-concurrent-mtoq4guq-17" (lst_mtoq4mztkvdv3v) queued as 9998211366582348_listener_8ruqc3 for LZPT-284
+INFO    2026-09-05T18:36:58.210Z bbabebd8-793e-4431-83f3-ed780e9c4bb5 Async handler: executing listener (9998211366582348_listener_8ruqc3)
+INFO    2026-09-05T18:36:58.403Z 74a05523-937f-48e1-9211-27ed0e90efc6 [listener] avi:jira:commented:issue: "campaignmtoo1tnz-concurrent-mtoq4guq-18" (lst_mtoq4n7f35qp1u) queued as 9998211366581870_listener_9m1dfg for LZPT-284
+INFO    2026-09-05T18:36:58.577Z 29bebf0e-cbd5-460e-9953-bc9c0806a59b Async handler: listener (9998211366582804_listener_fh2jts) completed
+INFO    2026-09-05T18:36:58.632Z 876e3094-fa5a-41a3-98c4-18bff6b9add2 Async handler: executing listener (9998211366581870_listener_9m1dfg)
+INFO    2026-09-05T18:36:58.877Z 74a05523-937f-48e1-9211-27ed0e90efc6 [listener] avi:jira:commented:issue: "campaignmtoo1tnz-concurrent-mtoq4guq-19" (lst_mtoq4nffrrqde5) queued as 9998211366581412_listener_s9xih8 for LZPT-284
+INFO    2026-09-05T18:36:59.030Z bbabebd8-793e-4431-83f3-ed780e9c4bb5 Async handler: listener (9998211366582348_listener_8ruqc3) completed
+INFO    2026-09-05T18:36:59.108Z 84a72233-a22e-458f-bbac-1d5196b0c954 Async handler: executing listener (9998211366581412_listener_s9xih8)
+INFO    2026-09-05T18:36:59.341Z 74a05523-937f-48e1-9211-27ed0e90efc6 [listener] avi:jira:commented:issue: "campaignmtoo1tnz-concurrent-mtoq4guq-20" (lst_mtoq4nnd5zgyr6) queued as 9998211366580946_listener_xgoweo for LZPT-284
+INFO    2026-09-05T18:36:59.415Z 74a05523-937f-48e1-9211-27ed0e90efc6 [listener] avi:jira:commented:issue: queued 20 run(s) in 9990ms
+INFO    2026-09-05T18:36:59.476Z 876e3094-fa5a-41a3-98c4-18bff6b9add2 Async handler: listener (9998211366581870_listener_9m1dfg) completed
+INFO    2026-09-05T18:36:59.549Z 4f6d176a-c767-45ce-bf8b-b2ac19e326d5 Async handler: executing listener (9998211366580946_listener_xgoweo)
+ERROR   2026-09-05T18:36:59.808Z 4f6d176a-c767-45ce-bf8b-b2ac19e326d5 Static PF Deliberate error error: campaignmtoo1tnz-concurrent-mtoq4guq-20-expected
+INFO    2026-09-05T18:36:59.955Z 84a72233-a22e-458f-bbac-1d5196b0c954 Async handler: listener (9998211366581412_listener_s9xih8) completed
+INFO    2026-09-05T18:37:00.200Z 4f6d176a-c767-45ce-bf8b-b2ac19e326d5 Async handler: listener (9998211366580946_listener_xgoweo) completed
+INFO    2026-09-05T18:37:46.761Z bab991ab-63ca-46b6-8fd2-8881ad737367 getConfigs orphan summary: {"checked":455,"retained":455,"removed":0,"workflows":5,"failedWorkflows":0,"partial":false,"removedExamples":[],"errorExamples":[]}
+INFO    2026-09-05T18:37:46.839Z bab991ab-63ca-46b6-8fd2-8881ad737367 getConfigs filter="all" role=admin scope=all total=455 shown=455
+INFO    2026-09-05T18:38:08.440Z 0ec35a9e-3a75-4c83-af6c-852e3d594d9c [job] tick: 12 job(s), 0 due, 0 queued in 623ms
+INFO    2026-09-05T18:38:27.788Z 9dd8cc91-c522-48fc-a708-9895ab2f9252 getConfigs orphan summary: {"checked":455,"retained":455,"removed":0,"workflows":5,"failedWorkflows":0,"partial":false,"removedExamples":[],"errorExamples":[]}
+INFO    2026-09-05T18:38:27.867Z 9dd8cc91-c522-48fc-a708-9895ab2f9252 getConfigs filter="all" role=admin scope=all total=455 shown=455
+INFO    2026-09-05T18:38:55.923Z fe27f872-c0c7-4cf4-9db3-7dadd9120463 [listener] avi:jira:commented:issue: "campaignmtoo1tnz-concurrent-mtoq4guq-1" (lst_mtoq4hnnxfn3b4) queued as 9998211366464344_listener_4lybky for LZPT-285
+INFO    2026-09-05T18:38:56.140Z 69c7a27f-4604-4419-a884-a0a6ea7f7c5a Async handler: executing listener (9998211366464344_listener_4lybky)
+INFO    2026-09-05T18:38:56.387Z fe27f872-c0c7-4cf4-9db3-7dadd9120463 [listener] avi:jira:commented:issue: "campaignmtoo1tnz-concurrent-mtoq4guq-2" (lst_mtoq4hybtxdbmy) queued as 9998211366463884_listener_1tq9mo for LZPT-285
+INFO    2026-09-05T18:38:56.870Z fe27f872-c0c7-4cf4-9db3-7dadd9120463 [listener] avi:jira:commented:issue: "campaignmtoo1tnz-concurrent-mtoq4guq-3" (lst_mtoq4i62546286) queued as 9998211366463408_listener_vh31nh for LZPT-285
+INFO    2026-09-05T18:38:56.999Z 69c7a27f-4604-4419-a884-a0a6ea7f7c5a Async handler: listener (9998211366464344_listener_4lybky) completed
+INFO    2026-09-05T18:38:57.083Z 2f663aeb-eae8-49f1-a2bb-6fcd8c5bb377 Async handler: executing listener (9998211366463408_listener_vh31nh)
+INFO    2026-09-05T18:38:57.198Z 139a7e15-f4d7-4e71-90e9-519c9625fd6c Async handler: executing listener (9998211366463884_listener_1tq9mo)
+INFO    2026-09-05T18:38:57.332Z fe27f872-c0c7-4cf4-9db3-7dadd9120463 [listener] avi:jira:commented:issue: "campaignmtoo1tnz-concurrent-mtoq4guq-4" (lst_mtoq4ie9mbuew0) queued as 9998211366462934_listener_fgnyuc for LZPT-285
+INFO    2026-09-05T18:38:57.551Z 76fb14a6-dee9-4c7f-801b-ab4f12172566 Async handler: executing listener (9998211366462934_listener_fgnyuc)
+INFO    2026-09-05T18:38:57.814Z fe27f872-c0c7-4cf4-9db3-7dadd9120463 [listener] avi:jira:commented:issue: "campaignmtoo1tnz-concurrent-mtoq4guq-5" (lst_mtoq4imfmi94zp) queued as 9998211366462480_listener_rb1x1l for LZPT-285
+INFO    2026-09-05T18:38:57.926Z 2f663aeb-eae8-49f1-a2bb-6fcd8c5bb377 Async handler: listener (9998211366463408_listener_vh31nh) completed
+INFO    2026-09-05T18:38:58.027Z 6b5fd915-25fc-4f0e-be64-ba64dc96a705 Async handler: executing listener (9998211366462480_listener_rb1x1l)
+INFO    2026-09-05T18:38:58.054Z 139a7e15-f4d7-4e71-90e9-519c9625fd6c Async handler: listener (9998211366463884_listener_1tq9mo) completed
+ERROR   2026-09-05T18:38:58.251Z 6b5fd915-25fc-4f0e-be64-ba64dc96a705 Static PF Deliberate error error: campaignmtoo1tnz-concurrent-mtoq4guq-5-expected
+INFO    2026-09-05T18:38:58.276Z fe27f872-c0c7-4cf4-9db3-7dadd9120463 [listener] avi:jira:commented:issue: "campaignmtoo1tnz-concurrent-mtoq4guq-6" (lst_mtoq4iwde0fmth) queued as 9998211366461994_listener_hmvbrt for LZPT-285
+INFO    2026-09-05T18:38:58.341Z 76fb14a6-dee9-4c7f-801b-ab4f12172566 Async handler: listener (9998211366462934_listener_fgnyuc) completed
+INFO    2026-09-05T18:38:58.499Z b40e8d7c-7d71-442e-92c0-8818a0a8f8bb Async handler: executing listener (9998211366461994_listener_hmvbrt)
+INFO    2026-09-05T18:38:58.578Z 6b5fd915-25fc-4f0e-be64-ba64dc96a705 Async handler: listener (9998211366462480_listener_rb1x1l) completed
+INFO    2026-09-05T18:38:58.738Z fe27f872-c0c7-4cf4-9db3-7dadd9120463 [listener] avi:jira:commented:issue: "campaignmtoo1tnz-concurrent-mtoq4guq-7" (lst_mtoq4j5rov4cpp) queued as 9998211366461534_listener_hp418i for LZPT-285
+INFO    2026-09-05T18:38:59.002Z 56f654d0-2292-475a-b042-340bafc1b7db Async handler: executing listener (9998211366461534_listener_hp418i)
+INFO    2026-09-05T18:38:59.194Z fe27f872-c0c7-4cf4-9db3-7dadd9120463 [listener] avi:jira:commented:issue: "campaignmtoo1tnz-concurrent-mtoq4guq-8" (lst_mtoq4je60nkrfj) queued as 9998211366461078_listener_7dhcax for LZPT-285
+INFO    2026-09-05T18:38:59.375Z b40e8d7c-7d71-442e-92c0-8818a0a8f8bb Async handler: listener (9998211366461994_listener_hmvbrt) completed
+INFO    2026-09-05T18:38:59.606Z b9ca59ef-37d4-4bbd-b5c0-fd0f0a9de46b getConfigs orphan summary: {"checked":455,"retained":455,"removed":0,"workflows":5,"failedWorkflows":0,"partial":false,"removedExamples":[],"errorExamples":[]}
+INFO    2026-09-05T18:38:59.694Z fe27f872-c0c7-4cf4-9db3-7dadd9120463 [listener] avi:jira:commented:issue: "campaignmtoo1tnz-concurrent-mtoq4guq-9" (lst_mtoq4kqkb0copc) queued as 9998211366460602_listener_dri84k for LZPT-285
+INFO    2026-09-05T18:38:59.735Z b9ca59ef-37d4-4bbd-b5c0-fd0f0a9de46b getConfigs filter="all" role=admin scope=all total=455 shown=455
+INFO    2026-09-05T18:38:59.772Z 56f654d0-2292-475a-b042-340bafc1b7db Async handler: listener (9998211366461534_listener_hp418i) completed
+INFO    2026-09-05T18:38:59.778Z 86d42c18-9f0d-4cd7-b085-4a466361fbdf Async handler: executing listener (9998211366461078_listener_7dhcax)
+INFO    2026-09-05T18:39:00.151Z fe27f872-c0c7-4cf4-9db3-7dadd9120463 [listener] avi:jira:commented:issue: "campaignmtoo1tnz-concurrent-mtoq4guq-10" (lst_mtoq4l66z01qb3) queued as 9998211366460128_listener_ug3rim for LZPT-285
+INFO    2026-09-05T18:39:00.267Z 1eee3627-f0ce-4e2f-8456-5caff1c5f44c Async handler: executing listener (9998211366460602_listener_dri84k)
+INFO    2026-09-05T18:39:00.442Z f0cfdcfc-e3ec-43b8-8c13-8d9b4988d2d1 Async handler: executing listener (9998211366460128_listener_ug3rim)
+INFO    2026-09-05T18:39:00.587Z 86d42c18-9f0d-4cd7-b085-4a466361fbdf Async handler: listener (9998211366461078_listener_7dhcax) completed
+INFO    2026-09-05T18:39:00.619Z fe27f872-c0c7-4cf4-9db3-7dadd9120463 [listener] avi:jira:commented:issue: "campaignmtoo1tnz-concurrent-mtoq4guq-11" (lst_mtoq4lft1v76jc) queued as 9998211366459664_listener_vtgrfi for LZPT-285
+ERROR   2026-09-05T18:39:00.682Z f0cfdcfc-e3ec-43b8-8c13-8d9b4988d2d1 Static PF Deliberate error error: campaignmtoo1tnz-concurrent-mtoq4guq-10-expected
+INFO    2026-09-05T18:39:01Z f0cfdcfc-e3ec-43b8-8c13-8d9b4988d2d1 Async handler: listener (9998211366460128_listener_ug3rim) completed
+INFO    2026-09-05T18:39:01.076Z fe27f872-c0c7-4cf4-9db3-7dadd9120463 [listener] avi:jira:commented:issue: "campaignmtoo1tnz-concurrent-mtoq4guq-12" (lst_mtoq4lrnzztzi4) queued as 9998211366459192_listener_7r5k24 for LZPT-285
+INFO    2026-09-05T18:39:01.115Z 1eee3627-f0ce-4e2f-8456-5caff1c5f44c Async handler: listener (9998211366460602_listener_dri84k) completed
+INFO    2026-09-05T18:39:01.210Z 9067ffbe-5a0e-4a28-9f62-a8f78a4e9697 Async handler: executing listener (9998211366459664_listener_vtgrfi)
+INFO    2026-09-05T18:39:01.289Z 5f569d48-9520-4f08-888e-3eab4fb81156 Async handler: executing listener (9998211366459192_listener_7r5k24)
+INFO    2026-09-05T18:39:01.556Z fe27f872-c0c7-4cf4-9db3-7dadd9120463 [listener] avi:jira:commented:issue: "campaignmtoo1tnz-concurrent-mtoq4guq-13" (lst_mtoq4m1ty12vqi) queued as 9998211366458736_listener_do60jz for LZPT-285
+INFO    2026-09-05T18:39:01.738Z f8467bc7-5e7b-487d-a63b-6dba0e23509d Async handler: executing listener (9998211366458736_listener_do60jz)
+INFO    2026-09-05T18:39:02.075Z 5f569d48-9520-4f08-888e-3eab4fb81156 Async handler: listener (9998211366459192_listener_7r5k24) completed
+INFO    2026-09-05T18:39:02.103Z fe27f872-c0c7-4cf4-9db3-7dadd9120463 [listener] avi:jira:commented:issue: "campaignmtoo1tnz-concurrent-mtoq4guq-14" (lst_mtoq4ma4j0etbw) queued as 9998211366458180_listener_9lyfib for LZPT-285
+INFO    2026-09-05T18:39:02.327Z 2546a295-9979-4fa6-9c11-265d9b6c2b55 Async handler: executing listener (9998211366458180_listener_9lyfib)
+INFO    2026-09-05T18:39:02.394Z 9067ffbe-5a0e-4a28-9f62-a8f78a4e9697 Async handler: listener (9998211366459664_listener_vtgrfi) completed
+INFO    2026-09-05T18:39:02.536Z f8467bc7-5e7b-487d-a63b-6dba0e23509d Async handler: listener (9998211366458736_listener_do60jz) completed
+INFO    2026-09-05T18:39:02.555Z fe27f872-c0c7-4cf4-9db3-7dadd9120463 [listener] avi:jira:commented:issue: "campaignmtoo1tnz-concurrent-mtoq4guq-15" (lst_mtoq4mjo1vaqgu) queued as 9998211366457708_listener_bc124b for LZPT-285
+INFO    2026-09-05T18:39:02.814Z 07c82f8f-af3a-47cd-9ffd-2d704e0b0652 Async handler: executing listener (9998211366457708_listener_bc124b)
+INFO    2026-09-05T18:39:03.039Z fe27f872-c0c7-4cf4-9db3-7dadd9120463 [listener] avi:jira:commented:issue: "campaignmtoo1tnz-concurrent-mtoq4guq-16" (lst_mtoq4msbgu86xs) queued as 9998211366457228_listener_gyy6q6 for LZPT-285
+ERROR   2026-09-05T18:39:03.066Z 07c82f8f-af3a-47cd-9ffd-2d704e0b0652 Static PF Deliberate error error: campaignmtoo1tnz-concurrent-mtoq4guq-15-expected
+INFO    2026-09-05T18:39:03.250Z 207f43c9-84cc-4792-ae8e-55010796bc10 Async handler: executing listener (9998211366457228_listener_gyy6q6)
+INFO    2026-09-05T18:39:03.394Z 07c82f8f-af3a-47cd-9ffd-2d704e0b0652 Async handler: listener (9998211366457708_listener_bc124b) completed
+INFO    2026-09-05T18:39:03.500Z fe27f872-c0c7-4cf4-9db3-7dadd9120463 [listener] avi:jira:commented:issue: "campaignmtoo1tnz-concurrent-mtoq4guq-17" (lst_mtoq4mztkvdv3v) queued as 9998211366456778_listener_clxdlu for LZPT-285
+INFO    2026-09-05T18:39:03.596Z 2546a295-9979-4fa6-9c11-265d9b6c2b55 Async handler: listener (9998211366458180_listener_9lyfib) completed
+INFO    2026-09-05T18:39:03.748Z c712e36a-0c39-4c18-86e8-3f952141511e Async handler: executing listener (9998211366456778_listener_clxdlu)
+INFO    2026-09-05T18:39:04.031Z fe27f872-c0c7-4cf4-9db3-7dadd9120463 [listener] avi:jira:commented:issue: "campaignmtoo1tnz-concurrent-mtoq4guq-18" (lst_mtoq4n7f35qp1u) queued as 9998211366456268_listener_l4mlrv for LZPT-285
+INFO    2026-09-05T18:39:04.072Z 207f43c9-84cc-4792-ae8e-55010796bc10 Async handler: listener (9998211366457228_listener_gyy6q6) completed
+INFO    2026-09-05T18:39:04.251Z a36e436e-8909-4ea9-b3bc-a38fec81e00c Async handler: executing listener (9998211366456268_listener_l4mlrv)
+INFO    2026-09-05T18:39:04.479Z fe27f872-c0c7-4cf4-9db3-7dadd9120463 [listener] avi:jira:commented:issue: "campaignmtoo1tnz-concurrent-mtoq4guq-19" (lst_mtoq4nffrrqde5) queued as 9998211366455788_listener_jmnddr for LZPT-285
+INFO    2026-09-05T18:39:04.570Z c712e36a-0c39-4c18-86e8-3f952141511e Async handler: listener (9998211366456778_listener_clxdlu) completed
+INFO    2026-09-05T18:39:04.705Z 0296eaa6-0703-4068-b211-fe386a6278a5 Async handler: executing listener (9998211366455788_listener_jmnddr)
+INFO    2026-09-05T18:39:04.936Z fe27f872-c0c7-4cf4-9db3-7dadd9120463 [listener] avi:jira:commented:issue: "campaignmtoo1tnz-concurrent-mtoq4guq-20" (lst_mtoq4nnd5zgyr6) queued as 9998211366455336_listener_g7ozhl for LZPT-285
+INFO    2026-09-05T18:39:05.008Z fe27f872-c0c7-4cf4-9db3-7dadd9120463 [listener] avi:jira:commented:issue: queued 20 run(s) in 9533ms
+INFO    2026-09-05T18:39:05.097Z a36e436e-8909-4ea9-b3bc-a38fec81e00c Async handler: listener (9998211366456268_listener_l4mlrv) completed
+INFO    2026-09-05T18:39:05.138Z 2a727522-865c-40fc-9cff-80c55d89e453 Async handler: executing listener (9998211366455336_listener_g7ozhl)
+ERROR   2026-09-05T18:39:05.370Z 2a727522-865c-40fc-9cff-80c55d89e453 Static PF Deliberate error error: campaignmtoo1tnz-concurrent-mtoq4guq-20-expected
+INFO    2026-09-05T18:39:05.587Z 0296eaa6-0703-4068-b211-fe386a6278a5 Async handler: listener (9998211366455788_listener_jmnddr) completed
+INFO    2026-09-05T18:39:05.701Z 2a727522-865c-40fc-9cff-80c55d89e453 Async handler: listener (9998211366455336_listener_g7ozhl) completed
+INFO    2026-09-05T18:43:09.446Z da604e7d-1102-4364-a70c-f6d3d2133bc5 Async handler: executing scheduledjob (9998211366211078_scheduledjob_wqz967)
+INFO    2026-09-05T18:43:09.747Z acf486e4-3002-4ac6-ad23-e18ecbd29eb9 Async handler: executing scheduledjob (9998211366210708_scheduledjob_jxyriy)
+INFO    2026-09-05T18:43:10.209Z 4dbcf706-4058-45ce-8949-972444da3ffc Async handler: executing scheduledjob (9998211366210332_scheduledjob_f101lx)
+INFO    2026-09-05T18:43:10.573Z da604e7d-1102-4364-a70c-f6d3d2133bc5 Async handler: scheduledjob (9998211366211078_scheduledjob_wqz967) completed
+INFO    2026-09-05T18:43:10.901Z c3eae3b8-c4c9-41f6-9ee8-2911af46675f Async handler: executing scheduledjob (9998211366209562_scheduledjob_rmlskp)
+INFO    2026-09-05T18:43:11.016Z 4bff80c3-7b92-4979-aefb-cf11d80a8d97 Async handler: executing scheduledjob (9998211366209964_scheduledjob_100otp)
+INFO    2026-09-05T18:43:11.355Z acf486e4-3002-4ac6-ad23-e18ecbd29eb9 Async handler: scheduledjob (9998211366210708_scheduledjob_jxyriy) completed
+INFO    2026-09-05T18:43:11.567Z f7796047-cdf4-485b-a3ee-6e23da889b4f Async handler: executing scheduledjob (9998211366209220_scheduledjob_9xcf1n)
+INFO    2026-09-05T18:43:11.631Z 9e5aef2c-db52-487f-a934-66bb370c2453 Async handler: executing scheduledjob (9998211366208872_scheduledjob_wivqzo)
+INFO    2026-09-05T18:43:11.644Z c3eae3b8-c4c9-41f6-9ee8-2911af46675f Async handler: scheduledjob (9998211366209562_scheduledjob_rmlskp) completed
+INFO    2026-09-05T18:43:11.749Z 4dbcf706-4058-45ce-8949-972444da3ffc Async handler: scheduledjob (9998211366210332_scheduledjob_f101lx) completed
+INFO    2026-09-05T18:43:11.960Z db72f40d-195e-4642-89d5-8228e478b258 Async handler: executing scheduledjob (9998211366208528_scheduledjob_nsr0jk)
+INFO    2026-09-05T18:43:11.998Z 4bff80c3-7b92-4979-aefb-cf11d80a8d97 Async handler: scheduledjob (9998211366209964_scheduledjob_100otp) completed
+ERROR   2026-09-05T18:43:12.235Z db72f40d-195e-4642-89d5-8228e478b258 Static PF No implicit target error: api.addComment() needs a current issue, but this job run has none (api.context.issueKey is null). Use api.forIssue("KEY").addComment(...) to target an issue explicitly.
+INFO    2026-09-05T18:43:12.243Z 821ea78f-363f-4ca0-9ae3-af5cc8b39de9 Async handler: executing scheduledjob (9998211366208174_scheduledjob_py0u2w)
+INFO    2026-09-05T18:43:12.483Z 9e5aef2c-db52-487f-a934-66bb370c2453 Async handler: scheduledjob (9998211366208872_scheduledjob_wivqzo) completed
+INFO    2026-09-05T18:43:12.588Z db72f40d-195e-4642-89d5-8228e478b258 Async handler: scheduledjob (9998211366208528_scheduledjob_nsr0jk) completed
+INFO    2026-09-05T18:43:12.707Z 631992f4-f5f4-4b03-94b5-8620899f0ee7 [job] tick: 12 job(s), 10 due, 10 queued in 4966ms
+INFO    2026-09-05T18:43:12.879Z 5e8c42ff-4afd-4cdb-92a2-5fdde991ea29 Async handler: executing scheduledjob (9998211366207834_scheduledjob_11rcet)
+ERROR   2026-09-05T18:43:12.880Z f7796047-cdf4-485b-a3ee-6e23da889b4f Static PF Fail only middle issue error: campaignmtoo1tnz-partial-expected
+INFO    2026-09-05T18:43:13.608Z f7796047-cdf4-485b-a3ee-6e23da889b4f Async handler: scheduledjob (9998211366209220_scheduledjob_9xcf1n) completed
+INFO    2026-09-05T18:43:17.444Z 821ea78f-363f-4ca0-9ae3-af5cc8b39de9 Async handler: scheduledjob (9998211366208174_scheduledjob_py0u2w) completed
+INFO    2026-09-05T18:43:18.178Z 5e8c42ff-4afd-4cdb-92a2-5fdde991ea29 Async handler: scheduledjob (9998211366207834_scheduledjob_11rcet) completed
+INFO    2026-09-05T18:44:20.577Z 5d9c5a01-567d-4e80-83ff-02df3b3c8755 getConfigs orphan summary: {"checked":455,"retained":455,"removed":0,"workflows":5,"failedWorkflows":0,"partial":false,"removedExamples":[],"errorExamples":[]}

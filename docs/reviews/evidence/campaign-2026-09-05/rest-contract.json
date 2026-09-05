@@ -1,0 +1,47 @@
+{
+  "tag": "campaignmtoo1tnz",
+  "checks": [
+    {
+      "name": "listeners existing record GET rejects missing token"
+    },
+    {
+      "name": "listeners existing record GET rejects invalid token"
+    },
+    {
+      "name": "listeners existing record PUT rejects missing token"
+    },
+    {
+      "name": "listeners existing record PUT rejects invalid token"
+    },
+    {
+      "name": "listeners invalid PUT rejected",
+      "error": "filters.commentPattern is not a valid regex: Invalid regular expression: /[/i: Unterminated character class"
+    },
+    {
+      "name": "listeners authorized X-Api-Key read proves refused writes changed nothing"
+    },
+    {
+      "name": "jobs existing record GET rejects missing token"
+    },
+    {
+      "name": "jobs existing record GET rejects invalid token"
+    },
+    {
+      "name": "jobs existing record PUT rejects missing token"
+    },
+    {
+      "name": "jobs existing record PUT rejects invalid token"
+    },
+    {
+      "name": "jobs invalid PUT rejected",
+      "error": "schedule.cron is invalid: Value out of range (0-59) in the minute field: \"99\""
+    },
+    {
+      "name": "jobs authorized X-Api-Key read proves refused writes changed nothing"
+    },
+    {
+      "name": "Revoked campaign-owned token is rejected"
+    }
+  ],
+  "pass": true
+}

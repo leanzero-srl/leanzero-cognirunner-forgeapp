@@ -3,12 +3,16 @@
     "eventType": "avi:jira:created:attachment",
     "status": 200,
     "capturedAt": "2026-09-05T18:32:59.645Z",
-    "tokenPresent": true
+    "tokenPresent": true,
+    "fileName": "briefing.md",
+    "issueId": "24940"
   },
   {
     "eventType": "avi:jira:deleted:attachment",
     "status": 200,
     "capturedAt": "2026-09-05T18:33:30.536Z",
-    "tokenPresent": true
+    "tokenPresent": true,
+    "fileName": "campaignmtoo1tnz-retry.txt",
+    "issueId": "24896"
   }
 ]

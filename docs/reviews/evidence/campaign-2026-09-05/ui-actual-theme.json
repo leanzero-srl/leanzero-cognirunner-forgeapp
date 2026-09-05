@@ -1,0 +1,166 @@
+{
+  "startedAt": "2026-09-05T18:50:02.825Z",
+  "records": [
+    {
+      "theme": "dark",
+      "width": 1024,
+      "tab": "Scheduled Jobs",
+      "outer": {
+        "mode": "dark",
+        "bodyBackground": "rgb(31, 31, 33)"
+      },
+      "inner": {
+        "mode": "dark",
+        "width": 624,
+        "scrollWidth": 624,
+        "titleColor": "rgb(245, 245, 247)",
+        "bodyBackground": "rgba(0, 0, 0, 0)"
+      }
+    },
+    {
+      "theme": "dark",
+      "width": 1024,
+      "tab": "Listeners",
+      "outer": {
+        "mode": "dark",
+        "bodyBackground": "rgb(31, 31, 33)"
+      },
+      "inner": {
+        "mode": "dark",
+        "width": 624,
+        "scrollWidth": 624,
+        "titleColor": "rgb(245, 245, 247)",
+        "bodyBackground": "rgba(0, 0, 0, 0)"
+      }
+    },
+    {
+      "theme": "dark",
+      "width": 1440,
+      "tab": "Scheduled Jobs",
+      "outer": {
+        "mode": "dark",
+        "bodyBackground": "rgb(31, 31, 33)"
+      },
+      "inner": {
+        "mode": "dark",
+        "width": 1040,
+        "scrollWidth": 1040,
+        "titleColor": "rgb(245, 245, 247)",
+        "bodyBackground": "rgba(0, 0, 0, 0)"
+      }
+    },
+    {
+      "theme": "dark",
+      "width": 1440,
+      "tab": "Listeners",
+      "outer": {
+        "mode": "dark",
+        "bodyBackground": "rgb(31, 31, 33)"
+      },
+      "inner": {
+        "mode": "dark",
+        "width": 1040,
+        "scrollWidth": 1040,
+        "titleColor": "rgb(245, 245, 247)",
+        "bodyBackground": "rgba(0, 0, 0, 0)"
+      }
+    },
+    {
+      "theme": "light",
+      "width": 1024,
+      "tab": "Scheduled Jobs",
+      "outer": {
+        "mode": "light",
+        "bodyBackground": "rgb(255, 255, 255)"
+      },
+      "inner": {
+        "mode": "light",
+        "width": 624,
+        "scrollWidth": 624,
+        "titleColor": "rgb(15, 23, 42)",
+        "bodyBackground": "rgba(0, 0, 0, 0)"
+      }
+    },
+    {
+      "theme": "light",
+      "width": 1024,
+      "tab": "Listeners",
+      "outer": {
+        "mode": "light",
+        "bodyBackground": "rgb(255, 255, 255)"
+      },
+      "inner": {
+        "mode": "light",
+        "width": 624,
+        "scrollWidth": 624,
+        "titleColor": "rgb(15, 23, 42)",
+        "bodyBackground": "rgba(0, 0, 0, 0)"
+      }
+    },
+    {
+      "theme": "light",
+      "width": 1440,
+      "tab": "Scheduled Jobs",
+      "outer": {
+        "mode": "light",
+        "bodyBackground": "rgb(255, 255, 255)"
+      },
+      "inner": {
+        "mode": "light",
+        "width": 1040,
+        "scrollWidth": 1040,
+        "titleColor": "rgb(15, 23, 42)",
+        "bodyBackground": "rgba(0, 0, 0, 0)"
+      }
+    },
+    {
+      "theme": "light",
+      "width": 1440,
+      "tab": "Listeners",
+      "outer": {
+        "mode": "light",
+        "bodyBackground": "rgb(255, 255, 255)"
+      },
+      "inner": {
+        "mode": "light",
+        "width": 1040,
+        "scrollWidth": 1040,
+        "titleColor": "rgb(15, 23, 42)",
+        "bodyBackground": "rgba(0, 0, 0, 0)"
+      }
+    }
+  ],
+  "errors": [],
+  "httpErrors": [
+    {
+      "status": 404,
+      "url": "https://wolfaenpak.atlassian.net/rest/api/3/user/properties/cross.join.nudges.jpd.visited.count"
+    },
+    {
+      "status": 404,
+      "url": "https://wolfaenpak.atlassian.net/rest/api/latest/user/properties/jpd-roadmaps-upsell.dismissed"
+    },
+    {
+      "status": 404,
+      "url": "https://wolfaenpak.atlassian.net/rest/api/3/user/properties/CROSS_JOIN_NUDGES_JIRA_TO_JPD"
+    },
+    {
+      "status": 404,
+      "url": "https://wolfaenpak.atlassian.net/rest/api/latest/user/properties/jpd-roadmaps-upsell.dismissed"
+    },
+    {
+      "status": 404,
+      "url": "https://wolfaenpak.atlassian.net/rest/api/3/user/properties/CROSS_JOIN_NUDGE_CONFLUENCE_VISITED_COUNT"
+    },
+    {
+      "status": 404,
+      "url": "https://wolfaenpak.atlassian.net/rest/api/latest/user/properties/jpd-roadmaps-upsell.dismissed"
+    }
+  ],
+  "mutations": [],
+  "original": "light",
+  "pass": true,
+  "restored": "light",
+  "restoreVerified": true,
+  "finishedAt": "2026-09-05T18:50:31.680Z"
+}

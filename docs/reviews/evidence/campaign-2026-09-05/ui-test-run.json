@@ -1,0 +1,195 @@
+{
+  "startedAt": "2026-09-05T18:31:35.128Z",
+  "checks": [
+    {
+      "name": "null",
+      "code": "throw null;",
+      "response": {
+        "success": false,
+        "mode": "simulation",
+        "issueKey": null,
+        "logs": [
+          "Testing listener with no current issue. Reads are live; writes are simulated.",
+          "ERROR: null"
+        ],
+        "changes": [],
+        "executionTimeMs": 4
+      },
+      "text": "FAIL\nLive reads · no current issue · writes staged — 4ms\nFix with AI\n×\nEXECUTION LOG:\nTesting listener with no current issue. Reads are live; writes are simulated.\nERROR: null"
+    },
+    {
+      "name": "number",
+      "code": "throw 42;",
+      "response": {
+        "success": false,
+        "mode": "simulation",
+        "issueKey": null,
+        "logs": [
+          "Testing listener with no current issue. Reads are live; writes are simulated.",
+          "ERROR: 42"
+        ],
+        "changes": [],
+        "executionTimeMs": 1
+      },
+      "text": "FAIL\nLive reads · no current issue · writes staged — 1ms\nFix with AI\n×\nEXECUTION LOG:\nTesting listener with no current issue. Reads are live; writes are simulated.\nERROR: 42"
+    },
+    {
+      "name": "string",
+      "code": "throw 'cgr-ui-thrown-string';",
+      "response": {
+        "success": false,
+        "mode": "simulation",
+        "issueKey": null,
+        "logs": [
+          "Testing listener with no current issue. Reads are live; writes are simulated.",
+          "ERROR: cgr-ui-thrown-string"
+        ],
+        "changes": [],
+        "executionTimeMs": 1
+      },
+      "text": "FAIL\nLive reads · no current issue · writes staged — 1ms\nFix with AI\n×\nEXECUTION LOG:\nTesting listener with no current issue. Reads are live; writes are simulated.\nERROR: cgr-ui-thrown-string"
+    }
+  ],
+  "pageErrors": [],
+  "saveRequests": [],
+  "before": {
+    "agent": {
+      "allowedActions": [
+        "get_issue",
+        "search_issues",
+        "add_comment"
+      ],
+      "instructions": "",
+      "maxRounds": 5
+    },
+    "aiCondition": "",
+    "createdAt": "2026-09-05T17:38:27.679Z",
+    "createdBy": "api:tok_mtoo1vrs868f16",
+    "description": "Campaign L20: Failure stops following steps",
+    "enabled": false,
+    "events": [
+      "avi:jira:commented:issue"
+    ],
+    "filters": {
+      "changedFields": [],
+      "commentPattern": "campaignmtoo1tnz-failure",
+      "issueTypes": [],
+      "jql": "key = LZPT-284",
+      "projectKeys": [
+        "LZPT"
+      ]
+    },
+    "functions": [
+      {
+        "code": "throw new Error('campaignmtoo1tnz-expected-failure');",
+        "conditionPrompt": "",
+        "endpoint": "",
+        "id": "step-1",
+        "includeBackoff": false,
+        "method": "GET",
+        "name": "Expected deliberate failure",
+        "operationPrompt": "",
+        "operationType": "work_item_query",
+        "variableName": ""
+      },
+      {
+        "code": "await api.addLabels('campaignmtoo1tnz-L20-continued');",
+        "conditionPrompt": "",
+        "endpoint": "",
+        "id": "step-2",
+        "includeBackoff": false,
+        "method": "GET",
+        "name": "Independent following step",
+        "operationPrompt": "",
+        "operationType": "work_item_query",
+        "variableName": ""
+      }
+    ],
+    "id": "lst_mtoo2di76yrm4x",
+    "ignoreSelf": true,
+    "mode": "script",
+    "name": "campaignmtoo1tnz L20 Partial failure continues later steps",
+    "simulationMode": false,
+    "suppressNotifications": false,
+    "updatedAt": "2026-09-05T18:31:33.485Z",
+    "stats": {
+      "runCount": 4,
+      "errorCount": 4,
+      "lastRunAt": "2026-09-05T18:31:31.794Z",
+      "lastStatus": "error",
+      "lastError": "Step \"Repeated name\" failed: campaignmtoo1tnz-multi-error-first",
+      "lastIssueKey": "LZPT-284"
+    }
+  },
+  "after": {
+    "agent": {
+      "allowedActions": [
+        "get_issue",
+        "search_issues",
+        "add_comment"
+      ],
+      "instructions": "",
+      "maxRounds": 5
+    },
+    "aiCondition": "",
+    "createdAt": "2026-09-05T17:38:27.679Z",
+    "createdBy": "api:tok_mtoo1vrs868f16",
+    "description": "Campaign L20: Failure stops following steps",
+    "enabled": false,
+    "events": [
+      "avi:jira:commented:issue"
+    ],
+    "filters": {
+      "changedFields": [],
+      "commentPattern": "campaignmtoo1tnz-failure",
+      "issueTypes": [],
+      "jql": "key = LZPT-284",
+      "projectKeys": [
+        "LZPT"
+      ]
+    },
+    "functions": [
+      {
+        "code": "throw new Error('campaignmtoo1tnz-expected-failure');",
+        "conditionPrompt": "",
+        "endpoint": "",
+        "id": "step-1",
+        "includeBackoff": false,
+        "method": "GET",
+        "name": "Expected deliberate failure",
+        "operationPrompt": "",
+        "operationType": "work_item_query",
+        "variableName": ""
+      },
+      {
+        "code": "await api.addLabels('campaignmtoo1tnz-L20-continued');",
+        "conditionPrompt": "",
+        "endpoint": "",
+        "id": "step-2",
+        "includeBackoff": false,
+        "method": "GET",
+        "name": "Independent following step",
+        "operationPrompt": "",
+        "operationType": "work_item_query",
+        "variableName": ""
+      }
+    ],
+    "id": "lst_mtoo2di76yrm4x",
+    "ignoreSelf": true,
+    "mode": "script",
+    "name": "campaignmtoo1tnz L20 Partial failure continues later steps",
+    "simulationMode": false,
+    "suppressNotifications": false,
+    "updatedAt": "2026-09-05T18:31:33.485Z",
+    "stats": {
+      "runCount": 4,
+      "errorCount": 4,
+      "lastRunAt": "2026-09-05T18:31:31.794Z",
+      "lastStatus": "error",
+      "lastError": "Step \"Repeated name\" failed: campaignmtoo1tnz-multi-error-first",
+      "lastIssueKey": "LZPT-284"
+    }
+  },
+  "pass": true,
+  "finishedAt": "2026-09-05T18:31:53.318Z"
+}

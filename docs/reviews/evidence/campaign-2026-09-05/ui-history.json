@@ -1,0 +1,484 @@
+{
+  "checks": [
+    {
+      "theme": "light",
+      "code": "J02",
+      "geometry": {
+        "width": 624,
+        "documentWidth": 624,
+        "pageX": 0,
+        "cardOverflow": "auto"
+      },
+      "records": [
+        {
+          "logId": "1788633790997pdyh",
+          "timestamp": "2026-09-05T18:43:10.997Z",
+          "chips": [
+            {
+              "key": "LZPT-284",
+              "failed": false,
+              "reason": "1 step(s), 1 change(s)",
+              "color": "rgb(255, 255, 255)"
+            },
+            {
+              "key": "LZPT-285",
+              "failed": false,
+              "reason": "1 step(s), 1 change(s)",
+              "color": "rgb(255, 255, 255)"
+            }
+          ]
+        },
+        {
+          "logId": "17886332704786cm1",
+          "timestamp": "2026-09-05T18:34:30.478Z",
+          "chips": [
+            {
+              "key": "LZPT-284",
+              "failed": false,
+              "reason": "1 step(s), 1 change(s)",
+              "color": "rgb(255, 255, 255)"
+            },
+            {
+              "key": "LZPT-285",
+              "failed": false,
+              "reason": "1 step(s), 1 change(s)",
+              "color": "rgb(255, 255, 255)"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "theme": "light",
+      "code": "J03",
+      "geometry": {
+        "width": 624,
+        "documentWidth": 624,
+        "pageX": 0,
+        "cardOverflow": "auto"
+      },
+      "records": [
+        {
+          "logId": "1788633791373ue63",
+          "timestamp": "2026-09-05T18:43:11.373Z",
+          "chips": [
+            {
+              "key": "LZPT-284",
+              "failed": false,
+              "reason": "1 step(s), 1 change(s)",
+              "color": "rgb(255, 255, 255)"
+            },
+            {
+              "key": "LZPT-285",
+              "failed": false,
+              "reason": "1 step(s), 1 change(s)",
+              "color": "rgb(255, 255, 255)"
+            }
+          ]
+        },
+        {
+          "logId": "1788633275178u0u4",
+          "timestamp": "2026-09-05T18:34:35.178Z",
+          "chips": [
+            {
+              "key": "LZPT-284",
+              "failed": false,
+              "reason": "1 step(s), 1 change(s)",
+              "color": "rgb(255, 255, 255)"
+            },
+            {
+              "key": "LZPT-285",
+              "failed": false,
+              "reason": "1 step(s), 1 change(s)",
+              "color": "rgb(255, 255, 255)"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "theme": "light",
+      "code": "J06",
+      "navigation": {
+        "width": 584,
+        "scrollWidth": 584,
+        "buttons": [
+          {
+            "left": 20,
+            "right": 93.25
+          },
+          {
+            "left": 93.25,
+            "right": 186
+          },
+          {
+            "left": 186,
+            "right": 325.703125
+          },
+          {
+            "left": 325.703125,
+            "right": 454.609375
+          },
+          {
+            "left": 454.609375,
+            "right": 582.0625
+          },
+          {
+            "left": 20,
+            "right": 90.34375
+          },
+          {
+            "left": 90.34375,
+            "right": 187.421875
+          },
+          {
+            "left": 187.421875,
+            "right": 298.21875
+          },
+          {
+            "left": 298.21875,
+            "right": 385.203125
+          }
+        ]
+      },
+      "normalPointerDeleteCancelled": true
+    },
+    {
+      "theme": "light",
+      "code": "J06",
+      "geometry": {
+        "width": 624,
+        "documentWidth": 624,
+        "pageX": 0,
+        "cardOverflow": "auto"
+      },
+      "records": [
+        {
+          "logId": "1788633793171kz9k",
+          "timestamp": "2026-09-05T18:43:13.171Z",
+          "chips": [
+            {
+              "key": "LZPT-284",
+              "failed": false,
+              "reason": "1 step(s), 1 change(s)",
+              "color": "rgb(255, 255, 255)"
+            },
+            {
+              "key": "LZPT-285",
+              "failed": true,
+              "reason": "step \"Fail only middle issue\" failed: campaignmtoo1tnz-partial-expected",
+              "color": "rgb(255, 255, 255)"
+            },
+            {
+              "key": "LZPT-286",
+              "failed": false,
+              "reason": "1 step(s), 1 change(s)",
+              "color": "rgb(255, 255, 255)"
+            }
+          ]
+        },
+        {
+          "logId": "1788633290442u9h8",
+          "timestamp": "2026-09-05T18:34:50.442Z",
+          "chips": [
+            {
+              "key": "LZPT-284",
+              "failed": false,
+              "reason": "1 step(s), 1 change(s)",
+              "color": "rgb(255, 255, 255)"
+            },
+            {
+              "key": "LZPT-285",
+              "failed": true,
+              "reason": "step \"Fail only middle issue\" failed: campaignmtoo1tnz-partial-expected",
+              "color": "rgb(255, 255, 255)"
+            },
+            {
+              "key": "LZPT-286",
+              "failed": false,
+              "reason": "1 step(s), 1 change(s)",
+              "color": "rgb(255, 255, 255)"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "theme": "light",
+      "code": "J09",
+      "geometry": {
+        "width": 624,
+        "documentWidth": 624,
+        "pageX": 0,
+        "cardOverflow": "auto"
+      },
+      "records": [
+        {
+          "logId": "1788633797092c4bz",
+          "timestamp": "2026-09-05T18:43:17.092Z",
+          "chips": [
+            {
+              "key": "LZPT-288",
+              "failed": false,
+              "reason": "done: Added label campaignmtoo1tnz-J09 and comment campaignmtoo1tnz-J09-ack to LZPT-288.",
+              "color": "rgb(255, 255, 255)"
+            }
+          ]
+        },
+        {
+          "logId": "1788633310118j52a",
+          "timestamp": "2026-09-05T18:35:10.118Z",
+          "chips": [
+            {
+              "key": "LZPT-288",
+              "failed": false,
+              "reason": "done: Added label campaignmtoo1tnz-J09 and comment campaignmtoo1tnz-J09-ack to issue LZPT-288.",
+              "color": "rgb(255, 255, 255)"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "theme": "dark",
+      "code": "J02",
+      "geometry": {
+        "width": 624,
+        "documentWidth": 624,
+        "pageX": 0,
+        "cardOverflow": "auto"
+      },
+      "records": [
+        {
+          "logId": "1788633790997pdyh",
+          "timestamp": "2026-09-05T18:43:10.997Z",
+          "chips": [
+            {
+              "key": "LZPT-284",
+              "failed": false,
+              "reason": "1 step(s), 1 change(s)",
+              "color": "rgb(255, 255, 255)"
+            },
+            {
+              "key": "LZPT-285",
+              "failed": false,
+              "reason": "1 step(s), 1 change(s)",
+              "color": "rgb(255, 255, 255)"
+            }
+          ]
+        },
+        {
+          "logId": "17886332704786cm1",
+          "timestamp": "2026-09-05T18:34:30.478Z",
+          "chips": [
+            {
+              "key": "LZPT-284",
+              "failed": false,
+              "reason": "1 step(s), 1 change(s)",
+              "color": "rgb(255, 255, 255)"
+            },
+            {
+              "key": "LZPT-285",
+              "failed": false,
+              "reason": "1 step(s), 1 change(s)",
+              "color": "rgb(255, 255, 255)"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "theme": "dark",
+      "code": "J03",
+      "geometry": {
+        "width": 624,
+        "documentWidth": 624,
+        "pageX": 0,
+        "cardOverflow": "auto"
+      },
+      "records": [
+        {
+          "logId": "1788633791373ue63",
+          "timestamp": "2026-09-05T18:43:11.373Z",
+          "chips": [
+            {
+              "key": "LZPT-284",
+              "failed": false,
+              "reason": "1 step(s), 1 change(s)",
+              "color": "rgb(255, 255, 255)"
+            },
+            {
+              "key": "LZPT-285",
+              "failed": false,
+              "reason": "1 step(s), 1 change(s)",
+              "color": "rgb(255, 255, 255)"
+            }
+          ]
+        },
+        {
+          "logId": "1788633275178u0u4",
+          "timestamp": "2026-09-05T18:34:35.178Z",
+          "chips": [
+            {
+              "key": "LZPT-284",
+              "failed": false,
+              "reason": "1 step(s), 1 change(s)",
+              "color": "rgb(255, 255, 255)"
+            },
+            {
+              "key": "LZPT-285",
+              "failed": false,
+              "reason": "1 step(s), 1 change(s)",
+              "color": "rgb(255, 255, 255)"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "theme": "dark",
+      "code": "J06",
+      "navigation": {
+        "width": 584,
+        "scrollWidth": 584,
+        "buttons": [
+          {
+            "left": 20,
+            "right": 93.25
+          },
+          {
+            "left": 93.25,
+            "right": 186
+          },
+          {
+            "left": 186,
+            "right": 325.703125
+          },
+          {
+            "left": 325.703125,
+            "right": 454.609375
+          },
+          {
+            "left": 454.609375,
+            "right": 582.0625
+          },
+          {
+            "left": 20,
+            "right": 90.34375
+          },
+          {
+            "left": 90.34375,
+            "right": 187.421875
+          },
+          {
+            "left": 187.421875,
+            "right": 298.21875
+          },
+          {
+            "left": 298.21875,
+            "right": 385.203125
+          }
+        ]
+      },
+      "normalPointerDeleteCancelled": true
+    },
+    {
+      "theme": "dark",
+      "code": "J06",
+      "geometry": {
+        "width": 624,
+        "documentWidth": 624,
+        "pageX": 0,
+        "cardOverflow": "auto"
+      },
+      "records": [
+        {
+          "logId": "1788633793171kz9k",
+          "timestamp": "2026-09-05T18:43:13.171Z",
+          "chips": [
+            {
+              "key": "LZPT-284",
+              "failed": false,
+              "reason": "1 step(s), 1 change(s)",
+              "color": "rgb(255, 255, 255)"
+            },
+            {
+              "key": "LZPT-285",
+              "failed": true,
+              "reason": "step \"Fail only middle issue\" failed: campaignmtoo1tnz-partial-expected",
+              "color": "rgb(255, 255, 255)"
+            },
+            {
+              "key": "LZPT-286",
+              "failed": false,
+              "reason": "1 step(s), 1 change(s)",
+              "color": "rgb(255, 255, 255)"
+            }
+          ]
+        },
+        {
+          "logId": "1788633290442u9h8",
+          "timestamp": "2026-09-05T18:34:50.442Z",
+          "chips": [
+            {
+              "key": "LZPT-284",
+              "failed": false,
+              "reason": "1 step(s), 1 change(s)",
+              "color": "rgb(255, 255, 255)"
+            },
+            {
+              "key": "LZPT-285",
+              "failed": true,
+              "reason": "step \"Fail only middle issue\" failed: campaignmtoo1tnz-partial-expected",
+              "color": "rgb(255, 255, 255)"
+            },
+            {
+              "key": "LZPT-286",
+              "failed": false,
+              "reason": "1 step(s), 1 change(s)",
+              "color": "rgb(255, 255, 255)"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "theme": "dark",
+      "code": "J09",
+      "geometry": {
+        "width": 624,
+        "documentWidth": 624,
+        "pageX": 0,
+        "cardOverflow": "auto"
+      },
+      "records": [
+        {
+          "logId": "1788633797092c4bz",
+          "timestamp": "2026-09-05T18:43:17.092Z",
+          "chips": [
+            {
+              "key": "LZPT-288",
+              "failed": false,
+              "reason": "done: Added label campaignmtoo1tnz-J09 and comment campaignmtoo1tnz-J09-ack to LZPT-288.",
+              "color": "rgb(255, 255, 255)"
+            }
+          ]
+        },
+        {
+          "logId": "1788633310118j52a",
+          "timestamp": "2026-09-05T18:35:10.118Z",
+          "chips": [
+            {
+              "key": "LZPT-288",
+              "failed": false,
+              "reason": "done: Added label campaignmtoo1tnz-J09 and comment campaignmtoo1tnz-J09-ack to issue LZPT-288.",
+              "color": "rgb(255, 255, 255)"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "errors": [],
+  "pass": true
+}

@@ -21,6 +21,9 @@ CLAUDE.md
 # Other AI tools
 .cline/
 .qwen/
+.codex/
+.agents/
+AGENTS.md
 
 # MCP server logs
 logs/

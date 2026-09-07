@@ -38,7 +38,7 @@ Four repos, one product:
 ## 2. Locked decisions (from planning Q&A)
 - **Delivery:** full roadmap, authored as this durable plan file; build predictably phase-by-phase.
 - **Capability model:** **declarative-primary + hardened-sandbox-secondary.** Declarative AI-assisted action types are the default (safe, natural-language config, no code); the static-PF `api.*` sandbox is the power-user escape hatch (hardened).
-- **Ways to run:** **transitions + validators only.** No event listeners / scheduled jobs this roadmap (explicitly deferred — see §8).
+- **Ways to run:** originally **transitions + validators only**; event listeners and scheduled jobs were deferred (§8) and have since **shipped** (dev 22.x, September 2026) — see `docs/LISTENERS-AND-JOBS.md`.
 - **MCP contract is frozen:** we only *call* existing MCP tools; no tool rename/removal, no top-level `oneOf/allOf/anyOf`, keep `{content:[…],isError}`. So no coordinated cross-repo deploy is required for the integration work.
 
 ## 3. Guiding principles
@@ -153,7 +153,7 @@ Cross-repo: doc-processor & web-search are already live and contract-stable; Cog
 - **Config double-persist drift:** every new field must be written in both wizard payloads (`onConfigure` blob + `registerPostFunction`) — easy footgun.
 - **Budget:** fact-check/research are slow → single-shot + `Promise.race` timeouts + fail-open (PF returns `{result:true}`, never blocks a transition).
 - **DocRepository 50-doc cap:** aggressive auto-save could evict curated docs → dedup-update + `autoSaveResearch` default off.
-- **Deferred (not this roadmap):** event listeners (issue created/updated/commented) and scheduled/cron triggers — the rest of the ScriptRunner "ways to run" surface. Revisit after the toolbox lands.
+- ~~**Deferred (not this roadmap):** event listeners and scheduled/cron triggers~~ — **shipped** September 2026 as Listeners (68 Jira product events), Scheduled Jobs (cron), the AI agent runner and the Rules REST API. See `docs/LISTENERS-AND-JOBS.md`.
 - **Non-atomic multi-issue static PFs:** inherent; document rather than fully solve.
 
 ## 9. How to resume

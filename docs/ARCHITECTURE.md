@@ -247,6 +247,22 @@ One function exported from `src/async-handler.js`:
 export const asyncHandler = async (event) => { ... }       // Queue consumer (120s timeout)
 ```
 
+Non-transition runtime (added September 2026 — full guide in `LISTENERS-AND-JOBS.md`):
+
+```javascript
+// src/listeners.js — manifest `trigger` modules (25s): match enabled Listeners, queue runs
+export const listenerTrigger = async (event, context) => { ... }
+// src/scheduled-jobs.js — manifest `scheduledTrigger` (fiveMinute, 120s): queue due jobs
+export const scheduledTick = async () => { ... }
+// src/rules-api.js — manifest `webtrigger` `rules-api`: bearer-token REST for listeners/jobs
+export const rulesApiHandler = async (req) => { ... }
+```
+
+Supporting modules: `src/agent-runner.js` (AI agent mode with an action allow-list),
+`src/rule-stats.js` (serialized run/error counters with durable receipts), and the shared
+`src/shared/cron.js`, `jira-events.js`, `agent-actions.js`, `agent-result.js`,
+`execution-claim.js`, `registry-limits.js`.
+
 ---
 
 ## Data Flow Diagrams

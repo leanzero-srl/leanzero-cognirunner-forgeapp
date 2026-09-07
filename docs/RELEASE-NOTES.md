@@ -8,6 +8,76 @@
 
 ---
 
+## 1.2.0 — Listeners, Scheduled Jobs, and a Rules REST API
+
+Until now CogniRunner could only run when an issue crossed a workflow transition. This
+release adds the two other "ways to run" that Jira automation has always needed — react
+to an **event**, or run on a **schedule** — and a REST API to provision both from CI or a
+migration script. Everything below was exercised against a live Jira, with the receipts
+committed under `docs/reviews/`.
+
+### Listeners: react to any of 68 Jira product events
+
+A listener picks one or more Jira, Jira Software or JSM events (issue created/updated,
+comments, worklogs, attachments, links, versions, components, sprints, boards, users,
+fields, filters, configuration, request types) and filters them by project, issue type,
+JQL, changed fields or a comment regex. An optional plain-language **AI condition** gates
+the run and fails closed. What runs is either **code steps** — the same sandbox `api.*` as
+static post-functions, bound to the event's issue — or an **AI agent** given instructions
+and an allow-list of actions.
+
+Listeners are protected against the classic automation loop: *ignore self-generated
+events* is on by default, and per-issue and per-listener brakes cap runs within a
+five-minute window. Every accepted event is claimed at-least-once so a redelivered event
+never runs twice. **Test with an issue** builds a synthetic event from a real issue and
+runs the whole thing in simulation; once the event has fired for real, the last payload
+can be inspected — with any capability tokens removed from what is stored and shown.
+
+### Scheduled Jobs: cron, with an optional JQL scope
+
+A job runs on a five-field cron expression in an IANA time zone, either once with no
+current issue, or once **per issue** of a JQL scope (capped at 100), the way an escalation
+service does. Jobs run manually or on the platform's five-minute tick; duplicate ticks are
+idempotent per minute and can never double-run a job. Scoped runs record a per-issue
+outcome that the history view now shows in full.
+
+### The Rules REST API
+
+Mint a bearer token in **Settings → API access** (admin only; only the hash is stored) and
+push listeners and jobs as JSON: single objects, arrays of up to 100, partial updates,
+enable/disable, test, run, and read-back of logs, samples and catalogues. Partial batch
+failures return HTTP 207 with the index of every rejected row. Rows created this way are
+tagged with the token that made them. Workflow rules still attach through Jira's own
+workflow API, as documented in `docs/REST-API-RULES.md`.
+
+### Also
+
+- Run and error counters are now accounted through serialized receipts, so concurrent
+  runs can no longer lose or double-count a result, and deleting a rule clears its
+  statistics atomically.
+- A step that throws a string, a number or `null` is reported as the failure it is
+  instead of aborting the steps after it, and **Fix with AI** learns from the step that
+  actually failed.
+- Key-optional sandbox methods default to the current issue; an explicitly empty issue
+  key throws instead of silently writing to the bound issue.
+- Simulated `createIssue` and `cloneIssue` return distinct Jira-shaped identities that
+  later steps can use; a simulated read never reaches Jira.
+- Workflow **Test Run** uses the same simulation as listener and job tests.
+- Attachment read and upload capabilities are claimed atomically, so a replayed link
+  can never be used twice.
+- A generated document is only reported as *attached* when Jira returned a concrete
+  attachment id.
+- The admin panel stays usable at Jira's narrowest iframe width; nothing overflows and
+  every action stays reachable.
+- `@forge/api` 7.2 and `@forge/events` 2.1.7.
+
+### For anyone reading the docs
+
+`docs/LISTENERS-AND-JOBS.md` is the guide; `docs/FEATURES.md` sections 14 and 15 cover
+the admin panel surface. The roadmap's "deferred" note on listeners and jobs is closed.
+
+---
+
 ## 1.1.0 — Rule management, and conditions that actually work
 
 This release is about **control**. CogniRunner could already attach far more rules

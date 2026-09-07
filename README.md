@@ -6,6 +6,8 @@ Part of the [LeanZero](https://leanzero.net) ecosystem.
 
 **[Live on the Atlassian Marketplace](https://marketplace.atlassian.com/apps/298437877/cognirunner?hosting=cloud&tab=overview)** -- install it directly into your Jira Cloud instance.
 
+**[Watch the tutorials on YouTube](https://youtu.be/oxtNm9gNKYQ)** -- seven features in five minutes, plus one short video per feature (validators, conditions, PDF post-functions, listeners, scheduled jobs) and the [complete 12-minute walkthrough](https://youtu.be/CNvAvb-f5f4).
+
 CogniRunner is the **first open-source Atlassian Forge app**, licensed under [Apache-2.0](LICENSE). It brings semantic intelligence to Jira workflows -- what was previously impossible to assess (the actual meaning of a text field, the content of an attached document, the quality of a description) is now child's play. Write a plain-English prompt, pick a field, and CogniRunner handles the rest.
 
 ---

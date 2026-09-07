@@ -71,6 +71,19 @@ workflow API, as documented in `docs/REST-API-RULES.md`.
   every action stays reachable.
 - `@forge/api` 7.2 and `@forge/events` 2.1.7.
 
+### Video tutorials
+
+Seven short walkthroughs, one per feature, plus a five-minute compilation:
+[7 AI workflow features in 5 minutes](https://youtu.be/oxtNm9gNKYQ) ·
+[the complete walkthrough](https://youtu.be/CNvAvb-f5f4) ·
+[AI validator: require any field](https://youtu.be/aEhHZvUd1ms) ·
+[Given-When-Then acceptance criteria](https://youtu.be/FB1uED9Ih18) ·
+[condition: hide a transition](https://youtu.be/qU_JHctH8xk) ·
+[condition + PDF post-function](https://youtu.be/ZWIyl4D8KeA) ·
+[generate a PDF from an issue](https://youtu.be/8kJeXSGUQHk) ·
+[listener: auto-triage new issues](https://youtu.be/heK5P7EaQMg) ·
+[scheduled job: flag unassigned tickets](https://youtu.be/nmqIE56EM_k).
+
 ### For anyone reading the docs
 
 `docs/LISTENERS-AND-JOBS.md` is the guide; `docs/FEATURES.md` sections 14 and 15 cover

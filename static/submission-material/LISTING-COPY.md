@@ -129,7 +129,7 @@ Previous release notes (1.1.x) live in `docs/RELEASE-NOTES.md`.
 | Highlight 2 | `marketplace-highlight-2.png` (+ `-cropped`) — agentic validation | 1840×900 (+ 580×330) |
 | Highlight 3 | `marketplace-highlight-3.png` (+ `-cropped`) — bring your own AI | 1840×900 (+ 580×330) |
 | Additional screenshots | `marketplace-screenshots/01-rules-dashboard.png`, `02-listeners.png`, `03-scheduled-jobs-run-report.png`, `04-agentic-validation-log.png`, `05-api-access.png` | 1840 wide |
-| Demo video | YouTube link (the 5:19 `yt-compilation` when uploaded; `cognirunner-demo-90s.mp4` remains the older master) | YouTube link |
+| Demo video | https://youtu.be/oxtNm9gNKYQ (the 5:19 compilation; full walkthrough https://youtu.be/CNvAvb-f5f4) | YouTube link |
 
 Website companions (same visual language, produced 2026-09-07): `LeanZero-website/public/assets/cognirunner/cr-og-1200x630.png`
 (Open Graph) and `cr-hero-strip-1920x640.png` (in-page hero strip: listener row, run report, validator toast).

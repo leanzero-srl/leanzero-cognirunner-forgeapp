@@ -28,6 +28,23 @@
  *
  * Effective granularity on Forge is the scheduledTrigger interval (5 min):
  * a `* * * * *` job runs at most once per tick.
+ *
+ * DST — WHAT FIRES WHEN (see isWallClockAnchored below; Vixie's rule, matched):
+ *   REAL-TIME schedules (the minute OR the hour field starts with `*`: `*\/15 * * * *`,
+ *   `0 * * * *`, `* * * * *`) are anchored to elapsed time. EVERY instant whose local
+ *   wall clock matches fires, so across a fall-back the repeated local hour fires
+ *   TWICE (`0 * * * *` runs in BOTH 02:00 hours; `*\/15` keeps its 15-minute rhythm
+ *   through the transition), and across a spring-forward the vanished hour simply has
+ *   no instants (01:00 then 03:00 local = two consecutive real hours).
+ *
+ *   WALL-CLOCK schedules (both minute and hour name explicit values: `0 2 * * *`,
+ *   `30 6 1 * *`) are anchored to the local clock: each distinct local
+ *   YYYY-MM-DD HH:MM fires EXACTLY ONCE.
+ *     · fall-back  — 02:00 exists twice; only the FIRST instant (02:00 CEST) fires,
+ *       the repeat one hour later (02:00 CET) is suppressed. No double escalation.
+ *     · spring-forward — 02:00 never exists; the job fires ONCE at the first instant
+ *       after the gap (the transition instant, 03:00 local). No skipped day. Several
+ *       matches inside one gap (`0,30 2 * * *`) collapse into that single fire.
  */
 
 const MONTHS = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
@@ -50,7 +67,7 @@ const parseField = (field, text) => {
   const set = new Set();
   const raw = String(text == null ? "" : text).trim();
   if (!raw) throw new Error(`Missing ${field} field`);
-  let star = false;
+  let star = false; let starLike = false;
   for (const part of raw.split(",")) {
     const seg = part.trim();
     if (!seg) throw new Error(`Empty list item in the ${field} field`);
@@ -62,6 +79,7 @@ const parseField = (field, text) => {
     let from; let to;
     if (base === "*" || base === "?") {
       from = lo; to = hi;
+      starLike = true;            // `*` OR `*/n` — Vixie's MIN_STAR / HR_STAR flag
       if (step === 1) star = true;
     } else if (base.includes("-")) {
       const [a, b] = base.split("-");
@@ -74,7 +92,7 @@ const parseField = (field, text) => {
     if (from < lo || to > hi) throw new Error(`Value out of range (${lo}-${hi}) in the ${field} field: "${seg}"`);
     for (let v = from; v <= to; v += step) set.add(v);
   }
-  return { set, star };
+  return { set, star, starLike };
 };
 
 /** Parse a cron expression. Throws an Error with a human message when invalid. */
@@ -143,6 +161,84 @@ export const cronMatches = (expr, date, timeZone) => cronMatchesParts(parseCron(
 
 const floorMinute = (ms) => Math.floor(ms / 60000) * 60000;
 
+// ── DST (see the "WHAT FIRES WHEN" block at the top of this file) ────────────
+
+/**
+ * TRUE when the schedule names an explicit minute AND an explicit hour, i.e. it is
+ * anchored to a local wall-clock time rather than to elapsed time. Mirrors Vixie's
+ * MIN_STAR / HR_STAR test: any `*`-based token (`*` or `*\/n`) in the minute or the
+ * hour field makes the schedule REAL-TIME (fires on every matching instant, DST or
+ * not — `0 * * * *` deliberately fires in BOTH 02:00 hours of a fall-back).
+ */
+export const isWallClockAnchored = (spec) => !spec.minute.starLike && !spec.hour.starLike;
+
+// Local wall-clock instant of these parts, expressed as "the same clock face in UTC".
+const localAsUtc = (p) => Date.UTC(p.year, p.month - 1, p.dom, p.hour, p.minute);
+// Zone offset in ms at an instant (local wall clock minus UTC), minute resolution.
+const offsetAt = (t, tz) => localAsUtc(getTimeParts(t, tz)) - floorMinute(t);
+// Transitions are hours apart and never shift by more than ~2h, so the offset in
+// force before the most recent one is visible 1/2/3 hours back.
+const BACK_PROBES_MS = [3600000, 7200000, 10800000];
+
+/**
+ * TRUE when `t` REPEATS a local wall-clock minute that already happened earlier in
+ * real time (the second pass through a fall-back hour). `off` is the offset at `t`.
+ * An earlier instant t-shift shares t's wall clock exactly when its offset is
+ * larger by `shift`.
+ */
+const isRepeatedWallClock = (t, off, tz) => {
+  let shift = 0;
+  for (const back of BACK_PROBES_MS) { const d = offsetAt(t - back, tz) - off; if (d > shift) shift = d; }
+  return shift > 0 && offsetAt(t - shift, tz) === off + shift;
+};
+
+// First minute at or before `t` (and after `prevT`) that already carries offset `off`
+// — i.e. the instant the clock jumped. Binary search: ~11 probes, twice a year.
+const transitionInstant = (prevT, t, off, tz) => {
+  let lo = prevT; let hi = t;
+  while (hi - lo > 60000) {
+    const mid = floorMinute(lo + Math.floor((hi - lo) / 2));
+    if (mid <= lo || mid >= hi) break;
+    if (offsetAt(mid, tz) === off) hi = mid; else lo = mid;
+  }
+  return hi;
+};
+
+/**
+ * Did a wall-clock match fall into the spring-forward gap between the previously
+ * examined minute `prevT` and `t`? Only the minutes that NEVER EXISTED are tested
+ * (`[transition + offsetBefore, transition + offsetAfter)`), so a schedule is never
+ * credited with a minute that really happened.
+ */
+const gapSwallowedMatch = (spec, prevT, t, off, tz) => {
+  const at = transitionInstant(prevT, t, off, tz);
+  const before = offsetAt(at - 60000, tz);
+  if (before >= off) return false;
+  for (let wall = at + before, end = at + off, n = 0; wall < end && n < 24 * 60; wall += 60000, n++) {
+    if (cronMatchesParts(spec, getTimeParts(wall, "UTC"))) return true; // wall ms read as a clock face
+  }
+  return false;
+};
+
+/**
+ * Stable identity of ONE firing, for the scheduler's idempotency claims. A
+ * wall-clock schedule is identified by its LOCAL minute, so the repeated hour of a
+ * fall-back can never mint a second claim even if a caller (or a future change)
+ * hands us both instants; a real-time schedule keeps the UTC instant, because its
+ * two passes through a repeated hour ARE two distinct runs.
+ */
+export const fireIdentity = (expr, fireAt, timeZone = "UTC") => {
+  const ms = floorMinute(fireAt instanceof Date ? fireAt.getTime() : Number(fireAt));
+  if (!Number.isFinite(ms)) return "invalid";
+  let spec = null;
+  try { spec = parseCron(expr); } catch { return new Date(ms).toISOString(); }
+  if (!isWallClockAnchored(spec)) return new Date(ms).toISOString();
+  const tz = normalizeTimeZone(timeZone);
+  const p = getTimeParts(ms, tz);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${p.year}-${pad(p.month)}-${pad(p.dom)}T${pad(p.hour)}:${pad(p.minute)}@${tz}`;
+};
+
 /**
  * Next `count` firing instants strictly after `from` (ms or Date), scanning
  * minute by minute up to `maxMinutes` (default ~400 days). Returns ISO strings.
@@ -150,10 +246,21 @@ const floorMinute = (ms) => Math.floor(ms / 60000) * 60000;
 export const nextRuns = (expr, { timeZone = "UTC", from = Date.now(), count = 5, maxMinutes = 60 * 24 * 400 } = {}) => {
   const spec = parseCron(expr);
   const tz = normalizeTimeZone(timeZone);
+  const wallClock = isWallClockAnchored(spec);
   const out = [];
   let t = floorMinute(from instanceof Date ? from.getTime() : Number(from)) + 60000;
+  // Seed the DST bookkeeping with the minute before the first one examined, so a
+  // transition landing exactly on it is still seen.
+  let prevT = t - 60000; let prevOff = offsetAt(prevT, tz);
   for (let i = 0; i < maxMinutes && out.length < count; i++, t += 60000) {
     const parts = getTimeParts(t, tz);
+    const off = localAsUtc(parts) - t;
+    // A wall-clock match swallowed by a spring-forward gap fires HERE, at the first
+    // instant after the gap. Checked before the fast skips, which jump over it.
+    if (wallClock && off > prevOff && gapSwallowedMatch(spec, prevT, t, off, tz)) {
+      out.push(new Date(t).toISOString()); prevT = t; prevOff = off; continue;
+    }
+    prevT = t; prevOff = off;
     // Fast skips: a day that can never match (month / day-of-month / weekday) jumps to
     // the next midnight; an hour that can never match jumps to the next hour.
     const dayOk = spec.month.set.has(parts.month)
@@ -164,7 +271,8 @@ export const nextRuns = (expr, { timeZone = "UTC", from = Date.now(), count = 5,
     if (!spec.hour.set.has(parts.hour)) {
       const skip = 59 - parts.minute; t += skip * 60000; i += skip; continue;
     }
-    if (cronMatchesParts(spec, parts)) out.push(new Date(t).toISOString());
+    // The second pass through a repeated (fall-back) hour is the SAME wall-clock run.
+    if (cronMatchesParts(spec, parts) && !(wallClock && isRepeatedWallClock(t, off, tz))) out.push(new Date(t).toISOString());
   }
   return out;
 };
@@ -177,12 +285,23 @@ export const nextRuns = (expr, { timeZone = "UTC", from = Date.now(), count = 5,
 export const dueInWindow = (expr, afterMs, untilMs, timeZone = "UTC", cap = 50) => {
   const spec = parseCron(expr);
   const tz = normalizeTimeZone(timeZone);
+  const wallClock = isWallClockAnchored(spec);
   const out = [];
   let t = floorMinute(afterMs) + 60000;
   const end = floorMinute(untilMs);
+  let prevT = t - 60000; let prevOff = offsetAt(prevT, tz);
   let guard = 0;
   while (t <= end && guard++ < 60 * 24 * 32) {
-    if (cronMatchesParts(spec, getTimeParts(t, tz))) out.push(t);
+    const parts = getTimeParts(t, tz);
+    const off = localAsUtc(parts) - t;
+    if (cronMatchesParts(spec, parts)) {
+      // Fall-back: the repeat of an already-fired wall clock is NOT a second run.
+      if (!(wallClock && isRepeatedWallClock(t, off, tz))) out.push(t);
+    } else if (wallClock && off > prevOff && gapSwallowedMatch(spec, prevT, t, off, tz)) {
+      // Spring-forward: a match inside the vanished hour fires once, right after it.
+      out.push(t);
+    }
+    prevT = t; prevOff = off;
     t += 60000;
   }
   return out.length > cap ? out.slice(out.length - cap) : out;
@@ -204,10 +323,25 @@ export const SCHEDULE_PRESETS = [
 
 const two = (n) => String(n).padStart(2, "0");
 
+/**
+ * One clamped integer option, or the preset's default. An emptied number input sends
+ * "" — and `Number("")` is 0 (finite!) while `parseInt("", 10)` is NaN, which is how
+ * a cleared spinner used to emit the literal cron "NaN 9 * * *". Blank, non-numeric
+ * and non-primitive values all fall back to the default; NaN can never be emitted.
+ */
+const intOpt = (value, lo, hi, fallback) => {
+  if (value == null || typeof value === "boolean" || typeof value === "object") return fallback;
+  const raw = typeof value === "string" ? value.trim() : value;
+  if (raw === "") return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(hi, Math.max(lo, Math.trunc(n)));
+};
+
 /** Build a cron expression from a preset + options { hour, minute, days:[0-6], dom }. */
 export const presetToCron = (preset, opts = {}) => {
-  const h = Number.isFinite(Number(opts.hour)) ? Math.min(23, Math.max(0, parseInt(opts.hour, 10))) : 9;
-  const m = Number.isFinite(Number(opts.minute)) ? Math.min(59, Math.max(0, parseInt(opts.minute, 10))) : 0;
+  const h = intOpt(opts.hour, 0, 23, 9);
+  const m = intOpt(opts.minute, 0, 59, 0);
   switch (preset) {
     case "every5": return "*/5 * * * *";
     case "every15": return "*/15 * * * *";
@@ -216,11 +350,15 @@ export const presetToCron = (preset, opts = {}) => {
     case "daily": return `${m} ${h} * * *`;
     case "weekdays": return `${m} ${h} * * 1-5`;
     case "weekly": {
-      const days = Array.isArray(opts.days) && opts.days.length ? [...new Set(opts.days.map((d) => parseInt(d, 10)).filter((d) => d >= 0 && d <= 6))].sort() : [1];
+      // Filter FIRST: a list of blanks must fall back to Monday, not emit an empty field.
+      // Out-of-range days are DROPPED, never clamped — 7 (a Sunday alias elsewhere) must
+      // not silently become Saturday, which is what clamping to 0-6 would do.
+      const picked = [...new Set((Array.isArray(opts.days) ? opts.days : []).map((d) => intOpt(d, -1, 7, -1)).filter((d) => d >= 0 && d <= 6))].sort();
+      const days = picked.length ? picked : [1];
       return `${m} ${h} * * ${days.join(",")}`;
     }
     case "monthly": {
-      const dom = Number.isFinite(Number(opts.dom)) ? Math.min(31, Math.max(1, parseInt(opts.dom, 10))) : 1;
+      const dom = intOpt(opts.dom, 1, 31, 1);
       return `${m} ${h} ${dom} * *`;
     }
     default: return String(opts.cron || "0 9 * * 1-5");

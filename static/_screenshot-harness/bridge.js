@@ -458,10 +458,155 @@ const JOB_FULL = {
 const LISTENER_TEST_RESULT = { type: "listener", source: "test", isValid: true, reason: "Ran 1 step(s), 1 change(s)", executionTimeMs: 812, eventType: "avi:jira:created:issue", eventUsed: "synthetic", gate: null, changes: [{ action: "addLabels", key: "PROJ-42", simulated: true }], logs: ["Starting 1 step(s) for PROJ-42", "\"Add triage label\": [SIMULATION] editIssue(\"PROJ-42\", update {\"labels\":[{\"add\":\"needs-triage\"}]})", "\"Add triage label\": Completed in 310ms", "Finished: 1/1 step(s) succeeded in 812ms, 1 change(s) made"] };
 const API_TOKENS = { success: true, url: "https://a1b2c3.hello.atlassian-dev.net/x1/demo-rules-api", tokens: [{ id: "tok_1", name: "CI pipeline", prefix: "cgr_0a1b2c", createdAt: "2026-08-20T10:00:00.000Z", createdBy: ACCT, lastUsedAt: "2026-09-01T06:00:00.000Z", revokedAt: null }] };
 
+/* ----------------------------- MARKETING dataset (admin-* scenarios) --------------
+ * The `admin` scenario above is pinned by listeners-jobs.test.mjs (row counts, badge
+ * counts, project names) — do NOT grow it. Marketing shots use window.__SHOT__ =
+ * "admin-<anything>" and get this richer, realistic dataset instead (5 listeners,
+ * 4 jobs, 2 tokens, listener/job execution logs, a completed run report).
+ * Shapes mirror src/listeners.js toIndexRow/normalizeListener, src/scheduled-jobs.js
+ * toIndexRow/normalizeJob/runJob, src/rules-api.js publicRow and the storeLog entries. */
+const fpOf = (s) => { const str = String(s || ""); let h = 0; for (let i = 0; i < str.length; i++) h = ((h << 5) - h + str.charCodeAt(i)) | 0; return `${str.length}:${h}`; };
+const mkStep = (id, name, prompt, code, meta) => ({ id, name, conditionPrompt: "", operationType: "work_item_query", operationPrompt: prompt, endpoint: "", method: "GET", variableName: "result1", code, includeBackoff: false, testedFingerprint: fpOf(code), generationMeta: meta || { appliedDocs: [{ id: "builtin_doc_field_matrix", title: "Field Types & Update Shapes" }], appliedSkills: [{ id: "sk_fields_data", name: "Fields & Data", auto: true }], appliedMemories: 2, truncatedDocs: [] } });
+const MKT_PROJECTS = { success: true, projects: [
+  { id: "10100", key: "TPP", name: "Team Payments Platform", avatarUrl: null },
+  { id: "10101", key: "OPS", name: "Operations", avatarUrl: null },
+  { id: "10102", key: "CS", name: "Customer Success", avatarUrl: null },
+  { id: "10103", key: "INF", name: "Infrastructure", avatarUrl: null },
+] };
+const TRIAGE_CODE = `// Flag the vague story and ask the reporter for acceptance criteria
+const issue = await api.getIssue(api.context.issueKey);
+const reporter = issue.fields.reporter ? issue.fields.reporter.displayName : "there";
+
+await api.addLabels("needs-refinement");
+await api.addComment(
+  \`Hi \${reporter} — this story needs acceptance criteria before it can be planned. \` +
+  "Please add Given / When / Then scenarios and the user outcome."
+);
+api.log(\`Flagged \${issue.key} for refinement\`);
+return { flagged: issue.key };`;
+const P1_CODE = `// Raise priority and page the on-call owner
+const issue = await api.getIssue(api.context.issueKey);
+if (issue.fields.priority && issue.fields.priority.name !== "Highest") {
+  await api.updateIssue(issue.key, { priority: { name: "Highest" } });
+}
+await api.addLabels("p1-escalated");
+await api.addWatcher("5f8a2c1e0b3d4e001c9a7b21"); // on-call lead
+await api.addComment("Escalated to P1 by CogniRunner — on-call lead added as watcher.");
+return { escalated: issue.key };`;
+const ATTACH_CODE = `// Tell the assignee a file landed on their ticket
+const ev = api.context.event;
+const issue = await api.getIssue(ev.issue.key);
+const who = issue.fields.assignee;
+if (!who) return { skipped: "unassigned" };
+await api.addComment(\`[~accountid:\${who.accountId}] a new attachment was added: \${ev.attachment.filename}\`);
+return { notified: who.displayName };`;
+const SPRINT_CODE = `// Create the kickoff checklist task in the sprint's board project
+const sprint = api.context.event.sprint;
+await api.createIssue({
+  project: { key: "TPP" }, issuetype: { name: "Task" },
+  summary: \`Sprint kickoff checklist — \${sprint.name}\`,
+  description: "Confirm sprint goal, capacity, dependencies and the demo slot.",
+});
+return { sprint: sprint.name };`;
+const UNASSIGNED_CODE = `// Nudge triage on tickets nobody picked up
+const issue = await api.getIssue(api.context.issueKey);
+const ageDays = Math.floor((Date.now() - new Date(issue.fields.created)) / 86400000);
+
+await api.addComment(
+  \`This ticket has been unassigned for \${ageDays} days. \` +
+  "Triage owner: please assign it or move it to the backlog."
+);
+await api.addLabels("unassigned-alert");
+return { key: issue.key, ageDays };`;
+const HYGIENE_CODE = `// Normalise the many spellings of "needs triage" to one label
+const issue = await api.getIssue(api.context.issueKey);
+const bad = (issue.fields.labels || []).filter((l) => /needs[ _-]?triage/i.test(l) && l !== "needs-triage");
+if (!bad.length) return { skipped: true };
+await api.editIssue(issue.key, { labels: [...bad.map((l) => ({ remove: l })), { add: "needs-triage" }] });
+return { key: issue.key, replaced: bad };`;
+const DIGEST_CODE = `// Post the release-readiness report on the release epic
+const r = await api.searchJql('project = TPP AND fixVersion = earliestUnreleasedVersion() AND status != Done');
+const open = r.issues.map((i) => \`• \${i.key} — \${i.fields.summary} (\${i.fields.status.name})\`).join("\\n");
+await api.forIssue("TPP-1").addComment(\`Release readiness — \${r.issues.length} item(s) still open:\\n\${open}\`);
+return { open: r.issues.length };`;
+
+const MKT_LISTENERS = [
+  { id: "lst_triage", name: "Auto-triage vague stories", description: "New stories without acceptance criteria get flagged and the reporter is asked to refine.", enabled: true, events: ["avi:jira:created:issue"], filters: { projectKeys: ["TPP"], issueTypes: ["Story"], jql: "", changedFields: [], commentPattern: "" }, ignoreSelf: true, aiCondition: "the story is vague — no acceptance criteria, no user outcome, or fewer than two sentences of description", mode: "script", functions: [mkStep("fn-triage-1", "Label and ask for acceptance criteria", "Add the label needs-refinement and post a comment asking the reporter for Given/When/Then acceptance criteria", TRIAGE_CODE, { appliedDocs: [{ id: "builtin_doc_adf", title: "ADF Cookbook" }, { id: "builtin_doc_field_matrix", title: "Field Types & Update Shapes" }], appliedSkills: [{ id: "sk_fields_data", name: "Fields & Data", auto: true }], appliedMemories: 3, truncatedDocs: [] })], agent: { instructions: "", allowedActions: ["get_issue", "search_issues", "add_comment"], maxRounds: 5 }, simulationMode: false, suppressNotifications: false, createdBy: ACCT, createdAt: "2026-08-12T09:10:00.000Z", updatedAt: "2026-09-05T14:22:00.000Z", stats: { runCount: 128, errorCount: 2, lastRunAt: "2026-09-07T07:42:00.000Z", lastStatus: "ok", lastError: null, lastIssueKey: "TPP-1187" } },
+  { id: "lst_p1", name: "Escalate P1 comments", description: "", enabled: true, events: ["avi:jira:commented:issue", "avi:jira:mentioned:comment"], filters: { projectKeys: ["OPS"], issueTypes: [], jql: "priority != Highest", changedFields: [], commentPattern: "urgent|outage|sev ?1|escalat" }, ignoreSelf: true, aiCondition: "", mode: "script", functions: [mkStep("fn-p1-1", "Raise priority and page on-call", "Set priority to Highest, add the label p1-escalated, add the on-call lead as watcher and acknowledge in a comment", P1_CODE)], agent: { instructions: "", allowedActions: ["get_issue", "search_issues", "add_comment"], maxRounds: 5 }, simulationMode: false, suppressNotifications: false, createdBy: ACCT, createdAt: "2026-08-18T11:00:00.000Z", updatedAt: "2026-09-04T09:05:00.000Z", stats: { runCount: 19, errorCount: 1, lastRunAt: "2026-09-07T05:18:00.000Z", lastStatus: "ok", lastError: null, lastIssueKey: "OPS-433" } },
+  { id: "lst_concierge", name: "Customer complaint concierge", description: "Reads customer comments and reacts like a support lead would.", enabled: true, events: ["avi:jira:commented:issue"], filters: { projectKeys: ["CS"], issueTypes: [], jql: "", changedFields: [], commentPattern: "" }, ignoreSelf: true, aiCondition: "the comment is a customer complaint, a churn threat, or asks for an escalation", mode: "agent", functions: [], agent: { instructions: "Read the comment and the ticket. If the customer is complaining or threatening to churn: set priority to High (Highest if they mention a deadline or money), add the label customer-escalation, and reply with a short, warm acknowledgement that names a next step. Never promise a fix date. If the ticket is already Highest, only reply.", allowedActions: ["get_issue", "search_issues", "add_comment", "add_labels", "update_fields"], maxRounds: 4 }, simulationMode: false, suppressNotifications: false, createdBy: ACCT, createdAt: "2026-08-25T08:30:00.000Z", updatedAt: "2026-09-03T16:40:00.000Z", stats: { runCount: 44, errorCount: 0, lastRunAt: "2026-09-07T08:01:00.000Z", lastStatus: "ok", lastError: null, lastIssueKey: "CS-2210" } },
+  { id: "lst_attach", name: "Notify on attachment", description: "", enabled: true, events: ["avi:jira:created:attachment"], filters: { projectKeys: ["TPP", "OPS"], issueTypes: [], jql: "", changedFields: [], commentPattern: "" }, ignoreSelf: true, aiCondition: "", mode: "script", functions: [mkStep("fn-att-1", "Mention the assignee", "Comment on the issue mentioning the assignee with the attachment file name", ATTACH_CODE)], agent: { instructions: "", allowedActions: ["get_issue", "search_issues", "add_comment"], maxRounds: 5 }, simulationMode: true, suppressNotifications: true, createdBy: ACCT, createdAt: "2026-09-01T10:00:00.000Z", updatedAt: "2026-09-02T10:15:00.000Z", stats: { runCount: 61, errorCount: 0, lastRunAt: "2026-09-06T16:05:00.000Z", lastStatus: "ok", lastError: null, lastIssueKey: "OPS-402" } },
+  { id: "lst_sprint", name: "Sprint kickoff checklist", description: "", enabled: false, events: ["avi:jira-software:started:sprint", "avi:jira-software:closed:sprint"], filters: { projectKeys: [], issueTypes: [], jql: "", changedFields: [], commentPattern: "" }, ignoreSelf: true, aiCondition: "", mode: "script", functions: [mkStep("fn-spr-1", "Create the checklist task", "Create a kickoff checklist task in TPP named after the sprint", SPRINT_CODE)], agent: { instructions: "", allowedActions: ["get_issue", "search_issues", "add_comment"], maxRounds: 5 }, simulationMode: false, suppressNotifications: false, createdBy: "557058:22222222-2222-2222-2222-222222222222", createdAt: "2026-07-14T09:00:00.000Z", updatedAt: "2026-08-21T09:00:00.000Z", stats: { runCount: 6, errorCount: 0, lastRunAt: "2026-08-21T09:00:00.000Z", lastStatus: "ok", lastError: null, lastIssueKey: null } },
+];
+const mktListenerRow = (l) => ({ id: l.id, name: l.name, enabled: l.enabled !== false, events: l.events, projectKeys: l.filters.projectKeys, mode: l.mode, hasAiCondition: Boolean(l.aiCondition), simulationMode: l.simulationMode === true, createdBy: l.createdBy, createdAt: l.createdAt, updatedAt: l.updatedAt, stats: l.stats });
+
+const MKT_JOBS = [
+  { id: "job_unassigned", name: "Alert unassigned open tickets", description: "Weekday-morning nudge on OPS tickets nobody has picked up.", enabled: true, schedule: { cron: "0 10 * * 1-5", timeZone: "Europe/Zurich" }, scope: { jql: 'project = OPS AND assignee is EMPTY AND status in (Open, "To Do") AND created <= -2d', maxIssues: 50 }, mode: "script", functions: [mkStep("fn-un-1", "Comment and flag", "Comment how long the ticket has been unassigned and add the label unassigned-alert", UNASSIGNED_CODE)], agent: { instructions: "", allowedActions: ["get_issue", "search_issues", "add_comment"], maxRounds: 5 }, simulationMode: false, suppressNotifications: false, createdBy: ACCT, createdAt: "2026-08-10T09:00:00.000Z", updatedAt: "2026-09-06T10:10:00.000Z", stats: { runCount: 37, errorCount: 0, lastRunAt: "2026-09-07T08:00:00.000Z", lastStatus: "ok", lastError: null, nextRunAt: "2026-09-08T08:00:00.000Z" } },
+  { id: "job_epics", name: "Weekly stale-epic digest", description: "", enabled: true, schedule: { cron: "0 9 * * 1", timeZone: "Europe/Zurich" }, scope: null, mode: "agent", functions: [], agent: { instructions: "Search project TPP for epics that are not Done and have had no update in 21 days. Post ONE comment on TPP-1 (the planning epic) listing each stale epic with its key, assignee and days since the last update, then add the label stale-epic to each of them. If nothing is stale, finish without writing anything.", allowedActions: ["get_issue", "search_issues", "add_comment", "add_labels"], maxRounds: 6 }, simulationMode: false, suppressNotifications: false, createdBy: ACCT, createdAt: "2026-08-15T09:00:00.000Z", updatedAt: "2026-09-04T12:00:00.000Z", stats: { runCount: 12, errorCount: 0, lastRunAt: "2026-09-07T07:00:00.000Z", lastStatus: "ok", lastError: null, nextRunAt: "2026-09-14T07:00:00.000Z" } },
+  { id: "job_hygiene", name: "Nightly label hygiene", description: "", enabled: true, schedule: { cron: "30 2 * * *", timeZone: "UTC" }, scope: { jql: 'project in (TPP, OPS) AND labels in ("Needs Triage", needs_triage, NeedsTriage)', maxIssues: 100 }, mode: "script", functions: [mkStep("fn-hy-1", "Normalise the label", "Replace every spelling variant of needs triage with the canonical needs-triage label", HYGIENE_CODE)], agent: { instructions: "", allowedActions: ["get_issue", "search_issues", "add_comment"], maxRounds: 5 }, simulationMode: false, suppressNotifications: true, createdBy: ACCT, createdAt: "2026-07-30T09:00:00.000Z", updatedAt: "2026-08-27T08:45:00.000Z", stats: { runCount: 86, errorCount: 3, lastRunAt: "2026-09-07T02:30:00.000Z", lastStatus: "ok", lastError: null, nextRunAt: "2026-09-08T02:30:00.000Z" } },
+  { id: "job_readiness", name: "Friday release-readiness report", description: "", enabled: false, schedule: { cron: "0 16 * * 5", timeZone: "Europe/London" }, scope: null, mode: "script", functions: [mkStep("fn-rr-1", "Post the report", "List everything still open in the earliest unreleased version and comment it on TPP-1", DIGEST_CODE)], agent: { instructions: "", allowedActions: ["get_issue", "search_issues", "add_comment"], maxRounds: 5 }, simulationMode: false, suppressNotifications: false, createdBy: "557058:22222222-2222-2222-2222-222222222222", createdAt: "2026-08-01T09:00:00.000Z", updatedAt: "2026-08-22T15:30:00.000Z", stats: { runCount: 4, errorCount: 0, lastRunAt: "2026-08-28T15:00:00.000Z", lastStatus: "ok", lastError: null, nextRunAt: null } },
+];
+const mktJobRow = (j) => ({ id: j.id, name: j.name, enabled: j.enabled !== false, schedule: j.schedule, scoped: Boolean(j.scope), mode: j.mode, simulationMode: j.simulationMode === true, createdBy: j.createdBy, createdAt: j.createdAt, updatedAt: j.updatedAt, stats: j.stats });
+
+const MKT_RUN_ISSUES = ["OPS-418", "OPS-421", "OPS-425", "OPS-427", "OPS-430", "OPS-431"];
+const MKT_JOB_RUN = {
+  success: true,
+  reason: "6/6 issue(s) processed OK, 12 change(s)",
+  issues: MKT_RUN_ISSUES.map((key) => ({ key, success: true, reason: "1 step(s), 2 change(s)" })),
+  changes: MKT_RUN_ISSUES.flatMap((key, i) => [{ action: "addComment", key, id: String(31240 + i), issue: key }, { action: "editIssue", key, update: { labels: [{ add: "unassigned-alert" }] }, issue: key }]),
+  logs: [
+    'Scope "project = OPS AND assignee is EMPTY AND status in (Open, "To Do") AND created <= -2d" matched 6 issue(s) (cap 50)',
+    ...MKT_RUN_ISSUES.flatMap((key, i) => [`--- ${key}: OK — 1 step(s), 2 change(s)`, `    "Comment and flag": addComment: ${31240 + i}`, `    "Comment and flag": editIssue("${key}", update {"labels":[{"add":"unassigned-alert"}]})`, `    "Comment and flag": Completed in ${640 + i * 37}ms`]),
+  ],
+  executionTimeMs: 9420, tokens: 0, aiTimeMs: 0,
+};
+const MKT_LOGS = [
+  { id: "mlg-01", type: "listener", source: "async", issueKey: "CS-2210", fieldId: "avi:jira:commented:issue", eventType: "avi:jira:commented:issue", mode: "agent", isValid: true, reason: "Agent done: Raised CS-2210 to High, labelled customer-escalation and acknowledged the delay with a next step (callback today).", gateReason: "The customer says the invoice bug is blocking month-end close and asks for a manager.", executionTimeMs: 7840, aiTimeMs: 6900, tokens: 2310, rounds: 3, toolCalls: [{ name: "get_issue", ok: true }, { name: "update_fields", ok: true }, { name: "add_labels", ok: true }, { name: "add_comment", ok: true }], changes: [{ action: "updateIssue", key: "CS-2210", fields: { priority: { name: "High" } } }, { action: "editIssue", key: "CS-2210", update: { labels: [{ add: "customer-escalation" }] } }, { action: "addComment", key: "CS-2210", id: "31302" }], logs: ["round 1: get_issue CS-2210", "round 2: update_fields {priority: High}; add_labels customer-escalation", "round 3: add_comment (212 chars); finish"], ruleId: "lst_concierge", ruleName: "Customer complaint concierge", ruleWorkflow: null, timestamp: "2026-09-07T08:01:00.000Z" },
+  { id: "mlg-02", type: "scheduledjob", source: "async", issueKey: "6 issue(s)", fieldId: "0 10 * * 1-5 Europe/Zurich", mode: "script", scheduledFor: "2026-09-07T08:00:00.000Z", manual: false, missed: 0, isValid: true, reason: MKT_JOB_RUN.reason, perIssue: MKT_JOB_RUN.issues, changes: MKT_JOB_RUN.changes, logs: MKT_JOB_RUN.logs, executionTimeMs: 9420, tokens: 0, aiTimeMs: 0, queueDelayMs: 4100, ruleId: "job_unassigned", ruleName: "Alert unassigned open tickets", ruleWorkflow: null, timestamp: "2026-09-07T08:00:14.000Z" },
+  { id: "mlg-03", type: "listener", source: "async", issueKey: "TPP-1187", fieldId: "avi:jira:created:issue", eventType: "avi:jira:created:issue", mode: "script", isValid: true, reason: "Ran 1 step(s), 2 change(s)", gateReason: "No acceptance criteria and a single sentence of description.", executionTimeMs: 2310, aiTimeMs: 1420, tokens: 640, changes: [{ action: "editIssue", key: "TPP-1187", update: { labels: [{ add: "needs-refinement" }] } }, { action: "addComment", key: "TPP-1187", id: "31298" }], logs: ["AI condition met: No acceptance criteria and a single sentence of description.", "Starting 1 step(s) for TPP-1187", "\"Label and ask for acceptance criteria\": editIssue(\"TPP-1187\", update {\"labels\":[{\"add\":\"needs-refinement\"}]})", "\"Label and ask for acceptance criteria\": addComment: 31298", "\"Label and ask for acceptance criteria\": Completed in 870ms", "Finished: 1/1 step(s) succeeded in 2310ms, 2 change(s) made"], ruleId: "lst_triage", ruleName: "Auto-triage vague stories", ruleWorkflow: null, timestamp: "2026-09-07T07:42:00.000Z" },
+  { id: "mlg-04", type: "listener", source: "async", issueKey: "TPP-1184", fieldId: "avi:jira:created:issue", eventType: "avi:jira:created:issue", mode: "script", isValid: true, decision: "SKIP", reason: "AI condition not met: the story has three Given/When/Then scenarios and names the user outcome.", executionTimeMs: 1010, aiTimeMs: 980, tokens: 410, ruleId: "lst_triage", ruleName: "Auto-triage vague stories", ruleWorkflow: null, timestamp: "2026-09-07T06:58:00.000Z" },
+  { id: "mlg-05", type: "scheduledjob", source: "async", issueKey: "(no issue)", fieldId: "0 9 * * 1 Europe/Zurich", mode: "agent", scheduledFor: "2026-09-07T07:00:00.000Z", manual: false, missed: 0, isValid: true, reason: "Agent done: 3 stale epics listed on TPP-1 and labelled stale-epic.", agentOutcome: "done", agentSummary: "3 stale epics listed on TPP-1 and labelled stale-epic.", executionTimeMs: 14200, aiTimeMs: 12100, tokens: 5120, toolCalls: [{ name: "search_issues", ok: true }, { name: "add_comment", ok: true }, { name: "add_labels", ok: true }, { name: "add_labels", ok: true }, { name: "add_labels", ok: true }], changes: [{ action: "addComment", key: "TPP-1", id: "31290" }, { action: "editIssue", key: "TPP-1102", update: { labels: [{ add: "stale-epic" }] } }, { action: "editIssue", key: "TPP-1088", update: { labels: [{ add: "stale-epic" }] } }, { action: "editIssue", key: "TPP-1061", update: { labels: [{ add: "stale-epic" }] } }], logs: ["round 1: search_issues project = TPP AND issuetype = Epic AND status != Done AND updated <= -21d → 3", "round 2: add_comment TPP-1 (388 chars)", "round 3: add_labels TPP-1102, TPP-1088, TPP-1061; finish"], ruleId: "job_epics", ruleName: "Weekly stale-epic digest", ruleWorkflow: null, timestamp: "2026-09-07T07:00:22.000Z" },
+  { id: "mlg-06", type: "listener", source: "async", issueKey: "OPS-433", fieldId: "avi:jira:commented:issue", eventType: "avi:jira:commented:issue", mode: "script", isValid: true, reason: "Ran 1 step(s), 4 change(s)", executionTimeMs: 1980, changes: [{ action: "updateIssue", key: "OPS-433", fields: { priority: { name: "Highest" } } }, { action: "editIssue", key: "OPS-433", update: { labels: [{ add: "p1-escalated" }] } }, { action: "addWatcher", key: "OPS-433", accountId: "5f8a2c1e0b3d4e001c9a7b21" }, { action: "addComment", key: "OPS-433", id: "31285" }], logs: ["Comment matched /urgent|outage|sev ?1|escalat/i", "Starting 1 step(s) for OPS-433", "\"Raise priority and page on-call\": updateIssue(\"OPS-433\", {\"priority\":{\"name\":\"Highest\"}})", "\"Raise priority and page on-call\": addWatcher 5f8a2c1e0b3d4e001c9a7b21", "\"Raise priority and page on-call\": addComment: 31285", "Finished: 1/1 step(s) succeeded in 1980ms, 4 change(s) made"], ruleId: "lst_p1", ruleName: "Escalate P1 comments", ruleWorkflow: null, timestamp: "2026-09-07T05:18:00.000Z" },
+];
+const MKT_API_TOKENS = { success: true, url: "https://9d2f6b1c-3e4a-4f8b-a1c7-5e0d2b9f7a63.hello.atlassian-dev.net/x1/Qm9vbVdvcmtmbG93/2c7a4e19-8f3b-4d6e-9a21-b5c8e0f4d7a2", tokens: [
+  { id: "tok_ci", name: "CI pipeline", prefix: "cgr_4d8e1f", createdAt: "2026-08-12T09:30:00.000Z", createdBy: ACCT, lastUsedAt: "2026-09-07T06:15:00.000Z", revokedAt: null },
+  { id: "tok_harness", name: "Test harness", prefix: "cgr_b07c92", createdAt: "2026-08-28T14:05:00.000Z", createdBy: ACCT, lastUsedAt: "2026-09-06T22:40:00.000Z", revokedAt: null },
+  { id: "tok_old", name: "Migration script (Aug)", prefix: "cgr_11aa2b", createdAt: "2026-08-03T08:00:00.000Z", createdBy: ACCT, lastUsedAt: "2026-08-19T10:12:00.000Z", revokedAt: "2026-08-20T07:00:00.000Z" },
+] };
+// Returns a Promise for the resolvers the marketing dataset overrides, else null.
+function mktInvoke(name, payload) {
+  const byId = (arr) => arr.find((x) => x.id === (payload && payload.id));
+  switch (name) {
+    case "listProjects": return Promise.resolve(MKT_PROJECTS);
+    case "getListeners": return Promise.resolve({ success: true, listeners: MKT_LISTENERS.map(mktListenerRow) });
+    case "getListener": { const l = byId(MKT_LISTENERS); return Promise.resolve(l ? { success: true, listener: l } : { success: false, error: "Listener not found" }); }
+    case "saveListener": { const l = (payload && payload.listener) || {}; return Promise.resolve({ success: true, listener: { ...l, id: l.id || "lst_new1", stats: l.stats || { runCount: 0, errorCount: 0, lastRunAt: null, lastStatus: null, lastError: null, lastIssueKey: null } } }); }
+    case "setListenerEnabled": { const l = byId(MKT_LISTENERS) || {}; return Promise.resolve({ success: true, listener: { ...l, enabled: payload && payload.enabled } }); }
+    case "deleteListener": return Promise.resolve({ success: true, removed: true });
+    case "getScheduledJobs": return Promise.resolve({ success: true, jobs: MKT_JOBS.map(mktJobRow) });
+    case "getScheduledJob": { const j = byId(MKT_JOBS); return Promise.resolve(j ? { success: true, job: j } : { success: false, error: "Scheduled job not found" }); }
+    case "saveScheduledJob": { const j = (payload && payload.job) || {}; const prev = MKT_JOBS.find((x) => x.id === j.id); return Promise.resolve({ success: true, job: { ...j, id: j.id || "job_new1", stats: (prev && prev.stats) || { runCount: 0, errorCount: 0, lastRunAt: null, lastStatus: null, lastError: null, nextRunAt: null } } }); }
+    case "setScheduledJobEnabled": { const j = byId(MKT_JOBS) || {}; return Promise.resolve({ success: true, job: { ...j, enabled: payload && payload.enabled } }); }
+    case "deleteScheduledJob": return Promise.resolve({ success: true, removed: true });
+    case "runScheduledJobNow": return Promise.resolve({ success: true, async: true, taskId: "task-mkt-job" });
+    case "getAsyncTaskResult":
+      if (payload && payload.taskId === "task-mkt-job") return Promise.resolve({ success: true, status: "done", result: MKT_JOB_RUN });
+      return null;
+    case "getLogs": {
+      const rid = payload && payload.ruleId;
+      return Promise.resolve({ success: true, logs: rid ? MKT_LOGS.filter((l) => l.ruleId === rid) : MKT_LOGS });
+    }
+    case "getApiTokens": return Promise.resolve(MKT_API_TOKENS);
+    case "createApiToken": return Promise.resolve({ success: true, token: "cgr_e7c41a9f2b8d6053f1a4c9e2b7d80f6a13c5e9b2d4f7a081", row: { id: "tok_new", name: (payload && payload.name) || "API token", prefix: "cgr_e7c41a", createdAt: new Date().toISOString(), createdBy: ACCT, lastUsedAt: null, revokedAt: null } });
+    default: return null;
+  }
+}
+
 /* ----------------------------- invoke router --------------------------------- */
 function invoke(name, payload) {
   const s = shot();
-  const isAdmin = s === "admin";
+  const mkt = s.startsWith("admin-");
+  const isAdmin = s === "admin" || mkt;
+  if (mkt) { const r = mktInvoke(name, payload); if (r) return r; }
   // Error-state testing: window.__FAIL__ = ["getSkills", ...] makes those resolvers
   // reject, so components take their catch → loadError path. Set via capture.mjs.
   if (typeof window !== "undefined" && Array.isArray(window.__FAIL__) && window.__FAIL__.includes(name)) {

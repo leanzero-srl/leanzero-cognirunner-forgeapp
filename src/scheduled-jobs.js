@@ -36,7 +36,7 @@
  */
 import storage from "@forge/kvs";
 import api, { route } from "@forge/api";
-import { validateCron, normalizeTimeZone, dueInWindow, nextRuns, describeCron } from "./shared/cron.js";
+import { validateCron, normalizeTimeZone, dueInWindow, nextRuns, describeCron, fireIdentity } from "./shared/cron.js";
 import { normalizeAllowedActions, DEFAULT_AGENT_ACTIONS, DEFAULT_AGENT_ROUNDS, MAX_AGENT_ROUNDS } from "./shared/agent-actions.js";
 import { normalizeStep } from "./listeners.js";
 import { agentResultFields, SCOPED_AGENT_SUMMARY_BUDGET_BYTES, boundScopedJobLog } from "./shared/agent-result.js";
@@ -240,8 +240,22 @@ export async function scheduledTick() {
   let rows; let sched;
   try { [rows, sched] = await Promise.all([readJobIndex(), readSchedMap()]); } catch (e) { console.error("[job] index read failed:", e && e.message); return; }
   // Recover completed runs even on sites with listeners but no scheduled jobs.
-  try { sched[":statsRecovery"] = { cursor: await recoverRuleStats(sched[":statsRecovery"]?.cursor) }; }
-  catch (error) { console.warn("[stats] recovery deferred:", error?.message); }
+  // On failure the cursor MUST be dropped: it is opaque, it is held across 5-minute
+  // tick boundaries, and it is the most likely CAUSE of the failure — keeping it made
+  // every later tick replay the same failing page, killing stats recovery for good.
+  // Restarting from the first page re-reads work already enqueued (the receipts are
+  // idempotent), and the consecutive-failure count makes a page that always fails
+  // loud instead of silent.
+  const recovery = sched[":statsRecovery"] || {};
+  try {
+    sched[":statsRecovery"] = { cursor: await recoverRuleStats(recovery.cursor) };
+  } catch (error) {
+    const fails = (Number(recovery.fails) || 0) + 1;
+    sched[":statsRecovery"] = { cursor: null, fails };
+    const where = recovery.cursor ? "cursor dropped, next tick restarts from the first page" : "already at the first page";
+    const msg = `[stats] recovery failed ${fails}x (${where}): ${error?.message}`;
+    if (fails >= 3) console.error(msg); else console.warn(msg);
+  }
   // Drop bookkeeping for jobs that no longer exist (keeps the map bounded).
   const ids = new Set(rows.map((r) => r.id));
   for (const k of Object.keys(sched)) if (k !== ":statsRecovery" && !ids.has(k)) delete sched[k];
@@ -253,7 +267,10 @@ export async function scheduledTick() {
   let queued = 0;
   for (const d of due) {
     if (Date.now() - started > TICK_BUDGET_MS) { console.warn(`[job] tick budget hit after ${queued} enqueue(s)`); break; }
-    const claimKey = `job_claim:${safeKeyPart(d.job.id)}:${d.fireAt}`;
+    // Claim identity comes from the SCHEDULE, not the raw instant: for a wall-clock
+    // schedule ("0 2 * * *") it is the local minute, so the two 02:00 hours of a
+    // DST fall-back can never mint two claims — see fireIdentity in shared/cron.js.
+    const claimKey = `job_claim:${safeKeyPart(d.job.id)}:${safeKeyPart(fireIdentity(d.job.schedule.cron, d.fireAt, d.job.schedule.timeZone))}`;
     if (!(await claimRuleExecution(storage, claimKey, CLAIM_TTL, "job"))) continue; // duplicate tick delivery
     const full = await getJob(d.job.id);
     if (!full || full.enabled === false) continue;
@@ -355,6 +372,14 @@ export const runJob = async ({ job, scheduledFor = null, missed = 0, manual = fa
   return { log, success, issues: log.perIssue };
 };
 
+// Identity of a scheduled (non-manual) delivery. Falls back to the raw value when the
+// queued payload carries no parsable due time (older payloads, hand-pushed tasks).
+const scheduledRunIdentity = (job, scheduledFor, taskId) => {
+  const ms = scheduledFor ? Date.parse(scheduledFor) : NaN;
+  if (!Number.isFinite(ms)) return String(scheduledFor || taskId);
+  return fireIdentity(job.schedule.cron, ms, job.schedule.timeZone);
+};
+
 /** Queue consumer entry: taskType "scheduledjob" (polled by "Run now"). */
 export const executeScheduledJobTask = async (params, taskId) => {
   const m = await idx();
@@ -365,9 +390,11 @@ export const executeScheduledJobTask = async (params, taskId) => {
     await m.storeLog({ type: "scheduledjob", source: "async", issueKey: "(no issue)", fieldId: `${job.schedule.cron} ${job.schedule.timeZone}`, isValid: true, decision: "SKIP", reason: "Skipped: job was disabled before the queued run started.", executionTimeMs: 0, ruleId: job.id, ruleName: job.name, ruleWorkflow: null });
     return { skipped: true, reason: "disabled" };
   }
-  // At-least-once delivery guard: a scheduled run is identified by job + due minute,
-  // a manual run by its task id. The atomic claim precedes every script/AI write.
-  const claimKey = EXEC_CLAIM_PREFIX + safeKeyPart(manual ? `${job.id}:manual:${taskId}` : `${job.id}:${scheduledFor || taskId}`);
+  // At-least-once delivery guard: a scheduled run is identified by job + the FIRING
+  // the tick planned (fireIdentity: the local minute for a wall-clock schedule, the
+  // UTC instant for a real-time one, so a fall-back hour is one run and `*/15` keeps
+  // both), a manual run by its task id. The atomic claim precedes every script/AI write.
+  const claimKey = EXEC_CLAIM_PREFIX + safeKeyPart(manual ? `${job.id}:manual:${taskId}` : `${job.id}:${scheduledRunIdentity(job, scheduledFor, taskId)}`);
   if (!(await claimRuleExecution(storage, claimKey, EXEC_CLAIM_TTL, "job"))) {
     console.log(`[job] duplicate delivery of ${taskId} suppressed`);
     return { skipped: true, reason: "duplicate delivery" };

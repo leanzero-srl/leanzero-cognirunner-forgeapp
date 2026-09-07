@@ -35,6 +35,14 @@ const MATRIX = [
     { name: "admin-permissions", shot: "admin", tab: "Permissions", wait: ".perm-admin-card" },
     { name: "admin-settings", shot: "admin", tab: "Settings", wait: ".openai-status" },
     { name: "admin-skills-error", shot: "admin", tab: "Skills", failInvokes: ["getSkills"], wait: ".load-error" },
+    // ── Marketing: Listeners · Scheduled Jobs · API access (shot "admin-mkt" → the richer
+    // dataset in bridge.js; run with `node capture.mjs admin-panel admin-` for just these).
+    { name: "admin-listeners", shot: "admin-mkt", tab: "Listeners", expandRow: "Auto-triage vague stories", wait: ".rule-accordion-inner .runres-badge" },
+    { name: "admin-listener-editor", shot: "admin-mkt", tab: "Listeners", editRow: "Auto-triage vague stories", wait: ".lst-editor .cm-content" },
+    { name: "admin-jobs", shot: "admin-mkt", tab: "Scheduled Jobs", wait: ".lst-table tbody tr" },
+    { name: "admin-job-editor", shot: "admin-mkt", tab: "Scheduled Jobs", editRow: "Alert unassigned open tickets", wait: ".schp-preview-run" },
+    { name: "admin-job-report", shot: "admin-mkt", tab: "Scheduled Jobs", runNowRow: "Alert unassigned open tickets", hideToasts: true, wait: ".runres-badge.ok" },
+    { name: "admin-api-access", shot: "admin-mkt", tab: "Settings", createToken: "Migration script", hideToasts: true, clipTo: ".apx", wait: ".apx-fresh" },
   ]},
   { app: "config-ui", shots: [
     { name: "config-validator", shot: "cfg-validator", wait: ".container .card" },
@@ -85,14 +93,16 @@ const NO_ANIM = `*, *::before, *::after { animation: none !important; transition
 /* expand internal scroll boxes so full content is captured */
 .logs-list, .doc-list, .log-trace-content, .st-value, .doc-preview-content { max-height: none !important; overflow: visible !important; }`;
 
-async function run(only) {
+async function run(only, namePrefix) {
   fs.mkdirSync(OUT, { recursive: true });
   for (const t of THEMES) fs.mkdirSync(path.join(OUT, t), { recursive: true });
   const browser = await chromium.launch();
   let ok = 0, fail = 0;
 
-  for (const { app, shots, rootSel = ".container" } of MATRIX) {
+  for (const { app, shots: allShots, rootSel = ".container" } of MATRIX) {
     if (only && app !== only) continue;
+    const shots = namePrefix ? allShots.filter((x) => x.name.startsWith(namePrefix)) : allShots;
+    if (!shots.length) continue;
     const root = path.join(STATIC, app, "build-shot");
     if (!fs.existsSync(path.join(root, "index.html"))) { console.log(`SKIP ${app}: no build-shot`); continue; }
     const { server, port } = await serve(root);
@@ -100,7 +110,8 @@ async function run(only) {
 
     for (const s of shots) {
       for (const theme of THEMES) {
-        const ctx = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: 2, reducedMotion: "reduce" });
+        // Fixed zone so "due …" / "last run" timestamps render the same on any machine.
+        const ctx = await browser.newContext({ viewport: VIEWPORT, deviceScaleFactor: 2, reducedMotion: "reduce", timezoneId: "Europe/Zurich" });
         const page = await ctx.newPage();
         const label = `${theme}/${s.name}`;
         try {
@@ -161,12 +172,29 @@ async function run(only) {
               await page.getByRole("button", { name: /Preview import/ }).first().click({ timeout: 4000 }).catch(() => {});
             }
           }
-          if (s.wait) await page.waitForSelector(s.wait, { timeout: 12000 }).catch(() => console.log(`   (wait '${s.wait}' missed for ${label})`));
+          // ── Listeners / Jobs / API-access row actions (marketing shots) ──
+          const rowOf = (name) => page.locator(".lst-table tbody tr", { hasText: name }).first();
+          if (s.editRow || s.runNowRow || s.expandRow) await page.locator(".lst-table tbody tr").first().waitFor({ timeout: 10000 }).catch(() => {});
+          if (s.expandRow) await rowOf(s.expandRow).locator(".rule-expand-btn").click({ timeout: 6000 }).catch(() => {});
+          if (s.editRow) await rowOf(s.editRow).locator("button", { hasText: /^Edit$/ }).click({ timeout: 6000 }).catch(() => {});
+          if (s.runNowRow) await rowOf(s.runNowRow).locator("button", { hasText: /Run now/ }).click({ timeout: 6000 }).catch(() => {});
+          if (s.createToken) {
+            await page.locator(".apx-input").fill(s.createToken).catch(() => {});
+            await page.locator(".apx-create").click({ timeout: 6000 }).catch(() => {});
+          }
+          if (s.wait) await page.waitForSelector(s.wait, { timeout: 15000 }).catch(() => console.log(`   (wait '${s.wait}' missed for ${label})`));
           if (s.openTrace) await page.evaluate(() => document.querySelectorAll("details.log-trace").forEach((d) => { d.open = true; }));
+          if (s.scrollTo) await page.evaluate((sel) => { const el = document.querySelector(sel); if (el) el.scrollIntoView({ block: "start" }); window.scrollBy(0, -16); }, s.scrollTo);
+          if (s.hideToasts) { await page.waitForTimeout(300); await page.evaluate(() => document.querySelectorAll(".mls-toast, .toast, [class*='toast']").forEach((t) => t.remove())); }
           await page.waitForTimeout(500); // settle codemirror / layout
-          const target = (await page.$(rootSel)) || page;
+          const target = s.viewportShot ? page : ((await page.$(rootSel)) || page);
           const file = path.join(OUT, theme, `${s.name}.png`);
-          await target.screenshot({ path: file });
+          if (s.clipTo) {
+            // The element plus a margin of page background (a bare card crop looks pasted-on).
+            const pad = s.pad ?? 28;
+            const r = await page.evaluate((sel) => { const b = document.querySelector(sel).getBoundingClientRect(); return { x: b.left + window.scrollX, y: b.top + window.scrollY, w: b.width, h: b.height }; }, s.clipTo);
+            await page.screenshot({ path: file, fullPage: true, clip: { x: Math.max(0, r.x - pad), y: Math.max(0, r.y - pad), width: r.w + pad * 2, height: r.h + pad * 2 } });
+          } else await (s.viewportShot ? page.screenshot({ path: file, fullPage: false }) : target.screenshot({ path: file }));
           const { size } = fs.statSync(file);
           console.log(`OK  ${label}  (${Math.round(size / 1024)} KB)`);
           // Objective horizontal-overflow check + worst offending element.
@@ -197,4 +225,4 @@ async function run(only) {
   console.log(`\nDone. ${ok} ok, ${fail} failed. Output: ${OUT}`);
 }
 
-run(process.argv[2]);
+run(process.argv[2], process.argv[3]);

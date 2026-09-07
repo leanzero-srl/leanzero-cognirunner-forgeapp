@@ -179,6 +179,10 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
   const [testRunning, setTestRunning] = useState(false);
   const [testResult, setTestResult] = useState(null);
   const [created, setCreated] = useState(false);
+  // Non-blocking: the rule IS created, but its Jira instance id could not be
+  // recorded. Surfaced on the success screen because it changes what a later
+  // "Delete everywhere" can do.
+  const [instanceIdWarning, setInstanceIdWarning] = useState(null);
   const [submitted, setSubmitted] = useState(false); // for field validation
   // Monotonic tokens — going back via the breadcrumb and re-picking while a
   // fetch is in flight must not render the previous selection's results or
@@ -315,6 +319,7 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
 
     setSaving(true);
     setError(null);
+    setInstanceIdWarning(null);
 
     const isPostFunction = ruleType.startsWith("postfunction");
     // Type-namespaced id with a per-instance suffix — without it, a second
@@ -451,8 +456,17 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
         // inferring which one it was. Best-effort: the rule is already live and
         // registered, so a failed patch must not read as a failed save.
         if (injectResult.ruleId) {
+          // A refusal RESOLVES here, it does not throw — `{ success: false }` is the
+          // app-wide resolver contract — so catching only a throw let a registry
+          // refusal (near-full registry, role re-check) pass as recorded. Both
+          // shapes now warn: the save still succeeded, but the operator has to know
+          // the delete path lost its unambiguous handle.
+          const warn = (why) => {
+            console.warn("[AddRuleWizard] could not record ruleInstanceId:", why);
+            setInstanceIdWarning(`Rule created, but its workflow instance id could not be recorded — ${why}. “Delete everywhere” may have to infer which rule on this transition to remove.`);
+          };
           try {
-            await invoke(isPostFunction ? "registerPostFunction" : "registerConfig", {
+            const idPatch = await invoke(isPostFunction ? "registerPostFunction" : "registerConfig", {
               id: ruleId,
               type: ruleType,
               ...configPayload,
@@ -460,7 +474,8 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
               workflow: workflowData,
               ruleInstanceId: injectResult.ruleId,
             });
-          } catch { /* the rule is live and registered; the id is an optimisation */ }
+            if (!idPatch || idPatch.success === false) warn(idPatch?.error || "the registry refused the update");
+          } catch (e) { warn(e?.message || "the request failed"); }
         }
         if (onCreated) onCreated();
         setCreated(true);
@@ -509,10 +524,15 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
             {RULE_TYPE_OPTIONS.find((o) => o.value === ruleType)?.label} has been added to{" "}
             <strong>{selectedTransition?.name}</strong> on {selectedWorkflow?.name}.
           </div>
+          {instanceIdWarning && (
+            <div className="alert alert-warning" style={{ marginBottom: "12px", textAlign: "left" }}>
+              <span>{instanceIdWarning}</span>
+            </div>
+          )}
           <div style={{ display: "flex", gap: "8px" }}>
             <button className="btn-small" onClick={onClose}>Done</button>
             <button className="btn-small btn-edit" onClick={() => {
-              setCreated(false); setStep(1); setSubmitted(false);
+              setCreated(false); setStep(1); setSubmitted(false); setInstanceIdWarning(null);
               setSelectedProject(null); setSelectedWorkflow(null); setSelectedTransition(null); setRuleType(null);
               setFieldId(""); setPrompt(""); setConditionPrompt(""); setActionPrompt(""); setActionFieldId(""); setCrossCheckClaims(false);
               setDocFormat("pdf"); setContentPrompt(""); setDocTitlePrompt(""); setAttachComment(false);

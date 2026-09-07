@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 const { runSandboxSteps, executePostFunction, handler } = await import("../../src/index.js");
 const { default: storage } = await import("@forge/kvs");
 const { default: jira, pushed } = await import("@forge/api");
+const { ADMIN_PRINCIPAL, seedAdminRoster } = await import("../lib/harness-identity.mjs");
 
 let passed = 0; let failed = 0;
 const check = async (name, fn) => {
@@ -185,9 +186,11 @@ for (const [thrown, expected] of [
     } finally { storage.set = set; }
   });
   await check(`Test Run reports throw ${thrown} and preserves preceding changes`, async () => {
+    // testPostFunction is editor-gated, and the checks above reset storage.
+    seedAdminRoster(storage);
     const result = await handler({ call: { functionKey: "testPostFunction", payload: {
       issueKey: "TEST-1", code: `api.log("before throw"); await api.addComment("dry run"); throw ${thrown};`,
-    } }, context: {} }, {});
+    } } }, ADMIN_PRINCIPAL);
     assert.equal(result.success, false);
     assert.equal(result.logs.at(-1), `ERROR: ${expected}`);
     assert.equal(result.logs.filter((line) => line === "before throw").length, 1);

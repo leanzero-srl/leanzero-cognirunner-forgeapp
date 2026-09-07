@@ -1,0 +1,86 @@
+<!doctype html>
+<!-- CogniRunner brand composition v3 (2026-09-07) — the YouTube-thumbnail visual language applied to the
+     Marketplace banner, the website OG image and the in-page hero strip.
+     Language: deep saturated navy bg + a lighter skewed wedge, CogniRunner mark top-left, yellow #FDE047
+     pill, an Inter 900 headline with ONE |yellow| word (auto-fitted after fonts load so no word touches a
+     window), tilted white windows with a 10px yellow border and a heavy shadow, "by LeanZero" bottom-left.
+     Query: w, h, pill, title (|word| = yellow), bg, bg2, mode=banner|og|hero, img (banner/og), img1..img3 (hero).
+     Render with static/_screenshot-harness/render-brand-v3.mjs at DSF 2 then Lanczos-downscale. -->
+<html><head><meta charset="utf-8">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@700;800;900&display=swap" rel="stylesheet">
+<style>
+  :root{--bg:#0B2A8A;--bg2:#1740B8;--y:#FDE047;--w:1120px;--h:548px;--s:1}
+  html,body{margin:0;width:var(--w);height:var(--h);overflow:hidden;background:var(--bg);font-family:Inter,'Helvetica Neue',sans-serif;-webkit-font-smoothing:antialiased;position:relative;color:#fff}
+  .wedge{position:absolute;right:calc(-140px*var(--s));top:calc(-120px*var(--s));width:58%;height:140%;background:var(--bg2);transform:skewX(-12deg);border-radius:calc(40px*var(--s))}
+  .brand{position:absolute;left:calc(44px*var(--s));top:calc(36px*var(--s));display:flex;align-items:center;gap:calc(11px*var(--s))}
+  .brand img{width:calc(44px*var(--s));height:calc(44px*var(--s))}
+  .brand .name{font-weight:900;font-size:calc(27px*var(--s));letter-spacing:-.5px}
+  .pill{position:absolute;left:calc(44px*var(--s));top:calc(102px*var(--s));padding:calc(8px*var(--s)) calc(16px*var(--s));border-radius:calc(9px*var(--s));background:var(--y);color:#111827;font-weight:900;font-size:calc(19px*var(--s));letter-spacing:2.2px;text-transform:uppercase;white-space:nowrap}
+  h1{position:absolute;left:calc(42px*var(--s));top:calc(160px*var(--s));bottom:calc(92px*var(--s));margin:0;display:flex;flex-direction:column;justify-content:center;font-weight:900;font-size:96px;line-height:.94;letter-spacing:-4px;text-shadow:0 7px 0 rgba(0,0,0,.35)}
+  h1 em{font-style:normal;color:var(--y)}
+  h1 span,h1 em{display:block}
+  .lz{position:absolute;left:calc(44px*var(--s));bottom:calc(36px*var(--s));display:flex;align-items:center;gap:calc(9px*var(--s));font-weight:800;font-size:calc(22px*var(--s))}
+  .lz b{opacity:.85;font-weight:700;font-size:calc(19px*var(--s))}
+  .lz img{height:calc(24px*var(--s))}
+  .win{position:absolute;border-radius:calc(18px*var(--s));overflow:hidden;background:#fff;border:calc(10px*var(--s)) solid var(--y);box-sizing:border-box;box-shadow:0 36px 70px rgba(0,0,0,.55)}
+  .win img{display:block;width:100%;height:auto}
+</style></head><body>
+<div class="wedge"></div>
+<div class="brand"><img id="logo" alt=""><span class="name">CogniRunner</span></div>
+<div class="pill" id="pill"></div>
+<h1 id="title"></h1>
+<div class="lz"><b>by</b><img id="lzimg" alt="">LeanZero</div>
+<div id="wins"></div>
+<script>
+  const q = new URLSearchParams(location.search);
+  const W = +q.get('w') || 1120, H = +q.get('h') || 548, mode = q.get('mode') || 'banner';
+  const S = +q.get('s') || 1;
+  const R = document.documentElement.style;
+  R.setProperty('--w', W + 'px'); R.setProperty('--h', H + 'px'); R.setProperty('--s', S);
+  R.setProperty('--bg', q.get('bg') || '#0B2A8A'); R.setProperty('--bg2', q.get('bg2') || '#1740B8');
+  document.getElementById('pill').textContent = q.get('pill') || '';
+  const esc = s => s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+  // one word per line (a~b keeps two words on one line); |word| renders yellow
+  document.getElementById('title').innerHTML = esc(q.get('title') || '').split(' ').map(w => {
+    const m = w.match(/^\|(.+)\|$/); const t = (m ? m[1] : w).replace(/~/g, ' ');
+    return m ? '<em>' + t + '</em>' : '<span>' + t + '</span>';
+  }).join('');
+  document.getElementById('logo').src = 'cr-logo.svg';
+  document.getElementById('lzimg').src = 'leanzero.png';
+
+  // windows: banner/og = one window on the right; hero = three staggered windows
+  const wins = document.getElementById('wins');
+  const spec = mode === 'hero'
+    ? [ { src: q.get('img1'), left: +q.get('x1') || 760,  top: +q.get('y1') || 70,  width: +q.get('w1') || 520, rot: -4 },
+        { src: q.get('img2'), left: +q.get('x2') || 1110, top: +q.get('y2') || 310, width: +q.get('w2') || 460, rot: 3 },
+        { src: q.get('img3'), left: +q.get('x3') || 1520, top: +q.get('y3') || 96,  width: +q.get('w3') || 330, rot: -5 } ]
+    : [ { src: q.get('img'), right: +q.get('right') || 44, width: +q.get('ww') || 540, rot: -4, center: true } ];
+  let pending = spec.length, leftLimit = W;
+  for (const s of spec) {
+    const d = document.createElement('div'); d.className = 'win'; d.style.width = s.width + 'px';
+    if (s.center) { d.style.right = s.right + 'px'; d.style.top = '50%'; d.style.transform = `translateY(-50%) rotate(${s.rot}deg)`; }
+    else { d.style.left = s.left + 'px'; d.style.top = s.top + 'px'; d.style.transform = `rotate(${s.rot}deg)`; }
+    const im = document.createElement('img'); im.src = s.src; d.appendChild(im); wins.appendChild(d);
+    im.onload = () => { if (--pending === 0) fit(); };
+  }
+  function fit() {
+    // headline column stops before the left-most window edge (after rotation)
+    for (const d of wins.children) leftLimit = Math.min(leftLimit, d.getBoundingClientRect().left);
+    const limit = leftLimit - 28 * S;
+    document.fonts.ready.then(() => {
+      const h1 = document.getElementById('title');
+      const avail = h1.getBoundingClientRect().height;
+      let fs = +q.get('fs') || 120;
+      const apply = () => { h1.style.fontSize = fs + 'px'; h1.style.letterSpacing = (-fs * 0.044) + 'px'; };
+      apply();
+      const wide = () => Math.max(...[...h1.querySelectorAll('span,em')].map(e => e.getBoundingClientRect().right)) > limit;
+      const tall = () => [...h1.querySelectorAll('span,em')].reduce((a, e) => a + e.getBoundingClientRect().height, 0) > avail;
+      while (fs > 40 && (wide() || tall())) { fs -= 2; apply(); }
+      // nothing may be cut off: every window's rotated bounding box must sit inside the canvas
+      const clipped = [...wins.children].map(d => d.getBoundingClientRect()).filter(r => r.left < 0 || r.top < 0 || r.right > W || r.bottom > H).length;
+      document.body.dataset.clipped = clipped;
+      document.body.dataset.fs = fs; document.body.dataset.ready = '1';
+    });
+  }
+</script>
+</body></html>

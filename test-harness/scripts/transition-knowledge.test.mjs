@@ -8,6 +8,7 @@
 import "../lib/register-mocks-index.mjs";
 import assert from "node:assert/strict";
 import storage from "../lib/mock-kvs.mjs";
+import { ADMIN_PRINCIPAL, seedAdminRoster } from "../lib/harness-identity.mjs";
 import { TRANSITION_API_REFERENCE, ARRAY_FIELDS_API_REFERENCE, AGILE_API_REFERENCE, API_SIGNATURE_REFERENCE, FIELD_TYPE_TABLE, SANDBOX_API_METHODS } from "../../src/shared/sandbox-api-spec.js";
 import { BUILTIN_DOCS, DOC_SEED_VERSION } from "../../src/shared/builtin-docs.js";
 import { BUILTIN_SKILLS, SKILL_SEED_VERSION } from "../../src/shared/builtin-skills.js";
@@ -61,7 +62,9 @@ for (const [id, reference, actions] of [
   assert.ok(entry.instructions.includes(reference), `${id} consumes the spec reference`);
   assert.doesNotMatch(entry.instructions + entry.examples, /sandbox only sets fields|sandbox cannot move issues between sprints|unavailable in this sandbox/i);
   forgeApi.__calls.length = 0;
-  const preview = await handler({ call: { functionKey: "testPostFunction", payload: { issueKey: "ABC-1", code: entry.examples } }, context: {} }, {});
+  // testPostFunction is editor-gated — drive it as a known admin.
+  seedAdminRoster(storage);
+  const preview = await handler({ call: { functionKey: "testPostFunction", payload: { issueKey: "ABC-1", code: entry.examples } } }, ADMIN_PRINCIPAL);
   assert.equal(preview.success, true, JSON.stringify(preview));
   assert.deepEqual(preview.changes.map((c) => c.action), actions);
   assert.ok(preview.changes.every((c) => c.simulated === true));

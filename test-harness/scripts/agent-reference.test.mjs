@@ -75,8 +75,20 @@ for (const value of ["lzpt-3", "MIXED_Key1-42", "200", " LZPT-3 "]) for (const f
   const name = field === "parentKey" ? "create_issue" : field === "otherIssueKey" ? "link_issues" : "add_comment";
   const { state, result } = await exercise([call(name, { ...validArgs(name), [field]: value })]);
   assert.equal(result.toolCalls[0].ok, true); assert.equal(state.writes.length, 1);
-  const write = state.writes[0]; const actual = field === "parentKey" ? write.args[0].parent.key : field === "otherIssueKey" ? write.args[0] : write.key;
+  const write = state.writes[0];
+  // create_issue builds the parent reference BY HAND, and Jira wants { id } for a
+  // numeric issue ID and { key } for a key — the schema advertises both forms.
+  const parent = write.args[0] && write.args[0].parent;
+  const actual = field === "parentKey" ? (parent && (parent.key ?? parent.id)) : field === "otherIssueKey" ? write.args[0] : write.key;
   assert.equal(actual, value.trim());
+  if (field === "parentKey") assert.deepEqual(parent, /^\d+$/.test(value.trim()) ? { id: value.trim() } : { key: value.trim() });
+});
+await check("a numeric parentKey becomes fields.parent.id, never a bogus key", async () => {
+  const { state, result } = await exercise([call("create_issue", { ...validArgs("create_issue"), parentKey: "10042" })], { issueKey: null });
+  assert.equal(result.toolCalls[0].ok, true);
+  // { key: "10042" } is the 400 the model could not explain from its instructions.
+  assert.deepEqual(state.writes[0].args[0].parent, { id: "10042" });
+  assert.equal(state.writes[0].args[0].parent.key, undefined);
 });
 await check("non-issue run requires an explicit target", async () => {
   const { state, result } = await exercise([call("add_comment", { text: "test" })], { issueKey: null });

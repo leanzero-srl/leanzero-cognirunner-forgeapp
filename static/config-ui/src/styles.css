@@ -294,6 +294,21 @@ html[data-color-mode="dark"] .button-disabled {
 .dropdown-trigger:focus,
 .dropdown-trigger.dropdown-open { border-color: var(--primary-color); }
 .dropdown-trigger.dropdown-error { border-color: var(--error-color) !important; }
+
+/* Searchable select = COMBOBOX: while the menu is open the trigger IS the search
+   box. There used to be a second search input inside the panel, so a field
+   rendered as two identical-looking bars stacked on each other and only the
+   lower one accepted typing. The wrapper keeps every .dropdown-trigger visual;
+   the input inside is chrome-free so it reads as one control, not a field
+   nested inside a field. */
+.dropdown-trigger.dropdown-combobox { cursor: text; display: flex; align-items: center; }
+.dropdown-combobox-input {
+  flex: 1 1 auto; min-width: 0; width: 100%;
+  border: 0; outline: none; padding: 0; margin: 0;
+  background: transparent; color: var(--text-color);
+  font: inherit; line-height: inherit;
+}
+.dropdown-combobox-input::placeholder { color: var(--text-muted); }
 .dropdown-trigger .dropdown-placeholder { color: var(--text-muted); }
 
 .dropdown-chevron {

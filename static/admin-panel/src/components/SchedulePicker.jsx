@@ -5,7 +5,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import CustomSelect from "./CustomSelect";
 import { SCHEDULE_PRESETS, presetToCron, cronToPreset, validateCron, describeCron, nextRuns, normalizeTimeZone } from "../../../../src/shared/cron.js";
 
@@ -42,8 +42,37 @@ export default function SchedulePicker({ value, onChange, disabled = false }) {
     const next = presetToCron(nextPreset, { hour, minute, days, dom, ...opts });
     onChange({ cron: next, timeZone });
   };
+
+  // What the user is CURRENTLY typing in a number box, per field. An empty or
+  // half-typed box is not a value and must never reach the cron: `presetToCron`
+  // reads "" as finite (Number("") === 0) and then parseInt("", 10) === NaN, so
+  // clearing the minute spinner emitted a literal `NaN 9 * * *`, which failed
+  // validation and snapped the field back to 0 under the user's cursor.
+  // While a box is being edited the cron keeps its last VALID number; on blur the
+  // draft is dropped so the box shows exactly what the cron holds (clamped).
+  const [typing, setTyping] = useState({});
+  const shown = (field, committed) => (typing[field] !== undefined ? typing[field] : committed);
+  const onNum = (field, raw) => {
+    setTyping((t) => ({ ...t, [field]: raw }));
+    if (/^\d+$/.test(String(raw).trim())) emit(preset, { [field]: Number(raw) });
+  };
+  const endNum = (field) => setTyping((t) => {
+    if (t[field] === undefined) return t;
+    const next = { ...t }; delete next[field]; return next;
+  });
+
+  // Keep the preset and the cron honest with each other. A cron that this builder
+  // cannot express (hand-edited, imported, or legacy) would otherwise leave the
+  // preset claiming "Every day" while the spinners silently showed the 9:00
+  // fallback; showing the custom field instead tells the truth about what is
+  // stored. Only fires for a cron that arrived from OUTSIDE — emit() can no
+  // longer produce an unparseable one.
+  useEffect(() => {
+    if (parsed.preset === "custom" && preset !== "custom") { setPreset("custom"); setCustomText(cron); }
+  }, [parsed.preset, preset, cron]);
+
   const choosePreset = (p) => {
-    setPreset(p);
+    setPreset(p); setTyping({});
     if (p === "custom") { setCustomText(cron); onChange({ cron, timeZone }); } else emit(p, {});
   };
   const toggleDay = (d) => {
@@ -61,23 +90,23 @@ export default function SchedulePicker({ value, onChange, disabled = false }) {
         {["hourly"].includes(preset) && (
           <div className="schp-field">
             <span className="label">At minute</span>
-            <input type="number" min="0" max="59" value={minute} onChange={(e) => emit(preset, { minute: e.target.value })} disabled={disabled} className="schp-num" />
+            <input type="number" min="0" max="59" value={shown("minute", minute)} onChange={(e) => onNum("minute", e.target.value)} onBlur={() => endNum("minute")} disabled={disabled} className="schp-num" />
           </div>
         )}
         {["daily", "weekdays", "weekly", "monthly"].includes(preset) && (
           <div className="schp-field">
             <span className="label">At time</span>
             <span className="schp-time">
-              <input type="number" min="0" max="23" value={hour} onChange={(e) => emit(preset, { hour: e.target.value })} disabled={disabled} className="schp-num" aria-label="Hour" />
+              <input type="number" min="0" max="23" value={shown("hour", hour)} onChange={(e) => onNum("hour", e.target.value)} onBlur={() => endNum("hour")} disabled={disabled} className="schp-num" aria-label="Hour" />
               <span className="schp-colon">:</span>
-              <input type="number" min="0" max="59" step="5" value={minute} onChange={(e) => emit(preset, { minute: e.target.value })} disabled={disabled} className="schp-num" aria-label="Minute" />
+              <input type="number" min="0" max="59" step="5" value={shown("minute", minute)} onChange={(e) => onNum("minute", e.target.value)} onBlur={() => endNum("minute")} disabled={disabled} className="schp-num" aria-label="Minute" />
             </span>
           </div>
         )}
         {preset === "monthly" && (
           <div className="schp-field">
             <span className="label">Day of month</span>
-            <input type="number" min="1" max="31" value={dom} onChange={(e) => emit(preset, { dom: e.target.value })} disabled={disabled} className="schp-num" />
+            <input type="number" min="1" max="31" value={shown("dom", dom)} onChange={(e) => onNum("dom", e.target.value)} onBlur={() => endNum("dom")} disabled={disabled} className="schp-num" />
           </div>
         )}
         <div className="schp-field schp-zone">

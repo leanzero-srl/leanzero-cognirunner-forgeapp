@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>CogniRunner Documentation — AI Workflow Automation for Jira</title>
-<meta name="description" content="CogniRunner brings AI understanding to Jira workflows: semantic validators, post-functions, attachment analysis, agentic duplicate detection, and declarative AI actions — plus deterministic conditions and premade checks that run at zero AI cost. Bring your own AI provider (Anthropic, OpenAI, Azure OpenAI, OpenRouter, AWS Bedrock, local LM Studio) or use the zero-key Atlassian Forge LLM. Open source on Forge (Apache-2.0).">
+<meta name="description" content="CogniRunner brings AI understanding to Jira workflows: semantic validators, post-functions, listeners that react to any of 68 Jira product events, scheduled jobs on a cron, an AI agent mode with an allow-list of actions, attachment analysis, agentic duplicate detection, and declarative AI actions — plus deterministic conditions and premade checks that run at zero AI cost. Provision listeners and jobs over a bearer-token Rules REST API. Bring your own AI provider (Anthropic, OpenAI, Azure OpenAI, OpenRouter, AWS Bedrock, local LM Studio) or use the zero-key Atlassian Forge LLM. Open source on Forge (Apache-2.0).">
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
@@ -236,6 +236,26 @@
     color: var(--text);
   }
 
+  pre {
+    font-family: 'JetBrains Mono', SFMono-Regular, Consolas, monospace;
+    font-size: 13px;
+    line-height: 1.55;
+    color: var(--text);
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px 16px;
+    margin: 16px 0 24px;
+    overflow-x: auto;
+    white-space: pre;
+  }
+
+  pre code {
+    padding: 0;
+    background: none;
+    font-size: inherit;
+  }
+
   .table-wrap {
     overflow-x: auto;
     margin: 16px 0 24px;
@@ -404,7 +424,7 @@
       </svg>
     </div>
     <h1>CogniRunner</h1>
-    <p class="tagline">AI workflow automation for Jira — semantic validators and post-functions that validate, decide, generate, and act in plain English, on your own AI key. Plus deterministic conditions and premade checks that run at zero AI cost.</p>
+    <p class="tagline">AI workflow automation for Jira — semantic validators, post-functions, event listeners and scheduled jobs that validate, decide, generate, and act in plain English, on your own AI key. Plus deterministic conditions and premade checks that run at zero AI cost.</p>
     <div class="hero-badges">
       <span class="badge">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
@@ -436,6 +456,10 @@
       <li><a href="#semantic-postfunctions">Semantic Post-Functions</a></li>
       <li><a href="#static-postfunctions">Static Post-Functions &amp; AI Actions</a></li>
       <li><a href="#rule-management">Rule Management (Enable / Disable / Delete)</a></li>
+      <li><a href="#listeners">Listeners (Jira events)</a></li>
+      <li><a href="#scheduled-jobs">Scheduled Jobs (cron)</a></li>
+      <li><a href="#agent-mode">AI Agent Mode</a></li>
+      <li><a href="#rules-rest-api">Rules REST API</a></li>
       <li><a href="#admin-hub">Admin Hub</a></li>
       <li><a href="#rest-provisioning">Provisioning Rules over REST</a></li>
       <li><a href="#permissions">Permissions &amp; Roles</a></li>
@@ -450,21 +474,24 @@
 
   <section id="overview">
     <h2>Overview</h2>
-    <p>CogniRunner brings real AI understanding to Jira workflows. Jira's built-in validators only do structural checks — "field is required", "matches regex". CogniRunner reads the actual <strong>meaning</strong> of your fields, attachments, and issues, then <strong>validates, decides, generates content, and takes action</strong> on every transition. Describe what you want in plain English — no scripting.</p>
-    <p>Four rule types cover the full loop:</p>
+    <p>CogniRunner brings real AI understanding to Jira workflows. Jira's built-in validators only do structural checks — "field is required", "matches regex". CogniRunner reads the actual <strong>meaning</strong> of your fields, attachments, and issues, then <strong>validates, decides, generates content, and takes action</strong> — on every transition, on any of the <strong>68 Jira product events</strong>, or on a schedule. Describe what you want in plain English — no scripting.</p>
+    <p>Six rule types cover the full loop — four on workflow transitions, two that run without one:</p>
     <ul>
       <li><strong>Validators</strong> block a transition when field content fails your rule, showing the user the AI's reasoning.</li>
       <li><strong>Conditions</strong> hide a transition entirely when criteria aren't met — the user never sees the button. Conditions are evaluated by Jira itself, so they run on a deterministic check rather than an AI prompt: no per-transition cost, no latency, and enforced on every surface including REST and automation.</li>
       <li><strong>Semantic Post-Functions</strong> run after a transition: the AI reads a field, decides, generates a value, and writes a target field — e.g. summarize the work into Release Notes.</li>
       <li><strong>Static Post-Functions</strong> let the AI generate JavaScript once, then run it at zero AI cost on every transition — chaining up to 50 sandboxed steps.</li>
+      <li><strong>Listeners</strong> react to Jira <em>events</em> instead of transitions — issue created, comment added, sprint started, version released, and the rest of the 68 events Forge exposes for Jira, Jira Software and JSM — filtered by project, issue type, JQL, changed fields or a comment regex, and gated by an optional plain-language AI condition. See <a href="#listeners">Listeners</a>.</li>
+      <li><strong>Scheduled Jobs</strong> run on a cron expression in any IANA time zone — once, or once per issue of a JQL scope, the way an escalation service does. See <a href="#scheduled-jobs">Scheduled Jobs</a>.</li>
     </ul>
+    <p>Listeners and jobs execute either <strong>code steps</strong> — the same AI-generated, sandboxed JavaScript as static post-functions — or an <strong>AI agent</strong> given plain-language instructions and an allow-list of actions (see <a href="#agent-mode">AI Agent Mode</a>). Both can be provisioned from CI or a migration script through the bearer-token <a href="#rules-rest-api">Rules REST API</a>.</p>
     <p>Not everything needs a model. CogniRunner also ships roughly <strong>27 premade deterministic validator and condition types</strong> — field required, field must be changed, regex pattern, length bounds, allowed values, relative dates, comment required, attachment required, all sub-tasks resolved, and more. They evaluate instantly and run at <strong>zero AI cost</strong>.</p>
     <p>CogniRunner works across company-managed and team-managed Jira projects, supports all standard, custom, and many third-party field types, analyzes the content of attached files and images, and runs on your choice of AI provider — bring your own key, or use the zero-key Atlassian Forge LLM.</p>
   </section>
 
   <section id="getting-started">
     <h2>Getting Started</h2>
-    <p>CogniRunner integrates into Jira's native workflow editor. To add a validator or condition:</p>
+    <p>CogniRunner integrates into Jira's native workflow editor. Validators, conditions and post-functions are added there (or through the Add Rule wizard); listeners and scheduled jobs are not tied to a transition, so they live in the admin panel under <strong>Apps &rarr; CogniRunner &rarr; Listeners / Scheduled Jobs</strong> — see <a href="#listeners">Listeners</a> and <a href="#scheduled-jobs">Scheduled Jobs</a>. To add a validator or condition:</p>
 
     <ol class="steps">
       <li>
@@ -487,6 +514,8 @@
       </span>
       <p>Prefer not to touch the workflow editor? Open <strong>Apps &rarr; CogniRunner</strong> and use the <strong>+ Add Rule</strong> wizard. Pick a project, workflow, transition, and rule type, configure it, and CogniRunner injects the rule into the workflow for you.</p>
     </div>
+
+    <p><strong>Video tutorials.</strong> Prefer to watch first? Short walkthroughs of the workflow editor, the admin panel, and the listener and job editors are collected at <a href="https://leanzero.net/portfolio/cognirunner#video-tutorials">leanzero.net/portfolio/cognirunner#video-tutorials</a>.</p>
 
     <figure class="screenshot">
       <img src="Screenshot 2026-02-27 at 00.06.58.jpg" alt="Add rule dialog showing CogniRunner Field Validator selected">
@@ -794,7 +823,7 @@
 
   <section id="rule-management">
     <h2>Rule Management (Enable / Disable / Delete)</h2>
-    <p>Each CogniRunner rule can be enabled or disabled without removing it from the workflow. This is useful for temporarily pausing validation during migrations, bulk updates, or troubleshooting. For validators and post-functions, disabled rules are skipped at runtime (fail-open) and their configuration is preserved. For conditions, the toggle goes further: because Jira itself enforces conditions, disabling one writes the disabled state <strong>into the workflow rule itself</strong> — so "Disabled" is never a lie. If that workflow write fails, the toggle refuses rather than half-applying.</p>
+    <p>Each CogniRunner rule can be enabled or disabled without removing it from the workflow. This is useful for temporarily pausing validation during migrations, bulk updates, or troubleshooting. For validators and post-functions, disabled rules are skipped at runtime (fail-open) and their configuration is preserved. For conditions, the toggle goes further: because Jira itself enforces conditions, disabling one writes the disabled state <strong>into the workflow rule itself</strong> — so "Disabled" is never a lie. If that workflow write fails, the toggle refuses rather than half-applying. Listeners and scheduled jobs have the same Enable / Disable / Delete controls on their own tabs (and over the <a href="#rules-rest-api">Rules REST API</a>): a disabled listener stops matching events, and a disabled job stops running on its schedule but can still be run manually.</p>
 
     <h3>Delete — and actually detach</h3>
     <p>Deleting from the Rules tab (per row, or in bulk via checkboxes) does more than remove a list entry: it also <strong>detaches the rule from its Jira workflow transition</strong>, so it genuinely stops running. Before anything happens, a preview dialog predicts the outcome per rule — flagging rules already gone from the workflow, duplicates, and workflows shared by multiple projects — and offers a lighter alternative, <em>Remove from this list only</em>, which leaves the rule attached and running.</p>
@@ -819,9 +848,228 @@
     <p>Rules travel. <strong>Export</strong> produces a self-contained JSON file — including the full JavaScript code of static post-functions — that you can keep in version control or move to another site. <strong>Import</strong> shows a preview of what will be created and lets you <strong>rebind fields</strong> to the target site's fields (custom field IDs rarely match across sites) before anything is written.</p>
   </section>
 
+  <section id="listeners">
+    <h2>Listeners (Jira events)</h2>
+    <p>Until now everything on this page ran when an issue crossed a workflow transition. A <strong>listener</strong> reacts to a Jira <em>event</em> instead — any of the <strong>68 product events</strong> Forge exposes for Jira, Jira Software and Jira Service Management. When an event matches the listener's filters and its optional AI condition, the listener runs either <strong>code steps</strong> (the same sandboxed <code>api.*</code> surface as static post-functions, bound to the event's issue) or an <strong>AI agent</strong> (see <a href="#agent-mode">AI Agent Mode</a>). Listeners live in the admin panel under <strong>Apps &rarr; CogniRunner &rarr; Listeners</strong>, and can also be pushed as JSON through the <a href="#rules-rest-api">Rules REST API</a>.</p>
+
+    <figure class="screenshot">
+      <img src="new-screenshots/light/admin-listeners.png" alt="CogniRunner Listeners tab listing listeners with their events, scope, mode, and last run">
+      <figcaption>The Listeners tab. Each row shows the listener's events, scope, mode (Code or AI agent), last run, and Edit / Enable / Disable / Delete; expanding a row reveals its recent executions.</figcaption>
+    </figure>
+
+    <h3>The 68 events</h3>
+    <p>The event picker groups them into sixteen families, each with its own color:</p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Group</th><th>Events</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><strong>Issues</strong> (6)</td><td>created, updated, deleted, assigned, viewed, mentioned</td></tr>
+          <tr><td><strong>Comments</strong> (3)</td><td>commented, mentioned in comment, comment deleted</td></tr>
+          <tr><td><strong>Worklogs</strong> (3)</td><td>created, updated, deleted</td></tr>
+          <tr><td><strong>Attachments</strong> (2)</td><td>created, deleted</td></tr>
+          <tr><td><strong>Issue links</strong> (2)</td><td>created, deleted</td></tr>
+          <tr><td><strong>Projects</strong> (7)</td><td>created, updated, soft-deleted, restored, deleted, archived, unarchived</td></tr>
+          <tr><td><strong>Versions</strong> (9)</td><td>created, updated, released, unreleased, archived, unarchived, moved, merged, deleted</td></tr>
+          <tr><td><strong>Components</strong> (3)</td><td>created, updated, deleted</td></tr>
+          <tr><td><strong>Sprints</strong> (5)</td><td>created, started, updated, closed, deleted</td></tr>
+          <tr><td><strong>Boards</strong> (4)</td><td>created, updated, deleted, configuration changed</td></tr>
+          <tr><td><strong>Users</strong> (3)</td><td>created, updated, deleted</td></tr>
+          <tr><td><strong>Custom fields</strong> (9)</td><td>field created, updated, trashed, restored, deleted; field context created, updated, deleted; context configuration updated</td></tr>
+          <tr><td><strong>Issue types</strong> (3)</td><td>created, updated, deleted</td></tr>
+          <tr><td><strong>Filters</strong> (3)</td><td>created, updated, deleted</td></tr>
+          <tr><td><strong>Configuration</strong> (3)</td><td>configuration changed, time-tracking provider changed, workflow expression failed</td></tr>
+          <tr><td><strong>Service Management</strong> (3)</td><td>request type created, updated, deleted</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p><strong>Issue viewed</strong> fires on every issue view and is flagged <strong>HIGH VOLUME</strong> in the picker. Events arrive asynchronously — seconds typically, up to roughly three minutes worst case — so a listener is <em>eventually consistent</em>, and a freshly saved listener can take up to 30 seconds to start matching.</p>
+
+    <h3>Configuring a listener</h3>
+    <p>Click <strong>+ Add Listener</strong>. The editor has a name, an optional description, and these parts:</p>
+    <ul>
+      <li><strong>When these Jira events fire</strong> — pick one or more events from the grouped picker.</li>
+      <li><strong>Only when…</strong> — filters: <strong>Projects</strong>, <strong>Issue types</strong>, <strong>Changed fields</strong> (applies to "Issue updated" only: fire when at least one of these fields is in the changelog), <strong>Comment matches (regex)</strong> for comment events, and <strong>Issue matches JQL</strong> (one search per event).</li>
+      <li><strong>Ignore events caused by this app</strong> — the loop guard, on by default. It prevents the classic automation loop where a listener's own writes re-fire it.</li>
+      <li><strong>AI condition (optional)</strong> — a plain-language yes/no the model evaluates before the run, one AI call per matching event. If the condition is not met, or the AI evaluation fails, the listener is skipped — it <strong>fails closed</strong>. Leave it empty to run whenever the filters match.</li>
+      <li><strong>What happens</strong> — <strong>Code steps</strong> or <strong>AI agent</strong>. Code steps use the same Function Builder as static post-functions: describe, Generate, Test, Fix with AI. Actions run as the CogniRunner app, using its Jira permissions — never as the triggering user.</li>
+      <li><strong>Simulation mode</strong> (reads are live, writes are logged but never executed), <strong>Suppress notifications</strong> on field updates (needs project admin; falls back to notifying), and <strong>Enabled</strong>.</li>
+    </ul>
+
+    <figure class="screenshot">
+      <img src="new-screenshots/light/admin-listener-editor.png" alt="CogniRunner listener editor with the event picker, filters, AI condition, mode switch, and test card">
+      <figcaption>The listener editor: grouped event picker, "Only when…" filters, the loop guard, an optional AI condition, the Code steps / AI agent switch, and the Test listener card at the bottom.</figcaption>
+    </figure>
+
+    <h3>The current issue — and when there isn't one</h3>
+    <p>Inside code steps, <code>api.context</code> carries <code>runtime</code> (<code>"listener"</code>), the current <code>issueKey</code>, the <code>eventType</code>, and <code>event</code> — the raw Forge payload. Issue-bound helpers (<code>addComment</code>, <code>addLabels</code>, <code>transitionByName</code>…) act on the event's issue. For events that have no issue — a version released, a sprint started, a project archived — the current issue is <strong><code>null</code></strong>, and those helpers throw a clear error rather than guessing. Use <code>api.forIssue("KEY")</code> to re-bind the whole surface to any issue you choose. The code generator and the fixer are told all of this, so generated steps use the right shape for the events you picked.</p>
+
+    <h3>Test with an issue, and the last real payload</h3>
+    <p>The <strong>Test listener</strong> card lets you test with an issue before anything fires: pick an issue and one of the listener's events, click <strong>Run test</strong>, and CogniRunner builds a synthetic event from that real issue and runs filters, AI condition and actions in simulation — reads are live, writes are recorded, and no real Jira event is triggered. Once an event has actually fired on the site, <strong>Show last real payload</strong> reveals a redacted sample of the exact <code>api.context.event</code> shape (kept for seven days per event type, with rich-text bodies removed), so you can write code against what Jira really sends.</p>
+
+    <div class="callout callout-warning">
+      <span class="callout-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      </span>
+      <p><strong>Brakes.</strong> A test never exercises event delivery, the brakes, or the self-event guard. At runtime, a listener that keeps re-firing hits two backstops: at most <strong>30 runs per issue</strong> and <strong>120 runs per listener</strong> in any fixed five-minute window. When a brake trips it is logged once, and further runs in that window are suppressed silently. Keep "Ignore events caused by this app" on unless you have a specific reason not to.</p>
+    </div>
+
+    <p>Every accepted event is claimed <strong>at least once</strong>, so a redelivered event never runs twice. Queued and running listener runs appear in the <strong>Active Jobs</strong> panel of the Execution Logs tab, where they can be cancelled — the kill switch. Runs get a 105-second budget inside the 120-second async consumer (the 25-second trigger itself only matches and queues), and each one lands in the execution log as type <strong>Listener</strong>, with the event that fired.</p>
+  </section>
+
+  <section id="scheduled-jobs">
+    <h2>Scheduled Jobs (cron)</h2>
+    <p>A <strong>scheduled job</strong> runs on a cron schedule — once per schedule with no current issue, or once <em>per issue</em> of a JQL scope, the way an escalation service does — executing the same <strong>code steps</strong> or <strong>AI agent</strong> as a listener. Jobs live under <strong>Apps &rarr; CogniRunner &rarr; Scheduled Jobs</strong> and can be provisioned through the <a href="#rules-rest-api">Rules REST API</a>.</p>
+
+    <figure class="screenshot">
+      <img src="new-screenshots/light/admin-jobs.png" alt="CogniRunner Scheduled Jobs tab listing jobs with their schedule, next due time, scope, mode, and last run">
+      <figcaption>The Scheduled Jobs tab. Each row shows the schedule in words, its time zone and next due time, the scope (Once or Per JQL issue), the mode, the last run, and Run now / Edit / Enable / Disable / Delete.</figcaption>
+    </figure>
+
+    <h3>Schedule</h3>
+    <p>The schedule picker offers presets — <strong>Every 5 minutes</strong>, <strong>Every 15 minutes</strong>, <strong>Every 30 minutes</strong>, <strong>Every hour</strong>, <strong>Every day at…</strong>, <strong>Weekdays at…</strong>, <strong>Weekly on…</strong>, <strong>Monthly on day…</strong> — and <strong>Custom cron</strong> for anything else. Custom schedules are standard 5-field cron (<code>minute hour day month weekday</code>) with <code>*</code>, ranges, lists, steps, and month or weekday names (<code>MON</code>, <code>JAN</code>). Every schedule has an IANA <strong>Time zone</strong>, and the picker shows the schedule in words plus its <strong>next due times</strong> in that zone before you save.</p>
+
+    <div class="callout callout-info">
+      <span class="callout-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+      </span>
+      <p>The effective granularity is the platform's <strong>five-minute tick</strong>: <code>* * * * *</code> runs once per tick, and execution starts after the next scheduler check plus any queue delay. A job that missed ticks (an outage, say) replays at most one hour and one run — duplicate ticks are idempotent per minute and can never double-run a job.</p>
+    </div>
+
+    <h3>Scope</h3>
+    <p><strong>Scope (optional) — run once per issue matching this JQL.</strong> Give the job a JQL and a <strong>Max issues</strong> cap (up to <strong>100</strong>), and it runs once for each matching issue with that issue as the current issue, sharing the run budget across them. Leave the scope empty and the job runs once per schedule with <strong>no current issue</strong> (<code>api.context.issueKey</code> is <code>null</code>): search for issues with <code>api.searchJql()</code> and act on them through <code>api.forIssue(key)</code> — the code generator is told this too. Keep runs idempotent (check for a marker before writing) so a retried run never duplicates a comment.</p>
+
+    <figure class="screenshot">
+      <img src="new-screenshots/light/admin-job-editor.png" alt="CogniRunner scheduled job editor with the schedule picker, next due times, JQL scope, and mode switch">
+      <figcaption>The job editor: a preset or custom cron with its time zone and next due times, an optional JQL scope with a Max issues cap, the Code steps / AI agent switch, and Save &amp; run now.</figcaption>
+    </figure>
+
+    <h3>Save &amp; run now, and the run report</h3>
+    <p>Jobs don't wait for the clock. <strong>Save &amp; run now</strong> in the editor (or <strong>Run now</strong> on any saved row) queues an immediate manual run on the background worker and polls it until it finishes. The editor says exactly what that will do: with Simulation mode on, it simulates the job — live reads, writes recorded; with it off, it executes real Jira writes. A disabled job still runs manually; it just stays off the schedule.</p>
+    <p>The <strong>run report</strong> that comes back shows a PASS / SKIPPED / FAILED badge, the duration and tokens used, the reason, a chip per scoped issue (green or red, with its outcome on hover), the tool calls an agent made, the list of changes — marked <em>simulated — nothing written</em> in simulation — and the full log lines. A scoped run reports how many issues were processed OK, how many changed, and how many failed or were cancelled; cancelling a run keeps the work already done and marks untouched issues as not processed. The same report is stored in the execution log as type <strong>Scheduled Job</strong>, with the scheduled time, whether it was manual, and whether it was a missed-tick replay.</p>
+
+    <figure class="screenshot">
+      <img src="new-screenshots/light/admin-job-report.png" alt="Run report for a scoped scheduled job showing the PASS badge, per-issue outcome chips, changes, and log lines">
+      <figcaption>A run report after Save &amp; run now: status badge, duration, per-issue outcome chips for the JQL scope, the recorded changes, and the log lines.</figcaption>
+    </figure>
+  </section>
+
+  <section id="agent-mode">
+    <h2>AI Agent Mode</h2>
+    <p>Both listeners and scheduled jobs offer a second way to say what happens: instead of generating code, write <strong>instructions for the AI agent</strong> in plain language and tick the <strong>allowed actions</strong>. The model reads the event or job context — passed as <em>fenced, untrusted data</em>, never as instructions — and can act <strong>only</strong> through the actions you ticked. Each tool call runs through the same sandbox as code steps: simulation mode, the kill switch, the change ledger, and transient retries all apply. Rounds are capped by <strong>Max tool rounds</strong> (1–8, default 5). The agent's summary and every tool call land in the execution log and the run report.</p>
+
+    <p>The actions — three read-only, ten that write, plus <strong>Finish</strong>, which is always available and ends the run with a one-to-three-sentence summary and an outcome of <code>done</code>, <code>nothing_to_do</code>, or <code>failed</code>:</p>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Action</th><th>Kind</th><th>What it does</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>get_issue</code> — Read an issue</td><td>read</td><td>Fetch an issue: summary, status, type, priority, people, labels, description text, last comments, non-empty custom fields.</td></tr>
+          <tr><td><code>search_issues</code> — Search issues (JQL)</td><td>read</td><td>Run a JQL search; up to 50 results with key, summary, status, type, priority, assignee, updated.</td></tr>
+          <tr><td><code>add_comment</code> — Add a comment</td><td>write</td><td>Post a plain-text comment; on JSM it can be an internal note not visible to customers.</td></tr>
+          <tr><td><code>update_fields</code> — Update fields</td><td>write</td><td>Set one or more fields in Jira REST field format.</td></tr>
+          <tr><td><code>add_labels</code> — Add labels</td><td>write</td><td>Add labels (existing labels are kept).</td></tr>
+          <tr><td><code>remove_labels</code> — Remove labels</td><td>write</td><td>Remove labels from an issue.</td></tr>
+          <tr><td><code>set_assignee</code> — Assign / unassign</td><td>write</td><td>Assign to a user by accountId, or unassign.</td></tr>
+          <tr><td><code>transition_issue</code> — Transition (by name)</td><td>write</td><td>Move an issue through a transition by its name, optionally setting the resolution.</td></tr>
+          <tr><td><code>create_issue</code> — Create an issue</td><td>write</td><td>Create a new issue, or a sub-task when a parent key is given.</td></tr>
+          <tr><td><code>link_issues</code> — Link issues</td><td>write</td><td>Create an issue link to another issue (Relates, Blocks, Duplicate…).</td></tr>
+          <tr><td><code>add_watcher</code> — Add a watcher</td><td>write</td><td>Add a user as a watcher.</td></tr>
+          <tr><td><code>send_notification</code> — Send a notification email</td><td>write</td><td>Send a Jira notification about an issue to its assignee, reporter, or watchers.</td></tr>
+          <tr><td><code>add_worklog</code> — Log work</td><td>write</td><td>Log time on an issue.</td></tr>
+          <tr><td><code>finish</code> — Finish</td><td>control</td><td>Always available; ends the run with a summary and outcome.</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>A new agent starts with <code>get_issue</code>, <code>search_issues</code> and <code>add_comment</code> ticked. Issue references in tool arguments are validated before dispatch — a key like <code>PROJ-123</code> or a numeric id, never an issue object — so a model that serializes the wrong shape cannot write to the wrong place or silently fall back to the current issue. The agent runs on whichever AI provider you configured — Anthropic, OpenAI, Azure OpenAI, OpenRouter, AWS Bedrock, LM Studio, or the Atlassian Forge LLM (see <a href="#ai-providers">Multi-Provider AI</a>).</p>
+
+    <div class="callout callout-success">
+      <span class="callout-icon">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+      </span>
+      <p>Start every agent in <strong>Simulation mode</strong> and read the run report: it lists each tool call and every change the agent <em>would</em> have made. Tick write actions one at a time, and only the ones the instructions actually need.</p>
+    </div>
+  </section>
+
+  <section id="rules-rest-api">
+    <h2>Rules REST API</h2>
+    <p>The Rules REST API is a bearer-token web trigger for pushing and driving <strong>listeners and scheduled jobs</strong> from CI, migration scripts, or a test harness — without the admin UI. It is separate from <a href="#rest-provisioning">provisioning workflow rules</a>: validators, conditions and post-functions attach through Jira's own workflow REST API, while listeners and jobs belong to the CogniRunner installation and use this one.</p>
+
+    <h3>API access</h3>
+    <p>Open <strong>Settings &rarr; API access</strong> (admin only). The panel shows this installation's <strong>Endpoint</strong> URL with a Copy button, a <strong>+ Create token</strong> field, and a table of live tokens with name, prefix, created and last-used times, and a Revoke button. A new token is shown <strong>once</strong> — copy it then; only its SHA-256 hash is stored, and revoking it returns 401 to any script still using it immediately. Up to <strong>25</strong> live tokens can exist at a time.</p>
+
+    <figure class="screenshot">
+      <img src="new-screenshots/light/admin-api-access.png" alt="CogniRunner API access panel on the Settings tab with the endpoint URL, create-token field, and token table">
+      <figcaption>API access on the Settings tab: the endpoint URL, token creation with a one-time reveal, and the token table with prefix, last used, and Revoke.</figcaption>
+    </figure>
+
+    <p>Tokens look like <code>cgr_</code> followed by 48 hex characters. Send one on every request as <code>Authorization: Bearer cgr_…</code> or as an <code>X-Api-Key</code> header. A missing or invalid token gets <code>401 { "error": "unauthorized" }</code> with no further detail. Rows created through the API carry <code>createdBy: "api:&lt;tokenId&gt;"</code>, so the admin panel shows which token made them.</p>
+
+    <h3>Endpoints</h3>
+    <p>Forge web-trigger URLs are fixed, so the resource travels in the query string:</p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>Method</th><th>Query</th><th>Body</th><th>Result</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>GET</td><td><code>?resource=events</code> / <code>?resource=actions</code></td><td>—</td><td>catalogues</td></tr>
+          <tr><td>GET</td><td><code>?resource=listeners</code> / <code>&amp;id=</code></td><td>—</td><td>slim list / full record</td></tr>
+          <tr><td>POST</td><td><code>?resource=listeners</code></td><td>one config or an array (≤100)</td><td>created/upserted (201 / 200 / 207)</td></tr>
+          <tr><td>PUT</td><td><code>?resource=listeners&amp;id=</code></td><td>partial config (<code>filters</code>, <code>agent</code>, <code>schedule</code>, <code>scope</code> merge)</td><td>updated</td></tr>
+          <tr><td>DELETE</td><td><code>?resource=listeners&amp;id=</code></td><td>—</td><td>deleted</td></tr>
+          <tr><td>POST</td><td><code>?resource=listeners&amp;id=&amp;action=enable|disable|test</code></td><td>test: <code>{ issueKey, eventType, event? }</code></td><td>state / simulated run</td></tr>
+          <tr><td>GET/POST/PUT/DELETE</td><td><code>?resource=jobs…</code></td><td>same shapes</td><td>same</td></tr>
+          <tr><td>POST</td><td><code>?resource=jobs&amp;id=&amp;action=run|preview</code></td><td>preview: <code>{ cron, timeZone, count }</code></td><td><code>202 { taskId }</code> / next runs</td></tr>
+          <tr><td>GET</td><td><code>?resource=tasks&amp;id=&lt;taskId&gt;</code></td><td>—</td><td>queued-run status + result</td></tr>
+          <tr><td>GET</td><td><code>?resource=logs[&amp;ruleId=]</code></td><td>—</td><td>execution logs (newest first)</td></tr>
+          <tr><td>GET</td><td><code>?resource=samples&amp;eventType=</code></td><td>—</td><td>last captured payload</td></tr>
+          <tr><td>GET</td><td><code>?resource=whoami</code></td><td>—</td><td>token identity</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p>Status codes are deliberate: a single item that saves returns <strong>201</strong>; an array (or an upsert) returns <strong>200</strong>; a batch in which some rows failed returns <strong>207</strong> with the saved rows and an indexed <code>errors</code> array — inspect both before marking the batch done; a validation failure returns <strong>400</strong> <code>{ "error": "…" }</code> with the same message the admin UI shows; no or bad token returns <strong>401</strong>. Run now returns <strong>202</strong> with a <code>taskId</code> to poll under <code>?resource=tasks</code>.</p>
+
+    <h3>Example</h3>
+    <p>Use the Rules API URL shown for the target installation. Save either configuration below as a JSON file and send it with a token from that installation:</p>
+<pre><code>curl --fail-with-body "$RULES_API_URL?resource=listeners" \
+  -H "Authorization: Bearer $RULES_API_TOKEN" -H 'Content-Type: application/json' \
+  --data-binary @listener.json
+curl --fail-with-body "$RULES_API_URL?resource=jobs" \
+  -H "Authorization: Bearer $RULES_API_TOKEN" -H 'Content-Type: application/json' \
+  --data-binary @job.json</code></pre>
+
+    <p>Read the returned id back with <code>GET ?resource=listeners&amp;id=…</code> (or <code>jobs</code>) to verify the complete saved configuration. For provisioning reruns, include that id and the complete configuration in the POST to update the same rule; use PUT for a partial update.</p>
+
+    <p>Listener config (script mode):</p>
+<pre><code>{
+  "name": "Label new bugs", "events": ["avi:jira:created:issue"],
+  "filters": { "projectKeys": ["PROJ"], "issueTypes": ["Bug"], "jql": "", "changedFields": [], "commentPattern": "" },
+  "ignoreSelf": true, "aiCondition": "",
+  "mode": "script",
+  "functions": [{ "name": "label", "code": "await api.addLabels(\"triage\");" }],
+  "simulationMode": false, "suppressNotifications": false, "enabled": true
+}</code></pre>
+
+    <p>Job config (AI agent, scoped):</p>
+<pre><code>{
+  "name": "Nudge stale work", "schedule": { "cron": "0 9 * * 1-5", "timeZone": "Europe/Zurich" },
+  "scope": { "jql": "project = PROJ AND status = \"In Progress\" AND updated &lt;= -7d", "maxIssues": 25 },
+  "mode": "agent",
+  "agent": { "instructions": "Ask the assignee for a status update in a short comment and add the label stale.", "allowedActions": ["get_issue", "add_comment", "add_labels"], "maxRounds": 4 }
+}</code></pre>
+
+    <p>The complete guide — the run pipelines, storage keys, limits, and the live test scripts — is in <a href="https://github.com/leanzero-srl/leanzero-cognirunner-forgeapp/blob/main/docs/LISTENERS-AND-JOBS.md">LISTENERS-AND-JOBS.md</a> in the repository.</p>
+  </section>
+
   <section id="admin-hub">
     <h2>Admin Hub</h2>
-    <p>The CogniRunner Admin panel is the hub for every rule across your Jira workflows. Access it from <strong>Apps &rarr; CogniRunner</strong> in the Jira sidebar. It has tabs for <strong>Rules</strong>, <strong>Documentation</strong>, <strong>Skills</strong>, <strong>Memories</strong>, <strong>Permissions</strong>, and <strong>Settings</strong>, plus an <strong>Add Rule</strong> wizard.</p>
+    <p>The CogniRunner Admin panel is the hub for every rule across your Jira workflows — and for the listeners and scheduled jobs that run outside them. Access it from <strong>Apps &rarr; CogniRunner</strong> in the Jira sidebar. It has tabs for <strong>Rules</strong>, <strong>Listeners</strong>, <strong>Scheduled Jobs</strong>, <strong>Execution Logs</strong>, <strong>Documentation</strong>, <strong>Skills</strong>, <strong>Memories</strong>, <strong>Permissions</strong>, and <strong>Settings</strong>, plus an <strong>Add Rule</strong> wizard.</p>
 
     <figure class="screenshot">
       <img src="new-screenshots/light/admin-rules.png" alt="CogniRunner Admin panel Rules tab with usage meter, Owner column, bulk selection, and per-row Delete">
@@ -829,13 +1077,14 @@
     </figure>
 
     <ul>
-      <li><strong>All rules, one place</strong> — every validator, condition, and post-function across all workflows, with type and ownership filters (All Rules / My Rules), inline enable/disable, and per-row or bulk <a href="#rule-management">Delete</a>.</li>
+      <li><strong>All rules, one place</strong> — every validator, condition, and post-function across all workflows, with type and ownership filters (All Rules / My Rules), inline enable/disable, and per-row or bulk <a href="#rule-management">Delete</a>. Listeners and scheduled jobs are not workflow rules, so they get their own tabs with the same enable / disable / delete controls, a Last run column, and expandable recent executions per row.</li>
       <li><strong>Registry usage meter</strong> — a byte-accurate meter shows real pressure against the registry's capacity (500 rules / 240&nbsp;KB), so imports and REST provisioning know exactly how much room is left.</li>
       <li><strong>Owner column</strong> — every rule shows its author, and "My Rules" strictly means rules you authored. Rules claimed from workflow scans are recorded with an explicit <strong>Unowned</strong> chip rather than mis-attributed — claiming is not authoring.</li>
       <li><strong>Scan workflows &rarr; Register all</strong> — sweeps every workflow for rules attached outside the panel (REST automation, imported or copied workflows), claims them so they can be managed, and reports anything it skipped.</li>
       <li><strong>Automating rule creation</strong> — a panel on the Rules tab exposes everything needed to provision rules over Jira's REST API: this installation's extension ARIs with copy buttons, plus the <code>ruleKey</code> and target slot per rule type. See <a href="#rest-provisioning">Provisioning Rules over REST</a>.</li>
       <li><strong>Add Rule wizard</strong> — create a rule without touching the workflow editor: pick project, workflow, transition, and type, then configure and publish. CogniRunner injects the rule into the actual Jira workflow for you.</li>
       <li><strong>Knowledge &amp; Skills</strong> — a shared documentation library, reusable Skills, and learned Memories give the AI grounded, instance-specific context.</li>
+      <li><strong>API access</strong> — an admin-only panel on the Settings tab mints and revokes bearer tokens for the <a href="#rules-rest-api">Rules REST API</a>, and shows this installation's endpoint URL.</li>
     </ul>
 
     <figure class="screenshot">
@@ -871,6 +1120,8 @@
 
     <p>Field-condition configs carry two extra keys the admin UI normally resolves for you: <code>exprProp</code> (the custom field id the Jira expression indexes) and <code>exprKind</code> (the comparison strategy — plus <code>valueNum</code> as a JSON number for numeric equals). A mismatched <code>exprKind</code> is the one way a hand-crafted config can fail closed and hide the transition, so copy configs the UI produced rather than hand-writing these.</p>
     <p>The full guide — payload shapes, the config schema per rule type, and a worked end-to-end example — is in <a href="https://github.com/leanzero-srl/leanzero-cognirunner-forgeapp/blob/main/docs/REST-API-RULES.md">REST-API-RULES.md</a> in the repository.</p>
+
+    <p><strong>Two REST paths, two kinds of rule.</strong> Everything on this page attaches to a workflow transition, so it travels through Jira's workflow REST API with your Jira credentials — CogniRunner never needs to be in the loop. Listeners and scheduled jobs are different: they are not workflow rules, they belong to the CogniRunner installation, and Jira has no API for them. Those are provisioned through CogniRunner's own bearer-token <a href="#rules-rest-api">Rules REST API</a> — a web trigger whose URL and tokens come from <strong>Settings &rarr; API access</strong>. Use the Jira workflow API for validators, conditions and post-functions; use the Rules REST API for listeners and jobs.</p>
   </section>
 
   <section id="permissions">
@@ -917,7 +1168,7 @@
 
   <section id="execution-logs">
     <h2>Execution Logs</h2>
-    <p>Every <strong>validator and post-function</strong> run is logged with full context: pass/skip/error status, whether it ran live, from the async queue, or as a test, the AI's reasoning, the JQL it ran, and an execution trace. Deterministic conditions produce <strong>no log entries</strong> — Jira evaluates them natively, so no app code runs. Logs are available in both the Admin panel and the individual rule view.</p>
+    <p>Every <strong>validator, post-function, listener and scheduled job</strong> run is logged with full context: pass/skip/error status, whether it ran live, from the async queue, or as a test, the AI's reasoning, the JQL it ran, and an execution trace. Deterministic conditions produce <strong>no log entries</strong> — Jira evaluates them natively, so no app code runs. Logs are available in the Admin panel's Execution Logs tab, in the individual rule view, and — for listeners and jobs — as expandable recent executions on their own tabs. Listener entries record the event that fired; scoped job entries record a per-issue outcome for every issue in the scope.</p>
 
     <figure class="screenshot">
       <img src="new-screenshots/light/admin-logs.png" alt="CogniRunner execution logs with status badges, LIVE/QUEUED source chips, and DRY-RUN and FAIL-OPEN flags">
@@ -927,7 +1178,7 @@
     <p>Each log entry includes:</p>
     <ul>
       <li><strong>Status</strong> — PASS, SKIP, or ERR badge</li>
-      <li><strong>Rule type</strong> — Validator or Post-Function (semantic / static)</li>
+      <li><strong>Rule type</strong> — Validator, Post-Function (semantic / static), Listener, or Scheduled Job</li>
       <li><strong>Source chip</strong> — LIVE (a real transition), QUEUED (the async queue), or TEST (a dry run from the editor)</li>
       <li><strong>Honesty flags</strong> — DRY-RUN when writes were simulated, FAIL-OPEN when an error let the transition through instead of blocking it</li>
       <li><strong>Issue key &amp; duration</strong> — which issue ran, and how long it took</li>
@@ -1025,6 +1276,14 @@
           <tr><td>JQL results per query</td><td>10 issues</td><td>Top 10 matching issues returned per query</td></tr>
           <tr><td>Static post-function steps</td><td>50 steps</td><td>Chained operations per static post-function</td></tr>
           <tr><td>Rule registry capacity</td><td>500 rules / 240 KB</td><td>Byte-accurate usage meter in the Rules tab; Import and Register all report what they skip at the cap</td></tr>
+          <tr><td>Listeners / scheduled jobs</td><td>200 each</td><td>Separate from the workflow-rule registry</td></tr>
+          <tr><td>Listener &amp; job run budget</td><td>105 seconds</td><td>Inside the 120-second async consumer; a scoped job shares the budget across its issues</td></tr>
+          <tr><td>Listener loop brakes</td><td>30 per issue / 120 per listener</td><td>Within a fixed 5-minute window; further runs in the window are suppressed and logged once</td></tr>
+          <tr><td>Job JQL scope</td><td>100 issues</td><td>Maximum issues per scoped run</td></tr>
+          <tr><td>Scheduler granularity</td><td>5 minutes</td><td>Platform tick; a missed tick replays at most one hour and one run</td></tr>
+          <tr><td>AI agent tool rounds</td><td>1–8 (default 5)</td><td>Per listener or job run</td></tr>
+          <tr><td>Rules REST API batch</td><td>100 items</td><td>Per POST; HTTP 207 reports partial failures by index</td></tr>
+          <tr><td>API tokens</td><td>25 live</td><td>Revoke unused tokens to mint more</td></tr>
           <tr><td>Execution log history</td><td>50 entries</td><td>Oldest entries removed when limit is reached (FIFO)</td></tr>
           <tr><td>Prompt log truncation</td><td>200 characters</td><td>Field values stored in logs are truncated for storage</td></tr>
         </tbody>

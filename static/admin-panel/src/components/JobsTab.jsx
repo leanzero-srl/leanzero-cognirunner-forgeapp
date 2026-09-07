@@ -82,8 +82,18 @@ export default function JobsTab({ invoke, isAdmin, userRole }) {
     try { const r = await invoke("getLogs", { ruleId: row.id }); if (token === expandToken.current) setExpandedLogs({ loading: false, logs: (r && r.logs) || [] }); } catch { if (token === expandToken.current) setExpandedLogs({ loading: false, logs: [] }); }
   };
 
-  // Run now: queue a manual run of a SAVED job and poll every 3s (≤40 tries) —
-  // the same getAsyncTaskResult contract FunctionBlock uses for LM Studio codegen.
+  // Run now: queue a manual run of a SAVED job and poll every 3s — the same
+  // getAsyncTaskResult contract FunctionBlock uses for LM Studio codegen.
+  //
+  // The window is 60 tries (180s), NOT 40 (120s): the async consumer's own budget
+  // is `timeoutSeconds: 120`, so a 40-poll window expires at the exact moment a
+  // job that legitimately used its full budget is still finishing, and any queue
+  // delay before the worker starts is pure overrun. 180s leaves a real margin.
+  //
+  // And when the window does expire the run is UNKNOWN, not failed — the worker
+  // may still be going and may still write to Jira. Reporting a red FAILED
+  // verdict would assert an outcome the poll never observed, so the expiry
+  // renders a neutral "still running" state and re-reads the rows once.
   const runNow = async (id) => {
     const token = ++pollRef.current;
     const editor = editorToken.current;
@@ -94,7 +104,7 @@ export default function JobsTab({ invoke, isAdmin, userRole }) {
       if (token !== pollRef.current) return;
       if (!r.success) { showToast(r.error || "Could not start the job", "error"); setRunning(null); return; }
       setRunning({ id, taskId: r.taskId, status: "queued" });
-      for (let i = 0; i < 40; i++) {
+      for (let i = 0; i < 60; i++) {
         await new Promise((res) => setTimeout(res, 3000));
         if (token !== pollRef.current) return;
         const p = await invoke("getAsyncTaskResult", { taskId: r.taskId });
@@ -105,8 +115,9 @@ export default function JobsTab({ invoke, isAdmin, userRole }) {
         if (p.status === "error") { showResult({ isValid: false, reason: p.error || "Run failed" }); setRunning(null); load(); return; }
         setRunning({ id, taskId: r.taskId, status: p.status === "processing" ? "running" : "queued" });
       }
-      showResult({ isValid: false, reason: "Timed out waiting for the run (2 min). Check the Execution Logs tab — the run may still complete." });
+      showResult({ pending: true, reason: "Still running after 3 minutes — the background worker has not reported back yet. This is not a failure: refresh, or open Recent executions / the Execution Logs tab to see how it ended." });
       setRunning(null);
+      load();
     } catch (e) { if (token === pollRef.current) { showToast(e.message, "error"); setRunning(null); } }
   };
 
@@ -189,7 +200,7 @@ export default function JobsTab({ invoke, isAdmin, userRole }) {
           <div className="form-group">
             <span className="label">Scope (optional) — run once per issue matching this JQL</span>
             <div className="job-scope">
-              <input type="text" className="lst-input" value={draft.scope.jql} onChange={(e) => patch({ scope: { ...draft.scope, jql: e.target.value } })} placeholder='e.g. project = LZPT AND status = "In Progress" AND updated <= -7d' spellCheck={false} />
+              <input type="text" className="lst-input" value={draft.scope.jql} onChange={(e) => patch({ scope: { ...draft.scope, jql: e.target.value } })} placeholder='e.g. project = PROJ AND status = "In Progress" AND updated <= -7d' spellCheck={false} />
               <span className="job-scope-max"><span className="label">Max issues</span><input type="number" min="1" max="100" className="schp-num" value={draft.scope.maxIssues} onChange={(e) => patch({ scope: { ...draft.scope, maxIssues: Math.min(100, Math.max(1, parseInt(e.target.value, 10) || 50)) } })} /></span>
             </div>
             <span className="hint">{scoped ? "Runs once for each matching issue, sharing the job runtime budget. Write actions for the current issue; the job already iterates this JQL scope." : "Runs once per schedule with no current issue. Search for issues in the code or AI instructions if needed, then act on those results."}</span>

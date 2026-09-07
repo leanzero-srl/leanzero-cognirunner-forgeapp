@@ -185,7 +185,12 @@ export const runAgentTask = async ({
       case "create_issue": {
         const fields = { project: { key: String(args.projectKey || "") }, issuetype: { name: String(args.issueType || "Task") }, summary: String(args.summary || "").slice(0, 255) };
         if (args.description) fields.description = m.coerceToAdf(String(args.description));
-        if (args.parentKey) fields.parent = { key: args.parentKey };
+        // parentKey is advertised (agent-actions.js) and validated as "issue key OR
+        // numeric issue ID string", and Jira's create API needs the two in DIFFERENT
+        // shapes: { id } for an id, { key } for a key. Everything else routes through
+        // apiFor()/the sandbox, whose /issue/{idOrKey} paths accept either form; this
+        // is the one place that builds a reference by hand, so it must choose here.
+        if (args.parentKey) fields.parent = /^\d+$/.test(args.parentKey) ? { id: String(args.parentKey) } : { key: String(args.parentKey) };
         if (Array.isArray(args.labels) && args.labels.length) fields.labels = args.labels.map(String);
         if (args.priority) fields.priority = { name: String(args.priority) };
         return baseApi.createIssue(fields);

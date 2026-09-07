@@ -8,6 +8,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import CustomSelect from "./CustomSelect";
 import { isSkippedLog } from "../../../../src/shared/log-flags.js";
+import { eventLabel } from "../../../../src/shared/jira-events.js";
 
 // Small building blocks shared by ListenersTab and JobsTab.
 
@@ -102,17 +103,21 @@ export function RunStat({ stats }) {
 }
 
 /** Result of a test run / run-now: verdict, reason, tool calls, changes, log lines. */
-export function RunResultView({ result, title = "Result" }) {
+export function RunResultView({ result, title = "Result", titleHint = null }) {
   if (!result) return null;
-  const skipped = isSkippedLog(result);
-  const ok = !skipped && (result.isValid === true || result.success === true);
+  // `pending` is the fourth verdict: the caller stopped WATCHING, it did not
+  // observe an outcome. It must never render as PASS or FAILED — neutral slate,
+  // no claim either way (JobsTab's manual run uses it when its poll window ends).
+  const pending = result.pending === true;
+  const skipped = !pending && isSkippedLog(result);
+  const ok = !pending && !skipped && (result.isValid === true || result.success === true);
   // Manual runs expose issues; saved scoped-job logs retain the same outcomes as perIssue.
   const issues = Array.isArray(result.issues) ? result.issues : result.perIssue;
   return (
-    <div className={`runres ${ok ? "runres-ok" : skipped ? "runres-skip" : "runres-err"}`}>
+    <div className={`runres ${pending ? "runres-pending" : ok ? "runres-ok" : skipped ? "runres-skip" : "runres-err"}`}>
       <div className="runres-head">
-        <span className={`runres-badge ${ok ? "ok" : skipped ? "skip" : "err"}`}>{ok ? "PASS" : skipped ? "SKIPPED" : "FAILED"}</span>
-        <span className="runres-title">{title}</span>
+        <span className={`runres-badge ${pending ? "pending" : ok ? "ok" : skipped ? "skip" : "err"}`}>{pending ? "STILL RUNNING" : ok ? "PASS" : skipped ? "SKIPPED" : "FAILED"}</span>
+        <span className="runres-title" title={titleHint || undefined}>{title}</span>
         {typeof result.executionTimeMs === "number" && <span className="runres-ms">{result.executionTimeMs} ms</span>}
         {result.tokens > 0 && <span className="runres-ms">{result.tokens} tokens</span>}
         {result.eventUsed && <span className="runres-ms">event: {result.eventUsed}</span>}
@@ -149,8 +154,17 @@ export function RecentLogs({ logs, loading }) {
   if (!logs || !logs.length) return <div className="hint">No executions logged yet.</div>;
   return (
     <div className="recent-logs">
+      {/* The operator reads "Comment created", not "avi:jira:commented:comment" —
+          eventLabel (src/shared/jira-events.js, the single source) does the lookup
+          and falls back to the raw id for anything not in the catalogue. The raw
+          id stays available as the hover tooltip. */}
       {logs.map((l) => (
-        <RunResultView key={l.id} result={l} title={`${l.eventType || l.fieldId || ""} · ${l.issueKey || ""} · ${fmtTime(l.timestamp)}`} />
+        <RunResultView
+          key={l.id}
+          result={l}
+          title={`${l.eventType ? eventLabel(l.eventType) : l.fieldId || ""} · ${l.issueKey || ""} · ${fmtTime(l.timestamp)}`}
+          titleHint={l.eventType || null}
+        />
       ))}
     </div>
   );

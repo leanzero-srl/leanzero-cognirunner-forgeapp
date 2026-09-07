@@ -20,9 +20,9 @@
  * spec so they can never drift from the prompt/editor documentation.
  */
 
-import { FIELD_TYPE_TABLE, SANDBOX_RULES, JQL_REFERENCE, TRANSITION_API_REFERENCE, API_SIGNATURE_REFERENCE, getApiMethodNames, ISSUE_KEY_OPTIONAL_METHODS } from "./sandbox-api-spec.js";
+import { FIELD_TYPE_TABLE, SANDBOX_RULES, JQL_REFERENCE, TRANSITION_API_REFERENCE, API_SIGNATURE_REFERENCE, getApiMethodNames, ISSUE_KEY_OPTIONAL_METHODS, KEY_OPTIONAL_EMPTY_KEY_NOTE } from "./sandbox-api-spec.js";
 
-export const DOC_SEED_VERSION = 6;
+export const DOC_SEED_VERSION = 7;
 
 const fieldMatrix = FIELD_TYPE_TABLE.map(
   (r) => `${r.fieldType}\n  read:  ${r.read.replace(/`/g, "")}\n  write: ${r.write.replace(/`/g, "")}`,
@@ -205,7 +205,7 @@ API SURFACE — a RICH set of typed methods (see the API Reference panel for the
 Methods: ${getApiMethodNames().map((name) => "api." + name).join(", ")}; context: api.context.
 Use the REAL method — e.g. api.addComment("your text") on the current issue, NOT a description-append workaround. Calling an invented/undocumented method throws at runtime.
 
-WHICH ISSUE DOES A CALL ACT ON? These methods take the key as their FIRST argument and it is OPTIONAL — ${ISSUE_KEY_OPTIONAL_METHODS.map((name) => "api." + name).join(", ")}. Omitted, they target the current issue (api.context.issueKey). Every other issue-bound helper (api.addComment, api.addLabels, api.setAssignee, ...) takes NO key and always targets the current issue. When the run has no current issue (a scheduled job without a JQL scope, a listener on a non-issue event) BOTH kinds throw an error naming api.forIssue("KEY") — nothing is ever sent to /issue/undefined. api.forIssue(key) re-binds the whole surface to another issue.
+WHICH ISSUE DOES A CALL ACT ON? These methods take the key as their FIRST argument and it is OPTIONAL — ${ISSUE_KEY_OPTIONAL_METHODS.map((name) => "api." + name).join(", ")}. Omitted, they target the current issue (api.context.issueKey). ${KEY_OPTIONAL_EMPTY_KEY_NOTE.replace(/`/g, "")} Every other issue-bound helper (api.addComment, api.addLabels, api.setAssignee, ...) takes NO key and always targets the current issue. When the run has no current issue (a scheduled job without a JQL scope, a listener on a non-issue event) BOTH kinds throw an error naming api.forIssue("KEY") — nothing is ever sent to /issue/undefined. api.forIssue(key) re-binds the whole surface to another issue.
 
 API SIGNATURES (derived from the same spec as the API Reference panel)
 ${API_SIGNATURE_REFERENCE}

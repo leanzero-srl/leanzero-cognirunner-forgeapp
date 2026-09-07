@@ -82,6 +82,7 @@
   const set=(id,v)=>{if(v!=null)document.getElementById(id).textContent=v};
   if(p.get('accent'))document.documentElement.style.setProperty('--accent',p.get('accent'));
   if(p.get('accent2'))document.documentElement.style.setProperty('--accent2',p.get('accent2'));
+  if(p.get('tsize')){const h=document.getElementById('title');h.style.fontSize=p.get('tsize')+'px';h.style.letterSpacing=(-p.get('tsize')*0.031)+'px';}
   set('eyebrow',p.get('eyebrow'));set('title',p.get('title'));set('sub',p.get('sub'));
   if(p.get('url'))set('url',p.get('url'));
   if(p.get('img'))document.getElementById('shot').src=p.get('img');

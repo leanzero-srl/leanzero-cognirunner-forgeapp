@@ -1,8 +1,12 @@
 /* CogniRunner - Copyright (C) 2025 LeanZero. SPDX-License-Identifier: AGPL-3.0-or-later */
 import "../lib/register-mocks-index.mjs";
 import assert from "node:assert/strict";
+import { ADMIN_PRINCIPAL, seedAdminRoster } from "../lib/harness-identity.mjs";
+import storage from "../lib/mock-kvs.mjs";
 const { handler, createSandboxSession } = await import("../../src/index.js");
 const { default: jira } = await import("@forge/api");
+// testPostFunction is editor-gated — drive it as a known admin.
+seedAdminRoster(storage);
 let created = 1;
 jira.__respond((path, options) => jira.__response(200,
   options.method === "POST" ? { key: `ABC-${++created}` } : { key: "ABC-1", fields: { project: { id: "1" }, issuetype: { id: "1" }, summary: "source" } }));
@@ -12,7 +16,7 @@ const clone = await api.cloneIssue(); await api.forIssue(clone.key).addLabels('c
 return {child:child.key,clone:clone.key};`;
 for (const runtime of ["postfunction", "listener", "job"]) {
   jira.__calls.length = 0;
-  const result = await handler({ call: { functionKey: "testPostFunction", payload: { code, issueKey: "ABC-1", contextExtras: { runtime } } }, context: {} }, {});
+  const result = await handler({ call: { functionKey: "testPostFunction", payload: { code, issueKey: "ABC-1", contextExtras: { runtime } } } }, ADMIN_PRINCIPAL);
   assert.equal(result.success, true, JSON.stringify(result));
   const [child, update, clone, label] = result.changes;
   assert.equal(child.action, "createIssue"); assert.equal(update.key, child.key);

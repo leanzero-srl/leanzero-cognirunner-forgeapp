@@ -9,23 +9,28 @@ fs.mkdirSync(OUT, { recursive: true });
 const tpl = "file://" + path.join(MK, "highlight-v2.html");
 const img = (n) => "file://" + path.join(MK, "focus", n);
 
+// 1.2.0 trio (2026-09-07): (1) listeners + scheduled jobs, (2) agentic validation, (3) BYOK.
+// tsize = optional h1 font-size override (the template default is 64px).
 const HL = [
-  { out: "hl1", accent: "#3B82F6", accent2: "#7DA9FF", eyebrow: "Agentic validation",
+  { out: "hl1", accent: "#F97316", accent2: "#FDBA74", eyebrow: "Listeners & scheduled jobs",
+    title: "React to 68 Jira events — or run on a schedule", img: "listeners-wide.png", tsize: 54,
+    sub: "No transition needed. A listener reacts to any Jira event, a job runs on cron — gated by a plain-English AI condition, running code the AI wrote or an AI agent.",
+    feats: "68 Jira, Software & JSM events|Cron jobs, once or per JQL issue|Loop brakes, test runs, REST API",
+    note: "AI condition gated the run", noteSub: "listener · code the AI wrote · 2 changes" },
+  { out: "hl2", accent: "#3B82F6", accent2: "#7DA9FF", eyebrow: "Agentic validation",
     title: "Catch what regex can't", img: "validate.png",
     sub: "CogniRunner reads the meaning of your fields, attachments, and issues — then blocks the transition and shows the user exactly why.",
     feats: "Plain-English rules, no scripting|Autonomous JQL duplicate search|Full reasoning and audit trace",
     note: "Duplicate of PROJ-118 — blocked", noteSub: "agentic validation · 3 rounds" },
-  { out: "hl2", accent: "#8B5CF6", accent2: "#B79CFF", eyebrow: "Bring your own AI",
+  { out: "hl3", accent: "#8B5CF6", accent2: "#B79CFF", eyebrow: "Bring your own AI",
     title: "Your AI. Your key.", img: "byok.png",
-    sub: "Connect OpenAI, Anthropic, Azure, OpenRouter, or AWS Bedrock — or use the zero-key Atlassian Forge LLM. Each key stored separately.",
+    sub: "Connect Anthropic, OpenAI, Azure, OpenRouter or AWS Bedrock, run locally with LM Studio, or use the zero-key Atlassian Forge LLM. Each key stored separately.",
     feats: "Six providers supported|Per-provider key storage|No embedded keys, ever",
     note: "Anthropic connected", noteSub: "switch providers anytime" },
-  { out: "hl3", accent: "#10B981", accent2: "#5EEAD4", eyebrow: "AI post-functions",
-    title: "Automate after the transition", img: "automate-code.png",
-    sub: "Semantic and static post-functions let AI update fields, draft comments, or run generated code — chained, tested, and sandboxed.",
-    feats: "The AI writes the code once|Runs at zero AI cost|Up to 50 chained steps",
-    note: "AI-generated — runs free", noteSub: "static post-function" },
+  // retired 2026-09-07 (kept for reference): "Automate after the transition" — accent #10B981/#5EEAD4,
+  // img automate-code.png, note "AI-generated — runs free" / "static post-function".
 ];
+for (const h of HL) if (h.tsize) h.tsize = String(h.tsize);
 
 const browser = await chromium.launch();
 const ctx = await browser.newContext({ deviceScaleFactor: 2 });

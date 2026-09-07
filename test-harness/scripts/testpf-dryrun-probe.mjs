@@ -10,8 +10,10 @@
 // must also call the deployed resolver and independently check that Jira is unchanged. Run:
 //   node --import ./lib/register-mocks-index.mjs scripts/testpf-dryrun-probe.mjs
 import forgeApi from "@forge/api";
+import storage from "../lib/mock-kvs.mjs";
 import { handler, createSandboxSession } from "../../src/index.js";
 import { getApiMethodNames } from "../../src/shared/sandbox-api-spec.js";
+import { ADMIN_PRINCIPAL, DENIED_PRINCIPAL, seedAdminRoster } from "../lib/harness-identity.mjs";
 
 let pass = 0; let fail = 0;
 const ok = (c, m) => { if (c) { pass++; console.log("  ✓ " + m); } else { fail++; console.log("  ✗ " + m); } };
@@ -24,10 +26,42 @@ forgeApi.__respond((path) => {
   return forgeApi.__response(404, { errorMessages: ["mock: not found"] });
 });
 
-const testPF = async (payload) => handler({ call: { functionKey: "testPostFunction", payload }, context: {} }, {});
+// testPostFunction runs arbitrary JS through the production sandbox with LIVE
+// reads as the app — it is editor-gated, so the probe drives it as a known admin.
+seedAdminRoster(storage);
+const testPF = async (payload, principal = ADMIN_PRINCIPAL) =>
+  handler({ call: { functionKey: "testPostFunction", payload } }, principal);
 
 const main = async () => {
   console.log("testPostFunction (in-UI dry-run) — offline probe of the DEPLOYED source\n");
+
+  // 0. PERMISSION GATE (F-048). An unpermitted caller must be REFUSED before any
+  // code runs: this resolver executes caller-supplied JavaScript against a full
+  // production api.* whose READS are live and run as the app.
+  const sentinel = `api.log("SENTINEL-MUST-NOT-RUN"); return await api.getIssue();`;
+  forgeApi.__calls.length = 0;
+  // (a) no accountId at all — refused without touching Jira.
+  let denied = await testPF({ issueKey: "ABC-1", code: sentinel }, {});  // no principal at all
+  ok(denied.success === false && /permission/i.test(denied.error || "")
+    && !JSON.stringify(denied.logs || []).includes("SENTINEL-MUST-NOT-RUN")
+    && (denied.changes || []).length === 0 && forgeApi.__calls.length === 0,
+  `anonymous caller refused, no code executed, no Jira call: ${JSON.stringify(denied)}`);
+  // (b) a real account that holds no app role and is in no Jira admin group.
+  forgeApi.__respond(() => forgeApi.__response(200, { values: [{ accountId: "somebody-else" }] }));
+  denied = await testPF({ issueKey: "ABC-1", code: sentinel }, DENIED_PRINCIPAL);
+  ok(denied.success === false && /permission/i.test(denied.error || "")
+    && !JSON.stringify(denied.logs || []).includes("SENTINEL-MUST-NOT-RUN")
+    && (denied.changes || []).length === 0
+    && forgeApi.__calls.every((c) => !String(c.path).includes("/rest/api/3/issue/")),
+  `non-roster caller refused, no code executed, no issue read: ${JSON.stringify(denied)}`);
+  // Restore the issue responder the rest of the probe relies on.
+  forgeApi.__respond((path) => {
+    if (String(path).includes("/issue/MISSING-404")) return forgeApi.__response(404, { errorMessages: ["Issue not found"] });
+    if (String(path).endsWith("/transitions")) return forgeApi.__response(200, { transitions: [{ id: "31", name: "Done" }] });
+    const m = String(path).match(/\/rest\/api\/3\/issue\/([A-Z]+-\d+)/);
+    if (m) return forgeApi.__response(200, { key: m[1], id: "1", fields: { summary: `real ${m[1]}`, status: { name: "To Do" }, labels: [] } });
+    return forgeApi.__response(404, { errorMessages: ["mock: not found"] });
+  });
 
   // 1. live mode: key omitted resolves to the selected test issue
   let r = await testPF({ issueKey: "ABC-1", code: `const i = await api.getIssue(); await api.updateIssue({ labels: ["x"] }); await api.editIssue({ labels: [{ add: "y" }] }); return i.key;` });

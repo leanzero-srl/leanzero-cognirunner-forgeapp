@@ -25,6 +25,7 @@ import {
   API_USAGE_GUARD,
   buildSystemPromptApiSection,
   ISSUE_KEY_OPTIONAL_METHODS,
+  SANDBOX_RULES,
   resolveIssueKey,
   normalizeKeyOptionalArgs,
 } from "../../src/shared/sandbox-api-spec.js";
@@ -115,8 +116,26 @@ for (const n of ISSUE_KEY_OPTIONAL_METHODS) {
   ok(!!entry, `key-optional method ${n} is documented in the spec`);
   ok(entry && entry.signature.includes("issueKey?"), `api.${n} signature marks the key optional`);
   ok(entry && entry.detail.includes("issueKey?"), `api.${n} hover detail marks the key optional`);
+  // F-067 companion: the completion dropdown is the one editor surface that renders `detail`
+  // (the hover and the API Reference panel render signature/returns/summary/example), so the
+  // short form of the empty-key rule has to live there or a human typing never sees it.
+  ok(entry && /an empty key throws/.test(entry.detail),
+    `api.${n} completion detail carries the short empty-key hint`);
   ok(entry && /key is OPTIONAL/i.test(entry.promptDoc), `api.${n} promptDoc says the key is optional`);
+  // F-052: a doc that only says "omit it and the call targets the current issue" made the
+  // generator emit `api.updateIssue(issue.fields.parent?.key || "", fields)` — an explicitly
+  // EMPTY key, which resolveIssueKey throws on. Every key-optional doc must say so, or the
+  // prompt and the runtime disagree and the disagreement ships as generated code.
+  ok(entry && /empty or blank string THROWS/.test(entry.promptDoc),
+    `api.${n} promptDoc warns that an explicitly-passed empty key THROWS`);
+  ok(entry && entry.promptDoc.includes('|| ""'),
+    `api.${n} promptDoc names the || "" pattern the model must not emit`);
 }
+// ...and the same rule once in the shared RULES block, so the model reads it as a rule too.
+const emptyKeyRules = SANDBOX_RULES.filter((r) => /EMPTY issue key/.test(r));
+ok(emptyKeyRules.length === 1, "SANDBOX_RULES states the empty-issue-key rule exactly once");
+ok(emptyKeyRules[0] && emptyKeyRules[0].includes('|| ""'), "the rule names the || \"\" pattern");
+ok(prompt.includes(emptyKeyRules[0] || "\u0000"), "the built system prompt carries the empty-issue-key rule");
 // createIssueLink / rankIssue / forIssue take a key first but it is NOT the bound issue.
 for (const n of ["createIssueLink", "rankIssue", "forIssue"]) {
   ok(!ISSUE_KEY_OPTIONAL_METHODS.includes(n), `${n} is NOT key-optional (its first arg is not the bound issue)`);

@@ -98,7 +98,7 @@ ${curl}
 curl -s -X POST -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \\
   "${url}?resource=listeners" -d '{
     "name": "Label new bugs", "events": ["avi:jira:created:issue"],
-    "filters": { "projectKeys": ["LZPT"], "issueTypes": ["Bug"] },
+    "filters": { "projectKeys": ["PROJ"], "issueTypes": ["Bug"] },
     "functions": [{ "name": "label", "code": "await api.addLabels(\\"triage\\");" }]
   }'
 
@@ -106,7 +106,7 @@ curl -s -X POST -H "Authorization: Bearer <token>" -H "Content-Type: application
 curl -s -X POST -H "Authorization: Bearer <token>" -H "Content-Type: application/json" \\
   "${url}?resource=jobs" -d '{
     "name": "Nudge stale work", "schedule": { "cron": "0 9 * * 1-5", "timeZone": "Europe/Zurich" },
-    "scope": { "jql": "project = LZPT AND status = \\"In Progress\\" AND updated <= -7d", "maxIssues": 25 },
+    "scope": { "jql": "project = PROJ AND status = \\"In Progress\\" AND updated <= -7d", "maxIssues": 25 },
     "mode": "agent", "agent": { "instructions": "Ask the assignee for an update in a short comment.", "allowedActions": ["get_issue", "add_comment"] }
   }'
 curl -s -X POST -H "Authorization: Bearer <token>" "${url}?resource=jobs&id=<jobId>&action=run"

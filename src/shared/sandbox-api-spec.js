@@ -32,16 +32,34 @@
 // `promptDoc` blocks are the verbatim markdown injected into the AI system
 // prompt. `summary`/`detail`/`info` feed the editor completions and hover docs.
 
+// The empty-key trap, stated ONCE here, appended to every key-optional promptDoc and carried
+// as a RULE in SANDBOX_RULES below: a doc that only says "omit it" makes the generator emit
+// `api.updateIssue(issue.fields.parent?.key || "", fields)`, which THROWS at runtime.
+// Wording matches resolveIssueKey() exactly — undefined/null default to the bound issue, while
+// a string that WAS passed but is empty or blank is a caller bug and throws rather than
+// quietly writing to the current issue.
+// EXPORTED so the second place that answers "which issue does this act on?" for the codegen
+// prompt (the builtin_doc_sandbox entry in builtin-docs.js) can derive this sentence instead of
+// growing a third, drifting copy of it.
+export const KEY_OPTIONAL_EMPTY_KEY_NOTE = "Passing `undefined` or `null` is the same as omitting it, but a key that IS passed and is an empty or blank string THROWS — never build one with `|| \"\"`; check the key exists first, e.g. `if (issue.fields.parent) await api.updateIssue(issue.fields.parent.key, fields);`.";
+
+// The same rule in the ONE place it has to be short: `detail` is rendered ONLY in the
+// CodeMirror completion dropdown's inline slot (sandboxCompletions.js:28 - the hover tooltip
+// and the API Reference panel render signature/returns/summary/example and never `detail`),
+// so the full sentence above would be truncated there. Defined HERE, beside the long form,
+// so a future edit to one is made looking at the other.
+export const KEY_OPTIONAL_EMPTY_KEY_HINT = "omit the key for the current issue; an empty key throws";
+
 export const SANDBOX_API_METHODS = [
   {
     name: "getIssue",
     signature: "api.getIssue(issueKey?)",
     returns: "issue object",
     summary: "Fetches a Jira issue by key (defaults to the current issue). Returns full issue with fields (summary, status, priority, etc.)",
-    detail: "(issueKey?) → issue object",
+    detail: "(issueKey?) → issue object — " + KEY_OPTIONAL_EMPTY_KEY_HINT,
     example: 'const issue = await api.getIssue(api.context.issueKey);',
     promptDoc: `### api.getIssue(issueKey?) → Object
-Fetches a Jira issue via REST API v3. The issue key is OPTIONAL: omit it and the call targets the current issue (\`api.context.issueKey\`); when the run has none (an unscoped scheduled job, a non-issue listener event) it throws and tells you to use \`api.forIssue(key)\`.
+Fetches a Jira issue via REST API v3. The issue key is OPTIONAL: omit it and the call targets the current issue (\`api.context.issueKey\`); when the run has none (an unscoped scheduled job, a non-issue listener event) it throws and tells you to use \`api.forIssue(key)\`. ${KEY_OPTIONAL_EMPTY_KEY_NOTE}
 Returns the full issue object:
 \`\`\`javascript
 const issue = await api.getIssue("PROJ-123");
@@ -72,10 +90,10 @@ const issue = await api.getIssue("PROJ-123");
     signature: "api.updateIssue(issueKey?, fields)",
     returns: "{ success: true }",
     summary: "Updates fields on an issue (defaults to the current issue). Use field IDs as keys. ADF required for description.",
-    detail: "(issueKey?, fields) → { success }",
+    detail: "(issueKey?, fields) → { success } — " + KEY_OPTIONAL_EMPTY_KEY_HINT,
     example: 'await api.updateIssue(api.context.issueKey, { priority: { name: "High" } });',
     promptDoc: `### api.updateIssue(issueKey?, fieldsObject) → { success: true }
-Updates fields via PUT /rest/api/3/issue/{key}. The issue key is OPTIONAL: omit it and the call targets the current issue (\`api.context.issueKey\`); when the run has none (an unscoped scheduled job, a non-issue listener event) it throws and tells you to use \`api.forIssue(key)\`.
+Updates fields via PUT /rest/api/3/issue/{key}. The issue key is OPTIONAL: omit it and the call targets the current issue (\`api.context.issueKey\`); when the run has none (an unscoped scheduled job, a non-issue listener event) it throws and tells you to use \`api.forIssue(key)\`. ${KEY_OPTIONAL_EMPTY_KEY_NOTE}
 Field value formats:
 
 **Text fields:** \`{ summary: "New title" }\`
@@ -167,11 +185,11 @@ const results = await api.searchJql('project = PROJ AND labels = "critical"');
     signature: "api.transitionIssue(issueKey?, transitionId, extra?)",
     returns: "{ success: true }",
     summary: "Executes a transition ID on the issue (defaults to the current issue). extra = { fields, update }. Use transitionByName when you have its name.",
-    detail: "(issueKey?, transitionId, extra?) → { success }",
+    detail: "(issueKey?, transitionId, extra?) → { success } — " + KEY_OPTIONAL_EMPTY_KEY_HINT,
     example: 'await api.transitionIssue(api.context.issueKey, "31", { fields: { resolution: { name: "Done" } } });',
     promptDoc: `### api.transitionIssue(issueKey?, transitionId, extra?) → { success: true }
 Executes a workflow transition. Pass a TRANSITION id, never a status id or status name. The id must be a non-empty string or finite number (e.g. "31" or 31); missing, blank or other types throw before simulation or writing. For a transition name use api.transitionByName instead.
-The issue key is OPTIONAL: api.transitionIssue("31") and api.transitionIssue("31", { fields: { resolution: { name: "Done" } } }) target the current issue. api.transitionIssue("PROJ-123", "31", extra) targets that issue. Without a current issue use an explicit key or api.forIssue("PROJ-123").
+The issue key is OPTIONAL: api.transitionIssue("31") and api.transitionIssue("31", { fields: { resolution: { name: "Done" } } }) target the current issue. api.transitionIssue("PROJ-123", "31", extra) targets that issue. Without a current issue use an explicit key or api.forIssue("PROJ-123"). ${KEY_OPTIONAL_EMPTY_KEY_NOTE}
 Optional extra.fields and extra.update are sent in the SAME transition call, for example resolution or an ADF comment update. Jira's transition screen and validators decide which fields are accepted. Simulation stages the request without executing Jira validators or changing the issue.`,
   },
   {
@@ -229,9 +247,9 @@ Forces the current issue into a status even when no normal transition path exist
     signature: "api.transitionByName(issueKey?, name, extra?)",
     returns: "{ success: true }",
     summary: "Resolves a transition by NAME on the issue (defaults to the current issue) and executes it — no numeric id needed. extra = { fields, update }.",
-    detail: "(issueKey?, name, extra?) → { success }",
+    detail: "(issueKey?, name, extra?) → { success } — " + KEY_OPTIONAL_EMPTY_KEY_HINT,
     example: 'await api.transitionByName(api.context.issueKey, "Done", { fields: { resolution: { name: "Done" } } });',
-    promptDoc: "### api.transitionByName(issueKey?, name, extra?) → { success }\nReads currently available transitions on the issue, matches the transition name case-insensitively (not the destination status name), then runs its id. An unavailable name throws, including during simulation; simulation performs the lookup but skips the write. `extra.fields`/`extra.update` set resolution, add a comment, etc. in the same call. The issue key is OPTIONAL: omit it and the call targets the current issue (`api.context.issueKey`); when the run has none (an unscoped scheduled job, a non-issue listener event) it throws and tells you to use `api.forIssue(key)`.",
+    promptDoc: "### api.transitionByName(issueKey?, name, extra?) → { success }\nReads currently available transitions on the issue, matches the transition name case-insensitively (not the destination status name), then runs its id. An unavailable name throws, including during simulation; simulation performs the lookup but skips the write. `extra.fields`/`extra.update` set resolution, add a comment, etc. in the same call. The issue key is OPTIONAL: omit it and the call targets the current issue (`api.context.issueKey`); when the run has none (an unscoped scheduled job, a non-issue listener event) it throws and tells you to use `api.forIssue(key)`. " + KEY_OPTIONAL_EMPTY_KEY_NOTE,
   },
   {
     name: "transitionSubtasks",
@@ -382,9 +400,9 @@ Forces the current issue into a status even when no normal transition path exist
     signature: "api.editIssue(issueKey?, update)",
     returns: "{ success: true }",
     summary: "Applies Jira `update` operations (add/remove/set) that MERGE server-side. Use this instead of updateIssue when multiple post-functions on one transition touch the same array field — updateIssue REPLACES and concurrent writes clobber.",
-    detail: "(issueKey?, update) → { success }",
+    detail: "(issueKey?, update) → { success } — " + KEY_OPTIONAL_EMPTY_KEY_HINT,
     example: 'await api.editIssue(api.context.issueKey, { labels: [{ add: "triaged" }], components: [{ add: { name: "API" } }] });',
-    promptDoc: "### api.editIssue(issueKey?, update) → { success }\nApplies Jira `update` ops, e.g. `{ labels: [{ add: \"x\" }, { remove: \"y\" }] }`. Prefer over api.updateIssue for additive array changes and when several PFs on the same transition modify the same field (avoids lost-update clobbering). The issue key is OPTIONAL: omit it and the call targets the current issue (`api.context.issueKey`); when the run has none (an unscoped scheduled job, a non-issue listener event) it throws and tells you to use `api.forIssue(key)`.",
+    promptDoc: "### api.editIssue(issueKey?, update) → { success }\nApplies Jira `update` ops, e.g. `{ labels: [{ add: \"x\" }, { remove: \"y\" }] }`. Prefer over api.updateIssue for additive array changes and when several PFs on the same transition modify the same field (avoids lost-update clobbering). The issue key is OPTIONAL: omit it and the call targets the current issue (`api.context.issueKey`); when the run has none (an unscoped scheduled job, a non-issue listener event) it throws and tells you to use `api.forIssue(key)`. " + KEY_OPTIONAL_EMPTY_KEY_NOTE,
   },
   {
     name: "addLabels",
@@ -724,6 +742,7 @@ export const SANDBOX_RULES = [
   "Post-functions run AFTER transition succeeds. Errors don't block the workflow.",
   "Never write unbounded loops (`while(true)`, `for(;;)`). A synchronous infinite loop cannot be interrupted, hits the function timeout, and may be retried — always give every loop a clear exit condition and bound its iterations.",
   "Never hardcode issue keys — use `api.context.issueKey` for the current issue.",
+  "Never pass an EMPTY issue key. On the key-optional methods (getIssue, updateIssue, transitionIssue, transitionByName, editIssue) an explicitly-passed empty string THROWS: `api.updateIssue(issue.fields.parent?.key || \"\", fields)` is a bug, not a request for the current issue. Omit the argument to target the current issue, or check the key exists first.",
   "For description/comment fields, always use ADF format (never plain strings).",
   "When searching by text, escape quotes in the search string.",
   "Use `accountId` for user references, never `username` or `emailAddress`.",

@@ -595,7 +595,7 @@ Admin panel → **Listeners** → *Add Listener*: name, events, filters, AI cond
 
 - Events arrive asynchronously (seconds; up to ~3 minutes worst case). A listener is eventually consistent.
 - `Issue viewed` fires on every issue view — the picker flags it HIGH VOLUME.
-- A listener whose writes re-fire its own event loops unless *ignore self-generated events* stays on; per-issue (10 / 5 min) and per-listener (120 / 5 min) brakes are the backstop and are logged once per window.
+- A listener whose writes re-fire its own event loops unless *ignore self-generated events* stays on; per-issue (30 / 5 min) and per-listener (120 / 5 min) brakes are the backstop and are logged once per window.
 - Listeners run as the app (`asApp`), never as the triggering user.
 
 ## Scheduled Jobs (cron)
@@ -606,7 +606,7 @@ A job runs on a **cron schedule** (5-field, IANA time zone; presets from every 5
 
 ### How It Works
 
-A `scheduledTrigger` (`fiveMinute`) calls `scheduled-jobs.scheduledTick`, which plans the cron minutes that came due since each job's last check (≤1 hour replay, one run per tick), claims each due minute (idempotent against duplicate ticks) and queues the run. The consumer runs the job with a ~100 s budget shared across scoped issues, logs `type: "scheduledjob"` (with `scheduledFor`, `manual`, `missed`) and updates stats (`nextRunAt`).
+A `scheduledTrigger` (`fiveMinute`) calls `scheduled-jobs.scheduledTick`, which plans the cron minutes that came due since each job's last check (≤1 hour replay, one run per tick), claims each due minute (idempotent against duplicate ticks) and queues the run. The consumer runs the job with a 105 s budget (inside the 120 s consumer cap) shared across scoped issues, logs `type: "scheduledjob"` (with `scheduledFor`, `manual`, `missed`) and updates stats (`nextRunAt`).
 
 ### Pitfalls
 

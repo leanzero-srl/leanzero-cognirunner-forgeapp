@@ -72,6 +72,10 @@ export default function DeleteRulesDialog({ invoke, ids, onClose, onDone }) {
   const [progress, setProgress] = useState(null);
   const [results, setResults] = useState(null);
   const [error, setError] = useState(null);
+  // Ids this dialog has already CONFIRMED deleted. Populated after a partial run
+  // so a retry never re-attempts a rule that is already gone (which the backend
+  // would answer "not-found" and the dialog would render as a fresh failure).
+  const [doneIds, setDoneIds] = useState(() => new Set());
 
   useEffect(() => {
     let live = true;
@@ -96,7 +100,11 @@ export default function DeleteRulesDialog({ invoke, ids, onClose, onDone }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose, busy]);
 
-  const items = preview?.items || [];
+  const allItems = preview?.items || [];
+  // Everything still standing: after a partial delete the list, the counts and the
+  // button must describe what is LEFT, not what the dialog was opened with.
+  const items = doneIds.size ? allItems.filter((it) => !doneIds.has(String(it.id))) : allItems;
+  const targets = doneIds.size ? ids.filter((id) => !doneIds.has(String(id))) : ids;
   const disabledCount = items.filter((i) => i.disabled).length;
   const unlocatable = items.filter((i) => !i.locatable);
   const everythingUnlocatable = items.length > 0 && unlocatable.length === items.length;
@@ -106,30 +114,60 @@ export default function DeleteRulesDialog({ invoke, ids, onClose, onDone }) {
   // is pure storage and can take far more per call. Both caps mirror the backend.
   const CHUNK = mode === "everywhere" ? 10 : 100;
 
+  // A chunk that throws mid-loop has NOT undone the chunks before it: those rules
+  // are already detached from their workflows and gone from the registry. So the
+  // failure path reports the same things the success path does — results, counts and
+  // onDone (the parent's only trigger for fetchConfigs) — and only then shows the
+  // error. Reporting nothing would leave the table listing deleted rules as live.
   const run = async () => {
     setBusy(true); setError(null);
+    const batch = targets;
     const all = [];
+    let thrown = null;
     try {
-      for (let i = 0; i < ids.length; i += CHUNK) {
-        const slice = ids.slice(i, i + CHUNK);
-        setProgress(`Deleting ${Math.min(i + slice.length, ids.length)} of ${ids.length}…`);
+      for (let i = 0; i < batch.length; i += CHUNK) {
+        const slice = batch.slice(i, i + CHUNK);
+        setProgress(`Deleting ${Math.min(i + slice.length, batch.length)} of ${batch.length}…`);
         const r = await invoke("deleteRules", { ids: slice, detach: mode === "everywhere" });
         if (!r || r.success === false) throw new Error(r?.error || "Delete failed");
         all.push(...(r.results || []));
       }
-      setResults(all);
-      const failed = all.filter((r) => !r.ok);
-      if (onDone) onDone({ results: all, removed: all.filter((r) => r.ok).length, failed: failed.length });
-      // Clean sweep — nothing more to show, so get out of the user's way.
-      if (!failed.length) onClose();
     } catch (e) {
-      setError(e.message || "Delete failed");
+      thrown = e?.message || "Delete failed";
+    }
+
+    const okIds = new Set(all.filter((r) => r.ok).map((r) => String(r.id)));
+    const failed = all.filter((r) => !r.ok);
+    // Anything not confirmed deleted stays selected in the table so the operator
+    // can retry exactly those without picking them out of the list again.
+    const remainingIds = batch.filter((id) => !okIds.has(String(id)));
+
+    setResults(all);
+    if (okIds.size) setDoneIds((prev) => new Set([...prev, ...okIds]));
+    if (onDone) {
+      onDone({
+        results: all,
+        removed: okIds.size,
+        failed: failed.length,
+        remainingIds,
+        total: batch.length,
+        error: thrown,
+      });
+    }
+
+    if (thrown) {
+      setError(okIds.size
+        ? `${okIds.size} of ${batch.length} deleted, then: ${thrown}`
+        : thrown);
+    } else if (!failed.length) {
+      // Clean sweep — nothing more to show, so get out of the user's way.
+      onClose();
     }
     setProgress(null);
     setBusy(false);
   };
 
-  const n = ids.length;
+  const n = targets.length;
 
   return createPortal(
     <div className="pf-modal-overlay" onClick={() => !busy && onClose()}>

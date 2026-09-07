@@ -347,6 +347,21 @@ html[data-color-mode="dark"] .alert-warning {
     }
     .dropdown-trigger.dropdown-error { border-color: var(--error-color) !important; }
 
+    /* Searchable select = COMBOBOX: while the menu is open the trigger IS the search
+       box. There used to be a second search input inside the panel, so a field
+       rendered as two identical-looking bars stacked on each other and only the
+       lower one accepted typing. The wrapper keeps every .dropdown-trigger visual;
+       the input inside is chrome-free so it reads as one control, not a field
+       nested inside a field. */
+    .dropdown-trigger.dropdown-combobox { cursor: text; display: flex; align-items: center; }
+    .dropdown-combobox-input {
+      flex: 1 1 auto; min-width: 0; width: 100%;
+      border: 0; outline: none; padding: 0; margin: 0;
+      background: transparent; color: var(--text-color);
+      font: inherit; line-height: inherit;
+    }
+    .dropdown-combobox-input::placeholder { color: var(--text-muted); }
+
     .dropdown-trigger .dropdown-placeholder { color: var(--text-muted); }
 
     .dropdown-chevron {
@@ -2491,6 +2506,7 @@ html[data-color-mode="dark"] .type-pf-static { background: #64748b; }
 .runres-badge.ok { background: #16a34a; }
 .runres-badge.skip { background: #d97706; }
 .runres-badge.err { background: #dc2626; }
+.runres-badge.pending { background: #475569; }
 .runres-title { font-weight: 600; font-size: 13px; }
 .runres-ms { font-size: 11px; color: var(--text-secondary); padding: 2px 6px; border-radius: 3px; border: 1px solid var(--border-color); }
 .runres-reason { margin-top: 8px; font-size: 13px; line-height: 1.5; }
@@ -2525,7 +2541,15 @@ html[data-color-mode="dark"] .type-pf-static { background: #64748b; }
 .evp-link { border: none; background: transparent; color: var(--primary-color); font-size: 11px; font-weight: 700; cursor: pointer; padding: 2px 4px; }
 .evp-rows { display: flex; flex-direction: column; }
 .evp-row { display: grid; grid-template-columns: 22px 1fr auto auto; gap: 10px; align-items: center; padding: 7px 12px; cursor: pointer; border-top: 1px solid var(--border-color); }
-.evp-row.on { background: rgba(37, 99, 235, 0.08); }
+/* Selected row: SOLID docs blue with white text (never a low-alpha wash — the
+   owner's rule, and an 8% tint on a white card was invisible anyway). Every
+   nested colour is restated so nothing inherits a muted token onto the fill;
+   the checkbox gets a near-black accent so its tick keeps its white contrast. */
+.evp-row.on { background: #2563eb; color: #fff; }
+.evp-row.on .evp-row-label { color: #fff; font-weight: 700; }
+.evp-row.on .evp-row-desc, .evp-row.on .evp-row-id { color: #fff; }
+.evp-row.on .evp-vol { background: #fff; color: #dc2626; }
+.evp-row.on input { accent-color: #0f172a; }
 .evp-row input { width: 15px; height: 15px; margin: 0; }
 .evp-row-main { display: flex; flex-direction: column; }
 .evp-row-label { font-size: 13px; font-weight: 600; }
@@ -2564,7 +2588,10 @@ html[data-color-mode="dark"] .type-pf-static { background: #64748b; }
 .agc-kind-read { background: #16a34a; }
 .agc-kind-write { background: #ea580c; }
 .agc-action { display: grid; grid-template-columns: 20px 1fr; gap: 10px; align-items: flex-start; padding: 8px 12px; border-top: 1px solid var(--border-color); cursor: pointer; }
-.agc-action.on { background: rgba(124, 58, 237, 0.1); }
+.agc-action.on { background: #7c3aed; color: #fff; }
+.agc-action.on .agc-action-label { color: #fff; font-weight: 700; }
+.agc-action.on .agc-action-desc { color: #fff; }
+.agc-action.on input { accent-color: #0f172a; }
 .agc-action input { margin-top: 2px; }
 .agc-action-main { display: flex; flex-direction: column; }
 .agc-action-label { font-size: 13px; font-weight: 600; }
@@ -2594,15 +2621,15 @@ html[data-color-mode="dark"] .type-pf-static { background: #64748b; }
 html[data-color-mode="dark"] .lst-count { background: #f97316; }
 html[data-color-mode="dark"] .lst-sim { background: #f59e0b; }
 html[data-color-mode="dark"] .lst-aic, html[data-color-mode="dark"] .type-badge.lst-mode-agent, html[data-color-mode="dark"] .mode-btn.mode-agent.on, html[data-color-mode="dark"] .runres-tool, html[data-color-mode="dark"] .apx-secret { background: #8b5cf6; border-color: #8b5cf6; }
-html[data-color-mode="dark"] .type-badge.lst-mode-script, html[data-color-mode="dark"] .mode-btn.mode-script.on, html[data-color-mode="dark"] .chips-chip { background: #64748b; border-color: #64748b; }
+html[data-color-mode="dark"] .type-badge.lst-mode-script, html[data-color-mode="dark"] .mode-btn.mode-script.on, html[data-color-mode="dark"] .chips-chip, html[data-color-mode="dark"] .runres-badge.pending { background: #64748b; border-color: #64748b; }
 html[data-color-mode="dark"] .chips-chip-project, html[data-color-mode="dark"] .runstat-ok .runstat-dot, html[data-color-mode="dark"] .runres-badge.ok, html[data-color-mode="dark"] .runres-issue, html[data-color-mode="dark"] .agc-kind-read, html[data-color-mode="dark"] .apx-fresh { background: #22c55e; }
-html[data-color-mode="dark"] .runres-badge.err, html[data-color-mode="dark"] .runres-issue.err, html[data-color-mode="dark"] .runres-tool.err, html[data-color-mode="dark"] .evp-vol, html[data-color-mode="dark"] .evp-chip-vol, html[data-color-mode="dark"] .schp-preview.schp-preview-error { background: #ef4444; }
+html[data-color-mode="dark"] .runstat-err .runstat-dot, html[data-color-mode="dark"] .runres-badge.err, html[data-color-mode="dark"] .runres-issue.err, html[data-color-mode="dark"] .runres-tool.err, html[data-color-mode="dark"] .evp-vol, html[data-color-mode="dark"] .evp-chip-vol, html[data-color-mode="dark"] .schp-preview.schp-preview-error { background: #ef4444; }
 html[data-color-mode="dark"] .runres-badge.skip, html[data-color-mode="dark"] .runstat-skip .runstat-dot { background: #f59e0b; }
 html[data-color-mode="dark"] .log-type-badge.lt-listener, html[data-color-mode="dark"] .agc-kind-write { background: #f97316; }
 html[data-color-mode="dark"] .log-type-badge.lt-job, html[data-color-mode="dark"] .schp-day.on, html[data-color-mode="dark"] .schp-preview { background: #06b6d4; border-color: #06b6d4; }
 html[data-color-mode="dark"] .apx-badge { background: #e11d48; }
-html[data-color-mode="dark"] .evp-row.on { background: rgba(59, 130, 246, 0.18); }
-html[data-color-mode="dark"] .agc-action.on { background: rgba(139, 92, 246, 0.2); }
+html[data-color-mode="dark"] .evp-row.on { background: #3b82f6; }
+html[data-color-mode="dark"] .agc-action.on { background: #8b5cf6; }
 /* --- Rule deletion + registry pressure (mirrors injectStyles in App.js) --- */
 .rule-select-th { width: 30px; }
 .rule-select-cell input[type="checkbox"],

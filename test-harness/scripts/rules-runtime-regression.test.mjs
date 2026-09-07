@@ -250,6 +250,33 @@ await check("concurrent scheduled ticks queue a due job once", async () => {
   assert.equal(pushed.length, 1);
   assert.equal(pushed[0].body.params.jobId, "claim-tick");
 });
+// A failing stats-recovery page must never become permanent: the cursor is opaque,
+// it is held across tick boundaries, and it is the likeliest cause of the failure.
+await check("a failing stats recovery drops its cursor instead of replaying it forever", async () => {
+  tickFixture();
+  storage.__seed("job_sched", { ...(storage.__raw("job_sched") || {}), ":statsRecovery": { cursor: "poisoned-cursor" } });
+  const originalQuery = storage.query; const originalWarn = console.warn; const originalError = console.error;
+  const seen = []; const said = [];
+  storage.query = () => { const q = originalQuery.call(storage); const getMany = q.getMany; q.getMany = async () => { seen.push("query"); throw new Error("invalid cursor"); }; q.cursor = (c) => { seen.push(c); return q; }; return q; };
+  console.warn = (...a) => said.push(a.join(" ")); console.error = (...a) => said.push(a.join(" "));
+  try {
+    await scheduledTick();
+    assert.deepEqual(seen, ["poisoned-cursor", "query"], "the first tick uses the stored cursor");
+    assert.equal(storage.__raw("job_sched")[":statsRecovery"].cursor, null, "and drops it when the page fails");
+    assert.equal(storage.__raw("job_sched")[":statsRecovery"].fails, 1);
+    assert.ok(said.some((l) => l.includes("cursor dropped")), "the drop is logged");
+    seen.length = 0;
+    await scheduledTick();
+    assert.deepEqual(seen, ["query"], "the next tick restarts from the first page, it does not replay the cursor");
+    assert.equal(storage.__raw("job_sched")[":statsRecovery"].fails, 2, "consecutive failures are counted, not silent");
+    await scheduledTick();
+    assert.ok(said.some((l) => l.includes("recovery failed 3x")), "a permanently failing page becomes loud");
+  } finally { storage.query = originalQuery; console.warn = originalWarn; console.error = originalError; }
+  // The tick's own work is unaffected by a broken recovery: the due job is queued
+  // (once — the three ticks share a due minute, so the claim collapses them).
+  assert.equal(pushed.length, 1);
+  assert.equal(pushed[0].body.params.jobId, "claim-tick");
+});
 await check("scheduled tick preserves 2h atomic options and infrastructure continue", async () => {
   tickFixture();
   const originalSet = storage.set; const originalWarn = console.warn; const warnings = []; const optionsSeen = [];

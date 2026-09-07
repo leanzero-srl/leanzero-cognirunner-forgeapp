@@ -201,6 +201,20 @@ ok(REGISTRY_FULL_MESSAGE.includes(String(REGISTRY_MAX_ROWS)),
   ok(/const saveRegistry\s*=\s*async[^;]*slimRegistryRow/s.test(src) || /saveRegistry[\s\S]{0,200}map\(slimRegistryRow\)/.test(src),
     "saveRegistry slims every row on write");
 
+  // registerPostFunction wrote the offloaded pf_code bundle BEFORE the UPDATE byte
+  // cap could refuse the save, so every refused retry minted another unreachable
+  // content-hashed key. Caps are checked before the side effect: inside this
+  // resolver the cap must precede the bundle write.
+  const regPf = src.slice(src.indexOf('resolver.define("registerPostFunction"'),
+    src.indexOf('resolver.define("removePostFunction"'));
+  const pfCapIdx = regPf.indexOf("REGISTRY_UPDATE_MAX_BYTES");
+  const pfWriteIdx = regPf.indexOf("await storage.set(codeKey");
+  ok(pfCapIdx > -1 && pfWriteIdx > -1, "registerPostFunction has both an update cap and a bundle write");
+  ok(pfCapIdx > -1 && pfWriteIdx > -1 && pfCapIdx < pfWriteIdx,
+    "registerPostFunction's UPDATE cap must run BEFORE the pf_code bundle write, or a refused save orphans the bundle");
+  ok((regPf.match(/await storage\.set\(codeKey/g) || []).length === 1,
+    "exactly one pf_code bundle write in registerPostFunction");
+
   // commitImportCore had NO cap check at all: at the cap it attached a live workflow
   // rule and then failed to register it, manufacturing an unmanageable rule. The
   // guard must sit BEFORE the inject, not before the registry push.

@@ -334,23 +334,83 @@ const _sampleAt = new Map();
 // context tokens at every depth on capture AND read, including legacy cached rows.
 // JSON cloning keeps this idempotent and never mutates the raw event used by a run.
 const cloneSampleWithoutContextTokens = (value) => JSON.parse(JSON.stringify(value, (key, child) => key === "contextToken" ? undefined : child));
-// Samples show the SHAPE of a payload, not its content: rich-text bodies are replaced by
-// a placeholder so a sample never leaks a description or comment across project permissions.
+/**
+ * Samples show the SHAPE of a payload, never its CONTENT. What that guarantees,
+ * exactly (it used to claim more than it did — only ADF was placeheld, so summaries,
+ * string custom fields, labels, people and changelog values crossed project lines):
+ *
+ *  · Inside the CONTENT ZONES — `issue.fields`, `comment`, `worklog`, `changelog`,
+ *    and any user-shaped object anywhere in the payload (accountId / displayName /
+ *    emailAddress / avatarUrls) — EVERY string becomes `<redacted text, N chars>`
+ *    and every ADF document becomes an empty doc, UNLESS it is schema rather than
+ *    content: an id/key/self/accountId/field id (SAMPLE_STRUCTURAL_KEYS), a date or
+ *    timestamp, or the NAME of a configuration object (status, status category,
+ *    priority, issue type, resolution, project, link type). So `summary`, string and
+ *    ADF custom fields, `labels`, `description`, `environment`, `comment.body`,
+ *    `comment.renderedBody` (which commentTextOf reads when `body` is absent),
+ *    `worklog.comment`, every changelog `fromString`/`toString` — for EVERY field,
+ *    not just rich text — and every display name, email and avatar URL are placeheld.
+ *  · The whole `issue.fields.comment` COLLECTION is dropped.
+ *  · Keys, nesting, array lengths and value types survive, so the editor still shows
+ *    the exact event shape; ids, keys, timestamps and the event type survive too.
+ *
+ * NOT redacted: everything outside those zones — entity metadata such as
+ * `attachment.fileName` or a version/sprint/board name. Those are only ever stored
+ * for an event that at least one enabled listener subscribes to AND whose project
+ * passes that listener's project filter (see the capture call in listenerTrigger).
+ */
+const SAMPLE_STRUCTURAL_KEYS = new Set([
+  "id", "key", "self", "accountId", "accountType", "atlassianId", "eventType", "type", "mimeType",
+  "field", "fieldId", "fieldtype", "from", "to", "issueId", "projectId", "parentId", "entityId",
+  "iconUrl", "colorName", "projectTypeKey",
+]);
+// `name` (and a link type's inward/outward wording) is configuration, not content,
+// only when it belongs to one of these objects.
+const SAMPLE_SCHEMA_PARENTS = new Set(["status", "statusCategory", "priority", "issuetype", "issueType", "resolution", "project", "type", "security", "securitylevel"]);
+const SAMPLE_SCHEMA_KEYS = new Set(["name", "inward", "outward", "description"]);
+const SAMPLE_TIMESTAMP = /^\d{4}-\d{2}-\d{2}([T ]\d{2}:\d{2}|$)/;
+const sampleKeepsString = (value, key, parentKey) => SAMPLE_STRUCTURAL_KEYS.has(key)
+  || SAMPLE_TIMESTAMP.test(value)
+  || (SAMPLE_SCHEMA_KEYS.has(key) && SAMPLE_SCHEMA_PARENTS.has(parentKey));
+const sampleIsUser = (v) => v && typeof v === "object" && !Array.isArray(v)
+  && ("accountId" in v || "displayName" in v || "emailAddress" in v || "avatarUrls" in v);
+// One pass, type-preserving. `content` turns on inside a content zone and stays on.
+const redactSampleNode = (value, key, parentKey, content, depth = 0) => {
+  if (value == null || depth > 24) return value;
+  if (typeof value === "string") return content && !sampleKeepsString(value, key, parentKey) ? `<redacted text, ${value.length} chars>` : value;
+  if (typeof value !== "object") return value;
+  if (Array.isArray(value)) return value.map((v) => redactSampleNode(v, key, parentKey, content, depth + 1));
+  if (content && value.type === "doc") return { type: "doc", version: 1, _redacted: true, content: [] };
+  const inside = content || sampleIsUser(value);
+  const out = {};
+  for (const k of Object.keys(value)) out[k] = redactSampleNode(value[k], k, key, inside, depth + 1);
+  return out;
+};
 export const redactSample = (payload) => {
-  const red = (v) => (v == null ? v : (typeof v === "string" ? `<redacted text, ${v.length} chars>` : { type: "doc", version: 1, _redacted: true, content: [] }));
   const p = cloneSampleWithoutContextTokens(payload || {});
-  if (p.issue && p.issue.fields) { const f = p.issue.fields; if (f.description != null) f.description = red(f.description); if (f.environment != null) f.environment = red(f.environment); if (f.comment) delete f.comment; for (const k of Object.keys(f)) if (k.startsWith("customfield_") && f[k] && typeof f[k] === "object" && f[k].type === "doc") f[k] = red(f[k]); }
-  if (p.comment && p.comment.body != null) p.comment.body = red(p.comment.body);
-  if (p.worklog && p.worklog.comment != null) p.worklog.comment = red(p.worklog.comment);
-  if (p.changelog && Array.isArray(p.changelog.items)) for (const it of p.changelog.items) { if (it && /description|comment|environment/i.test(String(it.field || ""))) { if (it.fromString != null) it.fromString = red(it.fromString); if (it.toString != null) it.toString = red(it.toString); } }
-  return p;
+  if (p.issue && p.issue.fields && p.issue.fields.comment) delete p.issue.fields.comment;
+  const out = {};
+  for (const k of Object.keys(p)) {
+    if (k === "issue" && p.issue && typeof p.issue === "object" && !Array.isArray(p.issue)) {
+      const issue = {};
+      for (const ik of Object.keys(p.issue)) issue[ik] = redactSampleNode(p.issue[ik], ik, "issue", ik === "fields");
+      out.issue = issue;
+    } else {
+      out[k] = redactSampleNode(p[k], k, "", k === "comment" || k === "worklog" || k === "changelog");
+    }
+  }
+  return out;
 };
 const captureSample = async (eventType, event) => {
   const last = _sampleAt.get(eventType) || 0;
   if (Date.now() - last < SAMPLE_MIN_INTERVAL_MS) return;
   _sampleAt.set(eventType, Date.now());
   try {
-    await storage.set(EVENT_SAMPLE_PREFIX + safeKeyPart(eventType), { eventType, capturedAt: nowIso(), redacted: true, payload: trimEventPayload(redactSample(event), 20000) }, SAMPLE_TTL);
+    // `redactVersion` marks WHICH redaction produced this row. Reads never re-redact
+    // (placeholders would change under the caller), so a row captured by an older,
+    // weaker pass keeps its own content until its 7-day TTL expires; the marker is
+    // how a future migration — or an operator — can tell the two apart.
+    await storage.set(EVENT_SAMPLE_PREFIX + safeKeyPart(eventType), { eventType, capturedAt: nowIso(), redacted: true, redactVersion: 2, payload: trimEventPayload(redactSample(event), 20000) }, SAMPLE_TTL);
   } catch { /* best-effort */ }
 };
 export const getEventSample = async (eventType) => {
@@ -391,7 +451,6 @@ export async function listenerTrigger(event, context) {
   try { rows = await readListenerIndex({ cached: true }); } catch (e) { console.error("[listener] index read failed:", e && e.message); return; }
   const candidates = rows.filter((r) => r.enabled !== false && Array.isArray(r.events) && r.events.includes(eventType));
   if (!candidates.length) return;
-  await captureSample(eventType, event); // only when someone listens; throttled 15 min per event type per container
 
   const ctx = extractEventContext(eventType, event);
   // id-only payloads: resolve the issue key once, only when someone listens.
@@ -405,6 +464,12 @@ export async function listenerTrigger(event, context) {
   }
   // Pre-filter on the slim index rows before paying for full reads.
   const matched = candidates.filter((r) => matchesListenerProject(r.projectKeys, ctx));
+  // The editor's "last real payload" is captured ONLY for an event some enabled
+  // listener actually accepts. Capturing before this filter published one project's
+  // issue content (summary, custom fields, people) to every editor — including those
+  // scoped to a different project — through getEventSample / ?resource=samples.
+  // Throttled to once per 15 min per event type per warm container.
+  if (matched.length) await captureSample(eventType, event);
   const shortlisted = matched.slice(0, MAX_CANDIDATES_PER_EVENT);
   // Say it out loud when the cap bites: saveListener APPENDS to the index, so the rows
   // this slice drops are the NEWEST ones — the listener someone just saved and is testing

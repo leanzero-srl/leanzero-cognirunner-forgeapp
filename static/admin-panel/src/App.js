@@ -2578,6 +2578,7 @@ const injectStyles = () => {
     .runres-badge.ok { background: #16a34a; }
     .runres-badge.skip { background: #d97706; }
     .runres-badge.err { background: #dc2626; }
+    .runres-badge.pending { background: #475569; }
     .runres-title { font-weight: 600; font-size: 13px; }
     .runres-ms { font-size: 11px; color: var(--text-secondary); padding: 2px 6px; border-radius: 3px; border: 1px solid var(--border-color); }
     .runres-reason { margin-top: 8px; font-size: 13px; line-height: 1.5; }
@@ -2612,7 +2613,15 @@ const injectStyles = () => {
     .evp-link { border: none; background: transparent; color: var(--primary-color); font-size: 11px; font-weight: 700; cursor: pointer; padding: 2px 4px; }
     .evp-rows { display: flex; flex-direction: column; }
     .evp-row { display: grid; grid-template-columns: 22px 1fr auto auto; gap: 10px; align-items: center; padding: 7px 12px; cursor: pointer; border-top: 1px solid var(--border-color); }
-    .evp-row.on { background: rgba(37, 99, 235, 0.08); }
+    /* Selected row: SOLID docs blue with white text (never a low-alpha wash — the
+       owner's rule, and an 8% tint on a white card was invisible anyway). Every
+       nested colour is restated so nothing inherits a muted token onto the fill;
+       the checkbox gets a near-black accent so its tick keeps its white contrast. */
+    .evp-row.on { background: #2563eb; color: #fff; }
+    .evp-row.on .evp-row-label { color: #fff; font-weight: 700; }
+    .evp-row.on .evp-row-desc, .evp-row.on .evp-row-id { color: #fff; }
+    .evp-row.on .evp-vol { background: #fff; color: #dc2626; }
+    .evp-row.on input { accent-color: #0f172a; }
     .evp-row input { width: 15px; height: 15px; margin: 0; }
     .evp-row-main { display: flex; flex-direction: column; }
     .evp-row-label { font-size: 13px; font-weight: 600; }
@@ -2651,7 +2660,10 @@ const injectStyles = () => {
     .agc-kind-read { background: #16a34a; }
     .agc-kind-write { background: #ea580c; }
     .agc-action { display: grid; grid-template-columns: 20px 1fr; gap: 10px; align-items: flex-start; padding: 8px 12px; border-top: 1px solid var(--border-color); cursor: pointer; }
-    .agc-action.on { background: rgba(124, 58, 237, 0.1); }
+    .agc-action.on { background: #7c3aed; color: #fff; }
+    .agc-action.on .agc-action-label { color: #fff; font-weight: 700; }
+    .agc-action.on .agc-action-desc { color: #fff; }
+    .agc-action.on input { accent-color: #0f172a; }
     .agc-action input { margin-top: 2px; }
     .agc-action-main { display: flex; flex-direction: column; }
     .agc-action-label { font-size: 13px; font-weight: 600; }
@@ -2681,15 +2693,15 @@ const injectStyles = () => {
     html[data-color-mode="dark"] .lst-count { background: #f97316; }
     html[data-color-mode="dark"] .lst-sim { background: #f59e0b; }
     html[data-color-mode="dark"] .lst-aic, html[data-color-mode="dark"] .type-badge.lst-mode-agent, html[data-color-mode="dark"] .mode-btn.mode-agent.on, html[data-color-mode="dark"] .runres-tool, html[data-color-mode="dark"] .apx-secret { background: #8b5cf6; border-color: #8b5cf6; }
-    html[data-color-mode="dark"] .type-badge.lst-mode-script, html[data-color-mode="dark"] .mode-btn.mode-script.on, html[data-color-mode="dark"] .chips-chip { background: #64748b; border-color: #64748b; }
+    html[data-color-mode="dark"] .type-badge.lst-mode-script, html[data-color-mode="dark"] .mode-btn.mode-script.on, html[data-color-mode="dark"] .chips-chip, html[data-color-mode="dark"] .runres-badge.pending { background: #64748b; border-color: #64748b; }
     html[data-color-mode="dark"] .chips-chip-project, html[data-color-mode="dark"] .runstat-ok .runstat-dot, html[data-color-mode="dark"] .runres-badge.ok, html[data-color-mode="dark"] .runres-issue, html[data-color-mode="dark"] .agc-kind-read, html[data-color-mode="dark"] .apx-fresh { background: #22c55e; }
-    html[data-color-mode="dark"] .runres-badge.err, html[data-color-mode="dark"] .runres-issue.err, html[data-color-mode="dark"] .runres-tool.err, html[data-color-mode="dark"] .evp-vol, html[data-color-mode="dark"] .evp-chip-vol, html[data-color-mode="dark"] .schp-preview.schp-preview-error { background: #ef4444; }
+    html[data-color-mode="dark"] .runstat-err .runstat-dot, html[data-color-mode="dark"] .runres-badge.err, html[data-color-mode="dark"] .runres-issue.err, html[data-color-mode="dark"] .runres-tool.err, html[data-color-mode="dark"] .evp-vol, html[data-color-mode="dark"] .evp-chip-vol, html[data-color-mode="dark"] .schp-preview.schp-preview-error { background: #ef4444; }
     html[data-color-mode="dark"] .runres-badge.skip, html[data-color-mode="dark"] .runstat-skip .runstat-dot { background: #f59e0b; }
     html[data-color-mode="dark"] .log-type-badge.lt-listener, html[data-color-mode="dark"] .agc-kind-write { background: #f97316; }
     html[data-color-mode="dark"] .log-type-badge.lt-job, html[data-color-mode="dark"] .schp-day.on, html[data-color-mode="dark"] .schp-preview { background: #06b6d4; border-color: #06b6d4; }
     html[data-color-mode="dark"] .apx-badge { background: #e11d48; }
-    html[data-color-mode="dark"] .evp-row.on { background: rgba(59, 130, 246, 0.18); }
-    html[data-color-mode="dark"] .agc-action.on { background: rgba(139, 92, 246, 0.2); }
+    html[data-color-mode="dark"] .evp-row.on { background: #3b82f6; }
+    html[data-color-mode="dark"] .agc-action.on { background: #8b5cf6; }
 `;
   document.head.appendChild(style);
 };
@@ -5585,9 +5597,19 @@ function App() {
     });
   };
 
-  const onDeleteDone = ({ removed, failed }) => {
-    setSelectedRuleIds(new Set());
-    if (removed > 0) {
+  // Called on BOTH the clean and the partial path: a delete that threw part-way
+  // through still detached real rules, so the list has to be re-read either way.
+  // `remainingIds` are the rules NOT confirmed deleted — they stay selected so a
+  // retry targets exactly them.
+  const onDeleteDone = ({ removed, failed, remainingIds, total, error }) => {
+    setSelectedRuleIds(new Set(Array.isArray(remainingIds) ? remainingIds : []));
+    // When the run threw before deleting anything the dialog stays open with the
+    // error in it — a toast would just say the same thing twice. A PARTIAL delete
+    // does need the toast: the rules that did go are the part the dialog cannot
+    // show once the operator closes it.
+    if (error && removed > 0) {
+      showToast(`${removed} of ${total ?? removed} deleted, then: ${error}`, "error");
+    } else if (!error && removed > 0) {
       showToast(`Deleted ${removed} rule${removed > 1 ? "s" : ""}${failed ? ` — ${failed} failed` : ""}`, failed ? "error" : "success");
     }
     fetchConfigs(true);

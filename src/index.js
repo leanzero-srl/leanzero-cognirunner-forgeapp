@@ -121,6 +121,15 @@ const INSTANCED_ID_RE = /::i-[a-z0-9]{6}$/;
 // disable identity). Zombie rows from abandoned drafts still get cleaned once
 // they age past the window.
 const ORPHAN_PRECISE_MIN_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+// Wall-clock budget for the getConfigs orphan sweep. The sweep issues ONE
+// sequential /workflows/search per distinct workflow; at the supported ceiling
+// (REGISTRY_MAX_ROWS rules over ~100 workflows, ~250ms each) it alone can burn
+// the whole 25s sync-resolver budget and the Rules tab then fails to load at
+// all. Once the budget is spent the sweep stops issuing NEW workflow reads and
+// every remaining row is RETAINED (the same "uncertain → keep" path an API
+// error takes). A skipped row is never removed: cleanup is cosmetic, the table
+// loading is not. 8s leaves ~17s for the owner-name lookups and the response.
+const ORPHAN_SWEEP_BUDGET_MS = 8000;
 
 const REGISTRY_CACHE_TTL_MS = 30000;
 let _registryCache = null;
@@ -320,6 +329,19 @@ const canDeleteConfig = async (accountId, config) => {
 
 /** Backward-compatible: requireAdmin = requireRole(id, "admin") */
 const requireAdmin = async (accountId) => requireRole(accountId, "admin");
+
+/**
+ * The ONE refusal shape every gated resolver returns: { success:false, error }.
+ * Lives here, with the gates it belongs to — it started next to the listener
+ * wrappers and is now used by the design-time AI/dry-run resolvers hundreds of
+ * lines earlier. Frontends render `error` on `success:false`; do not invent a
+ * second refusal shape somewhere else.
+ */
+/** F-072: the issue-link API takes `{ id }` for a numeric issue id and `{ key }` otherwise;
+ * every other sandbox path survives numeric ids only because `/issue/{idOrKey}` accepts both. */
+const issueRefForLink = (ref) => (/^\d+$/.test(String(ref)) ? { id: String(ref) } : { key: ref });
+
+const noPerm = (what) => ({ success: false, error: `You don't have permission to ${what}.` });
 
 /**
  * Decide which registry rows a caller may SEE. Pure — exported for unit tests.
@@ -1710,6 +1732,9 @@ resolver.define("getConfigs", async ({ payload, context }) => {
     const surviving = [];
     const removed = [];
     let hadApiError = false;
+    // Deadline for the whole sweep (see ORPHAN_SWEEP_BUDGET_MS).
+    const sweepDeadline = Date.now() + ORPHAN_SWEEP_BUDGET_MS;
+    let budgetSkipped = 0;
 
     for (const config of configs) {
       const wf = config.workflow || {};
@@ -1721,6 +1746,16 @@ resolver.define("getConfigs", async ({ payload, context }) => {
 
       let result = workflowCache.get(wf.workflowName);
       if (!result) {
+        // Out of budget and this row needs a NEW workflow read: treat it exactly
+        // like an unreadable workflow — retain the row, mark the pass partial.
+        // Rows whose workflow is already cached still get judged (they cost
+        // nothing); only fresh reads are refused.
+        if (Date.now() > sweepDeadline) {
+          hadApiError = true;
+          budgetSkipped++;
+          surviving.push(config);
+          continue;
+        }
         // One bounded summary below keeps a full registry from exhausting Forge's
         // per-invocation log allowance before a useful failure can be recorded.
         result = await fetchWorkflowTransitions(wf.workflowName, { log: false });
@@ -1807,6 +1842,11 @@ resolver.define("getConfigs", async ({ payload, context }) => {
         workflow: String(name).slice(0, 120), error: String(result.error || "Missing transitions").slice(0, 160),
       })),
     }));
+    if (budgetSkipped > 0) {
+      // Separate line on purpose — the summary object above is a fixed shape other
+      // tooling reads. Skipped rows were RETAINED, never removed.
+      console.log(`getConfigs orphan sweep hit its ${ORPHAN_SWEEP_BUDGET_MS}ms budget after ${workflowCache.size} workflow read(s): ${budgetSkipped} row(s) not checked this pass and retained.`);
+    }
 
     // ---- One-shot ownership repair -------------------------------------------------
     // "Register all" used to stamp the clicking admin as `createdBy` on every rule it
@@ -5925,13 +5965,13 @@ resolver.define("registerPostFunction", async ({ payload, context }) => {
     }
     const shouldOffload = (requestCodeOffload === true || fnBytes > REGISTRY_FUNCTIONS_OFFLOAD_BYTES)
       && Array.isArray(functions) && functions.length > 0;
-    let codeKey = null;
-    if (shouldOffload) {
-      codeKey = pfCodeKeyFor(effectiveId, functions);
-      await storage.set(codeKey, {
-        v: 1, ruleId: effectiveId, functions, updatedAt: new Date().toISOString(),
-      });
-    }
+    // Derive the bundle KEY here, but do NOT write the bundle yet: the UPDATE byte
+    // cap below can still refuse this save, and a refused save that had already
+    // stored the bundle leaves an unreachable content-hashed key behind on every
+    // retry (no registry row and no workflow config ever references it).
+    // Caps are checked BEFORE the side effect — commitImportCore moves its cap
+    // ahead of the same storage.set for exactly this reason.
+    const codeKey = shouldOffload ? pfCodeKeyFor(effectiveId, functions) : null;
 
     const entry = {
       id: effectiveId,
@@ -5984,10 +6024,21 @@ resolver.define("registerPostFunction", async ({ payload, context }) => {
       // edits used to be able to grow rows from the refusal line to the platform
       // ceiling unchecked. Measure the post-update SLIM shape (what storage will
       // hold) and refuse only near the hard cap, so shrinking edits always pass.
+      // This is the LAST refusal point, so nothing above it may have written.
       const predicted = configs.map((c, i) => slimRegistryRow(i === existing ? entry : c));
       if (registrySerializedBytes(predicted) > REGISTRY_UPDATE_MAX_BYTES) {
         return { success: false, error: REGISTRY_SIZE_MESSAGE };
       }
+    }
+
+    // Every cap has now passed — only here may the offloaded bundle land.
+    if (codeKey) {
+      await storage.set(codeKey, {
+        v: 1, ruleId: effectiveId, functions, updatedAt: new Date().toISOString(),
+      });
+    }
+
+    if (existing >= 0) {
       configs[existing] = entry;
     } else {
       configs.push(entry);
@@ -6076,7 +6127,10 @@ resolver.define("getPostFunctionStatus", async ({ payload }) => {
  * Fetch an offloaded static-PF code bundle for the edit screen. The prefix
  * whitelist prevents a crafted codeRef from reading arbitrary KVS entries.
  */
-resolver.define("getPostFunctionCode", async ({ payload }) => {
+resolver.define("getPostFunctionCode", async ({ payload, context }) => {
+  // F-073: offloaded step code is rule content — roster members only (config-view/config-ui
+  // callers are Jira admins, who resolve to "admin" via getUserPermissions).
+  if (!(await requireRole(context?.accountId, "viewer"))) return noPerm("read post-function code");
   const { codeRef } = payload || {};
   if (typeof codeRef !== "string" || !codeRef.startsWith(PF_CODE_PREFIX)) {
     return { success: false, error: "Invalid code reference" };
@@ -6965,8 +7019,18 @@ resolver.define("takeUiIntent", async ({ context }) => {
 /**
  * AI assistant for choosing the right Jira REST endpoint.
  * User describes what they want, AI suggests endpoint + method + body.
+ *
+ * EDITOR GATE — read this before adding another AI resolver here. Every resolver
+ * that spends the admin's BYOK budget (suggestEndpoint, generatePostFunctionCode,
+ * fixPostFunctionCode, reviewConfig, and the test* dry-runs further down) is
+ * reachable by ANY licensed user through the jira:globalPage invoke surface. The
+ * app has no per-account meter on these paths, so an ungated one is unbounded
+ * spend on somebody else's provider account with fully attacker-controlled model
+ * input. Jira site admins (the workflow editors) resolve to role "admin" via the
+ * group check in getUserPermissions, so the config-ui authoring path is unaffected.
  */
-resolver.define("suggestEndpoint", async ({ payload }) => {
+resolver.define("suggestEndpoint", async ({ payload, context }) => {
+  if (!(await requireRole(context.accountId, "editor"))) return noPerm("use the AI endpoint assistant");
   const { prompt, projectKey } = payload;
   if (!prompt || prompt.length < 5) return { success: false, error: "Describe what you want to do" };
 
@@ -7449,14 +7513,18 @@ export const runCodegenCore = async (payload = {}) => {
   }
 };
 
-resolver.define("generatePostFunctionCode", async ({ payload }) => runCodegenCore(payload));
+resolver.define("generatePostFunctionCode", async ({ payload, context }) => {
+  if (!(await requireRole(context.accountId, "editor"))) return noPerm("generate post-function code");
+  return runCodegenCore(payload);
+});
 
 /**
  * Fix a failing static post-function step with AI. Returns the corrected code,
  * a short explanation, and an optional memoryCandidate the frontend persists
  * (via addMemory) only after the auto re-run test passes.
  */
-resolver.define("fixPostFunctionCode", async ({ payload }) => {
+resolver.define("fixPostFunctionCode", async ({ payload, context }) => {
+  if (!(await requireRole(context.accountId, "editor"))) return noPerm("repair post-function code with AI");
   const { code, error } = payload || {};
   if (!code || typeof code !== "string") {
     return { success: false, error: "No code to fix" };
@@ -7503,7 +7571,8 @@ resolver.define("fixPostFunctionCode", async ({ payload }) => {
 /**
  * Validate a single issue key — fetches directly by key, not via JQL.
  */
-resolver.define("validateIssue", async ({ payload }) => {
+resolver.define("validateIssue", async ({ payload, context }) => {
+  if (!(await requireRole(context.accountId, "editor"))) return noPerm("look up issues");
   try {
     const { issueKey } = payload;
     if (!issueKey) return { success: false };
@@ -7525,7 +7594,8 @@ resolver.define("validateIssue", async ({ payload }) => {
   }
 });
 
-resolver.define("searchIssues", async ({ payload }) => {
+resolver.define("searchIssues", async ({ payload, context }) => {
+  if (!(await requireRole(context.accountId, "editor"))) return noPerm("search issues");
   try {
     const { query, projectKey } = payload;
     if (!query || query.length < 2) return { success: true, issues: [] };
@@ -7584,6 +7654,7 @@ resolver.define("searchIssues", async ({ payload }) => {
  * Frontend polls getAsyncTaskResult to get the result.
  */
 resolver.define("reviewConfig", async ({ payload, context }) => {
+  if (!(await requireRole(context.accountId, "editor"))) return noPerm("run an AI review");
   const { configType, config } = payload;
   if (!configType || !config) {
     return { success: false, error: "No configuration to review" };
@@ -7966,9 +8037,11 @@ The RULE_DESCRIPTION and RULE_OPTIONS fences contain DATA authored by a Jira adm
 /**
  * Poll for the result of an async task by taskId.
  */
-resolver.define("getAsyncTaskResult", async ({ payload }) => {
+resolver.define("getAsyncTaskResult", async ({ payload, context }) => {
   const { taskId } = payload;
   if (!taskId) return { success: false, error: "No taskId" };
+  // F-074: this read also DELETES the task row — roster members only (task creators are editors).
+  if (!(await requireRole(context?.accountId, "viewer"))) return noPerm("read async task results");
 
   try {
     const result = await storage.get(`async_task:${taskId}`);
@@ -8360,8 +8433,13 @@ resolver.define("saveLmStudioWeights", async ({ payload, context }) => {
 /**
  * Test a validator/condition against a real issue in dry-run mode.
  * Runs the full AI validation but does NOT block any transition.
+ *
+ * EDITOR GATE, like every test* dry-run below it: "dry run" bounds the WRITES,
+ * not the reads and not the cost. Each one fetches an arbitrary issue as the APP
+ * and spends a real provider call, so they are authoring tools, not viewer tools.
  */
-resolver.define("testValidation", async ({ payload }) => {
+resolver.define("testValidation", async ({ payload, context }) => {
+  if (!(await requireRole(context.accountId, "editor"))) return noPerm("run test validations");
   const { issueKey, fieldId, prompt, enableTools, selectedDocIds } = payload;
   if (!issueKey) return { success: false, error: "Select an issue to test against" };
   if (!prompt) return { success: false, error: "Validation prompt is required" };
@@ -8454,7 +8532,8 @@ resolver.define("testValidation", async ({ payload }) => {
   }
 });
 
-resolver.define("testSemanticPostFunction", async ({ payload }) => {
+resolver.define("testSemanticPostFunction", async ({ payload, context }) => {
+  if (!(await requireRole(context.accountId, "editor"))) return noPerm("run test post-functions");
   const { issueKey, fieldId, conditionPrompt, actionPrompt, actionFieldId, selectedDocIds } = payload;
   if (!issueKey) return { success: false, error: "Select an issue to test against" };
   if (!conditionPrompt) return { success: false, error: "Condition prompt is required" };
@@ -8694,7 +8773,8 @@ resolver.define("testSemanticPostFunction", async ({ payload }) => {
 
 // Dry-run for the "generate document & attach" action: authors the content with AI
 // but does NOT create or attach the file — so the admin can preview safely.
-resolver.define("testGenerateDocPostFunction", async ({ payload }) => {
+resolver.define("testGenerateDocPostFunction", async ({ payload, context }) => {
+  if (!(await requireRole(context.accountId, "editor"))) return noPerm("run test post-functions");
   const startTime = Date.now();
   const logs = [];
   try {
@@ -8729,7 +8809,8 @@ resolver.define("testGenerateDocPostFunction", async ({ payload }) => {
 });
 
 // Dry-run for the "research & save" action: runs the web search but does NOT save.
-resolver.define("testResearchPostFunction", async ({ payload }) => {
+resolver.define("testResearchPostFunction", async ({ payload, context }) => {
+  if (!(await requireRole(context.accountId, "editor"))) return noPerm("run test post-functions");
   const startTime = Date.now();
   const logs = [];
   try {
@@ -8763,7 +8844,8 @@ resolver.define("testResearchPostFunction", async ({ payload }) => {
 
 // Dry-run for "research & document": gathers evidence (web + context7) and authors the
 // brief, but does NOT create or attach a file. Mirrors the live executor's gather→author.
-resolver.define("testResearchDocPostFunction", async ({ payload }) => {
+resolver.define("testResearchDocPostFunction", async ({ payload, context }) => {
+  if (!(await requireRole(context.accountId, "editor"))) return noPerm("run test post-functions");
   const startTime = Date.now();
   const logs = [];
   try {
@@ -8813,7 +8895,8 @@ resolver.define("testResearchDocPostFunction", async ({ payload }) => {
 });
 
 // Dry-run for the "add comment" action: drafts the comment but does NOT post it.
-resolver.define("testCommentPostFunction", async ({ payload }) => {
+resolver.define("testCommentPostFunction", async ({ payload, context }) => {
+  if (!(await requireRole(context.accountId, "editor"))) return noPerm("run test post-functions");
   const startTime = Date.now();
   const logs = [];
   try {
@@ -8844,7 +8927,8 @@ resolver.define("testCommentPostFunction", async ({ payload }) => {
 });
 
 // Dry-run for the "create sub-task" action: drafts the sub-task but does NOT create it.
-resolver.define("testSubtaskPostFunction", async ({ payload }) => {
+resolver.define("testSubtaskPostFunction", async ({ payload, context }) => {
+  if (!(await requireRole(context.accountId, "editor"))) return noPerm("run test post-functions");
   const startTime = Date.now();
   const logs = [];
   try {
@@ -8885,7 +8969,8 @@ resolver.define("testSubtaskPostFunction", async ({ payload }) => {
 
 // Dry-run for the "link related issues" action: searches + AI-selects but creates
 // NOTHING — uses the same findRelatedIssues core as production.
-resolver.define("testLinkPostFunction", async ({ payload }) => {
+resolver.define("testLinkPostFunction", async ({ payload, context }) => {
+  if (!(await requireRole(context.accountId, "editor"))) return noPerm("run test post-functions");
   const startTime = Date.now();
   const logs = [];
   try {
@@ -8914,7 +8999,16 @@ resolver.define("testLinkPostFunction", async ({ payload }) => {
 
 // Test Run uses the production API with live reads and server-forced simulated writes.
 // Bind a selected issue or the first JQL match; without either, preserve null context.
-resolver.define("testPostFunction", async ({ payload }) => {
+resolver.define("testPostFunction", async ({ payload, context }) => {
+  // Editor gate. This runs ARBITRARY caller-supplied JavaScript through the full
+  // production sandbox: writes are server-forced to simulation, but READS are live
+  // and run as the APP (site-wide read:jira-work), so an ungated call is a
+  // disclosure channel for any issue, property or JQL result on the site.
+  // FunctionBlock renders `logs`, not `error` — carry the reason in both.
+  if (!(await requireRole(context.accountId, "editor"))) {
+    const refused = noPerm("run test executions");
+    return { ...refused, logs: [refused.error], changes: [], mode: "simulation", issueKey: null };
+  }
   const { code, issueKey, jql, priorVariables } = payload;
   if (!code || typeof code !== "string") {
     return { success: false, logs: ["No code provided"] };
@@ -9042,16 +9136,38 @@ resolver.define("testPostFunction", async ({ payload }) => {
 // ═══════════════════════ LISTENERS · SCHEDULED JOBS · REST API ═══════════════════════
 // Thin permission-gated wrappers; logic lives in src/listeners.js, src/scheduled-jobs.js,
 // src/rules-api.js (which lazily import the internals exported at the end of this file).
-const noPerm = (what) => ({ success: false, error: `You don't have permission to ${what}.` });
+// noPerm lives with the permission helpers at the top of this file.
 const okOr = async (fn) => { try { return await fn(); } catch (e) { return { success: false, error: String((e && e.message) || e) }; } };
 
+// Viewer floor + OWNER SCOPE. A listener row carries the agent's full instructions
+// and step code, so "can see the list" is the same permission question the Rules
+// table answers — reuse its one implementation (filterConfigsForUser) rather than
+// growing a second visibility rule here. A non-null perms IS the viewer floor
+// (getUserPermissions only ever returns a VALID_ROLES role).
 resolver.define("getListeners", async ({ context }) => {
-  if (!(await requireRole(context.accountId, "viewer"))) return noPerm("view listeners");
-  return okOr(async () => ({ success: true, listeners: await listenersMod.listListeners() }));
+  const perms = await getUserPermissions(context.accountId);
+  if (!perms) return noPerm("view listeners");
+  return okOr(async () => ({
+    success: true,
+    listeners: filterConfigsForUser(await listenersMod.listListeners(), {
+      accountId: context.accountId, scope: perms.scope, role: perms.role,
+    }),
+  }));
 });
 resolver.define("getListener", async ({ payload, context }) => {
-  if (!(await requireRole(context.accountId, "viewer"))) return noPerm("view listeners");
-  return okOr(async () => { const listener = await listenersMod.getListener(payload?.id); return listener ? { success: true, listener } : { success: false, error: "Listener not found" }; });
+  const perms = await getUserPermissions(context.accountId);
+  if (!perms) return noPerm("view listeners");
+  return okOr(async () => {
+    const listener = await listenersMod.getListener(payload?.id);
+    if (!listener) return { success: false, error: "Listener not found" };
+    // The SAME predicate as the list above, applied to one row — otherwise the
+    // list hides a colleague's agent and a direct id read hands over its
+    // instructions anyway. One permission lookup for both checks.
+    if (!filterConfigsForUser([listener], {
+      accountId: context.accountId, scope: perms.scope, role: perms.role,
+    }).length) return noPerm("view this listener");
+    return { success: true, listener };
+  });
 });
 resolver.define("saveListener", async ({ payload, context }) => {
   const input = payload?.listener;
@@ -9064,7 +9180,9 @@ resolver.define("saveListener", async ({ payload, context }) => {
 resolver.define("deleteListener", async ({ payload, context }) => {
   const existing = await listenersMod.getListener(payload?.id);
   if (!existing) return { success: false, error: "Listener not found" };
-  if (!(await canActOnConfig(context.accountId, existing, "editor"))) return noPerm("delete this listener");
+  // canDeleteConfig, NOT canActOnConfig — destruction requires genuine authorship
+  // for a scope-"own" editor (see the block comment on canDeleteConfig).
+  if (!(await canDeleteConfig(context.accountId, existing))) return noPerm("delete this listener");
   return okOr(async () => ({ success: true, ...(await listenersMod.deleteListener(payload.id)) }));
 });
 resolver.define("setListenerEnabled", async ({ payload, context }) => {
@@ -9086,6 +9204,11 @@ resolver.define("testListener", async ({ payload, context }) => {
       listener = await listenersMod.getListener(payload?.id);
     }
     if (!listener) return { success: false, error: "Listener not found" };
+    // Per-record scope, like runScheduledJobNow: the editor role alone let any
+    // editor run someone else's agent (real provider call, real reads).
+    // normalizeListener carries the EXISTING createdBy for a saved id and stamps
+    // the caller for a brand-new draft, so both branches check the true owner.
+    if (!(await canActOnConfig(context.accountId, listener, "editor"))) return noPerm("test this listener");
     const result = await listenersMod.testListener({ listener, issueKey: payload?.issueKey ? String(payload.issueKey).trim() : null, eventType: payload?.eventType || null, deadline: Date.now() + 20000 });
     return { success: true, result };
   });
@@ -9095,13 +9218,28 @@ resolver.define("getEventSample", async ({ payload, context }) => {
   return okOr(async () => ({ success: true, sample: await listenersMod.getEventSample(payload?.eventType) }));
 });
 
+// Viewer floor + OWNER SCOPE — identical rule to getListeners above.
 resolver.define("getScheduledJobs", async ({ context }) => {
-  if (!(await requireRole(context.accountId, "viewer"))) return noPerm("view scheduled jobs");
-  return okOr(async () => ({ success: true, jobs: await jobsMod.listJobs() }));
+  const perms = await getUserPermissions(context.accountId);
+  if (!perms) return noPerm("view scheduled jobs");
+  return okOr(async () => ({
+    success: true,
+    jobs: filterConfigsForUser(await jobsMod.listJobs(), {
+      accountId: context.accountId, scope: perms.scope, role: perms.role,
+    }),
+  }));
 });
 resolver.define("getScheduledJob", async ({ payload, context }) => {
-  if (!(await requireRole(context.accountId, "viewer"))) return noPerm("view scheduled jobs");
-  return okOr(async () => { const job = await jobsMod.getJob(payload?.id); return job ? { success: true, job } : { success: false, error: "Scheduled job not found" }; });
+  const perms = await getUserPermissions(context.accountId);
+  if (!perms) return noPerm("view scheduled jobs");
+  return okOr(async () => {
+    const job = await jobsMod.getJob(payload?.id);
+    if (!job) return { success: false, error: "Scheduled job not found" };
+    if (!filterConfigsForUser([job], {
+      accountId: context.accountId, scope: perms.scope, role: perms.role,
+    }).length) return noPerm("view this scheduled job");
+    return { success: true, job };
+  });
 });
 resolver.define("saveScheduledJob", async ({ payload, context }) => {
   const input = payload?.job;
@@ -9114,7 +9252,8 @@ resolver.define("saveScheduledJob", async ({ payload, context }) => {
 resolver.define("deleteScheduledJob", async ({ payload, context }) => {
   const existing = await jobsMod.getJob(payload?.id);
   if (!existing) return { success: false, error: "Scheduled job not found" };
-  if (!(await canActOnConfig(context.accountId, existing, "editor"))) return noPerm("delete this job");
+  // canDeleteConfig, NOT canActOnConfig — see deleteListener.
+  if (!(await canDeleteConfig(context.accountId, existing))) return noPerm("delete this job");
   return okOr(async () => ({ success: true, ...(await jobsMod.deleteJob(payload.id)) }));
 });
 resolver.define("setScheduledJobEnabled", async ({ payload, context }) => {
@@ -14770,7 +14909,7 @@ export const createSandboxSession = ({ issueKey: boundIssueKey = null, config = 
     },
     createIssueLink: async (outwardKey, typeName = "Relates") => {
       if (simulated) { executionLogs.push(`[SIMULATION] createIssueLink(${issueKey} ${typeName} ${outwardKey})`); changes.push({ action: "createIssueLink", from: issueKey, to: outwardKey, type: typeName, simulated: true }); return { simulated: true }; }
-      const res = await api.asApp().requestJira(route`/rest/api/3/issueLink`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ type: { name: typeName }, inwardIssue: { key: issueKey }, outwardIssue: { key: outwardKey } }) });
+      const res = await api.asApp().requestJira(route`/rest/api/3/issueLink`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ type: { name: typeName }, inwardIssue: { key: issueKey }, outwardIssue: issueRefForLink(outwardKey) }) });
       if (!res.ok) throw new Error(`createIssueLink failed: ${res.status} — ${(await res.text()).slice(0, 200)}`);
       changes.push({ action: "createIssueLink", from: issueKey, to: outwardKey, type: typeName }); executionLogs.push(`createIssueLink: ${issueKey} ${typeName} ${outwardKey}`); return { success: true };
     },

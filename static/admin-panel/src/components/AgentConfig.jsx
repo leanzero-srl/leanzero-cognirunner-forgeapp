@@ -24,7 +24,7 @@ export default function AgentConfig({ value, onChange, runtime = "listener", sco
   const placeholder = runtime === "job" && scoped
     ? "e.g. For the current issue, add a polite comment asking the assignee for an update and add the label stale. Skip it if it already has that label. The job selects each issue from the scope above."
     : runtime === "job"
-    ? "e.g. Find issues in project LZPT that have been In Progress for more than 7 days without an update. For each one, add a polite comment asking the assignee for a status update and add the label 'stale'. Skip issues that already carry the label."
+    ? "e.g. Find issues in project PROJ that have been In Progress for more than 7 days without an update. For each one, add a polite comment asking the assignee for a status update and add the label 'stale'. Skip issues that already carry the label."
     : "e.g. When the comment reads like a customer complaint or an escalation request, add the label 'escalate', set priority to Highest if it is lower, and reply with a short acknowledgement comment. Otherwise do nothing.";
 
   return (

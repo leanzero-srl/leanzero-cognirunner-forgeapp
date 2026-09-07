@@ -53,6 +53,12 @@ import * as J from "./scheduled-jobs.js";
 const idx = () => import("./index.js");
 
 export const API_TOKENS_KEY = "api_tokens";
+// One tombstone key per revoked token id. `api_tokens` is a single array written by
+// three read-modify-write sites (mint, revoke, lastUsedAt touch), so a request that
+// snapshotted the array before a revoke could write the live hash back and RESURRECT
+// the token. A tombstone is a key of its own: no stale array write can clear it, and
+// authenticate() consults it after a hash match, so a revoke is final.
+export const REVOKED_TOKEN_PREFIX = "api_token_revoked:";
 export const RULES_API_WEBTRIGGER_KEY = "rules-api";
 export const RULES_API_URL_KVS_KEY = "webtrigger_url:rules-api";
 const MAX_TOKENS = 25;
@@ -64,19 +70,41 @@ const nowIso = () => new Date().toISOString();
 const sha256 = (s) => createHash("sha256").update(String(s)).digest("hex");
 const readTokens = async () => { const v = (await storage.get(API_TOKENS_KEY)) || []; return Array.isArray(v) ? v : []; };
 const publicRow = (t) => ({ id: t.id, name: t.name, prefix: t.prefix, createdAt: t.createdAt, createdBy: t.createdBy, lastUsedAt: t.lastUsedAt || null, revokedAt: t.revokedAt || null });
+const tombstoneKey = (id) => REVOKED_TOKEN_PREFIX + String(id).replace(/[^a-zA-Z0-9:._#-]/g, "-").slice(0, 120);
+const isRevoked = async (id) => Boolean(await storage.get(tombstoneKey(id)));
 
-export const listApiTokens = async () => (await readTokens()).map(publicRow);
+export const listApiTokens = async () => {
+  const rows = await readTokens();
+  // Report a resurrected row as revoked: the tombstone, not the array, is the truth.
+  const out = [];
+  for (const t of rows) {
+    const row = publicRow(t);
+    if (!row.revokedAt) {
+      try { const stone = await storage.get(tombstoneKey(t.id)); if (stone) row.revokedAt = stone.revokedAt || nowIso(); } catch { /* best-effort */ }
+    }
+    out.push(row);
+  }
+  return out;
+};
 
 /** Mint a token; returns { token (plaintext, once), row }. */
 export const createApiTokenInternal = async ({ name, accountId }) => {
-  // Prune revoked rows older than 30 days so the store stays bounded.
-  const cutoff = Date.now() - 30 * 86400000;
-  const rows = (await readTokens()).filter((t) => !t.revokedAt || Date.parse(t.revokedAt) > cutoff);
-  if (rows.filter((t) => !t.revokedAt).length >= MAX_TOKENS) throw new Error(`Token limit reached (${MAX_TOKENS}). Revoke unused tokens first.`);
   const token = `cgr_${randomBytes(24).toString("hex")}`;
   const row = { id: `tok_${Date.now().toString(36)}${randomBytes(3).toString("hex")}`, name: String(name || "API token").slice(0, 80), hash: sha256(token), prefix: token.slice(0, 10), createdAt: nowIso(), createdBy: accountId || null, lastUsedAt: null, revokedAt: null };
+  // Read IMMEDIATELY before the write (nothing awaited in between but the write
+  // itself): a token minted or revoked while this request was hashing must not be
+  // dropped by a stale snapshot. Two mints that overlap this narrow window can still
+  // lose one row — KVS has no compare-and-set on a value — but a REVOKE can never be
+  // lost, because its tombstone lives outside this array.
+  const cutoff = Date.now() - 30 * 86400000;
+  const all = await readTokens();
+  const expired = all.filter((t) => t.revokedAt && Date.parse(t.revokedAt) <= cutoff);
+  const rows = all.filter((t) => !expired.includes(t)); // prune revoked rows older than 30 days
+  if (rows.filter((t) => !t.revokedAt).length >= MAX_TOKENS) throw new Error(`Token limit reached (${MAX_TOKENS}). Revoke unused tokens first.`);
   rows.push(row);
   await storage.set(API_TOKENS_KEY, rows);
+  // The pruned rows carry no hash any more, so their tombstones can go too (bounded store).
+  for (const t of expired) { try { await storage.delete(tombstoneKey(t.id)); } catch { /* best-effort */ } }
   return { token, row: publicRow(row) };
 };
 
@@ -84,8 +112,13 @@ export const revokeApiTokenInternal = async (id) => {
   const rows = await readTokens();
   const t = rows.find((r) => r.id === id);
   if (!t) return { revoked: false };
-  t.revokedAt = nowIso(); t.hash = "revoked";
-  await storage.set(API_TOKENS_KEY, rows);
+  const revokedAt = nowIso();
+  // TOMBSTONE FIRST — from this instant the token is dead even if the array write
+  // below fails, and even if an in-flight request writes its stale snapshot after us.
+  await storage.set(tombstoneKey(id), { id, revokedAt });
+  const fresh = await readTokens();
+  const row = fresh.find((r) => r.id === id);
+  if (row) { row.revokedAt = revokedAt; row.hash = "revoked"; await storage.set(API_TOKENS_KEY, fresh); }
   return { revoked: true };
 };
 
@@ -109,10 +142,20 @@ const authenticate = async (req) => {
     if (have.length === want.length && timingSafeEqual(have, want)) hit = r;
   }
   if (!hit) return null;
-  // Touch lastUsedAt at most once per hour (cheap, no write storm).
+  // The array row may be a resurrected corpse; the tombstone is authoritative. A KVS
+  // failure here throws and the caller answers 401 — this check fails CLOSED.
+  if (await isRevoked(hit.id)) return null;
+  // Touch lastUsedAt at most once per hour (cheap, no write storm) — but NEVER by
+  // writing back this snapshot: re-read and merge ONLY lastUsedAt into the matching
+  // row, so a revoke or a mint that landed since the read above survives untouched.
   if (!hit.lastUsedAt || Date.now() - Date.parse(hit.lastUsedAt) > 3600000) {
-    hit.lastUsedAt = nowIso();
-    try { await storage.set(API_TOKENS_KEY, rows); } catch { /* best-effort */ }
+    let fresh; let row;
+    try { fresh = await readTokens(); row = fresh.find((r) => r.id === hit.id); }
+    catch { return hit; } // read failed: skip the touch, the request itself is authentic
+    if (!row || row.revokedAt || row.hash !== hit.hash) return null; // revoked/rotated meanwhile
+    row.lastUsedAt = nowIso();
+    try { await storage.set(API_TOKENS_KEY, fresh); } catch { /* best-effort */ }
+    return { ...row };
   }
   return hit;
 };
@@ -219,8 +262,10 @@ export async function rulesApiHandler(req) {
       case "whoami": return json(200, { token: publicRow(who), app: "CogniRunner", now: nowIso() });
       case "events": return json(200, eventCatalog());
       case "actions": return json(200, { actions: AGENT_ACTIONS.map((a) => ({ id: a.id, kind: a.kind, label: a.label, description: a.description })) });
-      case "listeners": return handleCollection({ req, method, id, action, body, who, kind: "listeners" });
-      case "jobs": return handleCollection({ req, method, id, action, body, who, kind: "jobs" });
+      // `return await` — without it the rejection escapes this try and the caller gets
+      // a platform error page instead of the `{ "error": … }` contract (and no log).
+      case "listeners": return await handleCollection({ req, method, id, action, body, who, kind: "listeners" });
+      case "jobs": return await handleCollection({ req, method, id, action, body, who, kind: "jobs" });
       case "samples": {
         const s = await L.getEventSample(String(q(req, "eventType") || ""));
         return s ? json(200, s) : json(404, { error: "no sample captured yet for this event" });

@@ -18,7 +18,7 @@ API** (Settings → API access).
 | Filters | Projects, issue types, JQL (issue must match), changed fields (`updated:issue`), comment regex (comment events), *ignore self-generated events* (loop guard, default on) | Scope JQL + max issues (≤100) |
 | AI gate | **AI condition** — a plain-language yes/no the model evaluates before the run (fails closed) | — |
 | What runs | **Code steps** (describe → AI generates → test → fix; same sandbox `api.*` as static post-functions) **or** an **AI agent** (plain-language instructions + an allow-list of actions) | same |
-| Budget | 120 s on the async consumer (the 25 s trigger only matches + queues) | 120 s per run, shared across scoped issues |
+| Budget | 105 s run budget on the 120 s async consumer (the 25 s trigger only matches + queues) | 105 s per run inside the 120 s consumer, shared across scoped issues |
 | Safety | Simulation mode, kill switch, per-issue (30 / 5 min) and per-listener (120 / 5 min) brakes, at-least-once execution claims, `ignoreSelf`, notification suppression | Simulation mode, kill switch, idempotent per-minute claims (duplicate ticks never double-run) |
 
 ## How a listener runs
@@ -37,10 +37,16 @@ Jira event ──► manifest `trigger` (listeners.listenerTrigger, 25 s)
 
 Non-issue events whose payload carries only an issue **id** (worklogs, links, attachments) are
 resolved to a key with one REST read before matching; project-scoped events that carry only a
-project id (versions, links) get the key resolved so project filters apply. When a listener is
-subscribed, the event also leaves a **last-seen payload sample** (per event type, 7-day TTL,
-rich-text bodies redacted) that the editor shows next to the code steps ("Show last real
-payload") — the exact shape of `api.context.event`.
+project id (versions, links) get the key resolved so project filters apply. When a listener
+subscribes to the event **and its project filter accepts the payload**, the event also leaves a
+**last-seen payload sample** (per event type, 7-day TTL) that the editor shows next to the code
+steps ("Show last real payload") — the exact shape of `api.context.event`. The sample carries
+SHAPE, not content: inside `issue.fields`, `comment`, `worklog`, `changelog` and any user object,
+every string is replaced by `<redacted text, N chars>` (ADF by an empty doc) unless it is
+schema — an id/key/field id, a timestamp, or the name of a status, status category, priority,
+issue type, resolution, project or link type. Summaries, string custom fields, labels,
+descriptions, comment bodies and `renderedBody`, every changelog `fromString`/`toString`, and
+every display name, email and avatar URL are placeheld.
 
 ## How a job runs
 
@@ -120,7 +126,7 @@ Listener config (script mode):
 ```json
 {
   "name": "Label new bugs", "events": ["avi:jira:created:issue"],
-  "filters": { "projectKeys": ["LZPT"], "issueTypes": ["Bug"], "jql": "", "changedFields": [], "commentPattern": "" },
+  "filters": { "projectKeys": ["PROJ"], "issueTypes": ["Bug"], "jql": "", "changedFields": [], "commentPattern": "" },
   "ignoreSelf": true, "aiCondition": "",
   "mode": "script",
   "functions": [{ "name": "label", "code": "await api.addLabels(\"triage\");" }],
@@ -133,7 +139,7 @@ Job config (AI agent, scoped):
 ```json
 {
   "name": "Nudge stale work", "schedule": { "cron": "0 9 * * 1-5", "timeZone": "Europe/Zurich" },
-  "scope": { "jql": "project = LZPT AND status = \"In Progress\" AND updated <= -7d", "maxIssues": 25 },
+  "scope": { "jql": "project = PROJ AND status = \"In Progress\" AND updated <= -7d", "maxIssues": 25 },
   "mode": "agent",
   "agent": { "instructions": "Ask the assignee for a status update in a short comment and add the label stale.", "allowedActions": ["get_issue", "add_comment", "add_labels"], "maxRounds": 4 }
 }
@@ -151,8 +157,8 @@ shows. Rows created through the API carry `createdBy: "api:<tokenId>"`.
 | `job_index` / `job:{id}` / `job_sched` | slim rows / full config / the scheduler's own bookkeeping (id → `lastCheckedAt`; the tick is its single writer) |
 | `job_claim:{id}:{minute}` · `lst_exec:{taskId}` · `job_exec:{job}:{minute\|manual:task}` | idempotency claims: due-minute claim at the tick, execution claims in the consumer (at-least-once delivery), 2 h TTL |
 | `lst_brake:{issue}:{bucket}` / `lst_brake:L:{listener}:{bucket}` | 5-minute loop (30/issue) / cost (120/listener) brakes (15 min TTL) |
-| `event_sample:{eventType}` | last-seen payload SHAPE (7-day TTL, ≤20 KB) — captured only when a listener subscribes, with descriptions / comment bodies / rich-text fields redacted; editor-gated |
-| `api_tokens` | hashed REST tokens (≤25 live) |
+| `event_sample:{eventType}` | last-seen payload SHAPE (7-day TTL, ≤20 KB) — captured only for an event an enabled listener subscribes to AND whose project passes that listener's project filter; all free text and identity placeheld (see "How a listener runs"); editor-gated |
+| `api_tokens` · `api_token_revoked:{id}` | hashed REST tokens (≤25 live) · one tombstone per revoked token — checked after a hash match, so no stale write of the token array can resurrect a revoked token |
 | `log_entry:*` (`type: "listener"` / `"scheduledjob"`) | execution history, shared with the Logs tab and the issue glance |
 
 ## Limits & caveats
@@ -166,6 +172,12 @@ shows. Rows created through the API carry `createdBy: "api:<tokenId>"`.
   delete. The live harness reports which events it could fire (`npm run test:listeners-e2e`).
 - **Scheduler granularity** is the 5-minute tick: `* * * * *` runs once per tick. A job that
   missed ticks (outage) replays at most one hour and one run.
+- **Daylight saving** follows Vixie cron. A schedule with an explicit minute AND hour
+  (`0 2 * * *`) is anchored to the local clock: each local time fires exactly once — the
+  repeated hour of a fall-back does not run it twice, and a time inside a spring-forward gap
+  runs once at the first instant after the gap (02:00 → 03:00 local). A schedule whose minute
+  or hour is `*`-based (`*/15 * * * *`, `0 * * * *`) is anchored to elapsed time and keeps its
+  rhythm: it fires in BOTH 02:00 hours of a fall-back.
 - The trigger's listener index is cached for 30 s per warm container: a freshly saved
   listener can take up to 30 s to start matching.
 - Listeners and jobs run **as the app** (`asApp`); there is no "run as user".
@@ -177,7 +189,7 @@ shows. Rows created through the API carry `createdBy: "api:<tokenId>"`.
 
 ```bash
 cd test-harness
-npm run test:rules-offline     # cron (50) · event catalogue ⇄ manifest lockstep (362) · engines (74)
+npm run test:rules-offline     # cron (85) · event catalogue ⇄ manifest lockstep (376) · engines (116 + 74 + 156 + 25)
 npm run test:listeners-e2e     # LIVE: pushes listeners over REST, fires ~55 events, asserts runs + side effects
 npm run test:jobs-e2e          # LIVE: run-now (agent, scoped), real 5-minute tick, lifecycle round-trips
 npm run test:jsm-assets        # LIVE: the 3 jsm-entity request-type events, a portal request, INTERNAL

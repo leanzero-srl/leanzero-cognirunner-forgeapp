@@ -23,7 +23,7 @@ Browser access to Jira's landing page succeeded, but a subsequent CogniRunner de
 
 ## Live progress at 17:09 UTC
 
-LAB completed528seed issues, including every planned issue type, parent links, custom fields, native statuses and Resolution. A second full read-only population pass verified all528 and exact campaign membership. LAB-3 also passed Done→Ready→Review→Done with Resolution cleared/reapplied and every planned field unchanged. TRACK completed533issues and independent full verification; CARRIER completed434seed issues but still awaits its independent pass after the controller instrument update. These counts exclude reserved app-generated issues and do not claim CogniRunner activation.
+LAB completed528seed issues, including every planned issue type, parent links, custom fields, native statuses and Resolution. A second full read-only population pass verified all528 and exact campaign membership. LAB-3 also passed Done→Ready→Review→Done with Resolution cleared/reapplied and every planned field unchanged. TRACK completed533issues and independent full verification; CARRIER completed431seed issues but still awaits its independent pass after the controller instrument update. These counts exclude reserved app-generated issues and do not claim CogniRunner activation.
 
 The population controller now chains actual create-field availability, workflow graphs, native Resolution actions, content creation and independent readback. One worker runs per site, with project ordering and at most four issue requests in each verified-parent layer. Every worker drains before releasing the run lock; source changes stop new admission after active children finish. Controller commands: `node test-harness/scripts/org-population-sweep.mjs start|resume|status`.
 

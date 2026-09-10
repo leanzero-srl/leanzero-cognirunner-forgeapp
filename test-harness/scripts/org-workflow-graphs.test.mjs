@@ -5,13 +5,17 @@
  */
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-import {statusNames,buildGraphPayload,validateGraphResponse,compareWorkflow,executeProjectGraphs,graphHash} from '../lib/org-workflow-graphs.mjs';
+import {statusNames,buildGraphPayload,validateGraphResponse,compareWorkflow,executeProjectGraphs,graphHash,resolutionActions} from '../lib/org-workflow-graphs.mjs';
 import {graphClient} from './org-workflow-graphs.mjs';
 const plan=JSON.parse(await readFile(new URL('../../docs/org-expanded-approval-plan.json',import.meta.url)));
 const site=plan.sites[0],project=site.projects[0];
 const metadata={id:'1000',key:project.key,createdByCampaign:true,issueTypes:Object.fromEntries([...new Set(project.workflows.flatMap(w=>w.issueTypes))].map((name,i)=>[name,{id:String(i+2000)}]))};
 const names=statusNames(plan);assert.equal(names.evidence.Accepted,'Evidence Accepted');assert.equal(names.risk.Accepted,'Risk Accepted');assert.equal(names.migration.Assessed,'Migration Assessed');
 const payload=buildGraphPayload(plan,site.site,project,metadata);
+assert.deepEqual(resolutionActions('wf','1',false,false,'10000'),[]);
+assert.deepEqual(resolutionActions('wf','2',false,true,'10000')[0].parameters,{field:'resolution',value:'10000',mode:'replace'});
+assert.deepEqual(resolutionActions('wf','3',true,false,'10000')[0].parameters,{field:'resolution',value:'',mode:''});
+assert.throws(()=>resolutionActions('wf','4',false,true,'untrusted'),/Invalid/);
 assert(payload.workflows.every(w=>w.transitions[0].type==='INITIAL'&&w.transitions[0].links.length===0));
 assert.throws(()=>buildGraphPayload(plan,site.site,project,{...metadata,createdByCampaign:false}),/migration blocked/);
 assert.throws(()=>buildGraphPayload(plan,site.site,project,metadata,[{id:'1',name:'Ready',statusCategory:'DONE'}]),/category mismatch/);

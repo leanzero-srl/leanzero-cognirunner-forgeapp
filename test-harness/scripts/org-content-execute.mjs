@@ -40,6 +40,7 @@ async function execute(mode,site,key,limit){
   demand(metadata.site===site&&metadata.manifestHash===hash(plan)&&binding?.checkedAt&&binding.createdByCampaign,'Verified campaign project metadata missing');
   const graphFile=resolve(root,'test-harness/results/org-expanded-execution',site==='leanzero-apps-demo.atlassian.net'?'demo-graphs.json':site+'-graphs.json');
   const graphs=JSON.parse(readFileSync(graphFile));demand(graphs.projects?.[key]?.checkedAt,'Assigned graph verification missing');
+  demand(graphs.projects[key].nativeResolutionId&&graphs.projects[key].resolutionCheckedAt,'Native resolution lifecycle has not been verified');
   const folder=resolve(root,'test-harness/results/org-content-v1',site,key);mkdirSync(folder,{recursive:true});
   const lock=resolve(folder,'writer.lock'),fd=openSync(lock,'wx',0o600);writeFileSync(fd,JSON.stringify({pid:process.pid,mode}));closeSync(fd);
   try{
@@ -81,6 +82,8 @@ async function execute(mode,site,key,limit){
       const graph=graphs.projects[key].workflows[row.workflowId],family=plan.workflowFamilies[row.family];
       const actualState=()=>{const matches=Object.entries(graph.stateBindings).filter(([,v])=>String(v.id)===String(issue.fields.status.id));demand(matches.length===1,'Issue status outside approved graph');return matches[0][0];};
       let current=actualState();
+      const verifyResolution=()=>demand(plan.workflowFamilies[row.family].statusCategories[current]==='Done'?String(issue.fields.resolution?.id)===graphs.projects[key].nativeResolutionId:issue.fields.resolution==null,'Resolution does not match the workflow state');
+      verifyResolution();
       if(!receipt.lastState&&!receipt.pendingTransition)demand(current===family.states[0],'New issue left its initial state outside the campaign');
       if(receipt.pendingTransition){demand(current===receipt.pendingTransition.to,'Uncertain transition did not reach its expected state; no retry');receipt.lastState=current;delete receipt.pendingTransition;atomicSave(file,receipt);}
       if(receipt.lastState)demand(current===receipt.lastState,'Status changed outside campaign; preserve human transition');
@@ -91,7 +94,7 @@ async function execute(mode,site,key,limit){
         const allowed=await api(`/rest/api/3/issue/${issue.key}/transitions`);demand(allowed.transitions.some(t=>String(t.id)===String(id)),'Expected transition is not available');
         receipt.pendingTransition={from:edge.from,to:edge.to,id};atomicSave(file,receipt);
         await api(`/rest/api/3/issue/${issue.key}/transitions`,'POST',{transition:{id}});
-        issue=await api(`/rest/api/3/issue/${issue.key}?fields=*all`);verifyFields(issue.fields,rendered.fields);current=actualState();demand(current===edge.to,'Transition readback failed');
+        issue=await api(`/rest/api/3/issue/${issue.key}?fields=*all`);verifyFields(issue.fields,rendered.fields);current=actualState();demand(current===edge.to,'Transition readback failed');verifyResolution();
         receipt.lastState=current;delete receipt.pendingTransition;atomicSave(file,receipt);transitioned++;
       }
       receipt.stage='complete';receipt.lastState=current;receipt.verifiedAt=new Date().toISOString();atomicSave(file,receipt);issued.set(row.identity,receipt);verified++;

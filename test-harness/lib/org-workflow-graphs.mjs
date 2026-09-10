@@ -12,6 +12,11 @@ const demand=(ok,message)=>{if(!ok)throw new Error(message);};
 export const graphHash=value=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const uuid=value=>{const h=graphHash(value);return `${h.slice(0,8)}-${h.slice(8,12)}-5${h.slice(13,16)}-a${h.slice(17,20)}-${h.slice(20,32)}`;};
 const category=value=>CATEGORIES[value]||value;
+export function resolutionActions(workflowName,transitionId,fromDone,toDone,resolutionId){
+  if(!resolutionId||(!fromDone&&!toDone))return [];
+  demand(/^\d+$/.test(String(resolutionId)),'Invalid native resolution ID');
+  return [{id:uuid([workflowName,transitionId,'native-resolution']),ruleKey:'system:update-field',parameters:{field:'resolution',value:toDone?String(resolutionId):'',mode:toDone?'replace':''}}];
+}
 
 /** Qualify only names whose category differs across approved families. Never
  * rename or recategorize an existing global Jira status. */
@@ -38,7 +43,7 @@ export function buildGraphPayload(plan,site,project,metadata,existingStatuses=[]
       if(!statuses.has(actual))statuses.set(actual,{statusReference:reference,name:actual,statusCategory:cat,...(matches.length?{id:String(matches[0].id)}:{})});
     }
     const transitions=[{id:'1',name:'Create',type:'INITIAL',links:[],toStatusReference:refs[family.states[0]],actions:[],validators:[],triggers:[],properties:{}}];
-    for(const [i,edge]of family.edges.entries())transitions.push({id:String(i+11),name:edge.name,type:'DIRECTED',toStatusReference:refs[edge.to],links:[{fromStatusReference:refs[edge.from],fromPort:0,toPort:1}],actions:[],validators:[],triggers:[],properties:{}});
+    for(const [i,edge]of family.edges.entries())transitions.push({id:String(i+11),name:edge.name,type:'DIRECTED',toStatusReference:refs[edge.to],links:[{fromStatusReference:refs[edge.from],fromPort:0,toPort:1}],actions:resolutionActions(wf.name,String(i+11),family.statusCategories[edge.from]==='Done',family.statusCategories[edge.to]==='Done',metadata.resolutionId),validators:[],triggers:[],properties:{}});
     workflows.push({name:wf.name,description:`${MARK}: ${project.key} / ${wf.id}`,statuses:family.states.map((name,i)=>({statusReference:refs[name],layout:{x:i*200,y:0},properties:{}})),transitions});
   }
   demand(workflows.length<=20,'Workflow create request exceeds 20 workflows');
@@ -88,7 +93,7 @@ export async function executeProjectGraphs({plan,site,project,metadata,state,api
   state.projects ||= {};state.pending ||= {};
   const prior=state.projects[project.key];
   const existingStatuses=(await paged(api,'/rest/api/3/statuses/search?scope=GLOBAL')).values;
-  const payload=buildGraphPayload(plan,site,project,metadata,existingStatuses);
+  const payload=buildGraphPayload(plan,site,project,{...metadata,resolutionId:prior?.nativeResolutionId},existingStatuses);
   const requestId=`${project.key}/graphs`,expectedHash=graphHash(payload);
   // Ref IDs and reused status IDs legitimately differ after creation: retain
   // the exact original submitted payload for deterministic reconciliation.

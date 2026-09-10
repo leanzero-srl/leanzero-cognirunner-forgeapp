@@ -12,4 +12,6 @@ for(const page of pages){
 }
 assert.deepEqual(canonicalEvidence({type:'paragraph',attrs:{localId:'generated'}}),{type:'paragraph'});
 assert.notDeepEqual(canonicalEvidence({type:'text',text:'human edit'}),canonicalEvidence({type:'text',text:'original'}));
+assert.deepEqual(canonicalEvidence({type:'doc',content:[{type:'table',attrs:{layout:'default'},content:[{type:'tableCell',attrs:{colspan:1,rowspan:1}}]}]}),canonicalEvidence({type:'doc',version:1,content:[{type:'table',attrs:{layout:'default',isNumberColumnEnabled:false},content:[{type:'tableCell'}]}]}));
+assert.notDeepEqual(canonicalEvidence({type:'tableCell',attrs:{colspan:2}}),canonicalEvidence({type:'tableCell'}));
 console.log('PASS: 102 authored pages; exact 156-file mix; unique names; meaningful bodies; consistent measurements; approvals not fabricated');

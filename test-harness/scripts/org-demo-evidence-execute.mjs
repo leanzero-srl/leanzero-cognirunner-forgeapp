@@ -8,6 +8,7 @@ import {readFileSync,existsSync,mkdirSync,openSync,writeFileSync,closeSync,unlin
 import {resolve,dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import assert from 'node:assert/strict';
+import {isDeepStrictEqual} from 'node:util';
 import {evidenceCatalog,evidenceHash} from '../lib/org-demo-evidence.mjs';
 import {atomicSave} from './org-metadata-execute.mjs';
 import {requireEnv} from '../lib/env.mjs';
@@ -17,7 +18,13 @@ export function canonicalEvidence(node){
   if(Array.isArray(node))return node.map(canonicalEvidence);
   if(!node||typeof node!=='object')return node;
   const out=Object.fromEntries(Object.entries(node).map(([k,v])=>[k,canonicalEvidence(v)]));
-  if(out.attrs){delete out.attrs.localId;if(!Object.keys(out.attrs).length)delete out.attrs;}
+  if(out.type==='doc'&&out.version===undefined)out.version=1;
+  if(out.attrs){
+    delete out.attrs.localId;
+    if(out.type==='table'&&out.attrs.isNumberColumnEnabled===false)delete out.attrs.isNumberColumnEnabled;
+    if(out.type==='tableCell'||out.type==='tableHeader'){if(out.attrs.colspan===1)delete out.attrs.colspan;if(out.attrs.rowspan===1)delete out.attrs.rowspan;}
+    if(!Object.keys(out.attrs).length)delete out.attrs;
+  }
   return out;
 }
 async function main(mode,limit){
@@ -69,7 +76,7 @@ async function main(mode,limit){
         for(const attachment of page.attachments){const href=row.attachments[attachment.name]?.href;if(href)savedFinal.content.push({type:'paragraph',content:[{type:'text',text:'Evidence: '+attachment.name,marks:[{type:'link',attrs:{href}}]}]});}
         const before=canonicalEvidence(JSON.parse(livePage.body.atlas_doc_format.value));
         if(row.verifiedAt)assert.deepEqual(before,canonicalEvidence(savedFinal),'Preserve changes to completed pages');
-        else assert(JSON.stringify(before)===JSON.stringify(original)||JSON.stringify(before)===JSON.stringify(canonicalEvidence(savedFinal)),'Preserve page edits before any attachment write');
+        else assert(isDeepStrictEqual(before,original)||isDeepStrictEqual(before,canonicalEvidence(savedFinal)),'Preserve page edits before any attachment write');
         for(const attachment of page.attachments){
           const bytes=readFileSync(resolve(folder,'files',attachment.name));assert.equal(evidenceHash(bytes),attachmentHashes[attachment.name]);
           let saved=row.attachments[attachment.name];
@@ -90,7 +97,7 @@ async function main(mode,limit){
           final.content.push({type:'paragraph',content:[{type:'text',text:'Evidence: '+attachment.name,marks:[{type:'link',attrs:{href:saved.href}}]}]});
         }
         const canonicalFinal=canonicalEvidence(final),observed=canonicalEvidence(JSON.parse(livePage.body.atlas_doc_format.value));
-        if(JSON.stringify(observed)!==JSON.stringify(canonicalFinal)){
+        if(!isDeepStrictEqual(observed,canonicalFinal)){
           assert.equal(mode,'apply','Prepared evidence links missing');assert.deepEqual(observed,original,'Preserve human page edits');assert(!row.pendingLinks,'Uncertain page link update; reconcile before retry');row.pendingLinks=true;save();
           await api('/wiki/api/v2/pages/'+row.id,'PUT',{id:row.id,spaceId:owned.id,status:'current',title:page.title,body:{representation:'atlas_doc_format',value:JSON.stringify(final)},version:{number:livePage.version.number+1,message:'Link the prepared evidence package'}});
         }

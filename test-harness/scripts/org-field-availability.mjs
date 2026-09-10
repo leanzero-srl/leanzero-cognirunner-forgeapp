@@ -8,6 +8,7 @@ import {readFileSync,existsSync,mkdirSync,openSync,writeFileSync,closeSync,unlin
 import {resolve,dirname} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import assert from 'node:assert/strict';
+import {isDeepStrictEqual} from 'node:util';
 import {makeClient,atomicSave,durableMutation} from './org-metadata-execute.mjs';
 import {requireEnv} from '../lib/env.mjs';
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'../..');
@@ -18,6 +19,9 @@ export function desiredFieldConfiguration(original,fields){
   return rows;
 }
 export const visibleConfiguration=rows=>rows.filter(f=>!f.isHidden).map(canonicalField).sort((a,b)=>a.id.localeCompare(b.id));
+export function fieldConfigurationDelta(before,expected){
+  return [...expected.filter(f=>!isDeepStrictEqual(canonicalField(before.find(x=>x.id===f.id)||{id:f.id,isHidden:true}),canonicalField(f))),...before.filter(f=>!f.isHidden&&!expected.some(x=>x.id===f.id)).map(f=>({id:f.id,isHidden:true}))];
+}
 export function requireExclusiveConsumers(configId,schemeId,projectId,mappings,associations){
   if(configId)assert(mappings.filter(m=>String(m.fieldConfigurationId)===configId).every(m=>String(m.fieldConfigurationSchemeId)===schemeId),'Owned field configuration was reused in another scheme');
   if(schemeId)assert(associations.filter(a=>String(a.fieldConfigurationScheme?.id)===schemeId).every(a=>a.projectIds.every(id=>String(id)===projectId)),'Owned field scheme was reused on another project');
@@ -79,8 +83,7 @@ export async function main(mode,site,key){
         const id=await ensure('config/'+sourceId,'/rest/api/3/fieldconfiguration',{name:key+' Showcase Field Configuration '+sourceId,description:'lz-org-expanded-20260910: '+key+' / field configuration '+sourceId});ids[sourceId]=id;
         const expected=desiredFieldConfiguration(original,binding.fields);
         const before=await pages('/rest/api/3/fieldconfiguration/'+id+'/fields');
-        const hide=before.filter(f=>!expected.some(x=>x.id===f.id)).map(f=>({id:f.id,isHidden:true}));
-        const body={fieldConfigurationItems:[...expected,...hide]};
+        const body={fieldConfigurationItems:fieldConfigurationDelta(before,expected)};
         await exclusive(id,state.objects.scheme?.id);
         await durableMutation(state,save,api,mode,'fields/'+id,'PUT','/rest/api/3/fieldconfiguration/'+id+'/fields',body,async()=>JSON.stringify(visibleConfiguration(await pages('/rest/api/3/fieldconfiguration/'+id+'/fields')))===JSON.stringify(visibleConfiguration(expected)));
       }

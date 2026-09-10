@@ -42,7 +42,7 @@ const api=async(path,method='GET',body)=>{
   if(path==='/rest/api/3/workflowscheme/4000')return scheme;
   if(path.startsWith('/rest/api/3/workflowscheme/project?'))return {values:[{workflowScheme:{id:association}}]};
   if(path.startsWith('/rest/api/3/mypermissions?'))return {permissions:{BROWSE_PROJECTS:{havePermission:true},ADMINISTER:{havePermission:true}}};
-  if(path.endsWith('/issuesecuritylevel'))return {issueSecurityLevels:[]};
+  if(path.startsWith('/rest/api/3/issuesecurityschemes/project?'))return page([{projectId:metadata.id}]);
   if(path==='/rest/api/3/search/jql')return {issues:[],isLast:true};
   if(path==='/rest/api/3/workflowscheme/project'&&method==='PUT'){association=body.workflowSchemeId;return null;}
   throw new Error('Unexpected API '+method+' '+path);

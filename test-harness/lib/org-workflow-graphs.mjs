@@ -139,8 +139,10 @@ export async function executeProjectGraphs({plan,site,project,metadata,state,api
     if(mode!=='apply')return {project:project.key,status:'NEEDS_EMPTY_PROJECT_ASSOCIATION',schemeId:scheme.id};
     const permissions=await api(`/rest/api/3/mypermissions?projectId=${metadata.id}&permissions=BROWSE_PROJECTS,ADMINISTER`);
     demand(permissions.permissions?.BROWSE_PROJECTS?.havePermission&&permissions.permissions?.ADMINISTER?.havePermission,'Same-project visibility/global workflow administrator proof missing');
-    const security=await api(`/rest/api/3/project/${metadata.id}/issuesecuritylevel`);
-    demand(Array.isArray(security.issueSecurityLevels)&&security.issueSecurityLevels.length===0,'Cannot prove unfiltered issue visibility');
+    const security=await paged(api,`/rest/api/3/issuesecurityschemes/project?projectId=${metadata.id}`);
+    // Require the positive project-association row with no security scheme, not a
+    // user-filtered list of visible levels or an ambiguous 404.
+    demand(security.values.length===1&&String(security.values[0].projectId)===metadata.id&&Object.keys(security.values[0]).every(k=>k==='projectId'),'Cannot prove absence of project issue-security scheme');
     const issues=await api('/rest/api/3/search/jql','POST',{jql:`project = ${project.key}`,maxResults:1,fields:['id']});
     demand(Array.isArray(issues.issues)&&issues.issues.length===0&&issues.isLast===true,'New project is not demonstrably empty; migration blocked');
     // Jira itself rejects assignment if issues appeared since the read.

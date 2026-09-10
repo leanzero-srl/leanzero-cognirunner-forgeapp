@@ -15,7 +15,7 @@ const root=resolve(dirname(fileURLToPath(import.meta.url)),'../..');
 export const canonicalField=f=>({id:f.id,description:f.description||'',isHidden:!!f.isHidden,isRequired:!!f.isRequired,...(f.renderer?{renderer:f.renderer}:{})});
 export function desiredFieldConfiguration(original,fields){
   const rows=original.map(f=>({...f}));
-  for(const f of Object.values(fields))if(!f.system){const existing=rows.find(x=>x.id===f.id);if(existing)existing.isHidden=false;else rows.push(canonicalField({id:f.id,isHidden:false,isRequired:false,...(f.type==='paragraph'?{renderer:'wiki-renderer'}:{})}));}
+  for(const f of Object.values(fields))if(!f.system){const existing=rows.find(x=>x.id===f.id);if(existing)existing.isHidden=false;else rows.push(canonicalField({id:f.id,isHidden:false,isRequired:false,...(['paragraph','short-text'].includes(f.type)?{renderer:'wiki-renderer'}:{})}));}
   return rows;
 }
 export const visibleConfiguration=rows=>rows.filter(f=>!f.isHidden).map(canonicalField).sort((a,b)=>a.id.localeCompare(b.id));

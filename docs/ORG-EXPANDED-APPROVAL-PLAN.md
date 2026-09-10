@@ -1,6 +1,6 @@
 # Wolfaenpak organisation — expanded approval plan
 
-Status: PROPOSED, awaiting approval. Prepared 10 September 2026. No tenant mutations were made while preparing this revision.
+Status: APPROVED by the user's “let's start please let's do it” on 10 September 2026. Execution and verification receipts are tracked separately; approval does not mean the planned objects already exist. No tenant mutations were made while preparing this revision.
 
 This is the controlling revision for the eight included sites. It supersedes the older uniform org allocation and the subsequently narrowed demo-only configuration proposal. **leanzero.atlassian.net remains excluded.** Existing unrelated projects, including KAN and Wolfaenpak test beds, remain outside the campaign. CogniRunner is in scope on all eight sites; additional LeanZero Management and Sentinel Vault setup applies only to leanzero-apps-demo.
 

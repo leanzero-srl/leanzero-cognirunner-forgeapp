@@ -42,6 +42,7 @@ async function run(){
     console.log(JSON.stringify({at:stamp(),event:'start',units:units.length,pid:process.pid,instrument}));
     const durations=[];const failedSites=new Set();
     for(let i=0;i<units.length;i++){
+      if(!identity(version(),instrument))throw Error('Instrument changed during sweep; stop and re-verify with the new version');
       const {site,key}=units[i];const id=site+'/'+key;const prior=state.units[id];
       if(prior?.status==='verified'&&identity(prior.instrument,instrument))continue;
       if(failedSites.has(site)){state.units[id]={status:'blocked-by-site-failure',at:stamp()};save(statePath,state);continue;}
@@ -54,9 +55,11 @@ async function run(){
         if(prior?.status==='verified')result=await child('verify',site,key,output);
         else result=await child('apply',site,key,output);
         if(result.code!==0)throw Error('Metadata operation failed; inspect project log and durable pending receipt before retry');
+        if(!identity(version(),instrument))throw Error('Instrument changed during apply; result requires fresh verification');
         // Fresh process uses a client that rejects POST/PUT, proving readback independently.
         result=await child('verify',site,key,output);
         if(result.code!==0)throw Error('Independent metadata verification failed');
+        if(!identity(version(),instrument))throw Error('Instrument changed during verification; refusing verified verdict');
         state.units[id]={status:'verified',instrument,completedAt:stamp(),log:output};
         durations.push(Date.now()-start);
       }catch(e){state.units[id]={status:'failed',instrument,at:stamp(),reason:e.message,log:output};failedSites.add(site);}

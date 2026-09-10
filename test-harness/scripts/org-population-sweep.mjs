@@ -15,7 +15,7 @@ const self=fileURLToPath(import.meta.url),folder=resolve(root,'test-harness/resu
 const lock=resolve(folder,'sweep.lock'),stateFile=resolve(folder,'state.json');
 const read=path=>JSON.parse(readFileSync(path)),stamp=()=>new Date().toISOString();
 const alive=pid=>{try{process.kill(pid,0);return true;}catch{return false;}};
-const files=['docs/org-expanded-approval-plan.json','test-harness/scripts/org-population-sweep.mjs','test-harness/scripts/org-metadata-execute.mjs','test-harness/scripts/org-workflow-graphs.mjs','test-harness/lib/org-workflow-graphs.mjs','test-harness/scripts/org-workflow-resolution.mjs','test-harness/lib/org-content-model.mjs','test-harness/scripts/org-content-execute.mjs'];
+const files=['docs/org-expanded-approval-plan.json','test-harness/scripts/org-population-sweep.mjs','test-harness/scripts/org-metadata-execute.mjs','test-harness/scripts/org-workflow-graphs.mjs','test-harness/lib/org-workflow-graphs.mjs','test-harness/scripts/org-workflow-resolution.mjs','test-harness/lib/org-content-model.mjs','test-harness/scripts/org-content-execute.mjs','test-harness/scripts/org-field-availability.mjs'];
 const version=()=>Object.fromEntries(files.map(p=>[p,createHash('sha256').update(readFileSync(resolve(root,p))).digest('hex')]));
 const same=(a,b)=>JSON.stringify(a)===JSON.stringify(b);
 export function metadataAdmission(site,key,producer,owner,expected){
@@ -59,6 +59,8 @@ async function run(){
       const graph=resolve(root,'test-harness/results/org-expanded-execution',site==='leanzero-apps-demo.atlassian.net'?'demo-graphs.json':site+'-graphs.json');
       const graphArgs=['--manifest',resolve(root,files[0]),'--metadata',resolve(root,'test-harness/results/org-metadata-v1',site+'.json'),'--project',project.key,'--output',graph,'--env-module',resolve(root,'test-harness/lib/env.mjs')];
       const steps=[
+        ['fields-apply',['test-harness/scripts/org-field-availability.mjs','apply',site,project.key]],
+        ['fields-verify',['test-harness/scripts/org-field-availability.mjs','verify',site,project.key]],
         ['graphs-apply',['test-harness/scripts/org-workflow-graphs.mjs','apply',...graphArgs]],
         ['graphs-verify',['test-harness/scripts/org-workflow-graphs.mjs','verify',...graphArgs]],
         ['resolution-apply',['test-harness/scripts/org-workflow-resolution.mjs','apply',site,project.key]],
@@ -74,6 +76,7 @@ async function run(){
           state.units[id].steps.push({name,...outcome,at:stamp()});save();
           if(outcome.code!==0||outcome.timedOut)throw Error(name+' failed; inspect log and pending receipts before retry');
           if(outcome.result?.project!==project.key)throw Error(name+' returned no matching project result');
+          if(name.startsWith('fields')&&outcome.result.status!=='CREATE_FIELDS_READBACK_PASS')throw Error(name+' did not prove every issue type create screen');
           if(name.startsWith('graphs')&&outcome.result.status!=='GRAPH_AND_SCHEME_READBACK_PASS')throw Error(name+' did not prove the assigned graph');
           if(name.startsWith('resolution')&&(!outcome.result.nativeResolutionId||outcome.result.workflows!==project.workflows.length))throw Error(name+' did not prove every workflow resolution action');
           if(name.startsWith('content')&&(!outcome.result.complete||outcome.result.verified!==outcome.result.total))throw Error(name+' did not prove the full population');

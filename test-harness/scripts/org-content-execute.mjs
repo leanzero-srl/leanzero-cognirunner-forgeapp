@@ -12,6 +12,7 @@ import {buildPopulation,renderCase} from '../lib/org-content-model.mjs';
 import {makeClient,atomicSave} from './org-metadata-execute.mjs';
 import {executeProjectGraphs} from '../lib/org-workflow-graphs.mjs';
 import {requireEnv} from '../lib/env.mjs';
+import {verifyFieldAvailability} from './org-field-availability.mjs';
 const demand=(x,m)=>{if(!x)throw Error(m);};
 const hash=x=>createHash('sha256').update(JSON.stringify(x)).digest('hex');
 const root=resolve(dirname(fileURLToPath(import.meta.url)),'../..');
@@ -71,6 +72,7 @@ async function execute(mode,site,key,limit){
     const security=await api(`/rest/api/3/issuesecurityschemes/project?projectId=${binding.id}`);
     demand(security.isLast&&security.values?.length===1&&String(security.values[0].projectId)===binding.id&&Object.keys(security.values[0]).every(k=>k==='projectId'),'Issue-security visibility is not established');
     const users=(await api(`/rest/api/3/user/assignable/search?project=${key}&maxResults=100`)).filter(u=>u.active&&u.accountType!=='app').sort((a,b)=>a.accountId.localeCompare(b.accountId));
+    await verifyFieldAvailability(api,key,binding);
     const manifestFile=resolve(folder,'population.json');
     const existing=existsSync(manifestFile)?JSON.parse(readFileSync(manifestFile)):null;
     const fingerprint={site,key,planHash:hash(plan),modelHash:createHash('sha256').update(readFileSync(resolve(root,'test-harness/lib/org-content-model.mjs'))).digest('hex')};

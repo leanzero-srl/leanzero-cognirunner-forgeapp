@@ -114,8 +114,10 @@ try{
         saved={id:String(a.id),name:spec.name,sha256:hash(spec.content)};row.attachments.push(saved);delete row.pendingAttachment;save();
       }
       const a=await api(`/wiki/api/v2/attachments/${saved.id}`);assert.equal(a.title,spec.name);assert.equal(String(a.pageId),row.id);assert.equal(a.status,'current');assert.equal(a.fileSize,Buffer.byteLength(spec.content));
-      const link=new URL(a.downloadLink,base+'/wiki');assert.equal(link.origin,base,'Do not send product credentials to another host');
-      const download=await fetch(link,{headers:{Authorization:auth},signal:AbortSignal.timeout(30000)});assert(download.ok,'Attachment download failed');assert.equal(hash(Buffer.from(await download.arrayBuffer())),hash(spec.content),'Attachment byte mismatch');
+      // Confluence returns /rest/... relative to its /wiki context, not the Jira root.
+      const downloadPath=/^\/(?:rest|download)\//.test(a.downloadLink)?'/wiki'+a.downloadLink:a.downloadLink;
+      const link=new URL(downloadPath,base+'/wiki/');assert.equal(link.origin,base,'Do not send product credentials to another host');assert(link.pathname.startsWith('/wiki/'));
+      const download=await fetch(link,{headers:{Authorization:auth},signal:AbortSignal.timeout(30000)});assert(download.ok,`Attachment download HTTP ${download.status}`);assert.equal(hash(Buffer.from(await download.arrayBuffer())),hash(spec.content),'Attachment byte mismatch');
       saved.sha256=hash(spec.content);saved.downloadPath=link.pathname+link.search;saved.verifiedAt=new Date().toISOString();save();
     }
     const final=adf(doc.paragraphs);

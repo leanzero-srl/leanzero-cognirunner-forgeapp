@@ -20,6 +20,8 @@ const statusRows=payload.statuses.map((s,i)=>({...s,id:String(i+3000)}));
 const sample={...structuredClone(payload.workflows[0]),id:'wf1'};
 assert(compareWorkflow(payload.workflows[0],payload.statuses,sample,statusRows));
 const changed=structuredClone(sample);changed.transitions[1].toStatusReference=changed.transitions[0].toStatusReference;assert.throws(()=>compareWorkflow(payload.workflows[0],payload.statuses,changed,statusRows),/graph differs/);
+const locked=structuredClone(sample);locked.statuses[0].properties={'jira.issue.editable':'false'};
+assert.throws(()=>compareWorkflow(payload.workflows[0],payload.statuses,locked,statusRows),/graph differs/);
 let fetchCalls=0;await assert.rejects(graphClient(site.site,'verify','test',async()=>{fetchCalls++;})('/rest/api/3/workflows/create','POST',{}),/Read-only/);assert.equal(fetchCalls,0);
 assert.throws(()=>graphClient('leanzero.atlassian.net','apply','test'),/Unapproved/);
 let writeCount=0;const uncertain=graphClient(site.site,'apply','test',async()=>{writeCount++;throw new Error('network');});await assert.rejects(uncertain('/rest/api/3/workflows/create','POST',{}),/uncertain/);assert.equal(writeCount,1);
@@ -50,6 +52,9 @@ assert.equal((await execute('inspect')).status,'NEEDS_GRAPH_CREATION');assert.eq
 uncertainCreate=true;await assert.rejects(execute('apply'),/uncertain create/);assert(state.pending[project.key+'/graphs']);
 assert.equal((await execute('apply')).status,'GRAPH_AND_SCHEME_READBACK_PASS');assert.equal(writes.filter(w=>w.path==='/rest/api/3/workflows/create').length,1,'Reconcile committed create without duplicate');
 const before=writes.length;assert.equal((await execute('verify')).status,'GRAPH_AND_SCHEME_READBACK_PASS');assert.equal(writes.length,before,'Verify performs no tenant writes');
+association='human-choice';await assert.rejects(execute('apply'),/preserve external reassociation/);assert.equal(writes.length,before);
+delete state.projects[project.key].checkedAt;state.pending[project.key+'/association']={schemeId:'4000'};
+await assert.rejects(execute('apply'),/Uncertain workflow association/);assert.equal(writes.length,before);
 assert.equal((await executeProjectGraphs({plan,site:site.site,project,metadata:{...metadata,createdByCampaign:false},state,api:async()=>{throw new Error('Must not read or write');},save:async()=>{},mode:'apply'})).status,'BLOCKED_EXISTING_PROJECT_MIGRATION');
 const pending={site:site.site,manifestHash:graphHash(plan),projects:{},pending:{[project.key+'/graphs']:{payload}}};
 storedWorkflows=[];await assert.rejects(executeProjectGraphs({plan,site:site.site,project,metadata,state:pending,api,save:async()=>{},mode:'apply'}),/Pending workflow creation not visible/);

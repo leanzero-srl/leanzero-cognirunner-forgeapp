@@ -5,6 +5,7 @@
  */
 import {createHash} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
+import {durableMutation} from '../scripts/org-metadata-execute.mjs';
 const MARK='lz-org-expanded-20260910';
 const CATEGORIES={'To Do':'TODO','In Progress':'IN_PROGRESS',Done:'DONE'};
 const demand=(ok,message)=>{if(!ok)throw new Error(message);};
@@ -57,7 +58,7 @@ export function compareWorkflow(expected,payloadStatuses,actual,actualStatuses){
   demand(actual?.id&&actual.name===expected.name&&actual.description===expected.description,'Workflow identity or ownership differs');
   const lookup=(statuses,ref)=>{const found=statuses.filter(s=>String(s.statusReference)===String(ref));demand(found.length===1,'Missing or ambiguous status reference');return {name:found[0].name,category:category(found[0].statusCategory)};};
   const canonical=(wf,statuses)=>({
-    statuses:wf.statuses.map(s=>lookup(statuses,s.statusReference)).sort((a,b)=>a.name.localeCompare(b.name)),
+    statuses:wf.statuses.map(s=>({...lookup(statuses,s.statusReference),properties:s.properties||{}})).sort((a,b)=>a.name.localeCompare(b.name)),
     transitions:wf.transitions.map(t=>({name:t.name,type:t.type,to:lookup(statuses,t.toStatusReference),from:(t.links||[]).map(l=>lookup(statuses,l.fromStatusReference)).sort((a,b)=>a.name.localeCompare(b.name)),actions:t.actions||[],validators:t.validators||[],triggers:t.triggers||[],conditions:t.conditions||null,properties:t.properties||{}})).sort((a,b)=>a.name.localeCompare(b.name)),
   });
   demand(isDeepStrictEqual(canonical(expected,payloadStatuses),canonical(actual,actualStatuses)),`Workflow graph differs: ${expected.name}`);
@@ -114,7 +115,7 @@ export async function executeProjectGraphs({plan,site,project,metadata,state,api
     for(const name of family.states){const matches=read.statuses.filter(s=>s.name===names[name]&&read.workflow.statuses.some(ws=>String(ws.statusReference)===String(s.statusReference)));demand(matches.length===1,'Actual status identity ambiguous');stateBindings[name]={id:String(matches[0].id),name:matches[0].name,statusReference:String(matches[0].statusReference),statusCategory:matches[0].statusCategory};}
     bindings[approved.id]={id:read.workflow.id,name:wf.name,stateBindings,transitions:Object.fromEntries(read.workflow.transitions.map(t=>[t.name,{id:String(t.id)}]))};
   }
-  state.projects[project.key]={payload:submitted,workflows:bindings,projectId:metadata.id,graphsCheckedAt:new Date().toISOString()};delete state.pending[requestId];await save(state);
+  state.projects[project.key]={...prior,payload:submitted,workflows:bindings,projectId:metadata.id,graphsCheckedAt:new Date().toISOString()};delete state.pending[requestId];await save(state);
   const schemeName=`${project.key} Showcase Workflows`,description=`${MARK}: ${project.key}`;
   const mappings={};for(const wf of project.workflows)for(const name of wf.issueTypes){const id=metadata.issueTypes?.[name]?.id;demand(id,'Missing issue type binding');demand(!mappings[id],'Issue type mapped more than once');mappings[id]=wf.name;}
   const defaultWorkflow=project.workflows.find(w=>w.issueTypes.includes('Task'))?.name;demand(defaultWorkflow,'No Task default workflow');
@@ -133,6 +134,8 @@ export async function executeProjectGraphs({plan,site,project,metadata,state,api
   delete state.pending[schemeId];state.projects[project.key].schemeId=String(scheme.id);await save(state);
   const association=async()=>{const a=await api(`/rest/api/3/workflowscheme/project?projectId=${metadata.id}`);demand(Array.isArray(a.values)&&a.values.length===1,'Invalid scheme association');return String(a.values[0].workflowScheme.id);};
   if(await association()!==String(scheme.id)){
+    demand(!prior?.checkedAt,'Completed workflow association drift; preserve external reassociation');
+    demand(!state.pending[`${project.key}/association`],'Uncertain workflow association; reconcile before retry');
     if(mode!=='apply')return {project:project.key,status:'NEEDS_EMPTY_PROJECT_ASSOCIATION',schemeId:scheme.id};
     const permissions=await api(`/rest/api/3/mypermissions?projectId=${metadata.id}&permissions=BROWSE_PROJECTS,ADMINISTER_PROJECTS`);
     demand(permissions.permissions?.BROWSE_PROJECTS?.havePermission&&permissions.permissions?.ADMINISTER_PROJECTS?.havePermission,'Same-project visibility/admin proof missing');
@@ -140,10 +143,8 @@ export async function executeProjectGraphs({plan,site,project,metadata,state,api
     demand(Array.isArray(security.issueSecurityLevels)&&security.issueSecurityLevels.length===0,'Cannot prove unfiltered issue visibility');
     const issues=await api('/rest/api/3/search/jql','POST',{jql:`project = ${project.key}`,maxResults:1,fields:['id']});
     demand(Array.isArray(issues.issues)&&issues.issues.length===0&&issues.isLast===true,'New project is not demonstrably empty; migration blocked');
-    const pendingId=`${project.key}/association`;state.pending[pendingId]={projectId:metadata.id,schemeId:String(scheme.id),startedAt:new Date().toISOString()};await save(state);
     // Jira itself rejects assignment if issues appeared since the read.
-    await api('/rest/api/3/workflowscheme/project','PUT',{projectId:metadata.id,workflowSchemeId:String(scheme.id)});
-    demand(await association()===String(scheme.id),'Workflow association readback mismatch');delete state.pending[pendingId];
+    await durableMutation(state,()=>save(state),api,mode,`${project.key}/association`,'PUT','/rest/api/3/workflowscheme/project',{projectId:metadata.id,workflowSchemeId:String(scheme.id)},async()=>await association()===String(scheme.id));
   }
   state.projects[project.key].checkedAt=new Date().toISOString();await save(state);
   return {project:project.key,status:'GRAPH_AND_SCHEME_READBACK_PASS',workflowCount:project.workflows.length,schemeId:String(scheme.id)};

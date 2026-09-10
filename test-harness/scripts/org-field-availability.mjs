@@ -83,6 +83,13 @@ export async function main(mode,site,key){
         const id=await ensure('config/'+sourceId,'/rest/api/3/fieldconfiguration',{name:key+' Showcase Field Configuration '+sourceId,description:'lz-org-expanded-20260910: '+key+' / field configuration '+sourceId});ids[sourceId]=id;
         const expected=desiredFieldConfiguration(original,binding.fields);
         const before=await pages('/rest/api/3/fieldconfiguration/'+id+'/fields');
+        // Jira clones the locked Team field with its platform description and rejects any PUT to it.
+        // Preserve its functional flags; record the platform-owned description difference explicitly.
+        const teams=(await pages('/rest/api/3/field/search?type=custom')).filter(f=>f.schema?.type==='team');
+        for(const team of teams){const wanted=expected.find(f=>f.id===team.id),actual=before.find(f=>f.id===team.id);if(!wanted||!actual)continue;
+          assert.equal(!!actual.isHidden,!!wanted.isHidden,'Locked Team visibility cannot be preserved');assert.equal(!!actual.isRequired,!!wanted.isRequired,'Locked Team requirement cannot be preserved');
+          if((actual.description||'')!==wanted.description){state.platformDescriptions ||= {};state.platformDescriptions[team.id]={original:wanted.description,inherited:actual.description||'',reason:'Jira locked Team field; configuration API rejects edits'};wanted.description=actual.description||'';save();}
+        }
         const body={fieldConfigurationItems:fieldConfigurationDelta(before,expected)};
         await exclusive(id,state.objects.scheme?.id);
         await durableMutation(state,save,api,mode,'fields/'+id,'PUT','/rest/api/3/fieldconfiguration/'+id+'/fields',body,async()=>JSON.stringify(visibleConfiguration(await pages('/rest/api/3/fieldconfiguration/'+id+'/fields')))===JSON.stringify(visibleConfiguration(expected)));

@@ -126,8 +126,12 @@ async function executeSite(s,opts) {
   const dp=defaultScheme[0].projects;
   if(!dp||dp.isLast!==true||dp.total!==0||dp.values.length!==0)fail('Default issue type scheme has projects or incomplete exposure proof; stop before writes');
   state.defaultTypeSchemeBaseline={id:String(defaultScheme[0].id),projectCount:0,checkedAt:new Date().toISOString()};save();
-  // Capability probe before project creation, so unsupported modern field APIs cannot strand setup.
-  await pages(api,'/rest/api/3/config/fieldschemes');
+  // Atlassian rolls field schemes out per site. Keep the documented legacy
+  // project-context path for tenants where the new resource does not exist.
+  let modernFields=true;
+  try{await pages(api,'/rest/api/3/config/fieldschemes');}catch(e){if(e.status!==404)throw e;modernFields=false;}
+  if(state.fieldMechanism&&state.fieldMechanism!==(modernFields?'field-scheme':'field-context'))fail('Site field mechanism changed; reconcile existing setup before continuing');
+  state.fieldMechanism=modernFields?'field-scheme':'field-context';save();
   const allTypes=()=>api('/rest/api/3/issuetype');
   for(const p of s.projects){
     const old=legacyProject(opts.receiptsRoot,s.site,p.key);let project;
@@ -154,15 +158,18 @@ async function executeSite(s,opts) {
           screens[screenId]={tabs};
         }
       }
-      const fa=await pages(api,`/rest/api/3/config/fieldschemes/projects?projectId=${pid}`);
-      if(fa.length!==1||String(fa[0].projectId)!==pid)fail('Cannot read original field scheme');
-      state.baselines[p.key]={typeAssociations,screenAssociations,screenMappings,screenSchemes,screens,fieldSchemeId:fa[0].schemeId,capturedAt:new Date().toISOString()};save();
+      const fa=modernFields?await pages(api,`/rest/api/3/config/fieldschemes/projects?projectId=${pid}`):[];
+      if(modernFields&&(fa.length!==1||String(fa[0].projectId)!==pid))fail('Cannot read original field scheme');
+      state.baselines[p.key]={typeAssociations,screenAssociations,screenMappings,screenSchemes,screens,fieldSchemeId:fa[0]?.schemeId,capturedAt:new Date().toISOString()};save();
     }
     const baseline=state.baselines[p.key];
-    const fs=await ensure(`${p.key}/fieldscheme`,{name:`${p.key} Showcase Field Scheme`,description:`${MARK}: ${p.key}`},()=>pages(api,'/rest/api/3/config/fieldschemes'),`/rest/api/3/config/fieldschemes/${baseline.fieldSchemeId}/clone`);
+    let fs=null;
+    if(modernFields){
+    fs=await ensure(`${p.key}/fieldscheme`,{name:`${p.key} Showcase Field Scheme`,description:`${MARK}: ${p.key}`},()=>pages(api,'/rest/api/3/config/fieldschemes'),`/rest/api/3/config/fieldschemes/${baseline.fieldSchemeId}/clone`);
     const fsProjects=()=>pages(api,`/rest/api/3/config/fieldschemes/${fs.id}/projects`);
     if((await fsProjects()).some(x=>String(x.id)!==pid))fail('Owned field scheme is shared outside project');
     await mutation(`${p.key}/fieldschemeassociation`,'PUT','/rest/api/3/config/fieldschemes/projects',{[fs.id]:{projectIds:[Number(pid)]}},async()=>{const x=await pages(api,`/rest/api/3/config/fieldschemes/projects?projectId=${pid}`);return x.length===1&&String(x[0].schemeId)===String(fs.id);});
+    }
     const ids={};const wanted=[...new Set(p.workflows.flatMap(w=>w.issueTypes))];
     for(const name of wanted){const spec=s.issueTypeCatalogue.find(t=>t.name===name);let type;
       if(spec.hierarchy==='existing-standard'){type=one((await allTypes()).filter(t=>!t.scope),name);if(!type||Boolean(type.subtask)!==(name==='Sub-task'))fail(`Missing global standard type ${name}`);}
@@ -179,7 +186,18 @@ async function executeSite(s,opts) {
     for(const f of p.customFields){
       const body=fieldPayload(f);const field=await ensure(`${p.key}/field/${f.name}`,body,()=>pages(api,'/rest/api/3/field/search?type=custom'),'/rest/api/3/field',x=>x.description===body.description&&x.schema?.custom===body.type);
       const prefix=`/rest/api/3/field/${field.id}`;const contexts=await pages(api,prefix+'/context');
-      if(contexts.length!==1||!contexts[0].isGlobalContext||!contexts[0].isAnyIssueType)fail(`Unexpected owned context layout ${f.name}`);const ctx=contexts[0];
+      if(contexts.length!==1||!contexts[0].isAnyIssueType||(modernFields&&!contexts[0].isGlobalContext))fail(`Unexpected owned context layout ${f.name}`);const ctx=contexts[0];
+      if(!modernFields){
+        const scoped=async()=>{
+          const cs=await pages(api,prefix+'/context');const mappings=await pages(api,prefix+'/context/projectmapping');
+          return cs.length===1&&String(cs[0].id)===String(ctx.id)&&cs[0].isAnyIssueType&&!cs[0].isGlobalContext&&mappings.length===1&&String(mappings[0].contextId)===String(ctx.id)&&String(mappings[0].projectId)===pid;
+        };
+        if(ctx.isGlobalContext){
+          if(!state.creationProof?.[`${p.key}/field/${f.name}`]?.absentBeforeCreate)fail('Legacy scope requires exact field creation provenance');
+          await mutation(`${field.id}/legacy-project-context`,'PUT',`${prefix}/context/${ctx.id}/project`,{projectIds:[pid]},scoped);
+        }
+        if(!await scoped())fail('Legacy field scope differs; preserve external context changes');
+      }else{
       const hasField=async schemeId=>{
         const rows=await pages(api,`/rest/api/3/config/fieldschemes/${schemeId}/fields?fieldId=${field.id}`);const row=rows.find(x=>x.fieldId===field.id);
         if(row?.restrictedToWorkTypes?.length)fail(`Unexpected work-type restrictions ${field.id} / ${schemeId}`);return !!row;
@@ -204,6 +222,7 @@ async function executeSite(s,opts) {
         if(!isDeepStrictEqual(await currentOwners(),[String(fs.id)]))fail('Field scheme isolation failed');
         isolation.complete=true;isolation.completedAt=new Date().toISOString();save();
       }
+      }
       let options=[];
       if(f.options){const op=`${prefix}/context/${ctx.id}/option`;options=await pages(api,op);
         if(options.some(o=>!f.options.includes(o.value)||o.disabled||o.optionId)||new Set(options.map(o=>o.value)).size!==options.length)fail(`Unexpected options ${f.name}`);
@@ -211,7 +230,7 @@ async function executeSite(s,opts) {
         if(missing.length)await mutation(`${field.id}/options`,'POST',op,{options:missing.map(value=>({value,disabled:false}))},async()=>{const xs=await pages(api,op);return isDeepStrictEqual(xs.map(x=>[x.value,!!x.disabled]).sort(),f.options.map(v=>[v,false]).sort());});
         options=await pages(api,op);
       }
-      fields[f.name]={id:field.id,name:f.name,schema:field.schema,projectKeys:[p.key],contextId:String(ctx.id),contextIsGlobal:true,scopeMechanism:'field-scheme',fieldSchemeId:String(fs.id),type:f.type,options:options.map(o=>({id:String(o.id),value:o.value,disabled:!!o.disabled}))};
+      fields[f.name]={id:field.id,name:f.name,schema:field.schema,projectKeys:[p.key],contextId:String(ctx.id),contextIsGlobal:modernFields,scopeMechanism:state.fieldMechanism,...(fs?{fieldSchemeId:String(fs.id)}:{}),type:f.type,options:options.map(o=>({id:String(o.id),value:o.value,disabled:!!o.disabled}))};
     }
     const screenIds={},screenSchemeIds={};
     for(const [oldId,oldScreen] of Object.entries(baseline.screens)){
@@ -240,7 +259,7 @@ async function executeSite(s,opts) {
     if(!isDeepStrictEqual(normalize(sm),normalize(issueTypeMappings)))fail('Type screen mapping differs');
     await mutation(`${p.key}/screenassociation`,'PUT','/rest/api/3/issuetypescreenscheme/project',{issueTypeScreenSchemeId:String(itss.id),projectId:pid},async()=>{const rows=await pages(api,`/rest/api/3/issuetypescreenscheme/project?projectId=${pid}`);return rows.length===1&&String(rows[0].issueTypeScreenScheme.id)===String(itss.id);});
     for(const id of ['duedate','fixVersions'])fields[id]={id,name:id,projectKeys:[p.key],system:true,screenIds:Object.values(screenIds)};
-    state.projects[p.key]={id:pid,key:p.key,createdByCampaign:!old,issueTypes:Object.fromEntries(Object.entries(ids).map(([name,id])=>[name,{id,subtask:name==='Sub-task'||s.issueTypeCatalogue.find(t=>t.name===name)?.hierarchyLevel===-1}])),fields,issueTypeSchemeId:String(scheme.id),fieldSchemeId:String(fs.id),screenIds,screenSchemeIds,issueTypeScreenSchemeId:String(itss.id),checkedAt:new Date().toISOString()};save();
+    state.projects[p.key]={id:pid,key:p.key,createdByCampaign:!old,issueTypes:Object.fromEntries(Object.entries(ids).map(([name,id])=>[name,{id,subtask:name==='Sub-task'||s.issueTypeCatalogue.find(t=>t.name===name)?.hierarchyLevel===-1}])),fields,issueTypeSchemeId:String(scheme.id),...(fs?{fieldSchemeId:String(fs.id)}:{}),screenIds,screenSchemeIds,issueTypeScreenSchemeId:String(itss.id),checkedAt:new Date().toISOString()};save();
     console.log(JSON.stringify({site:s.site,project:p.key,fields:Object.keys(fields).length,issueTypes:wanted.length,mode:opts.mode}));
   }
 }

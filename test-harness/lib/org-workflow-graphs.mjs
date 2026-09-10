@@ -137,8 +137,8 @@ export async function executeProjectGraphs({plan,site,project,metadata,state,api
     demand(!prior?.checkedAt,'Completed workflow association drift; preserve external reassociation');
     demand(!state.pending[`${project.key}/association`],'Uncertain workflow association; reconcile before retry');
     if(mode!=='apply')return {project:project.key,status:'NEEDS_EMPTY_PROJECT_ASSOCIATION',schemeId:scheme.id};
-    const permissions=await api(`/rest/api/3/mypermissions?projectId=${metadata.id}&permissions=BROWSE_PROJECTS,ADMINISTER_PROJECTS`);
-    demand(permissions.permissions?.BROWSE_PROJECTS?.havePermission&&permissions.permissions?.ADMINISTER_PROJECTS?.havePermission,'Same-project visibility/admin proof missing');
+    const permissions=await api(`/rest/api/3/mypermissions?projectId=${metadata.id}&permissions=BROWSE_PROJECTS,ADMINISTER`);
+    demand(permissions.permissions?.BROWSE_PROJECTS?.havePermission&&permissions.permissions?.ADMINISTER?.havePermission,'Same-project visibility/global workflow administrator proof missing');
     const security=await api(`/rest/api/3/project/${metadata.id}/issuesecuritylevel`);
     demand(Array.isArray(security.issueSecurityLevels)&&security.issueSecurityLevels.length===0,'Cannot prove unfiltered issue visibility');
     const issues=await api('/rest/api/3/search/jql','POST',{jql:`project = ${project.key}`,maxResults:1,fields:['id']});

@@ -45,6 +45,18 @@ const duplicate = clone(plan); duplicate.sites[0].projects[0].workflows[0].rules
 assert(compileSite(duplicate,site.site,metadata).blockers.some(b=>b.reason.includes('Duplicate configuration')));
 const noPresence = clone(plan); const wf = noPresence.sites[0].projects[0].workflows.find(w=>w.family==='evidence'); wf.rules = wf.rules.filter(id=>!id.endsWith('.presence'));
 assert(compileSite(noPresence,site.site,metadata).blockers.some(b=>b.reason.includes('Presence prerequisite')));
+const manifest = await readFile(new URL('../../manifest.yml',import.meta.url),'utf8');
+const expression = manifest.split('expression: >-')[1].split('      create:')[0].trim();
+const evaluateCondition = new Function('config','issue','user', 'return (' + expression + ');');
+const ownerCondition = compiled.rows.find(r=>r.identity.endsWith('.C01')).config;
+assert.equal(evaluateCondition({...ownerCondition,disabled:false},{assignee:{accountId:'owner'}},{accountId:'other'}),false);
+assert.equal(evaluateCondition({...ownerCondition,disabled:false},{assignee:{accountId:'owner'}},{accountId:'owner'}),true);
+assert.equal(evaluateCondition({...ownerCondition,disabled:false,conditionKind:undefined},{assignee:{accountId:'owner'}},{accountId:'other'}),true,'Negative control reproduces missing-kind fail-open');
+for (const condition of compiled.rows.filter(r=>r.type==='condition')) {
+  assert.equal(condition.config.conditionKind,'deterministic','Must enter actual manifest deterministic branch');
+  assert.equal(condition.config.disabled,true);
+}
+assert(compiled.rows.filter(r=>!['validator','condition'].includes(r.type)).every(r=>r.config.simulationMode===true));
 const c = compiled.rows.find(r=>r.config.ruleType==='field-equals'); assert.equal(c.config.exprKind,'opt');
 const registry = projectRegistry(compiled.rows,[],{actorAccountId:'synthetic-test-actor',timestamp:'2026-09-10T00:00:00Z'});
 assert.equal(registry.rows.length,compiled.rows.length);

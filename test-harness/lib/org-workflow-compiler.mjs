@@ -212,6 +212,7 @@ export function compileSite(plan, siteName, metadata) {
             demand((type === 'validator' ? PREMADE_VALIDATORS : PREMADE_CONDITIONS).some(r => r.key === ruleType && r.availability === 'available'), `Unavailable premade: ${ruleType}`);
             config = {...config,ruleKind:'premade',ruleType,...parameters,...(mapped ? {fieldId:mapped.id,fieldName:mapped.name} : {})};
             delete config.requiresPresence; delete config.allowed; delete config.status;
+            if (type === 'condition') Object.assign(config,{conditionKind:'deterministic',disabled:true});
             if (parameters.allowed) config.allowedValues = parameters.allowed.join(', ');
             if (spec.archetype === 'C02') { const status = spec.parentReadyStatus; demand(m.statuses?.[status]?.id, 'Parent ready status mapping missing'); config.statusName = status; }
             if (type === 'condition' && mapped) { const support = conditionFieldSupport(mapped,ruleType); demand(!support.unsupported,support.unsupported); Object.assign(config,support); }
@@ -233,15 +234,18 @@ export function compileSite(plan, siteName, metadata) {
               config.actionPrompt = spec.archetype === 'M01' ? `Classify evidence using exactly one option: ${m.fields[spec.field].options.filter(o=>!o.disabled).map(o=>o.value).join(', ')}. Do not infer acceptance from missing observations.` : `Summarize the evidence factually, including observed outcome, open questions and caveats. ${spec.purpose}`;
             }
           }
+          if (!['validator','condition'].includes(type)) config.simulationMode = true;
           const text = JSON.stringify(config); demand(Buffer.byteLength(text) <= 32768,'Workflow config exceeds 32 KiB');
           const rule = { id:uuid(siteName + identity + ':rule'), ruleKey:type === 'validator' ? 'forge:expression-validator' : type === 'condition' ? 'forge:expression-condition' : 'forge:workflow-post-function', parameters:{key:`ari:cloud:ecosystem::extension/${install.appId}/${install.environmentId}/static/${MODULES[type]}`,config:text,id:uuid(siteName + identity + ':instance'),disabled:'true'} };
           if (type === 'validator') transition.validators.push(rule); else if(type === 'condition') transition.conditions.conditions.push(rule); else transition.actions.push(rule);
-          rows.push({identity,projectKey:project.key,workflowId:wf.id,transitionName:spec.transition,type,config,rule,activationGates:['Installed capability parity','Independent target fixture readback','Registry capacity preflight']});
+          rows.push({identity,projectKey:project.key,workflowId:wf.id,transitionName:spec.transition,type,config,rule,activationGates:['Do not attach before disabled registry readback and controller review','Installed capability parity','Independent target fixture readback','Registry capacity preflight']});
         } catch(error) { blockers.push({id:identity,reason:error.message}); }
       }
       workflows.push({id:wf.id,jiraWorkflowId:binding.id,name:wf.name,issueTypeMappings:wf.issueTypes.map(name=>({name,id:m.issueTypes[name].id})),transitions});
     }
   }
-  // Compiled rules are disabled by construction. No partial workflow is an activation plan.
-  return {schemaVersion:1,site:siteName,status:'OFFLINE_COMPILED_DISABLED',readyForActivation:false,rows,workflows,blockers};
+  // This is an UNATTACHED artifact. parameters.disabled is not a proven Forge
+  // execution brake. PF simulation and condition disabled flags are staging
+  // protections only; require actual disabled registry readback before attaching.
+  return {schemaVersion:1,site:siteName,status:'UNATTACHED_STAGE_ONLY',readyForActivation:false,rows,workflows,blockers};
 }

@@ -165,7 +165,7 @@ export function projectRegistry(rows, existingRows, { actorAccountId, timestamp 
 
 /** Contract: metadata = {site,installation:{appId,environmentId},projects:{KEY:
  * {id,fields:{exactName:{id,name,schema,projectKeys,options?}},statuses:{name:{id}},
- * issueTypes:{name:{id,subtask}},workflows:{approvedId:{id,transitions:{name:{id,screenFields:[]}}}}}}}.
+ * issueTypes:{name:{id,subtask}},workflows:{approvedId:{id,stateBindings:{state:{id,name,statusReference}},transitions:{name:{id,screenFields:[]}}}}}}}.
  * No identity is inferred from another site or project. Missing bindings are blockers.
  */
 export function compileSite(plan, siteName, metadata) {
@@ -182,15 +182,16 @@ export function compileSite(plan, siteName, metadata) {
     for (const wf of project.workflows) {
       const family = plan.workflowFamilies[wf.family];
       const binding = m?.workflows?.[wf.id];
+      const statuses = binding?.stateBindings || m?.statuses;
       const transitions = [];
       try {
         demand(m?.id && binding?.id && family, `Missing workflow/project binding: ${wf.id}`);
         for (const name of wf.issueTypes) demand(m.issueTypes?.[name]?.id, `Missing issue type: ${name}`);
-        for (const name of family.states) demand(m.statuses?.[name]?.id, `Missing status: ${name}`);
+        for (const name of family.states) demand(statuses?.[name]?.id, `Missing status: ${name}`);
         for (const edge of family.edges) {
           const t = binding.transitions?.[edge.name];
           demand(t?.id, `Missing transition: ${wf.id}/${edge.name}`);
-          transitions.push({ id: String(t.id), type: 'DIRECTED', name: edge.name, toStatusReference: String(m.statuses[edge.to].id), links: [{fromStatusReference:String(m.statuses[edge.from].id),fromPort:0,toPort:1}], validators: [], actions: [], conditions: {operation:'ALL',conditions:[],conditionGroups:[]} });
+          transitions.push({ id: String(t.id), type: 'DIRECTED', name: edge.name, toStatusReference: String(statuses[edge.to].statusReference || statuses[edge.to].id), links: [{fromStatusReference:String(statuses[edge.from].statusReference || statuses[edge.from].id),fromPort:0,toPort:1}], validators: [], actions: [], conditions: {operation:'ALL',conditions:[],conditionGroups:[]} });
         }
       } catch (error) { blockers.push({id:wf.id,reason:error.message}); continue; }
       for (const identity of wf.rules) {
@@ -214,7 +215,7 @@ export function compileSite(plan, siteName, metadata) {
             delete config.requiresPresence; delete config.allowed; delete config.status;
             if (type === 'condition') Object.assign(config,{conditionKind:'deterministic',disabled:true});
             if (parameters.allowed) config.allowedValues = parameters.allowed.join(', ');
-            if (spec.archetype === 'C02') { const status = spec.parentReadyStatus; demand(m.statuses?.[status]?.id, 'Parent ready status mapping missing'); config.statusName = status; }
+            if (spec.archetype === 'C02') { const status = spec.parentReadyStatus; demand(statuses?.[status]?.id, 'Parent ready status mapping missing'); config.statusName = statuses[status].name || status; }
             if (type === 'condition' && mapped) { const support = conditionFieldSupport(mapped,ruleType); demand(!support.unsupported,support.unsupported); Object.assign(config,support); }
             if (['P03','P04','P05','C04'].includes(spec.archetype)) demand(project.configurations.some(c => wf.rules.includes(c.id) && c.prerequisiteFor === spec.archetype && c.transition === spec.transition && c.field === spec.field), `Presence prerequisite missing: ${identity}`);
             if (['P02','P10'].includes(spec.archetype)) demand(binding.transitions[spec.transition].screenFields?.includes(spec.archetype === 'P10' ? 'comment' : mapped.id), `Transition screen does not expose required input: ${identity}`);

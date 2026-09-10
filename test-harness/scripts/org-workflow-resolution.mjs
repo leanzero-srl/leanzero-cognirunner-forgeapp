@@ -37,7 +37,7 @@ try{
       demand(mode==='apply','Native resolution actions missing');
       entry.resolutionProgress[wf.id]={state:'pending',at:new Date().toISOString()};atomicSave(path,state);
       const transitions=live.workflow.transitions.map(t=>({...t,actions:expected.transitions.find(x=>x.name===t.name).actions}));
-      const body={statuses:live.statuses.map(({id,name,statusReference,statusCategory})=>({id,name,statusReference,statusCategory})),workflows:[{id:live.workflow.id,version:live.workflow.version,statuses:live.workflow.statuses,transitions}]};
+      const body={statuses:live.statuses.map(({id,name,statusReference,statusCategory})=>({id,name,statusReference,statusCategory})),workflows:[{id:live.workflow.id,name:live.workflow.name,description:live.workflow.description,version:live.workflow.version,statuses:live.workflow.statuses,transitions}]};
       await api('/rest/api/3/workflows/update','POST',body);live=await read();compareWorkflow(expected,entry.payload.statuses,live.workflow,live.statuses);
     }
     entry.resolutionProgress[wf.id]={state:'verified',at:new Date().toISOString()};entry.payload.workflows[i]=expected;atomicSave(path,state);

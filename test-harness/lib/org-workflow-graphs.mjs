@@ -64,7 +64,7 @@ export function compareWorkflow(expected,payloadStatuses,actual,actualStatuses){
   const lookup=(statuses,ref)=>{const found=statuses.filter(s=>String(s.statusReference)===String(ref));demand(found.length===1,'Missing or ambiguous status reference');return {name:found[0].name,category:category(found[0].statusCategory)};};
   const canonical=(wf,statuses)=>({
     statuses:wf.statuses.map(s=>({...lookup(statuses,s.statusReference),properties:s.properties||{}})).sort((a,b)=>a.name.localeCompare(b.name)),
-    transitions:wf.transitions.map(t=>({name:t.name,type:t.type,to:lookup(statuses,t.toStatusReference),from:(t.links||[]).map(l=>lookup(statuses,l.fromStatusReference)).sort((a,b)=>a.name.localeCompare(b.name)),actions:t.actions||[],validators:t.validators||[],triggers:t.triggers||[],conditions:t.conditions||null,properties:t.properties||{}})).sort((a,b)=>a.name.localeCompare(b.name)),
+    transitions:wf.transitions.map(t=>({name:t.name,type:t.type,to:lookup(statuses,t.toStatusReference),from:(t.links||[]).map(l=>lookup(statuses,l.fromStatusReference)).sort((a,b)=>a.name.localeCompare(b.name)),actions:(t.actions||[]).map(a=>a.ruleKey?.startsWith('system:')?{ruleKey:a.ruleKey,parameters:a.parameters}:a),validators:t.validators||[],triggers:t.triggers||[],conditions:t.conditions||null,properties:t.properties||{}})).sort((a,b)=>a.name.localeCompare(b.name)),
   });
   demand(isDeepStrictEqual(canonical(expected,payloadStatuses),canonical(actual,actualStatuses)),`Workflow graph differs: ${expected.name}`);
   return true;

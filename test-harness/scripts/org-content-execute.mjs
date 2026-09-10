@@ -89,11 +89,13 @@ async function execute(mode,site,key,limit){
       const find=async()=>{const result=await api(`/rest/api/3/search/jql?jql=${encodeURIComponent(`project = ${key} AND labels = "${label}"`)}&maxResults=2&fields=key`);demand(result.isLast===true&&result.issues?.length<=1,'Ambiguous campaign issue identity');return result.issues[0];};
       let match=receipt?.key?{key:receipt.key}:await find();
       if(!match){
-        demand(!receipt,'Pending issue creation is not visible; never repeat an ambiguous POST');
+        demand(!receipt||receipt.stage==='rejected-create','Pending issue creation is not visible; never repeat an ambiguous POST');
         if(mode==='plan'){console.log(JSON.stringify({identity:row.identity,fields:rendered.fields,desiredState:row.state}));return false;}
         demand(mode==='apply','Missing planned issue');
-        receipt={identity:row.identity,bodyHash:hash(rendered.fields),stage:'pending-create',at:new Date().toISOString()};atomicSave(file,receipt);
-        match=await api('/rest/api/3/issue','POST',{fields:rendered.fields});demand(match?.id&&match?.key,'Create response missing identity');created++;
+        receipt={identity:row.identity,bodyHash:hash(rendered.fields),stage:'pending-create',at:new Date().toISOString(),...(receipt?{previousRejection:receipt}:{})};atomicSave(file,receipt);
+        try{match=await api('/rest/api/3/issue','POST',{fields:rendered.fields});}
+        catch(e){if([400,403,404,422].includes(e.status)){receipt.stage='rejected-create';receipt.rejection={status:e.status,at:new Date().toISOString()};atomicSave(file,receipt);}throw e;}
+        demand(match?.id&&match?.key,'Create response missing identity');created++;
       }else demand(receipt,'Matching issue lacks campaign creation receipt; preserve it');
       let issue=await api(`/rest/api/3/issue/${match.key}?fields=*all`);verifyFields(issue.fields,rendered.fields);
       demand(issue.key.startsWith(key+'-')&&(!receipt.id||String(issue.id)===receipt.id),'Issue identity mismatch');

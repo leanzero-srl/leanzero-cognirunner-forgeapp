@@ -16,6 +16,7 @@
 // Additive, single-site portfolio fixtures. No app configuration or shared scheme writes.
 import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { isDeepStrictEqual } from 'node:util';
 import { requireEnv } from '../lib/env.mjs';
 const base = 'https://leanzero-apps-demo.atlassian.net';
 const marker = 'lz-demo-portfolio-v1';
@@ -50,7 +51,10 @@ const receiptKeys=Object.values(state.projects).flatMap(p=>p.issues.map(i=>i.key
 if(new Set(receiptKeys).size!==receiptKeys.length)throw Error('Duplicate receipt issue key');
 function save(){writeFileSync(receipt+'.tmp',JSON.stringify(state,null,2)+'\n');renameSync(receipt+'.tmp',receipt);}
 const auth=Buffer.from(`${requireEnv('JIRA_ADMIN_EMAIL')}:${requireEnv('JIRA_API_TOKEN')}`).toString('base64');
+const requestCounts={};
 async function api(path,method='GET',body){
+ if(mode==='verify'&&method!=='GET')throw Error('Verify mode forbids all HTTP mutations');
+ requestCounts[method]=(requestCounts[method]??0)+1;
  if(!path.startsWith('/rest/api/3/'))throw Error('Only Jira relative API paths allowed');
  // No automatic retries for any mutation, including 429 or ambiguous transport failures.
  for(let n=0;n<5;n++){
@@ -70,7 +74,7 @@ if(starts.length!==1)throw Error('Ambiguous or missing Start date');const startF
 const priorities=await api('/rest/api/3/priority');
 const blocks=(await api('/rest/api/3/issueLinkType')).issueLinkTypes.find(t=>t.name==='Blocks');if(!blocks)throw Error('Blocks link unavailable');
 const adf=lines=>({version:1,type:'doc',content:lines.map(text=>({type:'paragraph',content:[{type:'text',text}]}))});
-function equal(a,b){return JSON.stringify(a)===JSON.stringify(b);}
+function equal(a,b){return isDeepStrictEqual(a,b);}
 async function checkIssue(key,want,category){
  const f=(await api(`/rest/api/3/issue/${key}?fields=*all`)).fields;
  for(const k of ['summary','description','duedate',startField])if(!equal(f[k],want[k]))throw Error(`${key}: ${k} mismatch`);
@@ -145,4 +149,5 @@ for(const p of packs){
  st.checkedAt=new Date().toISOString();save();console.log(`${p.key}: ${st.issues.length} issues / ${st.links.length} Blocks links complete`);
 }
 state.checkedAt=new Date().toISOString();save();
+console.log(JSON.stringify({requestCounts}));
 console.log('All 450 issues independently read back with hierarchy, dates, components, versions, priority, labels, descriptions and statuses.');

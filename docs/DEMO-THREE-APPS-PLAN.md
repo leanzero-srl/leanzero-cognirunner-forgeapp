@@ -2,7 +2,7 @@
 
 Target: **https://leanzero-apps-demo.atlassian.net only**. This content expansion does not authorise or start changes on any other site. In particular, https://leanzero.atlassian.net remains excluded. The broader organisation design remains a separate, unapplied plan.
 
-## Content being created in this pass
+## Content created and verified in this pass
 
 | Area | Persistent content | Purpose |
 | --- | --- | --- |
@@ -12,7 +12,7 @@ Target: **https://leanzero-apps-demo.atlassian.net only**. This content expansio
 | Existing COGDEMO — CogniRunner Workflow Showcase | 24 additional scenarios, extending the initial 12 to 36 | Complete/incomplete evidence, routing, escalation, summaries, replay and scheduled-check input |
 | LZSHOW — LeanZero Product Showcase | 18 authored pages under three app-specific hubs, with 24 downloadable text evidence files | Business context, review policies and real content for approval/attachment protection |
 
-When fully verified, this pass adds 474 Jira issues, bringing owned content on this site to 486 issues across four projects. These are curated subsets of the proposed 4,143-issue, 11-project demo site, not a claim that the full bulk design has been populated. The three portfolio projects add 18 components, nine releases and 72 Blocks links. Existing KAN content is outside the campaign and preserved.
+This pass added and independently verified 474 Jira issues, bringing campaign content on this site to 486 issues across four projects including the initial 12 COGDEMO issues. These are curated subsets of the proposed 4,143-issue, 11-project demo site, not a claim that the full bulk design has been populated. The three portfolio projects added 18 components, nine releases and 72 Blocks links. Existing KAN content is outside the campaign and preserved.
 
 LAUNCH, UPGRADE and ROLLOUT have meaningful owners drawn from the site's actual assignable users, priorities, descriptions, start/due dates, parent relationships, components, releases and varied workflow states. Status diversity comes from real Jira transitions. Overlapping dependency dates intentionally provide a schedule-adjustment scenario; the imported schedule is not claimed to be conflict-free.
 
@@ -64,7 +64,7 @@ The recovery, release-evidence and change-record documents connect the library t
 
 Content acceptance requires every new Jira issue's fields and hierarchy to match its receipt, every Blocks link to match its expected direction, every Confluence page's complete authored structure and parent to match its catalog, and every attachment's downloaded bytes to match its generated source hash. Verification is rerun separately without content writes.
 
-The Jira portfolio evidence is recorded in [demo-portfolio-receipt.md](demo-portfolio-receipt.md). The Confluence/CogniRunner-content evidence is recorded in [demo-content-receipt.md](demo-content-receipt.md) when the run finishes. Full local receipts remain in the gitignored test-harness/results/demo-portfolio-v1 and test-harness/results/demo-three-apps-content directories. No secrets are committed.
+The Jira portfolio evidence is recorded in [demo-portfolio-receipt.md](demo-portfolio-receipt.md). Its separate verification completed at 2026-09-10T13:00:57.127Z with 1,076 GET requests and zero mutation requests, matching all 450 issues and 72 directed links. The Confluence/CogniRunner-content evidence is recorded in [demo-content-receipt.md](demo-content-receipt.md); its separate verification completed at 2026-09-10T12:46:47.623Z, matching all 18 pages, 24 downloaded attachment hashes and 24 new tasks. Full local receipts remain in the gitignored test-harness/results/demo-portfolio-v1 and test-harness/results/demo-three-apps-content directories. No secrets are committed.
 
 The harness browser currently reaches Atlassian account login. REST access works, so content creation and independent REST checks can continue. App plan creation, workflow attachment, provider settings, approval and sealing remain pending until an authenticated app session is available and their real user paths have passed. No app deployment or manifest change is required by this content plan.
 

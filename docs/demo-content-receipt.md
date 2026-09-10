@@ -4,7 +4,7 @@ Target: https://leanzero-apps-demo.atlassian.net only. No other tenant was mutat
 
 Final separate read-only verification completed: 2026-09-10T12:46:47.623Z.
 
-Created18 Confluence pages and24 attachments, plus24 Jira tasks (COGDEMO-13 through COGDEMO-36). This extends the initial CogniRunner project to36 owned issues. The portfolio content is recorded separately in demo-portfolio-receipt.md.
+Created 18 Confluence pages and 24 attachments, plus 24 Jira tasks (COGDEMO-13 through COGDEMO-36). This extends the initial CogniRunner project to 36 owned issues. The portfolio content is recorded separately in demo-portfolio-receipt.md.
 
 The verification reread every page title, space, parent and full authored ADF including evidence links; it then downloaded every attachment and matched its exact bytes using SHA-256. It reread every new Jira task and matched its summary, full description, project/type, owner, labels, parent and due date. This establishes content creation, not app configuration or protected-workflow behaviour.
 
@@ -60,7 +60,7 @@ The verification reread every page title, space, parent and full authored ADF in
 
 ## Review and tests
 
-Pre-apply review identified a text-only page overwrite guard that could discard formatting or links. The guard was replaced with complete ADF comparison, tolerating only server node-local IDs. Local negative controls confirmed that formatting, link, media and text edits are rejected; server local IDs are tolerated. The live canary exposed Confluence context-relative download links; resolving /rest beneath /wiki corrected the route. Both apply and a separate verify then passed all18 pages,24 files and24 tasks.
+Pre-apply review identified a text-only page overwrite guard that could discard formatting or links. The guard was replaced with complete ADF comparison, tolerating only server node-local IDs. Local negative controls confirmed that formatting, link, media and text edits are rejected; server local IDs are tolerated. The live canary exposed Confluence context-relative download links; resolving /rest beneath /wiki corrected the route. Both apply and a separate verify then passed all 18 pages, 24 files and 24 tasks.
 
 Commands: node --check test-harness/scripts/demo-content-seed.mjs; node test-harness/scripts/demo-content-seed.mjs plan; node test-harness/scripts/demo-content-seed.mjs apply; node test-harness/scripts/demo-content-seed.mjs verify.
 

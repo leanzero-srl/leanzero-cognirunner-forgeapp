@@ -8,6 +8,8 @@ Revised design: **10–12 projects per included Jira site, with 4,000–20,000 t
 
 The machine-readable design is [`org-showcase-design.json`](org-showcase-design.json), explicitly marked `DESIGN_ONLY_NOT_APPLIED`. It records every proposed project key/name, exact issue allocation, workflow family, state mix and demo subset. Project keys remain proposed until the execution preflight checks availability; an unrelated collision must be resolved in the manifest before creating anything.
 
+The complete readable project list is [`ORG-SHOWCASE-PROJECTS.md`](ORG-SHOWCASE-PROJECTS.md). All 90 proposed keys are distinct name-derived mnemonics, without numbered sequences. Keys such as GATE, TRACK, VULN, INGEST and LAUNCH identify the work itself. The existing APEX, BEAC and FACT keys remain suitable; the existing COGDEMO project is mapped to the proposed COG key, with its live identity recorded separately so its 12 issues are retained. No live project has been renamed by this design update.
+
 | Site | Projects | Total issues | Project populations |
 | --- | ---: | ---: | --- |
 | Apex Core Systems | 12 | 17,024 | 232–4,815 |
@@ -105,7 +107,7 @@ Before raising AI traffic, measure token use, latency and error rate on twelve c
 
 ## Demo site: LeanZero Management
 
-Reserve three of the demo site's projects for a coherent portfolio: COGDEMO2 Product Launch (306 total issues, 180 in the curated plan), COGDEMO3 Platform Upgrade (351 total, 150 curated) and COGDEMO4 Operational Rollout (585 total, 120 curated). The JSON gives an exact membership label and JQL for each plan, and requires an ID list of that exact size including parents and dependency endpoints. These plan members are subsets of the same Jira issues, not extra records. Include epics/tasks/subtasks, real start/due dates, assignees, releases and actual Jira Blocks dependencies. Include delayed chains, completed work, upcoming milestones and overdue tasks.
+Reserve three of the demo site's projects for a coherent portfolio: LAUNCH Product Launch (306 total issues, 180 in the curated plan), UPGRADE Platform Upgrade (351 total, 150 curated) and ROLLOUT Operational Rollout (585 total, 120 curated). The JSON gives an exact membership label and JQL for each plan, and requires an ID list of that exact size including parents and dependency endpoints. These plan members are subsets of the same Jira issues, not extra records. Include epics/tasks/subtasks, real start/due dates, assignees, releases and actual Jira Blocks dependencies. Include delayed chains, completed work, upcoming milestones and overdue tasks.
 
 Discover and configure the demo site's actual Start date and Due date fields before indexing. Duration/buffer fields are optional and require explicit metadata support. Use the New plan flow, index it, wait for terminal progress, and verify exact membership, dates, hierarchy and dependency direction. Keep plan protection off during population so it cannot reverse intended Jira setup writes. Enable additional protection only after the intended final behaviour is tested.
 

@@ -44,6 +44,22 @@ export function atomicSave(path, value) {
   try { writeFileSync(fd,JSON.stringify(value,null,2)+'\n'); fsyncSync(fd); } finally { closeSync(fd); }
   renameSync(temp,path); const dir=openSync(dirname(path),'r'); try { fsyncSync(dir); } finally { closeSync(dir); }
 }
+export async function durableMutation(state, save, api, mode, id, method, path, body, ready) {
+  state.completedMutations ||= {};
+  const complete=()=>{
+    state.completedMutations[id]={bodyHash:hash(body),at:new Date().toISOString()};
+    delete state.pending[id];save();
+  };
+  if(await ready()){complete();return;}
+  // A completed write becoming untrue is external drift, never permission to repeat it.
+  if(state.completedMutations[id])fail(`Completed mutation drift ${id}; preserve external changes`);
+  if(state.pending[id])fail(`Uncertain ${id}; inspect before retry`);
+  if(mode!=='apply')fail(`Unfulfilled ${id}`);
+  state.pending[id]={bodyHash:hash(body),at:new Date().toISOString()};save();await api(path,method,body);
+  if(!await ready())fail(`Readback failed ${id}`);
+  // Completion and removal of pending are persisted in one atomic receipt replacement.
+  complete();
+}
 export function makeClient(site, mode, auth, fetcher=fetch) {
   if (!HOSTS.includes(site)) fail('Forbidden host');
   return async (path, method='GET', body) => {
@@ -101,11 +117,7 @@ async function executeSite(s,opts) {
     state.objects[id]={id:String(found.id),bodyHash:hash(body)};delete state.pending[id];save();return found;
   }
   async function mutation(id,method,path,body,ready) {
-    if(await ready()){delete state.pending[id];save();return;}
-    if(state.pending[id])fail(`Uncertain ${id}; inspect before retry`);
-    if(opts.mode!=='apply')fail(`Unfulfilled ${id}`);
-    state.pending[id]={bodyHash:hash(body),at:new Date().toISOString()};save();await api(path,method,body);
-    if(!await ready())fail(`Readback failed ${id}`);delete state.pending[id];save();
+    return durableMutation(state,save,api,opts.mode,id,method,path,body,ready);
   }
   // Global types necessarily enter the immutable default scheme. No project may use it.
   const schemes=await pages(api,'/rest/api/3/issuetypescheme?expand=projects');

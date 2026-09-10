@@ -31,6 +31,13 @@ export function selection(plan, site, project) {
   }
   return rows;
 }
+export function isolationRemovals(record, currentIds, targetId) {
+  const current=[...currentIds].map(String).sort();const target=String(targetId);
+  if(!record||!Array.isArray(record.initialSchemeIds))fail('No initial association provenance; manual reconciliation required');
+  if(record.complete){if(!isDeepStrictEqual(current,[target]))fail('Association drift after completed isolation; preserve external changes');return [];}
+  if(current.some(id=>id!==target&&!record.initialSchemeIds.includes(id)))fail('Unexpected association during initialization; preserve external changes');
+  return current.filter(id=>id!==target);
+}
 export function fieldPayload(f) { const [type,searcher]=TYPES[f.type]; return {name:f.name,description:`${MARK}: ${f.name}`,type:`${NS}:${type}`,searcherKey:`${NS}:${searcher}`}; }
 export function atomicSave(path, value) {
   mkdirSync(dirname(path),{recursive:true}); const temp=path+'.tmp'; const fd=openSync(temp,'w',0o600);
@@ -71,6 +78,7 @@ function legacyProject(root,site,key) {
 async function executeSite(s,opts) {
   const path=resolve(opts.output,s.site+'.json');const state=existsSync(path)?JSON.parse(readFileSync(path)): {site:s.site,marker:MARK,manifestHash:opts.manifestHash,objects:{},pending:{},projects:{}};
   if(state.site!==s.site||state.marker!==MARK||state.manifestHash!==opts.manifestHash)fail('Receipt identity/manifest mismatch');
+  const createdThisRun=new Set();
   const save=()=>atomicSave(path,state);const api=makeClient(s.site,opts.mode,opts.auth);
   const me=await api('/rest/api/3/myself');const perms=await api('/rest/api/3/mypermissions?permissions=ADMINISTER,CREATE_PROJECT');
   if(!me.active||!perms.permissions?.ADMINISTER?.havePermission||!perms.permissions?.CREATE_PROJECT?.havePermission)fail('Positive admin preflight failed');
@@ -83,8 +91,9 @@ async function executeSite(s,opts) {
       if(opts.mode!=='apply')fail(`Missing ${id}`);
       state.creationProof ||= {};state.creationProof[id]={absentBeforeCreate:true,bodyHash:hash(body),at:new Date().toISOString()};
       state.pending[id]={bodyHash:hash(body),at:new Date().toISOString()};save();
-      const created=await api(endpoint,'POST',body);
-      if(!created?.id)fail(`No identity returned ${id}`);
+      const response=await api(endpoint,'POST',body);
+      const created={...response,id:response?.id ?? (endpoint==='/rest/api/3/issuetypescheme'?response?.issueTypeSchemeId:undefined) ?? (endpoint==='/rest/api/3/issuetypescreenscheme'?response?.issueTypeScreenSchemeId:undefined)};
+      if(!created?.id)fail(`No identity returned ${id}`);createdThisRun.add(id);
       state.objects[id]={id:String(created.id),bodyHash:hash(body)};save();
       found=one(await list(),body.name);if(!found||String(found.id)!==String(created.id)||!check(found))fail(`Create readback failed ${id}`);
     }
@@ -150,7 +159,7 @@ async function executeSite(s,opts) {
     }
     const schemeBody={name:`${p.key} Showcase Issue Types`,description:`${MARK}: ${p.key}`,defaultIssueTypeId:ids.Task,issueTypeIds:Object.values(ids)};
     if(!schemeBody.defaultIssueTypeId)fail('Task default missing');
-    const scheme=await ensure(`${p.key}/typescheme`,schemeBody,()=>pages(api,'/rest/api/3/issuetypescheme'),'/rest/api/3/issuetypescheme');
+    const scheme=await ensure(`${p.key}/typescheme`,schemeBody,()=>pages(api,'/rest/api/3/issuetypescheme'),'/rest/api/3/issuetypescheme',x=>x.description===schemeBody.description&&String(x.defaultIssueTypeId)===ids.Task);
     const mappings=await pages(api,`/rest/api/3/issuetypescheme/mapping?issueTypeSchemeId=${scheme.id}`);
     if(!isDeepStrictEqual(mappings.map(x=>String(x.issueTypeId)).sort(),Object.values(ids).sort()))fail('Issue type scheme content differs');
     await mutation(`${p.key}/typeassociation`,'PUT','/rest/api/3/issuetypescheme/project',{issueTypeSchemeId:String(scheme.id),projectId:pid},async()=>{const rows=await pages(api,`/rest/api/3/issuetypescheme/project?projectId=${pid}`);return rows.length===1&&String(rows[0].issueTypeScheme.id)===String(scheme.id);});
@@ -158,16 +167,31 @@ async function executeSite(s,opts) {
     for(const f of p.customFields){
       const body=fieldPayload(f);const field=await ensure(`${p.key}/field/${f.name}`,body,()=>pages(api,'/rest/api/3/field/search?type=custom'),'/rest/api/3/field',x=>x.description===body.description&&x.schema?.custom===body.type);
       const prefix=`/rest/api/3/field/${field.id}`;const contexts=await pages(api,prefix+'/context');
-      if(contexts.length!==1||!contexts[0].isGlobalContext)fail(`Unexpected owned context layout ${f.name}`);const ctx=contexts[0];
-      const hasField=async schemeId=>(await pages(api,`/rest/api/3/config/fieldschemes/${schemeId}/fields?fieldId=${field.id}`)).some(x=>x.fieldId===field.id);
-      await mutation(`${field.id}/fieldscheme`,'PUT','/rest/api/3/config/fieldschemes/fields',{[field.id]:[{schemeIds:[Number(fs.id)]}]},()=>hasField(fs.id));
-      // Only this exact newly created campaign field can be detached elsewhere.
-      if(!state.creationProof?.[`${p.key}/field/${f.name}`]?.absentBeforeCreate||state.creationProof[`${p.key}/field/${f.name}`].bodyHash!==hash(body)||String(state.objects[`${p.key}/field/${f.name}`]?.id)!==String(field.id)||field.description!==body.description)fail('Field ownership guard failed');
-      for(const other of await pages(api,'/rest/api/3/config/fieldschemes'))if(String(other.id)!==String(fs.id)&&await hasField(other.id)){
-        await mutation(`${field.id}/detach/${other.id}`,'DELETE','/rest/api/3/config/fieldschemes/fields',{[field.id]:{schemeIds:[Number(other.id)]}},async()=>!await hasField(other.id));
+      if(contexts.length!==1||!contexts[0].isGlobalContext||!contexts[0].isAnyIssueType)fail(`Unexpected owned context layout ${f.name}`);const ctx=contexts[0];
+      const hasField=async schemeId=>{
+        const rows=await pages(api,`/rest/api/3/config/fieldschemes/${schemeId}/fields?fieldId=${field.id}`);const row=rows.find(x=>x.fieldId===field.id);
+        if(row?.restrictedToWorkTypes?.length)fail(`Unexpected work-type restrictions ${field.id} / ${schemeId}`);return !!row;
+      };
+      const currentOwners=async()=>{const owners=[];for(const other of await pages(api,'/rest/api/3/config/fieldschemes'))if(await hasField(other.id))owners.push(String(other.id));return owners;};
+      // Durable initial association snapshot is captured only in the process that created the field.
+      // An interrupted POST without this snapshot needs explicit reconciliation, never inferred ownership.
+      state.fieldIsolation ||= {};
+      if(!state.fieldIsolation[field.id]){
+        if(!createdThisRun.has(`${p.key}/field/${f.name}`))fail('Missing initial association snapshot; manual reconciliation required');
+        state.fieldIsolation[field.id]={initialSchemeIds:await currentOwners(),targetSchemeId:String(fs.id),complete:false,at:new Date().toISOString()};save();
       }
-      const owners=[];for(const other of await pages(api,'/rest/api/3/config/fieldschemes'))if(await hasField(other.id))owners.push(String(other.id));
-      if(!isDeepStrictEqual(owners,[String(fs.id)]))fail('Field scheme isolation failed');
+      const isolation=state.fieldIsolation[field.id];
+      if(isolation.targetSchemeId!==String(fs.id))fail('Isolation target changed');
+      const removals=isolationRemovals(isolation,await currentOwners(),fs.id);
+      if(!isolation.complete){
+        if(!state.creationProof?.[`${p.key}/field/${f.name}`]?.absentBeforeCreate||state.creationProof[`${p.key}/field/${f.name}`].bodyHash!==hash(body)||String(state.objects[`${p.key}/field/${f.name}`]?.id)!==String(field.id)||field.description!==body.description)fail('Field ownership guard failed');
+        await mutation(`${field.id}/fieldscheme`,'PUT','/rest/api/3/config/fieldschemes/fields',{[field.id]:[{schemeIds:[Number(fs.id)]}]},()=>hasField(fs.id));
+        for(const otherId of removals){
+          await mutation(`${field.id}/detach/${otherId}`,'DELETE','/rest/api/3/config/fieldschemes/fields',{[field.id]:{schemeIds:[Number(otherId)]}},async()=>!await hasField(otherId));
+        }
+        if(!isDeepStrictEqual(await currentOwners(),[String(fs.id)]))fail('Field scheme isolation failed');
+        isolation.complete=true;isolation.completedAt=new Date().toISOString();save();
+      }
       let options=[];
       if(f.options){const op=`${prefix}/context/${ctx.id}/option`;options=await pages(api,op);
         if(options.some(o=>!f.options.includes(o.value)||o.disabled||o.optionId)||new Set(options.map(o=>o.value)).size!==options.length)fail(`Unexpected options ${f.name}`);

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { HOSTS, selection, makeClient, fieldPayload, atomicSave } from './org-metadata-execute.mjs';
+import { HOSTS, selection, makeClient, fieldPayload, atomicSave, isolationRemovals } from './org-metadata-execute.mjs';
 const plan=JSON.parse(readFileSync(new URL('../../docs/org-expanded-approval-plan.json',import.meta.url)));
 assert.equal(selection(plan).flatMap(s=>s.projects).length,90);
 assert.equal(selection(plan).flatMap(s=>s.projects).flatMap(p=>p.customFields).length,1084);
@@ -21,3 +21,10 @@ const failed=makeClient(HOSTS[0],'apply','redacted',async()=>{mutations++;return
 assert.equal(fieldPayload({name:'LAB Evidence',type:'paragraph'}).type,'com.atlassian.jira.plugin.system.customfieldtypes:textarea');
 const file=join(mkdtempSync(join(tmpdir(),'org-meta-test-')),'receipt.json');atomicSave(file,{pending:'field'});atomicSave(file,{done:'field'});assert.deepEqual(JSON.parse(readFileSync(file)),{done:'field'});
 console.log('PASS: 90 projects/1084 fields; host, scoped-field, read-only, no mutation retry, atomic receipt controls');
+
+assert.deepEqual(isolationRemovals({initialSchemeIds:['1'],complete:false},['1','2'],'2'),['1']);
+assert.deepEqual(isolationRemovals({initialSchemeIds:['1'],complete:true},['2'],'2'),[]);
+assert.throws(()=>isolationRemovals({initialSchemeIds:['1'],complete:true},['2','3'],'2'),/preserve external/);
+assert.throws(()=>isolationRemovals({initialSchemeIds:['1'],complete:false},['1','2','3'],'2'),/preserve external/);
+assert.throws(()=>isolationRemovals(null,['1'],'2'),/provenance/);
+console.log('PASS: completed isolation refuses later additions; interrupted initialization removes only snapshot associations');

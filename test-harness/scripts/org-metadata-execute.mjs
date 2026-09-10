@@ -3,7 +3,8 @@
  * Copyright (C) 2025 LeanZero
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
-// Org metadata only. No issues, workflows, rules, provider settings or deletes.
+// Org metadata only. The only DELETE removes campaign-new field associations.
+// Global contexts are immutable since April 2026; scope uses isolated field schemes.
 // API reference: developer.atlassian.com/cloud/jira/platform/rest/v3/
 import { readFileSync, existsSync, mkdirSync, openSync, closeSync, writeFileSync, renameSync, unlinkSync, fsyncSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
@@ -41,7 +42,7 @@ export function makeClient(site, mode, auth, fetcher=fetch) {
   return async (path, method='GET', body) => {
     if (!path.startsWith('/rest/api/3/') || path.includes('..') || path.includes('://') || path.includes('#')) fail('Forbidden API path');
     if (method!=='GET' && mode!=='apply') fail('Read-only mode prohibits mutation');
-    if (!['GET','POST','PUT'].includes(method)) fail('Unsupported method');
+    if (!['GET','POST','PUT'].includes(method) && !(method==='DELETE'&&path==='/rest/api/3/config/fieldschemes/fields')) fail('Unsupported method');
     for(let attempt=0;attempt<5;attempt++) {
       let r;
       try { r=await fetcher(`https://${site}${path}`,{method,redirect:'error',headers:{Authorization:`Basic ${auth}`,Accept:'application/json',...(body?{'Content-Type':'application/json'}:{})},...(body?{body:JSON.stringify(body)}:{}),signal:AbortSignal.timeout(30000)}); }
@@ -80,6 +81,7 @@ async function executeSite(s,opts) {
     else {
       if(remembered||state.pending[id])fail(`Missing or uncertain ${id}; manual reconciliation required, no POST retry`);
       if(opts.mode!=='apply')fail(`Missing ${id}`);
+      state.creationProof ||= {};state.creationProof[id]={absentBeforeCreate:true,bodyHash:hash(body),at:new Date().toISOString()};
       state.pending[id]={bodyHash:hash(body),at:new Date().toISOString()};save();
       const created=await api(endpoint,'POST',body);
       if(!created?.id)fail(`No identity returned ${id}`);
@@ -96,6 +98,15 @@ async function executeSite(s,opts) {
     state.pending[id]={bodyHash:hash(body),at:new Date().toISOString()};save();await api(path,method,body);
     if(!await ready())fail(`Readback failed ${id}`);delete state.pending[id];save();
   }
+  // Global types necessarily enter the immutable default scheme. No project may use it.
+  const schemes=await pages(api,'/rest/api/3/issuetypescheme?expand=projects');
+  const defaultScheme=schemes.filter(x=>x.isDefault);
+  if(defaultScheme.length!==1)fail('Cannot identify default issue type scheme');
+  const dp=defaultScheme[0].projects;
+  if(!dp||dp.isLast!==true||dp.total!==0||dp.values.length!==0)fail('Default issue type scheme has projects or incomplete exposure proof; stop before writes');
+  state.defaultTypeSchemeBaseline={id:String(defaultScheme[0].id),projectCount:0,checkedAt:new Date().toISOString()};save();
+  // Capability probe before project creation, so unsupported modern field APIs cannot strand setup.
+  await pages(api,'/rest/api/3/config/fieldschemes');
   const allTypes=()=>api('/rest/api/3/issuetype');
   for(const p of s.projects){
     const old=legacyProject(opts.receiptsRoot,s.site,p.key);let project;
@@ -112,17 +123,25 @@ async function executeSite(s,opts) {
       const typeAssociations=await pages(api,`/rest/api/3/issuetypescheme/project?projectId=${pid}`);
       const screenAssociations=await pages(api,`/rest/api/3/issuetypescreenscheme/project?projectId=${pid}`);
       if(typeAssociations.length!==1||screenAssociations.length!==1)fail('Cannot establish original scheme baseline');
-      const originalFields=new Set();
-      const mappings=await pages(api,`/rest/api/3/issuetypescreenscheme/mapping?issueTypeScreenSchemeId=${screenAssociations[0].issueTypeScreenScheme.id}`);
-      for(const schemeId of new Set(mappings.map(m=>m.screenSchemeId))){
-        const schemes=await pages(api,`/rest/api/3/screenscheme?id=${schemeId}`);
-        if(schemes.length!==1)fail('Cannot read original screen scheme');
-        for(const screenId of new Set(Object.values(schemes[0].screens))){
-          for(const tab of await api(`/rest/api/3/screens/${screenId}/tabs`))for(const f of await api(`/rest/api/3/screens/${screenId}/tabs/${tab.id}/fields`))originalFields.add(f.id);
+      const screenMappings=await pages(api,`/rest/api/3/issuetypescreenscheme/mapping?issueTypeScreenSchemeId=${screenAssociations[0].issueTypeScreenScheme.id}`);
+      const screenSchemes={},screens={};
+      for(const schemeId of new Set(screenMappings.map(m=>m.screenSchemeId))){
+        const xs=await pages(api,`/rest/api/3/screenscheme?id=${schemeId}`);
+        if(xs.length!==1)fail('Cannot read original screen scheme');screenSchemes[schemeId]=xs[0].screens;
+        for(const screenId of new Set(Object.values(xs[0].screens))){
+          const tabs=[];for(const tab of await api(`/rest/api/3/screens/${screenId}/tabs`))tabs.push({name:tab.name,fields:(await api(`/rest/api/3/screens/${screenId}/tabs/${tab.id}/fields`)).map(f=>f.id)});
+          screens[screenId]={tabs};
         }
       }
-      state.baselines[p.key]={typeAssociations,screenAssociations,screenFields:[...originalFields],capturedAt:new Date().toISOString()};save();
+      const fa=await pages(api,`/rest/api/3/config/fieldschemes/projects?projectId=${pid}`);
+      if(fa.length!==1||String(fa[0].projectId)!==pid)fail('Cannot read original field scheme');
+      state.baselines[p.key]={typeAssociations,screenAssociations,screenMappings,screenSchemes,screens,fieldSchemeId:fa[0].schemeId,capturedAt:new Date().toISOString()};save();
     }
+    const baseline=state.baselines[p.key];
+    const fs=await ensure(`${p.key}/fieldscheme`,{name:`${p.key} Showcase Field Scheme`,description:`${MARK}: ${p.key}`},()=>pages(api,'/rest/api/3/config/fieldschemes'),`/rest/api/3/config/fieldschemes/${baseline.fieldSchemeId}/clone`);
+    const fsProjects=()=>pages(api,`/rest/api/3/config/fieldschemes/${fs.id}/projects`);
+    if((await fsProjects()).some(x=>String(x.id)!==pid))fail('Owned field scheme is shared outside project');
+    await mutation(`${p.key}/fieldschemeassociation`,'PUT','/rest/api/3/config/fieldschemes/projects',{[fs.id]:{projectIds:[Number(pid)]}},async()=>{const x=await pages(api,`/rest/api/3/config/fieldschemes/projects?projectId=${pid}`);return x.length===1&&String(x[0].schemeId)===String(fs.id);});
     const ids={};const wanted=[...new Set(p.workflows.flatMap(w=>w.issueTypes))];
     for(const name of wanted){const spec=s.issueTypeCatalogue.find(t=>t.name===name);let type;
       if(spec.hierarchy==='existing-standard'){type=one((await allTypes()).filter(t=>!t.scope),name);if(!type||Boolean(type.subtask)!==(name==='Sub-task'))fail(`Missing global standard type ${name}`);}
@@ -138,12 +157,17 @@ async function executeSite(s,opts) {
     const fields={};
     for(const f of p.customFields){
       const body=fieldPayload(f);const field=await ensure(`${p.key}/field/${f.name}`,body,()=>pages(api,'/rest/api/3/field/search?type=custom'),'/rest/api/3/field',x=>x.description===body.description&&x.schema?.custom===body.type);
-      const prefix=`/rest/api/3/field/${field.id}`;let contexts=await pages(api,prefix+'/context');
-      if(contexts.length!==1)fail(`Expected exactly one owned field context ${f.name}`);const ctx=contexts[0];
-      // Newly-created Jira fields start with one global context; narrow only this owned field.
-      const scoped=async()=>{const cs=await pages(api,prefix+'/context');const map=await pages(api,prefix+'/context/projectmapping');return cs.length===1&&!cs[0].isGlobalContext&&map.length===1&&String(map[0].contextId)===String(ctx.id)&&String(map[0].projectId)===pid;};
-      if(ctx.isGlobalContext)await mutation(`${field.id}/scope`,'PUT',`${prefix}/context/${ctx.id}/project`,{projectIds:[pid]},scoped);
-      if(!await scoped())fail(`Field project context mismatch ${f.name}`);
+      const prefix=`/rest/api/3/field/${field.id}`;const contexts=await pages(api,prefix+'/context');
+      if(contexts.length!==1||!contexts[0].isGlobalContext)fail(`Unexpected owned context layout ${f.name}`);const ctx=contexts[0];
+      const hasField=async schemeId=>(await pages(api,`/rest/api/3/config/fieldschemes/${schemeId}/fields?fieldId=${field.id}`)).some(x=>x.fieldId===field.id);
+      await mutation(`${field.id}/fieldscheme`,'PUT','/rest/api/3/config/fieldschemes/fields',{[field.id]:[{schemeIds:[Number(fs.id)]}]},()=>hasField(fs.id));
+      // Only this exact newly created campaign field can be detached elsewhere.
+      if(!state.creationProof?.[`${p.key}/field/${f.name}`]?.absentBeforeCreate||state.creationProof[`${p.key}/field/${f.name}`].bodyHash!==hash(body)||String(state.objects[`${p.key}/field/${f.name}`]?.id)!==String(field.id)||field.description!==body.description)fail('Field ownership guard failed');
+      for(const other of await pages(api,'/rest/api/3/config/fieldschemes'))if(String(other.id)!==String(fs.id)&&await hasField(other.id)){
+        await mutation(`${field.id}/detach/${other.id}`,'DELETE','/rest/api/3/config/fieldschemes/fields',{[field.id]:{schemeIds:[Number(other.id)]}},async()=>!await hasField(other.id));
+      }
+      const owners=[];for(const other of await pages(api,'/rest/api/3/config/fieldschemes'))if(await hasField(other.id))owners.push(String(other.id));
+      if(!isDeepStrictEqual(owners,[String(fs.id)]))fail('Field scheme isolation failed');
       let options=[];
       if(f.options){const op=`${prefix}/context/${ctx.id}/option`;options=await pages(api,op);
         if(options.some(o=>!f.options.includes(o.value)||o.disabled||o.optionId)||new Set(options.map(o=>o.value)).size!==options.length)fail(`Unexpected options ${f.name}`);
@@ -151,18 +175,36 @@ async function executeSite(s,opts) {
         if(missing.length)await mutation(`${field.id}/options`,'POST',op,{options:missing.map(value=>({value,disabled:false}))},async()=>{const xs=await pages(api,op);return isDeepStrictEqual(xs.map(x=>[x.value,!!x.disabled]).sort(),f.options.map(v=>[v,false]).sort());});
         options=await pages(api,op);
       }
-      fields[f.name]={id:field.id,name:f.name,schema:field.schema,projectKeys:[p.key],contextId:String(ctx.id),type:f.type,options:Object.fromEntries(options.map(o=>[o.value,String(o.id)]))};
+      fields[f.name]={id:field.id,name:f.name,schema:field.schema,projectKeys:[p.key],contextId:String(ctx.id),contextIsGlobal:true,scopeMechanism:'field-scheme',fieldSchemeId:String(fs.id),type:f.type,options:options.map(o=>({id:String(o.id),value:o.value,disabled:!!o.disabled}))};
     }
-    const screen=await ensure(`${p.key}/screen`,{name:`${p.key} Showcase Screen`,description:`${MARK}: ${p.key}`},()=>pages(api,'/rest/api/3/screens'),'/rest/api/3/screens');
-    const tab=await ensure(`${p.key}/tab`,{name:'Showcase'},()=>api(`/rest/api/3/screens/${screen.id}/tabs`),`/rest/api/3/screens/${screen.id}/tabs`,()=>true);
-    const screenFields=[...new Set([...state.baselines[p.key].screenFields,'summary','description','issuetype','priority','assignee','reporter','labels','duedate','components','fixVersions','timetracking','parent',...Object.values(fields).map(f=>f.id)])];
-    for(const fieldId of screenFields)await mutation(`${screen.id}/field/${fieldId}`,'POST',`/rest/api/3/screens/${screen.id}/tabs/${tab.id}/fields`,{fieldId},async()=> (await api(`/rest/api/3/screens/${screen.id}/tabs/${tab.id}/fields`)).some(f=>f.id===fieldId));
-    const ss=await ensure(`${p.key}/screenscheme`,{name:`${p.key} Showcase Screen Scheme`,description:`${MARK}: ${p.key}`,screens:{default:String(screen.id)}},()=>pages(api,'/rest/api/3/screenscheme'),'/rest/api/3/screenscheme',x=>x.description===`${MARK}: ${p.key}`&&String(x.screens?.default)===String(screen.id));
-    const itss=await ensure(`${p.key}/typescreenscheme`,{name:`${p.key} Showcase Type Screen Scheme`,description:`${MARK}: ${p.key}`,issueTypeMappings:[{issueTypeId:'default',screenSchemeId:String(ss.id)}]},()=>pages(api,'/rest/api/3/issuetypescreenscheme'),'/rest/api/3/issuetypescreenscheme');
+    const screenIds={},screenSchemeIds={};
+    for(const [oldId,oldScreen] of Object.entries(baseline.screens)){
+      const screen=await ensure(`${p.key}/screen/${oldId}`,{name:`${p.key} Showcase Screen ${oldId}`,description:`${MARK}: ${p.key} / original ${oldId}`},()=>pages(api,'/rest/api/3/screens'),'/rest/api/3/screens');screenIds[oldId]=String(screen.id);
+      // Copy each original tab separately. New fields get a dedicated tab; no operation/type flattening.
+      const originalIds=new Set(oldScreen.tabs.flatMap(t=>t.fields));
+      const tabs=[...oldScreen.tabs,{name:'Showcase Fields',fields:[...['duedate','fixVersions'].filter(id=>!originalIds.has(id)),...Object.values(fields).map(f=>f.id)]}];
+      if(new Set(tabs.map(t=>t.name)).size!==tabs.length)fail('Conflicting tab name');
+      for(const source of tabs){
+        const tab=await ensure(`${p.key}/tab/${oldId}/${source.name}`,{name:source.name},()=>api(`/rest/api/3/screens/${screen.id}/tabs`),`/rest/api/3/screens/${screen.id}/tabs`,()=>true);
+        for(const fieldId of source.fields){
+          const exists=async()=>(await api(`/rest/api/3/screens/${screen.id}/tabs/${tab.id}/fields`)).some(f=>f.id===fieldId);
+          if(!await exists()&&!(await api(`/rest/api/3/screens/${screen.id}/availableFields`)).some(f=>f.id===fieldId))fail(`Required original/custom field unavailable ${fieldId}`);
+          await mutation(`${screen.id}/field/${fieldId}`,'POST',`/rest/api/3/screens/${screen.id}/tabs/${tab.id}/fields`,{fieldId},exists);
+        }
+      }
+    }
+    for(const [oldId,operations] of Object.entries(baseline.screenSchemes)){
+      const screens=Object.fromEntries(Object.entries(operations).map(([op,id])=>[op,screenIds[id]]));
+      const ss=await ensure(`${p.key}/screenscheme/${oldId}`,{name:`${p.key} Showcase Screen Scheme ${oldId}`,description:`${MARK}: ${p.key} / original ${oldId}`,screens},()=>pages(api,'/rest/api/3/screenscheme'),'/rest/api/3/screenscheme',x=>x.description===`${MARK}: ${p.key} / original ${oldId}`&&isDeepStrictEqual(Object.fromEntries(Object.entries(x.screens||{}).map(([k,v])=>[k,String(v)])),screens));screenSchemeIds[oldId]=String(ss.id);
+    }
+    const issueTypeMappings=baseline.screenMappings.map(m=>({issueTypeId:String(m.issueTypeId),screenSchemeId:screenSchemeIds[m.screenSchemeId]}));
+    const itss=await ensure(`${p.key}/typescreenscheme`,{name:`${p.key} Showcase Type Screen Scheme`,description:`${MARK}: ${p.key}`,issueTypeMappings},()=>pages(api,'/rest/api/3/issuetypescreenscheme'),'/rest/api/3/issuetypescreenscheme');
     const sm=await pages(api,`/rest/api/3/issuetypescreenscheme/mapping?issueTypeScreenSchemeId=${itss.id}`);
-    if(sm.length!==1||sm[0].issueTypeId!=='default'||String(sm[0].screenSchemeId)!==String(ss.id))fail('Type screen mapping differs');
+    const normalize=rows=>rows.map(m=>`${m.issueTypeId}:${m.screenSchemeId}`).sort();
+    if(!isDeepStrictEqual(normalize(sm),normalize(issueTypeMappings)))fail('Type screen mapping differs');
     await mutation(`${p.key}/screenassociation`,'PUT','/rest/api/3/issuetypescreenscheme/project',{issueTypeScreenSchemeId:String(itss.id),projectId:pid},async()=>{const rows=await pages(api,`/rest/api/3/issuetypescreenscheme/project?projectId=${pid}`);return rows.length===1&&String(rows[0].issueTypeScreenScheme.id)===String(itss.id);});
-    state.projects[p.key]={id:pid,key:p.key,issueTypes:Object.fromEntries(Object.entries(ids).map(([name,id])=>[name,{id,subtask:name==='Sub-task'||s.issueTypeCatalogue.find(t=>t.name===name)?.hierarchyLevel===-1}])),fields,issueTypeSchemeId:String(scheme.id),screenId:String(screen.id),screenSchemeId:String(ss.id),issueTypeScreenSchemeId:String(itss.id),checkedAt:new Date().toISOString()};save();
+    for(const id of ['duedate','fixVersions'])fields[id]={id,name:id,projectKeys:[p.key],system:true,screenIds:Object.values(screenIds)};
+    state.projects[p.key]={id:pid,key:p.key,createdByCampaign:!old,issueTypes:Object.fromEntries(Object.entries(ids).map(([name,id])=>[name,{id,subtask:name==='Sub-task'||s.issueTypeCatalogue.find(t=>t.name===name)?.hierarchyLevel===-1}])),fields,issueTypeSchemeId:String(scheme.id),fieldSchemeId:String(fs.id),screenIds,screenSchemeIds,issueTypeScreenSchemeId:String(itss.id),checkedAt:new Date().toISOString()};save();
     console.log(JSON.stringify({site:s.site,project:p.key,fields:Object.keys(fields).length,issueTypes:wanted.length,mode:opts.mode}));
   }
 }

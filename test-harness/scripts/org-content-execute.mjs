@@ -32,6 +32,24 @@ export function transitionPath(family,from,to){
   while(queue.length){const row=queue.shift();if(row.state===to)return row.path;for(const edge of family.edges)if(edge.from===row.state&&!seen.has(edge.to)){seen.add(edge.to);queue.push({state:edge.to,path:[...row.path,edge]});}}
   throw Error(`No approved state path ${from} → ${to}`);
 }
+// Parent layers are barriers: a child can only use a fully verified parent receipt.
+export async function runPopulationRows(rows,visit,concurrency=4){
+  demand(Number.isInteger(concurrency)&&concurrency>=1&&concurrency<=4,'Invalid content concurrency');
+  const layer=row=>row.subtask?2:row.type==='Epic'?0:1;
+  for(let i=1;i<rows.length;i++)demand(layer(rows[i])>=layer(rows[i-1]),'Population parent ordering changed');
+  for(const kind of [0,1,2]){
+    const group=rows.filter(row=>layer(row)===kind);let cursor=0,error,stopped=false;
+    await Promise.all(Array.from({length:Math.min(concurrency,group.length)},async()=>{
+      while(!error&&!stopped&&cursor<group.length){
+        const row=group[cursor++];
+        try{if(await visit(row)===false)stopped=true;}catch(e){error ||= e;}
+      }
+    }));
+    if(error)throw error;
+    if(stopped)return false;
+  }
+  return true;
+}
 async function execute(mode,site,key,limit){
   const plan=JSON.parse(readFileSync(resolve(root,'docs/org-expanded-approval-plan.json')));
   const population=buildPopulation(plan,site,key),project=plan.sites.find(s=>s.site===site).projects.find(p=>p.key===key);
@@ -60,9 +78,8 @@ async function execute(mode,site,key,limit){
     const roster=existing?.users||users;demand(roster.length&&roster.every(u=>users.some(v=>v.accountId===u.accountId)),'Saved assignee roster is no longer assignable');
     if(!existing){demand(mode==='apply'||mode==='plan','Population receipt missing');atomicSave(manifestFile,{fingerprint,users:roster,rows:population.rows,createdAt:new Date().toISOString()});}
     const issued=new Map();let verified=0;let created=0;let transitioned=0;
-    for(const row of population.rows){
+    const walked=await runPopulationRows(limit?population.rows.slice(0,limit):population.rows,async row=>{
       const file=resolve(folder,hash(row.identity)+'.json');let receipt=existsSync(file)?JSON.parse(readFileSync(file)):null;
-      if(limit&&verified>=limit)break;
       const rendered=renderCase(plan,population,row,binding,roster);
       if(rendered.parentIdentity){const parent=issued.get(rendered.parentIdentity);demand(parent,'Parent has not passed independent verification');rendered.fields.parent={key:parent.key};}
       if(receipt)demand(receipt.identity===row.identity&&receipt.bodyHash===hash(rendered.fields),'Issue receipt or intended payload changed');
@@ -71,7 +88,7 @@ async function execute(mode,site,key,limit){
       let match=receipt?.key?{key:receipt.key}:await find();
       if(!match){
         demand(!receipt,'Pending issue creation is not visible; never repeat an ambiguous POST');
-        if(mode==='plan'){console.log(JSON.stringify({identity:row.identity,fields:rendered.fields,desiredState:row.state}));return;}
+        if(mode==='plan'){console.log(JSON.stringify({identity:row.identity,fields:rendered.fields,desiredState:row.state}));return false;}
         demand(mode==='apply','Missing planned issue');
         receipt={identity:row.identity,bodyHash:hash(rendered.fields),stage:'pending-create',at:new Date().toISOString()};atomicSave(file,receipt);
         match=await api('/rest/api/3/issue','POST',{fields:rendered.fields});demand(match?.id&&match?.key,'Create response missing identity');created++;
@@ -99,7 +116,8 @@ async function execute(mode,site,key,limit){
       }
       receipt.stage='complete';receipt.lastState=current;receipt.verifiedAt=new Date().toISOString();atomicSave(file,receipt);issued.set(row.identity,receipt);verified++;
       if(verified%10===0||verified===population.rows.length)console.log(JSON.stringify({at:new Date().toISOString(),site,project:key,verified,total:population.rows.length,created,transitioned,mode}));
-    }
+    },mode==='plan'?1:4);
+    if(!walked)return;
     if(verified===population.rows.length){
       const keys=[];let nextPageToken;
       do{

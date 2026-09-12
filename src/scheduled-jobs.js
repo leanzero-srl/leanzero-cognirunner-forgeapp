@@ -34,7 +34,7 @@
  *
  * Storage: `job_index` (slim rows + scheduler bookkeeping) and `job:{id}` (full).
  */
-import storage from "@forge/kvs";
+import { kvs as storage } from "@forge/kvs";
 import api, { route } from "@forge/api";
 import { validateCron, normalizeTimeZone, dueInWindow, nextRuns, describeCron, fireIdentity } from "./shared/cron.js";
 import { normalizeAllowedActions, DEFAULT_AGENT_ACTIONS, DEFAULT_AGENT_ROUNDS, MAX_AGENT_ROUNDS } from "./shared/agent-actions.js";

@@ -32,7 +32,7 @@
 
 // `storage` was deprecated from @forge/api — this project uses @forge/kvs
 // (same import discipline as src/index.js).
-import storage from "@forge/kvs";
+import { kvs as storage } from "@forge/kvs";
 
 export const MEMORIES_KEY = "pf_memories";
 export const MEMORY_SETTINGS_KEY = "COGNIRUNNER_MEMORY_SETTINGS";

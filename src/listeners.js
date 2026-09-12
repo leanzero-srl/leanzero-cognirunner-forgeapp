@@ -32,7 +32,7 @@
  * `listener:{id}` (full config incl. code). The index is what the trigger reads on
  * EVERY subscribed event (cached 30s per warm container), so it must stay small.
  */
-import storage from "@forge/kvs";
+import { kvs as storage } from "@forge/kvs";
 import api, { route } from "@forge/api";
 import {
   isKnownEvent, getEvent, eventLabel, extractEventContext, changedFieldsOf, commentTextOf,

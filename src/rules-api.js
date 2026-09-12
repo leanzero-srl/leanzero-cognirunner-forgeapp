@@ -43,7 +43,7 @@
  *   GET    ?resource=samples&eventType=              last captured payload for an event
  *   GET    ?resource=whoami                          token identity
  */
-import storage from "@forge/kvs";
+import { kvs as storage } from "@forge/kvs";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { JIRA_EVENTS, EVENT_CATEGORIES } from "./shared/jira-events.js";
 import { AGENT_ACTIONS } from "./shared/agent-actions.js";

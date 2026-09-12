@@ -18,7 +18,7 @@
 
 // `storage` was deprecated from @forge/api — migrated to @forge/kvs.
 // Aliased back to `storage` so the existing call sites stay unchanged.
-import storage from "@forge/kvs";
+import { kvs as storage } from "@forge/kvs";
 import api, { route, fetch } from "@forge/api";
 // Atlassian-hosted Forge LLMs (Preview) — used when the active provider is "atlassian".
 import { chat as forgeLlmChatApi } from "@forge/llm";

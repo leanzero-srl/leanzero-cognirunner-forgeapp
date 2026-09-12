@@ -31,7 +31,7 @@
 
 // `storage` was deprecated from @forge/api — this project uses @forge/kvs
 // (same import discipline as src/index.js).
-import storage from "@forge/kvs";
+import { kvs as storage } from "@forge/kvs";
 import { SKILL_SEED_VERSION, BUILTIN_SKILLS } from "./shared/builtin-skills.js";
 // Shared fence-defang helper — skill content is interpolated inside <<<SKILLS>>>.
 import { defangFence } from "./memories.js";

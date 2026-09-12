@@ -11,7 +11,7 @@
  * unless the secret is configured (absent in prod) AND matches the Bearer header.
  * Reads and explicitly allowlisted test actions only.
  */
-import storage from "@forge/kvs";
+import { kvs as storage } from "@forge/kvs";
 
 const json = (statusCode, body) => ({
   statusCode,

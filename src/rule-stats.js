@@ -8,7 +8,7 @@
 // Backend-only: every mutation of the two stats maps is serialized by Forge's
 // existing queue. Executions stay parallel; only this short storage task has a
 // concurrency limit. A transaction ALONE would not protect the preceding read.
-import storage from "@forge/kvs";
+import { kvs as storage } from "@forge/kvs";
 import { Queue } from "@forge/events";
 
 export const STATS_TASK_TYPE = "rule_stats";

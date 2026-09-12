@@ -110,12 +110,22 @@ export default function JobsTab({ invoke, isAdmin, userRole }) {
         const p = await invoke("getAsyncTaskResult", { taskId: r.taskId });
         if (token !== pollRef.current) return;
         if (!p.success) continue;
-        if (p.status === "cancelled") { showResult({ ...(p.result || {}), skipped: true, decision: "SKIP", reason: p.error || p.result?.reason || "Run cancelled by an operator." }); setRunning(null); load(); return; }
+        // F-122 — A CANCEL IS NOT A FAILURE, AND IT NEVER ARRIVES AS status "cancelled".
+        // `getAsyncTaskResult` only ever answers pending/processing/done/error/unknown
+        // (index.js ~8448), and the consumer writes an operator stop as
+        // `{status:"error", error:"Cancelled"}` — so the `status === "cancelled"` arm
+        // below has never fired, and the F-114 "error beats the status word" rule was
+        // turning every operator Stop into a red "Run failed" toast.
+        // The cancel path is identified by the `cancelled: true` flag the backend sets
+        // on the poll row, which is the ONLY signal that distinguishes a stop from a
+        // genuine consumer failure carrying the same status. Both cancel shapes render
+        // the same neutral SKIP result and a neutral "Run cancelled" toast.
+        if (p.cancelled === true || p.status === "cancelled") { showResult({ ...(p.result || {}), skipped: true, decision: "SKIP", reason: p.error || p.result?.reason || "Run cancelled by an operator." }); setRunning(null); showToast("Run cancelled"); load(); return; }
         // F-114 — an `error` string beats the status word. A run that died on the
         // no-provider path came back status "done" WITH an error, and the panel
         // reported a successful run. Error present (and not a cancel) = failure,
         // and the operator sees the message.
-        if (p.error && p.status !== "cancelled") { showResult({ isValid: false, reason: p.error }); setRunning(null); showToast("Run failed", "error"); load(); return; }
+        if (p.error) { showResult({ isValid: false, reason: p.error }); setRunning(null); showToast("Run failed", "error"); load(); return; }
         if (p.status === "done") { showResult({ ...(p.result || {}), isValid: p.result ? p.result.success !== false : true }); setRunning(null); showToast("Run finished"); load(); return; }
         if (p.status === "error") { showResult({ isValid: false, reason: p.error || "Run failed" }); setRunning(null); load(); return; }
         setRunning({ id, taskId: r.taskId, status: p.status === "processing" ? "running" : "queued" });

@@ -360,8 +360,8 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   ok(/ALSO FAIL OPEN/.test(doc), "…it states the real contract: the non-transient class fails OPEN too");
   ok(/UNVALIDATED/.test(doc), "…and names the actual harm (transitions pass unvalidated), not a block");
   // Both non-ok returns carry the flag; the ok:true return must NOT (nothing is failing).
-  ok((body.match(/failOpen: true/g) || []).length === 2,
-    "both non-ok returns (provider error + probe throw) carry failOpen:true");
+  ok((body.match(/failOpen: true/g) || []).length === 3,
+    "all three non-ok returns (no-provider, provider error, probe throw) carry failOpen:true");
   ok(!/ok: true,[^\n]*failOpen/.test(body), "the healthy return carries no failOpen flag");
   // And the validator branches this flag describes still fail OPEN — if one of them ever
   // flips, this assertion is what makes the flag a lie loudly instead of quietly.
@@ -420,6 +420,34 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   // And the guard's own message is still the one constant.
   ok((asyncSrc.match(/error: NO_PROVIDER_ERROR \}/g) || []).length === 5,
     "the five no-provider bails still return the one shared message constant");
+}
+
+// =====================================================================================
+// F-115 — the SYNC dispatcher refuses a null provider too.
+//
+// The consumer's callAIChatSimpleRaw got the guard; index.js's callAIChatRaw did not,
+// and its if-chain ends in an OpenAI-compatible TAIL — so null fell through to
+// fetch("null/chat/completions") with "Bearer null". checkProviderHealth is the one
+// call site with no `if (!apiKey)` bail above it, so the admin was handed "Invalid URL"
+// attributed to a provider, for what was a storage read fault.
+// =====================================================================================
+{
+  const m = indexSrc.match(/const callAIChatRaw = async \(opts\) => \{[\s\S]*?if \(provider === "anthropic"\)/);
+  ok(!!m, "found callAIChatRaw's head");
+  const head = m ? m[0] : "";
+  ok(/if \(!provider\) return \{ ok: false, status: 0, error: "No AI provider configured/.test(head),
+    "callAIChatRaw refuses a null provider");
+  ok(head.indexOf("if (!provider)") < head.indexOf('if (provider === "anthropic")'),
+    "…BEFORE the first routing branch, so no arm (incl. the OpenAI-compatible tail) can be reached");
+  ok(!/throw new Error/.test(head), "…as an ok:false result, never a throw (validators must still fail OPEN)");
+
+  // checkProviderHealth names the real cause instead of probing a provider that is null.
+  const h = indexSrc.match(/resolver\.define\("checkProviderHealth"[\s\S]*?\n\}\);/)[0];
+  ok(/reason: "no-provider"/.test(h), "checkProviderHealth reports reason:'no-provider'");
+  ok(/provider: null, providerLabel: null, model: null/.test(h), "…with a null provider/label/model, not a fabricated one");
+  ok(h.indexOf('if (!provider) {') < h.indexOf("try {"), "…and bails BEFORE the probe call");
+  ok(/transient: false, failOpen: true, reason: "no-provider"/.test(h),
+    "…non-transient (the banner must surface it) and flagged fail-open like every other non-ok answer");
 }
 
 console.log(`\nasync-handler-helpers: ${pass} passed, ${fail} failed`);

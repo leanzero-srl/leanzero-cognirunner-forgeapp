@@ -4810,6 +4810,19 @@ resolver.define("checkProviderHealth", async ({ context }) => {
   }
   const { provider } = await getProviderConfig();
   const providerLabel = (PROVIDERS[provider] && PROVIDERS[provider].label) || provider;
+  // F-115 — no provider at all means the config read faulted; there is nothing to
+  // probe. Say THAT, instead of probing a null provider and reporting its (fabricated)
+  // answer as a provider error that sends the admin auditing a key/URL/model that is
+  // not what broke. `reason` lets the banner name the real cause.
+  if (!provider) {
+    return {
+      // NOT transient: the banner must surface this. A read fault may clear on the
+      // next call, but while it lasts every AI rule fails open and nothing validates.
+      success: true, ok: false, transient: false, failOpen: true, reason: "no-provider",
+      provider: null, providerLabel: null, model: null, status: null,
+      message: "No AI provider configured — the provider setting could not be read. Nothing was sent to any provider.",
+    };
+  }
   try {
     const apiKey = await getOpenAIKey();
     const configuredModel = await getOpenAIModel();
@@ -10408,6 +10421,17 @@ const callAIChat = async (opts) => {
 const callAIChatRaw = async (opts) => {
   const { apiKey, model: requestedModel, messages, tools, tool_choice, jsonMode, preResolvedModel } = opts;
   const { provider, baseUrl } = await getProviderConfig();
+
+  // F-115 — a null provider means the config READ faulted (fail-closed, see
+  // getProviderConfig's catch). Refuse here, BEFORE any branch. F-103's comment says
+  // "with null no branch matches" — true of the if-chain, false of this function: the
+  // tail is the OpenAI-compatible arm, which would fetch `null/chat/completions` with
+  // `Authorization: Bearer null` and hand the caller an "Invalid URL" that reads as a
+  // PROVIDER fault when the real cause was storage. The consumer's twin
+  // (async-handler.js callAIChatSimpleRaw) already refuses; this is the same rule on
+  // the sync seam. Same ok:false shape every other failure uses — no throw, so
+  // validators keep failing OPEN (LAW 3) rather than erroring out of a transition.
+  if (!provider) return { ok: false, status: 0, error: "No AI provider configured (provider read failed)" };
 
   if (provider === "anthropic") {
     return callAnthropicChat({ apiKey, model: requestedModel, messages, tools, tool_choice, baseUrl, jsonMode });

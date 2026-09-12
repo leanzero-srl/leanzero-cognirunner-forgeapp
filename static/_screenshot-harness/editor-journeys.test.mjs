@@ -1139,6 +1139,99 @@ try {
       await closeEditor(env);
     }
 
+    /* F-158 — a fix card shows ONLY the memory ITS OWN fix produced */
+    // F-156 rightly stopped a second fix from CLEARING the first fix's memory. But most
+    // repairs return no memoryCandidate at all (typos and ReferenceErrors teach nothing
+    // reusable — src/index.js tells the model to answer null), so a second SUCCESSFUL fix
+    // then rendered fix #1's badge inside fix #2's card, uncaveated: "this fix learned
+    // that", about a lesson drawn from code two versions ago. The memory must still be
+    // visible and forgettable — but OUTSIDE the card, with the note that names its version.
+    {
+      console.log(`F-158 the second fix's card does not claim the first fix's memory (cfg-static, ${theme})`);
+      const env = await openEditor(browser, "config-ui", "cfg-static", theme, {
+        __TESTFAIL_ONCE__: true,
+        __FIX_MEMORY__: true,
+      });
+      const { page } = env;
+      try {
+        const b = page.locator(".function-block").first();
+        await b.locator(".btn-test-run", { hasText: /Test Run/ }).click();
+        await b.locator(".btn-run-test", { hasText: "Run Test" }).click();
+        await b.locator(".test-result.test-fail").waitFor({ timeout: 10000 });
+        await b.locator(".btn-fix-ai", { hasText: "Fix with AI" }).click();
+        await b.locator(".memory-saved-badge").first().waitFor({ timeout: 15000 });
+        ok(await b.locator(".fix-result .memory-saved-badge").count() === 1,
+          `F-158 ${T} fix #1 DOES show the memory it produced, inside its own card`);
+
+        // An edit takes ownership of the code and clears the fix card (F-149); the memory
+        // survives it (F-151) and moves to the card below. Then fix #2 — verified, but with
+        // NO candidate of its own, which is the ordinary case.
+        await page.evaluate(() => { window.__FIX_MEMORY__ = false; window.__TESTFAIL_ONCE__ = true; });
+        await b.locator(".cm-content").first().click();
+        await page.keyboard.type("\n// touch");
+        await page.waitForTimeout(250);
+        await b.locator(".btn-run-test", { hasText: "Run Test" }).click();
+        await b.locator(".test-result.test-fail").waitFor({ timeout: 10000 });
+        await b.locator(".btn-fix-ai", { hasText: "Fix with AI" }).click();
+        await page.waitForFunction(
+          () => !!document.querySelector(".function-block .fix-result.fix-verified"),
+          { timeout: 20000 },
+        );
+        await page.waitForTimeout(400);
+
+        // THE defect: fix #2's card carried fix #1's badge.
+        ok(await b.locator(".fix-result .fix-undo-bar").count() === 1,
+          `F-158 ${T} fix #2 has its own card`);
+        ok(await b.locator(".fix-result:has(.fix-undo-bar) .memory-saved-badge").count() === 0,
+          `F-158 ${T} fix #2's card shows NO memory badge — this fix learned nothing`);
+        ok(await b.locator(".memory-saved-badge").count() === 1,
+          `F-158 ${T} the first fix's memory is still disclosed — it is still in the store`);
+        ok(await b.locator(".memory-saved-badge button").count() === 1,
+          `F-158 ${T} and still forgettable from here`);
+        const outside = await b.locator(".fix-result").last().innerText();
+        ok(/the code shown is not that version/.test(outside),
+          `F-158 ${T} the surviving badge carries the note naming the version that taught it (got: ${outside.replace(/\n/g, " | ")})`);
+      } catch (e) { fail++; console.log(`  ✗ F-158 ${T} threw: ` + e.message.split("\n")[0]); }
+      await closeEditor(env);
+    }
+
+    /* F-158 — `{ success: false, reason: "cap", stored: false }` is NOT a learned memory */
+    // The store could not keep the row. That is neither a memory (a badge would claim one
+    // that does not exist, with a veto that has no id behind it) nor a generic failure (the
+    // call worked). It is its own outcome, and it says where to make room.
+    {
+      console.log(`F-158 a save that kept nothing gets a note, not a badge (cfg-static, ${theme})`);
+      const env = await openEditor(browser, "config-ui", "cfg-static", theme, {
+        __TESTFAIL_ONCE__: true,
+        __FIX_MEMORY__: true,
+        __MEMORY_CAP__: true,
+      });
+      const { page } = env;
+      try {
+        const b = page.locator(".function-block").first();
+        await b.locator(".btn-test-run", { hasText: /Test Run/ }).click();
+        await b.locator(".btn-run-test", { hasText: "Run Test" }).click();
+        await b.locator(".test-result.test-fail").waitFor({ timeout: 10000 });
+        await b.locator(".btn-fix-ai", { hasText: "Fix with AI" }).click();
+        await b.locator(".memory-not-kept").first().waitFor({ timeout: 15000 });
+
+        ok(await b.locator(".memory-saved-badge").count() === 0,
+          `F-158 ${T} no badge — nothing was stored`);
+        ok(await b.locator(".memory-saved-badge button").count() === 0,
+          `F-158 ${T} no veto — there is no id to delete`);
+        const note = await b.locator(".memory-not-kept").first().innerText();
+        ok(/Nothing was kept/.test(note) && /memory store is full/.test(note),
+          `F-158 ${T} the note says nothing was kept and why (got: ${note})`);
+        ok(/prune it in the Memories tab/.test(note),
+          `F-158 ${T} and where to fix it`);
+        // Slate, never the teal "learned" hue — and it must resolve in BOTH themes.
+        const color = await b.locator(".memory-not-kept").first().evaluate((el) => getComputedStyle(el).color);
+        ok(color === (theme === "dark" ? "rgb(100, 116, 139)" : "rgb(71, 85, 105)"),
+          `F-158 ${T} the note is slate for this theme (got: ${color})`);
+      } catch (e) { fail++; console.log(`  ✗ F-158 cap ${T} threw: ` + e.message.split("\n")[0]); }
+      await closeEditor(env);
+    }
+
     /* F-157 — after UNDO the mismatch copy must not accuse the author of an edit */
     // The note fires on any fingerprint divergence, and Undo restores the pre-fix code
     // without a keystroke — so the card told the author the code "has been edited since"

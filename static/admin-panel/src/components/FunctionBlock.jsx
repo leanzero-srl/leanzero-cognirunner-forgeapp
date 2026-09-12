@@ -242,11 +242,19 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
   // Fix-with-AI loop state
   const [fixing, setFixing] = useState(false);
   const [fixAttempts, setFixAttempts] = useState(0);
-  const [fixResult, setFixResult] = useState(null); // { explanation, verified, preFixCode, preFixMeta }
-  // { id, content, learnedFrom, merged } — `merged` is the resolver's answer to "was this
-  // candidate deduped INTO an existing memory?" (F-155). It decides what the badge may
-  // claim and whether a veto may be offered at all; see `renderMemoryBadge`.
+  // { explanation, verified, preFixCode, preFixMeta, token } — `token` is the genToken the
+  // fix ran under. F-158 uses it to answer "did THIS card's fix produce that memory?".
+  const [fixResult, setFixResult] = useState(null);
+  // { id, content, learnedFrom, merged, fixToken } — `merged` is the resolver's answer to
+  // "was this candidate deduped INTO an existing memory?" (F-155). It decides what the badge
+  // may claim and whether a veto may be offered at all; see `renderMemoryBadge`.
+  // F-158 — `fixToken` records WHICH fix produced it. The fix card may only show a memory
+  // its own fix produced; an older one is disclosed outside the card instead.
   const [memorySaved, setMemorySaved] = useState(null);
+  // F-158 — the backend can accept the call and keep nothing (`{ success:true, stored:false,
+  // reason }` — the store is at its cap). That is not a memory, so it gets no badge and no
+  // veto: just a neutral note inside the card of the fix that tried. Reset per fix.
+  const [memoryNotKept, setMemoryNotKept] = useState(null);
   // F-150 — true while the verified fix's addMemory tail is in flight. It is part of
   // `stepBusy` (below) because that tail still belongs to the fix: it is the step's
   // `token` that decides whether the saved memory gets a badge and a veto, and a writer
@@ -654,11 +662,15 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
         // green fix result. (A successful generate clears it too — it is reset at the top
         // of handleGenerate, before the request goes out.)
         setGenerationKept(null);
+        // F-158 — a fresh fix card owns a fresh "nothing was kept" note; the previous
+        // fix's note must not be read as this fix's outcome.
+        setMemoryNotKept(null);
         setFixResult({
           explanation: result.explanation || "",
           verified: false,
           preFixCode,
           preFixMeta,
+          token,
         });
         setFixing(false);
 
@@ -702,15 +714,33 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
                   setTimeout(() => reject(new Error("memory-save-timeout")), MEMORY_SAVE_TIMEOUT_MS),
                 ),
               ]);
-              if (memRes && memRes.success) {
+              // F-158 — "the store kept nothing" is its own outcome, not a failure and not
+              // a memory. The resolver answers `{ success: false, reason: "cap", stored: false }`
+              // when the store is at its cap, and `{ success: true, id, merged, stored: true }`
+              // otherwise. `stored === false` is the single tell, checked BEFORE `success`, so
+              // a full store never falls through to the generic error path (which would say
+              // "couldn't save" — wrong: the call worked, the store is simply full) and never
+              // produces a badge claiming a memory that does not exist, with a veto that has
+              // no id behind it.
+              if (memRes && (memRes.stored === false || memRes.reason === "cap")) {
+                setMemoryNotKept(
+                  memRes.reason === "cap"
+                    ? "Nothing was kept — the memory store is full; prune it in the Memories tab."
+                    : "Nothing was kept — this fix's lesson was not stored.",
+                );
+                showToast(memRes.reason === "cap" ? "Fix verified. Nothing was learned — the memory store is full." : "Fix verified. Nothing was learned from it.");
+              } else if (memRes && memRes.success && memRes.id) {
                 // F-155 — carry `merged` with the badge. On a dedup hit the resolver
                 // returns the id of the PRE-EXISTING memory it reinforced, which may be a
                 // user-authored row with many reinforcements; deleting it is not an undo.
+                // F-158 — a NEW successful save REPLACES the previous `memorySaved`, and
+                // stamps the fix that produced it so only that fix's card may show it.
                 setMemorySaved({
                   id: memRes.id,
                   content: result.memoryCandidate.content,
                   learnedFrom,
                   merged: !!memRes.merged,
+                  fixToken: token,
                 });
                 setKnowledgeRefresh((n) => n + 1);
                 showToast("Fix verified — memory saved");
@@ -1455,7 +1485,13 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
               {fixResult.explanation && (
                 <p className="fix-explanation">{fixResult.explanation}</p>
               )}
-              {renderMemoryBadge()}
+              {/* F-158 — this card shows ONLY the memory THIS fix produced. Most repairs
+                  (typos, ReferenceErrors) return no memoryCandidate at all, so an earlier
+                  fix's badge rendered here read as "this fix learned that" — a claim about a
+                  lesson drawn from different code. When it is not this fix's, the badge falls
+                  through to the card below, which names the version that taught it. */}
+              {memorySaved && memorySaved.fixToken === fixResult.token && renderMemoryBadge()}
+              {memoryNotKept && <p className="memory-not-kept">{memoryNotKept}</p>}
             </div>
           )}
 
@@ -1465,7 +1501,7 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
               the save tail: the keystroke cleared the fix card, but the memory is real and
               must stay forgettable. `learnedFrom` lets it say which code version taught it
               rather than implying it describes what is on screen now. */}
-          {!fixResult && memorySaved && (
+          {memorySaved && (!fixResult || memorySaved.fixToken !== fixResult.token) && (
             <div className="fix-result fix-verified anim-rise">
               {/* F-157 — a fingerprint mismatch means "this is not the code the memory was
                   learned from". It does NOT mean the code was edited: Undo restores the

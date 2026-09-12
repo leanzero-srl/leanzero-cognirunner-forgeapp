@@ -296,6 +296,13 @@ const STATIC_CODE_FIXED = STATIC_CODE_1.replace(
   'api.log("Found "',
   'if (!results || !results.issues) return [];\napi.log("Found "',
 );
+// F-158 — a SECOND fix must land DIFFERENT code again, or the first memory's
+// `learnedFrom` fingerprint still matches what is on screen and the outside-card note
+// (which is where the badge belongs once it is not this fix's) can never appear.
+const STATIC_CODE_FIXED_2 = STATIC_CODE_FIXED.replace(
+  "return results.issues || [];",
+  "return (results.issues || []).slice(0, 50);",
+);
 const STATIC_CODE_2 = [
   "// Post a comment linking each duplicate found in step 1",
   "if (!duplicates || duplicates.length === 0) {",
@@ -922,16 +929,30 @@ function invoke(name, payload) {
     // F-150 — window.__FIX_MEMORY__ = true makes the fix answer carry a memoryCandidate,
     // which is what drives FunctionBlock's post-verified-re-run addMemory tail (the badge
     // + veto). Opt-in so the other fix journeys keep their existing, memory-free screens.
-    case "fixPostFunctionCode": return Promise.resolve({ success: true, code: STATIC_CODE_FIXED, explanation: "Renamed the undefined `dupes` to `duplicates` and guarded the empty case.", meta: { appliedDocs: [], appliedSkills: [], appliedMemories: 1, truncatedDocs: [] }, ...(typeof window !== "undefined" && window.__FIX_MEMORY__ ? { memoryCandidate: { content: "api.searchJql returns { issues }, not a bare array — destructure before mapping.", projectScoped: false } } : {}) });
+    // F-158 — successive fixes return DIFFERENT code (a real fix always moves the source),
+    // and __FIX_MEMORY__ is read PER CALL so a test can turn the candidate off for fix #2 —
+    // the commonest real shape (typo / ReferenceError repairs teach nothing reusable, so
+    // src/index.js instructs the model to answer memoryCandidate: null).
+    case "fixPostFunctionCode": {
+      if (typeof window !== "undefined") window.__FIXCALLS__ = (window.__FIXCALLS__ || 0) + 1;
+      const nth = (typeof window !== "undefined" && window.__FIXCALLS__) || 1;
+      return Promise.resolve({ success: true, code: nth >= 2 ? STATIC_CODE_FIXED_2 : STATIC_CODE_FIXED, explanation: "Renamed the undefined `dupes` to `duplicates` and guarded the empty case.", meta: { appliedDocs: [], appliedSkills: [], appliedMemories: 1, truncatedDocs: [] }, ...(typeof window !== "undefined" && window.__FIX_MEMORY__ ? { memoryCandidate: { content: "api.searchJql returns { issues }, not a bare array — destructure before mapping.", projectScoped: false } } : {}) });
+    }
     // F-155 — addMemory has TWO real shapes and the UI must tell them apart:
     //   { success, id, merged: false } -> a NEW row this fix owns (veto = undo)
     //   { success, id, merged: true }  -> the candidate was deduped INTO an existing memory,
     //                                     so `id` is somebody else's row and a delete is not an undo.
     // window.__MEMORY_MERGED__ = true selects the merged shape.
+    // F-158 — a THIRD real shape (backend 5dd3d4f): the store could not keep the row, so
+    // the resolver answers success:false with reason "cap" and stored:false. There is no id,
+    // so there is nothing to badge and nothing to veto — and it is NOT a generic failure.
+    // The kept shapes carry stored:true (+ whatever the write evicted).
     case "addMemory": return Promise.resolve(
-      typeof window !== "undefined" && window.__MEMORY_MERGED__
-        ? { success: true, id: "mem_existing_7", merged: true }
-        : { success: true, id: "mem_fix_1", merged: false });
+      typeof window !== "undefined" && window.__MEMORY_CAP__
+        ? { success: false, reason: "cap", stored: false }
+        : typeof window !== "undefined" && window.__MEMORY_MERGED__
+        ? { success: true, id: "mem_existing_7", merged: true, stored: true, evicted: [] }
+        : { success: true, id: "mem_fix_1", merged: false, stored: true, evicted: [] });
     case "deleteMemory": return Promise.resolve({ success: true });
     case "reviewConfig": return Promise.resolve({ success: true, review: { verdict: "has_issues", summary: "The steps are sound; two improvements suggested.", items: [{ type: "warning", message: "Step 2 posts a comment without checking the issue is still open." }, { type: "suggestion", message: "Reuse the JQL result from step 1 instead of re-querying." }] }, tokens: 1240 });
     case "searchIssues": return Promise.resolve({ success: true, issues: [{ key: "PROJ-481", fields: { summary: "Checkout latency spike on mobile", status: { name: "In Progress" }, issuetype: { name: "Bug" } } }] });

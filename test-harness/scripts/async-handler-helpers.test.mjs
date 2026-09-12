@@ -540,5 +540,21 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   ok(logs("listener", null) === null, "EXECUTED: no failure → no entry");
 }
 
+// =====================================================================================
+// F-120(b) — the auto-capture path claims the error signature before it queues a distill.
+// Without it, a distill that fails leaves the signature novel and every repeat re-queues.
+// =====================================================================================
+{
+  ok(/memdistill_attempt:\$\{errorSig\}/.test(indexSrc), "the claim key is namespaced per error signature");
+  const c = indexSrc.match(/\} else if \(!\(await claimRuleExecution\([\s\S]{0,400}?\)\)\) \{/);
+  ok(!!c, "the queue branch is guarded by a conditional claim");
+  ok(/value: 6, unit: "HOURS"/.test(c ? c[0] : ""), "…with a SHORT ttl (6h), so a fixed provider resumes learning");
+  ok(indexSrc.indexOf("memdistill_attempt:") < indexSrc.indexOf('const memDistillTaskId = makeTaskId("memdistill")'),
+    "the claim is taken BEFORE the queue push — the cap is checked before the side effect");
+  ok(/is already pending or recently failed — not re-queued/.test(indexSrc), "the suppressed case says so in the log");
+  // claimRuleExecution is the ONE home for this conditional-write rule (no second copy).
+  ok(!/keyPolicy: "FAIL_IF_EXISTS"[\s\S]{0,80}memdistill/.test(indexSrc), "no second hand-rolled claim for the distill");
+}
+
 console.log(`\nasync-handler-helpers: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

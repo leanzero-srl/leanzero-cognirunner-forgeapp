@@ -16947,6 +16947,15 @@ export const dispatchPostFunction = async (issueKey, config, extensionKey, pfDea
                 known.reinforcements = (known.reinforcements || 0) + 1;
                 known.updatedAt = new Date().toISOString();
                 await saveMemories(memories);
+              } else if (!(await claimRuleExecution(
+                storage, `memdistill_attempt:${errorSig}`, { ttl: { value: 6, unit: "HOURS" } }, "memdistill"))) {
+                // F-120 — a distill that FAILS writes no memory, so this signature stays
+                // "novel" forever and EVERY repeat of the same step failure would queue
+                // another distill. The claim is a short-TTL atomic conditional write: while
+                // an attempt is pending — or failed within the last 6h — the same signature
+                // is not re-queued. Fail-OPEN by design: claimRuleExecution returns true on a
+                // KVS fault, so an infrastructure blip never silently stops learning.
+                console.log(`Memory auto-capture: a distill for signature ${errorSig} is already pending or recently failed — not re-queued`);
               } else {
                 const { Queue } = await import("@forge/events");
                 const queue = new Queue({ key: "async-ai-queue" });

@@ -4767,8 +4767,21 @@ resolver.define("checkProviderHealth", async ({ context }) => {
     // clamp can downgrade the configured model, and a banner that names a model the
     // app is not actually calling sends the admin hunting the wrong problem.
     const model = (result && result.data && result.data.model) || configuredModel;
+    // `clamped` means ONE thing: this install's EDITION refuses the configured model.
+    // It is computed from the edition policy, never from what the provider echoed back
+    // — OpenAI/OpenRouter routinely answer with a dated or aliased model id ("gpt-5.4
+    // -mini-2026-xx"), and reading that as a clamp made the panel claim a downgrade
+    // that never happened. Only Forge LLM ("atlassian") has an edition clamp at all;
+    // every other provider reports false.
+    let clamped = false;
+    if (provider === "atlassian") {
+      try {
+        const { edition } = await currentEdition();
+        clamped = clampForgeLlmModel(edition, configuredModel) !== configuredModel;
+      } catch (e) { /* fail-soft: an edition read fault is not a clamp claim */ }
+    }
     if (result && result.ok) {
-      return { success: true, ok: true, provider, providerLabel, model, configuredModel, clamped: model !== configuredModel };
+      return { success: true, ok: true, provider, providerLabel, model, configuredModel, clamped };
     }
     const status = (result && result.status) || null;
     const errText = (result && result.error) || "";

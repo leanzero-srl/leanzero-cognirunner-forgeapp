@@ -202,5 +202,20 @@ ok(/export const editionFromInvocation = \(license\)/.test(indexSrc), "editionFr
   ok(!!lic && /try \{ maybeRefreshSeatSnapshot\(\); \} catch/.test(lic[0]), "and it can never throw into the license read");
 }
 
+// =====================================================================================
+// 7. F-086 — checkProviderHealth's `clamped` is an EDITION verdict, not a string compare
+// against whatever model id the provider echoed back.
+// =====================================================================================
+{
+  const m = indexSrc.match(/resolver\.define\("checkProviderHealth",[\s\S]*?\n\}\);/);
+  ok(!!m, "found checkProviderHealth");
+  const body = m ? m[0] : "";
+  ok(!/clamped: model !== configuredModel/.test(body),
+    "the echo comparison is gone (a dated/aliased provider id is not a clamp)");
+  ok(/if \(provider === "atlassian"\)/.test(body) && /clampForgeLlmModel\(edition, configuredModel\) !== configuredModel/.test(body),
+    "clamped comes from the edition policy, on the atlassian branch only");
+  ok(/let clamped = false;/.test(body), "every other provider reports clamped:false");
+}
+
 console.log(`\nedition-backend: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

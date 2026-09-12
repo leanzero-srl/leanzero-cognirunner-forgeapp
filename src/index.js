@@ -95,6 +95,7 @@ import {
   buildMemoryBlock,
   readMemoryStoreFull,
   MEMORY_CONTENT_MAX,
+  MAX_MEMORIES,
   defangFence,
 } from "./memories.js";
 
@@ -7196,8 +7197,11 @@ const cleanProjectKey = (projectKey) =>
 
 resolver.define("getMemories", async () => {
   try {
-    const [memories, settings] = await Promise.all([loadMemories(), getMemorySettings()]);
-    return { success: true, memories, settings };
+    // F-167/F-169: the Memories tab reads `settings.storeFull` from THIS resolver
+    // (it never calls getMemorySettings directly), so the marker rides `settings`.
+    const [memories, baseSettings, storeFull] = await Promise.all([loadMemories(), getMemorySettings(), readMemoryStoreFull()]);
+    const settings = { ...baseSettings, storeFull };
+    return { success: true, memories, settings, storeFull };
   } catch (error) {
     console.error("Failed to get memories:", error);
     return { success: false, memories: [], error: error.message };
@@ -7239,7 +7243,7 @@ resolver.define("addMemory", async ({ payload, context }) => {
       const reason = result.reason || null;
       let error = result.error || "Failed to save memory";
       if (reason === "cap") {
-        error = "Memory store is full of your own memories (200 max) — nothing is evicted automatically. Prune it in the Memories tab to make room.";
+        error = "Memory store is full of your own memories (200 max) — nothing is evicted automatically — prune in the Memories tab to make room.";
       } else if (reason === "bytes") {
         error = "Memory store has reached its size limit — delete or shorten some memories in the Memories tab.";
       }
@@ -7299,8 +7303,9 @@ resolver.define("getMemorySettings", async () => {
     // F-167: `storeFull` is how the Memories tab learns the instance has STOPPED
     // LEARNING (a lesson was refused by the cap/byte guard and nothing is evicted
     // automatically). null = learning normally. Same shape in getKnowledgeCounts.
-    const [settings, storeFull] = await Promise.all([getMemorySettings(), readMemoryStoreFull()]);
-    return { success: true, settings, storeFull };
+    const [baseSettings, storeFull] = await Promise.all([getMemorySettings(), readMemoryStoreFull()]);
+    // F-169: the UI reads settings.storeFull; keep the sibling for other readers.
+    return { success: true, settings: { ...baseSettings, storeFull }, storeFull };
   } catch (error) {
     return { success: false, error: error.message };
   }
@@ -7398,6 +7403,8 @@ resolver.define("getKnowledgeCounts", async () => {
       docs: (docIndex || []).filter((d) => d.disabled !== true).length,
       skills: (skillIndex || []).filter((s) => s.enabled !== false).length,
       memories: memories.filter((m) => !m.disabled).length,
+      // F-169: the cap is owned here, never re-declared in a UI (KnowledgePanel chip).
+      memoryCap: MAX_MEMORIES,
       // F-167 — see getMemorySettings. null when the instance is learning normally.
       storeFull,
     };

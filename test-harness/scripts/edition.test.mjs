@@ -32,21 +32,22 @@ let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) pass++; else { fail++; console.log("FAIL:", m); } };
 
 // =====================================================================================
-// F-076 — the id keys the FOUR UI apps compare against. They read EDITIONS.ADVANCED /
-// EDITIONS.STANDARD (and now EDITION_IDS.*) as ID STRINGS; the lowercase keys stay the
-// {id,label} objects for rendering. If any of these drifts, every edition comparison in
-// the UI silently becomes `undefined === "advanced"` → false, i.e. Coder reads as free.
+// F-076 / F-097 — the id string has ONE home: EDITION_IDS. Every backend site and all
+// four UI apps compare against it. The EDITIONS table is LABELS only; it briefly also
+// carried uppercase alias keys holding the bare id, which is the second home F-097
+// removed. If the id drifts, every edition comparison in the UI silently becomes
+// `undefined === "advanced"` → false, i.e. Coder reads as free.
 // =====================================================================================
 ok(EDITION_IDS.STANDARD === "standard" && EDITION_IDS.ADVANCED === "advanced", "EDITION_IDS holds the two id strings");
-ok(EDITIONS.STANDARD === EDITION_IDS.STANDARD && EDITIONS.ADVANCED === EDITION_IDS.ADVANCED,
-  "EDITIONS.STANDARD / EDITIONS.ADVANCED are the SAME id strings (UI compatibility alias)");
-ok(typeof EDITIONS.STANDARD === "string" && typeof EDITIONS.ADVANCED === "string",
-  "the uppercase keys are strings, never objects — a comparison against them must succeed");
+ok(EDITIONS.STANDARD === undefined && EDITIONS.ADVANCED === undefined,
+  "the uppercase alias keys are GONE — EDITION_IDS is the only home for the id (F-097)");
+ok(Object.keys(EDITIONS).length === 2 && Object.values(EDITIONS).every((v) => v && typeof v === "object"),
+  "EDITIONS is ONE shape: two {id,label} objects, so Object.values() cannot mix strings in");
 ok(EDITIONS.standard.id === EDITION_IDS.STANDARD && EDITIONS.advanced.id === EDITION_IDS.ADVANCED,
   "the lowercase keys stay {id,label} and their ids match EDITION_IDS");
 ok(EDITIONS.standard.label === "Standard" && EDITIONS.advanced.label === "Coder", "labels are unchanged");
-ok(resolveEdition({ isActive: true, capabilitySet: "capabilityAdvanced" }).edition === EDITIONS.ADVANCED,
-  "a resolved edition compares equal to EDITIONS.ADVANCED — the exact expression the UI apps evaluate");
+ok(resolveEdition({ isActive: true, capabilitySet: "capabilityAdvanced" }).edition === EDITION_IDS.ADVANCED,
+  "a resolved edition compares equal to EDITION_IDS.ADVANCED — the exact expression every surface evaluates");
 
 // =====================================================================================
 // resolveEdition — the matrix

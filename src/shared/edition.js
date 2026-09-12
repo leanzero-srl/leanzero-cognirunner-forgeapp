@@ -44,24 +44,19 @@
 export const EDITION_IDS = { STANDARD: "standard", ADVANCED: "advanced" };
 
 /**
- * The two editions. `label` is what a human sees; `id` is what code compares.
+ * The two editions, keyed BY ID. `label` is what a human sees; `id` is what code
+ * compares — and comparisons use EDITION_IDS above, never a key of this table.
  *
- * TWO key shapes on purpose, because both are in use and they must not drift:
- *   EDITIONS.standard / EDITIONS.advanced  → the OBJECT {id,label}, for LABELS
- *                                            (EDITIONS[ed].label is how the UI
- *                                            and checkLicense render the name).
- *   EDITIONS.STANDARD / EDITIONS.ADVANCED  → the bare ID string, a compatibility
- *                                            alias for `EDITION_IDS.*`, because the
- *                                            four UI apps compare against the
- *                                            uppercase form. Reading an id is what
- *                                            the UI does; do not turn these into
- *                                            objects, and do not add a third shape.
+ * ONE shape, on purpose (F-097). The uppercase `EDITIONS.STANDARD`/`EDITIONS.ADVANCED`
+ * aliases that briefly lived here held the bare id STRING alongside these OBJECTS, so
+ * `Object.values(EDITIONS)` yielded two objects and two strings, and the id had two
+ * homes. Every app surface reads EDITION_IDS; this table is only for LABELS
+ * (EDITIONS[ed].label is how the UI and checkLicense render the name). Do not add a
+ * second key shape back.
  */
 export const EDITIONS = {
-  standard: { id: "standard", label: "Standard" },
-  advanced: { id: "advanced", label: "Coder" },
-  STANDARD: EDITION_IDS.STANDARD,
-  ADVANCED: EDITION_IDS.ADVANCED,
+  standard: { id: EDITION_IDS.STANDARD, label: "Standard" },
+  advanced: { id: EDITION_IDS.ADVANCED, label: "Coder" },
 };
 
 /**

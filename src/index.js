@@ -7184,6 +7184,9 @@ resolver.define("distillSkillFromStep", async ({ payload, context }) => {
 // === Learned Memories ===
 // Advisory per-instance lessons injected into AI prompts (see src/memories.js).
 
+// The ONLY memory sources. ("runtime" is the LOG taxonomy, not a memory source —
+// a runtime auto-capture is stored as "test"/"fix".) An add that names anything
+// else is refused, never coerced — see addMemory, F-165.
 const MEMORY_SOURCES = ["user", "test", "fix"];
 const MEMORY_CONFIDENCE_BY_SOURCE = { user: 1.0, fix: 0.8, test: 0.6 };
 const cleanProjectKey = (projectKey) =>
@@ -7207,7 +7210,16 @@ resolver.define("addMemory", async ({ payload, context }) => {
     const { content, projectKey, source } = payload || {};
     const clean = String(content || "").trim().substring(0, 400);
     if (!clean) return { success: false, error: "Memory content is required" };
-    const cleanSource = MEMORY_SOURCES.includes(source) ? source : "user";
+    // F-165: an UNRECOGNISED source is REJECTED, never coerced. The old
+    // `MEMORY_SOURCES.includes(source) ? source : "user"` failed toward the most
+    // privileged tier: "user" carries confidence 1.0, wears the human chip in the
+    // Memories tab, and since F-160/F-164 is the tier the app will never evict. A
+    // typo'd or future client (`source: "runtime"`) silently got a machine lesson
+    // filed as hand-authored. "user" is the default ONLY when no source is sent.
+    const cleanSource = (source === undefined || source === null || source === "") ? "user" : source;
+    if (!MEMORY_SOURCES.includes(cleanSource)) {
+      return { success: false, error: "Unknown memory source" };
+    }
     const result = await saveMemoryCandidate({
       content: clean,
       source: cleanSource,

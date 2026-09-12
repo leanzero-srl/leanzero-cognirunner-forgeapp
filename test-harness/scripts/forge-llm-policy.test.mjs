@@ -154,7 +154,18 @@ ok(/rest\/api\/3\/users\/search/.test(codeOnly), "seats are counted from /rest/a
   const m = codeOnly.match(/const maybeRefreshSeatSnapshot = \(\) => \{[\s\S]*?\n\};/);
   ok(!!m, "found maybeRefreshSeatSnapshot");
   const b = m ? m[0] : "";
-  ok(!/^const maybeRefreshSeatSnapshot = async/.test(b), "the seat refresh is NOT async at the call site — nothing awaits it");
+  // F-102: the caller awaits ONLY the start marker. The function is not `async` itself;
+  // it RETURNS a promise that resolves once the marker is durable, and the multi-page
+  // scan runs detached behind it — one KVS write on the resolver's clock, not ten pages.
+  ok(!/^const maybeRefreshSeatSnapshot = async/.test(b), "the seat refresh is not an async function — it returns a promise");
+  ok(/return Promise\.resolve\(\)\.then\(async \(\) => \{/.test(b), "…and that promise is returned, so the caller can await the marker");
+  ok(/const scan = async \(\) => \{/.test(b) && /\n    scan\(\)\.catch\(/.test(b),
+    "the PAGES run detached (scan() is not awaited) — the resolver never waits on the REST loop");
+  {
+    const iMarker = b.indexOf("await write({ seats: prevSeats, pending: true })");
+    const iScanDef = b.indexOf("const scan = async");
+    ok(iMarker > 0 && iMarker < iScanDef, "the marker is written before the detached scan is even defined");
+  }
   ok(/u\.active === true && u\.accountType === "atlassian"/.test(b), "only active Atlassian accounts count as seats");
   // F-081: a failed page must WRITE a marker row, not just return — otherwise every cold
   // container restarts the scan.
@@ -250,6 +261,27 @@ ok(/rest\/api\/3\/users\/search/.test(codeOnly), "seats are counted from /rest/a
     ok(state.row.seats === 500, "FAILURE: a 429 does NOT blank the last good seat count (F-092)");
     ok(state.row.error === "429", "FAILURE: the error is recorded");
     ok(typeof state.row.at === "number", "FAILURE: `at` is refreshed so it cannot re-run for 24h");
+  }
+  // F-102 — what the caller awaits is the START MARKER, and only that. The returned
+  // promise must be settled with the marker already written, while the pages are still
+  // in flight: a container frozen at resolver return then still leaves a throttle row.
+  {
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    const state = { row: { seats: 500, at: Date.now() - 2 * DAY }, writes: [], rest: 0 };
+    const storage = {
+      get: async () => state.row,
+      set: async (_k, v) => { state.row = v; state.writes.push(v); },
+    };
+    const api = { asApp: () => ({ requestJira: async () => { state.rest++; await gate; return { ok: true, json: async () => [] }; } }) };
+    const route = (strings, ...v) => strings.reduce((a, sPart, i) => a + sPart + (v[i] ?? ""), "");
+    const run = factory(storage, api, route, "K", DAY, 2000, 200, 10);
+    const started = await run();
+    ok(started === true, "the returned promise resolves as soon as the scan is under way");
+    ok(state.writes.length === 1 && state.writes[0].pending === true && typeof state.writes[0].at === "number",
+      "AWAITED: the start marker is DURABLE before the caller continues (F-102)");
+    release(); await settle();
+    ok(state.rest === 1, "…and the REST pages ran AFTER the caller was already free");
   }
   // F-100 — a 200 with a NON-ARRAY body (an error envelope, a gateway page) must not
   // read as "zero seats". This is the reproduced case: {seats:500} must survive it.

@@ -7249,7 +7249,13 @@ resolver.define("getAiUsage", async ({ context }) => {
     // Admin-panel opens are also where the seat scan is TRIGGERED (fire-and-forget,
     // 24h-throttled) — never from an inference path. This read uses whatever the last
     // completed scan left behind.
-    maybeRefreshSeatSnapshot();
+    // AWAITED, deliberately (F-102): what is awaited is only the START MARKER — one KVS
+    // write — and the multi-page scan runs detached behind it. The marker is the row the
+    // 24h throttle reads, so it must be DURABLE before this resolver returns; a container
+    // frozen at return used to leave no row at all and the next cold container restarted
+    // the whole scan. Wrapped because a marker we could not write is not worth an error
+    // page on the usage meter.
+    try { await maybeRefreshSeatSnapshot(); } catch (e) { /* the snapshot is best-effort */ }
     // F-099 — a faulted seat read is "unknown", not "100 seats": the panel shows no seat
     // count and NO allowance block rather than a ceiling computed from a number that was
     // never read (which is what tells an admin "Sonnet 5 paused" for the wrong reason).
@@ -11147,19 +11153,29 @@ const readSeatCount = async () => {
 
 const SEAT_MAX_PAGES = 10;
 
+/**
+ * Start (at most once a day) the seat scan. Returns a promise that resolves once the
+ * START MARKER is durable; the multi-page scan itself runs DETACHED behind it.
+ *
+ * The caller (getAiUsage, the only one) AWAITS this — one KVS write, well inside the
+ * 25s resolver budget — and does NOT await the scan (F-102). Awaiting the marker is
+ * what actually closes the re-run loop: the marker was itself two awaited KVS ops
+ * inside a fire-and-forget promise, so a container frozen at resolver return could
+ * still leave NO row and the next cold container restarted the whole scan.
+ */
 const maybeRefreshSeatSnapshot = () => {
   // Per-container throttle first (free), then the stored `at` (authoritative).
-  if (Date.now() - _seatRefreshStartedAt < SEAT_SNAPSHOT_MAX_AGE_MS) return;
+  if (Date.now() - _seatRefreshStartedAt < SEAT_SNAPSHOT_MAX_AGE_MS) return Promise.resolve(false);
   _seatRefreshStartedAt = Date.now();
-  Promise.resolve().then(async () => {
-    // TWO rules here, both paid for (F-092/F-094):
+  return Promise.resolve().then(async () => {
+    // TWO rules here, both paid for (F-092/F-094/F-102):
     //
-    // 1. A MARKER IS WRITTEN BEFORE THE SCAN, not only after it. This is started
-    //    fire-and-forget from a resolver that has already RETURNED, so the container
-    //    can be frozen or torn down mid-scan; an outcome-only marker leaves no row at
-    //    all and the next cold container starts the whole multi-page scan again — the
-    //    re-run loop F-081 was meant to close. The start marker carries `at`, so the
-    //    24h throttle holds even if this invocation never finishes.
+    // 1. A MARKER IS WRITTEN BEFORE THE SCAN, and the CALLER AWAITS IT. The scan runs
+    //    detached from a resolver that has already RETURNED, so the container can be
+    //    frozen or torn down mid-scan; an outcome-only marker leaves no row at all and
+    //    the next cold container starts the whole multi-page scan again — the re-run
+    //    loop F-081 was meant to close. The start marker carries `at`, so the 24h
+    //    throttle holds even if the scan never finishes.
     //
     // 2. A GOOD SEAT COUNT IS NEVER REPLACED BY null. A 429 on page 3 used to write
     //    {seats:null}, readSeatCount then returned null and a 500-seat site fell to the
@@ -11172,11 +11188,19 @@ const maybeRefreshSeatSnapshot = () => {
     let prevSeats = null;
     try {
       const snap = await storage.get(SEAT_SNAPSHOT_KEY);
-      if (snap && snap.at && Date.now() - snap.at < SEAT_SNAPSHOT_MAX_AGE_MS) return;
+      if (snap && snap.at && Date.now() - snap.at < SEAT_SNAPSHOT_MAX_AGE_MS) return false;
       prevSeats = snap && Number(snap.seats) > 0 ? Number(snap.seats) : null;
       // START marker — see rule 1 above. Keeps the last good count readable while the
-      // scan runs, so the allowance never dips during a refresh.
+      // scan runs, so the allowance never dips during a refresh. AWAITED by the caller.
       await write({ seats: prevSeats, pending: true });
+    } catch (e) {
+      await write({ seats: prevSeats, error: String((e && e.message) || e).slice(0, 120) });
+      return false;
+    }
+    // From here on the caller is gone: the pages run DETACHED so the resolver returns
+    // after ONE KVS write. Every outcome still writes a row, and every failure still
+    // carries the previous count.
+    const scan = async () => {
       let seats = 0;
       let startAt = 0;
       // Page until an EMPTY page or SEAT_MAX_PAGES. A SHORT page must NOT end the scan:
@@ -11213,10 +11237,12 @@ const maybeRefreshSeatSnapshot = () => {
       // fallback → the $800-becomes-$200 downgrade F-092 was opened for, re-entered
       // through the SUCCESS arm. The previous count rides on, with the reason recorded.
       await write(seats > 0 ? { seats } : { seats: prevSeats ?? null, error: "empty-directory" });
-    } catch (e) {
+    };
+    scan().catch(async (e) => {
       await write({ seats: prevSeats, error: String((e && e.message) || e).slice(0, 120) });
-    }
-  }).catch(() => { /* never surfaces */ });
+    });
+    return true;
+  }).catch(() => false /* never surfaces */);
 };
 
 // Per-provider KVS key helpers

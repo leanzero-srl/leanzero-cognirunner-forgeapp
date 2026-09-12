@@ -252,8 +252,15 @@ const pruneOne = (arr, protectId = null) => {
   // by its own save, while saveMemoryCandidate still reported an id, so addMemory
   // answered success for a row that no longer existed.
   const eligible = protectId ? arr.filter((m) => m.id !== protectId) : arr;
-  // F-164: the pool is the AUTO rows. Full stop — no fallback to user rows.
-  const pool = eligible.filter((m) => m.source !== "user");
+  // F-173: ARCHIVED rows (disabled:true) are the FIRST candidates for ANY newcomer,
+  // whatever their source — an archived memory is filtered out of every prompt block,
+  // so evicting it loses nothing live, and it is the one disposal an admin has already
+  // asked for. This is also what makes "Archive" actually free capacity, so the tab's
+  // store-full banner and the cap chip agree with what the store will accept.
+  // F-164: after the archive, the pool is the AUTO rows. Full stop — no fallback to
+  // LIVE user rows; a hand-authored, enabled memory is never evicted by the app.
+  const archived = eligible.filter((m) => m.disabled === true);
+  const pool = archived.length > 0 ? archived : eligible.filter((m) => m.source !== "user");
   let victim = null;
   for (const m of pool) {
     if (!victim
@@ -264,7 +271,7 @@ const pruneOne = (arr, protectId = null) => {
     }
   }
   if (!victim) {
-    // Every remaining row is hand-authored → nothing may be evicted. The caller
+    // Every remaining row is hand-authored AND live → nothing may be evicted. The caller
     // must reject the candidate and leave the store untouched.
     if (eligible.length > 0) return { out: arr, victim: null, blocked: true };
     // Nothing but the protected row is left: it is the only thing that can still go

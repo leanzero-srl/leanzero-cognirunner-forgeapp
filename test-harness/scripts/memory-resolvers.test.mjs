@@ -98,6 +98,11 @@ await call("addMemory", { content: "a novel lesson that cannot be stored at the 
 ok(storage.__raw(MEMORY_STORE_FULL_KEY), "marker raised again");
 await call("updateMemory", { id: "u5", content: "a user lesson number 5 distinct, reworded" });
 ok(storage.__raw(MEMORY_STORE_FULL_KEY), "an EDIT that frees no capacity does not clear it");
+// F-173: ARCHIVING a row frees a slot (archived rows are the first eviction candidates),
+// so the marker must clear — the banner agrees with what the store will now accept.
+await call("updateMemory", { id: "u5", disabled: true });
+ok(storage.__raw(MEMORY_STORE_FULL_KEY) === undefined,
+  "F-173: ARCHIVING a row at the cap frees a slot and clears the marker");
 await call("deleteMemory", { id: "u5" });
 const stored = await call("addMemory", { content: "a brand new lesson that now fits", source: "test" });
 ok(stored.success === true && storage.__raw(MEMORY_STORE_FULL_KEY) === undefined,

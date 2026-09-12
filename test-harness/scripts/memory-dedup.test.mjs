@@ -14,7 +14,7 @@
 // an AUTO reinforce must NOT resurrect an admin's archive.
 import storage from "../lib/mock-kvs.mjs";
 import {
-  saveMemoryCandidate, normalizeMemoryText, buildMemoryBlock, pruneForSave, MEMORIES_KEY,
+  saveMemoryCandidate, normalizeMemoryText, buildMemoryBlock, pruneForSave, MEMORIES_KEY, MAX_MEMORIES,
 } from "../../src/memories.js";
 
 let pass = 0, fail = 0;
@@ -183,6 +183,28 @@ if (atCap.stored) {
   ok(post.length === 200, "a rejected candidate leaves the store untouched");
 }
 
+
+// === F-173: an ARCHIVED row is the FIRST eviction candidate, whatever its source ===
+// An all-user store at the cap with ONE archived row: an auto (fix) candidate is stored and
+// the archived row is what gives way — archived rows are filtered out of every prompt block,
+// so nothing live is lost, and "Archive" becomes a real way to free capacity.
+{
+  const seed = [];
+  for (let i = 0; i < MAX_MEMORIES; i++) {
+    seed.push({
+      id: `u${i}`, content: `a curated user lesson number ${i} distinct`, source: "user",
+      confidence: 1.0, reinforcements: 5, disabled: i === 42,
+      createdAt: "2026-01-01T00:00:00Z", updatedAt: `2026-01-01T00:00:${String(i % 60).padStart(2, "0")}Z`,
+    });
+  }
+  reset(seed);
+  const r = await saveMemoryCandidate({ content: "a novel lesson learned while fixing generated code", source: "fix", confidence: 0.2 });
+  ok(r.stored === true && r.id, `F-173: the fix candidate is STORED at an all-user cap holding one archived row (got ${JSON.stringify({ stored: r.stored, reason: r.reason })})`);
+  ok(JSON.stringify(r.evicted) === JSON.stringify(["u42"]), `F-173: the ARCHIVED row is the one evicted (got ${JSON.stringify(r.evicted)})`);
+  const after = load();
+  ok(after.length === MAX_MEMORIES && !after.some((m) => m.id === "u42"), "the archived row is gone and the cap holds");
+  ok(after.filter((m) => m.source === "user").length === MAX_MEMORIES - 1, "no LIVE hand-authored memory was touched");
+}
 
 console.log(`\nmemory-dedup: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

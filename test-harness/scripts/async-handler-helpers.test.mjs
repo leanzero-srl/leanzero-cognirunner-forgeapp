@@ -194,7 +194,10 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   const m = asyncSrc.match(/const currentEditionAsync = async \(\) => \{[\s\S]*?\n\};/);
   ok(!!m, "found currentEditionAsync");
   const b = m ? m[0] : "";
-  ok(/getAppContext\(\)\?\.license/.test(b), "it tries getAppContext().license first");
+  // F-082/F-087: a LIVE context wins even when its `license` is null; the snapshot is
+  // only for a runtime that could not see the licence at all, and only when ACTIVE+advanced.
+  ok(/"license" in ctx/.test(b), "it trusts a live getAppContext() license read first");
+  ok(/snap\.active === true && snap\.edition === "advanced"/.test(b), "only an ACTIVE advanced snapshot is honoured");
   ok(/EDITION_SNAPSHOT_KEY/.test(b), "it falls back to the KVS snapshot written by the workflow runtimes");
   ok(/return "standard";/.test(b), "Standard is the floor");
   ok((b.match(/catch \(e\)/g) || []).length >= 2, "every read is wrapped — an edition fault never kills a queued job");

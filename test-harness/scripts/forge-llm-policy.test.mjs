@@ -78,7 +78,8 @@ ok(!/FORGE_LLM_MODELS\s*=/.test(codeOnly), "src/index.js does not redefine FORGE
   ok(i > 0, "found getOpenAIModelFromKVS");
   const b = codeOnly.slice(i, i + 1400);
   ok(/clampForgeLlmModel\(edition, savedModel\)/.test(b), "getOpenAIModelFromKVS clamps the saved model by edition");
-  ok(/clamped: savedModel !== effective/.test(b), "it reports `clamped` so the panel can say the saved model was downgraded");
+  // F-078: `clamped` needs a SAVED model — with nothing saved there is no downgrade to report.
+  ok(/clamped: !!savedModel && savedModel !== effective/.test(b), "it reports `clamped` only when a SAVED model was downgraded");
   ok(/edition,/.test(b), "it returns the edition");
 }
 {
@@ -138,7 +139,12 @@ ok(/rest\/api\/3\/users\/search/.test(codeOnly), "seats are counted from /rest/a
   const b = m ? m[0] : "";
   ok(!/^const maybeRefreshSeatSnapshot = async/.test(b), "the seat refresh is NOT async at the call site — nothing awaits it");
   ok(/u\.active === true && u\.accountType === "atlassian"/.test(b), "only active Atlassian accounts count as seats");
-  ok(/if \(!resp\.ok\) return;/.test(b), "a failed page keeps the PREVIOUS snapshot rather than writing a wrong one");
+  // F-081: a failed page must WRITE a marker row, not just return — otherwise every cold
+  // container restarts the scan. The count itself is still never overwritten with a wrong number.
+  ok(/seats: null, error/.test(b), "a failed page writes a {seats:null,error} marker so it cannot re-run for 24h");
+  ok(/await write\(\{ seats \}\)/.test(b), "a completed scan writes its count");
+  // F-080: a SHORT page is normal (Jira caps maxResults); only an empty page ends the scan.
+  ok(!/page\.length < SEAT_PAGE/.test(b), "a short page no longer truncates the scan");
 }
 {
   const m = codeOnly.match(/const getProviderConfig = async \(\) => \{[\s\S]*?\n\};/);
@@ -146,8 +152,11 @@ ok(/rest\/api\/3\/users\/search/.test(codeOnly), "seats are counted from /rest/a
   const b = m ? m[0] : "";
   ok(/edition: _cachedEditionId, allowance: _cachedAllowance/.test(b), "the memo returns edition + allowance on the CACHED path too");
   ok(/if \(provider === "atlassian"\)/.test(b), "the extra reads only happen for the vendor-billed provider");
-  ok(/forgeLlmAllowanceStatus\(state, allowanceUsdForSeats\(seats\)\)/.test(b), "the allowance is computed at refresh time");
-  ok(/maybeRefreshSeatSnapshot\(\);/.test(b) && !/await maybeRefreshSeatSnapshot/.test(b), "the seat refresh is fire-and-forget");
+  ok(/forgeLlmAllowanceStatus\(stateRes \|\| emptyState\(\), allowanceUsdForSeats\(seatsRes\)\)/.test(b), "the allowance is computed at refresh time");
+  // F-079: the seat SCAN no longer rides the transition path — it is triggered from the
+  // admin-panel resolvers (getAiUsage / checkLicense) only.
+  ok(!/maybeRefreshSeatSnapshot/.test(b), "the provider memo never starts a seat scan");
+  ok(/Promise\.all\(\[/.test(b), "the memo's three Forge-LLM reads go out in parallel");
   ok(/_cachedAllowance = null;/.test(b), "every failure path leaves the allowance null (no ceiling known → never 'hard')");
 }
 {
@@ -161,7 +170,10 @@ ok(/rest\/api\/3\/users\/search/.test(codeOnly), "seats are counted from /rest/a
   const b = codeOnly.slice(i, i + 1800);
   ok(/const model = \(result && result\.data && result\.data\.model\) \|\| configuredModel;/.test(b),
     "checkProviderHealth reports the EFFECTIVE (clamped) model");
-  ok(/clamped: model !== configuredModel/.test(b), "and says when it differs from the configured one");
+  // F-086: `clamped` is an EDITION verdict, never a compare against the id the provider echoed.
+  ok(/clampForgeLlmModel\(edition, configuredModel\) !== configuredModel/.test(b),
+    "and says when the EDITION refuses the configured model");
+  ok(!/clamped: model !== configuredModel/.test(b), "the provider-echo comparison is gone");
 }
 
 // =====================================================================================
@@ -177,7 +189,9 @@ ok(/export const getAgentModel = async \(\)/.test(codeOnly), "getAgentModel is e
   ok(/requireAdmin\(context\.accountId\)/.test(b), "saveAgentModel is admin-gated");
   ok(/FORGE_LLM_FRONTIER\.includes\(clean\)/.test(b), "on Forge LLM only the frontier ids are accepted");
   ok(/upgradeRequired\("forge-llm-frontier-models"\)/.test(b), "a Standard tenant gets the upgrade refusal");
-  ok(/clean\.length > 120/.test(b), "BYOK model ids are clamped to 120 chars server-side");
+  // F-084: the 120-char cap moved into normalizeModelId (src/shared/edition.js), shared
+  // with saveOpenAIModel — one home for what a legal model id is.
+  ok(/normalizeModelId\(payload && payload\.model\)/.test(b), "model ids are normalised server-side by the shared normaliser");
 }
 {
   const i = codeOnly.indexOf('resolver.define("getAgentModel"');

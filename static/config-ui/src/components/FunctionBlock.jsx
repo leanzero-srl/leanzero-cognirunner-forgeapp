@@ -56,6 +56,12 @@ const pollAsyncResult = (taskId) => new Promise((resolve) => {
     try {
       const res = await invoke("getAsyncTaskResult", { taskId });
       if (res.success) {
+        // F-129 — A CANCEL IS NOT A FAILURE. A tenant Stop-all epoch cancels the queued
+        // task and the poll answers { status: "error", error: "Cancelled", cancelled: true }
+        // — it NEVER answers status "cancelled" (same contract JobsTab documents at F-122).
+        // Must be checked BEFORE the status === "error" arm, which would otherwise render a
+        // red "generation failed" and let the caller clobber the editor with a template.
+        if (res.cancelled === true) { resolve({ success: false, cancelled: true, error: res.error || "Cancelled" }); return; }
         if (res.status === "done") { resolve(res.result); return; }
         if (res.status === "error") { resolve({ success: false, error: res.error }); return; }
         if (attempts < maxAttempts) { setTimeout(poll, 3000); return; }
@@ -211,6 +217,9 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
   // Non-blocking notice surfaced when AI code-gen failed and we fell back to a generic template.
   // Cleared by the user on the next Generate click or when they edit the code.
   const [generationFallback, setGenerationFallback] = useState(null);
+  // F-129 — set when a queued AI task was cancelled by a tenant Stop-all. Neutral slate
+  // note, NOT an error: nothing ran, nothing was written, the step is exactly as it was.
+  const [cancelledNote, setCancelledNote] = useState(null);
   // Fix-with-AI loop state
   const [fixing, setFixing] = useState(false);
   const [fixAttempts, setFixAttempts] = useState(0);
@@ -330,6 +339,7 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
     const token = genTokenRef.current;
     setIsGenerating(true);
     setGenerationFallback(null);
+    setCancelledNote(null);
     // A verdict earned by the OLD code must not stand against the new code.
     setTestResult(null);
     try {
@@ -356,6 +366,10 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
       // Stale resolution (user edited code / started another op / unmounted):
       // discard the result — never clobber the newer state.
       if (genTokenRef.current !== token) return;
+      // F-129 — cancelled by a tenant Stop-all: no AI ran, so there is nothing to show and
+      // nothing to fall back FROM. Falling through to the template branch below would
+      // overwrite the user's existing code with a generic stub over an operator's stop.
+      if (result && result.cancelled) { setCancelledNote("generate"); return; }
       if (result && result.success && result.code) {
         onUpdate({ code: result.code, generationMeta: compactMeta(result.meta) });
       } else {
@@ -478,6 +492,7 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
     setFixAttempts((n) => n + 1);
     setFixing(true);
     setMemorySaved(null);
+    setCancelledNote(null);
     try {
       const logs = failedResult?.logs || [];
       const firstError = logs.find((l) => /error|fail|exception|denied|invalid|timeout/i.test(l));
@@ -504,6 +519,13 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
         setFixing(false);
         return;
       }
+
+      // F-129 — cancelled by a tenant Stop-all. Leave the failing dry-run exactly as it
+      // was (no `fixError` stamped onto it, no fix-result card, no code replaced) so the
+      // user can simply press Fix with AI again once the stop is lifted.
+      // The cancelled attempt never reached the model, so it must not be charged against
+      // the 2-attempt auto-fix cap — refund it, or a Stop-all silently burns the budget.
+      if (result && result.cancelled) { setFixing(false); setFixAttempts((n) => Math.max(0, n - 1)); setCancelledNote("fix"); return; }
 
       if (result && result.success && result.code) {
         const preFixCode = functionData.code;
@@ -1048,6 +1070,18 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
           {!hasPrompt && (
             <span className="generate-hint">Describe what this step does to enable code generation</span>
           )}
+        </div>
+      )}
+
+      {/* F-129 — a tenant Stop-all cancelled the queued task. Neutral slate, not red:
+          this is an operator action, not a defect, and the step is untouched. */}
+      {cancelledNote && !isGenerating && !fixing && (
+        <div className="async-cancelled-note anim-rise">
+          <span className="acn-text">
+            <strong>{cancelledNote === "fix" ? "Fix cancelled." : "Generation cancelled."}</strong>{" "}
+            Cancelled — nothing was changed. Run it again when the stop is lifted.
+          </span>
+          <button className="acn-dismiss" onClick={() => setCancelledNote(null)} aria-label="Dismiss">&times;</button>
         </div>
       )}
 

@@ -659,6 +659,21 @@ function invoke(name, payload) {
   if (typeof window !== "undefined" && Array.isArray(window.__FAIL__) && window.__FAIL__.includes(name)) {
     return Promise.reject(new Error("Simulated network failure (harness __FAIL__)"));
   }
+  // F-129 — Stop-all CANCEL fixture. window.__ASYNC_CANCEL__ = true routes the four
+  // queueable AI resolvers down the async branch, and the poll then answers with the
+  // shape the tenant Stop-all epoch actually writes:
+  //   { status: "error", error: "Cancelled", cancelled: true }
+  // (an operator stop is NEVER reported as status "cancelled" — see JobsTab F-122).
+  // Surfaces exercised: FunctionBlock generate + fix, SkillEditor distill, ReviewPanel.
+  if (typeof window !== "undefined" && window.__ASYNC_CANCEL__) {
+    if (name === "generatePostFunctionCode" || name === "fixPostFunctionCode"
+      || name === "distillSkillFromStep" || name === "reviewConfig") {
+      return Promise.resolve({ success: true, async: true, taskId: "task-cancel" });
+    }
+    if (name === "getAsyncTaskResult" && payload && payload.taskId === "task-cancel") {
+      return Promise.resolve({ success: true, status: "error", error: "Cancelled", cancelled: true });
+    }
+  }
   // Optional resolver fixtures for targeted browser regressions; never bundled into production.
   if (typeof window !== "undefined" && window.__RESPONSES__) {
     window.__CALLS__ = window.__CALLS__ || [];

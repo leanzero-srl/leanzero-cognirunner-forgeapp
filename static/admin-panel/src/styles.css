@@ -1924,6 +1924,37 @@ html[data-color-mode="dark"] .alert-warning {
     .review-verdict-icon { flex-shrink: 0; font-size: 16px; }
     .review-verdict-text { flex: 1; }
 
+    /* F-129 — CANCELLED (tenant Stop-all) outcome for every queued-AI surface:
+       FunctionBlock generate + Fix with AI, SkillEditor distill, ReviewPanel review.
+       A cancel is an OPERATOR ACTION, not an AI failure, so it must never wear the red
+       error treatment — neutral slate, solid fill, white text (no washed-out tint, no
+       left accent rail). Dark variant is one shade lighter, per the hue map. */
+    .async-cancelled-note {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      margin: 8px 0;
+      padding: 8px 10px;
+      background: #475569;
+      border: none;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      color: #ffffff;
+    }
+    .async-cancelled-note .acn-text { flex: 1; }
+    .async-cancelled-note .acn-dismiss {
+      background: transparent;
+      border: none;
+      cursor: pointer;
+      color: #ffffff;
+      font-size: 16px;
+      line-height: 1;
+      padding: 0;
+    }
+    html[data-color-mode="dark"] .async-cancelled-note { background: #64748b; }
+
+
     .review-items {
       margin-top: 8px;
       display: flex;

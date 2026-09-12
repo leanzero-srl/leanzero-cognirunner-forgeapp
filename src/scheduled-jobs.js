@@ -380,6 +380,19 @@ const scheduledRunIdentity = (job, scheduledFor, taskId) => {
   return fireIdentity(job.schedule.cron, ms, job.schedule.timeZone);
 };
 
+/**
+ * Claim ONE job delivery. The claim IDENTITY lives here and nowhere else: the queue
+ * consumer's fail-closed refusal path (async-handler.js) takes the SAME claim before
+ * it writes a failure log + stats receipt, so a redelivered event cannot count the
+ * same refusal twice. Returns false only on a real conflict (claimRuleExecution keeps
+ * a KVS infrastructure fault fail-open).
+ */
+export const claimJobRun = (job, params, taskId) => {
+  const { scheduledFor, manual } = params || {};
+  const claimKey = EXEC_CLAIM_PREFIX + safeKeyPart(manual ? `${job.id}:manual:${taskId}` : `${job.id}:${scheduledRunIdentity(job, scheduledFor, taskId)}`);
+  return claimRuleExecution(storage, claimKey, EXEC_CLAIM_TTL, "job");
+};
+
 /** Queue consumer entry: taskType "scheduledjob" (polled by "Run now"). */
 export const executeScheduledJobTask = async (params, taskId) => {
   const m = await idx();
@@ -394,8 +407,7 @@ export const executeScheduledJobTask = async (params, taskId) => {
   // the tick planned (fireIdentity: the local minute for a wall-clock schedule, the
   // UTC instant for a real-time one, so a fall-back hour is one run and `*/15` keeps
   // both), a manual run by its task id. The atomic claim precedes every script/AI write.
-  const claimKey = EXEC_CLAIM_PREFIX + safeKeyPart(manual ? `${job.id}:manual:${taskId}` : `${job.id}:${scheduledRunIdentity(job, scheduledFor, taskId)}`);
-  if (!(await claimRuleExecution(storage, claimKey, EXEC_CLAIM_TTL, "job"))) {
+  if (!(await claimJobRun(job, params, taskId))) {
     console.log(`[job] duplicate delivery of ${taskId} suppressed`);
     return { skipped: true, reason: "duplicate delivery" };
   }

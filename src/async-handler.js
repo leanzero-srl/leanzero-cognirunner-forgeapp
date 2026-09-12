@@ -89,8 +89,8 @@ import {
   buildMemoryBlock,
   defangFence,
 } from "./memories.js";
-import { executeListenerTask, getListener } from "./listeners.js";
-import { executeScheduledJobTask, getJob } from "./scheduled-jobs.js";
+import { executeListenerTask, getListener, claimListenerRun } from "./listeners.js";
+import { executeScheduledJobTask, getJob, claimJobRun } from "./scheduled-jobs.js";
 import { STATS_TASK_TYPE, processRuleStatsReceipt, statsReceipt } from "./rule-stats.js";
 import { providerKeySlot, providerModelSlot } from "./shared/provider-slots.js";
 
@@ -951,6 +951,84 @@ const UNPOLLED_TASKS = new Set(["postfunction", "memory_distill", "listener", "p
 const UNPOLLED_LOG_TYPE = { postfunction: "postfunction", listener: "listener" };
 
 /**
+ * A queued listener / scheduled-job run REFUSED because the provider read faulted
+ * (F-121: these two types have no NO_PROVIDER_ERROR guard of their own, so the
+ * consumer fails CLOSED for them). Called from OUTSIDE the budget gate's try, whose
+ * catch is deliberately fail-OPEN ("run now") — a throw in here used to unwind into
+ * it and the job ran anyway (F-134). Every write is in its own try for the same
+ * reason: no fault on this path may reach a catch that resumes the run, and no fault
+ * on one write may swallow the next.
+ *
+ * `ruleRow` is the row the gate already read for its `usesAi` decision — reading it
+ * a second time in front of storeLog cost the whole log entry on a KVS fault (F-135).
+ */
+const refuseQueuedRunWithoutProvider = async (taskType, taskId, params, ruleRow, ttl) => {
+  const isListener = taskType === "listener";
+  console.error(`[budget] no provider for ${taskType} (${taskId}) — failing closed before the run`);
+  if (!UNPOLLED_TASKS.has(taskType)) {
+    try {
+      await storage.set(`${TASK_PREFIX}${taskId}`, { status: "error", error: NO_PROVIDER_ERROR }, ttl);
+    } catch (e) { console.warn("no-provider status row failed:", e && e.message); }
+  }
+
+  // F-136 — the entry below carries a STATS RECEIPT, and rule stats must move exactly
+  // ONCE per delivery. Take the SAME execution claim a real run takes (lst_exec: /
+  // job_exec:, identity owned by listeners.js / scheduled-jobs.js) before writing it,
+  // so a redelivered event finds the claim held and does not count a second failure.
+  // A lost claim means this delivery is already recorded: skip the log and the receipt.
+  let claimed = true;
+  if (ruleRow) {
+    try {
+      claimed = isListener ? await claimListenerRun(params, taskId) : await claimJobRun(ruleRow, params, taskId);
+    } catch (e) { console.warn("no-provider claim failed (continuing):", e && e.message); }
+  }
+
+  if (claimed) {
+    // F-128/F-132 — this entry must look like every other failure entry of its kind:
+    // a stats receipt (without one the Listeners/Jobs list keeps showing the previous
+    // run's green dot for a rule that did not run) and, for a job, the cron + timezone
+    // in `fieldId` — the cell the admin panel labels "Schedule". If the row is gone the
+    // rule was deleted: log without a receipt (the receipt's generation guard needs
+    // `createdAt` and would drop it anyway).
+    const cron = ruleRow?.schedule?.cron ? `${ruleRow.schedule.cron} ${ruleRow.schedule.timeZone}` : "schedule";
+    const entry = {
+      type: isListener ? "listener" : "scheduledjob",
+      source: "async",
+      issueKey: params?.ctx?.issueKey || "(no issue)",
+      fieldId: isListener ? (params?.eventType || "") : cron,
+      isValid: false,
+      decision: "ERROR",
+      reason: `Run stopped before it started: ${NO_PROVIDER_ERROR}`,
+      recommendation: "Check the AI provider setting in CogniRunner Settings, then re-trigger the rule or run the job manually.",
+      executionTimeMs: 0,
+      ruleId: params?.listenerId || params?.jobId || null,
+      ruleName: ruleRow?.name || params?.listenerName || params?.jobName || null,
+      ruleWorkflow: null,
+      eventType: params?.eventType,
+      mode: ruleRow?.mode,
+      ...(isListener ? {} : { manual: !!params?.manual, scheduledFor: params?.scheduledFor || null }),
+    };
+    // F-135 — the receipt is a nice-to-have; the LOG is the user-visible trace. Build
+    // the receipt in its own try so a fault here still leaves storeLog running with a
+    // null receipt instead of dropping the entry with it.
+    let receipt = null;
+    try {
+      if (ruleRow) receipt = statsReceipt(isListener ? "listener" : "scheduledjob", ruleRow, entry, isListener ? params?.ctx?.issueKey || null : null);
+    } catch (e) { console.warn("no-provider receipt build failed:", e && e.message); }
+    try {
+      const { storeLog } = await import("./index");
+      await storeLog(entry, { statsReceipt: receipt });
+    } catch (e) { console.warn("no-provider log failed:", e && e.message); }
+  } else {
+    console.log(`[budget] ${taskType} (${taskId}) refusal already recorded by an earlier delivery — no second log or receipt`);
+  }
+
+  try {
+    await updateAsyncJob(taskId, { status: "error", finishedAt: new Date().toISOString(), error: NO_PROVIDER_ERROR }, JOB_TTL_DONE);
+  } catch (e) { console.warn("no-provider job row update failed:", e && e.message); }
+};
+
+/**
  * Main async event handler. Routes to the correct task handler.
  */
 export async function handler(event) {
@@ -1056,11 +1134,21 @@ export async function handler(event) {
   let budgetEstimate = 0;
   let budgetProvider = null;
   let budgetReserveMs = 0; // the reservation's minute — the release must hit the SAME bucket
+  // F-134 — the fail-CLOSED decision for listener/scheduledjob is made INSIDE the gate
+  // try but acted on AFTER it. This try's catch is deliberately fail-OPEN ("run now"),
+  // so a throw from any write on the refusal path used to unwind into it and the job
+  // RAN on a provider this consumer had just proved does not exist. The flag is sticky:
+  // once set, no path below runs the task.
+  let refuseNoProvider = false;
+  // F-135 — the rule row read here for `usesAi` is the SAME row the refusal log and its
+  // receipt need. Read once and pass it down; the old second read sat in front of
+  // storeLog inside one try, so a KVS fault on it lost the execution-log entry too.
+  let ruleRow = null;
   try {
     let usesAi = false;
     if (taskType === "postfunction") usesAi = !/static/.test(String(params?.config?.type || ""));
-    else if (taskType === "listener") { const row = await getListener(params?.listenerId); usesAi = !!row && row.mode === "agent"; }
-    else if (taskType === "scheduledjob") { const row = await getJob(params?.jobId); usesAi = !!row && row.mode === "agent"; }
+    else if (taskType === "listener") { ruleRow = await getListener(params?.listenerId); usesAi = !!ruleRow && ruleRow.mode === "agent"; }
+    else if (taskType === "scheduledjob") { ruleRow = await getJob(params?.jobId); usesAi = !!ruleRow && ruleRow.mode === "agent"; }
     else usesAi = ["review", "codegen", "fixcode", "skilldistill", "memory_distill"].includes(taskType);
     if (usesAi) {
       budgetProvider = (await getProviderConfig()).provider;
@@ -1078,52 +1166,13 @@ export async function handler(event) {
         // on a provider this consumer believes does not exist. Fail CLOSED instead —
         // the same rule the other five task bodies already follow.
         if (taskType === "listener" || taskType === "scheduledjob") {
-          console.error(`[budget] no provider for ${taskType} (${taskId}) — failing closed before the run`);
-          if (!UNPOLLED_TASKS.has(taskType)) {
-            await storage.set(`${TASK_PREFIX}${taskId}`, { status: "error", error: NO_PROVIDER_ERROR }, ttl);
-          }
-          try {
-            const { storeLog } = await import("./index");
-            const isListener = taskType === "listener";
-            // F-128/F-132 — this entry must look like every other failure entry of its
-            // kind: it carries a STATS RECEIPT (rule stats move ONLY on a receipt, so
-            // without one the Listeners/Jobs list keeps showing the previous run's green
-            // dot for a rule that did not run), and, for a job, the cron + timezone in
-            // `fieldId` — the cell the admin panel labels "Schedule". Both need the rule
-            // ROW, which the queue params do not carry; one KVS read on a failure path is
-            // cheap. If the row is gone the rule was deleted: log without a receipt (the
-            // receipt's generation guard needs `createdAt` and would drop it anyway).
-            const row = isListener ? await getListener(params?.listenerId) : await getJob(params?.jobId);
-            const cron = row?.schedule?.cron ? `${row.schedule.cron} ${row.schedule.timeZone}` : "schedule";
-            const entry = {
-              type: isListener ? "listener" : "scheduledjob",
-              source: "async",
-              issueKey: params?.ctx?.issueKey || "(no issue)",
-              fieldId: isListener ? (params?.eventType || "") : cron,
-              isValid: false,
-              decision: "ERROR",
-              reason: `Run stopped before it started: ${NO_PROVIDER_ERROR}`,
-              recommendation: "Check the AI provider setting in CogniRunner Settings, then re-trigger the rule or run the job manually.",
-              executionTimeMs: 0,
-              ruleId: params?.listenerId || params?.jobId || null,
-              ruleName: row?.name || params?.listenerName || params?.jobName || null,
-              ruleWorkflow: null,
-              eventType: params?.eventType,
-              mode: row?.mode,
-              ...(isListener ? {} : { manual: !!params?.manual, scheduledFor: params?.scheduledFor || null }),
-            };
-            await storeLog(entry, {
-              statsReceipt: row
-                ? statsReceipt(isListener ? "listener" : "scheduledjob", row, entry, isListener ? params?.ctx?.issueKey || null : null)
-                : null,
-            });
-          } catch (e) { console.warn("no-provider log failed:", e && e.message); }
-          await updateAsyncJob(taskId, { status: "error", finishedAt: new Date().toISOString(), error: NO_PROVIDER_ERROR }, JOB_TTL_DONE);
-          return;
+          // Decide here, ACT outside this try (F-134) — see refuseQueuedRunWithoutProvider.
+          refuseNoProvider = true;
+        } else {
+          console.warn(`[budget] no provider for ${taskType} (${taskId}) — gate skipped, nothing reserved`);
+          budgetEstimate = 0;
+          budgetProvider = null;
         }
-        console.warn(`[budget] no provider for ${taskType} (${taskId}) — gate skipped, nothing reserved`);
-        budgetEstimate = 0;
-        budgetProvider = null;
       } else if (!gate.allow) {
         const until = new Date(Date.now() + gate.delaySeconds * 1000).toISOString();
         const firstEnqueuedAt = params?.firstEnqueuedAt || enqAt || new Date().toISOString();
@@ -1143,10 +1192,13 @@ export async function handler(event) {
         console.log(`[budget] deferred ${taskType} (${taskId}) ${gate.delaySeconds}s — minute at ${gate.used + gate.reserved}/${gate.budget} tokens, needs ~${budgetEstimate} (${budgetProvider}, deferral ${budgetDeferrals + 1})`);
         return;
       }
-      if (gate.forced) console.warn(`[budget] ${taskType} (${taskId}) ran after the deferral cap — budget still full`);
-      if (budgetProvider) {
-        budgetReserveMs = Date.now();
-        await bumpAiBudgetBucket(budgetProvider, { reserved: budgetEstimate }, budgetReserveMs);
+      // Nothing is reserved for a run that is about to be refused (F-134).
+      if (!refuseNoProvider) {
+        if (gate.forced) console.warn(`[budget] ${taskType} (${taskId}) ran after the deferral cap — budget still full`);
+        if (budgetProvider) {
+          budgetReserveMs = Date.now();
+          await bumpAiBudgetBucket(budgetProvider, { reserved: budgetEstimate }, budgetReserveMs);
+        }
       }
     }
   } catch (e) {
@@ -1155,6 +1207,13 @@ export async function handler(event) {
     if (budgetProvider && budgetEstimate && budgetReserveMs) { try { await bumpAiBudgetBucket(budgetProvider, { reserved: -budgetEstimate }, budgetReserveMs); } catch { /* best-effort */ } }
     budgetEstimate = 0;
   }
+
+  // F-134 — acted on OUTSIDE the fail-open catch above, and sticky: nothing below runs.
+  if (refuseNoProvider) {
+    await refuseQueuedRunWithoutProvider(taskType, taskId, params, ruleRow, ttl);
+    return;
+  }
+
   resetInvocationTokens();
 
   const startedAt = new Date().toISOString();

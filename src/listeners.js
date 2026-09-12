@@ -626,6 +626,20 @@ export const runListener = async ({ listener, eventType, event, ctx, deadline = 
   };
 };
 
+/**
+ * Claim ONE listener delivery. The claim IDENTITY lives here and nowhere else:
+ * the queue consumer's fail-closed refusal path (async-handler.js) takes the SAME
+ * claim before it writes a failure log + stats receipt, so a redelivered event
+ * cannot count the same refusal twice. Returns false only on a real conflict —
+ * a KVS infrastructure fault still permits the run (see claimRuleExecution).
+ */
+export const claimListenerRun = (params, taskId) => claimRuleExecution(
+  storage,
+  EXEC_CLAIM_PREFIX + safeKeyPart(taskId || `${params?.listenerId}:${params?.enqueuedAt || ""}`),
+  EXEC_CLAIM_TTL,
+  "listener",
+);
+
 /** Queue consumer entry: taskType "listener". */
 export const executeListenerTask = async (params, taskId) => {
   const m = await idx();
@@ -638,8 +652,7 @@ export const executeListenerTask = async (params, taskId) => {
   }
   // At-least-once delivery: atomically claim before the AI gate or sandbox. A
   // crash after claiming is not replayed with already-completed writes intact.
-  const claimKey = EXEC_CLAIM_PREFIX + safeKeyPart(taskId || `${listenerId}:${params.enqueuedAt || ""}`);
-  if (!(await claimRuleExecution(storage, claimKey, EXEC_CLAIM_TTL, "listener"))) {
+  if (!(await claimListenerRun(params, taskId))) {
     console.log(`[listener] duplicate delivery of ${taskId} suppressed`);
     return { skipped: true, reason: "duplicate delivery" };
   }

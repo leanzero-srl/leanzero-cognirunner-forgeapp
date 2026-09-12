@@ -496,9 +496,9 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   // The consumer honours the skip: no reservation, no settle to balance.
   const gateBlock = asyncSrc.match(/if \(usesAi\) \{[\s\S]*?\n    \}\n  \} catch \(e\) \{/)[0];
   ok(/if \(gate\.skipped === "no-provider"\) \{/.test(gateBlock), "the consumer branches on the skip");
-  ok(/budgetEstimate = 0;\n        budgetProvider = null;/.test(gateBlock),
+  ok(/budgetEstimate = 0;\s*\n\s*budgetProvider = null;/.test(gateBlock),
     "…zeroing the estimate and the provider so the settle has nothing to release");
-  ok(/if \(budgetProvider\) \{\n        budgetReserveMs = Date\.now\(\);/.test(gateBlock),
+  ok(/if \(budgetProvider\) \{\s*\n\s*budgetReserveMs = Date\.now\(\);/.test(gateBlock),
     "the reservation itself is made only when a provider is known");
   // The settle half was already guarded — assert it stays that way (it is the other
   // end of the same invariant: reserve and release must agree on the provider).
@@ -562,6 +562,14 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
 // F-121 — a null FRESH provider read must FAIL listener/scheduledjob, never skip the gate.
 // They have no NO_PROVIDER_ERROR guard of their own and reach AI through agent-runner's
 // 30s-memoised provider, so skipping would run them unpaced and unreserved.
+//
+// F-134 — the DECISION stays inside the budget-gate try; the ACTION moved out of it. That
+// try's catch is fail-OPEN ("run now"), so every write the refusal used to do inline could
+// throw straight into it and the job RAN on a provider that does not exist.
+// F-135 — the rule ROW is read ONCE (for `usesAi`) and passed down; the receipt build is
+// its own try so a fault there cannot take the execution-log entry with it.
+// F-136 — the refusal takes the SAME execution claim a real run takes, so a redelivered
+// event cannot write a second stats receipt (double-counted errorCount).
 // =====================================================================================
 {
   const gateBlock = asyncSrc.match(/if \(gate\.skipped === "no-provider"\) \{[\s\S]*?\} else if \(!gate\.allow\) \{/)[0];
@@ -569,29 +577,64 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
     "the two agent-runner task types are handled before the skip");
   ok(gateBlock.indexOf('taskType === "listener"') < gateBlock.indexOf("gate skipped, nothing reserved"),
     "…BEFORE the skip that zeroes the estimate");
-  ok(/error: NO_PROVIDER_ERROR/.test(gateBlock), "…failing with the one shared message constant");
-  ok(/return;/.test(gateBlock), "…and returning, so agent-runner never runs");
-  ok(/const entry = \{/.test(gateBlock) && /type: isListener \? "listener" : "scheduledjob"/.test(gateBlock),
-    "…leaving a visible execution-log entry under a known badge type (F-119)");
-  ok(/status: "error", finishedAt: new Date\(\)\.toISOString\(\), error: NO_PROVIDER_ERROR/.test(gateBlock),
-    "…and a failed job row");
-  ok(/!UNPOLLED_TASKS\.has\(taskType\)/.test(gateBlock), "…and the poll row only for the polled one (scheduledjob)");
+  // F-134 — inside the try the arm ONLY sets the sticky flag. No storage, no log, no return.
+  ok(/refuseNoProvider = true;/.test(gateBlock), "…by setting the sticky refusal flag");
+  ok(!/storage\.set|storeLog|updateAsyncJob|return;/.test(gateBlock.split('refuseNoProvider = true;')[0].split('if (taskType === "listener"')[1] || ""),
+    "…and does NO write inside the fail-open try");
+  ok(/let refuseNoProvider = false;/.test(asyncSrc) && asyncSrc.indexOf("let refuseNoProvider = false;") < asyncSrc.indexOf("// ===== TOKEN-BUDGET GATE =====") + asyncSrc.slice(asyncSrc.indexOf("// ===== TOKEN-BUDGET GATE =====")).indexOf("try {"),
+    "the flag is declared OUTSIDE the gate try, so the catch cannot reset it");
+  const afterCatch = asyncSrc.match(/\n  if \(refuseNoProvider\) \{[\s\S]*?\n  \}/)[0];
+  ok(/await refuseQueuedRunWithoutProvider\(taskType, taskId, params, ruleRow, ttl\);/.test(afterCatch)
+    && /\n    return;/.test(afterCatch), "the refusal is acted on AFTER the try/catch and returns");
+  ok(asyncSrc.indexOf(afterCatch) > asyncSrc.indexOf("[budget] gate skipped for"),
+    "…strictly after the fail-open catch");
+  ok(asyncSrc.indexOf(afterCatch) < asyncSrc.indexOf("const taskHandler2 = null") + 1 || asyncSrc.indexOf(afterCatch) < asyncSrc.indexOf("const result = await taskHandler(params, taskId);"),
+    "…and before anything that could execute the task");
+  ok(/if \(!refuseNoProvider\) \{\n\s*if \(gate\.forced\)/.test(asyncSrc),
+    "nothing is reserved on the ledger for a run about to be refused");
 
-  // F-128 — rule stats move ONLY on a statsReceipt. Without one this refused run never
-  // increments errorCount and the Jobs/Listeners list keeps the previous run's green dot.
-  ok(/statsReceipt: row$/m.test(gateBlock) || /statsReceipt: row\b/.test(gateBlock),
-    "the refused run carries a stats receipt (errorCount/lastStatus move)");
-  ok(/statsReceipt\(isListener \? "listener" : "scheduledjob", row, entry/.test(gateBlock),
-    "…built from the shared rule-stats helper with the rule ROW (generation guard needs createdAt)");
-  ok(/: null,/.test(gateBlock), "…and null when the row is gone — never a receipt the guard would drop");
+  const helperSrc = asyncSrc.match(/const refuseQueuedRunWithoutProvider = async \(taskType, taskId, params, ruleRow, ttl\) => \{[\s\S]*?\n\};/)[0];
+  ok(/error: NO_PROVIDER_ERROR/.test(helperSrc), "…failing with the one shared message constant");
+  ok(/const entry = \{/.test(helperSrc) && /type: isListener \? "listener" : "scheduledjob"/.test(helperSrc),
+    "…leaving a visible execution-log entry under a known badge type (F-119)");
+  ok(/status: "error", finishedAt: new Date\(\)\.toISOString\(\), error: NO_PROVIDER_ERROR/.test(helperSrc),
+    "…and a failed job row");
+  ok(/!UNPOLLED_TASKS\.has\(taskType\)/.test(helperSrc), "…and the poll row only for the polled one (scheduledjob)");
+  // F-134 — every write in the helper is individually wrapped.
+  ok((helperSrc.match(/try \{/g) || []).length >= 5, "every write on the refusal path sits in its OWN try");
+  // F-135 — the row is NOT re-read here.
+  ok(!/getListener\(|getJob\(/.test(helperSrc), "the helper never re-reads the rule row (it is passed in)");
+  ok(/ruleRow \?\.?/.test(helperSrc) || /ruleRow\?\./.test(helperSrc), "…it uses the row the budget gate already read");
+  ok(/else if \(taskType === "listener"\) \{ ruleRow = await getListener/.test(asyncSrc)
+    && /else if \(taskType === "scheduledjob"\) \{ ruleRow = await getJob/.test(asyncSrc),
+    "…and that read is the SAME one `usesAi` uses — one read, one home");
+
+  // F-128 — rule stats move ONLY on a statsReceipt.
+  ok(/statsReceipt\(isListener \? "listener" : "scheduledjob", ruleRow, entry/.test(helperSrc),
+    "the refused run carries a stats receipt built from the shared rule-stats helper");
   ok(/import \{ STATS_TASK_TYPE, processRuleStatsReceipt, statsReceipt \} from "\.\/rule-stats\.js";/.test(asyncSrc),
     "…imported, not re-implemented");
-  // F-132 — the job half of `fieldId` is the cron + timezone, the same shape every other
-  // scheduledjob entry writes (admin-panel labels that column "Schedule"), not "schedule".
-  ok(/row\?\.schedule\?\.cron \? `\$\{row\.schedule\.cron\} \$\{row\.schedule\.timeZone\}` : "schedule"/.test(gateBlock),
+  // F-132 — the job half of `fieldId` is the cron + timezone.
+  ok(/ruleRow\?\.schedule\?\.cron \? `\$\{ruleRow\.schedule\.cron\} \$\{ruleRow\.schedule\.timeZone\}` : "schedule"/.test(helperSrc),
     "the job entry's fieldId is '<cron> <tz>', with 'schedule' only as the row-is-gone fallback");
-  ok(/fieldId: isListener \? \(params\?\.eventType \|\| ""\) : cron,/.test(gateBlock),
+  ok(/fieldId: isListener \? \(params\?\.eventType \|\| ""\) : cron,/.test(helperSrc),
     "…and the listener half stays the eventType, matching listeners.js");
+  // F-136 — the claim identity is imported, never retyped here.
+  ok(/import \{ executeListenerTask, getListener, claimListenerRun \} from "\.\/listeners\.js";/.test(asyncSrc)
+    && /import \{ executeScheduledJobTask, getJob, claimJobRun \} from "\.\/scheduled-jobs\.js";/.test(asyncSrc),
+    "the refusal claim comes from the rule modules that own the claim identity");
+  ok(!/["`']lst_exec:|["`']job_exec:/.test(asyncSrc), "…and the consumer never retypes a claim key prefix");
+  const listenersSrc = readFileSync(path.join(here, "../../src/listeners.js"), "utf8");
+  const jobsSrc = readFileSync(path.join(here, "../../src/scheduled-jobs.js"), "utf8");
+  ok((listenersSrc.match(/EXEC_CLAIM_PREFIX \+ safeKeyPart/g) || []).length === 1,
+    "listeners.js builds its exec claim key in exactly ONE place");
+  ok((jobsSrc.match(/EXEC_CLAIM_PREFIX \+ safeKeyPart/g) || []).length === 1,
+    "scheduled-jobs.js builds its exec claim key in exactly ONE place");
+  ok(/if \(!\(await claimListenerRun\(params, taskId\)\)\)/.test(listenersSrc),
+    "…and the real listener run takes the claim through that same helper");
+  ok(/if \(!\(await claimJobRun\(job, params, taskId\)\)\)/.test(jobsSrc),
+    "…and the real job run too");
+
   // EXECUTED: the fieldId decision over both kinds and the deleted-row case.
   const fieldIdFor = (isListener, params, row) =>
     isListener ? (params?.eventType || "") : (row?.schedule?.cron ? `${row.schedule.cron} ${row.schedule.timeZone}` : "schedule");
@@ -604,6 +647,143 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   ok(route("listener") === "fail-closed" && route("scheduledjob") === "fail-closed", "EXECUTED: the two AI-writing types fail closed");
   for (const t of ["review", "codegen", "fixcode", "skilldistill", "memory_distill", "postfunction"])
     ok(route(t) === "skip-gate", `EXECUTED: ${t} still just skips the gate (its own body refuses)`);
+
+  // ===================================================================================
+  // EXECUTED — the REAL source of the gate region and of the refusal helper, run with
+  // stubs. `new Function` (not eval) so the extracted text is compiled in one scope with
+  // every free variable injected; the helper's `await import("./index")` is rewritten to
+  // an injected `__importIndex()` because ./index cannot load offline (project pattern).
+  // ===================================================================================
+  const makeHelper = (deps) => new Function("deps", `
+    const { console: __c, UNPOLLED_TASKS, storage, TASK_PREFIX, NO_PROVIDER_ERROR, claimListenerRun,
+            claimJobRun, statsReceipt, updateAsyncJob, JOB_TTL_DONE, __importIndex } = deps;
+    const console = __c;
+    ${helperSrc.replace('await import("./index")', "await __importIndex()")}
+    return refuseQueuedRunWithoutProvider;
+  `)(deps);
+
+  const quietConsole = { log() {}, warn() {}, error() {} };
+  const baseDeps = (over = {}) => {
+    const seen = { logged: [], jobRows: [], pollRows: [], claims: [] };
+    const deps = {
+      console: quietConsole,
+      UNPOLLED_TASKS: new Set(["postfunction", "memory_distill", "listener", "probe"]),
+      storage: { async set(k, v) { seen.pollRows.push([k, v]); } },
+      TASK_PREFIX: "async_task:",
+      NO_PROVIDER_ERROR: "NO_PROVIDER",
+      claimListenerRun: async () => { seen.claims.push("listener"); return true; },
+      claimJobRun: async () => { seen.claims.push("job"); return true; },
+      statsReceipt: (kind, row, entry) => ({ kind, ruleId: row.id, ok: entry.isValid }),
+      updateAsyncJob: async (id, patch) => { seen.jobRows.push([id, patch]); },
+      JOB_TTL_DONE: {},
+      __importIndex: async () => ({ storeLog: async (entry, opts) => { seen.logged.push([entry, opts]); } }),
+      ...over,
+    };
+    return { deps, seen };
+  };
+  const jobRow = { id: "J1", name: "Nightly", mode: "agent", createdAt: "2026-01-01T00:00:00.000Z", schedule: { cron: "0 9 * * 1", timeZone: "Europe/Rome" } };
+
+  // (1) happy refusal: poll row + claim + log with receipt + failed job row.
+  {
+    const { deps, seen } = baseDeps();
+    await makeHelper(deps)("scheduledjob", "T1", { jobId: "J1" }, jobRow, {});
+    ok(seen.pollRows.length === 1 && seen.pollRows[0][1].status === "error", "EXECUTED: the polled type gets an error poll row");
+    ok(seen.claims[0] === "job", "EXECUTED: the refusal takes the job execution claim");
+    ok(seen.logged.length === 1 && seen.logged[0][0].decision === "ERROR", "EXECUTED: one ERROR log entry");
+    ok(seen.logged[0][1].statsReceipt && seen.logged[0][1].statsReceipt.ruleId === "J1", "EXECUTED: …carrying the stats receipt");
+    ok(seen.logged[0][0].fieldId === "0 9 * * 1 Europe/Rome", "EXECUTED: …with the cron in fieldId");
+    ok(seen.jobRows.length === 1 && seen.jobRows[0][1].status === "error", "EXECUTED: the job row lands failed");
+  }
+
+  // (2) F-134: storage.set THROWS → the refusal still completes (log + receipt + job row),
+  //     and nothing escapes to a caller that would resume the run.
+  {
+    const { deps, seen } = baseDeps({ storage: { async set() { throw new Error("KVS down"); } } });
+    let threw = false;
+    try { await makeHelper(deps)("scheduledjob", "T2", { jobId: "J1" }, jobRow, {}); } catch { threw = true; }
+    ok(threw === false, "EXECUTED (F-134): a KVS fault on the poll row does not throw out of the refusal");
+    ok(seen.logged.length === 1, "EXECUTED (F-134): …the execution-log entry is still written");
+    ok(seen.jobRows.length === 1, "EXECUTED (F-134): …and the job row still lands failed");
+  }
+
+  // (3) F-135: the RECEIPT build faults → storeLog still runs, with a null receipt.
+  {
+    const { deps, seen } = baseDeps({ statsReceipt: () => { throw new Error("receipt boom"); } });
+    await makeHelper(deps)("listener", "T3", { listenerId: "L1", eventType: "avi:jira:created:issue" }, { id: "L1", name: "L", mode: "agent" }, {});
+    ok(seen.logged.length === 1, "EXECUTED (F-135): a receipt fault does not take the log entry with it");
+    ok(seen.logged[0][1].statsReceipt === null, "EXECUTED (F-135): …storeLog runs with a null receipt");
+    ok(seen.pollRows.length === 0, "EXECUTED: the UNPOLLED listener writes no poll row");
+  }
+
+  // (4) F-136: the claim is LOST (a redelivery) → no second log and no second receipt,
+  //     but the operational job row is still settled.
+  {
+    const { deps, seen } = baseDeps({ claimListenerRun: async () => false });
+    await makeHelper(deps)("listener", "T4", { listenerId: "L1" }, { id: "L1", name: "L", mode: "agent" }, {});
+    ok(seen.logged.length === 0, "EXECUTED (F-136): a redelivered refusal writes NO second log");
+    ok(seen.jobRows.length === 1, "EXECUTED (F-136): …the job row is still settled");
+  }
+
+  // (5) F-136: a KVS fault in the claim itself is fail-OPEN (the log is written) — the
+  //     run-path policy in claimRuleExecution, unchanged here.
+  {
+    const { deps, seen } = baseDeps({ claimJobRun: async () => { throw new Error("KVS down"); } });
+    await makeHelper(deps)("scheduledjob", "T5", { jobId: "J1" }, jobRow, {});
+    ok(seen.logged.length === 1, "EXECUTED (F-136): a claim INFRASTRUCTURE fault still leaves the trace (fail-open, as on the run path)");
+  }
+
+  // (6) F-134 STICKY: the real gate region, executed. A throwing refusal helper must NOT
+  //     let the task run — the flag is decided inside the try, acted on outside it.
+  const regionStart = asyncSrc.indexOf("  let budgetEstimate = 0;");
+  const regionEnd = asyncSrc.indexOf("  resetInvocationTokens();");
+  const regionSrc = asyncSrc.slice(regionStart, regionEnd);
+  const runRegion = (deps) => new Function("deps", `
+    const { console: __c, taskType, taskId, params, ttl, event, jobRow, enqAt, budgetDeferrals, budgetRuleId,
+            getListener, getJob, getProviderConfig, estimateTaskTokens, getLearnedRuleCost, aiBudgetGate,
+            bumpAiBudgetBucket, updateAsyncJob, JOB_TTL_ACTIVE, refuseQueuedRunWithoutProvider, RAN } = deps;
+    const console = __c;
+    return (async () => {
+      ${regionSrc}
+      RAN.ran = true;
+    })();
+  `)(deps);
+  const regionDeps = (over = {}) => {
+    const RAN = { ran: false, refused: 0 };
+    return { RAN, deps: {
+      console: quietConsole, taskType: "listener", taskId: "T6", params: { listenerId: "L1" }, ttl: {},
+      event: { body: {} }, jobRow: null, enqAt: null, budgetDeferrals: 0, budgetRuleId: "L1",
+      getListener: async () => ({ id: "L1", mode: "agent", name: "L" }),
+      getJob: async () => null,
+      getProviderConfig: async () => ({ provider: null }),
+      estimateTaskTokens: () => 1000,
+      getLearnedRuleCost: async () => 0,
+      aiBudgetGate: async () => ({ allow: true, skipped: "no-provider" }),
+      bumpAiBudgetBucket: async () => { throw new Error("must not reserve for a refused run"); },
+      updateAsyncJob: async () => {},
+      JOB_TTL_ACTIVE: {},
+      refuseQueuedRunWithoutProvider: async () => { RAN.refused++; },
+      RAN, ...over,
+    } };
+  };
+  {
+    const { RAN, deps } = regionDeps();
+    await runRegion(deps);
+    ok(RAN.refused === 1 && RAN.ran === false, "EXECUTED (F-134): a null provider refuses the listener and the task never runs");
+  }
+  {
+    const { RAN, deps } = regionDeps({ refuseQueuedRunWithoutProvider: async () => { throw new Error("KVS down"); } });
+    let threw = false;
+    try { await runRegion(deps); } catch { threw = true; }
+    ok(RAN.ran === false, "EXECUTED (F-134): a THROW on the refusal path does NOT fall through to running the task");
+    ok(threw === true, "EXECUTED (F-134): …it surfaces to the platform (a retried delivery re-refuses) instead of being swallowed by the fail-open catch");
+  }
+  {
+    // The fail-open catch itself is unchanged for everyone else: a ledger fault on a
+    // normal task still runs it.
+    const { RAN, deps } = regionDeps({ aiBudgetGate: async () => { throw new Error("ledger down"); } });
+    await runRegion(deps);
+    ok(RAN.ran === true && RAN.refused === 0, "EXECUTED: a ledger fault is still fail-OPEN for a task with a provider");
+  }
 }
 
 // =====================================================================================

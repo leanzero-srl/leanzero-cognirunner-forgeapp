@@ -220,3 +220,51 @@ export function registryPressure(input) {
     refusing,
   };
 }
+
+/* ------------------------------------------------------------------------
+ * MEMORY-STORE limits (F-175).
+ *
+ * These live HERE rather than in src/memories.js because that module imports
+ * @forge/kvs at load time, so nothing outside the Forge backend can import it:
+ * the screenshot-harness bridge mock had to RETYPE the cap sentence and the
+ * cap number, which is exactly the N-copies-of-one-rule defect this file was
+ * created to end. src/memories.js re-exports every name below, so existing
+ * backend/test imports from "./memories.js" keep working unchanged.
+ *
+ * Same storage reality as the registry: one KVS array value under
+ * `pf_memories`, one hard ~240KiB platform ceiling, no automatic eviction of
+ * live hand-authored rows — the cap is a REFUSAL with an escape valve
+ * (archive/delete in the Memories tab).
+ * ---------------------------------------------------------------------- */
+
+/** Hard row cap for the memory store. */
+export const MAX_MEMORIES = 200;
+
+/**
+ * Serialized-byte guard for the `pf_memories` value. Measured in real UTF-8
+ * BYTES, not UTF-16 chars — the KVS value cap is 240KiB (245760 bytes) and
+ * multibyte content (emoji, CJK) runs ~3-4 bytes/char, so a char count would
+ * let the value blow past the platform cap and throw. Safety margin included.
+ */
+export const MEMORY_MAX_SERIALIZED_BYTES = 230000;
+
+/**
+ * The ONE memory-content clamp (F-168). Every caller that trims memory text —
+ * saveMemoryCandidate in src/memories.js, the addMemory/updateMemory resolvers
+ * in src/index.js — imports THIS constant; do not retype the number.
+ * (async-handler's distill task clamps model-emitted text tighter on purpose,
+ * with its own named constant.)
+ */
+export const MEMORY_CONTENT_MAX = 400;
+
+/**
+ * The ONE user-facing refusal sentence for a store that will not take a lesson
+ * (F-174). THREE surfaces say it: the addMemory resolver (src/index.js), the
+ * Memories tabs which render its `error`, and the screenshot harness's bridge
+ * mock — which can import it from here. Every number in it is interpolated
+ * from the constants above; a retyped "200" is the defect class F-168/F-172
+ * were filed for. Pure: no storage, no I/O.
+ */
+export const memoryCapRefusalMessage = (reason) => (reason === "bytes"
+  ? "Memory store has reached its size limit — delete or shorten some memories in the Memories tab."
+  : `Memory store is full of your own memories (${MAX_MEMORIES} max) — no live memory is evicted automatically — archive or delete some in the Memories tab to make room.`);

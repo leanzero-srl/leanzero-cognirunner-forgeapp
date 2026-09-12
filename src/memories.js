@@ -33,6 +33,22 @@
 // `storage` was deprecated from @forge/api — this project uses @forge/kvs
 // (same import discipline as src/index.js).
 import { kvs as storage } from "@forge/kvs";
+/*
+ * F-175 — the memory caps and the pure refusal sentence live in
+ * src/shared/registry-limits.js (the one home for limits, dependency-free) so
+ * that surfaces which cannot import THIS module — it loads @forge/kvs — can
+ * still derive them instead of retyping the number and the sentence. They are
+ * re-exported below, so `import { MAX_MEMORIES, ... } from "./memories.js"`
+ * keeps working everywhere it already appears.
+ */
+import {
+  MAX_MEMORIES,
+  MEMORY_CONTENT_MAX,
+  MEMORY_MAX_SERIALIZED_BYTES,
+  memoryCapRefusalMessage,
+} from "./shared/registry-limits.js";
+
+export { MAX_MEMORIES, MEMORY_CONTENT_MAX, MEMORY_MAX_SERIALIZED_BYTES, memoryCapRefusalMessage };
 
 export const MEMORIES_KEY = "pf_memories";
 export const MEMORY_SETTINGS_KEY = "COGNIRUNNER_MEMORY_SETTINGS";
@@ -56,19 +72,7 @@ export const MEMORY_STORE_FULL_KEY = "COGNIRUNNER_MEMORY_STORE_FULL";
  */
 export const defangFence = (s) => String(s ?? "").replace(/<<<+/g, "<<").replace(/>>>+/g, ">>");
 
-export const MAX_MEMORIES = 200;
-// Guard on real UTF-8 BYTES, not UTF-16 chars — the KVS value cap is 240KiB (245760
-// bytes), and multibyte content (emoji, CJK) is up to ~3-4 bytes/char, so a char
-// count would let a value blow past the byte cap and throw. Keep a safety margin.
-const MAX_SERIALIZED_BYTES = 230000;
 const utf8Len = (s) => { try { return new TextEncoder().encode(s).length; } catch (e) { return String(s).length * 4; } };
-/**
- * The ONE memory-content clamp (F-168). Every caller that trims memory text —
- * saveMemoryCandidate here, the addMemory/updateMemory resolvers in index.js —
- * imports THIS constant; do not retype the number. (async-handler's distill task
- * clamps model-emitted text tighter on purpose, with its own named constant.)
- */
-export const MEMORY_CONTENT_MAX = 400;
 const JACCARD_DEDUP_THRESHOLD = 0.85;
 
 /**
@@ -320,7 +324,7 @@ export const pruneForSave = (arr, protectId = null) => {
     return !r.victim;
   };
   while (out.length > MAX_MEMORIES) { if (step("cap")) break; }
-  while (out.length > 0 && utf8Len(JSON.stringify(out)) >= MAX_SERIALIZED_BYTES) { if (step("bytes")) break; }
+  while (out.length > 0 && utf8Len(JSON.stringify(out)) >= MEMORY_MAX_SERIALIZED_BYTES) { if (step("bytes")) break; }
   const protectedKept = !protectId || out.some((m) => m.id === protectId);
   return { out, evicted, protectedKept, reason: protectedKept ? null : (reason || "cap") };
 };
@@ -436,19 +440,16 @@ export const saveMemoryCandidate = async ({ content, source = "user", projectKey
   return { id, merged: false, stored: true, evicted: saved.evicted };
 };
 
-/**
- * The ONE user-facing refusal sentence for a store that will not take a lesson (F-174).
- * Lives here, next to the rule that produces the refusal, because THREE surfaces say it:
- * the addMemory resolver (src/index.js), the Memories tabs which render its `error`, and
- * the screenshot harness's bridge mock. Every number in it is interpolated from the
- * constants — a retyped "200" is the defect class F-168/F-172 were filed for.
+/*
+ * The ONE user-facing refusal sentence (F-174) now lives in
+ * src/shared/registry-limits.js as memoryCapRefusalMessage and is re-exported
+ * at the top of this file, so importing it from here still works (F-175).
  *
- * NOTE for UI territory: static/_screenshot-harness/bridge.js (~:973) still retypes a
- * paraphrase of the "cap" sentence; it should import THIS builder instead.
+ * NOTE for UI territory: static/_screenshot-harness/bridge.js (~:973) still
+ * retypes a paraphrase of the "cap" sentence. It can now import the builder
+ * from src/shared/registry-limits.js — that module is dependency-free and
+ * frontend-importable, which this one is not.
  */
-export const memoryCapRefusalMessage = (reason) => (reason === "bytes"
-  ? "Memory store has reached its size limit — delete or shorten some memories in the Memories tab."
-  : `Memory store is full of your own memories (${MAX_MEMORIES} max) — no live memory is evicted automatically — archive or delete some in the Memories tab to make room.`);
 
 /**
  * Build the "- [source] content" lines block for prompt injection.

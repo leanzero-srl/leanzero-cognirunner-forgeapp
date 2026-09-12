@@ -56,5 +56,31 @@ for (const f of files) {
   ok(!badImport, `src/shared/${f} has no non-relative import (offender: ${badImport || "none"})`);
 }
 
+// F-175 — the memory caps and the refusal sentence have ONE home, and it is the
+// frontend-importable shared module. src/memories.js imports @forge/kvs at load, so a
+// number declared there can only reach the screenshot-harness bridge / any UI by being
+// RETYPED. Assert the shared module owns all three numbers and that memories.js declares
+// none of them itself (it re-exports them instead).
+const limitsSrc = readFileSync(path.join(sharedDir, "registry-limits.js"), "utf8");
+const memoriesSrc = readFileSync(path.join(sharedDir, "../memories.js"), "utf8");
+const limits = await import(pathToFileURL(path.join(sharedDir, "registry-limits.js")).href);
+ok(limits.MAX_MEMORIES === 200 && limits.MEMORY_CONTENT_MAX === 400
+  && limits.MEMORY_MAX_SERIALIZED_BYTES === 230000,
+  "registry-limits.js owns the three memory-store numbers");
+ok(typeof limits.memoryCapRefusalMessage === "function"
+  && limits.memoryCapRefusalMessage("cap").includes(`(${limits.MAX_MEMORIES} max)`)
+  && limits.memoryCapRefusalMessage("bytes") !== limits.memoryCapRefusalMessage("cap"),
+  "memoryCapRefusalMessage is pure, shared, and interpolates MAX_MEMORIES");
+for (const [name, value] of [["MAX_MEMORIES", 200], ["MEMORY_CONTENT_MAX", 400], ["MEMORY_MAX_SERIALIZED_BYTES", 230000]]) {
+  ok(new RegExp(`(const|let|var)\\s+${name}\\s*=`).test(limitsSrc),
+    `registry-limits.js declares ${name}`);
+  ok(!new RegExp(`(const|let|var)\\s+${name}\\s*=`).test(memoriesSrc),
+    `src/memories.js does NOT re-declare ${name}`);
+  ok(!new RegExp(`=\\s*${value}\\b`).test(memoriesSrc),
+    `src/memories.js does not retype the literal ${value}`);
+}
+ok(/from\s+"\.\/shared\/registry-limits\.js"/.test(memoriesSrc),
+  "src/memories.js imports the memory limits from the shared module");
+
 console.log(`\nshared-imports: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

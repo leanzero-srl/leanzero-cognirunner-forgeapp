@@ -758,7 +758,7 @@ const executeSkillDistill = async (params) => {
 
 /**
  * Model-emitted lesson clamp for the distill task. DELIBERATELY tighter than
- * MEMORY_CONTENT_MAX (400, src/memories.js — the limit a HUMAN may type): a
+ * MEMORY_CONTENT_MAX (400, src/shared/registry-limits.js — the limit a HUMAN may type): a
  * distilled lesson is generated text and stays terse. Named so the two numbers
  * can never be mistaken for one rule with two homes (F-168).
  */

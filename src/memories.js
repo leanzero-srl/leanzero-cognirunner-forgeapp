@@ -437,6 +437,20 @@ export const saveMemoryCandidate = async ({ content, source = "user", projectKey
 };
 
 /**
+ * The ONE user-facing refusal sentence for a store that will not take a lesson (F-174).
+ * Lives here, next to the rule that produces the refusal, because THREE surfaces say it:
+ * the addMemory resolver (src/index.js), the Memories tabs which render its `error`, and
+ * the screenshot harness's bridge mock. Every number in it is interpolated from the
+ * constants — a retyped "200" is the defect class F-168/F-172 were filed for.
+ *
+ * NOTE for UI territory: static/_screenshot-harness/bridge.js (~:973) still retypes a
+ * paraphrase of the "cap" sentence; it should import THIS builder instead.
+ */
+export const memoryCapRefusalMessage = (reason) => (reason === "bytes"
+  ? "Memory store has reached its size limit — delete or shorten some memories in the Memories tab."
+  : `Memory store is full of your own memories (${MAX_MEMORIES} max) — no live memory is evicted automatically — archive or delete some in the Memories tab to make room.`);
+
+/**
  * Build the "- [source] content" lines block for prompt injection.
  * Eligible: not disabled AND (unscoped OR scoped to the given project).
  * Order: project-scoped first, then unscoped; within each group confidence

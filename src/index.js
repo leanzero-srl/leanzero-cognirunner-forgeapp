@@ -96,6 +96,7 @@ import {
   readMemoryStoreFull,
   MEMORY_CONTENT_MAX,
   MAX_MEMORIES,
+  memoryCapRefusalMessage,
   defangFence,
 } from "./memories.js";
 
@@ -7242,14 +7243,9 @@ resolver.define("addMemory", async ({ payload, context }) => {
     if (result.stored === false || !result.id) {
       const reason = result.reason || null;
       let error = result.error || "Failed to save memory";
-      if (reason === "cap") {
-        // F-172: the cap comes from the ONE constant — a retyped "200" goes stale the
-        // day MAX_MEMORIES moves. F-173: archiving frees a slot too (archived rows are
-        // the first eviction candidates), so offer both actions.
-        error = `Memory store is full of your own memories (${MAX_MEMORIES} max) — no live memory is evicted automatically — archive or delete some in the Memories tab to make room.`;
-      } else if (reason === "bytes") {
-        error = "Memory store has reached its size limit — delete or shorten some memories in the Memories tab.";
-      }
+      // F-172/F-174: the sentence (and the cap inside it) has ONE home in memories.js —
+      // nothing about the limits is retyped at a consumption site.
+      if (reason === "cap" || reason === "bytes") error = memoryCapRefusalMessage(reason);
       return { success: false, stored: false, reason, error };
     }
     return { success: true, stored: true, id: result.id, merged: result.merged, evicted: result.evicted || [] };

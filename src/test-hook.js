@@ -14,7 +14,7 @@
 import { kvs as storage } from "@forge/kvs";
 import { PROVIDER_IDS, providerSlotsFor } from "./shared/provider-slots.js";
 // F-163: the memory-store key NAMES come from the module that owns them — never retyped here.
-import { MEMORIES_KEY, MEMORY_SETTINGS_KEY } from "./memories.js";
+import { MEMORIES_KEY, MEMORY_SETTINGS_KEY, MEMORY_STORE_FULL_KEY } from "./memories.js";
 
 const json = (statusCode, body) => ({
   statusCode,
@@ -347,9 +347,10 @@ export async function testStateTrigger(req) {
       // F-163 — the memory store + its settings, so the harness can SEED a 200-row fixture
       // (an all-user store, a mixed store) and restore it afterwards. No resolver can plant a
       // store at the cap, which is exactly the state the F-160 eviction policy and the F-161
-      // at-cap rejection are about.
+      // at-cap rejection are about. F-174 — plus the store-full MARKER, so a test that
+      // drives the banner can back it up and restore it (constant imported, never retyped).
       const KEYS = new Set(["COGNIRUNNER_USAGE", "COGNIRUNNER_SEAT_SNAPSHOT", "COGNIRUNNER_EDITION_SNAPSHOT",
-        "COGNIRUNNER_AI_PROVIDER", MEMORIES_KEY, MEMORY_SETTINGS_KEY]);
+        "COGNIRUNNER_AI_PROVIDER", MEMORIES_KEY, MEMORY_SETTINGS_KEY, MEMORY_STORE_FULL_KEY]);
       for (const p of PROVIDER_IDS) for (const slot of providerSlotsFor(p)) KEYS.add(slot);
       if (!KEYS.has(body.key)) return json(400, { error: `key not allowlisted: ${body.key}` });
       if (body.value === null) await storage.delete(body.key);

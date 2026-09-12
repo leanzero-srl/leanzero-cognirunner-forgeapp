@@ -13,7 +13,7 @@
 import "../lib/register-mocks-index.mjs";
 import storage from "../lib/mock-kvs.mjs";
 import { readFileSync } from "node:fs";
-import { MEMORIES_KEY, MEMORY_STORE_FULL_KEY, MEMORY_CONTENT_MAX, MAX_MEMORIES } from "../../src/memories.js";
+import { MEMORIES_KEY, MEMORY_STORE_FULL_KEY, MEMORY_CONTENT_MAX, MAX_MEMORIES, memoryCapRefusalMessage } from "../../src/memories.js";
 const { handler } = await import("../../src/index.js");
 
 let pass = 0, fail = 0;
@@ -58,6 +58,9 @@ const full = await call("addMemory", { content: "one more curated lesson about r
 ok(full.success === false && full.stored === false && full.reason === "cap",
   `a user add at the cap answers success:false / reason "cap" (got ${JSON.stringify({ success: full.success, reason: full.reason })})`);
 ok(typeof full.error === "string" && /Memories tab/.test(full.error), `the refusal names the tab to prune in: "${full.error}"`);
+// F-172/F-174: ONE home for the sentence and for the cap inside it
+ok(full.error === memoryCapRefusalMessage("cap"), "the refusal is the shared memoryCapRefusalMessage('cap')");
+ok(full.error.includes(`(${MAX_MEMORIES} max)`), `the cap is interpolated from MAX_MEMORIES (${MAX_MEMORIES})`);
 ok(JSON.stringify(load()) === before, "the store is byte-identical after the refusal (no hand-authored row destroyed)");
 
 // === F-167: a refused lesson raises a DURABLE marker the admin surfaces can read ===
@@ -157,6 +160,17 @@ ok(load().find((m) => m.id === longAdd.id).content.length === MEMORY_CONTENT_MAX
 const asyncSrc = readFileSync(new URL("../../src/async-handler.js", import.meta.url), "utf8");
 ok(!/substring\(0, 350\)/.test(asyncSrc) && /MEMORY_DISTILL_CONTENT_MAX = 350/.test(asyncSrc),
   "the distill task's deliberately tighter clamp is NAMED, not a bare literal");
+
+// === F-174: the store-full MARKER key is restorable by the harness, by constant ===
+{
+  const hookSrc = readFileSync(new URL("../../src/test-hook.js", import.meta.url), "utf8");
+  ok(/MEMORY_STORE_FULL_KEY[\s\S]*?from "\.\/memories\.js"/.test(hookSrc), "test-hook imports MEMORY_STORE_FULL_KEY rather than retyping it");
+  ok(/const KEYS = new Set\(\[[\s\S]*?MEMORY_STORE_FULL_KEY[\s\S]*?\]\);/.test(hookSrc), "the kvSet allowlist includes the store-full marker");
+  ok(!/"COGNIRUNNER_MEMORY_STORE_FULL"/.test(hookSrc), "…and never as a retyped string literal");
+  const idxSrc = readFileSync(new URL("../../src/index.js", import.meta.url), "utf8");
+  ok(!/\(200 max\)/.test(idxSrc) && !/full of your own memories/.test(idxSrc),
+    "index.js no longer carries a copy of the cap sentence or a retyped 200");
+}
 
 console.log(`\nmemory-resolvers: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

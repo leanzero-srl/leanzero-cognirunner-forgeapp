@@ -7220,11 +7220,22 @@ resolver.define("getAiUsage", async ({ context }) => {
     // completed scan left behind.
     maybeRefreshSeatSnapshot();
     const seats = await readSeatCount();
+    // F-091 — the allowance block is emitted ONLY when it can mean something: the
+    // active provider is the vendor-billed one AND the edition entitles the frontier
+    // models the allowance meters. A Standard tenant on OpenAI BYOK was shown "Forge
+    // LLM allowance $0 of $200" and, at level:"hard", "Sonnet 5 / Opus 5 paused until
+    // next month" for models it can never run. `seats` is unconditional as before — it
+    // is a plain site fact the panel shows either way.
+    // The edition comes from THIS invocation's own license (authoritative in a
+    // resolver), not from the snapshot-backed memo.
+    const provider = (await storage.get("COGNIRUNNER_AI_PROVIDER")) || "atlassian";
+    const edition = editionFromInvocation(context?.license).edition;
+    const showAllowance = provider === "atlassian" && edition === EDITION_IDS.ADVANCED;
     return {
       success: true,
       usage: summarizeState(state, Date.now()),
       seats,
-      forgeLlm: forgeLlmAllowanceStatus(state, allowanceUsdForSeats(seats)),
+      forgeLlm: showAllowance ? forgeLlmAllowanceStatus(state, allowanceUsdForSeats(seats)) : null,
     };
   } catch (error) {
     return { success: false, error: error.message };

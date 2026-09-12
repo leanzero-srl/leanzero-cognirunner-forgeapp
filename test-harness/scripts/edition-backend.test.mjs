@@ -217,5 +217,26 @@ ok(/export const editionFromInvocation = \(license\)/.test(indexSrc), "editionFr
   ok(/let clamped = false;/.test(body), "every other provider reports clamped:false");
 }
 
+// =====================================================================================
+// 8. F-091 — getAiUsage emits the Forge LLM allowance block ONLY where it can apply:
+// the vendor-billed provider AND the edition that entitles the models it meters.
+// A Standard / BYOK tenant was shown "$0 of $200" and a "Sonnet 5 / Opus 5 paused"
+// notice for models it can never run. `seats` stays unconditional.
+// =====================================================================================
+{
+  const m = indexSrc.match(/resolver\.define\("getAiUsage",[\s\S]*?\n\}\);/);
+  ok(!!m, "found getAiUsage");
+  const body = m ? m[0] : "";
+  ok(/requireAdmin\(context\.accountId\)/.test(body), "getAiUsage is admin-gated (it triggers the seat scan)");
+  ok(/const showAllowance = provider === "atlassian" && edition === EDITION_IDS\.ADVANCED;/.test(body),
+    "the allowance gate is provider AND edition — both, in one expression");
+  ok(/forgeLlm: showAllowance \? forgeLlmAllowanceStatus\(state, allowanceUsdForSeats\(seats\)\) : null/.test(body),
+    "…and forgeLlm is null when it does not apply, never a $0-of-$200 block");
+  ok(/editionFromInvocation\(context\?\.license\)\.edition/.test(body),
+    "the edition comes from THIS invocation's licence, not the snapshot-backed memo");
+  ok(/\n      seats,/.test(body), "seats is still reported unconditionally");
+  ok(!/edition === "advanced"/.test(body), "the id is not re-typed — EDITION_IDS is the one home");
+}
+
 console.log(`\nedition-backend: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

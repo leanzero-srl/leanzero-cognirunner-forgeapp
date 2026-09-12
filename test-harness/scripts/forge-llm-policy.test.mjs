@@ -177,7 +177,9 @@ ok(/rest\/api\/3\/users\/search/.test(codeOnly), "seats are counted from /rest/a
 {
   const i = codeOnly.indexOf('resolver.define("getAiUsage"');
   const b = codeOnly.slice(i, i + 900);
-  ok(/forgeLlm: forgeLlmAllowanceStatus\(state, allowanceUsdForSeats\(seats\)\)/.test(b), "getAiUsage reports the allowance status");
+  // F-091: the block is emitted only for the vendor-billed provider ON Coder; otherwise null.
+  ok(/forgeLlm: showAllowance \? forgeLlmAllowanceStatus\(state, allowanceUsdForSeats\(seats\)\) : null/.test(b),
+    "getAiUsage reports the allowance status where it applies, and null where it does not");
   ok(/seats,/.test(b), "getAiUsage reports the seat count");
 }
 {

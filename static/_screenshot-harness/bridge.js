@@ -19,6 +19,11 @@
  *   view-disabled    -> config-view rule summary (disabled) + logs
  */
 
+/* F-085: the edition facts below come from the ONE home for them. A harness that
+   re-states the frontier ids or invents feature ids stops being able to catch a
+   drift between the app and src/shared/edition.js — it just agrees with itself. */
+import { FORGE_LLM_FRONTIER, FORGE_LLM_DEFAULT, ADVANCED_FEATURES } from "../../src/shared/edition.js";
+
 const ACCT = "557058:11111111-1111-1111-1111-111111111111";
 const SITE = "https://your-site.atlassian.net";
 
@@ -400,8 +405,8 @@ const LM_WEIGHT_MODELS = [
    locked Sonnet/Opus rows, the upgrade copy and the agent-model lock. */
 const isStandardEd = () => typeof window !== "undefined" && !!window.__STANDARD__;
 const edName = () => (isStandardEd() ? "standard" : "advanced");
-const FORGE_FRONTIER = ["claude-sonnet-5", "claude-opus-5"];
-const FORGE_HAIKU = "claude-haiku-4-5-20251001";
+const FORGE_FRONTIER = FORGE_LLM_FRONTIER;
+const FORGE_HAIKU = FORGE_LLM_DEFAULT;
 const mockLicenseCtx = () => (isStandardEd()
   ? { active: true, isActive: true, capabilitySet: "capabilityStandard", state: "standard", type: "PAID" }
   : { active: true, isActive: true, capabilitySet: "capabilityAdvanced", state: "advanced", type: "PAID" });
@@ -655,12 +660,9 @@ function invoke(name, payload) {
       label: isStandardEd() ? "Standard" : "Coder",
       capabilitySet: isStandardEd() ? "capabilityStandard" : "capabilityAdvanced",
       source: "license",
-      features: [
-        { id: "frontierModels", label: "Claude Sonnet 5 and Opus 5 on Forge LLM", allowed: !isStandardEd() },
-        { id: "agentModel", label: "Agent model selection", allowed: !isStandardEd() },
-        { id: "coder", label: "Coder (in-issue coding, Git, PR review)", allowed: !isStandardEd() },
-        { id: "virtualAdmin", label: "Virtual Administrators", allowed: !isStandardEd() },
-      ],
+      // Built from ADVANCED_FEATURES so the mock can never carry a feature id the
+      // product does not have (F-085) — editions.test.mjs asserts the parity.
+      features: ADVANCED_FEATURES.map((f) => ({ id: f.id, label: f.label, allowed: !isStandardEd() })),
     });
     case "checkIsAdmin": return Promise.resolve({ success: true, isAdmin: true, role: "admin", scope: "all", accountId: ACCT });
     case "checkProviderHealth": return Promise.resolve({ success: true, ok: true, provider: "anthropic", providerLabel: "Anthropic", model: "claude-haiku-4-5-20251001" });
@@ -714,10 +716,17 @@ function invoke(name, payload) {
     case "getAsyncJobs": return Promise.resolve(buildJobs());
     case "getFields": return Promise.resolve(FIELDS);
     case "getRuleLists": return Promise.resolve({ success: true, lists: { issuetypes: [{ value: "Bug", label: "Bug" }, { value: "Task", label: "Task" }], statuses: [{ value: "Done", label: "Done" }], priorities: [{ value: "High", label: "High" }] } });
-    case "getAiUsage": return Promise.resolve({ success: true, usage: { month: { key: "2026-07", calls: 1284, prompt: 512000, completion: 148000, total: 660000, byProvider: { anthropic: { calls: 720, total: 410000 }, openai: { calls: 402, total: 180000 }, atlassian: { calls: 162, total: 70000 } } }, today: { key: "2026-07-08", calls: 96, total: 48200 }, history: [{ key: "2026-06", calls: 3140, total: 1620000 }],
+    // F-077: THIS IS THE BACKEND SHAPE — `usage`, `seats` and `forgeLlm` are
+    // SIBLINGS on the result (src/index.js getAiUsage). The mock used to nest
+    // seats/forgeLlm INSIDE usage, which made a dead allowance meter look alive.
+    // Do not nest them again.
+    case "getAiUsage": return Promise.resolve({
+      success: true,
+      usage: { month: { key: "2026-07", calls: 1284, prompt: 512000, completion: 148000, total: 660000, byProvider: { anthropic: { calls: 720, total: 410000 }, openai: { calls: 402, total: 180000 }, atlassian: { calls: 162, total: 70000 } } }, today: { key: "2026-07-08", calls: 96, total: 48200 }, history: [{ key: "2026-06", calls: 3140, total: 1620000 }] },
       // 1.3: the monthly Forge LLM allowance meter. Standard has no allowance row.
       forgeLlm: isStandardEd() ? undefined : { estUsd: 92.4, allowanceUsd: 200, pct: 46, level: "ok" },
-      seats: 118 } });
+      seats: 118,
+    });
     case "resetAiUsage": return Promise.resolve({ success: true });
     case "commitImport": return Promise.resolve({ success: true, status: "committed", ruleId: "imported-1" });
     case "exportRules": return Promise.resolve({ success: true, envelope: { schemaVersion: 1, kind: "cognirunner-rules-export", ruleCount: (args && args.ids || []).length, rules: [] }, skipped: [] });

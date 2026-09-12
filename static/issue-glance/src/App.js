@@ -17,7 +17,7 @@
 
 import React, { useEffect, useState } from "react";
 import { invoke, view } from "@forge/bridge";
-import { resolveEdition, EDITIONS } from "../../../src/shared/edition.js";
+import { resolveEdition, EDITION_IDS } from "../../../src/shared/edition.js";
 
 // Component CSS lives here (injectStyles is the live source; public/index.html carries only the
 // token bootstrap). Solid saturated status hues + white text, glyph+label badges (status is never
@@ -102,7 +102,7 @@ export default function App() {
   // Edition chip state. licenseActive stays null until we actually know, and the
   // chip is hidden until then — never claim an edition we have not read.
   const [licenseActive, setLicenseActive] = useState(null);
-  const [edition, setEdition] = useState(EDITIONS.STANDARD);
+  const [edition, setEdition] = useState(EDITION_IDS.STANDARD);
 
   useEffect(() => {
     injectStyles();
@@ -156,8 +156,8 @@ export default function App() {
       <div className="glance-head">
         <span className="glance-mark">CR</span> CogniRunner on this issue
         {licenseActive !== null && (
-          <span className={`edition-chip edition-${edition === EDITIONS.ADVANCED ? "advanced" : "standard"}`}>
-            {edition === EDITIONS.ADVANCED ? "Coder" : "Standard"}
+          <span className={`edition-chip edition-${edition === EDITION_IDS.ADVANCED ? "advanced" : "standard"}`}>
+            {edition === EDITION_IDS.ADVANCED ? "Coder" : "Standard"}
           </span>
         )}
       </div>

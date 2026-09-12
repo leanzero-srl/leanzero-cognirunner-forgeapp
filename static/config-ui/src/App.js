@@ -26,7 +26,7 @@ import DocRepository from "./components/DocRepository";
 import ReviewPanel from "./components/ReviewPanel";
 import AILoadingState from "./components/AILoadingState";
 import { ConfigSkeleton } from "./components/Skeleton";
-import { resolveEdition, EDITIONS } from "../../../src/shared/edition.js";
+import { resolveEdition, EDITION_IDS } from "../../../src/shared/edition.js";
 
 // Static-PF code offload: the workflow editor caps a rule's embedded config at
 // ~32KB. Above the threshold the step code moves to app storage (KVS) and the
@@ -2946,7 +2946,7 @@ function App() {
   // Edition (1.3). config-ui read no license before — it does now, purely to render
   // the chip; nothing in this editor is gated on it.
   const [licenseActive, setLicenseActive] = useState(null);
-  const [edition, setEdition] = useState(EDITIONS.STANDARD);
+  const [edition, setEdition] = useState(EDITION_IDS.STANDARD);
 
   const [isPostFunction, setIsPostFunction] = useState(false);
   const [isCondition, setIsCondition] = useState(false);
@@ -3612,8 +3612,8 @@ function App() {
               : isCondition ? "Condition Configuration"
               : "AI Validator Configuration"}
             {licenseActive !== null && (
-              <span className={`edition-chip edition-${edition === EDITIONS.ADVANCED ? "advanced" : "standard"}`} style={{ marginLeft: "8px" }}>
-                {edition === EDITIONS.ADVANCED ? "Coder" : "Standard"}
+              <span className={`edition-chip edition-${edition === EDITION_IDS.ADVANCED ? "advanced" : "standard"}`} style={{ marginLeft: "8px" }}>
+                {edition === EDITION_IDS.ADVANCED ? "Coder" : "Standard"}
               </span>
             )}
           </h3>

@@ -50,6 +50,12 @@ const pollAsyncResult = (taskId) => new Promise((resolve) => {
     try {
       const res = await invoke("getAsyncTaskResult", { taskId });
       if (res.success) {
+        // F-129 — A CANCEL IS NOT A FAILURE. A tenant Stop-all epoch cancels the queued
+        // task and the poll answers { status: "error", error: "Cancelled", cancelled: true }
+        // — it NEVER answers status "cancelled" (same contract JobsTab documents at F-122).
+        // Must be checked BEFORE the status === "error" arm, which would otherwise render a
+        // red "generation failed" and let the caller clobber the editor with a template.
+        if (res.cancelled === true) { resolve({ success: false, cancelled: true, error: res.error || "Cancelled" }); return; }
         if (res.status === "done") { resolve(res.result); return; }
         if (res.status === "error") { resolve({ success: false, error: res.error }); return; }
         if (attempts < maxAttempts) { setTimeout(poll, 3000); return; }
@@ -79,6 +85,9 @@ export default function SkillEditor({
   const [saving, setSaving] = useState(false);
   const [distilling, setDistilling] = useState(false);
   const [error, setError] = useState(null);
+  // F-129 — set when the queued distill was cancelled by a tenant Stop-all. Neutral slate
+  // note, NOT an error: the form keeps its pre-fill so the user can just retry.
+  const [cancelled, setCancelled] = useState(false);
 
   const handleSave = async () => {
     if (!name.trim() || !instructions.trim()) {
@@ -112,6 +121,7 @@ export default function SkillEditor({
     if (!distillContext) return;
     setDistilling(true);
     setError(null);
+    setCancelled(false);
     try {
       let result = await invoke("distillSkillFromStep", {
         name: name.trim() || undefined,
@@ -124,6 +134,10 @@ export default function SkillEditor({
       if (result.async && result.taskId) {
         result = await pollAsyncResult(result.taskId);
       }
+      // F-129 — a tenant Stop-all cancelled the queued distill. Nothing was written, so
+      // keep the form open on its pre-fill and say so neutrally instead of raising a
+      // red "AI could not distill the skill", which reads as an AI defect.
+      if (result && result.cancelled) { setCancelled(true); setDistilling(false); return; }
       if (result.success) {
         // The editor closes immediately on success — confirm WHAT was saved.
         const savedName = result.skill?.name || name.trim() || "new skill";
@@ -141,6 +155,15 @@ export default function SkillEditor({
   return (
     <div className="doc-add-form">
       {error && <div className="doc-error">{error}</div>}
+      {/* F-129 — operator Stop-all, not a distill failure. Neutral slate. */}
+      {cancelled && (
+        <div className="async-cancelled-note anim-rise">
+          <span className="acn-text">
+            <strong>Distill cancelled.</strong> Cancelled — nothing was changed. Your draft is untouched; try again when the stop is lifted.
+          </span>
+          <button className="acn-dismiss" onClick={() => setCancelled(false)} aria-label="Dismiss">&times;</button>
+        </div>
+      )}
       <input
         type="text"
         className="input"

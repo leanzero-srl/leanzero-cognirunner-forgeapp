@@ -320,6 +320,136 @@ try {
     await closeEditor(env);
   }
 
+
+  /* ---------------- F-129 — a Stop-all CANCEL is not a generation FAILURE ---------------- */
+  // getAsyncTaskResult reports an operator/tenant Stop-all as
+  //   { status: "error", error: "Cancelled", cancelled: true }
+  // — the literal string "Cancelled" in the `error` field, NOT status "cancelled"
+  // (JobsTab F-122 documents the same contract). Before this fix only JobsTab read the
+  // `cancelled` flag, so FunctionBlock (generate + fix), SkillEditor (distill) and
+  // ReviewPanel (review) all fell through to their red error arms and told the user the
+  // AI had FAILED — and FunctionBlock additionally clobbered the editor with a generic
+  // template. A cancel must be neutral slate and must leave editor state untouched.
+  const CANCEL_TEXT = /Cancelled — nothing was changed/;
+  const SLATE = { light: "rgb(71, 85, 105)", dark: "rgb(100, 116, 139)" };
+  const noteBg = (scope) => scope.evaluate(() => {
+    const el = document.querySelector(".async-cancelled-note");
+    return el ? getComputedStyle(el).backgroundColor : null;
+  });
+
+  for (const theme of ["light", "dark"]) {
+    const T = theme.toUpperCase();
+
+    /* F-129a — FunctionBlock GENERATE cancelled */
+    {
+      console.log(`F-129a static-PF generate cancelled (cfg-static, ${theme})`);
+      const env = await openEditor(browser, "config-ui", "cfg-static", theme, { __ASYNC_CANCEL__: true });
+      const { page } = env;
+      try {
+        const b = page.locator(".function-block").first();
+        // Seeded provenance is "2 memories" (J18b). A cancel must NOT rewrite it.
+        ok(/2 memor/i.test(await b.locator(".gmc-mem").first().innerText()), `F-129a ${T} step 1 starts on the seeded 2-memory provenance`);
+        await b.locator(".btn-generate", { hasText: "Regenerate Code" }).first().click();
+        await b.locator(".async-cancelled-note").waitFor({ timeout: 12000 });
+        ok(CANCEL_TEXT.test(await b.locator(".async-cancelled-note").first().innerText()), `F-129a ${T} generate shows the neutral cancelled note`);
+        ok(await noteBg(page) === SLATE[theme], `F-129a ${T} cancelled note is slate ${SLATE[theme]}, not red`);
+        // The red "AI generation failed / generic template inserted" banner must NOT appear.
+        ok(await page.getByText("AI generation failed").count() === 0, `F-129a ${T} no red 'AI generation failed' banner on a cancel`);
+        // Editor state untouched: provenance still the seeded 2 memories, no template swap.
+        ok(/2 memor/i.test(await b.locator(".gmc-mem").first().innerText()), `F-129a ${T} a cancel leaves the generated code + provenance untouched`);
+      } catch (e) { fail++; console.log(`  ✗ F-129a ${T} threw: ` + e.message.split("\n")[0]); }
+      await closeEditor(env);
+    }
+
+    /* F-129b — FunctionBlock FIX-WITH-AI cancelled */
+    {
+      console.log(`F-129b static-PF fix cancelled (cfg-static, ${theme})`);
+      const env = await openEditor(browser, "config-ui", "cfg-static", theme, { __TESTFAIL_ONCE__: true, __ASYNC_CANCEL__: true });
+      const { page } = env;
+      try {
+        const b = page.locator(".function-block").first();
+        await b.locator(".btn-test-run", { hasText: /Test Run/ }).click();
+        await b.locator(".btn-run-test", { hasText: "Run Test" }).click();
+        await b.locator(".test-result.test-fail").waitFor({ timeout: 10000 });
+        await b.locator(".btn-fix-ai", { hasText: "Fix with AI" }).click();
+        await b.locator(".async-cancelled-note").waitFor({ timeout: 12000 });
+        ok(CANCEL_TEXT.test(await b.locator(".async-cancelled-note").first().innerText()), `F-129b ${T} fix shows the neutral cancelled note`);
+        ok(await noteBg(page) === SLATE[theme], `F-129b ${T} cancelled note is slate ${SLATE[theme]}, not red`);
+        // The failing dry-run must survive intact, with no "AI fix failed" appended to it,
+        // and no fix-result card — nothing was changed, so there is nothing to undo.
+        ok(await b.locator(".test-result.test-fail").count() > 0, `F-129b ${T} the original failing dry-run is preserved`);
+        ok(await page.getByText("AI fix failed").count() === 0, `F-129b ${T} no red 'AI fix failed' on a cancel`);
+        ok(await b.locator(".fix-result").count() === 0, `F-129b ${T} no fix-result card — the code was not replaced`);
+      } catch (e) { fail++; console.log(`  ✗ F-129b ${T} threw: ` + e.message.split("\n")[0]); }
+      await closeEditor(env);
+    }
+
+    /* F-129c — SkillEditor DISTILL ("Let AI write it") cancelled */
+    {
+      console.log(`F-129c skill distill cancelled (cfg-static, ${theme})`);
+      const env = await openEditor(browser, "config-ui", "cfg-static", theme, { __ASYNC_CANCEL__: true });
+      const { page } = env;
+      try {
+        const b = page.locator(".function-block").first();
+        // Save as Skill is only offered on a PASSING dry-run — run one first.
+        await b.locator(".btn-test-run", { hasText: /Test Run/ }).click();
+        await b.locator(".btn-run-test", { hasText: "Run Test" }).click();
+        await b.locator(".test-result.test-pass").waitFor({ timeout: 10000 });
+        await b.locator(".btn-save-skill", { hasText: "Save as Skill" }).click();
+        const form = b.locator(".doc-add-form").first();
+        await form.waitFor({ timeout: 8000 });
+        const name = form.locator("input.input").first();
+        const before = await name.inputValue();
+        await form.locator(".btn-add-doc", { hasText: "Let AI write it" }).click();
+        await form.locator(".async-cancelled-note").waitFor({ timeout: 12000 });
+        ok(CANCEL_TEXT.test(await form.locator(".async-cancelled-note").first().innerText()), `F-129c ${T} distill shows the neutral cancelled note`);
+        ok(await noteBg(page) === SLATE[theme], `F-129c ${T} cancelled note is slate ${SLATE[theme]}, not red`);
+        ok(await form.locator(".doc-error").count() === 0, `F-129c ${T} no red .doc-error on a cancel`);
+        // The editor stays open on its pre-fill so the user can just retry.
+        ok(await name.inputValue() === before, `F-129c ${T} the skill form keeps its pre-filled values`);
+      } catch (e) { fail++; console.log(`  ✗ F-129c ${T} threw: ` + e.message.split("\n")[0]); }
+      await closeEditor(env);
+    }
+
+    /* F-129d — ReviewPanel AI REVIEW cancelled, in BOTH divergent copies.
+       config-ui's ReviewPanel lives in the static-PF FunctionBuilder; admin-panel's is
+       reached through AddRuleWizard step 5 (same path J8 walks). They are deliberately
+       NOT byte-identical, so each is asserted on its own build. */
+    {
+      console.log(`F-129d AI review cancelled (config-ui, ${theme})`);
+      const env = await openEditor(browser, "config-ui", "cfg-static", theme, { __ASYNC_CANCEL__: true });
+      const { page } = env;
+      try {
+        await page.locator("button.btn-review", { hasText: "AI Review" }).first().click();
+        await page.locator(".async-cancelled-note").waitFor({ timeout: 12000 });
+        ok(CANCEL_TEXT.test(await page.locator(".async-cancelled-note").first().innerText()), `F-129d ${T} config-ui review shows the neutral cancelled note`);
+        ok(await noteBg(page) === SLATE[theme], `F-129d ${T} config-ui cancelled note is slate ${SLATE[theme]}, not red`);
+        ok(await page.locator(".review-verdict").count() === 0, `F-129d ${T} config-ui no red review verdict card on a cancel`);
+      } catch (e) { fail++; console.log(`  ✗ F-129d ${T} config-ui threw: ` + e.message.split("\n")[0]); }
+      await closeEditor(env);
+    }
+    {
+      console.log(`F-129d AI review cancelled (admin-panel, ${theme})`);
+      const env = await openEditor(browser, "admin-panel", "admin", theme, { __ASYNC_CANCEL__: true });
+      const { page } = env;
+      try {
+        await page.locator("button", { hasText: /Add Rule/ }).first().click();
+        const wiz = page.locator(".wizard");
+        await wiz.waitFor({ timeout: 10000 });
+        await wiz.locator("button", { hasText: "Demo Project" }).first().click();
+        await wiz.locator("button", { hasText: "Software Simplified Workflow" }).first().click();
+        await wiz.locator("button", { hasText: "Submit for Review" }).first().click();
+        await wiz.locator("button", { hasText: "Static Post Function" }).first().click();
+        await wiz.locator(".function-block").first().waitFor({ timeout: 8000 });
+        await wiz.locator("button.btn-review", { hasText: "AI Review" }).first().click();
+        await wiz.locator(".async-cancelled-note").waitFor({ timeout: 12000 });
+        ok(CANCEL_TEXT.test(await wiz.locator(".async-cancelled-note").first().innerText()), `F-129d ${T} admin-panel review shows the neutral cancelled note`);
+        ok(await noteBg(page) === SLATE[theme], `F-129d ${T} admin-panel cancelled note is slate ${SLATE[theme]}, not red`);
+        ok(await wiz.locator(".review-verdict").count() === 0, `F-129d ${T} admin-panel no red review verdict card on a cancel`);
+      } catch (e) { fail++; console.log(`  ✗ F-129d ${T} admin-panel threw: ` + e.message.split("\n")[0]); }
+      await closeEditor(env);
+    }
+  }
   /* ---------------- J19 — MANAGED semantic flavors (config-ui = read-only admin notice) ---------------- */
   {
     console.log("J19 managed semantic flavors (cfg-managed)");

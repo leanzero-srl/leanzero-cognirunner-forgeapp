@@ -12,10 +12,10 @@ import AILoadingState from "./AILoadingState";
 const VERDICT_STYLES = {
   good: { color: "var(--success-color)", bg: "var(--card-bg)", border: "var(--success-color)", icon: "\u2705" },
   needs_attention: { color: "#d97706", bg: "var(--card-bg)", border: "#d97706", icon: "\u26A0\uFE0F" },
-  has_issues: { color: "var(--error-color)", bg: "var(--card-bg)", border: "var(--error-color)", icon: "\u274C" },
+  has_issues: { color: "var(--error-color)", bg: "var(--card-bg)", border: "var(--error-color)", icon: "❌" },
 };
 
-const ITEM_ICONS = { success: "\u2705", warning: "\u26A0\uFE0F", error: "\u274C", tip: "\uD83D\uDCA1" };
+const ITEM_ICONS = { success: "\u2705", warning: "\u26A0\uFE0F", error: "❌", tip: "\uD83D\uDCA1" };
 
 export default function ReviewPanel({ configType, config }) {
   const [reviewing, setReviewing] = useState(false);
@@ -43,6 +43,17 @@ export default function ReviewPanel({ configType, config }) {
         if (res.success) {
           if (res.status === "done") {
             setResult(res.result);
+            setReviewing(false);
+            setStatusText("");
+            return;
+          }
+          // F-129 — A CANCEL IS NOT A FAILURE. A tenant Stop-all cancels the queued review
+          // and the poll answers { status: "error", error: "Cancelled", cancelled: true }
+          // — never status "cancelled" (the contract JobsTab documents at F-122). Checked
+          // BEFORE the error arm below, which would paint a red ❌ "review failed" verdict
+          // over what is really an operator action.
+          if (res.cancelled === true) {
+            setResult({ success: false, cancelled: true, error: res.error || "Cancelled" });
             setReviewing(false);
             setStatusText("");
             return;
@@ -170,9 +181,17 @@ export default function ReviewPanel({ configType, config }) {
                 <div className="review-meta">{result.tokens} tokens used</div>
               )}
             </>
+          ) : result.cancelled ? (
+            /* F-129 — operator Stop-all, not a review failure. Neutral slate, no ❌. */
+            <div className="async-cancelled-note">
+              <span className="acn-text">
+                <strong>Review cancelled.</strong> Cancelled — nothing was changed. Run the review again when the stop is lifted.
+              </span>
+              <button className="acn-dismiss" onClick={() => setResult(null)} aria-label="Dismiss">&times;</button>
+            </div>
           ) : (
             <div className="review-verdict" style={{ background: VERDICT_STYLES.has_issues.bg, borderColor: VERDICT_STYLES.has_issues.border }}>
-              <span className="review-verdict-icon">{"\u274C"}</span>
+              <span className="review-verdict-icon">{"❌"}</span>
               <span className="review-verdict-text">{result.error || "Review failed"}</span>
               <button className="test-dismiss" onClick={() => setResult(null)}>&times;</button>
             </div>

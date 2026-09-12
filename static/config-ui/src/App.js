@@ -1410,6 +1410,17 @@ const injectStyles = () => {
       color: #ffffff;
     }
 
+    /* F-158 — the resolver can accept the save and keep nothing (store at cap). That is
+       not a memory: no teal badge, no veto — a neutral slate note instead, so the card
+       never implies a lesson was learned. Dark override below. */
+    .memory-not-kept {
+      margin: 8px 0 0;
+      font-size: 11px;
+      font-weight: 600;
+      color: #475569;
+      max-width: 460px;
+    }
+
     /* Dark mode — one shade lighter per hue */
     html[data-color-mode="dark"] .kc-docs { color: #3b82f6; }
     html[data-color-mode="dark"] .kc-skills { color: #8b5cf6; }
@@ -1432,6 +1443,7 @@ const injectStyles = () => {
     html[data-color-mode="dark"] .memory-src-fix { background: #22c55e; }
     html[data-color-mode="dark"] .btn-remember { background: #14b8a6; }
     html[data-color-mode="dark"] .memory-saved-badge { background: #14b8a6; }
+    html[data-color-mode="dark"] .memory-not-kept { color: #64748b; }
 
     /* Prior step variables indicator */
     .prior-vars-bar {

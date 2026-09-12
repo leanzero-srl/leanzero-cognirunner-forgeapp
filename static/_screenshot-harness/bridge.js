@@ -665,6 +665,19 @@ function invoke(name, payload) {
   if (typeof window !== "undefined" && Array.isArray(window.__FAIL__) && window.__FAIL__.includes(name)) {
     return Promise.reject(new Error("Simulated network failure (harness __FAIL__)"));
   }
+  // F-141 — HOLD fixture: window.__HOLD__ = ["fixPostFunctionCode"] parks that resolver
+  // in flight until the test calls window.__RELEASE_HOLD__(). Needed to assert what the
+  // UI offers WHILE an AI write to a step's code is running (generate and fix are
+  // mutually exclusive), which a resolved-immediately mock can never expose. On release
+  // the name is dropped from the list and the call re-enters the normal router.
+  if (typeof window !== "undefined" && Array.isArray(window.__HOLD__) && window.__HOLD__.includes(name)) {
+    return new Promise((resolve) => {
+      window.__RELEASE_HOLD__ = () => {
+        window.__HOLD__ = window.__HOLD__.filter((n) => n !== name);
+        resolve(invoke(name, payload));
+      };
+    });
+  }
   // F-129 — Stop-all CANCEL fixture. window.__ASYNC_CANCEL__ = true routes the four
   // queueable AI resolvers down the async branch, and the poll then answers with the
   // shape the tenant Stop-all epoch actually writes:

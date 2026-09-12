@@ -908,6 +908,7 @@ export async function handler(event) {
   const budgetRuleId = params?.config?.ruleId || params?.config?.id || params?.listenerId || params?.jobId || null;
   let budgetEstimate = 0;
   let budgetProvider = null;
+  let budgetReserveMs = 0; // the reservation's minute — the release must hit the SAME bucket
   try {
     let usesAi = false;
     if (taskType === "postfunction") usesAi = !/static/.test(String(params?.config?.type || ""));
@@ -938,12 +939,14 @@ export async function handler(event) {
         return;
       }
       if (gate.forced) console.warn(`[budget] ${taskType} (${taskId}) ran after the deferral cap — budget still full`);
-      await bumpAiBudgetBucket(budgetProvider, { reserved: budgetEstimate });
+      budgetReserveMs = Date.now();
+      await bumpAiBudgetBucket(budgetProvider, { reserved: budgetEstimate }, budgetReserveMs);
     }
   } catch (e) {
     // The gate must never block the queue: on any ledger/queue failure, run now.
     console.warn(`[budget] gate skipped for ${taskType} (${taskId}): ${e?.message}`);
-    if (budgetProvider && budgetEstimate) { try { await bumpAiBudgetBucket(budgetProvider, { reserved: -budgetEstimate }); } catch { /* best-effort */ } budgetEstimate = 0; }
+    if (budgetProvider && budgetEstimate && budgetReserveMs) { try { await bumpAiBudgetBucket(budgetProvider, { reserved: -budgetEstimate }, budgetReserveMs); } catch { /* best-effort */ } }
+    budgetEstimate = 0;
   }
   resetInvocationTokens();
 
@@ -976,7 +979,7 @@ export async function handler(event) {
   // cost from the tokens metered during THIS invocation (recordAiUsage counts them).
   if (budgetProvider && budgetEstimate) {
     try {
-      await bumpAiBudgetBucket(budgetProvider, { reserved: -budgetEstimate });
+      await bumpAiBudgetBucket(budgetProvider, { reserved: -budgetEstimate }, budgetReserveMs || Date.now());
       const spent = getInvocationTokens();
       if (spent > 0) await learnRuleCost(budgetRuleId, spent);
     } catch { /* best-effort */ }

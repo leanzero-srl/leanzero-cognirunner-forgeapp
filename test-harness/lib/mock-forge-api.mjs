@@ -37,6 +37,8 @@ const api = {
 export const fetch = async () => fakeResponse(500, "mock fetch");
 export const webTrigger = { getUrl: async (key) => `https://mock.webtrigger/${key}` };
 export const getAppContext = () => ({ environmentAri: null });
+// authorize() from @forge/api — unused by the offline paths, present so index.js imports resolve.
+export const authorize = () => ({ onJira: async () => [], onJiraProject: () => ({}), onJiraIssue: () => ({}) });
 export default api;
 
 // @forge/events subset

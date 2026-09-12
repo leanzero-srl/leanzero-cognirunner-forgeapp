@@ -62,4 +62,5 @@ const storage = {
 // deep clone so a caller can't mutate stored state by reference (mirrors KVS serialize semantics)
 function clone(v) { return v === undefined ? undefined : JSON.parse(JSON.stringify(v)); }
 
+export { storage as kvs };
 export default storage;

@@ -34,7 +34,10 @@ import { buildEndpointPromptBlock } from "./shared/jira-endpoints.js";
 import { DOC_SEED_VERSION, BUILTIN_DOCS } from "./shared/builtin-docs.js";
 import { clampNarrateLine } from "./shared/narrate-utils.js";
 import { buildCatalogPromptBlock, validateBuiltRule } from "./shared/build-rule.js";
-import { normalizeUsage, emptyState, bumpCounters, summarizeState } from "./shared/usage-meter.js";
+import {
+  normalizeUsage, emptyState, bumpCounters, summarizeState,
+  forgeLlmCostUsd, allowanceUsdForSeats, forgeLlmAllowanceStatus, noteForgeLlmClamp,
+} from "./shared/usage-meter.js";
 import { deriveLogFlags } from "./shared/log-flags.js";
 // Edition + capability — the ONE home for "which CogniRunner is this tenant on"
 // and for the Forge LLM model policy. See src/shared/edition.js.
@@ -4732,14 +4735,18 @@ resolver.define("checkProviderHealth", async ({ context }) => {
   const providerLabel = (PROVIDERS[provider] && PROVIDERS[provider].label) || provider;
   try {
     const apiKey = await getOpenAIKey();
-    const model = await getOpenAIModel();
+    const configuredModel = await getOpenAIModel();
     const result = await callAIChat({
       apiKey,
-      model,
+      model: configuredModel,
       messages: [{ role: "user", content: "Reply with the single word: OK" }],
     });
+    // Report the EFFECTIVE model the adapter used. On Forge LLM the edition/allowance
+    // clamp can downgrade the configured model, and a banner that names a model the
+    // app is not actually calling sends the admin hunting the wrong problem.
+    const model = (result && result.data && result.data.model) || configuredModel;
     if (result && result.ok) {
-      return { success: true, ok: true, provider, providerLabel, model };
+      return { success: true, ok: true, provider, providerLabel, model, configuredModel, clamped: model !== configuredModel };
     }
     const status = (result && result.status) || null;
     const errText = (result && result.error) || "";
@@ -4781,6 +4788,13 @@ resolver.define("getOpenAIModels", async ({ payload, context }) => {
     // Forge LLM: no key — list models via @forge/llm's list(). Fall back to the
     // documented Preview model ids if list() fails (e.g. llm module not yet approved).
     if (provider === "atlassian") {
+      // The edition decides the offer. `models` are the ids this tenant may SELECT;
+      // `locked` are the Coder-only ids it may not (so a Standard site still SEES
+      // Sonnet 5 / Opus 5 as locked rows and knows what the upgrade buys). This
+      // resolver NEVER refuses — a Standard admin browsing models is not an error.
+      const { edition } = await currentEdition();
+      const allowed = FORGE_LLM_MODELS[edition] || FORGE_LLM_MODELS.standard;
+      const locked = FORGE_LLM_MODELS.advanced.filter((id) => !allowed.includes(id));
       try {
         // ModelListResponse: { models: [{ model: string, status: "active"|"deprecated" }] }
         const resp = await forgeLlmListApi();
@@ -4789,12 +4803,12 @@ resolver.define("getOpenAIModels", async ({ payload, context }) => {
           .filter((m) => typeof m === "string" || m?.status !== "deprecated")
           .map((m) => (typeof m === "string" ? m : m?.model))
           .filter(Boolean)
-          .filter(isForgeLlmModelAllowed); // Haiku-only policy (vendor-billed tokens)
-        if (ids.length === 0) ids = [...FORGE_LLM_FALLBACK_MODELS];
-        return { success: true, models: ids, isByok: true };
+          .filter((id) => allowed.includes(id)); // exact-id edition policy
+        if (ids.length === 0) ids = [...allowed];
+        return { success: true, models: ids, locked, edition, isByok: true };
       } catch (e) {
-        console.warn("Forge LLM list() failed — using documented fallback models:", e?.message);
-        return { success: true, models: [...FORGE_LLM_FALLBACK_MODELS], isByok: true };
+        console.warn("Forge LLM list() failed — using the edition's model list:", e?.message);
+        return { success: true, models: [...allowed], locked, edition, isByok: true };
       }
     }
 
@@ -5073,14 +5087,78 @@ resolver.define("saveOpenAIModel", async ({ payload, context }) => {
         return { success: false, error: "Set the LM Studio base URL before selecting a model." };
       }
     }
-    if (provider === "atlassian" && !isForgeLlmModelAllowed(model)) {
-      return { success: false, error: "Only Claude Haiku is available on Atlassian (Forge LLM) right now." };
+    if (provider === "atlassian") {
+      const { edition } = await currentEdition();
+      if (!forgeLlmModelAllowedForEdition(edition, model)) {
+        // A frontier model on Standard is an UPGRADE prompt (the tenant could have it);
+        // anything else is simply not on the menu on any edition.
+        if (FORGE_LLM_FRONTIER.includes(String(model))) return upgradeRequired("forge-llm-frontier-models");
+        return { success: false, error: "Model not offered on Atlassian (Forge LLM)." };
+      }
     }
     await storage.set(providerModelSlot(provider), model);
     if (provider === (await activeProviderId())) { _cachedModel = null; } // invalidate active cache
     return { success: true };
   } catch (error) {
     console.error("Failed to save model:", error);
+    return { success: false, error: error.message };
+  }
+});
+
+/**
+ * The agent model for a provider (admin panel). Read-only; viewer floor is enough
+ * because it exposes no key and no URL — just which model an agent would use.
+ */
+resolver.define("getAgentModel", async ({ payload, context }) => {
+  if (!(await requireRole(context.accountId, "viewer"))) return noPerm("view the agent model");
+  try {
+    const provider = await resolveTargetProvider(payload);
+    const saved = await storage.get(providerAgentModelSlot(provider));
+    const { edition } = await currentEdition();
+    let model = saved ? String(saved) : null;
+    if (!model) {
+      model = provider === (await activeProviderId())
+        ? await getOpenAIModel()
+        : ((PROVIDERS[provider] && PROVIDERS[provider].defaultModel) || null);
+    }
+    // frontierOnly tells the panel to offer ONLY Sonnet 5 / Opus 5 here: on Forge LLM
+    // Haiku is not an agent model at any edition.
+    return { success: true, model, edition, frontierOnly: provider === "atlassian" };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+/**
+ * Save the agent model for a provider. Admin only — same reasoning as
+ * saveOpenAIModel: it decides what the app bills against.
+ */
+resolver.define("saveAgentModel", async ({ payload, context }) => {
+  if (!(await requireAdmin(context.accountId))) return noPerm("change the agent model");
+  try {
+    const model = payload && payload.model;
+    if (!model || typeof model !== "string" || !model.trim()) {
+      return { success: false, error: "Invalid model selection" };
+    }
+    const provider = await resolveTargetProvider(payload);
+    const clean = model.trim();
+    if (provider === "atlassian") {
+      if (!FORGE_LLM_FRONTIER.includes(clean)) {
+        const { edition } = await currentEdition();
+        // On Standard the honest answer is "upgrade"; on Coder it is "not an agent model".
+        if (edition !== "advanced") return upgradeRequired("forge-llm-frontier-models");
+        return { success: false, error: "Agents on Atlassian (Forge LLM) run on Claude Sonnet 5 or Opus 5 only." };
+      }
+      const { edition } = await currentEdition();
+      if (!forgeLlmModelAllowedForEdition(edition, clean)) return upgradeRequired("forge-llm-frontier-models");
+    } else if (clean.length > 120) {
+      // Clamped server-side AFTER reading, like every other model string.
+      return { success: false, error: "Model id is too long (max 120 characters)." };
+    }
+    await storage.set(providerAgentModelSlot(provider), clean);
+    return { success: true, model: clean };
+  } catch (error) {
+    console.error("Failed to save agent model:", error);
     return { success: false, error: error.message };
   }
 });
@@ -5093,12 +5171,15 @@ resolver.define("getOpenAIModelFromKVS", async ({ payload }) => {
     const provider = await resolveTargetProvider(payload);
     const byokKey = await storage.get(providerKeySlot(provider));
     // Forge LLM: no key — saved model (or provider default) with model picker unlocked.
-    // A saved model from before the Haiku-only policy is clamped to the default so
-    // the UI never claims a model the chat adapter would refuse to bill.
+    // A saved model the tenant's EDITION does not entitle (a downgrade from Coder, or
+    // a model saved before the policy) is clamped to the default so the UI never
+    // claims a model the chat adapter would refuse to bill. `clamped` tells the panel
+    // to say so rather than silently showing a different model than was saved.
     if (provider === "atlassian") {
       const savedModel = await storage.get(providerModelSlot(provider));
-      const effective = isForgeLlmModelAllowed(savedModel) ? savedModel : PROVIDERS.atlassian.defaultModel;
-      return { success: true, model: effective, isByok: true };
+      const { edition } = await currentEdition();
+      const effective = clampForgeLlmModel(edition, savedModel);
+      return { success: true, model: effective, isByok: true, edition, clamped: savedModel !== effective };
     }
     // LM Studio is always BYOK semantics — auth is optional, baseUrl is the gating config.
     if (provider === "lmstudio") {
@@ -7093,7 +7174,16 @@ resolver.define("getAiUsage", async ({ context }) => {
   }
   try {
     const state = (await storage.get(USAGE_KEY)) || emptyState();
-    return { success: true, usage: summarizeState(state, Date.now()) };
+    // Forge LLM vendor-spend against this tenant's monthly allowance. Seats come from
+    // the daily snapshot; when it is missing, allowanceUsdForSeats falls back to 100
+    // seats rather than to "unlimited" — an unknown seat count must not read as free.
+    const seats = await readSeatCount();
+    return {
+      success: true,
+      usage: summarizeState(state, Date.now()),
+      seats,
+      forgeLlm: forgeLlmAllowanceStatus(state, allowanceUsdForSeats(seats)),
+    };
   } catch (error) {
     return { success: false, error: error.message };
   }
@@ -9569,15 +9659,17 @@ const PROVIDERS = {
 // Sentinel returned by getOpenAIKey() when the active provider is Forge LLM —
 // keeps every `if (!apiKey) fail` call site working without a real secret.
 const FORGE_LLM_SENTINEL = "atlassian-forge-llm";
-// POLICY: only Claude Haiku is offered on Forge LLM — Sonnet/Opus token costs
-// are billed to the vendor's Forge bill, so the larger models are reserved for
-// a future paid "Advanced" tier. Enforced in list/save/load AND at the chat
-// adapter, so a stale saved model can never bill a larger model.
-const isForgeLlmModelAllowed = (id) => /haiku/i.test(String(id || ""));
-// Documented model ids as of the June 2026 Preview — used as a fallback when list() fails.
-const FORGE_LLM_FALLBACK_MODELS = [
-  "claude-haiku-4-5-20251001",
-];
+// POLICY: which Forge LLM models a tenant may run is decided by its EDITION, and
+// that rule lives in ONE place — src/shared/edition.js (FORGE_LLM_MODELS /
+// clampForgeLlmModel). Standard gets Haiku; Coder adds Claude Sonnet 5 and Opus 5.
+// Forge LLM tokens are billed to the VENDOR, so this is a pricing boundary.
+//
+// It replaced an arity-1 `isForgeLlmModelAllowed = (id) => /haiku/i.test(id)` that
+// lived here. A regex over the model NAME could not tell an entitled generation from
+// an unentitled one: it would have happily billed claude-sonnet-4-6 the moment the
+// policy widened to "sonnet". The lists are exact ids for that reason.
+// Enforced in list/save/load AND at the chat adapter (a stale saved model can never
+// bill a larger model) AND in src/async-handler.js, which shares the same import.
 
 /**
  * Forge LLM adapter: translate our internal OpenAI chat-completions shape to
@@ -9593,11 +9685,38 @@ const FORGE_LLM_FALLBACK_MODELS = [
  * (the response body is folded into .message — there is no .context property).
  */
 const callForgeLlmChat = async ({ model, messages, tools, tool_choice, jsonMode }) => {
-  // Billing backstop for the Haiku-only policy: whatever a stale config or
-  // caller passes, never let a larger (vendor-billed) model through.
-  if (!isForgeLlmModelAllowed(model)) {
-    console.warn(`Forge LLM model "${model}" not allowed — clamping to ${PROVIDERS.atlassian.defaultModel}`);
-    model = PROVIDERS.atlassian.defaultModel;
+  // THE billing backstop. Whatever a stale config, a downgraded tenant or a caller
+  // passes, a vendor-billed model only goes out when the edition entitles it AND the
+  // month's allowance is not exhausted. Both values ride the 30s getProviderConfig()
+  // memo — no new KVS read lands inside a transition's race.
+  //
+  // FAIL-SOFT, on purpose: any error resolving the edition or the allowance leaves
+  // `edition` at "standard" and the model clamped to Haiku. The call still goes out;
+  // a billing gate must degrade the model, never break the transition.
+  const requested = model;
+  let clampedByAllowance = false;
+  try {
+    const { edition, allowance } = await getProviderConfig();
+    if (allowance && allowance.level === "hard") {
+      // Allowance exhausted: everything drops to Haiku for the rest of the month.
+      // This is the documented "saved rules downgrade to Haiku" behaviour.
+      model = FORGE_LLM_DEFAULT;
+      clampedByAllowance = requested !== FORGE_LLM_DEFAULT;
+    } else {
+      model = clampForgeLlmModel(edition || "standard", model);
+    }
+  } catch (e) {
+    model = clampForgeLlmModel("standard", model);
+  }
+  if (model !== requested) {
+    console.warn(`Forge LLM model "${requested}" not permitted (${clampedByAllowance ? "monthly allowance exhausted" : "edition"}) — clamping to ${model}`);
+    if (clampedByAllowance) {
+      // Best-effort counter so the admin panel can show WHY rules downgraded.
+      try {
+        const state = (await storage.get(USAGE_KEY)) || emptyState();
+        await storage.set(USAGE_KEY, noteForgeLlmClamp(state));
+      } catch (e) { /* the meter is best-effort — never throw into an AI call */ }
+    }
   }
   try {
     // Map tool_call_id → tool name (Forge LLM wants `name` on tool-result messages).
@@ -9703,6 +9822,9 @@ const callForgeLlmChat = async ({ model, messages, tools, tool_choice, jsonMode 
         message: { role: "assistant", content: content ?? null },
         finish_reason: choice.finish_reason || "stop",
       }],
+      // The EFFECTIVE (post-clamp) model, so the meter costs the tier that was
+      // actually billed rather than the one the config asked for.
+      model,
       usage: {
         prompt_tokens: inputTokens,
         completion_tokens: outputTokens,
@@ -10010,11 +10132,21 @@ const callLmStudioNative = async ({ apiKey, model, messages, jsonMode, baseUrl }
 // through the ONE implementation. NOTE: called AFTER any raceDeadline at runtime
 // seams (never inside the race), so metering latency can't flip a completed verdict.
 export const USAGE_KEY = "COGNIRUNNER_USAGE";
-export const recordAiUsage = async ({ provider, usageLike }) => {
+export const recordAiUsage = async ({ provider, usageLike, model }) => {
   const usage = normalizeUsage(usageLike);
   try {
     const state = (await storage.get(USAGE_KEY)) || emptyState();
-    await storage.set(USAGE_KEY, bumpCounters(state, { provider: provider || "unknown", usage, nowMs: Date.now() }));
+    // Forge LLM is the only provider whose tokens land on the VENDOR's bill, so it is
+    // the only one costed. `model` is the EFFECTIVE (post-clamp) model the adapter
+    // returned, not what the config asked for — costing the requested model would
+    // over-report every clamped call.
+    let tier = null;
+    let costUsd = 0;
+    if (provider === "atlassian") {
+      tier = forgeLlmTier(model);
+      costUsd = forgeLlmCostUsd(tier, usage.prompt, usage.completion);
+    }
+    await storage.set(USAGE_KEY, bumpCounters(state, { provider: provider || "unknown", usage, nowMs: Date.now(), model, tier, costUsd }));
   } catch (e) { /* metering is best-effort — never throw into an AI call */ }
   // Token-budget ledger: every real call lands in the current minute's bucket so
   // the queue gate (async-handler) and the inline valve (executePostFunction) see
@@ -10103,7 +10235,7 @@ const callAIChat = async (opts) => {
   const res = await callAIChatRaw(opts);
   try {
     const { provider } = await getProviderConfig();
-    await recordAiUsage({ provider, usageLike: res && res.data && res.data.usage });
+    await recordAiUsage({ provider, usageLike: res && res.data && res.data.usage, model: (res && res.data && res.data.model) || opts.model });
   } catch (e) { /* fail-open */ }
   return res;
 };
@@ -10751,13 +10883,26 @@ let _cachedProvider = null;
 let _cachedBaseUrl = null;
 let _cachedProviderChecked = false;
 let _cachedProviderAt = 0;
+// The EDITION and the Forge LLM ALLOWANCE ride this same memo, deliberately. The
+// chat adapter needs both on every call; giving them their own reads would put two
+// extra KVS round-trips inside a transition's deadline race. Refreshed once per 30s
+// alongside the provider, and only for the provider that can actually incur
+// vendor-billed spend.
+let _cachedEditionId = "standard";
+let _cachedAllowance = null;
 
 /**
- * Get the configured AI provider info: { provider, baseUrl }.
- * Returns cached value on subsequent calls within the freshness window.
+ * Get the configured AI provider info: { provider, baseUrl, edition, allowance }.
+ * Returns the cached value on subsequent calls within the freshness window.
+ *
+ * `edition` / `allowance` are ADDITIVE — every existing caller destructures
+ * { provider, baseUrl } and is unaffected. Both fail soft: a bad read leaves the
+ * edition at "standard" and the allowance null (treated as "no ceiling known").
  */
 const getProviderConfig = async () => {
-  if (_cachedProviderChecked && _cacheFresh(_cachedProviderAt)) return { provider: _cachedProvider || "atlassian", baseUrl: _cachedBaseUrl || PROVIDERS.openai.baseUrl };
+  if (_cachedProviderChecked && _cacheFresh(_cachedProviderAt)) {
+    return { provider: _cachedProvider || "atlassian", baseUrl: _cachedBaseUrl || PROVIDERS.openai.baseUrl, edition: _cachedEditionId, allowance: _cachedAllowance };
+  }
   try {
     const provider = (await storage.get("COGNIRUNNER_AI_PROVIDER")) || "atlassian";
     const customUrl = await storage.get("COGNIRUNNER_AI_BASE_URL");
@@ -10765,16 +10910,86 @@ const getProviderConfig = async () => {
     _cachedProviderAt = Date.now();
     _cachedProvider = provider;
     _cachedBaseUrl = customUrl || (PROVIDERS[provider] && PROVIDERS[provider].baseUrl) || PROVIDERS.openai.baseUrl;
-    return { provider: _cachedProvider, baseUrl: _cachedBaseUrl };
+    // Only Forge LLM spends the vendor's money, so only Forge LLM pays for the
+    // extra reads. Every branch here is swallowed: this must never break a call.
+    if (provider === "atlassian") {
+      try { _cachedEditionId = (await currentEdition()).edition; } catch (e) { _cachedEditionId = "standard"; }
+      try {
+        const state = (await storage.get(USAGE_KEY)) || emptyState();
+        const seats = await readSeatCount();
+        _cachedAllowance = forgeLlmAllowanceStatus(state, allowanceUsdForSeats(seats));
+      } catch (e) { _cachedAllowance = null; }
+      // Daily seat re-count, fire-and-forget so no transition ever waits on it.
+      maybeRefreshSeatSnapshot();
+    } else {
+      _cachedEditionId = "standard";
+      _cachedAllowance = null;
+    }
+    return { provider: _cachedProvider, baseUrl: _cachedBaseUrl, edition: _cachedEditionId, allowance: _cachedAllowance };
   } catch (error) {
     console.error("Error reading provider config:", error);
-    return { provider: "atlassian", baseUrl: PROVIDERS.atlassian.baseUrl };
+    return { provider: "atlassian", baseUrl: PROVIDERS.atlassian.baseUrl, edition: "standard", allowance: null };
   }
+};
+
+// ===== SEAT SNAPSHOT (drives the Forge LLM monthly allowance) =====
+// The allowance is clamp(seats x $2, $40, $800)/month, so we need a seat count.
+// There is no seat API, so we count active Atlassian-account users and stop at
+// SEAT_SCAN_MAX — past that the allowance is at its ceiling anyway and the exact
+// number stops mattering. Refreshed AT MOST once a day, from the getProviderConfig
+// refresh (chosen over the scheduled tick because the tick lives in
+// src/scheduled-jobs.js and this is a provider concern; the call is fire-and-forget
+// so it never sits in a transition's path, and a killed invocation simply means the
+// next refresh retries). When the count is unknown, allowanceUsdForSeats falls back
+// to 100 seats — never to "unlimited".
+const SEAT_SNAPSHOT_KEY = "COGNIRUNNER_SEAT_SNAPSHOT";
+const SEAT_SNAPSHOT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+const SEAT_SCAN_MAX = 2000;
+const SEAT_PAGE = 200;
+let _seatRefreshStartedAt = 0;
+
+const readSeatCount = async () => {
+  try {
+    const snap = await storage.get(SEAT_SNAPSHOT_KEY);
+    return snap && Number(snap.seats) > 0 ? Number(snap.seats) : null;
+  } catch (e) { return null; }
+};
+
+const maybeRefreshSeatSnapshot = () => {
+  // Per-container throttle first (free), then the stored `at` (authoritative).
+  if (Date.now() - _seatRefreshStartedAt < SEAT_SNAPSHOT_MAX_AGE_MS) return;
+  _seatRefreshStartedAt = Date.now();
+  Promise.resolve().then(async () => {
+    try {
+      const snap = await storage.get(SEAT_SNAPSHOT_KEY);
+      if (snap && snap.at && Date.now() - snap.at < SEAT_SNAPSHOT_MAX_AGE_MS) return;
+      let seats = 0;
+      for (let startAt = 0; startAt < SEAT_SCAN_MAX; startAt += SEAT_PAGE) {
+        const resp = await api.asApp().requestJira(
+          route`/rest/api/3/users/search?startAt=${String(startAt)}&maxResults=${String(SEAT_PAGE)}`,
+          { headers: { Accept: "application/json" } },
+        );
+        if (!resp.ok) return; // keep the previous snapshot rather than writing a wrong one
+        const page = await resp.json();
+        if (!Array.isArray(page) || page.length === 0) break;
+        // Only licensed humans: app/customer accounts and deactivated users are not seats.
+        seats += page.filter((u) => u && u.active === true && u.accountType === "atlassian").length;
+        if (page.length < SEAT_PAGE) break;
+      }
+      if (seats > 0) await storage.set(SEAT_SNAPSHOT_KEY, { seats, at: Date.now() });
+    } catch (e) { /* seat count is best-effort — the 100-seat fallback covers it */ }
+  }).catch(() => { /* never surfaces */ });
 };
 
 // Per-provider KVS key helpers
 const providerKeySlot = (provider) => `COGNIRUNNER_KEY_${provider}`;
 const providerModelSlot = (provider) => `COGNIRUNNER_MODEL_${provider}`;
+// The model an AGENT surface uses (Coder chat, PR review, the Virtual Administrator),
+// kept apart from the rule/validator model: a tenant wants Haiku running a hundred
+// validators and a frontier model running the one agent turn. On Forge LLM only the
+// frontier ids are accepted here — Haiku never drives an agent (see agentCapability
+// in src/shared/edition.js). BYOK takes any model the customer names.
+const providerAgentModelSlot = (provider) => `COGNIRUNNER_AGENT_MODEL_${provider}`;
 // Per-provider base URL — so switching to a provider restores its saved URL
 // instead of re-prompting (LM Studio / Azure carry a custom endpoint). The
 // active provider's URL is still mirrored to COGNIRUNNER_AI_BASE_URL for runtime.
@@ -10995,6 +11210,23 @@ const getOpenAIModel = async () => {
   _cachedModel = model;
   _cachedModelAt = Date.now();
   return model;
+};
+
+/**
+ * The ACTIVE provider's agent model: the saved agent slot, else the ordinary model.
+ * Falling back to getOpenAIModel() rather than to a literal keeps one default in the
+ * app; on Forge LLM that means Haiku, which agentCapability() then refuses — a
+ * deliberate, visible refusal instead of a silent frontier upgrade.
+ *
+ * Not cached: agent surfaces are rare and low-frequency compared with validators.
+ */
+export const getAgentModel = async () => {
+  try {
+    const { provider } = await getProviderConfig();
+    const saved = await storage.get(providerAgentModelSlot(provider));
+    if (saved) return String(saved);
+  } catch (e) { /* fall through to the ordinary model */ }
+  return getOpenAIModel();
 };
 
 /**
@@ -11892,7 +12124,7 @@ Respond with JSON only.`;
     }), Date.now() + VALIDATOR_AI_DEADLINE_MS, "AI validation");
     // Meter AFTER the race (never inside it) so metering latency can't flip a
     // completed AI verdict to fail-open.
-    try { const { provider } = await getProviderConfig(); await recordAiUsage({ provider, usageLike: result && result.data && result.data.usage }); } catch (e) { /* fail-open */ }
+    try { const { provider } = await getProviderConfig(); await recordAiUsage({ provider, usageLike: result && result.data && result.data.usage, model: result && result.data && result.data.model }); } catch (e) { /* fail-open */ }
     // The model that actually served this call (the acquired LM Studio worker, or
     // the configured model for other providers) — for the cogni-debug trace.
     const servedModel = result.modelUsed || model;
@@ -12585,7 +12817,7 @@ RESPONSE FORMAT:
           tool_choice: callToolChoice,
         }), deadline, "Agentic validation round");
         // Meter each completed round AFTER its race (never inside it).
-        try { const { provider } = await getProviderConfig(); await recordAiUsage({ provider, usageLike: aiResult && aiResult.data && aiResult.data.usage }); } catch (e) { /* fail-open */ }
+        try { const { provider } = await getProviderConfig(); await recordAiUsage({ provider, usageLike: aiResult && aiResult.data && aiResult.data.usage, model: aiResult && aiResult.data && aiResult.data.model }); } catch (e) { /* fail-open */ }
       } catch (e) {
         if (e && e.pfDeadline) {
           return { isValid: true, reason: "Validation timed out while gathering context. Transition allowed.", transientError: true, toolMeta };
@@ -14031,7 +14263,7 @@ const executeSemanticPostFunction = async (issueKey, config, deadline = Date.now
       aiResult = await raceDeadline(semanticAiCall(), deadline - 5000, "Semantic AI evaluation (retry)");
     }
     // Meter AFTER the race(s) — the final aiResult only (retries share one logical call).
-    try { const { provider } = await getProviderConfig(); await recordAiUsage({ provider, usageLike: aiResult && aiResult.data && aiResult.data.usage }); } catch (e) { /* fail-open */ }
+    try { const { provider } = await getProviderConfig(); await recordAiUsage({ provider, usageLike: aiResult && aiResult.data && aiResult.data.usage, model: aiResult && aiResult.data && aiResult.data.model }); } catch (e) { /* fail-open */ }
     const aiTimeMs = Date.now() - aiStart;
 
     if (!aiResult.ok) {

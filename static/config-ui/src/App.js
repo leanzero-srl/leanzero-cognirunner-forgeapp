@@ -26,6 +26,7 @@ import DocRepository from "./components/DocRepository";
 import ReviewPanel from "./components/ReviewPanel";
 import AILoadingState from "./components/AILoadingState";
 import { ConfigSkeleton } from "./components/Skeleton";
+import { resolveEdition, EDITIONS } from "../../../src/shared/edition.js";
 
 // Static-PF code offload: the workflow editor caps a rule's embedded config at
 // ~32KB. Above the threshold the step code moves to app storage (KVS) and the
@@ -69,6 +70,7 @@ const injectStyles = () => {
       --accent-docs: #2563eb; --accent-skills: #7c3aed; --accent-memories: #0d9488;
       --accent-test: #d97706; --accent-fix: #16a34a; --accent-slate: #475569;
       --accent-cyan: #0891b2; --accent-indigo: #4f46e5;
+      --accent-edition: #c2410c;
       --r-sm: 6px; --r-md: 8px; --r-lg: 12px; --r-pill: 999px;
       --shadow-card: 0 1px 2px rgba(18,42,66,0.06), 0 5px 16px -8px rgba(18,42,66,0.14);
       --shadow-card-hover: 0 12px 30px -12px rgba(29,78,216,0.28), 0 3px 10px rgba(18,42,66,0.10);
@@ -81,6 +83,7 @@ const injectStyles = () => {
       --accent-docs: #3b82f6; --accent-skills: #8b5cf6; --accent-memories: #14b8a6;
       --accent-test: #f59e0b; --accent-fix: #22c55e; --accent-slate: #64748b;
       --accent-cyan: #22d3ee; --accent-indigo: #6366f1;
+      --accent-edition: #f97316;
       --shadow-card: 0 1px 2px rgba(0,0,0,0.4), 0 5px 16px -8px rgba(0,0,0,0.6);
       --shadow-card-hover: 0 12px 30px -12px rgba(0,0,0,0.7), 0 3px 10px rgba(0,0,0,0.5);
       --glow: 0 8px 22px -6px rgba(59,130,246,0.5);
@@ -149,6 +152,27 @@ const injectStyles = () => {
       line-height: 1.4;
       color: var(--text-secondary);
     }
+
+    /* === Edition chip (1.3) === Solid saturated fill, white text, never a tint.
+       Coder = burnt orange, Standard = neutral slate; dark overrides for both. */
+    .edition-chip {
+      display: inline-flex;
+      align-items: center;
+      padding: 2px 8px;
+      border-radius: 5px;
+      font-size: 11px;
+      font-weight: 700;
+      line-height: 1.5;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: #fff;
+      white-space: nowrap;
+      vertical-align: middle;
+    }
+    .edition-chip.edition-advanced { background: #c2410c; }
+    .edition-chip.edition-standard { background: #475569; }
+    html[data-color-mode="dark"] .edition-chip.edition-advanced { background: #f97316; color: #2a1602; }
+    html[data-color-mode="dark"] .edition-chip.edition-standard { background: #64748b; }
 
     .card {
       padding: 20px;
@@ -2919,6 +2943,11 @@ function App() {
   const [providerReady, setProviderReady] = useState(true);
 
   // Post-function state
+  // Edition (1.3). config-ui read no license before — it does now, purely to render
+  // the chip; nothing in this editor is gated on it.
+  const [licenseActive, setLicenseActive] = useState(null);
+  const [edition, setEdition] = useState(EDITIONS.STANDARD);
+
   const [isPostFunction, setIsPostFunction] = useState(false);
   const [isCondition, setIsCondition] = useState(false);
   // The AI prompt of a condition saved by an older version — shown for reference
@@ -3522,6 +3551,21 @@ function App() {
         // Ignore — defaults are fine
       }
 
+      // Edition — context.license is the fast seed, checkLicense is authoritative.
+      // Own try/catch: a license failure must never stop the editor from loading.
+      try {
+        if (currentContext) {
+          const ed = resolveEdition(currentContext.license);
+          setLicenseActive(ed.active);
+          setEdition(ed.edition);
+        }
+        const licenseResult = await invoke("checkLicense");
+        if (licenseResult?.isActive !== undefined) setLicenseActive(licenseResult.isActive);
+        if (licenseResult?.edition) setEdition(licenseResult.edition);
+      } catch (e) {
+        // Unknown license — the chip stays hidden rather than guessing an edition.
+      }
+
       setLoading(false);
     };
     init();
@@ -3567,6 +3611,11 @@ function App() {
             {isPostFunction ? "Post Function Configuration"
               : isCondition ? "Condition Configuration"
               : "AI Validator Configuration"}
+            {licenseActive !== null && (
+              <span className={`edition-chip edition-${edition === EDITIONS.ADVANCED ? "advanced" : "standard"}`} style={{ marginLeft: "8px" }}>
+                {edition === EDITIONS.ADVANCED ? "Coder" : "Standard"}
+              </span>
+            )}
           </h3>
           <p className="subtitle">
             {isPostFunction

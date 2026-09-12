@@ -394,18 +394,30 @@ const LM_WEIGHT_MODELS = [
   { wkey: "qwopus3.6-35b-a3b-v1-mtp", id: "qwopus3.6-35b-a3b-v1-mtp", quant: "Q8_0", ctx: 262144 },
 ];
 
+/* ----------------------------- editions (1.3) -------------------------------- */
+/* Default shot state is the Coder (advanced) edition. Set window.__STANDARD__ = true
+   before the app mounts to flip EVERY edition surface to Standard: the chip, the
+   locked Sonnet/Opus rows, the upgrade copy and the agent-model lock. */
+const isStandardEd = () => typeof window !== "undefined" && !!window.__STANDARD__;
+const edName = () => (isStandardEd() ? "standard" : "advanced");
+const FORGE_FRONTIER = ["claude-sonnet-5", "claude-opus-5"];
+const FORGE_HAIKU = "claude-haiku-4-5-20251001";
+const mockLicenseCtx = () => (isStandardEd()
+  ? { active: true, isActive: true, capabilitySet: "capabilityStandard", state: "standard", type: "PAID" }
+  : { active: true, isActive: true, capabilitySet: "capabilityAdvanced", state: "advanced", type: "PAID" });
+
 /* ----------------------------- context router -------------------------------- */
 function getContext() {
   const s = shot();
   const baseExt = { workflowId: "wf-software-simplified-12345", workflowName: "Software Simplified Workflow", scopedProjectId: "10001" };
   if (s === "cfg-validator")
-    return { accountId: ACCT, siteUrl: SITE, license: { active: true, type: "PAID" }, extension: { ...baseExt, type: "jira:workflowValidator", key: "ai-text-field-validator", entryPoint: "edit", transitionContext: { id: "21", from: { id: "3", name: "In Progress" }, to: { id: "4", name: "In Review" } }, validatorConfig: JSON.stringify(CFG_VALIDATOR) } };
+    return { accountId: ACCT, siteUrl: SITE, license: mockLicenseCtx(), extension: { ...baseExt, type: "jira:workflowValidator", key: "ai-text-field-validator", entryPoint: "edit", transitionContext: { id: "21", from: { id: "3", name: "In Progress" }, to: { id: "4", name: "In Review" } }, validatorConfig: JSON.stringify(CFG_VALIDATOR) } };
   if (s === "cfg-condition")
-    return { accountId: ACCT, siteUrl: SITE, license: { active: true, type: "PAID" }, extension: { ...baseExt, type: "jira:workflowCondition", key: "ai-text-field-condition", transitionContext: { id: "31", from: { id: "4", name: "In Review" }, to: { id: "5", name: "Done" } }, conditionConfig: JSON.stringify(CFG_CONDITION) } };
+    return { accountId: ACCT, siteUrl: SITE, license: mockLicenseCtx(), extension: { ...baseExt, type: "jira:workflowCondition", key: "ai-text-field-condition", transitionContext: { id: "31", from: { id: "4", name: "In Review" }, to: { id: "5", name: "Done" } }, conditionConfig: JSON.stringify(CFG_CONDITION) } };
   if (s === "cfg-premade")
-    return { accountId: ACCT, siteUrl: SITE, license: { active: true, type: "PAID" }, extension: { ...baseExt, type: "jira:workflowCondition", key: "ai-text-field-condition", transitionContext: { id: "31", from: { id: "4", name: "In Review" }, to: { id: "5", name: "Done" } }, conditionConfig: JSON.stringify(CFG_PREMADE_COND) } };
+    return { accountId: ACCT, siteUrl: SITE, license: mockLicenseCtx(), extension: { ...baseExt, type: "jira:workflowCondition", key: "ai-text-field-condition", transitionContext: { id: "31", from: { id: "4", name: "In Review" }, to: { id: "5", name: "Done" } }, conditionConfig: JSON.stringify(CFG_PREMADE_COND) } };
   if (s === "cfg-semantic")
-    return { accountId: ACCT, siteUrl: SITE, license: { active: true, type: "PAID" }, extension: { ...baseExt, type: "jira:workflowPostFunction", key: "ai-semantic-post-function", transitionContext: { id: "21", from: { id: "3", name: "In Progress" }, to: { id: "4", name: "In Review" } }, postFunctionConfig: JSON.stringify(CFG_SEMANTIC) } };
+    return { accountId: ACCT, siteUrl: SITE, license: mockLicenseCtx(), extension: { ...baseExt, type: "jira:workflowPostFunction", key: "ai-semantic-post-function", transitionContext: { id: "21", from: { id: "3", name: "In Progress" }, to: { id: "4", name: "In Review" } }, postFunctionConfig: JSON.stringify(CFG_SEMANTIC) } };
   if (s === "cfg-managed") {
     // A MANAGED semantic flavor (comment/subtask/generate-doc/research/research-doc/link). The
     // flavor type is chosen via window.__MANAGED__. The config-ui workflow editor is READ-ONLY for
@@ -419,21 +431,21 @@ function getContext() {
       docTitlePrompt: "A concise title for the generated document", docFormat: "markdown",
       researchQuery: "Latest known issues for the components mentioned in this ticket",
     };
-    return { accountId: ACCT, siteUrl: SITE, license: { active: true, type: "PAID" }, extension: { ...baseExt, type: "jira:workflowPostFunction", key: "ai-semantic-post-function", transitionContext: { id: "21", from: { id: "3", name: "In Progress" }, to: { id: "4", name: "In Review" } }, postFunctionConfig: JSON.stringify(managedCfg) } };
+    return { accountId: ACCT, siteUrl: SITE, license: mockLicenseCtx(), extension: { ...baseExt, type: "jira:workflowPostFunction", key: "ai-semantic-post-function", transitionContext: { id: "21", from: { id: "3", name: "In Progress" }, to: { id: "4", name: "In Review" } }, postFunctionConfig: JSON.stringify(managedCfg) } };
   }
   if (s === "cfg-static")
-    return { accountId: ACCT, siteUrl: SITE, license: { active: true, type: "PAID" }, extension: { ...baseExt, type: "jira:workflowPostFunction", key: "ai-static-post-function", transitionContext: { id: "11", from: { id: "1", name: "To Do" }, to: { id: "3", name: "In Progress" } }, postFunctionConfig: JSON.stringify(CFG_STATIC) } };
+    return { accountId: ACCT, siteUrl: SITE, license: mockLicenseCtx(), extension: { ...baseExt, type: "jira:workflowPostFunction", key: "ai-static-post-function", transitionContext: { id: "11", from: { id: "1", name: "To Do" }, to: { id: "3", name: "In Progress" } }, postFunctionConfig: JSON.stringify(CFG_STATIC) } };
   if (s === "view-static-offloaded")
     // An OFFLOADED static PF (config >24KB → code moved to pf_code): functions:[] + name-only functionsMeta.
     // config-view must render the step NAMES from functionsMeta (never the full details). E11 path.
-    return { accountId: ACCT, siteUrl: SITE, license: { active: true }, extension: { ...baseExt, type: "jira:workflowPostFunction", key: "ai-static-post-function", entryPoint: "view", transitionContext: { id: "81", from: { name: "Triaged" }, to: { name: "Mitigating" } }, postFunctionConfig: JSON.stringify({ id: "postfunction-static::Incident::81::i-offload", type: "postfunction-static", fieldId: "", functions: [], functionsMeta: [{ id: "s1", name: "Escalate priority to High", operationType: "rest_api_internal", variableName: "r1" }, { id: "s2", name: "Add on-call watcher", operationType: "rest_api_internal", variableName: "r2" }], workflow: { workflowId: "wf-incident-007", workflowName: "Incident Response", transitionId: "81", siteUrl: SITE } }) } };
+    return { accountId: ACCT, siteUrl: SITE, license: mockLicenseCtx(), extension: { ...baseExt, type: "jira:workflowPostFunction", key: "ai-static-post-function", entryPoint: "view", transitionContext: { id: "81", from: { name: "Triaged" }, to: { name: "Mitigating" } }, postFunctionConfig: JSON.stringify({ id: "postfunction-static::Incident::81::i-offload", type: "postfunction-static", fieldId: "", functions: [], functionsMeta: [{ id: "s1", name: "Escalate priority to High", operationType: "rest_api_internal", variableName: "r1" }, { id: "s2", name: "Add on-call watcher", operationType: "rest_api_internal", variableName: "r2" }], workflow: { workflowId: "wf-incident-007", workflowName: "Incident Response", transitionId: "81", siteUrl: SITE } }) } };
   if (s === "view-active" || s === "view-disabled")
-    return { accountId: ACCT, siteUrl: SITE, license: { active: true }, extension: { ...baseExt, type: "jira:workflowValidator", key: "cognirunner-validator", entryPoint: "view", transitionContext: { id: "21", from: { name: "In Progress" }, to: { name: "Done" } }, validatorConfig: VIEW_VALIDATOR_CONFIG } };
+    return { accountId: ACCT, siteUrl: SITE, license: mockLicenseCtx(), extension: { ...baseExt, type: "jira:workflowValidator", key: "cognirunner-validator", entryPoint: "view", transitionContext: { id: "21", from: { name: "In Progress" }, to: { name: "Done" } }, validatorConfig: VIEW_VALIDATOR_CONFIG } };
   if (s.startsWith("issue-glance"))
     // The jira:issueContext "CogniRunner on this issue" glance — the platform gives the open issue.
-    return { accountId: ACCT, siteUrl: SITE, license: { active: true }, theme: { colorMode: theme() }, extension: { type: "jira:issueContext", key: "cognirunner-issue-glance", issue: { id: "10042", key: "DEMO-42" }, project: { id: "10000", key: "DEMO" } } };
+    return { accountId: ACCT, siteUrl: SITE, license: mockLicenseCtx(), theme: { colorMode: theme() }, extension: { type: "jira:issueContext", key: "cognirunner-issue-glance", issue: { id: "10042", key: "DEMO-42" }, project: { id: "10000", key: "DEMO" } } };
   // default: admin global page (auto-admin via jira:adminPage)
-  return { extension: { type: "jira:adminPage", key: "cognirunner-admin-page" }, license: { active: true, isActive: true }, siteUrl: SITE, accountId: ACCT, cloudId: "00000000-aaaa-bbbb-cccc-000000000000", localId: "mock-local-id", theme: { colorMode: theme() }, locale: "en-US" };
+  return { extension: { type: "jira:adminPage", key: "cognirunner-admin-page" }, license: mockLicenseCtx(), siteUrl: SITE, accountId: ACCT, cloudId: "00000000-aaaa-bbbb-cccc-000000000000", localId: "mock-local-id", theme: { colorMode: theme() }, locale: "en-US" };
 }
 
 
@@ -637,7 +649,19 @@ function invoke(name, payload) {
         { kind: "skipped", label: "On-call escalation", decision: "Skipped", verdictOk: false, reason: "Duplicate platform delivery suppressed.", timestamp: new Date(Date.now() - 26 * 3600000).toISOString() },
       ] });
     }
-    case "checkLicense": return Promise.resolve({ isActive: true });
+    case "checkLicense": return Promise.resolve({
+      isActive: true,
+      edition: edName(),
+      label: isStandardEd() ? "Standard" : "Coder",
+      capabilitySet: isStandardEd() ? "capabilityStandard" : "capabilityAdvanced",
+      source: "license",
+      features: [
+        { id: "frontierModels", label: "Claude Sonnet 5 and Opus 5 on Forge LLM", allowed: !isStandardEd() },
+        { id: "agentModel", label: "Agent model selection", allowed: !isStandardEd() },
+        { id: "coder", label: "Coder (in-issue coding, Git, PR review)", allowed: !isStandardEd() },
+        { id: "virtualAdmin", label: "Virtual Administrators", allowed: !isStandardEd() },
+      ],
+    });
     case "checkIsAdmin": return Promise.resolve({ success: true, isAdmin: true, role: "admin", scope: "all", accountId: ACCT });
     case "checkProviderHealth": return Promise.resolve({ success: true, ok: true, provider: "anthropic", providerLabel: "Anthropic", model: "claude-haiku-4-5-20251001" });
     case "getConfigs": return Promise.resolve(ADMIN_CONFIGS);
@@ -690,7 +714,10 @@ function invoke(name, payload) {
     case "getAsyncJobs": return Promise.resolve(buildJobs());
     case "getFields": return Promise.resolve(FIELDS);
     case "getRuleLists": return Promise.resolve({ success: true, lists: { issuetypes: [{ value: "Bug", label: "Bug" }, { value: "Task", label: "Task" }], statuses: [{ value: "Done", label: "Done" }], priorities: [{ value: "High", label: "High" }] } });
-    case "getAiUsage": return Promise.resolve({ success: true, usage: { month: { key: "2026-07", calls: 1284, prompt: 512000, completion: 148000, total: 660000, byProvider: { anthropic: { calls: 720, total: 410000 }, openai: { calls: 402, total: 180000 }, atlassian: { calls: 162, total: 70000 } } }, today: { key: "2026-07-08", calls: 96, total: 48200 }, history: [{ key: "2026-06", calls: 3140, total: 1620000 }] } });
+    case "getAiUsage": return Promise.resolve({ success: true, usage: { month: { key: "2026-07", calls: 1284, prompt: 512000, completion: 148000, total: 660000, byProvider: { anthropic: { calls: 720, total: 410000 }, openai: { calls: 402, total: 180000 }, atlassian: { calls: 162, total: 70000 } } }, today: { key: "2026-07-08", calls: 96, total: 48200 }, history: [{ key: "2026-06", calls: 3140, total: 1620000 }],
+      // 1.3: the monthly Forge LLM allowance meter. Standard has no allowance row.
+      forgeLlm: isStandardEd() ? undefined : { estUsd: 92.4, allowanceUsd: 200, pct: 46, level: "ok" },
+      seats: 118 } });
     case "resetAiUsage": return Promise.resolve({ success: true });
     case "commitImport": return Promise.resolve({ success: true, status: "committed", ruleId: "imported-1" });
     case "exportRules": return Promise.resolve({ success: true, envelope: { schemaVersion: 1, kind: "cognirunner-rules-export", ruleCount: (args && args.ids || []).length, rules: [] }, skipped: [] });
@@ -724,9 +751,38 @@ function invoke(name, payload) {
       if (payload && payload.provider === "lmstudio") return Promise.resolve({ success: true, provider: "lmstudio", baseUrl: LM_URL, hasKey: false, hasToken: true, isByok: true });
       return Promise.resolve(isAdmin ? { success: true, provider: "anthropic", baseUrl: "https://api.anthropic.com", hasKey: true, isByok: true } : { success: true, isByok: false });
     case "getOpenAIModels":
-      if (payload && payload.provider === "lmstudio") return Promise.resolve({ success: true, isByok: true, models: LM_MODELS.map((m) => m.id), modelDetails: LM_MODELS });
-      return Promise.resolve({ success: true, isByok: true, models: ["claude-haiku-4-5-20251001", "claude-sonnet-4-6-20260101", "claude-opus-4-1-20250805", "claude-3-7-sonnet-20250219"] });
-    case "getOpenAIModelFromKVS": return Promise.resolve(payload && payload.provider === "lmstudio" ? { success: true, model: "qwen/qwen3.6-27b", isByok: true } : { success: true, model: "claude-haiku-4-5-20251001", isByok: true });
+      if (payload && payload.provider === "lmstudio") return Promise.resolve({ success: true, isByok: true, models: LM_MODELS.map((m) => m.id), modelDetails: LM_MODELS, locked: [], edition: edName() });
+      // Forge LLM: never refuses — returns what this edition may pick PLUS the locked ids.
+      if (payload && payload.provider === "atlassian") return Promise.resolve({
+        success: true,
+        isByok: false,
+        currentModel: FORGE_HAIKU,
+        edition: edName(),
+        models: isStandardEd() ? [FORGE_HAIKU] : [FORGE_HAIKU, ...FORGE_FRONTIER],
+        locked: isStandardEd() ? FORGE_FRONTIER : [],
+      });
+      return Promise.resolve({ success: true, isByok: true, edition: edName(), locked: [], models: ["claude-haiku-4-5-20251001", "claude-sonnet-4-6-20260101", "claude-opus-4-1-20250805", "claude-3-7-sonnet-20250219"] });
+    case "getOpenAIModelFromKVS":
+      if (payload && payload.provider === "lmstudio") return Promise.resolve({ success: true, model: "qwen/qwen3.6-27b", isByok: true, edition: edName(), clamped: false });
+      if (payload && payload.provider === "atlassian") return Promise.resolve({
+        success: true,
+        // Standard shot: a Sonnet 5 was saved while on Coder, the edition lapsed ->
+        // the backend serves Haiku and reports `clamped` so the UI can say so.
+        model: isStandardEd() ? FORGE_HAIKU : "claude-sonnet-5",
+        savedModel: isStandardEd() ? "claude-sonnet-5" : undefined,
+        isByok: false, edition: edName(), clamped: isStandardEd(),
+      });
+      return Promise.resolve({ success: true, model: "claude-haiku-4-5-20251001", isByok: true, edition: edName(), clamped: false });
+    case "getAgentModel":
+      if (payload && payload.provider === "atlassian") {
+        return Promise.resolve({ success: true, model: isStandardEd() ? "" : "claude-sonnet-5", edition: edName(), frontierOnly: true });
+      }
+      return Promise.resolve({ success: true, model: "anthropic/claude-opus-5", edition: edName(), frontierOnly: false });
+    case "saveAgentModel":
+      if (isStandardEd() && payload && payload.provider === "atlassian") {
+        return Promise.resolve({ success: false, upgradeRequired: true, featureId: "agentModel", error: "The agent model on Forge LLM is part of CogniRunner Coder \u2014 upgrade in Jira's Manage apps." });
+      }
+      return Promise.resolve({ success: true });
     case "pingLmStudio": return Promise.resolve({ success: true, ok: true, authOk: true, modelCount: LM_MODELS.length, message: `Connected — ${LM_MODELS.length} model(s) available` });
     case "loadLmStudioModel": return Promise.resolve({ success: true });
     case "getLmStudioMcps": return Promise.resolve({ success: true, enabled: { context7: true, webSearch: true, docReader: true, docWriter: false, localContext7: false, localWebSearch: false, localDocReader: false }, supported: [{ key: "context7", label: "context7", tools: ["resolve-library-id", "query-docs"] }, { key: "webSearch", label: "web-search", tools: ["get-web-search-summaries", "full-web-search", "get-single-web-page-content", "get-pdf-content"] }, { key: "docReader", label: "doc-reader", tools: ["read-doc"] }] });

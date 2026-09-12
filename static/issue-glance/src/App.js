@@ -17,6 +17,7 @@
 
 import React, { useEffect, useState } from "react";
 import { invoke, view } from "@forge/bridge";
+import { resolveEdition, EDITIONS } from "../../../src/shared/edition.js";
 
 // Component CSS lives here (injectStyles is the live source; public/index.html carries only the
 // token bootstrap). Solid saturated status hues + white text, glyph+label badges (status is never
@@ -50,6 +51,12 @@ const injectStyles = () => {
     .glance-spinner { width: 18px; height: 18px; border: 2px solid var(--border-color); border-top-color: var(--primary-color); border-radius: 50%; animation: glanceSpin 0.7s linear infinite; margin: 12px auto; }
     @keyframes glanceSpin { to { transform: rotate(360deg); } }
     .glance-err { color: var(--error-color); font-size: 12px; padding: 8px 2px; }
+    /* Edition chip (1.3) — solid saturated fill, white text, dark override per hue. */
+    .edition-chip { display: inline-flex; align-items: center; margin-left: auto; padding: 2px 7px; border-radius: 5px; font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: #fff; white-space: nowrap; }
+    .edition-chip.edition-advanced { background: #c2410c; }
+    .edition-chip.edition-standard { background: #475569; }
+    html[data-color-mode="dark"] .edition-chip.edition-advanced { background: #f97316; color: #2a1602; }
+    html[data-color-mode="dark"] .edition-chip.edition-standard { background: #64748b; }
   `;
   document.head.appendChild(el);
 };
@@ -92,6 +99,10 @@ const badgeFor = (it) => {
 export default function App() {
   const [state, setState] = useState("loading"); // loading | ready | error | notVisible
   const [items, setItems] = useState([]);
+  // Edition chip state. licenseActive stays null until we actually know, and the
+  // chip is hidden until then — never claim an edition we have not read.
+  const [licenseActive, setLicenseActive] = useState(null);
+  const [edition, setEdition] = useState(EDITIONS.STANDARD);
 
   useEffect(() => {
     injectStyles();
@@ -112,6 +123,9 @@ export default function App() {
         const issueKey = ctx?.extension?.issue?.key || ctx?.extension?.issueKey
           || ctx?.issue?.key || ctx?.issueKey || null;
         if (!issueKey) { if (!cancelled) setState("error"); return; }
+        const ed = resolveEdition(ctx?.license);
+        if (!cancelled) { setLicenseActive(ed.active); setEdition(ed.edition); }
+
         const res = await invoke("getIssueActivity", { issueKey });
         if (cancelled) return;
         if (res && res.success && Array.isArray(res.items)) {
@@ -120,6 +134,16 @@ export default function App() {
         } else {
           setState("error");
         }
+
+        // checkLicense is authoritative for paid apps; a failure just leaves the
+        // context-derived value (or hides the chip) — it never fails the panel.
+        try {
+          const lic = await invoke("checkLicense");
+          if (!cancelled) {
+            if (lic?.isActive !== undefined) setLicenseActive(lic.isActive);
+            if (lic?.edition) setEdition(lic.edition);
+          }
+        } catch (_) { /* unknown edition — chip stays as-is */ }
       } catch (e) {
         if (!cancelled) setState("error");
       }
@@ -129,7 +153,14 @@ export default function App() {
 
   return (
     <div className="glance">
-      <div className="glance-head"><span className="glance-mark">CR</span> CogniRunner on this issue</div>
+      <div className="glance-head">
+        <span className="glance-mark">CR</span> CogniRunner on this issue
+        {licenseActive !== null && (
+          <span className={`edition-chip edition-${edition === EDITIONS.ADVANCED ? "advanced" : "standard"}`}>
+            {edition === EDITIONS.ADVANCED ? "Coder" : "Standard"}
+          </span>
+        )}
+      </div>
       {state === "loading" && <div className="glance-spinner" aria-label="Loading activity" />}
       {state === "error" && <div className="glance-err">Couldn't load activity. Try reloading the issue.</div>}
       {(state === "ready" || state === "notVisible") && items.length === 0 && (

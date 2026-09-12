@@ -22,8 +22,13 @@ let _csSeq = 0;
  * scroll/resize while open.
  *
  * Props:
- *   value, onChange(value), options ([{value,label,meta?,icon?,type?}] or strings),
+ *   value, onChange(value), options ([{value,label,meta?,icon?,type?,badges?,disabled?}] or strings),
  *   groups ([{label, filter}]), placeholder, searchable, searchPlaceholder, error, disabled
+ *
+ * Per-option `disabled: true` renders a NON-selectable row (edition-locked models):
+ * click is a no-op, Enter ignores it, Arrow/Home/End skip over it, and it carries
+ * aria-disabled. It is styled with a solid secondary text colour + not-allowed cursor —
+ * never opacity/fading, per the design mandate.
  */
 export default function CustomSelect({
   value,
@@ -69,6 +74,16 @@ export default function CustomSelect({
       (o.meta && o.meta.toLowerCase().includes(q))
     );
   });
+
+  // Edition-locked (or otherwise unavailable) rows are rendered but never selectable.
+  const isDisabledOpt = (o) => !!(o && o.disabled);
+  // Next selectable index in `dir` (+1/-1) starting from `from`; -1 when there is none.
+  const nextEnabled = (from, dir) => {
+    for (let i = from; i >= 0 && i < filtered.length; i += dir) {
+      if (!isDisabledOpt(filtered[i])) return i;
+    }
+    return -1;
+  };
 
   // Find selected option's label
   const selectedOpt = normalized.find((o) => o.value === value);
@@ -122,7 +137,7 @@ export default function CustomSelect({
   }, [open, showSearch, measure]);
 
   // Reset highlight on search change
-  useEffect(() => { setHighlighted(0); }, [search]);
+  useEffect(() => { setHighlighted(nextEnabled(0, 1)); }, [search]);
 
   // Scroll highlighted into view
   useEffect(() => {
@@ -148,19 +163,20 @@ export default function CustomSelect({
     if (e.key === "Escape") { e.preventDefault(); setOpen(false); focusTrigger(); return; }
     if (e.key === "ArrowDown") {
       e.preventDefault();
-      setHighlighted((p) => Math.min(p + 1, filtered.length - 1));
+      setHighlighted((p) => { const n = nextEnabled(Math.min(p + 1, filtered.length - 1), 1); return n === -1 ? p : n; });
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
-      setHighlighted((p) => Math.max(p - 1, 0));
+      setHighlighted((p) => { const n = nextEnabled(Math.max(p - 1, 0), -1); return n === -1 ? p : n; });
     } else if (e.key === "Home") {
       e.preventDefault();
-      setHighlighted(0);
+      setHighlighted(nextEnabled(0, 1));
     } else if (e.key === "End") {
       e.preventDefault();
-      setHighlighted(filtered.length - 1);
+      setHighlighted(nextEnabled(filtered.length - 1, -1));
     } else if (e.key === "Enter") {
       e.preventDefault();
-      if (highlighted >= 0 && highlighted < filtered.length) {
+      // A locked row never commits — Enter on it is simply ignored.
+      if (highlighted >= 0 && highlighted < filtered.length && !isDisabledOpt(filtered[highlighted])) {
         onChange(filtered[highlighted].value);
         setOpen(false);
         setSearch("");
@@ -177,16 +193,19 @@ export default function CustomSelect({
     focusTrigger();
   };
 
-  const renderItem = (opt, idx) => (
+  const renderItem = (opt, idx) => {
+    const locked = isDisabledOpt(opt);
+    return (
     <div
       key={opt.value}
       id={optionId(idx)}
       role="option"
       aria-selected={opt.value === value}
+      aria-disabled={locked || undefined}
       data-idx={idx}
-      className={`dropdown-item${opt.value === value ? " dropdown-selected" : ""}${idx === highlighted ? " dropdown-highlighted" : ""}`}
-      onClick={() => selectOption(opt)}
-      onMouseEnter={() => setHighlighted(idx)}
+      className={`dropdown-item${opt.value === value ? " dropdown-selected" : ""}${idx === highlighted && !locked ? " dropdown-highlighted" : ""}${locked ? " dropdown-item-locked" : ""}`}
+      onClick={() => { if (!locked) selectOption(opt); }}
+      onMouseEnter={() => { if (!locked) setHighlighted(idx); }}
     >
       {opt.icon && <span className="dropdown-item-icon" dangerouslySetInnerHTML={{ __html: opt.icon }} />}
       <span className="dropdown-item-name">{opt.label}</span>
@@ -196,7 +215,8 @@ export default function CustomSelect({
       ))}
       {opt.type && <span className="dropdown-item-type">{opt.type}</span>}
     </div>
-  );
+    );
+  };
 
   const renderItems = () => {
     if (groups && groups.length > 0) {

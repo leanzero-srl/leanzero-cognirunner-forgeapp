@@ -126,24 +126,29 @@ export const loadMemories = async () => {
   }
 };
 
-// Prune priority: lowest (confidence + 0.1 × min(reinforcements, 5)) first,
-// oldest updatedAt as the tie-break. User-authored memories are only pruned
-// once no auto-captured (test/fix) memories remain.
+// Prune priority among AUTO-captured rows: lowest (confidence + 0.1 × min(
+// reinforcements, 5)) first, oldest updatedAt as the tie-break. User-authored
+// memories are never pruned at all (F-164 — see pruneOne).
 const pruneScore = (m) => (Number(m.confidence) || 0) + 0.1 * Math.min(Number(m.reinforcements) || 0, 5);
 
 /**
  * Choose ONE victim.
  *
- * F-160 — POLICY, one home: an AUTO-CAPTURED candidate (source test/fix/runtime)
- * NEVER evicts a USER-AUTHORED memory. The protected newcomer was excluded from
- * `eligible` before the auto pool was computed, so at a full store of user rows the
- * auto pool came out empty and the "autos first, then users" fallback handed a
- * machine-written lesson a human's memory as a victim (measured: a 1.0-confidence,
- * 5-reinforcement user row evicted by a 0.2-confidence fix row). When the protected
- * row is auto and no OTHER auto row exists, there is NO victim: the caller must
- * reject the candidate and leave the store untouched (`blocked`).
+ * POLICY, ONE HOME (F-160 + F-164): **a HAND-AUTHORED memory is never evicted by
+ * the app.** Only auto-captured rows (source "test"/"fix" — anything that is not
+ * "user") are ever eligible as a victim, whoever the newcomer is.
  *
- * A USER-authored add keeps the old behaviour: autos first, then the lowest user row.
+ * F-160 fixed half of it: an AUTO candidate may not evict a USER row (measured: a
+ * 1.0-confidence, 5-reinforcement user row evicted by a 0.2-confidence fix row). The
+ * USER arm stayed, so a user add at a full all-user store still silently destroyed
+ * the lowest-scoring hand-written memory — permanently, with no tombstone and no undo,
+ * behind a "Memory saved" toast (F-164). A curated store is exactly the state the
+ * feature asks admins to build; it must not eat itself.
+ *
+ * So: with no auto row available there is NO victim and the caller is told (`blocked`).
+ * For a new candidate that means refused with reason "cap" and a store left byte-identical;
+ * the human prunes in the Memories tab. The ONE exception is the byte guard with nothing
+ * left but the protected newcomer itself — it is then dropped (never a stored row).
  *
  * @returns {{ out: Array, victim: Object|null, blocked?: boolean }}
  */
@@ -153,11 +158,8 @@ const pruneOne = (arr, protectId = null) => {
   // by its own save, while saveMemoryCandidate still reported an id, so addMemory
   // answered success for a row that no longer existed.
   const eligible = protectId ? arr.filter((m) => m.id !== protectId) : arr;
-  const protectedRow = protectId ? arr.find((m) => m.id === protectId) : null;
-  const protectIsAuto = !!protectedRow && protectedRow.source !== "user";
-  const autoPool = eligible.filter((m) => m.source !== "user");
-  // F-160: an auto newcomer may only take from OTHER auto rows.
-  const pool = autoPool.length > 0 ? autoPool : (protectIsAuto ? [] : eligible);
+  // F-164: the pool is the AUTO rows. Full stop — no fallback to user rows.
+  const pool = eligible.filter((m) => m.source !== "user");
   let victim = null;
   for (const m of pool) {
     if (!victim
@@ -168,9 +170,11 @@ const pruneOne = (arr, protectId = null) => {
     }
   }
   if (!victim) {
-    // Auto newcomer, and every other row is user-authored → nothing may be evicted.
-    if (protectIsAuto && eligible.length > 0) return { out: arr, victim: null, blocked: true };
-    // Nothing but the protected row is left: it is the only thing that can still go.
+    // Every remaining row is hand-authored → nothing may be evicted. The caller
+    // must reject the candidate and leave the store untouched.
+    if (eligible.length > 0) return { out: arr, victim: null, blocked: true };
+    // Nothing but the protected row is left: it is the only thing that can still go
+    // (byte guard — a row that cannot fit even alone is never reported as stored).
     victim = arr.length > 0 ? arr[0] : null;
   }
   return { out: arr.filter((m) => m !== victim), victim };
@@ -183,7 +187,7 @@ const pruneOne = (arr, protectId = null) => {
  * `protectedKept` is false — the caller must then report stored:false).
  *
  * F-161: `reason` says WHY a protected row could not be kept — "cap" (the item cap,
- * now reachable because of the F-160 policy) or "bytes" (the serialized-size guard).
+ * reachable for ANY candidate since F-164) or "bytes" (the serialized-size guard).
  *
  * @returns {{ out: Array, evicted: string[], protectedKept: boolean, reason: string|null }}
  */
@@ -195,17 +199,27 @@ export const pruneForSave = (arr, protectId = null) => {
     reason = why;
     out = out.filter((m) => m.id !== protectId);
   };
+  // Returns true when no further eviction is possible and the loop must stop.
   const step = (why) => {
     const r = pruneOne(out, protectId);
-    if (r.blocked) { dropProtected(why); return; }
+    if (r.blocked) {
+      // F-164: nothing but hand-authored rows left. If we are protecting a newcomer,
+      // IT is what gives way (the caller then reports stored:false / reason). With no
+      // newcomer to drop (a re-save of an oversized legacy store) there is simply
+      // nothing this module is allowed to delete — stop rather than spin, and let the
+      // KVS write surface any real size error instead of silently eating user data.
+      if (protectId && out.some((m) => m.id === protectId)) { dropProtected(why); return false; }
+      return true;
+    }
     out = r.out;
     if (r.victim) {
       if (protectId && r.victim.id === protectId) reason = why;
       else evicted.push(r.victim.id);
     }
+    return !r.victim;
   };
-  while (out.length > MAX_MEMORIES) step("cap");
-  while (out.length > 0 && utf8Len(JSON.stringify(out)) >= MAX_SERIALIZED_BYTES) step("bytes");
+  while (out.length > MAX_MEMORIES) { if (step("cap")) break; }
+  while (out.length > 0 && utf8Len(JSON.stringify(out)) >= MAX_SERIALIZED_BYTES) { if (step("bytes")) break; }
   const protectedKept = !protectId || out.some((m) => m.id === protectId);
   return { out, evicted, protectedKept, reason: protectedKept ? null : (reason || "cap") };
 };
@@ -235,8 +249,8 @@ const jaccard = (a, b) => {
  * max, updatedAt = now) instead of creating a near-duplicate.
  *
  * @returns {{ id: string|null, merged: boolean, stored: boolean, evicted: string[], reason?: string, error?: string }}
- *   stored:false means nothing was written: reason "cap" = the item cap (for an
- *   auto candidate, a store with no other auto row to evict — F-160/F-161),
+ *   stored:false means nothing was written: reason "cap" = the item cap with no
+ *   AUTO row left to evict (hand-authored rows are never evicted — F-160/F-161/F-164),
  *   reason "bytes" = the serialized-size guard.
  */
 export const saveMemoryCandidate = async ({ content, source = "user", projectKey = null, confidence = 1.0, meta = null, createdBy = null } = {}) => {
@@ -294,7 +308,8 @@ export const saveMemoryCandidate = async ({ content, source = "user", projectKey
   // success answer for an id that vanished in the same call.
   // Decide BEFORE writing: a rejected newcomer must leave the store untouched
   // (no collateral eviction for a row we are not going to keep).
-  // F-160: an auto candidate is rejected outright rather than evicting a user memory.
+  // F-160/F-164: a candidate is rejected outright rather than evicting a hand-authored
+  // memory — for an auto candidate AND for a user one.
   const dryRun = pruneForSave(memories, id);
   if (!dryRun.protectedKept) {
     const reason = dryRun.reason || "cap";

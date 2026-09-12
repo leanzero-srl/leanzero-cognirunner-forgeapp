@@ -8,12 +8,13 @@
 // Offline unit test for memory DEDUP / REINFORCE / PRUNE (src/memories.js) via the mock @forge/kvs.
 // Run: node --import ../lib/register-mocks.mjs scripts/memory-dedup.test.mjs   (see test:offline)
 // Covers: normalizeMemoryText masking, exact + Jaccard dedup, reinforce (reinforcements++, confidence=max),
-// prune (auto evicted before user, 200-item cap), and the audit's PLAUSIBLE "reinforce a DISABLED memory
+// prune (ONLY auto rows are ever evicted — F-164: a hand-authored memory is never evicted by the app,
+// a user add at an all-user cap is refused instead; 200-item cap), and the audit's PLAUSIBLE "reinforce a DISABLED memory
 // without re-enabling" — a USER re-add of an archived memory must re-enable it (else it's a silent no-op);
 // an AUTO reinforce must NOT resurrect an admin's archive.
 import storage from "../lib/mock-kvs.mjs";
 import {
-  saveMemoryCandidate, normalizeMemoryText, buildMemoryBlock, MEMORIES_KEY,
+  saveMemoryCandidate, normalizeMemoryText, buildMemoryBlock, pruneForSave, MEMORIES_KEY,
 } from "../../src/memories.js";
 
 let pass = 0, fail = 0;
@@ -134,18 +135,32 @@ ok(mixedAfter.length === 200, `store stays at the cap (${mixedAfter.length})`);
 ok(mixedAdd.evicted.length === 1 && mixedAdd.evicted[0].startsWith("ma"), `the evicted row is an AUTO row (${JSON.stringify(mixedAdd.evicted)})`);
 ok(mixedAfter.filter((m) => m.source === "user").length === 190, "every USER row survived an auto candidate's eviction");
 
-// --- F-160: a USER add at the cap keeps the old behaviour — lowest AUTO first, then lowest USER ---
+// --- F-164: a USER add at the cap evicts the lowest AUTO row if there is one...
 reset([]);
 storage.__seed(MEMORIES_KEY, mixed.map((m) => ({ ...m })));
 const userAdd1 = await saveMemoryCandidate({ content: "a user lesson about release train cadence", source: "user" });
 ok(userAdd1.stored === true && userAdd1.evicted.length === 1 && userAdd1.evicted[0].startsWith("ma"),
-  `a USER add at the cap evicts the lowest AUTO row first (${JSON.stringify(userAdd1.evicted)})`);
+  `a USER add at the cap evicts the lowest AUTO row (${JSON.stringify(userAdd1.evicted)})`);
+ok(load().filter((m) => m.source === "user").length === 191, "every hand-authored row survived a USER add");
+
+// --- F-164: ...and at an ALL-USER cap it is REFUSED — a hand-authored memory is NEVER
+// evicted by the app. Before F-164 the lowest-scoring user row (u0) was silently destroyed
+// behind a "Memory saved" toast, with no tombstone and no undo.
 reset([]);
 storage.__seed(MEMORIES_KEY, allUser.map((m) => ({ ...m })));
+const beforeUserJson = JSON.stringify(load());
 const userAdd2 = await saveMemoryCandidate({ content: "a user lesson about release train cadence", source: "user" });
-ok(userAdd2.stored === true && userAdd2.evicted.length === 1 && userAdd2.evicted[0] === "u0",
-  `with no autos left a USER add evicts the LOWEST-scoring user row (${JSON.stringify(userAdd2.evicted)})`);
-ok(load().length === 200 && load().some((m) => m.id === userAdd2.id), "the user newcomer is in the store, still at the cap");
+ok(userAdd2.stored === false && userAdd2.id === null && userAdd2.reason === "cap",
+  `a USER add at an all-user cap is REFUSED with reason 'cap' (got ${JSON.stringify({ stored: userAdd2.stored, reason: userAdd2.reason })})`);
+ok(JSON.stringify(load()) === beforeUserJson, "the refused USER add leaves the store BYTE-IDENTICAL (u0 is not evicted)");
+ok(load().length === 200 && load().some((m) => m.id === "u0"), "the lowest-scoring hand-authored memory is still there");
+
+// --- F-164: an OVERSIZED all-user store re-saved with no newcomer must not spin forever
+// (the prune has nothing it is allowed to evict) — it returns, over cap, rather than hanging
+// or eating a user row.
+const over = allUser.map((m) => ({ ...m })).concat([{ id: "u200", content: "one row over the cap", source: "user", confidence: 1, reinforcements: 0, disabled: false, updatedAt: "2026-03-01T00:00:00Z" }]);
+const pf = pruneForSave(over, null);
+ok(pf.out.length === 201 && pf.evicted.length === 0, `an all-user over-cap array is left intact rather than pruned (${pf.out.length} rows, ${pf.evicted.length} evicted)`);
 
 // --- F-159/F-161: at the cap with every OTHER row higher-scoring AUTO, a new fix row must never
 // "succeed" into a vanished id. Either it is stored (and a lower-value auto row goes), or

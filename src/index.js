@@ -7218,11 +7218,14 @@ resolver.define("addMemory", async ({ payload, context }) => {
     // F-159: `stored:false` means nothing was written — never answer success for an
     // id that the prune dropped in the same call. F-161: say WHICH limit was hit —
     // the item cap (store full of memories nothing may evict) or the byte guard.
+    // F-164/F-166: this refusal is now REACHABLE for a plain user add — a hand-authored
+    // memory is never evicted, so at an all-user cap the add is refused instead of
+    // silently destroying one. The Memories tab renders `error`, so say what to do.
     if (result.stored === false || !result.id) {
       const reason = result.reason || null;
       let error = result.error || "Failed to save memory";
       if (reason === "cap") {
-        error = "Memory store is full of your own memories (200 max) — delete or archive some in the Memories tab to make room.";
+        error = "Memory store is full of your own memories (200 max) — nothing is evicted automatically. Prune it in the Memories tab to make room.";
       } else if (reason === "bytes") {
         error = "Memory store has reached its size limit — delete or shorten some memories in the Memories tab.";
       }

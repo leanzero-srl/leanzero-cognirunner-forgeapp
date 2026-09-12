@@ -146,6 +146,8 @@ ok(!/FORGE_LLM_MODELS\s*=/.test(codeOnly), "src/index.js does not redefine FORGE
 // =====================================================================================
 ok(/SEAT_SNAPSHOT_KEY = "COGNIRUNNER_SEAT_SNAPSHOT"/.test(codeOnly), "seat snapshot key");
 ok(/SEAT_SCAN_MAX = 2000/.test(codeOnly), "the user scan stops at 2,000 (past that the allowance is at its ceiling)");
+// Moved here from edition-backend.test.mjs (F-104 — one home for the scan's shape).
+ok(/SEAT_MAX_PAGES = 10/.test(codeOnly), "the page ceiling is 10");
 ok(/SEAT_SNAPSHOT_MAX_AGE_MS = 24 \* 60 \* 60 \* 1000/.test(codeOnly), "the seat count refreshes at most once a day");
 ok(/rest\/api\/3\/users\/search/.test(codeOnly), "seats are counted from /rest/api/3/users/search (read:jira-user is held)");
 {

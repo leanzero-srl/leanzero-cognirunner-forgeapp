@@ -559,6 +559,33 @@ try {
     } catch (e) { fail++; console.log("  ✗ D1 threw: " + e.message.split("\n")[0]); }
     await close(env);
   }
+  /* ---------------- M2 — admin Memories tab: store FULL banner (F-167), both themes ----------------
+   * Same storeFull signal as the config-ui Knowledge panel, same wording (MemoryFullBanner is
+   * imported, not re-typed), rendered above the admin table where pruning actually happens. */
+  for (const theme of ["light", "dark"]) {
+    console.log(`M2 admin memories store-full banner — ${theme}`);
+    const env = await openAdmin(browser, theme, { __MEMORY_FULL__: true });
+    const { page } = env;
+    try {
+      await tab(page, "Memories");
+      const banner = page.locator(".memory-full-banner").first();
+      await banner.waitFor({ timeout: 10000 });
+      const btxt = await banner.innerText();
+      ok(/Memory store is full/i.test(btxt), `M2 ${theme} banner renders in the admin Memories tab`);
+      ok(/not being kept since/i.test(btxt) && /resume learning/i.test(btxt), `M2 ${theme} banner carries the full wording`);
+      const style = await banner.evaluate((el) => {
+        const c = getComputedStyle(el);
+        return { bg: c.backgroundColor, fg: c.color, bl: c.borderLeftWidth, bt: c.borderTopWidth };
+      });
+      const rgb = style.bg.match(/\d+/g).map(Number);
+      ok(rgb[0] > 180 && rgb[1] < 90 && rgb[2] < 90, `M2 ${theme} solid red fill — got ${style.bg}`);
+      ok(/255,\s*255,\s*255/.test(style.fg), `M2 ${theme} white text — got ${style.fg}`);
+      ok(style.bl === style.bt, `M2 ${theme} no left accent rail`);
+      await shot(page, `m2-memories-full-${theme}`);
+    } catch (e) { fail++; console.log(`  ✗ M2 ${theme} threw: ` + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
 } finally {
   await browser.close();
 }

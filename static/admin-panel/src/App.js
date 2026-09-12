@@ -4984,6 +4984,22 @@ const injectCopiedComponentStyles = () => {
     }
     .memory-quick-add .input { flex: 1; }
 
+    /* F-167 — memory store FULL. A hard stop, not a hint: solid #dc2626, white text,
+       full border (never a left rail), no tint. Dark one shade lighter (#ef4444). */
+    .memory-full-banner {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      background: #dc2626;
+      color: #ffffff;
+      border-radius: 4px;
+      padding: 9px 12px;
+      margin-bottom: 10px;
+    }
+    .memory-full-title { font-size: 12px; font-weight: 700; letter-spacing: 0.02em; }
+    .memory-full-text { font-size: 12px; font-weight: 600; line-height: 1.45; }
+    .kc-mem-full { color: #dc2626 !important; }
+
     .btn-remember {
       padding: 6px 14px;
       font-size: 12px;
@@ -5042,6 +5058,9 @@ const injectCopiedComponentStyles = () => {
     html[data-color-mode="dark"] .kc-docs { color: #3b82f6; }
     html[data-color-mode="dark"] .kc-skills { color: #8b5cf6; }
     html[data-color-mode="dark"] .kc-mem { color: #14b8a6; }
+
+    html[data-color-mode="dark"] .memory-full-banner { background: #ef4444; color: #ffffff; }
+    html[data-color-mode="dark"] .kc-mem-full { color: #ef4444 !important; }
     html[data-color-mode="dark"] .knowledge-tab-docs.active { background: #3b82f6; border-color: #3b82f6; }
     html[data-color-mode="dark"] .knowledge-tab-skills.active { background: #8b5cf6; border-color: #8b5cf6; }
     html[data-color-mode="dark"] .knowledge-tab-memories.active { background: #14b8a6; border-color: #14b8a6; }

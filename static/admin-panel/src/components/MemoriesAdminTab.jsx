@@ -25,6 +25,9 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { showToast } from "./toast";
 import { confirmDialog } from "../confirmDialog";
+// F-167 — one home for the "store is full" wording; MemoriesTab is the byte-identical
+// copy shared with config-ui, so the admin tab and the Knowledge panel never drift.
+import { MemoryFullBanner } from "./MemoriesTab";
 
 const SOURCE_CLASS = {
   user: "memories-admin-src-user",
@@ -267,6 +270,8 @@ export default function MemoriesAdminTab({ invoke, isAdmin }) {
       <div className="memories-admin-explainer">
         Memories are short facts the AI has learned about this Jira instance. They are injected into every code generation.
       </div>
+
+      {settings && settings.storeFull && <MemoryFullBanner storeFull={settings.storeFull} />}
 
       {error && (
         <div style={{ color: "var(--error-color)", fontSize: "12px", fontWeight: 600, marginBottom: "10px" }}>

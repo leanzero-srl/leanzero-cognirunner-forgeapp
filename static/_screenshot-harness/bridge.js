@@ -669,6 +669,18 @@ function mktInvoke(name, payload) {
 }
 
 /* ----------------------------- invoke router --------------------------------- */
+
+/* F-167 - memory store ceiling fixture. storeFull rides getMemories' settings (what
+ * MemoriesTab / MemoriesAdminTab read) AND getMemorySettings / getKnowledgeCounts,
+ * matching the backend. Null unless window.__MEMORY_FULL__ is set by a test. */
+const MEMORY_STORE_FULL = { at: "2026-09-09T11:20:00.000Z", reason: "cap" };
+const MEMORY_SETTINGS = () => ({
+  autoCapture: true,
+  injection: true,
+  runtimeInjection: false,
+  storeFull: (typeof window !== "undefined" && window.__MEMORY_FULL__) ? MEMORY_STORE_FULL : null,
+});
+
 function invoke(name, payload) {
   const s = shot();
   const mkt = s.startsWith("admin-");
@@ -890,7 +902,14 @@ function invoke(name, payload) {
     case "searchUsers": return Promise.resolve({ success: true, users: [{ accountId: "557058:55555555-5555-5555-5555-555555555555", displayName: "Alex Newman", avatarUrl: "https://secure.gravatar.com/avatar/ddd?d=identicon&s=24" }, { accountId: "557058:66666666-6666-6666-6666-666666666666", displayName: "Jordan Lee", avatarUrl: null }] });
     case "getContextDocs": return Promise.resolve((typeof window !== "undefined" && window.__EMPTY__) ? { success: true, docs: [] } : DOCS);
     case "getContextDocContent": return Promise.resolve({ success: true, doc: { content: '{\n  "orders": { "GET /v2/orders": "List orders" }\n}' } });
-    case "getKnowledgeCounts": return Promise.resolve({ success: true, docs: 4, skills: 6, memories: 12 });
+    // F-167 - window.__MEMORY_FULL__ models the store at its hard ceiling: the backend
+    // answers getMemorySettings/getKnowledgeCounts with storeFull = { at, reason } and
+    // refuses a user add with reason "cap". The counts chip must then read "200 / 200".
+    case "getKnowledgeCounts": return Promise.resolve(
+      typeof window !== "undefined" && window.__MEMORY_FULL__
+        ? { success: true, docs: 4, skills: 6, memories: 200, memoryCap: 200, storeFull: MEMORY_STORE_FULL }
+        : { success: true, docs: 4, skills: 6, memories: 12 });
+    case "getMemorySettings": return Promise.resolve({ success: true, settings: MEMORY_SETTINGS() });
     case "getSkills": if (typeof window !== "undefined" && window.__EMPTY__) return Promise.resolve({ success: true, skills: [] }); return Promise.resolve({ success: true, skills: [
       { id: "sk1", name: "Create a linked issue", category: "Jira API", builtin: true, description: "Create and link a sub-task or related issue via the REST API." },
       { id: "sk2", name: "Find duplicates by summary", category: "Workflow Patterns", builtin: true, description: "Search the project with JQL for issues with a similar summary." },
@@ -899,7 +918,7 @@ function invoke(name, payload) {
       { id: "sk5", name: "Post to an external webhook", category: "External / Webhooks", builtin: false, description: "Notify an external service on a transition." },
       { id: "sk6", name: "Summarize a description", category: "Other", builtin: false, description: "Condense a long description into a short, structured summary." },
     ] });
-    case "getMemories": if (typeof window !== "undefined" && window.__EMPTY__) return Promise.resolve({ success: true, memories: [] }); return Promise.resolve({ success: true, memories: [
+    case "getMemories": if (typeof window !== "undefined" && window.__EMPTY__) return Promise.resolve({ success: true, memories: [], settings: MEMORY_SETTINGS() }); return Promise.resolve({ success: true, settings: MEMORY_SETTINGS(), memories: [
       { id: "m1", content: "This instance stores the team in customfield_10003 (Team), not Components.", source: "learned", createdAt: "2026-06-14T10:00:00Z" },
       { id: "m2", content: "Release Notes is customfield_10042 and accepts plain text.", source: "learned", createdAt: "2026-06-12T09:00:00Z" },
       { id: "m3", content: "Transitions to Done require a non-empty resolution.", source: "user", createdAt: "2026-06-10T08:00:00Z" },
@@ -950,6 +969,8 @@ function invoke(name, payload) {
     case "addMemory": return Promise.resolve(
       typeof window !== "undefined" && window.__MEMORY_CAP__
         ? { success: false, reason: "cap", stored: false }
+        : typeof window !== "undefined" && window.__MEMORY_FULL__
+        ? { success: false, reason: "cap", stored: false, error: "The memory store is full of your own memories - prune in the Memories tab." }
         : typeof window !== "undefined" && window.__MEMORY_MERGED__
         ? { success: true, id: "mem_existing_7", merged: true, stored: true, evicted: [] }
         : { success: true, id: "mem_fix_1", merged: false, stored: true, evicted: [] });

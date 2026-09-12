@@ -12,7 +12,8 @@
 // and F-164/F-166 (a user add at an all-user cap is refused with a message the tab can render).
 import "../lib/register-mocks-index.mjs";
 import storage from "../lib/mock-kvs.mjs";
-import { MEMORIES_KEY, MEMORY_STORE_FULL_KEY, MAX_MEMORIES } from "../../src/memories.js";
+import { readFileSync } from "node:fs";
+import { MEMORIES_KEY, MEMORY_STORE_FULL_KEY, MEMORY_CONTENT_MAX, MAX_MEMORIES } from "../../src/memories.js";
 const { handler } = await import("../../src/index.js");
 
 let pass = 0, fail = 0;
@@ -101,6 +102,23 @@ await call("deleteMemory", { id: "u5" });
 const stored = await call("addMemory", { content: "a brand new lesson that now fits", source: "test" });
 ok(stored.success === true && storage.__raw(MEMORY_STORE_FULL_KEY) === undefined,
   "a successful store clears the marker");
+
+// === F-168: ONE memory-content clamp, imported — no retyped literal in index.js ===
+const indexSrc = readFileSync(new URL("../../src/index.js", import.meta.url), "utf8");
+const memoryClamps = indexSrc.match(/String\(content \|\| ""\)\.trim\(\)\.substring\(0, ([A-Za-z0-9_]+)\)/g) || [];
+ok(memoryClamps.length === 2 && memoryClamps.every((m) => m.includes("MEMORY_CONTENT_MAX")),
+  `both memory-content clamps in index.js use MEMORY_CONTENT_MAX (${JSON.stringify(memoryClamps)})`);
+ok(/import \{[\s\S]*?MEMORY_CONTENT_MAX[\s\S]*?\} from "\.\/memories\.js";/.test(indexSrc),
+  "index.js imports the constant rather than retyping the number");
+reset([]);
+const longAdd = await call("addMemory", { content: "x".repeat(MEMORY_CONTENT_MAX + 50) });
+ok(load().find((m) => m.id === longAdd.id).content.length === MEMORY_CONTENT_MAX,
+  `addMemory clamps at MEMORY_CONTENT_MAX (${MEMORY_CONTENT_MAX})`);
+await call("updateMemory", { id: longAdd.id, content: "y".repeat(MEMORY_CONTENT_MAX + 50) });
+ok(load().find((m) => m.id === longAdd.id).content.length === MEMORY_CONTENT_MAX, "updateMemory clamps at the same constant");
+const asyncSrc = readFileSync(new URL("../../src/async-handler.js", import.meta.url), "utf8");
+ok(!/substring\(0, 350\)/.test(asyncSrc) && /MEMORY_DISTILL_CONTENT_MAX = 350/.test(asyncSrc),
+  "the distill task's deliberately tighter clamp is NAMED, not a bare literal");
 
 console.log(`\nmemory-resolvers: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

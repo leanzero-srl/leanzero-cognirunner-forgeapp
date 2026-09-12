@@ -757,6 +757,14 @@ const executeSkillDistill = async (params) => {
 };
 
 /**
+ * Model-emitted lesson clamp for the distill task. DELIBERATELY tighter than
+ * MEMORY_CONTENT_MAX (400, src/memories.js — the limit a HUMAN may type): a
+ * distilled lesson is generated text and stays terse. Named so the two numbers
+ * can never be mistaken for one rule with two homes (F-168).
+ */
+const MEMORY_DISTILL_CONTENT_MAX = 350;
+
+/**
  * Runtime auto-capture distillation (opt-in, queued by dispatchPostFunction's
  * static-PF failure hook). One JSON AI call distills a reusable lesson from
  * the failure; saveMemoryCandidate dedups/reinforces. Nothing polls this task.
@@ -798,7 +806,7 @@ const executeMemoryDistill = async (params) => {
     .slice(0, 10)
     .map((x) => x.m);
 
-  const systemPrompt = `Distill ONE reusable, general lesson (<=350 chars) from this Jira post-function failure. The lesson must help future code generation on THIS Jira instance: a field's real type or format, an option/value that doesn't exist, a permission rule, an API behavior. Strip issue keys and one-off values. Pure coding slip-ups (typos, undefined variables, syntax errors) teach nothing reusable.
+  const systemPrompt = `Distill ONE reusable, general lesson (<=${MEMORY_DISTILL_CONTENT_MAX} chars) from this Jira post-function failure. The lesson must help future code generation on THIS Jira instance: a field's real type or format, an option/value that doesn't exist, a permission rule, an API behavior. Strip issue keys and one-off values. Pure coding slip-ups (typos, undefined variables, syntax errors) teach nothing reusable.
 
 Respond with ONLY one of these JSON shapes:
 { "memory": "the lesson" } — a new lesson
@@ -837,7 +845,7 @@ Error: ${defangFence(String(error).substring(0, 2000))}${recommendation ? `\nRec
     if (target) {
       target.reinforcements = (target.reinforcements || 0) + 1;
       if (typeof parsed.content === "string" && parsed.content.trim()) {
-        target.content = parsed.content.trim().substring(0, 350);
+        target.content = parsed.content.trim().substring(0, MEMORY_DISTILL_CONTENT_MAX);
       }
       target.updatedAt = new Date().toISOString();
       await saveMemories(all);
@@ -852,7 +860,7 @@ Error: ${defangFence(String(error).substring(0, 2000))}${recommendation ? `\nRec
   if (!content.trim()) return { success: true, skipped: "empty memory" };
 
   const saved = await saveMemoryCandidate({
-    content: content.trim().substring(0, 350),
+    content: content.trim().substring(0, MEMORY_DISTILL_CONTENT_MAX),
     source: "test",
     projectKey: projectKey || null,
     confidence: 0.6,

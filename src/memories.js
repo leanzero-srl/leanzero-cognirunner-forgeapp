@@ -62,7 +62,13 @@ export const MAX_MEMORIES = 200;
 // count would let a value blow past the byte cap and throw. Keep a safety margin.
 const MAX_SERIALIZED_BYTES = 230000;
 const utf8Len = (s) => { try { return new TextEncoder().encode(s).length; } catch (e) { return String(s).length * 4; } };
-const MEMORY_CONTENT_MAX = 400;
+/**
+ * The ONE memory-content clamp (F-168). Every caller that trims memory text —
+ * saveMemoryCandidate here, the addMemory/updateMemory resolvers in index.js —
+ * imports THIS constant; do not retype the number. (async-handler's distill task
+ * clamps model-emitted text tighter on purpose, with its own named constant.)
+ */
+export const MEMORY_CONTENT_MAX = 400;
 const JACCARD_DEDUP_THRESHOLD = 0.85;
 
 /**

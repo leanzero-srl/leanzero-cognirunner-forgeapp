@@ -94,6 +94,7 @@ import {
   saveMemoryCandidate,
   buildMemoryBlock,
   readMemoryStoreFull,
+  MEMORY_CONTENT_MAX,
   defangFence,
 } from "./memories.js";
 
@@ -7209,7 +7210,7 @@ resolver.define("addMemory", async ({ payload, context }) => {
   }
   try {
     const { content, projectKey, source } = payload || {};
-    const clean = String(content || "").trim().substring(0, 400);
+    const clean = String(content || "").trim().substring(0, MEMORY_CONTENT_MAX);
     if (!clean) return { success: false, error: "Memory content is required" };
     // F-165: an UNRECOGNISED source is REJECTED, never coerced. The old
     // `MEMORY_SOURCES.includes(source) ? source : "user"` failed toward the most
@@ -7261,7 +7262,7 @@ resolver.define("updateMemory", async ({ payload, context }) => {
     const memory = memories.find((m) => m.id === id);
     if (!memory) return { success: false, error: "Memory not found" };
     if (content !== undefined) {
-      const clean = String(content || "").trim().substring(0, 400);
+      const clean = String(content || "").trim().substring(0, MEMORY_CONTENT_MAX);
       if (!clean) return { success: false, error: "Memory content cannot be empty" };
       memory.content = clean;
     }

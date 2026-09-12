@@ -1502,7 +1502,14 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
               must stay forgettable. `learnedFrom` lets it say which code version taught it
               rather than implying it describes what is on screen now. */}
           {memorySaved && (!fixResult || memorySaved.fixToken !== fixResult.token) && (
-            <div className="fix-result fix-verified anim-rise">
+            <div className="fix-result memory-card anim-rise">
+              {/* F-162 — this standalone card is NOT a fix outcome: it survives an undone,
+                  dismissed or superseded fix, and it renders alongside a LIVE fix whose re-run
+                  FAILED. Wearing `fix-verified` painted it green in that state and claimed a
+                  verification nothing had earned (and the F-158 harness gate keyed on
+                  `.fix-result.fix-verified` was satisfied by this always-green card, so the
+                  journey would have passed with fix #2 never verified). Its own class, in the
+                  memories hue, makes no claim about any fix. */}
               {/* F-157 — a fingerprint mismatch means "this is not the code the memory was
                   learned from". It does NOT mean the code was edited: Undo restores the
                   pre-fix code without a keystroke and lands here too, where the old copy

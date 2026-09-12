@@ -161,6 +161,71 @@ ok(/export const editionFromInvocation = \(license\)/.test(indexSrc), "editionFr
   }
   ok(/_cachedEditionAt < PROVIDER_CACHE_TTL_MS/.test(cur), "currentEdition memoises on the same 30s window as the provider config");
 }
+// =====================================================================================
+// F-108 — requireAdvanced uses THE ladder's top rung, EXECUTED. It used to test
+// `context.license` by truthiness, so a context CARRYING license:null (an install with
+// no licence) fell through to the KVS snapshot and could be gated as Coder for the
+// snapshot's whole 2-day life — the lapsed-subscription hole F-082 closed everywhere
+// else. Built from the REAL bodies of currentEdition + requireAdvanced.
+// =====================================================================================
+{
+  const mCur = indexSrc.match(/export const currentEdition = async \(context\) => \{[\s\S]*?\n\};/);
+  const mReq = indexSrc.match(/export const requireAdvanced = async \(context, featureId\) => \{[\s\S]*?\n\};/);
+  ok(!!mCur && !!mReq, "found currentEdition + requireAdvanced for the executed gate test");
+  const build = ({ snapshot, appCtx }) => new Function(
+    "storage", "getAppContext", "editionFromInvocation", "resolveEdition", "isFeatureAllowed",
+    "upgradeRequired", "EDITION_IDS", "EDITIONS", "EDITION_SNAPSHOT_KEY", "PROVIDER_CACHE_TTL_MS",
+    "let _cachedEdition = null; let _cachedEditionAt = 0;\n" +
+    (mCur ? mCur[0] : "").replace("export const", "const") + "\n" +
+    (mReq ? mReq[0] : "").replace("export const", "const") + "\nreturn requireAdvanced;",
+  )(
+    { get: async () => snapshot },
+    () => appCtx,
+    (license) => resolveEdition(license), // the real resolver, minus the snapshot write
+    resolveEdition, isFeatureAllowed, upgradeRequired, EDITION_IDS, EDITIONS, "SNAP", 30000,
+  );
+  const advancedSnapshot = { active: true, edition: EDITION_IDS.ADVANCED, at: Date.now() };
+  const coderLicense = { isActive: true, capabilitySet: "capabilityAdvanced" };
+  const feature = ADVANCED_FEATURES[0].id;
+
+  // BLOCK — the invocation CARRIES license:null. That is an answer, not a missing read:
+  // Standard, refused, even with an advanced snapshot sitting in KVS.
+  {
+    const requireAdvanced = build({ snapshot: advancedSnapshot, appCtx: {} });
+    const r = await requireAdvanced({ license: null }, feature);
+    ok(r.ok === false, "BLOCK: context {license:null} is refused even with an ADVANCED snapshot planted (F-108)");
+    ok(r.refusal && r.refusal.success === false && r.refusal.upgradeRequired === true,
+      "BLOCK: …and the refusal is the one upgradeRequired shape");
+    ok(r.edition.edition === EDITION_IDS.STANDARD, "BLOCK: the resolved edition is Standard");
+  }
+  // ALLOW — a live Coder licence on the invocation passes without touching the snapshot.
+  {
+    const requireAdvanced = build({ snapshot: null, appCtx: {} });
+    const r = await requireAdvanced({ license: coderLicense }, feature);
+    ok(r.ok === true && r.edition.edition === EDITION_IDS.ADVANCED,
+      "ALLOW: a live Coder licence on the invocation is rung 1");
+  }
+  // SNAPSHOT — only when the runtime could not see a licence AT ALL (no context, and
+  // getAppContext carries no `license` key) is the snapshot consulted.
+  {
+    const requireAdvanced = build({ snapshot: advancedSnapshot, appCtx: {} });
+    const r = await requireAdvanced(undefined, feature);
+    ok(r.ok === true && r.edition.source === "snapshot",
+      "SNAPSHOT: with no licence visible anywhere, an ACTIVE advanced snapshot still gates open");
+  }
+  // …and a live getAppContext() license:null beats that snapshot too — same rung, same rule.
+  {
+    const requireAdvanced = build({ snapshot: advancedSnapshot, appCtx: { license: null } });
+    const r = await requireAdvanced(undefined, feature);
+    ok(r.ok === false, "SNAPSHOT: a live getAppContext license:null still wins over the snapshot");
+  }
+  // The source keeps ONE top-rung test: no private truthiness check survives.
+  ok(!/context && context\.license \? editionFromInvocation/.test(indexSrc),
+    "requireAdvanced keeps no private `context.license ?` top rung");
+  ok(/ed = await currentEdition\(context\);/.test(mReq ? mReq[0] : ""),
+    "requireAdvanced reads THE ladder, fed its context");
+}
+
 {
   const a = asyncSrc.match(/const currentEditionAsync = async \(\) => \{[\s\S]*?\n\};/);
   ok(!!a, "found currentEditionAsync in src/async-handler.js");

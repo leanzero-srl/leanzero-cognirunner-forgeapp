@@ -528,18 +528,22 @@ export const upgradeRequired = (featureId) => {
 };
 
 /**
- * Resolver-side gate for a Coder-only feature. Uses the invocation's own license
- * when present (authoritative) and falls back to currentEdition().
- * Returns { ok:true, edition } or { ok:false, refusal, edition }.
+ * Resolver-side gate for a Coder-only feature. Reads THE ladder (currentEdition),
+ * fed this invocation's context. Returns { ok:true, edition } or
+ * { ok:false, refusal, edition }.
+ *
+ * F-108 — it used to apply its own top-rung test: `context.license` by TRUTHINESS, so
+ * a context that CARRIED the key with a null value (an install with no licence) fell
+ * through to the KVS snapshot and could be gated as Coder for the snapshot's whole
+ * 2-day life. The ladder's rule is `"license" in context`: a live read is the truth
+ * even when its value is null, and null means Standard → upgradeRequired. The snapshot
+ * is for a runtime that could not see a licence AT ALL, which is exactly the case a
+ * lapsed subscription must not be able to fake. One ladder, one top rung.
  */
 export const requireAdvanced = async (context, featureId) => {
   let ed;
   try {
-    // NOTE: the context is deliberately NOT forwarded here. This gate keeps its own
-    // truthiness test, so a resolver whose `license` is present-but-null still falls
-    // through to the snapshot rather than being refused outright — narrowing a FEATURE
-    // GATE is not part of F-101, which is about the two edition reads disagreeing.
-    ed = context && context.license ? editionFromInvocation(context.license) : await currentEdition();
+    ed = await currentEdition(context);
   } catch (e) {
     ed = resolveEdition(null);
   }

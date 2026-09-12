@@ -91,7 +91,7 @@ import {
 } from "./memories.js";
 import { executeListenerTask, getListener } from "./listeners.js";
 import { executeScheduledJobTask, getJob } from "./scheduled-jobs.js";
-import { STATS_TASK_TYPE, processRuleStatsReceipt } from "./rule-stats.js";
+import { STATS_TASK_TYPE, processRuleStatsReceipt, statsReceipt } from "./rule-stats.js";
 import { providerKeySlot, providerModelSlot } from "./shared/provider-slots.js";
 
 // F-109 — the ONE message a queued task fails with when the provider read faulted.
@@ -1084,20 +1084,38 @@ export async function handler(event) {
           }
           try {
             const { storeLog } = await import("./index");
-            await storeLog({
-              type: taskType === "listener" ? "listener" : "scheduledjob",
+            const isListener = taskType === "listener";
+            // F-128/F-132 — this entry must look like every other failure entry of its
+            // kind: it carries a STATS RECEIPT (rule stats move ONLY on a receipt, so
+            // without one the Listeners/Jobs list keeps showing the previous run's green
+            // dot for a rule that did not run), and, for a job, the cron + timezone in
+            // `fieldId` — the cell the admin panel labels "Schedule". Both need the rule
+            // ROW, which the queue params do not carry; one KVS read on a failure path is
+            // cheap. If the row is gone the rule was deleted: log without a receipt (the
+            // receipt's generation guard needs `createdAt` and would drop it anyway).
+            const row = isListener ? await getListener(params?.listenerId) : await getJob(params?.jobId);
+            const cron = row?.schedule?.cron ? `${row.schedule.cron} ${row.schedule.timeZone}` : "schedule";
+            const entry = {
+              type: isListener ? "listener" : "scheduledjob",
               source: "async",
               issueKey: params?.ctx?.issueKey || "(no issue)",
-              fieldId: params?.eventType || (params?.jobName ? "schedule" : ""),
+              fieldId: isListener ? (params?.eventType || "") : cron,
               isValid: false,
               decision: "ERROR",
               reason: `Run stopped before it started: ${NO_PROVIDER_ERROR}`,
               recommendation: "Check the AI provider setting in CogniRunner Settings, then re-trigger the rule or run the job manually.",
               executionTimeMs: 0,
               ruleId: params?.listenerId || params?.jobId || null,
-              ruleName: params?.listenerName || params?.jobName || null,
+              ruleName: row?.name || params?.listenerName || params?.jobName || null,
               ruleWorkflow: null,
               eventType: params?.eventType,
+              mode: row?.mode,
+              ...(isListener ? {} : { manual: !!params?.manual, scheduledFor: params?.scheduledFor || null }),
+            };
+            await storeLog(entry, {
+              statsReceipt: row
+                ? statsReceipt(isListener ? "listener" : "scheduledjob", row, entry, isListener ? params?.ctx?.issueKey || null : null)
+                : null,
             });
           } catch (e) { console.warn("no-provider log failed:", e && e.message); }
           await updateAsyncJob(taskId, { status: "error", finishedAt: new Date().toISOString(), error: NO_PROVIDER_ERROR }, JOB_TTL_DONE);

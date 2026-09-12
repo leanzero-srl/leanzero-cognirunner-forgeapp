@@ -571,11 +571,33 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
     "…BEFORE the skip that zeroes the estimate");
   ok(/error: NO_PROVIDER_ERROR/.test(gateBlock), "…failing with the one shared message constant");
   ok(/return;/.test(gateBlock), "…and returning, so agent-runner never runs");
-  ok(/storeLog\(\{/.test(gateBlock) && /type: taskType === "listener" \? "listener" : "scheduledjob"/.test(gateBlock),
+  ok(/const entry = \{/.test(gateBlock) && /type: isListener \? "listener" : "scheduledjob"/.test(gateBlock),
     "…leaving a visible execution-log entry under a known badge type (F-119)");
   ok(/status: "error", finishedAt: new Date\(\)\.toISOString\(\), error: NO_PROVIDER_ERROR/.test(gateBlock),
     "…and a failed job row");
   ok(/!UNPOLLED_TASKS\.has\(taskType\)/.test(gateBlock), "…and the poll row only for the polled one (scheduledjob)");
+
+  // F-128 — rule stats move ONLY on a statsReceipt. Without one this refused run never
+  // increments errorCount and the Jobs/Listeners list keeps the previous run's green dot.
+  ok(/statsReceipt: row$/m.test(gateBlock) || /statsReceipt: row\b/.test(gateBlock),
+    "the refused run carries a stats receipt (errorCount/lastStatus move)");
+  ok(/statsReceipt\(isListener \? "listener" : "scheduledjob", row, entry/.test(gateBlock),
+    "…built from the shared rule-stats helper with the rule ROW (generation guard needs createdAt)");
+  ok(/: null,/.test(gateBlock), "…and null when the row is gone — never a receipt the guard would drop");
+  ok(/import \{ STATS_TASK_TYPE, processRuleStatsReceipt, statsReceipt \} from "\.\/rule-stats\.js";/.test(asyncSrc),
+    "…imported, not re-implemented");
+  // F-132 — the job half of `fieldId` is the cron + timezone, the same shape every other
+  // scheduledjob entry writes (admin-panel labels that column "Schedule"), not "schedule".
+  ok(/row\?\.schedule\?\.cron \? `\$\{row\.schedule\.cron\} \$\{row\.schedule\.timeZone\}` : "schedule"/.test(gateBlock),
+    "the job entry's fieldId is '<cron> <tz>', with 'schedule' only as the row-is-gone fallback");
+  ok(/fieldId: isListener \? \(params\?\.eventType \|\| ""\) : cron,/.test(gateBlock),
+    "…and the listener half stays the eventType, matching listeners.js");
+  // EXECUTED: the fieldId decision over both kinds and the deleted-row case.
+  const fieldIdFor = (isListener, params, row) =>
+    isListener ? (params?.eventType || "") : (row?.schedule?.cron ? `${row.schedule.cron} ${row.schedule.timeZone}` : "schedule");
+  ok(fieldIdFor(false, {}, { schedule: { cron: "0 9 * * 1", timeZone: "Europe/Rome" } }) === "0 9 * * 1 Europe/Rome", "EXECUTED: a job entry carries the cron");
+  ok(fieldIdFor(false, {}, null) === "schedule", "EXECUTED: a deleted job falls back");
+  ok(fieldIdFor(true, { eventType: "avi:jira:created:issue" }, null) === "avi:jira:created:issue", "EXECUTED: a listener entry carries the event type");
 
   // EXECUTED: the routing decision.
   const route = (taskType) => (taskType === "listener" || taskType === "scheduledjob") ? "fail-closed" : "skip-gate";

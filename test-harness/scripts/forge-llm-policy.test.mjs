@@ -176,7 +176,14 @@ ok(/rest\/api\/3\/users\/search/.test(codeOnly), "seats are counted from /rest/a
     ok(iStart > 0, "a START marker { seats: <previous>, pending: true, at } is written");
     ok(iStart < iScan, "…BEFORE the first REST page, so a frozen container cannot re-run the scan");
   }
-  ok(/await write\(\{ seats \}\)/.test(b), "a completed scan writes its count");
+  // F-100: the SUCCESS arm is a money arm too. A non-array 200 body is a fault, and a
+  // count of zero is impossible on a site that installed this app — neither may
+  // overwrite a good count with something readSeatCount will read back as null.
+  ok(/await write\(\{ seats: prevSeats, error: "non-array-page" \}\)/.test(b),
+    "a 200 with a NON-ARRAY body is treated as a failure, preserving the last good count");
+  ok(/await write\(seats > 0 \? \{ seats \} : \{ seats: prevSeats \?\? null, error: "empty-directory" \}\)/.test(b),
+    "a completed scan writes its count, and a count of ZERO never overwrites a good one");
+  ok(!/await write\(\{ seats \}\);/.test(b), "the unconditional zero-writing success arm is gone");
   // The throttle is keyed on `at`, and every write sets it.
   ok(/\{ \.\.\.row, at: Date\.now\(\) \}/.test(b), "every write stamps `at` — the cross-container throttle key");
   ok(/Date\.now\(\) - snap\.at < SEAT_SNAPSHOT_MAX_AGE_MS/.test(b), "…and the stored `at` is what BLOCKS a re-run inside 24h");
@@ -241,6 +248,22 @@ ok(/rest\/api\/3\/users\/search/.test(codeOnly), "seats are counted from /rest/a
     ok(state.row.seats === 500, "FAILURE: a 429 does NOT blank the last good seat count (F-092)");
     ok(state.row.error === "429", "FAILURE: the error is recorded");
     ok(typeof state.row.at === "number", "FAILURE: `at` is refreshed so it cannot re-run for 24h");
+  }
+  // F-100 — a 200 with a NON-ARRAY body (an error envelope, a gateway page) must not
+  // read as "zero seats". This is the reproduced case: {seats:500} must survive it.
+  {
+    const { state, run } = build({ seats: 500, at: Date.now() - 2 * DAY }, [{ errorMessages: ["nope"] }]);
+    run(); await settle();
+    ok(state.row.seats === 500, "NON-ARRAY 200: the 500-seat count survives (F-100)");
+    ok(state.row.error === "non-array-page", "NON-ARRAY 200: the reason is recorded");
+    ok(state.writes.length === 2, "NON-ARRAY 200: start marker + failure marker, no zero write");
+  }
+  // F-100 — an empty FIRST page is a directory we cannot see, not a zero-seat site.
+  {
+    const { state, run } = build({ seats: 500, at: Date.now() - 2 * DAY }, [[]]);
+    run(); await settle();
+    ok(state.row.seats === 500 && state.row.error === "empty-directory",
+      "EMPTY directory: a zero count never overwrites a good one");
   }
   // FAILURE with no previous count — null is the honest answer, and the 100-seat fallback covers it.
   {

@@ -189,7 +189,11 @@ ok(/export const editionFromInvocation = \(license\)/.test(indexSrc), "editionFr
   ok(/await write\(\{ seats: prevSeats, pending: true \}\)/.test(body), "a START marker is written before the scan");
   ok(/await write\(\{ seats: prevSeats, error/.test(body), "a failed scan marks the failure and KEEPS the previous count");
   ok(!/seats: null, error/.test(body), "no failure path writes {seats:null} over a good count");
-  ok(/await write\(\{ seats \}\)/.test(body), "a successful scan writes its count, including zero");
+  // F-100: NOT "including zero". A zero count (or a non-array 200 body) is a directory
+  // we could not read, and writing it drops a 500-seat site to the 100-seat fallback.
+  ok(/await write\(seats > 0 \? \{ seats \} : \{ seats: prevSeats \?\? null, error: "empty-directory" \}\)/.test(body),
+    "a successful scan writes its count, and a ZERO never overwrites a good one");
+  ok(/error: "non-array-page"/.test(body), "a 200 with a non-array body is a failure, not a zero");
   ok(/SEAT_MAX_PAGES = 10/.test(indexSrc), "the page ceiling is 10");
   ok(/SEAT_SNAPSHOT_MAX_AGE_MS = 24 \* 60 \* 60 \* 1000/.test(indexSrc), "the throttle window is 24h");
 

@@ -11164,12 +11164,26 @@ const maybeRefreshSeatSnapshot = () => {
           return;
         }
         const page = await resp.json();
-        if (!Array.isArray(page) || page.length === 0) break;
+        if (!Array.isArray(page)) {
+          // A 200 carrying a NON-ARRAY body is a FAULT, not an empty directory (F-100):
+          // an {errorMessages:[…]} envelope or a gateway JSON page parses fine and used
+          // to break the loop with seats still 0, overwriting a good 500-seat count.
+          // Treated exactly like a !resp.ok page: keep the last count, record why.
+          await write({ seats: prevSeats, error: "non-array-page" });
+          return;
+        }
+        if (page.length === 0) break;
         // Only licensed humans: app/customer accounts and deactivated users are not seats.
         seats += page.filter((u) => u && u.active === true && u.accountType === "atlassian").length;
         startAt += page.length;
       }
-      await write({ seats });
+      // A ZERO-SEAT SITE IS IMPOSSIBLE — somebody had to install this app. So a scan that
+      // counted nothing is a directory we could not read (an asApp() token that cannot
+      // see the user directory returns an empty page, not an error), never a fact worth
+      // overwriting a good count with: seats 0 → readSeatCount null → the 100-seat
+      // fallback → the $800-becomes-$200 downgrade F-092 was opened for, re-entered
+      // through the SUCCESS arm. The previous count rides on, with the reason recorded.
+      await write(seats > 0 ? { seats } : { seats: prevSeats ?? null, error: "empty-directory" });
     } catch (e) {
       await write({ seats: prevSeats, error: String((e && e.message) || e).slice(0, 120) });
     }

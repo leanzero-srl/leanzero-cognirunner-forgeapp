@@ -23,13 +23,30 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import {
-  EDITIONS, resolveEdition, ADVANCED_FEATURES, isFeatureAllowed,
+  EDITIONS, EDITION_IDS, resolveEdition, ADVANCED_FEATURES, isFeatureAllowed,
   FORGE_LLM_MODELS, FORGE_LLM_FRONTIER, FORGE_LLM_DEFAULT,
   forgeLlmTier, forgeLlmModelAllowedForEdition, clampForgeLlmModel, agentCapability,
 } from "../../src/shared/edition.js";
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) pass++; else { fail++; console.log("FAIL:", m); } };
+
+// =====================================================================================
+// F-076 — the id keys the FOUR UI apps compare against. They read EDITIONS.ADVANCED /
+// EDITIONS.STANDARD (and now EDITION_IDS.*) as ID STRINGS; the lowercase keys stay the
+// {id,label} objects for rendering. If any of these drifts, every edition comparison in
+// the UI silently becomes `undefined === "advanced"` → false, i.e. Coder reads as free.
+// =====================================================================================
+ok(EDITION_IDS.STANDARD === "standard" && EDITION_IDS.ADVANCED === "advanced", "EDITION_IDS holds the two id strings");
+ok(EDITIONS.STANDARD === EDITION_IDS.STANDARD && EDITIONS.ADVANCED === EDITION_IDS.ADVANCED,
+  "EDITIONS.STANDARD / EDITIONS.ADVANCED are the SAME id strings (UI compatibility alias)");
+ok(typeof EDITIONS.STANDARD === "string" && typeof EDITIONS.ADVANCED === "string",
+  "the uppercase keys are strings, never objects — a comparison against them must succeed");
+ok(EDITIONS.standard.id === EDITION_IDS.STANDARD && EDITIONS.advanced.id === EDITION_IDS.ADVANCED,
+  "the lowercase keys stay {id,label} and their ids match EDITION_IDS");
+ok(EDITIONS.standard.label === "Standard" && EDITIONS.advanced.label === "Coder", "labels are unchanged");
+ok(resolveEdition({ isActive: true, capabilitySet: "capabilityAdvanced" }).edition === EDITIONS.ADVANCED,
+  "a resolved edition compares equal to EDITIONS.ADVANCED — the exact expression the UI apps evaluate");
 
 // =====================================================================================
 // resolveEdition — the matrix

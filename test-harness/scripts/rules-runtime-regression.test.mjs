@@ -455,10 +455,19 @@ try {
     }
   });
   await check("kvSet is still an allowlist, not a KVS write bridge", async () => {
-    for (const key of ["config_registry", "pf_memories", "COGNIRUNNER_KEY_", "COGNIRUNNER_KEY_notaprovider", "validation_logs", "app_users"]) {
+    // F-163 deliberately ADDED pf_memories + COGNIRUNNER_MEMORY_SETTINGS to the allowlist
+    // (the harness must be able to seed a 200-row store to prove the F-160/F-161 cap policy
+    // live). The point of this assertion is that the list is still a LIST — every key nobody
+    // put on it is refused.
+    for (const key of ["config_registry", "COGNIRUNNER_KEY_", "COGNIRUNNER_KEY_notaprovider", "validation_logs", "app_users", "doc_repo_index", "skill_repo_index"]) {
       const response = await kvSet(key, "x");
       assert.equal(response.statusCode, 400, `${key} must be refused`);
       assert.match(JSON.parse(response.body).error, /not allowlisted/);
+    }
+    // F-163: the two memory keys ARE allowlisted now — the names come from src/memories.js.
+    for (const key of ["pf_memories", "COGNIRUNNER_MEMORY_SETTINGS"]) {
+      const response = await kvSet(key, null);
+      assert.equal(response.statusCode, 200, `${key} must be allowlisted for the memory-store proof`);
     }
   });
   await check("kvSet stays behind HARNESS_SECRET", async () => {

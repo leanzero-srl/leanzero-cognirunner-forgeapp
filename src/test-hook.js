@@ -13,6 +13,8 @@
  */
 import { kvs as storage } from "@forge/kvs";
 import { PROVIDER_IDS, providerSlotsFor } from "./shared/provider-slots.js";
+// F-163: the memory-store key NAMES come from the module that owns them — never retyped here.
+import { MEMORIES_KEY, MEMORY_SETTINGS_KEY } from "./memories.js";
 
 const json = (statusCode, body) => ({
   statusCode,
@@ -300,7 +302,13 @@ export async function testStateTrigger(req) {
         "getAiBudget", "saveAiBudget", "getAsyncJobs",
         // HARNESS-ONLY (release 1.3 editions proof): the edition/model/usage resolvers.
         "checkLicense", "getProvider", "getOpenAIModels", "saveOpenAIModel", "getOpenAIModelFromKVS",
-        "getAgentModel", "saveAgentModel", "getAiUsage", "resetAiUsage", "checkProviderHealth", "reviewConfig"]);
+        "getAgentModel", "saveAgentModel", "getAiUsage", "resetAiUsage", "checkProviderHealth", "reviewConfig",
+        // F-163 — the MEMORY store resolvers. The F-155..F-161 behaviour (dedup/merge, the
+        // veto delete, the eviction policy and the at-cap rejection) lives in resolvers that
+        // no other hook path could reach, so it could only ever be proven offline. These are
+        // WRITES, deliberately: they exist to prove the memory store live, and they are behind
+        // the same HARNESS_SECRET Bearer gate (absent in production) as everything else here.
+        "getMemories", "addMemory", "updateMemory", "deleteMemory", "getMemorySettings", "saveMemorySettings"]);
       const functionKey = body.functionKey || body.name;
       if (!ALLOWED_KEYS.has(functionKey)) {
         return json(400, { error: `functionKey not allowlisted: ${functionKey}` });
@@ -336,8 +344,12 @@ export async function testStateTrigger(req) {
       // day a helper changes, which is the defect class this repo keeps paying for.
       // Still an allowlist, never a generic KVS write bridge, and still behind
       // HARNESS_SECRET (absent in production, checked at the top of this handler).
+      // F-163 — the memory store + its settings, so the harness can SEED a 200-row fixture
+      // (an all-user store, a mixed store) and restore it afterwards. No resolver can plant a
+      // store at the cap, which is exactly the state the F-160 eviction policy and the F-161
+      // at-cap rejection are about.
       const KEYS = new Set(["COGNIRUNNER_USAGE", "COGNIRUNNER_SEAT_SNAPSHOT", "COGNIRUNNER_EDITION_SNAPSHOT",
-        "COGNIRUNNER_AI_PROVIDER"]);
+        "COGNIRUNNER_AI_PROVIDER", MEMORIES_KEY, MEMORY_SETTINGS_KEY]);
       for (const p of PROVIDER_IDS) for (const slot of providerSlotsFor(p)) KEYS.add(slot);
       if (!KEYS.has(body.key)) return json(400, { error: `key not allowlisted: ${body.key}` });
       if (body.value === null) await storage.delete(body.key);

@@ -21,7 +21,7 @@ import { findRule } from "../../../src/shared/premade-rules-catalog.js";
 import { premadeSummaryRows, buildFactsText, ruleKindEnum } from "../../../src/shared/explain-facts.js";
 import { logSourceOf, SOURCE_LABEL, FLAG_LABEL, isSkippedLog } from "../../../src/shared/log-flags.js";
 import { codeFingerprint } from "../../../src/shared/code-fingerprint.js";
-import { resolveEdition, EDITIONS } from "../../../src/shared/edition.js";
+import { resolveEdition, EDITION_IDS } from "../../../src/shared/edition.js";
 
 // Inject styles directly
 const injectStyles = () => {
@@ -1181,7 +1181,7 @@ function App() {
   const [showLogs, setShowLogs] = useState(false);
   const [licenseActive, setLicenseActive] = useState(null);
   // Marketplace edition — seeded from context.license, confirmed by checkLicense.
-  const [edition, setEdition] = useState(EDITIONS.STANDARD);
+  const [edition, setEdition] = useState(EDITION_IDS.STANDARD);
   const [ruleDisabled, setRuleDisabled] = useState(null);
   const [ruleId, setRuleId] = useState(null);
   // Which module context delivered the config — the authoritative
@@ -1531,8 +1531,8 @@ function App() {
   // Edition chip — hidden while the license state is unknown (null), so we never
   // assert an edition we haven't actually read.
   const editionChip = licenseActive === null ? null : (
-    <span className={`edition-chip edition-${edition === EDITIONS.ADVANCED ? "advanced" : "standard"}`}>
-      {edition === EDITIONS.ADVANCED ? "Coder" : "Standard"}
+    <span className={`edition-chip edition-${edition === EDITION_IDS.ADVANCED ? "advanced" : "standard"}`}>
+      {edition === EDITION_IDS.ADVANCED ? "Coder" : "Standard"}
     </span>
   );
 

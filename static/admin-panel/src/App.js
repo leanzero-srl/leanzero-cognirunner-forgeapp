@@ -26,7 +26,7 @@ import CustomSelect from "./components/CustomSelect";
 import { findRule as findPremadeRule } from "../../../src/shared/premade-rules-catalog.js";
 import { buildFactsText, ruleKindEnum } from "../../../src/shared/explain-facts.js";
 import { logSourceOf, SOURCE_LABEL, FLAG_LABEL, isSkippedLog } from "../../../src/shared/log-flags.js";
-import { resolveEdition, EDITIONS } from "../../../src/shared/edition.js";
+import { resolveEdition, EDITION_IDS } from "../../../src/shared/edition.js";
 import AddRuleWizard from "./components/AddRuleWizard";
 import Tooltip from "./components/Tooltip";
 import RulePortabilityDialog from "./components/RulePortabilityDialog";
@@ -5393,7 +5393,7 @@ function App() {
   const [licenseActive, setLicenseActive] = useState(null);
   // Marketplace edition ("standard" | "advanced"). Seeded from context.license, then
   // overridden by checkLicense which is authoritative for paid apps.
-  const [edition, setEdition] = useState(EDITIONS.STANDARD);
+  const [edition, setEdition] = useState(EDITION_IDS.STANDARD);
   const [isAdmin, setIsAdmin] = useState(false);
   const [userRole, setUserRole] = useState(null); // "viewer" | "editor" | "admin" | null
   const [userScope, setUserScope] = useState(null); // "own" | "all" | null
@@ -6147,8 +6147,8 @@ function App() {
           <h2 className="title">
             CogniRunner Admin
             {licenseActive !== null && (
-              <span className={`edition-chip edition-${edition === EDITIONS.ADVANCED ? "advanced" : "standard"}`} style={{ marginLeft: "10px" }}>
-                {edition === EDITIONS.ADVANCED ? "Coder" : "Standard"}
+              <span className={`edition-chip edition-${edition === EDITION_IDS.ADVANCED ? "advanced" : "standard"}`} style={{ marginLeft: "10px" }}>
+                {edition === EDITION_IDS.ADVANCED ? "Coder" : "Standard"}
               </span>
             )}
           </h2>

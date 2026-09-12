@@ -65,6 +65,35 @@ async function pickForgeLlm(page) {
   await page.waitForTimeout(500);
 }
 
+/* ---------------- E0 — mock/shared-module parity (F-085) ----------------------
+   The mock bridge must not carry its own copy of the edition facts. If it does,
+   the harness stops being able to see a drift between the UI and the ONE home
+   for those facts (src/shared/edition.js) and simply agrees with itself. */
+{
+  console.log("E0 mock ↔ src/shared/edition.js parity");
+  const { ADVANCED_FEATURES, FORGE_LLM_FRONTIER, FORGE_LLM_DEFAULT } = await import("../../src/shared/edition.js");
+  globalThis.window = globalThis.window || {};
+  const { invoke } = await import("./bridge.js");
+  const lic = await invoke("checkLicense");
+  const mockIds = (lic.features || []).map((f) => f.id);
+  ok(JSON.stringify(mockIds) === JSON.stringify(ADVANCED_FEATURES.map((f) => f.id)),
+    `E0 mock feature ids equal ADVANCED_FEATURES ids (got ${JSON.stringify(mockIds)})`);
+  ok(mockIds.length > 0, "E0 mock actually emits features");
+  // F-077: seats and forgeLlm are SIBLINGS of usage on the resolver result.
+  const u = await invoke("getAiUsage");
+  ok(u.seats !== undefined, "E0 getAiUsage mock puts seats at the result root");
+  ok(u.forgeLlm !== undefined, "E0 getAiUsage mock puts forgeLlm at the result root");
+  ok(u.usage && u.usage.seats === undefined && u.usage.forgeLlm === undefined,
+    "E0 getAiUsage mock does NOT nest seats/forgeLlm inside usage");
+  // The frontier/default ids the mock serves are the shared ones, not a copy.
+  const m = await invoke("getOpenAIModels", { provider: "atlassian" });
+  ok((m.models || []).includes(FORGE_LLM_DEFAULT) && m.currentModel === FORGE_LLM_DEFAULT,
+    "E0 mock Forge LLM model list carries the shared default (not a copy)");
+  ok(JSON.stringify((m.models || []).slice(1)) === JSON.stringify(FORGE_LLM_FRONTIER),
+    "E0 mock frontier ids are the shared FORGE_LLM_FRONTIER");
+  ok(FORGE_LLM_FRONTIER.length === 2, "E0 shared frontier list still has two ids");
+}
+
 const browser = await chromium.launch();
 try {
   /* ---------------- E1 — Coder edition, light ---------------- */

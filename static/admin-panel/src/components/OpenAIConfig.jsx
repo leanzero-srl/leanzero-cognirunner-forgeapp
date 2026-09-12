@@ -10,7 +10,7 @@ import { router } from "@forge/bridge";
 import CustomSelect from "./CustomSelect";
 import Tooltip from "./Tooltip";
 import { showToast } from "./toast";
-import { EDITIONS, FORGE_LLM_FRONTIER, FORGE_LLM_DEFAULT } from "../../../../src/shared/edition.js";
+import { EDITION_IDS, FORGE_LLM_FRONTIER, FORGE_LLM_DEFAULT } from "../../../../src/shared/edition.js";
 
 // Forge Custom UI runs in a sandboxed iframe — plain <a target="_blank"> links
 // are blocked (nothing happens on click). router.open() is the supported way to
@@ -136,7 +136,7 @@ export default function OpenAIConfig({ invoke }) {
   // select PLUS `locked` — ids that exist on the provider but need CogniRunner Coder. We
   // render both so the admin can SEE what the upgrade buys instead of a silently short list.
   const [lockedModels, setLockedModels] = useState([]);
-  const [edition, setEdition] = useState(EDITIONS.STANDARD);
+  const [edition, setEdition] = useState(EDITION_IDS.STANDARD);
   // The saved model was outside this edition, so the backend is serving Haiku instead.
   const [modelClamped, setModelClamped] = useState(false);
   // The model the admin actually SAVED, when the backend reports it alongside the
@@ -150,6 +150,12 @@ export default function OpenAIConfig({ invoke }) {
   const [savingAgentModel, setSavingAgentModel] = useState(false);
   // AI usage meter (admin-only). Best-effort under-count of AI calls + tokens.
   const [usage, setUsage] = useState(null);
+  // F-077: getAiUsage returns { success, usage, seats, forgeLlm } — `seats` and
+  // `forgeLlm` are SIBLINGS of `usage`, not fields inside it. Reading them off
+  // `usage` left the Forge LLM allowance meter permanently dead. Keep them in
+  // their own state so the shape is impossible to confuse again.
+  const [usageSeats, setUsageSeats] = useState(null);
+  const [forgeAllowance, setForgeAllowance] = useState(null);
   const [usageConfirmReset, setUsageConfirmReset] = useState(false);
   const [usageResetting, setUsageResetting] = useState(false);
   // AWS Bedrock: region rides the base URL; ack is the Anthropic use-case gate; the
@@ -379,7 +385,11 @@ export default function OpenAIConfig({ invoke }) {
         invoke("getContext7Remote").catch(() => ({ success: false })),
         invoke("getAiUsage").catch(() => ({ success: false })),
       ]);
-      if (usageResult && usageResult.success) setUsage(usageResult.usage);
+      if (usageResult && usageResult.success) {
+        setUsage(usageResult.usage);
+        setUsageSeats(usageResult.seats ?? null);
+        setForgeAllowance(usageResult.forgeLlm || null);
+      }
 
       let initial = "atlassian";
       if (providerResult.success) {
@@ -1225,7 +1235,7 @@ export default function OpenAIConfig({ invoke }) {
   const providerLabel = PROVIDER_OPTIONS.find((p) => p.value === provider)?.label || provider;
 
   // --- Edition (1.3) -------------------------------------------------------
-  const isAdvanced = edition === EDITIONS.ADVANCED;
+  const isAdvanced = edition === EDITION_IDS.ADVANCED;
   // Forge LLM: the picker must exist on this provider too — it is where the Coder
   // edition's frontier models actually become selectable. (Before 1.3 the whole
   // picker was gated on isByok, so Forge LLM had no model control at all.)
@@ -1241,7 +1251,7 @@ export default function OpenAIConfig({ invoke }) {
     : (isAtlassian && !isAdvanced ? FORGE_LLM_FRONTIER : []);
   // The row we point the admin at once the frontier models are unlocked.
   const recommendedModel = isAtlassian && isAdvanced ? "claude-sonnet-5" : null;
-  const allowance = usage && usage.forgeLlm ? usage.forgeLlm : null;
+  const allowance = forgeAllowance;
   const allowancePct = allowance ? Math.max(0, Math.min(100, Math.round(allowance.pct || 0))) : 0;
   const money = (n) => `$${Number(n || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
 
@@ -1251,7 +1261,11 @@ export default function OpenAIConfig({ invoke }) {
       const r = await invoke("resetAiUsage");
       if (r && r.success) {
         const u = await invoke("getAiUsage").catch(() => null);
-        if (u && u.success) setUsage(u.usage);
+        if (u && u.success) {
+          setUsage(u.usage);
+          setUsageSeats(u.seats ?? null);
+          setForgeAllowance(u.forgeLlm || null);
+        }
       }
     } catch (e) { /* ignore */ }
     setUsageResetting(false);
@@ -1321,8 +1335,8 @@ export default function OpenAIConfig({ invoke }) {
                   Allowance spent — Sonnet 5 / Opus 5 paused until next month. Rules fall back to Claude Haiku.
                 </p>
               )}
-              {usage.seats !== undefined && usage.seats !== null && (
-                <div className="usage-seats">{usage.seats} licensed {usage.seats === 1 ? "user" : "users"} on this site.</div>
+              {usageSeats !== undefined && usageSeats !== null && (
+                <div className="usage-seats">{usageSeats} licensed {usageSeats === 1 ? "user" : "users"} on this site.</div>
               )}
             </div>
           )}
@@ -1684,11 +1698,12 @@ export default function OpenAIConfig({ invoke }) {
                       )}
                     </p>
                   )}
-                  {isAtlassian && modelClamped && (
+                  {/* F-078: only ever claim a clamp when the backend says clamped AND
+                      names a saved model. A tenant that never saved a model has
+                      nothing to clamp, and the generic line read as an error. */}
+                  {isAtlassian && modelClamped && typeof clampedFrom === "string" && clampedFrom.trim() !== "" && (
                     <p style={{ margin: "6px 0 0", fontSize: "12px", color: "var(--text-secondary)" }}>
-                      {clampedFrom
-                        ? <>Saved model <strong>{clampedFrom}</strong> is not available on this edition — using Claude Haiku.</>
-                        : <>The saved model is not available on this edition — using Claude Haiku.</>}
+                      Saved model <strong>{clampedFrom}</strong> is not available on this edition — using Claude Haiku.
                     </p>
                   )}
                 </div>

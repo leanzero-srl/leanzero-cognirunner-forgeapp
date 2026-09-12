@@ -41,7 +41,21 @@
 export const EDITIONS = {
   standard: { id: "standard", label: "Standard" },
   advanced: { id: "advanced", label: "Coder" },
+  // UPPERCASE aliases to the ID STRINGS. Four frontends were written against
+  // `EDITIONS.ADVANCED`/`EDITIONS.STANDARD` and every comparison silently
+  // evaluated to false (undefined === "advanced"), so a Coder tenant saw
+  // Standard everywhere. Prefer EDITION_IDS below in new code; these aliases
+  // exist so the old spelling can never be falsy again.
+  STANDARD: "standard",
+  ADVANCED: "advanced",
 };
+
+/**
+ * The two edition IDS as bare strings — what `resolveEdition().edition`,
+ * `checkLicense().edition` and every comparison in the UI actually carry.
+ * Compare against THESE, never against `EDITIONS.standard` (an object).
+ */
+export const EDITION_IDS = { STANDARD: "standard", ADVANCED: "advanced" };
 
 const ADVANCED_CAPABILITY_SET = "capabilityadvanced";
 

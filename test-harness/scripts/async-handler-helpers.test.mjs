@@ -339,5 +339,37 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
     "the probe's spend is metered so it is visible in the usage ledger");
 }
 
+// =====================================================================================
+// F-113 — checkProviderHealth must not claim validators FAIL CLOSED.
+//
+// The resolver's doc block said a 401/403/404/400 blocks every AI-guarded transition.
+// The validator's own non-transient branch returns isValid:true ("transition allowed
+// (fail-open)"), which is LAW 3 and stays. The banner the admin reads is derived from
+// this resolver, so the CONSEQUENCE is now a field (`failOpen`) rather than prose that
+// can drift from the branch it describes.
+// =====================================================================================
+{
+  const m = indexSrc.match(/resolver\.define\("checkProviderHealth"[\s\S]*?\n\}\);/);
+  ok(!!m, "found the checkProviderHealth resolver");
+  const body = m ? m[0] : "";
+  const doc = indexSrc.slice(Math.max(0, indexSrc.indexOf('resolver.define("checkProviderHealth"') - 2200),
+                             indexSrc.indexOf('resolver.define("checkProviderHealth"'));
+  ok(/F19 — Active health probe/.test(doc), "…and its doc block above it");
+  ok(!/FAIL CLOSED/.test(doc) && !/fail closed/i.test(doc),
+    "the doc block no longer claims validators fail CLOSED on a config error");
+  ok(/ALSO FAIL OPEN/.test(doc), "…it states the real contract: the non-transient class fails OPEN too");
+  ok(/UNVALIDATED/.test(doc), "…and names the actual harm (transitions pass unvalidated), not a block");
+  // Both non-ok returns carry the flag; the ok:true return must NOT (nothing is failing).
+  ok((body.match(/failOpen: true/g) || []).length === 2,
+    "both non-ok returns (provider error + probe throw) carry failOpen:true");
+  ok(!/ok: true,[^\n]*failOpen/.test(body), "the healthy return carries no failOpen flag");
+  // And the validator branches this flag describes still fail OPEN — if one of them ever
+  // flips, this assertion is what makes the flag a lie loudly instead of quietly.
+  const nonTransient = indexSrc.match(/\/\/ Non-transient provider\/config error[\s\S]*?\n      \};/);
+  ok(!!nonTransient && /isValid: true/.test(nonTransient[0]),
+    "the non-transient validator branch still returns isValid:true (the contract the flag reports)");
+  ok(!!nonTransient && /FAIL OPEN rather/.test(nonTransient[0]), "…and says so in its own comment");
+}
+
 console.log(`\nasync-handler-helpers: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

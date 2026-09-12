@@ -4789,9 +4789,18 @@ resolver.define("setBedrockAck", async ({ payload, context }) => {
  *   ok:false transient  → 429/408/5xx/timeout — validators FAIL OPEN (transitions
  *                          still pass, just degraded); the banner does NOT alarm.
  *   ok:false config     → 401/403/404/400 — a persistent, non-content error.
- *                          Validators/conditions FAIL CLOSED, so EVERY AI-guarded
- *                          transition is blocked until the admin fixes the
- *                          key/URL/model. This is the case the banner shouts about.
+ *                          Validators/conditions ALSO FAIL OPEN (LAW 3): the
+ *                          transition is ALLOWED and logged as
+ *                          `transientError:true`, so AI-guarded transitions pass
+ *                          UNVALIDATED until the admin fixes the key/URL/model.
+ *                          This is the case the banner shouts about — not because
+ *                          work is blocked, but because validation is silently
+ *                          not happening. See the non-transient branch in
+ *                          callOpenAI (and its agentic twin), both of which
+ *                          return isValid:true.
+ * Every non-ok response carries `failOpen: true` so the UI states the consequence
+ * from the backend's own contract instead of restating the rule in banner copy.
+ * If the validator contract ever changes, this flag changes with it — one home.
  * Read-only + admin-gated. Costs one tiny "OK" completion; the admin panel calls
  * it on load (when admin) and on manual re-check. No change to validation behavior.
  */
@@ -4833,13 +4842,13 @@ resolver.define("checkProviderHealth", async ({ context }) => {
     const errText = (result && result.error) || "";
     const transient = isTransientAIError(status, errText);
     return {
-      success: true, ok: false, transient, provider, providerLabel, model,
+      success: true, ok: false, transient, failOpen: true, provider, providerLabel, model,
       status, message: String(errText).replace(/\s+/g, " ").slice(0, 160),
     };
   } catch (e) {
     const transient = isTransientAIError(e && e.status, (e && e.message) || "");
     return {
-      success: true, ok: false, transient, provider, providerLabel,
+      success: true, ok: false, transient, failOpen: true, provider, providerLabel,
       status: (e && e.status) || null,
       message: String((e && e.message) || "probe failed").replace(/\s+/g, " ").slice(0, 160),
     };
@@ -10202,7 +10211,9 @@ const callLmStudioNative = async ({ apiKey, model, messages, jsonMode, baseUrl }
   //      side ("Permission denied to use plugin …" 403 / "unknown plugin" 400).
   //      The runtime/validator path here is the NO-TOOLS path — it doesn't need
   //      MCP — so dropping the integration lets the call succeed instead of
-  //      failing closed and blocking EVERY transition (F19 family). Agentic/
+  //      erroring out on EVERY transition. (The error would not block anything:
+  //      a non-transient provider error fails OPEN per LAW 3, so the transition
+  //      passes UNVALIDATED — which is the harm. F19 family.) Agentic/
   //      gendoc/research use other paths and are unaffected.
   if (!response.ok && (response.status === 400 || response.status === 403)) {
     const errText = await response.text().catch(() => "");

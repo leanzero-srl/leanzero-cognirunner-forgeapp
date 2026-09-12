@@ -344,6 +344,92 @@ try {
     await close(env);
   }
 
+  /* ---------------- F113 — provider-down banner tells the FAIL-OPEN truth ----------------
+     The banner used to claim validations were "blocking every transition". The runtime
+     fails OPEN on a provider config error (transitions pass UNVALIDATED), so the banner
+     must say that — in both themes — and must never say "blocking". */
+  for (const theme of ["light", "dark"]) {
+    console.log(`F113 provider-down banner copy (${theme})`);
+    const env = await openAdmin(browser, theme, {
+      __RESPONSES__: {
+        checkProviderHealth: {
+          success: true, ok: false, transient: false, provider: "anthropic",
+          providerLabel: "Anthropic", model: "claude-haiku-4-5-20251001", status: 401,
+          message: "invalid x-api-key",
+        },
+      },
+    });
+    const { page } = env;
+    try {
+      const banner = page.locator(".provider-down-banner");
+      await banner.waitFor({ timeout: 10000 });
+      const txt = (await banner.innerText()).toLowerCase();
+      ok(txt.includes("without validation"), `F113 ${theme} banner says "without validation" — got: ${txt.slice(0, 160)}`);
+      ok(!txt.includes("blocking"), `F113 ${theme} banner never says "blocking"`);
+      ok(!txt.includes("fail closed") && !txt.includes("fails closed"), `F113 ${theme} banner never claims fail-closed`);
+      ok(txt.includes("401") && txt.includes("invalid x-api-key"), `F113 ${theme} banner still names the status + provider message`);
+      // Solid saturated red alarm, white text, and NO left accent rail (owner mandate).
+      const css = await banner.evaluate((el) => {
+        const c = getComputedStyle(el);
+        return { bg: c.backgroundColor, fg: c.color, bl: c.borderLeftWidth };
+      });
+      ok(/^rgb\(2[02][0-9], 3[0-9], [0-9]+\)$/.test(css.bg.replace(/\s+/g, " ")) || css.bg === "rgb(220, 38, 38)" || css.bg === "rgb(239, 68, 68)", `F113 ${theme} banner is solid red — got ${css.bg}`);
+      ok(css.fg === "rgb(255, 255, 255)", `F113 ${theme} banner text is white — got ${css.fg}`);
+      ok(parseFloat(css.bl) === 0, `F113 ${theme} banner has no left accent rail — got ${css.bl}`);
+      await page.waitForTimeout(600); // let the rise/fade settle so the PNG is readable
+      await shot(page, `F113-provider-down-${theme}`);
+      ok(env.errors.length === 0, `F113 ${theme} no page errors: ` + env.errors.join(" | "));
+    } catch (e) { fail++; console.log(`  \u2717 F113 ${theme} threw: ` + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
+  /* ---------------- F114 — a job carrying an error is never a green DONE ----------------
+     A scheduled run that died on the no-provider path came back with an `error` string;
+     the row rendered DONE in green and swallowed the message. The error is authoritative. */
+  for (const theme of ["light", "dark"]) {
+    console.log(`F114 errored job row (${theme})`);
+    const NO_PROVIDER = "No AI provider is configured — set a provider and key in Settings.";
+    const env = await openAdmin(browser, theme, {
+      __RESPONSES__: {
+        getAsyncJobs: {
+          success: true,
+          jobs: {
+            running: [],
+            queued: [],
+            recent: [
+              // THE BUG SHAPE: status still says "done", but an error is attached.
+              { taskId: "e1", status: "done", taskType: "scheduledjob", ruleName: "Nightly triage", issueKey: "DEMO-1", provider: "anthropic", durationMs: 1200, error: NO_PROVIDER },
+              // Control: a genuinely clean run must still read DONE.
+              { taskId: "e2", status: "done", taskType: "review", ruleName: "AI review", issueKey: "DEMO-2", provider: "anthropic", durationMs: 3400 },
+              // Control: a cancel keeps its neutral badge even though it carries a reason.
+              { taskId: "e3", status: "cancelled", taskType: "codegen", ruleName: "Generate code", issueKey: "DEMO-3", provider: "openai", error: "Stopped by an operator" },
+            ],
+          },
+        },
+      },
+    });
+    const { page } = env;
+    try {
+      await tab(page, "Execution Logs");
+      await page.locator(".job-entry").first().waitFor({ timeout: 10000 });
+      const rows = page.locator(".job-entry");
+      const bad = rows.filter({ hasText: "Nightly triage" }).first();
+      const badge = await bad.locator(".job-status").first().innerText();
+      ok(badge.trim() === "ERROR", `F114 ${theme} errored job renders ERROR, not DONE — got "${badge.trim()}"`);
+      ok(await bad.locator(".job-status.done").count() === 0, `F114 ${theme} errored job carries no green done badge`);
+      ok((await bad.innerText()).includes("No AI provider is configured"), `F114 ${theme} errored job shows the message text`);
+      const good = rows.filter({ hasText: "AI review" }).first();
+      ok((await good.locator(".job-status").first().innerText()).trim() === "DONE", `F114 ${theme} a clean run still reads DONE`);
+      const cancelled = rows.filter({ hasText: "Generate code" }).first();
+      ok((await cancelled.locator(".job-status").first().innerText()).trim() === "CANCELLED", `F114 ${theme} a cancel is not relabelled ERROR`);
+      ok(await cancelled.locator(".job-error").count() === 0, `F114 ${theme} a cancel reason is not painted as a red error line`);
+      await page.waitForTimeout(600); // let the tab-panel fade settle so the PNG is readable
+      await shot(page, `F114-job-error-${theme}`);
+      ok(env.errors.length === 0, `F114 ${theme} no page errors: ` + env.errors.join(" | "));
+    } catch (e) { fail++; console.log(`  \u2717 F114 ${theme} threw: ` + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
   /* ---------------- D1 — dark theme renders the new tabs without errors ---------------- */
   {
     console.log("D1 dark theme");

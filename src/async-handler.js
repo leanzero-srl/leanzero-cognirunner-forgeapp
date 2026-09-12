@@ -50,7 +50,16 @@ import {
   // via callAIChatSimple.
   lmAcquireWorker,
   recordAiUsage,
+  // Token-budget pacing (owner decision 2026-09-12): the consumer is the single
+  // choke point for background AI, so the tokens-per-minute gate lives here.
+  aiBudgetGate,
+  bumpAiBudgetBucket,
+  learnRuleCost,
+  getLearnedRuleCost,
+  resetInvocationTokens,
+  getInvocationTokens,
 } from "./index";
+import { estimateTaskTokens, BUDGET_WAIT_HORIZON_MS } from "./shared/ai-budget.js";
 // Learned memories — injected into static-PF reviews and persisted by the
 // memory_distill task (runtime auto-capture, opt-in). defangFence neutralizes
 // fence tokens in untrusted content interpolated into prompts here.
@@ -63,8 +72,8 @@ import {
   buildMemoryBlock,
   defangFence,
 } from "./memories.js";
-import { executeListenerTask } from "./listeners.js";
-import { executeScheduledJobTask } from "./scheduled-jobs.js";
+import { executeListenerTask, getListener } from "./listeners.js";
+import { executeScheduledJobTask, getJob } from "./scheduled-jobs.js";
 import { STATS_TASK_TYPE, processRuleStatsReceipt } from "./rule-stats.js";
 
 const TASK_PREFIX = "async_task:";
@@ -866,10 +875,16 @@ export async function handler(event) {
   const enqAt = taskType === "postfunction"
     ? (params?.enqueuedAt || jobRow?.enqueuedAt)
     : (jobRow?.enqueuedAt || params?.enqueuedAt);
-  if (enqAt) {
-    const queuedMs = Date.now() - Date.parse(enqAt);
-    if (Number.isFinite(queuedMs) && queuedMs > STALE_JOB_MS) {
-      console.log(`Async handler: ${taskType} (${taskId}) expired — queued ${Math.round(queuedMs / 1000)}s (> ${Math.round(STALE_JOB_MS / 60000)}min) — skipping`);
+  // A budget-deferred event was re-pushed by US with a fresh enqueuedAt each time;
+  // its give-up clock is the budget horizon from the ORIGINAL enqueue, not the 15min
+  // dropped-event window (slow is the point).
+  const budgetDeferrals = Number(params?.budgetDeferrals) || 0;
+  const staleHorizonMs = budgetDeferrals > 0 ? BUDGET_WAIT_HORIZON_MS : STALE_JOB_MS;
+  const staleFrom = budgetDeferrals > 0 ? (params?.firstEnqueuedAt || enqAt) : enqAt;
+  if (staleFrom) {
+    const queuedMs = Date.now() - Date.parse(staleFrom);
+    if (Number.isFinite(queuedMs) && queuedMs > staleHorizonMs) {
+      console.log(`Async handler: ${taskType} (${taskId}) expired — queued ${Math.round(queuedMs / 1000)}s (> ${Math.round(staleHorizonMs / 60000)}min${budgetDeferrals ? `, ${budgetDeferrals} budget deferral(s)` : ""}) — skipping`);
       if (!UNPOLLED_TASKS.has(taskType)) {
         await storage.set(`${TASK_PREFIX}${taskId}`, { status: "error", error: "Expired (queued past the staleness window)" }, ttl);
       }
@@ -884,6 +899,53 @@ export async function handler(event) {
       return;
     }
   }
+
+  // ===== TOKEN-BUDGET GATE =====
+  // Estimate this task's spend; if the current minute cannot take it, DEFER: re-push
+  // the same event to just past the next minute boundary and return without running.
+  // The job row stays "queued" with a budgetWait so the Jobs tab shows the pacing.
+  // Static PFs and script-mode listeners/jobs use no AI and are never gated.
+  const budgetRuleId = params?.config?.ruleId || params?.config?.id || params?.listenerId || params?.jobId || null;
+  let budgetEstimate = 0;
+  let budgetProvider = null;
+  try {
+    let usesAi = false;
+    if (taskType === "postfunction") usesAi = !/static/.test(String(params?.config?.type || ""));
+    else if (taskType === "listener") { const row = await getListener(params?.listenerId); usesAi = !!row && row.mode === "agent"; }
+    else if (taskType === "scheduledjob") { const row = await getJob(params?.jobId); usesAi = !!row && row.mode === "agent"; }
+    else usesAi = ["review", "codegen", "fixcode", "skilldistill", "memory_distill"].includes(taskType);
+    if (usesAi) {
+      budgetProvider = (await getProviderConfig()).provider;
+      budgetEstimate = estimateTaskTokens(taskType, params, await getLearnedRuleCost(budgetRuleId));
+      const gate = await aiBudgetGate({ provider: budgetProvider, estimate: budgetEstimate, deferrals: budgetDeferrals });
+      if (!gate.allow) {
+        const until = new Date(Date.now() + gate.delaySeconds * 1000).toISOString();
+        const firstEnqueuedAt = params?.firstEnqueuedAt || enqAt || new Date().toISOString();
+        const body = {
+          ...event.body,
+          params: { ...params, enqueuedAt: new Date().toISOString(), firstEnqueuedAt, budgetDeferrals: budgetDeferrals + 1 },
+        };
+        const { Queue } = await import("@forge/events");
+        const queue = new Queue({ key: "async-ai-queue" });
+        // A small concurrency cap on the re-pushed events keeps a drained backlog from
+        // all passing the (non-atomic) ledger check in the same instant.
+        const pr = await queue.push({ body, delayInSeconds: gate.delaySeconds, concurrency: { key: "ai-budget", limit: 2 } });
+        await updateAsyncJob(taskId, {
+          status: "queued", enqueuedAt: body.params.enqueuedAt, jobId: pr?.jobId || jobRow?.jobId || null, startedAt: null,
+          budgetWait: { until, deferrals: budgetDeferrals + 1, firstEnqueuedAt, used: gate.used + gate.reserved, budget: gate.budget, estimate: budgetEstimate, provider: budgetProvider },
+        }, JOB_TTL_ACTIVE, { taskId, taskType, status: "queued", enqueuedAt: body.params.enqueuedAt });
+        console.log(`[budget] deferred ${taskType} (${taskId}) ${gate.delaySeconds}s — minute at ${gate.used + gate.reserved}/${gate.budget} tokens, needs ~${budgetEstimate} (${budgetProvider}, deferral ${budgetDeferrals + 1})`);
+        return;
+      }
+      if (gate.forced) console.warn(`[budget] ${taskType} (${taskId}) ran after the deferral cap — budget still full`);
+      await bumpAiBudgetBucket(budgetProvider, { reserved: budgetEstimate });
+    }
+  } catch (e) {
+    // The gate must never block the queue: on any ledger/queue failure, run now.
+    console.warn(`[budget] gate skipped for ${taskType} (${taskId}): ${e?.message}`);
+    if (budgetProvider && budgetEstimate) { try { await bumpAiBudgetBucket(budgetProvider, { reserved: -budgetEstimate }); } catch { /* best-effort */ } budgetEstimate = 0; }
+  }
+  resetInvocationTokens();
 
   const startedAt = new Date().toISOString();
   const startMs = Date.now();
@@ -908,6 +970,16 @@ export async function handler(event) {
     console.error(`Async handler error (${taskType}):`, error);
     if (polled) await storage.set(`${TASK_PREFIX}${taskId}`, { status: "error", error: error.message }, ttl);
     await updateAsyncJob(taskId, { status: "error", finishedAt: new Date().toISOString(), durationMs: Date.now() - startMs, error: String(error?.message || error).slice(0, 300) }, JOB_TTL_DONE);
+  }
+
+  // Settle the budget ledger: release the reservation and learn this rule's real
+  // cost from the tokens metered during THIS invocation (recordAiUsage counts them).
+  if (budgetProvider && budgetEstimate) {
+    try {
+      await bumpAiBudgetBucket(budgetProvider, { reserved: -budgetEstimate });
+      const spent = getInvocationTokens();
+      if (spent > 0) await learnRuleCost(budgetRuleId, spent);
+    } catch { /* best-effort */ }
   }
 
   // Best-effort always-honor: after a PF job runs, opportunistically sweep for DROPPED/

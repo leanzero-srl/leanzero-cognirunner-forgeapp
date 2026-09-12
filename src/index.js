@@ -36,6 +36,7 @@ import { clampNarrateLine } from "./shared/narrate-utils.js";
 import { buildCatalogPromptBlock, validateBuiltRule } from "./shared/build-rule.js";
 import { normalizeUsage, emptyState, bumpCounters, summarizeState } from "./shared/usage-meter.js";
 import { deriveLogFlags } from "./shared/log-flags.js";
+import { minuteKey, effectiveBudget, budgetDecision, inlineShouldQueue, AI_PLATFORM_TPM, AI_BUDGET_DEFAULT_TPM, BUDGET_WAIT_HORIZON_MS } from "./shared/ai-budget.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
 import { serializeRule, buildExportEnvelope, validateImportSchema, resolveBindings, containsSecretKey, EXPORT_CAPS } from "./shared/rule-portability.js";
 // Registry scale caps + pressure math — single source, shared with the admin panel.
@@ -8138,6 +8139,16 @@ resolver.define("getAsyncJobs", async ({ payload }) => {
         } else if (age > JOB_STALL_MS) {
           j.stalled = true;
         }
+      } else if (j.status === "queued" && j.budgetWait && j.budgetWait.firstEnqueuedAt) {
+        // Budget-deferred: slow by design. Judge on the wait horizon from FIRST enqueue.
+        const wage = now - Date.parse(j.budgetWait.firstEnqueuedAt);
+        if (wage > BUDGET_WAIT_HORIZON_MS) {
+          j.status = "error";
+          j.stalled = true;
+          j.error = `Expired: waited ${Math.round(wage / 60000)}min for AI token budget (past the ${Math.round(BUDGET_WAIT_HORIZON_MS / 60000)}min horizon).`;
+          j.finishedAt = new Date(now).toISOString();
+          toReap.push(j);
+        }
       } else if (j.status === "queued" && j.enqueuedAt) {
         // Reap zombie QUEUED rows: a job still queued past the staleness window was
         // never consumed — its Forge event was dropped after retries under load (the
@@ -8255,6 +8266,10 @@ export const sweepPostFunctionJobs = async () => {
           continue;
         }
         if (j.status !== "queued") { skipped++; continue; }
+        // Budget-deferred rows own a live DELAYED event (delayInSeconds) — re-pushing
+        // would double-deliver. Their give-up clock is the budget horizon, checked by
+        // the consumer's own staleness gate.
+        if (j.budgetWait && (now - (Date.parse(j.budgetWait.firstEnqueuedAt || "") || now)) < BUDGET_WAIT_HORIZON_MS) { skipped++; continue; }
         if ((now - (Date.parse(j.enqueuedAt || "") || now)) <= STALE_JOB_MS) { skipped++; continue; }
 
         const nextCount = (j.redriveCount || 0) + 1;
@@ -8382,6 +8397,49 @@ resolver.define("getLmStudioConcurrency", async () => {
     return { success: true, limit: await getLmStudioConcurrencyLimit() };
   } catch (error) {
     return { success: false, error: error.message, limit: 0 };
+  }
+});
+
+/**
+ * AI token budget (tokens per minute) — Settings card. Returns the effective
+ * budget for the ACTIVE provider, the admin overrides, the platform ceiling and
+ * the live minute so the admin sees the pacing in action.
+ */
+resolver.define("getAiBudget", async ({ context }) => {
+  if (!(await requireRole(context.accountId, "admin"))) return { success: false, error: "Admin access required" };
+  try {
+    const { provider } = await getProviderConfig();
+    const settings = await getAiBudgetSettings();
+    const snap = await aiBudgetSnapshot(provider);
+    const explicit = settings?.tokensPerMinute?.[provider];
+    return { success: true, ...snap, explicit: typeof explicit === "number" ? explicit : null, minute: minuteKey(Date.now()) };
+  } catch (error) {
+    return { success: false, error: error.message };
+  }
+});
+
+resolver.define("saveAiBudget", async ({ payload, context }) => {
+  if (!(await requireRole(context.accountId, "admin"))) return { success: false, error: "Admin access required" };
+  try {
+    const { provider } = await getProviderConfig();
+    const target = typeof payload?.provider === "string" && PROVIDERS[payload.provider] ? payload.provider : provider;
+    const raw = payload?.tokensPerMinute;
+    const settings = await getAiBudgetSettings();
+    const map = { ...(settings?.tokensPerMinute || {}) };
+    if (raw === null || raw === undefined || raw === "") {
+      delete map[target]; // back to the default
+    } else {
+      const n = Number(raw);
+      if (!Number.isFinite(n) || n < 0) return { success: false, error: "Enter a non-negative number (0 = no pacing)." };
+      const ceiling = AI_PLATFORM_TPM[target];
+      map[target] = ceiling ? Math.min(Math.floor(n), ceiling) : Math.min(Math.floor(n), 5000000);
+    }
+    await storage.set(AI_BUDGET_SETTINGS_KEY, { tokensPerMinute: map });
+    _budgetSettings = null; _budgetSettingsAt = 0;
+    const snap = await aiBudgetSnapshot(target);
+    return { success: true, ...snap, explicit: typeof map[target] === "number" ? map[target] : null };
+  } catch (error) {
+    return { success: false, error: error.message };
   }
 });
 
@@ -9810,10 +9868,88 @@ const callLmStudioNative = async ({ apiKey, model, messages, jsonMode, baseUrl }
 // seams (never inside the race), so metering latency can't flip a completed verdict.
 export const USAGE_KEY = "COGNIRUNNER_USAGE";
 export const recordAiUsage = async ({ provider, usageLike }) => {
+  const usage = normalizeUsage(usageLike);
   try {
     const state = (await storage.get(USAGE_KEY)) || emptyState();
-    await storage.set(USAGE_KEY, bumpCounters(state, { provider: provider || "unknown", usage: normalizeUsage(usageLike), nowMs: Date.now() }));
+    await storage.set(USAGE_KEY, bumpCounters(state, { provider: provider || "unknown", usage, nowMs: Date.now() }));
   } catch (e) { /* metering is best-effort — never throw into an AI call */ }
+  // Token-budget ledger: every real call lands in the current minute's bucket so
+  // the queue gate (async-handler) and the inline valve (executePostFunction) see
+  // validator spend too — background work backs off while transitions are busy.
+  if (usage.total > 0) {
+    _invocationTokens += usage.total;
+    await bumpAiBudgetBucket(provider || "unknown", { used: usage.total });
+  }
+};
+
+// ===== AI TOKEN BUDGET (tokens-per-minute pacing of background AI) =====
+// Owner decision 2026-09-12: when Forge LLM's 50k tokens/min window fills, the
+// app must keep doing its purpose, just SLOWER. Queued AI jobs (post-functions,
+// listeners, scheduled jobs, codegen/fix/review) are drained at a budget below
+// the platform limit; the remainder is headroom for synchronous validators.
+// Pure maths: src/shared/ai-budget.js. Consumer gate: src/async-handler.js.
+const AI_BUDGET_SETTINGS_KEY = "COGNIRUNNER_AI_BUDGET";
+const AI_BUDGET_BUCKET_TTL = { ttl: { value: 300, unit: "SECONDS" } };
+const AI_COST_TTL = { ttl: { value: 7, unit: "DAYS" } };
+let _budgetSettings = null;
+let _budgetSettingsAt = 0;
+let _invocationTokens = 0;
+/** Tokens metered so far in THIS invocation — the consumer learns per-rule cost from it. */
+export const resetInvocationTokens = () => { _invocationTokens = 0; };
+export const getInvocationTokens = () => _invocationTokens;
+
+const getAiBudgetSettings = async () => {
+  if (_budgetSettings && _cacheFresh(_budgetSettingsAt)) return _budgetSettings;
+  try { _budgetSettings = (await storage.get(AI_BUDGET_SETTINGS_KEY)) || { tokensPerMinute: {} }; }
+  catch { _budgetSettings = { tokensPerMinute: {} }; }
+  _budgetSettingsAt = Date.now();
+  return _budgetSettings;
+};
+/** Effective queue budget (tokens/min) for a provider. 0 = no pacing. */
+export const getAiBudgetForProvider = async (provider) => effectiveBudget(provider, await getAiBudgetSettings());
+
+const budgetBucketKey = (provider, ms) => `ai_budget:${provider}:${minuteKey(ms)}`;
+export const readAiBudgetBucket = async (provider, ms = Date.now()) => {
+  try { const b = await storage.get(budgetBucketKey(provider, ms)); return { used: Number(b?.used) || 0, reserved: Number(b?.reserved) || 0 }; }
+  catch { return { used: 0, reserved: 0 }; }
+};
+/**
+ * Read-modify-write on the minute bucket. Not atomic — two consumers can each add
+ * and one add can be lost, so the budget default sits 30% under the platform limit
+ * and the deferred re-pushes carry a concurrency cap. Overshoot is bounded, never
+ * unbounded. Negative reserved (a release racing a lost reserve) clamps to 0.
+ */
+export const bumpAiBudgetBucket = async (provider, { used = 0, reserved = 0 } = {}, ms = Date.now()) => {
+  try {
+    const key = budgetBucketKey(provider, ms);
+    const cur = (await storage.get(key)) || {};
+    await storage.set(key, {
+      used: Math.max(0, (Number(cur.used) || 0) + used),
+      reserved: Math.max(0, (Number(cur.reserved) || 0) + reserved),
+    }, AI_BUDGET_BUCKET_TTL);
+  } catch (e) { /* ledger is best-effort */ }
+};
+/** Per-rule learned cost: the LAST measured spend of a rule, used as the next estimate. */
+export const learnRuleCost = async (ruleId, tokens) => {
+  if (!ruleId || !(tokens > 0)) return;
+  try { await storage.set(`ai_cost:${String(ruleId).slice(0, 120)}`, { tokens: Math.round(tokens), at: Date.now() }, AI_COST_TTL); } catch { /* best-effort */ }
+};
+export const getLearnedRuleCost = async (ruleId) => {
+  if (!ruleId) return null;
+  try { const r = await storage.get(`ai_cost:${String(ruleId).slice(0, 120)}`); return r && r.tokens > 0 ? r.tokens : null; }
+  catch { return null; }
+};
+/** One-shot view for the Settings card and the consumer gate. */
+export const aiBudgetSnapshot = async (provider) => {
+  const budget = await getAiBudgetForProvider(provider);
+  const { used, reserved } = await readAiBudgetBucket(provider);
+  return { provider, budget, used, reserved, platformLimit: AI_PLATFORM_TPM[provider] || null, defaultBudget: AI_BUDGET_DEFAULT_TPM[provider] || 0 };
+};
+/** The gate: may a task costing ~estimate tokens run in the current minute? */
+export const aiBudgetGate = async ({ provider, estimate, deferrals = 0 }) => {
+  const snap = await aiBudgetSnapshot(provider);
+  const decision = budgetDecision({ used: snap.used, reserved: snap.reserved, estimate, budget: snap.budget, nowMs: Date.now(), deferrals });
+  return { ...decision, ...snap, estimate };
 };
 
 // Metered wrapper — the name every non-raced caller already uses. Meters AFTER the
@@ -15715,7 +15851,23 @@ export const executePostFunction = async (args) => {
       slowProvider = (await getProviderConfig()).provider === "lmstudio";
     } catch { /* provider unknown — assume fast, keep inline */ }
   }
-  const isHeavyPf = pfType.includes("generate-doc")
+  // TOKEN-BUDGET VALVE: when the current minute is already past the inline
+  // threshold of the provider's budget, an AI post-function goes to the queue —
+  // where the consumer gate paces it — instead of spending inline and pushing
+  // the next validator into a 429 fail-open. Static PFs use no AI: never routed.
+  let budgetRouted = false;
+  if (!slowProvider && /semantic|comment|subtask|link|generate-doc|research/.test(pfType)) {
+    try {
+      const { provider } = await getProviderConfig();
+      const snap = await aiBudgetSnapshot(provider);
+      if (inlineShouldQueue({ used: snap.used, reserved: snap.reserved, budget: snap.budget })) {
+        budgetRouted = true;
+        console.log(`[budget] ${pfType} on ${issue.key} routed to the queue — minute at ${snap.used + snap.reserved}/${snap.budget} tokens (${provider})`);
+      }
+    } catch { /* ledger unreadable — keep the fast path */ }
+  }
+  const isHeavyPf = budgetRouted
+    || pfType.includes("generate-doc")
     || pfType.includes("research")
     || (pfType.includes("semantic") && config.crossCheckClaims === true)
     // Static PFs run inline (25s) by default; opt-in runAsync routes them to the
@@ -15758,6 +15910,7 @@ export const executePostFunction = async (args) => {
         model: null,
         accountId: null,
         pfType,
+        budgetRouted,
         // Always-honor durability: persist the EXACT queue event body so the sweeper can
         // re-drive a dropped/stale PF (the config lives in the event, not elsewhere).
         // firstEnqueuedAt = absolute give-up clock (preserved across re-drives);

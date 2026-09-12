@@ -879,12 +879,16 @@ const injectStyles = () => {
     .job-status.error { background: #dc2626; }
     .job-status.cancelled { background: #475569; }
     .job-status.stalled { background: #d97706; color: #2a1602; }
+    .job-status.budgetwait { background: #7c3aed; color: #fff; }
+    .ai-budget-meter { font-size: 12px; font-weight: 600; color: #7c3aed; white-space: nowrap; }
     html[data-color-mode="dark"] .job-status.queued { background: #22d3ee; color: #06283d; }
     html[data-color-mode="dark"] .job-status.running { background: #22d3ee; color: #06283d; }
     html[data-color-mode="dark"] .job-status.done { background: #22c55e; }
     html[data-color-mode="dark"] .job-status.error { background: #ef4444; }
     html[data-color-mode="dark"] .job-status.cancelled { background: #64748b; }
     html[data-color-mode="dark"] .job-status.stalled { background: #f59e0b; color: #2a1602; }
+    html[data-color-mode="dark"] .job-status.budgetwait { background: #8b5cf6; color: #fff; }
+    html[data-color-mode="dark"] .ai-budget-meter { color: #a78bfa; }
     .job-type-badge {
       font-size: 10px;
       font-weight: 700;
@@ -5313,6 +5317,11 @@ const jobTypeLabel = (t) => JOB_TYPE_LABEL[t] || t || "Job";
 // Human elapsed/queued/duration string for a job row.
 const jobTimeText = (j) => {
   try {
+    if (j.status === "queued" && j.budgetWait && j.budgetWait.until) {
+      const s = Math.max(0, Math.round((Date.parse(j.budgetWait.until) - Date.now()) / 1000));
+      const n = j.budgetWait.deferrals > 1 ? ` (wait ${j.budgetWait.deferrals})` : "";
+      return s > 0 ? `next slot in ${s}s${n}` : `slot due${n}`;
+    }
     if (j.status === "queued" && j.enqueuedAt) {
       const s = Math.max(0, Math.round((Date.now() - Date.parse(j.enqueuedAt)) / 1000));
       return `waiting ${s}s`;
@@ -5713,8 +5722,10 @@ function App() {
 
   // One job row, shared by the Active Jobs panel and the per-rule accordion.
   const renderJobRow = (j) => {
-    const statusClass = j.stalled ? "stalled" : j.status;
+    const budgetWaiting = j.status === "queued" && !!j.budgetWait;
+    const statusClass = j.stalled ? "stalled" : budgetWaiting ? "budgetwait" : j.status;
     const statusLabel = j.stalled ? "STALLED"
+      : budgetWaiting ? "TOKEN BUDGET"
       : j.status === "queued" ? "QUEUED"
       : j.status === "running" ? "RUNNING"
       : j.status === "done" ? "DONE"
@@ -5731,7 +5742,7 @@ function App() {
         {j.ruleName && <span className="job-rule" title={j.ruleName}>{j.ruleName}</span>}
         {j.issueKey && <span className="job-issue">{j.issueKey}</span>}
         {j.provider && <span className="job-provider">{j.provider}</span>}
-        <span className="job-time">{jobTimeText(j)}</span>
+        <span className="job-time" title={budgetWaiting ? `Minute at ${(j.budgetWait.used || 0).toLocaleString()} / ${(j.budgetWait.budget || 0).toLocaleString()} tokens; this job needs ~${(j.budgetWait.estimate || 0).toLocaleString()}` : undefined}>{jobTimeText(j)}</span>
         {j.status === "error" && j.error && <span className="job-error" title={j.error}>{j.error}</span>}
         {canKill && active && (
           <button className="btn-small btn-danger job-stop" onClick={() => cancelJob(j.taskId)} title="Stop this job">

@@ -812,6 +812,48 @@ export default function OpenAIConfig({ invoke }) {
     setLoadingLmModel(false);
   };
 
+  // AI token budget (tokens per minute) — paces queued AI work for the ACTIVE
+  // provider (owner decision 2026-09-12: keep working, just slower). Reloads on
+  // every provider switch; the live minute refreshes while the card is open.
+  const [aiBudget, setAiBudget] = useState(null);
+  const [aiBudgetInput, setAiBudgetInput] = useState("");
+  const [savingAiBudget, setSavingAiBudget] = useState(false);
+  const refreshAiBudget = async () => {
+    try {
+      const r = await invoke("getAiBudget");
+      if (r && r.success) {
+        setAiBudget(r);
+        setAiBudgetInput(r.explicit === null || r.explicit === undefined ? "" : String(r.explicit));
+      }
+    } catch (e) { /* card is optional */ }
+  };
+  useEffect(() => {
+    if (!invoke) return;
+    let cancelled = false;
+    (async () => { if (!cancelled) await refreshAiBudget(); })();
+    const t = setInterval(() => { if (!cancelled) refreshAiBudget(); }, 15000);
+    return () => { cancelled = true; clearInterval(t); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [provider]);
+  const handleSaveAiBudget = async () => {
+    const raw = aiBudgetInput.trim();
+    if (raw !== "" && (!Number.isFinite(Number(raw)) || Number(raw) < 0)) { setError("Enter a non-negative number of tokens per minute (0 = no pacing, blank = default)."); return; }
+    setSavingAiBudget(true); setError(null); setSuccess(null);
+    try {
+      const r = await invoke("saveAiBudget", { tokensPerMinute: raw === "" ? null : Number(raw) });
+      if (r && r.success) {
+        setAiBudget(r);
+        setAiBudgetInput(r.explicit === null || r.explicit === undefined ? "" : String(r.explicit));
+        setSuccess(r.budget ? `Queued AI work paced at ${r.budget.toLocaleString()} tokens per minute.` : "AI token pacing is off for this provider.");
+      } else {
+        setError((r && r.error) || "Failed to save the AI token budget");
+      }
+    } catch (e) {
+      setError("Failed to save the AI token budget: " + e.message);
+    }
+    setSavingAiBudget(false);
+  };
+
   // Load the saved max-concurrent-LM-Studio-jobs cap when viewing LM Studio.
   useEffect(() => {
     if (!isLmStudio || !invoke) return;
@@ -1747,6 +1789,39 @@ export default function OpenAIConfig({ invoke }) {
                   Currently active: <strong>{currentModel}</strong>
                 </p>
               )}
+              <div style={{ marginTop: "14px", paddingTop: "14px", borderTop: "1px solid var(--border-color)" }}>
+                <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "var(--text-color)", marginBottom: "4px" }}>
+                  AI token budget (tokens per minute)
+                </label>
+                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                  <input
+                    type="number"
+                    min="0"
+                    value={aiBudgetInput}
+                    onChange={(e) => setAiBudgetInput(e.target.value)}
+                    placeholder={aiBudget && aiBudget.defaultBudget ? `default ${aiBudget.defaultBudget.toLocaleString()}` : "0 = no pacing"}
+                    style={{ width: "140px", padding: "8px 12px", border: "1px solid var(--border-color)", borderRadius: "4px", background: "var(--input-bg)", color: "var(--text-color)", fontSize: "13px" }}
+                    onKeyDown={(e) => e.key === "Enter" && handleSaveAiBudget()}
+                  />
+                  <button
+                    className={"btn-small btn-edit" + (savingAiBudget ? " is-busy" : "")}
+                    onClick={handleSaveAiBudget}
+                    disabled={savingAiBudget || !aiBudget || (aiBudget.explicit === null || aiBudget.explicit === undefined ? "" : String(aiBudget.explicit)) === aiBudgetInput.trim()}
+                  >
+                    Save budget
+                  </button>
+                  {aiBudget && aiBudget.budget > 0 && (
+                    <span className="ai-budget-meter" title="Tokens spent + reserved in the current minute, against the queue budget">
+                      this minute: <strong>{(aiBudget.used + aiBudget.reserved).toLocaleString()}</strong> / {aiBudget.budget.toLocaleString()}
+                    </span>
+                  )}
+                </div>
+                <p style={{ margin: "4px 0 0 0", fontSize: "11px", color: "var(--text-muted)" }}>
+                  Background AI work (post-functions, listeners, scheduled jobs, code generation) is drained from the queue at this pace; when a minute is full the next job waits for the next one instead of failing. Validators keep the headroom above it.
+                  {aiBudget && aiBudget.platformLimit ? <> Platform limit for this provider: <strong>{aiBudget.platformLimit.toLocaleString()}</strong> tokens/min. </> : " "}
+                  <strong>Blank = default{aiBudget && aiBudget.defaultBudget ? ` (${aiBudget.defaultBudget.toLocaleString()})` : ""}, 0 = no pacing.</strong>
+                </p>
+              </div>
               {isLmStudio && (
                 <div style={{ marginTop: "14px", paddingTop: "14px", borderTop: "1px solid var(--border-color)" }}>
                   <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "var(--text-color)", marginBottom: "4px" }}>

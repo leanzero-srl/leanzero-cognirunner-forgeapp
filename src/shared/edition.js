@@ -91,22 +91,22 @@ const lower = (v) => (typeof v === "string" && v ? v.toLowerCase() : null);
  */
 export const resolveEdition = (license) => {
   if (!license || typeof license !== "object") {
-    return { active: null, edition: "standard", label: EDITIONS.standard.label, capabilitySet: null, source: "none" };
+    return { active: null, edition: EDITION_IDS.STANDARD, label: EDITIONS.standard.label, capabilitySet: null, source: "none" };
   }
   const capabilitySet = lower(license.capabilitySet);
   const active = license.isActive === true || license.active === true
     ? true
     : (license.isActive === false || license.active === false ? false : null);
 
-  let edition = "standard";
+  let edition = EDITION_IDS.STANDARD;
   if (active === true) {
     if (capabilitySet) {
       // capabilitySet is authoritative when present — "capabilityStandard" means
       // standard even if some other field looks advanced.
-      if (capabilitySet === ADVANCED_CAPABILITY_SET) edition = "advanced";
-    } else if (lower(license.state) === "advanced") {
+      if (capabilitySet === ADVANCED_CAPABILITY_SET) edition = EDITION_IDS.ADVANCED;
+    } else if (lower(license.state) === EDITION_IDS.ADVANCED) {
       // Secondary signal ONLY. Legacy installs send no capabilitySet at all.
-      edition = "advanced";
+      edition = EDITION_IDS.ADVANCED;
     }
   }
   return { active, edition, label: EDITIONS[edition].label, capabilitySet, source: "license" };
@@ -130,7 +130,7 @@ const ADVANCED_FEATURE_IDS = ADVANCED_FEATURES.map((f) => f.id);
  */
 export const isFeatureAllowed = (edition, featureId) => {
   if (!ADVANCED_FEATURE_IDS.includes(featureId)) return true;
-  return edition === "advanced";
+  return edition === EDITION_IDS.ADVANCED;
 };
 
 /*
@@ -197,7 +197,7 @@ export const clampForgeLlmModel = (edition, id) =>
  */
 export const agentCapability = ({ provider, edition, agentModel, allowanceLevel } = {}) => {
   if (provider !== "atlassian") return { enabled: true, reason: "byok" };
-  if (edition !== "advanced") return { enabled: false, reason: "needs-coder-edition" };
+  if (edition !== EDITION_IDS.ADVANCED) return { enabled: false, reason: "needs-coder-edition" };
   if (!FORGE_LLM_FRONTIER.includes(String(agentModel || ""))) return { enabled: false, reason: "needs-frontier-model" };
   if (allowanceLevel === "hard") return { enabled: false, reason: "allowance-exhausted" };
   return { enabled: true, reason: "forge-frontier" };

@@ -138,9 +138,9 @@ const currentEditionAsync = async () => {
   } catch (e) { /* getAppContext has no license in every runtime */ }
   try {
     const snap = await storage.get(EDITION_SNAPSHOT_KEY);
-    if (snap && snap.active === true && snap.edition === "advanced") return "advanced";
+    if (snap && snap.active === true && snap.edition === EDITION_IDS.ADVANCED) return EDITION_IDS.ADVANCED;
   } catch (e) { /* fall through to Standard */ }
-  return "standard";
+  return EDITION_IDS.STANDARD;
 };
 
 const PROVIDER_DEFAULT_MODELS = {
@@ -874,7 +874,7 @@ const executeProbe = async (params) => {
     // Opus on Standard), and the spend is METERED so it shows up in the usage ledger
     // instead of vanishing. The ceilings are tighter than a normal call on purpose —
     // this is a measurement, not a workload.
-    const edition = await currentEditionAsync().catch(() => "standard");
+    const edition = await currentEditionAsync().catch(() => EDITION_IDS.STANDARD);
     const model = clampForgeLlmModel(edition, String(params?.model || FORGE_LLM_DEFAULT));
     const tokens = Math.min(50000, Math.max(500, Number(params?.tokens) || 20000));
     const calls = Math.min(3, Math.max(1, Number(params?.calls) || 3));

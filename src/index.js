@@ -411,7 +411,7 @@ export const editionFromInvocation = (license) => {
   try {
     resolved = resolveEdition(license);
   } catch (e) {
-    resolved = { active: null, edition: "standard", label: EDITIONS.standard.label, capabilitySet: null, source: "none" };
+    resolved = { active: null, edition: EDITION_IDS.STANDARD, label: EDITIONS.standard.label, capabilitySet: null, source: "none" };
   }
   try {
     if (resolved.source !== "none") {
@@ -468,10 +468,10 @@ export const currentEdition = async () => {
   if (!sawContext) {
     try {
       const snap = await storage.get(EDITION_SNAPSHOT_KEY);
-      if (snap && snap.active === true && snap.edition === "advanced") {
+      if (snap && snap.active === true && snap.edition === EDITION_IDS.ADVANCED) {
         out = {
           active: true,
-          edition: "advanced",
+          edition: EDITION_IDS.ADVANCED,
           label: EDITIONS.advanced.label,
           capabilitySet: snap.capabilitySet || null,
           source: "snapshot",
@@ -498,7 +498,7 @@ export const upgradeRequired = (featureId) => {
     success: false,
     upgradeRequired: true,
     featureId: featureId || null,
-    edition: "standard",
+    edition: EDITION_IDS.STANDARD,
     error: `${label} is part of CogniRunner ${EDITIONS.advanced.label}.`,
   };
 };
@@ -5186,7 +5186,7 @@ resolver.define("saveAgentModel", async ({ payload, context }) => {
       if (!FORGE_LLM_FRONTIER.includes(clean)) {
         const { edition } = await currentEdition();
         // On Standard the honest answer is "upgrade"; on Coder it is "not an agent model".
-        if (edition !== "advanced") return upgradeRequired("forge-llm-frontier-models");
+        if (edition !== EDITION_IDS.ADVANCED) return upgradeRequired("forge-llm-frontier-models");
         return { success: false, error: "Agents on Atlassian (Forge LLM) run on Claude Sonnet 5 or Opus 5 only." };
       }
       const { edition } = await currentEdition();
@@ -10982,7 +10982,7 @@ let _cachedProviderAt = 0;
 // extra KVS round-trips inside a transition's deadline race. Refreshed once per 30s
 // alongside the provider, and only for the provider that can actually incur
 // vendor-billed spend.
-let _cachedEditionId = "standard";
+let _cachedEditionId = EDITION_IDS.STANDARD;
 let _cachedAllowance = null;
 
 /**

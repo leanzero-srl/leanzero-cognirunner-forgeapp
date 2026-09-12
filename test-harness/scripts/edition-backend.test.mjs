@@ -21,7 +21,9 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { ADVANCED_FEATURES, EDITIONS, resolveEdition, isFeatureAllowed } from "../../src/shared/edition.js";
+// EDITION_IDS is imported because the fs+eval-extracted helpers below reference it —
+// the id string has ONE home and the extracted source must resolve it (F-098).
+import { ADVANCED_FEATURES, EDITIONS, EDITION_IDS, resolveEdition, isFeatureAllowed } from "../../src/shared/edition.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const indexSrc = readFileSync(path.join(here, "../../src/index.js"), "utf8");
@@ -134,7 +136,7 @@ ok(/export const editionFromInvocation = \(license\)/.test(indexSrc), "editionFr
   ok(/"license" in ctx/.test(cur), "a live context that CARRIES the license key is the truth…");
   ok(/resolveEdition\(ctx\.license\)/.test(cur), "…including license:null, which resolves to Standard");
   ok(/if \(!sawContext\)/.test(cur), "the snapshot is read ONLY when no live license read was possible");
-  ok(/snap\.active === true && snap\.edition === "advanced"/.test(cur),
+  ok(/snap\.active === true && snap\.edition === EDITION_IDS\.ADVANCED/.test(cur),
     "and only an ACTIVE advanced snapshot is honoured");
   ok(!/snap\.active \?\? null/.test(cur), "the old 'trust whatever the snapshot says' branch is gone");
   ok(/resolveEdition\(null\)/.test(cur), "currentEdition's last resort is Standard");
@@ -146,7 +148,7 @@ ok(/export const editionFromInvocation = \(license\)/.test(indexSrc), "editionFr
   const body = a ? a[0] : "";
   ok(/"license" in ctx/.test(body) && /resolveEdition\(ctx\.license\)\.edition/.test(body),
     "the consumer applies the SAME live-context-wins rule (one rule, two seams)");
-  ok(/snap\.active === true && snap\.edition === "advanced"/.test(body),
+  ok(/snap\.active === true && snap\.edition === EDITION_IDS\.ADVANCED/.test(body),
     "the consumer honours only an ACTIVE advanced snapshot");
 }
 

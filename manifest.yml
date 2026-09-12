@@ -103,6 +103,9 @@ modules:
           (issue.assignee != null && user != null && issue.assignee.accountId == user.accountId) :
         config.ruleType == "current-user-is-reporter" ?
           (issue.reporter != null && user != null && issue.reporter.accountId == user.accountId) :
+        config.ruleType == "probe-git-build" ?
+          (issue.properties?.["cognirunner.git"]?.build?.conclusion == null ? true :
+           issue.properties?.["cognirunner.git"]?.build?.conclusion == "success") :
         true
       create:
         resource: config-ui-resource
@@ -389,6 +392,11 @@ permissions:
     - write:sprint:jira-software
     - write:board-scope:jira-software
     - write:issue:jira-software
+    # Coder plan Part 0 probes (2026-09-12): JSM queue intake and Confluence reach.
+    - read:servicedesk-request
+    - read:space:confluence
+    - read:page:confluence
+    - search:confluence
   external:
     images:
       - address: "*.atlassian.net"
@@ -436,3 +444,10 @@ app:
   id: ari:cloud:ecosystem::app/36415848-6868-4697-9554-3c3ad87b8da9
   licensing:
     enabled: true
+  # Confluence is OPTIONAL: the app stays a Jira app; Confluence effects light up
+  # only where an admin also installs it on Confluence (probe d, Coder plan).
+  compatibility:
+    jira:
+      required: true
+    confluence:
+      required: false

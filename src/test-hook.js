@@ -39,6 +39,91 @@ export async function testStateTrigger(req) {
   if (String((req && req.method) || "GET").toUpperCase() === "POST") {
     let body = {};
     try { body = JSON.parse((req && req.body) || "{}"); } catch (e) { return json(400, { error: "invalid JSON body" }); }
+    // ===== Coder plan Part 0 platform probes (dev-gated) =====
+    // "probe": records getAppContext().license as seen by THIS webtrigger and enqueues the same
+    // question (or a Forge LLM cap measurement) into the async consumer; "readProbe" returns the
+    // recorded rows. Nothing here touches production paths or user data.
+    if (body.action === "probe") {
+      try {
+        const { getAppContext } = await import("@forge/api");
+        const { Queue } = await import("@forge/events");
+        let ctx = null; let ctxErr = null;
+        try { ctx = getAppContext(); } catch (e) { ctxErr = String(e?.message || e); }
+        const webtrigger = { hasContext: !!ctx, license: ctx?.license ?? null, keys: ctx ? Object.keys(ctx) : [], error: ctxErr };
+        await storage.set("probe:license:webtrigger", { at: new Date().toISOString(), runtime: "webtrigger", ...webtrigger }, { ttl: { value: 1, unit: "DAYS" } });
+        const queue = new Queue({ key: "async-ai-queue" });
+        const kind = body.kind === "forgeLlm" ? "forgeLlm" : "license";
+        const name = kind === "license" ? "license:consumer" : ("forgellm:" + String(body.name || Date.now()).replace(/[^A-Za-z0-9_.-]/g, ""));
+        const taskId = "probe-" + Date.now().toString(36);
+        const pushed = await queue.push({ body: { taskType: "probe", taskId, params: { kind, name, model: body.model, tokens: body.tokens, calls: body.calls, enqueuedAt: new Date().toISOString() } } });
+        return json(200, { webtrigger, queued: { kind, name, key: "probe:" + name, pushed: pushed || null } });
+      } catch (e) {
+        return json(500, { error: String((e && e.message) || e) });
+      }
+    }
+    if (body.action === "readProbe") {
+      const name = String(body.name || "").replace(/[^A-Za-z0-9_.:-]/g, "");
+      if (!name) return json(400, { error: "name required" });
+      return json(200, { name, value: (await storage.get("probe:" + name)) || null });
+    }
+    // Cross-product reach: can THIS Jira-triggered function call Confluence, and what is the
+    // exact error when the app is not installed on Confluence?
+    if (body.action === "probeConfluence") {
+      try {
+        const { default: api, route } = await import("@forge/api");
+        const r = await api.asApp().requestConfluence(route`/wiki/api/v2/spaces?limit=1`);
+        const text = await r.text();
+        return json(200, { status: r.status, ok: r.ok, body: text.slice(0, 600) });
+      } catch (e) {
+        return json(200, { thrown: String((e && e.message) || e).slice(0, 600) });
+      }
+    }
+    // JSM reach as the app: service desks and one queue listing.
+    if (body.action === "probeServiceDesk") {
+      try {
+        const { default: api, route } = await import("@forge/api");
+        const r1 = await api.asApp().requestJira(route`/rest/servicedeskapi/servicedesk?limit=5`);
+        const t1 = await r1.text();
+        let queues = null;
+        try {
+          const desks = JSON.parse(t1);
+          const first = desks?.values?.[0]?.id;
+          if (first) {
+            const r2 = await api.asApp().requestJira(route`/rest/servicedeskapi/servicedesk/${first}/queue?limit=5`);
+            const t2 = await r2.text();
+            let firstQueue = null;
+            try { firstQueue = JSON.parse(t2)?.values?.[0]?.id || null; } catch (e) { /* ignore */ }
+            let issues = null;
+            if (firstQueue) {
+              const r3 = await api.asApp().requestJira(route`/rest/servicedeskapi/servicedesk/${first}/queue/${firstQueue}/issue?limit=3`);
+              issues = { status: r3.status, body: (await r3.text()).slice(0, 400) };
+            }
+            queues = { status: r2.status, body: t2.slice(0, 400), issues };
+          }
+        } catch (e) { queues = { error: String(e?.message || e) }; }
+        return json(200, { servicedesks: { status: r1.status, body: t1.slice(0, 400) }, queues });
+      } catch (e) {
+        return json(200, { thrown: String((e && e.message) || e).slice(0, 600) });
+      }
+    }
+    // Writes the advisory Git-state property on ONE issue so the condition-expression probe can
+    // flip a transition. Dev site only; the harness restores/removes it afterwards.
+    if (body.action === "probeProperty") {
+      if (typeof body.issueKey !== "string" || !/^[A-Z][A-Z0-9_]*-\d+$/.test(body.issueKey)) return json(400, { error: "issueKey required" });
+      try {
+        const { default: api, route } = await import("@forge/api");
+        const key = String(body.propertyKey || "cognirunner.git");
+        if (body.remove === true) {
+          const r = await api.asApp().requestJira(route`/rest/api/3/issue/${body.issueKey}/properties/${key}`, { method: "DELETE" });
+          return json(200, { removed: r.status });
+        }
+        const r = await api.asApp().requestJira(route`/rest/api/3/issue/${body.issueKey}/properties/${key}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body.value || {}) });
+        const back = await api.asApp().requestJira(route`/rest/api/3/issue/${body.issueKey}/properties/${key}`);
+        return json(200, { put: r.status, readBack: back.status, value: (await back.text()).slice(0, 400) });
+      } catch (e) {
+        return json(200, { thrown: String((e && e.message) || e).slice(0, 600) });
+      }
+    }
     if (body.action === "commit") {
       try {
         const { commitImportCore } = await import("./index.js");

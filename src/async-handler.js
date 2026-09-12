@@ -19,7 +19,7 @@
 // `storage` was deprecated from @forge/api — migrated to @forge/kvs.
 // Aliased back to `storage` so the existing call sites stay unchanged.
 import { kvs as storage } from "@forge/kvs";
-import api, { route, fetch } from "@forge/api";
+import api, { route, fetch, getAppContext } from "@forge/api";
 // Atlassian-hosted Forge LLMs (Preview) — used when the active provider is "atlassian".
 import { chat as forgeLlmChatApi } from "@forge/llm";
 // Heavy post-functions (MCP-backed: generate-doc, research, fact-checked semantics)
@@ -787,8 +787,50 @@ Error: ${defangFence(String(error).substring(0, 2000))}${recommendation ? `\nRec
   return { success: true, id: saved.id, merged: saved.merged };
 };
 
+
+// === DEV PROBE task (Coder plan Part 0). Enqueued ONLY by the HARNESS_SECRET-gated
+// test hook; records platform facts into KVS `probe:<name>` for the harness to read.
+//   kind "license":  what getAppContext().license looks like INSIDE the consumer.
+//   kind "forgeLlm": N sequential @forge/llm calls of ~T tokens to measure the
+//                    per-installation token cap (429 text, window, per-model?).
+const executeProbe = async (params) => {
+  const kind = String(params?.kind || "");
+  const name = String(params?.name || kind).replace(/[^A-Za-z0-9_.:-]/g, "").slice(0, 80);
+  const key = "probe:" + name;
+  const record = async (value) => storage.set(key, { at: new Date().toISOString(), kind, ...value }, { ttl: { value: 1, unit: "DAYS" } });
+  if (kind === "license") {
+    let ctx = null; let err = null;
+    try { ctx = getAppContext(); } catch (e) { err = String(e?.message || e); }
+    await record({ runtime: "consumer", hasContext: !!ctx, license: ctx?.license ?? null, keys: ctx ? Object.keys(ctx) : [], error: err });
+    return { success: true, key };
+  }
+  if (kind === "forgeLlm") {
+    const model = String(params?.model || "claude-haiku-4-5-20251001");
+    const tokens = Math.min(60000, Math.max(500, Number(params?.tokens) || 20000));
+    const calls = Math.min(6, Math.max(1, Number(params?.calls) || 3));
+    // ~4 chars/token filler that the model must not summarise: ask for one word back.
+    const filler = "lorem ipsum ".repeat(Math.ceil((tokens * 4) / 12));
+    const results = [];
+    const startedAt = Date.now();
+    for (let i = 0; i < calls; i++) {
+      const t0 = Date.now();
+      try {
+        const r = await forgeLlmChatApi({ model, messages: [{ role: "system", content: "Reply with the single word OK." }, { role: "user", content: filler + "\nReply OK." }], max_completion_tokens: 8 });
+        results.push({ i, ok: true, ms: Date.now() - t0, usage: r?.usage || null, model: r?.model || null });
+      } catch (e) {
+        results.push({ i, ok: false, ms: Date.now() - t0, status: e?.status || e?.statusCode || null, error: String(e?.message || e).slice(0, 400) });
+      }
+    }
+    await record({ runtime: "consumer", model, tokens, calls, startedAt: new Date(startedAt).toISOString(), totalMs: Date.now() - startedAt, results });
+    return { success: true, key };
+  }
+  await record({ error: "unknown probe kind" });
+  return { success: false, key };
+};
+
 // === Task registry — add new async task types here ===
 const TASK_HANDLERS = {
+  "probe": executeProbe,
   "review": executeReview,
   "postfunction": executeQueuedPostFunction,
   "codegen": executeCodegen,
@@ -805,7 +847,7 @@ const TASK_HANDLERS = {
 // Task types with no poller — skip async_task:* status rows (they'd never be
 // cleaned up: getAsyncTaskResult deletes rows only when something polls them).
 // codegen/fixcode ARE polled (the frontend waits on getAsyncTaskResult).
-const UNPOLLED_TASKS = new Set(["postfunction", "memory_distill", "listener"]);
+const UNPOLLED_TASKS = new Set(["postfunction", "memory_distill", "listener", "probe"]);
 
 /**
  * Main async event handler. Routes to the correct task handler.

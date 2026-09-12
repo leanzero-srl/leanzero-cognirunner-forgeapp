@@ -6146,7 +6146,15 @@ function App() {
         <div>
           <h2 className="title">
             CogniRunner Admin
-            {licenseActive !== null && (
+            {/* F-106: gated on the EDITION, not on licenseActive. A live install with no
+                license object answers checkLicense -> { isActive: null, edition: "standard",
+                source: "none" }, so the old `licenseActive !== null` gate hid the chip on
+                exactly the tenant that most needs to be told which CogniRunner it is running.
+                `edition` is ALWAYS a real id (resolveEdition fails soft to "standard"), so
+                an unlicensed install now correctly reads STANDARD. isActive survives only
+                below, where it drives the license-banner copy — a claim we still decline to
+                make when the license state is genuinely unknown. */}
+            {edition && (
               <span className={`edition-chip edition-${edition === EDITION_IDS.ADVANCED ? "advanced" : "standard"}`} style={{ marginLeft: "10px" }}>
                 {edition === EDITION_IDS.ADVANCED ? "Coder" : "Standard"}
               </span>

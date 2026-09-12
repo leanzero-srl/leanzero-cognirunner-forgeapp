@@ -42,12 +42,12 @@ let pass = 0, fail = 0;
 const ok = (cond, msg) => { if (cond) { pass++; } else { fail++; console.log("  ✗ " + msg); } };
 const shot = async (page, name) => { if (SHOTS) await page.screenshot({ path: path.join(OUT, `${name}.png`), fullPage: true }); };
 
-async function openAdmin(browser, theme = "light", standard = false) {
+async function openAdmin(browser, theme = "light", standard = false, unlicensed = false) {
   const root = path.join(STATIC, "admin-panel", "build-shot");
   if (!fs.existsSync(path.join(root, "index.html"))) throw new Error("no admin-panel build-shot — build it first (webpack.screenshot.js)");
   const { s, port } = await serve(root);
   const ctx = await browser.newContext({ viewport: { width: 1440, height: 1200 } });
-  await ctx.addInitScript(([th, std]) => { window.__SHOT__ = "admin"; window.__THEME__ = th; if (std) window.__STANDARD__ = true; }, [theme, standard]);
+  await ctx.addInitScript(([th, std, unl]) => { window.__SHOT__ = "admin"; window.__THEME__ = th; if (std) window.__STANDARD__ = true; if (unl) window.__UNLICENSED__ = true; }, [theme, standard, unlicensed]);
   const page = await ctx.newPage();
   const errors = [];
   page.on("pageerror", (e) => errors.push(String(e && e.message)));
@@ -224,6 +224,36 @@ try {
       await shot(page, `E2-standard-settings-${theme}`);
       ok(env.errors.length === 0, "E2 no page errors: " + env.errors.join(" | "));
     } catch (e) { fail++; console.log("  ✗ E2 threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
+  /* ---------------- E3 — UNLICENSED install: the chip must still say STANDARD ----
+     F-106. A live install with no license object returns
+     checkLicense -> { isActive: null, edition: "standard", label: "Standard", source: "none" }.
+     Every app used to gate the chip on `licenseActive !== null`, so this tenant —
+     the DEFAULT state of a development or unlisted install — saw no edition chip at
+     all and could not tell which CogniRunner it was running. The chip gates on the
+     EDITION now (always a real string); `isActive` is kept only for the license
+     banner copy, which correctly stays silent when the license state is unknown. */
+  for (const theme of ["light", "dark"]) {
+    console.log(`E3 unlicensed install (${theme})`);
+    const env = await openAdmin(browser, theme, false, true);
+    const { page } = env;
+    try {
+      const chip = page.locator(".edition-chip");
+      await chip.first().waitFor({ timeout: 10000 });
+      ok(await chip.count() === 1, "E3 the unlicensed install still renders exactly one edition chip");
+      ok((await chip.first().innerText()).trim().toLowerCase() === "standard", "E3 unlicensed chip reads Standard");
+      ok(await page.locator(".edition-chip.edition-standard").count() === 1, "E3 unlicensed chip carries the standard class");
+      const bg = await chip.first().evaluate((el) => getComputedStyle(el).backgroundColor);
+      ok(bg === (theme === "dark" ? "rgb(100, 116, 139)" : "rgb(71, 85, 105)"), `E3 unlicensed chip slate hue per theme (got ${bg})`);
+      ok(await chip.first().evaluate((el) => getComputedStyle(el).opacity) === "1", "E3 unlicensed chip is solid, not faded");
+      /* isActive: null is UNKNOWN, not inactive. The banner makes a claim about the
+         licence and must not make one here — neither "active" nor "inactive". */
+      ok(await page.locator(".license-banner.license-inactive").count() === 0, "E3 no 'license inactive' banner on an unknown license");
+      ok(await page.locator(".license-banner.license-active").count() === 0, "E3 no 'license active' banner on an unknown license");
+      await shot(page, `E3-unlicensed-${theme}`);
+      ok(env.errors.length === 0, "E3 no page errors: " + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  ✗ E3 threw: " + e.message.split("\n")[0]); }
     await close(env);
   }
 } finally {

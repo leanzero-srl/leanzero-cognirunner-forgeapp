@@ -54,20 +54,29 @@ const browser = await chromium.launch();
 try {
   for (const { app, shot, ready, head } of APPS) {
     for (const theme of ["light", "dark"]) {
-      for (const standard of [false, true]) {
-        const ed = standard ? "standard" : "advanced";
-        const label = standard ? "standard" : "coder";
+      /* Three tenants, not two (F-106). "unlicensed" is a live install with NO
+         license object: checkLicense answers { isActive: null, source: "none" } and
+         edition "standard". It used to render NO chip at all, because every app
+         gated the chip on `licenseActive !== null`. The chip must gate on the
+         EDITION — which is always a real string — so this tenant reads STANDARD. */
+      for (const tenant of ["advanced", "standard", "unlicensed"]) {
+        const standard = tenant === "standard";
+        const unlicensed = tenant === "unlicensed";
+        // An unlicensed tenant IS Standard capability-wise, so it wears the slate chip.
+        const ed = tenant === "advanced" ? "advanced" : "standard";
+        const label = ed === "advanced" ? "coder" : "standard";
         const root = path.join(STATIC, app, "build-shot");
         if (!fs.existsSync(path.join(root, "index.html"))) { console.log(`SKIP ${app}: no build-shot`); break; }
         const { s, port } = await serve(root);
         const ctx = await browser.newContext({ viewport: { width: 1100, height: 900 } });
-        await ctx.addInitScript(([sh, th, std]) => {
+        await ctx.addInitScript(([sh, th, std, unl]) => {
           // NOTE: no documentElement.setAttribute here — an init script runs before
           // the document exists and the throw would abort the rest of this function
           // (that is how __STANDARD__ silently never got set the first time round).
           window.__SHOT__ = sh; window.__THEME__ = th;
           if (std) window.__STANDARD__ = true;
-        }, [shot, theme, standard]);
+          if (unl) window.__UNLICENSED__ = true;
+        }, [shot, theme, standard, unlicensed]);
         const page = await ctx.newPage();
         const errors = []; page.on("pageerror", (e) => errors.push(String(e && e.message)));
         await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: "domcontentloaded" });
@@ -75,17 +84,17 @@ try {
           await page.locator(ready).first().waitFor({ timeout: 15000 });
           const chip = page.locator(".edition-chip");
           await chip.first().waitFor({ timeout: 10000 });
-          ok(await chip.count() === 1, `${app}/${theme}/${ed} exactly one chip`);
-          ok((await chip.first().innerText()).trim().toLowerCase() === label, `${app}/${theme}/${ed} chip label`);
+          ok(await chip.count() === 1, `${app}/${theme}/${tenant} exactly one chip`);
+          ok((await chip.first().innerText()).trim().toLowerCase() === label, `${app}/${theme}/${tenant} chip label`);
           const bg = await chip.first().evaluate((el) => getComputedStyle(el).backgroundColor);
-          ok(bg === HUE[ed][theme], `${app}/${theme}/${ed} solid hue (got ${bg})`);
-          ok(await chip.first().evaluate((el) => getComputedStyle(el).opacity) === "1", `${app}/${theme}/${ed} chip not faded`);
-          ok(errors.length === 0, `${app}/${theme}/${ed} no page errors: ${errors.join(" | ")}`);
-          if (SHOTS && !standard) {
+          ok(bg === HUE[ed][theme], `${app}/${theme}/${tenant} solid hue (got ${bg})`);
+          ok(await chip.first().evaluate((el) => getComputedStyle(el).opacity) === "1", `${app}/${theme}/${tenant} chip not faded`);
+          ok(errors.length === 0, `${app}/${theme}/${tenant} no page errors: ${errors.join(" | ")}`);
+          if (SHOTS && tenant === "advanced") {
             await page.locator(head).first().screenshot({ path: path.join(OUT, `chip-${app}-${theme}.png`) });
           }
         } catch (e) {
-          fail++; console.log(`  ✗ ${app}/${theme}/${ed} threw: ${e.message.split("\n")[0]}`);
+          fail++; console.log(`  ✗ ${app}/${theme}/${tenant} threw: ${e.message.split("\n")[0]}`);
         }
         await ctx.close(); await new Promise((r) => s.close(r));
       }

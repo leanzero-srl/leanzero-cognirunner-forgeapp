@@ -706,6 +706,15 @@ const injectStyles = () => {
       box-shadow: 0 4px 12px -4px rgba(220, 38, 38, 0.35);
     }
 
+    /* F-106 — the chip's own row when there is no licence claim to make. Chrome-free
+       on purpose: it carries no colour of its own, so it needs no dark override. */
+    .license-edition-only {
+      background: transparent;
+      border-color: transparent;
+      padding: 0;
+      margin-bottom: 8px;
+    }
+
     /* === Edition chip (1.3) === Solid saturated fill, white text, no tint.
        Coder = burnt orange, Standard = neutral slate; dark overrides for both. */
     .edition-chip {
@@ -1528,13 +1537,16 @@ function App() {
     <div className="sk" style={{ height: "38px", marginBottom: "10px" }} />
   ) : null;
 
-  // Edition chip — hidden while the license state is unknown (null), so we never
-  // assert an edition we haven't actually read.
-  const editionChip = licenseActive === null ? null : (
+  /* Edition chip — gated on the EDITION, not on the license state (F-106). An install
+     with no license object answers checkLicense -> { isActive: null, edition: "standard",
+     source: "none" }, and the old `licenseActive === null` gate hid the chip on exactly
+     that tenant. `edition` is always a real id (resolveEdition fails soft to "standard"),
+     so an unlicensed install reads STANDARD — which is the truth, not a guess. */
+  const editionChip = edition ? (
     <span className={`edition-chip edition-${edition === EDITION_IDS.ADVANCED ? "advanced" : "standard"}`}>
       {edition === EDITION_IDS.ADVANCED ? "Coder" : "Standard"}
     </span>
-  );
+  ) : null;
 
   const licenseBanner = licenseActive === false ? (
     <div className="license-banner license-inactive anim-rise">
@@ -1554,6 +1566,15 @@ function App() {
       <span>License active</span>
       {editionChip}
     </div>
+  ) : editionChip ? (
+    /* License state UNKNOWN (isActive null). We decline to claim "active" or "inactive"
+       — that copy is the one thing isActive still owns — but the edition IS known, so
+       the chip needs a home of its own. Before F-106 the chip lived ONLY inside the two
+       banner arms, so fixing its own gate would not have been enough: on an unlicensed
+       install there was no element to render it into at all. This row is chrome-free
+       (no border, no fill, no new hue -> no dark-mode override needed) and keeps the
+       chip on the same baseline as the banner it stands in for. */
+    <div className="license-banner license-edition-only anim-rise">{editionChip}</div>
   ) : null;
 
   const toggleAlerts = (

@@ -99,9 +99,11 @@ const badgeFor = (it) => {
 export default function App() {
   const [state, setState] = useState("loading"); // loading | ready | error | notVisible
   const [items, setItems] = useState([]);
-  // Edition chip state. licenseActive stays null until we actually know, and the
-  // chip is hidden until then — never claim an edition we have not read.
-  const [licenseActive, setLicenseActive] = useState(null);
+  /* Edition chip state. There is no license BANNER on the glance, so the only thing
+     this surface ever needed was the edition — and `edition` fails soft to Standard,
+     which is the truthful answer for an install with no license object. The
+     licenseActive state that used to gate the chip is gone with F-106: it was never
+     read for anything else, and keeping it invited the gate back. */
   const [edition, setEdition] = useState(EDITION_IDS.STANDARD);
 
   useEffect(() => {
@@ -124,7 +126,7 @@ export default function App() {
           || ctx?.issue?.key || ctx?.issueKey || null;
         if (!issueKey) { if (!cancelled) setState("error"); return; }
         const ed = resolveEdition(ctx?.license);
-        if (!cancelled) { setLicenseActive(ed.active); setEdition(ed.edition); }
+        if (!cancelled) setEdition(ed.edition);
 
         const res = await invoke("getIssueActivity", { issueKey });
         if (cancelled) return;
@@ -140,7 +142,6 @@ export default function App() {
         try {
           const lic = await invoke("checkLicense");
           if (!cancelled) {
-            if (lic?.isActive !== undefined) setLicenseActive(lic.isActive);
             if (lic?.edition) setEdition(lic.edition);
           }
         } catch (_) { /* unknown edition — chip stays as-is */ }
@@ -155,7 +156,10 @@ export default function App() {
     <div className="glance">
       <div className="glance-head">
         <span className="glance-mark">CR</span> CogniRunner on this issue
-        {licenseActive !== null && (
+        {/* F-106: gated on the EDITION, not on licenseActive — an install with no
+            license object reports isActive:null and edition:"standard", and used to
+            show no chip at all. `edition` is always a real id, so it reads STANDARD. */}
+        {edition && (
           <span className={`edition-chip edition-${edition === EDITION_IDS.ADVANCED ? "advanced" : "standard"}`}>
             {edition === EDITION_IDS.ADVANCED ? "Coder" : "Standard"}
           </span>

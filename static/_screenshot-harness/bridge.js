@@ -409,7 +409,16 @@ const LM_WEIGHT_MODELS = [
 /* Default shot state is the Coder (advanced) edition. Set window.__STANDARD__ = true
    before the app mounts to flip EVERY edition surface to Standard: the chip, the
    locked Sonnet/Opus rows, the upgrade copy and the agent-model lock. */
-const isStandardEd = () => typeof window !== "undefined" && !!window.__STANDARD__;
+/* Third scenario (F-106): window.__UNLICENSED__ = true models a LIVE INSTALL WITH NO
+   LICENSE OBJECT — `context.license` is absent and checkLicense answers
+   { isActive: null, edition: "standard", source: "none" }. This is the shape a
+   development / unlisted install actually returns (proven on dev), and it is the
+   case that used to render NO chip at all because every surface gated the chip on
+   `licenseActive !== null`. Capability-wise an unlicensed tenant IS Standard, so it
+   folds into isStandardEd() for the model lists, the locks and the allowance — only
+   the license SIGNAL (isActive/source) differs. */
+const isUnlicensedEd = () => typeof window !== "undefined" && !!window.__UNLICENSED__;
+const isStandardEd = () => typeof window !== "undefined" && (!!window.__STANDARD__ || !!window.__UNLICENSED__);
 
 /* The Coder tenant this harness photographs: 100 seats -> $200 allowance (the seat
    rule in usage-meter.js), $92.40 of Forge LLM spend this month -> 46% used, "ok".
@@ -426,9 +435,11 @@ function mockAllowance() {
 const edName = () => (isStandardEd() ? "standard" : "advanced");
 const FORGE_FRONTIER = FORGE_LLM_FRONTIER;
 const FORGE_HAIKU = FORGE_LLM_DEFAULT;
-const mockLicenseCtx = () => (isStandardEd()
-  ? { active: true, isActive: true, capabilitySet: "capabilityStandard", state: "standard", type: "PAID" }
-  : { active: true, isActive: true, capabilitySet: "capabilityAdvanced", state: "advanced", type: "PAID" });
+const mockLicenseCtx = () => (isUnlicensedEd()
+  ? null // no license property at all — resolveEdition() answers active:null, source:"none"
+  : isStandardEd()
+    ? { active: true, isActive: true, capabilitySet: "capabilityStandard", state: "standard", type: "PAID" }
+    : { active: true, isActive: true, capabilitySet: "capabilityAdvanced", state: "advanced", type: "PAID" });
 
 /* ----------------------------- context router -------------------------------- */
 function getContext() {
@@ -674,11 +685,14 @@ function invoke(name, payload) {
       ] });
     }
     case "checkLicense": return Promise.resolve({
-      isActive: true,
+      // isActive is NULL on an unlicensed install — the backend sends null whenever
+      // there is no license property (src/index.js checkLicense). `edition` is still
+      // a real non-empty string ("standard"), which is what the chip must gate on.
+      isActive: isUnlicensedEd() ? null : true,
       edition: edName(),
       label: isStandardEd() ? "Standard" : "Coder",
-      capabilitySet: isStandardEd() ? "capabilityStandard" : "capabilityAdvanced",
-      source: "license",
+      capabilitySet: isUnlicensedEd() ? null : (isStandardEd() ? "capabilityStandard" : "capabilityAdvanced"),
+      source: isUnlicensedEd() ? "none" : "license",
       // Built from ADVANCED_FEATURES so the mock can never carry a feature id the
       // product does not have (F-085) — editions.test.mjs asserts the parity.
       features: ADVANCED_FEATURES.map((f) => ({ id: f.id, label: f.label, allowed: !isStandardEd() })),

@@ -124,6 +124,15 @@ html, body {
   box-shadow: 0 4px 12px -4px rgba(220, 38, 38, 0.35);
 }
 
+/* F-106 — the edition chip's own row when there is no licence claim to make.
+   Chrome-free on purpose: no colour of its own, so no dark override needed. */
+.license-edition-only {
+  background: transparent;
+  border-color: transparent;
+  padding: 0;
+  margin-bottom: 8px;
+}
+
 .rule-status-banner {
   display: flex;
   align-items: center;

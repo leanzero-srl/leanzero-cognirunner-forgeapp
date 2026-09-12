@@ -2943,9 +2943,11 @@ function App() {
   const [providerReady, setProviderReady] = useState(true);
 
   // Post-function state
-  // Edition (1.3). config-ui read no license before — it does now, purely to render
-  // the chip; nothing in this editor is gated on it.
-  const [licenseActive, setLicenseActive] = useState(null);
+  /* Edition (1.3). config-ui read no license before — it does now, purely to render
+     the chip; nothing in this editor is gated on it. This editor shows no license
+     BANNER, so the edition is the only thing it ever needed — the licenseActive state
+     that used to gate the chip is gone with F-106 (it had no other reader, and keeping
+     it invited the gate back). `edition` fails soft to Standard. */
   const [edition, setEdition] = useState(EDITION_IDS.STANDARD);
 
   const [isPostFunction, setIsPostFunction] = useState(false);
@@ -3556,14 +3558,14 @@ function App() {
       try {
         if (currentContext) {
           const ed = resolveEdition(currentContext.license);
-          setLicenseActive(ed.active);
           setEdition(ed.edition);
         }
         const licenseResult = await invoke("checkLicense");
-        if (licenseResult?.isActive !== undefined) setLicenseActive(licenseResult.isActive);
         if (licenseResult?.edition) setEdition(licenseResult.edition);
       } catch (e) {
-        // Unknown license — the chip stays hidden rather than guessing an edition.
+        // Unknown license — keep the seeded Standard edition. That is not a guess: an
+        // install we cannot read a license for HAS the Standard capability set
+        // (resolveEdition fails soft to standard, on purpose), so the chip is correct.
       }
 
       setLoading(false);
@@ -3611,7 +3613,10 @@ function App() {
             {isPostFunction ? "Post Function Configuration"
               : isCondition ? "Condition Configuration"
               : "AI Validator Configuration"}
-            {licenseActive !== null && (
+            {/* F-106: gated on the EDITION, not on licenseActive — an install with no
+                license object reports isActive:null and edition:"standard", and used to
+                show no chip at all. `edition` is always a real id, so it reads STANDARD. */}
+            {edition && (
               <span className={`edition-chip edition-${edition === EDITION_IDS.ADVANCED ? "advanced" : "standard"}`} style={{ marginLeft: "8px" }}>
                 {edition === EDITION_IDS.ADVANCED ? "Coder" : "Standard"}
               </span>

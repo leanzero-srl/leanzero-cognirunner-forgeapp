@@ -11000,10 +11000,9 @@ const getProviderConfig = async () => {
   try {
     const provider = (await storage.get("COGNIRUNNER_AI_PROVIDER")) || "atlassian";
     const customUrl = await storage.get("COGNIRUNNER_AI_BASE_URL");
-    _cachedProviderChecked = true;
-    _cachedProviderAt = Date.now();
-    _cachedProvider = provider;
-    _cachedBaseUrl = customUrl || (PROVIDERS[provider] && PROVIDERS[provider].baseUrl) || PROVIDERS.openai.baseUrl;
+    const baseUrl = customUrl || (PROVIDERS[provider] && PROVIDERS[provider].baseUrl) || PROVIDERS.openai.baseUrl;
+    let editionId = EDITION_IDS.STANDARD;
+    let allowance = null;
     // Only Forge LLM spends the vendor's money, so only Forge LLM pays for the
     // extra reads. Every branch here is swallowed: this must never break a call.
     if (provider === "atlassian") {
@@ -11014,24 +11013,38 @@ const getProviderConfig = async () => {
       // matters because the miss can land inside a transition. Each one fails open on
       // its own: a bad edition read leaves "standard" (the cheap tier) and a bad usage
       // or seat read leaves the allowance null ("no ceiling known"). No seat SCAN is
-      // triggered from here — the scan runs only from the admin-panel resolvers.
+      // triggered from here — the scan runs only from the admin-panel resolver.
       const [edRes, stateRes, seatsRes] = await Promise.all([
-        currentEdition().then((e) => e.edition).catch(() => "standard"),
+        currentEdition().then((e) => e.edition).catch(() => EDITION_IDS.STANDARD),
         storage.get(USAGE_KEY).catch(() => null),
         readSeatCount().catch(() => null),
       ]);
-      _cachedEditionId = edRes || "standard";
+      editionId = edRes || EDITION_IDS.STANDARD;
       try {
-        _cachedAllowance = forgeLlmAllowanceStatus(stateRes || emptyState(), allowanceUsdForSeats(seatsRes));
-      } catch (e) { _cachedAllowance = null; }
-    } else {
-      _cachedEditionId = "standard";
-      _cachedAllowance = null;
+        allowance = forgeLlmAllowanceStatus(stateRes || emptyState(), allowanceUsdForSeats(seatsRes));
+      } catch (e) { allowance = null; }
     }
+    // The memo is marked fresh ONLY here, once every read has resolved (F-096). It used
+    // to be stamped before the Forge LLM reads: if that block threw synchronously, the
+    // outer catch returned the fail-open answer (standard / no ceiling) while the memo
+    // stayed "fresh" holding the PREVIOUS edition and allowance — so this call clamped
+    // to Haiku and the next 30 seconds of calls were served "advanced" from the cache.
+    // One memo, one answer.
+    _cachedProvider = provider;
+    _cachedBaseUrl = baseUrl;
+    _cachedEditionId = editionId;
+    _cachedAllowance = allowance;
+    _cachedProviderChecked = true;
+    _cachedProviderAt = Date.now();
     return { provider: _cachedProvider, baseUrl: _cachedBaseUrl, edition: _cachedEditionId, allowance: _cachedAllowance };
   } catch (error) {
     console.error("Error reading provider config:", error);
-    return { provider: "atlassian", baseUrl: PROVIDERS.atlassian.baseUrl, edition: "standard", allowance: null };
+    // Fail-open, and the CACHE agrees with what we return: the fail-open values are
+    // written back rather than leaving a stale edition/allowance behind the memo. The
+    // memo is deliberately NOT marked fresh, so the next call retries the reads.
+    _cachedEditionId = EDITION_IDS.STANDARD;
+    _cachedAllowance = null;
+    return { provider: "atlassian", baseUrl: PROVIDERS.atlassian.baseUrl, edition: _cachedEditionId, allowance: _cachedAllowance };
   }
 };
 

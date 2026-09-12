@@ -262,6 +262,19 @@ ok(/rest\/api\/3\/users\/search/.test(codeOnly), "seats are counted from /rest/a
   ok(!/maybeRefreshSeatSnapshot/.test(b), "the provider memo never starts a seat scan");
   ok(/Promise\.all\(\[/.test(b), "the memo's three Forge-LLM reads go out in parallel");
   ok(/_cachedAllowance = null;/.test(b), "every failure path leaves the allowance null (no ceiling known → never 'hard')");
+  // F-096: the memo is stamped fresh only AFTER every read resolved. Stamping first meant
+  // a throwing read returned the fail-open answer while the cache kept serving the
+  // PREVIOUS edition/allowance for 30s — two answers from one memo.
+  {
+    const iReads = b.indexOf("Promise.all([");
+    const iStamp = b.indexOf("_cachedProviderChecked = true;");
+    ok(iStamp > iReads && iReads > 0, "the memo is marked fresh AFTER the Forge LLM reads, not before");
+    ok(b.indexOf("_cachedEditionId = editionId;") < iStamp, "…and the cached edition is written before the stamp");
+    const cat = b.slice(b.indexOf("} catch (error) {"));
+    ok(/_cachedEditionId = EDITION_IDS\.STANDARD;/.test(cat) && /_cachedAllowance = null;/.test(cat),
+      "the fail-open path writes the fail-open values into the cache — it never leaves a stale 'advanced' behind");
+    ok(!/_cachedProviderChecked = true;/.test(cat), "…and does not mark the memo fresh, so the next call retries");
+  }
 }
 {
   const i = codeOnly.indexOf('resolver.define("getAiUsage"');

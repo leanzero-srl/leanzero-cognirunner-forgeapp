@@ -11035,8 +11035,12 @@ let _cachedAllowance = null;
  * Returns the cached value on subsequent calls within the freshness window.
  *
  * `edition` / `allowance` are ADDITIVE — every existing caller destructures
- * { provider, baseUrl } and is unaffected. Both fail soft: a bad read leaves the
+ * { provider, baseUrl } and is unaffected. They fail soft: a bad read leaves the
  * edition at "standard" and the allowance null (treated as "no ceiling known").
+ *
+ * The PROVIDER does not fail soft to a vendor-billed default — see the catch below.
+ * On a fault it is the last provider this container read, or `null`, and `null` means
+ * "no provider configured" to every caller (F-103).
  */
 const getProviderConfig = async () => {
   if (_cachedProviderChecked && _cacheFresh(_cachedProviderAt)) {
@@ -11090,12 +11094,32 @@ const getProviderConfig = async () => {
     return { provider: _cachedProvider, baseUrl: _cachedBaseUrl, edition: _cachedEditionId, allowance: _cachedAllowance };
   } catch (error) {
     console.error("Error reading provider config:", error);
-    // Fail-open, and the CACHE agrees with what we return: the fail-open values are
-    // written back rather than leaving a stale edition/allowance behind the memo. The
-    // memo is deliberately NOT marked fresh, so the next call retries the reads.
+    // WHICH WAY THIS FAILS, and why (F-103):
+    //
+    //  - the EDITION and the ALLOWANCE fail OPEN-but-CHEAP: Standard, no ceiling known.
+    //    A billing gate must degrade the model, never break a transition.
+    //  - the PROVIDER fails CLOSED: to the last provider this container read, and if it
+    //    has never read one, to `null` — "no provider configured". It must NOT fall back
+    //    to "atlassian". This value is what callAIChatRaw dispatches on, so a KVS wobble
+    //    on a BYOK tenant used to route that tenant's call to Forge LLM, i.e. to the
+    //    VENDOR's bill, clamped to Haiku so it succeeded and nothing looked wrong.
+    //    A failure reported as success, on every call, for as long as the fault lasted.
+    //    With `null` no branch matches: getOpenAIKey finds no key, the caller bails with
+    //    "configure a key" and the validators/conditions fail OPEN on a missing key, as
+    //    they do for every other unconfigured-provider case. Nothing is billed to anyone.
+    //
+    // The cache agrees with what we return (the fail-open edition/allowance are written
+    // back, never left stale), and the memo is deliberately NOT marked fresh, so the
+    // next call retries the reads.
     _cachedEditionId = EDITION_IDS.STANDARD;
     _cachedAllowance = null;
-    return { provider: "atlassian", baseUrl: PROVIDERS.atlassian.baseUrl, edition: _cachedEditionId, allowance: _cachedAllowance };
+    const lastProvider = _cachedProvider || null;
+    return {
+      provider: lastProvider,
+      baseUrl: lastProvider ? (_cachedBaseUrl || (PROVIDERS[lastProvider] && PROVIDERS[lastProvider].baseUrl) || null) : null,
+      edition: _cachedEditionId,
+      allowance: _cachedAllowance,
+    };
   }
 };
 
@@ -11403,6 +11427,10 @@ const getOpenAIKey = async () => {
       _cachedKey = FORGE_LLM_SENTINEL;
       return _cachedKey;
     }
+    // No provider (F-103: getProviderConfig faulted and named none) → no key, and do
+    // NOT memoise that: "COGNIRUNNER_KEY_null" is not a slot, and caching its miss for
+    // 30s would keep answering "no key configured" after the fault has cleared.
+    if (!provider) return null;
     // Try per-provider slot
     let byokKey = await storage.get(providerKeySlot(provider));
     // Migrate: if no per-provider key, check legacy slot (one-time migration)

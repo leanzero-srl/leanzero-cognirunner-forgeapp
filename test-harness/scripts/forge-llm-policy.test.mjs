@@ -381,6 +381,23 @@ ok(/rest\/api\/3\/users\/search/.test(codeOnly), "seats are counted from /rest/a
     ok(/_cachedEditionId = EDITION_IDS\.STANDARD;/.test(cat) && /_cachedAllowance = null;/.test(cat),
       "the fail-open path writes the fail-open values into the cache — it never leaves a stale 'advanced' behind");
     ok(!/_cachedProviderChecked = true;/.test(cat), "…and does not mark the memo fresh, so the next call retries");
+    // F-103: the PROVIDER half does NOT fail open to the vendor-billed provider. This is
+    // the value callAIChatRaw dispatches on, so "atlassian" here routes a BYOK tenant's
+    // call to the vendor's bill, clamped to Haiku so it even succeeds.
+    ok(!/return \{ provider: "atlassian"/.test(cat), 'the fault path never names "atlassian" as the provider');
+    ok(/const lastProvider = _cachedProvider \|\| null;/.test(cat) && /provider: lastProvider,/.test(cat),
+      "on a fault the provider is the last one this container read, else null (no provider configured)");
+  }
+  // F-103: and `null` must really mean "no provider" downstream — no dispatch branch
+  // matches it, and the key lookup refuses it rather than memoising a bogus slot miss.
+  {
+    const raw = codeOnly.match(/const callAIChatRaw = async \(opts\) => \{[\s\S]*?\n  const \{ provider, baseUrl \} = await getProviderConfig\(\);/);
+    ok(!!raw, "callAIChatRaw dispatches on the provider from the memo");
+    const key = codeOnly.match(/const getOpenAIKey = async \(\) => \{[\s\S]*?\n\};/);
+    ok(!!key && /if \(!provider\) return null;/.test(key[0]),
+      "getOpenAIKey returns no key for a null provider — callers then bail and validators fail OPEN");
+    ok(!!key && key[0].indexOf("if (!provider) return null;") < key[0].lastIndexOf("_cachedKeyChecked = true;"),
+      "…and it returns BEFORE the memo is stamped, so the miss is not served for 30s");
   }
 }
 {

@@ -849,9 +849,16 @@ const executeProbe = async (params) => {
     return { success: true, key };
   }
   if (kind === "forgeLlm") {
-    const model = String(params?.model || "claude-haiku-4-5-20251001");
-    const tokens = Math.min(60000, Math.max(500, Number(params?.tokens) || 20000));
-    const calls = Math.min(6, Math.max(1, Number(params?.calls) || 3));
+    // The probe spends the VENDOR's Forge LLM tokens, so it obeys the same two rules
+    // every other Forge LLM call here obeys: the model is clamped to what this
+    // install's EDITION entitles (a dev probe must not be the one path that can bill
+    // Opus on Standard), and the spend is METERED so it shows up in the usage ledger
+    // instead of vanishing. The ceilings are tighter than a normal call on purpose —
+    // this is a measurement, not a workload.
+    const edition = await currentEditionAsync().catch(() => "standard");
+    const model = clampForgeLlmModel(edition, String(params?.model || FORGE_LLM_DEFAULT));
+    const tokens = Math.min(50000, Math.max(500, Number(params?.tokens) || 20000));
+    const calls = Math.min(3, Math.max(1, Number(params?.calls) || 3));
     // ~4 chars/token filler that the model must not summarise: ask for one word back.
     const filler = "lorem ipsum ".repeat(Math.ceil((tokens * 4) / 12));
     const results = [];
@@ -861,11 +868,24 @@ const executeProbe = async (params) => {
       try {
         const r = await forgeLlmChatApi({ model, messages: [{ role: "system", content: "Reply with the single word OK." }, { role: "user", content: filler + "\nReply OK." }], max_completion_tokens: 8 });
         results.push({ i, ok: true, ms: Date.now() - t0, usage: r?.usage || null, model: r?.model || null });
+        // Meter the spend (fail-open, like every other metering call site).
+        try {
+          const u = r?.usage || {};
+          await recordAiUsage({
+            provider: "atlassian",
+            usageLike: {
+              prompt_tokens: u.input_tokens ?? u.prompt_tokens ?? 0,
+              completion_tokens: u.output_tokens ?? u.completion_tokens ?? 0,
+              total_tokens: u.total_tokens ?? ((u.input_tokens || 0) + (u.output_tokens || 0)),
+            },
+            model: r?.model || model,
+          });
+        } catch (e) { /* metering never breaks the probe */ }
       } catch (e) {
         results.push({ i, ok: false, ms: Date.now() - t0, status: e?.status || e?.statusCode || null, error: String(e?.message || e).slice(0, 400) });
       }
     }
-    await record({ runtime: "consumer", model, tokens, calls, startedAt: new Date(startedAt).toISOString(), totalMs: Date.now() - startedAt, results });
+    await record({ runtime: "consumer", model, edition, tokens, calls, startedAt: new Date(startedAt).toISOString(), totalMs: Date.now() - startedAt, results });
     return { success: true, key };
   }
   await record({ error: "unknown probe kind" });

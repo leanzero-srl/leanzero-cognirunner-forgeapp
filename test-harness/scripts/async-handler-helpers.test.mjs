@@ -215,5 +215,22 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   ok(/res && res\.usage/.test(meter ? meter[0] : ""), "…and the split usage when the adapter returned one");
 }
 
+// =====================================================================================
+// F-083 — the dev-only forgeLlm PROBE spends vendor tokens, so it is clamped by edition,
+// bounded, and metered like every other Forge LLM call in this consumer.
+// =====================================================================================
+{
+  const m = asyncSrc.match(/const executeProbe = async \(params\) => \{[\s\S]*?\n\};/);
+  ok(!!m, "found executeProbe");
+  const body = m ? m[0] : "";
+  ok(/clampForgeLlmModel\(edition, String\(params\?\.model/.test(body),
+    "the probe model is clamped by the consumer's own edition, not taken from params");
+  ok(/currentEditionAsync\(\)/.test(body), "the edition comes from currentEditionAsync");
+  ok(/Math\.min\(50000,/.test(body), "token filler is capped at 50000");
+  ok(/Math\.min\(3,/.test(body), "call count is capped at 3");
+  ok(/recordAiUsage\(\{/.test(body) && /provider: "atlassian"/.test(body),
+    "the probe's spend is metered so it is visible in the usage ledger");
+}
+
 console.log(`\nasync-handler-helpers: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

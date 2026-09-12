@@ -21,6 +21,7 @@ import { findRule } from "../../../src/shared/premade-rules-catalog.js";
 import { premadeSummaryRows, buildFactsText, ruleKindEnum } from "../../../src/shared/explain-facts.js";
 import { logSourceOf, SOURCE_LABEL, FLAG_LABEL, isSkippedLog } from "../../../src/shared/log-flags.js";
 import { codeFingerprint } from "../../../src/shared/code-fingerprint.js";
+import { resolveEdition, EDITIONS } from "../../../src/shared/edition.js";
 
 // Inject styles directly
 const injectStyles = () => {
@@ -61,6 +62,7 @@ const injectStyles = () => {
       --accent-slate: #475569;
       --accent-cyan: #0891b2;
       --accent-indigo: #4f46e5;
+      --accent-edition: #c2410c;
       /* semantic */
       --danger: #dc2626;
       --success: #16a34a;
@@ -117,6 +119,7 @@ const injectStyles = () => {
       --accent-slate: #64748b;
       --accent-cyan: #22d3ee;
       --accent-indigo: #6366f1;
+      --accent-edition: #f97316;
       --danger: #ef4444;
       --success: #22c55e;
       --warning: #f59e0b;
@@ -703,6 +706,21 @@ const injectStyles = () => {
       box-shadow: 0 4px 12px -4px rgba(220, 38, 38, 0.35);
     }
 
+    /* === Edition chip (1.3) === Solid saturated fill, white text, no tint.
+       Coder = burnt orange, Standard = neutral slate; dark overrides for both. */
+    .edition-chip {
+      display: inline-flex; align-items: center;
+      padding: 2px 8px; border-radius: 5px;
+      font-size: 11px; font-weight: 700; line-height: 1.5;
+      letter-spacing: 0.06em; text-transform: uppercase;
+      color: #fff; white-space: nowrap; vertical-align: middle;
+      margin-left: auto;
+    }
+    .edition-chip.edition-advanced { background: #c2410c; }
+    .edition-chip.edition-standard { background: #475569; }
+    html[data-color-mode="dark"] .edition-chip.edition-advanced { background: #f97316; color: #2a1602; }
+    html[data-color-mode="dark"] .edition-chip.edition-standard { background: #64748b; }
+
     .rule-status-banner {
       display: flex;
       align-items: center;
@@ -1162,6 +1180,8 @@ function App() {
   const [logsLoading, setLogsLoading] = useState(false);
   const [showLogs, setShowLogs] = useState(false);
   const [licenseActive, setLicenseActive] = useState(null);
+  // Marketplace edition — seeded from context.license, confirmed by checkLicense.
+  const [edition, setEdition] = useState(EDITIONS.STANDARD);
   const [ruleDisabled, setRuleDisabled] = useState(null);
   const [ruleId, setRuleId] = useState(null);
   // Which module context delivered the config — the authoritative
@@ -1394,11 +1414,10 @@ function App() {
           setWorkflowContext(wfCtx);
         }
 
-        // Check license status from context
-        const licenseStatus = context?.license?.active;
-        if (licenseStatus !== undefined) {
-          setLicenseActive(licenseStatus);
-        }
+        // Check license status from context — one home for the edition rules.
+        const ed = resolveEdition(context?.license);
+        setLicenseActive(ed.active);
+        setEdition(ed.edition);
       } catch (e) {
         console.log("Could not load config:", e);
       }
@@ -1408,6 +1427,9 @@ function App() {
         const licenseResult = await invoke("checkLicense");
         if (licenseResult?.isActive !== undefined) {
           setLicenseActive(licenseResult.isActive);
+        }
+        if (licenseResult?.edition) {
+          setEdition(licenseResult.edition);
         }
       } catch (e) {
         console.log("Could not check license:", e);
@@ -1506,6 +1528,14 @@ function App() {
     <div className="sk" style={{ height: "38px", marginBottom: "10px" }} />
   ) : null;
 
+  // Edition chip — hidden while the license state is unknown (null), so we never
+  // assert an edition we haven't actually read.
+  const editionChip = licenseActive === null ? null : (
+    <span className={`edition-chip edition-${edition === EDITIONS.ADVANCED ? "advanced" : "standard"}`}>
+      {edition === EDITIONS.ADVANCED ? "Coder" : "Standard"}
+    </span>
+  );
+
   const licenseBanner = licenseActive === false ? (
     <div className="license-banner license-inactive anim-rise">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -1514,6 +1544,7 @@ function App() {
         <line x1="12" y1="16" x2="12.01" y2="16" />
       </svg>
       <span>License inactive — AI validation is disabled. Transitions will pass through without checks.</span>
+      {editionChip}
     </div>
   ) : licenseActive === true ? (
     <div className="license-banner license-active anim-rise">
@@ -1521,6 +1552,7 @@ function App() {
         <path d="M20 6L9 17l-5-5" />
       </svg>
       <span>License active</span>
+      {editionChip}
     </div>
   ) : null;
 

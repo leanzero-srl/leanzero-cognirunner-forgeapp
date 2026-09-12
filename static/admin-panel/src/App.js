@@ -26,6 +26,7 @@ import CustomSelect from "./components/CustomSelect";
 import { findRule as findPremadeRule } from "../../../src/shared/premade-rules-catalog.js";
 import { buildFactsText, ruleKindEnum } from "../../../src/shared/explain-facts.js";
 import { logSourceOf, SOURCE_LABEL, FLAG_LABEL, isSkippedLog } from "../../../src/shared/log-flags.js";
+import { resolveEdition, EDITIONS } from "../../../src/shared/edition.js";
 import AddRuleWizard from "./components/AddRuleWizard";
 import Tooltip from "./components/Tooltip";
 import RulePortabilityDialog from "./components/RulePortabilityDialog";
@@ -61,6 +62,7 @@ const injectStyles = () => {
       --accent-docs: #2563eb; --accent-skills: #7c3aed; --accent-memories: #0d9488;
       --accent-test: #d97706; --accent-fix: #16a34a; --accent-slate: #475569;
       --accent-cyan: #0891b2; --accent-indigo: #4f46e5;
+      --accent-edition: #c2410c;
       --r-sm: 6px; --r-md: 8px; --r-lg: 12px; --r-pill: 999px;
       --shadow-card: 0 1px 2px rgba(18,42,66,0.06), 0 5px 16px -8px rgba(18,42,66,0.14);
       --shadow-card-hover: 0 12px 30px -12px rgba(29,78,216,0.28), 0 3px 10px rgba(18,42,66,0.10);
@@ -73,6 +75,7 @@ const injectStyles = () => {
       --accent-docs: #3b82f6; --accent-skills: #8b5cf6; --accent-memories: #14b8a6;
       --accent-test: #f59e0b; --accent-fix: #22c55e; --accent-slate: #64748b;
       --accent-cyan: #22d3ee; --accent-indigo: #6366f1;
+      --accent-edition: #f97316;
       --shadow-card: 0 1px 2px rgba(0,0,0,0.4), 0 5px 16px -8px rgba(0,0,0,0.6);
       --shadow-card-hover: 0 12px 30px -12px rgba(0,0,0,0.7), 0 3px 10px rgba(0,0,0,0.5);
       --glow: 0 8px 22px -6px rgba(59,130,246,0.5);
@@ -165,6 +168,21 @@ const injectStyles = () => {
       color: var(--error-color);
       box-shadow: 0 4px 12px -4px rgba(220, 38, 38, 0.35);
     }
+
+    /* === Edition chip (1.3) === Solid saturated fill + white text, never a tint.
+       Coder = burnt orange, Standard = neutral slate. Hidden while the license
+       state is unknown (null) so we never claim an edition we haven't read. */
+    .edition-chip {
+      display: inline-flex; align-items: center;
+      padding: 2px 8px; border-radius: 5px;
+      font-size: 11px; font-weight: 700; line-height: 1.5;
+      letter-spacing: 0.06em; text-transform: uppercase;
+      color: #fff; white-space: nowrap; vertical-align: middle;
+    }
+    .edition-chip.edition-advanced { background: #c2410c; }
+    .edition-chip.edition-standard { background: #475569; }
+    html[data-color-mode="dark"] .edition-chip.edition-advanced { background: #f97316; color: #2a1602; }
+    html[data-color-mode="dark"] .edition-chip.edition-standard { background: #64748b; }
 
     .section {
       margin-bottom: 24px;
@@ -378,6 +396,21 @@ const injectStyles = () => {
     html[data-color-mode="dark"] .usage-prov-fill { background: #22d3ee; }
     .usage-prov-val { color: var(--text-secondary); white-space: nowrap; font-variant-numeric: tabular-nums; }
     .usage-foot { font-size: 11px; color: var(--text-muted); font-style: italic; }
+    /* Forge LLM monthly allowance meter (1.3). Same solid bar idiom as the
+       per-provider rows; the level recolours the FILL and the level line. */
+    .usage-allowance { margin: 2px 0 10px; padding-top: 10px; border-top: 1px solid var(--border-color); }
+    .usage-allow-fill.lvl-ok { background: #0d9488; }
+    .usage-allow-fill.lvl-soft { background: #d97706; }
+    .usage-allow-fill.lvl-hard { background: #dc2626; }
+    html[data-color-mode="dark"] .usage-allow-fill.lvl-ok { background: #14b8a6; }
+    html[data-color-mode="dark"] .usage-allow-fill.lvl-soft { background: #f59e0b; }
+    html[data-color-mode="dark"] .usage-allow-fill.lvl-hard { background: #ef4444; }
+    .usage-allow-note { margin: 6px 0 0; font-size: 11px; font-weight: 700; }
+    .usage-allow-note.lvl-soft { color: #b45309; }
+    .usage-allow-note.lvl-hard { color: #dc2626; }
+    html[data-color-mode="dark"] .usage-allow-note.lvl-soft { color: #f59e0b; }
+    html[data-color-mode="dark"] .usage-allow-note.lvl-hard { color: #ef4444; }
+    .usage-seats { font-size: 11px; color: var(--text-secondary); margin-top: 4px; }
 
     /* Rule export / import dialog — solid status chips, canonical tokens, no left rail. */
     .pf-modal-overlay {
@@ -1562,6 +1595,19 @@ const injectStyles = () => {
     html[data-color-mode="dark"] .dib-cold { background: #64748b; }
     html[data-color-mode="dark"] .dib-info { background: #14b8a6; color: #042f2a; }
     html[data-color-mode="dark"] .dib-device { background: #475569; }
+    /* Edition-locked model rows + their "Coder" badge. Solid burnt orange, white
+       text; the locked row keeps a SOLID secondary text colour (never opacity /
+       a faded wash) so it stays legible while reading as unavailable. */
+    .dib-edition { background: #c2410c; }
+    html[data-color-mode="dark"] .dib-edition { background: #f97316; color: #2a1602; }
+    .dropdown-item.dropdown-item-locked {
+      cursor: not-allowed;
+      color: var(--text-secondary);
+      background: transparent;
+    }
+    .dropdown-item.dropdown-item-locked:hover { background: transparent; }
+    .dropdown-item.dropdown-item-locked .dropdown-item-name { color: var(--text-secondary); }
+    .dropdown-item.dropdown-item-locked .dropdown-item-meta { color: var(--text-muted); }
     .dropdown-empty { padding: 16px 12px; text-align: center; color: var(--text-muted); font-size: 13px; }
 
     /* === Tooltip === */
@@ -5345,6 +5391,9 @@ function App() {
   const [logsSearch, setLogsSearch] = useState("");
   const [rulesSearch, setRulesSearch] = useState("");
   const [licenseActive, setLicenseActive] = useState(null);
+  // Marketplace edition ("standard" | "advanced"). Seeded from context.license, then
+  // overridden by checkLicense which is authoritative for paid apps.
+  const [edition, setEdition] = useState(EDITIONS.STANDARD);
   const [isAdmin, setIsAdmin] = useState(false);
   const [userRole, setUserRole] = useState(null); // "viewer" | "editor" | "admin" | null
   const [userScope, setUserScope] = useState(null); // "own" | "all" | null
@@ -5942,15 +5991,19 @@ function App() {
         // Check license
         const context = await bridge.view.getContext();
         if (context?.siteUrl) setSiteUrl(String(context.siteUrl).replace(/\/+$/, ""));
-        const ctxLicense = context?.license?.active;
-        if (ctxLicense !== undefined) {
-          setLicenseActive(ctxLicense);
-        }
+        // One home for "which edition is this" — src/shared/edition.js. The context
+        // license is the fast seed; checkLicense (below) is authoritative.
+        const ed = resolveEdition(context?.license);
+        setLicenseActive(ed.active);
+        setEdition(ed.edition);
 
         try {
           const licenseResult = await invoke("checkLicense");
           if (licenseResult?.isActive !== undefined) {
             setLicenseActive(licenseResult.isActive);
+          }
+          if (licenseResult?.edition) {
+            setEdition(licenseResult.edition);
           }
         } catch (e) {
           console.log("Could not check license:", e);
@@ -6091,7 +6144,14 @@ function App() {
           </svg>
         </div>
         <div>
-          <h2 className="title">CogniRunner Admin</h2>
+          <h2 className="title">
+            CogniRunner Admin
+            {licenseActive !== null && (
+              <span className={`edition-chip edition-${edition === EDITIONS.ADVANCED ? "advanced" : "standard"}`} style={{ marginLeft: "10px" }}>
+                {edition === EDITIONS.ADVANCED ? "Coder" : "Standard"}
+              </span>
+            )}
+          </h2>
           <p className="subtitle">Manage workflow rules, listeners and scheduled jobs.</p>
         </div>
       </div>

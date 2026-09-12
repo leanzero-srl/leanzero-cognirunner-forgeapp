@@ -10,6 +10,7 @@ import { router } from "@forge/bridge";
 import CustomSelect from "./CustomSelect";
 import Tooltip from "./Tooltip";
 import { showToast } from "./toast";
+import { EDITIONS, FORGE_LLM_FRONTIER, FORGE_LLM_DEFAULT } from "../../../../src/shared/edition.js";
 
 // Forge Custom UI runs in a sandboxed iframe — plain <a target="_blank"> links
 // are blocked (nothing happens on click). router.open() is the supported way to
@@ -131,6 +132,22 @@ export default function OpenAIConfig({ invoke }) {
   const [listUnavailable, setListUnavailable] = useState(false); // Bedrock: live list returned nothing
   const [currentModel, setCurrentModel] = useState(null);
   const [selectedModel, setSelectedModel] = useState("");
+  // Edition (1.3). getOpenAIModels never refuses: it returns the models this edition may
+  // select PLUS `locked` — ids that exist on the provider but need CogniRunner Coder. We
+  // render both so the admin can SEE what the upgrade buys instead of a silently short list.
+  const [lockedModels, setLockedModels] = useState([]);
+  const [edition, setEdition] = useState(EDITIONS.STANDARD);
+  // The saved model was outside this edition, so the backend is serving Haiku instead.
+  const [modelClamped, setModelClamped] = useState(false);
+  // The model the admin actually SAVED, when the backend reports it alongside the
+  // clamp. Without it we still say the model was clamped, just without naming it.
+  const [clampedFrom, setClampedFrom] = useState("");
+  // Agent model — drives Coder and Virtual Administrators; validators/rules keep the
+  // model above. Frontier-only on Forge LLM, any id on BYOK.
+  const [agentModel, setAgentModel] = useState("");
+  const [savedAgentModel, setSavedAgentModel] = useState("");
+  const [agentFrontierOnly, setAgentFrontierOnly] = useState(false);
+  const [savingAgentModel, setSavingAgentModel] = useState(false);
   // AI usage meter (admin-only). Best-effort under-count of AI calls + tokens.
   const [usage, setUsage] = useState(null);
   const [usageConfirmReset, setUsageConfirmReset] = useState(false);
@@ -311,12 +328,32 @@ export default function OpenAIConfig({ invoke }) {
         setModels(modelsResult.models || []);
         setModelDetails(modelsResult.modelDetails || []);
         setListUnavailable(!!modelsResult.listUnavailable);
+        setLockedModels(modelsResult.locked || []);
+        if (modelsResult.edition) setEdition(modelsResult.edition);
         if (!modelsResult.isByok) setFactoryModel(modelsResult.currentModel || "");
       }
       if (modelKvs.success) {
         setCurrentModel(modelKvs.model);
         setSelectedModel(modelKvs.model || "");
+        setModelClamped(!!modelKvs.clamped);
+        setClampedFrom(modelKvs.savedModel || modelKvs.requestedModel || "");
+        if (modelKvs.edition) setEdition(modelKvs.edition);
         if (!modelKvs.isByok) setFactoryModel(modelKvs.model || "");
+      }
+      // Agent model is a separate slot (COGNIRUNNER_AGENT_MODEL_{provider}); a backend
+      // that predates it simply fails here and the block renders its own default.
+      try {
+        const agentResult = await invoke("getAgentModel", { provider: target });
+        if (providerRef.current !== target) return;
+        if (agentResult && agentResult.success) {
+          setAgentModel(agentResult.model || "");
+          setSavedAgentModel(agentResult.model || "");
+          setAgentFrontierOnly(!!agentResult.frontierOnly);
+          if (agentResult.edition) setEdition(agentResult.edition);
+        }
+      } catch (e) {
+        setAgentModel("");
+        setSavedAgentModel("");
       }
       setCustomModelInput("");
     } catch (e) {
@@ -1017,15 +1054,45 @@ export default function OpenAIConfig({ invoke }) {
       const result = await invoke("saveOpenAIModel", { model: selectedModel, provider });
       if (result.success) {
         setCurrentModel(selectedModel);
+        setModelClamped(false);
         setSuccess("Model saved: " + selectedModel);
         showToast("Model saved");
       } else {
-        setError(result.error || "Failed to save model");
+        // upgradeRequired is a refusal, not a crash — its `error` is already a
+        // sentence for the admin. Same slot as any other save failure, no alert().
+        setError(result.error || (result.upgradeRequired
+          ? "That model is part of CogniRunner Coder — upgrade in Jira's Manage apps."
+          : "Failed to save model"));
       }
     } catch (e) {
       setError("Failed to save model: " + e.message);
     }
     setSavingModel(false);
+  };
+
+  // Agent model — the slot Coder and the Virtual Administrators run on. Same refusal
+  // shape as saveOpenAIModel ({ success:false, upgradeRequired, error }).
+  const handleSaveAgentModel = async () => {
+    const model = (agentModel || "").trim();
+    if (!model) return;
+    setSavingAgentModel(true);
+    setError(null);
+    setSuccess(null);
+    try {
+      const result = await invoke("saveAgentModel", { provider, model });
+      if (result && result.success) {
+        setSavedAgentModel(model);
+        setSuccess("Agent model saved: " + model);
+        showToast("Agent model saved");
+      } else {
+        setError((result && result.error) || (result && result.upgradeRequired
+          ? "The agent model is part of CogniRunner Coder — upgrade in Jira's Manage apps."
+          : "Failed to save the agent model"));
+      }
+    } catch (e) {
+      setError("Failed to save the agent model: " + e.message);
+    }
+    setSavingAgentModel(false);
   };
 
   // Bedrock: save the chosen region (the backend constructs the Converse host from it).
@@ -1157,6 +1224,27 @@ export default function OpenAIConfig({ invoke }) {
 
   const providerLabel = PROVIDER_OPTIONS.find((p) => p.value === provider)?.label || provider;
 
+  // --- Edition (1.3) -------------------------------------------------------
+  const isAdvanced = edition === EDITIONS.ADVANCED;
+  // Forge LLM: the picker must exist on this provider too — it is where the Coder
+  // edition's frontier models actually become selectable. (Before 1.3 the whole
+  // picker was gated on isByok, so Forge LLM had no model control at all.)
+  const showModelPicker = isByok || isAtlassian;
+  // Defensive fallback: if the backend hasn't shipped the edition-aware model list
+  // yet, still show Haiku selected and the frontier ids as locked rows on Forge LLM,
+  // so the surface is never an empty "no models found" lie.
+  const effectiveModels = models.length > 0
+    ? models
+    : (isAtlassian ? [FORGE_LLM_DEFAULT] : []);
+  const effectiveLocked = lockedModels.length > 0
+    ? lockedModels
+    : (isAtlassian && !isAdvanced ? FORGE_LLM_FRONTIER : []);
+  // The row we point the admin at once the frontier models are unlocked.
+  const recommendedModel = isAtlassian && isAdvanced ? "claude-sonnet-5" : null;
+  const allowance = usage && usage.forgeLlm ? usage.forgeLlm : null;
+  const allowancePct = allowance ? Math.max(0, Math.min(100, Math.round(allowance.pct || 0))) : 0;
+  const money = (n) => `$${Number(n || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+
   const resetUsage = async () => {
     setUsageResetting(true);
     try {
@@ -1207,6 +1295,35 @@ export default function OpenAIConfig({ invoke }) {
                   <span className="usage-prov-val">{(v.total || 0).toLocaleString()} tok · {v.calls} calls</span>
                 </div>
               ))}
+            </div>
+          )}
+          {allowance && (
+            <div className="usage-allowance">
+              <div className="usage-prov-row">
+                <span className="usage-prov-name">Forge LLM allowance</span>
+                <span className="usage-prov-bar">
+                  <span
+                    className={`usage-prov-fill usage-allow-fill lvl-${allowance.level || "ok"}`}
+                    style={{ width: `${allowancePct}%` }}
+                  />
+                </span>
+                <span className="usage-prov-val">
+                  {money(allowance.estUsd)} of {money(allowance.allowanceUsd)} · {allowancePct}%
+                </span>
+              </div>
+              {allowance.level === "soft" && (
+                <p className="usage-allow-note lvl-soft">
+                  Most of this month&apos;s Forge LLM allowance is used.
+                </p>
+              )}
+              {allowance.level === "hard" && (
+                <p className="usage-allow-note lvl-hard">
+                  Allowance spent — Sonnet 5 / Opus 5 paused until next month. Rules fall back to Claude Haiku.
+                </p>
+              )}
+              {usage.seats !== undefined && usage.seats !== null && (
+                <div className="usage-seats">{usage.seats} licensed {usage.seats === 1 ? "user" : "users"} on this site.</div>
+              )}
             </div>
           )}
           <div className="usage-foot">Best-effort under-count across all AI calls (validators, post-functions, and design-time tools). Not a billing ledger.</div>
@@ -1310,6 +1427,12 @@ export default function OpenAIConfig({ invoke }) {
                   and heavy steps such as document generation, research, and fact-checked rules
                   automatically run in the background queue. Nothing to configure on your side — this
                   is simply why the fast default model is recommended.
+                </div>
+                <div style={{ marginTop: "6px" }}>
+                  <strong>Edition.</strong>{" "}
+                  {isAdvanced
+                    ? "CogniRunner Coder covers Claude Sonnet 5 and Opus 5 here from a monthly allowance; when the allowance is spent, rules fall back to Claude Haiku until it resets."
+                    : "On the Standard edition only Claude Haiku runs here — Sonnet 5 and Opus 5 need CogniRunner Coder, and a saved model outside this edition is served as Haiku."}
                 </div>
               </div>
             )}
@@ -1546,9 +1669,26 @@ export default function OpenAIConfig({ invoke }) {
                   </p>
                   {isAtlassian && (
                     <p style={{ margin: "6px 0 0", fontSize: "12px", color: "var(--text-secondary)" }}>
-                      <strong style={{ color: "var(--primary-color)" }}>Only Claude Haiku is available</strong> on this
-                      provider right now — larger models are billed to the app vendor. Claude Sonnet is planned as part
-                      of the app's upcoming <strong>Advanced</strong> option.
+                      {isAdvanced ? (
+                        <>
+                          <strong style={{ color: "var(--primary-color)" }}>Sonnet 5 and Opus 5 unlocked.</strong>
+                          {allowance
+                            ? ` Monthly allowance: ${allowancePct}% used.`
+                            : " They are covered by this edition's monthly allowance."}
+                        </>
+                      ) : (
+                        <>
+                          <strong style={{ color: "var(--primary-color)" }}>Claude Sonnet 5 and Opus 5 are part of CogniRunner Coder</strong>
+                          {" "}— upgrade in Jira&apos;s Manage apps.
+                        </>
+                      )}
+                    </p>
+                  )}
+                  {isAtlassian && modelClamped && (
+                    <p style={{ margin: "6px 0 0", fontSize: "12px", color: "var(--text-secondary)" }}>
+                      {clampedFrom
+                        ? <>Saved model <strong>{clampedFrom}</strong> is not available on this edition — using Claude Haiku.</>
+                        : <>The saved model is not available on this edition — using Claude Haiku.</>}
                     </p>
                   )}
                 </div>
@@ -1669,12 +1809,12 @@ export default function OpenAIConfig({ invoke }) {
           {/* Model Selection — only when BYOK. For Bedrock the picker shows as soon as the
               key is set; the Anthropic acknowledgment above is an awareness formality, NOT a
               gate (model listing works regardless — listing != invoking). */}
-          {isByok && (
+          {showModelPicker && (
             <div>
               <label style={{ display: "block", fontSize: "12px", fontWeight: "600", color: "var(--text-secondary)", marginBottom: "6px" }}>
                 Model
               </label>
-              {models.length === 0 ? (
+              {effectiveModels.length === 0 && effectiveLocked.length === 0 ? (
                 <p style={{ margin: 0, fontSize: "12px", color: "var(--text-muted)" }}>
                   {isLmStudio
                     ? "No models found. Make sure LM Studio has at least one LLM downloaded, then click Test above to retry."
@@ -1682,7 +1822,9 @@ export default function OpenAIConfig({ invoke }) {
                       ? (listUnavailable
                           ? "Couldn't list models from AWS — your API key's IAM policy may not allow listing, or no models are enabled in this region. Enter a model or inference-profile id manually below."
                           : "No models found in this region. Enter a model or inference-profile id manually below.")
-                      : "No chat models found. Check your API key and try again."}
+                      : isAtlassian
+                        ? "Couldn't list the Forge LLM models. Reload the page to retry."
+                        : "No chat models found. Check your API key and try again."}
                 </p>
               ) : (
                 <>
@@ -1716,7 +1858,24 @@ export default function OpenAIConfig({ invoke }) {
                             if (m.device) badges.push({ text: m.device, tone: "device" });
                             return { value: m.id, label: m.id, meta: meta.join(" · ") || undefined, badges, group: m.device || "This machine" };
                           })
-                        : models.map((m) => ({ value: m, label: m }))}
+                        : [
+                            // Allowed rows first, then the edition-locked ones. Locked rows
+                            // are rendered (never hidden) so the admin can see exactly what
+                            // CogniRunner Coder unlocks — click/Enter on them is a no-op.
+                            ...effectiveModels.map((m) => ({
+                              value: m,
+                              label: m,
+                              badges: m === recommendedModel ? [{ text: "recommended", tone: "info" }] : undefined,
+                            })),
+                            ...effectiveLocked
+                              .filter((m) => !effectiveModels.includes(m))
+                              .map((m) => ({
+                                value: m,
+                                label: m,
+                                disabled: true,
+                                badges: [{ text: "Coder", tone: "edition" }],
+                              })),
+                          ]}
                       groups={isLmStudio && lmDevices.length > 0
                         ? [...lmDevices, "This machine"].filter((d, i, a) => a.indexOf(d) === i)
                             .map((d) => ({ label: d, filter: (o) => (o.group || "This machine") === d }))
@@ -1789,6 +1948,77 @@ export default function OpenAIConfig({ invoke }) {
                   Currently active: <strong>{currentModel}</strong>
                 </p>
               )}
+
+              {/* === Agent model (1.3) ===========================================
+                  A separate slot from the rule model above. Coder and the Virtual
+                  Administrators run on it; validators, conditions and post-functions
+                  do not. On Forge LLM only the frontier ids are selectable (and only
+                  on the Coder edition — otherwise they render as locked rows). On a
+                  BYOK provider it is a free-text id: the customer pays those tokens
+                  and we do not judge their model. */}
+              <div style={{ marginTop: "14px", paddingTop: "14px", borderTop: "1px solid var(--border-color)" }}>
+                <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "var(--text-color)", marginBottom: "4px" }}>
+                  Agent model
+                </label>
+                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                  {isAtlassian ? (
+                    <div style={{ flex: 1, maxWidth: "320px" }}>
+                      <CustomSelect
+                        value={agentModel}
+                        onChange={setAgentModel}
+                        placeholder="Select an agent model..."
+                        searchable={false}
+                        ariaLabel="Agent model"
+                        options={FORGE_LLM_FRONTIER.map((m) => (
+                          isAdvanced
+                            ? { value: m, label: m }
+                            : { value: m, label: m, disabled: true, badges: [{ text: "Coder", tone: "edition" }] }
+                        ))}
+                      />
+                    </div>
+                  ) : (
+                    <input
+                      type="text"
+                      value={agentModel}
+                      onChange={(e) => setAgentModel(e.target.value)}
+                      placeholder="e.g. anthropic/claude-opus-5"
+                      aria-label="Agent model"
+                      style={{ flex: 1, padding: "8px 12px", border: "1px solid var(--border-color)", borderRadius: "4px", background: "var(--input-bg)", color: "var(--text-color)", fontSize: "13px", fontFamily: "SFMono-Regular, Consolas, monospace" }}
+                      onKeyDown={(e) => e.key === "Enter" && handleSaveAgentModel()}
+                    />
+                  )}
+                  <button
+                    className={"btn-small btn-edit" + (savingAgentModel ? " is-busy" : "")}
+                    onClick={handleSaveAgentModel}
+                    disabled={
+                      savingAgentModel
+                      || !(agentModel || "").trim()
+                      || (agentModel || "").trim() === savedAgentModel
+                      || (isAtlassian && !isAdvanced)
+                    }
+                  >
+                    Save
+                  </button>
+                </div>
+                <p style={{ margin: "6px 0 0 0", fontSize: "11px", color: "var(--text-muted)" }}>
+                  Used by Coder and Virtual Administrators. Validators and rules keep using the model above.
+                </p>
+                {isAtlassian && !isAdvanced && (
+                  <p style={{ margin: "4px 0 0 0", fontSize: "11px", color: "var(--text-muted)" }}>
+                    On Forge LLM the agent model is part of CogniRunner Coder — upgrade in Jira&apos;s Manage apps, or point CogniRunner at your own provider key.
+                  </p>
+                )}
+                {isAtlassian && isAdvanced && agentFrontierOnly && (
+                  <p style={{ margin: "4px 0 0 0", fontSize: "11px", color: "var(--text-muted)" }}>
+                    Only Sonnet 5 and Opus 5 can drive agents — Haiku never does.
+                  </p>
+                )}
+                {savedAgentModel && (
+                  <p style={{ margin: "4px 0 0 0", fontSize: "11px", color: "var(--text-muted)" }}>
+                    Currently active: <strong>{savedAgentModel}</strong>
+                  </p>
+                )}
+              </div>
               <div style={{ marginTop: "14px", paddingTop: "14px", borderTop: "1px solid var(--border-color)" }}>
                 <label style={{ display: "block", fontSize: "12px", fontWeight: 600, color: "var(--text-color)", marginBottom: "4px" }}>
                   AI token budget (tokens per minute)

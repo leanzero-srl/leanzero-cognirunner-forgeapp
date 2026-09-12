@@ -69,6 +69,12 @@ import {
   getInvocationTokens,
   // F-111 — THE edition ladder, one home. `{ fresh: true }` opts out of its 30s memo.
   currentEdition,
+  // F-109 — THE raw provider read, one home. Uncached by construction (this consumer
+  // caches nothing) and FAIL-CLOSED: `provider: null` on a KVS fault, never a default
+  // vendor. The consumer used to keep its own copy whose catch returned "atlassian",
+  // so a KVS wobble on a BYOK tenant sent every queued task to the Forge LLM — the
+  // vendor's bill — and it SUCCEEDED, so the failure was invisible.
+  readProviderConfigFresh as getProviderConfig,
 } from "./index";
 import { estimateTaskTokens, BUDGET_WAIT_HORIZON_MS } from "./shared/ai-budget.js";
 // Learned memories — injected into static-PF reviews and persisted by the
@@ -86,6 +92,10 @@ import {
 import { executeListenerTask, getListener } from "./listeners.js";
 import { executeScheduledJobTask, getJob } from "./scheduled-jobs.js";
 import { STATS_TASK_TYPE, processRuleStatsReceipt } from "./rule-stats.js";
+
+// F-109 — the ONE message a queued task fails with when the provider read faulted.
+// A task with no provider FAILS; it never routes to the Forge LLM by default.
+const NO_PROVIDER_ERROR = "No AI provider configured (provider read failed) — the task was not sent to any provider.";
 
 const TASK_PREFIX = "async_task:";
 const TASK_TTL_HOURS = 1; // Results expire after 1 hour
@@ -105,6 +115,10 @@ const getOpenAIKey = async (providerOverride = null) => {
     // eventual routing can't desync if an admin switches provider mid-task. Falls back to a fresh read.
     const provider = providerOverride || (await getProviderConfig()).provider;
     // Forge LLM needs no API key — sentinel keeps `if (!apiKey)` call sites working.
+    // No provider (F-109: the read faulted and named none) → no key. `COGNIRUNNER_KEY_null`
+    // is not a slot, and a missing key is exactly how every unconfigured-provider case is
+    // already reported to the caller.
+    if (!provider) return null;
     if (provider === "atlassian") return "atlassian-forge-llm";
     let byokKey = await storage.get(providerKeySlot(provider));
     // Legacy migration fallback
@@ -150,6 +164,9 @@ const PROVIDER_DEFAULT_MODELS = {
 const getOpenAIModel = async (providerOverride = null) => {
   try {
     const provider = providerOverride || (await getProviderConfig()).provider;
+    // No provider (F-109) → no model. Returning a default here would hand an OpenAI
+    // model id to whatever the caller routes to next; the callers bail on the key first.
+    if (!provider) return null;
     // Read the saved model unconditionally — keyless providers (LM Studio, Forge LLM)
     // have no BYOK key, and gating on one made their saved model invisible here.
     const savedModel = await storage.get(providerModelSlot(provider));
@@ -163,26 +180,9 @@ const getOpenAIModel = async (providerOverride = null) => {
   return process.env.OPENAI_MODEL || "gpt-5.4-mini";
 };
 
-const PROVIDERS = {
-  openai: { baseUrl: "https://api.openai.com/v1" },
-  azure: { baseUrl: null }, // Azure OpenAI: same OpenAI-compatible path as openai; mostly untested
-  openrouter: { baseUrl: "https://openrouter.ai/api/v1" },
-  anthropic: { baseUrl: "https://api.anthropic.com" },
-  lmstudio: { baseUrl: null }, // user-supplied tunnel root (no /v1)
-  atlassian: { baseUrl: null }, // Forge LLM — served by @forge/llm, no HTTP base URL
-  bedrock: { baseUrl: null }, // AWS Bedrock — region-derived https://bedrock-runtime.<region>.amazonaws.com
-};
+// The consumer no longer keeps a PROVIDERS base-URL table: the base URL now comes with
+// the provider from readProviderConfigFresh (src/index.js), which owns the one table.
 
-const getProviderConfig = async () => {
-  try {
-    const provider = (await storage.get("COGNIRUNNER_AI_PROVIDER")) || "atlassian";
-    const customUrl = await storage.get("COGNIRUNNER_AI_BASE_URL");
-    const baseUrl = customUrl || (PROVIDERS[provider] && PROVIDERS[provider].baseUrl) || PROVIDERS.openai.baseUrl;
-    return { provider, baseUrl };
-  } catch (e) {
-    return { provider: "atlassian", baseUrl: PROVIDERS.atlassian.baseUrl };
-  }
-};
 
 /**
  * Simple AI chat call with Anthropic support (no tools/attachments needed here).
@@ -267,9 +267,10 @@ const callLmStudioNativeSimple = async ({ apiKey, model, systemPrompt, userMessa
 };
 
 // Metered wrapper for the async consumer's own dispatch (review / codegen / fix /
-// distill). Meters after the raw call, fail-open, using this handler's OWN uncached
-// getProviderConfig (the async no-cache policy). The consumer is the 120s path (not
-// a raced transition), so metering in the wrapper is fine here.
+// distill). Meters after the raw call, fail-open, reading the provider through the
+// shared UNCACHED read (the async no-cache policy — src/index.js readProviderConfigFresh).
+// The consumer is the 120s path (not a raced transition), so metering in the wrapper is
+// fine here.
 const callAIChatSimple = async (opts) => {
   const res = await callAIChatSimpleRaw(opts);
   try {
@@ -297,6 +298,10 @@ const callAIChatSimpleRaw = async ({ apiKey, model: requestedModel, systemPrompt
   let provider = providerOverride || null;
   let baseUrl = baseUrlOverride || null;
   if (!provider) { const pc = await getProviderConfig(); provider = pc.provider; baseUrl = pc.baseUrl; }
+  // Still no provider ⇒ the read FAILED CLOSED (F-109). Refuse loudly. There is no
+  // branch below that matches null, and falling through to Forge LLM would bill the
+  // vendor for a tenant that configured someone else.
+  if (!provider) return { ok: false, status: 0, error: "No AI provider configured (provider read failed)" };
 
   // LM Studio worker map: pick the least-loaded loaded model for this queued task,
   // then release immediately (these consumer tasks — review / codegen / fix /
@@ -429,8 +434,8 @@ const callAIChatSimpleRaw = async ({ apiKey, model: requestedModel, systemPrompt
     openaiHeaders["HTTP-Referer"] = "https://leanzero.net";
     openaiHeaders["X-Title"] = "CogniRunner";
   }
-  // OpenAI/Azure/OpenRouter all expect baseUrl ending in /v1 (PROVIDERS already
-  // configured that way). LM Studio is handled by the native path above.
+  // OpenAI/Azure/OpenRouter all expect baseUrl ending in /v1 (src/index.js's PROVIDERS
+  // table, the one home, is configured that way). LM Studio is handled by the native path above.
   const requestBody = {
     model,
     messages: [
@@ -479,6 +484,7 @@ const executeReview = async (params) => {
   const { configType, config } = params;
   // Snapshot the provider ONCE and thread it through key/model/routing so they can't desync.
   const { provider, baseUrl } = await getProviderConfig();
+  if (!provider) return { success: false, error: NO_PROVIDER_ERROR };
   const apiKey = await getOpenAIKey(provider);
   if (!apiKey) return { success: false, error: "No API key configured" };
   const model = await getOpenAIModel(provider);
@@ -665,6 +671,7 @@ const executeQueuedPostFunction = async (params, taskId) => {
  */
 const executeCodegen = async (params) => {
   const { provider, baseUrl } = await getProviderConfig();
+  if (!provider) return { success: false, error: NO_PROVIDER_ERROR };
   const apiKey = await getOpenAIKey(provider);
   // LM Studio auth is optional — only the other providers hard-require a key.
   if (!apiKey && provider !== "lmstudio") {
@@ -693,6 +700,7 @@ const executeCodegen = async (params) => {
  */
 const executeFixcode = async (params) => {
   const { provider, baseUrl } = await getProviderConfig();
+  if (!provider) return { success: false, error: NO_PROVIDER_ERROR };
   const apiKey = await getOpenAIKey(provider);
   if (!apiKey && provider !== "lmstudio") {
     return { success: false, error: "No API key configured" };
@@ -722,6 +730,7 @@ const executeFixcode = async (params) => {
  */
 const executeSkillDistill = async (params) => {
   const { provider, baseUrl } = await getProviderConfig();
+  if (!provider) return { success: false, error: NO_PROVIDER_ERROR };
   const apiKey = await getOpenAIKey(provider);
   if (!apiKey && provider !== "lmstudio") {
     return { success: false, error: "No API key configured" };
@@ -757,6 +766,7 @@ const executeMemoryDistill = async (params) => {
   if (settings.autoCapture !== true) return { success: true, skipped: "auto-capture disabled" };
 
   const { provider, baseUrl } = await getProviderConfig();
+  if (!provider) return { success: false, error: NO_PROVIDER_ERROR };
   const apiKey = await getOpenAIKey(provider);
   if (!apiKey && provider !== "lmstudio") {
     return { success: false, error: "No API key configured" };

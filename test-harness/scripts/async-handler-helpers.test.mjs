@@ -164,6 +164,74 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
 }
 
 // =====================================================================================
+// F-109 — ONE provider read, and it FAILS CLOSED.
+//
+// The consumer used to keep its own getProviderConfig whose catch returned
+// `provider: "atlassian"`. F-103 had already closed that in src/index.js: a KVS wobble
+// on a BYOK tenant routed the call to the Forge LLM — the VENDOR's bill — clamped to
+// Haiku so it SUCCEEDED, i.e. a failure reported as success, on every queued task.
+// The read now lives once, in src/index.js readProviderConfigFresh (uncached by
+// construction, `provider: null` on a fault), and every reader here treats null as
+// "no provider": no key, no model, no routing, a clear task error.
+// =====================================================================================
+{
+  const asyncCode2 = asyncSrc.replace(/\/\/[^\n]*/g, "");
+  ok(!/const getProviderConfig = async \(\) => \{/.test(asyncCode2),
+    "the consumer keeps NO private provider read");
+  ok(/readProviderConfigFresh as getProviderConfig/.test(asyncSrc),
+    "…it imports the one home from ./index");
+  ok(!/provider: "atlassian", baseUrl/.test(asyncCode2),
+    "no vendor-billed fail-open default survives in the consumer");
+  ok(!/const PROVIDERS = \{/.test(asyncCode2),
+    "the consumer's duplicate base-URL table is gone with it");
+
+  // The one home: uncached, fail-CLOSED, never throwing.
+  const m = indexSrc.match(/export const readProviderConfigFresh = async \(\) => \{[\s\S]*?\n\};/);
+  ok(!!m, "found readProviderConfigFresh in src/index.js");
+  const b = m ? m[0] : "";
+  ok(/COGNIRUNNER_AI_PROVIDER/.test(b) && /COGNIRUNNER_AI_BASE_URL/.test(b), "it reads both provider slots");
+  ok(/return \{ provider: null, baseUrl: null \};/.test(b), "on a fault it returns provider NULL — fail closed");
+  ok(!/catch[\s\S]*"atlassian"/.test(b), "its catch never names a provider");
+  ok(!/_cached/.test(b), "it is memo-free — the consumer's no-cache policy holds");
+  // …executed: a throwing KVS gives null, an EMPTY read still defaults to atlassian.
+  {
+    const PROVIDERS = { openai: { baseUrl: "https://api.openai.com/v1" }, atlassian: { baseUrl: null }, anthropic: { baseUrl: "https://api.anthropic.com" } };
+    const mk = (get) => {
+      // eslint-disable-next-line no-eval
+      return eval("(async (storage, PROVIDERS, console) => { const f = " + b.replace("export const readProviderConfigFresh = async () => {", "async () => {").replace(/;\s*$/, "") + "; return f(); })")({ get }, PROVIDERS, { error() {} });
+    };
+    const faulted = await mk(async () => { throw new Error("kvs 429"); });
+    ok(faulted.provider === null && faulted.baseUrl === null, "EXECUTED: a throwing KVS yields provider null, not 'atlassian'");
+    const empty = await mk(async () => null);
+    ok(empty.provider === "atlassian", "EXECUTED: an EMPTY read still defaults to atlassian (unconfigured install)");
+    const byok = await mk(async (k) => (k === "COGNIRUNNER_AI_PROVIDER" ? "anthropic" : null));
+    ok(byok.provider === "anthropic" && byok.baseUrl === "https://api.anthropic.com", "EXECUTED: a configured BYOK provider reads through with its base URL");
+  }
+
+  // index.js's memoised getProviderConfig delegates to it rather than re-typing the read.
+  const g = indexSrc.match(/const getProviderConfig = async \(\) => \{[\s\S]*?\n\};/);
+  ok(!!g && /await readProviderConfigFresh\(\)/.test(g[0]), "the memoised sync reader delegates to the same raw read");
+  ok(!!g && /if \(!provider\) throw new Error/.test(g[0]), "a null provider there is routed into the fail-closed catch");
+
+  // Every reader in the consumer treats null as "no provider".
+  const key = asyncSrc.match(/const getOpenAIKey = async \(providerOverride = null\) => \{[\s\S]*?\n\};/)[0];
+  ok(/if \(!provider\) return null;/.test(key), "getOpenAIKey: null provider → no key");
+  ok(key.indexOf("if (!provider) return null;") < key.indexOf('if (provider === "atlassian") return "atlassian-forge-llm";'),
+    "…checked BEFORE the Forge LLM sentinel, so a fault can never mint one");
+  const mod = asyncSrc.match(/const getOpenAIModel = async \(providerOverride = null\) => \{[\s\S]*?\n\};/)[0];
+  ok(/if \(!provider\) return null;/.test(mod), "getOpenAIModel: null provider → no model");
+  const raw = asyncSrc.match(/const callAIChatSimpleRaw = async \(\{[\s\S]*?\n  let model = requestedModel;/)[0];
+  ok(/if \(!provider\) return \{ ok: false, status: 0, error: "No AI provider configured/.test(raw),
+    "callAIChatSimpleRaw refuses a null provider BEFORE any routing branch");
+  ok(raw.indexOf("if (!provider) return { ok: false") < asyncSrc.indexOf('if (provider === "atlassian") {'),
+    "…and that refusal precedes the Forge LLM arm");
+  // Each AI task fails with one clear error instead of routing anywhere.
+  ok(/const NO_PROVIDER_ERROR = /.test(asyncSrc), "one message for the no-provider task failure");
+  ok((asyncSrc.match(/if \(!provider\) return \{ success: false, error: NO_PROVIDER_ERROR \};/g) || []).length === 5,
+    "all five AI task bodies (review/codegen/fixcode/skilldistill/memory_distill) bail on a null provider");
+}
+
+// =====================================================================================
 // FORGE LLM CLAMP IN THE CONSUMER (editions 1.3)
 //
 // Until 1.3 the consumer called forgeLlmChatApi with whatever model the saved config

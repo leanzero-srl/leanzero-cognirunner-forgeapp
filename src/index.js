@@ -11057,14 +11057,45 @@ let _cachedAllowance = null;
  * On a fault it is the last provider this container read, or `null`, and `null` means
  * "no provider configured" to every caller (F-103).
  */
+/**
+ * The RAW provider read — one home for the two seams that need it (F-109).
+ *
+ * Reads COGNIRUNNER_AI_PROVIDER / COGNIRUNNER_AI_BASE_URL with NO memo. The async
+ * consumer (src/async-handler.js) calls this directly: it runs in a warm container
+ * that no provider switch can invalidate, so it deliberately caches nothing. It used
+ * to keep its own copy of this read, and that copy still failed OPEN to "atlassian"
+ * after F-103 closed the same hole here — a KVS wobble on a BYOK tenant routed every
+ * queued task to Forge LLM, i.e. to the VENDOR's bill, clamped to Haiku so it
+ * succeeded and nothing looked wrong.
+ *
+ * FAILS CLOSED, and never throws: on a fault the provider is `null`, which every
+ * reader must treat as "no provider configured" (no key, no routing, a clear error) —
+ * never as a default vendor. An EMPTY read is a different thing: an unconfigured
+ * install legitimately defaults to "atlassian".
+ */
+export const readProviderConfigFresh = async () => {
+  try {
+    const provider = (await storage.get("COGNIRUNNER_AI_PROVIDER")) || "atlassian";
+    const customUrl = await storage.get("COGNIRUNNER_AI_BASE_URL");
+    const baseUrl = customUrl || (PROVIDERS[provider] && PROVIDERS[provider].baseUrl) || PROVIDERS.openai.baseUrl;
+    return { provider, baseUrl };
+  } catch (error) {
+    console.error("Error reading provider config:", error);
+    return { provider: null, baseUrl: null };
+  }
+};
+
 const getProviderConfig = async () => {
   if (_cachedProviderChecked && _cacheFresh(_cachedProviderAt)) {
     return { provider: _cachedProvider || "atlassian", baseUrl: _cachedBaseUrl || PROVIDERS.openai.baseUrl, edition: _cachedEditionId, allowance: _cachedAllowance };
   }
   try {
-    const provider = (await storage.get("COGNIRUNNER_AI_PROVIDER")) || "atlassian";
-    const customUrl = await storage.get("COGNIRUNNER_AI_BASE_URL");
-    const baseUrl = customUrl || (PROVIDERS[provider] && PROVIDERS[provider].baseUrl) || PROVIDERS.openai.baseUrl;
+    // The raw read lives in readProviderConfigFresh (F-109) — one home, shared with the
+    // async consumer. It fails CLOSED to provider null, and null here can only mean the
+    // read faulted (an empty read defaults to "atlassian"), so it is routed into this
+    // function's catch, which owns the memo/last-provider half of the fail-closed rule.
+    const { provider, baseUrl } = await readProviderConfigFresh();
+    if (!provider) throw new Error("provider read faulted");
     let editionId = EDITION_IDS.STANDARD;
     let allowance = null;
     // Only Forge LLM spends the vendor's money, so only Forge LLM pays for the

@@ -256,6 +256,19 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
   const narrateTokenRef = useRef(0);
   useEffect(() => () => { genTokenRef.current += 1; }, []);
 
+  // ── ONE RULE: a step has at most ONE writer of `code` in flight ──────────────────────
+  // Generate, Fix with AI, Insert recipe, Undo fix and the dry-run all resolve into the
+  // same step (its `code`, its provenance meta and its verdict), and each spends something
+  // real — a provider attempt, a sandbox run, or the author's explicit intent. So they are
+  // mutually exclusive, and `stepBusy` is the SINGLE predicate behind every writer's guard
+  // and every writer button's disabled/hidden state. The two ASYNC writers (generate, fix)
+  // additionally refuse re-entry at the top of their handler, because a second one would
+  // abandon the first with its attempt already charged. The two INSTANT writers (Insert
+  // recipe, Undo fix) instead bump `genTokenRef`, so that if one ever does land it takes
+  // ownership of the code and any in-flight AI result is discarded — exactly like a manual
+  // edit (handleCodeChange). F-141 / F-143 / F-145 / F-146.
+  const stepBusy = isGenerating || fixing || testRunning;
+
   const update = (field, value) => onUpdate({ [field]: value });
 
   // Prior-step variable names for editor completions/lint. Keyed by a joined
@@ -367,12 +380,11 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
   };
 
   const handleGenerate = async () => {
-    // F-141 — ONE RULE: generate and fix are mutually exclusive on a step. Only one AI
-    // write to `code` may ever be in flight, because both resolve into the same field and
-    // both spend a real provider attempt. Starting one while the other runs abandons the
-    // first silently (its token is bumped, its result discarded) with the attempt already
-    // charged. The mirror guard lives at the top of handleFixWithAI.
-    if (isGenerating || fixing) return;
+    // F-141 / F-143 — the ONE RULE (see `stepBusy` above): a generate may not start while
+    // a fix, another generate, or a dry-run is running. A dry-run counts because a landing
+    // generate replaces the very code the run is judging, leaving a verdict that describes
+    // code no longer on screen. The mirror guard lives at the top of handleFixWithAI.
+    if (stepBusy) return;
     genTokenRef.current += 1;
     const token = genTokenRef.current;
     setIsGenerating(true);
@@ -506,9 +518,8 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
   // auto re-run the test, and persist what the AI learned as a memory when
   // the re-run passes.
   const handleFixWithAI = async () => {
-    // F-141 — mirror of the guard in handleGenerate: generate and fix are mutually
-    // exclusive on a step (see the note there for why).
-    if (fixing || isGenerating || fixAttempts >= 2) return;
+    // F-141 / F-143 — mirror of the guard in handleGenerate: the ONE RULE (see `stepBusy`).
+    if (stepBusy || fixAttempts >= 2) return;
     genTokenRef.current += 1;
     const token = genTokenRef.current;
     const failedResult = testResult;
@@ -555,6 +566,11 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
         const preFixMeta = functionData.generationMeta || null;
         onUpdate({ code: result.code, generationMeta: compactMeta(result.meta) });
         setTestResult(null);
+        // F-144 — the red "generation failed, your existing code was kept" note describes
+        // code this fix has just replaced. Leaving it up puts a failure banner above a
+        // green fix result. (A successful generate clears it too — it is reset at the top
+        // of handleGenerate, before the request goes out.)
+        setGenerationKept(null);
         setFixResult({
           explanation: result.explanation || "",
           verified: false,
@@ -600,6 +616,11 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
 
   const handleUndoFix = () => {
     if (!fixResult) return;
+    // F-146 — Undo is an INSTANT writer of `code` (the ONE RULE, see `stepBusy`): its
+    // button is disabled while anything else is writing, and it takes ownership of the
+    // code by bumping the token, so a fix that lands afterwards can never silently revert
+    // the author's explicit restore.
+    genTokenRef.current += 1;
     onUpdate({ code: fixResult.preFixCode, generationMeta: fixResult.preFixMeta });
     setFixResult(null);
     // Clear the (now stale) PASS from the fixed code's auto re-run — the
@@ -695,7 +716,13 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
 
       {/* Start from a recipe — a ready-made, no-AI step. Alternative to describe → Generate. */}
       <div className="recipe-bar">
-        <button type="button" className="recipe-bar-toggle" onClick={() => setShowRecipes((v) => !v)}>
+        <button
+          type="button"
+          className="recipe-bar-toggle"
+          onClick={() => setShowRecipes((v) => !v)}
+          disabled={stepBusy}
+          title={stepBusy ? "Finish the step's current generate, fix or test run first" : undefined}
+        >
           <span className="recipe-bar-icon">{showRecipes ? "▾" : "▸"}</span>
           <span>Start from a recipe</span>
           <span className="recipe-bar-sub">ready-made · no AI</span>
@@ -761,10 +788,17 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
                   <button
                     type="button"
                     className="btn-generate"
-                    disabled={!supported || missing.length > 0}
+                    disabled={!supported || missing.length > 0 || stepBusy}
+                    title={stepBusy ? "Finish the step's current generate, fix or test run first" : undefined}
                     onClick={() => {
                       const params = {};
                       for (const pp of recipe.params) params[pp.name] = recipeParams[pp.name] ?? pp.default ?? "";
+                      // F-145 — Insert recipe is an INSTANT writer of `code` (the ONE RULE,
+                      // see `stepBusy`): the button is disabled while anything else writes,
+                      // and the insert takes ownership by bumping the token, so an in-flight
+                      // generate/fix can never land on top of the deterministic recipe and
+                      // stamp AI provenance onto code the user never generated.
+                      genTokenRef.current += 1;
                       onUpdate({
                         code: recipe.build(params),
                         operationType: recipe.operationType || functionData.operationType,
@@ -1087,7 +1121,7 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
           <button
             className={`btn-generate ${hasCode ? "btn-generate-secondary" : ""}`}
             onClick={handleGenerate}
-            disabled={!hasPrompt || fixing || testRunning}
+            disabled={!hasPrompt || stepBusy}
           >
             {hasCode ? "Regenerate Code" : "Generate Code"}
           </button>
@@ -1117,9 +1151,9 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
           <span className="aen-text">
             <strong>Generation failed — your existing code was kept.</strong> {generationKept}
           </span>
-          {/* F-141 — Retry is a generate. It is offered only when no AI write to this
-              step's code is in flight, so it can never abandon a running fix. */}
-          {!fixing && <button className="aen-retry" onClick={handleGenerate}>Retry</button>}
+          {/* F-141 / F-143 — Retry is a generate, so it obeys the ONE RULE (see `stepBusy`):
+              offered only when nothing else is writing this step's code. */}
+          {!stepBusy && <button className="aen-retry" onClick={handleGenerate}>Retry</button>}
           <button className="aen-dismiss" onClick={() => setGenerationKept(null)} aria-label="Dismiss">&times;</button>
         </div>
       )}
@@ -1223,7 +1257,14 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
             <div className={`fix-result anim-rise${fixResult.verified ? " fix-verified" : ""}`}>
               <div className="fix-undo-bar">
                 <strong>{fixResult.verified ? "AI fix applied & verified" : "AI fix applied"}</strong>
-                <button className="btn-add-doc" onClick={handleUndoFix}>Undo</button>
+                <button
+                  className="btn-add-doc"
+                  onClick={handleUndoFix}
+                  disabled={stepBusy}
+                  title={stepBusy ? "Finish the step's current generate, fix or test run first" : undefined}
+                >
+                  Undo
+                </button>
                 <button className="test-dismiss" onClick={() => { setFixResult(null); setMemorySaved(null); }}>&times;</button>
               </div>
               {fixResult.explanation && (
@@ -1297,7 +1338,7 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
                   <button
                     className={`btn-run-test${testRunning ? " is-busy busy-solid" : ""}`}
                     onClick={() => runTest()}
-                    disabled={testRunning || fixing || isGenerating || !functionData.code?.trim()}
+                    disabled={stepBusy || !functionData.code?.trim()}
                   >
                     Run Test
                   </button>
@@ -1333,7 +1374,7 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
                       <button
                         className="btn-fix-ai"
                         onClick={handleFixWithAI}
-                        disabled={fixing || isGenerating || testRunning || fixAttempts >= 2}
+                        disabled={stepBusy || fixAttempts >= 2}
                         title={fixAttempts >= 2
                           ? "Fix attempts exhausted — edit the code manually or regenerate"
                           : "AI repairs the code and re-runs the test automatically"}

@@ -564,17 +564,204 @@ try {
       const retryPressable = liveRetries > 0 && await retry.first().isEnabled();
       ok(!retryPressable, `F-141 ${T} Retry is absent or disabled while a fix is in flight`);
 
-      // Let the fix land, then Retry must come back — the rule is mutual exclusion, not
-      // a one-way removal of the affordance.
+      // Let the fix land. The rule is mutual exclusion, not a one-way removal: generating
+      // is offered again once nothing is writing the step. The kept-code note itself is
+      // now correctly GONE — F-144: a successful fix replaced the very code that note was
+      // reporting on — so the affordance to assert on is the Generate button.
       await page.evaluate(() => window.__RELEASE_HOLD__());
       await b.locator(".fix-result").waitFor({ timeout: 12000 });
       await page.waitForFunction(
-        () => { const r = document.querySelector(".async-error-note .aen-retry"); return !!r && !r.disabled; },
-        { timeout: 10000 },
+        () => { const g = document.querySelector(".function-block .generate-row .btn-generate"); return !!g && !g.disabled; },
+        { timeout: 12000 },
       );
-      ok(true, `F-141 ${T} Retry is enabled again once the fix has settled`);
+      ok(await b.locator(".async-error-note").count() === 0, `F-141 ${T} the kept-code note is cleared by the successful fix (F-144)`);
+      ok(true, `F-141 ${T} generating is offered again once the fix has settled`);
     } catch (e) { fail++; console.log(`  \u2717 F-141 ${T} threw: ` + e.message.split("\n")[0]); }
     await closeEditor(env);
+  }
+
+  /* ---------------- F-143..F-146 — ONE writer of a step's `code` at a time ---------------- */
+  // F-141 established the rule for two writers (generate, fix). There are FIVE: generate,
+  // Fix with AI, Insert recipe, Undo fix and the dry-run. They all resolve into the same
+  // step, so the fix is ONE predicate — `stepBusy = isGenerating || fixing || testRunning`
+  // — behind every writer's guard and every writer button's disabled/hidden state.
+  //   F-143: Retry/Generate were live during a dry-run.
+  //   F-144: the red kept-code note survived a SUCCESSFUL fix and sat above a green result.
+  //   F-145: Insert recipe was neither excluded nor token-bumping — an in-flight AI write
+  //          landed on top of the deterministic recipe and stamped AI provenance on it.
+  //   F-146: Undo pressed while another writer ran was silently reverted by it.
+  for (const theme of ["light", "dark"]) {
+    const T = theme.toUpperCase();
+
+    /* F-143 — Retry and Generate are withheld while a DRY-RUN is running */
+    {
+      console.log(`F-143 Retry/Generate withheld during a dry-run (cfg-static, ${theme})`);
+      const env = await openEditor(browser, "config-ui", "cfg-static", theme, {
+        __FAIL__: ["generatePostFunctionCode"],
+      });
+      const { page } = env;
+      try {
+        const b = page.locator(".function-block").first();
+        const retry = b.locator(".async-error-note .aen-retry");
+        const genBtn = b.locator(".btn-generate", { hasText: "Regenerate Code" }).first();
+
+        // Fail a generate to put the kept-code note (and its Retry) on screen.
+        await genBtn.click();
+        await b.locator(".async-error-note").waitFor({ timeout: 12000 });
+        ok(await retry.count() === 1, `F-143 ${T} Retry is offered while nothing is in flight`);
+
+        // Park a dry-run in flight.
+        await b.locator(".btn-test-run", { hasText: /Test Run/ }).click();
+        await page.evaluate(() => { window.__HOLD__ = ["testPostFunction"]; });
+        await b.locator(".btn-run-test", { hasText: "Run Test" }).click();
+        await page.waitForFunction(() => typeof window.__RELEASE_HOLD__ === "function", { timeout: 10000 });
+
+        ok(await b.locator(".async-error-note").count() === 1, `F-143 ${T} the kept-code note stays up while the test runs`);
+        const liveRetries = await retry.count();
+        const retryPressable = liveRetries > 0 && await retry.first().isEnabled();
+        ok(!retryPressable, `F-143 ${T} Retry is absent or disabled while a dry-run is in flight`);
+        ok(!(await genBtn.isEnabled()), `F-143 ${T} the main Generate button is disabled while a dry-run is in flight`);
+
+        // Release: both affordances come back — the rule is exclusion, not removal.
+        await page.evaluate(() => window.__RELEASE_HOLD__());
+        await b.locator(".test-result").waitFor({ timeout: 12000 });
+        await page.waitForFunction(
+          () => { const r = document.querySelector(".async-error-note .aen-retry"); return !!r && !r.disabled; },
+          { timeout: 10000 },
+        );
+        ok(await genBtn.isEnabled(), `F-143 ${T} Generate is enabled again once the dry-run has settled`);
+      } catch (e) { fail++; console.log(`  ✗ F-143 ${T} threw: ` + e.message.split("\n")[0]); }
+      await closeEditor(env);
+    }
+
+    /* F-144 — a SUCCESSFUL fix clears the red kept-code note */
+    {
+      console.log(`F-144 successful fix clears the kept-code note (cfg-static, ${theme})`);
+      const env = await openEditor(browser, "config-ui", "cfg-static", theme, {
+        __TESTFAIL_ONCE__: true,
+        __FAIL__: ["generatePostFunctionCode"],
+      });
+      const { page } = env;
+      try {
+        const b = page.locator(".function-block").first();
+        await b.locator(".btn-test-run", { hasText: /Test Run/ }).click();
+        await b.locator(".btn-run-test", { hasText: "Run Test" }).click();
+        await b.locator(".test-result.test-fail").waitFor({ timeout: 10000 });
+        await b.locator(".btn-generate", { hasText: "Regenerate Code" }).first().click();
+        await b.locator(".async-error-note").waitFor({ timeout: 12000 });
+        ok(await b.locator(".async-error-note").count() === 1, `F-144 ${T} the kept-code note is up after the failed generate`);
+
+        await b.locator(".btn-fix-ai", { hasText: "Fix with AI" }).click();
+        await b.locator(".fix-result").waitFor({ timeout: 12000 });
+        await page.waitForFunction(
+          () => { const u = Array.from(document.querySelectorAll(".fix-result button")).find((x) => /Undo/.test(x.textContent || "")); return !!u && !u.disabled; },
+          { timeout: 15000 },
+        );
+        // THE defect: a red "generation failed" banner sitting above a green fix result.
+        ok(await b.locator(".async-error-note").count() === 0, `F-144 ${T} the kept-code note is gone after a SUCCESSFUL fix`);
+        ok(await b.locator(".fix-result").count() === 1, `F-144 ${T} the fix result card is what the user is left looking at`);
+      } catch (e) { fail++; console.log(`  ✗ F-144 ${T} threw: ` + e.message.split("\n")[0]); }
+      await closeEditor(env);
+    }
+
+    /* F-145 — Insert recipe is excluded while an AI write runs, and takes ownership */
+    {
+      console.log(`F-145 Insert recipe excluded + token-bumping (cfg-static, ${theme})`);
+      const env = await openEditor(browser, "config-ui", "cfg-static", theme, {
+        __HOLD__: ["generatePostFunctionCode"],
+      });
+      const { page } = env;
+      try {
+        const b = page.locator(".function-block").first();
+        const toggle = b.locator(".recipe-bar-toggle").first();
+        const insert = b.locator(".recipe-bar-body .btn-generate", { hasText: "Insert recipe" }).first();
+
+        // Pick a no-required-params recipe so Insert is enabled on its own merits.
+        await toggle.click();
+        await b.locator(".recipe-bar-body .dropdown-trigger").first().click();
+        await page.locator(".dropdown-item", { hasText: "Add / remove labels" }).first().click();
+        await insert.waitFor({ timeout: 8000 });
+        ok(await insert.isEnabled(), `F-145 ${T} Insert recipe is pressable while nothing is in flight`);
+
+        // Park a generate in flight. The recipe bar must go unpressable.
+        await b.locator(".btn-generate", { hasText: "Regenerate Code" }).first().click();
+        await page.waitForFunction(() => typeof window.__RELEASE_HOLD__ === "function", { timeout: 10000 });
+        const insertLive = await insert.count();
+        ok(!(insertLive > 0 && await insert.first().isEnabled()), `F-145 ${T} Insert recipe is absent or disabled while a generate is in flight`);
+        ok(!(await toggle.isEnabled()), `F-145 ${T} the recipe bar toggle is disabled while a generate is in flight`);
+
+        // The exclusion cannot be forced past from the browser: React drops click handlers on
+        // elements whose props.disabled is true, so un-setting the DOM attribute and calling
+        // .click() is a no-op. That is the point — the in-flight AI write can no longer be
+        // raced. (The genTokenRef bump on insert is the belt to that braces: if an insert
+        // ever does land, it takes ownership of the code and the AI result is discarded.)
+        await page.evaluate(() => {
+          const btns = Array.from(document.querySelectorAll(".recipe-bar-body button"));
+          const el = btns.find((x) => /Insert recipe/.test(x.textContent || ""));
+          if (el) { el.disabled = false; el.click(); }
+        });
+        await page.waitForTimeout(400);
+        ok(!/Recipe: add \/ remove labels/.test(await b.locator(".cm-content").first().innerText()),
+          `F-145 ${T} a forced Insert while the generate runs does not land`);
+
+        // Release, then insert for real: the recipe takes ownership of BOTH the code and the
+        // provenance — no AI chips may survive on code the user never generated.
+        await page.evaluate(() => window.__RELEASE_HOLD__());
+        await page.waitForFunction(
+          () => { const g = document.querySelector(".function-block .generate-row .btn-generate"); return !!g && !g.disabled; },
+          { timeout: 15000 },
+        );
+        if (await b.locator(".recipe-bar-body").count() === 0) await toggle.click();
+        await insert.waitFor({ timeout: 8000 });
+        await insert.click();
+        await page.waitForFunction(
+          () => /Recipe: add \/ remove labels/.test(document.querySelector(".cm-content")?.innerText || ""),
+          { timeout: 8000 },
+        );
+        const code = await b.locator(".cm-content").first().innerText();
+        ok(/Recipe: add \/ remove labels/.test(code), `F-145 ${T} the code is the RECIPE after the insert`);
+        ok(!/similar summary/i.test(code), `F-145 ${T} no AI code survived under the recipe`);
+        ok(await b.locator(".gen-meta-chip.gmc-mem").count() === 0, `F-145 ${T} no AI provenance chips on code the user never generated`);
+        ok(await b.locator(".gen-meta-chip.gmc-recipe").count() === 1, `F-145 ${T} the recipe provenance chip stands`);
+      } catch (e) { fail++; console.log(`  ✗ F-145 ${T} threw: ` + e.message.split("\n")[0]); }
+      await closeEditor(env);
+    }
+
+    /* F-146 — Undo is withheld while another writer runs */
+    {
+      console.log(`F-146 Undo withheld while a writer is in flight (cfg-static, ${theme})`);
+      const env = await openEditor(browser, "config-ui", "cfg-static", theme, { __TESTFAIL_ONCE__: true });
+      const { page } = env;
+      try {
+        const b = page.locator(".function-block").first();
+        await b.locator(".btn-test-run", { hasText: /Test Run/ }).click();
+        await b.locator(".btn-run-test", { hasText: "Run Test" }).click();
+        await b.locator(".test-result.test-fail").waitFor({ timeout: 10000 });
+        await b.locator(".btn-fix-ai", { hasText: "Fix with AI" }).click();
+        await b.locator(".fix-result").waitFor({ timeout: 12000 });
+        const undo = b.locator(".fix-result button", { hasText: "Undo" }).first();
+        await page.waitForFunction(
+          () => { const u = Array.from(document.querySelectorAll(".fix-result button")).find((x) => /Undo/.test(x.textContent || "")); return !!u && !u.disabled; },
+          { timeout: 15000 },
+        );
+        ok(await undo.isEnabled(), `F-146 ${T} Undo is pressable once the fix has settled`);
+
+        // Park another writer (a dry-run) in flight — Undo must go unpressable.
+        await page.evaluate(() => { window.__HOLD__ = ["testPostFunction"]; });
+        await b.locator(".btn-run-test", { hasText: "Run Test" }).click();
+        await page.waitForFunction(() => typeof window.__RELEASE_HOLD__ === "function", { timeout: 10000 });
+        ok(await b.locator(".fix-result").count() === 1, `F-146 ${T} the fix card stays up while the run is in flight`);
+        ok(!(await undo.isEnabled()), `F-146 ${T} Undo is disabled while another writer is in flight`);
+
+        await page.evaluate(() => window.__RELEASE_HOLD__());
+        await page.waitForFunction(
+          () => { const u = Array.from(document.querySelectorAll(".fix-result button")).find((x) => /Undo/.test(x.textContent || "")); return !!u && !u.disabled; },
+          { timeout: 12000 },
+        );
+        ok(true, `F-146 ${T} Undo is enabled again once nothing is writing the step`);
+      } catch (e) { fail++; console.log(`  ✗ F-146 ${T} threw: ` + e.message.split("\n")[0]); }
+      await closeEditor(env);
+    }
   }
 
   /* ---------------- J19 — MANAGED semantic flavors (config-ui = read-only admin notice) ---------------- */

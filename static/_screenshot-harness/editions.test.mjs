@@ -85,6 +85,28 @@ async function pickForgeLlm(page) {
   ok(u.forgeLlm !== undefined, "E0 getAiUsage mock puts forgeLlm at the result root");
   ok(u.usage && u.usage.seats === undefined && u.usage.forgeLlm === undefined,
     "E0 getAiUsage mock does NOT nest seats/forgeLlm inside usage");
+  /* F-090: the allowance block must be the REAL shape, computed by the app's own
+     forgeLlmAllowanceStatus — pct is a 0-1 FRACTION. The mock used to hand-write
+     `pct: 46` and the harness photographed a meter that read 0% on every tenant. */
+  const { emptyState, monthKey, allowanceUsdForSeats, forgeLlmAllowanceStatus } =
+    await import("../../src/shared/usage-meter.js");
+  ok(typeof u.forgeLlm.pct === "number" && u.forgeLlm.pct > 0 && u.forgeLlm.pct <= 1,
+    `E0 allowance pct is a 0-1 fraction, not a percentage (got ${u.forgeLlm.pct})`);
+  {
+    const st = emptyState();
+    st.month.key = monthKey(Date.now());
+    st.month.forgeLlm.estUsd = u.forgeLlm.estUsd;
+    const real = forgeLlmAllowanceStatus(st, allowanceUsdForSeats(u.seats), Date.now());
+    ok(JSON.stringify(real) === JSON.stringify(u.forgeLlm),
+      `E0 allowance block equals forgeLlmAllowanceStatus(seats=${u.seats}) (got ${JSON.stringify(u.forgeLlm)})`);
+    ok(real.allowanceUsd === allowanceUsdForSeats(u.seats),
+      "E0 mock seats and allowance agree via the shared seat rule");
+  }
+  /* F-091: Standard gets an explicit null — the value the backend now sends. */
+  globalThis.window.__STANDARD__ = true;
+  const uStd = await invoke("getAiUsage");
+  ok(uStd.forgeLlm === null, `E0 getAiUsage returns forgeLlm: null on Standard (got ${JSON.stringify(uStd.forgeLlm)})`);
+  globalThis.window.__STANDARD__ = false;
   // The frontier/default ids the mock serves are the shared ones, not a copy.
   const m = await invoke("getOpenAIModels", { provider: "atlassian" });
   ok((m.models || []).includes(FORGE_LLM_DEFAULT) && m.currentModel === FORGE_LLM_DEFAULT,
@@ -113,12 +135,23 @@ try {
 
       await tab(page, "Settings");
       await page.locator(".usage-card").waitFor({ timeout: 10000 });
-      // allowance meter
-      ok(await page.locator(".usage-allowance").count() === 1, "E1 Forge LLM allowance row renders");
-      ok((await page.locator(".usage-allowance .usage-prov-val").innerText()).includes("of $200"), "E1 allowance shows est of allowance");
-      ok(await page.locator(".usage-allow-fill.lvl-ok").count() === 1, "E1 allowance bar at the ok level");
+      /* F-091: the allowance is a FORGE LLM meter. The mock tenant lands on the
+         Anthropic BYOK provider first, and a BYOK tenant pays their own tokens —
+         they must never be shown the vendor's allowance, on either edition. */
+      ok(await page.locator(".usage-allowance").count() === 0, "E1 no allowance row while the provider is BYOK");
 
       await pickForgeLlm(page);
+      // allowance meter — only now, on Forge LLM
+      ok(await page.locator(".usage-allowance").count() === 1, "E1 Forge LLM allowance row renders");
+      const allowText = await page.locator(".usage-allowance .usage-prov-val").innerText();
+      ok(allowText.includes("of $200"), "E1 allowance shows est of allowance");
+      /* F-090: the percentage is the real one. `pct` is a fraction (0.462) and the
+         panel must render 46%, not the 0% a bare Math.round produced. */
+      ok(allowText.includes("46%"), `E1 allowance row renders the real percentage (got "${allowText}")`);
+      ok(!/\b0%/.test(allowText), `E1 allowance row is not the 0% fraction bug (got "${allowText}")`);
+      ok(await page.locator(".usage-allow-fill.lvl-ok").count() === 1, "E1 allowance bar at the ok level");
+      const barW = await page.locator(".usage-allow-fill").first().evaluate((el) => el.style.width);
+      ok(barW === "46%", `E1 allowance bar width matches the percentage (got ${barW})`);
       const body = await page.locator(".container").innerText();
       ok(body.includes("Sonnet 5 and Opus 5 unlocked."), "E1 unlocked notice on Coder");
       ok(body.includes("Monthly allowance: 46% used."), "E1 notice names the allowance percentage");
@@ -148,6 +181,11 @@ try {
       ok(await page.locator(".usage-allowance").count() === 0, "E2 no allowance row on Standard");
 
       await pickForgeLlm(page);
+      /* F-091: the real test. On Forge LLM the provider gate no longer hides the
+         meter, so the ONLY thing keeping it off a Standard tenant is the backend's
+         `forgeLlm: null` — which the mock now sends. A Standard tenant must never
+         see a vendor allowance, nor the "Sonnet 5 / Opus 5 paused" copy. */
+      ok(await page.locator(".usage-allowance").count() === 0, "E2 still no allowance row on Standard with Forge LLM selected");
       const body = await page.locator(".container").innerText();
       ok(body.includes("Claude Sonnet 5 and Opus 5 are part of CogniRunner Coder"), "E2 upgrade notice on Standard");
       ok(body.includes("upgrade in Jira"), "E2 notice points at Manage apps");

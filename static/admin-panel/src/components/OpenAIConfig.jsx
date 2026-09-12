@@ -1249,10 +1249,19 @@ export default function OpenAIConfig({ invoke }) {
   const effectiveLocked = lockedModels.length > 0
     ? lockedModels
     : (isAtlassian && !isAdvanced ? FORGE_LLM_FRONTIER : []);
-  // The row we point the admin at once the frontier models are unlocked.
-  const recommendedModel = isAtlassian && isAdvanced ? "claude-sonnet-5" : null;
-  const allowance = forgeAllowance;
-  const allowancePct = allowance ? Math.max(0, Math.min(100, Math.round(allowance.pct || 0))) : 0;
+  // The row we point the admin at once the frontier models are unlocked. F-098:
+  // the id comes from the ONE home (src/shared/edition.js), never retyped here —
+  // reorder or rename the frontier list and this follows instead of going stale.
+  const recommendedModel = isAtlassian && isAdvanced ? FORGE_LLM_FRONTIER[0] : null;
+  // F-091: the Forge LLM allowance meter belongs to Forge LLM ONLY. The backend now
+  // sends `forgeLlm: null` for Standard and for BYOK tenants, but the provider gate
+  // lives here too: a BYOK tenant must never be shown a vendor allowance, whatever
+  // an older backend happens to return. Both conditions, on purpose.
+  const allowance = (isAtlassian && forgeAllowance && typeof forgeAllowance === "object") ? forgeAllowance : null;
+  // F-090: `pct` from forgeLlmAllowanceStatus (src/shared/usage-meter.js) is a
+  // 0-1 FRACTION, not a percentage. Convert in exactly ONE place — the bar width
+  // and every piece of copy read this, so the two can never disagree again.
+  const allowancePct = allowance ? Math.max(0, Math.min(100, Math.round((Number(allowance.pct) || 0) * 100))) : 0;
   const money = (n) => `$${Number(n || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
 
   const resetUsage = async () => {

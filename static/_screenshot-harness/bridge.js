@@ -23,6 +23,12 @@
    re-states the frontier ids or invents feature ids stops being able to catch a
    drift between the app and src/shared/edition.js — it just agrees with itself. */
 import { FORGE_LLM_FRONTIER, FORGE_LLM_DEFAULT, ADVANCED_FEATURES } from "../../src/shared/edition.js";
+/* F-090: the allowance block the mock serves is COMPUTED by the same function the
+   backend calls (forgeLlmAllowanceStatus), from the same seat->dollars rule
+   (allowanceUsdForSeats). It used to be hand-written, and it hand-wrote `pct: 46`
+   for a field that is a 0-1 FRACTION — so the harness happily photographed a meter
+   that reads 0% on every real tenant. A derived payload cannot have a wrong shape. */
+import { emptyState, monthKey, allowanceUsdForSeats, forgeLlmAllowanceStatus } from "../../src/shared/usage-meter.js";
 
 const ACCT = "557058:11111111-1111-1111-1111-111111111111";
 const SITE = "https://your-site.atlassian.net";
@@ -404,6 +410,19 @@ const LM_WEIGHT_MODELS = [
    before the app mounts to flip EVERY edition surface to Standard: the chip, the
    locked Sonnet/Opus rows, the upgrade copy and the agent-model lock. */
 const isStandardEd = () => typeof window !== "undefined" && !!window.__STANDARD__;
+
+/* The Coder tenant this harness photographs: 100 seats -> $200 allowance (the seat
+   rule in usage-meter.js), $92.40 of Forge LLM spend this month -> 46% used, "ok".
+   Only these two numbers are chosen here; the SHAPE and the maths are the app's. */
+const MOCK_SEATS = 100;
+const MOCK_FORGE_EST_USD = 92.4;
+function mockAllowance() {
+  const now = Date.now();
+  const st = emptyState();
+  st.month.key = monthKey(now);
+  st.month.forgeLlm.estUsd = MOCK_FORGE_EST_USD;
+  return forgeLlmAllowanceStatus(st, allowanceUsdForSeats(MOCK_SEATS), now);
+}
 const edName = () => (isStandardEd() ? "standard" : "advanced");
 const FORGE_FRONTIER = FORGE_LLM_FRONTIER;
 const FORGE_HAIKU = FORGE_LLM_DEFAULT;
@@ -723,9 +742,11 @@ function invoke(name, payload) {
     case "getAiUsage": return Promise.resolve({
       success: true,
       usage: { month: { key: "2026-07", calls: 1284, prompt: 512000, completion: 148000, total: 660000, byProvider: { anthropic: { calls: 720, total: 410000 }, openai: { calls: 402, total: 180000 }, atlassian: { calls: 162, total: 70000 } } }, today: { key: "2026-07-08", calls: 96, total: 48200 }, history: [{ key: "2026-06", calls: 3140, total: 1620000 }] },
-      // 1.3: the monthly Forge LLM allowance meter. Standard has no allowance row.
-      forgeLlm: isStandardEd() ? undefined : { estUsd: 92.4, allowanceUsd: 200, pct: 46, level: "ok" },
-      seats: 118,
+      // 1.3: the monthly Forge LLM allowance meter. F-091: Standard (and any BYOK
+      // tenant) gets an explicit `null`, which is what the backend sends — NOT
+      // `undefined`, so "no allowance row" is tested against the real absent value.
+      forgeLlm: isStandardEd() ? null : mockAllowance(),
+      seats: MOCK_SEATS,
     });
     case "resetAiUsage": return Promise.resolve({ success: true });
     case "commitImport": return Promise.resolve({ success: true, status: "committed", ruleId: "imported-1" });

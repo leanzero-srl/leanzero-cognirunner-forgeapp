@@ -982,6 +982,10 @@ const injectStyles = () => {
       box-shadow: 0 2px 6px rgba(37, 99, 235, 0.12);
       transform: translateY(-1px);
     }
+    /* ONE RULE (stepBusy): every writer of a step's code is unpressable while another
+       writer is in flight — Undo included. */
+    .btn-add-doc:disabled { opacity: 0.5; cursor: default; }
+    .btn-add-doc:disabled:hover { background: transparent; box-shadow: none; transform: none; }
 
     .doc-add-form {
       padding: 12px;
@@ -2887,6 +2891,7 @@ const injectStyles = () => {
       background: var(--input-bg); border: none; cursor: pointer; color: var(--text-color);
       font-weight: 600; font-size: 13px;
     }
+    .recipe-bar-toggle:disabled { opacity: 0.5; cursor: default; }
     .recipe-bar-icon { color: var(--text-secondary); }
     .recipe-bar-sub { margin-left: auto; font-weight: 400; font-size: 11px; color: var(--text-muted); }
     .recipe-bar-body { padding: 12px; border-top: 1px solid var(--border-color); }

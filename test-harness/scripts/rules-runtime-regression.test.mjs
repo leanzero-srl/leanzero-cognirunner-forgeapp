@@ -14,8 +14,40 @@ import forgeApi, { pushed } from "../lib/mock-forge-api.mjs";
 import { normalizeListener, testListener, executeListenerTask, matchListenerStatic, listenerTrigger, readListenerIndex, toIndexRow } from "../../src/listeners.js";
 import { normalizeJob, runJob, executeScheduledJobTask, scheduledTick } from "../../src/scheduled-jobs.js";
 import { JIRA_EVENTS } from "../../src/shared/jira-events.js";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { testStateTrigger } from "../../src/test-hook.js";
+
+// F-137 — the two "no retyped slot name" gates below stripped only WHOLE-LINE comments,
+// so a trailing `// COGNIRUNNER_KEY_openai` (a comment is allowed to NAME a slot) read as
+// code and would have failed the gate for a file that is perfectly correct — and the same
+// blind spot hides real code that shares a line with a trailing comment. One scanner, used
+// by both gates: block comments, line comments wherever they start, walking string and
+// template literals so a `//` inside a URL is not a comment. Escapes outside strings are
+// consumed in pairs so a regex literal's `\/` cannot open a phantom comment.
+const stripJsComments = (src) => {
+  let out = "", i = 0;
+  while (i < src.length) {
+    const c = src[i];
+    if (c === "\\") { out += c + (src[i + 1] || ""); i += 2; continue; }
+    if (c === "/" && src[i + 1] === "/") { const nl = src.indexOf("\n", i); i = nl < 0 ? src.length : nl; continue; }
+    if (c === "/" && src[i + 1] === "*") { const e = src.indexOf("*/", i); i = e < 0 ? src.length : e + 2; out += " "; continue; }
+    if (c === '"' || c === "'" || c === "`") {
+      const q = c; out += c; i++;
+      while (i < src.length && src[i] !== q) { if (src[i] === "\\") { out += src[i]; i++; } out += src[i] === undefined ? "" : src[i]; i++; }
+      out += q; i++; continue;
+    }
+    out += c; i++;
+  }
+  return out;
+};
+
+// F-137 — the backend modules this gate covers are DERIVED from the tree, not hand-typed.
+// A hand-typed list silently stops covering the next module somebody adds (which is exactly
+// how the consumer's retyped slot names survived: the gate only looked at index.js).
+// `src/shared/*` is excluded on purpose — it is the HOME of the slot names.
+const backendModules = () => readdirSync(new URL("../../src/", import.meta.url))
+  .filter((f) => f.endsWith(".js")).sort();
+
 
 register("data:text/javascript," + encodeURIComponent(`
 export async function resolve(spec, ctx, next) {
@@ -357,8 +389,7 @@ try {
       }
     }
     // DERIVED, not retyped: no literal provider slot string anywhere in the hook.
-    const hookCode = readFileSync(new URL("../../src/test-hook.js", import.meta.url), "utf8")
-      .split("\n").filter((l) => !l.trim().startsWith("//")).join("\n"); // comments may NAME a slot; code may not
+    const hookCode = stripJsComments(readFileSync(new URL("../../src/test-hook.js", import.meta.url), "utf8")); // comments may NAME a slot; code may not
     assert.equal(/COGNIRUNNER_(KEY|MODEL|AGENT_MODEL|BASEURL)_[a-z]/.test(hookCode), false);
   });
   await check("PROVIDER_IDS stays in lockstep with index.js's PROVIDERS map", async () => {
@@ -413,10 +444,12 @@ try {
     // gate only looked at index.js. Every backend module that could retype them is
     // checked here, in BOTH shapes: a `const provider*Slot =` declaration and a raw
     // COGNIRUNNER_* slot literal. Comments may name a slot; code may not.
-    const files = ["index.js", "async-handler.js", "listeners.js", "scheduled-jobs.js", "agent-runner.js", "rules-api.js", "test-hook.js"];
+    const files = backendModules();
+    // Sanity: the derivation must actually find the tree (a bad URL would pass vacuously).
+    assert.ok(files.length >= 7 && files.includes("index.js") && files.includes("async-handler.js"),
+      `backend module derivation returned ${files.join(",") || "nothing"}`);
     for (const f of files) {
-      const raw = readFileSync(new URL(`../../src/${f}`, import.meta.url), "utf8");
-      const code = raw.split("\n").filter((l) => !l.trim().startsWith("//") && !l.trim().startsWith("*")).join("\n");
+      const code = stripJsComments(readFileSync(new URL(`../../src/${f}`, import.meta.url), "utf8"));
       assert.equal(/const provider[A-Za-z]*Slot\s*=/.test(code), false, `${f} redeclares a provider slot helper — import it from src/shared/provider-slots.js`);
       assert.equal(/COGNIRUNNER_(KEY|MODEL|AGENT_MODEL|BASEURL)_[a-z$]/.test(code), false, `${f} types a provider slot literal — derive it from src/shared/provider-slots.js`);
     }

@@ -450,5 +450,58 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
     "…non-transient (the banner must surface it) and flagged fail-open like every other non-ok answer");
 }
 
+// =====================================================================================
+// F-116 — the budget gate must not reserve against a provider it does not have.
+//
+// `budgetProvider` can now be null (F-109). effectiveBudget(null) is 0 and
+// budgetDecision reads 0 as "no budget → allow", so the gate SKIPPED — and then
+// reserved `estimate` tokens in `ai_budget:null:<minute>`, a bucket nobody reads and
+// which the settle (guarded by `if (budgetProvider ...)`) never released.
+// =====================================================================================
+{
+  const g = indexSrc.match(/export const aiBudgetGate = async \(\{ provider, estimate, deferrals = 0 \}\) => \{[\s\S]*?\n\};/);
+  ok(!!g, "found aiBudgetGate");
+  const gb = g ? g[0] : "";
+  ok(/if \(!provider\) \{/.test(gb), "a null provider is answered before the snapshot");
+  ok(gb.indexOf("if (!provider)") < gb.indexOf("aiBudgetSnapshot(provider)"),
+    "…so no bucket is even READ for a null provider");
+  ok(/allow: true/.test(gb) && /skipped: "no-provider"/.test(gb),
+    "…returning allow (nothing to pace) and saying WHY, so the caller knows there is no reservation to release");
+
+  // The two ledger primitives refuse the null key at the door.
+  const rd = indexSrc.match(/export const readAiBudgetBucket = async \(provider, ms = Date\.now\(\)\) => \{[\s\S]*?\n\};/)[0];
+  ok(/if \(!provider\) return \{ used: 0, reserved: 0 \};/.test(rd), "readAiBudgetBucket never reads ai_budget:null:*");
+  const bp = indexSrc.match(/export const bumpAiBudgetBucket = async \(provider, \{ used = 0, reserved = 0 \} = \{\}, ms = Date\.now\(\)\) => \{[\s\S]*?\n\};/)[0];
+  ok(/if \(!provider\) return;/.test(bp), "bumpAiBudgetBucket never WRITES ai_budget:null:* (the orphan reservation)");
+  ok(bp.indexOf("if (!provider) return;") < bp.indexOf("budgetBucketKey"), "…checked before the key is even built");
+
+  // EXECUTED: the gate's null arm, with a storage stub that FAILS the test if touched.
+  {
+    const touched = [];
+    const storage = { get: async (k) => { touched.push(k); return null; }, set: async (k) => { touched.push(k); } };
+    // eslint-disable-next-line no-unused-vars
+    const aiBudgetSnapshot = async (provider) => { touched.push(`snapshot:${provider}`); return { provider, budget: 0, used: 0, reserved: 0 }; };
+    // eslint-disable-next-line no-unused-vars
+    const budgetDecision = () => { touched.push("decision"); return { allow: true, delaySeconds: 0, usedPct: 0 }; };
+    // eslint-disable-next-line no-eval
+    const fn = eval("(" + gb.replace("export const aiBudgetGate = async ", "async ").replace(/;\s*$/, "") + ")");
+    const res = await fn({ provider: null, estimate: 3000 });
+    ok(res.allow === true && res.skipped === "no-provider", "EXECUTED: null provider → allow, skipped:'no-provider'");
+    ok(res.estimate === 3000 && res.budget === 0 && res.reserved === 0, "EXECUTED: …and a zeroed snapshot, so no pacing is claimed");
+    ok(touched.length === 0, "EXECUTED: nothing was read, snapshotted or decided for a null provider");
+  }
+
+  // The consumer honours the skip: no reservation, no settle to balance.
+  const gateBlock = asyncSrc.match(/if \(usesAi\) \{[\s\S]*?\n    \}\n  \} catch \(e\) \{/)[0];
+  ok(/if \(gate\.skipped === "no-provider"\) \{/.test(gateBlock), "the consumer branches on the skip");
+  ok(/budgetEstimate = 0;\n        budgetProvider = null;/.test(gateBlock),
+    "…zeroing the estimate and the provider so the settle has nothing to release");
+  ok(/if \(budgetProvider\) \{\n        budgetReserveMs = Date\.now\(\);/.test(gateBlock),
+    "the reservation itself is made only when a provider is known");
+  // The settle half was already guarded — assert it stays that way (it is the other
+  // end of the same invariant: reserve and release must agree on the provider).
+  ok(/if \(budgetProvider && budgetEstimate\) \{/.test(asyncSrc), "the settle still releases only against a known provider");
+}
+
 console.log(`\nasync-handler-helpers: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -1052,7 +1052,15 @@ export async function handler(event) {
       budgetProvider = (await getProviderConfig()).provider;
       budgetEstimate = estimateTaskTokens(taskType, params, await getLearnedRuleCost(budgetRuleId));
       const gate = await aiBudgetGate({ provider: budgetProvider, estimate: budgetEstimate, deferrals: budgetDeferrals });
-      if (!gate.allow) {
+      // F-116 — the provider read faulted, so there is nothing to pace and no bucket
+      // to reserve in. The task body will refuse with NO_PROVIDER_ERROR a moment from
+      // now (F-109); spend nothing on the ledger on the way there. Zeroing the estimate
+      // also keeps the settle below symmetric with what was (not) reserved.
+      if (gate.skipped === "no-provider") {
+        console.warn(`[budget] no provider for ${taskType} (${taskId}) — gate skipped, nothing reserved`);
+        budgetEstimate = 0;
+        budgetProvider = null;
+      } else if (!gate.allow) {
         const until = new Date(Date.now() + gate.delaySeconds * 1000).toISOString();
         const firstEnqueuedAt = params?.firstEnqueuedAt || enqAt || new Date().toISOString();
         const body = {
@@ -1072,8 +1080,10 @@ export async function handler(event) {
         return;
       }
       if (gate.forced) console.warn(`[budget] ${taskType} (${taskId}) ran after the deferral cap — budget still full`);
-      budgetReserveMs = Date.now();
-      await bumpAiBudgetBucket(budgetProvider, { reserved: budgetEstimate }, budgetReserveMs);
+      if (budgetProvider) {
+        budgetReserveMs = Date.now();
+        await bumpAiBudgetBucket(budgetProvider, { reserved: budgetEstimate }, budgetReserveMs);
+      }
     }
   } catch (e) {
     // The gate must never block the queue: on any ledger/queue failure, run now.

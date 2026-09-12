@@ -10361,8 +10361,12 @@ const getAiBudgetSettings = async () => {
 /** Effective queue budget (tokens/min) for a provider. 0 = no pacing. */
 export const getAiBudgetForProvider = async (provider) => effectiveBudget(provider, await getAiBudgetSettings());
 
+// F-116 — a null provider means the provider read faulted. There is no bucket for
+// "no provider": `ai_budget:null:<minute>` is junk nobody reads and nobody releases.
+// Every ledger touch below refuses it at the door, so the key can never be written.
 const budgetBucketKey = (provider, ms) => `ai_budget:${provider}:${minuteKey(ms)}`;
 export const readAiBudgetBucket = async (provider, ms = Date.now()) => {
+  if (!provider) return { used: 0, reserved: 0 };
   try { const b = await storage.get(budgetBucketKey(provider, ms)); return { used: Number(b?.used) || 0, reserved: Number(b?.reserved) || 0 }; }
   catch { return { used: 0, reserved: 0 }; }
 };
@@ -10373,6 +10377,7 @@ export const readAiBudgetBucket = async (provider, ms = Date.now()) => {
  * unbounded. Negative reserved (a release racing a lost reserve) clamps to 0.
  */
 export const bumpAiBudgetBucket = async (provider, { used = 0, reserved = 0 } = {}, ms = Date.now()) => {
+  if (!provider) return; // F-116 — never write ai_budget:null:<minute>
   try {
     const key = budgetBucketKey(provider, ms);
     const cur = (await storage.get(key)) || {};
@@ -10400,6 +10405,17 @@ export const aiBudgetSnapshot = async (provider) => {
 };
 /** The gate: may a task costing ~estimate tokens run in the current minute? */
 export const aiBudgetGate = async ({ provider, estimate, deferrals = 0 }) => {
+  // F-116 — no provider, nothing to pace. Allow WITHOUT reserving: the old path
+  // computed effectiveBudget(null) = 0, which budgetDecision reads as "no budget"
+  // and allows anyway — but it still reserved `estimate` tokens in a bucket keyed
+  // on null that the settle (guarded by `if (budgetProvider ...)`) never released.
+  // `skipped` tells the caller there is no reservation to give back.
+  if (!provider) {
+    return {
+      allow: true, delaySeconds: 0, usedPct: 0, skipped: "no-provider",
+      provider: null, budget: 0, used: 0, reserved: 0, platformLimit: null, defaultBudget: 0, estimate,
+    };
+  }
   const snap = await aiBudgetSnapshot(provider);
   const decision = budgetDecision({ used: snap.used, reserved: snap.reserved, estimate, budget: snap.budget, nowMs: Date.now(), deferrals });
   return { ...decision, ...snap, estimate };

@@ -250,13 +250,63 @@ ok(/rest\/api\/3\/users\/search/.test(codeOnly), "seats are counted from /rest/a
       "FAILURE with no prior count: seats stays null (nothing good was overwritten)");
   }
 }
+// =====================================================================================
+// F-099 — the seat read's THREE outcomes, EXECUTED. A seat count decides the monthly
+// allowance, so "the read faulted" must never become "the site has 100 seats": that
+// turns a KVS wobble into level:"hard" and downgrades a paying tenant to Haiku.
+// =====================================================================================
+{
+  const rs = codeOnly.match(/const readSeatCount = async \(\) => \{[\s\S]*?\n\};/);
+  ok(!!rs, "found readSeatCount");
+  const ra = indexSrc.match(/export const readForgeLlmAllowance = async \(\) => \{[\s\S]*?\n\};/);
+  ok(!!ra, "found readForgeLlmAllowance");
+  const build = (storage) => new Function(
+    "storage", "SEAT_SNAPSHOT_KEY", "USAGE_KEY", "emptyState", "forgeLlmAllowanceStatus", "allowanceUsdForSeats",
+    (rs ? rs[0] : "") + "\n" + (ra ? ra[0] : "").replace("export const", "const") +
+    "\nreturn { readSeatCount, readForgeLlmAllowance };",
+  )(storage, "SEATS", "USAGE", () => ({ empty: true }), (state, ceilingUsd) => ({ ceilingUsd, state }), (seats) => (seats > 0 ? seats * 2 : 200));
+
+  // 1. A real snapshot → { ok:true, seats:n }
+  {
+    const { readSeatCount, readForgeLlmAllowance } = build({ get: async (k) => (k === "SEATS" ? { seats: 500 } : { spend: 1 }) });
+    const r = await readSeatCount();
+    ok(r.ok === true && r.seats === 500, "a snapshot with a count reads { ok:true, seats:500 }");
+    const a = await readForgeLlmAllowance();
+    ok(a && a.ceilingUsd === 1000, "…and the allowance is computed from THAT count");
+  }
+  // 2. No row ever written → { ok:true, seats:null } → the 100-seat fallback covers it
+  {
+    const { readSeatCount, readForgeLlmAllowance } = build({ get: async () => null });
+    const r = await readSeatCount();
+    ok(r.ok === true && r.seats === null, "a MISSING snapshot reads { ok:true, seats:null } — unknown, not faulted");
+    const a = await readForgeLlmAllowance();
+    ok(a && a.ceilingUsd === 200, "…and the 100-seat fallback still applies to an unscanned site");
+  }
+  // 3. The read FAULTED → { ok:false } → allowance null, never a computed ceiling
+  {
+    const { readSeatCount, readForgeLlmAllowance } = build({ get: async (k) => { if (k === "SEATS") throw new Error("kvs 429"); return { spend: 1 }; } });
+    const r = await readSeatCount();
+    ok(r.ok === false && r.seats === null, "a FAULTED seat read reads { ok:false } — distinguishable from 'no row'");
+    const a = await readForgeLlmAllowance();
+    ok(a === null, "…and readForgeLlmAllowance returns NULL on a faulted seat read (F-099: never 'hard')");
+  }
+  // 4. A faulted USAGE read is the same story — the doc comment promises null for both.
+  {
+    const { readForgeLlmAllowance } = build({ get: async (k) => { if (k === "USAGE") throw new Error("kvs 429"); return { seats: 500 }; } });
+    ok((await readForgeLlmAllowance()) === null, "a faulted USAGE read also yields null, as the comment states");
+  }
+}
 {
   const m = codeOnly.match(/const getProviderConfig = async \(\) => \{[\s\S]*?\n\};/);
   ok(!!m, "found getProviderConfig");
   const b = m ? m[0] : "";
   ok(/edition: _cachedEditionId, allowance: _cachedAllowance/.test(b), "the memo returns edition + allowance on the CACHED path too");
   ok(/if \(provider === "atlassian"\)/.test(b), "the extra reads only happen for the vendor-billed provider");
-  ok(/forgeLlmAllowanceStatus\(stateRes \|\| emptyState\(\), allowanceUsdForSeats\(seatsRes\)\)/.test(b), "the allowance is computed at refresh time");
+  ok(/forgeLlmAllowanceStatus\(stateRead\.state \|\| emptyState\(\), allowanceUsdForSeats\(seatRead\.seats\)\)/.test(b), "the allowance is computed at refresh time");
+  // F-099: a FAULTED usage or seat read yields NO allowance. It must not be folded into
+  // the 100-seat fallback — that computes a ceiling from a number nobody read.
+  ok(/\(stateRead\.ok && seatRead\.ok\)/.test(b) && /: null;/.test(b),
+    "a faulted usage/seat read leaves the allowance null, never a computed ceiling");
   // F-079/F-093: the seat SCAN no longer rides the transition path — it is triggered from
   // ONE admin-gated resolver (getAiUsage) only.
   ok(!/maybeRefreshSeatSnapshot/.test(b), "the provider memo never starts a seat scan");
@@ -280,9 +330,12 @@ ok(/rest\/api\/3\/users\/search/.test(codeOnly), "seats are counted from /rest/a
   const i = codeOnly.indexOf('resolver.define("getAiUsage"');
   const b = codeOnly.slice(i, i + 900);
   // F-091: the block is emitted only for the vendor-billed provider ON Coder; otherwise null.
-  ok(/forgeLlm: showAllowance \? forgeLlmAllowanceStatus\(state, allowanceUsdForSeats\(seats\)\) : null/.test(b),
+  ok(/forgeLlm: \(showAllowance && seatRead\.ok\) \? forgeLlmAllowanceStatus\(state, allowanceUsdForSeats\(seats\)\) : null/.test(b),
     "getAiUsage reports the allowance status where it applies, and null where it does not");
   ok(/seats,/.test(b), "getAiUsage reports the seat count");
+  // F-099: a faulted seat read is not 100 seats — no seat count and no allowance block.
+  ok(/const seats = seatRead\.ok \? seatRead\.seats : null;/.test(b),
+    "…and a FAULTED seat read reports null seats rather than the fallback");
 }
 {
   const i = codeOnly.indexOf('resolver.define("checkProviderHealth"');

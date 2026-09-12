@@ -7222,7 +7222,11 @@ resolver.define("getAiUsage", async ({ context }) => {
     // 24h-throttled) — never from an inference path. This read uses whatever the last
     // completed scan left behind.
     maybeRefreshSeatSnapshot();
-    const seats = await readSeatCount();
+    // F-099 — a faulted seat read is "unknown", not "100 seats": the panel shows no seat
+    // count and NO allowance block rather than a ceiling computed from a number that was
+    // never read (which is what tells an admin "Sonnet 5 paused" for the wrong reason).
+    const seatRead = await readSeatCount();
+    const seats = seatRead.ok ? seatRead.seats : null;
     // F-091 — the allowance block is emitted ONLY when it can mean something: the
     // active provider is the vendor-billed one AND the edition entitles the frontier
     // models the allowance meters. A Standard tenant on OpenAI BYOK was shown "Forge
@@ -7238,7 +7242,7 @@ resolver.define("getAiUsage", async ({ context }) => {
       success: true,
       usage: summarizeState(state, Date.now()),
       seats,
-      forgeLlm: showAllowance ? forgeLlmAllowanceStatus(state, allowanceUsdForSeats(seats)) : null,
+      forgeLlm: (showAllowance && seatRead.ok) ? forgeLlmAllowanceStatus(state, allowanceUsdForSeats(seats)) : null,
     };
   } catch (error) {
     return { success: false, error: error.message };
@@ -9788,11 +9792,17 @@ export const forgeLlmBillingClamp = async (requested, { edition, allowance, logP
  */
 export const readForgeLlmAllowance = async () => {
   try {
-    const [stateRes, seatsRes] = await Promise.all([
-      storage.get(USAGE_KEY).catch(() => null),
-      readSeatCount().catch(() => null),
+    const [stateRead, seatRead] = await Promise.all([
+      storage.get(USAGE_KEY).then((state) => ({ ok: true, state })).catch(() => ({ ok: false, state: null })),
+      readSeatCount().catch(() => ({ ok: false, seats: null })),
     ]);
-    return forgeLlmAllowanceStatus(stateRes || emptyState(), allowanceUsdForSeats(seatsRes));
+    // A FAULTED read of either input yields NO ALLOWANCE (F-099). The fallback seat
+    // count exists for "this site has never been scanned", not for "KVS just threw":
+    // turning a fault into a $200 ceiling is how a transient error manufactures
+    // level:"hard" and downgrades a paying tenant to Haiku. Null means "no ceiling
+    // known" and the clamp then falls back to the edition alone.
+    if (!stateRead.ok || !seatRead.ok) return null;
+    return forgeLlmAllowanceStatus(stateRead.state || emptyState(), allowanceUsdForSeats(seatRead.seats));
   } catch (e) { return null; }
 };
 
@@ -11014,14 +11024,20 @@ const getProviderConfig = async () => {
       // its own: a bad edition read leaves "standard" (the cheap tier) and a bad usage
       // or seat read leaves the allowance null ("no ceiling known"). No seat SCAN is
       // triggered from here — the scan runs only from the admin-panel resolver.
-      const [edRes, stateRes, seatsRes] = await Promise.all([
+      const [edRes, stateRead, seatRead] = await Promise.all([
         currentEdition().then((e) => e.edition).catch(() => EDITION_IDS.STANDARD),
-        storage.get(USAGE_KEY).catch(() => null),
-        readSeatCount().catch(() => null),
+        storage.get(USAGE_KEY).then((state) => ({ ok: true, state })).catch(() => ({ ok: false, state: null })),
+        readSeatCount().catch(() => ({ ok: false, seats: null })),
       ]);
       editionId = edRes || EDITION_IDS.STANDARD;
       try {
-        allowance = forgeLlmAllowanceStatus(stateRes || emptyState(), allowanceUsdForSeats(seatsRes));
+        // F-099 — a FAULTED usage or seat read leaves the allowance NULL, exactly as the
+        // comment above promises. It is not converted into the 100-seat fallback: that
+        // would compute a ceiling from a number nobody read, and a wrong ceiling is what
+        // clamps a paying tenant to Haiku for the next 30s of transitions.
+        allowance = (stateRead.ok && seatRead.ok)
+          ? forgeLlmAllowanceStatus(stateRead.state || emptyState(), allowanceUsdForSeats(seatRead.seats))
+          : null;
       } catch (e) { allowance = null; }
     }
     // The memo is marked fresh ONLY here, once every read has resolved (F-096). It used
@@ -11077,11 +11093,27 @@ const SEAT_SCAN_MAX = 2000;
 const SEAT_PAGE = 200;
 let _seatRefreshStartedAt = 0;
 
+/**
+ * Read the seat snapshot, telling the THREE outcomes apart (F-099). A seat count is a
+ * money input — it decides the monthly Forge LLM allowance — so "I could not read it"
+ * must never be flattened into "the site is small":
+ *
+ *   { ok: true,  seats: <n> }  a snapshot with a usable count
+ *   { ok: true,  seats: null } no row has ever been written — UNKNOWN, and the
+ *                              100-seat fallback in allowanceUsdForSeats covers it
+ *   { ok: false, seats: null } the read FAULTED (KVS throw/throttle). NOT a seat
+ *                              count: callers must yield allowance null ("no ceiling
+ *                              known"), because computing a ceiling from the fallback
+ *                              can MANUFACTURE level:"hard" on a 500-seat tenant at
+ *                              a third of its real allowance.
+ *
+ * Never throws — the outcome is in the return value, not in an exception.
+ */
 const readSeatCount = async () => {
   try {
     const snap = await storage.get(SEAT_SNAPSHOT_KEY);
-    return snap && Number(snap.seats) > 0 ? Number(snap.seats) : null;
-  } catch (e) { return null; }
+    return { ok: true, seats: snap && Number(snap.seats) > 0 ? Number(snap.seats) : null };
+  } catch (e) { return { ok: false, seats: null }; }
 };
 
 const SEAT_MAX_PAGES = 10;

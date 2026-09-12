@@ -242,8 +242,10 @@ ok(/export const editionFromInvocation = \(license\)/.test(indexSrc), "editionFr
   ok(/requireAdmin\(context\.accountId\)/.test(body), "getAiUsage is admin-gated (it triggers the seat scan)");
   ok(/const showAllowance = provider === "atlassian" && edition === EDITION_IDS\.ADVANCED;/.test(body),
     "the allowance gate is provider AND edition — both, in one expression");
-  ok(/forgeLlm: showAllowance \? forgeLlmAllowanceStatus\(state, allowanceUsdForSeats\(seats\)\) : null/.test(body),
-    "…and forgeLlm is null when it does not apply, never a $0-of-$200 block");
+  // F-099 added the third condition: a FAULTED seat read also suppresses the block,
+  // because a ceiling computed from a number nobody read is what says "Sonnet 5 paused".
+  ok(/forgeLlm: \(showAllowance && seatRead\.ok\) \? forgeLlmAllowanceStatus\(state, allowanceUsdForSeats\(seats\)\) : null/.test(body),
+    "…and forgeLlm is null when it does not apply or the seat read faulted, never a $0-of-$200 block");
   ok(/editionFromInvocation\(context\?\.license\)\.edition/.test(body),
     "the edition comes from THIS invocation's licence, not the snapshot-backed memo");
   ok(/\n      seats,/.test(body), "seats is still reported unconditionally");

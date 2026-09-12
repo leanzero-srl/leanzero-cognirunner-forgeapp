@@ -22,6 +22,11 @@ import { kvs as storage } from "@forge/kvs";
 import api, { route, fetch, getAppContext } from "@forge/api";
 // Atlassian-hosted Forge LLMs (Preview) — used when the active provider is "atlassian".
 import { chat as forgeLlmChatApi } from "@forge/llm";
+// Edition + the Forge LLM model policy — the SAME shared module src/index.js uses.
+// Until 1.3 this consumer called forgeLlmChatApi with whatever model the saved config
+// carried, UNCLAMPED: a stale or downgraded frontier id billed the vendor from every
+// queued job while the synchronous path refused it. Same rule, one home, both seams.
+import { resolveEdition, clampForgeLlmModel, FORGE_LLM_DEFAULT } from "./shared/edition.js";
 // Heavy post-functions (MCP-backed: generate-doc, research, fact-checked semantics)
 // are queued by executePostFunction and run HERE under this consumer's 120s timeout —
 // the inline jira:workflowPostFunction invocation is hard-capped at 25s by the platform.
@@ -108,10 +113,30 @@ const getOpenAIKey = async (providerOverride = null) => {
   return null;
 };
 
+// The consumer's edition read. getAppContext() carries a license in this runtime;
+// when it does not, the KVS snapshot written by validate()/executePostFunction()
+// (src/index.js EDITION_SNAPSHOT_KEY) is the fallback, and Standard is the floor.
+// NEVER throws — an edition fault must degrade the model, not kill a queued job.
+const EDITION_SNAPSHOT_KEY = "COGNIRUNNER_EDITION_SNAPSHOT";
+const currentEditionAsync = async () => {
+  try {
+    const lic = getAppContext()?.license;
+    if (lic) {
+      const ed = resolveEdition(lic);
+      if (ed.source !== "none") return ed.edition;
+    }
+  } catch (e) { /* getAppContext has no license in every runtime */ }
+  try {
+    const snap = await storage.get(EDITION_SNAPSHOT_KEY);
+    if (snap && snap.edition === "advanced") return "advanced";
+  } catch (e) { /* fall through to Standard */ }
+  return "standard";
+};
+
 const PROVIDER_DEFAULT_MODELS = {
   openrouter: "openai/gpt-5.4-mini",
   anthropic: "claude-haiku-4-5-20251001",
-  atlassian: "claude-haiku-4-5-20251001",
+  atlassian: FORGE_LLM_DEFAULT, // imported, never re-typed — the two must not drift
   lmstudio: "gpt-5.4-mini", // placeholder — LM Studio admins always save a model
   bedrock: "eu.anthropic.claude-sonnet-4-6", // EU inference-profile id (fallback; admins pick a model)
 };
@@ -245,7 +270,15 @@ const callAIChatSimple = async (opts) => {
     // Attribute usage to the SAME provider the call routed to (the snapshot), not a fresh read
     // that could have changed mid-task.
     const provider = (opts && opts.provider) || (await getProviderConfig()).provider;
-    await recordAiUsage({ provider, usageLike: res && res.tokens });
+    // Prefer the SPLIT usage when the adapter returned one (Forge LLM) — the per-tier
+    // cost maths needs prompt/completion apart, and the flat token total cannot give
+    // it. `model` is the effective post-clamp id, so a downgraded call is costed at
+    // the tier it was actually billed at.
+    await recordAiUsage({
+      provider,
+      usageLike: (res && res.usage) || (res && res.tokens),
+      model: (res && res.model) || (opts && opts.model) || null,
+    });
   } catch (e) { /* fail-open */ }
   return res;
 };
@@ -276,6 +309,14 @@ const callAIChatSimpleRaw = async ({ apiKey, model: requestedModel, systemPrompt
   // No response_format: JSON mode is enforced via the system message.
   if (provider === "atlassian") {
     try {
+      // Billing backstop — the same clamp src/index.js applies at callForgeLlmChat.
+      // FAIL-SOFT: any error resolving the edition leaves the model clamped to Haiku.
+      const requested = model;
+      try { model = clampForgeLlmModel(await currentEditionAsync(), model); }
+      catch (e) { model = clampForgeLlmModel("standard", model); }
+      if (model !== requested) {
+        console.warn(`[async] Forge LLM model "${requested}" not permitted on this edition — clamping to ${model}`);
+      }
       let sys = systemPrompt || "";
       if (jsonMode) {
         sys += (sys ? "\n\n" : "")
@@ -290,9 +331,12 @@ const callAIChatSimpleRaw = async ({ apiKey, model: requestedModel, systemPrompt
       if (Array.isArray(content)) {
         content = content.filter((p) => p?.type === "text").map((p) => p.text || "").join("");
       }
-      const tokens = response?.usage?.total_tokens
-        || ((response?.usage?.input_tokens || 0) + (response?.usage?.output_tokens || 0));
-      return { ok: true, content, tokens };
+      const inputTokens = response?.usage?.input_tokens || 0;
+      const outputTokens = response?.usage?.output_tokens || 0;
+      const tokens = response?.usage?.total_tokens || (inputTokens + outputTokens);
+      // `tokens` (flat) stays for the budget ledger; `usage` carries the SPLIT the
+      // per-tier cost maths needs, and `model` is the EFFECTIVE (post-clamp) id.
+      return { ok: true, content, tokens, model, usage: { prompt_tokens: inputTokens, completion_tokens: outputTokens, total_tokens: tokens } };
     } catch (err) {
       // ForgeLlmAPIError carries top-level .status/.message (no .context property)
       const detail = err?.message || String(err);

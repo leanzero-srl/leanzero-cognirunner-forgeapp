@@ -163,5 +163,57 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
     "override pins the key to the SNAPSHOT provider even after the active provider switched mid-task (it81a fix)");
 }
 
+// =====================================================================================
+// FORGE LLM CLAMP IN THE CONSUMER (editions 1.3)
+//
+// Until 1.3 the consumer called forgeLlmChatApi with whatever model the saved config
+// carried, UNCLAMPED, while the synchronous path in src/index.js refused the same id —
+// a live vendor-billing gap on every queued job. Same rule, one home, both seams.
+// Source-parsed: src/async-handler.js pulls @forge/* at load and cannot be imported here.
+// =====================================================================================
+{
+  ok(/from "\.\/shared\/edition\.js"/.test(asyncSrc), "the consumer imports the policy from the SHARED module");
+  for (const sym of ["clampForgeLlmModel", "FORGE_LLM_DEFAULT", "resolveEdition"]) {
+    ok(new RegExp("\\b" + sym + "\\b").test(asyncSrc), `consumer imports ${sym}`);
+  }
+  ok(/atlassian: FORGE_LLM_DEFAULT/.test(asyncSrc),
+    "PROVIDER_DEFAULT_MODELS.atlassian is the IMPORTED default, not a re-typed literal that could drift");
+  ok(!/atlassian: "claude-/.test(asyncSrc), "no hardcoded Forge LLM model literal survives in the consumer");
+
+  // The clamp sits inside the Forge LLM branch, before the chat call.
+  const i = asyncSrc.indexOf('if (provider === "atlassian") {', asyncSrc.indexOf("callAIChatSimpleRaw"));
+  ok(i > 0, "found the consumer's Forge LLM branch");
+  const branch = asyncSrc.slice(i, asyncSrc.indexOf("forgeLlmChatApi({", i));
+  ok(/clampForgeLlmModel\(await currentEditionAsync\(\), model\)/.test(branch),
+    "the model is clamped by edition BEFORE forgeLlmChatApi is called");
+  ok(/clampForgeLlmModel\("standard", model\)/.test(branch),
+    "any edition-read error FAILS SOFT to the Standard clamp (Haiku), never an exception out of a queued job");
+  ok(/console\.warn\(/.test(branch), "the clamp logs one line");
+
+  // currentEditionAsync: license → snapshot → Standard, never throwing.
+  const m = asyncSrc.match(/const currentEditionAsync = async \(\) => \{[\s\S]*?\n\};/);
+  ok(!!m, "found currentEditionAsync");
+  const b = m ? m[0] : "";
+  ok(/getAppContext\(\)\?\.license/.test(b), "it tries getAppContext().license first");
+  ok(/EDITION_SNAPSHOT_KEY/.test(b), "it falls back to the KVS snapshot written by the workflow runtimes");
+  ok(/return "standard";/.test(b), "Standard is the floor");
+  ok((b.match(/catch \(e\)/g) || []).length >= 2, "every read is wrapped — an edition fault never kills a queued job");
+  ok(/EDITION_SNAPSHOT_KEY = "COGNIRUNNER_EDITION_SNAPSHOT"/.test(asyncSrc),
+    "the consumer reads the SAME snapshot key src/index.js writes");
+  ok(indexSrc.includes('EDITION_SNAPSHOT_KEY = "COGNIRUNNER_EDITION_SNAPSHOT"'),
+    "…and src/index.js still defines that exact key (lockstep)");
+
+  // The split usage + effective model reach the meter.
+  const ret = asyncSrc.match(/return \{ ok: true, content, tokens, model, usage: \{[^}]*\} \};/);
+  ok(!!ret, "the Forge LLM branch returns the token SPLIT and the effective model alongside the flat total");
+  ok(/prompt_tokens: inputTokens/.test(ret ? ret[0] : "") && /completion_tokens: outputTokens/.test(ret ? ret[0] : ""),
+    "usage carries prompt_tokens + completion_tokens so per-tier costing can work");
+  const meter = asyncSrc.match(/await recordAiUsage\(\{[\s\S]*?\}\);/);
+  ok(!!meter, "found the consumer's recordAiUsage call");
+  ok(/model:/.test(meter ? meter[0] : ""), "the metering call passes `model`");
+  ok(/res && res\.model/.test(meter ? meter[0] : ""), "…preferring the adapter's EFFECTIVE (post-clamp) model");
+  ok(/res && res\.usage/.test(meter ? meter[0] : ""), "…and the split usage when the adapter returned one");
+}
+
 console.log(`\nasync-handler-helpers: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

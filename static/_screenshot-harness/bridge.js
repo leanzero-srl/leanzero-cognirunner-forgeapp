@@ -468,8 +468,14 @@ function getContext() {
     };
     return { accountId: ACCT, siteUrl: SITE, license: mockLicenseCtx(), extension: { ...baseExt, type: "jira:workflowPostFunction", key: "ai-semantic-post-function", transitionContext: { id: "21", from: { id: "3", name: "In Progress" }, to: { id: "4", name: "In Review" } }, postFunctionConfig: JSON.stringify(managedCfg) } };
   }
-  if (s === "cfg-static")
-    return { accountId: ACCT, siteUrl: SITE, license: mockLicenseCtx(), extension: { ...baseExt, type: "jira:workflowPostFunction", key: "ai-static-post-function", transitionContext: { id: "11", from: { id: "1", name: "To Do" }, to: { id: "3", name: "In Progress" } }, postFunctionConfig: JSON.stringify(CFG_STATIC) } };
+  if (s === "cfg-static") {
+    // F-133 — window.__STEP_NO_CODE__ blanks step 1's code + provenance so the harness can
+    // drive a FIRST generate (no code yet), where the local template fallback is legitimate.
+    const staticCfg = (typeof window !== "undefined" && window.__STEP_NO_CODE__)
+      ? { ...CFG_STATIC, functions: CFG_STATIC.functions.map((f, i) => (i === 0 ? { ...f, code: "", generationMeta: null } : f)) }
+      : CFG_STATIC;
+    return { accountId: ACCT, siteUrl: SITE, license: mockLicenseCtx(), extension: { ...baseExt, type: "jira:workflowPostFunction", key: "ai-static-post-function", transitionContext: { id: "11", from: { id: "1", name: "To Do" }, to: { id: "3", name: "In Progress" } }, postFunctionConfig: JSON.stringify(staticCfg) } };
+  }
   if (s === "view-static-offloaded")
     // An OFFLOADED static PF (config >24KB → code moved to pf_code): functions:[] + name-only functionsMeta.
     // config-view must render the step NAMES from functionsMeta (never the full details). E11 path.

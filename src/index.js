@@ -440,8 +440,22 @@ let _cachedEdition = null;
 let _cachedEditionAt = 0;
 
 /**
- * The edition for a code path that has NO invocation license to hand (the chat
- * adapter, the allowance meter, a webtrigger). Never throws; the floor is Standard.
+ * THE edition ladder — one home, every consumer (F-101). Top rung first:
+ *
+ *   1. the INVOCATION's own license, when the caller has one (`currentEdition(context)`
+ *      from a resolver). Authoritative: it is this request's licence, and the same read
+ *      also refreshes the KVS snapshot.
+ *   2. getAppContext().license, for a runtime that carries one (the chat adapter,
+ *      the allowance meter, a webtrigger).
+ *   3. the KVS snapshot, ONLY when this runtime could not see a licence at all.
+ *   4. Standard.
+ *
+ * Callers used to split: the write gates and getAiUsage called editionFromInvocation()
+ * directly (rung 1 only, Standard on a missing license object) while callForgeLlmChat
+ * read this function (rungs 2-4). Two reads with opposite failure directions meant the
+ * runtime could keep billing frontier models while the admin panel blanked the meter
+ * that explains why rules downgraded. Passing the context in keeps rung 1 without
+ * forking the ladder. Never throws; the floor is Standard.
  *
  * SNAPSHOT TRUST (F-082/F-087) — the snapshot is consulted ONLY when this runtime
  * could not see the licence AT ALL, i.e. getAppContext() threw, returned nothing, or
@@ -454,7 +468,17 @@ let _cachedEditionAt = 0;
  * TTL is 2 days. Anything else resolves to Standard — the cheap tier is the fail-soft
  * direction, here and everywhere in this module.
  */
-export const currentEdition = async () => {
+export const currentEdition = async (context) => {
+  // Rung 1 — this invocation's own license. Checked with `in` (not truthiness) for the
+  // same reason as the getAppContext read below: `license: null` is an ANSWER ("no
+  // licence → Standard"), not a missing read, and must not fall through to a snapshot
+  // that could keep a lapsed subscription billing. Deliberately NOT memoised: the memo
+  // is per-container and serves callers that have no context.
+  try {
+    if (context && typeof context === "object" && "license" in context) {
+      return editionFromInvocation(context.license);
+    }
+  } catch (e) { /* fall through to the context-less ladder */ }
   if (_cachedEdition && Date.now() - _cachedEditionAt < PROVIDER_CACHE_TTL_MS) return _cachedEdition;
   let out = null;
   let sawContext = false;
@@ -511,6 +535,10 @@ export const upgradeRequired = (featureId) => {
 export const requireAdvanced = async (context, featureId) => {
   let ed;
   try {
+    // NOTE: the context is deliberately NOT forwarded here. This gate keeps its own
+    // truthiness test, so a resolver whose `license` is present-but-null still falls
+    // through to the snapshot rather than being refused outright — narrowing a FEATURE
+    // GATE is not part of F-101, which is about the two edition reads disagreeing.
     ed = context && context.license ? editionFromInvocation(context.license) : await currentEdition();
   } catch (e) {
     ed = resolveEdition(null);
@@ -4779,7 +4807,7 @@ resolver.define("checkProviderHealth", async ({ context }) => {
     let clamped = false;
     if (provider === "atlassian") {
       try {
-        const { edition } = await currentEdition();
+        const { edition } = await currentEdition(context);
         clamped = clampForgeLlmModel(edition, configuredModel) !== configuredModel;
       } catch (e) { /* fail-soft: an edition read fault is not a clamp claim */ }
     }
@@ -4830,7 +4858,7 @@ resolver.define("getOpenAIModels", async ({ payload, context }) => {
       // `locked` are the Coder-only ids it may not (so a Standard site still SEES
       // Sonnet 5 / Opus 5 as locked rows and knows what the upgrade buys). This
       // resolver NEVER refuses — a Standard admin browsing models is not an error.
-      const { edition } = await currentEdition();
+      const { edition } = await currentEdition(context);
       const allowed = FORGE_LLM_MODELS[edition] || FORGE_LLM_MODELS.standard;
       const locked = FORGE_LLM_MODELS.advanced.filter((id) => !allowed.includes(id));
       try {
@@ -5128,7 +5156,7 @@ resolver.define("saveOpenAIModel", async ({ payload, context }) => {
       }
     }
     if (provider === "atlassian") {
-      const { edition } = await currentEdition();
+      const { edition } = await currentEdition(context);
       if (!forgeLlmModelAllowedForEdition(edition, model)) {
         // A frontier model on Standard is an UPGRADE prompt (the tenant could have it);
         // anything else is simply not on the menu on any edition.
@@ -5154,7 +5182,7 @@ resolver.define("getAgentModel", async ({ payload, context }) => {
   try {
     const provider = await resolveTargetProvider(payload);
     const saved = await storage.get(providerAgentModelSlot(provider));
-    const { edition } = await currentEdition();
+    const { edition } = await currentEdition(context);
     let model = saved ? String(saved) : null;
     if (!model) {
       model = provider === (await activeProviderId())
@@ -5184,12 +5212,12 @@ resolver.define("saveAgentModel", async ({ payload, context }) => {
     const provider = await resolveTargetProvider(payload);
     if (provider === "atlassian") {
       if (!FORGE_LLM_FRONTIER.includes(clean)) {
-        const { edition } = await currentEdition();
+        const { edition } = await currentEdition(context);
         // On Standard the honest answer is "upgrade"; on Coder it is "not an agent model".
         if (edition !== EDITION_IDS.ADVANCED) return upgradeRequired("forge-llm-frontier-models");
         return { success: false, error: "Agents on Atlassian (Forge LLM) run on Claude Sonnet 5 or Opus 5 only." };
       }
-      const { edition } = await currentEdition();
+      const { edition } = await currentEdition(context);
       if (!forgeLlmModelAllowedForEdition(edition, clean)) return upgradeRequired("forge-llm-frontier-models");
     }
     // No separate length check here: normalizeModelId already capped it at 120.
@@ -5204,7 +5232,7 @@ resolver.define("saveAgentModel", async ({ payload, context }) => {
 /**
  * Get the currently saved model from KVS (or null if factory).
  */
-resolver.define("getOpenAIModelFromKVS", async ({ payload }) => {
+resolver.define("getOpenAIModelFromKVS", async ({ payload, context }) => {
   try {
     const provider = await resolveTargetProvider(payload);
     const byokKey = await storage.get(providerKeySlot(provider));
@@ -5215,7 +5243,7 @@ resolver.define("getOpenAIModelFromKVS", async ({ payload }) => {
     // to say so rather than silently showing a different model than was saved.
     if (provider === "atlassian") {
       const savedModel = await storage.get(providerModelSlot(provider));
-      const { edition } = await currentEdition();
+      const { edition } = await currentEdition(context);
       const effective = clampForgeLlmModel(edition, savedModel);
       // `clamped` means "the SAVED model was refused", so it needs a saved model to be
       // true at all: with nothing saved, effective is just the default and there is
@@ -7233,10 +7261,11 @@ resolver.define("getAiUsage", async ({ context }) => {
     // LLM allowance $0 of $200" and, at level:"hard", "Sonnet 5 / Opus 5 paused until
     // next month" for models it can never run. `seats` is unconditional as before — it
     // is a plain site fact the panel shows either way.
-    // The edition comes from THIS invocation's own license (authoritative in a
-    // resolver), not from the snapshot-backed memo.
+    // ONE ladder (F-101): this invocation's own license when it carries one, else the
+    // same fallbacks callForgeLlmChat uses. The panel and the runtime clamp must not be
+    // able to answer differently — that is how a tenant gets billed with the meter blank.
     const provider = (await storage.get("COGNIRUNNER_AI_PROVIDER")) || "atlassian";
-    const edition = editionFromInvocation(context?.license).edition;
+    const edition = (await currentEdition(context)).edition;
     const showAllowance = provider === "atlassian" && edition === EDITION_IDS.ADVANCED;
     return {
       success: true,

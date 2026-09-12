@@ -124,11 +124,20 @@ ok(shapeOf(null).features.length === ADVANCED_FEATURES.length, "features list is
 ok(/export const EDITION_SNAPSHOT_KEY = "COGNIRUNNER_EDITION_SNAPSHOT";/.test(indexSrc), "snapshot key is exported for the sibling modules");
 ok(/EDITION_SNAPSHOT_TTL = \{ ttl: \{ value: 2, unit: "DAYS" \} \}/.test(indexSrc), "snapshot carries a 2-DAY TTL (F-082: a lapsed subscription must not bill Opus for a week)");
 ok(/EDITION_SNAPSHOT_MIN_INTERVAL_MS = 6 \* 60 \* 60 \* 1000/.test(indexSrc), "snapshot writes are throttled to once per 6h per container");
-ok(/export const currentEdition = async \(\)/.test(indexSrc), "currentEdition is exported");
+ok(/export const currentEdition = async \(context\)/.test(indexSrc), "currentEdition is exported, and takes the invocation context (F-101)");
 ok(/export const requireAdvanced = async \(context, featureId\)/.test(indexSrc), "requireAdvanced is exported");
+// F-101 — the edition consumers that DECIDE something (the Forge LLM write gates, the
+// health check, the usage meter) all read the one ladder with their context.
+for (const name of ["checkProviderHealth", "getOpenAIModels", "saveOpenAIModel", "getAgentModel", "saveAgentModel", "getOpenAIModelFromKVS"]) {
+  const r = indexSrc.match(new RegExp('resolver\\.define\\("' + name + '",[\\s\\S]*?\\n\\}\\);'));
+  ok(!!r, `found the ${name} resolver`);
+  const rb = r ? r[0] : "";
+  ok(/currentEdition\(context\)/.test(rb), `${name} reads the edition through currentEdition(context) — one ladder`);
+  ok(!/editionFromInvocation\(/.test(rb), `${name} keeps no private invocation-only edition read`);
+}
 ok(/export const editionFromInvocation = \(license\)/.test(indexSrc), "editionFromInvocation is exported");
 {
-  const m = indexSrc.match(/export const currentEdition = async \(\) => \{[\s\S]*?\n\};/);
+  const m = indexSrc.match(/export const currentEdition = async \(context\) => \{[\s\S]*?\n\};/);
   ok(!!m && /getAppContext\(\)/.test(m[0]), "currentEdition tries the live getAppContext() license first");
   ok(!!m && /EDITION_SNAPSHOT_KEY/.test(m[0]), "currentEdition falls back to the KVS snapshot");
   // F-082/F-087 — snapshot trust.
@@ -140,6 +149,16 @@ ok(/export const editionFromInvocation = \(license\)/.test(indexSrc), "editionFr
     "and only an ACTIVE advanced snapshot is honoured");
   ok(!/snap\.active \?\? null/.test(cur), "the old 'trust whatever the snapshot says' branch is gone");
   ok(/resolveEdition\(null\)/.test(cur), "currentEdition's last resort is Standard");
+  // F-101 — ONE ladder. Rung 1 is the caller's own invocation license; the resolver
+  // seams no longer keep a private editionFromInvocation() read that answers Standard
+  // where this function would answer advanced (and vice versa).
+  ok(/"license" in context/.test(cur) && /editionFromInvocation\(context\.license\)/.test(cur),
+    "an invocation context with a license key is rung 1 — the same read the old call sites did inline");
+  {
+    const iCtx = cur.indexOf("\"license\" in context");
+    const iMemo = cur.indexOf("_cachedEdition && Date.now()");
+    ok(iCtx > 0 && iCtx < iMemo, "…and it is checked BEFORE the per-container memo, so a context is never served a stale edition");
+  }
   ok(/_cachedEditionAt < PROVIDER_CACHE_TTL_MS/.test(cur), "currentEdition memoises on the same 30s window as the provider config");
 }
 {
@@ -226,8 +245,10 @@ ok(/export const editionFromInvocation = \(license\)/.test(indexSrc), "editionFr
   // because a ceiling computed from a number nobody read is what says "Sonnet 5 paused".
   ok(/forgeLlm: \(showAllowance && seatRead\.ok\) \? forgeLlmAllowanceStatus\(state, allowanceUsdForSeats\(seats\)\) : null/.test(body),
     "…and forgeLlm is null when it does not apply or the seat read faulted, never a $0-of-$200 block");
-  ok(/editionFromInvocation\(context\?\.license\)\.edition/.test(body),
-    "the edition comes from THIS invocation's licence, not the snapshot-backed memo");
+  ok(/\(await currentEdition\(context\)\)\.edition/.test(body),
+    "the edition comes from the ONE ladder, fed this invocation's context (F-101)");
+  ok(!/editionFromInvocation\(context\?\.license\)/.test(body),
+    "…not from a private invocation-only read that disagrees with callForgeLlmChat");
   ok(/\n      seats,/.test(body), "seats is still reported unconditionally");
   ok(!/edition === "advanced"/.test(body), "the id is not re-typed — EDITION_IDS is the one home");
 }

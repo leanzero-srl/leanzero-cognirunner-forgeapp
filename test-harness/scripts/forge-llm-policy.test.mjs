@@ -57,7 +57,7 @@ ok(!/FORGE_LLM_MODELS\s*=/.test(codeOnly), "src/index.js does not redefine FORGE
   const end = indexSrc.indexOf("// LM Studio: auth is optional", start);
   ok(start > 0 && end > start, "found the Forge LLM branch of getOpenAIModels");
   const b = indexSrc.slice(indexSrc.lastIndexOf('if (provider === "atlassian") {', start), end);
-  ok(/currentEdition\(\)/.test(b), "getOpenAIModels resolves the edition");
+  ok(/currentEdition\(context\)/.test(b), "getOpenAIModels resolves the edition through the one ladder (F-101)");
   ok(/FORGE_LLM_MODELS\[edition\]/.test(b), "getOpenAIModels intersects list() with the EDITION's list");
   ok(/locked/.test(b) && /FORGE_LLM_MODELS\.advanced\.filter/.test(b),
     "getOpenAIModels reports `locked` rows (a Standard site SEES Sonnet 5 / Opus 5 as locked)");

@@ -158,12 +158,55 @@ const markMemoryStoreFull = async (reason, source) => {
   }
 };
 
-/** Clear the marker — the instance is learning again. Best-effort, and a no-op when unset. */
-export const clearMemoryStoreFull = async () => {
+/**
+ * Is the store STILL full? (F-170/F-171 — the ONE predicate.)
+ *
+ * The marker means "a novel lesson would be refused right now". The only honest way
+ * to answer that is to ask the admission rule itself: build a hypothetical AUTO-sourced
+ * newcomer of the maximum allowed length and run the real `pruneForSave` dry-run over
+ * `[newcomer, ...arr]`. It stays raised iff that newcomer could not be kept — i.e. there
+ * is no evictable row (archived first, then auto — see pruneOne) AND either the item cap
+ * or the serialized-byte guard is hit.
+ *
+ * This replaces two PROXIES that disagreed with the rule that raises the marker:
+ * `out.length < MAX_MEMORIES` (blind to the byte arm: shortening one row of an over-size
+ * store cleared the banner while every capture was still being discarded, and an edit that
+ * merely archived a row left it raised) and an unconditional clear on every reinforce (a
+ * reinforce writes no new row, so a store with nothing evictable is exactly as full as it
+ * was one line earlier).
+ */
+const HYPOTHETICAL_PROBE_ID = "__memory_store_full_probe__";
+export const wouldRefuseNewMemory = (arr) => {
+  const now = new Date().toISOString();
+  const probe = {
+    id: HYPOTHETICAL_PROBE_ID,
+    content: "x".repeat(MEMORY_CONTENT_MAX),
+    source: "test",
+    projectKey: null,
+    confidence: 0.5,
+    reinforcements: 0,
+    createdAt: now,
+    updatedAt: now,
+    disabled: false,
+  };
+  const list = [probe, ...(Array.isArray(arr) ? arr : [])];
+  return !pruneForSave(list, HYPOTHETICAL_PROBE_ID).protectedKept;
+};
+
+/**
+ * Re-evaluate the marker after a write. Clears it when the store can accept a lesson
+ * again; when it is still full the EXISTING row is left untouched (its `at`/`reason`/
+ * `source` belong to the real refusal that raised it). Never raises — only a genuine
+ * refusal in saveMemoryCandidate does that. Best-effort: never fails a caller's answer.
+ */
+const refreshMemoryStoreFull = async (arr) => {
   try {
-    if (await storage.get(MEMORY_STORE_FULL_KEY)) await storage.delete(MEMORY_STORE_FULL_KEY);
+    const existing = await storage.get(MEMORY_STORE_FULL_KEY);
+    if (!existing) return;
+    if (wouldRefuseNewMemory(arr)) return;
+    await storage.delete(MEMORY_STORE_FULL_KEY);
   } catch (error) {
-    console.error("Failed to clear the memory store-full marker:", error);
+    console.error("Failed to refresh the memory store-full marker:", error);
   }
 };
 
@@ -278,9 +321,10 @@ export const pruneForSave = (arr, protectId = null) => {
 export const saveMemories = async (arr, { protectId = null } = {}) => {
   const { out, evicted, protectedKept, reason } = pruneForSave(arr, protectId);
   await storage.set(MEMORIES_KEY, out);
-  // F-167: any write that leaves room clears the "stopped learning" marker — that
-  // covers the Memories tab deleting or editing a row as well as a merge/reinforce.
-  if (out.length < MAX_MEMORIES) await clearMemoryStoreFull();
+  // F-167/F-170/F-171: EVERY write re-evaluates the marker against the same admission
+  // rule that raises it — never against a proxy like the row count. A delete, an
+  // archive, a shortened row or a merge clears it only if a lesson would now be kept.
+  await refreshMemoryStoreFull(out);
   return { memories: out, evicted, protectedKept, reason };
 };
 
@@ -336,9 +380,9 @@ export const saveMemoryCandidate = async ({ content, source = "user", projectKey
       // row but it stays hidden from injection (buildMemoryBlock filters disabled). An AUTO (test/fix)
       // reinforce does NOT resurrect an admin's archive — only an explicit user action does.
       if (m.disabled && source === "user") m.disabled = false;
+      // F-171: a reinforce writes NO new row, so it is not evidence that the store has
+      // room. saveMemories re-evaluates the marker; it clears only if a newcomer would fit.
       const mergedSave = await saveMemories(memories);
-      // A reinforce IS a successful store — the instance is still learning (F-167).
-      await clearMemoryStoreFull();
       return { id: m.id, merged: true, stored: true, evicted: mergedSave.evicted };
     }
   }
@@ -382,7 +426,6 @@ export const saveMemoryCandidate = async ({ content, source = "user", projectKey
     };
   }
   const saved = await saveMemories(memories, { protectId: id });
-  await clearMemoryStoreFull();
   return { id, merged: false, stored: true, evicted: saved.evicted };
 };
 

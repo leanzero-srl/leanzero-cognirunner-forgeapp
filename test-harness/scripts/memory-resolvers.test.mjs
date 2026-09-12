@@ -96,12 +96,45 @@ ok((await call("getMemorySettings")).storeFull === null, "and getMemorySettings 
 reset(allUser);
 await call("addMemory", { content: "a novel lesson that cannot be stored at the cap", source: "test" });
 ok(storage.__raw(MEMORY_STORE_FULL_KEY), "marker raised again");
-await call("updateMemory", { id: "u5", disabled: true });
-ok(storage.__raw(MEMORY_STORE_FULL_KEY), "an EDIT at the cap does not clear it (the count did not drop)");
+await call("updateMemory", { id: "u5", content: "a user lesson number 5 distinct, reworded" });
+ok(storage.__raw(MEMORY_STORE_FULL_KEY), "an EDIT that frees no capacity does not clear it");
 await call("deleteMemory", { id: "u5" });
 const stored = await call("addMemory", { content: "a brand new lesson that now fits", source: "test" });
 ok(stored.success === true && storage.__raw(MEMORY_STORE_FULL_KEY) === undefined,
   "a successful store clears the marker");
+
+// === F-170/F-171: the marker is cleared by the ADMISSION RULE, never by a proxy ===
+
+// --- cap arm: a REINFORCE writes no new row, so it must NOT clear the marker (F-171) ---
+reset(allUser);
+await call("addMemory", { content: "a novel lesson that cannot be stored at the cap", source: "test" });
+ok(storage.__raw(MEMORY_STORE_FULL_KEY), "cap-arm marker raised");
+const reinforce = await call("addMemory", { content: "a user lesson number 7 distinct", source: "user" });
+ok(reinforce.success === true && reinforce.merged === true, "the add MERGED into an existing row (a reinforce)");
+ok(storage.__raw(MEMORY_STORE_FULL_KEY), "a REINFORCE at a full store does NOT clear the marker (no row was freed)");
+// a delete that frees an evictable slot does clear it
+const delUser = await call("deleteMemory", { id: "u3" });
+ok(delUser.success === true && storage.__raw(MEMORY_STORE_FULL_KEY) === undefined,
+  "a DELETE that frees a slot clears the cap-arm marker");
+
+// --- bytes arm: the old count proxy could never see this (count stayed under the cap) ---
+const big = (id, n) => ({ id, content: "b".repeat(n), source: "user", confidence: 1.0, reinforcements: 0, disabled: false, createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z" });
+// 20 hand-authored rows (nothing evictable) whose serialized size sits over the byte guard
+const heavy = [];
+for (let i = 0; i < 20; i++) heavy.push(big(`b${i}`, 12000));
+reset(heavy);
+const refusedBytes = await call("addMemory", { content: "a novel lesson refused by the SIZE guard", source: "test" });
+const bytesMarker = storage.__raw(MEMORY_STORE_FULL_KEY);
+ok(refusedBytes.success === false && refusedBytes.reason === "bytes" && bytesMarker && bytesMarker.reason === "bytes",
+  `the byte guard refuses and raises a "bytes" marker (got ${JSON.stringify({ r: refusedBytes.reason, m: bytesMarker && bytesMarker.reason })})`);
+ok(load().length < MAX_MEMORIES, "…while the row COUNT is far under the cap (the old proxy cleared here)");
+// shorten ONE row, still over the guard → the marker must SURVIVE
+await call("updateMemory", { id: "b0", content: "b".repeat(MEMORY_CONTENT_MAX) });
+ok(storage.__raw(MEMORY_STORE_FULL_KEY), "shortening one row while still over the byte guard does NOT clear the marker");
+// shorten the rest → now a lesson fits → cleared
+for (let i = 1; i < 18; i++) await call("updateMemory", { id: `b${i}`, content: `shortened row ${i}` });
+ok(storage.__raw(MEMORY_STORE_FULL_KEY) === undefined,
+  "once the store is back under the byte guard the marker CLEARS");
 
 // === F-168: ONE memory-content clamp, imported — no retyped literal in index.js ===
 const indexSrc = readFileSync(new URL("../../src/index.js", import.meta.url), "utf8");

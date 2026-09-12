@@ -131,14 +131,33 @@ export const loadMemories = async () => {
 // once no auto-captured (test/fix) memories remain.
 const pruneScore = (m) => (Number(m.confidence) || 0) + 0.1 * Math.min(Number(m.reinforcements) || 0, 5);
 
+/**
+ * Choose ONE victim.
+ *
+ * F-160 — POLICY, one home: an AUTO-CAPTURED candidate (source test/fix/runtime)
+ * NEVER evicts a USER-AUTHORED memory. The protected newcomer was excluded from
+ * `eligible` before the auto pool was computed, so at a full store of user rows the
+ * auto pool came out empty and the "autos first, then users" fallback handed a
+ * machine-written lesson a human's memory as a victim (measured: a 1.0-confidence,
+ * 5-reinforcement user row evicted by a 0.2-confidence fix row). When the protected
+ * row is auto and no OTHER auto row exists, there is NO victim: the caller must
+ * reject the candidate and leave the store untouched (`blocked`).
+ *
+ * A USER-authored add keeps the old behaviour: autos first, then the lowest user row.
+ *
+ * @returns {{ out: Array, victim: Object|null, blocked?: boolean }}
+ */
 const pruneOne = (arr, protectId = null) => {
   // The just-inserted row (protectId) is NEVER the victim while any other row
   // remains: F-159 — the new entry could be the lowest-scoring row and get evicted
   // by its own save, while saveMemoryCandidate still reported an id, so addMemory
   // answered success for a row that no longer existed.
   const eligible = protectId ? arr.filter((m) => m.id !== protectId) : arr;
+  const protectedRow = protectId ? arr.find((m) => m.id === protectId) : null;
+  const protectIsAuto = !!protectedRow && protectedRow.source !== "user";
   const autoPool = eligible.filter((m) => m.source !== "user");
-  const pool = autoPool.length > 0 ? autoPool : eligible;
+  // F-160: an auto newcomer may only take from OTHER auto rows.
+  const pool = autoPool.length > 0 ? autoPool : (protectIsAuto ? [] : eligible);
   let victim = null;
   for (const m of pool) {
     if (!victim
@@ -148,8 +167,12 @@ const pruneOne = (arr, protectId = null) => {
       victim = m;
     }
   }
-  // Nothing but the protected row is left: it is the only thing that can still go.
-  if (!victim) victim = arr.length > 0 ? arr[0] : null;
+  if (!victim) {
+    // Auto newcomer, and every other row is user-authored → nothing may be evicted.
+    if (protectIsAuto && eligible.length > 0) return { out: arr, victim: null, blocked: true };
+    // Nothing but the protected row is left: it is the only thing that can still go.
+    victim = arr.length > 0 ? arr[0] : null;
+  }
   return { out: arr.filter((m) => m !== victim), victim };
 };
 
@@ -159,35 +182,38 @@ const pruneOne = (arr, protectId = null) => {
  * left (at which point, if it still cannot fit the byte guard, it is dropped and
  * `protectedKept` is false — the caller must then report stored:false).
  *
- * @returns {{ out: Array, evicted: string[], protectedKept: boolean }}
+ * F-161: `reason` says WHY a protected row could not be kept — "cap" (the item cap,
+ * now reachable because of the F-160 policy) or "bytes" (the serialized-size guard).
+ *
+ * @returns {{ out: Array, evicted: string[], protectedKept: boolean, reason: string|null }}
  */
 export const pruneForSave = (arr, protectId = null) => {
   let out = Array.isArray(arr) ? arr.slice() : [];
   const evicted = [];
-  const step = () => {
-    const r = pruneOne(out, protectId);
-    out = r.out;
-    if (r.victim) evicted.push(r.victim.id);
+  let reason = null;
+  const dropProtected = (why) => {
+    reason = why;
+    out = out.filter((m) => m.id !== protectId);
   };
-  while (out.length > MAX_MEMORIES) step();
-  while (out.length > 0 && utf8Len(JSON.stringify(out)) >= MAX_SERIALIZED_BYTES) step();
+  const step = (why) => {
+    const r = pruneOne(out, protectId);
+    if (r.blocked) { dropProtected(why); return; }
+    out = r.out;
+    if (r.victim) {
+      if (protectId && r.victim.id === protectId) reason = why;
+      else evicted.push(r.victim.id);
+    }
+  };
+  while (out.length > MAX_MEMORIES) step("cap");
+  while (out.length > 0 && utf8Len(JSON.stringify(out)) >= MAX_SERIALIZED_BYTES) step("bytes");
   const protectedKept = !protectId || out.some((m) => m.id === protectId);
-  return { out, evicted, protectedKept };
+  return { out, evicted, protectedKept, reason: protectedKept ? null : (reason || "cap") };
 };
 
-/**
- * Persist the memories array, pruning on overflow (item cap + serialized-size
- * guard).
- *
- * @param {Array} arr
- * @param {{ protectId?: string|null }} [options]
- * @returns {Promise<{ memories: Array, evicted: string[], protectedKept: boolean }>}
- *   `memories` is the array actually written; `evicted` the ids the prune dropped.
- */
 export const saveMemories = async (arr, { protectId = null } = {}) => {
-  const { out, evicted, protectedKept } = pruneForSave(arr, protectId);
+  const { out, evicted, protectedKept, reason } = pruneForSave(arr, protectId);
   await storage.set(MEMORIES_KEY, out);
-  return { memories: out, evicted, protectedKept };
+  return { memories: out, evicted, protectedKept, reason };
 };
 
 const tokenSet = (s) => new Set(
@@ -209,7 +235,9 @@ const jaccard = (a, b) => {
  * max, updatedAt = now) instead of creating a near-duplicate.
  *
  * @returns {{ id: string|null, merged: boolean, stored: boolean, evicted: string[], reason?: string, error?: string }}
- *   stored:false with reason "cap" means nothing was written (store full).
+ *   stored:false means nothing was written: reason "cap" = the item cap (for an
+ *   auto candidate, a store with no other auto row to evict — F-160/F-161),
+ *   reason "bytes" = the serialized-size guard.
  */
 export const saveMemoryCandidate = async ({ content, source = "user", projectKey = null, confidence = 1.0, meta = null, createdBy = null } = {}) => {
   const clean = String(content || "").trim().substring(0, MEMORY_CONTENT_MAX);
@@ -266,8 +294,16 @@ export const saveMemoryCandidate = async ({ content, source = "user", projectKey
   // success answer for an id that vanished in the same call.
   // Decide BEFORE writing: a rejected newcomer must leave the store untouched
   // (no collateral eviction for a row we are not going to keep).
-  if (!pruneForSave(memories, id).protectedKept) {
-    return { id: null, merged: false, stored: false, reason: "cap", evicted: [], error: "Memory store is full" };
+  // F-160: an auto candidate is rejected outright rather than evicting a user memory.
+  const dryRun = pruneForSave(memories, id);
+  if (!dryRun.protectedKept) {
+    const reason = dryRun.reason || "cap";
+    return {
+      id: null, merged: false, stored: false, reason, evicted: [],
+      error: reason === "bytes"
+        ? "Memory store is full (size limit reached)"
+        : "Memory store is full",
+    };
   }
   const saved = await saveMemories(memories, { protectId: id });
   return { id, merged: false, stored: true, evicted: saved.evicted };

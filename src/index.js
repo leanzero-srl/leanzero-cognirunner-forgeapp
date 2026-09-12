@@ -7215,10 +7215,18 @@ resolver.define("addMemory", async ({ payload, context }) => {
       confidence: MEMORY_CONFIDENCE_BY_SOURCE[cleanSource],
       createdBy: context.accountId || null,
     });
-    // F-159: `stored:false` (reason "cap") means nothing was written — never answer
-    // success for an id that the prune dropped in the same call.
+    // F-159: `stored:false` means nothing was written — never answer success for an
+    // id that the prune dropped in the same call. F-161: say WHICH limit was hit —
+    // the item cap (store full of memories nothing may evict) or the byte guard.
     if (result.stored === false || !result.id) {
-      return { success: false, stored: false, reason: result.reason || null, error: result.error || "Failed to save memory" };
+      const reason = result.reason || null;
+      let error = result.error || "Failed to save memory";
+      if (reason === "cap") {
+        error = "Memory store is full of your own memories (200 max) — delete or archive some in the Memories tab to make room.";
+      } else if (reason === "bytes") {
+        error = "Memory store has reached its size limit — delete or shorten some memories in the Memories tab.";
+      }
+      return { success: false, stored: false, reason, error };
     }
     return { success: true, stored: true, id: result.id, merged: result.merged, evicted: result.evicted || [] };
   } catch (error) {

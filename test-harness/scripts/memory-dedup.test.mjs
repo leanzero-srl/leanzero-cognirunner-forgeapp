@@ -106,9 +106,50 @@ const after = load();
 ok(after.length <= 200, `pruned to the 200 cap (was 206, now ${after.length})`);
 ok(after.some((m) => m.id === "keepUser"), "the low-confidence USER memory survived (auto pruned first)");
 
-// --- F-159: at the cap with every OTHER row higher-scoring, a new fix row must never
-// "succeed" into a vanished id. Either it is stored (and a lower-value row goes), or
-// stored:false with reason "cap" — and in that case the store is left untouched.
+// --- F-160: the SAME assertion against an ALL-USER store, where it actually bites.
+// Before F-160 the auto pool came out empty and the lowest-scoring USER row was the
+// victim — a machine lesson evicting a human's memory. Policy: an auto candidate NEVER
+// evicts a user memory; with no other auto row it is simply not stored.
+reset([]);
+const allUser = [];
+for (let i = 0; i < 200; i++) allUser.push({ id: `u${i}`, content: `a user lesson number ${i} distinct`, source: "user", confidence: i === 0 ? 0.05 : 1.0, reinforcements: i === 0 ? 0 : 5, disabled: false, createdAt: "2026-01-01T00:00:00Z", updatedAt: `2026-01-01T00:00:${String(i % 60).padStart(2, "0")}Z` });
+storage.__seed(MEMORIES_KEY, allUser);
+const beforeJson = JSON.stringify(load());
+const autoAtCap = await saveMemoryCandidate({ content: "a novel fix lesson about webhook retry backoff", source: "fix", confidence: 0.2 });
+ok(autoAtCap.stored === false && autoAtCap.id === null && autoAtCap.reason === "cap",
+  `an AUTO candidate at an all-user cap is REJECTED with reason 'cap' (got ${JSON.stringify({ stored: autoAtCap.stored, reason: autoAtCap.reason })})`);
+ok(JSON.stringify(load()) === beforeJson, "the rejected auto candidate leaves the store BYTE-IDENTICAL (no collateral eviction)");
+ok(load().some((m) => m.id === "u0"), "the lowest-scoring USER memory (0.05 conf) was NOT evicted by an auto candidate");
+
+// --- F-160: a MIXED store at the cap — the auto candidate IS stored, and the victim is an AUTO row ---
+reset([]);
+const mixed = [];
+for (let i = 0; i < 190; i++) mixed.push({ id: `mu${i}`, content: `a user lesson number ${i} distinct`, source: "user", confidence: 0.05, reinforcements: 0, disabled: false, updatedAt: `2026-01-01T00:00:${String(i % 60).padStart(2, "0")}Z` });
+for (let i = 0; i < 10; i++) mixed.push({ id: `ma${i}`, content: `an auto lesson number ${i} distinct`, source: "test", confidence: 0.9, reinforcements: 5, disabled: false, updatedAt: `2026-02-01T00:00:${String(i % 60).padStart(2, "0")}Z` });
+storage.__seed(MEMORIES_KEY, mixed);
+const mixedAdd = await saveMemoryCandidate({ content: "a novel fix lesson about sprint field mapping", source: "fix", confidence: 0.2 });
+const mixedAfter = load();
+ok(mixedAdd.stored === true && mixedAfter.some((m) => m.id === mixedAdd.id), "at a MIXED cap the auto candidate IS stored");
+ok(mixedAfter.length === 200, `store stays at the cap (${mixedAfter.length})`);
+ok(mixedAdd.evicted.length === 1 && mixedAdd.evicted[0].startsWith("ma"), `the evicted row is an AUTO row (${JSON.stringify(mixedAdd.evicted)})`);
+ok(mixedAfter.filter((m) => m.source === "user").length === 190, "every USER row survived an auto candidate's eviction");
+
+// --- F-160: a USER add at the cap keeps the old behaviour — lowest AUTO first, then lowest USER ---
+reset([]);
+storage.__seed(MEMORIES_KEY, mixed.map((m) => ({ ...m })));
+const userAdd1 = await saveMemoryCandidate({ content: "a user lesson about release train cadence", source: "user" });
+ok(userAdd1.stored === true && userAdd1.evicted.length === 1 && userAdd1.evicted[0].startsWith("ma"),
+  `a USER add at the cap evicts the lowest AUTO row first (${JSON.stringify(userAdd1.evicted)})`);
+reset([]);
+storage.__seed(MEMORIES_KEY, allUser.map((m) => ({ ...m })));
+const userAdd2 = await saveMemoryCandidate({ content: "a user lesson about release train cadence", source: "user" });
+ok(userAdd2.stored === true && userAdd2.evicted.length === 1 && userAdd2.evicted[0] === "u0",
+  `with no autos left a USER add evicts the LOWEST-scoring user row (${JSON.stringify(userAdd2.evicted)})`);
+ok(load().length === 200 && load().some((m) => m.id === userAdd2.id), "the user newcomer is in the store, still at the cap");
+
+// --- F-159/F-161: at the cap with every OTHER row higher-scoring AUTO, a new fix row must never
+// "succeed" into a vanished id. Either it is stored (and a lower-value auto row goes), or
+// stored:false with reason "cap"/"bytes" — and in that case the store is left untouched.
 reset([]);
 const full = [];
 for (let i = 0; i < 200; i++) full.push({ id: `hv${i}`, content: `high value lesson number ${i} distinct`, source: "test", confidence: 0.95, reinforcements: 5, disabled: false, updatedAt: `2026-02-01T00:00:${String(i % 60).padStart(2, "0")}Z` });
@@ -123,7 +164,7 @@ if (atCap.stored) {
     `the evicted row is another one, and it is reported (${JSON.stringify(atCap.evicted)})`);
   ok(!post.some((m) => m.id === atCap.evicted[0]), "the reported evicted id is really gone");
 } else {
-  ok(atCap.id === null && atCap.reason === "cap", "a rejected candidate returns id:null with reason 'cap'");
+  ok(atCap.id === null && (atCap.reason === "cap" || atCap.reason === "bytes"), "a rejected candidate returns id:null with reason 'cap' or 'bytes'");
   ok(post.length === 200, "a rejected candidate leaves the store untouched");
 }
 

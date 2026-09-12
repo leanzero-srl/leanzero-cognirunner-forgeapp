@@ -428,6 +428,35 @@ ok(/rest\/api\/3\/users\/search/.test(codeOnly), "seats are counted from /rest/a
     ok(!!key && key[0].indexOf("if (!provider) return null;") < key[0].lastIndexOf("_cachedKeyChecked = true;"),
       "…and it returns BEFORE the memo is stamped, so the miss is not served for 30s");
   }
+  // F-112 — getOpenAIModel is the same seam and had NO null branch: it read
+  // COGNIRUNNER_MODEL_null, then cached PROVIDERS[null]?.defaultModel || "gpt-5.4-mini"
+  // into _cachedModel for the full 30s TTL. Calls correctly routed to Anthropic after
+  // the fault cleared still carried an OpenAI model id → 400/404 → validators fail OPEN.
+  {
+    const mod = codeOnly.match(/const getOpenAIModel = async \(\) => \{[\s\S]*?\n\};/);
+    ok(!!mod, "found getOpenAIModel");
+    const mb = mod ? mod[0] : "";
+    ok((mb.match(/if \(!provider\) return null;/g) || []).length === 2,
+      "BOTH provider reads in getOpenAIModel refuse a null provider (the tail read can fault on its own)");
+    const iFirst = mb.indexOf("if (!provider) return null;");
+    ok(iFirst > 0 && iFirst < mb.indexOf("_cachedModel = savedModel") && iFirst < mb.lastIndexOf("_cachedModel ="),
+      "…and each refusal precedes every memo write, so a null-provider fault is never cached for 30s");
+    ok(iFirst < mb.indexOf("providerModelSlot(provider)"),
+      "…and precedes the slot read, so COGNIRUNNER_MODEL_null is never asked for");
+    // EXECUTED: with a faulted provider read the model is null, and the memo stays empty.
+    {
+      let cached = null;
+      const fn = eval("(async (getProviderConfig, storage, providerModelSlot, providerKeySlot, PROVIDERS, console, process) => {"
+        + "let _cachedModel = null, _cachedModelAt = 0; const _cacheFresh = () => Date.now() - _cachedModelAt < 30000;"
+        + mb.replace("const getOpenAIModel = async () => {", "const f = async () => {").replace(/;\s*$/, "")
+        + "; const out = await f(); return { out, _cachedModel }; })");
+      const res = await fn(async () => ({ provider: null, baseUrl: null }), { get: async () => "should-never-be-read" },
+        (p) => `COGNIRUNNER_MODEL_${p}`, (p) => `COGNIRUNNER_KEY_${p}`, { openai: { defaultModel: "gpt-5.4-mini" } }, { error() {} }, { env: {} });
+      ok(res.out === null, "EXECUTED: a null provider yields NO model");
+      ok(res._cachedModel === null, "EXECUTED: …and nothing is written to the 30s model memo");
+      cached = res._cachedModel; void cached;
+    }
+  }
 }
 {
   const i = codeOnly.indexOf('resolver.define("getAiUsage"');

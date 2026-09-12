@@ -11523,12 +11523,22 @@ let _cachedModelAt = 0;
 /**
  * Get the active provider's model. Checks per-provider KVS slot first,
  * falls back to legacy slot, then env var, then provider default.
+ *
+ * Returns null when there is NO active provider (getProviderConfig faulted, F-103),
+ * exactly as getOpenAIKey does — and without memoising that, because a cached default
+ * would outlive the fault by up to 30s and send an OpenAI model id to another vendor.
  */
 const getOpenAIModel = async () => {
   if (_cachedModel && _cacheFresh(_cachedModelAt)) return _cachedModel;
 
   try {
     const { provider } = await getProviderConfig();
+    // No provider (F-112) → no model, and NOTHING memoised. Mirrors getOpenAIKey: when
+    // getProviderConfig faults it names no provider (F-103), and `COGNIRUNNER_MODEL_null`
+    // is not a slot. Falling through used to cache "gpt-5.4-mini" for the full 30s TTL,
+    // so calls correctly routed to Anthropic AFTER the fault cleared still carried an
+    // OpenAI model id — 400/404, validators failing OPEN, with no fault visible anywhere.
+    if (!provider) return null;
     // Read the saved per-provider model UNCONDITIONALLY. Gating this on a BYOK key
     // broke keyless providers: LM Studio (auth optional) and Forge LLM (no key at all)
     // would silently ignore the admin's saved model and fall through to a default
@@ -11555,6 +11565,8 @@ const getOpenAIModel = async () => {
   // The OPENAI_MODEL env var names an OpenAI model — applying it to Anthropic,
   // LM Studio, or Forge LLM would 404 at inference time.
   const { provider } = await getProviderConfig();
+  // Same rule on the tail path — this is a SECOND read, and it can fault on its own.
+  if (!provider) return null;
   if (process.env.OPENAI_MODEL && (provider === "openai" || provider === "azure")) {
     _cachedModel = process.env.OPENAI_MODEL;
     _cachedModelAt = Date.now();

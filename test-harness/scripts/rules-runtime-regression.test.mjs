@@ -370,7 +370,19 @@ try {
     assert.deepEqual(PROVIDER_IDS, ids);
     // …and index.js builds its slot names from the shared module, not its own copies.
     assert.match(indexSrc, /from "\.\/shared\/provider-slots\.js"/);
-    assert.equal(/^const providerKeySlot = /m.test(indexSrc), false);
+  });
+  await check("no backend module keeps a second copy of the provider slot names", async () => {
+    // F-127 — the consumer redeclared providerKeySlot/providerModelSlot while the
+    // gate only looked at index.js. Every backend module that could retype them is
+    // checked here, in BOTH shapes: a `const provider*Slot =` declaration and a raw
+    // COGNIRUNNER_* slot literal. Comments may name a slot; code may not.
+    const files = ["index.js", "async-handler.js", "listeners.js", "scheduled-jobs.js", "agent-runner.js", "rules-api.js", "test-hook.js"];
+    for (const f of files) {
+      const raw = readFileSync(new URL(`../../src/${f}`, import.meta.url), "utf8");
+      const code = raw.split("\n").filter((l) => !l.trim().startsWith("//") && !l.trim().startsWith("*")).join("\n");
+      assert.equal(/const provider[A-Za-z]*Slot\s*=/.test(code), false, `${f} redeclares a provider slot helper — import it from src/shared/provider-slots.js`);
+      assert.equal(/COGNIRUNNER_(KEY|MODEL|AGENT_MODEL|BASEURL)_[a-z$]/.test(code), false, `${f} types a provider slot literal — derive it from src/shared/provider-slots.js`);
+    }
   });
   await check("kvSet is still an allowlist, not a KVS write bridge", async () => {
     for (const key of ["config_registry", "pf_memories", "COGNIRUNNER_KEY_", "COGNIRUNNER_KEY_notaprovider", "validation_logs", "app_users"]) {

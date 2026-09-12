@@ -92,6 +92,7 @@ import {
 import { executeListenerTask, getListener } from "./listeners.js";
 import { executeScheduledJobTask, getJob } from "./scheduled-jobs.js";
 import { STATS_TASK_TYPE, processRuleStatsReceipt } from "./rule-stats.js";
+import { providerKeySlot, providerModelSlot } from "./shared/provider-slots.js";
 
 // F-109 — the ONE message a queued task fails with when the provider read faulted.
 // A task with no provider FAILS; it never routes to the Forge LLM by default.
@@ -100,9 +101,10 @@ const NO_PROVIDER_ERROR = "No AI provider configured (provider read failed) — 
 const TASK_PREFIX = "async_task:";
 const TASK_TTL_HOURS = 1; // Results expire after 1 hour
 
-// Per-provider KVS key helpers (same scheme as index.js)
-const providerKeySlot = (provider) => `COGNIRUNNER_KEY_${provider}`;
-const providerModelSlot = (provider) => `COGNIRUNNER_MODEL_${provider}`;
+// Per-provider KVS key helpers live in ONE home: src/shared/provider-slots.js.
+// This consumer used to retype them, which is the split-brain that module exists to
+// prevent — a rename there would leave queued tasks reading the old slot while the
+// resolver writes the new one. Import, never redeclare (an offline test asserts this).
 
 // NO module-level key cache here. This consumer runs in a different warm container
 // than the resolver that handles saveProvider, so a cached key can't be invalidated

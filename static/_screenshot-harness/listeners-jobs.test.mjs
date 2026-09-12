@@ -401,8 +401,13 @@ try {
               { taskId: "e1", status: "done", taskType: "scheduledjob", ruleName: "Nightly triage", issueKey: "DEMO-1", provider: "anthropic", durationMs: 1200, error: NO_PROVIDER },
               // Control: a genuinely clean run must still read DONE.
               { taskId: "e2", status: "done", taskType: "review", ruleName: "AI review", issueKey: "DEMO-2", provider: "anthropic", durationMs: 3400 },
-              // Control: a cancel keeps its neutral badge even though it carries a reason.
-              { taskId: "e3", status: "cancelled", taskType: "codegen", ruleName: "Generate code", issueKey: "DEMO-3", provider: "openai", error: "Stopped by an operator" },
+              // F-123 — a cancelled row keeps its neutral badge, but an `error` on it is
+              // NEVER an "operator reason": no cancel writer in the backend sets `error`.
+              // The only producer is the sticky-cancelled merge keeping a genuine consumer
+              // failure, so the message must be visible under the CANCELLED badge.
+              { taskId: "e3", status: "cancelled", taskType: "codegen", ruleName: "Generate code", issueKey: "DEMO-3", provider: "openai", error: "No AI provider configured (provider read failed)" },
+              // Control: a plain cancel with no error shows a neutral badge and no message line.
+              { taskId: "e4", status: "cancelled", taskType: "codegen", ruleName: "Clean stop", issueKey: "DEMO-4", provider: "openai" },
             ],
           },
         },
@@ -422,11 +427,117 @@ try {
       ok((await good.locator(".job-status").first().innerText()).trim() === "DONE", `F114 ${theme} a clean run still reads DONE`);
       const cancelled = rows.filter({ hasText: "Generate code" }).first();
       ok((await cancelled.locator(".job-status").first().innerText()).trim() === "CANCELLED", `F114 ${theme} a cancel is not relabelled ERROR`);
-      ok(await cancelled.locator(".job-error").count() === 0, `F114 ${theme} a cancel reason is not painted as a red error line`);
+      // F-123 — the badge exemption stops at the badge: the message is always rendered.
+      ok(await cancelled.locator(".job-error").count() === 1, `F123 ${theme} a cancelled row carrying an error renders the message line`);
+      ok((await cancelled.innerText()).includes("No AI provider configured (provider read failed)"), `F123 ${theme} the hidden consumer failure is visible under the CANCELLED badge`);
+      const cleanStop = rows.filter({ hasText: "Clean stop" }).first();
+      ok((await cleanStop.locator(".job-status").first().innerText()).trim() === "CANCELLED", `F123 ${theme} a clean stop still reads CANCELLED`);
+      ok(await cleanStop.locator(".job-error").count() === 0, `F123 ${theme} a clean stop with no error renders no message line`);
       await page.waitForTimeout(600); // let the tab-panel fade settle so the PNG is readable
       await shot(page, `F114-job-error-${theme}`);
       ok(env.errors.length === 0, `F114 ${theme} no page errors: ` + env.errors.join(" | "));
     } catch (e) { fail++; console.log(`  \u2717 F114 ${theme} threw: ` + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
+  /* ---------------- F118 — "no provider" is NOT "the provider returned an error" ----------------
+     `checkProviderHealth` answers `reason: "no-provider"` when COGNIRUNNER_AI_PROVIDER could
+     not be read at all: provider, providerLabel, model and status are ALL null. The generic
+     sentence rendered that as "` ` returned an error" — a blank provider name asserting a call
+     that never happened, while the very next clause said nothing was sent. Own branch, own copy,
+     and the remedy must be "re-save the provider", not a key/URL/model audit. */
+  for (const theme of ["light", "dark"]) {
+    console.log(`F118 no-provider banner copy (${theme})`);
+    const env = await openAdmin(browser, theme, {
+      __RESPONSES__: {
+        checkProviderHealth: {
+          success: true, ok: false, transient: false, failOpen: true, reason: "no-provider",
+          provider: null, providerLabel: null, model: null, status: null,
+          message: "No AI provider configured — the provider setting could not be read. Nothing was sent to any provider.",
+        },
+      },
+    });
+    const { page } = env;
+    try {
+      const banner = page.locator(".provider-down-banner");
+      await banner.waitFor({ timeout: 10000 });
+      const txt = (await banner.innerText()).replace(/\s+/g, " ").toLowerCase();
+      ok(txt.includes("no ai provider could be read from settings"), `F118 ${theme} banner names the real cause — got: ${txt.slice(0, 200)}`);
+      ok(txt.includes("passing without validation"), `F118 ${theme} banner still states the fail-open consequence`);
+      ok(txt.includes("open settings and re-save the provider"), `F118 ${theme} banner gives the re-save remedy`);
+      // The whole defect: a fabricated provider error with a blank name.
+      ok(!txt.includes("returned an error"), `F118 ${theme} banner never claims a provider returned an error`);
+      ok(!txt.includes("unreachable"), `F118 ${theme} banner does not call an unread provider "unreachable"`);
+      ok(!txt.includes("fix the key, base url, or model"), `F118 ${theme} banner does not send the admin auditing the key/URL/model`);
+      ok(!txt.includes("blocking") && !txt.includes("fail closed") && !txt.includes("fails closed"), `F118 ${theme} banner never claims fail-closed`);
+      // Same solid red alarm, white text, no left accent rail (owner mandate).
+      const css = await banner.evaluate((el) => { const c = getComputedStyle(el); return { bg: c.backgroundColor, fg: c.color, bl: c.borderLeftWidth }; });
+      ok(css.bg === "rgb(220, 38, 38)" || css.bg === "rgb(239, 68, 68)", `F118 ${theme} banner is solid red — got ${css.bg}`);
+      ok(css.fg === "rgb(255, 255, 255)", `F118 ${theme} banner text is white — got ${css.fg}`);
+      ok(parseFloat(css.bl) === 0, `F118 ${theme} banner has no left accent rail — got ${css.bl}`);
+      await page.waitForTimeout(600);
+      await shot(page, `F118-no-provider-${theme}`);
+      ok(env.errors.length === 0, `F118 ${theme} no page errors: ` + env.errors.join(" | "));
+    } catch (e) { fail++; console.log(`  \u2717 F118 ${theme} threw: ` + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
+  /* ---------------- F124 — the unreachable fail-CLOSED copy is gone from the shipped bundle ----------------
+     Every `ok:false` return of checkProviderHealth hardcodes `failOpen: true`, so the
+     `failOpen === false` wording was a second, untestable home for the Law-3 statement.
+     Asserted against the BUILT bundles (never printed — an absence check only), because a
+     dead branch cannot be reached through the UI and only the artifact can prove it is gone. */
+  {
+    console.log("F124 dead fail-closed copy removed from the bundles");
+    try {
+      const DEAD = [
+        "AI-guarded transitions are being refused",
+        "refusing these transitions until you fix",
+      ];
+      let checked = 0;
+      for (const dir of ["admin-panel/build", "admin-panel/build-shot"]) {
+        const root = path.join(STATIC, dir);
+        if (!fs.existsSync(root)) continue;
+        for (const f of fs.readdirSync(root).filter((n) => n.endsWith(".js"))) {
+          const src = fs.readFileSync(path.join(root, f), "utf8");
+          checked++;
+          for (const d of DEAD) ok(!src.includes(d), `F124 ${dir}/${f} no longer ships the fail-closed copy "${d.slice(0, 40)}…"`);
+          // The live copy must still be there — proves we checked a real admin bundle.
+          ok(src.includes("passing WITHOUT validation") || src.includes("passing without validation"), `F124 ${dir}/${f} still ships the fail-open copy`);
+        }
+      }
+      ok(checked > 0, "F124 at least one admin-panel bundle was inspected");
+    } catch (e) { fail++; console.log("  \u2717 F124 threw: " + e.message.split("\n")[0]); }
+  }
+
+  /* ---------------- F122 — an operator Stop is a cancel, never a failed run ----------------
+     `getAsyncTaskResult` has no "cancelled" status; the consumer writes a stopped task as
+     {status:"error", error:"Cancelled"} plus the `cancelled: true` flag. The F-114
+     "error beats the status word" short-circuit was firing first and reporting the stop as
+     a red "Run failed". The flag wins: neutral SKIP result, neutral "Run cancelled" toast. */
+  for (const theme of ["light", "dark"]) {
+    console.log(`F122 stopped run reads as cancelled (${theme})`);
+    const env = await openAdmin(browser, theme, {
+      __RESPONSES__: {
+        getAsyncTaskResult: { success: true, status: "error", cancelled: true, error: "Cancelled" },
+      },
+    });
+    const { page } = env;
+    try {
+      await tab(page, "Scheduled Jobs");
+      await page.locator("tr", { hasText: "Nudge stale" }).locator("button", { hasText: "Run now" }).click();
+      await page.locator(".runres-badge.skip").waitFor({ timeout: 15000 });
+      ok(await page.locator(".runres-badge.skip").count() === 1, `F122 ${theme} a stopped run renders the neutral SKIP result`);
+      ok(await page.locator(".runres-badge.err, .runres-badge.fail").count() === 0, `F122 ${theme} a stopped run is never a red failure result`);
+      ok((await page.locator(".runres").innerText()).includes("Cancelled"), `F122 ${theme} the cancel reason is shown`);
+      const toasts = (await page.locator(".mls-toast").allInnerTexts()).join(" | ");
+      ok(toasts.includes("Run cancelled"), `F122 ${theme} the toast says "Run cancelled" — got: ${toasts}`);
+      ok(!toasts.includes("Run failed"), `F122 ${theme} an operator Stop never toasts "Run failed"`);
+      ok(await page.locator(".mls-toast-error").count() === 0, `F122 ${theme} the cancel toast is not an error toast`);
+      ok(await page.locator("button", { hasText: "Run now" }).first().isEnabled(), `F122 ${theme} a cancelled run releases the manual action`);
+      await shot(page, `F122-cancelled-run-${theme}`);
+      ok(env.errors.length === 0, `F122 ${theme} no page errors: ` + env.errors.join(" | "));
+    } catch (e) { fail++; console.log(`  \u2717 F122 ${theme} threw: ` + e.message.split("\n")[0]); }
     await close(env);
   }
 

@@ -5777,8 +5777,17 @@ function App() {
     // green DONE badge with the failure hidden — the worst possible lie for an
     // operator scanning the Jobs list. So: any row with a non-empty `error` is an
     // ERROR row, whatever `status` claims, and the message is always shown.
-    // "cancelled" is the one exception — a stop carries an operator reason in
-    // `error` and is not a failure, so it keeps its own neutral badge.
+    // "cancelled" is the one exception FOR THE BADGE — a stop is not a failure, so
+    // the row keeps its neutral CANCELLED word instead of turning red.
+    //
+    // F-123 — but the exception stops at the BADGE. No cancel path in the backend
+    // ever writes `error` onto a cancelled row (neither `cancelJob` nor
+    // `cancelAllQueuedJobs` nor the consumer's cancel checkpoint): the ONLY producer
+    // is the sticky-cancelled merge (index.js ~759), which keeps `status: "cancelled"`
+    // while merging the consumer's genuine `{status:"error", error}` patch. So an
+    // `error` on a cancelled row is always a REAL failure the job hit before/while it
+    // was stopped, and hiding it told the operator his stop was clean when it was not.
+    // Any row with an `error` renders the message, cancelled included.
     const hasError = !!(j.error && String(j.error).trim());
     const effStatus = hasError && j.status !== "cancelled" ? "error" : j.status;
     const budgetWaiting = effStatus === "queued" && !!j.budgetWait;
@@ -5802,7 +5811,7 @@ function App() {
         {j.issueKey && <span className="job-issue">{j.issueKey}</span>}
         {j.provider && <span className="job-provider">{j.provider}</span>}
         <span className="job-time" title={budgetWaiting ? `Minute at ${(j.budgetWait.used || 0).toLocaleString()} / ${(j.budgetWait.budget || 0).toLocaleString()} tokens; this job needs ~${(j.budgetWait.estimate || 0).toLocaleString()}` : undefined}>{jobTimeText(j)}</span>
-        {effStatus === "error" && <span className="job-error" title={j.error}>{j.error}</span>}
+        {hasError && <span className="job-error" title={j.error}>{j.error}</span>}
         {canKill && active && (
           <button className="btn-small btn-danger job-stop" onClick={() => cancelJob(j.taskId)} title="Stop this job">
             Stop
@@ -6184,10 +6193,14 @@ function App() {
           allowed (fail-open)" reason), which is the product contract (Law 3). So the
           real emergency is the opposite one — AI-guarded transitions are sailing through
           UNCHECKED while the key is broken. Say that.
-          `failOpen` is read from the health response when the backend supplies it; when
-          it is absent we default to the fail-open wording because that is what the
-          runtime actually does today. Only an explicit `failOpen === false` flips the
-          copy to "blocked". Transient (429/5xx/timeout) outages are not shown at all. */}
+          F-124 — there is no fail-CLOSED copy any more. Every `ok:false` return of
+          `checkProviderHealth` hardcodes `failOpen: true` (index.js ~4823/4858/4864),
+          so the `failOpen === false` wording this banner used to carry was unreachable
+          by construction: a second, untestable home for the Law-3 statement that would
+          age against the runtime exactly as the F-113 copy did. One home, one copy. If
+          the validator contract ever flips, it flips in the backend and this banner is
+          rewritten then — not kept warm on speculation.
+          Transient (429/5xx/timeout) outages are not shown at all. */}
       {providerHealth && providerHealth.ok === false && !providerHealth.transient && (
         <div className="provider-down-banner" role="alert">
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
@@ -6195,21 +6208,41 @@ function App() {
             <line x1="12" y1="9" x2="12" y2="13" />
             <line x1="12" y1="17" x2="12.01" y2="17" />
           </svg>
+          {/* F-118 — `reason: "no-provider"` is NOT a provider error. The health
+              resolver returns it when `COGNIRUNNER_AI_PROVIDER` could not be read at
+              all, and its whole point is that nothing was sent anywhere. Rendering it
+              through the generic sentence told the admin that a provider he was never
+              contacted "returned an error" — with a BLANK name, because
+              `providerLabel` is null on that return. Name the real cause and the real
+              remedy (re-save the provider), not a key/URL/model audit. */}
           <div className="provider-down-text">
-            <strong>
-              {providerHealth.failOpen === false
-                ? "AI provider unreachable — AI-guarded transitions are being refused."
-                : "AI provider unreachable — AI-guarded transitions are passing WITHOUT validation."}
-            </strong>
-            <span>
-              {providerHealth.providerLabel}
-              {providerHealth.model ? ` (${providerHealth.model})` : ""} returned{" "}
-              {providerHealth.status ? `HTTP ${providerHealth.status}` : "an error"}.{" "}
-              {providerHealth.failOpen === false
-                ? "Validators and conditions are refusing these transitions until you fix the key, base URL, or model in Settings."
-                : "Validators and conditions fail open on a provider error, so every transition guarded by an AI rule is currently allowed through without validation — nothing is being checked. Fix the key, base URL, or model in Settings to restore validation."}
-              {providerHealth.message ? ` — ${providerHealth.message}` : ""}
-            </span>
+            {providerHealth.reason === "no-provider" ? (
+              <>
+                <strong>
+                  No AI provider could be read from settings — AI-guarded transitions are passing without validation.
+                </strong>
+                <span>
+                  Nothing was sent to any provider. Validators and conditions fail open, so every
+                  transition guarded by an AI rule is currently allowed through unchecked. Open
+                  Settings and re-save the provider.
+                </span>
+              </>
+            ) : (
+              <>
+                <strong>
+                  AI provider unreachable — AI-guarded transitions are passing WITHOUT validation.
+                </strong>
+                <span>
+                  {providerHealth.providerLabel}
+                  {providerHealth.model ? ` (${providerHealth.model})` : ""} returned{" "}
+                  {providerHealth.status ? `HTTP ${providerHealth.status}` : "an error"}.{" "}
+                  Validators and conditions fail open on a provider error, so every transition
+                  guarded by an AI rule is currently allowed through without validation — nothing
+                  is being checked. Fix the key, base URL, or model in Settings to restore validation.
+                  {providerHealth.message ? ` — ${providerHealth.message}` : ""}
+                </span>
+              </>
+            )}
           </div>
           <button className="provider-down-recheck" onClick={checkProviderHealth} disabled={healthChecking}>
             {healthChecking ? "Checking…" : "Re-check"}

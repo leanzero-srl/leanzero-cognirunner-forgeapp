@@ -5,17 +5,18 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  *
  * Scoped job outcomes must survive reopening Recent executions. Uses the real
- * admin app and its mock bridge; build webpack.screenshot.js first.
+ * admin app and its mock bridge; build-shot is rebuilt here when stale (F-125).
  */
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { ensureFreshBuildShot } from "./lib/build-shot.mjs";
 import { chromium } from "playwright";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const root = path.resolve(here, "../admin-panel/build-shot");
+const root = ensureFreshBuildShot("admin-panel"); // F-125: never serve a bundle older than src/
 const outcomes = [
   { key: "JT-101", success: true, reason: "First issue updated" },
   { key: "JT-102", success: false, reason: "J06 intentional middle-issue failure" },

@@ -36,6 +36,13 @@ import { clampNarrateLine } from "./shared/narrate-utils.js";
 import { buildCatalogPromptBlock, validateBuiltRule } from "./shared/build-rule.js";
 import { normalizeUsage, emptyState, bumpCounters, summarizeState } from "./shared/usage-meter.js";
 import { deriveLogFlags } from "./shared/log-flags.js";
+// Edition + capability — the ONE home for "which CogniRunner is this tenant on"
+// and for the Forge LLM model policy. See src/shared/edition.js.
+import {
+  resolveEdition, EDITIONS, ADVANCED_FEATURES, isFeatureAllowed,
+  FORGE_LLM_MODELS, FORGE_LLM_FRONTIER, FORGE_LLM_DEFAULT,
+  forgeLlmTier, forgeLlmModelAllowedForEdition, clampForgeLlmModel,
+} from "./shared/edition.js";
 import { minuteKey, effectiveBudget, budgetDecision, inlineShouldQueue, AI_PLATFORM_TPM, AI_BUDGET_DEFAULT_TPM, BUDGET_WAIT_HORIZON_MS } from "./shared/ai-budget.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
 import { serializeRule, buildExportEnvelope, validateImportSchema, resolveBindings, containsSecretKey, EXPORT_CAPS } from "./shared/rule-portability.js";
@@ -361,6 +368,134 @@ const requireAdmin = async (accountId) => requireRole(accountId, "admin");
 const issueRefForLink = (ref) => (/^\d+$/.test(String(ref)) ? { id: String(ref) } : { key: ref });
 
 const noPerm = (what) => ({ success: false, error: `You don't have permission to ${what}.` });
+
+// ===== EDITION (1.3) =====
+// Which edition a tenant is on comes from the platform license object, and WHERE
+// that object lives is the only thing that differs per runtime:
+//   validate() / executePostFunction()  → args.context.license
+//   resolvers                            → context.license
+//   webtriggers / the async consumer     → getAppContext().license
+// Every one of those reads funnels into resolveEdition() (src/shared/edition.js).
+// There is no second copy of this rule; do not add one.
+//
+// getAppContext() does NOT carry a license in every runtime, so the invocation
+// paths that DO see one write a snapshot to KVS and the ones that do not read it
+// back. The snapshot is a 7-day-TTL cache, never an authority: if it expires the
+// tenant reads as Standard, which is the deliberate fail-soft direction.
+export const EDITION_SNAPSHOT_KEY = "COGNIRUNNER_EDITION_SNAPSHOT";
+const EDITION_SNAPSHOT_TTL = { ttl: { value: 7, unit: "DAYS" } };
+const EDITION_SNAPSHOT_MIN_INTERVAL_MS = 6 * 60 * 60 * 1000;
+// Module-level throttle memo: one container re-writes the snapshot only when the
+// tuple CHANGED or the last write is older than 6h. Without it every transition
+// on a busy site would add a KVS write to the hot path.
+let _editionSnapshotTuple = null;
+let _editionSnapshotAt = 0;
+
+/**
+ * Resolve the edition from an invocation's license object AND refresh the KVS
+ * snapshot (fire-and-forget, throttled). Returns synchronously-resolvable data;
+ * the write is intentionally not awaited by runtime callers.
+ *
+ * NEVER THROWS. A storage fault here must not touch a Jira transition.
+ */
+export const editionFromInvocation = (license) => {
+  let resolved;
+  try {
+    resolved = resolveEdition(license);
+  } catch (e) {
+    resolved = { active: null, edition: "standard", label: EDITIONS.standard.label, capabilitySet: null, source: "none" };
+  }
+  try {
+    if (resolved.source !== "none") {
+      const tuple = `${resolved.edition}|${resolved.capabilitySet || ""}|${resolved.active}`;
+      if (tuple !== _editionSnapshotTuple || Date.now() - _editionSnapshotAt > EDITION_SNAPSHOT_MIN_INTERVAL_MS) {
+        _editionSnapshotTuple = tuple;
+        _editionSnapshotAt = Date.now();
+        // Not awaited: the caller may be inside a transition. Errors are swallowed.
+        Promise.resolve(
+          storage.set(EDITION_SNAPSHOT_KEY, {
+            edition: resolved.edition,
+            capabilitySet: resolved.capabilitySet,
+            active: resolved.active,
+            at: Date.now(),
+          }, EDITION_SNAPSHOT_TTL),
+        ).catch(() => { /* snapshot is best-effort */ });
+      }
+    }
+  } catch (e) { /* snapshot is best-effort — never throw into a caller */ }
+  return resolved;
+};
+
+// Per-container edition memo, same 30s freshness window as _cachedModel and the
+// provider config (see PROVIDER_CACHE_TTL_MS).
+let _cachedEdition = null;
+let _cachedEditionAt = 0;
+
+/**
+ * The edition for a code path that has NO invocation license to hand (the chat
+ * adapter, the allowance meter, a webtrigger). Order: getAppContext().license →
+ * the KVS snapshot → Standard. Never throws; the fallback is always Standard.
+ */
+export const currentEdition = async () => {
+  if (_cachedEdition && Date.now() - _cachedEditionAt < PROVIDER_CACHE_TTL_MS) return _cachedEdition;
+  let out = null;
+  try {
+    const lic = getAppContext()?.license;
+    if (lic) out = resolveEdition(lic);
+  } catch (e) { /* getAppContext is not available in every runtime */ }
+  if (!out || out.source === "none") {
+    try {
+      const snap = await storage.get(EDITION_SNAPSHOT_KEY);
+      if (snap && snap.edition) {
+        out = {
+          active: snap.active ?? null,
+          edition: snap.edition === "advanced" ? "advanced" : "standard",
+          label: EDITIONS[snap.edition === "advanced" ? "advanced" : "standard"].label,
+          capabilitySet: snap.capabilitySet || null,
+          source: "snapshot",
+        };
+      }
+    } catch (e) { /* fall through to Standard */ }
+  }
+  if (!out) out = resolveEdition(null);
+  _cachedEdition = out;
+  _cachedEditionAt = Date.now();
+  return out;
+};
+
+/**
+ * The refusal a resolver returns when a Coder-only feature is asked for on
+ * Standard. It is the ONE refusal shape (`{ success:false, error }`, see noPerm
+ * above) plus ADDITIVE flags — a frontend that knows nothing about editions still
+ * renders `error` correctly. Do not invent a second refusal shape.
+ */
+export const upgradeRequired = (featureId) => {
+  const feature = ADVANCED_FEATURES.find((f) => f.id === featureId);
+  const label = feature ? feature.label : "This feature";
+  return {
+    success: false,
+    upgradeRequired: true,
+    featureId: featureId || null,
+    edition: "standard",
+    error: `${label} is part of CogniRunner ${EDITIONS.advanced.label}.`,
+  };
+};
+
+/**
+ * Resolver-side gate for a Coder-only feature. Uses the invocation's own license
+ * when present (authoritative) and falls back to currentEdition().
+ * Returns { ok:true, edition } or { ok:false, refusal, edition }.
+ */
+export const requireAdvanced = async (context, featureId) => {
+  let ed;
+  try {
+    ed = context && context.license ? editionFromInvocation(context.license) : await currentEdition();
+  } catch (e) {
+    ed = resolveEdition(null);
+  }
+  if (isFeatureAllowed(ed.edition, featureId)) return { ok: true, edition: ed };
+  return { ok: false, refusal: upgradeRequired(featureId), edition: ed };
+};
 
 /**
  * Decide which registry rows a caller may SEE. Pure — exported for unit tests.
@@ -1248,12 +1383,20 @@ resolver.define("getIssueActivity", async ({ payload }) => {
  * to decide whether to run AI validation.
  */
 resolver.define("checkLicense", ({ context }) => {
-  // If no license property at all (development/unlisted), return null (unknown)
-  // Only return false when a license explicitly exists but is inactive
-  if (!context?.license) {
-    return { isActive: null };
-  }
-  return { isActive: context.license.isActive === true };
+  // isActive semantics are UNCHANGED: null when there is no license property at
+  // all (development / unlisted install), false only when a license exists and is
+  // explicitly inactive. The edition fields are ADDITIVE — src/shared/edition.js
+  // is the one place that decides Standard vs Coder, and `features` is emitted
+  // here so the admin panel never keeps a second copy of the feature list.
+  const ed = editionFromInvocation(context?.license);
+  return {
+    isActive: context?.license ? context.license.isActive === true : null,
+    edition: ed.edition,
+    label: ed.label,
+    capabilitySet: ed.capabilitySet,
+    source: ed.source,
+    features: ADVANCED_FEATURES.map((f) => ({ ...f, allowed: isFeatureAllowed(ed.edition, f.id) })),
+  };
 });
 
 /**
@@ -13192,6 +13335,12 @@ export const validate = async (args) => {
 
   // License check: fail open if unlicensed (let transitions pass, skip AI validation)
   const license = args?.context?.license;
+  // Edition snapshot refresh. A workflow invocation is one of the few runtimes that
+  // reliably carries a license object, so it is where the KVS snapshot (read back by
+  // the chat adapter and the async consumer) gets kept warm. Fire-and-forget and
+  // wrapped: this must NEVER throw into the transition path, and the fail-open
+  // behaviour of the license check below is unchanged by it.
+  try { editionFromInvocation(license); } catch (e) { /* edition is never load-bearing here */ }
   if (license && license.isActive === false) {
     console.log("License inactive — skipping AI validation (fail open)");
     return { result: true };
@@ -15678,6 +15827,9 @@ export const executePostFunction = async (args) => {
 
   // License check: skip silently if unlicensed (but log it).
   const license = args?.context?.license;
+  // Edition snapshot refresh — see the identical comment in validate(). Fire-and-
+  // forget; the skip-if-inactive behaviour below is unchanged.
+  try { editionFromInvocation(license); } catch (e) { /* edition is never load-bearing here */ }
   if (license && license.isActive === false) {
     console.log("License inactive — skipping post-function");
     await logSkip(

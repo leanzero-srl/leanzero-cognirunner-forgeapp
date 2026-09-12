@@ -76,7 +76,7 @@ import {
   // vendor's bill — and it SUCCEEDED, so the failure was invisible.
   readProviderConfigFresh as getProviderConfig,
 } from "./index";
-import { estimateTaskTokens, BUDGET_WAIT_HORIZON_MS } from "./shared/ai-budget.js";
+import { estimateTaskTokens, BUDGET_WAIT_HORIZON_MS, MAX_BUDGET_DEFER_DELAY_S } from "./shared/ai-budget.js";
 // Learned memories — injected into static-PF reviews and persisted by the
 // memory_distill task (runtime auto-capture, opt-in). defangFence neutralizes
 // fence tokens in untrusted content interpolated into prompts here.
@@ -955,8 +955,17 @@ const UNPOLLED_LOG_TYPE = { postfunction: "postfunction", listener: "listener" }
 // execution claim so refusing a delivery never spends the run's identity. Keyed on the
 // task id (what an at-least-once redelivery repeats); the TTL only has to outlive the
 // redelivery window.
+// F-147 — that window is NOT a redelivery round-trip: a duplicated delivery of the same
+// taskId can sit in the token-budget deferral chain for up to BUDGET_WAIT_HORIZON_MS from
+// first enqueue, plus one final MAX_BUDGET_DEFER_DELAY_S re-push. A flat 15 min expired
+// long before that and two refusals of the same taskId double-logged (two ERROR entries,
+// two stats receipts). So the TTL is DERIVED from those two — ai-budget.js is their one
+// home — and rounded up to whole hours for headroom; never a retyped number.
 const REFUSE_CLAIM_PREFIX = "refuse_exec:";
-const REFUSE_CLAIM_TTL = { ttl: { value: 15, unit: "MINUTES" } };
+const REFUSE_CLAIM_TTL_HOURS = Math.ceil(
+  (BUDGET_WAIT_HORIZON_MS + MAX_BUDGET_DEFER_DELAY_S * 1000) / 3600000,
+);
+const REFUSE_CLAIM_TTL = { ttl: { value: REFUSE_CLAIM_TTL_HOURS, unit: "HOURS" } };
 
 /**
  * A queued listener / scheduled-job run REFUSED because the provider read faulted

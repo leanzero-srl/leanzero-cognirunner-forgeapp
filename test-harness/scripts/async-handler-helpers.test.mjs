@@ -625,9 +625,25 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
     "the consumer never takes the RUN's execution claim on the refusal path (F-139)");
   ok(/import \{ claimRuleExecution \} from "\.\/shared\/execution-claim\.js";/.test(asyncSrc),
     "…it dedups through the ONE conditional-write helper");
-  ok(/const REFUSE_CLAIM_PREFIX = "refuse_exec:";/.test(asyncSrc)
-    && /const REFUSE_CLAIM_TTL = \{ ttl: \{ value: 15, unit: "MINUTES" \} \};/.test(asyncSrc),
-    "…on a refusal-scoped key with a short TTL");
+  // F-147 — the refusal TTL must outlive a whole budget-deferral chain, so it is DERIVED
+  // from ai-budget.js (its one home), never retyped. Assert the derivation, not a number.
+  ok(/const REFUSE_CLAIM_PREFIX = "refuse_exec:";/.test(asyncSrc),
+    "…on a refusal-scoped key");
+  ok(/MAX_BUDGET_DEFER_DELAY_S/.test(asyncSrc)
+    && /const REFUSE_CLAIM_TTL_HOURS = Math\.ceil\(\s*\(BUDGET_WAIT_HORIZON_MS \+ MAX_BUDGET_DEFER_DELAY_S \* 1000\) \/ 3600000,?\s*\);/.test(asyncSrc)
+    && /const REFUSE_CLAIM_TTL = \{ ttl: \{ value: REFUSE_CLAIM_TTL_HOURS, unit: "HOURS" \} \};/.test(asyncSrc),
+    "…whose TTL is derived from BUDGET_WAIT_HORIZON_MS + MAX_BUDGET_DEFER_DELAY_S (F-147)");
+  ok(!/value: 15, unit: "MINUTES"/.test(asyncSrc),
+    "…and the old flat 15-minute refusal TTL is gone");
+  {
+    const { BUDGET_WAIT_HORIZON_MS: horizon, MAX_BUDGET_DEFER_DELAY_S: maxDelay } =
+      await import("../../src/shared/ai-budget.js");
+    const hours = Math.ceil((horizon + maxDelay * 1000) / 3600000);
+    ok(hours * 3600000 >= horizon + maxDelay * 1000,
+      `EXECUTED (F-147): the derived TTL (${hours}h) covers the deferral horizon plus one max re-push`);
+    ok(hours * 3600000 > 15 * 60000,
+      "EXECUTED (F-147): …and is longer than the 15 minutes that let a duplicate refusal double-log");
+  }
   ok(!/["`']lst_exec:|["`']job_exec:/.test(asyncSrc), "…and the consumer never retypes a run claim key prefix");
   const listenersSrc = readFileSync(path.join(here, "../../src/listeners.js"), "utf8");
   const jobsSrc = readFileSync(path.join(here, "../../src/scheduled-jobs.js"), "utf8");

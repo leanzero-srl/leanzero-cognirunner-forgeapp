@@ -52,6 +52,14 @@ export const INLINE_QUEUE_THRESHOLD = 0.6;
 /** Budget-deferred jobs get this long (from first enqueue) before they are abandoned. */
 export const BUDGET_WAIT_HORIZON_MS = 60 * 60 * 1000;
 
+/**
+ * The longest a single budget deferral may push its re-delivery out. The ONE home for
+ * this number: `budgetDecision` clamps with it, and anything that has to outlive a whole
+ * deferral chain (the consumer's refusal dedup TTL) derives its window from
+ * BUDGET_WAIT_HORIZON_MS + this.
+ */
+export const MAX_BUDGET_DEFER_DELAY_S = 900;
+
 /** Never defer a job more than this many times — after that it runs regardless. */
 export const MAX_BUDGET_DEFERRALS = 60;
 
@@ -120,7 +128,7 @@ export const budgetDecision = ({ used = 0, reserved = 0, estimate = 0, budget = 
   // the boundary and re-defer en masse.
   const spread = Math.min(30, 5 + deferrals * 2);
   const delaySeconds = Math.max(2, toBoundary + 1 + Math.floor(jitter * spread));
-  return { allow: false, delaySeconds: Math.min(900, delaySeconds), usedPct };
+  return { allow: false, delaySeconds: Math.min(MAX_BUDGET_DEFER_DELAY_S, delaySeconds), usedPct };
 };
 
 /** Should an inline (synchronous) post-function be routed to the queue instead? */

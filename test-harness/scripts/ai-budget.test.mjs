@@ -9,7 +9,7 @@
 // No live Forge. Run: node ai-budget.test.mjs
 import {
   minuteKey, effectiveBudget, estimateTokensFromText, estimateTaskTokens, budgetDecision,
-  inlineShouldQueue, describeBudgetWait, MAX_BUDGET_DEFERRALS, AI_BUDGET_DEFAULT_TPM,
+  inlineShouldQueue, describeBudgetWait, MAX_BUDGET_DEFERRALS, MAX_BUDGET_DEFER_DELAY_S, AI_BUDGET_DEFAULT_TPM,
 } from "../../src/shared/ai-budget.js";
 
 let pass = 0, fail = 0;
@@ -41,7 +41,7 @@ ok(d2.allow === false && d2.delaySeconds > d.delaySeconds && d2.delaySeconds <= 
 ok(budgetDecision({ budget: 35000, used: 0, reserved: 0, estimate: 50000, nowMs: t }).oversized === true, "oversized task runs on an empty minute");
 ok(budgetDecision({ budget: 35000, used: 100, reserved: 0, estimate: 50000, nowMs: t }).allow === false, "oversized task waits for an empty minute");
 ok(budgetDecision({ budget: 35000, used: 35000, estimate: 100, nowMs: t, deferrals: MAX_BUDGET_DEFERRALS }).forced === true, "deferral cap forces a run");
-ok(budgetDecision({ budget: 35000, used: 35000, estimate: 100, nowMs: t }).delaySeconds <= 900, "delay never exceeds the platform max");
+ok(budgetDecision({ budget: 35000, used: 35000, estimate: 100, nowMs: t }).delaySeconds <= MAX_BUDGET_DEFER_DELAY_S, "delay never exceeds the platform max");
 
 // --- inline valve ---
 ok(inlineShouldQueue({ budget: 35000, used: 20000, reserved: 1000 }) === true, "60% used → queue inline PFs");

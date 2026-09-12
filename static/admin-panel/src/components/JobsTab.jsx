@@ -111,6 +111,11 @@ export default function JobsTab({ invoke, isAdmin, userRole }) {
         if (token !== pollRef.current) return;
         if (!p.success) continue;
         if (p.status === "cancelled") { showResult({ ...(p.result || {}), skipped: true, decision: "SKIP", reason: p.error || p.result?.reason || "Run cancelled by an operator." }); setRunning(null); load(); return; }
+        // F-114 — an `error` string beats the status word. A run that died on the
+        // no-provider path came back status "done" WITH an error, and the panel
+        // reported a successful run. Error present (and not a cancel) = failure,
+        // and the operator sees the message.
+        if (p.error && p.status !== "cancelled") { showResult({ isValid: false, reason: p.error }); setRunning(null); showToast("Run failed", "error"); load(); return; }
         if (p.status === "done") { showResult({ ...(p.result || {}), isValid: p.result ? p.result.success !== false : true }); setRunning(null); showToast("Run finished"); load(); return; }
         if (p.status === "error") { showResult({ isValid: false, reason: p.error || "Run failed" }); setRunning(null); load(); return; }
         setRunning({ id, taskId: r.taskId, status: p.status === "processing" ? "running" : "queued" });

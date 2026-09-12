@@ -5771,20 +5771,30 @@ function App() {
 
   // One job row, shared by the Active Jobs panel and the per-rule accordion.
   const renderJobRow = (j) => {
-    const budgetWaiting = j.status === "queued" && !!j.budgetWait;
-    const statusClass = j.stalled ? "stalled" : budgetWaiting ? "budgetwait" : j.status;
-    const statusLabel = j.stalled ? "STALLED"
+    // F-114 — THE ERROR MESSAGE IS AUTHORITATIVE OVER THE STATUS WORD.
+    // A task that died on the no-provider path was landing here carrying a real
+    // `error` string while its `status` still read "done", and the row rendered a
+    // green DONE badge with the failure hidden — the worst possible lie for an
+    // operator scanning the Jobs list. So: any row with a non-empty `error` is an
+    // ERROR row, whatever `status` claims, and the message is always shown.
+    // "cancelled" is the one exception — a stop carries an operator reason in
+    // `error` and is not a failure, so it keeps its own neutral badge.
+    const hasError = !!(j.error && String(j.error).trim());
+    const effStatus = hasError && j.status !== "cancelled" ? "error" : j.status;
+    const budgetWaiting = effStatus === "queued" && !!j.budgetWait;
+    const statusClass = effStatus === "error" ? "error" : j.stalled ? "stalled" : budgetWaiting ? "budgetwait" : effStatus;
+    const statusLabel = effStatus === "error" ? "ERROR"
+      : j.stalled ? "STALLED"
       : budgetWaiting ? "TOKEN BUDGET"
-      : j.status === "queued" ? "QUEUED"
-      : j.status === "running" ? "RUNNING"
-      : j.status === "done" ? "DONE"
-      : j.status === "error" ? "ERROR"
-      : j.status === "cancelled" ? "CANCELLED" : String(j.status || "").toUpperCase();
-    const active = j.status === "queued" || j.status === "running";
+      : effStatus === "queued" ? "QUEUED"
+      : effStatus === "running" ? "RUNNING"
+      : effStatus === "done" ? "DONE"
+      : effStatus === "cancelled" ? "CANCELLED" : String(effStatus || "").toUpperCase();
+    const active = effStatus === "queued" || effStatus === "running";
     return (
       <div key={j.taskId} className="job-entry">
         <span className={`job-status ${statusClass}`}>
-          {j.status === "running" && !j.stalled && <span className="status-dot-checking" />}
+          {effStatus === "running" && !j.stalled && <span className="status-dot-checking" />}
           {statusLabel}
         </span>
         <span className="job-type-badge">{jobTypeLabel(j.taskType)}</span>
@@ -5792,7 +5802,7 @@ function App() {
         {j.issueKey && <span className="job-issue">{j.issueKey}</span>}
         {j.provider && <span className="job-provider">{j.provider}</span>}
         <span className="job-time" title={budgetWaiting ? `Minute at ${(j.budgetWait.used || 0).toLocaleString()} / ${(j.budgetWait.budget || 0).toLocaleString()} tokens; this job needs ~${(j.budgetWait.estimate || 0).toLocaleString()}` : undefined}>{jobTimeText(j)}</span>
-        {j.status === "error" && j.error && <span className="job-error" title={j.error}>{j.error}</span>}
+        {effStatus === "error" && <span className="job-error" title={j.error}>{j.error}</span>}
         {canKill && active && (
           <button className="btn-small btn-danger job-stop" onClick={() => cancelJob(j.taskId)} title="Stop this job">
             Stop
@@ -6166,10 +6176,18 @@ function App() {
 
       {licenseBanner}
 
-      {/* F19 — a misconfigured/unreachable provider returns a persistent config error
-          (401/403/404). Validators & conditions FAIL CLOSED on it, so every AI-guarded
-          transition silently blocks. Surface that loudly so the admin knows WHY nothing
-          is transitioning. Transient (429/5xx/timeout) outages fail OPEN — not shown. */}
+      {/* F19 / F-113 — a misconfigured/unreachable provider returns a persistent config
+          error (401/403/404/400). The banner used to claim validators FAIL CLOSED and
+          were "blocking every transition". That was FALSE and it is the dangerous
+          direction to be wrong in: the runtime fails OPEN on every non-verdict provider
+          error (index.js ~12516 / ~13202 return `isValid: true` with a "transition
+          allowed (fail-open)" reason), which is the product contract (Law 3). So the
+          real emergency is the opposite one — AI-guarded transitions are sailing through
+          UNCHECKED while the key is broken. Say that.
+          `failOpen` is read from the health response when the backend supplies it; when
+          it is absent we default to the fail-open wording because that is what the
+          runtime actually does today. Only an explicit `failOpen === false` flips the
+          copy to "blocked". Transient (429/5xx/timeout) outages are not shown at all. */}
       {providerHealth && providerHealth.ok === false && !providerHealth.transient && (
         <div className="provider-down-banner" role="alert">
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
@@ -6178,13 +6196,18 @@ function App() {
             <line x1="12" y1="17" x2="12.01" y2="17" />
           </svg>
           <div className="provider-down-text">
-            <strong>AI provider unreachable — workflow validations are blocking every transition.</strong>
+            <strong>
+              {providerHealth.failOpen === false
+                ? "AI provider unreachable — AI-guarded transitions are being refused."
+                : "AI provider unreachable — AI-guarded transitions are passing WITHOUT validation."}
+            </strong>
             <span>
               {providerHealth.providerLabel}
               {providerHealth.model ? ` (${providerHealth.model})` : ""} returned{" "}
-              {providerHealth.status ? `HTTP ${providerHealth.status}` : "an error"}. Validators and
-              conditions fail closed on a configuration error, so any transition guarded by an AI rule
-              is blocked until you fix the key, base URL, or model in Settings.
+              {providerHealth.status ? `HTTP ${providerHealth.status}` : "an error"}.{" "}
+              {providerHealth.failOpen === false
+                ? "Validators and conditions are refusing these transitions until you fix the key, base URL, or model in Settings."
+                : "Validators and conditions fail open on a provider error, so every transition guarded by an AI rule is currently allowed through without validation — nothing is being checked. Fix the key, base URL, or model in Settings to restore validation."}
               {providerHealth.message ? ` — ${providerHealth.message}` : ""}
             </span>
           </div>

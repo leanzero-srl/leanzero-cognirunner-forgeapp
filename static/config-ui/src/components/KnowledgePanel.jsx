@@ -52,7 +52,7 @@ export default function KnowledgePanel({
   // Tab panels also mount on first activation and stay mounted (display:none
   // when inactive) so revisiting a tab doesn't refetch its list.
   const [activatedTabs, setActivatedTabs] = useState({ docs: true });
-  const [counts, setCounts] = useState(null); // { docs, skills, memories } | null
+  const [counts, setCounts] = useState(null); // { docs, skills, memories, memoryCap, storeFull } | null
 
   // Loaded on mount AND re-invoked by the tabs after any successful
   // add/delete/save so the summary counts never go stale.
@@ -60,7 +60,16 @@ export default function KnowledgePanel({
     invoke("getKnowledgeCounts")
       .then((result) => {
         if (result && result.success) {
-          setCounts({ docs: result.docs, skills: result.skills, memories: result.memories });
+          setCounts({
+            docs: result.docs,
+            skills: result.skills,
+            memories: result.memories,
+            // F-167 — the cap only matters once the store is full; the number itself
+            // stays owned by the backend (memoryCap), never re-declared here. At cap
+            // the active count IS the cap, so it is a safe last resort.
+            memoryCap: result.memoryCap || null,
+            storeFull: result.storeFull || null,
+          });
         }
       })
       .catch(() => { /* fail-soft to em-dashes */ });
@@ -84,7 +93,12 @@ export default function KnowledgePanel({
     style: activeTab === tab ? undefined : { display: "none" },
   });
 
-  const memCount = counts ? counts.memories : "—";
+  // At cap the chip reads "200 / 200" so the ceiling is visible where the count is.
+  const memCount = !counts
+    ? "—"
+    : counts.storeFull
+    ? `${counts.memories} / ${counts.memoryCap || counts.memories}`
+    : counts.memories;
 
   return (
     <div className="knowledge-panel">
@@ -106,7 +120,7 @@ export default function KnowledgePanel({
           {", "}
           <span className="kc-skills">{selectedSkillIds.length} skills</span>
           {" selected · "}
-          <span className="kc-mem">{memCount} memories</span>
+          <span className={`kc-mem${counts && counts.storeFull ? " kc-mem-full" : ""}`}>{memCount} memories</span>
           {" active"}
         </span>
         {autoAppliedSkills.length > 0 && (

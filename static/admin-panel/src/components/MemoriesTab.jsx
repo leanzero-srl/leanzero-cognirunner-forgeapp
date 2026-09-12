@@ -32,6 +32,27 @@ const SOURCE_CLASS = {
   fix: "memory-src-fix",
 };
 
+/**
+ * F-167 — the store is FULL and the backend has stopped keeping new lessons.
+ * `storeFull` ({ at, reason }) rides getMemorySettings, so it reaches every
+ * surface that already reads settings. This is a hard stop, not a hint: solid
+ * red, white text, no rail and no tint (owner design law), dark override in
+ * injectStyles(). Exported so the admin tab renders the identical wording.
+ */
+export function MemoryFullBanner({ storeFull }) {
+  if (!storeFull) return null;
+  const at = storeFull.at ? new Date(storeFull.at) : null;
+  const when = at && !isNaN(at.getTime()) ? at.toLocaleDateString() : "recently";
+  return (
+    <div className="memory-full-banner" role="alert">
+      <span className="memory-full-title">Memory store is full</span>
+      <span className="memory-full-text">
+        {`New lessons are not being kept since ${when}. Delete or merge memories to resume learning.`}
+      </span>
+    </div>
+  );
+}
+
 export default function MemoriesTab({ onChanged = null }) {
   const [memories, setMemories] = useState([]);
   const [settings, setSettings] = useState(null);
@@ -135,6 +156,12 @@ export default function MemoriesTab({ onChanged = null }) {
           </Tooltip>
         )}
       </div>
+
+      {settings && settings.storeFull && (
+        <div style={{ padding: "10px 12px 0" }}>
+          <MemoryFullBanner storeFull={settings.storeFull} />
+        </div>
+      )}
 
       <div className="memory-quick-add">
         <input

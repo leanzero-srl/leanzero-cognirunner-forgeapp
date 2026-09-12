@@ -1423,6 +1423,58 @@ try {
     await closeEditor(env);
   }
 
+  /* ---------------- M1 — memory store FULL (F-167) + cap refusal on add (F-166) ----------------
+   * The backend stops keeping new lessons once the store hits its ceiling. Before F-167 that
+   * was invisible in the UI: the Memories tab looked normal and the counts chip just read a
+   * number, so "the AI stopped learning" was undiagnosable. storeFull ({ at, reason }) now
+   * rides the memory settings and the counts, and the tab says so in solid red.
+   * Both themes — every new hue needs a dark override. */
+  for (const theme of ["light", "dark"]) {
+    console.log(`M1 memory store full — ${theme} (cfg-static)`);
+    const env = await openEditor(browser, "config-ui", "cfg-static", theme, { __MEMORY_FULL__: true });
+    const { page } = env;
+    try {
+      const kp = page.locator(".knowledge-panel").first();
+      // The counts chip carries the ceiling BEFORE the panel is ever opened.
+      const chip = kp.locator(".kc-mem").first();
+      ok(/200\s*\/\s*200/.test(await chip.innerText()), `M1 ${theme} counts chip reads "200 / 200" at cap`);
+      ok(await kp.locator(".kc-mem.kc-mem-full").count() === 1, `M1 ${theme} the at-cap chip is flagged (kc-mem-full)`);
+
+      if (!(await kp.locator(".knowledge-tabs").isVisible().catch(() => false))) await kp.locator(".knowledge-summary").click();
+      await kp.locator(".knowledge-tab-memories").click();
+
+      const banner = kp.locator(".memory-full-banner").first();
+      await banner.waitFor({ timeout: 6000 });
+      const btxt = await banner.innerText();
+      ok(/Memory store is full/i.test(btxt), `M1 ${theme} banner names the condition`);
+      ok(/not being kept since/i.test(btxt), `M1 ${theme} banner says learning has STOPPED, with a date`);
+      ok(/Delete or merge memories to resume learning/i.test(btxt), `M1 ${theme} banner says how to recover`);
+      ok(await banner.getAttribute("role") === "alert", `M1 ${theme} banner is announced as an alert`);
+
+      // Owner design law: solid saturated fill with white text, and NEVER a left rail.
+      const style = await banner.evaluate((el) => {
+        const c = getComputedStyle(el);
+        return { bg: c.backgroundColor, fg: c.color, bl: c.borderLeftWidth, bt: c.borderTopWidth };
+      });
+      const rgb = style.bg.match(/\d+/g).map(Number);
+      ok(rgb[0] > 180 && rgb[1] < 90 && rgb[2] < 90, `M1 ${theme} banner is solid red, not a tint — got ${style.bg}`);
+      ok(/255,\s*255,\s*255/.test(style.fg), `M1 ${theme} banner text is white — got ${style.fg}`);
+      ok(style.bl === style.bt, `M1 ${theme} no left accent rail (border-left ${style.bl} vs top ${style.bt})`);
+
+      // F-166 — a user add refused at cap must surface the backend's own sentence INLINE,
+      // next to the form that just failed, not as a toast that scrolls away.
+      await kp.locator(".memory-quick-add .input").fill("Sprint field is customfield_10020.");
+      await kp.locator(".btn-remember").click();
+      await kp.getByText(/full of your own memories/i).first().waitFor({ timeout: 6000 });
+      ok(await kp.getByText(/prune in the Memories tab/i).count() > 0,
+        `M1 ${theme} the cap refusal renders inline under the add form (F-166)`);
+      // The typed content survives the refusal — nothing was stored, so nothing is discarded.
+      ok(await kp.locator(".memory-quick-add .input").inputValue() === "Sprint field is customfield_10020.",
+        `M1 ${theme} the refused text is kept in the input, not silently cleared`);
+    } catch (e) { fail++; console.log(`  ✗ M1 ${theme} threw: ` + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
   /* ---------------- E12 — keyboard-only CustomSelect operation ---------------- */
   {
     console.log("E12 keyboard-only CustomSelect (cfg-validator agentic select)");

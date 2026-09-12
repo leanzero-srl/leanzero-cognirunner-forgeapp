@@ -61,6 +61,12 @@ export async function testStateTrigger(req) {
         return json(500, { error: String((e && e.message) || e) });
       }
     }
+    if (body.action === "setWebhookProbeSecret") {
+      const secret = String(body.secret || "");
+      if (!/^[A-Za-z0-9]{16,80}$/.test(secret)) return json(400, { error: "secret must be 16-80 alphanumerics" });
+      await storage.set("probe:webhook:secret", { secret, at: new Date().toISOString() }, { ttl: { value: 1, unit: "DAYS" } });
+      return json(200, { ok: true });
+    }
     if (body.action === "readProbe") {
       const name = String(body.name || "").replace(/[^A-Za-z0-9_.:-]/g, "");
       if (!name) return json(400, { error: "name required" });
@@ -344,4 +350,32 @@ export async function testStateTrigger(req) {
   } catch (e) {
     return json(500, { error: String((e && e.message) || e) });
   }
+}
+
+// ===== Coder plan Part 0 probe (c): is the webtrigger `body` byte-identical to what the sender
+// signed? A GitHub/Bitbucket webhook points here with a secret stored under KVS
+// `probe:webhook:secret` (set through the test hook). Records headers (names + signature
+// values only), body length/sha256 and the HMAC verdict under `probe:webhook:last`.
+// Unauthenticated by design (webhook senders cannot send our Bearer) — it stores no payload.
+export async function gitWebhookProbe(req) {
+  const { createHmac, createHash, timingSafeEqual } = await import("node:crypto");
+  const row = (await storage.get("probe:webhook:secret")) || null;
+  const body = typeof (req && req.body) === "string" ? req.body : "";
+  const hdr = (n) => { const v = req && req.headers && (req.headers[n] || req.headers[n.toLowerCase()] || req.headers[n.toUpperCase()]); return Array.isArray(v) ? v[0] : (v || null); };
+  const sig256 = hdr("x-hub-signature-256") || hdr("X-Hub-Signature-256");
+  const sig = hdr("x-hub-signature") || hdr("X-Hub-Signature");
+  const provider = hdr("x-github-event") ? "github" : (hdr("x-event-key") ? "bitbucket" : "unknown");
+  let verdict = "no-secret";
+  if (row && row.secret) {
+    const expected = "sha256=" + createHmac("sha256", row.secret).update(body, "utf8").digest("hex");
+    const got = sig256 || sig || "";
+    verdict = got && expected.length === got.length && timingSafeEqual(Buffer.from(expected), Buffer.from(got)) ? "VALID" : "INVALID";
+  }
+  await storage.set("probe:webhook:last", {
+    at: new Date().toISOString(), provider, event: hdr("x-github-event") || hdr("x-event-key") || null,
+    bodyBytes: Buffer.byteLength(body, "utf8"), bodySha256: createHash("sha256").update(body, "utf8").digest("hex"),
+    headerNames: req && req.headers ? Object.keys(req.headers) : [], sig256: sig256 ? sig256.slice(0, 20) + "…" : null, sig: sig ? sig.slice(0, 20) + "…" : null,
+    verdict, bodyIsString: typeof (req && req.body) === "string",
+  }, { ttl: { value: 1, unit: "DAYS" } });
+  return { statusCode: 202, headers: { "Content-Type": ["application/json"] }, body: JSON.stringify({ ok: true, verdict }) };
 }

@@ -330,11 +330,18 @@ modules:
       function: rules-api-fn
       response:
         type: dynamic
+    # DEV-ONLY (Coder plan probe c): HMAC-over-raw-body check for Git webhooks.
+    - key: git-webhook-probe
+      function: gitWebhookProbeFn
+      response:
+        type: dynamic
 
   # Lambda function for validation logic
   function:
     - key: testStateFn
       handler: index.testStateTrigger
+    - key: gitWebhookProbeFn
+      handler: index.gitWebhookProbe
     - key: validate
       handler: index.validate
     - key: executePostFunction

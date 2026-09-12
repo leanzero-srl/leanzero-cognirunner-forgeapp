@@ -9392,7 +9392,7 @@ export {
 export const handler = resolver.getDefinitions();
 
 // DEV-ONLY harness test-state web trigger (gated by HARNESS_SECRET; 404 in prod)
-export { testStateTrigger } from "./test-hook";
+export { testStateTrigger, gitWebhookProbe } from "./test-hook";
 
 // === Provider definitions ===
 const PROVIDERS = {

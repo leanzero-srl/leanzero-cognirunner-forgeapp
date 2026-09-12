@@ -5179,7 +5179,10 @@ resolver.define("getOpenAIModelFromKVS", async ({ payload }) => {
       const savedModel = await storage.get(providerModelSlot(provider));
       const { edition } = await currentEdition();
       const effective = clampForgeLlmModel(edition, savedModel);
-      return { success: true, model: effective, isByok: true, edition, clamped: savedModel !== effective, savedModel: savedModel || null };
+      // `clamped` means "the SAVED model was refused", so it needs a saved model to be
+      // true at all: with nothing saved, effective is just the default and there is
+      // nothing for the panel to warn about.
+      return { success: true, model: effective, isByok: true, edition, clamped: !!savedModel && savedModel !== effective, savedModel: savedModel || null };
     }
     // LM Studio is always BYOK semantics — auth is optional, baseUrl is the gating config.
     if (provider === "lmstudio") {

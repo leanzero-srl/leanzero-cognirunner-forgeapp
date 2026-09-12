@@ -132,5 +132,24 @@ ok(/export const editionFromInvocation = \(license\)/.test(indexSrc), "editionFr
   ok(!!m && /_cachedEditionAt < PROVIDER_CACHE_TTL_MS/.test(m[0]), "currentEdition memoises on the same 30s window as the provider config");
 }
 
+// =====================================================================================
+// 5. F-078 — getOpenAIModelFromKVS reports `clamped` only when a SAVED model was refused.
+// With nothing saved the effective model is simply the default, and claiming it was
+// clamped makes the admin panel warn about a downgrade that never happened.
+// =====================================================================================
+{
+  const m = indexSrc.match(/resolver\.define\("getOpenAIModelFromKVS",[\s\S]*?\n\}\);/);
+  ok(!!m, "found the getOpenAIModelFromKVS resolver");
+  const body = m ? m[0] : "";
+  ok(/clamped:\s*!!savedModel && savedModel !== effective/.test(body),
+    "clamped requires a saved model AND a difference");
+  ok(!/clamped:\s*savedModel !== effective/.test(body), "the unguarded comparison is gone");
+  const clamped = (savedModel, effective) => !!savedModel && savedModel !== effective;
+  ok(clamped(null, "claude-haiku-4-5-20251001") === false, "nothing saved → not clamped");
+  ok(clamped(undefined, "claude-haiku-4-5-20251001") === false, "undefined saved → not clamped");
+  ok(clamped("claude-opus-5", "claude-haiku-4-5-20251001") === true, "a refused saved model → clamped");
+  ok(clamped("claude-opus-5", "claude-opus-5") === false, "an allowed saved model → not clamped");
+}
+
 console.log(`\nedition-backend: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

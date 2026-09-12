@@ -8,6 +8,91 @@
 
 ---
 
+## 1.3.0 — Editions (2026-09-12)
+
+CogniRunner is now sold as two Marketplace editions. **Standard** is the app you already
+have. **CogniRunner Coder** — the Marketplace *Advanced* edition — unlocks the frontier
+Claude models on the zero-key Atlassian (Forge LLM) provider and lays the foundation the
+1.4 and 1.5 agent features (Coder chat, PR review, the Virtual Administrator) will build on.
+Every decision below lives in one module, `src/shared/edition.js`, and was verified against
+a live install.
+
+### Claude Sonnet 5 and Opus 5 on Forge LLM, for Coder
+
+On the Atlassian (Forge LLM) provider the Standard edition runs Claude Haiku
+(`claude-haiku-4-5-20251001`). Coder adds `claude-sonnet-5` and `claude-opus-5`. The model
+lists are exact ids — an older Sonnet or Opus id is refused on every edition — and the same
+clamp is applied when a model is listed, saved and loaded, and again inside the chat
+adapters of both the synchronous backend and the async consumer, so a stale or downgraded
+configuration can never bill a frontier model.
+
+**Nothing changes on BYOK providers.** OpenAI, Azure, OpenRouter, Anthropic, Bedrock and
+LM Studio are billed to you, so every model your provider lists stays available on either
+edition.
+
+In **Settings**, a Standard site still sees Sonnet 5 and Opus 5 in the Forge LLM model
+picker, as locked rows with a **Coder** badge, and saving one returns an upgrade prompt that
+points at Jira's Manage apps. If a saved model falls outside the edition, the panel says so
+and names the model that is actually being served (Haiku).
+
+### A monthly allowance for vendor-billed models
+
+Forge LLM tokens are billed to the vendor, so a Coder tenant gets a monthly allowance that
+scales with the seats it pays for: `clamp(seats × $2.00, $40, $800)`. Seats are counted from
+the site's active Atlassian-account users when an admin opens the panel (at most once a day,
+never from a transition); when the count is unknown the allowance is computed for 100 seats.
+Spend is estimated per model tier from assumed per-million-token rates — Atlassian has not
+published Forge LLM pass-through rates and the Claude 5-series list prices were not public
+at ship time, so the numbers drive the meter only and nobody is billed from them.
+
+The **Forge LLM allowance** meter in Settings shows estimated spend against the allowance.
+At 80 % it warns. At 100 % every Forge LLM call runs on Claude Haiku until the month rolls
+over — saved rules keep running, on the default model — and each forced downgrade is
+counted so the panel can show why. An unknown allowance never pauses anything.
+
+### A separate agent model
+
+Each provider now has an **Agent model** slot next to the rule model, for the agent surfaces
+1.4 and 1.5 introduce. A tenant can run a hundred validators on Haiku and its one agent turn
+on a frontier model. On Forge LLM the slot is frontier-only — Sonnet 5 or Opus 5, on Coder;
+Haiku never drives an agent — while BYOK providers accept any model id. Model ids from both
+save resolvers go through one server-side normaliser.
+
+### Lapsed subscriptions fall back to Standard
+
+The edition is read live from the platform license on every invocation that carries one, so
+an expired Coder subscription is Standard on the next read. Only a runtime whose context has
+no license at all (the async consumer, a webtrigger) reads a snapshot — written by the paths
+that do see the license, expiring after two days, and honoured only when it recorded an
+active Coder license. Two days is the longest a lapsed subscription can keep a frontier
+model authorised on such a runtime.
+
+### Also
+
+- **Forge LLM rate limit.** The platform caps 50,000 tokens per minute per installation per
+  model. Background AI work (queued post-functions, listeners, jobs, code generation, fixes,
+  reviews, distillation) is paced by a tokens-per-minute budget queue — 35,000 by default for
+  Forge LLM, set under **Settings → AI token budget** — so a burst never turns into HTTP 429
+  for a user-facing validator. Design notes: `docs/PROMPT-token-budget-queue.md`.
+- `checkLicense` now also returns the edition, its label, the capability set, where it was
+  read from, and the Coder feature list with a per-feature `allowed` flag. `isActive` is
+  unchanged.
+- `checkProviderHealth` reports the model the adapter actually used and whether it was
+  clamped, computed from the edition policy rather than from what the provider echoed.
+- The UI apps compare editions through one shared id table (`EDITION_IDS`), so a
+  comparison can no longer silently be false; the allowance meter refreshes live.
+- Four UI bundles are shipped: the config editor, the read-only view, the admin panel and
+  the issue-glance panel.
+
+### For anyone reading the docs
+
+`docs/AI-PROVIDERS.md` → *Editions and the Forge LLM model policy* is the technical
+reference (resolution rules, every enforcement seam, the allowance maths, the agent slot);
+`docs/FEATURES.md` section 17 covers what an admin sees; the README's *Editions* and
+*Pricing* sections are the short version.
+
+---
+
 ## 1.2.0 — Listeners, Scheduled Jobs, and a Rules REST API
 
 Until now CogniRunner could only run when an issue crossed a workflow transition. This

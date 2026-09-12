@@ -23,6 +23,7 @@ CogniRunner is the **first open-source Atlassian Forge app**, licensed under [Ap
   - [Administration & Permissions](#administration--permissions)
   - [Add Rule Wizard](#add-rule-wizard)
   - [Supported Field Types](#supported-field-types)
+- [Editions: Standard and Coder](#editions-standard-and-coder)
 - [Architecture](#architecture)
 - [Getting Started](#getting-started)
 - [Development](#development)
@@ -31,6 +32,7 @@ CogniRunner is the **first open-source Atlassian Forge app**, licensed under [Ap
 - [Known Limitations](#known-limitations)
 - [Permissions & Security](#permissions--security)
 - [Contributing](#contributing)
+- [Pricing](#pricing)
 - [License](#license)
 
 ---
@@ -169,13 +171,14 @@ CogniRunner supports **seven AI providers**. Five are Bring Your Own Key, one ru
 | **Anthropic** | `claude-haiku-4-5` | `x-api-key` + `anthropic-version` | `api.anthropic.com/v1` |
 | **AWS Bedrock** | `eu.anthropic.claude-sonnet-4-6` | `Authorization: Bearer` (Bedrock API key, **not** SigV4) | Custom |
 | **LM Studio** _(local / self-hosted)_ | host-supplied | none — reachable endpoint only | Custom: your own machine, exposed to Forge |
-| **Atlassian (Forge LLM)** | `claude-haiku-4-5-20251001` | none — zero-key | Atlassian-hosted, no egress |
+| **Atlassian (Forge LLM)** | `claude-haiku-4-5-20251001` | none — zero-key | Atlassian-hosted, no egress. Claude Sonnet 5 / Opus 5 with the **Coder** edition (see [Editions](#editions-standard-and-coder)) |
 
 **How it works:**
 1. **Bring your own key (BYOK)** -- each admin supplies their own key for the active provider in the Settings tab. There is **no factory / out-of-the-box key**: the app ships with no embedded API key, so AI features require either a BYOK key or the zero-key **Atlassian Forge LLM** provider.
 2. **Model selection** -- providing a BYOK key unlocks model selection from the provider's model list.
 3. **Provider switching** -- select a new provider, click "Switch Provider". Your previous provider's key is preserved per-provider.
 4. **Remove key** -- deletes the active provider's key (nothing to fall back to). Other providers' keys are untouched.
+5. **Agent model** (1.3) -- a second model slot per provider for the upcoming agent surfaces (Coder chat, Virtual Administrator; 1.4 / 1.5). Validators and rules keep using the rule model. On Forge LLM it is frontier-only (Sonnet 5 / Opus 5, Coder edition); on BYOK providers any model id.
 
 The app includes a **unified AI adapter** (`callAIChat`) that normalizes between OpenAI-compatible APIs and the Anthropic Messages API. Tool calling, multimodal content (images, PDFs), and response parsing are handled transparently -- all callers use the same OpenAI message format.
 
@@ -190,7 +193,7 @@ Accessible via **Apps > CogniRunner** in the Jira sidebar. Four tabs:
 | **Rules** | All configured validators, conditions, and post-functions across all workflows. Type filter (All/Validators/Conditions/Post Functions) + ownership filter (All Rules/My Rules). Enable/disable toggles per rule. |
 | **Documentation** | Shared document library. Upload API docs, JSON schemas, business rules, or code snippets. Attach them to any rule so the AI has context during validation. Auto-format for JSON, XML, YAML, JavaScript. |
 | **Permissions** | Add users with roles (Viewer/Editor/Admin) and scope (Own Rules/All Rules). Search Jira users by name. Role dropdown + scope dropdown per user. Last admin protection. |
-| **Settings** | AI provider configuration. Provider selector with official brand icons (OpenAI, Azure, Anthropic, OpenRouter). API key management with per-provider storage. Model selection dropdown. |
+| **Settings** | AI provider configuration. Provider selector with official brand icons (OpenAI, Azure, Anthropic, OpenRouter). API key management with per-provider storage. Model selection dropdown with edition-locked rows, the agent model slot, the Forge LLM allowance meter and the AI token budget. |
 
 #### Execution Logs
 
@@ -252,6 +255,27 @@ CogniRunner can validate virtually any Jira field type. The field extraction eng
 | **Third-Party** | Checklist for Jira (Okapya), Xray Manual Test Steps, Jira Assets/Insight, ScriptRunner fields, Tempo accounts, Elements Connect |
 
 Any field type not explicitly handled gets a best-effort extraction (readable key-value pairs or JSON fallback).
+
+---
+
+## Editions: Standard and Coder
+
+Since 1.3 CogniRunner ships as two Marketplace editions. The edition is read from the platform license on every invocation and decided in one module, [`src/shared/edition.js`](src/shared/edition.js).
+
+| | **Standard** | **CogniRunner Coder** (Marketplace *Advanced* edition) |
+|---|---|---|
+| Validators, post-functions, listeners, jobs, REST API, knowledge system | Everything | Everything |
+| BYOK providers (OpenAI, Azure, OpenRouter, Anthropic, Bedrock, LM Studio) | Any model your provider lists | Any model your provider lists — nothing is locked |
+| Atlassian (Forge LLM), zero-key | Claude Haiku | Claude Haiku **+ Claude Sonnet 5 + Claude Opus 5** |
+| Agent model slot (for 1.4 / 1.5 Coder chat, PR review, Virtual Administrator) | BYOK only | BYOK, or Sonnet 5 / Opus 5 on Forge LLM |
+
+**Why the Forge LLM models are the paid part.** Forge LLM tokens are billed to the vendor, not to you. A Coder tenant therefore gets a monthly allowance for the frontier models that scales with seats -- `clamp(seats × $2.00, $40, $800)` per month, seats counted when an admin opens the panel (fallback 100 seats). At 80 % the Settings meter warns; at 100 % every Forge LLM call runs on Haiku until the month resets, so saved rules never stop. Spend is *estimated* from per-tier rates that are assumed until Atlassian publishes Forge LLM pass-through pricing -- nobody is billed from the meter.
+
+**Rate limit.** Forge LLM caps 50,000 tokens per minute per installation per model. Background AI work is paced by a tokens-per-minute budget queue (default 35,000 for Forge LLM; **Settings → AI token budget**) so a burst never becomes an HTTP 429 for a user-facing validator. Design: [`docs/PROMPT-token-budget-queue.md`](docs/PROMPT-token-budget-queue.md).
+
+**If a subscription lapses** the edition falls back to Standard on the next license read. The only runtime that consults a snapshot is one whose context carries no license at all (the async consumer, a webtrigger), and that snapshot expires after two days.
+
+Technical reference: [`docs/AI-PROVIDERS.md`](docs/AI-PROVIDERS.md#editions-and-the-forge-llm-model-policy-13). Admin-facing walkthrough: [`docs/FEATURES.md`](docs/FEATURES.md#editions-standard-and-coder).
 
 ---
 
@@ -627,9 +651,16 @@ By contributing, you agree that your contributions will be licensed under Apache
 
 ---
 
-## Pricing Philosophy
+## Pricing
 
-CogniRunner's Marketplace listing will never have a per-user license cost that exceeds its own runtime costs. The minimal licensing fee exists solely to cover infrastructure -- API hosting, Forge compute, and maintenance time. If it could be free without the author paying out of pocket, it would be. The open-source license ensures that if you want to self-host or run your own fork, you absolutely can.
+| Edition | Price |
+|---|---|
+| **Standard** | Unchanged from before 1.3 -- see the [Marketplace listing](https://marketplace.atlassian.com/apps/298437877/cognirunner?hosting=cloud&tab=pricing). |
+| **CogniRunner Coder** | **$4.00 per user per month at the 100-user tier** -- *proposed*, to be confirmed once Atlassian publishes the Forge LLM rates for the Claude 5-series models that the edition's allowance is priced against. |
+
+### Pricing Philosophy
+
+CogniRunner's Marketplace listing will never have a per-user license cost that exceeds its own runtime costs. The minimal licensing fee exists solely to cover infrastructure -- API hosting, Forge compute, and maintenance time. If it could be free without the author paying out of pocket, it would be. The Coder edition follows the same rule: its price covers the vendor-billed Forge LLM frontier tokens its monthly allowance hands out, nothing more. The open-source license ensures that if you want to self-host or run your own fork, you absolutely can.
 
 ---
 

@@ -149,6 +149,86 @@ Without these, requests may be rejected or throttled.
 
 ---
 
+## Editions and the Forge LLM model policy (1.3)
+
+CogniRunner ships as two Marketplace editions. The platform tells the app which one is installed through the license object it hands every invocation, and the decision is made in exactly one module: `src/shared/edition.js`.
+
+| Edition | Marketplace edition type | Internal id | Forge LLM models |
+|---|---|---|---|
+| **Standard** | standard | `standard` | `claude-haiku-4-5-20251001` |
+| **CogniRunner Coder** | Advanced (`capabilitySet: capabilityAdvanced`) | `advanced` | Haiku **plus** `claude-sonnet-5`, `claude-opus-5` |
+
+**Only the Atlassian (Forge LLM) provider is edition-gated.** On every BYOK provider (OpenAI, Azure, OpenRouter, Anthropic, Bedrock, LM Studio) the tenant pays for its own tokens and CogniRunner locks nothing — any model the provider lists can be selected on either edition. Forge LLM tokens are billed to the vendor (LeanZero), which is why the frontier models are what the Coder edition pays for.
+
+### How the edition is resolved
+
+`resolveEdition(license)` reads the platform license object. Where that object comes from is the only thing that differs per runtime, and every read funnels into the same function:
+
+| Runtime | Source |
+|---|---|
+| `validate()` / `executePostFunction()` | `args.context.license` |
+| Resolvers (`checkLicense`, `getOpenAIModels`, `saveOpenAIModel`, `getAgentModel`, `saveAgentModel`, …) | `context.license` |
+| Webtriggers and the async consumer | `getAppContext().license` |
+
+Rules, in order:
+
+1. No license object at all (development / unlisted install) → **Standard**, `active: null`.
+2. A license that is explicitly inactive (`isActive`/`active === false`) → **Standard**, whatever `capabilitySet` says. An expired Coder subscription is not Coder.
+3. An active license with `capabilitySet` → `capabilityAdvanced` (compared case-insensitively; a live install sends the camel-cased form) means **Coder**; anything else means Standard. `capabilitySet` is authoritative when present.
+4. An active license with no `capabilitySet` → `state: "advanced"` is accepted as a secondary signal only (legacy installs).
+5. Anything unrecognised, and any exception during the read → **Standard**. The module is fail-soft by design: a broken license read degrades the tenant to the free capability set and never blocks a workflow transition.
+
+**Lapsed subscriptions.** The edition is read live on every invocation that carries a license, so a lapsed Coder subscription falls back to Standard on the next read. The only place a snapshot is used is a runtime whose context carries **no `license` property at all** (the consumer / a webtrigger): those read `COGNIRUNNER_EDITION_SNAPSHOT`, which the invocation paths write (throttled to once per 6 h per container, fire-and-forget) with a **2-day TTL**, and accept it only when it recorded an *active advanced* license. If a live context does carry the key — even as `license: null` — that read wins over the snapshot. Two days is therefore the longest a lapsed Coder subscription can keep authorising vendor-billed frontier models on a runtime that cannot see the license itself.
+
+### Where the policy is enforced
+
+The Forge LLM lists are exact model ids, not name patterns — an older Sonnet/Opus id (e.g. `claude-sonnet-4-6`) is refused on every edition. The same `clampForgeLlmModel(edition, id)` runs at every seam, so a stale saved model can never bill a larger model:
+
+| Seam | Behaviour |
+|---|---|
+| `getOpenAIModels` (Forge LLM) | Returns `models` (selectable on this edition) plus `locked` (Coder-only ids). Never refuses — a Standard admin browsing models is not an error; the panel renders the locked ids as rows with a **Coder** badge. |
+| `saveOpenAIModel` (Forge LLM) | A frontier id on Standard returns `{ success:false, upgradeRequired:true, featureId:"forge-llm-frontier-models", edition:"standard", error }`; any other unlisted id is "not offered on Atlassian (Forge LLM)". |
+| `getOpenAIModelFromKVS` (Forge LLM) | Serves the *effective* model: a saved model the edition no longer entitles (a downgrade, or one saved before the policy) is clamped to Haiku and reported with `clamped: true` + `savedModel`, so the panel says "Saved model X is not available on this edition — using Claude Haiku." |
+| `callForgeLlmChat` (`src/index.js`) | The billing backstop for synchronous calls: clamps to the edition **and** to the monthly allowance (below). Fail-soft — an error resolving either leaves the model at Haiku; the call still goes out. |
+| `callAIChatSimple` (`src/async-handler.js`) | The same edition clamp for queued work (codegen, fix, review, listeners, jobs). The consumer reads the edition through the same trust rule (live context first, snapshot only when the context carries no license). |
+| `checkProviderHealth` | Reports the *effective* model and a `clamped` flag computed from the edition policy, never from what the provider echoed back. |
+
+Editions are exposed to the frontends by `checkLicense`, which returns `{ isActive, edition, label, capabilitySet, source, features[] }` — `features` is `ADVANCED_FEATURES` with an `allowed` flag per feature, so the admin panel never keeps a second copy of the list. `isActive` is unchanged from earlier releases: `null` when there is no license property, `false` only when a license exists and is inactive.
+
+### The agent model slot
+
+1.3 adds a second model slot per provider, `COGNIRUNNER_AGENT_MODEL_{provider}`, read by `getAgentModel` and written by `saveAgentModel` (admin only). It is the model the upcoming agent surfaces — Coder chat, PR review, the Virtual Administrator (1.4 / 1.5) — will run on, kept apart from the rule/validator model so a tenant can run a hundred validators on Haiku and one agent turn on a frontier model.
+
+- On Forge LLM the agent slot is **frontier-only**: `saveAgentModel` accepts only `claude-sonnet-5` / `claude-opus-5`. On Standard the refusal is the `upgradeRequired` shape; on Coder a non-frontier id is refused with "Agents on Atlassian (Forge LLM) run on Claude Sonnet 5 or Opus 5 only." Haiku never drives an agent at any edition. `getAgentModel` returns `frontierOnly: true` for this provider so the panel offers only those two ids.
+- On BYOK providers any model id the customer names is accepted.
+- When nothing is saved, `getAgentModel` falls back to the active provider's rule model (or the provider default).
+- `agentCapability({ provider, edition, agentModel, allowanceLevel })` in `edition.js` is the single predicate every agent surface will gate on: BYOK → enabled (`byok`); Forge LLM on Standard → `needs-coder-edition`; Forge LLM with a non-frontier agent model → `needs-frontier-model`; Forge LLM with the monthly allowance at its hard cap → `allowance-exhausted`; otherwise `forge-frontier`.
+- Model ids from either save resolver pass through one normaliser (`normalizeModelId`: trim, strip control characters, cap at 120 chars, server-side).
+
+### Monthly Forge LLM allowance (Coder)
+
+Because Forge LLM frontier tokens land on the vendor's bill, a Coder tenant gets a monthly allowance that scales with the seats it pays for. The maths lives in `src/shared/usage-meter.js`:
+
+```
+allowance = clamp(seats × $2.00, $40, $800) per month
+```
+
+- **Seats.** There is no seat API, so `maybeRefreshSeatSnapshot` counts active users with `accountType: "atlassian"` via `GET /rest/api/3/users/search` (pages of 200, at most 10 pages / 2,000 users — past that the allowance is at its ceiling anyway) and stores `COGNIRUNNER_SEAT_SNAPSHOT`. The scan is triggered only from the admin panel resolvers (`checkLicense` and `getAiUsage`, i.e. when an admin opens the panel), is throttled to once per 24 h, and never runs from an inference path. Every outcome writes a row — a count, a zero, or `seats: null` plus the error. When the seat count is unknown the allowance is computed for **100 seats** ($200), never for "unlimited".
+- **Spend.** The usage meter records every Forge LLM call by tier (haiku / sonnet / opus) with prompt and completion tokens and an estimated USD cost from `FORGE_LLM_USD_PER_M` — `haiku $1 in / $5 out`, `sonnet $3 / $15`, `opus $5 / $25` per million tokens. **These rates are assumed, not published**: Atlassian has not published Forge LLM pass-through rates and the Claude 5-series list prices were not public at ship time. They drive the meter and the panel's "estimated spend" line only; nobody is billed from them. BYOK spend is deliberately not costed. The meter itself is a best-effort under-count (re-read-and-add on one KVS key, no CAS).
+- **Levels.** `forgeLlmAllowanceStatus` returns `{ estUsd, allowanceUsd, pct, level }` with `level` **ok** below 80 %, **soft** at ≥ 80 %, **hard** at ≥ 100 %. An unknown or non-positive allowance is treated as `ok` — an unknown allowance must never pause the product.
+- **Soft (80 %).** The admin panel's allowance meter turns to the warning state and says "Most of this month's Forge LLM allowance is used." Nothing changes at runtime.
+- **Hard (100 %).** `callForgeLlmChat` drops **every** Forge LLM call to Haiku for the rest of the month — saved rules keep running, on `claude-haiku-4-5-20251001` — and counts each forced downgrade in `forgeLlm.clampedCalls` so the panel can show why. The panel reads "Allowance spent — Sonnet 5 / Opus 5 paused until next month. Rules fall back to Claude Haiku." Agent surfaces report `allowance-exhausted`. The allowance clamp is applied in `src/index.js`; the async consumer's clamp is edition-only.
+- **Reset.** The meter is keyed by UTC month; a read across the boundary shows the new month at zero without a write, so the allowance resets with the calendar month.
+- The edition and allowance ride the existing 30 s provider-config memo, so no extra KVS read lands inside a transition's deadline race.
+
+`getAiUsage` (admin only) returns `{ usage, seats, forgeLlm }` where `forgeLlm` is the allowance status above; the admin panel polls it for the meter.
+
+### Forge LLM rate limit and the token budget queue
+
+Forge LLM caps **50,000 tokens per minute per installation, per model** (`AI_PLATFORM_TPM` in `src/shared/ai-budget.js`; verified 2026-09-12 — Sonnet 5, Opus 5 and Haiku are counted independently). CogniRunner paces background AI work (queued post-functions, listeners, jobs, codegen, fix, review, distillation) against a per-provider tokens-per-minute budget — default **35,000** for Forge LLM, none for BYOK unless set — so a burst never runs the installation into HTTP 429 and never makes a user-facing validator fail. The budget is deliberately one installation-wide bucket rather than one per model: the conservative reading can only slow the app down, never overrun the platform. The admin sets it under **Settings → AI token budget (tokens per minute)**. The design is written up in [`PROMPT-token-budget-queue.md`](PROMPT-token-budget-queue.md).
+
+---
+
 ## Per-Provider Key Storage
 
 ### Storage Scheme
@@ -163,6 +243,9 @@ COGNIRUNNER_KEY_anthropic   → "sk-ant-..."             (Anthropic key — acti
 COGNIRUNNER_KEY_azure       → "abc123..."              (Azure key — preserved)
 COGNIRUNNER_MODEL_openai    → "gpt-5.4-mini"           (OpenAI model — preserved)
 COGNIRUNNER_MODEL_anthropic → "claude-haiku-4-5-20251001"  (Anthropic model — active)
+COGNIRUNNER_AGENT_MODEL_atlassian → "claude-sonnet-5"   (agent model slot, 1.3 — frontier-only on Forge LLM)
+COGNIRUNNER_EDITION_SNAPSHOT → { edition, capabilitySet, active, at }  (2-day TTL; read only where the runtime has no license)
+COGNIRUNNER_SEAT_SNAPSHOT   → { seats, at }              (24h; drives the Coder Forge LLM allowance)
 COGNIRUNNER_KEY_bedrock     → "bedrock-api-key"        (Bedrock bearer token — preserved)
 COGNIRUNNER_BASEURL_bedrock → "https://bedrock-runtime.eu-west-2.amazonaws.com"  (region carrier)
 COGNIRUNNER_BEDROCK_ACK     → true                     (Anthropic use-case acknowledgment)

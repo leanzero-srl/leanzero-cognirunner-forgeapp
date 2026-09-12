@@ -23,6 +23,11 @@ import { KNOWN_API_MEMBERS } from "../../../../src/shared/sandbox-api-spec.js";
 import { buildDryRunFacts, countChangeVerbs, CHANGE_VERB_LABEL } from "../../../../src/shared/narrate-utils.js";
 import { codeFingerprint } from "../../../../src/shared/code-fingerprint.js";
 
+// ONE literal for the "another writer holds this step" tooltip — it sits on every
+// writer affordance (recipe bar toggle, Insert recipe, Undo fix) and must name the
+// same set of writers `stepBusy` actually covers. F-150 added the memory-save tail.
+const BUSY_TITLE = "Finish the step's current generate, fix, test run or memory save first";
+
 // Maps a step's operation type to the closest skill category for
 // the "Save as Skill" pre-fill.
 const SKILL_CATEGORY_BY_OPTYPE = {
@@ -230,6 +235,12 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
   const [fixAttempts, setFixAttempts] = useState(0);
   const [fixResult, setFixResult] = useState(null); // { explanation, verified, preFixCode, preFixMeta }
   const [memorySaved, setMemorySaved] = useState(null); // { id, content }
+  // F-150 — true while the verified fix's addMemory tail is in flight. It is part of
+  // `stepBusy` (below) because that tail still belongs to the fix: it is the step's
+  // `token` that decides whether the saved memory gets a badge and a veto, and a writer
+  // that bumps the token during the tail persists a memory the author can neither see
+  // nor undo. The busy window therefore covers the fix from click to badge.
+  const [memorySaving, setMemorySaving] = useState(false);
   // Bumped after flows OUTSIDE the knowledge panel persist/delete a memory
   // (fix-derived save, veto) so the panel's counts and list refresh.
   const [knowledgeRefresh, setKnowledgeRefresh] = useState(0);
@@ -267,9 +278,35 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
   // recipe, Undo fix) instead bump `genTokenRef`, so that if one ever does land it takes
   // ownership of the code and any in-flight AI result is discarded — exactly like a manual
   // edit (handleCodeChange). F-141 / F-143 / F-145 / F-146.
-  const stepBusy = isGenerating || fixing || testRunning;
+  //
+  // F-150 — `memorySaving` is in the predicate because the fix flow does not end when the
+  // fixed code lands: the verified re-run is followed by an addMemory tail that decides
+  // the badge and its veto. Left outside the window, an Undo or an Insert during the tail
+  // bumped the token and the persisted memory became invisible and un-vetoable. ONE
+  // predicate, still — every writer guard and every writer button reads `stepBusy` only.
+  const stepBusy = isGenerating || fixing || testRunning || memorySaving;
 
   const update = (field, value) => onUpdate({ [field]: value });
+
+  // F-149 — every writer that TAKES OWNERSHIP of `code` must also drop the state that
+  // describes the code it replaced, or that state keeps acting on the new code: a live
+  // Undo whose `preFixCode` would overwrite the new code with the old, a PASS/FAIL verdict
+  // (and its narration) earned by code no longer on screen, a "your code was kept" note
+  // about code that is gone, and an auto-fix budget spent on a different program.
+  // Callers bump `genTokenRef` themselves — ownership of the code and ownership of the
+  // state describing it are one act, but the token bump is per-writer (an AI writer bumps
+  // at the START of its call, an instant writer at the moment it lands).
+  // NOT used by handleFixWithAI, which replaces the code and immediately installs the
+  // fix card that describes the replacement; nor by handleUndoFix, which deliberately
+  // keeps `memorySaved` and its own attempt budget.
+  const clearStaleCodeState = () => {
+    setFixResult(null); // carries preFixCode/preFixMeta — the live Undo
+    setFixAttempts(0);
+    setGenerationFallback(null);
+    setGenerationKept(null);
+    setTestResult(null);
+    resetNarrate();
+  };
 
   // Prior-step variable names for editor completions/lint. Keyed by a joined
   // string so the editor extensions only rebuild when names actually change.
@@ -424,8 +461,11 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
       if (result && result.cancelled) { setCancelledNote("generate"); return; }
       if (result && result.success && result.code) {
         onUpdate({ code: result.code, generationMeta: compactMeta(result.meta) });
-        // A verdict earned by the OLD code must not stand against the new code.
-        setTestResult(null);
+        // F-149 — a landed generate OWNS the code, so everything describing the code it
+        // replaced goes with it: the verdict earned by the old code, and (the defect) the
+        // fix card, whose Undo would have written the pre-fix code straight over the
+        // freshly generated program. The token was already bumped at the top of this call.
+        clearStaleCodeState();
       } else {
         handleGenerateFailure(result?.error);
       }
@@ -586,6 +626,13 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
           setFixResult((prev) => (prev ? { ...prev, verified: true } : prev));
           // Persist the fix-derived memory only once the fix is verified
           if (result.memoryCandidate && result.memoryCandidate.content) {
+            // F-150 — the step stays BUSY across this tail. The re-run has already cleared
+            // `testRunning`, so without `memorySaving` the step looked idle while a write
+            // was still outstanding: an Undo or an Insert recipe pressed here bumped the
+            // token, the guard below then dropped the result, and the memory ended up
+            // persisted on the backend with no badge and no veto — learned, invisible,
+            // and impossible to take back. Set BEFORE the await, cleared in `finally`.
+            setMemorySaving(true);
             try {
               const memRes = await invoke("addMemory", {
                 content: result.memoryCandidate.content,
@@ -600,6 +647,8 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
               }
             } catch (e) {
               console.warn("Memory save failed:", e.message);
+            } finally {
+              setMemorySaving(false);
             }
           }
         }
@@ -658,13 +707,8 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
     // generate/fix so its eventual result is discarded.
     genTokenRef.current += 1;
     update("code", v);
-    if (fixResult) setFixResult(null);
-    if (fixAttempts !== 0) setFixAttempts(0);
-    if (generationFallback) setGenerationFallback(null);
-    if (generationKept) setGenerationKept(null);
-    // The verdict belongs to the pre-edit code — clear it.
-    if (testResult) setTestResult(null);
-    if (narrateState !== "idle") resetNarrate();
+    // F-149 — one home for "this code is not the code that state describes".
+    clearStaleCodeState();
   };
 
   const hasPrompt = functionData.operationPrompt?.trim();
@@ -721,7 +765,7 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
           className="recipe-bar-toggle"
           onClick={() => setShowRecipes((v) => !v)}
           disabled={stepBusy}
-          title={stepBusy ? "Finish the step's current generate, fix or test run first" : undefined}
+          title={stepBusy ? BUSY_TITLE : undefined}
         >
           <span className="recipe-bar-icon">{showRecipes ? "▾" : "▸"}</span>
           <span>Start from a recipe</span>
@@ -789,7 +833,7 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
                     type="button"
                     className="btn-generate"
                     disabled={!supported || missing.length > 0 || stepBusy}
-                    title={stepBusy ? "Finish the step's current generate, fix or test run first" : undefined}
+                    title={stepBusy ? BUSY_TITLE : undefined}
                     onClick={() => {
                       const params = {};
                       for (const pp of recipe.params) params[pp.name] = recipeParams[pp.name] ?? pp.default ?? "";
@@ -804,6 +848,11 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
                         operationType: recipe.operationType || functionData.operationType,
                         generationMeta: { source: "recipe", recipeKey: recipe.key, recipeLabel: recipe.label, recipeParams: params },
                       });
+                      // F-149 — taking ownership of the code means taking ownership of the
+                      // state that described it. Without this the fix card survived the
+                      // insert with a LIVE Undo, and one click wrote `preFixCode` over the
+                      // deterministic recipe; the old dry-run verdict stood over it too.
+                      clearStaleCodeState();
                       setShowRecipes(false);
                     }}
                   >
@@ -1261,7 +1310,7 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
                   className="btn-add-doc"
                   onClick={handleUndoFix}
                   disabled={stepBusy}
-                  title={stepBusy ? "Finish the step's current generate, fix or test run first" : undefined}
+                  title={stepBusy ? BUSY_TITLE : undefined}
                 >
                   Undo
                 </button>

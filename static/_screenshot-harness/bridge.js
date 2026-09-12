@@ -910,7 +910,12 @@ function invoke(name, payload) {
     case "createApiToken": return Promise.resolve({ success: true, token: "cgr_9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f", row: { id: "tok_2", name: (payload && payload.name) || "API token", prefix: "cgr_9f9f9f", createdAt: new Date().toISOString(), createdBy: ACCT, lastUsedAt: null, revokedAt: null } });
     case "revokeApiToken": return Promise.resolve({ success: true, revoked: true });
     case "generatePostFunctionCode": return Promise.resolve({ success: true, code: STATIC_CODE_1, meta: { appliedDocs: [{ id: "builtin_doc_jql", title: "JQL Cheat Sheet" }], appliedSkills: [], appliedMemories: 1, truncatedDocs: [] } });
-    case "fixPostFunctionCode": return Promise.resolve({ success: true, code: STATIC_CODE_1, explanation: "Renamed the undefined `dupes` to `duplicates` and guarded the empty case.", meta: { appliedDocs: [], appliedSkills: [], appliedMemories: 1, truncatedDocs: [] } });
+    // F-150 — window.__FIX_MEMORY__ = true makes the fix answer carry a memoryCandidate,
+    // which is what drives FunctionBlock's post-verified-re-run addMemory tail (the badge
+    // + veto). Opt-in so the other fix journeys keep their existing, memory-free screens.
+    case "fixPostFunctionCode": return Promise.resolve({ success: true, code: STATIC_CODE_1, explanation: "Renamed the undefined `dupes` to `duplicates` and guarded the empty case.", meta: { appliedDocs: [], appliedSkills: [], appliedMemories: 1, truncatedDocs: [] }, ...(typeof window !== "undefined" && window.__FIX_MEMORY__ ? { memoryCandidate: { content: "api.searchJql returns { issues }, not a bare array — destructure before mapping.", projectScoped: false } } : {}) });
+    case "addMemory": return Promise.resolve({ success: true, id: "mem_fix_1" });
+    case "deleteMemory": return Promise.resolve({ success: true });
     case "reviewConfig": return Promise.resolve({ success: true, review: { verdict: "has_issues", summary: "The steps are sound; two improvements suggested.", items: [{ type: "warning", message: "Step 2 posts a comment without checking the issue is still open." }, { type: "suggestion", message: "Reuse the JQL result from step 1 instead of re-querying." }] }, tokens: 1240 });
     case "searchIssues": return Promise.resolve({ success: true, issues: [{ key: "PROJ-481", fields: { summary: "Checkout latency spike on mobile", status: { name: "In Progress" }, issuetype: { name: "Bug" } } }] });
     case "validateIssue": return Promise.resolve({ success: true, valid: true, summary: "Checkout latency spike on mobile", status: "In Progress", type: "Bug" });

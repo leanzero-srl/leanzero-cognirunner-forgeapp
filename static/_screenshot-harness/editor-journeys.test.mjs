@@ -762,6 +762,125 @@ try {
       } catch (e) { fail++; console.log(`  ✗ F-146 ${T} threw: ` + e.message.split("\n")[0]); }
       await closeEditor(env);
     }
+    /* F-149 — Insert recipe takes ownership of the state describing the code it replaced */
+    // F-145 made Insert recipe bump the generation token, so it OWNS the code. It did not
+    // own the state describing the code it replaced: the AI fix card stayed on screen with
+    // a LIVE Undo whose `preFixCode` was the pre-fix AI program, so one click overwrote the
+    // deterministic recipe with code the recipe had just replaced — and the dry-run verdict
+    // earned by that same old program sat under it, vouching for a step it never ran.
+    {
+      console.log(`F-149 Insert recipe clears the stale Undo/verdict (cfg-static, ${theme})`);
+      const env = await openEditor(browser, "config-ui", "cfg-static", theme, { __TESTFAIL_ONCE__: true });
+      const { page } = env;
+      try {
+        const b = page.locator(".function-block").first();
+
+        // Earn a fix card (fail a dry-run, fix it, let the auto re-run pass).
+        await b.locator(".btn-test-run", { hasText: /Test Run/ }).click();
+        await b.locator(".btn-run-test", { hasText: "Run Test" }).click();
+        await b.locator(".test-result.test-fail").waitFor({ timeout: 10000 });
+        await b.locator(".btn-fix-ai", { hasText: "Fix with AI" }).click();
+        await b.locator(".fix-result").waitFor({ timeout: 12000 });
+        await page.waitForFunction(
+          () => { const u = Array.from(document.querySelectorAll(".fix-result button")).find((x) => /Undo/.test(x.textContent || "")); return !!u && !u.disabled; },
+          { timeout: 15000 },
+        );
+        ok(await b.locator(".fix-result button", { hasText: "Undo" }).count() === 1, `F-149 ${T} the fix card and its Undo are on screen before the insert`);
+        ok(await b.locator(".test-result").count() === 1, `F-149 ${T} the fixed code's dry-run verdict is on screen before the insert`);
+        const preFixCode = await b.locator(".cm-content").first().innerText();
+
+        // Insert a recipe on top of the fixed code.
+        await b.locator(".recipe-bar-toggle").first().click();
+        await b.locator(".recipe-bar-body .dropdown-trigger").first().click();
+        await page.locator(".dropdown-item", { hasText: "Add / remove labels" }).first().click();
+        const insert = b.locator(".recipe-bar-body .btn-generate", { hasText: "Insert recipe" }).first();
+        await insert.waitFor({ timeout: 8000 });
+        await insert.click();
+        await page.waitForFunction(
+          () => /Recipe: add \/ remove labels/.test(document.querySelector(".cm-content")?.innerText || ""),
+          { timeout: 8000 },
+        );
+
+        // THE defect: an Undo that would write the pre-fix AI code over the recipe.
+        ok(await b.locator(".fix-result").count() === 0, `F-149 ${T} the fix card is gone after the insert — no Undo can overwrite the recipe`);
+        ok(await b.locator(".fix-result button", { hasText: "Undo" }).count() === 0, `F-149 ${T} no live Undo survives the insert`);
+        ok(await b.locator(".test-result").count() === 0, `F-149 ${T} the verdict earned by the replaced code is cleared`);
+        const code = await b.locator(".cm-content").first().innerText();
+        ok(/Recipe: add \/ remove labels/.test(code), `F-149 ${T} the code on screen is the recipe`);
+        ok(code !== preFixCode, `F-149 ${T} the recipe actually replaced the fixed code`);
+        ok(await b.locator(".gen-meta-chip.gmc-recipe").count() === 1, `F-149 ${T} the recipe provenance chip stands alone`);
+
+        // A GENERATE that lands on top of a fix card is the same writer/ownership problem.
+        await b.locator(".btn-generate", { hasText: /Generate Code|Regenerate Code/ }).first().click();
+        await page.waitForFunction(
+          () => { const g = document.querySelector(".function-block .generate-row .btn-generate"); return !!g && !g.disabled; },
+          { timeout: 15000 },
+        );
+        ok(await b.locator(".fix-result").count() === 0, `F-149 ${T} a landed generate leaves no fix card behind either`);
+        ok(await b.locator(".test-result").count() === 0, `F-149 ${T} a landed generate leaves no stale verdict behind either`);
+      } catch (e) { fail++; console.log(`  ✗ F-149 ${T} threw: ` + e.message.split("\n")[0]); }
+      await closeEditor(env);
+    }
+
+    /* F-150 — the step stays busy across the verified fix's addMemory tail */
+    // The fix flow does not end when the fixed code lands: a verified re-run is followed by
+    // an addMemory write that produces the "Learned:" badge and its veto. That tail ran with
+    // the step looking IDLE (fixing already false, testRunning already false), so an Undo or
+    // an Insert pressed during it bumped the generation token, the tail's stale-token guard
+    // dropped the result, and the memory was persisted with no badge and no way to take it
+    // back. The busy window now runs from the Fix click to the badge.
+    {
+      console.log(`F-150 busy window covers the fix's memory-save tail (cfg-static, ${theme})`);
+      const env = await openEditor(browser, "config-ui", "cfg-static", theme, {
+        __TESTFAIL_ONCE__: true,
+        __FIX_MEMORY__: true,
+        __HOLD__: ["addMemory"],
+      });
+      const { page } = env;
+      try {
+        const b = page.locator(".function-block").first();
+        const undo = b.locator(".fix-result button", { hasText: "Undo" }).first();
+        const recipeToggle = b.locator(".recipe-bar-toggle").first();
+
+        await b.locator(".btn-test-run", { hasText: /Test Run/ }).click();
+        await b.locator(".btn-run-test", { hasText: "Run Test" }).click();
+        await b.locator(".test-result.test-fail").waitFor({ timeout: 10000 });
+        await b.locator(".btn-fix-ai", { hasText: "Fix with AI" }).click();
+
+        // The fixed code has landed and its re-run has passed; the memory write is parked.
+        await page.waitForFunction(() => typeof window.__RELEASE_HOLD__ === "function", { timeout: 15000 });
+        ok(await b.locator(".fix-result").count() === 1, `F-150 ${T} the fix card is up while the memory save is in flight`);
+        ok(await b.locator(".memory-saved-badge").count() === 0, `F-150 ${T} no badge yet — the memory is not persisted`);
+
+        // THE defect: both instant writers were pressable during the tail.
+        ok(!(await undo.isEnabled()), `F-150 ${T} Undo is disabled while the memory save is in flight`);
+        ok(!(await recipeToggle.isEnabled()), `F-150 ${T} the recipe bar is disabled while the memory save is in flight`);
+        // And it cannot be forced past from the browser either (React drops handlers on
+        // disabled elements) — the token cannot be bumped out from under the tail.
+        await page.evaluate(() => {
+          const el = Array.from(document.querySelectorAll(".fix-result button")).find((x) => /Undo/.test(x.textContent || ""));
+          if (el) { el.disabled = false; el.click(); }
+        });
+        await page.waitForTimeout(300);
+
+        // Release: the memory lands, and the author gets both the badge and the veto.
+        await page.evaluate(() => window.__RELEASE_HOLD__());
+        await b.locator(".memory-saved-badge").first().waitFor({ timeout: 12000 });
+        ok(await b.locator(".memory-saved-badge").count() === 1, `F-150 ${T} the badge renders for the memory that was persisted`);
+        ok(await b.locator(".memory-saved-badge button").count() === 1, `F-150 ${T} the veto is offered next to the badge`);
+        await page.waitForFunction(
+          () => { const u = Array.from(document.querySelectorAll(".fix-result button")).find((x) => /Undo/.test(x.textContent || "")); return !!u && !u.disabled; },
+          { timeout: 12000 },
+        );
+        ok(await undo.isEnabled(), `F-150 ${T} Undo is pressable again once the tail has settled`);
+
+        // The memory outlives the Undo (it is already persisted) — the veto is the way back.
+        await undo.click();
+        await page.waitForTimeout(300);
+        ok(await b.locator(".memory-saved-badge").count() === 1, `F-150 ${T} the badge survives an Undo — the memory is persisted, the veto is the way back`);
+      } catch (e) { fail++; console.log(`  ✗ F-150 ${T} threw: ` + e.message.split("\n")[0]); }
+      await closeEditor(env);
+    }
   }
 
   /* ---------------- J19 — MANAGED semantic flavors (config-ui = read-only admin notice) ---------------- */

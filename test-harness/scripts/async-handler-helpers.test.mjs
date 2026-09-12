@@ -619,11 +619,16 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
     "the job entry's fieldId is '<cron> <tz>', with 'schedule' only as the row-is-gone fallback");
   ok(/fieldId: isListener \? \(params\?\.eventType \|\| ""\) : cron,/.test(helperSrc),
     "…and the listener half stays the eventType, matching listeners.js");
-  // F-136 — the claim identity is imported, never retyped here.
-  ok(/import \{ executeListenerTask, getListener, claimListenerRun \} from "\.\/listeners\.js";/.test(asyncSrc)
-    && /import \{ executeScheduledJobTask, getJob, claimJobRun \} from "\.\/scheduled-jobs\.js";/.test(asyncSrc),
-    "the refusal claim comes from the rule modules that own the claim identity");
-  ok(!/["`']lst_exec:|["`']job_exec:/.test(asyncSrc), "…and the consumer never retypes a claim key prefix");
+  // F-139 — the refusal has its OWN dedup key and must NOT touch the run's claim, so the
+  // consumer no longer imports (or can take) claimListenerRun / claimJobRun at all.
+  ok(!/claimListenerRun|claimJobRun/.test(asyncSrc),
+    "the consumer never takes the RUN's execution claim on the refusal path (F-139)");
+  ok(/import \{ claimRuleExecution \} from "\.\/shared\/execution-claim\.js";/.test(asyncSrc),
+    "…it dedups through the ONE conditional-write helper");
+  ok(/const REFUSE_CLAIM_PREFIX = "refuse_exec:";/.test(asyncSrc)
+    && /const REFUSE_CLAIM_TTL = \{ ttl: \{ value: 15, unit: "MINUTES" \} \};/.test(asyncSrc),
+    "…on a refusal-scoped key with a short TTL");
+  ok(!/["`']lst_exec:|["`']job_exec:/.test(asyncSrc), "…and the consumer never retypes a run claim key prefix");
   const listenersSrc = readFileSync(path.join(here, "../../src/listeners.js"), "utf8");
   const jobsSrc = readFileSync(path.join(here, "../../src/scheduled-jobs.js"), "utf8");
   ok((listenersSrc.match(/EXEC_CLAIM_PREFIX \+ safeKeyPart/g) || []).length === 1,
@@ -655,8 +660,8 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   // an injected `__importIndex()` because ./index cannot load offline (project pattern).
   // ===================================================================================
   const makeHelper = (deps) => new Function("deps", `
-    const { console: __c, UNPOLLED_TASKS, storage, TASK_PREFIX, NO_PROVIDER_ERROR, claimListenerRun,
-            claimJobRun, statsReceipt, updateAsyncJob, JOB_TTL_DONE, __importIndex } = deps;
+    const { console: __c, UNPOLLED_TASKS, storage, TASK_PREFIX, NO_PROVIDER_ERROR, claimRuleExecution,
+            REFUSE_CLAIM_PREFIX, REFUSE_CLAIM_TTL, statsReceipt, updateAsyncJob, JOB_TTL_DONE, __importIndex } = deps;
     const console = __c;
     ${helperSrc.replace('await import("./index")', "await __importIndex()")}
     return refuseQueuedRunWithoutProvider;
@@ -671,8 +676,9 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
       storage: { async set(k, v) { seen.pollRows.push([k, v]); } },
       TASK_PREFIX: "async_task:",
       NO_PROVIDER_ERROR: "NO_PROVIDER",
-      claimListenerRun: async () => { seen.claims.push("listener"); return true; },
-      claimJobRun: async () => { seen.claims.push("job"); return true; },
+      claimRuleExecution: async (st, key) => { seen.claims.push(key); return true; },
+      REFUSE_CLAIM_PREFIX: "refuse_exec:",
+      REFUSE_CLAIM_TTL: {},
       statsReceipt: (kind, row, entry) => ({ kind, ruleId: row.id, ok: entry.isValid }),
       updateAsyncJob: async (id, patch) => { seen.jobRows.push([id, patch]); },
       JOB_TTL_DONE: {},
@@ -688,7 +694,8 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
     const { deps, seen } = baseDeps();
     await makeHelper(deps)("scheduledjob", "T1", { jobId: "J1" }, jobRow, {});
     ok(seen.pollRows.length === 1 && seen.pollRows[0][1].status === "error", "EXECUTED: the polled type gets an error poll row");
-    ok(seen.claims[0] === "job", "EXECUTED: the refusal takes the job execution claim");
+    ok(seen.claims[0] === "refuse_exec:T1", "EXECUTED (F-139): the refusal dedups on its OWN key");
+    ok(!seen.claims.some((k) => /^lst_exec:|^job_exec:/.test(k)), "EXECUTED (F-139): …and never takes the run's claim");
     ok(seen.logged.length === 1 && seen.logged[0][0].decision === "ERROR", "EXECUTED: one ERROR log entry");
     ok(seen.logged[0][1].statsReceipt && seen.logged[0][1].statsReceipt.ruleId === "J1", "EXECUTED: …carrying the stats receipt");
     ok(seen.logged[0][0].fieldId === "0 9 * * 1 Europe/Rome", "EXECUTED: …with the cron in fieldId");
@@ -718,16 +725,27 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   // (4) F-136: the claim is LOST (a redelivery) → no second log and no second receipt,
   //     but the operational job row is still settled.
   {
-    const { deps, seen } = baseDeps({ claimListenerRun: async () => false });
-    await makeHelper(deps)("listener", "T4", { listenerId: "L1" }, { id: "L1", name: "L", mode: "agent" }, {});
-    ok(seen.logged.length === 0, "EXECUTED (F-136): a redelivered refusal writes NO second log");
-    ok(seen.jobRows.length === 1, "EXECUTED (F-136): …the job row is still settled");
+    const held = new Set();
+    const { deps, seen } = baseDeps({
+      claimRuleExecution: async (st, key) => { seen.claims.push(key); if (held.has(key)) return false; held.add(key); return true; },
+    });
+    const h = makeHelper(deps);
+    const p = { listenerId: "L1" }, row = { id: "L1", name: "L", mode: "agent" };
+    await h("listener", "T4", p, row, {});
+    await h("listener", "T4", p, row, {});                       // same taskId → redelivery
+    ok(seen.logged.length === 1, "EXECUTED (F-136): a redelivered refusal writes NO second log");
+    ok(seen.jobRows.length === 2, "EXECUTED (F-136): …the job row is still settled on both");
+    ok(seen.claims.every((k) => k.startsWith("refuse_exec:")),
+      "EXECUTED (F-139): the stub storage never saw a run claim key on the refusal path");
+    // F-139: a FRESH task id (the healthy delivery after the fault clears) is not suppressed.
+    await h("listener", "T7", p, row, {});
+    ok(seen.logged.length === 2, "EXECUTED (F-139): a later delivery with a new task id is NOT a duplicate");
   }
 
   // (5) F-136: a KVS fault in the claim itself is fail-OPEN (the log is written) — the
   //     run-path policy in claimRuleExecution, unchanged here.
   {
-    const { deps, seen } = baseDeps({ claimJobRun: async () => { throw new Error("KVS down"); } });
+    const { deps, seen } = baseDeps({ claimRuleExecution: async () => { throw new Error("KVS down"); } });
     await makeHelper(deps)("scheduledjob", "T5", { jobId: "J1" }, jobRow, {});
     ok(seen.logged.length === 1, "EXECUTED (F-136): a claim INFRASTRUCTURE fault still leaves the trace (fail-open, as on the run path)");
   }

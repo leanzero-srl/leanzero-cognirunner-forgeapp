@@ -381,11 +381,13 @@ const scheduledRunIdentity = (job, scheduledFor, taskId) => {
 };
 
 /**
- * Claim ONE job delivery. The claim IDENTITY lives here and nowhere else: the queue
- * consumer's fail-closed refusal path (async-handler.js) takes the SAME claim before
- * it writes a failure log + stats receipt, so a redelivered event cannot count the
- * same refusal twice. Returns false only on a real conflict (claimRuleExecution keeps
- * a KVS infrastructure fault fail-open).
+ * Claim ONE job delivery. The claim IDENTITY lives here and nowhere else, and it belongs
+ * to the RUN PATH ONLY. The queue consumer's fail-closed refusal path (async-handler.js)
+ * deliberately does NOT take this claim: it dedups on its own `refuse_exec:<taskId>` key
+ * instead, because a refusal that spent the run's identity made the next, healthy
+ * redelivery look like a duplicate and lost the scheduled run (F-139 — F-136 originally
+ * wired the refusal here). Returns false only on a real conflict (claimRuleExecution
+ * keeps a KVS infrastructure fault fail-open).
  */
 export const claimJobRun = (job, params, taskId) => {
   const { scheduledFor, manual } = params || {};

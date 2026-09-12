@@ -627,10 +627,12 @@ export const runListener = async ({ listener, eventType, event, ctx, deadline = 
 };
 
 /**
- * Claim ONE listener delivery. The claim IDENTITY lives here and nowhere else:
- * the queue consumer's fail-closed refusal path (async-handler.js) takes the SAME
- * claim before it writes a failure log + stats receipt, so a redelivered event
- * cannot count the same refusal twice. Returns false only on a real conflict —
+ * Claim ONE listener delivery. The claim IDENTITY lives here and nowhere else, and it
+ * belongs to the RUN PATH ONLY. The queue consumer's fail-closed refusal path
+ * (async-handler.js) deliberately does NOT take this claim: it dedups on its own
+ * `refuse_exec:<taskId>` key instead, because a refusal that spent the run's identity
+ * made the next, healthy redelivery look like a duplicate and lost the run (F-139 —
+ * F-136 originally wired the refusal here). Returns false only on a real conflict —
  * a KVS infrastructure fault still permits the run (see claimRuleExecution).
  */
 export const claimListenerRun = (params, taskId) => claimRuleExecution(

@@ -89,8 +89,9 @@ import {
   buildMemoryBlock,
   defangFence,
 } from "./memories.js";
-import { executeListenerTask, getListener, claimListenerRun } from "./listeners.js";
-import { executeScheduledJobTask, getJob, claimJobRun } from "./scheduled-jobs.js";
+import { executeListenerTask, getListener } from "./listeners.js";
+import { executeScheduledJobTask, getJob } from "./scheduled-jobs.js";
+import { claimRuleExecution } from "./shared/execution-claim.js";
 import { STATS_TASK_TYPE, processRuleStatsReceipt, statsReceipt } from "./rule-stats.js";
 import { providerKeySlot, providerModelSlot } from "./shared/provider-slots.js";
 
@@ -950,6 +951,13 @@ const UNPOLLED_TASKS = new Set(["postfunction", "memory_distill", "listener", "p
 // memory_distill and probe are deliberately ABSENT — see the settle block (F-120).
 const UNPOLLED_LOG_TYPE = { postfunction: "postfunction", listener: "listener" };
 
+// F-139 — dedup identity for the REFUSAL below, deliberately separate from the run's
+// execution claim so refusing a delivery never spends the run's identity. Keyed on the
+// task id (what an at-least-once redelivery repeats); the TTL only has to outlive the
+// redelivery window.
+const REFUSE_CLAIM_PREFIX = "refuse_exec:";
+const REFUSE_CLAIM_TTL = { ttl: { value: 15, unit: "MINUTES" } };
+
 /**
  * A queued listener / scheduled-job run REFUSED because the provider read faulted
  * (F-121: these two types have no NO_PROVIDER_ERROR guard of their own, so the
@@ -972,14 +980,21 @@ const refuseQueuedRunWithoutProvider = async (taskType, taskId, params, ruleRow,
   }
 
   // F-136 — the entry below carries a STATS RECEIPT, and rule stats must move exactly
-  // ONCE per delivery. Take the SAME execution claim a real run takes (lst_exec: /
-  // job_exec:, identity owned by listeners.js / scheduled-jobs.js) before writing it,
-  // so a redelivered event finds the claim held and does not count a second failure.
+  // ONCE per delivery: a redelivered event must not count a second failure.
+  // F-139 — but the refusal must NOT consume the RUN's identity. This used to take the
+  // very claim a real run takes (lst_exec: / job_exec:, owned by listeners.js /
+  // scheduled-jobs.js, 2h TTL): once a transient provider-read fault cleared, the
+  // at-least-once redelivery of the same event found that claim held and was suppressed
+  // as a duplicate — the unattended listener/scheduled run was LOST. So the refusal gets
+  // its OWN dedup key, scoped to the refusal and keyed on the task id an at-least-once
+  // redelivery carries (short TTL: it only has to outlive the redelivery window, not the
+  // run). A duplicate refusal still writes exactly one log + receipt; a later delivery
+  // with a fresh task id, after the fault clears, runs normally.
   // A lost claim means this delivery is already recorded: skip the log and the receipt.
   let claimed = true;
   if (ruleRow) {
     try {
-      claimed = isListener ? await claimListenerRun(params, taskId) : await claimJobRun(ruleRow, params, taskId);
+      claimed = await claimRuleExecution(storage, `${REFUSE_CLAIM_PREFIX}${taskId}`, REFUSE_CLAIM_TTL, "refusal");
     } catch (e) { console.warn("no-provider claim failed (continuing):", e && e.message); }
   }
 

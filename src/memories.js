@@ -36,6 +36,17 @@ import { kvs as storage } from "@forge/kvs";
 
 export const MEMORIES_KEY = "pf_memories";
 export const MEMORY_SETTINGS_KEY = "COGNIRUNNER_MEMORY_SETTINGS";
+/**
+ * F-167 — the ONE marker that says "this instance has stopped learning".
+ * Written whenever a candidate is REFUSED by the cap/byte guard (see
+ * saveMemoryCandidate), cleared by the next successful store/merge or by any
+ * save that leaves the store under the cap (a delete/edit in the Memories tab).
+ * Shape: { at: ISO string, reason: "cap"|"bytes", source: "user"|"test"|"fix" }.
+ * Read it with readMemoryStoreFull(); the admin resolvers surface it so the
+ * Memories tab can show a banner instead of the instance silently discarding
+ * every novel lesson behind a healthy-looking 200-row list.
+ */
+export const MEMORY_STORE_FULL_KEY = "COGNIRUNNER_MEMORY_STORE_FULL";
 
 /**
  * Defang prompt-fence tokens in untrusted content before it is interpolated
@@ -45,7 +56,7 @@ export const MEMORY_SETTINGS_KEY = "COGNIRUNNER_MEMORY_SETTINGS";
  */
 export const defangFence = (s) => String(s ?? "").replace(/<<<+/g, "<<").replace(/>>>+/g, ">>");
 
-const MAX_MEMORIES = 200;
+export const MAX_MEMORIES = 200;
 // Guard on real UTF-8 BYTES, not UTF-16 chars — the KVS value cap is 240KiB (245760
 // bytes), and multibyte content (emoji, CJK) is up to ~3-4 bytes/char, so a char
 // count would let a value blow past the byte cap and throw. Keep a safety margin.
@@ -114,6 +125,40 @@ export const errorSignature = (msg) => {
     h = Math.imul(h, 0x01000193) >>> 0;
   }
   return h.toString(16).padStart(8, "0");
+};
+
+/**
+ * Read the store-full marker (F-167). Returns null when the instance is learning
+ * normally. Never throws — a marker we cannot read must not break a memory read.
+ */
+export const readMemoryStoreFull = async () => {
+  try {
+    const row = await storage.get(MEMORY_STORE_FULL_KEY);
+    if (row && typeof row === "object" && row.at) {
+      return { at: String(row.at), reason: String(row.reason || "cap"), source: row.source || null };
+    }
+  } catch (error) {
+    console.error("Failed to read the memory store-full marker:", error);
+  }
+  return null;
+};
+
+/** Raise the store-full marker. Best-effort: never fails a caller's own answer. */
+const markMemoryStoreFull = async (reason, source) => {
+  try {
+    await storage.set(MEMORY_STORE_FULL_KEY, { at: new Date().toISOString(), reason, source: source || null });
+  } catch (error) {
+    console.error("Failed to write the memory store-full marker:", error);
+  }
+};
+
+/** Clear the marker — the instance is learning again. Best-effort, and a no-op when unset. */
+export const clearMemoryStoreFull = async () => {
+  try {
+    if (await storage.get(MEMORY_STORE_FULL_KEY)) await storage.delete(MEMORY_STORE_FULL_KEY);
+  } catch (error) {
+    console.error("Failed to clear the memory store-full marker:", error);
+  }
 };
 
 export const loadMemories = async () => {
@@ -227,6 +272,9 @@ export const pruneForSave = (arr, protectId = null) => {
 export const saveMemories = async (arr, { protectId = null } = {}) => {
   const { out, evicted, protectedKept, reason } = pruneForSave(arr, protectId);
   await storage.set(MEMORIES_KEY, out);
+  // F-167: any write that leaves room clears the "stopped learning" marker — that
+  // covers the Memories tab deleting or editing a row as well as a merge/reinforce.
+  if (out.length < MAX_MEMORIES) await clearMemoryStoreFull();
   return { memories: out, evicted, protectedKept, reason };
 };
 
@@ -283,6 +331,8 @@ export const saveMemoryCandidate = async ({ content, source = "user", projectKey
       // reinforce does NOT resurrect an admin's archive — only an explicit user action does.
       if (m.disabled && source === "user") m.disabled = false;
       const mergedSave = await saveMemories(memories);
+      // A reinforce IS a successful store — the instance is still learning (F-167).
+      await clearMemoryStoreFull();
       return { id: m.id, merged: true, stored: true, evicted: mergedSave.evicted };
     }
   }
@@ -313,6 +363,11 @@ export const saveMemoryCandidate = async ({ content, source = "user", projectKey
   const dryRun = pruneForSave(memories, id);
   if (!dryRun.protectedKept) {
     const reason = dryRun.reason || "cap";
+    // F-167: refusing a lesson is the moment the instance STOPS LEARNING. It used to
+    // be disclosed only by a console.warn in an unpolled queue task, so an instance
+    // could discard months of novel captures while the tab showed 200 healthy rows.
+    // One durable marker, surfaced by getMemorySettings/getKnowledgeCounts.
+    await markMemoryStoreFull(reason, source);
     return {
       id: null, merged: false, stored: false, reason, evicted: [],
       error: reason === "bytes"
@@ -321,6 +376,7 @@ export const saveMemoryCandidate = async ({ content, source = "user", projectKey
     };
   }
   const saved = await saveMemories(memories, { protectId: id });
+  await clearMemoryStoreFull();
   return { id, merged: false, stored: true, evicted: saved.evicted };
 };
 

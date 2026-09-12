@@ -93,6 +93,7 @@ import {
   saveMemories,
   saveMemoryCandidate,
   buildMemoryBlock,
+  readMemoryStoreFull,
   defangFence,
 } from "./memories.js";
 
@@ -7294,7 +7295,11 @@ resolver.define("deleteMemory", async ({ payload, context }) => {
 
 resolver.define("getMemorySettings", async () => {
   try {
-    return { success: true, settings: await getMemorySettings() };
+    // F-167: `storeFull` is how the Memories tab learns the instance has STOPPED
+    // LEARNING (a lesson was refused by the cap/byte guard and nothing is evicted
+    // automatically). null = learning normally. Same shape in getKnowledgeCounts.
+    const [settings, storeFull] = await Promise.all([getMemorySettings(), readMemoryStoreFull()]);
+    return { success: true, settings, storeFull };
   } catch (error) {
     return { success: false, error: error.message };
   }
@@ -7381,20 +7386,23 @@ resolver.define("saveMemorySettings", async ({ payload, context }) => {
 resolver.define("getKnowledgeCounts", async () => {
   try {
     await Promise.all([seedBuiltinDocs(), seedBuiltinSkills()]);
-    const [docIndex, skillIndex, memories] = await Promise.all([
+    const [docIndex, skillIndex, memories, storeFull] = await Promise.all([
       storage.get(DOC_REPO_INDEX_KEY),
       storage.get(SKILL_INDEX_KEY),
       loadMemories(),
+      readMemoryStoreFull(),
     ]);
     return {
       success: true,
       docs: (docIndex || []).filter((d) => d.disabled !== true).length,
       skills: (skillIndex || []).filter((s) => s.enabled !== false).length,
       memories: memories.filter((m) => !m.disabled).length,
+      // F-167 — see getMemorySettings. null when the instance is learning normally.
+      storeFull,
     };
   } catch (error) {
     console.error("Failed to get knowledge counts:", error);
-    return { success: false, docs: 0, skills: 0, memories: 0, error: error.message };
+    return { success: false, docs: 0, skills: 0, memories: 0, storeFull: null, error: error.message };
   }
 });
 

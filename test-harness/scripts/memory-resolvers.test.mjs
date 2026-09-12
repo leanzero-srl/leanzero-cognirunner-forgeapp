@@ -12,7 +12,7 @@
 // and F-164/F-166 (a user add at an all-user cap is refused with a message the tab can render).
 import "../lib/register-mocks-index.mjs";
 import storage from "../lib/mock-kvs.mjs";
-import { MEMORIES_KEY } from "../../src/memories.js";
+import { MEMORIES_KEY, MEMORY_STORE_FULL_KEY, MAX_MEMORIES } from "../../src/memories.js";
 const { handler } = await import("../../src/index.js");
 
 let pass = 0, fail = 0;
@@ -58,6 +58,49 @@ ok(full.success === false && full.stored === false && full.reason === "cap",
   `a user add at the cap answers success:false / reason "cap" (got ${JSON.stringify({ success: full.success, reason: full.reason })})`);
 ok(typeof full.error === "string" && /Memories tab/.test(full.error), `the refusal names the tab to prune in: "${full.error}"`);
 ok(JSON.stringify(load()) === before, "the store is byte-identical after the refusal (no hand-authored row destroyed)");
+
+// === F-167: a refused lesson raises a DURABLE marker the admin surfaces can read ===
+reset(allUser);
+ok(storage.__raw(MEMORY_STORE_FULL_KEY) === undefined, "no marker while the instance is learning");
+const settingsClean = await call("getMemorySettings");
+ok(settingsClean.storeFull === null, "getMemorySettings reports storeFull:null when learning normally");
+const countsClean = await call("getKnowledgeCounts");
+ok(countsClean.storeFull === null, "getKnowledgeCounts reports storeFull:null when learning normally");
+
+await call("addMemory", { content: "a novel lesson that cannot be stored at the cap", source: "test" });
+const marker = storage.__raw(MEMORY_STORE_FULL_KEY);
+ok(marker && marker.reason === "cap" && marker.source === "test" && !Number.isNaN(Date.parse(marker.at)),
+  `a refused lesson writes { at, reason, source } (got ${JSON.stringify(marker)})`);
+const settingsFull = await call("getMemorySettings");
+ok(settingsFull.storeFull && settingsFull.storeFull.reason === "cap" && settingsFull.storeFull.at === marker.at,
+  "getMemorySettings surfaces the marker so the tab can show a banner");
+const countsFull = await call("getKnowledgeCounts");
+ok(countsFull.storeFull && countsFull.storeFull.reason === "cap" && countsFull.memories === MAX_MEMORIES,
+  `getKnowledgeCounts surfaces the marker alongside the healthy-looking count (${countsFull.memories})`);
+
+// a second refusal overwrites the one key — never a pile of rows
+const firstAt = marker.at;
+await new Promise((r) => setTimeout(r, 5));
+await call("addMemory", { content: "another novel lesson refused at the same cap", source: "fix" });
+const marker2 = storage.__raw(MEMORY_STORE_FULL_KEY);
+ok(marker2.source === "fix" && marker2.at >= firstAt, "a second refusal OVERWRITES the single marker key");
+
+// deleting a memory drops the count below the cap → the marker clears
+const del = await call("deleteMemory", { id: "u0" });
+ok(del.success === true && storage.__raw(MEMORY_STORE_FULL_KEY) === undefined,
+  "deleteMemory drops below the cap and CLEARS the marker — the instance is learning again");
+ok((await call("getMemorySettings")).storeFull === null, "and getMemorySettings says so");
+
+// a successful store also clears it
+reset(allUser);
+await call("addMemory", { content: "a novel lesson that cannot be stored at the cap", source: "test" });
+ok(storage.__raw(MEMORY_STORE_FULL_KEY), "marker raised again");
+await call("updateMemory", { id: "u5", disabled: true });
+ok(storage.__raw(MEMORY_STORE_FULL_KEY), "an EDIT at the cap does not clear it (the count did not drop)");
+await call("deleteMemory", { id: "u5" });
+const stored = await call("addMemory", { content: "a brand new lesson that now fits", source: "test" });
+ok(stored.success === true && storage.__raw(MEMORY_STORE_FULL_KEY) === undefined,
+  "a successful store clears the marker");
 
 console.log(`\nmemory-resolvers: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

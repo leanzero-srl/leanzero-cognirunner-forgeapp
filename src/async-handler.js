@@ -940,6 +940,14 @@ const TASK_HANDLERS = {
 // codegen/fixcode ARE polled (the frontend waits on getAsyncTaskResult).
 const UNPOLLED_TASKS = new Set(["postfunction", "memory_distill", "listener", "probe"]);
 
+// F-119 — which UNPOLLED task types write an execution-log entry when they FAIL, and
+// under WHICH log type. The value must be a type the UI badge maps already know
+// (admin-panel App.js renderLogEntry / config-view App.js), otherwise the entry renders
+// under the fallback "Validator" badge on a rule that has no validator. `postfunction`
+// resolves to the rule's own type at the call site; this map is the default.
+// memory_distill and probe are deliberately ABSENT — see the settle block (F-120).
+const UNPOLLED_LOG_TYPE = { postfunction: "postfunction", listener: "listener" };
+
 /**
  * Main async event handler. Routes to the correct task handler.
  */
@@ -1127,17 +1135,27 @@ export async function handler(event) {
     if (polled) {
       await storage.set(`${TASK_PREFIX}${taskId}`,
         failure ? { status: "error", error: failure, result } : { status: "done", result }, ttl);
-    } else if (failure) {
+    } else if (failure && UNPOLLED_LOG_TYPE[taskType]) {
       // Nobody polls postfunction / memory_distill / listener / probe, so the job row
       // is the only live surface and the execution log is the only durable one. Without
       // this entry the operator's evidence says the queue ran clean while nothing ran.
+      //
+      // F-120 — memory_distill is EXCLUDED: it is background knowledge plumbing the
+      // operator never asked for, and a failing distill never writes a memory, so its
+      // error signature stays "novel" and every repeat re-queues it. Logging that would
+      // flood the 50-entry ring and prune the REAL failures. It warns to the console and
+      // is re-queue-suppressed at the capture site (index.js, memdistill_attempt claim).
+      // `probe` is excluded for the same class of reason: it is a dev-only self-test with
+      // no rule to attach to and no badge in any UI's type map.
       try {
         const { storeLog } = await import("./index");
         await storeLog({
-          // A queued PF logs under the rule's OWN type ("postfunction-static" /
-          // "-semantic") so the entry lands on that rule's view page next to its
-          // successful runs; other task types log under their task name.
-          type: taskType === "postfunction" ? (params?.config?.type || "postfunction") : taskType,
+          // F-119 — the type MUST be one the UIs' badge maps already know, or the entry
+          // renders as a "Validator" run on a rule that has no validator. A queued PF logs
+          // under the rule's OWN type ("postfunction-static" / "-semantic") so the entry
+          // lands on that rule's view page next to its successful runs; a listener logs
+          // under "listener", the same key its stale-skip entry above uses.
+          type: taskType === "postfunction" ? (params?.config?.type || "postfunction") : UNPOLLED_LOG_TYPE[taskType],
           source: "async",
           issueKey: params?.issueKey || params?.ctx?.issueKey || "(no issue)",
           fieldId: "",
@@ -1151,6 +1169,9 @@ export async function handler(event) {
           ruleWorkflow: null,
         });
       } catch (e) { console.warn("task-failure log failed:", e && e.message); }
+    } else if (failure) {
+      // Unpolled AND unlogged (memory_distill, probe) — console only. See above.
+      console.warn(`Async handler: ${taskType} (${taskId}) failed (not logged — background task): ${failure}`);
     }
     await updateAsyncJob(taskId, {
       status: failure ? "error" : "done",

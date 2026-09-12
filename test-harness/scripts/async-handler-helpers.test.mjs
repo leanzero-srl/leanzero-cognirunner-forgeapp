@@ -503,5 +503,42 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   ok(/if \(budgetProvider && budgetEstimate\) \{/.test(asyncSrc), "the settle still releases only against a known provider");
 }
 
+// =====================================================================================
+// F-119 / F-120(a) — the unpolled failure log must use a type the UI badge maps know,
+// and memory_distill must not log at all.
+//
+// F-114 logged every unpolled failure under its RAW task type. `memory_distill` is in
+// neither badge map (admin-panel renderLogEntry, config-view), so it rendered as a
+// "Validator" execution on a post-function rule — and because a failed distill never
+// writes a memory, its signature stays novel and the same failure re-queues forever,
+// flooding the 50-entry log ring.
+// =====================================================================================
+{
+  const m = asyncSrc.match(/const UNPOLLED_LOG_TYPE = \{[^}]*\};/);
+  ok(!!m, "UNPOLLED_LOG_TYPE exists — one home for the task-type → log-type rule");
+  // eslint-disable-next-line no-eval
+  const map = m ? eval("(" + m[0].replace("const UNPOLLED_LOG_TYPE = ", "").replace(/;\s*$/, "") + ")") : {};
+  ok(map.postfunction === "postfunction" && map.listener === "listener", "postfunction → postfunction, listener → listener");
+  ok(!("memory_distill" in map), "memory_distill is NOT logged (background plumbing — console only)");
+  ok(!("probe" in map), "probe is NOT logged (dev-only self-test, no rule and no badge)");
+  // Every logged type must be a key one of the badge ladders resolves to a real badge.
+  const KNOWN_BADGES = new Set(["listener", "scheduledjob", "condition", "postfunction", "postfunction-static", "postfunction-semantic"]);
+  for (const t of Object.values(map)) ok(KNOWN_BADGES.has(t), `log type "${t}" is a badge the UIs already know`);
+
+  ok(/\} else if \(failure && UNPOLLED_LOG_TYPE\[taskType\]\) \{/.test(asyncSrc),
+    "the execution-log branch is gated on the map, not on 'unpolled and failed'");
+  ok(/type: taskType === "postfunction" \? \(params\?\.config\?\.type \|\| "postfunction"\) : UNPOLLED_LOG_TYPE\[taskType\],/.test(asyncSrc),
+    "…and the raw taskType is never used as a log type again");
+  ok(/failed \(not logged — background task\)/.test(asyncSrc), "an unlogged unpolled failure still reaches the console");
+
+  // EXECUTED: the branch predicate over every unpolled type.
+  const logs = (taskType, failure) => (failure && map[taskType]) ? (taskType === "postfunction" ? "pf-type" : map[taskType]) : null;
+  ok(logs("memory_distill", "No API key configured") === null, "EXECUTED: a failing distill writes NO execution-log entry");
+  ok(logs("probe", "boom") === null, "EXECUTED: a failing probe writes no entry");
+  ok(logs("listener", "boom") === "listener", "EXECUTED: a failing listener logs as a listener");
+  ok(logs("postfunction", "boom") === "pf-type", "EXECUTED: a failing queued PF logs under the rule's own type");
+  ok(logs("listener", null) === null, "EXECUTED: no failure → no entry");
+}
+
 console.log(`\nasync-handler-helpers: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

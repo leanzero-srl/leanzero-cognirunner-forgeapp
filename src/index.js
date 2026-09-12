@@ -7243,7 +7243,10 @@ resolver.define("addMemory", async ({ payload, context }) => {
       const reason = result.reason || null;
       let error = result.error || "Failed to save memory";
       if (reason === "cap") {
-        error = "Memory store is full of your own memories (200 max) — nothing is evicted automatically — prune in the Memories tab to make room.";
+        // F-172: the cap comes from the ONE constant — a retyped "200" goes stale the
+        // day MAX_MEMORIES moves. F-173: archiving frees a slot too (archived rows are
+        // the first eviction candidates), so offer both actions.
+        error = `Memory store is full of your own memories (${MAX_MEMORIES} max) — no live memory is evicted automatically — archive or delete some in the Memories tab to make room.`;
       } else if (reason === "bytes") {
         error = "Memory store has reached its size limit — delete or shorten some memories in the Memories tab.";
       }

@@ -5,17 +5,18 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  *
  * Real admin UI at the 624px iframe width observed inside 1024px Jira.
- * Build admin webpack.screenshot.js, then run this script (optional --shots).
+ * build-shot is rebuilt here when stale (F-125). Optional --shots saves PNGs.
  */
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { ensureFreshBuildShot } from "./lib/build-shot.mjs";
 import { chromium } from "playwright";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const root = path.resolve(here, "../admin-panel/build-shot");
+const root = ensureFreshBuildShot("admin-panel"); // F-125: never serve a bundle older than src/
 const server = http.createServer((req, res) => {
   const name = req.url.split("?")[0] === "/" ? "/index.html" : req.url.split("?")[0];
   const file = path.resolve(root, `.${decodeURIComponent(name)}`);

@@ -9,7 +9,8 @@
  * editors, pickers, test-run and run-now flows are exercised end-to-end against canned
  * resolver responses — UI-behaviour coverage in isolation, no Jira / AI needed.
  *
- * Prereq: cd static/admin-panel && npx webpack --config webpack.screenshot.js --mode production
+ * No prereq build: the suite rebuilds admin-panel's build-shot itself when it is
+ * missing or older than src/ (lib/build-shot.mjs, F-125).
  * Run:    node static/_screenshot-harness/listeners-jobs.test.mjs   (add --shots to save PNGs to out/)
  */
 import { chromium } from "playwright";
@@ -17,6 +18,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { ensureFreshBuildShot } from "./lib/build-shot.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const STATIC = path.resolve(__dirname, "..");
@@ -40,8 +42,7 @@ const ok = (cond, msg) => { if (cond) { pass++; } else { fail++; console.log("  
 const shot = async (page, name) => { if (SHOTS) await page.screenshot({ path: path.join(OUT, `${name}.png`), fullPage: true }); };
 
 async function openAdmin(browser, theme = "light", extraInit = null) {
-  const root = path.join(STATIC, "admin-panel", "build-shot");
-  if (!fs.existsSync(path.join(root, "index.html"))) throw new Error("no admin-panel build-shot — build it first (webpack.screenshot.js)");
+  const root = ensureFreshBuildShot("admin-panel"); // F-125: never serve a bundle older than src/
   const { s, port } = await serve(root);
   const ctx = await browser.newContext({ viewport: { width: 1440, height: 1100 } });
   await ctx.addInitScript(([th, extra]) => { window.__SHOT__ = "admin"; window.__THEME__ = th; if (extra) for (const k in extra) window[k] = extra[k]; }, [theme, extraInit]);

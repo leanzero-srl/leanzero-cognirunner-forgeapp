@@ -1,9 +1,10 @@
 /* CogniRunner - Copyright (C) 2025 LeanZero. SPDX-License-Identifier: AGPL-3.0-or-later */
 import {chromium} from 'playwright';
 import {fileURLToPath} from 'node:url';
+import {ensureFreshBuildShot} from './lib/build-shot.mjs';
 import assert from 'node:assert/strict';
 import http from 'node:http'; import fs from 'node:fs';import path from 'node:path';
-const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../admin-panel/build-shot');
+const root=ensureFreshBuildShot('admin-panel'); // F-125: never serve a bundle older than src/
 const server=http.createServer((req,res)=>{const p=path.join(root,req.url==='/'?'index.html':req.url.split('?')[0]);res.setHeader('Content-Type',p.endsWith('.js')?'application/javascript':'text/html');fs.createReadStream(p).pipe(res);});
 await new Promise(r=>server.listen(0,'127.0.0.1',r));const browser=await chromium.launch();let count=0;
 const checked=(name)=>{count++;console.log('PASS',name);};

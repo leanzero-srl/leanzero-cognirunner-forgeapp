@@ -8,7 +8,8 @@
  * and issue-glance. Asserts the chip renders once, reads the right label, and carries
  * the SOLID per-theme hue (never a faded tint), in light AND dark.
  *
- * Prereq (each app): npx webpack --config webpack.screenshot.js --mode production
+ * No prereq build: each app's build-shot is rebuilt here when missing or stale
+ * (lib/build-shot.mjs, F-125) — a missing bundle is never a skip.
  * Run: node static/_screenshot-harness/edition-chip.test.mjs   (--shots saves header PNGs)
  */
 import { chromium } from "playwright";
@@ -16,6 +17,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { ensureFreshBuildShot } from "./lib/build-shot.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const STATIC = path.resolve(__dirname, "..");
@@ -65,8 +67,9 @@ try {
         // An unlicensed tenant IS Standard capability-wise, so it wears the slate chip.
         const ed = tenant === "advanced" ? "advanced" : "standard";
         const label = ed === "advanced" ? "coder" : "standard";
-        const root = path.join(STATIC, app, "build-shot");
-        if (!fs.existsSync(path.join(root, "index.html"))) { console.log(`SKIP ${app}: no build-shot`); break; }
+        // F-125: a missing build-shot used to SKIP here, so this suite could report 0/0
+        // and read as a pass. It now BUILDS, and a stale bundle is rebuilt.
+        const root = ensureFreshBuildShot(app);
         const { s, port } = await serve(root);
         const ctx = await browser.newContext({ viewport: { width: 1100, height: 900 } });
         await ctx.addInitScript(([sh, th, std, unl]) => {

@@ -184,7 +184,7 @@ ok(s.runtimeInjection === true && s.injection === true && s.autoCapture === fals
   const arr = [];
   for (let i = 0; i < 206; i++) arr.push(mk({ id: `a${i}`, content: `auto ${i}`, source: "test", confidence: 0.5 }));
   arr.push(mk({ id: "keepUser", content: "user memory", source: "user", confidence: 0.01 }));
-  const out = await saveMemories(arr);
+  const { memories: out } = await saveMemories(arr);
   ok(out.length === 200, `over-cap array pruned to 200 (was ${arr.length}, now ${out.length})`);
   ok(out.some((m) => m.id === "keepUser"), "low-confidence USER memory survives the item-cap prune (autos go first)");
 }
@@ -196,7 +196,7 @@ ok(s.runtimeInjection === true && s.injection === true && s.autoCapture === fals
   const arr = [];
   for (let i = 0; i < 200; i++) arr.push(mk({ id: `hi${i}`, content: `hi ${i}`, source: "test", confidence: 0.9 }));
   arr.push(mk({ id: "victim", content: "lowest score", source: "test", confidence: 0.05 }));
-  const out = await saveMemories(arr); // 201 → 200
+  const { memories: out } = await saveMemories(arr); // 201 → 200
   ok(out.length === 200 && !out.some((m) => m.id === "victim"), "single overflow evicts the lowest-pruneScore entry");
 }
 
@@ -206,7 +206,7 @@ ok(s.runtimeInjection === true && s.injection === true && s.autoCapture === fals
   for (let i = 0; i < 199; i++) arr.push(mk({ id: `f${i}`, content: `f ${i}`, source: "test", confidence: 0.5 }));
   arr.push(mk({ id: "reinf5", content: "reinforced", source: "test", confidence: 0.1, reinforcements: 5 })); // score 0.1 + 0.5 = 0.6
   arr.push(mk({ id: "raw02", content: "raw conf", source: "test", confidence: 0.2, reinforcements: 0 }));     // score 0.2
-  const out = await saveMemories(arr); // 201 → 200, evict lowest = raw02
+  const { memories: out } = await saveMemories(arr); // 201 → 200, evict lowest = raw02
   ok(!out.some((m) => m.id === "raw02"), "raw02 (score 0.2) is evicted");
   ok(out.some((m) => m.id === "reinf5"), "reinf5 survives — reinforcements lift pruneScore above raw confidence");
 }
@@ -217,7 +217,7 @@ ok(s.runtimeInjection === true && s.injection === true && s.autoCapture === fals
   for (let i = 0; i < 199; i++) arr.push(mk({ id: `f${i}`, content: `f ${i}`, source: "test", confidence: 0.9 }));
   arr.push(mk({ id: "lowOld", content: "old low", source: "test", confidence: 0.1, updatedAt: "2026-01-01T00:00:00Z" }));
   arr.push(mk({ id: "lowNew", content: "new low", source: "test", confidence: 0.1, updatedAt: "2026-06-01T00:00:00Z" }));
-  const out = await saveMemories(arr); // 201 → 200, both low tie on score 0.1; evict older
+  const { memories: out } = await saveMemories(arr); // 201 → 200, both low tie on score 0.1; evict older
   ok(!out.some((m) => m.id === "lowOld"), "on a pruneScore tie the OLDER updatedAt is evicted");
   ok(out.some((m) => m.id === "lowNew"), "the newer of two tied low-score entries survives");
 }
@@ -232,11 +232,34 @@ ok(s.runtimeInjection === true && s.injection === true && s.autoCapture === fals
   arr.splice(5, 0, mk({ id: "userA", content: `A ${fat}`, source: "user", confidence: 0.5 }));
   arr.splice(20, 0, mk({ id: "userB", content: `B ${fat}`, source: "user", confidence: 0.5 }));
   ok(bytes(arr) >= 230000, `pre-prune array exceeds the byte cap (${bytes(arr)} bytes)`);
-  const out = await saveMemories(arr);
+  const { memories: out } = await saveMemories(arr);
   ok(bytes(out) < 230000, `serialized size guard prunes below the cap (${bytes(out)} bytes)`);
   ok(out.length < arr.length, `size guard evicted rows (${arr.length} → ${out.length})`);
   ok(out.some((m) => m.id === "userA") && out.some((m) => m.id === "userB"),
     "both USER memories survive the size-based prune (auto rows evicted first)");
+}
+
+// ===================== F-159: observable eviction + protected newcomer =====================
+
+// saveMemories reports WHICH ids the prune evicted
+{
+  const arr = [];
+  for (let i = 0; i < 200; i++) arr.push(mk({ id: `hi${i}`, content: `hi ${i}`, source: "test", confidence: 0.9 }));
+  arr.push(mk({ id: "victim", content: "lowest score", source: "test", confidence: 0.05 }));
+  const res = await saveMemories(arr);
+  ok(Array.isArray(res.evicted) && res.evicted.length === 1 && res.evicted[0] === "victim",
+    `saveMemories returns the evicted ids (got ${JSON.stringify(res.evicted)})`);
+  ok(res.protectedKept === true, "protectedKept is true when nothing was protected");
+}
+
+// protectId shields the newcomer even when it is the LOWEST-scoring row
+{
+  const arr = [mk({ id: "newbie", content: "brand new low-confidence lesson", source: "test", confidence: 0.05 })];
+  for (let i = 0; i < 200; i++) arr.push(mk({ id: `hi${i}`, content: `hi ${i}`, source: "test", confidence: 0.9 }));
+  const res = await saveMemories(arr, { protectId: "newbie" });
+  ok(res.memories.some((m) => m.id === "newbie"), "the protected newcomer survives its own prune");
+  ok(res.protectedKept === true && res.evicted.length === 1 && res.evicted[0] !== "newbie",
+    `a DIFFERENT row was evicted instead (${JSON.stringify(res.evicted)})`);
 }
 
 console.log(`\nmemory-block: ${pass} passed, ${fail} failed`);

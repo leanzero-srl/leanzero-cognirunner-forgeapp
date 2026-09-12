@@ -7215,8 +7215,12 @@ resolver.define("addMemory", async ({ payload, context }) => {
       confidence: MEMORY_CONFIDENCE_BY_SOURCE[cleanSource],
       createdBy: context.accountId || null,
     });
-    if (!result.id) return { success: false, error: result.error || "Failed to save memory" };
-    return { success: true, id: result.id, merged: result.merged };
+    // F-159: `stored:false` (reason "cap") means nothing was written — never answer
+    // success for an id that the prune dropped in the same call.
+    if (result.stored === false || !result.id) {
+      return { success: false, stored: false, reason: result.reason || null, error: result.error || "Failed to save memory" };
+    }
+    return { success: true, stored: true, id: result.id, merged: result.merged, evicted: result.evicted || [] };
   } catch (error) {
     console.error("Failed to add memory:", error);
     return { success: false, error: error.message };

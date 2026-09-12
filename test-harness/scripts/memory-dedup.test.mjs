@@ -106,5 +106,27 @@ const after = load();
 ok(after.length <= 200, `pruned to the 200 cap (was 206, now ${after.length})`);
 ok(after.some((m) => m.id === "keepUser"), "the low-confidence USER memory survived (auto pruned first)");
 
+// --- F-159: at the cap with every OTHER row higher-scoring, a new fix row must never
+// "succeed" into a vanished id. Either it is stored (and a lower-value row goes), or
+// stored:false with reason "cap" — and in that case the store is left untouched.
+reset([]);
+const full = [];
+for (let i = 0; i < 200; i++) full.push({ id: `hv${i}`, content: `high value lesson number ${i} distinct`, source: "test", confidence: 0.95, reinforcements: 5, disabled: false, updatedAt: `2026-02-01T00:00:${String(i % 60).padStart(2, "0")}Z` });
+storage.__seed(MEMORIES_KEY, full);
+const atCap = await saveMemoryCandidate({ content: "a totally novel fix lesson about webhook retries", source: "fix", confidence: 0.2 });
+const post = load();
+ok(typeof atCap.stored === "boolean", "saveMemoryCandidate reports `stored`");
+if (atCap.stored) {
+  ok(atCap.id && post.some((m) => m.id === atCap.id), "a reported id EXISTS in the store after the save (no success for a vanished id)");
+  ok(post.length <= 200, `store still within the cap (${post.length})`);
+  ok(Array.isArray(atCap.evicted) && atCap.evicted.length === 1 && atCap.evicted[0] !== atCap.id,
+    `the evicted row is another one, and it is reported (${JSON.stringify(atCap.evicted)})`);
+  ok(!post.some((m) => m.id === atCap.evicted[0]), "the reported evicted id is really gone");
+} else {
+  ok(atCap.id === null && atCap.reason === "cap", "a rejected candidate returns id:null with reason 'cap'");
+  ok(post.length === 200, "a rejected candidate leaves the store untouched");
+}
+
+
 console.log(`\nmemory-dedup: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

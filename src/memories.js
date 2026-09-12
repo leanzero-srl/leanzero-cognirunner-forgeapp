@@ -131,9 +131,14 @@ export const loadMemories = async () => {
 // once no auto-captured (test/fix) memories remain.
 const pruneScore = (m) => (Number(m.confidence) || 0) + 0.1 * Math.min(Number(m.reinforcements) || 0, 5);
 
-const pruneOne = (arr) => {
-  const autoPool = arr.filter((m) => m.source !== "user");
-  const pool = autoPool.length > 0 ? autoPool : arr;
+const pruneOne = (arr, protectId = null) => {
+  // The just-inserted row (protectId) is NEVER the victim while any other row
+  // remains: F-159 — the new entry could be the lowest-scoring row and get evicted
+  // by its own save, while saveMemoryCandidate still reported an id, so addMemory
+  // answered success for a row that no longer existed.
+  const eligible = protectId ? arr.filter((m) => m.id !== protectId) : arr;
+  const autoPool = eligible.filter((m) => m.source !== "user");
+  const pool = autoPool.length > 0 ? autoPool : eligible;
   let victim = null;
   for (const m of pool) {
     if (!victim
@@ -143,19 +148,46 @@ const pruneOne = (arr) => {
       victim = m;
     }
   }
-  return arr.filter((m) => m !== victim);
+  // Nothing but the protected row is left: it is the only thing that can still go.
+  if (!victim) victim = arr.length > 0 ? arr[0] : null;
+  return { out: arr.filter((m) => m !== victim), victim };
+};
+
+/**
+ * Apply the item cap and the serialized-size guard to an array WITHOUT writing.
+ * `protectId` shields the just-added row from eviction until it is the only row
+ * left (at which point, if it still cannot fit the byte guard, it is dropped and
+ * `protectedKept` is false — the caller must then report stored:false).
+ *
+ * @returns {{ out: Array, evicted: string[], protectedKept: boolean }}
+ */
+export const pruneForSave = (arr, protectId = null) => {
+  let out = Array.isArray(arr) ? arr.slice() : [];
+  const evicted = [];
+  const step = () => {
+    const r = pruneOne(out, protectId);
+    out = r.out;
+    if (r.victim) evicted.push(r.victim.id);
+  };
+  while (out.length > MAX_MEMORIES) step();
+  while (out.length > 0 && utf8Len(JSON.stringify(out)) >= MAX_SERIALIZED_BYTES) step();
+  const protectedKept = !protectId || out.some((m) => m.id === protectId);
+  return { out, evicted, protectedKept };
 };
 
 /**
  * Persist the memories array, pruning on overflow (item cap + serialized-size
- * guard). Returns the array actually written.
+ * guard).
+ *
+ * @param {Array} arr
+ * @param {{ protectId?: string|null }} [options]
+ * @returns {Promise<{ memories: Array, evicted: string[], protectedKept: boolean }>}
+ *   `memories` is the array actually written; `evicted` the ids the prune dropped.
  */
-export const saveMemories = async (arr) => {
-  let out = Array.isArray(arr) ? arr.slice() : [];
-  while (out.length > MAX_MEMORIES) out = pruneOne(out);
-  while (out.length > 0 && utf8Len(JSON.stringify(out)) >= MAX_SERIALIZED_BYTES) out = pruneOne(out);
+export const saveMemories = async (arr, { protectId = null } = {}) => {
+  const { out, evicted, protectedKept } = pruneForSave(arr, protectId);
   await storage.set(MEMORIES_KEY, out);
-  return out;
+  return { memories: out, evicted, protectedKept };
 };
 
 const tokenSet = (s) => new Set(
@@ -176,11 +208,12 @@ const jaccard = (a, b) => {
  * against an existing memory reinforces it (reinforcements++, confidence =
  * max, updatedAt = now) instead of creating a near-duplicate.
  *
- * @returns {{ id: string|null, merged: boolean, error?: string }}
+ * @returns {{ id: string|null, merged: boolean, stored: boolean, evicted: string[], reason?: string, error?: string }}
+ *   stored:false with reason "cap" means nothing was written (store full).
  */
 export const saveMemoryCandidate = async ({ content, source = "user", projectKey = null, confidence = 1.0, meta = null, createdBy = null } = {}) => {
   const clean = String(content || "").trim().substring(0, MEMORY_CONTENT_MAX);
-  if (!clean) return { id: null, merged: false, error: "Memory content is required" };
+  if (!clean) return { id: null, merged: false, stored: false, reason: "empty", evicted: [], error: "Memory content is required" };
 
   const memories = await loadMemories();
   const norm = normalizeMemoryText(clean);
@@ -207,8 +240,8 @@ export const saveMemoryCandidate = async ({ content, source = "user", projectKey
       // row but it stays hidden from injection (buildMemoryBlock filters disabled). An AUTO (test/fix)
       // reinforce does NOT resurrect an admin's archive — only an explicit user action does.
       if (m.disabled && source === "user") m.disabled = false;
-      await saveMemories(memories);
-      return { id: m.id, merged: true };
+      const mergedSave = await saveMemories(memories);
+      return { id: m.id, merged: true, stored: true, evicted: mergedSave.evicted };
     }
   }
 
@@ -227,8 +260,17 @@ export const saveMemoryCandidate = async ({ content, source = "user", projectKey
   if (meta) entry.meta = meta;
   if (createdBy) entry.createdBy = createdBy;
   memories.unshift(entry);
-  await saveMemories(memories);
-  return { id, merged: false };
+  // F-159: the new row is protected from its own prune. If the store is genuinely
+  // full of rows that fit better AND the newcomer cannot fit the byte guard even
+  // alone, nothing is written and the caller is told it was NOT stored — never a
+  // success answer for an id that vanished in the same call.
+  // Decide BEFORE writing: a rejected newcomer must leave the store untouched
+  // (no collateral eviction for a row we are not going to keep).
+  if (!pruneForSave(memories, id).protectedKept) {
+    return { id: null, merged: false, stored: false, reason: "cap", evicted: [], error: "Memory store is full" };
+  }
+  const saved = await saveMemories(memories, { protectId: id });
+  return { id, merged: false, stored: true, evicted: saved.evicted };
 };
 
 /**

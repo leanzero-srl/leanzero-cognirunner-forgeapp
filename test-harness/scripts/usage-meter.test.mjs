@@ -8,7 +8,11 @@
 // Offline unit test for src/shared/usage-meter.js — the load-bearing pure logic
 // (normalizer + counter math + rollover + ceiling). No live Forge. Run:
 // node usage-meter.test.mjs
-import { normalizeUsage, emptyState, bumpCounters, summarizeState, overCallCeiling, METER_PROVIDERS } from "../../src/shared/usage-meter.js";
+import {
+  normalizeUsage, emptyState, bumpCounters, summarizeState, overCallCeiling, METER_PROVIDERS,
+  FORGE_LLM_USD_PER_M, forgeLlmCostUsd, FORGE_LLM_ALLOWANCE, allowanceUsdForSeats,
+  forgeLlmAllowanceStatus, noteForgeLlmClamp,
+} from "../../src/shared/usage-meter.js";
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) pass++; else { fail++; console.log("FAIL:", m); } };
@@ -74,6 +78,103 @@ ok(overCallCeiling(s, 0, MS(2026, 7, 8)) === false, "ceiling 0 = unlimited");
 ok(overCallCeiling(s, 100, MS(2026, 7, 8)) === false, "3 calls < 100 → under ceiling");
 ok(overCallCeiling(s, 3, MS(2026, 7, 8)) === true, "3 calls >= 3 → at ceiling");
 ok(overCallCeiling(s, 2, MS(2026, 7, 8)) === true, "3 calls >= 2 → over ceiling");
+
+// =====================================================================================
+// FORGE LLM VENDOR-SPEND METER (editions 1.3)
+// Only the "atlassian" provider is costed: Forge LLM tokens land on LeanZero's bill,
+// BYOK tokens land on the customer's and are deliberately NOT priced here.
+// =====================================================================================
+const near = (a, b, eps = 1e-9) => Math.abs(a - b) < eps;
+
+// --- cost math (rates are ASSUMED at tier — see the comment on FORGE_LLM_USD_PER_M) ---
+ok(near(forgeLlmCostUsd("sonnet", 3000, 300), 0.0135), "sonnet 3k/0.3k ≈ $0.0135 (the §3.2 validator figure)");
+ok(near(forgeLlmCostUsd("haiku", 3000, 300), 0.0045), "haiku 3k/0.3k ≈ $0.0045");
+ok(near(forgeLlmCostUsd("opus", 3000, 300), 0.0225), "opus 3k/0.3k ≈ $0.0225");
+ok(near(forgeLlmCostUsd("opus", 40000, 10000), 0.45), "opus agent turn 40k/10k ≈ $0.45");
+ok(forgeLlmCostUsd(null, 1e6, 1e6) === 0, "unknown tier costs 0 — never guess upward");
+ok(forgeLlmCostUsd("haiku", -5, -5) === 0, "negative tokens clamp to 0");
+ok(FORGE_LLM_USD_PER_M.haiku.in === 1 && FORGE_LLM_USD_PER_M.opus.out === 25, "price table shape");
+
+// --- tier buckets: atlassian only, split by model ---
+let fs0 = emptyState();
+fs0 = bumpCounters(fs0, { provider: "atlassian", usage: normalizeUsage({ prompt_tokens: 3000, completion_tokens: 300 }), nowMs: MS(2026, 7, 8), model: "claude-sonnet-5" });
+fs0 = bumpCounters(fs0, { provider: "atlassian", usage: normalizeUsage({ prompt_tokens: 1000, completion_tokens: 100 }), nowMs: MS(2026, 7, 8), tier: "haiku" });
+fs0 = bumpCounters(fs0, { provider: "openai", usage: normalizeUsage({ prompt_tokens: 9000, completion_tokens: 900 }), nowMs: MS(2026, 7, 8), model: "claude-opus-5" });
+let fsum = summarizeState(fs0, MS(2026, 7, 8)).month.forgeLlm;
+ok(fsum.byTier.sonnet.calls === 1 && fsum.byTier.sonnet.prompt === 3000 && fsum.byTier.sonnet.completion === 300, "sonnet bucket from the model id");
+ok(fsum.byTier.haiku.calls === 1 && fsum.byTier.haiku.prompt === 1000, "explicit tier is honoured");
+ok(fsum.byTier.opus.calls === 0, "a BYOK (openai) call NEVER lands in a forgeLlm tier bucket, whatever the model is named");
+ok(near(fsum.estUsd, 0.0135 + 0.0015), "estUsd = sonnet 0.0135 + haiku 0.0015");
+ok(fsum.clampedCalls === 0, "no clamps recorded yet");
+ok(summarizeState(fs0, MS(2026, 7, 8)).month.calls === 3, "all three calls still counted in the ordinary month totals");
+{
+  const unclassified = bumpCounters(emptyState(), { provider: "atlassian", usage: normalizeUsage(50), nowMs: MS(2026, 7, 8), model: "some-unlisted-model" });
+  const u = summarizeState(unclassified, MS(2026, 7, 8)).month.forgeLlm;
+  ok(u.byTier.haiku.calls === 0 && u.byTier.sonnet.calls === 0 && u.byTier.opus.calls === 0 && u.estUsd === 0,
+    "an unclassifiable Forge LLM model adds no tier row and no cost (rather than mis-billing a tier)");
+}
+
+// --- emptyState()/emptyMonth shape carries the forgeLlm block ---
+{
+  const fresh = summarizeState(emptyState(), MS(2026, 7, 8)).month.forgeLlm;
+  ok(!!fresh && !!fresh.byTier && fresh.estUsd === 0 && fresh.clampedCalls === 0, "emptyState month has a zeroed forgeLlm block");
+  ok(["haiku", "sonnet", "opus"].every((t) => fresh.byTier[t] && fresh.byTier[t].calls === 0), "all three tier buckets initialised");
+  // A pre-editions stored state has no forgeLlm at all — it must be repaired, not crash.
+  const legacy = { month: { key: "2026-07", calls: 4, prompt: 1, completion: 1, total: 2, byProvider: {} }, today: { key: "2026-07-08", calls: 0, total: 0 }, history: [] };
+  ok(summarizeState(legacy, MS(2026, 7, 8)).month.forgeLlm.estUsd === 0, "a legacy state with no forgeLlm block summarizes to a zeroed one");
+}
+
+// --- month rollover RESETS the forgeLlm block ---
+{
+  const next = bumpCounters(fs0, { provider: "atlassian", usage: normalizeUsage({ prompt_tokens: 10, completion_tokens: 1 }), nowMs: MS(2026, 8, 1), model: "claude-haiku-4-5-20251001" });
+  const n = summarizeState(next, MS(2026, 8, 1)).month.forgeLlm;
+  ok(n.byTier.sonnet.calls === 0, "new month: sonnet bucket reset");
+  ok(n.byTier.haiku.calls === 1, "new month: only the new haiku call");
+  ok(near(n.estUsd, forgeLlmCostUsd("haiku", 10, 1)), "new month: estUsd reset to just this call");
+}
+
+// --- allowance: clamp(seats × $2, $40, $800), fallback 100 seats ---
+ok(FORGE_LLM_ALLOWANCE.perSeatUsd === 2 && FORGE_LLM_ALLOWANCE.softPct === 0.8, "allowance constants");
+ok(allowanceUsdForSeats(100) === 200, "100 seats → $200");
+ok(allowanceUsdForSeats(5) === 40, "5 seats clamps UP to the $40 floor");
+ok(allowanceUsdForSeats(100000) === 800, "huge seat count clamps DOWN to the $800 ceiling");
+ok(allowanceUsdForSeats(0) === 200 && allowanceUsdForSeats(-3) === 200, "0 / negative seats → the 100-seat fallback");
+ok(allowanceUsdForSeats(null) === 200 && allowanceUsdForSeats("many") === 200 && allowanceUsdForSeats(NaN) === 200,
+  "null / string / NaN seats → the 100-seat fallback");
+
+// --- allowance levels at 79 / 80 / 100 % ---
+const stateAtUsd = (usd) => {
+  // 1M prompt tokens of haiku = exactly $1.00, so this builds an exact spend.
+  let st = emptyState();
+  st = bumpCounters(st, { provider: "atlassian", usage: normalizeUsage({ prompt_tokens: Math.round(usd * 1e6), completion_tokens: 0 }), nowMs: MS(2026, 7, 8), tier: "haiku" });
+  return st;
+};
+ok(forgeLlmAllowanceStatus(stateAtUsd(79), 100, MS(2026, 7, 8)).level === "ok", "79% → ok");
+ok(forgeLlmAllowanceStatus(stateAtUsd(80), 100, MS(2026, 7, 8)).level === "soft", "80% → soft (the warn threshold is inclusive)");
+ok(forgeLlmAllowanceStatus(stateAtUsd(99), 100, MS(2026, 7, 8)).level === "soft", "99% → soft");
+ok(forgeLlmAllowanceStatus(stateAtUsd(100), 100, MS(2026, 7, 8)).level === "hard", "100% → hard");
+ok(forgeLlmAllowanceStatus(stateAtUsd(250), 100, MS(2026, 7, 8)).level === "hard", "over → hard");
+{
+  const st = forgeLlmAllowanceStatus(stateAtUsd(50), 100, MS(2026, 7, 8));
+  ok(near(st.estUsd, 50) && st.allowanceUsd === 100 && near(st.pct, 0.5), "status reports estUsd / allowanceUsd / pct");
+}
+ok(forgeLlmAllowanceStatus(stateAtUsd(500), 0, MS(2026, 7, 8)).level === "ok",
+  "an UNKNOWN (0) allowance is never 'hard' — a missing allowance must not pause the product");
+ok(forgeLlmAllowanceStatus(emptyState(), 100, MS(2026, 7, 8)).level === "ok", "empty state → ok");
+
+// --- noteForgeLlmClamp ---
+{
+  let c = noteForgeLlmClamp(fs0, MS(2026, 7, 8));
+  c = noteForgeLlmClamp(c, MS(2026, 7, 8));
+  const cs = summarizeState(c, MS(2026, 7, 8)).month;
+  ok(cs.forgeLlm.clampedCalls === 2, "two clamps recorded");
+  ok(cs.calls === 3 && near(cs.forgeLlm.estUsd, 0.015), "noting a clamp does not invent a call or a cost");
+  const frozen3 = emptyState();
+  Object.freeze(frozen3); Object.freeze(frozen3.month); Object.freeze(frozen3.today); Object.freeze(frozen3.history);
+  let threw3 = false;
+  try { noteForgeLlmClamp(frozen3, MS(2026, 7, 8)); } catch (e) { threw3 = true; }
+  ok(!threw3, "noteForgeLlmClamp is pure (frozen input survives)");
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

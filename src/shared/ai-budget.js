@@ -28,8 +28,20 @@
 // This module is dependency-free (bundles into the backend AND the admin panel).
 // The KVS ledger lives in src/index.js; the consumer gate in src/async-handler.js.
 
-/** Platform ceilings we must stay under (tokens per minute, per installation). */
+/**
+ * Platform ceilings we must stay under (tokens per minute, per installation).
+ *
+ * VERIFIED 2026-09-12: Forge LLM's 50,000 tokens/min cap is PER MODEL per
+ * installation — Sonnet 5 and Opus 5 are counted independently of Haiku and of
+ * each other. The pacing below is deliberately still applied to the INSTALLATION
+ * as a whole (one number, one bucket): the conservative reading can only ever
+ * slow the app down, never overrun the platform, and splitting the ledger by
+ * model would change how every existing bucket key is read. When the queue grows
+ * a per-model bucket, this flag is the thing that says it is allowed to.
+ */
 export const AI_PLATFORM_TPM = { atlassian: 50000 };
+/** The cap above is per model, not per installation-wide token spend. */
+export const AI_PLATFORM_TPM_PER_MODEL = true;
 
 /** Default queue budgets when the admin has not set one. 0 = no budget (BYOK). */
 export const AI_BUDGET_DEFAULT_TPM = { atlassian: 35000 };

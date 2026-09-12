@@ -365,9 +365,46 @@ try {
     const { PROVIDER_IDS } = await import("../../src/shared/provider-slots.js");
     const indexSrc = readFileSync(new URL("../../src/index.js", import.meta.url), "utf8");
     const start = indexSrc.indexOf("const PROVIDERS = {");
-    const ids = [...indexSrc.slice(start, indexSrc.indexOf("\n};", start)).matchAll(/^  ([a-z0-9]+): \{/gm)].map((m) => m[1]);
+    assert.ok(start > 0, "PROVIDERS map not found in index.js");
+    // F-130 — parse by BRACE DEPTH, not by a `^  id: {` regex. A differently formatted
+    // entry (uppercase/underscore id, quoted key, `{` on the next line, an entry added
+    // after a nested block) was missed by the regex on BOTH sides, so the lockstep
+    // deepEqual compared two lists that were both wrong and passed.
+    const src = indexSrc.slice(start + "const PROVIDERS = ".length);
+    let depth = 0, i = 0, end = -1;
+    const ids = [];
+    let stripped = ""; // same slice with strings/comments blanked, for the independent count
+    while (i < src.length) {
+      const c = src[i];
+      if (c === "/" && src[i + 1] === "/") { const nl = src.indexOf("\n", i); i = nl < 0 ? src.length : nl; continue; }
+      if (c === "/" && src[i + 1] === "*") { const e = src.indexOf("*/", i); i = e < 0 ? src.length : e + 2; continue; }
+      if (c === '"' || c === "'" || c === "`") {
+        const q = c; i++;
+        while (i < src.length && src[i] !== q) { if (src[i] === "\\") i++; i++; }
+        i++; stripped += '""'; continue;
+      }
+      if (c === "{") {
+        depth++;
+        if (depth === 2) {
+          // the key that opened this entry: last identifier before the `{` and its `:`
+          const head = stripped.slice(-200);
+          const m = /([A-Za-z0-9_$]+)\s*:\s*$/.exec(head.replace(/\s+$/, (w) => w));
+          if (m) ids.push(m[1]);
+        }
+      } else if (c === "}") {
+        depth--;
+        if (depth === 0) { end = i; stripped += c; i++; break; }
+      }
+      stripped += c; i++;
+    }
+    assert.ok(end > 0, "PROVIDERS object never closed");
     assert.ok(ids.length > 1);
-    assert.deepEqual(PROVIDER_IDS, ids);
+    // Two-sided and format-independent: same length, and every declared id is a key.
+    assert.equal(ids.length, PROVIDER_IDS.length, `PROVIDERS has ${ids.length} entries, PROVIDER_IDS has ${PROVIDER_IDS.length}: ${ids.join(",")}`);
+    for (const id of PROVIDER_IDS) assert.ok(ids.includes(id), `${id} is in PROVIDER_IDS but not a key of PROVIDERS`);
+    for (const id of ids) assert.ok(PROVIDER_IDS.includes(id), `${id} is a PROVIDERS key but missing from PROVIDER_IDS`);
+    // A THIRD, independent count: every entry must carry a defaultModel.
+    assert.equal((stripped.match(/defaultModel\s*:/g) || []).length, PROVIDER_IDS.length);
     // …and index.js builds its slot names from the shared module, not its own copies.
     assert.match(indexSrc, /from "\.\/shared\/provider-slots\.js"/);
   });

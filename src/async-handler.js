@@ -26,7 +26,7 @@ import { chat as forgeLlmChatApi } from "@forge/llm";
 // Until 1.3 this consumer called forgeLlmChatApi with whatever model the saved config
 // carried, UNCLAMPED: a stale or downgraded frontier id billed the vendor from every
 // queued job while the synchronous path refused it. Same rule, one home, both seams.
-import { resolveEdition, clampForgeLlmModel, FORGE_LLM_DEFAULT } from "./shared/edition.js";
+import { resolveEdition, clampForgeLlmModel, FORGE_LLM_DEFAULT, EDITION_IDS } from "./shared/edition.js";
 // Heavy post-functions (MCP-backed: generate-doc, research, fact-checked semantics)
 // are queued by executePostFunction and run HERE under this consumer's 120s timeout —
 // the inline jira:workflowPostFunction invocation is hard-capped at 25s by the platform.
@@ -55,6 +55,10 @@ import {
   // via callAIChatSimple.
   lmAcquireWorker,
   recordAiUsage,
+  // F-089 — the Forge LLM billing clamp has ONE home (src/index.js): edition AND the
+  // month's allowance, one formula, both seams.
+  forgeLlmBillingClamp,
+  readForgeLlmAllowance,
   // Token-budget pacing (owner decision 2026-09-12): the consumer is the single
   // choke point for background AI, so the tokens-per-minute gate lives here.
   aiBudgetGate,
@@ -315,14 +319,23 @@ const callAIChatSimpleRaw = async ({ apiKey, model: requestedModel, systemPrompt
   // No response_format: JSON mode is enforced via the system message.
   if (provider === "atlassian") {
     try {
-      // Billing backstop — the same clamp src/index.js applies at callForgeLlmChat.
-      // FAIL-SOFT: any error resolving the edition leaves the model clamped to Haiku.
+      // Billing backstop — THE SAME clamp src/index.js applies at callForgeLlmChat,
+      // literally: forgeLlmBillingClamp is imported from there, so the edition AND the
+      // month's allowance are judged by one formula at both seams. Until F-089 this arm
+      // read the EDITION only, so a tenant whose allowance was exhausted ("hard") kept
+      // buying frontier tokens from every queued job — the bulk of the spend — while the
+      // synchronous path already refused them.
+      // The allowance is read FRESH here (this consumer deliberately caches nothing); a
+      // null allowance means "no ceiling known" and only the edition clamps.
+      // FAIL-SOFT: any error resolving edition or allowance leaves the model at Haiku.
       const requested = model;
-      try { model = clampForgeLlmModel(await currentEditionAsync(), model); }
-      catch (e) { model = clampForgeLlmModel("standard", model); }
-      if (model !== requested) {
-        console.warn(`[async] Forge LLM model "${requested}" not permitted on this edition — clamping to ${model}`);
-      }
+      try {
+        const [edition, allowance] = await Promise.all([
+          currentEditionAsync(),
+          readForgeLlmAllowance(),
+        ]);
+        model = await forgeLlmBillingClamp(requested, { edition, allowance, logPrefix: "[async] " });
+      } catch (e) { model = clampForgeLlmModel(EDITION_IDS.STANDARD, requested); }
       let sys = systemPrompt || "";
       if (jsonMode) {
         sys += (sys ? "\n\n" : "")

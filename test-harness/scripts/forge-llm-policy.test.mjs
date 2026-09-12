@@ -23,6 +23,8 @@ import { FORGE_LLM_DEFAULT, FORGE_LLM_FRONTIER, FORGE_LLM_MODELS } from "../../s
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const indexSrc = readFileSync(path.join(here, "../../src/index.js"), "utf8");
+// The async consumer — F-089 asserts it imports the clamp rather than owning a copy.
+const asyncSrc = readFileSync(path.join(here, "../../src/async-handler.js"), "utf8");
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) pass++; else { fail++; console.log("FAIL:", m); } };
@@ -88,14 +90,27 @@ ok(!/FORGE_LLM_MODELS\s*=/.test(codeOnly), "src/index.js does not redefine FORGE
   ok(i > 0, "found callForgeLlmChat");
   const b = codeOnly.slice(i, i + 2000);
   ok(/getProviderConfig\(\)/.test(b), "the adapter reads edition+allowance from the 30s provider memo");
-  ok(/clampForgeLlmModel\(/.test(b), "the adapter clamps by edition");
-  ok(/allowance\.level === "hard"/.test(b) && new RegExp("model = FORGE_LLM_DEFAULT").test(b),
-    "a HARD allowance forces FORGE_LLM_DEFAULT regardless of edition");
-  ok(/noteForgeLlmClamp\(/.test(b), "an allowance-forced clamp is counted through the meter");
-  ok(/console\.warn\(/.test(b), "the clamp logs one line");
-  ok(/clampForgeLlmModel\("standard"/.test(b),
+  // F-089: the clamp ITSELF now lives in forgeLlmBillingClamp — ONE home shared with the
+  // async consumer, which until 1.3 clamped by edition only. The adapter just feeds it.
+  ok(/forgeLlmBillingClamp\(requested, \{ edition, allowance \}\)/.test(b),
+    "the adapter applies the SHARED billing clamp (edition + allowance)");
+  ok(/clampForgeLlmModel\(EDITION_IDS\.STANDARD, requested\)/.test(b),
     "any error resolving edition/allowance FAILS SOFT to the Standard clamp — never an exception into a transition");
   ok(!/await storage\.get\(providerModelSlot/.test(b), "the adapter adds NO new KVS read of its own inside the race");
+}
+{
+  // The shared clamp — the ONE home for "may this vendor-billed model go out?".
+  const m = codeOnly.match(/export const forgeLlmBillingClamp = async [\s\S]*?\n\};/);
+  ok(!!m, "found forgeLlmBillingClamp");
+  const b = m ? m[0] : "";
+  ok(/allowance\.level === "hard"/.test(b) && new RegExp("model = FORGE_LLM_DEFAULT").test(b),
+    "a HARD allowance forces FORGE_LLM_DEFAULT regardless of edition");
+  ok(/clampForgeLlmModel\(edition \|\| EDITION_IDS\.STANDARD, requested\)/.test(b),
+    "otherwise the EDITION decides, defaulting to Standard");
+  ok(/noteForgeLlmClamp\(/.test(b), "an allowance-forced clamp is counted through the meter");
+  ok(/console\.warn\(/.test(b), "the clamp logs one line");
+  ok(/export const forgeLlmBillingClamp/.test(codeOnly) && /forgeLlmBillingClamp,/.test(asyncSrc || ""),
+    "the async consumer imports the same function — no second formula (F-089)");
 }
 {
   // The effective model is returned so the meter costs what was billed

@@ -42,7 +42,7 @@ import { deriveLogFlags } from "./shared/log-flags.js";
 // Edition + capability — the ONE home for "which CogniRunner is this tenant on"
 // and for the Forge LLM model policy. See src/shared/edition.js.
 import {
-  resolveEdition, EDITIONS, ADVANCED_FEATURES, isFeatureAllowed,
+  resolveEdition, EDITIONS, EDITION_IDS, ADVANCED_FEATURES, isFeatureAllowed,
   FORGE_LLM_MODELS, FORGE_LLM_FRONTIER, FORGE_LLM_DEFAULT,
   forgeLlmTier, forgeLlmModelAllowedForEdition, clampForgeLlmModel, normalizeModelId,
 } from "./shared/edition.js";
@@ -9726,6 +9726,62 @@ const FORGE_LLM_SENTINEL = "atlassian-forge-llm";
  * Errors are ForgeLlmAPIError with TOP-LEVEL .status/.statusText/.code/.message
  * (the response body is folded into .message — there is no .context property).
  */
+/**
+ * THE Forge LLM billing clamp — ONE home, two seams.
+ *
+ * Both the synchronous adapter (callForgeLlmChat, below) and the async consumer
+ * (src/async-handler.js, which imports this) must refuse a vendor-billed model on the
+ * same terms: the EDITION must entitle it AND the month's allowance must not be
+ * exhausted. Queued work is the bulk of the spend, so an edition-only clamp in the
+ * consumer let a "hard" tenant keep buying frontier tokens all month (F-089).
+ *
+ * Order matters: a HARD allowance wins over the edition — everything drops to
+ * FORGE_LLM_DEFAULT (Haiku) for the rest of the month, which is the documented
+ * "saved rules downgrade to Haiku" behaviour. An allowance-forced clamp is counted
+ * through the meter so the admin panel can say WHY rules downgraded.
+ *
+ * Callers pass the edition/allowance they already hold (the 30s memo in this module,
+ * a fresh read in the consumer) — this function adds no read of its own inside a race.
+ * It never throws; callers still wrap it and fail soft to the Standard clamp.
+ */
+export const forgeLlmBillingClamp = async (requested, { edition, allowance, logPrefix = "" } = {}) => {
+  let model = requested;
+  let clampedByAllowance = false;
+  if (allowance && allowance.level === "hard") {
+    model = FORGE_LLM_DEFAULT;
+    clampedByAllowance = requested !== FORGE_LLM_DEFAULT;
+  } else {
+    model = clampForgeLlmModel(edition || EDITION_IDS.STANDARD, requested);
+  }
+  if (model !== requested) {
+    console.warn(`${logPrefix}Forge LLM model "${requested}" not permitted (${clampedByAllowance ? "monthly allowance exhausted" : "edition"}) — clamping to ${model}`);
+    if (clampedByAllowance) {
+      // Best-effort counter so the admin panel can show WHY rules downgraded.
+      try {
+        const state = (await storage.get(USAGE_KEY)) || emptyState();
+        await storage.set(USAGE_KEY, noteForgeLlmClamp(state));
+      } catch (e) { /* the meter is best-effort — never throw into an AI call */ }
+    }
+  }
+  return model;
+};
+
+/**
+ * The month's Forge LLM allowance from a FRESH read (usage ledger + seat snapshot),
+ * for callers that hold no provider memo — i.e. the async consumer. The formula lives
+ * once, in usage-meter.js; this is only the two KVS reads around it. Returns null on
+ * any fault: "no ceiling known", never "hard".
+ */
+export const readForgeLlmAllowance = async () => {
+  try {
+    const [stateRes, seatsRes] = await Promise.all([
+      storage.get(USAGE_KEY).catch(() => null),
+      readSeatCount().catch(() => null),
+    ]);
+    return forgeLlmAllowanceStatus(stateRes || emptyState(), allowanceUsdForSeats(seatsRes));
+  } catch (e) { return null; }
+};
+
 const callForgeLlmChat = async ({ model, messages, tools, tool_choice, jsonMode }) => {
   // THE billing backstop. Whatever a stale config, a downgraded tenant or a caller
   // passes, a vendor-billed model only goes out when the edition entitles it AND the
@@ -9736,29 +9792,11 @@ const callForgeLlmChat = async ({ model, messages, tools, tool_choice, jsonMode 
   // `edition` at "standard" and the model clamped to Haiku. The call still goes out;
   // a billing gate must degrade the model, never break the transition.
   const requested = model;
-  let clampedByAllowance = false;
   try {
     const { edition, allowance } = await getProviderConfig();
-    if (allowance && allowance.level === "hard") {
-      // Allowance exhausted: everything drops to Haiku for the rest of the month.
-      // This is the documented "saved rules downgrade to Haiku" behaviour.
-      model = FORGE_LLM_DEFAULT;
-      clampedByAllowance = requested !== FORGE_LLM_DEFAULT;
-    } else {
-      model = clampForgeLlmModel(edition || "standard", model);
-    }
+    model = await forgeLlmBillingClamp(requested, { edition, allowance });
   } catch (e) {
-    model = clampForgeLlmModel("standard", model);
-  }
-  if (model !== requested) {
-    console.warn(`Forge LLM model "${requested}" not permitted (${clampedByAllowance ? "monthly allowance exhausted" : "edition"}) — clamping to ${model}`);
-    if (clampedByAllowance) {
-      // Best-effort counter so the admin panel can show WHY rules downgraded.
-      try {
-        const state = (await storage.get(USAGE_KEY)) || emptyState();
-        await storage.set(USAGE_KEY, noteForgeLlmClamp(state));
-      } catch (e) { /* the meter is best-effort — never throw into an AI call */ }
-    }
+    model = clampForgeLlmModel(EDITION_IDS.STANDARD, requested);
   }
   try {
     // Map tool_call_id → tool name (Forge LLM wants `name` on tool-result messages).

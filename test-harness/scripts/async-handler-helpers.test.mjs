@@ -184,11 +184,31 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   const i = asyncSrc.indexOf('if (provider === "atlassian") {', asyncSrc.indexOf("callAIChatSimpleRaw"));
   ok(i > 0, "found the consumer's Forge LLM branch");
   const branch = asyncSrc.slice(i, asyncSrc.indexOf("forgeLlmChatApi({", i));
-  ok(/clampForgeLlmModel\(await currentEditionAsync\(\), model\)/.test(branch),
-    "the model is clamped by edition BEFORE forgeLlmChatApi is called");
-  ok(/clampForgeLlmModel\("standard", model\)/.test(branch),
-    "any edition-read error FAILS SOFT to the Standard clamp (Haiku), never an exception out of a queued job");
-  ok(/console\.warn\(/.test(branch), "the clamp logs one line");
+  // F-089: the clamp is EDITION **and** ALLOWANCE, and it is not a second copy of the
+  // formula — forgeLlmBillingClamp is imported from src/index.js, the one home that the
+  // synchronous adapter also calls. An edition-only clamp here let a tenant at
+  // level:"hard" keep billing frontier models from every queued job all month.
+  ok(/forgeLlmBillingClamp\(requested, \{ edition, allowance/.test(branch),
+    "the model is clamped by edition AND allowance BEFORE forgeLlmChatApi is called");
+  ok(/currentEditionAsync\(\)/.test(branch) && /readForgeLlmAllowance\(\)/.test(branch),
+    "both inputs are read here — the edition locally, the allowance through index.js's one reader");
+  ok(/clampForgeLlmModel\(EDITION_IDS\.STANDARD, requested\)/.test(branch),
+    "any edition/allowance read error FAILS SOFT to the Standard clamp (Haiku), never an exception out of a queued job");
+  for (const sym of ["forgeLlmBillingClamp", "readForgeLlmAllowance"]) {
+    ok(new RegExp("\\n  " + sym + ",").test(asyncSrc), `the consumer imports ${sym} from src/index.js (no second formula)`);
+  }
+  // …and the one home applies the HARD-allowance arm the consumer used to lack.
+  {
+    const h = indexSrc.match(/export const forgeLlmBillingClamp = async [\s\S]*?\n\};/);
+    ok(!!h, "found forgeLlmBillingClamp in src/index.js");
+    const hb = h ? h[0] : "";
+    ok(/allowance\.level === "hard"/.test(hb) && /model = FORGE_LLM_DEFAULT/.test(hb),
+      "a HARD allowance forces FORGE_LLM_DEFAULT regardless of edition — for BOTH seams");
+    ok(/noteForgeLlmClamp\(/.test(hb), "an allowance-forced clamp is counted through the same meter note");
+    ok(/console\.warn\(/.test(hb), "the clamp logs one line, through the same path");
+  }
+  ok(/readSeatCount\(\)/.test(indexSrc.match(/export const readForgeLlmAllowance = async [\s\S]*?\n\};/)[0]),
+    "readForgeLlmAllowance reads the SAME usage ledger + seat snapshot the memo uses");
 
   // currentEditionAsync: license → snapshot → Standard, never throwing.
   const m = asyncSrc.match(/const currentEditionAsync = async \(\) => \{[\s\S]*?\n\};/);

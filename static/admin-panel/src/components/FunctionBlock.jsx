@@ -367,6 +367,12 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
   };
 
   const handleGenerate = async () => {
+    // F-141 — ONE RULE: generate and fix are mutually exclusive on a step. Only one AI
+    // write to `code` may ever be in flight, because both resolve into the same field and
+    // both spend a real provider attempt. Starting one while the other runs abandons the
+    // first silently (its token is bumped, its result discarded) with the attempt already
+    // charged. The mirror guard lives at the top of handleFixWithAI.
+    if (isGenerating || fixing) return;
     genTokenRef.current += 1;
     const token = genTokenRef.current;
     setIsGenerating(true);
@@ -500,7 +506,9 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
   // auto re-run the test, and persist what the AI learned as a memory when
   // the re-run passes.
   const handleFixWithAI = async () => {
-    if (fixing || fixAttempts >= 2) return;
+    // F-141 — mirror of the guard in handleGenerate: generate and fix are mutually
+    // exclusive on a step (see the note there for why).
+    if (fixing || isGenerating || fixAttempts >= 2) return;
     genTokenRef.current += 1;
     const token = genTokenRef.current;
     const failedResult = testResult;
@@ -1109,7 +1117,9 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
           <span className="aen-text">
             <strong>Generation failed — your existing code was kept.</strong> {generationKept}
           </span>
-          <button className="aen-retry" onClick={handleGenerate}>Retry</button>
+          {/* F-141 — Retry is a generate. It is offered only when no AI write to this
+              step's code is in flight, so it can never abandon a running fix. */}
+          {!fixing && <button className="aen-retry" onClick={handleGenerate}>Retry</button>}
           <button className="aen-dismiss" onClick={() => setGenerationKept(null)} aria-label="Dismiss">&times;</button>
         </div>
       )}

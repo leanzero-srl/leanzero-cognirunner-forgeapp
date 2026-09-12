@@ -520,6 +520,63 @@ try {
     }
   }
 
+  /* ---------------- F-141 — generate and fix are mutually exclusive on a step ---------------- */
+  // F-133 gave a failed regenerate a red "your existing code was kept" note with a Retry
+  // button, and (correctly) stopped clearing the dry-run verdict — so the FAILING verdict
+  // and its "Fix with AI" button survive the failed generate and sit on screen next to
+  // Retry. Retry, unlike its cancelled-note sibling, carried no `!fixing` guard and
+  // handleGenerate had no in-flight check, so both affordances were live at once: pressing
+  // Retry mid-fix bumped the generation token, silently abandoned the fix whose provider
+  // attempt was already charged, and left the step with neither result.
+  // ONE RULE: while an AI write to a step's code is in flight, no other one may start.
+  // __HOLD__ parks fixPostFunctionCode in flight until __RELEASE_HOLD__() is called.
+  for (const theme of ["light", "dark"]) {
+    const T = theme.toUpperCase();
+    console.log(`F-141 Retry is withheld while a fix is in flight (cfg-static, ${theme})`);
+    const env = await openEditor(browser, "config-ui", "cfg-static", theme, {
+      __TESTFAIL_ONCE__: true,
+      __FAIL__: ["generatePostFunctionCode"],
+      __HOLD__: ["fixPostFunctionCode"],
+    });
+    const { page } = env;
+    try {
+      const b = page.locator(".function-block").first();
+      const retry = b.locator(".async-error-note .aen-retry");
+
+      // Earn a FAILING dry-run, then fail a regenerate on top of it — this is the exact
+      // state F-133 created, with the failing verdict (and its Fix button) still standing.
+      await b.locator(".btn-test-run", { hasText: /Test Run/ }).click();
+      await b.locator(".btn-run-test", { hasText: "Run Test" }).click();
+      await b.locator(".test-result.test-fail").waitFor({ timeout: 10000 });
+      await b.locator(".btn-generate", { hasText: "Regenerate Code" }).first().click();
+      await b.locator(".async-error-note").waitFor({ timeout: 12000 });
+      ok(await retry.count() === 1, `F-141 ${T} Retry is offered while nothing is in flight`);
+      ok(await b.locator(".btn-fix-ai").count() === 1, `F-141 ${T} the failing verdict still offers Fix with AI (F-133 kept it)`);
+
+      // Start the fix and park it in flight.
+      await b.locator(".btn-fix-ai", { hasText: "Fix with AI" }).click();
+      await page.waitForFunction(() => typeof window.__RELEASE_HOLD__ === "function", { timeout: 10000 });
+
+      // THE defect: the kept-code note must still be there (nothing resolved it), but its
+      // Retry must not be pressable — absent, or present-and-disabled.
+      ok(await b.locator(".async-error-note").count() === 1, `F-141 ${T} the kept-code note stays up while the fix runs`);
+      const liveRetries = await retry.count();
+      const retryPressable = liveRetries > 0 && await retry.first().isEnabled();
+      ok(!retryPressable, `F-141 ${T} Retry is absent or disabled while a fix is in flight`);
+
+      // Let the fix land, then Retry must come back — the rule is mutual exclusion, not
+      // a one-way removal of the affordance.
+      await page.evaluate(() => window.__RELEASE_HOLD__());
+      await b.locator(".fix-result").waitFor({ timeout: 12000 });
+      await page.waitForFunction(
+        () => { const r = document.querySelector(".async-error-note .aen-retry"); return !!r && !r.disabled; },
+        { timeout: 10000 },
+      );
+      ok(true, `F-141 ${T} Retry is enabled again once the fix has settled`);
+    } catch (e) { fail++; console.log(`  \u2717 F-141 ${T} threw: ` + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
   /* ---------------- J19 — MANAGED semantic flavors (config-ui = read-only admin notice) ---------------- */
   {
     console.log("J19 managed semantic flavors (cfg-managed)");

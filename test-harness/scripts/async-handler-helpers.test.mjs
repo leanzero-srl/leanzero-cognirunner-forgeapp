@@ -584,5 +584,21 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
     ok(route(t) === "skip-gate", `EXECUTED: ${t} still just skips the gate (its own body refuses)`);
 }
 
+// =====================================================================================
+// F-122 — a cancel must be distinguishable from a failure by a FLAG, not a string.
+// =====================================================================================
+{
+  ok(/\{ status: "error", cancelled: true, error: "Cancelled" \}/.test(asyncSrc),
+    "the consumer's cancel checkpoint writes cancelled:true on the poll row");
+  ok(/status: "cancelled", cancelled: true, finishedAt/.test(asyncSrc), "…and on the job row");
+  ok(/status: "error", error: result\.error, \.\.\.\(result\.cancelled === true \? \{ cancelled: true \} : \{\}\)/.test(indexSrc),
+    "getAsyncTaskResult forwards the flag and KEEPS status 'error' (every existing poller has an error arm)");
+  // EXECUTED: the forward, over both shapes.
+  const fwd = (row) => ({ success: true, status: "error", error: row.error, ...(row.cancelled === true ? { cancelled: true } : {}) });
+  ok(fwd({ status: "error", cancelled: true, error: "Cancelled" }).cancelled === true, "EXECUTED: a cancel is flagged");
+  ok(fwd({ status: "error", error: "No API key configured" }).cancelled === undefined, "EXECUTED: a real failure is not");
+  ok(fwd({ status: "error", cancelled: true, error: "Cancelled" }).status === "error", "EXECUTED: the status word is unchanged (compatibility)");
+}
+
 console.log(`\nasync-handler-helpers: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

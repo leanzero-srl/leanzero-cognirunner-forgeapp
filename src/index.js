@@ -8454,7 +8454,11 @@ resolver.define("getAsyncTaskResult", async ({ payload, context }) => {
     }
     if (result.status === "error") {
       try { await storage.delete(`async_task:${taskId}`); } catch (e) { /* ignore */ }
-      return { success: true, status: "error", error: result.error };
+      // F-122 — a cancelled task is written as status "error" (every poller has an
+      // error arm; changing the status word would break them). Forward the explicit
+      // `cancelled` flag so a caller can tell an operator STOP from a real failure
+      // without string-matching the error text.
+      return { success: true, status: "error", error: result.error, ...(result.cancelled === true ? { cancelled: true } : {}) };
     }
     return { success: true, status: "unknown" };
   } catch (error) {

@@ -997,9 +997,13 @@ export async function handler(event) {
   if (await isJobCancelled(taskId, jobRow?.enqueuedAt || params?.enqueuedAt)) {
     console.log(`Async handler: ${taskType} (${taskId}) cancelled before start — skipping`);
     if (!UNPOLLED_TASKS.has(taskType)) {
-      await storage.set(`${TASK_PREFIX}${taskId}`, { status: "error", error: "Cancelled" }, ttl);
+      // F-122 — a cancel is NOT a failure. The status stays "error" for
+      // compatibility with every existing poller, but the row carries an explicit
+      // `cancelled: true` so a UI can branch on the FLAG instead of matching the
+      // literal string "Cancelled" (which no contract guarantees).
+      await storage.set(`${TASK_PREFIX}${taskId}`, { status: "error", cancelled: true, error: "Cancelled" }, ttl);
     }
-    await updateAsyncJob(taskId, { status: "cancelled", finishedAt: new Date().toISOString() }, JOB_TTL_DONE);
+    await updateAsyncJob(taskId, { status: "cancelled", cancelled: true, finishedAt: new Date().toISOString() }, JOB_TTL_DONE);
     return;
   }
 

@@ -220,6 +220,11 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
   // F-129 — set when a queued AI task was cancelled by a tenant Stop-all. Neutral slate
   // note, NOT an error: nothing ran, nothing was written, the step is exactly as it was.
   const [cancelledNote, setCancelledNote] = useState(null);
+  // F-133 — set when a generate FAILED while the step already had code. The existing code,
+  // its provenance and its dry-run verdict are all kept; this is the (solid red) note that
+  // says so, and it carries the Retry affordance. Distinct from `generationFallback`, which
+  // means "there was no code, so a generic template WAS inserted".
+  const [generationKept, setGenerationKept] = useState(null);
   // Fix-with-AI loop state
   const [fixing, setFixing] = useState(false);
   const [fixAttempts, setFixAttempts] = useState(0);
@@ -334,14 +339,43 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
     suggestTimer.current = setTimeout(() => suggestOperationType(val), 800);
   };
 
+  // F-133 — a generate that FAILED (provider error, poll exhaustion, timeout, network).
+  // A failed regenerate must NEVER replace code the author already has: their code may be
+  // tested, hand-edited and hours old, and the fix-undo bar is fix-only, so a clobber here
+  // is unrecoverable. The local template fallback exists for its ORIGINAL purpose only —
+  // a FIRST generate on a step with no code at all, so the user is not left empty-handed.
+  const handleGenerateFailure = (reason) => {
+    const message = reason || "AI generation failed";
+    if (functionData.code?.trim()) {
+      // Keep code, generationMeta AND the dry-run verdict exactly as they were.
+      setGenerationKept(message);
+      console.warn("AI generation failed, kept existing code:", message);
+      return;
+    }
+    const code = generateCode(
+      functionData.operationType,
+      functionData.operationPrompt,
+      functionData.endpoint,
+      functionData.method,
+      functionData.includeBackoff,
+    );
+    onUpdate({ code, generationMeta: null });
+    // No prior code means no verdict worth keeping; clear it for symmetry with a success.
+    setTestResult(null);
+    setGenerationFallback(message);
+    console.warn("AI generation failed, used template:", message);
+  };
+
   const handleGenerate = async () => {
     genTokenRef.current += 1;
     const token = genTokenRef.current;
     setIsGenerating(true);
     setGenerationFallback(null);
+    setGenerationKept(null);
     setCancelledNote(null);
-    // A verdict earned by the OLD code must not stand against the new code.
-    setTestResult(null);
+    // NOTE (F-133): the old verdict is cleared where the code is actually REPLACED, not
+    // here. Clearing it up-front threw away a PASS that still belonged to code we may end
+    // up keeping (a failed generate leaves the tested code in place).
     try {
       // The backend resolves selected docs/skills/memories itself; the inline
       // "Additional Context" textarea is the only client-supplied text.
@@ -372,33 +406,14 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
       if (result && result.cancelled) { setCancelledNote("generate"); return; }
       if (result && result.success && result.code) {
         onUpdate({ code: result.code, generationMeta: compactMeta(result.meta) });
+        // A verdict earned by the OLD code must not stand against the new code.
+        setTestResult(null);
       } else {
-        // Fallback to local template if AI fails. Surface a notice so the user knows
-        // they're looking at a generic template, not AI-tailored code.
-        const code = generateCode(
-          functionData.operationType,
-          functionData.operationPrompt,
-          functionData.endpoint,
-          functionData.method,
-          functionData.includeBackoff,
-        );
-        onUpdate({ code, generationMeta: null });
-        setGenerationFallback(result?.error || "AI generation failed");
-        console.warn("AI generation failed, used template:", result?.error);
+        handleGenerateFailure(result?.error);
       }
     } catch (e) {
       if (genTokenRef.current !== token) return;
-      // Fallback to local template on network error
-      const code = generateCode(
-        functionData.operationType,
-        functionData.operationPrompt,
-        functionData.endpoint,
-        functionData.method,
-        functionData.includeBackoff,
-      );
-      onUpdate({ code, generationMeta: null });
-      setGenerationFallback(e.message || "Network error");
-      console.warn("AI generation error, used template:", e.message);
+      handleGenerateFailure(e.message || "Network error");
     } finally {
       // Always clear the busy flag — a stale token here can only mean a manual
       // edit or unmount (the Generate/Fix buttons are mutually excluded), so
@@ -617,6 +632,7 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
     if (fixResult) setFixResult(null);
     if (fixAttempts !== 0) setFixAttempts(0);
     if (generationFallback) setGenerationFallback(null);
+    if (generationKept) setGenerationKept(null);
     // The verdict belongs to the pre-edit code — clear it.
     if (testResult) setTestResult(null);
     if (narrateState !== "idle") resetNarrate();
@@ -1082,6 +1098,19 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
             Cancelled — nothing was changed. Run it again when the stop is lifted.
           </span>
           <button className="acn-dismiss" onClick={() => setCancelledNote(null)} aria-label="Dismiss">&times;</button>
+        </div>
+      )}
+
+      {/* F-133 — generation failed while the step ALREADY had code. Nothing was replaced:
+          the code, its provenance chips and its dry-run verdict are all still the author's.
+          Solid red (this IS a failure, unlike a Stop-all cancel), white text, with Retry. */}
+      {generationKept && !isGenerating && (
+        <div className="async-error-note anim-rise">
+          <span className="aen-text">
+            <strong>Generation failed — your existing code was kept.</strong> {generationKept}
+          </span>
+          <button className="aen-retry" onClick={handleGenerate}>Retry</button>
+          <button className="aen-dismiss" onClick={() => setGenerationKept(null)} aria-label="Dismiss">&times;</button>
         </div>
       )}
 

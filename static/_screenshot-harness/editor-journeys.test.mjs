@@ -450,6 +450,76 @@ try {
       await closeEditor(env);
     }
   }
+  /* ---------------- F-133 — a FAILED regenerate must never replace existing code ---------------- */
+  // Before this fix, EVERY non-cancel generate failure (provider 500, poll exhaustion,
+  // timeout, network) ran the same `else` arm: overwrite the author's code with a generic
+  // local template, null the provenance, drop the dry-run verdict — with no undo (the
+  // undo bar is fix-only). Hours of tested work, gone to a transient 500.
+  // The template fallback keeps its ORIGINAL purpose: a FIRST generate on an empty step.
+  // __FAIL__ = ["generatePostFunctionCode"] makes the resolver reject (the catch arm).
+  const FIXTURE_CODE = /Find all issues in this project with a similar summary/;
+  const KEPT_TEXT = /Generation failed — your existing code was kept/;
+  const RED = { light: "rgb(220, 38, 38)", dark: "rgb(239, 68, 68)" };
+  const errBg = (scope) => scope.evaluate(() => {
+    const el = document.querySelector(".async-error-note");
+    return el ? getComputedStyle(el).backgroundColor : null;
+  });
+
+  for (const theme of ["light", "dark"]) {
+    const T = theme.toUpperCase();
+
+    /* F-133a — step HAS code (and a PASS): failure keeps code, provenance and verdict */
+    {
+      console.log(`F-133a generate failure keeps existing code (cfg-static, ${theme})`);
+      const env = await openEditor(browser, "config-ui", "cfg-static", theme, { __FAIL__: ["generatePostFunctionCode"] });
+      const { page } = env;
+      try {
+        const b = page.locator(".function-block").first();
+        // Earn a real PASS first, so we can prove the verdict survives too.
+        await b.locator(".btn-test-run", { hasText: /Test Run/ }).click();
+        await b.locator(".btn-run-test", { hasText: "Run Test" }).click();
+        await b.locator(".test-result.test-pass").waitFor({ timeout: 10000 });
+        ok(await b.locator(".pf-test-chip.pf-test-pass").count() > 0, `F-133a ${T} step is 'Tested ✓' before the failed regenerate`);
+        const codeBefore = await b.locator(".cm-content").first().innerText();
+        ok(FIXTURE_CODE.test(codeBefore), `F-133a ${T} the editor starts on the author's seeded code`);
+
+        await b.locator(".btn-generate", { hasText: "Regenerate Code" }).first().click();
+        await b.locator(".async-error-note").waitFor({ timeout: 12000 });
+
+        ok(KEPT_TEXT.test(await b.locator(".async-error-note").first().innerText()), `F-133a ${T} shows the 'your existing code was kept' note`);
+        ok(await errBg(page) === RED[theme], `F-133a ${T} the kept-code note is solid red ${RED[theme]}`);
+        ok(await b.locator(".async-error-note .aen-retry", { hasText: "Retry" }).count() > 0, `F-133a ${T} the note offers a Retry affordance`);
+        // THE defect: the code must be byte-for-byte what it was.
+        ok(await b.locator(".cm-content").first().innerText() === codeBefore, `F-133a ${T} the author's code is UNCHANGED after a failed regenerate`);
+        ok(await page.getByText("A generic template was inserted").count() === 0, `F-133a ${T} no generic template was inserted`);
+        // Provenance and the dry-run verdict belong to code we kept — they must stand.
+        ok(/2 memor/i.test(await b.locator(".gmc-mem").first().innerText()), `F-133a ${T} the seeded provenance chips survive the failure`);
+        ok(await b.locator(".test-result.test-pass").count() > 0, `F-133a ${T} the passing dry-run verdict survives the failure`);
+        ok(await b.locator(".pf-test-chip.pf-test-pass").count() > 0, `F-133a ${T} the step is still 'Tested ✓' — the verdict still fits the code`);
+      } catch (e) { fail++; console.log(`  ✗ F-133a ${T} threw: ` + e.message.split("\n")[0]); }
+      await closeEditor(env);
+    }
+
+    /* F-133b — step has NO code: the local template fallback is still correct */
+    {
+      console.log(`F-133b first generate failure falls back to template (cfg-static, ${theme})`);
+      const env = await openEditor(browser, "config-ui", "cfg-static", theme, { __FAIL__: ["generatePostFunctionCode"], __STEP_NO_CODE__: true });
+      const { page } = env;
+      try {
+        const b = page.locator(".function-block").first();
+        ok(await b.locator(".btn-generate", { hasText: "Generate Code" }).count() > 0, `F-133b ${T} an empty step offers 'Generate Code' (no code yet)`);
+        await b.locator(".btn-generate", { hasText: "Generate Code" }).first().click();
+        await page.getByText("A generic template was inserted").first().waitFor({ timeout: 12000 });
+        ok(true, `F-133b ${T} a first generate that fails still inserts the generic template`);
+        ok(await b.locator(".async-error-note").count() === 0, `F-133b ${T} no 'code was kept' note — there was no code to keep`);
+        const code = await b.locator(".cm-content").first().innerText();
+        ok(code.trim().length > 0, `F-133b ${T} the user is not left with an empty editor`);
+        ok(!FIXTURE_CODE.test(code), `F-133b ${T} what landed is the template, not the other step's code`);
+      } catch (e) { fail++; console.log(`  ✗ F-133b ${T} threw: ` + e.message.split("\n")[0]); }
+      await closeEditor(env);
+    }
+  }
+
   /* ---------------- J19 — MANAGED semantic flavors (config-ui = read-only admin notice) ---------------- */
   {
     console.log("J19 managed semantic flavors (cfg-managed)");

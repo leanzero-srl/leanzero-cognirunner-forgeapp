@@ -1954,6 +1954,49 @@ html[data-color-mode="dark"] .alert-warning {
     }
     html[data-color-mode="dark"] .async-cancelled-note { background: #64748b; }
 
+    /* F-133 — a generate that FAILED while the step already had code. The code, its
+       provenance and its dry-run verdict were all KEPT (a failed regenerate never
+       replaces the author's work, and there is no undo for generate). This IS a
+       failure, so unlike the slate cancel note it wears solid saturated red with
+       white text — no washed-out tint, no left accent rail. Dark is one shade lighter. */
+    .async-error-note {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      margin: 8px 0;
+      padding: 8px 10px;
+      background: #dc2626;
+      border: none;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      color: #ffffff;
+    }
+    .async-error-note .aen-text { flex: 1; }
+    .async-error-note .aen-retry {
+      background: #ffffff;
+      color: #dc2626;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 700;
+      padding: 2px 10px;
+      flex-shrink: 0;
+    }
+    .async-error-note .aen-dismiss {
+      background: transparent;
+      border: none;
+      cursor: pointer;
+      color: #ffffff;
+      font-size: 16px;
+      line-height: 1;
+      padding: 0;
+    }
+    html[data-color-mode="dark"] .async-error-note { background: #ef4444; }
+    html[data-color-mode="dark"] .async-error-note .aen-retry { color: #ef4444; }
+
+
 
     .review-items {
       margin-top: 8px;

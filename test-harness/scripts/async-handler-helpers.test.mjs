@@ -418,8 +418,10 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   ok(/return \{ success: false, error: "Queued post-function was delivered without an issue key or a rule config/.test(asyncSrc),
     "the dropped-PF early return carries an error string (it used to be a bare success:false → green DONE)");
   // And the guard's own message is still the one constant.
-  ok((asyncSrc.match(/error: NO_PROVIDER_ERROR \}/g) || []).length === 5,
-    "the five no-provider bails still return the one shared message constant");
+  // Counted on the RETURN shape specifically: F-121 added two more uses of the same
+  // constant in the budget gate (a poll row + a job row), which must not shift this count.
+  ok((asyncSrc.match(/return \{ success: false, error: NO_PROVIDER_ERROR \};/g) || []).length === 5,
+    "the five no-provider task-body bails still return the one shared message constant");
 }
 
 // =====================================================================================
@@ -554,6 +556,32 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   ok(/is already pending or recently failed — not re-queued/.test(indexSrc), "the suppressed case says so in the log");
   // claimRuleExecution is the ONE home for this conditional-write rule (no second copy).
   ok(!/keyPolicy: "FAIL_IF_EXISTS"[\s\S]{0,80}memdistill/.test(indexSrc), "no second hand-rolled claim for the distill");
+}
+
+// =====================================================================================
+// F-121 — a null FRESH provider read must FAIL listener/scheduledjob, never skip the gate.
+// They have no NO_PROVIDER_ERROR guard of their own and reach AI through agent-runner's
+// 30s-memoised provider, so skipping would run them unpaced and unreserved.
+// =====================================================================================
+{
+  const gateBlock = asyncSrc.match(/if \(gate\.skipped === "no-provider"\) \{[\s\S]*?\} else if \(!gate\.allow\) \{/)[0];
+  ok(/if \(taskType === "listener" \|\| taskType === "scheduledjob"\) \{/.test(gateBlock),
+    "the two agent-runner task types are handled before the skip");
+  ok(gateBlock.indexOf('taskType === "listener"') < gateBlock.indexOf("gate skipped, nothing reserved"),
+    "…BEFORE the skip that zeroes the estimate");
+  ok(/error: NO_PROVIDER_ERROR/.test(gateBlock), "…failing with the one shared message constant");
+  ok(/return;/.test(gateBlock), "…and returning, so agent-runner never runs");
+  ok(/storeLog\(\{/.test(gateBlock) && /type: taskType === "listener" \? "listener" : "scheduledjob"/.test(gateBlock),
+    "…leaving a visible execution-log entry under a known badge type (F-119)");
+  ok(/status: "error", finishedAt: new Date\(\)\.toISOString\(\), error: NO_PROVIDER_ERROR/.test(gateBlock),
+    "…and a failed job row");
+  ok(/!UNPOLLED_TASKS\.has\(taskType\)/.test(gateBlock), "…and the poll row only for the polled one (scheduledjob)");
+
+  // EXECUTED: the routing decision.
+  const route = (taskType) => (taskType === "listener" || taskType === "scheduledjob") ? "fail-closed" : "skip-gate";
+  ok(route("listener") === "fail-closed" && route("scheduledjob") === "fail-closed", "EXECUTED: the two AI-writing types fail closed");
+  for (const t of ["review", "codegen", "fixcode", "skilldistill", "memory_distill", "postfunction"])
+    ok(route(t) === "skip-gate", `EXECUTED: ${t} still just skips the gate (its own body refuses)`);
 }
 
 console.log(`\nasync-handler-helpers: ${pass} passed, ${fail} failed`);

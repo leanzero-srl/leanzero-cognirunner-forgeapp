@@ -1065,6 +1065,38 @@ export async function handler(event) {
       // now (F-109); spend nothing on the ledger on the way there. Zeroing the estimate
       // also keeps the settle below symmetric with what was (not) reserved.
       if (gate.skipped === "no-provider") {
+        // F-121 — the skip is only safe for the task types that refuse on their own.
+        // `listener` and `scheduledjob` have NO NO_PROVIDER_ERROR guard, and they reach
+        // the model through agent-runner → index.js's 30s-MEMOISED provider read, not
+        // this fresh one. So a skip here lets an agent run fully unpaced and unreserved
+        // on a provider this consumer believes does not exist. Fail CLOSED instead —
+        // the same rule the other five task bodies already follow.
+        if (taskType === "listener" || taskType === "scheduledjob") {
+          console.error(`[budget] no provider for ${taskType} (${taskId}) — failing closed before the run`);
+          if (!UNPOLLED_TASKS.has(taskType)) {
+            await storage.set(`${TASK_PREFIX}${taskId}`, { status: "error", error: NO_PROVIDER_ERROR }, ttl);
+          }
+          try {
+            const { storeLog } = await import("./index");
+            await storeLog({
+              type: taskType === "listener" ? "listener" : "scheduledjob",
+              source: "async",
+              issueKey: params?.ctx?.issueKey || "(no issue)",
+              fieldId: params?.eventType || (params?.jobName ? "schedule" : ""),
+              isValid: false,
+              decision: "ERROR",
+              reason: `Run stopped before it started: ${NO_PROVIDER_ERROR}`,
+              recommendation: "Check the AI provider setting in CogniRunner Settings, then re-trigger the rule or run the job manually.",
+              executionTimeMs: 0,
+              ruleId: params?.listenerId || params?.jobId || null,
+              ruleName: params?.listenerName || params?.jobName || null,
+              ruleWorkflow: null,
+              eventType: params?.eventType,
+            });
+          } catch (e) { console.warn("no-provider log failed:", e && e.message); }
+          await updateAsyncJob(taskId, { status: "error", finishedAt: new Date().toISOString(), error: NO_PROVIDER_ERROR }, JOB_TTL_DONE);
+          return;
+        }
         console.warn(`[budget] no provider for ${taskType} (${taskId}) — gate skipped, nothing reserved`);
         budgetEstimate = 0;
         budgetProvider = null;

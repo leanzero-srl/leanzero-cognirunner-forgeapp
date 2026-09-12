@@ -289,6 +289,13 @@ const STATIC_CODE_1 = [
   'api.log("Found " + (results.issues?.length || 0) + " possible duplicates");',
   "return results.issues || [];",
 ].join("\n");
+// F-157 — the fix mock must return code that DIFFERS from the step's current code. A real
+// landed fix always changes the source, which is what makes `learnedFrom` diverge after an
+// Undo; returning STATIC_CODE_1 unchanged made that whole branch unreachable in the harness.
+const STATIC_CODE_FIXED = STATIC_CODE_1.replace(
+  'api.log("Found "',
+  'if (!results || !results.issues) return [];\napi.log("Found "',
+);
 const STATIC_CODE_2 = [
   "// Post a comment linking each duplicate found in step 1",
   "if (!duplicates || duplicates.length === 0) {",
@@ -814,7 +821,9 @@ function invoke(name, payload) {
     case "discoverWorkflowRules": return Promise.resolve({ success: true, rules: [] });
     case "testValidation": return Promise.resolve({ success: true, isValid: true, reason: "The description includes clear steps to reproduce, the expected behavior, and the actual behavior. It meets the rule.", fieldId: "description", fieldValue: "Steps to reproduce:\n1. Open checkout\n2. Apply a coupon\nExpected: discount applied. Actual: 500 error.", issueKey: "DEMO-123", mode: "standard", executionTimeMs: 1840, logs: ["Reading field: description", "Running AI validation…", "Result: PASS"], toolInfo: null });
     case "testSemanticPostFunction": return Promise.resolve({ success: true, decision: "UPDATE", reason: "The description describes a customer-facing checkout regression — writing an executive summary.", proposedValue: "• Checkout fails when a coupon is applied (500 error)\n• Customer impact: all coupon users blocked\n• Next: hotfix the coupon service", targetFieldId: "customfield_10001", executionTimeMs: 2100 });
-    case "testPostFunction": if (typeof window !== "undefined" && window.__TESTFAIL_ONCE__) { window.__TESTFAIL_ONCE__ = false; return Promise.resolve({ success: false, isValid: false, mode: "live", issueKey: "PROJ-42", error: "ReferenceError: dupes is not defined", logs: ["getIssue(\"PROJ-42\") — OK", "ERROR: ReferenceError: dupes is not defined"], changes: [], executionTimeMs: 900 }); } return Promise.resolve({ success: true, isValid: true, mode: "live", issueKey: "PROJ-42", logs: ["getIssue(\"PROJ-42\") — OK (Payment retry fails)", "searchJql — returned 3 issues", "updateIssue — DRY RUN", "addComment — DRY RUN"], changes: [
+    // __TESTFAIL_ALWAYS__ keeps the dry run failing (F-156 needs a SECOND fix whose auto
+    // re-run also fails, which is the case that saves no new memory).
+    case "testPostFunction": if (typeof window !== "undefined" && (window.__TESTFAIL_ONCE__ || window.__TESTFAIL_ALWAYS__)) { window.__TESTFAIL_ONCE__ = false; return Promise.resolve({ success: false, isValid: false, mode: "live", issueKey: "PROJ-42", error: "ReferenceError: dupes is not defined", logs: ["getIssue(\"PROJ-42\") — OK", "ERROR: ReferenceError: dupes is not defined"], changes: [], executionTimeMs: 900 }); } return Promise.resolve({ success: true, isValid: true, mode: "live", issueKey: "PROJ-42", logs: ["getIssue(\"PROJ-42\") — OK (Payment retry fails)", "searchJql — returned 3 issues", "updateIssue — DRY RUN", "addComment — DRY RUN"], changes: [
       { action: "updateIssue", key: "PROJ-42", fields: { priority: { name: "High" }, labels: ["escalated"] } },
       { action: "addComment", key: "PROJ-42" },
       { action: "transitionIssue", key: "PROJ-42", transitionId: "31" },
@@ -913,8 +922,16 @@ function invoke(name, payload) {
     // F-150 — window.__FIX_MEMORY__ = true makes the fix answer carry a memoryCandidate,
     // which is what drives FunctionBlock's post-verified-re-run addMemory tail (the badge
     // + veto). Opt-in so the other fix journeys keep their existing, memory-free screens.
-    case "fixPostFunctionCode": return Promise.resolve({ success: true, code: STATIC_CODE_1, explanation: "Renamed the undefined `dupes` to `duplicates` and guarded the empty case.", meta: { appliedDocs: [], appliedSkills: [], appliedMemories: 1, truncatedDocs: [] }, ...(typeof window !== "undefined" && window.__FIX_MEMORY__ ? { memoryCandidate: { content: "api.searchJql returns { issues }, not a bare array — destructure before mapping.", projectScoped: false } } : {}) });
-    case "addMemory": return Promise.resolve({ success: true, id: "mem_fix_1" });
+    case "fixPostFunctionCode": return Promise.resolve({ success: true, code: STATIC_CODE_FIXED, explanation: "Renamed the undefined `dupes` to `duplicates` and guarded the empty case.", meta: { appliedDocs: [], appliedSkills: [], appliedMemories: 1, truncatedDocs: [] }, ...(typeof window !== "undefined" && window.__FIX_MEMORY__ ? { memoryCandidate: { content: "api.searchJql returns { issues }, not a bare array — destructure before mapping.", projectScoped: false } } : {}) });
+    // F-155 — addMemory has TWO real shapes and the UI must tell them apart:
+    //   { success, id, merged: false } -> a NEW row this fix owns (veto = undo)
+    //   { success, id, merged: true }  -> the candidate was deduped INTO an existing memory,
+    //                                     so `id` is somebody else's row and a delete is not an undo.
+    // window.__MEMORY_MERGED__ = true selects the merged shape.
+    case "addMemory": return Promise.resolve(
+      typeof window !== "undefined" && window.__MEMORY_MERGED__
+        ? { success: true, id: "mem_existing_7", merged: true }
+        : { success: true, id: "mem_fix_1", merged: false });
     case "deleteMemory": return Promise.resolve({ success: true });
     case "reviewConfig": return Promise.resolve({ success: true, review: { verdict: "has_issues", summary: "The steps are sound; two improvements suggested.", items: [{ type: "warning", message: "Step 2 posts a comment without checking the issue is still open." }, { type: "suggestion", message: "Reuse the JQL result from step 1 instead of re-querying." }] }, tokens: 1240 });
     case "searchIssues": return Promise.resolve({ success: true, issues: [{ key: "PROJ-481", fields: { summary: "Checkout latency spike on mobile", status: { name: "In Progress" }, issuetype: { name: "Bug" } } }] });

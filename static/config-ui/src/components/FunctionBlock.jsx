@@ -243,7 +243,10 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
   const [fixing, setFixing] = useState(false);
   const [fixAttempts, setFixAttempts] = useState(0);
   const [fixResult, setFixResult] = useState(null); // { explanation, verified, preFixCode, preFixMeta }
-  const [memorySaved, setMemorySaved] = useState(null); // { id, content }
+  // { id, content, learnedFrom, merged } — `merged` is the resolver's answer to "was this
+  // candidate deduped INTO an existing memory?" (F-155). It decides what the badge may
+  // claim and whether a veto may be offered at all; see `renderMemoryBadge`.
+  const [memorySaved, setMemorySaved] = useState(null);
   // F-150 — true while the verified fix's addMemory tail is in flight. It is part of
   // `stepBusy` (below) because that tail still belongs to the fix: it is the step's
   // `token` that decides whether the saved memory gets a badge and a veto, and a writer
@@ -600,7 +603,12 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
     const failedResult = testResult;
     setFixAttempts((n) => n + 1);
     setFixing(true);
-    setMemorySaved(null);
+    // F-156 — `memorySaved` is NOT cleared here. It describes a fact already persisted
+    // server-side, and the badge is the only place this screen offers to forget it. A
+    // second fix whose re-run FAILS saves no new memory, so clearing here left the first
+    // fix's memory live in the instance store with nothing on screen naming it. It is
+    // cleared by the veto, or overwritten by a NEW successful save below — nothing else.
+    // (Same rule as handleUndoFix and the fix card's dismiss.)
     setCancelledNote(null);
     try {
       const logs = failedResult?.logs || [];
@@ -695,7 +703,15 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
                 ),
               ]);
               if (memRes && memRes.success) {
-                setMemorySaved({ id: memRes.id, content: result.memoryCandidate.content, learnedFrom });
+                // F-155 — carry `merged` with the badge. On a dedup hit the resolver
+                // returns the id of the PRE-EXISTING memory it reinforced, which may be a
+                // user-authored row with many reinforcements; deleting it is not an undo.
+                setMemorySaved({
+                  id: memRes.id,
+                  content: result.memoryCandidate.content,
+                  learnedFrom,
+                  merged: !!memRes.merged,
+                });
                 setKnowledgeRefresh((n) => n + 1);
                 showToast("Fix verified — memory saved");
               }
@@ -744,6 +760,10 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
 
   const handleVetoMemory = async () => {
     if (!memorySaved || vetoingMemory) return;
+    // F-155 — a merged save has no veto affordance (see `renderMemoryBadge`); this is the
+    // matching code guarantee, so no future caller can point the delete at a row this fix
+    // only reinforced. `deleteMemory` removes the WHOLE row and there is no un-reinforce.
+    if (memorySaved.merged) return;
     setVetoingMemory(true);
     try {
       const res = await invoke("deleteMemory", { id: memorySaved.id });
@@ -760,6 +780,42 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
       showToast("Couldn't forget the memory: " + e.message, "error");
     }
     setVetoingMemory(false);
+  };
+
+  // F-155 — ONE home for the learned-memory disclosure; both cards below render it.
+  // `addMemory` answers `merged: true` when `saveMemoryCandidate` deduped this candidate
+  // INTO an existing memory instead of adding a row. That id belongs to the pre-existing
+  // memory — often user-authored and reinforced many times — and `deleteMemory` removes
+  // the whole row, so a "forget" there would destroy someone else's fact rather than undo
+  // this fix's contribution. There is no un-reinforce API, so the merged badge states what
+  // actually happened and sends the author to the store that owns the row.
+  const renderMemoryBadge = () => {
+    if (!memorySaved) return null;
+    if (memorySaved.merged) {
+      return (
+        <div className="memory-saved-wrap">
+          <span className="memory-saved-badge">🧠 Reinforced an existing memory</span>
+          <span className="memory-saved-note">
+            What this fix learned already existed as a memory, so it was reinforced rather than
+            added. Manage it in the Memories tab of the CogniRunner admin panel.
+          </span>
+        </div>
+      );
+    }
+    return (
+      <span className="memory-saved-badge">
+        🧠 Learned: {memorySaved.content.slice(0, 80)}
+        <button
+          className={vetoingMemory ? "is-busy busy-solid" : ""}
+          onClick={handleVetoMemory}
+          disabled={vetoingMemory}
+          title="Forget this memory"
+          style={{ background: "transparent", border: "none", cursor: "pointer", color: "#ffffff", fontSize: "14px", lineHeight: 1, padding: 0, marginLeft: "6px" }}
+        >
+          &times;
+        </button>
+      </span>
+    );
   };
 
   // Manual edits dismiss the fix card and reset the fix-attempt guard.
@@ -1391,25 +1447,15 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
                 >
                   Undo
                 </button>
-                <button className="test-dismiss" onClick={() => { setFixResult(null); setMemorySaved(null); }}>&times;</button>
+                {/* F-156 — dismissing the fix CARD must not drop the memory badge: the memory is
+                    already persisted and this badge is the only place to forget it. Same rule as
+                    handleUndoFix. The `!fixResult && memorySaved` card below picks it up. */}
+                <button className="test-dismiss" onClick={() => setFixResult(null)}>&times;</button>
               </div>
               {fixResult.explanation && (
                 <p className="fix-explanation">{fixResult.explanation}</p>
               )}
-              {memorySaved && (
-                <span className="memory-saved-badge">
-                  🧠 Learned: {memorySaved.content.slice(0, 80)}
-                  <button
-                    className={vetoingMemory ? "is-busy busy-solid" : ""}
-                    onClick={handleVetoMemory}
-                    disabled={vetoingMemory}
-                    title="Forget this memory"
-                    style={{ background: "transparent", border: "none", cursor: "pointer", color: "#ffffff", fontSize: "14px", lineHeight: 1, padding: 0, marginLeft: "6px" }}
-                  >
-                    &times;
-                  </button>
-                </span>
-              )}
+              {renderMemoryBadge()}
             </div>
           )}
 
@@ -1421,21 +1467,16 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
               rather than implying it describes what is on screen now. */}
           {!fixResult && memorySaved && (
             <div className="fix-result fix-verified anim-rise">
-              {memorySaved.learnedFrom && memorySaved.learnedFrom !== codeFingerprint(functionData.code || "") && (
-                <p className="fix-explanation">Learned from the version of this code the fix repaired — the code has been edited since.</p>
+              {/* F-157 — a fingerprint mismatch means "this is not the code the memory was
+                  learned from". It does NOT mean the code was edited: Undo restores the
+                  pre-fix code without a keystroke and lands here too, where the old copy
+                  accused the author of a phantom edit. State only what the comparison
+                  proves. (Not shown for a merged save — that badge makes no claim about
+                  which code version taught the memory.) */}
+              {!memorySaved.merged && memorySaved.learnedFrom && memorySaved.learnedFrom !== codeFingerprint(functionData.code || "") && (
+                <p className="fix-explanation">Learned from the version of this code the fix repaired — the code shown is not that version.</p>
               )}
-              <span className="memory-saved-badge">
-                🧠 Learned: {memorySaved.content.slice(0, 80)}
-                <button
-                  className={vetoingMemory ? "is-busy busy-solid" : ""}
-                  onClick={handleVetoMemory}
-                  disabled={vetoingMemory}
-                  title="Forget this memory"
-                  style={{ background: "transparent", border: "none", cursor: "pointer", color: "#ffffff", fontSize: "14px", lineHeight: 1, padding: 0, marginLeft: "6px" }}
-                >
-                  &times;
-                </button>
-              </span>
+              {renderMemoryBadge()}
             </div>
           )}
 

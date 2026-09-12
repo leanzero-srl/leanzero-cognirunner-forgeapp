@@ -1028,6 +1028,155 @@ try {
       } catch (e) { fail++; console.log(`  ✗ F-154 ${T} threw: ` + e.message.split("\n")[0]); }
       await closeEditor(env);
     }
+
+    /* F-155 — a MERGED save is a reinforcement, not a new row: no veto may be offered */
+    // `addMemory` answers `merged: true` when the candidate was deduped INTO an existing
+    // memory — often user-authored and reinforced many times. The badge's veto called
+    // `deleteMemory(id)` on that id, which erases the whole pre-existing row: a destructive
+    // delete of somebody else's fact dressed up as "undo what this fix just learned".
+    {
+      console.log(`F-155 a merged (reinforced) memory offers no veto (cfg-static, ${theme})`);
+      const env = await openEditor(browser, "config-ui", "cfg-static", theme, {
+        __TESTFAIL_ONCE__: true,
+        __FIX_MEMORY__: true,
+        __MEMORY_MERGED__: true,
+      });
+      const { page } = env;
+      try {
+        const b = page.locator(".function-block").first();
+        await b.locator(".btn-test-run", { hasText: /Test Run/ }).click();
+        await b.locator(".btn-run-test", { hasText: "Run Test" }).click();
+        await b.locator(".test-result.test-fail").waitFor({ timeout: 10000 });
+        await b.locator(".btn-fix-ai", { hasText: "Fix with AI" }).click();
+        await b.locator(".memory-saved-badge").first().waitFor({ timeout: 15000 });
+
+        const badge = await b.locator(".memory-saved-badge").first().innerText();
+        ok(/Reinforced an existing memory/.test(badge),
+          `F-155 ${T} the badge says the memory was REINFORCED, not learned fresh (got: ${badge})`);
+        // THE defect: a "forget" button here deletes the pre-existing row.
+        ok(await b.locator(".memory-saved-badge button").count() === 0,
+          `F-155 ${T} no veto is offered on a merged save — deleting is not an un-reinforce`);
+        ok(/Memories tab/.test(await b.locator(".fix-result").first().innerText()),
+          `F-155 ${T} the author is pointed at the store that owns the row instead`);
+        // The badge must not quote the candidate text as if it were the stored row.
+        ok(!/Learned: /.test(await b.locator(".fix-result").first().innerText()),
+          `F-155 ${T} the merged badge does not claim to quote the stored memory`);
+      } catch (e) { fail++; console.log(`  ✗ F-155 ${T} threw: ` + e.message.split("\n")[0]); }
+      await closeEditor(env);
+    }
+
+    /* F-155 control — a NON-merged save still gets its veto */
+    {
+      console.log(`F-155 control: a new (non-merged) memory keeps its veto (cfg-static, ${theme})`);
+      const env = await openEditor(browser, "config-ui", "cfg-static", theme, {
+        __TESTFAIL_ONCE__: true,
+        __FIX_MEMORY__: true,
+      });
+      const { page } = env;
+      try {
+        const b = page.locator(".function-block").first();
+        await b.locator(".btn-test-run", { hasText: /Test Run/ }).click();
+        await b.locator(".btn-run-test", { hasText: "Run Test" }).click();
+        await b.locator(".test-result.test-fail").waitFor({ timeout: 10000 });
+        await b.locator(".btn-fix-ai", { hasText: "Fix with AI" }).click();
+        await b.locator(".memory-saved-badge").first().waitFor({ timeout: 15000 });
+        ok(/Learned: /.test(await b.locator(".memory-saved-badge").first().innerText()),
+          `F-155 ${T} an added memory still quotes what was learned`);
+        ok(await b.locator(".memory-saved-badge button").count() === 1,
+          `F-155 ${T} an added memory still offers the veto — the fix must not disable it everywhere`);
+      } catch (e) { fail++; console.log(`  ✗ F-155 control ${T} threw: ` + e.message.split("\n")[0]); }
+      await closeEditor(env);
+    }
+
+    /* F-156 — dismissing the fix card, and a second failing fix, both KEEP the badge */
+    // `memorySaved` describes a fact persisted server-side and the badge is the only place
+    // this screen offers to forget it. Two writers still cleared it unconditionally: the
+    // fix card's × and the top of handleFixWithAI. A second fix whose re-run FAILS saves no
+    // replacement, so the first memory went live-but-invisible — exactly F-150's defect.
+    {
+      console.log(`F-156 the badge survives a dismissed card and a failed second fix (cfg-static, ${theme})`);
+      const env = await openEditor(browser, "config-ui", "cfg-static", theme, {
+        __TESTFAIL_ONCE__: true,
+        __FIX_MEMORY__: true,
+      });
+      const { page } = env;
+      try {
+        const b = page.locator(".function-block").first();
+        await b.locator(".btn-test-run", { hasText: /Test Run/ }).click();
+        await b.locator(".btn-run-test", { hasText: "Run Test" }).click();
+        await b.locator(".test-result.test-fail").waitFor({ timeout: 10000 });
+        await b.locator(".btn-fix-ai", { hasText: "Fix with AI" }).click();
+        await b.locator(".memory-saved-badge").first().waitFor({ timeout: 15000 });
+
+        // (a) THE defect: the fix card's × dropped the badge with it.
+        await b.locator(".fix-result .test-dismiss").first().click();
+        await page.waitForTimeout(250);
+        ok(await b.locator(".fix-result .fix-undo-bar").count() === 0,
+          `F-156 ${T} the × does dismiss the fix card itself`);
+        ok(await b.locator(".memory-saved-badge").count() === 1,
+          `F-156 ${T} the persisted memory keeps its badge after the card is dismissed`);
+        ok(await b.locator(".memory-saved-badge button").count() === 1,
+          `F-156 ${T} and keeps the veto — the only way to forget it from this screen`);
+
+        // (b) THE defect: a SECOND fix cleared the badge at its start, and its re-run fails,
+        // so nothing replaces it. Every dry run from here on fails.
+        await page.evaluate(() => { window.__TESTFAIL_ALWAYS__ = true; });
+        await b.locator(".btn-run-test", { hasText: "Run Test" }).click();
+        await b.locator(".test-result.test-fail").waitFor({ timeout: 10000 });
+        ok(await b.locator(".memory-saved-badge").count() === 1,
+          `F-156 ${T} a fresh failing run does not disturb the badge`);
+        await b.locator(".btn-fix-ai", { hasText: "Fix with AI" }).click();
+        await page.waitForFunction(
+          () => { const el = document.querySelector(".function-block .btn-fix-ai"); return !el || !el.disabled; },
+          { timeout: 20000 },
+        ).catch(() => {});
+        await page.waitForTimeout(400);
+        ok(await b.locator(".memory-saved-badge").count() === 1,
+          `F-156 ${T} the badge survives a second fix whose re-run FAILS (no new memory replaces it)`);
+        ok(await b.locator(".memory-saved-badge button").count() === 1,
+          `F-156 ${T} the veto survives it too`);
+      } catch (e) { fail++; console.log(`  ✗ F-156 ${T} threw: ` + e.message.split("\n")[0]); }
+      await closeEditor(env);
+    }
+
+    /* F-157 — after UNDO the mismatch copy must not accuse the author of an edit */
+    // The note fires on any fingerprint divergence, and Undo restores the pre-fix code
+    // without a keystroke — so the card told the author the code "has been edited since"
+    // when they had reverted it. The comparison only proves "not that version".
+    {
+      console.log(`F-157 the learnedFrom note is neutral after an Undo (cfg-static, ${theme})`);
+      const env = await openEditor(browser, "config-ui", "cfg-static", theme, {
+        __TESTFAIL_ONCE__: true,
+        __FIX_MEMORY__: true,
+      });
+      const { page } = env;
+      try {
+        const b = page.locator(".function-block").first();
+        await b.locator(".btn-test-run", { hasText: /Test Run/ }).click();
+        await b.locator(".btn-run-test", { hasText: "Run Test" }).click();
+        await b.locator(".test-result.test-fail").waitFor({ timeout: 10000 });
+        await b.locator(".btn-fix-ai", { hasText: "Fix with AI" }).click();
+        await b.locator(".memory-saved-badge").first().waitFor({ timeout: 15000 });
+        await page.waitForFunction(
+          () => { const u = Array.from(document.querySelectorAll(".fix-result button")).find((x) => /Undo/.test(x.textContent || "")); return !!u && !u.disabled; },
+          { timeout: 12000 },
+        );
+        await b.locator(".fix-result button", { hasText: "Undo" }).first().click();
+        await page.waitForTimeout(300);
+
+        const card = await b.locator(".fix-result").first().innerText();
+        ok(await b.locator(".memory-saved-badge").count() === 1,
+          `F-157 ${T} the badge survives the Undo (the memory is persisted)`);
+        ok(/Learned from the version of this code the fix repaired/.test(card),
+          `F-157 ${T} the note still names which version taught the memory`);
+        // THE defect: no edit happened — Undo is not an edit.
+        ok(!/edited since/.test(card),
+          `F-157 ${T} the note does not claim the code was edited (got: ${card.replace(/\n/g, " | ")})`);
+        ok(/the code shown is not that version/.test(card),
+          `F-157 ${T} the note states only what the fingerprint comparison proves`);
+      } catch (e) { fail++; console.log(`  ✗ F-157 ${T} threw: ` + e.message.split("\n")[0]); }
+      await closeEditor(env);
+    }
   }
 
   /* ---------------- J19 — MANAGED semantic flavors (config-ui = read-only admin notice) ---------------- */

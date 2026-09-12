@@ -1411,9 +1411,12 @@ resolver.define("checkLicense", ({ context }) => {
   // is the one place that decides Standard vs Coder, and `features` is emitted
   // here so the admin panel never keeps a second copy of the feature list.
   const ed = editionFromInvocation(context?.license);
-  // The other admin-panel open that refreshes the seat snapshot (F-079). Fire-and-forget
-  // and throttled by the snapshot's own `at`; this resolver stays synchronous.
-  try { maybeRefreshSeatSnapshot(); } catch (e) { /* never throws into a license read */ }
+  // NO seat scan here (F-093). checkLicense has no permission gate and is called by
+  // config-ui, config-view and the issue glance, so ANY user opening an issue on a cold
+  // container would have kicked off a fire-and-forget multi-page asApp() scan of the user
+  // directory. The 24h throttle bounds how OFTEN that happens, not who triggers it or on
+  // which surface. The scan belongs to the admin-panel read that actually needs a seat
+  // count — the admin-gated getAiUsage resolver — and nowhere else.
   return {
     isActive: context?.license ? context.license.isActive === true : null,
     edition: ed.edition,
@@ -11038,8 +11041,11 @@ const getProviderConfig = async () => {
 // SEAT_SCAN_MAX — past that the allowance is at its ceiling anyway and the exact
 // number stops mattering.
 //
-// WHERE IT RUNS (changed in 1.3 — F-079): ONLY from the getAiUsage and checkLicense
-// resolvers, i.e. when an admin opens the admin panel. It used to run from the
+// WHERE IT RUNS (1.3, F-079 then F-093): from EXACTLY ONE resolver, `getAiUsage`, which
+// is admin-gated (requireAdmin) and is the read that needs a seat count — i.e. when an
+// admin opens the admin panel's usage meter. It briefly also ran from `checkLicense`,
+// which has no gate and is called from config-ui, config-view and the issue glance: that
+// put the scan back on any user's issue-view path (F-093). It used to run from the
 // getProviderConfig() memo refresh, which put a fire-and-forget multi-page asApp()
 // user scan on the TRANSITION path: every cold container that ran an AI rule started
 // a scan, and because the failure paths wrote no marker, a 403 or a throttle made the

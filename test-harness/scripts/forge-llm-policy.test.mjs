@@ -257,8 +257,8 @@ ok(/rest\/api\/3\/users\/search/.test(codeOnly), "seats are counted from /rest/a
   ok(/edition: _cachedEditionId, allowance: _cachedAllowance/.test(b), "the memo returns edition + allowance on the CACHED path too");
   ok(/if \(provider === "atlassian"\)/.test(b), "the extra reads only happen for the vendor-billed provider");
   ok(/forgeLlmAllowanceStatus\(stateRes \|\| emptyState\(\), allowanceUsdForSeats\(seatsRes\)\)/.test(b), "the allowance is computed at refresh time");
-  // F-079: the seat SCAN no longer rides the transition path — it is triggered from the
-  // admin-panel resolvers (getAiUsage / checkLicense) only.
+  // F-079/F-093: the seat SCAN no longer rides the transition path — it is triggered from
+  // ONE admin-gated resolver (getAiUsage) only.
   ok(!/maybeRefreshSeatSnapshot/.test(b), "the provider memo never starts a seat scan");
   ok(/Promise\.all\(\[/.test(b), "the memo's three Forge-LLM reads go out in parallel");
   ok(/_cachedAllowance = null;/.test(b), "every failure path leaves the allowance null (no ceiling known → never 'hard')");

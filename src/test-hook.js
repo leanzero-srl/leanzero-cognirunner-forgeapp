@@ -325,7 +325,7 @@ export async function testStateTrigger(req) {
     // Key allowlist — never a generic KVS write bridge.
     if (body.action === "kvSet") {
       const KEYS = new Set(["COGNIRUNNER_MODEL_atlassian", "COGNIRUNNER_AGENT_MODEL_atlassian",
-        "COGNIRUNNER_USAGE", "COGNIRUNNER_SEAT_SNAPSHOT", "COGNIRUNNER_EDITION_SNAPSHOT"]);
+        "COGNIRUNNER_USAGE", "COGNIRUNNER_SEAT_SNAPSHOT", "COGNIRUNNER_EDITION_SNAPSHOT", "COGNIRUNNER_AGENT_MODEL_openai"]);
       if (!KEYS.has(body.key)) return json(400, { error: `key not allowlisted: ${body.key}` });
       if (body.value === null) await storage.delete(body.key);
       else await storage.set(body.key, body.value);

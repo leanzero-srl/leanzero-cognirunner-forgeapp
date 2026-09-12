@@ -200,11 +200,16 @@ ok(/export const editionFromInvocation = \(license\)/.test(indexSrc), "editionFr
   ok(gp && /if \(provider === "atlassian"\) \{[\s\S]*?Promise\.all/.test(gp[0]),
     "those reads happen ONLY on the atlassian branch");
 
+  // F-093: ONE trigger, and it is admin-gated. checkLicense is ungated and is called by
+  // config-ui, config-view and the issue glance, so triggering the scan there put a
+  // multi-page asApp() user-directory scan on any user's issue-view path.
   const usage = indexSrc.match(/resolver\.define\("getAiUsage",[\s\S]*?\n\}\);/);
   ok(!!usage && /maybeRefreshSeatSnapshot\(\)/.test(usage[0]), "getAiUsage triggers the scan");
+  ok(!!usage && /requireAdmin\(context\.accountId\)/.test(usage[0]), "…and getAiUsage is admin-gated");
   const lic = indexSrc.match(/resolver\.define\("checkLicense",[\s\S]*?\n\}\);/);
-  ok(!!lic && /maybeRefreshSeatSnapshot\(\)/.test(lic[0]), "checkLicense triggers the scan");
-  ok(!!lic && /try \{ maybeRefreshSeatSnapshot\(\); \} catch/.test(lic[0]), "and it can never throw into the license read");
+  ok(!!lic && !/maybeRefreshSeatSnapshot/.test(lic[0]), "checkLicense does NOT trigger the scan (F-093)");
+  ok((indexSrc.match(/\n\s*(?:try \{ )?maybeRefreshSeatSnapshot\(\)/g) || []).length === 1,
+    "exactly ONE call site starts the seat scan");
 }
 
 // =====================================================================================

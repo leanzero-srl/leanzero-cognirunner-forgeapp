@@ -14,6 +14,7 @@ import forgeApi, { pushed } from "../lib/mock-forge-api.mjs";
 import { normalizeListener, testListener, executeListenerTask, matchListenerStatic, listenerTrigger, readListenerIndex, toIndexRow } from "../../src/listeners.js";
 import { normalizeJob, runJob, executeScheduledJobTask, scheduledTick } from "../../src/scheduled-jobs.js";
 import { JIRA_EVENTS } from "../../src/shared/jira-events.js";
+import { readFileSync } from "node:fs";
 import { testStateTrigger } from "../../src/test-hook.js";
 
 register("data:text/javascript," + encodeURIComponent(`
@@ -338,6 +339,49 @@ try {
     const config = storage.__raw("job:claim-job"); config.name = "[Harness claim] scoped"; config.scope = { jql: "project=LZPT", maxIssues: 3 };
     const response = await probe({ ...probeBody, taskType: "scheduledjob", ruleId: "claim-job" });
     assert.equal(response.statusCode, 400); assert.equal(state.runs.length, 0);
+  });
+  // F-126 — the kvSet allowlist must carry the provider slots so the harness can plant a
+  // provider fault and prove fail-OPEN live; and it must STILL be an allowlist.
+  const kvSet = (key, value) => testStateTrigger({ method: "POST", headers: { authorization: ["Bearer offline-claim-secret"] }, body: JSON.stringify({ action: "kvSet", key, value }) });
+  await check("kvSet allows the active-provider slot (the fail-open fault the harness plants)", async () => {
+    const response = await kvSet("COGNIRUNNER_AI_PROVIDER", null);
+    assert.equal(response.statusCode, 200, response.body);
+    assert.equal(JSON.parse(response.body).set, "deleted");
+  });
+  await check("kvSet allows every per-provider key/model/agent-model/baseUrl slot, derived from the shared helpers", async () => {
+    const { PROVIDER_IDS, providerSlotsFor } = await import("../../src/shared/provider-slots.js");
+    for (const provider of PROVIDER_IDS) {
+      for (const key of providerSlotsFor(provider)) {
+        const response = await kvSet(key, null);
+        assert.equal(response.statusCode, 200, `${key}: ${response.body}`);
+      }
+    }
+    // DERIVED, not retyped: no literal provider slot string anywhere in the hook.
+    const hookCode = readFileSync(new URL("../../src/test-hook.js", import.meta.url), "utf8")
+      .split("\n").filter((l) => !l.trim().startsWith("//")).join("\n"); // comments may NAME a slot; code may not
+    assert.equal(/COGNIRUNNER_(KEY|MODEL|AGENT_MODEL|BASEURL)_[a-z]/.test(hookCode), false);
+  });
+  await check("PROVIDER_IDS stays in lockstep with index.js's PROVIDERS map", async () => {
+    const { PROVIDER_IDS } = await import("../../src/shared/provider-slots.js");
+    const indexSrc = readFileSync(new URL("../../src/index.js", import.meta.url), "utf8");
+    const start = indexSrc.indexOf("const PROVIDERS = {");
+    const ids = [...indexSrc.slice(start, indexSrc.indexOf("\n};", start)).matchAll(/^  ([a-z0-9]+): \{/gm)].map((m) => m[1]);
+    assert.ok(ids.length > 1);
+    assert.deepEqual(PROVIDER_IDS, ids);
+    // …and index.js builds its slot names from the shared module, not its own copies.
+    assert.match(indexSrc, /from "\.\/shared\/provider-slots\.js"/);
+    assert.equal(/^const providerKeySlot = /m.test(indexSrc), false);
+  });
+  await check("kvSet is still an allowlist, not a KVS write bridge", async () => {
+    for (const key of ["config_registry", "pf_memories", "COGNIRUNNER_KEY_", "COGNIRUNNER_KEY_notaprovider", "validation_logs", "app_users"]) {
+      const response = await kvSet(key, "x");
+      assert.equal(response.statusCode, 400, `${key} must be refused`);
+      assert.match(JSON.parse(response.body).error, /not allowlisted/);
+    }
+  });
+  await check("kvSet stays behind HARNESS_SECRET", async () => {
+    const response = await testStateTrigger({ method: "POST", headers: { authorization: ["Bearer wrong-secret"] }, body: JSON.stringify({ action: "kvSet", key: "COGNIRUNNER_AI_PROVIDER", value: null }) });
+    assert.equal(response.statusCode, 404);
   });
 } finally {
   if (previousSecret === undefined) delete process.env.HARNESS_SECRET;

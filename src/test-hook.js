@@ -12,6 +12,7 @@
  * Reads and explicitly allowlisted test actions only.
  */
 import { kvs as storage } from "@forge/kvs";
+import { PROVIDER_IDS, providerSlotsFor } from "./shared/provider-slots.js";
 
 const json = (statusCode, body) => ({
   statusCode,
@@ -324,8 +325,20 @@ export async function testStateTrigger(req) {
     // that no resolver can write on a Standard tenant (the whole point of the gate under test).
     // Key allowlist — never a generic KVS write bridge.
     if (body.action === "kvSet") {
-      const KEYS = new Set(["COGNIRUNNER_MODEL_atlassian", "COGNIRUNNER_AGENT_MODEL_atlassian",
-        "COGNIRUNNER_USAGE", "COGNIRUNNER_SEAT_SNAPSHOT", "COGNIRUNNER_EDITION_SNAPSHOT", "COGNIRUNNER_AGENT_MODEL_openai"]);
+      // F-126 — the provider slots are here so the harness can PLANT A PROVIDER FAULT and
+      // prove the fail-OPEN contract LIVE: clear COGNIRUNNER_AI_PROVIDER (or a BYOK key
+      // slot) and a validator/condition must still let the transition through, the health
+      // banner must say "no provider" and the consumer's budget gate must fail the
+      // listener/job closed. Those three 1.3 items cannot be proven any other way — no
+      // resolver writes these slots on a tenant, which is the whole point of the gate.
+      // The slot NAMES come from src/shared/provider-slots.js — the SAME module index.js
+      // builds them with. A retyped "COGNIRUNNER_KEY_openai" here would silently rot the
+      // day a helper changes, which is the defect class this repo keeps paying for.
+      // Still an allowlist, never a generic KVS write bridge, and still behind
+      // HARNESS_SECRET (absent in production, checked at the top of this handler).
+      const KEYS = new Set(["COGNIRUNNER_USAGE", "COGNIRUNNER_SEAT_SNAPSHOT", "COGNIRUNNER_EDITION_SNAPSHOT",
+        "COGNIRUNNER_AI_PROVIDER"]);
+      for (const p of PROVIDER_IDS) for (const slot of providerSlotsFor(p)) KEYS.add(slot);
       if (!KEYS.has(body.key)) return json(400, { error: `key not allowlisted: ${body.key}` });
       if (body.value === null) await storage.delete(body.key);
       else await storage.set(body.key, body.value);
@@ -360,6 +373,9 @@ export async function testStateTrigger(req) {
       const r = await webTrigger.getUrl("rules-api");
       return json(200, { url: typeof r === "string" ? r : r && r.url });
     }
+    // The kvs READ is deliberately unrestricted (no key allowlist): it is a read, it is
+    // behind HARNESS_SECRET, and the harness must be able to confirm a planted fault
+    // (F-126) landed on the exact slot it wrote. Nothing to widen here.
     if (what === "kvs") {
       const key = q(req, "key");
       if (!key) return json(400, { error: "key required" });

@@ -48,6 +48,7 @@ import {
 } from "./shared/edition.js";
 import { minuteKey, effectiveBudget, budgetDecision, inlineShouldQueue, AI_PLATFORM_TPM, AI_BUDGET_DEFAULT_TPM, BUDGET_WAIT_HORIZON_MS } from "./shared/ai-budget.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
+import { providerKeySlot, providerModelSlot, providerAgentModelSlot, providerBaseUrlSlot } from "./shared/provider-slots.js";
 import { serializeRule, buildExportEnvelope, validateImportSchema, resolveBindings, containsSecretKey, EXPORT_CAPS } from "./shared/rule-portability.js";
 // Registry scale caps + pressure math — single source, shared with the admin panel.
 import {
@@ -11386,19 +11387,13 @@ const maybeRefreshSeatSnapshot = () => {
   }).catch(() => false /* never surfaces */);
 };
 
-// Per-provider KVS key helpers
-const providerKeySlot = (provider) => `COGNIRUNNER_KEY_${provider}`;
-const providerModelSlot = (provider) => `COGNIRUNNER_MODEL_${provider}`;
-// The model an AGENT surface uses (Coder chat, PR review, the Virtual Administrator),
-// kept apart from the rule/validator model: a tenant wants Haiku running a hundred
-// validators and a frontier model running the one agent turn. On Forge LLM only the
-// frontier ids are accepted here — Haiku never drives an agent (see agentCapability
-// in src/shared/edition.js). BYOK takes any model the customer names.
-const providerAgentModelSlot = (provider) => `COGNIRUNNER_AGENT_MODEL_${provider}`;
-// Per-provider base URL — so switching to a provider restores its saved URL
-// instead of re-prompting (LM Studio / Azure carry a custom endpoint). The
-// active provider's URL is still mirrored to COGNIRUNNER_AI_BASE_URL for runtime.
-const providerBaseUrlSlot = (provider) => `COGNIRUNNER_BASEURL_${provider}`;
+// Per-provider KVS key helpers — ONE home, src/shared/provider-slots.js, so the
+// dev-gated test hook can name the same slots without importing this module (and
+// without retyping them). The agent-model slot is kept apart from the rule/validator
+// model: a tenant wants Haiku running a hundred validators and a frontier model
+// running the one agent turn. On Forge LLM only the frontier ids are accepted there —
+// Haiku never drives an agent (see agentCapability in src/shared/edition.js). The
+// active provider's base URL is still mirrored to COGNIRUNNER_AI_BASE_URL for runtime.
 
 // The currently-active provider (the one inference actually uses).
 const activeProviderId = async () => (await storage.get("COGNIRUNNER_AI_PROVIDER")) || "atlassian";

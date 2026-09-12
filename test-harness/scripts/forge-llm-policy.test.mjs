@@ -483,8 +483,19 @@ ok(/rest\/api\/3\/users\/search/.test(codeOnly), "seats are counted from /rest/a
 // =====================================================================================
 // 5. The agent model slot
 // =====================================================================================
-ok(/const providerAgentModelSlot = \(provider\) => `COGNIRUNNER_AGENT_MODEL_\$\{provider\}`;/.test(codeOnly),
-  "providerAgentModelSlot = COGNIRUNNER_AGENT_MODEL_{provider}");
+// F-126 — the slot helpers moved to src/shared/provider-slots.js (ONE home, importable by
+// the dev-gated test hook without pulling in the Forge runtime). Assert them THERE, and
+// assert index.js no longer keeps a private copy.
+{
+  const slotsSrc = readFileSync(path.join(here, "../../src/shared/provider-slots.js"), "utf8");
+  ok(/export const providerAgentModelSlot = \(provider\) => `COGNIRUNNER_AGENT_MODEL_\$\{provider\}`;/.test(slotsSrc),
+    "providerAgentModelSlot = COGNIRUNNER_AGENT_MODEL_{provider}");
+  ok(/export const providerKeySlot = \(provider\) => `COGNIRUNNER_KEY_\$\{provider\}`;/.test(slotsSrc),
+    "providerKeySlot = COGNIRUNNER_KEY_{provider}");
+  ok(!/const providerAgentModelSlot = /.test(codeOnly), "index.js keeps no second copy of the slot helpers");
+  ok(/import \{ providerKeySlot, providerModelSlot, providerAgentModelSlot, providerBaseUrlSlot \} from "\.\/shared\/provider-slots\.js";/.test(codeOnly),
+    "…it imports them from the shared module");
+}
 ok(/export const getAgentModel = async \(\)/.test(codeOnly), "getAgentModel is exported as a backend function");
 {
   const i = codeOnly.indexOf('resolver.define("saveAgentModel"');

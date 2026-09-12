@@ -297,7 +297,7 @@ try {
       ok(await firstBlock.locator(".btn-fix-ai", { hasText: "Fix with AI" }).count() > 0, "J18c 'Fix with AI' is offered on a failed test");
       // Fix with AI → fixPostFunctionCode → apply → auto re-run (now passes) → verified.
       await firstBlock.locator(".btn-fix-ai", { hasText: "Fix with AI" }).click();
-      await firstBlock.locator(".fix-result.fix-verified").waitFor({ timeout: 12000 });
+      await firstBlock.locator(".fix-result:has(.fix-undo-bar).fix-verified").waitFor({ timeout: 12000 });
       ok(true, "J18c fix applied + auto re-run PASSES → 'applied & verified'");
       ok(/Renamed the undefined/i.test(await firstBlock.locator(".fix-explanation").first().innerText()), "J18c the AI fix explanation renders");
     } catch (e) { fail++; console.log("  ✗ J18c threw: " + e.message.split("\n")[0]); }
@@ -1135,6 +1135,23 @@ try {
           `F-156 ${T} the badge survives a second fix whose re-run FAILS (no new memory replaces it)`);
         ok(await b.locator(".memory-saved-badge button").count() === 1,
           `F-156 ${T} the veto survives it too`);
+
+        // F-162 — the second fix's re-run FAILED. Nothing on this screen is verified, so
+        // nothing on it may be green: the standalone memory card used to be hard-coded
+        // `fix-result fix-verified` and sat above the real (failed) fix panel claiming a
+        // verification that never happened.
+        ok(await b.locator(".fix-result.memory-card").count() === 1,
+          `F-162 ${T} the surviving memory renders in its own card, not a fix-outcome card`);
+        ok(await b.locator(".fix-result.fix-verified").count() === 0,
+          `F-162 ${T} NOTHING claims "verified" when the second fix's re-run failed`);
+        const memBorder = await b.locator(".fix-result.memory-card").first()
+          .evaluate((el) => getComputedStyle(el).borderTopColor);
+        ok(memBorder === (theme === "dark" ? "rgb(20, 184, 166)" : "rgb(13, 148, 136)"),
+          `F-162 ${T} the memory card wears the memories hue for this theme (got: ${memBorder})`);
+        const memLeft = await b.locator(".fix-result.memory-card").first()
+          .evaluate((el) => { const c = getComputedStyle(el); return c.borderLeftWidth + "/" + c.borderTopWidth; });
+        ok(memLeft.split("/")[0] === memLeft.split("/")[1],
+          `F-162 ${T} no left accent rail — all four borders are equal (got: ${memLeft})`);
       } catch (e) { fail++; console.log(`  ✗ F-156 ${T} threw: ` + e.message.split("\n")[0]); }
       await closeEditor(env);
     }
@@ -1174,10 +1191,16 @@ try {
         await b.locator(".test-result.test-fail").waitFor({ timeout: 10000 });
         await b.locator(".btn-fix-ai", { hasText: "Fix with AI" }).click();
         await page.waitForFunction(
-          () => !!document.querySelector(".function-block .fix-result.fix-verified"),
+          // F-162 — the fix PANEL (the card with the undo bar) must be the verified one.
+          // Keying on a bare `.fix-result.fix-verified` was satisfied by the standalone
+          // memory card, which used to be hard-coded green, so this gate would have opened
+          // with fix #2 never verified.
+          () => !!document.querySelector(".function-block .fix-result:has(.fix-undo-bar).fix-verified"),
           { timeout: 20000 },
         );
         await page.waitForTimeout(400);
+        ok(await b.locator(".fix-result.memory-card.fix-verified").count() === 0,
+          `F-162 ${T} the standalone memory card never wears the fix panel's "verified" class`);
 
         // THE defect: fix #2's card carried fix #1's badge.
         ok(await b.locator(".fix-result .fix-undo-bar").count() === 1,

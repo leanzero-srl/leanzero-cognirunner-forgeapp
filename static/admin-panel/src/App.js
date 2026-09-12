@@ -5124,6 +5124,10 @@ const injectCopiedComponentStyles = () => {
       background: var(--card-bg);
     }
     .fix-result.fix-verified { border-color: var(--success-color); }
+    /* F-162 — the standalone memory card. Not a fix outcome, so never the green
+       "verified" border: the memories hue (#0d9488 / dark #14b8a6 via --accent-memories),
+       a full border, no left rail, no tint. */
+    .fix-result.memory-card { border-color: var(--accent-memories); }
 
     .fix-undo-bar {
       display: flex;

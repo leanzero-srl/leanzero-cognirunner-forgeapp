@@ -1392,6 +1392,9 @@ resolver.define("checkLicense", ({ context }) => {
   // is the one place that decides Standard vs Coder, and `features` is emitted
   // here so the admin panel never keeps a second copy of the feature list.
   const ed = editionFromInvocation(context?.license);
+  // The other admin-panel open that refreshes the seat snapshot (F-079). Fire-and-forget
+  // and throttled by the snapshot's own `at`; this resolver stays synchronous.
+  try { maybeRefreshSeatSnapshot(); } catch (e) { /* never throws into a license read */ }
   return {
     isActive: context?.license ? context.license.isActive === true : null,
     edition: ed.edition,
@@ -7180,6 +7183,10 @@ resolver.define("getAiUsage", async ({ context }) => {
     // Forge LLM vendor-spend against this tenant's monthly allowance. Seats come from
     // the daily snapshot; when it is missing, allowanceUsdForSeats falls back to 100
     // seats rather than to "unlimited" — an unknown seat count must not read as free.
+    // Admin-panel opens are also where the seat scan is TRIGGERED (fire-and-forget,
+    // 24h-throttled) — never from an inference path. This read uses whatever the last
+    // completed scan left behind.
+    maybeRefreshSeatSnapshot();
     const seats = await readSeatCount();
     return {
       success: true,
@@ -10916,14 +10923,23 @@ const getProviderConfig = async () => {
     // Only Forge LLM spends the vendor's money, so only Forge LLM pays for the
     // extra reads. Every branch here is swallowed: this must never break a call.
     if (provider === "atlassian") {
-      try { _cachedEditionId = (await currentEdition()).edition; } catch (e) { _cachedEditionId = "standard"; }
+      // THREE reads, and ONLY on the Forge LLM branch (only vendor-billed calls need
+      // them): the edition snapshot (via currentEdition, itself memoised), the usage
+      // ledger COGNIRUNNER_USAGE and the seat snapshot. They are independent, so they
+      // go out in PARALLEL — one round trip on the memo-miss instead of three, which
+      // matters because the miss can land inside a transition. Each one fails open on
+      // its own: a bad edition read leaves "standard" (the cheap tier) and a bad usage
+      // or seat read leaves the allowance null ("no ceiling known"). No seat SCAN is
+      // triggered from here — the scan runs only from the admin-panel resolvers.
+      const [edRes, stateRes, seatsRes] = await Promise.all([
+        currentEdition().then((e) => e.edition).catch(() => "standard"),
+        storage.get(USAGE_KEY).catch(() => null),
+        readSeatCount().catch(() => null),
+      ]);
+      _cachedEditionId = edRes || "standard";
       try {
-        const state = (await storage.get(USAGE_KEY)) || emptyState();
-        const seats = await readSeatCount();
-        _cachedAllowance = forgeLlmAllowanceStatus(state, allowanceUsdForSeats(seats));
+        _cachedAllowance = forgeLlmAllowanceStatus(stateRes || emptyState(), allowanceUsdForSeats(seatsRes));
       } catch (e) { _cachedAllowance = null; }
-      // Daily seat re-count, fire-and-forget so no transition ever waits on it.
-      maybeRefreshSeatSnapshot();
     } else {
       _cachedEditionId = "standard";
       _cachedAllowance = null;
@@ -10939,12 +10955,21 @@ const getProviderConfig = async () => {
 // The allowance is clamp(seats x $2, $40, $800)/month, so we need a seat count.
 // There is no seat API, so we count active Atlassian-account users and stop at
 // SEAT_SCAN_MAX — past that the allowance is at its ceiling anyway and the exact
-// number stops mattering. Refreshed AT MOST once a day, from the getProviderConfig
-// refresh (chosen over the scheduled tick because the tick lives in
-// src/scheduled-jobs.js and this is a provider concern; the call is fire-and-forget
-// so it never sits in a transition's path, and a killed invocation simply means the
-// next refresh retries). When the count is unknown, allowanceUsdForSeats falls back
-// to 100 seats — never to "unlimited".
+// number stops mattering.
+//
+// WHERE IT RUNS (changed in 1.3 — F-079): ONLY from the getAiUsage and checkLicense
+// resolvers, i.e. when an admin opens the admin panel. It used to run from the
+// getProviderConfig() memo refresh, which put a fire-and-forget multi-page asApp()
+// user scan on the TRANSITION path: every cold container that ran an AI rule started
+// a scan, and because the failure paths wrote no marker, a 403 or a throttle made the
+// next invocation start it all over again. Never call it from an inference path.
+//
+// THROTTLE, two arms: the per-container memo (free) and the stored snapshot `at`
+// (authoritative across containers). A row is written on EVERY outcome, including
+// failure ({ seats: null, error, at }) and a genuine zero, precisely so a failing
+// scan cannot re-run for another 24h.
+// When the count is unknown, allowanceUsdForSeats falls back to 100 seats — never to
+// "unlimited".
 const SEAT_SNAPSHOT_KEY = "COGNIRUNNER_SEAT_SNAPSHOT";
 const SEAT_SNAPSHOT_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const SEAT_SCAN_MAX = 2000;
@@ -10958,29 +10983,46 @@ const readSeatCount = async () => {
   } catch (e) { return null; }
 };
 
+const SEAT_MAX_PAGES = 10;
+
 const maybeRefreshSeatSnapshot = () => {
   // Per-container throttle first (free), then the stored `at` (authoritative).
   if (Date.now() - _seatRefreshStartedAt < SEAT_SNAPSHOT_MAX_AGE_MS) return;
   _seatRefreshStartedAt = Date.now();
   Promise.resolve().then(async () => {
+    // EVERY outcome writes a row (seats, 0, or null+error). A failed scan that wrote
+    // nothing is what made a cold container retry the scan on every single call.
+    const write = async (row) => {
+      try { await storage.set(SEAT_SNAPSHOT_KEY, { ...row, at: Date.now() }); } catch (e) { /* best-effort */ }
+    };
     try {
       const snap = await storage.get(SEAT_SNAPSHOT_KEY);
       if (snap && snap.at && Date.now() - snap.at < SEAT_SNAPSHOT_MAX_AGE_MS) return;
       let seats = 0;
-      for (let startAt = 0; startAt < SEAT_SCAN_MAX; startAt += SEAT_PAGE) {
+      let startAt = 0;
+      // Page until an EMPTY page or SEAT_MAX_PAGES. A SHORT page must NOT end the scan:
+      // Jira caps maxResults on its own, so a short page is normal mid-scan, and the
+      // old short-page break truncated the count (and so the allowance) on large sites.
+      for (let pageNo = 0; pageNo < SEAT_MAX_PAGES && startAt < SEAT_SCAN_MAX; pageNo++) {
         const resp = await api.asApp().requestJira(
           route`/rest/api/3/users/search?startAt=${String(startAt)}&maxResults=${String(SEAT_PAGE)}`,
           { headers: { Accept: "application/json" } },
         );
-        if (!resp.ok) return; // keep the previous snapshot rather than writing a wrong one
+        if (!resp.ok) {
+          // Mark the failure so this does not re-run for 24h; the 100-seat fallback covers it.
+          await write({ seats: null, error: String(resp.status) });
+          return;
+        }
         const page = await resp.json();
         if (!Array.isArray(page) || page.length === 0) break;
         // Only licensed humans: app/customer accounts and deactivated users are not seats.
         seats += page.filter((u) => u && u.active === true && u.accountType === "atlassian").length;
-        if (page.length < SEAT_PAGE) break;
+        startAt += page.length;
       }
-      if (seats > 0) await storage.set(SEAT_SNAPSHOT_KEY, { seats, at: Date.now() });
-    } catch (e) { /* seat count is best-effort — the 100-seat fallback covers it */ }
+      await write({ seats });
+    } catch (e) {
+      await write({ seats: null, error: String((e && e.message) || e).slice(0, 120) });
+    }
   }).catch(() => { /* never surfaces */ });
 };
 

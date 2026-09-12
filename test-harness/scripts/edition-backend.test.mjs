@@ -151,5 +151,38 @@ ok(/export const editionFromInvocation = \(license\)/.test(indexSrc), "editionFr
   ok(clamped("claude-opus-5", "claude-opus-5") === false, "an allowed saved model → not clamped");
 }
 
+// =====================================================================================
+// 6. F-079/F-080/F-081 — the seat snapshot is an ADMIN-PANEL concern, never an
+// inference one, it pages on an EMPTY page, and every outcome writes a row.
+// =====================================================================================
+{
+  const m = indexSrc.match(/const maybeRefreshSeatSnapshot = \(\) => \{[\s\S]*?\n\};/);
+  ok(!!m, "found maybeRefreshSeatSnapshot");
+  const body = m ? m[0] : "";
+  ok(!/page\.length < SEAT_PAGE/.test(body),
+    "the `page.length < SEAT_PAGE` early break is gone (Jira caps maxResults; a short page is not the end)");
+  ok(/SEAT_MAX_PAGES/.test(body) && /page\.length === 0\) break/.test(body),
+    "paging stops on an EMPTY page or SEAT_MAX_PAGES");
+  ok(/seats: null, error/.test(body), "a failed scan writes a {seats:null,error} marker row");
+  ok(/await write\(\{ seats \}\)/.test(body), "a successful scan writes its count, including zero");
+  ok(/SEAT_MAX_PAGES = 10/.test(indexSrc), "the page ceiling is 10");
+  ok(/SEAT_SNAPSHOT_MAX_AGE_MS = 24 \* 60 \* 60 \* 1000/.test(indexSrc), "the throttle window is 24h");
+
+  const gp = indexSrc.match(/const getProviderConfig = async \(\) => \{[\s\S]*?\n\};/);
+  ok(!!gp, "found getProviderConfig");
+  ok(gp && !/maybeRefreshSeatSnapshot/.test(gp[0]),
+    "the provider memo NEVER starts a seat scan — that scan used to ride the transition path");
+  ok(gp && /Promise\.all\(\[/.test(gp[0]) && /currentEdition\(\)/.test(gp[0]) && /storage\.get\(USAGE_KEY\)/.test(gp[0]) && /readSeatCount\(\)/.test(gp[0]),
+    "the memo's three reads (edition, usage, seats) go out in parallel");
+  ok(gp && /if \(provider === "atlassian"\) \{[\s\S]*?Promise\.all/.test(gp[0]),
+    "those reads happen ONLY on the atlassian branch");
+
+  const usage = indexSrc.match(/resolver\.define\("getAiUsage",[\s\S]*?\n\}\);/);
+  ok(!!usage && /maybeRefreshSeatSnapshot\(\)/.test(usage[0]), "getAiUsage triggers the scan");
+  const lic = indexSrc.match(/resolver\.define\("checkLicense",[\s\S]*?\n\}\);/);
+  ok(!!lic && /maybeRefreshSeatSnapshot\(\)/.test(lic[0]), "checkLicense triggers the scan");
+  ok(!!lic && /try \{ maybeRefreshSeatSnapshot\(\); \} catch/.test(lic[0]), "and it can never throw into the license read");
+}
+
 console.log(`\nedition-backend: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

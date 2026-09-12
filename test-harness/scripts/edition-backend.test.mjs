@@ -25,6 +25,7 @@ import { ADVANCED_FEATURES, EDITIONS, resolveEdition, isFeatureAllowed } from ".
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const indexSrc = readFileSync(path.join(here, "../../src/index.js"), "utf8");
+const asyncSrc = readFileSync(path.join(here, "../../src/async-handler.js"), "utf8");
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) pass++; else { fail++; console.log("FAIL:", m); } };
@@ -119,17 +120,34 @@ ok(shapeOf(null).features.length === ADVANCED_FEATURES.length, "features list is
 // 4. The snapshot + memo plumbing exists and is bounded
 // =====================================================================================
 ok(/export const EDITION_SNAPSHOT_KEY = "COGNIRUNNER_EDITION_SNAPSHOT";/.test(indexSrc), "snapshot key is exported for the sibling modules");
-ok(/EDITION_SNAPSHOT_TTL = \{ ttl: \{ value: 7, unit: "DAYS" \} \}/.test(indexSrc), "snapshot carries a 7-DAY TTL (it is a cache, never an authority)");
+ok(/EDITION_SNAPSHOT_TTL = \{ ttl: \{ value: 2, unit: "DAYS" \} \}/.test(indexSrc), "snapshot carries a 2-DAY TTL (F-082: a lapsed subscription must not bill Opus for a week)");
 ok(/EDITION_SNAPSHOT_MIN_INTERVAL_MS = 6 \* 60 \* 60 \* 1000/.test(indexSrc), "snapshot writes are throttled to once per 6h per container");
 ok(/export const currentEdition = async \(\)/.test(indexSrc), "currentEdition is exported");
 ok(/export const requireAdvanced = async \(context, featureId\)/.test(indexSrc), "requireAdvanced is exported");
 ok(/export const editionFromInvocation = \(license\)/.test(indexSrc), "editionFromInvocation is exported");
 {
   const m = indexSrc.match(/export const currentEdition = async \(\) => \{[\s\S]*?\n\};/);
-  ok(!!m && /getAppContext\(\)\?\.license/.test(m[0]), "currentEdition tries getAppContext().license first");
+  ok(!!m && /getAppContext\(\)/.test(m[0]), "currentEdition tries the live getAppContext() license first");
   ok(!!m && /EDITION_SNAPSHOT_KEY/.test(m[0]), "currentEdition falls back to the KVS snapshot");
-  ok(!!m && /resolveEdition\(null\)/.test(m[0]), "currentEdition's last resort is Standard");
-  ok(!!m && /_cachedEditionAt < PROVIDER_CACHE_TTL_MS/.test(m[0]), "currentEdition memoises on the same 30s window as the provider config");
+  // F-082/F-087 — snapshot trust.
+  const cur = m ? m[0] : "";
+  ok(/"license" in ctx/.test(cur), "a live context that CARRIES the license key is the truth…");
+  ok(/resolveEdition\(ctx\.license\)/.test(cur), "…including license:null, which resolves to Standard");
+  ok(/if \(!sawContext\)/.test(cur), "the snapshot is read ONLY when no live license read was possible");
+  ok(/snap\.active === true && snap\.edition === "advanced"/.test(cur),
+    "and only an ACTIVE advanced snapshot is honoured");
+  ok(!/snap\.active \?\? null/.test(cur), "the old 'trust whatever the snapshot says' branch is gone");
+  ok(/resolveEdition\(null\)/.test(cur), "currentEdition's last resort is Standard");
+  ok(/_cachedEditionAt < PROVIDER_CACHE_TTL_MS/.test(cur), "currentEdition memoises on the same 30s window as the provider config");
+}
+{
+  const a = asyncSrc.match(/const currentEditionAsync = async \(\) => \{[\s\S]*?\n\};/);
+  ok(!!a, "found currentEditionAsync in src/async-handler.js");
+  const body = a ? a[0] : "";
+  ok(/"license" in ctx/.test(body) && /resolveEdition\(ctx\.license\)\.edition/.test(body),
+    "the consumer applies the SAME live-context-wins rule (one rule, two seams)");
+  ok(/snap\.active === true && snap\.edition === "advanced"/.test(body),
+    "the consumer honours only an ACTIVE advanced snapshot");
 }
 
 // =====================================================================================

@@ -113,22 +113,28 @@ const getOpenAIKey = async (providerOverride = null) => {
   return null;
 };
 
-// The consumer's edition read. getAppContext() carries a license in this runtime;
-// when it does not, the KVS snapshot written by validate()/executePostFunction()
-// (src/index.js EDITION_SNAPSHOT_KEY) is the fallback, and Standard is the floor.
+// The consumer's edition read — the SAME trust rule as src/index.js currentEdition()
+// (F-082/F-087), because both decide whether a vendor-billed frontier model may go out.
+//
+// A LIVE context wins, even when its `license` is null: `license: null` means the
+// install has no licence, i.e. Standard. The KVS snapshot written by
+// validate()/executePostFunction() (src/index.js EDITION_SNAPSHOT_KEY) is consulted
+// ONLY when this runtime could not see the licence at all (getAppContext threw,
+// returned nothing, or carried no `license` key), and even then only when it recorded
+// an ACTIVE advanced licence. Its TTL is 2 days: a lapsed Coder subscription must not
+// keep billing Opus for a week.
 // NEVER throws — an edition fault must degrade the model, not kill a queued job.
 const EDITION_SNAPSHOT_KEY = "COGNIRUNNER_EDITION_SNAPSHOT";
 const currentEditionAsync = async () => {
   try {
-    const lic = getAppContext()?.license;
-    if (lic) {
-      const ed = resolveEdition(lic);
-      if (ed.source !== "none") return ed.edition;
+    const ctx = getAppContext();
+    if (ctx && typeof ctx === "object" && "license" in ctx) {
+      return resolveEdition(ctx.license).edition;
     }
   } catch (e) { /* getAppContext has no license in every runtime */ }
   try {
     const snap = await storage.get(EDITION_SNAPSHOT_KEY);
-    if (snap && snap.edition === "advanced") return "advanced";
+    if (snap && snap.active === true && snap.edition === "advanced") return "advanced";
   } catch (e) { /* fall through to Standard */ }
   return "standard";
 };

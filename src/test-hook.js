@@ -296,21 +296,40 @@ export async function testStateTrigger(req) {
         "getListeners", "getListener", "saveListener", "deleteListener", "setListenerEnabled", "testListener", "getEventSample",
         "getScheduledJobs", "getScheduledJob", "saveScheduledJob", "deleteScheduledJob", "setScheduledJobEnabled", "runScheduledJobNow", "previewSchedule",
         "getApiTokens", "createApiToken", "revokeApiToken", "getAsyncTaskResult", "getLogs", "checkIsAdmin",
-        "getAiBudget", "saveAiBudget", "getAsyncJobs"]);
+        "getAiBudget", "saveAiBudget", "getAsyncJobs",
+        // HARNESS-ONLY (release 1.3 editions proof): the edition/model/usage resolvers.
+        "checkLicense", "getProvider", "getOpenAIModels", "saveOpenAIModel", "getOpenAIModelFromKVS",
+        "getAgentModel", "saveAgentModel", "getAiUsage", "resetAiUsage", "checkProviderHealth", "reviewConfig"]);
       const functionKey = body.functionKey || body.name;
       if (!ALLOWED_KEYS.has(functionKey)) {
         return json(400, { error: `functionKey not allowlisted: ${functionKey}` });
       }
       try {
         const { handler } = await import("./index.js");
+        // HARNESS-ONLY: checkLicense reads context.license, which the platform supplies on a
+        // real resolver invocation. A webtrigger's getAppContext() carries the SAME license
+        // object (verified live), so forwarding it makes the hook a faithful stand-in.
+        let hookLicense;
+        try { const { getAppContext } = await import("@forge/api"); hookLicense = getAppContext()?.license; } catch (e) { hookLicense = undefined; }
         const r = await handler(
           { call: { functionKey, payload: body.payload || {} }, context: {} },
-          { principal: body.accountId ? { accountId: body.accountId } : undefined },
+          { principal: body.accountId ? { accountId: body.accountId } : undefined, license: hookLicense },
         );
         return json(200, r);
       } catch (e) {
         return json(500, { error: String((e && e.message) || e) });
       }
+    }
+    // HARNESS-ONLY (release 1.3 editions proof): seed/restore a narrow set of config slots
+    // that no resolver can write on a Standard tenant (the whole point of the gate under test).
+    // Key allowlist — never a generic KVS write bridge.
+    if (body.action === "kvSet") {
+      const KEYS = new Set(["COGNIRUNNER_MODEL_atlassian", "COGNIRUNNER_AGENT_MODEL_atlassian",
+        "COGNIRUNNER_USAGE", "COGNIRUNNER_SEAT_SNAPSHOT", "COGNIRUNNER_EDITION_SNAPSHOT"]);
+      if (!KEYS.has(body.key)) return json(400, { error: `key not allowlisted: ${body.key}` });
+      if (body.value === null) await storage.delete(body.key);
+      else await storage.set(body.key, body.value);
+      return json(200, { key: body.key, set: body.value === null ? "deleted" : true, now: (await storage.get(body.key)) ?? null });
     }
     if (body.action === "removeRules") {
       try {

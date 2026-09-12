@@ -382,11 +382,16 @@ const noPerm = (what) => ({ success: false, error: `You don't have permission to
 // There is no second copy of this rule; do not add one.
 //
 // getAppContext() does NOT carry a license in every runtime, so the invocation
-// paths that DO see one write a snapshot to KVS and the ones that do not read it
-// back. The snapshot is a 7-day-TTL cache, never an authority: if it expires the
+// paths that DO see one write a snapshot to KVS and the ones that CANNOT SEE ONE AT
+// ALL read it back. The snapshot is a cache, never an authority: if it expires the
 // tenant reads as Standard, which is the deliberate fail-soft direction.
+//
+// TTL is 2 DAYS (was 7 — F-082). The snapshot is what a runtime with no license
+// object bills against, so its lifetime is exactly how long a LAPSED Coder
+// subscription could keep authorising vendor-billed Opus. Two days is the window we
+// are willing to pay for; a week was not.
 export const EDITION_SNAPSHOT_KEY = "COGNIRUNNER_EDITION_SNAPSHOT";
-const EDITION_SNAPSHOT_TTL = { ttl: { value: 7, unit: "DAYS" } };
+const EDITION_SNAPSHOT_TTL = { ttl: { value: 2, unit: "DAYS" } };
 const EDITION_SNAPSHOT_MIN_INTERVAL_MS = 6 * 60 * 60 * 1000;
 // Module-level throttle memo: one container re-writes the snapshot only when the
 // tuple CHANGED or the last write is older than 6h. Without it every transition
@@ -436,24 +441,38 @@ let _cachedEditionAt = 0;
 
 /**
  * The edition for a code path that has NO invocation license to hand (the chat
- * adapter, the allowance meter, a webtrigger). Order: getAppContext().license →
- * the KVS snapshot → Standard. Never throws; the fallback is always Standard.
+ * adapter, the allowance meter, a webtrigger). Never throws; the floor is Standard.
+ *
+ * SNAPSHOT TRUST (F-082/F-087) — the snapshot is consulted ONLY when this runtime
+ * could not see the licence AT ALL, i.e. getAppContext() threw, returned nothing, or
+ * returned a context with no `license` property. If a live context DOES carry the
+ * key, that read is the truth even when its value is null: `license: null` means the
+ * install has no licence → Standard. Falling through to the snapshot there is what
+ * would let a lapsed subscription keep billing vendor Opus for the snapshot's whole
+ * lifetime, which is why the snapshot is also accepted only when it recorded an
+ * ACTIVE advanced licence (`active === true && edition === "advanced"`) and why its
+ * TTL is 2 days. Anything else resolves to Standard — the cheap tier is the fail-soft
+ * direction, here and everywhere in this module.
  */
 export const currentEdition = async () => {
   if (_cachedEdition && Date.now() - _cachedEditionAt < PROVIDER_CACHE_TTL_MS) return _cachedEdition;
   let out = null;
+  let sawContext = false;
   try {
-    const lic = getAppContext()?.license;
-    if (lic) out = resolveEdition(lic);
+    const ctx = getAppContext();
+    if (ctx && typeof ctx === "object" && "license" in ctx) {
+      sawContext = true;
+      out = resolveEdition(ctx.license); // null license → Standard, deliberately
+    }
   } catch (e) { /* getAppContext is not available in every runtime */ }
-  if (!out || out.source === "none") {
+  if (!sawContext) {
     try {
       const snap = await storage.get(EDITION_SNAPSHOT_KEY);
-      if (snap && snap.edition) {
+      if (snap && snap.active === true && snap.edition === "advanced") {
         out = {
-          active: snap.active ?? null,
-          edition: snap.edition === "advanced" ? "advanced" : "standard",
-          label: EDITIONS[snap.edition === "advanced" ? "advanced" : "standard"].label,
+          active: true,
+          edition: "advanced",
+          label: EDITIONS.advanced.label,
           capabilitySet: snap.capabilitySet || null,
           source: "snapshot",
         };

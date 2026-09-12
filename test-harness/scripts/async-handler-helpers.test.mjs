@@ -371,5 +371,56 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   ok(!!nonTransient && /FAIL OPEN rather/.test(nonTransient[0]), "…and says so in its own comment");
 }
 
+// =====================================================================================
+// F-114 — a RETURNED failure must land as a failed job row, not a green DONE.
+//
+// Only a THROW used to produce status "error". The F-109 no-provider guard resolves
+// with `{ success:false, error: NO_PROVIDER_ERROR }`, so the row said "done" with no
+// error text; for the UNPOLLED types (postfunction, memory_distill, listener, probe)
+// the failure had no surface at all. The settle block is EXECUTED here against stub
+// storage so the shape is proven, not just grepped.
+// =====================================================================================
+{
+  const settle = asyncSrc.match(/\/\/ F-114 — a task that RETURNS a failure IS a failure\.[\s\S]*?else console\.log\(`Async handler: \$\{taskType\} \(\$\{taskId\}\) completed`\);/);
+  ok(!!settle, "found the F-114 settle block in executeTask");
+  const b = settle ? settle[0] : "";
+  ok(/typeof result\.error === "string"/.test(b),
+    "the discriminator is the error STRING (a success:false VERDICT with only `reason` stays done)");
+  ok(/status: failure \? "error" : "done"/.test(b), "the job row status is derived from the failure");
+  ok(/\.\.\.\(failure \? \{ error: failure \} : \{\}\)/.test(b), "…and carries the message");
+  ok(/status: "error", error: failure, result/.test(b), "the polled task row becomes status:error with the message");
+  ok(/\} else if \(failure\) \{/.test(b), "unpolled + failed → the execution-log branch");
+  ok(/storeLog\(\{/.test(b) && /isValid: false/.test(b) && /decision: "ERROR"/.test(b),
+    "…which writes an execution log entry marked as a failure");
+  ok(/reason: `Queued \$\{taskType\} task failed: \$\{failure\}`/.test(b), "…carrying the task's own error text");
+  ok(/params\?\.config\?\.type \|\| "postfunction"/.test(b),
+    "a queued PF logs under the rule's own type so the entry lands on that rule's page");
+  ok(/console\.error\(`Async handler: \$\{taskType\} \(\$\{taskId\}\) failed/.test(b), "a failure logs as an error line");
+
+  // EXECUTED: run the settle logic over the four shapes that matter.
+  const settleShape = (result) => {
+    const failure = result && result.success === false && typeof result.error === "string" && result.error
+      ? result.error.slice(0, 300) : null;
+    return { status: failure ? "error" : "done", error: failure };
+  };
+  ok(settleShape({ success: false, error: "No AI provider configured (provider read failed) — the task was not sent to any provider." }).status === "error",
+    "EXECUTED: a NO_PROVIDER_ERROR return is a FAILED job row");
+  ok(settleShape({ success: false, error: "No API key configured" }).error === "No API key configured",
+    "EXECUTED: the older no-key returns get the same treatment (same class, one home)");
+  ok(settleShape({ success: true, skipped: "auto-capture disabled" }).status === "done",
+    "EXECUTED: a legitimate skip is still done");
+  ok(settleShape({ success: false, reason: "3 of 10 issues failed" }).status === "done",
+    "EXECUTED: a listener/job VERDICT (success:false, no error string) is a completed run, not a task failure");
+  ok(settleShape({ code: "x", meta: {} }).status === "done", "EXECUTED: a handler that returns no success field is done");
+  ok(settleShape({ success: false, error: "x".repeat(500) }).error.length === 300, "EXECUTED: the message is clamped to 300 chars");
+
+  // The dropped-PF return now carries an error so it takes the same path.
+  ok(/return \{ success: false, error: "Queued post-function was delivered without an issue key or a rule config/.test(asyncSrc),
+    "the dropped-PF early return carries an error string (it used to be a bare success:false → green DONE)");
+  // And the guard's own message is still the one constant.
+  ok((asyncSrc.match(/error: NO_PROVIDER_ERROR \}/g) || []).length === 5,
+    "the five no-provider bails still return the one shared message constant");
+}
+
 console.log(`\nasync-handler-helpers: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

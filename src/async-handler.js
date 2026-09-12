@@ -630,7 +630,9 @@ const executeQueuedPostFunction = async (params, taskId) => {
   const { issueKey, config, extensionKey, enqueuedAt } = params || {};
   if (!issueKey || !config) {
     console.error("Queued post-function missing issueKey/config — dropping");
-    return { success: false };
+    // Carries an `error` so the drop lands as a FAILED job row + execution log
+    // entry (F-114) instead of a silent green DONE.
+    return { success: false, error: "Queued post-function was delivered without an issue key or a rule config — nothing ran." };
   }
   // Idempotency: Forge async events are delivered at-least-once (platform-level
   // failures — timeouts, OOM — are redelivered automatically; app-level throws are
@@ -1096,10 +1098,58 @@ export async function handler(event) {
     // Execute the task (taskId lets idempotent handlers claim their execution)
     const result = await taskHandler(params, taskId);
 
+    // F-114 — a task that RETURNS a failure IS a failure. Only a THROW used to
+    // produce status "error"; a resolved `{ success: false, error }` (the
+    // NO_PROVIDER_ERROR guard, "No API key configured", a dropped PF) was stamped
+    // "done", so the Jobs tab showed a green DONE badge with no error text and the
+    // poll cache handed the caller a "done" row. One failure shape, every task type.
+    //
+    // The discriminator is the `error` STRING, not `success` alone: a listener or
+    // scheduled-job run reports its VERDICT as `success` (an agent that decided
+    // against acting, a sweep where some issues failed) and carries `reason`, not
+    // `error`. Those ran fine and already have their own execution-log entry — they
+    // stay "done". `error` means the task body refused to run at all.
+    const failure = result && result.success === false && typeof result.error === "string" && result.error
+      ? result.error.slice(0, 300)
+      : null;
+
     // Store result
-    if (polled) await storage.set(`${TASK_PREFIX}${taskId}`, { status: "done", result }, ttl);
-    await updateAsyncJob(taskId, { status: "done", finishedAt: new Date().toISOString(), durationMs: Date.now() - startMs }, JOB_TTL_DONE);
-    console.log(`Async handler: ${taskType} (${taskId}) completed`);
+    if (polled) {
+      await storage.set(`${TASK_PREFIX}${taskId}`,
+        failure ? { status: "error", error: failure, result } : { status: "done", result }, ttl);
+    } else if (failure) {
+      // Nobody polls postfunction / memory_distill / listener / probe, so the job row
+      // is the only live surface and the execution log is the only durable one. Without
+      // this entry the operator's evidence says the queue ran clean while nothing ran.
+      try {
+        const { storeLog } = await import("./index");
+        await storeLog({
+          // A queued PF logs under the rule's OWN type ("postfunction-static" /
+          // "-semantic") so the entry lands on that rule's view page next to its
+          // successful runs; other task types log under their task name.
+          type: taskType === "postfunction" ? (params?.config?.type || "postfunction") : taskType,
+          source: "async",
+          issueKey: params?.issueKey || params?.ctx?.issueKey || "(no issue)",
+          fieldId: "",
+          isValid: false,
+          decision: "ERROR",
+          reason: `Queued ${taskType} task failed: ${failure}`,
+          recommendation: "Check the AI provider and key in CogniRunner Settings, then retry.",
+          executionTimeMs: Date.now() - startMs,
+          ruleId: params?.ruleId || params?.config?.ruleId || params?.config?.id || null,
+          ruleName: params?.config?.name || params?.stepName || null,
+          ruleWorkflow: null,
+        });
+      } catch (e) { console.warn("task-failure log failed:", e && e.message); }
+    }
+    await updateAsyncJob(taskId, {
+      status: failure ? "error" : "done",
+      finishedAt: new Date().toISOString(),
+      durationMs: Date.now() - startMs,
+      ...(failure ? { error: failure } : {}),
+    }, JOB_TTL_DONE);
+    if (failure) console.error(`Async handler: ${taskType} (${taskId}) failed — ${failure}`);
+    else console.log(`Async handler: ${taskType} (${taskId}) completed`);
   } catch (error) {
     console.error(`Async handler error (${taskType}):`, error);
     if (polled) await storage.set(`${TASK_PREFIX}${taskId}`, { status: "error", error: error.message }, ttl);

@@ -5179,7 +5179,7 @@ resolver.define("getOpenAIModelFromKVS", async ({ payload }) => {
       const savedModel = await storage.get(providerModelSlot(provider));
       const { edition } = await currentEdition();
       const effective = clampForgeLlmModel(edition, savedModel);
-      return { success: true, model: effective, isByok: true, edition, clamped: savedModel !== effective };
+      return { success: true, model: effective, isByok: true, edition, clamped: savedModel !== effective, savedModel: savedModel || null };
     }
     // LM Studio is always BYOK semantics — auth is optional, baseUrl is the gating config.
     if (provider === "lmstudio") {

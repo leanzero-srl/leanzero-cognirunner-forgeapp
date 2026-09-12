@@ -881,6 +881,153 @@ try {
       } catch (e) { fail++; console.log(`  ✗ F-150 ${T} threw: ` + e.message.split("\n")[0]); }
       await closeEditor(env);
     }
+
+    /* F-151 / F-152 — the KEYBOARD is a writer too, and the tail must be VISIBLE */
+    // F-150 closed the button writers during the verified fix's addMemory tail, but the
+    // code editor was never gated and `handleCodeChange` bumps the generation token on the
+    // first keystroke — so one character typed during the tail put the token guard back in
+    // front of the memory outcome and the persisted memory lost its badge and its veto.
+    // The fix takes the DISCLOSURE out of the token guard entirely (the token owns the
+    // code, not the memory). F-152 rides along: during the tail both `fixing` and
+    // `testRunning` are already false, so the step showed no spinner at all while six
+    // controls were dead — `stepBusy` now drives one visible state and one reason string.
+    {
+      console.log(`F-151/F-152 a keystroke during the memory tail keeps the badge; the tail is visible (cfg-static, ${theme})`);
+      const env = await openEditor(browser, "config-ui", "cfg-static", theme, {
+        __TESTFAIL_ONCE__: true,
+        __FIX_MEMORY__: true,
+        __HOLD__: ["addMemory"],
+      });
+      const { page } = env;
+      try {
+        const b = page.locator(".function-block").first();
+        await b.locator(".btn-test-run", { hasText: /Test Run/ }).click();
+        await b.locator(".btn-run-test", { hasText: "Run Test" }).click();
+        await b.locator(".test-result.test-fail").waitFor({ timeout: 10000 });
+        await b.locator(".btn-fix-ai", { hasText: "Fix with AI" }).click();
+        await page.waitForFunction(() => typeof window.__RELEASE_HOLD__ === "function", { timeout: 15000 });
+
+        // F-152 — ONE visible busy state, with the memory-tail reason.
+        ok(await b.locator(".step-busy-note").count() === 1, `F-152 ${T} the step shows it is busy during the memory tail`);
+        ok(/Saving what was learned/.test(await b.locator(".step-busy-note").first().innerText()),
+          `F-152 ${T} the busy note names the memory save, not a generic "working"`);
+        // Every control stepBusy disables carries the same reason. (Insert recipe and Fix
+        // with AI are not mounted here — the recipe body is collapsed and the verdict is a
+        // PASS — so the four on screen are the testable surface.)
+        const titles = await page.evaluate(() => {
+          const root = document.querySelector(".function-block");
+          const q = (sel, text) => Array.from(root.querySelectorAll(sel)).find((el) => !text || text.test(el.textContent || ""));
+          const pick = (el) => (el ? { disabled: !!el.disabled, title: el.getAttribute("title") } : null);
+          return {
+            recipe: pick(q(".recipe-bar-toggle")),
+            generate: pick(q(".generate-row .btn-generate")),
+            runTest: pick(q(".btn-run-test")),
+            undo: pick(q(".fix-result button", /Undo/)),
+          };
+        });
+        for (const [name, c] of Object.entries(titles)) {
+          ok(c && c.disabled, `F-152 ${T} ${name} is disabled during the memory tail`);
+          ok(c && c.title === "Saving what was learned…", `F-152 ${T} ${name} says WHY it is disabled (got: ${c && c.title})`);
+        }
+
+        // THE F-151 defect: type one character while the memory write is parked.
+        await b.locator(".cm-content").first().click();
+        await page.keyboard.type("x");
+        await page.waitForTimeout(200);
+        ok(await b.locator(".fix-result button", { hasText: "Undo" }).count() === 0,
+          `F-151 ${T} the keystroke still takes ownership of the code — the fix card and its Undo are gone`);
+
+        // Release: the memory was written server-side, so it MUST be disclosed anyway.
+        await page.evaluate(() => window.__RELEASE_HOLD__());
+        await b.locator(".memory-saved-badge").first().waitFor({ timeout: 12000 });
+        ok(await b.locator(".memory-saved-badge").count() === 1,
+          `F-151 ${T} the persisted memory still gets its badge after a keystroke during the tail`);
+        ok(await b.locator(".memory-saved-badge button").count() === 1,
+          `F-151 ${T} the veto is still offered — a learned memory is never un-forgettable`);
+        ok(/Learned from the version of this code the fix repaired/.test(await b.locator(".fix-result").first().innerText()),
+          `F-151 ${T} the badge names the code version it belongs to, now that the code has moved on`);
+        ok(await b.locator(".step-busy-note").count() === 0, `F-152 ${T} the busy note clears when the tail settles`);
+      } catch (e) { fail++; console.log(`  ✗ F-151/F-152 ${T} threw: ` + e.message.split("\n")[0]); }
+      await closeEditor(env);
+    }
+
+    /* F-153 — the memory tail is BOUNDED: a wedged addMemory cannot lock the step forever */
+    // Since F-150 folded `memorySaving` into `stepBusy`, an invoke() that never settles
+    // disabled every writer on the step for the life of the mounted component, with no
+    // cancel and no route out. The await is now a Promise.race with an 8s bound.
+    {
+      console.log(`F-153 a wedged memory save unlocks the step within the bound (cfg-static, ${theme})`);
+      const env = await openEditor(browser, "config-ui", "cfg-static", theme, {
+        __TESTFAIL_ONCE__: true,
+        __FIX_MEMORY__: true,
+        __HOLD__: ["addMemory"], // deliberately NEVER released
+      });
+      const { page } = env;
+      try {
+        const b = page.locator(".function-block").first();
+        await b.locator(".btn-test-run", { hasText: /Test Run/ }).click();
+        await b.locator(".btn-run-test", { hasText: "Run Test" }).click();
+        await b.locator(".test-result.test-fail").waitFor({ timeout: 10000 });
+        await b.locator(".btn-fix-ai", { hasText: "Fix with AI" }).click();
+        await page.waitForFunction(() => typeof window.__RELEASE_HOLD__ === "function", { timeout: 15000 });
+        ok(await b.locator(".step-busy-note").count() === 1, `F-153 ${T} the step is locked while the wedged save is in flight`);
+
+        // THE defect: without the bound this wait times out — memorySaving never clears.
+        await page.waitForFunction(
+          () => !document.querySelector(".function-block .step-busy-note"),
+          { timeout: 12000 },
+        );
+        ok(await b.locator(".step-busy-note").count() === 0, `F-153 ${T} the step unlocks within the timeout bound`);
+        const undo = b.locator(".fix-result button", { hasText: "Undo" }).first();
+        ok(await undo.isEnabled(), `F-153 ${T} Undo is pressable again after the bound`);
+        ok(await b.locator(".btn-run-test").first().isEnabled(), `F-153 ${T} Run Test is pressable again after the bound`);
+        // No id came back, so a badge would carry a veto that cannot delete anything —
+        // we drop the badge and point at the Memories tab instead.
+        ok(await b.locator(".memory-saved-badge").count() === 0,
+          `F-153 ${T} no badge on a timeout — an unconfirmed save must not offer a veto it cannot honour`);
+      } catch (e) { fail++; console.log(`  ✗ F-153 ${T} threw: ` + e.message.split("\n")[0]); }
+      await closeEditor(env);
+    }
+
+    /* F-154 — the template fallback goes through the ONE home for stale code state */
+    // The local-template branch of handleGenerateFailure hand-rolled a subset of
+    // clearStaleCodeState (it cleared the verdict only), so the one rule had two homes
+    // again. The reachable half is asserted here — the template still lands and still
+    // announces itself, which an ordering slip in the new call would break.
+    {
+      console.log(`F-154 template fallback uses clearStaleCodeState (cfg-static, ${theme})`);
+      const env = await openEditor(browser, "config-ui", "cfg-static", theme, {
+        __FAIL__: ["generatePostFunctionCode"],
+      });
+      const { page } = env;
+      try {
+        const b = page.locator(".function-block").first();
+        // Empty the step's code so the failure takes the TEMPLATE branch (with code on
+        // screen it takes the "your code was kept" branch instead — F-133).
+        await b.locator(".cm-content").first().click();
+        await page.keyboard.press("ControlOrMeta+a");
+        await page.keyboard.press("Backspace");
+        // With no code the whole editor section unmounts (`hasCode &&`), so that is the
+        // signal the step is genuinely empty.
+        await page.waitForFunction(
+          () => !document.querySelectorAll(".function-block")[0].querySelector(".cm-content"),
+          { timeout: 8000 },
+        );
+        await b.locator(".btn-generate", { hasText: /Generate Code|Regenerate Code/ }).first().click();
+        await page.waitForFunction(
+          () => { const g = document.querySelector(".function-block .generate-row .btn-generate"); return !!g && !g.disabled; },
+          { timeout: 15000 },
+        );
+        const text = await b.innerText();
+        ok(/A generic template was inserted/.test(text),
+          `F-154 ${T} the template fallback still announces itself (clearStaleCodeState must not eat the note)`);
+        ok((await b.locator(".cm-content").first().innerText()).trim() !== "",
+          `F-154 ${T} the template landed — the author is not left with an empty step`);
+        ok(await b.locator(".fix-result").count() === 0, `F-154 ${T} no fix card survives the template`);
+        ok(await b.locator(".test-result").count() === 0, `F-154 ${T} no verdict survives the template`);
+      } catch (e) { fail++; console.log(`  ✗ F-154 ${T} threw: ` + e.message.split("\n")[0]); }
+      await closeEditor(env);
+    }
   }
 
   /* ---------------- J19 — MANAGED semantic flavors (config-ui = read-only admin notice) ---------------- */

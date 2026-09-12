@@ -27,6 +27,15 @@ import { codeFingerprint } from "../../../../src/shared/code-fingerprint.js";
 // writer affordance (recipe bar toggle, Insert recipe, Undo fix) and must name the
 // same set of writers `stepBusy` actually covers. F-150 added the memory-save tail.
 const BUSY_TITLE = "Finish the step's current generate, fix, test run or memory save first";
+// F-152 — the memory tail is the one busy source with no visible operation of its own
+// (fixing and testRunning are already false when it runs), so it gets a reason variant.
+// Same ONE predicate (`stepBusy`) decides WHETHER a control is disabled; only the words
+// change. Both literals live here so the copy cannot drift from the predicate.
+const MEMORY_BUSY_TITLE = "Saving what was learned…";
+// F-153 — the addMemory tail is a component-wide lock, so it must be bounded. 8s is well
+// past a warm Forge resolver round-trip (0.5-3s) and short enough that a wedged bridge
+// call does not strand every writer on the step for the life of the dialog.
+const MEMORY_SAVE_TIMEOUT_MS = 8000;
 
 // Maps a step's operation type to the closest skill category for
 // the "Save as Skill" pre-fill.
@@ -284,7 +293,30 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
   // the badge and its veto. Left outside the window, an Undo or an Insert during the tail
   // bumped the token and the persisted memory became invisible and un-vetoable. ONE
   // predicate, still — every writer guard and every writer button reads `stepBusy` only.
+  //
+  // F-151 — the token does NOT belong in this window. `stepBusy` owns who may WRITE THE
+  // CODE; the memory badge is not about the current code at all, it is the disclosure of
+  // a write the backend has already made about the code version the fix repaired. The
+  // keyboard is a writer `stepBusy` cannot close (F-141's manual-edit escape hatch must
+  // stay open, and locking CodeMirror during the tail would add a second predicate next to
+  // this one), so instead the disclosure is taken OUT of the token guard entirely: a
+  // persisted memory always gets its badge and its veto, and the badge carries the
+  // fingerprint of the code it was learned from so it can say so when the code has moved
+  // on. One rule each: the token guards code ownership, nothing else.
+  //
+  // F-152 — `stepBusy` is also the ONE visible state: the step header shows a spinner and
+  // a reason whenever it is true, and every control it disables carries `busyTitle`.
   const stepBusy = isGenerating || fixing || testRunning || memorySaving;
+  // The reason shown on every disabled writer control. Same predicate, different words.
+  const busyTitle = memorySaving ? MEMORY_BUSY_TITLE : BUSY_TITLE;
+  // What the step header says while it is busy — one label per busy source.
+  const busyLabel = isGenerating
+    ? "Generating code…"
+    : fixing
+    ? "Fixing the code…"
+    : testRunning
+    ? "Running the test…"
+    : "Saving what was learned…";
 
   const update = (field, value) => onUpdate({ [field]: value });
 
@@ -410,8 +442,11 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
       functionData.includeBackoff,
     );
     onUpdate({ code, generationMeta: null });
-    // No prior code means no verdict worth keeping; clear it for symmetry with a success.
-    setTestResult(null);
+    // F-154 — this branch TAKES OWNERSHIP of `code`, so it drops the state describing the
+    // code it replaced through the one home (it used to hand-roll a subset: testResult
+    // only, leaving a live Undo and a spent auto-fix budget pointing at a program that is
+    // gone). Called BEFORE setGenerationFallback because it clears that note too.
+    clearStaleCodeState();
     setGenerationFallback(message);
     console.warn("AI generation failed, used template:", message);
   };
@@ -633,20 +668,48 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
             // persisted on the backend with no badge and no veto — learned, invisible,
             // and impossible to take back. Set BEFORE the await, cleared in `finally`.
             setMemorySaving(true);
+            // F-151 — the memory outcome is deliberately NOT behind `genTokenRef`. The
+            // token answers "does this result still own the code on screen?", and the
+            // answer for a memory is always no: it was learned from the code version this
+            // fix repaired, which a later keystroke has already superseded. What must not
+            // be superseded is the DISCLOSURE — the backend has written the memory before
+            // this promise resolves, so dropping the badge leaves a fix-derived memory in
+            // the instance store that the author can neither see nor forget from here.
+            // The fingerprint travels with the badge so it can name the version it came
+            // from once the code has moved on.
+            const learnedFrom = codeFingerprint(result.code);
             try {
-              const memRes = await invoke("addMemory", {
-                content: result.memoryCandidate.content,
-                projectKey: result.memoryCandidate.projectScoped ? deriveProjectKey() : null,
-                source: "fix",
-              });
-              if (genTokenRef.current !== token) return;
-              if (memRes.success) {
-                setMemorySaved({ id: memRes.id, content: result.memoryCandidate.content });
+              // F-153 — bounded. `invoke` has no timeout of its own, and since F-150 put
+              // this tail inside `stepBusy` a call that never settles disables every
+              // writer on the step for the life of the mounted component, with no cancel
+              // and no route out. A losing race still leaves `memorySaving` cleared by
+              // `finally`, so the step always unlocks within MEMORY_SAVE_TIMEOUT_MS.
+              const memRes = await Promise.race([
+                invoke("addMemory", {
+                  content: result.memoryCandidate.content,
+                  projectKey: result.memoryCandidate.projectScoped ? deriveProjectKey() : null,
+                  source: "fix",
+                }),
+                new Promise((_, reject) =>
+                  setTimeout(() => reject(new Error("memory-save-timeout")), MEMORY_SAVE_TIMEOUT_MS),
+                ),
+              ]);
+              if (memRes && memRes.success) {
+                setMemorySaved({ id: memRes.id, content: result.memoryCandidate.content, learnedFrom });
                 setKnowledgeRefresh((n) => n + 1);
                 showToast("Fix verified — memory saved");
               }
             } catch (e) {
-              console.warn("Memory save failed:", e.message);
+              // On a timeout the memory MAY still land server-side, but we have no id, so
+              // a badge here would carry a veto button that cannot delete anything — a
+              // worse lie than no badge. We drop the badge and send the author to the one
+              // place that reads the real store, and refresh it so the row shows up there.
+              const timedOut = e && e.message === "memory-save-timeout";
+              console.warn("Memory save failed:", e && e.message);
+              if (timedOut) {
+                setKnowledgeRefresh((n) => n + 1);
+                showToast("Fix verified. The memory is still saving — check the Memories tab.", "error");
+              }
             } finally {
               setMemorySaving(false);
             }
@@ -728,6 +791,18 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
       {/* Header */}
       <div className="function-header">
         <span className="function-number">#{index + 1}</span>
+        {/* F-152 — ONE visible busy state for the whole step, driven by the same
+            `stepBusy` predicate that disables the six writer controls. Before this, the
+            memory tail disabled everything while the step looked completely idle (its two
+            spinners key on `testRunning`/`isGenerating`, both false by then). Solid slate
+            chip + the MLS `.spin-ring`; no per-control spinner is added, so there is still
+            only one place that says "this step is working". */}
+        {stepBusy && (
+          <span className="step-busy-note" title={busyTitle}>
+            <span className="spin-ring spin-ring-sm" />
+            {busyLabel}
+          </span>
+        )}
         <input
           type="text"
           className="input function-name-input"
@@ -765,7 +840,7 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
           className="recipe-bar-toggle"
           onClick={() => setShowRecipes((v) => !v)}
           disabled={stepBusy}
-          title={stepBusy ? BUSY_TITLE : undefined}
+          title={stepBusy ? busyTitle : undefined}
         >
           <span className="recipe-bar-icon">{showRecipes ? "▾" : "▸"}</span>
           <span>Start from a recipe</span>
@@ -833,7 +908,7 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
                     type="button"
                     className="btn-generate"
                     disabled={!supported || missing.length > 0 || stepBusy}
-                    title={stepBusy ? BUSY_TITLE : undefined}
+                    title={stepBusy ? busyTitle : undefined}
                     onClick={() => {
                       const params = {};
                       for (const pp of recipe.params) params[pp.name] = recipeParams[pp.name] ?? pp.default ?? "";
@@ -1171,6 +1246,8 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
             className={`btn-generate ${hasCode ? "btn-generate-secondary" : ""}`}
             onClick={handleGenerate}
             disabled={!hasPrompt || stepBusy}
+            /* F-152 — every control `stepBusy` disables says why. */
+            title={stepBusy ? busyTitle : (!hasPrompt ? "Describe what this step does first" : undefined)}
           >
             {hasCode ? "Regenerate Code" : "Generate Code"}
           </button>
@@ -1310,7 +1387,7 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
                   className="btn-add-doc"
                   onClick={handleUndoFix}
                   disabled={stepBusy}
-                  title={stepBusy ? BUSY_TITLE : undefined}
+                  title={stepBusy ? busyTitle : undefined}
                 >
                   Undo
                 </button>
@@ -1337,9 +1414,16 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
           )}
 
           {/* The memory persists even after the fix card is undone — keep the
-              badge (and its veto) visible until vetoed or dismissed. */}
+              badge (and its veto) visible until vetoed or dismissed.
+              F-151 — this card is also where a memory lands when the author typed during
+              the save tail: the keystroke cleared the fix card, but the memory is real and
+              must stay forgettable. `learnedFrom` lets it say which code version taught it
+              rather than implying it describes what is on screen now. */}
           {!fixResult && memorySaved && (
             <div className="fix-result fix-verified anim-rise">
+              {memorySaved.learnedFrom && memorySaved.learnedFrom !== codeFingerprint(functionData.code || "") && (
+                <p className="fix-explanation">Learned from the version of this code the fix repaired — the code has been edited since.</p>
+              )}
               <span className="memory-saved-badge">
                 🧠 Learned: {memorySaved.content.slice(0, 80)}
                 <button
@@ -1388,6 +1472,7 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
                     className={`btn-run-test${testRunning ? " is-busy busy-solid" : ""}`}
                     onClick={() => runTest()}
                     disabled={stepBusy || !functionData.code?.trim()}
+                    title={stepBusy ? busyTitle : (!functionData.code?.trim() ? "Generate or write the step's code first" : undefined)}
                   >
                     Run Test
                   </button>
@@ -1424,7 +1509,11 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
                         className="btn-fix-ai"
                         onClick={handleFixWithAI}
                         disabled={stepBusy || fixAttempts >= 2}
-                        title={fixAttempts >= 2
+                        /* F-152 — busy wins over the availability copy: this button used to
+                           advertise itself as ready while it was disabled by the tail. */
+                        title={stepBusy
+                          ? busyTitle
+                          : fixAttempts >= 2
                           ? "Fix attempts exhausted — edit the code manually or regenerate"
                           : "AI repairs the code and re-runs the test automatically"}
                       >

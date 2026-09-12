@@ -783,6 +783,28 @@ const injectStyles = () => {
       min-width: 24px;
     }
 
+
+    /* F-152 — ONE visible busy state for a static-PF step, driven by stepBusy.
+       Solid slate (the neutral hue), white text, white MLS spinner — no tint, no rail. */
+    .step-busy-note {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 2px 9px;
+      border-radius: 10px;
+      background: #475569;
+      color: #ffffff;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .step-busy-note .spin-ring {
+      border-color: rgba(255, 255, 255, 0.35);
+      border-top-color: #ffffff;
+    }
+    html[data-color-mode="dark"] .step-busy-note { background: #64748b; }
+
     .function-name-input {
       flex: 1;
       font-size: 13px;

@@ -467,8 +467,17 @@ let _cachedEditionAt = 0;
  * ACTIVE advanced licence (`active === true && edition === "advanced"`) and why its
  * TTL is 2 days. Anything else resolves to Standard — the cheap tier is the fail-soft
  * direction, here and everywhere in this module.
+ *
+ * `{ fresh: true }` (F-111) SKIPS the per-container 30s memo, read and write both. It
+ * exists for the async consumer, which deliberately caches nothing: it runs in a warm
+ * container that no provider/licence switch can invalidate, so a memoised edition there
+ * could keep authorising vendor-billed frontier models after a subscription lapsed.
+ * The consumer used to carry its OWN copy of this ladder for that reason; the copy
+ * drifted (no snapshot TTL trust comment, retyped key). One ladder, one home — the
+ * option is how the second caller gets its no-cache semantics without a second ladder.
  */
-export const currentEdition = async (context) => {
+export const currentEdition = async (context, options) => {
+  const fresh = !!(options && options.fresh);
   // Rung 1 — this invocation's own license. Checked with `in` (not truthiness) for the
   // same reason as the getAppContext read below: `license: null` is an ANSWER ("no
   // licence → Standard"), not a missing read, and must not fall through to a snapshot
@@ -479,7 +488,7 @@ export const currentEdition = async (context) => {
       return editionFromInvocation(context.license);
     }
   } catch (e) { /* fall through to the context-less ladder */ }
-  if (_cachedEdition && Date.now() - _cachedEditionAt < PROVIDER_CACHE_TTL_MS) return _cachedEdition;
+  if (!fresh && _cachedEdition && Date.now() - _cachedEditionAt < PROVIDER_CACHE_TTL_MS) return _cachedEdition;
   let out = null;
   let sawContext = false;
   try {
@@ -504,8 +513,10 @@ export const currentEdition = async (context) => {
     } catch (e) { /* fall through to Standard */ }
   }
   if (!out) out = resolveEdition(null);
-  _cachedEdition = out;
-  _cachedEditionAt = Date.now();
+  if (!fresh) {
+    _cachedEdition = out;
+    _cachedEditionAt = Date.now();
+  }
   return out;
 };
 

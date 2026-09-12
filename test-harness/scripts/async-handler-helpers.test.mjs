@@ -173,7 +173,9 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
 // =====================================================================================
 {
   ok(/from "\.\/shared\/edition\.js"/.test(asyncSrc), "the consumer imports the policy from the SHARED module");
-  for (const sym of ["clampForgeLlmModel", "FORGE_LLM_DEFAULT", "resolveEdition"]) {
+  // resolveEdition is NOT in this list any more: F-111 removed the consumer's own
+  // edition ladder, so the only edition resolution it does is through src/index.js.
+  for (const sym of ["clampForgeLlmModel", "FORGE_LLM_DEFAULT"]) {
     ok(new RegExp("\\b" + sym + "\\b").test(asyncSrc), `consumer imports ${sym}`);
   }
   ok(/atlassian: FORGE_LLM_DEFAULT/.test(asyncSrc),
@@ -190,7 +192,7 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   // level:"hard" keep billing frontier models from every queued job all month.
   ok(/forgeLlmBillingClamp\(requested, \{ edition, allowance/.test(branch),
     "the model is clamped by edition AND allowance BEFORE forgeLlmChatApi is called");
-  ok(/currentEditionAsync\(\)/.test(branch) && /readForgeLlmAllowance\(\)/.test(branch),
+  ok(/currentEditionFresh\(\)/.test(branch) && /readForgeLlmAllowance\(\)/.test(branch),
     "both inputs are read here — the edition locally, the allowance through index.js's one reader");
   ok(/clampForgeLlmModel\(EDITION_IDS\.STANDARD, requested\)/.test(branch),
     "any edition/allowance read error FAILS SOFT to the Standard clamp (Haiku), never an exception out of a queued job");
@@ -210,21 +212,35 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   ok(/readSeatCount\(\)/.test(indexSrc.match(/export const readForgeLlmAllowance = async [\s\S]*?\n\};/)[0]),
     "readForgeLlmAllowance reads the SAME usage ledger + seat snapshot the memo uses");
 
-  // currentEditionAsync: license → snapshot → Standard, never throwing.
-  const m = asyncSrc.match(/const currentEditionAsync = async \(\) => \{[\s\S]*?\n\};/);
-  ok(!!m, "found currentEditionAsync");
+  // F-111 — the consumer no longer carries its OWN edition ladder. It had one
+  // (`currentEditionAsync`) plus a retyped EDITION_SNAPSHOT_KEY, and that copy drifted
+  // from src/index.js's currentEdition(). Now there is one ladder, called with
+  // `{ fresh: true }` so the consumer keeps its deliberate no-cache semantics without
+  // a second implementation to keep in step.
+  const asyncCode = asyncSrc.replace(/\/\/[^\n]*/g, "");
+  ok(!/currentEditionAsync/.test(asyncCode), "the consumer's duplicate edition ladder is gone");
+  ok(!/EDITION_SNAPSHOT_KEY/.test(asyncCode),
+    "…and with it the retyped snapshot key (the ladder that reads it lives in src/index.js)");
+  ok(/\n  currentEdition,\n/.test(asyncSrc), "the consumer imports currentEdition from ./index");
+  const m = asyncSrc.match(/const currentEditionFresh = async \(\) => \{[\s\S]*?\n\};/);
+  ok(!!m, "found the consumer's thin wrapper currentEditionFresh");
   const b = m ? m[0] : "";
-  // F-082/F-087: a LIVE context wins even when its `license` is null; the snapshot is
-  // only for a runtime that could not see the licence at all, and only when ACTIVE+advanced.
-  ok(/"license" in ctx/.test(b), "it trusts a live getAppContext() license read first");
-  ok(/snap\.active === true && snap\.edition === EDITION_IDS\.ADVANCED/.test(b), "only an ACTIVE advanced snapshot is honoured");
-  ok(/EDITION_SNAPSHOT_KEY/.test(b), "it falls back to the KVS snapshot written by the workflow runtimes");
+  ok(/currentEdition\(undefined, \{ fresh: true \}\)/.test(b),
+    "it calls THE ladder with no context and fresh:true — the consumer caches nothing");
+  ok(/\.edition/.test(b), "…and unwraps `.edition`, the shape the call sites expect");
   ok(/return EDITION_IDS\.STANDARD;/.test(b), "Standard is the floor (from the one id home, not a re-typed literal)");
-  ok((b.match(/catch \(e\)/g) || []).length >= 2, "every read is wrapped — an edition fault never kills a queued job");
-  ok(/EDITION_SNAPSHOT_KEY = "COGNIRUNNER_EDITION_SNAPSHOT"/.test(asyncSrc),
-    "the consumer reads the SAME snapshot key src/index.js writes");
+  ok(/catch \(e\)/.test(b), "it never throws — an edition fault must not kill a queued job");
+  // The `fresh` option really bypasses the 30s memo on BOTH sides (read and write).
+  const led = indexSrc.match(/export const currentEdition = async \(context, options\) => \{[\s\S]*?\n\};/);
+  ok(!!led, "found currentEdition(context, options) in src/index.js");
+  const lb = led ? led[0] : "";
+  ok(/const fresh = !!\(options && options\.fresh\);/.test(lb), "the ladder reads the fresh option");
+  ok(/if \(!fresh && _cachedEdition/.test(lb), "fresh:true skips the memo READ");
+  ok(/if \(!fresh\) \{\n\s*_cachedEdition = out;/.test(lb), "fresh:true skips the memo WRITE (no poisoning for other callers)");
+  ok(/snap\.active === true && snap\.edition === EDITION_IDS\.ADVANCED/.test(lb),
+    "the one ladder still honours only an ACTIVE advanced snapshot (F-082/F-087)");
   ok(indexSrc.includes('EDITION_SNAPSHOT_KEY = "COGNIRUNNER_EDITION_SNAPSHOT"'),
-    "…and src/index.js still defines that exact key (lockstep)");
+    "…and src/index.js remains the single definition of the snapshot key");
 
   // The split usage + effective model reach the meter.
   const ret = asyncSrc.match(/return \{ ok: true, content, tokens, model, usage: \{[^}]*\} \};/);
@@ -248,7 +264,7 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   const body = m ? m[0] : "";
   ok(/clampForgeLlmModel\(edition, String\(params\?\.model/.test(body),
     "the probe model is clamped by the consumer's own edition, not taken from params");
-  ok(/currentEditionAsync\(\)/.test(body), "the edition comes from currentEditionAsync");
+  ok(/currentEditionFresh\(\)/.test(body), "the edition comes from the one ladder via currentEditionFresh");
   ok(/Math\.min\(50000,/.test(body), "token filler is capped at 50000");
   ok(/Math\.min\(3,/.test(body), "call count is capped at 3");
   ok(/recordAiUsage\(\{/.test(body) && /provider: "atlassian"/.test(body),

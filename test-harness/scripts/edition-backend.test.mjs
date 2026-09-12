@@ -124,7 +124,7 @@ ok(shapeOf(null).features.length === ADVANCED_FEATURES.length, "features list is
 ok(/export const EDITION_SNAPSHOT_KEY = "COGNIRUNNER_EDITION_SNAPSHOT";/.test(indexSrc), "snapshot key is exported for the sibling modules");
 ok(/EDITION_SNAPSHOT_TTL = \{ ttl: \{ value: 2, unit: "DAYS" \} \}/.test(indexSrc), "snapshot carries a 2-DAY TTL (F-082: a lapsed subscription must not bill Opus for a week)");
 ok(/EDITION_SNAPSHOT_MIN_INTERVAL_MS = 6 \* 60 \* 60 \* 1000/.test(indexSrc), "snapshot writes are throttled to once per 6h per container");
-ok(/export const currentEdition = async \(context\)/.test(indexSrc), "currentEdition is exported, and takes the invocation context (F-101)");
+ok(/export const currentEdition = async \(context, options\)/.test(indexSrc), "currentEdition is exported, and takes the invocation context (F-101)");
 ok(/export const requireAdvanced = async \(context, featureId\)/.test(indexSrc), "requireAdvanced is exported");
 // F-101 — the edition consumers that DECIDE something (the Forge LLM write gates, the
 // health check, the usage meter) all read the one ladder with their context.
@@ -137,7 +137,7 @@ for (const name of ["checkProviderHealth", "getOpenAIModels", "saveOpenAIModel",
 }
 ok(/export const editionFromInvocation = \(license\)/.test(indexSrc), "editionFromInvocation is exported");
 {
-  const m = indexSrc.match(/export const currentEdition = async \(context\) => \{[\s\S]*?\n\};/);
+  const m = indexSrc.match(/export const currentEdition = async \(context, options\) => \{[\s\S]*?\n\};/);
   ok(!!m && /getAppContext\(\)/.test(m[0]), "currentEdition tries the live getAppContext() license first");
   ok(!!m && /EDITION_SNAPSHOT_KEY/.test(m[0]), "currentEdition falls back to the KVS snapshot");
   // F-082/F-087 — snapshot trust.
@@ -169,7 +169,7 @@ ok(/export const editionFromInvocation = \(license\)/.test(indexSrc), "editionFr
 // else. Built from the REAL bodies of currentEdition + requireAdvanced.
 // =====================================================================================
 {
-  const mCur = indexSrc.match(/export const currentEdition = async \(context\) => \{[\s\S]*?\n\};/);
+  const mCur = indexSrc.match(/export const currentEdition = async \(context, options\) => \{[\s\S]*?\n\};/);
   const mReq = indexSrc.match(/export const requireAdvanced = async \(context, featureId\) => \{[\s\S]*?\n\};/);
   ok(!!mCur && !!mReq, "found currentEdition + requireAdvanced for the executed gate test");
   const build = ({ snapshot, appCtx }) => new Function(
@@ -227,13 +227,19 @@ ok(/export const editionFromInvocation = \(license\)/.test(indexSrc), "editionFr
 }
 
 {
-  const a = asyncSrc.match(/const currentEditionAsync = async \(\) => \{[\s\S]*?\n\};/);
-  ok(!!a, "found currentEditionAsync in src/async-handler.js");
+  // F-111 — the consumer has NO edition ladder of its own any more. It had a copy
+  // (currentEditionAsync + a retyped snapshot key) that drifted from this one; it now
+  // calls src/index.js's currentEdition() with { fresh: true } so it keeps its
+  // deliberate no-cache behaviour without a second implementation of the rule.
+  const asyncCode = asyncSrc.replace(/\/\/[^\n]*/g, "");
+  ok(!/currentEditionAsync/.test(asyncCode), "no second edition ladder in src/async-handler.js");
+  ok(!/EDITION_SNAPSHOT_KEY/.test(asyncCode), "no retyped snapshot key in the consumer");
+  const a = asyncSrc.match(/const currentEditionFresh = async \(\) => \{[\s\S]*?\n\};/);
+  ok(!!a, "found the consumer's currentEditionFresh wrapper");
   const body = a ? a[0] : "";
-  ok(/"license" in ctx/.test(body) && /resolveEdition\(ctx\.license\)\.edition/.test(body),
-    "the consumer applies the SAME live-context-wins rule (one rule, two seams)");
-  ok(/snap\.active === true && snap\.edition === EDITION_IDS\.ADVANCED/.test(body),
-    "the consumer honours only an ACTIVE advanced snapshot");
+  ok(/currentEdition\(undefined, \{ fresh: true \}\)/.test(body),
+    "the consumer reads THE ladder, memo-free (one rule, two seams)");
+  ok(/EDITION_IDS\.STANDARD/.test(body), "an edition fault in the consumer floors at Standard");
 }
 
 // =====================================================================================

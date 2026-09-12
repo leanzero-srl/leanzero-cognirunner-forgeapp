@@ -26,7 +26,7 @@ import { chat as forgeLlmChatApi } from "@forge/llm";
 // Until 1.3 this consumer called forgeLlmChatApi with whatever model the saved config
 // carried, UNCLAMPED: a stale or downgraded frontier id billed the vendor from every
 // queued job while the synchronous path refused it. Same rule, one home, both seams.
-import { resolveEdition, clampForgeLlmModel, FORGE_LLM_DEFAULT, EDITION_IDS } from "./shared/edition.js";
+import { clampForgeLlmModel, FORGE_LLM_DEFAULT, EDITION_IDS } from "./shared/edition.js";
 // Heavy post-functions (MCP-backed: generate-doc, research, fact-checked semantics)
 // are queued by executePostFunction and run HERE under this consumer's 120s timeout —
 // the inline jira:workflowPostFunction invocation is hard-capped at 25s by the platform.
@@ -67,6 +67,8 @@ import {
   getLearnedRuleCost,
   resetInvocationTokens,
   getInvocationTokens,
+  // F-111 — THE edition ladder, one home. `{ fresh: true }` opts out of its 30s memo.
+  currentEdition,
 } from "./index";
 import { estimateTaskTokens, BUDGET_WAIT_HORIZON_MS } from "./shared/ai-budget.js";
 // Learned memories — injected into static-PF reviews and persisted by the
@@ -117,30 +119,24 @@ const getOpenAIKey = async (providerOverride = null) => {
   return null;
 };
 
-// The consumer's edition read — the SAME trust rule as src/index.js currentEdition()
-// (F-082/F-087), because both decide whether a vendor-billed frontier model may go out.
+// The consumer's edition read is THE ladder in src/index.js — `currentEdition()` —
+// called with `{ fresh: true }` (F-111). This file used to carry its own copy
+// (`currentEditionAsync`) plus a retyped EDITION_SNAPSHOT_KEY, and the copy drifted
+// from the original it was meant to mirror. Both seams decide whether a vendor-billed
+// frontier model may go out, so both read one function.
 //
-// A LIVE context wins, even when its `license` is null: `license: null` means the
-// install has no licence, i.e. Standard. The KVS snapshot written by
-// validate()/executePostFunction() (src/index.js EDITION_SNAPSHOT_KEY) is consulted
-// ONLY when this runtime could not see the licence at all (getAppContext threw,
-// returned nothing, or carried no `license` key), and even then only when it recorded
-// an ACTIVE advanced licence. Its TTL is 2 days: a lapsed Coder subscription must not
-// keep billing Opus for a week.
+// `fresh: true` skips index.js's 30s per-container memo, because this consumer
+// deliberately caches nothing: it runs in a warm container that no provider or licence
+// switch can invalidate, and a memoised edition here would let a lapsed subscription
+// keep authorising Opus. No context is passed — the consumer has no invocation licence,
+// so the ladder starts at getAppContext() and falls through to the KVS snapshot.
 // NEVER throws — an edition fault must degrade the model, not kill a queued job.
-const EDITION_SNAPSHOT_KEY = "COGNIRUNNER_EDITION_SNAPSHOT";
-const currentEditionAsync = async () => {
+const currentEditionFresh = async () => {
   try {
-    const ctx = getAppContext();
-    if (ctx && typeof ctx === "object" && "license" in ctx) {
-      return resolveEdition(ctx.license).edition;
-    }
-  } catch (e) { /* getAppContext has no license in every runtime */ }
-  try {
-    const snap = await storage.get(EDITION_SNAPSHOT_KEY);
-    if (snap && snap.active === true && snap.edition === EDITION_IDS.ADVANCED) return EDITION_IDS.ADVANCED;
-  } catch (e) { /* fall through to Standard */ }
-  return EDITION_IDS.STANDARD;
+    return (await currentEdition(undefined, { fresh: true })).edition;
+  } catch (e) {
+    return EDITION_IDS.STANDARD;
+  }
 };
 
 const PROVIDER_DEFAULT_MODELS = {
@@ -331,7 +327,7 @@ const callAIChatSimpleRaw = async ({ apiKey, model: requestedModel, systemPrompt
       const requested = model;
       try {
         const [edition, allowance] = await Promise.all([
-          currentEditionAsync(),
+          currentEditionFresh(),
           readForgeLlmAllowance(),
         ]);
         model = await forgeLlmBillingClamp(requested, { edition, allowance, logPrefix: "[async] " });
@@ -874,7 +870,7 @@ const executeProbe = async (params) => {
     // Opus on Standard), and the spend is METERED so it shows up in the usage ledger
     // instead of vanishing. The ceilings are tighter than a normal call on purpose —
     // this is a measurement, not a workload.
-    const edition = await currentEditionAsync().catch(() => EDITION_IDS.STANDARD);
+    const edition = await currentEditionFresh();
     const model = clampForgeLlmModel(edition, String(params?.model || FORGE_LLM_DEFAULT));
     const tokens = Math.min(50000, Math.max(500, Number(params?.tokens) || 20000));
     const calls = Math.min(3, Math.max(1, Number(params?.calls) || 3));

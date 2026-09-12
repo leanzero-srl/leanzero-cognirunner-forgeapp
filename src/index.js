@@ -11245,9 +11245,13 @@ const maybeRefreshSeatSnapshot = () => {
     //    frozen or torn down mid-scan; an outcome-only marker leaves no row at all and
     //    the next cold container starts the whole multi-page scan again — the re-run
     //    loop F-081 was meant to close. The start marker carries `at`, so the 24h
-    //    throttle holds even if the scan never finishes.
+    //    throttle holds even if the scan never finishes. A marker is written only once
+    //    the PREVIOUS row has been read successfully — a faulted read writes no row at
+    //    all (F-110), because an `at` stamp we cannot back with a count would block the
+    //    rescan for 24h on a snapshot nobody read.
     //
-    // 2. A GOOD SEAT COUNT IS NEVER REPLACED BY null. A 429 on page 3 used to write
+    // 2. A GOOD SEAT COUNT IS NEVER REPLACED BY null — nor by a row written on behalf
+    //    of a read that failed. A 429 on page 3 used to write
     //    {seats:null}, readSeatCount then returned null and a 500-seat site fell to the
     //    100-seat fallback: an $800 allowance became $200, the month read "hard" and
     //    every rule on a paying tenant downgraded to Haiku for 24h. Failure refreshes
@@ -11255,18 +11259,30 @@ const maybeRefreshSeatSnapshot = () => {
     const write = async (row) => {
       try { await storage.set(SEAT_SNAPSHOT_KEY, { ...row, at: Date.now() }); } catch (e) { /* best-effort */ }
     };
-    let prevSeats = null;
+    // The PREVIOUS row is read in its OWN try (F-110). It used to share the marker's
+    // try, so `prevSeats` was still unassigned when the read threw and the catch wrote
+    // {seats:null, at:now} — replacing a good 500-seat count with UNKNOWN (which
+    // readSeatCount reports as ok:true/seats:null, so F-099's fault guard does not
+    // fire) and stamping `at`, which blocked any rescan for 24h. A 500-seat Coder
+    // tenant fell to the 100-seat $200 ceiling and clamped every rule to Haiku for a
+    // day, off ONE KVS hiccup.
+    let prevSeats;
     try {
       const snap = await storage.get(SEAT_SNAPSHOT_KEY);
       if (snap && snap.at && Date.now() - snap.at < SEAT_SNAPSHOT_MAX_AGE_MS) return false;
       prevSeats = snap && Number(snap.seats) > 0 ? Number(snap.seats) : null;
+    } catch (e) {
+      // We do not know what the row held, so we write NOTHING: a faulted READ must not
+      // stamp `at` (that would block the rescan for 24h) and must not overwrite a count
+      // it never saw. The per-container throttle already stops this from spinning.
+      console.warn("[seats] snapshot read failed, leaving the row untouched:", String((e && e.message) || e).slice(0, 120));
+      return false;
+    }
+    try {
       // START marker — see rule 1 above. Keeps the last good count readable while the
       // scan runs, so the allowance never dips during a refresh. AWAITED by the caller.
       await write({ seats: prevSeats, pending: true });
-    } catch (e) {
-      await write({ seats: prevSeats, error: String((e && e.message) || e).slice(0, 120) });
-      return false;
-    }
+    } catch (e) { /* `write` already swallows; belt and braces */ }
     // From here on the caller is gone: the pages run DETACHED so the resolver returns
     // after ONE KVS write. Every outcome still writes a row, and every failure still
     // carries the previous count.

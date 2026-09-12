@@ -180,6 +180,12 @@ ok(/rest\/api\/3\/users\/search/.test(codeOnly), "seats are counted from /rest/a
   ok(!/seats: null, error/.test(b), "no failure path replaces a good count with null (F-092)");
   ok(/prevSeats = snap && Number\(snap\.seats\) > 0 \? Number\(snap\.seats\) : null;/.test(b),
     "the previous count is read from the snapshot before anything is written");
+  // F-110: the snapshot READ has its own try, and a fault there writes NOTHING —
+  // `prevSeats` is left undefined rather than defaulting to null, and no `at` is
+  // stamped, so the next call rescans instead of sitting on an unread row for 24h.
+  ok(/\n    let prevSeats;\n/.test(b), "prevSeats is declared WITHOUT a null default (a fault must be distinguishable)");
+  ok(/console\.warn\("\[seats\] snapshot read failed[\s\S]*?\n      return false;/.test(b),
+    "a faulted snapshot read logs and returns — it writes no row at all");
   // F-094: the scan is started from a resolver that has already RETURNED, so a frozen
   // container must not be able to leave NO row. The START marker is written first and
   // carries `at`, which is the arm the 24h throttle actually reads.
@@ -261,6 +267,29 @@ ok(/rest\/api\/3\/users\/search/.test(codeOnly), "seats are counted from /rest/a
     ok(state.row.seats === 500, "FAILURE: a 429 does NOT blank the last good seat count (F-092)");
     ok(state.row.error === "429", "FAILURE: the error is recorded");
     ok(typeof state.row.at === "number", "FAILURE: `at` is refreshed so it cannot re-run for 24h");
+  }
+  // F-110 — the SNAPSHOT READ ITSELF faults. `prevSeats` used to be assigned on the
+  // line AFTER that read, so the shared catch wrote {seats:null, at:now}: a good
+  // 500-seat count became UNKNOWN (readSeatCount reports ok:true/seats:null, so F-099's
+  // fault guard does not fire) → the 100-seat $200 ceiling → "hard" → every rule
+  // clamped to Haiku, and the fresh `at` blocked any rescan for 24h. A faulted read
+  // must now write NOTHING.
+  {
+    const state = { row: { seats: 500, at: Date.now() - 2 * DAY }, writes: [], rest: 0 };
+    const storage = {
+      get: async () => { throw new Error("kvs 429"); },
+      set: async (_k, v) => { state.row = v; state.writes.push(v); },
+    };
+    const api = { asApp: () => ({ requestJira: async () => { state.rest++; return { ok: true, json: async () => [] }; } }) };
+    const route = (strings, ...v) => strings.reduce((a, sPart, i) => a + sPart + (v[i] ?? ""), "");
+    const run = factory(storage, api, route, "K", DAY, 2000, 200, 10);
+    const out = await run(); await settle();
+    ok(out === false, "READ FAULT: the refresh reports it did not run");
+    ok(state.writes.length === 0, "READ FAULT: NO row is written — a fault never stamps `at` (F-110)");
+    ok(state.row.seats === 500, "READ FAULT: the last good count survives untouched");
+    ok(typeof state.row.at === "number" && Date.now() - state.row.at > DAY,
+      "READ FAULT: `at` stays stale, so the next call rescans instead of waiting 24h");
+    ok(state.rest === 0, "READ FAULT: no scan is started off a snapshot nobody could read");
   }
   // F-102 — what the caller awaits is the START MARKER, and only that. The returned
   // promise must be settled with the marker already written, while the pages are still

@@ -181,7 +181,12 @@ ok(/export const editionFromInvocation = \(license\)/.test(indexSrc), "editionFr
     "the `page.length < SEAT_PAGE` early break is gone (Jira caps maxResults; a short page is not the end)");
   ok(/SEAT_MAX_PAGES/.test(body) && /page\.length === 0\) break/.test(body),
     "paging stops on an EMPTY page or SEAT_MAX_PAGES");
-  ok(/seats: null, error/.test(body), "a failed scan writes a {seats:null,error} marker row");
+  // F-092/F-094: every outcome writes a marker, the scan marks its START, and a failure
+  // preserves the last good count instead of blanking it. (Behaviour is EXECUTED in
+  // forge-llm-policy.test.mjs; this is the source-shape guard.)
+  ok(/await write\(\{ seats: prevSeats, pending: true \}\)/.test(body), "a START marker is written before the scan");
+  ok(/await write\(\{ seats: prevSeats, error/.test(body), "a failed scan marks the failure and KEEPS the previous count");
+  ok(!/seats: null, error/.test(body), "no failure path writes {seats:null} over a good count");
   ok(/await write\(\{ seats \}\)/.test(body), "a successful scan writes its count, including zero");
   ok(/SEAT_MAX_PAGES = 10/.test(indexSrc), "the page ceiling is 10");
   ok(/SEAT_SNAPSHOT_MAX_AGE_MS = 24 \* 60 \* 60 \* 1000/.test(indexSrc), "the throttle window is 24h");

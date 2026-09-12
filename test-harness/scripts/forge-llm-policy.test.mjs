@@ -155,11 +155,100 @@ ok(/rest\/api\/3\/users\/search/.test(codeOnly), "seats are counted from /rest/a
   ok(!/^const maybeRefreshSeatSnapshot = async/.test(b), "the seat refresh is NOT async at the call site — nothing awaits it");
   ok(/u\.active === true && u\.accountType === "atlassian"/.test(b), "only active Atlassian accounts count as seats");
   // F-081: a failed page must WRITE a marker row, not just return — otherwise every cold
-  // container restarts the scan. The count itself is still never overwritten with a wrong number.
-  ok(/seats: null, error/.test(b), "a failed page writes a {seats:null,error} marker so it cannot re-run for 24h");
+  // container restarts the scan.
+  // F-092: and that marker must NOT blank a good count. It used to write {seats:null},
+  // which dropped a 500-seat site to the 100-seat fallback ($800 → $200 allowance) and
+  // pushed a paying tenant to level:"hard" for 24h. Failure now refreshes `at`, records
+  // `error`, and carries the PREVIOUS count through.
+  ok(/await write\(\{ seats: prevSeats, error: String\(resp\.status\) \}\)/.test(b),
+    "a failed page writes a marker that PRESERVES the last good seat count");
+  ok(/await write\(\{ seats: prevSeats, error: String\(\(e && e\.message\)/.test(b),
+    "…and so does the outer catch");
+  ok(!/seats: null, error/.test(b), "no failure path replaces a good count with null (F-092)");
+  ok(/prevSeats = snap && Number\(snap\.seats\) > 0 \? Number\(snap\.seats\) : null;/.test(b),
+    "the previous count is read from the snapshot before anything is written");
+  // F-094: the scan is started from a resolver that has already RETURNED, so a frozen
+  // container must not be able to leave NO row. The START marker is written first and
+  // carries `at`, which is the arm the 24h throttle actually reads.
+  {
+    const iStart = b.indexOf("await write({ seats: prevSeats, pending: true })");
+    const iScan = b.indexOf("api.asApp().requestJira");
+    ok(iStart > 0, "a START marker { seats: <previous>, pending: true, at } is written");
+    ok(iStart < iScan, "…BEFORE the first REST page, so a frozen container cannot re-run the scan");
+  }
   ok(/await write\(\{ seats \}\)/.test(b), "a completed scan writes its count");
+  // The throttle is keyed on `at`, and every write sets it.
+  ok(/\{ \.\.\.row, at: Date\.now\(\) \}/.test(b), "every write stamps `at` — the cross-container throttle key");
+  ok(/Date\.now\(\) - snap\.at < SEAT_SNAPSHOT_MAX_AGE_MS/.test(b), "…and the stored `at` is what BLOCKS a re-run inside 24h");
   // F-080: a SHORT page is normal (Jira caps maxResults); only an empty page ends the scan.
   ok(!/page\.length < SEAT_PAGE/.test(b), "a short page no longer truncates the scan");
+}
+
+// =====================================================================================
+// F-092 / F-094 — the seat scan, EXECUTED. The source assertions above say what the code
+// reads; these run it against a fake KVS + Jira and assert the two behaviours that cost
+// money when they are wrong: the 24h throttle BLOCKS, and a failure never blanks a count.
+// =====================================================================================
+{
+  const m = codeOnly.match(/const maybeRefreshSeatSnapshot = \(\) => \{[\s\S]*?\n\};/);
+  const src = m ? m[0] : "";
+  // eslint-disable-next-line no-new-func
+  const factory = new Function(
+    "storage", "api", "route", "SEAT_SNAPSHOT_KEY", "SEAT_SNAPSHOT_MAX_AGE_MS",
+    "SEAT_SCAN_MAX", "SEAT_PAGE", "SEAT_MAX_PAGES",
+    "let _seatRefreshStartedAt = 0;\n" + src + "\nreturn maybeRefreshSeatSnapshot;",
+  );
+  const DAY = 24 * 60 * 60 * 1000;
+  const settle = () => new Promise((r) => setTimeout(r, 20));
+  const build = (row, pages) => {
+    const state = { row, writes: [], rest: 0 };
+    const storage = {
+      get: async () => state.row,
+      set: async (_k, v) => { state.row = v; state.writes.push(v); },
+    };
+    const api = { asApp: () => ({ requestJira: async () => {
+      const p = pages[state.rest++];
+      if (p && p.status) return { ok: false, status: p.status };
+      return { ok: true, json: async () => (p || []) };
+    } }) };
+    const route = (strings, ...v) => strings.reduce((a, sPart, i) => a + sPart + (v[i] ?? ""), "");
+    return { state, run: factory(storage, api, route, "K", DAY, 2000, 200, 10) };
+  };
+  const user = { active: true, accountType: "atlassian" };
+
+  // BLOCK — a snapshot written 1h ago stops the scan dead: no REST call, no write.
+  {
+    const { state, run } = build({ seats: 500, at: Date.now() - 60 * 60 * 1000 }, [[user]]);
+    run(); await settle();
+    ok(state.rest === 0, "BLOCK: a snapshot inside 24h makes no REST call");
+    ok(state.writes.length === 0, "BLOCK: …and writes nothing, so `at` is not pushed forward");
+    ok(state.row.seats === 500, "BLOCK: the good count is untouched");
+  }
+  // ALLOW — a stale snapshot rescans: START marker first (carrying the old count), then the new one.
+  {
+    const { state, run } = build({ seats: 500, at: Date.now() - 2 * DAY }, [[user, user, user], []]);
+    run(); await settle();
+    ok(state.writes.length >= 2, "ALLOW: a stale snapshot rescans and writes");
+    ok(state.writes[0].pending === true && state.writes[0].seats === 500,
+      "ALLOW: the FIRST write is the start marker, carrying the previous count (F-094)");
+    ok(typeof state.writes[0].at === "number", "ALLOW: the start marker stamps `at` — a frozen container cannot loop");
+    ok(state.row.seats === 3 && !state.row.pending, "ALLOW: the completed scan replaces it with the new count");
+  }
+  // FAILURE — a 429 mid-scan keeps the count, records the error, refreshes `at`.
+  {
+    const { state, run } = build({ seats: 500, at: Date.now() - 2 * DAY }, [[user], { status: 429 }]);
+    run(); await settle();
+    ok(state.row.seats === 500, "FAILURE: a 429 does NOT blank the last good seat count (F-092)");
+    ok(state.row.error === "429", "FAILURE: the error is recorded");
+    ok(typeof state.row.at === "number", "FAILURE: `at` is refreshed so it cannot re-run for 24h");
+  }
+  // FAILURE with no previous count — null is the honest answer, and the 100-seat fallback covers it.
+  {
+    const { state, run } = build(null, [{ status: 403 }]);
+    run(); await settle();
+    ok(state.row.seats === null && state.row.error === "403",
+      "FAILURE with no prior count: seats stays null (nothing good was overwritten)");
+  }
 }
 {
   const m = codeOnly.match(/const getProviderConfig = async \(\) => \{[\s\S]*?\n\};/);

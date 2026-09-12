@@ -64,6 +64,22 @@ export const EDITIONS = {
   ADVANCED: EDITION_IDS.ADVANCED,
 };
 
+/**
+ * The ONE normaliser for a model id that arrives from a client (saveOpenAIModel,
+ * saveAgentModel). A model id is a short printable token: trim it, drop control
+ * characters, cap at 120 chars. Returns "" for anything that is not a usable string,
+ * so a caller can simply refuse a falsy result.
+ *
+ * Clamped SERVER-SIDE after reading, like every other string this app stores — and in
+ * one place, because the two save resolvers had two different ideas of what a legal
+ * model id was (one trimmed, the other length-checked).
+ */
+export const normalizeModelId = (s) => {
+  if (typeof s !== "string") return "";
+  // eslint-disable-next-line no-control-regex
+  return s.replace(/[\u0000-\u001F\u007F]/g, "").trim().slice(0, 120);
+};
+
 const ADVANCED_CAPABILITY_SET = "capabilityadvanced";
 
 const lower = (v) => (typeof v === "string" && v ? v.toLowerCase() : null);

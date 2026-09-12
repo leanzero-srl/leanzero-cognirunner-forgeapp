@@ -23,7 +23,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import {
-  EDITIONS, EDITION_IDS, resolveEdition, ADVANCED_FEATURES, isFeatureAllowed,
+  EDITIONS, EDITION_IDS, normalizeModelId, resolveEdition, ADVANCED_FEATURES, isFeatureAllowed,
   FORGE_LLM_MODELS, FORGE_LLM_FRONTIER, FORGE_LLM_DEFAULT,
   forgeLlmTier, forgeLlmModelAllowedForEdition, clampForgeLlmModel, agentCapability,
 } from "../../src/shared/edition.js";
@@ -183,6 +183,18 @@ for (const r of ["byok", "needs-coder-edition", "needs-frontier-model", "allowan
   ok(m && m[1] === FORGE_LLM_DEFAULT,
     `PROVIDERS.atlassian.defaultModel (${m && m[1]}) === FORGE_LLM_DEFAULT (${FORGE_LLM_DEFAULT}) — the clamp target and the provider default must not drift`);
 }
+
+// =====================================================================================
+// F-084 — normalizeModelId is the ONE home for "what is a legal model id", shared by
+// saveOpenAIModel and saveAgentModel (they used to disagree: one trimmed, one length-checked).
+// =====================================================================================
+ok(normalizeModelId("  claude-opus-5  ") === "claude-opus-5", "trims");
+ok(normalizeModelId("gpt-5.4-mini") === "gpt-5.4-mini", "passes a normal id through");
+ok(normalizeModelId("a".repeat(500)).length === 120, "caps at 120 characters");
+ok(normalizeModelId("cl\u0000aude\n-5".trim()).includes("\u0000") === false, "strips control characters");
+ok(normalizeModelId(null) === "" && normalizeModelId(undefined) === "" && normalizeModelId(42) === "",
+  "a non-string is \"\" so a caller can refuse on falsy");
+ok(normalizeModelId("   ") === "", "whitespace-only is \"\"");
 
 console.log(`\nedition: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

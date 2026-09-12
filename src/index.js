@@ -44,7 +44,7 @@ import { deriveLogFlags } from "./shared/log-flags.js";
 import {
   resolveEdition, EDITIONS, ADVANCED_FEATURES, isFeatureAllowed,
   FORGE_LLM_MODELS, FORGE_LLM_FRONTIER, FORGE_LLM_DEFAULT,
-  forgeLlmTier, forgeLlmModelAllowedForEdition, clampForgeLlmModel,
+  forgeLlmTier, forgeLlmModelAllowedForEdition, clampForgeLlmModel, normalizeModelId,
 } from "./shared/edition.js";
 import { minuteKey, effectiveBudget, budgetDecision, inlineShouldQueue, AI_PLATFORM_TPM, AI_BUDGET_DEFAULT_TPM, BUDGET_WAIT_HORIZON_MS } from "./shared/ai-budget.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
@@ -5093,8 +5093,10 @@ resolver.define("saveOpenAIModel", async ({ payload, context }) => {
     return { success: false, error: "Admin access required" };
   }
   try {
-    const { model } = payload;
-    if (!model || typeof model !== "string") {
+    // ONE normaliser for model ids (src/shared/edition.js), shared with saveAgentModel:
+    // trim, strip control characters, cap at 120 chars — server-side, after reading.
+    const model = normalizeModelId(payload && payload.model);
+    if (!model) {
       return { success: false, error: "Invalid model selection" };
     }
     const provider = await resolveTargetProvider(payload);
@@ -5158,12 +5160,12 @@ resolver.define("getAgentModel", async ({ payload, context }) => {
 resolver.define("saveAgentModel", async ({ payload, context }) => {
   if (!(await requireAdmin(context.accountId))) return noPerm("change the agent model");
   try {
-    const model = payload && payload.model;
-    if (!model || typeof model !== "string" || !model.trim()) {
+    // Same normaliser as saveOpenAIModel — one home for what a legal model id is.
+    const clean = normalizeModelId(payload && payload.model);
+    if (!clean) {
       return { success: false, error: "Invalid model selection" };
     }
     const provider = await resolveTargetProvider(payload);
-    const clean = model.trim();
     if (provider === "atlassian") {
       if (!FORGE_LLM_FRONTIER.includes(clean)) {
         const { edition } = await currentEdition();
@@ -5173,10 +5175,8 @@ resolver.define("saveAgentModel", async ({ payload, context }) => {
       }
       const { edition } = await currentEdition();
       if (!forgeLlmModelAllowedForEdition(edition, clean)) return upgradeRequired("forge-llm-frontier-models");
-    } else if (clean.length > 120) {
-      // Clamped server-side AFTER reading, like every other model string.
-      return { success: false, error: "Model id is too long (max 120 characters)." };
     }
+    // No separate length check here: normalizeModelId already capped it at 120.
     await storage.set(providerAgentModelSlot(provider), clean);
     return { success: true, model: clean };
   } catch (error) {

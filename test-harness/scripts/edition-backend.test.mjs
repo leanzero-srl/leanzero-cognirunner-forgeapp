@@ -326,7 +326,10 @@ ok(/export const editionFromInvocation = \(license\)/.test(indexSrc), "editionFr
   ok(!!m, "found getAiUsage");
   const body = m ? m[0] : "";
   ok(/requireAdmin\(context\.accountId\)/.test(body), "getAiUsage is admin-gated (it triggers the seat scan)");
-  ok(/const showAllowance = provider === "atlassian" && edition === EDITION_IDS\.ADVANCED;/.test(body),
+  // The provider half is now the LIST of vendor-billed engines (Forge LLM and the
+  // LeanZero-managed engine draw on ONE allowance), but it is still one expression and
+  // it still ANDs the edition — a Standard tenant never sees a vendor-spend meter.
+  ok(/const showAllowance = VENDOR_BILLED_PROVIDERS\.includes\(provider\) && edition === EDITION_IDS\.ADVANCED;/.test(body),
     "the allowance gate is provider AND edition — both, in one expression");
   // F-099 added the third condition: a FAULTED seat read also suppresses the block,
   // because a ceiling computed from a number nobody read is what says "Sonnet 5 paused".

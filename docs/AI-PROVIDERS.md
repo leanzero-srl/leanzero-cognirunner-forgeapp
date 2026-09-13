@@ -21,6 +21,8 @@
 | **Image format** | `{type: "image_url"}` | Same | Same | `{type: "image", source: {type: "base64"}}` |
 | **Default model** | `gpt-5.4-mini` | `gpt-5.4-mini` | `openai/gpt-4o-mini` | `claude-haiku-4-5-20251001` |
 
+Beyond the four above the app also ships **LM Studio** (self-hosted), **AWS Bedrock**, **Atlassian Forge LLM** (no egress, vendor-billed) and **CogniRunner Cloud AI** (`managed` — LeanZero-billed, rides the OpenRouter adapter; see its section below).
+
 ---
 
 ## Architecture: The Unified Adapter
@@ -92,6 +94,82 @@ Without these, requests may be rejected or throttled.
 **Model listing:** No filter — the full OpenRouter catalogue (300+ models from many vendors: minimax, mistral, qwen, deepseek, …) is exposed; the picker has client-side search.
 
 **Model ID format:** `provider/model-name` (e.g., `openai/gpt-4o`, `anthropic/claude-3.5-sonnet`)
+
+### CogniRunner Cloud AI — the LeanZero-managed engine (provider id `managed`)
+
+**What it is.** The only engine in the app where **LeanZero's own credential** goes out on a
+tenant's behalf. There is no key to paste: the app holds an OpenRouter key and routes the
+tenant's calls through it, so a Coder site gets a frontier model with zero setup.
+
+**It rides the OpenRouter adapter.** Same endpoint (`openrouter.ai/api/v1/chat/completions`),
+same attribution headers, same already-allowed egress. The only differences are that the
+credential, the endpoint and the model are **taken, not accepted** — whatever a caller passes
+is ignored on this provider.
+
+| | Value |
+|---|---|
+| **Provider id** | `managed` |
+| **Label** | CogniRunner Cloud AI |
+| **Endpoint** | `https://openrouter.ai/api/v1/chat/completions` — **pinned**, the admin's `COGNIRUNNER_AI_BASE_URL` cannot redirect it |
+| **Credential** | encrypted Forge env var `COGNIRUNNER_MANAGED_OPENROUTER_KEY` |
+| **Kill switch** | env var `COGNIRUNNER_MANAGED_DISABLED=1` |
+| **Models** | `anthropic/claude-sonnet-5` (default), `anthropic/claude-opus-5` (opt-in) |
+| **Edition** | **Coder only.** Standard sees BYOK and Forge LLM Haiku |
+| **Allowance** | the same monthly vendor allowance as Forge LLM — one ceiling over both |
+| **Pacing** | `AI_PLATFORM_TPM.managed` 200,000 tpm (placeholder, pending probe (g)); queue budget 140,000 |
+
+**The key has exactly ONE reader.** `readManagedKey()` in `src/index.js` is the only place the
+env var is named, and `test-harness/scripts/managed-provider.test.mjs` asserts that the name
+appears exactly once in backend code. The async consumer imports `managedKeyForConsumer()`
+rather than reading the environment a second time. The key is **never** stored in KVS, **never**
+returned by a resolver in any shape (availability is a boolean plus a reason code — no prefix,
+no length, no mask), and **never** logged. It is rotated by redeploy.
+
+**Rotation and the kill switch.** `forge variables set --encrypt COGNIRUNNER_MANAGED_OPENROUTER_KEY <key>`
+per environment, then deploy. Setting `COGNIRUNNER_MANAGED_DISABLED=1` takes the deployment out
+of the offer without touching the credential — the picker row goes dark with reason
+`managed-disabled`, which reads as a decision rather than a fault. A missing key gives
+`managed-key-missing`, whose copy says plainly that it is LeanZero's side and that no upgrade
+or setting will fix it.
+
+**Three gates, checked BEFORE the call, at BOTH seams** (`callAIChatRaw` in `src/index.js` and
+`callAIChatSimpleRaw` in `src/async-handler.js` — queued work is the bulk of the spend, so a
+synchronous-only check would be no check at all):
+
+1. no key / kill switch → `managed-key-missing` or `managed-disabled`;
+2. edition is not Coder → `needs-coder-edition`, enforced at the adapter and not only at the
+   save door, because a tenant that **downgrades** keeps its saved provider;
+3. monthly allowance exhausted → `allowance-exhausted`. Forge LLM downgrades to Haiku here;
+   the managed engine **pauses**, because every model in its offer is a frontier model and
+   there is no cheap tier to fall to.
+
+Each refusal is `ok:false`, never a throw — a validator on this provider still **fails OPEN**
+and a transition is never blocked by a billing gate.
+
+**Prompt caching.** On `anthropic/*` model ids the adapter marks the stable prefix with
+Anthropic-style `cache_control: {type: "ephemeral"}` breakpoints (at most two of the four
+OpenRouter allows: the system message, and the last message of the caller's declared
+`cachePrefix`). This is **opt-in** — only the multi-round agent loop declares a prefix; every
+one-shot caller is deliberately unchanged, because a single call per prompt only ever pays the
+~1.25x write and never reads it back. Cache activity comes back in
+`usage.prompt_tokens_details` as `cached_tokens` (read) and `cache_write_tokens` (written),
+plus `usage.cache_discount`; both counters are **subsets of `prompt_tokens`** (OpenAI
+semantics), unlike our first-party Anthropic adapter where the read is *in addition* to it.
+Source: <https://openrouter.ai/docs/features/prompt-caching> (read 2026-09-13).
+
+**Cost accounting.** Managed calls are counted under `month.managed` in
+`src/shared/usage-meter.js`, per model tier, priced cache-aware by `managedCostUsd`
+(full-rate input is what remains after the cached and written tokens are removed — pricing
+`prompt_tokens` at full rate *and* adding the cache lines would bill the same tokens twice).
+`vendorAllowanceStatus` sums `month.forgeLlm.estUsd` and `month.managed.estUsd` against one
+ceiling and reports them apart in `byEngine`; `forgeLlmAllowanceStatus` is an alias of it, not
+a second maths.
+
+> **Data note.** Content sent to CogniRunner Cloud AI is processed by **OpenRouter** and, for
+> the models on offer, by **Anthropic**, under **LeanZero's** account. This is the same class of
+> processing as every BYOK path — the difference is whose account it runs under. Atlassian
+> Forge LLM remains the only option with no egress at all. Say this on the listing and on the
+> consent screen.
 
 ### Anthropic
 

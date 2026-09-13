@@ -201,11 +201,28 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   const providerKeySlot = (p) => `KEY_${p}`;
   // eslint-disable-next-line no-unused-vars
   const storage = { get: async (k) => (k === "KEY_openai" ? "sk-openai" : k === "KEY_anthropic" ? "sk-anthropic" : null) };
+  // The managed engine's arm: the credential comes from a Forge ENV VAR through ONE
+  // reader in src/index.js, which this consumer imports — so the stub here is the
+  // IMPORTED accessor, never a second env read. `managed-cloud-key` is a marker value;
+  // the real one never appears in a test, a log or a resolver answer.
+  // eslint-disable-next-line no-unused-vars
+  const MANAGED_PROVIDER_ID = "managed";
+  let managedKeyAvailable = true;
+  // eslint-disable-next-line no-unused-vars
+  const managedKeyForConsumer = () => (managedKeyAvailable ? "managed-cloud-key" : null);
   const m = asyncSrc.match(/const getOpenAIKey = async \(providerOverride = null\) => \{[\s\S]*?\n\};/);
   ok(!!m, "getOpenAIKey accepts a providerOverride param (snapshot threading present)");
   // eslint-disable-next-line no-eval
   const getOpenAIKey = eval("(" + m[0].replace("const getOpenAIKey = async ", "async ").replace(/;\s*$/, "") + ")");
   ok((await getOpenAIKey()) === "sk-openai", "no override → resolves the ACTIVE provider's key");
+  // The managed arm: the env-var credential, and NEVER a KVS slot read — `KEY_managed`
+  // does not exist in the stub store, so a fall-through would answer null.
+  ok((await getOpenAIKey("managed")) === "managed-cloud-key",
+    "managed → the env-var credential through the ONE imported reader, not a KVS slot");
+  managedKeyAvailable = false;
+  ok((await getOpenAIKey("managed")) === null,
+    "managed with no key (or the kill switch on) → null, which every caller reports as 'no key'");
+  managedKeyAvailable = true;
   ok((await getOpenAIKey("anthropic")) === "sk-anthropic", "override → resolves THAT provider's key, not the active one");
   activeProvider = "anthropic"; // simulate an admin provider-switch AFTER the per-task snapshot was taken
   ok((await getOpenAIKey("openai")) === "sk-openai",

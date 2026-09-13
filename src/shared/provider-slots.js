@@ -16,7 +16,13 @@
 // PROVIDER_IDS must stay in lockstep with the keys of index.js's PROVIDERS map
 // (which carries the per-provider CONFIG — labels, base URLs, default models — and
 // is not duplicated here). An offline test asserts the two agree.
-export const PROVIDER_IDS = ["openai", "azure", "openrouter", "anthropic", "lmstudio", "atlassian", "bedrock"];
+// "managed" is CogniRunner Cloud AI - the LeanZero-managed OpenRouter engine. It is
+// listed here because it IS a provider id (PROVIDERS, the active-provider slot, the
+// model/agent-model slots all carry it), but it has NO key slot in use: its credential
+// is an encrypted Forge env var read in one place (readManagedKey, src/index.js), never
+// KVS. `providerKeySlot("managed")` therefore only ever reads an empty slot - harmless,
+// and deliberately not special-cased, so a stray write can never become a live key.
+export const PROVIDER_IDS = ["openai", "azure", "openrouter", "anthropic", "lmstudio", "atlassian", "bedrock", "managed"];
 
 export const providerKeySlot = (provider) => `COGNIRUNNER_KEY_${provider}`;
 export const providerModelSlot = (provider) => `COGNIRUNNER_MODEL_${provider}`;

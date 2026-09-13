@@ -39,12 +39,19 @@
  * model would change how every existing bucket key is read. When the queue grows
  * a per-model bucket, this flag is the thing that says it is allowed to.
  */
-export const AI_PLATFORM_TPM = { atlassian: 50000 };
+// `managed` is CogniRunner Cloud AI — LeanZero's own OpenRouter account, shared by every
+// tenant that selects it, so unlike a BYOK provider it MUST be paced: one busy site can
+// otherwise rate-limit every other site. 200,000 is a placeholder — set after probe (g)
+// reads the org's real OpenRouter tier. It is deliberately a CEILING we are confident is
+// not exceeded rather than a measured limit: pacing too hard only slows the queue.
+export const AI_PLATFORM_TPM = { atlassian: 50000, managed: 200000 };
 /** The cap above is per model, not per installation-wide token spend. */
 export const AI_PLATFORM_TPM_PER_MODEL = true;
 
 /** Default queue budgets when the admin has not set one. 0 = no budget (BYOK). */
-export const AI_BUDGET_DEFAULT_TPM = { atlassian: 35000 };
+// managed keeps the same 70% headroom ratio Forge LLM uses (35k of 50k): the rest is
+// left for synchronous validators, which cannot be deferred.
+export const AI_BUDGET_DEFAULT_TPM = { atlassian: 35000, managed: 140000 };
 
 /** Share of the minute budget above which INLINE post-functions route to the queue. */
 export const INLINE_QUEUE_THRESHOLD = 0.6;

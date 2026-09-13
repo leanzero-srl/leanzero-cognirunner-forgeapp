@@ -32,6 +32,9 @@
 import "../lib/register-mocks-index.mjs";
 import storage from "../lib/mock-kvs.mjs";
 import { readFile, readdir } from "node:fs/promises";
+// The REAL receipt writer (F-501/F-502): the tests below write the row the engine writes
+// and read it back through the resolver, rather than hand-building a KVS value.
+import { recordTick } from "../../src/va-ledger.js";
 const { default: forgeApi, pushed } = await import("@forge/api");
 
 let pass = 0, fail = 0;
@@ -613,6 +616,49 @@ let agentId = null;
     "…and every skip carries {gate, itemKey}");
   ok(st.receipts.every((r) => (r.skipped || []).every((s) => !String(s.gate).startsWith("gate."))),
     "…with the engine's `gate.` prefix stripped at this one boundary, so GATE_COPY can key on it");
+
+  /* ── F-501: the STORED `gate` reaches the tab, it is not rebuilt from `reason` ──
+   *
+   * F-482 gave an agent-level skip an explicit `gate` field and `recordTick` keeps it.
+   * `publicReceipt` then rebuilt `gate` from `reason` and threw the stored field away, so
+   * a capability refusal — the whole tick stopped because the instance may not run an
+   * agent — reached the Agents tab as `gate: "needs-coder-edition"`. `GATE_COPY` is keyed
+   * on the GATE, so the lookup missed and the admin saw the raw id with no sentence.
+   * Proven live on dev before the fix: the engine stored `gate:"capability"` and
+   * `getVaStatus` answered `gate:"needs-coder-edition"`.
+   *
+   * Written through the REAL receipt path: `recordTick` writes the row the engine writes
+   * (the capability arm's exact skip shape), `getVaStatus` reads it back.
+   */
+  await recordTick(storage, agentId, {
+    tickId: "f501", phase: "prepare", candidates: 0, staged: 0,
+    skipped: [{ key: "(agent)", gate: "capability", reason: "needs-coder-edition" }],
+  });
+  const capSt = await call("getVaStatus", { jobId: agentId });
+  const capReceipt = (capSt.receipts || []).find((r) => r.tickId === "f501");
+  ok(capReceipt, `F-501: the capability tick is in the timeline (got ${JSON.stringify((capSt.receipts || []).map((r) => r.tickId))})`);
+  const capSkip = capReceipt && (capReceipt.skipped || [])[0];
+  ok(capSkip && capSkip.gate === "capability",
+    `F-501: the tab is handed the STORED gate, not the reason (got ${JSON.stringify(capSkip)})`);
+  ok(capSkip && capSkip.reason === "needs-coder-edition",
+    "F-501: …and the reason is carried SEPARATELY, unchanged — two fields, two questions");
+  ok(capSkip && capSkip.itemKey === null,
+    "F-501: …with the `(agent)` sentinel rendered as no item, not as an issue called (agent)");
+
+  // The FALLBACK still works for the post phase, which writes `gate.`-prefixed reasons
+  // and no `gate` field at all. Both shapes, one boundary.
+  await recordTick(storage, agentId, {
+    tickId: "f501b", phase: "post", candidates: 1, staged: 0,
+    skipped: [{ key: "SUP-1", reason: "gate.freshness" }],
+  });
+  const postSt = await call("getVaStatus", { jobId: agentId });
+  const postSkip = (postSt.receipts || []).find((r) => r.tickId === "f501b");
+  ok(postSkip && postSkip.skipped[0].gate === "freshness",
+    `F-501: a skip with NO stored gate still falls back to the stripped reason (got ${JSON.stringify(postSkip && postSkip.skipped)})`);
+  ok(postSkip && postSkip.skipped[0].reason === "gate.freshness",
+    "F-501: …and its raw reason is untouched");
+  ok(postSkip && postSkip.skipped[0].itemKey === "SUP-1",
+    "F-501: …and an ITEM-level skip still names its issue");
 
   const agents = await call("listVaAgents", {});
   has(agents, ["agents"], "listVaAgents");

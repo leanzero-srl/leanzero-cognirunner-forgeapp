@@ -581,12 +581,23 @@ export const postWindowInstants = (va, nowMs) => {
  * One tick receipt, in the shape the Receipts pane reads:
  * `{at, phase, ok, swept, worked, posted, error, skipped:[{gate, itemKey}]}`.
  *
- * THE `gate.` PREFIX IS STRIPPED HERE. `runVaPost` writes its skip reasons as
- * `gate.shadow`, `gate.freshness` …, while the tab's `GATE_COPY` table is keyed on the
- * BARE gate name. Neither side is wrong and neither should be edited to suit the other,
- * so the translation lives at the one boundary that knows both. An id with no copy in
- * that table still renders as itself, so a gate added to the engine is visible in the
- * tab the day it ships rather than disappearing.
+ * THE STORED `gate` IS PASSED THROUGH UNTOUCHED (F-501). A skip may carry an explicit
+ * `gate` field — `recordTick` keeps it deliberately (F-482), because a skip caused by a
+ * GATE ("this instance may not run an agent at all") reads differently from a skip caused
+ * by one item. This projection used to REBUILD `gate` from `reason` and throw the stored
+ * field away, so every agent-level skip rendered `gate === reason`: on a Standard tenant
+ * the tab showed the raw id `needs-coder-edition` with no sentence, because `GATE_COPY` is
+ * keyed on the gate name and the lookup was being handed the reason. The engine already
+ * decided which gate this was; the projection's job is to carry that decision, not to
+ * infer it.
+ *
+ * THE `gate.` PREFIX STRIP IS THE FALLBACK, for the skips that have no `gate` field:
+ * `runVaPost` writes its skip reasons as `gate.shadow`, `gate.freshness` …, while the
+ * tab's `GATE_COPY` table is keyed on the BARE gate name. Neither side is wrong and
+ * neither should be edited to suit the other, so the translation lives at the one
+ * boundary that knows both. An id with no copy in that table still renders as itself, so
+ * a gate added to the engine is visible in the tab the day it ships rather than
+ * disappearing. `reason` is carried SEPARATELY and is never overwritten by either path.
  *
  * `itemKey` is null for an AGENT-level skip: the engine writes the sentinel `(agent)`
  * for "the whole run stopped here", and rendering that as an issue key would invite an
@@ -605,7 +616,7 @@ const publicReceipt = (r) => {
     posted: phase === "post" ? r.staged : null,
     error: r.error || null,
     skipped: asArray(r.skipped).map((s) => ({
-      gate: String((s && s.reason) || "").replace(/^gate\./, ""),
+      gate: (s && s.gate) || String((s && s.reason) || "").replace(/^gate\./, ""),
       itemKey: s && s.key === "(agent)" ? null : ((s && s.key) || null),
       reason: (s && s.reason) || null,
     })),

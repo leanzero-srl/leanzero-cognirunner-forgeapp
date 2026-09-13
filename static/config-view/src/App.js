@@ -24,7 +24,7 @@ import { logSourceOf, SOURCE_LABEL, FLAG_LABEL, isSkippedLog } from "../../../sr
 import { codeFingerprint } from "../../../src/shared/code-fingerprint.js";
 import { resolveEdition, EDITION_IDS } from "../../../src/shared/edition.js";
 import FieldGuideChip from "./components/FieldGuideChip.jsx";
-import { KNOWLEDGE_INDEX } from "../../../src/shared/knowledge-index.js";
+import { KNOWLEDGE_TITLES } from "../../../src/shared/knowledge-titles.js";
 
 /**
  * F-587 — ONE ANSWER for "can this step's field guide be named?".
@@ -49,8 +49,8 @@ let FIELD_GUIDE_TITLES = null;
 export const resolvableFieldGuideTitles = (sections) => {
   if (!Array.isArray(sections) || !sections.length) return [];
   if (!FIELD_GUIDE_TITLES) {
-    FIELD_GUIDE_TITLES = new Map();
-    for (const s of KNOWLEDGE_INDEX) FIELD_GUIDE_TITLES.set(s.id, s.title);
+    // F-582: the slim generated titles module (id -> title), never the 136 KB index.
+    FIELD_GUIDE_TITLES = new Map(Object.entries(KNOWLEDGE_TITLES));
   }
   const titles = [];
   for (const id of sections) {

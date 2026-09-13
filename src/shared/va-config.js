@@ -563,7 +563,9 @@ export const renderGuardrailSentences = (va) => {
  *
  * ONE SHAPE, because the same object is handed to `normalizeAllowedActions` and to
  * `createAgentActionDispatcher` in commit 4, and the gate that reads it
- * (`assertWriteScope`, which lands in THIS file with that commit) must not have to guess
+ * (`assertWriteScope`, which lives in `src/shared/agent-actions.js` beside the action
+ * gate — it is asked of the Coder's headless PF and of listener agent runs too, neither
+ * of which has anything to do with a VA) must not have to guess
  * whether it was given a list, a record or a job. It is always `{ projects: [...] }`,
  * always upper-case keys, and an EMPTY list means "no writes", never "all writes" — the
  * restrictive reading of an absent value is the whole point of the gate.

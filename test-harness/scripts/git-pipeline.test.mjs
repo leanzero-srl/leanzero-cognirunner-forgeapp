@@ -28,6 +28,7 @@ import { pushed as pushedEvents } from "../lib/mock-forge-api.mjs";
 
 const conns = await import("../../src/git-connections.js");
 const pipe = await import("../../src/git-pipeline.js");
+const scaf = await import("../../src/shared/git-scaffolds.js");
 const { handler } = await import("../../src/index.js");
 
 let pass = 0, fail = 0;
@@ -637,6 +638,73 @@ reset();
   });
   ok(bad.success === false && bad.code === "invalid_developer_space",
     `...and a malformed one is refused by the module through the resolver (got ${JSON.stringify(bad).slice(0, 200)})`);
+}
+
+/* ===== 16. F-579 — AN INSTALLED PIPELINE KNOWS WHEN ITS COMMITTED FILES ARE STALE =====
+ * The scaffold is committed into the customer's repo and never touched again, so a fix to
+ * the line arrays repairs the NEXT install only. F-565 shipped exactly that: the workflow
+ * content changed, SCAFFOLD_VERSION did not, and no code compared the version stored on the
+ * row with the current one — so a repo installed before the fix reported installed, 6/6
+ * steps done, while every deploy dispatch 422'd.
+ *
+ * The row now carries the comparison, DERIVED on read (no migration), and the remedy is the
+ * setup path that already exists: re-running it re-commits and clears the flag. */
+reset();
+{
+  const connId = await seedConnection();
+  await call("setupGitPipeline", { connectionId: connId, repo: REPO, manifestYaml: MANIFEST, site: SITE });
+  fetchQueue = githubSetupChain();
+  await runQueued(lastParams());
+  const key = pipe.gitPipelineKey(connId, REPO);
+  const installed = storage.__raw(key);
+  ok(installed.status === "installed" && installed.scaffoldVersion === scaf.SCAFFOLD_VERSION,
+    `a fresh install stamps the CURRENT scaffold version (got ${installed.scaffoldVersion})`);
+  const fresh = await call("getGitPipelineStatus", { connectionId: connId, repo: REPO });
+  ok(fresh.status.outdated === false && fresh.status.outdatedReason === null,
+    `…and reads as current (got ${JSON.stringify({ o: fresh.status.outdated, r: fresh.status.outdatedReason })})`);
+
+  // AGE IT. This is the offshoot's row: installed, 6/6, stuck on version 1.
+  storage.__seed(key, { ...installed, scaffoldVersion: 1 });
+  const stale = await call("getGitPipelineStatus", { connectionId: connId, repo: REPO });
+  ok(stale.status.status === "installed" && stale.status.steps.every((s) => s.status === "done"),
+    "the aged row still says installed with every step done — the symptom F-579 is about");
+  ok(stale.status.outdated === true && stale.status.scaffoldVersion === 1 &&
+     stale.status.currentScaffoldVersion === scaf.SCAFFOLD_VERSION,
+    `…but it now reports outdated, naming both versions (got ${JSON.stringify(stale.status.scaffoldVersion)} vs ${JSON.stringify(stale.status.currentScaffoldVersion)})`);
+  ok(stale.status.outdatedReason === scaf.SCAFFOLD_CHANGELOG[2],
+    `…with the CHANGELOG line as the reason, verbatim (got ${JSON.stringify(stale.status.outdatedReason).slice(0, 120)})`);
+
+  // A row that predates the field at all is old, not unknown.
+  const noVersion = { ...installed };
+  delete noVersion.scaffoldVersion;
+  ok(pipe.publicPipelineRow(noVersion).outdated === true,
+    "a row with NO recorded version reads as outdated rather than as fine");
+
+  // THE REMEDY. Re-running the same setup — same manifest, same lock — re-commits and
+  // clears the flag. The redelivery short-circuit must NOT swallow this run.
+  storage.__seed(key, { ...installed, scaffoldVersion: 1 });
+  pushedEvents.length = 0;
+  const again = await call("setupGitPipeline", { connectionId: connId, repo: REPO, manifestYaml: MANIFEST, site: SITE });
+  ok(again.success === true, `an outdated pipeline may be re-set-up (got ${JSON.stringify(again).slice(0, 160)})`);
+  fetchCalls = [];
+  fetchQueue = githubSetupChain();
+  const out = await runQueued(lastParams());
+  ok(out.ok === true && out.duplicate !== true,
+    `the chain RAN rather than reporting a duplicate (got ${JSON.stringify(out).slice(0, 200)})`);
+  ok(fetchCalls.some((c) => /git\/trees/.test(c.url)),
+    "…and re-committed the scaffold, which is the whole remedy");
+  const after = await call("getGitPipelineStatus", { connectionId: connId, repo: REPO });
+  ok(after.status.outdated === false && after.status.outdatedReason === null &&
+     after.status.scaffoldVersion === scaf.SCAFFOLD_VERSION,
+    `…and the row is current again (got ${JSON.stringify({ v: after.status.scaffoldVersion, o: after.status.outdated })})`);
+
+  // A REDELIVERY of that same event is still a no-op — the version guard did not cost us
+  // the at-least-once protection it sits next to.
+  fetchCalls = [];
+  fetchQueue = [];
+  const dup = await runQueued({ ...lastParams(), taskId: "redelivered-579" });
+  ok(dup.ok === true && dup.duplicate === true && fetchCalls.length === 0,
+    `a redelivery of a CURRENT install is still a no-op (got ${JSON.stringify(dup).slice(0, 160)})`);
 }
 
 console.log(`git-pipeline: ${pass} passed, ${fail} failed`);

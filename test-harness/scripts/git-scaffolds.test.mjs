@@ -349,4 +349,65 @@ for (const entry of m.SCAFFOLD_INDEX) {
   fs.rmSync(dir, { recursive: true, force: true });
 }
 
+/* ===================== F-579 — A CONTENT CHANGE MUST BUMP THE VERSION =====================
+ * The line arrays are COMMITTED INTO CUSTOMER REPOSITORIES. `SCAFFOLD_VERSION` is the only
+ * thing that can tell an already-installed repo that what it carries is stale, and F-565
+ * changed the workflow's content without touching it: every pipeline installed before that
+ * fix stayed dead while the Code tab reported it installed, 6/6 steps done.
+ *
+ * So the guard is on the CONTENT, not on anyone's memory. This hashes every scaffold's
+ * paths and raw line arrays (conditional blocks included, unrendered — a change inside a
+ * `when` block is a content change too) and compares it with the checked-in
+ * SCAFFOLD_CONTENT_HASH. When they differ the test FAILS and prints the new hash, and the
+ * only correct response is: bump SCAFFOLD_VERSION, write its SCAFFOLD_CHANGELOG line, then
+ * paste the hash. Updating the hash alone puts the constant back in the state this finding
+ * was written about.
+ */
+const { createHash } = await import("node:crypto");
+
+/** Canonical, order-preserving serialisation of the line arrays — paths and text only. */
+const canonicalScaffoldContent = (scaffolds) =>
+  JSON.stringify(
+    Object.keys(scaffolds).sort().map((id) => [
+      id,
+      scaffolds[id].files.map((f) => [
+        f.path,
+        f.lines.map((l) => (typeof l === "string" ? l : ["when", l.lines])),
+      ]),
+    ])
+  );
+const scaffoldContentHash = (scaffolds) =>
+  createHash("sha256").update(canonicalScaffoldContent(scaffolds)).digest("hex").slice(0, 32);
+
+{
+  const actual = scaffoldContentHash(m.SCAFFOLDS);
+  assert.equal(
+    actual,
+    m.SCAFFOLD_CONTENT_HASH,
+    "the scaffold line arrays changed without a version bump.\n" +
+      "  Bump SCAFFOLD_VERSION (now " + m.SCAFFOLD_VERSION + "), add its SCAFFOLD_CHANGELOG line,\n" +
+      "  then set SCAFFOLD_CONTENT_HASH = \"" + actual + "\";"
+  );
+
+  // The guard is not vacuous: a scratch edit to one line of one scaffold moves the hash.
+  const scratch = JSON.parse(JSON.stringify({
+    x: { files: m.SCAFFOLDS["forge-pipeline"].files.map((f) => ({ path: f.path, lines: f.lines.filter((l) => typeof l === "string") })) },
+  }));
+  const before = scaffoldContentHash(scratch);
+  scratch.x.files[0].lines.push("# planted drift");
+  assert.notEqual(scaffoldContentHash(scratch), before, "a planted line changes the content hash");
+  assert.equal(scaffoldContentHash(m.SCAFFOLDS), actual, "…and the real catalogue was not mutated by the probe");
+
+  // The version and its changelog agree: every version above 1 has a sentence, and the
+  // sentence for a stuck row is what publicPipelineRow reports as `outdatedReason`.
+  for (let v = 2; v <= m.SCAFFOLD_VERSION; v++) {
+    assert.ok(typeof m.SCAFFOLD_CHANGELOG[v] === "string" && m.SCAFFOLD_CHANGELOG[v].length > 20,
+      "SCAFFOLD_VERSION " + v + " has a changelog line saying why it was bumped");
+  }
+  assert.equal(m.scaffoldOutdatedReason(m.SCAFFOLD_VERSION), null, "the current version is not outdated");
+  assert.equal(m.scaffoldOutdatedReason(1), m.SCAFFOLD_CHANGELOG[2], "a v1 row is told why, in the changelog's words");
+  assert.ok(m.scaffoldOutdatedReason(null), "a row with NO recorded version reads as outdated, not as fine");
+  assert.ok(m.scaffoldOutdatedReason("nonsense"), "…and so does an unparseable one");
+}
+
 console.log("git-scaffolds: ok");

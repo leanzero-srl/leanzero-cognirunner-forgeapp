@@ -57,7 +57,7 @@
 
 import storage from "@forge/kvs";
 import { createHash } from "node:crypto";
-import { renderScaffold, buildPermissionLock, scaffoldVarError, SCAFFOLD_VERSION } from "./shared/git-scaffolds.js";
+import { renderScaffold, buildPermissionLock, scaffoldVarError, SCAFFOLD_VERSION, scaffoldOutdatedReason } from "./shared/git-scaffolds.js";
 import { assertCommitWithinCaps, GitProviderError } from "./git-providers.js";
 import {
   getConnection,
@@ -517,7 +517,13 @@ export async function runPipelineSetup(params, { fetchImpl } = {}) {
   }
   // AT-LEAST-ONCE IS THE PLATFORM'S PROMISE. A redelivery of a run that already
   // installed THIS lock does nothing and says so.
-  if (row.installedAt && row.lockHash === lockHash && row.status === "installed") {
+  // F-579 - ...UNLESS the committed bytes are stale. A row installed on an older
+  // SCAFFOLD_VERSION is not "already done": the files in the customer's repo are the
+  // broken ones, and re-committing them is exactly what this run is for. Every step is
+  // idempotent (F-533: secrets and variables are PUT, the commit is a fresh tree), so
+  // running the chain again is safe and is the only remedy the product has.
+  if (row.installedAt && row.lockHash === lockHash && row.status === "installed" &&
+      scaffoldOutdatedReason(row.scaffoldVersion) === null) {
     return finish({ ok: true, duplicate: true, status: publicPipelineRow(row) });
   }
   if (row.lockHash && lockHash && row.lockHash !== lockHash) {
@@ -619,7 +625,10 @@ export async function runPipelineSetup(params, { fetchImpl } = {}) {
       row = { ...row, branch, commitSha: sha };
     });
 
-    await write({ status: "installed", installedAt: nowIso(), failedStep: null, commitSha: sha });
+    // F-579 - the version is stamped with the INSTALL, not only with the request: the
+    // row this run started from may be an older one being refreshed, and the stamp has to
+    // describe the bytes just committed.
+    await write({ status: "installed", installedAt: nowIso(), failedStep: null, commitSha: sha, scaffoldVersion: SCAFFOLD_VERSION });
     return finish({ ok: true, status: publicPipelineRow(row) });
   } catch (e) {
     const code = e instanceof GitProviderError ? e.code : "error";
@@ -645,6 +654,13 @@ export function publicPipelineRow(row) {
     kind: row.kind || null,
     scaffold: row.scaffold || null,
     scaffoldVersion: row.scaffoldVersion ?? null,
+    // F-579 - DERIVED, never stored: the comparison is against the version this build
+    // carries, so a row goes stale the moment the app ships a new scaffold, without a
+    // migration touching a single row. `outdatedReason` is the changelog line for the
+    // version the repo is stuck on - the Code tab shows it verbatim.
+    outdated: scaffoldOutdatedReason(row.scaffoldVersion) !== null,
+    outdatedReason: scaffoldOutdatedReason(row.scaffoldVersion),
+    currentScaffoldVersion: SCAFFOLD_VERSION,
     status: row.status || null,
     steps: (Array.isArray(row.steps) ? row.steps : []).map((s) => ({
       name: String(s && s.name).slice(0, 40),

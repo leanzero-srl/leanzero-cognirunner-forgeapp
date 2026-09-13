@@ -717,6 +717,45 @@ const gateExistingRow = async (accountId, row, { what, minRole = "editor", destr
   return configRefusal(verdict, what);
 };
 
+/**
+ * F-616 — THE ONE GATE FOR A SAVE THAT MAY CARRY AN ID. A CREATE MUST NEVER
+ * ACCEPT A CLIENT-CHOSEN ID.
+ *
+ * `saveListener` and `saveScheduledJob` UPSERT on `input.id`. They asked
+ * `gateExistingRow` and then returned only the PERMISSION arm of its answer:
+ *
+ *     if (refusal && refusal.reason === PERMISSION_REFUSAL_REASON) return refusal;
+ *
+ * The `notFound` sentence each call site supplied was therefore dead copy — computed
+ * and dropped — and a save naming an id that matches NO row fell through with
+ * `existing === null`, so `normalizeJob`/`normalizeListener` honoured the caller's id
+ * and CREATED the row there. Proven live on 2026-09-13: `saveScheduledJob` with the id
+ * of a job deleted seconds earlier returned `success:true` at that exact id.
+ *
+ * Two costs, and the first is the one that matters: an id is a NAMESPACE. A
+ * Virtual Administrator's whole ledger hangs off its job id (`va_item:{id}:*`,
+ * `va_index:{id}`, `va_memory:{id}`, and the `va_purged:{id}` tombstone F-553/F-575
+ * write on delete), so planting a job at a deleted agent's id inherits that agent's
+ * dead state — which is how this was found. The second: a UI editing a row someone
+ * deleted in another tab silently resurrects it instead of saying it is gone.
+ *
+ * THE RULE. An id that names no row is a REFUSAL, whatever kind of refusal
+ * `rowGateVerdict` produced for this caller — "not found" for a scope-"all" caller,
+ * the byte-identical `notOwner` for everyone else (F-261's existence-leak rule is
+ * unchanged and still lives there, not here). A deliberate create omits the id and
+ * asks only for the role floor, exactly as it did.
+ *
+ * ONE HOME. Both save resolvers call THIS, and the REST twin's create/upsert routes
+ * (`src/rules-api.js`) refuse an unmatched body id on the same rule. Do not restate
+ * the `if (input.id)` branch at a third call site.
+ */
+const gateSaveById = async (accountId, { id, existing, what, createWhat, notFound, minRole = "editor" }) => {
+  if (!id) {
+    return (await requireRole(accountId, minRole)) ? null : noPerm(createWhat, minRole);
+  }
+  return gateExistingRow(accountId, existing, { what, minRole, notFound });
+};
+
 /** Backward-compatible: requireAdmin = requireRole(id, "admin") */
 const requireAdmin = async (accountId) => requireRole(accountId, "admin");
 
@@ -7971,6 +8010,13 @@ resolver.define("saveSkill", async ({ payload, context }) => {
         // F-260 — see registerConfig.
         const verdict = await configActionVerdict(context.accountId, existing, "editor");
         if (!verdict.allowed) return configRefusal(verdict, "edit this skill");
+      } else {
+        // F-616 — THE SAME RULE AS `gateSaveById`: an id that names no row is an
+        // EDIT of something that is gone, never a create at a caller-chosen id.
+        // `saveSkillInternal` honours `meta.id` when it finds no index row, so
+        // without this a client could mint a skill at any id it liked — including
+        // the id of a skill someone had just deleted. A create omits the id.
+        return { success: false, error: "Skill not found" };
       }
     }
     const result = await saveSkillInternal(
@@ -11018,16 +11064,15 @@ resolver.define("saveListener", async ({ payload, context }) => {
   // else"), and a scope-"own" editor cannot tell "that id is someone else's"
   // from "that id is free" — both are the same refusal. A save with NO id is a
   // plain create and asks only for the role floor.
-  if (input.id) {
-    const refusal = await gateExistingRow(context.accountId, existing, {
-      what: "edit this listener", minRole: "editor", notFound: "Listener not found",
+  // F-616 — and an id that names NO row is a refusal too, not the create path:
+  // `gateSaveById` is the one home for both arms. See the block there for why a
+  // create must never accept a caller-chosen id.
+  {
+    const refusal = await gateSaveById(context.accountId, {
+      id: input.id, existing,
+      what: "edit this listener", createWhat: "create listeners", notFound: "Listener not found",
     });
-    // scope "all" + unknown id: creating with a caller-chosen id stays allowed
-    // (the Rules REST API mints ids this way), so a "not found" here is not a
-    // refusal — it is the create path.
-    if (refusal && refusal.reason === PERMISSION_REFUSAL_REASON) return refusal;
-  } else if (!(await requireRole(context.accountId, "editor"))) {
-    return noPerm("create listeners", "editor");
+    if (refusal) return refusal;
   }
   // F-302 — the gate context is supplied HERE or the git namespace is unreachable in
   // both directions: save time refuses every git action against the restrictive
@@ -11144,14 +11189,16 @@ resolver.define("saveScheduledJob", async ({ payload, context }) => {
   let input = payload?.job;
   if (!input || typeof input !== "object") return { success: false, error: "job is required" };
   const existing = input.id ? await jobsMod.getJob(input.id) : null;
-  // F-252/F-260/F-261 — see saveListener: same gate, same reasons.
-  if (input.id) {
-    const refusal = await gateExistingRow(context.accountId, existing, {
-      what: "edit this job", minRole: "editor", notFound: "Scheduled job not found",
+  // F-252/F-260/F-261/F-616 — see saveListener: the same one gate, same reasons.
+  // An unknown id is REFUSED here; it used to fall through and CREATE the job at
+  // the caller's id, which is how a deleted Virtual Administrator was re-created
+  // on top of its own purge tombstone and its whole `va_*` ledger namespace.
+  {
+    const refusal = await gateSaveById(context.accountId, {
+      id: input.id, existing,
+      what: "edit this job", createWhat: "create scheduled jobs", notFound: "Scheduled job not found",
     });
-    if (refusal && refusal.reason === PERMISSION_REFUSAL_REASON) return refusal;
-  } else if (!(await requireRole(context.accountId, "editor"))) {
-    return noPerm("create scheduled jobs", "editor");
+    if (refusal) return refusal;
   }
   // F-302 — see saveListener: the same gate, built from the same four facts.
   const [facts, savedByRole] = await Promise.all([agentGateFacts(context), savedByRoleFor(context.accountId)]);

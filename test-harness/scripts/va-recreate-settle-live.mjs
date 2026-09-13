@@ -8,30 +8,46 @@
 /*
  * F-575 / F-585 — A RE-CREATED AGENT WAITS FOR ITS PREDECESSOR'S TURNS TO SETTLE.
  *
+ * HOW THIS DRIVER CHANGED, AND WHY (F-616). The first version drove the window by
+ * DELETING an agent and RE-CREATING it under the same id through `saveScheduledJob`.
+ * That only worked because a save carrying an unknown id CREATED the row at that id —
+ * which is the defect F-616 closed: a create must never accept a client-chosen id, and
+ * an id is a namespace (the whole `va_*` ledger and the `va_purged:` tombstone hang off
+ * it). With that door shut there is no product path to a re-created agent, so the
+ * window is driven through a DEV-ONLY test-hook action instead — `action:"vaTombstone"`,
+ * behind the same HARNESS_SECRET Bearer as the rest of src/test-hook.js and absent in
+ * production. Planting a tombstone GRANTS nothing: every writer that reads one refuses
+ * under it. The product path being closed is itself asserted below, first.
+ *
  * THE SHAPE OF THE PROOF.
- *   1. Agent A is created and given TWO prepare ticks, so `va_exec:{A}:*` claim rows and
- *      the rest of the ledger actually exist. Every key is read through `?what=kvs` WHILE
- *      A LIVES — the positive control every later "absent" rests on.
- *   2. A is DELETED. `va_purged:{A}` is read back: the tombstone must be standing.
- *   3. A is RE-CREATED WITH THE SAME ID (`saveScheduledJob` with `job.id` — the resolver's
- *      not-found refusal is not returned, so the save falls through and writes the row) and
- *      ticked IMMEDIATELY. Inside `VA_PURGE_SETTLE_MS` (5 minutes) the tick must SKIP with
- *      `skipped[0].gate === "purge-settling"`, and `va_purged:{A}` must STILL BE THERE.
- *      `settling` says which guard held: "window" (F-575's clock), "claim" (a live
- *      `va_exec`/`va_post`/`va_compact` row) or "scan_truncated" (F-585's blocking
- *      could-not-tell).
- *   4. The window is WAITED OUT — the hook's `kvSet` allow-list does not carry `va_purged:*`
- *      (a plantable tombstone is a plantable permission), so there is no way to age it
- *      artificially and the script sleeps instead. A tick after the window must clear the
- *      tombstone (`va_purged:{A}` absent on a second read that saw it before) and produce a
- *      NORMAL prepare receipt with no purge gate on it.
+ *   0. `saveScheduledJob` REFUSES a job id that names no row (F-616), and the deleted
+ *      agent's id cannot be re-taken. This is the reason the rest of the script is
+ *      shaped the way it is, so it is measured and not assumed.
+ *   1. Agent A is created and TICKED, so `va_exec:{A}:*` claim rows and the rest of the
+ *      ledger actually exist; every key is read through `?what=kvs` WHILE A LIVES — the
+ *      positive control every later "absent" rests on. Then A is PAUSED.
+ *   2. A tombstone is PLANTED for A. The hook clamps `at` to just before the job's
+ *      `createdAt`, because `clearPurgeTombstone` only weighs a tombstone that predates
+ *      the job (that comparison is what tells a re-created job from a tick of the
+ *      deleted one) — an unclamped plant would land on `tombstone_newer_than_job` and
+ *      prove a different branch. The answer reports the clamp, and it is asserted.
+ *   3. A tick INSIDE the window must do NO WORK: no new prepare receipt, and the
+ *      tombstone must still stand. That the tick RAN AT ALL is proved separately, by the
+ *      job's execution-log count growing — "nothing happened" and "the consumer never
+ *      woke up" must never be the same evidence. (The purge-settling arm of
+ *      `runPrepareTick` returns before `recordTick`, so a SKIPPED tick deliberately
+ *      leaves no receipt; that is the observable, not a bug in this script.)
+ *   4. The tombstone is AGED past `VA_PURGE_SETTLE_MS` through the same door, and the
+ *      next tick must clear it and produce a NORMAL prepare receipt with no purge gate.
  *
- * NOTHING IS POSTED. The agent's only power is `replyInternal`, `shadowUntilTick` is 500,
- * and it is PAUSED between ticks so the five-minute planner cannot enqueue a post run.
- * The project's comment counts are read before and after anyway.
+ * NOTHING IS POSTED. The agent's only power is `replyInternal`, `shadowUntilTick` is
+ * 500, and it is PAUSED for every tick after the first, so the five-minute planner
+ * cannot enqueue a post run. The project's comment counts are read before and after
+ * anyway.
  *
- * RESTORE. The agent-model KVS SLOT (not the resolver's answer — it answers a fallback it
- * then refuses to re-save) is recorded and replayed in a finally, and the agent is deleted.
+ * RESTORE. The agent-model KVS SLOT (not the resolver's answer — it answers a fallback
+ * it then refuses to re-save) is recorded and replayed in a finally, the planted
+ * tombstone is cleared through the hook, and the agent is deleted.
  *
  * Usage (from test-harness/):
  *   node scripts/va-recreate-settle-live.mjs
@@ -67,7 +83,7 @@ const PASS = (s, d) => { passes++; ev.checks.push({ v: "PASS", s, ...(d ? { d } 
 const FAIL = (s, d) => { fails++; ev.checks.push({ v: "FAIL", s, ...(d ? { d } : {}) }); console.log(`  FAIL  ${s}${d ? " " + JSON.stringify(d) : ""}`); };
 const NV = (s, d) => { unproven++; ev.checks.push({ v: "N/V", s, ...(d ? { d } : {}) }); console.log(`  N/V   ${s}${d ? " " + JSON.stringify(d) : ""}`); };
 const info = (s) => console.log(`        ${s}`);
-const restore = { agentId: null, agentModelSlot: undefined };
+const restore = { agentId: null, agentModelSlot: undefined, tombstoneFor: null };
 
 async function fetchRetry(url, init, tries = 4) {
   let last = null;
@@ -99,6 +115,17 @@ async function kvs(key) {
   if (r.status !== 200 || !r.json) return { ok: false, value: null, status: r.status };
   return { ok: true, value: r.json.value === undefined ? null : r.json.value };
 }
+/** The F-616 door: plant | age | read | clear a `va_purged:{agent}` tombstone. */
+async function tombstone(op, agent, extra = {}) {
+  const r = await hook({ action: "vaTombstone", op, agent, ...extra });
+  return { status: r.status, body: r.json, raw: r.raw };
+}
+/** Execution logs for one rule — the proof that a tick RAN, independent of its receipt. */
+async function execLogCount(jobId) {
+  const r = await hook(null, "GET", `?what=execlogs&ruleId=${encodeURIComponent(jobId)}`);
+  const logs = (r.json && Array.isArray(r.json.logs)) ? r.json.logs : null;
+  return logs ? logs.length : null;
+}
 const AUTH = "Basic " + Buffer.from(`${requireEnv("JIRA_ADMIN_EMAIL")}:${requireEnv("JIRA_API_TOKEN")}`).toString("base64");
 async function jira(path, init = {}) {
   return readRes(await fetchRetry(requireEnv("JIRA_BASE_URL") + path, {
@@ -114,6 +141,7 @@ async function commentTotal() {
 }
 
 const receiptsOf = (s) => (s && Array.isArray(s.receipts) ? s.receipts : []);
+const prepareCount = async (jobId) => receiptsOf((await invoke("getVaStatus", { jobId })).body).filter((r) => r.phase === "prepare").length;
 const vaRecord = () => ({
   persona: { name: "Settle", voice: { register: "terse", greeting: false, maxSentences: 3, language: "auto" }, signature: false },
   scope: { read: { site: false, projects: [PROJECT] }, write: { projects: [PROJECT] } },
@@ -124,21 +152,30 @@ const vaRecord = () => ({
   status: { paused: false, shadowUntilTick: 500 },
 });
 
-/** Fire one prepare tick and wait until a NEW prepare receipt lands (by count, never by sleep). */
+/*
+ * Fire one prepare tick and wait for EITHER a new prepare receipt (the tick did work)
+ * or a new execution-log row (the tick ran and did not). Reporting both is what lets a
+ * SKIPPED tick be told apart from a consumer that never woke up.
+ */
 async function tick(jobId, label, waitS = TICK_WAIT_S) {
-  const before = receiptsOf((await invoke("getVaStatus", { jobId })).body).filter((r) => r.phase === "prepare").length;
+  const receiptsBefore = await prepareCount(jobId);
+  const logsBefore = await execLogCount(jobId);
   const ran = await invoke("runScheduledJobNow", { id: jobId });
   if (!(ran.body && ran.body.success)) { FAIL(`${label}: runScheduledJobNow refused`, { body: JSON.stringify(ran.body).slice(0, 300) }); return null; }
   info(`${label}: va-tick enqueued, taskId=${ran.body.taskId}`);
   const deadline = Date.now() + waitS * 1000;
+  let logsAfter = logsBefore;
   while (Date.now() < deadline) {
     const st = (await invoke("getVaStatus", { jobId })).body;
     const preps = receiptsOf(st).filter((r) => r.phase === "prepare");
-    if (preps.length > before) return { receipt: preps[0], status: st };
+    logsAfter = await execLogCount(jobId);
+    const grew = logsBefore != null && logsAfter != null && logsAfter > logsBefore;
+    if (preps.length > receiptsBefore) return { receipt: preps[0], status: st, newReceipt: true, ranAtAll: true, logsBefore, logsAfter };
+    // No receipt, but the run is recorded: that IS the skip, and we stop waiting for it.
+    if (grew) return { receipt: null, status: st, newReceipt: false, ranAtAll: true, logsBefore, logsAfter };
     await sleep(8000);
   }
-  NV(`${label}: no new prepare receipt within ${waitS}s`);
-  return null;
+  return { receipt: null, status: null, newReceipt: false, ranAtAll: false, logsBefore, logsAfter };
 }
 
 async function pause(jobId, paused) {
@@ -150,7 +187,7 @@ async function pause(jobId, paused) {
 }
 
 async function main() {
-  console.log(`\nF-575/F-585 — THE RE-CREATED AGENT'S SETTLE WINDOW, on ${ENV_NAME.toUpperCase()}, project ${PROJECT}\n`);
+  console.log(`\nF-575/F-585 — THE SETTLE WINDOW, driven through the F-616 tombstone door, on ${ENV_NAME.toUpperCase()}, project ${PROJECT}\n`);
   const ping = await hook(null, "GET");
   if (ping.status !== 200) throw new Error(`the hook is not reachable on ${ENV_NAME} (GET -> ${ping.status})`);
   PASS(`hook reachable on ${ENV_NAME}, secret accepted`);
@@ -175,8 +212,24 @@ async function main() {
   const cBefore = await commentTotal();
   info(`${PROJECT} before: ${JSON.stringify(cBefore)}`);
 
-  /* ── STEP 1 — agent A, two prepare ticks ────────────────────────────────── */
-  console.log("\nSTEP 1 - create agent A and run TWO prepare ticks so claim rows exist");
+  /* ── STEP 0 — F-616: the product path this script used to take is CLOSED ─── */
+  console.log("\nSTEP 0 - the id door (F-616): a save naming an unknown id must be REFUSED");
+  {
+    const planted = await invoke("saveScheduledJob", { job: { id: `job_f616_probe_${Date.now().toString(36)}`, name: "F-616 probe", mode: "va", enabled: true, va: vaRecord() } });
+    ev.f616Probe = planted.body;
+    if (planted.body && planted.body.success === false) {
+      PASS("saveScheduledJob refuses a job id that names no row", { error: planted.body.error });
+    } else {
+      FAIL("a save with an unknown id still CREATED a job — F-616 is open on this build", { body: JSON.stringify(planted.body).slice(0, 300) });
+      if (planted.body && planted.body.job && planted.body.job.id) {
+        await invoke("deleteScheduledJob", { id: planted.body.job.id });
+        info("the planted row was deleted again");
+      }
+    }
+  }
+
+  /* ── STEP 1 — agent A, one prepare tick, the ledger read while it lives ─── */
+  console.log("\nSTEP 1 - create agent A, tick it once so the ledger and its claim rows exist");
   const created = await invoke("saveScheduledJob", { job: { name: `F-575 settle proof ${Date.now()}`, mode: "va", enabled: true, va: vaRecord() } });
   if (!(created.body && created.body.success)) throw new Error(`saveScheduledJob refused: ${JSON.stringify(created.body).slice(0, 400)}`);
   const jobId = created.body.job.id;
@@ -184,13 +237,12 @@ async function main() {
   const createdAtA = created.body.job.createdAt;
   PASS(`agent A ${jobId} created (createdAt=${createdAtA})`);
   const t1 = await tick(jobId, "tick 1");
-  info(`tick 1 receipt: ${JSON.stringify(t1 && t1.receipt).slice(0, 400)}`);
-  const t2 = await tick(jobId, "tick 2");
-  info(`tick 2 receipt: ${JSON.stringify(t2 && t2.receipt).slice(0, 400)}`);
+  info(`tick 1: ${JSON.stringify({ newReceipt: t1 && t1.newReceipt, ranAtAll: t1 && t1.ranAtAll })} receipt=${JSON.stringify(t1 && t1.receipt).slice(0, 300)}`);
+  if (t1 && t1.newReceipt) PASS("a normal tick produces a prepare receipt — the control for STEP 3");
+  else NV("the first tick produced no prepare receipt; the 'no receipt' assertion below is weaker for it", { t1: t1 && { ranAtAll: t1.ranAtAll } });
   await pause(jobId, true);
   info("agent A is PAUSED so the planner cannot enqueue a post run");
 
-  /* ── STEP 2 — the ledger, read while A lives ────────────────────────────── */
   console.log("\nSTEP 2 - the ledger keys, read while A LIVES (the positive control)");
   const idx = (await kvs(`va_index:${jobId}`)).value;
   const items = (idx && Array.isArray(idx.ids) ? idx.ids : []);
@@ -202,66 +254,61 @@ async function main() {
   else FAIL("no ledger key readable at all — nothing below can be judged");
   ev.ledgerBefore = Object.fromEntries(KEYS.map((k) => [k, seen[k] !== null]));
   const tombBefore = (await kvs(`va_purged:${jobId}`)).value;
-  PASS("no tombstone stands before the delete", { va_purged: tombBefore });
-  if (tombBefore !== null) FAIL("a tombstone was already standing before the delete", { tombBefore });
+  if (tombBefore === null) PASS("no tombstone stands before the plant");
+  else FAIL("a tombstone was already standing before the plant", { tombBefore });
 
-  /* ── STEP 3 — delete, then re-create with the SAME id ───────────────────── */
-  console.log("\nSTEP 3 - delete A, read the tombstone, re-create with the SAME id");
-  const del = await invoke("deleteScheduledJob", { id: jobId });
-  if (del.body && del.body.success) { PASS(`deleteScheduledJob: ${JSON.stringify(del.body).slice(0, 200)}`); restore.agentId = null; }
-  else { FAIL(`deleteScheduledJob refused: ${JSON.stringify(del.body).slice(0, 300)}`); return; }
-  const deletedAt = Date.now();
-  const tomb = (await kvs(`va_purged:${jobId}`)).value;
-  ev.tombstone = tomb;
-  if (tomb && tomb.at) PASS(`the tombstone va_purged:${jobId} STANDS`, { at: tomb.at, reason: tomb.reason || tomb.why || null });
-  else { FAIL("no tombstone was written on delete", { tomb }); return; }
-  // F-577 — the purge REASON. Recorded whatever it is; a raw id or a missing reason is the defect.
-  info(`tombstone row: ${JSON.stringify(tomb).slice(0, 300)}`);
-
-  const re = await invoke("saveScheduledJob", { job: { id: jobId, name: `F-575 settle proof RECREATED ${Date.now()}`, mode: "va", enabled: true, va: vaRecord() } });
-  ev.recreate = { success: re.body && re.body.success, error: re.body && re.body.error, id: re.body && re.body.job && re.body.job.id };
-  if (re.body && re.body.success && re.body.job && re.body.job.id === jobId) {
-    restore.agentId = jobId;
-    PASS(`agent A was RE-CREATED with the same id ${jobId}`, { createdAt: re.body.job.createdAt, wasCreatedAt: createdAtA });
-    if (re.body.job.createdAt === createdAtA) FAIL("the re-created row kept the OLD createdAt — the tombstone comparison cannot work", { createdAt: re.body.job.createdAt });
+  /* ── STEP 3 — plant the tombstone, then tick INSIDE the window ───────────── */
+  console.log("\nSTEP 3 - plant a tombstone for A (the F-616 hook door), then tick INSIDE the window");
+  const planted = await tombstone("plant", jobId);
+  ev.plant = planted.body;
+  if (!(planted.status === 200 && planted.body && planted.body.ok)) { FAIL("the tombstone door refused the plant", { status: planted.status, body: planted.raw || JSON.stringify(planted.body).slice(0, 300) }); return; }
+  restore.tombstoneFor = jobId;
+  const plantedAtMs = Date.parse(planted.body.row.at);
+  PASS(`va_purged:${jobId} planted`, { at: planted.body.row.at, jobCreatedAt: planted.body.jobCreatedAt, clamped: planted.body.clampedToCreatedAt });
+  if (plantedAtMs < Date.parse(createdAtA)) {
+    PASS("the planted `at` PREDATES the job's createdAt — the clear will weigh the settle window, not `tombstone_newer_than_job`");
   } else {
-    NV(`saveScheduledJob will not re-create a deleted id — the F-575 settle arm cannot be driven this way`, { body: JSON.stringify(re.body).slice(0, 300) });
+    FAIL("the planted tombstone is newer than the job — the wrong branch would be proved", { at: planted.body.row.at, createdAt: createdAtA });
     return;
   }
+  const standing = (await kvs(`va_purged:${jobId}`)).value;
+  if (standing && standing.at) PASS("the tombstone is readable through the ordinary KVS read"); else FAIL("the planted tombstone is not readable", { standing });
 
-  /* ── STEP 4 — a tick INSIDE the settle window must skip ─────────────────── */
-  console.log("\nSTEP 4 - a tick INSIDE the 5-minute settle window");
-  const elapsed = Date.now() - deletedAt;
-  info(`~${Math.round(elapsed / 1000)}s since the delete; the window is ${SETTLE_MS / 1000}s`);
   const tIn = await tick(jobId, "tick inside the window", 180);
-  const rIn = tIn && tIn.receipt;
-  ev.receiptInsideWindow = rIn;
-  info(`receipt: ${JSON.stringify(rIn).slice(0, 500)}`);
-  const skipped = (rIn && Array.isArray(rIn.skipped) && rIn.skipped) || [];
-  const gate = skipped.find((s) => s && s.gate === "purge-settling");
-  if (gate) PASS('the tick SKIPPED with gate "purge-settling"', { gate: gate.gate, reason: gate.reason });
-  else if (rIn) FAIL("the tick inside the window did NOT carry the purge-settling gate", { skipped });
-  else NV("no receipt landed for the tick inside the window");
+  const ageAtTick = Date.now() - plantedAtMs;
+  ev.insideWindow = { newReceipt: tIn && tIn.newReceipt, ranAtAll: tIn && tIn.ranAtAll, logs: tIn && { before: tIn.logsBefore, after: tIn.logsAfter }, ageAtTickMs: ageAtTick, settleMs: SETTLE_MS };
+  info(`tick inside: ${JSON.stringify(ev.insideWindow)}`);
+  if (!(tIn && tIn.ranAtAll)) {
+    NV("no evidence the in-window tick ran at all (no new receipt AND no new execution log) — nothing to judge", ev.insideWindow);
+  } else if (ageAtTick >= SETTLE_MS) {
+    NV("the in-window tick landed AFTER the settle window had already retired — re-run; the window is not what was measured", ev.insideWindow);
+  } else {
+    if (tIn.newReceipt === false) PASS("the tick did NO WORK: it ran (an execution log landed) and produced NO prepare receipt", ev.insideWindow);
+    else FAIL("the tick inside the window produced a prepare receipt — it was not gated", { receipt: JSON.stringify(tIn.receipt).slice(0, 400) });
+  }
   const tombStill = (await kvs(`va_purged:${jobId}`)).value;
   if (tombStill && tombStill.at) PASS("the tombstone still STANDS after the in-window tick", { at: tombStill.at });
   else FAIL("the tombstone was cleared inside the settle window", { tombStill });
 
-  /* ── STEP 5 — wait the window out, tick again ───────────────────────────── */
-  console.log("\nSTEP 5 - wait the window out (kvSet cannot plant va_purged:*, so this sleeps)");
-  const wait = Math.max(0, SETTLE_MS - (Date.now() - deletedAt)) + 20000;
-  info(`sleeping ${Math.round(wait / 1000)}s`);
-  await sleep(wait);
+  /* ── STEP 4 — age the tombstone past the window, tick again ──────────────── */
+  console.log("\nSTEP 4 - age the tombstone past VA_PURGE_SETTLE_MS through the same door, then tick");
+  const aged = await tombstone("age", jobId, { ageMs: SETTLE_MS + 60000 });
+  ev.age = aged.body;
+  if (!(aged.status === 200 && aged.body && aged.body.ok && aged.body.effectiveAgeMs >= SETTLE_MS)) { FAIL("the age op did not move the tombstone past the window", { status: aged.status, body: JSON.stringify(aged.body).slice(0, 300) }); return; }
+  PASS("the tombstone is now older than the settle window", { at: aged.body.row.at, effectiveAgeMs: aged.body.effectiveAgeMs });
+
   const tAfter = await tick(jobId, "tick after the window", 240);
   const rAfter = tAfter && tAfter.receipt;
-  ev.receiptAfterWindow = rAfter;
-  info(`receipt: ${JSON.stringify(rAfter).slice(0, 500)}`);
+  ev.afterWindow = { newReceipt: tAfter && tAfter.newReceipt, ranAtAll: tAfter && tAfter.ranAtAll, receipt: rAfter };
+  info(`tick after: ${JSON.stringify(ev.afterWindow).slice(0, 600)}`);
   const skipAfter = (rAfter && Array.isArray(rAfter.skipped) && rAfter.skipped) || [];
   const gateAfter = skipAfter.find((s) => s && s.gate === "purge-settling");
-  if (rAfter && !gateAfter) PASS("the tick after the window carries NO purge gate — a normal prepare receipt", { phase: rAfter.phase, swept: rAfter.swept, worked: rAfter.worked, skipped: skipAfter.length });
+  if (rAfter && !gateAfter) PASS("the tick after the window is a NORMAL prepare receipt with no purge gate", { phase: rAfter.phase, swept: rAfter.swept, worked: rAfter.worked, skipped: skipAfter.length });
   else if (gateAfter) FAIL("the tick after the window is STILL gated", { gate: gateAfter });
-  else NV("no receipt landed for the tick after the window");
+  else if (tAfter && tAfter.ranAtAll) FAIL("the tick after the window ran but produced no prepare receipt — it is still doing nothing", ev.afterWindow);
+  else NV("no evidence the tick after the window ran at all", ev.afterWindow);
   const tombGone = (await kvs(`va_purged:${jobId}`)).value;
-  if (tombGone === null) PASS(`the tombstone va_purged:${jobId} is GONE (the same read saw it twice above)`);
+  if (tombGone === null) { PASS(`the tombstone va_purged:${jobId} is GONE (the same read saw it twice above)`); restore.tombstoneFor = null; }
   else FAIL("the tombstone is still standing after the window", { tombGone });
 
   const cAfter = await commentTotal();
@@ -274,11 +321,18 @@ async function main() {
 try { await main(); } catch (e) { console.error("THREW", e.stack); fails += 1; }
 finally {
   try {
+    // The planted tombstone is cleared through the SAME door that planted it — it is the
+    // one piece of state this script writes that is not an agent, and a stray one would
+    // mute a re-run of the same id for three days.
+    if (restore.tombstoneFor) {
+      const c = await tombstone("clear", restore.tombstoneFor);
+      info(`cleanup tombstone clear ${restore.tombstoneFor}: ${c.status}`);
+    }
     if (restore.agentId && !KEEP) {
       const r = await invoke("deleteScheduledJob", { id: restore.agentId });
       info(`cleanup deleteScheduledJob ${restore.agentId}: ${JSON.stringify(r.body).slice(0, 160)}`);
       const t = (await kvs(`va_purged:${restore.agentId}`)).value;
-      info(`cleanup tombstone: ${t ? t.at : "(none)"} — it carries VA_PURGE_TTL and ages out on its own`);
+      info(`cleanup tombstone after delete: ${t ? t.at : "(none)"} — it carries VA_PURGED_TTL and ages out on its own`);
     }
     if (restore.agentModelSlot !== undefined) {
       const r = await hook({ action: "kvSet", key: AGENT_MODEL_SLOT, value: restore.agentModelSlot });

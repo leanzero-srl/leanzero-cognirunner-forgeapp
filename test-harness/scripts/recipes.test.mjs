@@ -43,6 +43,7 @@ const SAMPLES = {
   add_remove_labels: { add: "triaged, urgent", remove: "stale" },
   clone_issue: { summaryPrefix: '[Copy] "x"', link: "yes" },
   create_subtask: { summary: 'Do "this"\nnow', issuetypeId: "5" },
+  confluence_page_from_issue: { spaceKey: "DOCS", titlePrefix: 'Release "notes"' },
 };
 
 function parseOK(code) {

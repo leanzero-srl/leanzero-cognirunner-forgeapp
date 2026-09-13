@@ -29,7 +29,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import path from "node:path";
 import FormData from "form-data";
 // Shared single-source-of-truth specs (also bundled into the Custom UIs).
-import { buildSystemPromptApiSection, API_USAGE_GUARD, getApiMethodNames, resolveIssueKey, normalizeKeyOptionalArgs } from "./shared/sandbox-api-spec.js";
+import { buildSystemPromptApiSection, API_USAGE_GUARD, getApiMethodNames, resolveIssueKey, normalizeKeyOptionalArgs, CONFLUENCE_SIGNATURE_REFERENCE, CONFLUENCE_ERROR_NOTE, CONFLUENCE_API_MEMBERS, CONFLUENCE_WRITE_MEMBERS } from "./shared/sandbox-api-spec.js";
 import { buildEndpointPromptBlock } from "./shared/jira-endpoints.js";
 import { DOC_SEED_VERSION, BUILTIN_DOCS } from "./shared/builtin-docs.js";
 import { clampNarrateLine } from "./shared/narrate-utils.js";
@@ -120,7 +120,8 @@ import { executePremadeRule, writeConfluenceIssueProperty } from "./premade-rule
 // THE Confluence client (1.5 commit 6). Every Confluence call in this file goes through
 // it — one error-code table, one timeout, one version-checked update.
 import {
-  createConfluenceClient, ConfluenceError,
+  createConfluenceClient, ConfluenceError, reasonFor as confluenceReasonFor,
+  CONFLUENCE_OPERATION_BUDGET_MS,
   // THE ONE install memo (F-473) — this file no longer keeps a copy of it.
   peekConfluenceInstalled, noteConfluenceInstallState,
 } from "./confluence-client.js";
@@ -8593,7 +8594,7 @@ ${buildSystemPromptApiSection()}
 ${includeBackoff ? `- Include an exponential backoff retry wrapper with jitter (3 retries, base delay 1s, max 8s, jitter ±30%). Wrap all API calls in it.` : ""}
 ${operationType === "rest_api_internal" ? `- The user wants a Jira REST API operation. Method: ${method || "GET"}. Endpoint hint: ${endpoint || "not specified"}.` : ""}
 ${operationType === "rest_api_external" ? `- The user wants to call an external API. URL hint: ${endpoint || "not specified"}. Note: external domains must be whitelisted in manifest.yml.` : ""}
-${operationType === "confluence_api" ? `- The user wants to interact with Confluence. Operation: ${method || "GET_PAGE"}.` : ""}
+${operationType === "confluence_api" ? `- The user wants to interact with Confluence. Operation hint: ${method || "GET_PAGE"}. Use the \`api.confluence.*\` members — there is no other way to reach Confluence from a step, and \`fetch\` is not available:\n${CONFLUENCE_SIGNATURE_REFERENCE}\n  Page bodies are Confluence STORAGE format (<p>…</p>), never ADF. ${CONFLUENCE_ERROR_NOTE}` : ""}
 ${operationType === "work_item_query" ? `- The user wants to search Jira issues using JQL. Use api.searchJql().` : ""}
 ${operationType === "log_function" ? `- The user wants to log debug information. Focus on api.log() with useful issue data.` : ""}
 ${buildPriorStepsSection(priorSteps)}`;
@@ -18324,7 +18325,7 @@ const ISSUE_BOUND_METHODS = [
  * tool-call. `createApi(key)` binds the surface to an issue (default: the run's
  * current issue, which may be null).
  */
-export const createSandboxSession = ({ issueKey: boundIssueKey = null, config = {}, deadline = Date.now() + PF_BUDGET_MS, cancelToken = null, extraContext = null, maxWrites = null } = {}) => {
+export const createSandboxSession = ({ issueKey: boundIssueKey = null, config = {}, deadline = Date.now() + PF_BUDGET_MS, cancelToken = null, extraContext = null, maxWrites = null, confluenceClient = null } = {}) => {
   const executionLogs = [];
   const MAX_EXEC_LOGS = 5000; // cap user api.log() volume so a runaway loop can't OOM the function
   const changes = [];
@@ -18358,6 +18359,96 @@ export const createSandboxSession = ({ issueKey: boundIssueKey = null, config = 
   let stepDeadline = deadline;
   // `issueKey` below is the api's BOUND issue: the run's current issue by default,
   // or any other key via api.forIssue(key) (same logs/changes/simulation/kill switch).
+  // ── THE CONFLUENCE SEAM ────────────────────────────────────────────────────
+  // ONE client per session (not per api binding): api.forIssue(key) re-binds the
+  // surface many times in a run, and a client per binding would be a new 10 s budget
+  // and a new lazy @forge/api import each time.
+  let _confluence = null;
+  const confluenceFor = () => (_confluence || (_confluence = confluenceClient || createConfluenceClient()));
+
+  /**
+   * Wrap one client method as a sandbox member.
+   *
+   * Three things happen here and nowhere else:
+   *
+   *  1. NOT INSTALLED IS A STEP FAILURE, NEVER A SILENT SUCCESS. When the memo already
+   *     says Confluence is absent we throw before spending a call; otherwise the client's
+   *     own mapping (any answer it does not positively recognise → `confluence_unavailable`)
+   *     produces the same failure. Either way the step fails with a recommendation.
+   *     The answer is written back through noteConfluenceInstallState — the ONE memo
+   *     (F-473) — so a whole run pays for at most one discovery.
+   *  2. WRITES ARE INTERCEPTED IN SIMULATION, on the SAME `changes` ledger and the SAME
+   *     `executionLogs` as every Jira write, and they respect the same write brake. A
+   *     Confluence write that ignored simulation would make Test Run edit real pages.
+   *  3. THE BUDGET IS CHECKED BEFORE THE CALL. One operation can take 10 s of a ~22 s
+   *     step; starting one with less than that left is how a step dies mid-write. We
+   *     refuse first, loudly, with the recommendation attached.
+   */
+  const confluenceMember = (name, { write = false } = {}) => async (args = {}) => {
+    const label = `api.confluence.${name}()`;
+    if (peekConfluenceInstalled() === false) {
+      throw new Error(`${label} failed (confluence_unavailable): ${confluenceReasonFor("confluence_unavailable")}. Install CogniRunner on Confluence (forge install --product Confluence) or remove the Confluence step from this rule.`);
+    }
+    if (write && maxWrites != null && changes.length >= maxWrites) {
+      const reason = brakeRefusalText("job-writes", maxWrites);
+      executionLogs.push(`[WRITE BRAKE] ${label} skipped — ${reason}`);
+      throw new Error(`${label} skipped — ${reason}`);
+    }
+    if (write && cancelToken && await isJobCancelled(cancelToken)) {
+      executionLogs.push(`[CANCELLED] ${label} — write skipped (job was stopped)`);
+      changes.push({ action: `confluence.${name}`, namespace: "confluence", cancelled: true });
+      throw new Error(`${label} skipped — the job was stopped by the kill switch.`);
+    }
+    if (simulated && write) {
+      // The staged row carries the SHAPE of the write, clamped, so the Test Run change
+      // list can show what would have happened without echoing a 60 KB body back.
+      const staged = {
+        action: `confluence.${name}`, namespace: "confluence", simulated: true,
+        target: String(args.id || args.pageId || args.title || args.spaceKey || "").slice(0, 200),
+      };
+      executionLogs.push(`[SIMULATION] ${label} ${JSON.stringify(args).substring(0, 300)} — write skipped`);
+      changes.push(staged);
+      return { simulated: true, action: `confluence.${name}` };
+    }
+    const remaining = stepDeadline - Date.now();
+    if (remaining < CONFLUENCE_OPERATION_BUDGET_MS) {
+      throw new Error(`${label} needs up to ${Math.round(CONFLUENCE_OPERATION_BUDGET_MS / 1000)}s but only ${Math.max(0, Math.round(remaining / 1000))}s of this step's budget remains — refusing to start a call it cannot finish. Split the Confluence work into its own step, or do less before it.`);
+    }
+    let out;
+    try {
+      out = await confluenceFor()[name](args || {});
+    } catch (e) {
+      const err = e instanceof ConfluenceError ? e : null;
+      const code = err ? err.code : "confluence_unavailable";
+      if (code === "confluence_unavailable") noteConfluenceInstallState({ installed: false, code, message: null });
+      executionLogs.push(`${label} failed (${code}): ${confluenceReasonFor(code)}`);
+      // The remote's own words are NEVER re-thrown (the client's F-434 rule): the code,
+      // its allow-listed reason and what to do about it, and nothing else.
+      const e2 = new Error(`${label} failed (${code}): ${confluenceReasonFor(code)}.${err && err.timeout ? " The call timed out." : ""}`);
+      e2.confluenceCode = code;
+      throw e2;
+    }
+    noteConfluenceInstallState({ installed: true, code: null, message: null });
+    if (write) {
+      changes.push({
+        action: `confluence.${name}`, namespace: "confluence",
+        target: String((out && (out.id || out.pageId)) || args.id || args.pageId || args.title || "").slice(0, 200),
+      });
+      executionLogs.push(`${label} ok${out && out.id ? ` (${out.id})` : ""}`);
+    }
+    return out;
+  };
+
+  // BUILT FROM THE SPEC'S MEMBER TABLE, not from a second list here. The documented
+  // surface and the real surface are then the same object by construction: a member
+  // added to SANDBOX_CONFLUENCE_METHODS appears here, and if the client has no such
+  // method the offline test that calls every member says so loudly. Which members
+  // WRITE is also the spec's answer (CONFLUENCE_WRITE_MEMBERS) — that flag decides
+  // simulation interception, so a second copy of it is a dry run that writes.
+  const confluenceNamespace = () => Object.freeze(Object.fromEntries(
+    CONFLUENCE_API_MEMBERS.map((name) => [name, confluenceMember(name, { write: CONFLUENCE_WRITE_MEMBERS.includes(name) })]),
+  ));
+
   const createApi = (issueKey = boundIssueKey || null) => {
     // Names the runtime in BOTH no-current-issue guards (the throwing stubs below and
     // resolveIssueKey for the key-optional methods) so the two read identically.
@@ -18802,6 +18893,14 @@ export const createSandboxSession = ({ issueKey: boundIssueKey = null, config = 
       changes.push({ action: "forceStatus", key: issueKey, target: targetStatusName, moved });
       return { success: moved, target: targetStatusName, tempTransition: tempId };
     },
+    // === Confluence ==========================================================
+    // `api.confluence.*` — the sandbox's window onto the OPTIONAL Confluence product.
+    // Documented ONCE in shared/sandbox-api-spec.js (SANDBOX_CONFLUENCE_METHODS); every
+    // call delegates to THE client (src/confluence-client.js), which owns the error-code
+    // table, the 10 s operation budget, the version-checked update and the 60 KB page
+    // clamp. Nothing here re-implements any of that, and nothing here calls Confluence
+    // directly — a second call site would be a finding against that module's contract.
+    confluence: confluenceNamespace(),
     log: (...args) => {
       // Bound user logging: a runaway api.log() loop (malicious OR an accidental
       // generated-code bug) would otherwise grow executionLogs without limit and

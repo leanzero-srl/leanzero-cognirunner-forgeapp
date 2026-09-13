@@ -50,6 +50,93 @@ export const KEY_OPTIONAL_EMPTY_KEY_NOTE = "Passing `undefined` or `null` is the
 // so a future edit to one is made looking at the other.
 export const KEY_OPTIONAL_EMPTY_KEY_HINT = "omit the key for the current issue; an empty key throws";
 
+// === Confluence namespace ====================================================
+// `api.confluence.*` is ONE member on `api` (a namespace object, not a callable),
+// and this is the ONE place its members are described. The namespace entry in
+// SANDBOX_API_METHODS below is BUILT from this array, so the codegen/fix prompt, the
+// completions, the hover card, the lint allowlist and the API Reference panel all
+// derive from these rows — a seventh member is added here and nowhere else.
+//
+// Every member delegates to src/confluence-client.js (the one home of every Confluence
+// call): its closed error-code table, its 10 s per-operation budget, its 60 KB page-text
+// clamp and its version-checked update are what these docs promise. Bodies are Confluence
+// STORAGE format (XHTML-ish), NOT ADF — the most likely generated-code mistake.
+export const SANDBOX_CONFLUENCE_METHODS = [
+  {
+    name: "searchCql",
+    signature: "api.confluence.searchCql({ cql, limit? })",
+    returns: "{ results: [{ id, type, title, url, excerpt }], size }",
+    summary: "Searches Confluence with CQL. `limit` is clamped to 25 server-side; excerpts are clamped to 2 KB.",
+    example: 'const hits = await api.confluence.searchCql({ cql: \'type = page AND text ~ "release notes"\', limit: 5 });',
+  },
+  {
+    name: "getPage",
+    signature: "api.confluence.getPage({ id, bodyFormat? })",
+    returns: "{ id, title, spaceId, status, version, url, storage, text, truncated }",
+    summary: "Reads one page by id. `storage` is the raw storage-format body, `text` the plain text — both clamped to 60 KB (`truncated` says when that bit).",
+    example: 'const page = await api.confluence.getPage({ id: "123456" });\napi.log(page.text.slice(0, 200));',
+  },
+  {
+    name: "getPageByTitle",
+    signature: "api.confluence.getPageByTitle({ spaceKey, title })",
+    returns: "page object, or null",
+    summary: "Exact-title lookup inside one space. Returns null when there is no such page — but a space the app cannot see throws `auth`, so null is not proof of absence.",
+    example: 'const existing = await api.confluence.getPageByTitle({ spaceKey: "DOCS", title: "Release notes" });',
+  },
+  {
+    name: "createPage",
+    signature: "api.confluence.createPage({ spaceKey, title, storage, parentId? })",
+    returns: "{ id, title, version, url, truncated }",
+    write: true,
+    summary: "WRITE. Creates a page from a storage-format body (clamped to 60 KB). Never retried — a retried create is a duplicate page.",
+    example: 'const page = await api.confluence.createPage({ spaceKey: "DOCS", title: "Release " + api.context.issueKey, storage: "<p>Created by CogniRunner</p>" });',
+  },
+  {
+    name: "updatePage",
+    signature: "api.confluence.updatePage({ id, version, storage, title? })",
+    returns: "{ id, title, version, url, truncated }",
+    write: true,
+    summary: "WRITE. Version-checked update: pass the `version` you READ. A moved version throws `conflict` instead of overwriting someone else's edit.",
+    example: 'const page = await api.confluence.getPage({ id: "123456" });\nawait api.confluence.updatePage({ id: page.id, version: page.version, storage: page.storage + "<p>Appended</p>" });',
+  },
+  {
+    name: "addComment",
+    signature: "api.confluence.addComment({ pageId, body })",
+    returns: "{ id, pageId, version, truncated }",
+    write: true,
+    summary: "WRITE. Adds a footer comment (storage format, clamped to 32 KB). Never retried — a retried comment is a duplicate comment.",
+    example: 'await api.confluence.addComment({ pageId: "123456", body: "<p>" + api.context.issueKey + " transitioned</p>" });',
+  },
+];
+
+/** The member names, for everything that needs the set (createApi, the tests, the UI). */
+export const CONFLUENCE_API_MEMBERS = SANDBOX_CONFLUENCE_METHODS.map((m) => m.name);
+
+/** The members that WRITE — simulation mode must intercept exactly these three. */
+export const CONFLUENCE_WRITE_MEMBERS = SANDBOX_CONFLUENCE_METHODS.filter((m) => m.write === true).map((m) => m.name);
+
+/** One line per member — the `confluence_api` operation-type hint in the codegen prompt reads this. */
+export const CONFLUENCE_SIGNATURE_REFERENCE = SANDBOX_CONFLUENCE_METHODS
+  .map((m) => `- ${m.signature} → ${m.returns}. ${m.summary}`)
+  .join("\n");
+
+// The failure contract, stated ONCE: it is the same for all six members.
+export const CONFLUENCE_ERROR_NOTE = "Every member THROWS on failure — there is no silent success. The message names a code from the closed set `confluence_unavailable` (the app is not installed on this site's Confluence, or Confluence did not answer in a way the app recognises) | `auth` | `not_found` | `conflict` | `rate_limited` | `network` | `invalid`. Let it throw to fail the step, or catch it and branch on the code in the message — never assume a write landed.";
+
+const confluenceNamespaceDoc = () => `### api.confluence.* → Confluence (an OPTIONAL product)
+Confluence is not installed on every site. When it is not, every member throws \`confluence_unavailable\` — the step FAILS loudly, it never quietly does nothing.
+
+Page bodies are Confluence **storage format** (XHTML-like: \`<p>text</p>\`, \`<h2>Heading</h2>\`, \`<ul><li>item</li></ul>\`), **never ADF** — ADF is Jira-only and Confluence rejects it.
+
+${SANDBOX_CONFLUENCE_METHODS.map((m) => `#### ${m.signature} → ${m.returns}
+${m.summary}
+\`\`\`javascript
+${m.example}
+\`\`\``).join("\n\n")}
+
+${CONFLUENCE_ERROR_NOTE}
+In simulation (Test Run) the writes (${CONFLUENCE_WRITE_MEMBERS.join(", ")}) are recorded on the change ledger and skipped, exactly like the Jira writes; the reads stay live. Each call may take up to 10 seconds of the step's ~22 second budget — do not loop over dozens of pages.`;
+
 export const SANDBOX_API_METHODS = [
   {
     name: "getIssue",
@@ -452,6 +539,21 @@ if (parent) await api.forIssue(parent).addComment("Child " + api.context.issueKe
 When \`api.context.issueKey\` is null (a scheduled job without a JQL scope, or a listener on a version/project/sprint event) every issue-bound call throws — the key-less helpers immediately, the key-optional ones when no key is passed either. Go through api.forIssue(key), or pass the key explicitly.`,
   },
   {
+    name: "confluence",
+    // NOT callable: `api.confluence` is a namespace OBJECT whose members are
+    // SANDBOX_CONFLUENCE_METHODS above. `callable: false` keeps it out of
+    // getApiMethodNames() (the list for which `typeof api[name] === "function"`
+    // must hold) while KNOWN_API_MEMBERS — the LINT allowlist, which must name
+    // every readable member of `api` — still carries it.
+    callable: false,
+    signature: `api.confluence.{ ${CONFLUENCE_API_MEMBERS.join(", ")} }`,
+    returns: "depends on the member",
+    summary: `Confluence namespace (${CONFLUENCE_API_MEMBERS.length} members: ${CONFLUENCE_API_MEMBERS.join(", ")}). Storage format, never ADF. Throws confluence_unavailable when Confluence is not installed on this site; writes are intercepted in simulation.`,
+    detail: `{ ${CONFLUENCE_API_MEMBERS.join(", ")} } — storage format, not ADF`,
+    example: 'const page = await api.confluence.getPageByTitle({ spaceKey: "DOCS", title: "Runbook" });',
+    get promptDoc() { return confluenceNamespaceDoc(); },
+  },
+  {
     name: "context",
     signature: "api.context",
     returns: "{ issueKey, runtime, event?, eventType?, jobId?, scheduledFor? }",
@@ -482,8 +584,13 @@ export const ARRAY_FIELDS_API_REFERENCE = methodReference(["editIssue", "addLabe
 export const AGILE_API_REFERENCE = methodReference(["moveToSprint", "moveToBacklog", "rankIssue"]);
 export const API_SIGNATURE_REFERENCE = SANDBOX_API_METHODS.map((m) => `- ${m.signature} → ${m.returns}. ${m.summary}`).join("\n");
 
+// The CALLABLE surface: `typeof api[name] === "function"` must hold for every name here
+// (test-harness/scripts/testpf-dryrun-probe.mjs asserts exactly that). The non-callable
+// members — the `context` accessor and the `confluence` namespace object — carry
+// `callable: false` and are excluded here, while staying in KNOWN_API_MEMBERS, which is
+// the lint allowlist and so must name every readable member of `api`.
 export const getApiMethodNames = () =>
-  SANDBOX_API_METHODS.filter((m) => m.name !== "context").map((m) => m.name);
+  SANDBOX_API_METHODS.filter((m) => m.callable !== false && m.name !== "context").map((m) => m.name);
 
 // === Which issue does a call act on when the caller does not say? ============
 // ONE answer, used by production (createApi in src/index.js) AND by the in-UI

@@ -20,6 +20,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   SANDBOX_API_METHODS,
+  SANDBOX_CONFLUENCE_METHODS,
+  CONFLUENCE_API_MEMBERS,
+  CONFLUENCE_WRITE_MEMBERS,
+  CONFLUENCE_SIGNATURE_REFERENCE,
   KNOWN_API_MEMBERS,
   getApiMethodNames,
   API_USAGE_GUARD,
@@ -35,14 +39,21 @@ const ok = (c, m) => { if (c) pass++; else { fail++; console.log("FAIL:", m); } 
 const nonEmptyStr = (v) => typeof v === "string" && v.trim().length > 0;
 
 // --- getApiMethodNames(): the callable surface fed to the AI + lint ---
+// The entries that are members of `api` but NOT functions. Stated once, here, and asserted
+// against the spec's own `callable: false` flag below so this list cannot quietly rot.
+const NON_CALLABLE = ["confluence", "context"];
 const names = getApiMethodNames();
 ok(Array.isArray(names), "getApiMethodNames() returns an array");
 // Lower bound, NOT a stale hardcoded exact count. CLAUDE.md mandates >= 30 documented methods; the old
 // bug was a hardcoded 6-name subset that red-flagged real methods — this guards against regressing to that.
 ok(names.length >= 30, `getApiMethodNames() lists >= 30 callable methods (got ${names.length})`);
-// The `context` accessor is a property, not a callable method — it is the ONLY entry filtered out.
+// The NON-CALLABLE entries are filtered out: the `context` accessor (a property) and the
+// `confluence` NAMESPACE object, whose own members live in SANDBOX_CONFLUENCE_METHODS. Every
+// name this returns must satisfy `typeof api[name] === "function"` in the real sandbox
+// (testpf-dryrun-probe.mjs asserts exactly that), which a namespace object does not.
 ok(!names.includes("context"), "getApiMethodNames() excludes the non-callable `context` accessor");
-ok(names.length === SANDBOX_API_METHODS.length - 1, "callable count === spec entries minus the 1 `context` accessor");
+ok(!names.includes("confluence"), "getApiMethodNames() excludes the non-callable `confluence` namespace");
+ok(names.length === SANDBOX_API_METHODS.length - NON_CALLABLE.length, `callable count === spec entries minus the ${NON_CALLABLE.length} non-callable members (${NON_CALLABLE.join(", ")})`);
 // Spot-check the well-known surface is present (the methods the old hardcoded-6 lint falsely denied).
 for (const expected of ["getIssue", "updateIssue", "searchJql", "transitionIssue", "addComment", "cloneIssue", "editIssue", "addLabels", "forceStatus", "log"]) {
   ok(names.includes(expected), `callable surface includes api.${expected}`);
@@ -53,10 +64,35 @@ const specNames = SANDBOX_API_METHODS.map((m) => m.name);
 ok(KNOWN_API_MEMBERS.length === SANDBOX_API_METHODS.length, "KNOWN_API_MEMBERS has one entry per spec method");
 ok(JSON.stringify(KNOWN_API_MEMBERS) === JSON.stringify(specNames), "KNOWN_API_MEMBERS === spec names in order (derived, not re-hardcoded)");
 ok(KNOWN_API_MEMBERS.includes("context"), "KNOWN_API_MEMBERS keeps `context` (readable member, unlike the callable list)");
-// KNOWN_API_MEMBERS must be a strict superset of the callable names by exactly `context`.
+// KNOWN_API_MEMBERS must be a strict superset of the callable names by exactly the non-callables.
 const extra = KNOWN_API_MEMBERS.filter((n) => !names.includes(n));
-ok(extra.length === 1 && extra[0] === "context", "KNOWN_API_MEMBERS = callable names + exactly `context`");
+ok(JSON.stringify([...extra].sort()) === JSON.stringify([...NON_CALLABLE].sort()), `KNOWN_API_MEMBERS = callable names + exactly ${NON_CALLABLE.join(", ")} (got ${extra.join(", ")})`);
+// The list above is the TEST's claim; the spec's own flag is the product's. They must agree,
+// or the lint allowlist and the dry-run probe are reading two different surfaces.
+const flagged = SANDBOX_API_METHODS.filter((m) => m.callable === false).map((m) => m.name);
+ok(flagged.includes("confluence"), "the `confluence` namespace entry carries callable: false");
+ok(flagged.every((n) => NON_CALLABLE.includes(n)), `every callable:false entry is a known non-callable (got ${flagged.join(", ")})`);
 ok(names.every((n) => KNOWN_API_MEMBERS.includes(n)), "every callable name is in the lint allowlist");
+
+// --- the `api.confluence.*` namespace: ONE entry group, everything derived from it ---
+ok(SANDBOX_CONFLUENCE_METHODS.length === CONFLUENCE_API_MEMBERS.length, "CONFLUENCE_API_MEMBERS is derived from the member table");
+ok(CONFLUENCE_API_MEMBERS.length === 6, `the namespace documents 6 members (got ${CONFLUENCE_API_MEMBERS.length})`);
+ok(CONFLUENCE_WRITE_MEMBERS.join(",") === "createPage,updatePage,addComment", `the WRITE members are createPage/updatePage/addComment (got ${CONFLUENCE_WRITE_MEMBERS.join(",")})`);
+for (const m of SANDBOX_CONFLUENCE_METHODS) {
+  ok(nonEmptyStr(m.signature) && m.signature.startsWith(`api.confluence.${m.name}`), `${m.name}: signature is api.confluence.<name>... (got ${m.signature})`);
+  ok(nonEmptyStr(m.returns) && nonEmptyStr(m.summary) && nonEmptyStr(m.example), `${m.name}: returns/summary/example populated`);
+  ok(m.example.includes(`api.confluence.${m.name}`), `${m.name}: the example calls the member it documents`);
+}
+// The namespace's promptDoc is BUILT from the member rows — no second copy of the docs.
+const cfEntry = SANDBOX_API_METHODS.find((m) => m.name === "confluence");
+ok(!!cfEntry, "the spec carries one `confluence` entry");
+for (const m of SANDBOX_CONFLUENCE_METHODS) {
+  ok(cfEntry.promptDoc.includes(m.signature), `the namespace promptDoc documents ${m.signature}`);
+}
+// The two facts a generated step gets wrong if they are missing.
+ok(/storage format/i.test(cfEntry.promptDoc) && /never ADF|not ADF/i.test(cfEntry.promptDoc), "the namespace promptDoc says storage format, NOT ADF");
+ok(cfEntry.promptDoc.includes("confluence_unavailable"), "the namespace promptDoc names the not-installed failure code");
+ok(CONFLUENCE_SIGNATURE_REFERENCE.split("\n").length === CONFLUENCE_API_MEMBERS.length, "CONFLUENCE_SIGNATURE_REFERENCE has one line per member");
 
 // --- names are UNIQUE (a dup would silently shadow completions/hover/lint) ---
 ok(new Set(specNames).size === specNames.length, "all spec method names are unique");
@@ -86,7 +122,8 @@ ok(promptDocMismatch === null, `every promptDoc is a \`###\` section naming its 
 // Callable methods take arguments in the signature paren (context has none) — the `context` accessor is
 // the only entry whose signature has no call parens.
 const parenless = SANDBOX_API_METHODS.filter((m) => !m.signature.includes("("));
-ok(parenless.length === 1 && parenless[0].name === "context", "only `context` has a paren-less (non-call) signature");
+ok(JSON.stringify(parenless.map((m) => m.name).sort()) === JSON.stringify([...NON_CALLABLE].sort()),
+  `only the non-callable members have a paren-less signature (got ${parenless.map((m) => m.name).join(", ")})`);
 
 // --- prompt/hover/completion DERIVATIONS are non-empty for a sample method ---
 const sample = SANDBOX_API_METHODS.find((m) => m.name === "getIssue");

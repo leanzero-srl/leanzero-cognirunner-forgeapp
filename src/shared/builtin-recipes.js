@@ -29,6 +29,10 @@
  *   build(params) → string of sandbox JS. ALWAYS JSON.stringify interpolated values
  *                 (safe escaping into the generated source — honours the JQL/code lint).
  *
+ * The `confluence_page_from_issue` recipe uses the api.confluence.* namespace, which
+ * is only reachable on a site where the app is installed on Confluence too — the step
+ * FAILS with confluence_unavailable elsewhere, which is the intended, visible answer.
+ *
  * Phase 1a recipes below use ONLY the always-available methods
  * (getIssue / updateIssue / searchJql / transitionIssue / log / context) so they are
  * lint-clean, test-clean, and prod-clean with no spec changes.
@@ -381,6 +385,49 @@ const sub = await api.createIssue({
 });
 api.log("Created sub-task " + sub.key);
 await api.setProperty(MARKER, sub.key);`;
+    },
+  },
+
+  {
+    key: "confluence_page_from_issue",
+    label: "Publish this issue to a Confluence page",
+    description: "Creates a Confluence page for this issue in a space, or updates the existing page with the same title. Storage format, version-checked.",
+    category: "External / Webhooks",
+    apiMembers: ["getIssue", "confluence"],
+    operationType: "confluence_api",
+    params: [
+      { name: "spaceKey", type: "value", label: "Confluence space key", required: true, hint: "e.g. DOCS — the key in the space URL." },
+      { name: "titlePrefix", type: "value", label: "Page title prefix", required: false, hint: 'Prepended to the issue key, e.g. "Release notes".' },
+    ],
+    build: (p) => {
+      const space = JSON.stringify(String(p.spaceKey || ""));
+      const prefix = JSON.stringify(String(p.titlePrefix || ""));
+      // The body is assembled from issue data at RUNTIME and escaped there — storage
+      // format is XHTML-ish, so an unescaped summary containing "<" would corrupt the
+      // page (or, with a title from a reporter, inject markup into it).
+      return `// Recipe: publish this issue to a Confluence page (create, or update in place)
+const esc = (v) => String(v == null ? "" : v)
+  .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+const issue = await api.getIssue(api.context.issueKey);
+const prefix = ${prefix};
+const title = (prefix ? prefix + " " : "") + issue.key + " " + (issue.fields.summary || "");
+const storage =
+  "<p><strong>" + esc(issue.key) + "</strong> — " + esc(issue.fields.summary) + "</p>" +
+  "<p>Status: " + esc(issue.fields.status && issue.fields.status.name) + "</p>" +
+  "<p>Published by CogniRunner.</p>";
+// getPageByTitle returns null when there is no such page; an access fault THROWS, so a
+// null here is not mistaken for "not there" when the app simply cannot see the space.
+const existing = await api.confluence.getPageByTitle({ spaceKey: ${space}, title });
+if (existing) {
+  // Version-checked: pass the version we just read, so a page edited meanwhile
+  // throws \`conflict\` instead of silently losing that edit.
+  const updated = await api.confluence.updatePage({ id: existing.id, version: existing.version, title, storage });
+  api.log("Updated Confluence page " + existing.id + " (version " + updated.version + ")");
+  return { pageId: existing.id, action: "updated" };
+}
+const created = await api.confluence.createPage({ spaceKey: ${space}, title, storage });
+api.log("Created Confluence page " + created.id);
+return { pageId: created.id, action: "created" };`;
     },
   },
 ];

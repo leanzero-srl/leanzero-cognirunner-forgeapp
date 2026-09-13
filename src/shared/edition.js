@@ -118,7 +118,7 @@ export const resolveEdition = (license) => {
  */
 export const ADVANCED_FEATURES = [
   { id: "forge-llm-frontier-models", label: "Claude Sonnet 5 & Opus 5 on Atlassian Forge LLM" },
-  { id: "coder", label: "Coder: in-issue coding chat, GitHub & Bitbucket, pipelines, Git-aware rules" },
+  { id: "coder", label: "the Coder toolset (in-issue coding chat, GitHub & Bitbucket, pipelines, Git-aware rules)" },
 ];
 
 const ADVANCED_FEATURE_IDS = ADVANCED_FEATURES.map((f) => f.id);

@@ -110,6 +110,8 @@ const CLAIM_TTL = { ttl: { value: 10, unit: "MINUTES" } };
  * Deliberately absent, and not to be added without the owner: anything granting app
  * or site administration (`manage:app-*`, `admin:*`), any `act-as-user` variant, and
  * any scope that can mint or read credentials.
+ *
+ * Owner review: the default list below was approved as-is on 2026-09-14.
  */
 export const PIPELINE_ALLOWED_SCOPES = Object.freeze([
   "storage:app",

@@ -7895,8 +7895,17 @@ resolver.define("getContextDocs", async ({ payload, context }) => {
 
 /**
  * Get a single document's full content by ID.
+ *
+ * F-626 — VIEWER FLOOR, the same one F-235 put on `getContextDocs` and
+ * `getSkillContent`, and for a stronger reason: this door returns the BODY, not the
+ * index row. It had no gate at all — no role floor, no licence — so any caller with
+ * a guessed id read a whole curated reference (this site's field ids, endpoint
+ * shapes, house conventions), and the "Document not found" sentence told it which
+ * ids exist. A ROLE floor, NOT an ownership gate: docs are org-wide shared content
+ * and every roster member is meant to read every one of them.
  */
-resolver.define("getContextDocContent", async ({ payload }) => {
+resolver.define("getContextDocContent", async ({ payload, context }) => {
+  if (!(await requireRole(context?.accountId, "viewer"))) return noPerm("read documentation", "viewer");
   try {
     const { id } = payload;
     const doc = await storage.get(`${DOC_REPO_PREFIX}${id}`);

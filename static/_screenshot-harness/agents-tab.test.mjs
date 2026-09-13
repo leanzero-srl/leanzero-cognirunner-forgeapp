@@ -40,6 +40,9 @@
  *   A14b the tick's own health ids (`tick:prepare_failed`, `tick:post_failed`) each read as
  *       their own sentence on the banner, in both themes, whether the stored row carries the
  *       base id alone or a legacy row with the exception glued on (F-535).
+ *   A15 a SUCCESSFUL save's own notes reach the admin on BOTH doors (F-538): the resolver's
+ *       `refused` and the job row's `vaRefused` both render, the id becomes a sentence, the
+ *       door stays open until the notes are dismissed - both themes, computed colours.
  *
  * Run: node static/_screenshot-harness/agents-tab.test.mjs   (add --shots to save PNGs)
  */
@@ -767,6 +770,82 @@ try {
         } finally { await close(env); }
       }
     }
+
+  /* ---------- A15 the SAVE's own notes reach the admin, on both doors (F-538) ---------- */
+  /*
+   * THE DEFECT THIS PINS. A successful `mode:"va"` save answers with `refused` (the
+   * resolver, from `prepareVaSave`) and `vaRefused` (the job row, from the second
+   * normalise pass). Both carry notes the browser CANNOT compute - the agent's own tick
+   * counter, a catalogue source that failed - and both doors read neither, rendering only
+   * the client-side `preview.refused`. So a field the save narrowed stayed a field the
+   * operator believed they had set, and a toast said "Agent saved".
+   *
+   * The mock answers on BOTH keys deliberately: reading one and not the other is exactly
+   * the shape of the original defect, and a fix that only picked up `refused` would pass a
+   * one-key test. The `shadow-watch-unknown` row is the id case (no prose in `reason`), so
+   * this also asserts the sentence map is what the admin reads.
+   */
+  for (const theme of ["light", "dark"]) {
+    console.log(`A15 save notes (${theme})`);
+    const NOTES = {
+      refused: [{ field: "va.status.shadowUntilTick", reason: "shadow-watch-unknown" }],
+      vaRefused: [{ field: "catalogue.projects", reason: "This site's projects could not be read, so that part of the configuration was accepted without being checked against live data." }],
+    };
+    const env = await openAgents(browser, theme, { __VA_SAVE_NOTES__: NOTES });
+    const { page } = env;
+    try {
+      const amber = theme === "dark" ? "rgb(245, 158, 11)" : "rgb(217, 119, 6)";
+      const ink = theme === "dark" ? "rgb(42, 22, 2)" : "rgb(255, 255, 255)";
+
+      /* — the classic form — */
+      await page.locator(".btn-small", { hasText: "Use the form" }).click();
+      await page.locator(".va-editor").waitFor({ timeout: 8000 });
+      await page.locator(".va-name").fill("Priya");
+      await page.locator(".va-editor .section-actions .btn-solid").click();
+      await page.locator(".va-save-notes").waitFor({ timeout: 8000 });
+      ok(await page.locator(".va-editor").count() === 1, `A15 ${theme} the form stays open until the notes are dismissed`);
+
+      const fields = await page.locator(".va-save-note-field").allInnerTexts();
+      ok(fields.length === 2, `A15 ${theme} BOTH answer keys render, got ${fields.length}: ${JSON.stringify(fields)}`);
+      ok(fields.some((f) => /va\.status\.shadowUntilTick/i.test(f)), `A15 ${theme} the resolver's "refused" row names its field`);
+      ok(fields.some((f) => /catalogue\.projects/i.test(f)), `A15 ${theme} the job row's "vaRefused" row names its field`);
+
+      const texts = await page.locator(".va-save-note-text").allInnerTexts();
+      ok(texts.some((t) => /tick counter could not be read/i.test(t)), `A15 ${theme} the id became a sentence, got ${JSON.stringify(texts)}`);
+      ok(texts.every((t) => !/shadow-watch-unknown/.test(t)), `A15 ${theme} the raw reason id is not what the admin reads`);
+      ok(texts.some((t) => /without being checked against live data/i.test(t)), `A15 ${theme} the catalogue sentence is carried through`);
+      ok(texts.every((t) => !/[—–→]/.test(t)), `A15 ${theme} no em-dash, en-dash or arrow`);
+
+      const css = await page.locator(".va-save-notes").first().evaluate((el) => {
+        const c = getComputedStyle(el);
+        const t = getComputedStyle(el.querySelector(".va-save-note-text"));
+        return { bg: c.backgroundColor, fg: c.color, bl: c.borderLeftWidth, w: t.fontWeight };
+      });
+      ok(css.bg === amber, `A15 ${theme} solid amber fill, got ${css.bg}`);
+      ok(css.fg === ink, `A15 ${theme} the hue's own ink, got ${css.fg}`);
+      ok(css.bl === "0px", `A15 ${theme} no left rail, got ${css.bl}`);
+      ok(Number(css.w) >= 600 && Number(css.w) <= 700, `A15 ${theme} 600-700 weight, got ${css.w}`);
+      await shot(page, `agents-save-notes-form-${theme}`);
+
+      /* Dismissing is what returns to the list - nothing before it does. */
+      await page.locator(".va-save-notes-dismiss").click();
+      await page.locator(".section-title", { hasText: /Agents/ }).first().waitFor({ timeout: 8000 });
+      ok(await page.locator(".va-editor").count() === 0, `A15 ${theme} dismissing leaves the form`);
+
+      /* — the wizard's review step, same rendering — */
+      await runInterview(page);
+      await page.locator(".va-actions .btn-solid").click();
+      await page.locator(".va-save-notes").waitFor({ timeout: 8000 });
+      const wf = await page.locator(".va-save-note-field").allInnerTexts();
+      ok(wf.length === 2, `A15 ${theme} the wizard review shows both notes, got ${wf.length}`);
+      const wcss = await page.locator(".va-save-notes").first().evaluate((el) => getComputedStyle(el).backgroundColor);
+      ok(wcss === amber, `A15 ${theme} the wizard uses the same solid amber, got ${wcss}`);
+      await shot(page, `agents-save-notes-wizard-${theme}`);
+      await page.locator(".va-save-notes-dismiss").click();
+      await page.locator(".section-title", { hasText: /Agents/ }).first().waitFor({ timeout: 8000 });
+
+      ok(env.errors.length === 0, `A15 ${theme} no page errors (${env.errors[0] || ""})`);
+    } finally { await close(env); }
   }
 } finally {
   await browser.close();

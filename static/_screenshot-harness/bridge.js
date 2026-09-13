@@ -1937,7 +1937,17 @@ function invoke(name, payload) {
     case "saveScheduledJob": {
       const j = (payload && payload.job) || {};
       if (typeof window !== "undefined" && j.mode === "va") { window.__VA_SAVE__ = j; }
-      return Promise.resolve({ success: true, job: { ...j, id: j.id || (j.mode === "va" ? "va_new1" : "job_new1"), stats: j.stats || { runCount: 0 } } });
+      /* F-538 — a SUCCESSFUL va save that narrowed something answers on TWO keys: the
+         resolver's own `refused` (src/index.js, from `prepareVaSave`) and `vaRefused` on
+         the saved job row (src/scheduled-jobs.js, the second normalise pass). Both are
+         notes only the backend can produce, so `__VA_SAVE_NOTES__` is the only way the
+         harness can put them on screen. */
+      const notes = (typeof window !== "undefined" && window.__VA_SAVE_NOTES__) || null;
+      return Promise.resolve({
+        success: true,
+        ...(notes && notes.refused ? { refused: notes.refused } : {}),
+        job: { ...j, id: j.id || (j.mode === "va" ? "va_new1" : "job_new1"), stats: j.stats || { runCount: 0 }, ...(notes && notes.vaRefused ? { vaRefused: notes.vaRefused } : {}) },
+      });
     }
     case "deleteScheduledJob": case "setScheduledJobEnabled": return Promise.resolve({ success: true, job: { ...(JOB_FULL[payload && payload.id] || {}), enabled: payload && payload.enabled }, removed: true });
     case "runScheduledJobNow": return Promise.resolve({ success: true, async: true, taskId: "task-job-1" });

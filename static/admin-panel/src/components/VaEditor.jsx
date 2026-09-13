@@ -29,6 +29,7 @@ import React, { useMemo, useState } from "react";
 import SchedulePicker from "./SchedulePicker";
 import { showToast } from "./toast";
 import { ChipPicker, ChipRadio, DeskQueuePicker, PowerPicker, GuardrailPicker, PostWindowPicker, NoteList, TextListInput } from "./VaPickers";
+import SaveNotes, { collectSaveNotes } from "./VaSaveNotes";
 import { buildVaRecord, catalogToCtx, optionsForStep, renderVoiceSamples, renderReviewSummary } from "../../../../src/shared/va-wizard.js";
 import { normalizeVa, renderGuardrailSentences, VA_DEFAULTS, VA_CEILINGS, VA_PROJECTS_MAX, VA_MENTIONS_MAX, VA_SERVICE_DESKS_MAX, VA_QUEUES_PER_DESK_MAX, VA_JQL_MAX, VA_PERSONA_NAME_MAX, VA_MAX_SENTENCES_MIN, VA_MAX_SENTENCES_MAX, VA_LIMITS } from "../../../../src/shared/va-config.js";
 import { cronToPreset } from "../../../../src/shared/cron.js";
@@ -56,6 +57,10 @@ const recordToAnswers = (va) => {
 export default function VaEditor({ client, catalog = {}, initial = null, initialRefusals = [], onSaved, onCancel }) {
   const [a, setA] = useState(() => recordToAnswers(initial));
   const [saving, setSaving] = useState(false);
+  // What the SAVE narrowed, which `preview.refused` can never contain (F-538). Holding it
+  // here is what keeps the form OPEN: `onSaved` navigates away, so it is deferred until
+  // the admin dismisses the notes rather than fired next to a toast nobody reads.
+  const [saveNotes, setSaveNotes] = useState(null);
   const set = (patch) => setA((s) => ({ ...s, ...patch }));
 
   const state = useMemo(() => ({ catalog, answers: a }), [catalog, a]);
@@ -87,8 +92,11 @@ export default function VaEditor({ client, catalog = {}, initial = null, initial
     setSaving(true);
     const r = await client.saveAgent(preview.va);
     setSaving(false);
-    if (r.success) { showToast(initial ? "Agent saved" : "Agent created"); onSaved(r.job || null); }
-    else showToast(r.error || "Save failed", "error");
+    if (!r.success) { showToast(r.error || "Save failed", "error"); return; }
+    showToast(initial ? "Agent saved" : "Agent created");
+    const notes = collectSaveNotes(r);
+    if (notes.length) { setSaveNotes({ notes, job: r.job || null }); return; }
+    onSaved(r.job || null);
   };
 
   // The cadence rides `SchedulePicker`, which speaks cron, and the record keeps the preset
@@ -106,6 +114,7 @@ export default function VaEditor({ client, catalog = {}, initial = null, initial
         </div>
       </div>
 
+      {saveNotes && <SaveNotes notes={saveNotes.notes} onDismiss={() => { const job = saveNotes.job; setSaveNotes(null); onSaved(job); }} dismissLabel="Got it, back to agents" />}
       <NoteList items={arr(initialRefusals)} kind="refusal" />
       {preview.error && <div className="alert alert-warning va-hardstop">{preview.error}</div>}
 

@@ -35,6 +35,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { showToast } from "./toast";
 import { ChipPicker, ChipRadio, DeskQueuePicker, PowerPicker, GuardrailPicker, PostWindowPicker, ZonePicker, NoteList, TextListInput } from "./VaPickers";
+import SaveNotes, { collectSaveNotes } from "./VaSaveNotes";
 import { VA_DEFAULTS } from "../../../../src/shared/va-config.js";
 
 const arr = (v) => (Array.isArray(v) ? v : []);
@@ -44,6 +45,10 @@ export default function VaWizard({ client, onCreated, onFallback, onCancel }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
   const [draft, setDraft] = useState({});
+  // The review step's LAST panel (F-538): what the save itself narrowed, which no turn of
+  // the interview can know because it is computed by the resolver, not by `stepWizard`.
+  // Same rendering the classic form uses, and it holds `onCreated` until it is dismissed.
+  const [saveNotes, setSaveNotes] = useState(null);
   // Every turn carries a token: a slow answer that lands after a newer one must never
   // overwrite the newer turn (the generation-token pattern this app uses for async AI).
   const token = useRef(0);
@@ -76,10 +81,29 @@ export default function VaWizard({ client, onCreated, onFallback, onCancel }) {
     }
     if (t.created && t.va) {
       const saved = await client.saveAgent(t.va);
-      if (saved.success) { showToast("Agent created"); await client.wizardReset(); onCreated(saved.job || null); }
-      else showToast(saved.error || "The agent could not be saved", "error");
+      if (!saved.success) { showToast(saved.error || "The agent could not be saved", "error"); return; }
+      showToast("Agent created");
+      await client.wizardReset();
+      const notes = collectSaveNotes(saved);
+      if (notes.length) { setSaveNotes({ notes, job: saved.job || null }); return; }
+      onCreated(saved.job || null);
     }
   };
+
+  // THE REVIEW STEP'S LAST PANEL. The interview is over and the agent exists; the only
+  // thing left to say is what the save narrowed on its way in. Starting over or going
+  // back would both be lies about an agent that is already stored, so this arm renders
+  // the notes and one dismissal, and nothing else.
+  if (saveNotes) {
+    return (
+      <div className="section va-wizard anim-rise">
+        <div className="section-header"><span className="section-title">Agent created</span></div>
+        <div className="card va-card">
+          <SaveNotes notes={saveNotes.notes} onDismiss={() => { const job = saveNotes.job; setSaveNotes(null); onCreated(job); }} dismissLabel="Got it, show me the agent" />
+        </div>
+      </div>
+    );
+  }
 
   const restart = async () => { await client.wizardReset(); token.current += 1; send({}); };
 

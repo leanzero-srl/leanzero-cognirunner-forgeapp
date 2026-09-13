@@ -48,8 +48,11 @@ export const DUPLICATED_COMPONENTS = [
   // bottom of this file holds equal.
   "MemoriesTab.jsx", "PremadeRuleForm.jsx", "IssuePicker.jsx", "Skeleton.jsx", "toast.js", "refusal.js",
   "capability.js",
-  // 1.4 commit 14b — the field-guide chip is a fourth shared helper of that kind (three homes:
-  // config-ui, admin-panel, issue-glance), gated like capability.js.
+  // 1.4 commit 14b — the field-guide chip is a fourth shared helper of that kind, gated like
+  // capability.js. F-572 gave it a FOURTH home: config-view, the read-only review surface,
+  // which renders provenance and had been left out of the chip when 14b landed. Homes:
+  // config-ui, admin-panel, issue-glance, config-view — the last two held equal by the
+  // explicit block near the bottom of this file, since the walk only sees the pair.
   "FieldGuideChip.jsx",
   "components/editor/*",
 ];
@@ -183,6 +186,27 @@ for (const rel of targets) {
   if (existsSync(glance) && existsSync(pair)) {
     ok(readFileSync(pair).equals(readFileSync(glance)),
       "issue-glance's capability.js is byte-identical to the config-ui/admin-panel pair");
+  }
+}
+
+/* F-572 — THE THIRD AND FOURTH COPIES of FieldGuideChip.jsx. issue-glance and config-view sit
+   outside the APPS walk above, so their copies are held equal here the way capability.js's third
+   home is. Compared by BYTES: all four live at the same import depth
+   (`../../../../src/shared/knowledge-index.js`), so there is nothing to normalise, and the rule
+   the file exists to carry — never print a section id the index cannot name — must not fork. */
+{
+  const chipBase = path.join(ROOT, "static", "config-ui", "src", "components", "FieldGuideChip.jsx");
+  const chipHomes = [
+    path.join(ROOT, "static", "issue-glance", "src", "components", "FieldGuideChip.jsx"),
+    path.join(ROOT, "static", "config-view", "src", "components", "FieldGuideChip.jsx"),
+  ];
+  for (const home of chipHomes) {
+    const rel = path.relative(ROOT, home);
+    ok(existsSync(home), `${rel} exists (FieldGuideChip has four homes)`);
+    if (existsSync(home) && existsSync(chipBase)) {
+      ok(readFileSync(chipBase).equals(readFileSync(home)),
+        `${rel} is byte-identical to the config-ui/admin-panel pair`);
+    }
   }
 }
 

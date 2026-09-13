@@ -27,7 +27,7 @@
  * Run: node refusal-contract.test.mjs
  */
 
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, dirname, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -210,6 +210,34 @@ console.log("F-436 the capability helper obeys the duplication convention");
   ok(capabilityAnswer(undefined) === null && capabilityAnswer(null) === null,
     "F-436 a missing body is transport");
   ok(capabilityAnswer({}) === null, "F-436 a body with no success field is transport");
+}
+
+/* F-572 — THE THIRD HELPER OF THE SAME KIND. FieldGuideChip.jsx names the baked field-guide
+   sections a record was generated with, and its whole reason for being one FILE is the rule
+   that a section id the index cannot name is DROPPED rather than printed — a raw id like
+   `forge-app-builder/forge-app-builder/9c1f/core-forge-concepts-3` leaking into the UI is
+   exactly what a copy that forked would do. It has FOUR homes: components/ in config-ui,
+   admin-panel and issue-glance, and — since F-572 — config-view, which is the READ-ONLY
+   review surface and the one place a reviewer reads provenance after the fact. All four sit
+   at the same import depth, so the comparison is BYTES. */
+console.log("F-572 the field-guide chip obeys the duplication convention across FOUR homes");
+{
+  const homes = [
+    join(STATIC, "config-ui/src/components/FieldGuideChip.jsx"),
+    join(STATIC, "admin-panel/src/components/FieldGuideChip.jsx"),
+    join(STATIC, "issue-glance/src/components/FieldGuideChip.jsx"),
+    join(STATIC, "config-view/src/components/FieldGuideChip.jsx"),
+  ];
+  ok(homes.every((p) => existsSync(p)),
+    `all ${homes.length} homes of FieldGuideChip.jsx exist (${homes.map((p) => relative(ROOT, p)).join(", ")})`);
+  const bodies = homes.filter((p) => existsSync(p)).map((p) => readFileSync(p, "utf8"));
+  ok(bodies.length === homes.length && bodies.every((b) => b === bodies[0]),
+    `all ${homes.length} copies of FieldGuideChip.jsx are byte-identical`);
+
+  /* The rule the shared file carries, asserted on the SOURCE rather than on a rendered chip,
+     so a copy that grew an id fallback fails here instead of in a tenant's rule view. */
+  ok(/titleFor\(id\)/.test(bodies[0]) && !/\|\|\s*id\b/.test(bodies[0]),
+    "F-572 the chip resolves a title and never falls back to printing the raw section id");
 }
 
 /* F-555 — THE PROVIDER-READINESS PREDICATE, pinned here rather than only in a browser

@@ -2996,6 +2996,70 @@ try {
     await closeEditor(env);
   }
 
+  /* ---------------- J23e — F-572: the field guide is provenance in the READ-ONLY view -------
+     config-view's `hasProvenance` tested docs/skills/memories only, so a step generated with
+     the BAKED FIELD GUIDE and nothing else rendered no GENERATED WITH row at all — and that
+     is the DEFAULT shape for a first-time author (no docs picked, no skills bound, memory
+     injection off). The reviewer reading the saved rule was told the code was generated with
+     nothing. The fixture deliberately empties the other three so the row can only be on
+     screen because the guide put it there. */
+  for (const theme of ["light", "dark"]) {
+    console.log(`J23e config-view field-guide provenance (view-static-fieldguide, ${theme})`);
+    const env = await openEditor(browser, "config-view", "view-static-fieldguide", theme);
+    const { page } = env;
+    try {
+      const row = page.locator(".cv-gen-row", { hasText: "GENERATED WITH" }).first();
+      await row.waitFor({ timeout: 8000 });
+      ok(await row.count() > 0, `J23e (${theme}) the GENERATED WITH row renders when the field guide is the ONLY provenance`);
+
+      // The fixture's control: none of the three old chip kinds may be what put the row there.
+      ok(await page.locator(".cv-gen-docs, .cv-gen-skill, .cv-gen-mem").count() === 0,
+        `J23e (${theme}) no docs/skills/memories chip — the row is carried by the guide alone`);
+
+      const chip = row.locator(".gen-meta-chip.gmc-fieldguide").first();
+      ok(await chip.count() === 1, `J23e (${theme}) the shared FieldGuideChip renders inside the row`);
+      const label = await chip.innerText();
+      ok(/Field guide:\s*3 sections/.test(label), `J23e (${theme}) the chip names the count it can resolve (got "${label.replace(/\s+/g, " ").trim()}")`);
+
+      // Collapsed by default, and the expanded list must agree with the count on the chip.
+      ok(await page.locator(".fg-chip-item").count() === 0, `J23e (${theme}) the title list starts collapsed`);
+      ok(await chip.getAttribute("aria-expanded") === "false", `J23e (${theme}) the chip reports its collapsed state`);
+      await chip.click();
+      await page.locator(".fg-chip-item").first().waitFor({ timeout: 4000 });
+      const titles = await page.locator(".fg-chip-item").allInnerTexts();
+      ok(titles.length === 3, `J23e (${theme}) the expanded list has one entry per counted section (got ${titles.length})`);
+      for (const want of [
+        "12. Two agents, one working tree",
+        "17. An Assets object field silently stores nothing until configured in the UI",
+        "4. A silent wrong-issue WRITE hides behind a type check that looks defensive",
+      ]) ok(titles.some((t) => t.trim() === want), `J23e (${theme}) the list names "${want.slice(0, 34)}…"`);
+
+      /* The rule the shared chip exists for: a generated section id is meaningless to a
+         reader and must never reach the screen, not even as a fallback. */
+      const body = await page.locator("body").innerText();
+      ok(!/cognirunner-sandbox-traps\/|jira-rest-correctness\//.test(body),
+        `J23e (${theme}) no raw section id reaches the read-only summary`);
+
+      /* Design: solid saturated hue with its own dark override, NO left accent rail, NO
+         low-alpha tint. Asserted on computed style so a later CSS edit that reaches for
+         either device fails here. */
+      const style = await chip.evaluate((el) => {
+        const cs = getComputedStyle(el);
+        return { background: cs.backgroundColor, color: cs.color, borderLeftWidth: cs.borderLeftWidth, fontWeight: cs.fontWeight };
+      });
+      ok(style.borderLeftWidth === "0px", `J23e (${theme}) no left accent rail on the chip`);
+      ok(/^rgb\(\d+, \d+, \d+\)$/.test(style.background), `J23e (${theme}) the chip fill is a SOLID colour, not an alpha tint (got ${style.background})`);
+      ok(Number(style.fontWeight) >= 600, `J23e (${theme}) the chip carries the 600-700 emphasis weight`);
+      ok(style.background === (theme === "dark" ? "rgb(245, 158, 11)" : "rgb(180, 83, 9)"),
+        `J23e (${theme}) the amber has a dark-mode override (got ${style.background})`);
+      /* Dark takes dark ink on #f59e0b: white on that amber is the one pair in the project
+         hue map that fails contrast, the same exception .pf-test-stale makes. */
+      ok(style.color === (theme === "dark" ? "rgb(42, 22, 2)" : "rgb(255, 255, 255)"),
+        `J23e (${theme}) the ink is the readable one for this fill (got ${style.color})`);
+    } catch (e) { fail++; console.log(`  ✗ J23e (${theme}) threw: ` + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
   /* ---------------- J24 — jira:issueContext "CogniRunner on this issue" glance ---------------- */
   {
     console.log("J24 issue-context glance (issue-glance)");
@@ -3644,22 +3708,22 @@ try {
     try {
       // The summary rows first: the group must read as words, not as a bare rule name.
       const body = await page.locator("body").innerText();
-      ok(/ENG/.test(body), `J23d (${theme}) the summary names the Confluence space`);
-      ok(/title ~ \{issueKey\}/.test(body), `J23d (${theme}) the summary shows the page query`);
-      ok(/fail-open/.test(body), `J23d (${theme}) the summary says what Strict OFF means`);
+      ok(/ENG/.test(body), `J23e (${theme}) the summary names the Confluence space`);
+      ok(/title ~ \{issueKey\}/.test(body), `J23e (${theme}) the summary shows the page query`);
+      ok(/fail-open/.test(body), `J23e (${theme}) the summary says what Strict OFF means`);
 
       await page.locator("button", { hasText: /Show Logs/i }).first().click();
       await page.locator(".log-entry").first().waitFor({ timeout: 8000 });
       await page.locator(".log-banner").first().waitFor({ timeout: 8000 });
-      ok(await page.locator(".log-banner").count() === 1, `J23d (${theme}) exactly the degraded run carries a banner - the clean one does not`);
+      ok(await page.locator(".log-banner").count() === 1, `J23e (${theme}) exactly the degraded run carries a banner - the clean one does not`);
       const bannerText = await page.locator(".log-banner").first().innerText();
-      ok(/Confluence could not be checked/.test(bannerText), `J23d (${theme}) the banner says what happened`);
-      ok(/Turn Strict on/.test(bannerText), `J23d (${theme}) the banner names the remedy`);
-      ok(/unreachable/.test(bannerText), `J23d (${theme}) the banner names WHICH fault it was`);
+      ok(/Confluence could not be checked/.test(bannerText), `J23e (${theme}) the banner says what happened`);
+      ok(/Turn Strict on/.test(bannerText), `J23e (${theme}) the banner names the remedy`);
+      ok(/unreachable/.test(bannerText), `J23e (${theme}) the banner names WHICH fault it was`);
       const bg = await page.locator(".log-banner").first().evaluate((el) => getComputedStyle(el).backgroundColor);
-      ok(bg === (theme === "dark" ? "rgb(59, 130, 246)" : "rgb(29, 78, 216)"), `J23d (${theme}) the banner is a SOLID Confluence-hue fill, not a tint - got ${bg}`);
-      ok(await page.locator(".log-banner").first().evaluate((el) => getComputedStyle(el).borderLeftWidth) === "0px", `J23d (${theme}) the banner has NO left accent rail`);
-    } catch (e) { fail++; console.log(`  ✗ J23d (${theme}) threw: ` + e.message.split("\n")[0]); }
+      ok(bg === (theme === "dark" ? "rgb(59, 130, 246)" : "rgb(29, 78, 216)"), `J23e (${theme}) the banner is a SOLID Confluence-hue fill, not a tint - got ${bg}`);
+      ok(await page.locator(".log-banner").first().evaluate((el) => getComputedStyle(el).borderLeftWidth) === "0px", `J23e (${theme}) the banner has NO left accent rail`);
+    } catch (e) { fail++; console.log(`  ✗ J23e (${theme}) threw: ` + e.message.split("\n")[0]); }
     await closeEditor(env);
   }
 

@@ -131,4 +131,28 @@ const skills = await read("../../src/skills.js");
 ok(!/if \(candidate\.length > capBytes\) break;/.test(skills), "fetchSkillsBlock no longer BREAKS on an oversized skill");
 ok(/skipped\.push\(\{ id: rec\.id, name: rec\.name \}\); continue;/.test(skills), "…it skips it and keeps going, reporting what it skipped");
 
+/* ===== the "skill too large" notice reaches the RUN ROW (F-405) ===== */
+
+// It was written behind `&& log`, and NO caller passed a log — so an author whose skill
+// did not fit the run's byte budget saw a rule that silently ignored it, which is the
+// exact failure fetchSkillsBlock's `skipped` list was added to prevent.
+for (const [name, src] of [["listeners", lst], ["scheduled-jobs", job]]) {
+  ok(/log: \(line\) => knowledgeNotices\.push\(String\(line\)\)/.test(src), `${name}: the run site passes a log into buildAgentKnowledge`);
+  ok(/\.\.\.knowledgeNotices, \.\.\.\(r\.logs \|\| \[\]\)/.test(src), `${name}: …and the notice is PREPENDED to the run's log rows, where the operator reads it`);
+}
+ok(/b\.skipped && b\.skipped\.length && log/.test(lst), "the notice is still written once, in the ONE builder");
+ok(/Skill\(s\) too large for this run's .*-byte budget, not injected/.test(lst),
+  "…and it names the budget and the skills, so the author can act on it");
+
+// The builder really does call the log it is handed — the guard above is now reachable.
+{
+  const notices = [];
+  const { buildAgentKnowledge } = await import("../../src/listeners.js");
+  // No skillIds and no memories: the call must still be harmless and silent. The notice
+  // path itself is covered by skills-store.test.mjs's `skipped` assertions; what is new
+  // here is that a log ARRIVES, which is what F-405 was.
+  const out = await buildAgentKnowledge({ instructions: "x" }, { log: (l) => notices.push(l) });
+  ok(out && typeof out === "object" && notices.length === 0, "a run with nothing to inject logs nothing (the notice is for real skips only)");
+}
+
 console.log(`agent-knowledge: ${n} passed, 0 failed`);

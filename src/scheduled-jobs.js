@@ -388,7 +388,10 @@ export const runJob = async ({ job, scheduledFor = null, missed = 0, manual = fa
       // scoped job walks issues from different projects. The skills half is identical
       // across them; paying one extra KVS read per issue is the cost of not injecting
       // project A's learned facts while acting on project B's issue.
-      const knowledge = await buildAgentKnowledge(job.agent, { projectKey: extraContext.projectKey, audience: "agentRun" });
+      // Same as the listener run site (F-405): the "skill too large, not injected" notice
+      // had no caller passing a log, so it was never written anywhere at all.
+      const knowledgeNotices = [];
+      const knowledge = await buildAgentKnowledge(job.agent, { projectKey: extraContext.projectKey, audience: "agentRun", log: (line) => knowledgeNotices.push(String(line)) });
       // The allowance the agent gets is what is LEFT of the run's budget.
       const r = await runAgentTask({ instructions: job.agent.instructions, allowedActions: job.agent.allowedActions, maxRounds: job.agent.maxRounds, issueKey, config, contextTitle: "JOB CONTEXT", contextText: summarizeJobForAi(job, scheduledFor, issue), deadline: perDeadline, cancelToken, extraContext, gate: agentGate, executors, knowledge, maxWrites: Math.max(0, maxWrites - writesDone), webRunBudget });
       // NO STAMP HERE (F-402). Reaching the limit is not the same as being STOPPED by it:
@@ -396,7 +399,7 @@ export const runJob = async ({ job, scheduledFor = null, missed = 0, manual = fa
       // braked, with "the remaining work was not done" on a run where none remained. The
       // brake is stamped where work is actually SKIPPED — the between-issue check below,
       // and the dispatcher's own refusal — so the word means what it says.
-      return { issueKey, ...agentResultFields(r, { summaryMaxBytes: job.scope ? Math.floor(SCOPED_AGENT_SUMMARY_BUDGET_BYTES / MAX_SCOPE_ISSUES) : null }), success: r.success, reason: r.success ? `${r.outcome}: ${r.summary || ""}` : (r.error || "agent failed"), changes: r.changes || [], logs: r.logs || [], tokens: r.tokens || 0, aiTimeMs: r.aiTimeMs || 0 };
+      return { issueKey, ...agentResultFields(r, { summaryMaxBytes: job.scope ? Math.floor(SCOPED_AGENT_SUMMARY_BUDGET_BYTES / MAX_SCOPE_ISSUES) : null }), success: r.success, reason: r.success ? `${r.outcome}: ${r.summary || ""}` : (r.error || "agent failed"), changes: r.changes || [], logs: [...knowledgeNotices, ...(r.logs || [])], tokens: r.tokens || 0, aiTimeMs: r.aiTimeMs || 0 };
     }
     // STEP MODE IS BRAKED TOO (F-402). The cap used to reach the agent dispatcher and the
     // between-issue check and nothing else, so one step-mode issue could write a thousand

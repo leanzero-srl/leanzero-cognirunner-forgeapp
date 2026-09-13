@@ -1267,7 +1267,13 @@ export const runListener = async ({ listener, eventType, event, ctx, deadline = 
       : undefined;
     // Knowledge is built by the CALLER (1.4 commit 13b): only here do we know the rule's
     // binding and the run's project. Fail-open — see buildAgentKnowledge.
-    const knowledge = await buildAgentKnowledge(listener.agent, { projectKey: ctx.projectKey || (extraContext && extraContext.projectKey) || null, audience: "agentRun" });
+    // The knowledge builder's "skill too large, not injected" notice needs somewhere to
+    // land (F-405): it was guarded by `&& log` and NO caller passed one, so an author whose
+    // skill did not fit the run's byte budget saw a listener that simply ignored it, with
+    // nothing anywhere to say why. These lines are prepended to the run's log rows below,
+    // because that is the row the operator opens.
+    const knowledgeNotices = [];
+    const knowledge = await buildAgentKnowledge(listener.agent, { projectKey: ctx.projectKey || (extraContext && extraContext.projectKey) || null, audience: "agentRun", log: (line) => knowledgeNotices.push(String(line)) });
     const r = await runAgentTask({
       instructions: listener.agent.instructions, allowedActions: listener.agent.allowedActions, maxRounds: listener.agent.maxRounds,
       issueKey: ctx.issueKey || null, config, contextTitle: "EVENT", contextText: summarizeEventForAi(eventType, event, ctx),
@@ -1284,7 +1290,7 @@ export const runListener = async ({ listener, eventType, event, ctx, deadline = 
         ...agentResultFields(r),
         isValid: r.success, reason: r.success ? `Agent ${r.outcome}: ${r.summary || "(no summary)"}` : `Agent failed: ${r.error || r.summary || "unknown"}`,
         recommendation: r.success ? undefined : "Open the listener, review the instructions and allowed actions, then use 'Test with an issue' to reproduce.",
-        tokens: r.tokens, aiTimeMs: r.aiTimeMs, changes: (r.changes || []).slice(0, 20), logs: (r.logs || []).slice(-60).map((s) => String(s).slice(0, 300)),
+        tokens: r.tokens, aiTimeMs: r.aiTimeMs, changes: (r.changes || []).slice(0, 20), logs: [...knowledgeNotices, ...(r.logs || [])].slice(-60).map((s) => String(s).slice(0, 300)),
         toolCalls: r.toolCalls, rounds: r.rounds, gateReason: gate ? gate.reason : undefined,
       }),
     };

@@ -472,6 +472,20 @@ the generated checker because that file is standalone in a customer's repository
 import nothing; `git-scaffolds.test.mjs` holds the two regex literals byte-equal so the two
 homes cannot drift apart.
 
+**Re-running setup (F-533).** Setting a pipeline secret or variable is an **upsert on both
+hosts** — the resolver's "validate everything, then queue" story only holds if a second run
+of the same setup does the same thing. GitHub was already idempotent (POST, then PATCH by
+name on 409). Bitbucket only ever POSTed, so the second `setupGitPipeline` for one
+repository died at the very first step with HTTP 409
+`variable-service.variable.duplicate` and left the row `status: "partial"` — for a repo
+whose deploy credential the first run had already installed. Bitbucket has no update-by-key:
+the update is `PUT .../pipelines_config/variables/{uuid}` and the uuid is only discoverable
+by listing, so the adapter POSTs first (one call in the common case) and lists-then-PUTs only
+when the POST says the key is taken. Listing first would cost a call on every write and walk
+into the collection's eventual consistency (F-534). When the 409 arrives but the key is not
+in the list yet — a real state, for exactly that reason — the adapter refuses with
+`conflict` and says to re-run, rather than writing to a uuid it did not read.
+
 **Which branch triggers a deploy (F-531).** Both scaffolds trigger on **`main` and
 `master`**, on both hosts. A repository CogniRunner creates on Bitbucket comes back with
 `mainbranch.name = "master"` (live, the offshoot's `-bb` repo) while the committed

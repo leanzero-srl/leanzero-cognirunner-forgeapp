@@ -1394,6 +1394,38 @@ function bitbucketAdapter({ auth, fetchImpl, timeoutMs, sleepImpl }) {
     return "/repositories/" + enc(owner) + "/" + enc(name);
   };
 
+  /**
+   * The one implementation behind `setSecret` and `setVariable` — see the contract note on
+   * `setSecret` below for why this exists and why it POSTs before it lists.
+   */
+  async function upsertPipelineVariable(operation, repo, name, value, secured) {
+    registerSecret(value);
+    const base = repoPath(repo, operation) + "/pipelines_config/variables";
+    const body = { key: name, value: String(value == null ? "" : value), secured };
+    try {
+      const { data } = await client.json(operation, "POST", base, body);
+      return { name, id: (data && data.uuid) || null, secured, created: true };
+    } catch (e) {
+      if (!(e instanceof GitProviderError) || e.code !== "conflict") throw e;
+      // The key is taken. Find its uuid and PUT — Bitbucket has no update-by-key.
+      const { data } = await client.json(operation, "GET", base + "/?pagelen=" + LIST_PAGE_SIZE);
+      const rows = data && Array.isArray(data.values) ? data.values : [];
+      const existing = rows.find((r) => r && r.key === name);
+      if (!existing || !existing.uuid) {
+        // F-534: the collection is eventually consistent, so "409 but not in the list" is a
+        // real state. Say so and stop; do not write to a uuid we did not read.
+        throw new GitProviderError(
+          "conflict",
+          operation + ': "' + name + '" already exists on this repository but did not come back in the ' +
+            "variables list yet (Bitbucket's pipeline variables are eventually consistent) — re-run the setup",
+          { provider: "bitbucket", operation }
+        );
+      }
+      const updated = await client.json(operation, "PUT", base + "/" + enc(existing.uuid), body);
+      return { name, id: (updated.data && updated.data.uuid) || existing.uuid, secured, created: false };
+    }
+  }
+
   function mapRepo(d) {
     return {
       kind: "bitbucket",
@@ -1739,29 +1771,37 @@ function bitbucketAdapter({ auth, fetchImpl, timeoutMs, sleepImpl }) {
       return { id: data && data.uuid, url, events };
     },
 
-    /** Bitbucket takes the plaintext and stores it secured — no sealed box. */
+    /**
+     * F-533 — SETTING A PIPELINE VARIABLE IS AN UPSERT, ON BOTH HOSTS.
+     *
+     * `setSecret` / `setVariable` are ONE contract with two adapters, and this one did not
+     * honour it: GitHub's half is PUT/POST-then-PATCH by name and is idempotent, while
+     * Bitbucket only ever POSTed. A second `setupGitPipeline` for the same repository
+     * therefore died at the very first step with HTTP 409
+     * `variable-service.variable.duplicate` ("A variable with the key provided already
+     * exists for repository …"), leaving the row `status:"partial"` — for a repo whose
+     * deploy credential the first run had already installed. Live, 2026-09-13, with a 201
+     * on the identical POST for a key that did not yet exist as the same-object control.
+     *
+     * Bitbucket has no upsert verb: an update is `PUT .../variables/{uuid}`, and the uuid
+     * is only discoverable by listing. So the shape is POST first (the common case, one
+     * call) and list-then-PUT only when the POST says the key is taken. Listing first would
+     * cost a call on every write AND walk into F-534 — Bitbucket's variables collection is
+     * eventually consistent and a read straight after a write can come back short.
+     *
+     * That same eventual consistency is why the 409-then-miss case is a NAMED refusal
+     * rather than a silent retry loop: the key demonstrably exists (the 409 proves it) but
+     * the list has not caught up, and the honest answer is "re-run", not a write to a uuid
+     * we guessed.
+     */
     async setSecret({ repo, name, value }) {
       requireArg("bitbucket", "setSecret", "name", name);
-      registerSecret(value);
-      const { data } = await client.json(
-        "setSecret",
-        "POST",
-        repoPath(repo, "setSecret") + "/pipelines_config/variables",
-        { key: name, value: String(value == null ? "" : value), secured: true }
-      );
-      return { name, id: (data && data.uuid) || null, secured: true };
+      return upsertPipelineVariable("setSecret", repo, name, value, true);
     },
 
     async setVariable({ repo, name, value }) {
       requireArg("bitbucket", "setVariable", "name", name);
-      registerSecret(value);
-      const { data } = await client.json(
-        "setVariable",
-        "POST",
-        repoPath(repo, "setVariable") + "/pipelines_config/variables",
-        { key: name, value: String(value == null ? "" : value), secured: false }
-      );
-      return { name, id: (data && data.uuid) || null, secured: false };
+      return upsertPipelineVariable("setVariable", repo, name, value, false);
     },
 
     async enablePipelines({ repo, enabled = true }) {

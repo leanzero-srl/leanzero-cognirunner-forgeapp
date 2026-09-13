@@ -770,6 +770,7 @@ try {
         } finally { await close(env); }
       }
     }
+  }
 
   /* ---------- A15 the SAVE's own notes reach the admin, on both doors (F-538) ---------- */
   /*

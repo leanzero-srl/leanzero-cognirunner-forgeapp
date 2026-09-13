@@ -174,6 +174,9 @@ export const VA_SERVICE_DESKS_MAX = 10;
 export const VA_QUEUES_PER_DESK_MAX = 20;
 export const VA_PROJECTS_MAX = 50;
 export const VA_PROJECT_KEY_RE = /^[A-Z][A-Z0-9_]{1,9}$/;
+/** Confluence space keys are wider than Jira project keys (personal spaces start `~`). */
+export const VA_SPACE_KEY_RE = /^[A-Z0-9_~][A-Z0-9_~.-]{0,60}$/;
+export const VA_CONFLUENCE_SPACES_MAX = 20;
 /** An accountId shape wide enough for Atlassian's `:`-separated ids, and nothing wilder. */
 const ACCOUNT_ID_RE = /^[a-zA-Z0-9:_.\-|]{1,128}$/;
 const HHMM_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -219,6 +222,7 @@ export const VA_DEFAULTS = Object.freeze({
     replyPublic: false, replyInternal: true, assign: false, transition: false, editFields: false,
     confluenceRead: false, confluenceWrite: false, git: false, webSearch: false,
     skillIds: Object.freeze([]),
+    confluenceSpaces: Object.freeze([]),
   }),
   guardrails: Object.freeze({
     capsPerHour: VA_CAPS_PER_HOUR_DEFAULT,
@@ -440,7 +444,7 @@ export const normalizeVa = (raw, ctx = {}) => {
   const powers = {};
   for (const k of VA_POWERS) powers[k] = bool(rawPowers[k], VA_DEFAULTS.powers[k]);
   for (const k of Object.keys(rawPowers)) {
-    if (k === "skillIds" || VA_POWERS.includes(k)) continue;
+    if (k === "skillIds" || k === "confluenceSpaces" || VA_POWERS.includes(k)) continue;
     report(`powers.${k}`, `"${k}" is not a power a Virtual Administrator has, so it was dropped. Configuration changes in particular have no action at all — the agent can only propose them.`);
   }
   const skillIds = [];
@@ -453,6 +457,38 @@ export const normalizeVa = (raw, ctx = {}) => {
     skillIds.push(id);
   }
   powers.skillIds = skillIds;
+
+  /* — powers.confluenceSpaces: THE WRITE ALLOW-LIST FOR CONFLUENCE (1.5 commit 4c) — */
+  //
+  // WHY A SPACE LIST AND NOT THE PROJECT SCOPE. `scope.write.projects` answers "which
+  // Jira projects may this agent change"; a Confluence page is in a SPACE and has no
+  // project, so asking the Jira question of it would make every Confluence write
+  // unresolvable and therefore permanently refused. The two allow-lists are different
+  // questions about different products and each is enforced where it can be answered:
+  // `assertWriteScope` for Jira, this list for Confluence (src/confluence-actions.js).
+  //
+  // AN EMPTY LIST MEANS NO CONFLUENCE WRITES, never all of them — the same restrictive
+  // reading of an absent value as `vaWriteScope`'s empty project list. Turning
+  // `confluenceWrite` on without naming a space gives the agent the tools and a refusal
+  // it can read, rather than the run of the wiki.
+  //
+  // READS ARE NOT SCOPED BY IT. A read changes nothing and is already bounded by what
+  // the app itself can see in Confluence.
+  const confluenceSpaces = [];
+  for (const sp of asArray(rawPowers.confluenceSpaces)) {
+    const key = String(isObj(sp) ? sp.key : sp).trim().toUpperCase();
+    if (!key || !VA_SPACE_KEY_RE.test(key)) { report("powers.confluenceSpaces", `"${String(isObj(sp) ? sp.key : sp).slice(0, 30)}" is not a Confluence space key, so it was dropped.`); continue; }
+    if (confluenceSpaces.includes(key)) continue;
+    if (confluenceSpaces.length >= VA_CONFLUENCE_SPACES_MAX) { report("powers.confluenceSpaces", `An agent may write in at most ${VA_CONFLUENCE_SPACES_MAX} Confluence spaces, so ${key} was dropped.`); continue; }
+    confluenceSpaces.push(key);
+  }
+  powers.confluenceSpaces = confluenceSpaces;
+  if (powers.confluenceWrite === true && !confluenceSpaces.length) {
+    // NOT a refused save: the wizard sets the power and the spaces in two steps, and a
+    // save that failed between them would be unrecoverable. It is a REPORTED clamp with
+    // a named consequence, and the executor refuses every write until a space is named.
+    report("powers.confluenceSpaces", "Confluence writing is on but no space is named, so this agent can read Confluence and cannot write to it. Name the spaces it may write in.");
+  }
 
   /* — guardrails — */
   const g = isObj(src.guardrails) ? src.guardrails : {};
@@ -576,6 +612,26 @@ export const renderGuardrailSentences = (va) => {
  * It deliberately does NOT carry the read scope: intake can never widen what may be
  * written, and a single object holding both is how that would happen by accident.
  */
+/**
+ * THE CONFLUENCE WRITE ALLOW-LIST, read from the record. The sibling of `vaWriteScope`,
+ * and deliberately a SEPARATE function rather than a field on the same object: one
+ * object holding both would eventually be passed to a gate that only understands one of
+ * them, and the half it did not understand would read as "unscoped".
+ *
+ * `confluenceWrite` off ⇒ the empty list, whatever the record names. The power is the
+ * first gate and the spaces are the second; a list left behind by a power that was later
+ * switched off must not still authorise anything.
+ */
+export const vaConfluenceSpaces = (va) => {
+  const r = isObj(va) ? va : {};
+  const p = isObj(r.powers) ? r.powers : {};
+  if (p.confluenceWrite !== true) return [];
+  const keys = asArray(p.confluenceSpaces)
+    .map((k) => String(isObj(k) ? k.key : k).trim().toUpperCase())
+    .filter((k) => VA_SPACE_KEY_RE.test(k));
+  return [...new Set(keys)];
+};
+
 export const vaWriteScope = (va) => {
   const r = isObj(va) ? va : {};
   const scope = isObj(r.scope) ? r.scope : {};

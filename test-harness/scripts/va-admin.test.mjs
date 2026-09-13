@@ -312,6 +312,11 @@ let agentId = null;
   ok(pushed.length === before, "…and APPROVING PUSHED NOTHING — the post phase is the only thing that delivers a draft");
   const row = await storage.get(`va_item:${agentId}:SUP-1`);
   ok(row && row.state === "staged", "…the draft is still staged (approve is a recorded decision, never a bypass)");
+  // F-464: the verdict is STAMPED ON THE DRAFT, which is what the post phase's shadow
+  // gate reads to let it out. Without it, Approve wrote a note and the draft went nowhere.
+  ok(row && row.staged && row.staged.approvedBy, "approve stamps approvedBy on the draft (F-464)");
+  ok(row && row.staged && row.staged.approvedAt, "…and approvedAt");
+  ok(row && row.staged && row.staged.body, "…and the draft's WORDS are untouched");
   ok(row && /approved/.test(String(row.notes)) && (row.history || []).some((h) => h.event === "approved"),
     `…and the verdict is durable on notes + history (got ${JSON.stringify(row && { notes: row.notes, history: row.history }).slice(0, 240)})`);
 

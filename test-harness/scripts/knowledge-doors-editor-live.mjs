@@ -20,8 +20,19 @@
  * scope:"own"} THROUGH THE PRODUCT'S OWN ROSTER SURFACE — the admin panel's Permissions
  * tab, which invokes `addAppAdmin` — because neither `addAppAdmin` nor `updateUserRole`
  * is on the hook's allow-list and `app_admins` is not a kvSet key. Playwright drives the
- * real UI under the persistent admin profile. The roster is snapshotted before and
- * restored through the same UI afterwards, and the restore is proven by a second read.
+ * real UI under the persistent admin profile.
+ *
+ * THE ACCOUNT IS PICKED BY ITS ACCOUNT ID, NEVER BY POSITION (F-654). Three site accounts
+ * are called "Mihai Perdum" and the search order is not stable; this script used to click
+ * a candidate and find out afterwards whether it had hit the target, which meant a real
+ * stranger held an app role for the seconds in between. It now reads the F-647
+ * `.perm-ident-id` title off each row and clicks only the row whose FULL account id
+ * matches — and if no row can be identified, it clicks NOTHING and reports N/V.
+ *
+ * THE ROSTER IS SNAPSHOTTED BEFORE AND RESTORED BY DIFF AFTERWARDS, unconditionally, in
+ * the `finally`: every row absent from the snapshot is removed whoever added it, every
+ * row the run lost is re-added with its snapshot role and scope, and a second read proves
+ * both the byte-identical restore and the absence of ANY stray grant.
  *
  * WHAT IT REFUSES TO RISK (F-639). The "colleague's document" is a THROWAWAY created by
  * this run through the Documentation tab, never one of the tenant's real docs: the doc
@@ -34,6 +45,9 @@
 import fs from "node:fs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
 import { redactSecrets, redactString } from "../lib/redact.mjs";
+import {
+  rosterIdOf, idTail, selectByDiscriminator, planRosterRestore, rosterRestoreVerdict, describePlan,
+} from "../lib/roster-restore.mjs";
 
 const env = loadEnv();
 const arg = (n, d) => { const h = process.argv.slice(2).find((a) => a.startsWith(`--${n}=`)); return h ? h.slice(n.length + 3) : d; };
@@ -121,85 +135,168 @@ async function createThrowawayDoc(title) {
   });
 }
 
-/** The app roster, as ids, straight from KVS. */
-const rosterIds = async () => ((await kvs("app_admins"))?.value || []).map((r) => (typeof r === "string" ? r : r.accountId));
+/* ═══════════════════════════════════════════════════════════════════════════════
+ * F-654 — THE ROSTER, DRIVEN BY DISCRIMINATOR AND RESTORED BY DIFF.
+ *
+ * WHAT WAS HERE BEFORE, AND WHY IT IS GONE. This file used to grant the role with a
+ * "loop with a ledger": click the nth enabled search row, read `app_admins`, and if the
+ * id that appeared was the wrong "Mihai Perdum", remove it and try n+1. MEASURED live on
+ * dev 2026-09-14: `[{hitTarget:false},{hitTarget:true}]` — a REAL wrong account held
+ * {role:"editor",scope:"own"} for the seconds between the click and the read, every run.
+ * The `finally` restored only EDITOR, so a Playwright timeout or a killed process in that
+ * window left the stray grant on the tenant permanently.
+ *
+ * It existed because the search rows carried no account id. F-647 fixed that: every row
+ * and every card now renders `.perm-ident-id` whose `title` is the FULL `557058:<uuid>`.
+ * So the target is identifiable BEFORE the click, and the loop is not a workaround any
+ * more — it is just a way to grant roles to the wrong people.
+ *
+ * THE RULE NOW: one click, on a row identified by its discriminator, or NO CLICK AT ALL.
+ * `selectByDiscriminator` (lib/roster-restore.mjs) never guesses and never falls back to
+ * the display name; when it cannot identify the target the step is NOT VERIFIED. An N/V
+ * costs a re-run. A grant on a stranger's account costs trust.
+ *
+ * AND THE RESTORE IS A DIFF, NOT AN UNDO. `restoreRosterToSnapshot` reads the roster,
+ * diffs it against the raw pre-run snapshot, removes EVERY row that is not in the
+ * snapshot (whoever put it there), re-adds every row the run lost, and proves it with a
+ * second read. It runs in the `finally` UNCONDITIONALLY — not behind `if (granted)` —
+ * because the state that needs repairing is the state on the tenant, not the state we
+ * think we caused.
+ * ═══════════════════════════════════════════════════════════════════════════════ */
+
+const ROLE_LABEL = { viewer: /^Viewer/, editor: /^Editor/, admin: /^Admin/ };
+const SCOPE_LABEL = { own: /^Own Rules/, all: /^All Rules/ };
+
+/** The app roster, raw rows, straight from KVS. Held in memory; never written unredacted. */
+const rosterRows = async () => (await kvs("app_admins"))?.value || [];
+const rosterIds = async () => (await rosterRows()).map(rosterIdOf);
+
+/** Open the Permissions tab and read every search/roster element's discriminator. */
+async function readRows(frame, sel) {
+  const rows = frame.locator(sel);
+  const n = await rows.count();
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const r = rows.nth(i);
+    const idEl = r.locator(".perm-ident-id");
+    const hasId = (await idEl.count()) > 0;
+    out.push({
+      i,
+      disabled: ((await r.getAttribute("class")) || "").includes("perm-search-disabled"),
+      idShown: hasId ? (await idEl.first().innerText()).trim() : null,
+      idTitle: hasId ? await idEl.first().getAttribute("title") : null,
+    });
+  }
+  return out;
+}
 
 /**
- * Remove the roster card at POSITION i. Position, not name: this site has THREE accounts
- * whose display name is "Mihai Perdum" and their cards are textually identical, so a
- * name match could remove the wrong person — including an admin. The Permissions list
- * renders `users` in roster order, so the KVS index and the card index are the same.
+ * Grant `{role, scope}` to `accountId` through the Permissions tab — by DISCRIMINATOR.
+ * Returns { ok } on a verified grant, { notFound, reason } when the target row cannot be
+ * identified (the caller's N/V), and NEVER clicks a row it has not identified.
  */
-async function removeRosterIndex(i) {
-  return withAdminPanel(async (page, frame) => {
+async function grantRole(accountId, role, scope, queries) {
+  const qs = (queries && queries.length ? queries : ["Mihai"]).concat([idTail(accountId)]);
+  for (const q of qs) {
+    const r = await withAdminPanel(async (page, frame) => {
+      await frame.locator(".tab-btn", { hasText: /^\s*Permissions\s*$/ }).click();
+      await frame.locator(".perm-search-input").waitFor({ state: "visible", timeout: 60000 });
+      await frame.locator(".perm-search-wrap .dropdown").nth(0).click();
+      await frame.locator(".dropdown-item-name", { hasText: ROLE_LABEL[role] || ROLE_LABEL.editor }).first().click();
+      await sleep(500);
+      await frame.locator(".perm-search-wrap .dropdown").nth(1).click();
+      await frame.locator(".dropdown-item-name", { hasText: SCOPE_LABEL[scope] || SCOPE_LABEL.all }).first().click();
+      await sleep(400);
+      await frame.locator(".perm-search-input").fill(q);
+      await sleep(4500);
+      const rows = await readRows(frame, ".perm-search-item");
+      const pick = selectByDiscriminator(rows, accountId);
+      if (pick.index < 0) return { clicked: false, rows: rows.length, reason: pick.reason, disabledHit: !!pick.disabledHit };
+      /* THE ONE CLICK. It happens only on a row whose FULL account id was read first. */
+      await frame.locator(".perm-search-item").nth(pick.index).click();
+      await sleep(4500);
+      await page.screenshot({ path: `${OUT}/02-roster-granted.png` }).catch(() => {});
+      return { clicked: true, rows: rows.length, how: pick.how, index: pick.index };
+    });
+    if (r.disabledHit) return { ok: true, alreadyPresent: true, query: q };
+    if (r.clicked) {
+      /* SECOND READ: the product's own storage, not the click's return value. */
+      const row = (await rosterRows()).find((x) => rosterIdOf(x) === accountId);
+      if (row && row.role === role && (row.scope === scope || scope === undefined)) return { ok: true, how: r.how, index: r.index, query: q };
+      return { ok: false, reason: `the click landed but the roster row is ${JSON.stringify(row ? { role: row.role, scope: row.scope } : null)}` };
+    }
+    // Not on this query's result page — try the next query before giving up.
+  }
+  return { ok: false, notFound: true, reason: `the target row was never identified across queries ${JSON.stringify(qs)}` };
+}
+
+/**
+ * Remove `accountId` from the roster by its DISCRIMINATOR, never by position.
+ * The positional fallback survives only for a build with no `.perm-ident-id` at all, and
+ * it refuses to act when more than one card could be the target.
+ */
+async function removeAccount(accountId) {
+  const r = await withAdminPanel(async (page, frame) => {
     await frame.locator(".tab-btn", { hasText: /^\s*Permissions\s*$/ }).click();
     await frame.locator(".perm-admin-card").first().waitFor({ state: "visible", timeout: 60000 });
     await sleep(1500);
-    const card = frame.locator(".perm-admin-card").nth(i);
-    const text = (await card.innerText()).replace(/\s+/g, " ");
+    const cards = await readRows(frame, ".perm-admin-card");
+    let pick = selectByDiscriminator(cards, accountId, { allowDisabled: true });
+    if (pick.index < 0 && cards.every((c) => !c.idTitle && !c.idShown)) {
+      /* No discriminator anywhere on this build: fall back to the KVS index, which the
+         list renders in roster order. Recorded explicitly so it is never invisible. */
+      const idx = (await rosterIds()).indexOf(accountId);
+      if (idx >= 0 && idx < cards.length) pick = { index: idx, how: "kvs-position (no chip on this build)" };
+    }
+    if (pick.index < 0) return { removed: false, reason: pick.reason, cards: cards.length };
+    const card = frame.locator(".perm-admin-card").nth(pick.index);
     await card.locator(".perm-remove-btn").click();
     await frame.locator(".cr-confirm").waitFor({ state: "visible", timeout: 15000 });
     await frame.locator(".cr-confirm-actions button", { hasText: /^\s*Remove\s*$/ }).first().click();
     await sleep(3500);
-    await page.screenshot({ path: `${OUT}/03-roster-restore-${i}.png` }).catch(() => {});
-    return { index: i, card: text };
+    await page.screenshot({ path: `${OUT}/03-roster-restore-${idTail(accountId).slice(0, 8)}.png` }).catch(() => {});
+    return { removed: true, how: pick.how, index: pick.index };
   });
+  if (!r.removed) return r;
+  const gone = !(await rosterIds()).includes(accountId);   // SECOND READ
+  return { removed: gone, how: r.how, index: r.index, ...(gone ? {} : { reason: "the card was clicked but the row is still in app_admins" }) };
 }
 
 /**
- * Grant {editor, own} to EDITOR through the Permissions tab.
- *
- * THE SEARCH ROWS CARRY NO ACCOUNT ID, and three site accounts share the display name
- * "Mihai Perdum" — the first run of this script added the WRONG one because the search
- * order is not stable. So the grant is a LOOP WITH A LEDGER: click a candidate, read the
- * roster, and if the id that appeared is not the one under test, remove it again (by
- * position) and try the next candidate. Nothing is left behind either way.
+ * Make the roster identical to `snapshot` again: remove every stray, re-add every row the
+ * run lost, restore every changed row. Driven by the DIFF, so it repairs damage this run
+ * never recorded causing. Returns the actions taken and the final verdict.
  */
-async function grantEditorOwn() {
-  const attempts = [];
-  for (let attempt = 0; attempt < 4; attempt++) {
-    const before = await rosterIds();
-    const r = await withAdminPanel(async (page, frame) => {  // eslint-disable-line
-      await frame.locator(".tab-btn", { hasText: /^\s*Permissions\s*$/ }).click();
-      await frame.locator(".perm-search-input").waitFor({ state: "visible", timeout: 60000 });
-      const roleSel = frame.locator(".perm-search-wrap .dropdown");
-      await roleSel.nth(0).click();
-      await frame.locator(".dropdown-item-name", { hasText: /^Editor/ }).first().click();
-      await sleep(500);
-      await frame.locator(".perm-search-wrap .dropdown").nth(1).click();
-      await frame.locator(".dropdown-item-name", { hasText: /^Own Rules/ }).first().click();
-      await sleep(400);
-      await frame.locator(".perm-search-input").fill("Mihai");
-      await sleep(4000);
-      const rows = frame.locator(".perm-search-item");
-      const n = await rows.count();
-      /* Skip the candidates earlier attempts already tried: a removed account becomes
-         clickable again in the SAME position, so "the first enabled row" is the same
-         wrong person every time. */
-      let skipped = 0;
-      for (let i = 0; i < n; i++) {
-        const cls = (await rows.nth(i).getAttribute("class")) || "";
-        if (cls.includes("perm-search-disabled")) continue;   // already on the roster
-        if (skipped++ < attempt) continue;
-        await rows.nth(i).click();
-        await sleep(4500);
-        await page.screenshot({ path: `${OUT}/02-roster-granted.png` }).catch(() => {});
-        return { clicked: true, candidates: n };
-      }
-      return { clicked: false, candidates: n };
-    });
-    const after = await rosterIds();
-    const added = after.filter((id) => !before.includes(id));
-    attempts.push({ attempt, clicked: r.clicked, candidates: r.candidates, added });
-    if (added.includes(EDITOR)) return { ok: true, attempts };
-    if (!r.clicked || added.length === 0) return { ok: false, attempts };
-    // The wrong account: put the roster back before trying the next candidate.
-    for (const id of added) {
-      const idx = (await rosterIds()).indexOf(id);
-      if (idx >= 0) await removeRosterIndex(idx);
+async function restoreRosterToSnapshot(snapshot) {
+  const actions = [];
+  for (let pass = 0; pass < 4; pass++) {
+    const plan = planRosterRestore(snapshot, await rosterRows());
+    if (plan.clean) return { ok: true, actions, verdict: "byte-identical" };
+    /* Strays first: a wrong grant is the thing that must not survive this process. */
+    for (const row of plan.strays) {
+      const id = rosterIdOf(row);
+      const r = await removeAccount(id);
+      actions.push({ act: "remove-stray", id: idTail(id), ...r });
     }
+    /* A changed row is put back by removing it and re-granting the snapshot's role. */
+    for (const c of plan.changed) {
+      const r1 = await removeAccount(c.accountId);
+      actions.push({ act: "remove-changed", id: idTail(c.accountId), ...r1 });
+      if (r1.removed) {
+        const r2 = await grantRole(c.accountId, c.before.role, c.before.scope, [c.before.displayName, c.before.emailAddress].filter(Boolean));
+        actions.push({ act: "readd-changed", id: idTail(c.accountId), ok: !!r2.ok, reason: r2.reason });
+      }
+    }
+    /* Re-add anything the run removed that the snapshot had. */
+    for (const row of plan.missing) {
+      const id = rosterIdOf(row);
+      const r = await grantRole(id, row.role || "viewer", row.scope || "all", [row.displayName, row.emailAddress].filter(Boolean));
+      actions.push({ act: "readd-missing", id: idTail(id), ok: !!r.ok, reason: r.reason });
+    }
+    if (plan.sameSet) break;   // only the ORDER differs; no click can fix that
   }
-  return { ok: false, attempts };
+  const v = rosterRestoreVerdict(snapshot, await rosterRows());
+  return { ok: v.ok, actions, verdict: v.verdict, plan: describePlan(v.plan) };
 }
 
 async function main() {
@@ -266,14 +363,28 @@ async function main() {
     if (docId && mine.createdBy === ADMIN) PASS("the throwaway document exists and is authored by the ADMIN — a genuine colleague's row for the editor", { id: docId });
     else { FAIL("the throwaway document was not created — the doc probes cannot run safely", { found: JSON.stringify(mine || null).slice(0, 160) }); }
 
-    const g = await grantEditorOwn();
-    info(`roster grant attempts: ${JSON.stringify(g.attempts.map((a) => ({ candidates: a.candidates, addedCount: a.added.length, hitTarget: a.added.includes(EDITOR) })))}`);
-    const rosterAfter = (await kvs("app_admins"))?.value || [];
-    const row = rosterAfter.find((r) => (typeof r === "string" ? r : r.accountId) === EDITOR);
+    /* F-654 — ONE grant, on a row identified by its FULL account id before the click.
+       There is no attempt loop any more: if the discriminator cannot name the target,
+       nothing is clicked and the run is NOT VERIFIED from here on. */
+    const g = await grantRole(EDITOR, "editor", "own", ["Mihai"]);
+    info(`roster grant: ${JSON.stringify({ ok: !!g.ok, how: g.how, rowIndex: g.index, alreadyPresent: !!g.alreadyPresent, notFound: !!g.notFound })}`);
+    ev.grant = { ok: !!g.ok, how: g.how, index: g.index, notFound: !!g.notFound, reason: g.reason };
+    if (g.notFound) {
+      NV("the target account's search row could not be identified by its discriminator — NOTHING was clicked, so no namesake was granted a role", { reason: String(g.reason).slice(0, 220) });
+      return;
+    }
+    const rosterAfter = await rosterRows();
+    const row = rosterAfter.find((r) => rosterIdOf(r) === EDITOR);
     granted = Boolean(row);
     ev.rosterAfterGrant = rosterAfter;
+    /* THE PROOF THAT THE OLD LOOP COULD NEVER GIVE: the roster gained EXACTLY the account
+       under test and nothing else. A namesake grant would show up here as a second row. */
+    const gainedNow = planRosterRestore(rosterBefore, rosterAfter).strays.map(rosterIdOf);
+    if (gainedNow.length === 1 && gainedNow[0] === EDITOR)
+      PASS("the grant added EXACTLY ONE account and it is the one under test — no namesake was touched", { added: gainedNow.map(idTail) });
+    else FAIL("the grant changed the roster in a way this run did not intend", { added: gainedNow.map(idTail) });
     if (row && row.role === "editor" && row.scope === "own") PASS("the second account now holds {role:'editor', scope:'own'} on the app roster", { accountId: EDITOR, role: row.role, scope: row.scope });
-    else { FAIL("the editor grant did not land as scope-'own' editor", { row: JSON.stringify(row || null).slice(0, 200) }); return; }
+    else { FAIL("the editor grant did not land as scope-'own' editor", { row: JSON.stringify(redactSecrets(row || null)).slice(0, 200) }); return; }
     const postRole = await roleOf(EDITOR);
     if (postRole?.role === "editor" && postRole.scope === "own" && postRole.isAdmin === false)
       PASS("…and the product's own `checkIsAdmin` agrees (second read, through the resolver)", { role: postRole.role, scope: postRole.scope });
@@ -437,21 +548,39 @@ async function main() {
     if (leftS.length === 0 && leftD.length === 0) PASS("every fixture this run created is GONE (second read of the skill and doc indexes finds none)");
     else FAIL("a fixture survives", { skills: leftS.map((s) => s.id), docs: leftD.map((d) => d.id) });
 
-    if (granted) {
-      try {
-        const idx = (await rosterIds()).indexOf(EDITOR);
-        if (idx >= 0) { const r = await removeRosterIndex(idx); info(`roster restore: removed card #${idx} (${r.card})`); }
-        else info("roster restore: the editor row is already gone");
-      } catch (e) { FAIL("the roster restore UI failed", { error: String(e.message).slice(0, 200) }); }
-      const rosterEnd = (await kvs("app_admins"))?.value || [];
+    /* F-654 — THE ROSTER RESTORE RUNS UNCONDITIONALLY. It used to sit behind
+       `if (granted)`, which is a statement about what this run BELIEVES it did; the thing
+       that needs repairing is what is actually on the tenant. Driven by the diff against
+       the raw snapshot, it removes any stray row — including one a mis-click or a partial
+       failure left behind — and re-adds anything the run lost. */
+    let restore = null;
+    try {
+      restore = await restoreRosterToSnapshot(rosterBefore);
+      info(`roster restore: ${JSON.stringify(restore.actions.map((a) => ({ act: a.act, id: a.id, ok: a.removed ?? a.ok, how: a.how })))}`);
+    } catch (e) { FAIL("the roster restore UI failed — the roster may still hold a row this run added", { error: String(e.message).slice(0, 200) }); }
+    {
+      const rosterEnd = await rosterRows();
       ev.rosterAfter = rosterEnd;
+      ev.rosterRestore = restore && { ok: restore.ok, verdict: restore.verdict, actions: restore.actions, plan: restore.plan };
       /* The comparison is RAW on both sides — a redacted diff would pass while two
          different addresses sat behind the same mask. Only the FAIL payload is
          redacted, and it is redacted BEFORE the slice: cutting first can leave a
          half-address under the 300-char boundary that no email pattern would match. */
       const same = JSON.stringify(rosterEnd) === rosterBeforeJson;
       if (same) PASS("SECOND READ: the app roster is byte-identical to the snapshot taken before this run", { rows: rosterEnd.length });
-      else FAIL("THE ROSTER IS NOT RESTORED — restore it by hand from roster-before.json", { before: redactString(rosterBeforeJson).slice(0, 300), now: redactString(JSON.stringify(rosterEnd)).slice(0, 300) });
+      else FAIL("THE ROSTER IS NOT RESTORED — restore it by hand from roster-before.json", {
+        verdict: restore ? restore.verdict : "the restore never ran",
+        diff: restore ? restore.plan : describePlan(planRosterRestore(rosterBefore, rosterEnd)),
+        before: redactString(rosterBeforeJson).slice(0, 300),
+        now: redactString(JSON.stringify(rosterEnd)).slice(0, 300),
+      });
+      /* THE NEGATIVE THAT MATTERS MOST: no account other than the snapshot's holds a row.
+         Proven on the same object — this is the very read that showed the stray grants. */
+      const strayEnd = planRosterRestore(rosterBefore, rosterEnd).strays.map(rosterIdOf);
+      if (strayEnd.length === 0) PASS("…and NO account outside the pre-run snapshot holds an app role — no namesake was left with a grant", { rows: rosterEnd.length });
+      else FAIL("AN ACCOUNT THIS RUN DID NOT START WITH STILL HOLDS AN APP ROLE — remove it by hand", { strays: strayEnd.map(idTail) });
+    }
+    if (granted) {
       const endRole = (await invoke("checkIsAdmin", {}, EDITOR)).json;
       if (endRole && endRole.role === null) PASS("…and the product's own checkIsAdmin reports the second account back to NO role", { role: endRole.role });
       else FAIL("the second account still holds a role", { answer: JSON.stringify(endRole).slice(0, 200) });

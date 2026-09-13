@@ -71,7 +71,7 @@ import {
   VA_OWED_PER_HOUR_DEFAULT, VA_OWED_PER_HOUR_MAX,
   VA_MAX_ITEMS_PER_TICK_DEFAULT, VA_MAX_ITEMS_PER_TICK_MAX,
   VA_MAX_CANDIDATES_PER_TICK,
-  VA_SHADOW_TICKS_DEFAULT, VA_SHADOW_TICKS_MAX,
+  VA_SHADOW_TICKS_DEFAULT, VA_SHADOW_TICKS_MAX, VA_SHADOW_UNTIL_TICK_MAX,
   VA_MIN_POST_GAP_MINUTES_DEFAULT, VA_MIN_POST_GAP_MINUTES_MIN, VA_MIN_POST_GAP_MINUTES_MAX,
   VA_ANTI_PILE_UP_DAYS_DEFAULT, VA_ANTI_PILE_UP_DAYS_MAX,
   VA_OTHER_WRITER_QUIET_MINUTES_DEFAULT, VA_OTHER_WRITER_QUIET_MINUTES_MAX,
@@ -111,6 +111,7 @@ export const VA_LIMITS = Object.freeze({
   maxItemsPerTick: VA_MAX_ITEMS_PER_TICK_DEFAULT,
   maxCandidatesPerTick: VA_MAX_CANDIDATES_PER_TICK,
   shadowTicks: VA_SHADOW_TICKS_DEFAULT,
+  shadowUntilTickMax: VA_SHADOW_UNTIL_TICK_MAX,
   minPostGapMinutes: VA_MIN_POST_GAP_MINUTES_DEFAULT,
   antiPileUpDays: VA_ANTI_PILE_UP_DAYS_DEFAULT,
   otherWriterQuietMinutes: VA_OTHER_WRITER_QUIET_MINUTES_DEFAULT,
@@ -148,6 +149,9 @@ export const VA_CEILINGS = Object.freeze({
   owedPerHour: Object.freeze({ min: 0, max: VA_OWED_PER_HOUR_MAX }),
   maxItemsPerTick: Object.freeze({ min: 1, max: VA_MAX_ITEMS_PER_TICK_MAX }),
   shadowTicks: Object.freeze({ min: 0, max: VA_SHADOW_TICKS_MAX }),
+  // How far ahead the STORED watch may point, as opposed to how much one save adds
+  // (F-508). The two are different questions and had one answer, which was "no limit".
+  shadowUntilTick: Object.freeze({ min: 0, max: VA_SHADOW_UNTIL_TICK_MAX }),
   // The post gap has a FLOOR as well as a ceiling: the wall-clock half of the speech
   // floor is the gate, so it cannot be set to zero and disabled.
   minPostGapMinutes: Object.freeze({ min: VA_MIN_POST_GAP_MINUTES_MIN, max: VA_MIN_POST_GAP_MINUTES_MAX }),
@@ -531,7 +535,18 @@ export const normalizeVa = (raw, ctx = {}) => {
     // else (the claim, the receipt, the two-phase floor), and a date could be satisfied
     // by a clock skew. Re-arming it after a config change is the ENGINE's job (commit 3),
     // because only the engine knows the current tick index.
-    shadowUntilTick: int(st.shadowUntilTick, 0, Number.MAX_SAFE_INTEGER, guardrails.shadowTicks, "status.shadowUntilTick", report),
+    /*
+     * F-508 — IT HAS A CEILING AT THE DOOR NOW, AND THE CLAMP IS REPORTED.
+     *
+     * This was the one VA number accepted up to `MAX_SAFE_INTEGER` with no bound and no
+     * `report`, on the reasoning that only the engine knows the current tick. True, and
+     * beside the point: "how far ahead may a watch point AT ALL" is knowable here, and
+     * leaving it unbounded meant the save path's re-arm quietly REPLACED anything it
+     * thought unreachable — turning `shadowUntilTick: 500` into 6 with a 200 and an
+     * empty `refused[]`. An unreachable value is a REFUSAL AT THE DOOR, said out loud,
+     * not a silent substitution three steps later.
+     */
+    shadowUntilTick: int(st.shadowUntilTick, 0, VA_CEILINGS.shadowUntilTick.max, guardrails.shadowTicks, "status.shadowUntilTick", report),
   };
 
   return { va: { persona, scope, intake, cadence, powers, guardrails, status }, refused };

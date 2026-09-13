@@ -1430,7 +1430,11 @@ export const prepareVaSave = async ({ input, existing, savedByRole, now } = {}, 
   // gate reads. `now` is no longer part of this answer: shadow mode was never a
   // wall-clock question, and taking it from the clock is what set the field to a number
   // the receipt count would not reach for a year.
-  const va = rearmShadow(normalized.va, await watchedTicksFor(existing, deps.store));
+  // …and it only ever RAISES the watch (F-508). Whatever it decides about a long armed
+  // watch is carried into the answer: a save that touches this field silently is the
+  // defect, not the fix.
+  const armed = rearmShadow(normalized.va, await watchedTicksFor(existing, deps.store));
+  const va = armed.va;
   return okv({
     input: {
       ...src,
@@ -1438,7 +1442,7 @@ export const prepareVaSave = async ({ input, existing, savedByRole, now } = {}, 
       name: String(src.name || "").trim() || va.persona.name,
       schedule: { cron: va.cadence.cron, timeZone: va.cadence.timeZone },
     },
-    refused,
+    refused: [...refused, ...asArray(armed.notes)],
   });
 };
 
@@ -1760,28 +1764,59 @@ export const wizardReset = async ({ accountId } = {}, injected = {}) => {
  * SHADOW while nobody could see why. `watchedTicks` (src/virtual-admin.js) is the one
  * home for "how many ticks has this agent watched"; nothing here counts anything.
  *
- * THE FLOOR HAS A CEILING NOW, for exactly those stored values. A legitimate
- * `shadowUntilTick` was written as `watched-at-that-save + shadowTicks`, and `watched`
- * only grows, so it can never exceed `watched + VA_SHADOW_TICKS_MAX`. Anything above
- * that line cannot have come from a receipt count — it is a wall-clock leftover — and
- * it is REPLACED by "shadowTicks from now" rather than floored against. A blanket
- * clamp would not do: an admin who lowers `shadowTicks` mid-watch must keep the longer
- * watch they armed, which is the floor's whole purpose.
+ * F-508 — AND THE CEILING NEVER SHORTENS A WATCH AGAIN; IT REPORTS.
+ *
+ * F-484's repair for the wall-clock leftovers was to REPLACE any value more than
+ * `VA_SHADOW_TICKS_MAX` above the live receipt count with "shadowTicks from now". That
+ * heuristic cannot tell a leftover from an admin who deliberately armed a long watch,
+ * and it ran on EVERY save — including the one that had just armed it. `PUT
+ * {"status":{"shadowUntilTick":500}}` on an agent with 3 watched ticks answered 200 with
+ * `shadowUntilTick: 6` and an empty `refused[]`: about 497 ticks earlier than the admin
+ * was told, the agent went live and started posting to customers. The docblock above
+ * states the opposite invariant in so many words — a watch must not be SHORTENED by an
+ * edit — so the heuristic was contradicting its own contract.
+ *
+ * THE BOUND MOVED TO THE DOOR. `normalizeVa` now clamps `status.shadowUntilTick` to
+ * `VA_CEILINGS.shadowUntilTick.max` and REPORTS the clamp in `refused[]`, which is where
+ * a value nobody can honour belongs: said out loud, at the moment it is sent, by the one
+ * function whose job is bounding this record. That also repairs the pre-F-484 leftovers
+ * this heuristic existed for — an ~8640 is cut at the door, with a sentence.
+ *
+ * SO THIS FUNCTION ONLY EVER RAISES. It is the floor it always claimed to be:
+ * `max(current, watched + shadowTicks)`, no replacement arm. A stored value still above
+ * the reachable window is KEPT and NOTED (`shadow-unreachable`) — the admin is told the
+ * watch is long and how long, rather than having it silently cut to fit.
+ *
+ * `shadowTicks: 0` still means "no shadow": 0 added to the current count is the current
+ * count, and gate 1 compares with `<`, so it never holds.
  * ════════════════════════════════════════════════════════════════════════════ */
 
+/**
+ * Returns `{va, notes}` — `notes` is `[{field, reason}]` in the same shape as
+ * `refused[]`, because a re-arm that changes (or deliberately does not change) an armed
+ * watch is exactly the kind of thing the save answer must say out loud. F-508's defect
+ * was a save that changed this field and reported nothing.
+ */
 export const rearmShadow = (va, watchedTickCount) => {
-  if (!isObj(va) || !isObj(va.status) || !isObj(va.guardrails)) return va;
+  if (!isObj(va) || !isObj(va.status) || !isObj(va.guardrails)) return { va, notes: [] };
   const idx = Number(watchedTickCount);
   const ticks = Number(va.guardrails.shadowTicks);
-  if (!Number.isFinite(idx) || !Number.isFinite(ticks)) return va;
+  if (!Number.isFinite(idx) || !Number.isFinite(ticks)) return { va, notes: [] };
   const current = Number(va.status.shadowUntilTick);
   const rearmed = idx + ticks;
-  // The ceiling on the floor (F-484): a stored value that no receipt count could have
-  // produced is a wall-clock leftover, and floor-ing against it would hold the agent in
-  // shadow mode for thousands of its own ticks. It is replaced, not maxed.
-  const reachable = Number.isFinite(current) && current <= idx + VA_CEILINGS.shadowTicks.max;
-  const next = reachable ? Math.max(current, rearmed) : rearmed;
-  return { ...va, status: { ...va.status, shadowUntilTick: next } };
+  const notes = [];
+
+  // ONLY UPWARDS (F-508). A value above the window a save could have produced is not
+  // evidence of a leftover — it is an armed long watch until proven otherwise, and the
+  // proof does not exist here. It is kept, and named.
+  const next = Number.isFinite(current) ? Math.max(current, rearmed) : rearmed;
+  if (Number.isFinite(current) && current > idx + VA_CEILINGS.shadowTicks.max) {
+    notes.push({
+      field: "status.shadowUntilTick",
+      reason: `This agent stays in shadow mode until it has watched ${current} of its own ticks — ${current - idx} more than it has now. It stages and proposes but posts nothing until then. Lower it if that is not what you meant.`,
+    });
+  }
+  return { va: { ...va, status: { ...va.status, shadowUntilTick: next } }, notes };
 };
 
 /**

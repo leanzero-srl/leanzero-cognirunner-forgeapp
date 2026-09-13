@@ -38,6 +38,8 @@ import { recordTick } from "../../src/va-ledger.js";
 // The allow-list the F-507 source assertion reads: the receipt keys the projection
 // deliberately does not hand to the tab, each with its reason.
 import { RECEIPT_NOT_PROJECTED } from "../../src/va-admin.js";
+// F-508: the tests assert against the CEILING, never a retyped literal.
+import { VA_CEILINGS } from "../../src/shared/va-config.js";
 const { default: forgeApi, pushed } = await import("@forge/api");
 
 let pass = 0, fail = 0;
@@ -222,9 +224,15 @@ let agentId = null;
  * screen saying why. Rows written by the old code are still out there, so the re-arm
  * has to RECOGNISE them.
  *
- * BOTH DIRECTIONS: a leftover is replaced by "shadowTicks from now"; a legitimate
- * longer watch is still a FLOOR and is never shortened — which is the arm a blanket
- * clamp would have broken. */
+ * F-508 CHANGED WHERE THAT RECOGNITION HAPPENS, and it is the important half of this
+ * block now. F-484 recognised a leftover in `rearmShadow` — at SAVE time, three steps
+ * after the value arrived — and REPLACED it. That heuristic cannot tell a leftover from
+ * a watch an admin deliberately armed, and it ran on every save including the one that
+ * had just armed it, so `PUT {"status":{"shadowUntilTick":500}}` came back 200 saying 6,
+ * with nothing in `refused[]`. The bound now lives AT THE DOOR: `normalizeVa` clamps to
+ * `VA_CEILINGS.shadowUntilTick.max` and REPORTS the clamp, and `rearmShadow` only ever
+ * RAISES. The leftover is still cut — to a number the receipt count can reach, with a
+ * sentence — and a deliberate long watch is kept and named instead of being cut to fit. */
 {
   const setWatched = async (n) => storage.set(`va_health:${agentId}`, { consecutiveFailures: 0, prepareTicks: n });
   const rowOf = async () => (await storage.get(`job:${agentId}`)) || (await storage.get(`sched_job:${agentId}`));
@@ -239,11 +247,17 @@ let agentId = null;
     const edited = await call("saveScheduledJob", { job: { id: agentId, mode: "va", va: vaRecord({ persona: { name: "Ada", voice: { register: "plain", maxSentences: 2 } }, status: { paused: false, shadowUntilTick: 8643 } }) } });
     ok(edited.success === true, "F-484.BLOCK — an old agent with a wall-clock shadow value still saves");
     const back = await rowOf();
-    ok(back && back.va.status.shadowUntilTick === 23,
-      `…and shadow ends after shadowTicks MORE of its own ticks (20 + 3 = 23), not 8643 (got ${back && back.va.status.shadowUntilTick})`);
+    ok(back && back.va.status.shadowUntilTick === VA_CEILINGS.shadowUntilTick.max,
+      `…and the leftover is CUT AT THE DOOR to the ceiling (${VA_CEILINGS.shadowUntilTick.max}), not left at 8643 (got ${back && back.va.status.shadowUntilTick})`);
+    ok(back && back.va.status.shadowUntilTick < 8643,
+      "…which is the F-484 property that matters: a wall-clock leftover cannot hold an agent in shadow for a year");
+    // F-508: and the cut is SAID OUT LOUD. F-484's replacement was silent, which is how
+    // the same code path could shorten a deliberate watch without anyone noticing.
+    ok(asRefusals(edited).some((r) => String(r.field) === "status.shadowUntilTick"),
+      `F-508: …and the save REPORTS that it changed the armed watch (got ${JSON.stringify(asRefusals(edited))})`);
     const status = await call("getVaStatus", { jobId: agentId });
-    ok(status.success && status.shadow && status.shadow.ticksLeft === 3,
-      `…so the tab promises three ticks, not 8623 (got ${JSON.stringify(status.shadow)})`);
+    ok(status.success && status.shadow && status.shadow.ticksLeft === VA_CEILINGS.shadowUntilTick.max - 20,
+      `…and the tab promises a number the agent's own ticks can reach (got ${JSON.stringify(status.shadow)})`);
   }
 
   // ALLOW — a REACHABLE stored value is a floor and survives. The admin armed a 10-tick
@@ -258,6 +272,70 @@ let agentId = null;
     const back = await rowOf();
     ok(back && back.va.status.shadowUntilTick === 30,
       `…and the LONGER watch already armed is kept — the re-arm is a floor (got ${back && back.va.status.shadowUntilTick})`);
+  }
+
+  /* ── F-508 — AN ARMED LONG WATCH IS NEVER SHORTENED SILENTLY ─────────────────
+   *
+   * The defect: `shadowUntilTick` was the one VA number with no ceiling at the door
+   * (`MAX_SAFE_INTEGER`, no `report`), and `rearmShadow` — which runs on EVERY save,
+   * including the one that just armed it — declared anything more than
+   * `VA_SHADOW_TICKS_MAX` above the live receipt count a wall-clock leftover and
+   * REPLACED it with `watched + shadowTicks`. An admin asking for a 500-tick supervised
+   * period on an agent with 3 watched ticks got 200, `shadowUntilTick: 6`, and an empty
+   * `refused[]`: three ticks later the agent was live and posting to customers, about
+   * 497 ticks before they were told it would be.
+   *
+   * The contract now: the value is BOUNDED AT THE DOOR and the bound is reported; what
+   * survives that is KEPT; and a stored watch beyond the window a save could have
+   * produced is NAMED, never cut to fit. */
+  {
+    await setWatched(3);
+    const armed = await call("saveScheduledJob", { job: { id: agentId, mode: "va", va: vaRecord({ guardrails: { shadowTicks: 3 }, status: { paused: false, shadowUntilTick: 500 } }) } });
+    ok(armed.success === true, "F-508 — a 500-tick watch saves");
+    const back = await rowOf();
+    ok(back && back.va.status.shadowUntilTick === 500,
+      `F-508: the watch the admin ARMED is what is stored — not watched+shadowTicks (got ${back && back.va.status.shadowUntilTick}, the defect wrote 6)`);
+    ok(back && back.va.status.shadowUntilTick !== 6,
+      "F-508: …and specifically NOT the silent 6 the re-arm used to substitute");
+    // Kept, and SAID: a watch this long is worth a sentence, because an agent that
+    // stages and posts nothing looks identical to a broken one.
+    const note = asRefusals(armed).find((r) => String(r.field) === "status.shadowUntilTick");
+    ok(note && /shadow/i.test(String(note.reason)) && /497|500/.test(String(note.reason)),
+      `F-508: …and the answer NAMES the long watch rather than leaving refused[] empty (got ${JSON.stringify(asRefusals(armed))})`);
+    const st = await call("getVaStatus", { jobId: agentId });
+    ok(st.success && st.shadow && st.shadow.ticksLeft === 497,
+      `F-508: …and the tab agrees about how long it lasts (got ${JSON.stringify(st.shadow)})`);
+
+    // AND AN UNRELATED EDIT DOES NOT SHORTEN IT. This is the sentence the docblock has
+    // always carried and the arm that broke it: a typo fix is not a permission change.
+    const typo = await call("saveScheduledJob", { job: { id: agentId, mode: "va", va: vaRecord({ persona: { name: "Adah", voice: { register: "plain", maxSentences: 2 } }, guardrails: { shadowTicks: 3 }, status: { paused: false, shadowUntilTick: 500 } }) } });
+    ok(typo.success === true, "F-508: an unrelated edit to the same agent saves");
+    const back2 = await rowOf();
+    ok(back2 && back2.va.status.shadowUntilTick === 500,
+      `F-508: …and the armed watch survives it (got ${back2 && back2.va.status.shadowUntilTick})`);
+  }
+
+  /* ── F-508 — ABOVE THE CEILING IS A REFUSAL AT THE DOOR, WITH A SENTENCE ──── */
+  {
+    await setWatched(3);
+    const tooLong = await call("saveScheduledJob", { job: { id: agentId, mode: "va", va: vaRecord({ guardrails: { shadowTicks: 3 }, status: { paused: false, shadowUntilTick: 50000 } }) } });
+    ok(tooLong.success === true, "F-508 — an over-ceiling watch still saves (it is a clamp, not a throw)");
+    const back = await rowOf();
+    ok(back && back.va.status.shadowUntilTick === VA_CEILINGS.shadowUntilTick.max,
+      `F-508: …clamped to the ceiling ${VA_CEILINGS.shadowUntilTick.max} (got ${back && back.va.status.shadowUntilTick})`);
+    ok(asRefusals(tooLong).some((r) => String(r.field) === "status.shadowUntilTick"),
+      `F-508: …and the clamp is REPORTED in refused[], which is what "no silent permission change" means (got ${JSON.stringify(asRefusals(tooLong))})`);
+  }
+
+  /* ── F-508 — THE F-484 BOUNDARY IS UNCHANGED: shadowTicks 50 on a NEW agent ── */
+  {
+    const made = await call("saveScheduledJob", { job: { mode: "va", name: "Boundary", va: vaRecord({ guardrails: { shadowTicks: 50 } }) } });
+    ok(made.success === true, "F-508/F-484 boundary — a NEW agent may arm the maximum 50-tick watch");
+    const row = (await storage.get(`job:${made.job && made.job.id}`)) || (await storage.get(`sched_job:${made.job && made.job.id}`));
+    ok(row && row.va.status.shadowUntilTick === 50,
+      `…and 0 watched + 50 shadowTicks is stored as 50, untouched (got ${row && row.va.status.shadowUntilTick})`);
+    ok(!asRefusals(made).some((r) => String(r.field) === "status.shadowUntilTick"),
+      `…with nothing reported, because nothing was clamped (got ${JSON.stringify(asRefusals(made))})`);
   }
 }
 

@@ -1517,6 +1517,24 @@ const lazyStore = () => {
  */
 
 export const DEFAULT_DEPS = {
+  /**
+   * THE BACKEND MODULE THE DISPATCHER NEEDS (F-468).
+   *
+   * `createAgentActionDispatcher` is handed `m` and its `get_issue` arm calls
+   * `compactIssue(issue, { extractText: m.extractTextFromADF })`. There was no `m` here
+   * at all, so on every production run the agent's PRIMARY READ TOOL threw
+   * "Cannot read properties of undefined" — 14 out of 14 calls on dev. The turn did not
+   * fail (the issue is also in the prompt fence, through `compactIssue` below, which
+   * DOES pass the module), so it was silent: the round was burned and the model reasoned
+   * from "this issue cannot be read", once writing that conclusion into the durable
+   * ledger as if it were a fact about the issue.
+   *
+   * A GETTER, not a value: `_index` is loaded by `primeDeps()` (the consumer awaits it
+   * before every run), and a plain property would capture `null` at module load. It is
+   * the same lazily-primed module `compactIssue` and `runLoop` already use, so there is
+   * one answer to "which backend is this run talking to".
+   */
+  get m() { return _index; },
   now: () => Date.now(),
   /**
    * The tick identity. It is the FIVE-MINUTE BUCKET, not the instant: the post phase's

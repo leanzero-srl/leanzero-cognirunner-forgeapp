@@ -241,6 +241,40 @@ export const clampShadowUntilTick = (value, watched = null) => {
   return Math.trunc(n) <= shadowReachableCeiling(watched) ? Math.trunc(n) : VA_SHADOW_UNTIL_TICK_MAX;
 };
 
+/* ══════════════════════════════════════════════════════════════════════════════
+ * F-523 — HOW THE WATCH COUNT REACHES THE *SECOND* NORMALISATION
+ *
+ * A VA save runs `normalizeVa` TWICE: once at the door that can reach Jira
+ * (`prepareVaSave`, src/va-admin.js — live catalogue, dry search, shadow re-arm) and
+ * once inside `normalizeJob` (src/scheduled-jobs.js), which is a storage module and
+ * reaches nothing. F-519 gave the first door the real watch count and left the second
+ * one deriving a watch from the STORED value — so the second pass's ceiling was the
+ * ceiling of what was stored, never of what `rearmShadow` had just armed. Stored 100,
+ * watched 600, `shadowTicks` 50: door 1 keeps 100, the re-arm raises it to 650, door 2
+ * derives `100 - 50 = 50`, ceils at 500 and CUTS the armed watch to 500 — under the 600
+ * already watched, so the edited agent was live with no shadow period at all, and
+ * `normalizeJob` dropped the refusal that said so.
+ *
+ * The fix is that the second pass is asked with the SAME watch count as the first, and
+ * the only way to carry it there is on the prepared input: `prepareVaSave` returns the
+ * input its callers hand to `saveJob` verbatim, and those callers (the resolver in
+ * src/index.js and `?resource=agents` in src/rules-api.js) must not each have to
+ * remember a second argument — a rule remembered at two call sites is a rule that will
+ * be forgotten at one of them.
+ *
+ * WHY IT CANNOT BE FORGED. `prepareVaSave` ALWAYS sets this key on the input it
+ * returns (to the count, or to `null` when the counter could not be read), so a value
+ * sent by a REST client is overwritten before it can be read, and every door that
+ * accepts a `mode:"va"` body goes through `prepareVaSave` — the Rules API's generic
+ * collections door refuses `mode:"va"` outright (F-478). It is also the SAFE direction
+ * on its own: this number only ever widens the ceiling for `status.shadowUntilTick`, and
+ * a larger shadow ceiling means MORE supervision, never less.
+ *
+ * It is stripped by `normalizeJob` — the stored record is built key by key, so it never
+ * reaches storage, the index row or the REST projection.
+ * ════════════════════════════════════════════════════════════════════════════ */
+export const VA_SAVE_WATCH_FIELD = "__vaWatchedTicks";
+
 /* ── Shape bounds (this file's own home — see the header's split rule) ────────── */
 
 /** The persona name is RENDERED INTO OUTWARD TEXT ("— Nadia"), so it is short and plain. */

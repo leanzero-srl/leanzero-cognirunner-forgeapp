@@ -992,7 +992,9 @@ const CODE_IDENTITY = () => ((typeof window !== "undefined" && window.__CODE_IDE
                                  "lock_mismatch" (carries added/removed BY NAME),
                                  "scope_not_allowed" (carries scopes),
                                  "identity_required".
-     window.__PIPE_DEPLOY_FAIL__ - triggerGitDeploy refuses with not_installed. */
+     window.__PIPE_DEPLOY_FAIL__ - triggerGitDeploy refuses with not_installed.
+     window.__PIPE_SETUP__     - WRITTEN BY the mock: the last setupGitPipeline payload
+                                 (F-526, the scaffoldVars assertion reads it). */
 /* F-465: the step ids are IMPORTED from the one home now
    (src/shared/git-pipeline-steps.js), not mirrored. They used to be retyped here with a
    note asking the next person to keep them in step with src/git-pipeline.js — a fixture
@@ -1874,6 +1876,11 @@ function invoke(name, payload) {
        polls getGitPipelineStatus for the rest. */
     case "setupGitPipeline": {
       const refuse = typeof window !== "undefined" ? window.__PIPE_REFUSE__ : null;
+      /* F-526: the SETUP PAYLOAD is recorded, because the defect was invisible in every
+         rendered pixel - the form looked right and the scaffold variables were simply
+         never sent, so the committed workflow built a folder nobody had named. A journey
+         can only catch that by reading what the screen actually asked the backend for. */
+      if (typeof window !== "undefined") window.__PIPE_SETUP__ = payload || null;
       if (refuse) return Promise.resolve(PIPE_REFUSALS[refuse] || { success: false, error: "refused", code: refuse });
       PIPE_STATE.walking = true; PIPE_STATE.stage = 1;
       return Promise.resolve({ success: true, async: true, taskId: "gpipe_1", lockHash: "b91c7a44", status: PIPE_ROW("queued") });
@@ -2072,7 +2079,17 @@ function invoke(name, payload) {
     case "listVaAgents": return Promise.resolve({ success: true, agents: VA_AGENTS.map((a) => ({ ...a, va: { ...a.va, status: { ...a.va.status, paused: VA_PAUSED.has(a.id) } } })) });
     case "getVaStatus": {
       const st = VA_STATUS[(payload && payload.jobId) || ""] || null;
-      return Promise.resolve(st ? { success: true, ...st, paused: VA_PAUSED.has(payload.jobId) } : { success: false, error: "No status for that agent." });
+      /* F-535 - the health row's reason is whatever the ENGINE wrote, and the tick's two
+         catch arms write ids the compaction fixture cannot model (`tick:prepare_failed`,
+         `tick:post_failed`, each carrying a 300-character slice of the exception). Rather
+         than a third and fourth agent card - which every other assertion here counts - the
+         broken agent's stored reason is swapped by a window flag, the same idiom
+         `window.__STANDARD__` and `window.__MEMORY_FULL__` already use. */
+      const override = (typeof window !== "undefined" && window.__VA_HEALTH_REASON__) || null;
+      const out = st && override && st.health && st.health.ok === false
+        ? { ...st, health: { ...st.health, reason: override } }
+        : st;
+      return Promise.resolve(out ? { success: true, ...out, paused: VA_PAUSED.has(payload.jobId) } : { success: false, error: "No status for that agent." });
     }
     case "listVaDrafts": return Promise.resolve({ success: true, drafts: (VA_DRAFTS[(payload && payload.jobId) || ""] || []).filter((d) => !VA_DECIDED.has(`${payload.jobId}:${d.itemKey}`)) });
     case "approveVaDraft": case "rejectVaDraft": {

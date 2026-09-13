@@ -513,6 +513,50 @@ reset();
   ok(spy2.writes.find((w) => w.key === K.vaHealthKey(AG)).options,
     "F-426 still holds: EVERY tick rewrites it, so a live agent's banner can never age out");
 
+  /* ── F-524 — THE HEALTH ROW STORES AN ID; THE EXCEPTION IS A SEPARATE FIELD ──
+     `lastReason` was the tick's raw string clamped to 300, and `agentStatus` hands that
+     field to the Agents tab's health banner - so `compaction:compaction_failed:` plus 80
+     characters of a provider or KVS exception reached the admin verbatim, on the one VA
+     row whose content has no TTL. The split happens at the ONE write. */
+  {
+    const rowOf = async () => kvs.get(K.vaHealthKey(AG));
+    await L.recordTickHealth(kvs, AG, false, { reason: "compaction:compaction_failed:TypeError: Cannot read properties of undefined (reading 'body')" });
+    const row = await rowOf();
+    eq(row.lastReason, "compaction:compaction_failed",
+      "F-524: the health row stores the BASE id, with no :detail glued on");
+    ok(!/TypeError|undefined/.test(String(row.lastReason)), "F-524: …and no exception text anywhere in it");
+    ok(/TypeError/.test(String(row.lastDetail)) && row.lastDetail.length <= L.VA_HEALTH_DETAIL_MAX,
+      `F-524: the detail is KEPT, in its own field, clamped to ${L.VA_HEALTH_DETAIL_MAX} (got ${JSON.stringify(row.lastDetail)})`);
+    const read = await L.readHealth(kvs, AG);
+    eq(read.lastReason, "compaction:compaction_failed", "F-524: …and the reader answers the id");
+
+    // The two-segment namespace is the grammar the copy map is keyed on, so an id that
+    // is ALREADY a base id passes through untouched and a count-style detail comes off.
+    await L.recordTickHealth(kvs, AG, false, { reason: "capability:forge_llm_standard" });
+    eq((await rowOf()).lastReason, "capability:forge_llm_standard", "F-524: a bare namespaced id is unchanged");
+    eq((await rowOf()).lastDetail, null, "F-524: …and carries no detail it does not have");
+    await L.recordTickHealth(kvs, AG, false, { reason: "compaction:pinned_dropped:2" });
+    eq((await rowOf()).lastReason, "compaction:pinned_dropped", "F-524: a counted detail comes off the id too");
+    eq((await rowOf()).lastDetail, "2", "F-524: …and is filed as the detail");
+    await L.recordTickHealth(kvs, AG, false, { reason: "compaction-backoff-write-failed" });
+    eq((await rowOf()).lastReason, "compaction-backoff-write-failed", "F-524: an un-namespaced id survives whole");
+
+    // A BARE EXCEPTION - no id at all - must never become the banner's text. It is filed
+    // under the neutral id, and the message goes to the detail.
+    await L.recordTickHealth(kvs, AG, false, { reason: "TypeError: x.map is not a function" });
+    eq((await rowOf()).lastReason, L.VA_HEALTH_REASON_UNKNOWN,
+      "F-524: a reason with no machine id is filed as `unknown`, not as a truncated stack message");
+    ok(/x\.map/.test(String((await rowOf()).lastDetail)), "F-524: …with the message kept as the detail");
+
+    // ON THE WAY OUT TOO, because rows written before this split are still in storage.
+    await kvs.set(K.vaHealthKey(AG), { consecutiveFailures: 3, lastReason: "compaction:compaction_failed:Error: kvs down" });
+    const legacy = await L.readHealth(kvs, AG);
+    eq(legacy.lastReason, "compaction:compaction_failed", "F-524: a LEGACY row reads back as the id alone");
+    ok(/kvs down/.test(String(legacy.lastDetail)), "F-524: …with its glued detail recovered into lastDetail");
+    await L.recordTickHealth(kvs, AG, true);
+    eq((await L.readHealth(kvs, AG)).lastDetail, null, "F-524: a successful tick clears the detail with the reason");
+  }
+
   // F-439 — ONE HOME for the threshold. The ledger must not carry its own literal: an
   // owner who raises the banner in registry-limits.js would otherwise move the admin copy
   // and `normalizeVa` while the ledger kept comparing against a stale 3, and nothing would

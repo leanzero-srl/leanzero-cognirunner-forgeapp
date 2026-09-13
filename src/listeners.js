@@ -499,9 +499,10 @@ export const matchListenerStatic = (listener, ctx, event) => {
 //
 // Forge's `selfGenerated` flag (matchListenerStatic above) answers "did OUR app
 // cause this Jira event". A git provider sends no such flag, so the same question
-// is answered differently: compare the delivery's actor login to the login the
-// CONNECTION's credential reported at whoami (cached on the connection row as
-// `login`). The two self-detections keep separate names on purpose — one field for
+// is answered differently: compare the delivery's actor to the identity the
+// CONNECTION's credential reported at whoami (cached on the connection row by
+// `identityFields` — the stable id FIRST, the label only as a fallback, F-532).
+// The two self-detections keep separate names on purpose — one field for
 // both would be exactly the "N copies of one rule" defect (FRAME 1.4 §commit 5).
 //
 // Injected, never statically imported: git-connections.js pulls @forge/kvs and the
@@ -516,7 +517,20 @@ const defaultConnectionIdentity = async (connId) => {
   const row = await gc.getConnection(connId);
   // Every identifier the connection row has kept, not just the label (F-326). The row
   // owner stores what whoami returned; missing fields simply do not participate.
-  return row ? { login: row.login || null, accountId: row.accountId || null, uuid: row.uuid || null, id: row.accountIdNumeric || row.userId || null } : null;
+  //
+  // F-532 - these are the names git-connections.js ACTUALLY writes (`identityFields`).
+  // The earlier guesses (`row.accountId`, `row.uuid`, `row.accountIdNumeric`) matched
+  // no field on any stored row, which is half of why the id comparison was dead code.
+  // `row.accountId` deliberately is NOT read: on this row that name would mean the
+  // ATLASSIAN admin who created the connection, not the git account that posts.
+  return row
+    ? {
+        login: row.login || null,
+        accountId: row.userAccountId || null,
+        uuid: row.userUuid || null,
+        id: row.userId || null,
+      }
+    : null;
 };
 export const getConnectionIdentity = (connId) => (_identityResolver || defaultConnectionIdentity)(connId);
 
@@ -539,13 +553,24 @@ const gitIdentity = (v) => {
   const norm = (x) => (x == null ? "" : String(x).trim().toLowerCase());
   return { login: norm(v.login), accountId: norm(v.accountId), uuid: norm(v.uuid), id: norm(v.id) };
 };
+const ID_KEYS = ["accountId", "uuid", "id"];
+const idsOf = (x) => ID_KEYS.map((k) => x[k]).filter(Boolean);
 export const sameGitActor = (a, b) => {
   const x = gitIdentity(a);
   const y = gitIdentity(b);
+  // F-532 - compare the UNION of ids, not field against matching field. The two
+  // sides name the same value differently on purpose: a Bitbucket delivery carries
+  // ONE `actorId` (the `{uuid}`) because the envelope has one id slot for both
+  // providers, while the connection row keeps that uuid under `uuid`. A field-wise
+  // compare never lines those up and the guard stays inert. The values cannot
+  // collide across kinds - a GitHub numeric id is not a `{uuid}` is not an
+  // Atlassian `557058:...` - so a cross-field match is a real match.
+  const xi = idsOf(x);
+  const yi = idsOf(y);
   // Ids first: they survive a rename and they never collide across accounts.
-  for (const k of ["accountId", "uuid", "id"]) if (x[k] && y[k] && x[k] === y[k]) return true;
+  if (xi.some((v) => yi.includes(v))) return true;
   // A login match is only trusted when neither side offered an id that DISAGREED.
-  for (const k of ["accountId", "uuid", "id"]) if (x[k] && y[k] && x[k] !== y[k]) return false;
+  if (xi.length && yi.length) return false;
   return Boolean(x.login && y.login && x.login === y.login);
 };
 
@@ -561,6 +586,10 @@ export const sameGitActor = (a, b) => {
 export const isGitSelfEvent = async (ctx) => {
   if (!ctx || !isGitEvent(ctx.eventType) || !ctx.connectionId) return false;
   // Either a login or a stable id is enough to ask the question (F-326).
+  // F-532 - `actorId` is the ONE id the envelope carries (GitHub `sender.id`,
+  // Bitbucket `actor.uuid`); `sameGitActor` matches it against whichever slot the
+  // connection row keeps it in. The other two names are read only so a caller that
+  // hands us a richer context still participates.
   const actor = { login: ctx.actorLogin || null, accountId: ctx.actorAccountIdGit || null, uuid: ctx.actorUuid || null, id: ctx.actorId || null };
   if (!actor.login && !actor.accountId && !actor.uuid && !actor.id) return false;
   try {

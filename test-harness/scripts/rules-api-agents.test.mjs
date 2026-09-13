@@ -481,6 +481,48 @@ let agentId = null;
     `an unknown agent is a NAMED 404 with a sentence, never a throw (got ${gone.status} ${JSON.stringify(gone.body).slice(0, 180)})`);
 }
 
+/* ═════ 8b. F-523 — THE REST DOOR DOES NOT RE-CUT THE SHADOW RE-ARM EITHER ═════
+
+   A VA save normalises TWICE — `prepareVaSave`, which reads the agent's tick counter,
+   and then `normalizeJob` inside `saveJob`, which cannot. The second pass used to derive
+   a watch from the STORED value, so its ceiling was the ceiling of what was stored and
+   never of what `rearmShadow` had just armed, and it discarded its own `refused[]` on the
+   way out. Stored 100, watched 600, `shadowTicks` 50: the re-arm produces 650 and the
+   second pass cut it to 500 — BELOW the 600 ticks already watched, so an agent edited
+   over REST went live with no shadow period at all and the 200 said nothing.
+
+   This is the same scenario the va-admin suite asserts through the resolver. It is
+   asserted HERE TOO because `?resource=agents` is a second door onto `saveJob`, and the
+   whole point of this suite is that the two doors cannot answer differently. */
+{
+  const created = await rest("admin", { method: "POST", body: { mode: "va", va: vaRecord({ guardrails: { shadowTicks: 50 } }) } });
+  ok(created.status === 201, `F-523 — the fixture agent is created (got ${created.status})`);
+  const id = created.body.agent.id;
+  const K = await import("../../src/shared/va-keys.js");
+  // The agent has watched 600 of its own ticks and carries an OLD, long-expired watch.
+  await storage.set(K.vaHealthKey(id), { consecutiveFailures: 0, prepareTicks: 600 });
+  const row = await J.getJob(id);
+  row.va.status.shadowUntilTick = 100;
+  await storage.set(`job:${id}`, row);
+
+  const edited = await rest("admin", { method: "PUT", query: { id }, body: { va: { persona: { name: "Ada REST" } } } });
+  ok(edited.status === 200, `F-523 — the persona edit is accepted (got ${edited.status} ${JSON.stringify(edited.body).slice(0, 200)})`);
+  const back = await J.getJob(id);
+  ok(back && back.va.status.shadowUntilTick === 650,
+    `F-523 — 600 watched + 50 shadowTicks is STORED as armed, not re-cut to 500 (got ${back && back.va.status.shadowUntilTick})`);
+  ok(!(edited.body.refused || []).some((r) => String(r.field) === "status.shadowUntilTick"),
+    `F-523 — …and nothing is refused, because nothing was moved (got ${JSON.stringify(edited.body.refused || []).slice(0, 240)})`);
+  const { isInShadow } = await import("../../src/virtual-admin.js");
+  ok(Boolean(await isInShadow(back, { receipts: 600 })),
+    "F-523 — …so the edited agent is SUPERVISED on its next tick; under the defect it was live");
+  // The stripped carrier never reaches storage, the index row or the REST projection.
+  ok(back && !Object.prototype.hasOwnProperty.call(back, "__vaWatchedTicks"),
+    "F-523 — the watch count the door stamped on the input is NOT stored on the record");
+  ok(edited.body.agent && !Object.prototype.hasOwnProperty.call(edited.body.agent, "__vaWatchedTicks"),
+    "F-523 — …nor echoed in the REST answer");
+  await J.deleteJob(id);
+}
+
 /* ═════ 9. DELETE goes through the job delete ═════ */
 {
   const del = await rest("admin", { method: "DELETE", query: { id: agentId } });

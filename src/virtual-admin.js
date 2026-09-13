@@ -800,7 +800,12 @@ export const runVaTick = async ({ job, tickId = null, deps: injected = {} } = {}
     // BOTH, and in this order: the receipt is the evidence, the health row is the banner.
     // F-426 is precisely the defect of deriving the second from the first.
     await recordTick(deps.store, agent, { tickId: tick, phase: "prepare", started, candidates, staged: fannedOut, skipped, error });
-    await recordTickHealth(deps.store, agent, false, { reason: error, now: deps.now(), phase: "prepare" });
+    // F-524 — THE EXCEPTION IS A DETAIL, SO IT ARRIVES BEHIND AN ID. This used to hand
+    // `recordTickHealth` a bare exception message, which became the health banner's whole
+    // text: the admin read `Cannot read properties of undefined` on a durable row. The id
+    // is what the banner renders; `splitHealthReason` files the message under `lastDetail`
+    // and the projection does not send it to the tab.
+    await recordTickHealth(deps.store, agent, false, { reason: `tick:prepare_failed:${error}`, now: deps.now(), phase: "prepare" });
     return { ok: false, reason: "tick_failed", detail: error, candidates, fannedOut };
   }
 };
@@ -1899,7 +1904,9 @@ export const runVaPost = async ({ agent, tickId = null, deps: injected = {} } = 
     return await finish(errors ? `${errors} post(s) could not be verified` : null);
   } catch (e) {
     const error = String((e && e.message) || e).slice(0, 300);
-    await recordTickHealth(deps.store, agentId, false, { reason: error, now });
+    // F-524 — behind an id, exactly as the prepare tick's catch arm is. The banner renders
+    // the id; the exception is `lastDetail`, which the tab is never sent.
+    await recordTickHealth(deps.store, agentId, false, { reason: `tick:post_failed:${error}`, now });
     return await finish(error);
   }
 };

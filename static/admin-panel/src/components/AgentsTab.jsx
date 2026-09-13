@@ -161,6 +161,24 @@ const isCompactionSkip = (s) => !!s && (s.gate === "compaction" || /^compaction:
    carries `gate: "compaction"`), so an unrecognised id there gets the compaction-specific
    unknown sentence rather than the generic one. */
 const UNKNOWN_REASON = "Its ticks are failing for a reason this panel does not recognise. The tick receipts below carry the detail.";
+/* F-535 - the ids that reach the HEALTH row and nowhere else. `recordTickHealth` is called
+   from five places in src/virtual-admin.js: the paused arm and the post arm write no
+   reason at all, the capability gate writes `capability:<id>`, the compaction gate writes
+   `compaction:<id>` (or the bare backoff-write id), and the tick's TWO catch arms write
+   `tick:prepare_failed:<exception>` / `tick:post_failed:<exception>`. Those last two were
+   introduced by F-524 to keep the exception out of the admin's copy, and they landed with
+   no sentence here, so the banner said only that the panel did not recognise the reason -
+   for the one case where it knows exactly what happened.
+
+   Keyed on the BASE id, `namespace:id`, which is what src/va-ledger.js `splitHealthReason`
+   stores: the exception is filed as `lastDetail` and is never projected to this tab.
+   `unknown` is that same helper's fallback for a reason that is prose rather than an id, so
+   it resolves to the neutral sentence deliberately rather than by falling off the end. */
+const HEALTH_COPY = {
+  "tick:prepare_failed": "The last tick stopped on an unexpected error before any work was queued, so nothing was picked up on that run.",
+  "tick:post_failed": "The last tick stopped on an unexpected error while it was posting, so some staged replies may not have been sent.",
+  unknown: UNKNOWN_REASON,
+};
 const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
 const reasonCopy = (reason, opts) => {
   const raw = String((reason && typeof reason === "object" ? reason.reason || reason.gate : reason) || "").trim();
@@ -169,6 +187,12 @@ const reasonCopy = (reason, opts) => {
   if ((opts && opts.compaction) || /^compaction:/.test(raw) || has(COMPACTION_COPY, base)) {
     return COMPACTION_COPY[base] || UNKNOWN_COMPACTION;
   }
+  /* The health ids are TWO segments, so they are looked up before the one-segment maps
+     below: `tick` on its own is not a reason anything writes. */
+  const segs = raw.split(":").map((x) => x.trim());
+  const pair = segs.slice(0, 2).join(":");
+  if (has(HEALTH_COPY, pair)) return HEALTH_COPY[pair];
+  if (has(HEALTH_COPY, segs[0])) return HEALTH_COPY[segs[0]];
   if (/^capability:/.test(raw)) {
     const row = agentCapabilityCopy(raw.split(":")[1] || "unknown") || null;
     if (row && row.title) return row.remedy ? `${row.title}. ${row.remedy}` : row.title;

@@ -970,6 +970,60 @@ export const bumpCaps = async (store, agent, { owed = false, now = Date.now() } 
  */
 export const VA_HEALTH_BANNER_AT = VA_LIMITS.healthBannerFailedTicks;
 
+/** How much of a failure's DETAIL the health row keeps. Not admin copy — see below. */
+export const VA_HEALTH_DETAIL_MAX = 120;
+/** The id a reason carrying no machine id at all is filed under. */
+export const VA_HEALTH_REASON_UNKNOWN = "unknown";
+
+/* ══════════════════════════════════════════════════════════════════════════════
+ * F-524 — THE HEALTH ROW STORES AN ID, AND THE DETAIL IS A SEPARATE FIELD
+ *
+ * `lastReason` was whatever string the tick handed it, clamped to 300 characters, and
+ * `agentStatus` hands that field straight to the Agents tab's health banner. So
+ * `compaction:compaction_failed:<80 characters of the provider or KVS exception>` reached
+ * the admin verbatim — and DURABLY, because the health row is the one VA row with no TTL
+ * on its content. F-518 fixed the same leak on the receipt's `(memory)` row by mapping
+ * engine ids to sentences; the banner had no map, and no map can help while the field it
+ * renders carries a stack message glued to the id.
+ *
+ * SO THE SPLIT HAPPENS AT THE ONE WRITE, not at each of the four call sites and not at the
+ * projection. A caller that forgets is the defect this is fixing; a normalisation every
+ * writer must remember is the same defect with more places to forget it.
+ *
+ * THE SHAPE OF AN ID, and why two segments: the engine namespaces its reasons
+ * (`compaction:pinned_dropped`, `capability:forge_llm_standard`) and appends a detail on
+ * the end (`compaction:compaction_failed:<text>`, `compaction:pinned_dropped:2`). That is
+ * the same grammar `AgentsTab`'s copy map is keyed on — namespace off the front, detail off
+ * the back — so the id kept here is exactly the key the copy map can answer. Segments are
+ * taken from the FRONT only while they look like machine ids; the first one that does not
+ * (an exception message: `TypeError: x is not a function`) ends the id and everything from
+ * there is DETAIL. A reason with no id segment at all is filed as `unknown`, which is the
+ * neutral sentence the tab already renders, rather than a truncated stack message.
+ *
+ * `lastDetail` is kept because "it failed" with nothing else is not diagnosable by the
+ * owner reading storage or `forge logs`. It is NOT admin copy: `agentStatus` deliberately
+ * does not project it, and 120 characters is a fingerprint of the fault, not a message.
+ * ════════════════════════════════════════════════════════════════════════════ */
+/* LOWERCASE ON PURPOSE. Every engine id in this app is lowercase snake or kebab
+ * (`compaction_failed`, `forge_llm_standard`, `compaction-backoff-write-failed`), and
+ * exception messages are not: `TypeError: x.map is not a function` would otherwise have
+ * its class name accepted as an id and the useful half thrown away. The capital letter is
+ * the cheapest reliable signal that a segment is prose, not an identifier. */
+const HEALTH_ID_SEGMENT = /^[a-z0-9][a-z0-9_.-]{0,59}$/;
+export const splitHealthReason = (reason) => {
+  const raw = String(reason == null ? "" : reason).trim();
+  if (!raw) return { id: "", detail: "" };
+  const parts = raw.split(":");
+  const idParts = [];
+  // At most TWO — `namespace:id`. A third id-shaped segment is already the detail
+  // (`compaction:pinned_dropped:2`), which is exactly what the copy map treats it as.
+  while (idParts.length < 2 && parts.length && HEALTH_ID_SEGMENT.test(parts[0].trim())) idParts.push(parts.shift().trim());
+  const detail = parts.join(":").trim();
+  return idParts.length
+    ? { id: idParts.join(":"), detail }
+    : { id: VA_HEALTH_REASON_UNKNOWN, detail: raw };
+};
+
 /**
  * The consecutive-failed-tick counter lives in ONE row and is written by the tick.
  *
@@ -998,12 +1052,16 @@ export const recordTickHealth = async (store, agent, okTick, { reason = "", now 
   // still a tick somebody could watch, and only counting successes would let a broken
   // agent sit in shadow mode for ever with nothing saying why.
   const prepareTicks = (Number(prev && prev.prepareTicks) || 0) + (phase === "prepare" ? 1 : 0);
+  // F-524 — the ID is what is stored and shown; the detail is filed separately and is
+  // never projected to the tab. See the long note above `splitHealthReason`.
+  const split = okTick ? { id: "", detail: "" } : splitHealthReason(reason);
   const row = {
     consecutiveFailures,
     prepareTicks,
     lastTickAt: nowIso(now),
     lastOkAt: okTick ? nowIso(now) : ((prev && prev.lastOkAt) || null),
-    lastReason: okTick ? null : safeText(reason, 300),
+    lastReason: okTick ? null : (safeText(split.id, 120) || null),
+    lastDetail: okTick || !split.detail ? null : safeText(split.detail, VA_HEALTH_DETAIL_MAX),
   };
   // The TTL is REFRESHED here, on every tick (F-469): a live agent's counter can never
   // expire, and one that stopped ticking 90 days ago is not a counter anybody reads.
@@ -1016,7 +1074,21 @@ export const readHealth = async (store, agent) => {
   try {
     const row = (await store.get(vaHealthKey(agent))) || { consecutiveFailures: 0 };
     const n = Number(row.consecutiveFailures) || 0;
-    return { ok: true, consecutiveFailures: n, prepareTicks: Number(row.prepareTicks) || 0, banner: n >= VA_HEALTH_BANNER_AT, lastOkAt: row.lastOkAt || null, lastReason: row.lastReason || null };
+    /* F-524: `lastReason` is an ID and `lastDetail` is the fault's fingerprint. BOTH are
+       returned — the owner reading storage needs the second one — and `agentStatus`
+       projects only the first. A row written before this split carries an id with the
+       detail glued on; `splitHealthReason` is applied on the way OUT as well so a legacy
+       row cannot print an exception at the admin either. */
+    const legacy = splitHealthReason(row.lastReason || "");
+    return {
+      ok: true,
+      consecutiveFailures: n,
+      prepareTicks: Number(row.prepareTicks) || 0,
+      banner: n >= VA_HEALTH_BANNER_AT,
+      lastOkAt: row.lastOkAt || null,
+      lastReason: row.lastReason ? (legacy.id || null) : null,
+      lastDetail: row.lastDetail || (row.lastReason ? (legacy.detail || null) : null),
+    };
   } catch (e) {
     return fail("health_read_failed", { detail: String((e && e.message) || e) });
   }

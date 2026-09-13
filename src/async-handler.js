@@ -26,7 +26,10 @@ import { chat as forgeLlmChatApi } from "@forge/llm";
 // Until 1.3 this consumer called forgeLlmChatApi with whatever model the saved config
 // carried, UNCLAMPED: a stale or downgraded frontier id billed the vendor from every
 // queued job while the synchronous path refused it. Same rule, one home, both seams.
-import { clampForgeLlmModel, FORGE_LLM_DEFAULT, EDITION_IDS } from "./shared/edition.js";
+import {
+  clampForgeLlmModel, FORGE_LLM_DEFAULT, EDITION_IDS,
+  MANAGED_PROVIDER_ID, MANAGED_DEFAULT_MODEL, clampManagedModel,
+} from "./shared/edition.js";
 // Heavy post-functions (MCP-backed: generate-doc, research, fact-checked semantics)
 // are queued by executePostFunction and run HERE under this consumer's 120s timeout —
 // the inline jira:workflowPostFunction invocation is hard-capped at 25s by the platform.
@@ -77,6 +80,15 @@ import {
   // so a KVS wobble on a BYOK tenant sent every queued task to the Forge LLM — the
   // vendor's bill — and it SUCCEEDED, so the failure was invisible.
   readProviderConfigFresh as getProviderConfig,
+  // THE MANAGED ENGINE, read from index.js and never re-derived here. The env var name
+  // appears in exactly ONE function in this repo (readManagedKey, src/index.js); this
+  // consumer gets the credential and the availability verdict through these two
+  // accessors, and the ENDPOINT through the same literal the sync adapter pins to. A
+  // second env read here is precisely the split-brain the provider-slots module exists
+  // to prevent — and with a secret, the cost of the split is a leak, not a drift.
+  managedKeyForConsumer,
+  managedCloudStatus,
+  PROVIDER_OPENROUTER_BASE_URL,
 } from "./index";
 import { estimateTaskTokens, BUDGET_WAIT_HORIZON_MS, MAX_BUDGET_DEFER_DELAY_S, TOKEN_SPENDING_TASK_TYPES } from "./shared/ai-budget.js";
 // Learned memories — injected into static-PF reviews and persisted by the
@@ -153,6 +165,11 @@ const getOpenAIKey = async (providerOverride = null) => {
     // already reported to the caller.
     if (!provider) return null;
     if (provider === "atlassian") return "atlassian-forge-llm";
+    // The managed engine's credential is a Forge ENV VAR, not a KVS slot — and env vars
+    // ARE visible to this consumer (same app, same deployment), so the "fresh read every
+    // task" policy above is satisfied for free: there is nothing cached to go stale.
+    // `null` when missing or killed, which the callers already report as "no key".
+    if (provider === MANAGED_PROVIDER_ID) return managedKeyForConsumer();
     let byokKey = await storage.get(providerKeySlot(provider));
     // Legacy migration fallback
     if (!byokKey) {
@@ -190,6 +207,7 @@ const PROVIDER_DEFAULT_MODELS = {
   openrouter: "openai/gpt-5.4-mini",
   anthropic: "claude-haiku-4-5-20251001",
   atlassian: FORGE_LLM_DEFAULT, // imported, never re-typed — the two must not drift
+  managed: MANAGED_DEFAULT_MODEL, // likewise — src/shared/edition.js owns the offer
   lmstudio: "gpt-5.4-mini", // placeholder — LM Studio admins always save a model
   bedrock: "eu.anthropic.claude-sonnet-4-6", // EU inference-profile id (fallback; admins pick a model)
 };
@@ -203,6 +221,9 @@ const getOpenAIModel = async (providerOverride = null) => {
     // Read the saved model unconditionally — keyless providers (LM Studio, Forge LLM)
     // have no BYOK key, and gating on one made their saved model invisible here.
     const savedModel = await storage.get(providerModelSlot(provider));
+    // Same server-side backstop as the sync seam: a managed slot holding anything
+    // outside the offer resolves to Sonnet 5 rather than billing LeanZero for it.
+    if (savedModel && provider === MANAGED_PROVIDER_ID) return clampManagedModel(savedModel);
     if (savedModel) return savedModel;
     // OPENAI_MODEL env var only makes sense for OpenAI-style factory deployments.
     if (process.env.OPENAI_MODEL && (provider === "openai" || provider === "azure")) {
@@ -349,6 +370,39 @@ const callAIChatSimpleRaw = async ({ apiKey, model: requestedModel, systemPrompt
     } catch (e) { /* best-effort — fall back to the configured model */ }
   }
 
+  /*
+   * THE MANAGED ENGINE — the same gate the sync adapter applies (callAIChatRaw), at the
+   * seam that spends the most: queued work is the bulk of the bill (F-089's lesson), so
+   * an edition/allowance check that existed only on the synchronous path would be no
+   * check at all. It runs BEFORE the request is built, never after.
+   *
+   * FRESH reads, like everything else in this consumer: it caches nothing, and a
+   * memoised allowance here would let a spent month keep buying frontier tokens from a
+   * warm container. A null allowance means "no ceiling known" and does not pause.
+   */
+  let managedKey = null;
+  if (provider === MANAGED_PROVIDER_ID) {
+    const status = managedCloudStatus();
+    if (!status.available) return { ok: false, status: 0, error: `CogniRunner Cloud AI is unavailable (${status.reason})` };
+    let edition = EDITION_IDS.STANDARD;
+    let allowance = null;
+    try {
+      [edition, allowance] = await Promise.all([currentEditionFresh(), readForgeLlmAllowance()]);
+    } catch (e) {
+      // FAIL-CLOSED here, unlike the Forge LLM clamp beside it: there is no cheaper
+      // managed model to fall back to, so an unreadable edition cannot be resolved by
+      // downgrading. `edition` stays Standard and the next line refuses.
+      edition = EDITION_IDS.STANDARD;
+    }
+    if (edition !== EDITION_IDS.ADVANCED) return { ok: false, status: 0, error: "CogniRunner Cloud AI needs the Coder edition (needs-coder-edition)" };
+    if (allowance && allowance.level === "hard") return { ok: false, status: 0, error: "This month's CogniRunner Cloud AI allowance is used up (allowance-exhausted)" };
+    // Pin the credential, the endpoint and the model — never the caller's, never the
+    // admin's base URL. Identical to the sync adapter's managed branch.
+    managedKey = managedKeyForConsumer();
+    baseUrl = PROVIDER_OPENROUTER_BASE_URL;
+    model = clampManagedModel(model);
+  }
+
   // Atlassian-hosted Forge LLM — chat() is OpenAI-chat-completions-shaped.
   // No response_format: JSON mode is enforced via the system message.
   if (provider === "atlassian") {
@@ -456,14 +510,17 @@ const callAIChatSimpleRaw = async ({ apiKey, model: requestedModel, systemPrompt
     return callLmStudioNativeSimple({ apiKey, model, systemPrompt, userMessage, jsonMode, baseUrl });
   }
 
-  // OpenAI-compatible (OpenAI, Azure, OpenRouter)
+  // OpenAI-compatible (OpenAI, Azure, OpenRouter, and the managed engine, which IS
+  // OpenRouter with LeanZero's credential).
   const openaiHeaders = { "Content-Type": "application/json" };
   if (provider === "azure") {
     openaiHeaders["api-key"] = apiKey;
   } else {
-    openaiHeaders["Authorization"] = `Bearer ${apiKey}`;
+    // On the managed engine whatever the caller passed is ignored — only the env-var
+    // credential may reach OpenRouter on LeanZero's account.
+    openaiHeaders["Authorization"] = `Bearer ${provider === MANAGED_PROVIDER_ID ? managedKey : apiKey}`;
   }
-  if (provider === "openrouter") {
+  if (provider === "openrouter" || provider === MANAGED_PROVIDER_ID) {
     openaiHeaders["HTTP-Referer"] = "https://leanzero.net";
     openaiHeaders["X-Title"] = "CogniRunner";
   }
@@ -507,7 +564,12 @@ const callAIChatSimpleRaw = async ({ apiKey, model: requestedModel, systemPrompt
   if ((!content || !content.trim()) && typeof msg?.reasoning_content === "string" && msg.reasoning_content.trim()) {
     content = msg.reasoning_content;
   }
-  return { ok: true, content, tokens: data.usage?.total_tokens };
+  // `usage` and the EFFECTIVE model ride back alongside the flat `tokens`, exactly as
+  // the Forge LLM arm does: the vendor-billed cost maths needs the prompt/completion
+  // split and the cache counters (the managed engine reports
+  // `prompt_tokens_details.cached_tokens` / `cache_write_tokens`), and `tokens` alone
+  // cannot be priced. Harmless for the BYOK providers, which are never costed.
+  return { ok: true, content, tokens: data.usage?.total_tokens, usage: data.usage, model };
 };
 
 /**

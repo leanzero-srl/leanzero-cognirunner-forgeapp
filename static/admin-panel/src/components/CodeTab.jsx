@@ -55,8 +55,61 @@ import {
 } from "./refusal";
 import { agentCapabilityCopy } from "../../../../src/shared/edition.js";
 import { GIT_PROVIDER_KINDS, gitProviderKindMeta, parseRepoList, formatRepoList } from "../../../../src/shared/git-ids.js";
+import { SCAFFOLDS } from "../../../../src/shared/git-scaffolds.js";
 
 const KIND_OPTIONS = GIT_PROVIDER_KINDS.map((k) => ({ value: k, label: gitProviderKindMeta(k).label }));
+
+/* =========================================================================
+ * F-526 - THE SCAFFOLD VARIABLES THE PIPELINE IS RENDERED WITH.
+ *
+ * The backend has accepted `scaffoldVars` since the resolver was written, and this
+ * screen is the only surface a human can reach; it used to send nothing, so every
+ * pipeline the product installed was rendered with the `forge-pipeline` DEFAULTS:
+ * an app called "Forge app" building a folder called `static/app`. A repository
+ * whose Custom UI lives anywhere else got a workflow that cannot even start its
+ * build step, and the setup was still recorded as installed.
+ *
+ * THE DEFAULTS ARE READ FROM THE SCAFFOLD, never retyped here. A second copy of
+ * "static/app" in this file is the next version of this finding.
+ * ========================================================================= */
+const PIPELINE_SCAFFOLD_ID = "forge-pipeline";
+const PIPELINE_VAR_DEFAULTS = (SCAFFOLDS[PIPELINE_SCAFFOLD_ID] || {}).vars || {};
+const DEFAULT_APP_NAME = PIPELINE_VAR_DEFAULTS.APP_NAME || "";
+const DEFAULT_UI_DIR = PIPELINE_VAR_DEFAULTS.UI_DIR || "";
+
+/* The renderer's own character set (SAFE_VAR in src/shared/git-scaffolds.js). A value
+   this form lets through and the backend then throws on is a setup that dies mid-chain,
+   so the form refuses the same things, in words, before anything is queued. */
+const VAR_CHARS = /^[A-Za-z0-9 ._/-]+$/;
+
+/** null when the value is usable, otherwise the sentence to show under the field. */
+function scaffoldVarError(raw, what) {
+  const v = String(raw == null ? "" : raw).trim();
+  if (!v) return `${what} cannot be empty.`;
+  if (v.length > 80) return `${what} must be 80 characters or fewer.`;
+  if (!VAR_CHARS.test(v)) return `${what} may only contain letters, numbers, spaces and . _ - /`;
+  /* Path traversal is refused on BOTH values, not only the folder: the renderer's
+     character set allows dots and slashes, so "does this climb out of the checkout"
+     is the question, and an app name has no business climbing either. */
+  if (v.split("/").some((seg) => seg === "..") || v.startsWith("/")) return `${what} cannot contain .. or start with /`;
+  return null;
+}
+
+/** The app's name as the pasted manifest states it, or "" when it does not say.
+ *  Only the `app:` block is read, and only its `name:` key. */
+function appNameFromManifest(yaml) {
+  const lines = String(yaml || "").split(/\r?\n/);
+  let inApp = false;
+  for (const line of lines) {
+    if (/^app:\s*$/.test(line)) { inApp = true; continue; }
+    if (inApp) {
+      if (/^\S/.test(line)) break;                       // the app block ended
+      const m = line.match(/^\s+name:\s*(.+?)\s*$/);
+      if (m) return m[1].replace(/^["']|["']$/g, "").trim();
+    }
+  }
+  return "";
+}
 
 /** The one sentence an admin must agree to before a deploy credential is stored.
  *  The BACKEND is the gate (saveForgeIdentity refuses without `consent: true`); this is
@@ -173,6 +226,13 @@ function PipelineCard({ invoke, conn, repoId, onNeedIdentity }) {
   const [site, setSite] = useState("");
   const [product, setProduct] = useState("Jira");
   const [branch, setBranch] = useState("");
+  /* F-526: the two scaffold variables, seeded from the scaffold's own defaults so the
+     form never shows a blank where the renderer would use a value. */
+  const [appName, setAppName] = useState(DEFAULT_APP_NAME);
+  const [uiDir, setUiDir] = useState(DEFAULT_UI_DIR);
+  /* Once the admin has typed a name, the manifest stops overwriting it. A prefill that
+     keeps winning is a field the reader cannot correct. */
+  const appNameTouched = useRef(false);
   const [busy, setBusy] = useState(false);
   const [deploying, setDeploying] = useState(false);
   const [run, setRun] = useState(null);
@@ -231,14 +291,31 @@ function PipelineCard({ invoke, conn, repoId, onNeedIdentity }) {
     timerRef.current = setTimeout(() => { if (tokenRef.current === token) readRef.current(token, 1); }, POLL_MS);
   };
 
+  /* The manifest is the one place the app's real name is written down, so pasting it
+     answers the question instead of asking it. It only ever fills an untouched field. */
+  const onManifestChange = (text) => {
+    setManifestYaml(text);
+    if (appNameTouched.current) return;
+    const fromManifest = appNameFromManifest(text);
+    if (fromManifest) setAppName(fromManifest);
+  };
+
+  const appNameErr = scaffoldVarError(appName, "The app name");
+  const uiDirErr = scaffoldVarError(uiDir, "The Custom UI folder");
+  const varsOk = !appNameErr && !uiDirErr;
+
   const handleSetup = async () => {
-    if (busy) return;
+    if (busy || !varsOk) return;
     setBusy(true); setErr(null);
     try {
       const r = await invoke("setupGitPipeline", {
         connectionId: conn.id, repo: repoId,
         manifestYaml, site: site.trim(), product,
         branch: branch.trim() || undefined,
+        /* F-526: the whole point. These are the scaffold's variable NAMES
+           (src/shared/git-scaffolds.js), and the backend passes them straight to
+           renderScaffold, which ignores any key the scaffold does not declare. */
+        scaffoldVars: { APP_NAME: appName.trim(), UI_DIR: uiDir.trim() },
       });
       if (r && r.success) {
         setRow(r.status || null);
@@ -403,7 +480,7 @@ function PipelineCard({ invoke, conn, repoId, onNeedIdentity }) {
             <textarea id={`pipe-manifest-${conn.id}-${repoId}`} className="code-textarea" rows={7}
               value={manifestYaml} spellCheck={false}
               placeholder="Paste the app's manifest.yml here"
-              onChange={(e) => setManifestYaml(e.target.value)} />
+              onChange={(e) => onManifestChange(e.target.value)} />
             {/* PASTE ONLY, and deliberately: a native file control is browser chrome the
                 app cannot style, which is the same rule that keeps native selects and
                 confirms out of every screen here. */}
@@ -427,8 +504,48 @@ function PipelineCard({ invoke, conn, repoId, onNeedIdentity }) {
                 placeholder="the repository's default branch" onChange={(e) => setBranch(e.target.value)} />
             </div>
           </div>
+          {/* F-526: the two values the workflow is RENDERED with. Before this they were
+              never asked for and the scaffold's defaults shipped to every repository. */}
+          <div className="code-pipe-fields">
+            <div className="form-group">
+              <label className="label" htmlFor={`pipe-appname-${conn.id}-${repoId}`}>App name</label>
+              <input id={`pipe-appname-${conn.id}-${repoId}`} className="code-input" type="text" value={appName}
+                /* No maxLength: a value silently clipped at 80 is a pipeline rendered
+                   with a name its author did not write. The rule is said out loud. */
+                placeholder={DEFAULT_APP_NAME}
+                onChange={(e) => { appNameTouched.current = true; setAppName(e.target.value); }} />
+              <p className="hint">The workflow registers the app under this name the first time it runs. It is filled in from the manifest you paste above when that manifest names the app.</p>
+              {appNameErr && <p className="code-field-err" role="alert">{appNameErr}</p>}
+            </div>
+            <div className="form-group">
+              <label className="label" htmlFor={`pipe-uidir-${conn.id}-${repoId}`}>Custom UI folder</label>
+              <input id={`pipe-uidir-${conn.id}-${repoId}`} className="code-input" type="text" value={uiDir}
+                placeholder={DEFAULT_UI_DIR}
+                onChange={(e) => setUiDir(e.target.value)} />
+              <p className="hint">The folder that holds the Custom UI's package.json, relative to the repository root. Type "none" for a backend only app that has no Custom UI to build.</p>
+              {uiDirErr && <p className="code-field-err" role="alert">{uiDirErr}</p>}
+            </div>
+          </div>
+          {/* The REVIEW: the values as the committed workflow will carry them, read back
+              before anything is written. A setup is ~15 writes to someone's repository
+              and there is no undo, so the last thing before the button is the truth. */}
+          <div className="code-pipe-review">
+            <span className="code-pipe-review-title">This pipeline will be written with</span>
+            <span className="code-fact"><span className="code-fact-k">FORGE_APP_NAME</span><span className="code-fact-v code-pipe-review-v">{appName.trim() || DEFAULT_APP_NAME}</span></span>
+            <span className="code-fact"><span className="code-fact-k">working-directory</span><span className="code-fact-v code-pipe-review-v">{uiDir.trim() || DEFAULT_UI_DIR}</span></span>
+          </div>
+          {uiDir.trim().toLowerCase() === "none" && (
+            /* Honest about the gap rather than quiet about it: the committed workflow
+               always carries the Custom UI build step, so a backend only app gets a step
+               pointed at a folder called "none". Removing the step needs a change to the
+               scaffold itself, which this screen does not own. */
+            <div className="code-pipe-warn" role="alert">
+              <span className="code-pipe-err-title">A backend only app still gets a Custom UI build step</span>
+              <span className="code-pipe-err-text">The deploy workflow this app commits always contains the Custom UI build, so it will point at a folder called "none" and fail there. Delete that step from the committed workflow, or point this at a folder that does hold a package.json.</span>
+            </div>
+          )}
           <div className="code-form-actions">
-            <button className="btn-primary btn-small" disabled={busy || !manifestYaml.trim() || !site.trim()} onClick={handleSetup}>
+            <button className="btn-primary btn-small" disabled={busy || !manifestYaml.trim() || !site.trim() || !varsOk} onClick={handleSetup}>
               {busy ? "Queueing…" : status === "partial" ? "Set up again" : "Set up pipeline"}
             </button>
           </div>

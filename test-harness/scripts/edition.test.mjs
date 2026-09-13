@@ -101,8 +101,10 @@ ok(EDITIONS.standard.id === "standard" && EDITIONS.advanced.id === "advanced" &&
 // =====================================================================================
 // Feature gate
 // =====================================================================================
-ok(ADVANCED_FEATURES.length === 2 && ADVANCED_FEATURES.every((f) => f.id && f.label),
-  "ADVANCED_FEATURES has two {id,label} rows");
+ok(ADVANCED_FEATURES.length === 3 && ADVANCED_FEATURES.every((f) => f.id && f.label),
+  "ADVANCED_FEATURES has three {id,label} rows");
+ok(isFeatureAllowed("advanced", "managed-cloud-ai") === true, "the managed engine is allowed on advanced");
+ok(isFeatureAllowed("standard", "managed-cloud-ai") === false, "the managed engine is refused on standard");
 ok(isFeatureAllowed("advanced", "coder") === true, "coder allowed on advanced");
 ok(isFeatureAllowed("standard", "coder") === false, "coder refused on standard");
 ok(isFeatureAllowed("standard", "forge-llm-frontier-models") === false, "frontier models refused on standard");

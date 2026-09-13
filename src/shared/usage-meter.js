@@ -19,7 +19,16 @@
 
 // Providers are clamped to this fixed set so byProvider can never grow unbounded
 // (the KVS key has no TTL — boundedness is required by the core contract).
-export const METER_PROVIDERS = ["openai", "azure", "openrouter", "anthropic", "bedrock", "lmstudio", "atlassian"];
+export const METER_PROVIDERS = ["openai", "azure", "openrouter", "anthropic", "bedrock", "lmstudio", "atlassian", "managed"];
+
+/**
+ * THE VENDOR-BILLED PROVIDERS - the ONE list of engines whose tokens land on LeanZero's
+ * bill rather than the tenant's. Both get a per-tier cost bucket here and both are
+ * measured against the SAME monthly allowance (vendorAllowanceStatus, below); BYOK spend
+ * is the customer's and is deliberately never costed. Adding a provider to this list is
+ * a pricing decision.
+ */
+export const VENDOR_BILLED_PROVIDERS = ["atlassian", "managed"];
 const clampProvider = (p) => (METER_PROVIDERS.includes(p) ? p : "other");
 
 const nn = (v) => {
@@ -55,7 +64,17 @@ export const normalizeUsage = (u) => {
    */
   const cacheRead = nn(u.cache_read_tokens ?? u.cache_read_input_tokens
     ?? (u.prompt_tokens_details && u.prompt_tokens_details.cached_tokens));
-  const cacheCreation = nn(u.cache_creation_tokens ?? u.cache_creation_input_tokens);
+  /*
+   * OpenRouter (and therefore the managed engine) reports the cache WRITE under
+   * `usage.prompt_tokens_details.cache_write_tokens` - a third spelling of the same
+   * quantity, documented at https://openrouter.ai/docs/features/prompt-caching
+   * ("cache_write_tokens counts prompt tokens written to the cache, and cached_tokens
+   * counts prompt tokens read from it", read 2026-09-13). Without this fallback a
+   * managed cache write was counted as zero while the read half was counted, which
+   * reads as free caching in the cost view.
+   */
+  const cacheCreation = nn(u.cache_creation_tokens ?? u.cache_creation_input_tokens
+    ?? (u.prompt_tokens_details && u.prompt_tokens_details.cache_write_tokens));
   return { prompt, completion, total, cacheRead, cacheCreation, hadUsage: (prompt + completion + total) > 0 };
 };
 
@@ -99,6 +118,45 @@ export const forgeLlmCostUsd = (tier, promptTokens, completionTokens) => {
 };
 
 /*
+ * MANAGED ENGINE PRICE TABLE — USD per MILLION tokens, by model TIER, for CogniRunner
+ * Cloud AI (LeanZero's OpenRouter key). These are the Anthropic list rates the plan's
+ * §3.17 costed against (cached 2026-06-24); OpenRouter passes the upstream price
+ * through, so they are the right order of magnitude but they are still an ESTIMATE
+ * driving the allowance meter, not a bill. `usage.cache_discount` is OpenRouter's own
+ * exact figure and is the thing to reconcile against before any pricing decision.
+ */
+export const MANAGED_USD_PER_M = {
+  haiku: { in: 1, out: 5 },
+  sonnet: { in: 2, out: 10 },
+  opus: { in: 5, out: 25 },
+};
+
+/** Cache multipliers on the INPUT rate — a read is ~0.1x, a 5-minute write ~1.25x. */
+export const CACHE_READ_MULTIPLIER = 0.1;
+export const CACHE_WRITE_MULTIPLIER = 1.25;
+
+/**
+ * Estimated USD for one managed-engine call, cache-aware.
+ *
+ * ON OPENROUTER THE CACHE COUNTERS ARE SUBSETS OF `prompt_tokens` (the OpenAI shape —
+ * see normalizeUsage's F-366 note, and OpenRouter's prompt-caching doc). So the
+ * full-rate input is what is LEFT after the cached and written tokens are taken out;
+ * pricing prompt at full rate AND adding the cache lines would bill the same tokens
+ * twice and drive the allowance to "hard" on caching that actually saved money.
+ * Unknown tier → 0, never a guess upward.
+ */
+export const managedCostUsd = (tier, promptTokens, completionTokens, cacheReadTokens, cacheCreationTokens) => {
+  const rate = MANAGED_USD_PER_M[tier];
+  if (!rate) return 0;
+  const prompt = nn(promptTokens);
+  const read = Math.min(nn(cacheReadTokens), prompt);
+  const write = Math.min(nn(cacheCreationTokens), Math.max(0, prompt - read));
+  const full = Math.max(0, prompt - read - write);
+  const inputUsd = (full + read * CACHE_READ_MULTIPLIER + write * CACHE_WRITE_MULTIPLIER) * rate.in;
+  return (inputUsd + nn(completionTokens) * rate.out) / 1e6;
+};
+
+/*
  * MONTHLY VENDOR ALLOWANCE. Forge LLM tokens are billed to LeanZero, so a Coder
  * tenant gets an allowance that scales with the seats they pay for:
  * clamp(seats × $2.00, $40, $800) per month. Soft at 80% (warn), hard at 100%
@@ -136,7 +194,17 @@ const mergeForgeLlm = (f) => {
 // purpose (F-366): cache reads are billed input the cost views must be able to
 // price, and `prompt` is the paced figure the TPM ledger owns. Old stored months
 // have neither key — nn() reads them as 0.
-const emptyMonth = (key) => ({ key, calls: 0, prompt: 0, completion: 0, total: 0, cacheReadTokens: 0, cacheCreationTokens: 0, byProvider: {}, forgeLlm: emptyForgeLlm() });
+/*
+ * The managed engine's own cost bucket. SAME SHAPE as the Forge LLM block on purpose —
+ * both are vendor-billed, both are costed per tier, and mergeForgeLlm repairs both — so
+ * the allowance maths can sum them without knowing which is which. `clampedCalls` stays
+ * 0 here: an exhausted allowance PAUSES the managed engine (agentCapability returns
+ * "allowance-exhausted"); it does not downgrade it to a cheaper model the way Forge LLM
+ * drops to Haiku, so there is no downgrade to count.
+ */
+const emptyManaged = () => emptyForgeLlm();
+
+const emptyMonth = (key) => ({ key, calls: 0, prompt: 0, completion: 0, total: 0, cacheReadTokens: 0, cacheCreationTokens: 0, byProvider: {}, forgeLlm: emptyForgeLlm(), managed: emptyManaged() });
 const emptyDay = (key) => ({ key, calls: 0, prompt: 0, completion: 0, total: 0 });
 
 export const emptyState = () => ({ month: emptyMonth(null), today: emptyDay(null), history: [] });
@@ -156,7 +224,7 @@ const rolled = (state, nowMs) => {
     if (month.key) history = [{ key: month.key, calls: nn(month.calls), total: nn(month.total) }, ...history].slice(0, 6);
     month = emptyMonth(mk);
   } else {
-    month = { ...month, key: mk, byProvider: { ...(month.byProvider || {}) }, forgeLlm: mergeForgeLlm(month.forgeLlm) };
+    month = { ...month, key: mk, byProvider: { ...(month.byProvider || {}) }, forgeLlm: mergeForgeLlm(month.forgeLlm), managed: mergeForgeLlm(month.managed) };
   }
   if (today.key !== dk) today = emptyDay(dk);
   else today = { ...today, key: dk };
@@ -172,7 +240,7 @@ export const bumpCounters = (state, { provider, usage, nowMs, model, tier, costU
   const s = rolled(state, nowMs);
   const u = usage && typeof usage === "object" ? usage : normalizeUsage(usage);
   const p = clampProvider(provider);
-  const month = { ...s.month, byProvider: { ...s.month.byProvider }, forgeLlm: mergeForgeLlm(s.month.forgeLlm) };
+  const month = { ...s.month, byProvider: { ...s.month.byProvider }, forgeLlm: mergeForgeLlm(s.month.forgeLlm), managed: mergeForgeLlm(s.month.managed) };
   month.calls += 1;
   month.prompt += nn(u.prompt);
   month.completion += nn(u.completion);
@@ -192,6 +260,23 @@ export const bumpCounters = (state, { provider, usage, nowMs, model, tier, costU
       : forgeLlmCostUsd(t, u.prompt, u.completion);
     month.forgeLlm.estUsd += cost;
   }
+  /*
+   * The managed engine's bucket. Its model ids are OpenRouter-namespaced
+   * ("anthropic/claude-sonnet-5"), which forgeLlmTierFromModel already classifies by
+   * substring, so the same tier helper serves both. Cost is CACHE-AWARE here and flat
+   * on the Forge LLM side because only this path reports cache counters at all.
+   */
+  if (p === "managed") {
+    const t = FORGE_TIERS.includes(tier) ? tier : forgeLlmTierFromModel(model);
+    if (t) {
+      const b = month.managed.byTier[t];
+      month.managed.byTier[t] = { calls: b.calls + 1, prompt: b.prompt + nn(u.prompt), completion: b.completion + nn(u.completion) };
+    }
+    const cost = typeof costUsd === "number" && Number.isFinite(costUsd) && costUsd > 0
+      ? costUsd
+      : managedCostUsd(t, u.prompt, u.completion, u.cacheRead, u.cacheCreation);
+    month.managed.estUsd += cost;
+  }
   const today = { ...s.today };
   today.calls += 1;
   today.total += nn(u.total);
@@ -202,7 +287,7 @@ export const bumpCounters = (state, { provider, usage, nowMs, model, tier, costU
 export const summarizeState = (state, nowMs) => {
   const s = rolled(state, nowMs);
   return {
-    month: { key: s.month.key, calls: nn(s.month.calls), prompt: nn(s.month.prompt), completion: nn(s.month.completion), total: nn(s.month.total), cacheReadTokens: nn(s.month.cacheReadTokens), cacheCreationTokens: nn(s.month.cacheCreationTokens), byProvider: s.month.byProvider || {}, forgeLlm: mergeForgeLlm(s.month.forgeLlm) },
+    month: { key: s.month.key, calls: nn(s.month.calls), prompt: nn(s.month.prompt), completion: nn(s.month.completion), total: nn(s.month.total), cacheReadTokens: nn(s.month.cacheReadTokens), cacheCreationTokens: nn(s.month.cacheCreationTokens), byProvider: s.month.byProvider || {}, forgeLlm: mergeForgeLlm(s.month.forgeLlm), managed: mergeForgeLlm(s.month.managed) },
     today: { key: s.today.key, calls: nn(s.today.calls), total: nn(s.today.total) },
     history: s.history || [],
   };
@@ -237,13 +322,31 @@ function forgeLlmTierFromModel(model) {
  * level: "ok" < 80%, "soft" >= 80%, "hard" >= 100%. A non-positive allowance is
  * treated as "ok" with pct 0 — an unknown allowance must never pause the product.
  */
-export const forgeLlmAllowanceStatus = (state, allowanceUsd, nowMs = Date.now()) => {
-  const est = summarizeState(state, nowMs).month.forgeLlm.estUsd || 0;
+export const vendorAllowanceStatus = (state, allowanceUsd, nowMs = Date.now()) => {
+  const month = summarizeState(state, nowMs).month;
+  /*
+   * ONE ALLOWANCE, BOTH VENDOR-BILLED ENGINES (plan §3.17 point 5). Forge LLM spend and
+   * managed-engine spend come out of the same LeanZero budget for the same tenant, so
+   * they are summed against the same ceiling. Splitting them into two meters would let a
+   * tenant spend the allowance twice; the per-engine figures stay visible in
+   * `byEngine` so a panel can still say where the money went.
+   */
+  const forgeUsd = (month.forgeLlm && month.forgeLlm.estUsd) || 0;
+  const managedUsd = (month.managed && month.managed.estUsd) || 0;
+  const est = forgeUsd + managedUsd;
   const allowance = typeof allowanceUsd === "number" && Number.isFinite(allowanceUsd) && allowanceUsd > 0 ? allowanceUsd : 0;
   const pct = allowance > 0 ? est / allowance : 0;
   const level = allowance > 0 ? (pct >= 1 ? "hard" : (pct >= FORGE_LLM_ALLOWANCE.softPct ? "soft" : "ok")) : "ok";
-  return { estUsd: est, allowanceUsd: allowance, pct, level };
+  return { estUsd: est, allowanceUsd: allowance, pct, level, byEngine: { forgeLlm: forgeUsd, managed: managedUsd } };
 };
+
+/**
+ * The name every existing caller uses. It is an ALIAS, not a second maths: the allowance
+ * was never "the Forge LLM allowance", it was always "the vendor's allowance", and the
+ * managed engine joined the same bill. Kept so the backend, the consumer and the admin
+ * panel do not all have to be renamed in one commit — do NOT give it a different body.
+ */
+export const forgeLlmAllowanceStatus = vendorAllowanceStatus;
 
 /** Count one allowance-forced downgrade to Haiku. Returns a NEW state (pure). */
 export const noteForgeLlmClamp = (state, nowMs = Date.now()) => {

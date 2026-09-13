@@ -92,8 +92,14 @@ ok(!/FORGE_LLM_MODELS\s*=/.test(codeOnly), "src/index.js does not redefine FORGE
   ok(/getProviderConfig\(\)/.test(b), "the adapter reads edition+allowance from the 30s provider memo");
   // F-089: the clamp ITSELF now lives in forgeLlmBillingClamp — ONE home shared with the
   // async consumer, which until 1.3 clamped by edition only. The adapter just feeds it.
-  ok(/forgeLlmBillingClamp\(requested, \{ edition, allowance \}\)/.test(b),
-    "the adapter applies the SHARED billing clamp (edition + allowance)");
+  // F-448 — the property is "the clamp is fed the requested model, the edition and the
+  // allowance", not "allowance is the last key in the literal".
+  {
+    const args = (b.match(/forgeLlmBillingClamp\(([^)]*)\)/) || [, null])[1];
+    ok(args !== null, "the adapter calls the SHARED billing clamp");
+    ok(!!args && /\brequested\b/.test(args) && /\bedition\b/.test(args) && /\ballowance\b/.test(args),
+      "the adapter applies the SHARED billing clamp (edition + allowance)");
+  }
   ok(/clampForgeLlmModel\(EDITION_IDS\.STANDARD, requested\)/.test(b),
     "any error resolving edition/allowance FAILS SOFT to the Standard clamp — never an exception into a transition");
   ok(!/await storage\.get\(providerModelSlot/.test(b), "the adapter adds NO new KVS read of its own inside the race");
@@ -129,8 +135,15 @@ ok(!/FORGE_LLM_MODELS\s*=/.test(codeOnly), "src/index.js does not redefine FORGE
   ok(/\{ provider, usageLike, model \}/.test(b), "recordAiUsage's signature gained `model`");
   ok(/provider === "atlassian"/.test(b), "only the atlassian provider is costed (BYOK spend is the customer's)");
   ok(/forgeLlmTier\(model\)/.test(b) && /forgeLlmCostUsd\(tier/.test(b), "tier + cost are derived from the model");
-  ok(/bumpCounters\(state, \{ provider: provider \|\| "unknown", usage, nowMs: Date\.now\(\), model, tier, costUsd \}\)/.test(b),
-    "the tier/cost are passed into bumpCounters");
+  // F-448 — assert what bumpCounters RECEIVES, key by key.
+  {
+    const args = (b.match(/bumpCounters\(state,\s*\{([^}]*)\}\)/) || [, null])[1];
+    ok(args !== null, "the meter feeds bumpCounters an options literal");
+    ok(!!args && /\bprovider:\s*provider \|\| "unknown"/.test(args) && /\busage\b/.test(args)
+      && /\bnowMs:\s*Date\.now\(\)/.test(args) && /\bmodel\b/.test(args)
+      && /\btier\b/.test(args) && /\bcostUsd\b/.test(args),
+      "the tier/cost are passed into bumpCounters");
+  }
   ok(/metering is best-effort/.test(indexSrc), "the fail-open comment on the meter is still there");
 }
 {
@@ -436,8 +449,16 @@ ok(/rest\/api\/3\/users\/search/.test(codeOnly), "seats are counted from /rest/a
     const mod = codeOnly.match(/const getOpenAIModel = async \(\) => \{[\s\S]*?\n\};/);
     ok(!!mod, "found getOpenAIModel");
     const mb = mod ? mod[0] : "";
-    ok((mb.match(/if \(!provider\) return null;/g) || []).length === 2,
-      "BOTH provider reads in getOpenAIModel refuse a null provider (the tail read can fault on its own)");
+    // F-448 — the property is "EVERY provider read is followed by a refusal", not "there
+    // are exactly two refusals". A third read added without a guard must fail this, and a
+    // refactor to one read must not.
+    {
+      const reads = [...mb.matchAll(/const \{ provider \} = await getProviderConfig\(\);/g)].map((m) => m.index);
+      ok(reads.length >= 1, `getOpenAIModel reads the provider ${reads.length} time(s)`);
+      const guarded = reads.filter((i) => /^[\s\S]{0,900}?if \(!provider\) return null;/.test(mb.slice(i)));
+      ok(guarded.length === reads.length,
+        "EVERY provider read in getOpenAIModel is followed by a null-provider refusal (the tail read can fault on its own)");
+    }
     const iFirst = mb.indexOf("if (!provider) return null;");
     ok(iFirst > 0 && iFirst < mb.indexOf("_cachedModel = savedModel") && iFirst < mb.lastIndexOf("_cachedModel ="),
       "…and each refusal precedes every memo write, so a null-provider fault is never cached for 30s");

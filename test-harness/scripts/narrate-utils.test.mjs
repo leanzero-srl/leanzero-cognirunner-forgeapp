@@ -20,6 +20,7 @@
 import {
   clampNarrateLine, buildDryRunFacts, countChangeVerbs, CHANGE_VERB_LABEL,
 } from "../../src/shared/narrate-utils.js";
+import { hasLoneSurrogate } from "../../src/shared/text-clamp.js";
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) pass++; else { fail++; console.log("FAIL:", m); } };
@@ -145,6 +146,25 @@ eq(CHANGE_VERB_LABEL.transitionIssue, "Transition", "label: transitionIssue");
 eq(CHANGE_VERB_LABEL.setProperty, "Set property", "label: setProperty");
 eq(CHANGE_VERB_LABEL.createIssueLink, "Link issue", "label: createIssueLink");
 eq(Object.keys(CHANGE_VERB_LABEL).length, 10, "10 known change-verb labels");
+
+/* ── F-383 — AN EMOJI ON THE BOUNDARY IS NOT CUT IN HALF ──────────────────────────
+ * The clamps counted UTF-16 code UNITS, so a cut landing between the halves of a
+ * surrogate pair emitted a LONE SURROGATE into a prompt or a Jira write. They route
+ * through clampChars (src/shared/text-clamp.js) now. */
+{
+  const line = "a".repeat(59) + "🚀tail";
+  const cut = clampNarrateLine(line, 60);
+  ok(!hasLoneSurrogate(cut), "clampNarrateLine never emits a lone surrogate at the boundary");
+  eq(cut, "a".repeat(59) + "…", "…the pair is dropped WHOLE rather than halved");
+  ok(!hasLoneSurrogate(clampNarrateLine("🚀".repeat(400), 360)), "a line that is ALL pairs clamps cleanly");
+  eq(clampNarrateLine("ok 🚀 fine", 360), "ok 🚀 fine", "a string inside the budget is untouched");
+
+  // The facts blob truncates per value AND overall — both used to slice by code unit.
+  const facts = buildDryRunFacts([{ action: "setProperty", propKey: "p".repeat(59) + "🚀", key: "LZPT-1" }]);
+  ok(!hasLoneSurrogate(facts), "buildDryRunFacts never emits a lone surrogate in a truncated value");
+  const many = Array.from({ length: 40 }, () => ({ action: "addComment", body: "🚀".repeat(300) }));
+  ok(!hasLoneSurrogate(buildDryRunFacts(many)), "…nor at the 4000-char cap of the whole blob");
+}
 
 console.log(`\nnarrate-utils: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

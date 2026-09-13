@@ -41,7 +41,9 @@ const {
   COMMIT_MAX_FILE_BYTES,
   PR_BODY_MAX_BYTES,
   PR_COMMENT_RESOLVED_UNKNOWN,
+  clampBytes,
 } = m;
+const { hasLoneSurrogate } = await import(path.join(here, "..", "..", "src", "shared", "text-clamp.js"));
 
 let checks = 0;
 const ok = (cond, msg) => {
@@ -959,5 +961,26 @@ for (const msg of allMessages) {
 ok(allMessages.length >= 20, "the leak scan saw real messages (" + allMessages.length + ")");
 eq(redactSecrets("token=" + GH_TOKEN, [GH_TOKEN]), "token=***", "redactSecrets replaces the literal");
 ok(!redactSecrets("basic " + BASIC, [BB_EMAIL + ":" + BB_TOKEN]).includes(BB_TOKEN), "redactSecrets also covers the base64 Basic form");
+
+/* ── F-383 — clampBytes CUTS ON A CODE POINT, NEVER ON A CODE UNIT ────────────────
+ * The old body sliced by UTF-16 code units and shrank 64 units at a time, so a budget
+ * landing inside a surrogate pair (or inside a multibyte sequence) produced a LONE
+ * SURROGATE in a PR body or a diff hunk. The rule lives in src/shared/text-clamp.js now
+ * (clampUtf8Bytes), shared with clampChars. */
+{
+  const marker = "\n… [cut]";
+  const body = "a".repeat(9) + "🚀" + "b".repeat(50);   // the emoji is 4 UTF-8 bytes at offset 9
+  for (let budget = 20; budget <= 25; budget++) {
+    const r = clampBytes(body, budget, marker);
+    ok(!hasLoneSurrogate(r.text), `clampBytes(budget=${budget}) emits no lone surrogate`);
+    ok(r.truncated === true, `clampBytes(budget=${budget}) reports the truncation`);
+    ok(Buffer.byteLength(r.text, "utf8") <= budget, `clampBytes(budget=${budget}) stays inside the BYTE budget, MARKER INCLUDED`);
+  }
+  // the marker is 10 bytes, so a 23-byte budget leaves 13 for the payload: 9 "a" + the 4-byte pair.
+  eq(clampBytes(body, 23, marker).text, "a".repeat(9) + "🚀" + marker, "a budget that fits the pair keeps it whole");
+  eq(clampBytes(body, 22, marker).text, "a".repeat(9) + marker, "a budget one byte short drops it WHOLE");
+  eq(clampBytes("plain", 100, marker), { text: "plain", truncated: false }, "inside the budget, nothing is added");
+  ok(!hasLoneSurrogate(clampBytes("🚀".repeat(4000), DIFF_MAX_FILE_BYTES).text), "a hunk that is ALL pairs caps cleanly");
+}
 
 console.log("git-providers: " + checks + " assertions passed");

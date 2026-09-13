@@ -18,6 +18,8 @@
 // Any action NOT listed here still gets described via the generic fallback in
 // buildDryRunFacts and counted generically in countChangeVerbs — so no staged
 // write is ever invisible, even if the recorded set grows.
+import { clampChars } from "./text-clamp.js";
+
 export const CHANGE_VERB_LABEL = {
   updateIssue: "Update fields",
   editIssue: "Edit fields",
@@ -36,7 +38,11 @@ const truncVal = (v, n) => {
   const max = n || 140;
   let s = typeof v === "string" ? v : (() => { try { return JSON.stringify(v); } catch { return String(v); } })();
   s = String(s == null ? "" : s).replace(/\s+/g, " ").trim();
-  return s.length > max ? s.slice(0, max - 1) + "…" : s;
+  // F-383 — code POINTS, not code units: a slice between the halves of a surrogate pair
+  // puts a lone surrogate in the facts blob. ONE home: src/shared/text-clamp.js.
+  if (s.length <= max) return s;
+  const cut = clampChars(s, max - 1);
+  return cut === s ? s : cut + "…";
 };
 
 // changes[] (from testPostFunction) -> a bounded, one-line-per-change plain-text
@@ -67,7 +73,7 @@ export const buildDryRunFacts = (changes) => {
       }
     }
   });
-  return lines.join("\n").slice(0, 4000);
+  return clampChars(lines.join("\n"), 4000);
 };
 
 // Deterministic per-verb counts for the client-side chips (the AUTHORITATIVE source
@@ -98,6 +104,11 @@ export const clampNarrateLine = (raw, max) => {
     .trim()
     .replace(/^["'“”]+|["'“”]+$/g, "")
     .trim();
-  if (s.length > cap) s = s.slice(0, cap - 1).trimEnd() + "…";
+  // F-383 — the clamp is by code POINT (src/shared/text-clamp.js), so an emoji sitting on
+  // the boundary is dropped whole instead of being cut into a lone surrogate.
+  if (s.length > cap) {
+    const cut = clampChars(s, cap - 1);
+    if (cut !== s) s = cut.trimEnd() + "…";
+  }
   return s;
 };

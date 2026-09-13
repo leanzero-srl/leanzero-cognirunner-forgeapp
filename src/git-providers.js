@@ -83,6 +83,7 @@ export const GIT_PROVIDER_HOST_NAMES = GIT_PROVIDER_HOSTS.map((h) => h.host);
 // keeps its import path.
 export { GIT_PROVIDER_KINDS } from "./shared/git-ids.js";
 import { GIT_PROVIDER_KINDS } from "./shared/git-ids.js";
+import { clampUtf8Bytes } from "./shared/text-clamp.js";
 
 /** The closed error-code set. Anything outside it is a bug in this file. */
 export const GIT_ERROR_CODES = [
@@ -209,11 +210,12 @@ function byteLength(str) {
  * `{ text, truncated }` — callers that only want the string take `.text`.
  */
 export function clampBytes(str, maxBytes, marker) {
-  const s = String(str == null ? "" : str);
-  if (byteLength(s) <= maxBytes) return { text: s, truncated: false };
-  let cut = s.slice(0, maxBytes);
-  while (byteLength(cut) > maxBytes && cut.length > 0) cut = cut.slice(0, -64);
-  return { text: cut + (marker || "\n… [truncated]"), truncated: true };
+  // F-383 — THE CUT IS ON A CODE POINT, NEVER ON A CODE UNIT. The old body sliced by
+  // UTF-16 code units and then shrank by 64 units at a time, so a cut could land between
+  // the halves of a surrogate pair and emit a LONE SURROGATE into a prompt or a Jira
+  // write — the one string shape a JSON body can carry that the receiver may reject.
+  // The rule now has ONE home (src/shared/text-clamp.js), shared with clampChars.
+  return clampUtf8Bytes(str, maxBytes, marker || "\n… [truncated]");
 }
 
 function isWriteMethod(method) {

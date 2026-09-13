@@ -110,7 +110,7 @@ cannot be given its object-schema/AQL configuration over any public REST API** �
 that configuration a write returns 204 and stores nothing. Configure it once in
 Settings → Issues → Custom fields → Configure → Assets, then re-run for the live read.
 
-`.env` needs `TESTSTATE_URL` + `HARNESS_SECRET` (the dev-only test-state web trigger; the scripts discover the `rules-api` URL and mint a token through it) or `RULES_API_URL` + `RULES_API_TOKEN` directly. Both scripts clean up after themselves (`KEEP=1` to keep the data). The listeners E2E lists, per run, which of the 68 events it could not fire (user events, issue viewed, failed expression, permanent field deletion) — see `docs/LISTENERS-AND-JOBS.md`.
+`.env` needs `TESTSTATE_URL` + `HARNESS_SECRET` (and `HARNESS_ADMIN_ACCOUNT_ID`, the admin the hook acts as, for `git-inbound-live.mjs`) (the dev-only test-state web trigger; the scripts discover the `rules-api` URL and mint a token through it) or `RULES_API_URL` + `RULES_API_TOKEN` directly. Both scripts clean up after themselves (`KEEP=1` to keep the data). The listeners E2E lists, per run, which of the 68 events it could not fire (user events, issue viewed, failed expression, permanent field deletion) — see `docs/LISTENERS-AND-JOBS.md`.
 
 ## Scope this run
 

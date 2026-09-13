@@ -306,6 +306,52 @@ export const scoreSections = (sections, queryTerms) => {
 };
 
 /* ------------------------------------------------------------------ *
+ * What a selection actually COSTS (F-551).
+ * ------------------------------------------------------------------ */
+
+/**
+ * ONE renderer for a section, used BOTH to measure it and to emit it.
+ *
+ * The budget used to be charged against `section.body` alone while the block that reached
+ * the model also carried `### <title>` per section, the guard sentence and the two fence
+ * lines — so every audience shipped a block OVER its cap (validator 6144 → 6393 bytes) and
+ * the `bytes` handed back to the Knowledge tab under-reported the real prompt cost. The fix
+ * is not a fudge factor: the selector measures the exact string `buildFieldGuideBlock` will
+ * emit, because both call THIS function. Defanging is included in the measurement, and
+ * `defangFence` can only ever shrink text, so a measured section never grows afterwards.
+ */
+const renderSection = (s) => `### ${defangFence(s.title || s.id)}\n${defangFence(s.body).trim()}`;
+
+/** The separator `buildFieldGuideBlock` joins rendered sections with. */
+const SECTION_JOINER = "\n\n";
+
+/** Wrap already-rendered section text in the fence + guard sentence. */
+const wrapFieldGuide = (body) => [
+  `<<<${FIELD_GUIDE_MARKER}`,
+  FIELD_GUIDE_GUARD_SENTENCE,
+  "",
+  body,
+  `${FIELD_GUIDE_MARKER}>>>`,
+].join("\n");
+
+/**
+ * The fixed cost of the fence and the guard sentence, charged to the budget the moment a
+ * first section is taken. Computed from the same wrapper the emitter uses, so it cannot
+ * drift when the guard sentence is reworded.
+ */
+export const FIELD_GUIDE_ENVELOPE_BYTES = utf8Len(wrapFieldGuide(""));
+
+/**
+ * The emitted size of a block containing exactly `sections` — the number the budget bounds
+ * and the number `bytes` reports. Exported so a test can assert the two agree.
+ */
+export const fieldGuideBlockBytes = (sections) => {
+  const list = (Array.isArray(sections) ? sections : []).filter(isUsableSection);
+  if (!list.length) return 0;
+  return utf8Len(wrapFieldGuide(list.map(renderSection).join(SECTION_JOINER)));
+};
+
+/* ------------------------------------------------------------------ *
  * Selection.
  * ------------------------------------------------------------------ */
 
@@ -329,6 +375,11 @@ const matchesAudience = (section, audience) => {
  * ever LOWER it; a caller cannot talk its way past the audience's ceiling, which is the
  * whole point of having one. `pins` may be passed explicitly; otherwise the pins the bake
  * emitted and the backend registered are used (none, until a pin map is registered).
+ *
+ * `bytes` is the size of the BLOCK this selection will be emitted as — fence, guard
+ * sentence, `### <title>` headings and separators included (F-551) — not the sum of the
+ * bodies, and the budget bounds that same number. 0 when nothing was selected, because an
+ * empty selection emits no fence at all.
  *
  * Returns `{ sections, sectionIds, bytes, pinnedBytes, budget, audience, skipped }`.
  * `skipped` counts
@@ -383,9 +434,14 @@ export const selectKnowledge = ({
   // the share is not dropped: it falls through to pass 2 and competes on its score, so the
   // worst a long pin list can do is lose, never take the whole budget.
   const pinnedBudget = Math.floor(budget * PINNED_BUDGET_SHARE);
+  // What one more section ADDS to the emitted block: the envelope is paid once, by the
+  // first section taken; every section after that also pays the joiner. Measured, never
+  // estimated — `renderSection` is the emitter's own renderer.
+  const costOf = (section) =>
+    utf8Len(renderSection(section)) + (chosen.length === 0 ? FIELD_GUIDE_ENVELOPE_BYTES : utf8Len(SECTION_JOINER));
   for (const section of pinned) {
-    const size = utf8Len(section.body);
-    if (pinnedBytes + size > pinnedBudget) continue;
+    const size = costOf(section);
+    if (bytes + size > pinnedBudget) continue;
     chosen.push(section);
     takenIds.add(String(section.id));
     pinnedBytes += size;
@@ -405,7 +461,7 @@ export const selectKnowledge = ({
     : [];
 
   for (const section of ranked) {
-    const size = utf8Len(section.body);
+    const size = costOf(section);
     if (bytes + size > budget) continue;
     chosen.push(section);
     takenIds.add(String(section.id));
@@ -445,17 +501,8 @@ export const buildFieldGuideBlock = (sections) => {
   const list = (Array.isArray(sections) ? sections : []).filter(isUsableSection);
   if (!list.length) return { block: "", sectionIds: [] };
 
-  const body = list
-    .map((s) => `### ${defangFence(s.title || s.id)}\n${defangFence(s.body).trim()}`)
-    .join("\n\n");
-
-  const block = [
-    `<<<${FIELD_GUIDE_MARKER}`,
-    FIELD_GUIDE_GUARD_SENTENCE,
-    "",
-    body,
-    `${FIELD_GUIDE_MARKER}>>>`,
-  ].join("\n");
+  // SAME renderer and SAME wrapper the budget was measured with (F-551).
+  const block = wrapFieldGuide(list.map(renderSection).join(SECTION_JOINER));
 
   return { block, sectionIds: list.map((s) => s.id) };
 };

@@ -177,11 +177,18 @@ ok(JSON.stringify(pinsForAudience("no-such-audience")) === "[]", "an unknown aud
 /* 6. THE BUDGET IS NEVER EXCEEDED, for any audience, and a caller may only LOWER it. */
 for (const audience of Object.keys(limits.FIELD_GUIDE_BUDGET_BYTES)) {
   const picked = selectKnowledge({ audience, text: "manifest adf rate limit blast radius comment issue" });
-  const used = picked.sections.reduce((n, s) => n + bytes(s.body), 0);
-  ok(used <= limits.fieldGuideBudget(audience),
-    `${audience}: ${used} B is within the ${limits.fieldGuideBudget(audience)} B budget`);
-  ok(picked.bytes === used, `${audience}: the reported byte count matches the selection`);
+  // F-551 — the budget bounds the EMITTED block (fence + guard + `### <title>` per
+  // section), not the sum of the bodies, and `bytes` reports that same emitted size.
+  const emitted = bytes(buildFieldGuideBlock(picked.sections).block);
+  ok(emitted <= limits.fieldGuideBudget(audience),
+    `${audience}: the emitted block is ${emitted} B, within the ${limits.fieldGuideBudget(audience)} B budget`);
+  ok(picked.bytes === emitted, `${audience}: the reported byte count is the emitted size`);
+  const bodiesOnly = picked.sections.reduce((n, s) => n + bytes(s.body), 0);
+  ok(!picked.sections.length || picked.bytes > bodiesOnly,
+    `${audience}: the envelope is charged to the budget, not given away free`);
 }
+ok(mod.FIELD_GUIDE_ENVELOPE_BYTES > 0 && mod.fieldGuideBlockBytes([]) === 0,
+  "the envelope has a measured size and an empty selection emits nothing");
 const lowered = selectKnowledge({ audience: "coder", text: "manifest modules", maxBytes: 300 });
 ok(lowered.bytes <= 300, `an explicit maxBytes lowers the budget (${lowered.bytes} B)`);
 const raised = selectKnowledge({ audience: "validator", text: "rate limit adf", maxBytes: 10 ** 7 });

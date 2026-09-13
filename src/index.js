@@ -18823,9 +18823,11 @@ export const executePostFunction = async (args) => {
  *   repository not on the connection's list    SKIP + the reason        ERROR + the reason
  *   mode unknown / not configured              ERROR                    ERROR
  *   rule has no owner account                  ERROR                    ERROR
+ *   every WRITE action of the mode refused     ERROR                    ERROR
+ *     because of the saver's ROLE (F-390)
  *   queue push failed                          ERROR                    ERROR
  *
- * The last three are CLOSED in both columns on purpose. A misconfigured rule and a lost
+ * The last four are CLOSED in both columns on purpose. A misconfigured rule and a lost
  * enqueue are not states an instance can be in legitimately, and the strict switch exists
  * for "the provider or the licence is not available today", not for "this rule is wrong".
  * Nothing in this table ever falls back to an inline run.
@@ -18932,6 +18934,9 @@ const enqueueCoderPostFunction = async (issueKey, config, extensionKey, registry
     // restrictive answer — and the refusal below says to re-save it as an admin.
     const ownerAccountId = registryRow?.createdBy || null;
     const savedByRole = listenersMod.normalizeSavedByRole(registryRow?.savedByRole);
+    // Whether the row carries a stamp at all — a legacy row is treated as "editor", and
+    // the F-390 refusal below says so rather than blaming the admin's role.
+    const roleIsStamped = registryRow?.savedByRole === "admin" || registryRow?.savedByRole === "editor";
     if (!ownerAccountId) {
       return await write(false,
         "This Coder rule has no owner account, so there is nobody to run it as and nothing ran.",
@@ -18985,6 +18990,44 @@ const enqueueCoderPostFunction = async (issueKey, config, extensionKey, registry
         `The Coder was not started: ${why}.`,
         "Switch to a BYOK provider, or upgrade to CogniRunner Coder, in Apps → CogniRunner → Settings. Until then this rule does nothing on every transition.",
       );
+    }
+    // F-390 — DOES THIS RULE STILL DO THE THING IT EXISTS FOR?
+    //
+    // "Some git action survived" is not the question. A mode's `actions` mix reads with
+    // the `confirm` writes it is NAMED for, and the emptiness test above passes whenever a
+    // single READ survives. An editor-saved `build` rule therefore lost create_branch,
+    // commit_files and open_pull_request to "needs-admin", kept get_pull_request and
+    // get_build_state — and queued a full frontier turn that spent ~16 000 budgeted tokens
+    // before halting at the first write, with nothing built. `open-branch`, whose only git
+    // action IS a write, was caught here for free: two modes of one feature disagreed
+    // about when a refusal is discovered.
+    //
+    // So the test is the mode's WRITE subset. A refusal is CLOSED in both strict columns:
+    // a rule armed by the wrong role is a misconfiguration, not "the provider is not
+    // available today", which is what `strict` exists to switch.
+    const modeWrites = (mode.actions || []).filter((id) => (getAgentAction(id) || {}).confirm === true);
+    const survivingWrites = modeWrites.filter((id) => gated.allowed.includes(id));
+    if (modeWrites.length && !survivingWrites.length) {
+      const refusedWrites = gated.refused.filter((r) => modeWrites.includes(r.id));
+      const named = refusedWrites
+        .map((r) => `${(getAgentAction(r.id) || {}).label || r.id} (${agentActionRefusalText(r.reason)})`)
+        .join("; ");
+      // An ENVIRONMENT reason still belongs to the strict switch (the rows above); only a
+      // permission/misconfiguration reason is closed in both columns.
+      const envReason = refusedWrites.find((r) => /^(capability-off|missing-product|needs-|allowance-)/.test(String(r.reason)) && r.reason !== "needs-admin");
+      if (envReason) {
+        return await envProblem(
+          `The Coder was not started: ${agentActionRefusalText(envReason.reason)}, so “${mode.label}” cannot do anything it exists for.`,
+          "Switch to a BYOK provider, or upgrade to CogniRunner Coder, in Apps → CogniRunner → Settings. Until then this rule does nothing on every transition.",
+        );
+      }
+      const hint = roleIsStamped
+        ? "Re-save this rule as an admin to arm its write actions, or pick a mode that only reads."
+        : "This rule was saved before CogniRunner recorded who armed it, so it is treated as editor-saved. Re-save it as an admin to arm its write actions.";
+      return await write(false,
+        `The Coder was not started: “${mode.label}” cannot perform any of its write actions — ${named}.`,
+        `${hint} No token was spent and nothing was written to the repository.`,
+        step("error", "Queue the Coder turn", "no write action survived the gate", hint));
     }
 
     const message = renderCoderPfMessage({ mode: mode.id, issueKey, repo, instructions: config?.instructions });

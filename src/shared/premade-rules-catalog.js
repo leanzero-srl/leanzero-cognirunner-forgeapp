@@ -626,9 +626,12 @@ export const getPremadeListener = (key) =>
  * here would be a promise the gate breaks at run time. The parity lint asserts this.
  *
  * `review` may COMMENT on a pull request (`add_pr_comment`, a `confirm` action): that
- * survives only when an ADMIN saved the rule. On an editor-saved rule the gate drops it
- * and the turn HALTS by name rather than writing — see the headless path in
- * src/coder-engine.js.
+ * survives only when an ADMIN saved the rule. EVERY mode here names at least one `confirm`
+ * write, and F-390 made that structural: `enqueueCoderPostFunction` REFUSES to start a turn
+ * when none of the mode's write actions survived the gate, so an editor-saved rule is
+ * reported as a misconfiguration at enqueue instead of spending a frontier turn and halting
+ * at its first write. The engine's headless halt (src/coder-engine.js) is still the
+ * guarantee — this is the cheap refusal in front of it.
  */
 export const CODER_PF_MODES = [
   {

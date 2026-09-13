@@ -242,15 +242,43 @@ if (CAP_OFF) {
   ok(!msg2.includes("\u{1F600}"), "…and nothing past the cap reaches the model");
 }
 
-/* ══════════ 3. an EDITOR-saved rule, end to end ══════════ */
+/* ══════════ 3. an EDITOR-saved rule, end to end (F-390) ══════════ */
 {
+  // A mode whose WRITE actions were all refused does not start: the turn could not do the
+  // thing the rule exists for, and discovering that after ~16 000 tokens is the defect.
   const before = pushed.length;
   await fire("LZPT-102", cfg({ ruleId: "rule-coder-editor", mode: "review" }));
-  const p = pushed.slice(before)[0].body.params;
-  ok(p.savedByRole === "editor", "the row's stamp decides the role, and an editor-saved row is 'editor'");
-  ok(!p.allowedActions.includes("add_pr_comment"),
-    "an editor-saved review rule cannot hold the PR comment write");
-  ok(p.allowedActions.includes("get_pull_request"), "…but keeps the reads, so it still reports");
+  ok(pushed.length === before, "an editor-saved REVIEW rule enqueues NOTHING — its only write is refused");
+  const l = await lastLog("LZPT-102");
+  ok(l && l.isValid === false && l.stepResults[0].status === "error",
+    `…and it is an ERROR in both strict columns: a wrong role is a misconfiguration (got ${l && l.stepResults[0].status})`);
+  ok(l && /Comment on a pull request/.test(l.reason) && /only an ADMIN/.test(l.reason),
+    `…naming the refused action AND the reason (got ${JSON.stringify(l && l.reason)})`);
+  ok(l && /admin/i.test(l.recommendation) && /No token was spent/.test(l.recommendation),
+    "…and telling the admin what to change, and that nothing was spent");
+
+  const before2 = pushed.length;
+  await fire("LZPT-113", cfg({ ruleId: "rule-coder-editor", mode: "build" }));
+  ok(pushed.length === before2, "an editor-saved BUILD rule enqueues NOTHING (F-390: the reads surviving is not enough)");
+  const l2 = await lastLog("LZPT-113");
+  ok(l2 && /Create a branch/.test(l2.reason) && /Commit files/.test(l2.reason) && /Open a pull request/.test(l2.reason),
+    "…and every refused write is named, not just the first");
+
+  // A LEGACY row — no savedByRole stamp at all — is treated as editor-saved, and says so.
+  const before3 = pushed.length;
+  await fire("LZPT-114", cfg({ ruleId: "rule-coder-legacy", mode: "build" }));
+  ok(pushed.length === before3, "a legacy row with no stamp is editor-saved, so it does not start either");
+  const l3 = await lastLog("LZPT-114");
+  ok(l3 && /saved before CogniRunner recorded who armed it/.test(l3.recommendation),
+    "…and the recommendation says to re-save it as an admin rather than blaming a role it never had");
+
+  // The ADMIN-saved review rule is unchanged: it starts, keeps its write and its reads.
+  const before4 = pushed.length;
+  await fire("LZPT-115", cfg({ mode: "review" }));
+  const p = pushed.slice(before4)[0].body.params;
+  ok(p.savedByRole === "admin" && p.allowedActions.includes("add_pr_comment"),
+    "an ADMIN-saved review rule still starts and keeps the PR comment write");
+  ok(p.allowedActions.includes("get_pull_request"), "…and its reads");
 }
 
 /* ══════════ the mode subset actually narrows ══════════ */

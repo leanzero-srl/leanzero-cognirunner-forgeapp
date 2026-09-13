@@ -138,9 +138,47 @@ for (const cls of SHARED_CSS_CLASSES) {
   }
 }
 
+// F-505 — the explicit list above is per-class and so cannot see a WHOLE FAMILY that
+// never reached a mirror: every `api-ref-*` rule lived only in config-ui's
+// injectStyles() and none of them existed in config-ui/src/styles.css. A family-level
+// assertion needs no list to stay current — it takes the family as injectStyles()
+// declares it and requires config-ui's mirror to carry every one of those selectors
+// with identical declarations. Scope is config-ui only: the API reference panel's CSS
+// is not part of admin-panel's copied-component block, so the four-home rule does not
+// apply to it.
+const FAMILY_PREFIX = ".api-ref";
+const liveHome = homes[0];
+const mirrorHome = homes[2];
+const familyOf = (css) => {
+  const map = new Map();
+  for (const rule of flatten(css)) {
+    // Every selector in the rule's prelude must be considered: `.a, .b { }` is one rule.
+    const own = rule.selector.split("»").pop();
+    // `.btn-api-ref` is NOT in the family: a part must BE the prefix or be a
+    // `-`-suffixed sibling of it.
+    if (!own.split(",").some((sel) => sel.trim().split(/[\s>+~]+/).some((part) =>
+      part === FAMILY_PREFIX || part.startsWith(`${FAMILY_PREFIX}-`))))
+      continue;
+    map.set(rule.selector, map.has(rule.selector)
+      ? `${map.get(rule.selector)}\n${rule.declarations}` : rule.declarations);
+  }
+  return map;
+};
+const liveFamily = familyOf(liveHome.css);
+const mirrorFamily = familyOf(mirrorHome.css);
+assert.ok(liveFamily.size > 0, `${FAMILY_PREFIX}: no rules found in ${liveHome.name} — the matcher is broken`);
+for (const [selector, declarations] of liveFamily) {
+  if (!mirrorFamily.has(selector)) failures.push(`${selector}: MISSING from ${mirrorHome.name} (present in ${liveHome.name})`);
+  else if (mirrorFamily.get(selector) !== declarations) failures.push(`${selector}: DRIFTED in ${mirrorHome.name} vs ${liveHome.name}`);
+}
+for (const selector of mirrorFamily.keys()) {
+  if (!liveFamily.has(selector)) failures.push(`${selector}: present in ${mirrorHome.name} but MISSING from ${liveHome.name}`);
+}
+
 if (failures.length) {
   console.error(`CSS parity: ${failures.length} problem(s) across ${SHARED_CSS_CLASSES.length} shared classes`);
   for (const f of failures) console.error(`  ✗ ${f}`);
   assert.fail(`css parity: ${failures[0]}`);
 }
 console.log(`CSS parity: ${SHARED_CSS_CLASSES.length} shared classes — ${compared} rule/home comparisons identical across ${homes.length} homes`);
+console.log(`CSS parity: ${FAMILY_PREFIX}* family — ${liveFamily.size} rules identical in ${liveHome.name} and ${mirrorHome.name}`);

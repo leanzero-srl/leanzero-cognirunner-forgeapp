@@ -19,6 +19,7 @@ const loader = path.join(here, "../lib/register-mocks.mjs");
 const files = readdirSync(here).filter((f) => f.endsWith(".test.mjs")).sort();
 
 let failed = 0;
+const failedSuites = [];
 const rows = [];
 for (const f of files) {
   const r = spawnSync(process.execPath, ["--import", loader, path.join(here, f)], { encoding: "utf8" });
@@ -26,11 +27,14 @@ for (const f of files) {
   const summary = (out.match(/[^\n]*\b(\d+)\s*(?:passed|\/\d+ assertions passed|checks passed)[^\n]*/i) || [])[0]
     || (out.split("\n").filter(Boolean).pop() || "").trim();
   const okRun = r.status === 0;
-  if (!okRun) failed++;
+  if (!okRun) { failed++; failedSuites.push(f); }
   rows.push(`  ${okRun ? "✓" : "✗"} ${f.padEnd(28)} ${okRun ? (summary || "").slice(0, 70) : "FAILED (exit " + r.status + ")\n" + out.slice(-600)}`);
 }
 
 console.log(`\n=== Offline suite: ${files.length} test files ===`);
 console.log(rows.join("\n"));
 console.log(failed === 0 ? `\nOFFLINE SUITE: PASS (${files.length}/${files.length})` : `\nOFFLINE SUITE: FAIL (${failed}/${files.length} suites failed)`);
+// Deploy chains gate on `tail -n1`: when anything failed the LAST line names the
+// failing suites and nothing else, and the exit code is non-zero.
+if (failed) console.log(`FAILING SUITES: ${failedSuites.join(" ")}`);
 process.exit(failed ? 1 : 0);

@@ -35,6 +35,17 @@ const drain = async () => {
   }
   await Promise.all(groups.values());
 };
+// storeLog() draws Math.random THREE times: the entry id, the log key's random
+// suffix, and the ~10% prune gate. Stubbing it to one constant made two writes
+// in the same millisecond mint the SAME key, so the second hit FAIL_IF_EXISTS
+// and aborted before it could prune (F-187 flake). Give every draw a distinct
+// value that is still under the 0.1 prune threshold: forced prune, unique keys.
+let pruneDraw = 0;
+const forcePrune = async (run) => {
+  const random = Math.random;
+  Math.random = () => 0.01 + ((pruneDraw++) % 1000) * 1e-5;
+  try { return await run(); } finally { Math.random = random; }
+};
 const seed = (kind, id = "count-test", createdAt = "2026-01-01T00:00:00.000Z") => {
   const base = { id, name: id, createdAt, functions: [{ name: "Run", code: "return 1;" }] };
   const rule = kind === "listener" ? normalizeListener({ ...base, events: ["avi:jira:created:issue"] }) : normalizeJob({ ...base, schedule: { cron: "*/5 * * * *" } });
@@ -293,13 +304,11 @@ await check("pruning preserves old pending receipts and delayed deliveries after
   const ancient = `log_entry:${String(1e13 - Date.now() + 7200000).padStart(13, "0")}_pending`;
   storage.__seed(ancient, await storage.get(key)); await storage.delete(key);
   for (let i = 0; i < 70; i++) storage.__seed(`log_entry:0000000000000_${String(i).padStart(3, "0")}`, { reason: "unrelated" });
-  const random = Math.random; Math.random = () => 0.01;
-  try { await storeLog({ type: "validation", reason: "force prune" }); } finally { Math.random = random; }
+  await forcePrune(() => storeLog({ type: "validation", reason: "force prune" }));
   assert.ok(pendingRuleStats(await storage.get(ancient)));
   const pendingEvent = { ...event, body: { ...event.body, params: { ...event.body.params, receiptKey: ancient } } };
   await consume(pendingEvent);
-  Math.random = () => 0.01;
-  try { await storeLog({ type: "validation", reason: "force prune applied receipt" }); } finally { Math.random = random; }
+  await forcePrune(() => storeLog({ type: "validation", reason: "force prune applied receipt" }));
   assert.equal(await storage.get(ancient), undefined);
   await consume(pendingEvent);
   assert.equal((await getJob(rule.id)).stats.runCount, 1);

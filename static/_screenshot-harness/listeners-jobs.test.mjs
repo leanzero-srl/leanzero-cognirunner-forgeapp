@@ -24,6 +24,11 @@ import { pickEventRow } from "./lib/pick-event-row.mjs";
    from the ONE home for them, so a test cannot assert a limit or a sentence the app does
    not actually use. */
 import { MEMORY_MAX_SERIALIZED_BYTES, MEMORY_PLATFORM_MAX_SERIALIZED_BYTES, memoryPlatformCapMessage } from "../../src/shared/registry-limits.js";
+/* F-486 - the premade listener catalogue and the ONE capability wording, so the journey
+   asserts the sentence the app actually renders and counts the rows the catalogue
+   actually declares. A hand-typed count here would pass while the tab hid a new row. */
+import { PREMADE_LISTENERS } from "../../src/shared/premade-rules-catalog.js";
+import { agentCapabilityCopy } from "../../src/shared/edition.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const STATIC = path.resolve(__dirname, "..");
@@ -1962,6 +1967,100 @@ try {
       await shot(page, `F-462-${theme}-job-write-brake`);
       ok(env.errors.length === 0, `F-462 ${theme} no page errors: ` + env.errors.join(" | "));
     } catch (e) { fail++; console.log(`  ✗ F-462 ${theme} threw: ` + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
+  /* ---------------- F-486 — the premade listener's CAPABILITY gate ----------------
+   * The catalogue has declared `requiresCapability` on the PR-review starter since it
+   * was written, and the Listeners tab had ZERO readers for it: every premade rendered
+   * on `canEdit` alone. On a Standard + Forge LLM instance that meant the button opened,
+   * the admin picked repositories, wrote instructions, bound skills — and only then did
+   * Save come back refused. The answer now arrives before the work.
+   *
+   * The counts come from the CATALOGUE, not from a literal: a row added tomorrow without
+   * a capability must still render enabled (the agentless deterministic engine needs no
+   * Coder), and a row added with one must render blocked. That is the invariant, and it
+   * is asserted generically so neither addition can pass silently.
+   * Both themes: the blocked chip is a hue, and the dark override is the usual trap. */
+  const CAP_GATED = PREMADE_LISTENERS.filter((p) => p.requiresCapability);
+  const CAP_FREE = PREMADE_LISTENERS.filter((p) => !p.requiresCapability);
+  for (const theme of ["light", "dark"]) {
+    console.log(`F-486 ${theme} premade listener capability gate`);
+    /* The OFF arm: a real verdict from the backend, not a dropped read. */
+    const env = await openAdmin(browser, theme, { __CODE_CAP__: "needs-coder-edition" });
+    const { page } = env;
+    try {
+      await tab(page, "Listeners");
+      await page.locator(".lst-table").waitFor({ timeout: 10000 });
+      const blocked = page.locator(".lst-premade-btn-blocked");
+      await blocked.first().waitFor({ timeout: 10000 });
+      ok(await blocked.count() === CAP_GATED.length, `F-486 every capability-gated starter is blocked (${CAP_GATED.length})`);
+      ok(await page.locator(".lst-premade-btn:not(.lst-premade-btn-blocked)").count() === CAP_FREE.length,
+        `F-486 an agentless starter that needs no capability stays enabled (${CAP_FREE.length})`);
+      ok(await blocked.first().isDisabled(), "F-486 the blocked starter is actually disabled, not just styled");
+
+      /* The SENTENCE is the one home's, verbatim — never re-typed here. */
+      const copy = agentCapabilityCopy("needs-coder-edition");
+      const cap = page.locator(".lst-premade-cap");
+      ok(await cap.count() === CAP_GATED.length, "F-486 the blocked starter carries the reason on its face");
+      const captxt = (await cap.first().innerText()).replace(/\s+/g, " ");
+      ok(captxt.includes(copy.title), `F-486 the note uses agentCapabilityCopy's title (got ${captxt.slice(0, 80)})`);
+      ok(captxt.includes(copy.remedy.slice(0, 40)), "F-486 the note carries the remedy, so the reader knows the way out");
+      ok(!captxt.includes("—"), "F-486 no em-dash in the capability note");
+
+      /* Solid saturated amber, white text, and NO left rail — both themes. */
+      const cs = await cap.first().evaluate((el) => { const s = getComputedStyle(el); return { bg: s.backgroundColor, color: s.color, bl: s.borderLeftWidth, bt: s.borderTopWidth }; });
+      ok(cs.bg === (theme === "dark" ? "rgb(245, 158, 11)" : "rgb(180, 83, 9)"), `F-486 ${theme} the note is solid amber, never a tint (got ${cs.bg})`);
+      ok(cs.bl === cs.bt, "F-486 the capability note has NO left accent rail");
+      ok(cs.color === (theme === "dark" ? "rgb(42, 22, 2)" : "rgb(255, 255, 255)"), `F-486 full-contrast text on the note (got ${cs.color})`);
+
+      /* THE POINT: it never opens. A forced click on a disabled control changes nothing. */
+      await blocked.first().click({ force: true }).catch(() => {});
+      await page.waitForTimeout(250);
+      ok(await page.locator(".lst-editor").count() === 0, "F-486 a blocked starter never opens the editor");
+      await shot(page, `F-486-${theme}-premade-blocked`);
+      ok(env.errors.length === 0, `F-486 ${theme} no page errors: ` + env.errors.join(" | "));
+    } catch (e) { fail++; console.log(`  ✗ F-486 ${theme} threw: ` + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
+  /* The ON arm and the UNKNOWN arm — light only: neither adds a hue, and what is being
+   * asserted is BEHAVIOUR (does it open, and does a dropped read claim the Coder is off). */
+  {
+    console.log("F-486 capability ON — the starter still opens");
+    const env = await openAdmin(browser, "light");   // default fixture: Coder ON, BYOK
+    const { page } = env;
+    try {
+      await tab(page, "Listeners");
+      await page.locator(".lst-table").waitFor({ timeout: 10000 });
+      await page.locator(".lst-premade-btn:not(.lst-premade-btn-blocked)").first().waitFor({ timeout: 10000 });
+      ok(await page.locator(".lst-premade-btn-blocked").count() === 0, "F-486 nothing is blocked when the Coder is on");
+      ok(await page.locator(".lst-premade-cap").count() === 0, "F-486 no capability note when there is nothing to say");
+      await page.locator(".lst-premade-btn").first().click();
+      await page.locator(".lst-editor").waitFor({ timeout: 10000 });
+      ok(await page.locator("#lst-name").inputValue() === "Review every opened PR", "F-486 the starter opens pre-filled, exactly as before");
+      ok(env.errors.length === 0, "F-486 ON no page errors: " + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  ✗ F-486 ON threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
+  {
+    /* F-436's law, applied here: a read that never answered must NOT say the Coder is off.
+       __CODE_CAP_FAIL__ exhausts the whole retry ladder (first attempt + three retries). */
+    console.log("F-486 capability read dropped — blocked, but honest about why");
+    const env = await openAdmin(browser, "light", { __CODE_CAP_FAIL__: 9 });
+    const { page } = env;
+    try {
+      await tab(page, "Listeners");
+      await page.locator(".lst-table").waitFor({ timeout: 10000 });
+      const cap = page.locator(".lst-premade-cap.cpf-cap-unknown");
+      await cap.waitFor({ timeout: 30000 });   // 2s + 4s + 8s ladder
+      const t = (await cap.innerText()).replace(/\s+/g, " ");
+      ok(/could not check/i.test(t), `F-486 the dropped read says the CHECK failed (got ${t.slice(0, 70)})`);
+      ok(!/is off/i.test(t), "F-486 a dropped read never claims the Coder is off");
+      ok(await page.locator(".lst-premade-cap .cpf-cap-retry").count() === 1, "F-486 the unknown arm offers a way back: Retry");
+      ok(await page.locator(".lst-premade-btn-blocked").first().isDisabled(), "F-486 an unanswered question is not a yes: still blocked");
+      ok(env.errors.length === 0, "F-486 unknown no page errors: " + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  ✗ F-486 unknown threw: " + e.message.split("\n")[0]); }
     await close(env);
   }
 

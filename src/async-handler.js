@@ -128,9 +128,9 @@ import { runPipelineSetup, PIPELINE_TASK } from "./git-pipeline.js";
 // 1.5 probe P3 — the ONE Confluence call site rule holds for the probe too: it goes
 // through the client, never straight to `requestConfluence`.
 import { createConfluenceClient } from "./confluence-client.js";
-import { runCoderTurn, isHeadlessTrigger, coderPfDoneClaimKey, CODER_PF_DONE_TTL } from "./coder-engine.js";
+import { runCoderTurn, isHeadlessTrigger, coderPfDoneClaimKey, CODER_PF_DONE_TTL, getCoderThread } from "./coder-engine.js";
 // The knowledge byte budgets have ONE home (F-404 builds the Coder's blocks below).
-import { knowledgeBudget, fieldGuideAudience } from "./shared/registry-limits.js";
+import { knowledgeBudget, fieldGuideAudience, fieldGuideBudget } from "./shared/registry-limits.js";
 import { executeScheduledJobTask, getJob } from "./scheduled-jobs.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
 import { isKeyConflict, safeKeyPart, assertKvsKey } from "./shared/kvs-keys.js";
@@ -1422,22 +1422,93 @@ const buildCoderKnowledge = async (p) => {
   //
   // `coderTurn` is the skills/memories vocabulary; `fieldGuideAudience` translates it to
   // the field guide's `coder` in the ONE place that map lives (shared/registry-limits.js).
+  //
+  // ONE GUIDE PER THREAD, NOT PER TURN (F-550). `runCoderTurn` places these knowledge
+  // messages inside the prompt prefix that src/coder-engine.js promises is byte-identical
+  // "across the rounds of one turn AND ACROSS THE TURNS OF ONE THREAD" — and the loop
+  // freezes its cache breakpoint at everything seeded on entry. Re-scoring up to 16 KB of
+  // field guide against THIS turn's message broke that promise at message index 1, so from
+  // turn 2 on nothing of the prefix — including the entire stored history — could be a
+  // cache hit, and on a cache-billing provider the whole thread was re-billed at write
+  // price every turn. So the guide is selected ONCE, from the thread's FIRST message, and
+  // re-emitted verbatim from the ids stored on the thread row on every later turn.
+  //
+  // A later turn that needs something else is not left without it: the sections the stored
+  // set does not already carry are emitted as `fieldGuideExtraBlock`, which the engine puts
+  // AFTER the prefix (between the history and the user's turn) where a per-turn change
+  // costs nothing but its own tokens.
   try {
-    const { resolveFieldGuideBlock } = await import("./knowledge-packs.js");
-    const guide = await resolveFieldGuideBlock({
-      audience: fieldGuideAudience("coderTurn"),
-      // The user's turn text is what the selector scores against — the same question the
-      // model is about to answer. It is a SCORING QUERY only: it is tokenized and thrown
-      // away, never echoed into the prompt, so untrusted text here cannot reach the model
-      // through this path.
-      text: String((p && p.message) || ""),
-    });
-    if (guide.block) {
-      out.fieldGuideBlock = guide.block;
-      out.fieldGuideSections = guide.sectionIds;
+    const { resolveFieldGuideBlock, resolveFieldGuideBlockByIds, selectFieldGuide, buildFieldGuideBlock } =
+      await import("./knowledge-packs.js");
+    const audience = fieldGuideAudience("coderTurn");
+    const budget = fieldGuideBudget(audience);
+    let row = null;
+    try { row = await getCoderThread(String((p && p.issueKey) || ""), String((p && p.threadId) || "")); }
+    catch (e) { row = null; }
+    const stored = row && Array.isArray(row.fieldGuideSections) ? row.fieldGuideSections.map((x) => String(x)) : [];
+
+    if (stored.length) {
+      // A THREAD THAT ALREADY CHOSE. Same ids, same bytes, same prefix.
+      const guide = await resolveFieldGuideBlockByIds(stored, { audience });
+      if (guide.block) {
+        out.fieldGuideBlock = guide.block;
+        out.fieldGuideSections = guide.sectionIds;
+      }
+      // The ADDITION, scored against this turn's words, bounded by what is left of the
+      // audience's budget so a thread can never spend more than one budget's worth at once.
+      const room = Math.max(0, budget - (guide.bytes || 0));
+      if (room > 0) {
+        const picked = await selectFieldGuide({ audience, text: String((p && p.message) || ""), maxBytes: room });
+        const known = new Set((guide.sectionIds || []).map((x) => String(x)));
+        const extra = (picked.sections || []).filter((sec) => !known.has(String(sec.id)));
+        const built = buildFieldGuideBlock(extra);
+        if (built.block) {
+          out.fieldGuideExtraBlock = built.block;
+          out.fieldGuideExtraSections = built.sectionIds;
+        }
+      }
+    } else {
+      // THE THREAD'S FIRST TURN — and the only turn that gets to choose. The query is this
+      // message (which IS the thread's first) plus the issue's summary, so the guide is
+      // about the WORK the thread is about, not about whatever was typed last. It is a
+      // SCORING QUERY only: tokenized and thrown away, never echoed into the prompt, so
+      // untrusted text cannot reach the model through this path.
+      const first = firstUserMessageOf(row) || String((p && p.message) || "");
+      const summary = await coderIssueSummary(p && p.issueKey);
+      const guide = await resolveFieldGuideBlock({ audience, text: `${first} ${summary}`.trim() });
+      if (guide.block) {
+        out.fieldGuideBlock = guide.block;
+        out.fieldGuideSections = guide.sectionIds;
+      }
     }
   } catch (e) { console.warn("[coder] field guide skipped:", e && e.message); }
   return out;
+};
+
+/** The thread's first USER message, when a row exists but predates the stored id list. */
+const firstUserMessageOf = (row) => {
+  const msgs = row && Array.isArray(row.messages) ? row.messages : [];
+  for (const msg of msgs) if (msg && msg.role === "user" && typeof msg.content === "string") return msg.content;
+  return "";
+};
+
+/**
+ * The issue's SUMMARY, for the thread's one field-guide query. Read once per thread, and
+ * FAIL-OPEN to "" — knowledge makes a turn better, it never makes it correct, and a
+ * summary read that fails must not cost the turn its guide (or its turn).
+ */
+const coderIssueSummary = async (issueKey) => {
+  const key = String(issueKey || "").trim();
+  if (!key) return "";
+  try {
+    const res = await api.asApp().requestJira(route`/rest/api/3/issue/${key}?fields=summary`);
+    if (!res.ok) return "";
+    const data = await res.json();
+    return String((data && data.fields && data.fields.summary) || "").slice(0, 500);
+  } catch (e) {
+    console.warn("[coder] issue summary for the field-guide query skipped:", e && e.message);
+    return "";
+  }
 };
 
 /* ─────────────────── 1.5 probes P3 / P4 — reach FROM THE CONSUMER ───────────────────

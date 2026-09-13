@@ -150,6 +150,41 @@ const reportPromptCacheDefect = (provider, out, log) => {
 };
 
 /**
+ * THE SIBLING OBSERVATION, ACROSS TURNS (F-550).
+ *
+ * The line above can only see INSIDE one turn: it fires when no round of this turn read
+ * the cache. It cannot see the failure that actually cost the Coder money — a turn whose
+ * rounds cached beautifully against each other while its FIRST round shared nothing with
+ * the previous turn, because something in the prefix (the field guide) was re-selected.
+ * That is invisible to a per-turn check and it re-bills the whole thread, history and all.
+ *
+ * So the caller that owns the cross-turn state (a Coder thread row) hands in the byte size
+ * of the PREVIOUS turn's stable prefix, and this compares it with what the FIRST round of
+ * this turn actually read. The test is one-sided on purpose: if round 1 hit the shared
+ * prefix its read is at least that prefix, so a read BELOW it proves a miss. A read above
+ * it proves nothing either way, and nothing is logged.
+ *
+ * The tolerances are stated, not hidden: bytes are turned into tokens at a deliberately
+ * LOW 1 token per 5 bytes (English prose is nearer 1 per 4, so the estimate under-shoots
+ * and cannot invent a defect), half of that is allowed for block granularity, and a prefix
+ * under MIN_CACHEABLE_TOKENS is not checked at all because no provider would cache it.
+ */
+export const CACHE_BYTES_PER_TOKEN = 5;
+const MIN_CACHEABLE_TOKENS = 1024;
+export const reportCrossTurnCacheDefect = ({ provider, usage, priorPrefixBytes, log = () => {} } = {}) => {
+  if (!provider || !CACHE_READ_PROVIDERS.has(String(provider))) return null;
+  const priorTokens = Math.floor((Number(priorPrefixBytes) || 0) / CACHE_BYTES_PER_TOKEN);
+  if (priorTokens < MIN_CACHEABLE_TOKENS) return null;
+  const first = Number(usage && usage.firstRoundCacheReadTokens) || 0;
+  const floorTokens = Math.floor(priorTokens / 2);
+  if (first >= floorTokens) return null;
+  const line = `DEFECT: provider "${provider}" read ${first} cached tokens on this turn's FIRST round, below the ~${floorTokens} the previous turn's ${priorPrefixBytes}-byte stable prefix should have provided — the prefix changed between turns, so the whole thread (system prompt, knowledge and the entire stored history) was re-billed in full.`;
+  log(line);
+  console.warn(`[agent-loop] ${line}`);
+  return line;
+};
+
+/**
  * KNOWLEDGE INJECTION for an agent turn — ONE builder, shared by `runAgentTask` (below)
  * and the Coder's `runCoderTurn` (1.4 commit 13b).
  *
@@ -369,7 +404,10 @@ export const runAgentLoop = async ({
   const cachePrefix = Array.isArray(messages) ? messages.length : 0;
   const out = {
     messages, actions: [], rounds: 0, summary: "", outcome: "failed", error: null, endedBy: null,
-    usage: { tokens: 0, aiTimeMs: 0, cacheReadTokens: 0 },
+    // `firstRoundCacheReadTokens` is the ONLY number that can answer the CROSS-TURN
+    // question (F-550): rounds 2+ cache against round 1 of this same turn, so a total
+    // says nothing about whether this turn met the previous one's prefix.
+    usage: { tokens: 0, aiTimeMs: 0, cacheReadTokens: 0, firstRoundCacheReadTokens: 0 },
   };
   for (let round = 0; round <= rounds; round++) {
     if (Date.now() >= deadlineMs - 3000) { out.error = "Time budget exhausted before the agent finished"; out.endedBy = "deadline"; log(`TIMEOUT: ${out.error}`); break; }
@@ -386,7 +424,9 @@ export const runAgentLoop = async ({
     if (!ai || !ai.ok) { out.error = `AI provider error (${ai && ai.status}): ${String((ai && ai.error) || "").slice(0, 300)}`; out.endedBy = "provider-error"; log(`ERROR: ${out.error}`); break; }
     if (ai.data && ai.data.usage) {
       out.usage.tokens += Number(ai.data.usage.total_tokens) || 0;
-      out.usage.cacheReadTokens += cacheReadTokensOf(ai.data.usage);
+      const readNow = cacheReadTokensOf(ai.data.usage);
+      out.usage.cacheReadTokens += readNow;
+      if (round === 0) out.usage.firstRoundCacheReadTokens = readNow;
     }
     const message = ai.data && ai.data.choices && ai.data.choices[0] ? ai.data.choices[0].message : null;
     if (!message) { out.error = "Empty AI response"; out.endedBy = "provider-error"; log(`ERROR: ${out.error}`); break; }

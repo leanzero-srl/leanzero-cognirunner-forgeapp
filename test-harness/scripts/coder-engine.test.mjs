@@ -882,5 +882,105 @@ await check("F-487: the receipt is built by ONE function, shared with the listen
   assert.equal(lines.length, 1);
 });
 
+/* ═════════ F-550: the prompt prefix really is byte-identical ACROSS TURNS ═════════
+ *
+ * `buildCoderSystemPrompt` promises a prefix that is stable "across the rounds of one turn
+ * AND ACROSS THE TURNS OF ONE THREAD", and `runAgentLoop` freezes its cache breakpoint at
+ * everything seeded on entry — so a prefix that moves costs the thread its entire history
+ * at write price, every turn, on a cache-billing provider. The guide is now chosen once per
+ * thread (proven in coder-resume-params.test.mjs); this proves the ENGINE keeps the promise
+ * given a stable guide, and that a turn's ADDITIONS land after the prefix, never inside it.
+ */
+const GUIDE = "<<<FIELD_GUIDE\nBackground.\n\n### Manifest modules\nA resolver is declared once.\nFIELD_GUIDE>>>";
+const EXTRA = "<<<FIELD_GUIDE\nBackground.\n\n### ADF\nA comment is an ADF document.\nFIELD_GUIDE>>>";
+
+await check("F-550: turn 2's prompt repeats turn 1's prefix BYTE FOR BYTE", async () => {
+  resetStore();
+  const world = setupWorld({ rounds: [reply([finish()]), reply([finish()])] });
+  const knowledge = { fieldGuideBlock: GUIDE, fieldGuideSections: ["forge-app-builder/x/manifest-1"] };
+  await startTurn(world, { knowledge });
+  await startTurn(world, { userMessage: "now fix the ADF in the comment", knowledge });
+
+  const t1 = world.requests[0].messages;
+  const t2 = world.requests[1].messages;
+  // Turn 1 is [system, knowledge…, userTurn]: everything but the last message is the part
+  // turn 2 has to match. Turn 2 adds the stored history on top of exactly those bytes.
+  const prefixLen = t1.length - 1;
+  assert.ok(prefixLen >= 2, "turn 1 seeded a system prompt and at least one knowledge message");
+  assert.equal(
+    JSON.stringify(t2.slice(0, prefixLen)),
+    JSON.stringify(t1.slice(0, prefixLen)),
+    "the system prompt and the knowledge messages are identical bytes on turn 2",
+  );
+  assert.ok(t2.length > t1.length, "turn 2 is longer — the history was appended AFTER the shared prefix");
+  assert.ok(JSON.stringify(t2[prefixLen]).includes("open a PR for the fix"),
+    "…and the first thing after the prefix is turn 1's stored message");
+});
+
+await check("F-550: the thread row pins the guide's section ids once, and records the prefix size", async () => {
+  resetStore();
+  const world = setupWorld({ rounds: [reply([finish()]), reply([finish()])] });
+  await startTurn(world, { knowledge: { fieldGuideBlock: GUIDE, fieldGuideSections: ["sec-a", "sec-b"] } });
+  const row1 = await store.get(coderThreadKey("LZPT-7", "t1"));
+  assert.deepEqual(row1.fieldGuideSections, ["sec-a", "sec-b"], "the first turn pins the thread's guide");
+  assert.ok(Number(row1.promptPrefixBytes) > 0, "…and records how big the prefix it sent was");
+
+  // A later turn does NOT get to re-pin: that would be the per-turn re-selection F-550 removed.
+  await startTurn(world, { userMessage: "second", knowledge: { fieldGuideBlock: GUIDE, fieldGuideSections: ["sec-z"] } });
+  const row2 = await store.get(coderThreadKey("LZPT-7", "t1"));
+  assert.deepEqual(row2.fieldGuideSections, ["sec-a", "sec-b"], "the pin is written once and never rewritten");
+});
+
+await check("F-550: a turn's ADDED sections are sent after the prefix, not inside it", async () => {
+  resetStore();
+  const world = setupWorld({ rounds: [reply([finish()]), reply([finish()])] });
+  const knowledge = { fieldGuideBlock: GUIDE, fieldGuideSections: ["sec-a"] };
+  await startTurn(world, { knowledge });
+  await startTurn(world, { userMessage: "now the ADF", knowledge: { ...knowledge, fieldGuideExtraBlock: EXTRA } });
+
+  const t1 = world.requests[0].messages;
+  const t2 = world.requests[1].messages;
+  const prefixLen = t1.length - 1;
+  assert.equal(JSON.stringify(t2.slice(0, prefixLen)), JSON.stringify(t1.slice(0, prefixLen)),
+    "the addition did not disturb one byte of the shared prefix");
+  const extraAt = t2.findIndex((mm) => String(mm.content || "").includes("A comment is an ADF document"));
+  assert.ok(extraAt >= prefixLen, `the addition sits after the shared prefix (at ${extraAt}, prefix ends at ${prefixLen})`);
+  assert.equal(t2[t2.length - 1].role, "user", "…and still before the user's own turn");
+  assert.ok(String(t2[t2.length - 1].content).includes("now the ADF"), "which is the message they just sent");
+  // It is a per-turn cost, so it never becomes part of the thread.
+  const row = await store.get(coderThreadKey("LZPT-7", "t1"));
+  assert.ok(!JSON.stringify(row.messages).includes("A comment is an ADF document"),
+    "an added block is never stored into the thread as if the model had said it");
+});
+
+await check("F-550: the cross-turn cache miss gets its own observation line", async () => {
+  const { reportCrossTurnCacheDefect, CACHE_BYTES_PER_TOKEN } = await import("../../src/agent-runner.js");
+  const lines = [];
+  const log = (l) => lines.push(l);
+  // A prefix well over any provider's minimum cacheable size.
+  const priorPrefixBytes = 40000;
+  const priorTokens = Math.floor(priorPrefixBytes / CACHE_BYTES_PER_TOKEN);
+
+  // The MISS: this turn's first round read almost nothing of it.
+  const miss = reportCrossTurnCacheDefect({ provider: "anthropic", usage: { firstRoundCacheReadTokens: 0 }, priorPrefixBytes, log });
+  assert.ok(miss && /FIRST round/.test(miss), "a first round that read nothing of the previous prefix is reported");
+  assert.equal(lines.length, 1, "…once, on the turn's own log");
+
+  // The HIT: nothing is said.
+  assert.equal(
+    reportCrossTurnCacheDefect({ provider: "anthropic", usage: { firstRoundCacheReadTokens: priorTokens }, priorPrefixBytes, log }),
+    null, "a first round that met the prefix says nothing");
+  // A provider that does not bill cache reads is never judged on it.
+  assert.equal(
+    reportCrossTurnCacheDefect({ provider: "openai", usage: { firstRoundCacheReadTokens: 0 }, priorPrefixBytes, log }),
+    null, "a provider outside the cache-billing set is not judged");
+  // Neither is a first turn (no previous prefix) or a prefix too small to be cacheable.
+  assert.equal(reportCrossTurnCacheDefect({ provider: "anthropic", usage: { firstRoundCacheReadTokens: 0 }, priorPrefixBytes: 0, log }),
+    null, "a thread's FIRST turn has nothing to compare against");
+  assert.equal(reportCrossTurnCacheDefect({ provider: "anthropic", usage: { firstRoundCacheReadTokens: 0 }, priorPrefixBytes: 900, log }),
+    null, "a prefix under the minimum cacheable size is not a defect");
+  assert.equal(lines.length, 1, "no other case logged anything");
+});
+
 console.log(`CODER ENGINE: ${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

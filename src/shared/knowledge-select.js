@@ -51,8 +51,14 @@ import { fieldGuideBudget } from "./registry-limits.js";
  * single section changes. Two numbers because they answer two questions — "did the text
  * change?" and "did the way we pick text change?" — and a log line that carries only one
  * of them cannot explain a shift in behaviour.
+ *
+ * 1.1.0 (commit 14b): the corpus a selection is drawn from is now a per-tenant subset —
+ * `src/knowledge-packs.js` subtracts the packs the admin switched off in
+ * COGNIRUNNER_KNOWLEDGE_SETTINGS before the scorer runs. The scoring, the pins and the
+ * block shape are unchanged, but two installations on the same content version can now
+ * legitimately be shown different sections, and a log line has to be able to say so.
  */
-export const KNOWLEDGE_VERSION = "1.0.0";
+export const KNOWLEDGE_VERSION = "1.1.0";
 
 /** The fence marker. One home — the block builder and any parser must agree. */
 export const FIELD_GUIDE_MARKER = "FIELD_GUIDE";

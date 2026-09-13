@@ -154,7 +154,9 @@ const unpolledLiteral = unpolledMatch[1].replace(/\b([A-Z_]{3,})\b/g, (m) =>
 // eslint-disable-next-line no-eval
 const UNPOLLED_TASKS = new Set(eval(unpolledLiteral));
 
-const expectedHandlers = ["probe", "review", "postfunction", "codegen", "fixcode", "skilldistill", "memory_distill", "listener", "scheduledjob", "gitreview", "git-event", "gitcredrotate", "gitpipeline"];
+// "coder" (1.4 commit 8) is the 14th and the first LONG-QUEUE-ONLY type — see the
+// LONG_QUEUE_ONLY_TASKS assertions further down.
+const expectedHandlers = ["probe", "review", "postfunction", "codegen", "fixcode", "skilldistill", "memory_distill", "listener", "scheduledjob", "gitreview", "git-event", "gitcredrotate", "gitpipeline", "coder"];
 for (const t of expectedHandlers) ok(handlerKeys.includes(t), `TASK_HANDLERS registers "${t}"`);
 ok(handlerKeys.length === expectedHandlers.length, `TASK_HANDLERS has exactly ${expectedHandlers.length} task types (no orphans)`);
 ok(["postfunction", "memory_distill", "listener", "probe", "gitreview", "git-event", "gitpipeline"].every((t) => UNPOLLED_TASKS.has(t)) && UNPOLLED_TASKS.size === 7,
@@ -947,8 +949,21 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   const callAt = asyncSrc.indexOf("await d.aiBudgetGate(");
   ok(gateAt > 0 && callAt > gateAt, "…and that one call site is inside runGatedTask");
   ok((asyncSrc.split("await runGatedTask(").length - 1) === 1, "runGatedTask is invoked from exactly one place — `handler`");
-  ok(/export async function longHandler\(event\) \{\s*return handler\(event\);\s*\}/.test(asyncSrc),
+  // 1.4 commit 8 — longHandler gained exactly ONE line: the mark that says the event
+  // arrived on the long queue (`coder` refuses to run anywhere else). It must still be a
+  // mark plus a delegation and nothing more; a body that grows statements is the second
+  // consumer starting to fork.
+  const longBody = (asyncSrc.match(/export async function longHandler\(event\) \{([\s\S]*?)\n\}/) || [])[1] || "";
+  ok(/return handler\(event\);/.test(longBody) && /LONG_QUEUE_EVENTS\.add\(event\)/.test(longBody),
     "longHandler still DELEGATES to handler, so the long consumer reaches the same gate (no copy)");
+  ok(longBody.split(";").filter((s) => s.trim()).length <= 2, "…and its body is the queue mark plus that delegation, nothing else");
+  // THE LONG-QUEUE-ONLY GUARANTEE. A coder turn on the 120 s consumer is a half-written
+  // thread and a held claim, so the refusal is in code and is checked BEFORE the handler
+  // table is consulted.
+  ok(/const LONG_QUEUE_ONLY_TASKS = new Set\(\["coder"\]\)/.test(asyncSrc), "coder is long-queue only");
+  const guardAt = asyncSrc.indexOf("LONG_QUEUE_ONLY_TASKS.has(taskType)");
+  const tableAt = asyncSrc.indexOf("const taskHandler = TASK_HANDLERS[taskType]");
+  ok(guardAt > 0 && tableAt > guardAt, "…and the consumer check runs before the task is dispatched");
 }
 
 // =====================================================================================
@@ -1038,7 +1053,10 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
     const at = src.indexOf(startNeedle);
     if (at < 0) throw new Error(`source slice anchor not found: ${startNeedle}`);
     const from = at + startNeedle.length;
-    const ends = [/\nconst \w/g, /\nexport /g, /\nasync function /g, /\nfunction /g, /\n\/\/ === /g]
+    // `\n/**` is in the list because the next top-level declaration usually arrives with
+    // its own docblock (commit 8's executeCoderTurn does), and a slice that swallowed the
+    // comment ended on " */" instead of the handler's closing brace.
+    const ends = [/\nconst \w/g, /\nexport /g, /\nasync function /g, /\nfunction /g, /\n\/\/ === /g, /\n\/\*\*/g]
       .map((re) => { re.lastIndex = from; const m = re.exec(src); return m ? m.index : -1; })
       .filter((i) => i >= 0);
     return src.slice(at, ends.length ? Math.min(...ends) : src.length);

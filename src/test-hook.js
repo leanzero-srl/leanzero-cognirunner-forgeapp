@@ -389,7 +389,18 @@ export async function testStateTrigger(req) {
         // The kvSet allow-list below is NOT widened for `git_pipeline:*` either: a
         // plantable row is a plantable permission LOCK, which is the one fact this
         // commit's refusal depends on.
-        "getGitPipelineStatus"]);
+        "getGitPipelineStatus",
+        // 1.4 commit 8 — the Coder thread READ only, so a live pass can prove the owner
+        // asymmetry (owner sees the thread, another editor is refused with `not-owner`)
+        // on a real row. DELIBERATELY ABSENT: startCoderTurn and confirmCoderTicket. The
+        // first spends a frontier model's tokens on somebody's tenant; the second is the
+        // one door between a model's request and a write to a customer's repository, and
+        // a harness that can walk through it is a harness that can be turned into one.
+        // The kvSet allow-list below is NOT widened for `coder_thread:*` / `coder_ticket:*`
+        // either: a plantable ticket is a plantable CONSENT, which is the fact the whole
+        // confirm flow depends on. (`?what=kvs` still READS those rows — a read behind
+        // HARNESS_SECRET is how a tester confirms the thread landed.)
+        "getCoderThread"]);
       const functionKey = body.functionKey || body.name;
       if (!ALLOWED_KEYS.has(functionKey)) {
         return json(400, { error: `functionKey not allowlisted: ${functionKey}` });

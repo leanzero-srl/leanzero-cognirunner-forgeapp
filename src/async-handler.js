@@ -109,6 +109,7 @@ import {
 // task-type STRING has ONE home (the producer and this registry read the same
 // constant), and the work itself lives in src/git-pipeline.js, not here.
 import { runPipelineSetup, PIPELINE_TASK } from "./git-pipeline.js";
+import { runCoderTurn } from "./coder-engine.js";
 import { executeScheduledJobTask, getJob } from "./scheduled-jobs.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
 import { isKeyConflict } from "./shared/kvs-keys.js";
@@ -1220,6 +1221,38 @@ const executeGitEvent = async (params) => {
   }
 };
 
+/**
+ * ONE CODER TURN (1.4 commit 8).
+ *
+ * `runCoderTurn` owns everything that matters: the per-issue claim taken before any read,
+ * the owner check, the consent ticket, the thread write and the claim release on every
+ * exit. This handler is pure wiring and must add no policy of its own.
+ *
+ * IT IS POLLED. The issue panel waits on `getAsyncTaskResult`, so `coder` is deliberately
+ * absent from UNPOLLED_TASKS — the turn's reply and its `awaiting:"confirm"` ticket reach
+ * the user through the task row.
+ *
+ * IT SPENDS TOKENS, and a lot of them: `coder` is in TOKEN_SPENDING_TASK_TYPES
+ * (src/shared/ai-budget.js, estimate 16 000) so the ONE governor paces it like every
+ * other AI task. Nothing here calls the budget gate — `runGatedTask` already did.
+ */
+const executeCoderTurn = async (params, taskId) => {
+  const p = params || {};
+  let out;
+  try {
+    out = await runCoderTurn({
+      issueKey: p.issueKey, threadId: p.threadId, userMessage: p.message, accountId: p.accountId,
+      simulation: p.simulation === true, connectionId: p.connectionId || null, maxRounds: p.maxRounds,
+      gateFacts: p.gateFacts || null, savedByRole: p.savedByRole || "editor", cancelToken: taskId,
+    });
+  } catch (e) {
+    console.warn(`[coder] ${p.issueKey || "?"}/${p.threadId || "?"}: failed (${(e && e.message) || e})`);
+    return { success: false, error: `Coder turn failed: ${String((e && e.message) || e).slice(0, 200)}` };
+  }
+  console.log(`[coder] ${p.issueKey || "?"}/${p.threadId || "?"}: ${out.awaiting ? `awaiting ${out.awaiting}` : out.endedBy || "ended"} in ${out.rounds || 0} round(s)`);
+  return out;
+};
+
 // === Task registry — add new async task types here ===
 const TASK_HANDLERS = {
   "probe": executeProbe,
@@ -1243,7 +1276,30 @@ const TASK_HANDLERS = {
   // 1.4 commit 7 — admin-triggered pipeline install. Not produced by a browser
   // poll: the admin panel watches `getGitPipelineStatus`, which reads the row.
   [PIPELINE_TASK]: executePipelineSetup,
+  // 1.4 commit 8 — an in-issue Coder turn. LONG QUEUE ONLY (see LONG_QUEUE_ONLY_TASKS).
+  "coder": executeCoderTurn,
 };
+
+/**
+ * TASK TYPES THAT MAY ONLY RUN ON THE 900 s CONSUMER.
+ *
+ * A coder turn is up to eight rounds of a frontier model with tool calls between them;
+ * the 120 s consumer cannot hold one, and a turn killed at 120 s leaves a thread half
+ * written and a claim held. So the restriction is a GUARANTEE in code, not a convention
+ * about which producer pushes where: if a `coder` event ever arrives on `async-ai-queue`
+ * — a bad producer, a copy-pasted re-push, a replayed body — it is REFUSED, loudly, and
+ * nothing runs. FAIL CLOSED: running it on the short consumer is the outcome this exists
+ * to prevent.
+ */
+const LONG_QUEUE_ONLY_TASKS = new Set(["coder"]);
+
+/**
+ * WHICH CONSUMER AM I? `longHandler` marks the event object it is about to delegate, and
+ * `handler` reads the mark off that same object. A WeakSet rather than a module-level
+ * flag: the mark belongs to ONE event and cannot leak to the next invocation that shares
+ * a warm container.
+ */
+const LONG_QUEUE_EVENTS = new WeakSet();
 
 // Task types with no poller — skip async_task:* status rows (they'd never be
 // cleaned up: getAsyncTaskResult deletes rows only when something polls them).
@@ -1572,6 +1628,15 @@ export async function handler(event) {
   // rows that something actually polls).
   const ttl = { ttl: { value: TASK_TTL_HOURS, unit: "HOURS" } };
 
+  // THE CONSUMER CHECK, before anything is claimed, read or run (see LONG_QUEUE_ONLY_TASKS).
+  if (LONG_QUEUE_ONLY_TASKS.has(taskType) && !LONG_QUEUE_EVENTS.has(event)) {
+    const error = `Task type "${taskType}" runs only on the long consumer (long-queue); it was delivered to the standard consumer and was not run.`;
+    console.error(`Async handler: ${error}`);
+    await storage.set(`${TASK_PREFIX}${taskId}`, { status: "error", error }, ttl);
+    await updateAsyncJob(taskId, { status: "error", error, finishedAt: new Date().toISOString() }, JOB_TTL_DONE);
+    return;
+  }
+
   const taskHandler = TASK_HANDLERS[taskType];
   if (!taskHandler) {
     await storage.set(`${TASK_PREFIX}${taskId}`, { status: "error", error: `Unknown task type: ${taskType}` }, ttl);
@@ -1778,10 +1843,11 @@ export async function handler(event) {
  * ever makes the long consumer's body genuinely differ, the gate comes out into
  * its own exported function FIRST and both call it — it is never copied.
  *
- * Nothing routes to `long-queue` yet; 1.4 commit 8 (coder turns) is its first
- * producer. Declaring the consumer now is what keeps the manifest bump to ONE
- * major version, and an unused consumer costs nothing at runtime.
+ * Its first producer is the `startCoderTurn` resolver (1.4 commit 8). The ONLY thing
+ * this function adds is the MARK that says which consumer is running: `coder` refuses to
+ * run anywhere else (LONG_QUEUE_ONLY_TASKS), and it is this line that tells it it is home.
  */
 export async function longHandler(event) {
+  if (event && typeof event === "object") LONG_QUEUE_EVENTS.add(event);
   return handler(event);
 }

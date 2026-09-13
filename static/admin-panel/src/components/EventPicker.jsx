@@ -5,15 +5,29 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useMemo, useState } from "react";
-import { EVENT_CATEGORIES, JIRA_EVENTS, eventsByCategory, getEvent } from "../../../../src/shared/jira-events.js";
+import React, { useEffect, useMemo, useState } from "react";
+import { EVENT_CATEGORIES, JIRA_EVENTS, eventsByCategory, getEvent, requiresRepoFilter } from "../../../../src/shared/jira-events.js";
+// F-310 - the repo-id canonical form, from the ONE home. Typing the normalisation here
+// would give the picker a different answer from the allow-list and the webhook envelope,
+// and the symptom would be a listener that looks configured and never fires.
+import { parseRepoList, formatRepoList, isRepoIdShaped } from "../../../../src/shared/git-ids.js";
 
 // Grouped, searchable multi-select over the Jira event catalogue (single source:
 // src/shared/jira-events.js). Selected events render as solid category-coloured
 // chips; high-volume events carry a loud warning badge.
-export default function EventPicker({ value = [], onChange, disabled = false }) {
+export default function EventPicker({ value = [], onChange, disabled = false, repos = null, onReposChange = null }) {
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(() => new Set(["issue", "comment"]));
+  /* The repos field is edited as RAW TEXT and canonicalised on BLUR, never on every
+     keystroke: lower-casing mid-word moves the caret and fights the typist, and a
+     half-typed "acme/" is not yet a mistake. One normalisation, one moment, one home. */
+  const [repoText, setRepoText] = useState(() => formatRepoList(repos));
+  const [repoTouched, setRepoTouched] = useState(false);
+  useEffect(() => {
+    // Follow the saved value when the editor loads a different rule, but never
+    // overwrite what the user is currently typing.
+    if (!repoTouched) setRepoText(formatRepoList(repos));
+  }, [repos, repoTouched]);
   const selected = useMemo(() => new Set(value), [value]);
   const groups = useMemo(() => eventsByCategory(), []);
   const q = query.trim().toLowerCase();
@@ -38,6 +52,19 @@ export default function EventPicker({ value = [], onChange, disabled = false }) 
   };
   const hueOf = (cat) => (EVENT_CATEGORIES.find((c) => c.id === cat) || {}).hue || "#475569";
 
+  /* A git event NAMES a repository, and there is no "all repositories" listener: the
+     catalogue says so per row (`repos: true` -> requiresRepoFilter), so the field appears
+     exactly when the selection makes it required, and nothing here hardcodes a git id. */
+  const needsRepos = value.some((id) => requiresRepoFilter(id));
+  const parsedRepos = parseRepoList(repoText);
+  const badRepos = parsedRepos.filter((r) => !isRepoIdShaped(r));
+  const commitRepos = () => {
+    setRepoTouched(false);
+    const next = parseRepoList(repoText);
+    setRepoText(formatRepoList(next));
+    if (onReposChange) onReposChange(next);
+  };
+
   return (
     <div className={`evp ${disabled ? "evp-disabled" : ""}`}>
       <div className="evp-selected">
@@ -53,6 +80,30 @@ export default function EventPicker({ value = [], onChange, disabled = false }) 
           );
         })}
       </div>
+      {needsRepos && (
+        <div className="evp-repos">
+          <label className="evp-repos-label" htmlFor="evp-repos-input">
+            <span className="evp-repos-dot" style={{ background: hueOf("git") }} />
+            Repositories (required for Git events)
+          </label>
+          <input
+            id="evp-repos-input"
+            className={`evp-repos-input ${badRepos.length ? "invalid" : ""}`}
+            type="text"
+            placeholder="owner/name, owner/other-repo"
+            value={repoText}
+            onChange={(e) => { setRepoTouched(true); setRepoText(e.target.value); }}
+            onBlur={commitRepos}
+            disabled={disabled || !onReposChange}
+          />
+          <p className="evp-repos-hint">
+            Comma separated, one entry per repository, written as owner/name (GitHub) or workspace/slug (Bitbucket). Lower cased when you leave the field. A Git listener runs only for the repositories listed here.
+          </p>
+          {badRepos.length > 0 && (
+            <p className="evp-repos-bad">Not in owner/name form: {badRepos.join(", ")}</p>
+          )}
+        </div>
+      )}
       <input
         className="evp-search"
         type="text"

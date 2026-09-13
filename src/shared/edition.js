@@ -195,6 +195,68 @@ export const clampForgeLlmModel = (edition, id) =>
  * Pure — the caller supplies the already-resolved edition, agent model and
  * allowance level, so this stays testable and free of I/O.
  */
+/**
+ * THE ONE SENTENCE per capability reason (1.4 commit 6).
+ *
+ * `agentCapability()` answers with a machine-readable `reason`; four surfaces then have
+ * to say what that MEANS and what to do about it - the admin panel's Code tab status
+ * card, the agent action checklist, the coder panel and the backend's own refusal.
+ * Four renderers inventing four wordings is the defect this repo is named for, so the
+ * words live here, next to the predicate that produces the code.
+ *
+ * Each row is { title, remedy, link }. `link` is a TAB KEY the app already has
+ * ("settings"), or null when there is nowhere to send the reader - never a URL, because
+ * the admin panel's tabs are not addressable and a fabricated link is worse than none.
+ *
+ * `agentActionRefusalText` in src/shared/agent-actions.js is the sibling for the
+ * gate's per-ACTION codes (it also handles "missing-product:*", "external-trigger",
+ * "needs-admin", which are not capability reasons at all). Keep the claims aligned;
+ * do not merge the tables - one answers "why is Coder off", the other "why was THIS
+ * action refused on THIS rule".
+ */
+export const AGENT_CAPABILITY_REASONS = {
+  "needs-coder-edition": {
+    title: "Coder is off - this site is on CogniRunner Standard",
+    remedy: "The Coder toolset runs on Atlassian Forge LLM only for Coder sites. Upgrade the app's edition, or switch to any BYOK provider (OpenAI, Anthropic, Azure, OpenRouter, LM Studio) and it turns on immediately.",
+    link: "settings",
+  },
+  "needs-frontier-model": {
+    title: "Coder is off - the agent model is not a frontier model",
+    remedy: "Haiku never drives an agent. Pick Claude Sonnet 5 or Opus 5 as the agent model in Settings, or switch to a BYOK provider.",
+    link: "settings",
+  },
+  "allowance-exhausted": {
+    title: "Coder is paused - this month's Forge LLM allowance is used up",
+    remedy: "Switch to a BYOK provider to keep going, or wait for the allowance to reset. Nothing is lost; queued work resumes.",
+    link: "settings",
+  },
+  byok: {
+    title: "Coder is on",
+    remedy: "This site pays for its own tokens, so the edition and the model are yours to choose.",
+    link: null,
+  },
+  "forge-frontier": {
+    title: "Coder is on",
+    remedy: "Running on Atlassian Forge LLM with a frontier agent model.",
+    link: null,
+  },
+  /**
+   * NOT a reason agentCapability() can return. It is what a SURFACE uses when the
+   * capability read itself failed - the UI fails to the restrictive side and must
+   * still say something true, so "could not check" gets its own row rather than
+   * borrowing a reason the backend never gave.
+   */
+  unknown: {
+    title: "Coder status could not be checked",
+    remedy: "The capability check did not answer. Controls stay disabled until it does - reload, and if it persists check the app's provider settings.",
+    link: "settings",
+  },
+};
+
+/** The row for a reason, degrading to `unknown` rather than guessing. */
+export const agentCapabilityCopy = (reason) =>
+  AGENT_CAPABILITY_REASONS[String(reason || "")] || AGENT_CAPABILITY_REASONS.unknown;
+
 export const agentCapability = ({ provider, edition, agentModel, allowanceLevel } = {}) => {
   if (provider !== "atlassian") return { enabled: true, reason: "byok" };
   if (edition !== EDITION_IDS.ADVANCED) return { enabled: false, reason: "needs-coder-edition" };

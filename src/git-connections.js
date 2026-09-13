@@ -69,6 +69,9 @@
 import storage from "@forge/kvs";
 import { createGitProvider, GitProviderError, GIT_PROVIDER_KINDS } from "./git-providers.js";
 import { safeKeyPart, isKeyConflict } from "./shared/kvs-keys.js";
+// F-310 - the repo-id canonical form has ONE home, and it is a shared/ module because
+// the admin panel needs the same answer and cannot import this file (it loads @forge/kvs).
+import { normalizeRepoId } from "./shared/git-ids.js";
 
 /* ===== KEY NAMES — the ONE home. Never retype one of these strings. ===== */
 
@@ -164,10 +167,13 @@ const HARNESS_REFUSAL = "This is a harness stand-in connection with no credentia
 
 const nowIso = () => new Date().toISOString();
 
-/** Stable, printable repo id: "owner/name" lower-cased, slashes kept. */
-export function normalizeRepoId(repoId) {
-  return String(repoId == null ? "" : repoId).trim().toLowerCase();
-}
+/**
+ * Stable, printable repo id: "owner/name" lower-cased. F-310 - the implementation
+ * moved to src/shared/git-ids.js so the EventPicker's `repos` filter cannot grow a
+ * fourth copy of it; re-exported here because every existing caller imports it from
+ * this module, and a second import path is how one home becomes two.
+ */
+export { normalizeRepoId };
 
 function randomId(prefix) {
   const rand =

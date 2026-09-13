@@ -78,7 +78,11 @@ export const GIT_PROVIDER_HOSTS = [
 export const GIT_PROVIDER_HOST_NAMES = GIT_PROVIDER_HOSTS.map((h) => h.host);
 
 /** The provider kinds this module can build. */
-export const GIT_PROVIDER_KINDS = ["github", "bitbucket"];
+// F-310 - ONE list. It lives in src/shared/git-ids.js because the admin panel needs it
+// and cannot import this module (tweetnacl). Re-exported so every existing caller here
+// keeps its import path.
+export { GIT_PROVIDER_KINDS } from "./shared/git-ids.js";
+import { GIT_PROVIDER_KINDS } from "./shared/git-ids.js";
 
 /** The closed error-code set. Anything outside it is a bug in this file. */
 export const GIT_ERROR_CODES = [

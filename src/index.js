@@ -48,7 +48,8 @@ import {
 } from "./shared/edition.js";
 import { minuteKey, effectiveBudget, budgetDecision, inlineShouldQueue, AI_PLATFORM_TPM, AI_BUDGET_DEFAULT_TPM, BUDGET_WAIT_HORIZON_MS } from "./shared/ai-budget.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
-import { safeKeyPart, isKeyConflict } from "./shared/kvs-keys.js";
+import { isKeyConflict } from "./shared/kvs-keys.js";
+import { gitDeliveryClaimKey } from "./shared/git-ids.js";
 import { providerKeySlot, providerModelSlot, providerAgentModelSlot, providerBaseUrlSlot } from "./shared/provider-slots.js";
 // GIT CONNECTIONS (1.4 commit 2). The behaviour — key names, caps, the security
 // model, auth_dead, queued rotation — lives in src/git-connections.js and is
@@ -11111,8 +11112,9 @@ export async function gitWebhook(req) {
   const envelope = buildGitEnvelope({ eventType, kind, headerEvent, connectionId: connId, repoId, deliveryId, payload });
 
   // ---- 5. idempotency claim BEFORE the enqueue ----
-  // F-335: ONE home for this key pending.
-  const claimKey = `git_delivery:${safeKeyPart(connId)}:${safeKeyPart(deliveryId)}`;
+  // ONE home for this key shape, shared with the consumer that releases it (F-335).
+  // The builder sanitises both parts — `deliveryId` is a raw provider header.
+  const claimKey = gitDeliveryClaimKey(connId, deliveryId);
   try {
     await storage.set(claimKey, { at: new Date().toISOString(), eventType }, {
       keyPolicy: "FAIL_IF_EXISTS",

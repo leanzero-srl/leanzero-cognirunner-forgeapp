@@ -32,6 +32,7 @@ const { gitWebhook, mapGitEvent, buildGitEnvelope, gitIssueKeysFrom } = await im
 const { extractEventContext, GIT_EVENT_IDS, isKnownEvent } = await import("../../src/shared/jira-events.js");
 const { gitHookSecretKey, gitConnKey, plantHarnessConnection, deleteHarnessConnection, HARNESS_STATUS, providerForConnection, testConnection } = await import("../../src/git-connections.js");
 const { safeKeyPart } = await import("../../src/shared/kvs-keys.js");
+const { gitDeliveryClaimKey } = await import("../../src/shared/git-ids.js");
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) pass++; else { fail++; console.log("FAIL:", m); } };
@@ -462,6 +463,8 @@ seed();
   const rawId = "a b/c\u00e9*1";
   ok(!storage.__raw(`git_delivery:${CONN}:${rawId}`), "…and the raw header value never becomes the key");
   ok(!!storage.__raw(`git_delivery:${CONN}:${safeKeyPart(rawId)}`), "…the sanitised key is the one written");
+  // The webhook and the consumer that releases the claim must build the SAME key.
+  ok(!!storage.__raw(gitDeliveryClaimKey(CONN, rawId)), "…which is exactly what gitDeliveryClaimKey builds (F-335's shared home)");
 }
 
 /* ===================== 6. the raw cap and the raw whitelist ===================== */

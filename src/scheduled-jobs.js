@@ -43,7 +43,7 @@ import { createRunSearchBudget } from "./web-search-tool.js";
 import { JOB_DEFAULT_MAX_WRITES_PER_RUN, JOB_MAX_WRITES_PER_RUN, JOB_MIN_WRITES_PER_RUN, brakeRefusalText } from "./shared/registry-limits.js";
 // The VA record has ONE normalizer and it is called FROM INSIDE normalizeJob — a parallel
 // save path for agents would be the split this release exists to avoid.
-import { normalizeVa } from "./shared/va-config.js";
+import { normalizeVa, VA_SAVE_WATCH_FIELD } from "./shared/va-config.js";
 import { agentResultFields, SCOPED_AGENT_SUMMARY_BUDGET_BYTES, boundScopedJobLog } from "./shared/agent-result.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
 // ONE HOME for KVS key sanitising / conflict detection — src/shared/kvs-keys.js (F-340).
@@ -81,7 +81,7 @@ export const newJobId = () => `job_${Date.now().toString(36)}${Math.random().toS
 
 // ── Validation / normalisation ───────────────────────────────────────────────
 
-export const normalizeJob = (input = {}, { existing = null, accountId = null, gate = undefined, savedByRole = "editor" } = {}) => {
+export const normalizeJob = (input = {}, { existing = null, accountId = null, gate = undefined, savedByRole = "editor", watchedTicks = undefined, vaRefused = null } = {}) => {
   const src = input && typeof input === "object" ? input : {};
   const id = existing ? existing.id : (typeof src.id === "string" && /^[A-Za-z0-9_.-]{3,80}$/.test(src.id) ? src.id : newJobId());
   const name = clampStr(src.name, 120).trim();
@@ -120,8 +120,44 @@ export const normalizeJob = (input = {}, { existing = null, accountId = null, ga
   // every number clamped, every project key validated, `scope.write.site` REFUSED.
   // A `mode:"va"` save with no block is refused rather than defaulted — an agent whose
   // persona, scope and caps were invented by the save path is an agent nobody configured.
-  const vaResult = mode === "va" ? normalizeVa(src.va, { existing: existing && existing.va, savedByRole }) : null;
+  /*
+   * THE SECOND PASS IS ASKED WITH THE FIRST PASS'S WATCH COUNT (F-523).
+   *
+   * `normalizeVa` bounds `status.shadowUntilTick` against how many of its own ticks the
+   * agent has been watched. This module cannot read that counter — it is a storage
+   * module and reaches nothing — so the number arrives from the door that could:
+   * `prepareVaSave` stamps it on the input it returns (`VA_SAVE_WATCH_FIELD`; the long
+   * note in src/shared/va-config.js says why it rides the input and why it cannot be
+   * forged). Without it this pass derived a watch from the STORED value and re-cut the
+   * very watch `rearmShadow` had just armed — in the permissive direction, silently.
+   *
+   * An explicit `watchedTicks` option wins over the stamped field, so an in-process
+   * caller that already holds the count need not decorate its input. `null` is a
+   * MEANINGFUL value on both (the counter could not be read) and `normalizeVa` reads it
+   * as "do not lower what is stored", so it is passed through rather than dropped.
+   */
+  const stampedWatch = Object.prototype.hasOwnProperty.call(src, VA_SAVE_WATCH_FIELD) ? src[VA_SAVE_WATCH_FIELD] : undefined;
+  const vaWatch = watchedTicks !== undefined ? watchedTicks : stampedWatch;
+  const vaResult = mode === "va"
+    ? normalizeVa(src.va, {
+      existing: existing && existing.va,
+      savedByRole,
+      ...(vaWatch !== undefined ? { watchedTicks: vaWatch } : {}),
+    })
+    : null;
   const va = vaResult ? vaResult.va : null;
+  /*
+   * AND ITS REFUSALS ARE NEVER DROPPED (F-523). This pass used to discard
+   * `vaResult.refused` entirely, so a clamp applied HERE — after the door had already
+   * answered the caller — changed a record with nobody told. A caller that can carry the
+   * note passes a `vaRefused` array and gets it; a caller that cannot gets a THROW,
+   * because on an already-normalised block this pass is idempotent, and a refusal means
+   * the block about to reach storage is not the block the door approved.
+   */
+  if (vaResult && Array.isArray(vaResult.refused) && vaResult.refused.length) {
+    if (Array.isArray(vaRefused)) vaRefused.push(...vaResult.refused);
+    else throw new Error(`va is invalid: ${vaResult.refused.map((r) => (r && r.reason) || "refused").join("; ")}`);
+  }
   const out = {
     id, name,
     description: clampStr(src.description, 2000),
@@ -193,9 +229,13 @@ const touchSched = async (id) => {
   try { const m = await readSchedMap(); m[id] = { ...(m[id] || {}), lastCheckedAt: nowIso() }; await writeSchedMap(m); } catch (e) { console.warn("[job] sched touch skipped:", e && e.message); }
 };
 
-export const saveJob = async (input, { accountId = null, gate = undefined, savedByRole = "editor" } = {}) => {
+export const saveJob = async (input, { accountId = null, gate = undefined, savedByRole = "editor", watchedTicks = undefined } = {}) => {
   const existing = input && input.id ? await getJob(input.id) : null;
-  const full = normalizeJob(input, { existing, accountId, gate, savedByRole });
+  // F-523: the VA door's watch count rides `input` (`VA_SAVE_WATCH_FIELD`) unless a
+  // caller passes it explicitly, and the second pass's refusals come back here instead
+  // of being dropped — they ride the ANSWER, never the stored record.
+  const vaRefused = [];
+  const full = normalizeJob(input, { existing, accountId, gate, savedByRole, watchedTicks, vaRefused });
   // Same refusal as a listener, from the same home (1.4 commit 13b).
   await assertKnownSkillIds(full.agent);
   delete full.stats;
@@ -210,7 +250,10 @@ export const saveJob = async (input, { accountId = null, gate = undefined, saved
   if (at < 0 || (existing && existing.enabled === false && full.enabled)) await touchSched(full.id);
   await writeJobIndex(next);
   await storage.set(JOB_PREFIX + safeKeyPart(full.id), full);
-  return decorate(full, existing && existing.stats ? { [full.id]: existing.stats } : {});
+  const saved = decorate(full, existing && existing.stats ? { [full.id]: existing.stats } : {});
+  // Only when there is something to say. `decorate` builds a fresh object, so this rides
+  // the ANSWER the caller renders and never the row that was just stored.
+  return vaRefused.length ? { ...saved, vaRefused } : saved;
 };
 
 export const deleteJob = async (id) => {

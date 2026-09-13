@@ -114,7 +114,7 @@ import {
   createWizard, resumeWizard, stepWizard, serializeWizardState, clampSay,
   VA_WIZARD_OPTIONS_MAX,
 } from "./shared/va-wizard.js";
-import { VA_LIMITS, VA_QUEUES_PER_DESK_MAX, VA_CEILINGS } from "./shared/va-config.js";
+import { VA_LIMITS, VA_QUEUES_PER_DESK_MAX, VA_CEILINGS, VA_SAVE_WATCH_FIELD } from "./shared/va-config.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
 import { safeKeyPart } from "./shared/kvs-keys.js";
 import { clampChars } from "./shared/text-clamp.js";
@@ -1521,12 +1521,29 @@ export const prepareVaSave = async ({ input, existing, savedByRole, now } = {}, 
     note: SHADOW_WATCH_UNKNOWN,
     reason: "This agent's own tick counter could not be read, so its shadow-mode watch was left exactly as it was rather than being recalculated. Nothing about shadow mode changed with this save.",
   }];
+  /* — THE WATCH COUNT TRAVELS WITH THE INPUT (F-523) —
+   *
+   * `saveJob` normalises this block a SECOND time, in a storage module that cannot read
+   * the counter, and F-519's restrictive fallback there derives a watch from the STORED
+   * value — which is not the value `rearmShadow` just armed. So the second pass cut the
+   * re-arm back to the stored ceiling and threw away the refusal that said so: an agent
+   * edited after 600 watched ticks went live with no shadow at all.
+   *
+   * It is stamped LAST and UNCONDITIONALLY, which is what makes it unforgeable: whatever
+   * a REST body put under this key is overwritten here, and every door that accepts a
+   * `mode:"va"` body comes through this function. `null` (the counter could not be read)
+   * is a real answer and is sent as one — `normalizeVa` reads it as "do not lower what is
+   * stored", the same restrictive case this door just used.
+   *
+   * `normalizeJob` strips it; it never reaches storage, the index row or the projection.
+   */
   return okv({
     input: {
       ...src,
       va,
       name: String(src.name || "").trim() || va.persona.name,
       schedule: { cron: va.cadence.cron, timeZone: va.cadence.timeZone },
+      [VA_SAVE_WATCH_FIELD]: watch.known ? watch.watched : null,
     },
     refused: [...refused, ...asArray(armed.notes), ...watchNotes],
   });

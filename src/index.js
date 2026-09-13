@@ -140,6 +140,12 @@ import * as listenersMod from "./listeners.js";
 // re-implemented here.
 import * as coderMod from "./coder-engine.js";
 import * as jobsMod from "./scheduled-jobs.js";
+// F-567 — the ONE emitter of the `Knowledge injected: …` line. The validator was the only
+// field-guide consumer that left no receipt; it now writes the same line as the agent, the
+// Coder and the listener runner, from the same function, so there is still exactly one
+// author of that wording. No new bundle weight: coder-engine.js above already pulls
+// agent-runner.js in.
+import { logKnowledgeInjection } from "./agent-runner.js";
 // THE VIRTUAL ADMINISTRATOR'S OPERATIONS (1.5 commit 5b). Every Agents-tab operation
 // lives in src/va-admin.js as a plain function over the ledger and the engine; the
 // resolvers at the bottom of this file are a permission skin and nothing else, and
@@ -15662,7 +15668,32 @@ const callOpenAI = async (fieldValue, validationPrompt, attachmentParts, context
   // The configured model. For LM Studio, callAIChat ACQUIRES the least-loaded
   // loaded worker (see lmAcquireWorker) and reports it back as result.modelUsed.
   const model = await getOpenAIModel();
-  const { text: fieldGuideText } = await getRuntimeFieldGuide(validationPrompt);
+  const { text: fieldGuideText, sectionIds: fieldGuideSections } = await getRuntimeFieldGuide(validationPrompt);
+  /* F-567 — THE VALIDATOR LEAVES A RECEIPT TOO.
+   * Every sibling field-guide consumer records what it injected (the semantic PF's
+   * `Field guide: N section(s)` trace line, codegen's `meta.fieldGuide`, the Coder's
+   * `knowledge.fieldGuideSections` on the thread row). The validator — the surface that
+   * runs on EVERY transition — discarded `sectionIds` here, so a tenant asking "what
+   * knowledge did this refusal carry?" had no answer on any build.
+   *
+   * The console line goes through `logKnowledgeInjection`, the ONE emitter of that
+   * wording (its exact spelling is asserted byte-for-byte by field-guide-surfaces and by
+   * two live drivers — it is not re-spelled here). The IDS and the BYTE COUNT ride back
+   * on the result so `validate()` can stamp them on the execution-log row; the BLOCK
+   * never leaves this function. `receipt()` is applied to every return below the guide
+   * resolution, including the fail-open ones: the guide reached the prompt whatever the
+   * provider then did, and a receipt that appears only on success is a receipt that
+   * misleads exactly when support needs it. */
+  if (fieldGuideText) {
+    logKnowledgeInjection(
+      { fieldGuideBlock: fieldGuideText, fieldGuideSections },
+      (line) => console.log(line),
+    );
+  }
+  const fieldGuideBytes = fieldGuideText ? Buffer.byteLength(fieldGuideText, "utf8") : 0;
+  const receipt = (result) => (fieldGuideSections.length
+    ? { ...result, fieldGuideSections, fieldGuideBytes }
+    : result);
   const hasAttachments = attachmentParts && attachmentParts.length > 0;
 
   const systemPrompt = (hasAttachments
@@ -15743,33 +15774,33 @@ Respond with JSON only.`;
       if (isTransientAIError(result.status, result.error)) {
         // Transient provider error → fail OPEN so a rate limit / outage doesn't
         // block legitimate transitions (especially under bulk operations).
-        return {
+        return receipt({
           isValid: true,
           reason: `AI service temporarily unavailable (${result.status}) — transition allowed (fail-open).`,
           transientError: true,
           modelUsed: servedModel,
-        };
+        });
       }
       // Non-transient provider/config error (e.g. a bad or expired API key = 401,
       // a malformed request = 400). This is NOT a validation failure of the field
       // content — it's an internal CogniRunner/provider fault, so FAIL OPEN rather
       // than block every transition on a misconfigured key.
-      return {
+      return receipt({
         isValid: true,
         reason: `AI service error (${result.status}) — transition allowed (fail-open). Check the AI provider/key in CogniRunner settings.`,
         transientError: true,
         modelUsed: servedModel,
-      };
+      });
     }
 
     const content = result.data.choices[0]?.message?.content?.trim();
 
     if (!content) {
-      return {
+      return receipt({
         isValid: false,
         reason: "Empty response from AI service",
         modelUsed: servedModel,
-      };
+      });
     }
 
     // Tolerant parse: handles markdown fences, prose-wrapped JSON, etc.
@@ -15778,44 +15809,44 @@ Respond with JSON only.`;
       // Generic parse failed — try the schema-aware verdict recovery before
       // discarding the response (which would FALSELY fail-closed / leak "malformed").
       const recovered = recoverValidatorVerdict(content);
-      if (recovered) return { ...recovered, modelUsed: servedModel };
-      return {
+      if (recovered) return receipt({ ...recovered, modelUsed: servedModel });
+      return receipt({
         isValid: false,
         reason: `AI returned malformed JSON: ${content.substring(0, 120)}`,
         modelUsed: servedModel,
-      };
+      });
     }
-    return {
+    return receipt({
       isValid: parsed.isValid === true,
       // Clamp the model-authored reason (it lands in errorMessage + the unbounded logEntry.reason);
       // mirrors recoverValidatorVerdict's 500-char cap so a runaway generation can't bloat the log/UI.
       reason: typeof parsed.reason === "string" ? parsed.reason.slice(0, 500) : "No reason provided",
       modelUsed: servedModel,
-    };
+    });
   } catch (error) {
     if (error && error.pfDeadline) {
       // Hit the 23s internal deadline before the 25s platform kill — fail OPEN
       // (same policy as a transient provider error) so the transition isn't blocked
       // by an ungraceful platform timeout.
       console.warn("AI validation exceeded its time budget — failing open (transition allowed).");
-      return {
+      return receipt({
         isValid: true,
         reason: "AI validation timed out — transition allowed (fail-open).",
         transientError: true,
         modelUsed: model,
-      };
+      });
     }
     // A thrown transport/network fault (provider unreachable, LM Studio tunnel down,
     // DNS/TLS/ECONNRESET) is an internal/infra fault, NOT a content-validation
     // failure — FAIL OPEN (mirrors the non-transient {ok:false} HTTP branch above)
     // so a provider outage never blocks a Jira transition.
     console.error("Error calling AI (failing open):", error);
-    return {
+    return receipt({
       isValid: true,
       reason: `AI service error — transition allowed (fail-open): ${error.message}`,
       transientError: true,
       modelUsed: model,
-    };
+    });
   }
 };
 
@@ -16320,7 +16351,17 @@ const callOpenAIWithTools = async (fieldValue, validationPrompt, attachmentParts
     console.log("LM Studio capability gate skipped:", e.message);
   }
   const hasAttachments = attachmentParts && attachmentParts.length > 0;
-  const { text: agenticFieldGuideText } = await getRuntimeFieldGuide(validationPrompt);
+  const { text: agenticFieldGuideText, sectionIds: agenticFieldGuideSections } = await getRuntimeFieldGuide(validationPrompt);
+  // F-567 — the agentic validator is the same surface and leaves the same receipt. The
+  // line comes from the ONE emitter (see the sibling in callOpenAI); the ids and bytes
+  // ride on `toolMeta` below, which every one of this function's ten returns already
+  // carries — a wrapper per return would be ten chances to forget one.
+  if (agenticFieldGuideText) {
+    logKnowledgeInjection(
+      { fieldGuideBlock: agenticFieldGuideText, fieldGuideSections: agenticFieldGuideSections },
+      (line) => console.log(line),
+    );
+  }
 
   // Build tool definitions from registry
   const tools = Object.values(TOOL_REGISTRY).map((t) => t.definition);
@@ -16407,6 +16448,9 @@ RESPONSE FORMAT:
     queries: [],    // JQL queries executed
     totalResults: 0, // total Jira issues returned across all queries
     modelUsed: model, // which (pooled) LM Studio model served this validation
+    // F-567 — the field-guide receipt. Ids and a byte count, never the block.
+    fieldGuideSections: agenticFieldGuideSections,
+    fieldGuideBytes: agenticFieldGuideText ? Buffer.byteLength(agenticFieldGuideText, "utf8") : 0,
   };
 
   // Agentic loop: up to MAX_TOOL_ROUNDS tool-call iterations + 1 final answer iteration
@@ -17808,6 +17852,25 @@ export const validate = async (args) => {
     logEntry.docsUsed = true;
   }
   if (memorySection) logEntry.memoriesUsed = true;
+  /* F-567 — THE FIELD-GUIDE RECEIPT ON THE ROW.
+   * `docsUsed` and `memoriesUsed` already say which knowledge a validation carried; the
+   * baked field guide said nothing, on any build, so "what knowledge did this refusal
+   * carry?" had no answer for the surface that runs on every transition.
+   *
+   * IDS AND A BYTE COUNT ONLY — never the block. Bounded to 20 ids for the same reason
+   * `summarizeKnowledge` bounds its own: a log row is stored, and an unbounded list from
+   * a selector is an unbounded row. Both the standard and the agentic path report here;
+   * the agentic one carries it on `toolMeta` (the slim `logEntry.toolMeta` rebuilt above
+   * deliberately does not copy it — one home for this fact on the row, not two).
+   */
+  const fieldGuideSections = Array.isArray(validationResult.fieldGuideSections)
+    ? validationResult.fieldGuideSections
+    : (Array.isArray(validationResult.toolMeta?.fieldGuideSections) ? validationResult.toolMeta.fieldGuideSections : []);
+  if (fieldGuideSections.length) {
+    logEntry.fieldGuide = fieldGuideSections.map((s) => String(s)).slice(0, 20);
+    const bytes = validationResult.fieldGuideBytes ?? validationResult.toolMeta?.fieldGuideBytes;
+    if (Number.isFinite(Number(bytes))) logEntry.fieldGuideBytes = Number(bytes);
+  }
   if (validationResult.transientError) logEntry.transientError = true;
   // Surface the honesty flags on validator/condition logs too (validate() writes
   // directly, not through logAndTrace). source defaults to "runtime" in storeLog.

@@ -714,14 +714,14 @@ fetchCalls = [];
 fetchQueue = [res(200, []), res(201, { id: 4242 })];
 const setup1 = await callScanned("setupGitWebhook", { connectionId: hookId, repo: "acme/app" });
 ok(setup1.success === true && setup1.reused === false, `setup installs the hook (${JSON.stringify(setup1).slice(0, 200)})`);
-ok(setup1.hook.hookId === "4242" && setup1.hook.provider === "github", "…and reports the provider's hook id");
+ok(setup1.hook.hookId === "4242" && setup1.hook.provider === "github" && typeof setup1.hook.createdAt === "string", "…and reports the provider's hook id");
 ok(fetchCalls.length === 2 && fetchCalls[0].method === "GET" && fetchCalls[1].method === "POST",
   `…through one list and one create (${JSON.stringify(fetchCalls.map((c) => c.method))})`);
 ok(/\/repos\/acme\/app\/hooks/.test(fetchCalls[1].url), `…on the repo's hooks endpoint (${fetchCalls[1].url})`);
 const hookPlanted = storage.__raw(conns.gitHookSecretKey(hookId, "acme/app"));
 ok(hookPlanted && typeof hookPlanted.secret === "string" && hookPlanted.secret.length === 64, "the per-repo signing secret is stored, 32 bytes hex");
-ok(setup1.connection.hooks["acme/app"].hookId === "4242", "the connection row records the hook per repo");
-ok(setup1.connection.hooks["acme/app"].secret === undefined, "…and the record carries no secret field");
+ok(setup1.connection.webhooks["acme/app"].hookId === "4242", "the connection row records the hook per repo");
+ok(setup1.connection.webhooks["acme/app"].secret === undefined, "…and the record carries no secret field");
 const HOOK_SECRET = hookPlanted.secret;
 ok(findSecret(setup1, HOOK_SECRET) === null, "setupGitWebhook does not return the signing secret");
 
@@ -742,10 +742,12 @@ ok(hookRot.success === true, `rotation succeeds (${JSON.stringify(hookRot).slice
 ok(fetchCalls.length === 1 && fetchCalls[0].method === "PATCH", "…through one hook-config update");
 const hookSecret2 = storage.__raw(conns.gitHookSecretKey(hookId, "acme/app"));
 ok(hookSecret2.secret !== HOOK_SECRET && hookSecret2.secret.length === 64, "…the stored secret is a NEW one");
-ok(typeof hookSecret2.rotatedAt === "string", "…stamped with the moment it hookSecret2");
+ok(typeof hookSecret2.rotatedAt === "string", "…stamped with the moment it rotated");
 ok(findSecret(hookRot, hookSecret2.secret) === null && findSecret(hookRot, HOOK_SECRET) === null,
   "rotateGitWebhookSecret returns neither the new secret nor the old one");
-ok(typeof hookRot.connection.hooks["acme/app"].rotatedAt === "string", "the connection row shows THAT it hookSecret2, never the value");
+ok(typeof hookRot.connection.webhooks["acme/app"].rotatedAt === "string", "the connection row shows THAT it rotated, never the value");
+ok(typeof hookRot.rotatedAt === "string", "…and the call answers WHEN it rotated, which is all the Code tab renders");
+ok(storage.__raw(conns.gitConnKey(hookId)).webhooks["acme/app"].secret === undefined, "the STORED row carries no secret under webhooks either");
 
 // a provider failure during rotation changes NOTHING.
 fetchQueue = [res(404, { message: "no such hook" })];

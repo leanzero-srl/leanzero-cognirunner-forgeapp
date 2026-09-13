@@ -11234,8 +11234,11 @@ resolver.define("setupGitWebhook", async ({ payload, context }) => {
   return okOr(async () => {
     const triggerUrl = await getGitWebhookUrl();
     const r = await setupRepoWebhook(payload?.connectionId, payload?.repo, { triggerUrl });
+    // `hook` is `{hookId, provider, createdAt, rotatedAt}` — the SAME shape the
+    // connection row carries under `webhooks[repoId]`, which is what the Code tab
+    // re-reads from `listGitConnections` after this call.
     return r.ok
-      ? { success: true, reused: r.reused === true, repo: r.repo, hook: r.hook, connection: r.connection }
+      ? { success: true, reused: r.reused === true, repo: r.repo, hook: r.hook, events: r.events, connection: r.connection }
       : { success: false, error: r.error, code: r.code };
   });
 });
@@ -11247,8 +11250,9 @@ resolver.define("rotateGitWebhookSecret", async ({ payload, context }) => {
   return okOr(async () => {
     const triggerUrl = await getGitWebhookUrl();
     const r = await rotateGitHookSecret(payload?.connectionId, payload?.repo, { triggerUrl });
+    // `rotatedAt` is WHEN, never WHAT TO — there is no read path for the secret.
     return r.ok
-      ? { success: true, repo: r.repo, connection: r.connection }
+      ? { success: true, repo: r.repo, rotatedAt: r.rotatedAt, hook: r.hook, connection: r.connection }
       : { success: false, error: r.error, code: r.code };
   });
 });

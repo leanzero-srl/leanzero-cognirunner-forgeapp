@@ -248,15 +248,15 @@ export function publicConnection(row) {
     // field like everything else here so a future field on the stored hook row
     // cannot ride along. The signing secret lives at `git_hook_secret:*` and has no
     // representation in any public shape, here or anywhere else.
-    hooks: publicHooks(row.hooks),
+    webhooks: publicWebhooks(row.webhooks),
   };
 }
 
 /** The emit shape of the per-repo hook record. Whitelist, never a spread. */
-export function publicHooks(hooks) {
+export function publicWebhooks(webhooks) {
   const out = {};
-  if (!hooks || typeof hooks !== "object") return out;
-  for (const [repoId, h] of Object.entries(hooks)) {
+  if (!webhooks || typeof webhooks !== "object") return out;
+  for (const [repoId, h] of Object.entries(webhooks)) {
     if (!h || typeof h !== "object") continue;
     out[repoId] = {
       hookId: h.hookId == null ? null : String(h.hookId),
@@ -939,11 +939,11 @@ async function hookProviderFailure(connId, e) {
 async function recordRepoHook(connId, repo, hook) {
   const row = await getConnection(connId);
   if (!row) return null;
-  const prev = (row.hooks && typeof row.hooks === "object" && row.hooks[repo]) || {};
+  const prev = (row.webhooks && typeof row.webhooks === "object" && row.webhooks[repo]) || {};
   const next = {
     ...row,
-    hooks: {
-      ...(row.hooks && typeof row.hooks === "object" ? row.hooks : {}),
+    webhooks: {
+      ...(row.webhooks && typeof row.webhooks === "object" ? row.webhooks : {}),
       [repo]: {
         hookId: hook.hookId == null ? null : String(hook.hookId),
         provider: row.kind,
@@ -989,11 +989,16 @@ export async function setupRepoWebhook(connId, repoId, { triggerUrl, fetchImpl }
       ? await provider.updateWebhook({ repo: t.repo, id: match.id, url, secret, events })
       : await provider.createWebhook({ repo: t.repo, url, secret, events });
     const next = await recordRepoHook(connId, t.repo, { hookId: hook && hook.id });
+    // The emitted hook IS the recorded row's public shape — one shape for "what the
+    // Code tab reads from the connection" and "what the setup call answered", so the
+    // chip cannot disagree with the list it is re-read from.
+    const recorded = publicWebhooks(next && next.webhooks)[t.repo] || null;
     return {
       ok: true,
       reused: !!match,
       repo: t.repo,
-      hook: { repo: t.repo, hookId: hook && hook.id != null ? String(hook.id) : null, provider: t.row.kind, events: events.slice() },
+      hook: recorded,
+      events: events.slice(),
       connection: publicConnection(next || t.row),
     };
   } catch (e) {
@@ -1011,7 +1016,7 @@ export async function setupRepoWebhook(connId, repoId, { triggerUrl, fetchImpl }
 export async function rotateGitHookSecret(connId, repoId, { triggerUrl, fetchImpl } = {}) {
   const t = await hookTarget(connId, repoId);
   if (t.error) return t.error;
-  const recorded = (t.row.hooks && typeof t.row.hooks === "object" && t.row.hooks[t.repo]) || null;
+  const recorded = (t.row.webhooks && typeof t.row.webhooks === "object" && t.row.webhooks[t.repo]) || null;
   if (!recorded || !recorded.hookId) {
     return { ok: false, error: "There is no webhook installed for this repository yet", code: "not_found" };
   }
@@ -1029,7 +1034,15 @@ export async function rotateGitHookSecret(connId, repoId, { triggerUrl, fetchImp
   }
   await writeHookSecret(connId, t.repo, secret, { rotated: true });
   const next = await recordRepoHook(connId, t.repo, { hookId: recorded.hookId, rotated: true });
-  return { ok: true, repo: t.repo, connection: publicConnection(next || t.row) };
+  const after = publicWebhooks(next && next.webhooks)[t.repo] || null;
+  return {
+    ok: true,
+    repo: t.repo,
+    // WHEN it rotated, never WHAT to. The Code tab renders this stamp.
+    rotatedAt: (after && after.rotatedAt) || nowIso(),
+    hook: after,
+    connection: publicConnection(next || t.row),
+  };
 }
 
 /** READ-ONLY: the hooks the provider actually has on this repo, id/url/events only. */
@@ -1048,7 +1061,7 @@ export async function listRepoWebhooks(connId, repoId, { fetchImpl } = {}) {
         events: Array.isArray(h.events) ? h.events.slice() : [],
         active: h.active !== false,
       })),
-      recorded: publicHooks(t.row.hooks)[t.repo] || null,
+      recorded: publicWebhooks(t.row.webhooks)[t.repo] || null,
     };
   } catch (e) {
     return hookProviderFailure(connId, e);

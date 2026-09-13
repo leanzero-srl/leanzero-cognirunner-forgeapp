@@ -674,6 +674,14 @@ export const runVaTick = async ({ job, tickId = null, deps: injected = {} } = {}
      * RECEIPT-FREE, for the reason the item turn's entry check is: the receipt is a ledger
      * write and the tombstone is exactly what refuses it. The reason goes to the log and to
      * the return value, which the queue log carries.
+     *
+     * F-614 - AND THE ADMIN NOW SEES THE WAIT WITHOUT A WRITE. Receipt-free meant the tab
+     * showed a re-created agent NOTHING for the whole window: it renders skips from
+     * RECORDED receipts, so the `purge-settling` gate below reaches the queue log and no
+     * screen. The surface is a READ instead - `status` in src/va-admin.js reads the
+     * tombstone and projects `settling {since, until, reason}`, and the Agents tab renders
+     * it on the card and in the Ticks pane. NOTHING was added here: this arm still writes
+     * nothing under a standing tombstone, which is the whole point of it.
      */
     const cleared = await clearPurgeTombstone(deps.store, agent, { createdAt: job.createdAt || null, now: deps.now() });
     if (cleared.reason === "purge-settling") {

@@ -74,6 +74,13 @@ import { KNOWLEDGE_PACKS, KNOWLEDGE_INDEX, KNOWLEDGE_CONTENT_VERSION } from "../
 import { KNOWLEDGE_VERSION } from "../../src/shared/knowledge-select.js";
 import { fieldGuideBudget } from "../../src/shared/registry-limits.js";
 import { VA_LIMITS } from "../../src/shared/va-config.js";
+/* F-614 - the settle window comes from the engine's ONE home, never from a number typed
+   here: a fixture that invented its own window would prove the tab renders a minute the
+   backend does not honour. (`src/va-admin.js` owns the projection itself; it is not
+   importable here because it reaches the Forge runtime, so this file builds the same
+   `{since, until, reason}` shape from the same constant and the projection's own unit
+   tests in test-harness/scripts/va-admin.test.mjs pin the shape.) */
+import { VA_PURGE_SETTLE_MS } from "../../src/shared/va-keys.js";
 
 const ACCT = "557058:11111111-1111-1111-1111-111111111111";
 const SITE = "https://your-site.atlassian.net";
@@ -1472,7 +1479,13 @@ const VA_STATUS = {
       { at: "2026-09-13T07:08:00.000Z", phase: "prepare", ok: true, swept: 8, worked: 0, skipped: [{ itemKey: "(memory)", reason: "compaction:memory_conveyor_jammed:sprocket-7" }] },
       /* F-575 - the RE-CREATED agent's tick, held while the deleted agent's turns settle.
          The engine's own detail names a claim key; the admin must read neither. */
-      { at: "2026-09-13T07:06:00.000Z", phase: "prepare", ok: true, swept: 0, worked: 0, skipped: [{ key: "(agent)", gate: "purge-settling", reason: "purge still settling (claim:va_1:8:post)" }] },
+      /* F-614 - THERE IS NO SETTLING RECEIPT HERE, AND THERE MUST NOT BE. This row used to
+         fabricate one, and it was the only thing that made the tab's settling copy appear:
+         the engine arm that produces that gate is receipt-free by design (the receipt is a
+         ledger write and the standing tombstone is exactly what refuses ledger writes), so
+         no such receipt can exist in production. A fixture that invents one proves the
+         renderer and hides the defect. The settle window is fixtured as `?vaSettling=` /
+         `__VA_SETTLING__` on the STATUS answer instead, which is where it really arrives. */
       /* F-577 - THE TWO PURGE TRUTHS, side by side. The entry check, where the turn never
          began, and the write-seam check, where it did and the writes are on the issue. The
          second carries the engine's count and is the only one an admin must act on. */
@@ -2341,7 +2354,28 @@ function invoke(name, payload) {
       const out = st && override && st.health && st.health.ok === false
         ? { ...st, health: { ...st.health, reason: override } }
         : st;
-      const answer = out ? { success: true, ...out, paused: VA_PAUSED.has(payload.jobId) } : { success: false, error: "No status for that agent." };
+      /* F-614 - THE PURGE SETTLE WINDOW, which no UI action can provoke: it needs a
+         standing `va_purged:{agent}` row, which only a DELETE writes and which the engine
+         then refuses to clear for VA_PURGE_SETTLE_MS. `?vaSettling=window` is a tombstone
+         inside its window; `?vaSettling=stale` is one that has outlived it, which is the
+         F-585/F-596 truncation lockout and the case an admin waits out for days; anything
+         else is no tombstone at all and the card is unchanged. `__VA_SETTLING__` does the
+         same for a journey that already injects window flags. */
+      const settleMode = (typeof window !== "undefined"
+        && (window.__VA_SETTLING__
+          || (typeof location !== "undefined" && new URLSearchParams(location.search).get("vaSettling")))) || "";
+      let settling = null;
+      if (settleMode === "window" || settleMode === "stale") {
+        const nowMs = Date.now();
+        const since = nowMs - (settleMode === "window" ? 90 * 1000 : 3 * 3600 * 1000);
+        const until = since + VA_PURGE_SETTLE_MS;
+        settling = {
+          since: new Date(since).toISOString(),
+          until: new Date(until).toISOString(),
+          reason: nowMs < until ? "window" : "scan_truncated",
+        };
+      }
+      const answer = out ? { success: true, ...out, settling, paused: VA_PAUSED.has(payload.jobId) } : { success: false, error: "No status for that agent." };
       return delay > 0 ? new Promise((r) => setTimeout(() => r(answer), delay)) : Promise.resolve(answer);
     }
     case "listVaDrafts": return Promise.resolve({ success: true, drafts: (VA_DRAFTS[(payload && payload.jobId) || ""] || []).filter((d) => !VA_DECIDED.has(`${payload.jobId}:${d.itemKey}`)) });

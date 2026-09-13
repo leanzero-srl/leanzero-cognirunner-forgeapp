@@ -76,11 +76,6 @@ const GATE_COPY = {
      row may be a FUNCTION of the skip, and gateCopy() calls it rather than this file
      re-typing a sentence that would then drift from the other two surfaces. */
   capability: (s) => agentCapabilityCopy(s && s.reason),
-  /* F-575 - the re-created agent's first ticks. The engine skips them while the DELETED
-     agent's in-flight turns settle, so this is a wait, not a failure: a flat sentence on
-     the ordinary slate skip row, never the red state. The engine's own detail string
-     ("purge still settling (claim:...)") is not projected; a claim key is not copy. */
-  "purge-settling": "It is waiting for the deleted agent's last turns to finish before it starts.",
   /* F-577 - THE PURGE THAT CAUGHT A TURN MID-FLIGHT, which is the one purge that is not
      harmless. The tombstone is read AFTER the loop has run, so the writes the turn had
      already made are on the issue and no ledger row survives to record them. This is the
@@ -102,6 +97,40 @@ function purgedWritesRemedy(s) {
   }
   return "Earlier writes from that turn stayed on the issue, so check its history.";
 }
+/* ── F-614: A STATE THE AGENT IS IN, NOT A GATE ON A RECEIPT. ──────────────────
+   `purge-settling` lived in GATE_COPY, keyed on a skip row, and that row can never exist.
+   The engine arm that produces this wait is RECEIPT-FREE ON PURPOSE (src/virtual-admin.js:
+   the receipt is a ledger write and the standing tombstone is what refuses ledger writes),
+   and ReceiptsPane renders skips off RECORDED receipts only. So the sentence written for
+   exactly this moment could not reach a screen, and a re-created agent showed the admin
+   nothing at all while it waited.
+
+   It is moved, not copied: a gate id that cannot arrive is dead copy wherever it sits. The
+   carrier is now `status.settling` ({since, until, reason}) from src/va-admin.js, which
+   READS the tombstone rather than writing under it, and this map is what turns that state
+   into a sentence. Anything else keyed on a STATE rather than on a receipt belongs here
+   too, so the distinction stays visible: GATE_COPY answers "why did this tick skip that
+   item"; STATUS_COPY answers "what is this agent doing right now". */
+const STATUS_COPY = {
+  "purge-settling": "It is waiting for the deleted agent's last turns to finish before it starts.",
+};
+/* The one-line state shown on the card and in the Ticks pane header. `until` may be absent
+   (an undated tombstone), and then the line says the state WITHOUT a time rather than
+   inventing one or going silent. The clock is the engine's own window: src/va-admin.js
+   derives `until` from VA_PURGE_SETTLE_MS, the same constant the clear refuses on. */
+export function settlingLine(settling, tz) {
+  if (!settling || typeof settling !== "object") return null;
+  const at = settling.until ? fmt(settling.until, tz) : null;
+  /* HH:MM, not the whole stamp: this is a wait of minutes and the date adds nothing. The
+     locale string is cut at its time part only when one can be found; otherwise the full
+     rendered stamp stands, which is still true. */
+  const hhmm = at ? (at.match(/\d{1,2}:\d{2}/) || [null])[0] : null;
+  const title = at
+    ? `Deletion settling until ${hhmm || at}, ticks are skipped`
+    : "Deletion is still settling, ticks are skipped";
+  return { title, text: STATUS_COPY["purge-settling"] };
+}
+
 /* A gate resolves to EITHER a flat sentence (the eleven post gates) or a copy row
    { title, remedy, link } that renders as its own solid-red state. An id with no copy at
    all still renders as itself. */
@@ -434,6 +463,10 @@ function AgentCard({ agent, client, canEdit, open, onToggle, onChanged }) {
      number retyped here. Solid red, because a dead credential or an unreachable model is
      not a hint - the agent is doing nothing and somebody has to know. */
   const healthBad = !!(health && (health.ok === false || (health.failedTicks || 0) >= VA_LIMITS.healthBannerFailedTicks));
+  /* F-614 - a STATE, read from the tombstone by the status projection. Null until the
+     status lands and null whenever no tombstone stands, so the card is unchanged for
+     every agent that was not just re-created. */
+  const settling = settlingLine(status && status.settling, tz);
 
   return (
     <div className={`card va-agent ${paused ? "va-agent-paused" : ""}`}>
@@ -456,6 +489,17 @@ function AgentCard({ agent, client, canEdit, open, onToggle, onChanged }) {
       )}
       {statusError && <div className="alert alert-warning">{statusError} <button type="button" className="btn-small" onClick={refresh}>Retry</button></div>}
 
+      {/* F-614 - the re-created agent's settle window. Solid amber, because this is a WAIT
+          and not a failure: the red health banner means somebody must act, this means
+          nobody need do anything for a few minutes. It sits above the stats, where "Last
+          tick" would otherwise be the only thing on screen and would read as silence. */}
+      {settling && (
+        <div className="va-settling" role="status">
+          <span className="va-settling-title">{settling.title}</span>
+          <span className="va-settling-text">{settling.text}</span>
+        </div>
+      )}
+
       <div className="va-stats">
         <Stat label="Last tick" value={when(status && status.lastTick, tz)} />
         <Stat label="Staged" value={status && status.staged != null ? String(status.staged) : "not known yet"} />
@@ -473,7 +517,7 @@ function AgentCard({ agent, client, canEdit, open, onToggle, onChanged }) {
           </div>
           {pane === "drafts" && <DraftsPane client={client} agent={agent} shadow={mode.id === "shadow"} canEdit={canEdit} onChanged={() => { refresh(); onChanged(); }} />}
           {pane === "effects" && <EffectsPane client={client} agent={agent} tz={tz} />}
-          {pane === "receipts" && <ReceiptsPane receipts={arr(status && status.receipts)} tz={tz} />}
+          {pane === "receipts" && <ReceiptsPane receipts={arr(status && status.receipts)} tz={tz} settling={settling} />}
           {pane === "memory" && <MemoryPane client={client} agent={agent} canEdit={canEdit} />}
           {pane === "caps" && <CapsPane va={va} />}
         </div>
@@ -620,10 +664,22 @@ function skipRows(r) {
   return arr(r.skipped).filter((s) => !isCompactionSkip(s));
 }
 
-function ReceiptsPane({ receipts, tz }) {
-  if (!receipts.length) return <div className="empty-state">No tick has been recorded yet.</div>;
+function ReceiptsPane({ receipts, tz, settling = null }) {
+  /* F-614 - THE PANE HEADER, and the reason it is here as well as on the card. A settling
+     agent records NO receipt, so this pane's honest answer is "nothing new" - and an admin
+     who opened it because the agent looks dead would read that as the failure. The state
+     is stated where the absence is, including on the empty pane, which is the case a
+     freshly re-created agent actually hits. */
+  const head = settling ? (
+    <div className="va-settling va-settling-pane" role="status">
+      <span className="va-settling-title">{settling.title}</span>
+      <span className="va-settling-text">{settling.text}</span>
+    </div>
+  ) : null;
+  if (!receipts.length) return <div className="va-receipts">{head}<div className="empty-state">No tick has been recorded yet.</div></div>;
   return (
     <div className="va-receipts">
+      {head}
       {receipts.map((r, i) => (
         <div className={`va-receipt ${r.ok === false ? "va-receipt-bad" : ""}`} key={`${r.at}-${i}`}>
           <div className="va-receipt-head">

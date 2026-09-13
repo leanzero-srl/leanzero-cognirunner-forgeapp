@@ -44,6 +44,12 @@
  *       `refused` and the job row's `vaRefused` both render, the id becomes a sentence, the
  *       door stays open until the notes are dismissed - both themes, computed colours.
  *
+ *   A17 the purge SETTLE WINDOW renders at all (F-614): the engine arm that skips a
+ *       re-created agent is receipt-free on purpose, so the wait now arrives as
+ *       `status.settling` and renders as a solid amber state on the card AND in the Ticks
+ *       pane header - both themes, computed colours - while the dead GATE_COPY row that
+ *       could never fire is gone rather than duplicated.
+ *
  * Run: node static/_screenshot-harness/agents-tab.test.mjs   (add --shots to save PNGs)
  */
 import { chromium } from "playwright";
@@ -680,11 +686,14 @@ try {
     /* BOTH copy maps: the receipt's compaction ids and F-535's health ids. A key may be
        quoted (`"tick:prepare_failed"`) or bare (`unknown`), and a sentence may be written
        as the shared UNKNOWN_REASON constant rather than inline. */
-    /* F-577 added a THIRD map to the scan: `purge-settling` reaches the admin as a skip
-       row's GATE, so its sentence lives in GATE_COPY, which is where a gate id's copy has
-       always lived. Function rows there (`capability`, `agent-purged-after-writes`) do not
-       match KEY_RE and are asserted by name below instead. */
-    const mapText = `${mapOf("const COMPACTION_COPY = {")}\n${mapOf("const HEALTH_COPY = {")}\n${mapOf("const GATE_COPY = {")}`;
+    /* F-577 added a THIRD map to the scan (GATE_COPY, where a gate id's copy has always
+       lived). F-614 added a FOURTH: `purge-settling` is not a gate on a receipt at all -
+       the arm that produces it writes no receipt, so no skip row can ever carry it - and
+       its sentence moved to STATUS_COPY, which answers "what is this agent doing right
+       now" rather than "why did this tick skip that item". Function rows in GATE_COPY
+       (`capability`, `agent-purged-after-writes`) do not match KEY_RE and are asserted by
+       name below instead. */
+    const mapText = `${mapOf("const COMPACTION_COPY = {")}\n${mapOf("const HEALTH_COPY = {")}\n${mapOf("const GATE_COPY = {")}\n${mapOf("const STATUS_COPY = {")}`;
     const KEY_RE = /^\s*"?([a-z][a-z0-9_:.-]*)"?\s*:\s*("([^"]+)"|UNKNOWN_REASON)/gm;
     const rows = [...mapText.matchAll(KEY_RE)];
     const unknownText = (tabSrc.match(/const UNKNOWN_REASON = "([^"]+)"/) || [])[1] || "";
@@ -711,6 +720,19 @@ try {
     }
     ok(/"agent-purged-after-writes":\s*\(s\)\s*=>/.test(tabSrc) && /va-receipt-cap/.test(tabSrc),
       "A14 agent-purged-after-writes is a copy row, so it renders the solid-red receipt state");
+    /* F-614 - MOVED, NOT COPIED. A gate row that no receipt can carry is dead copy wherever
+       it sits, and two homes for one sentence is how they drift. So the sentence must be in
+       STATUS_COPY and must NOT be back in GATE_COPY. */
+    {
+      const gateBody = mapOf("const GATE_COPY = {");
+      const statusBody = mapOf("const STATUS_COPY = {");
+      ok(!/"purge-settling"/.test(gateBody),
+        "A14/F-614 the purge-settling sentence is no longer a GATE row - the arm that produces it writes no receipt, so that branch could never render");
+      ok(/"purge-settling":\s*"/.test(statusBody),
+        "A14/F-614 …and it lives in STATUS_COPY, which is keyed on the agent's state and reached from status.settling");
+      ok(/status\.settling/.test(tabSrc) && /settlingLine\(/.test(tabSrc),
+        "A14/F-614 …and the tab actually reads `status.settling`, so the copy has a live carrier");
+    }
     ok(!/"agent-purged":\s*"[^"]*nothing was written[^"]*while a turn/.test(tabSrc),
       "A14 the entry-check sentence no longer claims nothing was written for a turn that ran");
     {
@@ -794,16 +816,16 @@ try {
       await page.locator(".va-receipt-cap").first().waitFor({ timeout: 8000 });
       const all = (await page.locator(".va-receipts").innerText());
 
-      /* F-575 - a WAIT, not a failure: the ordinary slate skip row, and the engine's claim
-         key stays in the engine. */
-      const settling = page.locator(".va-receipt-skip", { hasText: /waiting for the deleted agent/i }).first();
-      ok(await settling.count() === 1, `A14c ${theme} the settling tick renders its sentence`);
-      const settlingText = await settling.count() ? (await settling.innerText()).trim() : "";
-      ok(/last turns to finish before it starts/.test(settlingText), `A14c ${theme} the settling sentence is the copy map's, got ${JSON.stringify(settlingText)}`);
-      for (const leak of ["claim:", "purge still settling", "va_1"]) {
-        ok(!settlingText.includes(leak), `A14c ${theme} the settling row never prints "${leak}"`);
-      }
-      ok(await settling.count() ? await settling.evaluate((el) => getComputedStyle(el).borderLeftWidth) === "0px" : false, `A14c ${theme} no left rail on the settling row`);
+      /* F-614 - THE SETTLING ROW IS NOT ASSERTED HERE ANY MORE, AND THAT IS THE POINT.
+         This block used to drive a fabricated receipt carrying `gate: "purge-settling"`,
+         and it passed for months while the product showed a re-created agent nothing:
+         the engine arm that produces that gate is RECEIPT-FREE by design, so the row the
+         fixture invented cannot exist. A hand-built fixture that only the renderer has
+         ever seen is not evidence. The wait now arrives on `status.settling` and is
+         asserted end to end in A17. What is still asserted here is the NEGATIVE: no skip
+         row, and no engine detail string, anywhere on this pane. */
+      ok(await page.locator(".va-receipt-skip", { hasText: /waiting for the deleted agent/i }).count() === 0,
+        `A14c ${theme} no settling SKIP row is fixtured, because the engine cannot write one`);
 
       /* F-577 - the entry check keeps the "nothing was written" promise, because there it
          is true. */
@@ -1020,6 +1042,93 @@ try {
       ok((await badge.innerText()).trim() === "SHADOW", `A16 ${theme} Retry re-asks and the real state lands`);
       ok(env2.errors.length === 0, `A16 ${theme} no page errors (${env2.errors[0] || ""})`);
     } finally { await close(env2); }
+  }
+
+  /* ---------- A17 the purge SETTLE WINDOW is visible at all (F-614) ----------
+   *
+   * THE DEFECT THIS PINS. An admin deletes an agent and re-creates it under the same id
+   * (the documented recovery). For the next five minutes every tick skips, writes NOTHING
+   * - the arm is receipt-free BECAUSE the standing tombstone refuses every ledger write -
+   * and the Agents tab showed no new tick and no sentence. Measured live on staging twice:
+   * 180 s of waiting for a receipt that cannot exist, while `forge logs` carried "purge
+   * still settling". The sentence written for this exact moment sat in GATE_COPY, keyed on
+   * a skip row nothing can produce.
+   *
+   * So the carrier is a READ (`status.settling`, projected from the tombstone) and this
+   * asserts the two places an admin looks: the card, where "Last tick" would otherwise be
+   * the only thing on screen and reads as silence, and the Ticks pane, whose honest
+   * "nothing new" is exactly what looks like a dead agent.
+   *
+   * `stale` is the second mode: a tombstone past its window is the F-585/F-596 truncation
+   * lockout, which can last days. It must render the same wait, never a clock in the past
+   * and never nothing.
+   */
+  for (const theme of ["light", "dark"]) {
+    console.log(`A17 purge settle window (${theme})`);
+    const env = await openAgents(browser, theme, { __VA_SETTLING__: "window" });
+    const { page } = env;
+    try {
+      const amber = theme === "dark" ? "rgb(245, 158, 11)" : "rgb(217, 119, 6)";
+      const card = page.locator(".va-agent").first();
+      const banner = card.locator(".va-settling").first();
+      await banner.waitFor({ timeout: 8000 });
+      const title = (await banner.locator(".va-settling-title").innerText()).trim();
+      const text = (await banner.locator(".va-settling-text").innerText()).trim();
+      ok(/Deletion settling until/.test(title), `A17 ${theme} the card names the wait and when it ends, got ${JSON.stringify(title)}`);
+      ok(/\d{1,2}:\d{2}/.test(title), `A17 ${theme} …with a real clock time, got ${JSON.stringify(title)}`);
+      ok(/ticks are skipped/.test(title), `A17 ${theme} …and says plainly that nothing is running`);
+      ok(/waiting for the deleted agent's last turns/.test(text), `A17 ${theme} the copy is the sentence written for this moment, got ${JSON.stringify(text)}`);
+      for (const leak of ["purge-settling", "scan_truncated", "va_purged", "tombstone", "undefined", "NaN"]) {
+        ok(!`${title} ${text}`.includes(leak), `A17 ${theme} the admin never reads the engine word "${leak}"`);
+      }
+      ok(!/[—–→]/.test(`${title} ${text}`), `A17 ${theme} no em-dash, en-dash or arrow`);
+
+      const css = await banner.evaluate((el) => {
+        const c = getComputedStyle(el);
+        const t = getComputedStyle(el.querySelector(".va-settling-title"));
+        return { bg: c.backgroundColor, fg: c.color, bl: c.borderLeftWidth, w: t.fontWeight };
+      });
+      ok(css.bg === amber, `A17 ${theme} solid amber fill, because this is a WAIT and not a failure, got ${css.bg}`);
+      ok(css.fg === "rgb(255, 255, 255)", `A17 ${theme} white ink on the solid fill, got ${css.fg}`);
+      ok(css.bl === "0px", `A17 ${theme} no left rail, got ${css.bl}`);
+      ok(Number(css.w) >= 700, `A17 ${theme} the title carries the emphasis, got ${css.w}`);
+      /* The health banner is RED and means somebody must act; this must not be red too. */
+      ok(css.bg !== "rgb(220, 38, 38)" && css.bg !== "rgb(239, 68, 68)", `A17 ${theme} the wait is not dressed as the failure banner`);
+
+      /* — the Ticks pane, where the absence of a receipt is what the admin is staring at — */
+      await card.locator(".rule-expand-btn").click();
+      await page.locator(".va-pane-btn", { hasText: "Ticks" }).click();
+      const paneHead = page.locator(".va-settling-pane").first();
+      await paneHead.waitFor({ timeout: 8000 });
+      ok(/Deletion settling until/.test((await paneHead.locator(".va-settling-title").innerText()).trim()),
+        `A17 ${theme} the Ticks pane header states the wait, so "no new tick" is not read as a dead agent`);
+      await shot(page, `agents-settling-${theme}`);
+      ok(env.errors.length === 0, `A17 ${theme} no page errors (${env.errors[0] || ""})`);
+    } finally { await close(env); }
+  }
+  {
+    console.log("A17 a tombstone past its window (the truncation lockout)");
+    const env = await openAgents(browser, "light", { __VA_SETTLING__: "stale" });
+    const { page } = env;
+    try {
+      const banner = page.locator(".va-agent").first().locator(".va-settling").first();
+      await banner.waitFor({ timeout: 8000 });
+      const title = (await banner.locator(".va-settling-title").innerText()).trim();
+      ok(/settling/i.test(title) && /ticks are skipped/.test(title),
+        `A17 a tombstone that has outlived its window still states the wait, got ${JSON.stringify(title)}`);
+      ok(env.errors.length === 0, `A17 stale: no page errors (${env.errors[0] || ""})`);
+    } finally { await close(env); }
+  }
+  {
+    console.log("A17 no tombstone, no state");
+    const env = await openAgents(browser, "light");
+    const { page } = env;
+    try {
+      await page.locator(".va-agent").first().locator(".va-stats").waitFor({ timeout: 8000 });
+      await page.waitForTimeout(400);
+      ok(await page.locator(".va-settling").count() === 0,
+        "A17 an agent with no tombstone shows NO settle state - the card is unchanged for every agent that was not just re-created");
+    } finally { await close(env); }
   }
 } finally {
   await browser.close();

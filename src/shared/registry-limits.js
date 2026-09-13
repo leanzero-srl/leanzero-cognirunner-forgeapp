@@ -531,6 +531,25 @@ export const VA_MAX_CANDIDATES_PER_TICK = 50;
 /** Ticks a new or just-reconfigured agent spends staging without posting (shadow mode). */
 export const VA_SHADOW_TICKS_DEFAULT = 3;
 export const VA_SHADOW_TICKS_MAX = 50;
+/**
+ * THE ABSOLUTE CEILING ON `status.shadowUntilTick` ITSELF (F-508).
+ *
+ * `shadowTicks` above is how many ticks a SAVE adds; this is how far into the agent's
+ * own future the stored watch may point, and until F-508 it was the one VA number with
+ * no bound at the door at all (`Number.MAX_SAFE_INTEGER`). An unbounded value was then
+ * silently replaced three steps later by the save path's re-arm, which shortened a
+ * deliberately armed long watch to `watched + shadowTicks` and answered 200 with nothing
+ * in `refused[]`.
+ *
+ * 500 OF THE AGENT'S OWN PREPARE TICKS. At the five-minute cadence floor that is close
+ * to two days of continuous supervised staging, which is the longest watch that is still
+ * a watch — past that an admin does not want an agent staging unread, they want it
+ * paused, and `status.paused` is the control that says so. It is also low enough to
+ * REPAIR the F-484 leftovers: a pre-F-484 agent carrying a wall-clock-derived ~8640 is
+ * cut to a number its receipt count can actually reach, with a report saying so, instead
+ * of sitting in shadow mode for a year.
+ */
+export const VA_SHADOW_UNTIL_TICK_MAX = 500;
 
 /** The wall-clock half of the two-phase speech floor, in minutes (the tick-id half is code). */
 export const VA_MIN_POST_GAP_MINUTES_DEFAULT = 15;

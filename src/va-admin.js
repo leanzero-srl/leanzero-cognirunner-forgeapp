@@ -602,7 +602,34 @@ export const postWindowInstants = (va, nowMs) => {
  * `itemKey` is null for an AGENT-level skip: the engine writes the sentinel `(agent)`
  * for "the whole run stopped here", and rendering that as an issue key would invite an
  * admin to go looking for an issue called `(agent)`.
+ *
+ * F-507 — EVERY FIELD THE ENGINE STORES IS EITHER PROJECTED OR NAMED BELOW.
+ *
+ * This function has now dropped or invented an engine-decided field FOUR times (F-499,
+ * F-501, F-502, F-507: `compacted`). The pattern is always the same — the engine learns
+ * to record something new, and the ONE projection the Agents tab reads silently stops at
+ * the old key list, so the new evidence exists in KVS and on no human surface. A field
+ * that is deliberately not shown is a decision, and a decision has to be WRITTEN DOWN;
+ * `RECEIPT_NOT_PROJECTED` is that list, and `va-admin.test.mjs` reads `recordTick`'s own
+ * source and fails the build when a key appears in neither place.
+ *
+ * SKIP ROWS ARE CARRIED VERBATIM. `gate`/`itemKey`/`reason` are the three the tab names,
+ * but any OTHER field the engine chooses to put on a skip (a compaction skip's before/
+ * after bytes, say) rides through untouched rather than being filtered out by a key list
+ * that only this file knows about. `key` is the single rename, to `itemKey`.
  */
+
+/*
+ * The receipt keys `publicReceipt` deliberately does NOT hand to the tab, each with the
+ * reason it is not there. Anything else `recordTick` writes must be projected.
+ */
+export const RECEIPT_NOT_PROJECTED = {
+  agent: "The caller asked for THIS agent by id; echoing it back on every row is noise.",
+  started: "Projected under the name the tab reads: `startedAt`.",
+  finished: "Projected under the name the tab reads: `at`.",
+  next: "The engine's own scheduling hint. `getVaStatus` answers `nextTick` from the live schedule instead, which is the truth after an edit; a stale hint beside it would be two answers to one question.",
+};
+
 const publicReceipt = (r) => {
   const phase = r.phase === "post" ? "post" : "prepare";
   /*
@@ -620,11 +647,26 @@ const publicReceipt = (r) => {
    * the whole run stopped here — the same statement it takes a health failure for. So the
    * verdict is read from it rather than inferred from the absence of an exception.
    *
-   * A skip on `(agent)` WITHOUT a gate stays ok: that is the paused arm, and a paused
-   * agent is a healthy no-op, not a failure. The gate field is exactly the line between
-   * the two, which is why F-482 added it.
+   * A skip WITHOUT a gate stays ok: that is the paused arm, the shadow arm, the post
+   * phase's `gate.`-prefixed reason strings and F-506's compaction BACKOFF row — all of
+   * them healthy no-ops. The gate FIELD is exactly the line between the two, which is
+   * why F-482 added it.
+   *
+   * F-510 — THE KEY IS NOT PART OF THE QUESTION. F-502 wrote this predicate as
+   * `key === "(agent)" && gate`, reading the gate off the KEY as well as off the field,
+   * and its own commit message states the rule it did not implement: "the gate field is
+   * exactly the line between the two". The next gate the engine added proved the
+   * difference. F-506's convergence gate marks a compaction that was PAID FOR and left
+   * the memory over budget as `{key:"(memory)", gate:"compaction"}` and fails the tick
+   * — `recordTickHealth(..., false)` — while this projection answered `ok:true`, because
+   * the key was not `(agent)`. That is exactly the F-233 symptom F-502 was raised to
+   * remove, reappearing on the next gate.
+   *
+   * So: ANY skip carrying a `gate` stopped the tick, whatever it was gating. The key
+   * says WHAT was gated (the whole agent, its memory); the field says THAT the engine
+   * refused, and that is the only thing `ok` is asking about.
    */
-  const stoppedAtGate = asArray(r.skipped).some((s) => s && s.key === "(agent)" && s.gate);
+  const stoppedAtGate = asArray(r.skipped).some((s) => s && s.gate);
   return {
     at: r.finished || r.started || null,
     startedAt: r.started || null,
@@ -635,11 +677,30 @@ const publicReceipt = (r) => {
     worked: phase === "prepare" ? r.staged : null,
     posted: phase === "post" ? r.staged : null,
     error: r.error || null,
-    skipped: asArray(r.skipped).map((s) => ({
-      gate: (s && s.gate) || String((s && s.reason) || "").replace(/^gate\./, ""),
-      itemKey: s && s.key === "(agent)" ? null : ((s && s.key) || null),
-      reason: (s && s.reason) || null,
-    })),
+    skipped: asArray(r.skipped).map((s) => {
+      if (!isObj(s)) return { gate: "", itemKey: null, reason: null };
+      // Everything the engine put on the skip beside the three named fields rides
+      // through as it was written (F-507).
+      const { key, gate, reason, ...rest } = s;
+      return {
+        ...rest,
+        gate: gate || String(reason || "").replace(/^gate\./, ""),
+        itemKey: key === "(agent)" ? null : (key || null),
+        reason: reason || null,
+      };
+    }),
+    /*
+     * F-507 — COMPACTION IS INVISIBLE UNLESS THIS LINE EXISTS.
+     *
+     * `recordTick` writes `compacted:{before, after, reason?, fellBack?}` only when a
+     * compaction turn actually ran, and its docblock says a run that FELL BACK "reads
+     * very differently from a clean one, so the receipt says which". Dropping it here
+     * meant the one surface an admin reads could not tell them that the agent's notebook
+     * is over budget and that a model call is being spent and wasted every tick. Absent
+     * stays absent: a tick with no compaction must not look like a compaction that
+     * achieved nothing.
+     */
+    ...(isObj(r.compacted) ? { compacted: { ...r.compacted } } : {}),
   };
 };
 
@@ -1384,7 +1445,11 @@ export const prepareVaSave = async ({ input, existing, savedByRole, now } = {}, 
   // gate reads. `now` is no longer part of this answer: shadow mode was never a
   // wall-clock question, and taking it from the clock is what set the field to a number
   // the receipt count would not reach for a year.
-  const va = rearmShadow(normalized.va, await watchedTicksFor(existing, deps.store));
+  // …and it only ever RAISES the watch (F-508). Whatever it decides about a long armed
+  // watch is carried into the answer: a save that touches this field silently is the
+  // defect, not the fix.
+  const armed = rearmShadow(normalized.va, await watchedTicksFor(existing, deps.store));
+  const va = armed.va;
   return okv({
     input: {
       ...src,
@@ -1392,7 +1457,7 @@ export const prepareVaSave = async ({ input, existing, savedByRole, now } = {}, 
       name: String(src.name || "").trim() || va.persona.name,
       schedule: { cron: va.cadence.cron, timeZone: va.cadence.timeZone },
     },
-    refused,
+    refused: [...refused, ...asArray(armed.notes)],
   });
 };
 
@@ -1714,28 +1779,59 @@ export const wizardReset = async ({ accountId } = {}, injected = {}) => {
  * SHADOW while nobody could see why. `watchedTicks` (src/virtual-admin.js) is the one
  * home for "how many ticks has this agent watched"; nothing here counts anything.
  *
- * THE FLOOR HAS A CEILING NOW, for exactly those stored values. A legitimate
- * `shadowUntilTick` was written as `watched-at-that-save + shadowTicks`, and `watched`
- * only grows, so it can never exceed `watched + VA_SHADOW_TICKS_MAX`. Anything above
- * that line cannot have come from a receipt count — it is a wall-clock leftover — and
- * it is REPLACED by "shadowTicks from now" rather than floored against. A blanket
- * clamp would not do: an admin who lowers `shadowTicks` mid-watch must keep the longer
- * watch they armed, which is the floor's whole purpose.
+ * F-508 — AND THE CEILING NEVER SHORTENS A WATCH AGAIN; IT REPORTS.
+ *
+ * F-484's repair for the wall-clock leftovers was to REPLACE any value more than
+ * `VA_SHADOW_TICKS_MAX` above the live receipt count with "shadowTicks from now". That
+ * heuristic cannot tell a leftover from an admin who deliberately armed a long watch,
+ * and it ran on EVERY save — including the one that had just armed it. `PUT
+ * {"status":{"shadowUntilTick":500}}` on an agent with 3 watched ticks answered 200 with
+ * `shadowUntilTick: 6` and an empty `refused[]`: about 497 ticks earlier than the admin
+ * was told, the agent went live and started posting to customers. The docblock above
+ * states the opposite invariant in so many words — a watch must not be SHORTENED by an
+ * edit — so the heuristic was contradicting its own contract.
+ *
+ * THE BOUND MOVED TO THE DOOR. `normalizeVa` now clamps `status.shadowUntilTick` to
+ * `VA_CEILINGS.shadowUntilTick.max` and REPORTS the clamp in `refused[]`, which is where
+ * a value nobody can honour belongs: said out loud, at the moment it is sent, by the one
+ * function whose job is bounding this record. That also repairs the pre-F-484 leftovers
+ * this heuristic existed for — an ~8640 is cut at the door, with a sentence.
+ *
+ * SO THIS FUNCTION ONLY EVER RAISES. It is the floor it always claimed to be:
+ * `max(current, watched + shadowTicks)`, no replacement arm. A stored value still above
+ * the reachable window is KEPT and NOTED (`shadow-unreachable`) — the admin is told the
+ * watch is long and how long, rather than having it silently cut to fit.
+ *
+ * `shadowTicks: 0` still means "no shadow": 0 added to the current count is the current
+ * count, and gate 1 compares with `<`, so it never holds.
  * ════════════════════════════════════════════════════════════════════════════ */
 
+/**
+ * Returns `{va, notes}` — `notes` is `[{field, reason}]` in the same shape as
+ * `refused[]`, because a re-arm that changes (or deliberately does not change) an armed
+ * watch is exactly the kind of thing the save answer must say out loud. F-508's defect
+ * was a save that changed this field and reported nothing.
+ */
 export const rearmShadow = (va, watchedTickCount) => {
-  if (!isObj(va) || !isObj(va.status) || !isObj(va.guardrails)) return va;
+  if (!isObj(va) || !isObj(va.status) || !isObj(va.guardrails)) return { va, notes: [] };
   const idx = Number(watchedTickCount);
   const ticks = Number(va.guardrails.shadowTicks);
-  if (!Number.isFinite(idx) || !Number.isFinite(ticks)) return va;
+  if (!Number.isFinite(idx) || !Number.isFinite(ticks)) return { va, notes: [] };
   const current = Number(va.status.shadowUntilTick);
   const rearmed = idx + ticks;
-  // The ceiling on the floor (F-484): a stored value that no receipt count could have
-  // produced is a wall-clock leftover, and floor-ing against it would hold the agent in
-  // shadow mode for thousands of its own ticks. It is replaced, not maxed.
-  const reachable = Number.isFinite(current) && current <= idx + VA_CEILINGS.shadowTicks.max;
-  const next = reachable ? Math.max(current, rearmed) : rearmed;
-  return { ...va, status: { ...va.status, shadowUntilTick: next } };
+  const notes = [];
+
+  // ONLY UPWARDS (F-508). A value above the window a save could have produced is not
+  // evidence of a leftover — it is an armed long watch until proven otherwise, and the
+  // proof does not exist here. It is kept, and named.
+  const next = Number.isFinite(current) ? Math.max(current, rearmed) : rearmed;
+  if (Number.isFinite(current) && current > idx + VA_CEILINGS.shadowTicks.max) {
+    notes.push({
+      field: "status.shadowUntilTick",
+      reason: `This agent stays in shadow mode until it has watched ${current} of its own ticks — ${current - idx} more than it has now. It stages and proposes but posts nothing until then. Lower it if that is not what you meant.`,
+    });
+  }
+  return { va: { ...va, status: { ...va.status, shadowUntilTick: next } }, notes };
 };
 
 /**

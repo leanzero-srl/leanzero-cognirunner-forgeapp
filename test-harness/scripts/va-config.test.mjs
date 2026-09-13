@@ -68,6 +68,36 @@ const reasonsFor = (r, field) => r.refused.filter((x) => x.field === field).map(
     && g.otherWriterQuietMinutes === 15 && g.maxItemsPerTick === 5,
     "the FRAME's defaults are the defaults");
   ok(va.status.shadowUntilTick === g.shadowTicks, "a new agent starts inside shadow mode");
+
+  /* ── F-508 — `shadowUntilTick` HAS A CEILING AT THE DOOR, AND THE CLAMP IS SAID ──
+   *
+   * It was the one VA number bounded by `Number.MAX_SAFE_INTEGER` with no `report`, on
+   * the reasoning that only the engine knows the current tick index. The consequence was
+   * not a large stored number: it was that the SAVE PATH's re-arm (`rearmShadow`) took
+   * the bounding decision instead, three steps later, silently, and SHORTENED a watch an
+   * admin had deliberately armed — `shadowUntilTick: 500` came back as 6 with an empty
+   * `refused[]`. "How far ahead may a watch point at all" is answerable here, and a
+   * clamp that is not reported is the silent permission change this module's fail
+   * contract exists to prevent. */
+  {
+    const big = norm({ status: { shadowUntilTick: 50000 } });
+    ok(big.va.status.shadowUntilTick === VA_CEILINGS.shadowUntilTick.max,
+      `F-508: an out-of-ceiling shadowUntilTick is clamped at the door (got ${big.va.status.shadowUntilTick}, ceiling ${VA_CEILINGS.shadowUntilTick.max})`);
+    ok(reasonsFor(big, "status.shadowUntilTick").length === 1,
+      `F-508: …and the clamp is REPORTED, never silent (got ${JSON.stringify(big.refused)})`);
+
+    const arm = norm({ status: { shadowUntilTick: VA_CEILINGS.shadowUntilTick.max } });
+    ok(arm.va.status.shadowUntilTick === VA_CEILINGS.shadowUntilTick.max,
+      "F-508: a watch AT the ceiling passes through untouched — a long watch is a legitimate thing to arm");
+    ok(reasonsFor(arm, "status.shadowUntilTick").length === 0,
+      `F-508: …with nothing reported, because nothing was clamped (got ${JSON.stringify(arm.refused)})`);
+
+    ok(VA_CEILINGS.shadowUntilTick.max > VA_CEILINGS.shadowTicks.max,
+      `F-508: the STORED watch may point further ahead than one save adds (${VA_CEILINGS.shadowUntilTick.max} > ${VA_CEILINGS.shadowTicks.max}) — otherwise the ceiling would forbid the very thing the floor is for`);
+    ok(VA_LIMITS.shadowUntilTickMax === limits.VA_SHADOW_UNTIL_TICK_MAX
+      && VA_CEILINGS.shadowUntilTick.max === limits.VA_SHADOW_UNTIL_TICK_MAX,
+      "F-508: the ceiling is registry-limits' number, not a second declaration");
+  }
   ok(va.powers.replyPublic === false && va.powers.replyInternal === true, "public replies are OFF by default, internal notes ON");
 }
 

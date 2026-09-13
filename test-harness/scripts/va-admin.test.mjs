@@ -35,10 +35,16 @@ import { readFile, readdir } from "node:fs/promises";
 // The REAL receipt writer (F-501/F-502): the tests below write the row the engine writes
 // and read it back through the resolver, rather than hand-building a KVS value.
 import { recordTick } from "../../src/va-ledger.js";
+// The allow-list the F-507 source assertion reads: the receipt keys the projection
+// deliberately does not hand to the tab, each with its reason.
+import { RECEIPT_NOT_PROJECTED } from "../../src/va-admin.js";
+// F-508: the tests assert against the CEILING, never a retyped literal.
+import { VA_CEILINGS } from "../../src/shared/va-config.js";
 const { default: forgeApi, pushed } = await import("@forge/api");
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) pass++; else { fail++; console.log("FAIL:", m); } };
+const isObj = (v) => v != null && typeof v === "object" && !Array.isArray(v);
 const asRefusals = (r) => (Array.isArray(r && r.refused) ? r.refused : []);
 const has = (o, keys, label) => {
   const missing = keys.filter((k) => !(o && Object.prototype.hasOwnProperty.call(o, k)));
@@ -218,9 +224,15 @@ let agentId = null;
  * screen saying why. Rows written by the old code are still out there, so the re-arm
  * has to RECOGNISE them.
  *
- * BOTH DIRECTIONS: a leftover is replaced by "shadowTicks from now"; a legitimate
- * longer watch is still a FLOOR and is never shortened — which is the arm a blanket
- * clamp would have broken. */
+ * F-508 CHANGED WHERE THAT RECOGNITION HAPPENS, and it is the important half of this
+ * block now. F-484 recognised a leftover in `rearmShadow` — at SAVE time, three steps
+ * after the value arrived — and REPLACED it. That heuristic cannot tell a leftover from
+ * a watch an admin deliberately armed, and it ran on every save including the one that
+ * had just armed it, so `PUT {"status":{"shadowUntilTick":500}}` came back 200 saying 6,
+ * with nothing in `refused[]`. The bound now lives AT THE DOOR: `normalizeVa` clamps to
+ * `VA_CEILINGS.shadowUntilTick.max` and REPORTS the clamp, and `rearmShadow` only ever
+ * RAISES. The leftover is still cut — to a number the receipt count can reach, with a
+ * sentence — and a deliberate long watch is kept and named instead of being cut to fit. */
 {
   const setWatched = async (n) => storage.set(`va_health:${agentId}`, { consecutiveFailures: 0, prepareTicks: n });
   const rowOf = async () => (await storage.get(`job:${agentId}`)) || (await storage.get(`sched_job:${agentId}`));
@@ -235,11 +247,17 @@ let agentId = null;
     const edited = await call("saveScheduledJob", { job: { id: agentId, mode: "va", va: vaRecord({ persona: { name: "Ada", voice: { register: "plain", maxSentences: 2 } }, status: { paused: false, shadowUntilTick: 8643 } }) } });
     ok(edited.success === true, "F-484.BLOCK — an old agent with a wall-clock shadow value still saves");
     const back = await rowOf();
-    ok(back && back.va.status.shadowUntilTick === 23,
-      `…and shadow ends after shadowTicks MORE of its own ticks (20 + 3 = 23), not 8643 (got ${back && back.va.status.shadowUntilTick})`);
+    ok(back && back.va.status.shadowUntilTick === VA_CEILINGS.shadowUntilTick.max,
+      `…and the leftover is CUT AT THE DOOR to the ceiling (${VA_CEILINGS.shadowUntilTick.max}), not left at 8643 (got ${back && back.va.status.shadowUntilTick})`);
+    ok(back && back.va.status.shadowUntilTick < 8643,
+      "…which is the F-484 property that matters: a wall-clock leftover cannot hold an agent in shadow for a year");
+    // F-508: and the cut is SAID OUT LOUD. F-484's replacement was silent, which is how
+    // the same code path could shorten a deliberate watch without anyone noticing.
+    ok(asRefusals(edited).some((r) => String(r.field) === "status.shadowUntilTick"),
+      `F-508: …and the save REPORTS that it changed the armed watch (got ${JSON.stringify(asRefusals(edited))})`);
     const status = await call("getVaStatus", { jobId: agentId });
-    ok(status.success && status.shadow && status.shadow.ticksLeft === 3,
-      `…so the tab promises three ticks, not 8623 (got ${JSON.stringify(status.shadow)})`);
+    ok(status.success && status.shadow && status.shadow.ticksLeft === VA_CEILINGS.shadowUntilTick.max - 20,
+      `…and the tab promises a number the agent's own ticks can reach (got ${JSON.stringify(status.shadow)})`);
   }
 
   // ALLOW — a REACHABLE stored value is a floor and survives. The admin armed a 10-tick
@@ -254,6 +272,70 @@ let agentId = null;
     const back = await rowOf();
     ok(back && back.va.status.shadowUntilTick === 30,
       `…and the LONGER watch already armed is kept — the re-arm is a floor (got ${back && back.va.status.shadowUntilTick})`);
+  }
+
+  /* ── F-508 — AN ARMED LONG WATCH IS NEVER SHORTENED SILENTLY ─────────────────
+   *
+   * The defect: `shadowUntilTick` was the one VA number with no ceiling at the door
+   * (`MAX_SAFE_INTEGER`, no `report`), and `rearmShadow` — which runs on EVERY save,
+   * including the one that just armed it — declared anything more than
+   * `VA_SHADOW_TICKS_MAX` above the live receipt count a wall-clock leftover and
+   * REPLACED it with `watched + shadowTicks`. An admin asking for a 500-tick supervised
+   * period on an agent with 3 watched ticks got 200, `shadowUntilTick: 6`, and an empty
+   * `refused[]`: three ticks later the agent was live and posting to customers, about
+   * 497 ticks before they were told it would be.
+   *
+   * The contract now: the value is BOUNDED AT THE DOOR and the bound is reported; what
+   * survives that is KEPT; and a stored watch beyond the window a save could have
+   * produced is NAMED, never cut to fit. */
+  {
+    await setWatched(3);
+    const armed = await call("saveScheduledJob", { job: { id: agentId, mode: "va", va: vaRecord({ guardrails: { shadowTicks: 3 }, status: { paused: false, shadowUntilTick: 500 } }) } });
+    ok(armed.success === true, "F-508 — a 500-tick watch saves");
+    const back = await rowOf();
+    ok(back && back.va.status.shadowUntilTick === 500,
+      `F-508: the watch the admin ARMED is what is stored — not watched+shadowTicks (got ${back && back.va.status.shadowUntilTick}, the defect wrote 6)`);
+    ok(back && back.va.status.shadowUntilTick !== 6,
+      "F-508: …and specifically NOT the silent 6 the re-arm used to substitute");
+    // Kept, and SAID: a watch this long is worth a sentence, because an agent that
+    // stages and posts nothing looks identical to a broken one.
+    const note = asRefusals(armed).find((r) => String(r.field) === "status.shadowUntilTick");
+    ok(note && /shadow/i.test(String(note.reason)) && /497|500/.test(String(note.reason)),
+      `F-508: …and the answer NAMES the long watch rather than leaving refused[] empty (got ${JSON.stringify(asRefusals(armed))})`);
+    const st = await call("getVaStatus", { jobId: agentId });
+    ok(st.success && st.shadow && st.shadow.ticksLeft === 497,
+      `F-508: …and the tab agrees about how long it lasts (got ${JSON.stringify(st.shadow)})`);
+
+    // AND AN UNRELATED EDIT DOES NOT SHORTEN IT. This is the sentence the docblock has
+    // always carried and the arm that broke it: a typo fix is not a permission change.
+    const typo = await call("saveScheduledJob", { job: { id: agentId, mode: "va", va: vaRecord({ persona: { name: "Adah", voice: { register: "plain", maxSentences: 2 } }, guardrails: { shadowTicks: 3 }, status: { paused: false, shadowUntilTick: 500 } }) } });
+    ok(typo.success === true, "F-508: an unrelated edit to the same agent saves");
+    const back2 = await rowOf();
+    ok(back2 && back2.va.status.shadowUntilTick === 500,
+      `F-508: …and the armed watch survives it (got ${back2 && back2.va.status.shadowUntilTick})`);
+  }
+
+  /* ── F-508 — ABOVE THE CEILING IS A REFUSAL AT THE DOOR, WITH A SENTENCE ──── */
+  {
+    await setWatched(3);
+    const tooLong = await call("saveScheduledJob", { job: { id: agentId, mode: "va", va: vaRecord({ guardrails: { shadowTicks: 3 }, status: { paused: false, shadowUntilTick: 50000 } }) } });
+    ok(tooLong.success === true, "F-508 — an over-ceiling watch still saves (it is a clamp, not a throw)");
+    const back = await rowOf();
+    ok(back && back.va.status.shadowUntilTick === VA_CEILINGS.shadowUntilTick.max,
+      `F-508: …clamped to the ceiling ${VA_CEILINGS.shadowUntilTick.max} (got ${back && back.va.status.shadowUntilTick})`);
+    ok(asRefusals(tooLong).some((r) => String(r.field) === "status.shadowUntilTick"),
+      `F-508: …and the clamp is REPORTED in refused[], which is what "no silent permission change" means (got ${JSON.stringify(asRefusals(tooLong))})`);
+  }
+
+  /* ── F-508 — THE F-484 BOUNDARY IS UNCHANGED: shadowTicks 50 on a NEW agent ── */
+  {
+    const made = await call("saveScheduledJob", { job: { mode: "va", name: "Boundary", va: vaRecord({ guardrails: { shadowTicks: 50 } }) } });
+    ok(made.success === true, "F-508/F-484 boundary — a NEW agent may arm the maximum 50-tick watch");
+    const row = (await storage.get(`job:${made.job && made.job.id}`)) || (await storage.get(`sched_job:${made.job && made.job.id}`));
+    ok(row && row.va.status.shadowUntilTick === 50,
+      `…and 0 watched + 50 shadowTicks is stored as 50, untouched (got ${row && row.va.status.shadowUntilTick})`);
+    ok(!asRefusals(made).some((r) => String(r.field) === "status.shadowUntilTick"),
+      `…with nothing reported, because nothing was clamped (got ${JSON.stringify(asRefusals(made))})`);
   }
 }
 
@@ -696,6 +778,168 @@ let agentId = null;
   const errReceipt = (errSt.receipts || []).find((r) => r.tickId === "f502e");
   ok(errReceipt && errReceipt.ok === false && errReceipt.error === "kvs down",
     `F-502: a tick that threw is still ok:false and still names the error (got ${JSON.stringify(errReceipt && { ok: errReceipt.ok, error: errReceipt.error })})`);
+
+  /* -- F-507: EVERY KEY `recordTick` WRITES REACHES A HUMAN, OR IS NAMED --------
+   *
+   * `publicReceipt` has now dropped or invented an engine-decided field four times
+   * (F-499, F-501, F-502, and `compacted` here). Each fix so far closed one field; the
+   * mechanism that produced them - a projection with a hand-written key list, sitting
+   * between an engine that keeps learning to record things and the ONE surface an admin
+   * reads - was still in place after every one of them. This is the gate for the class:
+   * the writer's OWN SOURCE is read, every key it puts on a receipt is enumerated, and
+   * each one must either carry its value through to `getVaStatus` or appear in
+   * `RECEIPT_NOT_PROJECTED` with the reason it does not.
+   *
+   * The probes assert on VALUES, not on names, so a deliberate rename (`started` ->
+   * `startedAt`, `candidates` -> `swept`) stays legal and a silent DROP does not.
+   */
+  {
+    const ledgerSrc = await readFile(new URL("../../src/va-ledger.js", import.meta.url), "utf8");
+    const from = ledgerSrc.indexOf("const receipt = {", ledgerSrc.indexOf("export const recordTick"));
+    const to = ledgerSrc.indexOf("\n  };", from);
+    const literal = ledgerSrc.slice(from, to);
+    ok(from > 0 && to > from, "F-507: the receipt literal in `recordTick` was located in source");
+
+    // Loose on purpose: sub-keys of `skipped`/`compacted` are enumerated too, so a new
+    // field anywhere on the receipt has to be given a probe or a written-down reason.
+    const written = new Set([...literal.matchAll(/^\s+(\w+):/gm)].map((m) => m[1]));
+
+    const stamp = "2026-09-13T04:05:06.507Z";
+    const wrote = await recordTick(storage, agentId, {
+      tickId: "f507src", phase: "post", started: stamp,
+      candidates: 424207, staged: 70507, error: "tok-error-507",
+      next: "2026-09-13T04:10:00.000Z",
+      skipped: [{ key: "SUP-507", reason: "tok-skipped-507", gate: "compaction" }],
+      compacted: { before: 7000, after: 4101, reason: "tok-compacted-507", fellBack: true },
+    });
+    for (const k of Object.keys((wrote && wrote.receipt) || {})) written.add(k);
+
+    const proj = ((await call("getVaStatus", { jobId: agentId })).receipts || [])
+      .find((r) => r.tickId === "f507src");
+    ok(proj, "F-507: the probe receipt is in the timeline");
+    const seen = JSON.stringify(proj || {});
+
+    // key -> what proves that key reached the tab (by VALUE, under whatever name).
+    const probes = {
+      phase: () => proj.phase === "post",
+      tickId: () => proj.tickId === "f507src",
+      started: () => proj.startedAt === stamp,
+      candidates: () => proj.swept === 424207,
+      staged: () => proj.posted === 70507,
+      error: () => proj.error === "tok-error-507",
+      skipped: () => seen.includes("tok-skipped-507"),
+      key: () => (proj.skipped[0] || {}).itemKey === "SUP-507",
+      gate: () => (proj.skipped[0] || {}).gate === "compaction",
+      reason: () => seen.includes("tok-compacted-507") && seen.includes("tok-skipped-507"),
+      compacted: () => isObj(proj.compacted),
+      before: () => proj.compacted && proj.compacted.before === 7000,
+      after: () => proj.compacted && proj.compacted.after === 4101,
+      fellBack: () => proj.compacted && proj.compacted.fellBack === true,
+    };
+
+    for (const k of [...written].sort()) {
+      if (Object.prototype.hasOwnProperty.call(RECEIPT_NOT_PROJECTED, k)) {
+        ok(String(RECEIPT_NOT_PROJECTED[k] || "").length > 20,
+          `F-507: \`${k}\` is not projected ON PURPOSE and the reason is written down`);
+        continue;
+      }
+      const probe = probes[k];
+      ok(typeof probe === "function",
+        `F-507: \`recordTick\` writes \`${k}\` - project it in publicReceipt and probe it here, or add it to RECEIPT_NOT_PROJECTED with the reason`);
+      if (typeof probe === "function") {
+        ok(probe() === true,
+          `F-507: the value \`recordTick\` stored under \`${k}\` reaches getVaStatus (got ${seen.slice(0, 300)})`);
+      }
+    }
+
+    // The field this row was cut for, stated plainly: a fell-back compaction is visible.
+    ok(proj && proj.compacted && proj.compacted.fellBack === true && proj.compacted.reason === "tok-compacted-507",
+      `F-507: a compaction that FELL BACK says so on the receipt the admin reads (got ${JSON.stringify(proj && proj.compacted)})`);
+
+    // Absent stays absent: a tick with no compaction must not look like one that
+    // achieved nothing.
+    await recordTick(storage, agentId, { tickId: "f507none", phase: "prepare", candidates: 1, staged: 1 });
+    const none = ((await call("getVaStatus", { jobId: agentId })).receipts || []).find((r) => r.tickId === "f507none");
+    ok(none && !("compacted" in none),
+      `F-507: a tick that compacted NOTHING carries no compacted field (got ${JSON.stringify(none && none.compacted)})`);
+
+    /* A skip row is carried VERBATIM (F-507): F-506's compaction skip may arrive with
+     * fields this file has never heard of, and a projection that filters to a key list
+     * only it knows about would drop them the same way `compacted` was dropped. */
+    await recordTick(storage, agentId, {
+      tickId: "f507skip", phase: "prepare",
+      skipped: [{ key: "(agent)", gate: "compaction", reason: "summariser_failed_no_shrink" }],
+    });
+    const skipR = ((await call("getVaStatus", { jobId: agentId })).receipts || []).find((r) => r.tickId === "f507skip");
+    const sk = skipR && (skipR.skipped || [])[0];
+    ok(sk && sk.gate === "compaction" && sk.reason === "summariser_failed_no_shrink" && sk.itemKey === null,
+      `F-507: a compaction GATE skip reaches the tab whole (got ${JSON.stringify(sk)})`);
+    ok(skipR && skipR.ok === false,
+      "F-507: ...and an agent-level gate skip is still not an ok tick (F-502 holds)");
+  }
+
+  /* -- F-510: THE GATE IS THE FIELD, NOT THE KEY -------------------------------
+   *
+   * F-502 made a tick the engine stopped at a gate report `ok:false`, and wrote the
+   * predicate as `key === "(agent)" && gate` - reading the gate off the KEY as well as
+   * off the field, while its own commit message states the rule it did not implement:
+   * "the gate field is exactly the line between the two". The next gate the engine
+   * added proved the difference. F-506's convergence gate marks a compaction that was
+   * PAID FOR and left the memory over budget as `{key:"(memory)", gate:"compaction"}`
+   * and fails the tick (`recordTickHealth(..., false)`), while this projection still
+   * answered `ok:true` - the same disagreement between the health counter and the
+   * receipt that F-502 existed to remove, on the next gate that shipped.
+   *
+   * BOTH SHAPES, THROUGH `getVaStatus`, plus the three no-ops that must stay GREEN. */
+  {
+    // The engine's exact F-506 rows: `runVaCompaction` returns `gate:"compaction"` with
+    // `summariser-failed` or `did-not-converge`, and the tick pushes them as
+    // `{key:"(memory)", reason:"compaction:<reason>"}` with the gate riding along.
+    for (const reason of ["summariser-failed", "did-not-converge"]) {
+      const id = `f510-${reason}`;
+      await recordTick(storage, agentId, {
+        tickId: id, phase: "prepare", candidates: 2, staged: 2,
+        skipped: [{ key: "(memory)", gate: "compaction", reason: `compaction:${reason}` }],
+        compacted: { before: 7000, after: 7000, reason, fellBack: reason === "summariser-failed" },
+      });
+      const r = ((await call("getVaStatus", { jobId: agentId })).receipts || []).find((x) => x.tickId === id);
+      ok(r && r.ok === false,
+        `F-510: a compaction the engine GATED (${reason}) reports ok:false on the receipt too (got ${JSON.stringify(r && { ok: r.ok, skipped: r.skipped })})`);
+      ok(r && r.error === null,
+        "F-510: ...with `error` still null - nothing threw, the engine refused, and those are different claims");
+      ok(r && (r.skipped[0] || {}).itemKey === "(memory)",
+        `F-510: ...and the key is carried as written - it says WHAT was gated, and it is not an issue key the tab should hide (got ${JSON.stringify(r && r.skipped)})`);
+      // F-507 and F-510 answer the same tick together: the verdict AND the bytes.
+      ok(r && r.compacted && r.compacted.before === 7000 && r.compacted.after === 7000,
+        `F-510/F-507: ...and the receipt SHOWS the spend that achieved nothing (got ${JSON.stringify(r && r.compacted)})`);
+    }
+
+    // The capability gate is untouched by the widening (F-502's original case).
+    await recordTick(storage, agentId, {
+      tickId: "f510cap", phase: "prepare",
+      skipped: [{ key: "(agent)", gate: "capability", reason: "needs-coder-edition" }],
+    });
+    const cap = ((await call("getVaStatus", { jobId: agentId })).receipts || []).find((x) => x.tickId === "f510cap");
+    ok(cap && cap.ok === false, "F-510: the capability gate still fails the tick - widening the predicate did not narrow it");
+
+    /* THE GREEN SIDE, which is what stops this becoming a banner that cries wolf. A
+     * skip with NO `gate` field is a healthy no-op, and the engine writes all three
+     * that way: the paused arm, the post phase's `gate.`-PREFIXED REASON strings (a
+     * string, not the field), and F-506's compaction BACKOFF row - a tick that
+     * deliberately did not spend on a provider known to be failing is the brake
+     * working, not the agent failing. */
+    const greens = [
+      ["f510paused", "prepare", { key: "(agent)", reason: "paused" }, "a PAUSED tick"],
+      ["f510shadow", "post", { key: "SUP-9", reason: "gate.shadow" }, "a post held back by SHADOW"],
+      ["f510backoff", "prepare", { key: "(memory)", reason: "compaction:compaction-backoff" }, "a compaction BACKOFF tick (F-506)"],
+    ];
+    for (const [id, phase, skip, label] of greens) {
+      await recordTick(storage, agentId, { tickId: id, phase, candidates: 1, staged: 1, skipped: [skip] });
+      const r = ((await call("getVaStatus", { jobId: agentId })).receipts || []).find((x) => x.tickId === id);
+      ok(r && r.ok === true,
+        `F-510: ${label} stays GREEN - it carries no \`gate\` field, and the field is the whole question (got ${JSON.stringify(r && { ok: r.ok, skipped: r.skipped })})`);
+    }
+  }
 
   const agents = await call("listVaAgents", {});
   has(agents, ["agents"], "listVaAgents");

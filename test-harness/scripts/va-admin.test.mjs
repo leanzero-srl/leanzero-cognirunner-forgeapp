@@ -747,9 +747,11 @@ let agentId = null;
   ok(st.receipts.length > 0, "there is at least one receipt to shape-check");
   has(st.receipts[0], ["at", "phase", "ok", "swept", "worked", "posted", "error", "skipped"], "a receipt");
   ok(["prepare", "post"].includes(st.receipts[0].phase), "…whose phase is prepare or post");
-  ok(st.receipts.every((r) => (r.skipped || []).every((s) => "gate" in s && "itemKey" in s)),
-    "…and every skip carries {gate, itemKey}");
-  ok(st.receipts.every((r) => (r.skipped || []).every((s) => !String(s.gate).startsWith("gate."))),
+  ok(st.receipts.every((r) => (r.skipped || []).every((s) => "itemKey" in s && "reason" in s)),
+    "…and every skip carries {itemKey, reason}");
+  // `gate` is NOT on that list (F-515): it is present only when the ENGINE stored one, and
+  // its presence is what `ok` is read from. See the F-515 block below.
+  ok(st.receipts.every((r) => (r.skipped || []).every((s) => !String(s.reason || "").startsWith("gate."))),
     "…with the engine's `gate.` prefix stripped at this one boundary, so GATE_COPY can key on it");
 
   /* ── F-501: the STORED `gate` reaches the tab, it is not rebuilt from `reason` ──
@@ -780,18 +782,20 @@ let agentId = null;
   ok(capSkip && capSkip.itemKey === null,
     "F-501: …with the `(agent)` sentinel rendered as no item, not as an issue called (agent)");
 
-  // The FALLBACK still works for the post phase, which writes `gate.`-prefixed reasons
-  // and no `gate` field at all. Both shapes, one boundary.
+  // The post phase writes `gate.`-prefixed REASONS and no `gate` field at all. The prefix
+  // is stripped at this one boundary so `GATE_COPY` can key on the bare id — but no `gate`
+  // is invented for it (F-515): these rows are healthy no-ops and `gate` is the field `ok`
+  // is read from. Both shapes, one boundary.
   await recordTick(storage, agentId, {
     tickId: "f501b", phase: "post", candidates: 1, staged: 0,
     skipped: [{ key: "SUP-1", reason: "gate.freshness" }],
   });
   const postSt = await call("getVaStatus", { jobId: agentId });
   const postSkip = (postSt.receipts || []).find((r) => r.tickId === "f501b");
-  ok(postSkip && postSkip.skipped[0].gate === "freshness",
-    `F-501: a skip with NO stored gate still falls back to the stripped reason (got ${JSON.stringify(postSkip && postSkip.skipped)})`);
-  ok(postSkip && postSkip.skipped[0].reason === "gate.freshness",
-    "F-501: …and its raw reason is untouched");
+  ok(postSkip && postSkip.skipped[0].reason === "freshness",
+    `F-501/F-515: a skip with NO stored gate is projected with its reason STRIPPED, which is what GATE_COPY keys on (got ${JSON.stringify(postSkip && postSkip.skipped)})`);
+  ok(postSkip && !("gate" in postSkip.skipped[0]),
+    "F-515: …and NO `gate` is minted for it — the engine did not refuse, so the field that says it did must be absent");
   ok(postSkip && postSkip.skipped[0].itemKey === "SUP-1",
     "F-501: …and an ITEM-level skip still names its issue");
 
@@ -960,6 +964,10 @@ let agentId = null;
         `F-510: a compaction the engine GATED (${reason}) reports ok:false on the receipt too (got ${JSON.stringify(r && { ok: r.ok, skipped: r.skipped })})`);
       ok(r && r.error === null,
         "F-510: ...with `error` still null - nothing threw, the engine refused, and those are different claims");
+      ok(r && (r.skipped[0] || {}).gate === "compaction",
+        `F-515: ...and the ENGINE'S gate is projected, because the engine really did store one (got ${JSON.stringify(r && r.skipped)})`);
+      ok(r && (r.skipped[0] || {}).reason === `compaction:${reason}`,
+        "F-515: ...with the reason carried beside it, unchanged - two fields, two questions");
       ok(r && (r.skipped[0] || {}).itemKey === "(memory)",
         `F-510: ...and the key is carried as written - it says WHAT was gated, and it is not an issue key the tab should hide (got ${JSON.stringify(r && r.skipped)})`);
       // F-507 and F-510 answer the same tick together: the verdict AND the bytes.
@@ -974,6 +982,8 @@ let agentId = null;
     });
     const cap = ((await call("getVaStatus", { jobId: agentId })).receipts || []).find((x) => x.tickId === "f510cap");
     ok(cap && cap.ok === false, "F-510: the capability gate still fails the tick - widening the predicate did not narrow it");
+    ok(cap && (cap.skipped[0] || {}).gate === "capability",
+      `F-515: ...and its stored gate reaches the tab, which is what GATE_COPY's capability row keys on (got ${JSON.stringify(cap && cap.skipped)})`);
 
     /* THE GREEN SIDE, which is what stops this becoming a banner that cries wolf. A
      * skip with NO `gate` field is a healthy no-op, and the engine writes all three
@@ -991,6 +1001,30 @@ let agentId = null;
       const r = ((await call("getVaStatus", { jobId: agentId })).receipts || []).find((x) => x.tickId === id);
       ok(r && r.ok === true,
         `F-510: ${label} stays GREEN - it carries no \`gate\` field, and the field is the whole question (got ${JSON.stringify(r && { ok: r.ok, skipped: r.skipped })})`);
+      /* F-515 — AND IT IS STILL GREEN AFTER THE PROJECTION.
+       *
+       * `publicReceipt` used to MINT `gate` for exactly these rows:
+       * `gate: gate || reason.replace(/^gate\./, "")` turned `{reason:"gate.shadow"}` into
+       * `{gate:"shadow"}`. `ok` itself stayed right, because `stoppedAtGate` reads the
+       * STORED array - but any SECOND reader applying F-510's documented rule ("any skip
+       * carrying a `gate` stopped the tick") to the rows this function hands out would
+       * mark every shadow, paused and backoff tick as failed. That is the F-233/F-502
+       * symptom - two surfaces disagreeing about whether a run failed - re-created inside
+       * the function cut twice to remove it. The rule must survive its own projection. */
+      const projected = r && (r.skipped || [])[0];
+      ok(projected && !("gate" in projected),
+        `F-515: ${label} carries NO gate after the projection either - the rule must hold on the data this function produces (got ${JSON.stringify(projected)})`);
+      ok(!(r && (r.skipped || []).some((x) => x && x.gate)) === true,
+        `F-515: ${label} - F-510's own predicate, re-run on the PROJECTED rows, still says the tick did not stop`);
+    }
+    /* …and the copy the tab renders is unchanged by all of this. `gateCopy` keys on
+     * `gate || reason`, so stripping the `gate.` prefix into `reason` leaves the bare id
+     * GATE_COPY needs - which is why the derived value moved into `reason` rather than
+     * into a new field the tab does not read. */
+    {
+      const r = ((await call("getVaStatus", { jobId: agentId })).receipts || []).find((x) => x.tickId === "f510shadow");
+      ok(r && (r.skipped[0] || {}).reason === "shadow",
+        `F-515: the post phase's \`gate.shadow\` still reaches the tab as the bare id GATE_COPY keys on (got ${JSON.stringify(r && r.skipped)})`);
     }
   }
 

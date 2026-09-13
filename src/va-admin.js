@@ -677,16 +677,44 @@ const publicReceipt = (r) => {
     worked: phase === "prepare" ? r.staged : null,
     posted: phase === "post" ? r.staged : null,
     error: r.error || null,
+    /*
+     * THE SKIP PROJECTION — AND `gate` IS NOT MINTED HERE (F-515).
+     *
+     * THE CONTRACT, which AgentsTab.jsx and every later reader may rely on:
+     *   · `gate` is PRESENT only when the ENGINE stored one. It means "the engine
+     *     refused and the tick stopped", which is precisely what `stoppedAtGate` above
+     *     reads and therefore what `ok` is asking about.
+     *   · `reason` is the engine's reason with the post phase's `gate.` prefix REMOVED,
+     *     so it is a bare gate id the tab's `GATE_COPY` can key on directly.
+     *   · `itemKey` is the issue, or null for the `(agent)` sentinel.
+     *
+     * WHAT THIS REPLACED. The projection used to write
+     * `gate: gate || reason.replace(/^gate\./, "")` — minting a `gate` for exactly the
+     * rows it had just classified as HEALTHY no-ops. A post tick that did nothing because
+     * the agent is in shadow stores `{key:"(agent)", reason:"gate.shadow"}` with no `gate`
+     * field, and this handed the tab `{gate:"shadow"}`. So after `publicReceipt`, F-510's
+     * own rule — "ANY skip carrying a `gate` stopped the tick" — was FALSE of the data
+     * this function had just produced: `ok` stayed correct because `stoppedAtGate` reads
+     * the STORED array, but any second reader applying the documented rule to the
+     * projected rows would mark every shadow and paused tick as failed. That is the
+     * F-233/F-502 symptom — two surfaces disagreeing about whether a run failed —
+     * re-created inside the one function cut twice to remove it.
+     *
+     * The strip moves to `reason` rather than the derived value moving to a new key,
+     * because the tab already reads `gate || reason` for both the copy lookup and the
+     * badge: a bare `reason` keeps every rendered sentence identical with no UI change,
+     * while `gate` goes back to meaning only what the engine said.
+     */
     skipped: asArray(r.skipped).map((s) => {
-      if (!isObj(s)) return { gate: "", itemKey: null, reason: null };
+      if (!isObj(s)) return { itemKey: null, reason: null };
       // Everything the engine put on the skip beside the three named fields rides
       // through as it was written (F-507).
       const { key, gate, reason, ...rest } = s;
       return {
         ...rest,
-        gate: gate || String(reason || "").replace(/^gate\./, ""),
+        ...(gate ? { gate } : {}),
         itemKey: key === "(agent)" ? null : (key || null),
-        reason: reason || null,
+        reason: String(reason || "").replace(/^gate\./, "") || null,
       };
     }),
     /*

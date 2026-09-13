@@ -189,6 +189,50 @@ for (const fn of ["getKnowledgeCounts", "getSkills", "getSkillContent", "getCont
   assert.equal(roleless.memoryCap, undefined, `${fn} must not leak the memory cap to a refused caller`);
 }
 
+// ── F-251: the bootstrap WRITE belongs to the admin panel's own mount call and
+// nowhere else. `getUserPermissions` takes `{ allowBootstrap }` (default FALSE);
+// only `checkIsAdmin` passes true. A Jira admin reaching a GATED resolver through
+// the workflow editor on an empty roster is therefore resolved READ-ONLY: no role,
+// refusal, and not one byte written to `app_admins`.
+for (const fn of ["getContextDocs", "getSkills", "getMemories", "getKnowledgeCounts", "getLogs", "getConfigs"]) {
+  storage.__reset(); forgeApi.__reset();
+  // Jira confirms this caller IS an administrator — the only thing standing between
+  // them and a roster row is the call site.
+  currentCaller = ADMIN; scriptJira({ adminIds: [ADMIN] });
+  const [out, seedLogs] = await captureLogs(() =>
+    handler({ call: { functionKey: fn, payload: {} }, context: {} }, { principal: { accountId: ADMIN } }));
+  assert.equal(await storage.get("app_admins"), undefined,
+    `${fn} must not seed the first admin row — the bootstrap is checkIsAdmin's alone`);
+  assert.equal(seedLogs.filter((l) => l.includes("bootstrapping")).length, 0,
+    `${fn} must not even attempt the bootstrap write`);
+  // The CALL still answers — this caller is a Jira site admin, which authorizes
+  // them for the duration of the request. What must not happen is the PERSISTED
+  // grant: a durable app-admin row created by a surface that never mentions roles.
+  assert.equal(out.success, true, `${fn} still authorizes a Jira site admin in-request`);
+
+  // And a caller Jira says is NOT an admin is refused, with nothing written.
+  storage.__reset(); forgeApi.__reset();
+  currentCaller = USER; scriptJira({ adminIds: [], groupMembers: [] });
+  const roleless = await handler({ call: { functionKey: fn, payload: {} }, context: {} }, { principal: { accountId: USER } });
+  if (fn === "getConfigs") assert.deepEqual(roleless.configs, [], "getConfigs returns nothing to a role-less caller");
+  else assert.equal(roleless.success, false, `${fn} must refuse a caller with no role`);
+  assert.equal(await storage.get("app_admins"), undefined, `${fn} refusal must write no roster row`);
+}
+
+// The same admin then opens Apps → CogniRunner: THAT call seeds the roster.
+storage.__reset(); forgeApi.__reset();
+currentCaller = ADMIN; scriptJira({ adminIds: [ADMIN] });
+await handler({ call: { functionKey: "getSkills", payload: {} }, context: {} }, { principal: { accountId: ADMIN } });
+assert.equal(await storage.get("app_admins"), undefined, "the workflow-editor surface leaves the roster empty");
+[res] = await captureLogs(() => invoke(ADMIN));
+assert.equal(res.isAdmin, true, "checkIsAdmin is the surface that bootstraps");
+assert.equal(((await storage.get("app_admins")) || []).length, 1, "and it writes exactly one row");
+// And the role now comes from the ROSTER, not from a Jira round trip: the same
+// gated call answers with Jira scripted to deny ADMINISTER outright.
+scriptJira({ adminIds: [], groupMembers: [] });
+const gatedAfter = await handler({ call: { functionKey: "getSkills", payload: {} }, context: {} }, { principal: { accountId: ADMIN } });
+assert.equal(gatedAfter.success, true, "once rostered, the role no longer depends on Jira");
+
 // ── F-229: two first admins bootstrapping AT THE SAME TIME must both survive.
 // The old code captured "roster is empty" before four network calls and then blindly
 // set the whole key to a one-element array, so the second writer erased the first.
@@ -211,4 +255,4 @@ assert.ok(bothRoster.every((a) => a.role === "admin"), "both rows keep the admin
 await captureLogs(() => invoke(ADMIN));
 assert.equal(((await storage.get("app_admins")) || []).length, 2, "an existing roster row is never duplicated");
 
-console.log("permission bootstrap: 14 cases passed (non-admin refused, admin seeded, group fallback, anonymous denied, F-230 unknown vs no-role, gates still closed, F-227 anonymous getConfigs refused, F-235 knowledge reads gated, F-229 concurrent bootstrap)");
+console.log("permission bootstrap: 22 cases passed (non-admin refused, admin seeded, group fallback, anonymous denied, F-230 unknown vs no-role, gates still closed, F-227 anonymous getConfigs refused, F-235 knowledge reads gated, F-229 concurrent bootstrap, F-251 bootstrap is checkIsAdmin-only)");

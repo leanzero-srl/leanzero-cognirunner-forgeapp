@@ -281,7 +281,7 @@ const VALID_SCOPES = ["own", "all"];
  * `needsRole: "viewer"` plus `hint: "ask-app-admin"` so the UI can name the one
  * route that works (owner decision, 2026-09-13).
  */
-const getUserPermissions = async (accountId) => {
+const getUserPermissions = async (accountId, { allowBootstrap = false } = {}) => {
   if (!accountId) return null;
 
   // Set when the roster read succeeds and finds nobody — see the bootstrap below.
@@ -295,6 +295,20 @@ const getUserPermissions = async (accountId) => {
   // Seed the first admin row, but only for a caller Jira has just confirmed is an
   // administrator. Never called on the non-admin path: a non-admin first caller
   // gets role null and nothing is written.
+  //
+  // F-251 — and only when the CALL SITE asked for it (`{ allowBootstrap: true }`,
+  // default false). The F-233 cut gave the workflow rule editor a `checkIsAdmin`
+  // call, which handed a roster WRITE to a surface nobody associates with
+  // permissions: opening a rule for edit on a fresh install granted app-admin to
+  // whichever Jira admin got there first. Roles must resolve read-only everywhere;
+  // the one exception is `checkIsAdmin`, the admin panel's mount call, where
+  // "this install has no admins yet and a Jira admin just opened Apps →
+  // CogniRunner" is the page's own purpose. A fresh install therefore seeds its
+  // first admin there and nowhere else — a gated resolver on an empty roster
+  // refuses and writes nothing.
+  //
+  // OWNER DECISION 2026-09-13. Do not re-widen this by passing the flag from a
+  // convenience wrapper; the default false is the safety.
   //
   // F-229 — this used to be a BLIND WHOLE-KEY WRITE of a flag captured before four
   // network calls: `rosterEmpty` is read at step 1, then the mypermissions probe and
@@ -310,6 +324,10 @@ const getUserPermissions = async (accountId) => {
   const selfRow = () => ({ accountId, displayName: "Auto (first admin)", role: "admin", scope: "all" });
   const bootstrapFirstAdmin = async () => {
     if (!rosterEmpty) return;
+    // F-251 — the WRITE is opt-in per call site, and exactly ONE passes it:
+    // `checkIsAdmin`, the admin panel's own mount call. Every gated resolver
+    // (the workflow editor's role probe included) resolves roles READ-ONLY.
+    if (!allowBootstrap) return;
     try {
       // A lost claim means a concurrent bootstrap is mid-flight, not that we are done:
       // the winner may not have written its row yet. Either way the re-read + append
@@ -4400,7 +4418,9 @@ resolver.define("checkIsAdmin", async ({ context }) => {
   if (!accountId) {
     return { success: true, isAdmin: false, role: null, scope: null, accountId: null };
   }
-  const perms = await getUserPermissions(accountId);
+  // F-251 — the ONLY call site allowed to seed the first admin row. See the
+  // bootstrap block in getUserPermissions for why every other surface is read-only.
+  const perms = await getUserPermissions(accountId, { allowBootstrap: true });
   return {
     success: true,
     isAdmin: perms?.role === "admin",

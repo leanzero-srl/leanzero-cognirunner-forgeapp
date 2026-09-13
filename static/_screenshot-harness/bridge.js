@@ -1802,6 +1802,11 @@ function invoke(name, payload) {
       // First-run no-key state (window.__NOKEY__): a BYOK provider with no key stored →
       // hasKey:false (matches the real getOpenAIKey shape). Exercises the provider-warning.
       if (typeof window !== "undefined" && window.__NOKEY__) return Promise.resolve({ success: true, provider: "anthropic", baseUrl: "https://api.anthropic.com", hasKey: false, isByok: false });
+      /* F-555: window.__MANAGED__ models a CogniRunner Cloud AI tenant. The shape is the real
+         managed arm's, verbatim — hasKey:false (its credential is an env var, never a KVS
+         slot) WITH noKeyNeeded:true. It is the case that proves readiness cannot be read off
+         `hasKey`: a working engine that honestly reports no stored key. */
+      if (typeof window !== "undefined" && window.__MANAGED__) return Promise.resolve({ success: true, provider: "managed", baseUrl: "", hasKey: false, isByok: false, managed: true, noKeyNeeded: true });
       if (payload && payload.provider === "lmstudio") return Promise.resolve({ success: true, provider: "lmstudio", baseUrl: LM_URL, hasKey: false, hasToken: true, isByok: true });
       return Promise.resolve(isAdmin ? { success: true, provider: "anthropic", baseUrl: "https://api.anthropic.com", hasKey: true, isByok: true } : { success: true, isByok: false });
     case "getOpenAIModels":

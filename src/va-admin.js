@@ -88,6 +88,11 @@ import {
   // THE shadow predicate (F-474) — the same one the post gate reaches. This file used to
   // carry its own, over wall-clock tick buckets, and the two disagreed.
   isInShadow,
+  // THE agent-capability verdict (F-482/F-485) — the same one the tick and the item
+  // turn refuse on, so a SAVE cannot accept an agent the next tick will refuse. It
+  // reads its facts from `agentGateFacts` (src/index.js) and decides with
+  // `agentCapability` (src/shared/edition.js); this file holds neither copy.
+  vaCapabilityVerdict,
 } from "./virtual-admin.js";
 import {
   vaWizardKey, vaTickPrefix, vaEffectPrefix, VA_WIZARD_TTL, VA_CLAIM_TTL,
@@ -149,6 +154,10 @@ export const VA_ADMIN_REFUSALS = Object.freeze({
   memory_read_failed: "The agent's memory could not be read.",
   memory_write_failed: "The agent's memory could not be saved.",
   agent_disabled: "This agent is switched off. Enable it first.",
+  // The general half only — the refusal carries its own `message` naming WHICH
+  // capability is missing (`agentCapabilityCopy`, the same sentence the Code tab and
+  // the Coder show), and `refusalSentence` prefers that.
+  agent_capability_off: "This instance can't run a Virtual Administrator right now.",
   agent_paused: "This agent is paused. Resume it first.",
   already_running: "A run for this agent is already queued.",
   claim_failed: "Whether a run is already in flight could not be determined, so nothing was queued.",
@@ -237,6 +246,11 @@ export const DEFAULT_ADMIN_DEPS = {
    * `va_health` — the same number the post gate reads. The exit the old comment here
    * promised ("if a third caller needs it, move it to virtual-admin.js and both read
    * that") has been taken; there is one predicate now and this file imports it. */
+
+  /* — the instance's agent capability (F-485). ONE verdict, shared with the tick and
+   * the item turn (`vaCapabilityVerdict`, src/virtual-admin.js); a dep only so the
+   * offline suite can put an instance on either side of it. — */
+  capability: async () => vaCapabilityVerdict(),
 
   /* — the queue. The SAME queue and body shape the planner pushes. — */
   pushTask: async (body) => {
@@ -1214,6 +1228,55 @@ export const catalog = async (_args = {}, injected = {}) => {
 
 export const prepareVaSave = async ({ input, existing, savedByRole, now } = {}, injected = {}) => {
   const deps = withAdminDeps(injected);
+
+  /* — 0. THE CAPABILITY GATE, BEFORE ANY SIDE EFFECT OR ANY COST (F-482/F-485) —
+   *
+   * The runtime gate refuses a tick on an incapable instance; the SAVE door accepted
+   * the agent anyway, so an admin on Standard + Forge LLM could arm a Virtual
+   * Administrator, see it listed, and learn only from a tick receipt five minutes
+   * later that it will never run. A save that cannot produce a working agent is a
+   * refusal, and it belongs on the form.
+   *
+   * FIRST, deliberately: it reads no Jira, spends no search, and refusing here means
+   * the catalogue reads and F-479's dry search are never paid for a save that cannot
+   * succeed. It is also the caps-before-side-effect rule — nothing is written either
+   * way, but a refused save must not leave a trail of live reads behind it.
+   *
+   * ONE VERDICT, ONE SHAPE: `agentDisabled:true` plus the machine-readable capability
+   * reason, which is exactly what the Coder's gate answers, so the Agents tab and a
+   * REST client can both act on it instead of parsing a sentence.
+   *
+   * FAILS CLOSED, because `vaCapabilityVerdict` does: an unreadable provider is
+   * `{enabled:false, reason:"unknown"}` and the save is refused. That is the same
+   * direction every other agent surface takes, and the refusal is loud.
+   */
+  try {
+    const cap = await deps.capability();
+    if (!cap || cap.enabled !== true) {
+      const reason = (cap && cap.reason) || "unknown";
+      // `agentCapabilityCopy` answers a ROW ({title, remedy, link}), not a string — the
+      // four UI surfaces render the two halves separately. A refusal sentence takes the
+      // title and the remedy, in that order, and never the object itself.
+      const { agentCapabilityCopy } = await import("./shared/edition.js");
+      const copy = agentCapabilityCopy(reason);
+      return fail("agent_capability_off", {
+        agentDisabled: true,
+        capability: { enabled: false, reason },
+        message: `This instance can't run a Virtual Administrator right now. ${copy.title}. ${copy.remedy}`,
+        refused: [{ field: "va", reason }],
+      });
+    }
+  } catch (e) {
+    // A THROWN capability read is the same answer as a negative one. Letting it fall
+    // through would make an unreadable instance the permissive case.
+    return fail("agent_capability_off", {
+      agentDisabled: true,
+      capability: { enabled: false, reason: "unknown" },
+      message: "Whether this instance can run a Virtual Administrator could not be determined, so nothing was saved.",
+      refused: [{ field: "va", reason: "unknown" }],
+    });
+  }
+
   const { normalizeVa } = await import("./shared/va-config.js");
   const { catalogToCtx } = await import("./shared/va-wizard.js");
   const src = isObj(input) ? input : {};

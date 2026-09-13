@@ -536,6 +536,14 @@ const gateActions = (ids, opts) => {
  * HERE, from the four facts that decide it, so the resolver, the REST API and the two
  * run sites cannot each assemble a different one.
  *
+ * AND ALL FOUR OF THEM NOW DO (F-485). That sentence was aspirational for a year:
+ * `src/rules-api.js` supplied NO context at all, so a rename of a rule that
+ * legitimately held a capability-gated action was a permanent 400 on an instance
+ * where the capability IS enabled (F-480). The facts themselves come from ONE reader,
+ * `agentGateFacts` in src/index.js, exported for exactly this reason — a caller that
+ * assembles its own fact set is the defect this docblock describes, wearing a
+ * different hat.
+ *
  *   edition / provider / agentModel / allowanceLevel → the `git` capability verdict
  *   products       → the site's products (defaults to ["jira"])
  *   triggerSource  → "external" for anything an outside event started (a webhook, a

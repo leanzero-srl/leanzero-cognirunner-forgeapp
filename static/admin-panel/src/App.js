@@ -1316,11 +1316,49 @@ const injectStyles = () => {
     .perm-search-disabled:hover { background: transparent; }
     .perm-search-adding { opacity: 0.7; cursor: wait; }
 
-    .perm-search-name {
+    .perm-search-ident {
       flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 3px;
+    }
+
+    .perm-search-name {
       font-size: 13px;
       font-weight: 500;
       color: var(--text-color);
+    }
+
+    /* F-645 — the account discriminator under the display name, on the search row and on
+       the roster card. Two accounts sharing a display name are told apart HERE or nowhere.
+       Email: slate 600 text. Account-id segment: a SOLID slate chip with white text and a
+       mono face, so two ids are compared character-by-character. No rail, no tint. */
+    .perm-ident {
+      font-size: 11px;
+      font-weight: 600;
+      color: #475569;
+      max-width: 100%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    html[data-color-mode="dark"] .perm-ident { color: #64748b; }
+
+    .perm-ident-id {
+      display: inline-block;
+      padding: 1px 6px;
+      border-radius: 4px;
+      background: #475569;
+      color: #ffffff;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 10px;
+      letter-spacing: 0.2px;
+    }
+    html[data-color-mode="dark"] .perm-ident-id {
+      background: #64748b;
+      color: #ffffff;
     }
 
     .perm-search-badge {
@@ -1404,6 +1442,8 @@ const injectStyles = () => {
       font-weight: 500;
       color: var(--text-color);
     }
+
+    .perm-admin-info .perm-ident { margin: 3px 0; }
 
     .perm-admin-role {
       font-size: 11px;

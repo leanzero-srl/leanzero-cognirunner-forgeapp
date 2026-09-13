@@ -1891,6 +1891,112 @@ try {
     await close(env);
   }
 
+  /* ---------------- F-645 — two people with ONE name must not look like one person -----
+   * The Permissions tab rendered `displayName` and nothing else on both of its surfaces.
+   * wolfaenpak holds three accounts named exactly "Mihai Perdum" in an order that is not
+   * stable between loads; live, that granted editor to the WRONG account twice, and the
+   * roster card for the wrong grant was indistinguishable from the right one, so undoing
+   * it meant counting positions rather than reading the UI.
+   *
+   * What is asserted is DISTINGUISHABILITY, not cosmetics: the second lines of the
+   * same-name rows must differ from each other. The negative control is the revert — with
+   * the discriminator removed, every assertion below that compares two rows fails, because
+   * the two rows really are byte-identical text.
+   *
+   * Both themes: the discriminator is a new slate hue and a new solid chip, and a missing
+   * dark override is exactly the failure that would make it unreadable for half the users.
+   */
+  for (const theme of ["light", "dark"]) {
+    console.log(`F-645 ${theme} namesake accounts are tellable apart`);
+    const env = await openAdmin(browser, theme);
+    const { page } = env;
+    try {
+      await tab(page, "Permissions");
+
+      /* ── surface 1: the search rows ── */
+      const input = page.locator(".perm-search-input");
+      await input.waitFor({ timeout: 10000 });
+      await input.fill("mihai");
+      const rows = page.locator(".perm-search-item");
+      await rows.first().waitFor({ timeout: 10000 });
+      ok(await rows.count() === 3, `F-645 ${theme} all three namesakes are offered`);
+
+      const names = await rows.locator(".perm-search-name").allInnerTexts();
+      ok(names.length === 3 && names.every((n) => n.trim() === "Mihai Perdum"),
+        `F-645 ${theme} the display names really are identical - got ${JSON.stringify(names)}`);
+
+      /* THE assertion. Three rows, three DIFFERENT second lines. */
+      const idents = (await rows.locator(".perm-ident").allInnerTexts()).map((s) => s.trim());
+      ok(idents.length === 3, `F-645 ${theme} every search row carries a discriminator - got ${idents.length}`);
+      ok(new Set(idents).size === 3,
+        `F-645 ${theme} the three second lines are all different - got ${JSON.stringify(idents)}`);
+      ok(idents.every((s) => s.length > 0), `F-645 ${theme} and none of them is blank`);
+
+      /* The email row uses the email; the id rows use the LAST segment, never the shared
+         `557058:` directory prefix, which discriminates nothing. */
+      ok(idents.includes("mihai.perdum@wolfaenpak.example"),
+        `F-645 ${theme} a row that carries an email shows the email - got ${JSON.stringify(idents)}`);
+      const idOnly = idents.filter((s) => !s.includes("@"));
+      ok(idOnly.length === 2, `F-645 ${theme} the other two fall back to the account id`);
+      ok(idOnly.every((s) => !s.startsWith("557058") && !s.includes(":")),
+        `F-645 ${theme} the id chip is the last segment, not the shared directory prefix - got ${JSON.stringify(idOnly)}`);
+
+      /* Order is as returned by searchUsers. Sorting the rows would move the row the admin
+         is about to click, which is the same defect wearing a different hat. */
+      ok(await rows.nth(1).locator(".perm-ident").innerText() === "mihai.perdum@wolfaenpak.example",
+        `F-645 ${theme} the search order is left exactly as the resolver returned it`);
+
+      await shot(page, `f645-namesake-search-${theme}`);
+
+      /* ── surface 2: the roster cards ── */
+      await page.locator(".perm-search-clear").click();
+      const cards = page.locator(".perm-admin-card");
+      await cards.first().waitFor({ timeout: 10000 });
+      const cardNames = (await cards.locator(".perm-admin-name").allInnerTexts()).map((s) => s.trim());
+      const dupName = cardNames.filter((n) => n === "Mihai Perdum");
+      ok(dupName.length === 2, `F-645 ${theme} the roster holds two cards with one name`);
+
+      const cardIdents = (await cards.locator(".perm-ident").allInnerTexts()).map((s) => s.trim());
+      ok(cardIdents.length === cardNames.length,
+        `F-645 ${theme} every roster card carries a discriminator - ${cardIdents.length} of ${cardNames.length}`);
+      ok(new Set(cardIdents).size === cardIdents.length,
+        `F-645 ${theme} no two roster cards read the same - got ${JSON.stringify(cardIdents)}`);
+
+      /* A roster row has no email to show (addAppAdmin stores only accountId/displayName/
+         role/scope), so the full id must be reachable without a KVS read - it is the
+         title on the chip. This is what the live incident had to go to storage for. */
+      const titles = await cards.locator(".perm-ident").evaluateAll((els) => els.map((e) => e.getAttribute("title") || ""));
+      ok(titles.every((t) => t.includes(":")),
+        `F-645 ${theme} the roster card exposes the FULL account id in a title - got ${JSON.stringify(titles)}`);
+      ok(new Set(titles).size === titles.length, `F-645 ${theme} and those full ids are unique per card`);
+
+      /* Owner design law, live, in both themes: the id chip is a SOLID slate fill with
+         white text, and there is no left accent rail anywhere on the card. */
+      const chip = cards.locator(".perm-ident-id").first();
+      const st = await chip.evaluate((el) => {
+        const cs = getComputedStyle(el);
+        const card = el.closest(".perm-admin-card");
+        const ccs = getComputedStyle(card);
+        return { bg: cs.backgroundColor, color: cs.color, fw: cs.fontWeight, ff: cs.fontFamily, cbl: ccs.borderLeftWidth, cbt: ccs.borderTopWidth };
+      });
+      const rgb = (st.bg.match(/\d+/g) || []).map(Number);
+      const wantSlate = theme === "dark" ? [100, 116, 139] : [71, 85, 105];
+      ok(rgb.length >= 3 && rgb.slice(0, 3).every((v, i) => Math.abs(v - wantSlate[i]) <= 2),
+        `F-645 ${theme} the id chip is the solid slate ${wantSlate.join(",")} - got ${st.bg}`);
+      ok(rgb.length < 4 || rgb[3] === undefined || Number(rgb[3]) === 1 || !/rgba/.test(st.bg),
+        `F-645 ${theme} the chip is solid, not a low-alpha tint - got ${st.bg}`);
+      const fg = (st.color.match(/\d+/g) || []).map(Number);
+      ok(fg.slice(0, 3).every((v) => v >= 250), `F-645 ${theme} white text on the chip - got ${st.color}`);
+      ok(Number(st.fw) >= 600, `F-645 ${theme} the chip is 600+ weight - got ${st.fw}`);
+      ok(/mono/i.test(st.ff), `F-645 ${theme} the id is set in a mono face so characters compare - got ${st.ff}`);
+      ok(st.cbl === st.cbt, `F-645 ${theme} the roster card has NO left accent rail`);
+
+      await shot(page, `f645-namesake-accounts-${theme}`);
+      ok(env.errors.length === 0, `F-645 ${theme} no page errors: ` + env.errors.join(" | "));
+    } catch (e) { fail++; console.log(`  ✗ F-645 ${theme} threw: ` + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
   /* ---------------- F-274 — a THROWN checkIsAdmin is "unknown", not a verdict ----------
    * admin-panel's catch only logged. It behaved correctly only because F-230's
    * `roleIsUnknown = true` initialiser three dozen lines up was never cleared on that path

@@ -33,6 +33,38 @@ const scopeLabel = (role, scope) => {
   return scope === "all" ? "All rules" : "Own rules only";
 };
 
+/* F-645 — a display name is NOT an identity. wolfaenpak holds three accounts whose
+   displayName is exactly "Mihai Perdum", the search returns them in an order that is not
+   stable between loads, and the roster card that follows a grant reads the same for all
+   three. Live, that granted editor to the wrong account twice, and only a KVS read of
+   `app_admins` revealed which one. Both surfaces must therefore carry a DISCRIMINATOR
+   that differs per account, never a decoration.
+
+   Preference order, and why:
+   - `emailAddress` when the row carries one. It is the thing an admin can actually check
+     against the person they meant. MEASURED as NOT available today: `searchUsers`
+     (src/index.js) maps the Jira user search down to accountId/displayName/avatarUrl, and
+     `addAppAdmin` stores only accountId/displayName/role/scope, so neither the search row
+     nor the roster row has an email. The branch is kept because it is the right answer the
+     moment the backend passes one through, and it must not need a second edit here.
+   - otherwise the account id's LAST segment (Jira ids are `557058:<uuid>`; the prefix is
+     the shared directory id and discriminates nothing). Shown in a mono chip so the two
+     ids are compared character-by-character rather than read as prose.
+   The full id is never truncated away silently: the roster card carries it in `title`. */
+const accountDiscriminator = (row) => {
+  if (!row) return null;
+  const email = typeof row === "object" ? row.emailAddress : null;
+  if (typeof email === "string" && email.trim()) {
+    return { text: email.trim(), kind: "email" };
+  }
+  const id = typeof row === "string" ? row : row.accountId;
+  if (typeof id !== "string" || !id.trim()) return null;
+  const trimmed = id.trim();
+  const colon = trimmed.lastIndexOf(":");
+  const seg = colon >= 0 ? trimmed.slice(colon + 1) : trimmed;
+  return { text: seg || trimmed, kind: "id", fullId: trimmed };
+};
+
 export default function PermissionsTab({ invoke }) {
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -296,9 +328,14 @@ export default function PermissionsTab({ invoke }) {
         {/* Search results */}
         {searchResults.length > 0 && (
           <div className="perm-search-results">
+            {/* F-645 — the order is exactly as `searchUsers` returned it. Sorting here
+                would be a second, quieter version of the same bug: the row an admin
+                clicked would move under a rule they cannot see. The fix is to make the
+                rows TELLABLE APART, not to pick an order for them. */}
             {searchResults.map((user) => {
               const already = isAlreadyAdded(user.accountId);
               const isAdding = adding === user.accountId;
+              const disc = accountDiscriminator(user);
               return (
                 <div
                   key={user.accountId}
@@ -310,8 +347,18 @@ export default function PermissionsTab({ invoke }) {
                   ) : (
                     <span className="perm-avatar-placeholder">{getInitials(user.displayName)}</span>
                   )}
-                  <span className="perm-search-name">{user.displayName}</span>
-                  {already && <span className="perm-search-badge">Already added</span>}
+                  <div className="perm-search-ident">
+                    <span className="perm-search-name">{user.displayName}</span>
+                    {disc && (
+                      <span
+                        className={`perm-ident${disc.kind === "id" ? " perm-ident-id" : ""}`}
+                        title={disc.kind === "id" ? disc.fullId : disc.text}
+                      >
+                        {disc.text}
+                      </span>
+                    )}
+                  </div>
+                  {already &&<span className="perm-search-badge">Already added</span>}
                   {isAdding && (
                     <span className="perm-search-badge" style={{ display: "inline-flex", alignItems: "center", gap: "6px" }}>
                       <span className="spin-ring spin-ring-sm" />
@@ -396,6 +443,11 @@ export default function PermissionsTab({ invoke }) {
             const scope = typeof user === "object" ? (user.scope || "all") : "all";
             const isRemoving = removing === id;
             const isChanging = changingRole === id;
+            /* F-645 — the roster is the ONLY place an admin can verify a grant landed
+               where they meant it, and the only place Remove is armed. Two cards reading
+               "Mihai Perdum / Own rules only" made that button a coin flip, so the
+               discriminator belongs here at least as much as on the search. */
+            const disc = accountDiscriminator(user);
             return (
               <div key={id} className={`perm-admin-card${flashId === id ? " flash-success" : ""}`}>
                 <div className="perm-admin-info">
@@ -406,6 +458,14 @@ export default function PermissionsTab({ invoke }) {
                   )}
                   <div>
                     <div className="perm-admin-name">{name}</div>
+                    {disc && (
+                      <div
+                        className={`perm-ident${disc.kind === "id" ? " perm-ident-id" : ""}`}
+                        title={disc.kind === "id" ? disc.fullId : disc.text}
+                      >
+                        {disc.text}
+                      </div>
+                    )}
                     <div className="perm-admin-role">{scopeLabel(role, scope)}</div>
                   </div>
                 </div>

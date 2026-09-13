@@ -3611,3 +3611,15 @@ html[data-color-mode="dark"] .dib-unavailable { background: #ef4444; color: #2a0
 html[data-color-mode="dark"] .usage-engine-fill.eng-forge { background: #3b82f6; }
 html[data-color-mode="dark"] .usage-engine-fill.eng-managed { background: #8b5cf6; }
 
+
+/* F-645 — the Permissions tab's account discriminator. NOTE: the rest of the `.perm-*`
+   block has never been mirrored here; App.js injectStyles() is the live source, and only
+   the classes this cut ADDED are recorded, not the ones it merely sat next to.
+   Email: slate 600 text. Account-id segment: a solid slate chip, white text, mono face —
+   two namesakes are told apart by comparing characters, not by reading a name. */
+.perm-search-ident { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 3px; }
+.perm-ident { font-size: 11px; font-weight: 600; color: #475569; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+html[data-color-mode="dark"] .perm-ident { color: #64748b; }
+.perm-ident-id { display: inline-block; padding: 1px 6px; border-radius: 4px; background: #475569; color: #ffffff; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 10px; letter-spacing: 0.2px; }
+html[data-color-mode="dark"] .perm-ident-id { background: #64748b; color: #ffffff; }
+.perm-admin-info .perm-ident { margin: 3px 0; }

@@ -326,6 +326,12 @@ const ADMINS = {
     { accountId: "557058:22222222-2222-2222-2222-222222222222", displayName: "Dana Editor", avatarUrl: "https://secure.gravatar.com/avatar/bbb?d=identicon&s=48", role: "editor", scope: "all" },
     { accountId: "557058:33333333-3333-3333-3333-333333333333", displayName: "Sam Viewer", avatarUrl: "https://secure.gravatar.com/avatar/ccc?d=identicon&s=48", role: "viewer", scope: "own" },
     { accountId: "557058:44444444-4444-4444-4444-444444444444", displayName: "Priya Editor", avatarUrl: null, role: "editor", scope: "own" },
+    /* F-645 — the roster's own namesake: a SECOND "Mihai Perdum", exactly the pair that
+       made Remove a coin flip live. `addAppAdmin` stores only accountId/displayName/role/
+       scope (src/index.js), so a roster row has NO emailAddress and the id segment is the
+       only discriminator available on this surface. Placed deliberately as the last card,
+       away from the admin row it shares a name with. */
+    { accountId: "557058:99999999-9999-9999-9999-999999999999", displayName: "Mihai Perdum", avatarUrl: null, role: "editor", scope: "own" },
   ],
 };
 const DOCS = {
@@ -2113,7 +2119,24 @@ function invoke(name, payload) {
     case "getLmStudioPool": return Promise.resolve({ success: true, enabled: true });
     case "getLmStudioWeights": return Promise.resolve({ success: true, weights: { "qwen/qwen3.6-35b-a3b": "3" }, models: LM_WEIGHT_MODELS });
     case "getAppAdmins": return Promise.resolve(ADMINS);
-    case "searchUsers": return Promise.resolve({ success: true, users: [{ accountId: "557058:55555555-5555-5555-5555-555555555555", displayName: "Alex Newman", avatarUrl: "https://secure.gravatar.com/avatar/ddd?d=identicon&s=24" }, { accountId: "557058:66666666-6666-6666-6666-666666666666", displayName: "Jordan Lee", avatarUrl: null }] });
+    /* F-645 — the namesake search. A query for "mihai" returns THREE rows whose
+       displayName is byte-identical, which is the wolfaenpak shape that granted editor to
+       the wrong account twice. Two carry only an accountId (what `searchUsers` actually
+       maps today) and one carries an `emailAddress`, so both discriminator branches are
+       exercised. The order here is deliberately NOT the roster order: the fix must make
+       the rows tellable apart without reordering them. Any other query keeps the original
+       two-row fixture, so the F-259 refusal journey and the capture shots are untouched. */
+    case "searchUsers": {
+      const q = String((payload && payload.query) || "").toLowerCase();
+      if (q.includes("mihai") || q.includes("perdum")) {
+        return Promise.resolve({ success: true, users: [
+          { accountId: "557058:77777777-7777-7777-7777-777777777777", displayName: "Mihai Perdum", avatarUrl: null },
+          { accountId: "557058:88888888-8888-8888-8888-888888888888", displayName: "Mihai Perdum", avatarUrl: null, emailAddress: "mihai.perdum@wolfaenpak.example" },
+          { accountId: ACCT, displayName: "Mihai Perdum", avatarUrl: "https://secure.gravatar.com/avatar/aaa?d=identicon&s=24" },
+        ] });
+      }
+      return Promise.resolve({ success: true, users: [{ accountId: "557058:55555555-5555-5555-5555-555555555555", displayName: "Alex Newman", avatarUrl: "https://secure.gravatar.com/avatar/ddd?d=identicon&s=24" }, { accountId: "557058:66666666-6666-6666-6666-666666666666", displayName: "Jordan Lee", avatarUrl: null }] });
+    }
     case "getContextDocs": return Promise.resolve((typeof window !== "undefined" && window.__EMPTY__) ? { success: true, docs: [] } : DOCS);
     /* F-634 - the SUCCESS arm only. This door carries the F-235 viewer floor since F-626, and
        both refusal shapes are served above: `__NO_ROSTER__` for the whole-tenant state (which

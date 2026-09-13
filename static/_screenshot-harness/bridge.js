@@ -992,7 +992,9 @@ const CODE_IDENTITY = () => ((typeof window !== "undefined" && window.__CODE_IDE
                                  "lock_mismatch" (carries added/removed BY NAME),
                                  "scope_not_allowed" (carries scopes),
                                  "identity_required".
-     window.__PIPE_DEPLOY_FAIL__ - triggerGitDeploy refuses with not_installed. */
+     window.__PIPE_DEPLOY_FAIL__ - triggerGitDeploy refuses with not_installed.
+     window.__PIPE_SETUP__     - WRITTEN BY the mock: the last setupGitPipeline payload
+                                 (F-526, the scaffoldVars assertion reads it). */
 /* F-465: the step ids are IMPORTED from the one home now
    (src/shared/git-pipeline-steps.js), not mirrored. They used to be retyped here with a
    note asking the next person to keep them in step with src/git-pipeline.js — a fixture
@@ -1874,6 +1876,11 @@ function invoke(name, payload) {
        polls getGitPipelineStatus for the rest. */
     case "setupGitPipeline": {
       const refuse = typeof window !== "undefined" ? window.__PIPE_REFUSE__ : null;
+      /* F-526: the SETUP PAYLOAD is recorded, because the defect was invisible in every
+         rendered pixel - the form looked right and the scaffold variables were simply
+         never sent, so the committed workflow built a folder nobody had named. A journey
+         can only catch that by reading what the screen actually asked the backend for. */
+      if (typeof window !== "undefined") window.__PIPE_SETUP__ = payload || null;
       if (refuse) return Promise.resolve(PIPE_REFUSALS[refuse] || { success: false, error: "refused", code: refuse });
       PIPE_STATE.walking = true; PIPE_STATE.stage = 1;
       return Promise.resolve({ success: true, async: true, taskId: "gpipe_1", lockHash: "b91c7a44", status: PIPE_ROW("queued") });

@@ -3097,6 +3097,12 @@ const injectStyles = () => {
     .code-run-link:hover { text-decoration: underline; }
     .code-run-note { flex-basis: 100%; color: var(--text-secondary); line-height: 1.45; }
     .code-pipe-form { display: flex; flex-direction: column; gap: 10px; }
+    /* F-526: the scaffold variables and their read-back. No rail, no tint: a bordered
+       row of the same fact chips the rest of this card already uses. */
+    .code-pipe-review { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); }
+    .code-pipe-review-title { font-size: 10px; font-weight: 800; letter-spacing: 0.05em; color: var(--text-muted); text-transform: uppercase; }
+    .code-pipe-review-v { font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace); }
+    .code-field-err { margin: 4px 0 0; color: #dc2626; font-size: 12px; font-weight: 700; line-height: 1.45; }
     .code-pipe-fields { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; }
     .code-pipe-fields .form-group { flex: 1 1 220px; }
     .code-textarea { width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); background: var(--input-bg); color: var(--text-color); font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace); font-size: 12px; line-height: 1.5; resize: vertical; }
@@ -3106,7 +3112,7 @@ const injectStyles = () => {
     html[data-color-mode="dark"] .code-pipe-running, html[data-color-mode="dark"] .code-step-running .code-step-state, html[data-color-mode="dark"] .code-run-running, html[data-color-mode="dark"] .code-run-pending { background: #3b82f6; }
     html[data-color-mode="dark"] .code-pipe-err, html[data-color-mode="dark"] .code-step-failed .code-step-state, html[data-color-mode="dark"] .code-diff-rem, html[data-color-mode="dark"] .code-run-failed, html[data-color-mode="dark"] .code-hook-broken { background: #ef4444; }
     html[data-color-mode="dark"] .code-diff-lock { background: #c026d3; }
-    html[data-color-mode="dark"] .code-step-err { color: #ef4444; }
+    html[data-color-mode="dark"] .code-step-err, html[data-color-mode="dark"] .code-field-err { color: #ef4444; }
     html[data-color-mode="dark"] .code-run-link { color: #3b82f6; }
     html[data-color-mode="dark"] .code-pipe-goto, html[data-color-mode="dark"] .code-hook-broken-action { background: #f8fafc; color: #0f172a; }
     /* AgentConfig CODE column (the git namespace) */

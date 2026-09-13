@@ -117,22 +117,33 @@ export const CQL_PLACEHOLDER_HELP =
  * matches nothing, which is a determinate answer; a vanished clause silently widens
  * the query.
  *
+ * ⚠️ THE PLACEHOLDER SCAN RUNS ON THE TEMPLATE, BEFORE SUBSTITUTION, AND NEVER ON THE
+ * RESULT. A brace is only a placeholder where the ADMINISTRATOR typed it; a brace that
+ * arrives inside an issue summary (`Fix {code} rendering`, mustache, a pasted `{"json"}`)
+ * is data, it is inside a quoted CQL literal after `cqlQuote`, and it is literal to
+ * Confluence. Scanning the rendered query blamed the admin's template for a cause it did
+ * not contain and BLOCKED the transition in BOTH strict columns, because misconfiguration
+ * is not a fail-open degradation — that was F-450, and re-adding a scan over `out` brings
+ * it straight back.
+ *
  * @returns {{ok:true, cql:string} | {ok:false, reason:string}} — `ok:false` is
  *   MISCONFIGURATION, which the validator treats as a BLOCK regardless of `strict`.
  */
 export const renderCqlTemplate = (template, values = {}) => {
   const src = String(template == null ? "" : template).trim();
   if (!src) return { ok: false, reason: "the rule has no CQL template" };
+  // Unknown placeholders are judged on the TEMPLATE (see above): drop the ones we know
+  // how to fill, and anything brace-shaped still standing is the admin's own typo.
+  const leftover = src.replace(CQL_PLACEHOLDER_RE, "").match(/\{[^}\n]*\}/);
+  if (leftover) {
+    return { ok: false, reason: `the CQL template uses ${leftover[0]}, which is not a placeholder this rule can fill` };
+  }
   const fields = (values && values.fields) || {};
   const out = src.replace(CQL_PLACEHOLDER_RE, (_m, name) => {
     if (name === "issueKey") return cqlQuote(values.issueKey || "");
     if (name === "summary") return cqlQuote(values.summary || "");
     return cqlQuote(fields[String(name).slice("field:".length)] || "");
   });
-  const leftover = out.match(/\{[^}\n]*\}/);
-  if (leftover) {
-    return { ok: false, reason: `the CQL template uses ${leftover[0]}, which is not a placeholder this rule can fill` };
-  }
   if (out.length > CQL_MAX_CHARS) {
     return { ok: false, reason: `the rendered CQL is ${out.length} characters, over the ${CQL_MAX_CHARS} limit` };
   }

@@ -57,9 +57,10 @@
  *  - WRITES ARE NEVER RETRIED. A retried POST is a duplicate page or a duplicate
  *    comment. Reads retry at most once, and only on `network` or `rate_limited`.
  *
- *  - 10 s per logical operation (`CONFLUENCE_OPERATION_BUDGET_MS`), shared by
- *    every HTTP call an operation chains, and a 10 s per-call wall clock
- *    (AbortController). `getPageByTitle` and `createPage` are two calls each:
+ *  - 10 s per logical operation (`CONFLUENCE_OPERATION_BUDGET_MS`), CARRIED BY A
+ *    TOKEN down the call chain (never a client-level variable — two concurrent
+ *    operations would restore each other's deadline, F-433), and a 10 s per-call
+ *    wall clock (AbortController). `getPageByTitle` and `createPage` are two calls each:
  *    two independent 10 s timeouts would be a 20 s operation inside a 25 s sync
  *    resolver, so the BUDGET — not the per-call timeout — is what bounds them.
  *
@@ -243,18 +244,25 @@ export function createConfluenceClient(deps = {}) {
 
   const fail = (code, message, details = {}) => new ConfluenceError(code, message, details);
 
-  // ONE budget per logical OPERATION, shared by every call it chains. Nesting
-  // can only ever TIGHTEN it.
-  let budgetDeadline = null;
-  async function withBudget(totalMs, fn) {
-    const prev = budgetDeadline;
+  /**
+   * ONE budget per logical OPERATION, shared by every call that operation chains, and
+   * carried by a TOKEN passed down the chain — not by a closure variable (F-433).
+   *
+   * It used to be `let budgetDeadline`, saved and restored around each operation. That is
+   * correct for NESTING and wrong for INTERLEAVING: with two operations in flight on one
+   * client — `Promise.all([client.getPage(...), client.getPageByTitle(...)])`, the obvious
+   * thing to do inside a 25 s resolver — whichever finished FIRST restored the deadline it
+   * had captured, which for the first-started operation is `null`. The other operation's
+   * remaining calls then saw `remaining = Infinity` and got the full per-call timeout with
+   * no operation ceiling: exactly the 20 s two-call chain this budget exists to prevent.
+   *
+   * A token cannot be restored out from under anyone. Nesting still only TIGHTENS: pass the
+   * parent token and the deadline is the earlier of the two.
+   */
+  async function withBudget(totalMs, fn, parent = null) {
     const want = Date.now() + (typeof totalMs === "number" && totalMs > 0 ? totalMs : CONFLUENCE_OPERATION_BUDGET_MS);
-    budgetDeadline = prev === null ? want : Math.min(prev, want);
-    try {
-      return await fn();
-    } finally {
-      budgetDeadline = prev;
-    }
+    const deadline = parent && typeof parent.deadline === "number" ? Math.min(parent.deadline, want) : want;
+    return fn({ deadline });
   }
 
   const headerOf = (headers, name) => {
@@ -265,8 +273,9 @@ export function createConfluenceClient(deps = {}) {
     return null;
   };
 
-  async function once(operation, method, path, init, opts = {}) {
-    const remaining = budgetDeadline === null ? Infinity : budgetDeadline - Date.now();
+  async function once(operation, method, path, init, opts = {}, budget = null) {
+    const deadline = budget && typeof budget.deadline === "number" ? budget.deadline : null;
+    const remaining = deadline === null ? Infinity : deadline - Date.now();
     if (remaining <= 0) {
       throw fail("network", `${operation}: operation budget of ${CONFLUENCE_OPERATION_BUDGET_MS / 1000}s exhausted`, {
         operation,
@@ -328,27 +337,28 @@ export function createConfluenceClient(deps = {}) {
    *   - a READ retries at most once, and only on `network` or `rate_limited`,
    *     and only if the operation budget can still pay for it.
    */
-  async function request(operation, method, path, init, opts) {
+  async function request(operation, method, path, init, opts, budget = null) {
     try {
-      return await once(operation, method, path, init, opts);
+      return await once(operation, method, path, init, opts, budget);
     } catch (e) {
       const retryable = e instanceof ConfluenceError && (e.code === "network" || e.code === "rate_limited");
       if (isWriteMethod(method) || !retryable) throw e;
       const waitMs = e.retryAfterSeconds ? Math.min(Math.max(e.retryAfterSeconds, 0) * 1000, 5000) : 250;
-      if (budgetDeadline !== null && Date.now() + waitMs >= budgetDeadline) throw e;
+      const deadline = budget && typeof budget.deadline === "number" ? budget.deadline : null;
+      if (deadline !== null && Date.now() + waitMs >= deadline) throw e;
       await sleep(waitMs);
-      return once(operation, method, path, init, opts);
+      return once(operation, method, path, init, opts, budget);
     }
   }
 
   /** Read the body, CLAMP IT, then parse. A body we cannot parse is an error, never null. */
-  async function json(operation, method, path, body, opts) {
+  async function json(operation, method, path, body, opts, budget = null) {
     const init = {};
     if (body !== undefined) {
       init.body = typeof body === "string" ? body : JSON.stringify(body);
       init.headers = { "Content-Type": "application/json" };
     }
-    const resp = await request(operation, method, path, init, opts);
+    const resp = await request(operation, method, path, init, opts, budget);
     if (Number(resp.status) === 204) return null;
 
     let raw = "";
@@ -399,8 +409,8 @@ export function createConfluenceClient(deps = {}) {
    */
   async function probeInstalled() {
     try {
-      return await withBudget(CONFLUENCE_OPERATION_BUDGET_MS, async () => {
-        await request("probeInstalled", "GET", INSTALL_PROBE_PATH, undefined, { installProbe: true });
+      return await withBudget(CONFLUENCE_OPERATION_BUDGET_MS, async (budget) => {
+        await request("probeInstalled", "GET", INSTALL_PROBE_PATH, undefined, { installProbe: true }, budget);
         return { installed: true, code: null, message: null };
       });
     } catch (e) {
@@ -414,8 +424,8 @@ export function createConfluenceClient(deps = {}) {
     const op = "searchCql";
     const q = requireString(op, "cql", cql);
     const n = Math.max(1, Math.min(SEARCH_MAX_LIMIT, Number(limit) || 1));
-    return withBudget(CONFLUENCE_OPERATION_BUDGET_MS, async () => {
-      const data = await json(op, "GET", `/wiki/rest/api/search?cql=${enc(q)}&limit=${n}`);
+    return withBudget(CONFLUENCE_OPERATION_BUDGET_MS, async (budget) => {
+      const data = await json(op, "GET", `/wiki/rest/api/search?cql=${enc(q)}&limit=${n}`, undefined, undefined, budget);
       const results = Array.isArray(data && data.results) ? data.results : [];
       return {
         results: results.slice(0, n).map((r) => ({
@@ -438,8 +448,8 @@ export function createConfluenceClient(deps = {}) {
     const op = "getPage";
     const pageId = requireString(op, "id", id);
     const fmt = bodyFormat === "atlas_doc_format" ? "atlas_doc_format" : "storage";
-    return withBudget(CONFLUENCE_OPERATION_BUDGET_MS, async () => {
-      const data = await json(op, "GET", `/wiki/api/v2/pages/${enc(pageId)}?body-format=${fmt}`);
+    return withBudget(CONFLUENCE_OPERATION_BUDGET_MS, async (budget) => {
+      const data = await json(op, "GET", `/wiki/api/v2/pages/${enc(pageId)}?body-format=${fmt}`, undefined, undefined, budget);
       return shapePage(data, fmt);
     });
   }
@@ -462,9 +472,9 @@ export function createConfluenceClient(deps = {}) {
   }
 
   /** Resolve a space KEY to its numeric id — page writes need the id, configs carry the key. */
-  async function resolveSpaceId(op, spaceKey) {
+  async function resolveSpaceId(op, spaceKey, budget) {
     const key = requireString(op, "spaceKey", spaceKey);
-    const data = await json(op, "GET", `/wiki/api/v2/spaces?keys=${enc(key)}&limit=1`);
+    const data = await json(op, "GET", `/wiki/api/v2/spaces?keys=${enc(key)}&limit=1`, undefined, undefined, budget);
     const hit = Array.isArray(data && data.results) ? data.results[0] : null;
     if (!hit || hit.id == null) {
       throw fail("not_found", `${op}: no space with key ${key}`, { operation: op });
@@ -480,12 +490,15 @@ export function createConfluenceClient(deps = {}) {
   async function getPageByTitle({ spaceKey, title } = {}) {
     const op = "getPageByTitle";
     const wanted = requireString(op, "title", title);
-    return withBudget(CONFLUENCE_OPERATION_BUDGET_MS, async () => {
-      const spaceId = await resolveSpaceId(op, spaceKey);
+    return withBudget(CONFLUENCE_OPERATION_BUDGET_MS, async (budget) => {
+      const spaceId = await resolveSpaceId(op, spaceKey, budget);
       const data = await json(
         op,
         "GET",
-        `/wiki/api/v2/spaces/${enc(spaceId)}/pages?title=${enc(wanted)}&limit=1&body-format=storage`
+        `/wiki/api/v2/spaces/${enc(spaceId)}/pages?title=${enc(wanted)}&limit=1&body-format=storage`,
+        undefined,
+        undefined,
+        budget
       );
       const hit = Array.isArray(data && data.results) ? data.results[0] : null;
       return hit ? shapePage(hit, "storage") : null;
@@ -499,8 +512,8 @@ export function createConfluenceClient(deps = {}) {
     const value = String(storage == null ? "" : storage);
     if (!value) throw fail("invalid", `${op}: storage body is required`, { operation: op });
     const capped = clampUtf8Bytes(value, PAGE_STORAGE_MAX_BYTES, "");
-    return withBudget(CONFLUENCE_OPERATION_BUDGET_MS, async () => {
-      const spaceId = await resolveSpaceId(op, spaceKey);
+    return withBudget(CONFLUENCE_OPERATION_BUDGET_MS, async (budget) => {
+      const spaceId = await resolveSpaceId(op, spaceKey, budget);
       const body = {
         spaceId,
         status: "current",
@@ -508,7 +521,7 @@ export function createConfluenceClient(deps = {}) {
         body: { representation: "storage", value: capped.text },
       };
       if (parentId) body.parentId = String(parentId);
-      const data = await json(op, "POST", "/wiki/api/v2/pages", body);
+      const data = await json(op, "POST", "/wiki/api/v2/pages", body, undefined, budget);
       return {
         id: String((data && data.id) || ""),
         title: String((data && data.title) || pageTitle),
@@ -540,10 +553,10 @@ export function createConfluenceClient(deps = {}) {
     if (!value) throw fail("invalid", `${op}: storage body is required`, { operation: op });
     const capped = clampUtf8Bytes(value, PAGE_STORAGE_MAX_BYTES, "");
 
-    return withBudget(CONFLUENCE_OPERATION_BUDGET_MS, async () => {
+    return withBudget(CONFLUENCE_OPERATION_BUDGET_MS, async (budget) => {
       let pageTitle = title == null ? "" : String(title).trim();
       if (!pageTitle) {
-        const existing = await json(op, "GET", `/wiki/api/v2/pages/${enc(pageId)}`);
+        const existing = await json(op, "GET", `/wiki/api/v2/pages/${enc(pageId)}`, undefined, undefined, budget);
         const live = Number((existing && existing.version && existing.version.number) || 0);
         if (live !== current) {
           throw fail(
@@ -560,7 +573,7 @@ export function createConfluenceClient(deps = {}) {
         title: pageTitle,
         version: { number: current + 1, message: "Updated by CogniRunner" },
         body: { representation: "storage", value: capped.text },
-      });
+      }, undefined, budget);
       return {
         id: String((data && data.id) || pageId),
         title: String((data && data.title) || pageTitle),
@@ -578,11 +591,11 @@ export function createConfluenceClient(deps = {}) {
     const value = String(body == null ? "" : body);
     if (!value.trim()) throw fail("invalid", `${op}: body is required`, { operation: op });
     const capped = clampUtf8Bytes(value, COMMENT_MAX_BYTES, "");
-    return withBudget(CONFLUENCE_OPERATION_BUDGET_MS, async () => {
+    return withBudget(CONFLUENCE_OPERATION_BUDGET_MS, async (budget) => {
       const data = await json(op, "POST", "/wiki/api/v2/footer-comments", {
         pageId: id,
         body: { representation: "storage", value: capped.text },
-      });
+      }, undefined, budget);
       return {
         id: String((data && data.id) || ""),
         pageId: id,

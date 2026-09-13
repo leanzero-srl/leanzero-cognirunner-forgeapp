@@ -386,4 +386,54 @@ await expectErr(() => createConfluenceClient({ request: mock(() => ({ status: 20
   eq(t.calls.length, 2, "a timed-out READ still gets its one retry");
 }
 
+/* ------------------------------------------------------------------ *
+ * THE OPERATION BUDGET IS PER CALL CHAIN, NOT PER CLIENT (F-433)
+ *
+ * It used to be a closure variable saved and restored around each operation — correct for
+ * nesting, wrong for interleaving. With two operations in flight on one client the one
+ * that finished FIRST restored the deadline it had captured (null, for the first started),
+ * and the other operation's remaining calls ran with NO operation ceiling: the 20 s
+ * two-call chain inside a 25 s resolver that the budget exists to prevent.
+ *
+ * Asserted on a FAKE CLOCK: op A completes while op B is between its two calls, and the
+ * clock passes B's deadline in the meantime. B's second call must refuse.
+ * ------------------------------------------------------------------ */
+{
+  const realNow = Date.now;
+  let now = 1000000;
+  Date.now = () => now;
+  try {
+    const calls = [];
+    const request = async (path) => {
+      calls.push(path);
+      if (path.startsWith("/wiki/api/v2/spaces?keys=")) {
+        // Op B's FIRST call is slow: the clock passes both operations' 10 s deadline.
+        now += CONFLUENCE_OPERATION_BUDGET_MS + 1000;
+        return { status: 200, ok: true, headers: {}, text: async () => JSON.stringify({ results: [{ id: 77 }] }) };
+      }
+      if (path.startsWith("/wiki/api/v2/pages/9")) {
+        return { status: 200, ok: true, headers: {}, text: async () => JSON.stringify({ id: "9", title: "A", version: { number: 1 }, body: { storage: { value: "<p>a</p>" } } }) };
+      }
+      return { status: 200, ok: true, headers: {}, text: async () => JSON.stringify({ results: [{ id: "5", title: "B", version: { number: 1 }, body: { storage: { value: "<p>b</p>" } } }] }) };
+    };
+    const c = createConfluenceClient({ request, sleep: async () => {} });
+    const settled = await Promise.allSettled([
+      c.getPage({ id: "9" }),
+      c.getPageByTitle({ spaceKey: "DOCS", title: "B" }),
+    ]);
+    checks++;
+    assert.equal(settled[0].status, "fulfilled", "the fast operation still succeeds");
+    checks++;
+    assert.equal(settled[1].status, "rejected",
+      "the concurrent operation is still bounded after the other one finished");
+    const err = settled[1].reason;
+    ok(err instanceof ConfluenceError && err.timeout === true && /budget/.test(err.message),
+      `the second operation refuses on its OWN budget (${err && err.message})`);
+    ok(!calls.some((p) => p.includes("/pages?title=")),
+      "and the unbounded second call was never issued");
+  } finally {
+    Date.now = realNow;
+  }
+}
+
 console.log(`confluence-client: ${checks} passed, 0 failed`);

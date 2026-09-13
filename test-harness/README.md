@@ -90,6 +90,7 @@ npm run test:listeners-e2e    # LIVE: REST-pushes a catch-all + targeted listene
 npm run test:jobs-e2e         # LIVE: run-now (scoped AI agent), the real scheduler tick (≤12 min wait), lifecycle round-trips
 npm run probe:listeners       # LIVE, ~2 min: one script + one AI-agent + one version listener
 npm run test:resolvers-live   # LIVE: the admin resolvers (getListeners/saveListener/testListener/runScheduledJobNow/tokens…) via the dev hook
+node scripts/perm-discriminator-live.mjs   # LIVE (Playwright, admin profile): the Permissions picker discriminator — email when Jira returns one, account-id chip always, on BOTH the search row and the roster card; grants {editor,own} through the real UI and restores app_admins with a byte compare. `--editor=<accountId>` picks the target.
 npm run test:jsm-assets       # LIVE: JSM request-type events, a real portal request, INTERNAL notes (script + AI agent), Assets workspace/schema/objects/field
 npm run test:jsm-import       # LIVE: the rule importer end-to-end on a JSM company-managed workflow (commit → attach → fire → portable-JSON round-trip)
 ```

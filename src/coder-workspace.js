@@ -30,7 +30,7 @@
  *                                REMOTE LINKS carrying a deterministic `globalId`, so a
  *                                re-run updates the link instead of adding a second one.
  *   3. updateCoderLog          — ONE running "Coder log" comment, EDITED in place. Its id
- *                                lives in `coder_log:<issueKey>`; the body is the last
+ *                                lives in `coder_log:<issueKey>:<threadId>`; the body is the last
  *                                CODER_LOG_MAX_LINES lines under a byte cap.
  *   4. attachSessionArtifact   — `.md` only, through the SAME allow-list and size cap the
  *                                attachment-upload webtrigger enforces
@@ -109,7 +109,20 @@ export const WORKSPACE_LOCK_TTL = { ttl: { value: 1, unit: "MINUTES" } };
 // (F-346/F-349: a key part is never a raw id, and an illegal key fails at the builder).
 
 export const coderWorkspaceLockKey = (issueKey) => assertKvsKey(`coder_ws:${safeKeyPart(issueKey)}`);
-export const coderLogKey = (issueKey) => assertKvsKey(`coder_log:${safeKeyPart(issueKey)}`);
+/**
+ * THE LOG POINTER IS PER THREAD (F-377), not per issue.
+ *
+ * It used to be `coder_log:<issueKey>` while the log it points at is per THREAD, so two
+ * threads on one issue — one user with "New conversation", or two users, whose default
+ * thread ids differ — abandoned each other's comment and POSTED A NEW ONE every turn.
+ * Ten alternating turns meant ten "Coder log" comments and no way to tell which was live.
+ * The thread is part of the key, so each thread edits its own comment in place.
+ * (Rows written under the old, issue-only key are simply never read again; they carry a
+ * 90-day ttl and expire. Nothing migrates them — the comment they name is already on the
+ * issue and re-editing it from a new thread is the bug, not the fix.)
+ */
+export const coderLogKey = (issueKey, threadId) =>
+  assertKvsKey(`coder_log:${safeKeyPart(issueKey)}:${safeKeyPart(threadId == null ? "" : threadId) || "-"}`);
 
 /** A small, stable, non-cryptographic digest. Identity only — never a secret. */
 const hash32 = (s) => {
@@ -421,11 +434,12 @@ export const clampLogLines = (lines) => {
 /**
  * ONE "Coder log" comment per issue, EDITED in place.
  *
- * The lines accumulate in `coder_log:<issueKey>` (NOT read back out of the comment — a
+ * The lines accumulate in `coder_log:<issueKey>:<threadId>` (NOT read back out of the comment — a
  * user may edit the comment, and re-parsing our own rendering would let their text become
  * our state). The row keeps the last CODER_LOG_MAX_LINES lines under CODER_LOG_MAX_BYTES.
  * A new `threadId` starts a new log and a new comment: two threads must not interleave in
- * one running record.
+ * one running record — and because the pointer is keyed BY thread, alternating between two
+ * threads keeps editing two comments rather than posting a new one on every switch.
  *
  * If the stored comment id no longer resolves (the user deleted it), the log is recreated
  * and the new id stored — a 404 on the edit is a normal outcome, not a failure.
@@ -445,7 +459,7 @@ export const updateCoderLog = async ({ issueKey, threadId, lines, simulation = f
   const store = deps.store || storage;
   return withWorkspaceLock(key, "Updating the Coder log", async () => {
     let row = null;
-    try { row = await store.get(coderLogKey(key)); } catch (e) { console.warn(`[coder-workspace] ${key}: log row read failed: ${e && e.message}`); }
+    try { row = await store.get(coderLogKey(key, thread)); } catch (e) { console.warn(`[coder-workspace] ${key}: log row read failed: ${e && e.message}`); }
     const sameThread = row && typeof row === "object" && row.threadId === thread;
     const kept = clampLogLines([...(sameThread && Array.isArray(row.lines) ? row.lines : []), ...incoming]);
     const body = plainTextAdf([`${CODER_LOG_TITLE} — thread ${thread || "(none)"}`, "", ...kept].join("\n"),
@@ -467,7 +481,7 @@ export const updateCoderLog = async ({ issueKey, threadId, lines, simulation = f
       created = true;
     }
     try {
-      await store.set(coderLogKey(key), { issueKey: key, threadId: thread, commentId, lines: kept, updatedAt: new Date().toISOString() }, { ttl: { value: 90, unit: "DAYS" } });
+      await store.set(coderLogKey(key, thread), { issueKey: key, threadId: thread, commentId, lines: kept, updatedAt: new Date().toISOString() }, { ttl: { value: 90, unit: "DAYS" } });
     } catch (e) {
       // The comment is already correct; losing the pointer only costs us a second comment
       // next round. Never re-post because the bookkeeping failed.

@@ -282,6 +282,26 @@ await check("a new thread starts a new log comment", async () => {
   assert.ok(!secondBody.includes("ONLY-IN-THREAD-ONE"), "t1's lines never leak into t2's log");
 });
 
+await check("F-377: two threads ALTERNATING on one issue keep exactly two comments, each edited in place", async () => {
+  reset();
+  let n = 0;
+  respond([
+    [(p, m) => m === "POST" && p.endsWith("/comment"), () => okJson({ id: String(900 + ++n) }, 201)],
+    [(p, m) => m === "PUT", () => okJson({})],
+  ]);
+  for (const thread of ["t1", "t2", "t1", "t2", "t1"]) {
+    await ws.updateCoderLog({ issueKey: ISSUE, threadId: thread, lines: [`line for ${thread}`] });
+  }
+  assert.equal(callsTo("/comment", "POST").length, 2, "ONE comment per thread, not one per switch");
+  assert.equal(callsTo("/comment/901", "PUT").length, 2, "t1's comment is edited in place");
+  assert.equal(callsTo("/comment/902", "PUT").length, 1, "and so is t2's");
+  const t1 = ws.adfNodeText(bodyOf(callsTo("/comment/901", "PUT").at(-1)).body);
+  assert.ok(t1.includes("thread t1"), "the header names the thread the comment belongs to");
+  assert.equal(t1.includes("line for t2"), false, "the two logs never mix");
+  assert.equal((await store.get(ws.coderLogKey(ISSUE, "t1"))).commentId, "901");
+  assert.equal((await store.get(ws.coderLogKey(ISSUE, "t2"))).commentId, "902");
+});
+
 await check("a log comment the user deleted is RECREATED, not reported as a failure", async () => {
   reset();
   let created = 0;
@@ -295,7 +315,7 @@ await check("a log comment the user deleted is RECREATED, not reported as a fail
   assert.equal(r.ok, true);
   assert.equal(r.created, true);
   assert.equal(r.commentId, "901");
-  assert.equal((await store.get(ws.coderLogKey(ISSUE))).commentId, "901", "the pointer moved");
+  assert.equal((await store.get(ws.coderLogKey(ISSUE, "t1"))).commentId, "901", "the pointer moved");
 });
 
 await check("the log is bounded: last N lines, under the byte cap", async () => {
@@ -405,7 +425,8 @@ await check("the lock is released on success, on failure and on a throw", async 
 await check("the lock key is a legal KVS key even for a hostile issue key", async () => {
   const key = ws.coderWorkspaceLockKey("LZPT/9 ../../etc");
   assert.ok(!key.includes("/"), `"/" is not in the platform's key grammar: ${key}`);
-  assert.equal(ws.coderLogKey("LZPT-9"), "coder_log:LZPT-9");
+  assert.equal(ws.coderLogKey("LZPT-9", "t1"), "coder_log:LZPT-9:t1");
+  assert.ok(!ws.coderLogKey("LZPT/9", "thread/../x").includes("/"), "the thread part is made safe too");
 });
 
 /* ───────── 6. simulation ───────── */
@@ -425,7 +446,7 @@ await check("simulation writes NOTHING and says what it would have done", async 
     assert.ok(r.would && r.would.action, "every simulated answer names the action it would have taken");
   }
   assert.equal(calls().length, 0, "not one Jira call");
-  assert.equal(await store.get(ws.coderLogKey(ISSUE)), undefined, "and not one KVS row");
+  assert.equal(await store.get(ws.coderLogKey(ISSUE, "t1")), undefined, "and not one KVS row");
   assert.equal(results[1].would.links[0].globalId, ws.remoteLinkGlobalId(ISSUE, "pr", "https://x.test/1"));
 });
 

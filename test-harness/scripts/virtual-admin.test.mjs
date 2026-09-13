@@ -35,6 +35,9 @@ const eq = (a, b, m) => ok(a === b, `${m} (got ${JSON.stringify(a)}, expected ${
 const V = await import("../../src/virtual-admin.js");
 const L = await import("../../src/va-ledger.js");
 const { VA_LIMITS } = await import("../../src/shared/va-config.js");
+// The KEY BUILDERS, never retyped as string literals here: a test that spells a key
+// itself passes while the engine writes a different one (F-346's shape, in a suite).
+const K = await import("../../src/shared/va-keys.js");
 
 const AG = "job_va1";
 const reset = () => kvs.__reset();
@@ -2219,6 +2222,194 @@ reset();
   eq((await L.readCompactBackoff(kvs, AG)).active, true, "F-506.clear — (armed)");
   await L.clearCompactBackoff(kvs, AG);
   eq((await L.readCompactBackoff(kvs, AG)).active, false, "F-506.clear — a converged compaction drops the marker");
+}
+
+/* ══ F-575. THE TICK SKIPS WHILE A PURGE IS STILL SETTLING ═══════════════════
+ *
+ * The ledger owns the predicate (va-ledger.test.mjs asserts the window, the claim scan
+ * and the degraded store). THIS is the other half: the first prepare tick of a
+ * re-created agent must not sweep, must not fan out, and must not write a receipt —
+ * the tombstone is still standing, so a receipt is a ledger write the tombstone refuses,
+ * and the sweep would be a JQL search and a model call bought to produce nothing.
+ */
+reset();
+{
+  const T0 = Date.parse("2026-09-13T12:00:00.000Z");
+  const job = vaJob();
+  job.va.intake.jql = "status = Open";
+  // The re-creation: `normalizeJob` server-stamps `createdAt`, so it is HONESTLY newer
+  // than the tombstone. That is exactly what used to be mistaken for "the old turn ended".
+  job.createdAt = new Date(T0 + 5000).toISOString();
+  await L.markAgentPurged(kvs, AG, { now: T0 });
+
+  let searched = 0;
+  const pushed = [];
+  const logged = [];
+  const tickDeps = (nowMs) => ({
+    capability: CAP_ON,
+    store: kvs, now: () => nowMs,
+    jsmQueueIssues: async () => ({ ok: true, issues: [] }),
+    selfAccountId: async () => ({ ok: true, accountId: SELF }),
+    searchJql: async () => { searched++; return { issues: [issue("SUP-1")] }; },
+    pushTask: async (queueKey, body) => { pushed.push({ queueKey, body }); },
+    log: (l) => logged.push(String(l)),
+  });
+
+  // T+60 s — the tick that used to clear the tombstone and hand the ledger to the
+  // still-running pre-delete turn.
+  const early = await V.runVaTick({ job, tickId: "t-settle-1", deps: tickDeps(T0 + 60000) });
+  eq(early.reason, "purge-settling", "F-575.tick.BLOCK — the tick 60 s after the delete skips, naming the settling purge");
+  // `skipped` is an ARRAY on every arm of runVaTick and `src/va-admin.js` reads it as one
+  // (`asArray`, plus `stoppedAtGate` looking for `gate`). A boolean here would vanish.
+  eq(Array.isArray(early.skipped), true, "F-575.tick.BLOCK — …in the SHAPE the Agents tab reads, not a boolean asArray() would swallow");
+  eq(early.skipped[0].gate, "purge-settling", "F-575.tick.BLOCK — …named as a gate, so the tab shows why nothing happened");
+  eq(searched, 0, "F-575.tick.BLOCK — …having bought no JQL sweep");
+  eq(pushed.length, 0, "F-575.tick.BLOCK — …and fanned out no item task");
+  ok(Boolean(await kvs.get(K.vaPurgedKey(AG))), "F-575.tick.BLOCK — the tombstone is still standing");
+  ok(!(await L.readTick(kvs, AG, "t-settle-1", "prepare")).receipt,
+    "F-575.tick.BLOCK — and the skip is RECEIPT-FREE: a receipt is a ledger write the tombstone refuses");
+  ok(logged.some((l) => l.includes("purge still settling")),
+    `F-575.tick.BLOCK — …but it is not silent (lines: ${JSON.stringify(logged)})`);
+
+  // THE NEXT TICK, past the window: the tombstone clears and the agent works normally.
+  const later = await V.runVaTick({ job, tickId: "t-settle-2", deps: tickDeps(T0 + K.VA_PURGE_SETTLE_MS + 60000) });
+  eq(later.reason, undefined, "F-575.tick.ALLOW — the next tick is not skipped for a settling purge");
+  eq(later.ok, true, "F-575.tick.ALLOW — …it runs");
+  eq(searched, 1, "F-575.tick.ALLOW — …and sweeps");
+  ok((await kvs.get(K.vaPurgedKey(AG))) == null, "F-575.tick.ALLOW — the tombstone is cleared, one tick late instead of three days late");
+  ok(Boolean((await L.readTick(kvs, AG, "t-settle-2", "prepare")).receipt), "F-575.tick.ALLOW — …and the receipt is written again");
+}
+
+/* ══ F-571. A DELETE LANDING MID-TURN STOPS THE WRITES, AND NAMES THE ONES IT MISSED ══
+ *
+ * The window F-553 left open: between the entry tombstone read and the write seam, the
+ * dispatcher runs with live Jira/Confluence/git executors and — before this — no
+ * cancellation of any kind. The turn made real external writes for a deleted agent and
+ * then reported `skipped: agent-purged`, discarding `outcome` and `session.changes`.
+ *
+ * The fixture is the ledger row's own story: round 1 writes, the admin's delete lands
+ * BETWEEN the rounds, round 2's write is refused, and the log line names round 1's.
+ */
+reset();
+{
+  const logged = [];
+  // A dispatcher that records the TARGET, not just the action name — the real one does
+  // (src/index.js `createApi` pushes `{action, key}`), and the whole point of the log
+  // line is that an admin can see WHERE the escaped writes went.
+  const writingDispatcher = (changes) => ({ executors = {} } = {}) => async (name, args) => {
+    for (const ex of Object.values(executors)) if (ex && typeof ex.handles === "function" && ex.handles(name)) return ex.execute(name, args || {});
+    changes.push({ action: name, key: (args && args.issueKey) || "SUP-1" });
+    return { success: true };
+  };
+
+  const changes = [];
+  const attempted = [];
+  /*
+   * A two-round model. Round 1 assigns. Between the rounds the admin's delete lands —
+   * `markAgentPurged` is the first thing `purgeAgent` does, exactly as in production.
+   * Round 2 then tries a second write.
+   *
+   * `runLoop` is a stand-in, so it must honour `isCancelled` the way the REAL
+   * `runAgentLoop` does (agent-runner.js checks it at the head of every round) — and
+   * asserting that it was PASSED at all is half of what this block is for: without the
+   * token the loop would sail into round 2's model call.
+   */
+  let sawCancelToken = null;
+  const twoRounds = async ({ execute, isCancelled }) => {
+    sawCancelToken = typeof isCancelled === "function" ? isCancelled : null;
+    // ROUND 1 — a real write, before anybody has deleted anything.
+    attempted.push({ round: 1, name: "set_assignee", result: await execute("set_assignee", { issueKey: "SUP-1", accountId: "u-1" }) });
+
+    // ── the admin deletes the agent, mid-turn ──
+    await L.markAgentPurged(kvs, AG);
+
+    // The ROUND BOUNDARY half of the fix: the real loop stops here and never calls the
+    // model again. Asserted directly because a stand-in cannot prove the real loop's own
+    // `for` body, and `agent-runner.js`'s check is covered by its own suite.
+    const cancelled = sawCancelToken ? await sawCancelToken() : false;
+
+    // ROUND 2 — the WITHIN-ROUND half. Even if a round already in flight still has write
+    // calls queued behind it, each one re-reads the tombstone and refuses.
+    attempted.push({ round: 2, name: "update_fields", result: await execute("update_fields", { issueKey: "SUP-1", fields: { summary: "x" } }) });
+
+    return { endedBy: cancelled ? "cancelled" : "finish", rounds: 2, summary: "", usage: { tokens: 1 }, __cancelled: cancelled };
+  };
+
+  const d = itemDeps({
+    runLoop: twoRounds,
+    createDispatcher: writingDispatcher(changes),
+    // `session.changes` IS the run's change ledger (agent-runner.js's write brake counts
+    // exactly this array), so the session and the dispatcher must share one — which is
+    // what the real `createApi` does and what makes the landed-writes report truthful.
+    createSession: async () => ({ changes, createApi: () => ({}), recordChange: (c) => { changes.push(c); return c; } }),
+    log: (line) => logged.push(String(line)),
+    __changes: changes,
+  });
+  const r = await V.runVaItem({
+    agent: vaJob({ powers: { replyInternal: true, replyPublic: false, assign: true, editFields: true, transition: false, confluenceRead: false, confluenceWrite: false, git: false, webSearch: false, skillIds: [] } }),
+    issueKey: "SUP-1", tickId: "t-purge", deps: d,
+  });
+
+  ok(typeof sawCancelToken === "function", "F-571.token — `isCancelled` is passed into runLoop, the way the Coder passes isJobCancelled");
+  // Guarded: without the fix `isCancelled` is simply absent, and a bare call would abort
+  // the whole file on a TypeError instead of reporting the four assertions that follow.
+  eq(sawCancelToken ? await sawCancelToken() : false, true, "F-571.token — …and it answers TRUE once the tombstone is written, so the real loop would end the turn");
+
+  eq(attempted[0].result.success, true, "F-571.round1 — the write made BEFORE the delete succeeds (the fixture really did write)");
+  eq(changes.length, 1, "F-571.round1 — …and exactly one change landed");
+
+  eq(attempted[1].result.success, false, "F-571.BLOCK_round2 — the write attempted AFTER the tombstone is refused");
+  eq(attempted[1].result.code, "agent-purged", "F-571.BLOCK_round2 — …with the reason the model can act on");
+  eq(changes.length, 1, "F-571.BLOCK_round2 — …and NOTHING further reached the dispatcher");
+
+  eq(r.skipped, true, "F-571.result — the turn still reports the skip");
+  eq(r.reason, "agent-purged", "F-571.result — …with the same reason");
+  eq(r.changes, 1, "F-571.result — but it no longer DISCARDS what it did: one write is carried on the task result");
+  eq((r.landedWrites || [])[0], "set_assignee SUP-1", "F-571.result — …named by action AND key, so the queue log shows where it went");
+  ok((r.refusals || []).some((x) => x.code === "agent-purged"), "F-571.result — and the refusal is carried too");
+
+  const line = logged.find((l) => l.includes("purged mid-turn"));
+  ok(Boolean(line), `F-571.log — the escape is LOGGED loudly, not dropped on the floor (lines: ${JSON.stringify(logged)})`);
+  ok(line && line.includes("SUP-1") && line.includes("set_assignee"),
+    `F-571.log — …and the line NAMES round 1's write, which is the only record left once the ledger is gone (got ${line})`);
+
+  // RECEIPT-FREE STAYS RECEIPT-FREE. The whole of F-553 is that a purged agent's turn
+  // writes no ledger row; carrying the changes must not have re-opened that by writing an
+  // effects row "just to record it". The writers refuse anyway, so this asserts the
+  // DESIGN rather than the mechanism — an effects row here would mean somebody added a
+  // write path that bypassed the guard.
+  const effects = await L.listEffects?.(kvs, AG);
+  ok(!effects || !effects.rows || effects.rows.length === 0,
+    "F-571.receipt_free — no effects row is minted for a purged agent, even though the writes are now reported");
+}
+
+/* ══ F-571 (b). A HEALTHY TURN IS UNTOUCHED ══════════════════════════════════
+ * The cancellation reads the tombstone before every write-class action, so the cost and
+ * the risk both land on the normal path. A turn with no tombstone must still write. */
+reset();
+{
+  const changes = [];
+  const loop = async ({ execute }) => {
+    await execute("set_assignee", { issueKey: "SUP-1", accountId: "u-1" });
+    return { endedBy: "finish", rounds: 1, summary: "done", usage: { tokens: 1 } };
+  };
+  const d = itemDeps({
+    runLoop: loop,
+    createDispatcher: ({ executors = {} } = {}) => async (name, args) => {
+      for (const ex of Object.values(executors)) if (ex && typeof ex.handles === "function" && ex.handles(name)) return ex.execute(name, args || {});
+      changes.push({ action: name, key: (args && args.issueKey) || "SUP-1" });
+      return { success: true };
+    },
+    createSession: async () => ({ changes, createApi: () => ({}), recordChange: (c) => { changes.push(c); return c; } }),
+    __changes: changes,
+  });
+  const r = await V.runVaItem({
+    agent: vaJob({ powers: { replyInternal: true, replyPublic: false, assign: true, editFields: false, transition: false, confluenceRead: false, confluenceWrite: false, git: false, webSearch: false, skillIds: [] } }),
+    issueKey: "SUP-1", tickId: "t-ok", deps: d,
+  });
+  eq(r.skipped, undefined, "F-571.no_regression — with no tombstone the turn is not skipped");
+  eq(changes.length, 1, "F-571.no_regression — …and the write still lands");
+  eq((r.refusals || []).length, 0, "F-571.no_regression — …with no spurious agent-purged refusal");
 }
 
 

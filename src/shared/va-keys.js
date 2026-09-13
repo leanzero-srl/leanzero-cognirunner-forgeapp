@@ -217,6 +217,58 @@ export const vaCompactBackoffKey = (agent) =>
  * first prepare tick clears it, but ONLY when the tombstone predates the job's `createdAt`:
  * that comparison is what distinguishes a genuinely re-created job from a tick of the DELETED
  * job that is still in flight, which must not be allowed to unlock the ledger it is racing.
+ *
+ * F-575 — AND THAT COMPARISON, ON ITS OWN, PROVES THE WRONG THING. `stamped < created` proves
+ * the JOB is new. It says nothing about whether the OLD agent's TURN has finished, and those
+ * are different clocks: delete at T+0, re-create through the REST API at T+5 s (`normalizeJob`
+ * server-stamps `createdAt`, so it is honestly newer), first prepare tick clears at T+60 s,
+ * and the pre-delete turn — delivered before the delete, still inside its 120 s consumer —
+ * reaches its write seam at T+90 s and writes its rows into the LIVE agent's ledger. Every
+ * guard F-553 added passes again, because the tombstone it was refusing under is gone.
+ * See `clearPurgeTombstone` (src/va-ledger.js) for the settle test that closes it.
  */
 export const VA_PURGED_TTL = days(3);
 export const vaPurgedKey = (agent) => assertKvsKey(`va_purged:${part(agent)}`);
+
+/**
+ * F-575 — THE SETTLE WINDOW: how long after a tombstone is stamped no clear may happen.
+ *
+ * THE NUMBER LIVES HERE, NOT IN `va-config.js`, for the `VA_COMPACT_BACKOFF_TTL` reason
+ * stated above: every number in `va-config.js` is a CAP an admin can reason about and a
+ * surface renders. This is neither. It is a property of the MARKER — the horizon past
+ * which a turn that started before the marker cannot still be running — with one reader
+ * (`clearPurgeTombstone`) and no surface at all.
+ *
+ * WHY IT IS A SOUND PROOF AND NOT A GUESS. The only turn that can reach a write seam
+ * without seeing a standing tombstone is one that passed the ENTRY check BEFORE the
+ * tombstone was written; any task delivered after it refuses at entry, including every
+ * redelivery. Such a turn is bounded by the consumer's 120 s. So once the tombstone is
+ * older than the consumer budget plus slop, no pre-delete turn can still be in flight.
+ *
+ * FIVE MINUTES: the consumer's 120 s, plus queue-visibility and clock slop, rounded to
+ * the scheduler's own 5-minute tick so the cost is exactly ONE extra tick for a
+ * re-created agent rather than an arbitrary wait. Compare the alternative it replaces:
+ * three days of a re-created agent that cannot write a ledger row.
+ */
+export const VA_PURGE_SETTLE_MS = 5 * 60 * 1000;
+
+/**
+ * F-575 — THE CLAIM PREFIXES, listed ONCE.
+ *
+ * The three keys above that a RUNNING turn holds: `va_exec:` (the item turn),
+ * `va_post:` (the delivery) and `va_compact:` (the memory compaction step). The settle
+ * window is the guarantee; a bounded scan of these is the CORROBORATION, and it is the
+ * only thing that can see the one case the clock cannot — a turn that passed the entry
+ * check because its tombstone READ FAULTED (`readPurgeTombstone` fails soft and
+ * `purgedGuard` treats a fault as "write on", deliberately).
+ *
+ * They are PREFIXES, so they are not asserted — `assertKvsKey` checks a whole key and a
+ * prefix is a fragment, the same rule `vaTickPrefix` states. They live here, beside the
+ * builders that mint the keys, so the read side cannot retype what the write side built:
+ * a scan against a misspelt prefix finds nothing and reads as "no turn is running",
+ * which is the proven-negative trap this whole area exists to avoid.
+ */
+export const vaExecPrefix = (agent) => `va_exec:${part(agent)}:`;
+export const vaPostPrefix = (agent) => `va_post:${part(agent)}:`;
+export const vaCompactPrefix = (agent) => `va_compact:${part(agent)}:`;
+export const vaClaimPrefixes = (agent) => [vaExecPrefix(agent), vaPostPrefix(agent), vaCompactPrefix(agent)];

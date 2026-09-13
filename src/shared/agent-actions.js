@@ -335,11 +335,19 @@ const LEDGER_AGENT_ACTIONS = [
  * NO RAW STORAGE XHTML EITHER. `body` is plain text; the executor escapes it and wraps
  * paragraphs. A model that could post storage format could post a macro.
  *
- * `confluence_create_page` and `confluence_update_page` carry `confirm: true`: they are
- * the two actions that put a NEW document under an organisation's name, and on the
- * headless surfaces only an admin-saved rule may hold one. `confluence_add_comment` is a
- * write without `confirm`, per the 1.5 commit 4 scope -- it appends to a page somebody
- * already owns and is visible in that page's own history.
+ * ALL THREE WRITES CARRY `confirm: true` (F-472). The two page writes put a NEW document
+ * under an organisation's name; the COMMENT is outward speech under that same name, on a
+ * page whose readers are often customers, composed from issue text the agent did not
+ * write. That is exactly the shape of `add_pr_comment`, `confirm: true` since its
+ * namespace landed, and the earlier "it only appends to a page somebody else owns"
+ * reading weighed the DOCUMENT and not the SPEECH. On the headless surfaces `confirm`
+ * means "only an ADMIN-saved rule may hold this".
+ *
+ * IT DOES NOT CHANGE THE VIRTUAL ADMINISTRATOR. A VA turn is headless and never opens a
+ * consent ticket, so `confirm` is deliberately not applied to its tool list (1.5 commit
+ * 4c, src/virtual-admin.js): the comment stays under `confluenceWrite` + the
+ * `confluenceSpaces[]` allow-list, and the operator who ticked the power is the
+ * confirmation. The flag binds listeners, scheduled jobs and every other saved rule.
  */
 const CONFLUENCE_AGENT_ACTIONS = [
   {
@@ -381,7 +389,7 @@ const CONFLUENCE_AGENT_ACTIONS = [
     }, ["pageId", "version", "body"]),
   },
   {
-    id: "confluence_add_comment", namespace: "confluence", kind: "write", label: "Comment on a Confluence page", requiresProduct: "confluence",
+    id: "confluence_add_comment", namespace: "confluence", kind: "write", label: "Comment on a Confluence page", requiresProduct: "confluence", confirm: true,
     description: "Add a comment at the foot of a page. Plain text. Prefer this to editing somebody else's page when you only want to raise a point.",
     parameters: P({
       pageId: { type: "string", description: "The page id." },

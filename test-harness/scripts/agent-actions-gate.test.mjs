@@ -57,16 +57,23 @@ for (const id of CONFLUENCE_SNAPSHOT) {
   ok(r.refused.every((x) => x.reason === "missing-product:confluence"), "…and the reason names the product");
   ok(/does not have confluence/.test(agentActionRefusalText("missing-product:confluence")), "…in a sentence an admin can act on");
 }
-// The two PAGE writes need an admin-saved rule on a headless surface; the comment does not.
+// ALL THREE writes need an admin-saved rule on a headless surface (F-472): the comment is
+// outward speech under the org's name, not a lesser write than the page edits.
 {
   const r = normalizeAllowedActions(CONFLUENCE_SNAPSHOT, { products: ["jira", "confluence"], savedByRole: null });
-  eq(r.allowed, ["confluence_search", "confluence_get_page", "confluence_add_comment"], "confluence.BLOCK_page_writes_without_admin");
-  eq(r.refused.map((x) => x.id), ["confluence_create_page", "confluence_update_page"], "…and it is exactly the two page writes");
+  eq(r.allowed, ["confluence_search", "confluence_get_page"], "confluence.BLOCK_all_writes_without_admin");
+  eq(r.refused.map((x) => x.id), ["confluence_create_page", "confluence_update_page", "confluence_add_comment"],
+    "…and it is exactly the three writes, the comment included (F-472)");
+  ok(r.refused.every((x) => x.reason === "needs-admin"), "…refused for wanting an admin-saved rule");
   const all = normalizeAllowedActions(CONFLUENCE_SNAPSHOT, { products: ["jira", "confluence"], savedByRole: "admin" });
   eq(all.allowed, CONFLUENCE_SNAPSHOT, "confluence.ALLOW_admin_saved_with_the_product");
 }
 // The three writes are writes: the dispatcher's cross-namespace write ledger counts them.
-ok(hasWriteActions(["confluence_add_comment"], { products: ["jira", "confluence"] }), "confluence writes count as writes");
+// …on an ADMIN-saved rule, which since F-472 is the only rule that may hold any of them.
+ok(hasWriteActions(["confluence_add_comment"], { products: ["jira", "confluence"], savedByRole: "admin" }),
+  "confluence writes count as writes");
+ok(!hasWriteActions(["confluence_add_comment"], { products: ["jira", "confluence"] }),
+  "…and a non-admin-saved rule holds no confluence write at all to count (F-472)");
 ok(!hasWriteActions(["confluence_search", "confluence_get_page"], { products: ["jira", "confluence"] }), "confluence reads do not");
 
 /* ---------- 1.5 commit 4a — the LEDGER namespace is filled ---------- */

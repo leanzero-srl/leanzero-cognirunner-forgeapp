@@ -367,7 +367,9 @@ console.log("=== Confluence agent actions (1.5 commit 4b) ===");
   }
   eq(getAgentAction("confluence_create_page").confirm, true, "create_page is confirm:true");
   eq(getAgentAction("confluence_update_page").confirm, true, "update_page is confirm:true");
-  eq(getAgentAction("confluence_add_comment").confirm, undefined, "add_comment is a write WITHOUT confirm");
+  // F-472: the comment is outward speech under the org's name, like `add_pr_comment`.
+  eq(getAgentAction("confluence_add_comment").confirm, true, "add_comment is confirm:true (F-472)");
+  eq(getAgentAction("add_pr_comment").confirm, true, "…the same flag the other outward comment carries");
   for (const id of ids) ok(getAgentAction(id).dangerous === undefined, `${id} is not dangerous`);
   eq(getAgentAction("confluence_search").kind, "read", "search is a read");
   eq(getAgentAction("confluence_get_page").kind, "read", "get_page is a read");

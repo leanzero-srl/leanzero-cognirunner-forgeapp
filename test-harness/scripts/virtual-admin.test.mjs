@@ -560,8 +560,15 @@ reset();
   // "only an admin-saved rule may hold this". A VA turn is headless too — and it NEVER
   // opens a consent ticket, so the POWERS are the confirmation.
   ok(A.getAgentAction("confluence_create_page").confirm === true, "confluence_create_page is a confirm action");
+  // F-472 made the COMMENT a confirm action too. The VA is unchanged by that, and this is
+  // the assertion that says so: the powers table still offers it under `confluenceWrite`
+  // + `confluenceSpaces[]`, because a headless VA turn never opens a consent ticket.
+  ok(A.getAgentAction("confluence_add_comment").confirm === true, "confluence_add_comment is a confirm action (F-472)");
   const on = V.toolActionsFor(vaJob({ powers: { replyInternal: true, confluenceWrite: true, confluenceSpaces: ["ENG"] } }).va);
   ok(on.includes("confluence_create_page"), "confirm.ALLOW_powers_are_the_confirmation");
+  ok(on.includes("confluence_add_comment"), "confirm.ALLOW_the_comment_too — F-472 did not narrow the VA powers table");
+  const noSpaces = V.toolActionsFor(vaJob({ powers: { replyInternal: true, confluenceWrite: true } }).va);
+  ok(noSpaces.includes("confluence_add_comment"), "…the space allow-list bounds the write, it does not hide the tool");
   const off = V.toolActionsFor(vaJob({ powers: { replyInternal: true, confluenceRead: true } }).va);
   ok(!off.includes("confluence_create_page"), "confirm.BLOCK_not_allowed_by_the_powers");
 

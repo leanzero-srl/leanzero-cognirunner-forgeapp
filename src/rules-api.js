@@ -29,7 +29,8 @@
  *
  * ROUTING (Forge web-trigger URLs are fixed, so the resource travels in the
  * query string):
- *   GET    ?resource=events                         event catalogue
+ *   GET    ?resource=events                         event catalogue (each row carries
+ *                                                   `source` "jira"|"git" and `repos`)
  *   GET    ?resource=actions                        AI-agent action catalogue
  *   GET    ?resource=listeners[&id=]                list (slim) / one (full)
  *   POST   ?resource=listeners                      create or upsert (object or array)
@@ -181,7 +182,10 @@ const merge = (existing, patch) => {
 
 const eventCatalog = () => ({
   categories: EVENT_CATEGORIES,
-  events: JIRA_EVENTS.map((e) => ({ id: e.id, category: e.category, label: e.label, description: e.description, filters: e.filters, volume: e.volume, issueBound: e.issueBound, issueIdOnly: e.issueIdOnly, projectScoped: e.projectScoped, payloadHint: e.payloadHint })),
+  // `source` tells a client WHERE the event comes from ("jira" = a Forge product
+  // event; "git" = the app's own webhook), and `repos:true` says the listener MUST
+  // carry a filters.repos allow-list — a create/update without one is 400.
+  events: JIRA_EVENTS.map((e) => ({ id: e.id, source: e.source, category: e.category, label: e.label, description: e.description, filters: e.filters, volume: e.volume, issueBound: e.issueBound, issueIdOnly: e.issueIdOnly, projectScoped: e.projectScoped, repos: e.repos === true, payloadHint: e.payloadHint })),
 });
 
 // ── Resource handlers ────────────────────────────────────────────────────────

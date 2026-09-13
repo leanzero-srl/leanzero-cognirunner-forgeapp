@@ -485,13 +485,19 @@ await check("unsupported projectIds cannot bypass a project-key mismatch", async
   config.filters.projectIds = ["10"];
   assert.equal(matchListenerStatic(config, { eventType: UPDATE, projectKey: "LZPT", projectId: "10" }, {}).ok, false);
 });
+// A project filter must never gate an event Jira (or a git provider) does not scope
+// to a project. Repo-scoped git events carry their OWN mandatory scope instead —
+// the repos allow-list — so they are seeded with one and the delivery names it.
 for (const eventMeta of JIRA_EVENTS.filter(e => e.projectScoped === false)) await check(`global event ignores project filters in both match paths: ${eventMeta.id}`, async () => {
   reset();
-  const config = listener({ projectKeys: ["OTHER"] }, { id: "global-match", events: [eventMeta.id] });
-  assert.equal(matchListenerStatic(config, { eventType: eventMeta.id }, {}).ok, true);
+  const repoScoped = eventMeta.repos === true;
+  const filters = repoScoped ? { projectKeys: ["OTHER"], repos: ["owner/name"] } : { projectKeys: ["OTHER"] };
+  const config = listener(filters, { id: "global-match", events: [eventMeta.id], ...(repoScoped ? { mode: "agent", agent: { instructions: "x" }, functions: [] } : {}) });
+  const ctx = repoScoped ? { eventType: eventMeta.id, repoId: "owner/name" } : { eventType: eventMeta.id };
+  assert.equal(matchListenerStatic(config, ctx, {}).ok, true);
   storage.__seed("listener:global-match", config); storage.__seed("listener_index", [toIndexRow(config)]);
   await readListenerIndex(); // refresh this test container; live saves require ~35s for the 30s cache
-  await listenerTrigger({ eventType: eventMeta.id });
+  await listenerTrigger(repoScoped ? { eventType: eventMeta.id, source: "git", connectionId: "gc_1", repoId: "owner/name", actor: { login: "octocat" } } : { eventType: eventMeta.id });
   assert.equal(pushed.length, 1);
 });
 for (const [keys, projectKey, expected] of [[[], null, true], [["lzpt"], "LzPt", true], [["OTHER"], "LZPT", false], [["LZPT"], null, false]]) await check(`project shortlist/full parity ${JSON.stringify({ keys, projectKey })}`, async () => {

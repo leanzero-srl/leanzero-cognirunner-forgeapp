@@ -15,6 +15,7 @@ import path from "node:path";
 import {
   JIRA_EVENTS, EVENT_IDS, EVENT_CATEGORIES, getEvent, isKnownEvent, eventsByCategory, filtersForEvents,
   extractEventContext, changedFieldsOf, commentTextOf, adfToPlainText, trimEventPayload, buildEventPromptBlock,
+  eventLabel, eventSource, isGitEvent, GIT_EVENT_IDS, requiresRepoFilter,
 } from "../../src/shared/jira-events.js";
 
 let pass = 0; let fail = 0;
@@ -24,15 +25,68 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const manifest = readFileSync(path.join(here, "../../manifest.yml"), "utf8");
 const manifestEvents = new Set([...manifest.matchAll(/^\s+- (avi:[a-z0-9:._-]+)\s*$/gm)].map((m) => m[1]));
 
-ok(EVENT_IDS.length >= 68, `catalogue has ${EVENT_IDS.length} events (expected ≥ 68)`);
+// THE LOCKSTEP, AND ITS ONE EXEMPTION.
+// `source:"jira"` rows are Forge product events and MUST appear under a manifest
+// `trigger`. `source:"git"` rows (1.4) have no trigger and never will — they are
+// delivered by the app's own git webhook — so they are exempt from the manifest
+// half of the lockstep and are instead held to their own invariants below. This
+// exemption landed in the same commit as the git rows; without it the suite would
+// fail and the next person would delete an assertion.
+const jiraIds = EVENT_IDS.filter((id) => eventSource(id) === "jira");
+ok(jiraIds.length >= 68, `catalogue has ${jiraIds.length} Jira events (expected ≥ 68)`);
 ok(new Set(EVENT_IDS).size === EVENT_IDS.length, "no duplicate ids");
-for (const id of EVENT_IDS) ok(manifestEvents.has(id), `manifest subscribes ${id}`);
+for (const id of jiraIds) ok(manifestEvents.has(id), `manifest subscribes ${id}`);
 for (const id of manifestEvents) ok(isKnownEvent(id), `catalogue knows manifest event ${id}`);
+for (const id of GIT_EVENT_IDS) ok(!manifestEvents.has(id), `${id} is webhook-delivered, so it must NOT be a manifest trigger`);
+
+// Git rows: the invariants that replace the manifest half of the lockstep.
+const EXPECTED_GIT = [
+  "git:pull_request:opened", "git:pull_request:synchronize", "git:pull_request:closed",
+  "git:pull_request:merged", "git:pull_request_review:submitted", "git:issue_comment:created",
+  "git:push", "git:check_run:completed", "git:pipeline:completed",
+];
+ok(JSON.stringify(GIT_EVENT_IDS) === JSON.stringify(EXPECTED_GIT), `git catalogue is exactly the 9 expected ids (got ${GIT_EVENT_IDS.join(", ")})`);
+ok(EVENT_CATEGORIES.some((c) => c.id === "git" && c.hue), "the Git category exists and carries a hue");
+for (const id of GIT_EVENT_IDS) {
+  const e = getEvent(id);
+  ok(isGitEvent(id) && e.source === "git", `${id} is source:"git"`);
+  ok(e.category === "git", `${id} is in the Git category`);
+  ok(e.projectScoped === false, `${id} is not project-scoped (a repo is not a project)`);
+  ok(e.repos === true && requiresRepoFilter(id), `${id} requires a repos allow-list`);
+  ok(JSON.stringify(e.filters) === JSON.stringify(["repos"]), `${id} offers only the repos filter`);
+  ok(e.issueBound === false && e.issueIdOnly === false, `${id} carries no Jira issue by construction`);
+  ok(eventLabel(id) !== id && /\S/.test(eventLabel(id)), `eventLabel works for ${id}: "${eventLabel(id)}"`);
+  ok(e.payloadHint.includes("event.repoId"), `${id} documents event.repoId`);
+}
+ok(eventSource("avi:jira:created:issue") === "jira" && !isGitEvent("avi:jira:created:issue"), "Jira rows default to source \"jira\"");
+ok(!requiresRepoFilter("avi:jira:created:issue"), "Jira rows need no repos filter");
+ok(filtersForEvents(["git:pull_request:opened"]).includes("repos"), "git events offer the repos filter");
+ok(!filtersForEvents(["git:pull_request:opened"]).includes("projects"), "git events do not offer the project filter");
+
+// git context extraction
+const gitEv = {
+  eventType: "git:pull_request:opened", source: "git", connectionId: "gc_1", repoId: "LeanZero/CogniRunner",
+  deliveryId: "d-1", actor: { login: "Octocat" },
+  pullRequest: { number: 42, title: "t", headSha: "abc", headRef: "feat/x", baseRef: "main" },
+  issueKeys: ["LZPT-9"],
+};
+const gc = extractEventContext("git:pull_request:opened", gitEv);
+ok(gc.repoId === "leanzero/cognirunner", "repo id normalised to lower case");
+ok(gc.connectionId === "gc_1" && gc.actorLogin === "Octocat" && gc.prNumber === "42" && gc.deliveryId === "d-1", "git identity extracted");
+ok(gc.actorAccountId === null, "a git login is NOT reported as an Atlassian accountId");
+ok(gc.issueKey === "LZPT-9" && gc.projectKey === null, "advisory issue key kept; no project is inferred");
+ok(gc.entityName === "leanzero/cognirunner PR #42", `git entity name: "${gc.entityName}"`);
+ok(extractEventContext("git:push", { source: "git", repoId: "o/r" }).entityName === "o/r", "push without a PR still names the repo");
+const gitTrim = trimEventPayload({ ...gitEv, diff: "x".repeat(90000) }, 60000);
+ok(gitTrim.repoId === "LeanZero/CogniRunner" && gitTrim.pullRequest.number === 42 && !gitTrim.diff, "git payload trim keeps identity, drops the diff");
+ok(buildEventPromptBlock(["git:pull_request:opened"]).includes("event.pullRequest"), "git prompt block carries payload hints");
 const cats = new Set(EVENT_CATEGORIES.map((c) => c.id));
 for (const e of JIRA_EVENTS) {
   ok(cats.has(e.category), `${e.id} has a known category`);
   ok(e.label && e.description, `${e.id} has label + description`);
-  ok(Array.isArray(e.scopes) && e.scopes.length, `${e.id} declares scopes`);
+  // Git delivery costs no Jira scope — an empty array is the honest answer there,
+  // and only there.
+  ok(Array.isArray(e.scopes) && (e.source === "git" ? e.scopes.length === 0 : e.scopes.length > 0), `${e.id} declares scopes`);
 }
 ok(eventsByCategory().every((c) => c.events.length > 0), "every category has events");
 ok(filtersForEvents(["avi:jira:updated:issue"]).includes("changedFields"), "updated:issue offers changedFields");

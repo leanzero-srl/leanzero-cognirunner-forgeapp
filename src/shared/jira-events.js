@@ -29,9 +29,15 @@
  * The catalogue mirrors the Forge product-events reference for Jira, Jira
  * Software and Jira Service Management (scraped 2026-09-02 from
  * developer.atlassian.com/platform/forge/events-reference/{jira,jira-software,
- * jira-service-management}/). Every identifier here is ALSO listed under a
- * `trigger` module in manifest.yml — keep the two in lockstep (the offline
- * test-harness/scripts/jira-events.test.mjs asserts it).
+ * jira-service-management}/). Every identifier with `source:"jira"` is ALSO
+ * listed under a `trigger` module in manifest.yml — keep the two in lockstep (the
+ * offline test-harness/scripts/jira-events.test.mjs asserts it).
+ *
+ * Rows with `source:"git"` (1.4 "Coder") are EXEMPT from that lockstep and the
+ * test says so: they are not Forge product events, they have no trigger module,
+ * and they reach the queue through the app's own git webhook. They are in this
+ * catalogue rather than a second one so that the picker, the REST contract, the
+ * filter vocabulary and the matcher all keep exactly one source of truth.
  */
 
 export const EVENT_CATEGORIES = [
@@ -51,6 +57,12 @@ export const EVENT_CATEGORIES = [
   { id: "filter", label: "Filters", hue: "#0284c7" },
   { id: "configuration", label: "Configuration", hue: "#78716c" },
   { id: "jsm", label: "Service Management", hue: "#0f766e" },
+  // 1.4 "Coder": git events do NOT come from Jira. They arrive on the app's own
+  // webhook (git-webhook → async queue) and carry `source:"git"`. They live in
+  // THIS catalogue on purpose — a second event catalogue is the defect this repo
+  // is named for (it breaks the project filter, the picker and the REST contract
+  // all at once). The hue lives here, once, like every other category's.
+  { id: "git", label: "Git", hue: "#c026d3" },
 ];
 
 // entity: the payload property carrying the main object ("issue", "comment",
@@ -58,8 +70,16 @@ export const EVENT_CATEGORIES = [
 // directly). issueIdOnly: the payload names an issue by numeric id only (the
 // trigger resolves the key with one REST read). volume: "high" events fire on
 // every view/update — the picker warns about invocation cost.
+//
+// `source`: "jira" (a Forge product event, subscribed by a manifest `trigger`) or
+// "git" (delivered by the app's own webhook — NO manifest trigger exists, and the
+// catalogue/manifest lockstep test exempts these rows for exactly that reason).
+// `repos`: this event names a repository, and a listener on it MUST carry a
+// `filters.repos` allow-list — there is no "all repositories" listener.
 const E = (id, category, label, description, extra = {}) => ({
   id, category, label, description,
+  source: extra.source || "jira",
+  repos: extra.repos === true,
   entity: extra.entity || null,
   issueBound: extra.issueBound === true,
   issueIdOnly: extra.issueIdOnly === true,
@@ -72,6 +92,14 @@ const E = (id, category, label, description, extra = {}) => ({
 
 // Forge attachment events use fileName (Jira REST attachment responses use filename).
 const ATTACHMENT_PAYLOAD_HINT = "event.attachment {id,issueId,projectId?,fileName,mimeType,size,author}; api.context.issueKey is resolved when available";
+
+// Git rows: one helper so every one of them carries the same invariants —
+// source "git", never project-scoped (a repository is not a Jira project), a
+// REQUIRED repos allow-list, and no Jira scope for delivery.
+const G = (id, label, description, extra = {}) => E(id, "git", label, description, {
+  ...extra, source: "git", repos: true, entity: "git", projectScoped: false,
+  scopes: [], filters: ["repos"],
+});
 
 export const JIRA_EVENTS = [
   // ── Issues ──────────────────────────────────────────────────────────────
@@ -206,12 +234,57 @@ export const JIRA_EVENTS = [
   E("avi:jsm-entity:created:request-type", "jsm", "Request type created", "A JSM request type was created.", { entity: "entity", projectScoped: false, scopes: ["manage:jira-configuration"], payloadHint: "event.entityId, event.entityType ('request-type'), event.activationId" }),
   E("avi:jsm-entity:updated:request-type", "jsm", "Request type updated", "A JSM request type changed.", { entity: "entity", projectScoped: false, scopes: ["manage:jira-configuration"], payloadHint: "event.entityId, event.entityType, event.activationId" }),
   E("avi:jsm-entity:deleted:request-type", "jsm", "Request type deleted", "A JSM request type was deleted.", { entity: "entity", projectScoped: false, scopes: ["manage:jira-configuration"], payloadHint: "event.entityId, event.entityType, event.activationId" }),
+  // ── Git (source:"git" — webhook-delivered, NOT a Forge product event) ────
+  // The normalised envelope the git webhook enqueues (one shape for every provider):
+  //   { eventType, source:"git", connectionId, repoId:"owner/name", deliveryId,
+  //     actor:{login,id}, pullRequest?:{number,title,state,merged,draft,headSha,
+  //     headRef,baseRef,url,author:{login}}, review?, comment?, push?, check?,
+  //     issueKeys?:[] }
+  // `scopes: []` is honest, not an omission: delivery costs no Jira scope. What the
+  // listener DOES with the event (comment, transition) is gated by the agent action
+  // catalogue and the app's own scopes, not by the subscription.
+  G("git:pull_request:opened", "Pull request opened", "A pull request was opened.", {
+    payloadHint: "event.pullRequest {number,title,headSha,headRef,baseRef,url,author}, event.repoId, event.actor.login",
+  }),
+  G("git:pull_request:synchronize", "Pull request updated", "New commits were pushed to an open pull request (the head SHA moved).", {
+    volume: "high",
+    payloadHint: "event.pullRequest (headSha is the NEW head — review claims key on it), event.repoId, event.actor.login",
+  }),
+  G("git:pull_request:closed", "Pull request closed", "A pull request was closed without merging.", {
+    payloadHint: "event.pullRequest {number,state:'closed',merged:false}, event.repoId, event.actor.login",
+  }),
+  G("git:pull_request:merged", "Pull request merged", "A pull request was merged.", {
+    payloadHint: "event.pullRequest {number,merged:true,mergeCommitSha}, event.repoId, event.actor.login",
+  }),
+  G("git:pull_request_review:submitted", "Pull request review submitted", "A human (or a bot) submitted a review on a pull request.", {
+    payloadHint: "event.review {id,state:'approved'|'changes_requested'|'commented',body,author}, event.pullRequest, event.repoId",
+  }),
+  G("git:issue_comment:created", "Pull request comment added", "A comment was added on a pull request. Provider payloads carry issue comments on the same event; the webhook forwards only the ones attached to a PR.", {
+    volume: "high",
+    payloadHint: "event.comment {id,body,author,url}, event.pullRequest {number}, event.repoId",
+  }),
+  G("git:push", "Branch pushed", "Commits were pushed to a branch.", {
+    volume: "high",
+    payloadHint: "event.push {ref,before,after,forced,commits:[{id,message,author}]}, event.repoId, event.actor.login",
+  }),
+  G("git:check_run:completed", "Check run completed", "A GitHub check run finished (build state).", {
+    payloadHint: "event.check {name,status,conclusion,headSha,url}, event.repoId",
+  }),
+  G("git:pipeline:completed", "Pipeline completed", "A Bitbucket/GitLab pipeline finished (build state).", {
+    payloadHint: "event.check {name,status,conclusion,headSha,url}, event.repoId",
+  }),
 ];
 
 export const EVENT_IDS = JIRA_EVENTS.map((e) => e.id);
 const BY_ID = new Map(JIRA_EVENTS.map((e) => [e.id, e]));
 export const getEvent = (id) => BY_ID.get(id) || null;
 export const isKnownEvent = (id) => BY_ID.has(id);
+/** Where an event comes from: "jira" (manifest trigger) or "git" (app webhook). */
+export const eventSource = (id) => (BY_ID.get(id) || {}).source || "jira";
+export const isGitEvent = (id) => eventSource(id) === "git";
+export const GIT_EVENT_IDS = JIRA_EVENTS.filter((e) => e.source === "git").map((e) => e.id);
+/** Events that REQUIRE a `filters.repos` allow-list on the listener. */
+export const requiresRepoFilter = (id) => (BY_ID.get(id) || {}).repos === true;
 
 export const eventsByCategory = () =>
   EVENT_CATEGORIES.map((c) => ({ ...c, events: JIRA_EVENTS.filter((e) => e.category === c.id) }));
@@ -227,6 +300,7 @@ export const LISTENER_FILTERS = {
   jql: "Only when the issue matches this JQL",
   changedFields: "Only when one of these fields changed",
   commentPattern: "Only when the comment matches this regex",
+  repos: "Only these repositories (required for git events)",
 };
 
 // Union of the filters relevant to a set of events.
@@ -278,6 +352,27 @@ export const extractEventContext = (eventType, payload) => {
     selfGenerated: p.selfGenerated === true,
     entityName: null,
   };
+  if (meta.source === "git") {
+    // Git identity. `actorLogin` is deliberately NOT `actorAccountId`: a git login
+    // is not an Atlassian account, and one field for both would be a new instance
+    // of the signature defect. Same for selfGenerated (Forge's own flag) vs the
+    // ignoreSelf check that compares this login to the connection's cached whoami.
+    const pr = p.pullRequest || null;
+    out.connectionId = p.connectionId || null;
+    out.repoId = p.repoId ? String(p.repoId).trim().toLowerCase() : null;
+    out.actorLogin = (p.actor && p.actor.login) ? String(p.actor.login) : null;
+    out.prNumber = pr && pr.number != null ? num(pr.number) : null;
+    out.deliveryId = p.deliveryId ? String(p.deliveryId) : null;
+    // The webhook may have resolved Jira issue keys from the branch/PR title. The
+    // FIRST one only labels the run and keys the per-issue brake; it is advisory.
+    const keys = Array.isArray(p.issueKeys) ? p.issueKeys.filter((k) => typeof k === "string") : [];
+    out.issueKey = out.issueKey || keys[0] || null;
+    out.issueKeys = keys.slice(0, 20);
+    out.entityName = out.repoId
+      ? `${out.repoId}${out.prNumber ? ` PR #${out.prNumber}` : ""}`
+      : (meta.label || eventType);
+    return out;
+  }
   // Key prefix is a reliable project-key fallback when fields.project is absent.
   if (!out.projectKey && out.issueKey && /^[A-Z][A-Z0-9_]*-\d+$/i.test(out.issueKey)) {
     out.projectKey = out.issueKey.split("-")[0];
@@ -371,6 +466,24 @@ export const trimEventPayload = (payload, maxBytes = 60000) => {
     const json = JSON.stringify(payload);
     if (json.length <= maxBytes) return payload;
     const slim = { ...payload };
+    if (slim.source === "git") {
+      // Drop the bulk a git payload carries (diffs, commit lists, comment bodies)
+      // but keep the identity the consumer needs to re-fetch anything it wants.
+      if (slim.push && Array.isArray(slim.push.commits) && slim.push.commits.length > 20) {
+        slim.push = { ...slim.push, commits: slim.push.commits.slice(0, 20), _trimmed: true };
+      }
+      for (const k of ["diff", "files", "patch"]) if (slim[k] !== undefined) delete slim[k];
+      const jsonG = JSON.stringify(slim);
+      if (jsonG.length <= maxBytes) return slim;
+      return {
+        eventType: payload.eventType, source: "git", _trimmed: true,
+        connectionId: payload.connectionId || null, repoId: payload.repoId || null,
+        deliveryId: payload.deliveryId || null, actor: payload.actor || null,
+        pullRequest: payload.pullRequest ? { number: payload.pullRequest.number, title: String(payload.pullRequest.title || "").slice(0, 300), headSha: payload.pullRequest.headSha, baseRef: payload.pullRequest.baseRef, headRef: payload.pullRequest.headRef, url: payload.pullRequest.url } : undefined,
+        issueKeys: Array.isArray(payload.issueKeys) ? payload.issueKeys.slice(0, 20) : undefined,
+        _note: `git payload of ${json.length} bytes exceeded the ${maxBytes}-byte transport budget`,
+      };
+    }
     if (slim.issue && slim.issue.fields) {
       const f = slim.issue.fields;
       const keep = ["summary", "issuetype", "project", "status", "priority", "assignee", "reporter", "creator", "labels", "created", "updated", "resolution", "parent"];

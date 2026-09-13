@@ -385,6 +385,56 @@ export const PREMADE_CONDITIONS = [
   },
 ];
 
+/**
+ * PREMADE LISTENERS — ready-made Listener rules, offered as one-click starters.
+ *
+ * Different animal from PREMADE_VALIDATORS/PREMADE_CONDITIONS above: those are
+ * workflow rules executed by src/premade-rules.js (or by Jira's expression
+ * engine). These are *seeds for a Listener record* — the admin picks one and it
+ * is written through the normal saveListener path, so every invariant that path
+ * enforces (allowed-action gate, the required `filters.repos` for git events, the
+ * brakes, ignoreSelf) applies unchanged. Nothing here bypasses validation.
+ *
+ * The lint in test-harness/scripts/premade-parity.mjs keeps each row honest
+ * against the ONE event catalogue and the ONE agent-action catalogue: the events
+ * must exist, the actions must exist, and a row on a `repos:true` event must ship
+ * a repos placeholder so the seeded rule can actually be saved.
+ *
+ * `agentlessTaskType`: what runs when the instance has no agent configured — the
+ * deterministic PR-review engine (src/git-review.js), queued as taskType
+ * "gitreview". Same product, two engines; the row names both so nobody has to
+ * guess which one a starter uses.
+ */
+export const PREMADE_LISTENERS = [
+  {
+    key: "git-pr-review",
+    label: "Review every opened PR",
+    help: "When a pull request is opened (or new commits are pushed to it), read the diff and leave one review comment on the PR. Runs per repository — pick the repositories it may act on.",
+    events: ["git:pull_request:opened", "git:pull_request:synchronize"],
+    requiresCapability: "git",
+    // Seed shape, fed to normalizeListener. `filters.repos` is intentionally EMPTY:
+    // the picker must fill it, and saving without it is refused with the message the
+    // admin UI shows. That refusal is the feature, not a gap.
+    seed: {
+      name: "Review every opened PR",
+      description: "AI review of each opened or updated pull request.",
+      mode: "agent",
+      ignoreSelf: true,
+      filters: { repos: [] },
+      agent: {
+        allowedActions: ["get_pull_request", "add_pr_comment"],
+        maxRounds: 4,
+        instructions: "A pull request was opened or updated. Read it with get_pull_request, then post ONE comment with add_pr_comment summarising the risk you found: correctness bugs, missing error handling, secrets or credentials in the diff, and anything that widens permissions. Be specific — name the file and the line. If the change looks fine, say so in one sentence. Never post more than one comment, and never approve or request changes.",
+      },
+    },
+    agentlessTaskType: "gitreview",
+    availability: "available",
+  },
+];
+
+export const getPremadeListener = (key) =>
+  PREMADE_LISTENERS.find((r) => r.key === key) || null;
+
 export const getCatalog = (mode) =>
   mode === "condition" ? PREMADE_CONDITIONS : PREMADE_VALIDATORS;
 

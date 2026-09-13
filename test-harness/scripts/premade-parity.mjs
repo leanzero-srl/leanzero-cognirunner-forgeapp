@@ -18,7 +18,10 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { PREMADE_VALIDATORS, PREMADE_CONDITIONS } from "../../src/shared/premade-rules-catalog.js";
+import { PREMADE_VALIDATORS, PREMADE_CONDITIONS, PREMADE_LISTENERS, getPremadeListener } from "../../src/shared/premade-rules-catalog.js";
+import { isKnownEvent, requiresRepoFilter, isGitEvent } from "../../src/shared/jira-events.js";
+import { AGENT_ACTIONS } from "../../src/shared/agent-actions.js";
+import { normalizeListener } from "../../src/listeners.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const executorSrc = readFileSync(resolve(here, "../../src/premade-rules.js"), "utf8");
@@ -51,6 +54,61 @@ for (const key of executorKeys) {
   }
 }
 
+// 3. Premade LISTENERS ⇄ the ONE event catalogue + the ONE action catalogue.
+// A starter that names an event nobody delivers, an action the agent cannot call,
+// or that cannot survive saveListener's own validation is a broken button.
+const actionIds = new Set(AGENT_ACTIONS.map((a) => a.id));
+const seenListenerKeys = new Set();
+for (const row of PREMADE_LISTENERS) {
+  const where = `Premade listener "${row.key}"`;
+  if (seenListenerKeys.has(row.key)) problems.push(`${where} is declared twice`);
+  seenListenerKeys.add(row.key);
+  if (catalogKeys.has(row.key)) problems.push(`${where} collides with a workflow premade rule key`);
+  if (getPremadeListener(row.key) !== row) problems.push(`${where} is not findable by key`);
+  if (!row.label || !row.help) problems.push(`${where} has no label/help`);
+  if (!Array.isArray(row.events) || !row.events.length) problems.push(`${where} names no events`);
+  for (const id of row.events || []) {
+    if (!isKnownEvent(id)) problems.push(`${where} names "${id}", which is not in the event catalogue`);
+  }
+  const needsRepos = (row.events || []).some(requiresRepoFilter);
+  const seed = row.seed || {};
+  const seedRepos = (seed.filters || {}).repos;
+  if (needsRepos && !Array.isArray(seedRepos)) {
+    problems.push(`${where} listens to a repo-scoped event but its seed has no filters.repos array for the picker to fill`);
+  }
+  if ((row.events || []).some(isGitEvent) && row.requiresCapability !== "git") {
+    problems.push(`${where} uses git events but does not declare requiresCapability "git"`);
+  }
+  for (const a of (seed.agent || {}).allowedActions || []) {
+    if (!actionIds.has(a)) problems.push(`${where} allows "${a}", which is not in the agent-action catalogue`);
+  }
+  if (seed.mode === "agent" && !String((seed.agent || {}).instructions || "").trim()) {
+    problems.push(`${where} is an agent starter with no instructions`);
+  }
+  if (row.agentlessTaskType && row.agentlessTaskType !== "gitreview") {
+    problems.push(`${where} names an unknown agent-less task type "${row.agentlessTaskType}"`);
+  }
+  // The seed must survive the SAME validation the REST API and the admin UI use —
+  // minus the repos the picker supplies, which we stand in for here.
+  try {
+    const filled = { ...seed, events: row.events, filters: { ...(seed.filters || {}), ...(needsRepos ? { repos: ["owner/name"] } : {}) } };
+    const norm = normalizeListener(filled, { gate: { capability: true, savedByRole: "admin" } });
+    if (norm.mode !== (seed.mode || "script")) problems.push(`${where} seed did not normalise to its declared mode`);
+    const want = ((seed.agent || {}).allowedActions || []).slice().sort().join();
+    if (seed.mode === "agent" && norm.agent.allowedActions.slice().sort().join() !== want) {
+      problems.push(`${where} seed actions did not survive normalizeListener (got ${norm.agent.allowedActions.join(", ") || "none"})`);
+    }
+  } catch (e) {
+    problems.push(`${where} seed is REFUSED by normalizeListener: ${e.message}`);
+  }
+  // …and without the picker's repos it must be refused, loudly.
+  if (needsRepos) {
+    let refused = false;
+    try { normalizeListener({ ...seed, events: row.events }, { gate: { capability: true, savedByRole: "admin" } }); } catch { refused = true; }
+    if (!refused) problems.push(`${where} can be saved with NO repos allow-list — a git listener must never match every repository`);
+  }
+}
+
 const validatorCount = PREMADE_VALIDATORS.filter((r) => r.availability !== "unavailable").length;
 const conditionCount = PREMADE_CONDITIONS.filter((r) => r.availability !== "unavailable").length;
 const unavailableCount = allCatalog.length - availableKeys.size;
@@ -63,5 +121,6 @@ if (problems.length) {
 
 console.log(
   `✓ Premade-rule parity OK — ${validatorCount} validators + ${conditionCount} conditions wired ` +
-  `(${executorKeys.size} executor branches; ${unavailableCount} catalog rules marked unavailable).`,
+  `(${executorKeys.size} executor branches; ${unavailableCount} catalog rules marked unavailable) ` +
+  `+ ${PREMADE_LISTENERS.length} premade listener(s) checked against the event + action catalogues.`,
 );

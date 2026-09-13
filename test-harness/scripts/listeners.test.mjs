@@ -15,7 +15,7 @@ import forgeApi, { pushed } from "../lib/mock-forge-api.mjs";
 import {
   normalizeListener, normalizeStep, matchListenerStatic, toIndexRow, listenerTrigger,
   LISTENER_INDEX_KEY, LISTENER_PREFIX, saveListener, listListeners, getListener, deleteListener, setListenerEnabled,
-  BRAKE_MAX_PER_LISTENER,
+  BRAKE_MAX_PER_LISTENER, matchesListenerRepos, sameGitActor, isGitSelfEvent, setConnectionIdentityResolver,
 } from "../../src/listeners.js";
 import { normalizeJob, planTick, saveJob, listJobs, setJobEnabled, previewSchedule } from "../../src/scheduled-jobs.js";
 import { normalizeAllowedActions, toolDefinitionsFor } from "../../src/shared/agent-actions.js";
@@ -153,6 +153,38 @@ storage.__seed(listenerBrakeKey, BRAKE_MAX_PER_LISTENER);
 pushed.length = 0;
 await listenerTrigger(rtEvent(), {});
 ok(pushed.length === 1 && pushed[0].body.params.listenerId === lProjFilter.id, "per-listener brake stops the braked listener only — the cost guard applies without an issue");
+// ── trigger: a GIT delivery (webhook → trigger → queue), repos + ignoreSelf ───
+// Same trigger, different door: git events reach listenerTrigger from the app's own
+// webhook, not from a manifest trigger. The repos allow-list is the ONLY scope they
+// have, and ignoreSelf compares the actor login to the connection's cached whoami.
+storage.__reset(); forgeApi.__reset(); pushed.length = 0;
+const gitEvent = (over = {}) => ({
+  eventType: "git:pull_request:opened", source: "git", connectionId: "gc_1",
+  repoId: "LeanZero/CogniRunner", deliveryId: "d-9", actor: { login: "octocat" },
+  pullRequest: { number: 7, title: "Add a thing", headSha: "abc" }, ...over,
+});
+const gitL = await saveListener({ name: "PR review", events: ["git:pull_request:opened"], mode: "agent", agent: { instructions: "review", allowedActions: [] }, filters: { repos: ["leanzero/cognirunner"] } }, { accountId: "u" });
+setConnectionIdentityResolver(async () => ({ login: "CogniRunner[bot]" }));
+await listenerTrigger(gitEvent(), {});
+ok(pushed.length === 1 && pushed[0].body.params.listenerId === gitL.id, "a git delivery for an allow-listed repo enqueues a run");
+ok(pushed[0].body.params.ctx.repoId === "leanzero/cognirunner" && pushed[0].body.params.ctx.prNumber === "7" && pushed[0].body.params.ctx.actorLogin === "octocat", "queued ctx carries the git identity");
+ok(forgeApi.__calls.length === 0, "a git delivery costs the trigger zero Jira REST calls");
+pushed.length = 0;
+await listenerTrigger(gitEvent({ repoId: "someone/else" }), {});
+ok(pushed.length === 0, "a delivery from a repo outside the allow-list is dropped before any full read");
+pushed.length = 0;
+await listenerTrigger(gitEvent({ actor: { login: "CogniRunner[bot]" } }), {});
+ok(pushed.length === 0, "ignoreSelf: our own bot's delivery never re-enters the queue");
+pushed.length = 0;
+await listenerTrigger(gitEvent({ actor: { login: "CogniRunner[bot]" } }), {});
+ok(pushed.length === 0, "…and stays dropped on redelivery");
+const selfOff = await saveListener({ ...(await getListener(gitL.id)), ignoreSelf: false }, { accountId: "u" });
+pushed.length = 0;
+await listenerTrigger(gitEvent({ actor: { login: "CogniRunner[bot]" } }), {});
+ok(pushed.length === 1 && pushed[0].body.params.listenerId === selfOff.id, "ignoreSelf:false lets the bot's own delivery through (opt-out is real)");
+ok(!(await storage.get("event_sample:git:pull_request:opened")), "no event sample is stored for a git delivery (redactSample only knows Jira payloads)");
+setConnectionIdentityResolver(null);
+
 // F-010: the 25-candidate cap must SAY when it bites — it drops the TAIL of an
 // append-ordered index, i.e. the listener someone just saved. Seed 26 slim rows with no
 // `listener:{id}` records (getListener returns null and the loop skips them; the warning is
@@ -215,6 +247,33 @@ ok(en.enabled === true && typeof en.stats.nextRunAt === "string" && (await stora
 const pv = previewSchedule({ cron: "0 9 * * 1-5", timeZone: "Europe/Zurich", count: 3 });
 ok(pv.ok && pv.runs.length === 3 && pv.description === "Weekdays at 09:00", "preview");
 ok(!previewSchedule({ cron: "bad" }).ok, "preview invalid");
+
+// ── git events: repos filter, matching, ignoreSelf ───────────────────────────
+const gitSeed = (over = {}) => ({ name: "PR review", events: ["git:pull_request:opened"], mode: "agent", agent: { instructions: "review it", allowedActions: [] }, ...over });
+throws(() => normalizeListener(gitSeed()), /filters\.repos is required for git events/, "a git listener without a repos allow-list is refused");
+const gl = normalizeListener(gitSeed({ filters: { repos: [" LeanZero/CogniRunner ", "leanzero/cognirunner", "Other/Repo"] } }));
+ok(JSON.stringify(gl.filters.repos) === JSON.stringify(["leanzero/cognirunner", "other/repo"]), "repo ids trimmed, lower-cased, deduped");
+ok(JSON.stringify(toIndexRow(gl).repos) === JSON.stringify(gl.filters.repos), "the slim index row carries repos so the trigger can pre-filter");
+ok(normalizeListener({ name: "n", events: ["avi:jira:created:issue"], functions: [{ code: "1" }] }).filters.repos.length === 0, "a Jira listener needs no repos and gets an empty list");
+
+const gctx = (over = {}) => ({ eventType: "git:pull_request:opened", repoId: "leanzero/cognirunner", connectionId: "gc_1", actorLogin: "octocat", issueKey: null, ...over });
+ok(matchListenerStatic(gl, gctx(), {}).ok, "git listener matches its own repo");
+ok(!matchListenerStatic(gl, gctx({ repoId: "someone/else" }), {}).ok, "a delivery from another repo does not match");
+ok(matchListenerStatic(gl, gctx({ repoId: "LeanZero/CogniRunner" }), {}).ok, "repo matching is case-insensitive");
+ok(!matchListenerStatic({ ...gl, filters: { ...gl.filters, repos: [] } }, gctx(), {}).ok, "a legacy git row with NO repos matches nothing (never everything)");
+ok(!matchesListenerRepos([], gctx()) && !matchesListenerRepos(["a/b"], gctx({ repoId: null })), "empty allow-list / unknown repo never match");
+// Project filters must not apply to a git event: the repo IS the scope.
+ok(matchListenerStatic({ ...gl, filters: { ...gl.filters, projectKeys: ["LZPT"] } }, gctx({ projectKey: null }), {}).ok, "a project filter does not block a git event");
+
+ok(sameGitActor("Octocat", "octocat") && !sameGitActor("a", "b") && !sameGitActor("", "") && !sameGitActor(null, "x"), "git actor comparison is case-insensitive and never matches an empty login");
+setConnectionIdentityResolver(async (id) => (id === "gc_1" ? { login: "CogniRunner[bot]" } : null));
+ok(await isGitSelfEvent(gctx({ actorLogin: "cognirunner[bot]" })), "ignoreSelf: our own bot's delivery is self");
+ok(!(await isGitSelfEvent(gctx({ actorLogin: "octocat" }))), "ignoreSelf: a human's delivery is not self");
+ok(!(await isGitSelfEvent(gctx({ connectionId: "gc_missing", actorLogin: "cognirunner[bot]" }))), "unknown connection: no identity, not self");
+ok(!(await isGitSelfEvent({ eventType: "avi:jira:created:issue", actorLogin: "x", connectionId: "gc_1" })), "the git self-check never fires for a Jira event (selfGenerated is that one's flag)");
+setConnectionIdentityResolver(async () => { throw new Error("kvs down"); });
+ok(!(await isGitSelfEvent(gctx({ actorLogin: "cognirunner[bot]" }))), "identity lookup failure FAILS OPEN — the delivery runs, the brakes still cap a loop");
+setConnectionIdentityResolver(null);
 
 // ── agent actions ────────────────────────────────────────────────────────────
 ok(JSON.stringify(normalizeAllowedActions(["finish", "get_issue", "get_issue", "zzz"])) === JSON.stringify(["get_issue"]), "finish is implicit, dupes/unknown dropped");

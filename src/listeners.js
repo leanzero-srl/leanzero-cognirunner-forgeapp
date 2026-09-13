@@ -21,6 +21,7 @@
  *
  * Flow:
  *   manifest `trigger` modules (every Jira / Jira Software / JSM event)
+ *   — or, for `source:"git"` events, the app's git webhook →
  *     → listenerTrigger(event)            25s platform budget: match + enqueue only
  *     → async-ai-queue  taskType "listener"
  *     → executeListenerTask(params)        120s consumer budget: filters that need
@@ -36,7 +37,7 @@ import { kvs as storage } from "@forge/kvs";
 import api, { route } from "@forge/api";
 import {
   isKnownEvent, getEvent, eventLabel, extractEventContext, changedFieldsOf, commentTextOf,
-  trimEventPayload, adfToPlainText,
+  trimEventPayload, adfToPlainText, isGitEvent, requiresRepoFilter,
 } from "./shared/jira-events.js";
 import { assertAllowedActions, DEFAULT_AGENT_ACTIONS, DEFAULT_AGENT_ROUNDS, MAX_AGENT_ROUNDS } from "./shared/agent-actions.js";
 import { redosRisk } from "./shared/regex-safety.js";
@@ -110,7 +111,18 @@ export const normalizeListener = (input = {}, { existing = null, accountId = nul
     jql: clampStr(f.jql, 2000).trim().replace(/\s+ORDER\s+BY\s+[\s\S]*$/i, "").trim(),
     changedFields: uniqStrings(f.changedFields, 50),
     commentPattern: clampStr(f.commentPattern, 300),
+    // Repository allow-list for git events. Same normalisation as
+    // git-connections.normalizeRepoId ("owner/name", trimmed, lower-cased) — see
+    // the FINDINGS ledger row asking for one shared home for that one line.
+    repos: uniqStrings(f.repos, 50, (r) => r.toLowerCase()),
   };
+  // There is NO "all repositories" listener. A git event names a repo, the app
+  // may be connected to hundreds, and a listener that fired on every one of them
+  // would be a cost and blast-radius surprise, not a convenience.
+  const gitEvents = events.filter(requiresRepoFilter);
+  if (gitEvents.length && !filters.repos.length) {
+    throw new Error(`filters.repos is required for git events (${gitEvents.join(", ")}): list the repositories ("owner/name") this listener may run for`);
+  }
   if (filters.commentPattern) {
     const risk = redosRisk(filters.commentPattern);
     if (risk) throw new Error(`filters.commentPattern is unsafe: ${risk}`);
@@ -179,6 +191,8 @@ export const normalizeStep = (fn = {}, i = 0) => {
 export const toIndexRow = (full) => ({
   id: full.id, name: full.name, enabled: full.enabled !== false, events: full.events,
   projectKeys: (full.filters && full.filters.projectKeys) || [], mode: full.mode,
+  // The trigger pre-filters git deliveries on the slim row, before any full read.
+  repos: (full.filters && full.filters.repos) || [],
   hasAiCondition: Boolean(full.aiCondition), simulationMode: full.simulationMode === true,
   createdBy: full.createdBy || null, createdAt: full.createdAt, updatedAt: full.updatedAt,
 });
@@ -262,6 +276,20 @@ export const matchesListenerProject = (projectKeys, ctx) => {
 };
 
 /**
+ * Repository allow-list for git events. Project filters do NOT apply to a git
+ * event (a repository is not a Jira project — `projectScoped:false` in the
+ * catalogue already makes matchesListenerProject pass), so THIS is the only
+ * scoping a git listener has, and an empty list matches NOTHING (save-time
+ * validation refuses it; a legacy row without one must not fire on everything).
+ */
+export const matchesListenerRepos = (repos, ctx) => {
+  const want = Array.isArray(repos) ? repos.map((r) => String(r).trim().toLowerCase()) : [];
+  if (!want.length) return false;
+  const have = ctx.repoId ? String(ctx.repoId).trim().toLowerCase() : null;
+  return Boolean(have && want.includes(have));
+};
+
+/**
  * Static filters that need no I/O. Returns { ok:true } or { ok:false, reason }.
  * `ctx` is extractEventContext(); `event` the raw payload.
  */
@@ -272,6 +300,7 @@ export const matchListenerStatic = (listener, ctx, event) => {
   const f = listener.filters || {};
   const meta = getEvent(ctx.eventType) || {};
   if (!matchesListenerProject(f.projectKeys, ctx)) return { ok: false, reason: `project ${ctx.projectKey || ctx.projectId || "(unknown)"} not in filter` };
+  if (meta.repos === true && !matchesListenerRepos(f.repos, ctx)) return { ok: false, reason: `repository ${ctx.repoId || "(unknown)"} not in the listener's repos filter` };
   if (f.issueTypes && f.issueTypes.length && meta.issueBound) {
     const want = f.issueTypes.map((t) => String(t).toLowerCase());
     const haveName = ctx.issueTypeName ? String(ctx.issueTypeName).toLowerCase() : null;
@@ -290,6 +319,56 @@ export const matchListenerStatic = (listener, ctx, event) => {
     if (!re.test(text)) return { ok: false, reason: "comment does not match the pattern" };
   }
   return { ok: true };
+};
+
+// ── ignoreSelf for git events ────────────────────────────────────────────────
+//
+// Forge's `selfGenerated` flag (matchListenerStatic above) answers "did OUR app
+// cause this Jira event". A git provider sends no such flag, so the same question
+// is answered differently: compare the delivery's actor login to the login the
+// CONNECTION's credential reported at whoami (cached on the connection row as
+// `login`). The two self-detections keep separate names on purpose — one field for
+// both would be exactly the "N copies of one rule" defect (FRAME 1.4 §commit 5).
+//
+// Injected, never statically imported: git-connections.js pulls @forge/kvs and the
+// provider layer at module load, and this file is on the hottest path in the app
+// (every product event). The default resolver lazy-imports it, the same way index.js
+// is reached through idx().
+let _identityResolver = null;
+/** Test/DI seam: setConnectionIdentityResolver(async (connId) => ({ login })). */
+export const setConnectionIdentityResolver = (fn) => { _identityResolver = typeof fn === "function" ? fn : null; };
+const defaultConnectionIdentity = async (connId) => {
+  const gc = await import("./git-connections.js");
+  const row = await gc.getConnection(connId);
+  return row ? { login: row.login || null } : null;
+};
+export const getConnectionIdentity = (connId) => (_identityResolver || defaultConnectionIdentity)(connId);
+
+/** Pure: are these two git logins the same actor? (provider logins are case-insensitive) */
+export const sameGitActor = (a, b) => {
+  const x = a == null ? "" : String(a).trim().toLowerCase();
+  const y = b == null ? "" : String(b).trim().toLowerCase();
+  return Boolean(x && y && x === y);
+};
+
+/**
+ * True when this git delivery was caused by the connection's OWN credential — the
+ * loop this surface fears most (our comment on a PR re-delivering as a PR comment
+ * event that makes us comment again).
+ *
+ * FAILS OPEN on a lookup error: dropping real deliveries because a storage read
+ * blipped is silent data loss, and the per-issue / per-listener brakes still cap a
+ * loop at 30 / 120 per 5 minutes. Say it in the log when it happens.
+ */
+export const isGitSelfEvent = async (ctx) => {
+  if (!ctx || !isGitEvent(ctx.eventType) || !ctx.actorLogin || !ctx.connectionId) return false;
+  try {
+    const who = await getConnectionIdentity(ctx.connectionId);
+    return sameGitActor(ctx.actorLogin, who && who.login);
+  } catch (e) {
+    console.warn("[listener] git ignoreSelf lookup failed (event NOT dropped; brakes still apply):", e && e.message);
+    return false;
+  }
 };
 
 const jqlMatchesIssue = async (issueKey, jql) => {
@@ -467,13 +546,19 @@ export async function listenerTrigger(event, context) {
     try { ctx.projectKey = await resolveProjectKey(ctx.projectId); } catch (e) { console.warn("[listener] project resolve failed:", e && e.message); }
   }
   // Pre-filter on the slim index rows before paying for full reads.
-  const matched = candidates.filter((r) => matchesListenerProject(r.projectKeys, ctx));
+  const gitDelivery = isGitEvent(eventType);
+  const matched = candidates.filter((r) => (gitDelivery
+    ? matchesListenerRepos(r.repos, ctx)
+    : matchesListenerProject(r.projectKeys, ctx)));
   // The editor's "last real payload" is captured ONLY for an event some enabled
   // listener actually accepts. Capturing before this filter published one project's
   // issue content (summary, custom fields, people) to every editor — including those
   // scoped to a different project — through getEventSample / ?resource=samples.
   // Throttled to once per 15 min per event type per warm container.
-  if (matched.length) await captureSample(eventType, event);
+  // Samples are Jira-payload-shaped and redactSample() only knows Jira content
+  // zones; a git payload (PR titles, review bodies, diffs) would be stored largely
+  // unredacted. Git events get no sample until the redactor learns their shape.
+  if (matched.length && !gitDelivery) await captureSample(eventType, event);
   const shortlisted = matched.slice(0, MAX_CANDIDATES_PER_EVENT);
   // Say it out loud when the cap bites: saveListener APPENDS to the index, so the rows
   // this slice drops are the NEWEST ones — the listener someone just saved and is testing
@@ -488,6 +573,10 @@ export async function listenerTrigger(event, context) {
     let full;
     try { full = await getListener(row.id); } catch { full = null; }
     if (!full) continue;
+    if (gitDelivery && full.ignoreSelf !== false && await isGitSelfEvent(ctx)) {
+      console.log(`[listener] ${eventType}: "${full.name}" (${full.id}) skipped — the actor is the connection's own identity (ignoreSelf)`);
+      continue;
+    }
     const st = matchListenerStatic(full, ctx, event);
     if (!st.ok) { console.log(`[listener] ${eventType}: "${full.name}" (${full.id}) skipped — ${st.reason}`); continue; }
     const jql = full.filters && full.filters.jql;

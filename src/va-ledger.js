@@ -1054,6 +1054,13 @@ export const VA_PURGE_ITEM_BUDGET = 200;
  * `va_tick:*` and `va_effect:*` are NOT swept: they are prefix-scanned rows with their
  * own 7 and 30 day TTLs, and a bounded `query()` inside a delete would trade a certain
  * cost for rows that expire anyway.
+ *
+ * `va_compact_backoff:{agent}` IS swept (F-512), even though it carries a 6 h TTL, because
+ * unlike the tick and effect rows its key is the AGENT ID ALONE and an agent id can come
+ * BACK: `normalizeJob` accepts a caller-supplied `src.id`, which is the import/restore
+ * path, so a job re-created with a dead agent's id inside the window would inherit its
+ * backoff and answer its first ticks `compaction-backoff` for a provider failure that
+ * never happened to it. A TTL bounds an orphan; it does not stop an inheritance.
  */
 export const purgeAgent = async (store, agent, { itemBudget = VA_PURGE_ITEM_BUDGET } = {}) => {
   const failures = [];
@@ -1076,6 +1083,7 @@ export const purgeAgent = async (store, agent, { itemBudget = VA_PURGE_ITEM_BUDG
   await drop("index", vaIndexKey(agent));
   await drop("health", vaHealthKey(agent));
   await drop("memory", vaMemoryKey(agent));
+  await drop("compact_backoff", vaCompactBackoffKey(agent));
   let items = 0;
   const budget = Math.max(0, Math.trunc(itemBudget));
   for (const key of ids.slice(0, budget)) {

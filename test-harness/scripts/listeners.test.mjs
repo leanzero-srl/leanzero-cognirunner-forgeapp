@@ -16,6 +16,8 @@ import {
   normalizeListener, normalizeStep, matchListenerStatic, toIndexRow, listenerTrigger,
   LISTENER_INDEX_KEY, LISTENER_PREFIX, saveListener, listListeners, getListener, deleteListener, setListenerEnabled,
   BRAKE_MAX_PER_LISTENER, matchesListenerRepos, sameGitActor, isGitSelfEvent, setConnectionIdentityResolver,
+  normalizeSavedByRole, mergeGitProperty, gitPropertyEntry, writeGitIssueProperty, dispatchGitEvent,
+  GIT_PROPERTY_KEY, GIT_PROPERTY_MAX_REPOS, GIT_PROPERTY_MAX_BYTES,
 } from "../../src/listeners.js";
 import { normalizeJob, planTick, saveJob, listJobs, setJobEnabled, previewSchedule } from "../../src/scheduled-jobs.js";
 import { normalizeAllowedActions, toolDefinitionsFor } from "../../src/shared/agent-actions.js";
@@ -273,6 +275,116 @@ ok(!(await isGitSelfEvent(gctx({ connectionId: "gc_missing", actorLogin: "cognir
 ok(!(await isGitSelfEvent({ eventType: "avi:jira:created:issue", actorLogin: "x", connectionId: "gc_1" })), "the git self-check never fires for a Jira event (selfGenerated is that one's flag)");
 setConnectionIdentityResolver(async () => { throw new Error("kvs down"); });
 ok(!(await isGitSelfEvent(gctx({ actorLogin: "cognirunner[bot]" }))), "identity lookup failure FAILS OPEN — the delivery runs, the brakes still cap a loop");
+setConnectionIdentityResolver(null);
+
+
+// ── 1.4 commit 5c: the git-event consumer ────────────────────────────────────
+// savedByRole, the advisory cognirunner.git property, agentless dispatch.
+
+// savedByRole: least privilege by DEFAULT — a caller that passes no role gets "editor",
+// and only an admin save can arm a PR verdict action.
+ok(normalizeSavedByRole(undefined) === "editor" && normalizeSavedByRole("nonsense") === "editor" && normalizeSavedByRole("admin") === "admin",
+  "savedByRole normalises to editor unless the saver is an admin");
+const base5c = { name: "PR", events: ["git:pull_request:opened"], mode: "agent", agent: { instructions: "go", allowedActions: [] }, filters: { repos: ["o/r"] } };
+ok(normalizeListener(base5c).savedByRole === "editor", "a save with no role is recorded as editor (the REST API's case)");
+ok(normalizeListener(base5c, { savedByRole: "admin" }).savedByRole === "admin", "an admin save is recorded as admin");
+ok(normalizeListener({ ...base5c, gitReview: { allowVerdictActions: true } }).gitReview.allowVerdictActions === false,
+  "an EDITOR cannot arm allowVerdictActions — stored false, never honoured");
+ok(normalizeListener({ ...base5c, gitReview: { allowVerdictActions: true } }, { savedByRole: "admin" }).gitReview.allowVerdictActions === true,
+  "an ADMIN can arm allowVerdictActions");
+ok(normalizeListener({ ...base5c, gitReview: { allowVerdictActions: true }, savedByRole: "admin" }).gitReview.allowVerdictActions === false,
+  "savedByRole in the BODY is ignored — the role comes from the resolver, never from the payload");
+ok(normalizeListener({ ...base5c, agentlessTaskType: "rm -rf" }).agentlessTaskType === null
+  && normalizeListener({ ...base5c, agentlessTaskType: "gitreview" }).agentlessTaskType === "gitreview",
+  "agentlessTaskType accepts only the one engine id that exists");
+ok(normalizeJob({ name: "j", schedule: { cron: "0 9 * * *" }, functions: [{ code: "1" }] }).savedByRole === "editor"
+  && normalizeJob({ name: "j", schedule: { cron: "0 9 * * *" }, functions: [{ code: "1" }] }, { savedByRole: "admin" }).savedByRole === "admin",
+  "a scheduled job records the saver's role the same way, from the same normaliser");
+
+// The advisory property: merge per repo, bounded.
+const pEntry = gitPropertyEntry({ pullRequest: { number: 7, state: "open", headSha: "abc" } }, { repoId: "o/r", eventType: "git:pull_request:opened" });
+ok(pEntry.repoId === "o/r" && pEntry.pr.number === 7 && pEntry.pr.headSha === "abc", "the entry carries the PR identity");
+ok(gitPropertyEntry({}, { repoId: "o/r", eventType: "git:push" }) === null, "a delivery with no PR and no build writes nothing");
+ok(gitPropertyEntry({ pullRequest: { number: 7 } }, { repoId: null, eventType: "git:pull_request:opened" }) === null, "no repo, no property");
+ok(gitPropertyEntry({ pullRequest: { number: 7 }, review: { state: "APPROVED" } }, { repoId: "o/r", eventType: "git:pull_request_review:submitted" }).pr.approved === true,
+  "an approved review sets pr.approved");
+ok(gitPropertyEntry({ check: { conclusion: "failure", headSha: "zz" } }, { repoId: "o/r", eventType: "git:check_run:completed" }).pr.build === "failure",
+  "a completed check sets pr.build");
+ok(gitPropertyEntry({ pullRequest: { number: 7 } }, { repoId: "o/r", eventType: "git:pull_request:merged" }).pr.merged === true,
+  "the merged event is merged even when the payload omits the flag");
+const merged1 = mergeGitProperty(null, pEntry, "2026-01-01T00:00:00.000Z");
+ok(merged1.version === 1 && merged1.repos["o/r"].pr.number === 7, "a first write creates the repo entry");
+const merged2 = mergeGitProperty(merged1, { repoId: "o/r", pr: { build: "success" } }, "2026-01-02T00:00:00.000Z");
+ok(merged2.repos["o/r"].pr.number === 7 && merged2.repos["o/r"].pr.build === "success" && Object.keys(merged2.repos).length === 1,
+  "a second write MERGES into the same repo: the build lands without losing the PR");
+let manyRepos = null;
+for (let i = 0; i < GIT_PROPERTY_MAX_REPOS + 3; i++) manyRepos = mergeGitProperty(manyRepos, { repoId: `o/r${i}`, pr: { number: i } }, `2026-01-0${i + 1}T00:00:00.000Z`);
+ok(Object.keys(manyRepos.repos).length === GIT_PROPERTY_MAX_REPOS && manyRepos.repos["o/r7"] && !manyRepos.repos["o/r0"],
+  `the property keeps the newest ${GIT_PROPERTY_MAX_REPOS} repositories and drops the oldest`);
+ok(Buffer.byteLength(JSON.stringify(manyRepos), "utf8") <= GIT_PROPERTY_MAX_BYTES, "the property stays inside its byte bound");
+ok(mergeGitProperty({ repos: "not an object" }, pEntry).repos["o/r"], "a corrupt previous value is replaced, never thrown on");
+const hostile = mergeGitProperty(null, { repoId: "o/r", pr: { number: 1, state: "x".repeat(500), headSha: "y".repeat(500), extra: "dropped" } });
+ok(hostile.repos["o/r"].pr.state.length === 24 && hostile.repos["o/r"].pr.headSha.length === 64 && hostile.repos["o/r"].pr.extra === undefined,
+  "every field is clamped and unknown keys never reach the property");
+
+// The property WRITE: reads the previous value, PUTs the merge, best-effort on failure.
+storage.__reset(); forgeApi.__reset();
+forgeApi.__respond((path, opts) => {
+  if (path.includes(`/properties/${GIT_PROPERTY_KEY}`) && (!opts.method || opts.method === "GET")) return forgeApi.__response(200, { key: GIT_PROPERTY_KEY, value: { version: 1, repos: { "other/repo": { repoId: "other/repo", pr: { number: 1 }, updatedAt: "2025-01-01T00:00:00.000Z" } } } });
+  return forgeApi.__response(200, {});
+});
+const wrote = await writeGitIssueProperty(
+  { eventType: "git:pull_request:opened", pullRequest: { number: 7, headSha: "abc" } },
+  { eventType: "git:pull_request:opened", repoId: "o/r", issueKeys: ["LZPT-1", "LZPT-2", "not a key"], issueKey: "LZPT-1" },
+);
+const puts = forgeApi.__calls.filter((c) => c.opts && c.opts.method === "PUT");
+ok(wrote.written === 2 && puts.length === 2, "the property is written on every valid issue key the delivery names, and only those");
+const put0 = JSON.parse(puts[0].opts.body);
+ok(put0.repos["o/r"].pr.number === 7 && put0.repos["other/repo"], "the write MERGES with what was already on the issue — another repo's state survives");
+forgeApi.__reset();
+forgeApi.__respond(() => { throw new Error("Jira down"); });
+ok((await writeGitIssueProperty({ pullRequest: { number: 7 } }, { repoId: "o/r", issueKeys: ["LZPT-1"] })).written === 0,
+  "a failing property write is best-effort: it returns 0 and never throws into the dispatch");
+
+// dispatchGitEvent: the consumer entry. Matches, writes the property, enqueues — no AI.
+storage.__reset(); forgeApi.__reset(); pushed.length = 0;
+// 404 on the GET (no property yet), 200 on the PUT — the ordinary first write.
+const propOk = (path, opts) => forgeApi.__response(opts && opts.method === "PUT" ? 200 : 404, {});
+forgeApi.__respond(propOk);
+setConnectionIdentityResolver(async () => ({ login: "cognirunner[bot]" }));
+const agentL = await saveListener({ name: "PR agent", events: ["git:pull_request:opened"], mode: "agent", agent: { instructions: "review", allowedActions: [] }, filters: { repos: ["leanzero/cognirunner"] } }, { accountId: "u", savedByRole: "admin" });
+const env5c = { eventType: "git:pull_request:opened", source: "git", connectionId: "gc_1", repoId: "LeanZero/CogniRunner", deliveryId: "d-1", actor: { login: "octocat" }, pullRequest: { number: 7, title: "t", headSha: "abc" }, issueKeys: ["LZPT-4"] };
+const d1 = await dispatchGitEvent(env5c);
+ok(pushed.length === 1 && pushed[0].body.taskType === "listener" && pushed[0].body.params.listenerId === agentL.id,
+  "an AGENT listener is dispatched as the normal listener task, with the envelope as the event");
+ok(pushed[0].body.params.event.pullRequest.number === 7 && pushed[0].body.params.ctx.repoId === "leanzero/cognirunner",
+  "the envelope reaches the consumer intact");
+ok(d1.queued === 1 && d1.propertyWrites === 1, "the dispatch reports what it did");
+ok(forgeApi.__calls.some((c) => c.path.includes(`/properties/${GIT_PROPERTY_KEY}`) && c.opts.method === "PUT"), "the advisory property is written for the delivery's issue key");
+ok((await dispatchGitEvent({ eventType: "avi:jira:created:issue" })).skipped === "not-a-git-event", "a Jira event id is refused by the git entry point");
+
+// agentless: the premade PR-review engine, queued as gitreview with the review params.
+pushed.length = 0; forgeApi.__reset(); forgeApi.__respond(propOk);
+await deleteListener(agentL.id);
+const agentlessL = await saveListener({
+  name: "PR engine", events: ["git:pull_request:opened"], mode: "script", functions: [{ code: "api.log(1)" }],
+  agentlessTaskType: "gitreview", filters: { repos: ["leanzero/cognirunner"] }, simulationMode: true,
+}, { accountId: "u", savedByRole: "admin" });
+await dispatchGitEvent(env5c);
+// deleteListener above also pushes a rule_stats housekeeping event — look at the run tasks.
+const runTasks = pushed.filter((x) => x.body && (x.body.taskType === "gitreview" || x.body.taskType === "listener"));
+ok(runTasks.length === 1 && runTasks[0].body.taskType === "gitreview", "an agentless git listener enqueues the deterministic review engine, not a listener run");
+const gp = runTasks[0].body.params;
+ok(gp.connId === "gc_1" && gp.repoId === "leanzero/cognirunner" && gp.prNumber === "7" && gp.ruleId === agentlessL.id && gp.simulation === true,
+  "the gitreview params carry exactly { connId, repoId, prNumber, ruleId, simulation }");
+ok(gp.savedByRole === undefined && gp.allowVerdictActions === undefined,
+  "the verdict permission is NOT in the params — the engine reads it from the rule row, so a forged param cannot arm it");
+// The brakes are the listener brakes, unchanged: a braked git listener is not dispatched.
+pushed.length = 0;
+const bucket = Math.floor(Date.now() / 300000);
+storage.__seed(`lst_brake:L:${agentlessL.id}:${bucket}`, BRAKE_MAX_PER_LISTENER);
+await dispatchGitEvent(env5c);
+ok(pushed.filter((x) => x.body && x.body.taskType === "gitreview").length === 0, "the per-listener brake (120 / 5 min) stops a git delivery exactly as it stops a Jira event");
 setConnectionIdentityResolver(null);
 
 // ── agent actions ────────────────────────────────────────────────────────────

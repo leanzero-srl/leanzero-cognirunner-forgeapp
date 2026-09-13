@@ -200,6 +200,10 @@ const handleCollection = async ({ req, method, id, action, body, who, kind }) =>
   const setEnabled = isL ? L.setListenerEnabled : J.setJobEnabled;
   const noun = isL ? "listener" : "job";
   const actor = `api:${who.id}`;
+  // A REST token carries no role, so every save through this surface is recorded as
+  // `savedByRole:"editor"` (the normalizer's default). That is deliberate and it is a
+  // REFUSAL, not an oversight: a rule armed over the API can never hold an
+  // admin-only power such as a PR verdict action. Arming one is an admin's click.
 
   if (method === "GET") {
     if (id) { const row = await get(id); return row ? json(200, { [noun]: row }) : json(404, { error: `${noun} not found` }); }

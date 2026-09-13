@@ -89,7 +89,7 @@ import {
   buildMemoryBlock,
   defangFence,
 } from "./memories.js";
-import { executeListenerTask, getListener } from "./listeners.js";
+import { executeListenerTask, getListener, dispatchGitEvent } from "./listeners.js";
 // 1.4 commit 4b — the PR review engine and the connection layer it runs over. The
 // engine holds NO opinion about credentials or transports: the consumer injects the
 // provider (built from the saved connection) and the model callback.
@@ -1127,17 +1127,34 @@ const executeCredentialRotation = async (params) => {
 };
 
 /**
- * A GIT WEBHOOK DELIVERY — STUB (1.4 commit 5 fills it).
+ * A VERIFIED GIT WEBHOOK DELIVERY (1.4 commit 5c).
  *
- * Registered now so the task type exists in ONE place with its no-AI property stated
- * (`AI_TASK_TYPES` does not contain it, `estimateTaskTokens` returns 0 for it): a
- * delivery verifies a signature, filters and enqueues, and must never be paced by the
- * token governor. Until commit 5 it accepts and does nothing, which is the correct
- * behaviour for a type nothing produces yet.
+ * The webhook verifies the signature and enqueues; THIS is where a delivery becomes
+ * runs. The dispatch itself lives in src/listeners.js (`dispatchGitEvent`) so that the
+ * repo allow-list, ignoreSelf, the static filters and the 30/120-per-5-minute brakes
+ * have ONE implementation shared with every Jira event — this handler is wiring.
+ *
+ * IT SPENDS NO TOKENS. A dispatch matches and pushes; the model runs in the `listener`
+ * or `gitreview` task it enqueues, each of which is paced on its own. That is why
+ * "git-event" is deliberately absent from AI_TASK_TYPES and why estimateTaskTokens
+ * returns 0 for it — pacing a matcher would delay the delivery, not the spend.
  */
 const executeGitEvent = async (params) => {
-  console.log(`[git-event] stub — delivery accepted, no handler yet (1.4 commit 5). repo=${(params && params.repoId) || "?"}`);
-  return { success: true, skipped: "not-implemented" };
+  const envelope = (params && params.envelope) || null;
+  if (!envelope || typeof envelope !== "object") {
+    console.warn("[git-event] delivery carried no envelope — nothing dispatched");
+    return { success: false, error: "git-event requires params.envelope" };
+  }
+  try {
+    const out = await dispatchGitEvent(envelope);
+    console.log(`[git-event] ${out.eventType || "?"} ${out.repoId || "?"}: ${out.queued || 0} run(s) queued, ${out.propertyWrites || 0} issue propert(ies) written`);
+    return { success: true, ...out };
+  } catch (e) {
+    // A throw here means NOTHING was dispatched. Surface it: the provider already got
+    // its 2xx from the webhook, so this log line is the only trace of a lost delivery.
+    console.error("[git-event] dispatch failed:", e);
+    return { success: false, error: String((e && e.message) || e).slice(0, 300) };
+  }
 };
 
 // === Task registry — add new async task types here ===
@@ -1154,7 +1171,8 @@ const TASK_HANDLERS = {
   // by "Run now" (UI + REST), listener runs are fire-and-forget.
   "listener": executeListenerTask,
   "scheduledjob": executeScheduledJobTask,
-  // Git (1.4): a queued PR review, and the webhook delivery that will produce one.
+  // Git (1.4): a queued PR review, and the verified webhook delivery that dispatches
+  // listener runs (and one of those reviews) — neither is produced by a browser.
   "gitreview": executeGitReview,
   "git-event": executeGitEvent,
   // F-290 — the key is the producer's own constant, never a retyped literal.

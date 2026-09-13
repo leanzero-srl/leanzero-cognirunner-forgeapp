@@ -70,6 +70,25 @@ export async function testStateTrigger(req) {
       await storage.set("probe:webhook:secret", { secret, at: new Date().toISOString() }, { ttl: { value: 1, unit: "DAYS" } });
       return json(200, { ok: true });
     }
+    // 1.4 commit 5 — plant a PER-REPO webhook signing secret so a tester can sign a
+    // delivery to the PRODUCTION `git-webhook` trigger. Writes through
+    // git-connections.js (`gitHookSecretKey`) so the key name has ONE home, and it is
+    // dev-gated by the same HARNESS_SECRET Bearer as everything else in this file —
+    // there is no path to this action in production, where HARNESS_SECRET is unset.
+    if (body.action === "plantHookSecret") {
+      const connId = String(body.connId || "");
+      const repoId = String(body.repoId || "");
+      const secretValue = String(body.secret || "");
+      if (!/^[A-Za-z0-9_-]{1,64}$/.test(connId)) return json(400, { error: "connId required" });
+      if (!/^[^/\s]+\/[^/\s]+$/.test(repoId)) return json(400, { error: "repoId must be owner/name" });
+      if (!/^[A-Za-z0-9]{16,80}$/.test(secretValue)) return json(400, { error: "secret must be 16-80 alphanumerics" });
+      const { gitHookSecretKey, normalizeRepoId } = await import("./git-connections.js");
+      const key = gitHookSecretKey(connId, repoId);
+      await storage.set(key, { secret: secretValue, connId, repoId: normalizeRepoId(repoId), createdAt: new Date().toISOString() });
+      // The secret is what the CALLER just sent us; echoing the KEY (never the value)
+      // is what makes the plant verifiable without a read path for secrets.
+      return json(200, { ok: true, key });
+    }
     if (body.action === "readProbe") {
       const name = String(body.name || "").replace(/[^A-Za-z0-9_.:-]/g, "");
       if (!name) return json(400, { error: "name required" });

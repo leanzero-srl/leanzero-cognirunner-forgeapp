@@ -63,6 +63,14 @@ import {
   clearForgeIdentity as clearForgeIdentityCore,
   getForgeIdentityStatus as getForgeIdentityStatusCore,
   requestCredentialRotation,
+  // Read-only halves used by the git webhook (index.gitWebhook): the connection
+  // row, its repo allow-list predicate and the PER-REPO signing secret. The key
+  // names and the fail-closed rules stay in git-connections.js; nothing here
+  // retypes `git_hook_secret:*`.
+  getConnection,
+  getHookSecret,
+  isRepoAllowed,
+  normalizeRepoId,
 } from "./git-connections.js";
 import { serializeRule, buildExportEnvelope, validateImportSchema, resolveBindings, containsSecretKey, EXPORT_CAPS } from "./shared/rule-portability.js";
 // Registry scale caps + pressure math — single source, shared with the admin panel.
@@ -88,7 +96,7 @@ import { executePremadeRule } from "./premade-rules.js";
 import * as listenersMod from "./listeners.js";
 import * as jobsMod from "./scheduled-jobs.js";
 import { createApiTokenInternal, listApiTokens, revokeApiTokenInternal, RULES_API_WEBTRIGGER_KEY, RULES_API_URL_KVS_KEY } from "./rules-api.js";
-import { isKnownEvent, buildEventPromptBlock } from "./shared/jira-events.js";
+import { isKnownEvent, buildEventPromptBlock, GIT_EVENT_IDS } from "./shared/jira-events.js";
 import { describeCron } from "./shared/cron.js";
 // Skill repository (skill packs injected into codegen/fix prompts).
 import {
@@ -10515,42 +10523,462 @@ export const handler = resolver.getDefinitions();
 // DEV-ONLY harness test-state web trigger (gated by HARNESS_SECRET; 404 in prod)
 export { testStateTrigger, gitWebhookProbe } from "./test-hook";
 
+/* ═══════════════════ GIT WEBHOOK — 1.4 commit 5 ═══════════════════════════
+ * Verify the HMAC over the RAW body, normalise the envelope, enqueue, 202.
+ * NOTHING ELSE happens here: GitHub abandons a delivery at 10 s, so this
+ * handler never calls a provider, never calls a model, never reads a rule.
+ * Everything downstream is the `git-event` queue task (src/async-handler.js).
+ */
+
+/** Cap on the provider-specific leftovers we carry under `envelope.raw`. */
+const GIT_RAW_MAX_BYTES = 8192;
+/**
+ * THE EMIT ALLOW-LIST for `envelope.raw` — the same law as `RULE_EMIT_KEYS`:
+ * a whitelist, built field by field, NEVER widened to make something work.
+ * Everything a consumer actually needs is already normalised above it; `raw`
+ * exists only so a handler can tell "closed" from "merged" or read an action
+ * verb without a second fetch. Bodies, diffs, commit lists, user objects and
+ * anything that could carry a token are not on it and must not join it.
+ */
+const GIT_RAW_EMIT_KEYS = ["action", "eventKey", "ref", "before", "after", "created", "deleted", "forced", "number"];
+
+/** Header read helper: Forge gives header values as ARRAYS, case-insensitively. */
+const hookHeader = (req, name) => {
+  const h = (req && req.headers) || {};
+  const v = h[name] || h[String(name).toLowerCase()] || h[String(name).toUpperCase()];
+  const out = Array.isArray(v) ? v[0] : v;
+  return typeof out === "string" ? out : null;
+};
+const hookQuery = (req, name) => {
+  const v = req && req.queryParameters && req.queryParameters[name];
+  const out = Array.isArray(v) ? v[0] : v;
+  return typeof out === "string" ? out.trim() : "";
+};
+const hookJson = (status, body) => ({
+  statusCode: status,
+  headers: { "Content-Type": ["application/json"] },
+  body: JSON.stringify(body),
+});
+const clampStr = (v, n) => (v == null ? null : String(v).slice(0, n));
+
+/**
+ * THE EVENT MAP — provider event → an id that MUST exist in the one catalogue
+ * (`GIT_EVENT_IDS`, src/shared/jira-events.js). There is no second list of git
+ * events anywhere; an id this function returns that the catalogue does not know
+ * is dropped at the call site, and an offline test asserts every id here is a
+ * catalogue row. Anything unmapped is an IGNORED delivery (202), never a guess.
+ */
+export function mapGitEvent(kind, headerEvent, payload) {
+  const p = payload || {};
+  const ev = String(headerEvent || "");
+  if (kind === "github") {
+    const action = String(p.action || "");
+    switch (ev) {
+      case "pull_request":
+        if (action === "opened") return "git:pull_request:opened";
+        if (action === "synchronize") return "git:pull_request:synchronize";
+        // "merged" is not an action — it is `closed` with merged:true. Reading the
+        // action alone would file every merge as a plain close (and the premade
+        // "review every opened PR" listener would never see a merge at all).
+        if (action === "closed") {
+          return p.pull_request && p.pull_request.merged === true
+            ? "git:pull_request:merged"
+            : "git:pull_request:closed";
+        }
+        return null;
+      case "pull_request_review":
+        return action === "submitted" ? "git:pull_request_review:submitted" : null;
+      case "issue_comment":
+        // GitHub delivers PR comments AND issue comments on this event. Only the
+        // ones attached to a pull request are ours (the catalogue row says so).
+        return action === "created" && p.issue && p.issue.pull_request ? "git:issue_comment:created" : null;
+      case "push":
+        return "git:push";
+      case "check_run":
+        return action === "completed" || String(p.check_run && p.check_run.status) === "completed"
+          ? "git:check_run:completed"
+          : null;
+      default:
+        return null;
+    }
+  }
+  if (kind === "bitbucket") {
+    switch (ev) {
+      case "pullrequest:created": return "git:pull_request:opened";
+      case "pullrequest:updated": return "git:pull_request:synchronize";
+      case "pullrequest:fulfilled": return "git:pull_request:merged";
+      case "pullrequest:rejected": return "git:pull_request:closed";
+      case "pullrequest:comment_created": return "git:issue_comment:created";
+      case "pullrequest:approved": return "git:pull_request_review:submitted";
+      case "repo:push": return "git:push";
+      // Bitbucket has no check_run; a commit status IS its build verdict, and the
+      // catalogue's build row for non-GitHub hosts is `git:pipeline:completed`.
+      case "repo:commit_status_updated": return "git:pipeline:completed";
+      default: return null;
+    }
+  }
+  return null;
+}
+
+/**
+ * Jira issue keys mentioned in a branch name / PR title / commit subject.
+ * ADVISORY, and that word is load-bearing: anybody who can name a branch can
+ * put any key here. It labels the run and keys the per-issue brake; NOTHING may
+ * grant access, pick a project or write to an issue on the strength of it — a
+ * validator verifies live (commit 10). This is the ONE extractor; no caller
+ * re-derives the regex.
+ */
+export function gitIssueKeysFrom(...texts) {
+  const seen = [];
+  const re = /\b[A-Z][A-Z0-9_]{1,9}-\d{1,8}\b/g;
+  for (const t of texts) {
+    if (!t) continue;
+    const s = String(t).slice(0, 4000).toUpperCase();
+    let m;
+    while ((m = re.exec(s)) && seen.length < 20) if (!seen.includes(m[0])) seen.push(m[0]);
+    re.lastIndex = 0;
+  }
+  return seen.slice(0, 20);
+}
+
+/**
+ * Provider payload → THE normalised envelope, the single shape every git event
+ * travels in (documented on the `G(...)` rows in src/shared/jira-events.js, and
+ * read field-for-field by `extractEventContext`'s git branch). Every string is
+ * clamped HERE, server-side, because every field of it is attacker-shaped.
+ */
+export function buildGitEnvelope({ eventType, kind, headerEvent, connectionId, repoId, deliveryId, payload }) {
+  const p = payload || {};
+  const env = {
+    eventType,
+    source: "git",
+    connectionId,
+    repoId,
+    deliveryId,
+    receivedAt: new Date().toISOString(),
+    actor: { login: null, id: null },
+    issueKeys: [],
+  };
+  const texts = [];
+
+  if (kind === "github") {
+    const s = p.sender || {};
+    env.actor = { login: clampStr(s.login, 100), id: s.id != null ? String(s.id).slice(0, 60) : null };
+    const pr = p.pull_request || (p.issue && p.issue.pull_request ? p.issue : null);
+    if (pr && (pr.number != null || pr.html_url)) {
+      env.pullRequest = {
+        number: Number(pr.number) || null,
+        title: clampStr(pr.title, 300),
+        state: clampStr(pr.state, 40),
+        merged: pr.merged === true || eventType === "git:pull_request:merged",
+        draft: pr.draft === true,
+        headSha: clampStr(pr.head && pr.head.sha, 64),
+        headRef: clampStr(pr.head && pr.head.ref, 300),
+        baseRef: clampStr(pr.base && pr.base.ref, 300),
+        url: clampStr(pr.html_url, 500),
+        author: { login: clampStr(pr.user && pr.user.login, 100) },
+        mergeCommitSha: clampStr(pr.merge_commit_sha, 64),
+      };
+      texts.push(env.pullRequest.title, env.pullRequest.headRef);
+    }
+    if (p.review) {
+      env.review = {
+        id: p.review.id != null ? String(p.review.id).slice(0, 60) : null,
+        state: clampStr(String(p.review.state || "").toLowerCase(), 40),
+        body: clampStr(p.review.body, 2000),
+        author: { login: clampStr(p.review.user && p.review.user.login, 100) },
+        url: clampStr(p.review.html_url, 500),
+      };
+    }
+    if (p.comment && eventType === "git:issue_comment:created") {
+      env.comment = {
+        id: p.comment.id != null ? String(p.comment.id).slice(0, 60) : null,
+        body: clampStr(p.comment.body, 2000),
+        author: { login: clampStr(p.comment.user && p.comment.user.login, 100) },
+        url: clampStr(p.comment.html_url, 500),
+      };
+    }
+    if (eventType === "git:push") {
+      const commits = Array.isArray(p.commits) ? p.commits.slice(0, 20) : [];
+      env.push = {
+        ref: clampStr(p.ref, 300),
+        before: clampStr(p.before, 64),
+        after: clampStr(p.after, 64),
+        forced: p.forced === true,
+        commits: commits.map((c) => ({
+          id: clampStr(c && c.id, 64),
+          message: clampStr(c && c.message, 200),
+          author: { login: clampStr(c && c.author && (c.author.username || c.author.name), 100) },
+        })),
+      };
+      texts.push(env.push.ref, ...env.push.commits.map((c) => c.message));
+    }
+    const cr = p.check_run || null;
+    if (cr) {
+      env.check = {
+        name: clampStr(cr.name, 200),
+        status: clampStr(cr.status, 40),
+        conclusion: clampStr(cr.conclusion, 40),
+        headSha: clampStr(cr.head_sha, 64),
+        url: clampStr(cr.html_url, 500),
+      };
+    }
+  } else {
+    // Bitbucket. Different field names, SAME envelope — the shape a consumer
+    // reads never depends on the host (that is the whole point of normalising).
+    const a = p.actor || {};
+    env.actor = {
+      login: clampStr(a.nickname || a.username || a.display_name, 100),
+      id: a.uuid ? String(a.uuid).slice(0, 60) : null,
+    };
+    const pr = p.pullrequest || null;
+    if (pr) {
+      const src = pr.source || {};
+      const dst = pr.destination || {};
+      env.pullRequest = {
+        number: Number(pr.id) || null,
+        title: clampStr(pr.title, 300),
+        state: clampStr(String(pr.state || "").toLowerCase(), 40),
+        merged: String(pr.state || "").toUpperCase() === "MERGED" || eventType === "git:pull_request:merged",
+        draft: pr.draft === true,
+        headSha: clampStr(src.commit && src.commit.hash, 64),
+        headRef: clampStr(src.branch && src.branch.name, 300),
+        baseRef: clampStr(dst.branch && dst.branch.name, 300),
+        url: clampStr(pr.links && pr.links.html && pr.links.html.href, 500),
+        author: { login: clampStr(pr.author && (pr.author.nickname || pr.author.display_name), 100) },
+        mergeCommitSha: clampStr(pr.merge_commit && pr.merge_commit.hash, 64),
+      };
+      texts.push(env.pullRequest.title, env.pullRequest.headRef);
+    }
+    if (p.approval && eventType === "git:pull_request_review:submitted") {
+      env.review = {
+        id: null,
+        state: "approved",
+        body: null,
+        author: { login: clampStr(p.approval.user && (p.approval.user.nickname || p.approval.user.display_name), 100) },
+        url: env.pullRequest ? env.pullRequest.url : null,
+      };
+    }
+    if (p.comment && eventType === "git:issue_comment:created") {
+      env.comment = {
+        id: p.comment.id != null ? String(p.comment.id).slice(0, 60) : null,
+        body: clampStr(p.comment.content && p.comment.content.raw, 2000),
+        author: { login: clampStr(p.comment.user && (p.comment.user.nickname || p.comment.user.display_name), 100) },
+        url: clampStr(p.comment.links && p.comment.links.html && p.comment.links.html.href, 500),
+      };
+    }
+    if (eventType === "git:push") {
+      const change = (p.push && Array.isArray(p.push.changes) && p.push.changes[0]) || {};
+      const commits = Array.isArray(change.commits) ? change.commits.slice(0, 20) : [];
+      env.push = {
+        ref: clampStr(change.new && change.new.name, 300),
+        before: clampStr(change.old && change.old.target && change.old.target.hash, 64),
+        after: clampStr(change.new && change.new.target && change.new.target.hash, 64),
+        forced: change.forced === true,
+        commits: commits.map((c) => ({
+          id: clampStr(c && c.hash, 64),
+          message: clampStr(c && c.message, 200),
+          author: { login: clampStr(c && c.author && c.author.user && (c.author.user.nickname || c.author.user.display_name), 100) },
+        })),
+      };
+      texts.push(env.push.ref, ...env.push.commits.map((c) => c.message));
+    }
+    const cs = p.commit_status || null;
+    if (cs) {
+      env.check = {
+        name: clampStr(cs.name || cs.key, 200),
+        status: "completed",
+        conclusion: clampStr(String(cs.state || "").toLowerCase(), 40),
+        headSha: clampStr(cs.commit && cs.commit.hash, 64),
+        url: clampStr(cs.url || (cs.links && cs.links.commit && cs.links.commit.href), 500),
+      };
+    }
+  }
+
+  env.issueKeys = gitIssueKeysFrom(...texts);
+
+  // `raw`: the allow-listed leftovers, then a HARD byte cap. Over budget, keys
+  // are dropped one at a time and, if that is not enough, `raw` goes entirely —
+  // the envelope is never allowed to grow past the transport budget because a
+  // provider sent something huge.
+  const raw = {};
+  const flat = { ...p, eventKey: headerEvent };
+  for (const k of GIT_RAW_EMIT_KEYS) {
+    const v = flat[k];
+    if (v === undefined || v === null) continue;
+    if (typeof v === "object") continue; // scalars only — objects are how bodies sneak in
+    raw[k] = typeof v === "string" ? v.slice(0, 300) : v;
+  }
+  let rawJson = JSON.stringify(raw);
+  if (rawJson && Buffer.byteLength(rawJson, "utf8") > GIT_RAW_MAX_BYTES) {
+    for (const k of Object.keys(raw)) {
+      delete raw[k];
+      rawJson = JSON.stringify(raw);
+      if (Buffer.byteLength(rawJson, "utf8") <= GIT_RAW_MAX_BYTES) break;
+    }
+    raw._truncated = true;
+  }
+  env.raw = raw;
+  return env;
+}
+
 /**
  * PRODUCTION git webhook (manifest webtrigger `git-webhook` → `index.gitWebhook`).
- * 1.4 commit 2 declares it; **1.4 commit 5 implements it.**
  *
- * THIS STUB VERIFIES NOTHING AND STORES NOTHING. It is deliberately inert, and
- * it must stay inert until commit 5, because the only safe behaviour for an
- * endpoint with no signature check is to do no work: a handler that enqueued on
- * an unverified body would be an open door for anyone who learns the URL.
+ * THE CONTRACT, in order, and none of these steps may move:
+ *   1. Route from the query string the registered hook URL carries
+ *      (`?conn=<id>&repo=<owner/name>`) → the connection row + the PER-REPO
+ *      secret `git_hook_secret:<connId>:<repoId>`. Unknown connection, repo off
+ *      the allow-list, or no secret → 404 with NO body detail: an endpoint that
+ *      answered differently for "no such connection" and "no such repo" would be
+ *      a connection-id oracle for anyone who finds the URL.
+ *   2. Verify `x-hub-signature-256` (GitHub) or `x-hub-signature` (Bitbucket —
+ *      the SAME sha256= construction, per the adapter comment in
+ *      git-providers.js) with `timingSafeEqual` over the RAW body string. Probe
+ *      (c), VERIFIED 2026-09-12: the webtrigger `body` is byte-identical to what
+ *      GitHub signed (8,008 bytes, VALID). FAIL CLOSED — a missing, malformed or
+ *      wrong signature is 401, nothing is enqueued, no claim is taken, and the
+ *      one log line NEVER carries the body or the signature.
+ *   3. Map the provider event to a catalogue id (`mapGitEvent`). Unmapped → 202
+ *      "ignored": a delivery we do not model is not an error, and answering
+ *      non-2xx would make the provider retry it forever and eventually disable
+ *      the hook.
+ *   4. Normalise to the ONE envelope, clamped server-side, raw capped at 8 KB.
+ *   5. Claim `git_delivery:<connId>:<deliveryId>` FAIL_IF_EXISTS / 24 h BEFORE
+ *      the enqueue — the cap-before-the-side-effect law. A redelivery (GitHub's
+ *      "Redeliver" button, a retry after a timeout) answers 202 {duplicate:true}
+ *      and enqueues NOTHING. If the enqueue then fails, the claim is released so
+ *      the provider's retry is not silently swallowed, and we answer 500 so that
+ *      retry actually happens.
+ *   6. 202, inside GitHub's 10 s window. No provider call, no model call, no
+ *      rule read. The `git-event` consumer task does the work (`usesAi:false` —
+ *      a delivery is never paced by the token governor).
  *
- * It answers 202 rather than 401 on purpose. An admin who installs the hook
- * early should see GitHub record a delivery (so the URL and the egress are
- * provably right) while nothing downstream happens; 401 here would send them
- * hunting a secret mismatch that does not exist yet. `accepted:false` in the
- * body says plainly that nothing was processed.
- *
- * When commit 5 lands, the contract becomes: resolve the connection + repo, read
- * `git_hook_secret:<connId>:<repoId>` (src/git-connections.js), verify the HMAC
- * over the VERBATIM body with timingSafeEqual (probe (c), VERIFIED 2026-09-12),
- * and FAIL CLOSED — a bad or missing signature is a 401 and nothing is enqueued,
- * no ledger row, no log line carrying the body. Verify, enqueue, 202. Nothing
- * else: GitHub abandons a delivery at 10 s.
+ * `ignoreSelf` is NOT here: it compares the actor to the connection's cached
+ * whoami and belongs with the listener match, next to Forge's `selfGenerated`
+ * (which is a DIFFERENT self-detection — two ideas, never one field name).
  *
  * Do NOT promote src/test-hook.js's `gitWebhookProbe` into this slot — it is the
  * unauthenticated probe, it has no per-repo secret path, and it stores a
  * fingerprint of every delivery.
  */
 export async function gitWebhook(req) {
-  return {
-    statusCode: 202,
-    headers: { "Content-Type": ["application/json"] },
-    body: JSON.stringify({
-      ok: true,
-      accepted: false,
-      reason: "Git webhook processing is not enabled on this version yet.",
-    }),
-  };
+  const method = String((req && req.method) || "POST").toUpperCase();
+  if (method !== "POST") return hookJson(405, { ok: false });
+
+  const connId = hookQuery(req, "conn");
+  const repoParam = hookQuery(req, "repo");
+  const repoId = normalizeRepoId(repoParam);
+
+  // ---- 1. route + secret. One refusal shape for every miss. ----
+  let secret = null;
+  let row = null;
+  try {
+    if (connId && repoId) {
+      row = await getConnection(connId);
+      if (row && isRepoAllowed(row, repoId)) secret = await getHookSecret(connId, repoId);
+    }
+  } catch (e) {
+    // A storage fault is NOT "no secret, let it through": fail closed.
+    console.warn("[git-webhook] connection lookup failed — refusing delivery");
+    return hookJson(503, { ok: false });
+  }
+  if (!row || !secret) {
+    console.warn("[git-webhook] delivery for an unknown connection/repo — 404");
+    return hookJson(404, { ok: false });
+  }
+
+  // ---- 2. HMAC over the RAW body ----
+  const body = typeof (req && req.body) === "string" ? req.body : "";
+  const sig256 = hookHeader(req, "x-hub-signature-256");
+  const sig1 = hookHeader(req, "x-hub-signature");
+  // GitHub sends BOTH headers and its `x-hub-signature` is sha1 — so the 256
+  // header wins whenever it is present, and a bare `sha1=` is never accepted.
+  const provided = sig256 || (sig1 && /^sha256=/i.test(sig1) ? sig1 : null);
+  if (!provided) {
+    console.warn(`[git-webhook] unsigned delivery refused conn=${connId} repo=${repoId}`);
+    return hookJson(401, { ok: false });
+  }
+  const { createHmac, timingSafeEqual } = await import("node:crypto");
+  const expected = "sha256=" + createHmac("sha256", secret).update(body, "utf8").digest("hex");
+  // Length check first: timingSafeEqual THROWS on unequal lengths.
+  const valid =
+    expected.length === provided.length &&
+    timingSafeEqual(Buffer.from(expected, "utf8"), Buffer.from(provided, "utf8"));
+  if (!valid) {
+    console.warn(`[git-webhook] signature mismatch conn=${connId} repo=${repoId} bytes=${Buffer.byteLength(body, "utf8")}`);
+    return hookJson(401, { ok: false });
+  }
+
+  // ---- 3. provider + event → catalogue id ----
+  let payload = {};
+  try { payload = JSON.parse(body || "{}"); } catch (e) { payload = {}; }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) payload = {};
+  const ghEvent = hookHeader(req, "x-github-event");
+  const bbEvent = hookHeader(req, "x-event-key");
+  const kind = ghEvent ? "github" : (bbEvent ? "bitbucket" : null);
+  const headerEvent = ghEvent || bbEvent || "";
+  // The signature proved the sender holds THIS repo's secret; the host it claims
+  // to be must still match the connection, or the envelope would be normalised
+  // with the wrong field map.
+  if (!kind || (row.kind && row.kind !== kind)) {
+    return hookJson(202, { ok: true, ignored: "unrecognised-provider" });
+  }
+  const payloadRepo = normalizeRepoId(
+    kind === "github"
+      ? (payload.repository && payload.repository.full_name) || ""
+      : (payload.repository && payload.repository.full_name) || ""
+  );
+  // A valid signature for repo A carrying repo B's payload is an anomaly, not a
+  // routing hint: the per-repo secret decides the repo, and we drop the delivery
+  // rather than enqueue an event attributed to a repo nobody signed for.
+  if (payloadRepo && payloadRepo !== repoId) {
+    console.warn(`[git-webhook] payload repo does not match the signed repo — dropped conn=${connId}`);
+    return hookJson(202, { ok: true, ignored: "repo-mismatch" });
+  }
+  const eventType = mapGitEvent(kind, headerEvent, payload);
+  if (!eventType || !isKnownEvent(eventType) || !GIT_EVENT_IDS.includes(eventType)) {
+    return hookJson(202, { ok: true, ignored: "unsupported-event", event: clampStr(headerEvent, 60) });
+  }
+
+  // ---- 4. normalise ----
+  const deliveryId =
+    clampStr(hookHeader(req, "x-github-delivery") || hookHeader(req, "x-request-uuid") || hookHeader(req, "x-hook-uuid"), 100) ||
+    `nohdr-${createHmac("sha256", secret).update(body, "utf8").digest("hex").slice(0, 32)}`;
+  const envelope = buildGitEnvelope({ eventType, kind, headerEvent, connectionId: connId, repoId, deliveryId, payload });
+
+  // ---- 5. idempotency claim BEFORE the enqueue ----
+  const claimKey = `git_delivery:${connId}:${deliveryId}`;
+  try {
+    await storage.set(claimKey, { at: new Date().toISOString(), eventType }, {
+      keyPolicy: "FAIL_IF_EXISTS",
+      ttl: { value: 24, unit: "HOURS" },
+    });
+  } catch (e) {
+    console.log(`[git-webhook] duplicate delivery ${deliveryId} conn=${connId} — not enqueued`);
+    return hookJson(202, { ok: true, duplicate: true });
+  }
+
+  // ---- 5b. enqueue ONE event, then 202 ----
+  const taskId = makeTaskId("gitevent");
+  try {
+    const { Queue } = await import("@forge/events");
+    const queue = new Queue({ key: "async-ai-queue" });
+    await queue.push({
+      body: { taskType: "git-event", taskId, params: { envelope } },
+      // Two at a time per connection: a push storm or a PR-synchronize burst must
+      // not occupy every queue slot the rest of the app shares.
+      concurrency: { key: `git-event:${connId}`, limit: 2 },
+    });
+  } catch (e) {
+    // Release the claim — otherwise the provider's retry sees a duplicate and the
+    // delivery is lost for good. Non-2xx so that retry actually happens.
+    try { await storage.delete(claimKey); } catch (_) { /* best-effort */ }
+    console.error(`[git-webhook] enqueue failed conn=${connId} event=${eventType}: ${e && e.message}`);
+    return hookJson(500, { ok: false });
+  }
+  console.log(`[git-webhook] accepted ${eventType} repo=${repoId} delivery=${deliveryId} task=${taskId}`);
+  return hookJson(202, { ok: true, accepted: true, eventType, taskId });
 }
 
 // === Provider definitions ===

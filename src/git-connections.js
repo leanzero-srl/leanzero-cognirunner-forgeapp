@@ -658,10 +658,14 @@ export async function ensureHookSecret(connId, repoId) {
 }
 
 /**
- * INTERNAL: the secret the webhook handler verifies a delivery against
- * (commit 5). Returns null when there is none — and the HANDLER's answer to
- * null is 401, never "unsigned deliveries are fine". Fail CLOSED lives at the
- * caller because only the caller can produce the HTTP response.
+ * INTERNAL: the secret the webhook handler verifies a delivery against.
+ * The one caller is `gitWebhook` in src/index.js (1.4 commit 5), which reads it
+ * AFTER checking the repo is on this connection's allow-list.
+ * Returns null when there is none — and the HANDLER's answer to null is a 404
+ * with no body detail (one refusal shape for unknown connection, unlisted repo
+ * and missing secret alike, so the endpoint is not a connection-id oracle),
+ * never "unsigned deliveries are fine". Fail CLOSED lives at the caller because
+ * only the caller can produce the HTTP response.
  */
 export async function getHookSecret(connId, repoId) {
   const row = await storage.get(gitHookSecretKey(connId, repoId));

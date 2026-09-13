@@ -94,10 +94,24 @@ const safeKeyPart = (s) => String(s).replace(/[^a-zA-Z0-9:._#-]/g, "-").slice(0,
 // ── Validation / normalisation (shared by the resolvers AND the REST API) ─────
 
 /**
+ * The role the SAVER held, recorded on the rule row at save time.
+ *
+ * Why a stored field and not a live check: a run has no user. A queued PR review
+ * executes as the app, hours after the save, with nobody's permissions attached —
+ * so the only honest answer to "may this rule arm an AI to approve a pull request"
+ * is the role of the human who saved it. Least privilege is the DEFAULT: a caller
+ * that does not pass a role gets "editor", which can never unlock a verdict action.
+ * (F-311: this field did not exist before 1.4 commit 5c; rows saved earlier carry
+ * no `savedByRole` and are therefore treated as "editor" on read.)
+ */
+export const SAVED_BY_ROLES = ["admin", "editor"];
+export const normalizeSavedByRole = (role) => (role === "admin" ? "admin" : "editor");
+
+/**
  * Validate + clamp a listener config. Throws Error(message) on hard errors.
  * `existing` (previous full record) preserves identity/stats on update.
  */
-export const normalizeListener = (input = {}, { existing = null, accountId = null, gate = undefined } = {}) => {
+export const normalizeListener = (input = {}, { existing = null, accountId = null, gate = undefined, savedByRole = "editor" } = {}) => {
   const src = input && typeof input === "object" ? input : {};
   const id = existing ? existing.id : (typeof src.id === "string" && /^[A-Za-z0-9_.-]{3,80}$/.test(src.id) ? src.id : newListenerId());
   const name = clampStr(src.name, 120).trim();
@@ -144,6 +158,19 @@ export const normalizeListener = (input = {}, { existing = null, accountId = nul
   if (mode === "agent" && String(a.instructions || "").length > 6000) throw new Error("agent.instructions exceeds 6000 characters");
   if (mode === "script" && functions.length === 0) throw new Error("functions must contain at least one code step in script mode");
   if (String(src.aiCondition || "").length > 1500) throw new Error("aiCondition exceeds 1500 characters");
+  const role = normalizeSavedByRole(savedByRole);
+  // Which engine an agentless instance runs for this listener. Only the deterministic
+  // PR-review engine exists (taskType "gitreview", src/git-review.js); the id is the
+  // premade catalogue's own `agentlessTaskType`, validated here so an arbitrary string
+  // from the REST API can never name a task type.
+  const agentlessTaskType = src.agentlessTaskType === "gitreview" ? "gitreview" : null;
+  // A VERDICT IS NOT AN ACTION. `allowVerdictActions` lets the review engine approve or
+  // request changes on a pull request, so it is armable ONLY on a rule an ADMIN saved.
+  // An editor ticking it does not get an error (the checkbox is theirs to express) — it
+  // is stored as false, and executeGitReview re-checks `savedByRole` anyway, because a
+  // permission asserted in one place is one refactor away from being asserted nowhere.
+  const gr = src.gitReview && typeof src.gitReview === "object" ? src.gitReview : null;
+  const gitReview = gr ? { allowVerdictActions: role === "admin" && gr.allowVerdictActions === true } : null;
   const out = {
     id, name,
     description: clampStr(src.description, 2000),
@@ -152,8 +179,10 @@ export const normalizeListener = (input = {}, { existing = null, accountId = nul
     ignoreSelf: src.ignoreSelf !== false,
     aiCondition: clampStr(src.aiCondition, 1500).trim(),
     mode, functions, agent,
+    agentlessTaskType, gitReview,
     simulationMode: src.simulationMode === true,
     suppressNotifications: src.suppressNotifications === true,
+    savedByRole: role,
     createdBy: existing ? existing.createdBy || accountId || null : accountId || null,
     createdAt: existing ? existing.createdAt || nowIso() : nowIso(),
     updatedAt: nowIso(),
@@ -224,9 +253,12 @@ export const getListener = async (id) => {
   return full;
 };
 
-export const saveListener = async (input, { accountId = null, gate = undefined } = {}) => {
+export const saveListener = async (input, { accountId = null, gate = undefined, savedByRole = "editor" } = {}) => {
   const existing = input && input.id ? await getListener(input.id) : null;
-  const full = normalizeListener(input, { existing, accountId, gate });
+  // The role belongs to THIS save, not to the row's history: an admin-armed rule that
+  // an editor edits is re-recorded as editor and loses its verdict actions. That is the
+  // intended direction — privilege can only be granted by someone who holds it.
+  const full = normalizeListener(input, { existing, accountId, gate, savedByRole });
   delete full.stats; // stats live in LISTENER_STATS_KEY — never inside the record
   const rows = await readListenerIndex();
   const at = rows.findIndex((r) => r.id === full.id);
@@ -485,6 +517,12 @@ export const redactSample = (payload) => {
   return out;
 };
 const captureSample = async (eventType, event) => {
+  // NO SAMPLE FOR A GIT DELIVERY, stated twice on purpose (the trigger also skips it).
+  // redactSample below knows Jira content zones only — a PR title, a review body or a
+  // commit message would be stored verbatim under a row labelled "redacted", which is
+  // worse than no sample. Teaching the redactor the git envelope is a change to this
+  // guard, not to the caller.
+  if (isGitEvent(eventType)) return;
   const last = _sampleAt.get(eventType) || 0;
   if (Date.now() - last < SAMPLE_MIN_INTERVAL_MS) return;
   _sampleAt.set(eventType, Date.now());
@@ -519,6 +557,199 @@ export const enqueueListenerRun = async ({ listener, eventType, event, ctx, sour
   return { taskId };
 };
 
+/**
+ * A queued PR REVIEW for a listener that runs the deterministic engine instead of the
+ * agent (`agentlessTaskType:"gitreview"` — the premade "Review every opened PR" row).
+ * Same brakes, same claim discipline; a different consumer. `savedByRole` is NOT sent
+ * in the params: executeGitReview reads it from the rule row, so a params forgery
+ * cannot arm a verdict action.
+ */
+export const enqueueGitReviewRun = async ({ listener, ctx }) => {
+  const m = await idx();
+  const { Queue } = await import("@forge/events");
+  const queue = new Queue({ key: "async-ai-queue" });
+  const taskId = m.makeTaskId("gitreview");
+  const enqueuedAt = nowIso();
+  const params = {
+    connId: ctx.connectionId || null, repoId: ctx.repoId || null, prNumber: ctx.prNumber ?? null,
+    ruleId: listener.id, simulation: listener.simulationMode === true, enqueuedAt,
+  };
+  await queue.push({ body: { taskType: "gitreview", taskId, params } });
+  await m.writeAsyncJob({ taskId, taskType: "gitreview", status: "queued", ruleId: listener.id, ruleName: listener.name, issueKey: ctx.issueKey || null, provider: null, model: null, accountId: null, enqueuedAt });
+  return { taskId };
+};
+
+/**
+ * ONE enqueue decision for a matched listener, used by every delivery path.
+ *
+ * A git listener has two engines and the rule row names both: the AGENT (mode
+ * "agent" → the normal listener task, the envelope IS the event) and the agentless
+ * deterministic PR-review engine (`agentlessTaskType:"gitreview"` → the gitreview
+ * task). Anything else is a normal listener run. Neither path runs AI here — both
+ * only push onto the queue.
+ */
+export const enqueueForListener = async ({ listener, eventType, event, ctx, source = "event" }) => {
+  const agentless = isGitEvent(eventType) && listener.mode !== "agent" && listener.agentlessTaskType === "gitreview";
+  if (agentless) {
+    if (ctx.prNumber == null) {
+      console.log(`[listener] ${eventType}: "${listener.name}" (${listener.id}) skipped — the PR review engine needs a pull-request number`);
+      return null;
+    }
+    const r = await enqueueGitReviewRun({ listener, ctx });
+    return { ...r, taskType: "gitreview" };
+  }
+  const r = await enqueueListenerRun({ listener, eventType, event, ctx, source });
+  return { ...r, taskType: "listener" };
+};
+
+// ── The advisory `cognirunner.git` issue property ────────────────────────────
+
+export const GIT_PROPERTY_KEY = "cognirunner.git";
+export const GIT_PROPERTY_MAX_REPOS = 5;
+export const GIT_PROPERTY_MAX_BYTES = 2048;
+/** How many issue keys one delivery may touch (each is one Jira REST write). */
+export const GIT_PROPERTY_MAX_ISSUES = 5;
+
+/**
+ * THE PROPERTY IS ADVISORY. It is the last git state this app SAW, not a fact it can
+ * vouch for: anyone who can write issue properties can forge it, deliveries arrive out
+ * of order, and a missing property means "nothing seen", never "not merged". A workflow
+ * CONDITION may read it (it is cheap and it only decides what a screen shows); a
+ * VALIDATOR must verify live against the provider before it blocks anything. Say this
+ * next to every reader — plan §3.9.
+ *
+ * Pure, so the merge and the bounds are testable without Jira: returns the next value
+ * for one issue, given the previous one.
+ */
+export const mergeGitProperty = (previous, entry, now = nowIso()) => {
+  const prev = previous && typeof previous === "object" && previous.repos && typeof previous.repos === "object" ? previous.repos : {};
+  const repos = {};
+  for (const k of Object.keys(prev)) if (prev[k] && typeof prev[k] === "object") repos[k] = prev[k];
+  if (entry && entry.repoId) {
+    const before = repos[entry.repoId] || {};
+    const pr = { ...(before.pr || {}), ...(entry.pr || {}) };
+    // Only the keys a reader is documented to find, in a fixed order, each clamped.
+    repos[entry.repoId] = {
+      repoId: entry.repoId,
+      pr: {
+        number: pr.number == null ? null : Number(pr.number) || null,
+        state: pr.state ? String(pr.state).slice(0, 24) : null,
+        headSha: pr.headSha ? String(pr.headSha).slice(0, 64) : null,
+        ...(pr.merged === undefined ? {} : { merged: pr.merged === true }),
+        ...(pr.approved === undefined ? {} : { approved: pr.approved === true }),
+        ...(pr.build === undefined || pr.build === null ? {} : { build: String(pr.build).slice(0, 24) }),
+      },
+      updatedAt: now,
+    };
+  }
+  // Bounds, oldest first: the newest N repositories survive. A property that grows
+  // without a cap is a 32 KB failure on someone's busiest issue, months later.
+  const byAge = Object.keys(repos).sort((a, b) => String(repos[a].updatedAt || "").localeCompare(String(repos[b].updatedAt || "")));
+  while (byAge.length > GIT_PROPERTY_MAX_REPOS) delete repos[byAge.shift()];
+  let out = { version: 1, repos, updatedAt: now };
+  while (byAge.length > 1 && Buffer.byteLength(JSON.stringify(out), "utf8") > GIT_PROPERTY_MAX_BYTES) {
+    delete repos[byAge.shift()];
+    out = { version: 1, repos, updatedAt: now };
+  }
+  return out;
+};
+
+/**
+ * The git state this delivery carries, as the property entry for its repository.
+ * Returns null when the envelope says nothing about a pull request or a build.
+ */
+export const gitPropertyEntry = (envelope, ctx) => {
+  const repoId = ctx.repoId || null;
+  if (!repoId) return null;
+  const p = envelope || {};
+  const pr = p.pullRequest || null;
+  const check = p.check || null;
+  const review = p.review || null;
+  if (!pr && !check) return null;
+  const entry = { repoId, pr: {} };
+  if (pr) {
+    entry.pr.number = pr.number == null ? null : pr.number;
+    entry.pr.state = pr.state || (ctx.eventType === "git:pull_request:merged" ? "merged" : ctx.eventType === "git:pull_request:closed" ? "closed" : "open");
+    entry.pr.headSha = pr.headSha || null;
+    if (pr.merged !== undefined || ctx.eventType === "git:pull_request:merged") entry.pr.merged = pr.merged === true || ctx.eventType === "git:pull_request:merged";
+  }
+  if (review && review.state) entry.pr.approved = String(review.state).toLowerCase() === "approved";
+  if (check) {
+    entry.pr.build = check.conclusion || check.status || null;
+    if (!entry.pr.headSha && check.headSha) entry.pr.headSha = check.headSha;
+  }
+  return entry;
+};
+
+/**
+ * Write the advisory property on every issue key the delivery names (≤5).
+ *
+ * BEST EFFORT, ALWAYS: a failed property write must never fail the delivery or the
+ * runs it dispatches — the property is a convenience, the run is the product.
+ *
+ * This is the app's SECOND property writer and it is deliberate, not an oversight of
+ * LAW 1: the first one is `api.setProperty` inside index.js `createApi()`, a closure
+ * bound to ONE sandbox run's issue key, simulation flag and change ledger, and it is
+ * not exported or callable from here. Converging the two means lifting a plain
+ * `putIssueProperty(issueKey, key, value)` out of index.js — index.js is another
+ * surgeon's territory this commit, so the note is filed in the ledger (F-312) instead
+ * of a drive-by edit to a file two other agents are holding.
+ */
+export const writeGitIssueProperty = async (envelope, ctx) => {
+  const entry = gitPropertyEntry(envelope, ctx);
+  if (!entry) return { written: 0 };
+  const keys = (Array.isArray(ctx.issueKeys) && ctx.issueKeys.length ? ctx.issueKeys : (ctx.issueKey ? [ctx.issueKey] : []))
+    .filter((k) => typeof k === "string" && /^[A-Z][A-Z0-9_]*-\d+$/i.test(k))
+    .slice(0, GIT_PROPERTY_MAX_ISSUES);
+  let written = 0;
+  for (const issueKey of keys) {
+    try {
+      let previous = null;
+      const got = await api.asApp().requestJira(route`/rest/api/3/issue/${issueKey}/properties/${GIT_PROPERTY_KEY}`, { headers: { Accept: "application/json" } });
+      if (got.ok) { const body = await got.json(); previous = body && body.value; }
+      const next = mergeGitProperty(previous, entry);
+      const res = await api.asApp().requestJira(route`/rest/api/3/issue/${issueKey}/properties/${GIT_PROPERTY_KEY}`, {
+        method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(next),
+      });
+      if (res.ok) written++;
+      else console.warn(`[git-event] ${GIT_PROPERTY_KEY} write on ${issueKey} returned ${res.status}`);
+    } catch (e) {
+      console.warn(`[git-event] ${GIT_PROPERTY_KEY} write on ${issueKey} failed:`, e && e.message);
+    }
+  }
+  return { written, entry };
+};
+
+// ── The git delivery (webhook → queue taskType "git-event" → here) ───────────
+
+/**
+ * A VERIFIED git webhook delivery, dispatched on the CONSUMER (120 s), never on the
+ * webhook itself: the provider abandons a delivery in ~10 s, and matching costs a
+ * storage read, a full record read per candidate and a Jira write per advisory issue.
+ *
+ * It is a MATCHER, exactly like listenerTrigger — it reads the index, filters, takes
+ * the brakes and pushes onto the queue. NO AI runs here (which is why "git-event" is
+ * absent from AI_TASK_TYPES and costs the token governor nothing); every model call
+ * happens in the listener/gitreview task this enqueues.
+ *
+ * The matching itself is listenerTrigger's, called with the envelope as the event:
+ * repo allow-list, ignoreSelf-by-whoami, the static filters and the 30/120-per-5-min
+ * brakes are ONE implementation, not a git-shaped copy of them.
+ */
+export const dispatchGitEvent = async (envelope) => {
+  const eventType = envelope && envelope.eventType;
+  if (!eventType || !isGitEvent(eventType)) {
+    console.warn(`[git-event] ignored: ${eventType || "(no eventType)"} is not a git event id`);
+    return { skipped: "not-a-git-event" };
+  }
+  const ctx = extractEventContext(eventType, envelope);
+  // The property first: it describes the delivery, not the runs, so an instance with
+  // no listener at all still gets the advisory state its conditions read.
+  const property = await writeGitIssueProperty(envelope, ctx);
+  const dispatched = await listenerTrigger(envelope, null);
+  return { eventType, repoId: ctx.repoId, propertyWrites: property.written, queued: (dispatched && dispatched.queued) || 0 };
+};
+
 // ── The trigger (manifest `trigger` modules → here) ──────────────────────────
 
 /**
@@ -529,11 +760,11 @@ export const enqueueListenerRun = async ({ listener, eventType, event, ctx, sour
 export async function listenerTrigger(event, context) {
   const started = Date.now();
   const eventType = event && event.eventType;
-  if (!eventType || !isKnownEvent(eventType)) return;
+  if (!eventType || !isKnownEvent(eventType)) return { queued: 0 };
   let rows;
-  try { rows = await readListenerIndex({ cached: true }); } catch (e) { console.error("[listener] index read failed:", e && e.message); return; }
+  try { rows = await readListenerIndex({ cached: true }); } catch (e) { console.error("[listener] index read failed:", e && e.message); return { queued: 0 }; }
   const candidates = rows.filter((r) => r.enabled !== false && Array.isArray(r.events) && r.events.includes(eventType));
-  if (!candidates.length) return;
+  if (!candidates.length) return { queued: 0 };
 
   const ctx = extractEventContext(eventType, event);
   // id-only payloads: resolve the issue key once, only when someone listens.
@@ -564,7 +795,7 @@ export async function listenerTrigger(event, context) {
   // this slice drops are the NEWEST ones — the listener someone just saved and is testing
   // is the first to disappear, and silence there looks exactly like "my listener is broken".
   if (matched.length > shortlisted.length) console.warn(`[listener] ${eventType}: ${matched.length} listeners matched but only ${MAX_CANDIDATES_PER_EVENT} run per event — ${matched.length - shortlisted.length} skipped (the index is append-ordered, so the newest listeners are the ones dropped)`);
-  if (!shortlisted.length) return;
+  if (!shortlisted.length) return { queued: 0 };
 
   const jqlCache = new Map();
   let queued = 0;
@@ -602,8 +833,9 @@ export async function listenerTrigger(event, context) {
       if (ib.count >= BRAKE_MAX_PER_ISSUE) { await bumpBrake(ib); if (ib.count === BRAKE_MAX_PER_ISSUE) await logBrake(full, ctx, `issue ${ctx.issueKey} triggered more than ${BRAKE_MAX_PER_ISSUE} listener runs in 5 minutes`); continue; }
     }
     try {
-      const { taskId } = await enqueueListenerRun({ listener: full, eventType, event, ctx: { ...ctx, jqlPending }, source: "event" });
-      console.log(`[listener] ${eventType}: "${full.name}" (${full.id}) queued as ${taskId}${ctx.issueKey ? ` for ${ctx.issueKey}` : ""}`);
+      const enq = await enqueueForListener({ listener: full, eventType, event, ctx: { ...ctx, jqlPending }, source: "event" });
+      if (!enq) continue;
+      console.log(`[listener] ${eventType}: "${full.name}" (${full.id}) queued as ${enq.taskId} (${enq.taskType})${ctx.issueKey ? ` for ${ctx.issueKey}` : ""}`);
       queued++;
       await bumpBrake(lb);
       if (ib) await bumpBrake(ib);
@@ -612,6 +844,9 @@ export async function listenerTrigger(event, context) {
     }
   }
   if (queued) console.log(`[listener] ${eventType}: queued ${queued} run(s) in ${Date.now() - started}ms`);
+  // The count is for the CALLER's report (dispatchGitEvent logs it for a webhook
+  // delivery). Forge ignores a trigger's return value.
+  return { queued };
 }
 
 const logBrake = async (listener, ctx, why) => {

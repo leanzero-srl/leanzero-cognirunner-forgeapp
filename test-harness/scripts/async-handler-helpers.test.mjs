@@ -971,6 +971,33 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
 }
 
 // =====================================================================================
+// 1.4 commit 5c — the git-event consumer: a delivery becomes RUNS, and spends nothing.
+// =====================================================================================
+{
+  const g = asyncSrc.slice(asyncSrc.indexOf("const executeGitEvent = async"), asyncSrc.indexOf("// === Task registry"));
+  ok(/params && params\.envelope/.test(g), "the handler reads the 5a envelope from params.envelope");
+  ok(/await dispatchGitEvent\(envelope\)/.test(g), "…and delegates to listeners.js — matching, brakes and ignoreSelf have ONE home");
+  ok(!/callAIChat|callModel|reviewPullRequest/.test(g), "the dispatch makes NO model call: the AI runs in the task it enqueues");
+  ok(!/AI_TASK_TYPES = new Set\(\[[^\]]*git-event/.test(asyncSrc), "git-event is NOT an AI task — pacing a matcher would delay deliveries, not spend");
+  const aiTypes = new Set(eval(asyncSrc.match(/export const AI_TASK_TYPES = new Set\(([\s\S]*?)\);/)[1]));
+  ok(!aiTypes.has("git-event") && aiTypes.has("gitreview"), "EXECUTED: the governor paces the review, never the delivery");
+  ok(UNPOLLED_TASKS.has("git-event"), "nothing polls a delivery — no orphan async_task row");
+
+  // EXECUTED: the real handler source over a stubbed dispatch.
+  const logs = [];
+  const quiet = { log: (...a) => logs.push(a.join(" ")), warn: (...a) => logs.push(a.join(" ")), error: (...a) => logs.push(a.join(" ")) };
+  const mk = (dispatch) => new Function("dispatchGitEvent", "console", `return (${g.slice(g.indexOf("async (params)"), g.lastIndexOf("};") + 1)});`)(dispatch, quiet);
+  let seen = null;
+  const okHandler = mk(async (env) => { seen = env; return { eventType: env.eventType, repoId: "o/r", queued: 2, propertyWrites: 1 }; });
+  const r1 = await okHandler({ envelope: { eventType: "git:pull_request:opened", repoId: "o/r" } });
+  ok(r1.success === true && r1.queued === 2 && seen.eventType === "git:pull_request:opened", "EXECUTED: the envelope reaches the dispatcher and the result is reported");
+  const r2 = await okHandler({});
+  ok(r2.success === false && /envelope/.test(r2.error), "EXECUTED: a delivery with no envelope is a reported failure, not a silent success");
+  const r3 = await mk(async () => { throw new Error("kvs down"); })({ envelope: { eventType: "git:push" } });
+  ok(r3.success === false && /kvs down/.test(r3.error), "EXECUTED: a dispatch throw is caught and surfaced — the provider already got its 2xx");
+}
+
+// =====================================================================================
 // F-122 — a cancel must be distinguishable from a failure by a FLAG, not a string.
 // =====================================================================================
 {

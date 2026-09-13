@@ -38,7 +38,7 @@ import { kvs as storage } from "@forge/kvs";
 import api, { route } from "@forge/api";
 import { validateCron, normalizeTimeZone, dueInWindow, nextRuns, describeCron, fireIdentity } from "./shared/cron.js";
 import { assertAllowedActions, DEFAULT_AGENT_ACTIONS, DEFAULT_AGENT_ROUNDS, MAX_AGENT_ROUNDS } from "./shared/agent-actions.js";
-import { normalizeStep } from "./listeners.js";
+import { normalizeStep, normalizeSavedByRole } from "./listeners.js";
 import { agentResultFields, SCOPED_AGENT_SUMMARY_BUDGET_BYTES, boundScopedJobLog } from "./shared/agent-result.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
 import { JOB_STATS_KEY, statsForRule, statsReceipt, deleteRuleWithStats, recoverRuleStats } from "./rule-stats.js";
@@ -75,7 +75,7 @@ const safeKeyPart = (s) => String(s).replace(/[^a-zA-Z0-9:._#-]/g, "-").slice(0,
 
 // ── Validation / normalisation ───────────────────────────────────────────────
 
-export const normalizeJob = (input = {}, { existing = null, accountId = null, gate = undefined } = {}) => {
+export const normalizeJob = (input = {}, { existing = null, accountId = null, gate = undefined, savedByRole = "editor" } = {}) => {
   const src = input && typeof input === "object" ? input : {};
   const id = existing ? existing.id : (typeof src.id === "string" && /^[A-Za-z0-9_.-]{3,80}$/.test(src.id) ? src.id : newJobId());
   const name = clampStr(src.name, 120).trim();
@@ -111,6 +111,11 @@ export const normalizeJob = (input = {}, { existing = null, accountId = null, ga
     schedule, scope, mode, functions, agent,
     simulationMode: src.simulationMode === true,
     suppressNotifications: src.suppressNotifications === true,
+    // The saver's role, recorded at save time — see normalizeSavedByRole in
+    // listeners.js for why a stored field and not a live check, and why the default
+    // is the least-privileged one. A job holds no verdict actions today; the field is
+    // here so BOTH rule kinds answer "who armed this" the same way, from one home.
+    savedByRole: normalizeSavedByRole(savedByRole),
     createdBy: existing ? existing.createdBy || accountId || null : accountId || null,
     createdAt: existing ? existing.createdAt || nowIso() : nowIso(),
     updatedAt: nowIso(),
@@ -159,9 +164,9 @@ const touchSched = async (id) => {
   try { const m = await readSchedMap(); m[id] = { ...(m[id] || {}), lastCheckedAt: nowIso() }; await writeSchedMap(m); } catch (e) { console.warn("[job] sched touch skipped:", e && e.message); }
 };
 
-export const saveJob = async (input, { accountId = null, gate = undefined } = {}) => {
+export const saveJob = async (input, { accountId = null, gate = undefined, savedByRole = "editor" } = {}) => {
   const existing = input && input.id ? await getJob(input.id) : null;
-  const full = normalizeJob(input, { existing, accountId, gate });
+  const full = normalizeJob(input, { existing, accountId, gate, savedByRole });
   delete full.stats;
   const rows = await readJobIndex();
   const at = rows.findIndex((r) => r.id === full.id);

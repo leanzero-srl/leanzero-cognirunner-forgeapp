@@ -4,6 +4,9 @@
   "private": true,
   "type": "module",
   "description": "UNTRACKED throwaway harness to screenshot/record the CogniRunner UIs standalone.",
+  "scripts": {
+    "test:offline": "node refusal-contract.test.mjs && node mirror-va-css.test.mjs"
+  },
   "dependencies": {
     "playwright": "^1.57.0"
   }

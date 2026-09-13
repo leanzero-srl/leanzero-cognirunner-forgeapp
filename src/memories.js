@@ -274,15 +274,28 @@ const refreshMemoryStoreFull = async (arr) => {
   }
 };
 
-export const loadMemories = async () => {
+/**
+ * Read the store, SAYING whether the read faulted (F-188).
+ *
+ * `loadMemories` is deliberately fail-OPEN: a KVS blip must never take a prompt block
+ * or a resolver down, so it logs and answers `[]`. That is right for a READER and wrong
+ * for anything that makes a WRITE DECISION by comparing "what is stored" with "what we
+ * are about to store": with `[]` standing in for an unread store, `prior` is 2 bytes and
+ * every row looks brand-new, so saveMemories classified an ordinary delete as a store
+ * full of insertions and refused it. This variant is for the write path; every read-only
+ * caller keeps `loadMemories` and its fail-open behaviour.
+ */
+export const loadMemoriesResult = async () => {
   try {
     const stored = await storage.get(MEMORIES_KEY);
-    return Array.isArray(stored) ? stored : [];
+    return { memories: Array.isArray(stored) ? stored : [], faulted: false };
   } catch (error) {
     console.error("Failed to load memories:", error);
-    return [];
+    return { memories: [], faulted: true };
   }
 };
+
+export const loadMemories = async () => (await loadMemoriesResult()).memories;
 
 // Prune priority among AUTO-captured rows: lowest (confidence + 0.1 × min(
 // reinforcements, 5)) first, oldest updatedAt as the tie-break. User-authored
@@ -452,33 +465,44 @@ export const saveMemories = async (arr, { protectId = null, refuseIfOverBytes = 
   const { out: pruned, evicted, protectedKept, reason } = pruneForSave(arr, protectId);
   let out = pruned;
   if (!protectId && serializedBytes(out) >= MEMORY_MAX_SERIALIZED_BYTES) {
-    const stored = await loadMemories();
-    const prior = priorBytes === null || priorBytes === undefined ? serializedBytes(stored) : priorBytes;
-    if (serializedBytes(out) > prior) {
-      // Growing an already-over-guard store. Isolate the CONTENT growth: any row whose
-      // text got longer than the text currently in KVS.
-      const byId = new Map(stored.map((m) => [m.id, m]));
-      const grew = [];
-      const repaired = out.map((m) => {
-        const old = byId.get(m.id);
-        if (!old || old.content === m.content) return m;
-        if (utf8Len(String(m.content ?? "")) <= utf8Len(String(old.content ?? ""))) return m;
-        grew.push(m.id);
-        return { ...m, content: old.content };
-      });
-      if (grew.length && refuseIfOverBytes) return { memories: null, refused: true, reason: "bytes", evicted: [] };
-      if (grew.length) {
-        console.warn(`memories: at the ${MEMORY_MAX_SERIALIZED_BYTES}B guard — kept the stored text for ${grew.length} row(s) (${grew.join(", ")}); the reinforcement was still recorded`);
-        out = repaired;
+    const read = await loadMemoriesResult();
+    const stored = read.memories;
+    // F-188: a FAULTED read is not an empty store. Comparing against the 2 bytes of `[]`
+    // makes every row look like an insertion, which turned a delete — the one repair an
+    // admin has — into a `{ refused: true, reason: "bytes" }` that the resolver then
+    // reported as success. With no trustworthy prior there is nothing to compare, so the
+    // growth analysis is SKIPPED and the write goes ahead as a plain write of known size;
+    // the platform ceiling below still refuses anything KVS would reject outright.
+    if (read.faulted) {
+      console.warn(`memories: could not read the stored value to classify this ${out.length}-row write (${serializedBytes(out)}B) — the byte-growth check is skipped for it`);
+    } else {
+      const prior = priorBytes === null || priorBytes === undefined ? serializedBytes(stored) : priorBytes;
+      if (serializedBytes(out) > prior) {
+        // Growing an already-over-guard store. Isolate the CONTENT growth: any row whose
+        // text got longer than the text currently in KVS.
+        const byId = new Map(stored.map((m) => [m.id, m]));
+        const grew = [];
+        const repaired = out.map((m) => {
+          const old = byId.get(m.id);
+          if (!old || old.content === m.content) return m;
+          if (utf8Len(String(m.content ?? "")) <= utf8Len(String(old.content ?? ""))) return m;
+          grew.push(m.id);
+          return { ...m, content: old.content };
+        });
+        if (grew.length && refuseIfOverBytes) return { memories: null, refused: true, reason: "bytes", evicted: [] };
+        if (grew.length) {
+          console.warn(`memories: at the ${MEMORY_MAX_SERIALIZED_BYTES}B guard — kept the stored text for ${grew.length} row(s) (${grew.join(", ")}); the reinforcement was still recorded`);
+          out = repaired;
+        }
+        // Growth that the revert cannot undo — rows this save ADDS. There is no old text to
+        // fall back to, so the write is refused outright rather than handed to KVS, which
+        // rejects anything over 245 760 B anyway (and leaves the caller with an exception
+        // instead of an answer).
+        if (out.some((m) => !byId.has(m.id)) && serializedBytes(out) > prior) {
+          return { memories: null, refused: true, reason: "bytes", evicted: [] };
+        }
+        // Whatever delta is left is metadata (F-184) — always allowed.
       }
-      // Growth that the revert cannot undo — rows this save ADDS. There is no old text to
-      // fall back to, so the write is refused outright rather than handed to KVS, which
-      // rejects anything over 245 760 B anyway (and leaves the caller with an exception
-      // instead of an answer).
-      if (out.some((m) => !byId.has(m.id)) && serializedBytes(out) > prior) {
-        return { memories: null, refused: true, reason: "bytes", evicted: [] };
-      }
-      // Whatever delta is left is metadata (F-184) — always allowed.
     }
   }
   await storage.set(MEMORIES_KEY, out);

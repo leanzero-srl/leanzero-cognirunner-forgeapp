@@ -7197,6 +7197,16 @@ const MEMORY_CONFIDENCE_BY_SOURCE = { user: 1.0, fix: 0.8, test: 0.6 };
 const cleanProjectKey = (projectKey) =>
   (projectKey ? String(projectKey).trim().toUpperCase().substring(0, 20) : null);
 
+/**
+ * The ONE place a `saveMemories` refusal becomes a sentence for the Memories tab (F-188).
+ *
+ * Every memory resolver that writes must honour the return value — a refusal is a write
+ * that DID NOT HAPPEN — and every one of them renders the same wording for the same
+ * reason code. The sentences themselves live in src/shared/registry-limits.js; nothing
+ * about a limit is retyped here.
+ */
+const memoryRefusalMessage = (saved) => memoryCapRefusalMessage(saved?.reason);
+
 resolver.define("getMemories", async () => {
   try {
     // F-167/F-169: the Memories tab reads `settings.storeFull` from THIS resolver
@@ -7284,7 +7294,7 @@ resolver.define("updateMemory", async ({ payload, context }) => {
     // Archive was a one-way door.
     const saved = await saveMemories(memories, { refuseIfOverBytes: true, priorBytes });
     if (saved.refused) {
-      return { success: false, stored: false, reason: saved.reason, evicted: [], error: memoryCapRefusalMessage(saved.reason) };
+      return { success: false, stored: false, reason: saved.reason, evicted: [], error: memoryRefusalMessage(saved) };
     }
     return { success: true, evicted: [] };
   } catch (error) {
@@ -7304,7 +7314,16 @@ resolver.define("deleteMemory", async ({ payload, context }) => {
     if (next.length === memories.length) return { success: false, error: "Memory not found" };
     // F-178: a delete only ever SHRINKS the store, so it always proceeds — and, with no
     // newcomer to make room for, it evicts nothing on the way.
-    await saveMemories(next);
+    // F-188: "proceeds" is a claim about the GUARD, not a guarantee that the write happened.
+    // saveMemories can still answer `{ refused: true }` (a faulted prior read used to make
+    // every row look new; an over-platform-cap value cannot be handed to KVS at all), and
+    // this resolver used to drop that answer on the floor and report success for a delete
+    // that wrote nothing — on the very screen the store-full banner sends the admin to.
+    // Every caller honours the return.
+    const saved = await saveMemories(next);
+    if (saved.refused) {
+      return { success: false, stored: false, reason: saved.reason, evicted: [], error: memoryRefusalMessage(saved) };
+    }
     return { success: true, evicted: [] };
   } catch (error) {
     console.error("Failed to delete memory:", error);
@@ -17002,7 +17021,13 @@ export const dispatchPostFunction = async (issueKey, config, extensionKey, pfDea
               if (known) {
                 known.reinforcements = (known.reinforcements || 0) + 1;
                 known.updatedAt = new Date().toISOString();
-                await saveMemories(memories);
+                // F-188: honour the return even on this fire-and-forget path — a silent
+                // refusal here is an instance that has stopped recording reinforcements
+                // with nothing in the logs to say so.
+                const reinforceSave = await saveMemories(memories);
+                if (reinforceSave.refused) {
+                  console.warn(`Memory auto-capture: reinforcement of ${known.id} NOT stored (${reinforceSave.reason || "unknown"}) — the memory store refused the write`);
+                }
               } else if (!(await claimRuleExecution(
                 storage, `memdistill_attempt:${errorSig}`, { ttl: { value: 6, unit: "HOURS" } }, "memdistill"))) {
                 // F-120 — a distill that FAILS writes no memory, so this signature stays

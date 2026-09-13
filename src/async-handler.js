@@ -848,7 +848,12 @@ Error: ${defangFence(String(error).substring(0, 2000))}${recommendation ? `\nRec
         target.content = parsed.content.trim().substring(0, MEMORY_DISTILL_CONTENT_MAX);
       }
       target.updatedAt = new Date().toISOString();
-      await saveMemories(all);
+      // F-188: a refusal is a write that did not happen — never report a merge for it.
+      const mergeSave = await saveMemories(all);
+      if (mergeSave.refused) {
+        console.warn(`memory_distill: merge into ${target.id} NOT stored (${mergeSave.reason || "unknown"}) — the memory store refused the write`);
+        return { success: true, stored: false, reason: mergeSave.reason || "bytes", skipped: "memory store full" };
+      }
       return { success: true, id: target.id, merged: true };
     }
     // Named memory vanished (pruned/deleted) — fall through to save as new.

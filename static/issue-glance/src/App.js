@@ -185,6 +185,26 @@ const injectStyles = () => {
     .coder-composer-row { display: flex; align-items: center; gap: 8px; }
     .coder-composer-row .coder-btn-go { margin-left: auto; }
     .coder-picker { position: relative; }
+    /* F-463: the skills a conversation runs with. The skills hue is #7c3aed (dark #8b5cf6)
+       everywhere in this app, so a chosen chip is that colour SOLID with white text; an
+       unchosen one is the neutral card with a full 1px border. No rail, no tint, and the
+       disabled state is a solid neutral rather than a faded copy of the live chip. */
+    .coder-skills { display: flex; flex-direction: column; gap: 6px; }
+    .coder-skills-toggle { align-self: flex-start; display: inline-flex; align-items: center; gap: 7px; font: inherit; font-size: 11.5px; font-weight: 700; padding: 4px 10px; border-radius: 6px; cursor: pointer; border: 1px solid var(--border-color); background: var(--card-bg); color: var(--text-color); }
+    .coder-skills-toggle:hover:not(:disabled) { border-color: var(--text-secondary); }
+    .coder-skills-toggle:disabled { cursor: default; color: var(--text-muted); }
+    .coder-skills-count { font-size: 10px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-muted); }
+    .coder-skills-chosen, .coder-skill-list { display: flex; flex-wrap: wrap; gap: 6px; }
+    .coder-skill-list { max-height: 132px; overflow-y: auto; }
+    .coder-skill-chip { font: inherit; font-size: 11px; font-weight: 700; padding: 4px 10px; border-radius: 999px; cursor: pointer; border: 1px solid var(--border-color); background: var(--card-bg); color: var(--text-secondary); }
+    .coder-skill-chip:hover:not(:disabled) { border-color: var(--text-secondary); }
+    .coder-skill-chip.is-on { background: #7c3aed; border-color: #7c3aed; color: #fff; }
+    html[data-color-mode="dark"] .coder-skill-chip.is-on { background: #8b5cf6; border-color: #8b5cf6; color: #fff; }
+    .coder-skill-chip:disabled { cursor: default; background: var(--code-bg); color: var(--text-muted); }
+    .coder-skill-chip.is-on:disabled { background: #7c3aed; border-color: #7c3aed; color: #fff; }
+    html[data-color-mode="dark"] .coder-skill-chip.is-on:disabled { background: #8b5cf6; border-color: #8b5cf6; color: #fff; }
+    span.coder-skill-chip { cursor: default; }
+    .coder-skills-note { margin: 0; font-size: 11px; font-weight: 600; color: var(--text-secondary); }
     /* F-371: why the Dry run switch is not a choice any more. A plain sentence in the
        app's own secondary text, never a tinted callout and never a rail. */
     .coder-lock-note { margin: 0; font-size: 11.5px; font-weight: 600; color: var(--text-secondary); }

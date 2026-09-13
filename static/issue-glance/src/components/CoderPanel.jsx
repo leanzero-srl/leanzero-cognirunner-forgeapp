@@ -89,6 +89,21 @@ const readThreads = (issueKey) => {
 const writeThreads = (issueKey, rows) => {
   try { window.localStorage.setItem(threadsKey(issueKey), JSON.stringify(rows.slice(0, THREAD_MEMORY_CAP))); } catch (e) { /* the switcher is a convenience; losing it is not a failure */ }
 };
+
+/* F-463 - THE SKILLS A CONVERSATION RUNS WITH.
+   `startCoderTurn` takes `skillIds` (at most MAX_TURN_SKILLS, validated backend-side), and
+   the choice belongs to the CONVERSATION, not to the panel: a skill picked for a Forge-app
+   plan means nothing in the next conversation about a different repository. So the ids ride
+   the SAME per-viewer localStorage rows the thread switcher already keeps, keyed by thread,
+   and a new conversation starts with none. Nothing here is a record: the backend stores no
+   selection, and a browser that cannot read its own storage simply starts empty every time,
+   which is why every access is wrapped exactly as the rows above are. */
+const MAX_TURN_SKILLS = 4;
+const readThreadSkills = (issueKey, threadId) => {
+  const row = readThreads(issueKey).find((r) => r.id === threadId);
+  const ids = row && Array.isArray(row.skillIds) ? row.skillIds : [];
+  return ids.filter((v) => typeof v === "string").slice(0, MAX_TURN_SKILLS);
+};
 /* The label is the only place a thread id influences copy, and it never PRINTS the id: a
    minted id carries its own timestamp, so the chip can say when the conversation started,
    and the default one is simply the first. */
@@ -180,6 +195,12 @@ export default function CoderPanel({ issueKey, accountId }) {
   const defaultThreadId = threadIdFor(accountId);
   const [threadId, setThreadId] = useState(defaultThreadId);
   const [knownThreads, setKnownThreads] = useState([]);
+  /* F-463 - the skills offered, and the ones this conversation runs with. An unreadable or
+     refused `getSkills` leaves `skills` empty, which renders NO picker: a control with
+     nothing in it is a question the reader cannot answer. */
+  const [skills, setSkills] = useState([]);
+  const [skillIds, setSkillIds] = useState([]);
+  const [skillsOpen, setSkillsOpen] = useState(false);
   /* F-371: how many turns the OPEN conversation has. Read off the thread record, because
      the record is what the engine locks the simulation flag against - not anything this
      panel remembers. 0 means the flag is still a choice. */
@@ -309,6 +330,31 @@ export default function CoderPanel({ issueKey, accountId }) {
     return () => { cancelled = true; };
   }, [capEnabled]);
 
+  /* F-463 - the skills list, read once the capability is on and never per conversation
+     (the catalogue does not depend on which thread is open). `getSkills` sits behind the
+     viewer floor and can answer "not you"; that is a SETTLED answer and leaves the panel
+     exactly where it was before the picker existed - a composer with no skills control -
+     rather than a refusal banner for something nobody asked for. Disabled builtins come
+     back in the index and must not be offered. */
+  useEffect(() => {
+    if (!capEnabled) return undefined;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await invoke("getSkills");
+        if (cancelled || !mountedRef.current) return;
+        if (res && res.success && Array.isArray(res.skills)) {
+          setSkills(res.skills.filter((sk) => sk && sk.id && sk.enabled !== false));
+        }
+      } catch (e) { /* no picker, same as a refusal */ }
+    })();
+    return () => { cancelled = true; };
+  }, [capEnabled]);
+
+  /* The conversation's own selection, restored when the thread changes (including the
+     first render, where it restores what this browser had on the default thread). */
+  useEffect(() => { setSkillIds(readThreadSkills(issueKey, threadId)); }, [issueKey, threadId]);
+
   /* ------------------------------------------------------------------- polling */
   const applyResult = useCallback((result) => {
     const r = result || {};
@@ -408,6 +454,40 @@ export default function CoderPanel({ issueKey, accountId }) {
     switchThread(id);
   };
 
+  /* F-463 - picking a skill. The cap is enforced HERE as well as in the resolver, because
+     a control that lets you pick a fifth and then reports a refusal is a control that lied:
+     the fifth chip is simply not selectable, and the note under the list says why. The
+     selection is written back onto this thread's row in the same store the switcher uses;
+     a row for the default thread is minted on first pick, because a viewer who has never
+     started a second conversation has no row yet. */
+  const toggleSkill = (id) => {
+    const next = skillIds.includes(id)
+      ? skillIds.filter((v) => v !== id)
+      : (skillIds.length >= MAX_TURN_SKILLS ? skillIds : [...skillIds, id]);
+    if (next === skillIds) return;
+    setSkillIds(next);
+    const rows = knownThreads.some((r) => r.id === threadId)
+      ? knownThreads.map((r) => (r.id === threadId ? { ...r, skillIds: next } : r))
+      : [{ id: threadId, at: null, skillIds: next }, ...knownThreads];
+    const capped = rows.slice(0, THREAD_MEMORY_CAP);
+    setKnownThreads(capped);
+    writeThreads(issueKey, capped);
+  };
+
+  /* The names of the ids a turn was refused for. `unknown-skill` is a refusal about a
+     SKILL, so it is told with the skill's NAME: an id on screen is the resolver's
+     vocabulary and tells the reader nothing about which pick to drop. A skill the panel
+     no longer knows (deleted while the conversation was open) is named as deleted, which
+     is the honest answer and the reason the refusal arrived. */
+  const skillNameFor = (id) => (skills.find((sk) => sk.id === id) || {}).name || "a skill that no longer exists";
+  const unknownSkillText = (res) => {
+    const listed = [res && res.unknownSkillIds, res && res.unknown].find((v) => Array.isArray(v) && v.length);
+    const ids = listed || skillIds.filter((id) => !skills.some((sk) => sk.id === id));
+    if (!ids.length) return String((res && res.error) || "One of the chosen skills could not be used. Pick them again and send.");
+    const names = ids.map(skillNameFor);
+    return `${names.join(", ")} could not be used: ${names.length === 1 ? "it is" : "they are"} no longer in this instance's skills. Drop ${names.length === 1 ? "it" : "them"} and send again.`;
+  };
+
   /* --------------------------------------------------------------------- send */
   const send = async () => {
     const text = draft.trim();
@@ -424,6 +504,9 @@ export default function CoderPanel({ issueKey, accountId }) {
         issueKey, message: text, threadId,
         simulation: simulation === true,
         connectionId: connectionId || undefined,
+        // F-463 - only ever sent when the reader picked something, and never more than the
+        // resolver accepts. An empty array would be a key nothing reads.
+        skillIds: skillIds.length ? skillIds.slice(0, MAX_TURN_SKILLS) : undefined,
       });
       if (!mountedRef.current || genRef.current !== token) return;
       if (isUpgradeRequired(res)) { setRefusal(res); setCapState("upgrade"); setRunning(false); return; }
@@ -431,6 +514,17 @@ export default function CoderPanel({ issueKey, accountId }) {
       if (res && res.agentDisabled) { setCap({ enabled: false, reason: res.reason || "unknown" }); setRunning(false); return; }
       /* The engine answers this from the QUEUE (applyResult below), but the resolver may
          grow a synchronous arm for it, and a raw reason code on screen is the defect. */
+      /* F-463 - the skills half of the refusal family. `unknown-skill` is a settled answer
+         about the PICK, not an outage, so it names the skills rather than printing a
+         reason code, and the message the reader typed is kept in the box (the composer
+         cleared it optimistically) so sending again is one click, not a retype. */
+      if (res && res.reason === "unknown-skill") {
+        setError(unknownSkillText(res));
+        setMessages((prev) => prev.filter((m, i) => !(i === prev.length - 1 && m.role === "user" && m.content === text)));
+        setDraft(text);
+        setRunning(false);
+        return;
+      }
       if (res && res.reason === "simulation-locked") {
         if (typeof res.simulation === "boolean") setSimulation(res.simulation);
         setTurns((n) => (n > 0 ? n : 1));
@@ -684,6 +778,60 @@ export default function CoderPanel({ issueKey, accountId }) {
           aria-label="Message for the Coder"
           disabled={busy}
         />
+        {/* F-463 - THE SKILLS THIS CONVERSATION RUNS WITH.
+            A hand-rolled multi-select: one solid chip per skill, pressed state carried by
+            aria-pressed, never a native <select> and never a checkbox. It is COLLAPSED to a
+            summary until asked for, because the composer is an issue-panel and a catalogue
+            of skills would push the text box off it; the summary names the chosen ones, so
+            the picks are readable without opening anything. No picker at all when the
+            instance has no skills to offer or the read was refused. */}
+        {skills.length > 0 && (
+          <div className="coder-skills">
+            <button
+              type="button"
+              className="coder-skills-toggle"
+              aria-expanded={skillsOpen}
+              onClick={() => setSkillsOpen((v) => !v)}
+              disabled={busy}
+            >
+              Skills
+              <span className="coder-skills-count">{skillIds.length ? `${skillIds.length} of ${MAX_TURN_SKILLS}` : "none"}</span>
+            </button>
+            {skillIds.length > 0 && (
+              <div className="coder-skills-chosen">
+                {skillIds.map((id) => (
+                  <span className="coder-skill-chip is-on" key={id}>{skillNameFor(id)}</span>
+                ))}
+              </div>
+            )}
+            {skillsOpen && (
+              <div className="coder-skill-list" role="group" aria-label="Skills for this conversation">
+                {skills.map((sk) => {
+                  const on = skillIds.includes(sk.id);
+                  return (
+                    <button
+                      key={sk.id}
+                      type="button"
+                      className={`coder-skill-chip${on ? " is-on" : ""}`}
+                      aria-pressed={on}
+                      onClick={() => toggleSkill(sk.id)}
+                      disabled={busy || (!on && skillIds.length >= MAX_TURN_SKILLS)}
+                    >
+                      {sk.name}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+            {skillsOpen && (
+              <p className="coder-skills-note">
+                {skillIds.length >= MAX_TURN_SKILLS
+                  ? `That is the most a turn can carry: ${MAX_TURN_SKILLS} skills. Unpick one to choose another.`
+                  : `Up to ${MAX_TURN_SKILLS} skills ride every turn in this conversation. Start a new conversation to pick a different set.`}
+              </p>
+            )}
+          </div>
+        )}
         {showPicker && (
           <div className="coder-picker">
             <CustomSelect

@@ -55,6 +55,8 @@ const ok = (cond, msg) => { if (cond) { pass++; } else { fail++; console.log("  
 const HUE = {
   agents: { light: "rgb(180, 83, 9)", dark: "rgb(245, 158, 11)" },
   slate: { light: "rgb(71, 85, 105)", dark: "rgb(100, 116, 139)" },
+  // F-463 - the SKILLS hue, the one the knowledge panel and the rule form already use.
+  skills: { light: "rgb(124, 58, 237)", dark: "rgb(139, 92, 246)" },
 };
 
 const browser = await chromium.launch();
@@ -650,6 +652,95 @@ try {
       await designRules(page, id);
       ok(errors.length === 0, `${id} no page errors: ${errors.join(" | ")}`);
       if (SHOTS) await page.locator(".glance").screenshot({ path: path.join(OUT, `coder-editor-picker-${theme}.png`) });
+    });
+
+    /* ------------------------------------ 11. F-463: the SKILLS a conversation runs with.
+       `buildCoderKnowledge`'s skills half never ran, because no surface ever sent
+       `skillIds`: a skill written for Forge app generation was ignored by the Coder. The
+       composer now carries a picker, and what it must prove is (a) the ids actually reach
+       `startCoderTurn`, (b) the cap is enforced by the CONTROL rather than reported after
+       the fact, (c) the selection belongs to the CONVERSATION, and (d) it is the app's own
+       multi-select - chips with aria-pressed, no native control anywhere. */
+    await withPanel({ __THEME__: theme }, async (page, errors) => {
+      const id = `skills/${theme}`;
+      await page.locator(".coder-composer").waitFor({ timeout: 10000 });
+      // Collapsed by default: an issue panel cannot spend its height on a catalogue.
+      ok(await page.locator(".coder-skills-toggle").count() === 1, `${id} the composer offers a Skills control`);
+      ok(await page.locator(".coder-skill-list").count() === 0, `${id} the list is collapsed until asked for`);
+      ok(/none/i.test(await page.locator(".coder-skills-toggle").innerText()), `${id} the summary says nothing is picked`);
+      await page.locator(".coder-skills-toggle").click();
+      await page.locator(".coder-skill-list").waitFor({ timeout: 6000 });
+      const chips = page.locator(".coder-skill-list .coder-skill-chip");
+      ok(await chips.count() === 6, `${id} every enabled skill is offered (got ${await chips.count()})`);
+      ok(await page.locator(".coder-skill-list input").count() === 0, `${id} the multi-select is chips, never a checkbox or a native control`);
+
+      // PICK TWO. The chosen chips are the SOLID skills hue with white text, and they are
+      // named in the summary above the list.
+      await chips.nth(0).click();
+      await chips.nth(2).click();
+      ok(await chips.nth(0).getAttribute("aria-pressed") === "true", `${id} a picked chip carries aria-pressed`);
+      const onBg = await page.locator(".coder-skill-list .coder-skill-chip.is-on").first().evaluate((el) => getComputedStyle(el).backgroundColor);
+      ok(onBg === HUE.skills[theme], `${id} a chosen skill is the solid skills hue (got ${onBg})`);
+      const onFg = await page.locator(".coder-skill-list .coder-skill-chip.is-on").first().evaluate((el) => getComputedStyle(el).color);
+      ok(onFg === "rgb(255, 255, 255)", `${id} with white text (got ${onFg})`);
+      const chosen = (await page.locator(".coder-skills-chosen .coder-skill-chip").allInnerTexts()).join("|");
+      ok(/Create a linked issue/.test(chosen) && /Build an ADF comment/.test(chosen), `${id} the picks are named, not counted (got "${chosen}")`);
+      ok(!/sk1|sk3/.test(chosen), `${id} a skill ID is never printed`);
+
+      // THE CAP IS THE CONTROL'S, not a refusal after the send: a fifth chip cannot be
+      // pressed, and the note says why.
+      await chips.nth(3).click();
+      await chips.nth(4).click();
+      const disabledCount = await page.locator(".coder-skill-list .coder-skill-chip:disabled").count();
+      ok(disabledCount === 2, `${id} at four picks the remaining chips are not selectable (got ${disabledCount})`);
+      await chips.nth(5).click({ force: true });
+      ok(await page.locator(".coder-skill-list .coder-skill-chip[aria-pressed=true]").count() === 4, `${id} a fifth pick is refused by the control`);
+      ok(/most a turn can carry: 4/.test(await page.locator(".coder-skills-note").innerText()), `${id} the note says what the cap is`);
+      // Back down to two, and send.
+      await chips.nth(3).click();
+      await chips.nth(4).click();
+
+      await page.locator("textarea.coder-input").fill("Use those two skills and plan the change.");
+      await page.locator(".coder-composer .coder-btn-go").click();
+      await page.locator(".coder-consent").waitFor({ timeout: 20000 });
+      const start = await page.evaluate(() => window.__CODER_LAST_START__ || {});
+      ok(Array.isArray(start.skillIds) && start.skillIds.length === 2, `${id} the turn carries the picked skills (got ${JSON.stringify(start.skillIds)})`);
+      ok(start.skillIds.includes("sk1") && start.skillIds.includes("sk3"), `${id} and carries the RIGHT ids (got ${JSON.stringify(start.skillIds)})`);
+
+      // The selection belongs to the CONVERSATION: a new one starts with none.
+      await page.locator(".coder-consent-btns .coder-btn-alt").nth(1).click(); // Skip, to clear the ticket
+      await page.locator(".coder-outcome").waitFor({ timeout: 20000 });
+      await page.locator(".coder-newconv").click();
+      await page.waitForFunction(() => document.querySelectorAll(".coder-skills-chosen .coder-skill-chip").length === 0, { timeout: 8000 });
+      ok(/none/i.test(await page.locator(".coder-skills-toggle").innerText()), `${id} a new conversation starts with no skills`);
+
+      await designRules(page, id);
+      ok(errors.length === 0, `${id} no page errors: ${errors.join(" | ")}`);
+      if (SHOTS) await page.locator(".glance").screenshot({ path: path.join(OUT, `coder-skills-${theme}.png`) });
+    });
+
+    /* ------------------------ 11b. F-463: the resolver refuses an id no skill carries.
+       `{success:false, error, reason:"unknown-skill"}` is a settled answer about the PICK.
+       It must be told with the skill's NAME (an id is the resolver's vocabulary), must not
+       leave the panel spinning, and must not eat the message the reader typed. */
+    await withPanel({ __THEME__: theme, __CODER_UNKNOWN_SKILL__: "sk2" }, async (page, errors) => {
+      const id = `skills-refused/${theme}`;
+      await page.locator(".coder-composer").waitFor({ timeout: 10000 });
+      await page.locator(".coder-skills-toggle").click();
+      await page.locator(".coder-skill-list .coder-skill-chip").nth(1).click();
+      await page.locator("textarea.coder-input").fill("Plan it with that skill.");
+      await page.locator(".coder-composer .coder-btn-go").click();
+      await page.locator(".coder-error").waitFor({ timeout: 20000 });
+      const msg = await page.locator(".coder-error").innerText();
+      ok(/Find duplicates by summary/.test(msg), `${id} the refusal NAMES the skill (got "${msg}")`);
+      ok(!/unknown-skill/.test(msg) && !/sk[0-9]/.test(msg), `${id} neither the reason code nor an id reaches the screen`);
+      ok(await page.locator(".veil").count() === 0, `${id} the panel is not left spinning`);
+      ok((await page.locator("textarea.coder-input").inputValue()).includes("Plan it with that skill"),
+        `${id} the message the reader typed is still in the box`);
+      ok(await page.locator(".coder-msg-user").count() === 1, `${id} the refused turn left no second user row in the transcript`);
+      await designRules(page, id);
+      ok(errors.length === 0, `${id} no page errors: ${errors.join(" | ")}`);
+      if (SHOTS) await page.locator(".glance").screenshot({ path: path.join(OUT, `coder-skills-refused-${theme}.png`) });
     });
 
     /* --------------------------------------- 7b. a FIRST open: no thread, no empty-state lie.

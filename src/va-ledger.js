@@ -600,27 +600,84 @@ export const readTick = async (store, agent, tickId, phase = "prepare") => {
  * SECOND REST READ came back and showed the write. That distinction is the whole value of
  * the ledger an admin reads: a list of calls attempted is a list of maybes.
  *
- * So `recordEffect` REFUSES without a proof object and writes NOTHING — and the refusal is
- * a named `{ok:false, reason:"read_back_proof_required"}`, so the caller writes it into
- * the item's history instead of reporting a success.
+ * F-437 — THE PROOF IS TIED TO THE EFFECT, not merely shaped like one.
  *
- * A valid proof carries `verifiedAt` AND at least one identifier read back from the
- * platform: `commentId`, `status`, `fieldValue`, `propertyKey`, `pageId` (Confluence,
- * 1.5 commit 6) or `issueKey`. An empty `readBack` is not a proof, and neither is a bare
- * `{verified:true}` — the shape must carry the VALUE that was read.
+ * The old gate asked for `verifiedAt` to be truthy and any one of six identifier keys to be
+ * a non-empty string, and nothing more. Nothing said the value came from REST, nothing said
+ * `verifiedAt` was a timestamp, and — the hole that matters — nothing compared the
+ * identifier to the effect being recorded. So `{verifiedAt: "yes", readBack: {status:
+ * "Done"}}`, which is exactly the shape a model echoes back in a tool result, wrote an
+ * effects row an admin reads as "verified: the transition landed" for a write that may
+ * never have happened. A guarantee asserted in prose and enforced nowhere is LAW 2.
+ *
+ * A proof now has to satisfy FOUR things, each a refusal with its own reason:
+ *  1. `source: "rest"` — the value came back from a platform read, not from a turn's own
+ *     optimism. A caller that cannot say this honestly must not record an effect.
+ *  2. `verifiedAt` PARSES as a timestamp. "yes" is not a time.
+ *  3. `observed` — a snapshot of the value that was read back. An effect with no observed
+ *     value is a claim, and the admin has nothing to check it against.
+ *  4. THE IDENTIFIERS MATCH THE EFFECT'S TARGET: the issue key always, plus the comment id
+ *     for a comment, the field name for a field write, the transition id for a transition.
+ *     A proof about SUP-9's comment cannot verify an effect on SUP-1.
+ *
+ * An unrecognised `kind` is REFUSED rather than waved through: a new write vocabulary must
+ * come here and declare what its target id is, which is the whole point of the table.
  */
-const PROOF_IDENTIFIERS = ["commentId", "status", "fieldValue", "propertyKey", "pageId", "issueKey"];
+const PROOF_IDENTIFIERS = ["commentId", "status", "fieldValue", "propertyKey", "pageId", "issueKey", "field", "transitionId"];
 
-export const isReadBackProof = (proof) => {
-  if (!proof || typeof proof !== "object") return false;
-  if (!proof.verifiedAt) return false;
-  const rb = proof.readBack;
-  if (!rb || typeof rb !== "object") return false;
-  return PROOF_IDENTIFIERS.some((k) => rb[k] != null && String(rb[k]).length > 0);
+/**
+ * kind → the field on the EFFECT that names its target, and the field on `readBack` that
+ * must equal it. Aliases are explicit; nothing is inferred from a substring.
+ */
+export const EFFECT_TARGETS = Object.freeze({
+  comment: { effectKey: "commentId", readBackKey: "commentId" },
+  transition: { effectKey: "transitionId", readBackKey: "transitionId" },
+  field: { effectKey: "field", readBackKey: "field" },
+});
+const EFFECT_KIND_ALIASES = Object.freeze({
+  comment: "comment", public_comment: "comment", internal_comment: "comment", reply: "comment",
+  transition: "transition", status: "transition", transitionissue: "transition",
+  field: "field", field_update: "field", edit: "field", editissue: "field", property: "field",
+});
+export const effectKind = (kind) => EFFECT_KIND_ALIASES[String(kind || "").trim().toLowerCase()] || null;
+
+const sameId = (a, b) => a != null && b != null && String(a).length > 0 && String(a) === String(b);
+const hasObserved = (v) => {
+  if (v == null) return false;
+  if (typeof v === "string") return v.trim().length > 0;
+  if (typeof v === "object") return Object.keys(v).length > 0;
+  return true;                               // a number or a boolean IS an observed value
 };
 
+/**
+ * Does this proof verify THIS effect? PURE, so the post gate can test the binding without a
+ * store, and so the reason it refuses is the reason written into the item's history.
+ */
+export const proofBindsEffect = (effect, proof) => {
+  if (!proof || typeof proof !== "object") return { ok: false, reason: "read_back_proof_required" };
+  const rb = proof.readBack;
+  if (!rb || typeof rb !== "object" || Object.keys(rb).length === 0) return { ok: false, reason: "read_back_proof_required" };
+  if (!proof.verifiedAt) return { ok: false, reason: "read_back_proof_required" };
+  if (proof.source !== "rest") return { ok: false, reason: "proof_source_not_rest" };
+  if (!Number.isFinite(Date.parse(String(proof.verifiedAt)))) return { ok: false, reason: "proof_verified_at_invalid" };
+  if (!hasObserved(proof.observed)) return { ok: false, reason: "proof_observed_missing" };
+
+  const kind = effectKind(effect && effect.kind);
+  if (!kind) return { ok: false, reason: "proof_kind_unknown" };
+  if (!sameId(rb.issueKey, effect && effect.issueKey)) return { ok: false, reason: "proof_issue_mismatch" };
+  const { effectKey, readBackKey } = EFFECT_TARGETS[kind];
+  if (!sameId(rb[readBackKey], effect && effect[effectKey])) return { ok: false, reason: "proof_target_mismatch" };
+  return { ok: true, kind, targetKey: effectKey, targetId: String(effect[effectKey]) };
+};
+
+/** Boolean form. The EFFECT is required — a proof cannot be valid on its own (F-437). */
+export const isReadBackProof = (proof, effect) => proofBindsEffect(effect, proof).ok;
+
 export const recordEffect = async (store, agent, effect = {}, proof = null, { now = Date.now() } = {}) => {
-  if (!isReadBackProof(proof)) return fail("read_back_proof_required");
+  const bound = proofBindsEffect(effect, proof);
+  // The refusal is a NAMED value and writes NOTHING, so the caller puts it in the item's
+  // history instead of reporting a success it cannot back up.
+  if (!bound.ok) return fail(bound.reason);
   // Inverse timestamp so a prefix scan reads NEWEST FIRST (the `log_entry:` shape in
   // src/rule-stats.js). The Agents tab always wants the most recent effects.
   const invTs = String(1e15 - (Number(now) || Date.now())).padStart(16, "0");
@@ -632,9 +689,15 @@ export const recordEffect = async (store, agent, effect = {}, proof = null, { no
     audience: effect.audience === "public" ? "public" : "internal",
     summary: safeText(effect.summary, 300),
     tickId: effect.tickId == null ? null : clampChars(effect.tickId, 80),
+    // What was written, named the way the proof names it — the admin compares the two.
+    target: { kind: bound.kind, key: bound.targetKey, id: clampChars(bound.targetId, 200) },
     // The proof travels WITH the effect: a row whose evidence lives elsewhere is a claim.
     proof: {
+      source: "rest",
       verifiedAt: String(proof.verifiedAt),
+      observed: typeof proof.observed === "object"
+        ? safeText(JSON.stringify(proof.observed), 500)
+        : safeText(proof.observed, 500),
       readBack: Object.fromEntries(
         PROOF_IDENTIFIERS.filter((k) => proof.readBack[k] != null).map((k) => [k, clampChars(proof.readBack[k], 200)]),
       ),

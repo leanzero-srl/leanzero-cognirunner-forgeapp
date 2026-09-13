@@ -309,36 +309,97 @@ reset();
   ok(failed.receipt.error.includes("job_claim"), "a tick that could not run still writes a receipt saying so");
 }
 
-/* ── 10. effects refuse without a read-back proof (§3.14 law 6) ───────────── */
+/* ── 10. effects: the proof must be TIED to the effect (§3.14 law 6, F-437) ── */
 reset();
 {
-  const bad = [
-    [null, "no proof at all"],
-    [{}, "an empty object"],
-    [{ verified: true }, "a bare 'verified' flag"],
-    [{ verifiedAt: "2026-09-13T10:00:00Z" }, "a timestamp with no read-back"],
-    [{ verifiedAt: "2026-09-13T10:00:00Z", readBack: {} }, "an EMPTY read-back"],
-    [{ readBack: { commentId: "10001" } }, "a read-back with no verifiedAt"],
-    [{ verifiedAt: "2026-09-13T10:00:00Z", readBack: { commentId: "" } }, "a read-back whose identifier is empty"],
-  ];
-  for (const [proof, label] of bad) {
-    const r = await L.recordEffect(kvs, AG, { issueKey: "SUP-1", kind: "comment" }, proof);
-    eq(r.ok, false, `effects BLOCK: ${label} is refused`);
-    eq(r.reason, "read_back_proof_required", `…with the named reason (${label})`);
-  }
-  const rows = await kvs.query().where("key", { condition: "BEGINS_WITH", values: ["va_effect:"] }).limit(50).getMany();
-  eq(rows.results.length, 0, "effects BLOCK: NO row is written without proof — not even an 'attempted' one");
+  // The effect every case below is trying to verify: a comment posted on SUP-1.
+  const EFFECT = { issueKey: "SUP-1", kind: "comment", commentId: "10001", audience: "internal", summary: "posted an ETA", tickId: "t1" };
+  const VALID = {
+    source: "rest",
+    verifiedAt: "2026-09-13T10:00:00Z",
+    observed: { body: "Looking at it now.", jsdPublic: false },
+    readBack: { commentId: "10001", issueKey: "SUP-1" },
+  };
+  const without = (k) => { const p2 = { ...VALID }; delete p2[k]; return p2; };
 
-  const good = await L.recordEffect(kvs, AG, { issueKey: "SUP-1", kind: "comment", audience: "internal", summary: "posted an ETA", tickId: "t1" },
-    { verifiedAt: "2026-09-13T10:00:00Z", readBack: { commentId: "10001", issueKey: "SUP-1" } });
-  eq(good.ok, true, "effects ALLOW: a read-back proof writes the row");
+  const bad = [
+    [null, "no proof at all", "read_back_proof_required"],
+    [{}, "an empty object", "read_back_proof_required"],
+    [{ verified: true }, "a bare 'verified' flag", "read_back_proof_required"],
+    [{ ...VALID, readBack: undefined }, "a proof with no read-back", "read_back_proof_required"],
+    [{ ...VALID, readBack: {} }, "an EMPTY read-back", "read_back_proof_required"],
+    [without("verifiedAt"), "a read-back with no verifiedAt", "read_back_proof_required"],
+    // F-437 — the four new bindings.
+    [without("source"), "a proof that does not say it came from REST", "proof_source_not_rest"],
+    [{ ...VALID, source: "model" }, "a proof sourced from the MODEL's own tool result", "proof_source_not_rest"],
+    [{ ...VALID, verifiedAt: "yes" }, "a verifiedAt that is not a timestamp", "proof_verified_at_invalid"],
+    [without("observed"), "a proof with no observed snapshot", "proof_observed_missing"],
+    [{ ...VALID, observed: {} }, "an empty observed snapshot", "proof_observed_missing"],
+    [{ ...VALID, observed: "   " }, "a whitespace observed snapshot", "proof_observed_missing"],
+    [{ ...VALID, readBack: { commentId: "10001", issueKey: "SUP-9" } }, "a proof about ANOTHER issue", "proof_issue_mismatch"],
+    [{ ...VALID, readBack: { commentId: "99999", issueKey: "SUP-1" } }, "a proof about another COMMENT on the right issue", "proof_target_mismatch"],
+    [{ ...VALID, readBack: { issueKey: "SUP-1" } }, "a proof carrying no comment id at all", "proof_target_mismatch"],
+    [{ ...VALID, readBack: { commentId: "", issueKey: "SUP-1" } }, "a read-back whose identifier is empty", "proof_target_mismatch"],
+    // The exact shape a model echoes back: plausible keys, bound to nothing.
+    [{ source: "rest", verifiedAt: "2026-09-13T10:00:00Z", observed: "Done", readBack: { status: "Done" } },
+      "a MODEL-SHAPED object with a status and no matching ids", "proof_issue_mismatch"],
+  ];
+  for (const [proof, label, reason] of bad) {
+    const r = await L.recordEffect(kvs, AG, EFFECT, proof);
+    eq(r.ok, false, `effects BLOCK: ${label} is refused`);
+    eq(r.reason, reason, `…with the named reason (${label})`);
+  }
+  // An effect whose KIND is not in the target table cannot be verified at all.
+  const unknown = await L.recordEffect(kvs, AG, { ...EFFECT, kind: "deleted_the_project" }, VALID);
+  eq(unknown.ok, false, "effects BLOCK: an unrecognised effect kind is refused, not waved through");
+  eq(unknown.reason, "proof_kind_unknown", "…with the named reason");
+
+  const rows = await kvs.query().where("key", { condition: "BEGINS_WITH", values: ["va_effect:"] }).limit(50).getMany();
+  eq(rows.results.length, 0, "effects BLOCK: NO row is written without a bound proof — not even an 'attempted' one");
+
+  // ALLOW — the same effect, with a proof that is actually tied to it.
+  const good = await L.recordEffect(kvs, AG, EFFECT, VALID);
+  eq(good.ok, true, "effects ALLOW: a REST read-back bound to the effect writes the row");
   eq(good.effect.proof.readBack.commentId, "10001", "…and the proof travels WITH the effect");
+  eq(good.effect.proof.source, "rest", "…recording that it came from a REST read");
+  ok(good.effect.proof.observed.includes("Looking at it now."), "…and the OBSERVED value the admin checks against");
+  eq(good.effect.target.kind, "comment", "…and the row names the target kind");
+  eq(good.effect.target.id, "10001", "…and the target id");
+
+  // The other two write kinds bind to their own identifier.
+  const fieldEffect = { issueKey: "SUP-2", kind: "field_update", field: "customfield_10010" };
+  eq((await L.recordEffect(kvs, AG, fieldEffect, {
+    source: "rest", verifiedAt: "2026-09-13T10:01:00Z", observed: "2026-09-20",
+    readBack: { issueKey: "SUP-2", field: "customfield_10010", fieldValue: "2026-09-20" },
+  })).ok, true, "effects ALLOW: a field write proved by issue key + field name");
+  eq((await L.recordEffect(kvs, AG, fieldEffect, {
+    source: "rest", verifiedAt: "2026-09-13T10:01:00Z", observed: "2026-09-20",
+    readBack: { issueKey: "SUP-2", field: "duedate", fieldValue: "2026-09-20" },
+  })).reason, "proof_target_mismatch", "effects BLOCK: a proof for a DIFFERENT field does not verify this one");
+  const transEffect = { issueKey: "SUP-3", kind: "transition", transitionId: "31" };
+  eq((await L.recordEffect(kvs, AG, transEffect, {
+    source: "rest", verifiedAt: "2026-09-13T10:02:00Z", observed: { status: "Done" },
+    readBack: { issueKey: "SUP-3", transitionId: "31", status: "Done" },
+  })).ok, true, "effects ALLOW: a transition proved by issue key + transition id");
+  eq((await L.recordEffect(kvs, AG, transEffect, {
+    source: "rest", verifiedAt: "2026-09-13T10:02:00Z", observed: { status: "Done" },
+    readBack: { issueKey: "SUP-3", status: "Done" },
+  })).reason, "proof_target_mismatch", "effects BLOCK: a status string alone does not prove the transition landed");
+
+  // The pure binding is testable without a store — the post gate uses it before it writes.
+  eq(L.proofBindsEffect(EFFECT, VALID).ok, true, "proofBindsEffect is PURE and accepts the bound proof");
+  eq(L.isReadBackProof(VALID, EFFECT), true, "isReadBackProof agrees when given the EFFECT");
+  eq(L.isReadBackProof(VALID), false, "F-437: a proof is never valid on its own — the effect is required");
+  eq(L.effectKind("public_comment"), "comment", "effect kinds are aliased explicitly…");
+  eq(L.effectKind("nonsense"), null, "…and an unknown one resolves to nothing");
+
   const spy = spyStore();
-  await L.recordEffect(spy, AG, { issueKey: "SUP-1" }, { verifiedAt: "x", readBack: { status: "Done" } });
+  await L.recordEffect(spy, AG, EFFECT, VALID);
   eq(spy.writes[0].options.ttl.value, VA_LIMITS.effectTtlDays, "an effect carries the 30-day TTL");
   // Newest-first ordering: the inverse timestamp must sort the later effect FIRST.
-  const early = await L.recordEffect(kvs, AG, { issueKey: "SUP-2" }, { verifiedAt: "x", readBack: { status: "A" } }, { now: 1_700_000_000_000 });
-  const later = await L.recordEffect(kvs, AG, { issueKey: "SUP-3" }, { verifiedAt: "x", readBack: { status: "B" } }, { now: 1_800_000_000_000 });
+  const p3 = { source: "rest", verifiedAt: "2026-09-13T10:00:00Z", observed: { status: "A" }, readBack: { issueKey: "SUP-3", transitionId: "31" } };
+  const early = await L.recordEffect(kvs, AG, transEffect, p3, { now: 1_700_000_000_000 });
+  const later = await L.recordEffect(kvs, AG, transEffect, p3, { now: 1_800_000_000_000 });
   ok(later.key < early.key, "effect keys sort NEWEST FIRST (the inverse-timestamp shape)");
 }
 
@@ -607,7 +668,8 @@ reset();
     ["listItemIds", () => L.listItemIds(dead, AG)],
     ["recordTick", () => L.recordTick(dead, AG, { tickId: "t1" })],
     ["readTick", () => L.readTick(dead, AG, "t1")],
-    ["recordEffect", () => L.recordEffect(dead, AG, {}, { verifiedAt: "x", readBack: { commentId: "1" } })],
+    ["recordEffect", () => L.recordEffect(dead, AG, { issueKey: "SUP-1", kind: "comment", commentId: "1" },
+      { source: "rest", verifiedAt: "2026-09-13T10:00:00Z", observed: "hello", readBack: { issueKey: "SUP-1", commentId: "1" } })],
     ["readCaps", () => L.readCaps(dead, AG)],
     ["bumpCaps", () => L.bumpCaps(dead, AG)],
     ["recordTickHealth", () => L.recordTickHealth(dead, AG, false)],

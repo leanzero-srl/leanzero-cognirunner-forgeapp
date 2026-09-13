@@ -69,6 +69,9 @@ import {
   CONNECTION_SECURITY_MODEL,
 } from "./git-connections.js";
 import { gitPipelineKey, gitPipelineClaimKey } from "./shared/git-ids.js";
+// F-465 — the step ids, from the ONE dependency-free home the browser fixture can
+// import too. Re-exported below, because every caller imports them from this module.
+import { pipelineStepNames } from "./shared/git-pipeline-steps.js";
 
 /* ===== KEY NAMES — the ONE home. Never retype one of these strings. ===== */
 
@@ -197,16 +200,14 @@ export const diffLocks = (committed, rendered) => {
 /**
  * The FIXED step list for a run. Rebuilt every time from the provider kind, so the
  * row's `steps` array is bounded by construction and can never accumulate.
+ *
+ * F-465 — THE IDS LIVE IN src/shared/git-pipeline-steps.js and are re-exported here
+ * because every existing caller imports them from this module, and a second import
+ * path is how one home becomes two. They moved because this file imports @forge/kvs
+ * and node:crypto and so cannot be pulled into a browser bundle: the Code tab's
+ * screenshot fixture was MIRRORING the list by hand.
  */
-export const pipelineStepNames = (kind) => [
-  ...(kind === "bitbucket" ? ["enable-pipelines"] : []),
-  "secret:FORGE_EMAIL",
-  "secret:FORGE_API_TOKEN",
-  "var:FORGE_SITE",
-  "var:FORGE_PRODUCT",
-  "var:FORGE_ENV",
-  "commit-scaffold",
-];
+export { pipelineStepNames };
 
 /* =========================================================================
  * THE ROW

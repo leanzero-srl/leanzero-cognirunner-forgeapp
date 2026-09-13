@@ -166,6 +166,36 @@ const lastParams = () => pushedEvents[pushedEvents.length - 1].body.params;
     "a scope outside the allow-list is named as disallowed");
   ok(pipe.pipelineStepNames("bitbucket").length === pipe.pipelineStepNames("github").length + 1,
     "bitbucket carries the one extra step (enablePipelines) and nothing else");
+
+  /* F-465 — THE STEP IDS HAVE ONE HOME, and three readers that cannot import each
+   * other: this executor, the Code tab, and the screenshot fixture that stands in for
+   * the backend. The fixture used to RETYPE the list with a note asking the next person
+   * to keep it in step, which is the N-copies defect stated as a comment.
+   * What is held here: the executor's export IS the shared module's function, the ids
+   * are exactly these, in this order, and neither src/git-pipeline.js nor the fixture
+   * re-states one of them. */
+  const steps = await import("../../src/shared/git-pipeline-steps.js");
+  ok(pipe.pipelineStepNames === steps.pipelineStepNames,
+    "src/git-pipeline.js re-exports the shared function rather than owning a second copy");
+  ok(steps.pipelineStepNames("github").join("|")
+    === "secret:FORGE_EMAIL|secret:FORGE_API_TOKEN|var:FORGE_SITE|var:FORGE_PRODUCT|var:FORGE_ENV|commit-scaffold",
+    `the GitHub step ids are stable, in order (got ${steps.pipelineStepNames("github").join("|")})`);
+  ok(steps.pipelineStepNames("bitbucket")[0] === "enable-pipelines",
+    "…and Bitbucket runs enable-pipelines first");
+  ok(Object.isFrozen(steps.PIPELINE_COMMON_STEPS) && Object.isFrozen(steps.PIPELINE_BITBUCKET_PREFIX),
+    "the lists cannot be mutated at runtime");
+
+  const { readFileSync } = await import("node:fs");
+  const here = new URL("../../", import.meta.url);
+  const srcPipeline = readFileSync(new URL("src/git-pipeline.js", here), "utf8");
+  const fixture = readFileSync(new URL("static/_screenshot-harness/bridge.js", here), "utf8");
+  for (const [label, text] of [["src/git-pipeline.js", srcPipeline], ["the screenshot fixture", fixture]]) {
+    // The id appears once in git-pipeline.js as the STEP CALL that runs it; what must
+    // never come back is a second LIST literal beside it.
+    ok(!/\["enable-pipelines"\]/.test(text) && !/"var:FORGE_SITE",\s*"var:FORGE_PRODUCT"/.test(text),
+      `${label} does not re-state the step list — it imports src/shared/git-pipeline-steps.js`);
+    ok(/git-pipeline-steps\.js/.test(text), `…and it really imports it`);
+  }
 }
 
 /* ===================== 1. the ADMIN gate ===================== */

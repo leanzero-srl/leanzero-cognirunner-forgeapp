@@ -76,7 +76,11 @@ import {
   // names and the fail-closed rules stay in git-connections.js; nothing here
   // retypes `git_hook_secret:*`.
   getConnection,
-  getHookSecret,
+  // EVERY secret a delivery for this repo may legally be signed with (F-481) — one
+  // normally, two inside a rotation window. `getHookSecret` (the single current slot) is
+  // deliberately NOT imported here any more: the webhook was its only caller, and a
+  // verifier that reads one slot 401s a legitimate delivery mid-rotation.
+  getHookSecretCandidates,
   isRepoAllowed,
   normalizeRepoId,
   // F-460 — the per-repo webhook installation. The behaviour (idempotence by URL,
@@ -11201,8 +11205,15 @@ resolver.define("setupGitWebhook", async ({ payload, context }) => {
   });
 });
 
-// New signing secret for one repo's hook. The provider is updated FIRST, so a
-// failure leaves the old secret working on both sides instead of a deaf hook.
+// New signing secret for one repo's hook. THREE STEPS, in this order (F-481): the new
+// secret is STORED in the row's pending slot, then the PROVIDER is PATCHed to sign with
+// it, then it is PROMOTED to current and the slot closes. Nothing touches the provider
+// until the new secret is durable, so no step can leave a hook signing with a secret
+// this app does not hold: a failed store changes nothing, a failed PATCH drops the
+// pending slot and leaves the old secret current and installed, and a failed PROMOTE —
+// the case that used to be fatal — leaves BOTH secrets valid for the 24 h window, which
+// `gitWebhook` honours through `getHookSecretCandidates`, and stamps the connection
+// `hookState:"rotation-failed"` so the Code tab says so and names the remedy.
 resolver.define("rotateGitWebhookSecret", async ({ payload, context }) => {
   if (!(await requireAdmin(context.accountId))) return needRole("admin");
   return okOr(async () => {
@@ -12077,13 +12088,22 @@ export async function gitWebhook(req) {
   const repoParam = hookQuery(req, "repo");
   const repoId = normalizeRepoId(repoParam);
 
-  // ---- 1. route + secret. One refusal shape for every miss. ----
-  let secret = null;
+  // ---- 1. route + secretS. One refusal shape for every miss. ----
+  //
+  // CANDIDATES, NOT ONE SECRET (F-481). During a rotation window the provider has
+  // already been PATCHed to the NEW secret while the stored current slot is still the
+  // OLD one, so a delivery signed with the new secret is perfectly legitimate — and a
+  // verifier that knows only the current slot answers 401 to it. `getHookSecretCandidates`
+  // returns current-first: normally one entry, two inside the window, and an expired
+  // pending slot is simply absent. An EMPTY array is exactly what a null secret was:
+  // 404, fail closed, the same refusal shape as an unknown connection and an unlisted
+  // repo, so the endpoint is never a connection-id oracle.
+  let secrets = [];
   let row = null;
   try {
     if (connId && repoId) {
       row = await getConnection(connId);
-      if (row && isRepoAllowed(row, repoId)) secret = await getHookSecret(connId, repoId);
+      if (row && isRepoAllowed(row, repoId)) secrets = await getHookSecretCandidates(connId, repoId);
     }
   } catch (e) {
     // A storage fault is NOT "no secret, let it through": fail closed.
@@ -12097,7 +12117,7 @@ export async function gitWebhook(req) {
     console.warn(`[git-webhook] connection lookup failed — refusing delivery conn=${safeKeyPart(connId)} repo=${safeKeyPart(repoId)} err=${cls}: ${msg}`);
     return hookJson(503, { ok: false });
   }
-  if (!row || !secret) {
+  if (!row || !secrets.length) {
     console.warn("[git-webhook] delivery for an unknown connection/repo — 404");
     return hookJson(404, { ok: false });
   }
@@ -12114,11 +12134,20 @@ export async function gitWebhook(req) {
     return hookJson(401, { ok: false });
   }
   const { createHmac, timingSafeEqual } = await import("node:crypto");
-  const expected = "sha256=" + createHmac("sha256", secret).update(body, "utf8").digest("hex");
-  // Length check first: timingSafeEqual THROWS on unequal lengths.
-  const valid =
-    expected.length === provided.length &&
-    timingSafeEqual(Buffer.from(expected, "utf8"), Buffer.from(provided, "utf8"));
+  // THE HMAC KEEPS ITS ONE HOME HERE. The candidate list widens WHICH secrets are legal,
+  // never how a signature is checked: every candidate goes through the same digest, the
+  // same length guard and the same constant-time compare, and the loop does not stop
+  // early on a match so the work done is not a function of which slot matched. Length
+  // check first — `timingSafeEqual` THROWS on unequal lengths.
+  const providedBuf = Buffer.from(provided, "utf8");
+  let valid = false;
+  for (const candidate of secrets) {
+    const expected = "sha256=" + createHmac("sha256", candidate).update(body, "utf8").digest("hex");
+    const match =
+      expected.length === provided.length &&
+      timingSafeEqual(Buffer.from(expected, "utf8"), providedBuf);
+    valid = valid || match;
+  }
   if (!valid) {
     console.warn(`[git-webhook] signature mismatch conn=${connId} repo=${repoId} bytes=${Buffer.byteLength(body, "utf8")}`);
     return hookJson(401, { ok: false });
@@ -12158,7 +12187,12 @@ export async function gitWebhook(req) {
   // ---- 4. normalise ----
   const deliveryId =
     clampStr(hookHeader(req, "x-github-delivery") || hookHeader(req, "x-request-uuid") || hookHeader(req, "x-hook-uuid"), 100) ||
-    `nohdr-${createHmac("sha256", secret).update(body, "utf8").digest("hex").slice(0, 32)}`;
+    // The fallback id for a delivery with no id header is a keyed fingerprint of the
+    // body, so it cannot be guessed or forged into a claim. It keys on the CURRENT
+    // secret (`secrets[0]`), never on whichever candidate happened to verify: two
+    // redeliveries of the same body during a rotation window must collide, which is the
+    // whole point of the claim, and they would not if the key moved with the signature.
+    `nohdr-${createHmac("sha256", secrets[0]).update(body, "utf8").digest("hex").slice(0, 32)}`;
   const envelope = buildGitEnvelope({ eventType, kind, headerEvent, connectionId: connId, repoId, deliveryId, payload });
 
   // ---- 5. idempotency claim BEFORE the enqueue ----

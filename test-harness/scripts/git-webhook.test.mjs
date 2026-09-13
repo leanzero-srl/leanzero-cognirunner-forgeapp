@@ -114,6 +114,53 @@ seed();
   const r = parse(await gitWebhook(req({ payload: ghPr("opened"), signature: null })));
   ok(r.status === 401 && pushed.length === 0, "an UNSIGNED delivery is 401 and enqueues nothing");
 }
+
+/* ── THE ROTATION WINDOW (F-481) ─────────────────────────────────────────────
+ *
+ * Rotation stores the new secret in the row's `pending` slot, PATCHes the provider to
+ * sign with it, then promotes it. Between the PATCH and the promotion — and for 24 h
+ * after a promotion that FAILED — the hook signs with the NEW secret while the stored
+ * current slot still holds the OLD one. A verifier that reads only the current slot
+ * answers 401 to a delivery that is entirely legitimate, and the app's own rotation is
+ * what made it look forged. Both are legal inside the window; NEITHER is legal after
+ * `pendingUntil`, which is what stops a half-finished rotation leaving a second valid
+ * secret alive for ever.
+ */
+const PENDING = "1111111111111111bbbbbbbbbbbbbbbb";
+const seedRotating = (pendingUntil) => {
+  seed();
+  storage.__seed(gitHookSecretKey(CONN, REPO), {
+    secret: SECRET, connId: CONN, repoId: REPO, pending: PENDING, pendingUntil,
+  });
+};
+const inWindow = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+const expired = new Date(Date.now() - 60 * 1000).toISOString();
+{
+  seedRotating(inWindow);
+  const r = parse(await gitWebhook(req({ payload: ghPr("opened"), secret: PENDING })));
+  ok(r.status === 202 && r.body.accepted === true,
+    `a delivery signed with the PENDING secret is accepted inside the window (${JSON.stringify(r)})`);
+  ok(pushed.length === 1, "…and enqueues exactly one event");
+
+  seedRotating(inWindow);
+  const cur = parse(await gitWebhook(req({ payload: ghPr("opened"), secret: SECRET })));
+  ok(cur.status === 202 && cur.body.accepted === true, "…and the CURRENT secret still works at the same time");
+
+  seedRotating(inWindow);
+  const other = parse(await gitWebhook(req({ payload: ghPr("opened"), secret: OTHER_SECRET })));
+  ok(other.status === 401 && pushed.length === 0,
+    "…while a third secret is still 401 — the window widens which secrets are legal, not the check");
+
+  seedRotating(expired);
+  const late = parse(await gitWebhook(req({ payload: ghPr("opened"), secret: PENDING })));
+  ok(late.status === 401 && pushed.length === 0,
+    `after pendingUntil the pending secret is refused (${JSON.stringify(late)})`);
+
+  seedRotating(expired);
+  const stillCurrent = parse(await gitWebhook(req({ payload: ghPr("opened"), secret: SECRET })));
+  ok(stillCurrent.status === 202 && stillCurrent.body.accepted === true,
+    "…and an expired window leaves the CURRENT secret working, never a deaf hook");
+}
 seed();
 {
   // A tampered body under a signature that was valid for the original.

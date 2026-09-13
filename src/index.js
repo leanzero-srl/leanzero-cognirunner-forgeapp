@@ -473,7 +473,30 @@ const requireAdmin = async (accountId) => requireRole(accountId, "admin");
  * every other sandbox path survives numeric ids only because `/issue/{idOrKey}` accepts both. */
 const issueRefForLink = (ref) => (/^\d+$/.test(String(ref)) ? { id: String(ref) } : { key: ref });
 
-const noPerm = (what) => ({ success: false, error: `You don't have permission to ${what}.` });
+/**
+ * F-242 — the ONE builder for every permission refusal. The sentence is for the
+ * human; `reason: "no-permission"` is for the machine, so a frontend can tell a
+ * refusal from a fault WITHOUT regexing English (the UI helpers in
+ * MemoriesAdminTab / MemoriesTab should branch on this and drop their regex).
+ * `needsRole` is present only where the gate actually knows the level it wanted;
+ * its absence means "the gate refused on ownership/scope", not "any role will do".
+ * Never build a refusal object by hand — route it through here, or the machine
+ * flag silently goes missing on one path again.
+ */
+const PERMISSION_REFUSAL_REASON = "no-permission";
+const permissionDenied = (message, needsRole) => ({
+  success: false,
+  error: message,
+  reason: PERMISSION_REFUSAL_REASON,
+  ...(needsRole ? { needsRole } : {}),
+});
+const noPerm = (what, needsRole) =>
+  permissionDenied(`You don't have permission to ${what}.`, needsRole);
+/** "Editor access required" / "Admin access required" — sentence unchanged. */
+const needRole = (role) =>
+  permissionDenied(`${role.charAt(0).toUpperCase()}${role.slice(1)} access required`, role);
+/** Anonymous callers (F-227/F-221): no principal is not a pass. Sentences unchanged. */
+const notAuthorized = () => permissionDenied("Not authorized.", "viewer");
 
 // ===== EDITION (1.3) =====
 // Which edition a tenant is on comes from the platform license object, and WHERE
@@ -1593,7 +1616,7 @@ resolver.define("getLogs", async ({ payload, context }) => {
     // own `reason` field, which the admin panel renders as an outage note.
     if (!hasRole(perms)) {
       if (perms?.unknown) console.warn(`getLogs: refusing an unverifiable caller — ${perms.reason}`);
-      return { ...noPerm("read execution logs"), logs: [] };
+      return { ...noPerm("read execution logs", "viewer"), logs: [] };
     }
     let logs = await readLogs(payload?.ruleId || null);
     if (perms.role !== "admin" && perms.scope === "own") {
@@ -1618,7 +1641,7 @@ resolver.define("getLogs", async ({ payload, context }) => {
  */
 resolver.define("clearLogs", async ({ context }) => {
   if (!(await requireRole(context.accountId, "editor"))) {
-    return { success: false, error: "Editor access required" };
+    return needRole("editor");
   }
   try {
     // Run receipts clear through the same serialized stats consumer. It counts
@@ -1725,7 +1748,7 @@ resolver.define("registerConfig", async ({ payload, context }) => {
     // branch below gates via canActOnConfig; without this symmetric check the create branch
     // was ungated, so any licensed site user could seed rows and fill the shared registry (DoS).
     if (existingIndex < 0 && !(await requireRole(context.accountId, "editor"))) {
-      return { success: false, error: "You don't have permission to create a rule." };
+      return permissionDenied("You don't have permission to create a rule.", "editor");
     }
     // Scale guard: the registry lives in ONE KVS value (hard cap ~240KB) — refuse
     // unbounded growth with a clear message instead of corrupting at the limit.
@@ -1748,7 +1771,7 @@ resolver.define("registerConfig", async ({ payload, context }) => {
       // config they're allowed to act on (role + scope/ownership). Without this any caller
       // could overwrite another user's validator/condition rule.
       if (!(await canActOnConfig(context.accountId, configs[existingIndex], "editor"))) {
-        return { success: false, error: "You don't have permission to modify this rule." };
+        return permissionDenied("You don't have permission to modify this rule.", "editor");
       }
       // UPDATE growth guard (see registerPostFunction): updates bypass the create
       // checks, so refuse only if this edit would push the value near the hard cap.
@@ -1811,7 +1834,7 @@ resolver.define("removeConfig", async ({ payload, context }) => {
     });
     const r = (out.results || [])[0];
     if (!r || !r.ok) {
-      return { success: false, error: describeDeleteFailure(r), reason: r?.reason || "unknown" };
+      return deleteFailureResult(r);
     }
     return { success: true, detached: !!r.detached };
   } catch (error) {
@@ -1848,7 +1871,7 @@ export const setRuleDisabledCore = async ({ id, disabled, accountId, bypassAuthz
     return { success: false, error: "That id belongs to a different kind of rule." };
   }
   if (!bypassAuthz && !(await canActOnConfig(accountId, config, "editor"))) {
-    return { success: false, error: "You don't have permission to manage this rule" };
+    return permissionDenied("You don't have permission to manage this rule", "editor");
   }
   // Identities owned by OTHER registry rows — the tier-3 fallback inside the
   // propagation must refuse to write into a rule one of them owns, exactly as
@@ -2076,7 +2099,7 @@ resolver.define("getConfigs", async ({ payload, context }) => {
     // "We cannot identify the caller" is the strongest reason to refuse, not a
     // reason to trust. An anonymous call is now refused outright.
     const accountId = context?.accountId;
-    if (!accountId) return { success: false, error: "Viewer access required", configs: [], removedCount: 0 };
+    if (!accountId) return { ...needRole("viewer"), configs: [], removedCount: 0 };
 
     let configs = (await storage.get(CONFIG_REGISTRY_KEY)) || [];
 
@@ -2364,7 +2387,7 @@ resolver.define("getConfigs", async ({ payload, context }) => {
  */
 resolver.define("discoverWorkflowRules", async ({ context }) => {
   if (!(await requireAdmin(context.accountId))) {
-    return { success: false, error: "Admin access required" };
+    return needRole("admin");
   }
   try {
     const registry = (await storage.get(CONFIG_REGISTRY_KEY)) || [];
@@ -2615,7 +2638,7 @@ export const registerDiscoveredRulesCore = async (rules, accountId = null) => {
 };
 resolver.define("registerDiscoveredRules", async ({ payload, context }) => {
   if (!(await requireAdmin(context.accountId))) {
-    return { success: false, error: "Admin access required" };
+    return needRole("admin");
   }
   return registerDiscoveredRulesCore(Array.isArray(payload?.rules) ? payload.rules : [], context.accountId);
 });
@@ -2971,7 +2994,7 @@ async function getFieldsFromScreen(screenId) {
  */
 resolver.define("getScreenFields", async ({ payload, context }) => {
   // Viewer gate (AMS-65111): screen-scheme resolution runs as the app.
-  if (!(await requireRole(context?.accountId, "viewer"))) return noPerm("read screen fields");
+  if (!(await requireRole(context?.accountId, "viewer"))) return noPerm("read screen fields", "viewer");
   const { projectId: directProjectId, workflowId, transitionId } = payload;
   // Create transitions always have transitionId "1" in Jira
   const isCreateTransition = String(transitionId) === "1";
@@ -3082,7 +3105,7 @@ resolver.define("getScreenFields", async ({ payload, context }) => {
 resolver.define("getFields", async ({ context }) => {
   // Viewer gate (AMS-65116): the field catalog is read as the app; only roster
   // users and Jira admins may pull it through the app.
-  if (!(await requireRole(context?.accountId, "viewer"))) return noPerm("read Jira fields");
+  if (!(await requireRole(context?.accountId, "viewer"))) return noPerm("read Jira fields", "viewer");
   try {
     const response = await api.asApp().requestJira(route`/rest/api/3/field`, {
       headers: {
@@ -3120,7 +3143,7 @@ resolver.define("getFields", async ({ context }) => {
  */
 resolver.define("getRuleLists", async ({ context }) => {
   if (!(await requireRole(context.accountId, "editor"))) {
-    return { success: false, error: "Editor access required" };
+    return needRole("editor");
   }
   // requestJira resolves (doesn't throw) on 4xx/5xx, so a 403 (no permission) would
   // otherwise parse an error body — return null on !ok so it reads as an empty list.
@@ -3168,7 +3191,7 @@ resolver.define("getRuleLists", async ({ context }) => {
  */
 resolver.define("listProjects", async ({ context }) => {
   if (!(await requireRole(context.accountId, "editor"))) {
-    return { success: false, error: "Editor access required" };
+    return needRole("editor");
   }
   try {
     const response = await api.asApp().requestJira(
@@ -3198,7 +3221,7 @@ resolver.define("listProjects", async ({ context }) => {
  */
 resolver.define("getProjectWorkflows", async ({ payload, context }) => {
   if (!(await requireRole(context.accountId, "editor"))) {
-    return { success: false, error: "Editor access required" };
+    return needRole("editor");
   }
   const { projectKey, projectId } = payload;
   if (!projectKey && !projectId) return { success: false, error: "Project key or ID required" };
@@ -3294,7 +3317,7 @@ resolver.define("getProjectWorkflows", async ({ payload, context }) => {
  */
 resolver.define("getWorkflowTransitions", async ({ payload, context }) => {
   if (!(await requireRole(context.accountId, "editor"))) {
-    return { success: false, error: "Editor access required" };
+    return needRole("editor");
   }
   const { workflowName } = payload;
   if (!workflowName) return { success: false, error: "Workflow name required" };
@@ -3433,7 +3456,7 @@ const discoverEnvironmentId = async () => {
  */
 resolver.define("getRuleApiInfo", async ({ context }) => {
   if (!(await requireAdmin(context.accountId))) {
-    return { success: false, error: "Admin access required" };
+    return needRole("admin");
   }
   try {
     let envId = null;
@@ -3677,7 +3700,7 @@ const injectWorkflowRuleCore = async ({ workflowName, transitionId, ruleType, co
 // for AddRuleWizard (the only caller).
 resolver.define("injectWorkflowRule", async ({ payload, context }) => {
   if (!(await requireRole(context.accountId, "editor"))) {
-    return { success: false, error: "Editor access required" };
+    return needRole("editor");
   }
   return injectWorkflowRuleCore(payload);
 });
@@ -4085,6 +4108,20 @@ const describeDeleteFailure = (r) => {
 };
 
 /**
+ * The single-row delete refusal both removeConfig and removePostFunction return.
+ * F-242: a "forbidden" row IS a permission refusal, so it must carry the same
+ * machine flag as every gate (`reason: "no-permission"`); the granular delete
+ * code moves to `failure` so nothing that inspected it loses information.
+ */
+const deleteFailureResult = (r) => {
+  const message = describeDeleteFailure(r);
+  const code = r?.reason || "unknown";
+  return code === "forbidden"
+    ? { ...permissionDenied(message, "editor"), failure: code }
+    : { success: false, error: message, reason: code, failure: code };
+};
+
+/**
  * Delete registry rows — optionally detaching the rules from their workflows first.
  *
  * ONE implementation behind removeConfig, removePostFunction and deleteRules, so
@@ -4201,7 +4238,7 @@ const DELETE_MAX_IDS_REGISTRY = 200;
  */
 resolver.define("deleteRules", async ({ payload, context }) => {
   if (!(await requireRole(context.accountId, "editor"))) {
-    return { success: false, error: "Editor access required" };
+    return needRole("editor");
   }
   const ids = Array.isArray(payload?.ids) ? payload.ids : [];
   const detach = payload?.detach === true;
@@ -4223,7 +4260,7 @@ resolver.define("deleteRules", async ({ payload, context }) => {
  */
 resolver.define("previewRuleDeletion", async ({ payload, context }) => {
   if (!(await requireRole(context.accountId, "editor"))) {
-    return { success: false, error: "Editor access required" };
+    return needRole("editor");
   }
   const ids = [...new Set((Array.isArray(payload?.ids) ? payload.ids : []).map(String))];
   if (!ids.length) return { success: true, items: [] };
@@ -4359,7 +4396,7 @@ resolver.define("checkIsAdmin", async ({ context }) => {
  */
 resolver.define("getAppAdmins", async ({ context }) => {
   if (!(await requireAdmin(context.accountId))) {
-    return { success: false, error: "Admin access required" };
+    return needRole("admin");
   }
   const admins = (await storage.get(APP_ADMINS_KEY)) || [];
   return { success: true, admins };
@@ -4370,7 +4407,7 @@ resolver.define("getAppAdmins", async ({ context }) => {
  */
 resolver.define("addAppAdmin", async ({ payload, context }) => {
   if (!(await requireAdmin(context.accountId))) {
-    return { success: false, error: "Admin access required" };
+    return needRole("admin");
   }
   const { accountId, displayName, role, scope } = payload;
   if (!accountId) return { success: false, error: "Account ID required" };
@@ -4391,7 +4428,7 @@ resolver.define("addAppAdmin", async ({ payload, context }) => {
  */
 resolver.define("updateUserRole", async ({ payload, context }) => {
   if (!(await requireAdmin(context.accountId))) {
-    return { success: false, error: "Admin access required" };
+    return needRole("admin");
   }
   const { accountId, role, scope } = payload;
   if (!accountId) return { success: false, error: "Account ID required" };
@@ -4424,7 +4461,7 @@ resolver.define("updateUserRole", async ({ payload, context }) => {
  */
 resolver.define("removeAppAdmin", async ({ payload, context }) => {
   if (!(await requireAdmin(context.accountId))) {
-    return { success: false, error: "Admin access required" };
+    return needRole("admin");
   }
   const { accountId } = payload;
   let users = (await storage.get(APP_ADMINS_KEY)) || [];
@@ -4480,7 +4517,7 @@ resolver.define("searchUsers", async ({ payload, context }) => {
  */
 resolver.define("saveOpenAIKey", async ({ payload, context }) => {
   if (!(await requireAdmin(context.accountId))) {
-    return { success: false, error: "Admin access required" };
+    return needRole("admin");
   }
   try {
     const { key } = payload;
@@ -4539,7 +4576,7 @@ resolver.define("getOpenAIKey", async ({ payload }) => {
  */
 resolver.define("removeOpenAIKey", async ({ payload, context }) => {
   if (!(await requireAdmin(context.accountId))) {
-    return { success: false, error: "Admin access required" };
+    return needRole("admin");
   }
   try {
     const provider = await resolveTargetProvider(payload);
@@ -4575,7 +4612,7 @@ resolver.define("getDocProcessorRemote", async () => {
 
 resolver.define("saveDocProcessorRemote", async ({ payload, context }) => {
   if (!(await requireAdmin(context.accountId))) {
-    return { success: false, error: "Admin access required" };
+    return needRole("admin");
   }
   try {
     const url = (payload?.url || "").trim();
@@ -4608,7 +4645,7 @@ resolver.define("saveDocProcessorRemote", async ({ payload, context }) => {
 
 resolver.define("removeDocProcessorRemote", async ({ context }) => {
   if (!(await requireAdmin(context.accountId))) {
-    return { success: false, error: "Admin access required" };
+    return needRole("admin");
   }
   try {
     await storage.delete(DOC_PROCESSOR_REMOTE_KVS_KEY);
@@ -4644,7 +4681,7 @@ resolver.define("getWebSearchRemote", async () => {
 
 resolver.define("saveWebSearchRemote", async ({ payload, context }) => {
   if (!(await requireAdmin(context.accountId))) {
-    return { success: false, error: "Admin access required" };
+    return needRole("admin");
   }
   try {
     const url = (payload?.url || "").trim();
@@ -4683,7 +4720,7 @@ resolver.define("saveWebSearchRemote", async ({ payload, context }) => {
 
 resolver.define("removeWebSearchRemote", async ({ context }) => {
   if (!(await requireAdmin(context.accountId))) {
-    return { success: false, error: "Admin access required" };
+    return needRole("admin");
   }
   try {
     await storage.delete(WEB_SEARCH_REMOTE_KVS_KEY);
@@ -4724,7 +4761,7 @@ resolver.define("getContext7Remote", async () => {
 
 resolver.define("saveContext7Remote", async ({ payload, context }) => {
   if (!(await requireAdmin(context.accountId))) {
-    return { success: false, error: "Admin access required" };
+    return needRole("admin");
   }
   try {
     // context7 has a well-known official endpoint, so default it when the admin
@@ -4756,7 +4793,7 @@ resolver.define("saveContext7Remote", async ({ payload, context }) => {
 
 resolver.define("removeContext7Remote", async ({ context }) => {
   if (!(await requireAdmin(context.accountId))) {
-    return { success: false, error: "Admin access required" };
+    return needRole("admin");
   }
   try {
     await storage.delete(CONTEXT7_REMOTE_KVS_KEY);
@@ -4776,7 +4813,7 @@ resolver.define("removeContext7Remote", async ({ context }) => {
  */
 resolver.define("saveProvider", async ({ payload, context }) => {
   if (!(await requireAdmin(context.accountId))) {
-    return { success: false, error: "Admin access required" };
+    return needRole("admin");
   }
   try {
     const { provider, baseUrl } = payload;
@@ -4892,7 +4929,7 @@ resolver.define("getProvider", async () => {
  */
 resolver.define("setBedrockAck", async ({ payload, context }) => {
   if (!(await requireAdmin(context.accountId))) {
-    return { success: false, error: "Admin access required" };
+    return needRole("admin");
   }
   try {
     await storage.set("COGNIRUNNER_BEDROCK_ACK", payload && payload.acknowledged === true);
@@ -4929,7 +4966,7 @@ resolver.define("setBedrockAck", async ({ payload, context }) => {
  */
 resolver.define("checkProviderHealth", async ({ context }) => {
   if (!(await requireAdmin(context.accountId))) {
-    return { success: false, error: "Admin access required" };
+    return needRole("admin");
   }
   const { provider } = await getProviderConfig();
   const providerLabel = (PROVIDERS[provider] && PROVIDERS[provider].label) || provider;
@@ -5002,7 +5039,7 @@ resolver.define("getOpenAIModels", async ({ payload, context }) => {
   // spend the admin's API key + enumerate provider config. Admin-only (the model browser
   // lives in the admin panel; config-ui never calls this).
   if (!(await requireAdmin(context.accountId))) {
-    return { success: false, error: "Admin access required" };
+    return needRole("admin");
   }
   try {
     // The provider being VIEWED (may differ from the active one — the admin panel browses
@@ -5294,7 +5331,7 @@ resolver.define("getOpenAIModels", async ({ payload, context }) => {
  */
 resolver.define("saveOpenAIModel", async ({ payload, context }) => {
   if (!(await requireAdmin(context.accountId))) {
-    return { success: false, error: "Admin access required" };
+    return needRole("admin");
   }
   try {
     // ONE normaliser for model ids (src/shared/edition.js), shared with saveAgentModel:
@@ -5338,7 +5375,7 @@ resolver.define("saveOpenAIModel", async ({ payload, context }) => {
  * because it exposes no key and no URL — just which model an agent would use.
  */
 resolver.define("getAgentModel", async ({ payload, context }) => {
-  if (!(await requireRole(context.accountId, "viewer"))) return noPerm("view the agent model");
+  if (!(await requireRole(context.accountId, "viewer"))) return noPerm("view the agent model", "viewer");
   try {
     const provider = await resolveTargetProvider(payload);
     const saved = await storage.get(providerAgentModelSlot(provider));
@@ -5362,7 +5399,7 @@ resolver.define("getAgentModel", async ({ payload, context }) => {
  * saveOpenAIModel: it decides what the app bills against.
  */
 resolver.define("saveAgentModel", async ({ payload, context }) => {
-  if (!(await requireAdmin(context.accountId))) return noPerm("change the agent model");
+  if (!(await requireAdmin(context.accountId))) return noPerm("change the agent model", "admin");
   try {
     // Same normaliser as saveOpenAIModel — one home for what a legal model id is.
     const clean = normalizeModelId(payload && payload.model);
@@ -5437,7 +5474,7 @@ resolver.define("getOpenAIModelFromKVS", async ({ payload, context }) => {
  */
 resolver.define("pingLmStudio", async ({ payload, context }) => {
   if (!(await requireAdmin(context.accountId))) {
-    return { success: false, error: "Admin access required" };
+    return needRole("admin");
   }
   try {
     const baseUrl = String(payload?.baseUrl || "").trim().replace(/\/+$/, "").replace(/\/v1$/i, "");
@@ -5573,7 +5610,7 @@ resolver.define("pingLmStudio", async ({ payload, context }) => {
  */
 resolver.define("loadLmStudioModel", async ({ payload, context }) => {
   if (!(await requireAdmin(context.accountId))) {
-    return { success: false, error: "Admin access required" };
+    return needRole("admin");
   }
   try {
     const provider = (await storage.get("COGNIRUNNER_AI_PROVIDER")) || "openai";
@@ -5710,7 +5747,7 @@ resolver.define("getLmStudioMcps", async () => {
  */
 resolver.define("saveLmStudioMcps", async ({ payload, context }) => {
   if (!(await requireAdmin(context.accountId))) {
-    return { success: false, error: "Admin access required" };
+    return needRole("admin");
   }
   try {
     const incoming = payload?.enabled || {};
@@ -5751,7 +5788,7 @@ resolver.define("saveLmStudioMcps", async ({ payload, context }) => {
  */
 resolver.define("pingLmStudioMcp", async ({ payload, context }) => {
   if (!(await requireAdmin(context.accountId))) {
-    return { success: false, error: "Admin access required" };
+    return needRole("admin");
   }
   try {
     const { mcpKey } = payload || {};
@@ -5842,7 +5879,7 @@ resolver.define("pingLmStudioMcp", async ({ payload, context }) => {
  */
 resolver.define("testMcpConnection", async ({ payload, context }) => {
   if (!(await requireAdmin(context.accountId))) {
-    return { success: false, error: "Admin access required" };
+    return needRole("admin");
   }
   try {
     const { mcpKey } = payload || {};
@@ -6415,14 +6452,14 @@ resolver.define("registerPostFunction", async ({ payload, context }) => {
     // On update: verify the caller has editor rights on the existing record. Other PF resolvers
     // (remove/disable/enable) already do this; the create/update path was an oversight.
     if (existing >= 0 && !(await canActOnConfig(context.accountId, configs[existing], "editor"))) {
-      return { success: false, error: "You don't have permission to modify this post-function" };
+      return permissionDenied("You don't have permission to modify this post-function", "editor");
     }
     // Authz on CREATE — mirror the update gate: a new registry row (and its offloaded pf_code
     // bundle written below) requires at least the editor role. The create branch was ungated, so
     // any licensed site user could seed rows + arbitrary pf_code bundles and fill the shared
     // registry (DoS). Gate BEFORE the scale guard and the offload storage.set.
     if (existing < 0 && !(await requireRole(context.accountId, "editor"))) {
-      return { success: false, error: "You don't have permission to create a post-function" };
+      return permissionDenied("You don't have permission to create a post-function", "editor");
     }
     // Scale guard — same single-KVS-value limit as registerConfig (shared caps).
     if (existing < 0 && configs.length >= REGISTRY_MAX_ROWS) {
@@ -6556,7 +6593,7 @@ resolver.define("removePostFunction", async ({ payload, context }) => {
     });
     const r = (out.results || [])[0];
     if (!r || !r.ok) {
-      return { success: false, error: describeDeleteFailure(r), reason: r?.reason || "unknown" };
+      return deleteFailureResult(r);
     }
     return { success: true, detached: !!r.detached };
   } catch (error) {
@@ -6614,7 +6651,7 @@ resolver.define("getPostFunctionStatus", async ({ payload }) => {
 resolver.define("getPostFunctionCode", async ({ payload, context }) => {
   // F-073: offloaded step code is rule content — roster members only (config-view/config-ui
   // callers are Jira admins, who resolve to "admin" via getUserPermissions).
-  if (!(await requireRole(context?.accountId, "viewer"))) return noPerm("read post-function code");
+  if (!(await requireRole(context?.accountId, "viewer"))) return noPerm("read post-function code", "viewer");
   const { codeRef } = payload || {};
   if (typeof codeRef !== "string" || !codeRef.startsWith(PF_CODE_PREFIX)) {
     return { success: false, error: "Invalid code reference" };
@@ -6694,7 +6731,7 @@ const buildFieldMap = async ({ asUser = false } = {}) => {
 };
 
 resolver.define("exportRules", async ({ payload, context }) => {
-  if (!(await requireRole(context.accountId, "editor"))) return { success: false, error: "Editor access required" };
+  if (!(await requireRole(context.accountId, "editor"))) return needRole("editor");
   const ids = Array.isArray(payload?.ids) ? payload.ids.slice(0, EXPORT_CAPS.maxRules) : [];
   if (!ids.length) return { success: false, error: "No rules selected" };
   try {
@@ -6751,7 +6788,7 @@ resolver.define("exportRules", async ({ payload, context }) => {
 // Read-only dry-run: parse + validate + resolve bindings against the target site.
 // Writes NOTHING. Returns a per-rule plan the UI renders before any commit.
 resolver.define("previewImport", async ({ payload, context }) => {
-  if (!(await requireRole(context.accountId, "editor"))) return { success: false, error: "Editor access required" };
+  if (!(await requireRole(context.accountId, "editor"))) return needRole("editor");
   const text = typeof payload?.json === "string" ? payload.json : "";
   if (!text) return { success: false, error: "No import text provided" };
   if (text.length > EXPORT_CAPS.maxBytes) return { success: false, error: "Import file is too large." };
@@ -6875,7 +6912,7 @@ export const commitImportCore = async ({ rule, targetWorkflowName, targetTransit
 };
 
 resolver.define("commitImport", async ({ payload, context }) => {
-  if (!(await requireRole(context.accountId, "editor"))) return { success: false, error: "Editor access required" };
+  if (!(await requireRole(context.accountId, "editor"))) return needRole("editor");
   return commitImportCore({ ...payload, accountId: context.accountId });
 });
 
@@ -6957,7 +6994,7 @@ resolver.define("saveContextDoc", async ({ payload, context }) => {
   // fence-injected as untrusted REFERENCE_DOCS into AI prompts (prompt-injection seeding)
   // and can evict legit custom docs (capDocIndex DoS).
   if (!(await requireRole(context.accountId, "editor"))) {
-    return { success: false, error: "Editor access required" };
+    return needRole("editor");
   }
   try {
     const { title, content, category } = payload;
@@ -7002,7 +7039,7 @@ resolver.define("saveContextDoc", async ({ payload, context }) => {
  * are only ever reached from the Custom UI, which always carries a principal.
  */
 resolver.define("getContextDocs", async ({ payload, context }) => {
-  if (!(await requireRole(context?.accountId, "viewer"))) return { ...noPerm("read documentation"), docs: [] };
+  if (!(await requireRole(context?.accountId, "viewer"))) return { ...noPerm("read documentation", "viewer"), docs: [] };
   try {
     await seedBuiltinDocs();
     let index = (await storage.get(DOC_REPO_INDEX_KEY)) || [];
@@ -7042,7 +7079,7 @@ resolver.define("deleteContextDoc", async ({ payload, context }) => {
     const index = (await storage.get(DOC_REPO_INDEX_KEY)) || [];
     const doc = index.find((d) => d.id === id);
     if (doc && !(await canActOnConfig(context.accountId, doc, "editor"))) {
-      return { success: false, error: "You don't have permission to delete this document" };
+      return permissionDenied("You don't have permission to delete this document", "editor");
     }
     // Builtin docs flip to disabled instead of deleting — the seeder upserts by
     // id, so a hard delete would resurrect the doc on the next seed-version bump.
@@ -7081,7 +7118,7 @@ resolver.define("deleteContextDoc", async ({ payload, context }) => {
  */
 resolver.define("getSkills", async ({ context }) => {
   // F-235 — VIEWER FLOOR, same as the memory reads.
-  if (!(await requireRole(context?.accountId, "viewer"))) return { ...noPerm("read skills"), skills: [] };
+  if (!(await requireRole(context?.accountId, "viewer"))) return { ...noPerm("read skills", "viewer"), skills: [] };
   try {
     await seedBuiltinSkills();
     const skills = (await storage.get(SKILL_INDEX_KEY)) || [];
@@ -7097,7 +7134,7 @@ resolver.define("getSkills", async ({ context }) => {
  */
 resolver.define("getSkillContent", async ({ payload, context }) => {
   // F-235 — VIEWER FLOOR: skill instructions are the full text, not just a row.
-  if (!(await requireRole(context?.accountId, "viewer"))) return noPerm("read skills");
+  if (!(await requireRole(context?.accountId, "viewer"))) return noPerm("read skills", "viewer");
   try {
     const { id } = payload || {};
     const skill = await storage.get(`${SKILL_PREFIX}${id}`);
@@ -7115,7 +7152,7 @@ resolver.define("getSkillContent", async ({ payload, context }) => {
  */
 resolver.define("saveSkill", async ({ payload, context }) => {
   if (!(await requireRole(context.accountId, "editor"))) {
-    return { success: false, error: "Editor access required" };
+    return needRole("editor");
   }
   try {
     const { id, name, category, description, tags, operationTypes, instructions, examples, enabled } = payload || {};
@@ -7126,10 +7163,10 @@ resolver.define("saveSkill", async ({ payload, context }) => {
       const index = (await storage.get(SKILL_INDEX_KEY)) || [];
       const existing = index.find((s) => s.id === id);
       if (existing?.builtin === true && !(await requireAdmin(context.accountId))) {
-        return { success: false, error: "Admin access required to edit built-in skills" };
+        return permissionDenied("Admin access required to edit built-in skills", "admin");
       }
       if (existing && !(await canActOnConfig(context.accountId, existing, "editor"))) {
-        return { success: false, error: "You don't have permission to edit this skill" };
+        return permissionDenied("You don't have permission to edit this skill", "editor");
       }
     }
     const result = await saveSkillInternal(
@@ -7161,7 +7198,7 @@ resolver.define("deleteSkill", async ({ payload, context }) => {
     const index = (await storage.get(SKILL_INDEX_KEY)) || [];
     const skill = index.find((s) => s.id === id);
     if (skill && !(await canActOnConfig(context.accountId, skill, "editor"))) {
-      return { success: false, error: "You don't have permission to delete this skill" };
+      return permissionDenied("You don't have permission to delete this skill", "editor");
     }
     if (skill?.builtin === true) {
       // Builtins are shared, curated content — mirror the saveSkill gate.
@@ -7268,7 +7305,7 @@ export const persistDistilledSkill = async (parsed, params = {}) => {
  */
 resolver.define("distillSkillFromStep", async ({ payload, context }) => {
   if (!(await requireRole(context.accountId, "editor"))) {
-    return { success: false, error: "Editor access required" };
+    return needRole("editor");
   }
   try {
     const { name, prompt, code, operationType, testLogs } = payload || {};
@@ -7355,7 +7392,7 @@ resolver.define("getMemories", async ({ context }) => {
   // three read resolvers had no gate at all while every write path (addMemory,
   // updateMemory, deleteMemory, saveMemorySettings) did. Same floor as getFields /
   // getPostFunctionCode: roster users and Jira admins only.
-  if (!(await requireRole(context?.accountId, "viewer"))) return { ...noPerm("read memories"), memories: [] };
+  if (!(await requireRole(context?.accountId, "viewer"))) return { ...noPerm("read memories", "viewer"), memories: [] };
   try {
     // F-167/F-169: the Memories tab reads `settings.storeFull` from THIS resolver
     // (it never calls getMemorySettings directly), so the marker rides `settings`.
@@ -7370,7 +7407,7 @@ resolver.define("getMemories", async ({ context }) => {
 
 resolver.define("addMemory", async ({ payload, context }) => {
   if (!(await requireRole(context.accountId, "editor"))) {
-    return { success: false, error: "Editor access required" };
+    return needRole("editor");
   }
   try {
     const { content, projectKey, source } = payload || {};
@@ -7420,7 +7457,7 @@ resolver.define("addMemory", async ({ payload, context }) => {
 
 resolver.define("updateMemory", async ({ payload, context }) => {
   if (!(await requireRole(context.accountId, "editor"))) {
-    return { success: false, error: "Editor access required" };
+    return needRole("editor");
   }
   try {
     const { id, content, disabled, projectKey } = payload || {};
@@ -7457,7 +7494,7 @@ resolver.define("updateMemory", async ({ payload, context }) => {
 
 resolver.define("deleteMemory", async ({ payload, context }) => {
   if (!(await requireRole(context.accountId, "editor"))) {
-    return { success: false, error: "Editor access required" };
+    return needRole("editor");
   }
   try {
     /*
@@ -7516,7 +7553,7 @@ resolver.define("deleteMemory", async ({ payload, context }) => {
 resolver.define("getMemoryStoreStats", async ({ context }) => {
   // F-228 — same viewer floor as getMemories: byte pressure of this instance's
   // learned facts is not public information either.
-  if (!(await requireRole(context?.accountId, "viewer"))) return noPerm("read memories");
+  if (!(await requireRole(context?.accountId, "viewer"))) return noPerm("read memories", "viewer");
   try {
     const [memories, storeFull] = await Promise.all([loadMemories(), readMemoryStoreFull()]);
     return { success: true, ...memoryStoreStats(memories), storeFull };
@@ -7529,7 +7566,7 @@ resolver.define("getMemoryStoreStats", async ({ context }) => {
 resolver.define("getMemorySettings", async ({ context }) => {
   // F-228 — same viewer floor. This reports whether the instance auto-captures and
   // injects memories at runtime, which is configuration, not public state.
-  if (!(await requireRole(context?.accountId, "viewer"))) return noPerm("read memory settings");
+  if (!(await requireRole(context?.accountId, "viewer"))) return noPerm("read memory settings", "viewer");
   try {
     // F-167: `storeFull` is how the Memories tab learns the instance has STOPPED
     // LEARNING (a lesson was refused by the cap/byte guard and nothing is evicted
@@ -7546,7 +7583,7 @@ resolver.define("getMemorySettings", async ({ context }) => {
 // today, per-provider, 6-month history). Best-effort under-count, not an exact ledger.
 resolver.define("getAiUsage", async ({ context }) => {
   if (!(await requireAdmin(context.accountId))) {
-    return { success: false, error: "Admin access required" };
+    return needRole("admin");
   }
   try {
     const state = (await storage.get(USAGE_KEY)) || emptyState();
@@ -7593,7 +7630,7 @@ resolver.define("getAiUsage", async ({ context }) => {
 
 resolver.define("resetAiUsage", async ({ context }) => {
   if (!(await requireAdmin(context.accountId))) {
-    return { success: false, error: "Admin access required" };
+    return needRole("admin");
   }
   try {
     await storage.set(USAGE_KEY, emptyState());
@@ -7605,7 +7642,7 @@ resolver.define("resetAiUsage", async ({ context }) => {
 
 resolver.define("saveMemorySettings", async ({ payload, context }) => {
   if (!(await requireAdmin(context.accountId))) {
-    return { success: false, error: "Admin access required" };
+    return needRole("admin");
   }
   try {
     const settings = await saveMemorySettingsInternal(payload || {});
@@ -7625,7 +7662,7 @@ resolver.define("getKnowledgeCounts", async ({ context }) => {
   // storeFull marker, i.e. exactly the state getMemoryStoreStats/getMemorySettings
   // were gated to withhold (F-228); leaving it open re-opened that door sideways.
   if (!(await requireRole(context?.accountId, "viewer"))) {
-    return { ...noPerm("read knowledge counts"), docs: 0, skills: 0, memories: 0, storeFull: null };
+    return { ...noPerm("read knowledge counts", "viewer"), docs: 0, skills: 0, memories: 0, storeFull: null };
   }
   try {
     await Promise.all([seedBuiltinDocs(), seedBuiltinSkills()]);
@@ -7711,7 +7748,7 @@ resolver.define("takeUiIntent", async ({ context }) => {
  * group check in getUserPermissions, so the config-ui authoring path is unaffected.
  */
 resolver.define("suggestEndpoint", async ({ payload, context }) => {
-  if (!(await requireRole(context.accountId, "editor"))) return noPerm("use the AI endpoint assistant");
+  if (!(await requireRole(context.accountId, "editor"))) return noPerm("use the AI endpoint assistant", "editor");
   const { prompt, projectKey } = payload;
   if (!prompt || prompt.length < 5) return { success: false, error: "Describe what you want to do" };
 
@@ -8195,7 +8232,7 @@ export const runCodegenCore = async (payload = {}) => {
 };
 
 resolver.define("generatePostFunctionCode", async ({ payload, context }) => {
-  if (!(await requireRole(context.accountId, "editor"))) return noPerm("generate post-function code");
+  if (!(await requireRole(context.accountId, "editor"))) return noPerm("generate post-function code", "editor");
   return runCodegenCore(payload);
 });
 
@@ -8205,7 +8242,7 @@ resolver.define("generatePostFunctionCode", async ({ payload, context }) => {
  * (via addMemory) only after the auto re-run test passes.
  */
 resolver.define("fixPostFunctionCode", async ({ payload, context }) => {
-  if (!(await requireRole(context.accountId, "editor"))) return noPerm("repair post-function code with AI");
+  if (!(await requireRole(context.accountId, "editor"))) return noPerm("repair post-function code with AI", "editor");
   const { code, error } = payload || {};
   if (!code || typeof code !== "string") {
     return { success: false, error: "No code to fix" };
@@ -8253,7 +8290,7 @@ resolver.define("fixPostFunctionCode", async ({ payload, context }) => {
  * Validate a single issue key — fetches directly by key, not via JQL.
  */
 resolver.define("validateIssue", async ({ payload, context }) => {
-  if (!(await requireRole(context.accountId, "editor"))) return noPerm("look up issues");
+  if (!(await requireRole(context.accountId, "editor"))) return noPerm("look up issues", "editor");
   try {
     const { issueKey } = payload;
     if (!issueKey) return { success: false };
@@ -8276,7 +8313,7 @@ resolver.define("validateIssue", async ({ payload, context }) => {
 });
 
 resolver.define("searchIssues", async ({ payload, context }) => {
-  if (!(await requireRole(context.accountId, "editor"))) return noPerm("search issues");
+  if (!(await requireRole(context.accountId, "editor"))) return noPerm("search issues", "editor");
   try {
     const { query, projectKey } = payload;
     if (!query || query.length < 2) return { success: true, issues: [] };
@@ -8335,7 +8372,7 @@ resolver.define("searchIssues", async ({ payload, context }) => {
  * Frontend polls getAsyncTaskResult to get the result.
  */
 resolver.define("reviewConfig", async ({ payload, context }) => {
-  if (!(await requireRole(context.accountId, "editor"))) return noPerm("run an AI review");
+  if (!(await requireRole(context.accountId, "editor"))) return noPerm("run an AI review", "editor");
   const { configType, config } = payload;
   if (!configType || !config) {
     return { success: false, error: "No configuration to review" };
@@ -8463,7 +8500,7 @@ resolver.define("explainRule", async ({ payload, context }) => {
   // NOTE (owner decision): NOT editor-gated — requireRole over-blocks project-admin
   // viewers (getUserPermissions returns null for them) and the cost is already
   // bounded by explicit-click + sig-cache + negative-cache + tiny clamped output.
-  if (!context?.accountId) return { success: false, error: "Not authorized." };
+  if (!context?.accountId) return notAuthorized();
 
   let { kind, ruleTypeLabel, factsText } = payload || {};
   if (!factsText || typeof factsText !== "string" || !factsText.trim()) {
@@ -8550,7 +8587,7 @@ resolver.define("explainRule", async ({ payload, context }) => {
 const NARRATE_DEADLINE_MS = 20000;
 
 resolver.define("narrateDryRun", async ({ payload, context }) => {
-  if (!context?.accountId) return { success: false, error: "Not authorized." };
+  if (!context?.accountId) return notAuthorized();
 
   const { changesText, total, mode } = payload || {};
   if (!changesText || typeof changesText !== "string" || !changesText.trim()) {
@@ -8625,7 +8662,7 @@ resolver.define("narrateDryRun", async ({ payload, context }) => {
 const BUILD_RULE_VERSION = "1";
 
 resolver.define("buildRule", async ({ payload, context }) => {
-  if (!context?.accountId) return { success: false, error: "Not authorized." };
+  if (!context?.accountId) return notAuthorized();
 
   const { mode: rawMode, description, fields: rawFields, lists: rawLists } = payload || {};
   if (!description || typeof description !== "string" || description.trim().length < 5) {
@@ -8722,7 +8759,7 @@ resolver.define("getAsyncTaskResult", async ({ payload, context }) => {
   const { taskId } = payload;
   if (!taskId) return { success: false, error: "No taskId" };
   // F-074: this read also DELETES the task row — roster members only (task creators are editors).
-  if (!(await requireRole(context?.accountId, "viewer"))) return noPerm("read async task results");
+  if (!(await requireRole(context?.accountId, "viewer"))) return noPerm("read async task results", "viewer");
 
   try {
     const result = await storage.get(`async_task:${taskId}`);
@@ -8950,7 +8987,7 @@ export const sweepPostFunctionJobs = async () => {
 };
 
 resolver.define("sweepPostFunctionJobs", async ({ context }) => {
-  if (!(await requireAdmin(context.accountId))) return { success: false, error: "Admin access required" };
+  if (!(await requireAdmin(context.accountId))) return needRole("admin");
   return sweepPostFunctionJobs();
 });
 
@@ -8972,7 +9009,7 @@ export const sweepPostFunctionScheduled = async () => {
  */
 resolver.define("cancelJob", async ({ payload, context }) => {
   if (!(await requireRole(context.accountId, "editor"))) {
-    return { success: false, error: "Editor access required" };
+    return needRole("editor");
   }
   const { taskId } = payload || {};
   if (!taskId) return { success: false, error: "No taskId" };
@@ -9003,7 +9040,7 @@ resolver.define("cancelJob", async ({ payload, context }) => {
  */
 resolver.define("cancelAllQueuedJobs", async ({ context }) => {
   if (!(await requireRole(context.accountId, "editor"))) {
-    return { success: false, error: "Editor access required" };
+    return needRole("editor");
   }
   try {
     const nowIso = new Date().toISOString();
@@ -9056,7 +9093,7 @@ resolver.define("getLmStudioConcurrency", async () => {
  * the live minute so the admin sees the pacing in action.
  */
 resolver.define("getAiBudget", async ({ context }) => {
-  if (!(await requireRole(context.accountId, "admin"))) return { success: false, error: "Admin access required" };
+  if (!(await requireRole(context.accountId, "admin"))) return needRole("admin");
   try {
     const { provider } = await getProviderConfig();
     const settings = await getAiBudgetSettings();
@@ -9069,7 +9106,7 @@ resolver.define("getAiBudget", async ({ context }) => {
 });
 
 resolver.define("saveAiBudget", async ({ payload, context }) => {
-  if (!(await requireRole(context.accountId, "admin"))) return { success: false, error: "Admin access required" };
+  if (!(await requireRole(context.accountId, "admin"))) return needRole("admin");
   try {
     const { provider } = await getProviderConfig();
     const target = typeof payload?.provider === "string" && PROVIDERS[payload.provider] ? payload.provider : provider;
@@ -9095,7 +9132,7 @@ resolver.define("saveAiBudget", async ({ payload, context }) => {
 
 resolver.define("saveLmStudioConcurrency", async ({ payload, context }) => {
   if (!(await requireRole(context.accountId, "admin"))) {
-    return { success: false, error: "Admin access required" };
+    return needRole("admin");
   }
   const raw = Number(payload?.limit);
   const limit = Number.isFinite(raw) && raw > 0 ? Math.min(Math.floor(raw), 50) : 0;
@@ -9120,7 +9157,7 @@ resolver.define("getLmStudioPool", async () => {
 
 resolver.define("saveLmStudioPool", async ({ payload, context }) => {
   if (!(await requireRole(context.accountId, "admin"))) {
-    return { success: false, error: "Admin access required" };
+    return needRole("admin");
   }
   const enabled = payload?.enabled !== false;
   try {
@@ -9151,7 +9188,7 @@ resolver.define("getLmStudioWeights", async () => {
 
 resolver.define("saveLmStudioWeights", async ({ payload, context }) => {
   if (!(await requireRole(context.accountId, "admin"))) {
-    return { success: false, error: "Admin access required" };
+    return needRole("admin");
   }
   const raw = (payload && payload.weights && typeof payload.weights === "object") ? payload.weights : {};
   // Clamp to integers 1..20; keep only >1 entries (1 = default, no down-weighting).
@@ -9181,7 +9218,7 @@ resolver.define("saveLmStudioWeights", async ({ payload, context }) => {
  * and spends a real provider call, so they are authoring tools, not viewer tools.
  */
 resolver.define("testValidation", async ({ payload, context }) => {
-  if (!(await requireRole(context.accountId, "editor"))) return noPerm("run test validations");
+  if (!(await requireRole(context.accountId, "editor"))) return noPerm("run test validations", "editor");
   const { issueKey, fieldId, prompt, enableTools, selectedDocIds } = payload;
   if (!issueKey) return { success: false, error: "Select an issue to test against" };
   if (!prompt) return { success: false, error: "Validation prompt is required" };
@@ -9275,7 +9312,7 @@ resolver.define("testValidation", async ({ payload, context }) => {
 });
 
 resolver.define("testSemanticPostFunction", async ({ payload, context }) => {
-  if (!(await requireRole(context.accountId, "editor"))) return noPerm("run test post-functions");
+  if (!(await requireRole(context.accountId, "editor"))) return noPerm("run test post-functions", "editor");
   const { issueKey, fieldId, conditionPrompt, actionPrompt, actionFieldId, selectedDocIds } = payload;
   if (!issueKey) return { success: false, error: "Select an issue to test against" };
   if (!conditionPrompt) return { success: false, error: "Condition prompt is required" };
@@ -9516,7 +9553,7 @@ resolver.define("testSemanticPostFunction", async ({ payload, context }) => {
 // Dry-run for the "generate document & attach" action: authors the content with AI
 // but does NOT create or attach the file — so the admin can preview safely.
 resolver.define("testGenerateDocPostFunction", async ({ payload, context }) => {
-  if (!(await requireRole(context.accountId, "editor"))) return noPerm("run test post-functions");
+  if (!(await requireRole(context.accountId, "editor"))) return noPerm("run test post-functions", "editor");
   const startTime = Date.now();
   const logs = [];
   try {
@@ -9552,7 +9589,7 @@ resolver.define("testGenerateDocPostFunction", async ({ payload, context }) => {
 
 // Dry-run for the "research & save" action: runs the web search but does NOT save.
 resolver.define("testResearchPostFunction", async ({ payload, context }) => {
-  if (!(await requireRole(context.accountId, "editor"))) return noPerm("run test post-functions");
+  if (!(await requireRole(context.accountId, "editor"))) return noPerm("run test post-functions", "editor");
   const startTime = Date.now();
   const logs = [];
   try {
@@ -9587,7 +9624,7 @@ resolver.define("testResearchPostFunction", async ({ payload, context }) => {
 // Dry-run for "research & document": gathers evidence (web + context7) and authors the
 // brief, but does NOT create or attach a file. Mirrors the live executor's gather→author.
 resolver.define("testResearchDocPostFunction", async ({ payload, context }) => {
-  if (!(await requireRole(context.accountId, "editor"))) return noPerm("run test post-functions");
+  if (!(await requireRole(context.accountId, "editor"))) return noPerm("run test post-functions", "editor");
   const startTime = Date.now();
   const logs = [];
   try {
@@ -9638,7 +9675,7 @@ resolver.define("testResearchDocPostFunction", async ({ payload, context }) => {
 
 // Dry-run for the "add comment" action: drafts the comment but does NOT post it.
 resolver.define("testCommentPostFunction", async ({ payload, context }) => {
-  if (!(await requireRole(context.accountId, "editor"))) return noPerm("run test post-functions");
+  if (!(await requireRole(context.accountId, "editor"))) return noPerm("run test post-functions", "editor");
   const startTime = Date.now();
   const logs = [];
   try {
@@ -9670,7 +9707,7 @@ resolver.define("testCommentPostFunction", async ({ payload, context }) => {
 
 // Dry-run for the "create sub-task" action: drafts the sub-task but does NOT create it.
 resolver.define("testSubtaskPostFunction", async ({ payload, context }) => {
-  if (!(await requireRole(context.accountId, "editor"))) return noPerm("run test post-functions");
+  if (!(await requireRole(context.accountId, "editor"))) return noPerm("run test post-functions", "editor");
   const startTime = Date.now();
   const logs = [];
   try {
@@ -9712,7 +9749,7 @@ resolver.define("testSubtaskPostFunction", async ({ payload, context }) => {
 // Dry-run for the "link related issues" action: searches + AI-selects but creates
 // NOTHING — uses the same findRelatedIssues core as production.
 resolver.define("testLinkPostFunction", async ({ payload, context }) => {
-  if (!(await requireRole(context.accountId, "editor"))) return noPerm("run test post-functions");
+  if (!(await requireRole(context.accountId, "editor"))) return noPerm("run test post-functions", "editor");
   const startTime = Date.now();
   const logs = [];
   try {
@@ -9748,7 +9785,7 @@ resolver.define("testPostFunction", async ({ payload, context }) => {
   // disclosure channel for any issue, property or JQL result on the site.
   // FunctionBlock renders `logs`, not `error` — carry the reason in both.
   if (!(await requireRole(context.accountId, "editor"))) {
-    const refused = noPerm("run test executions");
+    const refused = noPerm("run test executions", "editor");
     return { ...refused, logs: [refused.error], changes: [], mode: "simulation", issueKey: null };
   }
   const { code, issueKey, jql, priorVariables } = payload;
@@ -9889,7 +9926,7 @@ const okOr = async (fn) => { try { return await fn(); } catch (e) { return { suc
 // entry whose role is null and which therefore authorizes nothing).
 resolver.define("getListeners", async ({ context }) => {
   const perms = await getUserPermissions(context.accountId);
-  if (!hasRole(perms)) return noPerm("view listeners");
+  if (!hasRole(perms)) return noPerm("view listeners", "viewer");
   return okOr(async () => ({
     success: true,
     listeners: filterConfigsForUser(await listenersMod.listListeners(), {
@@ -9899,7 +9936,7 @@ resolver.define("getListeners", async ({ context }) => {
 });
 resolver.define("getListener", async ({ payload, context }) => {
   const perms = await getUserPermissions(context.accountId);
-  if (!hasRole(perms)) return noPerm("view listeners");
+  if (!hasRole(perms)) return noPerm("view listeners", "viewer");
   return okOr(async () => {
     const listener = await listenersMod.getListener(payload?.id);
     if (!listener) return { success: false, error: "Listener not found" };
@@ -9908,7 +9945,7 @@ resolver.define("getListener", async ({ payload, context }) => {
     // instructions anyway. One permission lookup for both checks.
     if (!filterConfigsForUser([listener], {
       accountId: context.accountId, scope: perms.scope, role: perms.role,
-    }).length) return noPerm("view this listener");
+    }).length) return noPerm("view this listener", "viewer");
     return { success: true, listener };
   });
 });
@@ -9917,7 +9954,7 @@ resolver.define("saveListener", async ({ payload, context }) => {
   if (!input || typeof input !== "object") return { success: false, error: "listener is required" };
   const existing = input.id ? await listenersMod.getListener(input.id) : null;
   const allowed = existing ? await canActOnConfig(context.accountId, existing, "editor") : await requireRole(context.accountId, "editor");
-  if (!allowed) return noPerm(existing ? "edit this listener" : "create listeners");
+  if (!allowed) return noPerm(existing ? "edit this listener" : "create listeners", "editor");
   return okOr(async () => ({ success: true, listener: await listenersMod.saveListener(input, { accountId: context.accountId }) }));
 });
 resolver.define("deleteListener", async ({ payload, context }) => {
@@ -9937,7 +9974,7 @@ resolver.define("setListenerEnabled", async ({ payload, context }) => {
 // "Test with an issue": runs the (possibly unsaved) listener in SIMULATION against a
 // synthetic event built from a real issue. Sync — 20s budget inside the 25s cap.
 resolver.define("testListener", async ({ payload, context }) => {
-  if (!(await requireRole(context.accountId, "editor"))) return noPerm("test listeners");
+  if (!(await requireRole(context.accountId, "editor"))) return noPerm("test listeners", "editor");
   return okOr(async () => {
     let listener;
     if (payload?.listener && typeof payload.listener === "object") {
@@ -9957,14 +9994,14 @@ resolver.define("testListener", async ({ payload, context }) => {
   });
 });
 resolver.define("getEventSample", async ({ payload, context }) => {
-  if (!(await requireRole(context.accountId, "editor"))) return noPerm("view event samples");
+  if (!(await requireRole(context.accountId, "editor"))) return noPerm("view event samples", "editor");
   return okOr(async () => ({ success: true, sample: await listenersMod.getEventSample(payload?.eventType) }));
 });
 
 // Viewer floor + OWNER SCOPE — identical rule to getListeners above.
 resolver.define("getScheduledJobs", async ({ context }) => {
   const perms = await getUserPermissions(context.accountId);
-  if (!hasRole(perms)) return noPerm("view scheduled jobs");
+  if (!hasRole(perms)) return noPerm("view scheduled jobs", "viewer");
   return okOr(async () => ({
     success: true,
     jobs: filterConfigsForUser(await jobsMod.listJobs(), {
@@ -9974,13 +10011,13 @@ resolver.define("getScheduledJobs", async ({ context }) => {
 });
 resolver.define("getScheduledJob", async ({ payload, context }) => {
   const perms = await getUserPermissions(context.accountId);
-  if (!hasRole(perms)) return noPerm("view scheduled jobs");
+  if (!hasRole(perms)) return noPerm("view scheduled jobs", "viewer");
   return okOr(async () => {
     const job = await jobsMod.getJob(payload?.id);
     if (!job) return { success: false, error: "Scheduled job not found" };
     if (!filterConfigsForUser([job], {
       accountId: context.accountId, scope: perms.scope, role: perms.role,
-    }).length) return noPerm("view this scheduled job");
+    }).length) return noPerm("view this scheduled job", "viewer");
     return { success: true, job };
   });
 });
@@ -9989,7 +10026,7 @@ resolver.define("saveScheduledJob", async ({ payload, context }) => {
   if (!input || typeof input !== "object") return { success: false, error: "job is required" };
   const existing = input.id ? await jobsMod.getJob(input.id) : null;
   const allowed = existing ? await canActOnConfig(context.accountId, existing, "editor") : await requireRole(context.accountId, "editor");
-  if (!allowed) return noPerm(existing ? "edit this job" : "create scheduled jobs");
+  if (!allowed) return noPerm(existing ? "edit this job" : "create scheduled jobs", "editor");
   return okOr(async () => ({ success: true, job: await jobsMod.saveJob(input, { accountId: context.accountId }) }));
 });
 resolver.define("deleteScheduledJob", async ({ payload, context }) => {
@@ -10014,21 +10051,21 @@ resolver.define("runScheduledJobNow", async ({ payload, context }) => {
   return okOr(async () => ({ success: true, async: true, ...(await jobsMod.enqueueJobRun({ job, manual: true, accountId: context.accountId })) }));
 });
 resolver.define("previewSchedule", async ({ payload, context }) => {
-  if (!(await requireRole(context.accountId, "viewer"))) return noPerm("preview schedules");
+  if (!(await requireRole(context.accountId, "viewer"))) return noPerm("preview schedules", "viewer");
   return okOr(async () => ({ success: true, ...jobsMod.previewSchedule({ cron: payload?.cron, timeZone: payload?.timeZone, count: payload?.count || 5 }) }));
 });
 
 // API tokens for the Rules REST API (admin only; plaintext shown once).
 resolver.define("getApiTokens", async ({ context }) => {
-  if (!(await requireAdmin(context.accountId))) return noPerm("manage API tokens");
+  if (!(await requireAdmin(context.accountId))) return noPerm("manage API tokens", "admin");
   return okOr(async () => ({ success: true, tokens: await listApiTokens(), url: await getWebtriggerUrlFor(RULES_API_WEBTRIGGER_KEY, RULES_API_URL_KVS_KEY) }));
 });
 resolver.define("createApiToken", async ({ payload, context }) => {
-  if (!(await requireAdmin(context.accountId))) return noPerm("manage API tokens");
+  if (!(await requireAdmin(context.accountId))) return noPerm("manage API tokens", "admin");
   return okOr(async () => ({ success: true, ...(await createApiTokenInternal({ name: payload?.name, accountId: context.accountId })) }));
 });
 resolver.define("revokeApiToken", async ({ payload, context }) => {
-  if (!(await requireAdmin(context.accountId))) return noPerm("manage API tokens");
+  if (!(await requireAdmin(context.accountId))) return noPerm("manage API tokens", "admin");
   return okOr(async () => ({ success: true, ...(await revokeApiTokenInternal(payload?.id)) }));
 });
 

@@ -24,6 +24,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureFreshBuildShot } from "./lib/build-shot.mjs";
+/* F-175: M1 asserts the cap refusal the app ACTUALLY emits, pulled from its ONE home.
+   Retyping the sentence here would let the test and the mock agree with each other while
+   both drift from src/shared/registry-limits.js — which is exactly what happened before
+   (the suite hunted for "prune in the Memories tab", words no tenant has ever seen). */
+import { memoryCapRefusalMessage } from "../../src/shared/registry-limits.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const STATIC = path.resolve(__dirname, "..");
@@ -1465,9 +1470,13 @@ try {
       // next to the form that just failed, not as a toast that scrolls away.
       await kp.locator(".memory-quick-add .input").fill("Sprint field is customfield_10020.");
       await kp.locator(".btn-remember").click();
-      await kp.getByText(/full of your own memories/i).first().waitFor({ timeout: 6000 });
-      ok(await kp.getByText(/prune in the Memories tab/i).count() > 0,
-        `M1 ${theme} the cap refusal renders inline under the add form (F-166)`);
+      // F-175 — assert the app's REAL refusal, taken from its ONE home rather than retyped.
+      // The old assertion hunted for "prune in the Memories tab" — words the backend never
+      // emitted; it passed only because the mock had invented the same wrong sentence.
+      const capMsg = memoryCapRefusalMessage("cap");
+      await kp.getByText(capMsg, { exact: false }).first().waitFor({ timeout: 6000 });
+      ok(await kp.getByText(capMsg, { exact: false }).count() > 0,
+        `M1 ${theme} the cap refusal renders inline under the add form, verbatim (F-166/F-175)`);
       // The typed content survives the refusal — nothing was stored, so nothing is discarded.
       ok(await kp.locator(".memory-quick-add .input").inputValue() === "Sprint field is customfield_10020.",
         `M1 ${theme} the refused text is kept in the input, not silently cleared`);

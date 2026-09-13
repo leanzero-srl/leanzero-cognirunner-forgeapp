@@ -23,6 +23,8 @@
  *   A9  the memory editor saves what is on screen.
  *   A10 SchedulePicker's multi-hour presets round-trip through the minute spinner (13c).
  *   A11 dark theme renders the same surfaces.
+ *   A12 a tick refused by the agent-capability gate renders the copy home's sentence as a
+ *       solid red state, in both themes (F-501).
  *
  * Run: node static/_screenshot-harness/agents-tab.test.mjs   (add --shots to save PNGs)
  */
@@ -36,6 +38,9 @@ import { ensureFreshBuildShot } from "./lib/build-shot.mjs";
    cannot assert words or a number the app does not actually use. */
 import { writeSiteRefusalReason, stepWizard } from "../../src/shared/va-wizard.js";
 import { VA_LIMITS } from "../../src/shared/va-config.js";
+/* F-501 - the capability sentence is asserted from its ONE home, so this suite cannot pass
+   on words the app does not actually render. */
+import { agentCapabilityCopy } from "../../src/shared/edition.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SHOTS = process.argv.includes("--shots");
@@ -395,6 +400,35 @@ try {
       await stepIs(page, "persona_name");
       await shot(page, "agents-wizard-dark");
       ok(env.errors.length === 0, `A11 no page errors in dark (${env.errors[0] || ""})`);
+    } finally { await close(env); }
+  }
+
+  /* ---------- A12 the capability gate's refusal (F-501) ---------- */
+  for (const [theme, red] of [["light", "rgb(220, 38, 38)"], ["dark", "rgb(239, 68, 68)"]]) {
+    console.log(`A12 capability gate (${theme})`);
+    const env = await openAgents(browser, theme);
+    const { page } = env;
+    try {
+      // The second card is the broken agent; its receipts carry the capability skip.
+      await page.locator(".va-agent").nth(1).locator(".rule-expand-btn").click();
+      await page.locator(".va-pane-btn", { hasText: "Ticks" }).click();
+      await page.locator(".va-receipt-cap").first().waitFor({ timeout: 8000 });
+      const copy = agentCapabilityCopy("needs-coder-edition");
+      const block = page.locator(".va-receipt-cap").first();
+      ok((await block.locator(".va-receipt-cap-title").innerText()).trim() === copy.title, `A12 ${theme} the title is the copy home's title`);
+      ok((await block.locator(".va-receipt-cap-text").innerText()).trim() === copy.remedy, `A12 ${theme} the remedy is the copy home's remedy`);
+      ok(!/capability/i.test(await block.innerText()), `A12 ${theme} the raw gate id is not what the admin reads`);
+      ok(!(await block.innerText()).includes("\u2014"), `A12 ${theme} no em-dash`);
+      ok(copy.link === "settings" && await block.locator(".va-receipt-cap-link").count() === 1, `A12 ${theme} the Settings remedy link is offered`);
+      const css = await block.evaluate((el) => { const c = getComputedStyle(el); return { bg: c.backgroundColor, fg: c.color, bl: c.borderLeftWidth, w: getComputedStyle(el.querySelector(".va-receipt-cap-title")).fontWeight }; });
+      ok(css.bg === red, `A12 ${theme} solid red fill, got ${css.bg}`);
+      ok(css.fg === "rgb(255, 255, 255)", `A12 ${theme} white ink, got ${css.fg}`);
+      ok(css.bl === "0px", `A12 ${theme} no left rail, got ${css.bl}`);
+      ok(Number(css.w) >= 600 && Number(css.w) <= 700, `A12 ${theme} 600-700 weight, got ${css.w}`);
+      // An ok:false tick says so even when skipped[] is empty.
+      ok(await page.locator(".va-receipt-failed").count() >= 1, `A12 ${theme} a failed tick is badged FAILED`);
+      await shot(page, `agents-capability-${theme}`);
+      ok(env.errors.length === 0, `A12 ${theme} no page errors (${env.errors[0] || ""})`);
     } finally { await close(env); }
   }
 } finally {

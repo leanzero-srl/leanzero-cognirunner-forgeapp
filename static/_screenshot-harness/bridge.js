@@ -1329,7 +1329,11 @@ const VA_STATUS = {
     nextPostWindow: { from: "2026-09-13T09:05:00.000Z", to: "2026-09-13T17:00:00.000Z" },
     shadow: null, paused: false,
     health: { ok: false, failedTicks: VA_LIMITS.healthBannerFailedTicks, reason: "The Git connection this agent uses has a dead credential, so its last three ticks failed." },
-    receipts: [{ at: "2026-09-13T07:05:00.000Z", phase: "prepare", ok: false, swept: 0, error: "auth_dead: the connection credential was rejected.", skipped: [] }],
+    receipts: [
+      { at: "2026-09-13T07:05:00.000Z", phase: "prepare", ok: false, swept: 0, error: "auth_dead: the connection credential was rejected.", skipped: [] },
+      /* F-501 - the capability gate. The receipt carries the reason, never the sentence. */
+      { at: "2026-09-13T07:00:00.000Z", phase: "prepare", ok: false, swept: 0, skipped: [{ gate: "capability", reason: "needs-coder-edition" }] },
+    ],
   },
 };
 const VA_DRAFTS = {

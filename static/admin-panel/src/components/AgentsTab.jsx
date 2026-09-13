@@ -42,6 +42,7 @@ import { confirmDialog } from "../confirmDialog";
 import { createVaClient } from "../va-client";
 import { isPermissionRefusal, permissionRefusalText } from "./refusal";
 import { VA_LIMITS } from "../../../../src/shared/va-config.js";
+import { agentCapabilityCopy } from "../../../../src/shared/edition.js";
 
 const arr = (v) => (Array.isArray(v) ? v : []);
 const fmt = (iso, tz) => { if (!iso) return null; try { return new Date(iso).toLocaleString(undefined, tz ? { timeZone: tz } : undefined); } catch { return String(iso); } };
@@ -68,8 +69,23 @@ const GATE_COPY = {
   claim: "Another delivery already had this item.",
   readback: "The posted comment could not be verified, so it was made internal and reported as an error.",
   attempts: "The item failed its attempts limit and was parked.",
+  /* F-501 - the agent-capability gate (F-482). This one sentence is NOT a constant: the
+     receipt carries a `reason` ("needs-coder-edition", "needs-frontier-model",
+     "allowance-exhausted", ...) and the ONE home for those words is agentCapabilityCopy()
+     in src/shared/edition.js - the same rows the Code tab and the Coder panel render. So a
+     row may be a FUNCTION of the skip, and gateCopy() calls it rather than this file
+     re-typing a sentence that would then drift from the other two surfaces. */
+  capability: (s) => agentCapabilityCopy(s && s.reason),
 };
-const gateSentence = (g) => GATE_COPY[String(g && (g.gate || g.reason || g))] || String((g && (g.reason || g.gate)) || g);
+/* A gate resolves to EITHER a flat sentence (the eleven post gates) or a copy row
+   { title, remedy, link } that renders as its own solid-red state. An id with no copy at
+   all still renders as itself. */
+const gateCopy = (g) => {
+  const row = GATE_COPY[String((g && (g.gate || g.reason)) || g || "")];
+  if (typeof row === "function") return { copy: row(g) };
+  return { sentence: row || String((g && (g.reason || g.gate)) || g) };
+};
+const gateSentence = (g) => gateCopy(g).sentence || "";
 
 export default function AgentsTab({ invoke, isAdmin, userRole, roleUnknown = false }) {
   const canEdit = isAdmin || userRole === "editor" || userRole === "admin";
@@ -359,6 +375,19 @@ function EffectsPane({ client, agent, tz }) {
 
 /* ── Tick receipts: every skip, by the gate that made it. ─────────────────────── */
 
+/* The rows a receipt has to explain. A failing receipt may name its gate on the RECEIPT
+   itself (`{ ok:false, gate, reason }`, which is what the engine passes through untouched)
+   rather than inside `skipped[]` - so an ok:false tick still renders its failed state when
+   `skipped` is empty, instead of going silent, which is the quiet failure this pane exists
+   to prevent. A gate named in both places is rendered once. */
+function skipRows(r) {
+  const rows = arr(r.skipped);
+  if (r.ok === false && r.gate && !rows.some((s) => (s.gate || s.reason) === r.gate)) {
+    return rows.concat([{ gate: r.gate, reason: r.reason, itemKey: r.itemKey }]);
+  }
+  return rows;
+}
+
 function ReceiptsPane({ receipts, tz }) {
   if (!receipts.length) return <div className="empty-state">No tick has been recorded yet.</div>;
   return (
@@ -369,10 +398,23 @@ function ReceiptsPane({ receipts, tz }) {
             <span className="va-receipt-kind">{r.phase === "post" ? "POST" : "PREPARE"}</span>
             <span className="va-receipt-at">{when(r.at, tz)}</span>
             <span className="va-receipt-counts">{r.swept != null ? `${r.swept} swept` : ""}{r.worked != null ? ` · ${r.worked} worked` : ""}{r.posted != null ? ` · ${r.posted} posted` : ""}</span>
+            {r.ok === false && <span className="va-receipt-failed">FAILED</span>}
           </div>
-          {arr(r.skipped).map((s, j) => (
-            <div className="va-receipt-skip" key={j}><span className="va-receipt-gate">{s.gate || s.reason || "gate"}</span><span>{gateSentence(s)}{s.itemKey ? ` (${s.itemKey})` : ""}</span></div>
-          ))}
+          {skipRows(r).map((s, j) => {
+            const c = gateCopy(s);
+            if (!c.copy) {
+              return <div className="va-receipt-skip" key={j}><span className="va-receipt-gate">{s.gate || s.reason || "gate"}</span><span>{c.sentence}{s.itemKey ? ` (${s.itemKey})` : ""}</span></div>;
+            }
+            return (
+              <div className="va-receipt-cap" key={j}>
+                <span className="va-receipt-cap-title">{c.copy.title}{s.itemKey ? ` (${s.itemKey})` : ""}</span>
+                <span className="va-receipt-cap-text">{c.copy.remedy}</span>
+                {c.copy.link === "settings" && (
+                  <span className="va-receipt-cap-link">Open the Settings tab to change the provider, the edition or the agent model.</span>
+                )}
+              </div>
+            );
+          })}
           {r.error && <div className="va-receipt-error">{r.error}</div>}
         </div>
       ))}

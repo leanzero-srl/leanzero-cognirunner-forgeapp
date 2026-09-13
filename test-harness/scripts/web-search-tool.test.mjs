@@ -40,6 +40,9 @@ eq([...new Set(IDENTIFIER_PATTERNS.map((r) => r.id))].length, IDENTIFIER_PATTERN
 
 const LEAKS = [
   ["does 712020:8f3a91cc own this", "accountId"],
+  // F-406 - the bare 24-hex accountId, the shape every REST payload actually carries.
+  ["who is 5b10ac8d82e05b22cc7d4ef5", "accountIdHex"],
+  ["reporter 557058ABC0D1E2F3A4B5C6D7 history", "accountIdHex"],
   ["wolfaenpak.atlassian.net rest api v3 search", "atlassianHost"],
   ["who is mihai.perdum@leanzero.net", "email"],
   ["what is 3f2504e0-4f89-11d3-9a0c-0305e82c3301", "uuid"],
@@ -70,6 +73,8 @@ const CLEAN = [
   "forge kvs 240 KiB value limit",
   "HTTP-2 server push deprecation",
   "SHA-256 collision status",
+  "sha256 of the release is 9f86d081884c7d659a2feaa054", // 24 hex is an account id; 26 is not
+  "short hash 5b10ac8d82e0 rolled back", // a short hash is not an account id
 ];
 for (const query of CLEAN) ok(findIdentifierLeak(query) === null, `allows the public question "${query.slice(0, 40)}…"`);
 

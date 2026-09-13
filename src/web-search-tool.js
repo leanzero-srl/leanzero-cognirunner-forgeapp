@@ -95,6 +95,13 @@ const ISSUE_KEY_SHAPE = /\b[A-Z][A-Z0-9_]{1,9}-\d{1,6}\b/;
 export const IDENTIFIER_PATTERNS = Object.freeze([
   // Atlassian account id: the `712020:` (or any numeric realm) prefix followed by hex.
   { id: "accountId", kind: "an Atlassian account id", re: /\b\d{6}:[0-9a-fA-F]{8}/ },
+  // F-406 — the OTHER account id. Classic Atlassian Cloud accountIds are a bare 24-char
+  // hex string with no realm prefix and no dashes (`5b10ac8d82e05b22cc7d4ef5`), which the
+  // realm-prefixed row above and the UUID row both miss entirely. It is the identifier
+  // that appears in every REST payload an agent reads, so it is the one most likely to be
+  // pasted into a query. 24 hex chars is specific enough that a public token of that exact
+  // shape is vanishingly rare, and an extra refusal costs one sentence.
+  { id: "accountIdHex", kind: "an Atlassian account id", re: /\b[0-9a-f]{24}\b/i },
   // Any Atlassian Cloud site host — naming the tenant is naming the customer.
   { id: "atlassianHost", kind: "an Atlassian site address", re: /\b[A-Za-z0-9][A-Za-z0-9-]*\.atlassian\.net\b/ },
   { id: "email", kind: "an e-mail address", re: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/ },

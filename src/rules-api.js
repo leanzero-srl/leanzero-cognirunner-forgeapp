@@ -618,7 +618,19 @@ const handleCollection = async ({ req, method, id, action, body, who, kind }) =>
       // without `mode:"va"` in the body it would rewrite the agent as a plain script
       // job, losing the whole record. Same read, so it is asked here.
       if (!isL) { const hit = vaDoor(row); if (hit) return hit; }
-      if (!row) continue;
+      /*
+       * F-616 — AN UNMATCHED BODY ID IS A 404, NOT A CREATE AT THAT ID.
+       *
+       * This route used to `continue` here, so a POST whose body named an id that
+       * matched nothing fell into `save()` and `normalizeListener`/`normalizeJob`
+       * honoured the caller's id — a create at an id the CLIENT chose. An id is a
+       * namespace (a VA's whole `va_*` ledger and its purge tombstone hang off its
+       * job id), so that is how a deleted agent gets re-created on top of its own
+       * dead state. The resolvers close the same hole in the same words
+       * (`gateSaveById`, src/index.js): a create omits the id, an id that names no
+       * row is "not found". PUT already answered 404 here; this is the twin.
+       */
+      if (!row) return json(404, { error: `${noun} not found` });
       const owned = await ownerGate(who, row, { what: `replace this ${noun}`, notFound: `${noun} not found` });
       if (owned) return owned;
     }
@@ -804,6 +816,12 @@ const handleAgents = async ({ method, id, action, part, body, who, req }) => {
       if (input.id) {
         existing = await J.getJob(input.id);
         if (existing && existing.mode !== "va") return json(409, { error: "that id belongs to a scheduled job that is not a Virtual Administrator" });
+        // F-616 — the UPSERT arm, and the one that was exploited: a POST naming an
+        // id that matches no row used to CREATE the agent at that id, which plants
+        // a live agent on a deleted one's `va_*` namespace and its standing
+        // `va_purged:` tombstone. An agent is created WITHOUT an id; an id that
+        // names no agent is not found. Same rule as `gateSaveById` in src/index.js.
+        if (!existing) return json(404, { error: "agent not found" });
       }
     }
     // ONE normalisation, and it is the resolver's: the live catalogue check, the

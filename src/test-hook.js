@@ -748,6 +748,68 @@ export async function testStateTrigger(req) {
       else await storage.set(body.key, body.value);
       return json(200, { key: body.key, set: body.value === null ? "deleted" : true, now: (await storage.get(body.key)) ?? null });
     }
+    /*
+     * F-616 — THE PURGE-TOMBSTONE DOOR, and why it had to exist.
+     *
+     * F-575's settle window was driven live by DELETING a Virtual Administrator and
+     * RE-CREATING it under the same id through `saveScheduledJob`. That only worked
+     * because a save carrying an unknown id CREATED the row at that id — the defect
+     * F-616 closes. With the door shut there is no product path to a re-created agent,
+     * so the window would have gone unproven; this is its replacement.
+     *
+     * WHAT IT DOES. Writes, ages, reads or deletes `va_purged:{agent}` — the tombstone
+     * `purgeAgent` stamps on delete and `clearPurgeTombstone` weighs on the first prepare
+     * tick. The KEY and the TTL come from `src/shared/va-keys.js`, the module that owns
+     * them; nothing is retyped here.
+     *
+     * WHY IT IS NOT A PLANTABLE PERMISSION (the objection the old driver recorded when
+     * it refused to add `va_purged:*` to `kvSet`'s allow-list). A tombstone GRANTS
+     * nothing: every writer that reads one REFUSES under it. Planting one can only take
+     * an agent's voice away, never hand it one. The one direction that does relax
+     * something is `op:"age"`/a large `ageMs`, which can retire a settle window early —
+     * so this door is behind the same HARNESS_SECRET Bearer as everything else in this
+     * file (absent in production, checked at the top of the handler), it refuses an
+     * agent id that names no job row, and it never touches any other key.
+     *
+     * THE CLAMP IS THE POINT. `clearPurgeTombstone` only considers a tombstone STAMPED
+     * BEFORE the job's `createdAt` (that is what tells a re-created job from a tick of
+     * the deleted one). A planted `at` is therefore clamped to `createdAt - 1s`, so a
+     * fresh plant lands on the SETTLE-WINDOW arm rather than the `tombstone_newer_than_job`
+     * one, and `ageMs` moves it further back to retire the window. The answer reports the
+     * job's `createdAt`, the effective age and whether the clamp bit, so a driver grades
+     * on measured facts and never on an assumed clock.
+     */
+    if (body.action === "vaTombstone") {
+      const agent = String(body.agent || "");
+      if (!/^[A-Za-z0-9_.-]{3,80}$/.test(agent)) return json(400, { error: "agent must be a job id (3-80 chars of A-Za-z0-9_.-)" });
+      const { vaPurgedKey, VA_PURGED_TTL } = await import("./shared/va-keys.js");
+      const key = vaPurgedKey(agent);
+      const op = String(body.op || "read");
+      if (op === "read") return json(200, { ok: true, key, row: (await storage.get(key)) ?? null });
+      if (op === "clear") { await storage.delete(key); return json(200, { ok: true, key, row: (await storage.get(key)) ?? null }); }
+      if (op === "plant" || op === "age") {
+        const { getJob } = await import("./scheduled-jobs.js");
+        const job = await getJob(agent);
+        // A tombstone for an id that is not a live row would be unreachable litter, and
+        // the clamp below has nothing to clamp against.
+        if (!job) return json(404, { error: "no scheduled job / agent with that id" });
+        const existing = (await storage.get(key)) ?? null;
+        if (op === "age" && !existing) return json(409, { error: "no tombstone to age — plant one first" });
+        const ageMs = Math.max(0, Math.min(7 * 24 * 3600 * 1000, Number(body.ageMs) || 0));
+        const createdMs = Date.parse((job.createdAt == null ? "" : job.createdAt));
+        const wanted = Date.now() - ageMs;
+        const at = Number.isFinite(createdMs) ? Math.min(wanted, createdMs - 1000) : wanted;
+        const row = { at: new Date(at).toISOString(), agent, plantedBy: "harness" };
+        await storage.set(key, row, VA_PURGED_TTL);
+        return json(200, {
+          ok: true, key, row, op,
+          jobCreatedAt: job.createdAt || null,
+          effectiveAgeMs: Date.now() - at,
+          clampedToCreatedAt: Number.isFinite(createdMs) && wanted > createdMs - 1000,
+        });
+      }
+      return json(400, { error: `unknown op "${op}" for vaTombstone (plant|age|read|clear)` });
+    }
     if (body.action === "removeRules") {
       try {
         const { removeRegistryRowsCore } = await import("./index.js");

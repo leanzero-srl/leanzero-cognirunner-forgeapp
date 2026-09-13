@@ -36,6 +36,36 @@ export const SCAFFOLD_VERSION = 1;
 
 const PLACEHOLDER_APP_ID = "ari:cloud:ecosystem::app/PLACEHOLDER";
 
+/**
+ * F-540 — A LINE ARRAY MAY CARRY A CONDITIONAL BLOCK.
+ *
+ * The Code tab offers "none" as the Custom UI folder for a backend-only app, and both
+ * pipelines emitted the build step unconditionally, so that choice rendered
+ * "working-directory: none" (and "cd none") and the job failed there. The UI could only
+ * warn about it; the scaffold is where the step lives, so the scaffold is where the choice
+ * has to be honoured.
+ *
+ * A line array entry is therefore either a STRING (emitted verbatim, placeholders
+ * substituted) or "{ when, lines }" -- the lines are emitted only when when(vars) is true.
+ * Kept deliberately small: a predicate over the rendered variables, no expression language,
+ * and renderScaffold throws on any other entry shape so a typo cannot silently drop a
+ * step.
+ */
+const UI_DIR_NONE = "none";
+
+/** True when this render has a Custom UI to build at all. */
+export const scaffoldHasCustomUi = (vars) => {
+  const dir = String((vars && vars.UI_DIR) || "").trim().toLowerCase();
+  // An EMPTY UI_DIR is "no UI", not "a folder called empty string". Both scaffolds declare
+  // a default so this is unreachable through renderScaffold, but the predicate is exported
+  // and the safe reading of "I do not know where the UI is" is "do not emit a build step
+  // pointed at nowhere".
+  return dir !== "" && dir !== UI_DIR_NONE;
+};
+
+/** A block of lines emitted only when the render has a Custom UI. */
+const whenCustomUi = (lines) => ({ when: scaffoldHasCustomUi, lines });
+
 // ---------------------------------------------------------------------------
 // Pipeline: GitHub Actions
 // ---------------------------------------------------------------------------
@@ -102,9 +132,11 @@ const FORGE_DEPLOY_YML = [
   "          node-version: 22",
   "      - name: Install (backend)",
   "        run: npm install --no-audit --no-fund",
-  "      - name: Install and build (Custom UI)",
-  "        run: npm install --no-audit --no-fund && npm run build",
-  "        working-directory: {{UI_DIR}}",
+  whenCustomUi([
+    "      - name: Install and build (Custom UI)",
+    "        run: npm install --no-audit --no-fund && npm run build",
+    "        working-directory: {{UI_DIR}}",
+  ]),
   "      - name: Forge CLI",
   "        run: npm install --global @forge/cli@13 && forge settings set usage-analytics false",
   "      - name: Bootstrap (register when there is no app id yet)",
@@ -166,7 +198,9 @@ const BITBUCKET_PIPELINES_YML = [
   "        caches: [node]",
   "        script:",
   "          - npm install --no-audit --no-fund",
-  "          - cd {{UI_DIR}} && npm install --no-audit --no-fund && npm run build && cd -",
+  whenCustomUi([
+    "          - cd {{UI_DIR}} && npm install --no-audit --no-fund && npm run build && cd -",
+  ]),
   "          - npm install --global @forge/cli@13",
   "          - forge settings set usage-analytics false",
   "          - export FORGE_ENV=\"${ENVIRONMENT:-development}\"",
@@ -824,7 +858,28 @@ export const renderScaffold = (kind, overrides = {}) => {
     if (!SAFE_VAR.test(String(v))) throw new Error("Scaffold variable " + k + " has unsafe characters");
     vars[k] = String(v);
   }
-  return s.files.map((f) => ({ path: substitute(f.path, vars).replace(/^\/+/, ""), content: f.lines.map((l) => substitute(l, vars)).join("\n") + "\n" }));
+  return s.files.map((f) => ({
+    path: substitute(f.path, vars).replace(/^\/+/, ""),
+    content: expandLines(f.lines, vars).map((l) => substitute(l, vars)).join("\n") + "\n",
+  }));
+};
+
+/**
+ * Flatten a file's line array, dropping "{ when, lines }" blocks whose predicate is false.
+ * An entry that is neither a string nor such a block THROWS: a scaffold line silently
+ * vanishing because of a typo is the failure mode this shape must not have (F-540).
+ */
+const expandLines = (entries, vars) => {
+  const out = [];
+  for (const entry of entries || []) {
+    if (typeof entry === "string") { out.push(entry); continue; }
+    if (entry && typeof entry === "object" && Array.isArray(entry.lines) && typeof entry.when === "function") {
+      if (entry.when(vars)) out.push(...entry.lines);
+      continue;
+    }
+    throw new Error("Scaffold line entry must be a string or a { when, lines } block");
+  }
+  return out;
 };
 
 /** The permission lock CogniRunner writes when an admin approves a repo's pipeline. */

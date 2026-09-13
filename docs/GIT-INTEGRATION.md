@@ -477,6 +477,16 @@ the generated checker because that file is standalone in a customer's repository
 import nothing; `git-scaffolds.test.mjs` holds the two regex literals byte-equal so the two
 homes cannot drift apart.
 
+**Backend-only apps (F-540).** The Code tab offers `none` as the Custom UI folder. Both
+pipelines used to emit the Custom UI build step unconditionally, so that choice rendered
+`working-directory: none` on GitHub and `cd none` on Bitbucket and the job failed there —
+the UI could only warn about it, because the step lives in the scaffold. A scaffold line
+array entry may now be either a string or a `{ when, lines }` block whose lines are emitted
+only when the predicate holds; `scaffoldHasCustomUi(vars)` is that predicate and is false for
+`none`, for any casing or padding of it, and for an empty `UI_DIR`. `renderScaffold` throws
+on any other entry shape, because a step silently vanishing from a pipeline is the failure
+mode a conditional renderer must not have. Both branches are parity-tested.
+
 **Re-running setup (F-533).** Setting a pipeline secret or variable is an **upsert on both
 hosts** — the resolver's "validate everything, then queue" story only holds if a second run
 of the same setup does the same thing. GitHub was already idempotent (POST, then PATCH by

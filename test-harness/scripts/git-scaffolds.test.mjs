@@ -101,6 +101,47 @@ for (const kind of ["forge-custom-ui", "forge-pipeline"]) {
 assert.ok(!/registers the app ONCE/.test(src) && !/registers at most once/.test(src),
   "the module's own comments no longer promise a bootstrap that registers at most once automatically");
 
+/* ===================== F-540 — "none" MEANS THE STEP IS NOT THERE =====================
+ * The Code tab offers "none" as the Custom UI folder for a backend-only app, and both
+ * pipelines emitted the build step unconditionally, so that choice rendered
+ * `working-directory: none` / `cd none` and the job died there. The UI could only warn;
+ * the step lives in the scaffold, so the scaffold has to honour the choice.
+ *
+ * BOTH branches are held, and so is the failure mode of the mechanism itself: a line entry
+ * that is neither a string nor a { when, lines } block must THROW, because a step silently
+ * vanishing from a pipeline is the worst thing a conditional renderer can do. */
+for (const kind of ["forge-custom-ui", "forge-pipeline"]) {
+  const withUi = m.renderScaffold(kind, { UI_DIR: "static/app" });
+  const noUi = m.renderScaffold(kind, { UI_DIR: "none" });
+  const pick = (files, name) => files.find((f) => f.path === name).content;
+
+  const ghYes = pick(withUi, ".github/workflows/forge-deploy.yml");
+  const ghNo = pick(noUi, ".github/workflows/forge-deploy.yml");
+  assert.ok(/name: Install and build \(Custom UI\)/.test(ghYes), kind + ": a real folder keeps the build step");
+  assert.ok(/working-directory: static\/app/.test(ghYes), kind + ": ...pointed at it");
+  assert.ok(!/Install and build \(Custom UI\)/.test(ghNo), kind + ": UI_DIR=none drops the build step entirely");
+  assert.ok(!/working-directory: none/.test(ghNo), kind + ": ...so nothing ever points at a folder called none");
+  assert.ok(/name: Install \(backend\)/.test(ghNo), kind + ": ...and the backend install still runs");
+  assert.ok(/name: Deploy/.test(ghNo) && /name: Permission lock/.test(ghNo), kind + ": ...as do lock and deploy");
+
+  const bbYes = pick(withUi, "bitbucket-pipelines.yml");
+  const bbNo = pick(noUi, "bitbucket-pipelines.yml");
+  assert.ok(/cd static\/app && npm install/.test(bbYes), kind + ": Bitbucket builds the UI when there is one");
+  assert.ok(!/cd none/.test(bbNo) && !/npm run build/.test(bbNo), kind + ": ...and does not when there is not");
+  assert.ok(/forge deploy/.test(bbNo), kind + ": ...the deploy survives either way");
+
+  // the conditional never leaves a placeholder or an empty line behind.
+  for (const f of noUi) {
+    assert.ok(!/\{\{[A-Z_]+\}\}/.test(f.content), kind + "/" + f.path + ": no unresolved placeholder in the none branch");
+    assert.ok(!/\n\n\n/.test(f.content), kind + "/" + f.path + ": the dropped block leaves no hole");
+  }
+}
+assert.ok(m.scaffoldHasCustomUi({ UI_DIR: "static/app" }) === true
+  && m.scaffoldHasCustomUi({ UI_DIR: "NONE" }) === false
+  && m.scaffoldHasCustomUi({ UI_DIR: " none " }) === false
+  && m.scaffoldHasCustomUi({}) === false,
+  "the predicate is case- and space-insensitive, and an absent UI_DIR is no UI");
+
 /* ===================== F-531 — THE TRIGGER BRANCH ON BOTH HOSTS ======================
  * A repository CogniRunner creates on Bitbucket comes back with mainbranch.name = "master"
  * (live, the offshoot's -bb repo), while the committed pipeline only listed `main`, so its

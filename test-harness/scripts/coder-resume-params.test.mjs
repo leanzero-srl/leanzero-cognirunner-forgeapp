@@ -735,6 +735,160 @@ await call("confirmCoderTicket", { ticketId: "tkt_5", decision: "skip" });
   ok(p3.pinEpochVerified === undefined, "…and nothing claims the bytes were verified unchanged");
 }
 
+/* ===== 13. F-619 — TWO STORES, TWO VERDICTS: A MOVED MEMORY EPOCH MUST NOT SWALLOW
+ *        THE SKILL CHECK =========================================================
+ *
+ * F-598 made the memory bump a TRIGGER (re-render, compare bytes, keep the pin when they
+ * match) but left the skill comparison as the final `else if` of one chain. So any turn on
+ * which the memory epoch had moved never evaluated the skill epoch at all: the memory arm
+ * answered, `pinEpochVerified` re-stamped the pin, and the next memory write did it again.
+ * On an instance where a memory is written most turns, a skill the admin DELETED replayed
+ * verbatim for the life of the thread — the exact failure F-578 exists to prevent, reached
+ * through a store that has nothing to do with skills.
+ *
+ * The arms are independent now. Proven on the three cases that separate them, plus a
+ * negative control that re-runs the OLD chain over the same facts and shows it keeping the
+ * pin the new code drops.
+ */
+{
+  const { loadMemories, saveMemories, saveMemoryCandidate } = await import("../../src/memories.js");
+  const { SKILL_INDEX_KEY } = await import("../../src/skills.js");
+  const PIN_SKILL = "skill_f619";
+
+  await saveSkillInternal(
+    { id: PIN_SKILL, name: "Pinned F619", category: "Other" },
+    { instructions: "The original pinned instruction." },
+  );
+
+  const pinFor = async (thread, k) => storage.set(coder.coderPinKey(ISSUE, thread), {
+    issueKey: ISSUE, threadId: thread,
+    skillsBlock: k.skillsBlock || "", memoryBlock: k.memoryBlock || "",
+    skillIds: k.skillIds || [], memoryCount: k.memoryCount || 0,
+    memoryEpoch: k.memoryEpoch, skillEpoch: k.skillEpoch, at: new Date().toISOString(),
+  });
+  const startThread = async (thread) => {
+    await storage.set(coder.coderThreadKey(ISSUE, thread), {
+      issueKey: ISSUE, threadId: thread, ownerAccountId: OWNER,
+      messages: [{ role: "user", content: "turn one" }], turns: 1,
+    });
+    const k = await __coderKnowledgeInternals.buildCoderKnowledge({
+      issueKey: ISSUE, threadId: thread, message: "turn one", skillIds: [PIN_SKILL],
+    });
+    await pinFor(thread, k);
+    return k;
+  };
+  const turn = (thread) => __coderKnowledgeInternals.buildCoderKnowledge({
+    issueKey: ISSUE, threadId: thread, message: "turn two", skillIds: [PIN_SKILL],
+  });
+
+  // A memory write this project's block CANNOT see: scoped to another project, so the
+  // instance-wide epoch moves and the rendered LZPT block is byte-identical. This is the
+  // ordinary churn F-598 stopped charging for — and the cover the skill arm hid behind.
+  const bumpMemoryEpochOnly = async () => {
+    const row = await saveMemoryCandidate({
+      content: `F619 unrelated ${Math.random().toString(36).slice(2)} lives in another project.`,
+      source: "user", projectKey: "OTHER",
+    });
+    const rows = await loadMemories();
+    await saveMemories(rows.filter((m) => m.id !== row.id));
+  };
+  // The skill store, moved on its own: an EDIT (updatedAt) and a DELETE (the id leaves the
+  // index) are the two ways `skillEpochFor` reports a change.
+  const editPinnedSkill = async () => {
+    await new Promise((r) => setTimeout(r, 2));
+    await saveSkillInternal(
+      { id: PIN_SKILL, name: "Pinned F619", category: "Other" },
+      { instructions: "The EDITED instruction the thread must now see." },
+    );
+  };
+  // A REAL delete, both halves: `deleteSkill` (src/index.js) drops the index row AND the
+  // content record. Removing only the index row is not a delete — `fetchSkillsBlock` reads
+  // `skill_repo:{id}` directly and would still render the skill's text.
+  const { SKILL_PREFIX } = await import("../../src/skills.js");
+  const deletePinnedSkill = async () => {
+    const index = (await storage.get(SKILL_INDEX_KEY)) || [];
+    await storage.set(SKILL_INDEX_KEY, index.filter((r) => r && r.id !== PIN_SKILL));
+    await storage.delete(`${SKILL_PREFIX}${PIN_SKILL}`);
+  };
+
+  /* --- (a) BOTH epochs move in the same turn → rebuild, and the skill is the reason --- */
+  {
+    const T = "t_f619_both";
+    const p1 = await startThread(T);
+    ok(/The original pinned instruction/.test(String(p1.skillsBlock || "")),
+      "F-619 (a): turn 1 pins the skill's rendered bytes");
+    const pinnedBefore = await storage.get(coder.coderPinKey(ISSUE, T));
+
+    await bumpMemoryEpochOnly();
+    await editPinnedSkill();
+
+    const p2 = await turn(T);
+    ok(p2.repin === true,
+      `THE FINDING: a moved memory epoch no longer swallows the skill check (repin=${p2.repin}, pinInvalidated=${p2.pinInvalidated})`);
+    ok(typeof p2.pinInvalidated === "string" && /skillEpoch changed/.test(p2.pinInvalidated),
+      `…and the verdict NAMES the skill store (${p2.pinInvalidated})`);
+    ok(p2.pinEpochVerified === undefined,
+      "…and nothing re-stamps a pin that is being rebuilt");
+    ok(/The EDITED instruction/.test(String(p2.skillsBlock || "")) && !/The original pinned instruction/.test(String(p2.skillsBlock || "")),
+      "…the rebuilt prefix carries the CURRENT skill text, not the pinned one");
+
+    /* --- NEGATIVE CONTROL: the reverted chain, over the same facts --- */
+    const liveMemoryEpoch = await (await import("../../src/memories.js")).memoryEpoch();
+    const { skillEpochFor } = await import("../../src/skills.js");
+    const liveSkillEpoch = await skillEpochFor([PIN_SKILL]);
+    const liveMemoryText = (await (await import("../../src/memories.js")).buildMemoryBlock({ projectKey: "LZPT", capBytes: 4000 })).text;
+    // F-598's chain, restored verbatim: memory first, skills only in the trailing else-if.
+    const oldChain = () => {
+      if (pinnedBefore.memoryEpoch === undefined || pinnedBefore.skillEpoch === undefined) return "rebuild";
+      if (liveMemoryEpoch !== null && Number(pinnedBefore.memoryEpoch) !== Number(liveMemoryEpoch)) {
+        return String(liveMemoryText) === String(pinnedBefore.memoryBlock || "") ? "keep" : "rebuild";
+      }
+      if (liveSkillEpoch !== null && String(pinnedBefore.skillEpoch) !== String(liveSkillEpoch)) return "rebuild";
+      return "keep";
+    };
+    ok(Number(pinnedBefore.memoryEpoch) !== Number(liveMemoryEpoch) && String(pinnedBefore.skillEpoch) !== String(liveSkillEpoch),
+      `…the control runs on the real facts: both epochs did move (${pinnedBefore.memoryEpoch}→${liveMemoryEpoch})`);
+    ok(String(liveMemoryText) === String(pinnedBefore.memoryBlock || ""),
+      "…with this project's memory block byte-identical, which is what let the memory arm answer");
+    ok(oldChain() === "keep",
+      "NEGATIVE CONTROL: the reverted chain KEEPS this pin — it never reaches the skill comparison");
+  }
+
+  /* --- (b) memory moves, bytes equal, skill stable → the pin is KEPT (F-598 intact) --- */
+  {
+    await saveSkillInternal(
+      { id: PIN_SKILL, name: "Pinned F619", category: "Other" },
+      { instructions: "The EDITED instruction the thread must now see." },
+    );
+    const T = "t_f619_mem_only";
+    await startThread(T);
+    await bumpMemoryEpochOnly();
+    const p2 = await turn(T);
+    ok(p2.repin === undefined && p2.pinInvalidated === undefined,
+      `F-619 (b): an unrelated memory write with the skills stable still keeps the pin (repin=${p2.repin}, ${p2.pinInvalidated})`);
+    ok(p2.pinEpochVerified === true,
+      "…and still asks for the re-stamp, so the re-render is paid once and not every turn");
+  }
+
+  /* --- (c) memory STABLE, skill epoch moves → rebuild (the arm that was unreachable) --- */
+  {
+    const T = "t_f619_skill_only";
+    await startThread(T);
+    await deletePinnedSkill();
+    const p2 = await turn(T);
+    ok(p2.repin === true && /skillEpoch changed/.test(String(p2.pinInvalidated)),
+      `F-619 (c): a DELETED pinned skill drops the pin on its own (${p2.pinInvalidated})`);
+    ok(!/The EDITED instruction/.test(String(p2.skillsBlock || "")) && !/The original pinned instruction/.test(String(p2.skillsBlock || "")),
+      "…and the deleted skill's instructions are gone from the prefix");
+  }
+
+  // Leave the store as this file found it: the sections after this one bind real skills.
+  await saveSkillInternal(
+    { id: PIN_SKILL, name: "Pinned F619", category: "Other" },
+    { instructions: "The original pinned instruction." },
+  );
+}
+
 /* ===== F-610 - A FOLLOW-UP TURN INHERITS THE THREAD'S SKILLS ==================
  *
  * F-594 taught `buildCoderKnowledge` to keep the pin's skills when a turn carries no

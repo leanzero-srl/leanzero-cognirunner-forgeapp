@@ -202,6 +202,18 @@ ok(/Skill\(s\) too large for this run's .*-byte budget, not injected/.test(lst),
   ok(/catch \(e\) \{ console\.warn\("\[coder\] skills block skipped:/.test(ah)
     && /console\.warn\("\[coder\] memory block skipped:[\s\S]{0,120}?memoryRender = null;/.test(ah),
     "FAIL-OPEN in both halves: a knowledge fault must never become a Coder turn that did not run");
+
+  // F-619 — THE TWO EPOCH ARMS ARE INDEPENDENT, AND THE SHAPE IS WHAT KEEPS THEM SO.
+  // The defect was purely structural: the skill comparison sat in the trailing `else if`
+  // of the memory chain, so a moved memory epoch made it unreachable for that turn. The
+  // behaviour is proven in coder-resume-params.test.mjs; what is gated HERE is the chain
+  // never coming back, because that is the thing an innocent-looking edit restores.
+  ok(!/\}\s*else if\s*\(liveSkillEpoch/.test(ah),
+    "the skill epoch is NOT judged in an else-if hanging off the memory arm");
+  ok(/reasons\.push\("skillEpoch changed/.test(ah) && /reasons\.push\(`memoryEpoch/.test(ah),
+    "…both arms contribute to one joined verdict instead of racing for the chain");
+  ok(/verdict = reasons\.join\("; "\);[\s\S]{0,400}?out\.pinEpochVerified = true;/.test(ah),
+    "…and the pin is re-stamped only on the branch where NO arm objected");
 }
 
 console.log(`agent-knowledge: ${n} passed, 0 failed`);

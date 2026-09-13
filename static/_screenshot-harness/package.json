@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Harness to screenshot/record and source-scan the CogniRunner UIs standalone.",
   "scripts": {
-    "test:offline": "node refusal-contract.test.mjs && node fixture-constants.test.mjs"
+    "test:offline": "node refusal-contract.test.mjs && node fixture-constants.test.mjs && node mirror-va-css.test.mjs"
   },
   "dependencies": {
     "playwright": "^1.57.0"

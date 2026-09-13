@@ -4241,13 +4241,10 @@ resolver.define("previewRuleDeletion", async ({ payload, context }) => {
  */
 resolver.define("checkIsAdmin", async ({ context }) => {
   const accountId = context?.accountId;
+  // No caller identity means the resolver cannot know WHO is asking, so it cannot
+  // answer yes — not even on an empty roster. Bootstrapping the first admin is
+  // getUserPermissions' job and needs a real accountId plus a Jira admin check.
   if (!accountId) {
-    try {
-      const appUsers = (await storage.get(APP_ADMINS_KEY)) || [];
-      if (appUsers.length === 0) {
-        return { success: true, isAdmin: true, role: "admin", scope: "all", accountId: null };
-      }
-    } catch (e) { /* fall through */ }
     return { success: true, isAdmin: false, role: null, scope: null, accountId: null };
   }
   const perms = await getUserPermissions(accountId);

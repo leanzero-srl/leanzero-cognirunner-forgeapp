@@ -11,7 +11,9 @@ const { handler } = await import("../../src/index.js");
 
 // The first caller on an EMPTY roster used to be persisted as { role: "admin",
 // scope: "all" } without ever asking Jira — any licensed user who opened the app
-// first became its administrator (F-220). It is proved here against a scripted Jira: the bootstrap row may only be written for a caller
+// first became its administrator (F-220). And checkIsAdmin answered isAdmin:true
+// with no accountId at all on an empty roster (F-221). Both are proved here
+// against a scripted Jira: the bootstrap row may only be written for a caller
 // Jira confirms holds ADMINISTER (or sits in an admin group).
 
 const ADMIN = "acct-admin";
@@ -72,4 +74,14 @@ currentCaller = USER; scriptJira({ adminIds: [], groupMembers: [USER] });
 assert.equal(res.isAdmin, true, "group-scan fallback still authorizes");
 assert.equal((await storage.get("app_admins"))[0].accountId, USER);
 
-console.log("permission bootstrap: 3 cases passed (non-admin refused, admin seeded, group fallback)");
+// 4. F-221: no accountId at all → never admin, even on an empty roster.
+storage.__reset(); forgeApi.__reset();
+currentCaller = null; scriptJira();
+[res] = await captureLogs(() => invoke(null));
+assert.equal(res.isAdmin, false, "checkIsAdmin cannot know who is asking without an accountId");
+assert.equal(res.role, null);
+assert.equal(res.scope, null);
+assert.equal(res.accountId, null);
+assert.equal(await storage.get("app_admins"), undefined, "an anonymous call must not write a roster row");
+
+console.log("permission bootstrap: 4 cases passed (non-admin refused, admin seeded, group fallback, anonymous denied)");

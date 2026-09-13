@@ -105,6 +105,17 @@ export const coderThreadKey = (issueKey, threadId) => `coder_thread:${safeKeyPar
 export const coderTicketKey = (ticketId) => `coder_ticket:${safeKeyPart(ticketId)}`;
 export const coderExecClaimKey = (issueKey) => `coder_exec:${safeKeyPart(issueKey)}`;
 export const coderTicketExecClaimKey = (ticketId) => `coder_ticket_exec:${safeKeyPart(ticketId)}`;
+/**
+ * THE THREAD-WRITE LOCK (F-364). `coder_exec` serialises TURNS and `coder_ticket_exec`
+ * serialises one ACTION — neither covers the two entry points that write the SAME thread
+ * row concurrently: a turn runs on the long consumer while the user answers a ticket in a
+ * resolver, inline. The turn read the row before the decision row was written and wrote
+ * its own copy back at the end, losing the `kind:"decision"` row — the one thing
+ * compaction preserves verbatim for the life of the thread, and the record of the user
+ * saying "skip". Every writer takes this lock and RE-READS inside it, so the append is a
+ * merge and not an overwrite.
+ */
+export const coderThreadWriteClaimKey = (issueKey, threadId) => `coder_thread_write:${safeKeyPart(issueKey)}:${safeKeyPart(threadId)}`;
 
 /* ───────────────────────────── refusals ───────────────────────────── */
 
@@ -132,6 +143,36 @@ const fail = (error, extra = {}) => ({ success: false, error, ...extra });
 /* ───────────────────────────── the thread store ───────────────────────────── */
 
 const nowIso = () => new Date().toISOString();
+
+/** Short: it is held around ONE read-modify-write, never across a model call. */
+const THREAD_WRITE_LOCK_TTL = { ttl: { value: 2, unit: "MINUTES" } };
+const THREAD_WRITE_LOCK_TRIES = 25;
+const THREAD_WRITE_LOCK_WAIT_MS = 40;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Run `mutate` (a read-modify-write of the thread row) with the thread-write lock held.
+ *
+ * It WAITS rather than refusing: both callers have already done their irreversible work
+ * — the turn has called the model, the confirm has written to somebody's repository — so
+ * "come back later" is not an answer either of them can give. It waits about a second in
+ * total and then proceeds anyway; a lock that cannot be taken (or a KVS fault taking it)
+ * must not lose the write that the lock exists to protect. That is FAIL-OPEN on
+ * availability and it is only safe because every writer inside re-reads: the worst case
+ * is the race we had before, not a new one.
+ */
+const withThreadWriteLock = async (store, issueKey, threadId, mutate) => {
+  const lockKey = coderThreadWriteClaimKey(issueKey, threadId);
+  let held = false;
+  for (let i = 0; i < THREAD_WRITE_LOCK_TRIES && !held; i++) {
+    try { held = await claimRuleExecution(store, lockKey, THREAD_WRITE_LOCK_TTL, "coder-thread", { failClosed: true }); }
+    catch (e) { console.warn(`[coder] thread-write lock unavailable (${(e && e.message) || e}) — merging without it`); break; }
+    if (!held) await sleep(THREAD_WRITE_LOCK_WAIT_MS);
+  }
+  if (!held) console.warn(`[coder] thread-write lock busy for ${issueKey}/${threadId} — merging without it`);
+  try { return await mutate(); }
+  finally { if (held) { try { await store.delete(lockKey); } catch (e) { console.warn("[coder] thread-write lock release failed:", e && e.message); } } }
+};
 const bytesOf = (v) => Buffer.byteLength(JSON.stringify(v) || "", "utf8");
 
 /**
@@ -640,18 +681,27 @@ const runCoderTurnClaimed = async ({
   // context: the context is rebuilt live next turn, and storing it would make the thread
   // grow by a full issue snapshot per message.
   const addedByLoop = loop.messages.slice(history.length + 2);
-  const nextMessages = [
-    ...(record.messages || []),
+  const addedThisTurn = [
     { role: "user", content: text, at: nowIso() },
     ...addedByLoop.map(storableMessage).filter(Boolean),
   ];
-  const compacted = compactThread(nextMessages);
-  record.messages = compacted.messages;
-  record.turns = (Number(record.turns) || 0) + 1;
-  record.updatedAt = nowIso();
-  if (pendingTicket) record.pendingTicketId = pendingTicket.ticketId;
-  else delete record.pendingTicketId;
-  await store.set(threadKey, record, { ttl: { value: 90, unit: "DAYS" } });
+  // APPEND, DO NOT OVERWRITE (F-364). The row was read before the model ran; a consent
+  // ticket answered in the meantime appended a `kind:"decision"` row to it, and writing
+  // `record` back wholesale erased exactly that. So: take the thread-write lock, RE-READ,
+  // and append this turn's messages to whatever is there now.
+  const priorMessages = record.messages || [];
+  let compacted = { messages: priorMessages, compacted: false, dropped: 0 };
+  await withThreadWriteLock(store, key, thread, async () => {
+    const fresh = await store.get(threadKey);
+    const base = fresh && typeof fresh === "object" && Array.isArray(fresh.messages) ? fresh.messages : priorMessages;
+    compacted = compactThread([...base, ...addedThisTurn]);
+    record.messages = compacted.messages;
+    record.turns = Math.max(Number(record.turns) || 0, Number(fresh && fresh.turns) || 0) + 1;
+    record.updatedAt = nowIso();
+    if (pendingTicket) record.pendingTicketId = pendingTicket.ticketId;
+    else delete record.pendingTicketId;
+    await store.set(threadKey, record, { ttl: { value: 90, unit: "DAYS" } });
+  });
 
   // -- the workspace writes, AFTER the record is safe ----------------------
   // Order matters: the thread row IS the record, so it is written first. If a Jira write
@@ -865,13 +915,18 @@ export const confirmCoderTicket = async ({ ticketId, decision, change = "", acco
   // `compactThread` preserves verbatim for the life of the thread.
   try {
     const threadKey = coderThreadKey(ticket.issueKey, ticket.threadId);
-    const row = await store.get(threadKey);
-    if (row && typeof row === "object") {
-      row.messages = compactThread([...(row.messages || []), { role: "user", kind: "decision", at: nowIso(), content: decisionText }]).messages;
-      row.updatedAt = nowIso();
-      delete row.pendingTicketId;
-      await store.set(threadKey, row, { ttl: { value: 90, unit: "DAYS" } });
-    }
+    // UNDER THE THREAD-WRITE LOCK, and the read is INSIDE it (F-364): the turn this
+    // confirmation belongs to may still be running on the long consumer, and the two
+    // entry points are different processes writing one row.
+    await withThreadWriteLock(store, ticket.issueKey, ticket.threadId, async () => {
+      const row = await store.get(threadKey);
+      if (row && typeof row === "object") {
+        row.messages = compactThread([...(row.messages || []), { role: "user", kind: "decision", at: nowIso(), content: decisionText }]).messages;
+        row.updatedAt = nowIso();
+        delete row.pendingTicketId;
+        await store.set(threadKey, row, { ttl: { value: 90, unit: "DAYS" } });
+      }
+    });
   } catch (e) {
     // The action already ran; losing the note must not re-run it. Say so loudly.
     console.warn(`[coder] decision row not written for ticket ${id}: ${e && e.message}`);

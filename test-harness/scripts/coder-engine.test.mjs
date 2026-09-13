@@ -50,7 +50,7 @@ export async function load(url, ctx, next) {
 const store = (await import("../lib/mock-kvs.mjs")).default;
 const {
   runCoderTurn, confirmCoderTicket, compactThread, buildCoderSystemPrompt, buildArgsPreview,
-  coderThreadKey, coderTicketKey, coderExecClaimKey, coderTicketExecClaimKey,
+  coderThreadKey, coderTicketKey, coderExecClaimKey, coderTicketExecClaimKey, coderThreadWriteClaimKey,
   CODER_MAX_ROUNDS, CODER_CLAIM_TTL_MINUTES, repairTranscript,
 } = await import("../../src/coder-engine.js");
 const { runAgentTask, runAgentLoop, createAgentActionDispatcher } = await import("../../src/agent-runner.js");
@@ -86,6 +86,9 @@ const setupWorld = ({ rounds = [], provider = "anthropic" } = {}) => {
       return { changes: [], executionLogs: [], simulated: config && config.simulationMode === true, createApi: () => api(issueKey) };
     },
     async chat(args) {
+      // A seam for the F-364 interleaving test: something else writes the thread row
+      // while the model round is in flight.
+      if (world.chatHook) await world.chatHook();
       world.requests.push(JSON.parse(JSON.stringify({ messages: args.messages, tools: (args.tools || []).map((t) => t.function.name) })));
       const r = rounds[world.round] !== undefined ? rounds[world.round] : reply([finish()]);
       world.round++;
@@ -461,6 +464,60 @@ await check("F-360: a turn that asks for the OPPOSITE mode is refused by name, n
   assert.equal(flipped.simulation, true);
   assert.equal((await store.get(coderThreadKey("LZPT-7", "t1"))).simulation, true);
   assert.equal(await store.get(coderExecClaimKey("LZPT-7")), undefined, "the refused turn still releases its claim");
+});
+
+await check("F-364: two concurrent confirms on one thread keep BOTH decision rows", async () => {
+  resetStore();
+  const world = setupWorld({ rounds: [reply([call("open_pull_request", { repo: "acme/app", title: "T", sourceBranch: "s" })])] });
+  await startTurn(world);
+  // A second pending ticket on the same thread (the shape a turn + a queued answer make).
+  const first = await store.get(coderTicketKey("tkt_FIXED_ID"));
+  await store.set(coderTicketKey("tkt_SECOND"), { ...first, ticketId: "tkt_SECOND", action: "create_branch", args: { repo: "acme/app", branch: "b" } });
+  const git = recordingGit(world);
+  // A store whose WRITES take time: that is what opens the read-modify-write window the
+  // two entry points really race in (the resolver is inline, the turn is on a consumer).
+  // Without the thread-write lock the second reader sees the row before the first write
+  // lands and overwrites it.
+  const slow = {
+    get: (k) => store.get(k),
+    delete: (k) => store.delete(k),
+    set: async (k, v, o) => { await new Promise((r) => setTimeout(r, 15)); return store.set(k, v, o); },
+  };
+  const [a, b] = await Promise.all([
+    confirmCoderTicket({ ticketId: "tkt_FIXED_ID", decision: "skip", accountId: "acct-owner", deps: { store: slow, gitExecutor: git } }),
+    confirmCoderTicket({ ticketId: "tkt_SECOND", decision: "confirm", accountId: "acct-owner", deps: { store: slow, gitExecutor: git } }),
+  ]);
+  assert.equal(a.success, true);
+  assert.equal(b.success, true, b.error || "");
+  const thread = await store.get(coderThreadKey("LZPT-7", "t1"));
+  const decisions = thread.messages.filter((m) => m.kind === "decision").map((m) => m.content).join("\n");
+  assert.match(decisions, /SKIPPED open_pull_request/, "the skip must survive the concurrent confirm");
+  assert.match(decisions, /CONFIRMED create_branch/, "the confirm must survive the concurrent skip");
+  assert.equal(await store.get(coderThreadWriteClaimKey("LZPT-7", "t1")), undefined, "the lock is released");
+});
+
+await check("F-364: a turn's write-back MERGES a decision row appended while it ran", async () => {
+  resetStore();
+  const world = setupWorld({ rounds: [reply([finish("done")])] });
+  // Seed a thread, then run a turn whose model round appends a decision row behind it —
+  // exactly the interleaving a confirm answered on the resolver produces.
+  await store.set(coderThreadKey("LZPT-21", "t1"), {
+    issueKey: "LZPT-21", threadId: "t1", ownerAccountId: "acct-owner", createdAt: "x",
+    messages: [{ role: "user", at: "x", content: "the original ask" }], turns: 1,
+  });
+  world.chatHook = async () => {
+    const row = await store.get(coderThreadKey("LZPT-21", "t1"));
+    row.messages = [...row.messages, { role: "user", kind: "decision", at: "x", content: "DECISION: the user SKIPPED trigger_deploy." }];
+    await store.set(coderThreadKey("LZPT-21", "t1"), row);
+  };
+  const r = await runCoderTurn({
+    issueKey: "LZPT-21", threadId: "t1", userMessage: "carry on", accountId: "acct-owner",
+    deps: { store, gitExecutor: recordingGit(world) },
+  });
+  assert.equal(r.success, true);
+  const thread = await store.get(coderThreadKey("LZPT-21", "t1"));
+  assert.ok(thread.messages.some((m) => m.kind === "decision"), "the decision row written during the turn must not be overwritten");
+  assert.ok(thread.messages.some((m) => m.content === "carry on"), "…and the turn's own message is still there");
 });
 
 /* ═════════ 7. compaction ═════════ */

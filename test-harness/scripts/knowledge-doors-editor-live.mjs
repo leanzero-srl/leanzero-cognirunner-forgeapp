@@ -33,6 +33,7 @@
  * ═══════════════════════════════════════════════════════════════════════════════ */
 import fs from "node:fs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
+import { redactSecrets, redactString } from "../lib/redact.mjs";
 
 const env = loadEnv();
 const arg = (n, d) => { const h = process.argv.slice(2).find((a) => a.startsWith(`--${n}=`)); return h ? h.slice(n.length + 3) : d; };
@@ -51,10 +52,13 @@ fs.mkdirSync(OUT, { recursive: true });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let passes = 0, fails = 0, unproven = 0;
 const ev = { at: new Date().toISOString(), env: ENV_NAME, editorAccount: EDITOR, checks: [] };
-const PASS = (s, d) => { passes++; ev.checks.push({ v: "PASS", s, ...(d ? { d } : {}) }); console.log(`  PASS  ${s}${d ? " " + JSON.stringify(d) : ""}`); };
-const FAIL = (s, d) => { fails++; ev.checks.push({ v: "FAIL", s, ...(d ? { d } : {}) }); console.log(`  FAIL  ${s}${d ? " " + JSON.stringify(d) : ""}`); };
-const NV = (s, d) => { unproven++; ev.checks.push({ v: "N/V", s, ...(d ? { d } : {}) }); console.log(`  N/V   ${s}${d ? " " + JSON.stringify(d) : ""}`); };
-const info = (s) => console.log(`        ${s}`);
+/* F-646 — EVERY evidence payload is redacted ONCE, here, before it reaches the
+   console or `ev` (which is what gets written to results/evidence.json). Call sites
+   must never have to remember; that is exactly the memory that failed. */
+const PASS = (s, d) => { const r = d ? redactSecrets(d) : d; passes++; ev.checks.push({ v: "PASS", s, ...(d ? { d: r } : {}) }); console.log(`  PASS  ${s}${d ? " " + JSON.stringify(r) : ""}`); };
+const FAIL = (s, d) => { const r = d ? redactSecrets(d) : d; fails++; ev.checks.push({ v: "FAIL", s, ...(d ? { d: r } : {}) }); console.log(`  FAIL  ${s}${d ? " " + JSON.stringify(r) : ""}`); };
+const NV = (s, d) => { const r = d ? redactSecrets(d) : d; unproven++; ev.checks.push({ v: "N/V", s, ...(d ? { d: r } : {}) }); console.log(`  N/V   ${s}${d ? " " + JSON.stringify(r) : ""}`); };
+const info = (s) => console.log(`        ${redactString(String(s))}`);
 
 const readRes = async (res) => {
   let text = ""; try { text = await res.text(); } catch { return { status: 0, json: null, text: "" }; }
@@ -207,13 +211,13 @@ async function main() {
   /* ── STEP 0 — snapshots ───────────────────────────────────────────────────── */
   const rosterBefore = (await kvs("app_admins"))?.value || [];
   ev.rosterBefore = rosterBefore;
-  fs.writeFileSync(`${OUT}/roster-before.json`, JSON.stringify(rosterBefore, null, 2));
+  fs.writeFileSync(`${OUT}/roster-before.json`, JSON.stringify(redactSecrets(rosterBefore), null, 2));
   info(`roster snapshot: ${rosterBefore.length} row(s) -> ${OUT}/roster-before.json`);
   const docsBefore = (await invoke("getContextDocs", {})).json?.docs || [];
   const skillsBefore = (await invoke("getSkills", {})).json?.skills || [];
   ev.docsBefore = docsBefore.map((d) => ({ id: d.id, builtin: !!d.builtin, disabled: !!d.disabled }));
   ev.skillsBefore = skillsBefore.map((s) => ({ id: s.id, builtin: !!s.builtin, enabled: s.enabled !== false }));
-  fs.writeFileSync(`${OUT}/knowledge-before.json`, JSON.stringify({ docs: ev.docsBefore, skills: ev.skillsBefore }, null, 2));
+  fs.writeFileSync(`${OUT}/knowledge-before.json`, JSON.stringify(redactSecrets({ docs: ev.docsBefore, skills: ev.skillsBefore }), null, 2));
 
   const roleOf = async (acc) => (await invoke("checkIsAdmin", {}, acc)).json;
   const preRole = await roleOf(EDITOR);
@@ -402,7 +406,9 @@ async function main() {
     if (beforeIds === nowIds) PASS("SECOND READ: the documentation index is identical to the pre-run snapshot (ids, builtin flags, disabled flags)");
     else FAIL("the documentation index changed across this run", { before: beforeIds.slice(0, 300), now: nowIds.slice(0, 300) });
 
-    fs.writeFileSync(`${OUT}/evidence.json`, JSON.stringify(ev, null, 2));
+    /* F-646 — redacted AGAIN at the file boundary: `ev.f626`/`ev.f633`/`ev.saveSkill`
+       are assigned directly and never pass through PASS/FAIL/NV. */
+    fs.writeFileSync(`${OUT}/evidence.json`, JSON.stringify(redactSecrets(ev), null, 2));
     console.log(`\n${passes} pass, ${fails} fail, ${unproven} not verified. Evidence: ${OUT}/evidence.json`);
     if (fails > 0) process.exitCode = 1;
   }

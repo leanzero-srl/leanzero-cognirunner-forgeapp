@@ -28,10 +28,15 @@
  * refusal as the evidence, rather than guessed at.
  *
  * Everything it creates is deleted and proven gone by a second read; both tokens are
- * revoked in the `finally`. No token, URL or secret is ever printed.
+ * revoked in the `finally`. No token, URL or secret is ever printed — and since F-646
+ * that is a MECHANISM, not a promise: every PASS/FAIL/NV payload and every evidence
+ * file write goes through `lib/redact.mjs`. The header used to claim this while one
+ * FAIL arm dumped a live mint response; `scripts/evidence-redaction.test.mjs` now fails
+ * the offline suite if any driver stringifies a mint answer raw again.
  * ═══════════════════════════════════════════════════════════════════════════════ */
 import fs from "node:fs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
+import { redactSecrets, redactString } from "../lib/redact.mjs";
 
 const env = loadEnv();
 const arg = (n, d) => { const h = process.argv.slice(2).find((a) => a.startsWith(`--${n}=`)); return h ? h.slice(n.length + 3) : d; };
@@ -44,10 +49,13 @@ fs.mkdirSync(OUT, { recursive: true });
 
 let passes = 0, fails = 0, unproven = 0;
 const ev = { at: new Date().toISOString(), env: ENV_NAME, checks: [] };
-const PASS = (s, d) => { passes++; ev.checks.push({ v: "PASS", s, ...(d ? { d } : {}) }); console.log(`  PASS  ${s}${d ? " " + JSON.stringify(d) : ""}`); };
-const FAIL = (s, d) => { fails++; ev.checks.push({ v: "FAIL", s, ...(d ? { d } : {}) }); console.log(`  FAIL  ${s}${d ? " " + JSON.stringify(d) : ""}`); };
-const NV = (s, d) => { unproven++; ev.checks.push({ v: "N/V", s, ...(d ? { d } : {}) }); console.log(`  N/V   ${s}${d ? " " + JSON.stringify(d) : ""}`); };
-const info = (s) => console.log(`        ${s}`);
+/* F-646 — EVERY evidence payload is redacted ONCE, here, before it reaches the
+   console or `ev` (which is what gets written to results/evidence.json). Call sites
+   must never have to remember; that is exactly the memory that failed. */
+const PASS = (s, d) => { const r = d ? redactSecrets(d) : d; passes++; ev.checks.push({ v: "PASS", s, ...(d ? { d: r } : {}) }); console.log(`  PASS  ${s}${d ? " " + JSON.stringify(r) : ""}`); };
+const FAIL = (s, d) => { const r = d ? redactSecrets(d) : d; fails++; ev.checks.push({ v: "FAIL", s, ...(d ? { d: r } : {}) }); console.log(`  FAIL  ${s}${d ? " " + JSON.stringify(r) : ""}`); };
+const NV = (s, d) => { const r = d ? redactSecrets(d) : d; unproven++; ev.checks.push({ v: "N/V", s, ...(d ? { d: r } : {}) }); console.log(`  N/V   ${s}${d ? " " + JSON.stringify(r) : ""}`); };
+const info = (s) => console.log(`        ${redactString(String(s))}`);
 
 const readRes = async (res) => {
   let text = ""; try { text = await res.text(); } catch (e) { return { status: 0, json: null, text: "" }; }
@@ -105,11 +113,14 @@ async function main() {
     console.log("STEP 0 - one ADMIN token (writes the colleague's rows) and one EDITOR token (the caller under test)");
     const a = await hook({ action: "mintApiToken", name: `parity-admin-${Date.now().toString(36)}` });
     adminTok = { token: a.json && a.json.token, id: a.json && a.json.row && a.json.row.id, role: a.json && a.json.row && a.json.row.role };
-    if (!adminTok.token) { FAIL("no admin token could be minted", { body: JSON.stringify(a.json).slice(0, 200) }); return; }
+    if (!adminTok.token) { FAIL("no admin token could be minted", { body: JSON.stringify(redactSecrets(a.json)).slice(0, 200) }); return; }
     PASS("an admin-scope token was minted", { id: adminTok.id, role: adminTok.role || "(legacy = scope all)" });
     const e = await invoke("createApiToken", { name: `parity-editor-${Date.now().toString(36)}`, role: "editor" });
     editorTok = { token: e.json && e.json.token, id: e.json && e.json.row && e.json.row.id, role: e.json && e.json.row && e.json.row.role };
-    if (!editorTok.token || editorTok.role !== "editor") { FAIL("no EDITOR token could be minted", { body: JSON.stringify(e.json).slice(0, 250) }); return; }
+    /* F-646 — this arm fires on a SUCCESSFUL mint (a role that is not the literal
+       "editor"), and `createApiToken` returns the plaintext `token` at the TOP LEVEL of
+       that body. Never stringify the mint answer raw: redact first, then slice. */
+    if (!editorTok.token || editorTok.role !== "editor") { FAIL("no EDITOR token could be minted", { body: JSON.stringify(redactSecrets(e.json)).slice(0, 250) }); return; }
     PASS("an editor-scope token was minted, principal = the harness admin account", { id: editorTok.id, role: editorTok.role });
 
     /* ── STEP 1 — the colleague's rows, written by the OTHER principal ─────── */
@@ -238,7 +249,9 @@ async function main() {
     const live = ((left.json && left.json.tokens) || []).filter((t) => !t.revokedAt && /^parity-(admin|editor)-/.test(t.name || ""));
     if (live.length === 0) PASS("both minted tokens are revoked - a second read of the token list finds none of them live");
     else FAIL("a minted token is still live", { names: live.map((t) => t.name) });
-    fs.writeFileSync(OUT + "/evidence.json", JSON.stringify(ev, null, 2));
+    /* F-646 — redacted AGAIN at the file boundary: `ev` also carries fields assigned
+       outside PASS/FAIL/NV, and the file is the artefact that outlives the terminal. */
+    fs.writeFileSync(OUT + "/evidence.json", JSON.stringify(redactSecrets(ev), null, 2));
     console.log(`\n${passes} pass, ${fails} fail, ${unproven} not verified. Evidence: ${OUT}/evidence.json`);
   }
 }

@@ -685,7 +685,9 @@ const postDeps = (over = {}) => {
   return {
     store: kvs, now: () => T0,
     tickId: () => "t-post",
-    tickIndex: () => 999,                       // out of shadow unless a test says otherwise
+    // F-454: shadow mode counts the agent's OWN prepare receipts, read from `va_health`.
+    // A fixture that never ticks has none, so tests that are not about shadow mode seed
+    // the counter rather than passing a fake index.
     isKillSwitchActive: async () => false,
     selfAccountId: async () => ({ ok: true, accountId: SELF }),
     getIssue: async () => thread([humanComment("c-1", T0 - 60 * MIN)]),
@@ -991,11 +993,75 @@ reset();
 {
   // SHADOW MODE: the agent stages and shows, and posts NOTHING.
   await stageDraft();
-  const d = postDeps({ tickIndex: () => 1 });
+  // ONE prepare tick has been watched; the agent was promised three.
+  await L.recordTickHealth(kvs, AG, true, { phase: "prepare" });
+  const d = postDeps();
   const r = await V.runVaPost({ agent: vaJob({ status: { paused: false, shadowUntilTick: 3 } }), tickId: "t-post", deps: d });
   eq(r.posted, 0, "gate.shadow.BLOCK_within_shadow_ticks, end to end");
   eq(d.__commented.length, 0, "…nothing reached Jira");
   eq((await L.readItem(kvs, AG, "SUP-1")).row.state, "staged", "…and the draft is still there to be reviewed");
+}
+
+/* ══ F-454 — SHADOW MODE COUNTS THE AGENT'S OWN PREPARE TICKS ═════════════ */
+{
+  // It used to be `(now - createdAt) / 5 minutes` — the SCHEDULER's cadence, not the
+  // agent's. A DAILY agent left shadow mode 288 times faster than its operator was
+  // promised, and before it had run even once.
+  reset();
+  await stageDraft();
+  const shadowed = vaJob({ status: { paused: false, shadowUntilTick: 3 } });
+
+  // Zero receipts: nobody has watched anything yet.
+  eq((await L.readHealth(kvs, AG)).prepareTicks, 0, "shadow: a fresh agent has watched nothing");
+  let r = await V.runVaPost({ agent: shadowed, tickId: "p0", deps: postDeps() });
+  eq(r.posted, 0, "shadow.BLOCK_zero_prepare_ticks");
+  ok(r.skipped.some((x) => x.reason === "gate.shadow"), "shadow: …by name");
+
+  // Three prepare ticks — failed ones included, because a tick that ran and failed was
+  // still a tick somebody could watch.
+  await L.recordTickHealth(kvs, AG, true, { phase: "prepare" });
+  await L.recordTickHealth(kvs, AG, false, { phase: "prepare", reason: "boom" });
+  eq((await L.readHealth(kvs, AG)).prepareTicks, 2, "shadow: a FAILED prepare tick still counts");
+  r = await V.runVaPost({ agent: shadowed, tickId: "p1", deps: postDeps() });
+  eq(r.posted, 0, "shadow.BLOCK_two_of_three");
+  await L.recordTickHealth(kvs, AG, true, { phase: "prepare" });
+  eq((await L.readHealth(kvs, AG)).prepareTicks, 3, "shadow: three prepare receipts");
+  r = await V.runVaPost({ agent: shadowed, tickId: "p2", deps: postDeps() });
+  eq(r.posted, 1, "shadow.ALLOW_after_the_promised_number_of_ticks");
+
+  // A POST tick does NOT count — only prepare ticks are the thing being watched, and
+  // counting posts would let the agent shorten its own shadow period by posting.
+  reset();
+  await L.recordTickHealth(kvs, AG, true, { phase: "post" });
+  eq((await L.readHealth(kvs, AG)).prepareTicks, 0, "shadow.BLOCK_post_ticks_do_not_count");
+
+  // …and a PAUSED prepare tick does not count either: pausing for a week must not use up
+  // a shadow period nobody was watching.
+  reset();
+  await V.runVaTick({
+    job: vaJob({ status: { paused: true, shadowUntilTick: 3 } }), tickId: "paused-1",
+    deps: { store: kvs, selfAccountId: async () => ({ ok: true, accountId: SELF }), jsmQueueIssues: async () => ({ ok: true, issues: [] }), searchJql: async () => ({ issues: [] }), pushTask: async () => {} },
+  });
+  eq((await L.readHealth(kvs, AG)).prepareTicks, 0, "shadow.BLOCK_paused_ticks_do_not_count");
+
+  // A REAL prepare tick does count, so the counter and the gate cannot drift apart.
+  reset();
+  await V.runVaTick({
+    job: vaJob(), tickId: "real-1",
+    deps: { store: kvs, selfAccountId: async () => ({ ok: true, accountId: SELF }), jsmQueueIssues: async () => ({ ok: true, issues: [] }), searchJql: async () => ({ issues: [] }), pushTask: async () => {} },
+  });
+  eq((await L.readHealth(kvs, AG)).prepareTicks, 1, "shadow.ALLOW_a_real_prepare_tick_counts");
+}
+
+/* — an UNREADABLE health row keeps the agent in shadow — */
+{
+  reset();
+  await stageDraft();
+  const broken = { get: async () => { throw new Error("kvs down"); }, set: async () => {}, delete: async () => {} };
+  const d = postDeps({ store: broken });
+  const r = await V.runVaPost({ agent: vaJob({ status: { paused: false, shadowUntilTick: 3 } }), tickId: "p-broken", deps: d });
+  eq(r.posted, 0, "shadow.BLOCK_unreadable_health — 'I cannot tell how often you were watched' is not 'enough times'");
+  eq(d.__commented.length, 0, "…and nothing reached Jira");
 }
 
 reset();

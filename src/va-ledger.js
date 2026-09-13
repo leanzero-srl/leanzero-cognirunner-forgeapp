@@ -863,14 +863,27 @@ export const VA_HEALTH_BANNER_AT = VA_LIMITS.healthBannerFailedTicks;
  *
  * A successful tick RESETS it to zero. Two failures are not a banner; three are.
  */
-export const recordTickHealth = async (store, agent, okTick, { reason = "", now = Date.now() } = {}) => {
+export const recordTickHealth = async (store, agent, okTick, { reason = "", now = Date.now(), phase = null } = {}) => {
   let prev = null;
   try { prev = await store.get(vaHealthKey(agent)); }
   catch (e) { return fail("health_read_failed", { detail: String((e && e.message) || e) }); }
   const current = Number(prev && prev.consecutiveFailures) || 0;
   const consecutiveFailures = okTick ? 0 : current + 1;
+  // THE AGENT'S OWN PREPARE-TICK COUNT (F-454). Shadow mode means "run, stage, and post
+  // NOTHING until you have been watched for N of YOUR OWN ticks", and it used to be
+  // measured by dividing the agent's age by five minutes — the SCHEDULER's cadence, not
+  // the agent's. An agent on a daily schedule therefore left shadow mode 288 times faster
+  // than its operator was promised, before it had run even once. The honest count is the
+  // number of prepare receipts this agent has actually written, so it lives beside the
+  // OTHER counter that exists because a scan over TTL'd receipts is not a count (F-426).
+  //
+  // Counted on EVERY prepare tick, failed ones included: a tick that ran and failed was
+  // still a tick somebody could watch, and only counting successes would let a broken
+  // agent sit in shadow mode for ever with nothing saying why.
+  const prepareTicks = (Number(prev && prev.prepareTicks) || 0) + (phase === "prepare" ? 1 : 0);
   const row = {
     consecutiveFailures,
+    prepareTicks,
     lastTickAt: nowIso(now),
     lastOkAt: okTick ? nowIso(now) : ((prev && prev.lastOkAt) || null),
     lastReason: okTick ? null : safeText(reason, 300),
@@ -884,7 +897,7 @@ export const readHealth = async (store, agent) => {
   try {
     const row = (await store.get(vaHealthKey(agent))) || { consecutiveFailures: 0 };
     const n = Number(row.consecutiveFailures) || 0;
-    return { ok: true, consecutiveFailures: n, banner: n >= VA_HEALTH_BANNER_AT, lastOkAt: row.lastOkAt || null, lastReason: row.lastReason || null };
+    return { ok: true, consecutiveFailures: n, prepareTicks: Number(row.prepareTicks) || 0, banner: n >= VA_HEALTH_BANNER_AT, lastOkAt: row.lastOkAt || null, lastReason: row.lastReason || null };
   } catch (e) {
     return fail("health_read_failed", { detail: String((e && e.message) || e) });
   }

@@ -55,7 +55,7 @@ import {
   fingerprintOf, diffCandidates,
   withItemClaim, takePostClaim,
   recordTick, recordTickHealth, recordEffect,
-  readCaps, capsAllow, bumpCaps,
+  readCaps, capsAllow, bumpCaps, readHealth,
   readMemory, writeMemory, memoryPromptBlock,
 } from "./va-ledger.js";
 import {
@@ -357,6 +357,9 @@ export const runVaTick = async ({ job, tickId = null, deps: injected = {} } = {}
     // as the SPEECH (there), and an agent that keeps sweeping while paused is a bill.
     if (isObj(va.status) && va.status.paused === true) {
       await recordTick(deps.store, agent, { tickId: tick, phase: "prepare", started, candidates: 0, staged: 0, skipped: [{ key: "(agent)", reason: "paused" }] });
+      // A PAUSED tick is NOT a watched tick: it did no work, so it does not count toward
+      // shadow mode. Pausing an agent for a week and unpausing it must not have "used up"
+      // the shadow period nobody was watching.
       await recordTickHealth(deps.store, agent, true, { now: deps.now() });
       return { ok: true, paused: true, candidates: 0, fannedOut: 0, skipped: [{ key: "(agent)", reason: "paused" }] };
     }
@@ -429,14 +432,14 @@ export const runVaTick = async ({ job, tickId = null, deps: injected = {} } = {}
       candidates, staged: fannedOut, skipped,
       next: deps.nextRunOf ? deps.nextRunOf(job) : null,
     });
-    await recordTickHealth(deps.store, agent, true, { now: deps.now() });
+    await recordTickHealth(deps.store, agent, true, { now: deps.now(), phase: "prepare" });
     return { ok: true, candidates, fannedOut, skipped, queue: queueKey };
   } catch (e) {
     const error = String((e && e.message) || e).slice(0, 300);
     // BOTH, and in this order: the receipt is the evidence, the health row is the banner.
     // F-426 is precisely the defect of deriving the second from the first.
     await recordTick(deps.store, agent, { tickId: tick, phase: "prepare", started, candidates, staged: fannedOut, skipped, error });
-    await recordTickHealth(deps.store, agent, false, { reason: error, now: deps.now() });
+    await recordTickHealth(deps.store, agent, false, { reason: error, now: deps.now(), phase: "prepare" });
     return { ok: false, reason: "tick_failed", detail: error, candidates, fannedOut };
   }
 };
@@ -963,6 +966,9 @@ export const postFloorOk = ({ staged, currentTickId, minPostGapMinutes, now }) =
 
 /** GATE 1 — paused, shadow mode, kill switch. Agent-level, checked once per post run. */
 export const gatePausedShadow = ({ va, tickIndex = 0, killSwitchActive = false } = {}) => {
+  // `tickIndex` IS THE AGENT'S OWN PREPARE-TICK COUNT (F-454), read from `va_health` by
+  // the caller — not a wall-clock bucket. The argument keeps its name because the record's
+  // field is `shadowUntilTick` and renaming half of a pair is worse than naming it here.
   if (killSwitchActive) return { ok: false, reason: "kill_switch" };
   const status = isObj(va && va.status) ? va.status : {};
   if (status.paused === true) return { ok: false, reason: "paused" };
@@ -1143,7 +1149,19 @@ export const runVaPost = async ({ agent, tickId = null, deps: injected = {} } = 
 
   try {
     /* — GATE 1, once, for the whole run — */
-    const g1 = gatePausedShadow({ va, tickIndex: deps.tickIndex ? deps.tickIndex(job, tick) : 0, killSwitchActive: await deps.isKillSwitchActive(job) });
+    /* — GATE 1. THE SHADOW COUNT IS THE AGENT'S OWN PREPARE TICKS (F-454). — */
+    //
+    // It used to be `(now - createdAt) / 5 minutes` — the SCHEDULER's cadence, not the
+    // agent's. On a daily agent that left shadow mode 288 times faster than its operator
+    // was promised, and before the agent had run even once. The count is now the number
+    // of prepare receipts this agent has actually written.
+    //
+    // A HEALTH READ THAT FAULTS KEEPS THE AGENT IN SHADOW. "I cannot tell how many times
+    // you have been watched" is not "enough times"; the restrictive reading of an
+    // unreadable counter is the only one that keeps the promise shadow mode makes.
+    const health = await readHealth(deps.store, agentId);
+    const watched = health.ok ? health.prepareTicks : 0;
+    const g1 = gatePausedShadow({ va, tickIndex: watched, killSwitchActive: await deps.isKillSwitchActive(job) });
     if (!g1.ok) { note("(agent)", `gate.${g1.reason}`); return await finish(); }
     const window = inPostWindow(va, now);
     if (!window.ok) { note("(agent)", `gate.${window.reason}`); return await finish(); }
@@ -1608,17 +1626,6 @@ export const DEFAULT_DEPS = {
   isKillSwitchActive: async (job) => {
     try { return await (await import("./index.js")).isJobCancelled(`va:${job && job.id}`); }
     catch (e) { return false; }
-  },
-
-  /**
-   * Which tick number is this, for shadow mode? Counted from the agent's creation at the
-   * schedule's own cadence, so "three ticks of watching" means three of ITS runs rather
-   * than three of the scheduler's 5-minute ones.
-   */
-  tickIndex: (job) => {
-    const created = Date.parse(String((job && job.createdAt) || ""));
-    if (!Number.isFinite(created)) return Number.MAX_SAFE_INTEGER;   // unknown age ⇒ not in shadow
-    return Math.floor((Date.now() - created) / 300000);
   },
 
   /** THE LOOP. One implementation, shared with the listener, the job and the Coder. */

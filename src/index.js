@@ -10167,7 +10167,48 @@ resolver.define("testPostFunction", async ({ payload, context }) => {
 // Thin permission-gated wrappers; logic lives in src/listeners.js, src/scheduled-jobs.js,
 // src/rules-api.js (which lazily import the internals exported at the end of this file).
 // noPerm lives with the permission helpers at the top of this file.
-const okOr = async (fn) => { try { return await fn(); } catch (e) { return { success: false, error: String((e && e.message) || e) }; } };
+/**
+ * F-307 — THE MACHINE-READABLE HALF OF A REFUSAL, in one place.
+ *
+ * `src/shared/agent-actions.js` states the contract: "so the resolver and the REST
+ * layer render the same sentence". They did not. The REST layer's `errBody`
+ * (src/rules-api.js) forwarded `reason` and `refused[]`; `okOr` collapsed every
+ * throw to prose, so a REST client could highlight the exact refused checkbox from
+ * `refused[{id,reason}]` while the admin panel could only print a sentence and
+ * parse ids out of English — which no frontend does, so the highlight simply never
+ * happened on the UI path.
+ *
+ * The fields are the ones a UI can ACT on, and nothing else: `reason` (why, as a
+ * code), `refused` (which ids, and why each), `needsRole` (asking an admin for a
+ * role would help) and `hint` (it would not — e.g. "not-owner"). A refusal that
+ * carries none of them renders exactly as it did before.
+ *
+ * EXPORTED so `errBody` in src/rules-api.js can converge onto it rather than keep a
+ * second list of the same four field names — that file is another surgeon's
+ * territory this commit, so the convergence is filed (F-323) instead of taken as a
+ * drive-by edit. Until then this is the one home and that one is the copy.
+ *
+ * Everything is clamped: the payload may come from a throw we did not author.
+ */
+const refusalFields = (e) => {
+  if (!e || typeof e !== "object") return {};
+  const out = {};
+  if (e.reason) out.reason = String(e.reason).slice(0, 100);
+  if (Array.isArray(e.refused)) {
+    out.refused = e.refused.slice(0, 50).map((r) => ({
+      id: String((r && r.id) || "").slice(0, 100),
+      reason: String((r && r.reason) || "").slice(0, 100),
+    }));
+  }
+  if (e.needsRole) out.needsRole = String(e.needsRole).slice(0, 20);
+  if (e.hint) out.hint = String(e.hint).slice(0, 60);
+  return out;
+};
+
+const okOr = async (fn) => {
+  try { return await fn(); }
+  catch (e) { return { success: false, error: String((e && e.message) || e), ...refusalFields(e) }; }
+};
 
 // Viewer floor + OWNER SCOPE. A listener row carries the agent's full instructions
 // and step code, so "can see the list" is the same permission question the Rules
@@ -10515,6 +10556,9 @@ resolver.define("rotateGitCredential", async ({ payload, context }) => {
 export {
   storeLog, callAIChat, getOpenAIKey, getOpenAIModel, getProviderConfig, isTransientAIError, raceDeadline,
   requireRole, requireAdmin, getUserPermissions, hasRole, canActOnConfig, makeTaskId, coerceToAdf,
+  // F-307: the ONE builder for the machine-readable half of a refusal. src/rules-api.js'
+  // `errBody` is the second copy of this field list and converges here (F-323).
+  refusalFields,
   getRuntimeMemorySection, formatDurationHuman, getWebtriggerUrlFor,
 };
 

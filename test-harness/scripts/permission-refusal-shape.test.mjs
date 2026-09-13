@@ -373,3 +373,60 @@ console.log("permission-refusal-shape: OK");
   assert.equal(done?.success, true, `a scope-own editor still deletes their OWN rule (got ${JSON.stringify(done)})`);
   assert.deepEqual(await storage.get("config_registry"), [], "and the row is gone");
 }
+
+// ==========================================================================
+// F-307 — THE MACHINE-READABLE HALF SURVIVES THE RESOLVER PATH TOO.
+//
+// `src/shared/agent-actions.js` promises "the resolver and the REST layer render
+// the same sentence". They did not: `errBody` in src/rules-api.js forwarded
+// `reason` and `refused[]`, while `okOr` collapsed every throw to prose. So a REST
+// client could highlight the exact refused checkbox and the admin panel could only
+// print English — and no frontend parses ids out of a sentence, so the highlight
+// never happened at all on the UI path.
+//
+// This drives the REAL resolver (`saveListener` → `assertAllowedActions`), not the
+// helper, because the helper being right is not the claim; the claim is that a
+// resolver's refusal reaches the browser intact.
+{
+  await reset();
+  await storage.set("app_admins", [{ accountId: CALLER, role: "admin", scope: "all" }]);
+  const refused = await invoke("saveListener", {
+    listener: {
+      name: "Agent listener", events: ["avi:jira:created:issue"], mode: "agent",
+      agent: { instructions: "do the thing", allowedActions: ["commit_files"] },
+    },
+  });
+  assert.equal(refused?.success, false, "a listener asking for an action it may not use is refused");
+  assert.equal(refused?.reason, "action-not-allowed",
+    `the refusal REASON reaches the resolver caller (got ${JSON.stringify(refused)})`);
+  assert.ok(Array.isArray(refused?.refused) && refused.refused.length === 1,
+    "…and so does refused[] — the UI can highlight the exact checkbox");
+  assert.equal(refused.refused[0].id, "commit_files", "refused[].id is the action id");
+  assert.equal(refused.refused[0].reason, "capability-off:git", "refused[].reason is the machine code, not prose");
+  assert.match(String(refused.error || ""), /commit_files/,
+    "the human sentence still comes along — the two halves are additive, never a swap");
+
+  // A refusal that carries none of the four fields renders exactly as it did before:
+  // okOr must not INVENT a reason for an ordinary fault.
+  const plain = await invoke("saveListener", { listener: { name: "", events: [] } });
+  assert.equal(plain?.success, false, "an ordinary validation fault is still a failure");
+  assert.equal(plain?.reason, undefined, "…and carries no reason code it was never given");
+  assert.equal(plain?.refused, undefined, "…and no refused[]");
+  assert.equal(plain?.needsRole, undefined, "…and no needsRole");
+  assert.equal(plain?.hint, undefined, "…and no hint");
+
+  // The success path is untouched.
+  await reset();
+  await storage.set("app_admins", [{ accountId: CALLER, role: "admin", scope: "all" }]);
+  const saved = await invoke("saveListener", {
+    listener: {
+      name: "Plain listener", events: ["avi:jira:created:issue"], mode: "script",
+      functions: [{ id: "f1", name: "Step", code: "api.log('hi');" }],
+    },
+  });
+  assert.equal(saved?.success, true, `a legitimate save still succeeds (got ${JSON.stringify(saved).slice(0, 200)})`);
+  assert.equal(saved?.reason, undefined, "a success never carries the refusal fields");
+  assert.equal(saved?.refused, undefined);
+}
+
+console.log("refusal forwarding (F-307): OK");

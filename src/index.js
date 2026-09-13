@@ -15891,6 +15891,33 @@ const getFieldValue = async (issueKey, fieldId, modifiedFields) => {
  * Configuration is provided via the Custom UI configuration page
  * and passed in args.configuration
  */
+/*
+ * F-384 — WHAT JIRA ACCEPTS BACK FROM A VALIDATOR IS EXACTLY `{result, errorMessage?}`.
+ *
+ * Proven live (wolfaenpak dev, A/B on one transition and one issue): `{result:true}` →
+ * HTTP 204, the transition goes through; `{result:true, gitReason:"not-configured"}` →
+ * HTTP 400 "returned a response in an unexpected format". ONE extra key is sufficient,
+ * and the platform's refusal BLOCKS the user while the app's own log row and `forge logs`
+ * both say `result:true, blocked:false` — so the git validators' fail-OPEN promise was
+ * inverted at every allow path (not-configured, no-pull-request, pr-unbound, auth-dead,
+ * provider-unavailable, no-checks, no-head-sha, resolution-unknown), and a half-built rule
+ * blocked every transition it sat on.
+ *
+ * So the platform boundary NARROWS the object. Everything else the rule computed
+ * (`banner`, `gitReason`, `why`, …) is diagnosis and travels to the EXECUTION LOG, which
+ * is already written from the full object before this runs — config-view still renders the
+ * banner. `errorMessage` is emitted ONLY for a block: a message beside `result:true` is
+ * meaningless to the platform and is exactly the kind of extra key that broke this.
+ */
+const validatorResponse = (out) => {
+  const blocked = out?.result === false;
+  if (!blocked) return { result: true };
+  const msg = typeof out?.errorMessage === "string" ? out.errorMessage.trim() : "";
+  // A block with no sentence would leave the user with the platform's own bare refusal,
+  // so there is always a message — this is the one place that can guarantee it.
+  return { result: false, errorMessage: msg || "This transition is blocked by a CogniRunner rule." };
+};
+
 export const validate = async (args) => {
   const validateStartTime = Date.now();
   console.log("AI Validator called with args:", JSON.stringify(args, null, 2));
@@ -16054,7 +16081,9 @@ export const validate = async (args) => {
         });
       } catch { /* best-effort */ }
     }
-    return out;
+    // F-384 — the platform gets the CONTRACT shape, never the rule's rich object.
+    // The log row above already carries `banner`/`gitReason`/`why`.
+    return validatorResponse(out);
   }
 
   // modifiedFields comes directly from args, not from transition

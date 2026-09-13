@@ -885,5 +885,118 @@ reset();
     "memory: the memory row still carries NO TTL - purgeAgent is its bounded end, not a clock");
 }
 
+/* ── F-553 — THE PURGE TOMBSTONE ──────────────────────────────────────────────
+ *
+ * Live on staging, twice: `purgeAgent` removed everything, and minutes later `va_index`
+ * and a `va_item` row were BACK, stamped after the purge, written by an item turn that was
+ * already in flight when the delete ran. `va_index` has no TTL, so the orphan is permanent.
+ * These checks are the race, played out against the mock in the order it actually happens.
+ */
+{
+  reset();
+  const AG = "job_tomb1";
+  const LIVE = "job_tomb_live";
+
+  // The agent is alive and writing normally.
+  await L.saveItem(kvs, AG, "SUP-1", { state: "queued", event: "queued" });
+  await L.writeMemory(kvs, AG, { text: "before the delete", constraints: [] });
+  ok((await L.readPurgeTombstone(kvs, AG)).purged === false, "tombstone: a live agent has none");
+
+  // The delete. THE TOMBSTONE IS WRITTEN FIRST — that ordering is the whole fix.
+  const purged = await L.purgeAgent(kvs, AG);
+  ok(purged.ok === true, `tombstone: the purge still succeeds (got ${JSON.stringify(purged.failures)})`);
+  const t = await L.readPurgeTombstone(kvs, AG);
+  ok(t.purged === true && typeof t.at === "string", `tombstone: …and it stands afterwards (got ${JSON.stringify(t)})`);
+  ok((await kvs.get(K.vaIndexKey(AG))) == null, "tombstone: the index is gone, as before");
+
+  // THE LATE WRITE. This is exactly what `runVaItem` does at the end of a turn that was
+  // already past its "does the agent exist?" check when the delete landed.
+  const late = await L.saveItem(kvs, AG, "SUP-1", { state: "queued", event: "requeued", reason: "late turn" });
+  ok(late.ok === false, `tombstone.LATE_ITEM — the write is REFUSED (got ${JSON.stringify(late)})`);
+  eq(late.reason, "agent-purged", "tombstone: …with the named reason");
+  ok((await kvs.get(K.vaItemKey(AG, "SUP-1"))) == null, "tombstone.LATE_ITEM — no item row was resurrected");
+  ok((await kvs.get(K.vaIndexKey(AG))) == null,
+    "tombstone.INDEX_STAYS_ABSENT — the TTL-less index was NOT rebuilt from empty (F-469's own harm)");
+
+  // Every other writer named in F-553, one at a time.
+  for (const [what, run] of [
+    ["memory", () => L.writeMemory(kvs, AG, { text: "late", constraints: [] })],
+    ["health", () => L.recordTickHealth(kvs, AG, false, { reason: "late", phase: "prepare" })],
+    ["backoff", () => L.setCompactBackoff(kvs, AG, "late")],
+    // A FULLY VALID effect+proof, deliberately: an effect that would be refused on its own
+    // merits would pass this check with the guard removed, which is no check at all.
+    ["effect", () => L.recordEffect(kvs, AG, { issueKey: "SUP-1", kind: "comment", audience: "internal", summary: "late" }, {
+      source: "rest", verifiedAt: "2026-09-13T10:00:00Z",
+      observed: { body: "Looking at it now.", jsdPublic: false },
+      readBack: { commentId: "10001", issueKey: "SUP-1" },
+    })],
+  ]) {
+    const r = await run();
+    eq(r.ok, false, `tombstone: the ${what} writer refuses`);
+    eq(r.reason, "agent-purged", `tombstone: …the ${what} writer names the reason`);
+  }
+  ok((await kvs.get(K.vaMemoryKey(AG))) == null, "tombstone: va_memory stayed gone");
+  ok((await kvs.get(K.vaHealthKey(AG))) == null, "tombstone: va_health stayed gone");
+  ok((await kvs.get(K.vaCompactBackoffKey(AG))) == null, "tombstone: va_compact_backoff stayed gone");
+  const effects = await kvs.query().where("key", { condition: "BEGINS_WITH", values: [K.vaEffectPrefix(AG)] }).limit(10).getMany();
+  eq(effects.results.length, 0, "tombstone: …and NO va_effect row was written for the dead agent");
+
+  // A LIVE AGENT IS UNAFFECTED. The guard is per-agent or it is an outage.
+  ok((await L.saveItem(kvs, LIVE, "SUP-2", { state: "queued", event: "queued" })).ok === true,
+    "tombstone.LIVE_AGENT — an agent with no tombstone writes normally");
+  ok((await L.writeMemory(kvs, LIVE, { text: "still learning", constraints: [] })).ok === true,
+    "tombstone.LIVE_AGENT — …and still remembers");
+  ok(Boolean(await kvs.get(K.vaIndexKey(LIVE))), "tombstone.LIVE_AGENT — …and still has an index");
+
+  // EXPIRY. The mock has no clock, so expiry is modelled the only honest way: the row is
+  // dropped, which is what a TTL does. The NUMBER is asserted by source lockstep below.
+  await kvs.delete(K.vaPurgedKey(AG));
+  ok((await L.saveItem(kvs, AG, "SUP-1", { state: "queued", event: "queued" })).ok === true,
+    "tombstone.EXPIRY — once the row is gone the ledger accepts writes again");
+
+  // THE RE-CREATED AGENT (F-512's shape). The clear is conditional on the tombstone
+  // PREDATING the job's createdAt, so an in-flight tick of the deleted job cannot unlock
+  // the ledger it is racing.
+  reset();
+  const AG2 = "job_tomb2";
+  await L.markAgentPurged(kvs, AG2, { now: Date.parse("2026-09-13T12:00:00.000Z") });
+  const older = await L.clearPurgeTombstone(kvs, AG2, { createdAt: "2026-09-13T11:00:00.000Z" });
+  ok(older.cleared === false && older.reason === "tombstone_newer_than_job",
+    `tombstone.IN_FLIGHT_TICK — a tick of the DELETED job does not clear it (got ${JSON.stringify(older)})`);
+  ok((await L.clearPurgeTombstone(kvs, AG2, { createdAt: null })).reason === "createdAt_unknown",
+    "tombstone: an unknown createdAt clears NOTHING");
+  ok((await L.saveItem(kvs, AG2, "SUP-1", { state: "queued", event: "queued" })).ok === false,
+    "tombstone: …and the ledger is still refusing");
+  const newer = await L.clearPurgeTombstone(kvs, AG2, { createdAt: "2026-09-13T12:30:00.000Z" });
+  ok(newer.cleared === true, `tombstone.RECREATED — a job created AFTER the tombstone clears it (got ${JSON.stringify(newer)})`);
+  ok((await L.saveItem(kvs, AG2, "SUP-1", { state: "queued", event: "queued" })).ok === true,
+    "tombstone.RECREATED — …and the re-created agent writes its ledger from its first tick");
+
+  // THE GUARD FAILS OPEN ON A READ FAULT — stated in the source, asserted here, because a
+  // blip that refused every write would silently mute a LIVE agent.
+  reset();
+  await L.markAgentPurged(kvs, "job_tomb3");
+  kvs.__failNextGet(new Error("kvs throttled"));
+  ok((await L.saveItem(kvs, "job_tomb3", "SUP-1", { state: "queued", event: "queued" })).ok === true,
+    "tombstone.READ_FAULT — an unreadable tombstone lets the write through (reads fail SOFT)");
+}
+
+/* THE TOMBSTONE'S TTL (F-553), by source lockstep for the same reason the health TTL is:
+   the mock has no clock. 3 DAYS is DERIVED — `VA_CLAIM_TTL` is 2 days, and the tombstone
+   must outlive anything that can still be in flight under its own claim. Shortening it to
+   less than the claim TTL reopens the race at exactly the horizon the claims were sized
+   for, so that has to be a deliberate edit here. And the purge must write it FIRST. */
+{
+  const keysSrc = readFileSync(new URL("../../src/shared/va-keys.js", import.meta.url), "utf8");
+  const ledgerSrc = readFileSync(new URL("../../src/va-ledger.js", import.meta.url), "utf8");
+  ok(/export const VA_PURGED_TTL = days\(3\)/.test(keysSrc),
+    "tombstone: the TTL is 3 days — one day beyond VA_CLAIM_TTL (2 days)");
+  ok(/export const VA_CLAIM_TTL = days\(2\)/.test(keysSrc),
+    "tombstone: …and the claim TTL it is derived from is still 2 days");
+  const purgeBody = ledgerSrc.slice(ledgerSrc.indexOf("export const purgeAgent"));
+  ok(purgeBody.indexOf("markAgentPurged") < purgeBody.indexOf('drop("index"'),
+    "tombstone: purgeAgent writes the tombstone BEFORE it drops the index — the ordering IS the fix");
+}
+
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"}: ${pass} checks passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

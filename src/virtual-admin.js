@@ -62,6 +62,10 @@ import {
   // it runs, claims it, verifies the result and writes the receipt.
   memoryNeedsCompaction, memoryBytes, compactMemory, pinnedSurvived,
   takeCompactClaim, readCompactBackoff, setCompactBackoff, clearCompactBackoff,
+  // F-553 — the purge tombstone. Every ledger WRITE already refuses while it stands; these
+  // two are what let a task refuse EARLY, before it spends a model call on a dead agent,
+  // and what lets a re-created agent with the same id start writing again.
+  readPurgeTombstone, clearPurgeTombstone,
 } from "./va-ledger.js";
 import {
   VA_LIMITS, VA_DEFAULTS, VA_PROJECT_KEY_RE, VA_JQL_MAX,
@@ -442,6 +446,14 @@ export const runVaCompaction = async ({ agent, tick, deps }) => {
     return { backoffArmed: false, backoffError: (r && r.reason) || "compact_backoff_write_failed" };
   };
   try {
+    // F-553 — before the memory read, the claim and the model call. A compaction turn for a
+    // purged agent would summarise a notebook that has already been deleted and then try to
+    // write it back; the ledger refuses that write, but paying for the model call first is
+    // pointless. Receipt-free: the caller folds `ran:false` into the tick it is already
+    // writing, and for a purged agent that tick does not get written either.
+    const tomb = await readPurgeTombstone(deps.store, agent);
+    if (tomb.purged) return { ran: false, reason: "agent-purged" };
+
     const read = await readMemory(deps.store, agent);
     if (!read.ok) return { ran: false, reason: `memory_read_failed:${read.reason}` };
     const memory = read.memory;
@@ -615,6 +627,22 @@ export const runVaTick = async ({ job, tickId = null, deps: injected = {} } = {}
   let fannedOut = 0;
 
   try {
+    /*
+     * F-553 — THE PREPARE TICK IS WHERE A RE-CREATED AGENT UNLOCKS ITS LEDGER.
+     *
+     * A tick exists only because a JOB ROW exists, and a purge only happens on a delete,
+     * so "this id is ticking" is the proof that an agent with this id is alive again. The
+     * clear is conditional on the tombstone predating `job.createdAt` (`clearPurgeTombstone`
+     * owns that comparison), which is what stops a tick of the DELETED agent — still in
+     * flight, carrying the old `createdAt` — from unlocking the ledger it is racing.
+     *
+     * FIRST, before the paused and capability arms: both of those WRITE (a receipt and the
+     * health counter), and a re-created agent that was paused or briefly unlicensed would
+     * otherwise never reach the clear and would stay mute for the tombstone's three days.
+     * Fail-soft — a tombstone that will not clear costs rows, never the tick.
+     */
+    await clearPurgeTombstone(deps.store, agent, { createdAt: job.createdAt || null });
+
     // A PAUSED agent does no work at all, and says so in its receipt. The post gate
     // checks this too — both, deliberately: pausing must stop the SPEND (here) as well
     // as the SPEECH (there), and an agent that keeps sweeping while paused is a bill.
@@ -1037,6 +1065,22 @@ export const runVaItem = async ({ agent, issueKey, tickId, deps: injected = {} }
   const agentId = job.id;
   const tick = String(tickId || "");
 
+  /*
+   * F-553 — THE TOMBSTONE, AT THE ENTRY, BEFORE THE CLAIM.
+   *
+   * `loadVaJob` asks whether the agent exists at the START of the turn and the writes land
+   * up to two minutes later, which is the race itself. This check does not close it — the
+   * ledger writers do — it makes the common case CHEAP: a task queued by the last tick and
+   * delivered after the delete refuses here instead of buying a model call whose every
+   * write will be refused anyway. Before the claim, so a purged agent does not leave a
+   * two-day `va_exec:` row behind either.
+   *
+   * RECEIPT-FREE. Nothing is written, not even a skip note: there is no ledger left to
+   * write it into, and re-creating one is the defect.
+   */
+  const tomb = await readPurgeTombstone(deps.store, agentId);
+  if (tomb.purged) return { ok: true, ran: false, skipped: true, reason: "agent-purged", purgedAt: tomb.at };
+
   // THE CLAIM, before anything is read, spent or written.
   const held = await withItemClaim(deps.store, agentId, issueKey, tick, async () => {
     return oneItemTurn({ job, va, agentId, issueKey, tick, deps });
@@ -1242,6 +1286,19 @@ const oneItemTurn = async ({ job, va, agentId, issueKey, tick, deps }) => {
     deadlineMs: now() + (deps.turnBudgetMs || 100000),
     log: deps.log,
   });
+
+  /*
+   * F-553 — THE WRITE SEAM. The entry check was cheap; THIS is the one that matters, because
+   * the delete can land at any point during the model loop above and this is the last moment
+   * before the turn writes. The ledger refuses underneath us either way (`saveItem` and
+   * friends carry the same guard), so this is not the guarantee — it is what keeps the turn
+   * from reporting a park it did not make, and it names the reason instead of returning an
+   * item-write failure an admin would have to decode.
+   */
+  const tombAtWrite = await readPurgeTombstone(deps.store, agentId);
+  if (tombAtWrite.purged) {
+    return { ok: true, ran: true, skipped: true, issueKey, reason: "agent-purged", purgedAt: tombAtWrite.at, endedBy: loop.endedBy, rounds: loop.rounds };
+  }
 
   /* — ATTEMPTS (F-414): a turn that produced no outcome is an attempt, and it parks — */
   const producedSomething = Boolean(outcome.staged || outcome.asked || outcome.proposed || (session.changes || []).length);
@@ -1652,6 +1709,18 @@ export const runVaPost = async ({ agent, tickId = null, deps: injected = {} } = 
     await recordTick(deps.store, agentId, { tickId: tick, phase: "post", started, candidates: skipped.length + posted, staged: posted, skipped, error });
     return { ok: !error, posted, errors, skipped };
   };
+
+  /*
+   * F-553 — THE TOMBSTONE, BEFORE THE GATES AND BEFORE THE RECEIPT.
+   *
+   * The post phase is its own task on its own 5-minute clock, so a delete can land between
+   * the tick that staged a draft and the task that would deliver it. It returns WITHOUT
+   * calling `finish()`: `recordTick` would write a `va_tick:` row naming a dead agent, which
+   * is the shape of the defect, not a record of it. There is nothing left to post anyway —
+   * the purge dropped the item rows the drafts lived in.
+   */
+  const tomb = await readPurgeTombstone(deps.store, agentId);
+  if (tomb.purged) return { ok: true, posted: 0, errors: 0, skipped: [{ key: "(agent)", reason: "agent-purged" }] };
 
   try {
     /* — GATE 1, once, for the whole run — */

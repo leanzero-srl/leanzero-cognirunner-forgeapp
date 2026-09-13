@@ -43,9 +43,9 @@ import { defangFence } from "./memories.js";
 import { VA_LIMITS } from "./shared/va-config.js";
 import {
   vaItemKey, vaIndexKey, vaMemoryKey, vaTickKey, vaEffectKey, vaCapsKey, vaHealthKey,
-  vaExecClaimKey, vaPostClaimKey, vaCompactClaimKey, vaCompactBackoffKey, capsBuckets, tickIdFor,
+  vaExecClaimKey, vaPostClaimKey, vaCompactClaimKey, vaCompactBackoffKey, vaPurgedKey, capsBuckets, tickIdFor,
   VA_ITEM_TTL, VA_INDEX_TTL, VA_TICK_TTL, VA_EFFECT_TTL, VA_CAPS_TTL, VA_CLAIM_TTL, VA_HEALTH_TTL,
-  VA_COMPACT_BACKOFF_TTL,
+  VA_COMPACT_BACKOFF_TTL, VA_PURGED_TTL,
 } from "./shared/va-keys.js";
 
 const nowIso = (now) => new Date(now == null ? Date.now() : now).toISOString();
@@ -54,6 +54,100 @@ const safeText = (v, max) => clampChars(defangFence(v == null ? "" : v), max);
 const fail = (reason, extra = {}) => ({ ok: false, reason, ...extra });
 const isObj = (v) => v != null && typeof v === "object" && !Array.isArray(v);
 const bytesOf = (v) => { try { return new TextEncoder().encode(JSON.stringify(v) ?? "").length; } catch (e) { return Number.MAX_SAFE_INTEGER; } };
+
+/* ══════════════════════════════════════════════════════════════════════════════
+ * 0. THE PURGE TOMBSTONE (F-553) — READ BY EVERY WRITER BELOW
+ * ════════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * F-553 — WHY EVERY WRITE ASKS FIRST.
+ *
+ * F-469 gave the delete a purge. F-553 is that purge losing a race it cannot win from the
+ * delete side: `runVaItem` REBUILDS `va_index:{agent}` and rewrites `va_item:{agent}:{key}`
+ * at the END of its turn, and the turn's "does this agent exist?" check happens at the
+ * START, up to two minutes earlier. Reproduced live on staging twice: every row read GONE
+ * immediately after the delete, and minutes later `va_index` and one `va_item` were back,
+ * both stamped AFTER the purge, for an agent no surface can list. The index has no TTL, so
+ * the resurrected orphan is permanent — F-469's own harm, through a race.
+ *
+ * The delete runs in a 25 s resolver and the turn runs in a 120 s consumer, so the delete
+ * can never wait for the flight to drain. The only thing that survives the gap is a ROW.
+ * `purgeAgent` writes `va_purged:{agent}` FIRST, before it drops anything, and every writer
+ * here refuses `{ok:false, reason:"agent-purged"}` while it stands.
+ *
+ * THE GUARD FAILS OPEN ON A READ FAULT, deliberately, and it is the ledger's stated read
+ * contract (reads fail SOFT) rather than an oversight. A storage blip that made every write
+ * refuse would silently stop a LIVE agent's ledger — it would stage nothing, remember
+ * nothing and count no health — for a purge that almost certainly did not happen. The harm
+ * on the other side is one orphaned row whose only reader is a purge that can be run again.
+ * A certain outage is worse than an improbable orphan, so a fault lets the write through.
+ *
+ * ONE READ PER WRITE, NOT MEMOIZED. A warm container that cached "not purged" would hold
+ * exactly the stale answer this row exists to prevent, for exactly the window of the race.
+ * The writes guarded here are a handful per turn; the read is cheaper than the bug.
+ */
+export const readPurgeTombstone = async (store, agent) => {
+  try {
+    const row = await store.get(vaPurgedKey(agent));
+    return isObj(row) ? { purged: true, at: row.at || null } : { purged: false, at: null };
+  } catch (e) {
+    return { purged: false, at: null, readFailed: true, detail: String((e && e.message) || e) };
+  }
+};
+
+/** The writers' guard. `null` means "write on"; anything else is the refusal to return. */
+const purgedGuard = async (store, agent) => {
+  const t = await readPurgeTombstone(store, agent);
+  if (t.readFailed) return null;
+  return t.purged ? fail("agent-purged", { purgedAt: t.at }) : null;
+};
+
+/**
+ * Written FIRST by `purgeAgent`, and also the thing a re-created agent must clear.
+ * Fail-soft like every other step of the purge: a delete that cannot write the tombstone
+ * still deletes the agent, and says so in `failures`.
+ */
+export const markAgentPurged = async (store, agent, { now = Date.now() } = {}) => {
+  try {
+    await store.set(vaPurgedKey(agent), { at: nowIso(now), agent: String(agent) }, VA_PURGED_TTL);
+    return { ok: true };
+  } catch (e) {
+    return fail("tombstone_write_failed", { detail: String((e && e.message) || e) });
+  }
+};
+
+/**
+ * F-512's shape, applied to the tombstone: an agent id can COME BACK (`normalizeJob` takes a
+ * caller-supplied `src.id`, which is the import/restore path), and a re-created agent that
+ * inherited a dead one's tombstone could not write a single ledger row until it expired.
+ *
+ * So the first PREPARE TICK clears it — but ONLY when the tombstone was stamped BEFORE the
+ * job row's `createdAt`. That comparison is the whole safety of this function: a prepare
+ * tick of the DELETED agent that is still in flight carries the OLD `createdAt`, which is
+ * older than the tombstone, so it cannot unlock the ledger it is racing. A genuinely
+ * re-created job was normalized with no `existing` row and therefore has a `createdAt` after
+ * the delete, which is after the tombstone.
+ *
+ * A missing or unparseable `createdAt` CLEARS NOTHING. Refusing to clear costs a re-created
+ * agent three days of ledger; clearing on an unknown date reopens F-553 in full.
+ */
+export const clearPurgeTombstone = async (store, agent, { createdAt = null } = {}) => {
+  const t = await readPurgeTombstone(store, agent);
+  if (t.readFailed) return { ok: false, cleared: false, reason: "tombstone_read_failed", detail: t.detail };
+  if (!t.purged) return { ok: true, cleared: false, reason: "no_tombstone" };
+  const created = Date.parse(createdAt == null ? "" : createdAt);
+  const stamped = Date.parse(t.at == null ? "" : t.at);
+  if (!Number.isFinite(created) || !Number.isFinite(stamped)) {
+    return { ok: false, cleared: false, reason: "createdAt_unknown" };
+  }
+  if (!(stamped < created)) {
+    // The tombstone is NEWER than the job that is asking. This is the in-flight tick of the
+    // agent that was just deleted, not a re-creation. Leave it standing.
+    return { ok: false, cleared: false, reason: "tombstone_newer_than_job" };
+  }
+  try { await store.delete(vaPurgedKey(agent)); return { ok: true, cleared: true }; }
+  catch (e) { return { ok: false, cleared: false, reason: "tombstone_clear_failed", detail: String((e && e.message) || e) }; }
+};
 
 /* ══════════════════════════════════════════════════════════════════════════════
  * 1. THE ITEM STATE MACHINE
@@ -314,6 +408,10 @@ export const readItem = async (store, agent, issueKey) => {
  * would let the post phase deliver a draft twice and call it a state change.
  */
 export const saveItem = async (store, agent, issueKey, patch = {}, { now = Date.now() } = {}) => {
+  // F-553 — the tombstone, before the row AND before `touchIndex`. This one guard covers the
+  // index rebuild too: `touchIndex` has exactly one caller, and it is this function.
+  const tomb = await purgedGuard(store, agent);
+  if (tomb) return tomb;
   const current = await readItem(store, agent, issueKey);
   if (current.readFailed) return fail("item_read_failed", { detail: current.reason });
   const existing = current.row;
@@ -618,6 +716,8 @@ export const readCompactBackoff = async (store, agent) => {
  * writing "this is broken" agree. The TTL is the whole policy (`VA_COMPACT_BACKOFF_TTL`).
  */
 export const setCompactBackoff = async (store, agent, reason, { now = Date.now() } = {}) => {
+  const tomb = await purgedGuard(store, agent);   // F-553
+  if (tomb) return tomb;
   try {
     await store.set(vaCompactBackoffKey(agent), { at: nowIso(now), reason: String(reason || "unknown").slice(0, 80) }, VA_COMPACT_BACKOFF_TTL);
     return { ok: true };
@@ -807,6 +907,8 @@ export const proofBindsEffect = (effect, proof) => {
 export const isReadBackProof = (proof, effect) => proofBindsEffect(effect, proof).ok;
 
 export const recordEffect = async (store, agent, effect = {}, proof = null, { now = Date.now() } = {}) => {
+  const tomb = await purgedGuard(store, agent);   // F-553
+  if (tomb) return tomb;
   const bound = proofBindsEffect(effect, proof);
   // The refusal is a NAMED value and writes NOTHING, so the caller puts it in the item's
   // history instead of reporting a success it cannot back up.
@@ -1035,6 +1137,8 @@ export const splitHealthReason = (reason) => {
  * A successful tick RESETS it to zero. Two failures are not a banner; three are.
  */
 export const recordTickHealth = async (store, agent, okTick, { reason = "", now = Date.now(), phase = null } = {}) => {
+  const tomb = await purgedGuard(store, agent);   // F-553
+  if (tomb) return tomb;
   let prev = null;
   try { prev = await store.get(vaHealthKey(agent)); }
   catch (e) { return fail("health_read_failed", { detail: String((e && e.message) || e) }); }
@@ -1134,8 +1238,14 @@ export const VA_PURGE_ITEM_BUDGET = 200;
  * backoff and answer its first ticks `compaction-backoff` for a provider failure that
  * never happened to it. A TTL bounds an orphan; it does not stop an inheritance.
  */
-export const purgeAgent = async (store, agent, { itemBudget = VA_PURGE_ITEM_BUDGET } = {}) => {
+export const purgeAgent = async (store, agent, { itemBudget = VA_PURGE_ITEM_BUDGET, now = Date.now() } = {}) => {
   const failures = [];
+  // THE TOMBSTONE FIRST, BEFORE THE INDEX READ (F-553). Ordering is the entire fix: every
+  // row this function drops can be rewritten by a turn that is already in flight, and the
+  // only thing that stops it is a marker that was already standing when the turn reached
+  // its write. Writing it after the deletes would leave the same race in a smaller window.
+  const tomb = await markAgentPurged(store, agent, { now });
+  if (!tomb.ok) failures.push({ key: "tombstone", detail: String(tomb.detail || tomb.reason).slice(0, 200) });
   let ids = [];
   try {
     const row = await store.get(vaIndexKey(agent));
@@ -1325,6 +1435,8 @@ const memoryRowFor = (lines, marked, pinned, updatedAt) => ({
 });
 
 export const writeMemory = async (store, agent, { text = "", constraints = [] } = {}, { now = Date.now() } = {}) => {
+  const tomb = await purgedGuard(store, agent);   // F-553
+  if (tomb) return tomb;
   const pinned = normalizeConstraints(constraints);
   const updatedAt = nowIso(now);
   const cap = VA_LIMITS.memoryCapBytes;

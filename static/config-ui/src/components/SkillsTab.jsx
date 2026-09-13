@@ -25,6 +25,7 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@forge/bridge";
 import SkillEditor from "./SkillEditor";
 import { showToast } from "./toast";
+import { isPermissionRefusal, permissionRefusalText } from "./refusal";
 
 const MAX_SELECTED_SKILLS = 4;
 
@@ -41,6 +42,11 @@ export default function SkillsTab({ selectedSkills, onSkillSelectionChange, onCh
   const [skills, setSkills] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(null); // mount-load failure — render retry, not "no skills"
+  /* F-244 — the refusal arm, kept in its own state so a later edit cannot collapse it into
+     `loadError`. `getSkills` can answer "not you"; this panel rendered that as "Couldn't
+     load skills." plus a Retry that re-asks the same question forever. Holds the RESULT,
+     not a boolean, because the sentence is built from its `needsRole`. */
+  const [accessRefusal, setAccessRefusal] = useState(null);
   const [refreshing, setRefreshing] = useState(false); // non-initial reload — veil over the visible list
   const [showAdd, setShowAdd] = useState(false);
   const [expandedSkill, setExpandedSkill] = useState(null);
@@ -58,10 +64,16 @@ export default function SkillsTab({ selectedSkills, onSkillSelectionChange, onCh
       if (result.success) {
         setSkills(result.skills || []);
         setLoadError(null);
+        setAccessRefusal(null);
+      } else if (isPermissionRefusal(result)) {
+        // F-244 — authoritative, and it clears the error arm: one state, one voice.
+        setAccessRefusal(result);
+        setLoadError(null);
       } else {
         setLoadError(result.error || "Failed to load skills.");
       }
     } catch (e) {
+      /* A THROW is transport, never a refusal — refusals arrive as a resolved body. */
       console.error("Failed to load skills:", e);
       setLoadError(e.message || "Failed to load skills.");
     }
@@ -131,7 +143,20 @@ export default function SkillsTab({ selectedSkills, onSkillSelectionChange, onCh
       // Stale response — the user expanded another skill (or collapsed this
       // one) while the fetch was in flight. The newer call owns the state.
       if (expandedIdRef.current !== id) return;
-      if (result.success) setExpandedContent(result.skill);
+      if (result.success) {
+        setExpandedContent(result.skill);
+      } else if (isPermissionRefusal(result)) {
+        /* F-250 — `getSkillContent` refusing left `expandedContent` null, and null is the
+           SAME state as "still loading finished with nothing": the row opened onto an empty
+           panel that said nothing at all. A reader who can see a skill in the list but
+           cannot open it is owed the reason, not silence. Carried on the skill shape's own
+           `description` field so it renders through the existing body — no second render
+           path to keep in step. */
+        setExpandedContent({ description: permissionRefusalText(result, "this skill") });
+      } else {
+        // Answered, but not a refusal — a real failure, said plainly.
+        setExpandedContent({ description: result.error || "Failed to load skill content" });
+      }
     } catch (e) {
       if (expandedIdRef.current !== id) return;
       setExpandedContent({ description: "Failed to load skill content" });
@@ -170,6 +195,14 @@ export default function SkillsTab({ selectedSkills, onSkillSelectionChange, onCh
         <div style={{ padding: "12px" }}>
           <div className="sk sk-text" style={{ width: "60%", height: 12, marginBottom: 8 }} />
           <div className="sk sk-text" style={{ width: "40%", height: 12 }} />
+        </div>
+      ) : accessRefusal ? (
+        /* F-244 — a refusal, told as one, and checked BEFORE loadError so the outage arm
+           cannot shadow it. No Retry, for the same reason as DocRepository: a control that
+           cannot succeed keeps the reader trying instead of telling them who to ask. Slate
+           .access-note, not the red hard-stop grammar — nothing is broken. */
+        <div className="access-note" role="note" style={{ margin: "10px 12px" }}>
+          {permissionRefusalText(accessRefusal, "skills")}
         </div>
       ) : loadError ? (
         <div className="load-error" style={{ margin: "10px 12px" }}>

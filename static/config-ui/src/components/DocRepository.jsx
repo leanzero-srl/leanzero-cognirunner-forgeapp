@@ -11,6 +11,7 @@ import { javascriptLanguage } from "@codemirror/lang-javascript";
 import Tooltip from "./Tooltip";
 import CustomSelect from "./CustomSelect";
 import { showToast } from "./toast";
+import { isPermissionRefusal, permissionRefusalText } from "./refusal";
 
 // CSP-safe JavaScript syntax check: parse with Lezer (no eval / new Function,
 // which the Forge iframe CSP blocks) and look for error nodes in the tree.
@@ -45,6 +46,13 @@ export default function DocRepository({ selectedDocs, onSelectionChange, embedde
   const [docs, setDocs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(null); // mount-load failure — render retry, not "no docs"
+  /* F-244 — a REFUSAL is not a failure, and kept apart from `loadError` so the two can never
+     be collapsed by a later edit. `getContextDocs` can answer "not you" (F-242 gives that a
+     machine-readable shape); this panel rendered that as "Couldn't load documents." beside a
+     Retry button — a false claim about the app, plus a control that re-asks the same question
+     and gets the same no. Holds the refusal RESULT, not a boolean, because the sentence needs
+     `needsRole` off it. */
+  const [accessRefusal, setAccessRefusal] = useState(null);
   const [refreshing, setRefreshing] = useState(false); // non-initial reload — veil over the visible list
   const [showAdd, setShowAdd] = useState(false);
   const [newTitle, setNewTitle] = useState("");
@@ -69,10 +77,18 @@ export default function DocRepository({ selectedDocs, onSelectionChange, embedde
       if (result.success) {
         setDocs(result.docs || []);
         setLoadError(null);
+        setAccessRefusal(null);
+      } else if (isPermissionRefusal(result)) {
+        // F-244 — authoritative, and it clears the error arm: a refusal answered is not a
+        // load that failed, and showing both would give one state two voices.
+        setAccessRefusal(result);
+        setLoadError(null);
       } else {
         setLoadError(result.error || "Failed to load documents.");
       }
     } catch (e) {
+      /* A THROW is transport, never a refusal — the resolver answers refusals with a
+         resolved body. This arm must not set accessRefusal. */
       console.error("Failed to load docs:", e);
       setLoadError(e.message || "Failed to load documents.");
     }
@@ -340,6 +356,16 @@ export default function DocRepository({ selectedDocs, onSelectionChange, embedde
         <div style={{ padding: "12px" }}>
           <div className="sk sk-text" style={{ width: "60%", height: 12, marginBottom: 8 }} />
           <div className="sk sk-text" style={{ width: "40%", height: 12 }} />
+        </div>
+      ) : accessRefusal ? (
+        /* F-244 — a refusal, told as one, and checked BEFORE loadError so the outage arm can
+           never shadow it. No Retry: the button would re-ask the same question and get the
+           same no, and a control that cannot succeed is worse than no control — it keeps the
+           reader trying instead of telling them who to ask. Names the level required and WHO
+           grants it, which is the only thing this reader can act on. Plain slate .access-note,
+           not the red hard-stop grammar: nothing is broken and nothing was lost. */
+        <div className="access-note" role="note" style={{ margin: "10px 12px" }}>
+          {permissionRefusalText(accessRefusal, "documents")}
         </div>
       ) : loadError ? (
         <div className="load-error" style={{ margin: "10px 12px" }}>

@@ -329,6 +329,281 @@ try {
     await closeEditor(env);
   }
 
+  /* ---------------- F-243 — an UNREACHABLE JIRA on the rule editor's Memories tab -------
+     F-233 gave config-ui its first role read and derived `canEdit` from it. But
+     `checkIsAdmin` has a THIRD answer — `{ unknown: true }`, when the permission probe and
+     the group scan BOTH threw — and config-ui had no name for it, so an outage collapsed
+     into a verdict: a possible editor was told "Editors and admins can add memories.", which
+     reads as "you are not one". False about them, names no outage, offers no action. The
+     admin panel has told the truth about this since F-230.
+     This asserts the SENTENCE, not merely that a note exists — the pre-fix build renders a
+     note here too, and it is the wrong one. Both themes. */
+  for (const T of ["light", "dark"]) {
+    console.log(`F-243 role-unknown / rule-editor Memories tab (${T})`);
+    const env = await openEditor(browser, "config-ui", "cfg-static", T, { __ROLE_UNKNOWN__: true });
+    const { page } = env;
+    try {
+      const kp = page.locator(".knowledge-panel").first();
+      if (!(await kp.locator(".knowledge-tabs").isVisible().catch(() => false))) {
+        await kp.locator(".knowledge-summary").click();
+      }
+      await kp.locator(".knowledge-tabs").waitFor({ timeout: 6000 });
+      await kp.locator(".knowledge-tab-memories").click();
+
+      /* The WRITE still closes. `unknown` changes no access decision — the backend refuses
+         either way — so a "fix" that opened the add form would be worse than the bug. */
+      await kp.locator(".memory-quick-add-note").first().waitFor({ timeout: 6000 });
+      ok(await kp.locator(".memory-quick-add").count() === 0, `F-243 ${T} no add form while the role is unverified`);
+      ok(await kp.locator(".btn-remember").count() === 0, `F-243 ${T} no Remember button while the role is unverified`);
+
+      const note = kp.locator(".memory-quick-add-note").first();
+      const ntxt = (await note.innerText()).trim();
+      ok(/could not verify your role with Jira just now/i.test(ntxt),
+        `F-243 ${T} the note names the OUTAGE, not a verdict (got: ${JSON.stringify(ntxt)})`);
+      ok(!/Editors and admins can add memories/.test(ntxt),
+        `F-243 ${T} the note makes NO claim about this reader's role`);
+      /* ONE HOME, proven: byte-identical to the admin panel's role-note sentence
+         (listeners-jobs.test.mjs asserts that surface). Compared against the literal, not
+         against itself — retyping is exactly how the two would drift. */
+      ok(ntxt === "CogniRunner could not verify your role with Jira just now — reload to try again.",
+        `F-243 ${T} the sentence matches the admin panel's byte for byte`);
+
+      const st = await note.evaluate((el) => {
+        const cs = getComputedStyle(el);
+        return { bl: cs.borderLeftWidth, color: cs.color, bg: cs.backgroundColor, fw: cs.fontWeight };
+      });
+      ok(parseFloat(st.bl) === 0, `F-243 ${T} outage note has NO left accent rail (got ${st.bl})`);
+      const a243 = (st.color.match(/[\d.]+/g) || [])[3];
+      ok(a243 === undefined || parseFloat(a243) === 1, `F-243 ${T} outage note colour is solid (${st.color})`);
+      ok(/rgba\(0, 0, 0, 0\)|transparent/.test(st.bg), `F-243 ${T} outage note is not a tinted block (${st.bg})`);
+      ok(parseInt(st.fw, 10) >= 600, `F-243 ${T} outage note keeps 600+ emphasis (got ${st.fw})`);
+    } catch (e) { fail++; console.log("  \u2717 F-243 " + T + " threw: " + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
+  /* ------- F-244/F-245/F-249/F-250 — a REFUSED read is not an outage (Knowledge panel) ---
+     Every one of these surfaces answered a `{ success:false, reason:"no-permission" }` with
+     the OUTAGE grammar: "Couldn't load X." plus a Retry button. Two lies in one control. The
+     app is not broken — the backend answered, and the answer was "not you" — and Retry
+     cannot ever succeed, so it keeps the reader pressing a button instead of telling them
+     which role to ask for. F-242 made the refusal machine-readable; these four surfaces now
+     branch on it and render the slate .access-note with the level and the owner named.
+     The `__REFUSE__` fixture RESOLVES (unlike `__FAIL__`, which rejects) — that distinction
+     is the whole finding, so the fixture has to model it.
+     Both themes: .access-note is a new class and the owner's law is that every one carries
+     a dark override. */
+  for (const T of ["light", "dark"]) {
+    console.log(`F-244/245/249/250 refused knowledge reads (${T})`);
+    const env = await openEditor(browser, "config-ui", "cfg-static", T, {
+      __REFUSE__: ["getContextDocs", "getSkills", "getMemories", "getKnowledgeCounts", "getSkillContent"],
+      __REFUSE_ROLE__: "viewer",
+    });
+    const { page } = env;
+    try {
+      const kp = page.locator(".knowledge-panel").first();
+
+      /* F-249 — the SUMMARY, before anything is opened. Three em-dashes are this app's
+         symbol for "still loading", so a refused count read made the header look like a
+         fetch that never finishes. */
+      const summary = kp.locator(".knowledge-summary-counts").first();
+      await summary.waitFor({ timeout: 8000 });
+      const sumtxt = (await summary.innerText()).trim();
+      ok(/No access to knowledge/i.test(sumtxt),
+        `F-249 ${T} the summary says the counts were refused (got: ${JSON.stringify(sumtxt)})`);
+      ok(!/—\s*docs/.test(sumtxt),
+        `F-249 ${T} the summary does NOT render the "still loading" em-dashes`);
+
+      if (!(await kp.locator(".knowledge-tabs").isVisible().catch(() => false))) {
+        await kp.locator(".knowledge-summary").click();
+      }
+      await kp.locator(".knowledge-tabs").waitFor({ timeout: 6000 });
+
+      /* The F-249 summary note is ALSO an .access-note — same grammar on purpose — so a
+         bare `.first()` inside the panel matches the HEADER, not the tab body. Scope every
+         tab assertion below to the body. (This bit me: the first run reported "No access to
+         knowledge" as the docs sentence.) */
+      const body = kp.locator(".doc-repo-embedded:visible");
+
+      // F-244 — documents.
+      await kp.locator(".knowledge-tab-docs").click();
+      const dn = body.locator(".access-note").first();
+      await dn.waitFor({ timeout: 8000 });
+      const dtxt = (await dn.innerText()).trim();
+      ok(/You need CogniRunner viewer access to see documents\./.test(dtxt),
+        `F-244 ${T} docs: the refusal names the LEVEL required (got: ${JSON.stringify(dtxt)})`);
+      ok(/Ask a CogniRunner admin under Permissions\./.test(dtxt),
+        `F-244 ${T} docs: the refusal names WHO can change it`);
+      ok(await kp.locator(".btn-retry").count() === 0,
+        `F-244 ${T} docs: NO Retry button — it could only re-ask and be refused again`);
+      ok(!/Couldn.t load documents/i.test(await kp.innerText()),
+        `F-244 ${T} docs: the outage sentence is gone`);
+
+      // F-244 — skills.
+      await kp.locator(".knowledge-tab-skills").click();
+      const sn = body.locator(".access-note").first();
+      await sn.waitFor({ timeout: 8000 });
+      ok(/You need CogniRunner viewer access to see skills\./.test((await sn.innerText()).trim()),
+        `F-244 ${T} skills: the refusal names the level required`);
+      ok(await kp.locator(".btn-retry").count() === 0, `F-244 ${T} skills: NO Retry button`);
+      ok(!/Couldn.t load skills/i.test(await kp.innerText()), `F-244 ${T} skills: the outage sentence is gone`);
+
+      // F-245 — memories, the Knowledge-panel copy F-234 never reached.
+      await kp.locator(".knowledge-tab-memories").click();
+      const mn = body.locator(".access-note").first();
+      await mn.waitFor({ timeout: 8000 });
+      ok(/You need CogniRunner viewer access to see memories\./.test((await mn.innerText()).trim()),
+        `F-245 ${T} memories: the refusal names the level required`);
+      ok(await kp.locator(".btn-retry").count() === 0, `F-245 ${T} memories: NO Retry button`);
+      ok(!/Couldn.t load memories/i.test(await kp.innerText()), `F-245 ${T} memories: the outage sentence is gone`);
+
+      /* Owner design law on the new class, in BOTH themes. Asserted on a live element, not
+         read off the stylesheet — a rail added by a more specific selector would still
+         pass a source grep. */
+      const st = await mn.evaluate((el) => {
+        const cs = getComputedStyle(el);
+        return { bl: cs.borderLeftWidth, color: cs.color, bg: cs.backgroundColor, fw: cs.fontWeight };
+      });
+      ok(parseFloat(st.bl) === 0, `F-244 ${T} .access-note has NO left accent rail (got ${st.bl})`);
+      const al = (st.color.match(/[\d.]+/g) || [])[3];
+      ok(al === undefined || parseFloat(al) === 1, `F-244 ${T} .access-note colour is solid, not faded (${st.color})`);
+      ok(/rgba\(0, 0, 0, 0\)|transparent/.test(st.bg), `F-244 ${T} .access-note is not a tinted block (${st.bg})`);
+      ok(parseInt(st.fw, 10) >= 600, `F-244 ${T} .access-note carries the 600+ emphasis weight (got ${st.fw})`);
+      /* The dark override exists and actually CHANGES the colour — a new hue with no dark
+         arm is the owner's named failure, and asserting only "not empty" would miss it. */
+      ok(st.color === (T === "dark" ? "rgb(100, 116, 139)" : "rgb(71, 85, 105)"),
+        `F-244 ${T} .access-note uses the ${T} slate (#${T === "dark" ? "64748b" : "475569"}) — got ${st.color}`);
+    } catch (e) { fail++; console.log("  \u2717 F-244/245/249 " + T + " threw: " + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
+  /* F-250 — the EXPANDED skill row. `getSkillContent` refusing left `expandedContent` null,
+     which is the same state as "not fetched yet", so the row opened onto a silent empty
+     panel. Needs the list to LOAD (so there are rows to click) and only the content call to
+     be refused — a distinction the per-resolver __REFUSE__ list makes expressible. */
+  {
+    console.log("F-250 refused skill content (light)");
+    const env = await openEditor(browser, "config-ui", "cfg-static", "light", {
+      __REFUSE__: ["getSkillContent"], __REFUSE_ROLE__: "viewer",
+    });
+    const { page } = env;
+    try {
+      const kp = page.locator(".knowledge-panel").first();
+      if (!(await kp.locator(".knowledge-tabs").isVisible().catch(() => false))) {
+        await kp.locator(".knowledge-summary").click();
+      }
+      await kp.locator(".knowledge-tabs").waitFor({ timeout: 6000 });
+      await kp.locator(".knowledge-tab-skills").click();
+      const row = kp.locator(".skill-item").first();
+      await row.waitFor({ timeout: 8000 });
+      ok(await kp.locator(".access-note").count() === 0, "F-250 the skills LIST still loads — only the content read is refused");
+      /* Expansion is the PREVIEW button. Clicking the row body toggles SELECTION instead —
+         which is what the first version of this test did, and it duly reported an
+         unexpanded row as "no message". */
+      await row.locator(".doc-btn-preview").click();
+      await page.waitForTimeout(600);
+      const txt = (await kp.innerText());
+      ok(/You need CogniRunner viewer access to see this skill\./.test(txt),
+        `F-250 the expanded row says WHY it is empty (got: ${JSON.stringify(txt.slice(0, 400))})`);
+    } catch (e) { fail++; console.log("  \u2717 F-250 threw: " + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
+  /* F-246 — the role probe must NOT block the editor's first paint.
+     F-233 put an awaited `checkIsAdmin` on the line above `setLoading(false)`, so a Jira that
+     accepts the connection and never answers held the workflow editor on its skeleton until
+     the 25s resolver cap — over a lookup whose only consumer is the wording of one note in a
+     collapsed panel. `__HOLD__` parks the resolver in flight, which is the only way to
+     express "slow" as opposed to "failed": a rejecting mock takes the catch arm immediately
+     and would pass against the broken build. */
+  {
+    console.log("F-246 role probe does not block first paint");
+    const env = await openEditor(browser, "config-ui", "cfg-static", "light", { __HOLD__: ["checkIsAdmin"] });
+    const { page } = env;
+    try {
+      /* The editor is INTERACTIVE while the probe is still pending. openEditor already waits
+         for .container with no .sk, so reaching here at all is most of the assertion; the
+         locators below prove it is the real editor and not an empty shell. */
+      ok(await page.locator(".function-block").count() > 0, "F-246 the step editor rendered while checkIsAdmin is still in flight");
+      ok(await page.locator(".container .sk").count() === 0, "F-246 no loading skeleton remains while the probe hangs");
+      const kp = page.locator(".knowledge-panel").first();
+      ok(await kp.count() > 0, "F-246 the Knowledge panel rendered too");
+
+      /* Fail-CLOSED until the answer lands: no role known means no write offered and — this
+         is the F-243 half — no claim made about the reader either. */
+      if (!(await kp.locator(".knowledge-tabs").isVisible().catch(() => false))) {
+        await kp.locator(".knowledge-summary").click();
+      }
+      await kp.locator(".knowledge-tab-memories").click();
+      ok(await kp.locator(".memory-quick-add").count() === 0, "F-246 the add form stays closed while the role is unknown");
+    } catch (e) { fail++; console.log("  \u2717 F-246 threw: " + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
+  /* F-252 — an OWNERSHIP refusal must not be told as a role problem.
+     `hint: "not-owner"` arrives WITHOUT `needsRole`, because no role fixes it: the rule
+     belongs to another editor, and the reader may already be a CogniRunner admin. Rendering
+     the role sentence here would tell an admin with every permission in the product to go
+     ask an admin for access — false, unactionable, and the exact shape of the F-234 defect
+     one vocabulary further along. Asserted through the real render path, not just the helper,
+     because the bug would live in a call site that ignores `hint`. */
+  {
+    console.log("F-252 ownership refusal is not a role refusal");
+    const env = await openEditor(browser, "config-ui", "cfg-static", "light", {
+      __REFUSE__: ["getMemories"], __REFUSE_HINT__: "not-owner",
+    });
+    const { page } = env;
+    try {
+      const kp = page.locator(".knowledge-panel").first();
+      if (!(await kp.locator(".knowledge-tabs").isVisible().catch(() => false))) {
+        await kp.locator(".knowledge-summary").click();
+      }
+      await kp.locator(".knowledge-tabs").waitFor({ timeout: 6000 });
+      await kp.locator(".knowledge-tab-memories").click();
+      const note = kp.locator(".doc-repo-embedded:visible .access-note").first();
+      await note.waitFor({ timeout: 8000 });
+      const t = (await note.innerText()).replace(/\s+/g, " ").trim();
+      ok(/This rule belongs to another editor; only its author or an admin can change it\./.test(t),
+        `F-252 the note states OWNERSHIP, not a missing role (got: ${JSON.stringify(t)})`);
+      ok(!/You need CogniRunner/.test(t), "F-252 it does not claim a role level is missing");
+      ok(!/Ask a CogniRunner admin under Permissions/.test(t),
+        "F-252 it does not send the reader to ask for a role that would not help");
+      ok(await kp.locator(".btn-retry").count() === 0, "F-252 still no Retry — ownership will not change on a re-ask");
+    } catch (e) { fail++; console.log("  \u2717 F-252 threw: " + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
+  /* F-255 — an EDITION denial must NOT be absorbed into the refusal grammar.
+     `reason: "upgrade-required"` is a statement about the SITE'S PLAN, not about this
+     reader: their role is fine and no CogniRunner admin can grant their way out of it. The
+     risk this asserts against is a well-meaning edit widening `isPermissionRefusal` to "any
+     refusal-looking result", which would route a billing question to the Permissions tab and
+     silently replace the upgrade copy that already exists. The load-bearing assertion is the
+     NEGATIVE one: the permission note must be absent. */
+  {
+    console.log("F-255 an edition denial is not a permission refusal");
+    const env = await openEditor(browser, "config-ui", "cfg-static", "light", {
+      __UPGRADE__: ["getMemories"], __UPGRADE_FEATURE__: "static-post-function",
+    });
+    const { page } = env;
+    try {
+      const kp = page.locator(".knowledge-panel").first();
+      if (!(await kp.locator(".knowledge-tabs").isVisible().catch(() => false))) {
+        await kp.locator(".knowledge-summary").click();
+      }
+      await kp.locator(".knowledge-tabs").waitFor({ timeout: 6000 });
+      await kp.locator(".knowledge-tab-memories").click();
+      await page.waitForTimeout(700);
+      const panel = (await kp.innerText());
+      ok(await kp.locator(".doc-repo-embedded:visible .access-note").count() === 0,
+        "F-255 no permission note — an edition denial is not a role problem");
+      ok(!/You need CogniRunner \w+ access/.test(panel),
+        "F-255 the panel never asks the reader to get a role for a plan limit");
+      ok(!/Ask a CogniRunner admin under Permissions/.test(panel),
+        "F-255 and never sends a billing question to the Permissions tab");
+    } catch (e) { fail++; console.log("  \u2717 F-255 threw: " + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
   /* ---------------- J20 — NL-to-rule ("Build from a description") ---------------- */
   {
     console.log("J20 NL-to-rule builder (cfg-premade)");

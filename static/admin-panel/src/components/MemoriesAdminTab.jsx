@@ -24,6 +24,7 @@
 
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { showToast } from "./toast";
+import { isPermissionRefusal, permissionRefusalText } from "./refusal";
 import { confirmDialog } from "../confirmDialog";
 // F-167 — one home for the "store is full" wording; MemoriesTab is the byte-identical
 // copy shared with config-ui, so the admin tab and the Knowledge panel never drift.
@@ -71,10 +72,21 @@ function fmtBytes(n) {
  * Matching is apostrophe-tolerant because the sentence is retyped by humans and the
  * curly ’ is one autocorrect away from shipping.
  */
-function isAccessRefusal(result) {
-  if (!result || result.success) return false;
-  return /do(?:n['’]t| not) have permission/i.test(String(result.error || ""));
-}
+/* F-242 — the sentence regex is GONE.
+   This helper used to be:
+       return /do(?:n['’]t| not) have permission/i.test(String(result.error || ""));
+   i.e. the app's permission model was a contract made of English prose. It broke in three
+   ways at once. It was invisible — nothing in src/index.js marked those sentences as
+   load-bearing, so any reword would have silently turned every refusal back into an
+   "outage" with a Retry button. It was INCOMPLETE — the backend refuses in several voices,
+   and "Editor access required" (dozens of call sites) never matched this pattern at all, so
+   those refusals were already falling through to the failure arm. And it could not report
+   WHICH role was wanted, because a regex over prose has no fields.
+   F-242 replaced ~60 hand-built refusal literals with one builder that emits
+   `reason: "no-permission"` and, where the gate knows it, `needsRole`. This file now reads
+   the flag, and the sentence is built from `needsRole` by the shared helper rather than
+   hand-typed here — which is also what lets the four other surfaces (F-244/F-245/F-247)
+   say the same words without copying them. */
 
 /* F-219 — the UI gate MATCHES THE BACKEND GATE, and nothing else.
    `addMemory`/`updateMemory`/`deleteMemory` all gate on `requireRole(accountId, "editor")`
@@ -107,7 +119,9 @@ export default function MemoriesAdminTab({ invoke, isAdmin, userRole }) {
      same defect class F-230 fixed for `checkIsAdmin`: never render a refusal as a fault.
      Kept in its OWN state, not a flavour of `loadError`, so the two cannot be collapsed
      back together by a later edit. */
-  const [accessDenied, setAccessDenied] = useState(false);
+  /* F-242 — holds the REFUSAL RESULT, not a boolean. The note is built from the gate's
+     own `needsRole`, so the level can no longer drift from what the backend asked for. */
+  const [accessRefusal, setAccessRefusal] = useState(null);
   const [newContent, setNewContent] = useState("");
   const [adding, setAdding] = useState(false);
   // Which settings key is mid-save (toggles are optimistic — this only drives
@@ -158,20 +172,20 @@ export default function MemoriesAdminTab({ invoke, isAdmin, userRole }) {
           return next.size === prev.size ? prev : next;
         });
         setLoadError(false);
-        setAccessDenied(false);
+        setAccessRefusal(null);
         hasLoadedRef.current = true;
-      } else if (isAccessRefusal(result)) {
+      } else if (isPermissionRefusal(result)) {
         /* A refusal is AUTHORITATIVE and is recorded even if a previous load succeeded:
            a role revoked mid-session is a real state, and the honest thing to show is
            "you no longer have access", not the stale table plus a silent failure. */
-        setAccessDenied(true);
+        setAccessRefusal(result);
         setLoadError(false);
       } else if (!hasLoadedRef.current) {
         setLoadError(true);
       }
     } catch (e) {
       /* A THROW is a transport fault, never a refusal — the resolver answers refusals
-         with a resolved `{ success: false }`. So this arm must not set accessDenied. */
+         with a resolved `{ success: false }`. So this arm must not set accessRefusal. */
       console.error("Failed to load memories:", e);
       if (!hasLoadedRef.current) setLoadError(true);
     }
@@ -734,7 +748,15 @@ export default function MemoriesAdminTab({ invoke, isAdmin, userRole }) {
             Add Memory
           </button>
         </div>
-      ) : (
+      ) : accessRefusal ? null : (
+        /* F-243 — TWO notes for one reader. When the read itself was refused, the table
+           below already says "You need CogniRunner viewer access to see memories. Ask a
+           CogniRunner admin under Permissions." — the complete answer, with the remedy and
+           its owner. Stacking "Editors and admins can add memories." above it added a
+           second, weaker sentence about a control that is not the reader's problem yet:
+           they cannot SEE the store, so telling them who may WRITE to it answers a
+           question they have not reached. One refusal, one note — and the one that is
+           actionable. Nothing is hidden: the surviving note is the stronger of the two. */
         <div className="memories-admin-add-note">Editors and admins can add memories.</div>
       )}
 
@@ -777,7 +799,7 @@ export default function MemoriesAdminTab({ invoke, isAdmin, userRole }) {
               </div>
             ))}
           </div>
-        ) : accessDenied ? (
+        ) : accessRefusal ? (
           /* F-234 — a REFUSAL, told as one. No Retry: the button would re-ask the same
              question and get the same no, and a control that cannot succeed is worse than
              no control — it keeps the reader trying instead of telling them who to ask.
@@ -786,8 +808,10 @@ export default function MemoriesAdminTab({ invoke, isAdmin, userRole }) {
              hard-stop grammar: nothing is broken and nothing was lost. */
           <div style={{ padding: "14px" }}>
             <div className="memories-admin-denied" role="note">
-              You need CogniRunner viewer access to see memories.
-              Ask a CogniRunner admin under Permissions.
+              {/* F-242 — the LEVEL comes from the gate now (`needsRole`), not from a
+                  hand-typed "viewer" that happened to be right for this one resolver. Same
+                  sentence when the gate says viewer, so no copy change ships with this. */}
+              {permissionRefusalText(accessRefusal, "memories")}
             </div>
           </div>
         ) : loadError ? (

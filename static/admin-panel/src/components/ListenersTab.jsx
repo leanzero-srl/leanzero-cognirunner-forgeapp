@@ -27,7 +27,11 @@ const emptyDraft = () => ({
 });
 const hueOf = (cat) => (EVENT_CATEGORIES.find((c) => c.id === cat) || {}).hue || "#475569";
 
-export default function ListenersTab({ invoke, isAdmin, userRole, siteUrl, router }) {
+/* F-243 — `roleUnknown` threads the "Jira could not be asked" third answer down the
+   FunctionBuilder → KnowledgePanel → MemoriesTab chain this tab embeds. It is NOT an
+   input to `canEdit`, which stays false either way: it only decides whether the note in
+   place of the memory add form makes a claim about this reader or names the outage. */
+export default function ListenersTab({ invoke, isAdmin, userRole, siteUrl, router, roleUnknown = false }) {
   const canEdit = isAdmin || userRole === "editor" || userRole === "admin";
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -251,7 +255,7 @@ export default function ListenersTab({ invoke, isAdmin, userRole, siteUrl, route
           </div>
           {draft.mode === "script" ? (
             <div className="lst-builder">
-              <FunctionBuilder functions={functions} setFunctions={setFunctions} codegenContext={codegenContext} testContext={testContext} reviewConfigType="postfunction-static" howItWorks={false} canEdit={canEdit} />
+              <FunctionBuilder functions={functions} setFunctions={setFunctions} codegenContext={codegenContext} testContext={testContext} reviewConfigType="postfunction-static" howItWorks={false} canEdit={canEdit} roleUnknown={roleUnknown} />
             </div>
           ) : (
             <AgentConfig value={draft.agent} onChange={(agent) => patch({ agent })} runtime="listener" />

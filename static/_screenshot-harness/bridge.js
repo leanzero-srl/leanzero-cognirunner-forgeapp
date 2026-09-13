@@ -794,6 +794,55 @@ function invoke(name, payload) {
   if (typeof window !== "undefined" && Array.isArray(window.__FAIL__) && window.__FAIL__.includes(name)) {
     return Promise.reject(new Error("Simulated network failure (harness __FAIL__)"));
   }
+  /* F-242/F-244..F-250 — REFUSAL testing, the deliberate twin of __FAIL__ above.
+     window.__REFUSE__ = ["getContextDocs", ...] makes those resolvers answer with the shape
+     src/index.js's permissionDenied() actually emits: a RESOLVED body carrying
+     `success:false`, the English sentence, `reason:"no-permission"` and the `needsRole` the
+     gate asked for. It is a separate flag from __FAIL__ on purpose — the whole class of
+     findings this fixture exists for is the app CONFLATING the two, so a harness that could
+     only simulate one of them could never catch it. Note the contrast: __FAIL__ REJECTS
+     (transport fault, hits the catch arm), __REFUSE__ RESOLVES (the backend answered, and
+     what it said was "no"). Any frontend that puts a refusal on the catch path is wrong.
+     `needsRole` defaults to viewer (the F-228 read floor) and can be overridden per test
+     with window.__REFUSE_ROLE__. */
+  if (typeof window !== "undefined" && Array.isArray(window.__REFUSE__) && window.__REFUSE__.includes(name)) {
+    /* F-252/F-254 — a permission refusal has TWO shapes and the fixture must be able to
+       produce both, because the UI is required to say DIFFERENT things for them:
+         ask-app-admin (+needsRole) — a role floor. A CogniRunner admin can grant the level.
+         not-owner (and NO needsRole) — the rule belongs to someone else. No role fixes it,
+           and the reader may already be an admin, so "ask an admin for access" is false and
+           unactionable. The MISSING needsRole is the signal, so the fixture must actually
+           omit it — a mock that sent one anyway would let a UI that ignores the hint pass. */
+    const ownerRefusal = window.__REFUSE_HINT__ === "not-owner";
+    return Promise.resolve(ownerRefusal ? {
+      success: false,
+      error: "You don't have permission to modify this rule.",
+      reason: "no-permission",
+      hint: "not-owner",
+      memories: [], docs: [], skills: [], logs: [],
+    } : {
+      success: false,
+      error: "You don't have permission to perform this action.",
+      reason: "no-permission",
+      hint: "ask-app-admin",
+      needsRole: window.__REFUSE_ROLE__ || "viewer",
+      // Empty collections ride along exactly as the real resolvers send them.
+      memories: [], docs: [], skills: [], logs: [],
+    });
+  }
+  /* F-255 — an EDITION denial, which is NOT a permission refusal and must never be rendered
+     as one. Separate flag, separate `reason`, and it deliberately carries no `needsRole` or
+     `hint`: the reader's role is irrelevant, the site's plan is the constraint, and the
+     remedy is an upgrade rather than a conversation with a CogniRunner admin. Its presence
+     in the harness is what makes "isPermissionRefusal must not match this" testable at all. */
+  if (typeof window !== "undefined" && Array.isArray(window.__UPGRADE__) && window.__UPGRADE__.includes(name)) {
+    return Promise.resolve({
+      success: false,
+      error: "This feature requires the Coder edition.",
+      reason: "upgrade-required",
+      featureId: window.__UPGRADE_FEATURE__ || "static-post-function",
+    });
+  }
   // F-141 — HOLD fixture: window.__HOLD__ = ["fixPostFunctionCode"] parks that resolver
   // in flight until the test calls window.__RELEASE_HOLD__(). Needed to assert what the
   // UI offers WHILE an AI write to a step's code is running (generate and fix are
@@ -1058,7 +1107,7 @@ function invoke(name, payload) {
          fixture models a half-state no tenant is ever in — the read refused but the
          store's byte pressure still reported — and the access-denied screen would be
          verified with a size line on it that the real backend would never send. */
-      if (typeof window !== "undefined" && window.__NO_ROSTER__) return Promise.resolve({ success: false, error: "You don't have permission to read memories." });
+      if (typeof window !== "undefined" && window.__NO_ROSTER__) return Promise.resolve({ success: false, error: "You don't have permission to read memories.", reason: "no-permission", needsRole: "viewer" });
       const bytes = isMemoryOvercap() ? MEMORY_OVERCAP_BYTES : 49152;
       return Promise.resolve({
         success: true,
@@ -1083,12 +1132,14 @@ function invoke(name, payload) {
     ] });
     /* F-234 — `__NO_ROSTER__` is the F-228 VIEWER FLOOR refusing the read: a user who is
        on neither the CogniRunner roster nor Jira's admin list. The shape is the backend's
-       own `noPerm("read memories")` VERBATIM (src/index.js:476/7341) — `success:false`,
-       that exact sentence, and `memories: []`. It must stay verbatim: the frontend has no
-       machine-readable marker to branch on and matches the sentence, so a paraphrase here
-       would make the test pass against a string the app will never actually receive. */
+       own `noPerm("read memories", "viewer")` VERBATIM (src/index.js:476/7395).
+       F-242 — the shape GREW a machine-readable half: `reason:"no-permission"` plus the
+       `needsRole` the gate asked for. The note about the frontend "matching the sentence"
+       is dead and was the thing worth killing: the UI now branches on `reason` and BUILDS
+       its sentence from `needsRole`, so this fixture must carry both or every refusal test
+       would silently assert against the failure path instead of the refusal path. */
     case "getMemories":
-      if (typeof window !== "undefined" && window.__NO_ROSTER__) return Promise.resolve({ success: false, error: "You don't have permission to read memories.", memories: [] });
+      if (typeof window !== "undefined" && window.__NO_ROSTER__) return Promise.resolve({ success: false, error: "You don't have permission to read memories.", reason: "no-permission", needsRole: "viewer", memories: [] });
       if (typeof window !== "undefined" && window.__EMPTY__) return Promise.resolve({ success: true, memories: [], settings: MEMORY_SETTINGS() });
       return Promise.resolve({ success: true, settings: MEMORY_SETTINGS(), memories: MEMORY_ROWS.filter((m) => !DELETED_MEMORY_IDS.has(m.id)) });
     /* listeners + scheduled jobs + API tokens (admin) */

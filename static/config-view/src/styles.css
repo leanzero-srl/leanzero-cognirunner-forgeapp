@@ -669,6 +669,29 @@ html[data-color-mode="dark"] { --frost-bg: rgba(8, 8, 14, 0.55); }
 
 .flash-success { animation: mlsFlash 1.2s ease-out both; }
 
+
+/* F-244..F-250 — THE REFUSAL GRAMMAR, declared ONCE per injectStyles home.
+   Six surfaces now say "the backend refused this reader": the docs list, the skills
+   list, the Knowledge panel summary, the rule-editor Memories tab, the admin Memories
+   tab and config-view's execution log. They must not be six hand-copied blocks that
+   drift the way .memory-full-banner / .memories-admin-capwall / .memory-cap-refusal did
+   before F-212 collapsed them into .hard-stop.
+   Owner design law: SOLID slate #475569 (dark one shade lighter, #64748b), 600 weight,
+   NO left accent rail, NO tinted background, no faded alpha. Deliberately NOT the red
+   hard-stop grammar and deliberately NOT .load-error — a refusal is a statement of
+   fact, not a warning and not a fault, and it carries no Retry because no retry can
+   change the answer. */
+.access-note {
+  padding: 10px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: #475569;
+  background: none;
+  border: none;
+}
+html[data-color-mode="dark"] .access-note { color: #64748b; }
+
 .load-error {
   display: flex; align-items: center; gap: 10px;
   padding: 10px 14px;

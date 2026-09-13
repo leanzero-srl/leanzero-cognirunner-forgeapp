@@ -101,7 +101,9 @@ function WizardShell({ onClose, children }) {
    button on exactly that), so this is belt-and-braces — but the gate and the control now
    read the SAME value instead of one being inferred from the other's reachability. An
    entry point that grows a second caller should not silently re-open the hole. */
-export default function AddRuleWizard({ invoke, onClose, onCreated, canEdit = false }) {
+/* F-243 — `roleUnknown` rides beside `canEdit` and says WHY it is false: a refusal about
+   this reader, or a role probe that never reached Jira. Pass-through to FunctionBuilder. */
+export default function AddRuleWizard({ invoke, onClose, onCreated, canEdit = false, roleUnknown = false }) {
   // Wizard steps: project -> workflow -> transition -> type -> config
   const [step, setStep] = useState(1);
 
@@ -1236,6 +1238,7 @@ export default function AddRuleWizard({ invoke, onClose, onCreated, canEdit = fa
                 runAsync={runAsync}
                 setRunAsync={setRunAsync}
                 canEdit={canEdit}
+                roleUnknown={roleUnknown}
               />
             )}
 

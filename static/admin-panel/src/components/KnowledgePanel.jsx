@@ -27,6 +27,7 @@ import { invoke } from "@forge/bridge";
 import DocRepository from "./DocRepository";
 import SkillsTab from "./SkillsTab";
 import MemoriesTab from "./MemoriesTab";
+import { isPermissionRefusal } from "./refusal";
 
 export default function KnowledgePanel({
   selectedDocIds,
@@ -42,6 +43,11 @@ export default function KnowledgePanel({
   // role). Defaults FALSE to match MemoriesTab: a caller that forgets to thread it
   // gets a visibly missing control, not a silently reintroduced refusal trap.
   canEdit = false,
+  // F-243 — "Jira never answered when we asked for the role". Rides beside `canEdit`
+  // because it is the one thing that tells MemoriesTab WHICH of the two reasons made
+  // `canEdit` false: a refusal about this reader, or an outage that says nothing about
+  // them. Pure pass-through. Defaults FALSE — the answer we had before we asked.
+  roleUnknown = false,
 }) {
   const [open, setOpen] = useState(false);
   // The body mounts on FIRST open and then stays mounted (collapsed via the
@@ -58,13 +64,27 @@ export default function KnowledgePanel({
   // when inactive) so revisiting a tab doesn't refetch its list.
   const [activatedTabs, setActivatedTabs] = useState({ docs: true });
   const [counts, setCounts] = useState(null); // { docs, skills, memories, memoryCap, storeFull } | null
+  /* F-249 — a REFUSED count read is not a count of zero and not a count we are still
+     fetching. `getKnowledgeCounts` gates like the three stores it counts, and every
+     non-success answer fell into the same fail-soft as a network blip: the header rendered
+     "— docs, — skills, — memories" and said nothing. Three em-dashes are the app's symbol
+     for "still loading", so a reader with no knowledge access saw a panel that appeared to
+     be permanently mid-fetch, opened it, and got three tabs that each refused separately.
+     Say it once, at the top, instead. */
+  const [countsRefused, setCountsRefused] = useState(false);
 
   // Loaded on mount AND re-invoked by the tabs after any successful
   // add/delete/save so the summary counts never go stale.
   const loadCounts = useCallback(() => {
     invoke("getKnowledgeCounts")
       .then((result) => {
+        if (result && isPermissionRefusal(result)) {
+          // F-249 — authoritative and sticky until a later read succeeds.
+          setCountsRefused(true);
+          return;
+        }
         if (result && result.success) {
+          setCountsRefused(false);
           setCounts({
             docs: result.docs,
             skills: result.skills,
@@ -120,14 +140,24 @@ export default function KnowledgePanel({
           <path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z" />
         </svg>
         <span className="knowledge-title">KNOWLEDGE</span>
-        <span className="knowledge-summary-counts">
-          <span className="kc-docs">{selectedDocIds.length} docs</span>
-          {", "}
-          <span className="kc-skills">{selectedSkillIds.length} skills</span>
-          {" selected · "}
-          <span className={`kc-mem${counts && counts.storeFull ? " kc-mem-full" : ""}`}>{memCount} memories</span>
-          {" active"}
-        </span>
+        {/* F-249 — one honest line in place of three dashes that mean "loading". Plain
+            slate .access-note, inline in the summary row: it is a statement of fact about
+            this reader's access, not a warning and not an outage, so it borrows neither the
+            red hard-stop grammar nor the Retry the load-error arms carry. The tabs below
+            still render and still say their own piece if opened — this only stops the
+            header from implying a fetch that will never finish. */}
+        {countsRefused ? (
+          <span className="knowledge-summary-counts access-note">No access to knowledge</span>
+        ) : (
+          <span className="knowledge-summary-counts">
+            <span className="kc-docs">{selectedDocIds.length} docs</span>
+            {", "}
+            <span className="kc-skills">{selectedSkillIds.length} skills</span>
+            {" selected · "}
+            <span className={`kc-mem${counts && counts.storeFull ? " kc-mem-full" : ""}`}>{memCount} memories</span>
+            {" active"}
+          </span>
+        )}
         {autoAppliedSkills.length > 0 && (
           <span className="knowledge-auto-chips">
             {autoAppliedSkills.map((s) => (
@@ -199,7 +229,7 @@ export default function KnowledgePanel({
               )}
               {activatedTabs.memories && (
                 <div {...panelProps("memories")}>
-                  <MemoriesTab onChanged={loadCounts} canEdit={canEdit} />
+                  <MemoriesTab onChanged={loadCounts} canEdit={canEdit} roleUnknown={roleUnknown} />
                 </div>
               )}
             </>

@@ -26,7 +26,11 @@ const emptyDraft = () => ({
 });
 const fmtTime = (iso, timeZone) => { try { return new Date(iso).toLocaleString(undefined, { timeZone }); } catch { return iso || "—"; } };
 
-export default function JobsTab({ invoke, isAdmin, userRole }) {
+/* F-243 — `roleUnknown` threads the "Jira could not be asked" third answer down the
+   FunctionBuilder → KnowledgePanel → MemoriesTab chain this tab embeds. It is NOT an
+   input to `canEdit`, which stays false either way: it only decides whether the note in
+   place of the memory add form makes a claim about this reader or names the outage. */
+export default function JobsTab({ invoke, isAdmin, userRole, roleUnknown = false }) {
   const canEdit = isAdmin || userRole === "editor" || userRole === "admin";
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -227,7 +231,7 @@ export default function JobsTab({ invoke, isAdmin, userRole }) {
           </div>
           {draft.mode === "script" ? (
             <div className="lst-builder">
-              <FunctionBuilder functions={functions} setFunctions={setFunctions} codegenContext={codegenContext} testContext={testContext} reviewConfigType="postfunction-static" howItWorks={false} canEdit={canEdit} />
+              <FunctionBuilder functions={functions} setFunctions={setFunctions} codegenContext={codegenContext} testContext={testContext} reviewConfigType="postfunction-static" howItWorks={false} canEdit={canEdit} roleUnknown={roleUnknown} />
             </div>
           ) : (
             <AgentConfig value={draft.agent} onChange={(agent) => patch({ agent })} runtime="job" scoped={!!scoped} />

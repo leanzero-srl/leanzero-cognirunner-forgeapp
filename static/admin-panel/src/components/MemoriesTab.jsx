@@ -25,6 +25,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import { invoke } from "@forge/bridge";
 import Tooltip from "./Tooltip";
 import { showToast } from "./toast";
+import { isPermissionRefusal, permissionRefusalText } from "./refusal";
 
 const SOURCE_CLASS = {
   user: "memory-src-user",
@@ -111,11 +112,39 @@ export function MemoryFullBanner({ storeFull }) {
  * both apps threads it (config-ui App.js, and admin-panel's AddRuleWizard / ListenersTab
  * / JobsTab, which already compute the same `canEdit`).
  *
- * NOTE the asymmetry: READING is not gated. `getMemories` has no role gate and a viewer
- * has a real reason to see what the AI is being told about their instance. Hiding the
- * list would be a different, unasked-for change.
+ * F-248 — this docblock used to end with "NOTE the asymmetry: READING is not gated.
+ * `getMemories` has no role gate". That was FALSE, and it was load-bearing false: it is the
+ * stated reason no refusal branch was ever written here, so anyone auditing this file read
+ * it as proof that none was needed. `getMemories` has gated on requireRole(accountId,
+ * "viewer") since F-228 (src/index.js:7395 — the "VIEWER FLOOR"), which landed BEFORE the
+ * comment was written, and F-234 had already shipped an accessDenied arm on the admin twin
+ * for exactly that refusal. The comment was contradicted by the resolver it described and by
+ * a sibling file, and it still bought this component two more findings.
+ * The asymmetry that is REAL is narrower: reading needs VIEWER, writing needs EDITOR, so a
+ * viewer sees the list and not the add form. When even the read is refused, `accessRefusal`
+ * (F-245) renders the reason in place of the list.
  */
-export default function MemoriesTab({ onChanged = null, canEdit = false }) {
+/**
+ * F-243 — THE ONE HOME for the "we could not ask Jira" sentence, in the UI layer.
+ *
+ * `checkIsAdmin` has a THIRD answer besides editor and viewer: `unknown:true`, when the
+ * permission probe and the group scan both threw. The admin panel has said so since F-230
+ * (App.js role-note). config-ui gained a role read in F-233 and did NOT get that third
+ * arm, so an unreachable Jira collapsed into a verdict here: a real editor was told
+ * "Editors and admins can add memories." — a sentence that reads as "you are not one",
+ * names no outage, and offers no action. The claim is false and the advice is absent.
+ *
+ * It lives in MemoriesTab and not in either App.js because this component is one of the
+ * byte-identical copies (config-ui ↔ admin-panel) and must stay self-contained — it may
+ * not import from App.js. Putting the string here and letting admin-panel's App.js import
+ * it from the component inverts the dependency in the only direction the duplication
+ * convention allows, and leaves exactly one place to edit the wording. Both apps render
+ * the same bytes because the file IS the same bytes.
+ */
+export const ROLE_UNKNOWN_NOTE =
+  "CogniRunner could not verify your role with Jira just now — reload to try again.";
+
+export default function MemoriesTab({ onChanged = null, canEdit = false, roleUnknown = false }) {
   const [memories, setMemories] = useState([]);
   const [settings, setSettings] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -133,6 +162,13 @@ export default function MemoriesTab({ onChanged = null, canEdit = false }) {
   // control that cannot resolve it, so it read as a retryable hiccup. Kept in its own state
   // (not `error`) so the two render differently and a later fix cannot collapse them.
   const [capRefusal, setCapRefusal] = useState(null);
+  /* F-245 — the REFUSAL arm. F-234 gave the ADMIN Memories tab this branch and stopped
+     there, so the Knowledge panel's copy — the one in the rule editor, the rule wizard, the
+     listeners tab and the jobs tab — still rendered a refused read as "Couldn't load
+     memories." with a Retry beside it. Four surfaces telling the same lie, because the fix
+     was applied to the surface the finding was reported on rather than to the rule. Own
+     state, never folded into `loadError`: they render differently on purpose. */
+  const [accessRefusal, setAccessRefusal] = useState(null);
 
   const loadMemories = useCallback(async () => {
     try {
@@ -141,10 +177,16 @@ export default function MemoriesTab({ onChanged = null, canEdit = false }) {
         setMemories(result.memories || []);
         setSettings(result.settings || null);
         setLoadError(null);
+        setAccessRefusal(null);
+      } else if (isPermissionRefusal(result)) {
+        // F-245 — authoritative, and it clears the error arm: one state, one voice.
+        setAccessRefusal(result);
+        setLoadError(null);
       } else {
         setLoadError(result.error || "Failed to load memories.");
       }
     } catch (e) {
+      /* A THROW is transport, never a refusal — refusals arrive as a resolved body. */
       console.error("Failed to load memories:", e);
       setLoadError(e.message || "Failed to load memories.");
     }
@@ -290,7 +332,18 @@ export default function MemoriesTab({ onChanged = null, canEdit = false }) {
           </button>
         </div>
       ) : (
-        <div className="memory-quick-add-note">Editors and admins can add memories.</div>
+        /* F-243 — three answers, not two. `canEdit` false means EITHER "the backend will
+           refuse you" (a verdict about this reader) OR "we never got an answer out of
+           Jira" (an outage that says nothing about them). The editor/viewer sentence is a
+           claim we are only entitled to make in the first case; in the second it is false
+           AND unactionable, and the reader may well be the admin it tells them to become.
+           Same slate .memory-quick-add-note grammar for both arms (#475569 / #64748b dark,
+           solid, no rail, no tint — no new hue, so no new dark override): a statement of
+           fact either way, not a warning. Wording is ROLE_UNKNOWN_NOTE, the same bytes the
+           admin panel's role-note renders. */
+        <div className="memory-quick-add-note">
+          {roleUnknown ? ROLE_UNKNOWN_NOTE : "Editors and admins can add memories."}
+        </div>
       )}
 
       {/* F-201 — the capacity wall, rendered as the SAME solid red block the admin tab uses
@@ -335,6 +388,14 @@ export default function MemoriesTab({ onChanged = null, canEdit = false }) {
         <div style={{ padding: "12px" }}>
           <div className="sk sk-text" style={{ width: "60%", height: 12, marginBottom: 8 }} />
           <div className="sk sk-text" style={{ width: "40%", height: 12 }} />
+        </div>
+      ) : accessRefusal ? (
+        /* F-245 — checked BEFORE loadError so the outage arm cannot shadow it. No Retry:
+           it would re-ask the same question and get the same no. Same slate .access-note
+           and the same words as the admin tab's F-234 arm — the two surfaces that refuse
+           the same read refuse it in the same sentence, now from one builder. */
+        <div className="access-note" role="note" style={{ margin: "10px 12px" }}>
+          {permissionRefusalText(accessRefusal, "memories")}
         </div>
       ) : loadError ? (
         <div className="load-error" style={{ margin: "10px 12px" }}>

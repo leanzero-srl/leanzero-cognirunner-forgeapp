@@ -17,6 +17,7 @@
 
 import React, { useState, useEffect } from "react";
 import { confirmDialog } from "./confirmDialog";
+import { isPermissionRefusal, permissionRefusalText } from "./refusal";
 import { findRule } from "../../../src/shared/premade-rules-catalog.js";
 import { premadeSummaryRows, buildFactsText, ruleKindEnum } from "../../../src/shared/explain-facts.js";
 import { logSourceOf, SOURCE_LABEL, FLAG_LABEL, isSkippedLog } from "../../../src/shared/log-flags.js";
@@ -1002,6 +1003,29 @@ const injectStyles = () => {
 
     .flash-success { animation: mlsFlash 1.2s ease-out both; }
 
+
+    /* F-244..F-250 — THE REFUSAL GRAMMAR, declared ONCE per injectStyles home.
+       Six surfaces now say "the backend refused this reader": the docs list, the skills
+       list, the Knowledge panel summary, the rule-editor Memories tab, the admin Memories
+       tab and config-view's execution log. They must not be six hand-copied blocks that
+       drift the way .memory-full-banner / .memories-admin-capwall / .memory-cap-refusal did
+       before F-212 collapsed them into .hard-stop.
+       Owner design law: SOLID slate #475569 (dark one shade lighter, #64748b), 600 weight,
+       NO left accent rail, NO tinted background, no faded alpha. Deliberately NOT the red
+       hard-stop grammar and deliberately NOT .load-error — a refusal is a statement of
+       fact, not a warning and not a fault, and it carries no Retry because no retry can
+       change the answer. */
+    .access-note {
+      padding: 10px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      line-height: 1.5;
+      color: #475569;
+      background: none;
+      border: none;
+    }
+    html[data-color-mode="dark"] .access-note { color: #64748b; }
+
     .load-error {
       display: flex; align-items: center; gap: 10px;
       padding: 10px 14px;
@@ -1201,6 +1225,14 @@ function App() {
   const [toggling, setToggling] = useState(false);
   const [clearingLogs, setClearingLogs] = useState(false);
   const [logsLoadError, setLogsLoadError] = useState(false);
+  /* F-247 — `getLogs` gates like every other read, and a refusal arrived here as
+     `{ success: false }` with no marker, so it fell into `setLogsLoadError(true)` and the
+     read-only rule view told a user without log access "Couldn't load logs." beside a Retry
+     button. Wrong on both halves: nothing failed, and the retry cannot ever succeed. This is
+     the surface where it stings most — config-view is the VIEW app, the one a
+     non-administrator is most likely to open, so the reader least able to diagnose it is the
+     one most likely to see it. Holds the result for its `needsRole`. */
+  const [logsRefusal, setLogsRefusal] = useState(null);
   // Entrance animation for the status banner: rises in on first resolve,
   // pops when handleToggleRule flips it (keyed remount re-triggers it).
   const [statusAnim, setStatusAnim] = useState("anim-rise");
@@ -1249,6 +1281,16 @@ function App() {
             && (!l.type || l.type === "validation" || wantTypes.includes(l.type)));
         }
         setLogs(allLogs);
+        setLogsRefusal(null);
+      } else if (isPermissionRefusal(result)) {
+        /* F-247 — a refusal is AUTHORITATIVE and is recorded even when rows are already on
+           screen: a role revoked mid-session is a real state, and the honest thing is to
+           stop showing the stale list under a toast that says "couldn't refresh". Clears
+           the rows for the same reason — they are data this reader is no longer allowed to
+           see, and leaving them visible would make the note beneath them read as a lie. */
+        setLogs([]);
+        setLogsRefusal(result);
+        setLogsLoadError(false);
       } else if (logs.length > 0) {
         // Refresh failed but entries are still on screen — keep them visible.
         showToast(result.error || "Couldn't refresh logs", "error");
@@ -1625,6 +1667,16 @@ function App() {
   );
 
   // Failed mount-load of the logs list — never masquerade as "no logs yet".
+  // F-247 — ...and a REFUSAL never masquerades as a failed load. Checked first at both
+  // render sites below, so the outage block can never shadow it. No Retry on this one: the
+  // button would re-ask the same question and get the same no, which keeps the reader
+  // pressing instead of telling them who to ask. Plain slate .access-note — nothing is
+  // broken, so it borrows neither the red hard-stop grammar nor the retry affordance.
+  const logsAccessBlock = (
+    <div className="access-note" role="note">
+      {permissionRefusalText(logsRefusal, "execution logs")}
+    </div>
+  );
   const logsLoadErrorBlock = (
     <div className="load-error">
       <span>Couldn't load logs.</span>
@@ -1723,6 +1775,8 @@ function App() {
               <div className="logs-list stagger">
               {logsLoading && logs.length === 0 ? (
                 logsSkeleton
+              ) : logsRefusal ? (
+                logsAccessBlock
               ) : logsLoadError && logs.length === 0 ? (
                 logsLoadErrorBlock
               ) : logs.length === 0 ? (
@@ -2110,6 +2164,8 @@ function App() {
             <div className="logs-list stagger">
             {logsLoading && logs.length === 0 ? (
               logsSkeleton
+            ) : logsRefusal ? (
+              logsAccessBlock
             ) : logsLoadError && logs.length === 0 ? (
               logsLoadErrorBlock
             ) : logs.length === 0 ? (

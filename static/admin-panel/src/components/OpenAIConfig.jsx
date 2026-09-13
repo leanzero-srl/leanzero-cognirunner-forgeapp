@@ -10,6 +10,7 @@ import { router } from "@forge/bridge";
 import CustomSelect from "./CustomSelect";
 import Tooltip from "./Tooltip";
 import { showToast } from "./toast";
+import { providerReady } from "./capability";
 import {
   EDITION_IDS, FORGE_LLM_FRONTIER, FORGE_LLM_DEFAULT,
   MANAGED_PROVIDER_ID, MANAGED_PROVIDER_LABEL, MANAGED_MODELS, MANAGED_DEFAULT_MODEL,
@@ -133,6 +134,14 @@ export default function OpenAIConfig({ invoke }) {
   const [baseUrl, setBaseUrl] = useState("");
   const [isByok, setIsByok] = useState(false);
   const [hasKey, setHasKey] = useState(false);
+  /* F-591 - "does this provider need a key from this admin at all?", answered by ONE field.
+     `getOpenAIKey` sets `noKeyNeeded` on every arm where the ABSENCE of a stored key is the
+     NORMAL state (Forge LLM and the LeanZero-managed engine today, whatever is vendor-billed
+     tomorrow). Keeping it in state - rather than re-deriving "is this the managed provider?"
+     from a provider literal at each render site - is what stops this panel telling a managed
+     tenant "No key configured. Provide your CogniRunner Cloud AI API key to get started"
+     directly under the line that says the engine has no key to configure. */
+  const [noKeyNeeded, setNoKeyNeeded] = useState(false);
   // LM Studio: token is OPTIONAL; isByok is true once the baseUrl is set, but we need
   // a separate flag to know whether a Bearer token has actually been saved — otherwise
   // the UI would mask a non-existent key and hide the input.
@@ -283,6 +292,11 @@ export default function OpenAIConfig({ invoke }) {
   const isAtlassian = provider === "atlassian";
   const isBedrock = provider === "bedrock";
   const isManaged = provider === MANAGED_PROVIDER_ID;
+  /* F-591/F-555 - the ONE readiness predicate, shared with config-ui and issue-glance via
+     capability.js. `keyReady` is false ONLY when this admin genuinely has a key to supply and
+     has not supplied it; a managed/Atlassian-hosted engine reads ready with no key stored.
+     Every key-status read below goes through these two, never through a provider literal. */
+  const keyReady = providerReady({ hasKey, noKeyNeeded });
   // Tracks the provider whose config is currently being loaded, so a fast switch
   // doesn't let a slow in-flight load() overwrite the newer provider's state.
   const providerRef = useRef("atlassian");
@@ -335,6 +349,7 @@ export default function OpenAIConfig({ invoke }) {
 
       if (keyResult.success) {
         setHasKey(keyResult.hasKey);
+        setNoKeyNeeded(keyResult.noKeyNeeded === true);
         setIsByok(keyResult.isByok);
         // For LM Studio, hasToken reflects whether a Bearer token is actually saved
         // (separate from isByok which just means "URL is configured").
@@ -1747,7 +1762,7 @@ export default function OpenAIConfig({ invoke }) {
             // Compute LM Studio status from pingResult. While a ping is in
             // flight (silent OR explicit), say so — the old grey "not yet
             // tested" state was a lie during the auto-ping after page load.
-            const checking = isLmStudio && hasKey && pingInFlight;
+            const checking = isLmStudio && keyReady && pingInFlight;
             let lmStatusColor = "var(--text-muted)";
             let lmStatusTitle = "LM Studio URL not set";
             let lmStatusBody = "Set the Tailscale Funnel URL above (https://*.ts.net pointing at your LM Studio server) to get started.";
@@ -1755,7 +1770,7 @@ export default function OpenAIConfig({ invoke }) {
               lmStatusColor = "var(--primary-color)";
               lmStatusTitle = "Testing connection…";
               lmStatusBody = "Contacting your LM Studio server — verifying reachability and auth.";
-            } else if (isLmStudio && hasKey) {
+            } else if (isLmStudio && keyReady) {
               if (!pingResult) {
                 lmStatusColor = "var(--text-muted)";
                 lmStatusTitle = "URL saved — not yet tested";
@@ -1790,7 +1805,9 @@ export default function OpenAIConfig({ invoke }) {
               ? lmStatusTitle
               : isAtlassian
                 ? "Atlassian-hosted — ready, no key needed"
-                : (isByok ? `Using your ${providerLabel} key` : "No key configured");
+                : noKeyNeeded
+                  ? "Managed by LeanZero \u2014 ready, no key needed"
+                  : (isByok ? `Using your ${providerLabel} key` : "No key configured");
             return (
               <div className="openai-status" style={{ marginBottom: "16px" }}>
                 {/* Keyed on the resolved title: status changes fade in instead
@@ -1805,7 +1822,7 @@ export default function OpenAIConfig({ invoke }) {
                         width: "8px",
                         height: "8px",
                         borderRadius: "50%",
-                        background: isLmStudio ? lmStatusColor : (hasKey ? "var(--success-color)" : "var(--error-color)"),
+                        background: isLmStudio ? lmStatusColor : (keyReady ? "var(--success-color)" : "var(--error-color)"),
                       }}
                     />
                     <strong style={{ fontSize: "13px" }}>{statusTitle}</strong>
@@ -1815,6 +1832,8 @@ export default function OpenAIConfig({ invoke }) {
                       ? lmStatusBody
                       : isAtlassian
                       ? "Claude served inside the Atlassian platform — no key, no egress."
+                      : noKeyNeeded
+                      ? `${providerLabel} runs on LeanZero's own credential — nothing to paste here, and nothing to rotate. Pick a model below.`
                       : isByok
                         ? `Connected to ${providerLabel}. You can select from available models. Remove the key to clear it.`
                         : `No API key configured. Provide your ${providerLabel} API key to get started.`
@@ -1850,9 +1869,11 @@ export default function OpenAIConfig({ invoke }) {
             );
           })()}
 
-          {/* API Key Input — hidden entirely for Forge LLM AND for the managed engine
-              (neither has a key a tenant admin could paste). */}
-          {!isAtlassian && !isManaged && (
+          {/* API Key Input — hidden whenever the provider needs no key from this admin
+              (Forge LLM and the managed engine today). F-591: gated on the SAME `noKeyNeeded`
+              the status block above reads, not on a provider literal, so the two can never
+              again disagree on one screen. */}
+          {!isAtlassian && !noKeyNeeded && (
           <div style={{ marginBottom: "16px" }}>
             <label style={{ display: "flex", alignItems: "center", fontSize: "12px", fontWeight: "600", color: "var(--text-secondary)", marginBottom: "6px" }}>
               {pHelp.keyLabel}

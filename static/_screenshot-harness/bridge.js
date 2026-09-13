@@ -1918,6 +1918,11 @@ function invoke(name, payload) {
          slot) WITH noKeyNeeded:true. It is the case that proves readiness cannot be read off
          `hasKey`: a working engine that honestly reports no stored key. */
       if (typeof window !== "undefined" && window.__MANAGED__) return Promise.resolve({ success: true, provider: "managed", baseUrl: "", hasKey: false, isByok: false, managed: true, noKeyNeeded: true });
+      /* F-591: the SAME managed shape when the panel asks for the managed provider BY NAME —
+         which is what the Settings tab does the moment the admin picks that row, before any
+         __MANAGED__ flag is involved. Without this arm the mock answered the generic admin
+         body (hasKey:true) and the panel looked correct for the wrong reason. */
+      if (payload && payload.provider === MANAGED_PROVIDER_ID) return Promise.resolve({ success: true, provider: MANAGED_PROVIDER_ID, baseUrl: "", hasKey: false, isByok: false, managed: true, noKeyNeeded: true });
       if (payload && payload.provider === "lmstudio") return Promise.resolve({ success: true, provider: "lmstudio", baseUrl: LM_URL, hasKey: false, hasToken: true, isByok: true });
       return Promise.resolve(isAdmin ? { success: true, provider: "anthropic", baseUrl: "https://api.anthropic.com", hasKey: true, isByok: true } : { success: true, isByok: false });
     case "getOpenAIModels":

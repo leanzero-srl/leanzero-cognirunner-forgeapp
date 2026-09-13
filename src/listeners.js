@@ -41,7 +41,7 @@ import {
   trimEventPayload, adfToPlainText, isGitEvent, requiresRepoFilter,
 } from "./shared/jira-events.js";
 import { assertAllowedActions, buildAgentGateContext, normalizeAgentKnowledge, DEFAULT_AGENT_ACTIONS, DEFAULT_AGENT_ROUNDS, MAX_AGENT_ROUNDS } from "./shared/agent-actions.js";
-import { knowledgeBudget } from "./shared/registry-limits.js";
+import { knowledgeBudget, AGENT_RUN_BRAKE_MAX_PER_BUCKET, brakeRefusalText } from "./shared/registry-limits.js";
 import { redosRisk } from "./shared/regex-safety.js";
 import { agentResultFields } from "./shared/agent-result.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
@@ -75,9 +75,19 @@ const TRIGGER_BUDGET_MS = 18000;         // inside the 25s trigger cap
 const INDEX_CACHE_TTL_MS = 30000;
 // Loop brakes: per issue and per listener, fixed 5-minute buckets.
 const BRAKE_PREFIX = "lst_brake:";
-const BRAKE_BUCKET_MS = 300000;
+export const BRAKE_BUCKET_MS = 300000;
 export const BRAKE_MAX_PER_ISSUE = 30;
 export const BRAKE_MAX_PER_LISTENER = 120;
+/**
+ * THE TENANT-WIDE AGENT-RUN BRAKE (1.4 commit 13d). Same prefix shape, same bucket, same
+ * read/bump mechanism as `lst_brake` — this file is the ONE home for the mechanism, and
+ * scheduled-jobs.js imports it rather than growing a second copy.
+ *
+ * It answers a question no per-rule brake can: forty rules each behaving perfectly still
+ * add up to a bill. The key carries no rule and no issue, only the bucket, because the
+ * whole point is that it counts EVERYTHING.
+ */
+const AGENT_BRAKE_PREFIX = "agent_brake:";
 const SAMPLE_TTL = { ttl: { value: 7, unit: "DAYS" } };
 const SAMPLE_MIN_INTERVAL_MS = 15 * 60 * 1000;
 
@@ -542,10 +552,39 @@ const resolveIssueById = async (issueId) => {
 
 // ── Brakes ───────────────────────────────────────────────────────────────────
 
-const readBrake = async (key) => {
+// EXPORTED (1.4 commit 13d): scheduled-jobs.js takes the tenant-wide agent brake through
+// THESE two functions. A brake read that FAILS is fail-open by construction
+// (`readFailed` suppresses the bump and reports 0) — a KVS hiccup must not stop every
+// rule on the site, and the platform's own limits are still underneath.
+export const readBrake = async (key) => {
   try { return { key, count: Number(await storage.get(key)) || 0 }; } catch { return { key, count: 0, readFailed: true }; }
 };
-const bumpBrake = async (b) => { if (b.readFailed) return; try { await storage.set(b.key, b.count + 1, { ttl: { value: 15, unit: "MINUTES" } }); } catch { /* best-effort */ } };
+export const bumpBrake = async (b) => { if (b.readFailed) return; try { await storage.set(b.key, b.count + 1, { ttl: { value: 15, unit: "MINUTES" } }); } catch { /* best-effort */ } };
+
+/**
+ * THE TENANT-WIDE AGENT-RUN BRAKE, in one call (1.4 commit 13d).
+ *
+ * Taken at the RUN site, not at the trigger: this brake is about AI COST, and cost is
+ * spent when the model runs, not when a task is queued. It counts every agent run the
+ * installation starts — listener, scheduled job, anything later — because that is the
+ * only level at which "forty rules each behaving" is visible.
+ *
+ * Returns `{ braked: false }` to proceed (the bucket has been bumped: taking the slot IS
+ * the accounting), or `{ braked: true, reason, max }` to skip, with the sentence from the
+ * ONE home in src/shared/registry-limits.js.
+ */
+export const takeAgentRunSlot = async ({ max = AGENT_RUN_BRAKE_MAX_PER_BUCKET } = {}) => {
+  const bucket = Math.floor(Date.now() / BRAKE_BUCKET_MS);
+  const b = await readBrake(`${AGENT_BRAKE_PREFIX}${bucket}`);
+  if (b.count >= max) {
+    // Bump past the line too, so the bucket records the real pressure rather than
+    // flat-lining at the cap — an operator needs to see HOW far over it went.
+    await bumpBrake(b);
+    return { braked: true, kind: "agent-runs", max, count: b.count, reason: brakeRefusalText("agent-runs", max) };
+  }
+  await bumpBrake(b);
+  return { braked: false, kind: "agent-runs", max, count: b.count + 1 };
+};
 /**
  * The per-OBJECT brake key (F-320).
  *

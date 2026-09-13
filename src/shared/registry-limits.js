@@ -352,3 +352,58 @@ export const knowledgeBudget = (audience) => KNOWLEDGE_BUDGET_BYTES[audience] ||
 
 /** Skills a rule may bind. Small on purpose: a rule picks a VOICE, not a library. */
 export const MAX_RULE_SKILL_IDS = 4;
+
+/* ------------------------------------------------------------------------
+ * RUN BRAKES (1.4 commit 13d) — ONE home for the numbers.
+ *
+ * Listeners have had brakes since 1.2 (`lst_brake:*`: 30 runs per object and 120 per
+ * listener, per 5 minutes), because a listener whose own write re-fires its own event is
+ * the failure that surface fears most. SCHEDULED JOBS had none: a job is started by the
+ * app's own clock, so it cannot loop on itself — but it can still hold a 100-issue scope
+ * and an agent that writes on every one of them, and until now nothing counted that.
+ *
+ * Two different brakes, because they answer two different questions:
+ *
+ *   maxWritesPerRun — "how much may ONE run change?" Per job, author-set, clamped here.
+ *       Counted on the run's CHANGE LEDGER (`session.changes` in createSandboxSession),
+ *       which is the one write counter both execution modes and both rule kinds already
+ *       share. Counting anything else would be a second counter that drifts.
+ *   agent-run brake — "how much AI may the WHOLE INSTALLATION start in 5 minutes?"
+ *       Tenant-wide, fixed, in the same `<prefix>:<bucket>` shape as `lst_brake`. This is
+ *       the cost ceiling: a per-rule brake cannot see forty rules each behaving.
+ * ---------------------------------------------------------------------- */
+
+/**
+ * Writes ONE job run may make before it stops, when the job does not say otherwise.
+ *
+ * DERIVED, not guessed: the largest scope a job may hold is MAX_SCOPE_ISSUES (100,
+ * src/scheduled-jobs.js), and an escalation sweep that sets a field and adds a comment on
+ * every one of them is the ORDINARY use of this feature, not an abuse — so the default
+ * must clear twice the biggest legal scope. A brake that trips on correct work teaches
+ * every author to raise it, which is how a brake becomes a formality (and there is a
+ * cross-check in the scheduled-jobs suite so the two numbers cannot drift apart).
+ *
+ * It is still decisive for the case it exists for: a runaway agent looping on one issue
+ * has no scope at all and hits 200 in one run.
+ */
+export const JOB_DEFAULT_MAX_WRITES_PER_RUN = 200;
+/** The ceiling an author may raise it to. Above this, use several jobs with tighter scopes. */
+export const JOB_MAX_WRITES_PER_RUN = 1000;
+/** A job may also brake HARD at 0 writes — the value is meaningful, so 0 is not "unset". */
+export const JOB_MIN_WRITES_PER_RUN = 0;
+
+/**
+ * Tenant-wide AI agent runs per 5-minute bucket. Sized against the platform's own
+ * ceilings rather than a guess: the 120-per-listener brake times a handful of busy rules
+ * lands here, and past this the token budget (`src/shared/ai-budget.js`) would be
+ * deferring almost everything anyway — so this brake's job is to make the runaway VISIBLE
+ * and CHEAP rather than to be the first thing that notices it.
+ */
+export const AGENT_RUN_BRAKE_MAX_PER_BUCKET = 200;
+
+/** The refusal sentence for each brake. ONE home: the log, the job row and the REST answer share it. */
+export const brakeRefusalText = (kind, max) => {
+  if (kind === "job-writes") return `Write brake: this run reached its limit of ${max} change${max === 1 ? "" : "s"}. The remaining work was not done. Raise the job's "maximum writes per run", narrow its scope JQL, or split it into several jobs.`;
+  if (kind === "agent-runs") return `Agent brake: this installation started more than ${max} AI agent runs in 5 minutes, so this run was skipped. Something is firing far more often than intended — check the listeners and jobs that ran in the last few minutes.`;
+  return "Run brake tripped.";
+};

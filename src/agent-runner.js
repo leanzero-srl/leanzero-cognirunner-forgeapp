@@ -392,7 +392,29 @@ export const assertAgentActionAllowed = (name, allowed) => {
   return a;
 };
 
-export const createAgentActionDispatcher = ({ issueKey = null, session, allowed = [], executors = {}, m }) => {
+/**
+ * THE WRITE BRAKE, on the ONE counter (1.4 commit 13d).
+ *
+ * `session.changes` is the run's change ledger, appended by EVERY sandbox mutator in both
+ * the live and the simulated path (src/index.js `createApi`). It is the only per-run
+ * write counter this codebase has, and both rule kinds and both execution modes already
+ * share it — so the brake counts THAT and never mints a second number that can drift
+ * away from what the log shows the run did.
+ *
+ * Enforced BEFORE the call, not after: a brake that lets the write land and then reports
+ * it has not braked anything. Refusing (rather than throwing) means the model gets a
+ * usable sentence and can still call `finish` with an honest summary.
+ *
+ * `maxWrites == null` means no brake at all — the listener path today, unchanged.
+ */
+const writeBraked = (session, maxWrites) => {
+  if (maxWrites == null) return null;
+  const done = Array.isArray(session && session.changes) ? session.changes.length : 0;
+  if (done < maxWrites) return null;
+  return { done, max: maxWrites };
+};
+
+export const createAgentActionDispatcher = ({ issueKey = null, session, allowed = [], executors = {}, m, maxWrites = null }) => {
   const baseApi = session.createApi();
   const apiFor = (key) => (key && key !== issueKey ? baseApi.forIssue(key) : baseApi);
   // Validated references retain their explicit identity; only an omitted key
@@ -402,6 +424,12 @@ export const createAgentActionDispatcher = ({ issueKey = null, session, allowed 
   return async (name, args) => {
     // ONE HOME for the allow-list check (F-359) — see assertAgentActionAllowed above.
     const a = assertAgentActionAllowed(name, allowed);
+    // THE WRITE BRAKE, before the namespace switch so it covers EVERY namespace's writes
+    // (a git commit is a write to somebody's repository, and counts like any other).
+    if (a.kind === "write") {
+      const b = writeBraked(session, maxWrites);
+      if (b) return { success: false, code: "write_brake", error: `Refused: this run has already made ${b.done} change${b.done === 1 ? "" : "s"}, which is its limit of ${b.max}. Make no further changes — call finish and say what was and was not done.` };
+    }
     // DELEGATION BY NAMESPACE (plan §3.5). This switch must never learn an id from
     // another namespace: a new namespace is a new executor module plus one row in
     // AGENT_ACTION_NAMESPACES, not a new case below.
@@ -511,6 +539,10 @@ export const runAgentTask = async ({
   // src/scheduled-jobs.js) because only the caller knows the rule's `skillIds` and
   // `useMemories` and the run's project. Omitted = no knowledge, exactly as before.
   knowledge = null,
+  // WRITE BRAKE for this run (1.4 commit 13d), counted on `session.changes` — the one
+  // write ledger every surface already shares. `null` = no brake (the pre-1.4 listener
+  // behaviour, unchanged). A scheduled job passes its clamped `maxWritesPerRun`.
+  maxWrites = null,
   // Run-time gate context for normalizeAllowedActions (capability / products /
   // triggerSource / savedByRole). OMITTED means the most restrictive context — the
   // 13 Jira actions behave exactly as before and nothing from another namespace is
@@ -558,7 +590,7 @@ export const runAgentTask = async ({
   const runExecutors = allowed.includes("web_search")
     ? { ...executors, web: executors.web || createWebSearchExecutor({ budget: webBudget, log, deadline }) }
     : executors;
-  const execute = createAgentActionDispatcher({ issueKey, session, allowed, executors: runExecutors, m });
+  const execute = createAgentActionDispatcher({ issueKey, session, allowed, executors: runExecutors, m, maxWrites });
 
   // ONE constant, appended only for an agent that actually holds the tool — a rule about
   // checking claims is noise for an agent with no way to check anything.

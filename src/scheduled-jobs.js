@@ -38,7 +38,8 @@ import { kvs as storage } from "@forge/kvs";
 import api, { route } from "@forge/api";
 import { validateCron, normalizeTimeZone, dueInWindow, nextRuns, describeCron, fireIdentity } from "./shared/cron.js";
 import { assertAllowedActions, buildAgentGateContext, normalizeAgentKnowledge, DEFAULT_AGENT_ACTIONS, DEFAULT_AGENT_ROUNDS, MAX_AGENT_ROUNDS } from "./shared/agent-actions.js";
-import { normalizeStep, normalizeSavedByRole, assertKnownSkillIds, buildAgentKnowledge } from "./listeners.js";
+import { normalizeStep, normalizeSavedByRole, assertKnownSkillIds, buildAgentKnowledge, takeAgentRunSlot } from "./listeners.js";
+import { JOB_DEFAULT_MAX_WRITES_PER_RUN, JOB_MAX_WRITES_PER_RUN, JOB_MIN_WRITES_PER_RUN, brakeRefusalText } from "./shared/registry-limits.js";
 import { agentResultFields, SCOPED_AGENT_SUMMARY_BUDGET_BYTES, boundScopedJobLog } from "./shared/agent-result.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
 // ONE HOME for KVS key sanitising / conflict detection — src/shared/kvs-keys.js (F-340).
@@ -114,6 +115,11 @@ export const normalizeJob = (input = {}, { existing = null, accountId = null, ga
     schedule, scope, mode, functions, agent,
     simulationMode: src.simulationMode === true,
     suppressNotifications: src.suppressNotifications === true,
+    // THE JOB WRITE BRAKE (1.4 commit 13d). Clamped here, default from the ONE home in
+    // src/shared/registry-limits.js. 0 is a MEANINGFUL value (a job that may read and
+    // report but never change anything), so `clampInt`'s NaN fallback is what picks the
+    // default — a blank or absent field, never a deliberate zero.
+    maxWritesPerRun: clampInt(src.maxWritesPerRun, JOB_MIN_WRITES_PER_RUN, JOB_MAX_WRITES_PER_RUN, JOB_DEFAULT_MAX_WRITES_PER_RUN),
     // The saver's role, recorded at save time — see normalizeSavedByRole in
     // listeners.js for why a stored field and not a live check, and why the default
     // is the least-privileged one. A job holds no verdict actions today; the field is
@@ -131,6 +137,8 @@ export const normalizeJob = (input = {}, { existing = null, accountId = null, ga
 export const toIndexRow = (full) => ({
   id: full.id, name: full.name, enabled: full.enabled !== false, schedule: full.schedule,
   scoped: Boolean(full.scope), mode: full.mode, simulationMode: full.simulationMode === true,
+  // On the INDEX row so the Jobs tab can render the brake without loading every record.
+  maxWritesPerRun: full.maxWritesPerRun,
   createdBy: full.createdBy || null, createdAt: full.createdAt, updatedAt: full.updatedAt,
 });
 export const emptyStats = () => ({ runCount: 0, errorCount: 0, lastRunAt: null, lastStatus: null, lastError: null });
@@ -342,10 +350,33 @@ export const runJob = async ({ job, scheduledFor = null, missed = 0, manual = fa
   const config = { ...job, simulationMode: forceSimulation || job.simulationMode === true };
   const baseCtx = { runtime: "job", jobId: job.id, jobName: job.name, scheduledFor, manual, schedule: job.schedule };
   const base = { type: "scheduledjob", source, fieldId: `${job.schedule.cron} ${job.schedule.timeZone}`, ruleId: job.id, ruleName: job.name, ruleWorkflow: null, mode: job.mode, scheduledFor, manual, missed };
+  // THE JOB'S WRITE ALLOWANCE for this whole run — one number for the run, not per issue:
+  // a 100-issue scope writing once each is exactly the shape the brake exists to bound.
+  // An OLD record saved before 1.4 has no field; it gets the default rather than no brake,
+  // because "the field is absent" must not be the way past it.
+  const maxWrites = Number.isFinite(Number(job.maxWritesPerRun))
+    ? Math.min(JOB_MAX_WRITES_PER_RUN, Math.max(JOB_MIN_WRITES_PER_RUN, Math.trunc(Number(job.maxWritesPerRun))))
+    : JOB_DEFAULT_MAX_WRITES_PER_RUN;
+  // The run's own brake report, rendered by the Jobs tab and the log details. `null` until
+  // something actually trips — an absent field means "nothing was braked", which is the
+  // honest default and the common case.
+  let brake = null;
+  // Changes made SO FAR in this run, across every scope issue. The per-issue sandbox
+  // session counts its own (`session.changes`, the one write ledger); this carries the
+  // allowance forward, so the brake is a RUN budget and not a per-issue one.
+  let writesDone = 0;
   const runOne = async (issue, perDeadline) => {
     const issueKey = issue ? issue.key : null;
     const extraContext = { ...baseCtx, issueKey, projectKey: issue && issue.fields && issue.fields.project ? issue.fields.project.key : null, scopeIssue: issue ? { key: issue.key, summary: issue.fields && issue.fields.summary, status: issue.fields && issue.fields.status && issue.fields.status.name } : null };
     if (job.mode === "agent") {
+      // THE TENANT-WIDE AGENT BRAKE, taken at the RUN site because cost is spent when the
+      // model runs. Same mechanism as the listener brakes (src/listeners.js is its one
+      // home); per ISSUE of a scope, because each issue is its own agent run.
+      const slot = await takeAgentRunSlot();
+      if (slot.braked) {
+        brake = { kind: "agent-runs", max: slot.max, reason: slot.reason };
+        return { issueKey, success: false, braked: true, reason: slot.reason, changes: [], logs: [slot.reason], tokens: 0, aiTimeMs: 0 };
+      }
       const { runAgentTask } = await agentMod();
       const agentGate = gateFacts ? buildAgentGateContext({ ...gateFacts, triggerSource: null, savedByRole: job.savedByRole }) : undefined;
       // Knowledge is built PER ISSUE because the memory block is project-scoped and a
@@ -353,16 +384,19 @@ export const runJob = async ({ job, scheduledFor = null, missed = 0, manual = fa
       // across them; paying one extra KVS read per issue is the cost of not injecting
       // project A's learned facts while acting on project B's issue.
       const knowledge = await buildAgentKnowledge(job.agent, { projectKey: extraContext.projectKey, audience: "agentRun" });
-      const r = await runAgentTask({ instructions: job.agent.instructions, allowedActions: job.agent.allowedActions, maxRounds: job.agent.maxRounds, issueKey, config, contextTitle: "JOB CONTEXT", contextText: summarizeJobForAi(job, scheduledFor, issue), deadline: perDeadline, cancelToken, extraContext, gate: agentGate, executors, knowledge });
+      // The allowance the agent gets is what is LEFT of the run's budget.
+      const r = await runAgentTask({ instructions: job.agent.instructions, allowedActions: job.agent.allowedActions, maxRounds: job.agent.maxRounds, issueKey, config, contextTitle: "JOB CONTEXT", contextText: summarizeJobForAi(job, scheduledFor, issue), deadline: perDeadline, cancelToken, extraContext, gate: agentGate, executors, knowledge, maxWrites: Math.max(0, maxWrites - writesDone) });
+      if ((r.changes || []).length && writesDone + r.changes.length >= maxWrites) brake = brake || { kind: "job-writes", max: maxWrites, reason: brakeRefusalText("job-writes", maxWrites) };
       return { issueKey, ...agentResultFields(r, { summaryMaxBytes: job.scope ? Math.floor(SCOPED_AGENT_SUMMARY_BUDGET_BYTES / MAX_SCOPE_ISSUES) : null }), success: r.success, reason: r.success ? `${r.outcome}: ${r.summary || ""}` : (r.error || "agent failed"), changes: r.changes || [], logs: r.logs || [], tokens: r.tokens || 0, aiTimeMs: r.aiTimeMs || 0 };
     }
     const r = await m.runSandboxSteps({ issueKey, config, deadline: perDeadline, cancelToken, extraContext });
+    if ((r.changes || []).length && writesDone + r.changes.length >= maxWrites) brake = brake || { kind: "job-writes", max: maxWrites, reason: brakeRefusalText("job-writes", maxWrites) };
     return { issueKey, success: r.success, reason: r.success ? `${r.stepsTotal} step(s), ${r.changes.length} change(s)` : `step "${r.failedStep}" failed: ${(r.stepResults.find((s) => s.status === "error") || {}).error || "see logs"}`, recommendation: r.recommendation, changes: r.changes || [], logs: r.logs || [], stepResults: r.stepResults };
   };
 
   if (!job.scope) {
     const r = await runOne(null, deadline);
-    return { log: { ...base, issueKey: "(no issue)", isValid: r.success, reason: r.reason, agentOutcome: r.agentOutcome, agentSummary: r.agentSummary, recommendation: r.recommendation, executionTimeMs: Date.now() - started, changes: r.changes.slice(0, 20), logs: r.logs.slice(-60).map((s) => String(s).slice(0, 300)), tokens: r.tokens, aiTimeMs: r.aiTimeMs, stepResults: r.stepResults }, success: r.success, agentOutcome: r.agentOutcome, agentSummary: r.agentSummary, issues: [] };
+    return { log: { ...base, issueKey: "(no issue)", isValid: r.success, reason: r.reason, agentOutcome: r.agentOutcome, agentSummary: r.agentSummary, recommendation: brake ? brake.reason : r.recommendation, executionTimeMs: Date.now() - started, changes: r.changes.slice(0, 20), logs: r.logs.slice(-60).map((s) => String(s).slice(0, 300)), tokens: r.tokens, aiTimeMs: r.aiTimeMs, stepResults: r.stepResults, ...(brake ? { brake } : {}) }, success: r.success, agentOutcome: r.agentOutcome, agentSummary: r.agentSummary, issues: [], ...(brake ? { brake } : {}) };
   }
   let issues;
   try { issues = await searchScope(job.scope); } catch (e) {
@@ -382,8 +416,23 @@ export const runJob = async ({ job, scheduledFor = null, missed = 0, manual = fa
       for (const rest of issues.slice(i)) perIssue.push({ key: rest.key, success: false, reason: "not processed (cancelled)" });
       break;
     }
+    // THE WRITE BRAKE, between issues. The dispatcher refuses a write inside a run; this
+    // stops the SCOPE from starting another issue once the run's allowance is gone —
+    // otherwise a 100-issue scope would keep paying for model rounds that can no longer
+    // change anything. Every unprocessed issue gets an explicit outcome, the same rule
+    // the timeout and cancellation branches above follow: a partial run must never read
+    // as a whole one.
+    if (writesDone >= maxWrites) {
+      brake = brake || { kind: "job-writes", max: maxWrites, reason: brakeRefusalText("job-writes", maxWrites) };
+      const left = issues.length - i;
+      logs.push(`WRITE BRAKE: ${writesDone} change(s) made, limit ${maxWrites} — ${left} issue(s) not processed`);
+      failures += left;
+      for (const rest of issues.slice(i)) perIssue.push({ key: rest.key, success: false, reason: "not processed (write brake)" });
+      break;
+    }
     const share = Math.max(8000, Math.floor(remaining / (issues.length - i)));
     const r = await runOne(issues[i], Date.now() + Math.min(remaining - 2000, share));
+    writesDone += (r.changes || []).length;
     perIssue.push({ key: issues[i].key, success: r.success, agentOutcome: r.agentOutcome, agentSummary: r.agentSummary, reason: String(r.reason || "").slice(0, 200) });
     if (!r.success) failures++;
     changes = changes.concat((r.changes || []).map((c) => ({ ...c, issue: issues[i].key })));
@@ -393,8 +442,8 @@ export const runJob = async ({ job, scheduledFor = null, missed = 0, manual = fa
   }
   const processedOk = perIssue.filter((r) => r.success).length;
   const success = processedOk === issues.length;
-  const log = boundScopedJobLog({ ...base, issueKey: `${issues.length} issue(s)`, isValid: success, reason: `${processedOk}/${issues.length} issue(s) processed OK, ${changes.length} change(s)${failures ? `, ${failures} failed` : ""}${cancelled ? `, ${cancelled} cancelled` : ""}`, recommendation: success ? undefined : "Open the job's log details for the per-issue outcomes.", executionTimeMs: Date.now() - started, changes: changes.slice(0, 30), logs: logs.slice(-120).map((s) => String(s).slice(0, 300)), tokens, aiTimeMs, perIssue: perIssue.slice(0, 100) });
-  return { log, success, issues: log.perIssue };
+  const log = boundScopedJobLog({ ...base, issueKey: `${issues.length} issue(s)`, isValid: success, reason: `${processedOk}/${issues.length} issue(s) processed OK, ${changes.length} change(s)${failures ? `, ${failures} failed` : ""}${cancelled ? `, ${cancelled} cancelled` : ""}${brake ? `, BRAKED (${brake.kind})` : ""}`, recommendation: brake ? brake.reason : (success ? undefined : "Open the job's log details for the per-issue outcomes."), executionTimeMs: Date.now() - started, changes: changes.slice(0, 30), logs: logs.slice(-120).map((s) => String(s).slice(0, 300)), tokens, aiTimeMs, perIssue: perIssue.slice(0, 100), ...(brake ? { brake } : {}) });
+  return { log, success, issues: log.perIssue, ...(brake ? { brake } : {}) };
 };
 
 // Identity of a scheduled (non-manual) delivery. Falls back to the raw value when the

@@ -748,7 +748,17 @@ export const bumpCaps = async (store, agent, { owed = false, now = Date.now() } 
  * 10. HEALTH — F-426, the banner's OWN row
  * ════════════════════════════════════════════════════════════════════════════ */
 
-export const VA_HEALTH_BANNER_AT = 3;
+/**
+ * F-439 — ONE HOME. This is re-exported from `VA_LIMITS`, never retyped.
+ *
+ * It was a bare `3` while every other number in this file comes from `VA_LIMITS` (rule 3
+ * of the header), and the same threshold is declared in `src/shared/registry-limits.js` as
+ * `VA_HEALTH_BANNER_FAILED_TICKS` — the file the skill names as THE home for gate numbers.
+ * Two homes means an owner who raises the banner to 5 there moves the admin panel copy and
+ * `normalizeVa`, while `recordTickHealth`/`readHealth` keep comparing against 3: the banner
+ * fires two ticks early and no test fails. The alias stays so callers keep one name.
+ */
+export const VA_HEALTH_BANNER_AT = VA_LIMITS.healthBannerFailedTicks;
 
 /**
  * The consecutive-failed-tick counter lives in ONE row and is written by the tick.

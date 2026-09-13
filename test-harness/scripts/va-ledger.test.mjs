@@ -15,6 +15,7 @@
  * Auto-discovered by run-offline.mjs.
  * Run: node --import ./lib/register-mocks.mjs scripts/va-ledger.test.mjs
  */
+import { readFileSync } from "node:fs";
 import kvs from "../lib/mock-kvs.mjs";
 
 let pass = 0, fail = 0;
@@ -438,6 +439,28 @@ reset();
   await L.recordTickHealth(spy, AG, false, { reason: "x" });
   eq(spy.writes.find((w) => w.key === K.vaHealthKey(AG)).options, undefined,
     "F-426: the health row is written with NO TTL — it must never age out from under the banner");
+
+  // F-439 — ONE HOME for the threshold. The ledger must not carry its own literal: an
+  // owner who raises the banner in registry-limits.js would otherwise move the admin copy
+  // and `normalizeVa` while the ledger kept comparing against a stale 3, and nothing would
+  // fail. The grep is the lockstep: a bare number reintroduced here fails this assertion.
+  const limits = await import("../../src/shared/registry-limits.js");
+  eq(L.VA_HEALTH_BANNER_AT, limits.VA_HEALTH_BANNER_FAILED_TICKS,
+    "F-439: VA_HEALTH_BANNER_AT IS registry-limits' VA_HEALTH_BANNER_FAILED_TICKS");
+  eq(L.VA_HEALTH_BANNER_AT, VA_LIMITS.healthBannerFailedTicks,
+    "…reached through VA_LIMITS, like every other number in the ledger (rule 3)");
+  const ledgerSrc = readFileSync(new URL("../../src/va-ledger.js", import.meta.url), "utf8");
+  ok(/export const VA_HEALTH_BANNER_AT = VA_LIMITS\.healthBannerFailedTicks;/.test(ledgerSrc),
+    "F-439: the ledger IMPORTS the threshold…");
+  ok(!/export const VA_HEALTH_BANNER_AT\s*=\s*\d/.test(ledgerSrc),
+    "…and declares no bare literal for it");
+  // The banner really does move with the constant, not with a hard-coded 3.
+  reset();
+  for (let i = 1; i < limits.VA_HEALTH_BANNER_FAILED_TICKS; i++) {
+    eq((await L.recordTickHealth(kvs, AG, false, { reason: "x" })).banner, false, `no banner at ${i} consecutive failures`);
+  }
+  eq((await L.recordTickHealth(kvs, AG, false, { reason: "x" })).banner, true,
+    `the banner raises at exactly VA_HEALTH_BANNER_FAILED_TICKS (${limits.VA_HEALTH_BANNER_FAILED_TICKS})`);
 }
 
 /* ── 13. fingerprints ─────────────────────────────────────────────────────── */

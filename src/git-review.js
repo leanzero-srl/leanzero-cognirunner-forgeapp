@@ -94,6 +94,10 @@
  * module is testable offline and holds no opinion about credentials or transports.
  */
 import { claimRuleExecution } from "./shared/execution-claim.js";
+// F-348 — the two key SHAPES that carry a repo id live with every other one, in
+// shared/git-ids.js: Forge KVS refuses "/" in a key, so a repo id may never be a raw
+// key part. Re-exported below so the engine and the offline suite share one name.
+import { REVIEW_CLAIM_PREFIX, REVIEW_RATE_PREFIX, reviewClaimKey, reviewRateKey } from "./shared/git-ids.js";
 import { defangFence } from "./memories.js";
 import {
   capDiff,
@@ -112,7 +116,6 @@ import {
 
 /** 24 h: long enough that a redelivery storm or a replayed webhook cannot re-review. */
 export const REVIEW_CLAIM_TTL = { ttl: { value: 24, unit: "HOURS" } };
-export const REVIEW_CLAIM_PREFIX = "git_review:";
 
 export const REVIEW_VERDICTS = ["approve", "request_changes", "comment"];
 export const REVIEW_SEVERITIES = ["blocker", "major", "minor", "nit"];
@@ -121,10 +124,8 @@ export const MAX_FINDINGS = 20;
 export const MAX_INLINE_COMMENTS = 10;
 /** F-285 — and at most this many REVIEW RUNS per repo per clock hour. */
 export const REVIEW_RATE_PER_HOUR = 6;
-export const REVIEW_RATE_PREFIX = "git_review_rate:";
-/** The hour bucket a rate slot belongs to. One home — the engine and the test share it. */
-export const reviewRateKey = (connectionId, repoId, nowMs = Date.now(), slot = 0) =>
-  `${REVIEW_RATE_PREFIX}${str(connectionId) || "none"}:${str(repoId)}:${Math.floor(nowMs / 3600000)}:${slot}`;
+/** The hour bucket a rate slot belongs to. One home — shared/git-ids.js; see the import. */
+export { REVIEW_CLAIM_PREFIX, REVIEW_RATE_PREFIX, reviewClaimKey, reviewRateKey };
 /** A rate slot only has to outlive its own hour. */
 export const REVIEW_RATE_TTL = { ttl: { value: 2, unit: "HOURS" } };
 export const MAX_SUMMARY_BYTES = 2 * 1024;
@@ -159,9 +160,6 @@ const str = (v) => (v === null || v === undefined ? "" : String(v));
 export const clampBytes = (value, maxBytes, marker = "\n… [truncated]") =>
   clampBytesRaw(str(value), maxBytes, marker).text;
 
-/** The claim identity. One home — the test and the engine read the same builder. */
-export const reviewClaimKey = (connectionId, repoId, prNumber, headSha) =>
-  `${REVIEW_CLAIM_PREFIX}${str(connectionId) || "none"}:${str(repoId)}:${str(prNumber)}:${str(headSha) || "nosha"}`;
 
 /* ───────────────────────── strict JSON extraction ───────────────────────── */
 

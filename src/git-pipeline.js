@@ -68,18 +68,22 @@ import {
   getForgeIdentityStatus,
   CONNECTION_SECURITY_MODEL,
 } from "./git-connections.js";
+import { gitPipelineKey, gitPipelineClaimKey } from "./shared/git-ids.js";
 
 /* ===== KEY NAMES — the ONE home. Never retype one of these strings. ===== */
 
-/** The per-repo pipeline record. Bounded; never carries a secret. */
-export const gitPipelineKey = (connId, repoId) => `git_pipeline:${connId}:${normalizeRepoId(repoId)}`;
 /**
- * The concurrency CLAIM for one setup run. FAIL_IF_EXISTS, 10 minutes: two admins
- * pressing "Set up pipeline" at the same moment must not both push secrets and
- * both commit. It is released whenever the run does not complete, so the queue's
- * retry is never swallowed — see `runPipelineSetup`.
+ * F-348 — both per-repo key SHAPES live in `src/shared/git-ids.js`, with every other
+ * builder that embeds a repo id: Forge KVS refuses "/" in a key, so `normalizeRepoId`
+ * (which preserves the slash BY DESIGN, it is the comparison value) can never be a key
+ * part. Re-exported so the writers and the offline suite keep one name each.
+ *
+ * `gitPipelineClaimKey` is the concurrency CLAIM for one setup run — FAIL_IF_EXISTS,
+ * 10 minutes: two admins pressing "Set up pipeline" at the same moment must not both
+ * push secrets and both commit. It is released whenever the run does not complete, so
+ * the queue's retry is never swallowed — see `runPipelineSetup`.
  */
-export const gitPipelineClaimKey = (connId, repoId) => `git_pipeline_exec:${connId}:${normalizeRepoId(repoId)}`;
+export { gitPipelineKey, gitPipelineClaimKey };
 
 /** Task type on the EXISTING `async-ai-queue`. Priced at 0 in ai-budget.js. */
 export const PIPELINE_TASK = "gitpipeline";

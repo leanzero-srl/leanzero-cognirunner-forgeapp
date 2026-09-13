@@ -14,6 +14,7 @@ import {
   MAX_PROMPT_COMMENTS_INLINE, MAX_PROMPT_COMMENTS_GENERAL, MAX_PROMPT_COMMENTS, clampBytes,
 } from "../../src/git-review.js";
 import { clampBytes as adapterClampBytes } from "../../src/git-providers.js";
+import { repoKeyPart } from "../../src/shared/git-ids.js";
 
 let n = 0;
 const ok = (cond, msg) => { assert.ok(cond, msg); n++; };
@@ -89,7 +90,9 @@ const run = (o = {}) => reviewPullRequest({
   const provider = makeProvider();
   const first = await run({ storage, provider });
   eq(first.status, "done", "the first delivery reviews");
-  eq(reviewClaimKey("conn1", "acme/widget", 7, "abc1234def"), "git_review:conn1:acme/widget:7:abc1234def", "the claim identity carries the head sha");
+  // F-346 — the repo id is a KEY PART, so it is `repoKeyPart`-shaped (owner#name plus an
+  // identity hash), never the raw "owner/name": Forge KVS refuses "/" in a key.
+  eq(reviewClaimKey("conn1", "acme/widget", 7, "abc1234def"), `git_review:conn1:${repoKeyPart("acme/widget")}:7:abc1234def`, "the claim identity carries the head sha");
   ok(storage.rows.has(first.claimKey), "the claim row was written");
 
   let modelCalls = 0;
@@ -432,7 +435,7 @@ const run = (o = {}) => reviewPullRequest({
     "F-285: …and the cap spends what is left on nits, dropping the rest — severity first, never arrival order");
 
   // (b) the hourly rate brake, per repo.
-  eq(reviewRateKey("c1", "acme/widget", 3600000 * 5, 2), "git_review_rate:c1:acme/widget:5:2", "F-285: the rate slot key is per connection, repo, hour and slot");
+  eq(reviewRateKey("c1", "acme/widget", 3600000 * 5, 2), `git_review_rate:c1:${repoKeyPart("acme/widget")}:5:2`, "F-285: the rate slot key is per connection, repo, hour and slot");
   const storage = makeStore();
   const outcomes = [];
   for (let i = 0; i < REVIEW_RATE_PER_HOUR + 2; i++) {

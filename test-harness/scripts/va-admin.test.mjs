@@ -44,6 +44,8 @@ const { default: forgeApi, pushed } = await import("@forge/api");
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) pass++; else { fail++; console.log("FAIL:", m); } };
+/** `ok` with the actual value in the message, so a red line says WHAT it got. */
+const eqish = (actual, expected, m) => ok(actual === expected, `${m} (got ${JSON.stringify(actual)})`);
 const isObj = (v) => v != null && typeof v === "object" && !Array.isArray(v);
 const asRefusals = (r) => (Array.isArray(r && r.refused) ? r.refused : []);
 const has = (o, keys, label) => {
@@ -212,6 +214,57 @@ let agentId = null;
       `…counted in the agent's own prepare receipts: 12 watched + 3 shadowTicks = 15 (got ${row && row.va.status.shadowUntilTick})`);
     ok(after.shadow && after.shadow.ticksLeft === 3,
       `…so the admin is told THREE more ticks, not thousands (got ${JSON.stringify(after.shadow)})`);
+  }
+
+  /* ── F-514: THE CEILING IS ON THE READ SIDE TOO ──────────────────────────
+   *
+   * `VA_SHADOW_UNTIL_TICK_MAX` (500) lived only at the SAVE door, and `normalizeVa` runs
+   * on the save/wizard paths ONLY — so a pre-F-484 agent carrying a wall-clock-derived
+   * `shadowUntilTick: 8643` was never repaired, and `shadowStateOf` read the number raw.
+   * On an hourly cadence that is about a year of staging drafts nobody may post, while
+   * `registry-limits.js` claimed in prose that the constant had already fixed it.
+   *
+   * The value is written STRAIGHT INTO STORAGE here, never through a resolver: going
+   * through the door would clamp it and the test would prove nothing. That is exactly the
+   * legacy record's situation — it got there before the door existed.
+   */
+  {
+    const row = await storage.get(`job:${agentId}`) || await storage.get(`sched_job:${agentId}`);
+    row.va.status.shadowUntilTick = 8643;
+    for (const k of ["job:", "sched_job:"]) { if (await storage.get(k + agentId)) await storage.set(k + agentId, row); }
+    await setWatched(3);
+
+    const tab = await call("getVaStatus", { jobId: agentId });
+    ok(tab.success && tab.shadow, "F-514: the legacy agent still reads as SHADOW at 3 watched ticks (the clamp is a ceiling, not an eviction)");
+    eqish(tab.shadow.until, 500, "F-514.TAB — …but the watch it shows ends at the ceiling, not at 8643");
+    eqish(tab.shadow.ticksLeft, 497, "F-514.TAB — …so the badge says 497 more ticks, a number the agent can actually reach");
+
+    const engine = gatePausedShadow({ va: row.va, tickIndex: 3, killSwitchActive: false });
+    ok(engine.ok === false && engine.reason === "shadow", "F-514.ENGINE — the post gate agrees it is still shadow at 3");
+    const sh = await isInShadow(row, { receipts: 3 });
+    eqish(sh && sh.ticksLeft, 497, "F-514 — and isInShadow reads the SAME number as the tab: one predicate, one ceiling");
+
+    // THE POINT OF THE WHOLE ROW: it ENDS. Before the fix the agent was in shadow at 499
+    // and at 500 and at 8642. `min(value, watched + MAX)` would not have fixed this — it
+    // binds only when the clamped value is still above `watched`, so the in/out verdict
+    // would have been bit-identical to no clamp at all.
+    await setWatched(499);
+    ok(Boolean(await isInShadow(row, { receipts: 499 })), "F-514: 499 watched ticks is still inside the ceiling");
+    await setWatched(500);
+    eqish(await isInShadow(row, { receipts: 500 }), null, "F-514.ENDS — at the 500th watched tick the legacy watch is OVER, stored 8643 or not");
+    const liveTab = await call("getVaStatus", { jobId: agentId });
+    ok(liveTab.success && liveTab.shadow === null, "F-514.ENDS — and the tab says LIVE, in step with the engine");
+    const g500 = gatePausedShadow({ va: row.va, tickIndex: 500, killSwitchActive: false });
+    ok(!(g500.ok === false && g500.reason === "shadow"), "F-514.ENDS — …and the post gate lets it speak");
+
+    // AND IT DOES NOT CUT A WATCH THE ENGINE LEGITIMATELY ARMED. `rearmShadow` runs AFTER
+    // `normalizeVa` and is raise-only (F-508), so an agent past its 500th tick is armed to
+    // `watched + shadowTicks` — a stored value above the absolute ceiling that is correct.
+    // A flat 500 here would have switched shadow mode OFF for every long-lived agent.
+    row.va.status.shadowUntilTick = 603;
+    const armed = await isInShadow(row, { receipts: 600 });
+    ok(armed, "F-514.NO_REGRESSION — an agent with 600 receipts armed to 603 is still in shadow");
+    eqish(armed.ticksLeft, 3, "F-514.NO_REGRESSION — …for the three ticks it was armed for, not cut to zero");
   }
 }
 
@@ -694,9 +747,11 @@ let agentId = null;
   ok(st.receipts.length > 0, "there is at least one receipt to shape-check");
   has(st.receipts[0], ["at", "phase", "ok", "swept", "worked", "posted", "error", "skipped"], "a receipt");
   ok(["prepare", "post"].includes(st.receipts[0].phase), "…whose phase is prepare or post");
-  ok(st.receipts.every((r) => (r.skipped || []).every((s) => "gate" in s && "itemKey" in s)),
-    "…and every skip carries {gate, itemKey}");
-  ok(st.receipts.every((r) => (r.skipped || []).every((s) => !String(s.gate).startsWith("gate."))),
+  ok(st.receipts.every((r) => (r.skipped || []).every((s) => "itemKey" in s && "reason" in s)),
+    "…and every skip carries {itemKey, reason}");
+  // `gate` is NOT on that list (F-515): it is present only when the ENGINE stored one, and
+  // its presence is what `ok` is read from. See the F-515 block below.
+  ok(st.receipts.every((r) => (r.skipped || []).every((s) => !String(s.reason || "").startsWith("gate."))),
     "…with the engine's `gate.` prefix stripped at this one boundary, so GATE_COPY can key on it");
 
   /* ── F-501: the STORED `gate` reaches the tab, it is not rebuilt from `reason` ──
@@ -727,18 +782,20 @@ let agentId = null;
   ok(capSkip && capSkip.itemKey === null,
     "F-501: …with the `(agent)` sentinel rendered as no item, not as an issue called (agent)");
 
-  // The FALLBACK still works for the post phase, which writes `gate.`-prefixed reasons
-  // and no `gate` field at all. Both shapes, one boundary.
+  // The post phase writes `gate.`-prefixed REASONS and no `gate` field at all. The prefix
+  // is stripped at this one boundary so `GATE_COPY` can key on the bare id — but no `gate`
+  // is invented for it (F-515): these rows are healthy no-ops and `gate` is the field `ok`
+  // is read from. Both shapes, one boundary.
   await recordTick(storage, agentId, {
     tickId: "f501b", phase: "post", candidates: 1, staged: 0,
     skipped: [{ key: "SUP-1", reason: "gate.freshness" }],
   });
   const postSt = await call("getVaStatus", { jobId: agentId });
   const postSkip = (postSt.receipts || []).find((r) => r.tickId === "f501b");
-  ok(postSkip && postSkip.skipped[0].gate === "freshness",
-    `F-501: a skip with NO stored gate still falls back to the stripped reason (got ${JSON.stringify(postSkip && postSkip.skipped)})`);
-  ok(postSkip && postSkip.skipped[0].reason === "gate.freshness",
-    "F-501: …and its raw reason is untouched");
+  ok(postSkip && postSkip.skipped[0].reason === "freshness",
+    `F-501/F-515: a skip with NO stored gate is projected with its reason STRIPPED, which is what GATE_COPY keys on (got ${JSON.stringify(postSkip && postSkip.skipped)})`);
+  ok(postSkip && !("gate" in postSkip.skipped[0]),
+    "F-515: …and NO `gate` is minted for it — the engine did not refuse, so the field that says it did must be absent");
   ok(postSkip && postSkip.skipped[0].itemKey === "SUP-1",
     "F-501: …and an ITEM-level skip still names its issue");
 
@@ -907,6 +964,10 @@ let agentId = null;
         `F-510: a compaction the engine GATED (${reason}) reports ok:false on the receipt too (got ${JSON.stringify(r && { ok: r.ok, skipped: r.skipped })})`);
       ok(r && r.error === null,
         "F-510: ...with `error` still null - nothing threw, the engine refused, and those are different claims");
+      ok(r && (r.skipped[0] || {}).gate === "compaction",
+        `F-515: ...and the ENGINE'S gate is projected, because the engine really did store one (got ${JSON.stringify(r && r.skipped)})`);
+      ok(r && (r.skipped[0] || {}).reason === `compaction:${reason}`,
+        "F-515: ...with the reason carried beside it, unchanged - two fields, two questions");
       ok(r && (r.skipped[0] || {}).itemKey === "(memory)",
         `F-510: ...and the key is carried as written - it says WHAT was gated, and it is not an issue key the tab should hide (got ${JSON.stringify(r && r.skipped)})`);
       // F-507 and F-510 answer the same tick together: the verdict AND the bytes.
@@ -921,6 +982,8 @@ let agentId = null;
     });
     const cap = ((await call("getVaStatus", { jobId: agentId })).receipts || []).find((x) => x.tickId === "f510cap");
     ok(cap && cap.ok === false, "F-510: the capability gate still fails the tick - widening the predicate did not narrow it");
+    ok(cap && (cap.skipped[0] || {}).gate === "capability",
+      `F-515: ...and its stored gate reaches the tab, which is what GATE_COPY's capability row keys on (got ${JSON.stringify(cap && cap.skipped)})`);
 
     /* THE GREEN SIDE, which is what stops this becoming a banner that cries wolf. A
      * skip with NO `gate` field is a healthy no-op, and the engine writes all three
@@ -938,6 +1001,30 @@ let agentId = null;
       const r = ((await call("getVaStatus", { jobId: agentId })).receipts || []).find((x) => x.tickId === id);
       ok(r && r.ok === true,
         `F-510: ${label} stays GREEN - it carries no \`gate\` field, and the field is the whole question (got ${JSON.stringify(r && { ok: r.ok, skipped: r.skipped })})`);
+      /* F-515 — AND IT IS STILL GREEN AFTER THE PROJECTION.
+       *
+       * `publicReceipt` used to MINT `gate` for exactly these rows:
+       * `gate: gate || reason.replace(/^gate\./, "")` turned `{reason:"gate.shadow"}` into
+       * `{gate:"shadow"}`. `ok` itself stayed right, because `stoppedAtGate` reads the
+       * STORED array - but any SECOND reader applying F-510's documented rule ("any skip
+       * carrying a `gate` stopped the tick") to the rows this function hands out would
+       * mark every shadow, paused and backoff tick as failed. That is the F-233/F-502
+       * symptom - two surfaces disagreeing about whether a run failed - re-created inside
+       * the function cut twice to remove it. The rule must survive its own projection. */
+      const projected = r && (r.skipped || [])[0];
+      ok(projected && !("gate" in projected),
+        `F-515: ${label} carries NO gate after the projection either - the rule must hold on the data this function produces (got ${JSON.stringify(projected)})`);
+      ok(!(r && (r.skipped || []).some((x) => x && x.gate)) === true,
+        `F-515: ${label} - F-510's own predicate, re-run on the PROJECTED rows, still says the tick did not stop`);
+    }
+    /* …and the copy the tab renders is unchanged by all of this. `gateCopy` keys on
+     * `gate || reason`, so stripping the `gate.` prefix into `reason` leaves the bare id
+     * GATE_COPY needs - which is why the derived value moved into `reason` rather than
+     * into a new field the tab does not read. */
+    {
+      const r = ((await call("getVaStatus", { jobId: agentId })).receipts || []).find((x) => x.tickId === "f510shadow");
+      ok(r && (r.skipped[0] || {}).reason === "shadow",
+        `F-515: the post phase's \`gate.shadow\` still reaches the tab as the bare id GATE_COPY keys on (got ${JSON.stringify(r && r.skipped)})`);
     }
   }
 

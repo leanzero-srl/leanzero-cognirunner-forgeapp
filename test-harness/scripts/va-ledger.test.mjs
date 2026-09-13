@@ -778,9 +778,11 @@ reset();
   });
   await L.writeMemory(kvs, AG, { text: "The SUP desk escalates after 24h.", constraints: ["Never promise a date."] });
   await L.recordTickHealth(kvs, AG, false, { reason: "search failed", phase: "prepare" });
+  await L.setCompactBackoff(kvs, AG, "summariser threw");
   // A SECOND agent, to prove the purge is scoped to the one it was asked about.
   await L.saveItem(kvs, "job_purge2", "SUP-9", { state: "queued", event: "queued" });
   await L.writeMemory(kvs, "job_purge2", { text: "keep me", constraints: [] });
+  await L.setCompactBackoff(kvs, "job_purge2", "still broken");
 
   ok(Boolean(await kvs.get(K.vaIndexKey(AG))), "purge: the index exists before the purge");
   const r = await L.purgeAgent(kvs, AG);
@@ -790,10 +792,16 @@ reset();
   ok((await kvs.get(K.vaIndexKey(AG))) == null, "purge: va_index is gone");
   ok((await kvs.get(K.vaHealthKey(AG))) == null, "purge: va_health is gone");
   ok((await kvs.get(K.vaMemoryKey(AG))) == null, "purge: va_memory is gone");
+  // F-512 — the backoff is keyed on the agent id ALONE, and an id can be re-created by the
+  // import/restore path. A 6 h TTL bounds an orphan; only the purge stops the INHERITANCE.
+  ok((await kvs.get(K.vaCompactBackoffKey(AG))) == null,
+    "purge.COMPACT_BACKOFF — a re-created agent with the same id does not inherit the dead one's backoff");
   ok((await kvs.get(K.vaItemKey(AG, "SUP-1"))) == null, "purge: the queued item row is gone");
   ok((await kvs.get(K.vaItemKey(AG, "SUP-2"))) == null, "purge.STAGED_DRAFT_TEXT — the unsent message about a real person is gone too");
   ok(Boolean(await kvs.get(K.vaItemKey("job_purge2", "SUP-9"))), "purge: the OTHER agent's item row is untouched");
   ok(Boolean(await kvs.get(K.vaMemoryKey("job_purge2"))), "purge: …and its memory too");
+  ok((await L.readCompactBackoff(kvs, "job_purge2")).active === true,
+    "purge: …and the OTHER agent's compaction backoff is still armed");
 
   // Purging twice is not an error: a delete that was interrupted must be repeatable.
   const again = await L.purgeAgent(kvs, AG);

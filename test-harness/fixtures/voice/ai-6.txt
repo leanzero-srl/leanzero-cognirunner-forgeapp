@@ -1,0 +1,1 @@
+The deployment pipeline was reconfigured yesterday afternoon by the platform team. Your reports should now reflect the updated data source without any further problems. Please verify the output on your side and confirm whether everything looks correct.

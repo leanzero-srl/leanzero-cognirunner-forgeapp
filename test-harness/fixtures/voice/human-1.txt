@@ -1,0 +1,1 @@
+Fixed. The staging deploy was still pointing at the old database, which is why the report came back empty. Give it a refresh and it should be fine.

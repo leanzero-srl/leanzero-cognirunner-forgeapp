@@ -477,3 +477,115 @@ export const brakeRefusalText = (kind, max) => {
   if (kind === "web-searches") return `Search brake: this installation made more than ${max} web searches in 5 minutes, so this one was refused. Something is searching far more often than intended — check the listeners and jobs that ran in the last few minutes.`;
   return "Run brake tripped.";
 };
+
+/* ------------------------------------------------------------------------
+ * VIRTUAL ADMINISTRATOR BRAKES (1.5 commit 1) — the numbers a GATE enforces.
+ *
+ * THE SPLIT, stated once so it is not re-decided per constant:
+ *   - A number a RUNTIME GATE enforces (how often the agent may speak, how many
+ *     items a tick may open, how long the wall-clock floor is, when an item parks,
+ *     when a row expires, when the banner turns red) lives HERE, beside the job and
+ *     agent-run brakes, because those gates run in `src/virtual-admin.js` and
+ *     `src/va-ledger.js` — files the admin panel cannot import, and because a brake
+ *     number without its refusal sentence is how a brake becomes a formality.
+ *   - A number that only bounds the RECORD'S SHAPE (string lengths, list lengths, the
+ *     persona charset) lives in `src/shared/va-config.js` next to the clamp that
+ *     applies it, because nothing outside `normalizeVa` ever reads it.
+ * `src/shared/va-config.js` imports this block and exposes it as `VA_LIMITS`; it
+ * declares none of these literals itself, and `shared-imports.test.mjs` asserts that.
+ *
+ * WRITE VOCABULARY (F-425): a Virtual Administrator's per-run write brake IS the job
+ * brake — `JOB_DEFAULT_MAX_WRITES_PER_RUN` / `JOB_MAX_WRITES_PER_RUN` above. There is
+ * no `maxBulkTargets` and there is no second write number. A VA is a scheduled job
+ * with `mode:"va"`, so a second vocabulary would mean two counters for one question.
+ * ---------------------------------------------------------------------- */
+
+/** Posts per rolling hour when the agent's config does not say otherwise. */
+export const VA_CAPS_PER_HOUR_DEFAULT = 6;
+/** The ceiling an author may raise the hourly cap to. */
+export const VA_CAPS_PER_HOUR_MAX = 60;
+/** Posts per rolling day, default and ceiling. */
+export const VA_CAPS_PER_DAY_DEFAULT = 40;
+export const VA_CAPS_PER_DAY_MAX = 400;
+
+/**
+ * OWED replies get their OWN hourly cap — they are not uncapped (F-412).
+ *
+ * The plan carried `owedUncapped: true`: a human replied, so the agent may always
+ * answer. That is a cap with an off switch, and the failure mode of a queue worker is
+ * exactly the loop where its own reply provokes a reply. `owedPerHour` (12, twice the
+ * ordinary hourly cap) keeps the "answer the waiting human first" behaviour and still
+ * has a ceiling. `normalizeVa` REFUSES the old field BY NAME rather than ignoring it,
+ * so an operator who set it learns it is gone instead of believing it still holds.
+ */
+export const VA_OWED_PER_HOUR_DEFAULT = 12;
+export const VA_OWED_PER_HOUR_MAX = 60;
+
+/** Items one PREPARE tick may fan out. Each is a model turn, so this is a cost gate. */
+export const VA_MAX_ITEMS_PER_TICK_DEFAULT = 5;
+export const VA_MAX_ITEMS_PER_TICK_MAX = 20;
+
+/** Candidates one sweep may consider before it stops looking (plan 3.11 step 1). */
+export const VA_MAX_CANDIDATES_PER_TICK = 50;
+
+/** Ticks a new or just-reconfigured agent spends staging without posting (shadow mode). */
+export const VA_SHADOW_TICKS_DEFAULT = 3;
+export const VA_SHADOW_TICKS_MAX = 50;
+
+/** The wall-clock half of the two-phase speech floor, in minutes (the tick-id half is code). */
+export const VA_MIN_POST_GAP_MINUTES_DEFAULT = 15;
+export const VA_MIN_POST_GAP_MINUTES_MIN = 5;
+export const VA_MIN_POST_GAP_MINUTES_MAX = 1440;
+
+/** "We spoke last within N days" suppresses a non-owed reply (anti-pile-up). */
+export const VA_ANTI_PILE_UP_DAYS_DEFAULT = 4;
+export const VA_ANTI_PILE_UP_DAYS_MAX = 30;
+
+/** Quiet period after somebody who is not us wrote on the issue, in minutes. */
+export const VA_OTHER_WRITER_QUIET_MINUTES_DEFAULT = 15;
+export const VA_OTHER_WRITER_QUIET_MINUTES_MAX = 1440;
+
+/**
+ * Attempts one ledger item gets before it PARKS (F-414). A turn that stages nothing,
+ * or whose draft the voice lint rejects, increments it. Three is not a guess: the
+ * rewrite turn SEES the previous rejection reason, so a fourth identical failure is a
+ * model that cannot do this item, and every further attempt costs tokens plus a queue
+ * slot a workable item could have had.
+ */
+export const VA_ITEM_ATTEMPTS_MAX = 3;
+
+/** Ledger item rows one agent may hold before the oldest-touched are parked (LRU, F-413). */
+export const VA_ITEM_ROW_CAP = 400;
+/** Item-row TTL in days, refreshed on every touch (F-413). */
+export const VA_ITEM_TTL_DAYS = 90;
+/** Tick-receipt TTL, and effects-row TTL. A receipt is evidence; an effect is history. */
+export const VA_TICK_TTL_DAYS = 7;
+export const VA_EFFECT_TTL_DAYS = 30;
+/** Per-item bounds: `history[]` entries, `notes` characters, and a staged draft body. */
+export const VA_HISTORY_MAX = 10;
+export const VA_NOTES_MAX_CHARS = 600;
+export const VA_STAGED_BODY_MAX_CHARS = 2000;
+/** Pinned constraints in the agent memory: how many, and how long each may be (F-423). */
+export const VA_CONSTRAINTS_MAX = 20;
+export const VA_CONSTRAINT_MAX_CHARS = 300;
+
+/** Agent memory: compaction triggers at 6 KB and the compacted result is capped at 8 KB. */
+export const VA_MEMORY_COMPACT_BYTES = 6144;
+export const VA_MEMORY_MAX_BYTES = 8192;
+
+/**
+ * Consecutive failed ticks that turn the Agents-tab banner solid red (F-426). The
+ * counter lives in its own `va_health:{agent}` row — never reconstructed by scanning
+ * TTL'd receipts, which is how a banner silently stops appearing.
+ */
+export const VA_HEALTH_BANNER_FAILED_TICKS = 3;
+
+/** The refusal sentence for each VA brake. ONE home, like `brakeRefusalText` above. */
+export const vaRefusalText = (kind, max) => {
+  if (kind === "caps-hour") return `Speech cap: this agent already posted ${max} time${max === 1 ? "" : "s"} in the last hour, so the reply stays staged. It goes out on a later tick, or you can raise "posts per hour".`;
+  if (kind === "caps-day") return `Speech cap: this agent already posted ${max} time${max === 1 ? "" : "s"} today, so the reply stays staged. It goes out tomorrow, or you can raise "posts per day".`;
+  if (kind === "caps-owed") return `Owed-reply cap: this agent already answered ${max} waiting human${max === 1 ? "" : "s"} in the last hour, so this answer stays staged. Owed replies have their own cap; they are not uncapped.`;
+  if (kind === "items") return `Tick budget: this tick already opened ${max} item${max === 1 ? "" : "s"}. The rest stay queued for the next tick.`;
+  if (kind === "attempts") return `Item parked: this item failed ${max} attempts (nothing staged, or a draft that never passed the voice rules). It stops consuming ticks until somebody looks at it.`;
+  return "Virtual Administrator brake tripped.";
+};

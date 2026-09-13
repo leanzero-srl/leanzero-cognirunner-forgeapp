@@ -16,7 +16,7 @@ import {
   normalizeListener, normalizeStep, matchListenerStatic, toIndexRow, listenerTrigger,
   LISTENER_INDEX_KEY, LISTENER_PREFIX, saveListener, listListeners, getListener, deleteListener, setListenerEnabled,
   BRAKE_MAX_PER_LISTENER, matchesListenerRepos, sameGitActor, isGitSelfEvent, setConnectionIdentityResolver,
-  normalizeSavedByRole, brakeObjectKey, BRAKE_MAX_PER_ISSUE, mergeGitProperty, gitPropertyEntry, writeGitIssueProperty, dispatchGitEvent,
+  normalizeSavedByRole, brakeObjectKey, BRAKE_MAX_PER_ISSUE, mergeGitProperty, gitPropertyEntry, writeGitIssueProperty, dispatchGitEvent, gitPropertyTargets,
   GIT_PROPERTY_KEY, GIT_PROPERTY_MAX_REPOS, GIT_PROPERTY_MAX_BYTES,
 } from "../../src/listeners.js";
 import { normalizeJob, planTick, saveJob, listJobs, setJobEnabled, previewSchedule } from "../../src/scheduled-jobs.js";
@@ -336,6 +336,7 @@ forgeApi.__respond((path, opts) => {
 const wrote = await writeGitIssueProperty(
   { eventType: "git:pull_request:opened", pullRequest: { number: 7, headSha: "abc" } },
   { eventType: "git:pull_request:opened", repoId: "o/r", issueKeys: ["LZPT-1", "LZPT-2", "not a key"], issueKey: "LZPT-1" },
+  ["LZPT-1", "LZPT-2", "not a key"],
 );
 const puts = forgeApi.__calls.filter((c) => c.opts && c.opts.method === "PUT");
 ok(wrote.written === 2 && puts.length === 2, "the property is written on every valid issue key the delivery names, and only those");
@@ -343,8 +344,27 @@ const put0 = JSON.parse(puts[0].opts.body);
 ok(put0.repos["o/r"].pr.number === 7 && put0.repos["other/repo"], "the write MERGES with what was already on the issue — another repo's state survives");
 forgeApi.__reset();
 forgeApi.__respond(() => { throw new Error("Jira down"); });
-ok((await writeGitIssueProperty({ pullRequest: { number: 7 } }, { repoId: "o/r", issueKeys: ["LZPT-1"] })).written === 0,
+ok((await writeGitIssueProperty({ pullRequest: { number: 7 } }, { repoId: "o/r", issueKeys: ["LZPT-1"] }, ["LZPT-1"])).written === 0,
   "a failing property write is best-effort: it returns 0 and never throws into the dispatch");
+storage.__reset(); forgeApi.__reset();
+forgeApi.__respond((path, opts) => forgeApi.__response(opts && opts.method === "PUT" ? 200 : 404, {}));
+ok((await writeGitIssueProperty({ pullRequest: { number: 7 } }, { repoId: "o/r", issueKeys: ["LZPT-1"] })).written === 0,
+  "F-332 — the writer never re-derives keys from the envelope: with no authorised keys it writes nothing");
+
+// F-332 — gitPropertyTargets is the ONE authorisation rule for the advisory property.
+const f332ctx = { eventType: "git:pull_request:opened", repoId: "o/r", issueKeys: ["LZPT-1", "HR-42"] };
+const rowOf = (over = {}) => ({ id: "l1", enabled: true, simulationMode: false, events: ["git:pull_request:opened"], repos: ["o/r"], projectKeys: [], ...over });
+ok(JSON.stringify(gitPropertyTargets(f332ctx, [rowOf()])) === JSON.stringify(["LZPT-1", "HR-42"]),
+  "a matching listener with no project filter allows every key the delivery names");
+ok(JSON.stringify(gitPropertyTargets(f332ctx, [rowOf({ projectKeys: ["LZPT"] })])) === JSON.stringify(["LZPT-1"]),
+  "BLOCK: a key in an unrelated project is NOT written when the matching listener is project-scoped (a branch named HR-42-x)");
+ok(gitPropertyTargets(f332ctx, []).length === 0, "BLOCK: no listener at all ⇒ nothing is written");
+ok(gitPropertyTargets(f332ctx, [rowOf({ repos: ["other/repo"] })]).length === 0, "BLOCK: a listener whose repos allow-list excludes this repo authorises nothing");
+ok(gitPropertyTargets(f332ctx, [rowOf({ enabled: false })]).length === 0, "BLOCK: a disabled listener authorises nothing");
+ok(gitPropertyTargets(f332ctx, [rowOf({ simulationMode: true })]).length === 0, "BLOCK: simulation mode writes nothing, and the property is a write");
+ok(gitPropertyTargets(f332ctx, [rowOf({ events: ["git:push"] })]).length === 0, "BLOCK: a listener subscribed to another event authorises nothing");
+ok(gitPropertyTargets({ ...f332ctx, issueKeys: Array.from({ length: 9 }, (_, i) => `LZPT-${i + 1}`) }, [rowOf()]).length === 5,
+  "ALLOW: the ≤5 clamp survives the new rule");
 
 // dispatchGitEvent: the consumer entry. Matches, writes the property, enqueues — no AI.
 storage.__reset(); forgeApi.__reset(); pushed.length = 0;
@@ -362,6 +382,15 @@ ok(pushed[0].body.params.event.pullRequest.number === 7 && pushed[0].body.params
 ok(d1.queued === 1 && d1.propertyWrites === 1, "the dispatch reports what it did");
 ok(forgeApi.__calls.some((c) => c.path.includes(`/properties/${GIT_PROPERTY_KEY}`) && c.opts.method === "PUT"), "the advisory property is written for the delivery's issue key");
 ok((await dispatchGitEvent({ eventType: "avi:jira:created:issue" })).skipped === "not-a-git-event", "a Jira event id is refused by the git entry point");
+// F-332 end to end: a key in a project the matching listener is not scoped to is never PUT.
+forgeApi.__reset(); forgeApi.__respond(propOk); pushed.length = 0;
+await setListenerEnabled(agentL.id, false); // only the project-scoped listener may authorise here
+const scopedL = await saveListener({ name: "PR agent scoped", events: ["git:pull_request:opened"], mode: "agent", agent: { instructions: "review", allowedActions: [] }, filters: { repos: ["leanzero/cognirunner"], projectKeys: ["LZPT"] } }, { accountId: "u", savedByRole: "admin" });
+const dScoped = await dispatchGitEvent({ ...env5c, deliveryId: "d-2", issueKeys: ["LZPT-4", "HR-42"] });
+ok(dScoped.propertyWrites === 1, "ALLOW: the in-scope key is written once");
+ok(!forgeApi.__calls.some((c) => c.path.includes("HR-42")), "BLOCK: the unrelated project's key is never touched");
+await deleteListener(scopedL.id);
+await setListenerEnabled(agentL.id, true);
 
 // agentless: the premade PR-review engine, queued as gitreview with the review params.
 pushed.length = 0; forgeApi.__reset(); forgeApi.__respond(propOk);

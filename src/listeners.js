@@ -745,7 +745,51 @@ export const gitPropertyEntry = (envelope, ctx) => {
 };
 
 /**
- * Write the advisory property on every issue key the delivery names (≤5).
+ * WHICH issue keys this delivery is allowed to label — the ONE home of that rule (F-332).
+ *
+ * The keys come from `gitIssueKeysFrom(PR title, branch ref, commit messages)`: text
+ * anybody with push access to one connected repo can choose. So a key on its own
+ * authorises NOTHING. A key is written only when at least one ENABLED listener that
+ * subscribes to this event would ACCEPT this delivery — the same `repos` allow-list the
+ * run path uses — and, when that listener carries a `projects` filter, only when the key
+ * sits in one of those projects. No matching listener ⇒ nothing is written (the old
+ * "an instance with no listener still gets the advisory state" behaviour is GONE: it
+ * let a branch named `HR-42-x` put `pr.merged:true` on an issue in a project this
+ * instance never connected to the repo, and a workflow condition reads that property).
+ * A listener in Simulation Mode authorises nothing either — simulation writes nothing,
+ * and the property is a write.
+ *
+ * Pure: index rows in, issue keys out, so the rule is testable without Jira.
+ */
+export const gitPropertyTargets = (ctx, rows) => {
+  const keys = (Array.isArray(ctx.issueKeys) && ctx.issueKeys.length ? ctx.issueKeys : (ctx.issueKey ? [ctx.issueKey] : []))
+    .filter((k) => typeof k === "string" && /^[A-Z][A-Z0-9_]*-\d+$/i.test(k))
+    .map((k) => String(k).toUpperCase());
+  if (!keys.length) return [];
+  const candidates = (Array.isArray(rows) ? rows : []).filter((r) => r
+    && r.enabled !== false && r.simulationMode !== true
+    && Array.isArray(r.events) && r.events.includes(ctx.eventType)
+    && matchesListenerRepos(r.repos, ctx));
+  if (!candidates.length) return [];
+  const out = [];
+  for (const key of keys) {
+    const project = key.slice(0, key.lastIndexOf("-"));
+    const allowed = candidates.some((r) => !Array.isArray(r.projectKeys) || !r.projectKeys.length
+      || r.projectKeys.some((p) => String(p).toUpperCase() === project));
+    if (!allowed || out.includes(key)) continue;
+    out.push(key);
+    if (out.length >= GIT_PROPERTY_MAX_ISSUES) break;
+  }
+  return out;
+};
+
+/**
+ * Write the advisory property on the issue keys `gitPropertyTargets` allowed (≤5).
+ *
+ * The caller passes the keys; this writer never re-derives them from the envelope —
+ * one authorisation rule, one home (F-332). Each write also takes the SAME per-issue
+ * brake the run path takes (30 / 5 min per object), so a PR-synchronize storm cannot
+ * turn into an unbounded stream of Jira writes.
  *
  * BEST EFFORT, ALWAYS: a failed property write must never fail the delivery or the
  * runs it dispatches — the property is a convenience, the run is the product.
@@ -758,14 +802,19 @@ export const gitPropertyEntry = (envelope, ctx) => {
  * surgeon's territory this commit, so the note is filed in the ledger (F-312) instead
  * of a drive-by edit to a file two other agents are holding.
  */
-export const writeGitIssueProperty = async (envelope, ctx) => {
+export const writeGitIssueProperty = async (envelope, ctx, allowedKeys) => {
   const entry = gitPropertyEntry(envelope, ctx);
   if (!entry) return { written: 0 };
-  const keys = (Array.isArray(ctx.issueKeys) && ctx.issueKeys.length ? ctx.issueKeys : (ctx.issueKey ? [ctx.issueKey] : []))
+  const keys = (Array.isArray(allowedKeys) ? allowedKeys : [])
     .filter((k) => typeof k === "string" && /^[A-Z][A-Z0-9_]*-\d+$/i.test(k))
     .slice(0, GIT_PROPERTY_MAX_ISSUES);
   let written = 0;
   for (const issueKey of keys) {
+    const brake = await readBrake(brakeKeys("git-property", issueKey).issue);
+    if (brake.count >= BRAKE_MAX_PER_ISSUE) {
+      console.warn(`[git-event] ${GIT_PROPERTY_KEY} write on ${issueKey} skipped — more than ${BRAKE_MAX_PER_ISSUE} runs/writes on this object in 5 minutes`);
+      continue;
+    }
     try {
       let previous = null;
       const got = await api.asApp().requestJira(route`/rest/api/3/issue/${issueKey}/properties/${GIT_PROPERTY_KEY}`, { headers: { Accept: "application/json" } });
@@ -774,7 +823,7 @@ export const writeGitIssueProperty = async (envelope, ctx) => {
       const res = await api.asApp().requestJira(route`/rest/api/3/issue/${issueKey}/properties/${GIT_PROPERTY_KEY}`, {
         method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(next),
       });
-      if (res.ok) written++;
+      if (res.ok) { written++; await bumpBrake(brake); }
       else console.warn(`[git-event] ${GIT_PROPERTY_KEY} write on ${issueKey} returned ${res.status}`);
     } catch (e) {
       console.warn(`[git-event] ${GIT_PROPERTY_KEY} write on ${issueKey} failed:`, e && e.message);
@@ -806,9 +855,15 @@ export const dispatchGitEvent = async (envelope) => {
     return { skipped: "not-a-git-event" };
   }
   const ctx = extractEventContext(eventType, envelope);
-  // The property first: it describes the delivery, not the runs, so an instance with
-  // no listener at all still gets the advisory state its conditions read.
-  const property = await writeGitIssueProperty(envelope, ctx);
+  // The advisory property is written ONLY for issue keys an enabled, non-simulation
+  // listener matching this delivery would accept (F-332) — the key text is untrusted
+  // (branch names, PR titles, commit subjects), so it may not by itself reach an issue
+  // in a project nobody pointed at this repository. `gitPropertyTargets` is that rule's
+  // only home; the condition-expression reader is unchanged.
+  let indexRows = [];
+  try { indexRows = await readListenerIndex({ cached: true }); }
+  catch (e) { console.warn("[git-event] index read failed before the property write:", e && e.message); }
+  const property = await writeGitIssueProperty(envelope, ctx, gitPropertyTargets(ctx, indexRows));
   const dispatched = await listenerTrigger(envelope, null);
   return { eventType, repoId: ctx.repoId, propertyWrites: property.written, queued: (dispatched && dispatched.queued) || 0 };
 };

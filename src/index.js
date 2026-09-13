@@ -6988,8 +6988,13 @@ resolver.define("saveContextDoc", async ({ payload, context }) => {
 
 /**
  * List all documents in the shared repository (index only, no content).
+ *
+ * F-235 — VIEWER FLOOR. Same reasoning as the memory reads (F-228): the doc
+ * index names this instance's curated references, and the knowledge surfaces
+ * are only ever reached from the Custom UI, which always carries a principal.
  */
 resolver.define("getContextDocs", async ({ payload, context }) => {
+  if (!(await requireRole(context?.accountId, "viewer"))) return { ...noPerm("read documentation"), docs: [] };
   try {
     await seedBuiltinDocs();
     let index = (await storage.get(DOC_REPO_INDEX_KEY)) || [];
@@ -7066,7 +7071,9 @@ resolver.define("deleteContextDoc", async ({ payload, context }) => {
  * List all skills (index only, no content). Lazily seeds the builtin skills.
  * Returns enabled AND disabled-builtin rows — the frontend filters on `enabled`.
  */
-resolver.define("getSkills", async () => {
+resolver.define("getSkills", async ({ context }) => {
+  // F-235 — VIEWER FLOOR, same as the memory reads.
+  if (!(await requireRole(context?.accountId, "viewer"))) return { ...noPerm("read skills"), skills: [] };
   try {
     await seedBuiltinSkills();
     const skills = (await storage.get(SKILL_INDEX_KEY)) || [];
@@ -7080,7 +7087,9 @@ resolver.define("getSkills", async () => {
 /**
  * Get a single skill's full record (index row + instructions + examples).
  */
-resolver.define("getSkillContent", async ({ payload }) => {
+resolver.define("getSkillContent", async ({ payload, context }) => {
+  // F-235 — VIEWER FLOOR: skill instructions are the full text, not just a row.
+  if (!(await requireRole(context?.accountId, "viewer"))) return noPerm("read skills");
   try {
     const { id } = payload || {};
     const skill = await storage.get(`${SKILL_PREFIX}${id}`);
@@ -7603,7 +7612,13 @@ resolver.define("saveMemorySettings", async ({ payload, context }) => {
  * Counts for the Knowledge panel badges: enabled docs, enabled skills,
  * non-disabled memories. Lazily seeds both builtin repositories.
  */
-resolver.define("getKnowledgeCounts", async () => {
+resolver.define("getKnowledgeCounts", async ({ context }) => {
+  // F-235 — VIEWER FLOOR. This resolver reports the memory count, the cap and the
+  // storeFull marker, i.e. exactly the state getMemoryStoreStats/getMemorySettings
+  // were gated to withhold (F-228); leaving it open re-opened that door sideways.
+  if (!(await requireRole(context?.accountId, "viewer"))) {
+    return { ...noPerm("read knowledge counts"), docs: 0, skills: 0, memories: 0, storeFull: null };
+  }
   try {
     await Promise.all([seedBuiltinDocs(), seedBuiltinSkills()]);
     const [docIndex, skillIndex, memories, storeFull] = await Promise.all([

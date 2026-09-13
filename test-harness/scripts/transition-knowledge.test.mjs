@@ -27,7 +27,10 @@ storage.__seed("doc_repo_seed_meta", { seedVersion: DOC_SEED_VERSION - 1 });
 storage.__seed("skill_repo_index", [{ id: skillId, enabled: false, createdAt: "kept-skill-date" }]);
 storage.__seed("skill_repo_seed_meta", { seedVersion: SKILL_SEED_VERSION - 1 });
 
-const result = await handler({ call: { functionKey: "getContextDocs", payload: {} }, context: {} }, {});
+// F-235: the knowledge reads are now behind a viewer floor, so the roster has to
+// exist and the call has to carry a principal — like every Custom UI invoke does.
+seedAdminRoster(storage);
+const result = await handler({ call: { functionKey: "getContextDocs", payload: {} }, context: {} }, ADMIN_PRINCIPAL);
 assert.equal(result.success, true);
 await seedBuiltinSkills();
 const doc = await storage.get(`doc_repo:${docId}`);

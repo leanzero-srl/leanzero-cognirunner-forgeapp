@@ -168,6 +168,23 @@ assert.equal(restricted.restricted, true);
 assert.deepEqual(restricted.configs, []);
 assert.equal(forgeApi.__calls.filter((c) => c.path.includes("workflow")).length, 0);
 
+// ── F-235: the four KNOWLEDGE READS carry the same viewer floor as the memory
+// reads. getKnowledgeCounts in particular reports the memory count, the cap and the
+// storeFull marker — exactly what getMemoryStoreStats was gated to withhold.
+storage.__reset(); forgeApi.__reset();
+storage.__seed("app_admins", [{ accountId: ADMIN, role: "admin", scope: "all" }]);
+storage.__seed("pf_memories", [{ id: "m1", content: "a learned fact", source: "user", disabled: false }]);
+currentCaller = USER; scriptJira({ adminIds: [], groupMembers: [] });
+for (const fn of ["getKnowledgeCounts", "getSkills", "getSkillContent", "getContextDocs"]) {
+  const anonOut = await handler({ call: { functionKey: fn, payload: { id: "builtin_skill_transitions" } }, context: {} }, {});
+  assert.equal(anonOut.success, false, `${fn} must refuse an anonymous caller`);
+  const roleless = await handler({ call: { functionKey: fn, payload: { id: "builtin_skill_transitions" } }, context: {} }, { principal: { accountId: USER } });
+  assert.equal(roleless.success, false, `${fn} must refuse a caller with no role`);
+  assert.match(roleless.error, /don't have permission/);
+  assert.ok(!roleless.memories, `${fn} must not leak the memory count to a refused caller`);
+  assert.equal(roleless.memoryCap, undefined, `${fn} must not leak the memory cap to a refused caller`);
+}
+
 // ── F-229: two first admins bootstrapping AT THE SAME TIME must both survive.
 // The old code captured "roster is empty" before four network calls and then blindly
 // set the whole key to a one-element array, so the second writer erased the first.
@@ -190,4 +207,4 @@ assert.ok(bothRoster.every((a) => a.role === "admin"), "both rows keep the admin
 await captureLogs(() => invoke(ADMIN));
 assert.equal(((await storage.get("app_admins")) || []).length, 2, "an existing roster row is never duplicated");
 
-console.log("permission bootstrap: 13 cases passed (non-admin refused, admin seeded, group fallback, anonymous denied, F-230 unknown vs no-role, gates still closed, F-227 anonymous getConfigs refused, F-229 concurrent bootstrap)");
+console.log("permission bootstrap: 14 cases passed (non-admin refused, admin seeded, group fallback, anonymous denied, F-230 unknown vs no-role, gates still closed, F-227 anonymous getConfigs refused, F-235 knowledge reads gated, F-229 concurrent bootstrap)");

@@ -496,10 +496,25 @@ export const runVaCompaction = async ({ agent, tick, deps }) => {
     // not written, and the old one stands.
     const survived = pinnedSurvived(memory, result.memory);
     if (!survived.ok) {
-      // A turn WAS paid for and the memory is still over budget, so the backoff is armed
-      // here too (F-506) — a summariser that drops pinned lines will drop them again next
-      // tick. The tick stays ok: this is the engine protecting a human-typed rule, which
-      // is the refusal working, not a failure to report.
+      /*
+       * A turn WAS paid for and the memory is still over budget, so the backoff is armed
+       * here too (F-506) — a summariser that drops pinned lines will drop them again next
+       * tick.
+       *
+       * F-521 — ONE VERDICT, STATED HERE AND ASSERTED IN THE TEST:
+       *   · pinned-guard refusal WITH THE BRAKE ARMED  → the tick is OK. This is the
+       *     engine protecting a human-typed rule and then stopping itself from paying for
+       *     the same turn again. That is the refusal working; failing the tick would raise
+       *     the agent's failure banner for a guard doing its job.
+       *   · pinned-guard refusal WITH THE BRAKE UN-ARMED → the tick is NOT OK, with reason
+       *     `compaction-backoff-write-failed`. THE FAILURE IS THE UN-ARMED BRAKE, NEVER
+       *     THE GUARD: the marker did not reach storage, so the next tick finds no row and
+       *     buys the identical paid failure, every five minutes.
+       * This arm therefore sets NO `gate` of its own — `backoffUnarmed` in `runVaTick` is
+       * the only thing that can fail a tick here, and it names itself when it does. The
+       * comment used to say "the tick stays ok" flatly, which F-513 had already made false
+       * half the time.
+       */
       const armed = await armBackoff("pinned_dropped");
       return {
         ran: false, kept: true, before, ...armed,

@@ -2103,6 +2103,54 @@ reset();
     "F-520.NOTHING — and the receipt row carries the gate");
 }
 
+/* ── F-521: ONE VERDICT FOR THE PINNED GUARD, AND IT IS ABOUT THE BRAKE ─────
+ *
+ * The pinned-guard arm's own comment said "the tick stays ok" while F-513 had already
+ * made the same product event FAIL the tick whenever the backoff write faulted — so one
+ * event produced two opposite health verdicts depending on a KVS throttle, and nothing
+ * said which was intended. The verdict, stated in the code and asserted here:
+ *   · guard refuses, brake ARMED    → ok tick. The refusal is the engine working.
+ *   · guard refuses, brake UN-ARMED → not ok, `compaction-backoff-write-failed`.
+ *     The failure is the un-armed brake, never the guard.
+ */
+reset();
+{
+  const PIN = "never reply publicly on SEC issues";
+  const job = vaJob();
+  job.va.intake.jql = "status = Open";
+  const dropPins = compactTickDeps({
+    summariseMemory: async () => "tidy",
+    compactMemory: async (memory, summariser) => {
+      await summariser(memory);
+      return { ok: true, compacted: true, memory: { text: "tidy", constraints: [], updatedAt: null } };
+    },
+  });
+
+  // ARM: the ordinary case. The guard refuses, the brake goes to storage, the tick is ok.
+  await L.writeMemory(kvs, AG, { text: fatProse(), constraints: [PIN] });
+  const armedTick = await V.runVaTick({ job, tickId: "p1", deps: dropPins });
+  eq(armedTick.compacted.backoffArmed, true, "F-521.ARMED — the brake armed");
+  ok(/^pinned_dropped:/.test(String(armedTick.compacted.reason)), "F-521.ARMED — …on a pinned-guard refusal");
+  eq(armedTick.compacted.gate, undefined, "F-521.ARMED — the guard arm sets NO gate of its own");
+  eq(armedTick.ok, true, "F-521.ARMED — so the tick IS ok: protecting a human-typed line is the refusal working, not a failure");
+  const h1 = await kvs.get(`va_health:${AG}`);
+  eq(h1.consecutiveFailures, 0, "F-521.ARMED — …and no failure is counted toward the agent's banner");
+
+  // UN-ARMED: the same product event, with the backoff `set` faulting.
+  await L.clearCompactBackoff(kvs, AG);
+  await L.writeMemory(kvs, AG, { text: fatProse(), constraints: [PIN] });
+  kvs.__failSetWhen((key) => key.startsWith("va_compact_backoff:"), new Error("kvs throttled"));
+  const unarmedTick = await V.runVaTick({ job, tickId: "p2", deps: dropPins });
+  eq(unarmedTick.compacted.backoffArmed, false, "F-521.UNARMED — the brake did not reach storage");
+  eq(unarmedTick.ok, false, "F-521.UNARMED — …and THAT fails the tick");
+  const h2 = await kvs.get(`va_health:${AG}`);
+  eq(h2.lastReason, "compaction-backoff-write-failed",
+    "F-521.UNARMED — under the UN-ARMED BRAKE's name, not the guard's: the guard did its job, the brake did not");
+  const receipt = (await L.readTick(kvs, AG, "p2", "prepare")).receipt;
+  ok(receipt.skipped.some((x) => /pinned_dropped/.test(String(x.reason)) && !x.gate),
+    "F-521.UNARMED — the guard's own row is still an ungated skip: two facts, two rows, one verdict");
+}
+
 reset();
 {
   /* ── A SUMMARISER THAT ANSWERS OVER TARGET: not ok, and backed off ─────── */

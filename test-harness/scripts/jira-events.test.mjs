@@ -66,7 +66,7 @@ ok(!filtersForEvents(["git:pull_request:opened"]).includes("projects"), "git eve
 // git context extraction
 const gitEv = {
   eventType: "git:pull_request:opened", source: "git", connectionId: "gc_1", repoId: "LeanZero/CogniRunner",
-  deliveryId: "d-1", actor: { login: "Octocat" },
+  deliveryId: "d-1", actor: { login: "Octocat", id: 583231 },
   pullRequest: { number: 42, title: "t", headSha: "abc", headRef: "feat/x", baseRef: "main" },
   issueKeys: ["LZPT-9"],
 };
@@ -74,6 +74,28 @@ const gc = extractEventContext("git:pull_request:opened", gitEv);
 ok(gc.repoId === "leanzero/cognirunner", "repo id normalised to lower case");
 ok(gc.connectionId === "gc_1" && gc.actorLogin === "Octocat" && gc.prNumber === "42" && gc.deliveryId === "d-1", "git identity extracted");
 ok(gc.actorAccountId === null, "a git login is NOT reported as an Atlassian accountId");
+
+// F-532 — LOCKSTEP with the envelope `buildGitEnvelope` builds. The envelope has
+// carried `actor.id` since it was written (GitHub `sender.id`, Bitbucket
+// `actor.uuid`) and this extractor DROPPED it, which made the whole id half of
+// ignoreSelf dead code at runtime. If a future edit removes `actorId` here, the
+// guard goes quiet again with nothing failing, so assert the field exists, that
+// it is a STRING (ids are compared as strings), and that it is not confused with
+// either the login or the Atlassian accountId.
+ok(gc.actorId === "583231", `the envelope's actor.id survives as ctx.actorId (${gc.actorId})`);
+ok(typeof gc.actorId === "string" && gc.actorId !== gc.actorLogin, "actorId is a string and is NOT the label");
+const bbCtx = extractEventContext("git:issue_comment:created", {
+  source: "git", connectionId: "gc_b", repoId: "wp-global/repo",
+  // The live Bitbucket shape this finding came from: the delivery labels the actor
+  // with a NICKNAME while whoami answers a USERNAME. Only the uuid is common.
+  actor: { login: "Mihai Perdum", id: "{557058-uuid}" },
+});
+ok(bbCtx.actorLogin === "Mihai Perdum" && bbCtx.actorId === "{557058-uuid}",
+  "a Bitbucket comment delivery carries BOTH the nickname label and the uuid");
+ok(extractEventContext("git:push", { source: "git", repoId: "o/r" }).actorId === null,
+  "an envelope with no actor id yields null, never a fabricated one");
+ok(extractEventContext("git:push", { source: "git", repoId: "o/r", actor: { login: "x", id: "" } }).actorId === null,
+  "an EMPTY id is not an id (an empty string must never match another empty string)");
 ok(gc.issueKey === "LZPT-9" && gc.projectKey === null, "advisory issue key kept; no project is inferred");
 ok(gc.entityName === "leanzero/cognirunner PR #42", `git entity name: "${gc.entityName}"`);
 ok(extractEventContext("git:push", { source: "git", repoId: "o/r" }).entityName === "o/r", "push without a PR still names the repo");

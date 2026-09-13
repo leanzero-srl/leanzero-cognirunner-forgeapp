@@ -190,6 +190,48 @@ ok(pushed.length === 1 && pushed[0].body.params.listenerId === selfOff.id, "igno
 ok(!(await storage.get("event_sample:git:pull_request:opened")), "no event sample is stored for a git delivery (redactSample only knows Jira payloads)");
 setConnectionIdentityResolver(null);
 
+// ── F-532: ignoreSelf on BITBUCKET, where the two labels are different fields ──
+//
+// The whole path, end to end, with the shapes read live on 2026-09-14 (wp-global):
+// the delivery's actor is `nickname: "Mihai Perdum"`, the connection row's cached
+// whoami is `username: "mihaiwolfaenpak"`, and the ONLY thing the two have in
+// common is the uuid. Before this fix the extractor dropped the envelope's
+// `actor.id` and the row stored no id at all, so the compare fell through to two
+// labels that never match — ignoreSelf was inert and the app answered its own PR
+// comments. This arm fails if EITHER half regresses.
+storage.__reset(); forgeApi.__reset(); pushed.length = 0;
+const BB_UUID = "{b1e1a0c2-7d3f-4c2a-9a1e-000000000001}";
+const bbEvent = (over = {}) => ({
+  eventType: "git:issue_comment:created", source: "git", connectionId: "gc_bb",
+  repoId: "wp-global/cognirunner-forge-offshoot-bb", deliveryId: "efff97d7",
+  actor: { login: "Mihai Perdum", id: BB_UUID },
+  pullRequest: { number: 2, title: "offshoot", headSha: "bbb" },
+  comment: { id: "861548069", body: "ping", author: { login: "Mihai Perdum" } },
+  ...over,
+});
+const bbL = await saveListener({ name: "PR comment agent", events: ["git:issue_comment:created"], mode: "agent", agent: { instructions: "reply", allowedActions: [] }, filters: { repos: ["wp-global/cognirunner-forge-offshoot-bb"] } }, { accountId: "u" });
+ok(bbL.ignoreSelf === true, "ignoreSelf is on by default for the Bitbucket listener");
+// The row as `identityFields` now stores it: the LABEL that disagrees, plus the uuid.
+setConnectionIdentityResolver(async (id) => (id === "gc_bb" ? { login: "mihaiwolfaenpak", uuid: BB_UUID, accountId: null, id: null } : null));
+await listenerTrigger(bbEvent(), {});
+ok(pushed.length === 0,
+  "F-532: the app's OWN Bitbucket comment is skipped on the uuid, though nickname !== username");
+// …and the guard is not simply "drop every Bitbucket comment": a human on the same
+// repo, same connection, still runs. (A skip-everything bug would pass the line above.)
+pushed.length = 0;
+await listenerTrigger(bbEvent({ actor: { login: "someoneelse", id: "{b1e1a0c2-0000-0000-0000-000000000002}" } }), {});
+ok(pushed.length === 1 && pushed[0].body.params.listenerId === bbL.id,
+  "a DIFFERENT Bitbucket account's comment on the same connection still runs");
+ok(pushed[0].body.params.ctx.actorId === "{b1e1a0c2-0000-0000-0000-000000000002}",
+  "the queued ctx carries actorId, so the consumer sees the same identity the trigger judged");
+// The pre-fix row shape — a label and no id — must NOT start matching by accident.
+pushed.length = 0;
+setConnectionIdentityResolver(async () => ({ login: "mihaiwolfaenpak" }));
+await listenerTrigger(bbEvent(), {});
+ok(pushed.length === 1,
+  "a connection saved BEFORE this fix (label only) still falls back to the label compare — and a label that differs is not a match");
+setConnectionIdentityResolver(null);
+
 // F-010: the 25-candidate cap must SAY when it bites — it drops the TAIL of an
 // append-ordered index, i.e. the listener someone just saved. Seed 26 slim rows with no
 // `listener:{id}` records (getListener returns null and the loop skips them; the warning is
@@ -476,6 +518,19 @@ ok(sameGitActor({ login: "Mihai P", uuid: "{u1}" }, { login: "mihaip", uuid: "{U
 ok(!sameGitActor({ login: "bot", uuid: "{u1}" }, { login: "bot", uuid: "{u2}" }), "two different accounts that share a display name are NOT the same actor");
 ok(sameGitActor("Octocat", "octocat") && !sameGitActor("a", "b"), "a bare login on either side still works (every existing caller)");
 ok(!sameGitActor({}, {}) && !sameGitActor(null, { login: "x" }), "nothing matches nothing");
+
+// F-532 — the ids are compared as a UNION, not field against matching field. The
+// envelope has ONE id slot for both providers (`actorId`), so a Bitbucket uuid
+// arrives under `id` while the connection row keeps it under `uuid`; a field-wise
+// compare lines those up never, which is how a "fixed" guard stayed inert.
+ok(sameGitActor({ login: "Mihai Perdum", id: "{u1}" }, { login: "mihaiwolfaenpak", uuid: "{u1}" }),
+  "F-532: the delivery's actorId matches the row's uuid across the two field names");
+ok(sameGitActor({ id: "557058:abc" }, { accountId: "557058:ABC" }),
+  "…and an Atlassian account_id matches across names and case too");
+ok(!sameGitActor({ login: "bot", id: "{u1}" }, { login: "bot", uuid: "{u2}" }),
+  "…while two DIFFERENT ids still refuse a matching label (an id mismatch is a refusal)");
+ok(sameGitActor({ login: "bot", id: "42" }, { login: "BOT" }),
+  "one side with no id at all still falls back to the label (rows saved before F-532)");
 
 // F-328 — the self-check is resolved ONCE per delivery, not once per candidate.
 storage.__reset(); forgeApi.__reset(); pushed.length = 0;

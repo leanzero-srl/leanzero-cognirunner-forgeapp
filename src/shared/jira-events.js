@@ -362,13 +362,21 @@ export const extractEventContext = (eventType, payload) => {
     // Git identity. `actorLogin` is deliberately NOT `actorAccountId`: a git login
     // is not an Atlassian account, and one field for both would be a new instance
     // of the signature defect. Same for selfGenerated (Forge's own flag) vs the
-    // ignoreSelf check that compares this login to the connection's cached whoami.
+    // ignoreSelf check that compares this actor to the connection's cached whoami.
     const pr = p.pullRequest || null;
     out.connectionId = p.connectionId || null;
     // F-310 - the SAME normaliser the allow-list and the picker use. An envelope
     // normalised differently from the filter is a listener that never matches.
     out.repoId = p.repoId ? (normalizeRepoId(p.repoId) || null) : null;
     out.actorLogin = (p.actor && p.actor.login) ? String(p.actor.login) : null;
+    // F-532 - the STABLE identifier, carried beside the label and never instead of
+    // it. `buildGitEnvelope` already captures it (GitHub `sender.id`, Bitbucket
+    // `actor.uuid`); dropping it here is what made F-326's id comparison dead code
+    // at runtime, so on Bitbucket - where the delivery's `nickname` and whoami's
+    // `username` are DIFFERENT fields - ignoreSelf was inert and the app answered
+    // its own PR comments. One field for both providers: the values never collide
+    // (a numeric id is not a `{uuid}`) and `sameGitActor` compares the union.
+    out.actorId = (p.actor && p.actor.id != null && p.actor.id !== "") ? String(p.actor.id) : null;
     out.prNumber = pr && pr.number != null ? num(pr.number) : null;
     out.deliveryId = p.deliveryId ? String(p.deliveryId) : null;
     // The webhook may have resolved Jira issue keys from the branch/PR title. The

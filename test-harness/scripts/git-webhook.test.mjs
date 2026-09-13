@@ -215,6 +215,12 @@ seed({ kind: "bitbucket" });
   ok(env.pullRequest.number === 9 && env.pullRequest.headSha === "b".repeat(40) && env.pullRequest.baseRef === "main"
     && env.actor.login === "bbuser" && env.pullRequest.author.login === "bbauthor",
     `the Bitbucket payload normalises into the SAME envelope shape (${JSON.stringify(env.pullRequest)})`);
+  // F-532 — one id slot, both providers: GitHub's numeric `sender.id` and
+  // Bitbucket's `actor.uuid` arrive under the SAME envelope field, which is what
+  // lets one `actorId` on the context serve both.
+  ok(env.actor.id === "{u-1}", `envelope.actor.id carries Bitbucket's actor.uuid (${env.actor.id})`);
+  ok(extractEventContext(env.eventType, env).actorId === "{u-1}",
+    "…and the extractor keeps it, which is the half that made ignoreSelf inert on Bitbucket");
   ok(env.issueKeys.includes("LZPT-77"), "issue keys are read from the Bitbucket branch/title too");
 }
 seed({ kind: "bitbucket" });
@@ -343,6 +349,10 @@ seed();
   ok(env.connectionId === CONN, "envelope.connectionId");
   ok(env.repoId === REPO && env.repoId === env.repoId.toLowerCase(), "envelope.repoId is lower-cased owner/name");
   ok(env.actor.login === "octocat", "envelope.actor.login");
+  // F-532 — the envelope's other half of the identity. This is the field the
+  // extractor must keep (`ctx.actorId`, asserted below) and the connection row
+  // must have a counterpart for; a label alone cannot answer "was this us".
+  ok(env.actor.id === "7", `envelope.actor.id carries GitHub's sender.id (${env.actor.id})`);
   ok(env.deliveryId === "delivery-envelope-1", "envelope.deliveryId is the provider's delivery header");
   ok(env.pullRequest.number === 42 && env.pullRequest.headSha === "a".repeat(40)
     && env.pullRequest.state === "open" && env.pullRequest.headRef === "feature/LZPT-31-thing"
@@ -357,6 +367,7 @@ seed();
   ok(ctx.connectionId === CONN, "extractEventContext reads connectionId");
   ok(ctx.repoId === REPO, "extractEventContext reads repoId");
   ok(ctx.actorLogin === "octocat", "extractEventContext reads actor.login → actorLogin");
+  ok(ctx.actorId === "7", `extractEventContext reads actor.id → actorId, in LOCKSTEP with the envelope (${ctx.actorId})`);
   // `num()` in the extractor stringifies every id (that is its contract for Jira ids
   // too), so the envelope carries the NUMBER and the context carries "42".
   ok(ctx.prNumber === "42", `extractEventContext reads pullRequest.number → prNumber (${ctx.prNumber})`);

@@ -157,6 +157,69 @@ const readIndexRow = async (store, agent) => {
 };
 
 /**
+ * F-430 — THE TAIL IS NOT THE VICTIM. STATE IS.
+ *
+ * The eviction used to pop the tail purely by recency, so an `owed` row — a human replied
+ * and the agent has not answered yet — was deleted with the same indifference as a `seen`
+ * row it glanced at once. The row that has NOT been touched in three days is precisely the
+ * one where a promise is outstanding, so recency alone selects the worst possible victim,
+ * and the only trace was `parked` incrementing by one with no key and no reason. Recreating
+ * it is not a repair either: the next sweep brings it back as `new`, not `owed`, and both
+ * the ordering privilege `diffCandidates` gives it and its own caps bucket are gone.
+ *
+ * So eviction is ordered by STATE FIRST, recency second:
+ *  · tier 0 — `seen` / `done` / `parked`: the agent is supposed to forget these. Park them.
+ *  · tier 1 — `posted`, and any row that is missing or unreadable: nothing is owed to a
+ *    human, so it may go once tier 0 is exhausted.
+ *  · tier 2 — `owed` / `staged` / `waiting_on_human` / `queued`: NEVER evicted. Each one is
+ *    work the agent has committed to; dropping it is the silent broken promise F-430 names.
+ *
+ * When only tier 2 remains the insert is REFUSED rather than made room for, with a named
+ * reason and a receipt-shaped `{parked:{key, reason}}` naming the KEY that could not be
+ * admitted — a full ledger must be visible to the admin, not paid for with a dropped
+ * obligation. The row itself is still written by `saveItem` (losing state is worse than
+ * losing membership); the next sweep re-adds it once an obligation clears.
+ *
+ * The state scan reads rows, so it is BOUNDED: only the last `INDEX_EVICT_SCAN` entries are
+ * examined, and the walk stops at the first tier-0 hit — which is the ordinary case, one
+ * extra read. A ledger whose final 64 rows are all obligations is saturated by any honest
+ * reading, and refusing is the correct answer there.
+ */
+const EVICT_TIER = Object.freeze({
+  seen: 0, done: 0, parked: 0,
+  posted: 1,
+  queued: 2, staged: 2, waiting_on_human: 2, owed: 2,
+});
+const INDEX_EVICT_SCAN = 64;
+
+/** Tier for one id. An unreadable or absent row is tier 1: never assume an obligation. */
+const evictTier = async (store, agent, id) => {
+  try {
+    const row = await store.get(vaItemKey(agent, id));
+    const tier = row && EVICT_TIER[row.state];
+    return tier === undefined || tier === null ? 1 : tier;
+  } catch (e) {
+    return 1;
+  }
+};
+
+/**
+ * Pick ONE id to evict from `ids` (which is head-first), or `null` when every candidate in
+ * the scan window is an obligation. Walks the tail backwards so recency still decides
+ * within a tier.
+ */
+const pickEviction = async (store, agent, ids) => {
+  const from = Math.max(0, ids.length - INDEX_EVICT_SCAN);
+  let fallback = null;
+  for (let i = ids.length - 1; i >= from; i--) {
+    const tier = await evictTier(store, agent, ids[i]);
+    if (tier === 0) return { id: ids[i], tier };          // the ordinary case, first read
+    if (tier === 1 && fallback === null) fallback = { id: ids[i], tier };
+  }
+  return fallback;
+};
+
+/**
  * Touch `issueKey` to the head of the index and park whatever falls off the tail.
  * The parked rows are DELETED here, not handed back: the index and the rows it names must
  * not disagree, not even for one tick.
@@ -168,8 +231,23 @@ const touchIndex = async (store, agent, issueKey, { remove = false } = {}) => {
   const ids = idx.ids.filter((k) => k !== key);
   if (!remove) ids.unshift(key);
   const parked = [];
+  const parkedRows = [];
   while (ids.length > VA_LIMITS.itemRowCap || (ids.length > 1 && bytesOf(ids) > INDEX_MAX_BYTES)) {
-    parked.push(ids.pop());
+    const victim = await pickEviction(store, agent, ids);
+    if (!victim || victim.id === key) {
+      // Nothing in the window may be forgotten. Refuse the INSERT — never the obligation.
+      const reason = "index_full_obligations";
+      return {
+        ok: false,
+        reason,
+        parked: { key, reason },
+        refused: { key, reason, scanned: Math.min(ids.length, INDEX_EVICT_SCAN) },
+      };
+    }
+    const at = ids.indexOf(victim.id);
+    ids.splice(at, 1);
+    parked.push(victim.id);
+    parkedRows.push({ key: victim.id, reason: victim.tier === 0 ? "row_cap_forgettable" : "row_cap_posted" });
   }
   try {
     await store.set(vaIndexKey(agent), { ids, parked: idx.parked + parked.length, updatedAt: nowIso() }, VA_INDEX_TTL);
@@ -179,7 +257,7 @@ const touchIndex = async (store, agent, issueKey, { remove = false } = {}) => {
   for (const id of parked) {
     try { await store.delete(vaItemKey(agent, id)); } catch (e) { /* the row's own TTL is the floor */ }
   }
-  return { ok: true, parked, size: ids.length };
+  return { ok: true, parked, parkedRows, size: ids.length };
 };
 
 /** The live item ids for an agent, newest-touched first. Read-only, fails soft. */
@@ -245,9 +323,19 @@ export const saveItem = async (store, agent, issueKey, patch = {}, { now = Date.
     return fail("item_write_failed", { detail: String((e && e.message) || e) });
   }
   const idx = await touchIndex(store, agent, issueKey);
-  // The row IS written even when the index write faulted: losing membership is recoverable
-  // (the next sweep re-adds it), losing the item's state is not. Say so, never swallow it.
-  return { ok: true, row, parked: idx.parked || [], indexOk: idx.ok, indexReason: idx.reason };
+  // The row IS written even when the index write faulted or the index refused the insert
+  // (F-430): losing membership is recoverable — the next sweep re-adds it — losing the
+  // item's state is not. Say so, never swallow it. `parked` stays an ARRAY of keys here;
+  // the named-reason receipt is `parkedRows`, and a refused insert is `indexRefused`.
+  return {
+    ok: true,
+    row,
+    parked: Array.isArray(idx.parked) ? idx.parked : [],
+    parkedRows: idx.parkedRows || [],
+    indexOk: idx.ok,
+    indexReason: idx.reason,
+    ...(idx.refused ? { indexRefused: idx.refused } : {}),
+  };
 };
 
 /** Move an item's state with a reason in `history`. Sugar over `saveItem`, one home. */

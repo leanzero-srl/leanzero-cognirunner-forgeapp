@@ -191,6 +191,63 @@ reset();
   const next = await L.saveItem(kvs, AG, "SUP-OVER2", { state: "seen" });
   ok(!next.parked.includes("SUP-1"), "LRU: a row that was touched is not the next one parked");
   eq(next.parked[0], "SUP-2", "…the next-oldest is");
+  eq(next.parkedRows[0].key, "SUP-2", "…and the parked RECEIPT names the key");
+  eq(next.parkedRows[0].reason, "row_cap_forgettable", "…and why it was forgettable");
+}
+
+/* ── 7b. F-430: eviction is ordered by STATE, never by recency alone ───────── */
+reset();
+{
+  const cap = VA_LIMITS.itemRowCap;
+  // The OLDEST row is `owed` — a human replied three days ago and the agent still owes an
+  // answer. Under a recency-only cap it is the first thing deleted, silently.
+  await L.saveItem(kvs, AG, "OWED-1", { state: "queued" });
+  await L.saveItem(kvs, AG, "OWED-1", { state: "staged", staged: { body: "b", audience: "internal" } });
+  await L.saveItem(kvs, AG, "OWED-1", { state: "posted" });
+  await L.saveItem(kvs, AG, "OWED-1", { state: "owed", event: "customer replied" });
+  await L.saveItem(kvs, AG, "WAIT-1", { state: "queued" });
+  await L.saveItem(kvs, AG, "WAIT-1", { state: "waiting_on_human" });
+  for (let i = 0; i < cap - 2; i++) await L.saveItem(kvs, AG, `SEEN-${i}`, { state: "seen" });
+  let idx = await L.listItemIds(kvs, AG);
+  eq(idx.ids.length, cap, "the index is at the cap with an owed row at the very tail");
+  eq(idx.ids[idx.ids.length - 1], "OWED-1", "…and OWED-1 really is the least-recently-touched");
+
+  const over = await L.saveItem(kvs, AG, "NEW-1", { state: "seen" });
+  eq(over.ok, true, "the new row is admitted");
+  eq(over.parked.includes("OWED-1"), false, "F-430 BLOCK: an `owed` row is NOT evicted even though it is the oldest");
+  eq(over.parked.includes("WAIT-1"), false, "F-430 BLOCK: neither is `waiting_on_human`");
+  eq(over.parked[0], "SEEN-0", "F-430 ALLOW: the oldest FORGETTABLE row goes instead");
+  ok((await L.readItem(kvs, AG, "OWED-1")).row !== null, "…and the owed row is still in storage");
+  eq((await L.readItem(kvs, AG, "OWED-1")).row.state, "owed", "…still owed, with its history intact");
+  eq((await L.readItem(kvs, AG, "SEEN-0")).row, null, "…while the forgettable row is gone");
+
+  // `posted` is the middle tier: forgettable rows go first, but it is not an obligation.
+  await L.saveItem(kvs, AG, "POSTED-1", { state: "queued" });
+  await L.saveItem(kvs, AG, "POSTED-1", { state: "staged", staged: { body: "b" } });
+  await L.saveItem(kvs, AG, "POSTED-1", { state: "posted" });
+  const still = await L.saveItem(kvs, AG, "NEW-2", { state: "seen" });
+  ok(String(still.parked[0]).startsWith("SEEN-"), "tier order: a `seen` row is parked before a `posted` one");
+  ok((await L.readItem(kvs, AG, "POSTED-1")).row !== null, "…and the `posted` row survives the pass");
+
+  // Saturation: when EVERY row in the scan window is an obligation the insert is REFUSED.
+  reset();
+  const small = { get: (k) => kvs.get(k), set: (k, v, o) => kvs.set(k, v, o), delete: (k) => kvs.delete(k) };
+  for (let i = 0; i < cap; i++) {
+    await L.saveItem(small, AG, `OWE-${i}`, { state: "queued" });
+    await L.saveItem(small, AG, `OWE-${i}`, { state: "staged", staged: { body: "b" } });
+    await L.saveItem(small, AG, `OWE-${i}`, { state: "posted" });
+    await L.saveItem(small, AG, `OWE-${i}`, { state: "owed" });
+  }
+  const refused = await L.saveItem(small, AG, "NEW-3", { state: "seen" });
+  eq(refused.ok, true, "F-430: the ROW is still written — losing state is worse than losing membership");
+  eq(refused.indexOk, false, "F-430 BLOCK: the index REFUSES the insert when only obligations remain");
+  eq(refused.indexReason, "index_full_obligations", "…with a named reason");
+  eq(refused.indexRefused.key, "NEW-3", "…and the receipt names the KEY that could not be admitted");
+  eq(refused.parked.length, 0, "…and nothing was parked to make room for it");
+  const after = await L.listItemIds(small, AG);
+  eq(after.ids.length, cap, "…the index is unchanged at the cap");
+  eq(after.ids.includes("NEW-3"), false, "…and the refused key is not in it");
+  ok((await L.readItem(small, AG, "OWE-0")).row !== null, "…no obligation was dropped to make room");
 }
 
 /* ── 8. claims: ALLOW / BLOCK / release-on-throw (F-422) ──────────────────── */

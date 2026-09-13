@@ -30,12 +30,16 @@
  *   3. `git_conn_secret:<id>`      — saveConnection (store), deleteConnection (erase),
  *                                    applyCredentialRotation (QUEUED TASK ONLY)
  *   4. `git_hook_secret:<c>:<r>`   — ensureHookSecret (create-if-absent),
- *                                    rotateHookSecret (QUEUED TASK ONLY),
- *                                    rotateGitHookSecret (F-460, the ADMIN path —
- *                                    provider first, storage only on success),
+ *                                    rotateGitHookSecret (F-460/F-481, the ONE and
+ *                                    ONLY rotate path, F-483 —
+ *                                    PENDING SLOT first, then provider, then promote),
+ *                                    setupRepoWebhook (clears a stale pending slot
+ *                                    AFTER the install succeeded),
  *                                    deleteConnection (erase, best-effort).
  *                                    All of them write through `writeHookSecret`,
- *                                    which is the key's ONE writer.
+ *                                    which is the key's ONE writer, and the row's
+ *                                    two-slot shape `{secret, pending}` has its one
+ *                                    home there.
  *   5. `COGNIRUNNER_FORGE_IDENTITY` — saveForgeIdentity, clearForgeIdentity,
  *                                    applyCredentialRotation (QUEUED TASK ONLY)
  * There is no sixth. A caller that wants to change a credential goes through a
@@ -263,6 +267,13 @@ export function publicWebhooks(webhooks) {
       provider: h.provider || null,
       createdAt: h.createdAt || null,
       rotatedAt: h.rotatedAt || null,
+      // F-481 — the LOUD half. `"rotation-failed"` means the provider accepted a new
+      // signing secret that we could not durably store: deliveries still arrive (the
+      // pending slot is accepted for its window) but the rotation must be finished by
+      // pressing "Set up webhook" again. A silent failure here is what made a deaf
+      // hook indistinguishable from a healthy one. Null when healthy.
+      hookState: h.hookState || null,
+      hookStateAt: h.hookStateAt || null,
     };
   }
   return out;
@@ -853,18 +864,71 @@ export async function ensureHookSecret(connId, repoId) {
 }
 
 /**
- * THE ONE WRITER of `git_hook_secret:<connId>:<repoId>`. Both `ensureHookSecret` and
- * `rotateHookSecret` go through it so the stored shape (and the key builder) has one
- * home — two writers of one key is how the row's fields come to disagree.
+ * HOW LONG A *PENDING* SECRET IS ACCEPTED ALONGSIDE THE CURRENT ONE (F-481).
+ *
+ * A rotation opens a window in which the provider may be signing with EITHER the
+ * old secret (PATCH not applied yet) or the new one (PATCH applied, promotion not
+ * yet durable). The window has to outlive an admin's reaction time to the
+ * `rotation-failed` banner — the whole point is that deliveries keep arriving
+ * while the rotation is broken — so it is a day, matching the delivery claim's
+ * horizon, not a request timeout. It is a CEILING, not a schedule: a successful
+ * promotion or the next successful "Set up webhook" closes it immediately.
  */
-async function writeHookSecret(connId, repoId, secret, { rotated = false } = {}) {
+export const HOOK_SECRET_PENDING_TTL_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * THE ONE WRITER of `git_hook_secret:<connId>:<repoId>`, and the ONE HOME of the
+ * row's shape. `ensureHookSecret`, `rotateGitHookSecret` and
+ * `clearPendingHookSecret` all go through it — two writers of one key is how the
+ * row's fields come to disagree.
+ *
+ * TWO SLOTS (F-481). `secret` is the CURRENT secret; `pending` is the one a
+ * rotation has minted but not yet promoted, and it carries its own expiry so a
+ * rotation that died halfway cannot leave a second valid secret alive for ever.
+ * Passing no `pending` CLEARS the slot — closing the window is the same act as
+ * writing the row, never a second write that could fail on its own.
+ */
+async function writeHookSecret(connId, repoId, secret, { rotated = false, pending = null, pendingUntil = null } = {}) {
+  const pendingSecret = pending && typeof pending === "string" ? pending : null;
   await storage.set(gitHookSecretKey(connId, repoId), {
     secret,
     connId,
     repoId: normalizeRepoId(repoId),
     createdAt: nowIso(),
     ...(rotated ? { rotatedAt: nowIso() } : {}),
+    ...(pendingSecret
+      ? {
+          pending: pendingSecret,
+          pendingUntil: pendingUntil || new Date(Date.now() + HOOK_SECRET_PENDING_TTL_MS).toISOString(),
+        }
+      : {}),
   });
+}
+
+/** INTERNAL: the stored row, or null. The only reader of the raw two-slot shape. */
+async function readHookSecretRow(connId, repoId) {
+  const row = await storage.get(gitHookSecretKey(connId, repoId));
+  return row && typeof row === "object" ? row : null;
+}
+
+/** Is this row's pending slot still inside its window? Expired == absent. */
+function pendingIsLive(row) {
+  if (!row || !row.pending || typeof row.pending !== "string") return false;
+  const until = Date.parse(row.pendingUntil || "");
+  return Number.isFinite(until) && until > Date.now();
+}
+
+/**
+ * CLOSE the rotation window by re-writing the row with the pending slot dropped.
+ * Called only AFTER a successful provider install has proved which secret the hook
+ * actually signs with — closing it before that is exactly the F-481 mistake with the
+ * operands swapped. No-op when there is nothing pending. Best-effort by contract:
+ * the caller has already succeeded and a stale pending slot expires on its own.
+ */
+async function clearPendingHookSecret(connId, repoId, row) {
+  const r = row || (await readHookSecretRow(connId, repoId));
+  if (!r || !r.secret || !r.pending) return;
+  await writeHookSecret(connId, repoId, r.secret, { rotated: !!r.rotatedAt });
 }
 
 /**
@@ -878,13 +942,34 @@ async function writeHookSecret(connId, repoId, secret, { rotated = false } = {})
  * only the caller can produce the HTTP response.
  */
 export async function getHookSecret(connId, repoId) {
-  const row = await storage.get(gitHookSecretKey(connId, repoId));
+  const row = await readHookSecretRow(connId, repoId);
   return row && row.secret ? row.secret : null;
+}
+
+/**
+ * INTERNAL: EVERY secret a delivery for this repo may legitimately be signed with,
+ * current first (F-481). Normally one entry; during a rotation window, two — because
+ * between the provider PATCH and the durable promotion the hook signs with the NEW
+ * secret while the stored current one is still the OLD one, and a verifier that only
+ * knows the current slot answers 401 to a perfectly legitimate delivery.
+ *
+ * The caller is `gitWebhook` (src/index.js): it must try the candidates in order and
+ * accept the delivery if ANY matches, with the SAME constant-time comparison it
+ * already uses — this function widens WHICH secrets are legal, never how a signature
+ * is checked, and the HMAC keeps its single home at the caller.
+ *
+ * Empty array means "no secret" and the caller's answer to that is unchanged: 404,
+ * fail CLOSED. An expired pending slot is simply absent.
+ */
+export async function getHookSecretCandidates(connId, repoId) {
+  const row = await readHookSecretRow(connId, repoId);
+  if (!row || !row.secret) return [];
+  return pendingIsLive(row) ? [row.secret, row.pending] : [row.secret];
 }
 
 /* ===== PER-REPO WEBHOOK INSTALLATION (F-460) =====
  *
- * Until this existed, `ensureHookSecret`, `rotateHookSecret` and the adapters'
+ * Until this existed, `ensureHookSecret`, `rotateGitHookSecret` and the adapters'
  * `createWebhook` had NO caller but the dev hook: a real tenant could add a
  * connection, arm a git listener and never receive a single delivery, because
  * nothing registered the hook. These three functions are that missing half, and the
@@ -949,6 +1034,16 @@ async function recordRepoHook(connId, repo, hook) {
         provider: row.kind,
         createdAt: prev.createdAt || nowIso(),
         rotatedAt: hook.rotated ? nowIso() : (prev.rotatedAt || null),
+        // F-481 — `hookState` is STICKY: a broken rotation stays visible until a call
+        // that actually proves the hook healthy again clears it. Only an explicit
+        // `hookState` (raise) or `clearState` (a successful install/promotion) may
+        // change it; an unrelated re-record carries the previous value forward.
+        hookState: hook.clearState ? null : (hook.hookState || prev.hookState || null),
+        hookStateAt: hook.clearState
+          ? null
+          : hook.hookState
+            ? nowIso()
+            : (prev.hookStateAt || null),
       },
     },
     updatedAt: nowIso(),
@@ -988,7 +1083,20 @@ export async function setupRepoWebhook(connId, repoId, { triggerUrl, fetchImpl }
     const hook = match
       ? await provider.updateWebhook({ repo: t.repo, id: match.id, url, secret, events })
       : await provider.createWebhook({ repo: t.repo, url, secret, events });
-    const next = await recordRepoHook(connId, t.repo, { hookId: hook && hook.id });
+    // THE SELF-HEAL for a half-finished rotation (F-481). The provider now provably
+    // signs with the STORED current secret, so any pending slot from a rotation that
+    // never promoted is dead and the loud banner has been earned back. Both happen
+    // only AFTER the install returned — the order guarantee is the same one the
+    // rotation obeys, read in the other direction.
+    // Swallowed on purpose: the install SUCCEEDED, and a KVS blip while tidying an
+    // already-doomed pending slot must not be reported as a provider failure (nor
+    // cost the admin the hook record). The slot expires on its own regardless.
+    try {
+      await clearPendingHookSecret(connId, t.repo);
+    } catch (e) {
+      console.warn(`[git-hook] could not clear the pending secret slot after a successful install conn=${safeKeyPart(connId)} repo=${safeKeyPart(t.repo)}: ${(e && e.message) || e}`);
+    }
+    const next = await recordRepoHook(connId, t.repo, { hookId: hook && hook.id, clearState: true });
     // The emitted hook IS the recorded row's public shape — one shape for "what the
     // Code tab reads from the connection" and "what the setup call answered", so the
     // chip cannot disagree with the list it is re-read from.
@@ -1007,10 +1115,28 @@ export async function setupRepoWebhook(connId, repoId, { triggerUrl, fetchImpl }
 }
 
 /**
- * NEW SIGNING SECRET for one repo's hook, and the new one is installed in the
- * provider BEFORE it is stored. That order is the whole point: if the provider call
- * fails, nothing was written and the OLD secret is still valid on both sides, so a
- * failed rotation leaves a working webhook rather than a silently deaf one.
+ * NEW SIGNING SECRET for one repo's hook. THREE STEPS, IN THIS ORDER (F-481):
+ *
+ *   1. STORE the new secret in the row's `pending` slot, current secret untouched.
+ *   2. PATCH the provider to sign with the new secret.
+ *   3. PROMOTE: the new secret becomes `secret`, the pending slot closes.
+ *
+ * The guarantee is "no step can leave a hook signing with a secret we do not hold",
+ * and it now covers the STORE, not just the provider:
+ *
+ *   - step 1 fails → nothing was installed, the old secret is still valid on both
+ *     sides, and the refusal is a storage refusal. The cap-before-side-effect rule:
+ *     we do not touch the provider until the new secret is durable.
+ *   - step 2 fails → the pending slot is dropped; the old secret is still installed
+ *     and still current. Unchanged from F-460.
+ *   - step 3 fails → THE CASE THAT USED TO BE FATAL. The provider signs with the new
+ *     secret, the stored current one is still the old one — but the new secret is
+ *     already in the pending slot, `getHookSecretCandidates` accepts BOTH for the
+ *     window, so deliveries keep arriving, and the connection is stamped
+ *     `hookState:"rotation-failed"` so the Code tab says so out loud and names the
+ *     remedy. Pressing "Set up webhook" re-installs the stored current secret and
+ *     clears both the slot and the banner.
+ *
  * The secret is never returned — there is no read path for it anywhere.
  */
 export async function rotateGitHookSecret(connId, repoId, { triggerUrl, fetchImpl } = {}) {
@@ -1026,14 +1152,60 @@ export async function rotateGitHookSecret(connId, repoId, { triggerUrl, fetchImp
   const url = hookUrlFor(triggerUrl, connId, t.repo);
   const events = GIT_HOOK_EVENTS[t.row.kind] || [];
   const secret = generateWebhookSecret();
+
+  // ---- 1. the new secret becomes DURABLE (as `pending`) before the provider hears
+  // about it. A connection with no stored secret at all has no window to open and no
+  // old secret to keep working, so the new one goes straight in as current.
+  const before = await readHookSecretRow(connId, t.repo);
+  const current = (before && before.secret) || null;
+  try {
+    await writeHookSecret(connId, t.repo, current || secret, current ? { pending: secret } : { rotated: true });
+  } catch (e) {
+    return {
+      ok: false,
+      error: "The new signing secret could not be stored, so nothing was changed — the existing webhook still works. Try again.",
+      code: "storage",
+    };
+  }
+
+  // ---- 2. install it.
   try {
     const provider = await providerForConnection(connId, { repo: t.repo, fetchImpl });
     await provider.updateWebhook({ repo: t.repo, id: recorded.hookId, url, secret, events });
   } catch (e) {
+    // The provider never took it, so the pending slot is a lie — drop it. Swallowed:
+    // the refusal the admin needs is the PROVIDER's, and the slot expires anyway.
+    if (current) {
+      try {
+        await clearPendingHookSecret(connId, t.repo);
+      } catch (e2) {
+        console.warn(`[git-hook] could not drop the pending secret after a failed rotation conn=${safeKeyPart(connId)} repo=${safeKeyPart(t.repo)}: ${(e2 && e2.message) || e2}`);
+      }
+    }
     return hookProviderFailure(connId, e);
   }
-  await writeHookSecret(connId, t.repo, secret, { rotated: true });
-  const next = await recordRepoHook(connId, t.repo, { hookId: recorded.hookId, rotated: true });
+
+  // ---- 3. promote. If THIS is what fails, the pending slot is already carrying the
+  // installed secret, so the hook is not deaf — but the rotation is unfinished and
+  // that has to be visible, not swallowed into a generic error string.
+  try {
+    await writeHookSecret(connId, t.repo, secret, { rotated: true });
+  } catch (e) {
+    const msg = String((e && e.message) || e || "").slice(0, 300);
+    console.warn(`[git-hook] ROTATION FAILED AFTER INSTALL — the new secret is live at the provider but not promoted conn=${safeKeyPart(connId)} repo=${safeKeyPart(t.repo)}: ${msg}`);
+    try {
+      await recordRepoHook(connId, t.repo, { hookId: recorded.hookId, hookState: "rotation-failed" });
+    } catch (e2) {
+      console.warn(`[git-hook] could not record the rotation-failed state conn=${safeKeyPart(connId)} repo=${safeKeyPart(t.repo)}: ${(e2 && e2.message) || e2}`);
+    }
+    return {
+      ok: false,
+      error:
+        "The new signing secret was installed at the provider but could not be stored. Deliveries keep working for now — press “Set up webhook” for this repository to finish the rotation.",
+      code: "rotation-failed",
+    };
+  }
+  const next = await recordRepoHook(connId, t.repo, { hookId: recorded.hookId, rotated: true, clearState: true });
   const after = publicWebhooks(next && next.webhooks)[t.repo] || null;
   return {
     ok: true,
@@ -1402,9 +1574,13 @@ export async function applyCredentialRotation(params, { fetchImpl } = {}) {
   return { ok: true, rotated: "connection", id: target.id };
 }
 
-/** Rotate ONE repo's webhook secret. Queued-task half, same reason as above. */
-export async function rotateHookSecret(connId, repoId) {
-  const secret = generateWebhookSecret();
-  await writeHookSecret(connId, repoId, secret, { rotated: true });
-  return { secret };
-}
+/* F-483: there is NO queued half for the hook secret. `rotateHookSecret` used to
+ * live here as a second implementation of "rotate the hook secret" that replaced
+ * the stored secret with NO provider call — so the hook kept signing with the old
+ * one and every subsequent delivery was a 401 — and it RETURNED the secret, which
+ * this module's "secrets never leave" rule forbids. It had no caller: the only
+ * queued rotation task is `gitcredrotate` → `applyCredentialRotation` (the
+ * CONNECTION credential, above). Deleted. `rotateGitHookSecret` is the ONE HOME of
+ * hook-secret rotation: pending slot → provider PATCH → promote. If a queued caller
+ * is ever wanted, it delegates there; it does not mint a secret of its own.
+ */

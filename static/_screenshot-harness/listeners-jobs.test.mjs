@@ -335,24 +335,54 @@ try {
     await close(env);
   }
 
-  /* ---------------- A1 — Settings → API access: tokens + create (shown once) ---------------- */
-  {
-    console.log("A1 API access panel");
-    const env = await openAdmin(browser);
+  /* ---------------- A1 — Settings → API access: tokens + create (shown once) + ROLES ----------------
+     F-466: every UI-minted token used to be an admin token, so the editor/viewer floors on
+     ?resource=agents were unreachable from the product. This journey holds the whole contract in
+     BOTH themes: the role picker exists and defaults to Admin, the legacy role-less row (bridge
+     tok_1) still reads as Admin, minting as Viewer sends role:"viewer" in the PAYLOAD (not just
+     "a mint happened"), and the new row comes back wearing the Viewer chip. */
+  for (const theme of ["light", "dark"]) {
+    console.log(`A1 API access panel (${theme})`);
+    const env = await openAdmin(browser, theme);
     const { page } = env;
     try {
       await tab(page, "Settings");
       await page.locator(".apx").waitFor({ timeout: 10000 });
-      ok((await page.locator(".apx-code").first().innerText()).includes("hello.atlassian-dev.net"), "A1 endpoint URL rendered");
-      ok(await page.locator(".apx-table tbody tr").count() === 1, "A1 existing token listed");
-      await page.locator(".apx-input").fill("Migration script");
+      ok((await page.locator(".apx-code").first().innerText()).includes("hello.atlassian-dev.net"), `A1 ${theme} endpoint URL rendered`);
+      ok(await page.locator(".apx-table tbody tr").count() === 1, `A1 ${theme} existing token listed`);
+      // the legacy row carries no `role` at all — it must read as Admin, never blank
+      ok((await page.locator(".apx-table tbody tr").first().locator(".apx-role-chip").innerText()).trim() === "Admin", `A1 ${theme} legacy role-less token shows the Admin chip`);
+
+      ok(await page.locator(".apx-roles [role='radio']").count() === 3, `A1 ${theme} three roles offered`);
+      ok(await page.locator(".apx-roles select, .apx select").count() === 0, `A1 ${theme} no native select in the role picker`);
+      ok(await page.locator(".apx-role-btn.apx-role-admin").getAttribute("aria-checked") === "true", `A1 ${theme} defaults to Admin`);
+      const rolesText = await page.locator(".apx-roles-block").innerText();
+      ok(rolesText.includes("create and change rules, agents and settings"), `A1 ${theme} admin copy`);
+      ok(rolesText.includes("create and change rules and agents, no settings"), `A1 ${theme} editor copy`);
+      ok(rolesText.includes("read status, logs and agent receipts only"), `A1 ${theme} viewer copy`);
+      ok(rolesText.includes("Tokens created before roles existed act as Admin."), `A1 ${theme} legacy-token note`);
+
+      await page.locator(".apx-input").fill("Status dashboard");
+      await page.locator(".apx-role-btn.apx-role-viewer").click();
+      ok(await page.locator(".apx-role-btn.apx-role-viewer").getAttribute("aria-checked") === "true", `A1 ${theme} viewer selected`);
       await page.locator(".apx-create").click();
       await page.locator(".apx-fresh").waitFor({ timeout: 5000 });
-      ok((await page.locator(".apx-secret").innerText()).startsWith("cgr_"), "A1 new token shown once");
-      ok(await page.locator(".apx-examples").count() === 1, "A1 curl examples present");
-      await shot(page, "A1-api-access");
-      ok(env.errors.length === 0, "A1 no page errors: " + env.errors.join(" | "));
-    } catch (e) { fail++; console.log("  ✗ A1 threw: " + e.message.split("\n")[0]); }
+      ok((await page.locator(".apx-secret").innerText()).startsWith("cgr_"), `A1 ${theme} new token shown once`);
+      const mint = await page.evaluate(() => window.__TOKEN_MINT__);
+      ok(mint && mint.role === "viewer", `A1 ${theme} mint payload carries role:"viewer" (got ${JSON.stringify(mint && mint.role)})`);
+      ok((await page.locator(".apx-fresh-title").innerText()).includes("(Viewer)"), `A1 ${theme} shown-once banner names the role`);
+      await page.waitForFunction(() => document.querySelectorAll(".apx-table tbody tr").length === 2, { timeout: 5000 });
+      const chips = await page.locator(".apx-table tbody .apx-role-chip").allInnerTexts();
+      ok(chips.map((c) => c.trim()).join(",") === "Admin,Viewer", `A1 ${theme} role chips per row (got ${chips.join(",")})`);
+      // solid saturated fill, white text — the chip must never be a faded tint
+      const chipStyle = await page.locator(".apx-table tbody tr").nth(1).locator(".apx-role-chip").evaluate((el) => { const c = getComputedStyle(el); return { bg: c.backgroundColor, fg: c.color, weight: c.fontWeight }; });
+      ok(chipStyle.bg === (theme === "dark" ? "rgb(20, 184, 166)" : "rgb(13, 148, 136)"), `A1 ${theme} viewer chip uses the teal hue (got ${chipStyle.bg})`);
+      ok(chipStyle.fg === "rgb(255, 255, 255)" && Number(chipStyle.weight) >= 600, `A1 ${theme} viewer chip is white on solid, bold`);
+
+      ok(await page.locator(".apx-examples").count() === 1, `A1 ${theme} curl examples present`);
+      await shot(page, `A1-api-access-${theme}`);
+      ok(env.errors.length === 0, `A1 ${theme} no page errors: ` + env.errors.join(" | "));
+    } catch (e) { fail++; console.log(`  ✗ A1 ${theme} threw: ` + e.message.split("\n")[0]); }
     await close(env);
   }
 

@@ -22,6 +22,8 @@
 //   · simulation performs ZERO Jira calls and answers `{simulated:true, would}`;
 //   · every failure is `{ok:false, error, errorClass}` with the class named, and NOTHING
 //     throws at the engine — including a fault in the writer's own lazy import.
+// F-467: self-arranging mocks — must precede every src/ import (see lib/ensure-mocks.mjs).
+import "../lib/ensure-mocks.mjs";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import path from "node:path";

@@ -34,7 +34,7 @@
     "forge-app-builder": {
       "title": "Forge app builder",
       "purpose": "What the Coder needs to produce a Forge app that deploys: modules, manifest shape, resolver and Custom UI patterns, production patterns, FaaS limits and cost, async events, Forge LLM, the security golden rules.",
-      "pinned": ["forge-app-builder#core-concepts"],
+      "pinned": ["forge-app-builder#core-forge-concepts"],
       "pinnedFor": ["coder"]
     },
     "forge-platform-facts": {

@@ -43,6 +43,20 @@ const tokens = {
   legacy: (await createApiTokenInternal({ name: "legacy", accountId: "admin-1" })).token,
 };
 
+/*
+ * THE ROSTER (F-471). A token now acts as the ACCOUNT THAT MINTED IT for the
+ * ownership half of a write, so these rows are what `getUserPermissions` resolves:
+ * `admin-1` mints the role tokens above and is an app admin (scope "all");
+ * `acc-own` is an EDITOR whose scope is "own" — the only caller for whom the
+ * ownership arm can refuse anything.
+ */
+storage.__seed("app_admins", [
+  { accountId: "admin-1", displayName: "Admin", role: "admin", scope: "all" },
+  { accountId: "acc-own", displayName: "Own-scope editor", role: "editor", scope: "own" },
+]);
+tokens.owner = (await createApiTokenInternal({ name: "owner", accountId: "acc-own", role: "editor" })).token;
+tokens.orphan = (await createApiTokenInternal({ name: "orphan", role: "editor" })).token;
+
 const rest = async (role, resource, { method = "GET", query = {}, body } = {}) => {
   const res = await rulesApiHandler({
     method,
@@ -147,6 +161,75 @@ for (const [label, resource, opts, floor] of ROUTES) {
   const src = fs.readFileSync(new URL("../../src/rules-api.js", import.meta.url), "utf8");
   const ranks = src.match(/ROLE_RANK\[/g) || [];
   ok(ranks.length === 2, `the role comparison lives in ONE predicate (ROLE_RANK read ${ranks.length}× — expected the 2 inside tokenRoleAtLeast)`);
+}
+
+/* ── F-471: OWNERSHIP, not just the role floor ──────────────────────────────
+ *
+ * The floors above prove an editor token may write. They say nothing about WHOSE row
+ * it may write, and that was the defect: an editor token could edit, disable and
+ * delete every listener and job on the instance, while the same person's click is
+ * refused by `gateExistingRow`'s scope-"own" arm. The gate is the resolvers' one —
+ * these cases assert the ANSWER, including that the refusal is byte-identical in
+ * shape to the resolver's (`reason:"no-permission"`, `hint:"not-owner"`, and NO
+ * `needsRole`, because asking an admin for a role does not make a foreign row yours).
+ */
+{
+  const notOwner = (r) => r.status === 403 && r.body.reason === "no-permission"
+    && r.body.hint === "not-owner" && r.body.needsRole === undefined;
+
+  for (const [kind, noun, mk] of [["listeners", "listener", listenerBody], ["jobs", "job", jobBody]]) {
+    // A FOREIGN row: written by the admin token, so it carries that token's audit
+    // stamp and is nobody's row as far as a scope-"own" editor is concerned.
+    const foreign = (await rest("admin", kind, { method: "POST", body: mk("foreign") })).body[noun];
+    ok(foreign && foreign.id, `precondition: a foreign ${noun} exists`);
+
+    // The editor token's OWN row: an editor token stamps the ACCOUNT that minted it.
+    const mine = (await rest("owner", kind, { method: "POST", body: mk("mine") })).body[noun];
+    ok(mine && mine.createdBy === "acc-own", `an editor token's ${noun} is owned by the account that minted the token (got ${mine && mine.createdBy})`);
+
+    ok(notOwner(await rest("owner", kind, { method: "PUT", query: { id: foreign.id }, body: { name: "stolen" } })),
+      `BLOCK editor token → PUT a foreign ${noun} (ownership, not the floor)`);
+    ok(notOwner(await rest("owner", kind, { method: "POST", query: { id: foreign.id, action: "disable" } })),
+      `BLOCK editor token → disable a foreign ${noun}`);
+    ok(notOwner(await rest("owner", kind, { method: "DELETE", query: { id: foreign.id } })),
+      `BLOCK editor token → DELETE a foreign ${noun}`);
+    ok(((await rest("admin", kind, { query: { id: foreign.id } })).body[noun] || {}).name === "foreign",
+      `…and the foreign ${noun} is untouched afterwards`);
+
+    // F-261 — for this caller an UNKNOWN id and a foreign row are the same answer.
+    ok(notOwner(await rest("owner", kind, { method: "PUT", query: { id: `${noun}-does-not-exist` }, body: { name: "x" } })),
+      `an id that does not exist reads exactly like a foreign ${noun} (no existence leak)`);
+
+    // ALLOW on its own row, both the merge-update and the delete (the delete arm uses
+    // the NARROWER destructive ownership rule, so it is asserted separately).
+    const renamed = await rest("owner", kind, { method: "PUT", query: { id: mine.id }, body: { name: "mine-renamed" } });
+    ok(renamed.status === 200 && renamed.body[noun].name === "mine-renamed", `ALLOW editor token → PUT its OWN ${noun}`);
+    ok((await rest("owner", kind, { method: "POST", query: { id: mine.id, action: "disable" } })).status === 200,
+      `ALLOW editor token → disable its OWN ${noun}`);
+    ok((await rest("owner", kind, { method: "DELETE", query: { id: mine.id } })).status === 200,
+      `ALLOW editor token → DELETE its OWN ${noun}`);
+
+    // An ADMIN token keeps scope "all": ownership never refuses it.
+    ok((await rest("admin", kind, { method: "PUT", query: { id: foreign.id }, body: { name: "admin-edit" } })).status === 200,
+      `ALLOW admin token → PUT any ${noun} (scope "all" is unchanged)`);
+    ok((await rest("legacy", kind, { method: "DELETE", query: { id: foreign.id } })).status === 200,
+      `ALLOW legacy (roleless = admin) token → DELETE any ${noun} — no live integration loses a power`);
+
+    // An EDITOR token with no minting account has no principal to act as. It fails
+    // CLOSED, in the one refusal shape.
+    const seed2 = (await rest("admin", kind, { method: "POST", body: mk("for-orphan") })).body[noun];
+    const orphaned = await rest("orphan", kind, { method: "PUT", query: { id: seed2.id }, body: { name: "y" } });
+    ok(orphaned.status === 403 && orphaned.body.reason === "no-permission",
+      `an editor token with no createdBy is REFUSED on an existing ${noun}, not waved through`);
+  }
+}
+
+// ONE ownership home: the verdict is asked in src/index.js, never re-derived here.
+{
+  const fs = await import("node:fs");
+  const src = fs.readFileSync(new URL("../../src/rules-api.js", import.meta.url), "utf8");
+  ok(/gateExistingRow/.test(src) && !/createdBy === /.test(src),
+    "rules-api.js asks gateExistingRow and owns no ownership comparison of its own");
 }
 
 console.log(`rules-api roles: ${pass} passed, ${fail} failed`);

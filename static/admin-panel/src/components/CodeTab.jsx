@@ -484,7 +484,15 @@ function RepoRow({ invoke, conn, repoId, onChanged, onNeedIdentity }) {
         showToast("Webhook secret rotated");
         await onChanged();
       } else {
-        setNote(say(r, "The secret could not be rotated."));
+        const msg = say(r, "The secret could not be rotated.");
+        setNote(msg);
+        /* F-481: a half-finished rotation is not a plain "no" - it changes the state of
+           the hook, so it is said out loud AND the list is re-read, which is what raises
+           the red banner with the "Set up webhook" remedy. */
+        if (r && r.code === "rotation-failed") {
+          showToast(msg, "error");
+          await onChanged();
+        }
       }
     } catch (e) {
       setNote("Could not reach the app to rotate this secret.");
@@ -493,6 +501,11 @@ function RepoRow({ invoke, conn, repoId, onChanged, onNeedIdentity }) {
   };
 
   const rotated = rotatedAt || (hook && hook.rotatedAt) || null;
+  /* F-481: the backend records a rotation that started and did not finish as
+     hookState "rotation-failed" on the hook itself. The provider may now hold a secret
+     CogniRunner does not, so deliveries can be refused and the only honest remedy is to
+     register the hook again. It is said in full, in red, with the action attached. */
+  const rotationBroken = !!(hook && hook.hookState === "rotation-failed");
 
   return (
     <div className="code-repo-row">
@@ -513,6 +526,17 @@ function RepoRow({ invoke, conn, repoId, onChanged, onNeedIdentity }) {
           </button>
         </div>
       </div>
+      {rotationBroken && (
+        <div className="code-hook-broken" role="alert">
+          <span className="code-hook-broken-title">LAST SECRET ROTATION DID NOT FINISH</span>
+          <span className="code-hook-broken-text">
+            The secret was not fully replaced, so deliveries from {repoId} may be refused until the webhook is set up again.
+          </span>
+          <button className="code-hook-broken-action" disabled={busy} onClick={handleSetupHook}>
+            {busy ? "Registering…" : "Set up webhook"}
+          </button>
+        </div>
+      )}
       {!hook && (
         <p className="hint code-hook-hint">Nothing in this repository reaches CogniRunner until a webhook is registered. The secret is minted here and never shown, to anyone.</p>
       )}

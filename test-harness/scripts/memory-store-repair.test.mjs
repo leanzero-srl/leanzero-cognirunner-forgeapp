@@ -22,6 +22,8 @@
 //   rows can go in one write; getMemoryStoreStats reports the size against both ceilings.
 // F-193 — the mock's oversize throw mirrors @forge/kvs's real ForgeKvsAPIError shape instead of
 //   inventing a name and a code that the platform never emits.
+// F-467: self-arranging mocks — must precede every src/ import (see lib/ensure-mocks.mjs).
+import "../lib/ensure-mocks.mjs";
 import "../lib/register-mocks-index.mjs";
 import storage, { KVS_PLATFORM_MAX_VALUE_BYTES, KVS_STORAGE_LIMIT_CODE } from "../lib/mock-kvs.mjs";
 import { readFileSync } from "node:fs";

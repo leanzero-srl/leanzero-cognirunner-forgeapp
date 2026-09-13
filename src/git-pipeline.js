@@ -281,7 +281,9 @@ export async function requestPipelineSetup({
     return invalid("The app's manifest.yml is required — the permission lock is built from it", "manifest_required");
   }
 
-  const lock = buildPermissionLock(String(manifestYaml), { approvedBy: accountId, source: "cognirunner" });
+  // F-343: the timestamp is the CALLER's — the lock itself renders deterministically
+  // (its identity is the scope set), and `approvedAt` is provenance nothing compares.
+  const lock = buildPermissionLock(String(manifestYaml), { approvedBy: accountId, source: "cognirunner", approvedAt: new Date().toISOString() });
   const scopes = lockScopeNames(lock);
   if (!scopes.length) {
     return invalid("That manifest declares no permission scopes — nothing to lock", "manifest_required");

@@ -19,6 +19,28 @@ const manifest = files.find((f) => f.path === "manifest.yml").content;
 const lock = m.buildPermissionLock(manifest);
 assert.deepEqual(lock.permissions, ["- read:jira-user", "- read:jira-work", "- storage:app", "- unsafe-inline", "content:", "scopes:", "styles:"]);
 assert.ok(manifest.includes(m.PLACEHOLDER_FORGE_APP_ID), "committed manifest keeps the placeholder id");
+
+// F-343 — the lock's identity is its SCOPE SET. Two renders of one manifest must be
+// byte-equal; only the provenance siblings (approvedBy/approvedAt, which nothing
+// compares or hashes) may differ, and only when a caller passes them.
+{
+  const a = m.buildPermissionLock(manifest);
+  const b = m.buildPermissionLock(manifest);
+  assert.equal(JSON.stringify(a), JSON.stringify(b), "two renders of one manifest are byte-equal");
+  assert.equal(a.approvedAt, null, "approvedAt defaults to a fixed sentinel, not a wall clock");
+  const stamped = m.buildPermissionLock(manifest, { approvedAt: "2026-01-01T00:00:00.000Z", approvedBy: "acc" });
+  assert.equal(stamped.approvedAt, "2026-01-01T00:00:00.000Z", "a caller may stamp the provenance");
+  assert.deepEqual(stamped.permissions, a.permissions, "…without changing the lock's identity");
+  const ignore = (l) => JSON.stringify({ ...l, approvedAt: null, approvedBy: null });
+  assert.equal(ignore(stamped), ignore(a), "stamped and unstamped locks are equal once provenance is excluded");
+  const sources = m.SCAFFOLD_INDEX.map((sc) => sc.id);
+  for (const id of sources) {
+    const mf = m.renderScaffold(id, { APP_NAME: "Proof App" }).find((f) => f.path === "manifest.yml");
+    if (!mf) continue;
+    assert.equal(JSON.stringify(m.buildPermissionLock(mf.content)), JSON.stringify(m.buildPermissionLock(mf.content)),
+      `${id}: repeated lock renders are byte-equal`);
+  }
+}
 // The module itself must not use template literals (the class of bug the line arrays avoid).
 import fs from "node:fs";
 const src = fs.readFileSync(path.join(here, "..", "..", "src", "shared", "git-scaffolds.js"), "utf8");

@@ -734,7 +734,19 @@ export const renderScaffold = (kind, overrides = {}) => {
 };
 
 /** The permission lock CogniRunner writes when an admin approves a repo's pipeline. */
-export const buildPermissionLock = (manifestYaml, { approvedBy = null, source = "cognirunner" } = {}) => {
+/**
+ * The permission lock. ITS IDENTITY IS ITS SCOPE SET — "permissions" and nothing
+ * else. "approvedBy" / "approvedAt" are provenance siblings that no comparison
+ * may read (git-pipeline.js "hashLock" hashes "permissions" only; the generated
+ * CI check compares "lock.permissions" only).
+ *
+ * F-343: "approvedAt" used to be stamped with "new Date()" here, so two renders
+ * of ONE manifest were never byte-equal and any whole-lock comparison would have
+ * been wrong by construction (refusing every re-run with a lock_mismatch). It is
+ * now a PARAMETER defaulting to the fixed sentinel "null" — a render is
+ * deterministic; a caller that wants a timestamp on the row passes one.
+ */
+export const buildPermissionLock = (manifestYaml, { approvedBy = null, source = "cognirunner", approvedAt = null } = {}) => {
   const lines = String(manifestYaml || "").split(/\r?\n/);
   const out = [];
   let inPerm = false;
@@ -744,7 +756,7 @@ export const buildPermissionLock = (manifestYaml, { approvedBy = null, source = 
     if (inPerm && /^\S/.test(line) && line.trim()) inPerm = false;
     if (inPerm && line.trim()) out.push(line.trim());
   }
-  return { version: 1, source, approvedBy, approvedAt: new Date().toISOString(), permissions: out.sort() };
+  return { version: 1, source, approvedBy, approvedAt, permissions: out.sort() };
 };
 
 export const PLACEHOLDER_FORGE_APP_ID = PLACEHOLDER_APP_ID;

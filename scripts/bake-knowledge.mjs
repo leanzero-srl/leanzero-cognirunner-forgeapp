@@ -50,7 +50,8 @@
  *
  * Usage:
  *   node scripts/bake-knowledge.mjs            # bake
- *   node scripts/bake-knowledge.mjs --check    # pinned-hash check (npm run bake:check)
+ *   node scripts/bake-knowledge.mjs --check    # pinned-hash check (npm run bake:check);
+ *                                              always the FULL corpus, --tier is ignored
  *   node scripts/bake-knowledge.mjs --dry-run  # everything except writing files
  */
 
@@ -798,11 +799,34 @@ export const bake = ({ dryRun = false, check = false, tiers = null, write = fals
   // end while the re-authored tiers are still being written; it is not a way to ship a
   // partial corpus (the MANIFEST records which tiers were included, and --check compares
   // the whole thing).
-  const selected = tiers ? cfg.sources.filter((s) => tiers.includes(s.tier)) : cfg.sources;
-  if (tiers) console.log(`bake-knowledge: tier filter ${tiers.join(",")} — ${selected.length}/${cfg.sources.length} sources`);
+  //
+  // F-599: "--check compares the whole thing" was, again, a comment rather than a
+  // mechanism. `--tier A --check` filtered the sources FIRST, hashed the subset, and then
+  // reported the inevitable difference against the committed full-corpus artefacts as
+  // "a pinned source has changed since the last bake … run `npm run bake`" — a drift that
+  // did not exist, and a prescription to commit "regenerated packs" for a repo with
+  // nothing wrong with it. A gate that names a cause its own run manufactured is worse
+  // than no gate.
+  //
+  // The filter is IGNORED in check mode rather than refused. A check writes nothing, so
+  // there is no side effect to protect; the only question this pairing can be asking is
+  // "are the committed artefacts current?", and that question has exactly one honest
+  // answer — computed from the full corpus. Refusing would send the developer back to
+  // retype the command for no safety gained. The pairing is announced out loud (below) so
+  // nobody reads a green check as proof about the subset.
+  const tierFilterIgnored = !!tiers && check;
+  const selected = tiers && !check ? cfg.sources.filter((s) => tiers.includes(s.tier)) : cfg.sources;
+  if (tiers && !check) console.log(`bake-knowledge: tier filter ${tiers.join(",")} — ${selected.length}/${cfg.sources.length} sources`);
   // F-589: the side effect is decided HERE and nowhere else.
   const effectiveDryRun = dryRun || (!!tiers && !write);
-  if (tiers && !write && !dryRun && !check) {
+  // F-589's advisory, and it prints in CHECK mode too (F-599): the flag combination that
+  // most needed a word about what `--tier` does was the one the advisory was silent about.
+  if (tierFilterIgnored) {
+    console.log(`bake-knowledge: --check compares the FULL corpus — the tier filter ${tiers.join(",")} is IGNORED.\n`
+      + "  The committed index, titles module and packs are always a full-corpus bake, so a subset\n"
+      + "  hash would report drift that does not exist (F-599). Drop --check to rehearse the subset;\n"
+      + "  a tiered bake is a dry run unless --write is passed (F-589).");
+  } else if (tiers && !write && !dryRun) {
     console.log("bake-knowledge: --tier implies a DRY RUN — the generated modules are NOT written.\n"
       + "  A partial corpus overwriting the shipped packs is F-589; pass --write with --tier if that is\n"
       + "  genuinely what you want, and both pin gates are then enforced on the subset.");
@@ -915,13 +939,13 @@ export const bake = ({ dryRun = false, check = false, tiers = null, write = fals
 
   // The pin map, validated against what was actually baked. Before the emit, because a pin
   // that matches nothing must stop the bake rather than ship.
-  const pins = collectPins(cfg, sections, { partial: !!tiers });
+  const pins = collectPins(cfg, sections, { partial: !!tiers && !tierFilterIgnored });
 
   // The tab's view and the selector's view of the SAME pinned list must agree, or the
   // Knowledge tab lies about what a pack pins (F-570). Before the emit, as ever.
   // F-589: run on WHATEVER is emitted, whatever the tier. Strict when bytes are about to
   // land on disk (including a deliberate `--tier ... --write`), warn-only when they are not.
-  const pinGatesWarnOnly = !!tiers && effectiveDryRun;
+  const pinGatesWarnOnly = !!tiers && !tierFilterIgnored && effectiveDryRun;
   assertPinsAgree(packSummaries, pins.byAudience, { warnOnly: pinGatesWarnOnly });
   // ...and every pin must actually fit the share it is meant to be paid out of (F-576).
   // `sections` here are the freshly chunked ones, so this measures what is about to ship.

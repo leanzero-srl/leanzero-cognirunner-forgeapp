@@ -405,5 +405,63 @@ const secLit = JSON.stringify(sections);
   }
 }
 
+/* ---- `--check` WITH `--tier` answers about the FULL corpus (F-599) ----
+   `--tier A --check` used to filter the sources first, hash the subset, and then report
+   the inevitable difference against the committed full-corpus artefacts as "a pinned
+   source has changed since the last bake … run `npm run bake`" — drift that did not
+   exist, and a prescription to commit regenerated packs for a clean repo. The F-589
+   advisory, the one thing that would have explained the pairing, was gated `&& !check`. */
+{
+  const fs = await import("node:fs");
+  const src = fs.readFileSync(bakePath, "utf8");
+  ok(/const tierFilterIgnored = !!tiers && check;/.test(src),
+    "check mode records that the tier filter does not apply to it");
+  ok(/const selected = tiers && !check \?/.test(src),
+    "and the source list is NOT filtered in check mode — the check hashes the full corpus");
+  ok(!/if \(tiers && !write && !dryRun && !check\)/.test(src),
+    "the F-589 advisory is no longer silenced by --check");
+  ok(/if \(tierFilterIgnored\) \{/.test(src),
+    "check mode prints an advisory of its own instead");
+  ok(/partial: !!tiers && !tierFilterIgnored/.test(src),
+    "and the pin gates are STRICT in a tiered check, because it is a full-corpus run");
+
+  const rawPresent = fs.existsSync(path.join(repoRoot, "knowledge/raw"))
+    && fs.existsSync(path.join(repoRoot, "knowledge/denylist.local"));
+  if (rawPresent) {
+    const watched = [
+      path.join(repoRoot, "src/shared/knowledge-index.js"),
+      path.join(repoRoot, "src/shared/knowledge-titles.js"),
+      path.join(repoRoot, "src/shared/knowledge-packs/voice-rules.js"),
+      path.join(repoRoot, "knowledge/MANIFEST.md"),
+    ];
+    const before = watched.map((f) => fs.statSync(f).mtimeMs);
+    const plain = spawnSync(process.execPath, [bakePath, "--check"], { encoding: "utf8", cwd: repoRoot });
+    const plainOut = `${plain.stdout || ""}${plain.stderr || ""}`;
+    ok(plain.status === 0, `the committed artefacts pass a plain --check (exit ${plain.status})`);
+
+    const tiered = spawnSync(process.execPath, [bakePath, "--tier", "A", "--check"], { encoding: "utf8", cwd: repoRoot });
+    const tieredOut = `${tiered.stdout || ""}${tiered.stderr || ""}`;
+    ok(tiered.status === 0, `--tier A --check passes too, on the same corpus (exit ${tiered.status})`);
+    ok(!/a pinned source has changed/.test(tieredOut),
+      "and it does NOT claim a pinned source changed when nothing did");
+    ok(/--check compares the FULL corpus — the tier filter A is IGNORED/.test(tieredOut),
+      "it says out loud that the tier filter did not apply");
+    ok(!/tier filter A — \d+\/\d+ sources/.test(tieredOut),
+      "and no subset was selected at all");
+
+    const hashes = (out) => (out.match(/packs are current \(content [0-9a-f]{16}[^)]*\)/) || [])[0];
+    ok(hashes(tieredOut) && hashes(tieredOut) === hashes(plainOut),
+      `both checks report the same content hash (${hashes(tieredOut)})`);
+    ok(/pack module\(s\) current/.test(tieredOut) && /UI titles module current/.test(tieredOut),
+      "the tiered check still exercises all three drift probes");
+
+    const after = watched.map((f) => fs.statSync(f).mtimeMs);
+    ok(watched.every((f, i) => before[i] === after[i]),
+      "and a check — tiered or not — writes nothing");
+  } else {
+    console.log("  (skipped the live --tier --check arms: knowledge/raw or denylist.local absent)");
+  }
+}
+
 console.log(`\nbake-knowledge: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

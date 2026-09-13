@@ -105,7 +105,10 @@ import {
 } from "./shared/registry-limits.js";
 // Premade (non-AI, "static") rule executor — runs deterministic validators/conditions
 // chosen from the premade catalog, short-circuiting the AI path in validate().
-import { executePremadeRule } from "./premade-rules.js";
+import { executePremadeRule, writeConfluenceIssueProperty } from "./premade-rules.js";
+// THE Confluence client (1.5 commit 6). Every Confluence call in this file goes through
+// it — one error-code table, one timeout, one version-checked update.
+import { createConfluenceClient, ConfluenceError } from "./confluence-client.js";
 // Listeners (Jira product events) + Scheduled Jobs (cron) + the Rules REST API.
 // Thin resolvers below delegate to these modules; they lazily import index.js back
 // (no top-level cycle) for the shared sandbox / AI / log / permission internals
@@ -129,7 +132,14 @@ import {
 import {
   CODER_PF_MODE_IDS, getCoderPfMode, CODER_PF_INSTRUCTIONS_MAX,
   getCatalog as getPremadeCatalog, gitSubEnabled, hasGitGroup, PR_MATCH_OPTIONS, PR_MATCH_DEFAULT,
+  confluenceSubEnabled, hasConfluenceGroup, CONFLUENCE_VALIDATOR_MODE_IDS, CONFLUENCE_VALIDATOR_MODE_DEFAULT,
 } from "./shared/premade-rules-catalog.js";
+// The Confluence rules' shared vocabulary (1.5 commit 7): the ONE CQL escaper, the plain
+// template renderer, the markdown→storage converter, and the advisory property's builder.
+import {
+  CONFLUENCE_PROPERTY_KEY, renderTextTemplate, markdownToStorage,
+  confluenceRemoteLinkGlobalId, TITLE_MAX_CHARS, COMMENT_TEMPLATE_MAX_CHARS, CQL_MAX_CHARS,
+} from "./shared/confluence-rules.js";
 import { describeCron } from "./shared/cron.js";
 // The ONE code-point-safe text clamp (F-381/F-383) — never `.slice()` on a prompt path.
 import { clampChars } from "./shared/text-clamp.js";
@@ -3371,6 +3381,36 @@ resolver.define("getFields", async ({ context }) => {
  * never an exception. (Group/role lists are intentionally omitted — only the
  * acting-user rules need them, and those are unavailable in app conditions.)
  */
+/**
+ * The Confluence SPACE picker's options (1.5 commit 7). Never throws: this feeds ONE
+ * dropdown inside a list call that also serves six Jira pickers, and a site without
+ * Confluence — which is the normal state of a Jira app — must get an empty dropdown
+ * and the install message, not a failed form.
+ *
+ * It also warms the 5-minute install memo on the way past, so the admin card and the
+ * post-functions do not re-probe a fact this call just established.
+ */
+const listConfluenceSpacesForPicker = async () => {
+  try {
+    if (peekConfluenceInstalled() === false) return [];
+    const spaces = await createConfluenceClient().listSpaces({});
+    _cachedConfluenceInstall = { installed: true, code: null, message: null };
+    _cachedConfluenceInstallAt = Date.now();
+    return spaces.map((s) => ({ value: s.key, label: s.name === s.key ? s.key : `${s.name} (${s.key})` }));
+  } catch (e) {
+    // A fault here says nothing about whether a SPACE exists — only that we could not
+    // ask. Record the negative in the memo only when the client itself says the product
+    // is unavailable; an auth or network blip must not make the picker empty for five
+    // minutes on a site that does have Confluence.
+    if (e instanceof ConfluenceError && e.code === "confluence_unavailable") {
+      _cachedConfluenceInstall = { installed: false, code: e.code, message: e.message, status: e.status };
+      _cachedConfluenceInstallAt = Date.now();
+    }
+    console.warn("[confluence] space picker list unavailable:", e && e.message);
+    return [];
+  }
+};
+
 resolver.define("getRuleLists", async ({ context }) => {
   if (!(await requireRole(context.accountId, "editor"))) {
     return needRole("editor");
@@ -3438,6 +3478,13 @@ resolver.define("getRuleLists", async ({ context }) => {
         // call, so it degrades to an empty picker.
         gitconnections: gitLists.connections,
         gitrepos: gitLists.repos,
+        // Confluence rule pickers (1.5 commit 7). The SPACE is picked, never typed: a
+        // mistyped space key is misconfiguration, and misconfiguration BLOCKS the
+        // transition in both strict columns (the F-416 table). Every call goes through
+        // `createConfluenceClient`; a site with no Confluence — the common case, the app
+        // is a Jira app — degrades to an EMPTY list, never an error, and the rule form
+        // shows the install message instead of a dropdown.
+        confluencespaces: await listConfluenceSpacesForPicker(),
       },
     };
   } catch (error) {
@@ -6819,6 +6866,44 @@ const premadePostFunctionConfig = (payload) => {
       out.prMatch = PR_MATCH_OPTIONS.some((o) => o.value === payload.prMatch) ? payload.prMatch : PR_MATCH_DEFAULT;
     }
     if (gitSubEnabled(params, "strict")) out.strict = payload.strict === true;
+  }
+  if (hasConfluenceGroup(params)) {
+    // Same discipline as the git group: THE CLIENT IS NOT TRUSTED. Every value is coerced
+    // and clamped HERE, after the catalogue lookup, and only the sub-controls this rule
+    // actually HAS are stored — a `mode` on the page post-function would be a key nothing
+    // reads, and a form would then draw a control the executor ignores (F-388).
+    if (confluenceSubEnabled(params, "spaceKey")) {
+      const spaceKey = String(payload.spaceKey || "").trim().slice(0, 120);
+      if (spaceKey) out.spaceKey = spaceKey;
+    }
+    if (confluenceSubEnabled(params, "mode")) {
+      out.mode = CONFLUENCE_VALIDATOR_MODE_IDS.includes(payload.mode) ? payload.mode : CONFLUENCE_VALIDATOR_MODE_DEFAULT;
+    }
+    if (confluenceSubEnabled(params, "cqlTemplate")) {
+      const tpl = clampChars(String(payload.cqlTemplate || "").trim(), CQL_MAX_CHARS);
+      if (tpl) out.cqlTemplate = tpl;
+    }
+    if (confluenceSubEnabled(params, "prompt")) {
+      const prompt = clampChars(String(payload.prompt || "").trim(), CQL_MAX_CHARS);
+      if (prompt) out.prompt = prompt;
+    }
+    if (confluenceSubEnabled(params, "titleTemplate")) {
+      const t = clampChars(String(payload.titleTemplate || "").trim(), TITLE_MAX_CHARS);
+      if (t) out.titleTemplate = t;
+    }
+    if (confluenceSubEnabled(params, "commentTemplate")) {
+      const c = clampChars(String(payload.commentTemplate || "").trim(), COMMENT_TEMPLATE_MAX_CHARS);
+      if (c) out.commentTemplate = c;
+    }
+    if (confluenceSubEnabled(params, "parentId")) {
+      // A page id, not free text: digits only, or nothing.
+      const p = String(payload.parentId || "").trim();
+      if (/^[0-9]{1,32}$/.test(p)) out.parentId = p;
+    }
+    if (confluenceSubEnabled(params, "strict")) out.strict = payload.strict === true;
+    // The source field the doc generator reads. Same allow-shape as every other field id.
+    const fieldId = String(payload.fieldId || "").trim().slice(0, 120);
+    if (fieldId) out.fieldId = fieldId;
   }
   if (payload.simulationMode === true) out.simulationMode = true;
   return out;
@@ -13325,6 +13410,47 @@ const getProviderConfig = async () => {
   }
 };
 
+/* ═══════════ THE CONFLUENCE INSTALL PROBE — ONE MEMO (1.5 commit 7) ═══════════
+ *
+ * Deliberately beside the provider memo, and deliberately the ONLY memo of this fact.
+ * "Is CogniRunner installed on Confluence too?" is a per-SITE fact that changes when an
+ * admin runs `forge install -p Confluence` — roughly never — while every Confluence rule
+ * would otherwise ask it again on every transition, every post-function and every admin
+ * panel open. 5 minutes rather than the provider memo's 30 s: a provider switch must take
+ * effect while an admin watches, an install does not, and 5 minutes is short enough that
+ * the admin card shows the truth a minute after they install.
+ *
+ * TWO ACCESSORS, ONE MEMO, and the difference matters:
+ *   getConfluenceInstallState() — probes when the memo is cold. Callers that are ABOUT to
+ *     do Confluence work and want to fail fast (the post-functions, the admin card).
+ *   peekConfluenceInstalled()   — memo ONLY, never a call. Returns null for "unknown".
+ *     The VALIDATOR uses this: it is inside a transition's 8 s budget, and a probe there
+ *     would double the latency of the very check it precedes. A cold memo means the
+ *     validator simply runs its search, which answers the same question anyway.
+ *
+ * Every call goes through `createConfluenceClient` (LAW 1 — one client, one error-code
+ * table, one timeout). `probeInstalled` never throws; a fault is "not installed", which
+ * is the fail-OPEN direction for every validator that reads it.
+ */
+const CONFLUENCE_PROBE_TTL_MS = 5 * 60 * 1000;
+let _cachedConfluenceInstall = null;
+let _cachedConfluenceInstallAt = 0;
+
+const peekConfluenceInstalled = () =>
+  (_cachedConfluenceInstall && Date.now() - _cachedConfluenceInstallAt < CONFLUENCE_PROBE_TTL_MS)
+    ? _cachedConfluenceInstall.installed === true
+    : null;
+
+const getConfluenceInstallState = async ({ fresh = false } = {}) => {
+  if (!fresh && _cachedConfluenceInstall && Date.now() - _cachedConfluenceInstallAt < CONFLUENCE_PROBE_TTL_MS) {
+    return { ..._cachedConfluenceInstall, cached: true };
+  }
+  const state = await createConfluenceClient().probeInstalled();
+  _cachedConfluenceInstall = state;
+  _cachedConfluenceInstallAt = Date.now();
+  return { ...state, cached: false };
+};
+
 // ===== SEAT SNAPSHOT (drives the Forge LLM monthly allowance) =====
 // The allowance is clamp(seats x $2, $40, $800)/month, so we need a seat count.
 // There is no seat API, so we count active Atlassian-account users and stop at
@@ -16261,7 +16387,22 @@ export const validate = async (args) => {
     // BY this file, so importing it there would be a cycle — and the 8 s ceiling
     // the git validators need must be the SAME deadline helper every other
     // bounded call in this file uses (LAW 1).
-    const out = await executePremadeRule(configuration, args, invocationType, { raceDeadline });
+    // `judge` and `installedHint` are the CONFLUENCE validator's two injections (1.5
+    // commit 7), given the same way and for the same reason as `raceDeadline`:
+    //   judge        — the EXISTING validator engine (callOpenAI), so the semantic mode
+    //                  grows no second prompt and no second parse. premade-rules.js never
+    //                  makes an AI call of its own.
+    //   installedHint— the 5-minute install memo, READ ONLY (peek, never probe): inside a
+    //                  transition a probe would double the latency of the check it
+    //                  precedes. `null` means "unknown", and the rule just runs.
+    const out = await executePremadeRule(configuration, args, invocationType, {
+      raceDeadline,
+      installedHint: peekConfluenceInstalled(),
+      judge: async ({ content, prompt }) => {
+        const r = await callOpenAI(content, prompt, undefined, undefined, undefined);
+        return { isValid: r?.isValid === true, reason: r?.reason || "", transientError: r?.transientError === true };
+      },
+    });
     // Slim execution log (metadata only — never field VALUES) so premade runs
     // still appear in the admin panel's execution history alongside AI rules.
     try {
@@ -16280,7 +16421,12 @@ export const validate = async (args) => {
               ? "Allowed — the git connection's credential is dead (failed OPEN; turn Strict on to block instead)"
               : out?.banner === "git_unavailable"
                 ? "Allowed — the git provider could not be reached (failed OPEN; turn Strict on to block instead)"
-                : "Passed",
+                : out?.banner === "confluence_unavailable"
+                  // F-416's non-strict column, in the log row. WHICH fault it was rides
+                  // `confluenceReason` (unavailable / auth / unreachable / timeout /
+                  // judge-unavailable) — the banner is one id so config-view has one row.
+                  ? `Allowed — Confluence could not be checked (${out?.confluenceReason || "unavailable"}); failed OPEN, turn Strict on to block instead`
+                  : "Passed",
         executionTimeMs: Date.now() - premadeStart,
         mode: "premade",
         // Git validators may allow while telling the admin WHY (a dead token, an
@@ -18924,6 +19070,13 @@ export const executePostFunction = async (args) => {
     // between them, and this branch is what keeps it out of the 25 s transition budget.
     // Its enqueue is its own (long-queue, taskType "coder") a few lines below.
     || isCoderPfType(pfType)
+    // THE CONFLUENCE PAGE POST-FUNCTION IS HEAVY BY CONSTRUCTION (1.5 commit 7d): an AI
+    // authoring call plus a title lookup plus a create-or-update plus a remote link plus
+    // a property write. Named EXPLICITLY — a substring guess would also catch
+    // `postfunction-confluence-comment`, which is deterministic, makes one call and is
+    // meant to run inline. The catalogue's `execution` field is the one home of which is
+    // which, and the parity lint reads it against this line.
+    || isConfluencePagePfType(pfType)
     || pfType.includes("generate-doc")
     || pfType.includes("research")
     || (pfType.includes("semantic") && config.crossCheckClaims === true)
@@ -19056,6 +19209,295 @@ export const executePostFunction = async (args) => {
  * function returns a GREEN SKIP through `envProblem` — so the ERROR the table promised
  * never fired and the rule was silently dead on every transition.
  */
+/* ═══════════ THE CONFLUENCE POST-FUNCTIONS (1.5 commit 7d) ═══════════
+ *
+ * Two rules, two execution paths, and the difference is deliberate:
+ *
+ *   postfunction-confluence-page    — QUEUED. An AI authoring call plus a title lookup
+ *     plus a create-or-update plus a remote link plus a property write does not fit a
+ *     25 s transition. `isHeavyPf` names it explicitly (never by substring guess), the
+ *     generic heavy path pushes it to `async-ai-queue`, and `dispatchPostFunction` runs
+ *     it there. Unlike the Coder it is NOT refused inline — the generic heavy path's
+ *     fall-back-to-inline on a failed enqueue is acceptable here (one AI call and a few
+ *     REST calls can finish inside the budget, where an eight-round coder turn cannot).
+ *
+ *   postfunction-confluence-comment — INLINE. Deterministic: the admin's template with
+ *     the issue's values substituted, one Confluence call, no AI, no token cost. There
+ *     is nothing to queue and queuing it would only add the platform's event delay to a
+ *     comment somebody is waiting to see.
+ *
+ * ── FAIL-OPEN / FAIL-CLOSED, PER SURFACE (Law 3 — stated, not assumed) ────────────
+ * A post-function runs AFTER the transition is applied, so nothing here can block
+ * anything. "Open" means REPORTED AS A SKIP (the rule did nothing, said why, nobody is
+ * paged); "closed" means REPORTED AS A FAILURE (a red execution-log entry an admin must
+ * act on). There is no `strict` on these rules, because the choice `strict` offers a
+ * validator — block or allow — does not exist once the transition has happened.
+ *
+ *   cause                                        verdict
+ *   ──────────────────────────────────────────── ──────────────────────────────────────
+ *   Confluence unavailable / auth / network       OPEN  — skip, named in stepResults[]
+ *   a version CONFLICT on the update              OPEN  — skip, named; NEVER retried
+ *   the AI could not author the body              OPEN  — skip, named; no empty page
+ *   MISCONFIG: no space (page), no template        CLOSED — error. Nothing about a
+ *     (comment)                                     misconfigured rule will get better.
+ *   no page linked yet (comment)                   OPEN  — skip. Not a fault at all.
+ *
+ * A CONFLICT IS NEVER RETRIED. `updatePage` is version-checked; re-reading and
+ * re-writing after a 409 is precisely the lost edit the version check exists to prevent.
+ * Somebody edited that page while we were authoring, and their edit wins.
+ *
+ * SIMULATION intercepts every write, like every other post-function here.
+ */
+const CONFLUENCE_PAGE_PF_TYPE = "postfunction-confluence-page";
+const CONFLUENCE_COMMENT_PF_TYPE = "postfunction-confluence-comment";
+const isConfluencePagePfType = (t) => String(t || "") === CONFLUENCE_PAGE_PF_TYPE;
+const isConfluenceCommentPfType = (t) => String(t || "") === CONFLUENCE_COMMENT_PF_TYPE;
+
+/** Default page title when the rule names none. Same placeholders as the template. */
+const CONFLUENCE_DEFAULT_TITLE_TEMPLATE = "{issueKey} — {summary}";
+
+/** One step row, in the shape every other post-function's stepResults[] uses. */
+const confluenceStep = (index, name, status, reason, recommendation) =>
+  ({ index, name, status, ...(reason ? { reason } : {}), ...(recommendation ? { recommendation } : {}) });
+
+/**
+ * Turn whatever went wrong into ONE sentence that names the cause, for the step row and
+ * for the log. The closed code set is the client's (src/confluence-client.js); anything
+ * outside it is "unavailable", which is the fail-open direction.
+ */
+const confluenceFaultSentence = (e, what) => {
+  const code = e instanceof ConfluenceError ? e.code : null;
+  if (code === "conflict") return `Someone else edited the Confluence page while CogniRunner was writing it, so ${what} was abandoned rather than overwriting their edit.`;
+  if (code === "auth") return `CogniRunner is not allowed to write to Confluence on this site, so ${what} did not happen. An admin must approve the app's Confluence access.`;
+  if (code === "not_found") return `The Confluence space or page this rule points at does not exist or is not visible to CogniRunner, so ${what} did not happen.`;
+  if (code === "invalid") return `Confluence refused the request, so ${what} did not happen (${String((e && e.message) || "invalid").slice(0, 160)}).`;
+  if (code === "network" || code === "rate_limited") return `Confluence could not be reached, so ${what} did not happen (${code}).`;
+  return `Confluence is not available to CogniRunner on this site, so ${what} did not happen. Install CogniRunner on Confluence, or remove this rule.`;
+};
+
+/** The issue facts the templates and the doc generator need. Never throws. */
+const confluenceIssueFacts = async (issueKey, config, deps) => {
+  const sourceFieldId = config.fieldId || "description";
+  let summary = "";
+  let body = "";
+  try {
+    const read = deps.readIssue || (async (key) => {
+      const res = await api.asApp().requestJira(route`/rest/api/3/issue/${key}?fields=summary`, { headers: { Accept: "application/json" } });
+      return res.ok ? await res.json() : null;
+    });
+    const issue = await read(issueKey);
+    summary = String((issue && issue.fields && issue.fields.summary) || "");
+  } catch { /* a missing summary substitutes empty, never fails the rule */ }
+  try {
+    const readField = deps.readFieldText || ((key, fieldId) => getFieldValue(key, fieldId, null));
+    body = String((await readField(issueKey, sourceFieldId)) || "");
+  } catch { /* same */ }
+  return { summary, body, sourceFieldId };
+};
+
+/**
+ * CREATE OR UPDATE one Confluence page from the issue. Returns
+ * `{ success, decision, reason, simulated?, page?, stepResults, trace }` — it never
+ * throws, and `success` is the OPEN/CLOSED column of the table above.
+ *
+ * Deps are injectable so the offline suite can drive every row of that table without a
+ * network, a model or a Jira.
+ */
+const executeConfluencePagePostFunction = async (issueKey, config, deps = {}) => {
+  const steps = [];
+  const trace = [];
+  const spaceKey = String((config && config.spaceKey) || "").trim();
+  const simulated = config && config.simulationMode === true;
+  const done = (success, decision, reason, extra = {}) =>
+    ({ success, decision, reason, trace, stepResults: steps.length ? steps : [confluenceStep(1, "Write the Confluence page", success ? "ok" : "error", reason)], ...extra });
+
+  // MISCONFIGURATION IS CLOSED. Nothing about a rule with no space will get better, and
+  // a green "skipped" on every transition forever is how a rule dies silently (F-392).
+  if (!spaceKey) {
+    return done(false, "ERROR",
+      "This Confluence rule has no space, so there is nowhere to write the page and nothing ran.",
+      { recommendation: "Open the rule and pick a Confluence space." });
+  }
+
+  const client = deps.confluenceClient || createConfluenceClient();
+  const facts = await confluenceIssueFacts(issueKey, config, deps);
+  const values = { issueKey, summary: facts.summary };
+  const title = renderTextTemplate(config.titleTemplate || CONFLUENCE_DEFAULT_TITLE_TEMPLATE, values, TITLE_MAX_CHARS)
+    || String(issueKey || "CogniRunner page");
+
+  // 1) AUTHOR THE BODY. The doc generator is the EXISTING one (generateDocContent) —
+  // the same author the generate-doc post-function uses, with the same fenced, defanged,
+  // untrusted source field. A failure here is OPEN: an empty page is worse than none.
+  let gen;
+  try {
+    const generate = deps.generate || (async () => {
+      const [apiKey, model, contextDocsText] = await Promise.all([
+        getOpenAIKey(), getOpenAIModel(), fetchContextDocs(config.selectedDocIds),
+      ]);
+      if (!apiKey) return { ok: false, reason: "no provider API key is configured" };
+      return generateDocContent({
+        fieldValue: facts.body,
+        contextDocsText,
+        contentPrompt: config.instructions || "Write a clear Confluence page documenting this issue.",
+        titlePrompt: title,
+        sourceFieldId: facts.sourceFieldId,
+        apiKey,
+        model,
+      });
+    });
+    gen = await generate({ title, facts, config });
+  } catch (e) {
+    gen = { ok: false, reason: String((e && e.message) || e) };
+  }
+  if (!gen || !gen.ok) {
+    const why = `The AI could not author the page body (${String((gen && gen.reason) || "unknown").slice(0, 160)}), so no page was written.`;
+    steps.push(confluenceStep(1, "Author the page body", "skipped", why, "Check the AI provider settings; the transition itself was not affected."));
+    return done(true, "SKIP", why);
+  }
+  trace.push(`Authored "${title}" (${String(gen.content || "").length} chars)`);
+  const storage = markdownToStorage(gen.content);
+  steps.push(confluenceStep(1, "Author the page body", "ok"));
+
+  // 2) EXISTING PAGE? An exact-title lookup in the space is what makes this rule
+  // idempotent: the tenth run of the same transition updates one page rather than
+  // creating a tenth. A lookup FAULT is open — creating a duplicate because we could not
+  // ask is worse than doing nothing.
+  let existing = null;
+  try {
+    existing = await client.getPageByTitle({ spaceKey, title });
+  } catch (e) {
+    const why = confluenceFaultSentence(e, "the page lookup");
+    steps.push(confluenceStep(2, "Find an existing page", "skipped", why));
+    return done(true, "SKIP", why);
+  }
+  steps.push(confluenceStep(2, "Find an existing page", "ok", existing ? `Updating page ${existing.id}` : "None yet — creating"));
+
+  if (simulated) {
+    const why = `[SIMULATION] Would ${existing ? `update Confluence page ${existing.id}` : `create a Confluence page in ${spaceKey}`} titled "${title}" — skipped (simulation mode is ON for this rule).`;
+    steps.push(confluenceStep(3, existing ? "Update the page" : "Create the page", "skipped", why));
+    trace.push(why);
+    return done(true, "WRITE", why, { simulated: true });
+  }
+
+  // 3) THE WRITE. `updatePage` carries the version we just READ, so a page that moved
+  // under us raises `conflict` — reported, never retried.
+  let page;
+  try {
+    page = existing
+      ? await client.updatePage({ id: existing.id, version: existing.version, title, storage })
+      : await client.createPage({ spaceKey, parentId: config.parentId || null, title, storage });
+  } catch (e) {
+    const why = confluenceFaultSentence(e, existing ? "the page update" : "the page creation");
+    steps.push(confluenceStep(3, existing ? "Update the page" : "Create the page", "skipped", why,
+      e instanceof ConfluenceError && e.code === "conflict"
+        ? "Nothing was overwritten. Re-run the transition to write on top of their version."
+        : undefined));
+    return done(true, "SKIP", why);
+  }
+  steps.push(confluenceStep(3, existing ? "Update the page" : "Create the page", "ok", `${existing ? "Updated" : "Created"} "${page.title}" (version ${page.version})`));
+  trace.push(`${existing ? "Updated" : "Created"} page ${page.id}`);
+
+  // 4) LINK BACK, with a DETERMINISTIC globalId so a re-run updates the link instead of
+  // adding a second one. Best effort: the page exists either way.
+  try {
+    const link = deps.addRemoteLink || (async (key, url, linkTitle, globalId) => api.asApp().requestJira(
+      route`/rest/api/3/issue/${key}/remotelink`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ globalId, object: { url, title: linkTitle } }) },
+    ));
+    await link(issueKey, page.url || "", page.title, confluenceRemoteLinkGlobalId(issueKey, page.id));
+    steps.push(confluenceStep(4, "Link the page from the issue", "ok"));
+  } catch (e) {
+    steps.push(confluenceStep(4, "Link the page from the issue", "skipped", `The page was written but the issue link could not be added (${String((e && e.message) || e).slice(0, 120)}).`));
+  }
+
+  // 5) THE ADVISORY PROPERTY. ONE writer, imported from src/premade-rules.js — the same
+  // one the validator uses. ADVISORY: it is what the workflow CONDITION reads, and it is
+  // forgeable, which is exactly why no validator ever reads it.
+  await writeConfluenceIssueProperty(issueKey, page, deps);
+  steps.push(confluenceStep(5, "Record the page on the issue", "ok"));
+
+  return done(true, "WRITE", `${existing ? "Updated" : "Created"} the Confluence page "${page.title}".`, { page });
+};
+
+/**
+ * COMMENT ON THE LINKED PAGE. Deterministic, inline, fail-open. Same return contract.
+ *
+ * ⚠️ IT CHOOSES THE PAGE FROM THE ADVISORY PROPERTY, and that is a stated residual, not
+ * an oversight. `cognirunner.confluence` is forgeable by anyone who can edit the issue,
+ * so someone could point this comment at a different page in the same site. The bound is
+ * that the comment's CONTENT is the admin's own template with the issue's values in it,
+ * written as the app, visible on the page — a misdirected note, not an exfiltration and
+ * not a privilege gain. The rule that must never read this property is the VALIDATOR,
+ * which blocks; a comment blocks nothing.
+ */
+const executeConfluenceCommentPostFunction = async (issueKey, config, deps = {}) => {
+  const steps = [];
+  const trace = [];
+  const simulated = config && config.simulationMode === true;
+  const done = (success, decision, reason, extra = {}) =>
+    ({ success, decision, reason, trace, stepResults: steps.length ? steps : [confluenceStep(1, "Comment on the Confluence page", success ? "ok" : "error", reason)], ...extra });
+
+  const template = String((config && config.commentTemplate) || "").trim();
+  // MISCONFIGURATION IS CLOSED, same reasoning as the page rule.
+  if (!template) {
+    return done(false, "ERROR",
+      "This Confluence comment rule has no text, so there was nothing to post and nothing ran.",
+      { recommendation: "Open the rule and write the comment text." });
+  }
+
+  // WHICH PAGE. No property means CogniRunner has never linked a page to this issue —
+  // not a fault, and not something an admin should be paged for.
+  let prop = null;
+  try {
+    const readProperty = deps.readProperty || (async (key) => {
+      const res = await api.asApp().requestJira(route`/rest/api/3/issue/${key}/properties/${CONFLUENCE_PROPERTY_KEY}`, { headers: { Accept: "application/json" } });
+      if (!res.ok) return null;
+      const body = await res.json();
+      return body && body.value ? body.value : null;
+    });
+    prop = await readProperty(issueKey);
+  } catch { prop = null; }
+  const pageId = prop && prop.pageId ? String(prop.pageId) : "";
+  if (!pageId) {
+    const why = "No Confluence page is linked to this issue yet, so there was nothing to comment on.";
+    steps.push(confluenceStep(1, "Find the linked page", "skipped", why,
+      "Add the Confluence page post-function (or the Confluence validator) to a transition first."));
+    return done(true, "SKIP", why);
+  }
+  steps.push(confluenceStep(1, "Find the linked page", "ok", `Page ${pageId}`));
+
+  const facts = await confluenceIssueFacts(issueKey, config, deps);
+  const text = renderTextTemplate(template, { issueKey, summary: facts.summary }, COMMENT_TEMPLATE_MAX_CHARS);
+  // The comment body is storage format. Every substituted value is issue content, so it
+  // is escaped before it becomes markup — a summary containing `<b>` is text, not bold.
+  const body = markdownToStorage(text);
+
+  if (simulated) {
+    const why = `[SIMULATION] Would comment on Confluence page ${pageId} — skipped (simulation mode is ON for this rule).`;
+    steps.push(confluenceStep(2, "Post the comment", "skipped", why));
+    return done(true, "COMMENT", why, { simulated: true });
+  }
+
+  const client = deps.confluenceClient || createConfluenceClient();
+  try {
+    await client.addComment({ pageId, body });
+  } catch (e) {
+    const why = confluenceFaultSentence(e, "the comment");
+    steps.push(confluenceStep(2, "Post the comment", "skipped", why));
+    return done(true, "SKIP", why);
+  }
+  steps.push(confluenceStep(2, "Post the comment", "ok"));
+  return done(true, "COMMENT", `Commented on the Confluence page "${(prop && prop.title) || pageId}".`);
+};
+
+/** Exposed for the offline suite ONLY — neither is a resolver and neither is exported
+ *  anywhere the platform can reach. Keeping the executors module-private otherwise is
+ *  what stops a second caller growing that skips the routing above. */
+export const __confluencePfInternals = {
+  executeConfluencePagePostFunction,
+  executeConfluenceCommentPostFunction,
+};
+
 const CODER_PF_TYPE = "postfunction-coder";
 const isCoderPfType = (t) => String(t || "") === CODER_PF_TYPE;
 
@@ -19395,8 +19837,18 @@ export const recordCoderPfOutcome = async (params, out) => {
  * fallback would resolve to "postfunction-static" and be run INLINE inside the 25 s
  * transition budget, which is the exact outcome §3.9 forbids.
  */
+/* DERIVED FROM THE CATALOGUE, NOT TYPED (F-398, same reasoning as the RULE_KEY_MAP rows).
+ * `src/shared/premade-rules-catalog.js` is the one home for which premade post-functions
+ * exist; a literal list here would be the second list that disagrees the first time one
+ * is added — which is exactly what `resolvePfType` naming only the Coder became the
+ * moment 1.5 added two more. Only `available` rows: `registerPostFunction` refuses the
+ * rest, so a non-available key could only be a config nothing can save. */
+const PREMADE_PF_TYPES = new Set(
+  getPremadeCatalog("postfunction").filter((r) => r.availability === "available").map((r) => r.key),
+);
+
 const resolvePfType = (config, extensionKey) => {
-  if (config?.ruleKind === "premade" && config?.ruleType && isCoderPfType(config.ruleType)) return CODER_PF_TYPE;
+  if (config?.ruleKind === "premade" && config?.ruleType && PREMADE_PF_TYPES.has(config.ruleType)) return config.ruleType;
   let type = config?.type || "";
   if (!type && extensionKey) {
     if (extensionKey.includes("semantic")) type = "postfunction-semantic";
@@ -19500,6 +19952,40 @@ export const dispatchPostFunction = async (issueKey, config, extensionKey, pfDea
         stepsTotal: 1,
         stepResults: [{ index: 1, name: "Queue the Coder turn", status: "error", reason: "wrong execution path", recommendation: "Re-run the transition." }],
       });
+    } else if (isConfluencePagePfType(type) || isConfluenceCommentPfType(type)) {
+      // EXPLICIT branches, before every substring test below (1.5 commit 7d). Without
+      // them "postfunction-confluence-page" matches nothing and falls through to the
+      // final "unknown type" arm — the same silent-no-op class the Coder branch exists
+      // for. The page rule arrives here from the async consumer (isHeavyPf queued it);
+      // the comment rule arrives here inline. Both executors are fail-open and never
+      // throw, so this branch only has to write the log row.
+      const isPage = isConfluencePagePfType(type);
+      const result = isPage
+        ? await executeConfluencePagePostFunction(issue.key, config)
+        : await executeConfluenceCommentPostFunction(issue.key, config);
+      console.log(`Confluence PF result (${type}):`, JSON.stringify({ success: result.success, decision: result.decision }));
+      const logEntry = {
+        type,
+        issueKey: issue.key,
+        fieldId: isPage ? (config.spaceKey || "confluence") : "confluence",
+        isValid: result.success,
+        decision: result.decision,
+        reason: result.reason,
+        executionTimeMs: Date.now() - pfStartTime,
+        moduleKey: extensionKey || null,
+        premadeRuleType: type,
+        stepsTotal: (result.stepResults || []).length,
+        stepResults: result.stepResults || [],
+        ruleId: config.ruleId || config.id || null,
+        ruleName: config.workflow?.workflowName
+          ? `${config.workflow.workflowName} / ${config.workflow.transitionFromName || "Any"} → ${config.workflow.transitionToName || "?"}`
+          : (config.name || type),
+        ruleWorkflow: config.workflow || null,
+      };
+      if (result.simulated) logEntry.simulated = true;
+      if (result.trace && result.trace.length) logEntry.trace = result.trace;
+      if (result.recommendation) logEntry.recommendation = result.recommendation;
+      await logAndTrace(logEntry);
     } else if (type.includes("semantic")) {
       const result = await executeSemanticPostFunction(issue.key, config, pfDeadline, cancelToken);
       console.log("Semantic PF result:", result);

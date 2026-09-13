@@ -25,9 +25,18 @@ const requestJira = async (path, opts = {}) => {
   return fakeResponse(404, { errorMessages: ["mock: no responder"] });
 };
 
+// Confluence goes through the SAME scripted responder, so a test that wants to drive
+// src/confluence-client.js without injecting `deps.request` can. Paths are recorded with
+// their product so an assertion can tell a Jira call from a Confluence one.
+const requestConfluence = async (path, opts = {}) => {
+  calls.push({ path: String(path), opts, product: "confluence" });
+  if (responder) return responder(String(path), opts, "confluence");
+  return fakeResponse(404, { errorMessages: ["mock: no responder"] });
+};
+
 const api = {
-  asApp: () => ({ requestJira }),
-  asUser: () => ({ requestJira }),
+  asApp: () => ({ requestJira, requestConfluence }),
+  asUser: () => ({ requestJira, requestConfluence }),
   __calls: calls,
   __reset() { calls.length = 0; responder = null; },
   __respond(fn) { responder = fn; },

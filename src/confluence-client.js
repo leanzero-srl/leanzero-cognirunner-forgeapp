@@ -110,6 +110,8 @@ export const PAGE_STORAGE_MAX_BYTES = 60 * 1024;
 export const RESPONSE_MAX_BYTES = 1024 * 1024;
 /** CQL results per call. Every result ends up in a prompt. */
 export const SEARCH_MAX_LIMIT = 25;
+/** Spaces offered in a rule's space PICKER. A dropdown, not a directory listing. */
+export const SPACE_LIST_MAX = 100;
 /** Comment body written to a page. */
 export const COMMENT_MAX_BYTES = 32 * 1024;
 
@@ -409,6 +411,26 @@ export function createConfluenceClient(deps = {}) {
     }
   }
 
+  /**
+   * The spaces this app can see, for a PICKER (1.5 commit 7). Never a rule's evidence —
+   * a rule names ONE space key and every read of that space goes through
+   * `resolveSpaceId`, which is the call that can actually answer "does it exist".
+   *
+   * THROWS like every other read, so a caller can tell "no spaces" from "cannot ask".
+   * `limit` is clamped server-side; the picker is a dropdown, not a directory.
+   */
+  async function listSpaces({ limit = SPACE_LIST_MAX } = {}) {
+    const op = "listSpaces";
+    const n = Math.max(1, Math.min(SPACE_LIST_MAX, Number(limit) || SPACE_LIST_MAX));
+    return withBudget(CONFLUENCE_OPERATION_BUDGET_MS, async () => {
+      const data = await json(op, "GET", `/wiki/api/v2/spaces?limit=${n}&status=current`);
+      const results = Array.isArray(data && data.results) ? data.results : [];
+      return results.slice(0, n)
+        .filter((s) => s && s.key)
+        .map((s) => ({ id: String(s.id == null ? "" : s.id), key: String(s.key), name: String(s.name || s.key) }));
+    });
+  }
+
   /** CQL search. `limit` is clamped to SEARCH_MAX_LIMIT server-side, not trusted. */
   async function searchCql({ cql, limit = 10 } = {}) {
     const op = "searchCql";
@@ -594,6 +616,7 @@ export function createConfluenceClient(deps = {}) {
 
   return {
     probeInstalled,
+    listSpaces,
     searchCql,
     getPage,
     getPageByTitle,

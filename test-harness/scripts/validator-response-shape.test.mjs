@@ -125,6 +125,38 @@ for (const key of ["git-pr-merged", "git-pr-approved", "git-build-passed", "git-
   eq(out, { result: true }, `${key} with no connection allows with the BARE contract object`);
 }
 
+/* THE CONFLUENCE VALIDATOR (1.5 commit 7) carries the SAME extra keys the git ones do —
+ * `banner` on every degradation row and `confluenceReason` on every fail-OPEN allow — so
+ * it is the exact class of rule F-384 was found on. Each cell of its degradation table is
+ * driven here for SHAPE, on top of the semantic coverage in premade-confluence.test.mjs:
+ * a correct verdict that Jira refuses to parse is a blocked user and a green log row.
+ *
+ * `respondWith` answers 200 {} to any Confluence path (the mock routes requestConfluence
+ * through the same responder), so the search returns no results — the determinate "no
+ * page matched" BLOCK. Strict flips the fault rows. */
+{
+  const CQL = { spaceKey: "DOCS", cqlTemplate: "title ~ {issueKey}" };
+  for (const extra of [
+    { ...CQL },                                   // determinate negative → BLOCK
+    { ...CQL, strict: true },                     // …strict changes nothing here
+    { ...CQL, mode: "semantic", prompt: "x" },    // semantic, no judge available → degrade
+    { ...CQL, mode: "semantic", prompt: "x", strict: true },
+    { spaceKey: "", cqlTemplate: "x" },           // misconfig → BLOCK in both columns
+    { spaceKey: "DOCS", cqlTemplate: "" },
+    { spaceKey: "DOCS", cqlTemplate: "{nope}" },
+    { spaceKey: "DOCS", cqlTemplate: "x", mode: "semantic", prompt: "" },
+    { spaceKey: "DOCS", cqlTemplate: "x", errorMessage: "Write the design page first." },
+  ]) {
+    assertShape(await run("confluence-page-exists", FULL_ISSUE, extra),
+      `confluence-page-exists ${JSON.stringify(extra)}`);
+  }
+  // The fail-OPEN allow is the object the live A/B proved Jira refuses when it carries
+  // one extra key. `confluenceReason` and `banner` must NOT cross the boundary.
+  const open = await run("confluence-page-exists", FULL_ISSUE, { spaceKey: "DOCS", cqlTemplate: "x", __forceUnavailable: true });
+  ok(!("confluenceReason" in open) && !("banner" in open),
+    "a Confluence fail-OPEN never carries confluenceReason/banner across the platform boundary");
+}
+
 /* …and a real block still carries its sentence and nothing else. */
 {
   const out = await run("field-required", EMPTY_ISSUE);

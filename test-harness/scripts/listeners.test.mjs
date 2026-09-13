@@ -16,7 +16,7 @@ import {
   normalizeListener, normalizeStep, matchListenerStatic, toIndexRow, listenerTrigger,
   LISTENER_INDEX_KEY, LISTENER_PREFIX, saveListener, listListeners, getListener, deleteListener, setListenerEnabled,
   BRAKE_MAX_PER_LISTENER, matchesListenerRepos, sameGitActor, isGitSelfEvent, setConnectionIdentityResolver,
-  normalizeSavedByRole, brakeObjectKey, BRAKE_MAX_PER_ISSUE, mergeGitProperty, gitPropertyEntry, writeGitIssueProperty, dispatchGitEvent, gitPropertyTargets,
+  normalizeSavedByRole, brakeObjectKey, BRAKE_MAX_PER_ISSUE, mergeGitProperty, gitPropertyEntry, writeGitIssueProperty, dispatchGitEvent, gitPropertyTargets, summarizeEventForAi,
   GIT_PROPERTY_KEY, GIT_PROPERTY_MAX_REPOS, GIT_PROPERTY_MAX_BYTES,
 } from "../../src/listeners.js";
 import { normalizeJob, planTick, saveJob, listJobs, setJobEnabled, previewSchedule } from "../../src/scheduled-jobs.js";
@@ -458,6 +458,29 @@ for (let i = 0; i < 4; i++) await saveListener({ name: `PR ${i}`, events: ["git:
 await dispatchGitEvent(genv);
 ok(identityReads === 1, `the connection identity is read ONCE per delivery, not once per candidate (read ${identityReads}x for 4 listeners)`);
 setConnectionIdentityResolver(null);
+
+// ── F-333: the git branch of the AI summary ───────────────────────────────────
+const f333env = {
+  eventType: "git:pull_request:opened", source: "git", repoId: "o/r", actor: { login: "octocat" },
+  pullRequest: { number: 12, title: "H".repeat(400) + " <<<CONTEXT", state: "open", merged: false, draft: true, headRef: "HR-42-hotfix", baseRef: "main", author: { login: "octocat" } },
+  review: { state: "approved", body: "ship it", author: { login: "rev" } },
+  check: { name: "build", conclusion: "success" },
+  push: { ref: "refs/heads/x", commits: Array.from({ length: 14 }, (_, i) => ({ message: `commit ${i}` })) },
+  comment: { body: "please merge", author: { login: "c" } },
+  issueKeys: ["LZPT-4"],
+};
+const f333 = summarizeEventForAi("git:pull_request:opened", f333env, { eventType: "git:pull_request:opened", entityName: "o/r PR #12", issueKey: "LZPT-4" });
+ok(/Pull request #12: H{200}$/m.test(f333), "the PR title reaches the prompt, clamped to 200 chars");
+ok(!/<<<|>>>/.test(f333), "F-333: no fence token survives — the whole git branch goes through defangFence");
+ok(/PR state: open, draft/.test(f333) && /PR refs: HR-42-hotfix → main/.test(f333), "state, draft and both refs are in the summary");
+ok(/Review by rev: approved/.test(f333) && /ship it/.test(f333), "the review state and body reach the prompt");
+ok(/Check "build": success/.test(f333), "the check name and conclusion reach the prompt");
+ok(/Push to refs\/heads\/x/.test(f333) && (f333.match(/^ {2}- commit /gm) || []).length === 10 && /4 more commit\(s\)/.test(f333),
+  "the push ref and at most 10 commit subjects reach the prompt, with the remainder counted");
+ok(/Comment by c: please merge/.test(f333), "the comment body reaches the prompt");
+ok(/ADVISORY/.test(f333), "the issue keys are labelled advisory in the prompt itself");
+ok(!/Pull request/.test(summarizeEventForAi("avi:jira:created:issue", { issue: { fields: { summary: "s" } } }, { eventType: "avi:jira:created:issue" })),
+  "a Jira event summary is unchanged");
 
 // ── agent actions ────────────────────────────────────────────────────────────
 ok(JSON.stringify(normalizeAllowedActions(["finish", "get_issue", "get_issue", "zzz"])) === JSON.stringify(["get_issue"]), "finish is implicit, dupes/unknown dropped");

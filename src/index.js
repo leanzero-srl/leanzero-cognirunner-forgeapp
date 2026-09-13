@@ -710,12 +710,18 @@ export const currentEdition = async (context, options) => {
  * above) plus ADDITIVE flags — a frontend that knows nothing about editions still
  * renders `error` correctly. Do not invent a second refusal shape.
  */
+export const EDITION_REFUSAL_REASON = "upgrade-required";
 export const upgradeRequired = (featureId) => {
   const feature = ADVANCED_FEATURES.find((f) => f.id === featureId);
   const label = feature ? feature.label : "This feature";
   return {
     success: false,
     upgradeRequired: true,
+    // F-255 — an edition denial is its OWN family. It carries a `reason` so a
+    // consumer that branches on `reason` (F-242) never files it under
+    // "no-permission" and never under "fault + Retry": no retry and no role grant
+    // clears it, only an upgrade.
+    reason: EDITION_REFUSAL_REASON,
     featureId: featureId || null,
     edition: EDITION_IDS.STANDARD,
     error: `${label} is part of CogniRunner ${EDITIONS.advanced.label}.`,

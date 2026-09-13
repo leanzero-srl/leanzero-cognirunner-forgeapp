@@ -37,8 +37,15 @@ const ok = (c, m) => { if (c) pass++; else { fail++; console.log("FAIL:", m); } 
 // =====================================================================================
 const mUp = indexSrc.match(/export const upgradeRequired = \(featureId\) => \{[\s\S]*?\n\};/);
 ok(!!mUp, "found upgradeRequired in src/index.js");
+// F-255: the refusal names its own family through a constant — pull it in so the
+// extracted source still evaluates, and so a rename here is a test failure there.
+const mReason = indexSrc.match(/export const EDITION_REFUSAL_REASON = "([^"]+)";/);
+ok(!!mReason, "found EDITION_REFUSAL_REASON in src/index.js");
+const EDITION_REFUSAL_REASON = mReason ? mReason[1] : null;
 // eslint-disable-next-line no-eval
-const upgradeRequired = eval("(" + mUp[0].replace("export const upgradeRequired = ", "").replace(/;\s*$/, "") + ")");
+const upgradeRequired = eval(
+  `const EDITION_REFUSAL_REASON = ${JSON.stringify(EDITION_REFUSAL_REASON)};\n(`
+  + mUp[0].replace("export const upgradeRequired = ", "").replace(/;\s*$/, "") + ")");
 
 {
   const r = upgradeRequired("coder");
@@ -50,6 +57,14 @@ const upgradeRequired = eval("(" + mUp[0].replace("export const upgradeRequired 
     "the edition flags are ADDITIVE on top of {success,error}");
   const keys = Object.keys(r);
   ok(keys.includes("success") && keys.includes("error"), "superset of {success,error}, not a second refusal shape");
+  // F-255 — an edition denial must be SELF-CLASSIFYING. A consumer that branches on
+  // `reason` (the F-242 contract) would otherwise file it as a fault and offer a
+  // Retry that can never succeed; and it must NOT claim to be a permission refusal,
+  // because no role grant clears it.
+  ok(r.reason === "upgrade-required", `refusal carries reason:"upgrade-required" (got ${JSON.stringify(r.reason)})`);
+  ok(r.reason !== "no-permission", "an edition denial is not a permission refusal");
+  ok(r.needsRole === undefined && r.hint === undefined, "an edition denial names no role floor and no roster hint");
+  ok(r.featureId === "coder", "the featureId still rides along for the upsell");
 }
 {
   const r = upgradeRequired("not-a-real-feature");

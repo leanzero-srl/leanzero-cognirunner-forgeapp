@@ -612,8 +612,15 @@ reset();
   eq(big.memory.constraints[0], "c1", "…while the pinned constraint survives whole");
   const many = await L.writeMemory(kvs, AG, { text: "t", constraints: Array.from({ length: 50 }, (_, i) => `c${i}`) });
   eq(many.memory.constraints.length, VA_LIMITS.constraintsMax, "constraints are bounded in number");
-  eq((await L.writeMemory(kvs, AG, { text: "t", constraints: ["y".repeat(900)] })).memory.constraints[0].length,
-    VA_LIMITS.constraintMaxChars, "…and in length");
+  // IN SIZE, AND THE SIZE IS BYTES OF THE STORED FORM (F-498) — the unit `memoryCapBytes`
+  // counts. ASCII and CJK are both asserted, because a character cap is only wrong on one.
+  for (const [label, ch] of [["ascii", "y"], ["cjk", "日"], ["emoji", "🙂"]]) {
+    const one = (await L.writeMemory(kvs, AG, { text: "t", constraints: [ch.repeat(900)] })).memory.constraints[0];
+    const bytes = new TextEncoder().encode(JSON.stringify(one)).length;
+    ok(bytes <= VA_LIMITS.constraintMaxBytes,
+      `…and in SIZE: a ${label} constraint is clamped to ${VA_LIMITS.constraintMaxBytes} stored bytes (got ${bytes})`);
+    ok(!/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(one), `…cut on a code-point boundary (${label}), never a lone surrogate`);
+  }
   eq((await L.writeMemory(kvs, AG, { text: "t", constraints: ["  ", "", "real"] })).memory.constraints.length, 1, "blank constraints are dropped");
 
   // COMPACTION — the stub summariser actively tries to drop a constraint.

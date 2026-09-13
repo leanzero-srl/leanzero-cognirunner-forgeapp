@@ -82,6 +82,12 @@
 import {
   readItem, listItemIds, readTick, readCaps, readHealth, readMemory, writeMemory,
   transitionItem, saveItem,
+  // THE ONE MEASUREMENT OF A MEMORY ROW (F-459/F-499). This file used to carry a third
+  // private copy that omitted `updatedAt`, so the Agents-tab meter under-reported against
+  // the very cap `writeMemory` enforces: a row at 8.1 KB read "nearly full" on the pane
+  // while the write had already refused. The measurer lives with the writer that enforces
+  // the cap; a reader that measures it its own way is a reader that disagrees with it.
+  memoryBytes,
 } from "./va-ledger.js";
 import {
   isVaJob, vaOf, readScopeProjects, wrapScopedJql, inPostWindow,
@@ -575,12 +581,23 @@ export const postWindowInstants = (va, nowMs) => {
  * One tick receipt, in the shape the Receipts pane reads:
  * `{at, phase, ok, swept, worked, posted, error, skipped:[{gate, itemKey}]}`.
  *
- * THE `gate.` PREFIX IS STRIPPED HERE. `runVaPost` writes its skip reasons as
- * `gate.shadow`, `gate.freshness` …, while the tab's `GATE_COPY` table is keyed on the
- * BARE gate name. Neither side is wrong and neither should be edited to suit the other,
- * so the translation lives at the one boundary that knows both. An id with no copy in
- * that table still renders as itself, so a gate added to the engine is visible in the
- * tab the day it ships rather than disappearing.
+ * THE STORED `gate` IS PASSED THROUGH UNTOUCHED (F-501). A skip may carry an explicit
+ * `gate` field — `recordTick` keeps it deliberately (F-482), because a skip caused by a
+ * GATE ("this instance may not run an agent at all") reads differently from a skip caused
+ * by one item. This projection used to REBUILD `gate` from `reason` and throw the stored
+ * field away, so every agent-level skip rendered `gate === reason`: on a Standard tenant
+ * the tab showed the raw id `needs-coder-edition` with no sentence, because `GATE_COPY` is
+ * keyed on the gate name and the lookup was being handed the reason. The engine already
+ * decided which gate this was; the projection's job is to carry that decision, not to
+ * infer it.
+ *
+ * THE `gate.` PREFIX STRIP IS THE FALLBACK, for the skips that have no `gate` field:
+ * `runVaPost` writes its skip reasons as `gate.shadow`, `gate.freshness` …, while the
+ * tab's `GATE_COPY` table is keyed on the BARE gate name. Neither side is wrong and
+ * neither should be edited to suit the other, so the translation lives at the one
+ * boundary that knows both. An id with no copy in that table still renders as itself, so
+ * a gate added to the engine is visible in the tab the day it ships rather than
+ * disappearing. `reason` is carried SEPARATELY and is never overwritten by either path.
  *
  * `itemKey` is null for an AGENT-level skip: the engine writes the sentinel `(agent)`
  * for "the whole run stopped here", and rendering that as an issue key would invite an
@@ -588,18 +605,38 @@ export const postWindowInstants = (va, nowMs) => {
  */
 const publicReceipt = (r) => {
   const phase = r.phase === "post" ? "post" : "prepare";
+  /*
+   * F-502 — A TICK THE ENGINE STOPPED AT A GATE IS NOT AN OK TICK.
+   *
+   * `ok: !r.error` reported GREEN on a capability-refused tick while `va_health` recorded
+   * `consecutiveFailures: 1` for the same run. The two surfaces an admin reads disagreed
+   * about whether the run failed, and the receipt — the one that names the reason — was
+   * the one saying everything is fine. Below the banner threshold the receipt is the ONLY
+   * signal there is.
+   *
+   * The engine does not write an `error` on that arm, by design: nothing threw, the
+   * instance simply refused. What it DOES write is the agent-level GATE skip (F-482,
+   * `{key: "(agent)", gate: "capability"}`), and that field IS the engine's statement that
+   * the whole run stopped here — the same statement it takes a health failure for. So the
+   * verdict is read from it rather than inferred from the absence of an exception.
+   *
+   * A skip on `(agent)` WITHOUT a gate stays ok: that is the paused arm, and a paused
+   * agent is a healthy no-op, not a failure. The gate field is exactly the line between
+   * the two, which is why F-482 added it.
+   */
+  const stoppedAtGate = asArray(r.skipped).some((s) => s && s.key === "(agent)" && s.gate);
   return {
     at: r.finished || r.started || null,
     startedAt: r.started || null,
     phase,
     tickId: r.tickId || null,
-    ok: !r.error,
+    ok: !r.error && !stoppedAtGate,
     swept: r.candidates,
     worked: phase === "prepare" ? r.staged : null,
     posted: phase === "post" ? r.staged : null,
     error: r.error || null,
     skipped: asArray(r.skipped).map((s) => ({
-      gate: String((s && s.reason) || "").replace(/^gate\./, ""),
+      gate: (s && s.gate) || String((s && s.reason) || "").replace(/^gate\./, ""),
       itemKey: s && s.key === "(agent)" ? null : ((s && s.key) || null),
       reason: (s && s.reason) || null,
     })),
@@ -794,14 +831,10 @@ export const memory = async ({ jobId } = {}, injected = {}) => {
     capBytes: VA_LIMITS.memoryCapBytes,
     compactBytes: VA_LIMITS.memoryCompactBytes,
     constraintsMax: VA_LIMITS.constraintsMax,
-    constraintMaxChars: VA_LIMITS.constraintMaxChars,
+    // BYTES (F-498) — the unit `capBytes` is measured in, so the pane's per-line meter and
+    // the clamp `writeMemory` applies count the same thing on CJK text as on ASCII.
+    constraintMaxBytes: VA_LIMITS.constraintMaxBytes,
   });
-};
-
-/** What a stored memory weighs. The SAME measure `writeMemory`'s budget uses. */
-const memoryBytes = (m) => {
-  try { return new TextEncoder().encode(JSON.stringify({ text: (m && m.text) || "", constraints: asArray(m && m.constraints) })).length; }
-  catch (e) { return 0; }
 };
 
 /* ══════════════════════════════════════════════════════════════════════════════

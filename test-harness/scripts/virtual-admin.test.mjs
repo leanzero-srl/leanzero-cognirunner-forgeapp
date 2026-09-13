@@ -1676,39 +1676,56 @@ reset();
 
 reset();
 {
-  /* ── BLOCK 2: pinned text alone over the cap REFUSES, loudly ────────────── */
+  /* ── BLOCK 2: pinned text alone can NEVER fill the cap (F-498) ──────────── */
   /*
-   * AND IT IS REACHABLE TODAY, on a tenant that does not write in Latin script.
+   * THE REFUSAL EXISTS, AND PINNED TEXT MUST NOT BE ABLE TO REACH IT.
    *
-   * `constraintMaxChars` (300) clamps CHARACTERS; `memoryCapBytes` (8192) is BYTES. In
-   * ASCII the maximum pinned payload is ~6.1 KB and fits. In CJK every character is three
-   * UTF-8 bytes, so the same twenty constraints an admin is allowed to pin weigh ~18 KB —
-   * more than twice the cap. The old code stored that row anyway (KVS's own ceiling is
-   * 240 KiB, so it succeeded) and set an `overCap` flag neither caller read.
+   * F-494 made `writeMemory` refuse (`memory-full`) rather than cut human-pinned text when
+   * the pinned half alone exceeds `memoryCapBytes`. That was right, and it made a unit
+   * mismatch fatal: the pinned lines were capped in CHARACTERS (`constraintMaxChars`, 300)
+   * while the row is capped in BYTES (8192). In CJK every character is three UTF-8 bytes,
+   * so the twenty constraints an admin is ALLOWED to pin weighed ~18 KB and every
+   * subsequent write of that agent's memory refused. A permitted configuration that
+   * disables a feature is not a cap, it is a trap.
    *
-   * There is no cut that saves this row: the whole overflow IS human-pinned text. So the
-   * write refuses, and both callers already surface a refusal — `memory_note` tells the
-   * model it could not be remembered, `saveMemory` fails the admin's save with the reason.
+   * F-498 measures the pinned budget in the cap's own unit (`constraintMaxBytes`), so the
+   * worst case an admin can construct — `constraintsMax` lines, each at the byte cap, in
+   * the most expensive script — still fits with room for prose. The test is written in CJK
+   * on purpose: in ASCII this defect is invisible.
    */
-  const cjk = Array.from({ length: VA_LIMITS.constraintsMax }, () => "日".repeat(VA_LIMITS.constraintMaxChars));
-  const pinnedBytes = new TextEncoder().encode(JSON.stringify({ text: "", constraints: cjk, updatedAt: new Date().toISOString() })).length;
-  ok(pinnedBytes > VA_LIMITS.memoryCapBytes,
-    `memory.full: the fixture really does overflow on pinned text alone (${pinnedBytes} > ${VA_LIMITS.memoryCapBytes})`);
+  const cjkLine = "日".repeat(VA_LIMITS.constraintMaxBytes); // 3 bytes each: deliberately over the byte cap
+  const cjk = Array.from({ length: VA_LIMITS.constraintsMax }, (_, i) => `${cjkLine}${i}`);
+  const r = await L.writeMemory(kvs, AG, { text: "日本語のメモ", constraints: cjk });
+  eq(r.ok, true, "memory.full.ALLOW_cjk — the maximum pinned payload in CJK is WRITTEN, not refused (F-498)");
+  eq(r.reason, undefined, "memory.full: …there is no `memory-full` on pinned text alone");
+  eq(r.memory.constraints.length, VA_LIMITS.constraintsMax,
+    "memory.full: …all twenty pinned lines are stored");
+  for (const c of r.memory.constraints) {
+    const bytes = new TextEncoder().encode(JSON.stringify(c)).length;
+    ok(bytes <= VA_LIMITS.constraintMaxBytes,
+      `memory.full: …each clamped in BYTES of the stored form (${bytes} <= ${VA_LIMITS.constraintMaxBytes})`);
+    ok(!/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(c), "memory.full: …and cut on a code-point boundary, never mid-character");
+  }
+  const storedBytes = new TextEncoder().encode(JSON.stringify(r.memory)).length;
+  ok(storedBytes <= VA_LIMITS.memoryCapBytes,
+    `memory.full: the whole row is inside the cap (${storedBytes} <= ${VA_LIMITS.memoryCapBytes})`);
+  ok(r.memory.text.includes("日本語"), "memory.full: …and there was still room for the prose");
+  eq((await L.readMemory(kvs, AG)).memory.constraints.length, VA_LIMITS.constraintsMax,
+    "memory.full: …on read back too");
 
-  const r = await L.writeMemory(kvs, AG, { text: "anything", constraints: cjk });
-  eq(r.ok, false, "memory.full.BLOCK — pinned text alone over the cap REFUSES the write");
-  eq(r.reason, "memory-full", "memory.full: …by the name the caller surfaces");
-  eq(r.wrote, false, "memory.full: …and it says nothing was stored");
-  eq((await L.readMemory(kvs, AG)).memory.text, "", "memory.full: the store really is untouched");
-  eq((await L.readMemory(kvs, AG)).memory.constraints.length, 0, "memory.full: …no half-written row either");
+  // The prose, however big, never turns a full pinned list into a refusal: it is the half
+  // that may be cut, and the write keeps succeeding.
+  const withFlood = await L.writeMemory(kvs, AG, { text: "メモ行\n".repeat(4000), constraints: cjk });
+  eq(withFlood.ok, true, "memory.full.ALLOW — a 20-line CJK pin plus a flood of prose still writes");
+  eq(withFlood.memory.constraints.length, VA_LIMITS.constraintsMax, "…with every pinned line intact");
+  ok(new TextEncoder().encode(JSON.stringify(withFlood.memory)).length <= VA_LIMITS.memoryCapBytes,
+    "…and the stored row inside the cap");
 
-  // The same tenant, within its budget, is NOT refused — this is a cap, not a ban on CJK.
-  const few = ["日".repeat(VA_LIMITS.constraintMaxChars), "本".repeat(10)];
-  const okRow = await L.writeMemory(kvs, AG, { text: "日本語のメモ", constraints: few });
-  eq(okRow.ok, true, "memory.full.ALLOW — a CJK memory inside the budget writes normally");
-  eq(okRow.memory.constraints.length, 2, "memory.full: …with its pinned constraints whole");
-  ok(new TextEncoder().encode(JSON.stringify(okRow.memory)).length <= VA_LIMITS.memoryCapBytes,
-    "memory.full: …and inside the cap");
+  // The `memory-full` guard of F-494 is KEPT, and is now unreachable from normalised
+  // input by arithmetic (asserted in va-config.test.mjs) rather than by hope: it is what
+  // stands between a future change to these limits and a silently over-cap KVS row.
+  const none = await L.writeMemory(kvs, AG, { text: "x", constraints: [] });
+  eq(none.ok, true, "memory.full: an empty pinned list is never a refusal");
 
   // The refusal is reachable directly too, whatever the limits happen to be.
   const survived = L.pinnedSurvived({ constraints: ["a", "b"] }, { constraints: ["a"] });

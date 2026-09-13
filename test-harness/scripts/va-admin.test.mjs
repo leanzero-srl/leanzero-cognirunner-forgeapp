@@ -31,6 +31,10 @@
 
 import "../lib/register-mocks-index.mjs";
 import storage from "../lib/mock-kvs.mjs";
+import { readFile, readdir } from "node:fs/promises";
+// The REAL receipt writer (F-501/F-502): the tests below write the row the engine writes
+// and read it back through the resolver, rather than hand-building a KVS value.
+import { recordTick } from "../../src/va-ledger.js";
 const { default: forgeApi, pushed } = await import("@forge/api");
 
 let pass = 0, fail = 0;
@@ -613,6 +617,86 @@ let agentId = null;
   ok(st.receipts.every((r) => (r.skipped || []).every((s) => !String(s.gate).startsWith("gate."))),
     "…with the engine's `gate.` prefix stripped at this one boundary, so GATE_COPY can key on it");
 
+  /* ── F-501: the STORED `gate` reaches the tab, it is not rebuilt from `reason` ──
+   *
+   * F-482 gave an agent-level skip an explicit `gate` field and `recordTick` keeps it.
+   * `publicReceipt` then rebuilt `gate` from `reason` and threw the stored field away, so
+   * a capability refusal — the whole tick stopped because the instance may not run an
+   * agent — reached the Agents tab as `gate: "needs-coder-edition"`. `GATE_COPY` is keyed
+   * on the GATE, so the lookup missed and the admin saw the raw id with no sentence.
+   * Proven live on dev before the fix: the engine stored `gate:"capability"` and
+   * `getVaStatus` answered `gate:"needs-coder-edition"`.
+   *
+   * Written through the REAL receipt path: `recordTick` writes the row the engine writes
+   * (the capability arm's exact skip shape), `getVaStatus` reads it back.
+   */
+  await recordTick(storage, agentId, {
+    tickId: "f501", phase: "prepare", candidates: 0, staged: 0,
+    skipped: [{ key: "(agent)", gate: "capability", reason: "needs-coder-edition" }],
+  });
+  const capSt = await call("getVaStatus", { jobId: agentId });
+  const capReceipt = (capSt.receipts || []).find((r) => r.tickId === "f501");
+  ok(capReceipt, `F-501: the capability tick is in the timeline (got ${JSON.stringify((capSt.receipts || []).map((r) => r.tickId))})`);
+  const capSkip = capReceipt && (capReceipt.skipped || [])[0];
+  ok(capSkip && capSkip.gate === "capability",
+    `F-501: the tab is handed the STORED gate, not the reason (got ${JSON.stringify(capSkip)})`);
+  ok(capSkip && capSkip.reason === "needs-coder-edition",
+    "F-501: …and the reason is carried SEPARATELY, unchanged — two fields, two questions");
+  ok(capSkip && capSkip.itemKey === null,
+    "F-501: …with the `(agent)` sentinel rendered as no item, not as an issue called (agent)");
+
+  // The FALLBACK still works for the post phase, which writes `gate.`-prefixed reasons
+  // and no `gate` field at all. Both shapes, one boundary.
+  await recordTick(storage, agentId, {
+    tickId: "f501b", phase: "post", candidates: 1, staged: 0,
+    skipped: [{ key: "SUP-1", reason: "gate.freshness" }],
+  });
+  const postSt = await call("getVaStatus", { jobId: agentId });
+  const postSkip = (postSt.receipts || []).find((r) => r.tickId === "f501b");
+  ok(postSkip && postSkip.skipped[0].gate === "freshness",
+    `F-501: a skip with NO stored gate still falls back to the stripped reason (got ${JSON.stringify(postSkip && postSkip.skipped)})`);
+  ok(postSkip && postSkip.skipped[0].reason === "gate.freshness",
+    "F-501: …and its raw reason is untouched");
+  ok(postSkip && postSkip.skipped[0].itemKey === "SUP-1",
+    "F-501: …and an ITEM-level skip still names its issue");
+
+  /* ── F-502: the receipt agrees with the health counter about a failed tick ────
+   *
+   * The capability-refused tick reported `ok: true` on the receipt while `va_health`
+   * recorded `consecutiveFailures: 1` for the same run — the two surfaces an admin reads
+   * disagreeing about whether the run failed, with the receipt (the one that names the
+   * reason) being the green one. Below the banner threshold the receipt is the ONLY signal
+   * there is, so a green receipt is the F-233 shape: a control whose refusal reads as
+   * everything being fine.
+   *
+   * The engine writes no `error` on that arm — nothing threw, the instance refused — so
+   * the verdict is read from the agent-level GATE skip it DOES write.
+   */
+  ok(capReceipt && capReceipt.ok === false,
+    `F-502: a tick the engine stopped at a gate reports ok:false (got ${JSON.stringify(capReceipt && { ok: capReceipt.ok, error: capReceipt.error })})`);
+  ok(capReceipt && capReceipt.error === null,
+    "F-502: …with `error` still null — it did not throw, it was refused, and the two are different claims");
+
+  // A PAUSED agent is a healthy no-op, not a failure: its agent-level skip carries NO
+  // gate, which is exactly the line F-482 drew, and it must stay green.
+  await recordTick(storage, agentId, {
+    tickId: "f502p", phase: "prepare", candidates: 0, staged: 0,
+    skipped: [{ key: "(agent)", reason: "paused" }],
+  });
+  const okSt = await call("getVaStatus", { jobId: agentId });
+  const pausedReceipt = (okSt.receipts || []).find((r) => r.tickId === "f502p");
+  ok(pausedReceipt && pausedReceipt.ok === true,
+    `F-502: a PAUSED tick stays ok — a healthy no-op is not a failure (got ${JSON.stringify(pausedReceipt && { ok: pausedReceipt.ok })})`);
+
+  // And a tick that really threw is still not ok, by the original rule.
+  await recordTick(storage, agentId, {
+    tickId: "f502e", phase: "prepare", candidates: 0, staged: 0, error: "kvs down",
+  });
+  const errSt = await call("getVaStatus", { jobId: agentId });
+  const errReceipt = (errSt.receipts || []).find((r) => r.tickId === "f502e");
+  ok(errReceipt && errReceipt.ok === false && errReceipt.error === "kvs down",
+    `F-502: a tick that threw is still ok:false and still names the error (got ${JSON.stringify(errReceipt && { ok: errReceipt.ok, error: errReceipt.error })})`);
+
   const agents = await call("listVaAgents", {});
   has(agents, ["agents"], "listVaAgents");
   has(agents.agents[0], ["id", "name", "enabled", "va"], "an agent row (job row + {va})");
@@ -651,6 +735,46 @@ let agentId = null;
   const notVa = await call("getVaStatus", { jobId: (await call("getScheduledJobs", {})).jobs.find((j) => j.mode === "script").id });
   ok(notVa.success === false && notVa.reason === "not_a_virtual_administrator",
     `a script job is refused by name rather than operated on as an agent (got ${JSON.stringify(notVa).slice(0, 200)})`);
+}
+
+/* ── F-499: ONE MEASUREMENT OF A MEMORY ROW, ACROSS THE WHOLE BACKEND ────────────
+ *
+ * `memoryBytes` was defined three times (F-459 removed two of them), and this file's
+ * private copy omitted `updatedAt` — so the meter the Agents tab renders under-reported
+ * against the very cap `writeMemory` enforces: a row at 8.1 KB read "nearly full" on the
+ * pane while every write was already refusing `memory-full`.
+ *
+ * A comment saying "use the ledger's one" is not a gate; a fourth copy would be added by
+ * the next person who needs a byte count in a hurry. This reads the SOURCE and asserts
+ * there is exactly one DEFINITION of the name in src/, wherever it lives.
+ */
+{
+  const srcDir = new URL("../../src/", import.meta.url);
+  const files = [];
+  const walk = async (dir) => {
+    for (const e of await readdir(dir, { withFileTypes: true })) {
+      if (e.isDirectory()) await walk(new URL(`${e.name}/`, dir));
+      else if (e.name.endsWith(".js")) files.push(new URL(e.name, dir));
+    }
+  };
+  await walk(srcDir);
+  const definitions = [];
+  for (const f of files) {
+    const text = await readFile(f, "utf8");
+    // A DEFINITION, not a use: `const/let/var/function memoryBytes` or an exported one.
+    for (const m of text.matchAll(/(?:^|\n)\s*(?:export\s+)?(?:const|let|var|function)\s+memoryBytes\b/g)) {
+      definitions.push(`${f.pathname.split("/src/")[1]}@${text.slice(0, m.index).split("\n").length}`);
+    }
+  }
+  ok(definitions.length === 1,
+    `F-499: "memoryBytes" is DEFINED exactly once across src/ (found ${definitions.length}: ${definitions.join(", ") || "none"})`);
+  ok(definitions[0] && definitions[0].startsWith("va-ledger.js"),
+    `F-499: …and the one home is va-ledger.js, beside the write that enforces the cap (got ${definitions[0]})`);
+
+  // The definition really is the envelope, `updatedAt` included — the omission was the bug.
+  const ledger = await readFile(new URL("va-ledger.js", srcDir), "utf8");
+  const body = ledger.slice(ledger.indexOf("export const memoryBytes"), ledger.indexOf("export const memoryBytes") + 400);
+  ok(/updatedAt/.test(body), "F-499: the one measurer counts `updatedAt` — the field the deleted copy left out");
 }
 
 console.log(`\nva-admin.test.mjs: ${pass} passed, ${fail} failed`);

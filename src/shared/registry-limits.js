@@ -576,9 +576,23 @@ export const VA_WIZARD_TTL_DAYS = 7;
 export const VA_HISTORY_MAX = 10;
 export const VA_NOTES_MAX_CHARS = 600;
 export const VA_STAGED_BODY_MAX_CHARS = 2000;
-/** Pinned constraints in the agent memory: how many, and how long each may be (F-423). */
+/**
+ * Pinned constraints in the agent memory: how many, and how big each may be (F-423).
+ *
+ * THE BUDGET IS BYTES, NOT CHARACTERS (F-498). The memory cap below is measured in UTF-8
+ * bytes of the stored JSON envelope, so a CHARACTER cap on the pinned half is a cap in a
+ * different unit than the one that is enforced: 20 x 300 CJK characters weigh ~18 KB, more
+ * than twice `VA_MEMORY_MAX_BYTES`, and after F-494 (`writeMemory` refuses `memory-full`
+ * rather than cut human-pinned text) such a tenant could never write memory again.
+ *
+ * The arithmetic this number is chosen by: 20 x 280 = 5600 bytes of pinned content, plus
+ * the array's own commas and brackets and the `text`/`constraints`/`updatedAt` key names
+ * (~100 bytes) = ~5700. That is below `VA_MEMORY_COMPACT_BYTES` (6144), so a fully pinned
+ * agent is not permanently in compaction, and ~2.4 KB below `VA_MEMORY_MAX_BYTES` (8192),
+ * which is the prose's guaranteed room. Pinned text alone can therefore never fill the cap.
+ */
 export const VA_CONSTRAINTS_MAX = 20;
-export const VA_CONSTRAINT_MAX_CHARS = 300;
+export const VA_CONSTRAINT_MAX_BYTES = 280;
 
 /** Agent memory: compaction triggers at 6 KB and the compacted result is capped at 8 KB. */
 export const VA_MEMORY_COMPACT_BYTES = 6144;

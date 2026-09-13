@@ -31,6 +31,7 @@ const P = (properties, required) => ({ type: "object", properties, required, add
 // Issue references are named tool arguments, not the sandbox's overloaded
 // positional arguments. Accept Jira keys (case preserved) or numeric ID strings.
 import { agentCapability } from "./edition.js";
+import { MAX_RULE_SKILL_IDS } from "./registry-limits.js";
 
 export const ISSUE_REFERENCE_SCHEMA = Object.freeze({ type: "string", pattern: "^(?:[A-Za-z][A-Za-z0-9_]*-[0-9]+|[0-9]+)$" });
 const KEY = { ...ISSUE_REFERENCE_SCHEMA, description: "Issue key, e.g. PROJ-123, or numeric issue ID as a string. Omit to use the current issue." };
@@ -238,6 +239,34 @@ export const AGENT_ACTIONS = [...JIRA_AGENT_ACTIONS, ...GIT_AGENT_ACTIONS, ...WE
 
 /** The namespace an action belongs to. `finish` is control and belongs to none. */
 export const agentActionNamespace = (a) => (a && a.namespace) || (a && a.kind === "control" ? "control" : "jira");
+
+/**
+ * THE KNOWLEDGE BINDING on a rule's `agent` block (1.4 commit 13b) — ONE normalizer,
+ * called by `normalizeListener` and `normalizeJob`, so the two rule kinds cannot drift
+ * into two shapes for the same field.
+ *
+ * `skillIds`     — up to MAX_RULE_SKILL_IDS skills, in the author's order. CLAMPED here
+ *                  (shape, count, duplicates) and VALIDATED against the skill index by
+ *                  the async savers, which is the only place that can read it. A rule
+ *                  binds a VOICE, not a library: four is a choice, not a budget.
+ * `useMemories`  — opt-in, default OFF, exactly like the runtime memory injection the
+ *                  validators use. Memories cost tokens on every round of every run, so
+ *                  the rule's author says yes, not the app.
+ *
+ * Unknown-shaped input degrades to the empty binding rather than throwing: a rule with
+ * no knowledge is the pre-1.4 rule, and that has to stay saveable.
+ */
+export const normalizeAgentKnowledge = (a) => {
+  const src = a && typeof a === "object" ? a : {};
+  const ids = [];
+  for (const raw of Array.isArray(src.skillIds) ? src.skillIds : []) {
+    const id = String(raw == null ? "" : raw).trim();
+    if (!/^[A-Za-z0-9_.:-]{1,80}$/.test(id) || ids.includes(id)) continue;
+    ids.push(id);
+    if (ids.length >= MAX_RULE_SKILL_IDS) break;
+  }
+  return { skillIds: ids, useMemories: src.useMemories === true };
+};
 
 export const AGENT_ACTION_IDS = AGENT_ACTIONS.map((a) => a.id);
 const BY_ID = new Map(AGENT_ACTIONS.map((a) => [a.id, a]));

@@ -37,8 +37,8 @@
 import { kvs as storage } from "@forge/kvs";
 import api, { route } from "@forge/api";
 import { validateCron, normalizeTimeZone, dueInWindow, nextRuns, describeCron, fireIdentity } from "./shared/cron.js";
-import { assertAllowedActions, buildAgentGateContext, DEFAULT_AGENT_ACTIONS, DEFAULT_AGENT_ROUNDS, MAX_AGENT_ROUNDS } from "./shared/agent-actions.js";
-import { normalizeStep, normalizeSavedByRole } from "./listeners.js";
+import { assertAllowedActions, buildAgentGateContext, normalizeAgentKnowledge, DEFAULT_AGENT_ACTIONS, DEFAULT_AGENT_ROUNDS, MAX_AGENT_ROUNDS } from "./shared/agent-actions.js";
+import { normalizeStep, normalizeSavedByRole, assertKnownSkillIds, buildAgentKnowledge } from "./listeners.js";
 import { agentResultFields, SCOPED_AGENT_SUMMARY_BUDGET_BYTES, boundScopedJobLog } from "./shared/agent-result.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
 // ONE HOME for KVS key sanitising / conflict detection — src/shared/kvs-keys.js (F-340).
@@ -101,6 +101,8 @@ export const normalizeJob = (input = {}, { existing = null, accountId = null, ga
     // operator believing a gate they cannot see. `gate` omitted = restrictive default.
     allowedActions: assertAllowedActions(a.allowedActions == null ? DEFAULT_AGENT_ACTIONS : a.allowedActions, gate),
     maxRounds: clampInt(a.maxRounds, 1, MAX_AGENT_ROUNDS, DEFAULT_AGENT_ROUNDS),
+    // Knowledge binding — ONE normalizer, shared with listeners (1.4 commit 13b).
+    ...normalizeAgentKnowledge(a),
   };
   if (mode === "agent" && !agent.instructions.trim()) throw new Error("agent.instructions is required in agent mode");
   if (mode === "agent" && String(a.instructions || "").length > 6000) throw new Error("agent.instructions exceeds 6000 characters");
@@ -168,6 +170,8 @@ const touchSched = async (id) => {
 export const saveJob = async (input, { accountId = null, gate = undefined, savedByRole = "editor" } = {}) => {
   const existing = input && input.id ? await getJob(input.id) : null;
   const full = normalizeJob(input, { existing, accountId, gate, savedByRole });
+  // Same refusal as a listener, from the same home (1.4 commit 13b).
+  await assertKnownSkillIds(full.agent);
   delete full.stats;
   const rows = await readJobIndex();
   const at = rows.findIndex((r) => r.id === full.id);
@@ -344,7 +348,12 @@ export const runJob = async ({ job, scheduledFor = null, missed = 0, manual = fa
     if (job.mode === "agent") {
       const { runAgentTask } = await agentMod();
       const agentGate = gateFacts ? buildAgentGateContext({ ...gateFacts, triggerSource: null, savedByRole: job.savedByRole }) : undefined;
-      const r = await runAgentTask({ instructions: job.agent.instructions, allowedActions: job.agent.allowedActions, maxRounds: job.agent.maxRounds, issueKey, config, contextTitle: "JOB CONTEXT", contextText: summarizeJobForAi(job, scheduledFor, issue), deadline: perDeadline, cancelToken, extraContext, gate: agentGate, executors });
+      // Knowledge is built PER ISSUE because the memory block is project-scoped and a
+      // scoped job walks issues from different projects. The skills half is identical
+      // across them; paying one extra KVS read per issue is the cost of not injecting
+      // project A's learned facts while acting on project B's issue.
+      const knowledge = await buildAgentKnowledge(job.agent, { projectKey: extraContext.projectKey, audience: "agentRun" });
+      const r = await runAgentTask({ instructions: job.agent.instructions, allowedActions: job.agent.allowedActions, maxRounds: job.agent.maxRounds, issueKey, config, contextTitle: "JOB CONTEXT", contextText: summarizeJobForAi(job, scheduledFor, issue), deadline: perDeadline, cancelToken, extraContext, gate: agentGate, executors, knowledge });
       return { issueKey, ...agentResultFields(r, { summaryMaxBytes: job.scope ? Math.floor(SCOPED_AGENT_SUMMARY_BUDGET_BYTES / MAX_SCOPE_ISSUES) : null }), success: r.success, reason: r.success ? `${r.outcome}: ${r.summary || ""}` : (r.error || "agent failed"), changes: r.changes || [], logs: r.logs || [], tokens: r.tokens || 0, aiTimeMs: r.aiTimeMs || 0 };
     }
     const r = await m.runSandboxSteps({ issueKey, config, deadline: perDeadline, cancelToken, extraContext });

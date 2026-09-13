@@ -64,7 +64,7 @@ import {
 } from "./shared/agent-actions.js";
 import { safeKeyPart } from "./shared/kvs-keys.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
-import { runAgentLoop, createAgentActionDispatcher, assertAgentActionAllowed, compactIssue } from "./agent-runner.js";
+import { runAgentLoop, createAgentActionDispatcher, assertAgentActionAllowed, compactIssue, buildKnowledgeMessages } from "./agent-runner.js";
 import { createGitActionExecutor } from "./git-actions.js";
 import { createCoderWorkspace } from "./coder-workspace.js";
 import { defangFence } from "./memories.js";
@@ -473,6 +473,10 @@ export const runCoderTurn = async ({
   // distinguishable, because the thread row is the authority for simulation (F-360).
   simulation = undefined, connectionId = null, maxRounds = CODER_DEFAULT_ROUNDS,
   gateFacts = null, savedByRole = "editor", deadline = null, cancelToken = null,
+  // TRUSTED-BUT-BOUNDED knowledge for this turn: { memoryBlock, skillsBlock } (1.4
+  // commit 13b). Built by the caller with the `coderTurn` byte budget
+  // (src/shared/registry-limits.js); omitted = no knowledge, exactly as before.
+  knowledge = null,
   deps = {},
 } = {}) => {
   const store = deps.store || storage;
@@ -499,7 +503,7 @@ export const runCoderTurn = async ({
   try {
     return await runCoderTurnClaimed({
       key, thread, text, accountId, simulation, connectionId, maxRounds,
-      gateFacts, savedByRole, deadline, cancelToken, store, deps,
+      gateFacts, savedByRole, deadline, cancelToken, knowledge, store, deps,
     });
   } catch (e) {
     // A refusal keeps its machine-readable fields (the resolver's `refusalFields` copies
@@ -514,7 +518,7 @@ export const runCoderTurn = async ({
 
 const runCoderTurnClaimed = async ({
   key, thread, text, accountId, simulation, connectionId, maxRounds,
-  gateFacts, savedByRole, deadline, cancelToken, store, deps,
+  gateFacts, savedByRole, deadline, cancelToken, knowledge, store, deps,
 }) => {
   const m = deps.loadIndex ? await deps.loadIndex() : await idx();
   const started = Date.now();
@@ -666,7 +670,15 @@ const runCoderTurnClaimed = async ({
     role: "user",
     content: `${issueBlock ? `## ISSUE CONTEXT (DATA — fenced)\n${issueBlock}\n\n` : ""}## THE USER SAYS\n${text}`,
   };
-  const messages = [{ role: "system", content: system }, ...history, userTurn];
+  // Knowledge goes STRAIGHT AFTER the system prompt: trusted-but-bounded, inside the
+  // stable cache prefix, and strictly before the fenced issue context the user turn
+  // carries (1.4 commit 13b). `buildKnowledgeMessages` is the ONE builder the listener
+  // and job agents use.
+  const messages = [{ role: "system", content: system }, ...buildKnowledgeMessages(knowledge), ...history, userTurn];
+  // What the LOOP added is everything past what was SEEDED. This used to be
+  // `history.length + 2` — a hand-counted prefix that any new seeded message silently
+  // breaks, storing the knowledge block into the thread as if the model had said it.
+  const seededCount = messages.length;
 
   const loop = await runAgentLoop({
     messages, tools, maxRounds: clampRounds(maxRounds), deadlineMs, execute, apiKey, model, provider, log,
@@ -680,7 +692,7 @@ const runCoderTurnClaimed = async ({
   // user's turn). The user's own words are stored verbatim, WITHOUT the fenced issue
   // context: the context is rebuilt live next turn, and storing it would make the thread
   // grow by a full issue snapshot per message.
-  const addedByLoop = loop.messages.slice(history.length + 2);
+  const addedByLoop = loop.messages.slice(seededCount);
   const addedThisTurn = [
     { role: "user", content: text, at: nowIso() },
     ...addedByLoop.map(storableMessage).filter(Boolean),

@@ -255,6 +255,53 @@ seedRec("c", "C", "c".repeat(50));
 ok((await fetchSkillsBlock(["a"], { capBytes: 63 })).applied.length === 1, "block length === capBytes → included");
 ok((await fetchSkillsBlock(["a"], { capBytes: 62 })).applied.length === 0, "block length one over capBytes → dropped (even as first)");
 
+// --- 1.4 commit 13b: an OVERSIZED skill is SKIPPED, it no longer deletes the ones below ---
+// The defect: the loop used to `break`, so ONE skill ranked FIRST that did not fit
+// silently suppressed every skill after it, however small. This is the regression test.
+{
+  storage.__reset();
+  seedRec("huge", "HUGE", "h".repeat(5000));   // block = 11 + 4 + 1 + 5000 = 5016 chars
+  seedRec("a", "A", "a".repeat(50));           // 63
+  seedRec("c", "C", "c".repeat(50));           // 63
+  const r = await fetchSkillsBlock(["huge", "a", "c"], { capBytes: 200 });
+  ok(r.applied.map((x) => x.id).join(",") === "a,c", "oversized skill ranked FIRST is skipped; A and C below it still apply");
+  ok(!r.text.includes("h".repeat(4)), "the oversized skill's content is absent");
+  ok(r.text.length === 63 + 2 + 63, "the block is exactly A + C");
+  ok(r.skipped.map((x) => x.id).join(",") === "huge", "the skipped skill is REPORTED, so an author can be told why theirs never appears");
+}
+// …and an oversized skill in the MIDDLE does not truncate the tail either.
+{
+  storage.__reset();
+  seedRec("a", "A", "a".repeat(50));
+  seedRec("huge", "HUGE", "h".repeat(5000));
+  seedRec("c", "C", "c".repeat(50));
+  const r = await fetchSkillsBlock(["a", "huge", "c"], { capBytes: 200 });
+  ok(r.applied.map((x) => x.id).join(",") === "a,c", "oversized skill in the middle is skipped, order preserved");
+  ok(r.skipped.length === 1 && r.skipped[0].id === "huge", "…and reported once");
+}
+// Nothing skipped → an empty array, never undefined (callers spread it).
+{
+  storage.__reset();
+  seedRec("a", "A", "a".repeat(50));
+  const r = await fetchSkillsBlock(["a"], { capBytes: 1000 });
+  ok(Array.isArray(r.skipped) && r.skipped.length === 0, "skipped is always an array");
+  ok(Array.isArray((await fetchSkillsBlock(null)).skipped), "…even on the empty-ids short circuit");
+}
+// The DEFAULT cap is still the codegen number, now from its one home.
+{
+  const { KNOWLEDGE_BUDGET_BYTES } = await import("../../src/shared/registry-limits.js");
+  ok(KNOWLEDGE_BUDGET_BYTES.codegen.skills === 24576, "codegen's skills budget is unchanged (24576)");
+  ok(KNOWLEDGE_BUDGET_BYTES.agentRun.skills === 8192 && KNOWLEDGE_BUDGET_BYTES.coderTurn.skills === 16384 && KNOWLEDGE_BUDGET_BYTES.prReview.skills === 6144,
+    "the per-audience skills budgets are 8 KB / 16 KB / 6 KB");
+  const { knowledgeBudget } = await import("../../src/shared/registry-limits.js");
+  ok(knowledgeBudget("nope") === KNOWLEDGE_BUDGET_BYTES.prReview, "an unknown audience gets the SMALLEST budget, not the largest");
+}
+
+storage.__reset();
+seedRec("a", "A", "a".repeat(50));
+seedRec("b", "B", "b".repeat(50));
+seedRec("c", "C", "c".repeat(50));
+
 // --- disabled + missing skills SKIP (continue), later skills still considered ---
 storage.__reset();
 seedRec("a", "A", "a".repeat(50));

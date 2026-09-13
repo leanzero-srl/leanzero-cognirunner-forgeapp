@@ -35,6 +35,7 @@ import { kvs as storage } from "@forge/kvs";
 import { SKILL_SEED_VERSION, BUILTIN_SKILLS } from "./shared/builtin-skills.js";
 // Shared fence-defang helper — skill content is interpolated inside <<<SKILLS>>>.
 import { defangFence } from "./memories.js";
+import { KNOWLEDGE_BUDGET_BYTES } from "./shared/registry-limits.js";
 
 export const SKILL_INDEX_KEY = "skill_repo_index";
 export const SKILL_PREFIX = "skill_repo:";
@@ -232,14 +233,31 @@ export const autoMatchSkills = (promptText, operationType, index, { max = 2, exc
 };
 
 /**
- * Load skill contents and concatenate them into one prompt block, hard-capped
- * at capBytes. Whole skills only — a skill that would cross the cap is dropped
- * (along with everything after it, preserving the caller's priority order).
+ * Load skill contents and concatenate them into one prompt block, hard-capped at
+ * capBytes. Whole skills only — a skill whose block would cross the cap is SKIPPED and
+ * the ones after it are still considered.
+ *
+ * THE DEFECT THIS FIXES (1.4 commit 13b). This loop used to `break` on the first skill
+ * that did not fit. With one budget and one audience that read as "the cap is reached,
+ * stop" — but it is not what the code did: the loop walks the CALLER'S PRIORITY ORDER,
+ * so ONE oversized skill ranked first silently deleted every skill below it, including
+ * ones that would have fit with room to spare. The bigger a skill an author wrote, the
+ * more of everybody else's work it suppressed, and nothing anywhere said so.
+ *
+ * `continue` is the correct reading of "whole skills only": the cap is a per-block
+ * budget, not a stop signal. Ordering is unchanged for everything that fits, so the
+ * common case is byte-identical; only the suppression disappears. `skipped` is returned
+ * so a caller can SAY that a skill was too big instead of leaving the author to wonder
+ * why their skill never appears.
+ *
+ * Per-AUDIENCE budgets live in src/shared/registry-limits.js. The default here stays the
+ * codegen number so every pre-1.4 caller is unchanged to the byte.
  */
-export const fetchSkillsBlock = async (ids, { capBytes = 24576 } = {}) => {
+export const fetchSkillsBlock = async (ids, { capBytes = KNOWLEDGE_BUDGET_BYTES.codegen.skills } = {}) => {
   const applied = [];
+  const skipped = [];
   let text = "";
-  if (!Array.isArray(ids) || ids.length === 0) return { text, applied };
+  if (!Array.isArray(ids) || ids.length === 0) return { text, applied, skipped };
   try {
     const records = await Promise.all(
       ids.slice(0, 8).map((id) => storage.get(`${SKILL_PREFIX}${id}`)),
@@ -251,12 +269,29 @@ export const fetchSkillsBlock = async (ids, { capBytes = 24576 } = {}) => {
         block += `\n\nExample:\n${defangFence(rec.examples)}`;
       }
       const candidate = text ? `${text}\n\n${block}` : block;
-      if (candidate.length > capBytes) break;
+      if (candidate.length > capBytes) { skipped.push({ id: rec.id, name: rec.name }); continue; }
       text = candidate;
       applied.push({ id: rec.id, name: rec.name });
     }
   } catch (error) {
     console.error("Failed to fetch skills block:", error);
   }
-  return { text, applied };
+  return { text, applied, skipped };
+};
+
+/**
+ * Which of `ids` exist in the skill index. Used by the rule savers (listeners,
+ * scheduled jobs) to refuse a `skillIds` binding that names a skill nobody has — a
+ * rule that silently binds nothing is a rule whose author believes it has a voice it
+ * does not have. Returns { known, unknown }. Never throws: an index read failure
+ * reports everything as known, because a storage hiccup must not block a save.
+ */
+export const partitionKnownSkillIds = async (ids) => {
+  const list = (Array.isArray(ids) ? ids : []).map(String);
+  if (!list.length) return { known: [], unknown: [] };
+  let index = [];
+  try { index = (await storage.get(SKILL_INDEX_KEY)) || []; } catch { return { known: list, unknown: [] }; }
+  if (!Array.isArray(index)) return { known: list, unknown: [] };
+  const have = new Set(index.map((s) => s && s.id));
+  return { known: list.filter((id) => have.has(id)), unknown: list.filter((id) => !have.has(id)) };
 };

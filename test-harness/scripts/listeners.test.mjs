@@ -488,5 +488,51 @@ const defs = toolDefinitionsFor(["add_comment"]);
 ok(defs.length === 2 && defs.map((d) => d.function.name).sort().join() === "add_comment,finish", "tool defs = allowed + finish");
 ok(defs.every((d) => d.type === "function" && d.function.parameters.type === "object"), "OpenAI tool shape");
 
+// ── 1.4 commit 13b: the knowledge binding, end to end through the savers ──────
+// The shape is unit-tested in agent-knowledge.test.mjs; what is asserted HERE is that
+// a real save keeps it, and that a binding to a skill nobody has is REFUSED rather
+// than silently stored (an author must never believe a rule has a voice it does not).
+{
+  storage.__reset();
+  storage.__seed("skill_repo_index", [{ id: "sk_real", name: "House voice", enabled: true }]);
+  const l = await saveListener({
+    name: "K", events: ["avi:jira:created:issue"], mode: "agent",
+    agent: { instructions: "do the thing", allowedActions: ["add_comment"], skillIds: ["sk_real", "sk_real", "  "], useMemories: true },
+  }, { accountId: "u" });
+  ok(JSON.stringify(l.agent.skillIds) === JSON.stringify(["sk_real"]) && l.agent.useMemories === true, "a listener stores its skill binding and the memories opt-in");
+  const back = await getListener(l.id);
+  ok(back.agent.skillIds[0] === "sk_real" && back.agent.useMemories === true, "…and reads them back off the record");
+
+  let refused = null;
+  try {
+    await saveListener({ name: "K2", events: ["avi:jira:created:issue"], mode: "agent", agent: { instructions: "x", allowedActions: [], skillIds: ["sk_ghost"] } }, { accountId: "u" });
+  } catch (e) { refused = e; }
+  ok(refused && /sk_ghost/.test(refused.message) && refused.reason === "unknown-skill", "a skill that does not exist is REFUSED at save, by name");
+
+  const j = await saveJob({
+    name: "KJ", schedule: { cron: "0 9 * * *", timeZone: "UTC" }, mode: "agent",
+    agent: { instructions: "do it", allowedActions: ["add_comment"], skillIds: ["sk_real"], useMemories: false },
+  }, { accountId: "u" });
+  ok(j.agent.skillIds[0] === "sk_real" && j.agent.useMemories === false, "a scheduled job carries the SAME binding shape");
+  let jRefused = null;
+  try {
+    await saveJob({ name: "KJ2", schedule: { cron: "0 9 * * *", timeZone: "UTC" }, mode: "agent", agent: { instructions: "x", allowedActions: [], skillIds: ["sk_ghost"] } }, { accountId: "u" });
+  } catch (e) { jRefused = e; }
+  ok(jRefused && jRefused.reason === "unknown-skill", "…and the SAME refusal, from the same home");
+
+  // An ABSENT index is a read that SUCCEEDED and said "no skills" — it is not the same
+  // negative as a read that failed, and it must refuse exactly like a missing id.
+  storage.__reset();
+  let emptyIdx = null;
+  try {
+    await saveListener({ name: "K3", events: ["avi:jira:created:issue"], mode: "agent", agent: { instructions: "x", allowedActions: [], skillIds: ["sk_real"] } }, { accountId: "u" });
+  } catch (e) { emptyIdx = e; }
+  ok(emptyIdx && emptyIdx.reason === "unknown-skill", "an empty skill index refuses too — nothing exists, so nothing can be bound");
+
+  // A rule with NO binding never touches the index at all (the pre-1.4 path).
+  const l4 = await saveListener({ name: "K4", events: ["avi:jira:created:issue"], functions: [{ code: "api.log(1)" }] }, { accountId: "u" });
+  ok(Array.isArray(l4.agent.skillIds) && l4.agent.skillIds.length === 0 && l4.agent.useMemories === false, "a rule with no binding saves unchanged, with memories OFF");
+}
+
 console.log(`LISTENERS: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

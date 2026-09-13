@@ -306,3 +306,49 @@ export const memoryPlatformCapMessage = (bytesOver) => {
   const over = Math.max(1, Math.round(Number(bytesOver) || 0));
   return `Memory store is ${over} bytes over Jira's ${MEMORY_PLATFORM_MAX_SERIALIZED_BYTES}-byte storage limit, so no change to it can be saved — not even deleting one memory. Freeing at least ${over} bytes means selecting several memories in the Memories tab and deleting them together.`;
 };
+
+/* ------------------------------------------------------------------------
+ * KNOWLEDGE-INJECTION budgets, PER AUDIENCE (1.4 commit 13b).
+ *
+ * Until 1.4 there was ONE number — `fetchSkillsBlock`'s `capBytes = 24576` default,
+ * written as a literal in src/skills.js — because there was ONE audience: the codegen
+ * and fix prompts, which are one-shot, have no tool transcript to grow into, and can
+ * afford 24 KB of instructions.
+ *
+ * 1.4 gives the same blocks to AGENTS, and an agent's prompt is not one-shot: it is
+ * re-sent every round, alongside a tool transcript that grows by up to
+ * TOOL_RESULT_MAX_CHARS per call. A 24 KB skills block on an 8-round agent is 24 KB
+ * paid eight times, and it crowds out the transcript the agent actually reasons over.
+ * So the budget becomes a function of WHO is reading, and the table lives HERE — one
+ * home, dependency-free, next to the other caps — rather than as a number retyped at
+ * each of the four call sites.
+ *
+ *   codegen   — the pre-1.4 numbers, DELIBERATELY UNCHANGED. Changing them would be a
+ *               silent quality change to a shipped feature.
+ *   agentRun  — a listener or scheduled-job agent run (8 KB of skills). Short
+ *               instructions, up to 8 rounds, the tightest transcript pressure.
+ *   coderTurn — the in-issue Coder (16 KB). Longer, code-shaped skills genuinely help,
+ *               and the 900 s consumer affords the tokens.
+ *   prReview  — a pull-request review (6 KB). The DIFF is the content; knowledge is
+ *               there to shape the voice and the house rules, not to compete with it.
+ *
+ * `memories` is smaller than `skills` in every row on purpose: a memory is one advisory
+ * line, and 4 KB is already ~40 of them — past that the block stops being a reminder
+ * and becomes a second instruction set.
+ */
+export const KNOWLEDGE_BUDGET_BYTES = Object.freeze({
+  codegen: Object.freeze({ skills: 24576, memories: 8192 }),
+  agentRun: Object.freeze({ skills: 8192, memories: 4096 }),
+  coderTurn: Object.freeze({ skills: 16384, memories: 8192 }),
+  prReview: Object.freeze({ skills: 6144, memories: 2048 }),
+});
+
+/**
+ * The budget for one audience. An UNKNOWN audience gets the SMALLEST row, not the
+ * largest: a caller that forgot to name itself must not be handed the codegen budget by
+ * accident, for the same reason the action gate's default context is the restrictive one.
+ */
+export const knowledgeBudget = (audience) => KNOWLEDGE_BUDGET_BYTES[audience] || KNOWLEDGE_BUDGET_BYTES.prReview;
+
+/** Skills a rule may bind. Small on purpose: a rule picks a VOICE, not a library. */
+export const MAX_RULE_SKILL_IDS = 4;

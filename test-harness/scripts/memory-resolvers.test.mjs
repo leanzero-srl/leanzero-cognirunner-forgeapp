@@ -13,7 +13,13 @@
 import "../lib/register-mocks-index.mjs";
 import storage from "../lib/mock-kvs.mjs";
 import { readFileSync } from "node:fs";
-import { MEMORIES_KEY, MEMORY_STORE_FULL_KEY, MEMORY_CONTENT_MAX, MAX_MEMORIES, memoryCapRefusalMessage, memoryWriteFaultMessage } from "../../src/memories.js";
+// src/memories.js must be loaded DYNAMICALLY, like `handler` below. A STATIC import
+// is part of this module's graph and is instantiated BEFORE any top-level code runs,
+// so the register-mocks-index hook above has not been installed yet and memories.js
+// binds the REAL @forge/kvs — every storage call then throws "__forge_fetch__ is not
+// a function". run-offline.mjs hides this by spawning with `--import <loader>`, so
+// the file passed in the suite and failed the moment anyone ran it directly.
+const { MEMORIES_KEY, MEMORY_STORE_FULL_KEY, MEMORY_CONTENT_MAX, MAX_MEMORIES, memoryCapRefusalMessage, memoryWriteFaultMessage } = await import("../../src/memories.js");
 const { handler } = await import("../../src/index.js");
 
 let pass = 0, fail = 0;
@@ -261,6 +267,33 @@ ok(load().length === 0, "the store is untouched");
 // the very next add, with no fault armed, succeeds — "try again" is honest advice
 const retried = await call("addMemory", { content: filler.substring(0, MEMORY_CONTENT_MAX), source: "user" });
 ok(retried.success === true && load().length === 1, "the retry the sentence recommends actually works");
+
+// === F-228: the three memory READ resolvers had no gate at all ===
+// Every write path was gated; getMemories / getMemoryStoreStats / getMemorySettings
+// were not, so anyone who could reach a resolver could read this instance's learned
+// facts (which quote its field names, endpoints and failure text).
+const VIEWER = "acct-viewer";
+const STRANGER = "acct-stranger";
+reset([{ id: "m1", content: "a secret-ish learned fact", source: "user", createdAt: new Date().toISOString() }]);
+storage.__seed("app_admins", [
+  { accountId: ADMIN, role: "admin", scope: "all" },
+  { accountId: VIEWER, role: "viewer", scope: "own" },
+]);
+{
+  const quiet = console.warn; console.warn = () => {};
+  try {
+    for (const fn of ["getMemories", "getMemoryStoreStats", "getMemorySettings"]) {
+      const denied = await call(fn, {}, STRANGER);
+      ok(denied.success === false && /permission/.test(denied.error || ""),
+        `${fn} refuses a caller with no role (got ${JSON.stringify(denied).slice(0, 120)})`);
+      ok(!Array.isArray(denied.memories) || denied.memories.length === 0,
+        `${fn} leaks no memories in its refusal`);
+      const allowed = await call(fn, {}, VIEWER);
+      ok(allowed.success === true, `${fn} still serves a VIEWER (the floor, not admin)`);
+    }
+    ok((await call("getMemories", {}, VIEWER)).memories.length === 1, "a viewer reads the store normally");
+  } finally { console.warn = quiet; }
+}
 
 console.log(`\nmemory-resolvers: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

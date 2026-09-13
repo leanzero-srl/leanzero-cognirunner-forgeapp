@@ -40,7 +40,7 @@
     "test:recipes": "node scripts/recipes.test.mjs",
     "test:parity": "node scripts/premade-parity.mjs",
     "test:css-parity": "node scripts/css-parity.test.mjs",
-    "test:permissions": "node scripts/permission-bootstrap.test.mjs",
+    "test:permissions": "node scripts/permission-bootstrap.test.mjs && node scripts/memory-resolvers.test.mjs",
     "test:offline": "node scripts/premade-parity.mjs && node scripts/run-offline.mjs && npm run test:regression && node scripts/css-parity.test.mjs && node scripts/permission-bootstrap.test.mjs",
     "test:premade-e2e": "node scripts/premade-e2e.mjs",
     "reg": "node scripts/regression.mjs",

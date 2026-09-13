@@ -135,7 +135,7 @@ assert.match(res.reason, /role store unavailable/);
 storage.__reset(); forgeApi.__reset();
 storage.__seed("app_admins", [{ accountId: ADMIN, role: "admin", scope: "all" }]);
 forgeApi.__respond(() => { throw new Error("Jira 503"); });
-for (const fn of ["getAppAdmins", "getListeners", "getScheduledJobs", "getLogs"]) {
+for (const fn of ["getAppAdmins", "getListeners", "getScheduledJobs", "getLogs", "getMemories", "getMemorySettings"]) {
   const out = await captureWarn(() => handler(
     { call: { functionKey: fn, payload: {} }, context: {} }, { principal: { accountId: USER } }));
   assert.equal(out[0].success, false, `${fn} must refuse an unverifiable caller (fail closed)`);

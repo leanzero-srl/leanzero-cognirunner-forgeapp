@@ -7304,7 +7304,13 @@ const memoryRefusalMessage = (saved) => {
   return memoryCapRefusalMessage(saved?.reason);
 };
 
-resolver.define("getMemories", async () => {
+resolver.define("getMemories", async ({ context }) => {
+  // F-228 — VIEWER FLOOR. Memories are instance-level learned facts: they quote
+  // field names, endpoint shapes and failure text from this site's rules, and the
+  // three read resolvers had no gate at all while every write path (addMemory,
+  // updateMemory, deleteMemory, saveMemorySettings) did. Same floor as getFields /
+  // getPostFunctionCode: roster users and Jira admins only.
+  if (!(await requireRole(context?.accountId, "viewer"))) return { ...noPerm("read memories"), memories: [] };
   try {
     // F-167/F-169: the Memories tab reads `settings.storeFull` from THIS resolver
     // (it never calls getMemorySettings directly), so the marker rides `settings`.
@@ -7462,7 +7468,10 @@ resolver.define("deleteMemory", async ({ payload, context }) => {
  * have to go before anything can be saved at all. The arithmetic lives in memories.js;
  * nothing about a limit is computed here.
  */
-resolver.define("getMemoryStoreStats", async () => {
+resolver.define("getMemoryStoreStats", async ({ context }) => {
+  // F-228 — same viewer floor as getMemories: byte pressure of this instance's
+  // learned facts is not public information either.
+  if (!(await requireRole(context?.accountId, "viewer"))) return noPerm("read memories");
   try {
     const [memories, storeFull] = await Promise.all([loadMemories(), readMemoryStoreFull()]);
     return { success: true, ...memoryStoreStats(memories), storeFull };
@@ -7472,7 +7481,10 @@ resolver.define("getMemoryStoreStats", async () => {
   }
 });
 
-resolver.define("getMemorySettings", async () => {
+resolver.define("getMemorySettings", async ({ context }) => {
+  // F-228 — same viewer floor. This reports whether the instance auto-captures and
+  // injects memories at runtime, which is configuration, not public state.
+  if (!(await requireRole(context?.accountId, "viewer"))) return noPerm("read memory settings");
   try {
     // F-167: `storeFull` is how the Memories tab learns the instance has STOPPED
     // LEARNING (a lesson was refused by the cap/byte guard and nothing is evicted

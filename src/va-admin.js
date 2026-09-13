@@ -82,6 +82,12 @@
 import {
   readItem, listItemIds, readTick, readCaps, readHealth, readMemory, writeMemory,
   transitionItem, saveItem,
+  // THE ONE MEASUREMENT OF A MEMORY ROW (F-459/F-499). This file used to carry a third
+  // private copy that omitted `updatedAt`, so the Agents-tab meter under-reported against
+  // the very cap `writeMemory` enforces: a row at 8.1 KB read "nearly full" on the pane
+  // while the write had already refused. The measurer lives with the writer that enforces
+  // the cap; a reader that measures it its own way is a reader that disagrees with it.
+  memoryBytes,
 } from "./va-ledger.js";
 import {
   isVaJob, vaOf, readScopeProjects, wrapScopedJql, inPostWindow,
@@ -798,12 +804,6 @@ export const memory = async ({ jobId } = {}, injected = {}) => {
     // the clamp `writeMemory` applies count the same thing on CJK text as on ASCII.
     constraintMaxBytes: VA_LIMITS.constraintMaxBytes,
   });
-};
-
-/** What a stored memory weighs. The SAME measure `writeMemory`'s budget uses. */
-const memoryBytes = (m) => {
-  try { return new TextEncoder().encode(JSON.stringify({ text: (m && m.text) || "", constraints: asArray(m && m.constraints) })).length; }
-  catch (e) { return 0; }
 };
 
 /* ══════════════════════════════════════════════════════════════════════════════

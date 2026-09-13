@@ -31,6 +31,7 @@
 
 import "../lib/register-mocks-index.mjs";
 import storage from "../lib/mock-kvs.mjs";
+import { readFile, readdir } from "node:fs/promises";
 const { default: forgeApi, pushed } = await import("@forge/api");
 
 let pass = 0, fail = 0;
@@ -651,6 +652,46 @@ let agentId = null;
   const notVa = await call("getVaStatus", { jobId: (await call("getScheduledJobs", {})).jobs.find((j) => j.mode === "script").id });
   ok(notVa.success === false && notVa.reason === "not_a_virtual_administrator",
     `a script job is refused by name rather than operated on as an agent (got ${JSON.stringify(notVa).slice(0, 200)})`);
+}
+
+/* ── F-499: ONE MEASUREMENT OF A MEMORY ROW, ACROSS THE WHOLE BACKEND ────────────
+ *
+ * `memoryBytes` was defined three times (F-459 removed two of them), and this file's
+ * private copy omitted `updatedAt` — so the meter the Agents tab renders under-reported
+ * against the very cap `writeMemory` enforces: a row at 8.1 KB read "nearly full" on the
+ * pane while every write was already refusing `memory-full`.
+ *
+ * A comment saying "use the ledger's one" is not a gate; a fourth copy would be added by
+ * the next person who needs a byte count in a hurry. This reads the SOURCE and asserts
+ * there is exactly one DEFINITION of the name in src/, wherever it lives.
+ */
+{
+  const srcDir = new URL("../../src/", import.meta.url);
+  const files = [];
+  const walk = async (dir) => {
+    for (const e of await readdir(dir, { withFileTypes: true })) {
+      if (e.isDirectory()) await walk(new URL(`${e.name}/`, dir));
+      else if (e.name.endsWith(".js")) files.push(new URL(e.name, dir));
+    }
+  };
+  await walk(srcDir);
+  const definitions = [];
+  for (const f of files) {
+    const text = await readFile(f, "utf8");
+    // A DEFINITION, not a use: `const/let/var/function memoryBytes` or an exported one.
+    for (const m of text.matchAll(/(?:^|\n)\s*(?:export\s+)?(?:const|let|var|function)\s+memoryBytes\b/g)) {
+      definitions.push(`${f.pathname.split("/src/")[1]}@${text.slice(0, m.index).split("\n").length}`);
+    }
+  }
+  ok(definitions.length === 1,
+    `F-499: "memoryBytes" is DEFINED exactly once across src/ (found ${definitions.length}: ${definitions.join(", ") || "none"})`);
+  ok(definitions[0] && definitions[0].startsWith("va-ledger.js"),
+    `F-499: …and the one home is va-ledger.js, beside the write that enforces the cap (got ${definitions[0]})`);
+
+  // The definition really is the envelope, `updatedAt` included — the omission was the bug.
+  const ledger = await readFile(new URL("va-ledger.js", srcDir), "utf8");
+  const body = ledger.slice(ledger.indexOf("export const memoryBytes"), ledger.indexOf("export const memoryBytes") + 400);
+  ok(/updatedAt/.test(body), "F-499: the one measurer counts `updatedAt` — the field the deleted copy left out");
 }
 
 console.log(`\nva-admin.test.mjs: ${pass} passed, ${fail} failed`);

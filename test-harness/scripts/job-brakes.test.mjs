@@ -168,5 +168,77 @@ const jobWith = (over) => normalizeJob({ name: "Sweep", schedule: { cron: "0 9 *
   ok(changes2.length === 20, "maxWrites null = no brake at all (the listener path, unchanged)");
 }
 
+/* ============ the write brake counts GIT writes too (F-403) ============
+
+A commit, a branch and a pull request are writes to somebody's repository, but they are
+made by an executor that cannot reach `session.changes` — so the brake, which counts
+exactly that array, saw none of them. An agent could open forty pull requests under
+maxWritesPerRun: 2 and the run's own change ledger showed nothing at all. */
+
+{
+  const { createAgentActionDispatcher } = await import("../../src/agent-runner.js");
+  const { createSandboxSession } = await import("../../src/index.js");
+  // The REAL session, because `recordChange` is the thing under test and a hand-rolled
+  // stub would prove only that the test author agrees with the test author.
+  const session = createSandboxSession({ issueKey: "LZPT-1", config: {} });
+  let calls = 0;
+  const gitExecutor = {
+    namespace: "git",
+    execute: async (name, args) => { calls++; return { success: true, action: name, repo: args.repo, branch: args.branch, number: 7, url: "https://example.com/pr/7" }; },
+  };
+  const m = { extractTextFromADF: (v) => String(v || "") };
+  const dispatch = createAgentActionDispatcher({
+    issueKey: "LZPT-1", session, executors: { git: gitExecutor }, m, maxWrites: 2,
+    allowed: ["commit_files", "open_pull_request", "get_pull_request"],
+  });
+
+  const one = await dispatch("commit_files", { repo: "acme/app", branch: "main", files: [{ path: "a", content: "b" }] });
+  ok(one.success === true && calls === 1, "ALLOW: the first git write goes through");
+  ok(session.changes.length === 1, "…and LANDS ON THE LEDGER — this is the whole of F-403");
+  ok(session.changes[0].namespace === "git" && session.changes[0].action === "commit_files", "…naming the namespace and the action");
+  ok(session.changes[0].repo === "acme/app" && session.changes[0].branch === "main", "…and enough of the target to read the row");
+
+  await dispatch("open_pull_request", { repo: "acme/app", branch: "feat" });
+  ok(session.changes.length === 2 && calls === 2, "ALLOW: the second git write fills the allowance");
+
+  const third = await dispatch("commit_files", { repo: "acme/app", branch: "main", files: [{ path: "c", content: "d" }] });
+  ok(third.success === false && third.code === "write_brake", "BLOCK: the THIRD git write is refused by the same brake Jira writes obey");
+  ok(calls === 2, "…and the executor was never called, so nothing reached the repository");
+  ok(/already made 2 changes, which is its limit of 2/.test(third.error), "…with the one sentence, from the one home");
+
+  // A git READ is not a write and is never braked — a braked agent must still see enough
+  // to finish honestly.
+  const read = await dispatch("get_pull_request", { repo: "acme/app", number: 7 });
+  ok(read.success === true && session.changes.length === 2, "a git READ is not braked and does not touch the ledger");
+}
+{
+  // A FAILED git write records nothing: a brake that counts refusals brakes the wrong run,
+  // and a ledger that lists writes that never happened lies to the operator.
+  const { createAgentActionDispatcher } = await import("../../src/agent-runner.js");
+  const { createSandboxSession } = await import("../../src/index.js");
+  const session = createSandboxSession({ issueKey: "LZPT-1", config: {} });
+  const dispatch = createAgentActionDispatcher({
+    issueKey: "LZPT-1", session, m: {}, maxWrites: 5, allowed: ["commit_files"],
+    executors: { git: { namespace: "git", execute: async () => ({ success: false, code: "not_allowed", error: "no" }) } },
+  });
+  const r = await dispatch("commit_files", { repo: "acme/app", branch: "main", files: [] });
+  ok(r.success === false && session.changes.length === 0, "a REFUSED git write is not counted as a change");
+}
+{
+  // SIMULATION still counts: a simulated run's job is to show what WOULD happen, and a
+  // simulated run that ignores the brake shows a plan the real run could never execute.
+  const { createAgentActionDispatcher } = await import("../../src/agent-runner.js");
+  const { createSandboxSession } = await import("../../src/index.js");
+  const session = createSandboxSession({ issueKey: "LZPT-1", config: { simulationMode: true } });
+  const dispatch = createAgentActionDispatcher({
+    issueKey: "LZPT-1", session, m: {}, maxWrites: 1, allowed: ["commit_files"],
+    executors: { git: { namespace: "git", execute: async () => ({ success: true, simulated: true, repo: "acme/app" }) } },
+  });
+  await dispatch("commit_files", { repo: "acme/app", branch: "main", files: [] });
+  ok(session.changes.length === 1 && session.changes[0].simulated === true, "a SIMULATED git write is recorded, and says it was simulated");
+  const second = await dispatch("commit_files", { repo: "acme/app", branch: "main", files: [] });
+  ok(second.code === "write_brake", "…and it spends the allowance, so a dry run shows the brake the real run would hit");
+}
+
 console.log(`job-brakes: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

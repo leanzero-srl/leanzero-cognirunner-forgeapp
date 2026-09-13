@@ -18240,6 +18240,31 @@ export const createSandboxSession = ({ issueKey: boundIssueKey = null, config = 
     return this_api; };
   return {
     createApi, executionLogs, changes, simulated,
+    /**
+     * THE ONE WAY TO RECORD A CHANGE MADE OUTSIDE THE JIRA SANDBOX API (F-403).
+     *
+     * Every `api.*` mutator above appends to `changes` itself; a git commit, a pull request
+     * or a branch is just as much a write, but it is made by ANOTHER namespace's executor,
+     * which has no access to this array. The result was that the write brake — which counts
+     * `session.changes`, deliberately, so the brake and the log can never disagree — never
+     * saw a single git write: an agent could open forty pull requests under
+     * `maxWritesPerRun: 2`, and the run's own change ledger showed nothing at all.
+     *
+     * A recorder rather than a raw push, because `changes` is read by the brake, the log
+     * row, the Jobs tab and the consent ticket: the shape is checked and clamped here so
+     * that no executor decides the ledger's shape for itself.
+     */
+    recordChange: (change) => {
+      if (!change || typeof change !== "object") return null;
+      const row = { action: String(change.action || "change").slice(0, 60) };
+      if (change.namespace) row.namespace = String(change.namespace).slice(0, 30);
+      for (const field of ["key", "repo", "branch", "number", "sha", "url"]) {
+        if (change[field] != null && change[field] !== "") row[field] = String(change[field]).slice(0, 200);
+      }
+      if (change.simulated === true || simulated) row.simulated = true;
+      changes.push(row);
+      return row;
+    },
     setStepDeadline: (d) => { stepDeadline = d; },
     getStepDeadline: () => stepDeadline,
   };

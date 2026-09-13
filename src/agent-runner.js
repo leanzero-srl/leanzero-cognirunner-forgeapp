@@ -439,7 +439,25 @@ export const createAgentActionDispatcher = ({ issueKey = null, session, allowed 
       if (!executor || typeof executor.execute !== "function") {
         return { success: false, code: "not_configured", error: `"${name}" needs a ${ns} connection, and none is configured for this rule.` };
       }
-      return executor.execute(name, args);
+      const r = await executor.execute(name, args || {});
+      // THE WRITE LEDGER, FOR EVERY NAMESPACE (F-403). A git commit, branch or pull
+      // request is a write to somebody's repository, but it is made by an executor that
+      // cannot reach `session.changes` — so the write brake above, which counts exactly
+      // that array, never saw one of them. Recorded HERE rather than inside each executor:
+      // one place means the next namespace is counted the day it lands, and an executor
+      // still owns only its own protocol. Only a SUCCESSFUL write counts — a refusal
+      // changed nothing, and a brake that counts refusals brakes the wrong run.
+      if (a.kind === "write" && r && r.success === true && typeof session.recordChange === "function") {
+        session.recordChange({
+          action: name, namespace: ns, simulated: r.simulated === true,
+          repo: r.repo || (args && args.repo) || null,
+          branch: r.branch || (args && args.branch) || null,
+          number: r.number || (r.pullRequest && r.pullRequest.number) || null,
+          sha: r.sha || r.commit || null,
+          url: r.url || r.htmlUrl || null,
+        });
+      }
+      return r;
     }
     args = normalizeAgentIssueReferences(a, args);
     // ONE issue-key rule, ONE message. "No current issue" is resolved (and complained

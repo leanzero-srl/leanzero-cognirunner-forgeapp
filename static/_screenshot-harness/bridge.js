@@ -936,6 +936,7 @@ const CODE_CONNS = () => {
       hasToken: true, status: "ok", authDeadAt: null, authDeadReason: null,
       lastCheckedAt: "2026-09-12T08:00:00.000Z", login: "acme-bot",
       repos: ["acme/web", "acme/api"],
+      webhooks: HOOKS(),
       capabilities: { canCreateRepos: true, canWebhooks: true, canPipelines: null, reason: "Derived from the classic token's reported OAuth scopes." },
     },
     {
@@ -946,6 +947,7 @@ const CODE_CONNS = () => {
       authDeadReason: dead ? "The provider rejected this credential" : null,
       lastCheckedAt: "2026-09-12T09:00:00.000Z", login: "acme-platform",
       repos: ["acme/platform"],
+      webhooks: {},
       capabilities: { canCreateRepos: null, canWebhooks: null, canPipelines: null, reason: "Bitbucket does not report scopes on this call. Capability is proven only by the call that needs it." },
     },
   ];
@@ -953,6 +955,104 @@ const CODE_CONNS = () => {
 const CODE_IDENTITY = () => ((typeof window !== "undefined" && window.__CODE_IDENTITY__)
   ? { hasIdentity: true, email: "deploy@acme.example", consent: { accountId: ACCT, at: "2026-09-03T10:00:00.000Z" }, rotation: null, createdAt: "2026-09-03T10:00:00.000Z", updatedAt: "2026-09-03T10:00:00.000Z" }
   : { hasIdentity: false, email: null, consent: null, rotation: null, createdAt: null, updatedAt: null });
+
+/* -- F-460 / F-461: PER-REPO WEBHOOK + DEPLOY PIPELINE fixtures --------------------
+   The shapes are the BACKEND's, field for field: the hook record the connection row
+   carries (`webhooks[repoId] = {hookId, provider, createdAt}` and NO secret, because a
+   fixture carrying one would let a leak pass), and `publicPipelineRow` from
+   src/git-pipeline.js for a pipeline row.
+
+   THE STEP NAMES ARE A MIRROR, not an import: `pipelineStepNames` lives in
+   src/git-pipeline.js, which imports @forge/kvs and node:crypto and therefore cannot be
+   pulled into a browser bundle. Keep this list identical to it; code-tab.test.mjs
+   asserts the rendered names, so a rename in the backend shows up here as a diff to
+   make by hand.
+
+   THE HOOK AND THE ROW ARE MUTABLE per page load, because both journeys are a write
+   followed by a re-read: register a hook -> the list reloads -> the chip flips; queue a
+   pipeline -> the card polls -> the steps go green. A constant answer would let a UI
+   that never re-reads pass.
+
+   Scenario flags:
+     window.__CODE_HOOK__      - acme/web already has a registered webhook.
+     window.__HOOK_REFUSE__    - setupGitWebhook answers a refusal instead.
+     window.__PIPE_SCENARIO__  - "none" (default: no row, so the setup form), "queued"
+                                 (queued -> running -> installed across polls),
+                                 "installed", "partial" (failed at commit-scaffold).
+     window.__PIPE_REFUSE__    - the machine `code` setupGitPipeline refuses with:
+                                 "lock_mismatch" (carries added/removed BY NAME),
+                                 "scope_not_allowed" (carries scopes),
+                                 "identity_required".
+     window.__PIPE_DEPLOY_FAIL__ - triggerGitDeploy refuses with not_installed. */
+const PIPELINE_STEP_NAMES = (kind) => [
+  ...(kind === "bitbucket" ? ["enable-pipelines"] : []),
+  "secret:FORGE_EMAIL", "secret:FORGE_API_TOKEN",
+  "var:FORGE_SITE", "var:FORGE_PRODUCT", "var:FORGE_ENV",
+  "commit-scaffold",
+];
+const HOOK_STORE = { seeded: false };
+const HOOKS = () => {
+  if (typeof window !== "undefined" && window.__CODE_HOOK__ && !HOOK_STORE.seeded) {
+    HOOK_STORE.seeded = true;
+    HOOK_STORE["acme/web"] = { hookId: "hook_77123", provider: "github", createdAt: "2026-09-08T10:00:00.000Z" };
+  }
+  const out = {};
+  for (const k of Object.keys(HOOK_STORE)) { if (k !== "seeded") out[k] = HOOK_STORE[k]; }
+  return out;
+};
+const PIPE_STEPS = (kind, phase) => PIPELINE_STEP_NAMES(kind).map((name, i) => ({
+  name,
+  status: phase === "all" ? "done"
+    : phase === "fail" ? (name === "commit-scaffold" ? "failed" : "done")
+    : phase === "some" ? (i === 0 ? "running" : "pending")
+    : "pending",
+  at: phase === "none" ? null : "2026-09-13T09:0" + Math.min(i, 9) + ":00.000Z",
+  ...(phase === "fail" && name === "commit-scaffold"
+    ? { error: "The default branch is protected and refused the commit" } : {}),
+}));
+const PIPE_ROW = (status) => ({
+  connId: "gc_1", repoId: "acme/web", kind: "github", scaffold: "forge-pipeline", scaffoldVersion: 1,
+  status,
+  steps: PIPE_STEPS("github", status === "installed" ? "all" : status === "partial" ? "fail" : status === "running" ? "some" : "none"),
+  failedStep: status === "partial" ? "commit-scaffold" : null,
+  lockHash: "b91c7a44", lockScopes: ["read:jira-work", "write:jira-work", "storage:app"],
+  branch: "main", commitSha: status === "installed" ? "9f31c0de" : null,
+  installedAt: status === "installed" ? "2026-09-13T09:06:00.000Z" : null,
+  queuedAt: "2026-09-13T09:00:00.000Z", startedAt: null, updatedAt: "2026-09-13T09:06:00.000Z",
+  lastRun: PIPE_STATE_RUN(), requestedBy: ACCT,
+});
+/* The QUEUED journey is a SEQUENCE, not a state: each poll advances it one stage, which
+   is the only way "queued becomes installed" can prove the card really re-read. */
+const PIPE_STATE = { walking: false, stage: 0, run: null };
+function PIPE_STATE_RUN() { return PIPE_STATE.run; }
+const PIPE_SEQ = ["queued", "running", "installed"];
+const PIPE_READ = (repoId) => {
+  const scenario = (typeof window !== "undefined" && window.__PIPE_SCENARIO__) || "none";
+  if (repoId !== "acme/web") return null;
+  if (PIPE_STATE.walking || scenario === "queued") {
+    const st = PIPE_SEQ[Math.min(PIPE_STATE.stage, PIPE_SEQ.length - 1)];
+    PIPE_STATE.stage += 1;
+    return PIPE_ROW(st);
+  }
+  if (scenario === "installed" || scenario === "partial") return PIPE_ROW(scenario);
+  return null;
+};
+const PIPE_REFUSALS = {
+  lock_mismatch: {
+    success: false, code: "lock_mismatch",
+    error: "The permissions in this manifest differ from the lock committed to acme/web",
+    added: ["write:jira-work"], removed: ["read:jira-user"], otherLinesChanged: false,
+  },
+  scope_not_allowed: {
+    success: false, code: "scope_not_allowed",
+    error: "CogniRunner will not install a pipeline for these scopes: manage:jira-configuration",
+    scopes: ["manage:jira-configuration"],
+  },
+  identity_required: {
+    success: false, code: "identity_required",
+    error: "No Forge deploy identity is configured", hint: "configure-forge-identity",
+  },
+};
 
 /* ── 1.4 commit 9b: THE CODER PANEL fixtures ──────────────────────────────────────
    One mutable thread per page load, because the panel's whole job is a CONVERSATION:
@@ -1692,6 +1792,46 @@ function invoke(name, payload) {
       return Promise.resolve({ success: true, whoami: { kind: "github", login: "acme-bot", name: "Acme Bot", scopes: ["repo", "workflow"] }, capabilities: { canCreateRepos: true, canWebhooks: true, canPipelines: null, reason: "Derived from the classic token's reported OAuth scopes." } });
     case "setGitRepoAllowlist": return Promise.resolve({ success: true, connection: CODE_CONNS()[0] });
     case "deleteGitConnection": return Promise.resolve({ success: true });
+    /* F-460 - the webhook half. The response NEVER carries the secret, and neither does
+       the connection row it lands on: the UI is told a hook exists and when. */
+    case "setupGitWebhook": {
+      if (typeof window !== "undefined" && window.__HOOK_REFUSE__) {
+        return Promise.resolve({ success: false, error: "You need to be a CogniRunner admin to register webhooks", reason: "no-permission", needsRole: "admin" });
+      }
+      const repoId = (payload && payload.repo) || "";
+      const hook = { hookId: "hook_" + Math.floor(Math.random() * 90000 + 10000), provider: "github", createdAt: new Date().toISOString() };
+      HOOK_STORE[repoId] = hook;
+      return Promise.resolve({ success: true, hook });
+    }
+    case "rotateGitWebhookSecret": {
+      const repoId = (payload && payload.repo) || "";
+      const rotatedAt = new Date().toISOString();
+      if (HOOK_STORE[repoId]) HOOK_STORE[repoId] = { ...HOOK_STORE[repoId], rotatedAt };
+      return Promise.resolve({ success: true, rotatedAt });
+    }
+    /* F-461 - pipeline setup is QUEUED, so the answer is the queued row and the card
+       polls getGitPipelineStatus for the rest. */
+    case "setupGitPipeline": {
+      const refuse = typeof window !== "undefined" ? window.__PIPE_REFUSE__ : null;
+      if (refuse) return Promise.resolve(PIPE_REFUSALS[refuse] || { success: false, error: "refused", code: refuse });
+      PIPE_STATE.walking = true; PIPE_STATE.stage = 1;
+      return Promise.resolve({ success: true, async: true, taskId: "gpipe_1", lockHash: "b91c7a44", status: PIPE_ROW("queued") });
+    }
+    case "getGitPipelineStatus": {
+      const row = PIPE_READ((payload && payload.repo) || "");
+      const deploy = row && row.lastRun
+        ? { kind: "github", latest: { id: 5551212, state: "running", url: "https://github.com/acme/web/actions/runs/5551212", createdAt: "2026-09-13T09:20:00.000Z", name: "forge-deploy" }, runs: [] }
+        : null;
+      return Promise.resolve({ success: true, status: row, deploy });
+    }
+    case "triggerGitDeploy": {
+      if (payload && payload.confirm !== true) return Promise.resolve({ success: false, error: "Starting a deploy needs an explicit confirmation", code: "confirmation_required" });
+      if (typeof window !== "undefined" && window.__PIPE_DEPLOY_FAIL__) {
+        return Promise.resolve({ success: false, error: "No installed pipeline for that repository", code: "not_installed" });
+      }
+      PIPE_STATE.run = { id: null, ref: "main", workflow: "forge-deploy.yml", at: new Date().toISOString(), by: ACCT };
+      return Promise.resolve({ success: true, run: PIPE_STATE.run });
+    }
     case "rotateGitCredential": return Promise.resolve({ success: true, taskId: "rot_abc", queued: true });
     case "getForgeIdentityStatus": return Promise.resolve({ success: true, status: CODE_IDENTITY() });
     case "saveForgeIdentity":

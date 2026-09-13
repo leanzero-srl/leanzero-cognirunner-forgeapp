@@ -7,8 +7,9 @@
  * admin-panel CODE TAB + AgentConfig CODE column + EventPicker git group browser journeys
  * (mock-bridge harness). Drives the REAL admin-panel build with @forge/bridge aliased to
  * bridge.js, so the capability card, the connection list, the dead-credential banner, the
- * consent screen, the git action column and the repos filter are exercised end to end
- * against canned resolver responses.
+ * consent screen, the git action column, the repos filter and (F-460/F-461) the per-repo
+ * webhook chip and the deploy pipeline card are exercised end to end against canned
+ * resolver responses.
  *
  * Every journey runs in BOTH themes where the screen carries a hue, because a new hue
  * without a dark override is the owner's standing rule and the only way to catch it is to
@@ -212,7 +213,9 @@ try {
       ok(/repo/.test(who), "C6 the Test result shows the reported scopes");
       ok(/not known/.test(who), "C6 an unknown capability says NOT KNOWN, never no");
       // Deploy identity: consent gates the button, and the button is never pre-armed.
-      await page.locator("button", { hasText: "Set up" }).first().click();
+      // Scoped to the identity CARD: since F-460 every repo row also offers a "Set up
+      // webhook", and a loose "Set up" match would click the wrong control.
+      await page.locator(".code-card").last().locator("button", { hasText: /^Set up$/ }).first().click();
       await page.locator("#code-id-token").waitFor({ timeout: 5000 });
       await page.locator("#code-id-email").fill("deploy@acme.example");
       await page.locator("#code-id-token").fill("atlassian-api-token");
@@ -305,6 +308,229 @@ try {
       await shot(page, `C8-agentconfig-code-${theme}-${capReason || "on"}`);
       ok(env.errors.length === 0, "C8 no page errors: " + env.errors.join(" | "));
     } catch (e) { fail++; console.log("  ✗ C8 threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
+  /* ---------------- C9 — F-460: the webhook a tenant could not register ---------------- */
+  for (const theme of ["light", "dark"]) {
+    console.log(`C9 webhook setup (${theme})`);
+    const env = await openAdmin(browser, theme);
+    const { page } = env;
+    try {
+      await tab(page, "Code");
+      await page.locator(".code-repo-row").first().waitFor({ timeout: 10000 });
+      const row = page.locator(".code-repo-row", { hasText: "acme/web" }).first();
+      ok(await page.locator(".code-repo-row").count() === 3, `C9 ${theme} one row per allow-listed repo, and only those`);
+      ok(await row.locator(".code-hook.unset").innerText() === "NO WEBHOOK", `C9 ${theme} a repo with no hook says so`);
+      // The chip is a SOLID fill with white text, per theme, and carries no left rail.
+      const unsetFill = await row.locator(".code-hook").first().evaluate((el) => getComputedStyle(el).backgroundColor);
+      ok(unsetFill === (theme === "light" ? "rgb(71, 85, 105)" : "rgb(100, 116, 139)"), `C9 ${theme} the unset chip is the solid neutral (got ${unsetFill})`);
+      ok(await row.locator(".code-hook").first().evaluate((el) => getComputedStyle(el).borderLeftWidth) === "0px", `C9 ${theme} no left accent rail on the chip`);
+      await row.locator("button", { hasText: "Set up webhook" }).click();
+      await row.locator(".code-hook.set").waitFor({ timeout: 8000 });
+      const setChip = await row.locator(".code-hook.set").innerText();
+      ok(/WEBHOOK SET/.test(setChip), `C9 ${theme} the chip flips to SET after the write`);
+      ok(/\d/.test(setChip), `C9 ${theme} and it carries the date the hook was made`);
+      const setFill = await row.locator(".code-hook.set").evaluate((el) => getComputedStyle(el).backgroundColor);
+      ok(setFill === (theme === "light" ? "rgb(22, 163, 74)" : "rgb(34, 197, 94)"), `C9 ${theme} solid green with a dark override (got ${setFill})`);
+      ok(await row.locator(".code-hook.set").evaluate((el) => getComputedStyle(el).color) === "rgb(255, 255, 255)", `C9 ${theme} white text on the chip`);
+      // THE RULE THIS SCREEN EXISTS UNDER: the secret has no render path.
+      const shown = await page.locator(".code-tab").first().innerText();
+      ok(!/secret[:=]\s*\S+/i.test(shown) && !/whsec|hook_\d/.test(shown), `C9 ${theme} neither the secret nor the hook id is rendered`);
+      ok(await page.locator("select").count() === 0, `C9 ${theme} no native controls`);
+      await shot(page, `C9-webhook-${theme}`);
+      ok(env.errors.length === 0, `C9 ${theme} no page errors: ` + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  ✗ C9 threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
+  /* ---------------- C10 — rotating the secret asks first, with the app's own dialog ----- */
+  {
+    console.log("C10 rotate webhook secret");
+    const env = await openAdmin(browser, "light", { __CODE_HOOK__: true });
+    const { page } = env;
+    try {
+      await tab(page, "Code");
+      const row = page.locator(".code-repo-row", { hasText: "acme/web" }).first();
+      await row.locator(".code-hook.set").waitFor({ timeout: 10000 });
+      ok(await row.locator("button", { hasText: "Set up webhook" }).count() === 0, "C10 a repo that already has a hook is not offered a second one");
+      await row.locator("button", { hasText: "Rotate secret" }).click();
+      await page.locator(".cr-confirm").waitFor({ timeout: 5000 });
+      ok(await page.locator(".cr-confirm").count() === 1, "C10 the rotate asks first, through the app's own dialog");
+      const dlg = await page.locator(".cr-confirm").innerText();
+      ok(/old secret/i.test(dlg), "C10 the dialog says what stops working");
+      // Cancelling changes nothing: a confirm that acts on cancel is the worst kind.
+      await page.locator(".cr-confirm .btn-small", { hasText: "Cancel" }).click();
+      ok(await row.locator(".code-fact-k", { hasText: "Secret rotated" }).count() === 0, "C10 cancelling rotates nothing");
+      await row.locator("button", { hasText: "Rotate secret" }).click();
+      await page.locator(".cr-confirm").waitFor({ timeout: 5000 });
+      await page.locator(".cr-confirm .btn-small", { hasText: "Rotate" }).click();
+      await row.locator(".code-fact-k", { hasText: "Secret rotated" }).waitFor({ timeout: 8000 });
+      ok(await row.locator(".code-fact-k", { hasText: "Secret rotated" }).count() === 1, "C10 the rotation is reported as a time, never as a value");
+      ok(!/whsec|secret[:=]/i.test(await page.locator(".code-tab").first().innerText()), "C10 the new secret is nowhere on the screen");
+      await shot(page, "C10-rotate-secret");
+      ok(env.errors.length === 0, "C10 no page errors: " + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  ✗ C10 threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
+  /* ---------------- C11 — an editor is refused the webhook write, by NAME -------------- */
+  {
+    console.log("C11 webhook refusal");
+    const env = await openAdmin(browser, "light", { __HOOK_REFUSE__: true });
+    const { page } = env;
+    try {
+      await tab(page, "Code");
+      const row = page.locator(".code-repo-row", { hasText: "acme/web" }).first();
+      await row.waitFor({ timeout: 10000 });
+      await row.locator("button", { hasText: "Set up webhook" }).click();
+      await row.locator(".code-hook-note").waitFor({ timeout: 8000 });
+      const note = await row.locator(".code-hook-note").innerText();
+      ok(/admin/i.test(note), "C11 the refusal names the role the gate asked for");
+      ok(await row.locator(".code-hook.set").count() === 0, "C11 a refused write does not flip the chip");
+      const fill = await row.locator(".code-hook-note").evaluate((el) => getComputedStyle(el).backgroundColor);
+      ok(fill === "rgb(217, 119, 6)", `C11 the note is a solid fill, not a tint (got ${fill})`);
+      ok(await row.locator(".code-hook-note").evaluate((el) => getComputedStyle(el).borderLeftWidth) === "0px", "C11 no left accent rail");
+      await shot(page, "C11-webhook-refusal");
+      ok(env.errors.length === 0, "C11 no page errors: " + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  ✗ C11 threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
+  /* ---------------- C12 — F-461: queued setup becomes installed, by POLLING ------------- */
+  for (const theme of ["light", "dark"]) {
+    console.log(`C12 pipeline queued to installed (${theme})`);
+    const env = await openAdmin(browser, theme);
+    const { page } = env;
+    try {
+      await tab(page, "Code");
+      const row = page.locator(".code-repo-row", { hasText: "acme/web" }).first();
+      await row.waitFor({ timeout: 10000 });
+      await row.locator("button", { hasText: "Pipeline" }).click();
+      await row.locator(".code-pipe").waitFor({ timeout: 8000 });
+      ok(await row.locator(".code-pipe-status", { hasText: "NOT SET UP" }).count() === 1, `C12 ${theme} a repo with no row says NOT SET UP`);
+      const setupBtn = row.locator("button", { hasText: "Set up pipeline" });
+      ok(await setupBtn.isDisabled(), `C12 ${theme} the setup button is refused without a manifest and a site`);
+      await row.locator(".code-textarea").fill("permissions:\n  scopes:\n    - read:jira-work\n");
+      await row.locator("input[placeholder='your-site.atlassian.net']").fill("acme.atlassian.net");
+      ok(!(await setupBtn.isDisabled()), `C12 ${theme} a manifest and a site arm it`);
+      ok(await page.locator("select").count() === 0, `C12 ${theme} the product picker is the app's own dropdown`);
+      await setupBtn.click();
+      await row.locator(".code-pipe-queued").waitFor({ timeout: 8000 });
+      ok(await row.locator(".code-pipe-status", { hasText: "QUEUED" }).count() === 1, `C12 ${theme} the queued row lands immediately`);
+      // The step chain is the BACKEND's names, in its order.
+      const steps = await row.locator(".code-step-name").allInnerTexts();
+      ok(steps.join("|") === "secret:FORGE_EMAIL|secret:FORGE_API_TOKEN|var:FORGE_SITE|var:FORGE_PRODUCT|var:FORGE_ENV|commit-scaffold",
+        `C12 ${theme} the step list is the pipeline's own (got ${steps.join("|")})`);
+      ok(await row.locator(".code-diff-lock", { hasText: "read:jira-work" }).count() === 1, `C12 ${theme} the locked scopes are named`);
+      // Two polls at 5s: queued -> running -> installed. This is the whole finding.
+      await row.locator(".code-pipe-installed").waitFor({ timeout: 30000 });
+      ok(await row.locator(".code-pipe-status", { hasText: "INSTALLED" }).count() === 1, `C12 ${theme} polling carries it to INSTALLED`);
+      ok(await row.locator(".code-step-done").count() === 6, `C12 ${theme} every step is reported done`);
+      const doneFill = await row.locator(".code-step-done .code-step-state").first().evaluate((el) => getComputedStyle(el).backgroundColor);
+      ok(doneFill === (theme === "light" ? "rgb(22, 163, 74)" : "rgb(34, 197, 94)"), `C12 ${theme} done steps are solid green with a dark override (got ${doneFill})`);
+      ok(await row.locator("button", { hasText: "Trigger deploy" }).count() === 1, `C12 ${theme} an installed pipeline offers the deploy`);
+      ok(await row.locator("button", { hasText: "Set up pipeline" }).count() === 0, `C12 ${theme} and stops offering the setup form`);
+      await shot(page, `C12-pipeline-installed-${theme}`);
+      ok(env.errors.length === 0, `C12 ${theme} no page errors: ` + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  ✗ C12 threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
+  /* ---------------- C13 — the three refusals that must name NAMES ----------------------- */
+  for (const code of ["lock_mismatch", "scope_not_allowed", "identity_required"]) {
+    console.log("C13 pipeline refusal: " + code);
+    const env = await openAdmin(browser, "light", { __PIPE_REFUSE__: code });
+    const { page } = env;
+    try {
+      await tab(page, "Code");
+      const row = page.locator(".code-repo-row", { hasText: "acme/web" }).first();
+      await row.waitFor({ timeout: 10000 });
+      await row.locator("button", { hasText: "Pipeline" }).click();
+      await row.locator(".code-textarea").waitFor({ timeout: 8000 });
+      await row.locator(".code-textarea").fill("permissions:\n  scopes:\n    - write:jira-work\n");
+      await row.locator("input[placeholder='your-site.atlassian.net']").fill("acme.atlassian.net");
+      await row.locator("button", { hasText: "Set up pipeline" }).click();
+      await row.locator(".code-pipe-err").waitFor({ timeout: 8000 });
+      const body = await row.locator(".code-pipe-err").innerText();
+      if (code === "lock_mismatch") {
+        ok(/committed lock differs/i.test(body), "C13 lock_mismatch says the committed lock differs");
+        ok(await row.locator(".code-diff-add", { hasText: "+write:jira-work" }).count() === 1, "C13 the ADDED scope is named, with a sign");
+        ok(await row.locator(".code-diff-rem", { hasText: "read:jira-user" }).count() === 1, "C13 the REMOVED scope is named too");
+        ok(!/b91c7a44/.test(body), "C13 it is told by scope name, never by lock hash");
+      } else if (code === "scope_not_allowed") {
+        ok(await row.locator(".code-diff-rem", { hasText: "manage:jira-configuration" }).count() === 1, "C13 the refused scope is named");
+      } else {
+        ok(/deploy identity/i.test(body), "C13 identity_required names the missing identity");
+        // The remedy is on this screen, so it takes the reader there.
+        await row.locator(".code-pipe-goto").click();
+        await page.locator("#code-id-token").waitFor({ timeout: 5000 });
+        ok(await page.locator("#code-id-token").count() === 1, "C13 the refusal opens the deploy identity card");
+      }
+      const errFill = await row.locator(".code-pipe-err").evaluate((el) => getComputedStyle(el).backgroundColor);
+      ok(errFill === "rgb(220, 38, 38)", `C13 ${code} solid red, not a tint (got ${errFill})`);
+      ok(await row.locator(".code-pipe-err").evaluate((el) => getComputedStyle(el).borderLeftWidth) === "0px", `C13 ${code} no left accent rail`);
+      await shot(page, `C13-pipeline-${code}`);
+      ok(env.errors.length === 0, `C13 ${code} no page errors: ` + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  ✗ C13 threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
+  /* ---------------- C14 — a PARTIAL setup names the step it died on --------------------- */
+  for (const theme of ["light", "dark"]) {
+    console.log(`C14 partial pipeline (${theme})`);
+    const env = await openAdmin(browser, theme, { __PIPE_SCENARIO__: "partial" });
+    const { page } = env;
+    try {
+      await tab(page, "Code");
+      const row = page.locator(".code-repo-row", { hasText: "acme/web" }).first();
+      await row.waitFor({ timeout: 10000 });
+      await row.locator("button", { hasText: "Pipeline" }).click();
+      await row.locator(".code-pipe-warn").waitFor({ timeout: 8000 });
+      const warn = await row.locator(".code-pipe-warn").innerText();
+      ok(/commit-scaffold/.test(warn), `C14 ${theme} the warning names the step that failed`);
+      ok(await row.locator(".code-step-failed .code-step-name", { hasText: "commit-scaffold" }).count() === 1, `C14 ${theme} and the step itself reads failed`);
+      ok(/protected/.test(await row.locator(".code-step-err").innerText()), `C14 ${theme} the provider's reason is shown, not swallowed`);
+      ok(await row.locator("button", { hasText: "Set up again" }).count() === 1, `C14 ${theme} a partial setup can be retried`);
+      ok(await row.locator("button", { hasText: "Trigger deploy" }).count() === 0, `C14 ${theme} a partial setup offers no deploy`);
+      const warnFill = await row.locator(".code-pipe-warn").evaluate((el) => getComputedStyle(el).backgroundColor);
+      ok(warnFill === (theme === "light" ? "rgb(217, 119, 6)" : "rgb(245, 158, 11)"), `C14 ${theme} solid amber with a dark override (got ${warnFill})`);
+      await shot(page, `C14-pipeline-partial-${theme}`);
+      ok(env.errors.length === 0, `C14 ${theme} no page errors: ` + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  ✗ C14 threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
+  /* ---------------- C15 — the deploy asks first, then shows the run -------------------- */
+  {
+    console.log("C15 trigger deploy");
+    const env = await openAdmin(browser, "light", { __PIPE_SCENARIO__: "installed" });
+    const { page } = env;
+    try {
+      await tab(page, "Code");
+      const row = page.locator(".code-repo-row", { hasText: "acme/web" }).first();
+      await row.waitFor({ timeout: 10000 });
+      await row.locator("button", { hasText: "Pipeline" }).click();
+      await row.locator(".code-pipe-installed").waitFor({ timeout: 8000 });
+      await row.locator("button", { hasText: "Trigger deploy" }).click();
+      await page.locator(".cr-confirm").waitFor({ timeout: 5000 });
+      const dlg = await page.locator(".cr-confirm").innerText();
+      ok(/acme\/web/.test(dlg) && /cannot be called back/i.test(dlg), "C15 the dialog names the repo and says it is irreversible");
+      await page.locator(".cr-confirm .btn-small", { hasText: "Cancel" }).click();
+      ok(await row.locator(".code-run").count() === 0, "C15 cancelling deploys nothing");
+      await row.locator("button", { hasText: "Trigger deploy" }).click();
+      await page.locator(".cr-confirm").waitFor({ timeout: 5000 });
+      await page.locator(".cr-confirm .btn-small", { hasText: "Start deploy" }).click();
+      await row.locator(".code-run").waitFor({ timeout: 8000 });
+      const run = await row.locator(".code-run").innerText();
+      ok(/main/.test(run) && /forge-deploy\.yml/.test(run), "C15 the run names the ref and the workflow it started");
+      // GitHub answers a dispatch with no id, so the link only appears once the provider
+      // reports the run. Until then the card says so rather than rendering a dead link.
+      ok(/not reported a run/i.test(run) || await row.locator(".code-run-link").count() === 1, "C15 the run link, or an honest sentence when there is not one yet");
+      await row.locator(".code-run-link").waitFor({ timeout: 30000 });
+      ok((await row.locator(".code-run-link").getAttribute("href")).startsWith("https://github.com/"), "C15 the run link points at the provider's run");
+      await shot(page, "C15-trigger-deploy");
+      ok(env.errors.length === 0, "C15 no page errors: " + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  ✗ C15 threw: " + e.message.split("\n")[0]); }
     await close(env);
   }
 } finally {

@@ -160,6 +160,63 @@ export const VA_CEILINGS = Object.freeze({
   maxWritesPerRun: Object.freeze({ min: JOB_MIN_WRITES_PER_RUN, max: JOB_MAX_WRITES_PER_RUN }),
 });
 
+/**
+ * THE SHADOW CEILING — ONE HOME, BOTH DOORS (F-514).
+ *
+ * `VA_SHADOW_UNTIL_TICK_MAX` used to be applied ONLY at the save door, and
+ * `registry-limits.js` claimed in prose that it therefore "REPAIRs the F-484 leftovers".
+ * It did not: `normalizeVa` runs on the SAVE/wizard paths only, so a record nobody
+ * re-saves is never repaired, and `shadowStateOf` (src/virtual-admin.js) read the stored
+ * number raw. A pre-F-484 agent carrying a wall-clock-derived `shadowUntilTick: 8643`
+ * stayed in shadow for as long as it took to tick 8643 times — on an hourly cadence,
+ * about a year of staging drafts nobody was allowed to post — while the constant that
+ * claimed to have fixed it was never consulted on that path. This helper is that
+ * constant's only consumer, so the two doors cannot answer differently again.
+ *
+ * WHY IT IS NOT `min(value, watched + MAX)`, WHICH IS THE OBVIOUS FORMULA.
+ *
+ * Because that formula is a NO-OP for the thing it is meant to fix. It binds only when
+ * `value > watched + MAX`, and in exactly that case the clamped result is STILL greater
+ * than `watched` — so the agent is still in shadow, and the ceiling has moved up by the
+ * same step the count just took. The in/out verdict comes out bit-identical to no clamp
+ * at all; only the number on the badge changes, while the legacy agent goes on staging
+ * for a year. Any ceiling expressed as `watched + k` runs away in front of the count the
+ * same way. The releasing ceiling has to be ABSOLUTE.
+ *
+ * SO `watched` DECIDES WHICH OF TWO CASES THIS IS, IT DOES NOT SET THE CEILING:
+ *   · REACHABLE — `value <= max(MAX, watched + VA_SHADOW_TICKS_MAX)` — is a watch the
+ *     engine could legitimately have armed, and it is KEPT UNTOUCHED. `rearmShadow`
+ *     (src/va-admin.js) runs AFTER `normalizeVa` and is raise-only by design, so an agent
+ *     with 600 receipts is armed to `600 + shadowTicks`: a stored value above the
+ *     absolute ceiling that is CORRECT. A flat clamp would have silently switched shadow
+ *     mode off for every agent past its 500th tick — a worse defect than this one.
+ *     `shadowTicks`' own MAXIMUM is used rather than the agent's configured value, so the
+ *     ceiling cannot be moved under an already-armed watch by lowering the guardrail.
+ *   · UNREACHABLE — anything above that — is not a watch, it is an F-484 leftover in the
+ *     wrong unit, and it is replaced by the flat absolute ceiling. 8643 with 3 ticks
+ *     watched becomes 500 and really does end at the 500th tick. If the agent is already
+ *     past 500 the watch is simply over, which is the right answer for a number that was
+ *     never a tick index in the first place.
+ *
+ * A lost `va_health` row (its counter can expire) re-reads as 0 watched ticks, which can
+ * make a reachable value look unreachable and re-impose up to 500 ticks of shadow. That
+ * is the restrictive direction — staging instead of speaking — which is the one every
+ * other reader of this counter takes when it cannot tell.
+ *
+ * `watched` omitted (the save door, which cannot know the tick index) gives the plain
+ * absolute ceiling — exactly `VA_CEILINGS.shadowUntilTick.max`, so `normalizeVa`'s
+ * `refused[]` report stays truthful about the number it clamped to.
+ */
+export const clampShadowUntilTick = (value, watched = null) => {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  const w = Number(watched);
+  const reachable = Number.isFinite(w) && w > 0
+    ? Math.max(VA_SHADOW_UNTIL_TICK_MAX, Math.trunc(w) + VA_SHADOW_TICKS_MAX)
+    : VA_SHADOW_UNTIL_TICK_MAX;
+  return Math.trunc(n) <= reachable ? Math.trunc(n) : VA_SHADOW_UNTIL_TICK_MAX;
+};
+
 /* ── Shape bounds (this file's own home — see the header's split rule) ────────── */
 
 /** The persona name is RENDERED INTO OUTWARD TEXT ("— Nadia"), so it is short and plain. */
@@ -546,7 +603,11 @@ export const normalizeVa = (raw, ctx = {}) => {
      * empty `refused[]`. An unreachable value is a REFUSAL AT THE DOOR, said out loud,
      * not a silent substitution three steps later.
      */
-    shadowUntilTick: int(st.shadowUntilTick, 0, VA_CEILINGS.shadowUntilTick.max, guardrails.shadowTicks, "status.shadowUntilTick", report),
+    // The clamp runs through `clampShadowUntilTick` (F-514) so the save door and the
+    // runtime reader share one arithmetic. `int` still does the REPORTING — an
+    // unreachable value must be refused out loud here — and passing no `watched` gives
+    // the plain absolute ceiling, which is the number `int` just told the admin about.
+    shadowUntilTick: clampShadowUntilTick(int(st.shadowUntilTick, 0, VA_CEILINGS.shadowUntilTick.max, guardrails.shadowTicks, "status.shadowUntilTick", report)),
   };
 
   return { va: { persona, scope, intake, cadence, powers, guardrails, status }, refused };

@@ -44,6 +44,8 @@ const { default: forgeApi, pushed } = await import("@forge/api");
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) pass++; else { fail++; console.log("FAIL:", m); } };
+/** `ok` with the actual value in the message, so a red line says WHAT it got. */
+const eqish = (actual, expected, m) => ok(actual === expected, `${m} (got ${JSON.stringify(actual)})`);
 const isObj = (v) => v != null && typeof v === "object" && !Array.isArray(v);
 const asRefusals = (r) => (Array.isArray(r && r.refused) ? r.refused : []);
 const has = (o, keys, label) => {
@@ -212,6 +214,57 @@ let agentId = null;
       `…counted in the agent's own prepare receipts: 12 watched + 3 shadowTicks = 15 (got ${row && row.va.status.shadowUntilTick})`);
     ok(after.shadow && after.shadow.ticksLeft === 3,
       `…so the admin is told THREE more ticks, not thousands (got ${JSON.stringify(after.shadow)})`);
+  }
+
+  /* ── F-514: THE CEILING IS ON THE READ SIDE TOO ──────────────────────────
+   *
+   * `VA_SHADOW_UNTIL_TICK_MAX` (500) lived only at the SAVE door, and `normalizeVa` runs
+   * on the save/wizard paths ONLY — so a pre-F-484 agent carrying a wall-clock-derived
+   * `shadowUntilTick: 8643` was never repaired, and `shadowStateOf` read the number raw.
+   * On an hourly cadence that is about a year of staging drafts nobody may post, while
+   * `registry-limits.js` claimed in prose that the constant had already fixed it.
+   *
+   * The value is written STRAIGHT INTO STORAGE here, never through a resolver: going
+   * through the door would clamp it and the test would prove nothing. That is exactly the
+   * legacy record's situation — it got there before the door existed.
+   */
+  {
+    const row = await storage.get(`job:${agentId}`) || await storage.get(`sched_job:${agentId}`);
+    row.va.status.shadowUntilTick = 8643;
+    for (const k of ["job:", "sched_job:"]) { if (await storage.get(k + agentId)) await storage.set(k + agentId, row); }
+    await setWatched(3);
+
+    const tab = await call("getVaStatus", { jobId: agentId });
+    ok(tab.success && tab.shadow, "F-514: the legacy agent still reads as SHADOW at 3 watched ticks (the clamp is a ceiling, not an eviction)");
+    eqish(tab.shadow.until, 500, "F-514.TAB — …but the watch it shows ends at the ceiling, not at 8643");
+    eqish(tab.shadow.ticksLeft, 497, "F-514.TAB — …so the badge says 497 more ticks, a number the agent can actually reach");
+
+    const engine = gatePausedShadow({ va: row.va, tickIndex: 3, killSwitchActive: false });
+    ok(engine.ok === false && engine.reason === "shadow", "F-514.ENGINE — the post gate agrees it is still shadow at 3");
+    const sh = await isInShadow(row, { receipts: 3 });
+    eqish(sh && sh.ticksLeft, 497, "F-514 — and isInShadow reads the SAME number as the tab: one predicate, one ceiling");
+
+    // THE POINT OF THE WHOLE ROW: it ENDS. Before the fix the agent was in shadow at 499
+    // and at 500 and at 8642. `min(value, watched + MAX)` would not have fixed this — it
+    // binds only when the clamped value is still above `watched`, so the in/out verdict
+    // would have been bit-identical to no clamp at all.
+    await setWatched(499);
+    ok(Boolean(await isInShadow(row, { receipts: 499 })), "F-514: 499 watched ticks is still inside the ceiling");
+    await setWatched(500);
+    eqish(await isInShadow(row, { receipts: 500 }), null, "F-514.ENDS — at the 500th watched tick the legacy watch is OVER, stored 8643 or not");
+    const liveTab = await call("getVaStatus", { jobId: agentId });
+    ok(liveTab.success && liveTab.shadow === null, "F-514.ENDS — and the tab says LIVE, in step with the engine");
+    const g500 = gatePausedShadow({ va: row.va, tickIndex: 500, killSwitchActive: false });
+    ok(!(g500.ok === false && g500.reason === "shadow"), "F-514.ENDS — …and the post gate lets it speak");
+
+    // AND IT DOES NOT CUT A WATCH THE ENGINE LEGITIMATELY ARMED. `rearmShadow` runs AFTER
+    // `normalizeVa` and is raise-only (F-508), so an agent past its 500th tick is armed to
+    // `watched + shadowTicks` — a stored value above the absolute ceiling that is correct.
+    // A flat 500 here would have switched shadow mode OFF for every long-lived agent.
+    row.va.status.shadowUntilTick = 603;
+    const armed = await isInShadow(row, { receipts: 600 });
+    ok(armed, "F-514.NO_REGRESSION — an agent with 600 receipts armed to 603 is still in shadow");
+    eqish(armed.ticksLeft, 3, "F-514.NO_REGRESSION — …for the three ticks it was armed for, not cut to zero");
   }
 }
 

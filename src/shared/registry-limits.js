@@ -544,10 +544,18 @@ export const VA_SHADOW_TICKS_MAX = 50;
  * 500 OF THE AGENT'S OWN PREPARE TICKS. At the five-minute cadence floor that is close
  * to two days of continuous supervised staging, which is the longest watch that is still
  * a watch — past that an admin does not want an agent staging unread, they want it
- * paused, and `status.paused` is the control that says so. It is also low enough to
- * REPAIR the F-484 leftovers: a pre-F-484 agent carrying a wall-clock-derived ~8640 is
- * cut to a number its receipt count can actually reach, with a report saying so, instead
- * of sitting in shadow mode for a year.
+ * paused, and `status.paused` is the control that says so.
+ *
+ * IT IS ALSO WHAT REPAIRS THE F-484 LEFTOVERS — but only because F-514 gave it a second
+ * consumer. This docblock used to claim the repair outright, and it was not true: the
+ * ceiling was applied at the SAVE door alone (`normalizeVa`), which never runs on a
+ * record nobody edits, while the runtime reader (`shadowStateOf`) took the stored number
+ * raw. A pre-F-484 agent carrying a wall-clock-derived ~8640 therefore sat in shadow
+ * mode for about a year, and the constant said in prose that it had fixed exactly that.
+ * The clamp now has ONE home, `clampShadowUntilTick` in `src/shared/va-config.js`, used
+ * by the door (which reports what it cut) and by the reader (which does not need to,
+ * because nobody asked for the stored value). Read that helper for why the read side's
+ * ceiling is anchored rather than flat.
  */
 export const VA_SHADOW_UNTIL_TICK_MAX = 500;
 

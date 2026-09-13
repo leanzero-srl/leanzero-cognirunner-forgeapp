@@ -65,7 +65,7 @@ import {
 } from "./va-ledger.js";
 import {
   VA_LIMITS, VA_DEFAULTS, VA_PROJECT_KEY_RE, VA_JQL_MAX,
-  renderGuardrailSentences, vaWriteScope, vaConfluenceSpaces,
+  renderGuardrailSentences, vaWriteScope, vaConfluenceSpaces, clampShadowUntilTick,
 } from "./shared/va-config.js";
 import { lintVoice } from "./shared/voice-lint.js";
 // THE ONE agent-capability predicate (F-482). Pure, and shared with the Coder, the
@@ -1303,9 +1303,17 @@ export const postFloorOk = ({ staged, currentTickId, minPostGapMinutes, now }) =
  * test rather than a second copy of the comparison.
  */
 export const shadowStateOf = (va, watchedTicks) => {
-  const until = Number(va && va.status && va.status.shadowUntilTick);
   const idx = Number(watchedTicks);
-  if (!Number.isFinite(until) || !Number.isFinite(idx) || idx >= until) return null;
+  if (!Number.isFinite(idx)) return null;
+  // THE CEILING IS APPLIED ON THE READ SIDE TOO (F-514). It used to live only at the save
+  // door, so a record nobody re-saves was never repaired and this function read the stored
+  // number raw — a pre-F-484 agent carrying a wall-clock-derived `shadowUntilTick: 8643`
+  // stayed in shadow until it had ticked 8643 times. `clampShadowUntilTick` is the ONE
+  // home for that arithmetic (src/shared/va-config.js), shared with `normalizeVa`, and it
+  // is given the watch count so an agent the ENGINE legitimately armed past the absolute
+  // ceiling (`rearmShadow` is raise-only and runs after the door) is not cut short.
+  const until = clampShadowUntilTick(va && va.status && va.status.shadowUntilTick, idx);
+  if (!Number.isFinite(until) || idx >= until) return null;
   return { until, tickIndex: idx, ticksLeft: Math.max(0, until - idx) };
 };
 

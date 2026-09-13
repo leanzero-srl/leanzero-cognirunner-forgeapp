@@ -629,10 +629,20 @@ const handleCollection = async ({ req, method, id, action, body, who, kind }) =>
        * dead state. The resolvers close the same hole in the same words
        * (`gateSaveById`, src/index.js): a create omits the id, an id that names no
        * row is "not found". PUT already answered 404 here; this is the twin.
+       *
+       * F-620 — AND THE ORDER IS THE OWNERSHIP QUESTION FIRST, like every other
+       * route here (GET-by-id, DELETE, PUT, POST-action). The 404 sat ABOVE
+       * `ownerGate`, which handed a scope-"own" token a free oracle: 404 meant the
+       * id was unused, 403 `not-owner` meant a colleague owned a row there — F-261's
+       * existence leak, re-opened on the widest door onto it (100 ids per request,
+       * refused before any write, so probing was free). `ownerGate` answers a NULL
+       * row on the same rule the resolvers do: "not found" only for a scope-"all"
+       * caller, the byte-identical `not-owner` 403 for everyone else. An admin token
+       * short-circuits it, so the plain 404 below is still what an admin sees.
        */
-      if (!row) return json(404, { error: `${noun} not found` });
       const owned = await ownerGate(who, row, { what: `replace this ${noun}`, notFound: `${noun} not found` });
       if (owned) return owned;
+      if (!row) return json(404, { error: `${noun} not found` });
     }
     // ONE fact read for the whole batch (F-480/F-485): the instance's capabilities do
     // not change between two items of the same request, and re-reading them per item

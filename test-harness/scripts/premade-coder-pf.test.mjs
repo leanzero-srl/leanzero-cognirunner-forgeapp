@@ -60,7 +60,7 @@ const { AGENT_ACTIONS, normalizeAllowedActions, buildAgentGateContext } =
   ok(findRule("postfunction", "postfunction-coder") === row, "findRule reaches it");
   ok(CODER_PF_MODE_IDS.join() === "build,open-branch,open-pr,fix,review",
     `the five mode ids are stable for the UI (got ${CODER_PF_MODE_IDS.join()})`);
-  ok(CODER_PF_INSTRUCTIONS_MAX === 2048, "the instructions cap is 2 KB");
+  ok(CODER_PF_INSTRUCTIONS_MAX === 2048, "the instructions cap is 2048 CHARACTERS (code points, not bytes)");
   const byId = new Map(AGENT_ACTIONS.map((a) => [a.id, a]));
   ok(CODER_PF_MODES.every((m) => (m.actions || []).every((id) => byId.has(id))),
     "every mode's actions exist in the agent-action catalogue");
@@ -196,6 +196,24 @@ if (CAP_OFF) {
   ok(l && l.type === "postfunction-coder" && l.isValid === true, "an accepted enqueue logs a success entry");
   ok(l && Array.isArray(l.stepResults) && l.stepResults[0].status === "success",
     "…with a stepResults row, never a silent success");
+}
+
+/* ══════════ F-391 — the instructions clamp is code-point safe ══════════ */
+{
+  const { hasLoneSurrogate } = await import("../../src/shared/text-clamp.js");
+  // Exactly at the boundary: 2047 filler + one astral emoji = 2048 code points, so the
+  // emoji survives WHOLE. A raw `.slice(0, 2048)` would keep only its high surrogate.
+  const before = pushed.length;
+  await fire("LZPT-111", cfg({ instructions: "a".repeat(CODER_PF_INSTRUCTIONS_MAX - 1) + "\u{1F600}" }));
+  const msg = pushed.slice(before)[0].body.params.message;
+  ok(!hasLoneSurrogate(msg), "an emoji ON the boundary never leaves a lone surrogate in the message");
+  ok(msg.includes("\u{1F600}"), "…the whole emoji is kept when it fits in the code-point budget");
+  // One code point past the budget: the emoji is dropped whole, never halved.
+  const before2 = pushed.length;
+  await fire("LZPT-112", cfg({ instructions: "a".repeat(CODER_PF_INSTRUCTIONS_MAX) + "\u{1F600}" }));
+  const msg2 = pushed.slice(before2)[0].body.params.message;
+  ok(!hasLoneSurrogate(msg2), "an emoji PAST the boundary is dropped whole, not halved");
+  ok(!msg2.includes("\u{1F600}"), "…and nothing past the cap reaches the model");
 }
 
 /* ══════════ 3. an EDITOR-saved rule, end to end ══════════ */

@@ -85,7 +85,8 @@
  *                 truthiness, or it draws a control the executor ignores.
  *   coderMode   — the CODER_PF_MODES picker (writes `mode`; see the mode table below)
  *   instructions— one optional multi-line text box (writes `instructions`), UNTRUSTED and
- *                 clamped to CODER_PF_INSTRUCTIONS_MAX bytes before it reaches a model
+ *                 clamped to CODER_PF_INSTRUCTIONS_MAX CHARACTERS (code points, via
+ *                 clampChars — src/shared/text-clamp.js) before it reaches a model
  */
 
 /*
@@ -681,7 +682,14 @@ export const CODER_PF_MODES = [
 export const CODER_PF_MODE_IDS = CODER_PF_MODES.map((m) => m.id);
 export const getCoderPfMode = (id) => CODER_PF_MODES.find((m) => m.id === String(id || "")) || null;
 
-/** The admin's own instruction text. UNTRUSTED — clamped here, fenced by the renderer. */
+/**
+ * The admin's own instruction text. UNTRUSTED — clamped by the renderer, then fenced.
+ *
+ * The unit is CHARACTERS (code points), not bytes: `renderCoderPfMessage` (src/index.js)
+ * cuts with `clampChars` (src/shared/text-clamp.js), the ONE code-point-safe clamp, so an
+ * emoji straddling the boundary can never leave a lone surrogate in the provider's JSON
+ * body. A 2048-character note of CJK is therefore ~6 KB of UTF-8, by design.
+ */
 export const CODER_PF_INSTRUCTIONS_MAX = 2048;
 
 /**
@@ -699,7 +707,7 @@ export const CODER_PF_INSTRUCTIONS_MAX = 2048;
  * means what the fail-open/fail-closed table beside `enqueueCoderPostFunction`
  * (src/index.js) says. `coderMode` renders the CODER_PF_MODES picker (writes `mode`);
  * `instructions` renders one optional multi-line text box (writes `instructions`,
- * clamped to CODER_PF_INSTRUCTIONS_MAX).
+ * clamped to CODER_PF_INSTRUCTIONS_MAX characters).
  */
 export const PREMADE_POSTFUNCTIONS = [
   {

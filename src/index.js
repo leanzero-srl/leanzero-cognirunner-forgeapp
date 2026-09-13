@@ -37,6 +37,7 @@ import { buildCatalogPromptBlock, validateBuiltRule } from "./shared/build-rule.
 import {
   normalizeUsage, emptyState, bumpCounters, summarizeState,
   forgeLlmCostUsd, allowanceUsdForSeats, forgeLlmAllowanceStatus, noteForgeLlmClamp,
+  VENDOR_BILLED_PROVIDERS, managedCostUsd,
 } from "./shared/usage-meter.js";
 import { deriveLogFlags } from "./shared/log-flags.js";
 // Edition + capability — the ONE home for "which CogniRunner is this tenant on"
@@ -46,6 +47,8 @@ import {
   FORGE_LLM_MODELS, FORGE_LLM_FRONTIER, FORGE_LLM_DEFAULT,
   forgeLlmTier, forgeLlmModelAllowedForEdition, clampForgeLlmModel, normalizeModelId,
   agentCapability, agentCapabilityCopy,
+  MANAGED_PROVIDER_ID, MANAGED_PROVIDER_LABEL, MANAGED_DEFAULT_MODEL, MANAGED_MODELS,
+  managedModelAllowed, clampManagedModel,
 } from "./shared/edition.js";
 import { minuteKey, effectiveBudget, budgetDecision, inlineShouldQueue, AI_PLATFORM_TPM, AI_BUDGET_DEFAULT_TPM, BUDGET_WAIT_HORIZON_MS } from "./shared/ai-budget.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
@@ -5298,7 +5301,24 @@ resolver.define("saveProvider", async ({ payload, context }) => {
   try {
     const { provider, baseUrl } = payload;
     if (!provider || !PROVIDERS[provider]) {
-      return { success: false, error: "Invalid provider. Choose: openai, azure, openrouter, anthropic, lmstudio, bedrock, atlassian" };
+      return { success: false, error: "Invalid provider. Choose: openai, azure, openrouter, anthropic, lmstudio, bedrock, atlassian, managed" };
+    }
+    /*
+     * THE MANAGED ENGINE'S SAVE DOOR — two conditions, BOTH checked BEFORE the write.
+     *
+     * The edition gate lives at the adapter too (a tenant that downgrades keeps its
+     * saved provider, so save-time alone is not enough — F-089). This one exists so the
+     * refusal is LOUD at the moment an admin tries it, instead of silently accepted and
+     * then refused on every transition. The two are the same rule stated at two seams,
+     * not two rules: both read `agentCapability`'s inputs and both name its reasons.
+     */
+    if (provider === MANAGED_PROVIDER_ID) {
+      const managed = managedCloudStatus();
+      if (!managed.available) {
+        return { success: false, error: `${agentCapabilityCopy(managed.reason).title}. ${agentCapabilityCopy(managed.reason).remedy}`, reason: managed.reason };
+      }
+      const { edition } = await currentEdition(context);
+      if (edition !== EDITION_IDS.ADVANCED) return upgradeRequired("managed-cloud-ai");
     }
     if (provider === "azure" && baseUrl && !baseUrl.includes(".openai.azure.com")) {
       return { success: false, error: "Azure endpoint must contain .openai.azure.com (e.g. https://myresource.openai.azure.com/openai/v1)" };
@@ -5388,11 +5408,38 @@ resolver.define("getProvider", async () => {
     // bedrockAck: whether the admin confirmed submitting Anthropic's one-per-account use-case
     // form in the AWS console (a UX gate that reveals the Bedrock model picker — not auth).
     const bedrockAck = !!(await storage.get("COGNIRUNNER_BEDROCK_ACK"));
+    /*
+     * THE MANAGED ENGINE'S AVAILABILITY — a BOOLEAN and a REASON CODE, never the key.
+     * `managedCloudStatus()` reads the env var through the one reader and returns only
+     * `{available, reason}`; nothing here may ever grow into a prefix, a length or a
+     * masked value, all of which are credential disclosure by instalments.
+     *
+     * The picker row still needs the EDITION to decide whether to offer it (Coder only),
+     * and that is the caller's own licence — so it is not answered here; the admin panel
+     * already holds it from checkLicense, and agentCapability is the one predicate that
+     * combines the two. This resolver reports the deployment-side fact only.
+     */
+    const managed = managedCloudStatus();
     return {
       success: true,
       provider,
       baseUrl: baseUrl || (PROVIDERS[provider] && PROVIDERS[provider].baseUrl) || PROVIDERS.openai.baseUrl,
-      providers: Object.entries(PROVIDERS).map(([key, val]) => ({ key, label: val.label, hasDefaultUrl: !!val.baseUrl })),
+      providers: Object.entries(PROVIDERS).map(([key, val]) => ({
+        key,
+        label: val.label,
+        hasDefaultUrl: !!val.baseUrl,
+        // The managed row needs no key field and no URL field in the UI, and it is
+        // offered on Coder only — the picker reads these two flags rather than
+        // re-deriving "is this the managed one" from the id string.
+        managed: key === MANAGED_PROVIDER_ID,
+        coderOnly: key === MANAGED_PROVIDER_ID,
+        available: key === MANAGED_PROVIDER_ID ? managed.available : true,
+        unavailableReason: key === MANAGED_PROVIDER_ID && !managed.available ? managed.reason : null,
+      })),
+      managedAvailable: managed.available,
+      managedReason: managed.reason,
+      managedModels: [...MANAGED_MODELS],
+      managedDefaultModel: MANAGED_DEFAULT_MODEL,
       bedrockAck,
     };
   } catch (error) {
@@ -5553,6 +5600,29 @@ resolver.define("getOpenAIModels", async ({ payload, context }) => {
         console.warn("Forge LLM list() failed — using the edition's model list:", e?.message);
         return { success: true, models: [...allowed], locked, edition, isByok: true };
       }
+    }
+
+    /*
+     * The managed engine offers a FIXED list — never OpenRouter's 300+ catalogue. The
+     * models are LeanZero's spend, so the offer is a pricing decision made in
+     * src/shared/edition.js (MANAGED_MODELS), and enumerating the account's real
+     * catalogue would also mean authenticating an outbound call with the managed key on
+     * behalf of a tenant admin's browse. `locked` stays empty: unlike Forge LLM there is
+     * no model a Coder tenant may see but not pick — a Standard tenant cannot select the
+     * PROVIDER at all, which is the honest boundary and the one the picker renders.
+     */
+    if (provider === MANAGED_PROVIDER_ID) {
+      const { edition } = await currentEdition(context);
+      const managed = managedCloudStatus();
+      return {
+        success: true,
+        models: managed.available ? [...MANAGED_MODELS] : [],
+        locked: [],
+        edition,
+        isByok: false,
+        managedAvailable: managed.available,
+        managedReason: managed.reason,
+      };
     }
 
     // LM Studio: auth is optional, baseUrl is required. Always treated as BYOK.
@@ -5822,9 +5892,21 @@ resolver.define("saveOpenAIModel", async ({ payload, context }) => {
     }
     const provider = await resolveTargetProvider(payload);
     const byokKey = await storage.get(providerKeySlot(provider));
-    // LM Studio doesn't require a key (auth is optional); Forge LLM never has one.
-    if (!byokKey && provider !== "lmstudio" && provider !== "atlassian") {
+    // LM Studio doesn't require a key (auth is optional); Forge LLM never has one; the
+    // managed engine's key is LeanZero's and is never in KVS, so a missing BYOK slot is
+    // the NORMAL state for it and must not read as "configure a key".
+    if (!byokKey && provider !== "lmstudio" && provider !== "atlassian" && provider !== MANAGED_PROVIDER_ID) {
       return { success: false, error: "Model selection requires an API key" };
+    }
+    if (provider === MANAGED_PROVIDER_ID) {
+      // Same shape as the Forge LLM gate below: the edition decides, and an id outside
+      // the offer is refused rather than clamped, so the admin is told instead of
+      // silently given a different model than they picked.
+      const { edition } = await currentEdition(context);
+      if (edition !== EDITION_IDS.ADVANCED) return upgradeRequired("managed-cloud-ai");
+      if (!managedModelAllowed(model)) {
+        return { success: false, error: `Model not offered on ${MANAGED_PROVIDER_LABEL}. Choose ${MANAGED_MODELS.join(" or ")}.` };
+      }
     }
     if (provider === "lmstudio") {
       const lmBaseUrl = await providerBaseUrlFor(provider);
@@ -5866,9 +5948,14 @@ resolver.define("getAgentModel", async ({ payload, context }) => {
         ? await getOpenAIModel()
         : ((PROVIDERS[provider] && PROVIDERS[provider].defaultModel) || null);
     }
-    // frontierOnly tells the panel to offer ONLY Sonnet 5 / Opus 5 here: on Forge LLM
-    // Haiku is not an agent model at any edition.
-    return { success: true, model, edition, frontierOnly: provider === "atlassian" };
+    // The managed engine's saved agent model is clamped to the offer on the way out,
+    // for the same reason the ordinary model is: the panel must never display a model
+    // the adapter would refuse to send.
+    if (provider === MANAGED_PROVIDER_ID && model) model = clampManagedModel(model);
+    // frontierOnly tells the panel to offer ONLY frontier ids here: on Forge LLM Haiku
+    // is not an agent model at any edition, and on the managed engine the whole offer is
+    // frontier already — so both answer true and the panel needs no third rule.
+    return { success: true, model, edition, frontierOnly: provider === "atlassian" || provider === MANAGED_PROVIDER_ID };
   } catch (error) {
     return { success: false, error: error.message };
   }
@@ -5887,6 +5974,13 @@ resolver.define("saveAgentModel", async ({ payload, context }) => {
       return { success: false, error: "Invalid model selection" };
     }
     const provider = await resolveTargetProvider(payload);
+    if (provider === MANAGED_PROVIDER_ID) {
+      const { edition } = await currentEdition(context);
+      if (edition !== EDITION_IDS.ADVANCED) return upgradeRequired("managed-cloud-ai");
+      if (!managedModelAllowed(clean)) {
+        return { success: false, error: `Agents on ${MANAGED_PROVIDER_LABEL} run on ${MANAGED_MODELS.join(" or ")} only.` };
+      }
+    }
     if (provider === "atlassian") {
       if (!FORGE_LLM_FRONTIER.includes(clean)) {
         const { edition } = await currentEdition(context);
@@ -5926,6 +6020,20 @@ resolver.define("getOpenAIModelFromKVS", async ({ payload, context }) => {
       // true at all: with nothing saved, effective is just the default and there is
       // nothing for the panel to warn about.
       return { success: true, model: effective, isByok: true, edition, clamped: !!savedModel && savedModel !== effective, savedModel: savedModel || null };
+    }
+    // The managed engine: no key in KVS ever, so `isByok` is false and the gating fact
+    // is whether the deployment has the engine at all. Same clamp-and-say-so contract as
+    // Forge LLM above, against MANAGED_MODELS.
+    if (provider === MANAGED_PROVIDER_ID) {
+      const savedModel = await storage.get(providerModelSlot(provider));
+      const { edition } = await currentEdition(context);
+      const managed = managedCloudStatus();
+      const effective = clampManagedModel(savedModel);
+      return {
+        success: true, model: effective, isByok: false, edition,
+        clamped: !!savedModel && savedModel !== effective, savedModel: savedModel || null,
+        managedAvailable: managed.available, managedReason: managed.reason,
+      };
     }
     // LM Studio is always BYOK semantics — auth is optional, baseUrl is the gating config.
     if (provider === "lmstudio") {
@@ -8225,12 +8333,19 @@ resolver.define("getAiUsage", async ({ context }) => {
     // able to answer differently — that is how a tenant gets billed with the meter blank.
     const provider = (await storage.get("COGNIRUNNER_AI_PROVIDER")) || "atlassian";
     const edition = (await currentEdition(context)).edition;
-    const showAllowance = provider === "atlassian" && edition === EDITION_IDS.ADVANCED;
+    // The allowance meter is shown for EITHER vendor-billed engine, on Coder. It is one
+    // ceiling covering both (vendorAllowanceStatus sums them and reports `byEngine`), so
+    // the same card serves whichever the tenant has selected — a second meter would let
+    // the same allowance look spendable twice.
+    const showAllowance = VENDOR_BILLED_PROVIDERS.includes(provider) && edition === EDITION_IDS.ADVANCED;
     return {
       success: true,
       usage: summarizeState(state, Date.now()),
       seats,
+      // The key stays `forgeLlm` so no existing reader breaks; `vendorAllowance` is the
+      // honest name for the same object and is what a new surface should read.
       forgeLlm: (showAllowance && seatRead.ok) ? forgeLlmAllowanceStatus(state, allowanceUsdForSeats(seats)) : null,
+      vendorAllowance: (showAllowance && seatRead.ok) ? forgeLlmAllowanceStatus(state, allowanceUsdForSeats(seats)) : null,
     };
   } catch (error) {
     return { success: false, error: error.message };
@@ -10557,14 +10672,19 @@ resolver.define("testPostFunction", async ({ payload, context }) => {
  * the 30 s memo, never a different set of facts.
  */
 const agentGateFacts = async (context, { fresh = false } = {}) => {
-  const facts = { edition: null, provider: null, agentModel: null, allowanceLevel: null };
+  // `managedKeyPresent` is an ENV read, not I/O — free, never memoised, and always
+  // supplied so `agentCapability` can tell "the vendor's engine is missing" apart from
+  // "you are not entitled to it". It is a BOOLEAN: the credential itself never leaves
+  // readManagedKey.
+  const facts = { edition: null, provider: null, agentModel: null, allowanceLevel: null, managedKeyPresent: managedCloudStatus().available };
   try {
     if (fresh) {
       facts.provider = (await readProviderConfigFresh()).provider || null;
-      // The allowance is a Forge LLM question ONLY, exactly as the memo's arm is: on a
-      // BYOK provider there is no vendor ceiling that can be exhausted, and spending
-      // two KVS reads to answer "null" on every tick would be a cost for no fact.
-      if (facts.provider === "atlassian") {
+      // The allowance is a VENDOR-BILLED question ONLY, exactly as the memo's arm is: on
+      // a BYOK provider there is no vendor ceiling that can be exhausted, and spending
+      // two KVS reads to answer "null" on every tick would be a cost for no fact. Both
+      // Forge LLM and the managed engine draw on the same ceiling, so both ask.
+      if (VENDOR_BILLED_PROVIDERS.includes(facts.provider)) {
         const allowance = await readForgeLlmAllowance();
         facts.allowanceLevel = allowance && allowance.level ? allowance.level : null;
       }
@@ -12294,6 +12414,12 @@ export async function gitWebhook(req) {
 }
 
 // === Provider definitions ===
+// ONE literal for OpenRouter's API root: the BYOK `openrouter` provider and the
+// LeanZero-managed engine are the same endpoint and must never drift apart.
+// Exported for the async consumer, which must pin the managed engine to this exact host
+// rather than to whatever `COGNIRUNNER_AI_BASE_URL` holds — the same rule as the sync
+// adapter, from the same literal.
+export const PROVIDER_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1";
 const PROVIDERS = {
   openai: { label: "OpenAI", baseUrl: "https://api.openai.com/v1", defaultModel: "gpt-5.4-mini" },
   // Azure OpenAI rides the same OpenAI-compatible request path as `openai` (differs only by
@@ -12301,7 +12427,7 @@ const PROVIDERS = {
   // also covers it. NOTE: Azure OpenAI is MOSTLY UNTESTED end-to-end (no live deployment in the
   // test harness) — treat its runtime behavior as unverified.
   azure: { label: "Azure OpenAI", baseUrl: null, defaultModel: "gpt-5.4-mini" }, // user must provide URL; mostly untested
-  openrouter: { label: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", defaultModel: "openai/gpt-5.4-mini" },
+  openrouter: { label: "OpenRouter", baseUrl: PROVIDER_OPENROUTER_BASE_URL, defaultModel: "openai/gpt-5.4-mini" },
   anthropic: { label: "Anthropic", baseUrl: "https://api.anthropic.com", defaultModel: "claude-haiku-4-5-20251001" },
   // LM Studio: user-hosted OpenAI-compatible server. baseUrl is the user's Tailscale Funnel
   // root (e.g. https://your-machine.tailXXXX.ts.net); we append /v1 for inference and /api/v1
@@ -12320,7 +12446,65 @@ const PROVIDERS = {
   // which belongs to the `eu.` profile group); it is a fallback only — admins pick a model in
   // the panel. Bare model ids 403 for many models, so profile ids (eu./us.) are preferred.
   bedrock: { label: "AWS Bedrock", baseUrl: null, defaultModel: "eu.anthropic.claude-sonnet-4-6" },
+  // CogniRunner Cloud AI — the LeanZero-MANAGED engine. It is an OpenRouter account
+  // (owner's decision 2026-09-14), so it rides the OpenRouter adapter and the
+  // already-allowed openrouter.ai egress; the tenant pastes no key and picks from
+  // MANAGED_MODELS only. The baseUrl here is FIXED and is not overridable by the
+  // admin's COGNIRUNNER_AI_BASE_URL — see callAIChatRaw's managed branch.
+  managed: { label: MANAGED_PROVIDER_LABEL, baseUrl: PROVIDER_OPENROUTER_BASE_URL, defaultModel: MANAGED_DEFAULT_MODEL },
 };
+
+/*
+ * THE MANAGED ENGINE'S CREDENTIAL — read HERE and NOWHERE ELSE.
+ *
+ * `COGNIRUNNER_MANAGED_OPENROUTER_KEY` is an ENCRYPTED FORGE ENVIRONMENT VARIABLE, set
+ * per environment (`forge variables set --encrypt`), rotated by redeploy. The name
+ * appears exactly once in this repo, in the function below, and that is a property a
+ * test asserts (test-harness/scripts/managed-provider.test.mjs): the moment a second
+ * reader exists, a resolver can leak it.
+ *
+ * THE THREE RULES IT LIVES BY:
+ *   1. NEVER in KVS. `providerKeySlot("managed")` is never written.
+ *   2. NEVER returned by a resolver, in any shape — availability is reported as a
+ *      BOOLEAN plus a reason code, never as a prefix, a length or a masked string.
+ *   3. NEVER logged. The reason codes below are what goes in the log line.
+ *
+ * FAILS CLOSED, deliberately, and this is NOT the fail-open validator rule (LAW 3):
+ * no key means the managed ENGINE is unavailable, which is a provider-selection
+ * question, not a transition-time judgement. A validator whose provider is managed and
+ * whose key is missing still fails OPEN at its own seam (callAIChatRaw returns
+ * `ok:false` and the validator's existing fail-open path allows the transition) — the
+ * refusal here only stops the call from going out, it never blocks a workflow.
+ */
+const MANAGED_KEY_ENV = "COGNIRUNNER_MANAGED_OPENROUTER_KEY";
+const MANAGED_DISABLED_ENV = "COGNIRUNNER_MANAGED_DISABLED";
+
+/** The raw key, or null. The ONLY reader of the env var. Never log the return value. */
+const readManagedKey = () => {
+  // The kill switch wins over the key: a deployment can be taken out of the managed
+  // offer without rotating the credential (an OpenRouter incident, a spend freeze).
+  if (String(process.env[MANAGED_DISABLED_ENV] || "") === "1") return null;
+  const raw = process.env[MANAGED_KEY_ENV];
+  const key = typeof raw === "string" ? raw.trim() : "";
+  return key || null;
+};
+
+/**
+ * Is the managed engine offerable on this deployment, and if not, WHY.
+ * `{ available: boolean, reason: "managed" | "managed-disabled" | "managed-key-missing" }`
+ * — reason codes only, never the credential. Safe to return from a resolver.
+ */
+export const managedCloudStatus = () => {
+  if (String(process.env[MANAGED_DISABLED_ENV] || "") === "1") {
+    return { available: false, reason: "managed-disabled" };
+  }
+  return readManagedKey()
+    ? { available: true, reason: "managed" }
+    : { available: false, reason: "managed-key-missing" };
+};
+
+/** The managed key for the consumer, which runs in another container and holds no memo. */
+export const managedKeyForConsumer = () => readManagedKey();
 
 // Sentinel returned by getOpenAIKey() when the active provider is Forge LLM —
 // keeps every `if (!apiKey) fail` call site working without a real secret.
@@ -12848,15 +13032,22 @@ export const recordAiUsage = async ({ provider, usageLike, model }) => {
   const usage = normalizeUsage(usageLike);
   try {
     const state = (await storage.get(USAGE_KEY)) || emptyState();
-    // Forge LLM is the only provider whose tokens land on the VENDOR's bill, so it is
-    // the only one costed. `model` is the EFFECTIVE (post-clamp) model the adapter
-    // returned, not what the config asked for — costing the requested model would
-    // over-report every clamped call.
+    // The VENDOR-BILLED engines are the only ones costed (Forge LLM and the managed
+    // engine — VENDOR_BILLED_PROVIDERS is the one list). `model` is the EFFECTIVE
+    // (post-clamp) model the adapter returned, not what the config asked for — costing
+    // the requested model would over-report every clamped call.
+    //
+    // `forgeLlmTier` classifies both: it is a substring match over the model id, and the
+    // managed ids are OpenRouter-namespaced ("anthropic/claude-sonnet-5"). The COST
+    // functions differ — the managed one is cache-aware, because this is the only path
+    // that reports cache counters — so bumpCounters is handed the figure, not the rates.
     let tier = null;
     let costUsd = 0;
-    if (provider === "atlassian") {
+    if (VENDOR_BILLED_PROVIDERS.includes(provider)) {
       tier = forgeLlmTier(model);
-      costUsd = forgeLlmCostUsd(tier, usage.prompt, usage.completion);
+      costUsd = provider === MANAGED_PROVIDER_ID
+        ? managedCostUsd(tier, usage.prompt, usage.completion, usage.cacheRead, usage.cacheCreation)
+        : forgeLlmCostUsd(tier, usage.prompt, usage.completion);
     }
     await storage.set(USAGE_KEY, bumpCounters(state, { provider: provider || "unknown", usage, nowMs: Date.now(), model, tier, costUsd }));
   } catch (e) { /* metering is best-effort — never throw into an AI call */ }
@@ -12968,6 +13159,60 @@ const callAIChat = async (opts) => {
   return res;
 };
 
+/**
+ * Put an Anthropic-style `cache_control` breakpoint on the LAST content block of a
+ * message, returning a NEW message (the caller's array is never mutated — the same
+ * messages are re-sent next round and a mutation would compound markers).
+ *
+ * A string `content` is widened to the parts form, because `cache_control` is a
+ * BLOCK-level marker and a bare string has no block to carry it. A message with no
+ * textual content at all (an assistant turn that is only `tool_calls`) is returned
+ * unchanged: there is nothing to cache and an empty text block would change the
+ * conversation the model sees.
+ */
+const markCacheBreakpoint = (msg) => {
+  if (!msg) return msg;
+  const cc = { type: "ephemeral" };
+  if (typeof msg.content === "string") {
+    if (!msg.content) return msg;
+    return { ...msg, content: [{ type: "text", text: msg.content, cache_control: cc }] };
+  }
+  if (Array.isArray(msg.content) && msg.content.length > 0) {
+    const parts = msg.content.map((p, i) => (i === msg.content.length - 1 && p && typeof p === "object" ? { ...p, cache_control: cc } : p));
+    return { ...msg, content: parts };
+  }
+  return msg;
+};
+
+/**
+ * Mark the stable prefix of an OpenAI-shaped message array for OpenRouter's explicit
+ * cache breakpoints. TWO at most (the API allows four; the rest are reserved for a
+ * future field-guide/tool-definition block):
+ *
+ *   1. the LAST SYSTEM message — the system prompt is the largest stable block in every
+ *      agent turn, and everything before a breakpoint is cached, so one marker here
+ *      covers the whole system prefix however many system messages there are;
+ *   2. the LAST message of the declared stable prefix, when that is not the same
+ *      message — this extends the cached span over the opening user/tool turns that the
+ *      agent loop re-sends verbatim every round.
+ *
+ * `prefixCount` is the caller's declaration, clamped to the array length here; a caller
+ * that over-declares can only cost a cache miss, never corrupt the conversation.
+ */
+const markOpenRouterCacheBreakpoints = (messages, prefixCount) => {
+  if (!Array.isArray(messages) || messages.length === 0) return messages;
+  const stableEnd = Math.min(Math.floor(prefixCount), messages.length) - 1;
+  if (stableEnd < 0) return messages;
+  let lastSystem = -1;
+  for (let i = 0; i <= stableEnd; i++) {
+    if (messages[i] && messages[i].role === "system") lastSystem = i;
+  }
+  const marks = new Set();
+  if (lastSystem >= 0) marks.add(lastSystem);
+  marks.add(stableEnd);
+  return messages.map((m, i) => (marks.has(i) ? markCacheBreakpoint(m) : m));
+};
+
 const callAIChatRaw = async (opts) => {
   const { apiKey, model: requestedModel, messages, tools, tool_choice, jsonMode, preResolvedModel, cachePrefix } = opts;
   const { provider, baseUrl } = await getProviderConfig();
@@ -12982,6 +13227,37 @@ const callAIChatRaw = async (opts) => {
   // the sync seam. Same ok:false shape every other failure uses — no throw, so
   // validators keep failing OPEN (LAW 3) rather than erroring out of a transition.
   if (!provider) return { ok: false, status: 0, error: "No AI provider configured (provider read failed)" };
+
+  /*
+   * THE MANAGED ENGINE'S SERVER-SIDE GATE — checked BEFORE the call, never after.
+   *
+   * Three refusals, in this order, because each one makes the next moot:
+   *   1. no key / kill switch  → nothing can go out at all (vendor-side).
+   *   2. edition is not Coder  → the tenant is not entitled to LeanZero's money. This is
+   *      the same rule forgeLlmBillingClamp enforces for Forge LLM, and it is enforced
+   *      HERE rather than only at the save door because a tenant that DOWNGRADES keeps
+   *      its saved provider (F-089's lesson: a save-time-only clamp let a downgraded
+   *      tenant keep buying frontier tokens all month).
+   *   3. allowance exhausted   → the vendor's monthly ceiling is reached. Forge LLM
+   *      DOWNGRADES to Haiku here; the managed engine PAUSES instead, because every id
+   *      in MANAGED_MODELS is a frontier model and there is no cheap tier to fall to.
+   *
+   * A refusal is `ok:false`, never a throw — so a validator on this provider still fails
+   * OPEN at its own seam (LAW 3) and a transition is never blocked by a billing gate.
+   */
+  if (provider === MANAGED_PROVIDER_ID) {
+    const status = managedCloudStatus();
+    if (!status.available) {
+      return { ok: false, status: 0, error: `CogniRunner Cloud AI is unavailable (${status.reason})` };
+    }
+    const { edition: mEdition, allowance: mAllowance } = await getProviderConfig();
+    if (mEdition !== EDITION_IDS.ADVANCED) {
+      return { ok: false, status: 0, error: "CogniRunner Cloud AI needs the Coder edition (needs-coder-edition)" };
+    }
+    if (mAllowance && mAllowance.level === "hard") {
+      return { ok: false, status: 0, error: "This month's CogniRunner Cloud AI allowance is used up (allowance-exhausted)" };
+    }
+  }
 
   if (provider === "anthropic") {
     // cachePrefix rides through UNCHANGED for every other provider (none of them read
@@ -13008,6 +13284,20 @@ const callAIChatRaw = async (opts) => {
   // own worker and pass preResolvedModel so they don't re-acquire here. No-op for
   // OpenAI / Azure / OpenRouter (release is a noop; model stays as requested).
   let model = requestedModel;
+  /*
+   * THE MANAGED ENGINE'S CREDENTIAL AND MODEL ARE TAKEN, NOT ACCEPTED.
+   *
+   * Whatever a caller passed as `apiKey` is ignored on this provider: the only key that
+   * may reach OpenRouter on LeanZero's account is the one from the env var, read here
+   * through the single reader. And the model is clamped to MANAGED_MODELS server-side,
+   * after the read (a slot written before the policy, or by a future save door with a
+   * gap in it, cannot bill a model the offer does not include).
+   */
+  let outboundKey = apiKey;
+  if (provider === MANAGED_PROVIDER_ID) {
+    outboundKey = readManagedKey();
+    model = clampManagedModel(requestedModel);
+  }
   let releaseWorker = NOOP_RELEASE;
   if (provider === "lmstudio" && !preResolvedModel) {
     const needsTools = !!(tools && tools.length > 0);
@@ -13054,6 +13344,36 @@ const callAIChatRaw = async (opts) => {
       }
     }
 
+    /*
+     * PROMPT CACHING ON OPENROUTER — Anthropic-style `cache_control` breakpoints.
+     *
+     * OpenRouter's Chat Completions API accepts Anthropic's per-block
+     * `cache_control: { type: "ephemeral" }` marker on content blocks and forwards it to
+     * Anthropic-compatible providers; there is a limit of FOUR explicit breakpoints, and
+     * cache activity comes back in `usage.prompt_tokens_details` as `cached_tokens`
+     * (read from cache) and `cache_write_tokens` (written to cache), plus a
+     * `usage.cache_discount` figure. Source: https://openrouter.ai/docs/features/prompt-caching
+     * (read 2026-09-13). Unlike our Anthropic adapter, those counters are SUBSETS of
+     * `prompt_tokens` here — the OpenAI semantics — which is exactly what
+     * normalizeUsage already assumes for an OpenAI-shaped provider, so nothing is
+     * double-counted.
+     *
+     * ONLY for `anthropic/*` model ids: OpenRouter translates the marker for some other
+     * vendors, but the caching CONTRACT (5-minute ephemeral, 1.25x write, 0.1x read) is
+     * the Anthropic one, and marking a prefix on a model that bills writes without ever
+     * serving reads is a pure cost. Non-Anthropic ids are left exactly as they were.
+     *
+     * OPT-IN, like the Anthropic adapter (F-353): `cachePrefix` is the number of LEADING
+     * messages the CALLER declares byte-stable. Every one-shot caller passes nothing and
+     * is deliberately unchanged — a single call per prompt only ever pays the write.
+     * Only the multi-round agent loop sets it. At most TWO breakpoints are emitted (the
+     * merged system message, and the last message of the stable prefix).
+     */
+    if (Number(cachePrefix) > 0 && (provider === "openrouter" || provider === MANAGED_PROVIDER_ID)
+        && /^anthropic\//i.test(String(model || ""))) {
+      outboundMessages = markOpenRouterCacheBreakpoints(outboundMessages, Number(cachePrefix));
+    }
+
     const requestBody = { model, ...buildModelParams(), messages: outboundMessages };
     if (tools && tools.length > 0) {
       requestBody.tools = tools;
@@ -13080,17 +13400,24 @@ const callAIChatRaw = async (opts) => {
       // LM Studio: auth is optional. Only send Authorization when a token is set.
       if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
     } else {
-      headers["Authorization"] = `Bearer ${apiKey}`;
+      headers["Authorization"] = `Bearer ${outboundKey}`;
     }
-    if (provider === "openrouter") {
+    if (provider === "openrouter" || provider === MANAGED_PROVIDER_ID) {
       headers["HTTP-Referer"] = "https://leanzero.net";
       headers["X-Title"] = "CogniRunner";
     }
 
     // LM Studio's baseUrl is the tunnel root (no /v1); other providers' baseUrl already ends in /v1.
-    const inferenceUrl = provider === "lmstudio"
-      ? `${baseUrl}/v1/chat/completions`
-      : `${baseUrl}/chat/completions`;
+    //
+    // THE MANAGED ENGINE IGNORES THE ADMIN'S BASE URL. `COGNIRUNNER_AI_BASE_URL` is a
+    // site-admin setting; honouring it here would let an admin point LeanZero's own
+    // credential at a host of their choosing and harvest it. The managed endpoint is the
+    // fixed OpenRouter root, full stop.
+    const inferenceUrl = provider === MANAGED_PROVIDER_ID
+      ? `${PROVIDER_OPENROUTER_BASE_URL}/chat/completions`
+      : provider === "lmstudio"
+        ? `${baseUrl}/v1/chat/completions`
+        : `${baseUrl}/chat/completions`;
 
     // Retry transient errors (429/5xx) honoring Retry-After before giving up;
     // a hard fail then triggers the validator/PF fail-open (F9).
@@ -13807,9 +14134,12 @@ const getProviderConfig = async () => {
     if (!provider) throw new Error("provider read faulted");
     let editionId = EDITION_IDS.STANDARD;
     let allowance = null;
-    // Only Forge LLM spends the vendor's money, so only Forge LLM pays for the
-    // extra reads. Every branch here is swallowed: this must never break a call.
-    if (provider === "atlassian") {
+    // Only the VENDOR-BILLED engines spend LeanZero's money, so only they pay for the
+    // extra reads. `managed` joined `atlassian` here (not a second branch): it is gated
+    // on the same edition and measured against the same monthly allowance, so it needs
+    // the same two facts on the same memo. Every branch here is swallowed: this must
+    // never break a call.
+    if (VENDOR_BILLED_PROVIDERS.includes(provider)) {
       // THREE reads, and ONLY on the Forge LLM branch (only vendor-billed calls need
       // them): the edition snapshot (via currentEdition, itself memoised), the usage
       // ledger COGNIRUNNER_USAGE and the seat snapshot. They are independent, so they
@@ -14206,6 +14536,12 @@ const getOpenAIKey = async () => {
       _cachedKey = FORGE_LLM_SENTINEL;
       return _cachedKey;
     }
+    // The managed engine's key comes from the environment, not KVS — and is NOT
+    // memoised: the env read is free, while a 30s memo of a rotated-away credential is
+    // 30s of 401s. `null` here means unavailable (missing or killed), which every
+    // `if (!apiKey) bail` call site already reports as "configure a key"; the adapter
+    // says the precise reason.
+    if (provider === MANAGED_PROVIDER_ID) return readManagedKey();
     // No provider (F-103: getProviderConfig faulted and named none) → no key, and do
     // NOT memoise that: "COGNIRUNNER_KEY_null" is not a slot, and caching its miss for
     // 30s would keep answering "no key configured" after the fault has cleared.
@@ -14273,6 +14609,10 @@ const getOpenAIModel = async () => {
         }
       }
     }
+    // Clamp the managed engine's saved model to the offer, server-side after the read —
+    // the same backstop clampForgeLlmModel is for Forge LLM. A slot holding anything
+    // else resolves to Sonnet 5 rather than being sent to OpenRouter on our account.
+    if (savedModel && provider === MANAGED_PROVIDER_ID) savedModel = clampManagedModel(savedModel);
     if (savedModel) { _cachedModel = savedModel; _cachedModelAt = Date.now(); return savedModel; }
   } catch (error) {
     console.error("Error reading model from storage:", error);

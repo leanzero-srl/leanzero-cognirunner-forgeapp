@@ -133,7 +133,10 @@ ok(!/FORGE_LLM_MODELS\s*=/.test(codeOnly), "src/index.js does not redefine FORGE
   ok(!!m, "found recordAiUsage");
   const b = m ? m[0] : "";
   ok(/\{ provider, usageLike, model \}/.test(b), "recordAiUsage's signature gained `model`");
-  ok(/provider === "atlassian"/.test(b), "only the atlassian provider is costed (BYOK spend is the customer's)");
+  // The costed set is now a LIST, not a literal: Forge LLM and the LeanZero-managed
+  // engine are both vendor-billed and both are costed; BYOK spend stays the customer's.
+  ok(/VENDOR_BILLED_PROVIDERS\.includes\(provider\)/.test(b), "only the VENDOR-BILLED providers are costed (BYOK spend is the customer's)");
+  ok(/managedCostUsd\(/.test(b) && /forgeLlmCostUsd\(/.test(b), "each vendor-billed engine is costed by its own rate table");
   ok(/forgeLlmTier\(model\)/.test(b) && /forgeLlmCostUsd\(tier/.test(b), "tier + cost are derived from the model");
   // F-448 — assert what bumpCounters RECEIVES, key by key.
   {
@@ -400,7 +403,7 @@ ok(/rest\/api\/3\/users\/search/.test(codeOnly), "seats are counted from /rest/a
   ok(!!m, "found getProviderConfig");
   const b = m ? m[0] : "";
   ok(/edition: _cachedEditionId, allowance: _cachedAllowance/.test(b), "the memo returns edition + allowance on the CACHED path too");
-  ok(/if \(provider === "atlassian"\)/.test(b), "the extra reads only happen for the vendor-billed provider");
+  ok(/if \(VENDOR_BILLED_PROVIDERS\.includes\(provider\)\)/.test(b), "the extra reads only happen for the vendor-billed providers");
   ok(/forgeLlmAllowanceStatus\(stateRead\.state \|\| emptyState\(\), allowanceUsdForSeats\(seatRead\.seats\)\)/.test(b), "the allowance is computed at refresh time");
   // F-099: a FAULTED usage or seat read yields NO allowance. It must not be folded into
   // the 100-seat fallback — that computes a ceiling from a number nobody read.

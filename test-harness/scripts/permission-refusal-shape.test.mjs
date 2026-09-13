@@ -159,6 +159,16 @@ for (const [key, payload] of OWNERSHIP) {
   assert.equal(row.hint, "not-owner", "bulk ownership refusal carries the not-owner hint");
 }
 
+// F-257 — a refusal is never dressed as an empty success.
+{
+  await reset();
+  const refused = await invoke("searchUsers", { query: "ab" });
+  assert.equal(refused?.success, false, "a non-admin searchUsers is a refusal, not an empty result set");
+  assert.equal(refused?.reason, "no-permission", "searchUsers refusal is machine-readable");
+  assert.equal(refused?.needsRole, "admin", "searchUsers names the admin floor");
+  assert.equal(refused?.hint, "ask-app-admin", "searchUsers refusal carries the roster hint");
+}
+
 // A SUCCESS must never look like a refusal.
 await reset();
 const ok = await invoke("checkIsAdmin", {});

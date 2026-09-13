@@ -4550,8 +4550,11 @@ resolver.define("removeAppAdmin", async ({ payload, context }) => {
  * Search Jira users by name/email for the admin picker (admin only).
  */
 resolver.define("searchUsers", async ({ payload, context }) => {
+  // F-257 — a refusal is NEVER reported as an empty success: "nobody matches" and
+  // "you may not search" must stay distinguishable (the short-query branch below
+  // is the legitimate empty result).
   if (!(await requireAdmin(context.accountId))) {
-    return { success: true, users: [] };
+    return { ...noPerm("search users", "admin"), users: [] };
   }
   try {
     const { query } = payload;

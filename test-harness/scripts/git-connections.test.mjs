@@ -191,6 +191,51 @@ let threw = null;
 try { await conns.providerForConnection(liveId, { repo: "acme/app" }); } catch (e) { threw = e; }
 ok(threw && threw.code === "auth_dead", "providerForConnection refuses on a dead connection");
 
+// (e) F-292 — the EXECUTION path marks the row too, not just Test.
+// A lost `git_conn_secret:<id>` used to make every agent action and PR review
+// throw while `status` stayed "ok": a healthy-looking connection, no banner,
+// and the only way to learn the truth was to press Test.
+reset();
+fetchQueue = [whoamiOk()];
+const ex = await call("saveGitConnection", { kind: "github", label: "exec", token: GH_TOKEN, repos: ["acme/app"] });
+const exId = ex.connection.id;
+await storage.delete(conns.gitConnSecretKey(exId));
+threw = null;
+try { await conns.providerForConnection(exId, { repo: "acme/app" }); } catch (e) { threw = e; }
+ok(threw && threw.code === "auth_dead", "a missing credential still fails closed");
+ok(storage.__raw(conns.gitConnKey(exId)).status === "auth_dead",
+  `…and it is RECORDED, so the banner appears without pressing Test (got ${JSON.stringify(storage.__raw(conns.gitConnKey(exId)).status)})`);
+
+// …and a credential the PROVIDER rejects mid-action marks the row on the way out,
+// with the error rethrown unchanged.
+reset();
+fetchQueue = [whoamiOk()];
+const ex2 = await call("saveGitConnection", { kind: "github", label: "exec2", token: GH_TOKEN, repos: ["acme/app"] });
+const ex2Id = ex2.connection.id;
+const prov = await conns.providerForConnection(ex2Id, { repo: "acme/app" });
+fetchQueue = [res(401, { message: "Bad credentials" })];
+threw = null;
+try { await prov.whoami(); } catch (e) { threw = e; }
+ok(threw && threw.code === "auth_dead", "a 401 from an adapter call is rethrown UNCHANGED (never swallowed)");
+ok(storage.__raw(conns.gitConnKey(ex2Id)).status === "auth_dead",
+  "…and the execution path routed it to markAuthDead — one writer, no silent gate");
+// a transient fault from the same wrapper must NOT raise the alarm.
+reset();
+fetchQueue = [whoamiOk()];
+const ex3 = await call("saveGitConnection", { kind: "github", label: "exec3", token: GH_TOKEN, repos: ["acme/app"] });
+const ex3Id = ex3.connection.id;
+const prov3 = await conns.providerForConnection(ex3Id, { repo: "acme/app" });
+fetchQueue = [res(500, { message: "upstream" }), res(500, { message: "upstream" }), res(500, { message: "upstream" })];
+try { await prov3.whoami(); } catch (e) { /* expected */ }
+ok(storage.__raw(conns.gitConnKey(ex3Id)).status === "ok", "a 5xx through the wrapper does NOT mark the credential dead");
+// and a later successful Test clears the flag (already the rule — proven for the execution-marked row).
+fetchQueue = [res(401, { message: "Bad credentials" })];
+try { await prov3.whoami(); } catch (e) { /* expected */ }
+ok(storage.__raw(conns.gitConnKey(ex3Id)).status === "auth_dead", "the wrapper marked it");
+fetchQueue = [whoamiOk()];
+await call("testGitConnection", { id: ex3Id });
+ok(storage.__raw(conns.gitConnKey(ex3Id)).status === "ok", "a successful Test clears a flag the execution path set");
+
 /* ===================== 5. the repo allow-list fails CLOSED ===================== */
 reset();
 fetchQueue = [whoamiOk()];

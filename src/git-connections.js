@@ -255,11 +255,74 @@ export async function providerForConnection(id, { repo, fetchImpl } = {}) {
       operation: "providerForConnection",
     });
   }
-  const sec = await readConnectionSecret(id);
-  return createGitProvider({
+  let sec;
+  try {
+    sec = await readConnectionSecret(id);
+  } catch (e) {
+    // F-292: a missing/malformed secret IS a dead credential. Record it before
+    // rethrowing, or the row keeps reporting "ok" while every call fails.
+    await noteAuthDead(id, e);
+    throw e;
+  }
+  const provider = createGitProvider({
     kind: row.kind,
     auth: row.kind === "bitbucket" ? { email: sec.email, token: sec.token } : { token: sec.token },
     fetchImpl,
+  });
+  return watchAuthDead(id, provider);
+}
+
+/**
+ * F-292 — THE EXECUTION PATH'S ROUTE TO `markAuthDead`.
+ *
+ * `markAuthDead` is the one writer of the dead-credential flag, and its contract
+ * says every call site that discovers an `auth_dead` routes it here. Until this
+ * wrapper existed, only `testConnection` did: a connection whose token had been
+ * revoked (or whose secret had gone missing) failed every agent action and every
+ * PR review while `status` stayed `"ok"`, so the admin UI showed a healthy
+ * connection with no banner and the only way to learn the truth was to press
+ * Test. Now ANY adapter call that throws `auth_dead` marks the row on the way
+ * out, and the error is rethrown UNCHANGED — this wrapper never swallows and
+ * never converts. A later successful `testConnection` clears the flag, which is
+ * already the rule (it writes `status:"ok", authDeadAt:null`).
+ *
+ * Marking is best-effort: a KVS fault while recording must not replace the real
+ * provider error with a storage one.
+ */
+async function noteAuthDead(id, e) {
+  if (!(e instanceof GitProviderError) || e.code !== "auth_dead") return;
+  try {
+    await markAuthDead(id, e.message || "The provider rejected this credential");
+  } catch (_) {
+    /* best-effort: the provider error is the one the caller must see */
+  }
+}
+
+/**
+ * Return the adapter with every method call watched. A Proxy so the wrapper
+ * cannot drift out of date as the provider surface grows — a new method is
+ * covered the day it is added, which a hand-written method list would not be.
+ */
+export function watchAuthDead(id, provider) {
+  if (!provider || typeof provider !== "object") return provider;
+  return new Proxy(provider, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver);
+      if (typeof value !== "function") return value;
+      return (...args) => {
+        let out;
+        try {
+          out = value.apply(target, args);
+        } catch (e) {
+          return noteAuthDead(id, e).then(() => { throw e; });
+        }
+        if (!out || typeof out.then !== "function") return out;
+        return out.then(undefined, async (e) => {
+          await noteAuthDead(id, e);
+          throw e;
+        });
+      };
+    },
   });
 }
 

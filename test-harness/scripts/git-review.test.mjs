@@ -543,4 +543,118 @@ const run = (o = {}) => reviewPullRequest({
     "F-289: …which is never printed when a body exists");
 }
 
+/* ─── F-321: a SIMULATION consumes NEITHER the 24 h claim NOR a rate slot ─── */
+{
+  const storage = makeStore();
+  const p1 = makeProvider();
+  const sim1 = await run({ storage, provider: p1, options: { simulation: true } });
+  eq(sim1.status, "done", "F-321: a dry run completes");
+  eq(p1.calls.comments.length, 0, "F-321: …posting nothing");
+  ok(!storage.rows.has(sim1.claimKey), "F-321: …and it does NOT take the per-PR claim");
+  eq([...storage.rows.keys()].filter((k) => k.startsWith("git_review_rate:")).length, 0,
+    "F-321: …and it does NOT take a rate slot");
+  eq(sim1.rate.slot, null, "F-321: …which the result reports honestly as slot:null");
+
+  // Run it a second time: a preview of an already-previewed PR is still allowed,
+  // because the thing the claim guards against — a duplicate comment — cannot happen.
+  const sim2 = await run({ storage, provider: makeProvider(), options: { simulation: true } });
+  eq(sim2.status, "done", "F-321: simulating twice is allowed — a preview is never 'already-reviewed'");
+
+  // THE POINT: the real run afterwards still reviews, and still posts.
+  const real = makeProvider();
+  const out = await run({ storage, provider: real });
+  eq(out.status, "done", "F-321: …and the REAL run after two previews reviews for real");
+  eq(out.skipped, undefined, "F-321: …not skipped as 'already-reviewed' by its own dry run");
+  ok(real.calls.comments.length > 0, "F-321: …and it actually posts");
+  ok(storage.rows.has(out.claimKey), "F-321: the real run is the one that takes the claim");
+  eq([...storage.rows.keys()].filter((k) => k.startsWith("git_review_rate:")).length, 1,
+    "F-321: …and the one that spends a rate slot");
+
+  // And a simulation is not stopped by an exhausted hourly budget either.
+  const busy = makeStore();
+  for (let i = 0; i < REVIEW_RATE_PER_HOUR; i++) {
+    await reviewPullRequest({
+      provider: makeProvider({ pr: { ...PR, number: 200 + i, headSha: "s" + i } }),
+      connection: { id: "conn1", kind: "github" }, repoId: "acme/widget", prNumber: 200 + i,
+      callModel: modelSaying(GOOD), storage: busy, log: () => {},
+    });
+  }
+  const simBusy = await run({ storage: busy, provider: makeProvider(), options: { simulation: true } });
+  eq(simBusy.status, "done", "F-321: a preview still runs when the hourly budget is spent — it costs the repo nothing");
+}
+
+/* ─── F-322: a rate slot is spent by a DELIVERED review, never by an attempt ─── */
+{
+  const rateKeys = (st) => [...st.rows.keys()].filter((k) => k.startsWith("git_review_rate:"));
+
+  // (a) one failed attempt returns its slot.
+  const s1 = makeStore();
+  const f1 = await run({ storage: s1, callModel: async () => { throw new Error("model exploded"); } });
+  eq(f1.status, "failed", "F-322: a model failure fails");
+  eq(rateKeys(s1).length, 0, "F-322: …and gives the rate slot back, because nothing was posted");
+
+  // (b) every no-write failure path does it: bad JSON, a diff fetch error, a refused
+  //     general comment (the first write itself failing).
+  const s2 = makeStore();
+  const f2 = await run({ storage: s2, callModel: modelSaying("not json at all") });
+  eq(f2.code, "bad_model_output", "F-322: an unparseable answer fails");
+  eq(rateKeys(s2).length, 0, "F-322: …and releases the slot");
+
+  const s3 = makeStore();
+  const f3 = await run({
+    storage: s3,
+    provider: makeProvider({ methods: { async getPullRequestDiff() { throw new Error("diff boom"); } } }),
+  });
+  eq(f3.status, "failed", "F-322: a diff failure fails");
+  eq(rateKeys(s3).length, 0, "F-322: …and releases the slot");
+
+  const s4 = makeStore();
+  const f4 = await run({ storage: s4, provider: makeProvider({ commentThrows: new Error("comment refused") }) });
+  eq(f4.status, "failed", "F-322: a refused general comment fails");
+  eq(rateKeys(s4).length, 0, "F-322: …and releases the slot — the write did not land");
+
+  // (c) THE POINT: REVIEW_RATE_PER_HOUR failed attempts do not silence the repo.
+  const storage = makeStore();
+  for (let i = 0; i < REVIEW_RATE_PER_HOUR; i++) {
+    const out = await reviewPullRequest({
+      provider: makeProvider({ pr: { ...PR, number: 300 + i, headSha: "bad" + i } }),
+      connection: { id: "conn1", kind: "github" }, repoId: "acme/widget", prNumber: 300 + i,
+      callModel: async () => { throw new Error("model down"); }, storage, log: () => {},
+    });
+    eq(out.status, "failed", `F-322: attempt ${i + 1} failed, as arranged`);
+  }
+  eq(rateKeys(storage).length, 0, `F-322: ${REVIEW_RATE_PER_HOUR} failed attempts hold NO slots`);
+  const healthy = makeProvider({ pr: { ...PR, number: 399, headSha: "good" } });
+  const seventh = await reviewPullRequest({
+    provider: healthy, connection: { id: "conn1", kind: "github" }, repoId: "acme/widget",
+    prNumber: 399, callModel: modelSaying(GOOD), storage, log: () => {},
+  });
+  eq(seventh.status, "done", "F-322: the next healthy delivery still reviews — attempts never spend the budget");
+  ok(healthy.calls.comments.length > 0, "F-322: …and posts");
+  eq(rateKeys(storage).length, 1, "F-322: …and it is the DELIVERED review that holds the only slot");
+
+  // (d) a review that posted at least one comment KEEPS its slot, even if it then fails.
+  const s5 = makeStore();
+  let nth = 0;
+  const partial = makeProvider({
+    methods: {
+      async addPullRequestComment(args) {
+        nth++;
+        if (nth === 1) return { id: 1, url: "https://x/c/1" };
+        throw new Error("inline refused");
+      },
+    },
+  });
+  const p5 = await run({ storage: s5, provider: partial });
+  eq(p5.status, "done", "F-322: a partially posted review completes");
+  eq(rateKeys(s5).length, 1, "F-322: …and KEEPS its rate slot — a comment did land on the repository");
+  ok(s5.rows.has(p5.claimKey), "F-322: …and keeps its claim too (F-284's rule is unchanged)");
+
+  // (e) a failed slot release is reported, never fatal, and never changes the outcome.
+  const s6 = makeStore({ throwOnDelete: true });
+  const f6 = await run({ storage: s6, callModel: async () => { throw new Error("model exploded"); } });
+  eq(f6.status, "failed", "F-322: a KVS that cannot delete does not change the failure");
+  eq(rateKeys(s6).length, 1, "F-322: …the slot simply stays spent — over-counting the budget is the safe direction");
+}
+
 console.log(`git-review.test.mjs: ${n} checks passed`);

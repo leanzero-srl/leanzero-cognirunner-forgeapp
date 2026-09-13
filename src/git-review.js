@@ -74,6 +74,13 @@
  *     only guarantees the PR is never reviewed. After the first successful post the
  *     claim is kept whatever happens next — a partial review must never be repeated.
  *
+ *  5d. A BRAKE IS SPENT ONLY BY A REVIEW THAT HAPPENED (F-321, F-322). Simulation
+ *     takes NEITHER the 24 h per-PR claim NOR a rate slot: a dry run that consumed the
+ *     claim would make the real run report "already-reviewed", and one that consumed a
+ *     slot would let a handful of previews exhaust a repo's hourly budget. A failed
+ *     attempt that posted nothing releases the rate slot with the claim, so the budget
+ *     counts DELIVERED reviews (completed, or partially posted), never attempts.
+ *
  *  6. SIMULATION POSTS NOTHING and returns exactly what it would have posted.
  *
  *  7. A FAILURE IS NEVER A CLEAN REVIEW. A model error, a parse failure or an
@@ -542,14 +549,22 @@ export const reviewPullRequest = async ({
   const headSha = str(pr && pr.headSha);
   const claimKey = reviewClaimKey(conn.id, repo, number, headSha);
 
-  /* 2 — THE CLAIM, FAIL-CLOSED, BEFORE ANY MODEL CALL. */
-  let won;
-  try {
-    won = await claimRuleExecution(storage, claimKey, REVIEW_CLAIM_TTL, "gitreview", { failClosed: true });
-  } catch (e) {
-    // Fail closed: a KVS fault must not license a second public comment.
-    log(`git review ${repo}#${number}: claim storage failed — refusing`);
-    return failure("claim_failed", "The review claim could not be taken; the review was not run.", { claimKey });
+  /* 2 — THE CLAIM, FAIL-CLOSED, BEFORE ANY MODEL CALL.
+     F-321 — but ONLY on a real run. The claim exists to stop a SECOND comment on the
+     same head SHA; simulation posts nothing, so it has nothing to duplicate, and a dry
+     run that took the claim would leave the real run reporting "already-reviewed" for
+     24 h — the preview would cancel the review it was previewing. A simulation is also
+     deliberately NOT gated by an existing claim: previewing an already-reviewed PR is
+     allowed precisely because it writes nothing. */
+  let won = true;
+  if (!simulation) {
+    try {
+      won = await claimRuleExecution(storage, claimKey, REVIEW_CLAIM_TTL, "gitreview", { failClosed: true });
+    } catch (e) {
+      // Fail closed: a KVS fault must not license a second public comment.
+      log(`git review ${repo}#${number}: claim storage failed — refusing`);
+      return failure("claim_failed", "The review claim could not be taken; the review was not run.", { claimKey });
+    }
   }
   if (!won) {
     log(`git review ${repo}#${number}@${headSha.slice(0, 7)}: already reviewed`);
@@ -564,40 +579,69 @@ export const reviewPullRequest = async ({
    * IS the thing we are protecting against, whatever fails later.
    */
   let posted = false;
+  let rateSlotKey = null;
+  const deleteKey = async (key) => {
+    if (typeof storage.delete === "function") await storage.delete(key);
+    else if (typeof storage.deleteSecret === "function") await storage.deleteSecret(key);
+  };
   const releaseClaim = async () => {
-    if (posted) return;
+    if (posted || simulation) return;
     try {
-      if (typeof storage.delete === "function") await storage.delete(claimKey);
-      else if (typeof storage.deleteSecret === "function") await storage.deleteSecret(claimKey);
+      await deleteKey(claimKey);
     } catch (e) {
       // The claim outliving a failed run is the SAFE direction (a review is skipped,
       // never doubled), so this is reported and never fatal.
       log(`git review ${repo}#${number}: claim ${claimKey} could not be released (${(e && e.message) || e})`);
     }
   };
+  /**
+   * F-322 — release the RATE SLOT on any exit that posted nothing. A slot is a unit of
+   * "this repo received a review this hour"; an attempt that died on the diff fetch, the
+   * model call or a malformed answer delivered no comment, so charging it means six bad
+   * model calls silence a repo for the rest of the hour. Like the claim, this is a no-op
+   * the instant the first comment is posted — from there the run DID consume the budget.
+   * Failing to delete is reported, never fatal: the safe direction is an over-counted
+   * budget (fewer reviews), and the key expires with its hour anyway.
+   */
+  const releaseRateSlot = async () => {
+    if (posted || !rateSlotKey) return;
+    const key = rateSlotKey;
+    rateSlotKey = null;
+    try {
+      await deleteKey(key);
+    } catch (e) {
+      log(`git review ${repo}#${number}: rate slot ${key} could not be released (${(e && e.message) || e})`);
+    }
+  };
   const fail = async (code, message, extra = {}) => {
     await releaseClaim();
+    await releaseRateSlot();
     return failure(code, message, { claimKey, ...extra });
   };
 
   /* 2b — F-285 THE RATE BRAKE. A per-repo, per-clock-hour budget of RUNS, taken as
      slot claims (KVS has no counter). Fail CLOSED, like the review claim: a storage
      fault must not license an unbounded number of public comments. Refusing here
-     RELEASES the per-PR claim, so the PR is reviewable again in the next hour. */
+     RELEASES the per-PR claim, so the PR is reviewable again in the next hour.
+     F-321 — simulation takes NO slot: a preview writes nothing to the repository, so it
+     is not part of what the per-repo hourly budget is bounding, and letting dry runs
+     spend it would let a few previews mute the real reviews for the rest of the hour. */
   let rateSlot = -1;
-  for (let i = 0; i < REVIEW_RATE_PER_HOUR; i++) {
-    const key = reviewRateKey(conn.id, repo, Date.now(), i);
-    let gotSlot;
-    try {
-      gotSlot = await claimRuleExecution(storage, key, REVIEW_RATE_TTL, "gitreview-rate", { failClosed: true });
-    } catch (e) {
-      await releaseClaim();
-      log(`git review ${repo}#${number}: rate ledger unavailable — refusing`);
-      return failure("claim_failed", "The review rate budget could not be read; the review was not run.", { claimKey });
+  if (!simulation) {
+    for (let i = 0; i < REVIEW_RATE_PER_HOUR; i++) {
+      const key = reviewRateKey(conn.id, repo, Date.now(), i);
+      let gotSlot;
+      try {
+        gotSlot = await claimRuleExecution(storage, key, REVIEW_RATE_TTL, "gitreview-rate", { failClosed: true });
+      } catch (e) {
+        await releaseClaim();
+        log(`git review ${repo}#${number}: rate ledger unavailable — refusing`);
+        return failure("claim_failed", "The review rate budget could not be read; the review was not run.", { claimKey });
+      }
+      if (gotSlot) { rateSlot = i; rateSlotKey = key; break; }
     }
-    if (gotSlot) { rateSlot = i; break; }
   }
-  if (rateSlot < 0) {
+  if (!simulation && rateSlot < 0) {
     await releaseClaim();
     log(`git review ${repo}#${number}: rate brake — ${repo} already had ${REVIEW_RATE_PER_HOUR} reviews this hour`);
     return {
@@ -674,7 +718,7 @@ export const reviewPullRequest = async ({
     diff: { files: diff.files.length, bytes: diff.bytes, truncated: diff.truncated },
     comments: resolution,
     simulated: simulation,
-    rate: { perHour: REVIEW_RATE_PER_HOUR, slot: rateSlot },
+    rate: { perHour: REVIEW_RATE_PER_HOUR, slot: simulation ? null : rateSlot },
     posted: { general: null, inline: [], verdict: null },
     planned: {
       general: body,

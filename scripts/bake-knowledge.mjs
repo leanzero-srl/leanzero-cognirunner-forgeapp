@@ -74,6 +74,7 @@ const P = {
   denylist: path.join(repoRoot, "knowledge/denylist.local"),
   packs: path.join(repoRoot, "src/shared/knowledge-packs"),
   index: path.join(repoRoot, "src/shared/knowledge-index.js"),
+  titles: path.join(repoRoot, "src/shared/knowledge-titles.js"),
   manifest: path.join(repoRoot, "knowledge/MANIFEST.md"),
 };
 
@@ -82,6 +83,36 @@ export const SECTION_TARGET_BYTES = 2048;
 export const SECTION_MAX_BYTES = 4096;
 /** A pack past this is a design mistake, not a big pack: the whole bundle ships to every tenant. */
 export const PACK_MAX_BYTES = 200 * 1024;
+/**
+ * The UI-facing titles module's ceiling (F-573). It exists to be SMALL: the moment it is
+ * not, the frontends are back to shipping the index and the finding is undone.
+ *
+ * THE ARITHMETIC, measured on today's 179-section corpus, because the number is not a
+ * preference. A flat `id -> title` map cannot be made much smaller than it is:
+ *
+ *   section ids          14 855 B  (179 ids, avg 83 B — `pack/source/filehash/slug-N`)
+ *   section titles        6 725 B  (175 of 179 are unique, so de-duplicating buys nothing)
+ *   JSON punctuation      ~1 100 B
+ *   pack titles + header  ~2 400 B
+ *   -----------------------------
+ *   emitted               25 095 B
+ *
+ * Two smaller shapes were measured and rejected: nesting by pack and document saves
+ * 3.5 KB (15 618 B of body) but makes every chip split an id to look a title up, moving
+ * logic into three byte-identical frontend copies to save a fifth of an already small
+ * file; interning titles saves nothing, since they are almost all distinct. The ids are
+ * the cost, and they are the thing that cannot change — they ride in saved
+ * `generationMeta` and in tick receipts.
+ *
+ * So the ceiling is set just above what the corpus actually costs. The CLAIM being
+ * defended is the ratio, not the absolute: 25 KB against the index's 138 KB is an 82 %
+ * saving on the three UI bundles, and `knowledge-titles.test` asserts that ratio too.
+ * A corpus that outgrows this needs a decision — fetch the titles, or nest them — not a
+ * bigger number here.
+ */
+export const TITLES_MAX_BYTES = 28 * 1024;
+/** ...and it must stay a small FRACTION of the index, which is the point of it existing. */
+export const TITLES_MAX_INDEX_FRACTION = 0.25;
 
 const die = (msg, code = 1) => { console.error(`bake-knowledge: ${msg}`); process.exit(code); };
 const sha = (s) => createHash("sha256").update(s).digest("hex");
@@ -432,6 +463,37 @@ export const KNOWLEDGE_INDEX = ${JSON.stringify(sections.map((s) => ({
 export default KNOWLEDGE_INDEX;
 `;
 
+/**
+ * THE TITLES MODULE (F-573) — the only knowledge artefact a FRONTEND should import.
+ *
+ * `knowledge-index.js` is 136 KB because it carries tags, audiences, byte counts and
+ * provenance for 179 sections. `FieldGuideChip` needs `{id -> title}` and nothing else, and
+ * it is statically imported (through CoderPanel) by three bundles — measured on the
+ * issue-glance bundle, that one label cost +101 040 B, a 40 % growth on a read-only
+ * right-rail panel that may never render a Coder turn. Webpack cannot help: the index is
+ * one array literal of object literals, every key reachable.
+ *
+ * So the bake emits the map directly: 25 KB against the index's 138 KB, an 82 % saving on
+ * every bundle that renders a chip. The index KEEPS everything it has and stays the
+ * backend's and the Knowledge tab's module — the Knowledge tab really does render tags and
+ * provenance, and paying 136 KB on an admin page somebody opened on purpose is a different
+ * trade from paying it on every issue view.
+ *
+ * Pack titles ride along because they are nine rows and a chip that groups by pack should
+ * not have to reach back to the index for them.
+ */
+const emitTitles = (sections, packs, contentVersion) =>
+  `${GENERATED_HEADER("Section and pack TITLES only — the module the UI bundles import.\n *\n * id -> title, nothing else. The full index (tags, audiences, byte counts, provenance)\n * is src/shared/knowledge-index.js and belongs to the backend and the Knowledge tab;\n * importing THAT from a frontend ships 136 KB to render a label (F-573).")}
+/** Content fingerprint of the baked corpus — the same value src/shared/knowledge-index.js pins. */
+export const KNOWLEDGE_TITLES_VERSION = ${JSON.stringify(contentVersion)};
+
+export const KNOWLEDGE_PACK_TITLES = ${JSON.stringify(Object.fromEntries(packs.map((p) => [p.id, p.title])), null, 2)};
+
+export const KNOWLEDGE_TITLES = ${JSON.stringify(Object.fromEntries(sections.map((s) => [s.id, s.title])), null, 2)};
+
+export default KNOWLEDGE_TITLES;
+`;
+
 /* ================================================================== *
  * The run
  * ================================================================== */
@@ -571,6 +633,27 @@ export const checkIndexCurrent = (contentVersion, expectedIndexText = null) => {
   return { checked: true };
 };
 
+/**
+ * The same drift probe for the UI titles module (F-573). It is generated from the same
+ * sections, so it can go stale the same way and it is hand-editable the same way — and it
+ * is the one knowledge artefact that reaches every issue view, so a stale title there is
+ * seen by more people than a stale anything else.
+ */
+export const checkTitlesCurrent = (expectedText) => {
+  if (!existsSync(P.titles)) {
+    die("--check: NOT A PASS — src/shared/knowledge-titles.js is missing.\n"
+      + "  Run `npm run bake` and commit it: the UI bundles import it instead of the full index.", 1);
+    return { checked: false };
+  }
+  if (readFileSync(P.titles, "utf8") !== expectedText) {
+    die("src/shared/knowledge-titles.js is not what the bake would write.\n"
+      + "  Re-bake rather than editing it; it is generated from the same sections as the index.", 1);
+    return { checked: false };
+  }
+  console.log(`bake-knowledge --check: UI titles module current (${utf8(expectedText)} B of ${TITLES_MAX_BYTES} B).`);
+  return { checked: true };
+};
+
 export const bake = ({ dryRun = false, check = false, tiers = null } = {}) => {
   const { denylist } = runPreflight();
   const cfg = readSources();
@@ -705,11 +788,25 @@ export const bake = ({ dryRun = false, check = false, tiers = null } = {}) => {
   const metaVersion = indexMetaFingerprint(sections, packSummaries, pins.byAudience);
   const sortedSections = sections.slice().sort((a, b) => a.id.localeCompare(b.id));
   const indexText = emitIndex(sortedSections, packSummaries, contentVersion, metaVersion, pins.byAudience);
+  const titlesText = emitTitles(sortedSections, packSummaries, contentVersion);
+  const titlesBytes = utf8(titlesText);
+  const indexBytes = utf8(indexText);
+  if (titlesBytes > TITLES_MAX_BYTES) {
+    die(`src/shared/knowledge-titles.js would be ${titlesBytes} B, past the ${TITLES_MAX_BYTES} B ceiling.\n`
+      + "  It exists to keep the UI bundles small (F-573); a titles module that is not small is\n"
+      + "  the index again under another name. NOTHING was written.", 1);
+  }
+  if (titlesBytes > indexBytes * TITLES_MAX_INDEX_FRACTION) {
+    die(`src/shared/knowledge-titles.js would be ${titlesBytes} B against an index of ${indexBytes} B `
+      + `(${((titlesBytes / indexBytes) * 100).toFixed(0)} %, ceiling ${(TITLES_MAX_INDEX_FRACTION * 100).toFixed(0)} %).\n`
+      + "  The saving is the whole reason the module exists. NOTHING was written.", 1);
+  }
 
   /* ---- --check: the pinned hashes ------------------------------------ */
   if (check) {
     checkIndexCurrent(contentVersion, indexText);
-    return { sections, packSummaries, contentVersion, metaVersion, pins, checked: true };
+    checkTitlesCurrent(titlesText);
+    return { sections, packSummaries, contentVersion, metaVersion, titlesBytes, pins, checked: true };
   }
 
   /* ---- stage 5: emit -------------------------------------------------- */
@@ -719,12 +816,15 @@ export const bake = ({ dryRun = false, check = false, tiers = null } = {}) => {
       writeFileSync(path.join(P.packs, `${pack}.js`), emitPack(pack, list));
     }
     writeFileSync(P.index, indexText);
+    writeFileSync(P.titles, titlesText);
     writeFileSync(P.manifest, renderManifest({ cfg, docs, sections, packSummaries, contentVersion, findings, pins }));
   }
 
   console.log(`\nbake-knowledge: ${sections.length} sections across ${packSummaries.length} packs · content ${contentVersion}${dryRun ? " (dry run — nothing written)" : ""}`);
   for (const p of packSummaries) console.log(`  ${p.id.padEnd(30)} ${String(p.sections).padStart(4)} sections  ${(p.bytes / 1024).toFixed(1)} KB`);
-  return { sections, packSummaries, contentVersion, metaVersion, pins, findings };
+  console.log(`  ${"(UI titles module)".padEnd(30)} ${String(sections.length).padStart(4)} titles    ${(titlesBytes / 1024).toFixed(1)} KB`
+    + `  — ${((titlesBytes / indexBytes) * 100).toFixed(0)} % of the ${(indexBytes / 1024).toFixed(1)} KB index, which stays backend-only`);
+  return { sections, packSummaries, contentVersion, metaVersion, titlesBytes, pins, findings };
 };
 
 /** knowledge/MANIFEST.md — the artefact the owner reads BEFORE any pack is committed. */

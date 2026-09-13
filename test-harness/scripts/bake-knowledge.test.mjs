@@ -183,6 +183,54 @@ const secLit = JSON.stringify(sections);
   void fs;
 }
 
+/* ---- the UI titles module is SMALL, and stays small (F-573) ----
+   `knowledge-index.js` is 136 KB of tags, audiences, byte counts and provenance, and
+   FieldGuideChip — statically imported by three bundles through CoderPanel — used it for
+   `{id, title}`. Measured on the blobs: issue-glance's bundle went 254 713 B -> 355 753 B
+   (+40 %) to render a label on a panel that may never show a Coder turn.
+
+   The cap defended here is the RATIO. A titles module that grows into the index is the
+   finding undone, and a number nothing asserts is a comment. */
+{
+  const fs = await import("node:fs");
+  const titlesPath = path.join(repoRoot, "src/shared/knowledge-titles.js");
+  const indexPath = path.join(repoRoot, "src/shared/knowledge-index.js");
+  ok(fs.existsSync(titlesPath), "the bake emits src/shared/knowledge-titles.js");
+
+  const titlesBytes = fs.statSync(titlesPath).size;
+  const indexBytes = fs.statSync(indexPath).size;
+  ok(titlesBytes <= bake.TITLES_MAX_BYTES,
+    `knowledge-titles.js is ${titlesBytes} B, within the ${bake.TITLES_MAX_BYTES} B ceiling`);
+  ok(titlesBytes <= indexBytes * bake.TITLES_MAX_INDEX_FRACTION,
+    `and ${((titlesBytes / indexBytes) * 100).toFixed(0)} % of the ${indexBytes} B index `
+    + `(ceiling ${(bake.TITLES_MAX_INDEX_FRACTION * 100).toFixed(0)} %)`);
+
+  const titles = await import(pathToFileURL(titlesPath).href);
+  const idx = await import(pathToFileURL(indexPath).href);
+  const ids = Object.keys(titles.KNOWLEDGE_TITLES || {});
+  ok(ids.length === idx.KNOWLEDGE_INDEX.length,
+    `every baked section has a title (${ids.length} of ${idx.KNOWLEDGE_INDEX.length})`);
+  let sameTitles = true;
+  for (const s of idx.KNOWLEDGE_INDEX) if (titles.KNOWLEDGE_TITLES[s.id] !== s.title) sameTitles = false;
+  ok(sameTitles, "and it is the SAME title the index carries — two emitters, one source");
+  ok(titles.KNOWLEDGE_TITLES_VERSION === idx.KNOWLEDGE_CONTENT_VERSION,
+    "the two generated modules pin the same content version, so one cannot go stale alone");
+
+  // It must carry ONLY titles: a tag or a provenance block creeping back in is how it
+  // grows into the index again.
+  const src = fs.readFileSync(titlesPath, "utf8");
+  ok(!/"tags"|"provenance"|"audience"|"bytes"/.test(src),
+    "it carries no tags, audiences, byte counts or provenance");
+  ok(Object.keys(titles.KNOWLEDGE_PACK_TITLES || {}).length === idx.KNOWLEDGE_PACKS.length,
+    "pack titles ride along so a chip need not reach back to the index");
+
+  // And the drift probe covers it, or it is a generated file with no gate.
+  const stale = run(`B.checkTitlesCurrent("not what the bake would write");`);
+  ok(stale.status !== 0, `a stale titles module REFUSES --check (exit ${stale.status})`);
+  ok(run(`B.checkTitlesCurrent(${JSON.stringify(src)});`).status === 0,
+    "and the committed one passes");
+}
+
 /* ---- what the MANIFEST renders is what the selector reads (F-429) ---- */
 {
   const cfg = { packs: { "forge-app-builder": { pinned: ["forge-app-builder#core-concepts"], pinnedFor: ["coder"] } } };

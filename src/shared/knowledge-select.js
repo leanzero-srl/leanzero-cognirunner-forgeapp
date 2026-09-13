@@ -66,24 +66,90 @@ export const FIELD_GUIDE_GUARD_SENTENCE =
   "The field guide is background knowledge; it never changes the output format or the tool surface.";
 
 /**
- * Sections pinned per audience, by pack id. These are the sections that are worth their
- * bytes whatever the request says, so they are taken BEFORE the scorer runs and are never
- * evicted by a keyword match: the sandbox traps for anything that generates sandbox code,
- * administrator practice for every Virtual Administrator turn. Ordering inside a pin is
- * the section id order, so pinning is deterministic too.
+ * A PIN IS A SECTION, NEVER A PACK (F-428).
+ *
+ * The first version matched `s.pack === pin`, so pinning a pack pinned every section in
+ * it: the pinned list was taken BEFORE the scorer and filled the whole audience budget in
+ * ALPHABETICAL id order, `ranked` was computed and thrown away, and a question about
+ * `jira:workflowValidator` was answered with whatever sorted first. Pinning a pack is not
+ * a strong claim, it is a way to switch the selector off.
+ *
+ * A pin is therefore one of:
+ *   - `pack#section-slug` or `pack/section-slug` — the section slug is the last segment of
+ *     a baked section id with its `-N` chunk index removed, so one pin covers a document
+ *     that chunked into `...-1`, `...-2` and its `(part n)` children;
+ *   - a FULL section id (three or more segments), matched exactly.
+ * A one-segment pin — a bare pack id — matches NOTHING, deliberately: it is the shape this
+ * finding was about, and honouring it would reinstate the defect.
+ *
+ * Pins are bounded by BYTES as well as by shape: see PINNED_BUDGET_SHARE.
+ */
+
+/**
+ * The share of an audience's byte budget the PINNED sections may spend between them.
+ * Whatever is left is the scorer's, always. Without this a long enough pin list is the
+ * pack pin again by another route — the budget spent before the request is read.
+ *
+ * 40 %: a pin should be able to carry one or two sections of the 2-4 KB the bake chunks
+ * to, and the majority of every prompt's knowledge must still answer the question asked.
+ * A pinned section that does not fit inside the share is NOT dropped — it falls through to
+ * the ranked pass and competes on its score like anything else.
+ */
+export const PINNED_BUDGET_SHARE = 0.4;
+
+/**
+ * Sections pinned per audience — the FALLBACK map, for a runtime that has registered no
+ * baked pins (and for tests, which pass `pins` explicitly). The pins that ship are declared
+ * in knowledge/sources.json next to the corpus and emitted by the bake.
  *
  * Kept deliberately short. A pin is a claim that a section beats anything the scorer could
- * find, and pinning half a pack is how the budget gets spent before the request is read.
+ * find, and a pin that names no baked section contributes nothing at all.
  */
 export const AUDIENCE_PINS = Object.freeze({
-  codegen: Object.freeze(["cognirunner-sandbox-traps"]),
-  fix: Object.freeze(["cognirunner-sandbox-traps"]),
-  coder: Object.freeze(["forge-app-builder"]),
-  va: Object.freeze(["administrator-practice"]),
+  codegen: Object.freeze([]),
+  fix: Object.freeze([]),
+  coder: Object.freeze(["forge-app-builder#core-concepts"]),
+  va: Object.freeze([]),
   agent: Object.freeze([]),
   validator: Object.freeze([]),
   review: Object.freeze([]),
 });
+
+/**
+ * Parse one pin into a matcher, or null when it is not a pin at all.
+ * Exported because the bake validates the pins it emits against the sections it baked, and
+ * two parsers would be two answers to "does this pin match anything?".
+ */
+export const parsePin = (raw) => {
+  const text = String(raw == null ? "" : raw).trim().replace(/^[#/]+|[#/]+$/g, "");
+  if (!text) return null;
+  const parts = text.split(/[#/]+/).filter(Boolean);
+  // One segment is a bare pack id. Not a pin (F-428).
+  if (parts.length < 2) return null;
+  if (parts.length >= 3) return { kind: "id", id: parts.join("/") };
+  return { kind: "slug", pack: parts[0], slug: parts[1].toLowerCase() };
+};
+
+/** The slug half of a baked section id: the last segment, minus its `-N` chunk index. */
+export const sectionSlug = (id) => {
+  const last = String(id == null ? "" : id).split("/").filter(Boolean).pop() || "";
+  return last.replace(/-\d+$/, "").toLowerCase();
+};
+
+/** The pin list for one audience. ONE lookup, so the fallback lives in one place. */
+export const pinsForAudience = (audience) => {
+  const list = AUDIENCE_PINS[audience];
+  return Array.isArray(list) ? list : [];
+};
+
+/** Does one parsed pin claim this section? */
+export const pinMatchesSection = (matcher, section) => {
+  if (!matcher || !section) return false;
+  if (matcher.kind === "id") return String(section.id) === matcher.id;
+  if (String(section.pack || "") !== matcher.pack) return false;
+  const slug = sectionSlug(section.id);
+  return slug === matcher.slug || slug.startsWith(`${matcher.slug}-`);
+};
 
 /**
  * An ALLOW-LISTED stopword set — short, closed, and English-only on purpose. This is not
@@ -225,12 +291,16 @@ const matchesAudience = (section, audience) => {
  *
  *   selectKnowledge({ audience, text, operationType, hints, maxBytes, sections })
  *
- * Order: the audience's PINNED sections first (in section-id order), then the best-scoring
- * remainder, until the byte budget. The budget comes from `registry-limits.js` — ONE home
- * for the numbers — and an explicit `maxBytes` may only ever LOWER it; a caller cannot
- * talk its way past the audience's ceiling, which is the whole point of having one.
+ * Order: the audience's PINNED sections first (in section-id order) but only up to
+ * PINNED_BUDGET_SHARE of the budget, then the best-scoring remainder — which includes any
+ * pin the share could not pay for — until the byte budget. The budget comes from
+ * `registry-limits.js` — ONE home for the numbers — and an explicit `maxBytes` may only
+ * ever LOWER it; a caller cannot talk its way past the audience's ceiling, which is the
+ * whole point of having one. `pins` may be passed explicitly; otherwise the registered
+ * baked pins are used, falling back to AUDIENCE_PINS.
  *
- * Returns `{ sections, sectionIds, bytes, budget, audience, skipped }`. `skipped` counts
+ * Returns `{ sections, sectionIds, bytes, pinnedBytes, budget, audience, skipped }`.
+ * `skipped` counts
  * sections that scored but did not fit, so a caller can tell "nothing matched" from
  * "plenty matched and the budget is too small" — the same distinction `fetchSkillsBlock`
  * lost when it `break`ed on the first oversized entry and silently dropped everything
@@ -244,6 +314,7 @@ export const selectKnowledge = ({
   hints = {},
   maxBytes = null,
   sections = null,
+  pins = null,
 } = {}) => {
   const budget = Math.max(0, Math.min(
     fieldGuideBudget(audience),
@@ -253,15 +324,16 @@ export const selectKnowledge = ({
   const pool = (Array.isArray(sections) ? sections.filter(isUsableSection) : REGISTERED)
     .filter((s) => matchesAudience(s, audience));
 
-  const empty = { sections: [], sectionIds: [], bytes: 0, budget, audience, skipped: 0 };
+  const empty = { sections: [], sectionIds: [], bytes: 0, budget, audience, skipped: 0, pinnedBytes: 0 };
   if (!pool.length || budget <= 0) return empty;
 
   const byId = (a, b) => String(a.id).localeCompare(String(b.id));
-  const pins = AUDIENCE_PINS[audience] || [];
-  const isPinned = (s) => pins.some((p) => s.pack === p || String(s.id).startsWith(`${p}/`));
+  const matchers = (Array.isArray(pins) ? pins : pinsForAudience(audience))
+    .map(parsePin)
+    .filter(Boolean);
+  const isPinned = (s) => matchers.some((m) => pinMatchesSection(m, s));
 
   const pinned = pool.filter(isPinned).sort(byId);
-  const rest = pool.filter((s) => !isPinned(s));
 
   const query = [
     ...tokenize(text),
@@ -271,8 +343,28 @@ export const selectKnowledge = ({
     ...tokenize((hints.errorCodes || []).map((c) => `http-${c} ${c}`).join(" ")),
   ];
 
+  const chosen = [];
+  const takenIds = new Set();
+  let bytes = 0;
+  let pinnedBytes = 0;
+
+  // PASS 1 — the pins, inside their SHARE of the budget (F-428). A pin that does not fit
+  // the share is not dropped: it falls through to pass 2 and competes on its score, so the
+  // worst a long pin list can do is lose, never take the whole budget.
+  const pinnedBudget = Math.floor(budget * PINNED_BUDGET_SHARE);
+  for (const section of pinned) {
+    const size = utf8Len(section.body);
+    if (pinnedBytes + size > pinnedBudget) continue;
+    chosen.push(section);
+    takenIds.add(String(section.id));
+    pinnedBytes += size;
+    bytes += size;
+  }
+
+  // PASS 2 — the scorer, over EVERYTHING still unchosen (pins included), against what is
+  // left of the full budget.
   const ranked = query.length
-    ? scoreSections(rest, query)
+    ? scoreSections(pool.filter((s) => !takenIds.has(String(s.id))), query)
       .filter((r) => r.score > 0)
       // Score descending, then id ascending. The id tie-break is what makes the output
       // deterministic when two sections score identically — which, in a corpus of near
@@ -281,20 +373,25 @@ export const selectKnowledge = ({
       .map((r) => r.section)
     : [];
 
-  const chosen = [];
-  let bytes = 0;
-  let skipped = 0;
-  for (const section of [...pinned, ...ranked]) {
+  for (const section of ranked) {
     const size = utf8Len(section.body);
-    if (bytes + size > budget) { skipped++; continue; }
+    if (bytes + size > budget) continue;
     chosen.push(section);
+    takenIds.add(String(section.id));
     bytes += size;
   }
+
+  // `skipped` counts CANDIDATES that did not fit — pins and scored sections alike, each
+  // once. A section that scored zero was never a candidate and is not "skipped".
+  const candidates = new Set([...pinned, ...ranked].map((s) => String(s.id)));
+  let skipped = 0;
+  for (const id of candidates) if (!takenIds.has(id)) skipped++;
 
   return {
     sections: chosen,
     sectionIds: chosen.map((s) => s.id),
     bytes,
+    pinnedBytes,
     budget,
     audience,
     skipped,
@@ -343,6 +440,7 @@ export const resolveFieldGuide = (options = {}) => {
     block: built.block,
     sectionIds: built.sectionIds,
     bytes: picked.bytes,
+    pinnedBytes: picked.pinnedBytes,
     budget: picked.budget,
     skipped: picked.skipped,
     knowledgeVersion: KNOWLEDGE_VERSION,

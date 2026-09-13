@@ -28,6 +28,7 @@ const {
   selectKnowledge, buildFieldGuideBlock, resolveFieldGuide, registerKnowledgeSections,
   clearKnowledgeSections, getKnowledgeSections, tokenize, scoreSections,
   KNOWLEDGE_VERSION, AUDIENCE_PINS, FIELD_GUIDE_MARKER, FIELD_GUIDE_GUARD_SENTENCE, STOPWORDS,
+  PINNED_BUDGET_SHARE, parsePin, sectionSlug, pinsForAudience,
 } = mod;
 
 let pass = 0, fail = 0;
@@ -85,24 +86,77 @@ ok(registerKnowledgeSections([{ id: "x", body: "" }, null, { body: "no id" }]) =
   "unusable sections (no id, empty body) are refused at registration");
 registerKnowledgeSections(corpus);
 
-/* 4. PINNED SECTIONS COME FIRST, per audience. */
+/* 4. A PIN IS A SECTION, NEVER A PACK (F-428). A bare pack id is not a pin at all —
+      honouring it is how the whole budget got spent in alphabetical id order before the
+      scorer ever ran. */
+ok(parsePin("forge-app-builder") === null, "a bare pack id is NOT a pin");
+ok(parsePin("") === null && parsePin(null) === null, "an empty pin is not a pin");
+{
+  const m = parsePin("forge-app-builder#manifest-skeleton");
+  ok(m && m.kind === "slug" && m.pack === "forge-app-builder" && m.slug === "manifest-skeleton",
+    "pack#slug parses to a slug matcher");
+  const m2 = parsePin("forge-app-builder/b/manifest-skeleton-1");
+  ok(m2 && m2.kind === "id" && m2.id === "forge-app-builder/b/manifest-skeleton-1",
+    "a full section id parses to an exact matcher");
+}
+ok(sectionSlug("forge-app-builder/b/manifest-skeleton-1") === "manifest-skeleton",
+  "the section slug drops the chunk index");
 for (const [audience, pins] of Object.entries(AUDIENCE_PINS)) {
-  const picked = selectKnowledge({ audience, text: "rate limit 429 backoff adf comment" });
-  if (!pins.length) { ok(true, `${audience} declares no pins`); continue; }
-  const expected = corpus
-    .filter((s) => pins.includes(s.pack) && s.audience.includes(audience))
-    .map((s) => s.id).sort();
-  if (!expected.length) { ok(true, `${audience} has no pinned section in this corpus`); continue; }
-  const head = picked.sectionIds.slice(0, expected.length).slice().sort();
-  ok(JSON.stringify(head) === JSON.stringify(expected),
-    `${audience}: pinned sections come first (${picked.sectionIds.slice(0, expected.length).join(", ")})`);
+  ok(pins.every((p) => parsePin(p) !== null), `${audience}: every declared pin is a real pin (not a pack id)`);
+  ok(JSON.stringify(pinsForAudience(audience)) === JSON.stringify([...pins]),
+    `${audience}: pinsForAudience returns the declared list`);
+}
+ok(JSON.stringify(pinsForAudience("no-such-audience")) === "[]", "an unknown audience has no pins");
+
+/* 4b. A pin IS taken first when it fits the share. */
+{
+  const picked = selectKnowledge({
+    audience: "coder", text: "429 rate limit backoff",
+    pins: ["cognirunner-sandbox-traps#simulation-intercepts-writes"],
+  });
+  ok(picked.sectionIds[0] === "cognirunner-sandbox-traps/a/simulation-intercepts-writes-2",
+    `a section pin is taken first (got ${picked.sectionIds[0]})`);
+  ok(picked.pinnedBytes > 0 && picked.pinnedBytes <= Math.floor(picked.budget * PINNED_BUDGET_SHARE),
+    "the pinned bytes stay inside the pinned share");
 }
 
-/* 5. A pin is taken even when the query matches something else entirely — that is what
-      "pinned" means, and a pin that loses to a keyword is just a high-scoring section. */
-const pinnedAnyway = selectKnowledge({ audience: "codegen", text: "429 rate limit backoff" });
-ok(pinnedAnyway.sectionIds[0].startsWith("cognirunner-sandbox-traps/"),
-  "the codegen pin survives a query that points elsewhere");
+/* 5. A PACK PIN CANNOT EAT THE BUDGET, and a RANKED section always beats an unpinned
+      alphabetical one. This is the F-428 regression: the pool below is ordered so that the
+      alphabetically-first sections are irrelevant and the relevant one sorts last. */
+{
+  const big = (n, pack, tagword) => section(
+    `${pack}/z/aaa-filler-${n}`, pack, `Filler ${n}`, [tagword], ["agent"],
+    pad(`filler ${tagword}`, 120)
+  );
+  const relevant = section("other-pack/z/zzz-webhook-1", "other-pack", "Webhooks",
+    ["webhook", "external"], ["agent"], pad("a webhook posts to an external endpoint", 20));
+  const pool = [big(1, "fat", "filler"), big(2, "fat", "filler"), big(3, "fat", "filler"), relevant];
+
+  const packPinned = selectKnowledge({ audience: "agent", text: "webhook external endpoint", sections: pool, pins: ["fat"] });
+  ok(packPinned.sectionIds.includes("other-pack/z/zzz-webhook-1"),
+    "a bare PACK pin cannot displace the section the query actually asked for");
+  ok(packPinned.sectionIds[0] === "other-pack/z/zzz-webhook-1",
+    `the ranked section wins over the unpinned alphabetical ones (got ${packPinned.sectionIds[0]})`);
+
+  // Even a LEGITIMATE pin list may never spend more than its share on pins.
+  const manyPins = selectKnowledge({
+    audience: "agent", text: "webhook external endpoint", sections: pool,
+    pins: ["fat#aaa-filler"],
+  });
+  ok(manyPins.pinnedBytes <= Math.floor(manyPins.budget * PINNED_BUDGET_SHARE),
+    `pins never exceed ${PINNED_BUDGET_SHARE * 100}% of the budget (${manyPins.pinnedBytes}/${manyPins.budget} B)`);
+  ok(manyPins.sectionIds.includes("other-pack/z/zzz-webhook-1"),
+    "the scorer still contributes with a multi-section pin in play");
+  ok(manyPins.bytes <= manyPins.budget, "the total is still within the budget");
+}
+
+/* 5b. A pinned section that does not fit the share is NOT dropped — it competes on score. */
+{
+  const huge = section("p/z/huge-1", "p", "Huge pinned", ["widget"], ["agent"], pad("widget", 900));
+  const picked = selectKnowledge({ audience: "agent", text: "widget", sections: [huge], pins: ["p#huge"] });
+  ok(picked.sectionIds.includes("p/z/huge-1"), "an over-share pin falls through to the ranked pass");
+  ok(picked.pinnedBytes === 0, "and it is not counted as pinned bytes");
+}
 
 /* 6. THE BUDGET IS NEVER EXCEEDED, for any audience, and a caller may only LOWER it. */
 for (const audience of Object.keys(limits.FIELD_GUIDE_BUDGET_BYTES)) {

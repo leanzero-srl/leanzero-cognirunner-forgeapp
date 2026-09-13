@@ -55,6 +55,24 @@ const DESK_ID = arg("desk", "1");
 const QUEUES = arg("queues", "1,2,3").split(",").filter(Boolean);
 const TICK_WAIT_S = Number(arg("tickwait", "180"));
 const KEEP = flag("keep");
+/*
+ * --flip-model — HOW AN AGENT COMES TO EXIST ON AN INCAPABLE INSTANCE AT ALL (F-485).
+ *
+ * Since F-485 the SAVE door refuses `mode:"va"` whenever capability is off, so the old
+ * shape of this script - "create an agent on an incapable instance, then tick it" - can
+ * no longer even reach STEP 1. The instance has to be made capable for the CREATE and
+ * incapable again for the TICK, which is also the more honest test: it is exactly the
+ * life an agent has when an admin's licence or model changes underneath it.
+ *
+ * The slot is recorded and replayed through the hook's `kvSet`, the same one home
+ * va-purge-on-delete-live.mjs uses (the resolver answers a FALLBACK when the slot is
+ * empty and `saveAgentModel` refuses to write a non-frontier value back, so restoring
+ * "what the resolver said" would leave the slot dirty).
+ */
+const FLIP_MODEL = flag("flip-model");
+const FRONTIER = arg("model", "claude-sonnet-5");
+const AGENT_MODEL_SLOT = "COGNIRUNNER_AGENT_MODEL_atlassian";
+let agentModelSlotBefore;   // undefined = never touched, so the finally must not write
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let passes = 0, fails = 0, unproven = 0;
@@ -123,8 +141,10 @@ async function main() {
   const cap = await invoke("getAgentCapability", {});
   const capBody = cap.body || {};
   info(`getAgentCapability -> ${JSON.stringify(capBody)}`);
-  if (capBody.enabled === false) PASS(`capability is OFF: reason="${capBody.reason}" edition=${capBody.edition} provider=${capBody.provider}`);
+  if (capBody.enabled === false) PASS(`capability is OFF at rest: reason="${capBody.reason}" edition=${capBody.edition} provider=${capBody.provider}`);
   else { FAIL(`capability is ON (enabled=${capBody.enabled}) - this script proves the REFUSAL and cannot run here`); return; }
+  /* The reason the TICK will be refused for is the one the instance reports AT REST -
+   * after the slot has been put back - and it is captured here, before any flip. */
   const EXPECT_REASON = capBody.reason;
 
   const pre = await invoke("listVaAgents", {});
@@ -132,7 +152,17 @@ async function main() {
   info(`listVaAgents before: ${pre.body.agents.length} agent(s)`);
 
   /* ── STEP 1 — create the agent ───────────────────────────────────────────── */
-  console.log("\nSTEP 1 - create a Virtual Administrator on an INCAPABLE instance");
+  console.log("\nSTEP 1 - bring an agent into existence, then take the capability away underneath it");
+  if (FLIP_MODEL) {
+    const slot = await kvs(AGENT_MODEL_SLOT);
+    agentModelSlotBefore = slot.value;
+    info(`${AGENT_MODEL_SLOT} before: ${slot.value === null ? "EMPTY (the resolver answers a fallback)" : JSON.stringify(slot.value)} - the SLOT is what the finally replays`);
+    const set = await invoke("saveAgentModel", { model: FRONTIER });
+    if (!(set.body && set.body.success)) throw new Error(`saveAgentModel("${FRONTIER}") refused: ${JSON.stringify(set.body).slice(0, 300)}`);
+    const capOn = await invoke("getAgentCapability", {});
+    if (capOn.body && capOn.body.enabled === true) PASS(`capability flipped ON for the CREATE only (agentModel=${capOn.body.agentModel}, reason="${capOn.body.reason}")`);
+    else { FAIL(`the flip did not make the instance capable: ${JSON.stringify(capOn.body)}`); return; }
+  }
   const created = await invoke("saveScheduledJob", { job: { name: `F-482 capability proof`, mode: "va", enabled: true, va: vaRecord() } });
   if (!(created.body && created.body.success)) throw new Error(`saveScheduledJob refused: ${JSON.stringify(created.body).slice(0, 500)}`);
   const job = created.body.job;
@@ -141,6 +171,22 @@ async function main() {
   PASS(`agent created: ${jobId} mode=${job.mode} cron="${job.schedule.cron}"`);
   info(`refused[]: ${JSON.stringify(created.body.refused || [])}`);
   info(`F-485 note: the SAVE door accepted this agent on an instance whose capability is "${EXPECT_REASON}".`);
+
+  if (FLIP_MODEL) {
+    /* THE CAPABILITY IS TAKEN AWAY MID-LIFE, which is the whole point: the agent is a
+     * real, saved, enabled row that the instance can no longer run. The slot goes back
+     * to exactly what it was, so the reason below is the instance's own resting reason
+     * (EXPECT_REASON), not one this script invented. */
+    const r = await hook({ action: "kvSet", key: AGENT_MODEL_SLOT, value: agentModelSlotBefore });
+    info(`kvSet ${AGENT_MODEL_SLOT} -> ${JSON.stringify(r.json).slice(0, 140)}`);
+    agentModelSlotBefore = undefined;   // put back already; the finally must not write again
+    const capOff = await invoke("getAgentCapability", {});
+    if (capOff.body && capOff.body.enabled === false && capOff.body.reason === EXPECT_REASON) {
+      PASS(`capability is OFF again MID-LIFE: reason="${capOff.body.reason}" agentModel=${capOff.body.agentModel} - the agent exists and the instance cannot run it`);
+    } else {
+      FAIL(`the capability did not return to its resting state: ${JSON.stringify(capOff.body)} (expected enabled:false reason:"${EXPECT_REASON}")`);
+    }
+  }
 
   /* ── the BEFORE read of every ledger key (a negative must be provable) ───── */
   console.log("\nBASELINE - the ledger keys, read through ?what=kvs BEFORE the tick");
@@ -218,6 +264,44 @@ async function main() {
   if (Number(b.staged) === 0) PASS("staged = 0 through the resolver layer too");
   else FAIL(`staged = ${b.staged}`);
 
+  /* ── F-501 / F-502 — THE REFUSAL RECEIPT AS THE AGENTS TAB SEES IT ────────
+   *
+   * F-501: `publicReceipt` used to REBUILD `gate` from the reason and never read the
+   * field the engine stored, so `gate:"capability"` could not reach the tab. F-502: the
+   * same receipt reported `ok:true` because `publicReceipt` derived ok from `r.error`
+   * and the capability arm records no error - a tick the engine stopped at a gate was
+   * being shown as a healthy one. Both are read HERE, off `getVaStatus`, because that
+   * resolver is what the tab actually calls; asserting them off the raw ledger row would
+   * prove the storage and not the surface.
+   */
+  console.log("\n  F-501 / F-502 - the receipt getVaStatus hands the Agents tab");
+  /*
+   * THE RECEIPT IS `receipts[]`, NOT `lastTick`. `getVaStatus.lastTick` is the TIMESTAMP
+   * of the last tick (a string); the row the Agents tab renders is the newest `prepare`
+   * entry of `receipts[]`, which is what `publicReceipt` shapes and therefore where
+   * F-501 (the gate name) and F-502 (ok) have to be read. An earlier draft of this arm
+   * asserted against `lastTick` and reported two failures that were the probe's, not the
+   * app's - recorded here so the wrong field is not tried a third time.
+   */
+  const st501 = await invoke("getVaStatus", { jobId });
+  const prep501 = latest(st501.body && st501.body.success ? st501.body : null, "prepare");
+  info(`getVaStatus.receipts[phase=prepare][0] -> ${JSON.stringify(prep501)}`);
+  info(`getVaStatus.lastTick (a timestamp, not the receipt) -> ${JSON.stringify(st501.body && st501.body.lastTick)}`);
+  if (!prep501) {
+    FAIL("getVaStatus returned no prepare receipt at all, so F-501/F-502 cannot be read off the surface the tab uses");
+  } else {
+    if (prep501.ok === false) PASS(`F-502 HOLDS: the receipt getVaStatus hands the tab reports ok = false - a tick the engine stopped at a gate is NOT an ok tick`);
+    else FAIL(`F-502: the receipt reports ok = ${prep501.ok} (expected false)`);
+    const gateRow = (Array.isArray(prep501.skipped) ? prep501.skipped : []).find((r) => r && r.itemKey === null);
+    if (gateRow && gateRow.gate === "capability") PASS(`F-501 HOLDS: the receipt reaching the tab NAMES the gate: gate="capability" (reason="${gateRow.reason}")`);
+    else FAIL(`F-501: the agent-level skipped row is ${JSON.stringify(gateRow)} - expected gate:"capability". publicReceipt is dropping the stored gate again.`);
+    if (gateRow && gateRow.reason === EXPECT_REASON) PASS(`the receipt carries the machine-readable reason "${gateRow.reason}", the instance's own`);
+    else FAIL(`the receipt's reason is ${JSON.stringify(gateRow && gateRow.reason)} - the instance reports "${EXPECT_REASON}"`);
+    const rendered = JSON.stringify(prep501);
+    if (!rendered.includes("[object Object]")) PASS(`no "[object Object]" anywhere in the receipt the tab renders`);
+    else FAIL(`the receipt contains "[object Object]": ${rendered.slice(0, 300)}`);
+  }
+
   const dr = await invoke("listVaDrafts", { jobId });
   const drafts = (dr.body && dr.body.drafts) || [];
   if (drafts.length === 0) PASS(`listVaDrafts is empty (${JSON.stringify(dr.body && dr.body.refused || null)})`);
@@ -270,6 +354,14 @@ main()
    *    `getScheduledJob`, and a survivor exits non-zero with the phase named.
    */
   .finally(async () => {
+    if (agentModelSlotBefore !== undefined) {
+      const r = await hook({ action: "kvSet", key: AGENT_MODEL_SLOT, value: agentModelSlotBefore });
+      console.log(`\nCLEANUP - kvSet ${AGENT_MODEL_SLOT} -> ${JSON.stringify(r.json).slice(0, 140)}`);
+      const back = await kvs(AGENT_MODEL_SLOT).catch(() => null);
+      const ok = !!(back && back.ok && JSON.stringify(back.value) === JSON.stringify(agentModelSlotBefore));
+      console.log(`        ${ok ? "RESTORED" : "NOT RESTORED"}: the slot reads back ${JSON.stringify(back && back.value)} (was ${JSON.stringify(agentModelSlotBefore)})`);
+      if (!ok) process.exitCode = 1;
+    }
     if (!createdJobId || KEEP) return;
     const list = await invoke("listVaAgents", {}).catch(() => null);
     const listWorked = !!(list && list.body && Array.isArray(list.body.agents));

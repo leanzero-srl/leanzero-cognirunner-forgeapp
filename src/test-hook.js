@@ -55,6 +55,58 @@ const errorClassOf = (e) => (e && (e.code || e.name) ? String(e.code || e.name) 
 const keysOf = (data) => (data && typeof data === "object" && !Array.isArray(data) ? Object.keys(data).slice(0, 30) : []);
 const jsonOf = async (res) => { try { return JSON.parse(String(await res.text()).slice(0, 200000)); } catch { return null; } };
 
+/* ═══════════════════════════════════════════════════════════════════════════════════
+ * F-627/F-628 — "A SECRET IS NEVER PLANTABLE", IN ONE HOME.
+ *
+ * Two doors in this file now PLANT A ROW from a caller-supplied object: `pipelineRow`
+ * (a `git_pipeline:*` record) and `vaTombstone`'s `turns`. Both build their row field by
+ * field from an allow-list, so a stray key cannot reach storage by construction — but
+ * "by construction" is a property a future edit can lose quietly, and the promise the
+ * whole file rests on ("the write resolvers are off the allow-list because a planted
+ * token would then exist on a real tenant") deserves a check that FAILS LOUDLY rather
+ * than an argument that has to be re-derived by every reader.
+ *
+ * So a plant body is REFUSED OUTRIGHT when it so much as mentions a credential: any key
+ * whose name reads like one, at any depth, and any string value that looks like a stored
+ * key slot, a provider token or a web-trigger URL. It is deliberately coarse — a harness
+ * body has no legitimate reason to carry any of these, and a false refusal costs a
+ * driver one rename while a false accept costs a tenant a live credential.
+ *
+ * Returns `null` when the body is clean, or `{ error, harnessRefusal, field }`.
+ * ═══════════════════════════════════════════════════════════════════════════════════ */
+const SECRET_KEY_HINTS = [
+  "token", "secret", "password", "credential", "apikey", "privatekey", "bearer",
+  "authorization", "cookie", "webtrigger", "webhookurl", "cognirunnerkey", "gitconnection",
+];
+/** COGNIRUNNER_KEY_* slots, GitHub/Bitbucket/OpenAI token shapes, Forge web-trigger URLs. */
+const SECRET_VALUE_RE =
+  /(COGNIRUNNER_KEY_|git_conn_secret:|\bgh[pousr]_[A-Za-z0-9]{8}|\bgithub_pat_|\bsk-[A-Za-z0-9_-]{12}|\bxoxb-|\.atlassian-dev\.net\/)/;
+
+export const SECRET_PLANT_REFUSAL = "harnessRefusal: a plant body may never carry a credential — this door plants state, never secrets";
+
+export const findPlantedSecret = (value, path = "", depth = 0) => {
+  if (depth > 6) return null;
+  if (typeof value === "string") {
+    return SECRET_VALUE_RE.test(value) ? { field: path || "(root)", why: "value-looks-like-a-credential" } : null;
+  }
+  if (!value || typeof value !== "object") return null;
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length && i < 50; i++) {
+      const hit = findPlantedSecret(value[i], `${path}[${i}]`, depth + 1);
+      if (hit) return hit;
+    }
+    return null;
+  }
+  for (const [k, v] of Object.entries(value)) {
+    const flat = k.toLowerCase().replace(/[^a-z0-9]/g, "");
+    // `key` alone is a legitimate harness word (a KVS key); the hints below are not.
+    if (SECRET_KEY_HINTS.some((h) => flat.includes(h))) return { field: path ? `${path}.${k}` : k, why: "field-name-reads-like-a-credential" };
+    const hit = findPlantedSecret(v, path ? `${path}.${k}` : k, depth + 1);
+    if (hit) return hit;
+  }
+  return null;
+};
+
 /**
  * The four calls, as real `route` templates. Injected as a unit so the offline suite can
  * drive every branch (including the delete) without a network.
@@ -256,6 +308,39 @@ export async function testStateTrigger(req) {
       }
       if (body.action === "disarmHookPromoteFault") return json(200, { ok: true, ...(await disarmHarnessFault(HARNESS_FAULT_HOOK_PROMOTE, parts)) });
       return json(200, { ok: true, ...(await readHarnessFault(HARNESS_FAULT_HOOK_PROMOTE, parts)) });
+    }
+    /* ===== F-629 live proof: the dev-only KEY-READ fault lever =====
+     * THE THIRD MEMBER of the `armHarnessFault` family, and the first that is not
+     * git-scoped. F-603 is a bug about what the provider settings card does when
+     * `getOpenAIKey` FAILS — a stale `noKeyNeeded` painting a BYOK provider as "Managed
+     * by LeanZero, nothing to paste here" with no key input at all — and that resolver is
+     * a KVS read plus a provider switch, so nothing a tester can do from outside makes it
+     * fail. The fix could only ever be exercised against a mock.
+     *
+     * KEYED BY PROVIDER ID ALONE, so the F-603 scenario is expressible: the managed engine
+     * loads fine, then OpenAI's read fails. The cap, the two modes, the TTL and the env
+     * gate all live in src/harness-fault.js; this is wiring behind the same HARNESS_SECRET
+     * Bearer as everything else here, and the lever is additionally inert wherever that
+     * env var is absent (production).
+     *
+     * IT ACCEPTS NO KEY AND RETURNS NO KEY. The body carries a provider id, a mode and a
+     * TTL — nothing else — and the three answers carry the fault KEY, never a slot value.
+     */
+    if (body.action === "armKeyReadFault" || body.action === "disarmKeyReadFault" || body.action === "readKeyReadFault") {
+      const provider = String(body.provider || "");
+      if (!PROVIDER_IDS.includes(provider)) return json(400, { error: `provider must be one of: ${PROVIDER_IDS.join(", ")}` });
+      const {
+        armKeyReadFault, disarmHarnessFault, readHarnessFault,
+        HARNESS_FAULT_KEY_READ, KEY_READ_FAULT_MODES, HARNESS_KEY_READ_FAULT_MAX_TTL_SECONDS,
+      } = await import("./harness-fault.js");
+      if (body.action === "armKeyReadFault") {
+        if (!KEY_READ_FAULT_MODES.includes(body.mode)) return json(400, { error: `mode must be one of: ${KEY_READ_FAULT_MODES.join(", ")}` });
+        const r = await armKeyReadFault(provider, body.mode, body.ttlSeconds);
+        // The clamp lives with the lever; a refusal from it overrides the optimistic ok.
+        return json(r.ok === false ? 400 : 200, { ok: true, provider, maxTtlSeconds: HARNESS_KEY_READ_FAULT_MAX_TTL_SECONDS, ...r });
+      }
+      if (body.action === "disarmKeyReadFault") return json(200, { ok: true, provider, ...(await disarmHarnessFault(HARNESS_FAULT_KEY_READ, [provider])) });
+      return json(200, { ok: true, provider, ...(await readHarnessFault(HARNESS_FAULT_KEY_READ, [provider])) });
     }
     if (body.action === "readProbe") {
       const name = String(body.name || "").replace(/[^A-Za-z0-9_.:-]/g, "");
@@ -619,17 +704,28 @@ export async function testStateTrigger(req) {
         // row: that WRITE is the thing under test (the auth_dead banner has one
         // source), it creates no credential, and it cannot delete one.
         "listGitConnections", "testGitConnection", "getForgeIdentityStatus",
-        // 1.4 commit 7 — the pipeline READ only. `git_pipeline:*` rows are also
-        // reachable through the GET `?what=kvs` read (deliberately unrestricted: it
-        // is a read, behind HARNESS_SECRET), which is how a tester confirms the
-        // bounded row landed on the exact slot. DELIBERATELY ABSENT: setupGitPipeline
-        // and triggerGitDeploy. Both are writes to a customer's repository — one
-        // pushes the deploy credential into it, the other starts a real deploy — and
-        // a harness that can do either is a harness that can be turned into one.
-        // The kvSet allow-list below is NOT widened for `git_pipeline:*` either: a
-        // plantable row is a plantable permission LOCK, which is the one fact this
-        // commit's refusal depends on.
-        "getGitPipelineStatus",
+        // 1.4 commit 7 — the pipeline READ. `git_pipeline:*` rows are also reachable
+        // through the GET `?what=kvs` read (deliberately unrestricted: it is a read,
+        // behind HARNESS_SECRET), which is how a tester confirms the bounded row landed
+        // on the exact slot. DELIBERATELY ABSENT: setupGitPipeline — it pushes the deploy
+        // credential into a customer's repository and commits to it, and a harness that
+        // can do that is a harness that can be turned into one.
+        //
+        // F-627 — `triggerGitDeploy` IS here now, and ONLY through the outdated-only
+        // wrapper below. The sentence above has not been relaxed: what changed is that
+        // the hook can no longer ask for a deploy that would actually be DISPATCHED.
+        // `triggerPipelineDeploy` refuses an outdated row with `pipeline_outdated` BEFORE
+        // it touches the provider (src/git-pipeline.js), so the wrapper admits the call
+        // only when the stored row is outdated by the product's own predicate — the
+        // resolver is then exercised for real and the one thing it can reach is a
+        // refusal. F-611 is the reason it had to be reachable at all: the fix lives in
+        // the resolver, and the Code tab's button (F-602) is the half a reader sees.
+        //
+        // The kvSet allow-list below is still NOT widened for `git_pipeline:*` — the
+        // F-627 `pipelineRow` action is the door, and it is a CLAMPED plant that can
+        // never write `lockHash`/`lockScopes`, which is the permission-lock objection the
+        // old wording recorded here.
+        "getGitPipelineStatus", "triggerGitDeploy",
         // 1.4 commit 8 — the Coder thread READ only, so a live pass can prove the owner
         // asymmetry (owner sees the thread, another editor is refused with `not-owner`)
         // on a real row. DELIBERATELY ABSENT: startCoderTurn and confirmCoderTicket. The
@@ -698,6 +794,30 @@ export async function testStateTrigger(req) {
             threadSimulation: thread ? thread.simulation === true : null,
           });
         }
+      } else if (functionKey === "triggerGitDeploy") {
+        /* ── F-627 — THE OUTDATED-ONLY WRAPPER. ─────────────────────────────────────
+         * Same shape and same reason as the forced-simulation wrapper above: the hook may
+         * drive this resolver, but it may never drive it into a REAL dispatch. A deploy
+         * on a current row starts CI on a customer's repository; a deploy on an OUTDATED
+         * row is refused by `triggerPipelineDeploy` with `pipeline_outdated` before the
+         * provider is touched at all, and that refusal is the whole of F-611.
+         *
+         * So the row is read HERE and asked `pipelineOutdated` — the product's own
+         * predicate from src/shared/git-pipeline-state.js, never a restatement — and
+         * anything else is refused before the resolver runs. A row that cannot be read is
+         * refused too: unknown is not a licence, the same direction every gate here fails. */
+        const { readPipelineRow } = await import("./git-pipeline.js");
+        const { pipelineOutdated } = await import("./shared/git-pipeline-state.js");
+        let row = null;
+        try { row = await readPipelineRow(hookPayload.connectionId, hookPayload.repo); } catch (e) { row = null; }
+        if (!row || !pipelineOutdated(row)) {
+          return json(400, {
+            error: "harnessRefusal: the hook only triggers a deploy on an OUTDATED pipeline row — any other row would be dispatched for real against a customer's repository",
+            harnessRefusal: "not-outdated",
+            hasRow: Boolean(row),
+            outdated: pipelineOutdated(row),
+          });
+        }
       }
       try {
         const { handler } = await import("./index.js");
@@ -749,6 +869,168 @@ export async function testStateTrigger(req) {
       return json(200, { key: body.key, set: body.value === null ? "deleted" : true, now: (await storage.get(body.key)) ?? null });
     }
     /*
+     * F-627 — THE PIPELINE-ROW DOOR, and why it had to exist.
+     *
+     * F-604, F-605 and F-611 are all about ONE state of a `git_pipeline:*` row — the
+     * committed workflow is older than the scaffold this build installs (`outdated`), or
+     * a setup run died and left "queued" behind (`stuck`). Neither state was reachable on
+     * a tenant: a setup always stamps the CURRENT `SCAFFOLD_VERSION`, and there is no
+     * lever that stops the `gitpipeline` consumer mid-run. So the prefilled setup form,
+     * the preserved header facts, the stuck-queued banner and the `pipeline_outdated`
+     * deploy refusal were render-proven and live-unprovable. This is their door.
+     *
+     * WHAT IT PLANTS, AND WHAT IT REFUSES TO. The row is built FIELD BY FIELD from an
+     * allow-list — status, scaffold version, the two ageable timestamps, the declared
+     * scaffold variables, the developer space and app ids, the branch. Everything else on
+     * a real row is written as its empty value, and TWO fields are deliberately never
+     * plantable at all: `lockHash` and `lockScopes`. That is the objection the old
+     * comment on the invoke allow-list recorded — "a plantable row is a plantable
+     * permission LOCK" — and it is answered by construction rather than by prose: this
+     * door cannot state what scopes a repository's committed lock declares, so it cannot
+     * talk any gate into accepting one. `findPlantedSecret` refuses the body outright if
+     * it so much as names a credential.
+     *
+     * IT NEVER OVERWRITES A REAL ROW. A plant lands only on a free key or on a key this
+     * same door planted (`plantedBy: "harness"`), and `clear` deletes only a planted row —
+     * so a harness pointed at a tenant with a genuinely installed pipeline refuses instead
+     * of destroying the record of it. Same discipline as `deleteHarnessConnection`.
+     *
+     * THE READ IS THE PRODUCT'S OWN ANSWER. It returns `publicPipelineRow(row)` — the
+     * exact projection `getGitPipelineStatus` hands the Code tab — plus the three
+     * predicates from `src/shared/git-pipeline-state.js` computed on the stored row, so a
+     * driver grades the planted state against the SAME functions the tab renders from and
+     * never against a restatement of them.
+     */
+    if (body.action === "pipelineRow") {
+      const connId = String(body.connId || body.connectionId || "");
+      const repoRaw = String(body.repoId || body.repo || "");
+      if (!/^[A-Za-z0-9_.:-]{1,80}$/.test(connId)) return json(400, { error: "connId required" });
+      if (!/^[^/\s]+\/[^/\s]+$/.test(repoRaw) || repoRaw.length > 120) return json(400, { error: "repoId must be owner/name" });
+      const { gitPipelineKey, normalizeDeveloperSpaceId, normalizeForgeAppId } = await import("./shared/git-ids.js");
+      const { normalizeRepoId } = await import("./git-connections.js");
+      const { publicPipelineRow, PIPELINE_SCAFFOLD } = await import("./git-pipeline.js");
+      const { pipelineOutdated, pipelineLive, pipelineStuck } = await import("./shared/git-pipeline-state.js");
+      const { SCAFFOLD_VERSION, scaffoldVarNames, scaffoldVarError } = await import("./shared/git-scaffolds.js");
+      const repoId = normalizeRepoId(repoRaw);
+      const key = gitPipelineKey(connId, repoId);
+      const op = String(body.op || "read");
+      const existing = (await storage.get(key)) ?? null;
+      const planted = Boolean(existing && typeof existing === "object" && existing.plantedBy === "harness");
+
+      if (op === "read") {
+        return json(200, {
+          ok: true, key, planted,
+          row: publicPipelineRow(existing),
+          // The SAME three functions the projection and the Code tab ask, on the stored
+          // row, so a driver can prove projection and predicate agree rather than assume it.
+          predicates: {
+            outdated: pipelineOutdated(existing),
+            live: pipelineLive(existing),
+            stuck: pipelineStuck(existing),
+          },
+          currentScaffoldVersion: SCAFFOLD_VERSION,
+        });
+      }
+      if (op === "clear") {
+        if (existing && !planted) {
+          return json(409, { error: "harnessRefusal: that row was not planted by the harness — this door never deletes a real pipeline record", harnessRefusal: "not-planted", key });
+        }
+        await storage.delete(key);
+        return json(200, { ok: true, key, row: (await storage.get(key)) ?? null });
+      }
+      if (op !== "plant") return json(400, { error: `unknown op "${op}" for pipelineRow (plant|read|clear)` });
+
+      // A credential mentioned ANYWHERE in the body refuses the whole plant, before
+      // anything is read or written. One home: `findPlantedSecret`.
+      const leak = findPlantedSecret(body);
+      if (leak) return json(400, { error: SECRET_PLANT_REFUSAL, harnessRefusal: "secret-field", field: leak.field, why: leak.why });
+
+      if (existing && !planted) {
+        return json(409, { error: "harnessRefusal: a real pipeline row already exists for that repository — this door never overwrites one", harnessRefusal: "not-planted", key });
+      }
+      const status = body.status === "queued" ? "queued" : "installed";
+      if (body.status !== undefined && body.status !== "queued" && body.status !== "installed") {
+        return json(400, { error: 'status must be "installed" or "queued"' });
+      }
+      // CLAMPED to what this build can actually describe: 1..SCAFFOLD_VERSION. A version
+      // above the current one would make `scaffoldOutdatedReason` answer null and the row
+      // would claim to be NEWER than the app, a state no setup can produce.
+      const wantVersion = body.scaffoldVersion === undefined ? 1 : Math.trunc(Number(body.scaffoldVersion));
+      if (!Number.isFinite(wantVersion)) return json(400, { error: "scaffoldVersion must be a number" });
+      const scaffoldVersion = Math.max(1, Math.min(SCAFFOLD_VERSION, wantVersion));
+      const ageMs = Math.max(0, Math.min(7 * 24 * 3600 * 1000, Number(body.ageMs) || 0));
+      const stamp = new Date(Date.now() - ageMs).toISOString();
+
+      // Only DECLARED scaffold variables, each through the module that owns "is this
+      // variable usable" (F-541). A value the product would refuse is refused here too.
+      let scaffoldVars = null;
+      if (body.scaffoldVars !== undefined) {
+        if (!body.scaffoldVars || typeof body.scaffoldVars !== "object" || Array.isArray(body.scaffoldVars)) {
+          return json(400, { error: "scaffoldVars must be an object" });
+        }
+        const out = {};
+        for (const name of scaffoldVarNames(PIPELINE_SCAFFOLD)) {
+          const v = body.scaffoldVars[name];
+          if (v === undefined || v === null) continue;
+          const text = String(v).slice(0, 200);
+          const err = scaffoldVarError(name, text);
+          if (err) return json(400, { error: err, variable: name });
+          out[name] = text;
+        }
+        scaffoldVars = Object.keys(out).length ? out : null;
+      }
+      let developerSpaceId = null;
+      if (body.developerSpaceId !== undefined && body.developerSpaceId !== null) {
+        developerSpaceId = normalizeDeveloperSpaceId(body.developerSpaceId);
+        if (!developerSpaceId) return json(400, { error: "invalid developerSpaceId" });
+      }
+      let appId = null;
+      if (body.appId !== undefined && body.appId !== null) {
+        appId = normalizeForgeAppId(body.appId);
+        if (!appId) return json(400, { error: "invalid appId" });
+      }
+      let branch = "main";
+      if (body.branch !== undefined && body.branch !== null) {
+        branch = String(body.branch);
+        if (!/^[A-Za-z0-9._/-]{1,120}$/.test(branch)) return json(400, { error: "invalid branch" });
+      }
+
+      const row = {
+        connId,
+        repoId,
+        kind: "github",
+        scaffold: PIPELINE_SCAFFOLD,
+        scaffoldVersion,
+        status,
+        steps: [],
+        failedStep: null,
+        // NEVER PLANTABLE. See the docblock: the permission lock is the one fact a
+        // planted row must not be able to assert.
+        lockHash: null,
+        lockScopes: [],
+        branch,
+        commitSha: null,
+        installedAt: status === "installed" ? stamp : null,
+        queuedAt: stamp,
+        startedAt: null,
+        updatedAt: stamp,
+        lastRun: null,
+        requestedBy: null,
+        scaffoldVars,
+        developerSpaceId,
+        appId,
+        plantedBy: "harness",
+      };
+      await storage.set(key, row);
+      return json(200, {
+        ok: true, key, op, planted: true,
+        row: publicPipelineRow(row),
+        predicates: { outdated: pipelineOutdated(row), live: pipelineLive(row), stuck: pipelineStuck(row) },
+        currentScaffoldVersion: SCAFFOLD_VERSION,
+        effectiveAgeMs: ageMs,
+      });
+    }
+    /*
      * F-616 — THE PURGE-TOMBSTONE DOOR, and why it had to exist.
      *
      * F-575's settle window was driven live by DELETING a Virtual Administrator and
@@ -761,6 +1043,12 @@ export async function testStateTrigger(req) {
      * `purgeAgent` stamps on delete and `clearPurgeTombstone` weighs on the first prepare
      * tick. The KEY and the TTL come from `src/shared/va-keys.js`, the module that owns
      * them; nothing is retyped here.
+     *
+     * F-628 — a plant may additionally carry `turns`, the writes that landed while the
+     * agent was being deleted. They are written through the PRODUCT's own writer
+     * (`recordPurgedTurnWrites`, src/va-ledger.js), one turn per call, never by a second
+     * writer in this file — see the block below for why that distinction is the whole
+     * value of the door.
      *
      * WHY IT IS NOT A PLANTABLE PERMISSION (the objection the old driver recorded when
      * it refused to add `va_purged:*` to `kvSet`'s allow-list). A tombstone GRANTS
@@ -788,6 +1076,10 @@ export async function testStateTrigger(req) {
       if (op === "read") return json(200, { ok: true, key, row: (await storage.get(key)) ?? null });
       if (op === "clear") { await storage.delete(key); return json(200, { ok: true, key, row: (await storage.get(key)) ?? null }); }
       if (op === "plant" || op === "age") {
+        // F-628 — a write body may never name a credential. One home, shared with the
+        // F-627 pipeline door, and asked BEFORE anything is read or written.
+        const leak = findPlantedSecret(body);
+        if (leak) return json(400, { error: SECRET_PLANT_REFUSAL, harnessRefusal: "secret-field", field: leak.field, why: leak.why });
         const { getJob } = await import("./scheduled-jobs.js");
         const job = await getJob(agent);
         // A tombstone for an id that is not a live row would be unreachable litter, and
@@ -799,13 +1091,70 @@ export async function testStateTrigger(req) {
         const createdMs = Date.parse((job.createdAt == null ? "" : job.createdAt));
         const wanted = Date.now() - ageMs;
         const at = Number.isFinite(createdMs) ? Math.min(wanted, createdMs - 1000) : wanted;
-        const row = { at: new Date(at).toISOString(), agent, plantedBy: "harness" };
+        const row = {
+          at: new Date(at).toISOString(),
+          agent,
+          plantedBy: "harness",
+          // F-628 — `age` rewrites the row, so without this an age would silently ERASE
+          // the turns a plant had recorded. The carrier survives its own timestamp move.
+          ...(existing && Array.isArray(existing.turns) && existing.turns.length ? { turns: existing.turns } : {}),
+        };
         await storage.set(key, row, VA_PURGED_TTL);
+
+        /* ── F-628 — THE TURNS THAT LANDED WHILE THE AGENT WAS BEING DELETED ────────
+         * F-608's "recently deleted agents that wrote during deletion" panel returns a
+         * row ONLY when `turns[].landedWrites` is non-empty, and the sole producer of
+         * that field is `recordPurgedTurnWrites` running inside a turn that is writing
+         * to Jira at the moment the agent is deleted — a race no driver can schedule. So
+         * the panel could only ever be proven EMPTY live, and an empty list is not
+         * evidence that a populated one would render.
+         *
+         * THE WRITE GOES THROUGH THE PRODUCT'S OWN WRITER, ONE TURN PER CALL. That is
+         * the whole point: a second writer here would produce a row that merely RESEMBLES
+         * what a real race produces, and the panel would then be proven against the
+         * harness's idea of the shape rather than the engine's. `recordPurgedTurnWrites`
+         * applies its own caps, refuses when no tombstone stands, and is the thing whose
+         * output `listRecentPurges` projects.
+         *
+         * CLAMPED HERE FIRST, well inside the product's own bounds: at most five turns of
+         * at most five writes each, every string 64 characters. A tombstone GRANTS
+         * nothing — every ledger writer refuses under one — so its CONTENT grants nothing
+         * either, which is why the objection that keeps `va_purged:*` out of `kvSet` does
+         * not reach this. `at` is clamped to the last seven days and never to the future. */
+        let noted = null;
+        if (body.turns !== undefined) {
+          if (!Array.isArray(body.turns)) return json(400, { error: "turns must be an array" });
+          const { recordPurgedTurnWrites } = await import("./va-ledger.js");
+          const results = [];
+          for (const t of body.turns.slice(0, 5)) {
+            if (!t || typeof t !== "object") return json(400, { error: "each turn must be an object" });
+            const writes = (Array.isArray(t.writes) ? t.writes : [])
+              .slice(0, 5)
+              .map((w) => String(w == null ? "" : w).slice(0, 64))
+              .filter(Boolean);
+            if (!writes.length) return json(400, { error: "each turn needs at least one write string" });
+            let issueKey = null;
+            if (t.issueKey !== undefined && t.issueKey !== null && String(t.issueKey) !== "") {
+              issueKey = String(t.issueKey);
+              if (!/^[A-Z][A-Z0-9_]*-\d+$/.test(issueKey)) return json(400, { error: `turn issueKey must be an issue key (got ${issueKey.slice(0, 40)})` });
+            }
+            const wantedAt = Date.parse(t.at == null ? "" : String(t.at));
+            const now = Number.isFinite(wantedAt)
+              ? Math.max(Date.now() - 7 * 24 * 3600 * 1000, Math.min(Date.now(), wantedAt))
+              : Date.now();
+            results.push(await recordPurgedTurnWrites(storage, agent, { issueKey, landedWrites: writes, now }));
+          }
+          noted = results;
+        }
+
         return json(200, {
-          ok: true, key, row, op,
+          ok: true, key, row: (await storage.get(key)) ?? row, op,
           jobCreatedAt: job.createdAt || null,
           effectiveAgeMs: Date.now() - at,
           clampedToCreatedAt: Number.isFinite(createdMs) && wanted > createdMs - 1000,
+          // What the PRODUCT's writer said about each turn — `{ok:true, turns, writes}`
+          // or its own refusal reason. A driver grades on the writer's answer, not on ours.
+          ...(noted ? { noted } : {}),
         });
       }
       return json(400, { error: `unknown op "${op}" for vaTombstone (plant|age|read|clear)` });

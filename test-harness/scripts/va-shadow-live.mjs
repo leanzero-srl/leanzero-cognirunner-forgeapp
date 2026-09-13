@@ -469,15 +469,36 @@ async function main() {
  * THE CLEANUP GUARANTEE. `createdJobId` is set the moment the agent exists, and the
  * `finally` deletes it whatever happened above — an exception in the middle of the
  * journey must never leave an ENABLED Virtual Administrator ticking on a live site.
+ *
+ * AND THE GUARANTEE IS PROVEN, NOT ASSUMED. Two traps this block used to walk into:
+ *  - a `listVaAgents` call that THREW was caught to `null`, which read as "not listed",
+ *    which read as "already gone" — a blind query licensing a silent exit. An absence is
+ *    only evidence when the query is known to be able to see the object;
+ *  - `deleteScheduledJob`'s own `success:true` was the last word. It is the writer's
+ *    opinion of its own write, so the row is now RE-READ through `getScheduledJob`.
+ * A survivor exits non-zero with the phase named.
  */
 main()
   .catch((e) => { console.error("\nDRIVER ERROR:", e && e.message); process.exitCode = 1; })
   .finally(async () => {
     if (!createdJobId || KEEP) return;
-    const check = await invoke("listVaAgents", {}).catch(() => null);
-    const still = check && check.body && (check.body.agents || []).some((a) => a.id === createdJobId);
-    if (!still) return;
-    console.log(`\nCLEANUP — the run did not reach step 7; deleting ${createdJobId}`);
-    const del = await invoke("deleteScheduledJob", { id: createdJobId }).catch((e) => ({ body: { error: String(e.message) } }));
-    console.log(`        deleteScheduledJob: ${JSON.stringify(del.body).slice(0, 200)}`);
+    const list = await invoke("listVaAgents", {}).catch(() => null);
+    const listWorked = !!(list && list.body && Array.isArray(list.body.agents));
+    const listed = listWorked && list.body.agents.some((a) => a.id === createdJobId);
+    if (!listWorked) console.log(`\nCLEANUP — listVaAgents could not be read, so "not listed" would prove nothing; deleting ${createdJobId} regardless`);
+    else if (!listed) console.log(`\nCLEANUP — listVaAgents no longer lists ${createdJobId}; confirming with a direct read`);
+    else console.log(`\nCLEANUP — the run did not reach step 7; deleting ${createdJobId}`);
+
+    if (listed || !listWorked) {
+      const del = await invoke("deleteScheduledJob", { id: createdJobId }).catch((e) => ({ body: { error: String(e.message) } }));
+      console.log(`        deleteScheduledJob: ${JSON.stringify(del.body).slice(0, 200)}`);
+    }
+    // THE SECOND READ, on the same object, through a different call than the delete.
+    const back = await invoke("getScheduledJob", { id: createdJobId }).catch((e) => ({ body: { error: String(e.message) } }));
+    const survives = !!(back && back.body && back.body.job);
+    console.log(`        second read getScheduledJob ${createdJobId}: ${survives ? "STILL PRESENT" : "gone"}`);
+    if (survives) {
+      console.error(`\nCLEANUP FAILED — the Virtual Administrator ${createdJobId} is STILL on the instance after the delete. Remove it by hand (Admin → Scheduled jobs) before the next run.`);
+      process.exitCode = 1;
+    }
   });

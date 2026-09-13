@@ -405,8 +405,44 @@ const phaseProperty = async () => {
     { property: repoEntry || prop });
 };
 
+/*
+ * CLEANUP IS AN ASSERTION, NOT A COURTESY.
+ *
+ * WHAT WENT WRONG BEFORE: this phase clicked the Code tab and read `card.count()` in the
+ * very next statement. The React tab had not rendered yet, so the count was 0, the delete
+ * was skipped, and the phase still reported OK — the connection had to be removed BY HAND
+ * after the run. `count()` NEVER waits; it is a snapshot. Only `waitFor`/`expect` retry.
+ *
+ * THE RULE THIS PHASE NOW FOLLOWS, end to end:
+ *   1. WAIT for the thing before concluding it is absent — bounded `.waitFor({ timeout })`,
+ *      the same pattern the setup phase already uses for `.code-conn-label` / `.code-hook.set`.
+ *   2. PROVE BY A SECOND READ, never by the DOM and never by a resolver's own `removed:true`:
+ *      `listGitConnections` through the dev hook, and `gh api /repos/…/hooks` on GitHub.
+ *   3. PROVE THE NEGATIVE ON THE SAME OBJECT. Before deleting, show that the read which will
+ *      later report "gone" can SEE this exact connection while it still lives — otherwise
+ *      "listGitConnections is empty" might only mean the read is broken.
+ *   4. FAIL LOUD. Any residue is `check(..., false)`, so the phase exits non-zero with the
+ *      phase named; a cleanup that no-ops can never read as a pass again.
+ */
 const phaseCleanup = async () => {
   const done = [];
+  const labels = [state.label1, state.label2].filter(Boolean);
+  const hookIds = [state.hook1, state.hookPre].filter(Boolean).map(String);
+
+  /* ── the POSITIVE CONTROL, first: can the reads that will judge "gone" see these now? ── */
+  const connsBefore = (await call("listGitConnections")).connections || [];
+  if (labels.length) {
+    const visible = labels.filter((l) => connsBefore.some((c) => c.label === l));
+    check("cleanup: listGitConnections can SEE the connections this run created (the control every \"gone\" below rests on)",
+      visible.length === labels.length, { expected: labels, visible, totalRows: connsBefore.length });
+  }
+  const hooksBefore = ghHooks();
+  if (hookIds.length) {
+    const visible = hookIds.filter((id) => hooksBefore.some((h) => String(h.id) === id));
+    check("cleanup: GitHub can SEE the webhooks this run created before the delete",
+      visible.length === hookIds.length, { expected: hookIds, visible, totalOnRepo: hooksBefore.length });
+  }
+
   if (state.pr) { try { gh(["api", "-X", "PATCH", `/repos/${REPO}/pulls/${state.pr}`, "--input", "-"], { state: "closed" }); done.push(`pr#${state.pr} closed`); } catch (e) { done.push(`pr close failed: ${e.message.slice(0, 120)}`); } }
   if (state.branch) { try { execFileSync("gh", ["api", "-X", "DELETE", `/repos/${REPO}/git/refs/heads/${state.branch}`], { env: process.env }); done.push("branch deleted"); } catch (e) { done.push(`branch delete failed: ${e.message.slice(0, 120)}`); } }
   for (const id of [state.hook1, state.hookPre]) {
@@ -416,30 +452,66 @@ const phaseCleanup = async () => {
   if (state.listener) { try { await call("deleteListener", { id: state.listener }); done.push("listener deleted"); } catch (e) { done.push(`listener: ${e.message.slice(0, 120)}`); } }
   // The connections go through the UI, because deleteGitConnection is not on the hook's
   // allow-list either — the same rule that kept the write half out of the harness.
-  const labels = [state.label1, state.label2].filter(Boolean);
+  const clicked = [];
   if (labels.length) {
     const { ctx, frame } = await openAdmin("Code");
     try {
+      // THE TAB MUST RENDER BEFORE ANYTHING IS COUNTED. Wait for the Code tab's own list
+      // to resolve to one of its three terminal states (rows / empty / load error) before
+      // asking any question about a card. This is the line whose absence broke cleanup.
+      await frame.locator(".code-conns, .empty-state, .load-error").first()
+        .waitFor({ state: "visible", timeout: 60000 }).catch(() => {});
       for (const label of labels) {
         const card = frame.locator(".code-conn").filter({ has: frame.locator(".code-conn-label", { hasText: label }) });
-        if (await card.count()) {
-          await card.locator(".code-conn-actions button.btn-danger").click();
-          // The app's OWN dialog (static/admin-panel/src/confirmDialog.js) - there is no
-          // native confirm anywhere in this app, so the confirm is `.cr-confirm .btn-danger`.
-          await frame.locator(".cr-confirm-actions button.btn-danger").click();
-          await card.waitFor({ state: "detached", timeout: 30000 }).catch(() => {});
-          done.push(`connection "${label}" deleted`);
+        let rendered = true;
+        try { await card.first().waitFor({ state: "visible", timeout: 30000 }); } catch { rendered = false; }
+        if (!rendered) {
+          // NOT "nothing to do". The app's own read said this connection exists, so a card
+          // that never appears is a finding, not a shortcut past the delete.
+          const stillThere = connsBefore.some((c) => c.label === label);
+          check(`cleanup: the Code tab rendered the connection card for "${label}" so it could be deleted`,
+            !stillThere, { label, listGitConnectionsSawIt: stillThere });
+          done.push(`connection "${label}": card never rendered — NOT deleted`);
+          continue;
         }
+        await card.locator(".code-conn-actions button.btn-danger").click();
+        // The app's OWN dialog (static/admin-panel/src/confirmDialog.js) - there is no
+        // native confirm anywhere in this app, so the confirm is `.cr-confirm .btn-danger`.
+        await frame.locator(".cr-confirm-actions button.btn-danger").click();
+        let detached = true;
+        try { await card.waitFor({ state: "detached", timeout: 30000 }); } catch { detached = false; }
+        clicked.push(label);
+        // The DOM is only ever a hint here; the verdict is the second read below.
+        done.push(`connection "${label}": delete clicked (card detached: ${detached})`);
       }
     } finally { await ctx.close(); }
   }
+
+  /* ── THE SECOND READ — through the app and through GitHub, never through the DOM ───── */
   const conns = (await call("listGitConnections")).connections || [];
-  check("listGitConnections is empty again", conns.length === 0, { remaining: conns.map((c) => c.label) });
+  const connResidue = labels.filter((l) => conns.some((c) => c.label === l));
+  check("cleanup: every connection this run created is gone from listGitConnections",
+    connResidue.length === 0,
+    { stillPresent: connResidue, clicked, otherRowsNotOurs: conns.filter((c) => !labels.includes(c.label)).map((c) => c.label) });
+
   const hooks = ghHooks();
-  check("the repository has no webhooks left", hooks.length === 0, { remaining: hooks.length });
+  const hookResidue = hookIds.filter((id) => hooks.some((h) => String(h.id) === id));
+  // Also by URL: a hook still pointing at one of our connections is residue even if its id
+  // is not one we recorded (a retried setup can have created a row we never saw).
+  const urlResidue = hooks.filter((h) => h.config && [state.conn1, state.conn2].filter(Boolean).some((c) => h.config.url === hookUrl(c)));
+  check("cleanup: every GitHub webhook this run created is gone from the repository",
+    hookResidue.length === 0 && urlResidue.length === 0,
+    { stillPresentById: hookResidue, stillPointingAtOurConnections: urlResidue.length, totalOnRepo: hooks.length });
+
   const listeners = (await call("getListeners")).listeners || [];
-  check("the premade listener is gone", !listeners.some((l) => l.id === state.listener), {});
+  check("cleanup: the premade listener is gone from getListeners",
+    !state.listener || !listeners.some((l) => l.id === state.listener), { listener: state.listener });
+
   console.log("CLEANUP", JSON.stringify(done, null, 2));
+  if (failures) {
+    console.error('\nCLEANUP FAILED — phase "cleanup" left residue on the instance or on the repository.');
+    console.error("Read the FAIL lines above: whatever is named there is still live and must be removed before the next run.");
+  }
 };
 
 const PHASES = { setup: phaseSetup, idem: phaseIdem, rotate: phaseRotate, listener: phaseListener, pr: phasePr, rerun: phaseRerun, property: phaseProperty, cleanup: phaseCleanup };

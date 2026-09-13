@@ -343,16 +343,33 @@ async function main() {
 
 main()
   .catch((e) => { console.error("\nDRIVER ERROR:", e && e.message); process.exitCode = 1; })
+  /*
+   * CLEANUP IS AN ASSERTION. A delete resolver's own `success:true` / `removed:true` is
+   * the same class of evidence as "the step returned success" — it is the writer's
+   * opinion of its own write. Every removal below is therefore RE-READ through a
+   * different call (getListener / getScheduledJob / getApiTokens) and a survivor makes
+   * the process exit non-zero with the phase named, instead of scrolling past.
+   */
   .finally(async () => {
     if (KEEP) { console.log("\nCLEANUP SKIPPED (--keep)"); return; }
     console.log("\nCLEANUP");
+    const residue = [];
     for (const id of cleanup.listenerIds) {
       const r = await invoke("deleteListener", { id }).catch((e) => ({ body: { error: e.message } }));
       console.log(`        deleteListener ${id}: ${JSON.stringify(r.body).slice(0, 120)}`);
+      const back = await invoke("getListener", { id }).catch(() => null);
+      const still = !!(back && back.body && back.body.listener);
+      console.log(`        second read getListener ${id}: ${still ? "STILL PRESENT" : "gone"}`);
+      if (still) residue.push(`listener ${id}`);
     }
     if (cleanup.agentId) {
-      const r = await invoke("deleteScheduledJob", { id: cleanup.agentId }).catch((e) => ({ body: { error: e.message } }));
-      console.log(`        deleteScheduledJob ${cleanup.agentId}: ${JSON.stringify(r.body).slice(0, 120)}`);
+      const id = cleanup.agentId;
+      const r = await invoke("deleteScheduledJob", { id }).catch((e) => ({ body: { error: e.message } }));
+      console.log(`        deleteScheduledJob ${id}: ${JSON.stringify(r.body).slice(0, 120)}`);
+      const back = await invoke("getScheduledJob", { id }).catch(() => null);
+      const still = !!(back && back.body && back.body.job);
+      console.log(`        second read getScheduledJob ${id}: ${still ? "STILL PRESENT" : "gone"}`);
+      if (still) residue.push(`agent ${id}`);
     }
     for (const id of cleanup.tokenIds) {
       const r = await invoke("revokeApiToken", { id }).catch((e) => ({ body: { error: e.message } }));
@@ -360,5 +377,21 @@ main()
     }
     const left = await invoke("getApiTokens", {}).catch(() => null);
     const rows = (left && left.body && left.body.tokens) || [];
-    console.log(`        API tokens still live: ${rows.filter((t) => !t.revokedAt).length}`);
+    if (cleanup.tokenIds.length) {
+      if (!rows.length) {
+        // PROVE THE NEGATIVE: an empty list is not evidence of revocation if the read
+        // cannot see tokens at all. It saw them at mint time only through createApiToken.
+        console.log("        getApiTokens returned NO rows at all — cannot judge revocation from an empty list");
+        residue.push(`token revocation unproven (getApiTokens returned nothing; ids ${cleanup.tokenIds.join(", ")})`);
+      } else {
+        const live = cleanup.tokenIds.filter((id) => rows.some((t) => t.id === id && !t.revokedAt));
+        console.log(`        second read getApiTokens: ${rows.length} row(s); ours still live: ${live.join(", ") || "none"}`);
+        if (live.length) residue.push(`api token(s) ${live.join(", ")}`);
+      }
+    }
+    console.log(`        API tokens still live overall: ${rows.filter((t) => !t.revokedAt).length}`);
+    if (residue.length) {
+      console.error(`\nCLEANUP FAILED — these objects survived their delete and are still live on the instance:\n        ${residue.join("\n        ")}`);
+      process.exitCode = 1;
+    }
   });

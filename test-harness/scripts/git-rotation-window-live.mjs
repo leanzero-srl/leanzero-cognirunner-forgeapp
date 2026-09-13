@@ -61,6 +61,8 @@ const ADMIN = requireEnv("HARNESS_ADMIN_ACCOUNT_ID");
 const STATE = new URL("../results/git-webhook-setup/state.json", import.meta.url).pathname;
 
 let passes = 0, fails = 0, unproven = 0;
+/** The objects this script BORROWS from git-webhook-setup-live.mjs; checked in the finally. */
+const borrowed = { connId: null, hookId: null };
 const PASS = (s) => { passes++; console.log(`  PASS  ${s}`); };
 const FAIL = (s) => { fails++; console.log(`  FAIL  ${s}`); };
 const NV = (s) => { unproven++; console.log(`  N/V   ${s}`); };
@@ -94,6 +96,7 @@ async function main() {
   const st = JSON.parse(fs.readFileSync(STATE, "utf8"));
   const connId = st.conn1, hookId = st.hook1;
   if (!connId || !hookId) throw new Error("the setup state has no conn1/hook1");
+  borrowed.connId = connId; borrowed.hookId = hookId;
   info(`connection ${connId}, GitHub hook ${hookId}, repo ${REPO}`);
 
   /* ── STEP 1 — the banner field, as the Code tab reads it ─────────────────── */
@@ -166,4 +169,45 @@ async function main() {
   if (fails) process.exitCode = 1;
 }
 
-main().catch((e) => { console.error("\nDRIVER ERROR:", e && e.message); process.exitCode = 1; });
+/*
+ * THIS SCRIPT CREATES NOTHING, SO IT DELETES NOTHING — the connection and the GitHub hook
+ * belong to `git-webhook-setup-live.mjs`, whose `cleanup` phase removes them. What it CAN
+ * do is damage that borrowed fixture (it fires real deliveries at a real hook), and the
+ * cheapest way for that damage to go unnoticed is for this script to simply end.
+ *
+ * So the same rule the cleanup phases now follow applies here: PROVE BY A SECOND READ that
+ * the fixture this run borrowed is still intact — `listGitConnections` through the hook and
+ * `gh api /repos/…/hooks` on GitHub — and FAIL LOUD, named, if it is not. A missing hook
+ * here means the NEXT script in the chain will fail for a reason that started in this one.
+ */
+main()
+  .catch((e) => { console.error("\nDRIVER ERROR:", e && e.message); process.exitCode = 1; })
+  .finally(async () => {
+    if (!borrowed.connId || !borrowed.hookId) return;
+    console.log("\nFIXTURE CHECK - this script owns no objects; it proves it did not break the ones it borrowed");
+    const problems = [];
+    const conns = await invoke("listGitConnections", {}).catch((e) => ({ body: { error: e.message } }));
+    const rows = (conns.body && conns.body.connections) || null;
+    if (!Array.isArray(rows)) {
+      problems.push(`listGitConnections could not be read (${JSON.stringify(conns.body).slice(0, 160)}), so the connection's survival is UNPROVEN`);
+    } else {
+      const row = rows.find((c) => c.id === borrowed.connId);
+      const rec = row && row.webhooks && row.webhooks[REPO];
+      console.log(`        connection ${borrowed.connId}: ${row ? "present" : "GONE"}; webhook record for ${REPO}: ${rec ? "present" : "GONE"}`);
+      if (!row) problems.push(`the borrowed connection ${borrowed.connId} is gone from listGitConnections`);
+      else if (!rec) problems.push(`the borrowed connection no longer records a webhook for ${REPO}`);
+    }
+    let hooks = null;
+    try { hooks = gh(["api", `/repos/${REPO}/hooks`]); } catch (e) { problems.push(`GitHub's hook list could not be read (${String(e.message).slice(0, 120)}), so the hook's survival is UNPROVEN`); }
+    if (Array.isArray(hooks)) {
+      const h = hooks.find((x) => String(x.id) === String(borrowed.hookId));
+      console.log(`        GitHub hook ${borrowed.hookId}: ${h ? `present, active=${h.active} signed=${h.config && h.config.secret === "********"}` : "GONE"}`);
+      if (!h) problems.push(`the borrowed GitHub hook ${borrowed.hookId} is gone from ${REPO}`);
+      else if (!h.active || !(h.config && h.config.secret === "********")) problems.push(`the borrowed hook ${borrowed.hookId} is no longer active-and-signed (active=${h.active})`);
+    }
+    if (problems.length) {
+      console.error(`\nFIXTURE CHECK FAILED — the shared webhook fixture is not as this run found it:\n        ${problems.join("\n        ")}`);
+      console.error("        Re-run `node scripts/git-webhook-setup-live.mjs setup` (and `... rotate`) before anything else uses it.");
+      process.exitCode = 1;
+    }
+  });

@@ -598,6 +598,11 @@ export async function testStateTrigger(req) {
         // harness that can run a VA tick is a harness that can be turned into one.
         // `vaWizardStep` is also absent: it CREATES an agent and it calls a model.
         "listVaAgents", "getVaStatus", "listVaDrafts", "listVaEffects", "getVaMemory",
+        // F-608 — `getVaRecentPurges` joins them on the same terms: it is a READ over
+        // F-595's purge tombstones (which agents wrote to Jira while being deleted), it
+        // takes no id, it changes nothing and it clears nothing — `clearPurgeTombstone`
+        // stays the only authority on whether a tombstone may go, and it is not here.
+        "getVaRecentPurges",
         // 1.4 commit 2 — the git-connection READ surfaces only, so a live pass can
         // prove the admin gate and the "a resolver never returns a token" contract
         // on real data. DELIBERATELY ABSENT: saveGitConnection, deleteGitConnection,

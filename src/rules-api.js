@@ -51,6 +51,7 @@
  *   PUT    ?resource=agents&id=                      merge-update a VA    (admin)
  *   DELETE ?resource=agents&id=                      delete a VA          (admin)
  *   GET    ?resource=agents&id=&part=drafts|effects|memory      (admin)
+ *   GET    ?resource=agents&part=purges                         (admin; no id, site-wide)
  *   PUT    ?resource=agents&id=&part=memory                     (admin)
  *   POST   ?resource=agents&id=&action=pause|resume|tick|post   (admin)
  *   POST   ?resource=agents&id=&action=approve|reject           (admin; {itemKey, stagedAt})
@@ -713,6 +714,26 @@ const handleAgents = async ({ method, id, action, part, body, who, req }) => {
     return row && row.mode === "va" ? row : null;
   };
 
+  /* F-608 — `?resource=agents&part=purges`, the ONE part with NO id.
+   *
+   * Every other part is a slice of an agent that still exists. This one is the
+   * opposite: the agents that were DELETED mid-turn and had already written to Jira
+   * when they went, read off F-595's tombstones. There is no id to give because the
+   * agent is gone, so it is answered here, ABOVE the "id required" gate and above the
+   * no-id list — otherwise `part=purges` would silently return the agent list.
+   *
+   * ADMIN, the same floor as `part=effects`: it names what an agent did to Jira.
+   *
+   * An id WITH it is refused rather than ignored: a caller who passed one is asking a
+   * question this part cannot answer (the tombstones are not indexed per agent), and a
+   * silently site-wide answer to a per-agent request is the worse of the two. */
+  if (part === "purges") {
+    const r = floor("admin", "review what a deleted Virtual Administrator wrote"); if (r) return r;
+    if (method !== "GET") return json(405, { error: `method ${method} not allowed` });
+    if (id) return json(400, { error: "part=purges takes no id; it lists site-wide purges of agents that no longer exist" });
+    return vaJson(await VA.listRecentPurges({ limit: q(req, "limit") }));
+  }
+
   if (method === "GET" && !id) {
     const r = floor("editor", "list Virtual Administrators"); if (r) return r;
     return vaJson(await VA.listAgents({}));
@@ -734,7 +755,7 @@ const handleAgents = async ({ method, id, action, part, body, who, req }) => {
       if (method === "PUT") return vaJson(await VA.saveMemory({ jobId: id, memory: body && body.memory, constraints: body && body.constraints }));
       return json(405, { error: `method ${method} not allowed` });
     }
-    return json(400, { error: `unknown part "${part}" for agents`, parts: ["drafts", "effects", "memory"] });
+    return json(400, { error: `unknown part "${part}" for agents`, parts: ["drafts", "effects", "memory", "purges (no id)"] });
   }
 
   if (method === "GET") {

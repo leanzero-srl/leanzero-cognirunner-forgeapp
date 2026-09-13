@@ -56,6 +56,22 @@ for (const f of files) {
   ok(!badImport, `src/shared/${f} has no non-relative import (offender: ${badImport || "none"})`);
 }
 
+// F-419 — the identifier-leak TABLE has ONE home, and it is a dependency-free shared
+// module, because a second caller is coming: the knowledge bake scans for the same
+// identifiers the agent's web search does. A copy of the table is a second answer to "is a
+// bare 24-hex string an account id?" — which is F-406, answered late once already.
+{
+  const leak = await import(pathToFileURL(path.join(sharedDir, "identifier-leak.js")).href);
+  for (const name of ["IDENTIFIER_PATTERNS", "IDENTIFIER_KINDS", "NON_KEY_PREFIXES", "findIdentifierLeak", "matchesTenantIssueKey", "normalizeProjectKeys"]) {
+    ok(typeof leak[name] !== "undefined", `identifier-leak.js exports ${name}`);
+  }
+  const toolSrc = readFileSync(path.join(sharedDir, "../web-search-tool.js"), "utf8");
+  ok(/from\s+"\.\/shared\/identifier-leak\.js"/.test(toolSrc), "src/web-search-tool.js imports the table from that one home");
+  ok(!/IDENTIFIER_PATTERNS = Object\.freeze/.test(toolSrc), "…and does not keep a copy of it");
+  const indexSrc = readFileSync(path.join(sharedDir, "../index.js"), "utf8");
+  ok(/from\s+"\.\/shared\/identifier-leak\.js"/.test(indexSrc), "src/index.js takes the project-key memo mechanics from there too");
+}
+
 // F-175 — the memory caps and the refusal sentence have ONE home, and it is the
 // frontend-importable shared module. src/memories.js imports @forge/kvs at load, so a
 // number declared there can only reach the screenshot-harness bridge / any UI by being

@@ -51,7 +51,8 @@ import { minuteKey, effectiveBudget, budgetDecision, inlineShouldQueue, AI_PLATF
 import { claimRuleExecution } from "./shared/execution-claim.js";
 import { isKeyConflict, safeKeyPart } from "./shared/kvs-keys.js";
 import { gitDeliveryClaimKey, GIT_DELIVERY_CLAIM_TTL } from "./shared/git-ids.js";
-import { createProjectKeysMemo, PROJECT_KEY_CAP } from "./web-search-tool.js";
+// The project-key memo mechanics + the cap live with the leak table they serve (F-419).
+import { createProjectKeysMemo, PROJECT_KEY_CAP } from "./shared/identifier-leak.js";
 import { readHeader } from "./shared/http-headers.js";
 import { providerKeySlot, providerModelSlot, providerAgentModelSlot, providerBaseUrlSlot } from "./shared/provider-slots.js";
 // GIT CONNECTIONS (1.4 commit 2). The behaviour — key names, caps, the security

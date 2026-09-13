@@ -190,3 +190,33 @@ export const vaCompactClaimKey = (agent, tickId) =>
  */
 export const vaCompactBackoffKey = (agent) =>
   assertKvsKey(`va_compact_backoff:${part(agent)}`);
+
+/**
+ * `va_purged:{agent}` — F-553. THE TOMBSTONE. Written FIRST by `purgeAgent`, read by every
+ * ledger writer and at the entry and write seam of every VA task.
+ *
+ * WHY A ROW AND NOT A BETTER-ORDERED PURGE. F-469's purge is raced by the agent's own
+ * in-flight turns: `executeVaItemTask` asks whether the agent exists at the START of a turn
+ * and then spends up to two minutes on a model call, so a turn already past that check when
+ * `deleteScheduledJob` runs finishes normally and writes `va_item:{agent}:{key}` plus a
+ * REBUILT `va_index:{agent}` — stamped after the purge, for an agent that no longer exists,
+ * and the index carries no TTL. Reproduced live on staging twice, on two agents. There is no
+ * ordering that fixes this from the delete side: the delete runs in a 25 s resolver and
+ * cannot wait for a 120 s consumer to drain. So the purge leaves a marker that outlives the
+ * flight, and the writers ask.
+ *
+ * THE TTL IS 3 DAYS, and the number is derived, not chosen: the longest thing that can still
+ * be in flight for a purged agent is a queued task under its own claim, and `VA_CLAIM_TTL` is
+ * 2 days — one day on top of that covers the long consumer's 120 s and any redelivery inside
+ * the claim window with room to spare. Shorter than the claim TTL would reopen the race at
+ * exactly the horizon the claims were sized for.
+ *
+ * IT IS CLEARED, NOT ONLY EXPIRED (F-512's shape). An agent id can come BACK — `normalizeJob`
+ * accepts a caller-supplied `src.id`, which is the import/restore path — and a re-created
+ * agent inheriting a dead one's tombstone could not write a single row for three days. So the
+ * first prepare tick clears it, but ONLY when the tombstone predates the job's `createdAt`:
+ * that comparison is what distinguishes a genuinely re-created job from a tick of the DELETED
+ * job that is still in flight, which must not be allowed to unlock the ledger it is racing.
+ */
+export const VA_PURGED_TTL = days(3);
+export const vaPurgedKey = (agent) => assertKvsKey(`va_purged:${part(agent)}`);

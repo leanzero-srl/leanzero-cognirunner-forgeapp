@@ -149,7 +149,16 @@ const CACHE_READ_PROVIDERS = new Set(["anthropic", "managed"]);
 const reportPromptCacheDefect = (provider, out, log) => {
   if (!provider || !CACHE_READ_PROVIDERS.has(String(provider))) return;
   if (out.rounds < 2 || out.usage.cacheReadTokens > 0) return;
-  const line = `DEFECT: provider "${provider}" reported 0 cache-read tokens across ${out.rounds} rounds — the stable prompt prefix is being re-billed in full every round (the prefix changed between rounds, the prompt is under the model's minimum cacheable size, or the cache entry expired).`;
+  // F-643 — "NO MARK WAS EMITTED" IS A NAMED CAUSE, not a guess. The adapters report how
+  // many `cache_control` markers each request actually carried (`ai.cacheMarks`), summed
+  // across the turn's rounds. Zero means the request asked for no caching at all, which no
+  // amount of prefix stability could have fixed — and it is exactly what a boundary landing
+  // on an unmarkable message used to produce silently. Naming it keeps the reader off the
+  // three causes below, all of which would be wrong.
+  const causes = out.usage.cacheMarksEmitted === 0
+    ? "no cache breakpoint was emitted on any round — the request asked for no caching"
+    : "the prefix changed between rounds, the prompt is under the model's minimum cacheable size, or the cache entry expired";
+  const line = `DEFECT: provider "${provider}" reported 0 cache-read tokens across ${out.rounds} rounds — the stable prompt prefix is being re-billed in full every round (${causes}).`;
   log(line);
   console.warn(`[agent-loop] ${line}`);
 };
@@ -512,7 +521,10 @@ export const runAgentLoop = async ({
     // `firstRoundCacheReadTokens` is the ONLY number that can answer the CROSS-TURN
     // question (F-550): rounds 2+ cache against round 1 of this same turn, so a total
     // says nothing about whether this turn met the previous one's prefix.
-    usage: { tokens: 0, aiTimeMs: 0, cacheReadTokens: 0, firstRoundCacheReadTokens: 0 },
+    // `cacheMarksEmitted` is the number of cache_control markers the ADAPTERS actually put
+    // on the request, summed over the rounds (F-643) — 0 across a whole turn is a cause
+    // reportPromptCacheDefect can name instead of inferring one.
+    usage: { tokens: 0, aiTimeMs: 0, cacheReadTokens: 0, firstRoundCacheReadTokens: 0, cacheMarksEmitted: 0 },
   };
   for (let round = 0; round <= rounds; round++) {
     if (Date.now() >= deadlineMs - 3000) { out.error = "Time budget exhausted before the agent finished"; out.endedBy = "deadline"; log(`TIMEOUT: ${out.error}`); break; }
@@ -526,6 +538,7 @@ export const runAgentLoop = async ({
       out.error = `AI call failed: ${String(e && e.message).slice(0, 300)}`; out.endedBy = "provider-error"; log(`ERROR: ${out.error}`); break;
     }
     out.usage.aiTimeMs += Date.now() - t0;
+    out.usage.cacheMarksEmitted += Number(ai && ai.cacheMarks) || 0;
     if (!ai || !ai.ok) { out.error = `AI provider error (${ai && ai.status}): ${String((ai && ai.error) || "").slice(0, 300)}`; out.endedBy = "provider-error"; log(`ERROR: ${out.error}`); break; }
     if (ai.data && ai.data.usage) {
       out.usage.tokens += Number(ai.data.usage.total_tokens) || 0;

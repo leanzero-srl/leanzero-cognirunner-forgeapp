@@ -43,6 +43,7 @@ const extract = (decl) => {
 };
 
 const fnSrc = extract("const convertContentBlock = (block) =>")
+  + "\n" + extract("const canCarryCacheBreakpoint = (msg) =>")
   + "\n" + extract("const cacheBreakpointIndices = ({ messages, boundaries")
   + "\n" + extract("const callAnthropicChat = async ({ apiKey, model, messages");
 
@@ -221,6 +222,61 @@ install();
   await callAnthropicChat({ apiKey: "k", model: "m", messages: baseMessages(), baseUrl: "https://x", cachePrefix: 2, turnPrefix: 2 });
   ok(JSON.stringify(lastBody) === legacy, "two coinciding boundaries emit exactly what the one-boundary caller emitted");
   ok(countCacheControl(lastBody) === 2, "...still two breakpoints, at the same places");
+}
+
+/* ===================================================================================
+ * F-643 - ONE DEFINITION OF "MARKABLE". The placement helper chose the boundary message
+ * by ROLE; the emitter then applied a SECOND test the helper knew nothing about (empty
+ * content) and, when it failed, DROPPED the mark instead of walking back. A thread whose
+ * stored history ends on an empty assistant turn therefore sent its CROSS-TURN boundary
+ * with no breakpoint at all, and every later turn re-billed the whole history.
+ * Reproduced before the cut: marks at [2] only, against [1,2] for a non-empty tail.
+ * =================================================================================== */
+console.log("\n== 9. F-643 an EMPTY assistant tail: the cross-turn boundary walks back and is marked ==");
+install();
+{
+  const emptyTail = [
+    { role: "system", content: "STABLE SYSTEM PROMPT" },
+    { role: "system", content: "knowledge" },
+    { role: "user", content: "turn 1 words" },
+    { role: "assistant", content: "" },
+    { role: "user", content: "turn 2 words" },
+  ];
+  const res = await callAnthropicChat({ apiKey: "k", model: "m", messages: emptyTail, baseUrl: "https://x", cachePrefix: 4, turnPrefix: 5 });
+  // filteredMessages: source 2,3,4 -> anthropic 0,1,2. Index 1 is the empty assistant, which
+  // cannot carry a marker, so the cross-turn boundary belongs on anthropic 0 (turn 1 words).
+  ok(JSON.stringify(marked(lastBody)) === "[0,2]",
+    `THE FINDING: the cross-turn mark walks back to the last markable message instead of vanishing, got ${JSON.stringify(marked(lastBody))}`);
+  ok(countCacheControl(lastBody) === 3, `three breakpoints (system + both boundaries), got ${countCacheControl(lastBody)}`);
+  ok(res.cacheMarks === 2, `the adapter reports the 2 MESSAGE marks it emitted, got ${res.cacheMarks}`);
+}
+
+console.log("\n== 9b. F-643 control: a non-empty tail is unchanged by the cut ==");
+install();
+{
+  const nonEmptyTail = [
+    { role: "system", content: "STABLE SYSTEM PROMPT" },
+    { role: "system", content: "knowledge" },
+    { role: "user", content: "turn 1 words" },
+    { role: "assistant", content: "turn 1 answer" },
+    { role: "user", content: "turn 2 words" },
+  ];
+  await callAnthropicChat({ apiKey: "k", model: "m", messages: nonEmptyTail, baseUrl: "https://x", cachePrefix: 4, turnPrefix: 5 });
+  ok(JSON.stringify(marked(lastBody)) === "[1,2]",
+    `the control still marks the end of the history, got ${JSON.stringify(marked(lastBody))}`);
+}
+
+console.log("\n== 9c. F-643 nothing markable before the boundary: no mark, and cacheMarks says so ==");
+install();
+{
+  const allEmpty = [
+    { role: "system", content: "STABLE SYSTEM PROMPT" },
+    { role: "assistant", content: "" },
+    { role: "user", content: "" },
+  ];
+  const res = await callAnthropicChat({ apiKey: "k", model: "m", messages: allEmpty, baseUrl: "https://x", cachePrefix: 2, turnPrefix: 3 });
+  ok(marked(lastBody).length === 0, "no message mark is invented on a message with no block to carry it");
+  ok(res.cacheMarks === 0, `cacheMarks is 0, which is the cause reportPromptCacheDefect names, got ${res.cacheMarks}`);
 }
 
 console.log(failures === 0 ? "\nALL PASS" : `\n${failures} FAILURE(S)`);

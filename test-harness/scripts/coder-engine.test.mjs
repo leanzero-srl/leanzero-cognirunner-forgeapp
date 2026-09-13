@@ -1219,11 +1219,15 @@ const placementRule = await (async () => {
     if (!m) throw new Error(`could not lift ${what} out of src/index.js`);
     return m[0].replace(/^const [A-Za-z]+ = /, "").replace(/;\s*$/, "");
   };
+  const mp = grab(/const canCarryCacheBreakpoint = \(msg\) => \{[\s\S]*?\n\};/, "canCarryCacheBreakpoint");
   const mb = grab(/const markCacheBreakpoint = \(msg\) => \{[\s\S]*?\n\};/, "markCacheBreakpoint");
   const mi = grab(/const cacheBreakpointIndices = \(\{ messages, boundaries[\s\S]*?\n\};/, "cacheBreakpointIndices");
   const mo = grab(/const markOpenRouterCacheBreakpoints = \(messages, prefixCount, turnCount\) => \{[\s\S]*?\n\};/, "markOpenRouterCacheBreakpoints");
   // eslint-disable-next-line no-new-func
-  return new Function(`const markCacheBreakpoint = ${mb};\nconst cacheBreakpointIndices = ${mi};\nreturn ${mo};`)();
+  const fn = new Function(`const canCarryCacheBreakpoint = ${mp};\nconst markCacheBreakpoint = ${mb};\nconst cacheBreakpointIndices = ${mi};\nreturn ${mo};`)();
+  // F-643 — the marker returns { messages, marks }; this drives the placement, so it reads
+  // the array and the emitted-mark count is asserted where it is the point.
+  return Object.assign((...a) => fn(...a).messages, { raw: fn });
 })();
 
 const markedIndices = (req) => placementRule(req.messages, req.cachePrefix, req.turnPrefix)

@@ -13626,21 +13626,43 @@ const callAIChat = async (opts) => {
 };
 
 /**
+ * CAN THIS MESSAGE CARRY A CACHE BREAKPOINT — the ONE definition of "markable", read by
+ * the placement helper AND by both emitters (F-643).
+ *
+ * `cache_control` is a BLOCK-level marker, so a message needs a block to hang it on: a
+ * non-empty string content (widened to one text block on the way out) or an array with at
+ * least one block. A message with no content at all — an assistant turn that is only
+ * `tool_calls`, or the empty-prose turn F-644 stopped storing — cannot carry one, because
+ * inventing an empty text block would change the conversation the model sees.
+ *
+ * THIS IS WHY IT IS A SEPARATE FUNCTION RATHER THAN AN `if` IN EACH EMITTER. Before F-643
+ * the helper decided markability by ROLE and each emitter then applied this second,
+ * undeclared test — and when it failed the emitter DROPPED the mark instead of walking
+ * back to the previous markable message. An empty assistant turn at the tail of a thread's
+ * history therefore left the CROSS-TURN boundary with no breakpoint in either adapter, and
+ * every later turn re-billed the whole history at full input price. One predicate, passed
+ * into the placement helper as `isMarkable`, is what makes the walk-back possible.
+ */
+const canCarryCacheBreakpoint = (msg) => {
+  if (!msg) return false;
+  if (typeof msg.content === "string") return msg.content.length > 0;
+  if (Array.isArray(msg.content)) return msg.content.length > 0;
+  return false;
+};
+
+/**
  * Put an Anthropic-style `cache_control` breakpoint on the LAST content block of a
  * message, returning a NEW message (the caller's array is never mutated — the same
  * messages are re-sent next round and a mutation would compound markers).
  *
- * A string `content` is widened to the parts form, because `cache_control` is a
- * BLOCK-level marker and a bare string has no block to carry it. A message with no
- * textual content at all (an assistant turn that is only `tool_calls`) is returned
- * unchanged: there is nothing to cache and an empty text block would change the
- * conversation the model sees.
+ * A string `content` is widened to the parts form. A message that cannot carry a marker
+ * (`canCarryCacheBreakpoint`) is returned unchanged — the SAME predicate the placement
+ * helper uses, so a mark is never placed here and then silently lost.
  */
 const markCacheBreakpoint = (msg) => {
-  if (!msg) return msg;
+  if (!canCarryCacheBreakpoint(msg)) return msg;
   const cc = { type: "ephemeral" };
   if (typeof msg.content === "string") {
-    if (!msg.content) return msg;
     return { ...msg, content: [{ type: "text", text: msg.content, cache_control: cc }] };
   }
   if (Array.isArray(msg.content) && msg.content.length > 0) {
@@ -13667,11 +13689,16 @@ const markCacheBreakpoint = (msg) => {
  * The two coincide for every caller that knows only one of them, and that case stays
  * BYTE-IDENTICAL — same single mark, at the same index.
  *
- * A boundary is placed on the LAST MARKABLE message at or before it (`isMarkable` is how
- * the Anthropic adapter skips the system messages it hoists out of the array); a boundary
- * with no markable message before it places NOTHING rather than drifting onto a message
- * that is not a boundary. Over the budget, the LARGEST index is dropped first — the
- * cross-turn mark is the one that pays across turns and it always sits earlier.
+ * A boundary is placed on the LAST MARKABLE message at or before it, and MARKABLE MEANS
+ * EXACTLY ONE THING (F-643): `canCarryCacheBreakpoint` — a message with a block to hang the
+ * marker on — narrowed by the adapter's own role rule where it has one (the Anthropic
+ * adapter skips the system messages it hoists out of the array). The emitters do NOT
+ * re-test: they were the second, disagreeing definition, and where they disagreed they
+ * dropped the boundary's mark instead of walking back, so a thread whose history ended on
+ * an empty assistant turn lost its CROSS-TURN breakpoint in both adapters. A boundary with
+ * no markable message before it places NOTHING rather than drifting onto a message that is
+ * not a boundary. Over the budget, the LARGEST index is dropped first — the cross-turn
+ * mark is the one that pays across turns and it always sits earlier.
  *
  * Counts are the caller's declaration, clamped to the array length here; a caller that
  * over-declares can only cost a cache miss, never corrupt the conversation.
@@ -13707,22 +13734,30 @@ const cacheBreakpointIndices = ({ messages, boundaries, isMarkable = () => true,
  *
  * Duplicates collapse, so a caller that declares one boundary emits exactly what it did
  * before.
+ *
+ * Returns `{ messages, marks }` — `marks` is how many `cache_control` markers were actually
+ * EMITTED on the array. It is carried out to the agent loop so a zero-cache-read turn can
+ * name "no mark was emitted" as the cause instead of guessing at a prefix move (F-643).
  */
 const markOpenRouterCacheBreakpoints = (messages, prefixCount, turnCount) => {
-  if (!Array.isArray(messages) || messages.length === 0) return messages;
+  if (!Array.isArray(messages) || messages.length === 0) return { messages, marks: 0 };
   const stableEnd = Math.min(Math.floor(prefixCount), messages.length) - 1;
-  if (stableEnd < 0) return messages;
+  if (stableEnd < 0) return { messages, marks: 0 };
   let lastSystem = -1;
   for (let i = 0; i <= stableEnd; i++) {
-    if (messages[i] && messages[i].role === "system") lastSystem = i;
+    // The seeded system mark answers to the SAME markability predicate as the boundaries
+    // (F-643): an empty system message cannot carry a marker, so seeding it would spend a
+    // slot on nothing.
+    if (messages[i] && messages[i].role === "system" && canCarryCacheBreakpoint(messages[i])) lastSystem = i;
   }
   const marks = cacheBreakpointIndices({
     messages,
     boundaries: [prefixCount, turnCount],
+    isMarkable: canCarryCacheBreakpoint,
     seed: lastSystem >= 0 ? [lastSystem] : [],
     maxMarks: 4,
   });
-  return messages.map((m, i) => (marks.has(i) ? markCacheBreakpoint(m) : m));
+  return { messages: messages.map((m, i) => (marks.has(i) ? markCacheBreakpoint(m) : m)), marks: marks.size };
 };
 
 const callAIChatRaw = async (opts) => {
@@ -13839,6 +13874,10 @@ const callAIChatRaw = async (opts) => {
     // LM Studio's REST API does NOT accept that content type — its document-RAG support is
     // GUI-only. Vision (image_url blocks on a VLM) DOES work and is preserved.
     let outboundMessages = messages;
+    // How many cache_control markers this request actually carries (F-643). Zero on every
+    // provider that does not cache and on every one-shot caller; the agent loop reads it so
+    // a zero-cache-read turn can say "no mark was emitted" instead of blaming the prefix.
+    let cacheMarksEmitted = 0;
     if (provider === "lmstudio") {
       let strippedFiles = 0;
       outboundMessages = messages.map((msg) => {
@@ -13886,7 +13925,9 @@ const callAIChatRaw = async (opts) => {
      */
     if (Number(cachePrefix) > 0 && (provider === "openrouter" || provider === MANAGED_PROVIDER_ID)
         && /^anthropic\//i.test(String(model || ""))) {
-      outboundMessages = markOpenRouterCacheBreakpoints(outboundMessages, Number(cachePrefix), Number(turnPrefix) || 0);
+      const marked = markOpenRouterCacheBreakpoints(outboundMessages, Number(cachePrefix), Number(turnPrefix) || 0);
+      outboundMessages = marked.messages;
+      cacheMarksEmitted = marked.marks;
     }
 
     const requestBody = { model, ...buildModelParams(), messages: outboundMessages };
@@ -13964,7 +14005,7 @@ const callAIChatRaw = async (opts) => {
         msg.content = msg.reasoning_content;
       }
     } catch { /* leave data unchanged on any unexpected shape */ }
-    return { ok: true, status: 200, data, modelUsed: model };
+    return { ok: true, status: 200, data, modelUsed: model, cacheMarks: cacheMarksEmitted };
   } finally {
     await releaseWorker();
   }
@@ -14026,7 +14067,10 @@ const callAnthropicChat = async ({ apiKey, model, messages, tools, tool_choice, 
     ? cacheBreakpointIndices({
       messages,
       boundaries: [prefixCount, turnPrefix],
-      isMarkable: (m) => !!m && m.role !== "system",
+      // The adapter's own rule (system messages are hoisted out) AND the one shared
+      // markability predicate (F-643) — so a boundary landing on a message with no block
+      // to mark walks back to the previous one that has, instead of losing its mark.
+      isMarkable: (m) => !!m && m.role !== "system" && canCarryCacheBreakpoint(m),
       maxMarks: 3,
     })
     : new Set();
@@ -14142,13 +14186,17 @@ const callAnthropicChat = async ({ apiKey, model, messages, tools, tool_choice, 
   // WITHIN-TURN one (what rounds 2..N of this turn read back). Everything AFTER the last
   // of them (this round's tool transcript) stays uncached, which is the point: a marker at
   // the end of the whole prompt writes a fresh entry every request and never reads it back.
+  // NO SECOND MARKABILITY TEST HERE (F-643): placement already refused any message with
+  // nothing to mark and walked the boundary back to one that has. This loop only picks the
+  // block — string content is widened, an array takes its last block.
+  let messageMarks = 0;
   for (const boundaryMsg of boundaryMsgs) {
     if (typeof boundaryMsg.content === "string") {
-      if (!boundaryMsg.content) continue;
       boundaryMsg.content = [{ type: "text", text: boundaryMsg.content, cache_control: { type: "ephemeral" } }];
+      messageMarks++;
     } else if (Array.isArray(boundaryMsg.content) && boundaryMsg.content.length > 0) {
       const last = boundaryMsg.content[boundaryMsg.content.length - 1];
-      if (last && typeof last === "object") last.cache_control = { type: "ephemeral" };
+      if (last && typeof last === "object") { last.cache_control = { type: "ephemeral" }; messageMarks++; }
     }
   }
 
@@ -14240,7 +14288,10 @@ const callAnthropicChat = async ({ apiKey, model, messages, tools, tool_choice, 
     openAIData.choices[0].message.tool_calls = toolCalls;
   }
 
-  return { ok: true, status: 200, data: openAIData };
+  // `cacheMarks` counts the markers on the MESSAGE array only — the system block's marker
+  // (placed above whenever a prefix is declared) is not a message and would mask the case
+  // this number exists to name: a declared boundary that emitted nothing (F-643).
+  return { ok: true, status: 200, data: openAIData, cacheMarks: messageMarks };
 };
 
 /**

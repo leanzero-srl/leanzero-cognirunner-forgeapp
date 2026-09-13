@@ -326,13 +326,21 @@ ok(agentCapabilityCopy("managed-key-missing").remedy.includes("LeanZero"),
   // marker, or this test would be exercising a copy of a rule that has a single home.
   const mi = indexSrc.match(/const cacheBreakpointIndices = \(\{ messages, boundaries[\s\S]*?\n\};/);
   ok(!!mi, "found cacheBreakpointIndices (the ONE placement helper)");
+  // F-643: markability has ONE definition, shared by the placement helper and the emitter.
+  const mp = indexSrc.match(/const canCarryCacheBreakpoint = \(msg\) => \{[\s\S]*?\n\};/);
+  ok(!!mp, "found canCarryCacheBreakpoint (the ONE markability predicate)");
+  const pred = "const canCarryCacheBreakpoint = " + mp[0].replace("const canCarryCacheBreakpoint = ", "").replace(/;\s*$/, "") + ";\n";
   // eslint-disable-next-line no-eval
-  const markCacheBreakpoint = eval("(" + mb[0].replace("const markCacheBreakpoint = ", "").replace(/;\s*$/, "") + ")");
+  const markCacheBreakpoint = eval("(function(){ " + pred + "return " + mb[0].replace("const markCacheBreakpoint = ", "").replace(/;\s*$/, "") + "; })()");
   // eslint-disable-next-line no-eval
-  const mark = eval(
-    "(function(){ const markCacheBreakpoint = " + mb[0].replace("const markCacheBreakpoint = ", "").replace(/;\s*$/, "") + ";\n"
+  const markRaw = eval(
+    "(function(){ " + pred
+    + "const markCacheBreakpoint = " + mb[0].replace("const markCacheBreakpoint = ", "").replace(/;\s*$/, "") + ";\n"
     + "const cacheBreakpointIndices = " + mi[0].replace("const cacheBreakpointIndices = ", "").replace(/;\s*$/, "") + ";\n"
     + "return " + m[0].replace("const markOpenRouterCacheBreakpoints = ", "").replace(/;\s*$/, "") + "; })()");
+  // The marker now returns { messages, marks } — the COUNT rides out so a zero-cache-read
+  // turn can name "no mark was emitted" as its cause (F-643). Most cases here read the array.
+  const mark = (...a) => markRaw(...a).messages;
 
   const sys = { role: "system", content: "RULES" };
   const u1 = { role: "user", content: "one" };
@@ -389,6 +397,23 @@ ok(agentCapabilityCopy("managed-key-missing").remedy.includes("LeanZero"),
     ok(JSON.stringify(markedAt(mark(full, 3))) === JSON.stringify(markedAt(mark(full, 3, 3))),
       "one declared boundary == two coinciding boundaries == the pre-F-641 placement");
     ok(JSON.stringify(markedAt(mark(msgs, 2))) === "[0,1]", "and the original two-message case is untouched");
+
+    /* F-643 - an EMPTY assistant turn at the tail of the stored history cannot carry a
+     * marker, and the emitter used to DROP the cross-turn mark rather than walk back to a
+     * message that can. Before the cut this array marked [1,4] - index 3, the declared
+     * cross-turn boundary, went out with no breakpoint at all and every later turn of the
+     * thread re-billed the whole history. */
+    const empty = { role: "assistant", content: "" };
+    const withEmptyTail = [sys, u1, empty, turn];
+    const outEmpty = markRaw(withEmptyTail, 3, 4);
+    ok(JSON.stringify(markedAt(outEmpty.messages)) === "[0,1,3]",
+      `THE FINDING: the cross-turn mark walks back onto the last markable message, got ${JSON.stringify(markedAt(outEmpty.messages))}`);
+    ok(outEmpty.marks === 3, `the emitted-mark count rides out with the array, got ${outEmpty.marks}`);
+    ok(outEmpty.messages[2] === empty, "the empty turn itself is left exactly as it was");
+    // Control: the same array with prose in the assistant turn marks the tail itself.
+    ok(JSON.stringify(markedAt(mark([sys, u1, { role: "assistant", content: "answer" }, turn], 3, 4))) === "[0,2,3]",
+      "control: a non-empty tail keeps the cross-turn mark on itself");
+    ok(markRaw([sys], 0).marks === 0, "an opt-out caller reports 0 emitted marks");
   }
 }
 {

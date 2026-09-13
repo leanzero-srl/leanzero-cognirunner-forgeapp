@@ -10692,10 +10692,23 @@ const GIT_RAW_MAX_BYTES = 8192;
  */
 const GIT_RAW_EMIT_KEYS = ["action", "eventKey", "ref", "before", "after", "created", "deleted", "forced", "number"];
 
-/** Header read helper: Forge gives header values as ARRAYS, case-insensitively. */
+/**
+ * Header read helper: Forge gives header values as ARRAYS.
+ * HTTP header names are case-insensitive and providers send mixed case
+ * (`X-Hub-Signature-256`, `X-GitHub-Event`), so this folds case over the ACTUAL
+ * keys of the object instead of guessing a fixed set of spellings — the old
+ * exact/lower/UPPER probe matched none of the canonical forms and rested on the
+ * runtime happening to lower-case them (F-338). Exact hit first: it is the
+ * common case and skips the scan.
+ */
 const hookHeader = (req, name) => {
   const h = (req && req.headers) || {};
-  const v = h[name] || h[String(name).toLowerCase()] || h[String(name).toUpperCase()];
+  let v = h[name];
+  if (v === undefined || v === null) {
+    const want = String(name).toLowerCase();
+    const key = Object.keys(h).find((k) => String(k).toLowerCase() === want);
+    v = key === undefined ? undefined : h[key];
+  }
   const out = Array.isArray(v) ? v[0] : v;
   return typeof out === "string" ? out : null;
 };

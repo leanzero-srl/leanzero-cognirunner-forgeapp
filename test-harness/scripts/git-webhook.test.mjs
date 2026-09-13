@@ -339,6 +339,34 @@ ok(gitIssueKeysFrom("feature/lzpt-31-thing").includes("LZPT-31"), "issue keys ar
 ok(gitIssueKeysFrom("no keys here").length === 0, "…and nothing is invented when there are none");
 ok(gitIssueKeysFrom("ABC-1 ABC-1 DEF-2").length === 2, "…and they are de-duplicated");
 
+/* ============ 4b. header casing (F-338) ============ */
+seed();
+{
+  // Providers send mixed-case header names. The reader must fold case over the
+  // ACTUAL keys, not guess spellings — every lookup on this surface (signature,
+  // event, delivery id) goes through it, so a miss reads as "unsigned".
+  const body = JSON.stringify(ghPr("opened"));
+  const canonical = parse(await gitWebhook({
+    method: "POST", body, queryParameters: { conn: [CONN], repo: [REPO] },
+    headers: {
+      "X-Hub-Signature-256": [sign(body)],
+      "X-GitHub-Event": ["pull_request"],
+      "X-GitHub-Delivery": ["case-1"],
+    },
+  }));
+  ok(canonical.status === 202 && canonical.body.accepted === true, `GitHub's canonical header casing is read (${JSON.stringify(canonical)})`);
+  ok(!!storage.__raw(`git_delivery:${CONN}:case-1`), "…including the delivery id, so dedupe still works");
+  const mixed = parse(await gitWebhook({
+    method: "POST", body, queryParameters: { conn: [CONN], repo: [REPO] },
+    headers: {
+      "x-HUB-signature-256": [sign(body)],
+      "X-github-EVENT": ["pull_request"],
+      "x-GitHub-DELIVERY": ["case-2"],
+    },
+  }));
+  ok(mixed.status === 202 && mixed.body.accepted === true, `an arbitrary mixed casing is read too (${JSON.stringify(mixed)})`);
+}
+
 /* ===================== 5. redelivery ===================== */
 seed();
 {

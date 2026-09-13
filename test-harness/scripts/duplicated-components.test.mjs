@@ -36,11 +36,21 @@ const APPS = ["config-ui", "admin-panel"];
 export const DUPLICATED_COMPONENTS = [
   "FunctionBlock.jsx", "FunctionBuilder.jsx", "CodeEditor.jsx", "DocRepository.jsx",
   "AILoadingState.jsx", "KnowledgePanel.jsx", "SkillsTab.jsx", "SkillEditor.jsx",
-  "MemoriesTab.jsx", "components/editor/*",
+  // F-237 — these three were byte-identical in both apps while the lists said
+  // otherwise: PremadeRuleForm.jsx was in NEITHER list (so nothing held it equal),
+  // and IssuePicker.jsx / Skeleton.jsx were filed as "deliberately diverged" when
+  // they are identical — a claim that licenses the next editor to fork them.
+  // toast.js (not .jsx) was likewise identical and unlisted — the reality scan below
+  // is what found it.
+  "MemoriesTab.jsx", "PremadeRuleForm.jsx", "IssuePicker.jsx", "Skeleton.jsx", "toast.js",
+  "components/editor/*",
 ];
-// Deliberately DIVERGED — never blind-copied between the two apps.
+// Deliberately DIVERGED — never blind-copied between the two apps. Verified by
+// `cmp -s` at the F-237 cut: these three really do differ. SemanticConfig.jsx also
+// exists in both apps and differs, but it is in NEITHER list on purpose — it is not
+// part of the copy convention and nothing claims it is.
 export const DIVERGED_COMPONENTS = [
-  "CustomSelect.jsx", "Tooltip.jsx", "ReviewPanel.jsx", "IssuePicker.jsx", "Skeleton.jsx",
+  "CustomSelect.jsx", "Tooltip.jsx", "ReviewPanel.jsx",
 ];
 
 let pass = 0, fail = 0;
@@ -70,7 +80,7 @@ if (!existsSync(claudeMdPath)) {
 const duplicated = DUPLICATED_COMPONENTS;
 const diverged = DIVERGED_COMPONENTS;
 ok(duplicated.length >= 9, `the duplicated set has ${duplicated.length} entries`);
-ok(diverged.length >= 5, `the deliberately-diverged set has ${diverged.length} entries`);
+ok(diverged.length >= 3, `the deliberately-diverged set has ${diverged.length} entries`);
 ok(duplicated.includes("FunctionBlock.jsx") && duplicated.includes("components/editor/*"),
   "the set carries component names and globs");
 ok(!duplicated.some((f) => diverged.includes(f)), "no file is in both sets");
@@ -118,6 +128,40 @@ for (const rel of targets) {
   ok(!probeA.equals(probeB), "positive control: the byte comparison can distinguish two files");
   const real = path.join(ROOT, "static", APPS[0], "src", targets[0]);
   ok(statSync(real).size > 0, `positive control: ${targets[0]} is a real non-empty file`);
+}
+
+// --- F-237: REALITY, not just the list. Every same-named component present in BOTH
+// apps is classified by its bytes, and a file the lists get wrong fails here:
+//   identical + unlisted        → nothing holds it equal (PremadeRuleForm.jsx was this)
+//   identical + "diverged"      → the doc licenses the next editor to fork it
+//                                 (IssuePicker.jsx and Skeleton.jsx were this)
+//   differs   + "duplicated"    → already caught by the drift walk above
+// A file that differs and is in NEITHER list is out of the convention on purpose.
+{
+  const listed = new Set(targets);
+  const walk = (app, dir = "components") => {
+    const base = path.join(ROOT, "static", app, "src", dir);
+    if (!existsSync(base)) return [];
+    const out = [];
+    for (const e of readdirSync(base, { withFileTypes: true })) {
+      if (e.isDirectory()) out.push(...walk(app, path.posix.join(dir, e.name)));
+      else if (/\.(jsx|js)$/.test(e.name)) out.push(path.posix.join(dir, e.name));
+    }
+    return out;
+  };
+  const shared = walk(APPS[0]).filter((rel) => existsSync(path.join(ROOT, "static", APPS[1], "src", rel)));
+  const misfiled = [];
+  for (const rel of shared) {
+    const [a, b] = APPS.map((app) => readFileSync(path.join(ROOT, "static", app, "src", rel)));
+    const identical = a.equals(b);
+    const name = path.posix.basename(rel);
+    if (identical && diverged.includes(name)) misfiled.push(`${rel} is byte-identical but filed as deliberately diverged`);
+    else if (identical && !listed.has(rel)) misfiled.push(`${rel} is byte-identical in both apps but is in NEITHER list — add it to DUPLICATED_COMPONENTS (and CLAUDE.md)`);
+  }
+  ok(shared.length >= 12, `positive control: ${shared.length} same-named components exist in both apps`);
+  ok(misfiled.length === 0, misfiled.length
+    ? `THE LISTS DISAGREE WITH THE BYTES — ${misfiled.join("; ")}`
+    : `all ${shared.length} shared components are filed to match their bytes`);
 }
 
 ok(drifted.length === 0,

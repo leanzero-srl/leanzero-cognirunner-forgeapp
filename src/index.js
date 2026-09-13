@@ -10762,6 +10762,88 @@ const coderGate = async (context) => {
   return { facts };
 };
 
+/*
+ * WHAT A THREAD'S TURNS RUN WITH — written when a turn is started, read back when a
+ * consent ticket is answered. The resolver half of F-360.
+ *
+ * WHY THIS ROW EXISTS. `confirmCoderTicket` is the ONE producer of the RESUME turn, and
+ * it used to push it with the message alone: no `simulation`, no `connectionId`, no
+ * `maxRounds`. The engine half (src/coder-engine.js, "SIMULATION IS FIXED BY THE
+ * THREAD'S FIRST TURN") is what CLOSES the hole — the thread row is the authority and a
+ * turn that says nothing inherits it. This half makes the resume's intent EXPLICIT and
+ * carries the rest of the original turn's shape, which nothing else remembers:
+ * `connectionId` survives only because the engine re-writes it on the row, and
+ * `maxRounds` did not survive at all, so every resumed turn silently got the default.
+ *
+ * WHY IT IS NOT READ OFF THE CONFIRM PAYLOAD. That payload is caller-controlled, and
+ * simulation is exactly the flag a caller must not be able to flip after the fact.
+ * A resume INHERITS the turn; it never re-decides it.
+ *
+ * Bounded by construction (four scalars, keyed by the thread) and TTL'd to the thread's
+ * own 90 days, so it cannot outlive what it describes.
+ */
+const coderTurnParamsKey = (issueKey, threadId) => `coder_turn:${safeKeyPart(issueKey)}:${safeKeyPart(threadId)}`;
+const CODER_TURN_PARAMS_TTL = { ttl: { value: 90, unit: "DAYS" } };
+
+/**
+ * Remember what this thread runs with. `simulation` is recorded by the FIRST turn and
+ * never overwritten afterwards — the engine refuses a mid-thread flip, so a later turn's
+ * claim is not authority. Best-effort: a lost write degrades to the thread row at confirm
+ * time, and from there to "say nothing and let the engine's row decide".
+ */
+const rememberCoderTurnParams = async (issueKey, threadId, params) => {
+  try {
+    const key = coderTurnParamsKey(issueKey, threadId);
+    let existing = null;
+    try { existing = await storage.get(key); } catch (e) { existing = null; }
+    // null = UNKNOWN, and unknown stays unknown: a resume that could not learn the mode
+    // must not write a guess that the next resume would then read as authority.
+    const firstSimulation = existing && typeof existing === "object" && typeof existing.simulation === "boolean"
+      ? existing.simulation
+      : (typeof params.simulation === "boolean" ? params.simulation : null);
+    await storage.set(key, {
+      simulation: firstSimulation,
+      connectionId: params.connectionId || (existing && existing.connectionId) || null,
+      maxRounds: typeof params.maxRounds === "number" && Number.isFinite(params.maxRounds)
+        ? params.maxRounds
+        : ((existing && typeof existing.maxRounds === "number") ? existing.maxRounds : null),
+      savedByRole: params.savedByRole || (existing && existing.savedByRole) || null,
+      updatedAt: new Date().toISOString(),
+    }, CODER_TURN_PARAMS_TTL);
+  } catch (e) {
+    console.warn(`[coder] turn params not stored for ${safeKeyPart(issueKey)}/${safeKeyPart(threadId)}: ${e && e.message}`);
+  }
+};
+
+/**
+ * What the RESUME turn must run with. Never the caller's payload:
+ *   1. the turn-params row the thread's first turn wrote,
+ *   2. failing that, the thread row the engine keeps (it re-writes `simulation` and
+ *      `connectionId` there),
+ *   3. failing both, SAY NOTHING. `simulation: undefined` is how the engine is told
+ *      "inherit", and inheriting from the row it owns is always righter than a guess
+ *      made here — a value invented here would either take a simulated thread live or
+ *      be refused as `simulation-locked` on a live one.
+ */
+const coderResumeParams = async (issueKey, threadId) => {
+  let stored = null;
+  try { stored = await storage.get(coderTurnParamsKey(issueKey, threadId)); } catch (e) { stored = null; }
+  let src = stored && typeof stored === "object" ? stored : null;
+  if (!src) {
+    try {
+      const thread = await coderMod.getCoderThread(issueKey, threadId);
+      if (thread && typeof thread === "object") src = thread;
+    } catch (e) { /* the thread row is a convenience here, never a requirement */ }
+  }
+  if (!src) return { simulation: undefined, connectionId: null, maxRounds: undefined, savedByRole: null };
+  return {
+    simulation: typeof src.simulation === "boolean" ? src.simulation : undefined,
+    connectionId: src.connectionId || null,
+    maxRounds: typeof src.maxRounds === "number" && Number.isFinite(src.maxRounds) ? src.maxRounds : undefined,
+    savedByRole: src.savedByRole || null,
+  };
+};
+
 /**
  * START ONE TURN. Returns `{ success, async: true, taskId, threadId }` — the panel polls
  * `getAsyncTaskResult(taskId)` exactly like every other queued AI task.
@@ -10802,6 +10884,9 @@ resolver.define("startCoderTurn", async ({ payload, context }) => {
       gateFacts: gate.facts,
       savedByRole,
     };
+    // Recorded BEFORE the push, so the row a resume reads can never be missing for a
+    // turn that has already run (F-360).
+    await rememberCoderTurnParams(issueKey, threadId, params);
     const { Queue } = await import("@forge/events");
     const queue = new Queue({ key: "long-queue" });
     const pushResult = await queue.push({
@@ -10864,7 +10949,19 @@ resolver.define("confirmCoderTicket", async ({ payload, context }) => {
     // swallowed: the decision has already been recorded in the thread, so the user must be
     // told that the follow-up did not start rather than left watching a spinner.
     try {
-      const savedByRole = await savedByRoleFor(context.accountId);
+      // F-360 — THE RESUME INHERITS THE TURN, IT DOES NOT REDEFINE IT. `simulation`,
+      // `connectionId` and `maxRounds` come from what the OWNER started this thread with
+      // (the turn-params row, or the thread row the engine keeps), never from the confirm
+      // payload: answering a ticket must not be able to take a dry-run thread live, and
+      // a resumed turn must not silently drop back to the default round budget. When
+      // nothing is known, `simulation` is left UNDEFINED on purpose — that is how the
+      // engine is told to inherit the thread row it owns.
+      const prior = await coderResumeParams(out.issueKey, out.threadId);
+      // `savedByRole` is the role the work RUNS AS, and it is read fresh: the confirming
+      // user is the thread's owner (the engine refuses anyone else), so this is the same
+      // person's role, and reading it now means a demoted owner cannot keep an old
+      // elevation alive through a resume. The stored value is only the fallback.
+      const savedByRole = (await savedByRoleFor(context.accountId)) || prior.savedByRole;
       const taskId = makeTaskId("coder");
       const { Queue } = await import("@forge/events");
       const queue = new Queue({ key: "long-queue" });
@@ -10873,10 +10970,23 @@ resolver.define("confirmCoderTicket", async ({ payload, context }) => {
           taskType: "coder", taskId,
           params: {
             issueKey: out.issueKey, threadId: out.threadId, accountId: context.accountId,
-            message: out.resumeMessage, gateFacts: gate.facts, savedByRole,
+            message: out.resumeMessage,
+            ...(prior.simulation === undefined ? {} : { simulation: prior.simulation }),
+            connectionId: prior.connectionId,
+            ...(prior.maxRounds === undefined ? {} : { maxRounds: prior.maxRounds }),
+            // gateFacts are read FRESH on this resolver call, deliberately: a kill switch,
+            // a licence lapse or a revoked capability between the two turns must apply to
+            // the resume. They are the INSTANCE's facts, not the turn's.
+            gateFacts: gate.facts,
+            savedByRole,
           },
         },
         concurrency: { key: `coder:${out.issueKey}`, limit: 1 },
+      });
+      // Keep the row alive (and correct) for the next resume on this thread.
+      await rememberCoderTurnParams(out.issueKey, out.threadId, {
+        simulation: prior.simulation, connectionId: prior.connectionId,
+        maxRounds: prior.maxRounds, savedByRole,
       });
       await writeAsyncJob({
         taskId, jobId: pushResult?.jobId || null, taskType: "coder", status: "queued",

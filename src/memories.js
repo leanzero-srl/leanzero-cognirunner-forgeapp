@@ -179,6 +179,31 @@ const markMemoryStoreFull = async (reason, source) => {
  * reinforce writes no new row, so a store with nothing evictable is exactly as full as it
  * was one line earlier).
  */
+/**
+ * Clamp a memory row's `meta` — the ONE home (F-185).
+ *
+ * `meta` arrives from the runtime (index.js's auto-capture) and from the async distill
+ * task, carrying a rule id and a STEP NAME that the user typed: both were reaching the
+ * stored row unclamped, so a 4 000-character step name rode into the single `pf_memories`
+ * value and counted against the byte guard as if it were a lesson. Unknown keys are
+ * dropped rather than clamped — a meta key nothing reads is pure weight in the store.
+ *
+ * Limits are CHARACTER clamps (like MEMORY_CONTENT_MAX); the byte guard is what decides
+ * whether the row fits, and the store-full probe below is built from the worst case of
+ * exactly these numbers.
+ */
+export const META_LIMITS = { errorSig: 16, ruleId: 60, stepName: 80 };
+export const clampMemoryMeta = (meta) => {
+  if (!meta || typeof meta !== "object" || Array.isArray(meta)) return null;
+  const out = {};
+  for (const [key, max] of Object.entries(META_LIMITS)) {
+    const raw = meta[key];
+    if (raw === undefined || raw === null || raw === "") continue;
+    out[key] = String(raw).substring(0, max);
+  }
+  return Object.keys(out).length ? out : null;
+};
+
 const HYPOTHETICAL_PROBE_ID = "__memory_store_full_probe__";
 /*
  * F-180 — the probe must be the WORST CASE a real newcomer can be, because the
@@ -202,6 +227,18 @@ const HYPOTHETICAL_PROBE_ID = "__memory_store_full_probe__";
  * an instance that is silently discarding everything it learns.
  */
 const PROBE_CONTENT = "\u{1F600}".repeat(MEMORY_CONTENT_MAX);
+/*
+ * F-185 — the probe's `meta` is the WORST CASE the meta clamp can produce, for the same
+ * reason PROBE_CONTENT is: the guard counts UTF-8 bytes while META_LIMITS are character
+ * clamps. Emoji at the full limit is deliberately heavier than any row that can actually
+ * be stored (`substring` clamps UTF-16 code units, so a real maximum meta is ~3 B/char
+ * CJK, e.g. 240 B for an 80-char stepName, against 320 B here). Erring heavy holds the
+ * banner up a little early; erring light is F-170 again — a green banner over an instance
+ * that is silently discarding everything it learns.
+ */
+const PROBE_META = Object.fromEntries(
+  Object.entries(META_LIMITS).map(([key, max]) => [key, "\u{1F600}".repeat(max)]),
+);
 export const wouldRefuseNewMemory = (arr) => {
   const now = new Date().toISOString();
   const probe = {
@@ -214,7 +251,7 @@ export const wouldRefuseNewMemory = (arr) => {
     createdAt: now,
     updatedAt: now,
     disabled: false,
-    meta: { errorSig: "00000000", ruleId: HYPOTHETICAL_PROBE_ID, stepName: HYPOTHETICAL_PROBE_ID },
+    meta: PROBE_META,
   };
   const list = [probe, ...(Array.isArray(arr) ? arr : [])];
   return !pruneForSave(list, HYPOTHETICAL_PROBE_ID).protectedKept;
@@ -523,7 +560,10 @@ export const saveMemoryCandidate = async ({ content, source = "user", projectKey
     updatedAt: now,
     disabled: false,
   };
-  if (meta) entry.meta = meta;
+  // F-185: meta is clamped HERE, at the store, so every caller (runtime auto-capture,
+  // the async distill task) gets the same ceiling without retyping it.
+  const cleanMeta = clampMemoryMeta(meta);
+  if (cleanMeta) entry.meta = cleanMeta;
   if (createdBy) entry.createdBy = createdBy;
   memories.unshift(entry);
   // F-159: the new row is protected from its own prune. If the store is genuinely

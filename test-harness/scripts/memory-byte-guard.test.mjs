@@ -5,7 +5,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-// Offline unit test for the memory SERIALIZED-BYTE CEILING (src/memories.js)
+// Offline unit test for the memory SERIALIZED-BYTE CEILING and the meta clamp (src/memories.js)
 // via the mock @forge/kvs (which now enforces the real 240 KiB platform value limit).
 // Run: node --import ./lib/register-mocks.mjs scripts/memory-byte-guard.test.mjs
 //
@@ -17,10 +17,13 @@
 //   growing write ever succeeds again.
 // F-184 — metadata-only edits (archive/restore, project clear) must never be refused by the byte
 //   guard. Archive (-1 B) succeeded while Restore (+1 B) was refused: a one-way door.
+// F-185 — `meta.stepName` / `meta.ruleId` reached the stored row unclamped from the runtime and
+//   the distill task; they are clamped at the store, unknown keys dropped, and the store-full
+//   probe carries the worst case of those clamps.
 import storage from "../lib/mock-kvs.mjs";
 import {
-  saveMemories, serializedBytes, loadMemories,
-  MEMORIES_KEY, MEMORY_MAX_SERIALIZED_BYTES, MEMORY_CONTENT_MAX,
+  saveMemories, saveMemoryCandidate, serializedBytes, clampMemoryMeta, META_LIMITS,
+  wouldRefuseNewMemory, loadMemories, MEMORIES_KEY, MEMORY_MAX_SERIALIZED_BYTES, MEMORY_CONTENT_MAX,
 } from "../../src/memories.js";
 
 let pass = 0, fail = 0;
@@ -149,6 +152,37 @@ ok(grown.refused === true && grown.reason === "bytes", "CONTENT growth on an ove
 ok(load()[0].content === textBefore, "the refused content edit left the store untouched");
 const shrunk = await editWith((m) => { m.content = m.content.substring(0, 100); });
 ok(shrunk.refused !== true && load()[0].content.length === 100, "CONTENT shrink is allowed — the recovery path out of an over-size store");
+
+// ---------------------------------------------------------------------------
+// F-185: meta is clamped at the store; unknown keys are dropped.
+// ---------------------------------------------------------------------------
+storage.__reset();
+storage.__seed(MEMORIES_KEY, []);
+const withMeta = await saveMemoryCandidate({
+  content: "the Rollback field is a select, not text",
+  source: "test",
+  confidence: 0.6,
+  meta: {
+    errorSig: "a".repeat(50), ruleId: "b".repeat(500), stepName: "c".repeat(4000),
+    payload: "z".repeat(5000), nested: { big: "y".repeat(5000) },
+  },
+});
+ok(withMeta.stored === true, "the metered candidate stored");
+const meta = load()[0].meta;
+ok(meta.stepName.length === META_LIMITS.stepName, `meta.stepName clamped to ${META_LIMITS.stepName} chars (was 4000)`);
+ok(meta.ruleId.length === META_LIMITS.ruleId, `meta.ruleId clamped to ${META_LIMITS.ruleId} chars (was 500)`);
+ok(meta.errorSig.length === META_LIMITS.errorSig, `meta.errorSig clamped to ${META_LIMITS.errorSig} chars`);
+ok(!("payload" in meta) && !("nested" in meta), "unknown meta keys are dropped, not clamped");
+ok(clampMemoryMeta(null) === null && clampMemoryMeta({}) === null && clampMemoryMeta("x") === null,
+  "clampMemoryMeta returns null for absent/empty/non-object meta");
+
+// the store-full probe COUNTS the meta: a store with room for the probe's content but not for
+// content + worst-case meta must still answer "a lesson would be refused".
+const probeContentBytes = new TextEncoder().encode(JSON.stringify("\u{1F600}".repeat(MEMORY_CONTENT_MAX))).length;
+const tight = buildStore(MEMORY_MAX_SERIALIZED_BYTES - probeContentBytes - 300);
+ok(wouldRefuseNewMemory(tight) === true,
+  "the store-full probe includes its worst-case meta (a content-only probe would have fitted)");
+ok(wouldRefuseNewMemory([]) === false, "an empty store accepts a lesson");
 
 console.log(`\nmemory-byte-guard: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

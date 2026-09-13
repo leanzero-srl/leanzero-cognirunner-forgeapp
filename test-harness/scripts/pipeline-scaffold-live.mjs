@@ -39,6 +39,7 @@ import { execFileSync } from "node:child_process";
 import { chromium } from "../../static/_screenshot-harness/node_modules/playwright/index.mjs";
 import { loadEnv } from "../lib/env.mjs";
 import { testState } from "../lib/rules-api.mjs";
+import { readJobLog, assertLockRefusal } from "../lib/gh-job-log.mjs";
 
 const env = loadEnv();
 const BASE = "https://wolfaenpak.atlassian.net";
@@ -69,6 +70,9 @@ const gh = (args, input) => {
   const o = execFileSync("gh", args, { encoding: "utf8", input: input ? JSON.stringify(input) : undefined, env: { ...process.env, GH_TOKEN: GH } });
   try { return JSON.parse(o); } catch { return o; }
 };
+/* Raw stdout, no JSON parse and no throw-on-stderr sugar - readJobLog needs the text
+   exactly as gh printed it, and needs the exception when gh refuses. */
+const ghRun = (file, args) => execFileSync(file, args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, env: { ...process.env, GH_TOKEN: GH, NO_COLOR: "1" } });
 const ghText = (p, ref) => {
   const r = gh(["api", `/repos/${REPO}/contents/${p}${ref ? `?ref=${ref}` : ""}`]);
   return Buffer.from(r.content, "base64").toString("utf8");
@@ -247,12 +251,29 @@ const phaseDrift = async () => {
   const deploy = steps.find((s) => /^Deploy$/.test(s.name));
   check("it failed AT the Permission lock step (F-529), not later", !!lock && lock.conclusion === "failure", { lock: lock && lock.conclusion });
   check("the Deploy step never ran", !deploy || deploy.conclusion === "skipped" || deploy.conclusion === null, { deploy: deploy && deploy.conclusion });
-  const log = String(gh(["api", `/repos/${REPO}/actions/jobs/${jobs[0].id}/logs`]));
-  fs.writeFileSync(OUT + "/drift-job.log", log);
-  const errLines = log.split("\n").filter((l) => l.includes("::error::"));
+  /* F-592: the newer gh CLI refuses to PRINT a log body containing terminal escape
+     sequences, so the bare `gh api .../logs` call threw and killed this phase before
+     its two most important assertions ever ran - and the phase still printed the
+     earlier PASS lines. readJobLog tries `gh run view --log`, then the API with
+     --allow-escape-sequences, then the API bare, strips ANSI, and THROWS if none of
+     them produced text. A log we cannot read is a FAILED CHECK, never a skipped one. */
+  let log = null, via = null, readErr = null;
+  try {
+    const got = readJobLog({ run: ghRun, repo: REPO, runId: r.id, jobId: jobs[0].id });
+    log = got.text; via = got.via;
+    fs.writeFileSync(OUT + "/drift-job.log", log);
+  } catch (e) { readErr = String(e.message).slice(0, 400); }
+  check("the failing job's log was READ (the ::error:: assertions are never skipped)", log !== null, { via, err: readErr, file: log !== null ? OUT + "/drift-job.log" : null });
+  if (log === null) {
+    check("the failure carries the LOCK's own ::error:: line, not MAJOR_VERSION_RULE", false, { reason: "the log could not be read - assertion NOT evaluated" });
+    return;
+  }
+  const verdict = assertLockRefusal(log);
   check("the failure carries the LOCK's own ::error:: line, not MAJOR_VERSION_RULE",
-    errLines.some((l) => /lock|permission|scope/i.test(l)) && !/MAJOR_VERSION_RULE/.test(log),
-    { errLines: errLines.slice(0, 5).map((l) => l.trim().slice(0, 240)) });
+    verdict.ok,
+    { lockLines: verdict.lockLines.slice(0, 3).map((l) => l.slice(0, 240)),
+      errLines: verdict.errLines.slice(0, 5).map((l) => l.slice(0, 240)),
+      sawMajorVersionRule: verdict.sawMajorVersionRule });
 };
 
 /* ═══════════════════════ phase: cleanup ═══════════════════════ */

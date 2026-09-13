@@ -82,5 +82,82 @@ for (const [name, value] of [["MAX_MEMORIES", 200], ["MEMORY_CONTENT_MAX", 400],
 ok(/from\s+"\.\/shared\/registry-limits\.js"/.test(memoriesSrc),
   "src/memories.js imports the memory limits from the shared module");
 
+/* ===== 1.5 commit 1 — the Virtual Administrator's two new shared modules ===== */
+// Both are named EXPLICITLY here (the loop above discovers them, but a named check says
+// which contracts must exist, so deleting an export fails with a sentence rather than
+// with "exports at least one binding").
+const vaConfig = await import(pathToFileURL(path.join(sharedDir, "va-config.js")).href);
+const voiceLint = await import(pathToFileURL(path.join(sharedDir, "voice-lint.js")).href);
+const voiceData = await import(pathToFileURL(path.join(sharedDir, "voice-rules-data.js")).href);
+const vaConfigSrc = readFileSync(path.join(sharedDir, "va-config.js"), "utf8");
+const voiceLintSrc = readFileSync(path.join(sharedDir, "voice-lint.js"), "utf8");
+
+for (const name of ["normalizeVa", "renderGuardrailSentences", "vaWriteScope", "VA_DEFAULTS", "VA_LIMITS", "VA_CEILINGS"]) {
+  ok(typeof vaConfig[name] !== "undefined", `va-config.js exports ${name}`);
+}
+// 1.5 commit 2's ledger and key builders clamp against these member names. They are
+// asserted here as well as in va-config.test.mjs because the two commits land from two
+// worktrees, and a rename that only fails in the other one's suite fails at MERGE.
+for (const name of ["itemTtlDays", "tickTtlDays", "effectTtlDays", "itemRowCap", "attemptsCap",
+  "memoryCompactBytes", "memoryCapBytes", "stagedBodyMaxChars", "constraintsMax", "constraintMaxChars",
+  "maxItemsPerTick", "capsPerHour", "capsPerDay", "owedPerHour", "minPostGapMinutes",
+  "antiPileUpDays", "otherWriterQuietMinutes", "shadowTicks", "historyMax", "notesMaxChars"]) {
+  ok(typeof vaConfig.VA_LIMITS[name] === "number", `VA_LIMITS.${name} is a flat number (the ledger clamps against it)`);
+}
+ok(typeof voiceLint.lintVoice === "function", "voice-lint.js exports lintVoice");
+ok(typeof voiceData.VOICE_RULES_TABLES === "object", "voice-rules-data.js exports VOICE_RULES_TABLES");
+
+// ONE HOME FOR THE VA BRAKE NUMBERS. Every number a runtime gate enforces is declared in
+// registry-limits.js beside the job/agent brakes and its refusal sentence; va-config.js
+// composes them into VA_LIMITS. A literal RETYPED in va-config.js is the two-homes defect
+// this repo is named after, and it would be invisible: the wizard would keep rendering the
+// cap it was given while the engine held another one.
+const VA_BRAKE_NUMBERS = [
+  "VA_CAPS_PER_HOUR_DEFAULT", "VA_CAPS_PER_HOUR_MAX", "VA_CAPS_PER_DAY_DEFAULT", "VA_CAPS_PER_DAY_MAX",
+  "VA_OWED_PER_HOUR_DEFAULT", "VA_OWED_PER_HOUR_MAX", "VA_MAX_ITEMS_PER_TICK_DEFAULT", "VA_MAX_ITEMS_PER_TICK_MAX",
+  "VA_MAX_CANDIDATES_PER_TICK", "VA_SHADOW_TICKS_DEFAULT", "VA_SHADOW_TICKS_MAX",
+  "VA_MIN_POST_GAP_MINUTES_DEFAULT", "VA_MIN_POST_GAP_MINUTES_MIN", "VA_MIN_POST_GAP_MINUTES_MAX",
+  "VA_ANTI_PILE_UP_DAYS_DEFAULT", "VA_ANTI_PILE_UP_DAYS_MAX",
+  "VA_OTHER_WRITER_QUIET_MINUTES_DEFAULT", "VA_OTHER_WRITER_QUIET_MINUTES_MAX",
+  "VA_ITEM_ATTEMPTS_MAX", "VA_ITEM_ROW_CAP", "VA_ITEM_TTL_DAYS", "VA_TICK_TTL_DAYS", "VA_EFFECT_TTL_DAYS",
+  "VA_HISTORY_MAX", "VA_NOTES_MAX_CHARS", "VA_STAGED_BODY_MAX_CHARS",
+  "VA_CONSTRAINTS_MAX", "VA_CONSTRAINT_MAX_CHARS",
+  "VA_MEMORY_COMPACT_BYTES", "VA_MEMORY_MAX_BYTES", "VA_HEALTH_BANNER_FAILED_TICKS",
+];
+for (const name of VA_BRAKE_NUMBERS) {
+  ok(new RegExp(`export const ${name}\\s*=\\s*\\d`).test(limitsSrc), `registry-limits.js declares ${name}`);
+  ok(!new RegExp(`(const|let|var)\\s+${name}\\s*=`).test(vaConfigSrc), `va-config.js does NOT re-declare ${name}`);
+}
+ok(/from\s+"\.\/registry-limits\.js"/.test(vaConfigSrc), "va-config.js imports its brake numbers from registry-limits.js");
+ok(typeof limits.vaRefusalText === "function"
+  && limits.vaRefusalText("caps-hour", 6) !== limits.vaRefusalText("caps-owed", 12)
+  && limits.vaRefusalText("attempts", 3).includes("3"),
+  "the VA brake refusal sentences live beside the numbers and interpolate them");
+// The record's SHAPE bounds are the other half of the split and belong in va-config.js.
+ok(/export const VA_PERSONA_NAME_MAX/.test(vaConfigSrc) && !/VA_PERSONA_NAME_MAX/.test(limitsSrc),
+  "the record's shape bounds live in va-config.js, not in registry-limits.js");
+
+// ONE HOME FOR THE VOICE WORDS (F-420). voice-lint.js owns the RULES; the banned openers,
+// method leaks, sign-offs and disclaimers are DATA in voice-rules-data.js and arrive as an
+// argument, so the `voice-rules` knowledge pack can replace the source in 14b without
+// touching the linter, the post gate or the wizard.
+ok(/from\s+"\.\/voice-rules-data\.js"/.test(voiceLintSrc), "voice-lint.js reads its tables from the data module");
+ok(/tables\s*=\s*VOICE_RULES_TABLES/.test(voiceLintSrc), "…and takes them as an argument, so the home can move");
+for (const phrase of ["great question", "as an ai", "best regards", "i ran a query"]) {
+  ok(!voiceLintSrc.toLowerCase().includes(phrase), `voice-lint.js does not hardcode the phrase "${phrase}"`);
+}
+ok(voiceData.BANNED_OPENERS.length > 0 && voiceData.METHOD_LEAKS.length > 0
+  && voiceData.SIGN_OFFS.length > 0 && voiceData.AI_DISCLAIMERS.length > 0,
+  "every voice table has entries");
+ok(/voice-rules/.test(voiceLintSrc) && /voice-rules/.test(readFileSync(path.join(sharedDir, "voice-rules-data.js"), "utf8")),
+  "both modules say, in their headers, that the voice-rules pack replaces this home in 14b");
+// The lint result must not carry the text it judged — asserted in full in
+// voice-lint.test.mjs; asserted here too because it is a security property of a module
+// whose output reaches logs, receipts and the next turn's prompt.
+{
+  const r = voiceLint.lintVoice("Certainly! The widget frobnicator was reconfigured.", { register: "plain", maxSentences: 3 });
+  ok(r.ok === false && !JSON.stringify(r).includes("frobnicator"), "the lint result never echoes the text it judged");
+}
+
 console.log(`\nshared-imports: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -1,0 +1,1 @@
+I ran a query against the project and found four open tickets with the same summary. I retrieved their details via the API so you can compare them.

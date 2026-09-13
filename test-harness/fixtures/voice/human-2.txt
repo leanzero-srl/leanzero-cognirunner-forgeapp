@@ -1,0 +1,1 @@
+I had a look this morning and the permission scheme is the problem, not the workflow. Can you confirm which group the user sits in? I will sort it once I know.

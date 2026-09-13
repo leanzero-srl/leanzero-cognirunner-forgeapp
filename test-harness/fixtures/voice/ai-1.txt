@@ -1,0 +1,7 @@
+## Summary of the issue
+
+Here is what I found:
+
+- The permission scheme is misconfigured
+- The reporter is not in the required group
+- A **workflow condition** is also blocking the transition

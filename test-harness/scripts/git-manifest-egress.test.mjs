@@ -119,6 +119,14 @@ ok(/export async function longHandler\(event\)\s*\{\s*return handler\(event\);\s
   "longHandler DELEGATES to handler — the two consumers differ only by manifest timeoutSeconds");
 const budgetGateMarkers = ah.split("TOKEN-BUDGET GATE").length - 1;
 ok(budgetGateMarkers === 1, `there is exactly one TOKEN-BUDGET GATE section (${budgetGateMarkers})`);
+// 1.4 commit 4b — and that section IS the extracted function, not a region inlined in
+// one consumer. Both entry points reach it: `handler` calls it, `longHandler` delegates
+// to `handler` (asserted just above).
+ok(/export async function runGatedTask\(event, deps = \{\}\)/.test(ah), "the gate is the exported runGatedTask");
+ok(ah.indexOf("TOKEN-BUDGET GATE") < ah.indexOf("export async function runGatedTask")
+  && ah.indexOf("export async function runGatedTask") < ah.indexOf("aiBudgetGate("),
+  "the one marker and the one aiBudgetGate call both belong to runGatedTask");
+ok((ah.split("await runGatedTask(").length - 1) === 1, "runGatedTask is called from exactly one place");
 
 /* ---- 7. the Coder issue panel, on the EXISTING resource ---- */
 ok(/jira:issuePanel:\n\s+- key: coder-panel/.test(manifest), "jira:issuePanel coder-panel is declared");

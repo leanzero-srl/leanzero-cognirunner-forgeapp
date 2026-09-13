@@ -100,6 +100,29 @@ export const estimateTaskTokens = (taskType, params, learned) => {
       return 6000;
     case "review":
       return 4000;
+    // A PR review is dominated by the diff. The engine caps it at DIFF_MAX_TOTAL_BYTES
+    // (60 KB) before the prompt is built, so this is bounded by construction; the flat
+    // 4000 covers the rubric prefix, the PR body/comments and the JSON answer.
+    case "gitreview": {
+      const bytes = Number(p.diffBytes);
+      return (Number.isFinite(bytes) && bytes > 0 ? Math.ceil(bytes / 4) : 0) + 4000;
+    }
+    // One coder turn is the most expensive thing the app can queue (probe (f):
+    // ~40k for a round on a frontier model). Deliberately generous.
+    case "coder":
+      return 16000;
+    // A verification-agenda item is one bounded model call; the POST of a result is
+    // a formatting call with almost no input.
+    case "va-item":
+      return 8000;
+    case "va-post":
+      return 200;
+    // A git webhook delivery does NO model work — it verifies, filters and enqueues.
+    // It must never be paced (`usesAi` is false for it in the consumer gate); the 0
+    // here is the second half of that statement, so a future caller that DOES estimate
+    // it still adds nothing to the ledger.
+    case "git-event":
+      return 0;
     case "skilldistill":
     case "memory_distill":
       return 3000;

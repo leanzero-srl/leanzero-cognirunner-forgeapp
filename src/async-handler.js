@@ -90,6 +90,20 @@ import {
   defangFence,
 } from "./memories.js";
 import { executeListenerTask, getListener } from "./listeners.js";
+// 1.4 commit 4b — the PR review engine and the connection layer it runs over. The
+// engine holds NO opinion about credentials or transports: the consumer injects the
+// provider (built from the saved connection) and the model callback.
+import { reviewPullRequest } from "./git-review.js";
+import {
+  getConnection,
+  providerForConnection,
+  applyCredentialRotation,
+  // The task-type STRING has one home — the producer (requestCredentialRotation) and
+  // this registry read the same constant, which is the defect F-290 was: the producer
+  // queued "gitcredrotate" and the registry had no such key, so every rotation returned
+  // `{ ok: true, queued: true }` to the operator and then died as "Unknown task type".
+  CREDENTIAL_ROTATION_TASK,
+} from "./git-connections.js";
 import { executeScheduledJobTask, getJob } from "./scheduled-jobs.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
 import { STATS_TASK_TYPE, processRuleStatsReceipt, statsReceipt } from "./rule-stats.js";
@@ -951,6 +965,181 @@ const executeProbe = async (params) => {
   return { success: false, key };
 };
 
+
+/* ─────────────────────────── gitreview / git-event ─────────────────────────── */
+
+/**
+ * A QUEUED PULL-REQUEST REVIEW (1.4 commit 4b).
+ *
+ * The engine (`src/git-review.js`) owns the claim, the prompt, the clamps and the
+ * posting; this handler owns only the WIRING — build the provider from the saved
+ * connection, hand it the consumer's existing AI call path (the same metered,
+ * edition/allowance-clamped `callAIChatSimple` the `review` task uses), and record
+ * the outcome where an operator can see it.
+ *
+ * A VERDICT IS NOT AN ACTION, TWICE OVER. `allowVerdictActions` is read from the
+ * rule's own config AND is only honoured when the rule row says an ADMIN saved it —
+ * an editor cannot arm an AI to approve a pull request. The default is false, and an
+ * unreadable rule row keeps it false. The engine re-checks the same fact (it is
+ * passed `savedByRole`) rather than trusting this caller: a permission asserted in
+ * one place is a permission one refactor away from being asserted nowhere.
+ */
+const executeGitReview = async (params, taskId) => {
+  const { connId, repoId, prNumber, ruleId, simulation } = params || {};
+  const startMs = Date.now();
+
+  /**
+   * ONE EXIT. Every outcome — a missing provider, an unusable connection, a lost
+   * claim, a model failure, a posted review — leaves through here, so the job row
+   * carries the result and the execution log carries the trace in all of them. A
+   * return path that skipped this would be a run with no evidence, which for a task
+   * that can post a PUBLIC comment is the worst failure mode.
+   *
+   * The log type is "listener": a PR review IS a listener run (a git event fired a
+   * rule), and "listener" is a badge every UI type map already knows. A new type
+   * string here would render under the fallback "Validator" badge (F-119).
+   */
+  const finish = async (out, { decision, reason, recommendation = "" }) => {
+    try {
+      await updateAsyncJob(taskId, {
+        gitReview: out.review
+          ? {
+              status: out.review.status, skipped: out.review.skipped || null, code: out.review.code || null,
+              repo: out.review.repo || repoId, pr: out.review.pr || { number: prNumber },
+              verdict: out.review.verdict || null, verdictAction: out.review.verdictAction || null,
+              findings: Array.isArray(out.review.findings) ? out.review.findings.length : 0,
+              posted: out.review.posted || null, simulated: out.review.simulated === true,
+            }
+          : { status: "failed", repo: repoId, pr: { number: prNumber }, code: out.code || null },
+      }, JOB_TTL_ACTIVE);
+    } catch (e) { console.warn("[gitreview] job row update failed:", e && e.message); }
+    try {
+      const { storeLog } = await import("./index");
+      await storeLog({
+        type: "listener", source: "async",
+        issueKey: `${repoId || "?"}#${prNumber ?? "?"}`,
+        fieldId: "pull-request",
+        isValid: decision !== "ERROR",
+        decision, reason: String(reason || "").slice(0, 1000), recommendation,
+        executionTimeMs: Date.now() - startMs,
+        ruleId: ruleId || null, ruleName: (out.ruleName) || null, ruleWorkflow: null,
+        eventType: "git:pull_request",
+      });
+    } catch (e) { console.warn("[gitreview] log failed:", e && e.message); }
+    return out;
+  };
+
+  // Provider snapshot ONCE, threaded through key/model/routing so they cannot desync
+  // mid-task (the same rule executeReview follows).
+  const { provider: aiProvider, baseUrl } = await getProviderConfig();
+  if (!aiProvider) return finish({ success: false, error: NO_PROVIDER_ERROR }, { decision: "ERROR", reason: NO_PROVIDER_ERROR, recommendation: "Set an AI provider and key in CogniRunner Settings." });
+  const apiKey = await getOpenAIKey(aiProvider);
+  if (!apiKey) return finish({ success: false, error: "No API key configured" }, { decision: "ERROR", reason: "No API key configured", recommendation: "Add the provider's API key in CogniRunner Settings." });
+  const model = await getOpenAIModel(aiProvider);
+
+  let connection = null;
+  let gitProvider = null;
+  try {
+    connection = await getConnection(connId);
+    if (!connection) throw new Error(`Unknown git connection (${connId}).`);
+    // providerForConnection re-checks auth_dead AND the repo allow-list — the allow-list
+    // is FAIL-CLOSED there, so an unlisted repo throws here rather than being reviewed.
+    gitProvider = await providerForConnection(connId, { repo: repoId });
+  } catch (e) {
+    const msg = `Git connection unusable: ${(e && e.message) || e}`;
+    return finish({ success: false, error: msg, code: (e && e.code) || null },
+      { decision: "ERROR", reason: msg, recommendation: "Check the connection's credential and repository allow-list in the Code tab." });
+  }
+
+  // The rule row is the ONLY source of the verdict-action permission. Absent row,
+  // absent flag, non-admin author → false.
+  let ruleRow = null;
+  if (ruleId) { try { ruleRow = await getListener(ruleId); } catch (e) { ruleRow = null; } }
+  const savedByRole = ruleRow && ruleRow.savedByRole === "admin" ? "admin" : null;
+  const reviewCfg = (ruleRow && ruleRow.gitReview && typeof ruleRow.gitReview === "object") ? ruleRow.gitReview : {};
+  const allowVerdictActions = savedByRole === "admin" && reviewCfg.allowVerdictActions === true;
+  const simulated = simulation === true || (ruleRow ? ruleRow.simulationMode === true : false);
+  const ruleName = (ruleRow && ruleRow.name) || null;
+
+  const callModel = async ({ system, user }) => {
+    const r = await callAIChatSimple({
+      apiKey, model, systemPrompt: system, userMessage: user,
+      jsonMode: true, provider: aiProvider, baseUrl,
+    });
+    // A model failure must reach the engine as a THROW: it ends the run as "failed",
+    // never as a clean review with no findings (git-review.js rule 7).
+    if (!r.ok) throw new Error(`AI call failed (HTTP ${r.status || "?"}). ${String(r.error || "").slice(0, 200)}`);
+    if (!r.content) throw new Error("Empty response from the model.");
+    return r.content;
+  };
+
+  const review = await reviewPullRequest({
+    provider: gitProvider,
+    connection,
+    repoId,
+    prNumber,
+    callModel,
+    storage,
+    log: (m) => console.log(`[gitreview] ${m}`),
+    options: { simulation: simulated, allowVerdictActions, savedByRole },
+  });
+
+  const failed = review.status === "failed";
+  const skipped = review.status === "skipped";
+  return finish(
+    { success: !failed, error: failed ? review.error : undefined, review, ruleName },
+    failed
+      ? { decision: "ERROR", reason: `PR review failed (${review.code}): ${review.error}`, recommendation: "Check the git connection and the AI provider, then re-run the review." }
+      : skipped
+        ? { decision: "SKIP", reason: `PR review skipped: ${review.skipped}.`, recommendation: "" }
+        : { decision: simulated ? "SIMULATED" : "REVIEW", reason: `PR review: ${review.verdict}, ${review.findings.length} finding(s)${simulated ? " — simulation, nothing posted" : `, ${review.posted.inline.length} inline comment(s)`}.`, recommendation: "" },
+  );
+};
+
+/**
+ * A QUEUED CREDENTIAL ROTATION (F-290).
+ *
+ * `applyCredentialRotation` is the only writer that replaces a stored secret in place,
+ * and it VERIFIES the replacement before it overwrites the old one — so this handler is
+ * pure wiring and must add no policy of its own. It spends no model tokens, so it is
+ * absent from AI_TASK_TYPES and is never paced.
+ *
+ * THE SECRET IS NEVER LOGGED. `params.secret` carries a live token; the one log line
+ * below names the target and the outcome and nothing else, and the returned result is
+ * built field by field rather than spreading `params` into it.
+ */
+const executeCredentialRotation = async (params) => {
+  const target = (params && params.target) || {};
+  const label = target.kind === "connection" ? `connection ${target.id}` : "forge identity";
+  let out;
+  try {
+    out = await applyCredentialRotation(params);
+  } catch (e) {
+    // A throw here is infrastructure, not a rejected credential — either way nothing
+    // was rotated, and the operator must be told rather than left on a green badge.
+    console.warn(`[gitcredrotate] ${label}: failed (${(e && e.message) || e})`);
+    return { success: false, error: `Credential rotation failed: ${String((e && e.message) || e).slice(0, 200)}` };
+  }
+  console.log(`[gitcredrotate] ${label}: ${out.ok ? "rotated" : `refused (${out.code || "error"})`}`);
+  return out.ok
+    ? { success: true, rotated: out.rotated, id: out.id || null }
+    : { success: false, error: out.error || "Credential rotation failed", code: out.code || null };
+};
+
+/**
+ * A GIT WEBHOOK DELIVERY — STUB (1.4 commit 5 fills it).
+ *
+ * Registered now so the task type exists in ONE place with its no-AI property stated
+ * (`AI_TASK_TYPES` does not contain it, `estimateTaskTokens` returns 0 for it): a
+ * delivery verifies a signature, filters and enqueues, and must never be paced by the
+ * token governor. Until commit 5 it accepts and does nothing, which is the correct
+ * behaviour for a type nothing produces yet.
+ */
+const executeGitEvent = async (params) => {
+  console.log(`[git-event] stub — delivery accepted, no handler yet (1.4 commit 5). repo=${(params && params.repoId) || "?"}`);
+  return { success: true, skipped: "not-implemented" };
+};
+
 // === Task registry — add new async task types here ===
 const TASK_HANDLERS = {
   "probe": executeProbe,
@@ -965,12 +1154,21 @@ const TASK_HANDLERS = {
   // by "Run now" (UI + REST), listener runs are fire-and-forget.
   "listener": executeListenerTask,
   "scheduledjob": executeScheduledJobTask,
+  // Git (1.4): a queued PR review, and the webhook delivery that will produce one.
+  "gitreview": executeGitReview,
+  "git-event": executeGitEvent,
+  // F-290 — the key is the producer's own constant, never a retyped literal.
+  [CREDENTIAL_ROTATION_TASK]: executeCredentialRotation,
 };
 
 // Task types with no poller — skip async_task:* status rows (they'd never be
 // cleaned up: getAsyncTaskResult deletes rows only when something polls them).
 // codegen/fixcode ARE polled (the frontend waits on getAsyncTaskResult).
-const UNPOLLED_TASKS = new Set(["postfunction", "memory_distill", "listener", "probe"]);
+// `gitreview` and `git-event` are produced by a webhook, not by a browser — nothing
+// polls them. gitreview writes its OWN execution-log entry on every outcome (see
+// executeGitReview's single exit), so it is deliberately absent from UNPOLLED_LOG_TYPE
+// below: adding it there would double-log every failure.
+const UNPOLLED_TASKS = new Set(["postfunction", "memory_distill", "listener", "probe", "gitreview", "git-event"]);
 
 // F-119 — which UNPOLLED task types write an execution-log entry when they FAIL, and
 // under WHICH log type. The value must be a type the UI badge maps already know
@@ -1082,6 +1280,147 @@ const refuseQueuedRunWithoutProvider = async (taskType, taskId, params, ruleRow,
 };
 
 /**
+ * WHICH TASK TYPES SPEND MODEL TOKENS — one home, read by the gate and asserted by
+ * the offline suite. `postfunction`, `listener` and `scheduledjob` are NOT here: their
+ * answer depends on the rule row (a static PF / a script-mode rule uses no AI), so the
+ * gate decides those from the row it reads.
+ *
+ * `git-event` is deliberately ABSENT: a webhook delivery verifies a signature, filters
+ * and enqueues — it calls no model, so pacing it would only delay the enqueue of work
+ * that IS paced a moment later. Its ai-budget estimate is 0 for the same reason.
+ */
+export const AI_TASK_TYPES = new Set([
+  "review", "codegen", "fixcode", "skilldistill", "memory_distill", "gitreview",
+]);
+
+/**
+ * The gate's real collaborators. Injected (rather than closed over) so the offline
+ * suite can execute the REAL gate source against stubs — see runGatedTask.
+ */
+const GATE_DEPS = {
+  getListener, getJob, getProviderConfig, estimateTaskTokens, getLearnedRuleCost,
+  aiBudgetGate, bumpAiBudgetBucket, updateAsyncJob, refuseQueuedRunWithoutProvider,
+  JOB_TTL_ACTIVE,
+  pushDeferred: async (body, delayInSeconds) => {
+    const { Queue } = await import("@forge/events");
+    const queue = new Queue({ key: "async-ai-queue" });
+    return queue.push({ body, delayInSeconds, concurrency: { key: "ai-budget", limit: 2 } });
+  },
+};
+
+/**
+ * THE TOKEN-BUDGET GATE — one implementation, both consumers.
+ *
+ * Estimate this task's spend; if the current minute cannot take it, DEFER: re-push the
+ * same event to just past the next minute boundary and return `{ run: false }`. The job
+ * row stays "queued" with a budgetWait so the Jobs tab shows the pacing. Static PFs,
+ * script-mode listeners/jobs and `git-event` (a webhook delivery does no model work)
+ * use no AI and are NEVER gated.
+ *
+ * Carved out of `handler` for 1.4 commit 4b because a second consumer (`longHandler`)
+ * and a second producer (git) now exist: the ONE thing that must never fork is the
+ * governor. `aiBudgetGate` is called exactly HERE and nowhere else in this file —
+ * `test-harness/scripts/git-manifest-egress.test.mjs` counts the call sites, and
+ * `async-handler-helpers.test.mjs` executes this function's source directly.
+ *
+ * Everything it touches is injected through `deps` (defaulted to the module's real
+ * imports) so the offline suite can run the real region with no Forge platform.
+ *
+ * @param {object} event  the queue event (`{ body: { taskType, taskId, params } }`).
+ * @param {object} deps   per-invocation context `{ ttl, jobRow, enqAt, budgetDeferrals }`
+ *                        plus any override of GATE_DEPS.
+ * @returns {Promise<{run:boolean, budgetRuleId, budgetEstimate, budgetProvider, budgetReserveMs, ruleRow}>}
+ */
+export async function runGatedTask(event, deps = {}) {
+  const d = { ...GATE_DEPS, ...deps };
+  const { taskType, taskId, params } = (event && event.body) || {};
+  const { ttl, jobRow = null, enqAt = null, budgetDeferrals = 0 } = d;
+  const budgetRuleId = params?.config?.ruleId || params?.config?.id || params?.listenerId || params?.jobId || null;
+  let budgetEstimate = 0;
+  let budgetProvider = null;
+  let budgetReserveMs = 0; // the reservation's minute — the release must hit the SAME bucket
+  // F-134 — the fail-CLOSED decision for listener/scheduledjob is made INSIDE the gate
+  // try but acted on AFTER it. This try's catch is deliberately fail-OPEN ("run now"),
+  // so a throw from any write on the refusal path used to unwind into it and the job
+  // RAN on a provider this consumer had just proved does not exist. The flag is sticky:
+  // once set, no path below runs the task.
+  let refuseNoProvider = false;
+  // F-135 — the rule row read here for `usesAi` is the SAME row the refusal log and its
+  // receipt need. Read once and pass it down; the old second read sat in front of
+  // storeLog inside one try, so a KVS fault on it lost the execution-log entry too.
+  let ruleRow = null;
+  try {
+    let usesAi = false;
+    if (taskType === "postfunction") usesAi = !/static/.test(String(params?.config?.type || ""));
+    else if (taskType === "listener") { ruleRow = await d.getListener(params?.listenerId); usesAi = !!ruleRow && ruleRow.mode === "agent"; }
+    else if (taskType === "scheduledjob") { ruleRow = await d.getJob(params?.jobId); usesAi = !!ruleRow && ruleRow.mode === "agent"; }
+    else usesAi = AI_TASK_TYPES.has(taskType);
+    if (usesAi) {
+      budgetProvider = (await d.getProviderConfig()).provider;
+      budgetEstimate = d.estimateTaskTokens(taskType, params, await d.getLearnedRuleCost(budgetRuleId));
+      const gate = await d.aiBudgetGate({ provider: budgetProvider, estimate: budgetEstimate, deferrals: budgetDeferrals });
+      // F-116 — the provider read faulted, so there is nothing to pace and no bucket
+      // to reserve in. The task body will refuse with NO_PROVIDER_ERROR a moment from
+      // now (F-109); spend nothing on the ledger on the way there. Zeroing the estimate
+      // also keeps the settle below symmetric with what was (not) reserved.
+      if (gate.skipped === "no-provider") {
+        // F-121 — the skip is only safe for the task types that refuse on their own.
+        // `listener` and `scheduledjob` have NO NO_PROVIDER_ERROR guard, and they reach
+        // the model through agent-runner → index.js's 30s-MEMOISED provider read, not
+        // this fresh one. So a skip here lets an agent run fully unpaced and unreserved
+        // on a provider this consumer believes does not exist. Fail CLOSED instead —
+        // the same rule the other five task bodies already follow.
+        if (taskType === "listener" || taskType === "scheduledjob") {
+          // Decide here, ACT outside this try (F-134) — see refuseQueuedRunWithoutProvider.
+          refuseNoProvider = true;
+        } else {
+          console.warn(`[budget] no provider for ${taskType} (${taskId}) — gate skipped, nothing reserved`);
+          budgetEstimate = 0;
+          budgetProvider = null;
+        }
+      } else if (!gate.allow) {
+        const until = new Date(Date.now() + gate.delaySeconds * 1000).toISOString();
+        const firstEnqueuedAt = params?.firstEnqueuedAt || enqAt || new Date().toISOString();
+        const body = {
+          ...event.body,
+          params: { ...params, enqueuedAt: new Date().toISOString(), firstEnqueuedAt, budgetDeferrals: budgetDeferrals + 1 },
+        };
+        // A small concurrency cap on the re-pushed events keeps a drained backlog from
+        // all passing the (non-atomic) ledger check in the same instant.
+        const pr = await d.pushDeferred(body, gate.delaySeconds);
+        await d.updateAsyncJob(taskId, {
+          status: "queued", enqueuedAt: body.params.enqueuedAt, jobId: pr?.jobId || jobRow?.jobId || null, startedAt: null,
+          budgetWait: { until, deferrals: budgetDeferrals + 1, firstEnqueuedAt, used: gate.used + gate.reserved, budget: gate.budget, estimate: budgetEstimate, provider: budgetProvider },
+        }, d.JOB_TTL_ACTIVE, { taskId, taskType, status: "queued", enqueuedAt: body.params.enqueuedAt });
+        console.log(`[budget] deferred ${taskType} (${taskId}) ${gate.delaySeconds}s — minute at ${gate.used + gate.reserved}/${gate.budget} tokens, needs ~${budgetEstimate} (${budgetProvider}, deferral ${budgetDeferrals + 1})`);
+        return { run: false, deferred: true, budgetRuleId, budgetEstimate: 0, budgetProvider: null, budgetReserveMs: 0, ruleRow };
+      }
+      // Nothing is reserved for a run that is about to be refused (F-134).
+      if (!refuseNoProvider) {
+        if (gate.forced) console.warn(`[budget] ${taskType} (${taskId}) ran after the deferral cap — budget still full`);
+        if (budgetProvider) {
+          budgetReserveMs = Date.now();
+          await d.bumpAiBudgetBucket(budgetProvider, { reserved: budgetEstimate }, budgetReserveMs);
+        }
+      }
+    }
+  } catch (e) {
+    // The gate must never block the queue: on any ledger/queue failure, run now.
+    console.warn(`[budget] gate skipped for ${taskType} (${taskId}): ${e?.message}`);
+    if (budgetProvider && budgetEstimate && budgetReserveMs) { try { await d.bumpAiBudgetBucket(budgetProvider, { reserved: -budgetEstimate }, budgetReserveMs); } catch { /* best-effort */ } }
+    budgetEstimate = 0;
+  }
+
+  // F-134 — acted on OUTSIDE the fail-open catch above, and sticky: nothing below runs.
+  if (refuseNoProvider) {
+    await d.refuseQueuedRunWithoutProvider(taskType, taskId, params, ruleRow, ttl);
+    return { run: false, refused: true, budgetRuleId, budgetEstimate: 0, budgetProvider: null, budgetReserveMs: 0, ruleRow };
+  }
+
+  return { run: true, budgetRuleId, budgetEstimate, budgetProvider, budgetReserveMs, ruleRow };
+}
+
+/**
  * Main async event handler. Routes to the correct task handler.
  */
 export async function handler(event) {
@@ -1178,94 +1517,14 @@ export async function handler(event) {
     }
   }
 
-  // ===== TOKEN-BUDGET GATE =====
-  // Estimate this task's spend; if the current minute cannot take it, DEFER: re-push
-  // the same event to just past the next minute boundary and return without running.
-  // The job row stays "queued" with a budgetWait so the Jobs tab shows the pacing.
-  // Static PFs and script-mode listeners/jobs use no AI and are never gated.
-  const budgetRuleId = params?.config?.ruleId || params?.config?.id || params?.listenerId || params?.jobId || null;
-  let budgetEstimate = 0;
-  let budgetProvider = null;
-  let budgetReserveMs = 0; // the reservation's minute — the release must hit the SAME bucket
-  // F-134 — the fail-CLOSED decision for listener/scheduledjob is made INSIDE the gate
-  // try but acted on AFTER it. This try's catch is deliberately fail-OPEN ("run now"),
-  // so a throw from any write on the refusal path used to unwind into it and the job
-  // RAN on a provider this consumer had just proved does not exist. The flag is sticky:
-  // once set, no path below runs the task.
-  let refuseNoProvider = false;
-  // F-135 — the rule row read here for `usesAi` is the SAME row the refusal log and its
-  // receipt need. Read once and pass it down; the old second read sat in front of
-  // storeLog inside one try, so a KVS fault on it lost the execution-log entry too.
-  let ruleRow = null;
-  try {
-    let usesAi = false;
-    if (taskType === "postfunction") usesAi = !/static/.test(String(params?.config?.type || ""));
-    else if (taskType === "listener") { ruleRow = await getListener(params?.listenerId); usesAi = !!ruleRow && ruleRow.mode === "agent"; }
-    else if (taskType === "scheduledjob") { ruleRow = await getJob(params?.jobId); usesAi = !!ruleRow && ruleRow.mode === "agent"; }
-    else usesAi = ["review", "codegen", "fixcode", "skilldistill", "memory_distill"].includes(taskType);
-    if (usesAi) {
-      budgetProvider = (await getProviderConfig()).provider;
-      budgetEstimate = estimateTaskTokens(taskType, params, await getLearnedRuleCost(budgetRuleId));
-      const gate = await aiBudgetGate({ provider: budgetProvider, estimate: budgetEstimate, deferrals: budgetDeferrals });
-      // F-116 — the provider read faulted, so there is nothing to pace and no bucket
-      // to reserve in. The task body will refuse with NO_PROVIDER_ERROR a moment from
-      // now (F-109); spend nothing on the ledger on the way there. Zeroing the estimate
-      // also keeps the settle below symmetric with what was (not) reserved.
-      if (gate.skipped === "no-provider") {
-        // F-121 — the skip is only safe for the task types that refuse on their own.
-        // `listener` and `scheduledjob` have NO NO_PROVIDER_ERROR guard, and they reach
-        // the model through agent-runner → index.js's 30s-MEMOISED provider read, not
-        // this fresh one. So a skip here lets an agent run fully unpaced and unreserved
-        // on a provider this consumer believes does not exist. Fail CLOSED instead —
-        // the same rule the other five task bodies already follow.
-        if (taskType === "listener" || taskType === "scheduledjob") {
-          // Decide here, ACT outside this try (F-134) — see refuseQueuedRunWithoutProvider.
-          refuseNoProvider = true;
-        } else {
-          console.warn(`[budget] no provider for ${taskType} (${taskId}) — gate skipped, nothing reserved`);
-          budgetEstimate = 0;
-          budgetProvider = null;
-        }
-      } else if (!gate.allow) {
-        const until = new Date(Date.now() + gate.delaySeconds * 1000).toISOString();
-        const firstEnqueuedAt = params?.firstEnqueuedAt || enqAt || new Date().toISOString();
-        const body = {
-          ...event.body,
-          params: { ...params, enqueuedAt: new Date().toISOString(), firstEnqueuedAt, budgetDeferrals: budgetDeferrals + 1 },
-        };
-        const { Queue } = await import("@forge/events");
-        const queue = new Queue({ key: "async-ai-queue" });
-        // A small concurrency cap on the re-pushed events keeps a drained backlog from
-        // all passing the (non-atomic) ledger check in the same instant.
-        const pr = await queue.push({ body, delayInSeconds: gate.delaySeconds, concurrency: { key: "ai-budget", limit: 2 } });
-        await updateAsyncJob(taskId, {
-          status: "queued", enqueuedAt: body.params.enqueuedAt, jobId: pr?.jobId || jobRow?.jobId || null, startedAt: null,
-          budgetWait: { until, deferrals: budgetDeferrals + 1, firstEnqueuedAt, used: gate.used + gate.reserved, budget: gate.budget, estimate: budgetEstimate, provider: budgetProvider },
-        }, JOB_TTL_ACTIVE, { taskId, taskType, status: "queued", enqueuedAt: body.params.enqueuedAt });
-        console.log(`[budget] deferred ${taskType} (${taskId}) ${gate.delaySeconds}s — minute at ${gate.used + gate.reserved}/${gate.budget} tokens, needs ~${budgetEstimate} (${budgetProvider}, deferral ${budgetDeferrals + 1})`);
-        return;
-      }
-      // Nothing is reserved for a run that is about to be refused (F-134).
-      if (!refuseNoProvider) {
-        if (gate.forced) console.warn(`[budget] ${taskType} (${taskId}) ran after the deferral cap — budget still full`);
-        if (budgetProvider) {
-          budgetReserveMs = Date.now();
-          await bumpAiBudgetBucket(budgetProvider, { reserved: budgetEstimate }, budgetReserveMs);
-        }
-      }
-    }
-  } catch (e) {
-    // The gate must never block the queue: on any ledger/queue failure, run now.
-    console.warn(`[budget] gate skipped for ${taskType} (${taskId}): ${e?.message}`);
-    if (budgetProvider && budgetEstimate && budgetReserveMs) { try { await bumpAiBudgetBucket(budgetProvider, { reserved: -budgetEstimate }, budgetReserveMs); } catch { /* best-effort */ } }
-    budgetEstimate = 0;
-  }
-
-  // F-134 — acted on OUTSIDE the fail-open catch above, and sticky: nothing below runs.
-  if (refuseNoProvider) {
-    await refuseQueuedRunWithoutProvider(taskType, taskId, params, ruleRow, ttl);
-    return;
-  }
+  // ===== THE PACING GATE, CALLED (defined once, in runGatedTask) =====
+  // ONE GATE, ONE HOME (§3.17(3)). The whole region lives in `runGatedTask` above and
+  // is the ONLY place `aiBudgetGate` is called — asserted by
+  // test-harness/scripts/git-manifest-egress.test.mjs. `handler` acts on its verdict;
+  // `longHandler` reaches the same function by delegating to `handler`.
+  const gated = await runGatedTask(event, { ttl, jobRow, enqAt, budgetDeferrals });
+  if (!gated.run) return;
+  const { budgetRuleId, budgetEstimate, budgetProvider, budgetReserveMs } = gated;
 
   resetInvocationTokens();
 

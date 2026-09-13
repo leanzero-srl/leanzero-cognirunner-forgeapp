@@ -124,16 +124,28 @@ ok(normalizeMemoryText("PROJ-77 failed with 12345") === normalizeMemoryText("QA-
 const handlersBlock = asyncSrc.match(/const TASK_HANDLERS = \{([\s\S]*?)\n\};/);
 if (!handlersBlock) { console.log("FAIL: could not locate TASK_HANDLERS"); process.exit(1); }
 const handlerKeys = [...handlersBlock[1].matchAll(/"([^"]+)"\s*:/g)].map((x) => x[1]);
+// F-290 — one key is COMPUTED from git-connections.js's exported constant (the producer
+// and the registry must not retype the same string). Resolve it from the real module so
+// the orphan count below still covers it.
+{
+  const computed = [...handlersBlock[1].matchAll(/\[([A-Z_]+)\]\s*:/g)].map((x) => x[1]);
+  const conns = await import("../../src/git-connections.js").catch(() => null);
+  for (const name of computed) {
+    const value = conns && conns[name];
+    ok(typeof value === "string" && value.length > 0, `the computed TASK_HANDLERS key ${name} resolves from git-connections.js`);
+    if (typeof value === "string") handlerKeys.push(value);
+  }
+}
 const unpolledMatch = asyncSrc.match(/const UNPOLLED_TASKS = new Set\((\[[\s\S]*?\])\);/);
 if (!unpolledMatch) { console.log("FAIL: could not locate UNPOLLED_TASKS"); process.exit(1); }
 // eslint-disable-next-line no-eval
 const UNPOLLED_TASKS = new Set(eval(unpolledMatch[1]));
 
-const expectedHandlers = ["probe", "review", "postfunction", "codegen", "fixcode", "skilldistill", "memory_distill", "listener", "scheduledjob"];
+const expectedHandlers = ["probe", "review", "postfunction", "codegen", "fixcode", "skilldistill", "memory_distill", "listener", "scheduledjob", "gitreview", "git-event", "gitcredrotate"];
 for (const t of expectedHandlers) ok(handlerKeys.includes(t), `TASK_HANDLERS registers "${t}"`);
 ok(handlerKeys.length === expectedHandlers.length, `TASK_HANDLERS has exactly ${expectedHandlers.length} task types (no orphans)`);
-ok(UNPOLLED_TASKS.has("postfunction") && UNPOLLED_TASKS.has("memory_distill") && UNPOLLED_TASKS.has("listener") && UNPOLLED_TASKS.has("probe") && UNPOLLED_TASKS.size === 4,
-   "UNPOLLED_TASKS = { postfunction, memory_distill, listener, probe } (scheduledjob is polled by Run now; probe is dev-only, read via the test hook)");
+ok(["postfunction", "memory_distill", "listener", "probe", "gitreview", "git-event"].every((t) => UNPOLLED_TASKS.has(t)) && UNPOLLED_TASKS.size === 6,
+   "UNPOLLED_TASKS = { postfunction, memory_distill, listener, probe, gitreview, git-event } (scheduledjob is polled by Run now, gitcredrotate by the Code tab; probe is dev-only, read via the test hook)");
 // Invariant: every unpolled type MUST be a registered handler (an unpolled type absent from the
 // registry could never run yet would skip its status-row write — a silent dead task).
 ok([...UNPOLLED_TASKS].every((t) => handlerKeys.includes(t)), "every UNPOLLED task is a registered TASK_HANDLER");
@@ -581,11 +593,14 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   ok(/refuseNoProvider = true;/.test(gateBlock), "…by setting the sticky refusal flag");
   ok(!/storage\.set|storeLog|updateAsyncJob|return;/.test(gateBlock.split('refuseNoProvider = true;')[0].split('if (taskType === "listener"')[1] || ""),
     "…and does NO write inside the fail-open try");
-  ok(/let refuseNoProvider = false;/.test(asyncSrc) && asyncSrc.indexOf("let refuseNoProvider = false;") < asyncSrc.indexOf("// ===== TOKEN-BUDGET GATE =====") + asyncSrc.slice(asyncSrc.indexOf("// ===== TOKEN-BUDGET GATE =====")).indexOf("try {"),
-    "the flag is declared OUTSIDE the gate try, so the catch cannot reset it");
+  {
+    const gateFn = asyncSrc.slice(asyncSrc.indexOf("export async function runGatedTask"));
+    ok(gateFn.indexOf("let refuseNoProvider = false;") > 0 && gateFn.indexOf("let refuseNoProvider = false;") < gateFn.indexOf("  try {"),
+      "the flag is declared OUTSIDE the gate try, so the catch cannot reset it");
+  }
   const afterCatch = asyncSrc.match(/\n  if \(refuseNoProvider\) \{[\s\S]*?\n  \}/)[0];
-  ok(/await refuseQueuedRunWithoutProvider\(taskType, taskId, params, ruleRow, ttl\);/.test(afterCatch)
-    && /\n    return;/.test(afterCatch), "the refusal is acted on AFTER the try/catch and returns");
+  ok(/await d\.refuseQueuedRunWithoutProvider\(taskType, taskId, params, ruleRow, ttl\);/.test(afterCatch)
+    && /\n    return \{ run: false, refused: true/.test(afterCatch), "the refusal is acted on AFTER the try/catch and returns a non-running verdict");
   ok(asyncSrc.indexOf(afterCatch) > asyncSrc.indexOf("[budget] gate skipped for"),
     "…strictly after the fail-open catch");
   ok(asyncSrc.indexOf(afterCatch) < asyncSrc.indexOf("const taskHandler2 = null") + 1 || asyncSrc.indexOf(afterCatch) < asyncSrc.indexOf("const result = await taskHandler(params, taskId);"),
@@ -605,8 +620,8 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   // F-135 — the row is NOT re-read here.
   ok(!/getListener\(|getJob\(/.test(helperSrc), "the helper never re-reads the rule row (it is passed in)");
   ok(/ruleRow \?\.?/.test(helperSrc) || /ruleRow\?\./.test(helperSrc), "…it uses the row the budget gate already read");
-  ok(/else if \(taskType === "listener"\) \{ ruleRow = await getListener/.test(asyncSrc)
-    && /else if \(taskType === "scheduledjob"\) \{ ruleRow = await getJob/.test(asyncSrc),
+  ok(/else if \(taskType === "listener"\) \{ ruleRow = await d\.getListener/.test(asyncSrc)
+    && /else if \(taskType === "scheduledjob"\) \{ ruleRow = await d\.getJob/.test(asyncSrc),
     "…and that read is the SAME one `usesAi` uses — one read, one home");
 
   // F-128 — rule stats move ONLY on a statsReceipt.
@@ -768,24 +783,27 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
 
   // (6) F-134 STICKY: the real gate region, executed. A throwing refusal helper must NOT
   //     let the task run — the flag is decided inside the try, acted on outside it.
-  const regionStart = asyncSrc.indexOf("  let budgetEstimate = 0;");
-  const regionEnd = asyncSrc.indexOf("  resetInvocationTokens();");
-  const regionSrc = asyncSrc.slice(regionStart, regionEnd);
-  const runRegion = (deps) => new Function("deps", `
-    const { console: __c, taskType, taskId, params, ttl, event, jobRow, enqAt, budgetDeferrals, budgetRuleId,
-            getListener, getJob, getProviderConfig, estimateTaskTokens, getLearnedRuleCost, aiBudgetGate,
-            bumpAiBudgetBucket, updateAsyncJob, JOB_TTL_ACTIVE, refuseQueuedRunWithoutProvider, RAN } = deps;
-    const console = __c;
-    return (async () => {
-      ${regionSrc}
-      RAN.ran = true;
-    })();
-  `)(deps);
+  // 1.4 commit 4b — the region is now the EXPORTED `runGatedTask`, one implementation
+  // for both consumers. Its real source is executed here against stubs (it takes every
+  // collaborator through `deps`, which is exactly why it can be).
+  const fnSrc = (() => {
+    const at = asyncSrc.indexOf("export async function runGatedTask(event, deps = {}) {");
+    ok(at > 0, "runGatedTask exists and is exported");
+    const close = asyncSrc.indexOf("\n}\n", at);
+    return asyncSrc.slice(at, close + 2).replace("export async function", "async function");
+  })();
+  const AI_TASK_TYPES = new Set(eval(asyncSrc.match(/export const AI_TASK_TYPES = new Set\(([\s\S]*?)\);/)[1]));
+  const buildGate = (deps) => new Function("GATE_DEPS", "console", "AI_TASK_TYPES", `return (${fnSrc});`)(deps, quietConsole, AI_TASK_TYPES);
+  const runRegion = async (deps) => {
+    const out = await buildGate(deps)({ body: { taskType: deps.taskType, taskId: deps.taskId, params: deps.params } }, {});
+    if (out && out.run) deps.RAN.ran = true;
+    return out;
+  };
   const regionDeps = (over = {}) => {
     const RAN = { ran: false, refused: 0 };
     return { RAN, deps: {
-      console: quietConsole, taskType: "listener", taskId: "T6", params: { listenerId: "L1" }, ttl: {},
-      event: { body: {} }, jobRow: null, enqAt: null, budgetDeferrals: 0, budgetRuleId: "L1",
+      taskType: "listener", taskId: "T6", params: { listenerId: "L1" }, ttl: {},
+      jobRow: null, enqAt: null, budgetDeferrals: 0,
       getListener: async () => ({ id: "L1", mode: "agent", name: "L" }),
       getJob: async () => null,
       getProviderConfig: async () => ({ provider: null }),
@@ -795,6 +813,7 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
       bumpAiBudgetBucket: async () => { throw new Error("must not reserve for a refused run"); },
       updateAsyncJob: async () => {},
       JOB_TTL_ACTIVE: {},
+      pushDeferred: async () => ({ jobId: "deferred" }),
       refuseQueuedRunWithoutProvider: async () => { RAN.refused++; },
       RAN, ...over,
     } };
@@ -818,6 +837,137 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
     await runRegion(deps);
     ok(RAN.ran === true && RAN.refused === 0, "EXECUTED: a ledger fault is still fail-OPEN for a task with a provider");
   }
+
+  // --- 1.4 commit 4b: gitreview IS gated, git-event NEVER is ---
+  {
+    let gateCalls = 0;
+    const { RAN, deps } = regionDeps({
+      taskType: "git-event", taskId: "G1", params: { repoId: "o/r", payload: { big: "x".repeat(5000) } },
+      getProviderConfig: async () => { throw new Error("a git-event must never read the provider"); },
+      aiBudgetGate: async () => { gateCalls++; return { allow: true }; },
+    });
+    const out = await runRegion(deps);
+    ok(out.run === true && RAN.ran === true, "EXECUTED: a git-event runs");
+    ok(gateCalls === 0, "EXECUTED: …and is NEVER paced — the governor is not consulted for it");
+    ok(out.budgetEstimate === 0 && out.budgetProvider === null, "EXECUTED: …so it reserves nothing on the ledger");
+  }
+  {
+    let seen = null;
+    const { RAN, deps } = regionDeps({
+      taskType: "gitreview", taskId: "R1", params: { connId: "c1", repoId: "o/r", prNumber: 7, diffBytes: 40960 },
+      getProviderConfig: async () => ({ provider: "atlassian" }),
+      estimateTaskTokens: (t, p) => { seen = { t, p }; return 14240; },
+      aiBudgetGate: async () => ({ allow: true }),
+      bumpAiBudgetBucket: async () => {},
+    });
+    const out = await runRegion(deps);
+    ok(seen && seen.t === "gitreview", "EXECUTED: a gitreview IS estimated (it spends tokens)");
+    ok(out.run === true && out.budgetEstimate === 14240 && out.budgetProvider === "atlassian",
+      "EXECUTED: …and reserves its estimate on the ledger before running");
+  }
+  {
+    // A full minute defers the review instead of running it — same governor, no fork.
+    let pushed = null;
+    const { RAN, deps } = regionDeps({
+      taskType: "gitreview", taskId: "R2", params: { connId: "c1", repoId: "o/r", prNumber: 7 },
+      getProviderConfig: async () => ({ provider: "atlassian" }),
+      estimateTaskTokens: () => 9000,
+      aiBudgetGate: async () => ({ allow: false, delaySeconds: 42, used: 34000, reserved: 0, budget: 35000 }),
+      pushDeferred: async (body, delay) => { pushed = { body, delay }; return { jobId: "J" }; },
+      bumpAiBudgetBucket: async () => { throw new Error("a deferred run reserves nothing"); },
+    });
+    const out = await runRegion(deps);
+    ok(out.run === false && out.deferred === true && RAN.ran === false, "EXECUTED: a gitreview over budget is DEFERRED, not run");
+    ok(pushed && pushed.delay === 42 && pushed.body.params.budgetDeferrals === 1, "EXECUTED: …re-pushed past the boundary with the deferral counted");
+  }
+}
+
+// =====================================================================================
+// 1.4 commit 4b — ONE GATE, BOTH CONSUMERS. The 120 s `handler` and the 900 s
+// `longHandler` must reach the SAME governor. This is the property the 2026-09-12
+// "second token governor" finding was about; it is asserted three ways.
+// =====================================================================================
+{
+  ok((asyncSrc.split("aiBudgetGate(").length - 1) === 1, "aiBudgetGate is called exactly ONCE in the whole file");
+  const gateAt = asyncSrc.indexOf("export async function runGatedTask");
+  const callAt = asyncSrc.indexOf("await d.aiBudgetGate(");
+  ok(gateAt > 0 && callAt > gateAt, "…and that one call site is inside runGatedTask");
+  ok((asyncSrc.split("await runGatedTask(").length - 1) === 1, "runGatedTask is invoked from exactly one place — `handler`");
+  ok(/export async function longHandler\(event\) \{\s*return handler\(event\);\s*\}/.test(asyncSrc),
+    "longHandler still DELEGATES to handler, so the long consumer reaches the same gate (no copy)");
+}
+
+// =====================================================================================
+// 1.4 commit 4b — the gitreview task handler, executed over a mocked provider + model.
+// =====================================================================================
+{
+  ok(/"gitreview": executeGitReview,/.test(asyncSrc), "gitreview is registered in TASK_HANDLERS");
+  ok(/"git-event": executeGitEvent,/.test(asyncSrc), "git-event is registered in TASK_HANDLERS");
+  ok(/UNPOLLED_TASKS = new Set\(\[[^\]]*"gitreview"/.test(asyncSrc), "nothing polls a gitreview — no orphan async_task row");
+  // It writes its own execution-log entry on EVERY outcome, so it must not also be in
+  // the generic unpolled-failure logger (that would double-log every failure).
+  const ulog = asyncSrc.match(/const UNPOLLED_LOG_TYPE = \{[^}]*\}/);
+  ok(ulog && !/gitreview/.test(ulog[0]), "…and it is absent from UNPOLLED_LOG_TYPE (it logs itself, once)");
+
+  // The permission is read from the RULE ROW and defaults to false.
+  const h = asyncSrc.slice(asyncSrc.indexOf("const executeGitReview = async"), asyncSrc.indexOf("const executeGitEvent = async"));
+  ok(/savedByRole === "admin" && reviewCfg\.allowVerdictActions === true/.test(h),
+    "allowVerdictActions requires BOTH the rule's flag and an admin author");
+  ok(/options: \{ simulation: simulated, allowVerdictActions, savedByRole \}/.test(h),
+    "savedByRole is passed to the engine so the engine can re-check it (F-286) — never trusted from here alone");
+  ok(/type: "listener", source: "async"/.test(h), "the execution-log entry uses the listener type (a badge every UI knows)");
+  ok(/if \(!r\.ok\) throw new Error/.test(h), "a model failure THROWS into the engine, so the run ends 'failed', never 'clean'");
+
+  // EXECUTED: the permission derivation, over the three rule rows that matter.
+  const derive = (row) => {
+    const savedByRole = row && row.savedByRole === "admin" ? "admin" : null;
+    const cfg = (row && row.gitReview && typeof row.gitReview === "object") ? row.gitReview : {};
+    return savedByRole === "admin" && cfg.allowVerdictActions === true;
+  };
+  ok(derive(null) === false, "EXECUTED: no rule row → allowVerdictActions false");
+  ok(derive({ gitReview: { allowVerdictActions: true } }) === false, "EXECUTED: an editor-saved rule cannot arm the verdict action");
+  ok(derive({ savedByRole: "admin", gitReview: {} }) === false, "EXECUTED: an admin who did not tick the box does not arm it either");
+  ok(derive({ savedByRole: "admin", gitReview: { allowVerdictActions: true } }) === true, "EXECUTED: admin + ticked → armed");
+  ok(derive({ savedByRole: "admin", gitReview: { allowVerdictActions: "yes" } }) === false, "EXECUTED: a truthy non-true value does not arm it");
+
+  // EXECUTED: the engine's claim-skip path over a mocked provider — no model call,
+  // no comment, and the handler still reports it.
+  const { reviewPullRequest } = await import("../../src/git-review.js");
+  const mockProvider = (over = {}) => ({
+    kind: "github",
+    getPullRequest: async () => ({ number: 7, headSha: "abc1234", title: "t", body: "b", author: "a", state: "open" }),
+    getPullRequestDiff: async () => ({ files: [{ path: "a.js", additions: 1, deletions: 0, patch: "@@ -1 +1 @@\n+x" }] }),
+    listPullRequestComments: async () => [],
+    addPullRequestComment: async () => ({ id: 1, url: "u" }),
+    ...over,
+  });
+  {
+    let modelCalls = 0, posted = 0;
+    // The claim is LOST the way KVS loses it: a conditional write that conflicts.
+    const conflict = Object.assign(new Error("key already exists"), { code: "KEY_ALREADY_EXISTS" });
+    const store = { set: async () => { throw conflict; }, get: async () => null };
+    const r = await reviewPullRequest({
+      provider: mockProvider({ addPullRequestComment: async () => { posted++; return { id: 1 }; } }),
+      connection: { id: "c1", kind: "github" }, repoId: "o/r", prNumber: 7,
+      callModel: async () => { modelCalls++; return "{}"; }, storage: store,
+    });
+    ok(r.status === "skipped" && r.skipped === "already-reviewed", "EXECUTED: a redelivered review loses the claim and skips");
+    ok(modelCalls === 0 && posted === 0, "EXECUTED: …spending NO model call and posting NOTHING");
+  }
+  {
+    // The default really is "report, never act": a won claim + an approve verdict
+    // still takes no review action when allowVerdictActions is not passed.
+    let approved = 0;
+    const store = { set: async () => undefined, get: async () => null, delete: async () => {} };
+    const r = await reviewPullRequest({
+      provider: mockProvider({ approvePullRequest: async () => { approved++; } }),
+      connection: { id: "c1", kind: "github" }, repoId: "o/r", prNumber: 7,
+      callModel: async () => JSON.stringify({ verdict: "approve", summary: "ok", findings: [] }),
+      storage: store,
+    });
+    ok(r.status === "done" && r.verdict === "approve", "EXECUTED: the review completes");
+    ok(approved === 0 && r.verdictAction === null, "EXECUTED: …and approves NOTHING by default (a verdict is not an action)");
+  }
 }
 
 // =====================================================================================
@@ -834,6 +984,53 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   ok(fwd({ status: "error", cancelled: true, error: "Cancelled" }).cancelled === true, "EXECUTED: a cancel is flagged");
   ok(fwd({ status: "error", error: "No API key configured" }).cancelled === undefined, "EXECUTED: a real failure is not");
   ok(fwd({ status: "error", cancelled: true, error: "Cancelled" }).status === "error", "EXECUTED: the status word is unchanged (compatibility)");
+}
+
+// =====================================================================================
+// F-290 — a queued credential rotation had NO handler: requestCredentialRotation pushed
+// "gitcredrotate", the registry had no such key, and the operator was told `{ ok: true,
+// queued: true }` while nothing rotated. The task type string has ONE home.
+// =====================================================================================
+{
+  const conns = await import("../../src/git-connections.js");
+  ok(conns.CREDENTIAL_ROTATION_TASK === "gitcredrotate", "the rotation task type is the exported constant");
+  ok(handlerKeys.includes(conns.CREDENTIAL_ROTATION_TASK), "…and TASK_HANDLERS registers it (the F-290 defect)");
+  ok(!UNPOLLED_TASKS.has(conns.CREDENTIAL_ROTATION_TASK),
+    "a rotation IS polled — the Code tab waits on the result row, so it must be written");
+  const gcSrc = asyncSrc.match(/const executeCredentialRotation = async \(params\) => \{[\s\S]*?\n\};/)[0];
+  ok(/\[CREDENTIAL_ROTATION_TASK\]: executeCredentialRotation/.test(asyncSrc), "…under the computed key, never a retyped literal");
+  ok(!/AI_TASK_TYPES = new Set\(\[[^\]]*gitcredrotate/.test(asyncSrc), "a rotation spends no tokens and is never gated");
+
+  // EXECUTED: the real handler source over a stubbed rotation.
+  const logs = [];
+  const run = (impl) => new Function("applyCredentialRotation", "console", `return (${gcSrc.replace("const executeCredentialRotation = async (params) =>", "async (params) =>").replace(/;$/, "")});`)(
+    impl, { log: (m) => logs.push(String(m)), warn: (m) => logs.push(String(m)) });
+
+  const SECRET = "ghp_SUPERSECRET_TOKEN";
+  const params = { target: { kind: "connection", id: "c1" }, secret: { token: SECRET }, requestedBy: "acc" };
+  {
+    // Success: the store really is written (the mock KVS stands in for the one
+    // applyCredentialRotation writes) and the result row says so.
+    const kv = new Map([["git_conn_secret:c1", { token: "OLD" }]]);
+    const impl = async (p) => { kv.set("git_conn_secret:c1", { token: p.secret.token }); return { ok: true, rotated: "connection", id: p.target.id }; };
+    const out = await run(impl)(params);
+    ok(kv.get("git_conn_secret:c1").token === SECRET, "EXECUTED (F-290): a queued rotation REPLACES the stored secret");
+    ok(out.success === true && out.rotated === "connection" && out.id === "c1", "EXECUTED: …and the polled result row reports the rotation");
+  }
+  {
+    // A rejected replacement credential: nothing was written, and the operator gets an
+    // ERROR row rather than a green badge (the generic settle path keys off `error`).
+    const out = await run(async () => ({ ok: false, error: "The replacement credential was rejected — nothing was changed", code: "auth" }))(params);
+    ok(out.success === false && typeof out.error === "string" && out.error && out.code === "auth",
+      "EXECUTED (F-290): a refused rotation returns the failure shape the consumer turns into an error row");
+  }
+  {
+    const out = await run(async () => { throw new Error("KVS down"); })(params);
+    ok(out.success === false && /KVS down/.test(out.error), "EXECUTED: an infrastructure throw is reported, not swallowed");
+  }
+  ok(!logs.some((l) => l.includes(SECRET)), "EXECUTED: the token appears in NO log line");
+  ok(!JSON.stringify(await run(async () => ({ ok: true, rotated: "connection", id: "c1" }))(params)).includes(SECRET),
+    "EXECUTED: …and in no result row either (the result is built field by field, never spread from params)");
 }
 
 console.log(`\nasync-handler-helpers: ${pass} passed, ${fail} failed`);

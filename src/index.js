@@ -4314,12 +4314,27 @@ const describeDeleteFailure = (r) => {
 
 /**
  * The single-row delete refusal both removeConfig and removePostFunction return.
- * F-242: an ownership row IS a permission refusal, so it must carry the same
- * machine flag as every gate (`reason: "no-permission"`); the granular delete
- * code moves to `failure` so nothing that inspected it loses information.
- * F-254: that refusal is an AUTHORSHIP verdict, never a role floor — no
- * `needsRole`, hint `not-owner` (see notOwner). The old private code "forbidden"
- * is gone; the bulk results[] rows carry the same pair.
+ *
+ * F-242: an ownership row IS a permission refusal, so it carries the same machine
+ * flag as every gate (`reason: "no-permission"`).
+ *
+ * F-272 — WHAT `failure` ACTUALLY IS, because the old sentence here ("the granular
+ * delete code moves to `failure` so nothing that inspected it loses information")
+ * stopped being true at F-254 and then read as an invitation to branch on it.
+ * `failure` MIRRORS `reason`, always, on every path: on a permission refusal both
+ * read "no-permission", and there is no granular delete code hiding in it. It
+ * exists only so a caller written against the pre-F-242 field keeps working, and
+ * nothing new should read it.
+ *
+ * THE DISTINGUISHING SIGNAL IS THE PAIR, not `failure`:
+ *   - ownership ("the row is someone else's") → `hint: "not-owner"`, NO `needsRole`
+ *   - role floor ("you lack the role")        → `needsRole`, hint `"ask-app-admin"`
+ * That pair is what tells a UI whether asking an admin for a role would help, and
+ * it is carried BOTH on this top-level result and on every bulk `results[]` row
+ * (removeRegistryRowsCore, the three `rowGateVerdict` branches). A reader that
+ * cannot tell the two apart will send a viewer hunting for a rule's "owner".
+ *
+ * F-254: the old private code "forbidden" is gone.
  */
 const deleteFailureResult = (r) => {
   const message = describeDeleteFailure(r);

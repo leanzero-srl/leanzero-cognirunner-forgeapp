@@ -1375,3 +1375,26 @@ export async function handler(event) {
     try { await sweepPostFunctionJobs(); } catch { /* best-effort — never fail a completed job on the sweep */ }
   }
 }
+
+/**
+ * THE 900 s CONSUMER (manifest `long-consumer` on `long-queue`, 1.4 commit 2).
+ *
+ * ONE GATE, NOT TWO. The kill switch, the staleness horizon and the TOKEN-BUDGET
+ * GATE above are not duplicated here: `longHandler` IS `handler`. The two
+ * consumers differ in exactly one thing — the manifest's `timeoutSeconds` (120 vs
+ * 900) — and that difference belongs in the manifest, not in a second copy of a
+ * gate whose last fork was the 2026-09-12 finding ("a second token governor").
+ *
+ * So the extraction §3.17(3) asks for is satisfied by DELEGATION rather than by
+ * carving the gate out of a 200-line function: the gate has exactly one
+ * implementation and both consumer entry points execute it. If a future change
+ * ever makes the long consumer's body genuinely differ, the gate comes out into
+ * its own exported function FIRST and both call it — it is never copied.
+ *
+ * Nothing routes to `long-queue` yet; 1.4 commit 8 (coder turns) is its first
+ * producer. Declaring the consumer now is what keeps the manifest bump to ONE
+ * major version, and an unused consumer costs nothing at runtime.
+ */
+export async function longHandler(event) {
+  return handler(event);
+}

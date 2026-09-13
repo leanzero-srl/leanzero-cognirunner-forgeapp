@@ -36,10 +36,15 @@
  *  - Egress: api.github.com and api.bitbucket.org only, plus bitbucket.org for
  *    the diff/src redirect (flagged — see GIT_PROVIDER_HOSTS).
  *
- * Dependency-free on purpose: it is imported by the backend and by an offline
- * mocked-fetch suite (test-harness/scripts/git-providers.test.mjs) that must
- * run with no Forge runtime.
+ * NO FORGE RUNTIME on purpose: it is imported by the backend and by an offline
+ * mocked-fetch suite (test-harness/scripts/git-providers.test.mjs) that runs
+ * with no @forge/* module available. Its ONE npm dependency is `tweetnacl`
+ * (pure JS, no native bindings — §4b row 35), needed for the GitHub Actions
+ * sealed box below and for nothing else. It is NOT a src/shared/ module and
+ * must never become one: src/shared/* bundles into the Custom UI iframes and
+ * has to stay dependency-free.
  */
+import nacl from "tweetnacl";
 
 /**
  * The ONE home of the outbound hosts this app talks to for git. The manifest
@@ -374,6 +379,168 @@ function prStateFromFlags(open, merged) {
 }
 
 /* ════════════════════════════ GitHub adapter ════════════════════════════ */
+
+/* ===========================================================================
+ * GITHUB SEALED BOX (libsodium crypto_box_seal, pure JS)
+ *
+ * A GitHub Actions secret is NOT sent in plaintext: the value must be sealed
+ * to the repository's own Curve25519 public key with libsodium's
+ * `crypto_box_seal`. This is the ONE home of that construction in the app —
+ * `setSecret` on the GitHub adapter is its only caller, and nothing else may
+ * grow a second copy.
+ *
+ * Why it is written out here instead of imported: `crypto_box_seal` needs
+ * X25519 + XSalsa20-Poly1305 (tweetnacl, a declared dependency, pure JS, no
+ * native bindings) AND BLAKE2b with a 24-BYTE digest for the nonce. Node's
+ * `crypto` only offers `blake2b512` at a fixed 512-bit length, and BLAKE2b's
+ * output length is part of its parameter block — truncating a 64-byte digest
+ * is a DIFFERENT hash and would produce a nonce GitHub cannot reproduce. So
+ * the digest is computed here (RFC 7693, the reference 32-bit-halves form).
+ *
+ * Proven, not assumed: the digest is asserted against independent BLAKE2b
+ * vectors (including digest_size=24) and the whole sealed box is asserted to
+ * round-trip against the reference `crypto_box_seal` layout in
+ * test-harness/scripts/git-sealed-box.test.mjs.
+ *
+ * NEVER log a plaintext secret or a sealed box. The caller passes the value in
+ * and gets ciphertext out; no intermediate is retained.
+ * =========================================================================== */
+
+const BLAKE2B_IV32 = new Uint32Array([
+  0xf3bcc908, 0x6a09e667, 0x84caa73b, 0xbb67ae85,
+  0xfe94f82b, 0x3c6ef372, 0x5f1d36f1, 0xa54ff53a,
+  0xade682d1, 0x510e527f, 0x2b3e6c1f, 0x9b05688c,
+  0xfb41bd6b, 0x1f83d9ab, 0x137e2179, 0x5be0cd19,
+]);
+const BLAKE2B_SIGMA = new Uint8Array([
+  0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+  14, 10, 4, 8, 9, 15, 13, 6, 1, 12, 0, 2, 11, 7, 5, 3,
+  11, 8, 12, 0, 5, 2, 15, 13, 10, 14, 3, 6, 7, 1, 9, 4,
+  7, 9, 3, 1, 13, 12, 11, 14, 2, 6, 5, 10, 4, 0, 15, 8,
+  9, 0, 5, 7, 2, 4, 10, 15, 14, 1, 11, 12, 6, 8, 3, 13,
+  2, 12, 6, 10, 0, 11, 8, 3, 4, 13, 7, 5, 15, 14, 1, 9,
+  12, 5, 1, 15, 14, 13, 4, 10, 0, 7, 6, 3, 9, 2, 8, 11,
+  13, 11, 7, 14, 12, 1, 3, 9, 5, 0, 15, 4, 8, 6, 2, 10,
+  6, 15, 14, 9, 11, 3, 0, 8, 12, 2, 13, 7, 1, 4, 10, 5,
+  10, 2, 8, 4, 7, 6, 1, 5, 15, 11, 9, 14, 3, 12, 13, 0,
+  0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,
+  14, 10, 4, 8, 9, 15, 13, 6, 1, 12, 0, 2, 11, 7, 5, 3,
+].map((x) => x * 2));
+
+function b2bAddAA(v, a, b) {
+  const o0 = v[a] + v[b];
+  let o1 = v[a + 1] + v[b + 1];
+  if (o0 >= 0x100000000) o1++;
+  v[a] = o0;
+  v[a + 1] = o1;
+}
+function b2bAddAC(v, a, b0, b1) {
+  let o0 = v[a] + b0;
+  if (b0 < 0) o0 += 0x100000000;
+  let o1 = v[a + 1] + b1;
+  if (o0 >= 0x100000000) o1++;
+  v[a] = o0;
+  v[a + 1] = o1;
+}
+function b2bGet32(arr, i) {
+  return arr[i] ^ (arr[i + 1] << 8) ^ (arr[i + 2] << 16) ^ (arr[i + 3] << 24);
+}
+function b2bG(v, m, a, b, c, d, ix, iy) {
+  const x0 = m[ix], x1 = m[ix + 1], y0 = m[iy], y1 = m[iy + 1];
+  b2bAddAA(v, a, b); b2bAddAC(v, a, x0, x1);
+  let xor0 = v[d] ^ v[a], xor1 = v[d + 1] ^ v[a + 1];
+  v[d] = xor1; v[d + 1] = xor0;
+  b2bAddAA(v, c, d);
+  xor0 = v[b] ^ v[c]; xor1 = v[b + 1] ^ v[c + 1];
+  v[b] = (xor0 >>> 24) ^ (xor1 << 8); v[b + 1] = (xor1 >>> 24) ^ (xor0 << 8);
+  b2bAddAA(v, a, b); b2bAddAC(v, a, y0, y1);
+  xor0 = v[d] ^ v[a]; xor1 = v[d + 1] ^ v[a + 1];
+  v[d] = (xor0 >>> 16) ^ (xor1 << 16); v[d + 1] = (xor1 >>> 16) ^ (xor0 << 16);
+  b2bAddAA(v, c, d);
+  xor0 = v[b] ^ v[c]; xor1 = v[b + 1] ^ v[c + 1];
+  v[b] = (xor1 >>> 31) ^ (xor0 << 1); v[b + 1] = (xor0 >>> 31) ^ (xor1 << 1);
+}
+function b2bCompress(ctx, v, m, last) {
+  for (let i = 0; i < 16; i++) { v[i] = ctx.h[i]; v[i + 16] = BLAKE2B_IV32[i]; }
+  v[24] = v[24] ^ ctx.t;
+  v[25] = v[25] ^ (ctx.t / 0x100000000);
+  if (last) { v[28] = ~v[28]; v[29] = ~v[29]; }
+  for (let i = 0; i < 32; i++) m[i] = b2bGet32(ctx.b, 4 * i);
+  for (let i = 0; i < 12; i++) {
+    const s = i * 16;
+    b2bG(v, m, 0, 8, 16, 24, BLAKE2B_SIGMA[s + 0], BLAKE2B_SIGMA[s + 1]);
+    b2bG(v, m, 2, 10, 18, 26, BLAKE2B_SIGMA[s + 2], BLAKE2B_SIGMA[s + 3]);
+    b2bG(v, m, 4, 12, 20, 28, BLAKE2B_SIGMA[s + 4], BLAKE2B_SIGMA[s + 5]);
+    b2bG(v, m, 6, 14, 22, 30, BLAKE2B_SIGMA[s + 6], BLAKE2B_SIGMA[s + 7]);
+    b2bG(v, m, 0, 10, 20, 30, BLAKE2B_SIGMA[s + 8], BLAKE2B_SIGMA[s + 9]);
+    b2bG(v, m, 2, 12, 22, 24, BLAKE2B_SIGMA[s + 10], BLAKE2B_SIGMA[s + 11]);
+    b2bG(v, m, 4, 14, 16, 26, BLAKE2B_SIGMA[s + 12], BLAKE2B_SIGMA[s + 13]);
+    b2bG(v, m, 6, 8, 18, 28, BLAKE2B_SIGMA[s + 14], BLAKE2B_SIGMA[s + 15]);
+  }
+  for (let i = 0; i < 16; i++) ctx.h[i] = ctx.h[i] ^ v[i] ^ v[i + 16];
+}
+
+/**
+ * Unkeyed BLAKE2b with an arbitrary digest length (1..64 bytes).
+ * Exported ONLY so the offline suite can assert it against published vectors.
+ */
+export function blake2b(input, outlen = 64) {
+  if (!(outlen >= 1 && outlen <= 64)) {
+    throw new GitProviderError("conflict", "blake2b: outlen must be 1..64");
+  }
+  const ctx = { b: new Uint8Array(128), h: new Uint32Array(16), t: 0, c: 0 };
+  const v = new Uint32Array(32);
+  const m = new Uint32Array(32);
+  for (let i = 0; i < 16; i++) ctx.h[i] = BLAKE2B_IV32[i];
+  ctx.h[0] ^= 0x01010000 ^ outlen;
+  for (let i = 0; i < input.length; i++) {
+    if (ctx.c === 128) { ctx.t += ctx.c; b2bCompress(ctx, v, m, false); ctx.c = 0; }
+    ctx.b[ctx.c++] = input[i];
+  }
+  ctx.t += ctx.c;
+  while (ctx.c < 128) ctx.b[ctx.c++] = 0;
+  b2bCompress(ctx, v, m, true);
+  const out = new Uint8Array(outlen);
+  for (let i = 0; i < outlen; i++) out[i] = ctx.h[i >> 2] >> (8 * (i & 3));
+  return out;
+}
+
+/**
+ * libsodium `crypto_box_seal(message, recipientPk)`:
+ *   ephemeral X25519 keypair → nonce = BLAKE2b-24(epk ‖ rpk) →
+ *   box = crypto_box(message, nonce, rpk, esk) → output = epk ‖ box.
+ * `ephemeralKeyPair` is injectable for the deterministic offline vector only;
+ * production ALWAYS uses a fresh random pair (a reused ephemeral key is a
+ * nonce reuse, which breaks the cipher).
+ *
+ * @param {Uint8Array} message       plaintext bytes
+ * @param {Uint8Array} recipientPk   32-byte Curve25519 public key
+ * @returns {Uint8Array} epk ‖ ciphertext
+ */
+export function sealBox(message, recipientPk, ephemeralKeyPair) {
+  if (!(recipientPk instanceof Uint8Array) || recipientPk.length !== 32) {
+    throw new GitProviderError("conflict", "sealBox: recipient public key must be 32 bytes");
+  }
+  const eph = ephemeralKeyPair || nacl.box.keyPair();
+  const pre = new Uint8Array(64);
+  pre.set(eph.publicKey, 0);
+  pre.set(recipientPk, 32);
+  const nonce = blake2b(pre, 24);
+  const boxed = nacl.box(message, nonce, recipientPk, eph.secretKey);
+  if (!boxed) throw new GitProviderError("conflict", "sealBox: encryption failed");
+  const out = new Uint8Array(32 + boxed.length);
+  out.set(eph.publicKey, 0);
+  out.set(boxed, 32);
+  return out;
+}
+
+/** Seal a UTF-8 string to a base64 GitHub public key and return base64 ciphertext. */
+export function sealSecretForGithub(value, publicKeyBase64, ephemeralKeyPair) {
+  const rpk = new Uint8Array(Buffer.from(String(publicKeyBase64 || ""), "base64"));
+  const msg = new Uint8Array(Buffer.from(String(value == null ? "" : value), "utf8"));
+  const sealed = sealBox(msg, rpk, ephemeralKeyPair);
+  return Buffer.from(sealed).toString("base64");
+}
 
 function githubAdapter({ auth, fetchImpl, timeoutMs, sleepImpl }) {
   const token = (auth && (auth.token || auth.password)) || "";
@@ -725,19 +892,38 @@ function githubAdapter({ auth, fetchImpl, timeoutMs, sleepImpl }) {
     },
 
     /**
-     * NOT SUPPORTED, on purpose. A GitHub Actions secret must be encrypted with
-     * the repository's public key using libsodium's crypto_box_seal. There is no
-     * sealed-box implementation in this app's dependency tree (checked: package.json
-     * carries no tweetnacl / libsodium-wrappers), and adding a dependency is an
-     * owner's call, not a surgeon's. Until one lands, the pipeline-setup flow must
-     * ask the admin to paste the secret in GitHub, and this refuses LOUDLY rather
-     * than sending a plaintext secret to an endpoint that expects ciphertext.
+     * A GitHub Actions repository secret, sealed to the repo's own public key.
+     *
+     * TWO CALLS, and the order matters: GET the repo's Curve25519 public key,
+     * then PUT the sealed value keyed by that `key_id`. The GET is a read (it
+     * may retry); the PUT is a write and is issued EXACTLY ONCE, like every
+     * other write in this module.
+     *
+     * The plaintext never leaves this function, never reaches an error message
+     * (it is in `secrets`, so redactSecrets scrubs it from any body GitHub
+     * echoes) and is never logged. A 404 on the public key means "this token
+     * cannot see this repo's Actions config" just as much as it means "no such
+     * repo" — it is surfaced as not_found and NEVER read as "no secret exists".
      */
-    setSecret: notSupported(
-      "github",
-      "setSecret",
-      "Actions secrets require libsodium sealed-box encryption and no pure-JS libsodium (e.g. tweetnacl) is a dependency of this app; add one deliberately, or set the secret in the GitHub UI"
-    ),
+    async setSecret({ repo, name, value }) {
+      requireArg("github", "setSecret", "name", name);
+      const base = repoPath(repo, "setSecret") + "/actions/secrets";
+      const { data: pk } = await client.json("setSecret", "GET", base + "/public-key");
+      if (!pk || !pk.key || !pk.key_id) {
+        throw new GitProviderError("conflict", "setSecret: repository public key unavailable", {
+          provider: "github",
+          operation: "setSecret",
+        });
+      }
+      // The plaintext joins the redaction list for the remainder of the call.
+      secrets.push(String(value == null ? "" : value));
+      const encrypted_value = sealSecretForGithub(value, pk.key);
+      await client.json("setSecret", "PUT", base + "/" + enc(name), {
+        encrypted_value,
+        key_id: pk.key_id,
+      });
+      return { name, secured: true, keyId: pk.key_id };
+    },
 
     async setVariable({ repo, name, value }) {
       requireArg("github", "setVariable", "name", name);

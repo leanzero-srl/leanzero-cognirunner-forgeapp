@@ -14,7 +14,8 @@
     "@forge/llm": "^0.6.7",
     "@forge/resolver": "^1.6.0",
     "form-data": "^4.0.6",
-    "punycode": "^2.3.1"
+    "punycode": "^2.3.1",
+    "tweetnacl": "^1.0.3"
   },
   "devDependencies": {
     "eslint": "^8.57.0"

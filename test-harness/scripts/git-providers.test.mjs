@@ -44,6 +44,8 @@ const eq = (a, b, msg) => {
   assert.deepEqual(a, b, msg);
 };
 
+const nacl = (await import("tweetnacl")).default;
+
 const GH_TOKEN = "ghp_SUPERSECRET_TOKEN_abcdef0123456789";
 const BB_EMAIL = "bot@leanzero.net";
 const BB_TOKEN = "ATATT_BITBUCKET_SECRET_9876543210";
@@ -265,18 +267,36 @@ ok(DIFF_MAX_TOTAL_BYTES === 61440 && DIFF_MAX_FILE_BYTES === 16384, "diff caps a
 }
 
 {
-  // setSecret is not_supported on GitHub: sealed-box needs a libsodium dep we
-  // do not have, and a plaintext POST would be worse than a refusal.
-  const f = mockFetch([]);
+  // setSecret on GitHub: GET the repo public key (a read), then PUT the SEALED
+  // value (a write, issued once). The plaintext must never appear on the wire.
+  const kp = nacl.box.keyPair();
+  const pubB64 = Buffer.from(kp.publicKey).toString("base64");
+  const f = mockFetch([res(200, { key: pubB64, key_id: "KID-1" }), res(201, {})]);
+  const r = await gh(f).setSecret({ repo: "acme/app", name: "FORGE_API_TOKEN", value: "plaintext-forge-token" });
+  eq(r.keyId, "KID-1", "setSecret returns the key id it sealed against");
+  eq(f.calls.length, 2, "setSecret = one key read + one write");
+  eq(f.calls[0].method, "GET", "public key is read first");
+  eq(f.calls[1].method, "PUT", "the secret is PUT");
+  ok(f.calls[1].url.endsWith("/actions/secrets/FORGE_API_TOKEN"), "secret path carries the name");
+  const putBody = JSON.parse(f.calls[1].body);
+  eq(putBody.key_id, "KID-1", "the PUT quotes the key id");
+  ok(!f.calls[1].body.includes("plaintext-forge-token"), "the PLAINTEXT never reaches the wire");
+  // and the ciphertext really is a crypto_box_seal the recipient can open.
+  const sealed = new Uint8Array(Buffer.from(putBody.encrypted_value, "base64"));
+  const epk = sealed.slice(0, 32);
+  const pre = new Uint8Array(64); pre.set(epk, 0); pre.set(kp.publicKey, 32);
+  const opened = nacl.box.open(sealed.slice(32), m.blake2b(pre, 24), epk, kp.secretKey);
+  eq(opened && Buffer.from(opened).toString("utf8"), "plaintext-forge-token", "sealed box round-trips");
+
+  // A 404 on the public key is not_found and NEVER "there is no secret yet";
+  // nothing is written after it.
+  const f404 = mockFetch([res(404, { message: "Not Found" })]);
   await assert.rejects(
-    gh(f).setSecret({ repo: "acme/app", name: "FORGE_API_TOKEN", value: "x" }),
-    (e) => {
-      allMessages.push(e.message);
-      return e.code === "not_supported" && /sealed-box/i.test(e.message);
-    }
+    gh(f404).setSecret({ repo: "acme/app", name: "X", value: "v" }),
+    (e) => { allMessages.push(e.message); return e.code === "not_found"; }
   );
   checks++;
-  eq(f.calls.length, 0, "a not_supported method never touches the network");
+  eq(f404.calls.length, 1, "a refused key read writes nothing");
   await assert.rejects(gh(mockFetch([])).enablePipelines({ repo: "acme/app" }), (e) => e.code === "not_supported");
   checks++;
 }

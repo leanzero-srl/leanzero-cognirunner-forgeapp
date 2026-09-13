@@ -320,7 +320,20 @@ export async function testStateTrigger(req) {
         // permits, which only a two-accountId invocation can demonstrate.
         // getKnowledgeCounts and getLogs are already allowlisted above; listed here in the
         // comment only, not re-added — one entry, one home.
-        "getContextDocs", "getSkills", "getSkillContent", "explainRule"]);
+        "getContextDocs", "getSkills", "getSkillContent", "explainRule",
+        // 1.4 commit 2 — the git-connection READ surfaces only, so a live pass can
+        // prove the admin gate and the "a resolver never returns a token" contract
+        // on real data. DELIBERATELY ABSENT: saveGitConnection, deleteGitConnection,
+        // saveForgeIdentity, clearForgeIdentity, rotateGitCredential. A harness that
+        // can plant or destroy a credential is a harness that can be turned into
+        // one, and a planted token would then exist on a real tenant — so the write
+        // side is driven by a human admin in the UI, never from here. The kvSet
+        // allow-list below is NOT widened for `git_conn:*` / `git_conn_secret:*`
+        // for the same reason: secrets are never plantable.
+        // `testGitConnection` is here despite writing the whoami verdict back to the
+        // row: that WRITE is the thing under test (the auth_dead banner has one
+        // source), it creates no credential, and it cannot delete one.
+        "listGitConnections", "testGitConnection", "getForgeIdentityStatus"]);
       const functionKey = body.functionKey || body.name;
       if (!ALLOWED_KEYS.has(functionKey)) {
         return json(400, { error: `functionKey not allowlisted: ${functionKey}` });

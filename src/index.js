@@ -49,6 +49,21 @@ import {
 import { minuteKey, effectiveBudget, budgetDecision, inlineShouldQueue, AI_PLATFORM_TPM, AI_BUDGET_DEFAULT_TPM, BUDGET_WAIT_HORIZON_MS } from "./shared/ai-budget.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
 import { providerKeySlot, providerModelSlot, providerAgentModelSlot, providerBaseUrlSlot } from "./shared/provider-slots.js";
+// GIT CONNECTIONS (1.4 commit 2). The behaviour — key names, caps, the security
+// model, auth_dead, queued rotation — lives in src/git-connections.js and is
+// never re-implemented here. Aliased where a name would collide with a resolver
+// key, so the resolver and the core it calls stay visibly distinct.
+import {
+  listConnections as listGitConnections,
+  saveConnection as saveGitConnectionCore,
+  testConnection as testGitConnectionCore,
+  deleteConnection as deleteGitConnection,
+  setRepoAllowlist as setGitRepoAllowlist,
+  saveForgeIdentity as saveForgeIdentityCore,
+  clearForgeIdentity as clearForgeIdentityCore,
+  getForgeIdentityStatus as getForgeIdentityStatusCore,
+  requestCredentialRotation,
+} from "./git-connections.js";
 import { serializeRule, buildExportEnvelope, validateImportSchema, resolveBindings, containsSecretKey, EXPORT_CAPS } from "./shared/rule-portability.js";
 // Registry scale caps + pressure math — single source, shared with the admin panel.
 import {
@@ -10152,6 +10167,145 @@ resolver.define("revokeApiToken", async ({ payload, context }) => {
   return okOr(async () => ({ success: true, ...(await revokeApiTokenInternal(payload?.id)) }));
 });
 
+/* =========================================================================
+ * GIT CONNECTIONS + FORGE DEPLOY IDENTITY — resolvers (1.4 commit 2, §3.4)
+ *
+ * The BEHAVIOUR lives in src/git-connections.js (key names, caps, the security
+ * model, the auth_dead flag, rotation). These resolvers are a thin permission
+ * skin: nothing here re-implements a rule, and nothing here reads a credential.
+ *
+ * PERMISSION: every one is `requireAdmin`, refusing through `noPerm`/`needRole`
+ * (F-242's one refusal shape, `reason:"no-permission"`). Not `canActOnConfig`,
+ * not `requireRole("editor")` — a connection is an instance-wide credential, not
+ * a row somebody owns, so there is no ownership question to ask and no editor
+ * floor that would be correct.
+ *
+ * LAW 3 for this whole group: FAIL CLOSED. A storage or provider fault becomes
+ * `{success:false,error}` and the operation does not happen. None of these sit
+ * in a Jira transition, so the app's fail-OPEN validator contract is untouched.
+ *
+ * WHAT NO RESOLVER HERE RETURNS, EVER: a connection token, a Bitbucket app
+ * password, the Forge API token, or a per-repo webhook secret. The public shapes
+ * are the allow-lists `publicConnection` / `publicWhoami` / `forgeIdentityStatus`
+ * in git-connections.js, and test-harness/scripts/git-connections.test.mjs deep-
+ * scans every return value of every resolver below for the planted secrets.
+ * ========================================================================= */
+
+// List every connection. LAW 3: a read fault is an error, never an empty list —
+// "no connections" would read as "nothing is configured" and invite a setup that
+// overwrites a live one.
+resolver.define("listGitConnections", async ({ context }) => {
+  if (!(await requireAdmin(context.accountId))) return needRole("admin");
+  return okOr(async () => ({ success: true, connections: await listGitConnections() }));
+});
+
+// Create or replace a connection. The credential is VERIFIED with whoami before
+// anything is stored (git-connections.saveConnection), so a dead token is
+// refused here and never becomes a connection that is born broken.
+resolver.define("saveGitConnection", async ({ payload, context }) => {
+  if (!(await requireAdmin(context.accountId))) return needRole("admin");
+  return okOr(async () => {
+    const r = await saveGitConnectionCore({
+      id: payload?.id,
+      kind: payload?.kind,
+      label: payload?.label,
+      token: payload?.token,
+      email: payload?.email,
+      host: payload?.host,
+      owner: payload?.owner,
+      repos: payload?.repos,
+      accountId: context.accountId,
+    });
+    if (!r.ok) return { success: false, error: r.error, code: r.code };
+    return { success: true, connection: r.connection, whoami: r.whoami };
+  });
+});
+
+// Live check: whoami + capability flags, and it RECORDS the verdict on the row
+// so the dead-credential banner has exactly one source (§8 "dead token = gate
+// silently gone"). A transient network fault does NOT raise the banner.
+resolver.define("testGitConnection", async ({ payload, context }) => {
+  if (!(await requireAdmin(context.accountId))) return needRole("admin");
+  return okOr(async () => {
+    const r = await testGitConnectionCore(payload?.id);
+    if (!r.ok) return { success: false, error: r.error, code: r.code, transient: r.transient === true };
+    return { success: true, whoami: r.whoami, capabilities: r.capabilities };
+  });
+});
+
+// The admin-edited repo ALLOW-LIST. This is a security control, not a
+// convenience: an agent may only ever act on a repo that appears here, and only
+// an admin resolver can change it (CONNECTION_SECURITY_MODEL.repoAllowListEditableBy).
+resolver.define("setGitRepoAllowlist", async ({ payload, context }) => {
+  if (!(await requireAdmin(context.accountId))) return needRole("admin");
+  return okOr(async () => {
+    const r = await setGitRepoAllowlist(payload?.id, payload?.repos);
+    return r.ok ? { success: true, connection: r.connection } : { success: false, error: r.error, code: r.code };
+  });
+});
+
+// Delete the connection, its credential and its per-repo webhook secrets.
+resolver.define("deleteGitConnection", async ({ payload, context }) => {
+  if (!(await requireAdmin(context.accountId))) return needRole("admin");
+  return okOr(async () => {
+    const r = await deleteGitConnection(payload?.id);
+    return r.ok ? { success: true } : { success: false, error: r.error, code: r.code };
+  });
+});
+
+// Store the customer's Atlassian deploy identity. WRITE-ONLY: there is no read
+// path for the token anywhere in this app.
+//
+// CONSENT IS EXPLICIT AND RECORDED. `payload.consent === true` must come from the
+// admin ticking the consent screen; an absent flag is a REFUSAL, never a
+// default-yes, because this is a human handing a credential to an automated
+// system that will act as them. The accountId that consented and the moment are
+// stored with it.
+resolver.define("saveForgeIdentity", async ({ payload, context }) => {
+  if (!(await requireAdmin(context.accountId))) return needRole("admin");
+  return okOr(async () => {
+    const r = await saveForgeIdentityCore({
+      email: payload?.email,
+      token: payload?.token,
+      consent: payload?.consent === true,
+      accountId: context.accountId,
+    });
+    return r.ok ? { success: true, status: r.status } : { success: false, error: r.error, code: r.code };
+  });
+});
+
+// Remove the identity. Idempotent — a missing identity is not an error, because
+// "make sure this is gone" must always be answerable with yes.
+resolver.define("clearForgeIdentity", async ({ context }) => {
+  if (!(await requireAdmin(context.accountId))) return needRole("admin");
+  return okOr(async () => {
+    const r = await clearForgeIdentityCore();
+    return { success: true, status: r.status };
+  });
+});
+
+// `{hasIdentity, email, consent}` — booleans and metadata. The token has no
+// representation in this shape at all.
+resolver.define("getForgeIdentityStatus", async ({ context }) => {
+  if (!(await requireAdmin(context.accountId))) return needRole("admin");
+  return okOr(async () => ({ success: true, status: await getForgeIdentityStatusCore() }));
+});
+
+// Rotation is QUEUED, never done here (§8's "rotation in a resolver" finding):
+// a resolver has 25 s, no retry and no visibility, and a half-finished rotation
+// is a connection nobody can repair from the UI. This resolver only enqueues.
+resolver.define("rotateGitCredential", async ({ payload, context }) => {
+  if (!(await requireAdmin(context.accountId))) return needRole("admin");
+  return okOr(async () => {
+    const r = await requestCredentialRotation(
+      payload?.target,
+      { token: payload?.token, email: payload?.email },
+      { accountId: context.accountId }
+    );
+    return r.ok ? { success: true, taskId: r.taskId, queued: true } : { success: false, error: r.error, code: r.code };
+  });
+});
+
 // Internals shared with src/listeners.js, src/scheduled-jobs.js, src/agent-runner.js,
 // src/rules-api.js (they import lazily, so nothing here creates a load-time cycle).
 export {
@@ -10164,6 +10318,44 @@ export const handler = resolver.getDefinitions();
 
 // DEV-ONLY harness test-state web trigger (gated by HARNESS_SECRET; 404 in prod)
 export { testStateTrigger, gitWebhookProbe } from "./test-hook";
+
+/**
+ * PRODUCTION git webhook (manifest webtrigger `git-webhook` → `index.gitWebhook`).
+ * 1.4 commit 2 declares it; **1.4 commit 5 implements it.**
+ *
+ * THIS STUB VERIFIES NOTHING AND STORES NOTHING. It is deliberately inert, and
+ * it must stay inert until commit 5, because the only safe behaviour for an
+ * endpoint with no signature check is to do no work: a handler that enqueued on
+ * an unverified body would be an open door for anyone who learns the URL.
+ *
+ * It answers 202 rather than 401 on purpose. An admin who installs the hook
+ * early should see GitHub record a delivery (so the URL and the egress are
+ * provably right) while nothing downstream happens; 401 here would send them
+ * hunting a secret mismatch that does not exist yet. `accepted:false` in the
+ * body says plainly that nothing was processed.
+ *
+ * When commit 5 lands, the contract becomes: resolve the connection + repo, read
+ * `git_hook_secret:<connId>:<repoId>` (src/git-connections.js), verify the HMAC
+ * over the VERBATIM body with timingSafeEqual (probe (c), VERIFIED 2026-09-12),
+ * and FAIL CLOSED — a bad or missing signature is a 401 and nothing is enqueued,
+ * no ledger row, no log line carrying the body. Verify, enqueue, 202. Nothing
+ * else: GitHub abandons a delivery at 10 s.
+ *
+ * Do NOT promote src/test-hook.js's `gitWebhookProbe` into this slot — it is the
+ * unauthenticated probe, it has no per-repo secret path, and it stores a
+ * fingerprint of every delivery.
+ */
+export async function gitWebhook(req) {
+  return {
+    statusCode: 202,
+    headers: { "Content-Type": ["application/json"] },
+    body: JSON.stringify({
+      ok: true,
+      accepted: false,
+      reason: "Git webhook processing is not enabled on this version yet.",
+    }),
+  };
+}
 
 // === Provider definitions ===
 const PROVIDERS = {

@@ -1221,6 +1221,21 @@ export const runListener = async ({ listener, eventType, event, ctx, deadline = 
     }
   }
   if (listener.mode === "agent") {
+    // THE TENANT-WIDE AGENT-RUN BRAKE (F-396), taken HERE — before the model call and
+    // before any knowledge read — for the same reason the job run site takes it: the cost
+    // is spent when the model runs. The bucket is the SAME one (`takeAgentRunSlot`, one
+    // home above), so a comment storm that fires listener runs and a sweeping job draw on
+    // one allowance. Wiring it only at the job site left the brake tenant-wide in name and
+    // key while the busiest producer of agent runs walked past it.
+    //
+    // A TEST run takes a slot too: it starts a model and costs the same tokens, and an
+    // installation already over the line is exactly where an operator must not be able to
+    // add more. SCRIPT listeners are untouched — they start no model.
+    const slot = await takeAgentRunSlot();
+    if (slot.braked) {
+      const brake = { kind: "agent-runs", max: slot.max, reason: slot.reason };
+      return { skipped: true, braked: true, brake, gate, log: done({ isValid: false, decision: "SKIP", reason: slot.reason, recommendation: slot.reason, brake }) };
+    }
     const { runAgentTask } = await agentMod();
     // A LISTENER IS AN EXTERNAL TRIGGER, always: an event we did not originate started
     // this run and no human is watching it, so a `dangerous` action (approve code,

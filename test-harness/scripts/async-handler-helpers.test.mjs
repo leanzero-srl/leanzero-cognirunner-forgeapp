@@ -1346,5 +1346,83 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
     "EXECUTED: …and in no result row either (the result is built field by field, never spread from params)");
 }
 
+/* ══════════ F-393 — a redelivered coder POST-FUNCTION event runs nothing ══════════ */
+// The per-issue `coder_exec:` claim is a LOCK released in `finally`, so it stops nothing
+// once a turn has ended. A platform redelivery of the SAME taskId used to re-enter the
+// same pf_<ruleId>_<ts> thread and run the mode again — a second branch, a second pull
+// request, two SUCCESS rows, with no human in the loop. The real region is executed here
+// against stubs: only the collaborators are fake, the control flow is the shipped one.
+{
+  const at = asyncSrc.indexOf("const executeCoderTurn = async (params, taskId) => {");
+  ok(at > 0, "executeCoderTurn exists");
+  const end = asyncSrc.indexOf("\n};\n", at);
+  const src = asyncSrc.slice(at, end + 2).replace("const executeCoderTurn = ", "");
+  const quiet = { log() {}, warn() {}, error() {} };
+  const build = (deps) => new Function(
+    "runCoderTurn", "isHeadlessTrigger", "recordCoderPfOutcome", "claimRuleExecution",
+    "storage", "coderPfDoneClaimKey", "CODER_PF_DONE_TTL", "console",
+    `return (${src});`,
+  )(deps.runCoderTurn, () => false, deps.recordCoderPfOutcome, deps.claimRuleExecution,
+    deps.storage, (id) => `coder_pf_done:${id}`, { ttl: { value: 24, unit: "HOURS" } }, quiet);
+
+  const makeDeps = (over = {}) => {
+    const held = new Set();
+    const state = { runs: 0, recorded: 0, deleted: [] };
+    return { state, deps: {
+      runCoderTurn: async () => { state.runs++; return { success: true, endedBy: "finish", rounds: 3 }; },
+      recordCoderPfOutcome: async () => { state.recorded++; },
+      claimRuleExecution: async (_s, key) => { if (held.has(key)) return false; held.add(key); return true; },
+      storage: { delete: async (k) => { state.deleted.push(k); held.delete(k); } },
+      ...over,
+    } };
+  };
+  const PF = { issueKey: "LZPT-7", threadId: "pf_r1_1", message: "go", pf: { mode: "build", strict: false } };
+
+  {
+    const { state, deps } = makeDeps();
+    const run = build(deps);
+    const first = await run(PF, "TASK-1");
+    const second = await run(PF, "TASK-1");
+    ok(state.runs === 1, `EXECUTED (F-393): the SAME taskId runs the turn exactly once (ran ${state.runs}x)`);
+    ok(first && first.success === true && second && second.skipped === true,
+      "EXECUTED (F-393): …the redelivery returns a skip, not a second outcome");
+    ok(state.recorded === 1, "EXECUTED (F-393): …and writes ONE execution-log outcome, not two");
+  }
+  {
+    // A DIFFERENT event (a legitimate second transition) is untouched by the claim.
+    const { state, deps } = makeDeps();
+    const run = build(deps);
+    await run(PF, "TASK-1");
+    await run({ ...PF, threadId: "pf_r1_2" }, "TASK-2");
+    ok(state.runs === 2, "EXECUTED (F-393): a genuinely new delivery still runs — the claim is per EVENT, not per issue");
+  }
+  {
+    // A turn that THREW recorded no outcome: the claim is released so the platform's own
+    // retry of that failed delivery may still run it.
+    const { state, deps } = makeDeps({ runCoderTurn: async () => { throw new Error("provider down"); } });
+    const run = build(deps);
+    const out = await run(PF, "TASK-3");
+    ok(out.success === false && state.deleted.includes("coder_pf_done:TASK-3"),
+      "EXECUTED (F-393): a throw before any recorded outcome RELEASES the completion claim");
+    const again = await run(PF, "TASK-3");
+    ok(again.success === false && !again.skipped, "EXECUTED (F-393): …so the retry is not mistaken for a redelivery");
+  }
+  {
+    // A PANEL turn (no `pf` block) never takes the claim at all — the user may re-send.
+    const { state, deps } = makeDeps();
+    const run = build(deps);
+    await run({ issueKey: "LZPT-8", threadId: "t1", message: "hi" }, "TASK-4");
+    await run({ issueKey: "LZPT-8", threadId: "t1", message: "hi" }, "TASK-4");
+    ok(state.runs === 2, "EXECUTED (F-393): the claim is POST-FUNCTION only — a panel turn is unaffected");
+  }
+  {
+    // FAIL OPEN on a KVS fault: an unreachable store must not swallow a rule's only delivery.
+    const { state, deps } = makeDeps({ claimRuleExecution: async () => true });
+    const run = build(deps);
+    await run(PF, "TASK-5");
+    ok(state.runs === 1, "EXECUTED (F-393): a claim that cannot answer fails OPEN and the turn runs");
+  }
+}
+
 console.log(`\nasync-handler-helpers: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

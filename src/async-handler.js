@@ -113,7 +113,7 @@ import {
 // task-type STRING has ONE home (the producer and this registry read the same
 // constant), and the work itself lives in src/git-pipeline.js, not here.
 import { runPipelineSetup, PIPELINE_TASK } from "./git-pipeline.js";
-import { runCoderTurn, isHeadlessTrigger } from "./coder-engine.js";
+import { runCoderTurn, isHeadlessTrigger, coderPfDoneClaimKey, CODER_PF_DONE_TTL } from "./coder-engine.js";
 import { executeScheduledJobTask, getJob } from "./scheduled-jobs.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
 import { isKeyConflict } from "./shared/kvs-keys.js";
@@ -1291,6 +1291,28 @@ const executeGitEvent = async (params) => {
  */
 const executeCoderTurn = async (params, taskId) => {
   const p = params || {};
+  // F-393 — THE PER-EVENT COMPLETION CLAIM, for the POST-FUNCTION path only.
+  //
+  // The per-issue `coder_exec:` claim is a LOCK released in `finally`; it stops two turns
+  // overlapping and stops nothing once a turn has ended. A platform redelivery of this
+  // same taskId therefore re-entered the SAME `pf_<ruleId>_<ts>` thread and ran the mode
+  // again: a second branch, a second pull request, two SUCCESS rows. The panel path has a
+  // human who would notice; a post-function has nobody.
+  //
+  // The claim is taken BEFORE anything runs and, on a completed run, is NEVER released —
+  // it IS the "this event has been executed" record. FAIL OPEN on a KVS fault
+  // (claimRuleExecution without failClosed): an unreachable store must not stop a rule's
+  // first and only delivery, and a duplicate is the rarer accident of the two. It is
+  // released only when the turn THREW before its outcome was recorded, so the platform's
+  // own retry of a genuinely failed delivery still works.
+  const doneKey = p.pf ? coderPfDoneClaimKey(taskId) : null;
+  if (doneKey) {
+    const firstDelivery = await claimRuleExecution(storage, doneKey, CODER_PF_DONE_TTL, "coder-pf-done");
+    if (!firstDelivery) {
+      console.warn(`[coder] ${p.issueKey || "?"}/${p.threadId || "?"}: redelivery of a completed PF turn, skipped (${taskId})`);
+      return { success: false, skipped: true, error: "redelivery of a completed PF turn, skipped" };
+    }
+  }
   let out;
   try {
     out = await runCoderTurn({
@@ -1307,6 +1329,11 @@ const executeCoderTurn = async (params, taskId) => {
     });
   } catch (e) {
     console.warn(`[coder] ${p.issueKey || "?"}/${p.threadId || "?"}: failed (${(e && e.message) || e})`);
+    // The turn threw, so this event produced no recorded outcome: release the completion
+    // claim so a platform retry of the SAME taskId may still run it. (Repository writes
+    // that landed before the throw are covered by the engine's own per-action brakes, not
+    // by this claim — it guards against re-running a COMPLETED turn.)
+    if (doneKey) { try { await storage.delete(doneKey); } catch (e2) { console.warn("[coder] releasing the PF completion claim failed:", e2 && e2.message); } }
     const failed = { success: false, error: `Coder turn failed: ${String((e && e.message) || e).slice(0, 200)}` };
     if (p.pf) await recordCoderPfOutcome(p, failed);
     return failed;

@@ -85,6 +85,21 @@ export const CODER_CLAIM_TTL_MINUTES = Math.ceil((LONG_CONSUMER_BUDGET_S + 300) 
 const CODER_CLAIM_TTL = { ttl: { value: CODER_CLAIM_TTL_MINUTES, unit: "MINUTES" } };
 /** A consent ticket the user never answers expires. 24 h, the same window a git delivery claim uses. */
 export const CODER_TICKET_TTL = { ttl: { value: 24, unit: "HOURS" } };
+/**
+ * THE POST-FUNCTION TURN'S PER-EVENT COMPLETION CLAIM (F-393).
+ *
+ * `coder_exec:<issueKey>` is a LOCK — it is released in `finally`, so once a turn ends it
+ * no longer stops anything. That is correct for "one turn per issue at a time" and wrong
+ * for "this queue EVENT has already been executed": a platform redelivery of the same
+ * taskId after the consumer returned would re-enter the same `pf_<ruleId>_<ts>` thread and
+ * run the mode a second time — a second branch, a second pull request, two SUCCESS rows,
+ * and no human anywhere near it (the panel path has one; a post-function does not).
+ *
+ * So a post-function turn also takes a claim on its EVENT, which is never released on a
+ * completed run. 24 h — the same window the git delivery claim uses — comfortably outlives
+ * any redelivery horizon while staying bounded.
+ */
+export const CODER_PF_DONE_TTL = { ttl: { value: 24, unit: "HOURS" } };
 
 /**
  * THE ONE PREDICATE that decides whether a turn has a human in the loop (1.4 commit 12).
@@ -119,6 +134,8 @@ export const coderThreadKey = (issueKey, threadId) => `coder_thread:${safeKeyPar
 export const coderTicketKey = (ticketId) => `coder_ticket:${safeKeyPart(ticketId)}`;
 export const coderExecClaimKey = (issueKey) => `coder_exec:${safeKeyPart(issueKey)}`;
 export const coderTicketExecClaimKey = (ticketId) => `coder_ticket_exec:${safeKeyPart(ticketId)}`;
+/** Per-EVENT completion claim for a post-function turn (F-393) — see CODER_PF_DONE_TTL. */
+export const coderPfDoneClaimKey = (taskId) => `coder_pf_done:${safeKeyPart(taskId)}`;
 /**
  * THE THREAD-WRITE LOCK (F-364). `coder_exec` serialises TURNS and `coder_ticket_exec`
  * serialises one ACTION — neither covers the two entry points that write the SAME thread

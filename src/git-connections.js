@@ -248,6 +248,13 @@ export function publicConnection(row) {
     authDeadReason: row.authDeadReason || null,
     lastCheckedAt: row.lastCheckedAt || null,
     login: row.login || null,
+    // F-532 - the identifiers `ignoreSelf` actually compares on. Public account
+    // ids, never the credential; emitted so an admin can SEE that the row has one
+    // (a connection saved before this fix has all three null and still falls back
+    // to the label compare).
+    userId: row.userId || null,
+    userUuid: row.userUuid || null,
+    userAccountId: row.userAccountId || null,
     repos: Array.isArray(row.repos) ? row.repos.slice() : [],
     capabilities: row.capabilities || null,
     // F-460 — WHICH REPOS HAVE A WEBHOOK INSTALLED, and nothing about its secret.
@@ -484,6 +491,33 @@ export function isRepoAllowed(row, repoId) {
 /* ===== WHOAMI + CAPABILITIES ===== */
 
 /**
+ * The STABLE identifiers whoami reported, for `ignoreSelf` (F-532).
+ *
+ * The row used to keep the whoami LABEL and nothing else, which made F-326's id
+ * comparison dead code on both halves at once: the delivery carried an id nobody
+ * read and the row carried an id nobody stored. On Bitbucket that is not a
+ * cosmetic gap - whoami answers `username || nickname` and a PR comment's actor
+ * answers `nickname || username`, so on an account where those differ (live,
+ * 2026-09-14: `mihaiwolfaenpak` vs `Mihai Perdum`) the label compare is
+ * permanently false and the app answers its own PR comments.
+ *
+ * Three fields, not one, because the two providers name their id differently and
+ * a single column would force a guess at read time: `userId` is GitHub's numeric
+ * id, `userUuid` and `userAccountId` are Bitbucket's `{uuid}` and `account_id`.
+ * All three are public identifiers - none of them is, or can be derived from,
+ * the credential, which is why they may sit on the row and be emitted.
+ * Missing fields are stored as null and simply do not participate in the compare.
+ */
+export function identityFields(who) {
+  const str = (v) => (v == null || v === "" ? null : String(v).slice(0, 120));
+  return {
+    userId: str(who && who.id),
+    userUuid: str(who && who.uuid),
+    userAccountId: str(who && who.accountId),
+  };
+}
+
+/**
  * Capability flags derived from what the credential ITSELF reports.
  *
  * The "proven negative" rule applies hard here: a GitHub fine-grained PAT does
@@ -628,6 +662,9 @@ export async function saveConnection({
     authDeadReason: null,
     lastCheckedAt: nowIso(),
     login: who.login || null,
+    // F-532 - store the stable id beside the label, at the one moment we hold a
+    // fresh whoami. The label alone cannot answer "was this us" on Bitbucket.
+    ...identityFields(who),
     repos: Array.isArray(repos)
       ? dedupeRepos(repos)
       : existing && Array.isArray(existing.repos)
@@ -707,6 +744,9 @@ export async function testConnection(id, { fetchImpl } = {}) {
       authDeadReason: null,
       lastCheckedAt: nowIso(),
       login: who.login || row.login || null,
+      // F-532 - a Test also REFRESHES the identity, so an existing connection
+      // saved before this fix gains its ids without being re-entered.
+      ...identityFields(who),
       capabilities,
     });
     return { ok: true, whoami: publicWhoami(who), capabilities };
@@ -818,6 +858,10 @@ export async function plantHarnessConnection({ id, kind = "github", repoId, acco
     authDeadReason: null,
     lastCheckedAt: null,
     login: null,
+    // A stand-in has no credential, so it has no identity to compare against.
+    userId: null,
+    userUuid: null,
+    userAccountId: null,
     // EXACTLY the one repo asked for: a stand-in never widens an allow-list.
     repos: [repo],
     capabilities: null,
@@ -1595,13 +1639,19 @@ export async function applyCredentialRotation(params, { fetchImpl } = {}) {
     await releaseClaim();
     return { ok: false, error: "A newer rotation has already been applied — nothing was changed", code: "stale" };
   }
+  let rotatedWho = null;
   try {
     const probe = createGitProvider({
       kind: row.kind,
       auth: row.kind === "bitbucket" ? { email: secret.email, token: secret.token } : { token: secret.token },
       fetchImpl,
     });
-    await probe.whoami();
+    // F-532 - the rotation ALREADY proves the credential here; keep what it
+    // answered. A token rotated to a DIFFERENT service account leaves the row's
+    // cached identity describing the old one, and `ignoreSelf` would then compare
+    // the app's own deliveries against an account that no longer posts them - the
+    // same inert-guard failure this finding is about, reached by another door.
+    rotatedWho = await probe.whoami();
   } catch (e) {
     const code = e instanceof GitProviderError ? e.code : "network";
     // Nothing was written. The old credential is untouched and still works — and the
@@ -1620,6 +1670,10 @@ export async function applyCredentialRotation(params, { fetchImpl } = {}) {
     authDeadAt: null,
     authDeadReason: null,
     lastCheckedAt: nowIso(),
+    // F-532 - the rotated credential's own identity, or the row's if whoami said
+    // nothing useful. Never a half-update: all four identity fields move together.
+    login: (rotatedWho && rotatedWho.login) || row.login || null,
+    ...(rotatedWho ? identityFields(rotatedWho) : {}),
     // F-304's ordering mark: the moment the ADMIN asked for the credential that is
     // now in the box. A later delivery carrying an EARLIER `enqueuedAt` is refused.
     rotatedAt: (params && params.enqueuedAt) || nowIso(),

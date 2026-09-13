@@ -142,6 +142,19 @@ ok(JSON.stringify(saved.connection.repos) === JSON.stringify(["leanzero/app", "l
 ok(saved.connection.capabilities.canWebhooks === true && saved.connection.capabilities.canPipelines === true,
   "capability flags come from the token's own reported scopes");
 
+/* ---- F-532: the row records WHICH ACCOUNT, not just what it is called ---- */
+//
+// `ignoreSelf` compares the delivery's actor to this row. A LABEL is not an
+// identity: on Bitbucket whoami answers `username` while a PR-comment delivery
+// labels the same human with their `nickname`, so a label-only row made the guard
+// inert and the app answered its own PR comments. The id is stored at the one
+// moment we hold a fresh whoami, and it is a public account id — never anything
+// derived from the credential (the secret scan below covers every field here).
+ok(saved.connection.userId === "42", `the GitHub numeric id is stored beside the login (${saved.connection.userId})`);
+ok(saved.connection.userUuid === null && saved.connection.userAccountId === null,
+  "…and the Bitbucket-only fields stay null rather than being invented for GitHub");
+ok(storage.__raw(conns.gitConnKey(connId)).userId === "42", "the id is on the STORED row, not only in the response");
+
 // the token is where it should be, and the row is not.
 ok(storage.__raw(conns.gitConnSecretKey(connId)).token === GH_TOKEN, "the token lives under its own key");
 ok(!JSON.stringify(storage.__raw(conns.gitConnKey(connId))).includes(GH_TOKEN), "the connection ROW never contains the token");
@@ -621,12 +634,42 @@ reset();
 fetchQueue = [res(200, { username: "bb-bot", display_name: "BB Bot", account_id: "1" })];
 const bb = await call("saveGitConnection", { kind: "bitbucket", label: "bb", token: BB_TOKEN, email: "bot@leanzero.net" });
 ok(bb.success === true, `a bitbucket connection saves (${JSON.stringify(bb).slice(0, 160)})`);
+// F-532 — the Bitbucket save above deliberately reports NO uuid, so nothing is
+// invented; the next block saves a realistic whoami and checks all three fields.
+ok(bb.connection.userAccountId === "1" && bb.connection.userUuid === null,
+  `a whoami without a uuid stores the account_id and leaves uuid null (${JSON.stringify([bb.connection.userUuid, bb.connection.userAccountId])})`);
 for (const secret of [BB_TOKEN]) {
   ok(findSecret(bb, secret) === null, "the bitbucket app password is not returned by saveGitConnection");
   ok(findSecret(await call("listGitConnections", {}), secret) === null, "…nor by listGitConnections");
   ok(findSecret(await call("testGitConnection", { id: bb.connection.id }).catch(() => ({})), secret) === null,
     "…nor by testGitConnection");
 }
+/* ---- F-532: the live Bitbucket shape, and Test refreshing an old row ---- */
+reset();
+const BB_UUID = "{b1e1a0c2-7d3f-4c2a-9a1e-000000000001}";
+// The account read live on 2026-09-14 (wp-global): `username` and `nickname` are
+// DIFFERENT strings on the same person, which is the whole finding.
+const bbWhoami = () => res(200, { username: "mihaiwolfaenpak", nickname: "Mihai Perdum", display_name: "Mihai Perdum", uuid: BB_UUID, account_id: "557058:abc" });
+fetchQueue = [bbWhoami()];
+const bb2 = await callScanned("saveGitConnection", { kind: "bitbucket", label: "wp-global", token: BB_TOKEN, email: "bot@leanzero.net", repos: ["wp-global/cognirunner-forge-offshoot-bb"] });
+ok(bb2.success === true, "the wp-global bitbucket connection saves");
+ok(bb2.connection.login === "mihaiwolfaenpak", "the row's LABEL is whoami's username…");
+ok(bb2.connection.userUuid === BB_UUID && bb2.connection.userAccountId === "557058:abc",
+  `…and BOTH stable ids are stored beside it (${JSON.stringify([bb2.connection.userUuid, bb2.connection.userAccountId])})`);
+ok(bb2.connection.login !== "Mihai Perdum",
+  "the stored label is NOT the nickname a delivery carries — which is exactly why the id is needed");
+// A connection saved before this fix has no ids. A Test must heal it, without the
+// admin re-entering the credential.
+const bb2Id = bb2.connection.id;
+const preFix = { ...storage.__raw(conns.gitConnKey(bb2Id)) };
+delete preFix.userUuid; delete preFix.userAccountId; delete preFix.userId;
+storage.__seed(conns.gitConnKey(bb2Id), preFix);
+ok(storage.__raw(conns.gitConnKey(bb2Id)).userUuid === undefined, "…the pre-F-532 row genuinely has no id (the negative is proven, not assumed)");
+fetchQueue = [bbWhoami()];
+const bbHealed = await callScanned("testGitConnection", { id: bb2Id });
+ok(bbHealed.success === true, "Test succeeds on the pre-F-532 row");
+ok(storage.__raw(conns.gitConnKey(bb2Id)).userUuid === BB_UUID,
+  "F-532: a Test REFRESHES the identity, so an existing connection gains its id without being re-entered");
 ok(findSecret(conns.publicConnection(storage.__raw(conns.gitConnKey(bb.connection.id))), BB_TOKEN) === null,
   "publicConnection is a whitelist: a secret added to the stored row cannot leak through it");
 // prove the whitelist by PLANTING a token field on the stored row.

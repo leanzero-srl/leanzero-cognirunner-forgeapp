@@ -101,7 +101,7 @@ export const MODE_DECIDED_TASK_TYPES = Object.freeze(["postfunction", "listener"
 // "probe-confluence" is the 1.5 §5 P3/P4 reach probe (src/async-handler.js): read-only
 // HTTP from the consumer, no model call, dev-gated by HARNESS_SECRET. It is listed here
 // because THIS is the one home of the partition every TASK_HANDLERS key must be in.
-export const NON_AI_TASK_TYPES = Object.freeze(["git-event", "gitcredrotate", "gitpipeline", "probe", "probe-confluence"]);
+export const NON_AI_TASK_TYPES = Object.freeze(["git-event", "gitcredrotate", "gitpipeline", "probe", "probe-confluence", "va-tick"]);
 
 /** ~4 chars per token is the usual English/JSON ratio; good enough for a gate. */
 export const estimateTokensFromText = (text) => Math.ceil(String(text || "").length / 4);
@@ -153,6 +153,13 @@ export const estimateTaskTokens = (taskType, params, learned) => {
       return 8000;
     case "va-post":
       return 200;
+    // A VA PREPARE TICK calls NO MODEL: it reads a queue, runs at most one search, diffs
+    // against the ledger and pushes item tasks. It is in NON_AI_TASK_TYPES and the 0 here
+    // is the second half of that statement. Pricing it as spending would reserve tokens
+    // it never spends, on the same per-minute ceiling the items themselves need — the
+    // sweep would starve the work it exists to schedule.
+    case "va-tick":
+      return 0;
     // A git webhook delivery does NO model work — it verifies, filters and enqueues.
     // It must never be paced (`usesAi` is false for it in the consumer gate); the 0
     // here is the second half of that statement, so a future caller that DOES estimate

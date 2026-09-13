@@ -1322,6 +1322,16 @@ export const runListener = async ({ listener, eventType, event, ctx, deadline = 
       // turn, is where the number lives on BOTH surfaces (F-407): the day a listener grows
       // a second turn, the ceiling is already the run's.
       webRunBudget: createRunSearchBudget(),
+      // `writeScope: null` — UNSCOPED, DELIBERATELY (F-411). A listener has no project
+      // allow-list of its own: it is bounded by its EVENT FILTER (which projects and
+      // issue types it fires on) and, where configured, its JQL gate. Passing `null`
+      // preserves exactly the pre-1.5 behaviour, and it is passed EXPLICITLY because
+      // omitting it now refuses every write — the explicit value is the greppable
+      // admission that this surface has no scope yet.
+      // TODO(F-411): give a listener a real `scope.write` in its own record, so that a
+      // rule which fires on project A cannot be made to write on project B by a model
+      // that was handed a foreign issue key, and drop this `null`.
+      writeScope: null,
     });
     return {
       skipped: false, result: r, gate, ...agentResultFields(r),

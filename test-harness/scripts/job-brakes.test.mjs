@@ -147,7 +147,10 @@ const jobWith = (over) => normalizeJob({ name: "Sweep", schedule: { cron: "0 9 *
   };
   const session = { createApi: () => fakeApi, changes };
   const m = { extractTextFromADF: (v) => String(v || "") };
-  const dispatch = createAgentActionDispatcher({ issueKey: "LZPT-1", session, allowed: ["add_comment", "get_issue"], m, maxWrites: 2 });
+  // `writeScope: null` — this suite is about the WRITE BRAKE, so the scope gate is
+  // explicitly set to the unscoped state the pre-1.5 surfaces use. Omitting it would
+  // refuse every write and this suite would pass for the wrong reason (F-411).
+  const dispatch = createAgentActionDispatcher({ issueKey: "LZPT-1", session, allowed: ["add_comment", "get_issue"], m, maxWrites: 2, writeScope: null });
 
   ok((await dispatch("add_comment", { text: "one" })).id === "1", "ALLOW: the first write goes through");
   ok((await dispatch("add_comment", { text: "two" })).id === "1", "ALLOW: the second fills the allowance");
@@ -163,9 +166,20 @@ const jobWith = (over) => normalizeJob({ name: "Sweep", schedule: { cron: "0 9 *
   // No brake configured = the pre-1.4 behaviour, unchanged.
   const changes2 = [];
   const api2 = { addComment: async () => { changes2.push({}); return { id: "9" }; }, forIssue: () => api2 };
-  const open = createAgentActionDispatcher({ issueKey: "LZPT-1", session: { createApi: () => api2, changes: changes2 }, allowed: ["add_comment"], m, maxWrites: null });
+  const open = createAgentActionDispatcher({ issueKey: "LZPT-1", session: { createApi: () => api2, changes: changes2 }, allowed: ["add_comment"], m, maxWrites: null, writeScope: null });
   for (let i = 0; i < 20; i++) await open("add_comment", { text: "x" });
   ok(changes2.length === 20, "maxWrites null = no brake at all (the listener path, unchanged)");
+
+  // THE ARITY TRAP, CLOSED (F-411). A dispatcher built WITHOUT a writeScope refuses every
+  // Jira write. This is the assertion that makes "forgot to pass it" safe: the two `null`s
+  // above are decisions, and this is what happens to an omission.
+  const changes3 = [];
+  const api3 = { addComment: async () => { changes3.push({}); return { id: "9" }; }, forIssue: () => api3 };
+  const noScope = createAgentActionDispatcher({ issueKey: "LZPT-1", session: { createApi: () => api3, changes: changes3 }, allowed: ["add_comment"], m, maxWrites: null });
+  const scopeRefused = await noScope("add_comment", { text: "x" });
+  ok(scopeRefused.success === false && scopeRefused.code === "write_scope", "writescope.BLOCK_absent_context_refuses_writes");
+  ok(changes3.length === 0, "…and nothing reached Jira");
+  ok(/without a write scope/.test(scopeRefused.error), "…with a sentence the model can act on");
 }
 
 /* ============ the write brake counts GIT writes too (F-403) ============

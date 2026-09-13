@@ -11382,7 +11382,8 @@ const coderGate = async (context) => {
         success: false,
         agentDisabled: true,
         reason: verdict.reason,
-        error: `The Coder can't run right now: ${agentCapabilityCopy(verdict.reason)}`,
+        // F-496: agentCapabilityCopy returns a {title, remedy} row, never a string.
+        error: `The Coder can't run right now. ${agentCapabilityCopy(verdict.reason).title}. ${agentCapabilityCopy(verdict.reason).remedy}`,
       },
     };
   }

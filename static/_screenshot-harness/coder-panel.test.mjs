@@ -510,6 +510,36 @@ try {
       if (SHOTS) await page.locator(".glance").screenshot({ path: path.join(OUT, `coder-simlocked-${theme}.png`) });
     });
 
+    /* ------------------------------- 10. F-369: an EDITOR gets the connection picker.
+       `listGitConnections` is requireAdmin, so every non-admin developer was refused and
+       their turn silently took the engine's DEFAULT connection: with two configured, that
+       is a turn landing in the wrong repository with nothing on screen to choose. The
+       fallback is the editor-floor rows getRuleLists returns. */
+    await withPanel({ __THEME__: theme, __REFUSE__: ["listGitConnections"], __REFUSE_ROLE__: "admin" }, async (page, errors) => {
+      const id = `editor-picker/${theme}`;
+      await page.locator(".coder-composer").waitFor({ timeout: 10000 });
+      await page.locator(".coder-picker .dropdown").waitFor({ timeout: 8000 });
+      ok(await page.locator(".coder-picker .dropdown").count() === 1, `${id} the refused editor still gets a picker`);
+      // The refusal is NOT told as an outage: the panel is fully usable.
+      ok(await page.locator(".coder-error").count() === 0, `${id} an admin-only list being refused is not an error banner`);
+      ok(await page.locator("textarea.coder-input").count() === 1, `${id} the composer is untouched`);
+      const calls = await page.evaluate(() => (window.__CALLS__ || []).map((c) => c.name));
+      ok(calls.includes("getRuleLists"), `${id} the editor-floor list WAS read after the refusal`);
+      await page.locator(".coder-picker .dropdown-trigger").click();
+      await page.waitForSelector(".dropdown-panel", { timeout: 6000 });
+      const items = await page.locator(".dropdown-panel .dropdown-item").allInnerTexts();
+      ok(items.some((t) => /Acme engineering/.test(t)) && items.some((t) => /Acme platform/.test(t)), `${id} both connections are offered (got ${JSON.stringify(items)})`);
+      await page.locator(".dropdown-panel .dropdown-item", { hasText: "Acme platform" }).first().click();
+      await page.locator("textarea.coder-input").fill("Use the platform repo for this one.");
+      await page.locator(".coder-composer .coder-btn-go").click();
+      await page.locator(".coder-consent").waitFor({ timeout: 20000 });
+      const start = await page.evaluate(() => window.__CODER_LAST_START__ || {});
+      ok(start.connectionId === "gc_2", `${id} the chosen connection travels on the turn (got ${start.connectionId})`);
+      await designRules(page, id);
+      ok(errors.length === 0, `${id} no page errors: ${errors.join(" | ")}`);
+      if (SHOTS) await page.locator(".glance").screenshot({ path: path.join(OUT, `coder-editor-picker-${theme}.png`) });
+    });
+
     /* --------------------------------------- 7b. a FIRST open: no thread, no empty-state lie.
        "Thread not found" is the normal answer on a first open and must not become an error
        banner — an empty transcript is exactly what a new user should see. */

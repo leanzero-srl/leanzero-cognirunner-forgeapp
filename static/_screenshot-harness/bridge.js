@@ -1270,7 +1270,18 @@ function invoke(name, payload) {
     }
     case "getAsyncJobs": return Promise.resolve(buildJobs());
     case "getFields": return Promise.resolve(FIELDS);
-    case "getRuleLists": return Promise.resolve({ success: true, lists: { issuetypes: [{ value: "Bug", label: "Bug" }, { value: "Task", label: "Task" }], statuses: [{ value: "Done", label: "Done" }], priorities: [{ value: "High", label: "High" }] } });
+    /* F-369/F-373 — the EDITOR FLOOR list. `gitconnections` rows are RICH
+       ({id, kind, label, repos[]}) and carry no status and no secret state, so a non-admin
+       workflow editor can both SEE the connections and narrow repositories to one of them.
+       `gitrepos` stays the flat union for the older callers. This is the shape the Coder
+       panel's fallback and PremadeRuleForm's fallback are written against. */
+    case "getRuleLists": return Promise.resolve({ success: true, lists: {
+      issuetypes: [{ value: "Bug", label: "Bug" }, { value: "Task", label: "Task" }],
+      statuses: [{ value: "Done", label: "Done" }],
+      priorities: [{ value: "High", label: "High" }],
+      gitconnections: CODE_CONNS().map((c) => ({ id: c.id, kind: c.kind, label: c.label, repos: (c.repos || []).slice() })),
+      gitrepos: [...new Set(CODE_CONNS().flatMap((c) => c.repos || []))].sort().map((r) => ({ value: r, label: r })),
+    } });
     // F-077: THIS IS THE BACKEND SHAPE — `usage`, `seats` and `forgeLlm` are
     // SIBLINGS on the result (src/index.js getAiUsage). The mock used to nest
     // seats/forgeLlm INSIDE usage, which made a dead allowance meter look alive.

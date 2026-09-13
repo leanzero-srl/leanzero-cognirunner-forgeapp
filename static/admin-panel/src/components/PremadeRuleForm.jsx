@@ -73,10 +73,15 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
   /* Rich connection rows (kind, status, per-connection repo allow-list) from
      `listGitConnections`. That resolver is requireAdmin, so a workflow EDITOR gets a
      permission REFUSAL — not an outage, and not something to retry. In that case the
-     form falls back to the editor-visible flat lists getRuleLists already returns
-     (`gitconnections` / `gitrepos`), which carry no credential status and whose repos
-     are the UNION across every connection. `gitNarrowed` is false there, and the form
-     says so rather than implying a repo is allowed when only the backend knows.
+     form falls back to the editor-floor rows getRuleLists returns.
+
+     F-369 — those rows are now RICH: `gitconnections: [{id, kind, label, repos[]}]`, with
+     no status and no secret state. Each row carries its OWN repo allow-list, so the editor
+     path NARROWS exactly like the admin path, and the "this list is every repository across
+     all connections" note disappears with the thing it described. The older flat shape
+     (`{value,label}` plus the `gitrepos` UNION) is still read, because a form that breaks on
+     the shape its backend has today would be worse than one that says it cannot narrow: no
+     repos[] on the rows means no narrowing, and the note comes back.
      null = not fetched yet. */
   const [gitRows, setGitRows] = useState(null);
   const [gitNarrowed, setGitNarrowed] = useState(true);
@@ -254,15 +259,32 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
   // premade rule must never see a permission refusal it did not provoke.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { if (p.git) loadGitConnections(); }, [!!p.git]);
-  const gitConnections = (gitRows && gitRows.length) || gitNarrowed
-    ? (gitRows || [])
-    : (lists.gitconnections || []).map((o) => ({ id: o.value, label: o.label, kind: null, status: "ok", repos: [] }));
+  /* The editor-floor rows, normalised to the admin row's field names so ONE renderer
+     serves both paths. `repos` is what decides whether this path can narrow (F-369). */
+  const gitFallback = (lists.gitconnections || [])
+    .map((o) => ({
+      id: o.id || o.value,
+      label: o.label || o.id || o.value,
+      kind: o.kind || null,
+      status: "ok", // the editor floor deliberately carries no credential state
+      repos: Array.isArray(o.repos) ? o.repos : null,
+    }))
+    .filter((o) => !!o.id);
+  const usingFallback = !((gitRows && gitRows.length) || gitNarrowed);
+  const gitConnections = usingFallback
+    ? gitFallback.map((o) => ({ ...o, repos: o.repos || [] }))
+    : (gitRows || []);
+  /* Can the list on screen be narrowed to ONE connection? The admin path always can; the
+     editor path can whenever its rows carry their own repos[]. */
+  const reposNarrowed = usingFallback
+    ? (gitFallback.length > 0 && gitFallback.every((o) => Array.isArray(o.repos)))
+    : true;
   const gitConn = gitConnections.find((c) => c.id === connectionId) || null;
   const gitConnDead = !!gitConn && gitConn.status === "auth_dead";
   // The repo allow-list of the CHOSEN connection. Nothing is offered before a connection
   // is chosen: a repository is only meaningful inside one, and the executor fails CLOSED
   // on a repo that connection may not read.
-  const gitRepoOptions = gitNarrowed
+  const gitRepoOptions = reposNarrowed
     ? (gitConn ? (gitConn.repos || []) : [])
     : (connectionId ? (lists.gitrepos || []).map((o) => o.value) : []);
 
@@ -667,7 +689,7 @@ export default function PremadeRuleForm({ mode = "validator", fields = [], initi
               }
               options={gitRepoOptions.map((r) => ({ value: r, label: r }))}
             />
-            {connectionId && !gitNarrowed && (
+            {connectionId && !reposNarrowed && (
               <p className="hint">
                 {gitRefused
                   ? "You are not a CogniRunner admin, so this list is every repository across all connections rather than just this one's."

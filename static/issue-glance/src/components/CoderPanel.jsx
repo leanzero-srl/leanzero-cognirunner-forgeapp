@@ -220,16 +220,38 @@ export default function CoderPanel({ issueKey, accountId }) {
   }, [issueKey, threadId, capEnabled]);
 
   /* Connections drive the picker, and ONLY the picker. Read once the capability is on and
-     never per conversation: the list does not depend on which thread is open. */
+     never per conversation: the list does not depend on which thread is open.
+
+     F-369 - AN EDITOR MUST SEE THE PICKER TOO. `listGitConnections` is requireAdmin, so
+     every non-admin developer was refused here and their turn silently took the engine's
+     DEFAULT connection: with two connections configured, that is somebody's turn landing
+     in the wrong repository with nothing on screen to choose. The admin read is still
+     tried FIRST because it is richer (status, credential state); a PERMISSION REFUSAL is a
+     settled answer, not an outage, and falls through to the editor-floor rows getRuleLists
+     returns - `gitconnections: [{id, kind, label, repos[]}]`, which carry no status and no
+     secret state. Anything else (an outage) leaves the picker absent, which is the same
+     place the panel was before. */
   useEffect(() => {
     if (!capEnabled) return undefined;
     let cancelled = false;
     (async () => {
+      let rows = null;
       try {
         const c = await invoke("listGitConnections");
         if (cancelled || !mountedRef.current) return;
-        if (c && c.success && Array.isArray(c.connections)) setConnections(c.connections);
-      } catch (e) { /* no picker */ }
+        if (c && c.success && Array.isArray(c.connections)) rows = c.connections;
+        else if (!isPermissionRefusal(c)) return; // an outage is not a reason to ask again
+      } catch (e) { return; /* same: no picker */ }
+      if (!rows) {
+        try {
+          const l = await invoke("getRuleLists");
+          if (cancelled || !mountedRef.current) return;
+          const flat = l && l.success && l.lists && Array.isArray(l.lists.gitconnections) ? l.lists.gitconnections : [];
+          rows = flat.map((o) => ({ id: o.id || o.value, label: o.label || o.id || o.value, kind: o.kind || null, repos: Array.isArray(o.repos) ? o.repos : [] }))
+            .filter((o) => !!o.id);
+        } catch (e) { return; }
+      }
+      if (!cancelled && mountedRef.current) setConnections(rows);
     })();
     return () => { cancelled = true; };
   }, [capEnabled]);

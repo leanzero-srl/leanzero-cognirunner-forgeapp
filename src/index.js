@@ -91,6 +91,7 @@ import {
   errorSignature,
   loadMemories,
   saveMemories,
+  serializedBytes,
   saveMemoryCandidate,
   buildMemoryBlock,
   readMemoryStoreFull,
@@ -7264,6 +7265,7 @@ resolver.define("updateMemory", async ({ payload, context }) => {
     const memories = await loadMemories();
     const memory = memories.find((m) => m.id === id);
     if (!memory) return { success: false, error: "Memory not found" };
+    const priorBytes = serializedBytes(memories);
     if (content !== undefined) {
       const clean = String(content || "").trim().substring(0, MEMORY_CONTENT_MAX);
       if (!clean) return { success: false, error: "Memory content cannot be empty" };
@@ -7272,8 +7274,16 @@ resolver.define("updateMemory", async ({ payload, context }) => {
     if (disabled !== undefined) memory.disabled = disabled === true;
     if (projectKey !== undefined) memory.projectKey = cleanProjectKey(projectKey);
     memory.updatedAt = new Date().toISOString();
-    await saveMemories(memories);
-    return { success: true };
+    // F-178: an EDIT is not a newcomer — it may never cost another memory its life.
+    // saveMemories evicts nothing without a protectId; if the edit would leave the store
+    // at or over the byte guard WITHOUT shrinking it, the edit itself is refused and the
+    // store is left byte-identical. (Shortening rows still works — that is the recovery
+    // path out of an over-size store, and it shrinks.)
+    const saved = await saveMemories(memories, { refuseIfOverBytes: true, priorBytes });
+    if (saved.refused) {
+      return { success: false, stored: false, reason: saved.reason, evicted: [], error: memoryCapRefusalMessage(saved.reason) };
+    }
+    return { success: true, evicted: [] };
   } catch (error) {
     console.error("Failed to update memory:", error);
     return { success: false, error: error.message };
@@ -7289,8 +7299,10 @@ resolver.define("deleteMemory", async ({ payload, context }) => {
     const memories = await loadMemories();
     const next = memories.filter((m) => m.id !== id);
     if (next.length === memories.length) return { success: false, error: "Memory not found" };
+    // F-178: a delete only ever SHRINKS the store, so it always proceeds — and, with no
+    // newcomer to make room for, it evicts nothing on the way.
     await saveMemories(next);
-    return { success: true };
+    return { success: true, evicted: [] };
   } catch (error) {
     console.error("Failed to delete memory:", error);
     return { success: false, error: error.message };

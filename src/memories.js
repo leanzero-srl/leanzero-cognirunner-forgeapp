@@ -328,20 +328,57 @@ export const pruneForSave = (arr, protectId = null) => {
     }
     return !r.victim;
   };
-  while (out.length > MAX_MEMORIES) { if (step("cap")) break; }
-  while (out.length > 0 && utf8Len(JSON.stringify(out)) >= MEMORY_MAX_SERIALIZED_BYTES) { if (step("bytes")) break; }
+  // F-178: eviction exists to make room for a NEWCOMER. With no protected row there is
+  // no newcomer, so there is nothing to make room FOR — an edit, a delete, an archive or
+  // a reinforce must never cost another row its life. (Before this, an edit on an
+  // over-size store evicted, often FUTILELY: the loop breaks as soon as pruneOne reports
+  // `blocked`, so it destroyed a row, stayed over the guard, and wrote the oversized value
+  // anyway while updateMemory answered success and dropped `evicted` on the floor.)
+  if (protectId) {
+    while (out.length > MAX_MEMORIES) { if (step("cap")) break; }
+    while (out.length > 0 && utf8Len(JSON.stringify(out)) >= MEMORY_MAX_SERIALIZED_BYTES) { if (step("bytes")) break; }
+  }
   const protectedKept = !protectId || out.some((m) => m.id === protectId);
   return { out, evicted, protectedKept, reason: protectedKept ? null : (reason || "cap") };
 };
 
-export const saveMemories = async (arr, { protectId = null } = {}) => {
+/** Serialized UTF-8 size of a memory array — the quantity the byte guard measures. */
+export const serializedBytes = (arr) => utf8Len(JSON.stringify(Array.isArray(arr) ? arr : []));
+
+/**
+ * Write the store.
+ *
+ * `protectId` — a just-inserted newcomer: the prune runs and may evict (non-archived
+ * AUTO rows only, see pruneOne).
+ *
+ * No `protectId` (an edit / delete / archive / reinforce) — F-178: NOTHING is evicted.
+ * Such a save may still leave the store over the serialized-byte guard, and the caller
+ * decides what that means:
+ *  - `refuseIfOverBytes: true` + `priorBytes` (updateMemory): when the store is at or over
+ *    the guard, refuse any edit that GROWS it and return `{ refused: true, reason: "bytes" }`
+ *    with the store untouched. Edits that SHRINK it still proceed, because shortening rows is
+ *    the only repair an admin has short of deleting — refusing those would trap them in a
+ *    store they cannot fix. (Every edit also re-stamps `updatedAt`, so in practice a
+ *    metadata-only toggle on an already-over-guard store grows it by a few bytes and is
+ *    refused too; that is intended — nothing may grow a value this close to the 240KiB
+ *    platform cap, and the refusal costs only a toggle, never a memory.)
+ *  - default (deleteMemory, the reinforce/merge path): write. A delete only shrinks, and
+ *    a reinforce rewrites the same rows; neither can be the thing that broke the guard.
+ */
+export const saveMemories = async (arr, { protectId = null, refuseIfOverBytes = false, priorBytes = null } = {}) => {
   const { out, evicted, protectedKept, reason } = pruneForSave(arr, protectId);
+  if (!protectId && refuseIfOverBytes) {
+    const bytes = serializedBytes(out);
+    if (bytes >= MEMORY_MAX_SERIALIZED_BYTES && (priorBytes === null || bytes > priorBytes)) {
+      return { memories: null, refused: true, reason: "bytes", evicted: [] };
+    }
+  }
   await storage.set(MEMORIES_KEY, out);
   // F-167/F-170/F-171: EVERY write re-evaluates the marker against the same admission
   // rule that raises it — never against a proxy like the row count. A delete, an
   // archive, a shortened row or a merge clears it only if a lesson would now be kept.
   await refreshMemoryStoreFull(out);
-  return { memories: out, evicted, protectedKept, reason };
+  return { memories: out, evicted, protectedKept, reason, refused: false };
 };
 
 const tokenSet = (s) => new Set(

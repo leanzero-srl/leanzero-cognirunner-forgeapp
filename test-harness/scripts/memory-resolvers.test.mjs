@@ -146,6 +146,52 @@ for (let i = 1; i < 18; i++) await call("updateMemory", { id: `b${i}`, content: 
 ok(storage.__raw(MEMORY_STORE_FULL_KEY) === undefined,
   "once the store is back under the byte guard the marker CLEARS");
 
+// === F-178: an edit/delete save has NO newcomer, so it must NEVER evict ===
+// The breaker's fixture: 20 hand-authored rows of 12000 chars (one of them ARCHIVED),
+// serialized well over the byte guard. Before the fix, editing an unrelated row evicted a
+// row (the archived one, under F-173) FUTILELY — still over the guard, oversized value
+// written anyway, `{success:true}` returned and `evicted` dropped on the floor.
+{
+  const heavy178 = [];
+  for (let i = 0; i < 20; i++) heavy178.push({ ...big(`b${i}`, 12000), disabled: i === 7 });
+  reset(heavy178);
+  const beforeBytes = new TextEncoder().encode(JSON.stringify(load())).length;
+  ok(beforeBytes >= 230000, `fixture is over the byte guard (${beforeBytes} B)`);
+  const beforeJson = JSON.stringify(load());
+  // An edit that GROWS the store (scoping a row to a project). A content edit cannot be used
+  // here — updateMemory clamps to MEMORY_CONTENT_MAX, so it always shrinks a 12000-char row.
+  const edit = await call("updateMemory", { id: "b3", projectKey: "PROJA" });
+  ok(edit.success === false && edit.reason === "bytes",
+    `the EDIT is refused with reason "bytes" (got ${JSON.stringify({ success: edit.success, reason: edit.reason })})`);
+  ok(JSON.stringify(edit.evicted) === "[]", `the refused edit reports evicted: [] (got ${JSON.stringify(edit.evicted)})`);
+  ok(JSON.stringify(load()) === beforeJson, "the store is BYTE-IDENTICAL after the refused edit — nothing evicted, nothing written");
+  ok(load().some((m) => m.id === "b7" && m.disabled === true), "the ARCHIVED hand-authored row is still there");
+  ok(typeof edit.error === "string" && /Memories tab/.test(edit.error), `the refusal names the tab: "${edit.error}"`);
+
+  // Characterization of the edge: every edit also stamps a fresh `updatedAt` (4 bytes longer
+  // than a seeded "…00:00:00Z"), so on a store ALREADY over the guard even an archive grows
+  // the value and is refused. That is the rule doing its job — no growth over a ceiling that
+  // is one step from the 240KiB platform cap — and it costs nothing: archiving frees no
+  // capacity since F-176, and the store is left untouched rather than raided for a row.
+  const arch178 = await call("updateMemory", { id: "b5", disabled: true });
+  ok(arch178.success === false && arch178.reason === "bytes" && load().find((m) => m.id === "b5").disabled === false,
+    "an ARCHIVE on an already-over-guard store is refused, not written, and evicts nothing");
+  ok(load().length === 20, "…still 20 rows");
+
+  // …and a SHRINKING edit still proceeds — shortening rows is the recovery path out of an
+  // over-size store, so it must never be refused.
+  const shrink = await call("updateMemory", { id: "b3", content: "short" });
+  ok(shrink.success === true && load().find((m) => m.id === "b3").content === "short",
+    "a SHRINKING edit on an over-size store proceeds (recovery is not trapped)");
+  ok(load().length === 20, "…and it evicted nothing (still 20 rows)");
+
+  // a DELETE always proceeds (it only shrinks) and evicts nothing
+  const delHeavy = await call("deleteMemory", { id: "b1" });
+  ok(delHeavy.success === true && JSON.stringify(delHeavy.evicted) === "[]" && load().length === 19,
+    "a DELETE on an over-size store proceeds, reports evicted: [], and removes exactly one row");
+  ok(load().some((m) => m.id === "b7"), "the archived row survives the delete of a different row");
+}
+
 // === F-168: ONE memory-content clamp, imported — no retyped literal in index.js ===
 const indexSrc = readFileSync(new URL("../../src/index.js", import.meta.url), "utf8");
 const memoryClamps = indexSrc.match(/String\(content \|\| ""\)\.trim\(\)\.substring\(0, ([A-Za-z0-9_]+)\)/g) || [];

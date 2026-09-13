@@ -20,6 +20,8 @@
  *   view-active      -> config-view rule summary (active) + logs
  *   view-disabled    -> config-view rule summary (disabled) + logs
  *   view-premade-git -> config-view read-only summary of a saved GIT premade rule (F-380)
+ *   view-static-fieldguide -> config-view summary of a static PF whose ONLY provenance is the
+ *                             baked field guide (F-572): no docs, no skills, no memories
  *   cfg-premade-confluence    -> config-ui premade VALIDATOR, empty, for the Confluence group (F-447)
  *   cfg-premade-confluence-pf -> config-ui premade POST-FUNCTION slot, for the two Confluence rules (F-447)
  *   view-premade-confluence   -> config-view summary of a saved Confluence rule + a
@@ -653,6 +655,15 @@ function getContext() {
     // An OFFLOADED static PF (config >24KB → code moved to pf_code): functions:[] + name-only functionsMeta.
     // config-view must render the step NAMES from functionsMeta (never the full details). E11 path.
     return { accountId: ACCT, siteUrl: SITE, license: mockLicenseCtx(), extension: { ...baseExt, type: "jira:workflowPostFunction", key: "ai-static-post-function", entryPoint: "view", transitionContext: { id: "81", from: { name: "Triaged" }, to: { name: "Mitigating" } }, postFunctionConfig: JSON.stringify({ id: "postfunction-static::Incident::81::i-offload", type: "postfunction-static", fieldId: "", functions: [], functionsMeta: [{ id: "s1", name: "Escalate priority to High", operationType: "rest_api_internal", variableName: "r1" }, { id: "s2", name: "Add on-call watcher", operationType: "rest_api_internal", variableName: "r2" }], workflow: { workflowId: "wf-incident-007", workflowName: "Incident Response", transitionId: "81", siteUrl: SITE } }) } };
+  if (s === "view-static-fieldguide")
+    /* F-572 - a SAVED static PF opened in the READ-ONLY view whose single step was generated
+       with the BAKED FIELD GUIDE AND NOTHING ELSE. This is not a contrived shape: no docs
+       picked, no skills bound and memory injection off is the DEFAULT for a first-time
+       author, and the backend still stamps generationMeta.fieldGuide on every generate. The
+       three emptied fields are spelled out rather than omitted because the bug was a
+       predicate that only tested those three - a fixture that left them undefined would
+       pass against a renderer that read them wrongly. */
+    return { accountId: ACCT, siteUrl: SITE, license: mockLicenseCtx(), extension: { ...baseExt, type: "jira:workflowPostFunction", key: "ai-static-post-function", entryPoint: "view", transitionContext: { id: "31", from: { name: "In Review" }, to: { name: "Done" } }, postFunctionConfig: JSON.stringify({ id: "postfunction-static::Software Simplified Workflow::31::i-fg", type: "postfunction-static", fieldId: "", functions: [{ id: "func_fg", name: "Roll the fix version forward", conditionPrompt: "", operationType: "rest_api_internal", operationPrompt: "Set the fix version on the issue to the next unreleased version in the project.", endpoint: "", method: "GET", variableName: "fixver", includeBackoff: false, code: STATIC_CODE_1, testedFingerprint: fpOf(STATIC_CODE_1), generationMeta: { appliedDocs: [], appliedSkills: [], appliedMemories: 0, truncatedDocs: [], fieldGuide: FIELD_GUIDE_SECTION_IDS } }], workflow: { workflowId: "wf-software-simplified-12345", workflowName: "Software Simplified Workflow", transitionId: "31", siteUrl: SITE } }) } };
   if (s === "view-premade-git")
     /* F-380 - a SAVED git premade rule opened in the READ-ONLY view. The whole point of the
        arm is the connection row: config-view has no picker, so if it cannot resolve `gc_1`

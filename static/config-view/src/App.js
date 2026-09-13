@@ -23,6 +23,7 @@ import { premadeSummaryRows, buildFactsText, ruleKindEnum } from "../../../src/s
 import { logSourceOf, SOURCE_LABEL, FLAG_LABEL, isSkippedLog } from "../../../src/shared/log-flags.js";
 import { codeFingerprint } from "../../../src/shared/code-fingerprint.js";
 import { resolveEdition, EDITION_IDS } from "../../../src/shared/edition.js";
+import FieldGuideChip from "./components/FieldGuideChip.jsx";
 
 // Inject styles directly
 const injectStyles = () => {
@@ -906,6 +907,46 @@ const injectStyles = () => {
     .cv-gen-skill { background: var(--accent-skills); }
     .cv-gen-mem { background: var(--accent-memories); }
     .cv-gen-recipe { background: var(--accent-indigo); }
+
+    /* F-572 — the field-guide chip. FieldGuideChip.jsx is a byte-identical copy shared with
+       config-ui, admin-panel and issue-glance, so it brings ITS class names (gen-meta-chip /
+       gmc-fieldguide / fg-*) rather than the cv-gen-* ones, and this is the config-view copy
+       of that rule set. Same amber as the editor: solid #b45309 with white text, no rail, no
+       tint. The chip is a BUTTON, so it carries a button reset the cv-gen chips do not need.
+       Dark takes dark ink on #f59e0b — white on that amber is the one pair in the project hue
+       map that fails contrast, the exception .pf-test-stale above already makes. */
+    .gen-meta-chip {
+      padding: 2px 10px;
+      border-radius: var(--r-sm);
+      font-size: 10px;
+      font-weight: 700;
+      color: #ffffff;
+      white-space: nowrap;
+    }
+    .gmc-fieldguide {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      border: none;
+      background: #b45309;
+      font-family: inherit;
+      cursor: pointer;
+    }
+    .gmc-fieldguide:focus-visible { outline: 2px solid #b45309; outline-offset: 2px; }
+    html[data-color-mode="dark"] .gmc-fieldguide { background: #f59e0b; color: #2a1602; }
+    html[data-color-mode="dark"] .gmc-fieldguide:focus-visible { outline-color: #f59e0b; }
+    .fg-chip-wrap { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 5px; }
+    .fg-chip-caret { font-size: 8px; }
+    .fg-chip-list { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+    .fg-chip-item {
+      font-size: 10px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      border: 1px solid var(--border-color);
+      border-radius: 4px;
+      padding: 1px 6px;
+      white-space: nowrap;
+    }
 
     .sk {
       background: linear-gradient(90deg, #cbd5e1 25%, #f1f5f9 50%, #cbd5e1 75%);
@@ -2085,10 +2126,16 @@ function App() {
             // functionsMeta without it — render nothing in that case.
             const meta = fn.generationMeta;
             const isRecipe = meta?.source === "recipe";
+            // F-572 — the BAKED field guide counts as provenance. It is written by
+            // compactMeta on every generate, and it is frequently the ONLY knowledge a step
+            // has: no docs picked, no skills bound, memory injection off is the default for
+            // a first-time author. Leaving it out of this predicate hid the whole GENERATED
+            // WITH row and told the reviewer the code was generated with nothing.
             const hasProvenance = !!meta && !isRecipe && (
               meta.appliedDocs?.length > 0 ||
               meta.appliedSkills?.length > 0 ||
-              meta.appliedMemories > 0
+              meta.appliedMemories > 0 ||
+              meta.fieldGuide?.length > 0
             );
             return (
               <React.Fragment key={i}>
@@ -2129,6 +2176,10 @@ function App() {
                         {meta.appliedMemories} memor{meta.appliedMemories > 1 ? "ies" : "y"}
                       </span>
                     )}
+                    {/* The same component the other three apps render, so the count and the
+                        expandable title list cannot disagree across surfaces. It resolves its
+                        own titles and returns null when it can name none. */}
+                    <FieldGuideChip sections={meta.fieldGuide} />
                   </div>
                 )}
               </React.Fragment>

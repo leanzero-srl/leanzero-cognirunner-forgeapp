@@ -8,7 +8,7 @@
 /**
  * "Field guide: N sections" — the provenance chip for the baked knowledge (1.4 commit 14b).
  *
- * ⚠️ THREE BYTE-IDENTICAL HOMES, and it is a shared FILE rather than three copies of the
+ * ⚠️ FOUR BYTE-IDENTICAL HOMES, and it is a shared FILE rather than four copies of the
  * same twelve lines for one reason: the rule it carries is "an id the index has never heard
  * of must not be printed". The section ids are long, generated and meaningless to a reader
  * (`forge-app-builder/forge-app-builder/9c1f/core-forge-concepts-3`), and a chip that fell
@@ -19,9 +19,16 @@
  *   static/config-ui/src/components/FieldGuideChip.jsx
  *   static/admin-panel/src/components/FieldGuideChip.jsx
  *   static/issue-glance/src/components/FieldGuideChip.jsx
+ *   static/config-view/src/components/FieldGuideChip.jsx
  *
- * After editing one: copy to the other two and verify with `diff -q`, then rebuild all three
+ * After editing one: copy to the other three and verify with `diff -q`, then rebuild all four
  * apps. Self-contained on purpose (no import from App.js) so the copy stays a copy.
+ *
+ * F-572 added the fourth home. config-view is the READ-ONLY review surface, and it was the
+ * one provenance renderer the guide never reached: its `hasProvenance` predicate tested
+ * docs/skills/memories only, so a step generated with the field guide ALONE — the default
+ * for a first-time author with no docs picked, no skills bound and memory injection off —
+ * told its reviewer the code was generated with nothing.
  *
  * WHAT IT READS. `src/shared/knowledge-index.js` — the GENERATED index of titles, tags and
  * provenance, with NO bodies. That is the module the UI bundles are meant to import: the
@@ -38,6 +45,8 @@
  */
 
 import React, { useState } from "react";
+/* SWAP PENDING: a titles-only `src/shared/knowledge-titles.js` is being generated to replace
+   this 136 KB import (F-573); point all four copies at it when it lands. */
 import { KNOWLEDGE_INDEX } from "../../../../src/shared/knowledge-index.js";
 
 /* Built once, on first use. A module-level Map over ~180 rows; building it eagerly at

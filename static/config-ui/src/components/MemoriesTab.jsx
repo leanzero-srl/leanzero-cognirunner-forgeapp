@@ -25,7 +25,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import { invoke } from "@forge/bridge";
 import Tooltip from "./Tooltip";
 import { showToast } from "./toast";
-import { isPermissionRefusal, permissionRefusalText } from "./refusal";
+import { isPermissionRefusal, permissionRefusalText, isUpgradeRequired, upgradeRequiredText, UPGRADE_REQUIRED_HEADLINE } from "./refusal";
 
 const SOURCE_CLASS = {
   user: "memory-src-user",
@@ -169,6 +169,13 @@ export default function MemoriesTab({ onChanged = null, canEdit = false, roleUnk
      was applied to the surface the finding was reported on rather than to the rule. Own
      state, never folded into `loadError`: they render differently on purpose. */
   const [accessRefusal, setAccessRefusal] = useState(null);
+  /* F-273 — the EDITION arm. Same separation F-245 insisted on between a refusal and an
+     outage, applied one level down: an `upgrade-required` answer is neither. It matched no
+     branch here and fell into `loadError`, so a Standard tenant was told the app had failed
+     and handed a Retry, when the true statement is "this store is part of Coder". Own
+     state, so no branch that reasons about this READER'S ROLE can consume a statement about
+     the SITE'S PLAN. */
+  const [upgradeRefusal, setUpgradeRefusal] = useState(null);
 
   const loadMemories = useCallback(async () => {
     try {
@@ -178,9 +185,16 @@ export default function MemoriesTab({ onChanged = null, canEdit = false, roleUnk
         setSettings(result.settings || null);
         setLoadError(null);
         setAccessRefusal(null);
+        setUpgradeRefusal(null);
       } else if (isPermissionRefusal(result)) {
         // F-245 — authoritative, and it clears the error arm: one state, one voice.
         setAccessRefusal(result);
+        setUpgradeRefusal(null);
+        setLoadError(null);
+      } else if (isUpgradeRequired(result)) {
+        // F-273 — the edition twin, caught before the fault arm can claim it.
+        setUpgradeRefusal(result);
+        setAccessRefusal(null);
         setLoadError(null);
       } else {
         setLoadError(result.error || "Failed to load memories.");
@@ -396,6 +410,13 @@ export default function MemoriesTab({ onChanged = null, canEdit = false, roleUnk
            the same read refuse it in the same sentence, now from one builder. */
         <div className="access-note" role="note" style={{ margin: "10px 12px" }}>
           {permissionRefusalText(accessRefusal, "memories")}
+        </div>
+      ) : upgradeRefusal ? (
+        /* F-273 — the edition note, checked before loadError like its twin above. Solid
+           orange .upgrade-note and no Retry: the remedy is an upgrade, not another attempt. */
+        <div className="upgrade-note" role="note" style={{ margin: "10px 12px" }}>
+          <span className="upgrade-note-title">{UPGRADE_REQUIRED_HEADLINE}</span>
+          <span className="upgrade-note-text">{upgradeRequiredText(upgradeRefusal)}</span>
         </div>
       ) : loadError ? (
         <div className="load-error" style={{ margin: "10px 12px" }}>

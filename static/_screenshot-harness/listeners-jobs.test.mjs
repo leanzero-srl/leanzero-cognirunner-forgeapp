@@ -1565,6 +1565,44 @@ try {
     await close(env);
   }
 
+  /* ---------------- F-274 — a THROWN checkIsAdmin is "unknown", not a verdict ----------
+   * admin-panel's catch only logged. It behaved correctly only because F-230's
+   * `roleIsUnknown = true` initialiser three dozen lines up was never cleared on that path
+   * — an invariant with no statement of intent at the site that depends on it. If the page
+   * ever reports a role it could not verify, it tells a user "CogniRunner has you as no
+   * role. Ask a CogniRunner admin" — a false claim plus advice that cannot help, since the
+   * reader may BE that admin and there is nothing for anyone to change.
+   *
+   * Both themes: the note is chrome, and the slate override is the thing a theme can break. */
+  for (const theme of ["light", "dark"]) {
+    console.log(`F-274 ${theme} a thrown role check names the outage, not a role`);
+    const env = await openAdmin(browser, theme, { __FAIL__: ["checkIsAdmin"] });
+    const { page } = env;
+    try {
+      const note = page.locator(".role-note").first();
+      await note.waitFor({ timeout: 10000 });
+      const txt = (await note.innerText()).replace(/\s+/g, " ");
+
+      /* THE assertion: we never received an answer, so we must not state one. */
+      ok(!/has you as/.test(txt),
+        `F-274 ${theme} an unverified role is never reported as a role — got: ${txt}`);
+      ok(!/no role/.test(txt),
+        `F-274 ${theme} and specifically not as "no role" — got: ${txt}`);
+      ok(txt.trim().length > 0, `F-274 ${theme} the note still says something`);
+
+      /* Same slate grammar, no rail, in both themes. */
+      const st = await note.evaluate((el) => {
+        const cs = getComputedStyle(el);
+        return { bl: cs.borderLeftWidth, bt: cs.borderTopWidth };
+      });
+      ok(st.bl === st.bt, `F-274 ${theme} the role note has NO left accent rail`);
+
+      await shot(page, `f274-role-unknown-${theme}`);
+      ok(env.errors.length === 0, `F-274 ${theme} no page errors: ` + env.errors.join(" | "));
+    } catch (e) { fail++; console.log(`  ✗ F-274 ${theme} threw: ` + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
 } finally {
   await browser.close();
 }

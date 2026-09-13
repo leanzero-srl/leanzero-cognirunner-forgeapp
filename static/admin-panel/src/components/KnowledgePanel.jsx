@@ -27,7 +27,7 @@ import { invoke } from "@forge/bridge";
 import DocRepository from "./DocRepository";
 import SkillsTab from "./SkillsTab";
 import MemoriesTab from "./MemoriesTab";
-import { isPermissionRefusal } from "./refusal";
+import { isPermissionRefusal, isUpgradeRequired } from "./refusal";
 
 export default function KnowledgePanel({
   selectedDocIds,
@@ -72,6 +72,13 @@ export default function KnowledgePanel({
      be permanently mid-fetch, opened it, and got three tabs that each refused separately.
      Say it once, at the top, instead. */
   const [countsRefused, setCountsRefused] = useState(false);
+  /* F-273 — the EDITION twin of countsRefused. `getKnowledgeCounts` gates on the edition as
+     well as the role, and an `upgrade-required` answer hit neither the refusal branch nor
+     the success branch: it fell into the fail-soft below and left the header showing
+     "— docs, — skills, — memories", the app's symbol for "still loading". A Standard tenant
+     therefore saw a panel that looked permanently mid-fetch. Separate from countsRefused
+     because the two say different things and offer different remedies. */
+  const [countsUpgrade, setCountsUpgrade] = useState(false);
 
   // Loaded on mount AND re-invoked by the tabs after any successful
   // add/delete/save so the summary counts never go stale.
@@ -81,10 +88,18 @@ export default function KnowledgePanel({
         if (result && isPermissionRefusal(result)) {
           // F-249 — authoritative and sticky until a later read succeeds.
           setCountsRefused(true);
+          setCountsUpgrade(false);
+          return;
+        }
+        if (result && isUpgradeRequired(result)) {
+          // F-273 — same stickiness, different sentence: the plan, not the reader.
+          setCountsUpgrade(true);
+          setCountsRefused(false);
           return;
         }
         if (result && result.success) {
           setCountsRefused(false);
+          setCountsUpgrade(false);
           setCounts({
             docs: result.docs,
             skills: result.skills,
@@ -148,6 +163,12 @@ export default function KnowledgePanel({
             header from implying a fetch that will never finish. */}
         {countsRefused ? (
           <span className="knowledge-summary-counts access-note">No access to knowledge</span>
+        ) : countsUpgrade ? (
+          /* F-273 — one honest line for the edition case, in the same slot and for the same
+             reason as F-249's: three em-dashes promise a fetch that will never finish. Kept
+             to the inline .upgrade-chip rather than the full note block because this is a
+             one-line summary row, not a panel body — the tabs below still say their piece. */
+          <span className="knowledge-summary-counts upgrade-chip">Needs CogniRunner Coder</span>
         ) : (
           <span className="knowledge-summary-counts">
             <span className="kc-docs">{selectedDocIds.length} docs</span>

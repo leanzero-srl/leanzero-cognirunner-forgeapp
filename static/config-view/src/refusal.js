@@ -13,7 +13,14 @@
  * so a local copy is cheaper and safer than a cross-app relative import. The CONTRACT is
  * what must not drift — `reason: "no-permission"`, set by permissionDenied() in
  * src/index.js (F-242) — and that is owned by the backend, not by either copy.
+ *
+ * F-273 — it is no longer true that these functions import nothing: the Coder feature
+ * LABELS come from src/shared/edition.js, the one table that says what the paid edition
+ * sells. A frontend copy of those labels would be a second answer to a product question,
+ * and the stale one. The path differs from the shared pair only by depth.
  */
+
+import { ADVANCED_FEATURES, EDITIONS } from "../../../src/shared/edition.js";
 
 /**
  * Did the backend REFUSE this caller, as opposed to fail?
@@ -80,3 +87,23 @@ export function permissionRefusalText(result, what = "this") {
   if (sentence) return `${sentence} Ask a CogniRunner admin under Permissions.`;
   return `You do not have access to ${what}. Ask a CogniRunner admin under Permissions.`;
 }
+
+/**
+ * F-273 — the edition copy, carried here for the same reason the rest of this file is:
+ * the VOCABULARY is one vocabulary, and a third app holding two thirds of it is how a
+ * "one home" rule quietly becomes three homes that disagree. config-view renders no
+ * knowledge surface today, so nothing here calls these yet — they exist so that the next
+ * surface which does cannot invent its own words for an upgrade.
+ *
+ * The only permitted difference from the shared pair is the DEPTH of the src/shared import
+ * (this file sits one directory higher); refusal-contract.test.mjs normalises exactly that
+ * and nothing else, so any real drift still fails the build.
+ */
+export function upgradeRequiredText(result) {
+  const id = result && result.featureId;
+  const feature = ADVANCED_FEATURES.find((f) => f.id === id);
+  const label = feature ? feature.label : "This feature";
+  return `${label} is part of the ${EDITIONS.advanced.label} edition — upgrade in Settings.`;
+}
+
+export const UPGRADE_REQUIRED_HEADLINE = `This needs CogniRunner ${EDITIONS.advanced.label}.`;

@@ -2893,6 +2893,23 @@ const injectStyles = () => {
     .apx-secret { background: #7c3aed; color: #fff; font-weight: 700; }
     .apx-new { display: flex; gap: 8px; margin-bottom: 12px; }
     .apx-input { flex: 1; max-width: 360px; padding: 8px 12px; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); background: var(--input-bg); color: var(--text-color); font-size: 13px; }
+    /* F-466 token roles - solid saturated fills, white text, no rails, no tints.
+       Hues: admin slate #475569, editor blue #2563eb, viewer teal #0d9488 (dark one shade lighter). */
+    .apx-roles-block { margin-bottom: 12px; }
+    .apx-roles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 6px; }
+    @media (max-width: 700px) { .apx-roles { grid-template-columns: 1fr; } }
+    .apx-role-btn { display: flex; flex-direction: column; gap: 3px; padding: 10px 12px; border: 2px solid var(--border-color); border-radius: var(--r-md, 8px); background: var(--card-bg); color: var(--text-color); text-align: left; cursor: pointer; transition: border-color 0.15s, background 0.15s; }
+    .apx-role-title { font-size: 13px; font-weight: 700; }
+    .apx-role-desc { font-size: 11px; color: var(--text-secondary); line-height: 1.4; }
+    .apx-role-btn.on .apx-role-desc { color: rgba(255, 255, 255, 0.88); }
+    .apx-role-btn.apx-role-admin.on { border-color: #475569; background: #475569; color: #fff; }
+    .apx-role-btn.apx-role-editor.on { border-color: #2563eb; background: #2563eb; color: #fff; }
+    .apx-role-btn.apx-role-viewer.on { border-color: #0d9488; background: #0d9488; color: #fff; }
+    .apx-roles-note { display: block; margin-top: 6px; }
+    .apx-role-chip { display: inline-block; padding: 2px 8px; border-radius: 4px; color: #fff; font-size: 11px; font-weight: 700; letter-spacing: 0.02em; }
+    .apx-role-chip.apx-role-admin { background: #475569; }
+    .apx-role-chip.apx-role-editor { background: #2563eb; }
+    .apx-role-chip.apx-role-viewer { background: #0d9488; }
     .apx-fresh { padding: 12px 14px; border-radius: var(--r-md, 8px); background: #16a34a; color: #fff; margin-bottom: 12px; }
     .apx-fresh-title { font-weight: 700; margin-bottom: 8px; }
     .apx-fresh .btn-small { background: #fff; color: #0f172a; border-color: #fff; }
@@ -2911,6 +2928,9 @@ const injectStyles = () => {
     html[data-color-mode="dark"] .log-type-badge.lt-listener, html[data-color-mode="dark"] .agc-kind-write { background: #f97316; }
     html[data-color-mode="dark"] .log-type-badge.lt-job, html[data-color-mode="dark"] .schp-day.on, html[data-color-mode="dark"] .schp-preview { background: #06b6d4; border-color: #06b6d4; }
     html[data-color-mode="dark"] .apx-badge { background: #e11d48; }
+    html[data-color-mode="dark"] .apx-role-chip.apx-role-admin, html[data-color-mode="dark"] .apx-role-btn.apx-role-admin.on { background: #64748b; border-color: #64748b; }
+    html[data-color-mode="dark"] .apx-role-chip.apx-role-editor, html[data-color-mode="dark"] .apx-role-btn.apx-role-editor.on { background: #3b82f6; border-color: #3b82f6; }
+    html[data-color-mode="dark"] .apx-role-chip.apx-role-viewer, html[data-color-mode="dark"] .apx-role-btn.apx-role-viewer.on { background: #14b8a6; border-color: #14b8a6; }
     html[data-color-mode="dark"] .evp-row.on { background: #3b82f6; }
     html[data-color-mode="dark"] .agc-action.on { background: #8b5cf6; }
     /* ── CODE TAB (1.4 commit 6) ─────────────────────────────────────────────

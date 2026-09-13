@@ -674,6 +674,10 @@ const JOB_FULL = {
   job_b2: { id: "job_b2", name: "Weekly release digest", description: "", enabled: false, schedule: { cron: "0 17 * * 5", timeZone: "UTC" }, scope: null, mode: "script", functions: [{ id: "fn-1", name: "Digest", operationType: "work_item_query", operationPrompt: "Find issues resolved this week and post a digest comment on PROJ-1", variableName: "result1", code: "const r = await api.searchJql(\"resolved >= startOfWeek()\");\nawait api.forIssue(\"PROJ-1\").addComment(`${r.issues.length} issues resolved this week`);\nreturn r.issues.length;", includeBackoff: false, method: "GET", endpoint: "", conditionPrompt: "" }], agent: { instructions: "", allowedActions: ["get_issue", "search_issues", "add_comment"], maxRounds: 5 }, simulationMode: false, suppressNotifications: false, createdBy: ACCT, createdAt: "2026-08-20T10:00:00.000Z", updatedAt: "2026-08-20T10:00:00.000Z", stats: JOB_ROWS[1].stats },
 };
 const LISTENER_TEST_RESULT = { type: "listener", source: "test", isValid: true, reason: "Ran 1 step(s), 1 change(s)", executionTimeMs: 812, eventType: "avi:jira:created:issue", eventUsed: "synthetic", gate: null, changes: [{ action: "addLabels", key: "PROJ-42", simulated: true }], logs: ["Starting 1 step(s) for PROJ-42", "\"Add triage label\": [SIMULATION] editIssue(\"PROJ-42\", update {\"labels\":[{\"add\":\"needs-triage\"}]})", "\"Add triage label\": Completed in 310ms", "Finished: 1/1 step(s) succeeded in 812ms, 1 change(s) made"] };
+/* F-466 - tok_1 deliberately carries NO `role`: that is the LEGACY row shape minted before
+   token roles existed, and the panel must show it as Admin (which is what rules-api.js's
+   tokenRole() resolves a missing role to). createApiToken below APPENDS the minted row to
+   this list, so a mint-then-reload journey sees its own new token with its own role chip. */
 const API_TOKENS = { success: true, url: "https://a1b2c3.hello.atlassian-dev.net/x1/demo-rules-api", tokens: [{ id: "tok_1", name: "CI pipeline", prefix: "cgr_0a1b2c", createdAt: "2026-08-20T10:00:00.000Z", createdBy: ACCT, lastUsedAt: "2026-09-01T06:00:00.000Z", revokedAt: null }] };
 
 /* ----------------------------- MARKETING dataset (admin-* scenarios) --------------
@@ -814,7 +818,7 @@ function mktInvoke(name, payload) {
       return Promise.resolve({ success: true, logs: rid ? MKT_LOGS.filter((l) => l.ruleId === rid) : MKT_LOGS });
     }
     case "getApiTokens": return Promise.resolve(MKT_API_TOKENS);
-    case "createApiToken": return Promise.resolve({ success: true, token: "cgr_e7c41a9f2b8d6053f1a4c9e2b7d80f6a13c5e9b2d4f7a081", row: { id: "tok_new", name: (payload && payload.name) || "API token", prefix: "cgr_e7c41a", createdAt: new Date().toISOString(), createdBy: ACCT, lastUsedAt: null, revokedAt: null } });
+    case "createApiToken": return Promise.resolve({ success: true, token: "cgr_e7c41a9f2b8d6053f1a4c9e2b7d80f6a13c5e9b2d4f7a081", row: { id: "tok_new", name: (payload && (payload.name || payload.label)) || "API token", prefix: "cgr_e7c41a", createdAt: new Date().toISOString(), createdBy: ACCT, role: (payload && payload.role) || "admin", lastUsedAt: null, revokedAt: null } });
     default: return null;
   }
 }
@@ -1865,7 +1869,14 @@ function invoke(name, payload) {
       if (payload && payload.taskId === "task-job-1") return Promise.resolve({ success: true, status: "done", result: { success: true, reason: "2/2 issue(s) processed OK, 4 change(s)", changes: [{ action: "addComment", key: "PROJ-7", id: "1" }, { action: "addLabels", key: "PROJ-7" }], logs: ["Scope \"project = PROJ AND status = \"In Progress\" AND updated <= -7d\" matched 2 issue(s) (cap 25)", "--- PROJ-7: OK — done: asked for an update", "--- PROJ-9: OK — done: asked for an update"], issues: [{ key: "PROJ-7", success: true }, { key: "PROJ-9", success: true }], executionTimeMs: 6120, tokens: 1830 } });
       return Promise.resolve({ success: true, status: "pending" });
     case "getApiTokens": return Promise.resolve(API_TOKENS);
-    case "createApiToken": return Promise.resolve({ success: true, token: "cgr_9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f", row: { id: "tok_2", name: (payload && payload.name) || "API token", prefix: "cgr_9f9f9f", createdAt: new Date().toISOString(), createdBy: ACCT, lastUsedAt: null, revokedAt: null } });
+    case "createApiToken": {
+      // F-466 - mirror the backend: an unknown/absent role stores as null and reads back as admin.
+      const wanted = payload && payload.role;
+      const row = { id: "tok_" + (API_TOKENS.tokens.length + 1), name: (payload && (payload.name || payload.label)) || "API token", prefix: "cgr_9f9f9f", createdAt: new Date().toISOString(), createdBy: ACCT, role: ["viewer", "editor", "admin"].includes(wanted) ? wanted : "admin", lastUsedAt: null, revokedAt: null };
+      if (typeof window !== "undefined") { window.__TOKEN_MINT__ = { ...(payload || {}) }; } // the exact mint payload, so a test asserts the shape not "a mint happened"
+      API_TOKENS.tokens = [...API_TOKENS.tokens, row];
+      return Promise.resolve({ success: true, token: "cgr_9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f", row });
+    }
     case "revokeApiToken": return Promise.resolve({ success: true, revoked: true });
     case "generatePostFunctionCode": return Promise.resolve({ success: true, code: STATIC_CODE_1, meta: { appliedDocs: [{ id: "builtin_doc_jql", title: "JQL Cheat Sheet" }], appliedSkills: [], appliedMemories: 1, truncatedDocs: [] } });
     // F-150 — window.__FIX_MEMORY__ = true makes the fix answer carry a memoryCandidate,

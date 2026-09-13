@@ -175,4 +175,26 @@ ok(/Skill\(s\) too large for this run's .*-byte budget, not injected/.test(lst),
   ok(out && typeof out === "object" && notices.length === 0, "a run with nothing to inject logs nothing (the notice is for real skips only)");
 }
 
+/* ===== the CODER gets knowledge too, on both paths (F-404) ===== */
+
+// runCoderTurn had taken `knowledge` since 13b and NOTHING passed it — so the one agent that
+// writes code into somebody's repository was the only one running with no skills and no
+// learned facts at all.
+{
+  const ah = await read("../../src/async-handler.js");
+  ok(/const buildCoderKnowledge = async \(p\)/.test(ah), "the async consumer builds the Coder's knowledge…");
+  ok(/knowledge: await buildCoderKnowledge\(p\)/.test(ah), "…and passes it into runCoderTurn");
+  // ONE builder at the ONE place both paths meet: the panel push and the headless
+  // post-function push are the same task type and both arrive in executeCoderTurn.
+  ok((ah.match(/buildCoderKnowledge\(p\)/g) || []).length === 1, "called from ONE place, so the two paths cannot disagree");
+  ok(/const executeCoderTurn = async[\s\S]*knowledge: await buildCoderKnowledge/.test(ah), "…and that place is the handler BOTH paths reach");
+  ok(/knowledgeBudget\("coderTurn"\)/.test(ah), "with the coderTurn byte budget, from the ONE home");
+  ok(/Array\.isArray\(p && p\.skillIds\)/.test(ah), "skills come from the RULE's skillIds when the delivery carries them…");
+  ok(/if \(ids\.length\)/.test(ah), "…and from nothing otherwise (a panel turn has no rule to bind skills)");
+  ok(/settings && settings\.injection !== false/.test(ah), "memories follow the INSTANCE injection setting, not a per-rule flag");
+  ok(/fetchSkillsBlock/.test(ah) && /buildMemoryBlock/.test(ah), "…built by the same two builders every other surface uses");
+  ok(/catch \(e\) \{ console\.warn\("\[coder\] skills block skipped:/.test(ah) && /catch \(e\) \{ console\.warn\("\[coder\] memory block skipped:/.test(ah),
+    "FAIL-OPEN in both halves: a knowledge fault must never become a Coder turn that did not run");
+}
+
 console.log(`agent-knowledge: ${n} passed, 0 failed`);

@@ -1358,12 +1358,16 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   const end = asyncSrc.indexOf("\n};\n", at);
   const src = asyncSrc.slice(at, end + 2).replace("const executeCoderTurn = ", "");
   const quiet = { log() {}, warn() {}, error() {} };
+  // `buildCoderKnowledge` (F-404) is a collaborator like the rest: stubbed here so this
+  // suite keeps testing the CLAIM's control flow. What it builds is asserted where it
+  // belongs — agent-knowledge.test.mjs for the rules, coder-engine.test.mjs for the payload.
   const build = (deps) => new Function(
     "runCoderTurn", "isHeadlessTrigger", "recordCoderPfOutcome", "claimRuleExecution",
-    "storage", "coderPfDoneClaimKey", "CODER_PF_DONE_TTL", "console",
+    "storage", "coderPfDoneClaimKey", "CODER_PF_DONE_TTL", "buildCoderKnowledge", "console",
     `return (${src});`,
   )(deps.runCoderTurn, () => false, deps.recordCoderPfOutcome, deps.claimRuleExecution,
-    deps.storage, (id) => `coder_pf_done:${id}`, { ttl: { value: 24, unit: "HOURS" } }, quiet);
+    deps.storage, (id) => `coder_pf_done:${id}`, { ttl: { value: 24, unit: "HOURS" } },
+    deps.buildCoderKnowledge || (async () => ({})), quiet);
 
   const makeDeps = (over = {}) => {
     const held = new Set();
@@ -1373,6 +1377,9 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
       recordCoderPfOutcome: async () => { state.recorded++; },
       claimRuleExecution: async (_s, key) => { if (held.has(key)) return false; held.add(key); return true; },
       storage: { delete: async (k) => { state.deleted.push(k); held.delete(k); } },
+      // The knowledge build must not run BEFORE the redelivery claim: a skipped
+      // redelivery should read nothing at all.
+      buildCoderKnowledge: async () => { state.knowledgeBuilds = (state.knowledgeBuilds || 0) + 1; return {}; },
       ...over,
     } };
   };
@@ -1387,6 +1394,7 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
     ok(first && first.success === true && second && second.skipped === true,
       "EXECUTED (F-393): …the redelivery returns a skip, not a second outcome");
     ok(state.recorded === 1, "EXECUTED (F-393): …and writes ONE execution-log outcome, not two");
+    ok((state.knowledgeBuilds || 0) === 1, "EXECUTED (F-404): the skipped redelivery builds no knowledge — it reads nothing at all");
   }
   {
     // A DIFFERENT event (a legitimate second transition) is untouched by the claim.

@@ -775,5 +775,36 @@ await check("a namespace with no executor refuses instead of falling through to 
   assert.equal(world.writes.length, 0);
 });
 
+await check("F-404: the knowledge blocks reach the MODEL PAYLOAD of a coder turn", async () => {
+  resetStore();
+  const world = setupWorld({ rounds: [reply([finish()])] });
+  await startTurn(world, {
+    knowledge: {
+      skillsBlock: "### Skill: House style\nTwo-space indent.",
+      memoryBlock: "- [fix] The build script lives in tools/, not scripts/.",
+    },
+  });
+  const sent = JSON.stringify(world.requests[0].messages);
+  assert.match(sent, /<<<SKILLS/, "the skills block is in the payload the model was actually sent");
+  assert.match(sent, /Two-space indent/, "…with the skill's own text");
+  assert.match(sent, /<<<LEARNED_MEMORIES/, "the memories block is there too");
+  assert.match(sent, /build script lives in tools/, "…with the memory's own text");
+  // The order rule: knowledge sits after the system prompt and before the turn's history.
+  const roles = world.requests[0].messages.map((mm) => mm.role);
+  assert.equal(roles[0], "system", "the system prompt is still first");
+  const firstUser = roles.indexOf("user");
+  const knowledgeAt = world.requests[0].messages.findIndex((mm) => /<<<SKILLS|<<<LEARNED_MEMORIES/.test(String(mm.content || "")));
+  assert.ok(knowledgeAt > 0 && (firstUser === -1 || knowledgeAt < firstUser),
+    "knowledge is seeded before the user turn that carries untrusted content");
+});
+
+await check("F-404: a turn with no knowledge sends no fenced blocks (a pre-13b turn is unchanged)", async () => {
+  resetStore();
+  const world = setupWorld({ rounds: [reply([finish()])] });
+  await startTurn(world);
+  const sent = JSON.stringify(world.requests[0].messages);
+  assert.ok(!/<<<SKILLS|<<<LEARNED_MEMORIES/.test(sent), "nothing is conjured when the caller passes none");
+});
+
 console.log(`CODER ENGINE: ${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

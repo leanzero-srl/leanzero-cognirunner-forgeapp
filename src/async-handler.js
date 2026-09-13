@@ -114,6 +114,8 @@ import {
 // constant), and the work itself lives in src/git-pipeline.js, not here.
 import { runPipelineSetup, PIPELINE_TASK } from "./git-pipeline.js";
 import { runCoderTurn, isHeadlessTrigger, coderPfDoneClaimKey, CODER_PF_DONE_TTL } from "./coder-engine.js";
+// The knowledge byte budgets have ONE home (F-404 builds the Coder's blocks below).
+import { knowledgeBudget } from "./shared/registry-limits.js";
 import { executeScheduledJobTask, getJob } from "./scheduled-jobs.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
 import { isKeyConflict } from "./shared/kvs-keys.js";
@@ -1289,6 +1291,55 @@ const executeGitEvent = async (params) => {
  * (src/shared/ai-budget.js, estimate 16 000) so the ONE governor paces it like every
  * other AI task. Nothing here calls the budget gate — `runGatedTask` already did.
  */
+/**
+ * THE CODER'S KNOWLEDGE (F-404).
+ *
+ * `runCoderTurn` has taken `knowledge` since 1.4 commit 13b and NOTHING ever passed it, on
+ * either path — so the Coder, the one surface that writes code into somebody's repository,
+ * was the only agent in the product running with no skills and no learned facts at all.
+ *
+ * Built HERE because this is the one place both paths meet: the panel push and the headless
+ * post-function push are the same task type, and building it in two places is how they come
+ * to disagree about which budget or which setting applies.
+ *
+ * WHAT IT TAKES, and why each is the rule it is:
+ *  · SKILLS come from the RULE's `skillIds` when the delivery carries them (a post-function
+ *    binds skills the way a listener does) and from nothing otherwise. A panel turn has no
+ *    rule, so it has no bound skills — auto-matching would be guessing at authorship.
+ *  · MEMORIES follow the INSTANCE setting (`injection`), not a per-rule flag, because the
+ *    Coder is not configured per rule the way a listener's agent is, and `injection` is the
+ *    switch an admin already understands as "let learned facts into prompts".
+ *  · The budget is `coderTurn` (16 KB skills / 8 KB memories): the turn's prompt carries a
+ *    diff and a file tree, and the budgets are per audience for exactly that reason.
+ *
+ * FAIL-OPEN, in both halves and for the same reason the listener builder is: knowledge makes
+ * an agent better, it does not make it correct. A skill that will not load or a memory store
+ * having a bad minute must never turn into a Coder turn that did not run.
+ */
+const buildCoderKnowledge = async (p) => {
+  const out = {};
+  const budget = knowledgeBudget("coderTurn");
+  const ids = Array.isArray(p && p.skillIds) ? p.skillIds : [];
+  if (ids.length) {
+    try {
+      const { fetchSkillsBlock } = await import("./skills.js");
+      const b = await fetchSkillsBlock(ids, { capBytes: budget.skills });
+      if (b.text) out.skillsBlock = b.text;
+      if (b.skipped && b.skipped.length) console.warn(`[coder] skill(s) too large for the turn's ${budget.skills}-byte budget, not injected: ${b.skipped.map((x) => x.name || x.id).join(", ")}`);
+    } catch (e) { console.warn("[coder] skills block skipped:", e && e.message); }
+  }
+  try {
+    const { getMemorySettings, buildMemoryBlock } = await import("./memories.js");
+    const settings = await getMemorySettings();
+    if (settings && settings.injection !== false) {
+      const projectKey = String((p && p.issueKey) || "").split("-")[0] || null;
+      const b = await buildMemoryBlock({ projectKey, capBytes: budget.memories });
+      if (b.text) out.memoryBlock = b.text;
+    }
+  } catch (e) { console.warn("[coder] memory block skipped:", e && e.message); }
+  return out;
+};
+
 const executeCoderTurn = async (params, taskId) => {
   const p = params || {};
   // F-393 — THE PER-EVENT COMPLETION CLAIM, for the POST-FUNCTION path only.
@@ -1326,6 +1377,9 @@ const executeCoderTurn = async (params, taskId) => {
       gateFacts: p.gateFacts || null, savedByRole: p.savedByRole || "editor", cancelToken: taskId,
       headless: isHeadlessTrigger(p.triggerSource) || p.headless === true,
       allowedActions: Array.isArray(p.allowedActions) ? p.allowedActions : null,
+      // BOTH PATHS (F-404): the panel turn and the headless post-function turn are the same
+      // task type, and both arrive here.
+      knowledge: await buildCoderKnowledge(p),
     });
   } catch (e) {
     console.warn(`[coder] ${p.issueKey || "?"}/${p.threadId || "?"}: failed (${(e && e.message) || e})`);

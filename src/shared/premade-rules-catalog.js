@@ -62,7 +62,11 @@
  *                   repo         — "owner/name", normalised through
  *                                  src/shared/git-ids.js normalizeRepoId
  *                   prMatch      — "property" | "branch" | "both" (default "both"):
- *                                  what makes a candidate pull request acceptable
+ *                                  which LIVE signal must bind the candidate pull
+ *                                  request to the issue — "branch" = source branch
+ *                                  only, "property"/"both" = branch OR title. The
+ *                                  property only NOMINATES the number; no mode
+ *                                  accepts an unbound candidate (F-362)
  *                   strict       — boolean, default false: what a provider outage,
  *                                  a dead token or "no pull request found" does
  *                                  (see the fail-open/fail-closed table beside

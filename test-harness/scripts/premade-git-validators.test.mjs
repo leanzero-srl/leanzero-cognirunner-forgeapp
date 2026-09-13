@@ -14,7 +14,9 @@
  *
  * What it pins, in the order it matters:
  *   1. each validator's pass and fail,
- *   2. the property is an INDEX, never evidence (a forged merged:true does not pass),
+ *   2. the property is an INDEX, never evidence (a forged merged:true does not pass,
+ *      and F-362: a forged NUMBER pointing at an unrelated merged PR does not pass
+ *      either — the live PR must name the issue in its branch or title),
  *   3. strict vs fail-OPEN on auth_dead / network / timeout, and the banner,
  *   4. the repo-not-on-the-allow-list refusal — fail CLOSED whatever strict says,
  *   5. no pull request found,
@@ -219,11 +221,39 @@ async function main() {
   await check("prMatch branch: branch does NOT name the issue → treated as no PR (strict blocks)",
     run({ ruleType: "git-pr-merged", prMatch: "branch", strict: true }, { prov: provider({ state: { state: "merged" }, pr: { sourceBranch: "chore/unrelated" } }) }),
     { result: false, msgIncludes: "No pull request" });
-  await check("prMatch both (default): property candidate is enough",
-    run({ ruleType: "git-pr-merged", prMatch: "both" }, { prov: provider({ state: { state: "merged" }, pr: { sourceBranch: "chore/unrelated" } }) }),
+  await check("prMatch branch: T-1 must not match the branch of T-12 (word boundary)",
+    run({ ruleType: "git-pr-merged", prMatch: "branch", strict: true }, { prov: provider({ state: { state: "merged" }, pr: { sourceBranch: "feature/T-12-other" } }) }),
+    { result: false, msgIncludes: "No pull request" });
+  await check("prMatch both (default): the TITLE may bind the candidate",
+    run({ ruleType: "git-pr-merged", prMatch: "both" }, { prov: provider({ state: { state: "merged" }, pr: { sourceBranch: "chore/unrelated", title: "T-1: do the thing" } }) }),
     { result: true });
-  await check("prMatch property: branch is irrelevant",
-    run({ ruleType: "git-pr-merged", prMatch: "property" }, { prov: provider({ state: { state: "merged" }, pr: { sourceBranch: "chore/unrelated" } }) }),
+  await check("prMatch branch: the title does NOT bind in branch mode",
+    run({ ruleType: "git-pr-merged", prMatch: "branch", strict: true }, { prov: provider({ state: { state: "merged" }, pr: { sourceBranch: "chore/unrelated", title: "T-1: do the thing" } }) }),
+    { result: false, msgIncludes: "No pull request" });
+
+  // ---- 10b. F-362: an UNBOUND candidate is not this issue's pull request ----
+  // The attack: anyone with issue-edit writes cognirunner.git pointing at an OLD
+  // merged PR in the same allow-listed repo. Nothing in the live PR names this
+  // issue, so in EVERY mode it counts as "no pull request found".
+  const forged = property({ number: 41, merged: true, state: "merged" });
+  const unrelatedMerged = provider({ state: { state: "merged", approved: true }, pr: { number: 41, state: "merged", sourceBranch: "chore/unrelated", title: "Bump deps" } });
+  for (const mode of ["both", "property", "branch"]) {
+    await check(`forged property → unrelated merged PR (${mode}), strict off → allow as "no PR" + banner`,
+      run({ ruleType: "git-pr-merged", prMatch: mode }, { prop: forged, prov: unrelatedMerged }),
+      { result: true, banner: "pr_unbound" });
+    await check(`forged property → unrelated merged PR (${mode}), strict on → BLOCK`,
+      run({ ruleType: "git-pr-merged", prMatch: mode, strict: true }, { prop: forged, prov: unrelatedMerged }),
+      { result: false, msgIncludes: "No pull request" });
+  }
+  await check("forged property → unrelated APPROVED PR, strict on → BLOCK (same hole, git-pr-approved)",
+    run({ ruleType: "git-pr-approved", prMatch: "both", strict: true }, { prop: forged, prov: unrelatedMerged }),
+    { result: false, msgIncludes: "No pull request" });
+  await check("forged property → unrelated PR, build gate, strict on → BLOCK",
+    run({ ruleType: "git-build-passed", prMatch: "both", strict: true }, { prop: forged, prov: unrelatedMerged }),
+    { result: false, msgIncludes: "No pull request" });
+  // …and the SAME number, once the live PR names the issue, is checked normally.
+  await check("bound candidate is still checked (the fix blocks nothing legitimate)",
+    run({ ruleType: "git-pr-merged", prMatch: "both" }, { prop: forged, prov: provider({ state: { state: "merged" }, pr: { number: 41, state: "merged", sourceBranch: "feature/T-1-fix" } }) }),
     { result: true });
 
   // ---- 11. the dry-run (testValidation / simulation) shape ----
@@ -235,6 +265,9 @@ async function main() {
   eq("dry-run result is a boolean", typeof dry.result, "boolean");
   const dryOpen = await run({ ruleType: "git-pr-approved" }, { prov: provider({ throws: "auth_dead" }) });
   eq("allow keys are bounded", Object.keys(dryOpen).sort(), ["banner", "gitReason", "result"]);
+  const dryUnbound = await run({ ruleType: "git-pr-merged" }, { prov: provider({ state: { state: "merged" }, pr: { sourceBranch: "chore/unrelated" } }) });
+  eq("unbound allow keys are bounded", Object.keys(dryUnbound).sort(), ["banner", "gitReason", "result"]);
+  eq("unbound allow names its reason", dryUnbound.gitReason, "pr-unbound");
 
   // ---- 12. a custom errorMessage wins, on every blocking path ----
   await check("custom errorMessage is used",

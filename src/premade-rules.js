@@ -440,6 +440,34 @@ export const GIT_VALIDATOR_BUDGET_MS = 8000;
 /** Build states that are a DETERMINATE "has not passed" (rollUpChecks vocabulary). */
 const BUILD_NOT_PASSED = ["failed", "running", "pending"];
 
+/**
+ * Does this LIVE pull request name the issue? (F-362.)
+ *
+ * Word-boundary, case-insensitive: "T-1" matches "feature/T-1-thing" and
+ * "T-1: add the thing", and does NOT match "T-12". The key is escaped before it
+ * reaches the RegExp — it arrives from an arbitrary issue and must never be read
+ * as a pattern.
+ */
+const issueKeyNamedIn = (text, issueKey) => {
+  const key = String(issueKey || "").trim();
+  const hay = typeof text === "string" ? text : "";
+  if (!key || !hay) return false;
+  const esc = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(^|[^A-Za-z0-9])${esc}([^A-Za-z0-9]|$)`, "i").test(hay);
+};
+
+/**
+ * The candidate/issue binding, per prMatch mode. "branch" reads only the source
+ * branch; "property" and "both" accept branch OR title. No mode returns true
+ * without a LIVE signal — the property never binds anything by itself (F-362).
+ */
+const prIsBoundToIssue = (pr, issueKey, prMatch) => {
+  if (!issueKey) return false;
+  const branch = issueKeyNamedIn(pr && pr.sourceBranch, issueKey);
+  if (prMatch === "branch") return branch;
+  return branch || issueKeyNamedIn(pr && pr.title, issueKey);
+};
+
 /** Read the advisory cognirunner.git property for one issue. Never throws. */
 async function readGitProperty(issueKey) {
   try {
@@ -464,6 +492,10 @@ async function readGitProperty(issueKey) {
  * property can set `pr.merged:true`, and deliveries arrive out of order. So the
  * property is an INDEX — it supplies the candidate PR number — and every answer
  * that blocks or allows comes from a live provider read on this transition.
+ * F-362 closed the other half of that promise: the property also chose the
+ * SUBJECT of the read, so a forged number pointed the gate at an unrelated
+ * merged PR. The live pull request must now NAME the issue (source branch or
+ * title) in every prMatch mode, or it is no candidate at all.
  *
  * FAIL-OPEN / FAIL-CLOSED, on purpose (LAW 3). Validators fail OPEN by default;
  * `strict:true` is the admin opting into the opposite, and two cases ignore it:
@@ -518,31 +550,39 @@ async function runGitValidator(cfg, issueKey, deps) {
     return fail(`This rule checks ${repo}, which is not on the allow-list of the git connection “${connLabel}”. Add the repository to that connection, or point the rule at one that is allowed.`);
   }
 
-  // The candidate pull request. The property is the INDEX; `prMatch` says what
-  // makes the candidate acceptable once the live read comes back:
-  //   "property" — accept it (the delivery that wrote it named this issue),
-  //   "branch"   — only if the LIVE source branch contains the issue key,
-  //   "both"     — either of the two (the default; the widest match).
-  // There is no discovery-by-listing: the adapter has no list-pull-requests
-  // method, so an issue whose repo has no property entry has no candidate.
+  // The candidate pull request. The property is the INDEX and never the evidence:
+  // it NOMINATES a pull request number, and `prMatch` says which LIVE signal must
+  // bind that pull request to THIS issue before any answer is read off it:
+  //   "property" — the property may nominate the candidate; the live PR must still
+  //                name the issue in its source branch OR its title,
+  //   "branch"   — only the LIVE source branch counts,
+  //   "both"     — branch OR title (the default; the widest LIVE match).
+  // F-362: no mode accepts an unbound candidate. Before this, "property" and "both"
+  // took the number on the property's word alone, so anyone with issue-edit could
+  // point a "code must be merged" gate at an old merged PR in the same repo and
+  // walk through it. The binding is read from the LIVE pull request, never from
+  // the property. There is no discovery-by-listing: the adapter has no
+  // list-pull-requests method, so an issue whose repo has no property entry has
+  // no candidate.
   const prMatch = cfg.prMatch === "property" || cfg.prMatch === "branch" ? cfg.prMatch : "both";
   const prop = issueKey ? await readProperty(issueKey) : null;
   const entry = prop && prop.repos && typeof prop.repos === "object" ? prop.repos[repo] : null;
   const number = entry && entry.pr && entry.pr.number != null ? Number(entry.pr.number) : null;
-  const noPr = () =>
+  // An unbound candidate is NOT a pull request for this issue — it is the same
+  // situation as "none found", and it takes the same fail-open/fail-closed answer
+  // (the banner tells config-view and the execution log which of the two it was).
+  const noPr = (reason, banner) =>
     strict
-      ? fail(`No pull request for this issue was found in ${repo}, so this check cannot pass. Open a pull request whose branch names ${issueKey || "this issue"}, or turn Strict off on this rule.`)
-      : allow("no-pull-request");
+      ? fail(`No pull request for this issue was found in ${repo}, so this check cannot pass. Open a pull request whose branch or title names ${issueKey || "this issue"}, or turn Strict off on this rule.`)
+      : allow(reason || "no-pull-request", banner);
   if (!Number.isFinite(number) || number <= 0) return noPr();
 
   try {
     const provider = await makeProvider(connectionId, { repo });
     const live = await provider.getPullRequestState({ repo, number });
     const pr = (live && live.pr) || {};
-    if (prMatch === "branch") {
-      const branch = String(pr.sourceBranch || "").toUpperCase();
-      if (!issueKey || !branch.includes(String(issueKey).toUpperCase())) return noPr();
-    }
+    // THE BINDING CHECK (F-362) — runs in EVERY mode, on the LIVE pull request.
+    if (!prIsBoundToIssue(pr, issueKey, prMatch)) return noPr("pr-unbound", "pr_unbound");
     switch (cfg.ruleType) {
       case "git-pr-merged":
         return (live && live.state) === "merged" || pr.state === "merged"

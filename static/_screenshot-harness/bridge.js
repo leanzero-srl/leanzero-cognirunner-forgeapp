@@ -17,6 +17,7 @@
  *   cfg-static       -> config-ui static post-function (CodeMirror)
  *   view-active      -> config-view rule summary (active) + logs
  *   view-disabled    -> config-view rule summary (disabled) + logs
+ *   view-premade-git -> config-view read-only summary of a saved GIT premade rule (F-380)
  */
 
 /* F-085: the edition facts below come from the ONE home for them. A harness that
@@ -523,6 +524,13 @@ function getContext() {
     // An OFFLOADED static PF (config >24KB → code moved to pf_code): functions:[] + name-only functionsMeta.
     // config-view must render the step NAMES from functionsMeta (never the full details). E11 path.
     return { accountId: ACCT, siteUrl: SITE, license: mockLicenseCtx(), extension: { ...baseExt, type: "jira:workflowPostFunction", key: "ai-static-post-function", entryPoint: "view", transitionContext: { id: "81", from: { name: "Triaged" }, to: { name: "Mitigating" } }, postFunctionConfig: JSON.stringify({ id: "postfunction-static::Incident::81::i-offload", type: "postfunction-static", fieldId: "", functions: [], functionsMeta: [{ id: "s1", name: "Escalate priority to High", operationType: "rest_api_internal", variableName: "r1" }, { id: "s2", name: "Add on-call watcher", operationType: "rest_api_internal", variableName: "r2" }], workflow: { workflowId: "wf-incident-007", workflowName: "Incident Response", transitionId: "81", siteUrl: SITE } }) } };
+  if (s === "view-premade-git")
+    /* F-380 - a SAVED git premade rule opened in the READ-ONLY view. The whole point of the
+       arm is the connection row: config-view has no picker, so if it cannot resolve `gc_1`
+       to "Acme engineering" nobody on that screen ever can. The config stores the id, the
+       editor-floor getRuleLists rows carry the label, and the fixture keeps them in the two
+       places they really live. */
+    return { accountId: ACCT, siteUrl: SITE, license: mockLicenseCtx(), extension: { ...baseExt, type: "jira:workflowValidator", key: "cognirunner-validator", entryPoint: "view", transitionContext: { id: "21", from: { name: "In Progress" }, to: { name: "Done" } }, validatorConfig: { ...CFG_PREMADE_GIT, type: "validator", ruleType: "git-pr-merged", connectionId: "gc_1", repo: "acme/web", prMatch: "both", strict: true } } };
   if (s === "view-active" || s === "view-disabled")
     return { accountId: ACCT, siteUrl: SITE, license: mockLicenseCtx(), extension: { ...baseExt, type: "jira:workflowValidator", key: "cognirunner-validator", entryPoint: "view", transitionContext: { id: "21", from: { name: "In Progress" }, to: { name: "Done" } }, validatorConfig: VIEW_VALIDATOR_CONFIG } };
   if (s.startsWith("issue-glance")) {

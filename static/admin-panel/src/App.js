@@ -6479,6 +6479,27 @@ function App() {
     return kind === "condition" ? "AI Condition" : "AI Validator";
   };
 
+  /* F-380 — the explain prompt is told the connection's NAME, not its id.
+     `buildFactsText(config, steps, connections)` gained the list in F-372 and no call site
+     ever passed one, so the model was asked to explain a rule that gates "gc_7abc". Read
+     ONCE per session, lazily, and only for a rule that stores a connection: this page opens
+     for every admin task, and a list nobody will read is a request nobody should make.
+     `getRuleLists` is the EDITOR floor (F-373) — no status, no credential state — and a
+     refusal or an outage caches an empty list so the fallback (the id, said to BE an id)
+     stands and the read is not retried on every click. */
+  const gitConnectionsRef = useRef(null);
+  const loadGitConnections = async () => {
+    if (gitConnectionsRef.current) return gitConnectionsRef.current;
+    let rows = [];
+    try {
+      const r = await invoke("getRuleLists");
+      const list = r && r.success && r.lists && Array.isArray(r.lists.gitconnections) ? r.lists.gitconnections : [];
+      rows = list.map((o) => ({ id: o.id || o.value, label: o.label || "" })).filter((o) => o.id && o.label);
+    } catch (e) { rows = []; }
+    gitConnectionsRef.current = rows;
+    return rows;
+  };
+
   // One explainRule call per rule, on explicit click. Registry config.type is
   // explicit (condition/validator/postfunction-*) so the kind is unambiguous.
   const runExplainFor = async (config) => {
@@ -6487,7 +6508,8 @@ function App() {
     setExplain((prev) => ({ ...prev, [id]: { ...(prev[id] || {}), open: true, status: "loading" } }));
     try {
       const kind = ruleKindEnum(config, config.type, config.type === "condition");
-      const factsText = buildFactsText(config, config.functions?.length ? config.functions : (config.functionsMeta || []));
+      const connections = config.connectionId ? await loadGitConnections() : null;
+      const factsText = buildFactsText(config, config.functions?.length ? config.functions : (config.functionsMeta || []), connections);
       const result = await invoke("explainRule", { kind, ruleTypeLabel: explainLabelFor(kind), factsText });
       // degraded and success co-occur on the resolver's timeout/error path — test degraded FIRST.
       if (result && result.degraded) {

@@ -2580,6 +2580,34 @@ try {
     await closeEditor(env);
   }
 
+  /* ---------------- J23b — F-380: config-view names the git CONNECTION ---------------- */
+  {
+    console.log("J23b config-view git rule summary (view-premade-git)");
+    for (const theme of ["light", "dark"]) {
+    const env = await openEditor(browser, "config-view", "view-premade-git", theme);
+    const { page } = env;
+    try {
+      const row = page.locator(".config-item", { hasText: "Connection:" }).first();
+      await row.waitFor({ timeout: 8000 });
+      const value = (await row.innerText()).replace(/^Connection:/, "").trim();
+      /* The whole finding: this screen has no picker, so an id here is unanswerable.
+         `premadeSummaryRows(config, connections)` had the human-label branch since F-372
+         and no call site ever passed a list. */
+      ok(value === "Acme engineering", `J23b (${theme}) the connection row shows the LABEL, not the id (got "${value}")`);
+      ok(!/gc_1/.test(await page.locator("body").innerText()), `J23b (${theme}) the raw connection id is nowhere on the read-only summary`);
+      // The rest of the git group still renders, so the label did not cost a row.
+      const body = await page.locator("body").innerText();
+      ok(/acme\/web/.test(body), `J23b (${theme}) the repository still renders`);
+      ok(/source branch name or the pull request title/.test(body), `J23b (${theme}) the prMatch sentence still renders`);
+      // The row is a summary row like any other, so it inherits the surface's own colours
+      // in both themes: the fix is DATA, and it must not have introduced a hue.
+      const contrast = await page.locator(".config-item", { hasText: "Connection:" }).first().evaluate((el) => getComputedStyle(el).color);
+      ok(!!contrast, `J23b (${theme}) the connection row renders in ${theme}`);
+    } catch (e) { fail++; console.log("  \u2717 J23b threw: " + e.message.split("\n")[0]); }
+    await closeEditor(env);
+    }
+  }
+
   /* ---------------- J24 — jira:issueContext "CogniRunner on this issue" glance ---------------- */
   {
     console.log("J24 issue-context glance (issue-glance)");

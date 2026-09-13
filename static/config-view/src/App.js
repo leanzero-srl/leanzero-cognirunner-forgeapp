@@ -1491,6 +1491,33 @@ function App() {
     init();
   }, []);
 
+  /* F-380 — THE CONNECTION HAS A NAME, AND THIS IS THE SURFACE THAT MUST SHOW IT.
+     F-372 gave the git rows a human-label branch (`premadeSummaryRows(config, connections)`)
+     and no call site ever passed a list, so every saved git rule on this read-only screen
+     answered "which connection does this use?" with `gc_7abc (connection id)` — the exact
+     question the row was added for, on the one surface with no picker to resolve it.
+
+     `getRuleLists` is the EDITOR floor (F-373): it returns `gitconnections` rows
+     {id, kind, label, repos[]} with no status and no credential state, so a reader who may
+     view the rule may read the name of the connection it names. `listGitConnections` is
+     requireAdmin and is deliberately NOT used here. A refusal or an outage passes NOTHING,
+     and explain-facts falls back to the id-and-say-it-is-an-id sentence, which is where
+     this screen was before. Only fetched for a rule that actually stores a connection. */
+  const [gitConnections, setGitConnections] = useState(null);
+  useEffect(() => {
+    if (!invoke || !config?.connectionId || gitConnections) return undefined;
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await invoke("getRuleLists");
+        if (cancelled) return;
+        const rows = r && r.success && r.lists && Array.isArray(r.lists.gitconnections) ? r.lists.gitconnections : null;
+        if (rows) setGitConnections(rows.map((o) => ({ id: o.id || o.value, label: o.label || "" })).filter((o) => o.id && o.label));
+      } catch (e) { /* no list: the id-with-label sentence is the honest fallback */ }
+    })();
+    return () => { cancelled = true; };
+  }, [config?.connectionId]);
+
   // Check rule disabled status using all available identifiers
   useEffect(() => {
     if (!invoke) return;
@@ -1695,8 +1722,14 @@ function App() {
   // Offloaded static rules carry a slim config — step names live in functionsMeta.
   const staticSteps = (config?.functions?.length ? config.functions : config?.functionsMeta) || [];
 
-  // Check if config has any meaningful data (validator/condition OR post-function)
+  /* Check if config has any meaningful data (validator/condition OR post-function).
+     A PREMADE rule is meaningful on its ruleKind alone: a git rule (git-pr-merged and its
+     siblings) gates a transition on a pull request, not on a field, so it stores no
+     fieldId and no prompt and every one of them used to render "No configuration set" on
+     this screen. Found while proving F-380 — the connection row cannot be read if the whole
+     summary never renders. */
   const hasConfig = config && (
+    config.ruleKind === "premade" ||
     config.fieldId || config.prompt ||
     config.conditionPrompt || config.actionPrompt ||
     config.type?.includes("postfunction") ||
@@ -2030,7 +2063,7 @@ function App() {
       {!config.type?.includes("postfunction") && (
         config.ruleKind === "premade" ? (
           <>
-            {premadeSummaryRows(config).map((r, i) => (
+            {premadeSummaryRows(config, gitConnections).map((r, i) => (
               <div className="config-item" key={i}>
                 <span className="label">{r.label}</span>
                 {r.code
@@ -2075,7 +2108,7 @@ function App() {
 
       {(() => {
         const explainKind = ruleKindEnum(config, ruleModule, isCondition);
-        const explainFacts = buildFactsText(config, staticSteps);
+        const explainFacts = buildFactsText(config, staticSteps, gitConnections);
         const trigger = (
           <button
             className={`cv-explain-btn${explainState === "loading" ? " is-busy busy-solid" : ""}`}

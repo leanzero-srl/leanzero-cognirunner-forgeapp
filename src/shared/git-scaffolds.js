@@ -169,7 +169,17 @@ const FORGE_DEPLOY_YML = [
   "          fi",
   "      - name: Install skipped (permission drift)",
   "        if: env.FORGE_ENV == 'development' && steps.lock.outputs.locked != 'true'",
-  "        run: echo \"::warning::manifest permissions differ from .cognirunner/forge-permissions.lock (drift: ${{ steps.lock.outputs.drift }}) — deployed, NOT installed. A SCOPE change never gets this far: the Permission lock step fails the job before the deploy. Re-run pipeline setup in CogniRunner to approve the change.\"",
+  // F-565 -- THIS `run:` IS A BLOCK SCALAR AND MUST STAY ONE. A plain (unquoted) YAML
+  // scalar may not contain ": " (colon-space); the warning text does, twice ("drift: ",
+  // "this far: "), and a plain scalar carrying it is read as a nested mapping inside a
+  // compact mapping. The whole workflow file then fails to parse -- and GitHub does not
+  // say so: it lists the workflow by its PATH instead of its name and answers every
+  // dispatch with `422 Workflow does not have 'workflow_dispatch' trigger`, so an
+  // installed pipeline is simply dead while CogniRunner reports it as ready (observed
+  // live on leanzero-srl/cognirunner-forge-offshoot, 2026-09-13). Prose goes in a `|`
+  // block; never inline it back into the mapping value.
+  "        run: |",
+  "          echo \"::warning::manifest permissions differ from .cognirunner/forge-permissions.lock (drift: ${{ steps.lock.outputs.drift }}) — deployed, NOT installed. A SCOPE change never gets this far: the Permission lock step fails the job before the deploy. Re-run pipeline setup in CogniRunner to approve the change.\"",
 ];
 
 // ---------------------------------------------------------------------------

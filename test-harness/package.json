@@ -59,6 +59,7 @@
     "probe:jsm-entity": "node scripts/jsm-entity-probe.mjs"
   },
   "devDependencies": {
-    "@playwright/test": "^1.48.0"
+    "@playwright/test": "^1.48.0",
+    "yaml": "^2.9.1"
   }
 }

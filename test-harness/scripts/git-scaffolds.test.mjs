@@ -349,4 +349,77 @@ for (const entry of m.SCAFFOLD_INDEX) {
   fs.rmSync(dir, { recursive: true, force: true });
 }
 
+/* ===================== F-565 - EVERY RENDERED YAML MUST ACTUALLY PARSE =====================
+ * The scaffolds were only ever GREPPED, never parsed, so the deploy workflow shipped as
+ * invalid YAML: a plain `run:` scalar carrying ": " inside its prose is read as a nested
+ * mapping. GitHub's failure mode is silent - it lists the workflow by its path instead of
+ * its name and answers `422 Workflow does not have 'workflow_dispatch' trigger` - so an
+ * installed pipeline is simply dead while the product reports it ready (live, 2026-09-13).
+ *
+ * This gate renders EVERY scaffold on EVERY variable branch (including UI_DIR "none" and
+ * "", which drop the build step), parses every *.yml with a conformant parser, and asserts
+ * the properties GitHub actually needs: a workflow_dispatch trigger, and every `run:` value
+ * a STRING - a mapping there is exactly what the bad render produced. */
+{
+  let YAML = null;
+  try { YAML = await import("yaml"); }
+  catch {
+    throw new Error(
+      "F-565 gate cannot run: the `yaml` devDependency is not resolvable. " +
+      "Run `npm install` in test-harness (or symlink the root node_modules) - this " +
+      "assertion is the only thing standing between a bad render and a dead pipeline.");
+  }
+  const parse = (text, what) => {
+    try { return YAML.parse(text); }
+    catch (e) { assert.fail(what + " is not valid YAML: " + e.message); }
+  };
+  // Every `run:` (GitHub) and `script:` entry (Bitbucket) reachable in the parsed document.
+  const eachRun = (node, visit) => {
+    if (Array.isArray(node)) { for (const v of node) eachRun(v, visit); return; }
+    if (!node || typeof node !== "object") return;
+    for (const [k, v] of Object.entries(node)) {
+      if (k === "run") visit(v);
+      if (k === "script" && Array.isArray(v)) { for (const line of v) visit(line); }
+      eachRun(v, visit);
+    }
+  };
+  const branches = [
+    {},
+    { UI_DIR: "none" },
+    { APP_NAME: "Proof App", UI_DIR: "static/proof" },
+  ];
+  for (const sc of m.SCAFFOLD_INDEX) {
+    for (const overrides of branches) {
+      const vars = Object.fromEntries(Object.entries(overrides).filter(([k]) => sc.vars.includes(k)));
+      const rendered = m.renderScaffold(sc.id, vars);
+      const label = sc.id + " " + JSON.stringify(vars);
+      for (const f of rendered) {
+        if (!/\.ya?ml$/.test(f.path)) continue;
+        const doc = parse(f.content, label + " " + f.path);
+        assert.ok(doc && typeof doc === "object", label + " " + f.path + " parses to a mapping");
+        eachRun(doc, (v) => assert.equal(typeof v, "string",
+          label + " " + f.path + ": every run/script value is a string, not a nested mapping (a ': ' leaked into a plain scalar)"));
+      }
+      const wf = rendered.find((f) => f.path === ".github/workflows/forge-deploy.yml");
+      if (!wf) continue;
+      const doc = parse(wf.content, label + " workflow");
+      // `on:` is YAML 1.1-truthy: a 1.2 parser keys it "on", a 1.1 one keys it true.
+      const triggers = doc.on !== undefined ? doc.on : doc[true];
+      assert.ok(triggers && typeof triggers === "object", label + ": the workflow has a trigger block");
+      assert.ok(Object.prototype.hasOwnProperty.call(triggers, "workflow_dispatch"),
+        label + ": on.workflow_dispatch exists (GitHub 422s every dispatch without it)");
+      assert.ok(doc.jobs && Object.keys(doc.jobs).length > 0, label + ": the workflow declares jobs");
+    }
+  }
+  // The gate is not vacuous: the exact defect shape is rejected.
+  const bad = ["on:", "  workflow_dispatch:", "jobs:", "  a:", "    steps:",
+    "      - run: echo \"drift: nope\"", ""].join("\n");
+  let caught = false;
+  try {
+    const doc = YAML.parse(bad);
+    eachRun(doc, (v) => assert.equal(typeof v, "string", "plain-scalar run"));
+  } catch { caught = true; }
+  assert.ok(caught, "a plain run: scalar containing ': ' is rejected by this gate");
+}
+
 console.log("git-scaffolds: ok");

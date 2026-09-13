@@ -139,6 +139,7 @@ import {
 import {
   CONFLUENCE_PROPERTY_KEY, renderTextTemplate, markdownToStorage,
   confluenceRemoteLinkGlobalId, TITLE_MAX_CHARS, COMMENT_TEMPLATE_MAX_CHARS, CQL_MAX_CHARS,
+  CONFLUENCE_DEFAULT_TITLE_TEMPLATE,
 } from "./shared/confluence-rules.js";
 import { describeCron } from "./shared/cron.js";
 // The ONE code-point-safe text clamp (F-381/F-383) — never `.slice()` on a prompt path.
@@ -19252,9 +19253,6 @@ const CONFLUENCE_PAGE_PF_TYPE = "postfunction-confluence-page";
 const CONFLUENCE_COMMENT_PF_TYPE = "postfunction-confluence-comment";
 const isConfluencePagePfType = (t) => String(t || "") === CONFLUENCE_PAGE_PF_TYPE;
 const isConfluenceCommentPfType = (t) => String(t || "") === CONFLUENCE_COMMENT_PF_TYPE;
-
-/** Default page title when the rule names none. Same placeholders as the template. */
-const CONFLUENCE_DEFAULT_TITLE_TEMPLATE = "{issueKey} — {summary}";
 
 /** One step row, in the shape every other post-function's stepResults[] uses. */
 const confluenceStep = (index, name, status, reason, recommendation) =>

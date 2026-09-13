@@ -547,6 +547,24 @@ const injectStyles = () => {
     html[data-color-mode="dark"] .log-flag-transientError { background: #ef4444; }
     html[data-color-mode="dark"] .log-flag-capped         { background: #fb923c; color: #2a1602; }
 
+    /* Execution-log banners (F-447) - solid saturated fills, white text, no rail and no
+       tint. The git family keeps the red the dead-credential block already uses; the
+       Confluence family carries the Confluence hue (#1d4ed8, one shade lighter in dark),
+       the same hue PremadeRuleForm gives the Confluence group. */
+    .log-banner {
+      display: flex; flex-direction: column; gap: 3px;
+      margin-top: 10px; padding: 10px 12px;
+      border-radius: var(--r-md, 8px); color: #fff;
+    }
+    .log-banner-title { font-size: 12px; font-weight: 800; letter-spacing: 0.02em; }
+    .log-banner-text { font-size: 12px; font-weight: 500; line-height: 1.45; }
+    .log-banner-auth_dead { background: #dc2626; }
+    .log-banner-git_unavailable { background: #ea580c; }
+    .log-banner-confluence_unavailable { background: #1d4ed8; }
+    html[data-color-mode="dark"] .log-banner-auth_dead { background: #ef4444; }
+    html[data-color-mode="dark"] .log-banner-git_unavailable { background: #fb923c; color: #2a1602; }
+    html[data-color-mode="dark"] .log-banner-confluence_unavailable { background: #3b82f6; }
+
     .log-tools-badge {
       display: inline-block;
       padding: 1px 6px;
@@ -1206,6 +1224,49 @@ const showToast = (message, kind) => {
   setTimeout(() => el.remove(), 2600);
 };
 
+/*
+ * THE EXECUTION-LOG BANNER - ONE HOME (F-447).
+ *
+ * A premade rule that could not reach its provider still ALLOWS the transition (the
+ * app-wide fail-open contract) and records WHY on the log row as `banner`. The banner
+ * ids are minted in exactly two places - runGitValidator and runConfluenceValidator
+ * (src/premade-rules.js) - and this is the only renderer for all of them, so a new id
+ * lands here once instead of being hand-copied into each of config-view's two log
+ * lists. An id nothing here knows renders nothing rather than a blank block.
+ *
+ * Solid saturated fill, white text, 700 weight. No rail, no tint: a gate that silently
+ * stopped gating is not a whisper.
+ */
+const LOG_BANNERS = {
+  auth_dead: {
+    title: "The git credential is dead",
+    text: "This rule could not check the pull request, so the transition was allowed. An admin must re-connect the credential in Settings, Code. Turn Strict on to block instead.",
+  },
+  git_unavailable: {
+    title: "The git provider could not be reached",
+    text: "This rule could not check the pull request, so the transition was allowed. Turn Strict on to block while the provider is unreachable.",
+  },
+  confluence_unavailable: {
+    title: "Confluence could not be checked",
+    text: "This rule could not search Confluence, so the transition was allowed. Turn Strict on to block instead. An incomplete rule, with no space or no query, blocks either way.",
+  },
+};
+
+const LogBanner = ({ log }) => {
+  const b = LOG_BANNERS[log && log.banner];
+  if (!b) return null;
+  // The banner is ONE id per family, so this is one row per family; WHEN the log row
+  // also carries the specific fault (`confluenceReason` / `gitReason`) it is named in
+  // parentheses rather than given a row of its own.
+  const why = (log && (log.confluenceReason || log.gitReason)) || "";
+  return (
+    <div className={`log-banner log-banner-${log.banner}`} role="status">
+      <span className="log-banner-title">{b.title}</span>
+      <span className="log-banner-text">{b.text}{why ? ` (${why})` : ""}</span>
+    </div>
+  );
+};
+
 function App() {
   const [config, setConfig] = useState(null);
   const [logs, setLogs] = useState([]);
@@ -1852,6 +1913,7 @@ function App() {
                         <div className="log-reason">{log.reason}</div>
                       </>
                     )}
+                    <LogBanner log={log} />
                     {log.toolMeta?.toolsUsed && (
                       <div className="log-tools">
                         <span className="log-tools-badge">JQL</span>
@@ -2297,6 +2359,7 @@ function App() {
                       <div className="log-reason">{log.reason}</div>
                     </>
                   )}
+                  <LogBanner log={log} />
                   {log.toolMeta?.toolsUsed && (
                     <div className="log-tools">
                       <span className="log-tools-badge">JQL</span>

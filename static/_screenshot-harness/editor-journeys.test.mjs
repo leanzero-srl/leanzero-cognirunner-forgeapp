@@ -3254,6 +3254,221 @@ try {
       `F-179/F-181 no app source retypes the retired wording${offenders.length ? " — " + offenders.join("; ") : ""}`);
   }
 
+
+  /* ---------------- J16u - F-447: the CONFLUENCE param group, light AND dark ----------
+     The defect this closes is the git one repeating on a new group: PremadeRuleForm had
+     no renderer for `params.confluence`, so the Confluence validator could be picked and
+     saved with no space and no query - a rule the executor then BLOCKS every transition
+     on, in both strict columns, because misconfiguration is not a degradation (F-416).
+     The arm drives the group from empty and asserts the string the editor hands Jira:
+     a control that does not reach the saved config is a form pretending to be a rule. */
+  for (const theme of ["light", "dark"]) {
+    console.log(`J16u Confluence premade validator group (cfg-premade-confluence, ${theme})`);
+    const env = await openEditor(browser, "config-ui", "cfg-premade-confluence", theme);
+    const { page } = env;
+    try {
+      const rulePicker = page.locator(".dropdown-trigger", { hasText: "Choose a premade rule" }).first();
+      await rulePicker.click();
+      await page.waitForSelector(".dropdown-panel", { timeout: 6000 });
+      const opt = page.locator(".dropdown-panel .dropdown-item", { hasText: "a page for this issue exists" }).first();
+      ok(await opt.count() > 0, `J16u (${theme}) the catalogue offers "Confluence: a page for this issue exists"`);
+      await opt.click();
+
+      // The whole group renders, and none of it is native chrome.
+      await page.waitForSelector(".pr-seg-conf", { timeout: 6000 });
+      ok(await page.locator("select").count() === 0, `J16u (${theme}) no native <select> anywhere in the Confluence group`);
+      ok(await page.locator(".pr-seg-conf .pr-seg-btn").count() === 2, `J16u (${theme}) the mode is a 2-option segmented control, not a dropdown`);
+      ok(await page.locator(".pr-conf-ph").count() >= 3, `J16u (${theme}) the placeholder legend names {issueKey}, {summary} and {field:<id>}`);
+      ok(await page.locator(".pr-git-toggle-row input[type=checkbox]").count() === 1, `J16u (${theme}) the Strict toggle renders on the validator`);
+
+      // The SPACE is picked, never typed.
+      const spacePicker = page.locator(".dropdown-trigger", { hasText: "Choose a Confluence space" }).first();
+      ok(await spacePicker.count() > 0, `J16u (${theme}) the space picker renders with its placeholder`);
+      await spacePicker.click();
+      await page.waitForSelector(".dropdown-panel", { timeout: 6000 });
+      const spaceItems = await page.locator(".dropdown-panel .dropdown-item").allInnerTexts();
+      ok(spaceItems.some((t) => /Engineering \(ENG\)/.test(t)), `J16u (${theme}) the space list comes from getRuleLists.confluencespaces`);
+      await page.locator(".dropdown-panel .dropdown-item", { hasText: "Engineering (ENG)" }).first().click();
+
+      // The query, and the LIVE example: proof the value arrives already quoted.
+      const cql = page.locator("textarea.pr-conf-tpl").first();
+      await cql.fill("title ~ {issueKey} OR text ~ {summary}");
+      await page.waitForSelector(".pr-conf-example", { timeout: 6000 });
+      const exampleText = await page.locator(".pr-conf-example-text").first().innerText();
+      ok(/ACME-42/.test(exampleText), `J16u (${theme}) the live example substitutes the sample issue key (got "${exampleText}")`);
+      ok(/"ACME-42"/.test(exampleText), `J16u (${theme}) the example shows the value ARRIVING QUOTED, which is what the template must not do itself`);
+      const exBg = await page.locator(".pr-conf-example").first().evaluate((el) => getComputedStyle(el).backgroundColor);
+      ok(exBg === (theme === "dark" ? "rgb(59, 130, 246)" : "rgb(29, 78, 216)"), `J16u (${theme}) the example block is a SOLID Confluence-hue fill, not a tint - got ${exBg}`);
+      ok(await page.locator(".pr-conf-example").first().evaluate((el) => getComputedStyle(el).borderLeftWidth) === "0px", `J16u (${theme}) the example block has NO left accent rail`);
+
+      // THE MODE SWITCH: semantic reveals the prompt, and the prompt is REQUIRED there
+      // (a semantic rule with no prompt is misconfiguration, which blocks either way).
+      ok(await page.locator("textarea[placeholder*='rollback plan and name an owner']").count() === 0, `J16u (${theme}) CQL mode does not draw the semantic prompt`);
+      await page.locator(".pr-seg-conf .pr-seg-btn", { hasText: "must SAY something" }).first().click();
+      await page.waitForSelector("textarea[placeholder*='rollback plan and name an owner']", { timeout: 6000 });
+      ok(await page.locator(".pr-seg-conf .pr-seg-btn.active", { hasText: "must SAY something" }).count() === 1, `J16u (${theme}) the segmented control marks Semantic active`);
+      const halfSaved = await page.evaluate(async () => {
+        const raw = await window.__ON_CONFIGURE__();
+        return raw == null || raw === "undefined" ? null : JSON.parse(raw);
+      });
+      ok(halfSaved === null, `J16u (${theme}) Semantic mode with no prompt is NOT savable (it would block every transition as misconfigured)`);
+      await page.locator("textarea[placeholder*='rollback plan and name an owner']").first().fill("The page must describe the rollback plan.");
+
+      // Strict copy switches, and it says what the F-416 table says - both columns.
+      const strictBox = page.locator(".pr-git-toggle-row input[type=checkbox]").first();
+      ok(!(await strictBox.isChecked()), `J16u (${theme}) Strict defaults OFF (the app-wide fail-OPEN contract)`);
+      const strictCopy = async () => (await page.locator(".pr-git-toggle-row").locator("xpath=following-sibling::p[1]").first().innerText());
+      ok(/ALLOWED/.test(await strictCopy()), `J16u (${theme}) Strict OFF copy: an unreachable Confluence ALLOWS the transition`);
+      await strictBox.check();
+      ok(/BLOCKED/.test(await strictCopy()), `J16u (${theme}) Strict ON copy: an unreachable Confluence BLOCKS the transition`);
+      const misconfigCopy = await page.locator(".pr-conf-misconfig").first().innerText();
+      ok(/blocks the transition in both modes/.test(misconfigCopy), `J16u (${theme}) the note says an incomplete rule blocks in BOTH columns (got "${misconfigCopy}")`);
+
+      // THE POINT: exactly the catalogue's param ids reach the config Jira is handed.
+      const saved = await page.evaluate(async () => JSON.parse(await window.__ON_CONFIGURE__()));
+      ok(saved.ruleKind === "premade" && saved.ruleType === "confluence-page-exists", `J16u (${theme}) saved config is the premade Confluence rule`);
+      ok(saved.spaceKey === "ENG", `J16u (${theme}) saved config carries spaceKey (ENG)`);
+      ok(saved.mode === "semantic", `J16u (${theme}) saved config carries mode (semantic)`);
+      ok(saved.cqlTemplate === "title ~ {issueKey} OR text ~ {summary}", `J16u (${theme}) saved config carries the UNRENDERED cqlTemplate`);
+      ok(saved.prompt === "The page must describe the rollback plan.", `J16u (${theme}) saved config carries the semantic prompt`);
+      ok(saved.strict === true, `J16u (${theme}) saved config carries strict`);
+      ok(!("titleTemplate" in saved) && !("commentTemplate" in saved) && !("parentId" in saved),
+        `J16u (${theme}) the validator saves NO post-function-only keys - the catalogue does not give it those controls`);
+    } catch (e) { fail++; console.log(`  ✗ J16u (${theme}) threw: ` + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
+  /* ---------------- J16v - F-447: the two CONFLUENCE POST-FUNCTIONS -------------------
+     Same group, two OBJECT forms of it (`confluence: { mode: false, ... }`). The arm
+     proves the form reads `confluenceSubEnabled` and not truthiness: the page rule draws
+     a title and a parent and NO mode; the comment rule draws the comment text and none
+     of the page's controls. Neither draws Strict - a post-function runs after the
+     transition, where "block or allow" is not a choice anything can make. */
+  for (const theme of ["light", "dark"]) {
+    console.log(`J16v Confluence premade post-functions (cfg-premade-confluence-pf, ${theme})`);
+    const env = await openEditor(browser, "config-ui", "cfg-premade-confluence-pf", theme);
+    const { page } = env;
+    try {
+      await page.waitForSelector(".pr-form", { timeout: 8000 });
+      // --- the PAGE rule ---
+      await page.locator(".dropdown-trigger", { hasText: "Choose a premade rule" }).first().click();
+      await page.waitForSelector(".dropdown-panel", { timeout: 6000 });
+      await page.locator(".dropdown-panel .dropdown-item", { hasText: "create or update a page" }).first().click();
+      await page.waitForSelector(".dropdown-trigger", { hasText: "Choose a Confluence space" }, { timeout: 8000 });
+      ok(await page.locator("select").count() === 0, `J16v (${theme}) no native <select> on the Confluence post-function editor`);
+      ok(await page.locator(".pr-seg-conf").count() === 0, `J16v (${theme}) the page rule draws NO mode control - the catalogue switches it off`);
+      ok(await page.locator("input[placeholder*='Default:']").count() === 1, `J16v (${theme}) the page rule shows the DEFAULT title in the title control`);
+      ok(await page.locator("input[placeholder='e.g. 393217']").count() === 1, `J16v (${theme}) the page rule draws the parent page id`);
+      ok(await page.locator("textarea[placeholder*='moved on']").count() === 0, `J16v (${theme}) the page rule draws NO comment text`);
+      ok(await page.locator(".pr-git-toggle-row").count() === 0, `J16v (${theme}) a post-function draws NO Strict toggle - it cannot block anything`);
+      const titleDefault = await page.locator("input[placeholder*='Default:']").first().getAttribute("placeholder");
+      ok(/\{issueKey\}/.test(titleDefault) && /\{summary\}/.test(titleDefault), `J16v (${theme}) the default title is the run time's own fallback (got "${titleDefault}")`);
+      // A parent that is not a page id is refused in front of the reader.
+      await page.locator("input[placeholder='e.g. 393217']").first().fill("Engineering home");
+      ok(/digits only/.test(await page.locator("input[placeholder='e.g. 393217']").locator("xpath=following-sibling::p[1]").first().innerText()),
+        `J16v (${theme}) a non-numeric parent page id is named as wrong, not silently dropped`);
+      await page.locator("input[placeholder='e.g. 393217']").first().fill("393217");
+
+      await page.locator(".dropdown-trigger", { hasText: "Choose a Confluence space" }).first().click();
+      await page.waitForSelector(".dropdown-panel", { timeout: 6000 });
+      await page.locator(".dropdown-panel .dropdown-item", { hasText: "Operations (OPS)" }).first().click();
+      await page.locator("input[placeholder*='Default:']").first().fill("{issueKey} design notes");
+      const savedPage = await page.evaluate(async () => JSON.parse(await window.__ON_CONFIGURE__()));
+      ok(savedPage.ruleType === "postfunction-confluence-page" && savedPage.type === "postfunction-confluence-page",
+        `J16v (${theme}) BOTH ruleType and type carry the catalogue key for the page rule`);
+      ok(savedPage.spaceKey === "OPS", `J16v (${theme}) the page rule saves its space`);
+      ok(savedPage.titleTemplate === "{issueKey} design notes", `J16v (${theme}) the page rule saves the title template`);
+      ok(savedPage.parentId === "393217", `J16v (${theme}) the page rule saves the parent page id`);
+      ok(!("mode" in savedPage) && !("commentTemplate" in savedPage),
+        `J16v (${theme}) the page rule saves NO key its group switched off`);
+
+      // --- the COMMENT rule. Switching rule types must clear the page rule's params. ---
+      await page.locator(".dropdown-trigger", { hasText: "create or update a page" }).first().click();
+      await page.waitForSelector(".dropdown-panel", { timeout: 6000 });
+      await page.locator(".dropdown-panel .dropdown-item", { hasText: "comment on the linked page" }).first().click();
+      await page.waitForSelector("textarea[placeholder*='moved on']", { timeout: 8000 });
+      ok(await page.locator("input[placeholder*='Default:']").count() === 0, `J16v (${theme}) the comment rule draws NO page title`);
+      ok(await page.locator("input[placeholder='e.g. 393217']").count() === 0, `J16v (${theme}) the comment rule draws NO parent page id`);
+      ok(await page.locator("textarea.pr-conf-tpl").count() === 1, `J16v (${theme}) the comment rule draws ONE template box - the comment text`);
+      const beforeText = await page.evaluate(async () => {
+        const raw = await window.__ON_CONFIGURE__();
+        return raw == null || raw === "undefined" ? null : JSON.parse(raw);
+      });
+      ok(beforeText === null, `J16v (${theme}) a comment rule with no text is NOT savable (it errors on every run)`);
+      await page.locator(".dropdown-trigger", { hasText: "Choose a Confluence space" }).first().click();
+      await page.waitForSelector(".dropdown-panel", { timeout: 6000 });
+      await page.locator(".dropdown-panel .dropdown-item", { hasText: "Engineering (ENG)" }).first().click();
+      await page.locator("textarea.pr-conf-tpl").first().fill("{issueKey} moved: {summary}");
+      const commentExample = await page.locator(".pr-conf-example-text").first().innerText();
+      ok(/ACME-42 moved:/.test(commentExample), `J16v (${theme}) the comment's live example substitutes RAW - a comment is not a query (got "${commentExample}")`);
+      const savedComment = await page.evaluate(async () => JSON.parse(await window.__ON_CONFIGURE__()));
+      ok(savedComment.ruleType === "postfunction-confluence-comment", `J16v (${theme}) the comment rule saves its catalogue key`);
+      ok(savedComment.commentTemplate === "{issueKey} moved: {summary}", `J16v (${theme}) the comment rule saves the comment template`);
+      ok(savedComment.spaceKey === "ENG", `J16v (${theme}) the comment rule saves its space`);
+      ok(!("titleTemplate" in savedComment) && !("parentId" in savedComment) && !("cqlTemplate" in savedComment),
+        `J16v (${theme}) the page rule's params did NOT survive the rule-type switch`);
+    } catch (e) { fail++; console.log(`  ✗ J16v (${theme}) threw: ` + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
+  /* ---------------- J16w - F-447: no Confluence on the site ---------------------------
+     `listConfluenceSpacesForPicker` degrades to an EMPTY list on a site with no
+     Confluence (the common case - this is a Jira app), and an empty control that looks
+     broken is not an answer. The picker must SAY what is missing, and the rule must not
+     be savable without a space. */
+  {
+    console.log("J16w Confluence group with no spaces (cfg-premade-confluence)");
+    const env = await openEditor(browser, "config-ui", "cfg-premade-confluence", "light", { __NO_CONFLUENCE__: true });
+    const { page } = env;
+    try {
+      await page.locator(".dropdown-trigger", { hasText: "Choose a premade rule" }).first().click();
+      await page.waitForSelector(".dropdown-panel", { timeout: 6000 });
+      await page.locator(".dropdown-panel .dropdown-item", { hasText: "a page for this issue exists" }).first().click();
+      await page.waitForSelector(".pr-seg-conf", { timeout: 6000 });
+      const empty = page.locator(".dropdown-trigger", { hasText: "No Confluence spaces" }).first();
+      ok(await empty.count() > 0, "J16w the empty picker says CogniRunner is not installed on Confluence");
+      ok(await page.locator("select").count() === 0, "J16w still no native <select>");
+      await page.locator("textarea.pr-conf-tpl").first().fill("title ~ {issueKey}");
+      const saved = await page.evaluate(async () => {
+        const raw = await window.__ON_CONFIGURE__();
+        return raw == null || raw === "undefined" ? null : JSON.parse(raw);
+      });
+      ok(saved === null, "J16w a Confluence rule with no space is NOT savable (it would block every transition)");
+    } catch (e) { fail++; console.log("  ✗ J16w threw: " + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
+  /* ---------------- J23d - F-447: the fail-open BANNER in config-view -----------------
+     A Confluence validator that could not reach Confluence ALLOWS the transition and says
+     so on the log row as `banner: "confluence_unavailable"`. config-view rendered no row
+     for it, so the one screen a designer has showed a green PASS for a gate that had
+     stopped gating. Solid fill, white text, no rail - in both themes. */
+  for (const theme of ["light", "dark"]) {
+    console.log(`J23d config-view Confluence banner (view-premade-confluence, ${theme})`);
+    const env = await openEditor(browser, "config-view", "view-premade-confluence", theme);
+    const { page } = env;
+    try {
+      // The summary rows first: the group must read as words, not as a bare rule name.
+      const body = await page.locator("body").innerText();
+      ok(/ENG/.test(body), `J23d (${theme}) the summary names the Confluence space`);
+      ok(/title ~ \{issueKey\}/.test(body), `J23d (${theme}) the summary shows the page query`);
+      ok(/fail-open/.test(body), `J23d (${theme}) the summary says what Strict OFF means`);
+
+      await page.locator("button", { hasText: /Show Logs/i }).first().click();
+      await page.locator(".log-entry").first().waitFor({ timeout: 8000 });
+      await page.locator(".log-banner").first().waitFor({ timeout: 8000 });
+      ok(await page.locator(".log-banner").count() === 1, `J23d (${theme}) exactly the degraded run carries a banner - the clean one does not`);
+      const bannerText = await page.locator(".log-banner").first().innerText();
+      ok(/Confluence could not be checked/.test(bannerText), `J23d (${theme}) the banner says what happened`);
+      ok(/Turn Strict on/.test(bannerText), `J23d (${theme}) the banner names the remedy`);
+      ok(/unreachable/.test(bannerText), `J23d (${theme}) the banner names WHICH fault it was`);
+      const bg = await page.locator(".log-banner").first().evaluate((el) => getComputedStyle(el).backgroundColor);
+      ok(bg === (theme === "dark" ? "rgb(59, 130, 246)" : "rgb(29, 78, 216)"), `J23d (${theme}) the banner is a SOLID Confluence-hue fill, not a tint - got ${bg}`);
+      ok(await page.locator(".log-banner").first().evaluate((el) => getComputedStyle(el).borderLeftWidth) === "0px", `J23d (${theme}) the banner has NO left accent rail`);
+    } catch (e) { fail++; console.log(`  ✗ J23d (${theme}) threw: ` + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
 } finally {
   await browser.close();
 }

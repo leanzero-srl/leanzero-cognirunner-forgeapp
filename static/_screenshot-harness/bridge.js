@@ -991,7 +991,12 @@ const CODE_IDENTITY = () => ((typeof window !== "undefined" && window.__CODE_IDE
      window.__PIPE_REFUSE__    - the machine `code` setupGitPipeline refuses with:
                                  "lock_mismatch" (carries added/removed BY NAME),
                                  "scope_not_allowed" (carries scopes),
-                                 "identity_required".
+                                 "identity_required",
+                                 "invalid_developer_space" / "invalid_app_id" (F-527/528,
+                                 each about ONE field), "invalid_scaffold_var" (F-541,
+                                 carries `variable`).
+     window.__PIPE_IDS__       - {developerSpaceId, appId} for the already-installed
+                                 scenarios, so the row can be asked to render them.
      window.__PIPE_DEPLOY_FAIL__ - triggerGitDeploy refuses with not_installed.
      window.__PIPE_SETUP__     - WRITTEN BY the mock: the last setupGitPipeline payload
                                  (F-526, the scaffoldVars assertion reads it). */
@@ -1015,7 +1020,17 @@ const HOOKS = () => {
   for (const k of Object.keys(HOOK_STORE)) { if (k !== "seeded") out[k] = HOOK_STORE[k]; }
   return out;
 };
-const PIPE_STEPS = (kind, phase) => PIPELINE_STEP_NAMES(kind).map((name, i) => ({
+/* F-527/F-528/F-548: the two OPTIONAL repository variables ride the row, and they also
+   decide the step list, because `pipelineStepNames` is a function of the REQUEST as well
+   as of the provider kind. A fixture that answered a constant step list would let a card
+   that never renders the new steps pass. The ids come from the setup payload the screen
+   sent, or from `window.__PIPE_IDS__` for the already-installed scenarios. */
+const PIPE_IDS = () => {
+  if (PIPE_STATE.ids) return PIPE_STATE.ids;
+  const seeded = (typeof window !== "undefined" && window.__PIPE_IDS__) || null;
+  return seeded || { developerSpaceId: null, appId: null };
+};
+const PIPE_STEPS = (kind, phase) => PIPELINE_STEP_NAMES(kind, PIPE_IDS()).map((name, i) => ({
   name,
   status: phase === "all" ? "done"
     : phase === "fail" ? (name === "commit-scaffold" ? "failed" : "done")
@@ -1035,10 +1050,15 @@ const PIPE_ROW = (status) => ({
   installedAt: status === "installed" ? "2026-09-13T09:06:00.000Z" : null,
   queuedAt: "2026-09-13T09:00:00.000Z", startedAt: null, updatedAt: "2026-09-13T09:06:00.000Z",
   lastRun: PIPE_STATE_RUN(), requestedBy: ACCT,
+  /* publicPipelineRow exposes both, normalised: the space id lower-cased, the app id as
+     the full ARI. The fixture normalises the same way so the card is asked to render the
+     BACKEND's value rather than the reader's keystrokes. */
+  developerSpaceId: PIPE_IDS().developerSpaceId || null,
+  appId: PIPE_IDS().appId || null,
 });
 /* The QUEUED journey is a SEQUENCE, not a state: each poll advances it one stage, which
    is the only way "queued becomes installed" can prove the card really re-read. */
-const PIPE_STATE = { walking: false, stage: 0, run: null };
+const PIPE_STATE = { walking: false, stage: 0, run: null, ids: null };
 function PIPE_STATE_RUN() { return PIPE_STATE.run; }
 const PIPE_SEQ = ["queued", "running", "installed"];
 const PIPE_READ = (repoId) => {
@@ -1066,6 +1086,23 @@ const PIPE_REFUSALS = {
   identity_required: {
     success: false, code: "identity_required",
     error: "No Forge deploy identity is configured", hint: "configure-forge-identity",
+  },
+  /* F-527/F-528/F-541 refusals, in the shape src/git-pipeline.js returns them. Each is a
+     refusal ABOUT ONE FIELD, which is the whole reason the code exists: rendered as a
+     nameless "this setup was refused" the reader cannot tell which box to fix.
+     `invalid_scaffold_var` carries the VARIABLE name, so it is the one that proves the
+     mapping is read from the payload rather than guessed from the code. */
+  invalid_developer_space: {
+    success: false, code: "invalid_developer_space",
+    error: "That Forge developer space id is not a space id (expected 36 characters of hex and dashes)",
+  },
+  invalid_app_id: {
+    success: false, code: "invalid_app_id",
+    error: "That Forge app id is not an app id (expected ari:cloud:ecosystem::app/<uuid> or the bare uuid)",
+  },
+  invalid_scaffold_var: {
+    success: false, code: "invalid_scaffold_var", variable: "UI_DIR",
+    error: "The Custom UI folder cannot contain .. or start with /",
   },
 };
 
@@ -1882,6 +1919,18 @@ function invoke(name, payload) {
          can only catch that by reading what the screen actually asked the backend for. */
       if (typeof window !== "undefined") window.__PIPE_SETUP__ = payload || null;
       if (refuse) return Promise.resolve(PIPE_REFUSALS[refuse] || { success: false, error: "refused", code: refuse });
+      /* F-548: the backend NORMALISES both ids before it stores them (lower-case space
+         id, full ARI app id) and the row is what the card reads back, so the fixture
+         normalises too. A fixture that echoed the keystrokes would let a card that shows
+         the form's value instead of the row's pass. */
+      const ARI = "ari:cloud:ecosystem::app/";
+      const rawSpace = String((payload && payload.developerSpaceId) || "").trim().toLowerCase();
+      let rawApp = String((payload && payload.appId) || "").trim().toLowerCase();
+      if (rawApp && rawApp.startsWith(ARI)) rawApp = rawApp.slice(ARI.length);
+      PIPE_STATE.ids = {
+        developerSpaceId: rawSpace || null,
+        appId: rawApp ? ARI + rawApp : null,
+      };
       PIPE_STATE.walking = true; PIPE_STATE.stage = 1;
       return Promise.resolve({ success: true, async: true, taskId: "gpipe_1", lockHash: "b91c7a44", status: PIPE_ROW("queued") });
     }

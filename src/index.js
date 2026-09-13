@@ -6855,6 +6855,11 @@ resolver.define("registerPostFunction", async ({ payload, context }) => {
       // field's shape stable; `|| context.accountId` used to write `undefined`, which
       // JSON.stringify drops entirely.
       createdBy: existing >= 0 ? (configs[existing].createdBy ?? null) : (context.accountId || null),
+      // F-394 — THE SAVER'S ROLE, RECORDED AT SAVE TIME. Re-stamped on every save (the
+      // listeners.js pattern): an editor re-saving an admin's rule DOWNGRADES it, which is
+      // the whole point — the row records who last armed it, and nothing is ever re-read
+      // about a third party while a transition is running.
+      savedByRole: await stampSavedByRole(context.accountId),
       createdAt: existing >= 0 ? configs[existing].createdAt : new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -7211,9 +7216,11 @@ export const commitImportCore = async ({ rule, targetWorkflowName, targetTransit
       // Keep the workflow-rule instance id the inject just minted: it lets a later
       // delete locate this exact rule inside the transition without guessing.
       const instanceId = injected.ruleId ? { ruleInstanceId: String(injected.ruleId) } : {};
+      // F-394 — the same save-time stamp the resolver writes; `accountId` is the CALLER.
+      const savedByRole = await stampSavedByRole(accountId);
       let row = isPf
-        ? { ...cfg, ...instanceId, instanced: true, disabled: false, createdBy: accountId || null, createdAt: now, updatedAt: now }
-        : { id: freshId, type: ruleType, fieldId: cfg.fieldId, prompt: typeof cfg.prompt === "string" ? cfg.prompt.slice(0, 200) : "", workflow: cfg.workflow, ruleKind: cfg.ruleKind, premadeRuleType: cfg.premadeRuleType, ...instanceId, instanced: true, disabled: false, createdBy: accountId || null, createdAt: now, updatedAt: now };
+        ? { ...cfg, ...instanceId, instanced: true, disabled: false, savedByRole, createdBy: accountId || null, createdAt: now, updatedAt: now }
+        : { id: freshId, type: ruleType, fieldId: cfg.fieldId, prompt: typeof cfg.prompt === "string" ? cfg.prompt.slice(0, 200) : "", workflow: cfg.workflow, ruleKind: cfg.ruleKind, premadeRuleType: cfg.premadeRuleType, ...instanceId, instanced: true, disabled: false, savedByRole, createdBy: accountId || null, createdAt: now, updatedAt: now };
       // Registry-copy offload (mirrors registerPostFunction): the WORKFLOW config
       // above decided inline-vs-codeRef at 24KB for runtime semantics; the REGISTRY
       // row offloads at 2KB so imported step code doesn't eat the shared value.
@@ -10289,6 +10296,25 @@ const savedByRoleFor = async (accountId) => {
     return perms && perms.role === "admin" ? "admin" : "editor";
   } catch (e) { return "editor"; }
 };
+
+/**
+ * F-394 — THE ROLE IS STAMPED ON THE ROW AT SAVE TIME, NEVER RE-READ AT RUN TIME.
+ *
+ * `savedByRoleFor` authorizes the CALLER, not the subject: arm 1 of `getUserPermissions`
+ * reads the roster for `accountId`, but arm 2 asks Jira `mypermissions` AS THE INVOKING
+ * USER and ignores `accountId` entirely. Passing a THIRD PARTY's id therefore returns an
+ * answer about whoever happens to be invoking — at transition time, the person who dragged
+ * the issue. A site admin moving someone else's card would have armed an editor's rule with
+ * repository writes, and the same rule fired by a plain agent would halt: privilege by
+ * transition actor.
+ *
+ * So every call passes `context.accountId` (caller == subject) and the verdict is STAMPED
+ * on the rule row here, exactly as `saveListener`/`saveJob` do — `normalizeSavedByRole` is
+ * their shared normaliser and stays the one home for the two values. A row with no owner
+ * stamps "editor": the lesser power is the safe answer.
+ */
+const stampSavedByRole = async (accountId) =>
+  listenersMod.normalizeSavedByRole(accountId ? await savedByRoleFor(accountId) : "editor");
 
 // ═══════════════════════ LISTENERS · SCHEDULED JOBS · REST API ═══════════════════════
 // Thin permission-gated wrappers; logic lives in src/listeners.js, src/scheduled-jobs.js,
@@ -18486,6 +18512,12 @@ export const executePostFunction = async (args) => {
     return { result: true };
   }
 
+  // THE REGISTRY ROW FOR THIS INVOCATION, resolved ONCE below and reused.
+  // The workflow config is what the transition carries; the REGISTRY ROW is what the app
+  // owns — `createdBy` and (F-394) `savedByRole` live only there, and the Coder branch
+  // needs both. Null means "no row was found or the registry could not be read", which the
+  // Coder branch treats as ownerless (fail CLOSED — an ERROR row, never a quiet run).
+  let registryRow = null;
   // Check if disabled in KVS. Accept both the id embedded in the (possibly old)
   // workflow-rule config and its type-namespaced registry variant, and only let
   // post-function rows mute a post-function invocation.
@@ -18531,6 +18563,7 @@ export const executePostFunction = async (args) => {
         && String(c.workflow?.transitionId) === String(config.workflow.transitionId)
       ) || null;
     }
+    registryRow = match;
     if (match?.disabled) {
       const shownId = ruleId || match.id;
       console.log(`Post-function "${shownId}" is disabled — skipping`);
@@ -18654,7 +18687,7 @@ export const executePostFunction = async (args) => {
   // 900 s consumer (LONG_QUEUE_ONLY_TASKS), and an inline coder turn cannot exist.
   // enqueueCoderPostFunction never throws and always writes its own log entry.
   if (isCoderPfType(pfType)) {
-    await enqueueCoderPostFunction(issue.key, config, extensionKey);
+    await enqueueCoderPostFunction(issue.key, config, extensionKey, registryRow);
     return { result: true };
   }
   const queuePayloadTaskId = makeTaskId("pf");
@@ -18804,7 +18837,7 @@ const coderPfLogBase = (issueKey, config) => ({
  * execution-log entry, and it never throws (a post-function that throws fails the
  * transition's audit trail without telling anyone why).
  */
-const enqueueCoderPostFunction = async (issueKey, config, extensionKey) => {
+const enqueueCoderPostFunction = async (issueKey, config, extensionKey, registryRow = null) => {
   const startedAt = Date.now();
   const strict = config?.strict === true;
   const step = (status, name, reason, recommendation) => ({ index: 1, name, status, reason, recommendation });
@@ -18875,12 +18908,21 @@ const enqueueCoderPostFunction = async (issueKey, config, extensionKey) => {
     // reach from `headless:true`, computed here so the refusal can be logged BEFORE a
     // token is spent (the engine re-runs it; agreeing twice is the point).
     const facts = await agentGateFacts(null);
-    // WHO the rule runs as, and whether an admin armed it. The registry row's owner is
-    // the authority; `savedByRoleFor` re-reads the role LIVE, so an owner demoted out of
-    // admin loses the confirm actions on the next transition rather than at some later
-    // re-save. No owner ⇒ "editor" and no account ⇒ refused below.
-    const ownerAccountId = config?.createdBy || config?.actorAccountId || null;
-    const savedByRole = ownerAccountId ? await savedByRoleFor(ownerAccountId) : "editor";
+    // WHO the rule runs as, and whether an ADMIN armed it — BOTH read from the registry
+    // row, never computed here (F-394).
+    //
+    // This used to call `savedByRoleFor(ownerAccountId)` at transition time. That helper
+    // authorizes the CALLER, not the subject (`getUserPermissions` arm 2 asks Jira
+    // `mypermissions` as the invoking user), so the answer was about whoever DRAGGED THE
+    // ISSUE: a site admin moving an editor's card armed the rule with repository writes,
+    // and the same rule fired by an agent halted. Privilege by transition actor.
+    //
+    // The row's `savedByRole` is stamped at SAVE time by `registerPostFunction` /
+    // `commitImportCore` (the listeners/jobs pattern). A legacy row with no stamp is
+    // treated as "editor" — the restrictive answer — and the refusal below tells the admin
+    // to re-save the rule as an admin to arm its write actions.
+    const ownerAccountId = registryRow?.createdBy || null;
+    const savedByRole = listenersMod.normalizeSavedByRole(registryRow?.savedByRole);
     const gate = buildAgentGateContext({ ...facts, triggerSource: "external", savedByRole });
     const gated = normalizeAllowedActions(mode.actions, gate);
     const gitAllowed = gated.allowed.filter((id) => (getAgentAction(id) || {}).namespace === "git");
@@ -18894,7 +18936,7 @@ const enqueueCoderPostFunction = async (issueKey, config, extensionKey) => {
     if (!ownerAccountId) {
       return await write(false,
         "This Coder rule has no owner account, so there is nobody to run it as and nothing ran.",
-        "Open the rule in the workflow editor and save it once. The save stamps the rule with the account the Coder runs as.",
+        "Open the rule in the workflow editor and save it once — as an admin, if it should be able to write to the repository. The save stamps the rule with the account the Coder runs as and with the role that armed it.",
         step("error", "Queue the Coder turn", "no owner account", "Re-save the rule to stamp its owner."));
     }
 

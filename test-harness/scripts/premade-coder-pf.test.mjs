@@ -126,7 +126,6 @@ const cfg = (over = {}) => ({
   ruleType: "postfunction-coder",
   type: "postfunction-coder",
   ruleId: "rule-coder-1",
-  createdBy: ADMIN,
   connectionId: CONN,
   repo: REPO,
   mode: "build",
@@ -134,6 +133,26 @@ const cfg = (over = {}) => ({
   workflow: { workflowName: "SW", transitionFromName: "To Do", transitionToName: "In Progress", transitionId: "11" },
   ...over,
 });
+
+// F-394 — WHO ARMED THE RULE IS A PROPERTY OF THE REGISTRY ROW, not of the workflow config
+// the transition carries and not of whoever performed the transition. The row is what the
+// backend reads, so the registry is seeded ONCE here with one row per case (the backend
+// memoises the registry for 30 s, so a mid-run re-seed would not be seen).
+const row = (id, over = {}) => ({
+  id, type: "postfunction-coder", ruleKind: "premade", premadeRuleType: "postfunction-coder",
+  disabled: false, createdBy: ADMIN, savedByRole: "admin",
+  workflow: { workflowName: "SW", transitionId: "11" },
+  ...over,
+});
+const LEGACY = row("rule-coder-legacy");
+delete LEGACY.savedByRole;              // a row saved before the stamp existed
+await storage.set("config_registry", [
+  row("rule-coder-1"),
+  row("rule-coder-editor", { createdBy: EDITOR, savedByRole: "editor" }),
+  LEGACY,
+  row("rule-coder-ownerless", { createdBy: null }),
+]);
+
 const fire = (issueKey, configuration) => executePostFunction({
   issue: { key: issueKey },
   configuration,
@@ -175,7 +194,8 @@ if (CAP_OFF) {
   ok(p.issueKey === "LZPT-101", "issueKey rides the payload");
   ok(/^pf_rule-coder-1_\d+$/.test(p.threadId), `threadId is pf_<ruleId>_<ts> (got ${p.threadId})`);
   ok(p.triggerSource === "postfunction" && p.headless === true, "it is marked headless with its provenance label");
-  ok(p.accountId === ADMIN && p.savedByRole === "admin", "it runs as the rule's owner, whose role is re-read live");
+  ok(p.accountId === ADMIN && p.savedByRole === "admin",
+    "it runs as the ROW's owner, with the role the ROW was stamped with at save time (F-394)");
   ok(p.connectionId === CONN, "the connection rides the payload");
   ok(p.simulation === false, "a live rule is not simulated");
   ok(p.gateFacts && p.gateFacts.provider === "openai", "the instance's facts travel with the task (the engine never reads them)");
@@ -219,9 +239,9 @@ if (CAP_OFF) {
 /* ══════════ 3. an EDITOR-saved rule, end to end ══════════ */
 {
   const before = pushed.length;
-  await fire("LZPT-102", cfg({ createdBy: EDITOR, mode: "review" }));
+  await fire("LZPT-102", cfg({ ruleId: "rule-coder-editor", mode: "review" }));
   const p = pushed.slice(before)[0].body.params;
-  ok(p.savedByRole === "editor", "a non-admin owner is 'editor'");
+  ok(p.savedByRole === "editor", "the row's stamp decides the role, and an editor-saved row is 'editor'");
   ok(!p.allowedActions.includes("add_pr_comment"),
     "an editor-saved review rule cannot hold the PR comment write");
   ok(p.allowedActions.includes("get_pull_request"), "…but keeps the reads, so it still reports");
@@ -270,9 +290,53 @@ if (CAP_OFF) {
   ok(pushed.length === before, "an unknown mode enqueues nothing");
   const l = await lastLog("LZPT-109");
   ok(l && l.isValid === false, "…and is an ERROR even with strict OFF — a wrong rule is not an environment problem");
-  await fire("LZPT-110", cfg({ createdBy: null, strict: false }));
+  await fire("LZPT-110", cfg({ ruleId: "rule-coder-ownerless", strict: false }));
   const l2 = await lastLog("LZPT-110");
   ok(l2 && l2.isValid === false && /owner/i.test(l2.reason), "a rule with no owner account is an ERROR");
+}
+
+/* ══════════ F-394 — the role is STAMPED at save time and read ONLY from the row ══════════ */
+{
+  // (a) the SOURCE property: `savedByRoleFor` authorizes the CALLER (getUserPermissions
+  //     arm 2 asks Jira `mypermissions` as the invoking user), so it may only ever be
+  //     asked about the caller. A call carrying a third party's id is the F-394 defect.
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath: toPath } = await import("node:url");
+  const pathMod = await import("node:path");
+  const indexRaw = readFileSync(pathMod.join(pathMod.dirname(toPath(import.meta.url)), "../../src/index.js"), "utf8");
+  // CODE ONLY — the comments beside the fix quote the defect they removed.
+  const indexSrc = indexRaw.split("\n").filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join("\n");
+  const allCalls = [...indexSrc.matchAll(/await savedByRoleFor\(([^)]*)\)/g)].map((m) => m[1].trim());
+  ok(allCalls.length > 0, "savedByRoleFor is still called somewhere");
+  ok(allCalls.every((a) => a === "context.accountId" || a === "accountId"),
+    `every savedByRoleFor call asks about the CALLER (saw ${JSON.stringify([...new Set(allCalls)])})`);
+  ok(/const stampSavedByRole = async \(accountId\) =>/.test(indexSrc),
+    "the save-time stamp has ONE home (stampSavedByRole)");
+  ok(!/savedByRoleFor\(ownerAccountId\)/.test(indexSrc),
+    "nothing re-reads a rule OWNER's role at run time");
+
+  // (b) the behaviour: registerPostFunction stamps the SAVER's role on the row.
+  await storage.set("app_admins", [
+    { accountId: ADMIN, role: "admin", scope: "all" },
+    { accountId: EDITOR, role: "editor", scope: "all" },
+  ]);
+  const { handler } = await import("../../src/index.js");
+  const call = (functionKey, payload, accountId) =>
+    handler({ call: { functionKey, payload } }, { principal: { accountId } });
+  const base = { type: "postfunction-coder", workflow: { workflowName: "SW2", transitionId: "21" } };
+  ok((await call("registerPostFunction", { id: "pf-a", ...base }, ADMIN)).success === true, "an admin may save a PF");
+  let rows = await storage.get("config_registry");
+  ok((rows.find((r) => r.id === "pf-a") || {}).savedByRole === "admin",
+    "the row carries savedByRole 'admin' when an admin saved it");
+  ok((await call("registerPostFunction", { id: "pf-b", ...base }, EDITOR)).success === true, "an editor may save a PF");
+  rows = await storage.get("config_registry");
+  ok((rows.find((r) => r.id === "pf-b") || {}).savedByRole === "editor",
+    "…and 'editor' when an editor saved it");
+  // Re-saved by an editor ⇒ DOWNGRADED. The row records who last armed it.
+  await call("registerPostFunction", { id: "pf-a", ...base }, EDITOR);
+  rows = await storage.get("config_registry");
+  ok((rows.find((r) => r.id === "pf-a") || {}).savedByRole === "editor",
+    "an editor re-saving an admin's rule DOWNGRADES the stamp — it is never sticky");
 }
 
 console.log(`\npremade-coder-pf: ${pass} passed, ${fail} failed`);

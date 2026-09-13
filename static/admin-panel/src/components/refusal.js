@@ -128,14 +128,23 @@ export function permissionRefusalText(result, what = "this") {
  * "imports nothing" note above means no import from App.js, which is what makes a
  * component copyable; src/shared is deliberately shared by both bundlers.
  *
- * An UNKNOWN or absent featureId degrades to "This feature" rather than guessing —
+ * An UNKNOWN or absent featureId degrades to "this feature" rather than guessing —
  * the same discipline as the unnamed-role case above.
+ *
+ * F-330 — WHY THE REMEDY LEADS. The labels in ADVANCED_FEATURES are noun phrases and
+ * one of them ("the Coder toolset …") is deliberately lowercase, because the backend
+ * embeds it mid-sentence in its error strings (F-297) — so that table must not change.
+ * Putting the label first made the rendered body open in lowercase AND, sitting under
+ * "This needs CogniRunner Coder.", named the edition three times in two lines. Leading
+ * with the remedy fixes both at the render site: the sentence starts with a capital, the
+ * label is still used VERBATIM as a noun phrase, and the edition is named once — by the
+ * headline. Do not re-add the edition name here.
  */
 export function upgradeRequiredText(result) {
   const id = result && result.featureId;
   const feature = ADVANCED_FEATURES.find((f) => f.id === id);
-  const label = feature ? feature.label : "This feature";
-  return `${label} is part of the ${EDITIONS.advanced.label} edition — upgrade in Settings.`;
+  const label = feature ? feature.label : "this feature";
+  return `Upgrade in Settings to unlock ${label}.`;
 }
 
 /**

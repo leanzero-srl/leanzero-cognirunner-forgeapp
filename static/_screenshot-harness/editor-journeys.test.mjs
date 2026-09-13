@@ -645,8 +645,15 @@ try {
       const txt = (await note.innerText()).replace(/\s+/g, " ").trim();
       ok(/This needs CogniRunner Coder\./.test(txt),
         `F-273 ${theme} the note names the edition — got: ${JSON.stringify(txt)}`);
-      ok(/upgrade in Settings/.test(txt),
+      ok(/Upgrade in Settings to unlock /.test(txt),
         `F-273 ${theme} and names the remedy and where to do it — got: ${JSON.stringify(txt)}`);
+      /* F-330 — the body under that headline is a sentence: it opens with a capital and does
+         not say "Coder" a second and third time. Asserted on the LIVE render, not the pure
+         function, because the defect was only ever visible as two stacked lines. */
+      ok(/This needs CogniRunner Coder\. Upgrade in Settings to unlock /.test(txt),
+        `F-330 ${theme} headline then a capitalised one-clause body — got: ${JSON.stringify(txt)}`);
+      ok(!/Coder edition/.test(txt),
+        `F-330 ${theme} the body does not re-announce the edition the headline just named — got: ${JSON.stringify(txt)}`);
 
       /* Owner design law, asserted live in BOTH themes: solid saturated orange, white text,
          no left accent rail, no faded low-alpha tint. */

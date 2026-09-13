@@ -280,20 +280,36 @@ console.log("\nF-273 the upgrade copy");
 
   const known = ADVANCED_FEATURES[0];
   const text = upgradeRequiredText({ success: false, reason: "upgrade-required", featureId: known.id });
-  ok(text === `${known.label} is part of the Coder edition — upgrade in Settings.`,
+  ok(text === `Upgrade in Settings to unlock ${known.label}.`,
     "F-273 a known featureId renders its label from ADVANCED_FEATURES and names the remedy");
   ok(text.includes(known.label),
     "F-273 the label comes from the shared table, not a frontend copy of it");
-  ok(/upgrade in Settings/.test(text) && !/Retry|Ask a CogniRunner admin/.test(text),
+  ok(/Upgrade in Settings/.test(text) && !/Retry|Ask a CogniRunner admin/.test(text),
     "F-273 the remedy is an upgrade — never a retry and never a role request");
 
   /* Unknown / absent featureId degrades rather than guessing, the same discipline the
      unnamed-role case follows. A wrong confident claim about what someone must buy is
      worse than a vague true one. */
-  ok(upgradeRequiredText({ featureId: "no-such-feature" }) === "This feature is part of the Coder edition — upgrade in Settings.",
-    "F-273 an unknown featureId degrades to 'This feature' instead of guessing");
-  ok(upgradeRequiredText({}) === "This feature is part of the Coder edition — upgrade in Settings.",
+  ok(upgradeRequiredText({ featureId: "no-such-feature" }) === "Upgrade in Settings to unlock this feature.",
+    "F-273 an unknown featureId degrades to 'this feature' instead of guessing");
+  ok(upgradeRequiredText({}) === "Upgrade in Settings to unlock this feature.",
     "F-273 a missing featureId degrades the same way");
+
+  /* F-330 — the body sentence must read as a sentence for EVERY row of the table, not just
+     the one that happens to start with a capital. ADVANCED_FEATURES labels are noun phrases
+     and one of them is deliberately lowercase (the backend embeds it mid-sentence, F-297),
+     so the render site — not the table — is what must guarantee the opener. It must also not
+     repeat the edition name that the headline directly above it already carries. */
+  for (const f of ADVANCED_FEATURES) {
+    const body = upgradeRequiredText({ featureId: f.id });
+    ok(/^[A-Z]/.test(body), `F-330 the body opens with a capital for "${f.id}" (got "${body.slice(0, 24)}…")`);
+    ok(body.endsWith(`${f.label}.`),
+      `F-330 the label is used VERBATIM as a noun phrase for "${f.id}", never re-cased or re-worded`);
+    ok(!/Coder edition|CogniRunner Coder/.test(body),
+      `F-330 the body does not repeat the edition name for "${f.id}" — the headline names it once`);
+  }
+  ok(!/—/.test(upgradeRequiredText({ featureId: "coder" })),
+    "F-330 the two-clause em-dash sentence is gone; the body is one clause");
 }
 
 

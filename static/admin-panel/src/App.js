@@ -1334,7 +1334,19 @@ const injectStyles = () => {
     /* F-645 — the account discriminator under the display name, on the search row and on
        the roster card. Two accounts sharing a display name are told apart HERE or nowhere.
        Email: slate 600 text. Account-id segment: a SOLID slate chip with white text and a
-       mono face, so two ids are compared character-by-character. No rail, no tint. */
+       mono face, so two ids are compared character-by-character. No rail, no tint.
+       F-647 — the two are no longer alternatives: when an email exists it sits BESIDE the
+       id chip on one line, because the chip is the string that has to match across the
+       search row and the roster card. The row must stay a single line so a long email
+       ellipsises rather than pushing the chip out of view. */
+    .perm-ident-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+      max-width: 100%;
+    }
+
     .perm-ident {
       font-size: 11px;
       font-weight: 600;
@@ -1360,6 +1372,11 @@ const injectStyles = () => {
       background: #64748b;
       color: #ffffff;
     }
+
+    /* The chip never shrinks away: a uuid segment that is half-rendered is a
+       discriminator that cannot be matched, which is the whole defect. */
+    .perm-ident-id { flex: 0 0 auto; }
+    .perm-ident-email { min-width: 0; flex: 0 1 auto; }
 
     .perm-search-badge {
       font-size: 10px;
@@ -1443,7 +1460,7 @@ const injectStyles = () => {
       color: var(--text-color);
     }
 
-    .perm-admin-info .perm-ident { margin: 3px 0; }
+    .perm-admin-info .perm-ident-row { margin: 3px 0; }
 
     .perm-admin-role {
       font-size: 11px;

@@ -40,30 +40,60 @@ const scopeLabel = (role, scope) => {
    `app_admins` revealed which one. Both surfaces must therefore carry a DISCRIMINATOR
    that differs per account, never a decoration.
 
-   Preference order, and why:
-   - `emailAddress` when the row carries one. It is the thing an admin can actually check
-     against the person they meant. MEASURED as NOT available today: `searchUsers`
-     (src/index.js) maps the Jira user search down to accountId/displayName/avatarUrl, and
-     `addAppAdmin` stores only accountId/displayName/role/scope, so neither the search row
-     nor the roster row has an email. The branch is kept because it is the right answer the
-     moment the backend passes one through, and it must not need a second edit here.
-   - otherwise the account id's LAST segment (Jira ids are `557058:<uuid>`; the prefix is
-     the shared directory id and discriminates nothing). Shown in a mono chip so the two
-     ids are compared character-by-character rather than read as prose.
-   The full id is never truncated away silently: the roster card carries it in `title`. */
+   F-647 — the first cut made the two kinds MUTUALLY EXCLUSIVE and put them in different
+   namespaces: an email row showed the email and suppressed the account id entirely (not
+   in the chip, not in the `title`, not even carried on the returned object), while a
+   roster card could only ever show the id segment. So the moment the backend started
+   passing an email through (0811b8a), an admin who picked a row BY EMAIL had no mapping
+   from that email to either uuid chip on the roster — the F-645 incident verbatim, with
+   the "right answer" branch as the enabling condition.
+
+   The rule now, and it is ONE rule for both surfaces:
+   - the email is shown WHEN PRESENT (it is the thing an admin can check against the
+     person they meant), and
+   - the account id's LAST segment is shown ALWAYS, in a solid mono chip, so the same
+     string appears on the search row and on the roster card and the two can be matched
+     by eye. (Jira ids are `557058:<uuid>`; the prefix is the shared directory id and
+     discriminates nothing.)
+   - the FULL id is the `title` on both parts, on both surfaces, so nothing is truncated
+     away silently and the id never needs a KVS read to recover.
+   `handleAdd` therefore passes `emailAddress` through to `addAppAdmin` and carries it on
+   the optimistic roster row, which is what lets the card repeat the email the admin
+   clicked. */
 const accountDiscriminator = (row) => {
   if (!row) return null;
-  const email = typeof row === "object" ? row.emailAddress : null;
-  if (typeof email === "string" && email.trim()) {
-    return { text: email.trim(), kind: "email" };
+  const rawEmail = typeof row === "object" ? row.emailAddress : null;
+  const email = typeof rawEmail === "string" && rawEmail.trim() ? rawEmail.trim() : null;
+  const rawId = typeof row === "string" ? row : row.accountId;
+  const fullId = typeof rawId === "string" && rawId.trim() ? rawId.trim() : null;
+  let seg = null;
+  if (fullId) {
+    const colon = fullId.lastIndexOf(":");
+    seg = (colon >= 0 ? fullId.slice(colon + 1) : fullId) || fullId;
   }
-  const id = typeof row === "string" ? row : row.accountId;
-  if (typeof id !== "string" || !id.trim()) return null;
-  const trimmed = id.trim();
-  const colon = trimmed.lastIndexOf(":");
-  const seg = colon >= 0 ? trimmed.slice(colon + 1) : trimmed;
-  return { text: seg || trimmed, kind: "id", fullId: trimmed };
+  if (!email && !seg) return null;
+  return { email, seg, fullId };
 };
+
+/* One renderer, both surfaces — a second copy is how the two namespaces diverged in the
+   first place. Email first (human-checkable), id chip always (the cross-surface key). */
+function AccountIdent({ disc }) {
+  if (!disc) return null;
+  return (
+    <div className="perm-ident-row">
+      {disc.email && (
+        <span className="perm-ident perm-ident-email" title={disc.fullId || disc.email}>
+          {disc.email}
+        </span>
+      )}
+      {disc.seg && (
+        <span className="perm-ident perm-ident-id" title={disc.fullId || disc.seg}>
+          {disc.seg}
+        </span>
+      )}
+    </div>
+  );
+}
 
 export default function PermissionsTab({ invoke }) {
   const [users, setUsers] = useState([]);
@@ -175,9 +205,14 @@ export default function PermissionsTab({ invoke }) {
     setError(null);
     try {
       const effectiveScope = addRole === "admin" ? "all" : addScope;
-      const result = await invoke("addAppAdmin", { accountId: user.accountId, displayName: user.displayName, role: addRole, scope: effectiveScope });
+      /* F-647 — the email rides the grant. Without it the roster card can only ever show a
+         uuid segment, so an admin who picked the row BY EMAIL has nothing to match it
+         against. The optimistic row carries it too: the card must read the same on this
+         render as it will after the next getAppAdmins. */
+      const emailAddress = typeof user.emailAddress === "string" && user.emailAddress.trim() ? user.emailAddress.trim() : undefined;
+      const result = await invoke("addAppAdmin", { accountId: user.accountId, displayName: user.displayName, role: addRole, scope: effectiveScope, emailAddress });
       if (result.success) {
-        setUsers([...users, { accountId: user.accountId, displayName: user.displayName, avatarUrl: user.avatarUrl, role: addRole, scope: effectiveScope }]);
+        setUsers([...users, { accountId: user.accountId, displayName: user.displayName, avatarUrl: user.avatarUrl, role: addRole, scope: effectiveScope, ...(emailAddress ? { emailAddress } : {}) }]);
         setSearchQuery("");
         setSearchResults([]);
         setSearchedEmpty(false);
@@ -349,14 +384,7 @@ export default function PermissionsTab({ invoke }) {
                   )}
                   <div className="perm-search-ident">
                     <span className="perm-search-name">{user.displayName}</span>
-                    {disc && (
-                      <span
-                        className={`perm-ident${disc.kind === "id" ? " perm-ident-id" : ""}`}
-                        title={disc.kind === "id" ? disc.fullId : disc.text}
-                      >
-                        {disc.text}
-                      </span>
-                    )}
+                    <AccountIdent disc={disc} />
                   </div>
                   {already &&<span className="perm-search-badge">Already added</span>}
                   {isAdding && (
@@ -446,7 +474,9 @@ export default function PermissionsTab({ invoke }) {
             /* F-645 — the roster is the ONLY place an admin can verify a grant landed
                where they meant it, and the only place Remove is armed. Two cards reading
                "Mihai Perdum / Own rules only" made that button a coin flip, so the
-               discriminator belongs here at least as much as on the search. */
+               discriminator belongs here at least as much as on the search. F-647 — and it
+               is the SAME discriminator the search row showed: the email when the grant
+               carried one, and always the id segment matching the chip that was clicked. */
             const disc = accountDiscriminator(user);
             return (
               <div key={id} className={`perm-admin-card${flashId === id ? " flash-success" : ""}`}>
@@ -458,14 +488,7 @@ export default function PermissionsTab({ invoke }) {
                   )}
                   <div>
                     <div className="perm-admin-name">{name}</div>
-                    {disc && (
-                      <div
-                        className={`perm-ident${disc.kind === "id" ? " perm-ident-id" : ""}`}
-                        title={disc.kind === "id" ? disc.fullId : disc.text}
-                      >
-                        {disc.text}
-                      </div>
-                    )}
+                    <AccountIdent disc={disc} />
                     <div className="perm-admin-role">{scopeLabel(role, scope)}</div>
                   </div>
                 </div>

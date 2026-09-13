@@ -1926,7 +1926,7 @@ try {
         `F-645 ${theme} the display names really are identical - got ${JSON.stringify(names)}`);
 
       /* THE assertion. Three rows, three DIFFERENT second lines. */
-      const idents = (await rows.locator(".perm-ident").allInnerTexts()).map((s) => s.trim());
+      const idents = (await rows.locator(".perm-ident-row").allInnerTexts()).map((s) => s.replace(/\s+/g, " ").trim());
       ok(idents.length === 3, `F-645 ${theme} every search row carries a discriminator - got ${idents.length}`);
       ok(new Set(idents).size === 3,
         `F-645 ${theme} the three second lines are all different - got ${JSON.stringify(idents)}`);
@@ -1934,7 +1934,7 @@ try {
 
       /* The email row uses the email; the id rows use the LAST segment, never the shared
          `557058:` directory prefix, which discriminates nothing. */
-      ok(idents.includes("mihai.perdum@wolfaenpak.example"),
+      ok(idents.some((s) => s.includes("mihai.perdum@wolfaenpak.example")),
         `F-645 ${theme} a row that carries an email shows the email - got ${JSON.stringify(idents)}`);
       const idOnly = idents.filter((s) => !s.includes("@"));
       ok(idOnly.length === 2, `F-645 ${theme} the other two fall back to the account id`);
@@ -1943,7 +1943,7 @@ try {
 
       /* Order is as returned by searchUsers. Sorting the rows would move the row the admin
          is about to click, which is the same defect wearing a different hat. */
-      ok(await rows.nth(1).locator(".perm-ident").innerText() === "mihai.perdum@wolfaenpak.example",
+      ok((await rows.nth(1).locator(".perm-ident-email").innerText()).trim() === "mihai.perdum@wolfaenpak.example",
         `F-645 ${theme} the search order is left exactly as the resolver returned it`);
 
       await shot(page, `f645-namesake-search-${theme}`);
@@ -1956,16 +1956,16 @@ try {
       const dupName = cardNames.filter((n) => n === "Mihai Perdum");
       ok(dupName.length === 2, `F-645 ${theme} the roster holds two cards with one name`);
 
-      const cardIdents = (await cards.locator(".perm-ident").allInnerTexts()).map((s) => s.trim());
+      const cardIdents = (await cards.locator(".perm-ident-row").allInnerTexts()).map((s) => s.replace(/\s+/g, " ").trim());
       ok(cardIdents.length === cardNames.length,
         `F-645 ${theme} every roster card carries a discriminator - ${cardIdents.length} of ${cardNames.length}`);
       ok(new Set(cardIdents).size === cardIdents.length,
         `F-645 ${theme} no two roster cards read the same - got ${JSON.stringify(cardIdents)}`);
 
-      /* A roster row has no email to show (addAppAdmin stores only accountId/displayName/
-         role/scope), so the full id must be reachable without a KVS read - it is the
-         title on the chip. This is what the live incident had to go to storage for. */
-      const titles = await cards.locator(".perm-ident").evaluateAll((els) => els.map((e) => e.getAttribute("title") || ""));
+      /* The full id must be reachable without a KVS read - it is the title on the chip,
+         on every card, whether or not that grant also carries an email. This is what the
+         live incident had to go to storage for. */
+      const titles = await cards.locator(".perm-ident-id").evaluateAll((els) => els.map((e) => e.getAttribute("title") || ""));
       ok(titles.every((t) => t.includes(":")),
         `F-645 ${theme} the roster card exposes the FULL account id in a title - got ${JSON.stringify(titles)}`);
       ok(new Set(titles).size === titles.length, `F-645 ${theme} and those full ids are unique per card`);
@@ -1994,6 +1994,153 @@ try {
       await shot(page, `f645-namesake-accounts-${theme}`);
       ok(env.errors.length === 0, `F-645 ${theme} no page errors: ` + env.errors.join(" | "));
     } catch (e) { fail++; console.log(`  ✗ F-645 ${theme} threw: ` + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
+  /* ---------------- F-647 — ONE discriminator, in ONE namespace, on BOTH surfaces ------
+   * The F-645 cut made the two kinds MUTUALLY EXCLUSIVE: a search row carrying an
+   * `emailAddress` showed the email and suppressed the account id entirely (not in the
+   * chip, not in the title, not even carried on the returned object), while a roster card
+   * could only ever show the id segment. The moment the backend began passing an email
+   * through (0811b8a), an admin who picked a row BY EMAIL had no mapping from that email
+   * to either uuid chip on the roster - the F-645 incident verbatim, with the branch that
+   * was supposed to be the right answer as the enabling condition.
+   *
+   * What the old arm could NOT catch, and this one does: it asserted only that the three
+   * second lines DIFFER FROM EACH OTHER on one surface at a time. Nothing asserted that a
+   * row's discriminator REAPPEARS on the card it produces. So the journey here is the
+   * whole loop - search, read the email, click, find the card - and the assertion is a
+   * cross-surface identity, not a uniqueness.
+   *
+   * Negative control by revert: restore the `kind:"email"` early return and the email row
+   * loses its chip, so `segFromSearch` is empty and every cross-surface check below fails.
+   *
+   * Both themes: the email text and the chip are two different slate treatments and a
+   * missing dark override on either is what makes the pair unreadable for half the users.
+   */
+  for (const theme of ["light", "dark"]) {
+    console.log(`F-647 ${theme} the clicked row's discriminator reappears on its card`);
+    const env = await openAdmin(browser, theme);
+    const { page } = env;
+    try {
+      await tab(page, "Permissions");
+      const input = page.locator(".perm-search-input");
+      await input.waitFor({ timeout: 10000 });
+      await input.fill("mihai");
+      const rows = page.locator(".perm-search-item");
+      await rows.first().waitFor({ timeout: 10000 });
+
+      /* ── the email row shows BOTH: the email a human can check, and the id chip that is
+         the key to the roster. The old cut showed only the first of these. ── */
+      const emailRow = rows.nth(1);
+      const emailFromSearch = (await emailRow.locator(".perm-ident-email").innerText()).trim();
+      ok(emailFromSearch === "mihai.perdum@wolfaenpak.example",
+        `F-647 ${theme} the email row shows its email - got ${JSON.stringify(emailFromSearch)}`);
+      ok(await emailRow.locator(".perm-ident-id").count() === 1,
+        `F-647 ${theme} and it ALSO shows the id chip - the two kinds are not alternatives`);
+      const segFromSearch = (await emailRow.locator(".perm-ident-id").innerText()).trim();
+      ok(segFromSearch === "88888888-8888-8888-8888-888888888888",
+        `F-647 ${theme} the chip is the id's last segment - got ${JSON.stringify(segFromSearch)}`);
+
+      /* The full id is in the title on BOTH parts, so neither is a dead end. */
+      const rowTitles = await emailRow.locator(".perm-ident").evaluateAll((els) => els.map((e) => e.getAttribute("title") || ""));
+      ok(rowTitles.length === 2 && rowTitles.every((t) => t === "557058:88888888-8888-8888-8888-888888888888"),
+        `F-647 ${theme} the full account id is the title on the email AND on the chip - got ${JSON.stringify(rowTitles)}`);
+
+      /* A row with no email still carries the segment - the fallback did not become
+         conditional on the email branch being absent from the data. */
+      const plainRow = rows.nth(0);
+      ok(await plainRow.locator(".perm-ident-email").count() === 0,
+        `F-647 ${theme} a row with no email invents none`);
+      ok((await plainRow.locator(".perm-ident-id").innerText()).trim() === "77777777-7777-7777-7777-777777777777",
+        `F-647 ${theme} and it still shows its id segment`);
+
+      await shot(page, `f647-search-email-and-id-${theme}`);
+
+      /* ── the journey: grant to the row picked BY EMAIL, then find it on the roster ── */
+      await emailRow.click();
+      const grantedCard = page.locator(".perm-admin-card", { hasText: segFromSearch });
+      await grantedCard.first().waitFor({ timeout: 10000 });
+      ok(await grantedCard.count() === 1,
+        `F-647 ${theme} exactly one card carries the segment that was clicked`);
+      ok((await grantedCard.locator(".perm-ident-email").innerText()).trim() === emailFromSearch,
+        `F-647 ${theme} THE assertion - the card repeats the SAME email the admin clicked`);
+      ok((await grantedCard.locator(".perm-ident-id").innerText()).trim() === segFromSearch,
+        `F-647 ${theme} and the SAME id segment, so the two surfaces share one namespace`);
+      ok(await grantedCard.locator(".perm-ident-id").getAttribute("title") === "557058:88888888-8888-8888-8888-888888888888",
+        `F-647 ${theme} the card's chip carries the full id in its title`);
+
+      /* A STORED row (not the optimistic one this click just pushed) renders its email
+         too - the grant persists the email, it is not a render-time nicety. */
+      const dana = page.locator(".perm-admin-card", { hasText: "Dana Editor" });
+      ok((await dana.locator(".perm-ident-email").innerText()).trim() === "dana.editor@wolfaenpak.example",
+        `F-647 ${theme} a stored roster row renders the email it was granted with`);
+      ok(await dana.locator(".perm-ident-id").count() === 1,
+        `F-647 ${theme} and that stored row shows its id segment as well`);
+
+      /* The no-email namesake card still stands on its segment alone. */
+      const noEmailCard = page.locator(".perm-admin-card", { hasText: "99999999-9999-9999-9999-999999999999" });
+      ok(await noEmailCard.count() === 1, `F-647 ${theme} the pre-0811b8a grant is still identifiable`);
+      ok(await noEmailCard.locator(".perm-ident-email").count() === 0,
+        `F-647 ${theme} and it shows no email, because it has none`);
+
+      /* Owner design law on the new email treatment, in both themes: solid slate text at
+         600+, no tint, and no left rail introduced on the row that now holds two parts. */
+      const est = await grantedCard.locator(".perm-ident-email").evaluate((el) => {
+        const cs = getComputedStyle(el);
+        const row = el.closest(".perm-ident-row");
+        const rcs = getComputedStyle(row);
+        return { color: cs.color, fw: cs.fontWeight, rbl: rcs.borderLeftWidth, rbt: rcs.borderTopWidth };
+      });
+      const want = theme === "dark" ? [100, 116, 139] : [71, 85, 105];
+      const got = (est.color.match(/\d+/g) || []).map(Number);
+      ok(got.slice(0, 3).every((v, i) => Math.abs(v - want[i]) <= 2),
+        `F-647 ${theme} the email is the solid slate ${want.join(",")} - got ${est.color}`);
+      ok(!/rgba/.test(est.color) || !/0\.\d/.test(est.color),
+        `F-647 ${theme} the email is not a faded low-alpha tint - got ${est.color}`);
+      ok(Number(est.fw) >= 600, `F-647 ${theme} the email is 600+ weight - got ${est.fw}`);
+      ok(est.rbl === est.rbt, `F-647 ${theme} the discriminator row has NO left accent rail`);
+
+      await shot(page, `f647-roster-same-discriminator-${theme}`);
+      ok(env.errors.length === 0, `F-647 ${theme} no page errors: ` + env.errors.join(" | "));
+    } catch (e) { fail++; console.log(`  ✗ F-647 ${theme} threw: ` + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
+  /* ---------------- F-648 — a failed user search is NOT an empty directory -------------
+   * `searchUsers` reported every Jira-side failure as `{success:true, users:[]}`, so the
+   * tab said "No users found" when the truth was "Jira did not answer". That is the
+   * negative-that-authorises-action shape on a surface that feeds a PERMISSION GRANT: the
+   * admin concludes the person is not on the site and invites a duplicate, or grants to a
+   * namesake a complete result set would have disambiguated. The resolver now fails CLOSED
+   * with `reason: "jira_unavailable"`, which is deliberately NOT "no-permission" - it is an
+   * outage, not a refusal - so it must land in the error slot and nowhere else.
+   */
+  for (const theme of ["light", "dark"]) {
+    console.log(`F-648 ${theme} a 429 from Jira reads as a failure, not as an empty directory`);
+    const env = await openAdmin(browser, theme, { __USER_SEARCH_429__: true });
+    const { page } = env;
+    try {
+      await tab(page, "Permissions");
+      const input = page.locator(".perm-search-input");
+      await input.waitFor({ timeout: 10000 });
+      await input.fill("mihai");
+      await page.waitForTimeout(900);
+
+      const body = await page.locator(".perm-search-wrap").innerText();
+      ok(/HTTP 429/.test(body), `F-648 ${theme} the backend's reason is shown verbatim - got ${JSON.stringify(body.slice(0, 160))}`);
+      ok(!/No users found/.test(body),
+        `F-648 ${theme} and it does NOT claim the directory is empty`);
+      ok(await page.locator(".perm-search-item").count() === 0,
+        `F-648 ${theme} no rows are offered from a failed search`);
+      /* Not a refusal: the "ask a CogniRunner admin" copy would be wrong advice here, and
+         this reader IS an admin. */
+      ok(await page.locator(".perm-search-wrap .access-note").count() === 0,
+        `F-648 ${theme} an outage is not dressed as a permission refusal`);
+
+      await shot(page, `f648-search-unavailable-${theme}`);
+      ok(env.errors.length === 0, `F-648 ${theme} no page errors: ` + env.errors.join(" | "));
+    } catch (e) { fail++; console.log(`  ✗ F-648 ${theme} threw: ` + e.message.split("\n")[0]); }
     await close(env);
   }
 

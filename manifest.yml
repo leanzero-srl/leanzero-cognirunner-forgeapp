@@ -570,6 +570,9 @@ permissions:
         - address: "*.ts.net"
         # context7 hosted MCP (library/SDK docs)
         - address: https://mcp.context7.com
+        # Atlassian's public Forge MCP server (opt-in `forgeDocs` bridge MCP, F-542; owner go 2026-09-14).
+        # Docs search, module catalogue, manifest guidance. External call; the toggle says so.
+        - address: https://mcp.atlassian.com
       backend:
         - address: https://api.openai.com
         - address: "*.openai.azure.com"
@@ -588,6 +591,9 @@ permissions:
         - address: "*.ts.net"
         # context7 hosted MCP (library/SDK docs)
         - address: https://mcp.context7.com
+        # Atlassian's public Forge MCP server (opt-in `forgeDocs` bridge MCP, F-542; owner go 2026-09-14).
+        # Docs search, module catalogue, manifest guidance. External call; the toggle says so.
+        - address: https://mcp.atlassian.com
         # GIT HOSTS (1.4). BACKEND ONLY — every git call is a backend fetch from
         # src/git-providers.js; a Custom UI iframe never talks to a git host, so
         # these must NOT be mirrored into `client`.

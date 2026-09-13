@@ -1321,6 +1321,10 @@ const VA_STATUS = {
     receipts: [
       { at: "2026-09-13T08:30:00.000Z", phase: "prepare", ok: true, swept: 37, worked: 2, skipped: [{ gate: "pileup", itemKey: "OPS-14" }, { gate: "quiet", itemKey: "OPS-19" }] },
       { at: "2026-09-13T08:00:00.000Z", phase: "post", ok: true, posted: 0, skipped: [{ gate: "shadow", itemKey: "OPS-12" }] },
+      /* F-511 - a clean compaction: a turn ran and the notebook shrank. The teal chip. */
+      { at: "2026-09-13T07:30:00.000Z", phase: "prepare", ok: true, swept: 12, worked: 0, skipped: [], compacted: { before: 7268, after: 3942 } },
+      /* F-511 - the BACKOFF row: no gate, deliberately, so this tick is not a failure. */
+      { at: "2026-09-13T07:25:00.000Z", phase: "prepare", ok: true, swept: 11, worked: 0, skipped: [{ gate: "compaction:compaction-backoff", itemKey: "(memory)", reason: "compaction:compaction-backoff" }] },
     ],
   },
   /* Live, and BROKEN: three failed ticks is the banner's own threshold (VA_LIMITS). */
@@ -1333,6 +1337,11 @@ const VA_STATUS = {
       { at: "2026-09-13T07:05:00.000Z", phase: "prepare", ok: false, swept: 0, error: "auth_dead: the connection credential was rejected.", skipped: [] },
       /* F-501 - the capability gate. The receipt carries the reason, never the sentence. */
       { at: "2026-09-13T07:00:00.000Z", phase: "prepare", ok: false, swept: 0, skipped: [{ gate: "capability", reason: "needs-coder-edition" }] },
+      /* F-511 - a compaction that was PAID FOR and did not converge (F-506): the bytes
+         ride the receipt on this arm too, which is the evidence the spend bought nothing. */
+      { at: "2026-09-13T06:55:00.000Z", phase: "prepare", ok: false, swept: 0, skipped: [{ gate: "compaction", itemKey: "(memory)", reason: "compaction:did-not-converge" }], compacted: { before: 9120, after: 8990, reason: "did-not-converge" } },
+      /* F-511 - the summariser fell back: named once, though the engine writes it twice. */
+      { at: "2026-09-13T06:50:00.000Z", phase: "prepare", ok: false, swept: 0, skipped: [{ gate: "compaction", itemKey: "(memory)", reason: "compaction:summariser-failed" }], compacted: { before: 9400, after: 9310, reason: "summariser-failed", fellBack: true } },
     ],
   },
 };

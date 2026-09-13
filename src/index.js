@@ -14671,7 +14671,10 @@ const getBridgeMcp = async (mcpKey) => {
 };
 
 // Execute a hosted MCP tool call; returns a string for the tool-result message.
-const callBridgeTool = async (mcpKey, toolName, args) => {
+// EXPORTED for src/web-search-tool.js (1.4 commit 13a) — the agent's `web_search`
+// action proxies THIS function so that every provider, Forge LLM included, reaches the
+// hosted web-search MCP by the one path the validators already use.
+export const callBridgeTool = async (mcpKey, toolName, args) => {
   const cfg = await getBridgeMcp(mcpKey);
   if (!cfg) return JSON.stringify({ error: `MCP "${mcpKey}" not configured` });
   const body = { jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: toolName, arguments: args || {} } };
@@ -14775,7 +14778,11 @@ const mcpBridgeActive = async () => {
 // Each is timeout-guarded and never throws into the PF path.
 
 // True when a specific hosted MCP is enabled in the admin panel.
-const mcpEnabled = async (key) => {
+// EXPORTED for src/web-search-tool.js (1.4 commit 13a): the `web` namespace executor
+// is gated by the tenant's MCP toggle at RUN TIME, and it must read that toggle from
+// THIS function rather than re-reading LMSTUDIO_MCPS_KVS_KEY itself — a second reader
+// of the same key is how two surfaces come to disagree about whether web search is on.
+export const mcpEnabled = async (key) => {
   try {
     const enabled = (await storage.get(LMSTUDIO_MCPS_KVS_KEY)) || {};
     return enabled[key] === true;

@@ -257,12 +257,27 @@ const VALID_SCOPES = ["own", "all"];
  * - role: "viewer" | "editor" | "admin"
  * - scope: "own" (only own rules) | "all" (all rules). Admin always "all".
  * Jira site admins always get { role: "admin", scope: "all" }.
+ *
+ * F-230 — THREE outcomes, not two. `null` means "asked and answered: this caller
+ * has no role". `{ role: null, unknown: true, reason }` means "could not ask" —
+ * the roster read faulted, or BOTH Jira authorization arms (the mypermissions
+ * probe and the group scan) failed to answer. Every gate still FAILS CLOSED on
+ * the unknown shape (role null is below every floor), because an unreadable
+ * authorization answer must never authorize; the distinction exists only so the
+ * UI can say "couldn't verify your role — try again" instead of the flatly wrong
+ * "you have no role", which sends people to an admin for a permission they hold.
+ * Callers must test `hasRole(perms)`, never truthiness of the object.
  */
 const getUserPermissions = async (accountId) => {
   if (!accountId) return null;
 
   // Set when the roster read succeeds and finds nobody — see the bootstrap below.
   let rosterEmpty = false;
+  // F-230 fault bookkeeping: why each arm failed to ANSWER (an answer of "no" is
+  // not a fault). All three empty at the end = a real, informed "no role".
+  let rosterFaulted = null;
+  let probeFaulted = null;
+  let groupsFaulted = null;
 
   // Seed the first admin row, but only for a caller Jira has just confirmed is an
   // administrator. Never called on the non-admin path: a non-admin first caller
@@ -290,7 +305,12 @@ const getUserPermissions = async (accountId) => {
     // administrator (steps 2/3 below). Seeding whoever happens to call first hands
     // full app admin to any licensed user who opens the page.
     if (appUsers.length === 0) rosterEmpty = true;
-  } catch (e) { /* fall through */ }
+  } catch (e) {
+    // KVS faulted: we do not know whether this caller has a roster row. Fall
+    // through to the Jira arms (a site admin is still authorizable), but if they
+    // cannot answer either, report unknown rather than "no role".
+    rosterFaulted = String(e?.message || e);
+  }
 
   // 2. Real Jira authorization of the CALLER: ask Jira, as the user, whether they
   // hold the ADMINISTER global permission. This is the check Atlassian's FSRT
@@ -310,28 +330,55 @@ const getUserPermissions = async (accountId) => {
         await bootstrapFirstAdmin();
         return { role: "admin", scope: "all" };
       }
+    } else {
+      // A non-2xx is not "you are not an admin" — Jira declined to tell us.
+      probeFaulted = `mypermissions HTTP ${permResp.status}`;
     }
-  } catch (e) { /* fall through to the group scan */ }
+  } catch (e) { probeFaulted = String(e?.message || e); /* fall through to the group scan */ }
 
   // 3. Check Jira admin group membership — site admins always get admin role
   const adminGroups = ["jira-administrators", "site-admins", "system-administrators"];
+  let groupAnswered = false;
   for (const groupName of adminGroups) {
     try {
       const resp = await api.asApp().requestJira(
         route`/rest/api/3/group/member?groupname=${groupName}&maxResults=200`,
       );
       if (resp.ok) {
+        groupAnswered = true;
         const data = await resp.json();
         if ((data.values || []).some((u) => u.accountId === accountId)) {
           await bootstrapFirstAdmin();
           return { role: "admin", scope: "all" };
         }
+      } else if (!groupsFaulted) {
+        // A missing group (404) is a legitimate "not a member" on sites that do
+        // not have it; anything else is Jira declining to answer. Both are
+        // recorded, but only a total failure of every arm reads as unknown.
+        groupsFaulted = `group/member HTTP ${resp.status}`;
       }
-    } catch (e) { /* try next group */ }
+    } catch (e) { if (!groupsFaulted) groupsFaulted = String(e?.message || e); }
+  }
+
+  // F-230 — every arm faulted, so we never learned anything about this caller.
+  // FAIL CLOSED: role stays null and every gate below refuses, exactly as before.
+  // The extra `unknown`/`reason` is for the UI's wording only, never for access.
+  if (rosterFaulted || (probeFaulted && !groupAnswered)) {
+    const reason = rosterFaulted ? `role store unavailable (${rosterFaulted})`
+      : `Jira could not confirm your permissions (${probeFaulted}${groupsFaulted ? `; ${groupsFaulted}` : ""})`;
+    console.warn(`getUserPermissions: unknown role for ${accountId} — ${reason}`);
+    return { role: null, scope: null, unknown: true, reason };
   }
 
   return null;
 };
+
+/**
+ * The ONE truthiness test for a permissions entry. `perms` may now be an UNKNOWN
+ * object with role null (F-230), which is truthy but authorizes nothing — every
+ * gate and resolver asks this, never `if (perms)`.
+ */
+const hasRole = (perms) => !!(perms && perms.role);
 
 /** Shorthand: get just the role string. */
 const getUserRole = async (accountId) => {
@@ -353,7 +400,7 @@ const requireRole = async (accountId, minRole) => {
  */
 const canActOnConfig = async (accountId, config, minRole) => {
   const perms = await getUserPermissions(accountId);
-  if (!perms) return false;
+  if (!hasRole(perms)) return false;
   const levels = { viewer: 1, editor: 2, admin: 3 };
   if ((levels[perms.role] || 0) < (levels[minRole] || 0)) return false;
   // Admin always has access, scope "all" always has access
@@ -376,7 +423,7 @@ const canActOnConfig = async (accountId, config, minRole) => {
  */
 const canDeleteConfig = async (accountId, config) => {
   const perms = await getUserPermissions(accountId);
-  if (!perms) return false;
+  if (!hasRole(perms)) return false;
   if (perms.role === "admin") return true;
   if (perms.role !== "editor") return false;
   if (perms.scope === "all") return true;
@@ -1511,7 +1558,7 @@ resolver.define("checkLicense", ({ context }) => {
 resolver.define("getLogs", async ({ payload, context }) => {
   try {
     const perms = await getUserPermissions(context?.accountId);
-    if (!perms) return { success: false, error: "You don't have access to execution logs.", logs: [] };
+    if (!hasRole(perms)) return { success: false, error: perms?.unknown ? perms.reason : "You don't have access to execution logs.", logs: [] };
     let logs = await readLogs(payload?.ruleId || null);
     if (perms.role !== "admin" && perms.scope === "own") {
       const configs = (await storage.get(CONFIG_REGISTRY_KEY)) || [];
@@ -1998,7 +2045,7 @@ resolver.define("getConfigs", async ({ payload, context }) => {
     // The meter still reports the shared site-wide state.
     const accountId = context?.accountId;
     const perms = accountId ? await getUserPermissions(accountId) : null;
-    if (accountId && !perms) {
+    if (accountId && !hasRole(perms)) {
       return {
         success: true, configs: [], removedCount: 0, restricted: true,
         registry: registryPressure(configs.map(slimRegistryRow)),
@@ -4253,6 +4300,10 @@ resolver.define("checkIsAdmin", async ({ context }) => {
     isAdmin: perms?.role === "admin",
     role: perms?.role || null,
     scope: perms?.scope || null,
+    // F-230: role null has two meanings. `unknown` says the lookup FAULTED, so the
+    // UI wording is "couldn't verify your role — try again", not "you have no role".
+    // It changes no access decision: isAdmin is still false and every gate refuses.
+    ...(perms?.unknown ? { unknown: true, reason: perms.reason } : {}),
     accountId,
   };
 });
@@ -9760,11 +9811,12 @@ const okOr = async (fn) => { try { return await fn(); } catch (e) { return { suc
 // Viewer floor + OWNER SCOPE. A listener row carries the agent's full instructions
 // and step code, so "can see the list" is the same permission question the Rules
 // table answers — reuse its one implementation (filterConfigsForUser) rather than
-// growing a second visibility rule here. A non-null perms IS the viewer floor
-// (getUserPermissions only ever returns a VALID_ROLES role).
+// growing a second visibility rule here. hasRole(perms) IS the viewer floor
+// (getUserPermissions only ever returns a VALID_ROLES role, or the F-230 unknown
+// entry whose role is null and which therefore authorizes nothing).
 resolver.define("getListeners", async ({ context }) => {
   const perms = await getUserPermissions(context.accountId);
-  if (!perms) return noPerm("view listeners");
+  if (!hasRole(perms)) return noPerm("view listeners");
   return okOr(async () => ({
     success: true,
     listeners: filterConfigsForUser(await listenersMod.listListeners(), {
@@ -9774,7 +9826,7 @@ resolver.define("getListeners", async ({ context }) => {
 });
 resolver.define("getListener", async ({ payload, context }) => {
   const perms = await getUserPermissions(context.accountId);
-  if (!perms) return noPerm("view listeners");
+  if (!hasRole(perms)) return noPerm("view listeners");
   return okOr(async () => {
     const listener = await listenersMod.getListener(payload?.id);
     if (!listener) return { success: false, error: "Listener not found" };
@@ -9839,7 +9891,7 @@ resolver.define("getEventSample", async ({ payload, context }) => {
 // Viewer floor + OWNER SCOPE — identical rule to getListeners above.
 resolver.define("getScheduledJobs", async ({ context }) => {
   const perms = await getUserPermissions(context.accountId);
-  if (!perms) return noPerm("view scheduled jobs");
+  if (!hasRole(perms)) return noPerm("view scheduled jobs");
   return okOr(async () => ({
     success: true,
     jobs: filterConfigsForUser(await jobsMod.listJobs(), {
@@ -9849,7 +9901,7 @@ resolver.define("getScheduledJobs", async ({ context }) => {
 });
 resolver.define("getScheduledJob", async ({ payload, context }) => {
   const perms = await getUserPermissions(context.accountId);
-  if (!perms) return noPerm("view scheduled jobs");
+  if (!hasRole(perms)) return noPerm("view scheduled jobs");
   return okOr(async () => {
     const job = await jobsMod.getJob(payload?.id);
     if (!job) return { success: false, error: "Scheduled job not found" };
@@ -9911,7 +9963,7 @@ resolver.define("revokeApiToken", async ({ payload, context }) => {
 // src/rules-api.js (they import lazily, so nothing here creates a load-time cycle).
 export {
   storeLog, callAIChat, getOpenAIKey, getOpenAIModel, getProviderConfig, isTransientAIError, raceDeadline,
-  requireRole, requireAdmin, getUserPermissions, canActOnConfig, makeTaskId, coerceToAdf,
+  requireRole, requireAdmin, getUserPermissions, hasRole, canActOnConfig, makeTaskId, coerceToAdf,
   getRuntimeMemorySection, formatDurationHuman, getWebtriggerUrlFor,
 };
 

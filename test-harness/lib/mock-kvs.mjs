@@ -61,9 +61,20 @@ const enforceValueSize = (key, value) => {
  * one, so it can never leak into a later assertion in the same file.
  */
 let pendingSetFault = null;
+// F-230 — the same one-shot device for READS. A permission lookup whose roster GET
+// faults must be distinguishable from one that reads an empty roster, so a suite
+// needs a get() that throws exactly once.
+let pendingGetFault = null;
 
 const storage = {
-  async get(key) { return store.has(key) ? clone(store.get(key)) : undefined; },
+  async get(key) {
+    if (pendingGetFault) {
+      const fault = pendingGetFault;
+      pendingGetFault = null;
+      throw fault;
+    }
+    return store.has(key) ? clone(store.get(key)) : undefined;
+  },
   async set(key, value, options = {}) {
     if (pendingSetFault) {
       const fault = pendingSetFault;
@@ -112,7 +123,7 @@ const storage = {
     return transaction;
   },
   // test helpers (not part of the real API)
-  __reset() { store.clear(); pendingSetFault = null; },
+  __reset() { store.clear(); pendingSetFault = null; pendingGetFault = null; },
   // Arm ONE throw from the next `set` — a transient fault, not the size ceiling.
   __failNextSet(error) {
     const fault = error instanceof Error ? error : new Error(String(error || "KVS write failed"));
@@ -122,6 +133,16 @@ const storage = {
       fault.responseDetails = { status: 500, statusText: "Internal Server Error", traceId: "mock-trace", httpMethod: "POST", httpPath: "/api/v1/set" };
     }
     pendingSetFault = fault;
+  },
+  // Arm ONE throw from the next `get` — a transient read fault (F-230).
+  __failNextGet(error) {
+    const fault = error instanceof Error ? error : new Error(String(error || "KVS read failed"));
+    if (!error || !(error instanceof Error)) {
+      fault.name = "ForgeKvsError";
+      fault.code = "INTERNAL_SERVER_ERROR";
+      fault.responseDetails = { status: 500, statusText: "Internal Server Error", traceId: "mock-trace", httpMethod: "POST", httpPath: "/api/v1/get" };
+    }
+    pendingGetFault = fault;
   },
   __seed(key, value) { store.set(key, clone(value)); },
   __raw(key) { return store.get(key); },

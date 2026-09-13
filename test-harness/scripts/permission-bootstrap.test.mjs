@@ -84,4 +84,61 @@ assert.equal(res.scope, null);
 assert.equal(res.accountId, null);
 assert.equal(await storage.get("app_admins"), undefined, "an anonymous call must not write a roster row");
 
-console.log("permission bootstrap: 4 cases passed (non-admin refused, admin seeded, group fallback, anonymous denied)");
+// ── F-230: role null has two meanings, and only one of them is "you have no role".
+const captureWarn = async (fn) => {
+  const lines = [], saved = console.warn;
+  console.warn = (...args) => lines.push(args.join(" "));
+  try { return [await fn(), lines]; } finally { console.warn = saved; }
+};
+
+// 5. Informed NO: roster reads fine and empty, Jira answers "not an admin".
+//    No `unknown` marker — the UI is right to say "you have no role".
+storage.__reset(); forgeApi.__reset();
+currentCaller = USER; scriptJira({ adminIds: [], groupMembers: [] });
+[res] = await captureLogs(() => invoke(USER));
+assert.equal(res.role, null);
+assert.equal(res.unknown, undefined, "an ANSWERED no must not be marked unknown");
+
+// 6. Jira fault on BOTH arms (probe throws, every group read throws) → unknown:true,
+//    forwarded by checkIsAdmin, and still not admin.
+storage.__reset(); forgeApi.__reset();
+storage.__seed("app_admins", [{ accountId: ADMIN, role: "admin", scope: "all" }]);
+forgeApi.__respond(() => { throw new Error("Jira 503"); });
+let warns;
+[res, warns] = await captureWarn(() => invoke(USER));
+assert.equal(res.isAdmin, false, "an unverifiable caller is NOT admin — fail closed");
+assert.equal(res.role, null);
+assert.equal(res.unknown, true, "both authorization arms faulted → unknown");
+assert.match(res.reason, /Jira could not confirm/);
+assert.match(res.reason, /503/, "the reason must name the underlying fault");
+assert.equal(warns.filter((l) => l.includes("unknown role")).length, 1);
+
+// 7. Probe faults but the GROUP SCAN answers (200, caller absent) → an informed no.
+storage.__reset(); forgeApi.__reset();
+forgeApi.__respond((path) => (path.includes("mypermissions")
+  ? forgeApi.__response(500, { errorMessages: ["boom"] })
+  : forgeApi.__response(200, { values: [] })));
+[res] = await captureWarn(() => invoke(USER));
+assert.equal(res.role, null);
+assert.equal(res.unknown, undefined, "one arm answering is enough to know the caller is not an admin");
+
+// 8. The ROSTER read faults → unknown even though Jira answers cleanly.
+storage.__reset(); forgeApi.__reset();
+currentCaller = USER; scriptJira({ adminIds: [], groupMembers: [] });
+storage.__failNextGet();
+[res] = await captureWarn(() => invoke(USER));
+assert.equal(res.role, null);
+assert.equal(res.unknown, true, "an unreadable roster cannot produce a confident 'no role'");
+assert.match(res.reason, /role store unavailable/);
+
+// 9. A faulted lookup authorizes NOTHING: the gated resolvers still refuse.
+storage.__reset(); forgeApi.__reset();
+storage.__seed("app_admins", [{ accountId: ADMIN, role: "admin", scope: "all" }]);
+forgeApi.__respond(() => { throw new Error("Jira 503"); });
+for (const fn of ["getAppAdmins", "getListeners", "getScheduledJobs", "getLogs"]) {
+  const out = await captureWarn(() => handler(
+    { call: { functionKey: fn, payload: {} }, context: {} }, { principal: { accountId: USER } }));
+  assert.equal(out[0].success, false, `${fn} must refuse an unverifiable caller (fail closed)`);
+}
+
+console.log("permission bootstrap: 9 cases passed (non-admin refused, admin seeded, group fallback, anonymous denied, F-230 unknown vs no-role, gates still closed)");

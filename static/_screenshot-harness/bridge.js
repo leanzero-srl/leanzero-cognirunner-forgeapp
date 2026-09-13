@@ -535,7 +535,8 @@ function getContext() {
   // jira:adminPage, AND that module (alone) earns the slate `.role-note` explaining the
   // bare page. __NOT_ADMIN__ cannot test either, because it switches the module away -
   // which is exactly what makes it the control for the note.
-  const notAdmin = typeof window !== "undefined" && !!window.__NOT_ADMIN__;
+  // F-219 — a viewer reaches the app the same way an editor does: jira:globalPage.
+  const notAdmin = typeof window !== "undefined" && (!!window.__NOT_ADMIN__ || !!window.__VIEWER__);
   return { extension: notAdmin ? { type: "jira:globalPage", key: "cognirunner-global-page" } : { type: "jira:adminPage", key: "cognirunner-admin-page" }, license: mockLicenseCtx(), siteUrl: SITE, accountId: ACCT, cloudId: "00000000-aaaa-bbbb-cccc-000000000000", localId: "mock-local-id", theme: { colorMode: theme() }, locale: "en-US" };
 }
 
@@ -863,8 +864,17 @@ function invoke(name, payload) {
     // EDITOR: a role the backend genuinely lets through `addMemory` (requireRole "editor"),
     // which is exactly the person who can trip a write refusal with no delete control on
     // screen. Without this flag the non-admin half of every `{isAdmin && ...}` is untested.
+    // F-219 — `__VIEWER__` is the THIRD role state, and until now it did not exist in the
+    // mock at all. It matters because `isAdmin: false` was being used as a stand-in for
+    // "cannot write", which conflated an EDITOR (who the backend lets add, edit, archive
+    // and delete memories) with a VIEWER (who it does not). Every `{isAdmin && ...}` gate
+    // that F-219 corrected to `canEdit` needs a fixture on BOTH sides of the new line, or
+    // the correction is only half tested: the editor arm proves the controls appeared, and
+    // this one proves they did not appear for someone the backend would refuse.
     case "checkIsAdmin": return Promise.resolve(
-      typeof window !== "undefined" && (window.__NOT_ADMIN__ || window.__DEMOTED_ADMIN__)
+      typeof window !== "undefined" && window.__VIEWER__
+        ? { success: true, isAdmin: false, role: "viewer", scope: "mine", accountId: ACCT }
+        : typeof window !== "undefined" && (window.__NOT_ADMIN__ || window.__DEMOTED_ADMIN__)
         ? { success: true, isAdmin: false, role: "editor", scope: "mine", accountId: ACCT }
         : { success: true, isAdmin: true, role: "admin", scope: "all", accountId: ACCT });
     case "checkProviderHealth": return Promise.resolve({ success: true, ok: true, provider: "anthropic", providerLabel: "Anthropic", model: "claude-haiku-4-5-20251001" });

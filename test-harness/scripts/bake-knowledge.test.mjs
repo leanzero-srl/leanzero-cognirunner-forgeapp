@@ -104,6 +104,85 @@ const secLit = JSON.stringify(sections);
   else ok(true, "an absent index cannot be asserted here — the index is committed");
 }
 
+/* ---- a HAND EDIT of the generated index fails the gate (F-570) ----
+   F-558 hand-patched `KNOWLEDGE_PINS` into src/shared/knowledge-index.js and left
+   `KNOWLEDGE_PACKS[].pinned` behind. The corpus was untouched, so the content version
+   still matched and `npm run bake:check` reported the packs current while the Knowledge
+   tab told the admin the VA's pinned core did not exist.
+
+   The trap this test exists to hold shut: comparing a metadata FINGERPRINT STORED IN THE
+   FILE against one computed from the corpus does NOT catch it — the hand editor changes
+   the `pinned` list and not the constant, so the two still agree. A fingerprint defends
+   only what it is recomputed from. The gate therefore re-emits the index and compares the
+   bytes on disk. */
+{
+  const fs = await import("node:fs");
+  const indexPath = path.join(repoRoot, "src/shared/knowledge-index.js");
+  const current = fs.readFileSync(indexPath, "utf8");
+  const contentVersion = (/KNOWLEDGE_CONTENT_VERSION = "([a-f0-9]+)"/.exec(current) || [])[1];
+  ok(!!contentVersion, "the committed index pins a content version");
+  ok(/KNOWLEDGE_INDEX_META_VERSION = "[a-f0-9]+"/.test(current),
+    "and a metadata fingerprint, so a reader can see at a glance that the metadata moved");
+
+  // Identical bytes pass.
+  const same = run(`B.checkIndexCurrent(${JSON.stringify(contentVersion)}, ${JSON.stringify(current)});`);
+  ok(same.status === 0, `an untouched index passes --check (exit ${same.status})`);
+
+  // A pin moved in KNOWLEDGE_PACKS[].pinned, with the stored fingerprint left alone —
+  // EXACTLY the F-570 edit — must refuse.
+  const handEdited = current.replace('"administrator-practice#administrator-practice"', '"administrator-practice#not-a-thing"');
+  ok(handEdited !== current, "the fixture edit landed (the va pin is in the committed index)");
+  const drifted = run(`B.checkIndexCurrent(${JSON.stringify(contentVersion)}, ${JSON.stringify(handEdited)});`);
+  ok(drifted.status !== 0, `a hand-edited pin list REFUSES --check (exit ${drifted.status})`);
+  ok(/NOT what the bake would write/.test(drifted.out), "and the refusal says the file is not what the bake would write");
+  ok(/F-570/.test(drifted.out), "pointing at knowledge/sources.json as the one home");
+}
+
+/* ---- the two pin emitters must agree (F-570) ----
+   `KNOWLEDGE_PACKS[].pinned` (what the Knowledge tab renders) and `KNOWLEDGE_PINS` (what
+   the selector reads) are two views of one list. They disagreed on a shipped build. */
+{
+  const packs = [
+    { id: "administrator-practice", pinned: ["administrator-practice#administrator-practice"] },
+    { id: "other", pinned: [] },
+  ];
+  ok(bake.assertPinsAgree(packs, { va: ["administrator-practice#administrator-practice"] }) === true,
+    "agreeing emitters pass");
+
+  const lie = run(`B.assertPinsAgree(${JSON.stringify([{ id: "administrator-practice", pinned: [] }])}, ${JSON.stringify({ va: ["administrator-practice#administrator-practice"] })});`);
+  ok(lie.status !== 0, `a pin the pack does not declare REFUSES the bake (exit ${lie.status})`);
+  ok(/does not list it/.test(lie.out) && /NOTHING was written/.test(lie.out),
+    "and it refuses before the emit, naming the pack");
+
+  const orphan = run(`B.assertPinsAgree(${JSON.stringify(packs)}, {});`);
+  ok(orphan.status !== 0, `a declared pin no audience reads REFUSES too (exit ${orphan.status})`);
+  ok(/no audience pins it/.test(orphan.out), "naming the missing pinnedFor");
+
+  const unknown = run(`B.assertPinsAgree([], ${JSON.stringify({ va: ["ghost-pack#thing"] })});`);
+  ok(unknown.status !== 0, `a pin whose pack was not baked REFUSES (exit ${unknown.status})`);
+}
+
+/* ---- the committed index's two pin emitters agree RIGHT NOW ----
+   The regression assertion proper: read the shipped artefact, not a fixture. */
+{
+  const fs = await import("node:fs");
+  const indexUrl = pathToFileURL(path.join(repoRoot, "src/shared/knowledge-index.js")).href;
+  const idx = await import(indexUrl);
+  const declared = new Map((idx.KNOWLEDGE_PACKS || []).map((p) => [p.id, new Set(p.pinned || [])]));
+  let agree = true;
+  for (const [audience, pins] of Object.entries(idx.KNOWLEDGE_PINS || {})) {
+    for (const pin of pins) {
+      const pack = String(pin).split("#")[0].split("/")[0];
+      if (!declared.get(pack)?.has(pin)) { agree = false; console.log(`  ${audience} pins ${pin}, pack ${pack} does not declare it`); }
+    }
+  }
+  ok(agree, "every KNOWLEDGE_PINS entry appears in its pack's `pinned` list in the committed index");
+  ok((idx.KNOWLEDGE_PINS?.va || []).length > 0
+    && declared.get("administrator-practice")?.has("administrator-practice#administrator-practice"),
+    "the VA's administrator-practice pin is visible to the Knowledge tab (the F-570 symptom)");
+  void fs;
+}
+
 /* ---- what the MANIFEST renders is what the selector reads (F-429) ---- */
 {
   const cfg = { packs: { "forge-app-builder": { pinned: ["forge-app-builder#core-concepts"], pinnedFor: ["coder"] } } };

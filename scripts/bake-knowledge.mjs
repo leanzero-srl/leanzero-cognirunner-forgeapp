@@ -350,10 +350,70 @@ export const SECTIONS = ${JSON.stringify(sections, null, 2)};
 export default SECTIONS;
 `;
 
-const emitIndex = (sections, packs, contentVersion, pins = {}) =>
+/**
+ * THE INDEX METADATA FINGERPRINT (F-570).
+ *
+ * `KNOWLEDGE_CONTENT_VERSION` hashes the section BODIES, so it is blind to everything the
+ * index says ABOUT them. F-558 hand-patched `KNOWLEDGE_PINS` into this generated file and
+ * left `KNOWLEDGE_PACKS[].pinned` behind; the corpus was untouched, the content version
+ * still matched, and `--check` reported the packs current while the Knowledge tab told the
+ * admin the VA's pinned core did not exist. A generated file that can be hand-edited
+ * without failing its own gate is not generated, it is advisory.
+ *
+ * So this hashes the metadata the gate must also defend: every pack's `pinned` list, the
+ * whole pin map, and each section's audiences. Bodies stay in KNOWLEDGE_CONTENT_VERSION —
+ * two fingerprints, two questions, and `--check` asks both.
+ */
+export const indexMetaFingerprint = (sections, packs, pins = {}) => sha(JSON.stringify({
+  packs: packs.map((p) => ({ id: p.id, pinned: [...(p.pinned || [])].sort() })),
+  pins: Object.keys(pins).sort().map((a) => [a, [...pins[a]].sort()]),
+  audiences: sections.slice().sort((a, b) => String(a.id).localeCompare(String(b.id)))
+    .map((s) => [s.id, [...(s.audience || [])].sort()]),
+})).slice(0, 16);
+
+/**
+ * THE TWO PIN EMITTERS MUST AGREE (F-570). `KNOWLEDGE_PACKS[].pinned` and `KNOWLEDGE_PINS`
+ * are two views of ONE list in knowledge/sources.json — the tab reads the first, the
+ * selector reads the second. They disagreed on a shipped build. Asserted at bake time,
+ * before the emit, because the check comes before the side effect.
+ */
+export const assertPinsAgree = (packs, byAudience = {}) => {
+  const declared = new Map(packs.map((p) => [p.id, new Set(p.pinned || [])]));
+  const problems = [];
+  const seen = new Set();
+  for (const [audience, pins] of Object.entries(byAudience)) {
+    for (const pin of pins) {
+      seen.add(pin);
+      const pack = String(pin).split("#")[0].split("/")[0];
+      if (!declared.has(pack)) {
+        problems.push(`KNOWLEDGE_PINS.${audience} pins "${pin}" whose pack "${pack}" was not baked`);
+      } else if (!declared.get(pack).has(pin)) {
+        problems.push(`KNOWLEDGE_PINS.${audience} pins "${pin}" but KNOWLEDGE_PACKS["${pack}"].pinned does not list it`);
+      }
+    }
+  }
+  for (const p of packs) {
+    for (const pin of p.pinned || []) {
+      if (!seen.has(pin)) problems.push(`pack "${p.id}" declares pinned "${pin}" but no audience pins it (missing "pinnedFor")`);
+    }
+  }
+  if (problems.length) {
+    die(`the two pin emitters disagree — NOTHING was written:\n  ${problems.join("\n  ")}`, 1);
+  }
+  return true;
+};
+
+const emitIndex = (sections, packs, contentVersion, metaVersion, pins = {}) =>
   `${GENERATED_HEADER("The knowledge INDEX: titles, tags, audiences and provenance — no bodies.\n *\n * This is the module the UI bundles import. Bodies live in the packs and are only ever\n * loaded by the backend, so a Knowledge tab costs kilobytes rather than megabytes.")}
 /** Content fingerprint of the baked corpus. Changes whenever any section changes. */
 export const KNOWLEDGE_CONTENT_VERSION = ${JSON.stringify(contentVersion)};
+
+/**
+ * Fingerprint of this file's METADATA — pack pin lists, the pin map, section audiences.
+ * \`KNOWLEDGE_CONTENT_VERSION\` only hashes bodies, so it cannot see a hand edit here;
+ * \`npm run bake:check\` compares BOTH and fails on either (F-570).
+ */
+export const KNOWLEDGE_INDEX_META_VERSION = ${JSON.stringify(metaVersion)};
 
 export const KNOWLEDGE_PACKS = ${JSON.stringify(packs, null, 2)};
 
@@ -468,8 +528,20 @@ export const collectPins = (cfg, sections, { partial = false } = {}) => {
  * packs" is not "packs are current".
  *
  * Extracted so the harness can assert the exit code of each arm without a raw corpus.
+ *
+ * F-570: it compared the CONTENT version only, so a hand edit to the generated index —
+ * the pin map, a pack's `pinned` list, a section's audiences — passed the gate silently.
+ *
+ * The fix is NOT to compare the corpus's metadata fingerprint against the constant stored
+ * in the file: the hand editor changes the `pinned` list and leaves the constant alone, so
+ * the two still agree and the gate still passes (measured — the first version of this fix
+ * did exactly that). A fingerprint only defends what it is recomputed FROM. So the check
+ * re-emits the index from the corpus and compares the bytes actually on disk: whatever was
+ * hand-edited, the file is no longer what the bake would write, which is the whole claim
+ * "GENERATED — DO NOT EDIT" makes. The metadata arm reports separately from the content
+ * arm so the message can name the likely culprit.
  */
-export const checkIndexCurrent = (contentVersion) => {
+export const checkIndexCurrent = (contentVersion, expectedIndexText = null) => {
   if (!existsSync(P.index)) {
     die("--check: NOT A PASS — no baked packs exist (src/shared/knowledge-index.js is missing).\n"
       + "  Run `npm run bake`, review knowledge/MANIFEST.md, and commit the generated packs.", 1);
@@ -482,7 +554,20 @@ export const checkIndexCurrent = (contentVersion) => {
       + "  Run `npm run bake`, review knowledge/MANIFEST.md, and commit the regenerated packs.", 1);
     return { checked: false };
   }
-  console.log(`bake-knowledge --check: packs are current (${contentVersion}).`);
+  let metaVersion = null;
+  if (expectedIndexText) {
+    metaVersion = (/KNOWLEDGE_INDEX_META_VERSION = "([a-f0-9]+)"/.exec(expectedIndexText) || [])[1] || null;
+    if (current !== expectedIndexText) {
+      const onDisk = (/KNOWLEDGE_INDEX_META_VERSION = "([a-f0-9]+)"/.exec(current) || [])[1];
+      die("src/shared/knowledge-index.js is NOT what the bake would write, though every section body is current.\n"
+        + `  metadata fingerprint: on disk ${onDisk || "absent"}, corpus ${metaVersion}\n`
+        + "  Something was hand-edited in the generated file — the pin map, a pack's `pinned`\n"
+        + "  list, a section's audiences or a title. Edit knowledge/sources.json and re-bake;\n"
+        + "  never the generated file (F-570).", 1);
+      return { checked: false };
+    }
+  }
+  console.log(`bake-knowledge --check: packs are current (content ${contentVersion}${metaVersion ? `, meta ${metaVersion}` : ""}).`);
   return { checked: true };
 };
 
@@ -612,12 +697,19 @@ export const bake = ({ dryRun = false, check = false, tiers = null } = {}) => {
   // that matches nothing must stop the bake rather than ship.
   const pins = collectPins(cfg, sections, { partial: !!tiers });
 
+  // The tab's view and the selector's view of the SAME pinned list must agree, or the
+  // Knowledge tab lies about what a pack pins (F-570). Before the emit, as ever.
+  if (!tiers) assertPinsAgree(packSummaries, pins.byAudience);
+
   const contentVersion = sha(sections.map((s) => `${s.id}:${sha(s.body)}`).join("\n")).slice(0, 16);
+  const metaVersion = indexMetaFingerprint(sections, packSummaries, pins.byAudience);
+  const sortedSections = sections.slice().sort((a, b) => a.id.localeCompare(b.id));
+  const indexText = emitIndex(sortedSections, packSummaries, contentVersion, metaVersion, pins.byAudience);
 
   /* ---- --check: the pinned hashes ------------------------------------ */
   if (check) {
-    checkIndexCurrent(contentVersion);
-    return { sections, packSummaries, contentVersion, pins, checked: true };
+    checkIndexCurrent(contentVersion, indexText);
+    return { sections, packSummaries, contentVersion, metaVersion, pins, checked: true };
   }
 
   /* ---- stage 5: emit -------------------------------------------------- */
@@ -626,13 +718,13 @@ export const bake = ({ dryRun = false, check = false, tiers = null } = {}) => {
     for (const [pack, list] of byPack) {
       writeFileSync(path.join(P.packs, `${pack}.js`), emitPack(pack, list));
     }
-    writeFileSync(P.index, emitIndex(sections.slice().sort((a, b) => a.id.localeCompare(b.id)), packSummaries, contentVersion, pins.byAudience));
+    writeFileSync(P.index, indexText);
     writeFileSync(P.manifest, renderManifest({ cfg, docs, sections, packSummaries, contentVersion, findings, pins }));
   }
 
   console.log(`\nbake-knowledge: ${sections.length} sections across ${packSummaries.length} packs · content ${contentVersion}${dryRun ? " (dry run — nothing written)" : ""}`);
   for (const p of packSummaries) console.log(`  ${p.id.padEnd(30)} ${String(p.sections).padStart(4)} sections  ${(p.bytes / 1024).toFixed(1)} KB`);
-  return { sections, packSummaries, contentVersion, pins, findings };
+  return { sections, packSummaries, contentVersion, metaVersion, pins, findings };
 };
 
 /** knowledge/MANIFEST.md — the artefact the owner reads BEFORE any pack is committed. */

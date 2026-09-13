@@ -25,13 +25,22 @@
 /** Content fingerprint of the baked corpus. Changes whenever any section changes. */
 export const KNOWLEDGE_CONTENT_VERSION = "4daff10f6d5d5c5b";
 
+/**
+ * Fingerprint of this file's METADATA — pack pin lists, the pin map, section audiences.
+ * `KNOWLEDGE_CONTENT_VERSION` only hashes bodies, so it cannot see a hand edit here;
+ * `npm run bake:check` compares BOTH and fails on either (F-570).
+ */
+export const KNOWLEDGE_INDEX_META_VERSION = "79ef69a85db14862";
+
 export const KNOWLEDGE_PACKS = [
   {
     "id": "administrator-practice",
     "title": "Administrator practice",
     "sections": 9,
     "bytes": 23557,
-    "pinned": []
+    "pinned": [
+      "administrator-practice#administrator-practice"
+    ]
   },
   {
     "id": "automation-semantics",

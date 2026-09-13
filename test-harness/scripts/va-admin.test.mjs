@@ -561,6 +561,17 @@ let agentId = null;
   ok(agents.agents[0].va && agents.agents[0].va.persona && agents.agents[0].va.guardrails,
     "…whose va block carries what the tab renders (persona, guardrails, status)");
 
+  // F-470 — ONE `maxWritesPerRun` IN THE PAYLOAD. The row used to carry the job field
+  // beside the guardrail: two numbers under one name, and the top-level one is not the
+  // ceiling the engine enforces on a Virtual Administrator (`virtual-admin.js` reads
+  // `va.guardrails.maxWritesPerRun`). The tab already renders the guardrail.
+  for (const a of agents.agents) {
+    ok(!("maxWritesPerRun" in a),
+      `an agent row carries no top-level maxWritesPerRun (got ${JSON.stringify(a.maxWritesPerRun)})`);
+    ok(Number.isFinite(Number(a.va.guardrails.maxWritesPerRun)),
+      "…and the guardrail is the one home for it");
+  }
+
   const eff = await call("listVaEffects", { jobId: agentId });
   has(eff, ["effects", "items"], "listVaEffects");
   ok(Array.isArray(eff.items) && eff.items.every((i) => "key" in i && "state" in i && "attempts" in i && "at" in i),

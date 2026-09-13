@@ -420,7 +420,13 @@ export const listAgents = async (_args = {}, injected = {}) => {
       mode: "va",
       schedule: job.schedule || null,
       simulationMode: job.simulationMode === true,
-      maxWritesPerRun: job.maxWritesPerRun,
+      // NO TOP-LEVEL `maxWritesPerRun` (F-470). The row used to carry `job.maxWritesPerRun`
+      // beside `va.guardrails.maxWritesPerRun` — two numbers under one name in one payload,
+      // and not necessarily the same number: the job field is the SCRIPT job's brake,
+      // clamped by `scheduled-jobs.js`, while the one that actually bounds a Virtual
+      // Administrator is the guardrail, which is what `virtual-admin.js` reads
+      // (`guard(va, "maxWritesPerRun")`) and what the Agents tab renders. A reader taking
+      // the top-level one would print a ceiling the engine does not enforce.
       createdBy: job.createdBy || null,
       createdAt: job.createdAt || null,
       updatedAt: job.updatedAt || null,

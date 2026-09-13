@@ -24,7 +24,10 @@
 
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { showToast } from "./toast";
-import { isPermissionRefusal, permissionRefusalText } from "./refusal";
+import {
+  isPermissionRefusal, permissionRefusalText,
+  isUpgradeRequired, upgradeRequiredText, UPGRADE_REQUIRED_HEADLINE,
+} from "./refusal";
 import { confirmDialog } from "../confirmDialog";
 // F-167 — one home for the "store is full" wording; MemoriesTab is the byte-identical
 // copy shared with config-ui, so the admin tab and the Knowledge panel never drift.
@@ -122,6 +125,15 @@ export default function MemoriesAdminTab({ invoke, isAdmin, userRole }) {
   /* F-242 — holds the REFUSAL RESULT, not a boolean. The note is built from the gate's
      own `needsRole`, so the level can no longer drift from what the backend asked for. */
   const [accessRefusal, setAccessRefusal] = useState(null);
+  /* F-296 — the EDITION twin, which this tab never grew. F-255 made the two refusal
+     families distinguishable and F-273 gave the rule-editor surfaces an arm for the second
+     one; the admin tab kept only the permission arm, so an `upgrade-required` answer
+     matched neither the success arm nor isPermissionRefusal and fell straight through to
+     `loadError` — "Couldn't load memories." plus a Retry, shown to a tenant whose only
+     remedy is to buy an edition. Its OWN state, deliberately: every other branch that
+     reads `accessRefusal` (the add-form note, the bulk bar) would otherwise start treating
+     a billing answer as a role answer. */
+  const [upgradeRefusal, setUpgradeRefusal] = useState(null);
   const [newContent, setNewContent] = useState("");
   const [adding, setAdding] = useState(false);
   // Which settings key is mid-save (toggles are optimistic — this only drives
@@ -173,12 +185,19 @@ export default function MemoriesAdminTab({ invoke, isAdmin, userRole }) {
         });
         setLoadError(false);
         setAccessRefusal(null);
+        setUpgradeRefusal(null);
         hasLoadedRef.current = true;
       } else if (isPermissionRefusal(result)) {
         /* A refusal is AUTHORITATIVE and is recorded even if a previous load succeeded:
            a role revoked mid-session is a real state, and the honest thing to show is
            "you no longer have access", not the stale table plus a silent failure. */
         setAccessRefusal(result);
+        setUpgradeRefusal(null);
+        setLoadError(false);
+      } else if (isUpgradeRequired(result)) {
+        /* F-296 — checked alongside its twin so neither can reach the fault arm. */
+        setUpgradeRefusal(result);
+        setAccessRefusal(null);
         setLoadError(false);
       } else if (!hasLoadedRef.current) {
         setLoadError(true);
@@ -735,7 +754,11 @@ export default function MemoriesAdminTab({ invoke, isAdmin, userRole }) {
           learn, and the refusal arrives only after they commit to it.
           The non-editor arm is a plain slate note, not a disabled control — a greyed-out
           form still reads as "try again later" when the answer is "not you, ever". */}
-      {canEdit ? (
+      {/* F-296 — an EDITION denial hides the form for an admin too. `canEdit` answers "is
+          your ROLE enough"; it cannot answer "does this site's plan include the store", so
+          on a Standard tenant a CogniRunner admin got a live Add Memory box stacked above
+          an upgrade note — the same invite-then-refuse shape F-224 removed for viewers. */}
+      {canEdit && !upgradeRefusal ? (
         <div className="memories-admin-add">
           <input
             type="text"
@@ -748,7 +771,7 @@ export default function MemoriesAdminTab({ invoke, isAdmin, userRole }) {
             Add Memory
           </button>
         </div>
-      ) : accessRefusal ? null : (
+      ) : (accessRefusal || upgradeRefusal) ? null : (
         /* F-243 — TWO notes for one reader. When the read itself was refused, the table
            below already says "You need CogniRunner viewer access to see memories. Ask a
            CogniRunner admin under Permissions." — the complete answer, with the remedy and
@@ -812,6 +835,19 @@ export default function MemoriesAdminTab({ invoke, isAdmin, userRole }) {
                   hand-typed "viewer" that happened to be right for this one resolver. Same
                   sentence when the gate says viewer, so no copy change ships with this. */}
               {permissionRefusalText(accessRefusal, "memories")}
+            </div>
+          </div>
+        ) : upgradeRefusal ? (
+          /* F-296 — the EDITION note. Also BEFORE loadError, and carrying no Retry for a
+             sharper version of the same reason the refusal above carries none: no number of
+             re-asks changes which edition the site is on. Solid orange .upgrade-note — a
+             third voice, distinct from the slate refusal (nobody can grant you this) and
+             the red hard-stop (something is wrong), because this is the app's one "no" that
+             is a PURCHASE decision. */
+          <div style={{ padding: "14px" }}>
+            <div className="upgrade-note" role="note">
+              <span className="upgrade-note-title">{UPGRADE_REQUIRED_HEADLINE}</span>
+              <span className="upgrade-note-text">{upgradeRequiredText(upgradeRefusal)}</span>
             </div>
           </div>
         ) : loadError ? (

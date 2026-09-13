@@ -42,6 +42,7 @@ export async function load(url, ctx, next) {
     + "export const coerceToAdf = s => s;"
     + "export const extractTextFromADF = s => s;"
     + "export const parseAIJson = () => ({});"
+    + "export const getUserPermissions = async () => ({ role: globalThis.__coderRole || 'admin' });"
     + "export const UPLOAD_ALLOWED_EXTENSIONS = new Set(['.md','.txt']);"
     + "export const UPLOAD_MAX_BYTES = 26214400;" };
   return next(url, ctx);
@@ -313,6 +314,46 @@ await check("a redelivered confirm executes exactly once", async () => {
   assert.equal(second.duplicate, true, "the second answer is a duplicate, not a second write");
   assert.equal(world.gitCalls.length, 1, "the repository was written exactly once");
   assert.ok(await store.get(coderTicketExecClaimKey("tkt_FIXED_ID")), "the once-claim is kept, not released");
+});
+
+await check("F-375: a ticket opened by an ADMIN is REFUSED after the admin is demoted", async () => {
+  const world = setupWorld({});
+  await openTicket(world);            // opened while __coderRole is "admin"
+  globalThis.__coderRole = "editor";  // …the role flips inside the ticket's 24 h life
+  try {
+    const r = await confirmCoderTicket({ ticketId: "tkt_FIXED_ID", decision: "confirm", accountId: "acct-owner", deps: { store, gitExecutor: recordingGit(world) } });
+    assert.equal(r.success, false, "a demoted owner cannot execute a needs-admin action");
+    assert.equal(r.reason, "action-not-allowed");
+    assert.deepEqual(r.refused, [{ id: "open_pull_request", reason: "needs-admin" }]);
+    assert.equal(world.gitCalls.length, 0, "NOTHING reached the repository");
+    const ticket = await store.get(coderTicketKey("tkt_FIXED_ID"));
+    assert.equal(ticket.status, "refused", "the ticket is CLOSED, not left open for a retry");
+    const thread = await store.get(coderThreadKey("LZPT-7", "t1"));
+    assert.ok(thread.messages.some((m) => m.kind === "decision" && /REFUSED/.test(m.content)), "the thread records the refusal as a decision row");
+    // …and answering it again gives the same refusal, never a cheerful duplicate.
+    const again = await confirmCoderTicket({ ticketId: "tkt_FIXED_ID", decision: "confirm", accountId: "acct-owner", deps: { store, gitExecutor: recordingGit(world) } });
+    assert.equal(again.success, false);
+    assert.equal(again.reason, "action-not-allowed");
+  } finally { globalThis.__coderRole = "admin"; }
+});
+
+await check("F-375: the same ticket still executes for an owner who IS still an admin", async () => {
+  const world = setupWorld({});
+  await openTicket(world);
+  const r = await confirmCoderTicket({ ticketId: "tkt_FIXED_ID", decision: "confirm", accountId: "acct-owner", deps: { store, gitExecutor: recordingGit(world) } });
+  assert.equal(r.success, true);
+  assert.equal(world.gitCalls.length, 1);
+});
+
+await check("F-375: a demoted owner may still SKIP the step they opened", async () => {
+  const world = setupWorld({});
+  await openTicket(world);
+  globalThis.__coderRole = "editor";
+  try {
+    const r = await confirmCoderTicket({ ticketId: "tkt_FIXED_ID", decision: "skip", accountId: "acct-owner", deps: { store, gitExecutor: recordingGit(world) } });
+    assert.equal(r.success, true, "cancelling executes nothing, so it is not gated");
+    assert.equal(world.gitCalls.length, 0);
+  } finally { globalThis.__coderRole = "admin"; }
 });
 
 await check("a non-owner cannot answer a ticket, and the refusal carries the machine flags", async () => {

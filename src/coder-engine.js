@@ -60,7 +60,7 @@
 import storage from "@forge/kvs";
 import {
   AGENT_ACTIONS, getAgentAction, toolDefinitionsFor, normalizeAllowedActions,
-  buildAgentGateContext, MAX_AGENT_ROUNDS,
+  buildAgentGateContext, agentActionRefusalText, MAX_AGENT_ROUNDS,
 } from "./shared/agent-actions.js";
 import { safeKeyPart } from "./shared/kvs-keys.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
@@ -854,7 +854,39 @@ export const stepLinksFromResult = (action, result) => {
  * In all three cases the caller is told `resume: true` and the RESUME MESSAGE to send as
  * the next turn; the engine never enqueues on its own (one producer, the resolver).
  */
-export const confirmCoderTicket = async ({ ticketId, decision, change = "", accountId, deps = {} } = {}) => {
+/**
+ * THE ROLE THIS CONFIRMATION RUNS AS, read FRESH (F-375).
+ *
+ * The SAME rule as `savedByRoleFor` in src/index.js — "admin" only for a confirmed admin
+ * role, and a read fault lands on "editor" because the lesser power is the safe answer.
+ * It is re-read HERE rather than taken off the ticket because the ticket lives 24 h: the
+ * admin who opened it may have been demoted since, and the row remembers the role they
+ * had, not the role they have.
+ */
+const savedByRoleNow = async (accountId, deps) => {
+  if (deps && deps.savedByRole) return deps.savedByRole === "admin" ? "admin" : "editor";
+  try {
+    const m = deps && deps.loadIndex ? await deps.loadIndex() : await idx();
+    const perms = await m.getUserPermissions(accountId);
+    return perms && perms.role === "admin" ? "admin" : "editor";
+  } catch (e) { return "editor"; }
+};
+
+/** Append one `kind:"decision"` row to a thread, under the thread-write lock. */
+const appendDecisionRow = async (store, issueKey, threadId, text) => {
+  const threadKey = coderThreadKey(issueKey, threadId);
+  await withThreadWriteLock(store, issueKey, threadId, async () => {
+    const row = await store.get(threadKey);
+    if (row && typeof row === "object") {
+      row.messages = compactThread([...(row.messages || []), { role: "user", kind: "decision", at: nowIso(), content: text }]).messages;
+      row.updatedAt = nowIso();
+      delete row.pendingTicketId;
+      await store.set(threadKey, row, { ttl: { value: 90, unit: "DAYS" } });
+    }
+  });
+};
+
+export const confirmCoderTicket = async ({ ticketId, decision, change = "", accountId, gateFacts = null, deps = {} } = {}) => {
   const store = deps.store || storage;
   const id = String(ticketId || "").trim();
   const verdict = ["confirm", "skip", "change"].includes(decision) ? decision : null;
@@ -876,8 +908,59 @@ export const confirmCoderTicket = async ({ ticketId, decision, change = "", acco
   if (!ticketAction || ticketAction.confirm !== true) {
     return fail(`"${String(ticket.action || "").slice(0, 60)}" is not an action that can be confirmed — nothing was performed.`, { code: "not_confirmable" });
   }
+  if (ticket.status === "refused") {
+    // Not a duplicate and not a success: the ticket was CLOSED by the gate below, and
+    // answering it again must give the same refusal rather than a cheerful "already done".
+    return fail(`"${String(ticket.action || "").slice(0, 60)}" was refused: ${agentActionRefusalText(ticket.refusedReason)}. Nothing was performed.`, {
+      reason: "action-not-allowed", refused: [{ id: ticket.action, reason: ticket.refusedReason || "not-allowed" }], ticketId: id,
+    });
+  }
   if (ticket.status && ticket.status !== "pending") {
     return { success: true, duplicate: true, decision: ticket.decision || ticket.status, status: ticket.status, ticketId: id };
+  }
+
+  /* ── F-375 — THE ALLOW-LIST IS ASSERTED WHERE THE ACTION EXECUTES, NOT ONLY WHERE
+   * THE TICKET WAS WRITTEN.
+   *
+   * The gate ran once, on the turn that opened the ticket (F-359), against THAT moment's
+   * facts — including `savedByRole`, the fact that decides `needs-admin`, i.e. every
+   * repository write. A ticket then lives 24 h. So an admin could open a `trigger_deploy`
+   * ticket, be demoted an hour later, and still execute it: the confirm path checked the
+   * editor role, the instance gate, ownership and "is this a confirm-kind action" — and
+   * none of those is the per-action allow-list.
+   *
+   * So the verdict is REBUILT here, fresh, from the CURRENT role (re-read the same way the
+   * resume turn re-reads it in src/index.js) and, when the caller supplies them, the
+   * current instance facts. `gateFacts` is optional because the resolver proves the
+   * instance's capability with `coderGate` on this very call before reaching us; when it
+   * passes none, capability is taken as satisfied and the ROLE/trigger rules still apply.
+   * Passing them makes the assertion total.
+   *
+   * ONLY `confirm` IS GATED. "skip" and "change" execute nothing, and a demoted owner must
+   * still be able to cancel or redirect the step they opened — refusing those would strand
+   * the ticket for 24 h. */
+  if (verdict === "confirm") {
+    const savedByRole = await savedByRoleNow(accountId, deps);
+    const gateOpts = gateFacts
+      ? buildAgentGateContext({ ...gateFacts, triggerSource: null, savedByRole })
+      : { capability: true, products: ["jira"], triggerSource: null, savedByRole };
+    const now = normalizeAllowedActions([ticket.action], gateOpts);
+    let allowedNow = true;
+    try { assertAgentActionAllowed(ticket.action, now.allowed); } catch (e) { allowedNow = false; }
+    if (!allowedNow) {
+      const reason = (now.refused && now.refused[0] && now.refused[0].reason) || "not-allowed";
+      const text = `DECISION: ${ticket.action} was REFUSED at confirmation time and NOT performed — ${agentActionRefusalText(reason)}.`;
+      // The ticket is CLOSED, so a retry cannot come back a minute later and find it open.
+      try {
+        await store.set(coderTicketKey(id), { ...ticket, status: "refused", refusedReason: reason, answeredAt: nowIso() }, CODER_TICKET_TTL);
+      } catch (e) { console.warn(`[coder] refused ticket status not written for ${id}: ${e && e.message}`); }
+      // …and the thread says so, in the one row shape `compactThread` keeps verbatim.
+      try { await appendDecisionRow(store, ticket.issueKey, ticket.threadId, text); }
+      catch (e) { console.warn(`[coder] refusal decision row not written for ticket ${id}: ${e && e.message}`); }
+      return fail(`"${ticket.action}" can no longer be confirmed: ${agentActionRefusalText(reason)}. Nothing was performed.`, {
+        reason: "action-not-allowed", refused: [{ id: ticket.action, reason }], ticketId: id,
+      });
+    }
   }
 
   // ONCE. Taken before anything is executed.
@@ -914,19 +997,10 @@ export const confirmCoderTicket = async ({ ticketId, decision, change = "", acco
   // The decision row is written by CODE, carries kind:"decision", and is what
   // `compactThread` preserves verbatim for the life of the thread.
   try {
-    const threadKey = coderThreadKey(ticket.issueKey, ticket.threadId);
     // UNDER THE THREAD-WRITE LOCK, and the read is INSIDE it (F-364): the turn this
     // confirmation belongs to may still be running on the long consumer, and the two
     // entry points are different processes writing one row.
-    await withThreadWriteLock(store, ticket.issueKey, ticket.threadId, async () => {
-      const row = await store.get(threadKey);
-      if (row && typeof row === "object") {
-        row.messages = compactThread([...(row.messages || []), { role: "user", kind: "decision", at: nowIso(), content: decisionText }]).messages;
-        row.updatedAt = nowIso();
-        delete row.pendingTicketId;
-        await store.set(threadKey, row, { ttl: { value: 90, unit: "DAYS" } });
-      }
-    });
+    await appendDecisionRow(store, ticket.issueKey, ticket.threadId, decisionText);
   } catch (e) {
     // The action already ran; losing the note must not re-run it. Say so loudly.
     console.warn(`[coder] decision row not written for ticket ${id}: ${e && e.message}`);

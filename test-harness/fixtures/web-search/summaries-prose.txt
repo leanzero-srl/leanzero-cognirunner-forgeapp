@@ -1,0 +1,48 @@
+Search summaries for "Forge KVS per-value size limit documentation" with 6 results:
+
+```json
+[
+  {
+    "title": "KVS and Custom Entity Store limits - Forge",
+    "url": "https://developer.atlassian.com/platform/forge/limits-kvs-ce/",
+    "description": "Each value stored in the key-value store has a maximum size. Applications that need to keep larger payloads should split them across keys or offload them elsewhere. This sentence is padding so that the snippet is comfortably longer than the three hundred character ceiling the reducer applies, which is the only way to prove the cut actually happens on a body shaped the way the hosted MCP really answers rather than on a body we invented to be convenient.",
+    "date": "2026-02-11",
+    "position": 1,
+    "sitelinks": [{ "title": "Storage API", "link": "https://developer.atlassian.com/platform/forge/runtime-reference/storage-api/" }],
+    "imageUrl": "https://example.invalid/thumb-1.png",
+    "rating": 4.5
+  },
+  {
+    "title": "Storage API reference - Forge",
+    "url": "https://developer.atlassian.com/platform/forge/runtime-reference/storage-api/",
+    "description": "Reference for the storage API: get, set, delete, query and the transactional helpers.",
+    "position": 2
+  },
+  {
+    "name": "Platform quotas and limits",
+    "link": "https://developer.atlassian.com/platform/forge/platform-quotas-and-limits/",
+    "snippet": "Invocation timeouts, payload ceilings and the per-installation storage allowance.",
+    "published": "2026-01-30"
+  },
+  {
+    "title": "Forge storage: patterns for large payloads",
+    "url": "https://developer.atlassian.com/platform/forge/storage-patterns/",
+    "content": "Chunking, offloading and content hashing, with the trade-offs of each.",
+    "position": 4
+  },
+  {
+    "title": "Custom entity store queries",
+    "url": "https://developer.atlassian.com/platform/forge/custom-entity-queries/",
+    "description": "Indexes, cursors and the shape of a paged query result.",
+    "position": 5
+  },
+  {
+    "title": "This sixth row must never reach the model",
+    "url": "https://developer.atlassian.com/platform/forge/sixth-row/",
+    "description": "Present only so that the five-row cap is proven on the real answer shape.",
+    "position": 6
+  }
+]
+```
+
+These summaries come from a general web index and may be out of date.

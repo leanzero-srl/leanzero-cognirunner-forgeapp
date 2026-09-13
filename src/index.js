@@ -120,6 +120,14 @@ import * as listenersMod from "./listeners.js";
 // re-implemented here.
 import * as coderMod from "./coder-engine.js";
 import * as jobsMod from "./scheduled-jobs.js";
+// THE VIRTUAL ADMINISTRATOR'S OPERATIONS (1.5 commit 5b). Every Agents-tab operation
+// lives in src/va-admin.js as a plain function over the ledger and the engine; the
+// resolvers at the bottom of this file are a permission skin and nothing else, and
+// the REST resource (commit 8) is the second skin over the SAME module. Nothing about
+// an operation is re-implemented here.
+import * as vaAdmin from "./va-admin.js";
+import { normalizeVa } from "./shared/va-config.js";
+import { catalogToCtx } from "./shared/va-wizard.js";
 import { createApiTokenInternal, listApiTokens, revokeApiTokenInternal, RULES_API_WEBTRIGGER_KEY, RULES_API_URL_KVS_KEY } from "./rules-api.js";
 import { isKnownEvent, buildEventPromptBlock, GIT_EVENT_IDS } from "./shared/jira-events.js";
 // F-302: the ONE builder of the agent action gate's context. index.js reads the facts
@@ -139,6 +147,7 @@ import {
 import {
   CONFLUENCE_PROPERTY_KEY, renderTextTemplate, markdownToStorage,
   confluenceRemoteLinkGlobalId, TITLE_MAX_CHARS, COMMENT_TEMPLATE_MAX_CHARS, CQL_MAX_CHARS,
+  CONFLUENCE_DEFAULT_TITLE_TEMPLATE,
 } from "./shared/confluence-rules.js";
 import { describeCron } from "./shared/cron.js";
 // The ONE code-point-safe text clamp (F-381/F-383) — never `.slice()` on a prompt path.
@@ -919,6 +928,54 @@ export const requireAdvanced = async (context, featureId) => {
 };
 
 /**
+ * WHO OWNS A ROW, for visibility. ONE list: the account the rule currently ACTS AS
+ * (`createdBy`) and the account that first authored it (`firstCreatedBy`).
+ *
+ * F-432 — `armingStamp` (F-409) moves `createdBy` to whoever last SAVED the rule, and
+ * `createdBy` was also the only visibility key. So an admin re-arming an editor's rule —
+ * exactly what the F-390 refusal text tells them to do ("Re-save this rule as an admin to
+ * arm its write actions") — erased the rule from the editor's Rules tab, from their "My
+ * rules" filter, AND every historical run of it from their Logs tab, silently, with only
+ * an admin able to hand it back. The ownership MOVE is a decided trade (the account the
+ * rule acts as is the account answerable for it); the erasure of the author's view was not
+ * part of that decision. `firstCreatedBy` recorded the truth and no surface read it.
+ *
+ * Visibility is therefore `createdBy` OR `firstCreatedBy`. Permission is NOT: every gate
+ * that decides what a caller may DO (canActOnConfig, configActionVerdict) still reads
+ * `createdBy` alone — seeing a rule and being able to change it are different questions.
+ */
+export const ruleOwnerIds = (row) => {
+  const out = [];
+  for (const key of ["createdBy", "firstCreatedBy"]) {
+    const v = row && row[key];
+    if (v && !out.includes(v)) out.push(v);
+  }
+  return out;
+};
+
+/**
+ * THE ONE VISIBILITY PREDICATE. Used by getConfigs, by the "mine" display filter and by
+ * the getLogs scope filter — three surfaces that used to carry three copies of "is this
+ * row yours?", which is how the Rules tab and the Logs tab could disagree.
+ *
+ * Two modes, because two different questions share one owner list:
+ *
+ *  - `mode: "visibility"` (default) is a PERMISSION. An admin (or scope-"all") sees
+ *    everything; an own-scope caller sees rows they own plus OWNERLESS legacy rows, which
+ *    predate `createdBy` and would blank a table on upgrade if they vanished.
+ *  - `mode: "mine"` is a DISPLAY CHOICE the user makes, and it is strict: an ownerless row
+ *    is not yours, and an admin's "My rules" is still only the admin's rules. Admin never
+ *    short-circuits this arm — that is what made "My Rules" list everything before F-OWN.
+ */
+export const canSeeRule = (row, { accountId, role, scope, mode = "visibility" } = {}) => {
+  const owners = ruleOwnerIds(row);
+  if (mode === "mine") return !!accountId && owners.includes(accountId);
+  if (role === "admin" || scope === "all") return true;
+  if (!accountId) return true;
+  return owners.length === 0 || owners.includes(accountId);
+};
+
+/**
  * Decide which registry rows a caller may SEE. Pure — exported for unit tests.
  *
  * Two different jobs used to share one flag, and conflating them is what made
@@ -931,18 +988,17 @@ export const requireAdvanced = async (context, featureId) => {
  *    a row with no owner is not yours. The old `!c.createdBy ||` clause made
  *    every ownerless row belong to everybody.
  *
- * Enforcement runs first, the display choice narrows it further.
+ * Enforcement runs first, the display choice narrows it further. Both arms go through
+ * `canSeeRule`, so "yours" means the same thing here and in the Logs tab (F-432).
  */
 export const filterConfigsForUser = (configs, { filter, accountId, scope, role } = {}) => {
   let visible = Array.isArray(configs) ? configs : [];
   const isPrivileged = role === "admin" || scope === "all";
   if (!isPrivileged && accountId) {
-    // Permission: own-scope users see their rules plus unowned legacy rows.
-    visible = visible.filter((c) => !c.createdBy || c.createdBy === accountId);
+    visible = visible.filter((c) => canSeeRule(c, { accountId, role, scope }));
   }
   if (filter === "mine" && accountId) {
-    // Display choice: strictly authored by me.
-    visible = visible.filter((c) => c.createdBy === accountId);
+    visible = visible.filter((c) => canSeeRule(c, { accountId, role, scope, mode: "mine" }));
   }
   return visible;
 };
@@ -1851,12 +1907,15 @@ resolver.define("getLogs", async ({ payload, context }) => {
     let logs = await readLogs(payload?.ruleId || null);
     if (perms.role !== "admin" && perms.scope === "own") {
       const configs = (await storage.get(CONFIG_REGISTRY_KEY)) || [];
-      const ownerOf = new Map(configs.map((c) => [String(c.id), c.createdBy || null]));
+      const rowOf = new Map(configs.map((c) => [String(c.id), c]));
       logs = logs.filter((l) => {
-        const owner = ownerOf.get(String(l.ruleId));
-        // Entries for deleted rules keep no owner to check — visible, like
-        // unowned rows. Owned rules' entries are visible to their owner only.
-        return owner === undefined || owner === null || owner === context.accountId;
+        const row = rowOf.get(String(l.ruleId));
+        // Entries for deleted rules keep no row to check — visible, like unowned rows.
+        // Everything else goes through THE visibility predicate (F-432), so a rule an
+        // admin re-armed does not silently take its whole history out of the author's
+        // Logs tab while it is still listed in their Rules tab.
+        if (row === undefined) return true;
+        return canSeeRule(row, { accountId: context.accountId, role: perms.role, scope: perms.scope });
       });
     }
     return { success: true, logs };
@@ -2024,6 +2083,12 @@ resolver.define("registerConfig", async ({ payload, context }) => {
         premadeRuleType: isPremade ? premadeRuleType : undefined,
         ...(isInstanced ? { instanced: true } : {}),
         ...instanceIdPatch,
+        // F-432 — the FIRST author, written once and never moved. A validator/condition
+        // row does not re-stamp `createdBy` on save (only post-functions do, via
+        // `stampArming`), but a row that predates this field, or one whose owner an admin
+        // takes over elsewhere, still needs the author recorded: `canSeeRule` reads it, so
+        // the author keeps seeing their rule and its logs. No permission is read from it.
+        firstCreatedBy: configs[existingIndex].firstCreatedBy || configs[existingIndex].createdBy || null,
         updatedAt: now,
       };
     } else {
@@ -2038,6 +2103,8 @@ resolver.define("registerConfig", async ({ payload, context }) => {
         ...(isInstanced ? { instanced: true } : {}),
         ...instanceIdPatch,
         createdBy: context.accountId || null,
+        // Set ONCE, at creation, and never moved (F-432). See the update branch above.
+        firstCreatedBy: context.accountId || null,
         createdAt: now,
         updatedAt: now,
       });
@@ -10715,7 +10782,7 @@ resolver.define("getScheduledJob", async ({ payload, context }) => {
   });
 });
 resolver.define("saveScheduledJob", async ({ payload, context }) => {
-  const input = payload?.job;
+  let input = payload?.job;
   if (!input || typeof input !== "object") return { success: false, error: "job is required" };
   const existing = input.id ? await jobsMod.getJob(input.id) : null;
   // F-252/F-260/F-261 — see saveListener: same gate, same reasons.
@@ -10733,9 +10800,97 @@ resolver.define("saveScheduledJob", async ({ payload, context }) => {
   // action (a PR verdict) is gated on, and it comes from the ROSTER — never from the
   // payload, or the flag would be self-granted by whoever is saving.
   const gate = buildAgentGateContext({ ...facts, triggerSource: null, savedByRole });
+
+  /*
+   * THE VIRTUAL ADMINISTRATOR BRANCH (1.5 commit 5b). Two things happen here that
+   * `normalizeJob` cannot do, and one thing that deliberately does not.
+   *
+   * 1. THE LIVE CATALOGUE. `normalizeVa` validates project keys, service desks,
+   *    queues, time zones and skill ids against a `ctx` — and with no ctx it checks
+   *    SHAPE ONLY. `scheduled-jobs.js` calls it with no ctx because it is a storage
+   *    module with no business reaching Jira. So the resolver, which can, builds the
+   *    catalogue and runs `normalizeVa` against it HERE, first. Without this an admin
+   *    could save an agent scoped to a project that does not exist and the refusal
+   *    would arrive as a dead sweep five minutes later instead of on the form.
+   *
+   * 2. THE SHADOW RE-ARM (§3.11). A configuration change re-arms shadow mode: the
+   *    agent somebody watched for three ticks is not the agent they have after
+   *    changing its voice, its scope or its powers, and the watching period exists to
+   *    catch exactly the surprises a change introduces. `normalizeVa`'s own docblock
+   *    says this belongs to a caller that knows the tick index, and this is it.
+   *    `rearmShadow` is a FLOOR (`max(current, index + shadowTicks)`), so an edit can
+   *    only ever lengthen a watch, and `shadowTicks: 0` still means no shadow.
+   *
+   * 3. WHAT DOES NOT HAPPEN: a pause. `pauseVa`/`resumeVa` write `status.paused`
+   *    through `va-admin.js` and do NOT come through here, precisely so that pausing
+   *    an agent does not re-arm three ticks of shadow on every resume.
+   *
+   * `saveJob` then normalises AGAIN, without the catalogue. That is deliberate and it
+   * is safe: `normalizeVa` is pure and idempotent, and the second pass re-clamps every
+   * number against the same ceilings. What it cannot do is UNDO the catalogue check —
+   * a key that passed here is a key that exists. Running the strict pass first and the
+   * storage module's pass second is what lets the catalogue live in the resolver
+   * without `scheduled-jobs.js` growing a Jira dependency.
+   */
+  let vaRefused = [];
+  if (input.mode === "va") {
+    const built = await vaAdmin.catalog({}, {});
+    let normalized = null;
+    try {
+      normalized = normalizeVa(input.va, {
+        ...catalogToCtx(built.ok ? built.catalog : {}),
+        existing: existing && existing.va,
+        savedByRole,
+      });
+    } catch (e) {
+      // A STRUCTURAL refusal (no persona name, a site-wide write scope, an unusable
+      // cadence). It surfaces as a refusal the form can render beside the field, not
+      // as a 500 — `refused[]` is the shape every other save path in this app uses.
+      return {
+        success: false,
+        error: String((e && e.message) || e),
+        refused: [{ field: "va", reason: String((e && e.message) || e).slice(0, 300) }],
+      };
+    }
+    vaRefused = Array.isArray(normalized.refused) ? normalized.refused : [];
+    const va = vaAdmin.rearmShadow(normalized.va, vaAdmin.tickIndexFor(existing, Date.now()));
+    /*
+     * THE CADENCE *IS* THE SCHEDULE, so the job's `schedule` and `name` are DERIVED
+     * from the VA record rather than asked for twice.
+     *
+     * `normalizeVa` has already resolved `cadence.preset` into a validated cron in the
+     * agent's own time zone (`cron.js` is the one home for that maths). Letting the
+     * caller send a second `schedule` alongside it would create two answers to "how
+     * often does this agent run" — and the one the scheduler reads is not the one the
+     * wizard showed. So for a VA the derived pair WINS; an explicitly supplied
+     * schedule is ignored, which is why `VaWizard`/`VaEditor` do not send one.
+     *
+     * `name` falls back to the persona name for the same reason: the agent's name is
+     * printed in every message it writes, and a job list that called it something else
+     * would be a second name for one thing.
+     */
+    input = {
+      ...input,
+      va,
+      name: String(input.name || "").trim() || va.persona.name,
+      schedule: { cron: va.cadence.cron, timeZone: va.cadence.timeZone },
+    };
+    // A catalogue source that FAILED is reported alongside the save rather than
+    // swallowed: `normalizeVa` treats an absent list as "shape only", so a save that
+    // silently skipped the project check must say it skipped it.
+    for (const [name, src] of Object.entries((built.ok && built.sources) || {})) {
+      if (src && src.ok === false) {
+        vaRefused = [...vaRefused, { field: `catalogue.${name}`, reason: `This site's ${name} could not be read, so that part of the configuration was accepted without being checked against live data.` }];
+      }
+    }
+  }
+
   return okOr(async () => ({
     success: true,
     job: await jobsMod.saveJob(input, { accountId: context.accountId, gate, savedByRole }),
+    // Clamps and drops the save APPLIED. A field silently narrowed is a field the
+    // operator still believes they set.
+    ...(vaRefused.length ? { refused: vaRefused } : {}),
   }));
 });
 resolver.define("deleteScheduledJob", async ({ payload, context }) => {
@@ -10774,6 +10929,161 @@ resolver.define("runScheduledJobNow", async ({ payload, context }) => {
 resolver.define("previewSchedule", async ({ payload, context }) => {
   if (!(await requireRole(context.accountId, "viewer"))) return noPerm("preview schedules", "viewer");
   return okOr(async () => ({ success: true, ...jobsMod.previewSchedule({ cron: payload?.cron, timeZone: payload?.timeZone, count: payload?.count || 5 }) }));
+});
+
+
+/* =========================================================================
+ * VIRTUAL ADMINISTRATOR — resolvers (1.5 commit 5b)
+ *
+ * A PERMISSION SKIN AND NOTHING ELSE. Every one of these wraps exactly ONE
+ * function in src/va-admin.js, which is the one home for the behaviour and is
+ * also what the REST resource (commit 8) calls. Nothing here reads the ledger,
+ * builds a catalogue, decides what a draft means or shapes an answer — if you
+ * find yourself wanting to, the edit belongs in va-admin.js so that both doors
+ * get it. The `accountId` handed down is for ATTRIBUTION (the receipt line, the
+ * wizard's row key); the authorization is the line above it, here.
+ *
+ * THE FLOOR, and why it is where it is:
+ *  · ADMIN for everything that CHANGES an agent or reads what it is about to SAY
+ *    to a customer. A staged draft is an unsent message to a real person, the
+ *    memory is what the agent believes, the effects are what it did to Jira, and
+ *    pause / run-now move a live automation. None of that is an editor's to
+ *    touch, and the FRAME's §8 attack list starts at exactly these surfaces.
+ *  · EDITOR for `listVaAgents`, `getVaStatus` and `vaCatalog` — the overview an
+ *    editor needs to know an agent exists, whether it is healthy and what this
+ *    site contains. They carry NO secret: no credential, no rule code, no
+ *    instructions, no draft body. The allow-lists that make that true are in
+ *    `listAgents` and `buildCatalogue`, not here.
+ *
+ * LAW 3 for this whole group: FAIL CLOSED. A storage or Jira fault becomes
+ * `{success:false, error}` and the operation does not happen. None of these sits
+ * in a Jira transition, so the app's fail-OPEN validator contract is untouched.
+ *
+ * THE ANSWER SHAPE is `va-client.js`'s, and va-admin.js already speaks it — these
+ * wrappers only translate `{ok}` into `{success}` and a `reason` into the one
+ * sentence `refusalSentence` owns. They do NOT rename or reshape a field; a drift
+ * between the tab and the backend is meant to be one edit in one place.
+ * ========================================================================= */
+
+/**
+ * `{ok, ...}` from va-admin → `{success, ...}` for a resolver, with ONE sentence.
+ *
+ * `reason` rides along on a refusal so a caller can branch on the machine-readable
+ * half (the tab disables a button on `not_in_shadow`; the REST door maps it to a
+ * status code) without parsing English. `okOr` still wraps the call, so a THROW is
+ * still a refusal rather than a 500.
+ */
+const vaAnswer = (r) => {
+  if (r && r.ok === true) {
+    const { ok, ...rest } = r;
+    return { success: true, ...rest };
+  }
+  const { ok, reason, ...rest } = (r && typeof r === "object") ? r : {};
+  return { success: false, error: vaAdmin.refusalSentence(r), reason: reason || null, ...rest };
+};
+
+/* ── the setup interview (admin: it CREATES an agent) ───────────────────────── */
+
+// The turn is handed back VERBATIM under `turn` (VaWizard reads `turn.state.answers`
+// to pre-fill the step on screen). The state is never accepted back FROM the payload:
+// this resolver always resumes from `va_wizard:{accountId}`.
+resolver.define("vaWizardStep", async ({ payload, context }) => {
+  if (!(await requireAdmin(context.accountId))) return noPerm("set up a Virtual Administrator", "admin");
+  return okOr(async () => vaAnswer(await vaAdmin.wizardStep({ accountId: context.accountId, input: payload?.input })));
+});
+resolver.define("vaWizardReset", async ({ context }) => {
+  if (!(await requireAdmin(context.accountId))) return noPerm("set up a Virtual Administrator", "admin");
+  return okOr(async () => vaAnswer(await vaAdmin.wizardReset({ accountId: context.accountId })));
+});
+
+// EDITOR FLOOR. Project keys and names, desk and queue ids and names, IANA zone
+// names, skill ids and names — the same catalogue the wizard validates against, for
+// the classic form, which needs all of it at once instead of one step's slice.
+resolver.define("vaCatalog", async ({ context }) => {
+  if (!(await requireRole(context.accountId, "editor"))) return noPerm("configure a Virtual Administrator", "editor");
+  return okOr(async () => vaAnswer(await vaAdmin.catalog({})));
+});
+
+/* ── the overview (editor floor, no secrets) ────────────────────────────────── */
+
+resolver.define("listVaAgents", async ({ context }) => {
+  if (!(await requireRole(context.accountId, "editor"))) return noPerm("view Virtual Administrators", "editor");
+  return okOr(async () => vaAnswer(await vaAdmin.listAgents({})));
+});
+resolver.define("getVaStatus", async ({ payload, context }) => {
+  if (!(await requireRole(context.accountId, "editor"))) return noPerm("view Virtual Administrators", "editor");
+  return okOr(async () => vaAnswer(await vaAdmin.status({ jobId: payload?.jobId })));
+});
+
+/* ── what it is about to say, and what it did (ADMIN) ───────────────────────── */
+
+// A staged draft is an unsent message to a real person and is returned IN FULL, which
+// is the whole point of shadow mode — and the reason this is not an editor read.
+resolver.define("listVaDrafts", async ({ payload, context }) => {
+  if (!(await requireAdmin(context.accountId))) return noPerm("review a Virtual Administrator's staged replies", "admin");
+  return okOr(async () => vaAnswer(await vaAdmin.drafts({ jobId: payload?.jobId })));
+});
+resolver.define("listVaEffects", async ({ payload, context }) => {
+  if (!(await requireAdmin(context.accountId))) return noPerm("review what a Virtual Administrator changed", "admin");
+  return okOr(async () => vaAnswer(await vaAdmin.effects({ jobId: payload?.jobId })));
+});
+
+// NEITHER OF THESE POSTS. They record a human verdict on the ledger row; the post
+// phase is the only thing that delivers a draft, and it does so behind eleven gates.
+// `stagedAt` rides through as the concurrency check — see `decide` in va-admin.js.
+resolver.define("approveVaDraft", async ({ payload, context }) => {
+  if (!(await requireAdmin(context.accountId))) return noPerm("approve a Virtual Administrator's reply", "admin");
+  return okOr(async () => vaAnswer(await vaAdmin.approveDraft({
+    jobId: payload?.jobId, itemKey: payload?.itemKey, stagedAt: payload?.stagedAt,
+    reason: payload?.reason, accountId: context.accountId,
+  })));
+});
+resolver.define("rejectVaDraft", async ({ payload, context }) => {
+  if (!(await requireAdmin(context.accountId))) return noPerm("reject a Virtual Administrator's reply", "admin");
+  return okOr(async () => vaAnswer(await vaAdmin.rejectDraft({
+    jobId: payload?.jobId, itemKey: payload?.itemKey, stagedAt: payload?.stagedAt,
+    reason: payload?.reason, accountId: context.accountId,
+  })));
+});
+
+/* ── the agent's memory (ADMIN: it is what the agent believes) ──────────────── */
+
+resolver.define("getVaMemory", async ({ payload, context }) => {
+  if (!(await requireAdmin(context.accountId))) return noPerm("read a Virtual Administrator's memory", "admin");
+  return okOr(async () => vaAnswer(await vaAdmin.memory({ jobId: payload?.jobId })));
+});
+// The clamp and the defang are `writeMemory`'s, at write time (F-423), not this
+// resolver's — a second clamp here would be a second authority on the cap.
+resolver.define("saveVaMemory", async ({ payload, context }) => {
+  if (!(await requireAdmin(context.accountId))) return noPerm("edit a Virtual Administrator's memory", "admin");
+  return okOr(async () => vaAnswer(await vaAdmin.saveMemory({
+    jobId: payload?.jobId, memory: payload?.memory, constraints: payload?.constraints,
+  })));
+});
+
+/* ── the brakes and the manual runs (ADMIN) ─────────────────────────────────── */
+
+// `pause` writes `status.paused` and a receipt. It does NOT come through
+// saveScheduledJob, so pausing never re-arms shadow mode.
+resolver.define("pauseVa", async ({ payload, context }) => {
+  if (!(await requireAdmin(context.accountId))) return noPerm("pause a Virtual Administrator", "admin");
+  return okOr(async () => vaAnswer(await vaAdmin.pause({ jobId: payload?.jobId, accountId: context.accountId, reason: payload?.reason })));
+});
+resolver.define("resumeVa", async ({ payload, context }) => {
+  if (!(await requireAdmin(context.accountId))) return noPerm("resume a Virtual Administrator", "admin");
+  return okOr(async () => vaAnswer(await vaAdmin.resume({ jobId: payload?.jobId, accountId: context.accountId, reason: payload?.reason })));
+});
+
+// A shortcut through the CLOCK, never through a gate: the same task body, the same
+// queue, the same bucketed claim the planner takes. `taskId` is polled through
+// getAsyncTaskResult like every other queued run.
+resolver.define("runVaTickNow", async ({ payload, context }) => {
+  if (!(await requireAdmin(context.accountId))) return noPerm("run a Virtual Administrator", "admin");
+  return okOr(async () => vaAnswer(await vaAdmin.runTickNow({ jobId: payload?.jobId, accountId: context.accountId })));
+});
+resolver.define("runVaPostNow", async ({ payload, context }) => {
+  if (!(await requireAdmin(context.accountId))) return noPerm("run a Virtual Administrator", "admin");
+  return okOr(async () => vaAnswer(await vaAdmin.runPostNow({ jobId: payload?.jobId, accountId: context.accountId })));
 });
 
 // API tokens for the Rules REST API (admin only; plaintext shown once).
@@ -19252,9 +19562,6 @@ const CONFLUENCE_PAGE_PF_TYPE = "postfunction-confluence-page";
 const CONFLUENCE_COMMENT_PF_TYPE = "postfunction-confluence-comment";
 const isConfluencePagePfType = (t) => String(t || "") === CONFLUENCE_PAGE_PF_TYPE;
 const isConfluenceCommentPfType = (t) => String(t || "") === CONFLUENCE_COMMENT_PF_TYPE;
-
-/** Default page title when the rule names none. Same placeholders as the template. */
-const CONFLUENCE_DEFAULT_TITLE_TEMPLATE = "{issueKey} — {summary}";
 
 /** One step row, in the shape every other post-function's stepResults[] uses. */
 const confluenceStep = (index, name, status, reason, recommendation) =>

@@ -3080,6 +3080,22 @@ const injectStyles = () => {
     html[data-color-mode="dark"] .pr-seg-coder .pr-seg-btn.active { background: #f59e0b; color: #1c1207; }
     html[data-color-mode="dark"] .pr-coder-count-full { color: #f59e0b; }
 
+    /* CONFLUENCE param group (F-447) - the same visual language as the git group above:
+       solid fills, white text on the chip, no rail and no tint. The hue is CONFLUENCE
+       (#1d4ed8; #3b82f6 in dark), which is also the hue config-view gives the
+       the confluence_unavailable execution-log banner, so one feature reads as one colour.
+       FOUR HOMES, kept equal by css-parity.test.mjs on the .pr-conf token. */
+    .pr-conf-tpl { min-height: 72px; resize: vertical; font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace; font-size: 12.5px; line-height: 1.5; }
+    .pr-conf-ph { display: inline-block; margin-right: 6px; padding: 2px 7px; border-radius: 4px; background: #1d4ed8; color: #fff; font-size: 11px; font-weight: 700; }
+    .pr-conf-example { display: flex; flex-direction: column; gap: 3px; margin-top: 8px; padding: 9px 12px; border-radius: var(--r-md, 8px); background: #1d4ed8; color: #fff; }
+    .pr-conf-example-label { font-size: 11px; font-weight: 800; letter-spacing: 0.02em; text-transform: uppercase; }
+    .pr-conf-example-text { font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace; font-size: 12px; font-weight: 600; line-height: 1.45; word-break: break-word; }
+    .pr-conf-misconfig { font-weight: 700; color: var(--text-primary); }
+    .pr-seg-conf .pr-seg-btn.active { background: #1d4ed8; }
+    html[data-color-mode="dark"] .pr-conf-ph { background: #3b82f6; }
+    html[data-color-mode="dark"] .pr-conf-example { background: #3b82f6; }
+    html[data-color-mode="dark"] .pr-seg-conf .pr-seg-btn.active { background: #3b82f6; }
+
     /* ── F-398 — THE PREMADE POST-FUNCTION (Coder) ARMS ──────────────────────────────
        Two blocks, both SOLID: the capability verdict and the save gate. No left rail, no
        low-alpha tint, white text on the saturated fill. The OFF arm carries the AGENTS hue

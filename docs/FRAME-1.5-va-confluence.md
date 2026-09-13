@@ -403,34 +403,42 @@ account exists on this site, so the reporter is an Atlassian-account user; `publ
 portal's own field and is what the audience gate reads, but "a customer saw it in the portal
 UI" was not observed.
 
-**P2 — NOT SETTLED, and the probe found a defect instead.** `probeConfluenceInstalled` answers
-`installed=false, status=null, code=network, bodyKeys=[]` on **both** dev and staging — but
-`forge install list` shows the app installed on **Jira + Confluence on wolfaenpak in both
-environments**, and the older route-based lever (`action:"probeConfluence"`,
-`test-hook.js:243`, ``route`/wiki/api/v2/spaces?limit=1` ``) returns **200 with a real spaces
-body on both**. The difference is the transport: `src/confluence-client.js:241` passes a
-**plain string** path to `api.asApp().requestConfluence(path, init)`, and
-`@forge/api` wraps every product request in `requireSafeUrl()`
-(`node_modules/@forge/api/out/api/fetch.js:138-141`), which **throws** on anything that is not a
-`route` object ("You must create your route using the 'route' export from '@forge/api'"). The
-client's header comment justifies the plain string as "the existing plain-path call idiom in
-src/coder-workspace.js and src/index.js" — those call sites pass ``route`…` `` values through a
-variable, not strings. So no Confluence call this client makes can ever leave the app, every
-answer is `code:"network"`, and the not-installed SHAPE is still uncaptured (it also cannot be
-captured on this site while the app IS installed on Confluence there). Filed as **F-441**;
-the fail-open direction of `statusToCode` is unaffected and still correct.
+**P2 — RE-RUN 2026-09-13 after F-441 (`route`, commit c15bac5): PASS on the reach, and the
+not-installed SHAPE is still uncaptured.** `probeConfluenceInstalled` now answers
+`installed=true, status=200, code=null, bodyKeys=[results,_links], errorClass=null` on
+**dev AND staging** (probe path `/wiki/api/v2/spaces?limit=1`, the same path the old
+route-based lever used). The `code:"network"` that the first run reported on both
+environments is gone, which is the A/B that proves the string-path throw was ours and that
+c15bac5 removed it: same site, same path, same lever, `network` before the fix and a real
+200 spaces body after it. The ONE Confluence client therefore reaches Confluence in the
+resolver/webtrigger runtime — F-441 is closed by evidence, not only by inspection. What is
+STILL open is the original P2 question, and it is unanswerable here: the app IS installed on
+Confluence on wolfaenpak in both environments (`forge install list`), so this site can never
+produce a not-installed answer. The fallback stated in the table stands unchanged and is the
+correct one — anything that is not a recognised auth/not-found/2xx maps to
+`confluence_unavailable` with the install link, failing OPEN — and the shape gets refined the
+first time a site without the Confluence install is available.
 
-**P3 — NOT VERIFIED, blocked by the same defect.** `probeConfluenceFromConsumer` on staging ran
-on both queues and the consumer executed and recorded within ~1 s each:
-standard → `{status:null, code:"network", installed:false, queue:"standard"}`,
-long → `{status:null, code:"network", installed:false, queue:"long"}`. `forge logs -e staging`
-shows `Async handler: executing probe-confluence (harnessprobe-…)` → `[probe-confluence]
-confluence from the standard/long consumer → harness_probe:confluence:…` → `completed`, with no
-exception. What IS proven: the probe task type, the queue routing, the 10-minute row and the
-read path all work from both consumers. What is NOT: whether `requestConfluence` itself is
-permitted from a consumer — every arm died in our own transport before reaching the platform.
-Re-run P3 after F-441 is cut; until then the fallback (Confluence effects inline in the
-post-function) must not be chosen on this evidence.
+**P3 — SETTLED, PASS. `requestConfluence` WORKS FROM A CONSUMER.** Re-run on **staging and
+dev**, both queues: `probeConfluenceFromConsumer` rows read back through `readHarnessProbe`
+are `{installed:true, code:null, errorClass:null, status:null, queue:"standard"}` and
+`{… queue:"long"}` on staging (ids `pmtzps87m`, `pmtzpsd6z`) and the same on dev
+(`pmtzpsy2a`, `pmtzpt320`), each written within ~1 s of enqueue. `installed:true` is the
+200 signal: `probeInstalled` returns it only after `request()` resolved, and `request()`
+THROWS on every non-2xx (`statusToCode` → `fail(code, …)`), so the value cannot be reached
+without a 2xx from the platform. The row's `status` field is `null` by construction, not by
+failure — `probeInstalled`'s success return carries `{installed, code, message}` and no
+status; the raw `200` for the identical client and path is captured by the P2 arm, whose
+hook instruments the transport. `forge logs -e staging` and `-e development` show, for every
+id, `Async handler: executing probe-confluence (harnessprobe-…)` → `[probe-confluence]
+confluence from the standard/long consumer → harness_probe:confluence:…` → `completed`,
+with no exception, no AI-recovery path and no throttling. The negative is demonstrable on
+this same row shape: the pre-fix run produced `{status:null, code:"network",
+installed:false}` from the identical lever, so the probe is able to report a failure and is
+not merely defaulting to success. **The P3 fallback in the table — Confluence effects run
+inline in the post-function and the VA's Confluence powers hidden — is NO LONGER NEEDED.**
+A VA item and a queued Confluence post-function may make Confluence calls from the consumer
+they run in, on both the standard and the 900 s long queue.
 
 **P4 — SETTLED, PASS.** `probeServicedeskFromConsumer` on dev, long queue:
 `statusDesk: 200`, `statusQueue: 200`, keys
@@ -444,7 +452,10 @@ stays a design preference, not a necessity.
 **Sequencing rule (§3.16), restated:** no code is built on a PROBE row before its verdict.
 P1 blocks only the `replyPublic` audience arm; P2/P3 block only the Confluence half's error
 semantics; P4 blocks only the queue-intake arm. **Commits 1–3 and 5 depend on none of them**
-and should be cut first.
+and should be cut first. **As of the 2026-09-13 re-run all four probes are answered** —
+P1 and P4 settled on the first pass, P2's reach and P3 settled on the second after F-441 —
+so no 1.5 commit is gated on a probe any longer; the only residual is P2's not-installed
+error TEXT, which is a refinement of an already fail-open mapping and not a blocker.
 
 ---
 

@@ -117,6 +117,30 @@ eq(buildPageExistsCql("DO\"CS", "x", {}).ok && buildPageExistsCql("DO\"CS", "x",
 ok(buildPageExistsCql("DOCS", "a ~ {issueKey} OR b ~ {issueKey}", { issueKey: "X-1" }).cql.endsWith(')'),
   "an OR in the template cannot escape the space clause");
 
+/* -- F-450: a brace in a VALUE is data, not a broken template ----------------
+   The placeholder scan runs on the template BEFORE substitution. Scanning the
+   rendered query blamed the admin for `{code}` typed by a reporter and blocked the
+   transition in both strict columns. */
+{
+  const r = renderCqlTemplate("title ~ {summary}", { summary: "Fix {code} rendering" });
+  ok(r.ok, "F-450: a summary containing {code} still RENDERS - the braces are data");
+  eq(r.cql, 'title ~ "Fix {code} rendering"', "...and reach the query as literal braces inside the quoted literal");
+}
+{
+  const r = renderCqlTemplate("text ~ {field:customfield_10010}", { fields: { customfield_10010: '{"json":1}' } });
+  ok(r.ok, "F-450: a brace-bearing FIELD value renders too");
+  eq(r.cql, 'text ~ "{\\"json\\":1}"', "...quoted once, by the one escaper");
+}
+{
+  const r = renderCqlTemplate("text ~ {nope} AND title ~ {summary}", { summary: "Fix {code} rendering" });
+  eq(r.ok, false, "F-450: an unknown placeholder in the TEMPLATE is still misconfiguration");
+  ok(/\{nope\}/.test(r.reason), "...and the reason names the admin's placeholder, not the value's braces");
+}
+{
+  const b = buildPageExistsCql("DOCS", "title ~ {summary}", { summary: "a } b { c" });
+  ok(b.ok, "F-450: unmatched braces in a value do not break the builder either");
+}
+
 /* ══════════ 2. THE VALIDATOR + THE F-416 DEGRADATION TABLE ══════════════════ */
 
 const CFG = {
@@ -171,6 +195,28 @@ const runValidator = async (cfg, deps = {}) => {
   eq(props.length, 1, "…and writes the advisory property once");
   eq(props[0].propKey, CONFLUENCE_PROPERTY_KEY, "…under cognirunner.confluence");
   eq(props[0].value.pageId, "111", "…naming the page it actually found");
+}
+
+/* -- 2a-bis. F-450 end to end: braces in the summary must not become a misconfig -- */
+for (const strict of [false, true]) {
+  const m = mockClient({ results: [{ id: "222", title: "Design", url: "/wiki/y" }] });
+  const out = await runValidator(
+    { strict, cqlTemplate: "title ~ {summary}" },
+    { confluenceClient: m.client, readField: async (_k, f) => (f === "summary" ? "Fix {code} rendering" : "") },
+  );
+  eq(out.result, true, `F-450: a summary with {code} ALLOWS via the normal search (strict:${strict})`);
+  eq(m.seen.cql, 'space = "DOCS" AND type = page AND (title ~ "Fix {code} rendering")',
+    `F-450: ...and the braces ride the query as literal text (strict:${strict})`);
+}
+{
+  const m = mockClient({ results: [{ id: "333", title: "Design", url: "/wiki/z" }] });
+  const out = await runValidator(
+    { strict: false, cqlTemplate: "title ~ {nope}" },
+    { confluenceClient: m.client, readField: async () => "" },
+  );
+  eq(out.result, false, "F-450: an unknown placeholder in the admin's template still BLOCKS as misconfiguration");
+  eq(m.seen.cql, null, "...without ever calling Confluence");
+  eq(out.banner, undefined, "...and misconfiguration carries no unavailable banner");
 }
 
 /* ── 2b. a determinate negative BLOCKS in both strict columns ── */

@@ -298,9 +298,19 @@ n++;
   const jsrc = readFileSync(new URL("../../src/scheduled-jobs.js", import.meta.url), "utf8");
   ok(/gateFacts = null, executors = \{\}/.test(lsrc) && /gateFacts = null, executors = \{\}/.test(jsrc),
     "both run sites take gateFacts + executors, defaulting to the restrictive context");
-  ok(/gateFacts\s*\?\s*buildAgentGateContext\(\{ \.\.\.gateFacts, triggerSource: "external", savedByRole: listener\.savedByRole \}\)\s*:\s*undefined/.test(lsrc),
+  // F-448 — assert the PROPERTIES the gate context carries, not their position in the
+  // call literal. A key added after `savedByRole` must not fail a test about what is
+  // passed, and a wrong value in the right slot must still fail.
+  const gateArgs = (src) => (src.match(/buildAgentGateContext\(\{([^}]*)\}\)/) || [, null])[1];
+  const lArgs = gateArgs(lsrc), jArgs = gateArgs(jsrc);
+  ok(lArgs !== null && jArgs !== null, "both run sites build a gate context from an object literal");
+  ok(/gateFacts\s*\?\s*buildAgentGateContext\([\s\S]*?\)\s*:\s*undefined/.test(lsrc),
+    "a LISTENER builds a context only when it was given gate facts (no facts → undefined)");
+  ok(!!lArgs && /\.\.\.gateFacts\b/.test(lArgs) && /\btriggerSource:\s*"external"/.test(lArgs)
+    && /\bsavedByRole:\s*listener\.savedByRole\b/.test(lArgs),
     "a LISTENER run is external and reads savedByRole from the rule row");
-  ok(/buildAgentGateContext\(\{ \.\.\.gateFacts, triggerSource: null, savedByRole: job\.savedByRole \}\)/.test(jsrc),
+  ok(!!jArgs && /\.\.\.gateFacts\b/.test(jArgs) && /\btriggerSource:\s*null\b/.test(jArgs)
+    && /\bsavedByRole:\s*job\.savedByRole\b/.test(jArgs),
     "a SCHEDULED JOB is not external (the app's own clock started it)");
   ok(/gate: agentGate, executors/.test(lsrc) && /gate: agentGate, executors/.test(jsrc), "…and both hand the context to runAgentTask");
   // F-302 seam — a TEST run must gate exactly like the live delivery, or "Test with an

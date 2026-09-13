@@ -119,23 +119,102 @@ export const reduceResults = (rows) => (Array.isArray(rows) ? rows : [])
   })
   .filter((r) => r.title || r.link);
 
+/** The ceiling on the unstructured `note` fallback, in characters. Its own constant
+ * rather than SNIPPET_MAX_CHARS: a note is a whole reply, not one row's snippet, and the
+ * two ceilings move for different reasons. */
+export const NOTE_MAX_CHARS = 1200;
+
+/** clampSnippet's ceiling, made a parameter. Same whitespace collapse and ellipsis. */
+export const clampTo = (v, max) => {
+  const s = String(v == null ? "" : v).replace(/\s+/g, " ").trim();
+  return s.length > max ? `${s.slice(0, max)}…` : s;
+};
+
+/** The balanced-scan half of the extractor below. Separate so it stays readable, and so
+ * the fenced case does not pay for it when the fence already answered. */
+const firstBalanced = (body) => {
+  const a = body.indexOf("{");
+  const b = body.indexOf("[");
+  const start = a < 0 ? b : (b < 0 ? a : Math.min(a, b));
+  if (start < 0) return null;
+  const open = body[start];
+  const close = open === "{" ? "}" : "]";
+  let depth = 0, inStr = false, esc = false;
+  for (let i = start; i < body.length; i++) {
+    const ch = body[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === "\\") esc = true;
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') { inStr = true; continue; }
+    if (ch === open) depth++;
+    else if (ch === close) { depth--; if (depth === 0) return body.slice(start, i + 1); }
+  }
+  return null;
+};
+
 /**
- * Pull the result ROWS out of whatever envelope the hosted MCP returned. The bridge
- * hands back a STRING (`callBridgeTool`), which is usually JSON but is plain text on a
- * niche query. Never throws: an unparsable body becomes `{ rows: [], raw }` and the
- * caller reports honestly that there was nothing structured to read.
+ * FIND THE JSON INSIDE WHATEVER THE BRIDGE SAID (F-444).
+ *
+ * The hosted `get-web-search-summaries` does NOT answer with a JSON body: it answers with
+ * a SENTENCE ("Search summaries for "…" with 5 results:") wrapping a ```json fenced block.
+ * The old parser accepted only a body that STARTS with `{`/`[`, so on this MCP it found no
+ * rows on EVERY successful search — the 5-row cap, the field allow-list, the 300-char
+ * snippet cut and the per-row defang were dead code, and the engine's whole payload reached
+ * the model through the `note` instead.
+ *
+ * ONE extractor, two shapes, in this order:
+ *   1. the first fenced block (```json … ``` or a bare ``` … ```), and
+ *   2. otherwise the first BALANCED top-level `{…}` or `[…]` in the text.
+ * Balance is counted with string- and escape-awareness, so a brace inside a title or a URL
+ * cannot end the scan early. Returns null when there is nothing that even LOOKS like JSON;
+ * it never throws and never parses — parsing is the caller's job.
+ */
+export const extractJsonBlock = (text) => {
+  const body = typeof text === "string" ? text : "";
+  if (!body) return null;
+  const fenced = /```(?:json|JSON)?\s*\n?([\s\S]*?)```/.exec(body);
+  const candidates = [];
+  if (fenced && fenced[1] && fenced[1].trim()) candidates.push(fenced[1].trim());
+  const balanced = firstBalanced(body);
+  if (balanced) candidates.push(balanced);
+  for (const c of candidates) if (c.startsWith("{") || c.startsWith("[")) return c;
+  return null;
+};
+
+/**
+ * Pull the result ROWS out of whatever envelope the hosted MCP returned. The bridge hands
+ * back a STRING (`callBridgeTool`), which may be a JSON body, PROSE WRAPPING a fenced JSON
+ * block (the hosted web-search MCP — F-444), or plain text on a niche query.
+ *
+ * Never throws: an unreadable body becomes `{ rows: [], raw, parsed: false }`, and
+ * `parsed` is what the caller reports so that "the engine answered something we could not
+ * read" is never dressed up as "the engine found nothing".
  */
 export const parseSearchPayload = (text) => {
   const body = typeof text === "string" ? text : "";
   const trimmed = body.trim();
-  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return { rows: [], raw: trimmed, envelope: null };
+  if (!trimmed) return { rows: [], raw: "", envelope: null, parsed: false };
+  const looksJson = trimmed.startsWith("{") || trimmed.startsWith("[");
+  const candidate = looksJson ? trimmed : extractJsonBlock(trimmed);
+  if (!candidate) return { rows: [], raw: trimmed, envelope: null, parsed: false };
   let parsed;
-  try { parsed = JSON.parse(trimmed); } catch { return { rows: [], raw: trimmed, envelope: null }; }
-  if (Array.isArray(parsed)) return { rows: parsed, raw: "", envelope: null };
+  try { parsed = JSON.parse(candidate); }
+  catch {
+    // A body that STARTED like JSON but did not parse may still carry a good fenced or
+    // balanced block further down; a block we already extracted has nowhere else to look.
+    const second = looksJson ? extractJsonBlock(trimmed) : null;
+    if (!second || second === candidate) return { rows: [], raw: trimmed, envelope: null, parsed: false };
+    try { parsed = JSON.parse(second); } catch { return { rows: [], raw: trimmed, envelope: null, parsed: false }; }
+  }
+  if (Array.isArray(parsed)) return { rows: parsed, raw: "", envelope: null, parsed: true };
+  if (!parsed || typeof parsed !== "object") return { rows: [], raw: trimmed, envelope: null, parsed: false };
   const rows = ["organic", "results", "items", "webPages", "data"]
     .map((k) => parsed[k])
     .find((v) => Array.isArray(v));
-  return { rows: Array.isArray(rows) ? rows : [], raw: rows ? "" : trimmed, envelope: parsed };
+  return { rows: Array.isArray(rows) ? rows : [], raw: rows ? "" : trimmed, envelope: parsed, parsed: true };
 };
 
 /**
@@ -300,16 +379,24 @@ export const createWebSearchExecutor = ({ budget = createSearchBudget(), runBudg
       }
     }
 
-    const { rows, raw, envelope } = parseSearchPayload(text);
+    const { rows, raw, envelope, parsed } = parseSearchPayload(text);
     const results = reduceResults(rows);
     const cache = cacheFieldsOf(envelope);
-    log(`web_search "${query.slice(0, 120)}" → ${results.length} result(s)${cache.cached ? " (cached)" : ""} [turn ${budget.used}/${budget.max}${runBudget ? `, run ${runBudget.used}/${runBudget.max}` : ""}]`);
+    // The log line says whether the body was READ, not only how many rows survived: on the
+    // hosted MCP every successful search used to log "0 result(s)" while the model got the
+    // whole payload through the note (F-444), and an operator could not tell the two apart.
+    log(`web_search "${query.slice(0, 120)}" → ${results.length} result(s)${parsed ? "" : " (unstructured reply — nothing parsed)"}${cache.cached ? " (cached)" : ""} [turn ${budget.used}/${budget.max}${runBudget ? `, run ${runBudget.used}/${runBudget.max}` : ""}]`);
 
     if (!results.length) {
+      // THE FALLBACK, AND IT IS A FALLBACK. `parsed:false` is reported so that a count of 0
+      // is never read as "the engine found nothing" when the truth is "we could not read
+      // what the engine said". The note itself is third-party text: CLAMPED to
+      // NOTE_MAX_CHARS and DEFANGED, so it can neither flood the context window nor carry
+      // a literal fence marker out of its fence.
       return {
-        success: true, query, results: [], count: 0, ...cache, rule: RESULT_RULE,
+        success: true, query, results: [], count: 0, parsed: parsed === true, ...cache, rule: RESULT_RULE,
         note: raw
-          ? `The search returned no structured results. Unstructured reply, fenced and untrusted:\n<<<WEB_RESULTS\n${defangFence(clampSnippet(raw))}\nWEB_RESULTS>>>`
+          ? `The search returned no structured results. Unstructured reply, truncated, fenced and untrusted:\n<<<WEB_RESULTS\n${defangFence(clampTo(raw, NOTE_MAX_CHARS))}\nWEB_RESULTS>>>`
           : "The search returned nothing for this query. That is not evidence the claim is false — say plainly that you could not check.",
       };
     }
@@ -322,6 +409,7 @@ export const createWebSearchExecutor = ({ budget = createSearchBudget(), runBudg
       success: true,
       query,
       count: results.length,
+      parsed: true,
       ...cache,
       rule: RESULT_RULE,
       results: `<<<WEB_RESULTS\n${fenced}\nWEB_RESULTS>>>`,

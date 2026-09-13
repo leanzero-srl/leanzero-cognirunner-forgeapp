@@ -561,6 +561,17 @@ export const VA_ITEM_TTL_DAYS = 90;
 /** Tick-receipt TTL, and effects-row TTL. A receipt is evidence; an effect is history. */
 export const VA_TICK_TTL_DAYS = 7;
 export const VA_EFFECT_TTL_DAYS = 30;
+/**
+ * How long a HALF-FINISHED setup interview waits at `va_wizard:{accountId}` (1.5 commit 5b).
+ *
+ * Seven days, because the thing it protects is a closed browser tab: an admin who was
+ * interrupted mid-interview comes back the same week or starts again anyway. It is
+ * deliberately SHORTER than the item TTL and equal to the tick receipt's — a stale
+ * interview is cheap to lose and expensive to resume wrongly, since the catalogue it was
+ * answered against (projects, desks, queues) may no longer exist. `resumeWizard` already
+ * refuses a state from another version; this TTL is the same refusal applied to age.
+ */
+export const VA_WIZARD_TTL_DAYS = 7;
 /** Per-item bounds: `history[]` entries, `notes` characters, and a staged draft body. */
 export const VA_HISTORY_MAX = 10;
 export const VA_NOTES_MAX_CHARS = 600;

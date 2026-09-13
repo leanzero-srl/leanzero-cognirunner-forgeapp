@@ -87,7 +87,13 @@ export default function SchedulePicker({ value, onChange, disabled = false }) {
           <span className="label">Runs</span>
           <CustomSelect value={preset} onChange={choosePreset} options={SCHEDULE_PRESETS.map((p) => ({ value: p.id, label: p.label }))} ariaLabel="Schedule preset" disabled={disabled} />
         </div>
-        {["hourly"].includes(preset) && (
+        {/* 1.4 commit 13c, UI half. The multi-hour presets honour the MINUTE exactly as
+            `hourly` does (`presetToCron` puts the minute in the first cron field for them
+            too), so they need the same spinner. It
+            was missing, which meant picking "Every 4 hours" silently reset the minute to
+            whatever the last preset's number happened to be with no box to see or change it
+            — the cron was right and the editor could not show it. */}
+        {["hourly", "every2h", "every4h", "every6h", "every12h"].includes(preset) && (
           <div className="schp-field">
             <span className="label">At minute</span>
             <input type="number" min="0" max="59" value={shown("minute", minute)} onChange={(e) => onNum("minute", e.target.value)} onBlur={() => endNum("minute")} disabled={disabled} className="schp-num" />

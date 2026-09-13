@@ -13,13 +13,14 @@ API** (Settings → API access).
 
 | | Listener | Scheduled Job |
 |---|---|---|
-| Trigger | One or more of the **68 Jira product events** Forge exposes (issues, comments, worklogs, attachments, links, projects, versions, components, sprints, boards, users, custom fields, issue types, filters, configuration, JSM request types) | A **cron** expression (5-field, IANA time zone). Presets from every-5-minutes to monthly. Effective granularity is the platform tick: 5 minutes |
-| Current issue | The event's issue (or `null` for non-issue events) | Each issue of an optional **JQL scope** (escalation-style), or `null` when unscoped |
-| Filters | Projects, issue types, JQL (issue must match), changed fields (`updated:issue`), comment regex (comment events), *ignore self-generated events* (loop guard, default on) | Scope JQL + max issues (≤100) |
+| Trigger | One or more of the **68 Jira product events** Forge exposes (issues, comments, worklogs, attachments, links, projects, versions, components, sprints, boards, users, custom fields, issue types, filters, configuration, JSM request types), or of the **9 Git events** the app's own webhook delivers (1.4; see [`GIT-INTEGRATION.md`](GIT-INTEGRATION.md#3-the-nine-git-events)) | A **cron** expression (5-field, IANA time zone). Presets: every 5 / 15 / 30 minutes, hourly, every 2 / 4 / 6 / 12 hours, daily, weekdays, weekly, monthly, custom. Effective granularity is the platform tick: 5 minutes |
+| Current issue | The event's issue (or `null` for non-issue events; a git event carries the issue keys it names as `event.issueKeys`, advisory) | Each issue of an optional **JQL scope** (escalation-style), or `null` when unscoped |
+| Filters | Projects, issue types, JQL (issue must match), changed fields (`updated:issue`), comment regex (comment events), **repositories** (`filters.repos`, required for git events), *ignore self-generated events* (loop guard, default on; for git events the actor is compared with the connection's own login) | Scope JQL + max issues (≤100) |
 | AI gate | **AI condition** — a plain-language yes/no the model evaluates before the run (fails closed) | — |
-| What runs | **Code steps** (describe → AI generates → test → fix; same sandbox `api.*` as static post-functions) **or** an **AI agent** (plain-language instructions + an allow-list of actions) | same |
+| What runs | **Code steps** (describe → AI generates → test → fix; same sandbox `api.*` as static post-functions) **or** an **AI agent** (plain-language instructions + an allow-list of actions, optionally bound to Skills and Memories) **or**, on the PR events, the deterministic **PR-review engine** (`agentlessTaskType: "gitreview"`) | code steps or an AI agent |
 | Budget | 105 s run budget on the 120 s async consumer (the 25 s trigger only matches + queues) | 105 s per run inside the 120 s consumer, shared across scoped issues |
-| Safety | Simulation mode, kill switch, per-issue (30 / 5 min) and per-listener (120 / 5 min) brakes, at-least-once execution claims, `ignoreSelf`, notification suppression | Simulation mode, kill switch, idempotent per-minute claims (duplicate ticks never double-run) |
+| Safety | Simulation mode, kill switch, per-issue (30 / 5 min) and per-listener (120 / 5 min) brakes, at-least-once execution claims, `ignoreSelf`, notification suppression | Simulation mode, kill switch, idempotent per-minute claims (duplicate ticks never double-run), a per-run **write brake** (`maxWritesPerRun`) |
+| Installation-wide | at most **200 AI agent runs** and **300 web searches** per 5-minute window, across every listener and job | same |
 
 ## How a listener runs
 
@@ -80,6 +81,40 @@ untrusted data** and can only act through the ticked actions (`get_issue`, `sear
 api (simulation mode, kill switch, change ledger, transient retries). Rounds are capped
 (1–8, default 5); the summary and every tool call land in the execution log.
 
+Since 1.4 the action catalogue (`src/shared/agent-actions.js`) has two more namespaces,
+and one gate decides which ids a rule may hold:
+
+- **Git** (`create_repo`, `create_branch`, `commit_files`, `open_pull_request`,
+  `get_pull_request`, `add_pr_comment`, `approve_pull_request`, `request_changes`,
+  `get_build_state`, `trigger_deploy`, `get_deploy_status`). Every one needs the `git`
+  capability (the Coder edition on Forge LLM, or any BYOK provider). The writes are
+  `confirm` actions: on a headless surface (a listener, a job, a webhook) they survive only
+  on a rule an **admin** saved. `approve_pull_request`, `request_changes` and
+  `trigger_deploy` are `dangerous`: an externally triggered run never holds one, whatever
+  was saved. A save that names a refused action is refused, with the reason per id
+  (`reason: "action-not-allowed"`, `refused: [{ id, reason }]`); at run time refused ids are
+  dropped so a permission change is not an outage. Every git action acts only on a
+  repository on its connection's allow-list.
+- **Web** (`web_search({ query, recency })`). No capability and no edition: the one gate is
+  the tenant's web-search MCP toggle (**Settings → MCP**), checked at run time, so a rule
+  saved while it was on stays saved when it is turned off and its searches refuse. A query
+  carrying an identifier from this instance (an issue key of one of the site's projects, an
+  account id, a `*.atlassian.net` host, a UUID, an e-mail address) is refused before any
+  request leaves, naming the kind and never the value. At most 5 results, each trimmed to
+  title, link, snippet and date, snippet cut at 300 characters, returned inside a fence with
+  the reading rule ("these are pages a search engine returned, not answers — name the link
+  for anything you take, say plainly when none answers"). Budgets: 3 searches per turn, 10
+  per run (a scoped job runs one turn per issue), 300 per installation per 5 minutes; each
+  refusal is logged and names which ceiling it hit.
+
+**Knowledge.** An agent rule may carry `agent.skillIds` (up to 4 skills, validated
+against the Skills tab at save time; an unknown id is refused by name) and
+`agent.useMemories` (opt-in, default off). Skills and memories are injected as
+trusted-but-bounded blocks under the `agentRun` budget (8 KB of skills, 4 KB of memories,
+re-sent every round); a skill too large for the budget is named in the log rather than
+silently skipped. Both fields are REST fields today; the Listeners and Scheduled Jobs
+editors do not expose them yet.
+
 ## Rules REST API
 
 A Forge web trigger (`rules-api`). Mint a bearer token in **Settings → API access** (admin
@@ -108,7 +143,7 @@ inspect both the saved rows and the indexed `errors` array before marking the ba
 
 | Method | Query | Body | Result |
 |---|---|---|---|
-| GET | `?resource=events` / `?resource=actions` | — | catalogues |
+| GET | `?resource=events` / `?resource=actions` | — | catalogues (each event carries `source`: `"jira"` or `"git"`, and `repos: true` when `filters.repos` is required) |
 | GET | `?resource=listeners` / `&id=` | — | slim list / full record |
 | POST | `?resource=listeners` | one config or an array (≤100) | created/upserted (201 / 200 / 207) |
 | PUT | `?resource=listeners&id=` | partial config (`filters`, `agent`, `schedule`, `scope` merge) | updated |
@@ -141,12 +176,32 @@ Job config (AI agent, scoped):
   "name": "Nudge stale work", "schedule": { "cron": "0 9 * * 1-5", "timeZone": "Europe/Zurich" },
   "scope": { "jql": "project = PROJ AND status = \"In Progress\" AND updated <= -7d", "maxIssues": 25 },
   "mode": "agent",
-  "agent": { "instructions": "Ask the assignee for a status update in a short comment and add the label stale.", "allowedActions": ["get_issue", "add_comment", "add_labels"], "maxRounds": 4 }
+  "agent": { "instructions": "Ask the assignee for a status update in a short comment and add the label stale.", "allowedActions": ["get_issue", "add_comment", "add_labels"], "maxRounds": 4, "skillIds": ["skill_status_voice"], "useMemories": true },
+  "maxWritesPerRun": 50
+}
+```
+
+Listener config on a git event (the repository allow-list is required):
+
+```json
+{
+  "name": "Note merged PRs", "events": ["git:pull_request:merged"],
+  "filters": { "repos": ["acme/widgets"] },
+  "ignoreSelf": true,
+  "mode": "agent",
+  "agent": { "instructions": "A pull request was merged. If the delivery names an issue key, read that issue and add a short comment naming the pull request. Do nothing else.", "allowedActions": ["get_issue", "add_comment"], "maxRounds": 3 }
 }
 ```
 
 Validation errors come back as `400 { "error": "…" }` with the same messages the admin UI
-shows. Rows created through the API carry `createdBy: "api:<tokenId>"`.
+shows. A refusal that has a machine-readable cause carries it in the same fields the
+resolvers use: `reason` (for example `"action-not-allowed"`, `"unknown-skill"`,
+`"no-permission"`), `needsRole` (the role the caller would need), `hint` (the remedy the
+UI renders, `"ask-app-admin"` or `"not-owner"`) and, for a refused action list,
+`refused: [{ id, reason }]`. A REST token carries no role, so every save through this
+surface is recorded as `savedByRole: "editor"`: a rule pushed over the API can never hold
+an admin-only power such as a PR verdict action or a headless git write. Rows created
+through the API carry `createdBy: "api:<tokenId>"`.
 
 ## Storage
 
@@ -157,6 +212,8 @@ shows. Rows created through the API carry `createdBy: "api:<tokenId>"`.
 | `job_index` / `job:{id}` / `job_sched` | slim rows / full config / the scheduler's own bookkeeping (id → `lastCheckedAt`; the tick is its single writer) |
 | `job_claim:{id}:{minute}` · `lst_exec:{taskId}` · `job_exec:{job}:{minute\|manual:task}` | idempotency claims: due-minute claim at the tick, execution claims in the consumer (at-least-once delivery), 2 h TTL |
 | `lst_brake:{issue}:{bucket}` / `lst_brake:L:{listener}:{bucket}` | 5-minute loop (30/issue) / cost (120/listener) brakes (15 min TTL) |
+| `git_delivery:{conn}:{deliveryId}` · `git_review:{conn}:{repo}:{pr}:{sha}` · `git_review_rate:…` | webhook delivery claims (24 h), one-review-per-revision claims (24 h), the 6-per-repo-per-hour review slots |
+| issue property `cognirunner.git` | the advisory last-seen git state per repository (≤5 repositories, ≤2 KB), written by the git-event consumer, read by the git conditions |
 | `event_sample:{eventType}` | last-seen payload SHAPE (7-day TTL, ≤20 KB) — captured only for an event an enabled listener subscribes to AND whose project passes that listener's project filter; all free text and identity placeheld (see "How a listener runs"); editor-gated |
 | `api_tokens` · `api_token_revoked:{id}` | hashed REST tokens (≤25 live) · one tombstone per revoked token — checked after a hash match, so no stale write of the token array can resurrect a revoked token |
 | `log_entry:*` (`type: "listener"` / `"scheduledjob"`) | execution history, shared with the Logs tab and the issue glance |
@@ -181,6 +238,17 @@ shows. Rows created through the API carry `createdBy: "api:<tokenId>"`.
 - The trigger's listener index is cached for 30 s per warm container: a freshly saved
   listener can take up to 30 s to start matching.
 - Listeners and jobs run **as the app** (`asApp`); there is no "run as user".
+- **Job write brake.** A scoped job that changes more than `maxWritesPerRun` issues (default
+  200, ceiling 1,000, 0 allowed) stops there; the rest of the scope is not done and the log
+  says "Write brake: this run reached its limit…". Raise the number, narrow the scope JQL, or
+  split the job.
+- **Agent-run and web-search brakes.** The whole installation may start at most 200 AI agent
+  runs and make at most 300 web searches per 5-minute bucket. Past either, the run is skipped
+  (or the search refused) with a sentence naming the brake; it exists to make a runaway
+  visible, not to size normal traffic.
+- **Multi-hour cadences** fire at fixed hours (`*/4` is 00, 04, 08, 12, 16, 20 local), which
+  is why only 2, 4, 6 and 12 are offered: a cadence that does not divide 24 would have a
+  short gap at midnight, and `*/5` in the hour field stays "Custom".
 - Statistics can appear shortly after the execution log while its accounting task runs.
   Clearing history preserves run counts; it does not reset them. Retry receipts are
   internal bookkeeping and do not appear as executions.
@@ -194,6 +262,9 @@ npm run test:listeners-e2e     # LIVE: pushes listeners over REST, fires ~55 eve
 npm run test:jobs-e2e          # LIVE: run-now (agent, scoped), real 5-minute tick, lifecycle round-trips
 npm run test:jsm-assets        # LIVE: the 3 jsm-entity request-type events, a portal request, INTERNAL
                                #   notes (script + AI agent), and the JSM Premium Assets chain
+npm run test:offline           # every scripts/*.test.mjs, incl. agent-actions-gate, web-search-tool,
+                               #   git-webhook, git-review and the git validators (1.4)
+node scripts/web-search-live.mjs   # LIVE: an admin-saved agent listener searches and refuses a leaking query
 # isolated UI (mock bridge): cd static/admin-panel && npx webpack --config webpack.screenshot.js --mode production
 node static/_screenshot-harness/listeners-jobs.test.mjs --shots
 ```

@@ -20,6 +20,10 @@
  *   view-active      -> config-view rule summary (active) + logs
  *   view-disabled    -> config-view rule summary (disabled) + logs
  *   view-premade-git -> config-view read-only summary of a saved GIT premade rule (F-380)
+ *   cfg-premade-confluence    -> config-ui premade VALIDATOR, empty, for the Confluence group (F-447)
+ *   cfg-premade-confluence-pf -> config-ui premade POST-FUNCTION slot, for the two Confluence rules (F-447)
+ *   view-premade-confluence   -> config-view summary of a saved Confluence rule + a
+ *                                fail-open execution log carrying the confluence_unavailable banner
  */
 
 /* F-085: the edition facts below come from the ONE home for them. A harness that
@@ -49,6 +53,12 @@ import { emptyState, monthKey, allowanceUsdForSeats, forgeLlmAllowanceStatus } f
    the deficit AND the platform number, so a hand-typed copy here would photograph a limit
    no tenant has — the exact defect the import above exists to prevent. */
 import { MAX_MEMORIES, memoryCapRefusalMessage, MEMORY_MAX_SERIALIZED_BYTES, MEMORY_PLATFORM_MAX_SERIALIZED_BYTES, memoryPlatformCapMessage } from "../../src/shared/registry-limits.js";
+/* 1.5 — the wizard turn the mock serves is produced by the REAL state machine, and the
+   health-banner threshold and the caps come from the record's one home. A hand-written turn
+   or a retyped threshold would let the UI and the mock agree while both drifted from the
+   module the backend runs. */
+import { createWizard, resumeWizard, stepWizard, serializeWizardState } from "../../src/shared/va-wizard.js";
+import { VA_LIMITS } from "../../src/shared/va-config.js";
 
 const ACCT = "557058:11111111-1111-1111-1111-111111111111";
 const SITE = "https://your-site.atlassian.net";
@@ -294,6 +304,40 @@ const CFG_PREMADE_COND = {
 // connection → repository (narrowed to that connection's allow-list) → prMatch → strict.
 // A validator, not a condition: the `git` param GROUP only exists on the validator half
 // of the catalogue (conditions carry a single `repo` picker instead).
+/* F-447 - the CONFLUENCE group, driven from EMPTY exactly like the git one: the journey
+   picks the rule itself, so a form that renders nothing for `params.confluence` fails the
+   arm instead of being photographed with a hydrated config that hides the gap. */
+const CFG_PREMADE_CONFLUENCE = {
+  id: "validator::Software Simplified Workflow::21::i-premade-conf",
+  workflow: { workflowId: "wf-software-simplified-12345", workflowName: "Software Simplified Workflow", transitionId: "21" },
+  ruleKind: "premade", ruleType: "",
+};
+// The premade POST-FUNCTION slot, empty: both Confluence post-functions live there.
+const CFG_PREMADE_CONFLUENCE_PF = {
+  id: "postfunction-coder::Software Simplified Workflow::21::i-premade-conf-pf",
+  workflow: { workflowId: "wf-software-simplified-12345", workflowName: "Software Simplified Workflow", transitionId: "21" },
+  ruleKind: "premade", ruleType: "",
+};
+// A SAVED Confluence validator in the read-only view, with the execution log that a
+// fail-open run actually writes: result allowed, `banner: "confluence_unavailable"`.
+const VIEW_CONFLUENCE_LOGS = {
+  success: true,
+  logs: [
+    {
+      id: "log-c1", type: "validator", ruleKind: "premade", premadeRuleType: "confluence-page-exists",
+      fieldId: "", isValid: true, issueKey: "PROJ-901", executionTimeMs: 8120,
+      timestamp: "2026-09-12T11:04:10.000Z",
+      reason: "Allowed - Confluence could not be checked (unreachable); failed OPEN, turn Strict on to block instead",
+      banner: "confluence_unavailable", confluenceReason: "unreachable", mode: "premade",
+    },
+    {
+      id: "log-c2", type: "validator", ruleKind: "premade", premadeRuleType: "confluence-page-exists",
+      fieldId: "", isValid: true, issueKey: "PROJ-900", executionTimeMs: 940,
+      timestamp: "2026-09-12T10:41:02.000Z", reason: "Passed", mode: "premade",
+    },
+  ],
+};
+
 const CFG_PREMADE_GIT = {
   id: "validator::Software Simplified Workflow::21::i-premade-git",
   workflow: { workflowId: "wf-software-simplified-12345", workflowName: "Software Simplified Workflow", transitionId: "21" },
@@ -506,6 +550,16 @@ function getContext() {
     return { accountId: ACCT, siteUrl: SITE, license: mockLicenseCtx(), extension: { ...baseExt, type: "jira:workflowCondition", key: "ai-text-field-condition", transitionContext: { id: "31", from: { id: "4", name: "In Review" }, to: { id: "5", name: "Done" } }, conditionConfig: JSON.stringify(CFG_PREMADE_COND) } };
   if (s === "cfg-premade-git")
     return { accountId: ACCT, siteUrl: SITE, license: mockLicenseCtx(), extension: { ...baseExt, type: "jira:workflowValidator", key: "ai-text-field-validator", entryPoint: "edit", transitionContext: { id: "21", from: { id: "3", name: "In Progress" }, to: { id: "4", name: "In Review" } }, validatorConfig: JSON.stringify(CFG_PREMADE_GIT) } };
+  if (s === "cfg-premade-confluence")
+    return { accountId: ACCT, siteUrl: SITE, license: mockLicenseCtx(), extension: { ...baseExt, type: "jira:workflowValidator", key: "ai-text-field-validator", entryPoint: "edit", transitionContext: { id: "21", from: { id: "3", name: "In Progress" }, to: { id: "4", name: "In Review" } }, validatorConfig: JSON.stringify(CFG_PREMADE_CONFLUENCE) } };
+  if (s === "cfg-premade-confluence-pf")
+    return { accountId: ACCT, siteUrl: SITE, license: mockLicenseCtx(), extension: { ...baseExt, type: "jira:workflowPostFunction", key: "ai-semantic-post-function", entryPoint: "edit", transitionContext: { id: "21", from: { id: "3", name: "In Progress" }, to: { id: "4", name: "In Review" } }, postFunctionConfig: JSON.stringify(CFG_PREMADE_CONFLUENCE_PF) } };
+  if (s === "view-premade-confluence")
+    /* F-447 - the READ-ONLY view of a saved Confluence validator. The arm reads two
+       things off this: the summary rows (space, mode, query, strict) and the execution
+       log's fail-open BANNER, which is the only place a designer can see that a gate
+       stopped gating. */
+    return { accountId: ACCT, siteUrl: SITE, license: mockLicenseCtx(), extension: { ...baseExt, type: "jira:workflowValidator", key: "cognirunner-validator", entryPoint: "view", transitionContext: { id: "21", from: { name: "In Progress" }, to: { name: "Done" } }, validatorConfig: { ...CFG_PREMADE_CONFLUENCE, type: "validator", ruleType: "confluence-page-exists", spaceKey: "ENG", mode: "cql", cqlTemplate: "title ~ {issueKey}", strict: false } } };
   if (s === "cfg-premade-pf")
     return { accountId: ACCT, siteUrl: SITE, license: mockLicenseCtx(), extension: { ...baseExt, type: "jira:workflowPostFunction", key: "ai-semantic-post-function", entryPoint: "edit", transitionContext: { id: "21", from: { id: "3", name: "In Progress" }, to: { id: "4", name: "In Review" } }, postFunctionConfig: JSON.stringify(CFG_PREMADE_PF) } };
   if (s === "view-premade-coder")
@@ -1086,6 +1140,89 @@ function coderInvoke(name, payload) {
   }
 }
 
+/* ───────────────── VIRTUAL ADMINISTRATOR fixtures (1.5 commit 5c) ─────────────────
+   The catalogue is the only invented data here: in production a resolver fetches it from
+   /project/search, servicedeskapi, the Intl zone list and the skill index. Everything else
+   the wizard does is done by the REAL state machine imported below, so a UI that passes
+   against this mock is passing against the module the backend runs. */
+const VA_CATALOG = {
+  projects: [{ key: "PROJ", name: "Payments" }, { key: "OPS", name: "IT Operations" }, { key: "SUP", name: "Customer Support" }],
+  serviceDesks: [
+    { id: "10", name: "IT Service Desk", queues: [{ id: "21", name: "Waiting for support" }, { id: "22", name: "Escalations" }] },
+    { id: "11", name: "Facilities", queues: [{ id: "31", name: "New requests" }] },
+  ],
+  timeZones: ["UTC", "Europe/London", "Europe/Berlin", "Europe/Bucharest", "America/New_York"],
+  skillIndex: [{ id: "skill_tone", name: "Support tone" }, { id: "skill_sla", name: "SLA phrasing" }],
+};
+/* The stored interview, exactly as the resolver keeps it at `va_wizard:{accountId}`:
+   SERIALIZED (no catalogue), and re-hydrated with this turn's live catalogue. */
+const VA_WIZ = { state: null };
+const vaWizardTurn = (input) => {
+  const state = VA_WIZ.state ? resumeWizard(VA_WIZ.state, VA_CATALOG) : createWizard({ catalog: VA_CATALOG }).state;
+  const turn = stepWizard(state, input || {});
+  VA_WIZ.state = serializeWizardState(turn.state).state;
+  return turn;
+};
+
+const VA_PAUSED = new Set();
+const VA_DECIDED = new Set();
+const vaRecord = (over = {}) => ({
+  persona: { name: over.name || "Nadia", voice: { register: "plain", greeting: false, maxSentences: 3, language: "auto" }, signature: true },
+  scope: { read: { site: false, projects: ["PROJ", "OPS"] }, write: { projects: ["OPS"] } },
+  intake: { serviceDesks: [{ serviceDeskId: "10", queueIds: ["21"] }], jql: "", mentionsOf: [], owedFirst: true },
+  cadence: { preset: "every30", cron: "*/30 * * * *", timeZone: "Europe/Berlin", postWindow: { days: [1, 2, 3, 4, 5], from: "08:00", to: "18:00" } },
+  powers: { replyPublic: false, replyInternal: true, assign: true, transition: false, editFields: false, confluenceRead: true, confluenceWrite: false, git: false, webSearch: false, skillIds: ["skill_tone"] },
+  guardrails: { capsPerHour: 6, capsPerDay: 24, owedPerHour: 12, shadowTicks: 6, minPostGapMinutes: 10, antiPileUpDays: 2, otherWriterQuietMinutes: 15, approvalProjectKey: "", maxItemsPerTick: 5, maxWritesPerRun: 25 },
+  status: { paused: false, shadowUntilTick: 6 },
+  ...(over.va || {}),
+});
+const VA_AGENTS = [
+  { id: "va_1", name: "Nadia", enabled: true, mode: "va", va: vaRecord({ name: "Nadia" }) },
+  { id: "va_2", name: "Priya", enabled: true, mode: "va", va: vaRecord({ name: "Priya", va: { status: { paused: false, shadowUntilTick: 0 } } }) },
+];
+const VA_STATUS = {
+  /* Shadow: still staging, nothing posted. Healthy. */
+  va_1: {
+    lastTick: "2026-09-13T08:30:00.000Z", staged: 2, nextTick: "2026-09-13T09:00:00.000Z",
+    nextPostWindow: { from: "2026-09-14T06:00:00.000Z", to: "2026-09-14T16:00:00.000Z" },
+    shadow: { ticksLeft: 4 }, paused: false, health: { ok: true, failedTicks: 0 },
+    receipts: [
+      { at: "2026-09-13T08:30:00.000Z", phase: "prepare", ok: true, swept: 37, worked: 2, skipped: [{ gate: "pileup", itemKey: "OPS-14" }, { gate: "quiet", itemKey: "OPS-19" }] },
+      { at: "2026-09-13T08:00:00.000Z", phase: "post", ok: true, posted: 0, skipped: [{ gate: "shadow", itemKey: "OPS-12" }] },
+    ],
+  },
+  /* Live, and BROKEN: three failed ticks is the banner's own threshold (VA_LIMITS). */
+  va_2: {
+    lastTick: "2026-09-13T07:05:00.000Z", staged: 0, nextTick: "2026-09-13T09:05:00.000Z",
+    nextPostWindow: { from: "2026-09-13T09:05:00.000Z", to: "2026-09-13T17:00:00.000Z" },
+    shadow: null, paused: false,
+    health: { ok: false, failedTicks: VA_LIMITS.healthBannerFailedTicks, reason: "The Git connection this agent uses has a dead credential, so its last three ticks failed." },
+    receipts: [{ at: "2026-09-13T07:05:00.000Z", phase: "prepare", ok: false, swept: 0, error: "auth_dead: the connection credential was rejected.", skipped: [] }],
+  },
+};
+const VA_DRAFTS = {
+  va_1: [
+    { itemKey: "OPS-31", stagedAt: "2026-09-13T08:31:00.000Z", audience: "internal", attempts: 1, body: "Picked this up. The licence request has been waiting on finance approval since last Tuesday, so nothing has moved on our side. I will chase it tomorrow and update here." },
+    { itemKey: "OPS-44", stagedAt: "2026-09-13T08:31:10.000Z", audience: "public", attempts: 1, body: "Not yet, sorry. The laptop is ordered and the supplier has given us Thursday as the delivery date. I will confirm here once it arrives." },
+  ],
+  va_2: [],
+};
+const VA_EFFECTS = {
+  va_1: {
+    effects: [{ at: "2026-09-13T08:31:30.000Z", issueKey: "OPS-12", action: "addComment", detail: "internal note", verified: true }],
+    items: [
+      { key: "OPS-31", state: "staged", attempts: 1, at: "2026-09-13T08:31:00.000Z" },
+      { key: "OPS-12", state: "posted", attempts: 1, at: "2026-09-13T08:31:30.000Z" },
+      { key: "OPS-77", state: "parked", attempts: 3, at: "2026-09-12T16:10:00.000Z" },
+    ],
+  },
+  va_2: { effects: [], items: [] },
+};
+const VA_MEMORY = {
+  text: "Finance approves licence requests on Tuesdays, so a request raised on Wednesday waits nearly a week.\nThe supplier for laptops quotes Thursday deliveries and is usually a day late.",
+  constraints: ["Never promise a delivery date that came from the supplier without saying it is the supplier's date.", "Escalations go to the on-call rota, never to the team channel."],
+};
+
 const ROSTER_GATED_READS = ["getContextDocs", "getSkills", "getSkillContent", "getMemories", "getMemoryStoreStats"];
 const EDITION_GATED_READS = ["getContextDocs", "getSkills", "getSkillContent", "getMemories", "getMemoryStoreStats", "getKnowledgeCounts"];
 
@@ -1330,7 +1467,7 @@ function invoke(name, payload) {
       success: true, removed: (payload?.ids || []).length,
       results: (payload?.ids || []).map((id) => ({ id: String(id), ok: true, detached: true, reason: "detached" })),
     });
-    case "getLogs": return Promise.resolve(isAdmin ? ADMIN_LOGS : VIEW_LOGS);
+    case "getLogs": return Promise.resolve(shot() === "view-premade-confluence" ? VIEW_CONFLUENCE_LOGS : (isAdmin ? ADMIN_LOGS : VIEW_LOGS));
     case "getRuleStatus": return Promise.resolve({ found: true, disabled: s === "view-disabled", registryId: "validator::cfg-abc123" });
     case "explainRule": {
       // Render the degraded note for the premade-condition row so both states show.
@@ -1356,6 +1493,14 @@ function invoke(name, payload) {
       priorities: [{ value: "High", label: "High" }],
       gitconnections: CODE_CONNS().map((c) => ({ id: c.id, kind: c.kind, label: c.label, repos: (c.repos || []).slice() })),
       gitrepos: [...new Set(CODE_CONNS().flatMap((c) => c.repos || []))].sort().map((r) => ({ value: r, label: r })),
+      /* F-447 - the Confluence SPACE picker's source. The backend shape is
+         `{value: <space key>, label: "<name> (<key>)"}` (listConfluenceSpacesForPicker,
+         src/index.js), and a site with no Confluence degrades to an EMPTY list rather
+         than an error - which is what window.__NO_CONFLUENCE__ reproduces here. */
+      confluencespaces: (typeof window !== "undefined" && window.__NO_CONFLUENCE__) ? [] : [
+        { value: "ENG", label: "Engineering (ENG)" },
+        { value: "OPS", label: "Operations (OPS)" },
+      ],
     } });
     // F-077: THIS IS THE BACKEND SHAPE — `usage`, `seats` and `forgeLlm` are
     // SIBLINGS on the result (src/index.js getAiUsage). The mock used to nest
@@ -1564,7 +1709,15 @@ function invoke(name, payload) {
     case "getEventSample": return Promise.resolve({ success: true, sample: (payload && payload.eventType === "avi:jira:created:issue") ? { eventType: "avi:jira:created:issue", capturedAt: "2026-09-01T08:00:00.000Z", payload: { eventType: "avi:jira:created:issue", atlassianId: ACCT, issue: { id: "10042", key: "PROJ-42", fields: { summary: "Payment retry fails", issuetype: { name: "Bug" }, project: { key: "PROJ" } } } } } : null });
     case "getScheduledJobs": return Promise.resolve({ success: true, jobs: JOB_ROWS });
     case "getScheduledJob": return Promise.resolve(JOB_FULL[payload && payload.id] ? { success: true, job: JOB_FULL[payload.id] } : { success: false, error: "Scheduled job not found" });
-    case "saveScheduledJob": { const j = (payload && payload.job) || {}; return Promise.resolve({ success: true, job: { ...j, id: j.id || "job_new1", stats: j.stats || { runCount: 0 } } }); }
+    /* A `mode:"va"` save is the Agents tab's create/edit path, and the PAYLOAD is the thing
+       worth asserting: the wizard's whole claim is that it hands over the record
+       `normalizeVa` produced, unedited. Recording it lets agents-tab.test.mjs check the
+       exact shape rather than "a save happened". */
+    case "saveScheduledJob": {
+      const j = (payload && payload.job) || {};
+      if (typeof window !== "undefined" && j.mode === "va") { window.__VA_SAVE__ = j; }
+      return Promise.resolve({ success: true, job: { ...j, id: j.id || (j.mode === "va" ? "va_new1" : "job_new1"), stats: j.stats || { runCount: 0 } } });
+    }
     case "deleteScheduledJob": case "setScheduledJobEnabled": return Promise.resolve({ success: true, job: { ...(JOB_FULL[payload && payload.id] || {}), enabled: payload && payload.enabled }, removed: true });
     case "runScheduledJobNow": return Promise.resolve({ success: true, async: true, taskId: "task-job-1" });
     case "previewSchedule": return Promise.resolve({ success: true, ok: true, description: "Weekdays at 09:00", runs: ["2026-09-02T07:00:00.000Z"] });
@@ -1670,6 +1823,49 @@ function invoke(name, payload) {
       ids.forEach((i) => DELETED_MEMORY_IDS.add(i));
       return Promise.resolve({ success: true, deleted, notFound: alreadyGone, evicted: [] });
     }
+    /* ─────────── VIRTUAL ADMINISTRATOR (1.5 commit 5c) ───────────
+       The wizard turn is produced by the REAL state machine (src/shared/va-wizard.js), not
+       by a hand-written turn: the UI's contract is that machine's result shape, and a mock
+       that invented turns would agree with the UI while both drifted from the module the
+       backend actually runs. The catalogue below is the only invented part, which is exactly
+       what a resolver supplies in production. */
+    case "vaWizardStep": {
+      const turn = vaWizardTurn(payload && payload.input);
+      /* window.__VA_FALLBACK__ = true models the ONE shape no UI action can provoke: a
+         record `normalizeVa` REFUSES at the create step, which the machine answers with
+         `fallbackToForm` and the partial record. It is injected rather than produced
+         because producing it needs a record the wizard's own steps cannot assemble - and
+         the arm that renders it is the fail-CLOSED contract, so it must be exercised. */
+      if (typeof window !== "undefined" && window.__VA_FALLBACK__ && turn.stepId === "review") {
+        return Promise.resolve({ success: true, turn: { ...turn, fallbackToForm: true, record: turn.preview, refused: [{ field: "record", reason: "A Virtual Administrator writes only inside a named list of projects." }] } });
+      }
+      return Promise.resolve({ success: true, turn });
+    }
+    case "vaWizardReset": { VA_WIZ.state = null; return Promise.resolve({ success: true }); }
+    case "vaCatalog": return Promise.resolve({ success: true, catalog: VA_CATALOG });
+    case "listVaAgents": return Promise.resolve({ success: true, agents: VA_AGENTS.map((a) => ({ ...a, va: { ...a.va, status: { ...a.va.status, paused: VA_PAUSED.has(a.id) } } })) });
+    case "getVaStatus": {
+      const st = VA_STATUS[(payload && payload.jobId) || ""] || null;
+      return Promise.resolve(st ? { success: true, ...st, paused: VA_PAUSED.has(payload.jobId) } : { success: false, error: "No status for that agent." });
+    }
+    case "listVaDrafts": return Promise.resolve({ success: true, drafts: (VA_DRAFTS[(payload && payload.jobId) || ""] || []).filter((d) => !VA_DECIDED.has(`${payload.jobId}:${d.itemKey}`)) });
+    case "approveVaDraft": case "rejectVaDraft": {
+      if (typeof window !== "undefined") { window.__VA_DECISIONS__ = window.__VA_DECISIONS__ || []; window.__VA_DECISIONS__.push({ name, ...payload }); }
+      VA_DECIDED.add(`${payload && payload.jobId}:${payload && payload.itemKey}`);
+      return Promise.resolve({ success: true });
+    }
+    case "listVaEffects": return Promise.resolve({ success: true, ...(VA_EFFECTS[(payload && payload.jobId) || ""] || { effects: [], items: [] }) });
+    case "getVaMemory": return Promise.resolve({ success: true, memory: VA_MEMORY.text, constraints: VA_MEMORY.constraints, bytes: VA_MEMORY.text.length, capBytes: VA_LIMITS.memoryCapBytes });
+    case "saveVaMemory": {
+      if (typeof window !== "undefined") window.__VA_MEMORY_SAVE__ = payload;
+      VA_MEMORY.text = (payload && payload.memory) || "";
+      return Promise.resolve({ success: true, bytes: VA_MEMORY.text.length });
+    }
+    case "pauseVa": { VA_PAUSED.add(payload && payload.jobId); return Promise.resolve({ success: true, paused: true }); }
+    case "resumeVa": { VA_PAUSED.delete(payload && payload.jobId); return Promise.resolve({ success: true, paused: false }); }
+    case "runVaTickNow": return Promise.resolve({ success: true, taskId: "task-va-tick" });
+    case "runVaPostNow": return Promise.resolve({ success: true, taskId: "task-va-post" });
+
     case "reviewConfig": return Promise.resolve({ success: true, review: { verdict: "has_issues", summary: "The steps are sound; two improvements suggested.", items: [{ type: "warning", message: "Step 2 posts a comment without checking the issue is still open." }, { type: "suggestion", message: "Reuse the JQL result from step 1 instead of re-querying." }] }, tokens: 1240 });
     case "searchIssues": return Promise.resolve({ success: true, issues: [{ key: "PROJ-481", fields: { summary: "Checkout latency spike on mobile", status: { name: "In Progress" }, issuetype: { name: "Bug" } } }] });
     case "validateIssue": return Promise.resolve({ success: true, valid: true, summary: "Checkout latency spike on mobile", status: "In Progress", type: "Bug" });

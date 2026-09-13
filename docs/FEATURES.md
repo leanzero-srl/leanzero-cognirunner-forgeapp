@@ -23,6 +23,8 @@
 15. [Scheduled Jobs (cron)](#scheduled-jobs-cron)
 16. [Rules REST API](#rules-rest-api)
 17. [Editions: Standard and Coder](#editions-standard-and-coder)
+18. [The Coder (1.4)](#the-coder-14)
+19. [Git integration (1.4)](#git-integration-14)
 
 ---
 
@@ -89,8 +91,7 @@ open on a provider outage.
 
 ### Configuration
 
-Pick a check from the catalog and fill in its parameters. There is no prompt. Ten checks are
-supported:
+Pick a check from the catalog and fill in its parameters. There is no prompt. The checks:
 
 | Check | Parameters |
 |---|---|
@@ -101,6 +102,12 @@ supported:
 | Priority is… | priority |
 | Parent issue status is… | status (top-level issues always pass) |
 | Current user is the assignee / reporter | — |
+| Git: the pull request is merged / is approved / the build has not failed | repository |
+
+The three Git checks (1.4) read the advisory `cognirunner.git` issue property that the git
+webhook listeners write. They hide the transition only on a known-negative state and evaluate
+true on a missing property, so they never block on their own; the Git *validators* of the same
+name verify live. See [`GIT-INTEGRATION.md`](GIT-INTEGRATION.md#6-git-conditions).
 
 Checks that need related issues, attachments or group membership are greyed out: Jira's expression
 sandbox cannot reach them. Use a validator for those.
@@ -582,7 +589,7 @@ Toggle individual rules on/off without removing them from the workflow. Disabled
 
 ### What It Does
 
-A listener reacts to Jira **product events** instead of workflow transitions — all 68 events Forge exposes for Jira, Jira Software and JSM (see the event picker, grouped by Issues / Comments / Worklogs / Attachments / Issue links / Projects / Versions / Components / Sprints / Boards / Users / Custom fields / Issue types / Filters / Configuration / Service Management). When an event matches the listener's filters (project, issue type, JQL, changed fields, comment regex, ignore-self) and its optional **AI condition**, the listener runs either **code steps** (the same sandbox as static post-functions, bound to the event's issue, with `api.context.event` carrying the raw payload and `api.forIssue(key)` for other issues) or an **AI agent** (plain-language instructions + an allow-list of actions).
+A listener reacts to Jira **product events** instead of workflow transitions — all 68 events Forge exposes for Jira, Jira Software and JSM (see the event picker, grouped by Issues / Comments / Worklogs / Attachments / Issue links / Projects / Versions / Components / Sprints / Boards / Users / Custom fields / Issue types / Filters / Configuration / Service Management), and since 1.4 the **nine Git events** (pull request opened / updated / closed / merged, review submitted, PR comment added, branch pushed, check run completed, pipeline completed) delivered by the app's own webhook, which require a repository allow-list on the listener. When an event matches the listener's filters (project, issue type, JQL, changed fields, comment regex, repositories, ignore-self) and its optional **AI condition**, the listener runs either **code steps** (the same sandbox as static post-functions, bound to the event's issue, with `api.context.event` carrying the raw payload and `api.forIssue(key)` for other issues) or an **AI agent** (plain-language instructions + an allow-list of actions, which since 1.4 include the Git actions and web search). An agent rule can also bind up to four Skills and opt into Memories (`agent.skillIds`, `agent.useMemories`; REST fields, see [`LISTENERS-AND-JOBS.md`](LISTENERS-AND-JOBS.md#ai-agent-mode)).
 
 ### How to Configure
 
@@ -603,7 +610,7 @@ Admin panel → **Listeners** → *Add Listener*: name, events, filters, AI cond
 
 ### What It Does
 
-A job runs on a **cron schedule** (5-field, IANA time zone; presets from every 5 minutes to monthly; custom cron) — once per schedule, or **per issue of a JQL scope** (escalation-style, ≤100 issues per run) — executing code steps or an AI agent. "Run now" queues an immediate manual run and shows the result.
+A job runs on a **cron schedule** (5-field, IANA time zone; presets from every 5 minutes to monthly, including every 2 / 4 / 6 / 12 hours since 1.4; custom cron) — once per schedule, or **per issue of a JQL scope** (escalation-style, ≤100 issues per run) — executing code steps or an AI agent. "Run now" queues an immediate manual run and shows the result. Each run is capped by a **write brake** (`maxWritesPerRun`, default 200, at most 1,000): past it the remaining work is not done and the log says so.
 
 ### How It Works
 
@@ -614,6 +621,7 @@ A `scheduledTrigger` (`fiveMinute`) calls `scheduled-jobs.scheduledTick`, which 
 - Effective granularity is 5 minutes; `* * * * *` runs once per tick.
 - Unscoped jobs have no current issue: use `api.searchJql()` + `api.forIssue(key)` (the code generator is told this).
 - Keep runs idempotent (check for a marker before writing) — a retried or re-driven run must not duplicate comments.
+- Two installation-wide brakes apply to every agent run, listener or job: at most 200 AI agent runs and 300 web searches per 5-minute window; a run past either is skipped or refused with a sentence naming the brake.
 
 ## Rules REST API
 
@@ -649,4 +657,43 @@ Admin panel → **Settings**, with the Atlassian (Forge LLM) provider selected:
 - A Coder-only id refused on Standard returns `{ success:false, upgradeRequired:true, featureId, edition:"standard", error }` — the one refusal shape; frontends that know nothing about editions still render `error`.
 - The allowance meter is a best-effort under-count (no compare-and-set on the usage key); concurrent writers can only ever under-count.
 - The seat scan is never triggered from an inference path — only from `checkLicense` / `getAiUsage`, i.e. an admin opening the panel. A site nobody administers for a while keeps its last count (or the 100-seat fallback).
+
+## The Coder (1.4)
+
+### What It Does
+
+The Coder is an engineer inside a Jira issue. From the **CogniRunner Coder** issue panel a developer tells it what to do on the issue; it reads the issue, plans, and asks before every repository write (a branch, a commit, a pull request, a PR comment, an approval, a deploy) through a consent chip with **Confirm / Change / Skip**. The same engine runs headless as the premade post-function **Coder: build / open branch / open PR / fix / review**, where a transition hands the issue to one of five modes. Everything a turn does is written back onto the issue: a plan section in the description, one comment per confirmed step with the repository, branch and pull request as remote links, a running "Coder log" comment, and a `coder-session-<n>.md` transcript.
+
+### Where You See It
+
+- The issue panel (editor role and up; the thread belongs to the person who opened it).
+- Admin panel → **Code**: the Coder status card, Git connections, the Forge deploy identity.
+- Admin panel → **Settings**: the **Agent model** slot the Coder runs on.
+- The workflow editor: the Coder post-function under the **Git** category.
+
+### How It Works Internally
+
+One predicate, `agentCapability` in `src/shared/edition.js`, decides whether the Coder may run: on any BYOK provider it is on for every edition; on Atlassian (Forge LLM) it needs the Coder edition and a frontier agent model (Sonnet 5 or Opus 5), and pauses at the monthly allowance's hard cap. A turn runs on the 900 s `long-consumer`, one turn per issue, up to eight rounds, and is paced by the token budget queue like every other queued AI task. Full reference: [`CODER.md`](CODER.md).
+
+### Pitfalls
+
+- A dry run is fixed by a conversation's first turn; start a new conversation to change it.
+- A post-function turn has no one to answer a consent ticket: a write the gate allows executes, a write it refuses halts the turn and says why. Write actions survive on a headless rule only when an **admin** saved it.
+- Skills are not bound on Coder turns today; memories are injected when the instance's memory injection setting is on.
+
+## Git integration (1.4)
+
+### What It Does
+
+Admins connect GitHub or Bitbucket Cloud with a token that is verified before it is stored and can never be read back, and allow-list the repositories anything under that connection may touch. The app's webhook turns repository events into listener runs (nine Git events, always scoped to a repository allow-list); the deterministic PR-review engine reviews an opened or updated pull request once per revision; four **Git validators** block a transition until the linked pull request is merged, approved, its comments resolved or its build green, verified live; three **Git conditions** hide a transition on a known-negative state from the advisory `cognirunner.git` property.
+
+### How to Configure
+
+Admin panel → **Code** for connections and the deploy identity. The workflow editor's premade catalog, category **Git**, for validators, conditions and the Coder post-function: the connection and the repository are picked from lists, never typed, and the **Strict** checkbox decides whether an unreachable provider or a missing pull request blocks or allows. Git listeners take the repository allow-list in the event picker's Git category or as `filters.repos` over the Rules REST API.
+
+### Pitfalls
+
+- A rule pointing at a deleted connection, or at a repository the connection may not read, blocks whatever Strict says: a misconfigured gate must not pass silently.
+- The `cognirunner.git` property is advisory and forgeable; only the validators verify live, and the live pull request must name the issue key in its branch or title.
+- The per-repository webhook secret is not yet provisioned from the product; see the 1.4 release notes. Full reference: [`GIT-INTEGRATION.md`](GIT-INTEGRATION.md).
 

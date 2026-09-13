@@ -185,12 +185,12 @@ issue on their strength.
 ### Provisioning the secret
 
 The per-repository secret is created by `ensureHookSecret` (create-if-absent, 32 random
-bytes as hex) and rotated by `rotateHookSecret`. Neither is reachable from an admin
-resolver or the Code tab today: on `main` the only writer of a `git_hook_secret` row is the
-dev-only test hook, and there is no resolver that registers the hook on the provider
-(`createWebhook` exists on the adapters and is not called). Until that lands, a real
-repository cannot be wired to the production webhook from the product. It is listed under
-Known limitations in the release notes.
+bytes as hex) and rotated by `rotateGitHookSecret`, which is the ONE home of rotation
+(F-483 deleted a callerless second implementation, `rotateHookSecret`, that replaced the
+stored secret without ever telling the provider). Both are reachable from the admin
+resolvers behind the Code tab (F-460): "Set up webhook" registers the hook on the provider
+and "Rotate secret" runs the pending-slot → provider PATCH → promote order (F-481). It is
+no longer a Known limitation in the release notes.
 
 ## 3. The nine git events
 
@@ -443,8 +443,8 @@ with concurrency one per target. The consumer:
   so a mistyped token is stored and surfaces on the next deploy. The original consent record
   is kept verbatim and who rotated is recorded separately under `rotation`.
 
-Per-repository webhook secrets rotate through `rotateHookSecret` (a queued path with no
-resolver yet; see §2).
+Per-repository webhook secrets rotate through `rotateGitHookSecret`, the single rotate
+path (F-483), driven by the `rotateGitHookSecret` admin resolver; see §2.
 
 ## 9. Security model
 

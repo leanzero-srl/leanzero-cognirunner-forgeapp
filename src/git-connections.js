@@ -30,8 +30,8 @@
  *   3. `git_conn_secret:<id>`      — saveConnection (store), deleteConnection (erase),
  *                                    applyCredentialRotation (QUEUED TASK ONLY)
  *   4. `git_hook_secret:<c>:<r>`   — ensureHookSecret (create-if-absent),
- *                                    rotateHookSecret (QUEUED TASK ONLY),
- *                                    rotateGitHookSecret (F-460/F-481, the ADMIN path —
+ *                                    rotateGitHookSecret (F-460/F-481, the ONE and
+ *                                    ONLY rotate path, F-483 —
  *                                    PENDING SLOT first, then provider, then promote),
  *                                    setupRepoWebhook (clears a stale pending slot
  *                                    AFTER the install succeeded),
@@ -878,7 +878,7 @@ export const HOOK_SECRET_PENDING_TTL_MS = 24 * 60 * 60 * 1000;
 
 /**
  * THE ONE WRITER of `git_hook_secret:<connId>:<repoId>`, and the ONE HOME of the
- * row's shape. `ensureHookSecret`, `rotateHookSecret`, `rotateGitHookSecret` and
+ * row's shape. `ensureHookSecret`, `rotateGitHookSecret` and
  * `clearPendingHookSecret` all go through it — two writers of one key is how the
  * row's fields come to disagree.
  *
@@ -969,7 +969,7 @@ export async function getHookSecretCandidates(connId, repoId) {
 
 /* ===== PER-REPO WEBHOOK INSTALLATION (F-460) =====
  *
- * Until this existed, `ensureHookSecret`, `rotateHookSecret` and the adapters'
+ * Until this existed, `ensureHookSecret`, `rotateGitHookSecret` and the adapters'
  * `createWebhook` had NO caller but the dev hook: a real tenant could add a
  * connection, arm a git listener and never receive a single delivery, because
  * nothing registered the hook. These three functions are that missing half, and the
@@ -1574,9 +1574,13 @@ export async function applyCredentialRotation(params, { fetchImpl } = {}) {
   return { ok: true, rotated: "connection", id: target.id };
 }
 
-/** Rotate ONE repo's webhook secret. Queued-task half, same reason as above. */
-export async function rotateHookSecret(connId, repoId) {
-  const secret = generateWebhookSecret();
-  await writeHookSecret(connId, repoId, secret, { rotated: true });
-  return { secret };
-}
+/* F-483: there is NO queued half for the hook secret. `rotateHookSecret` used to
+ * live here as a second implementation of "rotate the hook secret" that replaced
+ * the stored secret with NO provider call — so the hook kept signing with the old
+ * one and every subsequent delivery was a 401 — and it RETURNED the secret, which
+ * this module's "secrets never leave" rule forbids. It had no caller: the only
+ * queued rotation task is `gitcredrotate` → `applyCredentialRotation` (the
+ * CONNECTION credential, above). Deleted. `rotateGitHookSecret` is the ONE HOME of
+ * hook-secret rotation: pending slot → provider PATCH → promote. If a queued caller
+ * is ever wanted, it delegates there; it does not mint a secret of its own.
+ */

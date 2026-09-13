@@ -24,6 +24,8 @@
 //
 // Run: node scripts/git-connections.test.mjs   (auto-discovered by run-offline.mjs)
 
+import { readFile } from "node:fs/promises";
+
 import "../lib/register-mocks-index.mjs";
 import storage from "../lib/mock-kvs.mjs";
 import { pushed as pushedEvents } from "../lib/mock-forge-api.mjs";
@@ -288,9 +290,26 @@ ok(h1.created === true && h1b.created === false && h1.secret === h1b.secret,
 const h2 = await conns.ensureHookSecret("c1", "acme/other");
 ok(h2.secret !== h1.secret, "the secret is PER REPO — one leak does not forge deliveries for another repo");
 ok(/^[0-9a-f]{64}$/.test(h1.secret), "the secret is 32 random bytes, hex");
-const rotated = await conns.rotateHookSecret("c1", "acme/app");
-ok(rotated.secret !== h1.secret, "rotation replaces the secret");
-ok((await conns.getHookSecret("c1", "acme/app")) === rotated.secret, "and the verifier reads the new one");
+// F-483 — ONE RULE, ONE HOME. `rotateHookSecret` was a SECOND implementation of
+// "rotate the hook secret": it replaced the stored secret with NO provider call (so
+// the hook kept signing with the old one and every delivery 401'd) and it RETURNED
+// the secret, which this module's "secrets never leave" rule forbids. It had no
+// caller — the only queued rotation task is gitcredrotate → applyCredentialRotation.
+// It is gone, and the module must expose exactly ONE exported rotate path so it
+// cannot grow back. The real rotation is exercised in section 13 (F-460/F-481).
+ok(conns.rotateHookSecret === undefined,
+  "the callerless no-provider rotateHookSecret is GONE — hook-secret rotation has one home");
+ok(typeof conns.rotateGitHookSecret === "function",
+  "…and that home is rotateGitHookSecret (pending slot → provider → promote)");
+{
+  const src = await readFile(new URL("../../src/git-connections.js", import.meta.url), "utf8");
+  const rotateExports = (src.match(/^export\s+(?:async\s+)?function\s+\w*[Rr]otate\w*/gm) || [])
+    .map((m) => m.replace(/^export\s+(?:async\s+)?function\s+/, ""));
+  ok(rotateExports.length === 1 && rotateExports[0] === "rotateGitHookSecret",
+    `SOURCE: exactly one exported rotate path in git-connections.js (found ${JSON.stringify(rotateExports)})`);
+  ok(!/\bfunction\s+rotateHookSecret\b/.test(src),
+    "SOURCE: rotateHookSecret is not redefined anywhere in the module");
+}
 ok((await conns.getHookSecret("c1", "nope/none")) === null,
   "an unknown repo yields null — the WEBHOOK's answer to null is 401, never 'unsigned is fine'");
 
@@ -681,7 +700,7 @@ const asViewer = await call("getRuleLists", {}, VIEWER);
 ok(asViewer.success !== true, "a viewer is still refused the editor floor");
 
 /* ===================== 13. F-460 — PER-REPO WEBHOOK SETUP ====================== *
- * Before this, `ensureHookSecret` / `rotateHookSecret` / `createWebhook` had NO
+ * Before this, `ensureHookSecret` / `rotateGitHookSecret` / `createWebhook` had NO
  * caller but the dev hook: an admin could add a connection, arm a git listener and
  * never receive one delivery. What must hold, in the order it would hurt:
  *   1. the SECRET never appears in a return value, on any path;

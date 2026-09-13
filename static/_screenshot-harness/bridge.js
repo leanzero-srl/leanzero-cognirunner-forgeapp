@@ -897,6 +897,10 @@ const CODE_IDENTITY = () => ((typeof window !== "undefined" && window.__CODE_IDE
                                  its veil are on screen long enough to be asserted.
      window.__CODER_DUPLICATE__- confirmCoderTicket answers { duplicate: true }.
      window.__CODER_NO_RESUME__- the decision is recorded but the follow-up did not enqueue.
+     window.__CODER_SIM_LOCKED__- F-371: the turn is REFUSED by the engine's F-360 arm,
+                                 `reason:"simulation-locked"`, which arrives through the
+                                 QUEUE (the resolver enqueues before the engine reads the
+                                 thread row) and so lands in the poll's result.
    The capability and the connection list reuse __CODE_CAP__ / __CODE_NO_CONNS__ above -
    one flag per product question, not one per surface. */
 const CODER_TICKET_ID = "ct_9f31c0de";
@@ -904,10 +908,23 @@ const CODER_SEED = () => ((typeof window !== "undefined" && window.__CODER_SCENA
   { role: "user", content: "Open a branch for this and add the retry guard to the payment client.", at: "2026-09-13T08:00:00.000Z" },
   { role: "assistant", content: "I read PROJ-42 and the payment client.\n\nThe retry guard belongs in sendPayment, around the provider call. I will open a branch first and push the change to it, then ask before anything leaves the branch.", at: "2026-09-13T08:00:20.000Z" },
 ]);
-let CODER_THREAD = null;
-const coderThread = () => {
-  if (!CODER_THREAD) CODER_THREAD = { messages: CODER_SEED(), turns: CODER_SEED().length ? 1 : 0 };
-  return CODER_THREAD;
+/* F-368 - threads are keyed BY ID, because the panel can now start a second conversation
+   on the same issue and switch back. The FIRST id the panel asks for gets the seeded
+   transcript; every later one starts EMPTY, which is what a freshly minted `t_<ts>` thread
+   is. A fixture that answered the same messages for every id would let a panel that
+   ignores threadId pass the switch. */
+const CODER_THREADS = new Map();
+let CODER_FIRST_THREAD = null;
+let CODER_ACTIVE_THREAD = null;
+const coderThread = (threadId) => {
+  const key = String(threadId || CODER_ACTIVE_THREAD || "p_demo");
+  if (!CODER_THREADS.has(key)) {
+    const first = CODER_FIRST_THREAD === null;
+    if (first) CODER_FIRST_THREAD = key;
+    const seed = first ? CODER_SEED() : [];
+    CODER_THREADS.set(key, { messages: seed, turns: seed.length ? 1 : 0 });
+  }
+  return CODER_THREADS.get(key);
 };
 const CODER_TURN_TICKET = {
   success: true, reply: "", actions: [{ name: "create_branch", args: { name: "proj-42-retry-guard" }, ok: true, ms: 640 }],
@@ -932,7 +949,11 @@ let CODER_LAST_DECISION = "confirm";
 let CODER_POLLS = 0;
 function coderInvoke(name, payload) {
   const scenario = (typeof window !== "undefined" && window.__CODER_SCENARIO__) || "ticket";
-  const t = coderThread();
+  /* confirmCoderTicket and getAsyncTaskResult carry no threadId (a ticket id is already
+     bound to its thread in the engine), so the last thread the panel NAMED is the one they
+     append to - exactly the binding the backend makes off the ticket row. */
+  if (payload && payload.threadId) CODER_ACTIVE_THREAD = payload.threadId;
+  const t = coderThread(payload && payload.threadId);
   switch (name) {
     case "getCoderThread":
       return Promise.resolve({ success: true, thread: { messages: t.messages.slice(), turns: t.turns, ...(t.pendingTicketId ? { pendingTicketId: t.pendingTicketId } : {}) } });
@@ -968,6 +989,15 @@ function coderInvoke(name, payload) {
       const slow = typeof window !== "undefined" && window.__CODER_SLOW__;
       CODER_POLLS++;
       if (slow && CODER_POLLS === 1) return Promise.resolve({ success: true, status: "processing" });
+      if (typeof window !== "undefined" && window.__CODER_SIM_LOCKED__) {
+        return Promise.resolve({
+          success: true, status: "done",
+          result: {
+            success: false, reason: "simulation-locked", simulation: true,
+            error: "This Coder thread is running in SIMULATION \u2014 it cannot be switched to live writes mid-thread. Start a new thread to work for real.",
+          },
+        });
+      }
       const first = payload && payload.taskId === "coder_turn_1";
       const result = first
         ? (scenario === "plain" ? CODER_TURN_PLAIN : CODER_TURN_TICKET)
@@ -1240,7 +1270,18 @@ function invoke(name, payload) {
     }
     case "getAsyncJobs": return Promise.resolve(buildJobs());
     case "getFields": return Promise.resolve(FIELDS);
-    case "getRuleLists": return Promise.resolve({ success: true, lists: { issuetypes: [{ value: "Bug", label: "Bug" }, { value: "Task", label: "Task" }], statuses: [{ value: "Done", label: "Done" }], priorities: [{ value: "High", label: "High" }] } });
+    /* F-369/F-373 — the EDITOR FLOOR list. `gitconnections` rows are RICH
+       ({id, kind, label, repos[]}) and carry no status and no secret state, so a non-admin
+       workflow editor can both SEE the connections and narrow repositories to one of them.
+       `gitrepos` stays the flat union for the older callers. This is the shape the Coder
+       panel's fallback and PremadeRuleForm's fallback are written against. */
+    case "getRuleLists": return Promise.resolve({ success: true, lists: {
+      issuetypes: [{ value: "Bug", label: "Bug" }, { value: "Task", label: "Task" }],
+      statuses: [{ value: "Done", label: "Done" }],
+      priorities: [{ value: "High", label: "High" }],
+      gitconnections: CODE_CONNS().map((c) => ({ id: c.id, kind: c.kind, label: c.label, repos: (c.repos || []).slice() })),
+      gitrepos: [...new Set(CODE_CONNS().flatMap((c) => c.repos || []))].sort().map((r) => ({ value: r, label: r })),
+    } });
     // F-077: THIS IS THE BACKEND SHAPE — `usage`, `seats` and `forgeLlm` are
     // SIBLINGS on the result (src/index.js getAiUsage). The mock used to nest
     // seats/forgeLlm INSIDE usage, which made a dead allowance meter look alive.

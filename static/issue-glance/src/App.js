@@ -103,6 +103,23 @@ const injectStyles = () => {
     .coder-msg-p { margin: 0 0 6px; font-size: 12.5px; color: var(--text-color); white-space: pre-wrap; word-break: break-word; }
     .coder-msg-p:last-child { margin-bottom: 0; }
 
+    /* -- F-368: the conversations bar. Chips for the threads this browser has opened,
+          and the button that mints a new one. The CURRENT chip is the solid agents hue
+          with white text; the rest carry a full 1px border, never a left rail and never
+          a tinted fill. -- */
+    .coder-threads { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .coder-thread-list { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .coder-thread-chip { font: inherit; font-size: 11px; font-weight: 700; padding: 4px 10px; border-radius: 999px; cursor: pointer; border: 1px solid var(--border-color); background: var(--card-bg); color: var(--text-secondary); }
+    .coder-thread-chip:hover:not(:disabled) { border-color: var(--text-secondary); }
+    .coder-thread-chip.is-current { background: #b45309; border-color: #b45309; color: #fff; }
+    html[data-color-mode="dark"] .coder-thread-chip.is-current { background: #f59e0b; border-color: #f59e0b; color: #2a1602; }
+    .coder-thread-chip:disabled { cursor: default; color: var(--text-muted); }
+    .coder-thread-chip.is-current:disabled { color: #fff; }
+    html[data-color-mode="dark"] .coder-thread-chip.is-current:disabled { color: #2a1602; }
+    .coder-newconv { margin-left: auto; font: inherit; font-size: 11.5px; font-weight: 700; padding: 5px 11px; border-radius: 6px; cursor: pointer; border: 1px solid var(--border-color); background: var(--card-bg); color: var(--text-color); }
+    .coder-newconv:hover:not(:disabled) { border-color: var(--text-secondary); }
+    .coder-newconv:disabled { cursor: default; color: var(--text-muted); }
+
     /* -- the consent chip row: the action, its preview, three answers -- */
     .coder-consent { border: 1px solid var(--border-color); border-radius: 8px; background: var(--card-bg); padding: 10px 11px; }
     .coder-consent-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -149,6 +166,9 @@ const injectStyles = () => {
     .coder-composer-row { display: flex; align-items: center; gap: 8px; }
     .coder-composer-row .coder-btn-go { margin-left: auto; }
     .coder-picker { position: relative; }
+    /* F-371: why the Dry run switch is not a choice any more. A plain sentence in the
+       app's own secondary text, never a tinted callout and never a rail. */
+    .coder-lock-note { margin: 0; font-size: 11.5px; font-weight: 600; color: var(--text-secondary); }
     /* The Dry run switch: a real control, never a native checkbox. Solid when on. */
     .coder-toggle { display: inline-flex; align-items: center; gap: 7px; font: inherit; font-size: 12px; font-weight: 700; color: var(--text-secondary); background: none; border: none; padding: 0; cursor: pointer; }
     .coder-toggle-box { width: 30px; height: 17px; border-radius: 999px; background: #475569; position: relative; transition: background 140ms ease; }

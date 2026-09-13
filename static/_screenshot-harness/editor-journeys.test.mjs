@@ -313,6 +313,84 @@ try {
     await closeEditor(env);
   }
 
+  /* ------------- J16i — F-369: the EDITOR floor picks a connection and narrows repos ---
+     `listGitConnections` is requireAdmin, so a workflow editor is REFUSED there. Before
+     this the form fell back to a flat list whose repos were the union across every
+     connection: the editor could pick connection A and a repo only B allows, save it, and
+     the transition would fail CLOSED at run time. getRuleLists now answers the editor floor
+     with rich rows ({id, kind, label, repos[]}), so the SAME renderer narrows on both paths
+     and the "this is every repository" note is gone with the thing it described. */
+  for (const theme of ["light", "dark"]) {
+    console.log(`J16i git group on the EDITOR floor (listGitConnections refused, ${theme})`);
+    const env = await openEditor(browser, "config-ui", "cfg-premade-git", theme, { __REFUSE__: ["listGitConnections"], __REFUSE_ROLE__: "admin" });
+    const { page } = env;
+    try {
+      await page.locator(".dropdown-trigger", { hasText: "Choose a premade rule" }).first().click();
+      await page.waitForSelector(".dropdown-panel", { timeout: 6000 });
+      await page.locator(".dropdown-panel .dropdown-item", { hasText: "the pull request is merged" }).first().click();
+      await page.waitForSelector(".pr-seg", { timeout: 6000 });
+
+      // The picker EXISTS for a non-admin, and it is the app's own control.
+      const connPicker = page.locator(".dropdown-trigger", { hasText: "Choose a git connection" }).first();
+      ok(await connPicker.count() > 0, `J16i (${theme}) an editor refused by listGitConnections still gets a connection picker`);
+      ok(await page.locator("select").count() === 0, `J16i (${theme}) no native <select> on the editor floor either`);
+      await connPicker.click();
+      await page.waitForSelector(".dropdown-panel", { timeout: 6000 });
+      const connItems = await page.locator(".dropdown-panel .dropdown-item").allInnerTexts();
+      ok(connItems.some((t) => /Acme engineering/.test(t)), `J16i (${theme}) the editor-floor rows are listed (Acme engineering)`);
+      ok(connItems.some((t) => /Acme platform/.test(t)), `J16i (${theme}) both connections are listed`);
+      // The editor floor carries NO credential state, so nothing may claim one.
+      ok(!connItems.some((t) => /credential dead/.test(t)), `J16i (${theme}) the editor floor claims no credential status it cannot see`);
+      await page.locator(".dropdown-panel .dropdown-item", { hasText: "Acme engineering" }).first().click();
+
+      // THE NARROWING, on the editor path: repos[] rides each row.
+      await page.locator(".dropdown-trigger", { hasText: "Choose a repository" }).first().click();
+      await page.waitForSelector(".dropdown-panel", { timeout: 6000 });
+      const repoItems = await page.locator(".dropdown-panel .dropdown-item").allInnerTexts();
+      ok(repoItems.some((t) => /acme\/web/.test(t)), `J16i (${theme}) the editor sees the chosen connection's repos (acme/web)`);
+      ok(!repoItems.some((t) => /acme\/platform/.test(t)), `J16i (${theme}) the OTHER connection's repo is NOT offered to an editor either`);
+      await page.locator(".dropdown-panel .dropdown-item", { hasText: "acme/web" }).first().click();
+
+      // The union note belonged to a list that could not narrow. It must be gone.
+      const formText = await page.locator(".container").innerText();
+      ok(!/every repository across all connections/.test(formText), `J16i (${theme}) the "every repository" note is gone once the editor floor narrows`);
+
+      // And the config an editor hands Jira is the same four keys.
+      const saved = await page.evaluate(async () => JSON.parse(await window.__ON_CONFIGURE__()));
+      ok(saved.connectionId === "gc_1" && saved.repo === "acme/web", `J16i (${theme}) the editor's config carries the connection AND the repo`);
+    } catch (e) { fail++; console.log(`  ✗ J16i (${theme}) threw: ` + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
+  /* ------------- J16j — F-369: NO connections configured, on both floors --------------
+     Nothing to pick is a real state, and it must read as "an admin adds them", never as an
+     empty control that looks broken. */
+  for (const flags of [{ __CODE_NO_CONNS__: true }, { __CODE_NO_CONNS__: true, __REFUSE__: ["listGitConnections"], __REFUSE_ROLE__: "admin" }]) {
+    const who = flags.__REFUSE__ ? "editor" : "admin";
+    console.log(`J16j git group with NO connections (${who})`);
+    const env = await openEditor(browser, "config-ui", "cfg-premade-git", "light", flags);
+    const { page } = env;
+    try {
+      await page.locator(".dropdown-trigger", { hasText: "Choose a premade rule" }).first().click();
+      await page.waitForSelector(".dropdown-panel", { timeout: 6000 });
+      await page.locator(".dropdown-panel .dropdown-item", { hasText: "the pull request is merged" }).first().click();
+      await page.waitForSelector(".pr-seg", { timeout: 6000 });
+      const empty = page.locator(".dropdown-trigger", { hasText: "No git connections" }).first();
+      ok(await empty.count() > 0, `J16j (${who}) the empty picker says an admin adds connections in Settings`);
+      ok(await page.locator("select").count() === 0, `J16j (${who}) still no native <select>`);
+      /* With no connection to pick the rule is INVALID, so the editor refuses to hand Jira
+         a config at all - which is the right answer: a git rule with no connection is the
+         unfinished config the executor would ALLOW every transition on. */
+      const saved = await page.evaluate(async () => {
+        const raw = await window.__ON_CONFIGURE__();
+        if (raw == null || raw === "undefined") return null;
+        try { return JSON.parse(raw); } catch (e) { return null; }
+      });
+      ok(!saved || !saved.connectionId, `J16j (${who}) nothing was invented for the saved config`);
+    } catch (e) { fail++; console.log(`  ✗ J16j (${who}) threw: ` + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
   /* ---------------- J18b — static-PF DRIVE: Regenerate + dry-run Test ---------------- */
   {
     console.log("J18b static-PF drive (regenerate + test run)");

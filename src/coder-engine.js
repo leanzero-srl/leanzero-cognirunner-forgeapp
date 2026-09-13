@@ -126,12 +126,36 @@ export const CODER_THREAD_KEEP_RECENT = 12;
 export const CODER_USER_MESSAGE_MAX_CHARS = 8000;
 /** A ticket row stores the model's arguments verbatim; beyond this the action is refused. */
 export const CODER_TICKET_ARGS_MAX_BYTES = 120 * 1024;
+/**
+ * THE THREAD'S PINNED KNOWLEDGE (F-574). The skills and memory blocks the FIRST turn was
+ * given are stored on the row VERBATIM and replayed on every later turn, because — unlike
+ * the field guide, whose sections are baked constants a set of ids reproduces byte for byte
+ * — a skill can be EDITED and a memory can be ADDED between two turns of one thread. Ids
+ * would therefore not be enough to promise the same bytes, so the bytes themselves are
+ * pinned, bounded by the `coderTurn` knowledge budget (16 KB skills + 8 KB memories,
+ * src/shared/registry-limits.js) with this ceiling as the hard stop.
+ *
+ * Over the ceiling NOTHING is pinned (fail-open): the thread then behaves exactly as it did
+ * before this finding — knowledge re-derived per turn, a prefix that may move — which is a
+ * billing cost, never a wrong answer, and is preferable to a thread row that cannot be
+ * written at all.
+ */
+export const CODER_PINNED_KNOWLEDGE_MAX_BYTES = 32 * 1024;
 
 /* ───────────────────────────── KVS key builders ───────────────────────────── */
 // ONE home for every coder key shape, so the engine, the resolvers and the dev hook
 // cannot disagree about where a thread lives. `safeKeyPart` is the shared sanitiser.
 export const coderThreadKey = (issueKey, threadId) => `coder_thread:${safeKeyPart(issueKey)}:${safeKeyPart(threadId)}`;
 export const coderTicketKey = (ticketId) => `coder_ticket:${safeKeyPart(ticketId)}`;
+/**
+ * THE THREAD'S PINNED KNOWLEDGE (F-574) — ITS OWN KEY, DELIBERATELY NOT THE THREAD ROW.
+ * The transcript row carries IDS AND COUNTS ONLY (F-487): a skill is an admin's writing and
+ * a memory is derived from issue content, and neither belongs in the thing the model is
+ * re-fed every turn. It is also capped at 48 KB by the compactor, so 24 KB of pinned
+ * knowledge in there would evict the conversation itself. So the bytes live beside the
+ * thread, on the same 90-day life, read by `buildCoderKnowledge` and by nothing else.
+ */
+export const coderPinKey = (issueKey, threadId) => `coder_pin:${safeKeyPart(issueKey)}:${safeKeyPart(threadId)}`;
 export const coderExecClaimKey = (issueKey) => `coder_exec:${safeKeyPart(issueKey)}`;
 export const coderTicketExecClaimKey = (ticketId) => `coder_ticket_exec:${safeKeyPart(ticketId)}`;
 /** Per-EVENT completion claim for a post-function turn (F-393) — see CODER_PF_DONE_TTL. */
@@ -366,6 +390,17 @@ export const getCoderThread = async (issueKey, threadId, { store = storage } = {
   return row && typeof row === "object" ? row : null;
 };
 
+/**
+ * THE THREAD'S PINNED KNOWLEDGE (F-574), for `buildCoderKnowledge` and nothing else:
+ * `{ skillsBlock, memoryBlock, skillIds, memoryCount }` as the FIRST turn rendered them.
+ * Null means "this thread has not pinned yet" — the first turn, or a thread whose blocks
+ * were too large to pin — and the caller then builds live, exactly as it did before.
+ */
+export const getCoderPinnedKnowledge = async (issueKey, threadId, { store = storage } = {}) => {
+  const row = await store.get(coderPinKey(issueKey, threadId));
+  return row && typeof row === "object" ? row : null;
+};
+
 /* ───────────────────────────── the prompt ───────────────────────────── */
 
 /**
@@ -378,9 +413,11 @@ export const getCoderThread = async (issueKey, threadId, { store = storage } = {
  * the turns of one thread. That is what makes a provider's prompt cache reachable.
  *
  * The same promise binds everything the assembly below puts in front of the user's turn —
- * the knowledge messages and the stored history — and it is the reason the Coder's field
- * guide is chosen ONCE per thread and replayed from ids on the row (F-550). Anything that
- * legitimately varies per turn goes AFTER that prefix, never inside it.
+ * the knowledge messages and the stored history — and it is the reason ALL THREE knowledge
+ * blocks are chosen ONCE per thread: the field guide from the section ids on the row
+ * (F-550), the skills and memory blocks from the bytes on the row (F-574, because a skill
+ * can be edited and a memory added mid-thread, so ids do not reproduce bytes). Anything
+ * that legitimately varies per turn goes AFTER that prefix, never inside it.
  */
 export const buildCoderSystemPrompt = ({ simulated = false } = {}) => `You are CogniRunner's Coder: an engineer working inside a Jira issue, talking to the person who opened this chat.
 
@@ -529,9 +566,11 @@ export const runCoderTurn = async ({
   gateFacts = null, savedByRole = "editor", deadline = null, cancelToken = null,
   headless = false, allowedActions = null,
   // TRUSTED-BUT-BOUNDED knowledge for this turn: { memoryBlock, skillsBlock,
-  // fieldGuideBlock, fieldGuideSections, fieldGuideExtraBlock } (1.4 commits 13b and 14b;
-  // the `Extra` block is F-550 and is the ONE part of knowledge that is allowed to vary
-  // per turn, which is why it is emitted after the prefix and not inside it). Built by
+  // fieldGuideBlock, fieldGuideSections } inside the stable prefix, and
+  // { skillsExtraBlock, memoryExtraBlock, fieldGuideExtraBlock } after it (1.4 commits 13b
+  // and 14b; the `Extra` blocks are F-550 for the guide and F-574 for the other two, and
+  // they are the ONLY parts of knowledge allowed to vary per turn, which is why they are
+  // emitted after the prefix and not inside it). Built by
   // `buildCoderKnowledge` (src/async-handler.js); rendered by the ONE builder
   // `buildKnowledgeMessages` (src/agent-runner.js), which is why nothing here changed
   // when the field guide became a third block. (1.4
@@ -791,16 +830,24 @@ const runCoderTurnClaimed = async ({
   //
   // THE PREFIX IS EVERYTHING UP TO AND INCLUDING THE HISTORY, and it is the thing the
   // contract above (`buildCoderSystemPrompt`) promises is byte-identical across the turns
-  // of one thread. That promise is only true because the field guide in `knowledge` is now
-  // chosen ONCE per thread and re-emitted from the ids stored on this row (F-550) — it used
-  // to be re-scored from each turn's message, which moved message index 1 every turn and
-  // cost the whole thread, history included, its cross-turn cache hit.
+  // of one thread. That promise holds only because EVERY block inside it is chosen once per
+  // thread: the field guide from the section ids on this row (F-550) and the skills and
+  // memory blocks from the bytes pinned on this row (F-574). F-550 fixed the guide alone
+  // and the other two stayed re-derived per turn — `skillsBlock` from the delivery's ids
+  // (a skill can be edited) and `memoryBlock` from the live memory store (a memory can be
+  // added mid-thread) — so a single admin action still moved message index 1 and cost the
+  // whole thread, stored history included, its cross-turn cache hit.
   const prefix = [{ role: "system", content: system }, ...buildKnowledgeMessages(knowledge), ...history];
-  // ANYTHING THIS TURN ADDED to the guide goes HERE, after the prefix and before the
-  // user's words: a per-turn block is allowed to exist, it is simply not allowed to sit
-  // inside the bytes the next turn has to match. Rendered by the SAME builder, so it
-  // carries the same header, marker and guard sentence as the stable block.
-  const extraKnowledge = buildKnowledgeMessages({ fieldGuideBlock: knowledge && knowledge.fieldGuideExtraBlock });
+  // ANYTHING THIS TURN ADDED — a newly bound skill, a memory written since the thread
+  // started, a guide section this turn's words scored — goes HERE, after the prefix and
+  // before the user's words: a per-turn block is allowed to exist, it is simply not allowed
+  // to sit inside the bytes the next turn has to match. Rendered by the SAME builder, so it
+  // carries the same headers, markers, guard sentences and trust ORDER as the stable block.
+  const extraKnowledge = buildKnowledgeMessages({
+    skillsBlock: knowledge && knowledge.skillsExtraBlock,
+    fieldGuideBlock: knowledge && knowledge.fieldGuideExtraBlock,
+    memoryBlock: knowledge && knowledge.memoryExtraBlock,
+  });
   const messages = [...prefix, ...extraKnowledge, userTurn];
   // What the previous turn's prefix WAS, in bytes, read before this turn overwrites it.
   // It is the only thing that can tell a cross-turn cache miss from a healthy turn.
@@ -877,6 +924,52 @@ const runCoderTurnClaimed = async ({
     else delete record.pendingTicketId;
     await store.set(threadKey, record, { ttl: { value: 90, unit: "DAYS" } });
   });
+
+  // THE THREAD'S SKILLS AND MEMORIES, PINNED ONCE (F-574) — the same rule as the guide
+  // above, on its OWN key. What is pinned is the RENDERED TEXT, not a list of ids: the
+  // guide's sections are baked constants that ids reproduce exactly, while a skill can be
+  // EDITED and a memory ADDED between two turns, so only the bytes can promise the bytes.
+  // `buildCoderKnowledge` (src/async-handler.js) replays these verbatim on every later turn
+  // and hands anything NEWER back as `skillsExtraBlock` / `memoryExtraBlock`, which are
+  // emitted after the prefix.
+  //
+  // NOT ON THE THREAD ROW, for two reasons that both matter: the transcript carries ids and
+  // counts only (F-487, and this text is admin writing plus issue-derived memory content),
+  // and the row is compacted at CODER_THREAD_MAX_BYTES, where 24 KB of knowledge would
+  // evict the conversation it exists to serve.
+  //
+  // It is written even when both blocks are EMPTY, and that is the point: "this thread was
+  // offered knowledge and had none" is a decision, so a memory added before turn 3 lands in
+  // the extra block instead of appearing inside the prefix as if it had always been there.
+  // AFTER the thread write and never in front of it — a pin is an optimisation, the record
+  // is the conversation. Fail-open on every fault, for the same reason.
+  if (knowledge && typeof knowledge === "object") {
+    try {
+      const pinKey = coderPinKey(key, thread);
+      const already = await store.get(pinKey);
+      if (!already) {
+        const pinnedSkills = typeof knowledge.skillsBlock === "string" ? knowledge.skillsBlock : "";
+        const pinnedMemory = typeof knowledge.memoryBlock === "string" ? knowledge.memoryBlock : "";
+        const pinnedBytes = Buffer.byteLength(pinnedSkills + pinnedMemory, "utf8");
+        if (pinnedBytes <= CODER_PINNED_KNOWLEDGE_MAX_BYTES) {
+          await store.set(pinKey, {
+            issueKey: key, threadId: thread,
+            skillsBlock: pinnedSkills,
+            memoryBlock: pinnedMemory,
+            // The receipt's ids and counts, so a replayed turn reports what it injected
+            // without re-reading either store.
+            skillIds: Array.isArray(knowledge.skillIds) ? knowledge.skillIds.map((x) => String(x)).slice(0, 40) : [],
+            memoryCount: Number(knowledge.memoryCount) || 0,
+            at: nowIso(),
+          }, { ttl: { value: 90, unit: "DAYS" } });
+        } else {
+          // Say it on the turn's own log: an unpinned thread re-derives its knowledge every
+          // turn (the pre-F-574 behaviour), which costs cache hits, never answers.
+          log(`knowledge too large to pin for this thread (${pinnedBytes} bytes) — later turns will rebuild it and the prompt prefix may move`);
+        }
+      }
+    } catch (e) { log(`pinning this thread's knowledge failed, later turns will rebuild it: ${(e && e.message) || e}`); }
+  }
 
   // -- the workspace writes, AFTER the record is safe ----------------------
   // Order matters: the thread row IS the record, so it is written first. If a Jira write

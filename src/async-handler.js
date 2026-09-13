@@ -128,7 +128,7 @@ import { runPipelineSetup, PIPELINE_TASK } from "./git-pipeline.js";
 // 1.5 probe P3 — the ONE Confluence call site rule holds for the probe too: it goes
 // through the client, never straight to `requestConfluence`.
 import { createConfluenceClient } from "./confluence-client.js";
-import { runCoderTurn, isHeadlessTrigger, coderPfDoneClaimKey, CODER_PF_DONE_TTL, getCoderThread } from "./coder-engine.js";
+import { runCoderTurn, isHeadlessTrigger, coderPfDoneClaimKey, CODER_PF_DONE_TTL, getCoderThread, getCoderPinnedKnowledge } from "./coder-engine.js";
 // The knowledge byte budgets have ONE home (F-404 builds the Coder's blocks below).
 import { knowledgeBudget, fieldGuideAudience, fieldGuideBudget } from "./shared/registry-limits.js";
 import { executeScheduledJobTask, getJob } from "./scheduled-jobs.js";
@@ -1378,6 +1378,18 @@ const executeGitEvent = async (params) => {
  *  · The budget is `coderTurn` (16 KB skills / 8 KB memories): the turn's prompt carries a
  *    diff and a file tree, and the budgets are per audience for exactly that reason.
  *
+ * ONE SET OF BLOCKS PER THREAD, NOT PER TURN (F-574, extending F-550 to the other two).
+ * All three blocks sit in the prompt prefix `runCoderTurn` promises is byte-identical across
+ * the turns of one thread. F-550 pinned the field guide by SECTION ID — the packs are baked
+ * constants, so ids reproduce bytes — and left these two re-derived every turn: skills from
+ * the delivery's ids (a skill can be EDITED mid-thread) and memories from the live store (a
+ * memory can be ADDED mid-thread, from the admin panel or a fix-derived capture). Either one
+ * moved message index 1 and re-billed the entire thread, stored history included, at write
+ * price. So the FIRST turn's rendered blocks are pinned on the thread row by
+ * `runCoderTurn` and replayed here VERBATIM; anything newer than the pin comes back as
+ * `skillsExtraBlock` / `memoryExtraBlock`, which the engine emits AFTER the history where a
+ * per-turn change costs only its own tokens. Nothing is dropped — it simply moves.
+ *
  * FAIL-OPEN, in both halves and for the same reason the listener builder is: knowledge makes
  * an agent better, it does not make it correct. A skill that will not load or a memory store
  * having a bad minute must never turn into a Coder turn that did not run.
@@ -1393,16 +1405,60 @@ const buildCoderKnowledge = async (p) => {
   const out = {};
   const budget = knowledgeBudget("coderTurn");
   const ids = Array.isArray(p && p.skillIds) ? p.skillIds : [];
+  // WHAT THIS THREAD ALREADY DECIDED, read once for all three blocks: the transcript row
+  // (it carries the guide's section ids — F-550) and the pin row beside it (the skills and
+  // memory BYTES the first turn rendered — F-574; they are not on the transcript because
+  // the transcript carries ids and counts only, F-487). Fail-open to null on both: nothing
+  // to replay means "build live", which costs a cache hit and never a turn.
+  const issueKey = String((p && p.issueKey) || "");
+  const threadId = String((p && p.threadId) || "");
+  let row = null;
+  try { row = await getCoderThread(issueKey, threadId); } catch (e) { row = null; }
+  let pinned = null;
+  try { pinned = await getCoderPinnedKnowledge(issueKey, threadId); } catch (e) { pinned = null; }
+
+  if (pinned) {
+    // A THREAD THAT ALREADY DECIDED. The bytes come off the row BEFORE any store is
+    // touched, so even a skills or memories outage cannot move the prompt prefix.
+    if (pinned.skillsBlock) {
+      out.skillsBlock = String(pinned.skillsBlock);
+      out.skillIds = Array.isArray(pinned.skillIds) ? pinned.skillIds.map((x) => String(x)) : [];
+      out.skillCount = out.skillIds.length || 1;
+    }
+    if (pinned.memoryBlock) {
+      out.memoryBlock = String(pinned.memoryBlock);
+      out.memoryCount = Number(pinned.memoryCount) || 0;
+    }
+  }
+
   if (ids.length) {
     try {
       const { fetchSkillsBlock } = await import("./skills.js");
-      const b = await fetchSkillsBlock(ids, { capBytes: budget.skills });
-      if (b.text) out.skillsBlock = b.text;
-      // Same receipt stamp as `buildAgentKnowledge` (src/listeners.js) — F-487. The ids
-      // the model actually received travel with the block so `summarizeKnowledge`
-      // (src/agent-runner.js) can record them on the Coder's turn without re-parsing it.
-      if (b.applied && b.applied.length) { out.skillIds = b.applied.map((x) => x.id); out.skillCount = b.applied.length; }
-      if (b.skipped && b.skipped.length) console.warn(`[coder] skill(s) too large for the turn's ${budget.skills}-byte budget, not injected: ${b.skipped.map((x) => x.name || x.id).join(", ")}`);
+      // What this turn BOUND that the thread has not already been given. On a pinned
+      // thread an id already in the prefix is never re-fetched: re-rendering it could
+      // produce different bytes (the skill may have been edited) and the whole point is
+      // that the prefix does not move. The edit reaches the NEXT thread, not this one.
+      const known = pinned ? new Set((Array.isArray(pinned.skillIds) ? pinned.skillIds : []).map((x) => String(x))) : null;
+      const wanted = known ? ids.filter((id) => !known.has(String(id))) : ids;
+      if (wanted.length) {
+        const b = await fetchSkillsBlock(wanted, { capBytes: budget.skills });
+        // Same receipt stamp as `buildAgentKnowledge` (src/listeners.js) — F-487. The ids
+        // the model actually received travel with the block so `summarizeKnowledge`
+        // (src/agent-runner.js) can record them on the Coder's turn without re-parsing it.
+        const applied = (b.applied || []).map((x) => x.id);
+        if (pinned) {
+          // AFTER the history, never inside the prefix.
+          if (b.text) out.skillsExtraBlock = b.text;
+          if (applied.length) {
+            out.skillIds = [...(out.skillIds || []), ...applied];
+            out.skillCount = (Number(out.skillCount) || 0) + applied.length;
+          }
+        } else {
+          if (b.text) out.skillsBlock = b.text;
+          if (applied.length) { out.skillIds = applied; out.skillCount = applied.length; }
+        }
+        if (b.skipped && b.skipped.length) console.warn(`[coder] skill(s) too large for the turn's ${budget.skills}-byte budget, not injected: ${b.skipped.map((x) => x.name || x.id).join(", ")}`);
+      }
     } catch (e) { console.warn("[coder] skills block skipped:", e && e.message); }
   }
   try {
@@ -1411,8 +1467,26 @@ const buildCoderKnowledge = async (p) => {
     if (settings && settings.injection !== false) {
       const projectKey = String((p && p.issueKey) || "").split("-")[0] || null;
       const b = await buildMemoryBlock({ projectKey, capBytes: budget.memories });
-      if (b.text) out.memoryBlock = b.text;
-      if (b.text) out.memoryCount = Number(b.count) || 0;
+      if (pinned) {
+        // MEMORIES WRITTEN SINCE THIS THREAD STARTED go after the history (F-574). The
+        // pinned block is already on `out`; what is new is the lines the live block has
+        // and the pinned one does not, bounded by the same memory budget so a long-running
+        // thread can never spend more than one budget's worth of additions at a time.
+        const extra = memoryLinesNotIn(b.text, pinned.memoryBlock, budget.memories);
+        if (extra.text) {
+          out.memoryExtraBlock = extra.text;
+          out.memoryCount = (Number(out.memoryCount) || 0) + extra.count;
+        }
+      } else {
+        if (b.text) out.memoryBlock = b.text;
+        if (b.text) out.memoryCount = Number(b.count) || 0;
+      }
+    } else if (pinned && out.memoryBlock) {
+      // The admin turned instance-wide memory injection OFF mid-thread. That is a
+      // deliberate instruction and it wins over the prefix: the block is dropped, the
+      // prefix moves ONCE, and the thread carries no learned facts from here on.
+      delete out.memoryBlock;
+      delete out.memoryCount;
     }
   } catch (e) { console.warn("[coder] memory block skipped:", e && e.message); }
   // THE BAKED FIELD GUIDE (1.4 commit 14b) — the Coder's turn is the widest budget in the
@@ -1442,9 +1516,9 @@ const buildCoderKnowledge = async (p) => {
       await import("./knowledge-packs.js");
     const audience = fieldGuideAudience("coderTurn");
     const budget = fieldGuideBudget(audience);
-    let row = null;
-    try { row = await getCoderThread(String((p && p.issueKey) || ""), String((p && p.threadId) || "")); }
-    catch (e) { row = null; }
+    // `row` was read once at the top of this builder (F-574) — the guide, the skills and
+    // the memories all read the same thread row, and reading it twice is how two halves of
+    // one decision come to disagree about which turn this is.
     const stored = row && Array.isArray(row.fieldGuideSections) ? row.fieldGuideSections.map((x) => String(x)) : [];
 
     if (stored.length) {
@@ -1483,6 +1557,34 @@ const buildCoderKnowledge = async (p) => {
     }
   } catch (e) { console.warn("[coder] field guide skipped:", e && e.message); }
   return out;
+};
+
+/**
+ * THE MEMORIES A THREAD HAS NOT SEEN YET (F-574).
+ *
+ * `buildMemoryBlock` renders one `- [source] text` line per memory, so "what is new since
+ * this thread pinned its block" is a line-set difference and nothing cleverer: the rendered
+ * block carries no ids, and comparing rendered LINES is exactly what decides whether the
+ * prompt prefix would have moved.
+ *
+ * Bounded by the same byte budget as the block it came from, measured in UTF-8 (a CJK or
+ * emoji memory costs 3-4 bytes per character), so a thread's additions can never exceed one
+ * memory budget on any single turn.
+ */
+const memoryLinesNotIn = (liveText, pinnedText, capBytes) => {
+  const live = String(liveText || "").split("\n").filter((l) => l.trim());
+  if (!live.length) return { text: "", count: 0 };
+  const seen = new Set(String(pinnedText || "").split("\n").map((l) => l.trim()).filter(Boolean));
+  let text = "";
+  let count = 0;
+  for (const line of live) {
+    if (seen.has(line.trim())) continue;
+    const candidate = text ? `${text}\n${line}` : line;
+    if (Buffer.byteLength(candidate, "utf8") > capBytes) break;
+    text = candidate;
+    count++;
+  }
+  return { text, count };
 };
 
 /** The thread's first USER message, when a row exists but predates the stored id list. */

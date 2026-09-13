@@ -51,7 +51,7 @@ export async function load(url, ctx, next) {
 const store = (await import("../lib/mock-kvs.mjs")).default;
 const {
   runCoderTurn, confirmCoderTicket, compactThread, buildCoderSystemPrompt, buildArgsPreview,
-  coderThreadKey, coderTicketKey, coderExecClaimKey, coderTicketExecClaimKey, coderThreadWriteClaimKey,
+  coderThreadKey, coderPinKey, coderTicketKey, coderExecClaimKey, coderTicketExecClaimKey, coderThreadWriteClaimKey,
   CODER_MAX_ROUNDS, CODER_CLAIM_TTL_MINUTES, repairTranscript,
 } = await import("../../src/coder-engine.js");
 const { runAgentTask, runAgentLoop, createAgentActionDispatcher } = await import("../../src/agent-runner.js");
@@ -951,6 +951,104 @@ await check("F-550: a turn's ADDED sections are sent after the prefix, not insid
   const row = await store.get(coderThreadKey("LZPT-7", "t1"));
   assert.ok(!JSON.stringify(row.messages).includes("A comment is an ADF document"),
     "an added block is never stored into the thread as if the model had said it");
+});
+
+/* ═════════ F-574: the skills and memory blocks are pinned per thread too ═════════
+ *
+ * F-550 pinned the FIELD GUIDE and left the other two blocks of the same cached prefix
+ * re-derived every turn. The guide is pinned by section id because packs are baked
+ * constants; a skill can be edited and a memory added, so those two are pinned by their
+ * BYTES. This is the engine half: the row is written once, and a turn's additions are
+ * emitted after the prefix, in the builder's trust order.
+ */
+const SKILLS = "### Skill: House style\nTwo-space indent, never tabs.";
+const MEM = "- [user] Always rebase before opening a PR.";
+const MEM_NEW = "- [user] Deploys need the production environment flag set.";
+
+await check("F-574: the thread pins the skills and memory BYTES once, on its own key, and never re-pins", async () => {
+  resetStore();
+  const world = setupWorld({ rounds: [reply([finish()]), reply([finish()])] });
+  await startTurn(world, { knowledge: { skillsBlock: SKILLS, memoryBlock: MEM, skillIds: ["skill_house"], memoryCount: 1 } });
+  const pin1 = await store.get(coderPinKey("LZPT-7", "t1"));
+  assert.equal(pin1.skillsBlock, SKILLS, "the first turn pins the rendered skills block");
+  assert.equal(pin1.memoryBlock, MEM, "…and the rendered memory block");
+  assert.deepEqual(pin1.skillIds, ["skill_house"], "…with the receipt's ids");
+  assert.equal(pin1.memoryCount, 1, "…and its count");
+  // F-487 stands: the TRANSCRIPT still carries ids and counts only, so the pin cannot be
+  // "fixed" by moving it onto the thread row.
+  const stored = JSON.stringify(await store.get(coderThreadKey("LZPT-7", "t1")));
+  assert.ok(!/Two-space indent/.test(stored) && !/Always rebase/.test(stored),
+    "the pinned text is NOT on the thread row — that row is the transcript (F-487)");
+
+  // A later turn does NOT re-pin — that would be the per-turn re-derivation this removed.
+  await startTurn(world, { userMessage: "second", knowledge: { skillsBlock: "### Skill: Other\nx", memoryBlock: `${MEM}\n${MEM_NEW}` } });
+  const pin2 = await store.get(coderPinKey("LZPT-7", "t1"));
+  assert.equal(pin2.skillsBlock, SKILLS, "the pin is written once and never rewritten");
+  assert.equal(pin2.memoryBlock, MEM, "…for either block");
+});
+
+await check("F-574: a turn offered NO knowledge still records the decision, so turn 2's memory lands outside the prefix", async () => {
+  resetStore();
+  const world = setupWorld({ rounds: [reply([finish()]), reply([finish()])] });
+  await startTurn(world, { knowledge: { fieldGuideBlock: GUIDE, fieldGuideSections: ["sec-a"] } });
+  const pin = await store.get(coderPinKey("LZPT-7", "t1"));
+  assert.ok(pin, "the pin records that this thread was offered knowledge and had no skills or memories");
+  assert.equal(pin.skillsBlock, "");
+  assert.equal(pin.memoryBlock, "");
+});
+
+await check("F-574: knowledge too large to pin leaves the thread unpinned and says so, rather than failing the turn", async () => {
+  resetStore();
+  const world = setupWorld({ rounds: [reply([finish()])] });
+  const huge = "x".repeat(33 * 1024);
+  const r = await startTurn(world, { knowledge: { skillsBlock: huge } });
+  assert.equal(r.success, true, "the turn still runs — a pin is an optimisation, never a gate");
+  assert.equal(await store.get(coderPinKey("LZPT-7", "t1")), undefined, "nothing is pinned");
+  assert.ok((r.logs || []).some((l) => /too large to pin/.test(l)), "…and the turn's log says why");
+});
+
+await check("F-574: a memory added between two turns does not move one byte of the prefix, and still reaches the model", async () => {
+  resetStore();
+  const world = setupWorld({ rounds: [reply([finish()]), reply([finish()])] });
+  // What `buildCoderKnowledge` hands the engine on each turn: turn 2 replays the pinned
+  // blocks and passes the NEW memory separately (proven against the real stores in
+  // coder-resume-params.test.mjs).
+  const stable = { skillsBlock: SKILLS, memoryBlock: MEM, fieldGuideBlock: GUIDE, fieldGuideSections: ["sec-a"] };
+  await startTurn(world, { knowledge: stable });
+  await startTurn(world, { userMessage: "and deploy it", knowledge: { ...stable, memoryExtraBlock: MEM_NEW } });
+
+  const t1 = world.requests[0].messages;
+  const t2 = world.requests[1].messages;
+  const prefixLen = t1.length - 1;
+  assert.equal(JSON.stringify(t2.slice(0, prefixLen)), JSON.stringify(t1.slice(0, prefixLen)),
+    "THE FINDING: turn 2's prefix is byte-identical although a memory was added between the turns");
+  const at = t2.findIndex((mm) => String(mm.content || "").includes("production environment flag"));
+  assert.ok(at >= prefixLen, `the new memory sits after the shared prefix (at ${at}, prefix ends at ${prefixLen})`);
+  assert.equal(t2[t2.length - 1].role, "user", "…and still before the user's own turn");
+  assert.ok(String(t2[at].content).includes("LEARNED MEMORIES"), "…rendered by the SAME builder, with the advisory header");
+  const row = await store.get(coderThreadKey("LZPT-7", "t1"));
+  assert.ok(!JSON.stringify(row.messages).includes("production environment flag"),
+    "a per-turn block is never stored into the thread as if the model had said it");
+  assert.ok(Number(row.promptPrefixBytes) > 0, "…and the prefix size is recorded for the next turn's cache check");
+});
+
+await check("F-574: a newly bound skill takes the same route, after the history and above the memories", async () => {
+  resetStore();
+  const world = setupWorld({ rounds: [reply([finish()]), reply([finish()])] });
+  const stable = { skillsBlock: SKILLS, memoryBlock: MEM };
+  await startTurn(world, { knowledge: stable });
+  await startTurn(world, { userMessage: "now the ADF", knowledge: { ...stable, skillsExtraBlock: "### Skill: ADF\nComments are ADF documents.", memoryExtraBlock: MEM_NEW } });
+
+  const t1 = world.requests[0].messages;
+  const t2 = world.requests[1].messages;
+  const prefixLen = t1.length - 1;
+  assert.equal(JSON.stringify(t2.slice(0, prefixLen)), JSON.stringify(t1.slice(0, prefixLen)),
+    "the addition did not disturb one byte of the shared prefix");
+  const skillAt = t2.findIndex((mm) => String(mm.content || "").includes("Comments are ADF documents"));
+  const memAt = t2.findIndex((mm) => String(mm.content || "").includes("production environment flag"));
+  assert.ok(skillAt >= prefixLen && memAt > skillAt,
+    `the extra blocks keep the prompt's trust order: skills then memories (${skillAt} < ${memAt}, prefix ends at ${prefixLen})`);
+  assert.ok(String(t2[skillAt].content).includes("<<<SKILLS"), "…and the skills addition is fenced like the stable block");
 });
 
 await check("F-550: the cross-turn cache miss gets its own observation line", async () => {

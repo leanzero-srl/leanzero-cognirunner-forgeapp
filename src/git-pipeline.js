@@ -57,7 +57,7 @@
 
 import storage from "@forge/kvs";
 import { createHash } from "node:crypto";
-import { renderScaffold, buildPermissionLock, SCAFFOLD_VERSION } from "./shared/git-scaffolds.js";
+import { renderScaffold, buildPermissionLock, scaffoldVarError, SCAFFOLD_VERSION } from "./shared/git-scaffolds.js";
 import { assertCommitWithinCaps, GitProviderError } from "./git-providers.js";
 import {
   getConnection,
@@ -353,6 +353,16 @@ export async function requestPipelineSetup({
       "That Forge app id is not an app id (expected ari:cloud:ecosystem::app/<uuid> or the bare uuid)",
       "invalid_app_id"
     );
+  }
+  // F-541 — the scaffold variables are validated HERE, not only in the browser. They are
+  // substituted into shell words, YAML values and file PATHS, and `renderScaffold` throws
+  // on a bad one — which, without this, happens inside the consumer, after the secrets are
+  // already in the customer's repository. The commitImportCore rule: refuse first.
+  if (scaffoldVars && typeof scaffoldVars === "object") {
+    for (const [k, v] of Object.entries(scaffoldVars)) {
+      const err = scaffoldVarError(k, v);
+      if (err) return invalid(err, "invalid_scaffold_var", { variable: k });
+    }
   }
   if (!manifestYaml || !String(manifestYaml).trim()) {
     return invalid("The app's manifest.yml is required — the permission lock is built from it", "manifest_required");

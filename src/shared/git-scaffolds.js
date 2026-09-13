@@ -843,7 +843,42 @@ export const SCAFFOLD_INDEX = Object.entries(SCAFFOLDS).map(([id, s]) => ({ id, 
 
 const substitute = (text, vars) => String(text).replace(/\{\{([A-Z_]+)\}\}/g, (m, k) => (Object.prototype.hasOwnProperty.call(vars, k) ? String(vars[k]) : m));
 
-const SAFE_VAR = /^[A-Za-z0-9 ._\/-]{1,80}$/;
+const SAFE_VAR_CHARS = /^[A-Za-z0-9 ._\/-]+$/;
+
+/**
+ * F-541 — THE ONE RULE FOR "IS THIS SCAFFOLD VARIABLE USABLE", AND ITS ONE HOME.
+ *
+ * A scaffold variable is substituted into shell words, YAML values and FILE PATHS, so the
+ * character set was never the whole question: "." and "/" are both legal and both needed
+ * (static/app), which means ".." and a leading "/" are reachable and neither belongs in a
+ * path relative to a checkout. The backend's old SAFE_VAR allowed both, so a traversing
+ * UI_DIR was refused only by the admin panel's own copy of the rule -- that is, only in the
+ * browser, and only for the one caller that happens to be a form.
+ *
+ * This is the rule, and both the renderer and the setup resolver call it. The admin panel
+ * imports it too, instead of keeping the copy it grew.
+ *
+ * Returns null when the value is usable, otherwise the sentence to show a human.
+ */
+export const SCAFFOLD_VAR_LABELS = Object.freeze({
+  APP_NAME: "The app name",
+  UI_DIR: "The Custom UI folder",
+});
+
+export const scaffoldVarError = (name, value, label) => {
+  const what = label || SCAFFOLD_VAR_LABELS[name] || String(name || "That value");
+  const v = String(value == null ? "" : value).trim();
+  if (!v) return what + " cannot be empty.";
+  if (v.length > 80) return what + " must be 80 characters or fewer.";
+  if (!SAFE_VAR_CHARS.test(v)) return what + " may only contain letters, numbers, spaces and . _ - /";
+  // Path traversal is refused on EVERY value, not only the folder: the character set has to
+  // allow dots and slashes, so "does this climb out of the checkout" is the real question,
+  // and an app name has no business climbing either.
+  if (v.split("/").some((seg) => seg === "..") || v.startsWith("/")) {
+    return what + " cannot contain .. or start with /";
+  }
+  return null;
+};
 
 /**
  * Render a scaffold into [{ path, content }]. Variables are validated to a safe
@@ -855,8 +890,9 @@ export const renderScaffold = (kind, overrides = {}) => {
   const vars = { ...s.vars };
   for (const [k, v] of Object.entries(overrides || {})) {
     if (!Object.prototype.hasOwnProperty.call(vars, k)) continue;
-    if (!SAFE_VAR.test(String(v))) throw new Error("Scaffold variable " + k + " has unsafe characters");
-    vars[k] = String(v);
+    const err = scaffoldVarError(k, v);
+    if (err) throw new Error("Scaffold variable " + k + " is not usable: " + err);
+    vars[k] = String(v).trim();
   }
   return s.files.map((f) => ({
     path: substitute(f.path, vars).replace(/^\/+/, ""),

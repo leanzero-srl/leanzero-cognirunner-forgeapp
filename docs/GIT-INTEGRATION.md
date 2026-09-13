@@ -477,6 +477,21 @@ the generated checker because that file is standalone in a customer's repository
 import nothing; `git-scaffolds.test.mjs` holds the two regex literals byte-equal so the two
 homes cannot drift apart.
 
+**Scaffold variables (F-541).** `scaffoldVarError(name, value, label?)`, exported from
+`src/shared/git-scaffolds.js`, is the ONE rule for whether a scaffold variable is usable:
+non-empty, 80 characters or fewer, only letters/numbers/spaces/`. _ - /`, no `..` **segment**
+and no leading `/`. It returns `null` or the sentence to show a human, labelled from
+`SCAFFOLD_VAR_LABELS` (`APP_NAME` → "The app name", `UI_DIR` → "The Custom UI folder") unless
+a caller passes its own label. `renderScaffold` calls it (and trims the accepted value before
+substituting), `setupGitPipeline` calls it before any side effect and refuses with
+`code: "invalid_scaffold_var"` plus the offending `variable`, and the admin panel's Code tab
+imports it rather than keeping the copy it grew. A scaffold variable is substituted into
+shell words, YAML values and file **paths** — the character set must allow `.` and `/` for
+`static/app`, which makes `..` and a leading `/` reachable, and the old `SAFE_VAR` allowed
+both. Until this, a traversing `UI_DIR` was refused only in the browser: `renderScaffold`
+would have thrown in the **consumer**, after the deploy secrets were already in the
+customer's repository.
+
 **Backend-only apps (F-540).** The Code tab offers `none` as the Custom UI folder. Both
 pipelines used to emit the Custom UI build step unconditionally, so that choice rendered
 `working-directory: none` on GitHub and `cd none` on Bitbucket and the job failed there —

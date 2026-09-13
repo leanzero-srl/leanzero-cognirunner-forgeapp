@@ -13,7 +13,7 @@ const wf = files.find((f) => f.path === ".github/workflows/forge-deploy.yml");
 assert.ok(wf.content.includes("${{ secrets.FORGE_API_TOKEN }}"), "GitHub Actions syntax survives verbatim");
 assert.ok(wf.content.includes("FORGE_APP_NAME: Proof App"), "declared var substituted");
 assert.ok(!files.some((f) => /\{\{[A-Z_]+\}\}/.test(f.content)), "no unresolved placeholder");
-assert.throws(() => m.renderScaffold("forge-custom-ui", { APP_NAME: "x`y" }), /unsafe/);
+assert.throws(() => m.renderScaffold("forge-custom-ui", { APP_NAME: "x`y" }), /is not usable/);
 assert.throws(() => m.renderScaffold("nope"), /Unknown scaffold/);
 const manifest = files.find((f) => f.path === "manifest.yml").content;
 const lock = m.buildPermissionLock(manifest);
@@ -100,6 +100,55 @@ for (const kind of ["forge-custom-ui", "forge-pipeline"]) {
 }
 assert.ok(!/registers the app ONCE/.test(src) && !/registers at most once/.test(src),
   "the module's own comments no longer promise a bootstrap that registers at most once automatically");
+
+/* ===================== F-541 — ONE VALIDATOR FOR THE SCAFFOLD VARIABLES ==============
+ * A scaffold variable is substituted into shell words, YAML values and FILE PATHS. The
+ * character set has to allow "." and "/" (static/app), which makes ".." and a leading "/"
+ * reachable — and the backend's old SAFE_VAR allowed both, so a traversing UI_DIR was
+ * refused only by the admin panel's own copy of the rule: in the browser, for one caller,
+ * on one form. scaffoldVarError is the rule; the renderer and the setup resolver both call
+ * it, and the UI imports it instead of keeping a copy. */
+{
+  assert.equal(typeof m.scaffoldVarError, "function", "the validator is exported from the single source");
+  assert.equal(m.scaffoldVarError("UI_DIR", "static/app"), null, "a normal folder is usable");
+  assert.equal(m.scaffoldVarError("UI_DIR", "none"), null, "…and so is the backend-only sentinel");
+  assert.equal(m.scaffoldVarError("APP_NAME", "Next Steps"), null, "…and a name with a space");
+  assert.equal(m.scaffoldVarError("UI_DIR", "  static/app  "), null, "…padding is trimmed, not refused");
+
+  const cases = [
+    ["UI_DIR", "", /cannot be empty/],
+    ["UI_DIR", "   ", /cannot be empty/],
+    ["UI_DIR", "x".repeat(81), /80 characters or fewer/],
+    ["UI_DIR", "a`b", /may only contain/],
+    ["UI_DIR", "$(id)", /may only contain/],
+    ["UI_DIR", "a;b", /may only contain/],
+    ["UI_DIR", "../../etc", /cannot contain \.\. or start with \//],
+    ["UI_DIR", "static/../../etc", /cannot contain \.\. or start with \//],
+    ["UI_DIR", "/etc/passwd", /cannot contain \.\. or start with \//],
+    ["APP_NAME", "../escape", /cannot contain \.\. or start with \//],
+  ];
+  for (const [name, value, rx] of cases) {
+    const err = m.scaffoldVarError(name, value);
+    assert.ok(err && rx.test(err), name + "=" + JSON.stringify(value) + " is refused: " + err);
+  }
+  // ".." only as a whole SEGMENT — a folder legitimately named "..config" is fine.
+  assert.equal(m.scaffoldVarError("UI_DIR", "static/..config"), null, "a segment that merely starts with dots is not traversal");
+
+  // the sentence names the field a human is looking at.
+  assert.ok(/^The Custom UI folder/.test(m.scaffoldVarError("UI_DIR", "")), "the label comes from the variable name");
+  assert.ok(/^The app name/.test(m.scaffoldVarError("APP_NAME", "")), "…for both of them");
+  assert.ok(/^Whatever/.test(m.scaffoldVarError("UI_DIR", "", "Whatever")), "…and a caller may override it");
+
+  // the RENDERER refuses the same things, so the two can never disagree.
+  for (const [name, value] of cases.map(([n, v]) => [n, v])) {
+    assert.throws(() => m.renderScaffold("forge-pipeline", { [name]: value }), /is not usable/,
+      "renderScaffold refuses " + name + "=" + JSON.stringify(value));
+  }
+  // and a good value still renders, trimmed.
+  const rendered = m.renderScaffold("forge-pipeline", { UI_DIR: "  static/ui  " });
+  assert.ok(/working-directory: static\/ui\n/.test(rendered.find((f) => f.path === ".github/workflows/forge-deploy.yml").content),
+    "a padded value is trimmed before substitution, never emitted with its spaces");
+}
 
 /* ===================== F-540 — "none" MEANS THE STEP IS NOT THERE =====================
  * The Code tab offers "none" as the Custom UI folder for a backend-only app, and both

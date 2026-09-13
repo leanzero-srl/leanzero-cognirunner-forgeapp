@@ -521,5 +521,39 @@ reset();
     `every step of the widest chain is recorded done (${JSON.stringify(out2).slice(0, 200)})`);
 }
 
+/* ===== 13. F-541 — a traversing scaffold variable is refused by the BACKEND ===== */
+reset();
+{
+  const connId = await seedConnection();
+  for (const [k, v] of [["UI_DIR", "../../etc"], ["UI_DIR", "/etc"], ["APP_NAME", "a;rm -rf /"], ["UI_DIR", ""]]) {
+    const r = await call("setupGitPipeline", {
+      connectionId: connId, repo: REPO, manifestYaml: MANIFEST, site: SITE,
+      scaffoldVars: { [k]: v },
+    });
+    ok(r.success === false && r.code === "invalid_scaffold_var",
+      `${k}=${JSON.stringify(v)} is refused by the resolver (got ${JSON.stringify(r)})`);
+    ok(typeof r.error === "string" && r.error.length > 10,
+      "...with a sentence that names the field a human is looking at: " + r.error);
+    // The resolver in src/index.js whitelists which refusal extras it forwards, so the
+    // machine-readable `variable` is asserted on the module's own return, not through it.
+    const direct = await pipe.requestPipelineSetup({
+      connectionId: connId, repo: REPO, manifestYaml: MANIFEST, site: SITE,
+      scaffoldVars: { [k]: v }, accountId: ADMIN,
+    });
+    ok(direct.ok === false && direct.code === "invalid_scaffold_var" && direct.variable === k,
+      `...and the refusal names the variable in machine form (got ${JSON.stringify(direct)})`);
+  }
+  ok(fetchCalls.length === 0 && pushedEvents.length === 0,
+    "THE COMMITIMPORTCORE RULE: a bad scaffold variable is refused BEFORE a secret reaches the repo - renderScaffold would otherwise have thrown in the consumer, after the credentials were installed");
+  ok(storage.__raw(pipe.gitPipelineClaimKey(connId, REPO)) === undefined, "...and no claim was taken");
+
+  const good = await call("setupGitPipeline", {
+    connectionId: connId, repo: REPO, manifestYaml: MANIFEST, site: SITE,
+    scaffoldVars: { APP_NAME: "Next Steps", UI_DIR: "none" },
+  });
+  ok(good.success === true, `usable variables still queue, including UI_DIR "none" (got ${JSON.stringify(good).slice(0, 160)})`);
+  ok(lastParams().scaffoldVars.UI_DIR === "none", "...and ride to the consumer unchanged");
+}
+
 console.log(`git-pipeline: ${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

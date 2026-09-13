@@ -42,7 +42,7 @@ export const DUPLICATED_COMPONENTS = [
   // they are identical — a claim that licenses the next editor to fork them.
   // toast.js (not .jsx) was likewise identical and unlisted — the reality scan below
   // is what found it.
-  "MemoriesTab.jsx", "PremadeRuleForm.jsx", "IssuePicker.jsx", "Skeleton.jsx", "toast.js",
+  "MemoriesTab.jsx", "PremadeRuleForm.jsx", "IssuePicker.jsx", "Skeleton.jsx", "toast.js", "refusal.js",
   "components/editor/*",
 ];
 // Deliberately DIVERGED — never blind-copied between the two apps. Verified by

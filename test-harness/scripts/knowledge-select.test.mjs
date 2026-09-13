@@ -325,6 +325,60 @@ ok(pinnedFixSections.some((s) => s.pack === "cognirunner-sandbox-traps"),
 ok(pinnedFixSections.every((s) => (s.audience || []).includes("fix")),
   "a section pinned for fix also carries the fix audience tag — a pin cannot smuggle past the filter");
 
+/* ---- a pin that does not fit its share is NAMED (F-576) ----
+   The `va` audience's pinned core renders to 3061 B against a 3276 B share: 215 B of
+   headroom. The fall-through to the scorer is the right behaviour and is also what makes
+   the loss invisible — on a query that does not favour it, the section the pack exists to
+   pin is simply absent, and `skipped` is one number nobody prints.
+
+   The REAL pack bodies are needed here, not the index (which carries no bodies), because
+   the whole question is how many bytes the section renders to. */
+{
+  const ap = await import(pathToFileURL(path.join(sharedDir, "knowledge-packs/administrator-practice.js")).href);
+  const sections = ap.SECTIONS;
+  const pins = realPins.va || [];
+  ok(pins.length > 0, "the va audience has a pin to test");
+
+  const today = selectKnowledge({ audience: "va", text: "", sections, pins });
+  ok(Array.isArray(today.pinnedDropped) && Array.isArray(today.pinnedDemoted),
+    "selectKnowledge always returns both pinned-shortfall arrays, so a caller needs no shape test");
+  ok(today.pinnedDropped.length === 0 && today.pinnedDemoted.length === 0,
+    `the va pin fits its share on today's corpus (${today.pinnedBytes} B)`);
+
+  // Grow the pinned section past the 215 B of headroom — the future bake this is about.
+  const pinnedId = today.sectionIds[0];
+  const grown = sections.map((s) => (s.id === pinnedId ? { ...s, body: `${s.body}\n${"x".repeat(300)}` } : s));
+
+  // No query: the scorer selects nothing, so the pin is not rescued. THE SILENT CASE.
+  const dropped = selectKnowledge({ audience: "va", text: "", sections: grown, pins });
+  ok(dropped.pinnedBytes === 0, "a 300 B growth pushes the va pin out of the pinned pass");
+  ok(dropped.pinnedDropped.length === 1 && dropped.pinnedDropped[0] === pinnedId,
+    `and it is reported BY ID as dropped (${dropped.pinnedDropped.join(", ")})`);
+  ok(dropped.pinnedDemoted.length === 0, "not as demoted — it is not in the prompt at all");
+  ok(!dropped.sectionIds.includes(pinnedId), "the selection really does not contain it");
+
+  // A query that favours it: the scorer rescues it. Still worth a line — it is the
+  // warning shot for the drop — but it is a different fact and is reported as one.
+  const demoted = selectKnowledge({ audience: "va", text: "administrator practice", sections: grown, pins });
+  ok(demoted.pinnedDemoted.length === 1 && demoted.pinnedDemoted[0] === pinnedId,
+    "a query that favours the pin demotes rather than drops it");
+  ok(demoted.pinnedDropped.length === 0 && demoted.sectionIds.includes(pinnedId),
+    "and it IS in the prompt, just no longer paid for out of the pinned share");
+
+  // The seam the backend logs from must carry them too, or nothing can report it.
+  const resolved = resolveFieldGuide({ audience: "va", text: "", sections: grown, pins });
+  ok(resolved.pinnedDropped.length === 1, "resolveFieldGuide carries pinnedDropped through");
+  ok(Array.isArray(resolved.pinnedDemoted), "and pinnedDemoted");
+
+  // The share stays ONE number: a per-audience share was considered and rejected (the
+  // arithmetic is in the PINNED_BUDGET_SHARE docblock). Asserted so a later "just bump
+  // va" edit has to read it.
+  ok(typeof PINNED_BUDGET_SHARE === "number" && PINNED_BUDGET_SHARE === 0.4,
+    "PINNED_BUDGET_SHARE is a single scalar at 40 %");
+  ok(PINNED_BUDGET_SHARE < 0.5,
+    "and below half — the majority of a field guide must still answer the request");
+}
+
 registerKnowledgePins({ agent: ["administrator-practice#blast-radius"] });
 clearKnowledgeSections();
 ok(getKnowledgeSections().length === 0, "clearKnowledgeSections empties the registry");

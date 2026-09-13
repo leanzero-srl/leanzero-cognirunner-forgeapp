@@ -376,6 +376,15 @@ export const knowledgeBudget = (audience) => KNOWLEDGE_BUDGET_BYTES[audience] ||
  *                          helps and the 900 s consumer affords the tokens.
  *   review          6 KB — a PR review. The DIFF is the content; background is there to
  *                          shape the house rules, not to compete with it.
+ *
+ * THE PINNED SHARE IS NOT ONE OF THESE NUMBERS, DELIBERATELY (F-576). Pins may spend
+ * `PINNED_BUDGET_SHARE` (40 %, src/shared/knowledge-select.js) of whichever row applies,
+ * and that share is a single scalar rather than a second column here. `va` is the tight
+ * audience — 3061 B of pins against a 3276 B share, 215 B of headroom — and a per-audience
+ * share was considered and rejected there, with the arithmetic, rather than here: these
+ * rows differ because the CALLERS differ, while the share states a policy ("most of the
+ * guide answers the question asked") that is true of every caller. If this table ever
+ * grows a second column, read that comment first.
  * ---------------------------------------------------------------------- */
 export const FIELD_GUIDE_BUDGET_BYTES = Object.freeze({
   codegen: 12288,

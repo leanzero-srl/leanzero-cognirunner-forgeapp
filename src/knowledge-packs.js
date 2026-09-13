@@ -59,6 +59,7 @@ import {
   KNOWLEDGE_VERSION,
   FIELD_GUIDE_MARKER,
   FIELD_GUIDE_GUARD_SENTENCE,
+  PINNED_BUDGET_SHARE,
 } from "./shared/knowledge-select.js";
 import { fieldGuideBudget } from "./shared/registry-limits.js";
 import { KNOWLEDGE_PACKS, KNOWLEDGE_PINS, KNOWLEDGE_CONTENT_VERSION } from "./shared/knowledge-index.js";
@@ -214,6 +215,39 @@ export const selectFieldGuide = async ({ audience = "review", text = "", operati
 };
 
 /**
+ * THE ONE PLACE A PIN THAT DID NOT FIT IS ANNOUNCED (F-576).
+ *
+ * The `va` audience's pinned core renders to 3061 B against a pinned share of 3276 B — 215
+ * bytes of headroom on today's corpus. A slightly larger re-bake pushes it out of the
+ * pinned pass, where it falls through to the scorer and, on a query that does not favour
+ * it, is simply absent: every Virtual Administrator turn quietly loses the guardrail core
+ * the pack exists to pin, and the only signal is a byte count nobody prints.
+ *
+ * It goes HERE and not in each caller because `resolveFieldGuideBlock` is the one call
+ * every prompt-building surface makes — the listener/job agent through
+ * `buildAgentKnowledge`, the validator, the semantic post-function, the Coder, the PR
+ * review. One emitter, one wording, and a caller that forgets to look still cannot lose it.
+ *
+ * A DROP IS A WARNING, A DEMOTION IS A NOTICE. A dropped pin did nothing at all; a demoted
+ * one is still in the prompt but is now competing on score, which is the warning shot for
+ * the drop. Neither throws: a field guide is advisory and every path around it fails open.
+ */
+export const reportPinnedShortfall = (picked, audience) => {
+  const dropped = Array.isArray(picked && picked.pinnedDropped) ? picked.pinnedDropped : [];
+  const demoted = Array.isArray(picked && picked.pinnedDemoted) ? picked.pinnedDemoted : [];
+  if (!dropped.length && !demoted.length) return null;
+  const where = `audience "${audience}" · pinned ${picked.pinnedBytes || 0} B of `
+    + `${Math.floor((picked.budget || 0) * PINNED_BUDGET_SHARE)} B share (budget ${picked.budget || 0} B)`;
+  if (dropped.length) {
+    console.warn(`[knowledge] PINNED SECTION NOT IN THE PROMPT — ${where}: ${dropped.join(", ")}`);
+  }
+  if (demoted.length) {
+    console.warn(`[knowledge] pinned section missed its share and was rescued by the scorer — ${where}: ${demoted.join(", ")}`);
+  }
+  return { dropped, demoted };
+};
+
+/**
  * THE call every prompt-building surface makes. Select, then build the one fenced block.
  *
  * Returns `{ block, sectionIds, bytes, budget, skipped }`. `block` is "" when nothing was
@@ -226,12 +260,18 @@ export const selectFieldGuide = async ({ audience = "review", text = "", operati
 export const resolveFieldGuideBlock = async (options = {}) => {
   const picked = await selectFieldGuide(options);
   const built = buildFieldGuideBlock(picked.sections);
+  // LOUD, at the one seam that has the numbers (F-576). Before the return, so a caller
+  // that ignores the fields still leaves a log line behind.
+  reportPinnedShortfall(picked, picked.audience || options.audience || "review");
   return {
     block: built.block,
     sectionIds: built.sectionIds,
     bytes: picked.bytes,
     budget: picked.budget,
     skipped: picked.skipped,
+    pinnedBytes: picked.pinnedBytes,
+    pinnedDemoted: picked.pinnedDemoted || [],
+    pinnedDropped: picked.pinnedDropped || [],
     knowledgeVersion: KNOWLEDGE_VERSION,
     contentVersion: KNOWLEDGE_CONTENT_VERSION,
   };

@@ -425,6 +425,16 @@ let agentId = null;
   const del = await rest("admin", { method: "DELETE", query: { id: agentId } });
   ok(del.status === 200 && del.body.deleted === agentId, `an agent deletes through the job delete (got ${del.status} ${JSON.stringify(del.body)})`);
   ok((await J.getJob(agentId)) == null, "…and the job row is gone, because a VA has no second store");
+  /* AND IT TAKES ITS LEDGER WITH IT (F-469). Before this, the delete left `va_index`,
+     `va_health`, `va_memory` and every item row behind - none of the first three with a
+     TTL - so an agent that had staged a draft about a real person left that text in
+     storage for ever, with no surface able to show it or clear it. Sections 5 and 7
+     staged a draft and wrote a memory on this very agent, so the rows exist here. */
+  const K = await import("../../src/shared/va-keys.js");
+  ok((await storage.get(K.vaIndexKey(agentId))) == null, "…the VA ledger index went with it");
+  ok((await storage.get(K.vaMemoryKey(agentId))) == null, "…and the memory");
+  ok((await storage.get(K.vaHealthKey(agentId))) == null, "…and the health counter");
+  ok((await storage.get(K.vaItemKey(agentId, "SUP-1"))) == null, "…and the item row that held the staged draft text");
   ok((await rest("admin", { method: "DELETE", query: { id: agentId } })).status === 404, "…so deleting it twice is a 404");
 }
 

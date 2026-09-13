@@ -220,6 +220,26 @@ export const deleteJob = async (id) => {
   if (!full && next.length === rows.length) return { removed: false };
   await deleteRuleWithStats({ kind: "scheduledjob", rule: full || { id, createdAt: null }, recordKey: JOB_PREFIX + safeKeyPart(id), indexKey: JOB_INDEX_KEY, indexRows: next });
   try { const m = await readSchedMap(); if (m[id]) { delete m[id]; await writeSchedMap(m); } } catch { /* best-effort */ }
+  /*
+   * A VIRTUAL ADMINISTRATOR TAKES ITS LEDGER WITH IT (F-469).
+   *
+   * A VA is stored as a job row, so this is the only door that can destroy one - and it
+   * used to leave `va_index`, `va_health`, `va_memory` and every `va_item:*` row behind,
+   * with no TTL on the first three and no surface left that could read them. Those item
+   * rows hold STAGED DRAFT TEXT: unsent messages about real people.
+   *
+   * FAIL-SOFT and LOGGED, never fatal: the job delete has already happened above, and an
+   * admin who is told "no" because a counter row would not go has an agent they cannot
+   * remove. `purgeAgent` is bounded (the index cap is 400, the sweep does 200) and what
+   * it does not reach carries the item TTL.
+   */
+  if (full && full.mode === "va") {
+    try {
+      const { purgeAgent } = await import("./va-ledger.js");
+      const r = await purgeAgent(storage, id);
+      if (!r.ok || r.remaining) console.log(`[job] va ledger purge ${id}: ${r.items} item row(s), ${r.remaining} left to the item TTL, ${r.failures.length} failure(s)`);
+    } catch (e) { console.log(`[job] va ledger purge failed for ${id}: ${String((e && e.message) || e).slice(0, 200)}`); }
+  }
   return { removed: next.length !== rows.length };
 };
 

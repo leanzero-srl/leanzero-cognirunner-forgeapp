@@ -98,7 +98,7 @@ export const TOKEN_SPENDING_TASK_TYPES = Object.freeze([
   "review", "codegen", "fixcode", "skilldistill", "memory_distill", "gitreview", "coder", "va-item", "va-post",
 ]);
 export const MODE_DECIDED_TASK_TYPES = Object.freeze(["postfunction", "listener", "scheduledjob"]);
-export const NON_AI_TASK_TYPES = Object.freeze(["git-event", "gitcredrotate", "probe"]);
+export const NON_AI_TASK_TYPES = Object.freeze(["git-event", "gitcredrotate", "gitpipeline", "probe"]);
 
 /** ~4 chars per token is the usual English/JSON ratio; good enough for a gate. */
 export const estimateTokensFromText = (text) => Math.ceil(String(text || "").length / 4);
@@ -155,6 +155,11 @@ export const estimateTaskTokens = (taskType, params, learned) => {
     // here is the second half of that statement, so a future caller that DOES estimate
     // it still adds nothing to the ledger.
     case "git-event":
+      return 0;
+    // A pipeline install pushes secrets, sets variables and commits files. No model
+    // is called, so it is never paced; the 0 is the second half of that statement, so
+    // a future caller that DOES estimate it still adds nothing to the ledger.
+    case "gitpipeline":
       return 0;
     case "skilldistill":
     case "memory_distill":

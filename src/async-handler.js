@@ -104,6 +104,10 @@ import {
   // `{ ok: true, queued: true }` to the operator and then died as "Unknown task type".
   CREDENTIAL_ROTATION_TASK,
 } from "./git-connections.js";
+// 1.4 commit 7 — the pipeline-setup chain. Same rule as the rotation above: the
+// task-type STRING has ONE home (the producer and this registry read the same
+// constant), and the work itself lives in src/git-pipeline.js, not here.
+import { runPipelineSetup, PIPELINE_TASK } from "./git-pipeline.js";
 import { executeScheduledJobTask, getJob } from "./scheduled-jobs.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
 import { STATS_TASK_TYPE, processRuleStatsReceipt, statsReceipt } from "./rule-stats.js";
@@ -1127,6 +1131,39 @@ const executeCredentialRotation = async (params) => {
 };
 
 /**
+ * A QUEUED PIPELINE SETUP (1.4 commit 7).
+ *
+ * `runPipelineSetup` owns the whole chain: the lock re-check, the fixed step list,
+ * the row written after every step, and the claim it releases on every exit. This
+ * handler is pure wiring and must add no policy of its own.
+ *
+ * IT SPENDS NO MODEL TOKENS — it pushes secrets, sets variables and commits files.
+ * So it is in NON_AI_TASK_TYPES, absent from AI_TASK_TYPES, and estimateTaskTokens
+ * prices it at 0: pacing a deploy install would only delay a deploy, never a spend.
+ *
+ * NOTHING HERE LOGS A SECRET. The one log line names the repo and the outcome; the
+ * returned result is built field by field rather than spreading `params`, which
+ * carries the rendered lock and the site but never a credential (the deploy token is
+ * read inside the chain, straight into setSecret).
+ */
+const executePipelineSetup = async (params) => {
+  const label = `${(params && params.connectionId) || "?"}/${(params && params.repoId) || "?"}`;
+  let out;
+  try {
+    out = await runPipelineSetup(params);
+  } catch (e) {
+    // A throw here means the chain did not finish. Say so — a partial setup reported
+    // as ready is the exact failure this commit exists to prevent.
+    console.warn(`[gitpipeline] ${label}: failed (${(e && e.message) || e})`);
+    return { success: false, error: `Pipeline setup failed: ${String((e && e.message) || e).slice(0, 200)}` };
+  }
+  console.log(`[gitpipeline] ${label}: ${out.ok ? (out.duplicate ? "already installed (duplicate delivery)" : "installed") : `refused (${out.code || "error"})`}`);
+  return out.ok
+    ? { success: true, duplicate: out.duplicate === true, status: out.status || null }
+    : { success: false, error: out.error || "Pipeline setup failed", code: out.code || null, status: out.status || null };
+};
+
+/**
  * A VERIFIED GIT WEBHOOK DELIVERY (1.4 commit 5c).
  *
  * The webhook verifies the signature and enqueues; THIS is where a delivery becomes
@@ -1177,6 +1214,9 @@ const TASK_HANDLERS = {
   "git-event": executeGitEvent,
   // F-290 — the key is the producer's own constant, never a retyped literal.
   [CREDENTIAL_ROTATION_TASK]: executeCredentialRotation,
+  // 1.4 commit 7 — admin-triggered pipeline install. Not produced by a browser
+  // poll: the admin panel watches `getGitPipelineStatus`, which reads the row.
+  [PIPELINE_TASK]: executePipelineSetup,
 };
 
 // Task types with no poller — skip async_task:* status rows (they'd never be
@@ -1186,7 +1226,7 @@ const TASK_HANDLERS = {
 // polls them. gitreview writes its OWN execution-log entry on every outcome (see
 // executeGitReview's single exit), so it is deliberately absent from UNPOLLED_LOG_TYPE
 // below: adding it there would double-log every failure.
-const UNPOLLED_TASKS = new Set(["postfunction", "memory_distill", "listener", "probe", "gitreview", "git-event"]);
+const UNPOLLED_TASKS = new Set(["postfunction", "memory_distill", "listener", "probe", "gitreview", "git-event", PIPELINE_TASK]);
 
 // F-119 — which UNPOLLED task types write an execution-log entry when they FAIL, and
 // under WHICH log type. The value must be a type the UI badge maps already know

@@ -352,7 +352,18 @@ export async function testStateTrigger(req) {
         // `testGitConnection` is here despite writing the whoami verdict back to the
         // row: that WRITE is the thing under test (the auth_dead banner has one
         // source), it creates no credential, and it cannot delete one.
-        "listGitConnections", "testGitConnection", "getForgeIdentityStatus"]);
+        "listGitConnections", "testGitConnection", "getForgeIdentityStatus",
+        // 1.4 commit 7 — the pipeline READ only. `git_pipeline:*` rows are also
+        // reachable through the GET `?what=kvs` read (deliberately unrestricted: it
+        // is a read, behind HARNESS_SECRET), which is how a tester confirms the
+        // bounded row landed on the exact slot. DELIBERATELY ABSENT: setupGitPipeline
+        // and triggerGitDeploy. Both are writes to a customer's repository — one
+        // pushes the deploy credential into it, the other starts a real deploy — and
+        // a harness that can do either is a harness that can be turned into one.
+        // The kvSet allow-list below is NOT widened for `git_pipeline:*` either: a
+        // plantable row is a plantable permission LOCK, which is the one fact this
+        // commit's refusal depends on.
+        "getGitPipelineStatus"]);
       const functionKey = body.functionKey || body.name;
       if (!ALLOWED_KEYS.has(functionKey)) {
         return json(400, { error: `functionKey not allowlisted: ${functionKey}` });

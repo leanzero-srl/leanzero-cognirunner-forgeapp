@@ -328,8 +328,13 @@ const pruneScore = (m) => (Number(m.confidence) || 0) + 0.1 * Math.min(Number(m.
  * never evicted either — archived rows keep their slot and count toward the cap.**
  * With no such row available there is NO victim and the caller is told (`blocked`);
  * for a new candidate that means refused with reason "cap"/"bytes" and a store left
- * byte-identical, and the human prunes in the Memories tab (memoryCapRefusalMessage
- * says exactly that). The ONE exception is the byte guard with nothing left but the
+ * byte-identical, and the human DELETES in the Memories tab — which is what
+ * memoryCapRefusalMessage actually says ("delete some in the Memories tab to make room").
+ * F-194: this docblock still claimed the sentence said "prune". No control in this app
+ * prunes anything, the builder has not used the word since F-174, and the scan added to
+ * keep it retired walked only static/ — so the BACKEND copy, sitting on the function that
+ * owns the policy, was the one place a maintainer could still copy it from. The ONE
+ * exception is the byte guard with nothing left but the
  * protected newcomer itself — it is then dropped (never a stored row).
  *
  * Why each half exists:

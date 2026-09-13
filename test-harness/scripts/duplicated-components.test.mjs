@@ -15,10 +15,13 @@
 // different sentences and both stay green — which is the exact condition F-179 was filed to end,
 // and the one-file habit this repo has paid for in F-174, F-175, F-179 and F-181.
 //
-// The LIST is parsed out of CLAUDE.md rather than retyped here: a test with its own copy of the
-// convention is the same defect one layer up. Add a component to that sentence and it is covered
-// on the next run; the parse is guarded by a positive control so a reworded CLAUDE.md fails loudly
-// instead of silently checking nothing.
+// F-231 — WHERE THE LIST LIVES. It used to be parsed out of CLAUDE.md, on the reasoning that
+// a test with its own copy of the convention is the same defect one layer up. But CLAUDE.md is
+// GITIGNORED and untracked in this repo (`git ls-files CLAUDE.md` is empty), so the suite died
+// with ENOENT on a `git archive` of HEAD, a clean clone, or any CI checkout — a gate that cannot
+// run outside one laptop is not a gate. The canonical list therefore lives HERE, in the tracked
+// file that enforces it, and the doc is checked AGAINST it when the doc is present. That keeps
+// one home for the rule (this file) and still refuses to let CLAUDE.md drift away from it.
 import { readFileSync, readdirSync, existsSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,24 +31,48 @@ import { fileURLToPath } from "node:url";
 const ROOT = process.env.CR_DUP_ROOT || path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const APPS = ["config-ui", "admin-panel"];
 
+// THE CANONICAL SETS. Adding a component to the duplication convention means adding it here;
+// the CLAUDE.md cross-check below then tells you the doc needs the same edit.
+export const DUPLICATED_COMPONENTS = [
+  "FunctionBlock.jsx", "FunctionBuilder.jsx", "CodeEditor.jsx", "DocRepository.jsx",
+  "AILoadingState.jsx", "KnowledgePanel.jsx", "SkillsTab.jsx", "SkillEditor.jsx",
+  "MemoriesTab.jsx", "components/editor/*",
+];
+// Deliberately DIVERGED — never blind-copied between the two apps.
+export const DIVERGED_COMPONENTS = [
+  "CustomSelect.jsx", "Tooltip.jsx", "ReviewPanel.jsx", "IssuePicker.jsx", "Skeleton.jsx",
+];
+
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) pass++; else { fail++; console.log("FAIL:", m); } };
 
-// --- parse the convention out of CLAUDE.md -------------------------------------------------
-const claudeMd = readFileSync(path.join(ROOT, "CLAUDE.md"), "utf8");
-const sentence = claudeMd.split("\n").find((line) => line.includes("are **byte-identical copies**"));
-ok(!!sentence, "CLAUDE.md still states the byte-identical-copies convention (positive control)");
-if (!sentence) { console.log("\nduplicated-components: cannot proceed without the convention sentence"); process.exit(1); }
+// --- the doc may not drift from the list above (skipped when the doc is absent) -------------
+const claudeMdPath = path.join(ROOT, "CLAUDE.md");
+if (!existsSync(claudeMdPath)) {
+  console.log("note: CLAUDE.md is not present (it is gitignored) — the doc cross-check is SKIPPED; the component comparison below still runs in full");
+} else {
+  const claudeMd = readFileSync(claudeMdPath, "utf8");
+  const sentence = claudeMd.split("\n").find((line) => line.includes("are **byte-identical copies**"));
+  ok(!!sentence, "CLAUDE.md still states the byte-identical-copies convention (positive control)");
+  if (sentence) {
+    const backticked = (text) => [...text.matchAll(/`([^`]+)`/g)].map((m) => m[1]);
+    const docDuplicated = backticked(sentence.slice(0, sentence.indexOf("are **byte-identical copies**")));
+    const divergedText = sentence.slice(sentence.indexOf("Do NOT blind-copy"));
+    const docDiverged = backticked(divergedText.slice(0, divergedText.indexOf("—") + 1 || undefined));
+    const same = (a, b) => [...a].sort().join(",") === [...b].sort().join(",");
+    ok(same(docDuplicated, DUPLICATED_COMPONENTS),
+      `CLAUDE.md's duplicated set equals this file's (doc: ${docDuplicated.join(", ")} | test: ${DUPLICATED_COMPONENTS.join(", ")})`);
+    ok(same(docDiverged, DIVERGED_COMPONENTS),
+      `CLAUDE.md's diverged set equals this file's (doc: ${docDiverged.join(", ")} | test: ${DIVERGED_COMPONENTS.join(", ")})`);
+  }
+}
 
-const backticked = (text) => [...text.matchAll(/`([^`]+)`/g)].map((m) => m[1]);
-const duplicated = backticked(sentence.slice(0, sentence.indexOf("are **byte-identical copies**")));
-const divergedText = sentence.slice(sentence.indexOf("Do NOT blind-copy"));
-const diverged = backticked(divergedText.slice(0, divergedText.indexOf("—") + 1 || undefined));
-
-ok(duplicated.length >= 9, `the parse found the duplicated set (${duplicated.length}): ${duplicated.join(", ")}`);
-ok(diverged.length >= 5, `the parse found the deliberately-diverged set (${diverged.length}): ${diverged.join(", ")}`);
+const duplicated = DUPLICATED_COMPONENTS;
+const diverged = DIVERGED_COMPONENTS;
+ok(duplicated.length >= 9, `the duplicated set has ${duplicated.length} entries`);
+ok(diverged.length >= 5, `the deliberately-diverged set has ${diverged.length} entries`);
 ok(duplicated.includes("FunctionBlock.jsx") && duplicated.includes("components/editor/*"),
-  "positive control: the parse really read the component names, globs included");
+  "the set carries component names and globs");
 ok(!duplicated.some((f) => diverged.includes(f)), "no file is in both sets");
 
 // --- expand globs to concrete relative paths -----------------------------------------------

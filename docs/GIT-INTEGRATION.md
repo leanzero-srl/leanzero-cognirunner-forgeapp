@@ -30,6 +30,7 @@ the text below, the code wins.
 7. [Pipeline setup](#7-pipeline-setup)
 8. [Rotation](#8-rotation)
 9. [Security model](#9-security-model)
+9b. [Bitbucket — what is proven, and what differs](#9b-bitbucket--what-is-proven-and-what-differs)
 10. [Testing](#10-testing)
 
 ---
@@ -133,6 +134,10 @@ it is a `sha256=` value (GitHub's own `x-hub-signature` is sha1 and is never acc
 A missing, malformed or wrong signature answers `401`, nothing is enqueued, no claim is
 taken, and the log line never carries the body or the signature. This construction was
 verified against a real GitHub delivery (an 8,008-byte body, valid).
+**Bitbucket signs the same way and it is proven live** (2026-09-13): a real
+`pullrequest:comment_created` delivery from `wp-global/cognirunner-forge-offshoot-bb`,
+signed with `X-Hub-Signature`, was accepted by the production trigger
+(`[git-webhook] accepted git:issue_comment:created …`) and the `git-event` consumer ran it.
 
 ### Events and answers
 
@@ -500,6 +505,45 @@ connection or a repository it may not read (both validator columns). The one del
 open surface is the git validator on a transport fault with Strict off, because the app's
 validator contract is fail-open and the rule there is correct.
 
+## 9b. Bitbucket — what is proven, and what differs
+
+Everything below was run live on 2026-09-13 against `wp-global/cognirunner-forge-offshoot-bb`
+through the shipped adapter, each claim confirmed by a second REST read
+(`test-harness/scripts/bitbucket-live.mjs`).
+
+**Proven:** Basic `email:token` auth and `whoami`; repo create (private) and list; a 16-file
+scaffold committed in ONE form-encoded `/src` call; `pipelines_config` enable; secured
+variables (the value never reads back) and plain variables (it does); PR open, diff, inline
+comment, approve, request-changes, comment resolution; a repo webhook with a secret and a
+real signed delivery accepted by the production `git-webhook`; a custom pipeline trigger and
+its run status.
+
+**`bitbucket.org` is NOT required in egress.** `GET /2.0/…/pullrequests/{n}/diff` answers
+`302`, but its `Location` stays on `api.bitbucket.org`
+(`/2.0/…/diff/<spec>?from_pullrequest_id={n}&topic=true`, then `200`), and `/src/{branch}/{path}`
+and `/diff/{spec}` answer `200` with no redirect at all. The manifest keeps
+`https://bitbucket.org` — removing an egress host is a major-version change and a
+redirect-only entry is harmless — but nothing observed depends on it.
+
+**Inline comments.** `inline: { path, to }` is accepted and `to` is the line in the NEW file:
+a comment asked for line 5 reads back as `inline:{ path, to:5, from:null, outdated:false }`.
+`resolved` really is answered by Bitbucket (`resolution.user` after `POST …/comments/{id}/resolve`),
+so the adapter's `false` is PROVEN unresolved — unlike GitHub's `null`.
+
+**Approve / request-changes** are separate first-class endpoints, and request-changes CLEARS
+a previous approval on the same participant (the participants list carries exactly one state
+per user).
+
+**Known rough edges (ledger F-530 … F-534), none of them fixed here:**
+
+| | |
+|---|---|
+| F-530 | the scaffold runs `npm ci` and ships no lockfile — a first pipeline run fails on BOTH hosts |
+| F-531 | repos the app creates on Bitbucket default to `master`, while the scaffold only triggers `branches: main` |
+| F-532 | `ignoreSelf` is inert on Bitbucket: neither the envelope nor the connection row keeps an account id, and Bitbucket's `nickname` ≠ `username` |
+| F-533 | `setupGitPipeline` is not re-runnable on Bitbucket — the variable POST answers `409 conflict` (GitHub's PUT is idempotent) |
+| F-534 | `pipelines_config/variables` is eventually consistent right after a write (harness concern only) |
+
 ## 10. Testing
 
 Offline (`cd test-harness && npm run test:offline` runs every `scripts/*.test.mjs`):
@@ -523,4 +567,7 @@ production `git-webhook` trigger with self-signed deliveries (202 accept, 202 du
 401 unsigned, 401 bad signature, 404 unknown route, 405 on GET), without touching a
 provider; `scripts/git-dispatch-drop-live.mjs` proves the retry-and-drop contract;
 `scripts/git-validator-live.mjs` and `scripts/git-condition-live.mjs` drive the validators
-and the condition branches through real transitions.
+and the condition branches through real transitions; `scripts/bitbucket-live.mjs` is the
+BITBUCKET live driver (phases `whoami repo redirect pr hook pipeline cleanup`) and needs
+`BITBUCKET_EMAIL` / `BITBUCKET_API_TOKEN` / `BITBUCKET_WORKSPACE` in `test-harness/.env`
+plus `GIT_WEBHOOK_URL` for the delivery phase.

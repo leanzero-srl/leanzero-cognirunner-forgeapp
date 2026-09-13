@@ -503,12 +503,35 @@ const handleCollection = async ({ req, method, id, action, body, who, kind }) =>
     // batch runs, so a mixed batch cannot half-create one.
     if (!isL) {
       const va = items.map((it) => vaDoor(it)).find(Boolean); if (va) return va;
-      // …and an UPSERT that names an existing agent's id is the same door from the
-      // other side: without `mode:"va"` in the body it would rewrite the agent as a
-      // plain script job, losing the whole record.
-      for (const it of items) {
-        if (it && it.id) { const hit = vaDoor(await get(String(it.id))); if (hit) return hit; }
-      }
+    }
+    /*
+     * A BODY ID IS AN EDIT, AND AN EDIT ASKS THE OWNERSHIP QUESTION (F-490).
+     *
+     * `saveListener`/`saveJob` UPSERT by `input.id`, so a create that names an existing
+     * row REPLACES it in place — and `normalizeListener` carries `existing.createdBy`
+     * forward, which is what made the hijack invisible. This was the only write route on
+     * this surface that asked nothing: the same body sent as `PUT ?id=` is refused 403
+     * `not-owner`, and the resolver the UI uses gates a body-supplied id the same way
+     * (`gateExistingRow` in src/index.js). One rule, and the REST door was the wider home.
+     *
+     * THE GATE IS `ownerGate` — imported, not restated: a second ownership rule here is
+     * how two doors onto one row grow two answers, and the F-261 existence-leak rule (an
+     * unknown id and a foreign row are the same refusal for a scope-"own" caller) would
+     * have to be re-derived to match. An ADMIN token skips it, exactly as it does on PUT.
+     *
+     * BEFORE THE BATCH RUNS, like the VA door above: a refused item must not leave the
+     * earlier items of a mixed batch already written.
+     */
+    for (const it of items) {
+      if (!it || !it.id) continue;
+      const row = await get(String(it.id));
+      // An UPSERT that names an existing AGENT is the F-478 door from the other side:
+      // without `mode:"va"` in the body it would rewrite the agent as a plain script
+      // job, losing the whole record. Same read, so it is asked here.
+      if (!isL) { const hit = vaDoor(row); if (hit) return hit; }
+      if (!row) continue;
+      const owned = await ownerGate(who, row, { what: `replace this ${noun}`, notFound: `${noun} not found` });
+      if (owned) return owned;
     }
     // ONE fact read for the whole batch (F-480/F-485): the instance's capabilities do
     // not change between two items of the same request, and re-reading them per item

@@ -196,6 +196,32 @@ for (const [label, resource, opts, floor] of ROUTES) {
     ok(((await rest("admin", kind, { query: { id: foreign.id } })).body[noun] || {}).name === "foreign",
       `…and the foreign ${noun} is untouched afterwards`);
 
+    /* F-490 — A POST THAT NAMES AN EXISTING ID IS AN EDIT, AND IT WAS UN-GATED.
+     *
+     * `saveListener`/`saveJob` upsert by id and `normalizeListener` keeps
+     * `existing.createdBy`, so this replaced a foreign row IN PLACE and it kept
+     * running under its owner's account — the same body sent as PUT was already 403.
+     * BLOCK, ALLOW, and the batch arm: a refused item must not leave the rest of a
+     * mixed batch written. */
+    ok(notOwner(await rest("owner", kind, { method: "POST", body: { ...mk("hijacked"), id: foreign.id } })),
+      `BLOCK editor token → POST an UPSERT onto a foreign ${noun} (F-490)`);
+    ok(((await rest("admin", kind, { query: { id: foreign.id } })).body[noun] || {}).name === "foreign",
+      `…and the foreign ${noun} still carries its own name afterwards`);
+    {
+      const before = (await rest("admin", kind, { method: "GET" })).body[kind].length;
+      const mixed = await rest("owner", kind, { method: "POST", body: [mk("batch-new"), { ...mk("batch-hijack"), id: foreign.id }] });
+      ok(notOwner(mixed), `BLOCK a MIXED batch whose second item targets a foreign ${noun}`);
+      ok((await rest("admin", kind, { method: "GET" })).body[kind].length === before,
+        `…and the legal FIRST item of that batch was not written either (refused before the batch runs)`);
+    }
+    {
+      // ALLOW: the same upsert onto its OWN row is an edit it may make.
+      const up = await rest("owner", kind, { method: "POST", body: { ...mk("mine-upserted"), id: mine.id } });
+      ok(up.status === 200 || up.status === 201, `ALLOW editor token → POST an upsert onto its OWN ${noun} (got ${up.status})`);
+      ok(((await rest("admin", kind, { query: { id: mine.id } })).body[noun] || {}).name === "mine-upserted",
+        `…and the upsert actually took`);
+    }
+
     // F-261 — for this caller an UNKNOWN id and a foreign row are the same answer.
     ok(notOwner(await rest("owner", kind, { method: "PUT", query: { id: `${noun}-does-not-exist` }, body: { name: "x" } })),
       `an id that does not exist reads exactly like a foreign ${noun} (no existence leak)`);

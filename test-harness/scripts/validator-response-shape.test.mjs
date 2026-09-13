@@ -142,5 +142,43 @@ for (const key of ["git-pr-merged", "git-pr-approved", "git-build-passed", "git-
   assertShape(out, "unlicensed (fail open)");
 }
 
+/* ══════════ F-399 — WHAT THE INVOCATION PUTS IN forge logs ══════════ */
+// Both workflow entry points used to `JSON.stringify(args, null, 2)` the WHOLE platform
+// payload, which carries `context.contextToken` — the platform's signed JWT — and every
+// modified FIELD VALUE. Forge logs are readable by site admins and forwarded off-site.
+{
+  const JWT = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1In0.sig";
+  const SECRET_VALUE = "patient name Ada Lovelace, 1990-12-10";
+  const captured = [];
+  const realLog = console.log;
+  console.log = (...a) => { captured.push(a.map((x) => (typeof x === "string" ? x : JSON.stringify(x))).join(" ")); };
+  try {
+    respondWith(FULL_ISSUE);
+    await validate({
+      issue: { key: "LZPT-1" },
+      configuration: cfgFor("field-required"),
+      modifiedFields: { summary: { value: SECRET_VALUE }, customfield_10001: { value: JWT } },
+      context: {
+        extension: { type: "jira:workflowValidator", key: "ai-text-field-validator" },
+        contextToken: JWT, license: { isActive: true }, accountId: "acct-1",
+      },
+    });
+    const { executePostFunction } = await import("../../src/index.js");
+    await executePostFunction({
+      issue: { key: "LZPT-1" },
+      configuration: JSON.stringify({ type: "postfunction-static", ruleId: "r1", functions: [] }),
+      context: { extension: { key: "ai-static-post-function" }, contextToken: JWT, license: { isActive: true } },
+    });
+  } finally { console.log = realLog; }
+  const all = captured.join("\n");
+  ok(!all.includes("contextToken"), "no invocation log names contextToken");
+  ok(!/eyJ[A-Za-z0-9_-]{5,}/.test(all), "no JWT-shaped string reaches the logs");
+  ok(!all.includes(SECRET_VALUE), "no modified-field VALUE reaches the logs");
+  ok(/AI Validator invoked:/.test(all) && /Post-function invoked:/.test(all),
+    "…both entry points still log an allow-listed summary (the diagnostic is kept, not deleted)");
+  ok(/"modifiedFieldIds":\["summary","customfield_10001"\]/.test(all),
+    "…naming the modified field IDs, which is what a diagnostic actually needs");
+}
+
 console.log(`\nvalidator response shape: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

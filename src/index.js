@@ -15249,7 +15249,9 @@ RESPONSE FORMAT:
               // exfiltrate other projects' data into the verdict. Always-on; the executor
               // fails closed if the project key can't be determined (e.g. issue CREATE).
               if (toolName === "search_jira_issues") args.confineToProject = projectKey ?? null;
-              console.log(`Executing tool "${toolName}":`, JSON.stringify(args));
+              // Clamped like its hosted-MCP sibling above: these are the MODEL's arguments,
+              // so their size is not ours to bound and forge logs are not a dump target.
+              console.log(`Executing tool "${toolName}":`, JSON.stringify(args).slice(0, 200));
               toolResult = await tool.execute(args, validatedFieldId);
 
               // Track JQL queries for observability
@@ -15953,9 +15955,41 @@ const validatorResponse = (out) => {
   return { result: false, errorMessage: msg || "This transition is blocked by a CogniRunner rule." };
 };
 
+/**
+ * F-399 — WHAT A WORKFLOW INVOCATION IS ALLOWED TO PUT IN THE LOGS.
+ *
+ * `console.log("… called with args:", JSON.stringify(args, null, 2))` dumped the WHOLE
+ * platform payload on every validator and post-function invocation — including
+ * `context.contextToken`, the platform's signed JWT, and every modified FIELD VALUE. Forge
+ * logs are readable by any site admin and are shipped off-site by log forwarders, so that
+ * is a credential and customer content in a place neither belongs.
+ *
+ * This is an ALLOW-LIST, not a redaction: a new platform field must be added here
+ * deliberately before it can ever be printed. `context` as a whole is never logged,
+ * modified fields contribute their KEYS only, and nothing carries a value.
+ */
+const logInvocationArgs = (kind, args) => {
+  try {
+    const cfg = args?.configuration;
+    const parsed = typeof cfg === "string" ? (() => { try { return JSON.parse(cfg); } catch { return null; } })() : cfg;
+    const summary = {
+      issueKey: args?.issue?.key || null,
+      moduleKey: args?.context?.extension?.key || null,
+      ruleId: parsed?.ruleId || parsed?.id || null,
+      type: parsed?.type || null,
+      premadeRuleType: parsed?.ruleType || parsed?.premadeRuleType || null,
+      transitionId: parsed?.workflow?.transitionId || null,
+      modifiedFieldIds: args?.modifiedFields && typeof args.modifiedFields === "object"
+        ? Object.keys(args.modifiedFields).slice(0, 40) : [],
+      configBytes: typeof cfg === "string" ? cfg.length : (cfg ? JSON.stringify(cfg).length : 0),
+    };
+    console.log(`${kind} invoked:`, JSON.stringify(summary));
+  } catch (e) { console.log(`${kind} invoked (summary unavailable)`); }
+};
+
 export const validate = async (args) => {
   const validateStartTime = Date.now();
-  console.log("AI Validator called with args:", JSON.stringify(args, null, 2));
+  logInvocationArgs("AI Validator", args);
 
   const { issue, configuration, modifiedFields } = args;
 
@@ -18434,7 +18468,7 @@ const bumpPfBrake = async (brake) => {
  * Always returns { result: true } to never block transitions.
  */
 export const executePostFunction = async (args) => {
-  console.log("Post-function called with args:", JSON.stringify(args, null, 2));
+  logInvocationArgs("Post-function", args);
 
   const { issue, configuration } = args;
   // Capture the Forge-side module key — needed both for the type fallback below

@@ -7917,11 +7917,29 @@ resolver.define("deleteContextDoc", async ({ payload, context }) => {
     // Check ownership — users can only delete their own docs, admins can delete any
     const index = (await storage.get(DOC_REPO_INDEX_KEY)) || [];
     const doc = index.find((d) => d.id === id);
-    if (doc) {
-      // F-260 — a viewer is refused for lacking the role, not for not owning it.
-      const verdict = await configActionVerdict(context.accountId, doc, "editor");
-      if (!verdict.allowed) return configRefusal(verdict, "delete this document");
-    }
+    // F-625 — THE GATE IS UNCONDITIONAL, exactly as `deleteSkill` (F-624) and
+    // `deleteListener`/`deleteJob`. It used to be `if (doc) { …verdict… }`, so an
+    // id naming no document skipped the gate entirely — no role floor either —
+    // and fell through to `storage.delete` + an index rewrite, answering a bare
+    // `{success:true}`, while a colleague's doc answered the `notOwner` sentence.
+    // That is F-261's existence leak on the docs door: `success:true` = free id,
+    // "belongs to someone else" = a colleague's document. A refused caller now
+    // reaches no write at all.
+    //
+    // `gateExistingRow` decides role, existence and ownership in ONE home: for a
+    // scope-"own" caller unknown-id and foreign-row are byte-identical, and
+    // "Document not found" is produced only for a scope-"all" caller, for whom it
+    // is the answer they asked for and not a map.
+    //
+    // DECISION (F-624, carried here): PARITY WINS. `destructive: true` narrows
+    // scope-"own" to genuine authorship, so an OWNERLESS legacy document (no
+    // `createdBy` — saved before authorship was recorded, and every builtin)
+    // becomes deletable by ADMINS ONLY. Deliberate, not an oversight.
+    const refusal = await gateExistingRow(context.accountId, doc, {
+      what: "delete this document", minRole: "editor", destructive: true,
+      notFound: "Document not found",
+    });
+    if (refusal) return refusal;
     // Builtin docs flip to disabled instead of deleting — the seeder upserts by
     // id, so a hard delete would resurrect the doc on the next seed-version bump.
     if (doc?.builtin === true) {

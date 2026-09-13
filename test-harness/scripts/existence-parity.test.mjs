@@ -23,9 +23,10 @@
  *    "Skill not found" instead of going through `gateSaveById`.
  *
  * WHY THIS SUITE EXISTS RATHER THAN TWO MORE ASSERTIONS IN THE F-616 SUITES: the same
- * rule now lives behind seven doors, and it has been re-broken once already by a fix to
- * a neighbouring rule. This walks EVERY door — resolvers listeners/jobs/agents/skills
- * and REST listeners/jobs/agents — and asserts the same three things at each:
+ * rule now lives behind nine doors, and it has been re-broken once already by a fix to
+ * a neighbouring rule. This walks EVERY door — resolvers listeners/jobs/agents, skills
+ * save + DELETE (F-624), docs DELETE (F-625), and REST listeners/jobs/agents — and
+ * asserts the same three things at each:
  *   1. a scope-"own" caller's unknown-id and foreign-row refusals are byte-identical;
  *   2. an admin (scope "all") still gets the plain not-found — it is not a leak for a
  *      caller who may act on every row, and hiding it would break the UI's "it's gone";
@@ -165,6 +166,48 @@ const listenerBody = (over = {}) => ({
   ok(legacyAdmin.success === true, `resolver deleteSkill: an ADMIN can still delete it (got ${JSON.stringify(legacyAdmin)})`);
 }
 
+/* docs DELETE — F-625's door, the same `if (doc) {…}` shape F-624 removed from
+ * deleteSkill. An unknown id skipped the gate (no role floor either) and fell
+ * through to storage.delete + an index rewrite; a colleague's doc answered notOwner. */
+{
+  const docIndex = async () => (await storage.get("doc_repo_index")) || [];
+  const mine = await call("saveContextDoc", { title: "Admin's doc", content: "reference body", category: "General" }, ADMIN);
+  const foreign = mine.id;
+  const FREE = "doc_parity_delete_free";
+  await storage.set(`doc_repo:${FREE}`, { id: FREE, title: "canary", content: "must not be deleted" });
+  const a = await call("deleteContextDoc", { id: FREE }, OWN);
+  const b = await call("deleteContextDoc", { id: foreign }, OWN);
+  ok(a.success === false && b.success === false,
+    `resolver deleteContextDoc: a scope-'own' editor is refused on BOTH ids — never success:true for a free one (got ${JSON.stringify(a)})`);
+  same(a, b, "resolver deleteContextDoc (F-625)");
+  ok(a.error !== "Document not found",
+    `resolver deleteContextDoc: the not-found sentence is NOT the scope-'own' answer (got ${a.error})`);
+  ok(await storage.get(`doc_repo:${FREE}`),
+    "resolver deleteContextDoc: NO WRITE on refusal — the refused call never reached storage.delete");
+  ok((await docIndex()).find((d) => d.id === foreign),
+    "resolver deleteContextDoc: the colleague's document survived the refused delete");
+  const adminAnswer = await call("deleteContextDoc", { id: "doc_parity_absent" }, ADMIN);
+  ok(adminAnswer.success === false && adminAnswer.error === "Document not found",
+    `resolver deleteContextDoc: an ADMIN still gets the plain not-found (got ${JSON.stringify(adminAnswer)})`);
+  /* and the door still OPENS for the author */
+  const ownDoc = await call("saveContextDoc", { title: "Own editor's doc", content: "mine", category: "General" }, OWN);
+  const deleted = await call("deleteContextDoc", { id: ownDoc.id }, OWN);
+  ok(deleted.success === true, `resolver deleteContextDoc: the author can still delete their own document (got ${JSON.stringify(deleted)})`);
+  ok(!(await docIndex()).find((d) => d.id === ownDoc.id), "resolver deleteContextDoc: …and the row is gone from the index");
+  ok(!(await storage.get(`doc_repo:${ownDoc.id}`)), "resolver deleteContextDoc: …and the content key is gone too");
+  /* F-625 carries F-624's decision: destructive:true narrows scope-'own' to genuine
+   * authorship, so an OWNERLESS legacy document is admin-delete-only. */
+  const legacyDoc = { id: "doc_legacy_ownerless", title: "Legacy", category: "General", contentLength: 4, createdBy: null };
+  await storage.set("doc_repo_index", [...(await docIndex()), legacyDoc]);
+  await storage.set(`doc_repo:${legacyDoc.id}`, { ...legacyDoc, content: "body" });
+  const legacyRefused = await call("deleteContextDoc", { id: legacyDoc.id }, OWN);
+  ok(legacyRefused.success === false,
+    `resolver deleteContextDoc: an OWNERLESS legacy document is refused to a scope-'own' editor (got ${JSON.stringify(legacyRefused)})`);
+  ok((await docIndex()).find((d) => d.id === legacyDoc.id), "resolver deleteContextDoc: …and it was not deleted");
+  const legacyAdmin = await call("deleteContextDoc", { id: legacyDoc.id }, ADMIN);
+  ok(legacyAdmin.success === true, `resolver deleteContextDoc: an ADMIN can still delete it (got ${JSON.stringify(legacyAdmin)})`);
+}
+
 /* agents — the VA resolvers sit at the ADMIN floor, so the parity here is that the
  * floor answers FIRST and an id never reaches a row read at all. */
 {
@@ -222,5 +265,5 @@ for (const [resource, mk, noun, free, indexOf] of [
   same(a, b, "REST POST ?resource=agents");
 }
 
-console.log(`existence-parity (F-620/F-622): ${pass} passed, ${fail} failed`);
+console.log(`existence-parity (F-620/F-622/F-624/F-625): ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

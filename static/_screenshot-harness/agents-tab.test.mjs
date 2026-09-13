@@ -633,6 +633,10 @@ try {
     /* THE EXACT SET, listed here on purpose: a new engine id is not a bigger number, it is
        a failing test naming the id nobody has written a sentence for. */
     const EXPECTED = [
+      /* F-564 - the purge tombstone read F-553 put in front of the compaction turn and the
+         item turn (src/va-ledger.js `refuseIfPurged`). Receipt-free at every site, but the
+         id is still pushed, so it owes a sentence like any other. */
+      "agent-purged",
       "compaction-backoff",
       "compaction-backoff-write-failed",
       "compaction_failed",

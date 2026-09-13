@@ -441,6 +441,37 @@ scaffold comments now say:** until the variable exists, every run registers agai
 bootstrap is not "at most once" by itself, it is "at most once once a human has stored the
 id".
 
+**Drift on the runner: which class produces which outcome (F-529).** The pipeline's own
+`check-permissions-lock.js` compares the working-copy manifest's `permissions:` block
+against the committed lock and classifies any difference, because the two classes cannot
+share an outcome:
+
+| drift | what changed | what the pipeline does |
+|---|---|---|
+| `none` | nothing | `locked=true`, exit 0 — deploy, then install |
+| `scopes` | a scope was added or removed | `::error::permission lock: DRIFT (scopes) - added …, removed …`, **exit 1 at the lock step**. Nothing is deployed and nothing is installed |
+| `other` | a non-scope permissions line (`content:` / `styles:`) | `locked=false`, exit 0 — **deployed, NOT installed**, with the warning step |
+| `missing` | no lock committed | `locked=false`, exit 0 — deployed, NOT installed |
+
+The `scopes` class exits at the lock step deliberately. `forge deploy --non-interactive`
+refuses a scope widening on its own with `MAJOR_VERSION_RULE` ("The deploy failed due to 1
+approval requested"), so before this the job died at the Deploy step with Forge's message
+about approvals while the lock's correct verdict, computed one step earlier, was thrown
+away with the job — a red run for the right reason, stated wrongly, and the "deployed, NOT
+installed" warning step was unreachable for the only drift the lock exists to catch
+(observed live 2026-09-13, run 34768718033). The lock step is rendered before the Deploy
+step on both hosts; on Bitbucket the checker's exit code is honoured with
+`|| { cat .lock-result; exit 1; }`, because the `;` that used to separate them swallowed
+it. The install remains the human consent gate for the `other` / `missing` classes; a scope
+change must be re-approved in CogniRunner — which rewrites the lock — before the pipeline
+deploys at all. `--approve MAJOR_VERSION_RULE` is deliberately never added: it would deploy
+a wider-scoped version off a drifted manifest, which is the opposite of the lock's purpose.
+
+The scope-vs-structure rule (`scopeOfLockLine` in `src/git-pipeline.js`) is restated inside
+the generated checker because that file is standalone in a customer's repository and can
+import nothing; `git-scaffolds.test.mjs` holds the two regex literals byte-equal so the two
+homes cannot drift apart.
+
 **The steps.** The consumer runs a fixed chain and records every step on the row before
 the next one starts, so a chain that dies reports `status: "partial"` with the step that
 failed, never "installed": on Bitbucket `enable-pipelines`, then `secret:FORGE_EMAIL`,
@@ -466,7 +497,8 @@ consent screen, and "Set up pipeline" -> all six steps done, secrets `FORGE_EMAI
 created at the provider, scaffold + lock committed in one commit (`2d0e088e`), the row
 `installed`. A green pipeline run then deployed the app (`permission lock: OK (7 lines)`,
 `locked=true`) and installed it on the site; a second run reused the app id with Bootstrap
-skipped. Four defects were found and are open in the findings ledger:
+skipped. Four defects were found; F-527, F-528 and F-529 are closed above and F-526 remains
+open:
 
 - **F-526** — the Code tab sends no `scaffoldVars`, so the installed workflow always renders
   with the `forge-pipeline` defaults (`FORGE_APP_NAME: Forge app`, `working-directory:
@@ -483,11 +515,11 @@ skipped. Four defects were found and are open in the findings ledger:
   `administration` resource. The scaffold no longer attempts it or carries the permission:
   it prints a `::notice::` naming the variable, and `setupGitPipeline` takes the optional
   `appId` and stores it. See "The app id" above.
-- **F-529** — when the drift is a widened SCOPE, `forge deploy --non-interactive` refuses
-  first with `MAJOR_VERSION_RULE`, so the job fails before the "deployed, NOT installed"
-  warning can render. The lock's own verdict (`permission lock: DRIFT`, `locked=false`, the
-  scopes printed) is computed correctly one step earlier. It fails closed, but not by the
-  mechanism this section and the scaffold comment describe.
+- **F-529** — FIXED. When the drift was a widened SCOPE, `forge deploy --non-interactive`
+  refused first with `MAJOR_VERSION_RULE`, so the job failed before the "deployed, NOT
+  installed" warning could render and the admin read Forge's reason instead of the lock's.
+  The checker now classifies the drift and exits 1 at the lock step for the `scopes` class;
+  the warning path belongs to `other` / `missing` alone. See the drift table above.
 
 ## 8. Rotation
 

@@ -101,6 +101,96 @@ for (const kind of ["forge-custom-ui", "forge-pipeline"]) {
 assert.ok(!/registers the app ONCE/.test(src) && !/registers at most once/.test(src),
   "the module's own comments no longer promise a bootstrap that registers at most once automatically");
 
+/* ===================== F-529 — THE LOCK SPEAKS BEFORE FORGE DOES =====================
+ * Live, 2026-09-13: with `write:jira-work` added to the manifest, the Permission lock step
+ * printed `permission lock: DRIFT` / `locked=false` and the scopes — correctly — and then
+ * the Deploy step killed the job with Forge's `MAJOR_VERSION_RULE` ("run forge deploy
+ * --approve MAJOR_VERSION_RULE"). Both install steps were skipped, so the designed
+ * "deployed, NOT installed" warning was unreachable and the admin read the wrong reason
+ * for a red run.
+ *
+ * Two things are held here: the ORDER (the lock step is before the deploy step in the
+ * rendered YAML, so the lock can stop the job), and the two drift CLASSES, run through the
+ * committed checker itself rather than reasoned about. */
+{
+  const os = await import("node:os");
+  const { execFileSync } = await import("node:child_process");
+  const gh = m.renderScaffold("forge-pipeline", {}).find((f) => f.path === ".github/workflows/forge-deploy.yml").content;
+  const iLock = gh.indexOf("name: Permission lock");
+  const iDeploy = gh.indexOf("name: Deploy");
+  assert.ok(iLock > -1 && iDeploy > -1 && iLock < iDeploy,
+    "the permission-lock step runs BEFORE forge deploy, so its refusal is the one the job dies of");
+  assert.ok(/steps\.lock\.outputs\.drift/.test(gh), "the warning step reports which drift class it is");
+
+  const bb = m.renderScaffold("forge-pipeline", {}).find((f) => f.path === "bitbucket-pipelines.yml").content;
+  const bLock = bb.indexOf("check-permissions-lock.js");
+  const bDeploy = bb.indexOf("forge deploy");
+  assert.ok(bLock > -1 && bLock < bDeploy, "…and on Bitbucket too");
+  assert.ok(/check-permissions-lock\.js > \.lock-result \|\| \{ cat \.lock-result; exit 1; \}/.test(bb),
+    "Bitbucket honours the checker's exit code — a ';' would have swallowed it");
+
+  // The checker is a standalone file in a customer's repo, so it restates the scope rule.
+  // The two homes are held BYTE-EQUAL here; that is the price of the second copy.
+  const checker = m.renderScaffold("forge-pipeline", {}).find((f) => f.path === ".cognirunner/check-permissions-lock.js").content;
+  const pipelineSrc = fs.readFileSync(path.join(here, "..", "..", "src", "git-pipeline.js"), "utf8");
+  const RX = /\/\^-\\s\*"\?\(\[A-Za-z\]\[A-Za-z0-9_\.-\]\*\(\?::\[A-Za-z0-9_\.:-\]\+\)\+\)"\?\\s\*\$\//;
+  assert.ok(RX.test(checker) && RX.test(pipelineSrc),
+    "the scope-vs-structure regex in the generated checker is byte-equal to scopeOfLockLine's");
+
+  // Now RUN it, on a real tree, for each class.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "cr-lock-"));
+  const write = (rel, text) => { fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true }); fs.writeFileSync(path.join(dir, rel), text); };
+  write(".cognirunner/check-permissions-lock.js", checker);
+  const manifestOf = (scopes, styles) => [
+    "modules:", "  jira:globalPage:", "    - key: page",
+    "permissions:", "  scopes:", ...scopes.map((x) => "    - " + x),
+    "  content:", "    styles:", ...styles.map((x) => "      - " + x),
+    "app:", "  id: x",
+  ].join("\n");
+  const base = manifestOf(["read:jira-work", "storage:app"], ["unsafe-inline"]);
+  write("manifest.yml", base);
+  write(".cognirunner/forge-permissions.lock", JSON.stringify(m.buildPermissionLock(base), null, 2));
+  const run = () => {
+    try { return { code: 0, out: execFileSync(process.execPath, [".cognirunner/check-permissions-lock.js"], { cwd: dir, encoding: "utf8" }) }; }
+    catch (e) { return { code: e.status, out: String(e.stdout || "") }; }
+  };
+
+  let r = run();
+  assert.equal(r.code, 0, "no drift exits 0");
+  assert.ok(/permission lock: OK/.test(r.out) && /locked=true/.test(r.out) && /drift=none/.test(r.out), "…and says so: " + r.out);
+
+  // SCOPE drift — the class forge deploy would otherwise refuse first.
+  write("manifest.yml", manifestOf(["read:jira-work", "storage:app", "write:jira-work"], ["unsafe-inline"]));
+  r = run();
+  assert.equal(r.code, 1, "a widened SCOPE fails the step, so the job never reaches forge deploy");
+  assert.ok(/drift=scopes/.test(r.out), "…classified as a scope drift: " + r.out);
+  assert.ok(/::error::permission lock: DRIFT \(scopes\)/.test(r.out), "…with the LOCK's own message, not Forge's");
+  assert.ok(/added write:jira-work/.test(r.out), "…naming the scope that appeared");
+  assert.ok(/Nothing was deployed/.test(r.out), "…and saying what did not happen");
+  assert.ok(!/MAJOR_VERSION_RULE/.test(r.out), "…and never quoting Forge's approval rule at the admin");
+
+  // A REMOVED scope is a scope drift too — narrowing is still a change nobody approved.
+  write("manifest.yml", manifestOf(["read:jira-work"], ["unsafe-inline"]));
+  r = run();
+  assert.equal(r.code, 1, "a removed scope fails the step as well");
+  assert.ok(/removed storage:app/.test(r.out), "…naming it: " + r.out);
+
+  // NON-SCOPE drift — content/styles. This one really does deploy and skip the install.
+  write("manifest.yml", manifestOf(["read:jira-work", "storage:app"], ["unsafe-inline", "unsafe-hashes"]));
+  r = run();
+  assert.equal(r.code, 0, "a content/styles change does NOT fail the job — it does not trip MAJOR_VERSION_RULE");
+  assert.ok(/drift=other/.test(r.out) && /locked=false/.test(r.out),
+    "…it is 'other' drift: deployed, NOT installed, which is the warning step's only reachable class: " + r.out);
+
+  // A MISSING lock behaves like 'other': deploy, withhold the install.
+  fs.rmSync(path.join(dir, ".cognirunner", "forge-permissions.lock"));
+  r = run();
+  assert.equal(r.code, 0, "a missing lock does not fail the job");
+  assert.ok(/drift=missing/.test(r.out) && /locked=false/.test(r.out), "…it withholds the install: " + r.out);
+
+  fs.rmSync(dir, { recursive: true, force: true });
+}
+
 /* ===================== render-scaffold PARITY =====================
  * The harness script that writes a scaffold to disk (and that the offshoot is checked
  * against) must emit exactly the line arrays in this module - otherwise "scaffold parity

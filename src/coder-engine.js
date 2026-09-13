@@ -883,6 +883,16 @@ const runCoderTurnClaimed = async ({
 
   const loop = await runAgentLoop({
     messages, tools, maxRounds: clampRounds(maxRounds), deadlineMs, execute, apiKey, model, provider, log,
+    // F-636 — WHERE THIS TURN'S BYTES STOP BEING THE THREAD'S BYTES. `prefix` is the part
+    // the contract above promises is byte-identical across the turns of this thread;
+    // `extraKnowledge` and `userTurn` after it are this turn's alone, by design. The loop
+    // used to declare the WHOLE array, so the provider's first `cache_control` mark went
+    // on the last SYSTEM message — which, on any turn carrying an addition, is that
+    // addition, sitting after the history. The request then had no breakpoint inside
+    // anything the previous turn had written, read zero cached tokens, and F-550's
+    // detector reported a prefix move no one had decided. The boundary is declared here
+    // because this is the one place that knows it.
+    stablePrefixCount: prefix.length,
     isCancelled: cancelToken ? () => m.isJobCancelled(cancelToken) : null,
     roundLabel: (n) => `Coder round ${n}`,
     onRound,

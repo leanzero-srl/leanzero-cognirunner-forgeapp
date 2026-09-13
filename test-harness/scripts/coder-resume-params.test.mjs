@@ -1158,5 +1158,100 @@ await call("confirmCoderTicket", { ticketId: "tkt_5", decision: "skip" });
   }
 }
 
+/* ===== F-636 — THE BYTES A REBUILD SENDS ARE THE BYTES THE NEXT TURN SENDS =========
+ *
+ * Measured live on staging twice (2026-09-14): the turn after a pin rebuild read ZERO
+ * cached tokens and raised F-550's DEFECT WARN although it decided nothing — so a rebuild
+ * cost the thread TWO full re-bills instead of the one its own INFO line promises. Two
+ * causes were possible and they live in different files: the builder serialising a
+ * rebuilt turn's blocks differently from the replayed ones (HERE), or the cache
+ * breakpoints landing on volatile bytes (src/agent-runner.js, cut and proven in
+ * coder-engine.test.mjs). It was the second.
+ *
+ * This half is the REGRESSION GUARD for the first, and it earns its place on its own
+ * terms: the whole F-574/F-578 design rests on "a rebuild produces the prefix the next
+ * turn replays", and nothing asserted it. The comparison is on
+ * `buildKnowledgeMessages(...)` — the rendered messages, not the fields — because that is
+ * what reaches the model, and an empty block that serialises as `""` on one path and as
+ * absent on the other is invisible on the fields and fatal on the bytes.
+ *
+ * Three shapes, because they reach the rebuild by three different routes: skills kept,
+ * skills explicitly dropped, and a legacy pin with no epoch stamps at all.
+ */
+{
+  const { buildKnowledgeMessages } = await import("../../src/agent-runner.js");
+  const { loadMemories, saveMemories, saveMemoryCandidate } = await import("../../src/memories.js");
+  const bumpMemories = async () => {
+    await saveMemoryCandidate({ content: `F-636 probe ${Math.random().toString(36).slice(2)} for the epoch bump.`, source: "user" });
+    const rows = await loadMemories();
+    await saveMemories(rows.slice(0, -1));
+  };
+
+  // The engine's pin write (src/coder-engine.js), including the two epoch stamps and the
+  // `typeof === "string" ? … : ""` normalisation that was the first suspect.
+  const pinFrom = (thread, k) => storage.set(coder.coderPinKey(ISSUE, thread), {
+    issueKey: ISSUE, threadId: thread,
+    skillsBlock: typeof k.skillsBlock === "string" ? k.skillsBlock : "",
+    memoryBlock: typeof k.memoryBlock === "string" ? k.memoryBlock : "",
+    skillIds: Array.isArray(k.skillIds) ? k.skillIds : [],
+    requestedSkillIds: Array.isArray(k.requestedSkillIds) ? k.requestedSkillIds : (Array.isArray(k.skillIds) ? k.skillIds : []),
+    memoryCount: Number(k.memoryCount) || 0,
+    ...(k.memoryEpoch !== undefined ? { memoryEpoch: Number(k.memoryEpoch) || 0 } : {}),
+    ...(k.skillEpoch !== undefined ? { skillEpoch: String(k.skillEpoch) } : {}),
+    at: new Date().toISOString(),
+  });
+
+  const arm = async (thread, { bind, rebuildWith, legacy = false, label }) => {
+    await storage.set(coder.coderThreadKey(ISSUE, thread), {
+      issueKey: ISSUE, threadId: thread, ownerAccountId: OWNER,
+      messages: [{ role: "user", content: "build me a resolver" }], turns: 1,
+    });
+    const build = (extra) => __coderKnowledgeInternals.buildCoderKnowledge({
+      issueKey: ISSUE, threadId: thread, message: "carry on", ...extra,
+    });
+    const first = await build({ ...bind, message: "build me a resolver" });
+    await pinFrom(thread, first);
+    if (legacy) {
+      // A pin written before F-578 — no epochs at all, which is its own route to a rebuild.
+      const raw = await storage.get(coder.coderPinKey(ISSUE, thread));
+      delete raw.memoryEpoch; delete raw.skillEpoch;
+      await storage.set(coder.coderPinKey(ISSUE, thread), raw);
+    } else {
+      await bumpMemories();
+    }
+    const rebuild = await build(rebuildWith);
+    ok(rebuild.repin === true, `F-636 ${label}: the turn rebuilds (${JSON.stringify(rebuild.pinInvalidated)})`);
+    // What the engine writes from that rebuild is what the NEXT turn replays.
+    await pinFrom(thread, rebuild);
+    const next = await build({});
+    ok(next.repin !== true, `F-636 ${label}: the turn after it decides nothing`);
+    const a = JSON.stringify(buildKnowledgeMessages(rebuild));
+    const b = JSON.stringify(buildKnowledgeMessages(next));
+    ok(a === b, `F-636 ${label}: THE FINDING — the prefix a rebuild sends is byte-identical to the one the next turn replays (${a.length} vs ${b.length} bytes)`);
+    // …and nothing of that turn's own is hiding inside the prefix instead of after it.
+    ok(next.skillsExtraBlock === undefined,
+      `F-636 ${label}: the replay carries no skills addition that belonged in the block`);
+  };
+
+  await arm("t_f636_keep", {
+    label: "skills present",
+    bind: { skillIds: ["skill_house"], skillIdsExplicit: true },
+    // No selection on the wire: F-594 re-renders the pin's skills INTO the rebuilt prefix.
+    rebuildWith: {},
+  });
+  await arm("t_f636_empty", {
+    label: "skills empty",
+    bind: { skillIds: ["skill_house"], skillIdsExplicit: true },
+    // The live shape: an explicit unbind, which is what produced the measurement.
+    rebuildWith: { skillIds: [], skillIdsExplicit: true },
+  });
+  await arm("t_f636_legacy", {
+    label: "legacy pin",
+    bind: { skillIds: ["skill_house"], skillIdsExplicit: true },
+    rebuildWith: {},
+    legacy: true,
+  });
+}
+
 console.log(`\ncoder resume params: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

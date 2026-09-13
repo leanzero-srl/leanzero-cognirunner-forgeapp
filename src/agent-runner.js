@@ -428,7 +428,9 @@ export const logKnowledgeInjection = (knowledge, log) => {
  * entry is stable for the whole turn, so it passes `cachePrefix: <that count>` on each
  * round (F-353). Adapters that cannot cache ignore the field; the Anthropic adapter
  * turns it into two `cache_control` breakpoints. One-shot callers never set it, so
- * validators/codegen/semantic PFs pay no cache-write premium.
+ * validators/codegen/semantic PFs pay no cache-write premium. A caller whose entry array
+ * ends in a deliberately per-TURN tail says so with `stablePrefixCount` (F-636 — see it
+ * below; without it the breakpoints land on that tail and the next turn reads nothing).
  *
  * HALTING. `execute` may return `{ __agentHalt: { toolResult, reason, summary } }` to end
  * the turn without executing anything further (the Coder's consent ticket). The halting
@@ -459,11 +461,42 @@ export const runAgentLoop = async ({
   // can never fail a round — a hook that throws is logged and swallowed, because by the time
   // it runs the model's work for that round has already happened.
   onRound = null,
+  /*
+   * F-636 — HOW MANY OF THE SEEDED MESSAGES ARE STABLE ACROSS *TURNS*, not merely across
+   * this turn's rounds. Optional; omitted ⇒ the whole entry array, which is what every
+   * caller got before and is still right for a one-conversation caller.
+   *
+   * The two counts are NOT the same thing and conflating them cost a whole thread its
+   * cross-turn cache. Everything present at entry is stable for the ROUNDS of this turn —
+   * that is the invariant above and it is why the loop could declare a prefix at all. But
+   * the tail of that array is deliberately volatile ACROSS TURNS: the Coder puts a turn's
+   * additions (a newly bound skill, a memory written since the thread started, a field
+   * guide section this turn's words scored) after the history and before the user's text,
+   * precisely so they do NOT sit inside the bytes the next turn has to match
+   * (src/coder-engine.js). Those additions are `system` messages.
+   *
+   * `markOpenRouterCacheBreakpoints` / `callAnthropicChat` (src/index.js) place their two
+   * `cache_control` marks at the LAST SYSTEM MESSAGE inside the declared prefix and at its
+   * END. Declaring the whole array therefore moved the first mark onto the volatile
+   * addition — so on any turn that carried one, the request had no breakpoint anywhere
+   * inside the bytes the previous turn had written, the cross-turn read came back ZERO,
+   * and F-550's detector reported a prefix move nobody had decided (measured live on
+   * staging 2026-09-14, on the turn after a pin rebuild).
+   *
+   * With the boundary declared, the marks land on the knowledge block and on the end of
+   * the history: the next turn matches the first one exactly, and the rounds of THIS turn
+   * still cache everything up to the history and re-bill only the additions and the user's
+   * own words.
+   */
+  stablePrefixCount = null,
 }) => {
   const m = await idx();
   const rounds = clampInt(maxRounds, 1, MAX_AGENT_ROUNDS, DEFAULT_AGENT_ROUNDS);
-  // Frozen at entry, never recomputed: the seeded messages are the turn's stable prefix.
-  const cachePrefix = Array.isArray(messages) ? messages.length : 0;
+  // Frozen at entry, never recomputed: the seeded messages are the turn's stable prefix,
+  // narrowed to the CROSS-TURN boundary when the caller knows one (F-636, above).
+  const seeded = Array.isArray(messages) ? messages.length : 0;
+  const declared = Number(stablePrefixCount);
+  const cachePrefix = Number.isFinite(declared) && declared > 0 ? Math.min(Math.floor(declared), seeded) : seeded;
   const out = {
     messages, actions: [], rounds: 0, summary: "", outcome: "failed", error: null, endedBy: null,
     // `firstRoundCacheReadTokens` is the ONLY number that can answer the CROSS-TURN

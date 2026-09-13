@@ -90,7 +90,13 @@ const setupWorld = ({ rounds = [], provider = "anthropic" } = {}) => {
       // A seam for the F-364 interleaving test: something else writes the thread row
       // while the model round is in flight.
       if (world.chatHook) await world.chatHook();
-      world.requests.push(JSON.parse(JSON.stringify({ messages: args.messages, tools: (args.tools || []).map((t) => t.function.name) })));
+      // `cachePrefix` rides along because it is the thing the provider turns into
+      // `cache_control` breakpoints (F-636) — a request captured without it cannot show
+      // where the cache boundary was declared.
+      world.requests.push(JSON.parse(JSON.stringify({
+        messages: args.messages, cachePrefix: args.cachePrefix,
+        tools: (args.tools || []).map((t) => t.function.name),
+      })));
       const r = rounds[world.round] !== undefined ? rounds[world.round] : reply([finish()]);
       world.round++;
       return typeof r === "function" ? r() : r;
@@ -1112,6 +1118,83 @@ await check("F-578: `repin` REPLACES the pinned bytes and says so — an ordinar
   assert.equal(pin3.memoryEpoch, 2, "…and the pin now records the epoch it was rebuilt under");
   assert.ok((r.logs || []).some((l) => /memoryEpoch 1→2/.test(l) && /prefix moves once/.test(l)),
     `the turn's own log says why the prefix moved (${JSON.stringify((r.logs || []).filter((l) => /pin/.test(l)))})`);
+});
+
+/* ═════════ F-636: the declared cache boundary is the CROSS-TURN one ═════════
+ *
+ * Measured live on staging twice (2026-09-14): the turn AFTER a pin rebuild read ZERO
+ * cached tokens and raised F-550's DEFECT WARN although it decided nothing. The prefix
+ * itself was innocent — coder-resume-params.test.mjs proves the rebuilt and replayed
+ * blocks are byte-identical — and the miss was in WHERE the provider was told to put its
+ * `cache_control` marks.
+ *
+ * `runAgentLoop` declared the WHOLE entry array as the cache prefix, which is true for the
+ * ROUNDS of one turn and false across TURNS: `extraKnowledge` (a newly bound skill, a
+ * memory written since the thread started, a guide section this turn's words scored) is a
+ * `system` message deliberately placed AFTER the history, and the adapters
+ * (markOpenRouterCacheBreakpoints / callAnthropicChat, src/index.js) mark the LAST SYSTEM
+ * MESSAGE inside the declared prefix. So on any turn carrying an addition the mark moved
+ * onto the addition, the request had no breakpoint anywhere inside what the previous turn
+ * wrote, and the whole thread was re-billed.
+ *
+ * These two assert the boundary itself, because it is the thing the provider reads: the
+ * declared count is the STABLE prefix, and the mark the adapters' own rule would place
+ * still falls inside the bytes the previous turn sent.
+ */
+// The adapters' rule, copied from markOpenRouterCacheBreakpoints (src/index.js) — the
+// first mark is what a cross-turn read can land on.
+const firstCacheMark = (messages, prefixCount) => {
+  const stableEnd = Math.min(Math.floor(prefixCount), messages.length) - 1;
+  let lastSystem = -1;
+  for (let i = 0; i <= stableEnd; i++) if (messages[i].role === "system") lastSystem = i;
+  return lastSystem;
+};
+
+await check("F-636: the cache prefix a turn declares STOPS at the history — the per-turn additions are outside it", async () => {
+  resetStore();
+  const world = setupWorld({ rounds: [reply([finish()]), reply([finish()])] });
+  const stable = { skillsBlock: SKILLS, memoryBlock: MEM, fieldGuideBlock: GUIDE, fieldGuideSections: ["sec-a"] };
+  await startTurn(world, { knowledge: stable });
+  await startTurn(world, { userMessage: "and deploy it", knowledge: { ...stable, memoryExtraBlock: MEM_NEW } });
+
+  const t2 = world.requests[1];
+  assert.ok(Number(t2.cachePrefix) > 0, "the loop still declares a prefix at all (F-353)");
+  assert.ok(t2.cachePrefix < t2.messages.length,
+    `THE FINDING: the addition and the user's turn are OUTSIDE the declared prefix (declared ${t2.cachePrefix} of ${t2.messages.length})`);
+  const tail = t2.messages.slice(t2.cachePrefix);
+  assert.ok(tail.some((mm) => String(mm.content || "").includes("production environment flag")),
+    "…the per-turn memory addition is one of the messages left out");
+  assert.equal(tail[tail.length - 1].role, "user", "…and the user's own words are the last of them");
+  // The boundary is the end of the stored HISTORY, so the last message inside it is one
+  // the transcript holds (user / assistant / tool) and never one of the knowledge blocks.
+  assert.ok(["user", "assistant", "tool"].includes(t2.messages[t2.cachePrefix - 1].role),
+    `…so the boundary sits at the end of the stored history (last declared role: ${t2.messages[t2.cachePrefix - 1].role})`);
+  assert.ok(!tail.some((mm, i) => i < tail.length - 1 && mm.role !== "system"),
+    "…and everything after it is a knowledge addition, up to the user's turn");
+});
+
+await check("F-636: a turn carrying an addition still marks the cache INSIDE the bytes the previous turn sent", async () => {
+  resetStore();
+  const world = setupWorld({ rounds: [reply([finish()]), reply([finish()]), reply([finish()])] });
+  const stable = { skillsBlock: SKILLS, memoryBlock: MEM, fieldGuideBlock: GUIDE, fieldGuideSections: ["sec-a"] };
+  await startTurn(world, { knowledge: stable });
+  // A rebuild turn — the prefix moves ONCE, on purpose (F-578/F-630).
+  await startTurn(world, { userMessage: "drop the skills", knowledge: { memoryBlock: MEM, fieldGuideBlock: GUIDE, fieldGuideSections: ["sec-a"], repin: true, pinInvalidated: "skills changed by the turn" } });
+  // The turn AFTER it, deciding nothing, carrying one addition: this is the live shape.
+  await startTurn(world, { userMessage: "carry on", knowledge: { memoryBlock: MEM, fieldGuideBlock: GUIDE, fieldGuideSections: ["sec-a"], memoryExtraBlock: MEM_NEW } });
+
+  const prev = world.requests[1];
+  const now = world.requests[2];
+  let common = 0;
+  while (common < now.messages.length && common < prev.messages.length
+    && JSON.stringify(now.messages[common]) === JSON.stringify(prev.messages[common])) common++;
+  assert.ok(common > 1, `the rebuilt prefix is shared with the turn that rebuilt it (${common} messages)`);
+  const mark = firstCacheMark(now.messages, now.cachePrefix);
+  assert.ok(mark >= 0, "the turn has a cache breakpoint at all");
+  assert.ok(mark < common,
+    `THE FINDING: the breakpoint (index ${mark}) falls inside the ${common} messages the previous turn already sent, so the read is a hit — it used to land on the addition at index ${firstCacheMark(now.messages, now.messages.length)}`);
+  assert.equal(firstCacheMark(prev.messages, prev.cachePrefix), mark,
+    "…at the SAME index the rebuild turn wrote its entry at, which is what makes it reachable");
 });
 
 await check("F-578: a re-pin too large to write CLEARS the stale row rather than leaving it to replay", async () => {

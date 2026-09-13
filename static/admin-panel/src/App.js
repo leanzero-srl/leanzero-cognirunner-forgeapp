@@ -3296,6 +3296,12 @@ const injectStyles = () => {
     .va-badge-shadow { background: #b45309; }
     .va-badge-live { background: #16a34a; }
     .va-badge-paused { background: #475569; }
+    /* F-554 - the READ's own two states, kept apart from the two verdicts. LOADING is
+       neutral slate (never green, which would read LIVE); UNKNOWN is the app's solid red,
+       because a mode nobody could read is the state that most needs to be noticed. Solid
+       fills, white ink, no rail, no tint, and a dark override for each. */
+    .va-badge-loading { background: #475569; }
+    .va-badge-unknown { background: #dc2626; }
     .va-badge-public { background: #2563eb; }
     .va-badge-internal { background: #475569; }
     .va-badge-ok { background: #16a34a; }
@@ -3311,6 +3317,8 @@ const injectStyles = () => {
     html[data-color-mode="dark"] .va-state-seen, html[data-color-mode="dark"] .va-state-queued, html[data-color-mode="dark"] .va-state-done, html[data-color-mode="dark"] .va-state-waiting_on_human { background: #64748b; }
     html[data-color-mode="dark"] .va-badge-public { background: #3b82f6; }
     html[data-color-mode="dark"] .va-badge-bad, html[data-color-mode="dark"] .va-state-owed { background: #ef4444; }
+    html[data-color-mode="dark"] .va-badge-loading { background: #64748b; }
+    html[data-color-mode="dark"] .va-badge-unknown { background: #ef4444; }
 
     /* the health banner: SOLID red, because a dead agent is not a hint */
     .va-health { display: flex; flex-direction: column; gap: 3px; padding: 11px 13px; border-radius: var(--r-md, 8px); background: #dc2626; color: #fff; }

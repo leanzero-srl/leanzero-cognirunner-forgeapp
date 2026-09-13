@@ -294,6 +294,10 @@ try {
     const { page } = env;
     try {
       await page.locator(".va-agent").first().waitFor({ timeout: 8000 });
+      /* F-554 - the card renders BEFORE its status answers, and until it does the mode is
+         LOADING for both agents. This suite is about the loaded card, so wait for the read
+         rather than for the element; A16 owns the two non-answers. */
+      await page.locator(".va-badge-shadow").first().waitFor({ timeout: 8000 });
       ok(await page.locator(".va-agent").count() === 2, "A6 two agent cards");
       ok(await page.locator(".va-badge-shadow").count() === 1, "A6 the shadow agent is badged SHADOW");
       ok(await page.locator(".va-badge-live").count() === 1, "A6 the live agent is badged LIVE");
@@ -847,6 +851,74 @@ try {
 
       ok(env.errors.length === 0, `A15 ${theme} no page errors (${env.errors[0] || ""})`);
     } finally { await close(env); }
+  }
+
+  /* ---------- A16 the mode badge's THREE states (F-554) ----------
+     The finding: `status` starts null, `shadow` read null as "not in shadow", and the card
+     painted LIVE and Mode "live" for the whole of the status round trip - observed on
+     staging against an agent that was actually in shadow with 500 ticks left. So both
+     non-answers are driven here, on the SAME fixture that later resolves to SHADOW, and
+     the assertion is that neither of them is ever allowed to read LIVE. */
+  for (const [theme, slate, red] of [["light", "rgb(71, 85, 105)", "rgb(220, 38, 38)"], ["dark", "rgb(100, 116, 139)", "rgb(239, 68, 68)"]]) {
+    console.log(`A16 mode badge three states (${theme})`);
+    /* The delay is long enough to read the card mid-flight and short enough that the same
+       page then shows the flip - one fixture, both halves of the claim. */
+    const env = await openAgents(browser, theme, { __VA_STATUS_DELAY_MS__: 2500 });
+    const { page } = env;
+    try {
+      const badge = page.locator(".va-agent").first().locator(".va-badge[data-mode]").first();
+      await badge.waitFor({ timeout: 8000 });
+      ok((await badge.innerText()).trim() === "LOADING", `A16 ${theme} an unanswered status reads LOADING, got ${JSON.stringify(await badge.innerText())}`);
+      ok(await badge.getAttribute("data-mode") === "loading", `A16 ${theme} the loading mode is named on the element`);
+      ok(await page.locator(".va-badge-live").count() === 0, `A16 ${theme} NOTHING is badged LIVE while no status has answered`);
+      const modeStat = page.locator(".va-agent").first().locator(".va-stat", { hasText: /MODE/i }).first();
+      ok(/checking/i.test(await modeStat.innerText()), `A16 ${theme} the Mode line reads checking, got ${JSON.stringify(await modeStat.innerText())}`);
+      ok(!/\blive\b/i.test(await modeStat.innerText()), `A16 ${theme} the Mode line does not claim live while checking`);
+      const lcss = await badge.evaluate((el) => { const c = getComputedStyle(el); return { bg: c.backgroundColor, fg: c.color, bl: c.borderLeftWidth, w: c.fontWeight }; });
+      ok(lcss.bg === slate, `A16 ${theme} LOADING is solid neutral slate, got ${lcss.bg}`);
+      ok(lcss.fg === "rgb(255, 255, 255)", `A16 ${theme} LOADING has white ink, got ${lcss.fg}`);
+      ok(lcss.bl === "0px", `A16 ${theme} LOADING has no left rail, got ${lcss.bl}`);
+      ok(Number(lcss.w) >= 600 && Number(lcss.w) <= 800, `A16 ${theme} LOADING is 600-800 weight, got ${lcss.w}`);
+      // Let the card's entry animation settle so the saved PNG is readable evidence and
+      // not a half-faded frame; the colour assertions above already ran on the element.
+      await page.waitForTimeout(900);
+      await shot(page, `agents-mode-loading-${theme}`);
+
+      // ...and it FLIPS to the engine's own answer once the read lands. va_1 is in shadow.
+      await page.locator(".va-agent").first().locator(".va-badge-shadow").waitFor({ timeout: 10000 });
+      ok((await badge.innerText()).trim() === "SHADOW", `A16 ${theme} the loaded status reads SHADOW, got ${JSON.stringify(await badge.innerText())}`);
+      ok(/shadow, 4 ticks left/.test(await modeStat.innerText()), `A16 ${theme} the Mode line carries the engine's ticks left, got ${JSON.stringify(await modeStat.innerText())}`);
+      // The SECOND agent's status says shadow:null - only THAT may read LIVE.
+      ok(await page.locator(".va-badge-live").count() === 1, `A16 ${theme} only the agent whose status says shadow:null is badged LIVE`);
+      ok(env.errors.length === 0, `A16 ${theme} no page errors (${env.errors[0] || ""})`);
+    } finally { await close(env); }
+
+    /* A failed read is NOT a live agent. */
+    const env2 = await openAgents(browser, theme, { __VA_STATUS_FAIL__: true });
+    const page2 = env2.page;
+    try {
+      const badge = page2.locator(".va-agent").first().locator(".va-badge[data-mode]").first();
+      await badge.waitFor({ timeout: 8000 });
+      await page2.locator(".va-agent").first().locator(".va-badge-unknown").waitFor({ timeout: 8000 });
+      ok((await badge.innerText()).trim() === "UNKNOWN", `A16 ${theme} a failed status read reads UNKNOWN, got ${JSON.stringify(await badge.innerText())}`);
+      ok(await page2.locator(".va-badge-live").count() === 0, `A16 ${theme} a failed read is NEVER badged LIVE`);
+      const modeStat = page2.locator(".va-agent").first().locator(".va-stat", { hasText: /MODE/i }).first();
+      ok(/not known/i.test(await modeStat.innerText()), `A16 ${theme} the Mode line says not known, got ${JSON.stringify(await modeStat.innerText())}`);
+      const ucss = await badge.evaluate((el) => { const c = getComputedStyle(el); return { bg: c.backgroundColor, fg: c.color, bl: c.borderLeftWidth, w: c.fontWeight }; });
+      ok(ucss.bg === red, `A16 ${theme} UNKNOWN is the app's solid red, got ${ucss.bg}`);
+      ok(ucss.fg === "rgb(255, 255, 255)", `A16 ${theme} UNKNOWN has white ink, got ${ucss.fg}`);
+      ok(ucss.bl === "0px", `A16 ${theme} UNKNOWN has no left rail, got ${ucss.bl}`);
+      // The way back: a Retry that actually re-asks, exactly as F-436's read offers one.
+      const retry = page2.locator(".va-agent").first().locator("button", { hasText: /^Retry$/ }).first();
+      ok(await retry.count() === 1, `A16 ${theme} the unknown state offers a Retry`);
+      await page2.waitForTimeout(900);
+      await shot(page2, `agents-mode-unknown-${theme}`);
+      await page2.evaluate(() => { window.__VA_STATUS_FAIL__ = false; });
+      await retry.click();
+      await page2.locator(".va-agent").first().locator(".va-badge-shadow").waitFor({ timeout: 8000 });
+      ok((await badge.innerText()).trim() === "SHADOW", `A16 ${theme} Retry re-asks and the real state lands`);
+      ok(env2.errors.length === 0, `A16 ${theme} no page errors (${env2.errors[0] || ""})`);
+    } finally { await close(env2); }
   }
 } finally {
   await browser.close();

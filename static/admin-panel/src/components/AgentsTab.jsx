@@ -87,6 +87,43 @@ const gateCopy = (g) => {
 };
 const gateSentence = (g) => gateCopy(g).sentence || "";
 
+/* ── F-554: THE MODE OF AN AGENT IS THREE-STATE, NOT TWO. ──────────────────────
+   `status` starts null and the card renders immediately, so for one round trip per agent
+   the tab used to read `status && status.shadow` as falsy and paint the head badge LIVE
+   and the Mode line "live". That is a POSITIVE claim about the one control standing
+   between a virtual administrator and a real customer, made from an answer nobody has
+   received. It was observed on staging against an agent that was genuinely in shadow with
+   500 ticks left, while "Last tick" in the same block honestly read "not known yet".
+
+   So the mode is derived the way F-436 derives the Coder capability read: the two states
+   of the READ are kept apart from the two verdicts.
+
+     loading — the status fetch has not answered. Neutral SLATE chip, Mode "checking".
+     unknown — the read FAILED and there is no prior answer. Solid RED chip, Mode "not
+               known", and the error block above the stats carries the Retry. Never LIVE:
+               an unanswered question is not a "yes, it is posting to customers".
+     shadow / live — a LOADED status. Only here may the tab make a claim, and `shadow`
+               being null now means "the engine said it is live", not "nobody asked".
+
+   ONE helper, every site: the head badge, the Mode stat, and the drafts pane's
+   Approve / Reject column all call this, so the three cannot disagree about what is known.
+   A read that fails AFTER a good answer keeps the last answer (the stats do the same) and
+   the failure is reported by the error block - a card is not blanked for a dropped poll.
+
+   Approve / Reject are ABSENT in both unknown states, which is the same direction the old
+   code happened to take: they may only be offered once the engine has said "shadow". */
+export const AGENT_MODE_LOADING = { id: "loading", badge: "LOADING", cls: "va-badge-loading", stat: "checking" };
+export const AGENT_MODE_UNKNOWN = { id: "unknown", badge: "UNKNOWN", cls: "va-badge-unknown", stat: "not known" };
+export function agentMode(status, statusError) {
+  if (!status) return statusError ? AGENT_MODE_UNKNOWN : AGENT_MODE_LOADING;
+  const shadow = status.shadow;
+  if (shadow) {
+    const left = shadow.ticksLeft;
+    return { id: "shadow", badge: "SHADOW", cls: "va-badge-shadow", shadow, stat: `shadow, ${left != null ? `${left} tick${left === 1 ? "" : "s"} left` : "staging only"}` };
+  }
+  return { id: "live", badge: "LIVE", cls: "va-badge-live", shadow: null, stat: "live" };
+}
+
 /* ── F-511: the memory-compaction line on a tick receipt. ──────────────────────
    The engine records compaction in TWO places and the tab used to read neither, so a
    notebook that was over budget, or a summarisation being bought and wasted every five
@@ -340,7 +377,8 @@ function AgentCard({ agent, client, canEdit, open, onToggle, onChanged }) {
   };
 
   const paused = status ? status.paused === true : va.status && va.status.paused === true;
-  const shadow = status && status.shadow;
+  /* F-554 - ONE helper for every mode claim on this card; see agentMode() above. */
+  const mode = agentMode(status, statusError);
   const health = (status && status.health) || null;
   /* The banner is the engine's own counter and its own threshold (VA_LIMITS), never a
      number retyped here. Solid red, because a dead credential or an unreachable model is
@@ -352,7 +390,7 @@ function AgentCard({ agent, client, canEdit, open, onToggle, onChanged }) {
       <div className="va-agent-head">
         <button type="button" className="rule-expand-btn" onClick={onToggle} aria-expanded={open} title="Details">{open ? "▾" : "▸"}</button>
         <span className="va-agent-name">{(va.persona && va.persona.name) || agent.name || "Unnamed agent"}</span>
-        {shadow ? <span className="va-badge va-badge-shadow">SHADOW</span> : <span className="va-badge va-badge-live">LIVE</span>}
+        <span className={`va-badge ${mode.cls}`} data-mode={mode.id}>{mode.badge}</span>
         {paused && <span className="va-badge va-badge-paused">PAUSED</span>}
         <span className="va-agent-spacer" />
         {canEdit && <button type="button" className="btn-small" disabled={!!busy} onClick={() => act(paused ? "Resume" : "Pause", () => (paused ? client.resume(agent.id) : client.pause(agent.id)), paused ? null : `Pause ${(va.persona && va.persona.name) || "this agent"}? It stops staging and stops posting until you resume it. Anything already staged stays staged.`)}>{paused ? "Resume" : "Pause"}</button>}
@@ -373,7 +411,7 @@ function AgentCard({ agent, client, canEdit, open, onToggle, onChanged }) {
         <Stat label="Staged" value={status && status.staged != null ? String(status.staged) : "not known yet"} />
         <Stat label="Next tick" value={when(status && status.nextTick, tz)} />
         <Stat label="Next posting window" value={status && status.nextPostWindow ? (status.nextPostWindow.from ? `${fmt(status.nextPostWindow.from, tz)} to ${fmt(status.nextPostWindow.to, tz) || "…"}` : String(status.nextPostWindow)) : "not known yet"} />
-        <Stat label="Mode" value={shadow ? `shadow, ${shadow.ticksLeft != null ? `${shadow.ticksLeft} tick${shadow.ticksLeft === 1 ? "" : "s"} left` : "staging only"}` : "live"} />
+        <Stat label="Mode" value={mode.stat} />
       </div>
 
       {open && (
@@ -383,7 +421,7 @@ function AgentCard({ agent, client, canEdit, open, onToggle, onChanged }) {
               <button type="button" key={p.id} role="tab" aria-selected={pane === p.id} className={`va-pane-btn ${pane === p.id ? "on" : ""}`} onClick={() => setPane(p.id)}>{p.label}</button>
             ))}
           </div>
-          {pane === "drafts" && <DraftsPane client={client} agent={agent} shadow={!!shadow} canEdit={canEdit} onChanged={() => { refresh(); onChanged(); }} />}
+          {pane === "drafts" && <DraftsPane client={client} agent={agent} shadow={mode.id === "shadow"} canEdit={canEdit} onChanged={() => { refresh(); onChanged(); }} />}
           {pane === "effects" && <EffectsPane client={client} agent={agent} tz={tz} />}
           {pane === "receipts" && <ReceiptsPane receipts={arr(status && status.receipts)} tz={tz} />}
           {pane === "memory" && <MemoryPane client={client} agent={agent} canEdit={canEdit} />}

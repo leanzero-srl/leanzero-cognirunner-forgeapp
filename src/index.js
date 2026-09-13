@@ -573,21 +573,34 @@ const configRefusal = (verdict, what) =>
  *
  * Returns `null` when the action is allowed, or the refusal object to return.
  * Role first (F-260), then existence, then ownership.
+ *
+ * F-291 — the DELETE path (removeRegistryRowsCore) needs the same three answers
+ * but reports them as per-row `results[]` entries, not as a resolver refusal.
+ * So the decision lives in `rowGateVerdict` (pure, takes the permissions the
+ * caller already read) and the two shapes are only MAPPINGS of it. Do not
+ * re-derive "unknown id looks like someone else's row" anywhere else.
  */
-const gateExistingRow = async (accountId, row, { what, minRole = "editor", destructive = false, notFound }) => {
-  // ONE permissions read for all three questions (role, existence, ownership).
-  const perms = await getUserPermissions(accountId);
-  if (!hasRole(perms)) return noPerm(what, minRole);
-  if ((ROLE_LEVELS[perms.role] || 0) < (ROLE_LEVELS[minRole] || 0)) return noPerm(what, minRole);
+const rowGateVerdict = (perms, accountId, row, { minRole = "editor", destructive = false } = {}) => {
+  if (!hasRole(perms)) return { allowed: false, kind: "no-role", needsRole: minRole, role: null, scope: null };
+  if ((ROLE_LEVELS[perms.role] || 0) < (ROLE_LEVELS[minRole] || 0)) {
+    return { allowed: false, kind: "below-floor", needsRole: minRole, role: perms.role, scope: perms.scope };
+  }
   const seesEverything = perms.role === "admin" || perms.scope === "all";
   if (!row) {
     // The ONLY place "not found" is safe: this caller may act on every row.
     return seesEverything
-      ? { success: false, error: notFound || "Not found" }
-      : notOwner(what);
+      ? { allowed: false, kind: "not-found", needsRole: minRole, role: perms.role, scope: perms.scope }
+      : { allowed: false, kind: "not-owner", needsRole: minRole, role: perms.role, scope: perms.scope };
   }
-  const verdict = verdictFromPerms(perms, accountId, row, minRole, { destructive });
-  return verdict.allowed ? null : configRefusal(verdict, what);
+  return verdictFromPerms(perms, accountId, row, minRole, { destructive });
+};
+
+const gateExistingRow = async (accountId, row, { what, minRole = "editor", destructive = false, notFound }) => {
+  // ONE permissions read for all three questions (role, existence, ownership).
+  const verdict = rowGateVerdict(await getUserPermissions(accountId), accountId, row, { minRole, destructive });
+  if (verdict.allowed) return null;
+  if (verdict.kind === "not-found") return { success: false, error: notFound || "Not found" };
+  return configRefusal(verdict, what);
 };
 
 /** Backward-compatible: requireAdmin = requireRole(id, "admin") */
@@ -1991,6 +2004,10 @@ resolver.define("registerConfig", async ({ payload, context }) => {
  * rule actually stops running, not just that it vanishes from the admin table.
  */
 resolver.define("removeConfig", async ({ payload, context }) => {
+  // F-291 — the ROLE floor is a resolver-level gate, so a role-less licensed
+  // user never reaches the registry read and cannot use the per-row reasons as
+  // an existence/type oracle.
+  if (!(await requireRole(context.accountId, "editor"))) return needRole("editor");
   try {
     const detach = payload?.detach !== false;
     const out = await removeRegistryRowsCore({
@@ -4334,23 +4351,40 @@ export const removeRegistryRowsCore = async ({ ids, accountId, detach = false, f
   const results = [];
   const removable = [];
 
+  // bypassAuthz is ONLY ever set by the dev-gated HARNESS_SECRET web trigger, where
+  // the Bearer secret is the authorization (same reasoning as its other actions).
+  // Resolvers never pass it.
+  // F-291 — ONE permissions read for the whole batch, and the role question is
+  // answered before anything is said about the row: a caller who could not act on
+  // ANY row learns nothing about which ids exist or what kind they are. For a
+  // scope-"own" caller, "unknown id", "other family" and "someone else's row" are
+  // the SAME `no-permission`/`not-owner` result row. "not-found" / "wrong-family"
+  // survive only for callers who see everything, for whom they are not a leak.
+  const perms = bypassAuthz ? null : await getUserPermissions(accountId);
+
   for (const id of wanted) {
     const target = byId.get(id);
-    if (!target) { results.push({ id, ok: false, reason: "not-found" }); continue; }
-    if (family === "postfunction" && !isPostFunctionRow(target)) { results.push({ id, ok: false, reason: "wrong-family" }); continue; }
-    if (family === "rule" && isPostFunctionRow(target)) { results.push({ id, ok: false, reason: "wrong-family" }); continue; }
-    // bypassAuthz is ONLY ever set by the dev-gated HARNESS_SECRET web trigger, where
-    // the Bearer secret is the authorization (same reasoning as its other actions).
-    // Resolvers never pass it.
-    if (!bypassAuthz) {
-      // F-260 — the VERDICT, so a per-row refusal says which of the three it is.
-      const verdict = await configActionVerdict(accountId, target, "editor", { destructive: true });
-      if (!verdict.allowed) {
-        results.push(verdict.kind === "not-owner"
-          ? { id, ok: false, reason: PERMISSION_REFUSAL_REASON, hint: PERMISSION_REFUSAL_HINT_NOT_OWNER }
-          : { id, ok: false, reason: PERMISSION_REFUSAL_REASON, hint: PERMISSION_REFUSAL_HINT, needsRole: verdict.needsRole });
-        continue;
+    const wrongFamily = !!target && (
+      (family === "postfunction" && !isPostFunctionRow(target)) ||
+      (family === "rule" && isPostFunctionRow(target))
+    );
+    if (bypassAuthz) {
+      if (!target) { results.push({ id, ok: false, reason: "not-found" }); continue; }
+      if (wrongFamily) { results.push({ id, ok: false, reason: "wrong-family" }); continue; }
+      removable.push(target);
+      continue;
+    }
+    // A row of the wrong family is, for this call, a row that is not there.
+    const verdict = rowGateVerdict(perms, accountId, wrongFamily ? null : target, { minRole: "editor", destructive: true });
+    if (!verdict.allowed) {
+      if (verdict.kind === "not-found") {
+        results.push({ id, ok: false, reason: wrongFamily ? "wrong-family" : "not-found" });
+      } else if (verdict.kind === "not-owner") {
+        results.push({ id, ok: false, reason: PERMISSION_REFUSAL_REASON, hint: PERMISSION_REFUSAL_HINT_NOT_OWNER });
+      } else {
+        results.push({ id, ok: false, reason: PERMISSION_REFUSAL_REASON, hint: PERMISSION_REFUSAL_HINT, needsRole: verdict.needsRole });
       }
+      continue;
     }
     removable.push(target);
   }
@@ -6782,6 +6816,10 @@ resolver.define("registerPostFunction", async ({ payload, context }) => {
  * Remove a post-function configuration by ID.
  */
 resolver.define("removePostFunction", async ({ payload, context }) => {
+  // F-291 — the ROLE floor is a resolver-level gate, so a role-less licensed
+  // user never reaches the registry read and cannot use the per-row reasons as
+  // an existence/type oracle.
+  if (!(await requireRole(context.accountId, "editor"))) return needRole("editor");
   try {
     const detach = payload?.detach !== false;
     const out = await removeRegistryRowsCore({

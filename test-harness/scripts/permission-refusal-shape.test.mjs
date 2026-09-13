@@ -64,6 +64,10 @@ const GATED = [
   ["testPostFunction", { code: "x" }, "editor"],
   ["saveContextDoc", { title: "t", content: "c" }, "editor"],
   ["saveSkill", { skill: { name: "s", content: "c" } }, "editor"],
+  // F-291 — the delete resolvers have a resolver-level role floor of their own,
+  // so a role-less caller never reaches the registry (and its per-row reasons).
+  ["removeConfig", { id: "r-anything" }, "editor"],
+  ["removePostFunction", { id: "p-anything" }, "editor"],
   ["saveMemorySettings", { settings: {} }, "admin"],
   ["getAppAdmins", {}, "admin"],
   ["addAppAdmin", { accountId: "x" }, "admin"],
@@ -304,3 +308,68 @@ assert.equal(handBuilt.length, 0,
   `hand-built permission refusals bypass the helper at src/index.js lines: ${handBuilt.map(([n]) => n).join(", ")}`);
 
 console.log("permission-refusal-shape: OK");
+
+// ==========================================================================
+// F-291 — THE SAME EXISTENCE LEAK, ON THE DELETE PATH.
+//
+// removeConfig/removePostFunction had no resolver-level role gate at all, and
+// removeRegistryRowsCore pushed "not-found" (and "wrong-family") BEFORE the
+// per-row ownership verdict — so a caller who could never delete anything could
+// enumerate every rule id on the instance and its kind. For a scope-"own"
+// caller the three answers must now be one answer.
+{
+  const seedRules = async () => {
+    await storage.set("app_admins", [{ accountId: CALLER, role: "editor", scope: "own" }]);
+    await storage.set("config_registry", [
+      { id: "r-other", type: "validator", createdBy: OWNED_BY_OTHER, prompt: "x", transitionId: "1", workflowName: "wf" },
+      { id: "p-other", type: "postfunction", createdBy: OWNED_BY_OTHER, transitionId: "1", workflowName: "wf" },
+    ]);
+  };
+  const shape = (r) => ({ success: r?.success, error: r?.error, reason: r?.reason, hint: r?.hint, needsRole: r?.needsRole });
+  const call = async (key, payload) => { await reset(); await seedRules(); return invoke(key, payload); };
+
+  for (const [key, existsId, missingId, otherFamilyId] of [
+    ["removeConfig", "r-other", "r-nonexistent", "p-other"],
+    ["removePostFunction", "p-other", "p-nonexistent", "r-other"],
+  ]) {
+    const exists = await call(key, { id: existsId, detach: false });
+    const missing = await call(key, { id: missingId, detach: false });
+    const wrongFamily = await call(key, { id: otherFamilyId, detach: false });
+    assert.equal(exists?.reason, "no-permission", `${key}: another owner's row is an ownership refusal`);
+    assert.equal(exists?.hint, "not-owner", `${key}: ...with the not-owner hint`);
+    assert.deepEqual(shape(missing), shape(exists),
+      `${key}: an unknown id must answer exactly as another owner's row does ` +
+      `(exists=${JSON.stringify(exists)} missing=${JSON.stringify(missing)})`);
+    assert.deepEqual(shape(wrongFamily), shape(exists),
+      `${key}: a row of the OTHER family must not be distinguishable either ` +
+      `(got ${JSON.stringify(wrongFamily)})`);
+    assert.doesNotMatch(String(missing?.error || ""), /registry|not found/i,
+      `${key}: a scope-own caller is never told whether an id exists`);
+  }
+
+  // The other half: an all-scope caller keeps the honest answers.
+  const seedAdminRules = async () => {
+    await storage.set("app_admins", [{ accountId: CALLER, role: "admin", scope: "all" }]);
+    await storage.set("config_registry", [
+      { id: "p-other", type: "postfunction", createdBy: OWNED_BY_OTHER, transitionId: "1", workflowName: "wf" },
+    ]);
+  };
+  await reset(); await seedAdminRules();
+  const adminMissing = await invoke("removeConfig", { id: "r-nope", detach: false });
+  assert.equal(adminMissing?.success, false, "an admin still gets a failure for an unknown id");
+  assert.equal(adminMissing?.reason, "not-found", "and it is a NOT-FOUND, not a permission refusal");
+  assert.match(String(adminMissing?.error || ""), /no longer in the registry/i, "an admin is told plainly");
+  await reset(); await seedAdminRules();
+  const adminFamily = await invoke("removeConfig", { id: "p-other", detach: false });
+  assert.equal(adminFamily?.reason, "wrong-family", "an admin still learns a family mismatch");
+
+  // And a legitimate delete still works (the gate is not "refuse everything").
+  await reset();
+  await storage.set("app_admins", [{ accountId: CALLER, role: "editor", scope: "own" }]);
+  await storage.set("config_registry", [
+    { id: "r-mine", type: "validator", createdBy: CALLER, prompt: "x", transitionId: "1", workflowName: "wf" },
+  ]);
+  const done = await invoke("removeConfig", { id: "r-mine", detach: false });
+  assert.equal(done?.success, true, `a scope-own editor still deletes their OWN rule (got ${JSON.stringify(done)})`);
+  assert.deepEqual(await storage.get("config_registry"), [], "and the row is gone");
+}

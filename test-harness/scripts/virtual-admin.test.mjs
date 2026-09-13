@@ -301,7 +301,15 @@ const itemDeps = (over = {}) => {
     getIssue: async (k) => issue(k, { fields: { reporter: { accountId: "rep-1" }, requestType: { id: "rt-1" }, comment: { comments: [{ id: "c-9", author: { accountId: "rep-1" }, body: "hi" }] } } }),
     createIssue: async (fields) => { posted.push(fields); return { key: "INBOX-1" }; },
     createSession: async () => ({ changes, createApi: () => ({}) }),
-    createDispatcher: () => async (name) => { changes.push({ action: name }); return { ok: true }; },
+    // A STAND-IN FOR `createAgentActionDispatcher`, delegating by namespace exactly as the
+    // real one does (agent-runner.js). The ledger actions must reach the ledger EXECUTOR
+    // and not a Jira branch; a mock that answered every id itself would make the whole
+    // 4a move untestable, because the turn would pass with no executor wired at all.
+    createDispatcher: ({ executors = {} } = {}) => async (name, args) => {
+      for (const ex of Object.values(executors)) if (ex && typeof ex.handles === "function" && ex.handles(name)) return ex.execute(name, args || {});
+      changes.push({ action: name });
+      return { ok: true };
+    },
     compactIssue: (i) => ({ key: i.key, summary: i.fields.summary }),
     buildKnowledge: async () => ({ skillsBlock: "house rules" }),
     buildKnowledgeMessages: (k) => (k && k.skillsBlock ? [{ role: "system", content: `## OPERATOR KNOWLEDGE\n${k.skillsBlock}` }] : []),

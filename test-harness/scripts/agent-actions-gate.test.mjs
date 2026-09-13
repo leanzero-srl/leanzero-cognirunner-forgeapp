@@ -29,9 +29,76 @@ for (const ns of ["jira", "git", "confluence", "web", "ledger"]) {
   ok(row && typeof row.label === "string", `namespace ${ns} exists`);
   ok("requiresCapability" in row && "requiresProduct" in row, `namespace ${ns} declares its flags`);
 }
-for (const ns of ["confluence", "ledger"]) {
+for (const ns of ["confluence"]) {
   ok(AGENT_ACTION_NAMESPACES[ns].reserved === true, `${ns} is reserved`);
   eq(AGENT_ACTIONS.filter((a) => agentActionNamespace(a) === ns).map((a) => a.id), [], `${ns} is still empty`);
+}
+
+/* ---------- 1.5 commit 4a — the LEDGER namespace is filled ---------- */
+// The five speech/state actions lived as `VA_SPEECH_ACTIONS` inside src/virtual-admin.js
+// while the namespace was reserved, which meant the gate, the admin checklist and the
+// REST validator could not see them at all. They are catalogue rows now.
+ok(AGENT_ACTION_NAMESPACES.ledger.reserved === false, "ledger is no longer reserved");
+ok(AGENT_ACTION_NAMESPACES.ledger.executor === "va-ledger-actions",
+  "ledger names the EXECUTOR module, not the ledger store (va-ledger.js is the store)");
+const LEDGER_SNAPSHOT = ["stage_reply", "ask_human", "propose_change", "ledger_note", "memory_note"];
+eq(AGENT_ACTIONS.filter((a) => agentActionNamespace(a) === "ledger").map((a) => a.id), LEDGER_SNAPSHOT,
+  "the ledger namespace holds exactly the five speech/state actions");
+// SPEECH IS NEVER DIRECT — the guarantee is the ABSENCE of a tool, asserted by name.
+ok(!AGENT_ACTION_IDS.includes("post_comment"), "ledger.BLOCK_no_direct_speech_action_exists");
+ok(!AGENT_ACTIONS.some((a) => agentActionNamespace(a) === "ledger" && /scheme|workflow|permission|role|field/i.test(a.id)),
+  "ledger.BLOCK_no_configuration_write — propose_change is the ONLY route, not the approved one");
+for (const id of LEDGER_SNAPSHOT) {
+  const a = getAgentAction(id);
+  // `kind` answers "does this change anything OUTSIDE CogniRunner?". Every ledger action
+  // answers no — a staged reply is a row, and the post phase (not an action) is what
+  // speaks. Calling them writes would spend maxWritesPerRun on drafts.
+  ok(a.kind === "read", `${id} is kind "read" — it changes nothing outside CogniRunner`);
+  ok(a.confirm === undefined && a.dangerous === undefined, `${id} carries neither confirm nor dangerous`);
+  ok(a.requiresCapability === null, `${id} requires no capability`);
+  ok(a.parameters && a.parameters.type === "object" && a.parameters.additionalProperties === false,
+    `${id} has a closed object schema`);
+  ok(Array.isArray(a.parameters.required) && a.parameters.required.every((r) => r in a.parameters.properties),
+    `${id}'s required list names only declared properties`);
+  ok(Object.values(a.parameters.properties).every((sch) => sch && typeof sch.type === "string"),
+    `${id}'s every argument declares a type — buildArgsPreview-style derivation needs it`);
+}
+// ARG SCHEMAS, by name: a rename here silently changes what the executor reads.
+eq(Object.keys(getAgentAction("stage_reply").parameters.properties), ["audience", "body", "reason"], "stage_reply's arguments");
+eq(getAgentAction("stage_reply").parameters.properties.audience.enum, ["customer", "internal"], "stage_reply's audience is a closed set");
+eq(Object.keys(getAgentAction("ask_human").parameters.properties), ["summary", "needs"], "ask_human's arguments");
+eq(Object.keys(getAgentAction("propose_change").parameters.properties), ["kind", "target", "blastRadius", "steps"], "propose_change's arguments");
+eq(Object.keys(getAgentAction("ledger_note").parameters.properties), ["note"], "ledger_note's arguments");
+eq(Object.keys(getAgentAction("memory_note").parameters.properties), ["note", "constraint"], "memory_note's arguments");
+
+// FINISH: declared in `ledger`, but CONTROL WINS at dispatch. If the declared namespace
+// ever won, every listener and scheduled-job run — which carry no ledger executor —
+// would get `not_configured` for the one tool the loop needs to end cleanly.
+ok(getAgentAction("finish").namespace === "ledger", "finish declares the ledger namespace");
+eq(agentActionNamespace(getAgentAction("finish")), "control", "finish.ALLOW_control_wins_over_declared_namespace");
+ok(getAgentAction("finish").always === true, "finish is still always available");
+// The ledger actions must not have leaked into the gate's write vocabulary.
+ok(!hasWriteActions(LEDGER_SNAPSHOT, { products: ["jira"] }), "ledger.BLOCK_not_counted_as_writes");
+// They survive the MOST RESTRICTIVE context: no capability, no product but Jira,
+// external trigger, not admin-saved. A VA's notebook must not need an edition.
+eq(normalizeAllowedActions(LEDGER_SNAPSHOT), LEDGER_SNAPSHOT, "ledger.ALLOW_under_the_restrictive_default");
+{
+  const r = normalizeAllowedActions(LEDGER_SNAPSHOT, { triggerSource: "external", savedByRole: null, products: ["jira"] });
+  eq(r.refused, [], "ledger.ALLOW_external_non_admin — none of them is confirm or dangerous");
+}
+// The executor module the namespace table names actually exists and exports the ids.
+{
+  const { VA_LEDGER_ACTION_IDS } = await import("../../src/va-ledger-actions.js");
+  eq([...VA_LEDGER_ACTION_IDS], LEDGER_SNAPSHOT, "the executor handles exactly the catalogue's ledger ids");
+}
+// AND THE OLD HOME IS GONE. A second copy of these definitions is the defect this move
+// exists to remove, so its absence is asserted rather than assumed.
+{
+  const { readFileSync } = await import("node:fs");
+  const vsrc = readFileSync(new URL("../../src/virtual-admin.js", import.meta.url), "utf8");
+  ok(!/VA_SPEECH_ACTIONS\s*=/.test(vsrc), "ledger.BLOCK_second_definition — VA_SPEECH_ACTIONS is deleted, not duplicated");
+  ok(/executors: \{ ledger: ledgerExecutor \}/.test(vsrc) || /ledger: ledgerExecutor/.test(vsrc),
+    "the item turn reaches the ledger actions through the dispatcher's namespace delegation");
 }
 // 1.4 commit 13a — `web` left the reserved set with exactly ONE action.
 ok(AGENT_ACTION_NAMESPACES.web.reserved === false, "web is no longer reserved");
@@ -122,14 +189,17 @@ eq(normalizeAllowedActions(["approve_pull_request"], { capability: false, trigge
 
 /* ---------- tool definitions with a context ---------- */
 const tools = toolDefinitionsFor(["commit_files", "approve_pull_request"], { ...CAP_ON, triggerSource: "external" });
-eq(tools.map((t) => t.function.name), ["finish", "commit_files"], "a dangerous tool never reaches the model on an external run");
+// ORDER IS THE CATALOGUE'S, and 1.5 commit 4a moved `finish` out of the Jira block into
+// the ledger one, so it is now LAST rather than first. Nothing reads tool order — every
+// provider matches by name — so the assertion is about the SET, plus `finish` being in it.
+eq(tools.map((t) => t.function.name).sort(), ["commit_files", "finish"], "a dangerous tool never reaches the model on an external run");
 ok(tools.every((t) => t.function.parameters && t.function.parameters.type === "object"), "every tool definition carries its schema");
 
 /* ---------- F-275: a pregated list is NOT re-gated ---------- */
 const verdict = normalizeAllowedActions(["commit_files", "get_issue"], CAP_ON).allowed;
 eq(verdict, ["commit_files", "get_issue"], "the gate allowed both");
-eq(toolDefinitionsFor(verdict, { pregated: true }).map((t) => t.function.name), ["get_issue", "finish", "commit_files"],
-  "pregated tool definitions keep the gate's verdict verbatim");
+eq(toolDefinitionsFor(verdict, { pregated: true }).map((t) => t.function.name), ["get_issue", "commit_files", "finish"],
+  "pregated tool definitions keep the gate's verdict verbatim (finish is last since 4a moved it to the ledger block)");
 eq(toolDefinitionsFor(verdict).map((t) => t.function.name), ["get_issue", "finish"],
   "…and WITHOUT pregated the arity-1 default would have dropped the git tool — this is the F-275 trap");
 eq(toolDefinitionsFor(["zzz", "finish"], { pregated: true }).map((t) => t.function.name), ["finish"],

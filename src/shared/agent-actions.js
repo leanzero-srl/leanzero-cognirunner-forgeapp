@@ -107,11 +107,6 @@ const JIRA_AGENT_ACTIONS = [
     description: "Log time on an issue.",
     parameters: P({ issueKey: KEY, timeSpentSeconds: { type: "integer" }, comment: { type: "string" } }, ["timeSpentSeconds"]),
   },
-  {
-    id: "finish", kind: "control", label: "Finish", always: true,
-    description: "End the run. Always call this when the task is complete or there is nothing to do. Summarise what was done in one to three sentences.",
-    parameters: P({ summary: { type: "string" }, outcome: { type: "string", enum: ["done", "nothing_to_do", "failed"] } }, ["summary", "outcome"]),
-  },
 ];
 
 /**
@@ -137,7 +132,13 @@ export const AGENT_ACTION_NAMESPACES = Object.freeze({
   // deliberately NOT a save-time capability, because a rule saved while the MCP was on
   // must not become unsavable the moment an admin flips the toggle off.
   web: Object.freeze({ label: "Web", requiresCapability: null, requiresMcp: "webSearch", requiresProduct: null, executor: "web-search-tool", reserved: false }),
-  ledger: Object.freeze({ label: "Agent ledger", requiresCapability: null, requiresProduct: null, executor: "va-ledger", reserved: true }),
+  // THE EXECUTOR IS `va-ledger-actions`, NOT `va-ledger` (1.5 commit 4a). The FRAME's
+  // table named `va-ledger`, which by then already existed as the ledger STORE -- rows,
+  // claims, fingerprints, TTLs. Conflating the store with the action executor would put
+  // two jobs in one module and give the store a reason to know what a tool call is. The
+  // split mirrors git exactly: `git-connections.js` is the store, `git-actions.js` is the
+  // executor, and the namespace table names the executor.
+  ledger: Object.freeze({ label: "Agent ledger", requiresCapability: null, requiresProduct: null, executor: "va-ledger-actions", reserved: false }),
 });
 export const AGENT_ACTION_NAMESPACE_IDS = Object.keys(AGENT_ACTION_NAMESPACES);
 
@@ -235,10 +236,98 @@ const WEB_AGENT_ACTIONS = [
   },
 ];
 
-export const AGENT_ACTIONS = [...JIRA_AGENT_ACTIONS, ...GIT_AGENT_ACTIONS, ...WEB_AGENT_ACTIONS];
 
-/** The namespace an action belongs to. `finish` is control and belongs to none. */
-export const agentActionNamespace = (a) => (a && a.namespace) || (a && a.kind === "control" ? "control" : "jira");
+/**
+ * LEDGER namespace -- the Virtual Administrator's SPEECH AND STATE actions
+ * (1.5 commit 4a). Executed by src/va-ledger-actions.js over the ledger store
+ * (src/va-ledger.js).
+ *
+ * WHY THEY ARE `kind: "read"`, every one of them. `kind` in this catalogue answers ONE
+ * question -- "does calling this change something OUTSIDE CogniRunner?" -- because that
+ * is the question the write brake (`session.changes`, agent-runner.js) and
+ * `hasWriteActions` are asking. A staged reply changes nothing anybody can see: it writes
+ * a row in the agent's own ledger, and the POST PHASE, which is not an action and not
+ * reachable from a tool, is what eventually speaks. Calling them writes would spend a
+ * run's `maxWritesPerRun` on drafts and then refuse the transition the agent was actually
+ * asked to make -- the brake would be braking the wrong thing.
+ *
+ * WHAT IS NOT HERE, AND NEVER WILL BE:
+ *   - `post_comment`, or any action that speaks immediately. Speech is staged, always,
+ *     and the guarantee is that NO TOOL POSTS -- a code fact, not a prompt sentence.
+ *   - any configuration write. No scheme, workflow, permission, role or field action
+ *     exists at all, which is why `propose_change` is not "the approved route" but the
+ *     ONLY route. A gate here would imply a second one.
+ *
+ * None carries `confirm` or `dangerous` and none requires a capability: writing in your
+ * own notebook needs no edition, no product and no admin.
+ */
+const LEDGER_AGENT_ACTIONS = [
+  {
+    id: "stage_reply", namespace: "ledger", kind: "read", label: "Stage a reply", requiresCapability: null,
+    description: "Write the reply you want to send. It is NOT sent now: it is staged, checked and sent on a later run, at least a few minutes from now. Say who it is for: 'customer' only when you are answering the person who raised the request, otherwise 'internal' for a note your colleagues see. Plain sentences, no bullet points, no headings.",
+    parameters: P({
+      audience: { type: "string", enum: ["customer", "internal"], description: "Who reads it. 'customer' is only possible on a portal request, to its reporter." },
+      body: { type: "string", description: "The message, in plain sentences." },
+      reason: { type: "string", description: "One line: why this reply, for the ledger. The customer never sees it." },
+    }, ["audience", "body", "reason"]),
+  },
+  {
+    id: "ask_human", namespace: "ledger", kind: "read", label: "Ask a human", requiresCapability: null,
+    description: "Stop and ask a person. Use it when you need a decision, a permission or a fact you cannot read. The item waits and you will not be charged for it again until somebody answers.",
+    parameters: P({
+      summary: { type: "string", description: "What you are asking, in one or two sentences." },
+      needs: { type: "string", description: "Exactly what would unblock you." },
+    }, ["summary", "needs"]),
+  },
+  {
+    id: "propose_change", namespace: "ledger", kind: "read", label: "Propose a change", requiresCapability: null,
+    description: "Propose a change you are NOT allowed to make yourself -- a scheme, a workflow, a permission, a field, or a bulk edit. This never executes anything. It files the proposal for a human to decide.",
+    parameters: P({
+      kind: { type: "string", description: "What kind of change, e.g. workflow, permission, field, bulk-edit." },
+      target: { type: "string", description: "What it would affect." },
+      blastRadius: { type: "string", description: "How many issues, projects or people it would touch." },
+      steps: { type: "string", description: "The steps a human would follow." },
+    }, ["kind", "target", "blastRadius", "steps"]),
+  },
+  {
+    id: "ledger_note", namespace: "ledger", kind: "read", label: "Note on this item", requiresCapability: null,
+    description: "Record one short note about THIS issue for your next run on it.",
+    parameters: P({ note: { type: "string", description: "One or two sentences." } }, ["note"]),
+  },
+  {
+    id: "memory_note", namespace: "ledger", kind: "read", label: "Remember this", requiresCapability: null,
+    description: "Record something you have learned that will still be true next week, about this instance rather than this issue. Mark it as a constraint only when it is a rule you must always follow.",
+    parameters: P({ note: { type: "string" }, constraint: { type: "boolean", description: "True only for a standing rule." } }, ["note"]),
+  },
+  {
+    // FINISH LIVES IN THE `ledger` NAMESPACE (1.5 commit 4a) AND IS STILL `kind: "control"`.
+    // Both halves matter and the second one is load-bearing: `agentActionNamespace` gives
+    // CONTROL precedence over the declared namespace, so the dispatcher's namespace
+    // delegation still resolves `finish` to "control" and executes it inline. Had the
+    // namespace won, every listener and scheduled-job run — which carry no ledger
+    // executor — would have got `not_configured` for the one tool the loop needs to end
+    // cleanly. The namespace is here so the catalogue, the admin checklist and the REST
+    // validator group it with the ledger actions; it is NOT a routing instruction.
+    id: "finish", namespace: "ledger", kind: "control", label: "Finish", always: true,
+    description: "End the run. Always call this when the task is complete or there is nothing to do. Summarise what was done in one to three sentences.",
+    parameters: P({ summary: { type: "string" }, outcome: { type: "string", enum: ["done", "nothing_to_do", "failed"] } }, ["summary", "outcome"]),
+  },
+];
+
+export const AGENT_ACTIONS = [...JIRA_AGENT_ACTIONS, ...GIT_AGENT_ACTIONS, ...WEB_AGENT_ACTIONS, ...LEDGER_AGENT_ACTIONS];
+
+/**
+ * The namespace an action belongs to, for DELEGATION.
+ *
+ * CONTROL WINS, and the order of these two tests is the whole rule (1.5 commit 4a).
+ * `finish` declares `namespace: "ledger"` so the catalogue groups it with the ledger
+ * actions -- but it is executed INLINE by the dispatcher on every surface, including the
+ * listener and scheduled-job runs that carry no ledger executor. Were the declared
+ * namespace to win, those runs would answer `not_configured` for the one tool the loop
+ * needs in order to end cleanly, and every agent run in the product would end on the
+ * round cap instead. A control action is never delegated.
+ */
+export const agentActionNamespace = (a) => (a && a.kind === "control" ? "control" : (a && a.namespace) || "jira");
 
 /**
  * THE KNOWLEDGE BINDING on a rule's `agent` block (1.4 commit 13b) — ONE normalizer,

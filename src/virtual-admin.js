@@ -64,6 +64,7 @@ import {
 } from "./shared/va-config.js";
 import { lintVoice } from "./shared/voice-lint.js";
 import { assertWriteScope } from "./shared/agent-actions.js";
+import { createVaLedgerExecutor, VA_LEDGER_ACTION_IDS } from "./va-ledger-actions.js";
 import { clampChars } from "./shared/text-clamp.js";
 
 const nowIso = (ms) => new Date(ms == null ? Date.now() : ms).toISOString();
@@ -497,68 +498,39 @@ export const decideAudience = ({ requested, va, issue, addresseeAccountId = null
  * 5. THE ITEM TURN — one issue, one bounded turn, and NO direct speech
  * ════════════════════════════════════════════════════════════════════════════ */
 
-const S = (properties, required) => ({ type: "object", properties, required, additionalProperties: false });
-
 /**
- * THE SPEECH AND STATE ACTIONS.
+ * THE SPEECH AND STATE ACTIONS NOW LIVE IN THE CATALOGUE (1.5 commit 4a).
  *
- * WHERE THEY LIVE, and why they live here TODAY. The `ledger` namespace is already
- * declared in `src/shared/agent-actions.js` with `executor: "va-ledger"` and
- * `reserved: true`; 1.5 commit 4 fills it with rows and this file becomes the executor
- * the table already names. Until that cut lands, the definitions have ONE home and it is
- * this constant — not a copy in the prompt and a copy in the dispatcher.
+ * They were defined here as `VA_SPEECH_ACTIONS` while the `ledger` namespace was still
+ * RESERVED. That namespace is now filled: the rows are in `src/shared/agent-actions.js`
+ * beside every other action the product has, the executor is `src/va-ledger-actions.js`,
+ * and this file reads the ids rather than owning the definitions. The consequence that
+ * matters is that the admin checklist, the REST validator and the gate now see these
+ * five actions — while they lived here, none of them did.
  *
- * WHAT IS NOT HERE, and never will be:
- *   · `post_comment`, or any action that speaks immediately. Speech is staged, always.
- *     The guarantee is not that the agent is told not to post — it is that there is no
- *     tool that posts, which is a code guarantee rather than a sentence in a prompt.
- *   · any configuration write. No scheme, workflow, permission, role or field action
- *     exists, so `propose_change` is not "the approved route", it is the ONLY route.
- *     A gate would imply a second one exists.
+ * `stage_reply` is offered only to an agent that may speak at all; the rest are an
+ * agent's own notebook and are unconditional. See `ledgerActionsFor`.
  */
-export const VA_SPEECH_ACTIONS = Object.freeze([
-  {
-    id: "stage_reply", label: "Stage a reply",
-    description: "Write the reply you want to send. It is NOT sent now: it is staged, checked and sent on a later run, at least a few minutes from now. Say who it is for: 'customer' only when you are answering the person who raised the request, otherwise 'internal' for a note your colleagues see. Plain sentences, no bullet points, no headings.",
-    parameters: S({
-      audience: { type: "string", enum: ["customer", "internal"], description: "Who reads it. 'customer' is only possible on a portal request, to its reporter." },
-      body: { type: "string", description: "The message, in plain sentences." },
-      reason: { type: "string", description: "One line: why this reply, for the ledger. The customer never sees it." },
-    }, ["audience", "body", "reason"]),
-  },
-  {
-    id: "ask_human", label: "Ask a human",
-    description: "Stop and ask a person. Use it when you need a decision, a permission or a fact you cannot read. The item waits and you will not be charged for it again until somebody answers.",
-    parameters: S({
-      summary: { type: "string", description: "What you are asking, in one or two sentences." },
-      needs: { type: "string", description: "Exactly what would unblock you." },
-    }, ["summary", "needs"]),
-  },
-  {
-    id: "propose_change", label: "Propose a change",
-    description: "Propose a change you are NOT allowed to make yourself — a scheme, a workflow, a permission, a field, or a bulk edit. This never executes anything. It files the proposal for a human to decide.",
-    parameters: S({
-      kind: { type: "string", description: "What kind of change, e.g. workflow, permission, field, bulk-edit." },
-      target: { type: "string", description: "What it would affect." },
-      blastRadius: { type: "string", description: "How many issues, projects or people it would touch." },
-      steps: { type: "string", description: "The steps a human would follow." },
-    }, ["kind", "target", "blastRadius", "steps"]),
-  },
-  {
-    id: "ledger_note", label: "Note on this item",
-    description: "Record one short note about THIS issue for your next run on it.",
-    parameters: S({ note: { type: "string", description: "One or two sentences." } }, ["note"]),
-  },
-  {
-    id: "memory_note", label: "Remember this",
-    description: "Record something you have learned that will still be true next week, about this instance rather than this issue. Mark it as a constraint only when it is a rule you must always follow.",
-    parameters: S({ note: { type: "string" }, constraint: { type: "boolean", description: "True only for a standing rule." } }, ["note"]),
-  },
-]);
-
-export const VA_SPEECH_ACTION_IDS = VA_SPEECH_ACTIONS.map((a) => a.id);
-
-const speechToolDefinitions = () => VA_SPEECH_ACTIONS.map((a) => ({ type: "function", function: { name: a.id, description: a.description, parameters: a.parameters } }));
+/**
+ * The LEDGER action ids this agent's powers allow.
+ *
+ * `replyPublic` / `replyInternal` decide whether `stage_reply` is a tool at all — an
+ * agent with neither power has no way to draft speech, which is a code guarantee rather
+ * than a prompt sentence. WHICH AUDIENCE a draft ends up with is a second, later gate
+ * (`decideAudience`), because `replyPublic` off must DOWNGRADE a customer reply to an
+ * internal note rather than lose it.
+ *
+ * `ask_human`, `propose_change`, `ledger_note` and `memory_note` are unconditional: they
+ * write in the agent's own ledger and change nothing anyone else can see, and an agent
+ * that cannot say "I am stuck" or "this needs a human" is an agent that guesses instead.
+ */
+export const ledgerActionsFor = (va) => {
+  const p = isObj(va && va.powers) ? va.powers : {};
+  const ids = [];
+  if (p.replyPublic === true || p.replyInternal === true) ids.push("stage_reply");
+  for (const id of VA_LEDGER_ACTION_IDS) if (id !== "stage_reply") ids.push(id);
+  return ids;
+};
 
 /**
  * THE FREE JIRA ACTIONS this agent's POWERS allow.
@@ -700,157 +672,50 @@ const oneItemTurn = async ({ job, va, agentId, issueKey, tick, deps }) => {
     ].join("\n"),
   });
 
-  /* — the TOOLS: speech actions plus whatever the powers allow — */
+  /* — the TOOLS: ONE list, from the catalogue, decided by the POWERS — */
+  //
+  // THE POWERS ARE THE GATE (1.5 commit 4c). `pregated: true` says so: this list is
+  // already a verdict, reached from the agent's own record, and `toolDefinitionsFor`
+  // must not re-decide it against the restrictive default (F-275). It also means the
+  // catalogue's `confirm` flag — "only an ADMIN-saved rule may hold this" — is NOT
+  // applied here, deliberately: a VA turn is headless and has no admin to ask, so an
+  // action the powers allow executes under the write scope, and an action the powers do
+  // NOT allow is simply absent from this list and refused by `assertAgentActionAllowed`
+  // if the model invents it. A headless VA turn NEVER opens a consent ticket; there is
+  // no halt path anywhere in this file.
+  const ledgerIds = ledgerActionsFor(va);
   const freeIds = freeActionsFor(va);
-  const tools = [...speechToolDefinitions(), ...deps.toolDefinitionsFor(freeIds, { pregated: true })];
+  const allowedIds = [...ledgerIds, ...freeIds];
+  const tools = deps.toolDefinitionsFor(allowedIds, { pregated: true });
 
-  /* — the DISPATCH — */
-  const outcome = { staged: null, asked: false, proposed: false, notes: 0, memories: 0, refusals: [] };
+  /* — the DISPATCH: ONE dispatcher, namespaces delegated to their executors — */
   const session = await deps.createSession({ issueKey, config: job });
-  const jiraDispatch = deps.createDispatcher({
-    issueKey, session, allowed: freeIds, m: deps.m, executors: {},
+  const ledgerExecutor = deps.createLedgerExecutor({
+    store: deps.store, agentId, issueKey, va, issue, tickId: tick, memory,
+    now, createIssue: deps.createIssue,
+    decideAudience, fingerprintOf,
+    // Read from the ISSUE, never from a tool argument — see the executor's own note.
+    addresseeAccountId: lastCommentAuthorOf(issue),
+    log: deps.log,
+  });
+  const outcome = ledgerExecutor.outcome;
+  outcome.refusals = [];
+  const executors = { ledger: ledgerExecutor };
+  const dispatch = deps.createDispatcher({
+    issueKey, session, allowed: allowedIds, m: deps.m, executors,
     maxWrites: Math.max(0, Math.trunc(guard(va, "maxWritesPerRun"))),
     // THE WRITE SCOPE (F-410/F-411), built by `vaWriteScope` from the record. This is the
     // only surface that passes a REAL scope today; the others pass an explicit `null`.
+    // It bounds the JIRA namespace only: a Confluence write is bounded by its SPACE
+    // allow-list and a git write by its repository allow-list, and asking a Jira project
+    // question of either would make both unresolvable and therefore always refused.
     writeScope: vaWriteScope(va),
   });
 
   const execute = async (name, args) => {
-    const a = args && typeof args === "object" ? args : {};
-    switch (name) {
-      case "stage_reply": {
-        const decided = decideAudience({
-          requested: a.audience === "customer" ? "public" : "internal",
-          va, issue, addresseeAccountId: lastCommentAuthorOf(issue),
-        });
-        const fp = fingerprintOf(issue);
-        const saved = await saveItem(deps.store, agentId, issueKey, {
-          state: "staged",
-          staged: {
-            audience: decided.audience,
-            body: String(a.body || ""),
-            reason: String(a.reason || ""),
-            // THE FRESHNESS BASELINE: the last comment id we saw when the draft was
-            // written. Gate 2 at post time compares it against a FRESH read, which is
-            // the whole of "has a human spoken since we decided what to say".
-            baseline: fp.lastCommentId == null ? "" : String(fp.lastCommentId),
-            tickId: tick,
-            stagedAt: nowIso(now()),
-          },
-          fingerprint: fp,
-          event: "staged",
-          reason: `${decided.audience} (${decided.reason})`,
-        }, { now: now() });
-        if (!saved.ok) return { success: false, error: `The reply could not be staged: ${saved.reason}.` };
-        outcome.staged = { audience: decided.audience, reason: decided.reason };
-        return {
-          staged: true, audience: decided.audience, audienceReason: decided.reason,
-          note: decided.audience === "internal" && a.audience === "customer"
-            ? "You asked for a customer reply and it was staged as an internal note instead. The reason is above. Do not try to send it another way; there is no other way."
-            : "Staged. It goes out on a later run if every check passes.",
-        };
-      }
-      case "ask_human": {
-        const summary = String(a.summary || "");
-        const needs = String(a.needs || "");
-        const inbox = String((isObj(va.guardrails) && va.guardrails.approvalProjectKey) || "");
-        // THE DUE DATE reuses `antiPileUpDays` on purpose rather than inventing a number:
-        // it is exactly "how long before this agent may speak on this issue again", so
-        // chasing a human sooner than that would break its own quiet rule.
-        const dueAt = nowIso(now() + Math.max(1, guard(va, "antiPileUpDays")) * 86400000);
-        if (inbox) {
-          // THE APPROVAL INBOX IS NOT A MODEL-CHOSEN TARGET. The project comes from the
-          // record, validated at save time; the model cannot name it and cannot reach any
-          // other project through this action. That is why this create does not go
-          // through the write-scope gate: there is no argument for the gate to check.
-          try {
-            const created = await deps.createIssue({
-              project: { key: inbox }, issuetype: { name: "Task" },
-              summary: clampChars(`${persona.name || "Agent"} needs a decision on ${issueKey}`, 250),
-              description: `${summary}\n\nWhat would unblock it: ${needs}\n\nIssue: ${issueKey}`,
-            });
-            await saveItem(deps.store, agentId, issueKey, { state: "waiting_on_human", dueAt, event: "asked", reason: clampChars(summary, 200) }, { now: now() });
-            outcome.asked = true;
-            return { asked: true, where: `${inbox} (${created && created.key})`, note: "A human has been asked. This item now waits; you will not work it again until they answer or it falls due." };
-          } catch (e) {
-            return { success: false, error: `The approval inbox ${inbox} could not be written to: ${String((e && e.message) || e).slice(0, 160)}. Ask again as an internal note instead.` };
-          }
-        }
-        // NO INBOX: the question is STAGED as an internal note, so it still goes through
-        // every post gate. It does NOT bypass the two-phase clock just because it is
-        // addressed to a colleague — a question posted three times is as bad as a reply
-        // posted three times.
-        const saved = await saveItem(deps.store, agentId, issueKey, {
-          state: "staged",
-          staged: { audience: "internal", kind: "ask", body: `${summary}\n\nWhat would unblock this: ${needs}`, reason: "asking a human", baseline: String(fingerprintOf(issue).lastCommentId || ""), tickId: tick, stagedAt: nowIso(now()) },
-          dueAt, event: "asked", reason: clampChars(summary, 200),
-        }, { now: now() });
-        if (!saved.ok) return { success: false, error: `The question could not be staged: ${saved.reason}.` };
-        outcome.asked = true;
-        outcome.staged = { audience: "internal", reason: "ask_human" };
-        return { asked: true, where: "an internal note on this issue", note: "Staged as an internal note. It goes out on a later run." };
-      }
-      case "propose_change": {
-        // IT NEVER EXECUTES. Not "it executes after approval" — this action's entire
-        // implementation writes text. There is no code path from here to a scheme, a
-        // workflow, a permission or a bulk edit, because no such action exists at all.
-        const text = [
-          `Proposed ${String(a.kind || "change")} on ${String(a.target || "?")}`,
-          `Blast radius: ${String(a.blastRadius || "unknown")}`,
-          `Steps: ${String(a.steps || "")}`,
-          `Raised from ${issueKey}.`,
-        ].join("\n");
-        const inbox = String((isObj(va.guardrails) && va.guardrails.approvalProjectKey) || "");
-        outcome.proposed = true;
-        if (inbox) {
-          try {
-            const created = await deps.createIssue({
-              project: { key: inbox }, issuetype: { name: "Task" },
-              summary: clampChars(`Proposal: ${String(a.kind || "change")} on ${String(a.target || "?")}`, 250),
-              description: text,
-            });
-            await saveItem(deps.store, agentId, issueKey, { event: "proposed", reason: clampChars(String(a.kind || "change"), 200) }, { now: now() });
-            return { proposed: true, executed: false, where: `${inbox} (${created && created.key})`, note: "Filed for a human to decide. Nothing was changed." };
-          } catch (e) {
-            return { success: false, error: `The proposal could not be filed in ${inbox}: ${String((e && e.message) || e).slice(0, 160)}.` };
-          }
-        }
-        const saved = await saveItem(deps.store, agentId, issueKey, {
-          state: "staged",
-          staged: { audience: "internal", kind: "proposal", body: text, reason: "proposing a change", baseline: String(fingerprintOf(issue).lastCommentId || ""), tickId: tick, stagedAt: nowIso(now()) },
-          event: "proposed", reason: clampChars(String(a.kind || "change"), 200),
-        }, { now: now() });
-        if (!saved.ok) return { success: false, error: `The proposal could not be staged: ${saved.reason}.` };
-        outcome.staged = { audience: "internal", reason: "proposal" };
-        return { proposed: true, executed: false, where: "an internal note on this issue", note: "Staged as an internal note. Nothing was changed." };
-      }
-      case "ledger_note": {
-        const saved = await saveItem(deps.store, agentId, issueKey, { notes: String(a.note || ""), event: "note" }, { now: now() });
-        if (!saved.ok) return { success: false, error: `The note could not be saved: ${saved.reason}.` };
-        outcome.notes++;
-        return { saved: true };
-      }
-      case "memory_note": {
-        // DEFANGED AND CLAMPED AT WRITE TIME by `writeMemory` (F-423) — not here, and not
-        // at injection. One row that cannot contain a fence marker is safe at every
-        // injection site, including the ones that do not exist yet.
-        const constraints = asArray(memory.constraints).slice();
-        let text = memory.text || "";
-        if (a.constraint === true) constraints.push(String(a.note || ""));
-        else text = `${text}${text ? "\n" : ""}${String(a.note || "")}`;
-        const wrote = await writeMemory(deps.store, agentId, { text, constraints }, { now: now() });
-        if (!wrote.ok) return { success: false, error: `That could not be remembered: ${wrote.reason}.` };
-        memory.text = wrote.memory.text;
-        memory.constraints = wrote.memory.constraints;
-        outcome.memories++;
-        return { remembered: true, constraint: a.constraint === true };
-      }
-      default: {
-        const r = await jiraDispatch(name, a);
-        if (r && r.success === false) outcome.refusals.push({ name, code: r.code });
-        return r;
-      }
-    }
+    const r = await dispatch(name, args && typeof args === "object" ? args : {});
+    if (r && r.success === false) outcome.refusals.push({ name, code: r.code });
+    return r;
   };
 
   const loop = await deps.runLoop({
@@ -1481,6 +1346,13 @@ export const DEFAULT_DEPS = {
   compactIssue: (issue) => _agentRunner.compactIssue(issue, { extractText: _index && _index.extractTextFromADF }),
   buildKnowledgeMessages: (k) => _agentRunner.buildKnowledgeMessages(k),
   toolDefinitionsFor: (ids, opts) => _agentActions.toolDefinitionsFor(ids, opts),
+
+  /**
+   * The LEDGER namespace executor (1.5 commit 4a). A dep rather than a direct call so
+   * the offline suite can watch every ledger write the turn makes; production is the
+   * real module and nothing else builds one.
+   */
+  createLedgerExecutor: (ctx) => createVaLedgerExecutor(ctx),
 
   /**
    * The knowledge blocks, from the SAME builder the listener and the job use

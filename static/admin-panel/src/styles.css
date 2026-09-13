@@ -2985,6 +2985,12 @@ html[data-color-mode="dark"] .code-kind-bitbucket { background: #2684ff; }
 .code-hook.unset { background: #475569; }
 .code-hook-hint { margin: 0; }
 .code-hook-note { padding: 10px 12px; border-radius: var(--r-md, 8px); background: #d97706; color: #fff; font-size: 12px; font-weight: 600; line-height: 1.45; }
+/* F-481 - a rotation that did not finish. Solid red, white text, no rail, no tint. */
+.code-hook-broken { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; padding: 11px 13px; border-radius: var(--r-md, 8px); background: #dc2626; color: #fff; }
+.code-hook-broken-title { font-size: 11px; font-weight: 800; letter-spacing: 0.05em; }
+.code-hook-broken-text { font-size: 12px; font-weight: 600; line-height: 1.45; }
+.code-hook-broken-action { margin-top: 2px; padding: 6px 12px; border: 0; border-radius: var(--r-md, 8px); background: #fff; color: #0f172a; font-size: 12px; font-weight: 700; cursor: pointer; }
+.code-hook-broken-action:disabled { opacity: 0.7; cursor: default; }
 .code-pipe { display: flex; flex-direction: column; gap: 10px; padding: 12px; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); }
 .code-pipe-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .code-pipe-title { font-size: 13px; font-weight: 700; }
@@ -3032,11 +3038,11 @@ html[data-color-mode="dark"] .code-hook.set, html[data-color-mode="dark"] .code-
 html[data-color-mode="dark"] .code-hook.unset, html[data-color-mode="dark"] .code-pipe-status, html[data-color-mode="dark"] .code-pipe-queued, html[data-color-mode="dark"] .code-step-state, html[data-color-mode="dark"] .code-diff, html[data-color-mode="dark"] .code-run-state { background: #64748b; }
 html[data-color-mode="dark"] .code-hook-note, html[data-color-mode="dark"] .code-pipe-partial, html[data-color-mode="dark"] .code-pipe-warn { background: #f59e0b; }
 html[data-color-mode="dark"] .code-pipe-running, html[data-color-mode="dark"] .code-step-running .code-step-state, html[data-color-mode="dark"] .code-run-running, html[data-color-mode="dark"] .code-run-pending { background: #3b82f6; }
-html[data-color-mode="dark"] .code-pipe-err, html[data-color-mode="dark"] .code-step-failed .code-step-state, html[data-color-mode="dark"] .code-diff-rem, html[data-color-mode="dark"] .code-run-failed { background: #ef4444; }
+html[data-color-mode="dark"] .code-pipe-err, html[data-color-mode="dark"] .code-step-failed .code-step-state, html[data-color-mode="dark"] .code-diff-rem, html[data-color-mode="dark"] .code-run-failed, html[data-color-mode="dark"] .code-hook-broken { background: #ef4444; }
 html[data-color-mode="dark"] .code-diff-lock { background: #c026d3; }
 html[data-color-mode="dark"] .code-step-err { color: #ef4444; }
 html[data-color-mode="dark"] .code-run-link { color: #3b82f6; }
-html[data-color-mode="dark"] .code-pipe-goto { background: #f8fafc; color: #0f172a; }
+html[data-color-mode="dark"] .code-pipe-goto, html[data-color-mode="dark"] .code-hook-broken-action { background: #f8fafc; color: #0f172a; }
 /* AgentConfig CODE column (the git namespace) */
 .agc-kind-code { background: #a21caf; }
 .agc-col-locked .agc-action { opacity: 0.55; }

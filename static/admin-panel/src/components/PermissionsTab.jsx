@@ -8,6 +8,7 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import CustomSelect from "./CustomSelect";
 import { showToast } from "./toast";
+import { isPermissionRefusal, permissionRefusalText } from "./refusal";
 import { confirmDialog } from "../confirmDialog";
 
 const ROLE_OPTIONS = [
@@ -40,6 +41,15 @@ export default function PermissionsTab({ invoke }) {
   const [searchResults, setSearchResults] = useState([]);
   const [searching, setSearching] = useState(false);
   const [searchedEmpty, setSearchedEmpty] = useState(false);
+  /* F-259 — the search read only `if (result.success)` and had NO else at all, so every
+     non-success answer was swallowed in silence: the spinner stopped, the box stayed empty,
+     and the admin was left to conclude that nobody on the site matches their own name. The
+     refusal case is the one that hurts — `searchUsers` gates on admin, so the person most
+     likely to see this is someone who has just been demoted, and the app's answer was to
+     imply the user directory is empty. Holds the result (for `needsRole`) or a plain string
+     for a genuine failure; both render in the same slot, and both are better than nothing. */
+  const [searchRefusal, setSearchRefusal] = useState(null);
+  const [searchError, setSearchError] = useState(null);
   const [adding, setAdding] = useState(null);
   const [addRole, setAddRole] = useState("viewer");
   const [addScope, setAddScope] = useState("own");
@@ -81,6 +91,9 @@ export default function PermissionsTab({ invoke }) {
     if (!query || query.length < 2) {
       setSearchResults([]);
       setSearchedEmpty(false);
+      // F-259 — clearing the box clears the message with it.
+      setSearchRefusal(null);
+      setSearchError(null);
       setSearching(false);
       return;
     }
@@ -88,6 +101,9 @@ export default function PermissionsTab({ invoke }) {
     // the new search is in flight.
     setSearchResults([]);
     setSearchedEmpty(false);
+    // F-259 — a message from the PREVIOUS query must not outlive it either.
+    setSearchRefusal(null);
+    setSearchError(null);
     setSearching(true);
     try {
       const result = await invoke("searchUsers", { query });
@@ -96,10 +112,21 @@ export default function PermissionsTab({ invoke }) {
         const found = result.users || [];
         setSearchResults(found);
         setSearchedEmpty(found.length === 0);
+      } else if (isPermissionRefusal(result)) {
+        /* F-259 — a refusal, told as one. Results are already cleared above, which matters
+           here beyond tidiness: a stale row left under this note would be a user this admin
+           can no longer act on, rendered next to a sentence saying they have no access. */
+        setSearchRefusal(result);
+      } else {
+        // Answered, and it was a real failure — say what the backend said rather than
+        // leaving the admin with an empty box and no reason.
+        setSearchError(result.error || "User search failed.");
       }
     } catch (e) {
       if (token !== searchTokenRef.current) return;
       console.error("User search failed:", e);
+      // A THROW is transport, never a refusal — but it must still not be silent.
+      setSearchError("User search failed.");
     }
     if (token === searchTokenRef.current) setSearching(false);
   };
@@ -245,7 +272,7 @@ export default function PermissionsTab({ invoke }) {
             />
             {searching && <span className="spin-ring spin-ring-sm" />}
             {searchQuery && !searching && (
-              <button className="perm-search-clear" onClick={() => { searchTokenRef.current++; setSearchQuery(""); setSearchResults([]); setSearchedEmpty(false); }}>&times;</button>
+              <button className="perm-search-clear" onClick={() => { searchTokenRef.current++; setSearchQuery(""); setSearchResults([]); setSearchedEmpty(false); setSearchRefusal(null); setSearchError(null); }}>&times;</button>
             )}
           </div>
           <div style={{ width: "110px" }}>
@@ -300,8 +327,27 @@ export default function PermissionsTab({ invoke }) {
           </div>
         )}
 
+        {/* F-259 — the refusal, in the same slot the results would have filled. Slate
+            .access-note, no Retry (the gate will answer the same way), and it names the
+            level and who grants it. Checked BEFORE the "no users found" arm below, which
+            would otherwise be an outright false claim about the directory. */}
+        {searchRefusal && !searching && (
+          <div className="access-note anim-fade" role="note" style={{ padding: "8px 4px" }}>
+            {permissionRefusalText(searchRefusal, "users")}
+          </div>
+        )}
+
+        {/* F-259 — a genuine failure, also no longer silent. Distinct from the refusal
+            above on purpose: this one IS retryable (the admin can simply type again), so it
+            does not borrow the refusal's "ask an admin" ending. */}
+        {searchError && !searching && !searchRefusal && (
+          <div className="anim-fade" style={{ padding: "8px 4px", fontSize: "12px", fontWeight: 600, color: "var(--text-secondary)" }}>
+            {searchError}
+          </div>
+        )}
+
         {/* Completed search with zero matches — say so instead of staying silent */}
-        {searchedEmpty && !searching && (
+        {searchedEmpty && !searching && !searchRefusal && !searchError && (
           <div className="anim-fade" style={{ padding: "8px 4px", fontSize: "12px", fontWeight: 600, color: "var(--text-secondary)" }}>
             No users found for &ldquo;{searchQuery}&rdquo;
           </div>

@@ -20,6 +20,12 @@ import TabBar from "./components/TabBar";
 import DocsTab from "./components/DocsTab";
 import SkillsAdminTab from "./components/SkillsAdminTab";
 import MemoriesAdminTab from "./components/MemoriesAdminTab";
+/* F-243 — the role-outage sentence has ONE home and it is MemoriesTab, one of the
+   byte-identical copies shared with config-ui. Importing it here rather than retyping it
+   is the only direction the duplication convention allows (a shared component may not
+   import from App.js; App.js may import from it), and it is why both apps now say the
+   same words when Jira cannot be asked. Editing the wording is a one-file change. */
+import { ROLE_UNKNOWN_NOTE } from "./components/MemoriesTab";
 import PermissionsTab from "./components/PermissionsTab";
 import SettingsOpenAITab from "./components/SettingsOpenAITab";
 import CustomSelect from "./components/CustomSelect";
@@ -3813,6 +3819,29 @@ const injectCopiedComponentStyles = () => {
       font-size: 12px;
     }
 
+
+    /* F-244..F-250 — THE REFUSAL GRAMMAR, declared ONCE per injectStyles home.
+       Six surfaces now say "the backend refused this reader": the docs list, the skills
+       list, the Knowledge panel summary, the rule-editor Memories tab, the admin Memories
+       tab and config-view's execution log. They must not be six hand-copied blocks that
+       drift the way .memory-full-banner / .memories-admin-capwall / .memory-cap-refusal did
+       before F-212 collapsed them into .hard-stop.
+       Owner design law: SOLID slate #475569 (dark one shade lighter, #64748b), 600 weight,
+       NO left accent rail, NO tinted background, no faded alpha. Deliberately NOT the red
+       hard-stop grammar and deliberately NOT .load-error — a refusal is a statement of
+       fact, not a warning and not a fault, and it carries no Retry because no retry can
+       change the answer. */
+    .access-note {
+      padding: 10px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      line-height: 1.5;
+      color: #475569;
+      background: none;
+      border: none;
+    }
+    html[data-color-mode="dark"] .access-note { color: #64748b; }
+
     .doc-empty {
       padding: 16px 12px;
       text-align: center;
@@ -6556,7 +6585,7 @@ function App() {
         <div className="role-note" role="status">
           <span className="role-note-text">
             {roleUnknown
-              ? "CogniRunner could not verify your role with Jira just now — reload to try again."
+              ? ROLE_UNKNOWN_NOTE
               : `You opened the admin page, but CogniRunner has you as ${userRole || "no role"}. A CogniRunner admin can change that under Permissions.`}
           </span>
         </div>
@@ -7005,6 +7034,11 @@ function App() {
             /* F-233 — same expression as ListenersTab:31 / JobsTab:30 / MemoriesAdminTab:72.
                One rule, one shape, everywhere it is asked. */
             canEdit={isAdmin || userRole === "editor" || userRole === "admin"}
+            /* F-243 — the wizard embeds the same FunctionBuilder → KnowledgePanel →
+               MemoriesTab chain as the rule editor, so it needs the same third answer.
+               Without it the wizard's Memories tab would keep making the verdict claim
+               during the very outage the header note above is explaining. */
+            roleUnknown={roleUnknown}
           />
         )}
 
@@ -7540,12 +7574,12 @@ function App() {
       {/* Documentation Tab */}
       {/* Listeners Tab — Jira product-event rules */}
       {activeTab === "listeners" && (
-        <ListenersTab invoke={invoke} isAdmin={isAdmin} userRole={userRole} siteUrl={siteUrl} router={router} />
+        <ListenersTab invoke={invoke} isAdmin={isAdmin} userRole={userRole} siteUrl={siteUrl} router={router} roleUnknown={roleUnknown} />
       )}
 
       {/* Scheduled Jobs Tab — cron rules */}
       {activeTab === "jobs" && (
-        <JobsTab invoke={invoke} isAdmin={isAdmin} userRole={userRole} />
+        <JobsTab invoke={invoke} isAdmin={isAdmin} userRole={userRole} roleUnknown={roleUnknown} />
       )}
 
       {activeTab === "docs" && (

@@ -213,7 +213,9 @@ return { success: true };`)}`;
 // its memory add/delete writes on it. Defaults FALSE for the same fail-closed reason
 // documented on MemoriesTab. It does NOT gate anything else on this block: step editing
 // is already reachable only from surfaces the caller has gated.
-export default function FunctionBlock({ index, functionData, priorSteps, fields = [], onUpdate, onRemove, isOnly, codegenContext = null, testContext = null, canEdit = false }) {
+// F-243 — `roleUnknown` is the same kind of pass-through, carrying the "Jira did not
+// answer" third case down to the note MemoriesTab renders in place of the add form.
+export default function FunctionBlock({ index, functionData, priorSteps, fields = [], onUpdate, onRemove, isOnly, codegenContext = null, testContext = null, canEdit = false, roleUnknown = false }) {
   const runtime = codegenContext?.runtime || testContext?.runtime;
   const executionWhen = runtime === "listener" ? "when the listener runs" : runtime === "job" ? "when the job runs" : "on every transition";
   const [isGenerating, setIsGenerating] = useState(false);
@@ -1300,6 +1302,7 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
           autoAppliedSkills={(functionData.generationMeta?.appliedSkills || []).filter((s) => s.auto)}
           refreshKey={knowledgeRefresh}
           canEdit={canEdit}
+          roleUnknown={roleUnknown}
         />
       )}
 

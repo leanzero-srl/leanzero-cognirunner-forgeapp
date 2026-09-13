@@ -1056,6 +1056,29 @@ const injectStyles = () => {
       font-size: 12px;
     }
 
+
+    /* F-244..F-250 — THE REFUSAL GRAMMAR, declared ONCE per injectStyles home.
+       Six surfaces now say "the backend refused this reader": the docs list, the skills
+       list, the Knowledge panel summary, the rule-editor Memories tab, the admin Memories
+       tab and config-view's execution log. They must not be six hand-copied blocks that
+       drift the way .memory-full-banner / .memories-admin-capwall / .memory-cap-refusal did
+       before F-212 collapsed them into .hard-stop.
+       Owner design law: SOLID slate #475569 (dark one shade lighter, #64748b), 600 weight,
+       NO left accent rail, NO tinted background, no faded alpha. Deliberately NOT the red
+       hard-stop grammar and deliberately NOT .load-error — a refusal is a statement of
+       fact, not a warning and not a fault, and it carries no Retry because no retry can
+       change the answer. */
+    .access-note {
+      padding: 10px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      line-height: 1.5;
+      color: #475569;
+      background: none;
+      border: none;
+    }
+    html[data-color-mode="dark"] .access-note { color: #64748b; }
+
     .doc-empty {
       padding: 16px 12px;
       text-align: center;
@@ -3144,6 +3167,18 @@ function App() {
      editing itself: reaching this iframe already required Jira's own workflow-edit
      permission, and second-guessing that here would paint a refusal Jira never made. */
   const [userRole, setUserRole] = useState(null); // "viewer" | "editor" | "admin" | null
+  /* F-243 — "Jira could not be asked" is a THIRD answer, and config-ui had no name for it.
+     F-233 above reads the role and derives `canEdit` from it, but a null role arrives from
+     TWO different worlds: a confirmed viewer, and a Jira that threw. Collapsing them made
+     the Memories tab tell a possible editor "Editors and admins can add memories." during
+     an outage — a false claim about them, with no outage named and no action offered. The
+     admin panel has told the truth about this since F-230; this is the same third arm in
+     the editor, rendered with the same sentence (ROLE_UNKNOWN_NOTE, owned by MemoriesTab).
+     TWO sources, unlike the admin panel's one: `unknown === true` (the resolver reached its
+     own verdict that it has none) AND a thrown invoke (we never got a reply at all). The
+     admin panel only honours the first — see the ledger note; it is the same defect class
+     and is not in this cut's territory. */
+  const [roleUnknown, setRoleUnknown] = useState(false);
 
   const [isPostFunction, setIsPostFunction] = useState(false);
   const [isCondition, setIsCondition] = useState(false);
@@ -3763,23 +3798,57 @@ function App() {
         // (resolveEdition fails soft to standard, on purpose), so the chip is correct.
       }
 
-      /* F-233 — the CogniRunner role, for the memory write gate in the Knowledge panel.
-         Own try/catch and never awaited into a blocking position for the same reason the
-         license block has one: a permission lookup that throws must not stop the workflow
-         editor from loading. On a throw `userRole` stays null, which is the CLOSED answer
-         — the Memories tab then shows the read-only note. That is the correct direction to
-         fail for a control whose backend will refuse it anyway; the cost of being wrong is
-         an editor who must use the admin panel's Memories tab, not a lost rule. */
-      try {
-        const roleResult = await invoke("checkIsAdmin");
-        if (roleResult?.success) setUserRole(roleResult.role || null);
-      } catch (e) {
-        // Unknown role — stays null, i.e. no memory writes offered here.
-      }
-
       setLoading(false);
     };
     init();
+  }, []);
+
+  /* F-246 — THE ROLE PROBE RUNS AFTER THE EDITOR RENDERS, IN ITS OWN EFFECT.
+     F-233 introduced this read inside `init()`, directly above `setLoading(false)`, with a
+     comment claiming it was "never awaited into a blocking position". It was: an awaited
+     call on the line before the only thing that clears the loading skeleton is the
+     definition of blocking. The try/catch it relied on protects against a REJECTED promise,
+     not a slow or hanging one — `checkIsAdmin` calls Jira's permission API and scans groups,
+     and a Jira that accepts the connection and never answers leaves this resolver pending
+     until the 25s cap. For those 25 seconds the workflow editor was a skeleton, and the rule
+     the user came to edit was unreachable, over a lookup whose ONLY consumer is whether one
+     note in a collapsed panel says "add memories" or "ask an admin".
+     That trade was never worth making, and it gets worse the more callers `canEdit` gains.
+     So: the editor renders on its own schedule, and this effect flips the gate when (if) the
+     answer lands. `userRole` starts null and `roleUnknown` false, which is the fail-CLOSED
+     pair — before the answer arrives the Memories tab offers no writes and makes no claim
+     about the reader, which is exactly right, because at that moment we genuinely do not
+     know. A probe that never returns now costs a note, not the editor.
+     `alive` guards the unmount case: this iframe is torn down when the user cancels out of
+     the workflow rule dialog, and a setState after that is a React warning in the console of
+     a product whose console is the only debugging surface a support engineer gets. */
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const roleResult = await invoke("checkIsAdmin");
+        if (!alive) return;
+        if (roleResult?.success) {
+          setUserRole(roleResult.role || null);
+          // F-243 — the backend's own verdict, never re-derived here from a null role: a
+          // confirmed viewer and an unreachable Jira both arrive with role null, and only
+          // the resolver knows which of the two it saw.
+          setRoleUnknown(roleResult.unknown === true);
+        } else {
+          // Unreachable today — checkIsAdmin (src/index.js:4335) has no success:false
+          // return. Kept because the fail direction is the point: a reply that is not a
+          // verdict must not be rendered as one, and a future guard added to that
+          // resolver would otherwise land here as a silent false claim.
+          setRoleUnknown(true);
+        }
+      } catch (e) {
+        // F-243 — a throw is the strongest form of "we never got an answer". `userRole`
+        // stays null so the write gate remains CLOSED (the backend would refuse anyway),
+        // but the NOTE must not claim that closure is about this reader.
+        if (alive) setRoleUnknown(true);
+      }
+    })();
+    return () => { alive = false; };
   }, []);
 
   if (loading) {
@@ -3944,7 +4013,7 @@ function App() {
           {/* F-233 — `canEdit` is the memory-write gate for the Knowledge panel's Memories
               tab, in the SAME expression the admin panel's tabs use (ListenersTab:31,
               JobsTab:30, MemoriesAdminTab:72) so one rule has one shape everywhere. */}
-          <FunctionBuilder functions={functions} setFunctions={setFunctions} runAsync={runAsync} setRunAsync={setRunAsync} canEdit={userRole === "editor" || userRole === "admin"} />
+          <FunctionBuilder functions={functions} setFunctions={setFunctions} runAsync={runAsync} setRunAsync={setRunAsync} canEdit={userRole === "editor" || userRole === "admin"} roleUnknown={roleUnknown} />
         </div>
       )}
 

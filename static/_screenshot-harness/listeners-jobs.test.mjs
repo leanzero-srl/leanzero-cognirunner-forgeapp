@@ -1236,6 +1236,26 @@ try {
       ok(await page.locator(".memories-admin-stats").count() === 0,
         `M6c ${theme} and no store-size line - getMemoryStoreStats is refused by the same floor`);
 
+      /* F-243 — ONE refusal, ONE note. The refused reader also failed `canEdit`, so the
+         add-form's non-editor note rendered ABOVE the access note: "Editors and admins can
+         add memories." stacked on "You need CogniRunner viewer access to see memories."
+         Two sentences for one state, and the weaker one came first — it answers a question
+         this reader has not reached (who may WRITE) while they cannot even READ the store,
+         and it quietly implies the real obstacle is their edit level rather than their lack
+         of any access at all. Only the actionable note survives. */
+      ok(await page.locator(".memories-admin-add-note").count() === 0,
+        `M6c ${theme} the "Editors and admins can add memories." note is NOT stacked above the refusal`);
+      ok(await page.locator(".memories-admin-tab [role='note']").count() === 1,
+        `M6c ${theme} exactly ONE note is shown to a refused reader`);
+
+      /* F-242 — the refusal was detected from `reason:"no-permission"`, not by regexing the
+         English. The fixture sends the real shape now; this asserts the LEVEL in the note
+         came from the gate's `needsRole` rather than a hand-typed "viewer" that happened to
+         be right. A backend that starts asking for `editor` here must change this sentence,
+         and if the level were still hardcoded it silently would not. */
+      ok(/viewer/.test(dtxt),
+        `M6c ${theme} the note names the level the GATE asked for (needsRole), got: ${dtxt}`);
+
       /* Owner design law: neutral slate, solid colour, 600+ weight, NO left rail — the
          same grammar as the F-224 add note, asserted the same way. */
       const dst = await denied.evaluate((el) => {
@@ -1481,6 +1501,67 @@ try {
       await shot(page, `m7d-role-unknown-${theme}`);
       ok(env.errors.length === 0, `M7d ${theme} no page errors: ` + env.errors.join(" | "));
     } catch (e) { fail++; console.log(`  ✗ M7d ${theme} threw: ` + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
+  /* ---------------- F-259 — a REFUSED user search must not look like an empty directory ----
+     PermissionsTab's search read `if (result.success)` and had NO else branch at all, so
+     every non-success answer vanished: spinner off, box empty, no message. `searchUsers`
+     gates on admin, so the reader most likely to hit the refusal is an admin who has just
+     been demoted — and the app's answer was to imply that nobody on the site matches their
+     query. Silence is the worst of the three possible wrongs here, because there is nothing
+     on screen to even tell them a question was asked and answered.
+     Both themes: .access-note is a slate class and every hue needs its dark override. */
+  for (const theme of ["light", "dark"]) {
+    console.log(`F-259 refused user search (${theme})`);
+    const env = await openAdmin(browser, theme, { __REFUSE__: ["searchUsers"], __REFUSE_ROLE__: "admin" });
+    const { page } = env;
+    try {
+      await tab(page, "Permissions");
+      const input = page.locator(".perm-search-input");
+      await input.waitFor({ timeout: 10000 });
+      await input.fill("alex");
+      const note = page.locator(".perm-search-wrap .access-note");
+      await note.waitFor({ timeout: 10000 });
+      const t = (await note.innerText()).replace(/\s+/g, " ").trim();
+
+      ok(/You need CogniRunner admin access to see users\./.test(t),
+        `F-259 ${theme} the refusal names the level the gate asked for (got: ${JSON.stringify(t)})`);
+      ok(/Ask a CogniRunner admin under Permissions\./.test(t),
+        `F-259 ${theme} and names who can grant it`);
+
+      /* The load-bearing negative: the old behaviour's ONLY visible outcome was the
+         "no users found" line (or nothing at all), which is a false claim about the
+         directory rather than a statement about this reader. */
+      ok(!/No users found/i.test(await page.locator(".perm-search-wrap").innerText()),
+        `F-259 ${theme} it does NOT claim the directory has no match`);
+      ok(await page.locator(".perm-search-wrap .perm-result-row, .perm-search-wrap .perm-result").count() === 0,
+        `F-259 ${theme} no stale result rows remain clickable under the refusal`);
+      ok(await page.locator(".perm-search-wrap .btn-retry").count() === 0,
+        `F-259 ${theme} no Retry — the gate answers the same way every time`);
+
+      /* Owner design law on the note, asserted live, in both themes. */
+      const st = await note.evaluate((el) => {
+        const cs = getComputedStyle(el);
+        return { bl: cs.borderLeftWidth, bt: cs.borderTopWidth, color: cs.color, bg: cs.backgroundColor, fw: cs.fontWeight };
+      });
+      ok(st.bl === st.bt, `F-259 ${theme} the note has NO left accent rail`);
+      const rgb = (st.color.match(/\d+/g) || []).map(Number);
+      const want = theme === "dark" ? [100, 116, 139] : [71, 85, 105];
+      ok(rgb.slice(0, 3).every((v, i) => Math.abs(v - want[i]) <= 2),
+        `F-259 ${theme} the note is the neutral slate ${want.join(",")} — got ${st.color}`);
+      ok(Number(st.fw) >= 600, `F-259 ${theme} the note is 600+ weight — got ${st.fw}`);
+      ok(/rgba\(0, 0, 0, 0\)|transparent/.test(st.bg), `F-259 ${theme} the note is not a tinted block`);
+
+      /* Clearing the box clears the message. A note that outlives the query it answered is
+         the next version of this bug: it would sit over a fresh, successful search. */
+      await page.locator(".perm-search-clear").click();
+      await page.waitForTimeout(300);
+      ok(await page.locator(".perm-search-wrap .access-note").count() === 0,
+        `F-259 ${theme} clearing the search clears the refusal note with it`);
+
+      ok(env.errors.length === 0, `F-259 ${theme} no page errors: ` + env.errors.join(" | "));
+    } catch (e) { fail++; console.log(`  ✗ F-259 ${theme} threw: ` + e.message.split("\n")[0]); }
     await close(env);
   }
 

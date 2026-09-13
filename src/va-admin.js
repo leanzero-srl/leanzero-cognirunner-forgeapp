@@ -88,6 +88,14 @@ import {
   // THE shadow predicate (F-474) — the same one the post gate reaches. This file used to
   // carry its own, over wall-clock tick buckets, and the two disagreed.
   isInShadow,
+  // THE ONE count of "how many ticks has this agent watched" (F-484) — the agent's own
+  // prepare receipts, the same number the post gate compares `shadowUntilTick` against.
+  watchedTicks,
+  // THE agent-capability verdict (F-482/F-485) — the same one the tick and the item
+  // turn refuse on, so a SAVE cannot accept an agent the next tick will refuse. It
+  // reads its facts from `agentGateFacts` (src/index.js) and decides with
+  // `agentCapability` (src/shared/edition.js); this file holds neither copy.
+  vaCapabilityVerdict,
 } from "./virtual-admin.js";
 import {
   vaWizardKey, vaTickPrefix, vaEffectPrefix, VA_WIZARD_TTL, VA_CLAIM_TTL,
@@ -96,7 +104,7 @@ import {
   createWizard, resumeWizard, stepWizard, serializeWizardState, clampSay,
   VA_WIZARD_OPTIONS_MAX,
 } from "./shared/va-wizard.js";
-import { VA_LIMITS, VA_QUEUES_PER_DESK_MAX } from "./shared/va-config.js";
+import { VA_LIMITS, VA_QUEUES_PER_DESK_MAX, VA_CEILINGS } from "./shared/va-config.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
 import { safeKeyPart } from "./shared/kvs-keys.js";
 import { clampChars } from "./shared/text-clamp.js";
@@ -149,6 +157,10 @@ export const VA_ADMIN_REFUSALS = Object.freeze({
   memory_read_failed: "The agent's memory could not be read.",
   memory_write_failed: "The agent's memory could not be saved.",
   agent_disabled: "This agent is switched off. Enable it first.",
+  // The general half only — the refusal carries its own `message` naming WHICH
+  // capability is missing (`agentCapabilityCopy`, the same sentence the Code tab and
+  // the Coder show), and `refusalSentence` prefers that.
+  agent_capability_off: "This instance can't run a Virtual Administrator right now.",
   agent_paused: "This agent is paused. Resume it first.",
   already_running: "A run for this agent is already queued.",
   claim_failed: "Whether a run is already in flight could not be determined, so nothing was queued.",
@@ -237,6 +249,11 @@ export const DEFAULT_ADMIN_DEPS = {
    * `va_health` — the same number the post gate reads. The exit the old comment here
    * promised ("if a third caller needs it, move it to virtual-admin.js and both read
    * that") has been taken; there is one predicate now and this file imports it. */
+
+  /* — the instance's agent capability (F-485). ONE verdict, shared with the tick and
+   * the item turn (`vaCapabilityVerdict`, src/virtual-admin.js); a dep only so the
+   * offline suite can put an instance on either side of it. — */
+  capability: async () => vaCapabilityVerdict(),
 
   /* — the queue. The SAME queue and body shape the planner pushes. — */
   pushTask: async (body) => {
@@ -1191,8 +1208,10 @@ export const catalog = async (_args = {}, injected = {}) => {
  *    agent somebody watched for three ticks is not the agent they have after
  *    changing its voice, its scope or its powers, and the watching period exists to
  *    catch exactly the surprises a change introduces. `rearmShadow` is a FLOOR
- *    (`max(current, index + shadowTicks)`), so an edit can only ever lengthen a
- *    watch, and `shadowTicks: 0` still means no shadow.
+ *    (`max(current, watched + shadowTicks)`), so an edit can only ever lengthen a
+ *    watch, and `shadowTicks: 0` still means no shadow. `watched` is the agent's own
+ *    PREPARE-RECEIPT count (F-484) — the same number the post gate compares against —
+ *    and not a wall-clock bucket, which is what put edited agents in shadow for ever.
  *
  * 3. THE CADENCE *IS* THE SCHEDULE, so `schedule` and `name` are DERIVED from the VA
  *    record rather than asked for twice. A caller-supplied schedule is IGNORED: two
@@ -1214,6 +1233,55 @@ export const catalog = async (_args = {}, injected = {}) => {
 
 export const prepareVaSave = async ({ input, existing, savedByRole, now } = {}, injected = {}) => {
   const deps = withAdminDeps(injected);
+
+  /* — 0. THE CAPABILITY GATE, BEFORE ANY SIDE EFFECT OR ANY COST (F-482/F-485) —
+   *
+   * The runtime gate refuses a tick on an incapable instance; the SAVE door accepted
+   * the agent anyway, so an admin on Standard + Forge LLM could arm a Virtual
+   * Administrator, see it listed, and learn only from a tick receipt five minutes
+   * later that it will never run. A save that cannot produce a working agent is a
+   * refusal, and it belongs on the form.
+   *
+   * FIRST, deliberately: it reads no Jira, spends no search, and refusing here means
+   * the catalogue reads and F-479's dry search are never paid for a save that cannot
+   * succeed. It is also the caps-before-side-effect rule — nothing is written either
+   * way, but a refused save must not leave a trail of live reads behind it.
+   *
+   * ONE VERDICT, ONE SHAPE: `agentDisabled:true` plus the machine-readable capability
+   * reason, which is exactly what the Coder's gate answers, so the Agents tab and a
+   * REST client can both act on it instead of parsing a sentence.
+   *
+   * FAILS CLOSED, because `vaCapabilityVerdict` does: an unreadable provider is
+   * `{enabled:false, reason:"unknown"}` and the save is refused. That is the same
+   * direction every other agent surface takes, and the refusal is loud.
+   */
+  try {
+    const cap = await deps.capability();
+    if (!cap || cap.enabled !== true) {
+      const reason = (cap && cap.reason) || "unknown";
+      // `agentCapabilityCopy` answers a ROW ({title, remedy, link}), not a string — the
+      // four UI surfaces render the two halves separately. A refusal sentence takes the
+      // title and the remedy, in that order, and never the object itself.
+      const { agentCapabilityCopy } = await import("./shared/edition.js");
+      const copy = agentCapabilityCopy(reason);
+      return fail("agent_capability_off", {
+        agentDisabled: true,
+        capability: { enabled: false, reason },
+        message: `This instance can't run a Virtual Administrator right now. ${copy.title}. ${copy.remedy}`,
+        refused: [{ field: "va", reason }],
+      });
+    }
+  } catch (e) {
+    // A THROWN capability read is the same answer as a negative one. Letting it fall
+    // through would make an unreadable instance the permissive case.
+    return fail("agent_capability_off", {
+      agentDisabled: true,
+      capability: { enabled: false, reason: "unknown" },
+      message: "Whether this instance can run a Virtual Administrator could not be determined, so nothing was saved.",
+      refused: [{ field: "va", reason: "unknown" }],
+    });
+  }
+
   const { normalizeVa } = await import("./shared/va-config.js");
   const { catalogToCtx } = await import("./shared/va-wizard.js");
   const src = isObj(input) ? input : {};
@@ -1279,7 +1347,11 @@ export const prepareVaSave = async ({ input, existing, savedByRole, now } = {}, 
     }
   }
 
-  const va = rearmShadow(normalized.va, tickIndexFor(existing, now == null ? deps.now() : now));
+  // THE RE-ARM COUNTS THE AGENT'S OWN TICKS (F-484), read from the counter the post
+  // gate reads. `now` is no longer part of this answer: shadow mode was never a
+  // wall-clock question, and taking it from the clock is what set the field to a number
+  // the receipt count would not reach for a year.
+  const va = rearmShadow(normalized.va, await watchedTicksFor(existing, deps.store));
   return okv({
     input: {
       ...src,
@@ -1592,34 +1664,62 @@ export const wizardReset = async ({ accountId } = {}, injected = {}) => {
  * the surprises a change introduces. `normalizeVa` deliberately does NOT do this — it
  * is pure and has no idea what tick it is — and its docblock says so, pointing here.
  *
- * IT IS A FLOOR, NOT AN ASSIGNMENT: `max(current, tickIndex + shadowTicks)`. An admin
+ * IT IS A FLOOR, NOT AN ASSIGNMENT: `max(current, watched + shadowTicks)`. An admin
  * who had armed a long watch and then fixed a typo must not have that watch SHORTENED
  * by the edit. Shadow only ever gets longer from here.
  *
  * `shadowTicks: 0` means "no shadow", and the floor respects it: 0 ticks added to the
- * current index is the current index, and gate 1's comparison is `<`, so it never
+ * current count is the current count, and gate 1's comparison is `<`, so it never
  * holds. An admin who turned shadow off does not get it turned back on by editing.
+ *
+ * THE UNIT IS THE AGENT'S OWN PREPARE-RECEIPT COUNT (F-484), and it was not. This
+ * re-armed from five-minute WALL-CLOCK buckets since `createdAt` while the post gate
+ * has compared `shadowUntilTick` against the receipt count since F-454. Editing a
+ * month-old agent therefore set the field to ≈8640 + shadowTicks, a number the receipt
+ * count reaches after 8640 of the agent's OWN ticks — 12 months on an hourly cadence.
+ * One edit put an agent in shadow mode effectively for ever, and the Agents tab said
+ * SHADOW while nobody could see why. `watchedTicks` (src/virtual-admin.js) is the one
+ * home for "how many ticks has this agent watched"; nothing here counts anything.
+ *
+ * THE FLOOR HAS A CEILING NOW, for exactly those stored values. A legitimate
+ * `shadowUntilTick` was written as `watched-at-that-save + shadowTicks`, and `watched`
+ * only grows, so it can never exceed `watched + VA_SHADOW_TICKS_MAX`. Anything above
+ * that line cannot have come from a receipt count — it is a wall-clock leftover — and
+ * it is REPLACED by "shadowTicks from now" rather than floored against. A blanket
+ * clamp would not do: an admin who lowers `shadowTicks` mid-watch must keep the longer
+ * watch they armed, which is the floor's whole purpose.
  * ════════════════════════════════════════════════════════════════════════════ */
 
-export const rearmShadow = (va, tickIndex) => {
+export const rearmShadow = (va, watchedTickCount) => {
   if (!isObj(va) || !isObj(va.status) || !isObj(va.guardrails)) return va;
-  const idx = Number(tickIndex);
+  const idx = Number(watchedTickCount);
   const ticks = Number(va.guardrails.shadowTicks);
   if (!Number.isFinite(idx) || !Number.isFinite(ticks)) return va;
   const current = Number(va.status.shadowUntilTick);
   const rearmed = idx + ticks;
-  const next = Number.isFinite(current) ? Math.max(current, rearmed) : rearmed;
+  // The ceiling on the floor (F-484): a stored value that no receipt count could have
+  // produced is a wall-clock leftover, and floor-ing against it would hold the agent in
+  // shadow mode for thousands of its own ticks. It is replaced, not maxed.
+  const reachable = Number.isFinite(current) && current <= idx + VA_CEILINGS.shadowTicks.max;
+  const next = reachable ? Math.max(current, rearmed) : rearmed;
   return { ...va, status: { ...va.status, shadowUntilTick: next } };
 };
 
 /**
- * The tick index for a job that may not exist yet. A BRAND-NEW agent has no
- * `createdAt`, so its index is 0 and the re-arm is simply `shadowTicks` — which is
- * exactly what `normalizeVa` defaults `shadowUntilTick` to, so creation and the first
- * edit agree without either one knowing about the other.
+ * HOW MANY TICKS THE AGENT BEING SAVED HAS ALREADY BEEN WATCHED (F-484).
+ *
+ * A BRAND-NEW agent has watched nothing, so its count is 0 and the re-arm is simply
+ * `shadowTicks` — which is exactly what `normalizeVa` defaults `shadowUntilTick` to, so
+ * creation and the first edit agree without either one knowing about the other.
+ *
+ * The count itself is NOT computed here: `watchedTicks` (src/virtual-admin.js) reads the
+ * agent's prepare-receipt counter, and it is the same number the post gate and the
+ * Agents tab's badge read. This function is only "which agent, and is there one yet".
+ * A read fault counts as zero there, which keeps the agent in shadow — the restrictive
+ * direction, and the one every other reader of this counter takes.
  */
-export const tickIndexFor = (job, nowMs = Date.now()) => {
-  const created = Date.parse(String((job && job.createdAt) || ""));
-  if (!Number.isFinite(created)) return 0;
-  return Math.max(0, Math.floor((nowMs - created) / 300000));
+export const watchedTicksFor = async (job, store) => {
+  const id = String((job && job.id) || "").trim();
+  if (!id || !store) return 0;
+  try { return await watchedTicks(store, id); } catch (e) { return 0; }
 };

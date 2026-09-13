@@ -1074,12 +1074,29 @@ export const isInShadow = async (job, { receipts = null, store = null } = {}) =>
   let watched = receipts == null ? NaN : Number(receipts);
   if (!Number.isFinite(watched)) {
     if (!store) return null;
-    // The agent id IS the job id, on both surfaces (`loadAgent` in va-admin.js and the
-    // post phase below both take it straight from the record).
-    const health = await readHealth(store, job.id);
-    watched = health.ok ? Number(health.prepareTicks) || 0 : 0;
+    watched = await watchedTicks(store, job.id);
   }
   return shadowStateOf(va, watched);
+};
+
+/**
+ * HOW MANY TICKS HAS THIS AGENT BEEN WATCHED — one home (F-484).
+ *
+ * The answer is the agent's own PREPARE-RECEIPT count, held in `va_health` and written
+ * by the tick (`recordTickHealth`, src/va-ledger.js). Three callers now: the post gate,
+ * `isInShadow` above, and the SAVE-time re-arm in src/va-admin.js, which used to count
+ * five-minute wall-clock buckets since `createdAt` instead — a different number, in a
+ * different unit, compared against the same field.
+ *
+ * The agent id IS the job id on every surface (`loadAgent` in va-admin.js and the post
+ * phase both take it straight from the record).
+ *
+ * A HEALTH READ THAT FAULTS COUNTS AS ZERO, i.e. keeps the agent IN shadow. "I cannot
+ * tell how many times you have been watched" is not "enough times".
+ */
+export const watchedTicks = async (store, agentId) => {
+  const health = await readHealth(store, agentId);
+  return health.ok ? Number(health.prepareTicks) || 0 : 0;
 };
 
 /** GATE 1 — paused, shadow mode, kill switch. Agent-level, checked once per post run. */
@@ -1608,6 +1625,38 @@ const lazyStore = () => {
 };
 
 /**
+ * THE AGENT CAPABILITY VERDICT FOR THE VIRTUAL ADMINISTRATOR — one home, three
+ * callers (F-482, widened by F-485).
+ *
+ * The VA asked this NOWHERE. On a dev tenant whose own `getAgentCapability` resolver
+ * answered `{enabled:false, reason:"needs-coder-edition"}`, a Virtual Administrator ran
+ * ten item turns anyway — so a Standard tenant on Forge LLM got an agent the product
+ * says it may not have, driven by the rules model. The tick, the item turn and (since
+ * F-485) the SAVE DOOR in `src/va-admin.js` all refuse on this one verdict, so a save
+ * cannot accept an agent the very next tick will refuse.
+ *
+ * IT READS NO FACTS OF ITS OWN. `agentGateFacts` in src/index.js is the ONE reader
+ * (provider, edition, agent model, allowance level) and `agentCapability` in
+ * src/shared/edition.js is the ONE predicate. `{fresh:true}` because this runs in a
+ * warm container that no provider switch, licence change or spent allowance can
+ * invalidate.
+ *
+ * FAILS CLOSED. A fact we could not read is not a capability we may assume: any throw
+ * answers `{enabled:false, reason:"unknown"}`, which refuses loudly rather than running
+ * an agent on facts nobody established. NO PROVIDER, NO CAPABILITY — the same rule
+ * `buildAgentGateContext` applies.
+ */
+export const vaCapabilityVerdict = async () => {
+  let facts = { provider: null, edition: null, agentModel: null, allowanceLevel: null };
+  try {
+    const m = _index || (await import("./index.js"));
+    facts = { ...facts, ...(await m.agentGateFacts(null, { fresh: true })) };
+  } catch (e) { return { enabled: false, reason: "unknown", ...facts }; }
+  const verdict = facts.provider ? agentCapability(facts) : { enabled: false, reason: "unknown" };
+  return { enabled: verdict.enabled === true, reason: verdict.reason, ...facts };
+};
+
+/**
  * The production implementations, every Forge module imported ON FIRST USE.
  *
  * A test overrides whichever of these it needs; nothing here invents an empty result on
@@ -1692,28 +1741,16 @@ export const DEFAULT_DEPS = {
    * answers `{enabled:false, reason:"unknown"}`, which refuses the tick loudly rather
    * than running an agent on facts nobody established.
    *
-   * ONE KNOWN GAP, stated rather than hidden: `allowanceLevel` is NOT read here, because
-   * the monthly Forge LLM allowance is computed inside `src/index.js` from a private seat
-   * read and is not exported. So the `allowance-exhausted` arm of the predicate cannot
-   * fire on this surface; the edition, provider and frontier-model arms - which are the
-   * ones that were bypassed - all do. Closing it means exporting the facts assembler
-   * from index.js, which is one owner's call and not this module's.
+   * THE ALLOWANCE ARM FIRES NOW (F-485). This used to re-assemble the facts itself and
+   * could not read `allowanceLevel` — the monthly Forge LLM allowance was private to
+   * `src/index.js` — so a tenant whose month was SPENT kept running its agent every
+   * five minutes on the vendor's bill, because the arm of the predicate that says
+   * `allowance-exhausted` had nothing to fire on. `agentGateFacts` is exported now and
+   * is the ONE reader of all four facts; `{fresh:true}` is the same no-memo semantics
+   * this dep always had, and for the same reason: a warm container that no provider
+   * switch, licence change or spent allowance can invalidate.
    */
-  capability: async () => {
-    const facts = { provider: null, edition: null, agentModel: null, allowanceLevel: null };
-    try {
-      const m = _index || (await import("./index.js"));
-      try { facts.provider = (await m.readProviderConfigFresh()).provider || null; } catch (e) { /* restrictive */ }
-      // `fresh: true` for the same reason the consumer reads everything fresh: this runs
-      // in a warm container that no licence change can invalidate.
-      try { facts.edition = (await m.currentEdition(null, { fresh: true })).edition; } catch (e) { /* restrictive */ }
-      try { facts.agentModel = await m.getAgentModel(); } catch (e) { /* restrictive */ }
-    } catch (e) { return { enabled: false, reason: "unknown", ...facts }; }
-    // NO PROVIDER, NO CAPABILITY - the same rule `buildAgentGateContext` applies: an
-    // unanswered question is refused, never assumed.
-    const verdict = facts.provider ? agentCapability(facts) : { enabled: false, reason: "unknown" };
-    return { enabled: verdict.enabled === true, reason: verdict.reason, ...facts };
-  },
+  capability: async () => vaCapabilityVerdict(),
 
   getIssue: async (issueKey) => {
     const { default: api, route } = await import("@forge/api");

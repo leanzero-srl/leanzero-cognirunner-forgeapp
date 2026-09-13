@@ -347,7 +347,10 @@ let agentId = null;
   named(await jobs("editor", { method: "POST", query: { id: agentId, action: "disable" }, body: {} }), "disabling an agent");
   named(await jobs("editor", { method: "POST", body: { mode: "va", va: vaRecord() } }), "creating an agent");
   // The UPSERT from the other side: no `mode:"va"` in the body, so `normalizeJob` would
-  // have rewritten the agent as a plain script job and lost the record.
+  // have rewritten the agent as a plain script job and lost the record. Since F-490 the
+  // create branch also asks the OWNERSHIP question about a body id — the VA answer must
+  // still win, because "you are at the wrong door" is the more specific refusal and the
+  // one that tells the caller where to go.
   named(await jobs("editor", { method: "POST", body: { id: agentId, name: "hijack", schedule: { cron: "0 9 * * *", timeZone: "UTC" }, functions: [{ name: "s", code: "api.log('x')" }] } }), "rewriting an agent as a script job");
 
   // …and nothing was actually changed by any of the refusals above.

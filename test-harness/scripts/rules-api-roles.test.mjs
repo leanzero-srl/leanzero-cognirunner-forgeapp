@@ -196,6 +196,32 @@ for (const [label, resource, opts, floor] of ROUTES) {
     ok(((await rest("admin", kind, { query: { id: foreign.id } })).body[noun] || {}).name === "foreign",
       `…and the foreign ${noun} is untouched afterwards`);
 
+    /* F-490 — A POST THAT NAMES AN EXISTING ID IS AN EDIT, AND IT WAS UN-GATED.
+     *
+     * `saveListener`/`saveJob` upsert by id and `normalizeListener` keeps
+     * `existing.createdBy`, so this replaced a foreign row IN PLACE and it kept
+     * running under its owner's account — the same body sent as PUT was already 403.
+     * BLOCK, ALLOW, and the batch arm: a refused item must not leave the rest of a
+     * mixed batch written. */
+    ok(notOwner(await rest("owner", kind, { method: "POST", body: { ...mk("hijacked"), id: foreign.id } })),
+      `BLOCK editor token → POST an UPSERT onto a foreign ${noun} (F-490)`);
+    ok(((await rest("admin", kind, { query: { id: foreign.id } })).body[noun] || {}).name === "foreign",
+      `…and the foreign ${noun} still carries its own name afterwards`);
+    {
+      const before = (await rest("admin", kind, { method: "GET" })).body[kind].length;
+      const mixed = await rest("owner", kind, { method: "POST", body: [mk("batch-new"), { ...mk("batch-hijack"), id: foreign.id }] });
+      ok(notOwner(mixed), `BLOCK a MIXED batch whose second item targets a foreign ${noun}`);
+      ok((await rest("admin", kind, { method: "GET" })).body[kind].length === before,
+        `…and the legal FIRST item of that batch was not written either (refused before the batch runs)`);
+    }
+    {
+      // ALLOW: the same upsert onto its OWN row is an edit it may make.
+      const up = await rest("owner", kind, { method: "POST", body: { ...mk("mine-upserted"), id: mine.id } });
+      ok(up.status === 200 || up.status === 201, `ALLOW editor token → POST an upsert onto its OWN ${noun} (got ${up.status})`);
+      ok(((await rest("admin", kind, { query: { id: mine.id } })).body[noun] || {}).name === "mine-upserted",
+        `…and the upsert actually took`);
+    }
+
     // F-261 — for this caller an UNKNOWN id and a foreign row are the same answer.
     ok(notOwner(await rest("owner", kind, { method: "PUT", query: { id: `${noun}-does-not-exist` }, body: { name: "x" } })),
       `an id that does not exist reads exactly like a foreign ${noun} (no existence leak)`);
@@ -221,6 +247,44 @@ for (const [label, resource, opts, floor] of ROUTES) {
     const orphaned = await rest("orphan", kind, { method: "PUT", query: { id: seed2.id }, body: { name: "y" } });
     ok(orphaned.status === 403 && orphaned.body.reason === "no-permission",
       `an editor token with no createdBy is REFUSED on an existing ${noun}, not waved through`);
+  }
+}
+
+/* ═════ F-493 — A CREATE RE-READS THE OWNING ACCOUNT'S LIVE ROLE ═════
+ *
+ * A token's role is a stamp made at mint time. Every route on an EXISTING row re-reads
+ * the account through `gateExistingRow`; the CREATE route read only the stamp, so an
+ * editor token kept minting live, enabled rules after its owner was demoted or
+ * deactivated — rules the product's own UI would have refused that person, and which
+ * nobody but an admin could govern afterwards (the owner cannot edit them either).
+ *
+ * Deliberately LAST in this file: it demotes `acc-own`, and every assertion above needs
+ * that account to still hold the editor role. */
+{
+  const bodies = [["listeners", listenerBody], ["jobs", jobBody]];
+  // ALLOW first, so the BLOCK below cannot pass because the route was broken all along.
+  for (const [kind, mk] of bodies) {
+    ok((await rest("owner", kind, { method: "POST", body: mk("while-editor") })).status === 201,
+      `F-493.ALLOW — an editor token whose account still holds the role creates ${kind}`);
+  }
+
+  await storage.set("app_admins", [
+    { accountId: "admin-1", displayName: "Admin", role: "admin", scope: "all" },
+    // Bob left the team: the app admin took his editor role away. His token was never revoked.
+    { accountId: "acc-own", displayName: "Demoted", role: "viewer", scope: "own" },
+  ]);
+
+  for (const [kind, mk] of bodies) {
+    const r = await rest("owner", kind, { method: "POST", body: mk("after-demotion") });
+    ok(r.status === 403 && r.body.reason === "no-permission" && r.body.needsRole === "editor",
+      `F-493.BLOCK — a demoted owner's token may no longer create ${kind} (got ${r.status} ${JSON.stringify(r.body).slice(0, 160)})`);
+    ok((await rest("admin", kind, { method: "GET" })).body[kind].every((x) => x.name !== "after-demotion"),
+      `…and nothing was written for ${kind}`);
+    // The ADMIN token is unchanged and documented as such: it is scope "all", it has
+    // always survived its minter's demotion, and narrowing it would break live
+    // integrations silently on upgrade.
+    ok((await rest("admin", kind, { method: "POST", body: mk("admin-still-can") })).status === 201,
+      `F-493 — an ADMIN token still creates ${kind} (the deliberate residual)`);
   }
 }
 

@@ -133,8 +133,13 @@ const agentListener = (over = {}) => ({
 {
   const { readFileSync } = await import("node:fs");
   const src = readFileSync(new URL("../../src/index.js", import.meta.url), "utf8");
-  ok(/const agentGateFacts = async \(context\)/.test(src),
+  ok(/const agentGateFacts = async \(context, \{ fresh = false \} = \{\}\)/.test(src),
     "the facts are read in ONE helper — no resolver assembles its own");
+  // F-485 — and the helper is EXPORTED, because three surfaces outside this file need
+  // it: the REST API (which built no gate context at all), the VA save door and the VA
+  // runtime gate. A caller that cannot reach it assembles its own, which is the defect.
+  ok(/\n  agentGateFacts,/.test(src),
+    "agentGateFacts is exported from the internals block (F-485)");
   ok(!/capability:\s*\{\s*git:/.test(src),
     "index.js never hand-builds the gate CONTEXT shape; buildAgentGateContext owns it");
   const helper = src.slice(src.indexOf("const agentGateFacts"), src.indexOf("const savedByRoleFor"));

@@ -10529,16 +10529,42 @@ resolver.define("testPostFunction", async ({ payload, context }) => {
  * omitted, and `buildAgentGateContext` refuses what it was not told about. That is
  * the right direction even though a save-time refusal is loud — inventing a
  * capability from a failed read is how a tenant gets a power nobody granted.
+ *
+ * EXPORTED (F-485), because it was the private half of a rule with four surfaces and
+ * three of them could not reach it: `src/rules-api.js` built NO gate context at all
+ * (F-480 — a rename of a listener holding a repository action was a permanent 400 on
+ * an instance where that capability IS enabled), `src/va-admin.js`'s save door
+ * accepted a Virtual Administrator on an incapable instance, and
+ * `src/virtual-admin.js` had to re-assemble the facts itself WITHOUT the allowance —
+ * which is private allowance maths — so the `allowance-exhausted` arm of the
+ * predicate could never fire there. One reader, one set of facts; `agentCapability`
+ * in src/shared/edition.js stays the one PREDICATE.
+ *
+ * `fresh: true` is for a caller with no memo to trust — the queue consumer and the
+ * Virtual Administrator run in warm containers that a provider switch, a licence
+ * change or a spent allowance cannot invalidate. It is the same facts read without
+ * the 30 s memo, never a different set of facts.
  */
-const agentGateFacts = async (context) => {
+const agentGateFacts = async (context, { fresh = false } = {}) => {
   const facts = { edition: null, provider: null, agentModel: null, allowanceLevel: null };
   try {
-    const cfg = await getProviderConfig();
-    facts.provider = cfg.provider || null;
-    facts.allowanceLevel = cfg.allowance && cfg.allowance.level ? cfg.allowance.level : null;
+    if (fresh) {
+      facts.provider = (await readProviderConfigFresh()).provider || null;
+      // The allowance is a Forge LLM question ONLY, exactly as the memo's arm is: on a
+      // BYOK provider there is no vendor ceiling that can be exhausted, and spending
+      // two KVS reads to answer "null" on every tick would be a cost for no fact.
+      if (facts.provider === "atlassian") {
+        const allowance = await readForgeLlmAllowance();
+        facts.allowanceLevel = allowance && allowance.level ? allowance.level : null;
+      }
+    } else {
+      const cfg = await getProviderConfig();
+      facts.provider = cfg.provider || null;
+      facts.allowanceLevel = cfg.allowance && cfg.allowance.level ? cfg.allowance.level : null;
+    }
   } catch (e) { /* restrictive: provider unknown → the gate refuses */ }
   try {
-    facts.edition = (await currentEdition(context)).edition;
+    facts.edition = (await currentEdition(context, fresh ? { fresh: true } : undefined)).edition;
   } catch (e) { /* restrictive: edition unknown → Coder-only actions refuse */ }
   try {
     facts.agentModel = await getAgentModel();
@@ -10847,6 +10873,10 @@ resolver.define("saveScheduledJob", async ({ payload, context }) => {
         success: false,
         error: prepared.message || vaAdmin.refusalSentence(prepared),
         refused: prepared.refused || [{ field: "va", reason: "invalid" }],
+        // A CAPABILITY refusal is machine-readable on this door too (F-485): the tab
+        // renders the disabled-agent banner off `agentDisabled`/`reason`, exactly as
+        // the Coder's own gate lets it, instead of matching on a sentence.
+        ...(prepared.agentDisabled ? { agentDisabled: true, reason: prepared.reason, capability: prepared.capability } : {}),
       };
     }
     input = prepared.input;
@@ -11731,6 +11761,12 @@ export {
   // token (acting as the account that minted it) so a REST caller and a click resolve
   // ownership through the same predicate. Never write a second ownership check there.
   gateExistingRow,
+  // F-485 — the ONE reader of the instance's agent-gate facts (provider, edition,
+  // agent model, allowance level). src/rules-api.js, src/va-admin.js and
+  // src/virtual-admin.js consume THIS; none of them assembles a fact set of its own,
+  // and none of them re-derives the verdict (`agentCapability`, src/shared/edition.js,
+  // which stays the one predicate). Pass `{fresh:true}` from a warm container.
+  agentGateFacts,
   // F-307: the ONE builder for the machine-readable half of a refusal. src/rules-api.js'
   // `errBody` is the second copy of this field list and converges here (F-331).
   refusalFields,

@@ -74,7 +74,7 @@
 import { kvs as storage } from "@forge/kvs";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { JIRA_EVENTS, EVENT_CATEGORIES } from "./shared/jira-events.js";
-import { AGENT_ACTIONS } from "./shared/agent-actions.js";
+import { AGENT_ACTIONS, buildAgentGateContext } from "./shared/agent-actions.js";
 import * as L from "./listeners.js";
 import * as J from "./scheduled-jobs.js";
 // The ONE home for every Virtual Administrator operation (1.5 commit 5b). The Agents
@@ -270,6 +270,45 @@ const errBody = (e) => ({
 });
 
 /*
+ * WHAT ROLE A REST SAVE ARMS A RULE WITH — one home (F-485).
+ *
+ * ALWAYS "editor", whatever role the token holds. The token's role gates the DOOR
+ * (who may write at all); it never grants the ROW a power, because an admin-only
+ * action — a pull-request verdict, an outward comment — exists on a rule only
+ * because an admin CLICKED it. `?resource=agents` and the collections had this
+ * constant twice; it is one value with one reason, so it is one constant.
+ */
+const REST_SAVED_BY_ROLE = "editor";
+
+/*
+ * THE GATE CONTEXT FOR A REST SAVE (F-480, through F-485's one fact reader).
+ *
+ * This file supplied NO gate context at all, so `normalizeListener`/`normalizeJob`
+ * ran `assertAllowedActions` against the restrictive default and THREW on any
+ * capability-gated action. A rule that legitimately held one — armed by an admin's
+ * click on an instance where the capability IS enabled — was therefore permanently
+ * un-editable over REST: a rename came back 400 "contains actions this rule may not
+ * use". Fail-closed and loud, but a capability the product grants and this door
+ * cannot see.
+ *
+ * The facts come from `agentGateFacts` in src/index.js and from nowhere else — the
+ * comment in src/shared/agent-actions.js names the resolver, the REST API and the two
+ * run sites as the callers that "cannot each assemble a different one", and this is
+ * how that becomes true rather than aspirational.
+ *
+ * NO CONTEXT TO PASS: a web trigger carries no invocation licence, so the edition
+ * comes from the snapshot ladder, exactly as it does for the git webhook's own gate.
+ * FAILS TO THE RESTRICTIVE SIDE: `agentGateFacts` never throws and omits what it
+ * could not read, so an unreadable instance refuses the action instead of granting
+ * it — and an incapable instance still refuses this same rename, which is the point.
+ */
+const restGateContext = async () => {
+  const { agentGateFacts } = await idx();
+  const facts = await agentGateFacts(null);
+  return buildAgentGateContext({ ...facts, triggerSource: null, savedByRole: REST_SAVED_BY_ROLE });
+};
+
+/*
  * The ONE refusal a role floor produces, in the ONE refusal shape (`reason`,
  * `needsRole`, `hint`) the resolvers and the admin UI already speak. Returns null when
  * the token clears the floor, so every call site reads
@@ -304,15 +343,47 @@ const roleFloor = (who, level, what) => (tokenRoleAtLeast(who, level)
  * REFUSED in the one refusal shape — failing open there would hand back exactly the
  * capability this gate exists to remove.
  */
+const noPrincipal = (what) => json(403, {
+  error: `This token has no owning account and may not ${what}. Mint a new token.`,
+  reason: "no-permission", needsRole: "admin", hint: "ask-app-admin",
+});
+
+/*
+ * F-493 — THE OWNING ACCOUNT'S ROLE IS RE-READ ON A CREATE TOO.
+ *
+ * Every route on an EXISTING row asks `gateExistingRow`, which reads the account's LIVE
+ * role. The create route read only the stamp on the token, so an editor token kept
+ * minting live listeners and jobs after its owning account was demoted to viewer or
+ * deactivated — rows the product's own UI would have refused that person, enabled, and
+ * governable afterwards by nobody but an admin (the owner cannot edit them either,
+ * because `ownerGate` correctly refuses them).
+ *
+ * THE SAME FLOOR THE RESOLVER USES on the same path: `requireRole(accountId, "editor")`,
+ * which is what `saveListener`'s create branch asks in src/index.js. Not a new predicate.
+ *
+ * FAILS CLOSED. A role read that throws refuses: "I cannot tell whether this account may
+ * author rules" is not "it may". ADMIN TOKENS SKIP IT, deliberately and as documented for
+ * `ownerGate` — an admin token is scope "all" and has always survived its minter's
+ * demotion; narrowing that here would revoke a power from every live integration on
+ * upgrade, silently, which is the worse failure of the two.
+ */
+const creatorGate = async (who, what) => {
+  if (tokenRole(who) === "admin") return null;
+  const accountId = who && who.createdBy;
+  if (!accountId) return noPrincipal(what);
+  const { requireRole } = await idx();
+  let allowed = false;
+  try { allowed = await requireRole(accountId, "editor"); } catch (e) { allowed = false; }
+  return allowed ? null : json(403, {
+    error: `The account this token acts as may no longer ${what}.`,
+    reason: "no-permission", needsRole: "editor", hint: "ask-app-admin",
+  });
+};
+
 const ownerGate = async (who, row, { what, minRole = "editor", destructive = false, notFound }) => {
   if (tokenRole(who) === "admin") return null; // scope "all" — the pre-F-466 behaviour
   const accountId = who && who.createdBy;
-  if (!accountId) {
-    return json(403, {
-      error: `This token has no owning account and may not ${what}. Mint a new token.`,
-      reason: "no-permission", needsRole: "admin", hint: "ask-app-admin",
-    });
-  }
+  if (!accountId) return noPrincipal(what);
   const { gateExistingRow } = await idx();
   const refusal = await gateExistingRow(accountId, row, { what, minRole, destructive, notFound });
   if (!refusal) return null;
@@ -384,9 +455,12 @@ const handleCollection = async ({ req, method, id, action, body, who, kind }) =>
    */
   const floor = (level, what) => roleFloor(who, level, what);
   // A REST token carries no role, so every save through this surface is recorded as
-  // `savedByRole:"editor"` (the normalizer's default). That is deliberate and it is a
-  // REFUSAL, not an oversight: a rule armed over the API can never hold an
-  // admin-only power such as a PR verdict action. Arming one is an admin's click.
+  // `savedByRole:"editor"` (`REST_SAVED_BY_ROLE`, passed explicitly). That is
+  // deliberate and it is a REFUSAL, not an oversight: a rule armed over the API can
+  // never hold an admin-only power such as a PR verdict action. Arming one is an
+  // admin's click. What it is NOT is a refusal of every CAPABILITY-gated action —
+  // that was F-480, and the gate context (`restGateContext`) is what tells this door
+  // which capabilities the instance actually has.
 
   if (method === "GET") {
     const gate = floor("viewer", `view ${kind}`); if (gate) return gate;
@@ -415,7 +489,10 @@ const handleCollection = async ({ req, method, id, action, body, who, kind }) =>
     const owned = await ownerGate(who, existing, { what: `edit this ${noun}`, notFound: `${noun} not found` });
     if (owned) return owned;
     if (!existing) return json(404, { error: `${noun} not found` });
-    try { const saved = await save({ ...merge(existing, body || {}), id }, { accountId: actor }); return json(200, { [noun]: saved }); } catch (e) { return json(400, errBody(e)); }
+    // The instance's gate context (F-480). Without it this rename refuses every
+    // capability-gated action the row legitimately holds.
+    const agentGate = await restGateContext();
+    try { const saved = await save({ ...merge(existing, body || {}), id }, { accountId: actor, gate: agentGate, savedByRole: REST_SAVED_BY_ROLE }); return json(200, { [noun]: saved }); } catch (e) { return json(400, errBody(e)); }
   }
   if (method === "POST" && action) {
     // `preview` computes nothing but the next fire times of a cron string — the
@@ -451,6 +528,10 @@ const handleCollection = async ({ req, method, id, action, body, who, kind }) =>
   }
   if (method === "POST") {
     const gate = floor("editor", `create ${kind}`); if (gate) return gate;
+    // …and the LIVE role of the account the token acts as (F-493). The token's own role
+    // is a stamp made when it was minted; every other route on this surface re-reads the
+    // account, and a create that did not was how a demoted owner kept authoring rules.
+    const creator = await creatorGate(who, `create ${kind}`); if (creator) return creator;
     const items = Array.isArray(body) ? body : (body && Array.isArray(body[kind]) ? body[kind] : [body]);
     if (!items.length || items.length > 100) return json(400, { error: "provide 1-100 items" });
     // CREATE is the same door (F-478): a `mode:"va"` body here would mint an agent with
@@ -458,16 +539,43 @@ const handleCollection = async ({ req, method, id, action, body, who, kind }) =>
     // batch runs, so a mixed batch cannot half-create one.
     if (!isL) {
       const va = items.map((it) => vaDoor(it)).find(Boolean); if (va) return va;
-      // …and an UPSERT that names an existing agent's id is the same door from the
-      // other side: without `mode:"va"` in the body it would rewrite the agent as a
-      // plain script job, losing the whole record.
-      for (const it of items) {
-        if (it && it.id) { const hit = vaDoor(await get(String(it.id))); if (hit) return hit; }
-      }
     }
+    /*
+     * A BODY ID IS AN EDIT, AND AN EDIT ASKS THE OWNERSHIP QUESTION (F-490).
+     *
+     * `saveListener`/`saveJob` UPSERT by `input.id`, so a create that names an existing
+     * row REPLACES it in place — and `normalizeListener` carries `existing.createdBy`
+     * forward, which is what made the hijack invisible. This was the only write route on
+     * this surface that asked nothing: the same body sent as `PUT ?id=` is refused 403
+     * `not-owner`, and the resolver the UI uses gates a body-supplied id the same way
+     * (`gateExistingRow` in src/index.js). One rule, and the REST door was the wider home.
+     *
+     * THE GATE IS `ownerGate` — imported, not restated: a second ownership rule here is
+     * how two doors onto one row grow two answers, and the F-261 existence-leak rule (an
+     * unknown id and a foreign row are the same refusal for a scope-"own" caller) would
+     * have to be re-derived to match. An ADMIN token skips it, exactly as it does on PUT.
+     *
+     * BEFORE THE BATCH RUNS, like the VA door above: a refused item must not leave the
+     * earlier items of a mixed batch already written.
+     */
+    for (const it of items) {
+      if (!it || !it.id) continue;
+      const row = await get(String(it.id));
+      // An UPSERT that names an existing AGENT is the F-478 door from the other side:
+      // without `mode:"va"` in the body it would rewrite the agent as a plain script
+      // job, losing the whole record. Same read, so it is asked here.
+      if (!isL) { const hit = vaDoor(row); if (hit) return hit; }
+      if (!row) continue;
+      const owned = await ownerGate(who, row, { what: `replace this ${noun}`, notFound: `${noun} not found` });
+      if (owned) return owned;
+    }
+    // ONE fact read for the whole batch (F-480/F-485): the instance's capabilities do
+    // not change between two items of the same request, and re-reading them per item
+    // would spend a provider/licence read 100 times for one answer.
+    const agentGate = await restGateContext();
     const saved = []; const errors = [];
     for (let i = 0; i < items.length; i++) {
-      try { saved.push(await save(items[i], { accountId: actor })); } catch (e) { errors.push({ index: i, name: items[i] && items[i].name, ...errBody(e) }); }
+      try { saved.push(await save(items[i], { accountId: actor, gate: agentGate, savedByRole: REST_SAVED_BY_ROLE })); } catch (e) { errors.push({ index: i, name: items[i] && items[i].name, ...errBody(e) }); }
     }
     const status = saved.length ? (errors.length ? 207 : (items.length === 1 ? 201 : 200)) : 400;
     // Single-item ergonomics: `{ listener }` on success, `{ error }` on failure (the UI's shape).
@@ -513,6 +621,11 @@ const VA_STATUS_BY_REASON = Object.freeze({
   // not "fix" its body.
   not_in_shadow: 409, no_staged_draft: 409, draft_changed: 409,
   agent_disabled: 409, agent_paused: 409, already_running: 409,
+  // A CONFLICT too, and the same one the Coder answers: the request is legal, the
+  // INSTANCE cannot run an agent (edition, provider, model or a spent allowance).
+  // Nothing in the body would fix it, so it must not read as 400. `agentDisabled` and
+  // `capability` ride through `vaJson`'s `...rest`.
+  agent_capability_off: 409,
   // A FAULT, and it is reported as one. "I could not read the drafts" and "there are
   // no drafts" must never reach a client as the same answer.
   job_read_failed: 502, job_index_read_failed: 502, job_write_failed: 502,
@@ -539,8 +652,9 @@ const handleAgents = async ({ method, id, action, part, body, who, req }) => {
   /* A REST save is recorded as `savedByRole:"editor"` exactly as a listener or job
    * save is, and for the same reason: an admin-only power (a PR verdict action) is
    * an admin's CLICK, never a token's. The role on the token gates the DOOR; it does
-   * not grant the row a power. */
-  const savedByRole = "editor";
+   * not grant the row a power. The value and its reason live once, at module level
+   * (F-485), because the collections door arms rows with the same rule. */
+  const savedByRole = REST_SAVED_BY_ROLE;
 
   const loadVaJob = async () => {
     const row = await J.getJob(id);
@@ -626,7 +740,11 @@ const handleAgents = async ({ method, id, action, part, body, who, req }) => {
     const prepared = await VA.prepareVaSave({ input, existing, savedByRole });
     if (!prepared.ok) return vaJson(prepared);
     try {
-      const job = await J.saveJob(prepared.input, { accountId: actor, savedByRole });
+      // The gate context, from the ONE fact reader, exactly as the collections door
+      // and the resolvers build it (F-480/F-485). A Virtual Administrator's job row
+      // carries `agent.allowedActions` like any other, so without it a re-save of an
+      // agent that holds a capability-gated action refuses that action.
+      const job = await J.saveJob(prepared.input, { accountId: actor, gate: await restGateContext(), savedByRole });
       return json(method === "PUT" || input.id ? 200 : 201, { agent: job, ...(prepared.refused.length ? { refused: prepared.refused } : {}) });
     // A byte cap, a brake or an action allow-list refusal from `saveJob` arrives in
     // the ONE refusal shape (`errBody`, module-level since commit 8 so this resource

@@ -125,20 +125,25 @@ const cacheReadTokensOf = (usage) => {
  * module must not grow a provider feature (that is the backend surgeon's file).
  */
 const CACHE_READ_PROVIDERS = new Set(["anthropic", "managed"]);
+// NOTE: "managed" is not (today) a provider id that src/index.js dispatches on — the
+// set is deliberately permissive so the observation survives a rename; it gates a log
+// line only. See FINDINGS-LEDGER F-356.
 
 /**
- * DEFECT LINE, not a fix. When a provider that charges (and discounts) cache reads
- * reports ZERO of them across a multi-round turn, the prompt prefix is not being
- * cached — on a coder turn that is the difference between one full re-send of the
- * system prompt per round and a discounted one. Today that is EXPECTED on
- * `anthropic`: `callAnthropicChat` sends no `cache_control` block and drops
- * `cache_read_input_tokens` when it converts usage to the OpenAI shape, so the number
- * can only ever be zero. Say so once per turn, in the log, and leave the adapter alone.
+ * OBSERVATION LINE. When a provider that charges (and discounts) cache reads reports
+ * ZERO of them across a multi-round turn, the prompt prefix is not being cached — on a
+ * coder turn that is the difference between one full re-send of the system prompt per
+ * round and a discounted one. Since F-353 this is no longer EXPECTED: the Anthropic
+ * adapter sends `cache_control` on the system block and on the last message of the
+ * stable prefix (this loop opts in via `cachePrefix`, below) and forwards
+ * `cache_read_input_tokens` as `prompt_tokens_details.cached_tokens`. So a zero here
+ * now means a real miss — a prefix that changed between rounds, a prompt under the
+ * model's minimum cacheable size, or an entry that expired — and is worth the line.
  */
 const reportPromptCacheDefect = (provider, out, log) => {
   if (!provider || !CACHE_READ_PROVIDERS.has(String(provider))) return;
   if (out.rounds < 2 || out.usage.cacheReadTokens > 0) return;
-  const line = `DEFECT: provider "${provider}" reported 0 cache-read tokens across ${out.rounds} rounds — the stable prompt prefix is being re-billed in full every round (the adapter sends no cache_control and does not forward cache_read_input_tokens).`;
+  const line = `DEFECT: provider "${provider}" reported 0 cache-read tokens across ${out.rounds} rounds — the stable prompt prefix is being re-billed in full every round (the prefix changed between rounds, the prompt is under the model's minimum cacheable size, or the cache entry expired).`;
   log(line);
   console.warn(`[agent-loop] ${line}`);
 };
@@ -167,6 +172,12 @@ const reportPromptCacheDefect = (provider, out, log) => {
  * keeps a re-usable prefix across rounds; one that rewrites the head defeats every
  * provider's cache. Nothing here edits an earlier message.
  *
+ * Because of that invariant the loop can DECLARE the prefix: every message present at
+ * entry is stable for the whole turn, so it passes `cachePrefix: <that count>` on each
+ * round (F-353). Adapters that cannot cache ignore the field; the Anthropic adapter
+ * turns it into two `cache_control` breakpoints. One-shot callers never set it, so
+ * validators/codegen/semantic PFs pay no cache-write premium.
+ *
  * HALTING. `execute` may return `{ __agentHalt: { toolResult, reason, summary } }` to end
  * the turn without executing anything further (the Coder's consent ticket). The halting
  * call still gets a tool result — `toolResult`, which the CALLER builds and which must
@@ -194,6 +205,8 @@ export const runAgentLoop = async ({
 }) => {
   const m = await idx();
   const rounds = clampInt(maxRounds, 1, MAX_AGENT_ROUNDS, DEFAULT_AGENT_ROUNDS);
+  // Frozen at entry, never recomputed: the seeded messages are the turn's stable prefix.
+  const cachePrefix = Array.isArray(messages) ? messages.length : 0;
   const out = {
     messages, actions: [], rounds: 0, summary: "", outcome: "failed", error: null, endedBy: null,
     usage: { tokens: 0, aiTimeMs: 0, cacheReadTokens: 0 },
@@ -205,7 +218,7 @@ export const runAgentLoop = async ({
     let ai;
     const t0 = Date.now();
     try {
-      ai = await m.raceDeadline(m.callAIChat({ apiKey, model, messages, tools, tool_choice: exhausted ? "none" : "auto" }), deadlineMs - 1500, roundLabel(round + 1));
+      ai = await m.raceDeadline(m.callAIChat({ apiKey, model, messages, tools, tool_choice: exhausted ? "none" : "auto", cachePrefix }), deadlineMs - 1500, roundLabel(round + 1));
     } catch (e) {
       out.error = `AI call failed: ${String(e && e.message).slice(0, 300)}`; out.endedBy = "provider-error"; log(`ERROR: ${out.error}`); break;
     }

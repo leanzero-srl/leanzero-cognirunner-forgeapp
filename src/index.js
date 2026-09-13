@@ -12152,7 +12152,7 @@ const callAIChat = async (opts) => {
 };
 
 const callAIChatRaw = async (opts) => {
-  const { apiKey, model: requestedModel, messages, tools, tool_choice, jsonMode, preResolvedModel } = opts;
+  const { apiKey, model: requestedModel, messages, tools, tool_choice, jsonMode, preResolvedModel, cachePrefix } = opts;
   const { provider, baseUrl } = await getProviderConfig();
 
   // F-115 — a null provider means the config READ faulted (fail-closed, see
@@ -12167,7 +12167,9 @@ const callAIChatRaw = async (opts) => {
   if (!provider) return { ok: false, status: 0, error: "No AI provider configured (provider read failed)" };
 
   if (provider === "anthropic") {
-    return callAnthropicChat({ apiKey, model: requestedModel, messages, tools, tool_choice, baseUrl, jsonMode });
+    // cachePrefix rides through UNCHANGED for every other provider (none of them read
+    // it) — only the Anthropic adapter acts on it. See callAnthropicChat (F-353).
+    return callAnthropicChat({ apiKey, model: requestedModel, messages, tools, tool_choice, baseUrl, jsonMode, cachePrefix });
   }
 
   // AWS Bedrock (BYOK): bearer-token auth + the unified Converse API. Translated to/from
@@ -12311,8 +12313,28 @@ const callAIChatRaw = async (opts) => {
 
 /**
  * Call Anthropic Messages API, translating from/to OpenAI format.
+ *
+ * PROMPT CACHING (F-353) — OPT-IN, and OFF for every existing caller.
+ * `cachePrefix` is the number of LEADING entries of `messages` that the CALLER
+ * declares byte-stable across the calls that share this prefix. Omitted / 0 ⇒ this
+ * function behaves exactly as before: no `cache_control` anywhere, no cache-write
+ * premium. Validators, conditions, semantic post-functions, codegen, fix, review and
+ * every other one-shot caller pass nothing and are DELIBERATELY unchanged — a single
+ * call per prompt only ever pays the ~1.25x write and never reads it back. Only the
+ * multi-round agent loop (`runAgentLoop`, src/agent-runner.js) sets it, because there
+ * the same prefix is re-sent once per round.
+ *
+ * Render order is tools → system → messages, so the marker on the system block caches
+ * the tool definitions with it. At most TWO breakpoints are emitted here (system, plus
+ * the last content block of the last stable message) — the API cap is four.
  */
-const callAnthropicChat = async ({ apiKey, model, messages, tools, tool_choice, baseUrl, jsonMode }) => {
+const callAnthropicChat = async ({ apiKey, model, messages, tools, tool_choice, baseUrl, jsonMode, cachePrefix = 0 }) => {
+  const prefixCount = Number(cachePrefix) > 0 ? Math.floor(Number(cachePrefix)) : 0;
+  // The anthropic message object that the LAST stable source message landed in; the
+  // breakpoint goes on its last content block. Tool results merge into a previous user
+  // message, and system messages are hoisted out, so this is tracked during conversion
+  // rather than computed from an index afterwards.
+  let prefixBoundaryMsg = null;
   // 1. Extract system prompt from messages
   let systemText = "";
   const filteredMessages = [];
@@ -12331,7 +12353,14 @@ const callAnthropicChat = async ({ apiKey, model, messages, tools, tool_choice, 
 
   // 2. Convert messages content (images, files, tool results)
   const anthropicMessages = [];
+  // Source-order index of the last message inside the declared stable prefix. System
+  // messages were hoisted above, so count against the ORIGINAL array.
+  let srcIndex = -1;
+  const lastStableSrcIndex = prefixCount > 0 ? Math.min(prefixCount, messages.length) - 1 : -1;
   for (const msg of filteredMessages) {
+    // Re-derive this message's position in the original array (filteredMessages keeps order).
+    srcIndex = messages.indexOf(msg, srcIndex + 1);
+    const isStable = prefixCount > 0 && srcIndex >= 0 && srcIndex <= lastStableSrcIndex;
     if (msg.role === "tool") {
       // OpenAI tool result → Anthropic tool_result inside a user message
       const lastMsg = anthropicMessages[anthropicMessages.length - 1];
@@ -12343,8 +12372,11 @@ const callAnthropicChat = async ({ apiKey, model, messages, tools, tool_choice, 
       // Merge into previous user message if it exists, else create new one
       if (lastMsg && lastMsg.role === "user" && Array.isArray(lastMsg.content)) {
         lastMsg.content.push(toolResultBlock);
+        if (isStable) prefixBoundaryMsg = lastMsg;
       } else {
-        anthropicMessages.push({ role: "user", content: [toolResultBlock] });
+        const created = { role: "user", content: [toolResultBlock] };
+        anthropicMessages.push(created);
+        if (isStable) prefixBoundaryMsg = created;
       }
     } else {
       const converted = { role: msg.role };
@@ -12371,6 +12403,7 @@ const callAnthropicChat = async ({ apiKey, model, messages, tools, tool_choice, 
         converted.content = contentBlocks;
       }
       anthropicMessages.push(converted);
+      if (isStable) prefixBoundaryMsg = converted;
     }
   }
 
@@ -12390,7 +12423,14 @@ const callAnthropicChat = async ({ apiKey, model, messages, tools, tool_choice, 
     max_tokens: 4096,
     messages: anthropicMessages,
   };
-  if (systemText) body.system = systemText;
+  if (systemText) {
+    // Breakpoint 1 of 2: the system block. With tools present this caches tools+system
+    // together (tools render first). Plain string when caching is off — byte-identical
+    // to the pre-F-353 request.
+    body.system = prefixCount > 0
+      ? [{ type: "text", text: systemText, cache_control: { type: "ephemeral" } }]
+      : systemText;
+  }
   if (anthropicTools) {
     body.tools = anthropicTools;
     // Translate OpenAI's tool_choice shape to Anthropic's. Per Anthropic docs:
@@ -12423,6 +12463,19 @@ const callAnthropicChat = async ({ apiKey, model, messages, tools, tool_choice, 
   // Anthropic's native mcp_servers connector is intentionally NOT used (it forwards
   // only the bearer, so per-tenant service keys never reach the server, and it would
   // double-expose tools that are already function tools).
+  // Breakpoint 2 of 2: the last content block of the last message the caller declared
+  // stable. Everything AFTER it (this round's tool transcript) stays uncached, which is
+  // the point — the marker must sit at the end of the SHARED portion, not at the end of
+  // the whole prompt, or every request writes a fresh entry that is never read back.
+  if (prefixCount > 0 && prefixBoundaryMsg) {
+    if (typeof prefixBoundaryMsg.content === "string") {
+      prefixBoundaryMsg.content = [{ type: "text", text: prefixBoundaryMsg.content, cache_control: { type: "ephemeral" } }];
+    } else if (Array.isArray(prefixBoundaryMsg.content) && prefixBoundaryMsg.content.length > 0) {
+      const last = prefixBoundaryMsg.content[prefixBoundaryMsg.content.length - 1];
+      if (last && typeof last === "object") last.cache_control = { type: "ephemeral" };
+    }
+  }
+
   const headers = {
     "Content-Type": "application/json",
     "x-api-key": apiKey,
@@ -12464,8 +12517,20 @@ const callAnthropicChat = async ({ apiKey, model, messages, tools, tool_choice, 
     : anthropicData.stop_reason === "max_tokens" ? "length"
     : "stop";
 
-  const inputTokens = anthropicData.usage?.input_tokens || 0;
+  const rawInputTokens = anthropicData.usage?.input_tokens || 0;
   const outputTokens = anthropicData.usage?.output_tokens || 0;
+  // F-353 — Anthropic reports cached input SEPARATELY from `input_tokens`:
+  //   cache_creation_input_tokens — written to cache this request (billed ~1.25x input)
+  //   cache_read_input_tokens     — served from cache this request (billed ~0.1x input)
+  // Cache WRITES are ordinary billed input, so they join prompt/total. Cache READS are
+  // reported on their own and (on the Claude API) do not count toward the input rate
+  // limit, so they stay OUT of prompt_tokens — which is what the TPM budget ledger
+  // paces on — and are surfaced in ONE shape every consumer already reads:
+  // `prompt_tokens_details.cached_tokens` (OpenAI-style, what agent-runner's
+  // cacheReadTokensOf looks at first) plus the explicit cache_* fields.
+  const cacheReadTokens = anthropicData.usage?.cache_read_input_tokens || 0;
+  const cacheCreationTokens = anthropicData.usage?.cache_creation_input_tokens || 0;
+  const inputTokens = rawInputTokens + cacheCreationTokens;
 
   const openAIData = {
     choices: [{
@@ -12480,6 +12545,9 @@ const callAnthropicChat = async ({ apiKey, model, messages, tools, tool_choice, 
       prompt_tokens: inputTokens,
       completion_tokens: outputTokens,
       total_tokens: inputTokens + outputTokens,
+      prompt_tokens_details: { cached_tokens: cacheReadTokens },
+      cache_read_tokens: cacheReadTokens,
+      cache_creation_tokens: cacheCreationTokens,
     },
   };
 

@@ -419,6 +419,8 @@ for (const entry of m.SCAFFOLD_INDEX) {
     eachRun(doc, (v) => assert.equal(typeof v, "string", "plain-scalar run"));
   } catch { caught = true; }
   assert.ok(caught, "a plain run: scalar containing ': ' is rejected by this gate");
+}
+
 /* ===================== F-579 — A CONTENT CHANGE MUST BUMP THE VERSION =====================
  * The line arrays are COMMITTED INTO CUSTOMER REPOSITORIES. `SCAFFOLD_VERSION` is the only
  * thing that can tell an already-installed repo that what it carries is stale, and F-565

@@ -681,7 +681,7 @@ const postDeps = (over = {}) => {
     tickId: () => "t-post",
     tickIndex: () => 999,                       // out of shadow unless a test says otherwise
     isKillSwitchActive: async () => false,
-    selfAccountId: async () => SELF,
+    selfAccountId: async () => ({ ok: true, accountId: SELF }),
     getIssue: async () => thread([humanComment("c-1", T0 - 60 * MIN)]),
     addComment: async (k, body, opts) => { commented.push({ k, body, internal: opts.internal }); return { id: "new-1" }; },
     readComment: async () => { read.push(1); return { id: "new-1", jsdPublic: false }; },
@@ -749,6 +749,16 @@ const stageDraft = async (over = {}) => {
   eq(V.gatePileUp({ row: { state: "staged" }, issue: spokeLast, now: T0, antiPileUpDays: 4, selfAccountId: SELF }).reason, "we_spoke_last", "gate.pileup.BLOCK_we_spoke_last");
   eq(V.gatePileUp({ row: { state: "owed" }, issue: spokeLast, now: T0, antiPileUpDays: 4, selfAccountId: SELF }).ok, true, "gate.pileup.ALLOW_owed_overrides");
   eq(V.gatePileUp({ row: { state: "staged" }, issue: thread([ourComment("c-2", T0 - 9 * DAY)]), now: T0, antiPileUpDays: 4, selfAccountId: SELF }).ok, true, "gate.pileup.ALLOW_past_the_window");
+  // F-451 — AN UNKNOWN IDENTITY BLOCKS. The gate's own comment always claimed a null
+  // `selfAccountId` blocked, and it did the opposite: nothing could match, so the gate
+  // read "we did not speak last" and PASSED — piling a third reply onto our own thread
+  // exactly when we had lost track of who we were.
+  eq(V.gatePileUp({ row: { state: "staged" }, issue: spokeLast, now: T0, antiPileUpDays: 4, selfAccountId: null }).reason, "self_unknown", "gate.pileup.BLOCK_self_unknown");
+  eq(V.gatePileUp({ row: { state: "staged" }, issue: spokeLast, now: T0, antiPileUpDays: 4 }).reason, "self_unknown", "gate.pileup.BLOCK_self_omitted");
+  eq(V.gatePileUp({ row: { state: "staged" }, issue: spokeLast, now: T0, antiPileUpDays: 4, selfAccountId: "" }).reason, "self_unknown", "gate.pileup.BLOCK_self_empty_string");
+  // …and it blocks even an OWED item: `owed` overrides the pile-up rule, never the
+  // question of whether the rule could be evaluated at all.
+  eq(V.gatePileUp({ row: { state: "owed" }, issue: spokeLast, now: T0, antiPileUpDays: 4, selfAccountId: null }).reason, "self_unknown", "gate.pileup.BLOCK_self_unknown_even_when_owed");
   eq(V.gatePileUp({ row: { state: "staged" }, issue: thread([ourComment("c-1", T0 - DAY), humanComment("c-2", T0)]), now: T0, antiPileUpDays: 4, selfAccountId: SELF }).ok, true, "gate.pileup: a human spoke after us, so we did not speak last");
 }
 
@@ -776,6 +786,32 @@ const stageDraft = async (over = {}) => {
   eq(V.gateVoice("- one\n- two", { register: "plain", maxSentences: 3 }).ok, false, "gate.voice.BLOCK_bullet");
   eq(V.gateVoice("As an AI I cannot do that.", { register: "plain", maxSentences: 3 }).ok, false, "gate.voice.BLOCK_as_an_ai");
   eq(V.gateVoice("", { register: "plain" }).ok, false, "gate.voice.BLOCK_empty — nothing to check must never read as checked");
+}
+
+/* — F-451: THE IDENTITY IS RESOLVED ONCE, AND A FAULT STOPS THE PASS — */
+reset();
+{
+  await stageDraft();
+  let asked = 0;
+  const d = postDeps({ selfAccountId: async () => { asked++; return { ok: true, accountId: SELF }; } });
+  await V.runVaPost({ agent: vaJob(), tickId: "t-self", deps: d });
+  eq(asked, 1, "self.ALLOW_resolved_once_per_pass — not once per gate and not once per item");
+}
+reset();
+{
+  await stageDraft();
+  const d = postDeps({ selfAccountId: async () => ({ ok: false, accountId: null, reason: "myself:503" }) });
+  const r = await V.runVaPost({ agent: vaJob(), tickId: "t-self-dead", deps: d });
+  // NOT SILENTLY OPEN. Speech whose brakes cannot be evaluated does not happen.
+  eq(r.posted, 0, "self.BLOCK_whole_pass_when_identity_unreadable");
+  eq(d.__commented.length, 0, "self: …and nothing at all was posted");
+  ok(r.skipped.some((x) => x.reason === "self_unknown"), "self: the skip names the cause");
+  const receipt = (await L.readTick(kvs, AG, "t-self-dead", "post")).receipt;
+  ok(receipt && /own account could not be read/.test(String(receipt.error)),
+    "self: …and the RECEIPT says so — a quiet failure is loud somewhere (law 8)");
+  // The draft is untouched: it is not dropped for an infrastructure fault.
+  const row = (await L.readItem(kvs, AG, "SUP-1")).row;
+  eq(row.state, "staged", "self.ALLOW_draft_survives_an_infrastructure_fault");
 }
 
 /* — THE WHOLE POST RUN — */

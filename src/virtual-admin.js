@@ -996,6 +996,15 @@ export const gateQuiet = ({ issue, now, quietMinutes, selfAccountId = null } = {
  * it still passes through the caps gate, against its own counter.
  */
 export const gatePileUp = ({ row, issue, now, antiPileUpDays, selfAccountId = null } = {}) => {
+  // AN UNKNOWN IDENTITY BLOCKS (F-451). The comment above this gate has always claimed a
+  // null `selfAccountId` "blocks", and it did the opposite: `lastOwnComment` cannot match
+  // anything without an identity, so it answered null, the gate read that as
+  // "we_did_not_speak_last" and PASSED. The agent could therefore pile a third reply onto
+  // its own thread precisely when it had lost track of who it was. Not being able to tell
+  // our comments from theirs is a refusal, not a pass — the same rule the write scope
+  // applies to an unresolvable project. The caller resolves the identity ONCE per pass
+  // and skips the whole pass when it cannot; this is the second wall.
+  if (selfAccountId == null || String(selfAccountId) === "") return { ok: false, reason: "self_unknown" };
   if (row && row.state === "owed") return { ok: true, reason: "owed_overrides" };
   const own = lastOwnComment(issue, selfAccountId);
   if (!own || !own.created) return { ok: true, reason: "we_did_not_speak_last" };
@@ -1118,7 +1127,19 @@ export const runVaPost = async ({ agent, tickId = null, deps: injected = {} } = 
     /* — the BOUNDED scan for staged rows (F-421: bounded and recorded, like any tick) — */
     const index = await listItemIds(deps.store, agentId);
     if (!index.ok) { note("(agent)", "index_read_failed"); return await finish("index_read_failed"); }
-    const selfAccountId = await deps.selfAccountId();
+    /* — THE IDENTITY, RESOLVED ONCE FOR THE WHOLE PASS (F-451) — */
+    //
+    // Three gates (freshness, quiet, anti-pile-up) and `isOwed` all turn on telling our
+    // comments from theirs, and each of them used to ask separately. Asked once here,
+    // memoised for five minutes in the dep, and — the half that was missing — a FAULT
+    // STOPS THE PASS. Speech whose brakes cannot be evaluated does not happen; a receipt
+    // says so, so the silence is loud somewhere (§3.14 law 8).
+    const self = await deps.selfAccountId();
+    const selfAccountId = self && self.ok ? self.accountId : null;
+    if (!self || self.ok !== true || !selfAccountId) {
+      note("(agent)", "self_unknown");
+      return await finish("the app's own account could not be read, so no post gate could tell our comments from a human's");
+    }
     const voice = isObj(va.persona) && isObj(va.persona.voice) ? va.persona.voice : {};
     const writeScope = vaWriteScope(va);
     const minGap = guard(va, "minPostGapMinutes");
@@ -1347,6 +1368,13 @@ const verifyPostedComment = async ({ deps, issueKey, commentId, wantPublic, now 
  */
 export const AI_BUDGET_CONCURRENCY = Object.freeze({ key: "ai-budget", limit: 2 });
 
+/** The app's own accountId (F-451). See `DEFAULT_DEPS.selfAccountId`. */
+export const SELF_MEMO_TTL_MS = 5 * 60 * 1000;
+let _selfMemo = null;
+let _selfMemoAt = 0;
+/** Tests only — a module-level memo outlives a test case otherwise. */
+export const resetSelfMemo = () => { _selfMemo = null; _selfMemoAt = 0; };
+
 let _store = null;
 const lazyStore = () => {
   if (!_store) {
@@ -1478,12 +1506,24 @@ export const DEFAULT_DEPS = {
    * direction (it blocks), so a failure here costs silence, never a double reply.
    */
   selfAccountId: async () => {
+    // MEMOISED FOR FIVE MINUTES (F-451). The app's own accountId changes never; asking
+    // `/myself` once per post pass was one REST call inside a budget that already has to
+    // re-read every candidate issue. Module-level, like the provider memo and the tenant
+    // project-key memo in src/index.js — the established shape in this codebase for a
+    // per-site fact that does not move.
+    if (_selfMemo && Date.now() - _selfMemoAt < SELF_MEMO_TTL_MS) return { ..._selfMemo, cached: true };
     const { default: api, route } = await import("@forge/api");
     try {
       const res = await api.asApp().requestJira(route`/rest/api/3/myself`);
-      if (!res.ok) return null;
-      return ((await res.json()) || {}).accountId || null;
-    } catch (e) { return null; }
+      if (!res.ok) return { ok: false, accountId: null, reason: `myself:${res.status}` };
+      const accountId = ((await res.json()) || {}).accountId || null;
+      if (!accountId) return { ok: false, accountId: null, reason: "myself:no_account_id" };
+      // ONLY A SUCCESS IS MEMOISED. Caching "I could not read it" for five minutes would
+      // turn one throttled call into five minutes of an agent that cannot speak.
+      _selfMemo = { ok: true, accountId };
+      _selfMemoAt = Date.now();
+      return { ok: true, accountId, cached: false };
+    } catch (e) { return { ok: false, accountId: null, reason: String((e && e.message) || e).slice(0, 120) }; }
   },
 
   /**

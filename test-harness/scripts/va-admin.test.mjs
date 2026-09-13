@@ -873,6 +873,36 @@ let agentId = null;
   ok(st.lastTick === null || typeof st.lastTick === "string", "lastTick is an ISO instant or null, never an object");
   ok(st.staged === null || typeof st.staged === "number", "staged is a COUNT or null");
   has(st.health, ["ok", "failedTicks", "reason"], "getVaStatus.health");
+
+  /* ── F-524 — THE HEALTH BANNER NEVER CARRIES ENGINE OR EXCEPTION TEXT ──────
+     `compactionGateReason` flowed raw into `recordTickHealth` -> `lastReason` ->
+     `agentStatus` -> the banner, so `compaction:compaction_failed:<80 characters of the
+     provider or KVS exception>` reached the admin verbatim, on the one VA row whose
+     content has no TTL. The normalisation is at the ONE write (`splitHealthReason`,
+     src/va-ledger.js); this asserts what actually reaches the tab. */
+  {
+    const { recordTickHealth } = await import("../../src/va-ledger.js");
+    const boom = "TypeError: Cannot read properties of undefined (reading 'choices')";
+    for (let i = 0; i < 3; i++) {
+      await recordTickHealth(storage, agentId, false, { reason: `compaction:compaction_failed:${boom}` });
+    }
+    const row = await storage.get(`va_health:${agentId}`);
+    ok(row && row.lastReason === "compaction:compaction_failed",
+      `F-524 — the health row stores the base id alone (got ${JSON.stringify(row && row.lastReason)})`);
+    ok(row && /Cannot read properties/.test(String(row.lastDetail)),
+      `F-524 — …with the fault kept in lastDetail, where an owner can still read it (got ${JSON.stringify(row && row.lastDetail)})`);
+    const sick = await call("getVaStatus", { jobId: agentId });
+    ok(sick.success && sick.health && sick.health.ok === false, "F-524 — three failures raise the banner");
+    ok(sick.health.reason === "compaction:compaction_failed",
+      `F-524 — …and what the tab is handed is the ID (got ${JSON.stringify(sick.health.reason)})`);
+    const asText = JSON.stringify(sick.health);
+    ok(!/TypeError|Cannot read properties|choices/.test(asText),
+      `F-524 — NO exception text reaches the tab, anywhere in the health object (got ${asText})`);
+    ok(!Object.prototype.hasOwnProperty.call(sick.health, "lastDetail") && !/lastDetail/.test(asText),
+      "F-524 — and the detail field is not projected at all");
+    // The counter goes back to healthy so the sections after this one are unaffected.
+    await recordTickHealth(storage, agentId, true, {});
+  }
   ok(st.receipts.length > 0, "there is at least one receipt to shape-check");
   has(st.receipts[0], ["at", "phase", "ok", "swept", "worked", "posted", "error", "skipped"], "a receipt");
   ok(["prepare", "post"].includes(st.receipts[0].phase), "…whose phase is prepare or post");

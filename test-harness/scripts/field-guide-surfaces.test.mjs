@@ -216,6 +216,45 @@ ok(guide.block.length > 0, "control: the agent audience selects a non-empty guid
     "a path that carries no guide reports NOTHING, not an invented empty list");
 }
 
+// --- B4b: F-597 — THE TOP-UP IS PART OF WHAT REACHED THE MODEL ---
+/*
+ * F-586 gave a later turn a field-guide top-up and a `reason` for it (`new`, `none-new`,
+ * `budget`) — and nothing read either, so `budget` ("the byte budget is squeezing the
+ * guide out", the value F-586 says is worth acting on) was unreadable, and the receipt
+ * named the turn-1 PINNED sections while staying silent about the sections this turn
+ * actually put in front of the model.
+ */
+{
+  const withExtra = summarizeKnowledge({
+    fieldGuideBlock: guide.block,
+    fieldGuideSections: guide.sectionIds,
+    fieldGuideExtraSections: ["pack/sec-adf", "pack/sec-storage"],
+    fieldGuideExtraReason: "new",
+  });
+  ok(withExtra.fieldGuideExtra && withExtra.fieldGuideExtra.reason === "new",
+    `F-597 — the receipt states WHY the top-up is what it is (got ${JSON.stringify(withExtra.fieldGuideExtra)})`);
+  ok(JSON.stringify(withExtra.fieldGuideExtra.sections) === JSON.stringify(["pack/sec-adf", "pack/sec-storage"]),
+    "F-597 — …and names the sections the top-up added, so a reviewer knows which guide text produced the answer");
+  ok(JSON.stringify(withExtra.fieldGuideSections) === JSON.stringify(guide.sectionIds),
+    "F-597 — …without disturbing the PINNED sections, which are a different statement");
+
+  // The reason F-586 calls worth acting on: a match that did not FIT. It carries no
+  // sections and must still be readable, or the squeeze stays invisible.
+  const squeezed = summarizeKnowledge({ fieldGuideBlock: guide.block, fieldGuideSections: guide.sectionIds, fieldGuideExtraReason: "budget" });
+  ok(squeezed.fieldGuideExtra.reason === "budget" && squeezed.fieldGuideExtra.sections.length === 0,
+    `F-597 — an empty top-up caused by the BUDGET is on the receipt, with no sections to name (got ${JSON.stringify(squeezed.fieldGuideExtra)})`);
+
+  // A FIRST turn has nothing to add to a guide it just chose. An invented `none-new`
+  // there would read as a top-up considered and declined rather than one never applied.
+  ok(summarizeKnowledge({ fieldGuideBlock: guide.block, fieldGuideSections: guide.sectionIds }).fieldGuideExtra === undefined,
+    "F-597 — a turn with no top-up reports NOTHING, the same rule the sections list follows");
+
+  // IDS AND COUNTS ONLY still holds for the new field.
+  const joinedExtra = JSON.stringify(withExtra);
+  ok(!joinedExtra.includes(FIELD_GUIDE_GUARD_SENTENCE) && !joinedExtra.includes(`<<<${FIELD_GUIDE_MARKER}`),
+    "F-597 — the top-up rides the receipt as IDS ONLY, like everything else on it");
+}
+
 // --- B5: the log line grows without breaking the wordings the live drivers match on ---
 {
   const lines = [];

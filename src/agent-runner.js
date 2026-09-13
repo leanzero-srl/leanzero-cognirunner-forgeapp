@@ -323,6 +323,34 @@ export const summarizeKnowledge = (knowledge) => {
   if (Array.isArray(knowledge && knowledge.fieldGuideSections)) {
     out.fieldGuideSections = knowledge.fieldGuideSections.map((s) => String(s)).slice(0, 20);
   }
+  /*
+   * F-597 — THE TOP-UP IS PART OF WHAT REACHED THE MODEL, SO IT IS PART OF THE RECEIPT.
+   *
+   * F-586 gave a later Coder turn a field-guide TOP-UP — sections the thread's pinned
+   * guide does not already carry, emitted after the stable prefix — and a `reason` saying
+   * why the top-up is what it is (`new`, `none-new`, `budget`). Nothing consumed either:
+   * both were set on an in-memory object and dropped, so `budget` — the one value F-586
+   * calls "worth acting on", the guide being squeezed out by its own byte budget — was
+   * unreadable anywhere, and the receipt named the turn-1 pinned sections while staying
+   * silent about the sections this turn actually put in front of the model.
+   *
+   * It rides the SAME object as `fieldGuideSections`, in the same ids-and-counts-only
+   * shape, so every surface that already renders a receipt gets it without a second
+   * projection: the agent turn record, the Coder thread row and the Coder task result
+   * (`out.knowledge`, src/coder-engine.js) are one object between them.
+   *
+   * PRESENT ONLY WHEN A BUILDER SUPPLIES A REASON. A first turn has nothing to add to a
+   * guide it just chose, and an invented `{reason:"none-new"}` there would read as a
+   * top-up that was considered and declined rather than one that never applied.
+   */
+  if (knowledge && knowledge.fieldGuideExtraReason) {
+    out.fieldGuideExtra = {
+      reason: String(knowledge.fieldGuideExtraReason),
+      sections: Array.isArray(knowledge.fieldGuideExtraSections)
+        ? knowledge.fieldGuideExtraSections.map((s) => String(s)).slice(0, 20)
+        : [],
+    };
+  }
   return out;
 };
 

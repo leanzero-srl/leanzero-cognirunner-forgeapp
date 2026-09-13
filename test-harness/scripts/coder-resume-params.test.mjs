@@ -290,6 +290,25 @@ await call("confirmCoderTicket", { ticketId: "tkt_5", decision: "skip" });
   ok(k1.fieldGuideExtraReason === undefined,
     "a FIRST turn has no top-up at all, so it has no reason to state either");
 
+  /* F-597 — AND THE REASON REACHES A SURFACE.
+   *
+   * Everything above was asserted against an in-memory object that nothing consumed:
+   * `fieldGuideExtraReason` and `fieldGuideExtraSections` were set by the builder and
+   * dropped, so `budget` was unreadable and the receipt named the PINNED sections while
+   * staying silent about what the top-up actually put in front of the model. The same
+   * `summarizeKnowledge` the turn record and the Coder task result are built from must
+   * carry both — asserted here against the REAL builder's output, not a fixture. */
+  {
+    const { summarizeKnowledge } = await import("../../src/agent-runner.js");
+    const receipt = summarizeKnowledge(k2);
+    ok(receipt && receipt.fieldGuideExtra && receipt.fieldGuideExtra.reason === k2.fieldGuideExtraReason,
+      `F-597: the turn's receipt carries the top-up REASON the builder decided (got ${JSON.stringify(receipt && receipt.fieldGuideExtra)})`);
+    ok(JSON.stringify(receipt.fieldGuideExtra.sections) === JSON.stringify((k2.fieldGuideExtraSections || []).map(String)),
+      "F-597: …and the sections the top-up added, beside the pinned ones");
+    ok(summarizeKnowledge(k1).fieldGuideExtra === undefined,
+      "F-597: a first turn's receipt reports no top-up rather than an invented empty one");
+  }
+
   // A DIFFERENT thread on the same issue is free to choose differently: the guarantee is
   // per thread, and pinning it per issue would be a different (wrong) rule.
   const kOther = await __coderKnowledgeInternals.buildCoderKnowledge({

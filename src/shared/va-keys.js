@@ -231,6 +231,40 @@ export const VA_PURGED_TTL = days(3);
 export const vaPurgedKey = (agent) => assertKvsKey(`va_purged:${part(agent)}`);
 
 /**
+ * F-595 — THE TOMBSTONE IS ALSO THE ONLY RECEIPT A MID-TURN PURGE CAN HAVE.
+ *
+ * A turn that was already past its entry check when the delete landed can have written
+ * to Jira, to Confluence or to a repository before the cancellation caught it (F-571).
+ * Those writes are the one purge an admin must act on, and they had no durable carrier
+ * at all: every ledger writer refuses under this very tombstone (F-553, and that is the
+ * point, not a gap), `recordTickHealth` included, so the only survivors were the queue
+ * task result and a log line — neither of which any surface reads.
+ *
+ * This row is the exception, and it is the ONLY row that can be: it is written FIRST by
+ * the purge, it is the thing every other writer refuses under, and it already outlives
+ * the flight by construction. So the purged turn APPENDS what it landed to the marker
+ * itself rather than re-opening a ledger write, and `listRecentPurges` (src/va-admin.js)
+ * projects it for the Agents tab. Appending here creates no orphan: there is nothing to
+ * resurrect, the row is already there, and a turn that finds NO tombstone writes nothing
+ * — a cleared tombstone means a re-created agent, and re-stamping one would mute it.
+ *
+ * TWO BOUNDS, because a row nobody can read is no better than no row. At most
+ * `VA_PURGED_TURNS_MAX` turns are kept (newest first — an older entry is a turn an
+ * admin has had longer to see), and at most `VA_PURGED_WRITES_PER_TURN` named writes
+ * per turn. In practice a purge races one or two turns; the caps are what keep a
+ * pathological case inside the 240 KiB value limit rather than losing the whole row.
+ */
+export const VA_PURGED_TURNS_MAX = 20;
+export const VA_PURGED_WRITES_PER_TURN = 20;
+
+/**
+ * The tombstone prefix, for the admin projection. A PREFIX, so it is not asserted —
+ * `assertKvsKey` checks a whole key (the rule `vaTickPrefix` states) — and it lives
+ * beside the builder so the read side cannot retype what the write side built.
+ */
+export const vaPurgedPrefix = () => "va_purged:";
+
+/**
  * F-575 — THE SETTLE WINDOW: how long after a tombstone is stamped no clear may happen.
  *
  * THE NUMBER LIVES HERE, NOT IN `va-config.js`, for the `VA_COMPACT_BACKOFF_TTL` reason
@@ -268,6 +302,42 @@ export const VA_PURGE_SETTLE_MS = 5 * 60 * 1000;
  * a scan against a misspelt prefix finds nothing and reads as "no turn is running",
  * which is the proven-negative trap this whole area exists to avoid.
  */
+/**
+ * F-596 — `va_running:{agent}` `{newestTakeAt}`. THE O(1) SUCCESSOR TO THE CLAIM SCAN.
+ *
+ * The scan the prefixes below feed exists to answer ONE question — "could a turn of this
+ * agent still be running?" — and it answers it by walking a space whose size nobody
+ * controls. F-585 bounded that walk at 2000 rows per prefix and graded truncation as
+ * BLOCKING, which was right; the arithmetic beside it was not. `va_exec` rows are kept
+ * for `VA_CLAIM_TTL` and are NOT released on success, so a continuously-working agent at
+ * the DEFAULT 5 items per 5-minute tick leaves 5 x 288 x 2 = 2 880 of them — past the cap
+ * on an ORDINARY busy agent, not a pathological one. A deleted-and-re-created busy agent
+ * (the documented recovery for a mis-scoped agent) therefore truncated on every tick and
+ * stayed mute for up to two days, told only "purge still settling".
+ *
+ * The scan was always answering a MAXIMUM with a full enumeration. This row carries the
+ * maximum directly: the claim taker stamps `newestTakeAt` on every successful take, so
+ * one read of one key says when this agent last began anything. Older than the settle
+ * window means nothing it started can still be running — the same proof the window
+ * itself rests on (a turn is bounded by the consumer's 120 s), applied to a real instant
+ * instead of to a count of rows.
+ *
+ * THE TTL IS `VA_CLAIM_TTL`, not a number of its own: the row's whole job is to summarise
+ * the claim rows, and a summary that outlived what it summarises would answer for a space
+ * that no longer exists.
+ *
+ * IT IS NOT WRITTEN UNDER A TOMBSTONE GUARD, deliberately. The one case the settle window
+ * cannot see is a turn that got past the entry check because its tombstone read FAULTED;
+ * guarding this write would blind the marker to exactly that turn, which is the only turn
+ * the corroboration was ever for. Like the claim rows it summarises, it is left behind by
+ * a purge and aged out by its TTL.
+ *
+ * ABSENT MEANS "ASK THE SCAN" (legacy agents, and a marker write that failed), never
+ * "nothing is running": `clearPurgeTombstone` falls back to the paginated walk, with
+ * F-585's truncation rule intact.
+ */
+export const vaRunningKey = (agent) => assertKvsKey(`va_running:${part(agent)}`);
+
 export const vaExecPrefix = (agent) => `va_exec:${part(agent)}:`;
 export const vaPostPrefix = (agent) => `va_post:${part(agent)}:`;
 export const vaCompactPrefix = (agent) => `va_compact:${part(agent)}:`;

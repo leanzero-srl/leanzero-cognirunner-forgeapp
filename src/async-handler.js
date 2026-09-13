@@ -1509,6 +1509,50 @@ const executeCoderTurn = async (params, taskId) => {
   return out;
 };
 
+/* ── THE VIRTUAL ADMINISTRATOR'S THREE TASKS (1.5 commit 3) ─────────────────
+ *
+ * Thin. Every one of them loads the job, refuses anything that is not a VA, and hands
+ * off to `src/virtual-admin.js` — the engine owns the claims, the gates and the
+ * receipts, and a second copy of any of that HERE is the split the FRAME forbids.
+ *
+ * A DELETED OR DISABLED AGENT IS A SKIP, NOT A FAILURE: the queue holds work for up to
+ * fifteen minutes, and an admin who paused or deleted an agent in that window has said
+ * what they want. `isVaJob` is the ONE predicate that answers "is this a VA".
+ */
+const loadVaJob = async (jobId) => {
+  const { getJob } = await import("./scheduled-jobs.js");
+  const { isVaJob } = await import("./virtual-admin.js");
+  const job = await getJob(jobId);
+  if (!job) return { skip: "agent deleted" };
+  if (!isVaJob(job)) return { skip: "not a virtual administrator" };
+  if (job.enabled === false) return { skip: "agent disabled" };
+  return { job };
+};
+
+const executeVaTickTask = async (params) => {
+  const { job, skip } = await loadVaJob(params?.jobId || params?.agent);
+  if (skip) return { skipped: true, reason: skip };
+  const { runVaTick, primeDeps } = await import("./virtual-admin.js");
+  await primeDeps();
+  return runVaTick({ job, tickId: params?.tickId || null });
+};
+
+const executeVaItemTask = async (params) => {
+  const { job, skip } = await loadVaJob(params?.jobId || params?.agent);
+  if (skip) return { skipped: true, reason: skip };
+  const { runVaItem, primeDeps } = await import("./virtual-admin.js");
+  await primeDeps();
+  return runVaItem({ agent: job, issueKey: params?.issueKey, tickId: params?.tickId });
+};
+
+const executeVaPostTask = async (params) => {
+  const { job, skip } = await loadVaJob(params?.jobId || params?.agent);
+  if (skip) return { skipped: true, reason: skip };
+  const { runVaPost, primeDeps } = await import("./virtual-admin.js");
+  await primeDeps();
+  return runVaPost({ agent: job, tickId: params?.tickId || null });
+};
+
 // === Task registry — add new async task types here ===
 const TASK_HANDLERS = {
   "probe": executeProbe,
@@ -1534,6 +1578,18 @@ const TASK_HANDLERS = {
   [PIPELINE_TASK]: executePipelineSetup,
   // 1.4 commit 8 — an in-issue Coder turn. LONG QUEUE ONLY (see LONG_QUEUE_ONLY_TASKS).
   "coder": executeCoderTurn,
+  // 1.5 — the Virtual Administrator's three tasks. They reach the model gate through
+  // `runGatedTask` like every other row here: `va-item` and `va-post` are in
+  // TOKEN_SPENDING_TASK_TYPES (8000 / 200) and are paced; `va-tick` is in
+  // NON_AI_TASK_TYPES and is not, because a sweep calls nothing.
+  //
+  // `va-item` is deliberately NOT in LONG_QUEUE_ONLY_TASKS: an item with a Confluence,
+  // git or web power is PUSHED to the long queue by the producer (`itemQueueFor`), and a
+  // plain one belongs on the 120 s consumer. Naming it long-only would force every VA
+  // onto the 900 s consumer whether it needed it or not.
+  "va-tick": executeVaTickTask,
+  "va-item": executeVaItemTask,
+  "va-post": executeVaPostTask,
   // 1.5 probes P3/P4 — DEV-ONLY reach probe; the handler refuses when HARNESS_SECRET
   // is absent (production), and only the HARNESS_SECRET-gated test hook produces it.
   [HARNESS_PROBE_TASK]: executeHarnessProbe,
@@ -1567,7 +1623,11 @@ const LONG_QUEUE_EVENTS = new WeakSet();
 // polls them. gitreview writes its OWN execution-log entry on every outcome (see
 // executeGitReview's single exit), so it is deliberately absent from UNPOLLED_LOG_TYPE
 // below: adding it there would double-log every failure.
-const UNPOLLED_TASKS = new Set(["postfunction", "memory_distill", "listener", "probe", "gitreview", "git-event", PIPELINE_TASK, HARNESS_PROBE_TASK]);
+// The three VA tasks are produced by the SCHEDULER, not by a browser, and nothing polls
+// them: their evidence is the `va_tick` RECEIPT the engine writes on every phase (F-421),
+// which the Agents tab reads directly. An `async_task:*` status row for them would be a
+// row nobody ever deletes, because `getAsyncTaskResult` only cleans up what is polled.
+const UNPOLLED_TASKS = new Set(["postfunction", "memory_distill", "listener", "probe", "gitreview", "git-event", PIPELINE_TASK, HARNESS_PROBE_TASK, "va-tick", "va-item", "va-post"]);
 
 // F-119 — which UNPOLLED task types write an execution-log entry when they FAIL, and
 // under WHICH log type. The value must be a type the UI badge maps already know

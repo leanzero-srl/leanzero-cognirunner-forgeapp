@@ -68,22 +68,34 @@
 
 import storage from "@forge/kvs";
 import { createGitProvider, GitProviderError, GIT_PROVIDER_KINDS } from "./git-providers.js";
-import { safeKeyPart, isKeyConflict } from "./shared/kvs-keys.js";
+import { safeKeyPart, isKeyConflict, assertKvsKey } from "./shared/kvs-keys.js";
 // F-310 - the repo-id canonical form has ONE home, and it is a shared/ module because
 // the admin panel needs the same answer and cannot import this file (it loads @forge/kvs).
-import { normalizeRepoId } from "./shared/git-ids.js";
+import { normalizeRepoId, gitHookSecretKey } from "./shared/git-ids.js";
 
 /* ===== KEY NAMES — the ONE home. Never retype one of these strings. ===== */
 
 /** Index of connection ids (a short array; the rows themselves are separate). */
 export const GIT_CONN_INDEX_KEY = "git_conn_index";
-/** The connection ROW. Never contains a token. */
-export const gitConnKey = (id) => `git_conn:${id}`;
+/**
+ * The connection ROW. Never contains a token.
+ *
+ * F-348 — the id goes through `safeKeyPart` and the result through `assertKvsKey` even
+ * though the id is app-minted (`randomId("gc_")`, and `plantHarnessConnection` takes a
+ * `[A-Za-z0-9_-]{1,64}` one): the builder, not its callers, is where key legality is
+ * decided, and a later caller that hands it something else must not be able to produce a
+ * key the platform refuses. A no-op for every id ever minted, so nothing migrates.
+ */
+export const gitConnKey = (id) => assertKvsKey(`git_conn:${safeKeyPart(id)}`);
 /** The connection's CREDENTIAL. Its own key so a row read can never carry it. */
-export const gitConnSecretKey = (id) => `git_conn_secret:${id}`;
-/** Per-repo webhook signing secret. Per-repo, not per-connection: a leaked
- *  secret on one repo must not let an attacker forge deliveries for another. */
-export const gitHookSecretKey = (connId, repoId) => `git_hook_secret:${connId}:${normalizeRepoId(repoId)}`;
+export const gitConnSecretKey = (id) => assertKvsKey(`git_conn_secret:${safeKeyPart(id)}`);
+/**
+ * Per-repo webhook signing secret. F-346 — the SHAPE now lives in
+ * `src/shared/git-ids.js` beside the delivery-claim keys, because a repo id cannot be
+ * embedded raw (Forge KVS refuses "/") and that rule may not have two homes. Re-exported
+ * here so every existing importer and the test hook keep one name for it.
+ */
+export { gitHookSecretKey };
 /** The customer-supplied Atlassian identity used to deploy their Forge app. */
 export const FORGE_IDENTITY_KEY = "COGNIRUNNER_FORGE_IDENTITY";
 
@@ -103,7 +115,7 @@ export const CREDENTIAL_ROTATION_TASK = "gitcredrotate";
  *
  * `forge-identity` has no id of its own and uses the literal as its slot.
  */
-export const gitRotateClaimKey = (targetId) => `git_rotate:${safeKeyPart(targetId || "forge-identity")}`;
+export const gitRotateClaimKey = (targetId) => assertKvsKey(`git_rotate:${safeKeyPart(targetId || "forge-identity")}`);
 
 /** Safety net only — the lock is released on EVERY exit, success or failure. */
 const ROTATE_LOCK_TTL = { ttl: { value: 10, unit: "MINUTES" } };

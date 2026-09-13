@@ -21,15 +21,15 @@
  * is a key part that can be shaped (F-334). Sanitising inside the builder is also what
  * keeps the webhook's claim and the consumer's release on the SAME key.
  */
-import { safeKeyPart } from "./kvs-keys.js";
+import { safeKeyPart, assertKvsKey } from "./kvs-keys.js";
 
 const part = (s) => safeKeyPart(s);
 
 /** The 24 h idempotency claim: taken at accept, released when a dispatch throws. */
-export const gitDeliveryClaimKey = (connectionId, deliveryId) => `git_delivery:${part(connectionId)}:${part(deliveryId)}`;
+export const gitDeliveryClaimKey = (connectionId, deliveryId) => assertKvsKey(`git_delivery:${part(connectionId)}:${part(deliveryId)}`);
 
 /** The dispatch-attempt counter, so a poison delivery cannot retry forever. */
-export const gitDeliveryAttemptKey = (connectionId, deliveryId) => `git_delivery_try:${part(connectionId)}:${part(deliveryId)}`;
+export const gitDeliveryAttemptKey = (connectionId, deliveryId) => assertKvsKey(`git_delivery_try:${part(connectionId)}:${part(deliveryId)}`);
 
 /**
  * The platform retries a thrown consumer event up to four times. A delivery that has
@@ -111,3 +111,65 @@ export const GIT_PROVIDER_KIND_META = {
 export const gitProviderKindMeta = (kind) =>
   GIT_PROVIDER_KIND_META[String(kind || "").toLowerCase()]
   || { id: String(kind || "unknown"), label: String(kind || "Unknown") };
+
+/* ===== F-346 / F-348 — EVERY KVS KEY SHAPE THAT CARRIES A REPO ID LIVES HERE ===== */
+
+/** 32-bit FNV-1a, hex, 8 chars. Dependency-free and stable across runtimes — it is an
+ *  identity suffix, never a security primitive. */
+const fnv1a32 = (s) => {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i += 1) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+  return h.toString(16).padStart(8, "0");
+};
+
+/**
+ * THE ONE WAY a repository id becomes part of a KVS key (F-346).
+ *
+ * Forge KVS refuses "/" in a key (`assertKvsKey` carries the platform pattern), so the
+ * canonical repo id "owner/name" can never be embedded raw — the live proof was that the
+ * per-repo hook secret could not be written at all and the whole inbound git path
+ * answered 503.
+ *
+ * THE COLLISION CHOICE: sanitising alone is LOSSY — `safeKeyPart` maps every illegal
+ * character to "-", so "a/b-c" and "a-b/c" would land on the same key and one repo's
+ * secret would be read for another repo. So the part is TWO pieces:
+ *   1. a readable body: "/" → "#" (legal in a KVS key, and no provider allows "#" in an
+ *      owner or repo name, so it reads back unambiguously for a well-formed id), then
+ *      `safeKeyPart` for anything else and a clamp to 80 chars;
+ *   2. a "." separated 8-hex FNV-1a of the RAW canonical id, which is what actually makes
+ *      the part injective for hostile or over-long ids where piece 1 is lossy.
+ * Readability comes from piece 1; correctness comes from piece 2. Never drop the hash.
+ *
+ * The raw canonical `normalizeRepoId(...)` stays the comparison VALUE everywhere (the
+ * connection allow-list, the webhook envelope, a listener's `filters.repos`) — only KEY
+ * parts change shape. There is nothing to migrate: no row was ever written under the old
+ * shape, because the platform refused every one of them.
+ */
+export const repoKeyPart = (repoId) => {
+  const canonical = normalizeRepoId(repoId);
+  return `${safeKeyPart(canonical.replace(/\//g, "#")).slice(0, 80)}.${fnv1a32(canonical)}`;
+};
+
+/** Per-repo webhook signing secret. Per-repo, not per-connection: a leaked secret on one
+ *  repo must not let an attacker forge deliveries for another. */
+export const gitHookSecretKey = (connId, repoId) =>
+  assertKvsKey(`git_hook_secret:${part(connId)}:${repoKeyPart(repoId)}`);
+
+/** The per-repo pipeline record. Bounded; never carries a secret. */
+export const gitPipelineKey = (connId, repoId) =>
+  assertKvsKey(`git_pipeline:${part(connId)}:${repoKeyPart(repoId)}`);
+
+/** The concurrency CLAIM for one pipeline setup run (FAIL_IF_EXISTS, 10 minutes). */
+export const gitPipelineClaimKey = (connId, repoId) =>
+  assertKvsKey(`git_pipeline_exec:${part(connId)}:${repoKeyPart(repoId)}`);
+
+export const REVIEW_CLAIM_PREFIX = "git_review:";
+export const REVIEW_RATE_PREFIX = "git_review_rate:";
+
+/** The PR-review claim identity: one review per connection, repo, PR and head sha. */
+export const reviewClaimKey = (connectionId, repoId, prNumber, headSha) =>
+  assertKvsKey(`${REVIEW_CLAIM_PREFIX}${part(connectionId) || "none"}:${repoKeyPart(repoId)}:${part(prNumber)}:${part(headSha) || "nosha"}`);
+
+/** One slot of the reviews-per-repo-per-clock-hour ledger (F-285). */
+export const reviewRateKey = (connectionId, repoId, nowMs = Date.now(), slot = 0) =>
+  assertKvsKey(`${REVIEW_RATE_PREFIX}${part(connectionId) || "none"}:${repoKeyPart(repoId)}:${Math.floor(nowMs / 3600000)}:${slot}`);

@@ -86,6 +86,19 @@ const CODER_CLAIM_TTL = { ttl: { value: CODER_CLAIM_TTL_MINUTES, unit: "MINUTES"
 /** A consent ticket the user never answers expires. 24 h, the same window a git delivery claim uses. */
 export const CODER_TICKET_TTL = { ttl: { value: 24, unit: "HOURS" } };
 
+/**
+ * THE ONE PREDICATE that decides whether a turn has a human in the loop (1.4 commit 12).
+ *
+ * `triggerSource` is the task payload's PROVENANCE label — "panel" for the issue panel,
+ * "postfunction" for a workflow post-function. `headless` is the ENGINE's flag. They must
+ * never be able to disagree, so the consumer derives one from the other HERE rather than
+ * each producer setting both and one of them forgetting. Anything that is not the
+ * interactive panel is headless: an unknown producer gets the restrictive answer.
+ */
+export const CODER_INTERACTIVE_TRIGGER = "panel";
+export const isHeadlessTrigger = (triggerSource) =>
+  triggerSource != null && String(triggerSource) !== CODER_INTERACTIVE_TRIGGER;
+
 /** Rounds are capped 1–8 like every other agent surface (MAX_AGENT_ROUNDS). */
 export const CODER_MAX_ROUNDS = MAX_AGENT_ROUNDS;
 export const CODER_DEFAULT_ROUNDS = 6;
@@ -467,8 +480,24 @@ const makeTicketId = () => `tkt_${Date.now().toString(36)}_${Math.random().toStr
  * @param threadId      the thread inside that issue.
  * @param userMessage   what the user just typed (clamped, stored verbatim).
  * @param accountId     WHO is asking. Must equal the thread's `ownerAccountId`.
+ * @param headless      TRUE when NOBODY is watching — a workflow post-function fired this
+ *                      turn, not a person in the issue panel (1.4 commit 12). It changes
+ *                      exactly two things and nothing else:
+ *                        · the gate context's `triggerSource` becomes "external", so a
+ *                          `dangerous` action is refused whatever was saved and a
+ *                          `confirm` action survives only on an ADMIN-saved rule;
+ *                        · the CONSENT TICKET PATH IS GONE. There is no one to answer a
+ *                          ticket, and a ticket nobody answers is a turn that silently
+ *                          did nothing, forever. Instead: a `confirm` action the gate
+ *                          ALLOWS executes directly, and one the gate REFUSED ends the
+ *                          turn with `endedBy:"halt"` and `haltReason` naming the action
+ *                          and the reason. Never a ticket, never a silent success.
+ * @param allowedActions  Optional CEILING on what may be offered (the post-function's
+ *                      mode subset). The gate still runs on it, so the tool list is
+ *                      `ceiling ∩ verdict`. Omitted ⇒ every non-control action is offered
+ *                      to the gate, exactly as the panel does it.
  * @param deps          test seams only: { store, loadIndex, gitExecutor, ticketId }.
- * @returns {{success, awaiting?, ticket?, reply, actions, usage, endedBy, threadId}}
+ * @returns {{success, awaiting?, ticket?, reply, actions, usage, endedBy, haltReason?, threadId}}
  */
 export const runCoderTurn = async ({
   issueKey, threadId, userMessage, accountId,
@@ -476,6 +505,7 @@ export const runCoderTurn = async ({
   // distinguishable, because the thread row is the authority for simulation (F-360).
   simulation = undefined, connectionId = null, maxRounds = CODER_DEFAULT_ROUNDS,
   gateFacts = null, savedByRole = "editor", deadline = null, cancelToken = null,
+  headless = false, allowedActions = null,
   deps = {},
 } = {}) => {
   const store = deps.store || storage;
@@ -503,6 +533,7 @@ export const runCoderTurn = async ({
     return await runCoderTurnClaimed({
       key, thread, text, accountId, simulation, connectionId, maxRounds,
       gateFacts, savedByRole, deadline, cancelToken, store, deps,
+      headless: headless === true, allowedActions,
     });
   } catch (e) {
     // A refusal keeps its machine-readable fields (the resolver's `refusalFields` copies
@@ -518,6 +549,7 @@ export const runCoderTurn = async ({
 const runCoderTurnClaimed = async ({
   key, thread, text, accountId, simulation, connectionId, maxRounds,
   gateFacts, savedByRole, deadline, cancelToken, store, deps,
+  headless = false, allowedActions = null,
 }) => {
   const m = deps.loadIndex ? await deps.loadIndex() : await idx();
   const started = Date.now();
@@ -565,12 +597,29 @@ const runCoderTurnClaimed = async ({
   // The Coder is an INTERACTIVE surface: a human opened the chat and is waiting, so
   // `triggerSource` is null (not "external") and a `dangerous` action may be offered —
   // it still cannot execute without the consent ticket below.
-  const gate = gateFacts ? buildAgentGateContext({ ...gateFacts, triggerSource: null, savedByRole }) : undefined;
-  const offered = AGENT_ACTIONS.filter((a) => a.kind !== "control").map((a) => a.id);
+  //
+  // HEADLESS (1.4 commit 12) is the other half: a workflow post-function fired the turn,
+  // there is no human, so the trigger IS "external" and the gate drops every `dangerous`
+  // action and every `confirm` action on a rule an admin did not save. One flag, one
+  // place; nothing below re-decides it.
+  const gate = gateFacts
+    ? buildAgentGateContext({ ...gateFacts, triggerSource: headless ? "external" : null, savedByRole })
+    : undefined;
+  // The CEILING. A post-function offers only its mode's subset; the panel offers
+  // everything. Unknown and control ids are dropped here so the gate only ever sees real
+  // ones, and an EMPTY ceiling means "nothing" rather than "everything" — a caller that
+  // computed an empty subset meant it.
+  const ceiling = Array.isArray(allowedActions)
+    ? allowedActions.map((id) => getAgentAction(String(id))).filter((a) => a && a.kind !== "control").map((a) => a.id)
+    : AGENT_ACTIONS.filter((a) => a.kind !== "control").map((a) => a.id);
+  const offered = ceiling;
   const gated = gate === undefined
     ? { allowed: normalizeAllowedActions(offered), refused: [] }
     : normalizeAllowedActions(offered, gate);
   const allowed = gated.allowed;
+  // Why each id was dropped, so a headless halt can NAME the cause instead of saying
+  // "not allowed" — the thing an admin reading the execution log has to act on.
+  const refusedBy = new Map((gated.refused || []).map((r) => [r.id, r.reason]));
   const tools = toolDefinitionsFor(allowed, { pregated: true });
 
   const apiKey = await m.getOpenAIKey();
@@ -620,11 +669,39 @@ const runCoderTurnClaimed = async ({
     // the admin relied on never ran. It runs here, through the SAME predicate the
     // dispatcher uses (src/agent-runner.js), so a refused action gets exactly the refusal
     // `dispatch` would have given and no ticket row is ever created for it.
+    // HEADLESS: THE TICKET PATH IS A REFUSAL (1.4 commit 12). Checked BEFORE the
+    // allow-list assert, because the assert throws a tool error the model would simply
+    // retry, and a post-function turn has nobody to answer a ticket either way. So:
+    //   · a `confirm` action the gate ALLOWED (admin-saved rule) falls through to
+    //     `dispatch` and executes — that is what the admin armed;
+    //   · a `confirm` action the gate REFUSED ends the turn, by name, right here.
+    // FAIL CLOSED: the write never happens and the turn never reports success.
+    if (headless) {
+      const def = getAgentAction(name);
+      if (def && def.confirm === true && !allowed.includes(name)) {
+        const why = agentActionRefusalText(refusedBy.get(name) || "needs-admin");
+        log(`HEADLESS REFUSAL ${name}: ${why}`);
+        return {
+          __agentHalt: {
+            reason: `refused ${name}: ${why}`,
+            summary: `Stopped: this rule may not ${name.replace(/_/g, " ")} — ${why}.`,
+            toolResult: {
+              executed: false,
+              refused: true,
+              action: name,
+              message: `This run is headless (a workflow post-function started it), and ${name} is not permitted for this rule: ${why}. Nothing was performed. Stop — there is no one to ask and no way around it.`,
+            },
+          },
+        };
+      }
+    }
     const action = assertAgentActionAllowed(name, allowed);
     // EVERY external write is a `confirm` action, and a `confirm` action NEVER executes
     // inside a turn — not even in simulation, because the flow the user sees must be the
     // same one that runs for real. The ticket is the only path from here to a repository.
-    if (action && action.confirm === true) {
+    // (INTERACTIVE ONLY — see the headless block above: with no human there is no ticket,
+    // so an allowed `confirm` executes and a refused one has already halted the turn.)
+    if (action && action.confirm === true && !headless) {
       if (pendingTicket) {
         return { success: false, code: "awaiting_confirm", error: "You already asked the user to confirm a step. Wait for their answer." };
       }
@@ -751,6 +828,10 @@ const runCoderTurnClaimed = async ({
     workspace: workspaceResults,
   };
   if (loop.error) out.error = loop.error;
+  // WHY it halted, in words, for every caller. The panel already knows (it gets the
+  // ticket); a headless caller has nothing else to write into its execution log, and
+  // "the turn ended" with no reason is the silent success this commit exists to prevent.
+  if (loop.halt && loop.halt.reason) out.haltReason = String(loop.halt.reason).slice(0, 300);
   if (pendingTicket) {
     out.awaiting = "confirm";
     out.success = true;

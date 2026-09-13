@@ -270,6 +270,26 @@ await call("confirmCoderTicket", { ticketId: "tkt_5", decision: "skip" });
   });
   ok(k3.fieldGuideBlock === k1.fieldGuideBlock, "…even an empty message re-emits the thread's guide unchanged");
 
+  /* F-586 — AN EMPTY TOP-UP IS EXPLAINED, and it is not paid for twice.
+   *
+   * The extra selection used to run over the whole corpus and filter the thread's stored
+   * ids out afterwards, so pass 1 spent the pinned share (0.4 × what was left of the
+   * budget) re-buying sections the thread already carries verbatim and then discarded
+   * them. The extra block could therefore come back empty with the room fully spent and
+   * nothing on the turn saying which of the two reasons it was. The ids are now excluded
+   * BEFORE selection and pass 1 is off, and the turn states the reason either way.
+   */
+  ok(k2.fieldGuideExtraReason === "new" || k2.fieldGuideExtraReason === "none-new" || k2.fieldGuideExtraReason === "budget",
+    `every later turn states why its extra block is what it is (${k2.fieldGuideExtraReason})`);
+  ok((k2.fieldGuideExtraBlock ? "new" : k2.fieldGuideExtraReason) === k2.fieldGuideExtraReason,
+    "…and a block that exists is reported as `new`");
+  // A turn with NO words has nothing to score, so nothing can be new — the healthy case,
+  // and it must not be reported as a budget squeeze.
+  ok(k3.fieldGuideExtraBlock === undefined && k3.fieldGuideExtraReason === "none-new",
+    `THE FINDING: a turn that adds no sections says so (${k3.fieldGuideExtraReason})`);
+  ok(k1.fieldGuideExtraReason === undefined,
+    "a FIRST turn has no top-up at all, so it has no reason to state either");
+
   // A DIFFERENT thread on the same issue is free to choose differently: the guarantee is
   // per thread, and pinning it per issue would be a different (wrong) rule.
   const kOther = await __coderKnowledgeInternals.buildCoderKnowledge({

@@ -374,7 +374,12 @@ const matchesAudience = (section, audience) => {
  * `registry-limits.js` — ONE home for the numbers — and an explicit `maxBytes` may only
  * ever LOWER it; a caller cannot talk its way past the audience's ceiling, which is the
  * whole point of having one. `pins` may be passed explicitly; otherwise the pins the bake
- * emitted and the backend registered are used (none, until a pin map is registered).
+ * emitted and the backend registered are used (none, until a pin map is registered), and
+ * `pins: false` skips pass 1 altogether.
+ *
+ * `excludeIds` removes sections from the POOL before anything is scored or paid for — for a
+ * caller that is topping up a selection it already holds (F-586). Excluding after the fact
+ * spends the budget on sections the caller then throws away.
  *
  * `bytes` is the size of the BLOCK this selection will be emitted as — fence, guard
  * sentence, `### <title>` headings and separators included (F-551) — not the sum of the
@@ -397,20 +402,40 @@ export const selectKnowledge = ({
   maxBytes = null,
   sections = null,
   pins = null,
+  excludeIds = null,
 } = {}) => {
   const budget = Math.max(0, Math.min(
     fieldGuideBudget(audience),
     Number.isFinite(maxBytes) && maxBytes !== null ? Number(maxBytes) : Infinity,
   ));
 
+  /*
+   * F-586 — SECTIONS THE CALLER ALREADY HAS ARE NOT CANDIDATES.
+   *
+   * The Coder's per-turn "extra" selection asks for what a thread does NOT already carry
+   * (the guide it pinned on turn 1 is emitted verbatim — F-550). It used to select from the
+   * whole corpus and filter the stored ids out AFTERWARDS, which spent budget — and the
+   * whole pinned share — on sections that were then discarded, so the extra block could
+   * come back empty with the room fully "spent" and no receipt saying why.
+   *
+   * Excluding BEFORE selection is the only way the budget means what it says. It also keeps
+   * `skipped` honest: a section the caller already has never was a candidate, so it is
+   * neither chosen nor skipped.
+   */
+  const excluded = excludeIds ? new Set((Array.isArray(excludeIds) ? excludeIds : []).map(String)) : null;
   const pool = (Array.isArray(sections) ? sections.filter(isUsableSection) : REGISTERED)
-    .filter((s) => matchesAudience(s, audience));
+    .filter((s) => matchesAudience(s, audience))
+    .filter((s) => !excluded || !excluded.has(String(s.id)));
 
   const empty = { sections: [], sectionIds: [], bytes: 0, budget, audience, skipped: 0, pinnedBytes: 0 };
   if (!pool.length || budget <= 0) return empty;
 
   const byId = (a, b) => String(a.id).localeCompare(String(b.id));
-  const matchers = (Array.isArray(pins) ? pins : pinsForAudience(audience))
+  // `pins: false` turns pass 1 OFF entirely (F-586) — for a selection that is TOPPING UP a
+  // caller which already holds the audience's pinned core, where re-buying the pins is not
+  // a safety net but a way of spending the last of a lowered budget on nothing. Any other
+  // non-array value still means "use the audience's registered pins".
+  const matchers = (pins === false ? [] : (Array.isArray(pins) ? pins : pinsForAudience(audience)))
     .map(parsePin)
     .filter(Boolean);
   const isPinned = (s) => matchers.some((m) => pinMatchesSection(m, s));

@@ -1592,14 +1592,40 @@ const buildCoderKnowledge = async (p) => {
       // audience's budget so a thread can never spend more than one budget's worth at once.
       const room = Math.max(0, budget - (guide.bytes || 0));
       if (room > 0) {
-        const picked = await selectFieldGuide({ audience, text: String((p && p.message) || ""), maxBytes: room });
-        const known = new Set((guide.sectionIds || []).map((x) => String(x)));
-        const extra = (picked.sections || []).filter((sec) => !known.has(String(sec.id)));
-        const built = buildFieldGuideBlock(extra);
+        /*
+         * F-586 — THE TOP-UP ASKS FOR WHAT THE THREAD DOES NOT HAVE, and asks for it once.
+         *
+         * This used to select from the whole corpus against `room` and filter the stored ids
+         * out afterwards. Two things were wrong with that and they compounded:
+         *   - pass 1 spent the PINNED SHARE (0.4 × room) re-buying the audience's pins, which
+         *     a thread that pinned its guide on turn 1 already carries verbatim, and then they
+         *     were discarded — so on a thread whose stored guide had taken most of the budget,
+         *     the top-up could come back empty with every byte of `room` already "spent";
+         *   - because the pins were bought and dropped, `pinnedDropped`/`pinnedDemoted` on
+         *     this lowered budget described a shortfall that was not real, which is why this
+         *     path must NOT report one (F-576's `reportPinnedShortfall` is for selections that
+         *     actually own their pinned core; this one is a top-up on top of one).
+         * Excluding BEFORE selection and turning pass 1 off makes `room` mean what it says.
+         */
+        const known = (guide.sectionIds || []).map((x) => String(x));
+        const picked = await selectFieldGuide({
+          audience, text: String((p && p.message) || ""), maxBytes: room,
+          excludeIds: known, pins: false,
+        });
+        const built = buildFieldGuideBlock(picked.sections || []);
         if (built.block) {
           out.fieldGuideExtraBlock = built.block;
           out.fieldGuideExtraSections = built.sectionIds;
+          out.fieldGuideExtraReason = "new";
+        } else {
+          // AN EMPTY TOP-UP IS NOW EXPLAINED. It has exactly two causes and they mean
+          // opposite things to whoever reads the turn: "this thread already holds everything
+          // the question matched" is healthy, "something matched and the room was too small"
+          // is the budget squeezing the guide out and is worth acting on.
+          out.fieldGuideExtraReason = (picked.skipped || 0) > 0 ? "budget" : "none-new";
         }
+      } else {
+        out.fieldGuideExtraReason = "budget";
       }
     } else {
       // THE THREAD'S FIRST TURN — and the only turn that gets to choose. The query is this

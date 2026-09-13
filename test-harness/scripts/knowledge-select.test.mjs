@@ -136,6 +136,45 @@ ok(JSON.stringify(pinsForAudience("no-such-audience")) === "[]", "an unknown aud
     "the pinned bytes stay inside the pinned share");
 }
 
+/* 4c. F-586 — A TOP-UP SELECTION DOES NOT PAY FOR WHAT THE CALLER ALREADY HOLDS.
+ *
+ * The Coder's per-turn "extra" selection tops up a guide the thread pinned on turn 1. It
+ * used to select from the whole corpus against a LOWERED budget and filter the stored ids
+ * out afterwards, so pass 1 spent the pinned share on sections the caller already had and
+ * then discarded them — the extra block could come back empty with the room fully spent.
+ * `excludeIds` removes them from the POOL, and `pins: false` turns pass 1 off.
+ */
+{
+  const PIN = "cognirunner-sandbox-traps#simulation-intercepts-writes";
+  const full = selectKnowledge({ audience: "coder", text: "429 rate limit backoff", pins: [PIN] });
+  ok(full.sectionIds.length > 0, "the baseline selection is not empty");
+
+  const held = full.sectionIds.slice(0, 1);
+  const topUp = selectKnowledge({
+    audience: "coder", text: "429 rate limit backoff", pins: [PIN], excludeIds: held,
+  });
+  ok(!topUp.sectionIds.some((id) => held.includes(id)),
+    "THE FINDING: an excluded section is never selected, so its bytes are never spent");
+  ok(topUp.pinnedBytes >= 0 && topUp.bytes <= topUp.budget, "…and the budget still holds");
+
+  ok(full.pinnedBytes > 0, "pass 1 does buy the pins when it is on");
+  const passOneOff = selectKnowledge({
+    audience: "coder", text: "429 rate limit backoff", pins: false, excludeIds: held,
+  });
+  ok(passOneOff.pinnedBytes === 0, "`pins: false` spends nothing on pass 1");
+  ok(!passOneOff.sectionIds.some((id) => held.includes(id)), "…and still honours the exclusion");
+
+  // Excluding the WHOLE corpus is "the caller already has everything", not a budget
+  // problem: nothing is selected and nothing is reported as skipped, which is exactly what
+  // lets the Coder tell `none-new` from `budget`.
+  const allIds = getKnowledgeSections().map((s) => String(s.id));
+  const exhausted = selectKnowledge({
+    audience: "coder", text: "429 rate limit backoff", pins: false, excludeIds: allIds,
+  });
+  ok(exhausted.sectionIds.length === 0, "excluding every candidate selects nothing");
+  ok(exhausted.skipped === 0, "…and reports NOTHING skipped — an excluded section was never a candidate");
+}
+
 /* 5. A PACK PIN CANNOT EAT THE BUDGET, and a RANKED section always beats an unpinned
       alphabetical one. This is the F-428 regression: the pool below is ordered so that the
       alphabetically-first sections are irrelevant and the relevant one sorts last. */

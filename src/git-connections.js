@@ -799,9 +799,20 @@ export async function requestCredentialRotation(target, secret, { accountId } = 
  * The consumer half of a rotation. The ONLY writer that replaces a stored secret
  * in place.
  *
- * Verifies the NEW credential before it replaces the old one — a rotation to a
- * dead token would lock the tenant out of their own connection, so the check
- * happens BEFORE the side effect, like every other cap in this app.
+ * CONNECTION arm: verifies the NEW credential (whoami) before it replaces the
+ * old one — a rotation to a dead token would lock the tenant out of their own
+ * connection, so the check happens BEFORE the side effect, like every other cap
+ * in this app.
+ *
+ * FORGE-IDENTITY arm: NOT verified, and that is PARKED, not an oversight (F-293).
+ * Proving an Atlassian API token means calling `/rest/api/3/myself` with Basic
+ * email:token against `*.atlassian.net` — a host that is NOT in this app's
+ * manifest egress, and adding it is a scope change that needs the owner's
+ * decision and tenant re-consent. So a mistyped token here IS stored, and the
+ * failure surfaces on the next pipeline deploy as a 401. Do not paper over this
+ * with a fake check; the honest fix is the egress entry.
+ * What this arm DOES guarantee: the length/emptiness cap before the write, and a
+ * consent record that names the admin who actually handed this token over.
  */
 export async function applyCredentialRotation(params, { fetchImpl } = {}) {
   const target = params && params.target;
@@ -817,6 +828,13 @@ export async function applyCredentialRotation(params, { fetchImpl } = {}) {
       ...prev,
       email: secret.email || prev.email,
       token: String(secret.token),
+      // F-293 — the CONSENT record belongs to the credential that is stored NOW.
+      // `{...prev}` carried admin A's accountId and A's timestamp onto a token
+      // admin B handed over later, so getForgeIdentityStatus reported a consent
+      // that never happened for the credential in the box. The rotation's own
+      // requester and moment replace it; an unattributed rotation records null
+      // rather than inheriting somebody else's name.
+      consent: { accountId: (params && params.requestedBy) || null, at: nowIso() },
       updatedAt: nowIso(),
     });
     return { ok: true, rotated: "forge-identity" };

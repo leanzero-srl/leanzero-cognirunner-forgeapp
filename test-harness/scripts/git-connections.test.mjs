@@ -355,6 +355,31 @@ const applyHuge = await conns.applyCredentialRotation({ target: { kind: "connect
 ok(applyHuge.ok === false && /implausibly long/i.test(String(applyHuge.error)), "applyCredentialRotation caps before the side effect");
 ok(storage.__raw(conns.gitConnSecretKey(rotId)).token === "ghp_GOOD", "the oversized apply wrote nothing");
 
+// F-293 — a rotation of the FORGE IDENTITY records ITS OWN consent.
+// `{...prev}` used to carry the original admin's accountId and timestamp onto a
+// token a DIFFERENT admin handed over later, so the stored provenance was false.
+reset();
+const idA = await call("saveForgeIdentity", { email: "a@leanzero.net", token: FORGE_TOKEN, consent: true }, ADMIN);
+ok(idA.success === true, `the identity saves (${JSON.stringify(idA).slice(0, 120)})`);
+const consentA = (await conns.getForgeIdentityStatus()).consent;
+ok(consentA.accountId === ADMIN, "the first consent names the admin who gave it");
+await new Promise((r) => setTimeout(r, 5));
+const rotId2 = await conns.applyCredentialRotation({
+  target: { kind: "forge-identity" }, secret: { token: "ATATT_ROTATED_TOKEN" }, requestedBy: "acct-admin-b",
+});
+ok(rotId2.ok === true, "the identity rotation applies");
+const consentB = (await conns.getForgeIdentityStatus()).consent;
+ok(consentB.accountId === "acct-admin-b",
+  `the consent record names the admin who ROTATED, not the one who first consented (got ${JSON.stringify(consentB)})`);
+ok(consentB.at !== consentA.at, "and the moment is the rotation's, not the original's");
+ok(storage.__raw(conns.FORGE_IDENTITY_KEY).token === "ATATT_ROTATED_TOKEN", "the new token is stored");
+const anon = await conns.applyCredentialRotation({ target: { kind: "forge-identity" }, secret: { token: "ATATT_ANON" } });
+ok(anon.ok === true && (await conns.getForgeIdentityStatus()).consent.accountId === null,
+  "an unattributed rotation records NO consenter — it never inherits somebody else's name");
+const idHuge = await conns.applyCredentialRotation({ target: { kind: "forge-identity" }, secret: { token: huge } });
+ok(idHuge.ok === false && /implausibly long/i.test(String(idHuge.error)), "the identity arm caps the token too");
+ok(storage.__raw(conns.FORGE_IDENTITY_KEY).token === "ATATT_ANON", "and the oversized identity rotation wrote nothing");
+
 /* ===================== 10. the security model is data, and it is asserted ===================== */
 ok(conns.PIPELINE_SETUP_IS_ADMIN_RESOLVER === true,
   "pipeline setup is an ADMIN RESOLVER — flipping this has to be a visible diff");

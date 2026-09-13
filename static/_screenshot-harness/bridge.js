@@ -29,6 +29,14 @@ import { FORGE_LLM_FRONTIER, FORGE_LLM_DEFAULT, ADVANCED_FEATURES } from "../../
    for a field that is a 0-1 FRACTION — so the harness happily photographed a meter
    that reads 0% on every real tenant. A derived payload cannot have a wrong shape. */
 import { emptyState, monthKey, allowanceUsdForSeats, forgeLlmAllowanceStatus } from "../../src/shared/usage-meter.js";
+/* F-175: the memory caps and the cap REFUSAL SENTENCE come from the ONE home for them
+   (src/shared/registry-limits.js), exactly as the addMemory resolver does. The mock used
+   to hand-type its own near-miss of that sentence ("...prune in the Memories tab.") while
+   the backend said "...archive or delete some in the Memories tab to make room." — so the
+   Memories tabs, which render this `error` verbatim, were photographed and asserted
+   against words no tenant ever sees. A retyped cap number or sentence is the N-copies
+   defect this file's other imports exist to prevent. */
+import { MAX_MEMORIES, memoryCapRefusalMessage } from "../../src/shared/registry-limits.js";
 
 const ACCT = "557058:11111111-1111-1111-1111-111111111111";
 const SITE = "https://your-site.atlassian.net";
@@ -905,9 +913,11 @@ function invoke(name, payload) {
     // F-167 - window.__MEMORY_FULL__ models the store at its hard ceiling: the backend
     // answers getMemorySettings/getKnowledgeCounts with storeFull = { at, reason } and
     // refuses a user add with reason "cap". The counts chip must then read "200 / 200".
+    // F-175 - both numbers are MAX_MEMORIES, not a typed 200: "at the ceiling" means
+    // memories === the cap, so raising the cap must move this fixture with it.
     case "getKnowledgeCounts": return Promise.resolve(
       typeof window !== "undefined" && window.__MEMORY_FULL__
-        ? { success: true, docs: 4, skills: 6, memories: 200, memoryCap: 200, storeFull: MEMORY_STORE_FULL }
+        ? { success: true, docs: 4, skills: 6, memories: MAX_MEMORIES, memoryCap: MAX_MEMORIES, storeFull: MEMORY_STORE_FULL }
         : { success: true, docs: 4, skills: 6, memories: 12 });
     case "getMemorySettings": return Promise.resolve({ success: true, settings: MEMORY_SETTINGS() });
     case "getSkills": if (typeof window !== "undefined" && window.__EMPTY__) return Promise.resolve({ success: true, skills: [] }); return Promise.resolve({ success: true, skills: [
@@ -966,11 +976,16 @@ function invoke(name, payload) {
     // the resolver answers success:false with reason "cap" and stored:false. There is no id,
     // so there is nothing to badge and nothing to veto — and it is NOT a generic failure.
     // The kept shapes carry stored:true (+ whatever the write evicted).
+    // F-175 — BOTH cap branches now answer with the backend's real refusal, built by the
+    // shared memoryCapRefusalMessage(). Two bugs died here: __MEMORY_CAP__ carried no
+    // `error` at all (the Memories tabs render that field, so the inline refusal had
+    // nothing to say), and __MEMORY_FULL__ carried a hand-typed near-miss of the sentence.
+    // The two branches differ only in what ELSE the scenario sets up, never in the words.
     case "addMemory": return Promise.resolve(
       typeof window !== "undefined" && window.__MEMORY_CAP__
-        ? { success: false, reason: "cap", stored: false }
+        ? { success: false, reason: "cap", stored: false, error: memoryCapRefusalMessage("cap") }
         : typeof window !== "undefined" && window.__MEMORY_FULL__
-        ? { success: false, reason: "cap", stored: false, error: "The memory store is full of your own memories - prune in the Memories tab." }
+        ? { success: false, reason: "cap", stored: false, error: memoryCapRefusalMessage("cap") }
         : typeof window !== "undefined" && window.__MEMORY_MERGED__
         ? { success: true, id: "mem_existing_7", merged: true, stored: true, evicted: [] }
         : { success: true, id: "mem_fix_1", merged: false, stored: true, evicted: [] });

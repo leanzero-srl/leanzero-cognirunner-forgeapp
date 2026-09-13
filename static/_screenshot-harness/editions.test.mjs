@@ -115,6 +115,73 @@ async function pickForgeLlm(page) {
   ok(JSON.stringify((m.models || []).slice(1)) === JSON.stringify(FORGE_LLM_FRONTIER),
     "E0 mock frontier ids are the shared FORGE_LLM_FRONTIER");
   ok(FORGE_LLM_FRONTIER.length === 2, "E0 shared frontier list still has two ids");
+
+  /* F-175 — the MEMORY CAP facts have the same parity duty as the edition facts.
+     The Memories tabs render addMemory's `error` verbatim, so a mock that invents its
+     own refusal sentence photographs and asserts words no tenant ever sees. Two real
+     defects lived here: the __MEMORY_CAP__ branch returned no `error` at all, and the
+     __MEMORY_FULL__ branch hand-typed "...prune in the Memories tab." while the backend
+     said "...archive or delete some in the Memories tab to make room."
+     Both branches must now equal memoryCapRefusalMessage("cap") EXACTLY. */
+  {
+    const { MAX_MEMORIES, MEMORY_CONTENT_MAX, MEMORY_MAX_SERIALIZED_BYTES, memoryCapRefusalMessage } =
+      await import("../../src/shared/registry-limits.js");
+    const expected = memoryCapRefusalMessage("cap");
+
+    for (const flag of ["__MEMORY_CAP__", "__MEMORY_FULL__"]) {
+      globalThis.window[flag] = true;
+      const r = await invoke("addMemory", { content: "x" });
+      ok(r.error === expected,
+        `E0 ${flag} addMemory error is memoryCapRefusalMessage("cap") verbatim (got ${JSON.stringify(r.error)})`);
+      ok(r.success === false && r.stored === false && r.reason === "cap",
+        `E0 ${flag} addMemory keeps the refusal shape { success:false, stored:false, reason:"cap" }`);
+      globalThis.window[flag] = false;
+    }
+
+    /* The at-cap counts fixture must MOVE with the cap, not sit on a typed 200. */
+    globalThis.window.__MEMORY_FULL__ = true;
+    const kc = await invoke("getKnowledgeCounts");
+    ok(kc.memoryCap === MAX_MEMORIES && kc.memories === MAX_MEMORIES,
+      `E0 getKnowledgeCounts at cap is derived from MAX_MEMORIES=${MAX_MEMORIES} (got ${kc.memories}/${kc.memoryCap})`);
+    globalThis.window.__MEMORY_FULL__ = false;
+
+    /* The shared module really is the only home: sanity-check the numbers exist and are
+       the sort of thing the sentence interpolates, so a null/undefined export cannot make
+       the equality assertions above pass vacuously. */
+    ok(Number.isInteger(MAX_MEMORIES) && MAX_MEMORIES > 0, "E0 MAX_MEMORIES is a real cap");
+    ok(Number.isInteger(MEMORY_CONTENT_MAX) && MEMORY_CONTENT_MAX > 0, "E0 MEMORY_CONTENT_MAX is a real clamp");
+    ok(Number.isInteger(MEMORY_MAX_SERIALIZED_BYTES) && MEMORY_MAX_SERIALIZED_BYTES > 0,
+      "E0 MEMORY_MAX_SERIALIZED_BYTES is a real byte guard");
+    ok(expected.includes(String(MAX_MEMORIES)),
+      "E0 the refusal sentence interpolates MAX_MEMORIES rather than a typed number");
+
+    /* The RECURRENCE GATE. A future edit that retypes the sentence into bridge.js or any
+       suite re-creates the exact defect this parity block was written for, and every
+       assertion above would still pass because the copy would be identical ON THE DAY IT
+       WAS TYPED. So: scan the harness sources and allow the phrase ONLY on a line that
+       imports it. Checked against the source text, not the running module. */
+    // The needle is CUT FROM the real sentence (everything before the "(N max)" clause),
+    // never typed — otherwise this very line would be its own first offender, and a
+    // reworded refusal would silently stop being guarded.
+    const NEEDLE = expected.slice(0, expected.indexOf("(")).trim();
+    ok(NEEDLE.length > 20, `E0 the retype needle was cut from the real sentence (got "${NEEDLE}")`);
+    const files = fs.readdirSync(__dirname)
+      .filter((f) => f === "bridge.js" || f.endsWith(".test.mjs"));
+    const offenders = [];
+    for (const f of files) {
+      const lines = fs.readFileSync(path.join(__dirname, f), "utf8").split("\n");
+      lines.forEach((line, i) => {
+        if (!line.includes(NEEDLE)) return;
+        // The sentence may only appear where it is IMPORTED/derived, never as a literal.
+        if (/\bmemoryCapRefusalMessage\b/.test(line)) return;
+        offenders.push(`${f}:${i + 1}`);
+      });
+    }
+    ok(offenders.length === 0,
+      `E0 no harness line retypes the cap refusal — derive it from memoryCapRefusalMessage (offenders: ${offenders.join(", ")})`);
+    ok(files.includes("bridge.js") && files.length > 1,
+      `E0 the retype scan actually read the harness sources (${files.length} files)`);
+  }
 }
 
 const browser = await chromium.launch();

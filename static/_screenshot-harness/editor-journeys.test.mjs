@@ -3797,22 +3797,22 @@ try {
     try {
       // The summary rows first: the group must read as words, not as a bare rule name.
       const body = await page.locator("body").innerText();
-      ok(/ENG/.test(body), `J23e (${theme}) the summary names the Confluence space`);
-      ok(/title ~ \{issueKey\}/.test(body), `J23e (${theme}) the summary shows the page query`);
-      ok(/fail-open/.test(body), `J23e (${theme}) the summary says what Strict OFF means`);
+      ok(/ENG/.test(body), `J23d (${theme}) the summary names the Confluence space`);
+      ok(/title ~ \{issueKey\}/.test(body), `J23d (${theme}) the summary shows the page query`);
+      ok(/fail-open/.test(body), `J23d (${theme}) the summary says what Strict OFF means`);
 
       await page.locator("button", { hasText: /Show Logs/i }).first().click();
       await page.locator(".log-entry").first().waitFor({ timeout: 8000 });
       await page.locator(".log-banner").first().waitFor({ timeout: 8000 });
-      ok(await page.locator(".log-banner").count() === 1, `J23e (${theme}) exactly the degraded run carries a banner - the clean one does not`);
+      ok(await page.locator(".log-banner").count() === 1, `J23d (${theme}) exactly the degraded run carries a banner - the clean one does not`);
       const bannerText = await page.locator(".log-banner").first().innerText();
-      ok(/Confluence could not be checked/.test(bannerText), `J23e (${theme}) the banner says what happened`);
-      ok(/Turn Strict on/.test(bannerText), `J23e (${theme}) the banner names the remedy`);
-      ok(/unreachable/.test(bannerText), `J23e (${theme}) the banner names WHICH fault it was`);
+      ok(/Confluence could not be checked/.test(bannerText), `J23d (${theme}) the banner says what happened`);
+      ok(/Turn Strict on/.test(bannerText), `J23d (${theme}) the banner names the remedy`);
+      ok(/unreachable/.test(bannerText), `J23d (${theme}) the banner names WHICH fault it was`);
       const bg = await page.locator(".log-banner").first().evaluate((el) => getComputedStyle(el).backgroundColor);
-      ok(bg === (theme === "dark" ? "rgb(59, 130, 246)" : "rgb(29, 78, 216)"), `J23e (${theme}) the banner is a SOLID Confluence-hue fill, not a tint - got ${bg}`);
-      ok(await page.locator(".log-banner").first().evaluate((el) => getComputedStyle(el).borderLeftWidth) === "0px", `J23e (${theme}) the banner has NO left accent rail`);
-    } catch (e) { fail++; console.log(`  ✗ J23e (${theme}) threw: ` + e.message.split("\n")[0]); }
+      ok(bg === (theme === "dark" ? "rgb(59, 130, 246)" : "rgb(29, 78, 216)"), `J23d (${theme}) the banner is a SOLID Confluence-hue fill, not a tint - got ${bg}`);
+      ok(await page.locator(".log-banner").first().evaluate((el) => getComputedStyle(el).borderLeftWidth) === "0px", `J23d (${theme}) the banner has NO left accent rail`);
+    } catch (e) { fail++; console.log(`  ✗ J23d (${theme}) threw: ` + e.message.split("\n")[0]); }
     await closeEditor(env);
   }
 

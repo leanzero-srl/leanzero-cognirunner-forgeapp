@@ -28,7 +28,7 @@
  * Also hosts the AI CONDITION evaluator (a one-shot yes/no gate shared by both
  * execution modes).
  */
-import { toolDefinitionsFor, normalizeAllowedActions, getAgentAction, normalizeAgentIssueReferences, agentActionNamespace, DEFAULT_AGENT_ROUNDS, MAX_AGENT_ROUNDS } from "./shared/agent-actions.js";
+import { toolDefinitionsFor, normalizeAllowedActions, getAgentAction, normalizeAgentIssueReferences, agentActionNamespace, assertWriteScope, writeScopeRefusalText, DEFAULT_AGENT_ROUNDS, MAX_AGENT_ROUNDS } from "./shared/agent-actions.js";
 import { resolveIssueKey } from "./shared/sandbox-api-spec.js";
 import { defangFence } from "./memories.js";
 import { createWebSearchExecutor, createSearchBudget, createRunSearchBudget, WEB_SEARCH_SYSTEM_RULE } from "./web-search-tool.js";
@@ -437,12 +437,59 @@ const writeBraked = (session, maxWrites) => {
   return { done, max: maxWrites };
 };
 
-export const createAgentActionDispatcher = ({ issueKey = null, session, allowed = [], executors = {}, m, maxWrites = null }) => {
+/**
+ * THE WRITE-SCOPE ARGUMENT (F-411) — read this before adding a call site.
+ *
+ * `writeScope` is DELIBERATELY not defaulted. Three states, and the difference between
+ * the first two is the gate (the full contract is on `assertWriteScope` in
+ * src/shared/agent-actions.js):
+ *   · OMITTED   → every Jira write is refused. "Forgot to pass it" must not be the way
+ *                 past the gate; a caller that omits it gets a loud, self-explaining
+ *                 refusal instead of silent full access.
+ *   · `null`    → unscoped, DELIBERATELY. The pre-1.5 behaviour for the surfaces that
+ *                 have no project scope of their own yet. Every one is greppable.
+ *   · `{projects:[...]}` → the target issue's project, RESOLVED FROM A READ, must be in
+ *                 the list.
+ *
+ * It is applied to the `jira` namespace only. A git write is bounded by its connection's
+ * repository allow-list and a Confluence write by its space; a Jira project scope is not
+ * the right question to ask of either, and asking it would make every one of them
+ * unresolvable and therefore refused.
+ */
+export const createAgentActionDispatcher = ({ issueKey = null, session, allowed = [], executors = {}, m, maxWrites = null, writeScope }) => {
   const baseApi = session.createApi();
   const apiFor = (key) => (key && key !== issueKey ? baseApi.forIssue(key) : baseApi);
   // Validated references retain their explicit identity; only an omitted key
   // reaches the shared sandbox resolver's current-issue fallback.
   const keyOf = (args) => args.issueKey;
+
+  /**
+   * The target issue's project, from a READ, cached for this run.
+   *
+   * Cached because a scoped agent may write several times on one issue and each check
+   * would otherwise be another REST call inside a 120 s budget. The cache is per
+   * DISPATCHER — one run — so it cannot outlive the run that built it and serve a stale
+   * project to the next one.
+   */
+  const projectCache = new Map();
+  const readProjectOf = async (key) => {
+    if (!key) return null;
+    if (projectCache.has(key)) return projectCache.get(key);
+    const issue = await apiFor(key).getIssue(key);
+    const project = issue && issue.fields && issue.fields.project ? issue.fields.project.key : null;
+    projectCache.set(key, project);
+    return project;
+  };
+
+  /** One scope check, returning the model-readable refusal, or null to proceed. */
+  const scopeRefusal = async (targetKey, readProject) => {
+    const verdict = await assertWriteScope(targetKey, writeScope, { readProject: readProject || readProjectOf });
+    if (verdict.allowed) return null;
+    return {
+      success: false, code: "write_scope",
+      error: writeScopeRefusalText(verdict.reason, { issueKey: targetKey, projects: (writeScope && writeScope.projects) || [] }),
+    };
+  };
 
   return async (name, args) => {
     // ONE HOME for the allow-list check (F-359) — see assertAgentActionAllowed above.
@@ -496,6 +543,34 @@ export const createAgentActionDispatcher = ({ issueKey = null, session, allowed 
       label: name,
       remedy: `Pass the issue key explicitly, e.g. { "issueKey": "PROJ-123" }.`,
     });
+
+    // THE WRITE SCOPE (F-410/F-411), enforced BEFORE the switch so no case can be added
+    // later that skips it, and AFTER `normalizeAgentIssueReferences` so the key we check
+    // is the validated one rather than whatever shape the model sent.
+    //
+    // The target is resolved per action rather than assumed:
+    //   · `create_issue` has no issue to read — the project IS the argument, and the
+    //     allow-list is still the authority, so a foreign project key is refused exactly
+    //     like any other (`writescope.BLOCK_create_issue_foreign_project`).
+    //   · `link_issues` writes a link onto BOTH issues, so BOTH are checked. A scope
+    //     that only guarded the near side would let an in-scope issue be used as a
+    //     handle to change one outside it.
+    if (a.kind === "write") {
+      if (name === "create_issue") {
+        const project = String((args && args.projectKey) || "");
+        const refusal = await scopeRefusal(`${project}-new`, async () => project);
+        if (refusal) return refusal;
+      } else {
+        const target = needKey(args);
+        const refusal = await scopeRefusal(target);
+        if (refusal) return refusal;
+        if (name === "link_issues" && args.otherIssueKey) {
+          const other = await scopeRefusal(String(args.otherIssueKey));
+          if (other) return other;
+        }
+      }
+    }
+
     switch (name) {
       case "get_issue": {
         const key = needKey(args);
@@ -595,6 +670,11 @@ export const runAgentTask = async ({
   // 13 Jira actions behave exactly as before and nothing from another namespace is
   // held, so a caller that forgot to pass it cannot become the way past the gate.
   gate = undefined,
+  // THE WRITE SCOPE (F-411), passed straight through to the dispatcher. Deliberately
+  // NOT defaulted here either: defaulting it in this hop would re-open at the caller
+  // exactly the trap the dispatcher closes. See createAgentActionDispatcher's docblock
+  // for the three states.
+  writeScope,
 }) => {
   const m = await idx();
   const started = Date.now();
@@ -640,7 +720,7 @@ export const runAgentTask = async ({
   const runExecutors = allowed.includes("web_search")
     ? { ...executors, web: executors.web || createWebSearchExecutor({ budget: webBudget, runBudget: webRunCeiling, log, deadline }) }
     : executors;
-  const execute = createAgentActionDispatcher({ issueKey, session, allowed, executors: runExecutors, m, maxWrites });
+  const execute = createAgentActionDispatcher({ issueKey, session, allowed, executors: runExecutors, m, maxWrites, writeScope });
 
   // ONE constant, appended only for an agent that actually holds the tool — a rule about
   // checking claims is noise for an agent with no way to check anything.

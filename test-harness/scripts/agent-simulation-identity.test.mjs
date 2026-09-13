@@ -27,7 +27,9 @@ for (const simulationMode of [true, false]) {
     else { name = "finish"; args = { outcome: "done", summary: "Created and labelled child" }; }
     return { ok: true, data: { choices: [{ message: { role: "assistant", tool_calls: [{ id: `call-${round}`, function: { name, arguments: JSON.stringify(args) } }] } }] } };
   };
-  const result = await runAgentTask({ issueKey: "ABC-1", config: { simulationMode }, instructions: "Create and label the new child", allowedActions: ["create_issue", "add_labels"], maxRounds: 3 });
+  // `writeScope: null` — unscoped, the pre-1.5 behaviour (F-411). This suite is about
+  // SIMULATION identity, not about scope.
+  const result = await runAgentTask({ issueKey: "ABC-1", config: { simulationMode }, instructions: "Create and label the new child", allowedActions: ["create_issue", "add_labels"], maxRounds: 3, writeScope: null });
   assert.equal(result.success, true, JSON.stringify(result));
   assert.ok(result.toolCalls.every(c => c.ok), JSON.stringify(result.toolCalls));
   assert.equal(result.changes.length, 2);

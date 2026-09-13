@@ -72,8 +72,21 @@
  *  - Response bodies are CLAMPED BEFORE PARSING (1 MB), and page text is clamped
  *    to 60 KB by the ONE html→text reducer in this file (`storageToText`).
  *
+ * AN ERROR MESSAGE CARRIES NO REMOTE TEXT (F-434). `ConfluenceError.message` is
+ * built from the operation, the HTTP status and a SHORT ALLOW-LISTED reason from
+ * this file — never from the response body. The body used to ride in it as
+ * `bodyText.slice(0, 300)`, and that message is the value the F-416 degradation
+ * table hands a user (and, at the VA seam, a model) as "the reason": a 404 body
+ * echoing user-authored content, or a branded interstitial, landed verbatim in a
+ * validator's errorMessage, in the execution log and in a prompt — and `slice()`
+ * is the UTF-16 cut src/shared/text-clamp.js exists to prevent. What the remote
+ * said is kept on `error.detail`, clamped with `clampChars` and flagged
+ * `detailUntrusted`: it is for a server log or a debug surface, and anything that
+ * puts it in a prompt must fence and defang it like any other remote content.
+ *
  * ⚠ WHAT THIS MODULE GUARANTEES: BOUNDED, NOT SANITISED.
- * A page title, a page body, an excerpt and a comment are all user-authored
+ * A page title, a page body, an excerpt, a comment and `ConfluenceError.detail`
+ * are all user-authored
  * content from another product. This module size-caps and shape-normalises them
  * and DOES NOT fence or defang them — `text` handed to a caller is raw.
  * A CALLER THAT PUTS ANY OF IT IN A PROMPT MUST FENCE IT AND RUN `defangFence()`
@@ -86,7 +99,7 @@
  * no @forge/* module available. Every request goes through an injectable
  * `deps.request`.
  */
-import { clampUtf8Bytes } from "./shared/text-clamp.js";
+import { clampUtf8Bytes, clampChars } from "./shared/text-clamp.js";
 
 /** The closed error-code set. Anything outside it is a bug in this file. */
 export const CONFLUENCE_ERROR_CODES = [
@@ -117,9 +130,35 @@ export const COMMENT_MAX_BYTES = 32 * 1024;
 /** The install probe — the same entry the catalogue documents. */
 export const INSTALL_PROBE_PATH = "/wiki/api/v2/spaces?limit=1";
 
+/** How much of a remote body we keep on `detail`. Code POINTS, never `slice()` (F-391). */
+export const ERROR_DETAIL_MAX_CHARS = 300;
+
+/**
+ * THE ALLOW-LISTED REASONS (F-434). One short sentence per code, written here, shown to
+ * humans and models. The set is closed: an error message may say what KIND of failure it
+ * was and nothing the remote chose to say.
+ */
+export const CONFLUENCE_ERROR_REASONS = Object.freeze({
+  confluence_unavailable: "Confluence did not answer in a way this app recognises",
+  auth: "the app is not permitted to do that in Confluence",
+  not_found: "no such content, or it is not visible to the app",
+  conflict: "the content changed since it was read",
+  rate_limited: "Confluence is rate limiting this app",
+  network: "the request to Confluence did not complete",
+  invalid: "Confluence rejected the request as invalid",
+});
+
+/** The reason sentence for a code. An unknown code gets the fail-open one. */
+export const reasonFor = (code) =>
+  CONFLUENCE_ERROR_REASONS[code] || CONFLUENCE_ERROR_REASONS.confluence_unavailable;
+
 /**
  * The one error every method throws. `code` is from CONFLUENCE_ERROR_CODES,
  * `status` is the HTTP status when there was one, `timeout` marks our own abort.
+ *
+ * `message` NEVER carries remote text (F-434) — see the file header. `detail` is where
+ * what the remote said goes: clamped to ERROR_DETAIL_MAX_CHARS code points, and flagged
+ * `detailUntrusted` so no caller can mistake it for something this module sanitised.
  */
 export class ConfluenceError extends Error {
   constructor(code, message, details = {}) {
@@ -133,6 +172,10 @@ export class ConfluenceError extends Error {
     this.timeout = details.timeout === true;
     this.retryAfterSeconds =
       typeof details.retryAfterSeconds === "number" ? details.retryAfterSeconds : null;
+    // UNTRUSTED REMOTE BYTES. Bounded, not sanitised: fence and defang before a prompt.
+    const detail = details.detail == null ? "" : clampChars(details.detail, ERROR_DETAIL_MAX_CHARS, "…");
+    this.detail = detail || null;
+    this.detailUntrusted = detail ? true : false;
   }
 }
 
@@ -322,9 +365,12 @@ export function createConfluenceClient(deps = {}) {
       bodyText = "";
     }
     const retryAfter = Number(headerOf(resp && resp.headers, "retry-after"));
-    throw fail(code, `${operation}: HTTP ${status}${bodyText ? ` — ${bodyText.slice(0, 300)}` : ""}`, {
+    // The MESSAGE is ours: operation, status, allow-listed reason. What Confluence said
+    // rides on `detail`, untrusted and clamped (F-434).
+    throw fail(code, `${operation}: HTTP ${status} — ${reasonFor(code)}`, {
       operation,
       status,
+      detail: bodyText,
       retryAfterSeconds: code === "rate_limited" && Number.isFinite(retryAfter) ? retryAfter : null,
     });
   }
@@ -386,8 +432,8 @@ export function createConfluenceClient(deps = {}) {
       // this product" / interstitial answer — the fail-open direction again.
       throw fail(
         "confluence_unavailable",
-        `${operation}: expected JSON but got ${looksHtml ? "an HTML page" : "an unparseable body"} — ${clamped.text.slice(0, 200)}`,
-        { operation, status: Number(resp.status) }
+        `${operation}: expected JSON but got ${looksHtml ? "an HTML page" : "an unparseable body"}`,
+        { operation, status: Number(resp.status), detail: clamped.text }
       );
     }
   }

@@ -391,11 +391,20 @@ export const runJob = async ({ job, scheduledFor = null, missed = 0, manual = fa
       const knowledge = await buildAgentKnowledge(job.agent, { projectKey: extraContext.projectKey, audience: "agentRun" });
       // The allowance the agent gets is what is LEFT of the run's budget.
       const r = await runAgentTask({ instructions: job.agent.instructions, allowedActions: job.agent.allowedActions, maxRounds: job.agent.maxRounds, issueKey, config, contextTitle: "JOB CONTEXT", contextText: summarizeJobForAi(job, scheduledFor, issue), deadline: perDeadline, cancelToken, extraContext, gate: agentGate, executors, knowledge, maxWrites: Math.max(0, maxWrites - writesDone), webRunBudget });
-      if ((r.changes || []).length && writesDone + r.changes.length >= maxWrites) brake = brake || { kind: "job-writes", max: maxWrites, reason: brakeRefusalText("job-writes", maxWrites) };
+      // NO STAMP HERE (F-402). Reaching the limit is not the same as being STOPPED by it:
+      // a run that made exactly its allowance and had nothing left to do was reported as
+      // braked, with "the remaining work was not done" on a run where none remained. The
+      // brake is stamped where work is actually SKIPPED — the between-issue check below,
+      // and the dispatcher's own refusal — so the word means what it says.
       return { issueKey, ...agentResultFields(r, { summaryMaxBytes: job.scope ? Math.floor(SCOPED_AGENT_SUMMARY_BUDGET_BYTES / MAX_SCOPE_ISSUES) : null }), success: r.success, reason: r.success ? `${r.outcome}: ${r.summary || ""}` : (r.error || "agent failed"), changes: r.changes || [], logs: r.logs || [], tokens: r.tokens || 0, aiTimeMs: r.aiTimeMs || 0 };
     }
-    const r = await m.runSandboxSteps({ issueKey, config, deadline: perDeadline, cancelToken, extraContext });
-    if ((r.changes || []).length && writesDone + r.changes.length >= maxWrites) brake = brake || { kind: "job-writes", max: maxWrites, reason: brakeRefusalText("job-writes", maxWrites) };
+    // STEP MODE IS BRAKED TOO (F-402). The cap used to reach the agent dispatcher and the
+    // between-issue check and nothing else, so one step-mode issue could write a thousand
+    // times while the job's own "maximum writes per run" said nothing. The sandbox enforces
+    // it at its write boundary, counting the SAME `changes` ledger the agent brake counts —
+    // one number for both modes, and what is left of the run's budget, not a fresh one per
+    // issue.
+    const r = await m.runSandboxSteps({ issueKey, config, deadline: perDeadline, cancelToken, extraContext, maxWrites: Math.max(0, maxWrites - writesDone) });
     return { issueKey, success: r.success, reason: r.success ? `${r.stepsTotal} step(s), ${r.changes.length} change(s)` : `step "${r.failedStep}" failed: ${(r.stepResults.find((s) => s.status === "error") || {}).error || "see logs"}`, recommendation: r.recommendation, changes: r.changes || [], logs: r.logs || [], stepResults: r.stepResults };
   };
 

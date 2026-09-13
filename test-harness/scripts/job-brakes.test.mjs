@@ -26,7 +26,7 @@ export async function load(url,ctx,next) {
   return next(url,ctx);
 }`));
 const { normalizeJob, runJob, MAX_SCOPE_ISSUES } = await import("../../src/scheduled-jobs.js");
-const { JOB_DEFAULT_MAX_WRITES_PER_RUN, AGENT_RUN_BRAKE_MAX_PER_BUCKET } = await import("../../src/shared/registry-limits.js");
+const { JOB_DEFAULT_MAX_WRITES_PER_RUN, AGENT_RUN_BRAKE_MAX_PER_BUCKET, brakeRefusalText } = await import("../../src/shared/registry-limits.js");
 const { BRAKE_BUCKET_MS } = await import("../../src/listeners.js");
 
 let pass = 0; let fail = 0;
@@ -238,6 +238,59 @@ maxWritesPerRun: 2 and the run's own change ledger showed nothing at all. */
   ok(session.changes.length === 1 && session.changes[0].simulated === true, "a SIMULATED git write is recorded, and says it was simulated");
   const second = await dispatch("commit_files", { repo: "acme/app", branch: "main", files: [] });
   ok(second.code === "write_brake", "…and it spends the allowance, so a dry run shows the brake the real run would hit");
+}
+
+/* ============ STEP-mode jobs are braked too, and "braked" means STOPPED (F-402) ============ */
+
+{
+  // The cap reached the agent dispatcher and the between-issue check and nothing else, so
+  // one step-mode issue could write a thousand times with the job's own limit set to two.
+  const { createSandboxSession } = await import("../../src/index.js");
+  jira.__reset();
+  jira.__respond(() => jira.__response(204, {}));
+  const session = createSandboxSession({ issueKey: "LZPT-1", config: {}, maxWrites: 2 });
+  const api = session.createApi();
+  await api.addComment("one");
+  await api.addComment("two");
+  ok(session.changes.length === 2, "ALLOW: the sandbox makes its two writes");
+  let refused = null;
+  try { await api.addComment("three"); } catch (e) { refused = e; }
+  ok(session.changes.length === 2, "BLOCK: the THIRD sandbox write never lands on the ledger");
+  ok(session.executionLogs.some((l) => /WRITE BRAKE/.test(l)), "…and the run log says why, in the operator's words");
+  ok(session.executionLogs.some((l) => /remaining work was not done|maximum writes per run/i.test(l)), "…with the sentence from the ONE home");
+
+  // A READ is never braked — a braked run must still be able to report what it found.
+  jira.__respond(() => jira.__response(200, { key: "LZPT-1", fields: { summary: "s" } }));
+  const read = await api.getIssue("LZPT-1");
+  ok(read && read.key === "LZPT-1", "reads keep working past the write brake");
+
+  // No cap = the behaviour every existing surface has (a post-function, a listener).
+  jira.__respond(() => jira.__response(204, {}));
+  const open = createSandboxSession({ issueKey: "LZPT-1", config: {} });
+  const openApi = open.createApi();
+  for (let i = 0; i < 12; i++) await openApi.addComment("x");
+  ok(open.changes.length === 12, "maxWrites null = no brake at all (post-functions and listeners, unchanged)");
+}
+
+{
+  // "BRAKED" MUST MEAN STOPPED. A run that made exactly its allowance and had nothing left
+  // to do was stamped braked, telling the operator "the remaining work was not done" about
+  // a run where none remained.
+  storage.__reset(); jira.__reset();
+  globalThis.__brakeAgent = async () => ({ success: true, outcome: "done", summary: "s", rounds: 1, toolCalls: [], changes: [{ action: "addComment" }, { action: "addComment" }], logs: [], tokens: 0, aiTimeMs: 0 });
+  scopeOf(1);
+  const out = await runJob({ job: jobWith({ maxWritesPerRun: 2, scope: { jql: "project = LZPT", maxIssues: 1 } }), manual: true });
+  ok(out.brake === undefined, "a run that SPENT its allowance with nothing left is NOT reported as braked");
+  ok(out.success === true && !/BRAKED/.test(out.log.reason), "…and its log does not claim work was left undone");
+  ok(out.log.recommendation !== brakeRefusalText("job-writes", 2), "…nor tell the operator to raise a limit that stopped nothing");
+}
+{
+  // …and the run that really IS stopped still says so, with the issues it never reached.
+  storage.__reset(); jira.__reset(); oneWriteAgent();
+  scopeOf(4);
+  const out = await runJob({ job: jobWith({ maxWritesPerRun: 2, scope: { jql: "project = LZPT", maxIssues: 4 } }), manual: true });
+  ok(out.brake && out.brake.kind === "job-writes", "a run that was actually STOPPED is still stamped");
+  ok(out.issues.filter((i) => i.reason === "not processed (write brake)").length === 2, "…and names the issues it never reached");
 }
 
 console.log(`job-brakes: ${pass} passed, ${fail} failed`);

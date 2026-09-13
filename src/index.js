@@ -101,6 +101,7 @@ import {
   registryPressure,
   registrySerializedBytes,
   slimRegistryRow,
+  brakeRefusalText,
 } from "./shared/registry-limits.js";
 // Premade (non-AI, "static") rule executor — runs deterministic validators/conditions
 // chosen from the premade catalog, short-circuiting the AI path in validate().
@@ -17752,7 +17753,7 @@ const ISSUE_BOUND_METHODS = [
  * tool-call. `createApi(key)` binds the surface to an issue (default: the run's
  * current issue, which may be null).
  */
-export const createSandboxSession = ({ issueKey: boundIssueKey = null, config = {}, deadline = Date.now() + PF_BUDGET_MS, cancelToken = null, extraContext = null } = {}) => {
+export const createSandboxSession = ({ issueKey: boundIssueKey = null, config = {}, deadline = Date.now() + PF_BUDGET_MS, cancelToken = null, extraContext = null, maxWrites = null } = {}) => {
   const executionLogs = [];
   const MAX_EXEC_LOGS = 5000; // cap user api.log() volume so a runaway loop can't OOM the function
   const changes = [];
@@ -17802,6 +17803,26 @@ export const createSandboxSession = ({ issueKey: boundIssueKey = null, config = 
       // missing one. Only mutating verbs are gated; GET reads always pass, and
       // searchJql (a read over POST) bypasses this wrapper via appJiraClient.
       const httpMethod = String(opts?.method || "GET").toUpperCase();
+      // THE WRITE BRAKE, at the same boundary and for the same reason (F-402). A STEP-mode
+      // job had no brake at all inside one issue: `maxWritesPerRun` was checked between
+      // scope issues and handed to the agent dispatcher, but nothing was ever passed to
+      // the sandbox, so one step could write a thousand times and the job's own limit said
+      // nothing. Enforced here because this is the funnel every sandbox mutator already
+      // goes through, and counted on `changes` — the SAME ledger the agent brake counts,
+      // so both modes share one number instead of two that can disagree.
+      //
+      // Nothing is recorded: the write did not happen, and a row here would spend the very
+      // allowance being enforced.
+      if (maxWrites != null && httpMethod !== "GET" && changes.length >= maxWrites) {
+        const reason = brakeRefusalText("job-writes", maxWrites);
+        executionLogs.push(`[WRITE BRAKE] ${httpMethod} skipped — ${reason}`);
+        return {
+          ok: false, status: 429, statusText: "Write brake",
+          headers: { get: () => null },
+          text: async () => reason,
+          json: async () => ({ errorMessages: [reason] }),
+        };
+      }
       if (cancelToken && httpMethod !== "GET" && await isJobCancelled(cancelToken)) {
         executionLogs.push(`[CANCELLED] ${httpMethod} ${typeof routeArg === "string" ? routeArg : "request"} — write skipped (job was stopped)`);
         changes.push({ action: "cancelled-write", method: httpMethod });
@@ -18277,7 +18298,7 @@ export const createSandboxSession = ({ issueKey: boundIssueKey = null, config = 
  * to nothing). `extraContext` is merged into api.context (event / job facts); the
  * step loop, the retry wrapper, simulation mode and the kill switch are shared.
  */
-export const runSandboxSteps = async ({ issueKey: boundIssueKey = null, config = {}, deadline = Date.now() + PF_BUDGET_MS, cancelToken = null, extraContext = null, functions: functionsOverride = null } = {}) => {
+export const runSandboxSteps = async ({ issueKey: boundIssueKey = null, config = {}, deadline = Date.now() + PF_BUDGET_MS, cancelToken = null, extraContext = null, functions: functionsOverride = null, maxWrites = null } = {}) => {
   const issueKey = boundIssueKey || null;
   let functions = Array.isArray(functionsOverride) ? functionsOverride : (config.functions || []);
   // Code offload: large rules carry a codeRef pointer instead of inline step
@@ -18307,7 +18328,7 @@ export const runSandboxSteps = async ({ issueKey: boundIssueKey = null, config =
       recommendation: "No code steps configured. Go to Edit and add at least one function block with code." };
   }
 
-  const session = createSandboxSession({ issueKey, config, deadline, cancelToken, extraContext });
+  const session = createSandboxSession({ issueKey, config, deadline, cancelToken, extraContext, maxWrites });
   const { executionLogs, changes, createApi } = session;
   const variables = {};
   const startTime = Date.now();

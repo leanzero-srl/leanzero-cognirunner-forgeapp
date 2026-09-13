@@ -380,6 +380,75 @@ let agentId = null;
       `F-508: …and the clamp is REPORTED in refused[], which is what "no silent permission change" means (got ${JSON.stringify(asRefusals(tooLong))})`);
   }
 
+  /* ── F-519 — THE SAVE DOOR DOES NOT CUT A WATCH THE ENGINE ARMED ────────────
+   *
+   * F-514 gave the READ side the reachability ceiling (`max(500, watched + 50)`) and left
+   * the SAVE door on a flat 500 — and the door's `int` runs BEFORE the shared clamp. So an
+   * agent with 600 prepare receipts, armed by `rearmShadow` to 603 (legitimate, and
+   * asserted as such by F-514.NO_REGRESSION above), was cut to 500 by the next unrelated
+   * save, with a `refused[]` line naming a number the admin never sent. The only thing
+   * that put it back was the re-arm — which reads `va_health`, a row with a TTL. With that
+   * row gone the restore floor is `0 + shadowTicks`, the 500 stands, and the agent is LIVE
+   * and posting to customers 103 ticks early. Both halves are asserted here, because the
+   * one that bites in production is the one where the health row is ABSENT.
+   */
+  {
+    // HEALTH PRESENT — the door can see 600 watched ticks, so 603 is reachable and kept.
+    await setWatched(600);
+    const row = await rowOf();
+    row.va.status.shadowUntilTick = 603;
+    await writeRow(row);
+    const edit = await call("saveScheduledJob", { job: { id: agentId, mode: "va", va: vaRecord({ persona: { name: "Ada", voice: { register: "warm", maxSentences: 2 } }, guardrails: { shadowTicks: 3 }, status: { paused: false, shadowUntilTick: 603 } }) } });
+    ok(edit.success === true, "F-519 — an agent armed past the absolute ceiling still saves");
+    const back = await rowOf();
+    eqish(back && back.va.status.shadowUntilTick, 603,
+      "F-519.KEPT — the watch the ENGINE armed survives the save (the defect stored 500)");
+    ok(!asRefusals(edit).some((r) => String(r.field) === "status.shadowUntilTick"),
+      `F-519.KEPT — …and nothing is REFUSED, because nothing was moved (got ${JSON.stringify(asRefusals(edit))})`);
+    // The door and the reader agree, which is the whole point of one ceiling.
+    const st = await call("getVaStatus", { jobId: agentId });
+    ok(st.success && st.shadow && st.shadow.ticksLeft === 3,
+      `F-519.KEPT — and the tab still promises the three ticks it was armed for (got ${JSON.stringify(st.shadow)})`);
+
+    // …AND THE DOOR IS STILL A DOOR. Far above what the engine could have armed is
+    // refused out loud: "do not cut an armed watch" is not "accept any number".
+    const tooFar = await call("saveScheduledJob", { job: { id: agentId, mode: "va", va: vaRecord({ guardrails: { shadowTicks: 3 }, status: { paused: false, shadowUntilTick: 99999 } }) } });
+    ok(tooFar.success === true && asRefusals(tooFar).some((r) => String(r.field) === "status.shadowUntilTick"),
+      `F-519.DOOR — an unreachable value is still clamped AND reported (got ${JSON.stringify(asRefusals(tooFar))})`);
+    const capped = await rowOf();
+    ok(capped && capped.va.status.shadowUntilTick <= 600 + 50,
+      `F-519.DOOR — …to the reachable ceiling, not past it (got ${capped && capped.va.status.shadowUntilTick})`);
+  }
+  {
+    // HEALTH ABSENT — the row expired, so the count is UNKNOWN. The save must not lower
+    // the stored watch on a number it cannot verify, and must say that it could not.
+    const row = await rowOf();
+    row.va.status.shadowUntilTick = 603;
+    await writeRow(row);
+    await storage.delete(`va_health:${agentId}`);
+    const edit = await call("saveScheduledJob", { job: { id: agentId, mode: "va", va: vaRecord({ persona: { name: "Ada", voice: { register: "plain", maxSentences: 2 } }, guardrails: { shadowTicks: 3 }, status: { paused: false, shadowUntilTick: 603 } }) } });
+    ok(edit.success === true, "F-519.UNKNOWN — the save succeeds with no health row");
+    const back = await rowOf();
+    eqish(back && back.va.status.shadowUntilTick, 603,
+      "F-519.UNKNOWN — the armed watch is KEPT, not cut to 500 — an unreadable counter fails RESTRICTIVE");
+    const note = asRefusals(edit).find((r) => String(r.note) === "shadow-watch-unknown");
+    ok(note && !/\d{3}/.test(String(note.reason)),
+      `F-519.UNKNOWN — …and the answer carries the shadow-watch-unknown note, with no invented tick count in the sentence (got ${JSON.stringify(asRefusals(edit))})`);
+    // And the FALSE sentence is gone: the re-arm does not run on a count nobody has, so
+    // it cannot tell the admin the agent needs "603 more ticks than it has now".
+    ok(!asRefusals(edit).some((r) => /more than it has now/.test(String(r.reason))),
+      `F-519.UNKNOWN — …and no note claims to know how many ticks the agent has watched (got ${JSON.stringify(asRefusals(edit))})`);
+    // A brand-new agent is NOT "unknown": it genuinely has nothing to count, so a create
+    // still re-arms exactly as before and says nothing about an unreadable counter.
+    const made = await call("saveScheduledJob", { job: { mode: "va", name: "Fresh", va: vaRecord({ guardrails: { shadowTicks: 4 } }) } });
+    const fresh = (await storage.get(`job:${made.job && made.job.id}`)) || (await storage.get(`sched_job:${made.job && made.job.id}`));
+    eqish(fresh && fresh.va.status.shadowUntilTick, 4,
+      "F-519 — a CREATE is a known zero, not an unknown: 0 watched + 4 shadowTicks = 4");
+    ok(!asRefusals(made).some((r) => String(r.note) === "shadow-watch-unknown"),
+      "F-519 — …and a create does not claim a counter could not be read");
+    await setWatched(3);
+  }
+
   /* ── F-508 — THE F-484 BOUNDARY IS UNCHANGED: shadowTicks 50 on a NEW agent ── */
   {
     const made = await call("saveScheduledJob", { job: { mode: "va", name: "Boundary", va: vaRecord({ guardrails: { shadowTicks: 50 } }) } });

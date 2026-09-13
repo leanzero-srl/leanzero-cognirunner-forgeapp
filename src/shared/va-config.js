@@ -203,18 +203,42 @@ export const VA_CEILINGS = Object.freeze({
  * is the restrictive direction — staging instead of speaking — which is the one every
  * other reader of this counter takes when it cannot tell.
  *
- * `watched` omitted (the save door, which cannot know the tick index) gives the plain
- * absolute ceiling — exactly `VA_CEILINGS.shadowUntilTick.max`, so `normalizeVa`'s
- * `refused[]` report stays truthful about the number it clamped to.
+ * `watched` omitted gives the plain absolute ceiling. That used to be described here as
+ * "the save door, which cannot know the tick index" — and F-519 is what that sentence
+ * cost. The door CAN know it: it reads `va_health` three steps later for the re-arm
+ * anyway. Not asking meant the door cut every watch the engine had armed above 500, and
+ * reported a refusal for a number the admin never sent. The door now passes its own
+ * `watched` (`normalizeVa`'s `doorWatch`), so an omitted `watched` here means only what
+ * it says — "no count available" — and both doors answer with one ceiling
+ * (`shadowReachableCeiling`).
  */
+/**
+ * THE REACHABILITY CEILING ITSELF — the one arithmetic, named (F-519).
+ *
+ * `clampShadowUntilTick` is the READ side's clamp; `normalizeVa`'s `int` is the SAVE
+ * door's, because the door must also REPORT what it moved. Two clamps, and before F-519
+ * they used two different ceilings: the door a flat `VA_CEILINGS.shadowUntilTick.max`,
+ * the reader `max(MAX, watched + VA_SHADOW_TICKS_MAX)`. So an agent with 600 prepare
+ * receipts, legitimately armed by `rearmShadow` to 603, was cut to 500 by the very next
+ * save — with a `refused[]` line naming a number the admin never sent — and if the
+ * health row could not be read the re-arm did not restore it. The agent went LIVE 103
+ * ticks early: the permissive direction, against a docblock promising the opposite.
+ *
+ * So the CEILING has one home and both clamps ask it. `watched <= 0` or not a number is
+ * the plain absolute ceiling, which is the restrictive answer and the one every other
+ * reader of this counter takes when it cannot tell.
+ */
+export const shadowReachableCeiling = (watched) => {
+  const w = Number(watched);
+  return Number.isFinite(w) && w > 0
+    ? Math.max(VA_SHADOW_UNTIL_TICK_MAX, Math.trunc(w) + VA_SHADOW_TICKS_MAX)
+    : VA_SHADOW_UNTIL_TICK_MAX;
+};
+
 export const clampShadowUntilTick = (value, watched = null) => {
   const n = Number(value);
   if (!Number.isFinite(n) || n <= 0) return 0;
-  const w = Number(watched);
-  const reachable = Number.isFinite(w) && w > 0
-    ? Math.max(VA_SHADOW_UNTIL_TICK_MAX, Math.trunc(w) + VA_SHADOW_TICKS_MAX)
-    : VA_SHADOW_UNTIL_TICK_MAX;
-  return Math.trunc(n) <= reachable ? Math.trunc(n) : VA_SHADOW_UNTIL_TICK_MAX;
+  return Math.trunc(n) <= shadowReachableCeiling(watched) ? Math.trunc(n) : VA_SHADOW_UNTIL_TICK_MAX;
 };
 
 /* ── Shape bounds (this file's own home — see the header's split rule) ────────── */
@@ -344,6 +368,10 @@ export const clampPersonaName = (value) => clampChars(String(value == null ? "" 
  *   @param {Array}    [ctx.serviceDesks]  `[{ id|serviceDeskId, queueIds:[] }]`, from a live read.
  *   @param {string[]} [ctx.timeZones]     allowed IANA zones; omitted = Intl validation.
  *   @param {string[]} [ctx.skillIndex]    skill ids that exist; omitted = shape only.
+ *   @param {object}   [ctx.existing]      the STORED `va` block this save replaces.
+ *   @param {number}   [ctx.watchedTicks]  the agent's own prepare-receipt count (F-519);
+ *                                          omitted/null = "could not be read", which is
+ *                                          the restrictive case — see `doorWatch` below.
  * @returns {{ va: object, refused: Array<{field:string, reason:string}> }}
  * @throws  on a structural refusal (no name, site-wide write, unusable cadence).
  */
@@ -586,6 +614,15 @@ export const normalizeVa = (raw, ctx = {}) => {
 
   /* — status — */
   const st = isObj(src.status) ? src.status : {};
+  // F-519 — see the long note on `shadowUntilTick` below. `ctx.watchedTicks` is the
+  // agent's own prepare-receipt count when the caller could read it; when it could not,
+  // the stored watch is turned back into the count that makes it reachable, which is what
+  // "a save must never LOWER an armed watch it cannot verify" means in arithmetic.
+  const ctxWatched = Number(ctx.watchedTicks);
+  const storedUntil = Number(isObj(ctx.existing) && isObj(ctx.existing.status) ? ctx.existing.status.shadowUntilTick : NaN);
+  const doorWatch = ctx.watchedTicks != null && Number.isFinite(ctxWatched) && ctxWatched >= 0
+    ? Math.trunc(ctxWatched)
+    : (Number.isFinite(storedUntil) && storedUntil > 0 ? Math.max(0, Math.trunc(storedUntil) - VA_SHADOW_TICKS_MAX) : 0);
   const status = {
     paused: bool(st.paused, false),
     // Shadow mode is a TICK INDEX, not a date: ticks are the agent's clock everywhere
@@ -603,11 +640,37 @@ export const normalizeVa = (raw, ctx = {}) => {
      * empty `refused[]`. An unreachable value is a REFUSAL AT THE DOOR, said out loud,
      * not a silent substitution three steps later.
      */
-    // The clamp runs through `clampShadowUntilTick` (F-514) so the save door and the
-    // runtime reader share one arithmetic. `int` still does the REPORTING — an
-    // unreachable value must be refused out loud here — and passing no `watched` gives
-    // the plain absolute ceiling, which is the number `int` just told the admin about.
-    shadowUntilTick: clampShadowUntilTick(int(st.shadowUntilTick, 0, VA_CEILINGS.shadowUntilTick.max, guardrails.shadowTicks, "status.shadowUntilTick", report)),
+    /*
+     * F-519 — THE DOOR'S CEILING *IS* THE READ SIDE'S REACHABILITY RULE.
+     *
+     * F-514 routed this through `clampShadowUntilTick` but left `int`'s ceiling at the
+     * flat absolute max, and `int` runs FIRST — so the door cut every value the ENGINE
+     * had legitimately armed above 500 (`rearmShadow` is raise-only and runs after this,
+     * so an agent with 600 prepare receipts is armed to 603) and REPORTED a refusal for a
+     * number the admin never sent. The only thing that put it back was the re-arm, which
+     * reads `va_health` — a row with a TTL. When that row had expired or faulted the
+     * watch count read 0, the restore floor became `0 + shadowTicks`, and the clamped 500
+     * stood: the agent went LIVE 103 ticks early. A shortening, in the PERMISSIVE
+     * direction, on the one counter whose whole contract is to err the other way.
+     *
+     * `doorWatch` is how many of its own ticks this agent has been watched:
+     *   · `ctx.watchedTicks` — a number — is the real count, read from `va_health` by the
+     *     save path (`watchedTicksForSave`, src/virtual-admin.js).
+     *   · ABSENT or unreadable is the RESTRICTIVE case: the door must not LOWER what is
+     *     already stored. The watch that makes the stored value exactly reachable is used
+     *     instead, so a stored 603 survives untouched and a 604 sent by an admin is still
+     *     refused. `null` therefore never widens anything: with no stored value (a new
+     *     agent, the wizard, the shape-only doors) it is the plain absolute ceiling.
+     *
+     * That same restrictive case is what keeps the SECOND normalisation honest: `saveJob`
+     * re-normalises without a catalogue and without a watch count, and a flat ceiling
+     * there would have re-cut the value this door just preserved.
+     *
+     * `int` still does the REPORTING — a value above the ceiling must be refused out
+     * loud — and `clampShadowUntilTick` is asked with the same `doorWatch`, so the number
+     * stored and the number the admin was told about cannot differ.
+     */
+    shadowUntilTick: clampShadowUntilTick(int(st.shadowUntilTick, 0, shadowReachableCeiling(doorWatch), guardrails.shadowTicks, "status.shadowUntilTick", report), doorWatch),
   };
 
   return { va: { persona, scope, intake, cadence, powers, guardrails, status }, refused };

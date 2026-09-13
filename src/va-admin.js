@@ -97,6 +97,10 @@ import {
   // THE ONE count of "how many ticks has this agent watched" (F-484) — the agent's own
   // prepare receipts, the same number the post gate compares `shadowUntilTick` against.
   watchedTicks,
+  // …and the same count WITH its confidence (F-519). The save door must not treat an
+  // unreadable or expired health row as "watched 0 times": at save time that is the
+  // permissive reading, and it cuts watches the engine legitimately armed.
+  watchedTicksKnown,
   // THE agent-capability verdict (F-482/F-485) — the same one the tick and the item
   // turn refuse on, so a SAVE cannot accept an agent the next tick will refuse. It
   // reads its facts from `agentGateFacts` (src/index.js) and decides with
@@ -1409,11 +1413,40 @@ export const prepareVaSave = async ({ input, existing, savedByRole, now } = {}, 
   const src = isObj(input) ? input : {};
 
   const built = await buildCatalogue(injected);
+  /* — THE WATCH COUNT IS READ BEFORE THE DOOR, NOT AFTER IT (F-519) —
+   *
+   * It used to be read three steps later, for the re-arm alone, and `normalizeVa` was
+   * left to bound `status.shadowUntilTick` against a flat ceiling with no idea how many
+   * ticks the agent had watched. So the door CUT every watch the engine had armed above
+   * that ceiling — reporting a refusal for a number nobody sent — and the only thing that
+   * put it back was this read, which answers 0 when `va_health` has expired or faulted.
+   * The net effect was an agent released from shadow mode early, quietly.
+   *
+   * `known:false` is carried all the way through: the door keeps the stored watch, the
+   * re-arm does not run on a count it does not have, and the save SAYS SO.
+   */
+  const watch = await watchedTicksFor(existing, deps.store);
+  /* AND IT ONLY CHANGES AN ANSWER WHERE IT PROTECTS SOMETHING. An unreadable counter is
+   * the NORMAL state for an agent that has not ticked yet, and on that agent it decides
+   * nothing: the reachable ceiling is the flat absolute one either way, and the re-arm's
+   * `watched + shadowTicks` over a true zero is exactly right. Treating every such save
+   * as "unknown" would skip a re-arm that should happen and put a sentence about a
+   * counter nobody asked about into `refused[]` on every save. The unknown count MATTERS
+   * in one case: a stored watch ABOVE the absolute ceiling, which only the engine can
+   * have armed and only the real count can justify keeping. */
+  const storedUntil = Number(existing && existing.va && existing.va.status && existing.va.status.shadowUntilTick);
+  const armedBeyondCeiling = Number.isFinite(storedUntil) && storedUntil > VA_CEILINGS.shadowUntilTick.max;
+  const watchUnverified = !watch.known && armedBeyondCeiling;
   let normalized = null;
   try {
     normalized = normalizeVa(src.va, {
       ...catalogToCtx(built.catalog || {}),
       existing: existing && existing.va,
+      // `null` when the count could not be read — `normalizeVa` reads that as "do not
+      // lower what is stored", which is the restrictive direction for this field. With
+      // nothing armed above the ceiling that is the same answer as a zero, so an ordinary
+      // never-ticked agent is bounded exactly as it always was.
+      watchedTicks: watch.known ? watch.watched : null,
       savedByRole,
     });
   } catch (e) {
@@ -1476,8 +1509,18 @@ export const prepareVaSave = async ({ input, existing, savedByRole, now } = {}, 
   // …and it only ever RAISES the watch (F-508). Whatever it decides about a long armed
   // watch is carried into the answer: a save that touches this field silently is the
   // defect, not the fix.
-  const armed = rearmShadow(normalized.va, await watchedTicksFor(existing, deps.store));
+  // …and it does not run at all on a count we do not have (F-519). `rearmShadow` is a
+  // floor over `watched + shadowTicks`; computed from a 0 nobody believes, that floor is
+  // a fiction, and its note ("N more ticks than it has now") is a false sentence about an
+  // agent that may have ticked six hundred times. A watch that cannot be verified is
+  // KEPT AS IT IS and named, which is what `shadow-watch-unknown` says.
+  const armed = rearmShadow(normalized.va, watch.known ? watch.watched : (watchUnverified ? null : 0));
   const va = armed.va;
+  const watchNotes = !watchUnverified ? [] : [{
+    field: "status.shadowUntilTick",
+    note: SHADOW_WATCH_UNKNOWN,
+    reason: "This agent's own tick counter could not be read, so its shadow-mode watch was left exactly as it was rather than being recalculated. Nothing about shadow mode changed with this save.",
+  }];
   return okv({
     input: {
       ...src,
@@ -1485,7 +1528,7 @@ export const prepareVaSave = async ({ input, existing, savedByRole, now } = {}, 
       name: String(src.name || "").trim() || va.persona.name,
       schedule: { cron: va.cadence.cron, timeZone: va.cadence.timeZone },
     },
-    refused: [...refused, ...asArray(armed.notes)],
+    refused: [...refused, ...asArray(armed.notes), ...watchNotes],
   });
 };
 
@@ -1842,6 +1885,11 @@ export const wizardReset = async ({ accountId } = {}, injected = {}) => {
  */
 export const rearmShadow = (va, watchedTickCount) => {
   if (!isObj(va) || !isObj(va.status) || !isObj(va.guardrails)) return { va, notes: [] };
+  // `null` IS NOT ZERO (F-519). The count could not be read — `Number(null)` is 0, and a
+  // floor computed from a zero nobody believes both fails to re-arm honestly and emits a
+  // note asserting how many ticks the agent still needs. No count, no re-arm, no note;
+  // `prepareVaSave` says `shadow-watch-unknown` instead.
+  if (watchedTickCount == null) return { va, notes: [] };
   const idx = Number(watchedTickCount);
   const ticks = Number(va.guardrails.shadowTicks);
   if (!Number.isFinite(idx) || !Number.isFinite(ticks)) return { va, notes: [] };
@@ -1877,6 +1925,12 @@ export const rearmShadow = (va, watchedTickCount) => {
  */
 export const watchedTicksFor = async (job, store) => {
   const id = String((job && job.id) || "").trim();
-  if (!id || !store) return 0;
-  try { return await watchedTicks(store, id); } catch (e) { return 0; }
+  // NO JOB AT ALL is a CREATE, and a create genuinely has nothing to count: `known` is
+  // true and the count is 0, which is what `normalizeVa` defaults `shadowUntilTick` to.
+  if (!id) return { watched: 0, known: true };
+  if (!store) return { watched: null, known: false };
+  try { return await watchedTicksKnown(store, id); } catch (e) { return { watched: null, known: false }; }
 };
+
+/** The `refused[]` note a save emits when it could not read the agent's tick count. */
+export const SHADOW_WATCH_UNKNOWN = "shadow-watch-unknown";

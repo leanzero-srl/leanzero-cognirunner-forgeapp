@@ -1359,8 +1359,37 @@ export const isInShadow = async (job, { receipts = null, store = null } = {}) =>
  * tell how many times you have been watched" is not "enough times".
  */
 export const watchedTicks = async (store, agentId) => {
+  const { watched } = await watchedTicksKnown(store, agentId);
+  return watched == null ? 0 : watched;
+};
+
+/**
+ * …AND WHETHER THE COUNT IS A COUNT AT ALL (F-519).
+ *
+ * Reading a health row that is missing, expired or unreadable as "0 ticks watched" is
+ * the RESTRICTIVE answer for every RUNTIME reader — an agent nobody can prove was
+ * watched stays in shadow — which is why `watchedTicks` above keeps doing exactly that.
+ *
+ * At the SAVE door the same 0 is the PERMISSIVE answer, and that is the whole of F-519.
+ * A watch the engine armed at 603 is only reachable if the door knows the agent has 600
+ * receipts; told "0", the door decides 603 is an F-484 leftover, cuts it to 500, and the
+ * agent goes live 103 ticks before the admin was promised. `va_health` carries a TTL, so
+ * "I cannot tell" is a normal state and not an exceptional one.
+ *
+ * `known:false` therefore means "do not act on this number" — never "zero". The three
+ * causes are indistinguishable in the stored row (`readHealth` rebuilds an absent row as
+ * a healthy zero) and they do not need distinguishing: an agent that genuinely has never
+ * ticked has no armed watch above the absolute ceiling to protect, so treating it as
+ * unknown costs nothing.
+ */
+export const watchedTicksKnown = async (store, agentId) => {
   const health = await readHealth(store, agentId);
-  return health.ok ? Number(health.prepareTicks) || 0 : 0;
+  if (!health || health.ok !== true) return { watched: null, known: false };
+  const n = Number(health.prepareTicks) || 0;
+  // A row that aged out reads back as `prepareTicks: 0` with no `lastOkAt` — identical
+  // to an agent that has never run. Both are "no evidence", and no evidence is unknown.
+  if (n <= 0 && !health.lastOkAt) return { watched: null, known: false };
+  return { watched: n, known: true };
 };
 
 /** GATE 1 — paused, shadow mode, kill switch. Agent-level, checked once per post run. */

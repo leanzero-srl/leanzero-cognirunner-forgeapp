@@ -8050,11 +8050,29 @@ resolver.define("deleteSkill", async ({ payload, context }) => {
     const { id } = payload || {};
     const index = (await storage.get(SKILL_INDEX_KEY)) || [];
     const skill = index.find((s) => s.id === id);
-    if (skill) {
-      // F-260 — see registerConfig.
-      const verdict = await configActionVerdict(context.accountId, skill, "editor");
-      if (!verdict.allowed) return configRefusal(verdict, "delete this skill");
-    }
+    // F-624 — THE GATE IS UNCONDITIONAL, exactly as `deleteListener`/`deleteJob`.
+    // It used to be `if (skill) { …verdict… }`, so an id naming no skill skipped
+    // the gate entirely: it answered a bare `{success:true}` (and still called
+    // `deleteSkillRows` on nothing — a write attempt a refused caller must never
+    // reach) while a colleague's skill answered the `notOwner` sentence. That is
+    // F-261's existence leak, one resolver down from the SAVE door F-622 closed:
+    // `success:true` = free id, "belongs to someone else" = a colleague's skill.
+    // `gateExistingRow` decides both arms in ONE home — for a scope-"own" caller
+    // unknown-id and foreign-row are byte-identical, and "Skill not found" is
+    // produced only for a scope-"all" caller, for whom it is the answer they
+    // asked for and not a map.
+    //
+    // DECISION (F-624, coordinator, under the owner's "no more security issues"):
+    // PARITY WINS over the old leniency. `destructive: true` narrows scope-"own"
+    // to genuine authorship, so an OWNERLESS legacy user skill (no `createdBy` —
+    // saved before authorship was recorded) becomes deletable by ADMINS ONLY.
+    // That is the listener/job rule applied here deliberately; it is a behaviour
+    // change, not an oversight.
+    const refusal = await gateExistingRow(context.accountId, skill, {
+      what: "delete this skill", minRole: "editor", destructive: true,
+      notFound: "Skill not found",
+    });
+    if (refusal) return refusal;
     if (skill?.builtin === true) {
       // Builtins are shared, curated content — mirror the saveSkill gate.
       if (!(await requireAdmin(context.accountId))) {

@@ -128,6 +128,43 @@ const listenerBody = (over = {}) => ({
   ok(stillMine && stillMine.name === "Admin's skill", "resolver skills: the colleague's skill was NOT overwritten");
 }
 
+/* skills DELETE — F-624's door, one resolver down from F-622's.
+ * The gate used to be `if (skill) {…}`, so an unknown id skipped it, answered
+ * `{success:true}` and still called deleteSkillRows on nothing. */
+{
+  const mine = await call("saveSkill", { name: "Admin's deletable skill", instructions: "do a thing" }, ADMIN);
+  const foreign = mine.id;
+  const FREE = "skill_parity_delete_free";
+  const a = await call("deleteSkill", { id: FREE }, OWN);
+  const b = await call("deleteSkill", { id: foreign }, OWN);
+  ok(a.success === false && b.success === false,
+    `resolver deleteSkill: a scope-'own' editor is refused on BOTH ids — never success:true for a free one (got ${JSON.stringify(a)})`);
+  same(a, b, "resolver deleteSkill (F-624)");
+  ok(a.error !== "Skill not found",
+    `resolver deleteSkill: the not-found sentence is NOT the scope-'own' answer (got ${a.error})`);
+  ok((await skillIndex()).find((s) => s.id === foreign),
+    "resolver deleteSkill: the colleague's skill survived the refused delete");
+  const adminAnswer = await call("deleteSkill", { id: FREE }, ADMIN);
+  ok(adminAnswer.success === false && adminAnswer.error === "Skill not found",
+    `resolver deleteSkill: an ADMIN still gets the plain not-found (got ${JSON.stringify(adminAnswer)})`);
+  /* and the door still OPENS for the owner */
+  const ownSkill = await call("saveSkill", { name: "Own editor's skill", instructions: "mine" }, OWN);
+  const deleted = await call("deleteSkill", { id: ownSkill.id }, OWN);
+  ok(deleted.success === true, `resolver deleteSkill: the author can still delete their own skill (got ${JSON.stringify(deleted)})`);
+  ok(!(await skillIndex()).find((s) => s.id === ownSkill.id), "resolver deleteSkill: …and the row is gone");
+  /* F-624 decision: destructive:true narrows scope-'own' to genuine authorship,
+   * so an OWNERLESS legacy skill is admin-delete-only. Named here so a future
+   * change to it is a test failure, not a surprise. */
+  const legacy = { id: "skill_legacy_ownerless", name: "Legacy", category: "Other", enabled: true, createdBy: null };
+  await storage.set("skill_repo_index", [...(await skillIndex()), legacy]);
+  const legacyRefused = await call("deleteSkill", { id: legacy.id }, OWN);
+  ok(legacyRefused.success === false,
+    `resolver deleteSkill: an OWNERLESS legacy skill is refused to a scope-'own' editor (got ${JSON.stringify(legacyRefused)})`);
+  ok((await skillIndex()).find((s) => s.id === legacy.id), "resolver deleteSkill: …and it was not deleted");
+  const legacyAdmin = await call("deleteSkill", { id: legacy.id }, ADMIN);
+  ok(legacyAdmin.success === true, `resolver deleteSkill: an ADMIN can still delete it (got ${JSON.stringify(legacyAdmin)})`);
+}
+
 /* agents — the VA resolvers sit at the ADMIN floor, so the parity here is that the
  * floor answers FIRST and an id never reaches a row read at all. */
 {

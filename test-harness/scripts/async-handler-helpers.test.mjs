@@ -1028,15 +1028,39 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   // EXECUTED: the real handler source over a stubbed dispatch.
   const logs = [];
   const quiet = { log: (...a) => logs.push(a.join(" ")), warn: (...a) => logs.push(a.join(" ")), error: (...a) => logs.push(a.join(" ")) };
-  const mk = (dispatch) => new Function("dispatchGitEvent", "console", `return (${g.slice(g.indexOf("async (params)"), g.lastIndexOf("};") + 1)});`)(dispatch, quiet);
+  const { gitDeliveryClaimKey, gitDeliveryAttemptKey, GIT_DISPATCH_MAX_ATTEMPTS } = await import("../../src/shared/git-ids.js");
+  const gitStore = new Map();
+  const gitStorage = {
+    get: async (k) => gitStore.get(k),
+    set: async (k, v) => { gitStore.set(k, v); },
+    delete: async (k) => { gitStore.delete(k); },
+  };
+  const mk = (dispatch) => new Function("dispatchGitEvent", "console", "storage", "gitDeliveryClaimKey", "gitDeliveryAttemptKey", "GIT_DISPATCH_MAX_ATTEMPTS",
+    `return (${g.slice(g.indexOf("async (params)"), g.lastIndexOf("};") + 1)});`)(dispatch, quiet, gitStorage, gitDeliveryClaimKey, gitDeliveryAttemptKey, GIT_DISPATCH_MAX_ATTEMPTS);
   let seen = null;
   const okHandler = mk(async (env) => { seen = env; return { eventType: env.eventType, repoId: "o/r", queued: 2, propertyWrites: 1 }; });
   const r1 = await okHandler({ envelope: { eventType: "git:pull_request:opened", repoId: "o/r" } });
   ok(r1.success === true && r1.queued === 2 && seen.eventType === "git:pull_request:opened", "EXECUTED: the envelope reaches the dispatcher and the result is reported");
   const r2 = await okHandler({});
   ok(r2.success === false && /envelope/.test(r2.error), "EXECUTED: a delivery with no envelope is a reported failure, not a silent success");
+  // F-335 — a dispatch throw FAILS CLOSED: the claim is released and the throw is
+  // rethrown so the platform redelivers, up to the four-retry cap.
+  gitStore.clear();
+  gitStore.set(gitDeliveryClaimKey("gc_1", "d-1"), { at: "now" });
+  const thrower = mk(async () => { throw new Error("kvs down"); });
+  const env335 = { envelope: { eventType: "git:push", connectionId: "gc_1", deliveryId: "d-1" } };
+  let thrown = null;
+  try { await thrower(env335); } catch (e) { thrown = e; }
+  ok(thrown && /kvs down/.test(thrown.message) && thrown.requeue === true, "EXECUTED: the dispatch throw PROPAGATES (marked requeue) instead of being returned as a stamped failure");
+  ok(gitStore.get(gitDeliveryClaimKey("gc_1", "d-1")) === undefined, "EXECUTED: …and the 24 h delivery claim is released, so the provider's Redeliver is not answered 'duplicate'");
+  ok((gitStore.get(gitDeliveryAttemptKey("gc_1", "d-1")) || {}).attempts === 1, "EXECUTED: the attempt is counted");
+  let lastThrow = null;
+  for (let i = 2; i <= GIT_DISPATCH_MAX_ATTEMPTS; i++) { lastThrow = null; try { await thrower(env335); } catch (e) { lastThrow = e; } }
+  ok(lastThrow === null, `EXECUTED: attempt ${GIT_DISPATCH_MAX_ATTEMPTS} stops rethrowing — a poison delivery does not loop forever`);
+  ok(logs.some((l) => /DELIVERY DROPPED/.test(l)), "EXECUTED: …and the final drop is logged loudly");
   const r3 = await mk(async () => { throw new Error("kvs down"); })({ envelope: { eventType: "git:push" } });
-  ok(r3.success === false && /kvs down/.test(r3.error), "EXECUTED: a dispatch throw is caught and surfaced — the provider already got its 2xx");
+  ok(r3.success === false && /kvs down/.test(r3.error), "EXECUTED: a delivery with no connection/delivery id cannot be re-claimed, so it is dropped and reported, never rethrown blind");
+  ok(/if \(error && error\.requeue\) throw error;/.test(asyncSrc), "the consumer's outer catch lets a requeue-marked error out AFTER recording it");
 }
 
 // =====================================================================================

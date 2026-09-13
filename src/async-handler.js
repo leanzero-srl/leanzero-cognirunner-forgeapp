@@ -90,6 +90,7 @@ import {
   defangFence,
 } from "./memories.js";
 import { executeListenerTask, getListener, dispatchGitEvent } from "./listeners.js";
+import { gitDeliveryClaimKey, gitDeliveryAttemptKey, GIT_DISPATCH_MAX_ATTEMPTS } from "./shared/git-ids.js";
 // 1.4 commit 4b — the PR review engine and the connection layer it runs over. The
 // engine holds NO opinion about credentials or transports: the consumer injects the
 // provider (built from the saved connection) and the model callback.
@@ -1150,10 +1151,35 @@ const executeGitEvent = async (params) => {
     console.log(`[git-event] ${out.eventType || "?"} ${out.repoId || "?"}: ${out.queued || 0} run(s) queued, ${out.propertyWrites || 0} issue propert(ies) written`);
     return { success: true, ...out };
   } catch (e) {
-    // A throw here means NOTHING was dispatched. Surface it: the provider already got
-    // its 2xx from the webhook, so this log line is the only trace of a lost delivery.
-    console.error("[git-event] dispatch failed:", e);
-    return { success: false, error: String((e && e.message) || e).slice(0, 300) };
+    // A throw here means NOTHING was dispatched — FAIL CLOSED (Law 3): a verified
+    // delivery that did not run must be retried, never stamped and forgotten. Returning
+    // the failure (what this did before F-335) is terminal: the consumer marks it
+    // "error" and the platform never redelivers, while the 24 h `git_delivery` claim —
+    // taken at ACCEPT time — answers the provider's own Redeliver button `duplicate`.
+    // So: release the claim (the claim means COMPLETION now, not acceptance) and
+    // RETHROW so the queue redelivers. `requeue` tells `handler` to let the throw out
+    // after it has recorded the failure; everything else still swallows.
+    //
+    // A poison delivery must not loop forever: the attempt counter is checked first and
+    // the fourth failure is DROPPED loudly, matching the platform's four-retry cap.
+    const connId = (envelope && envelope.connectionId) || null;
+    const deliveryId = (envelope && envelope.deliveryId) || null;
+    const msg = String((e && e.message) || e).slice(0, 300);
+    let attempts = 0;
+    if (connId && deliveryId) {
+      const attemptKey = gitDeliveryAttemptKey(connId, deliveryId);
+      try { attempts = Number((await storage.get(attemptKey) || {}).attempts) || 0; } catch { /* best-effort */ }
+      attempts += 1;
+      try { await storage.set(attemptKey, { attempts, at: new Date().toISOString() }, { ttl: { value: 24, unit: "HOURS" } }); } catch { /* best-effort */ }
+    }
+    if (!connId || !deliveryId || attempts >= GIT_DISPATCH_MAX_ATTEMPTS) {
+      console.error(`[git-event] DELIVERY DROPPED after ${attempts || "?"} dispatch attempt(s) — conn=${connId || "?"} delivery=${deliveryId || "?"}: ${msg}. Nothing ran and nothing will retry; re-run the pull request's event from the provider after fixing the cause.`);
+      return { success: false, error: msg };
+    }
+    try { await storage.delete(gitDeliveryClaimKey(connId, deliveryId)); } catch { /* best-effort */ }
+    console.error(`[git-event] dispatch failed (attempt ${attempts}/${GIT_DISPATCH_MAX_ATTEMPTS}), claim released, requeueing:`, e);
+    e.requeue = true;
+    throw e;
   }
 };
 
@@ -1668,6 +1694,12 @@ export async function handler(event) {
     console.error(`Async handler error (${taskType}):`, error);
     if (polled) await storage.set(`${TASK_PREFIX}${taskId}`, { status: "error", error: error.message }, ttl);
     await updateAsyncJob(taskId, { status: "error", finishedAt: new Date().toISOString(), durationMs: Date.now() - startMs, error: String(error?.message || error).slice(0, 300) }, JOB_TTL_DONE);
+    // F-335 — the ONE opt-in escape from this swallow. A task handler that marks its
+    // error `requeue` has decided the work must be RETRIED by the platform (today:
+    // a git delivery whose dispatch faulted, whose claim it has already released).
+    // The rows above are written first so the failure is visible either way; the
+    // handler caps its own retries, this line does not loop on its own.
+    if (error && error.requeue) throw error;
   }
 
   // Settle the budget ledger: release the reservation and learn this rule's real

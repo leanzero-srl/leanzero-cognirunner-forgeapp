@@ -16,6 +16,8 @@ import { PROVIDER_IDS, providerSlotsFor } from "./shared/provider-slots.js";
 import { readBearerToken } from "./shared/http-headers.js";
 // F-163: the memory-store key NAMES come from the module that owns them — never retyped here.
 import { MEMORIES_KEY, MEMORY_SETTINGS_KEY, MEMORY_STORE_FULL_KEY } from "./memories.js";
+// F-566: same discipline for the knowledge-pack settings slot — the module that owns it.
+import { KNOWLEDGE_SETTINGS_KEY } from "./knowledge-packs.js";
 
 const json = (statusCode, body) => ({
   statusCode,
@@ -574,6 +576,19 @@ export async function testStateTrigger(req) {
         // getKnowledgeCounts and getLogs are already allowlisted above; listed here in the
         // comment only, not re-added — one entry, one home.
         "getContextDocs", "getSkills", "getSkillContent", "explainRule",
+        // F-566 — the knowledge-pack surfaces. `getKnowledgePacks` is a pure READ of the
+        // generated index (titles, tags, sizes, budgets — never a pack BODY), the same
+        // class as `getKnowledgeCounts` above. `saveKnowledgeSettings` is a WRITE and is
+        // admitted deliberately: "the packs are opt-out" is a product claim, and with the
+        // resolver closed to the harness the disable path had no live proof on any build —
+        // a tester could read the settings row through `?what=kvs` and never write it.
+        // It keeps its OWN admin gate (requireAdmin) — the hook does not bypass it, so a
+        // harness driving it with a non-admin accountId still gets the refusal, which is
+        // half of what is worth testing. It plants no credential, calls no model and
+        // writes nothing outside this instance's own settings row; the clamp in
+        // `saveKnowledgeSettings` runs before the write, so a phantom pack id cannot be
+        // stored through here either.
+        "getKnowledgePacks", "saveKnowledgeSettings",
         // 1.5 commit 5b — the Virtual Administrator READ surfaces, so a live pass can
         // prove the permission floors and the answer shapes on real data: the editor
         // floor on listVaAgents/getVaStatus and the ADMIN floor on the three below.
@@ -716,8 +731,13 @@ export async function testStateTrigger(req) {
       // store at the cap, which is exactly the state the F-160 eviction policy and the F-161
       // at-cap rejection are about. F-174 — plus the store-full MARKER, so a test that
       // drives the banner can back it up and restore it (constant imported, never retyped).
+      // F-566 — the knowledge-pack SETTINGS row (a settings key, never a secret), so a
+      // driver can back up the instance's pack switches before it flips them and put them
+      // back afterwards. The resolver alone cannot do that: it clamps to the known pack
+      // ids, which is right for a product surface and wrong for a restore.
       const KEYS = new Set(["COGNIRUNNER_USAGE", "COGNIRUNNER_SEAT_SNAPSHOT", "COGNIRUNNER_EDITION_SNAPSHOT",
-        "COGNIRUNNER_AI_PROVIDER", MEMORIES_KEY, MEMORY_SETTINGS_KEY, MEMORY_STORE_FULL_KEY]);
+        "COGNIRUNNER_AI_PROVIDER", MEMORIES_KEY, MEMORY_SETTINGS_KEY, MEMORY_STORE_FULL_KEY,
+        KNOWLEDGE_SETTINGS_KEY]);
       for (const p of PROVIDER_IDS) for (const slot of providerSlotsFor(p)) KEYS.add(slot);
       if (!KEYS.has(body.key)) return json(400, { error: `key not allowlisted: ${body.key}` });
       if (body.value === null) await storage.delete(body.key);

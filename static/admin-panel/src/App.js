@@ -2905,6 +2905,18 @@ const injectStyles = () => {
     .lst-premade-btn:hover { border-color: #7c3aed; }
     .lst-premade-name { font-size: 13.5px; font-weight: 700; }
     .lst-premade-help { font-size: 11.5px; color: var(--text-secondary); line-height: 1.45; }
+    /* F-486 - the premade starter is a CELL now: the button plus, when the instance
+       cannot run it, the solid capability note under it. The flex basis moved off the
+       button and onto the cell so a blocked row keeps the same column width. */
+    .lst-premade-cell { flex: 1 1 320px; display: flex; flex-direction: column; }
+    .lst-premade-cell .lst-premade-btn { flex: 1 1 auto; width: 100%; }
+    /* A blocked starter is NOT faded - a washed-out button reads as a rendering bug. It
+       keeps full contrast and a dashed edge, and the solid chip below says why. */
+    .lst-premade-btn-blocked { cursor: not-allowed; border-style: dashed; border-color: #b45309; }
+    .lst-premade-btn-blocked:hover { border-color: #b45309; }
+    .lst-premade-cap { margin-top: 8px; margin-bottom: 0; }
+    html[data-color-mode="dark"] .lst-premade-btn-blocked { border-color: #f59e0b; }
+    html[data-color-mode="dark"] .lst-premade-btn-blocked:hover { border-color: #f59e0b; }
     html[data-color-mode="dark"] .runres-brake { background: #f59e0b; }
     html[data-color-mode="dark"] .agc-knowledge-refusal { background: #ef4444; }
     html[data-color-mode="dark"] .agc-kr-chip { background: #1e293b; }
@@ -3275,9 +3287,18 @@ const injectStyles = () => {
     .va-receipt-skip { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; font-size: 12.5px; line-height: 1.5; color: var(--text-color); }
     .va-receipt-gate { padding: 2px 7px; border-radius: 4px; background: #b45309; color: #fff; font-size: 10px; font-weight: 800; letter-spacing: 0.04em; }
     .va-receipt-error { padding: 8px 11px; border-radius: 6px; background: #dc2626; color: #fff; font-size: 12px; font-weight: 600; }
+    /* F-501 - the capability gate's own state. Solid red, white ink, no rail and no tint:
+       this is a stop, and the remedy sentence has to read as one. */
+    .va-receipt-failed { padding: 2px 8px; border-radius: 4px; background: #dc2626; color: #fff; font-size: 10px; font-weight: 800; letter-spacing: 0.05em; }
+    .va-receipt-cap { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border-radius: 6px; background: #dc2626; color: #fff; }
+    .va-receipt-cap-title { font-size: 13px; font-weight: 700; color: #fff; }
+    .va-receipt-cap-text { font-size: 12.5px; font-weight: 600; line-height: 1.5; color: #fff; }
+    .va-receipt-cap-link { font-size: 12px; font-weight: 600; color: #fff; }
     html[data-color-mode="dark"] .va-receipt-kind { background: #64748b; }
     html[data-color-mode="dark"] .va-receipt-gate { background: #f59e0b; color: #2a1602; }
     html[data-color-mode="dark"] .va-receipt-error { background: #ef4444; }
+    html[data-color-mode="dark"] .va-receipt-failed { background: #ef4444; }
+    html[data-color-mode="dark"] .va-receipt-cap { background: #ef4444; }
     html[data-color-mode="dark"] .va-receipt-bad { border-color: #ef4444; }
 
     .va-constraints { display: flex; flex-direction: column; gap: 6px; }

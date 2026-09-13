@@ -193,8 +193,13 @@ function byteLength(str) {
   return new TextEncoder().encode(str).length;
 }
 
-/** Truncate to a byte budget on a character boundary, with a visible marker. */
-function clampBytes(str, maxBytes, marker) {
+/**
+ * Truncate to a byte budget on a character boundary, with a visible marker.
+ * EXPORTED (F-287): the review engine needs the same maths, and a second copy of a
+ * truncation rule is how a marker and a budget silently drift apart. Returns
+ * `{ text, truncated }` — callers that only want the string take `.text`.
+ */
+export function clampBytes(str, maxBytes, marker) {
   const s = String(str == null ? "" : str);
   if (byteLength(s) <= maxBytes) return { text: s, truncated: false };
   let cut = s.slice(0, maxBytes);

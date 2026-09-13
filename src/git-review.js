@@ -53,9 +53,26 @@
  *     summary to 2 KB, a message to 1 KB, a path to 200 chars, a line to an integer or
  *     null, a severity to a closed set. Anything else is dropped, not coerced.
  *
- *  5. A VERDICT IS NOT AN ACTION. `approve` / `request_changes` are reported in the
- *     comment TEXT unless `options.allowVerdictActions === true` (default false).
- *     An AI approving a pull request is a decision a human opts into.
+ *  5. A VERDICT IS NOT AN ACTION, AND THE ENGINE CHECKS THE PERMISSION ITSELF (F-286).
+ *     `approve` / `request_changes` are reported in the comment TEXT unless BOTH
+ *     `options.allowVerdictActions === true` AND `options.savedByRole === "admin"`.
+ *     The caller already derives the first from the rule row; the engine re-derives the
+ *     second because a permission asserted in exactly one place is one refactor away
+ *     from being asserted nowhere, and the thing on the other side of it is an AI
+ *     approving a human's pull request.
+ *
+ *  5b. THE WRITE BRAKE (F-285). A run posts at most ONE general comment and
+ *     MAX_INLINE_COMMENTS inline ones, and a repo may be reviewed at most
+ *     REVIEW_RATE_PER_HOUR times an hour (`git_review_rate:<connId>:<repoId>:<hour>`
+ *     slot claims). A model that emits 20 findings on a 40-file PR, or a webhook that
+ *     loops, is a comment flood on a customer's repository — the per-PR claim does not
+ *     stop either, because each is a DIFFERENT pull request or a different head SHA.
+ *
+ *  5c. THE CLAIM IS RELEASED WHEN NOTHING WAS POSTED (F-284). Fail-closed starts at the
+ *     FIRST WRITE, not at the claim: before any comment exists the risk being managed
+ *     is a duplicate comment, and there is no comment, so holding the claim for 24 h
+ *     only guarantees the PR is never reviewed. After the first successful post the
+ *     claim is kept whatever happens next — a partial review must never be repeated.
  *
  *  6. SIMULATION POSTS NOTHING and returns exactly what it would have posted.
  *
@@ -73,6 +90,12 @@ import { claimRuleExecution } from "./shared/execution-claim.js";
 import { defangFence } from "./memories.js";
 import {
   capDiff,
+  // F-287 — ONE truncation rule. This module used to carry its own byte clamp with a
+  // different marker and a different loop; the adapter's is the one that already
+  // decides what a truncated diff looks like, so it is the one home. It returns
+  // `{ text, truncated }`; `clampBytes` below is the thin string-returning wrapper the
+  // prompt builder wants, and it is NOT a second implementation.
+  clampBytes as clampBytesRaw,
   DIFF_MAX_TOTAL_BYTES,
   DIFF_MAX_FILE_BYTES,
   GIT_ERROR_CODES,
@@ -87,6 +110,16 @@ export const REVIEW_CLAIM_PREFIX = "git_review:";
 export const REVIEW_VERDICTS = ["approve", "request_changes", "comment"];
 export const REVIEW_SEVERITIES = ["blocker", "major", "minor", "nit"];
 export const MAX_FINDINGS = 20;
+/** F-285 — the write brake. At most this many inline comments per run, plus ONE general. */
+export const MAX_INLINE_COMMENTS = 10;
+/** F-285 — and at most this many REVIEW RUNS per repo per clock hour. */
+export const REVIEW_RATE_PER_HOUR = 6;
+export const REVIEW_RATE_PREFIX = "git_review_rate:";
+/** The hour bucket a rate slot belongs to. One home — the engine and the test share it. */
+export const reviewRateKey = (connectionId, repoId, nowMs = Date.now(), slot = 0) =>
+  `${REVIEW_RATE_PREFIX}${str(connectionId) || "none"}:${str(repoId)}:${Math.floor(nowMs / 3600000)}:${slot}`;
+/** A rate slot only has to outlive its own hour. */
+export const REVIEW_RATE_TTL = { ttl: { value: 2, unit: "HOURS" } };
 export const MAX_SUMMARY_BYTES = 2 * 1024;
 export const MAX_MESSAGE_BYTES = 1024;
 export const MAX_PATH_CHARS = 200;
@@ -95,25 +128,29 @@ export const MAX_COMMENT_BYTES = 32 * 1024;
 /** PR title/body/comment bounds for the prompt (plan §3.17 "bounded inputs everywhere"). */
 export const MAX_PR_TITLE_CHARS = 300;
 export const MAX_PR_BODY_BYTES = 8 * 1024;
-export const MAX_PROMPT_COMMENTS = 30;
+/**
+ * F-288 — general and inline comments are capped SEPARATELY. One shared cap of 30 was
+ * filled by whichever list the provider happened to return first (GitHub returns inline
+ * then general), so a PR with 40 inline notes hid every general comment — including the
+ * one that says "do not touch the migration". Two budgets, one each.
+ */
+export const MAX_PROMPT_COMMENTS_INLINE = 15;
+export const MAX_PROMPT_COMMENTS_GENERAL = 15;
+/** The total the prompt will ever carry. Derived — never a third number. */
+export const MAX_PROMPT_COMMENTS = MAX_PROMPT_COMMENTS_INLINE + MAX_PROMPT_COMMENTS_GENERAL;
 export const MAX_PR_COMMENT_BYTES = 1024;
 
 export { DIFF_MAX_TOTAL_BYTES, DIFF_MAX_FILE_BYTES };
 
 const str = (v) => (v === null || v === undefined ? "" : String(v));
 
-const byteLen = (s) => {
-  try { return new TextEncoder().encode(s).length; } catch (e) { return str(s).length; }
-};
-
-/** Cut to a BYTE budget without splitting a UTF-8 sequence in half. */
-export const clampBytes = (value, maxBytes, marker = "\n… [truncated]") => {
-  const s = str(value);
-  if (byteLen(s) <= maxBytes) return s;
-  let cut = s.slice(0, maxBytes);
-  while (cut.length && byteLen(cut) > maxBytes - byteLen(marker)) cut = cut.slice(0, -1);
-  return cut + marker;
-};
+/**
+ * The adapter's clamp, returning just the string (F-287). NOT a second implementation:
+ * every byte decision — the boundary walk, the marker, the budget — is made in
+ * git-providers.js, and this line exists only so call sites read `clampBytes(x, n)`.
+ */
+export const clampBytes = (value, maxBytes, marker = "\n… [truncated]") =>
+  clampBytesRaw(str(value), maxBytes, marker).text;
 
 /** The claim identity. One home — the test and the engine read the same builder. */
 export const reviewClaimKey = (connectionId, repoId, prNumber, headSha) =>
@@ -235,16 +272,29 @@ export const diffLineIndex = (files) => {
  */
 export const shapeDiff = (diff) => {
   const rawFiles = Array.isArray(diff && diff.files) ? diff.files : [];
+  // F-283 — THE PROVIDER'S `omitted:true` IS AUTHORITATIVE AND SURVIVES THIS PASS.
+  // `capDiff` re-decides omission from the rows it is given, and an already-omitted
+  // row has an empty patch, so it "fits" and comes back `omitted:false`. The file was
+  // then printed to the model as a normal changed file with no diff — the exact
+  // "changed, and here is all of it: nothing" failure F-263 was about, reintroduced by
+  // the re-assertion that was supposed to prevent it. So the flag is remembered BEFORE
+  // capDiff runs and OR-ed back in after, and an omitted file always makes the whole
+  // diff `truncated` so the prompt carries the incompleteness note.
+  const omittedPaths = new Set(rawFiles.filter((f) => f && f.omitted === true).map((f) => str(f.path)));
   const capped = capDiff(rawFiles);
   const files = capped.files.map((f) => {
+    const omitted = f.omitted === true || omittedPaths.has(str(f.path));
     const changed = Number(f.additions || 0) + Number(f.deletions || 0);
-    const withheld = !f.omitted && !str(f.patch).trim() && changed > 0;
-    return { ...f, withheld };
+    // "withheld" is the OTHER reason a patch is missing (binary/oversized at the
+    // provider). An omitted file is never also withheld — one label per file, or the
+    // prompt says two contradictory things about it.
+    const withheld = !omitted && !str(f.patch).trim() && changed > 0;
+    return { ...f, omitted, withheld };
   });
   return {
     files,
     bytes: capped.bytes,
-    truncated: !!capped.truncated || files.some((f) => f.withheld),
+    truncated: !!capped.truncated || files.some((f) => f.withheld || f.omitted),
     caps: { totalBytes: DIFF_MAX_TOTAL_BYTES, fileBytes: DIFF_MAX_FILE_BYTES },
   };
 };
@@ -302,6 +352,27 @@ export const PR_FENCE = "PR_DIFF";
 
 const fenced = (body) => `<<<${PR_FENCE}\n${defangFence(body)}\n${PR_FENCE}>>>`;
 
+/**
+ * F-288 — "oldest first" was a LIE the header told: the list was sliced in whatever
+ * order the provider returned it (GitHub concatenates inline then general; neither is
+ * sorted), so the prompt's own claim about its ordering was wrong and the comments the
+ * model saw were arbitrary. Sort by `createdAt` ASCENDING first, then take each kind's
+ * own budget, then merge back in time order. A missing/unparseable `createdAt` sorts
+ * LAST — it is unknown, not oldest, and an unknown date must never displace a known one.
+ */
+export const selectPromptComments = (comments) => {
+  const list = (Array.isArray(comments) ? comments : []).filter((c) => c && typeof c === "object");
+  const at = (c) => {
+    const t = Date.parse(str(c.createdAt));
+    return Number.isFinite(t) ? t : Number.POSITIVE_INFINITY;
+  };
+  const byTime = (a, b) => at(a) - at(b);
+  const sorted = list.slice().sort(byTime);
+  const inline = sorted.filter((c) => c.inline && c.inline.path).slice(0, MAX_PROMPT_COMMENTS_INLINE);
+  const general = sorted.filter((c) => !(c.inline && c.inline.path)).slice(0, MAX_PROMPT_COMMENTS_GENERAL);
+  return inline.concat(general).sort(byTime);
+};
+
 export const buildReviewPrompt = ({ pr, diff, comments, repo } = {}) => {
   const p = pr || {};
   const shaped = diff && Array.isArray(diff.files) ? diff : { files: [], truncated: false };
@@ -312,9 +383,14 @@ export const buildReviewPrompt = ({ pr, diff, comments, repo } = {}) => {
   lines.push(`branches: ${str(p.sourceBranch)} → ${str(p.targetBranch)}`);
   lines.push("");
   lines.push("DESCRIPTION:");
-  lines.push(clampBytes(str(p.body || p.description || "(no description)"), MAX_PR_BODY_BYTES, "\n… [description truncated]"));
+  // F-289 — `body` is the adapter's field (F-282 named it on both providers); `description`
+  // is the older Bitbucket-shaped alias a mocked or third-party provider may still use.
+  // "(no description)" is the LAST resort, never a stand-in for an empty-string body that
+  // the provider did supply.
+  const prBody = str(p.body) || str(p.description) || "(no description)";
+  lines.push(clampBytes(prBody, MAX_PR_BODY_BYTES, "\n… [description truncated]"));
 
-  const cs = (Array.isArray(comments) ? comments : []).slice(0, MAX_PROMPT_COMMENTS);
+  const cs = selectPromptComments(comments);
   if (cs.length) {
     lines.push("");
     lines.push("EXISTING COMMENTS (oldest first):");
@@ -335,7 +411,9 @@ export const buildReviewPrompt = ({ pr, diff, comments, repo } = {}) => {
   }
   lines.push("DIFF:");
   for (const f of shaped.files) {
-    const flag = f.omitted ? " [omitted — diff budget exhausted]"
+    // F-283 — an omitted file says PATCH WITHHELD in the same words as a provider-withheld
+    // one, because to the model they are the same fact: there is no diff to reason about.
+    const flag = f.omitted ? " [patch withheld — omitted, diff budget exhausted]"
       : f.withheld ? " [withheld by the provider — binary or too large]"
       : f.truncated ? " [truncated at the per-file cap]" : "";
     lines.push(`--- ${str(f.path)} (${str(f.status) || "modified"}, +${Number(f.additions || 0)}/-${Number(f.deletions || 0)})${flag}`);
@@ -434,8 +512,12 @@ export const reviewPullRequest = async ({
   options = {},
 } = {}) => {
   const simulation = options.simulation === true;
-  // NEVER auto-approve or request changes unless the caller opted in, explicitly.
-  const allowVerdictActions = options.allowVerdictActions === true;
+  // F-286 — NEVER auto-approve or request changes unless the caller opted in explicitly
+  // AND the rule that asked for this review was saved by an ADMIN. The consumer already
+  // derives both; the engine re-derives the second rather than trusting one caller to
+  // have done it. Two independent conditions, both required, both defaulting to false.
+  const savedByRole = str(options.savedByRole);
+  const allowVerdictActions = options.allowVerdictActions === true && savedByRole === "admin";
   const wantInline = options.inlineComments !== false;
 
   if (!provider || typeof provider.getPullRequest !== "function") return failure("invalid_args", "A git provider is required.");
@@ -474,12 +556,62 @@ export const reviewPullRequest = async ({
     return { status: "skipped", skipped: "already-reviewed", claimKey, pr: { number, headSha } };
   }
 
+  /**
+   * F-284 — release the claim while NOTHING has been posted. Fail-closed protects
+   * against a DUPLICATE comment; with no comment there is nothing to duplicate, and a
+   * held claim would mean this head SHA can never be reviewed again for 24 h. Flipped
+   * to a no-op by `posted` the instant the first write succeeds — after that a repeat
+   * IS the thing we are protecting against, whatever fails later.
+   */
+  let posted = false;
+  const releaseClaim = async () => {
+    if (posted) return;
+    try {
+      if (typeof storage.delete === "function") await storage.delete(claimKey);
+      else if (typeof storage.deleteSecret === "function") await storage.deleteSecret(claimKey);
+    } catch (e) {
+      // The claim outliving a failed run is the SAFE direction (a review is skipped,
+      // never doubled), so this is reported and never fatal.
+      log(`git review ${repo}#${number}: claim ${claimKey} could not be released (${(e && e.message) || e})`);
+    }
+  };
+  const fail = async (code, message, extra = {}) => {
+    await releaseClaim();
+    return failure(code, message, { claimKey, ...extra });
+  };
+
+  /* 2b — F-285 THE RATE BRAKE. A per-repo, per-clock-hour budget of RUNS, taken as
+     slot claims (KVS has no counter). Fail CLOSED, like the review claim: a storage
+     fault must not license an unbounded number of public comments. Refusing here
+     RELEASES the per-PR claim, so the PR is reviewable again in the next hour. */
+  let rateSlot = -1;
+  for (let i = 0; i < REVIEW_RATE_PER_HOUR; i++) {
+    const key = reviewRateKey(conn.id, repo, Date.now(), i);
+    let gotSlot;
+    try {
+      gotSlot = await claimRuleExecution(storage, key, REVIEW_RATE_TTL, "gitreview-rate", { failClosed: true });
+    } catch (e) {
+      await releaseClaim();
+      log(`git review ${repo}#${number}: rate ledger unavailable — refusing`);
+      return failure("claim_failed", "The review rate budget could not be read; the review was not run.", { claimKey });
+    }
+    if (gotSlot) { rateSlot = i; break; }
+  }
+  if (rateSlot < 0) {
+    await releaseClaim();
+    log(`git review ${repo}#${number}: rate brake — ${repo} already had ${REVIEW_RATE_PER_HOUR} reviews this hour`);
+    return {
+      status: "skipped", skipped: "rate", claimKey, repo, pr: { number, headSha },
+      rate: { perHour: REVIEW_RATE_PER_HOUR, used: REVIEW_RATE_PER_HOUR },
+    };
+  }
+
   /* 3 — diff + existing comments. */
   let diff;
   try {
     diff = shapeDiff(await provider.getPullRequestDiff({ repo, number }));
   } catch (e) {
-    return failure(codeOf(e), e && e.message, { claimKey });
+    return fail(codeOf(e), e && e.message);           // F-284: nothing posted → claim released
   }
   let comments = [];
   try {
@@ -499,10 +631,10 @@ export const reviewPullRequest = async ({
   try {
     answer = await callModel(prompt);
   } catch (e) {
-    return failure("model_failed", (e && e.message) || "The model call failed.", { claimKey });
+    return fail("model_failed", (e && e.message) || "The model call failed.");   // F-284
   }
   const parsed = parseStrictJson(typeof answer === "string" ? answer : (answer && answer.text));
-  if (!parsed) return failure("bad_model_output", "The model did not return a JSON object.", { claimKey });
+  if (!parsed) return fail("bad_model_output", "The model did not return a JSON object.");   // F-284
 
   /* 5 — clamp EVERYTHING the model emitted, before any side effect. */
   const review = clampReview(parsed);
@@ -518,6 +650,15 @@ export const reviewPullRequest = async ({
     if (supportsInline && f.path && f.line && lines && lines.has(f.line)) inline.push(f);
     else unplaced.push(f);
   }
+  // F-285 — THE WRITE BRAKE. At most MAX_INLINE_COMMENTS inline comments, highest
+  // severity first so the cap drops nits rather than blockers; everything cut becomes a
+  // bullet in the ONE general comment, so no finding is lost, only the number of WRITES
+  // to someone else's pull request is bounded.
+  if (inline.length > MAX_INLINE_COMMENTS) {
+    inline.sort((a, b) => (SEVERITY_ORDER[a.severity] ?? 9) - (SEVERITY_ORDER[b.severity] ?? 9));
+    unplaced.push(...inline.splice(MAX_INLINE_COMMENTS));
+  }
+
   const willAct = allowVerdictActions && (review.verdict === "approve" || review.verdict === "request_changes");
   const body = renderReviewComment({ review, unplaced, diff, resolution, actioned: willAct });
 
@@ -533,6 +674,7 @@ export const reviewPullRequest = async ({
     diff: { files: diff.files.length, bytes: diff.bytes, truncated: diff.truncated },
     comments: resolution,
     simulated: simulation,
+    rate: { perHour: REVIEW_RATE_PER_HOUR, slot: rateSlot },
     posted: { general: null, inline: [], verdict: null },
     planned: {
       general: body,
@@ -550,18 +692,21 @@ export const reviewPullRequest = async ({
   /* 8 — post. The general comment ALWAYS; inline best-effort (a refused inline comment
          must not lose the review); the verdict action only when opted in. */
   try {
-    const posted = await provider.addPullRequestComment({ repo, number, body });
-    result.posted.general = { id: (posted && posted.id) || null, url: (posted && posted.url) || null };
+    const general = await provider.addPullRequestComment({ repo, number, body });
+    // F-284 — THE FIRST WRITE. From this line on the claim is KEPT whatever fails next:
+    // a partially posted review must never be repeated.
+    posted = true;
+    result.posted.general = { id: (general && general.id) || null, url: (general && general.url) || null };
   } catch (e) {
-    return failure(codeOf(e), e && e.message, { claimKey, verdict: review.verdict, findings: review.findings });
+    return fail(codeOf(e), e && e.message, { verdict: review.verdict, findings: review.findings });
   }
 
   for (const f of inline) {
     try {
-      const posted = await provider.addPullRequestComment({
+      const c = await provider.addPullRequestComment({
         repo, number, body: `**${f.severity}**: ${f.message}`, path: f.path, line: f.line, commitSha: headSha || undefined,
       });
-      result.posted.inline.push({ path: f.path, line: f.line, id: (posted && posted.id) || null });
+      result.posted.inline.push({ path: f.path, line: f.line, id: (c && c.id) || null });
     } catch (e) {
       if (codeOf(e) === "auth_dead") return failure("auth_dead", e && e.message, { claimKey, partial: result.posted });
       log(`git review ${repo}#${number}: inline comment on ${f.path}:${f.line} refused (${codeOf(e)})`);

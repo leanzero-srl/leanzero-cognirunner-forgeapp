@@ -10,7 +10,10 @@ import {
   reviewPullRequest, reviewClaimKey, clampReview, parseStrictJson, diffLineIndex,
   shapeDiff, summariseResolution, buildReviewPrompt, PR_FENCE,
   REVIEW_VERDICTS, REVIEW_SEVERITIES, MAX_FINDINGS, MAX_SUMMARY_BYTES, MAX_MESSAGE_BYTES, MAX_PATH_CHARS,
+  MAX_INLINE_COMMENTS, REVIEW_RATE_PER_HOUR, reviewRateKey, selectPromptComments,
+  MAX_PROMPT_COMMENTS_INLINE, MAX_PROMPT_COMMENTS_GENERAL, MAX_PROMPT_COMMENTS, clampBytes,
 } from "../../src/git-review.js";
+import { clampBytes as adapterClampBytes } from "../../src/git-providers.js";
 
 let n = 0;
 const ok = (cond, msg) => { assert.ok(cond, msg); n++; };
@@ -29,6 +32,7 @@ const makeStore = (opts = {}) => {
   const rows = new Map();
   return {
     rows,
+    async delete(key) { if (opts.throwOnDelete) throw new Error("kvs down"); rows.delete(key); },
     async set(key, value, o = {}) {
       if (opts.throwOnSet) { const e = new Error("kvs down"); e.code = "INTERNAL"; throw e; }
       if (o.keyPolicy === "FAIL_IF_EXISTS" && rows.has(key)) {
@@ -255,19 +259,19 @@ const run = (o = {}) => reviewPullRequest({
     ok(provider.calls.comments[0].body.includes("reported only"), "the comment says the verdict was not acted on");
     // explicit opt-in
     const p2 = makeProvider();
-    const out2 = await run({ provider: p2, callModel: modelSaying({ verdict, summary: "ship it", findings: [] }), options: { allowVerdictActions: true } });
+    const out2 = await run({ provider: p2, callModel: modelSaying({ verdict, summary: "ship it", findings: [] }), options: { allowVerdictActions: true, savedByRole: "admin" } });
     eq(out2.verdictAction, verdict, "the opted-in run acts");
     eq(verdict === "approve" ? p2.calls.approve : p2.calls.requestChanges, 1, "and calls exactly the right endpoint once");
   }
   const p3 = makeProvider();
-  await run({ provider: p3, callModel: modelSaying({ verdict: "comment", summary: "s", findings: [] }), options: { allowVerdictActions: true } });
+  await run({ provider: p3, callModel: modelSaying({ verdict: "comment", summary: "s", findings: [] }), options: { allowVerdictActions: true, savedByRole: "admin" } });
   eq([p3.calls.approve, p3.calls.requestChanges], [0, 0], 'a "comment" verdict acts on nothing even when actions are allowed');
 }
 
 /* ─────────────────── 6. simulation posts nothing ─────────────────── */
 {
   const provider = makeProvider();
-  const out = await run({ provider, callModel: modelSaying(GOOD), options: { simulation: true, allowVerdictActions: true } });
+  const out = await run({ provider, callModel: modelSaying(GOOD), options: { simulation: true, allowVerdictActions: true, savedByRole: "admin" } });
   eq(out.status, "done", "a simulated review completes");
   eq(out.simulated, true, "and says it was simulated");
   eq(provider.calls.comments.length, 0, "NOTHING was posted");
@@ -331,6 +335,212 @@ const run = (o = {}) => reviewPullRequest({
   }
   const badPr = await reviewPullRequest({ provider: makeProvider(), connection: {}, repoId: "a/b", prNumber: "seven", callModel: modelSaying(GOOD), storage: makeStore() });
   eq(badPr.code, "invalid_args", "a non-numeric PR number refuses");
+}
+
+
+/* ══════════════ breaker 31, second pass: F-283 … F-289 ══════════════ */
+
+/* ─── F-283: the provider's `omitted:true` SURVIVES shapeDiff ─── */
+{
+  const shaped = shapeDiff({ files: [
+    { path: "big.bin", status: "modified", additions: 900, deletions: 20, patch: "", omitted: true, truncated: true },
+    { path: "src/a.js", status: "modified", additions: 2, deletions: 0, patch: PATCH_A },
+  ] });
+  const big = shaped.files.find((f) => f.path === "big.bin");
+  eq(big.omitted, true, "F-283: an already-omitted file is NOT rebuilt as omitted:false by the re-cap");
+  eq(big.withheld, false, "F-283: …and it is not ALSO labelled withheld — one label per file");
+  eq(shaped.truncated, true, "F-283: an omitted file makes the whole diff truncated");
+  const prompt = buildReviewPrompt({ pr: PR, diff: shaped, comments: [], repo: "acme/widget" });
+  ok(prompt.user.includes("patch withheld"), "F-283: …and the prompt tells the model the patch was withheld");
+  ok(prompt.user.includes("this diff is INCOMPLETE"), "F-283: …under the incompleteness note");
+  // The healthy file is untouched.
+  eq(shaped.files.find((f) => f.path === "src/a.js").omitted, false, "F-283: a normal file is still omitted:false");
+}
+
+/* ─── F-284: the claim is RELEASED when the run failed before any write ─── */
+{
+  // (a) the model failed → nothing was posted → the PR is reviewable again.
+  const storage = makeStore();
+  const provider = makeProvider();
+  const out = await run({ storage, provider, callModel: async () => { throw new Error("502 from the model"); } });
+  eq(out.status, "failed", "F-284: a model failure is a failure");
+  ok(!storage.rows.has(out.claimKey), "F-284: …and the claim is released, because nothing was posted");
+  eq(provider.calls.comments.length, 0, "F-284: …nothing was posted, indeed");
+  // A retry now actually runs.
+  const retry = await run({ storage, provider: makeProvider(), callModel: modelSaying(GOOD) });
+  eq(retry.status, "done", "F-284: …so the retry reviews instead of being skipped forever");
+
+  // (b) bad model output, same rule.
+  const s2 = makeStore();
+  const o2 = await run({ storage: s2, callModel: modelSaying("not json at all") });
+  eq(o2.code, "bad_model_output", "F-284: an unparseable answer fails");
+  ok(!s2.rows.has(o2.claimKey), "F-284: …and releases the claim");
+
+  // (c) the diff call failed, before the model.
+  const s3 = makeStore();
+  const o3 = await run({ storage: s3, provider: makeProvider({ methods: { async getPullRequestDiff() { const e = new Error("boom"); e.code = "network"; throw e; } } }) });
+  eq(o3.status, "failed", "F-284: a diff failure fails");
+  ok(!s3.rows.has(o3.claimKey), "F-284: …and releases the claim");
+
+  // (d) AFTER the first write the claim is KEPT, whatever fails next. The general
+  //     comment lands, then every inline one is refused.
+  const s4 = makeStore();
+  let first = true;
+  const p4 = makeProvider();
+  p4.addPullRequestComment = async (args) => {
+    if (first) { first = false; p4.calls.comments.push(args); return { id: 1 }; }
+    const e = new Error("refused"); e.code = "not_found"; throw e;
+  };
+  const o4 = await run({ storage: s4, provider: p4, callModel: modelSaying(GOOD) });
+  eq(o4.status, "done", "F-284: a partially posted review still completes");
+  ok(s4.rows.has(o4.claimKey), "F-284: …and KEEPS its claim — a partial review must never be repeated");
+
+  // (e) a release that itself fails is reported, never fatal (the claim outliving a
+  //     failed run is the safe direction).
+  const s5 = makeStore({ throwOnDelete: true });
+  const o5 = await run({ storage: s5, callModel: async () => { throw new Error("502"); } });
+  eq(o5.status, "failed", "F-284: a failed claim release does not change the outcome");
+  ok(s5.rows.has(o5.claimKey), "F-284: …the claim simply stays (skip a review, never double one)");
+}
+
+/* ─── F-285: the write brake — inline cap and the per-repo hourly rate ─── */
+{
+  // (a) at most MAX_INLINE_COMMENTS inline comments + exactly ONE general comment.
+  const lines = Array.from({ length: 40 }, (_, i) => `+line ${i}`).join("\n");
+  const bigPatch = "@@ -1,1 +1,40 @@\n" + lines;
+  const findings = Array.from({ length: 20 }, (_, i) => ({
+    path: "src/a.js", line: i + 2,
+    severity: i < 3 ? "blocker" : i < 8 ? "major" : "nit",
+    message: `finding ${i}`,
+  }));
+  const provider = makeProvider({
+    diff: { files: [{ path: "src/a.js", status: "modified", additions: 40, deletions: 0, patch: bigPatch }], bytes: bigPatch.length, truncated: false },
+  });
+  const out = await run({ provider, callModel: modelSaying({ verdict: "request_changes", summary: "lots", findings }) });
+  eq(out.status, "done", "F-285: the run completes");
+  eq(out.posted.inline.length, MAX_INLINE_COMMENTS, `F-285: at most ${MAX_INLINE_COMMENTS} inline comments are posted`);
+  eq(provider.calls.comments.filter((c) => !c.path).length, 1, "F-285: …and exactly ONE general comment");
+  eq(provider.calls.comments.length, MAX_INLINE_COMMENTS + 1, "F-285: …so a 20-finding model makes 11 writes, not 21");
+  // The cut findings are NOT lost — they are bullets in the general comment, and the
+  // cap drops the LOW severities.
+  const general = provider.calls.comments.find((c) => !c.path).body;
+  ok(general.includes("finding 19"), "F-285: a finding cut by the cap still appears as a bullet");
+  const sevOf = (c) => findings.find((f) => f.line === c.line).severity;
+  eq(out.posted.inline.filter((c) => sevOf(c) === "blocker").length, 3, "F-285: every blocker is posted inline");
+  eq(out.posted.inline.filter((c) => sevOf(c) === "major").length, 5, "F-285: …and every major");
+  eq(out.posted.inline.filter((c) => sevOf(c) === "nit").length, MAX_INLINE_COMMENTS - 8,
+    "F-285: …and the cap spends what is left on nits, dropping the rest — severity first, never arrival order");
+
+  // (b) the hourly rate brake, per repo.
+  eq(reviewRateKey("c1", "acme/widget", 3600000 * 5, 2), "git_review_rate:c1:acme/widget:5:2", "F-285: the rate slot key is per connection, repo, hour and slot");
+  const storage = makeStore();
+  const outcomes = [];
+  for (let i = 0; i < REVIEW_RATE_PER_HOUR + 2; i++) {
+    // A different PR each time, so the per-PR claim never fires — only the rate brake can stop this.
+    outcomes.push(await reviewPullRequest({
+      provider: makeProvider({ pr: { ...PR, number: 100 + i, headSha: "sha" + i } }),
+      connection: { id: "conn1", kind: "github" }, repoId: "acme/widget", prNumber: 100 + i,
+      callModel: modelSaying(GOOD), storage, log: () => {},
+    }));
+  }
+  eq(outcomes.slice(0, REVIEW_RATE_PER_HOUR).map((o) => o.status), Array(REVIEW_RATE_PER_HOUR).fill("done"),
+    `F-285: the first ${REVIEW_RATE_PER_HOUR} reviews of the hour run`);
+  eq(outcomes.slice(REVIEW_RATE_PER_HOUR).map((o) => o.skipped), ["rate", "rate"], "F-285: …and the rest are refused with skipped:'rate'");
+  eq(outcomes[REVIEW_RATE_PER_HOUR].status, "skipped", "F-285: a rate refusal is a SKIP, not a failure");
+  ok(!storage.rows.has(outcomes[REVIEW_RATE_PER_HOUR].claimKey),
+    "F-285: …and it releases the PR claim, so the PR is reviewable in the next hour (F-284's rule)");
+
+  // Another repo on the same connection has its own budget.
+  const other = await reviewPullRequest({
+    provider: makeProvider(), connection: { id: "conn1", kind: "github" }, repoId: "acme/other",
+    prNumber: 7, callModel: modelSaying(GOOD), storage, log: () => {},
+  });
+  eq(other.status, "done", "F-285: the budget is PER REPO — a busy repo cannot starve a quiet one");
+
+  // (c) the rate ledger is FAIL CLOSED: a storage fault refuses, it does not license
+  //     an unbounded number of public comments.
+  const broken = {
+    rows: new Map(),
+    async delete() {},
+    async set(key) { if (key.startsWith("git_review_rate:")) { const e = new Error("kvs down"); e.code = "INTERNAL"; throw e; } this.rows.set(key, 1); },
+  };
+  const p = makeProvider();
+  const refused = await reviewPullRequest({
+    provider: p, connection: { id: "conn1", kind: "github" }, repoId: "acme/widget", prNumber: 999,
+    callModel: modelSaying(GOOD), storage: broken, log: () => {},
+  });
+  eq(refused.status, "failed", "F-285: a rate-ledger fault REFUSES the review (fail closed)");
+  eq(p.calls.comments.length, 0, "F-285: …posting nothing");
+}
+
+/* ─── F-286: the engine checks the permission itself ─── */
+{
+  const cases = [
+    [{ allowVerdictActions: true, savedByRole: "admin" }, "approve", "admin + opted in acts"],
+    [{ allowVerdictActions: true }, null, "opted in WITHOUT an admin author does NOT act"],
+    [{ allowVerdictActions: true, savedByRole: "editor" }, null, "an editor-saved rule does not act"],
+    [{ allowVerdictActions: true, savedByRole: "ADMIN" }, null, "the role is matched exactly, not case-folded"],
+    [{ savedByRole: "admin" }, null, "an admin who did not opt in does not act"],
+    [{}, null, "neither → no action"],
+  ];
+  for (const [options, expected, msg] of cases) {
+    const provider = makeProvider();
+    const out = await run({ provider, callModel: modelSaying({ verdict: "approve", summary: "ok", findings: [] }), options });
+    eq(out.verdictAction, expected, "F-286: " + msg);
+    eq(provider.calls.approve, expected ? 1 : 0, "F-286: …and the provider agrees");
+  }
+}
+
+/* ─── F-287: ONE byte clamp, the adapter's ─── */
+{
+  const long = "x".repeat(5000);
+  eq(clampBytes(long, 100), adapterClampBytes(long, 100, "\n… [truncated]").text, "F-287: the engine's clamp IS the adapter's clamp");
+  eq(clampBytes("short", 100), "short", "F-287: …and leaves a short string alone");
+  eq(clampBytes(null, 100), "", "F-287: …and a null is an empty string, not 'null'");
+  // A multi-byte string is never cut mid-sequence.
+  const emoji = "🙂".repeat(100);
+  ok(Buffer.byteLength(clampBytes(emoji, 40, ""), "utf8") <= 40, "F-287: a multi-byte string is cut within budget");
+  ok(!clampBytes(emoji, 40, "").includes("\uFFFD"), "F-287: …without splitting a UTF-8 sequence");
+}
+
+/* ─── F-288: comments are sorted oldest-first and capped per kind ─── */
+{
+  const mk = (i, inline, day) => ({
+    id: i, body: `c${i}`, author: "a", createdAt: `2026-09-${String(day).padStart(2, "0")}T00:00:00Z`,
+    inline: inline ? { path: "src/a.js", line: 2 } : null, resolved: null,
+  });
+  // 20 inline (days 1..20) then 20 general (days 1..20) — the provider's own order.
+  const comments = [];
+  for (let i = 0; i < 20; i++) comments.push(mk(i, true, i + 1));
+  for (let i = 0; i < 20; i++) comments.push(mk(100 + i, false, i + 1));
+  const picked = selectPromptComments(comments);
+  eq(picked.filter((c) => c.inline).length, MAX_PROMPT_COMMENTS_INLINE, "F-288: inline comments get their OWN budget");
+  eq(picked.filter((c) => !c.inline).length, MAX_PROMPT_COMMENTS_GENERAL, "F-288: …and so do general ones — 40 inline can no longer hide every general comment");
+  eq(picked.length, MAX_PROMPT_COMMENTS, "F-288: the total is the sum of the two budgets");
+  const times = picked.map((c) => Date.parse(c.createdAt));
+  ok(times.every((t, i) => i === 0 || t >= times[i - 1]), "F-288: the list really is oldest-first, as the prompt header claims");
+  eq(picked[0].createdAt, "2026-09-01T00:00:00Z", "F-288: …and starts at the oldest comment");
+  // An unknown date sorts LAST — unknown is not 'oldest'.
+  const withUnknown = selectPromptComments([{ id: 1, body: "no date", inline: null }, mk(2, false, 5)]);
+  eq(withUnknown.map((c) => c.id), [2, 1], "F-288: a missing createdAt sorts last, never first");
+  // And the prompt uses it.
+  const prompt = buildReviewPrompt({ pr: PR, diff: shapeDiff({ files: [] }), comments, repo: "acme/widget" });
+  eq((prompt.user.match(/\n- a/g) || []).length, MAX_PROMPT_COMMENTS, "F-288: the prompt carries exactly the selected comments");
+}
+
+/* ─── F-289: the PR description reads `body` first ─── */
+{
+  const d = shapeDiff({ files: [] });
+  ok(buildReviewPrompt({ pr: { ...PR, body: "the real body", description: "stale alias" }, diff: d, comments: [], repo: "r" }).user.includes("the real body"),
+    "F-289: `body` (the adapter's field since F-282) wins");
+  ok(!buildReviewPrompt({ pr: { ...PR, body: "the real body", description: "stale alias" }, diff: d, comments: [], repo: "r" }).user.includes("stale alias"),
+    "F-289: …and the alias is not also printed");
+  ok(buildReviewPrompt({ pr: { ...PR, description: "only the alias" }, diff: d, comments: [], repo: "r" }).user.includes("only the alias"),
+    "F-289: a provider that only sets `description` still works");
+  ok(buildReviewPrompt({ pr: { ...PR, body: "", description: "" }, diff: d, comments: [], repo: "r" }).user.includes("(no description)"),
+    "F-289: an empty body falls through to the last resort");
+  ok(!buildReviewPrompt({ pr: { ...PR, body: "b" }, diff: d, comments: [], repo: "r" }).user.includes("(no description)"),
+    "F-289: …which is never printed when a body exists");
 }
 
 console.log(`git-review.test.mjs: ${n} checks passed`);

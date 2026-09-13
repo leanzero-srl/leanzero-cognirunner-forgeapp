@@ -5,7 +5,10 @@
   "license": "Apache-2.0",
   "private": true,
   "scripts": {
-    "lint": "eslint src/**/*.js"
+    "lint": "eslint src/**/*.js",
+    "leak:scan": "node scripts/leak-scan.mjs",
+    "bake": "node scripts/bake-knowledge.mjs",
+    "bake:check": "node scripts/bake-knowledge.mjs --check"
   },
   "dependencies": {
     "@forge/api": "^7.2.2",

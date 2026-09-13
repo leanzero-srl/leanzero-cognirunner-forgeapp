@@ -1,0 +1,38 @@
+# CogniRunner - AI-powered workflow validation for Jira
+# Copyright (C) 2025 LeanZero
+# SPDX-License-Identifier: Apache-2.0
+#
+# TEMPLATE for knowledge/denylist.local — the client / person / project denylist the leak
+# scanner checks the knowledge corpus against.
+#
+# Copy it:   cp knowledge/denylist.local.example knowledge/denylist.local
+#
+# knowledge/denylist.local is GITIGNORED and must stay that way. The denylist is itself a
+# list of the client names we are protecting: shipping it would leak exactly what it
+# exists to keep out. THIS file contains placeholders only and nothing else may be added
+# to it, ever.
+#
+# A MISSING denylist.local is NOT a clean scan — `npm run leak:scan` and the bake both
+# REFUSE when the file is absent, because "no denylist" and "the denylist found nothing"
+# produce the same green tick and only one of them is safe.
+#
+# Format, one entry per line. Blank lines and lines starting with # are ignored.
+#
+#   acme-industries      a term — matched case-insensitively on a word boundary.
+#                        Use one line per client name, per product name, per person.
+#   project:ABC          a project key — matches the bare key and ABC-123 ticket keys.
+#   /pattern/i           an explicit regex, for a name a word boundary will not catch
+#                        (accented characters, an ampersand, a two-word brand).
+
+# --- client and partner organisations -----------------------------------
+placeholder-client-one
+placeholder-client-two
+
+# --- named people (colleagues, reviewers, requesters) -------------------
+placeholder person-name
+
+# --- client project keys ------------------------------------------------
+project:PLACEHOLDERKEY
+
+# --- anything a word boundary will not catch ----------------------------
+# /placeholder\s*&\s*partners/i

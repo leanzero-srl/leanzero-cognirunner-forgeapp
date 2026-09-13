@@ -34,7 +34,12 @@
  *       into the admin's copy - on the receipt rows AND on the health banner, the reason's
  *       second and durable home (F-524). The extraction reads EVERY literal in the
  *       compaction sites' ranges and asserts an EXACT set, so a reason written as a ternary,
- *       a helper or a template cannot slip past it (F-525).
+ *       a helper or a template cannot slip past it (F-525). The scope is EVERY
+ *       `recordTickHealth(` call site as well as the compaction ones (F-535), because the
+ *       health row is where the tick's two catch arms file their ids.
+ *   A14b the tick's own health ids (`tick:prepare_failed`, `tick:post_failed`) each read as
+ *       their own sentence on the banner, in both themes, whether the stored row carries the
+ *       base id alone or a legacy row with the exception glued on (F-535).
  *
  * Run: node static/_screenshot-harness/agents-tab.test.mjs   (add --shots to save PNGs)
  */
@@ -552,17 +557,42 @@ try {
         const seg = src.slice(m.index, src.indexOf(";", m.index) + 1);
         if (/compaction/.test(seg)) pushes.push(seg);
       }
-      return { fnBody, tickBody, chunks: [fnBody, tickBody, ...pushes].map(strip) };
+      /* F-535 - EVERY `recordTickHealth(` call, not just the compaction one. The health row
+         is the reason's durable home and two of its writers (the prepare and the post catch
+         arms) live nowhere near a `skipped.push`, so the compaction-only scope could not
+         see the ids they store. Each call runs to its own statement terminator, the
+         `);`/`});` that closes it - none of these calls contains a `;` of its own. */
+      const health = [];
+      for (const m of src.matchAll(/recordTickHealth\(/g)) {
+        health.push(src.slice(m.index, src.indexOf(";", m.index) + 1));
+      }
+      return { fnBody, tickBody, health, chunks: [fnBody, tickBody, ...pushes, ...health].map(strip) };
     };
-    /* Every quoted literal in a range, cut into the parts the copy map is keyed on. */
+    /* Every quoted literal in a range, cut into the ONE key the copy map is looked up by.
+       A literal is read the way src/va-ledger.js `splitHealthReason` reads a stored reason:
+       the interpolated tail is not part of the id, `compaction:` is the namespace the map's
+       keys are written without, `capability:` resolves through its own copy home, and any
+       other two id-shaped segments are a `namespace:id` key (`tick:prepare_failed`). */
+    const copyKeyOf = (literal) => {
+      const head = String(literal).split("$")[0];
+      const segs = head.split(":").map((x) => x.trim()).filter((x) => ID_RE.test(x));
+      if (!segs.length) return null;
+      if (segs[0] === "compaction") return segs.length > 1 ? segs[1] : "compaction";
+      if (segs[0] === "capability") return "capability";
+      return segs.slice(0, 2).join(":");
+    };
     const extractIds = (src) => {
       const out = new Set();
       for (const chunk of sites(src).chunks) {
-        for (const lit of chunk.matchAll(/(["'`])((?:[^\\`"']|\\.)*?)\1/g)) {
-          for (const part of String(lit[2]).replace(/^compaction:/, "").split(/[:$]/)) {
-            const p = part.trim();
-            if (ID_RE.test(p)) out.add(p);
-          }
+        /* Two passes: ordinary quoted strings, and template literals - which the first
+           pattern cannot see whole, because a `${...}` may hold a quote of its own. */
+        for (const lit of chunk.matchAll(/(["'])((?:[^\\"'])*?)\1/g)) {
+          const key = copyKeyOf(lit[2]);
+          if (key) out.add(key);
+        }
+        for (const lit of chunk.matchAll(/`([^`]*)`/g)) {
+          const key = copyKeyOf(lit[1]);
+          if (key) out.add(key);
         }
       }
       return out;
@@ -576,14 +606,20 @@ try {
       "export const runVaCompaction = async ({ agent, tick, deps }) => {",
       'export const runVaCompaction = async ({ agent, tick, deps }) => {\n  if (globalThis.__never__) return { ran: false, gate: "compaction", reason: deps ? "harness_probe_ternary" : "harness_probe_other", detail: `${tick}:harness_probe_tail` };',
     );
-    const probed = extractIds(probeSrc);
-    for (const id of ["harness_probe_ternary", "harness_probe_other", "harness_probe_tail"]) {
-      ok(probed.has(id), `A14 the extractor sees a reason written as a ternary or a template ("${id}")`);
+    /* F-535 - and a health arm grows an id too, so the WIDENED scope is proven to bite the
+       same way the compaction scope is. */
+    const probeSrc2 = probeSrc.replace(
+      "await recordTickHealth(deps.store, agentId, true, { now });",
+      'await recordTickHealth(deps.store, agentId, true, { now, reason: "tick:harness_probe_health" });',
+    );
+    const probed = extractIds(probeSrc2);
+    for (const id of ["harness_probe_ternary", "harness_probe_other", "tick:harness_probe_health"]) {
+      ok(probed.has(id), `A14 the extractor sees a reason written as a ternary, a template or a health arm ("${id}")`);
     }
     /* The words in those ranges that are NOT reason ids: the gate/namespace value itself,
        and two BACKOFF-CAUSE details that ride `armBackoff()`/`detail` and never reach the
        copy map. Each is asserted present so this list cannot rot into an excuse. */
-    const ALLOW = ["compaction", "compact_backoff_write_failed", "write_refused"];
+    const ALLOW = ["compaction", "compact_backoff_write_failed", "write_refused", "prepare"];
     const raw = extractIds(engineSrc);
     for (const w of ALLOW) ok(raw.has(w), `A14 the allow-listed non-reason word "${w}" is still in the compaction source (stale allow-list otherwise)`);
     const engineIds = new Set([...raw].filter((id) => !ALLOW.includes(id)));
@@ -600,20 +636,47 @@ try {
       "pinned_dropped",
       "summariser-failed",
       "under_threshold",
+      /* F-535 - the health row's own writers. `capability` stands for the whole
+         `capability:<id>` namespace, whose sentences live in src/shared/edition.js and are
+         asserted below rather than in the map; `unknown` is what `splitHealthReason` files
+         a prose reason under. */
+      "capability",
+      "tick:post_failed",
+      "tick:prepare_failed",
+      "unknown",
     ];
     const extra = [...engineIds].filter((id) => !EXPECTED.includes(id)).sort();
     const missing = EXPECTED.filter((id) => !engineIds.has(id));
     ok(extra.length === 0, `A14 the engine pushes no reason id this test does not know about (new: ${extra.join(", ")})`);
     ok(missing.length === 0, `A14 every expected engine reason id is still pushed (gone: ${missing.join(", ")})`);
     const tabSrc = fs.readFileSync(path.join(__dirname, "../admin-panel/src/components/AgentsTab.jsx"), "utf8");
-    const mapBody = tabSrc.slice(tabSrc.indexOf("const COMPACTION_COPY = {"));
-    const mapText = mapBody.slice(0, mapBody.indexOf("\n};"));
-    const mapKeys = new Set([...mapText.matchAll(/^\s*"([^"]+)":/gm)].map((m) => m[1]));
-    for (const id of [...engineIds].sort()) ok(mapKeys.has(id), `A14 the copy map has a sentence for the engine id "${id}"`);
+    const mapOf = (decl) => {
+      const body = tabSrc.slice(tabSrc.indexOf(decl));
+      return body.slice(0, body.indexOf("\n};"));
+    };
+    /* BOTH copy maps: the receipt's compaction ids and F-535's health ids. A key may be
+       quoted (`"tick:prepare_failed"`) or bare (`unknown`), and a sentence may be written
+       as the shared UNKNOWN_REASON constant rather than inline. */
+    const mapText = `${mapOf("const COMPACTION_COPY = {")}\n${mapOf("const HEALTH_COPY = {")}`;
+    const KEY_RE = /^\s*"?([a-z][a-z0-9_:.-]*)"?\s*:\s*("([^"]+)"|UNKNOWN_REASON)/gm;
+    const rows = [...mapText.matchAll(KEY_RE)];
+    const unknownText = (tabSrc.match(/const UNKNOWN_REASON = "([^"]+)"/) || [])[1] || "";
+    const mapKeys = new Set(rows.map((m) => m[1]));
+    for (const id of [...engineIds].sort()) {
+      /* `capability:<id>` has no row here on purpose: F-501 made src/shared/edition.js the
+         ONE home for those words, so what is asserted is that the tab still routes to it. */
+      if (id === "capability") {
+        ok(/\/\^capability:\//.test(tabSrc) && /agentCapabilityCopy\(/.test(tabSrc), "A14 the capability namespace still resolves through agentCapabilityCopy()");
+        ok(!!(agentCapabilityCopy("unknown") || {}).title, "A14 the capability copy home answers an id it has never heard of");
+        continue;
+      }
+      ok(mapKeys.has(id), `A14 the copy map has a sentence for the engine id "${id}"`);
+    }
     /* And no sentence carries an em-dash or an engine id inside it. */
-    const sentences = [...mapText.matchAll(/^\s*"[^"]+":\s*"([^"]+)"/gm)].map((m) => m[1]);
-    ok(sentences.length === mapKeys.size, "A14 every map key carries a sentence");
-    ok(sentences.every((t) => !/[—–]/.test(t)), "A14 no em-dash or en-dash in the compaction copy");
+    const sentences = rows.map((m) => m[3] || unknownText);
+    ok(unknownText.length > 20, "A14 the neutral sentence was read from the tab");
+    ok(sentences.length === mapKeys.size, `A14 every map key carries a sentence (${sentences.length} of ${mapKeys.size})`);
+    ok(sentences.every((t) => !/[—–]/.test(t)), "A14 no em-dash or en-dash in the reason copy");
     ok(sentences.every((t) => ![...engineIds].some((id) => t.includes(id))), "A14 no sentence prints an engine id");
   }
   for (const [theme, red] of [["light", "rgb(220, 38, 38)"], ["dark", "rgb(239, 68, 68)"]]) {
@@ -667,6 +730,43 @@ try {
       await shot(page, `agents-compaction-unknown-${theme}`);
       ok(env.errors.length === 0, `A14 ${theme} no page errors (${env.errors[0] || ""})`);
     } finally { await close(env); }
+  }
+  /* ---------- A14b the TICK's own health ids, both themes (F-535) ---------- */
+  for (const theme of ["light", "dark"]) {
+    console.log(`A14b tick health ids (${theme})`);
+    for (const [id, must] of [["tick:prepare_failed", /before any work was queued/], ["tick:post_failed", /while it was posting/]]) {
+      /* BOTH shapes: what the engine stores today (the base id alone, F-524) and the glued
+         legacy row a site upgraded mid-flight still carries (`<id>:<exception>`). Neither
+         may reach the admin, and both must land on the SAME sentence. */
+      for (const stored of [id, `${id}:TypeError: Cannot read properties of undefined (reading 'text')`]) {
+        const env = await openAgents(browser, theme, { __VA_HEALTH_REASON__: stored });
+        const { page } = env;
+        try {
+          const hb = page.locator(".va-health-text").first();
+          await hb.waitFor({ timeout: 8000 });
+          const banner = (await hb.innerText()).trim();
+          ok(must.test(banner), `A14b ${theme} "${stored}" renders its own sentence, got ${JSON.stringify(banner)}`);
+          ok(!/does not recognise/.test(banner), `A14b ${theme} "${id}" is not falling through to the neutral sentence`);
+          for (const leak of ["tick:", "prepare_failed", "post_failed", "TypeError", "Cannot read properties", "undefined"]) {
+            ok(!banner.includes(leak), `A14b ${theme} the health banner never prints "${leak}"`);
+          }
+          ok(!/[\u2014\u2013\u2192]/.test(banner), `A14b ${theme} no em-dash, en-dash or arrow in the health banner`);
+          if (stored === id) {
+            const css = await page.locator(".va-health").first().evaluate((el) => {
+              const c = getComputedStyle(el);
+              return { bl: c.borderLeftWidth, fg: c.color, bg: c.backgroundColor };
+            });
+            ok(css.bl === "0px", `A14b ${theme} no left rail on the health banner, got ${css.bl}`);
+            /* The tab fades in; a shot taken the instant the banner exists catches the
+               transition mid-flight and is not a picture of anything. */
+            await page.locator(".va-agent").first().waitFor({ timeout: 8000 });
+            await page.waitForTimeout(600);
+            await shot(page, `agents-health-${id.replace(":", "-")}-${theme}`);
+          }
+          ok(env.errors.length === 0, `A14b ${theme} no page errors (${env.errors[0] || ""})`);
+        } finally { await close(env); }
+      }
+    }
   }
 } finally {
   await browser.close();

@@ -94,6 +94,12 @@ async function main() {
   if (!RULES_URL) throw new Error("the rules-api URL could not be discovered");
 
   let adminTok = null, editorTok = null, lstId = null, jobId = null;
+  /* Read-only fixtures for STEP 5: a skill and a document this instance already holds
+     that were authored by SOMEONE ELSE than the editor account. Nothing is created and
+     nothing is deleted here - every STEP 5 call is expected to be refused, and the
+     refusal is asserted; the fixtures that must be CREATED live in
+     knowledge-doors-editor-live.mjs, which owns their restore. */
+  let foreignSkillId = null, foreignDocId = null;
   try {
     /* ── STEP 0 — two tokens: one scope-"all", one scope-"own" ────────────── */
     console.log("STEP 0 - one ADMIN token (writes the colleague's rows) and one EDITOR token (the caller under test)");
@@ -161,13 +167,53 @@ async function main() {
     if (uA.status === 403 && /needsRole|admin/.test(uA.text)) PASS("agents POST: an editor is stopped at the ADMIN floor before any row is read", { status: uA.status });
     else NV("agents POST: the shared answer is not the admin role floor - worth reading", { status: uA.status, body: uA.text.slice(0, 160) });
 
-    /* ── STEP 5 — the four RESOLVER doors, and why they are not reachable ──── */
+    const skillsIdx = (await invoke("getSkills", {})).json?.skills || [];
+    const docsIdx = (await invoke("getContextDocs", {})).json?.docs || [];
+    const rosterPre = ((await hook(null, "GET", "?what=kvs&key=app_admins")).json || {}).value || [];
+    const editorAcc = (rosterPre.find((r) => r && typeof r === "object" && r.role === "editor" && r.scope === "own") || {}).accountId || null;
+    foreignSkillId = (skillsIdx.find((x) => !x.builtin && x.createdBy && x.createdBy !== editorAcc) || {}).id || null;
+    foreignDocId = (docsIdx.find((d) => !d.builtin && d.createdBy && d.createdBy !== editorAcc) || {}).id || null;
+
+    /* ── STEP 5 — the four RESOLVER doors, driven as a scope-"own" EDITOR ─── */
+    /* F-642: this step used to call each door with the ADMIN account id and print
+       "reachable, extend this script" — neither PASS nor FAIL, so a re-run after F-638
+       showed FEWER not-verified lines and proved nothing. The parity under test is what
+       a scope-"own" EDITOR is told, and the hook's principal is an ACCOUNT ID, so the
+       step needs an editor ACCOUNT on the roster. `knowledge-doors-editor-live.mjs`
+       grants one through the Permissions tab and restores it; this step reads the roster
+       and either asserts against that account or says plainly why it cannot. */
     console.log("\nSTEP 5 - the resolver doors (F-622 saveSkill / F-624 deleteSkill / F-625 deleteContextDoc / F-626 getContextDocContent)");
+    const rosterRow = await hook(null, "GET", "?what=kvs&key=app_admins");
+    const roster = (rosterRow.json && rosterRow.json.value) || [];
+    const ownEditor = roster.find((r) => r && typeof r === "object" && r.role === "editor" && r.scope === "own");
     for (const [fk, finding] of [["saveSkill", "F-622"], ["deleteSkill", "F-624"], ["deleteContextDoc", "F-625"], ["getContextDocContent", "F-626"]]) {
       const r = await invoke(fk, { id: "probe_does_not_exist" });
-      const notAllowed = r.status === 400 && r.json && /not allowlisted/.test(String(r.json.error || ""));
-      if (notAllowed) NV(`${finding}: ${fk} cannot be driven live - the dev hook's invokeResolver allow-list does not carry it`, { answer: String(r.json.error).slice(0, 90) });
-      else info(`${finding}: ${fk} answered ${r.status} ${JSON.stringify(r.json).slice(0, 160)} - reachable, extend this script`);
+      if (r.status === 400 && r.json && /not allowlisted/.test(String(r.json.error || ""))) {
+        NV(`${finding}: ${fk} cannot be driven live - the dev hook's invokeResolver allow-list does not carry it`, { answer: String(r.json.error).slice(0, 90) });
+        continue;
+      }
+      if (!ownEditor) {
+        NV(`${finding}: ${fk} IS reachable, but no scope-"own" editor ACCOUNT is on the roster, so only the admin arm can be driven here - run knowledge-doors-editor-live.mjs, which grants one through the Permissions tab and restores it`, { adminAnswer: r.text.slice(0, 120) });
+        continue;
+      }
+      if (fk === "getContextDocContent") {
+        const asEditor = await invoke(fk, { id: "probe_does_not_exist" }, ownEditor.accountId);
+        if (asEditor.json && asEditor.json.success === false && !asEditor.json.doc) PASS(`${finding}: ${fk} returns no document body to a scope-"own" editor for an unknown id`, { body: asEditor.text.slice(0, 140) });
+        else FAIL(`${finding}: ${fk} answered with a body`, { body: asEditor.text.slice(0, 200) });
+        continue;
+      }
+      /* THE FOREIGN ARM MUST BE A REAL ROW. Comparing an unknown id against a SECOND
+         unknown id is trivially "identical" and would be a false pass, so a missing
+         fixture is NOT VERIFIED, never a PASS. */
+      const foreignId = fk === "deleteContextDoc" ? foreignDocId : foreignSkillId;
+      if (!foreignId) {
+        NV(`${finding}: ${fk} IS reachable and an editor account is on the roster, but this instance holds no ${fk === "deleteContextDoc" ? "user document" : "user skill"} authored by anyone else - the "colleague's row" arm would be a second unknown id, which proves nothing`);
+        continue;
+      }
+      const payloadFor = (id) => (fk === "saveSkill" ? { id, name: "probe", category: "Other", instructions: "probe" } : { id });
+      const unknown = await invoke(fk, payloadFor(`f620probe_${Date.now().toString(36)}`), ownEditor.accountId);
+      const foreign = await invoke(fk, payloadFor(foreignId), ownEditor.accountId);
+      assertIdentical(`${finding}: ${fk} as a scope-"own" editor (foreign row ${foreignId})`, unknown, foreign);
     }
   } finally {
     console.log("\nRESTORE");

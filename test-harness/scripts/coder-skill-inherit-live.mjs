@@ -122,7 +122,19 @@ const runTurn = async (label, message, payloadExtra) => {
   const logs = ((inner && inner.logs) || []).map(String);
   const injected = logs.find((l) => /Knowledge injected/i.test(l)) || null;
   note(`${label}: knowledge line`, { line: injected });
-  return { label, taskId: r.taskId, logs, injected, knowledge: inner && inner.knowledge };
+  /* F-636 / F-641 — THE CACHE NUMBERS THE TURN ITSELF REPORTS. `runCoderTurn` returns
+     `usage: {...loop.usage}`, which carries `cacheReadTokens` (every round summed) and
+     `firstRoundCacheReadTokens` (round 1 alone). There is no per-round breakdown anywhere
+     in the product, so rounds 2..N are measured as the DIFFERENCE of those two — which is
+     exactly the number F-641 is about. Nothing is inferred beyond that subtraction. */
+  const usage = (inner && inner.usage) || {};
+  const rounds = Number(inner && inner.rounds) || 0;
+  const first = Number(usage.firstRoundCacheReadTokens) || 0;
+  const total = Number(usage.cacheReadTokens) || 0;
+  const cacheLines = logs.filter((l) => /cache|pin re-built|DEFECT/i.test(l));
+  note(`${label}: cache reads`, { rounds, firstRoundCacheReadTokens: first, cacheReadTokensAllRounds: total, roundsTwoPlusCacheReads: total - first, tokens: Number(usage.tokens) || 0 });
+  if (cacheLines.length) note(`${label}: cache/pin log lines`, { lines: cacheLines.map((l) => l.slice(0, 260)) });
+  return { label, taskId: r.taskId, logs, injected, knowledge: inner && inner.knowledge, usage, rounds, first, total, cacheLines };
 };
 const skillsInjected = (t) => !!(t && t.injected && /skills/i.test(t.injected));
 
@@ -188,6 +200,31 @@ const main = async () => {
     evidence.rowAfterTurn4 = r4 && { skillIds: r4.skillIds, updatedAt: r4.updatedAt };
     check("an inherited [] is not a reason to fall back: the row is STILL []", !!r4 && Array.isArray(r4.skillIds) && r4.skillIds.length === 0, { stored: r4 && r4.skillIds });
     check("turn 4 injected no skills either", !skillsInjected(t4), { line: t4 && t4.injected });
+    /* ── F-636 / F-641 — THE CACHE READS, MEASURED ON THE SAME THREAD ────────── */
+    console.log("\nF-636 / F-641 — the cross-turn cache");
+    evidence.cache = {
+      turn1: t1 && { rounds: t1.rounds, first: t1.first, total: t1.total, roundsTwoPlus: t1.total - t1.first },
+      turn2: t2 && { rounds: t2.rounds, first: t2.first, total: t2.total },
+      turn3: t3 && { rounds: t3.rounds, first: t3.first, total: t3.total, lines: t3.cacheLines },
+      turn4: t4 && { rounds: t4.rounds, first: t4.first, total: t4.total, lines: t4.cacheLines },
+    };
+    /* THE POSITIVE CONTROL FIRST: turn 3 is the turn that DECIDES the rebuild, so it is
+       allowed to read nothing. Turn 4 decides nothing — if IT reads nothing, the rebuild
+       was billed twice, which is the whole of F-636. */
+    note("turn 3 (the rebuild turn) is allowed to miss — this is the stated price", { first: t3 && t3.first, lines: (t3 && t3.cacheLines) || [] });
+    check("F-636: turn 4 — the turn AFTER the rebuild, which decided nothing — read a NON-ZERO number of cached tokens on its FIRST round",
+      !!t4 && t4.first > 0, { firstRoundCacheReadTokens: t4 && t4.first, rounds: t4 && t4.rounds });
+    const defect4 = ((t4 && t4.cacheLines) || []).filter((l) => /^DEFECT/.test(l));
+    check("F-636: turn 4's own execution log carries NO `DEFECT` line", defect4.length === 0, { lines: defect4.map((l) => l.slice(0, 220)) });
+    const row4 = await kvGet(`coder_thread:${ISSUE}:${THREAD}`);
+    evidence.threadRowCacheReset = row4 && row4.cacheReset ? row4.cacheReset : null;
+    check("F-636: the thread row carries no unexplained `cacheReset` after turn 4 (a healthy turn clears it)",
+      !row4 || !row4.cacheReset || row4.cacheReset.defect !== true, { cacheReset: row4 && row4.cacheReset });
+    /* F-641 BASELINE — a measurement, not a verdict: the row is being cut, so this run
+       only records what turn 1's later rounds read today. */
+    note("F-641 baseline: turn 1's cache reads (round 1 vs rounds 2+)",
+      { rounds: t1 && t1.rounds, round1: t1 && t1.first, roundsTwoPlusCombined: t1 ? t1.total - t1.first : null });
+
     check("the row was rewritten by turn 4 (so the [] above is this turn's answer, not a stale read)",
       !!r4 && !!r3 && r4.updatedAt !== r3.updatedAt, { turn3: r3 && r3.updatedAt, turn4: r4 && r4.updatedAt });
   } finally {

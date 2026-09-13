@@ -52,6 +52,7 @@ import fs from "node:fs";
 import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
+import { gitHookUrl } from "../lib/git-hook-url.mjs";
 
 const env = loadEnv();
 const REPO = process.env.GIT_REPO_ID || "leanzero-srl/cognirunner-forge-offshoot";
@@ -87,7 +88,7 @@ async function invoke(functionKey, payload = {}) {
   return { status: r.status, body: j, raw: j ? null : t.slice(0, 200) };
 }
 
-const hookUrl = (connId) => `${TRIGGER}${TRIGGER.includes("?") ? "&" : "?"}conn=${connId}&repo=${encodeURIComponent(REPO)}`;
+const hookUrl = (connId) => gitHookUrl(TRIGGER, connId, REPO);
 
 async function main() {
   console.log("\nF-481 - THE ROTATION WINDOW, live on DEV against a real GitHub repository\n");

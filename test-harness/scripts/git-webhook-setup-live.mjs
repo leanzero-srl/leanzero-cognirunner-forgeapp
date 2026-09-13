@@ -50,6 +50,7 @@ import fs from "node:fs";
 import { execFileSync } from "node:child_process";
 import { chromium } from "../../static/_screenshot-harness/node_modules/playwright/index.mjs";
 import { testState } from "../lib/rules-api.mjs";
+import { gitHookUrl } from "../lib/git-hook-url.mjs";
 
 const BASE = "https://wolfaenpak.atlassian.net";
 const APP = "36415848-6868-4697-9554-3c3ad87b8da9";
@@ -85,7 +86,7 @@ const gh = (args, body) => {
 const ghHooks = () => gh(["api", `/repos/${REPO}/hooks`]);
 /** The url a delivery for this connection+repo must arrive on — hookUrlFor, retyped
  *  nowhere: this mirrors src/git-connections.js and is compared, never printed. */
-const hookUrl = (connId) => `${TRIGGER}${TRIGGER.includes("?") ? "&" : "?"}conn=${encodeURIComponent(connId)}&repo=${encodeURIComponent(REPO)}`;
+const hookUrl = (connId) => gitHookUrl(TRIGGER, connId, REPO);
 
 /* ---- the app, read-side, through the dev test hook ---- */
 const call = async (functionKey, payload = {}) => {

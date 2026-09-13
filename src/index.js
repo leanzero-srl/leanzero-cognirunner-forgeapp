@@ -8006,18 +8006,21 @@ resolver.define("saveSkill", async ({ payload, context }) => {
       if (existing?.builtin === true && !(await requireAdmin(context.accountId))) {
         return permissionDenied("Admin access required to edit built-in skills", "admin");
       }
-      if (existing) {
-        // F-260 — see registerConfig.
-        const verdict = await configActionVerdict(context.accountId, existing, "editor");
-        if (!verdict.allowed) return configRefusal(verdict, "edit this skill");
-      } else {
-        // F-616 — THE SAME RULE AS `gateSaveById`: an id that names no row is an
-        // EDIT of something that is gone, never a create at a caller-chosen id.
-        // `saveSkillInternal` honours `meta.id` when it finds no index row, so
-        // without this a client could mint a skill at any id it liked — including
-        // the id of a skill someone had just deleted. A create omits the id.
-        return { success: false, error: "Skill not found" };
-      }
+      // F-616/F-622 — THE ONE GATE, CALLED, NOT RESTATED. An id that names no row
+      // is an EDIT of something that is gone, never a create at a caller-chosen id
+      // (`saveSkillInternal` honours `meta.id` when it finds no index row, so a
+      // client could otherwise mint a skill at any id it liked — including one just
+      // deleted). This branch used to answer a bare "Skill not found" for an unknown
+      // id while a colleague's skill answered `notOwner`, which is F-261's existence
+      // leak: a scope-"own" editor could tell a free id from a taken one and map the
+      // instance's skills. `gateSaveById` → `gateExistingRow` → `rowGateVerdict`
+      // decides both arms in one home — "not found" only for a scope-"all" caller,
+      // the byte-identical `notOwner` for everyone else. A create omits the id.
+      const refusal = await gateSaveById(context.accountId, {
+        id, existing, what: "edit this skill", createWhat: "create a skill",
+        notFound: "Skill not found", minRole: "editor",
+      });
+      if (refusal) return refusal;
     }
     const result = await saveSkillInternal(
       {

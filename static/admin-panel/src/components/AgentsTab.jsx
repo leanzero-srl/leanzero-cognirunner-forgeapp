@@ -46,7 +46,7 @@ import VaEditor from "./VaEditor";
 import { showToast } from "./toast";
 import { confirmDialog } from "../confirmDialog";
 import { createVaClient } from "../va-client";
-import { isPermissionRefusal, permissionRefusalText } from "./refusal";
+import { isPermissionRefusal, isUpgradeRequired, permissionRefusalText } from "./refusal";
 import { VA_LIMITS } from "../../../../src/shared/va-config.js";
 import { agentCapabilityCopy } from "../../../../src/shared/edition.js";
 
@@ -336,9 +336,13 @@ const reasonCopy = (reason, opts) => {
        screen is not the answer, so it renders a solid red notice. It must never render as
        an empty state: "no agent wrote while it was being deleted" is the one sentence this
        panel must not say falsely, and a storage fault is not evidence for it.
-     reason null - a PERMISSION refusal (this read is admin-floored, the agent list is
-       not, so an editor sees the tab and not this). The backend's sentence names the
-       remedy and its owner, so it is rendered AS GIVEN rather than re-typed here.
+     reason "no-permission" / "upgrade-required" - a REFUSAL, not a fault (this read is
+       admin-floored, the agent list is not, so an editor sees the tab and not this). The
+       backend's sentence names the remedy and its owner, so it is rendered AS GIVEN rather
+       than re-typed here. F-621: this block used to say a refusal arrives with a NULL
+       reason. It does not, and never did - `permissionDenied` stamps one - which is how a
+       non-admin came to be shown a storage fault. The refusal is identified by
+       `isPermissionRefusal` / `isUpgradeRequired`, never by the absence of a reason.
 
    The sentences for the two faults are copy, not the store's own words: `VA_ADMIN_REFUSALS`
    says "Stored history could not be read", which is true of six other reads and tells an
@@ -781,12 +785,25 @@ function PurgesSection({ client }) {
       if (mine !== token.current) return;
       if (r && r.success) { setAnswer({ purges: arr(r.purges), truncated: r.truncated === true }); setFault(null); return; }
       setAnswer({ purges: [], truncated: false });
-      /* A named reason is a STORE fault and gets this panel's own sentence; a null reason
-         is the permission refusal, whose sentence names a remedy and its owner and is the
-         backend's to write (refusal.js is the one test for that shape). */
-      setFault(r && r.reason
-        ? { kind: "fault", text: purgeFaultCopy(r.reason) }
-        : { kind: "refusal", text: (r && r.error) || "" });
+      /* F-621 - REFUSAL FIRST, and by the SAME PREDICATE the agent list uses at the top of
+         this file. The comment that stood here said "a null reason is the permission
+         refusal", and the test below it (`r.reason ? fault : refusal`) was built on that
+         belief. It was never true: `permissionDenied` in src/index.js always stamps
+         `reason: "no-permission"`, so `getVaRecentPurges`'s `noPerm(...)` carried a named
+         reason and landed in the FAULT arm - a non-admin was told the store is broken, in
+         solid red, with the backend's own remedy sentence dropped on the floor. An edition
+         denial (`reason: "upgrade-required"`) took the same wrong arm.
+
+         So this no longer re-states the discrimination in its own words. `isPermissionRefusal`
+         / `isUpgradeRequired` in refusal.js are the ONE test for "the backend refused this
+         reader" and they are asked FIRST; only what is left over is a store fault. That
+         ordering matters: a fault is the fallback, so a reason nobody has taught this panel
+         about still raises the incomplete-list notice rather than being silently swallowed as
+         a refusal with no sentence - "no agent wrote while it was being deleted" stays the
+         one thing this panel will not say falsely. */
+      setFault(isPermissionRefusal(r) || isUpgradeRequired(r)
+        ? { kind: "refusal", text: (r && r.error) || "" }
+        : { kind: "fault", text: purgeFaultCopy(r && r.reason) });
     });
     return () => { token.current += 1; };
   }, [client]);

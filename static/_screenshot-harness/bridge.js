@@ -2544,16 +2544,28 @@ function invoke(name, payload) {
        `window.__VA_PURGES__` (the idiom `__VA_HEALTH_REASON__` and `__VA_STATUS_FAIL__`
        already use) or by `?vaPurges=` when a human is browsing the harness by hand. The
        shapes mirror src/va-admin.js `listRecentPurges` and src/index.js `vaAnswer` exactly:
-       a refusal carries BOTH the sentence on `error` and the machine-readable `reason`, and
-       a permission refusal carries `reason: null`, which is how the tab tells a store fault
-       (its own copy) from a role floor (the backend's sentence, rendered as given). */
+       a refusal carries BOTH the sentence on `error` and the machine-readable `reason`.
+       F-621 - the `non_admin` shape below USED TO STAMP `reason: null`, mirroring a belief
+       about `permissionDenied` that was never true. `src/index.js` `noPerm(...)` always
+       stamps `reason: "no-permission"` (plus `needsRole` and `hint: "ask-app-admin"`), so
+       the old fixture was strictly easier than production and it made the tab's inverted
+       fault/refusal test PASS. A fixture that is kinder than the real resolver does not
+       test the resolver; it certifies the bug. The tab now tells the two apart with
+       `isPermissionRefusal`, on this exact shape. */
     case "getVaRecentPurges": {
       const which = (typeof window !== "undefined" && (window.__VA_PURGES__ || new URLSearchParams(window.location.search).get("vaPurges"))) || "empty";
       if (which === "scan_failed" || which === "scan_unavailable") {
         return Promise.resolve({ success: false, reason: which, error: which === "scan_unavailable" ? "Stored history could not be read on this runtime." : "Stored history could not be read." });
       }
       if (which === "non_admin") {
-        return Promise.resolve({ success: false, reason: null, error: "You don't have permission to review what a deleted Virtual Administrator wrote. Ask a Jira administrator for the admin role in CogniRunner.", needsRole: "admin", code: "permission_denied" });
+        return Promise.resolve({ success: false, reason: "no-permission", error: "You don't have permission to review what a deleted Virtual Administrator wrote. Ask a Jira administrator for the admin role in CogniRunner.", needsRole: "admin", hint: "ask-app-admin" });
+      }
+      /* F-621 - the EDITION twin. It took the same wrong arm as the role floor before the
+         fix (a named reason, so the fault branch claimed the store was unreadable), and it
+         is the case `isPermissionRefusal` deliberately does NOT match - hence a second
+         scenario rather than trusting one to stand for both. */
+      if (which === "upgrade_required") {
+        return Promise.resolve({ success: false, reason: "upgrade-required", featureId: "va", error: "Upgrade to CogniRunner Coder to review what a deleted Virtual Administrator wrote." });
       }
       if (which === "two" || which === "truncated") {
         return Promise.resolve({ success: true, purges: VA_PURGES, truncated: which === "truncated" });

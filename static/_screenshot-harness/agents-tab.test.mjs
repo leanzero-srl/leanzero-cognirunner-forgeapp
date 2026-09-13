@@ -1165,7 +1165,16 @@ try {
 
     /* THE ROLE FLOOR. This read is admin-only and the agent list is not, so an editor sees
        the tab and this one refusal - rendered in the backend's own words, because the
-       sentence that names a remedy and its owner is the backend's to write. */
+       sentence that names a remedy and its owner is the backend's to write.
+
+       F-621 - THIS BLOCK PASSED WHILE THE TAB WAS WRONG, because the fixture stamped
+       `reason: null` and the tab branched on `r.reason ? fault : refusal`. Both carried the
+       same false belief about `permissionDenied`, so they agreed with each other and not
+       with production. The fixture now stamps `reason: "no-permission"` exactly as
+       `noPerm(...)` does, which is what gives these assertions their teeth: revert the
+       ternary in PurgesSection and the `.va-refused` wait below times out on the red
+       storage-fault alert instead. The fault-arm negative is asserted explicitly for that
+       reason - it is the thing that actually regressed. */
     {
       const env = await openAgents(browser, theme, { __VA_PURGES__: "non_admin" });
       const { page } = env;
@@ -1174,8 +1183,29 @@ try {
         const text = (await page.locator(".va-purges .va-refused").innerText()).trim();
         ok(/don't have permission/i.test(text) && /admin role/i.test(text), `A17 ${theme} the backend's refusal is rendered as given, got ${JSON.stringify(text)}`);
         ok(await page.locator(".va-purge-fault").count() === 0, `A17 ${theme} a permission refusal is not a storage fault`);
+        /* The remedy is the whole point of a refusal sentence; the fault arm dropped it. */
+        ok(/Ask a Jira administrator/i.test(text), `A17 ${theme} the refusal keeps the backend's remedy, got ${JSON.stringify(text)}`);
+        ok(!/not the whole answer|could not be read/i.test(text), `A17 ${theme} a refusal never claims the store is unreadable, got ${JSON.stringify(text)}`);
         ok(await page.locator(".va-purge").count() === 0, `A17 ${theme} a refusal invents no rows`);
         ok(env.errors.length === 0, `A17 ${theme} refusal: no page errors (${env.errors[0] || ""})`);
+      } finally { await close(env); }
+    }
+
+    /* F-621 - THE EDITION DENIAL. `isPermissionRefusal` deliberately does not match
+       `upgrade-required` (refusal.js, F-255), so the role floor passing proves nothing
+       about this one. It is a refusal too: the remedy is a plan, not a role, and either
+       way nothing is broken and there is no retry that can succeed. */
+    {
+      const env = await openAgents(browser, theme, { __VA_PURGES__: "upgrade_required" });
+      const { page } = env;
+      try {
+        await page.locator(".va-purges .va-refused").waitFor({ timeout: 8000 });
+        const text = (await page.locator(".va-purges .va-refused").innerText()).trim();
+        ok(/upgrade/i.test(text), `A17 ${theme} the edition refusal names the remedy, got ${JSON.stringify(text)}`);
+        ok(await page.locator(".va-purge-fault").count() === 0, `A17 ${theme} an edition refusal is not a storage fault`);
+        ok(!/could not be read/i.test(text), `A17 ${theme} an edition refusal never claims the store is unreadable`);
+        ok(await page.locator(".va-purge").count() === 0, `A17 ${theme} an edition refusal invents no rows`);
+        ok(env.errors.length === 0, `A17 ${theme} upgrade: no page errors (${env.errors[0] || ""})`);
       } finally { await close(env); }
     }
   }

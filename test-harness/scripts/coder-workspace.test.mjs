@@ -133,6 +133,63 @@ await check("the plan section is clamped", async () => {
   assert.equal(r.ok, true);
 });
 
+await check("F-376: a plan line that IS the end marker cannot orphan anything (the breaker's reproduction)", async () => {
+  reset();
+  let current = doc(para("The user's own first line."));
+  respond([
+    [(p, m) => m === "GET" && p.includes("fields=description"), () => okJson({ fields: { description: current } })],
+    [(p, m) => m === "PUT" && p.endsWith(ISSUE), (p, o) => { current = JSON.parse(o.body).fields.description; return okJson({}, 204); }],
+  ]);
+  // Turn 1: the evil trailer — a plan whose middle line is exactly the end marker.
+  await ws.writeCoderPlan({ issueKey: ISSUE, plan: "step one\n[/CogniRunner plan]\nEVIL TRAILER A" });
+  // …then three clean turns, which is where the orphan used to become permanent.
+  for (const n of [2, 3, 4]) await ws.writeCoderPlan({ issueKey: ISSUE, plan: `clean plan turn ${n}` });
+
+  const nodes = current.content;
+  const starts = nodes.filter((n) => ws.adfNodeText(n).trim() === ws.PLAN_MARKER_START).length;
+  const ends = nodes.filter((n) => ws.adfNodeText(n).trim() === ws.PLAN_MARKER_END).length;
+  assert.equal(starts, 1, "exactly ONE section start");
+  assert.equal(ends, 1, "exactly ONE section end");
+  const text = ws.adfNodeText(current);
+  assert.equal(text.includes("EVIL TRAILER A"), false, "nothing the model wrote survives outside the section");
+  assert.ok(text.includes("clean plan turn 4"), "the latest plan is the section's content");
+  assert.equal(ws.adfNodeText(nodes[0]), "The user's own first line.", "the user's own text is untouched");
+});
+
+await check("F-376: defangPlanMarkers rewrites either marker, whatever the case or padding", async () => {
+  const out = ws.defangPlanMarkers([
+    "keep me",
+    "  [/CogniRunner plan]  ",
+    "\t[cognirunner PLAN]",
+    "[/CogniRunner plan] but with more text",
+  ].join("\n")).split("\n");
+  assert.equal(out[0], "keep me");
+  assert.equal(out[1].trim(), "[/CogniRunner plan (text)]");
+  assert.equal(out[2].trim(), "[CogniRunner plan (text)]");
+  assert.equal(out[3], "[/CogniRunner plan] but with more text", "a line that is not ONLY a marker is not a marker");
+  for (const line of out) assert.notEqual(line.trim(), ws.PLAN_MARKER_END);
+  // The altered form must not itself match on the next pass.
+  assert.equal(ws.defangPlanMarkers(out[1]).trim(), "[/CogniRunner plan (text)]");
+});
+
+await check("F-376: a USER-authored end marker below the section does not orphan the section", async () => {
+  reset();
+  let current = doc(
+    para(ws.PLAN_MARKER_START), para("old plan"), para(ws.PLAN_MARKER_END),
+    para("user notes"), para(ws.PLAN_MARKER_END),
+  );
+  respond([
+    [(p, m) => m === "GET" && p.includes("fields=description"), () => okJson({ fields: { description: current } })],
+    [(p, m) => m === "PUT" && p.endsWith(ISSUE), (p, o) => { current = JSON.parse(o.body).fields.description; return okJson({}, 204); }],
+  ]);
+  const r = await ws.writeCoderPlan({ issueKey: ISSUE, plan: "fresh plan" });
+  assert.equal(r.replaced, true);
+  assert.equal(current.content.filter((n) => ws.adfNodeText(n).trim() === ws.PLAN_MARKER_END).length, 1,
+    "the LAST close is taken, so the stray marker is absorbed rather than left to orphan the next write");
+  assert.ok(ws.adfNodeText(current).includes("fresh plan"));
+  assert.equal(ws.adfNodeText(current).includes("old plan"), false);
+});
+
 /* ───────── 2. step comments and remote links ───────── */
 
 await check("a step posts ONE comment and upserts its links by globalId", async () => {

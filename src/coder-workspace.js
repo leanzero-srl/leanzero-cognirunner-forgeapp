@@ -181,8 +181,13 @@ export const replacePlanSection = (description, sectionNodes) => {
     ? { ...description, version: 1, content: description.content.slice() }
     : { type: "doc", version: 1, content: [] };
   const isMarker = (node, marker) => adfNodeText(node).trim() === marker;
+  // THE FIRST OPEN, THE LAST CLOSE (F-376). Taking the first close orphans everything
+  // between a duplicate close and the real one — permanently, because the next write
+  // matches the same first close again. Widest span = the section can always be reclaimed,
+  // which is the only direction that is self-healing on an already-damaged description.
   const start = doc.content.findIndex((n) => isMarker(n, PLAN_MARKER_START));
-  const end = doc.content.findIndex((n) => isMarker(n, PLAN_MARKER_END));
+  let end = -1;
+  for (let i = doc.content.length - 1; i > start; i--) { if (isMarker(doc.content[i], PLAN_MARKER_END)) { end = i; break; } }
   if (start >= 0 && end > start) {
     doc.content.splice(start, end - start + 1, ...sectionNodes);
     return { doc, replaced: true };
@@ -191,11 +196,39 @@ export const replacePlanSection = (description, sectionNodes) => {
   return { doc, replaced: false };
 };
 
-/** The section as nodes: marker, heading, the plan's paragraphs, marker. */
+/**
+ * DEFANG THE MARKERS (F-376). The plan markers are a FENCE, and every other fence in this
+ * app strips its own token out of the content it wraps (`defangFence`, memories.js). This
+ * one did not: a plan line whose text is exactly `[/CogniRunner plan]` became a top-level
+ * paragraph that the NEXT write read as the section's end, so everything after it was
+ * orphaned OUTSIDE the app-owned section and could never be rewritten or removed again —
+ * permanent model-authored text in the user's description, reachable from the untrusted
+ * `<<<ISSUE>>>` context the plan is derived from.
+ *
+ * Any line that WOULD match a marker (case-insensitive, after the same control-character
+ * normalisation and trim that `paragraph()` and the matcher apply) is rewritten to a
+ * visibly altered, non-matching form. It is a REWRITE, not a rejection: the model's text is
+ * data, and a plan is not dropped because it contains an unlucky line.
+ */
+export const defangPlanMarkers = (text) => {
+  const looksLike = (line, marker) => line.replace(CONTROL_CHARS, " ").trim().toLowerCase() === marker.toLowerCase();
+  const altered = (marker) => `${marker.slice(0, -1)} (text)]`;
+  return String(text == null ? "" : text).replace(/\r\n?/g, "\n").split("\n").map((line) => {
+    if (looksLike(line, PLAN_MARKER_START)) return altered(PLAN_MARKER_START);
+    if (looksLike(line, PLAN_MARKER_END)) return altered(PLAN_MARKER_END);
+    return line;
+  }).join("\n");
+};
+
+/**
+ * The section as nodes: marker, heading, the plan's paragraphs, marker.
+ * The plan is the MODEL'S text and is defanged before it goes between the markers — the
+ * marker paragraphs themselves are written here, by code, and are never passed through it.
+ */
 export const buildPlanSection = (plan) => [
   paragraph(PLAN_MARKER_START),
   { type: "heading", attrs: { level: 3 }, content: [{ type: "text", text: "CogniRunner plan" }] },
-  ...plainTextAdf(plan, { maxLines: PLAN_MAX_LINES, maxBytes: PLAN_MAX_BYTES }).content,
+  ...plainTextAdf(defangPlanMarkers(plan), { maxLines: PLAN_MAX_LINES, maxBytes: PLAN_MAX_BYTES }).content,
   paragraph(PLAN_MARKER_END),
 ];
 

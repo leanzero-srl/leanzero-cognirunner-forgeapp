@@ -117,6 +117,18 @@ Without these, requests may be rejected or throttled.
 | `finish_reason: "tool_calls"` | `stop_reason: "tool_use"` |
 | `usage.total_tokens` | Computed: `input_tokens + output_tokens` |
 
+**Prompt caching (1.4).** `callAnthropicChat` takes an optional `cachePrefix`: the number of
+leading entries of `messages` the caller declares byte-stable across the calls that share
+them. When it is set, the system block (rendered after the tools, so the tool definitions
+are cached with it) and the last content block of the last stable message carry
+`cache_control: { type: "ephemeral" }`; everything after that point (the current round's
+tool transcript) stays uncached. Two breakpoints at most (the API allows four). Only the
+multi-round agent loop (`runAgentLoop`, `src/agent-runner.js`) sets it, freezing the count
+at the messages present on entry, because there the same prefix is re-sent once per round;
+validators, conditions, semantic post-functions, codegen, fix, review and every other
+one-shot caller pass nothing and send a request byte-identical to the pre-1.4 one, since a
+single call only ever pays the cache-write premium. No other provider reads the flag.
+
 ### AWS Bedrock
 
 **Auth:** `Authorization: Bearer <bedrock-api-key>` — the Bedrock API key is a plain bearer token; **no AWS SigV4 signing** is performed (or needed) in the Forge sandbox.
@@ -197,12 +209,13 @@ Editions are exposed to the frontends by `checkLicense`, which returns `{ isActi
 
 ### The agent model slot
 
-1.3 adds a second model slot per provider, `COGNIRUNNER_AGENT_MODEL_{provider}`, read by `getAgentModel` and written by `saveAgentModel` (admin only). It is the model the upcoming agent surfaces — Coder chat, PR review, the Virtual Administrator (1.4 / 1.5) — will run on, kept apart from the rule/validator model so a tenant can run a hundred validators on Haiku and one agent turn on a frontier model.
+1.3 adds a second model slot per provider, `COGNIRUNNER_AGENT_MODEL_{provider}`, read by `getAgentModel` and written by `saveAgentModel` (admin only). It is the model the agent surfaces run on — since 1.4 the Coder (the issue panel and the Coder post-function), the PR-review engine and the listener/job agent runs; the Virtual Administrator (1.5) is in progress — kept apart from the rule/validator model so a tenant can run a hundred validators on Haiku and one agent turn on a frontier model.
 
 - On Forge LLM the agent slot is **frontier-only**: `saveAgentModel` accepts only `claude-sonnet-5` / `claude-opus-5`. On Standard the refusal is the `upgradeRequired` shape; on Coder a non-frontier id is refused with "Agents on Atlassian (Forge LLM) run on Claude Sonnet 5 or Opus 5 only." Haiku never drives an agent at any edition. `getAgentModel` returns `frontierOnly: true` for this provider so the panel offers only those two ids.
 - On BYOK providers any model id the customer names is accepted.
 - When nothing is saved, `getAgentModel` falls back to the active provider's rule model (or the provider default).
-- `agentCapability({ provider, edition, agentModel, allowanceLevel })` in `edition.js` is the single predicate every agent surface will gate on: BYOK → enabled (`byok`); Forge LLM on Standard → `needs-coder-edition`; Forge LLM with a non-frontier agent model → `needs-frontier-model`; Forge LLM with the monthly allowance at its hard cap → `allowance-exhausted`; otherwise `forge-frontier`.
+- `agentCapability({ provider, edition, agentModel, allowanceLevel })` in `edition.js` is the single predicate every agent surface gates on: BYOK → enabled (`byok`); Forge LLM on Standard → `needs-coder-edition`; Forge LLM with a non-frontier agent model → `needs-frontier-model`; Forge LLM with the monthly allowance at its hard cap → `allowance-exhausted`; otherwise `forge-frontier`. The `getAgentCapability` resolver (viewer floor) is the one door for a UI, and the sentence for each reason lives beside the predicate (`AGENT_CAPABILITY_REASONS`). See [`CODER.md`](CODER.md#1-editions-and-the-capability-rule).
+- The agent facts (provider, edition, agent model, allowance level) are read by one function, `agentGateFacts` in `src/index.js`, which never throws and omits what it could not read; the action gate refuses what it was not told about.
 - Model ids from either save resolver pass through one normaliser (`normalizeModelId`: trim, strip control characters, cap at 120 chars, server-side).
 
 ### Monthly Forge LLM allowance (Coder)
@@ -225,7 +238,7 @@ allowance = clamp(seats × $2.00, $40, $800) per month
 
 ### Forge LLM rate limit and the token budget queue
 
-Forge LLM caps **50,000 tokens per minute per installation, per model** (`AI_PLATFORM_TPM` in `src/shared/ai-budget.js`; verified 2026-09-12 — Sonnet 5, Opus 5 and Haiku are counted independently). CogniRunner paces background AI work (queued post-functions, listeners, jobs, codegen, fix, review, distillation) against a per-provider tokens-per-minute budget — default **35,000** for Forge LLM, none for BYOK unless set — so a burst never runs the installation into HTTP 429 and never makes a user-facing validator fail. The budget is deliberately one installation-wide bucket rather than one per model: the conservative reading can only slow the app down, never overrun the platform. The admin sets it under **Settings → AI token budget (tokens per minute)**. The design is written up in [`PROMPT-token-budget-queue.md`](PROMPT-token-budget-queue.md).
+Forge LLM caps **50,000 tokens per minute per installation, per model** (`AI_PLATFORM_TPM` in `src/shared/ai-budget.js`; verified 2026-09-12 — Sonnet 5, Opus 5 and Haiku are counted independently). CogniRunner paces background AI work (queued post-functions, listeners, jobs, codegen, fix, review, distillation, and since 1.4 PR reviews (`gitreview`, estimated from the diff size up to the 60 KB cap plus 4,000) and Coder turns (`coder`, estimated at 16,000)) against a per-provider tokens-per-minute budget — default **35,000** for Forge LLM, none for BYOK unless set — so a burst never runs the installation into HTTP 429 and never makes a user-facing validator fail. The budget is deliberately one installation-wide bucket rather than one per model: the conservative reading can only slow the app down, never overrun the platform. The admin sets it under **Settings → AI token budget (tokens per minute)**. The design is written up in [`PROMPT-token-budget-queue.md`](PROMPT-token-budget-queue.md).
 
 ---
 

@@ -8,6 +8,139 @@
 
 ---
 
+## 1.4 — Coder (2026-09-13)
+
+1.3 sold the Coder edition; 1.4 ships the Coder. An engineer inside the Jira issue, a
+workflow post-function that hands a transition to the same engine, and the Git layer both
+run on: connections with write-only credentials, a signed webhook that turns repository
+events into listener runs, a deterministic pull-request reviewer, and Git validators and
+conditions. Two reference pages carry the detail, [`CODER.md`](CODER.md) and
+[`GIT-INTEGRATION.md`](GIT-INTEGRATION.md); everything below was read from the code on
+`main`. The 1.5 work (the Virtual Administrator, the Confluence rules) is in progress and
+is not part of this entry.
+
+### The capability rule
+
+One predicate, `agentCapability` in `src/shared/edition.js`, decides whether any agent
+surface may run. On a BYOK provider it is on for every edition. On Atlassian (Forge LLM)
+it needs the Coder edition and a frontier agent model (Sonnet 5 or Opus 5; Haiku never
+drives an agent), and it pauses at the monthly allowance's hard cap. The sentence for each
+reason lives beside the predicate, so the Code tab, the action checklist, the issue panel
+and the backend refusal all say the same thing; a capability read that fails renders the
+off state, never an enabled control.
+
+### The Coder in the issue
+
+The **CogniRunner Coder** issue panel: tell the Coder what to do on the issue, pick a
+connection, choose a dry run or a live run (fixed by the conversation's first turn), and
+send. A turn runs on a new 900 s consumer, one turn per issue, up to eight rounds. Every
+repository write is a consent chip naming the action and a preview of its arguments, with
+**Confirm / Change / Skip**; the decision is recorded in the thread verbatim and survives
+compaction. Each turn writes back onto the issue: a plan section in the description
+between visible markers, one comment per confirmed step with the repository, branch and
+pull request as remote links, a running "Coder log" comment edited in place, and a
+`coder-session-<n>.md` transcript.
+
+### The Coder post-function
+
+The premade post-function **Coder: build / open branch / open PR / fix / review** hands a
+transition to the engine in one of five modes, each with a fixed instruction and a ceiling
+on the actions it may hold. It is always queued, never inline. Headless means no consent
+tickets: a write the gate allows executes, one it refuses halts the turn and says why, and
+write actions survive only on a rule an admin saved. A `strict` flag chooses whether an
+environment problem (capability off, dead token, repository not allow-listed) is logged as
+a skip or an error; a misconfigured rule is an error either way.
+
+### Git connections, the webhook, the events
+
+Admins connect GitHub or Bitbucket Cloud in the new **Code** tab. A token is verified with
+`whoami` before it is stored, is never returned by any resolver, and every connection
+carries an admin-edited repository allow-list that fails closed when empty. A dead
+credential is loud: the row is marked, the tab shows a banner, and the validators' Strict
+option reads the same flag. Rotation is a queued task, never a resolver.
+
+The production webhook (`git-webhook`) routes on `?conn=&repo=`, verifies a SHA-256 HMAC
+over the raw body with a per-repository secret, answers inside GitHub's 10 s window, claims
+every delivery id for 24 h before it enqueues, and refuses everything else with the
+documented 401 / 404 / 503 / 202 answers. Nine Git events join the one event catalogue
+(pull request opened / updated / closed / merged, review submitted, PR comment added,
+branch pushed, check run completed, pipeline completed); every one requires a repository
+allow-list on the listener, and `ignoreSelf` compares the actor with the connection's own
+login. The consumer writes the advisory `cognirunner.git` issue property for the issue keys
+a delivery names.
+
+### PR review, validators, conditions
+
+A listener on the PR events can run the deterministic review engine
+(`agentlessTaskType: "gitreview"`): one review per head SHA, the diff capped and fenced,
+the model's findings clamped in code, at most one general and ten inline comments per run
+and six reviews per repository per hour, and a verdict posted as text unless an admin-saved
+rule allows the action. Four Git validators (build passed, PR approved, comments resolved,
+PR merged) verify live on every transition; the property only nominates the pull request,
+and the live pull request must name the issue key. Three Git conditions hide a transition
+on a known-negative recorded state and never block on a missing property.
+
+### Agents
+
+The action catalogue gains the `git` and `web` namespaces behind one gate with four inputs
+(capability, products, trigger source, the saver's role). `web_search` refuses any query
+that carries an identifier from the instance, returns at most five fenced results with a
+reading rule, and is budgeted per turn (3), per run (10) and per installation (300 per
+5 minutes). Listener and job agents can bind up to four Skills and opt into Memories
+(`agent.skillIds`, `agent.useMemories`); scheduled jobs gain a per-run write brake
+(`maxWritesPerRun`, default 200) and four multi-hour cadence presets; the installation
+gains an agent-run brake (200 per 5 minutes). Refusals over the Rules REST API carry the
+same `reason` / `needsRole` / `hint` / `refused[]` fields the resolvers return.
+
+### Providers
+
+The Anthropic adapter marks a caller-declared stable prefix with `cache_control` so an
+agent turn's later rounds read the system prompt, the tool definitions and the thread
+history from the cache; one-shot callers are unchanged. The token budget queue prices a
+Coder turn at 16,000 tokens and a PR review from its diff size, so both are paced like every
+other queued AI task on Forge LLM.
+
+### Also
+
+- The manifest grows one issue panel (`coder-panel`, on the existing issue-glance bundle),
+  one web trigger (`git-webhook`), one consumer (`long-consumer`, 900 s) and backend-only
+  egress to `api.github.com`, `api.bitbucket.org` and `bitbucket.org`. No new scopes.
+- Pipeline setup exists as admin resolvers (`setupGitPipeline`, `getGitPipelineStatus`,
+  `triggerGitDeploy`) with a permission lock and a fixed scope allow-list; see the
+  limitations below.
+
+### Known limitations
+
+- **Bitbucket adapter unproven.** The Bitbucket Cloud adapter, its webhook mapping and its
+  review path are written and covered by the mocked-fetch suite, but have not been run
+  against a real workspace. On GitHub the webhook signature construction was verified
+  against a real delivery and the inbound path was proven live with self-signed deliveries;
+  the adapters themselves are proven on mocked fetch.
+- **Webhook secret provisioning.** The per-repository signing secret is minted by
+  `ensureHookSecret`, which no admin resolver or Code tab control calls yet, and the
+  adapters' `createWebhook` is not called from the product. A real repository cannot be
+  wired to the production webhook from the app; the live proof used the dev harness to
+  plant the secret.
+- **Managed key not shipped.** There is no vendor-managed Anthropic provider; the Coder
+  runs on the tenant's own BYOK key or on Forge LLM under the edition rule above.
+- **Pipeline run unproven.** The pipeline setup chain and the rendered workflows have not
+  been exercised against a real Atlassian API token; the Forge deploy identity's token is
+  stored without verification (the app has no egress to `*.atlassian.net`), so a mistyped
+  token surfaces on the first deploy.
+- **Knowledge packs not yet shipped.** The field-guide selector (`src/shared/knowledge-select.js`)
+  and its per-audience budgets are in the tree, but no packs are baked and nothing injects
+  a field guide into a prompt.
+- **No one-click premade listener.** The "Review every opened PR" seed exists in the
+  catalogue, but the Listeners tab does not offer it; push the shape over the Rules REST
+  API.
+- **Skills and memories on rules are REST-only fields.** The Listeners and Scheduled Jobs
+  editors do not expose `agent.skillIds`, `agent.useMemories` or `maxWritesPerRun` yet.
+  Coder turns bind no skills (nothing passes `skillIds` to them).
+- **GitHub review-thread resolution** is not readable over REST, so `git-pr-comments-resolved`
+  reports it as unknown on GitHub (Strict decides).
+
+---
+
 ## 1.3.0 — Editions (2026-09-12)
 
 CogniRunner is now sold as two Marketplace editions. **Standard** is the app you already

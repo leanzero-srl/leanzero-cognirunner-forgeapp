@@ -861,6 +861,18 @@ try {
       const setup = row.locator("button", { hasText: "Set up pipeline" });
       ok(await setup.count() === 1, `C16 ${theme} the "Set up pipeline" button is reachable on an installed-but-outdated row`);
 
+      /* F-602 - AND THE ACTION THAT CANNOT WORK IS GONE. The deploy gate read `status`,
+         which is still "installed" on an outdated row, so the card described the 422 and
+         then offered the button that produces it. Two controls, one of them a dead end,
+         is worse than the missing remedy was: the dead one is primary-styled and sits in
+         the head, where a reader reaches first. Absent, not disabled - a greyed button
+         still reads as "the right action, temporarily unavailable". */
+      ok(await row.locator(".code-pipe-deploy").count() === 0,
+        `C16 ${theme} the "Trigger deploy" button is GONE on an outdated row - the dispatch it would send is the 422 the box just named`);
+      const headButtons = await row.locator(".code-pipe-head button").allInnerTexts();
+      ok(!headButtons.some((t) => /deploy/i.test(t)),
+        `C16 ${theme} no control in the pipeline head offers a deploy (got ${JSON.stringify(headButtons)})`);
+
       /* Design: solid amber, white ink, 600-700, NO left rail, NO alpha tint, dark override.
          Asserted on computed style on BOTH the badge and the body. */
       for (const [name, loc] of [["badge", badge], ["box", row.locator(".code-pipe-outdated-box").first()]]) {
@@ -899,6 +911,11 @@ try {
       ok(await row.locator(".code-pipe-outdated-box").count() === 0, "C16b an up-to-date pipeline shows no outdated box");
       ok((await row.locator(".code-pipe-status").first().innerText()).trim() === "INSTALLED", "C16b it keeps the green INSTALLED badge");
       ok(await row.locator("button", { hasText: "Set up pipeline" }).count() === 0, "C16b and it is not asked to set itself up again");
+      /* F-602's negative control. Hiding the deploy button on the outdated arm is only a
+         fix if the HEALTHY arm still has it; a gate that removed it everywhere would pass
+         C16 and take the feature away from every up-to-date repo. */
+      ok(await row.locator(".code-pipe-deploy").count() === 1, "C16b a CURRENT installed pipeline keeps its Trigger deploy button");
+      ok(/Trigger deploy/.test(await row.locator(".code-pipe-deploy").first().innerText()), "C16b and the button still reads Trigger deploy");
       ok(env.errors.length === 0, "C16b no page errors: " + env.errors.join(" | "));
     } catch (e) { fail++; console.log("  ✗ C16b threw: " + e.message.split("\n")[0]); }
     await close(env);

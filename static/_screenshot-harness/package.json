@@ -3,7 +3,10 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "UNTRACKED throwaway harness to screenshot/record the CogniRunner UIs standalone.",
+  "description": "Harness to screenshot/record and source-scan the CogniRunner UIs standalone.",
+  "scripts": {
+    "test:offline": "node refusal-contract.test.mjs && node fixture-constants.test.mjs"
+  },
   "dependencies": {
     "playwright": "^1.57.0"
   }

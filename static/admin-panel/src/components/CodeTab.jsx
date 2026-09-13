@@ -474,7 +474,16 @@ function PipelineCard({ invoke, conn, repoId, onNeedIdentity }) {
         {row && row.appId && (
           <span className="code-fact"><span className="code-fact-k">App id</span><span className="code-fact-v">{row.appId}</span></span>
         )}
-        {status === "installed" && (
+        {/* F-602 - AN OUTDATED PIPELINE MUST NOT OFFER THE ACTION THAT CANNOT WORK.
+            The gate used to read `status` alone, which is still "installed" on an outdated
+            row, so the card said the committed workflow is invalid YAML and that GitHub
+            answers every dispatch with 422 - and then put a primary-styled button next to
+            that sentence whose only outcome IS the 422. A reader presses what is in front
+            of them rather than scrolling to a form. The remedy for this state is "Set up
+            pipeline" below, and it is the only control the state should leave standing.
+            Disabling was the weaker option: a greyed button still reads as "the right
+            action, temporarily unavailable" and invites a wait rather than the re-setup. */}
+        {status === "installed" && !outdated && (
           <button className="btn-primary btn-small code-pipe-deploy" disabled={deploying} onClick={handleDeploy}>
             {deploying ? "Starting…" : "Trigger deploy"}
           </button>

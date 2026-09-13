@@ -50,6 +50,23 @@
  */
 import { saveItem, writeMemory } from "./va-ledger.js";
 import { clampChars } from "./shared/text-clamp.js";
+import { defangFence } from "./memories.js";
+
+/**
+ * THE APPROVAL-INBOX CLAMPS (F-455). An inbox issue is written from text the MODEL
+ * produced, so it is clamped and defanged here rather than trusted to be short.
+ * A 40 KB "summary" is a 400 from Jira the agent cannot explain; a 200 KB description is
+ * a write nobody meant to make.
+ */
+export const INBOX_SUMMARY_MAX_CHARS = 250;
+export const INBOX_DESCRIPTION_MAX_CHARS = 4000;
+/**
+ * At most TWO inbox issues per turn. An agent that asks a human and proposes a change on
+ * one issue is working; one that files five is looping, and each one is a write somebody
+ * has to read. The budget is per EXECUTOR, i.e. per turn, for the same reason
+ * `createGitActionExecutor`'s repo budget is.
+ */
+export const INBOX_ISSUES_PER_TURN = 2;
 
 const isObj = (v) => v != null && typeof v === "object" && !Array.isArray(v);
 const asArray = (v) => (Array.isArray(v) ? v : []);
@@ -100,7 +117,7 @@ export const createVaLedgerExecutor = ({
   selfAccountId = null,
   log = () => {},
 } = {}) => {
-  const outcome = { staged: null, asked: false, proposed: false, notes: 0, memories: 0 };
+  const outcome = { staged: null, asked: false, proposed: false, notes: 0, memories: 0, inboxIssues: 0 };
   const persona = isObj(va && va.persona) ? va.persona : {};
   const guardrails = isObj(va && va.guardrails) ? va.guardrails : {};
   const inboxKey = () => str(guardrails.approvalProjectKey);
@@ -117,6 +134,47 @@ export const createVaLedgerExecutor = ({
   const baselineOf = () => {
     const fp = fingerprintOf(issue, { selfAccountId });
     return fp.lastCommentId == null ? "" : String(fp.lastCommentId);
+  };
+
+  /**
+   * THE ONE PLACE THAT FILES AN INBOX ISSUE (F-455).
+   *
+   * It used to be two copies, each calling `deps.createIssue` DIRECTLY with an unclamped,
+   * undefanged description — outside the dispatcher, so outside the write scope, outside
+   * the write brake and absent from `session.changes`. An agent with `maxWritesPerRun: 2`
+   * could file a hundred issues into a project its write scope did not name, and the run's
+   * own change ledger showed nothing at all.
+   *
+   * `createIssue` is now the DISPATCHER's `create_issue`, which resolves the project from
+   * the argument, checks it against the write scope, counts the write against
+   * `maxWritesPerRun` and records it. The approval inbox must therefore be a project this
+   * agent may write in, or the action is refused — which is the correct answer: an inbox
+   * outside the agent's write scope is a configuration mistake, not a special case.
+   *
+   * THE MODEL STILL CANNOT NAME THE TARGET. The project comes from the RECORD; the model
+   * has no argument that reaches it. What changed is that the record's choice is now
+   * checked too.
+   */
+  const fileInboxIssue = async (summary, description) => {
+    if (outcome.inboxIssues >= INBOX_ISSUES_PER_TURN) {
+      return { ok: false, error: `Refused: this turn has already filed ${INBOX_ISSUES_PER_TURN} issues for a human, which is its limit. Say what is left in a note and finish.` };
+    }
+    try {
+      const created = await createIssue({
+        projectKey: inboxKey(),
+        issueType: "Task",
+        summary: clampChars(defangFence(str(summary)), INBOX_SUMMARY_MAX_CHARS),
+        description: clampChars(defangFence(str(description)), INBOX_DESCRIPTION_MAX_CHARS),
+      });
+      // The dispatcher REPORTS a refusal rather than throwing (write scope, write brake),
+      // so a `{success:false}` is a refusal to pass straight back to the model — not a
+      // success with a missing key.
+      if (created && created.success === false) return { ok: false, error: str(created.error) || "the issue could not be created" };
+      outcome.inboxIssues++;
+      return { ok: true, key: (created && created.key) || null };
+    } catch (e) {
+      return { ok: false, error: str(e && e.message || e).slice(0, 160) };
+    }
   };
 
   const stage = async (staged, patch) => saveItem(store, agentId, issueKey, {
@@ -166,18 +224,16 @@ export const createVaLedgerExecutor = ({
       const dueAt = dueDate();
       const inbox = inboxKey();
       if (inbox) {
-        try {
-          const created = await createIssue({
-            project: { key: inbox }, issuetype: { name: "Task" },
-            summary: clampChars(`${persona.name || "Agent"} needs a decision on ${issueKey}`, 250),
-            description: `${summary}\n\nWhat would unblock it: ${needs}\n\nIssue: ${issueKey}`,
-          });
-          await saveItem(store, agentId, issueKey, { state: "waiting_on_human", dueAt, event: "asked", reason: clampChars(summary, 200) }, { now: now() });
-          outcome.asked = true;
-          return { asked: true, where: `${inbox} (${created && created.key})`, note: "A human has been asked. This item now waits; you will not work it again until they answer or it falls due." };
-        } catch (e) {
-          return { success: false, code: "inbox_write", error: `The approval inbox ${inbox} could not be written to: ${str(e && e.message || e).slice(0, 160)}. Ask again as an internal note instead.` };
+        const filed = await fileInboxIssue(
+          `${persona.name || "Agent"} needs a decision on ${issueKey}`,
+          `${summary}\n\nWhat would unblock it: ${needs}\n\nIssue: ${issueKey}`,
+        );
+        if (!filed.ok) {
+          return { success: false, code: "inbox_write", error: `The approval inbox ${inbox} could not be written to: ${filed.error}. Ask again as an internal note instead.` };
         }
+        await saveItem(store, agentId, issueKey, { state: "waiting_on_human", dueAt, event: "asked", reason: clampChars(summary, 200) }, { now: now() });
+        outcome.asked = true;
+        return { asked: true, where: `${inbox} (${filed.key})`, note: "A human has been asked. This item now waits; you will not work it again until they answer or it falls due." };
       }
       // NO INBOX: the question is STAGED as an internal note, so it still goes through
       // every post gate. It does NOT bypass the two-phase clock just because it is
@@ -206,17 +262,12 @@ export const createVaLedgerExecutor = ({
       const inbox = inboxKey();
       outcome.proposed = true;
       if (inbox) {
-        try {
-          const created = await createIssue({
-            project: { key: inbox }, issuetype: { name: "Task" },
-            summary: clampChars(`Proposal: ${str(a.kind) || "change"} on ${str(a.target) || "?"}`, 250),
-            description: text,
-          });
-          await saveItem(store, agentId, issueKey, { event: "proposed", reason: clampChars(str(a.kind) || "change", 200) }, { now: now() });
-          return { proposed: true, executed: false, where: `${inbox} (${created && created.key})`, note: "Filed for a human to decide. Nothing was changed." };
-        } catch (e) {
-          return { success: false, code: "inbox_write", error: `The proposal could not be filed in ${inbox}: ${str(e && e.message || e).slice(0, 160)}.` };
+        const filed = await fileInboxIssue(`Proposal: ${str(a.kind) || "change"} on ${str(a.target) || "?"}`, text);
+        if (!filed.ok) {
+          return { success: false, code: "inbox_write", error: `The proposal could not be filed in ${inbox}: ${filed.error}.` };
         }
+        await saveItem(store, agentId, issueKey, { event: "proposed", reason: clampChars(str(a.kind) || "change", 200) }, { now: now() });
+        return { proposed: true, executed: false, where: `${inbox} (${filed.key})`, note: "Filed for a human to decide. Nothing was changed." };
       }
       const saved = await stage(
         { audience: "internal", kind: "proposal", body: text, reason: "proposing a change" },

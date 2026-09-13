@@ -783,9 +783,29 @@ const oneItemTurn = async ({ job, va, agentId, issueKey, tick, deps }) => {
 
   /* — the DISPATCH: ONE dispatcher, namespaces delegated to their executors — */
   const session = await deps.createSession({ issueKey, config: job });
+  /**
+   * THE INBOX DISPATCHER (F-455). A SECOND dispatcher over the SAME session, allowing
+   * exactly one action: `create_issue`.
+   *
+   * Separate from the model's dispatcher because the model must never be offered
+   * `create_issue` — the approval inbox is not a target it may name, and a tool that
+   * creates issues anywhere is the opposite of "speech is staged". Sharing the SESSION is
+   * the point: one `session.changes`, so an inbox issue counts against the same
+   * `maxWritesPerRun` as a transition, and one write scope, so the inbox project is
+   * checked like any other target.
+   */
+  const inboxDispatch = deps.createDispatcher({
+    issueKey, session, allowed: ["create_issue"], m: deps.m, executors: {},
+    maxWrites: Math.max(0, Math.trunc(guard(va, "maxWritesPerRun"))),
+    writeScope: vaWriteScope(va),
+  });
+
   const ledgerExecutor = deps.createLedgerExecutor({
     store: deps.store, agentId, issueKey, va, issue, tickId: tick, memory,
-    now, createIssue: deps.createIssue,
+    now,
+    // THE INBOX WRITE GOES THROUGH THE DISPATCHER (F-455) — write scope, write brake and
+    // change ledger, exactly like every other write this run makes.
+    createIssue: (fields) => inboxDispatch("create_issue", fields),
     decideAudience, fingerprintOf,
     // Read from the ISSUE, never from a tool argument — see the executor's own note.
     addresseeAccountId: lastCommentAuthorOf(issue),

@@ -25,6 +25,9 @@
  *   A11 dark theme renders the same surfaces.
  *   A12 a tick refused by the agent-capability gate renders the copy home's sentence as a
  *       solid red state, in both themes (F-501).
+ *   A13 the three memory-compaction shapes (F-511): a clean compaction as a solid teal
+ *       chip, a fallback and a non-converging gate as solid red states, and the backoff as
+ *       a solid slate one - both themes, computed colours, no rail, no em-dash.
  *
  * Run: node static/_screenshot-harness/agents-tab.test.mjs   (add --shots to save PNGs)
  */
@@ -429,6 +432,72 @@ try {
       ok(await page.locator(".va-receipt-failed").count() >= 1, `A12 ${theme} a failed tick is badged FAILED`);
       await shot(page, `agents-capability-${theme}`);
       ok(env.errors.length === 0, `A12 ${theme} no page errors (${env.errors[0] || ""})`);
+    } finally { await close(env); }
+  }
+  /* ---------- A13 the memory-compaction line (F-511) ---------- */
+  for (const [theme, teal, red, slate] of [
+    ["light", "rgb(13, 148, 136)", "rgb(220, 38, 38)", "rgb(71, 85, 105)"],
+    ["dark", "rgb(20, 184, 166)", "rgb(239, 68, 68)", "rgb(100, 116, 139)"],
+  ]) {
+    console.log(`A13 memory compaction (${theme})`);
+    const env = await openAgents(browser, theme);
+    const { page } = env;
+    try {
+      const css = (loc) => loc.evaluate((el) => {
+        const c = getComputedStyle(el);
+        const t = el.querySelector(".va-receipt-compact-title");
+        return { bg: c.backgroundColor, fg: c.color, bl: c.borderLeftWidth, w: getComputedStyle(t).fontWeight };
+      });
+
+      /* The healthy agent: one clean compaction, and the backoff tick beside it. */
+      await page.locator(".va-agent").first().locator(".rule-expand-btn").click();
+      await page.locator(".va-pane-btn", { hasText: "Ticks" }).click();
+      await page.locator(".va-receipt-compact").first().waitFor({ timeout: 8000 });
+      const good = page.locator(".va-receipt-compact").first();
+      const goodText = (await good.innerText()).trim();
+      ok(goodText === "Memory compacted 7268 to 3942 bytes", `A13 ${theme} the clean chip names both sizes with the word "to", got ${JSON.stringify(goodText)}`);
+      ok(!/[—–→]/.test(goodText), `A13 ${theme} no em-dash, en-dash or arrow on the clean chip`);
+      const g = await css(good);
+      ok(g.bg === teal, `A13 ${theme} solid teal fill, got ${g.bg}`);
+      ok(g.fg === "rgb(255, 255, 255)", `A13 ${theme} white ink, got ${g.fg}`);
+      ok(g.bl === "0px", `A13 ${theme} no left rail, got ${g.bl}`);
+      ok(Number(g.w) >= 600 && Number(g.w) <= 700, `A13 ${theme} 600-700 weight, got ${g.w}`);
+
+      const paused = page.locator(".va-receipt-compact-muted").first();
+      await paused.waitFor({ timeout: 8000 });
+      const pausedText = (await paused.innerText()).trim();
+      ok(/paused for six hours/i.test(pausedText), `A13 ${theme} the backoff sentence is the copy map's, got ${JSON.stringify(pausedText)}`);
+      ok(!/compaction-backoff/.test(pausedText), `A13 ${theme} the raw reason id is not what the admin reads`);
+      ok((await css(paused)).bg === slate, `A13 ${theme} the paused state is solid slate`);
+      /* A backoff tick is NOT a failure - the engine leaves the gate off it on purpose. */
+      ok(await paused.locator("xpath=ancestor::div[contains(@class,'va-receipt')][1]").locator(".va-receipt-failed").count() === 0, `A13 ${theme} the backoff tick is not badged FAILED`);
+      await shot(page, `agents-compaction-ok-${theme}`);
+
+      /* The broken agent: the non-converging gate, and the fallback. */
+      await page.locator(".va-agent").first().locator(".rule-expand-btn").click();
+      await page.locator(".va-agent").nth(1).locator(".rule-expand-btn").click();
+      await page.locator(".va-pane-btn", { hasText: "Ticks" }).click();
+      await page.locator(".va-receipt-compact-bad").first().waitFor({ timeout: 8000 });
+      const bad = page.locator(".va-receipt-compact-bad");
+      ok(await bad.count() === 2, `A13 ${theme} both failing shapes render, got ${await bad.count()}`);
+      const badTexts = (await bad.allInnerTexts()).map((t) => t.trim());
+      ok(badTexts.every((t) => /Memory compaction failed/.test(t)), `A13 ${theme} each failure says so`);
+      ok(badTexts.some((t) => /still over its byte budget/.test(t)), `A13 ${theme} the did-not-converge sentence`);
+      ok(badTexts.some((t) => /summariser did not answer/.test(t)), `A13 ${theme} the summariser-failed sentence`);
+      ok(badTexts.every((t) => !/[—–→]/.test(t)), `A13 ${theme} no em-dash, en-dash or arrow on the failed states`);
+      ok(badTexts.every((t) => !/did-not-converge|summariser-failed|compaction:/.test(t)), `A13 ${theme} no raw reason ids`);
+      /* The fallback is written by the engine TWICE (compacted.fellBack and a gated skip)
+         and must be named once. */
+      ok(badTexts.filter((t) => /summariser did not answer/.test(t)).length === 1, `A13 ${theme} the fallback is named once`);
+      /* A failed compaction never renders the teal "compacted" chip beside itself. */
+      ok(await page.locator(".va-receipt-compact:not(.va-receipt-compact-bad):not(.va-receipt-compact-muted)").count() === 0, `A13 ${theme} no clean chip on a failed compaction`);
+      const b = await css(bad.first());
+      ok(b.bg === red, `A13 ${theme} solid red fill, got ${b.bg}`);
+      ok(b.fg === "rgb(255, 255, 255)", `A13 ${theme} white ink on the failed state, got ${b.fg}`);
+      ok(b.bl === "0px", `A13 ${theme} no left rail on the failed state, got ${b.bl}`);
+      ok(Number(b.w) >= 600 && Number(b.w) <= 700, `A13 ${theme} 600-700 weight on the failed state, got ${b.w}`);
+      await shot(page, `agents-compaction-bad-${theme}`);
+      ok(env.errors.length === 0, `A13 ${theme} no page errors (${env.errors[0] || ""})`);
     } finally { await close(env); }
   }
 } finally {

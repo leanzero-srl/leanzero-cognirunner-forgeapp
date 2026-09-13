@@ -3472,11 +3472,22 @@ html[data-color-mode="dark"] .va-pane-btn.on { background: #f59e0b; border-color
 .va-receipt-cap-title { font-size: 13px; font-weight: 700; color: #fff; }
 .va-receipt-cap-text { font-size: 12.5px; font-weight: 600; line-height: 1.5; color: #fff; }
 .va-receipt-cap-link { font-size: 12px; font-weight: 600; color: #fff; }
+/* F-511 - the memory-compaction line. Teal is the memories hue; the failed state is
+   the same solid red the capability gate uses, the paused state neutral slate. Solid
+   fills with white ink, no left rail, no tint. */
+.va-receipt-compact { display: flex; flex-direction: column; gap: 3px; align-self: flex-start; padding: 6px 11px; border-radius: 6px; background: #0d9488; color: #fff; }
+.va-receipt-compact-title { font-size: 12.5px; font-weight: 700; color: #fff; }
+.va-receipt-compact-text { font-size: 12.5px; font-weight: 600; line-height: 1.5; color: #fff; }
+.va-receipt-compact-bad { background: #dc2626; }
+.va-receipt-compact-muted { background: #475569; }
 html[data-color-mode="dark"] .va-receipt-kind { background: #64748b; }
 html[data-color-mode="dark"] .va-receipt-gate { background: #f59e0b; color: #2a1602; }
 html[data-color-mode="dark"] .va-receipt-error { background: #ef4444; }
 html[data-color-mode="dark"] .va-receipt-failed { background: #ef4444; }
 html[data-color-mode="dark"] .va-receipt-cap { background: #ef4444; }
+html[data-color-mode="dark"] .va-receipt-compact { background: #14b8a6; }
+html[data-color-mode="dark"] .va-receipt-compact-bad { background: #ef4444; }
+html[data-color-mode="dark"] .va-receipt-compact-muted { background: #64748b; }
 html[data-color-mode="dark"] .va-receipt-bad { border-color: #ef4444; }
 
 .va-constraints { display: flex; flex-direction: column; gap: 6px; }

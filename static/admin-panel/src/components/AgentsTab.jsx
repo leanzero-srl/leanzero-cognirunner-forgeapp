@@ -87,6 +87,59 @@ const gateCopy = (g) => {
 };
 const gateSentence = (g) => gateCopy(g).sentence || "";
 
+/* ── F-511: the memory-compaction line on a tick receipt. ──────────────────────
+   The engine records compaction in TWO places and the tab used to read neither, so a
+   notebook that was over budget, or a summarisation being bought and wasted every five
+   minutes, left no trace on the one surface an administrator reads (F-506/F-507):
+
+     `receipt.compacted = {before, after, reason?, fellBack?}` - a turn actually RAN.
+     a skip row `{itemKey: "(memory)", gate: "compaction", reason: "compaction:<why>"}`
+     - it did not run, or it ran and did not converge.
+
+   The reason string arrives PREFIXED (`compaction:did-not-converge`) because the engine
+   namespaces it when it pushes the skip, so the prefix is stripped before the lookup
+   rather than being typed into the keys - the keys are the engine's own reason ids.
+
+   TONE IS READ OFF THE `gate` FIELD, never off the reason, for the same reason F-510
+   rewrote `ok`: the field is the engine's statement that it REFUSED. A gated row, and a
+   fallback, are solid red. The BACKOFF row carries no gate on purpose - those ticks are
+   the engine deliberately not paying for a call it knows is dead, and painting six hours
+   of them red would bury the banner the original failure already raised - so it renders
+   as a solid slate state instead. No rail, no tint, either way. */
+const COMPACTION_COPY = {
+  "summariser-failed": "The summariser did not answer, so the notes were cut instead of summarised and the memory is still over budget.",
+  "did-not-converge": "A summarisation was paid for and the memory is still over its byte budget.",
+  "compaction-backoff": "Compaction is paused for six hours after a failed compaction.",
+};
+const compactionReason = (s) => String((s && (s.reason || s.gate)) || "").replace(/^compaction:/, "");
+/* A skip the engine namespaced `compaction:` is one of ours whether or not it also carries
+   the gate; an id with no copy still renders its own reason rather than disappearing. */
+const isCompactionSkip = (s) => !!s && (s.gate === "compaction" || /^compaction:/.test(String((s && (s.reason || s.gate)) || "")));
+const compactionSentence = (reason) => COMPACTION_COPY[reason] || `Memory compaction stopped: ${reason || "unknown"}.`;
+const bytesOf = (n) => String(Math.max(0, Math.trunc(Number(n) || 0)));
+
+/* Every compaction statement on one receipt, in the order an admin reads them. A fallback
+   is named ONCE even though the engine writes it both as `compacted.fellBack` and as a
+   gated skip carrying the same reason. */
+function compactionRows(r) {
+  const out = [];
+  const c = r && r.compacted && typeof r.compacted === "object" ? r.compacted : null;
+  const skips = arr(r && r.skipped).filter(isCompactionSkip);
+  const gated = skips.some((s) => s.gate === "compaction");
+  const fellBack = !!(c && c.fellBack === true);
+  if (c && !fellBack && !gated) {
+    out.push({ tone: "ok", title: `Memory compacted ${bytesOf(c.before)} to ${bytesOf(c.after)} bytes` });
+  }
+  if (fellBack) out.push({ tone: "bad", title: "Memory compaction failed", text: compactionSentence(compactionReason(c) || "summariser-failed") });
+  for (const s of skips) {
+    const reason = compactionReason(s);
+    if (fellBack && reason === "summariser-failed") continue;
+    const isGate = s.gate === "compaction";
+    out.push({ tone: isGate ? "bad" : "muted", title: isGate ? "Memory compaction failed" : "Memory compaction paused", text: compactionSentence(reason) });
+  }
+  return out;
+}
+
 export default function AgentsTab({ invoke, isAdmin, userRole, roleUnknown = false }) {
   const canEdit = isAdmin || userRole === "editor" || userRole === "admin";
   const client = useRef(createVaClient(invoke)).current;
@@ -375,17 +428,23 @@ function EffectsPane({ client, agent, tz }) {
 
 /* ── Tick receipts: every skip, by the gate that made it. ─────────────────────── */
 
-/* The rows a receipt has to explain. A failing receipt may name its gate on the RECEIPT
-   itself (`{ ok:false, gate, reason }`, which is what the engine passes through untouched)
-   rather than inside `skipped[]` - so an ok:false tick still renders its failed state when
-   `skipped` is empty, instead of going silent, which is the quiet failure this pane exists
-   to prevent. A gate named in both places is rendered once. */
+/* The rows a receipt has to explain.
+
+   F-516 - A GATE ONLY EVER ARRIVES INSIDE `skipped[]`. This function used to carry a
+   second branch that synthesised a row from a TOP-LEVEL `r.gate`/`r.reason`, "which is
+   what the engine passes through untouched". It is not: `publicReceipt` (src/va-admin.js)
+   builds its answer as an explicit object literal and neither key is in it, at any arm -
+   the gate is projected onto the skip rows and nowhere else. So the branch could not fire,
+   no fixture ever reached it, and it invited exactly the mistake F-515 is removing, which
+   is code reading a `gate` off the receipt as if the receipt had a verdict of its own. The
+   verdict is `ok`; the gate belongs to the skip.
+
+   An ok:false tick with an empty `skipped[]` does NOT go silent without it: the FAILED
+   badge and the `error` line are both rendered from the receipt itself in ReceiptsPane. */
 function skipRows(r) {
-  const rows = arr(r.skipped);
-  if (r.ok === false && r.gate && !rows.some((s) => (s.gate || s.reason) === r.gate)) {
-    return rows.concat([{ gate: r.gate, reason: r.reason, itemKey: r.itemKey }]);
-  }
-  return rows;
+  /* The compaction rows have their own renderer (F-511) and would otherwise print here as
+     a raw `compaction:did-not-converge` id with no sentence. */
+  return arr(r.skipped).filter((s) => !isCompactionSkip(s));
 }
 
 function ReceiptsPane({ receipts, tz }) {
@@ -400,6 +459,12 @@ function ReceiptsPane({ receipts, tz }) {
             <span className="va-receipt-counts">{r.swept != null ? `${r.swept} swept` : ""}{r.worked != null ? ` · ${r.worked} worked` : ""}{r.posted != null ? ` · ${r.posted} posted` : ""}</span>
             {r.ok === false && <span className="va-receipt-failed">FAILED</span>}
           </div>
+          {compactionRows(r).map((c, j) => (
+            <div className={`va-receipt-compact${c.tone === "bad" ? " va-receipt-compact-bad" : ""}${c.tone === "muted" ? " va-receipt-compact-muted" : ""}`} key={`c${j}`}>
+              <span className="va-receipt-compact-title">{c.title}</span>
+              {c.text && <span className="va-receipt-compact-text">{c.text}</span>}
+            </div>
+          ))}
           {skipRows(r).map((s, j) => {
             const c = gateCopy(s);
             if (!c.copy) {

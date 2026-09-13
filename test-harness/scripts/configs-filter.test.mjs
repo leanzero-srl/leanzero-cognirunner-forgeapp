@@ -33,13 +33,20 @@ const ok = (c, m) => { if (c) pass++; else { fail++; console.log("FAIL:", m); } 
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const src = readFileSync(path.join(here, "../../src/index.js"), "utf8");
-const m = src.match(/export const filterConfigsForUser = \([\s\S]*?\n\};/);
-if (!m) { console.log("FAIL: could not extract filterConfigsForUser from src/index.js"); process.exit(1); }
+const grab = (name) => {
+  const m = src.match(new RegExp(`export const ${name} = \\([\\s\\S]*?\\n\\};`));
+  if (!m) { console.log(`FAIL: could not extract ${name} from src/index.js`); process.exit(1); }
+  return m[0].replace(/^export /, "");
+};
+// filterConfigsForUser now delegates to THE visibility predicate (F-432), so all three
+// come across together — extracting the caller without the predicate proves nothing.
 // eslint-disable-next-line no-new-func
-const { filterConfigsForUser } = new Function(
+const { filterConfigsForUser, canSeeRule, ruleOwnerIds } = new Function(
   `"use strict";
-   ${m[0].replace(/^export /, "")}
-   return { filterConfigsForUser };`,
+   ${grab("ruleOwnerIds")}
+   ${grab("canSeeRule")}
+   ${grab("filterConfigsForUser")}
+   return { filterConfigsForUser, canSeeRule, ruleOwnerIds };`,
 )();
 
 const ME = "acct-me";
@@ -101,6 +108,55 @@ const ids = (list) => list.map((c) => c.id).sort();
   // No accountId (anonymous/system context) must not silently hide everything.
   ok(filterConfigsForUser(rows, { filter: "mine", accountId: null }).length === rows.length,
     "filter=mine with no accountId must not filter (nothing to compare against)");
+}
+
+// ---- 7. F-432: an admin re-arm moves createdBy; the AUTHOR must still see the row ----
+//
+// `armingStamp` re-stamps `createdBy` with whoever last saved the rule, and that was also
+// the only visibility key — so an admin re-arming an editor's rule erased it from the
+// editor's Rules tab, their "My rules" and their Logs tab. Visibility is now `createdBy`
+// OR `firstCreatedBy`; PERMISSION (canActOnConfig) still reads `createdBy` alone.
+{
+  const rearmed = { id: "rearmed-1", createdBy: "acct-admin", firstCreatedBy: ME };
+  const withRearmed = [...rows, rearmed];
+
+  ok(JSON.stringify(ruleOwnerIds(rearmed)) === JSON.stringify(["acct-admin", ME]),
+    "a row's owners are the acting account and the first author, in that order");
+  ok(ruleOwnerIds({}).length === 0 && ruleOwnerIds(null).length === 0, "a row with neither has no owners");
+  ok(ruleOwnerIds({ createdBy: ME, firstCreatedBy: ME }).length === 1, "one account is not counted twice");
+
+  const seen = filterConfigsForUser(withRearmed, { accountId: ME, scope: "own", role: "editor" });
+  ok(ids(seen).includes("rearmed-1"), "the AUTHOR still sees a rule an admin re-armed");
+  const mine = filterConfigsForUser(withRearmed, { filter: "mine", accountId: ME, scope: "own", role: "editor" });
+  ok(ids(mine).includes("rearmed-1"), "…and it is still under their My rules");
+
+  const other = filterConfigsForUser(withRearmed, { accountId: YOU, scope: "own", role: "editor" });
+  ok(!ids(other).includes("rearmed-1"), "a third editor sees nothing of it");
+  const adminView = filterConfigsForUser(withRearmed, { accountId: "acct-admin", scope: "all", role: "admin" });
+  ok(ids(adminView).includes("rearmed-1"), "an admin sees every row");
+
+  // The "mine" arm is a DISPLAY choice and must NEVER short-circuit on admin — that is the
+  // F-OWN defect in reverse ("My Rules" listing everything).
+  const adminMine = filterConfigsForUser(withRearmed, { filter: "mine", accountId: "acct-admin", scope: "all", role: "admin" });
+  ok(JSON.stringify(ids(adminMine)) === JSON.stringify(["rearmed-1"]),
+    `an admin's "mine" is still only the admin's rules — got ${JSON.stringify(ids(adminMine))}`);
+}
+
+// ---- 8. canSeeRule directly: the ONE predicate three surfaces share --------------
+{
+  const row = { id: "x", createdBy: "acct-admin", firstCreatedBy: ME };
+  ok(canSeeRule(row, { accountId: ME, role: "editor", scope: "own" }), "the first author may SEE it");
+  ok(canSeeRule(row, { accountId: ME, role: "editor", scope: "own", mode: "mine" }), "…and it counts as theirs");
+  ok(!canSeeRule(row, { accountId: YOU, role: "editor", scope: "own" }), "an unrelated editor may not");
+  ok(canSeeRule(row, { accountId: YOU, role: "admin", scope: "all" }), "an admin may");
+  ok(!canSeeRule(row, { accountId: YOU, role: "admin", scope: "all", mode: "mine" }),
+    "but an admin's 'mine' is strict ownership, not privilege");
+  const orphan = { id: "legacy" };
+  ok(canSeeRule(orphan, { accountId: ME, role: "editor", scope: "own" }),
+    "an ownerless legacy row stays visible — an upgrade must not blank the table");
+  ok(!canSeeRule(orphan, { accountId: ME, role: "editor", scope: "own", mode: "mine" }),
+    "…but an ownerless row is nobody's");
+  ok(!canSeeRule(row, { accountId: null, mode: "mine" }), "no accountId owns nothing");
 }
 
 console.log(`\nconfigs-filter: ${pass} passed, ${fail} failed`);

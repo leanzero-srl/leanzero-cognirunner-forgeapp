@@ -1319,5 +1319,43 @@ reset();
 }
 
 
+
+/* ══ F-457 — THE POST BUDGET COUNTS CANDIDATES, NOT INDEX ENTRIES ═════════ */
+{
+  // The budget check used to run BEFORE the row was read, so once the cap was reached
+  // every remaining id in the index was recorded as `over_post_budget` — including parked,
+  // posted and plain queued rows that were never candidates for this pass. An operator
+  // read "forty skipped for budget" when three existed, which is the kind of number
+  // somebody raises a cap over.
+  reset();
+  const stageAt = async (key) => {
+    await L.saveItem(kvs, AG, key, { state: "queued" }, { now: T0 });
+    await L.saveItem(kvs, AG, key, {
+      state: "staged",
+      staged: { audience: "internal", body: "I have picked this up. It should be sorted today.", reason: "r", baseline: "c-1", tickId: "t-stage", stagedAt: new Date(T0 - 30 * MIN).toISOString() },
+    }, { now: T0 });
+  };
+  // Three genuine candidates, plus six rows in states this pass must ignore.
+  await stageAt("SUP-1"); await stageAt("SUP-2"); await stageAt("SUP-3");
+  for (const [key, state] of [["SUP-4", "queued"], ["SUP-5", "posted"], ["SUP-6", "parked"], ["SUP-7", "done"], ["SUP-8", "seen"], ["SUP-9", "waiting_on_human"]]) {
+    await L.saveItem(kvs, AG, key, { state: "queued" }, { now: T0 });
+    if (state !== "queued") await L.saveItem(kvs, AG, key, { state }, { now: T0 });
+  }
+
+  const capped = vaJob({ guardrails: { ...vaJob().va.guardrails, maxItemsPerTick: 2 } });
+  const d = postDeps();
+  const r = await V.runVaPost({ agent: capped, tickId: "t-budget", deps: d });
+  const over = r.skipped.filter((x) => x.reason === "over_post_budget");
+  eq(over.length, 1, "budget.ALLOW_only_real_candidates_are_over_budget — 3 staged, cap 2, so exactly 1");
+  ok(over.every((x) => ["SUP-1", "SUP-2", "SUP-3"].includes(x.key)), "budget: …and it is a STAGED row, never a parked or posted one");
+  for (const key of ["SUP-4", "SUP-5", "SUP-6", "SUP-7", "SUP-8", "SUP-9"]) {
+    ok(!r.skipped.some((x) => x.key === key && x.reason === "over_post_budget"), `budget.BLOCK_${key}_is_not_a_budget_skip`);
+  }
+  eq(r.posted, 2, "budget: exactly the cap went out");
+  const receipt = (await L.readTick(kvs, AG, "t-budget", "post")).receipt;
+  eq(receipt.candidates, r.skipped.length + r.posted, "budget: the receipt's candidate count matches what it actually saw");
+}
+
+
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

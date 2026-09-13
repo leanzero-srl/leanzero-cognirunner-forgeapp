@@ -1214,11 +1214,21 @@ export const runVaPost = async ({ agent, tickId = null, deps: injected = {} } = 
 
     let considered = 0;
     for (const issueKey of index.ids) {
-      if (considered >= cap) { note(issueKey, "over_post_budget"); continue; }
       const read = await readItem(deps.store, agentId, issueKey);
       if (read.readFailed) { note(issueKey, "item_read_failed"); continue; }
       const row = read.row;
+      // FILTER FIRST, THEN BUDGET (F-457). The budget check used to run BEFORE the row was
+      // read, so once the cap was reached every remaining id in the index was recorded as
+      // `over_post_budget` — including the parked, the posted and the plain queued ones,
+      // which were never candidates for this pass at all. The receipt then told an
+      // operator that forty items had been skipped for budget when three existed, which
+      // is the kind of number somebody raises a cap over.
+      //
+      // The cost is that a non-candidate row is READ even after the budget is spent. That
+      // is bounded by the index itself, which the per-agent row cap and the 90-day TTL
+      // already bound (F-413); an honest receipt is worth the reads.
       if (!row || row.state !== "staged" || !row.staged) continue;
+      if (considered >= cap) { note(issueKey, "over_post_budget"); continue; }
       considered++;
 
       const refuse = async (reason, patch = {}) => {

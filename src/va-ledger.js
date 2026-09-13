@@ -623,7 +623,14 @@ export const recordTick = async (store, agent, { tickId, phase = "prepare", star
     staged: Math.max(0, Math.trunc(Number(staged) || 0)),
     // Bounded: a receipt is evidence, not a log file, and KVS refuses a 240 KiB value.
     skipped: (Array.isArray(skipped) ? skipped : []).slice(0, 50)
-      .map((s) => ({ key: clampChars(s && s.key, 80), reason: safeText(s && s.reason, 120) })),
+      // `gate` is optional and kept when present (F-482): a skip caused by a GATE - the
+      // instance may not run an agent at all - reads differently from a skip caused by
+      // this item, and the receipt is the only place an admin can tell them apart.
+      .map((s) => ({
+        key: clampChars(s && s.key, 80),
+        reason: safeText(s && s.reason, 120),
+        ...(s && s.gate ? { gate: clampChars(s.gate, 40) } : {}),
+      })),
     next: next == null ? null : String(next),
     error: error == null ? null : safeText(error, 300),
   };

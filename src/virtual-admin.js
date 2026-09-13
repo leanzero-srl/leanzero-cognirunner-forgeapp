@@ -63,6 +63,10 @@ import {
   renderGuardrailSentences, vaWriteScope, vaConfluenceSpaces,
 } from "./shared/va-config.js";
 import { lintVoice } from "./shared/voice-lint.js";
+// THE ONE agent-capability predicate (F-482). Pure, and shared with the Coder, the
+// listener gate and the admin's own capability read - a VA must not be the surface that
+// answers this question differently, or not at all.
+import { agentCapability } from "./shared/edition.js";
 import { assertWriteScope } from "./shared/agent-actions.js";
 import { createVaLedgerExecutor, VA_LEDGER_ACTION_IDS } from "./va-ledger-actions.js";
 import { clampChars } from "./shared/text-clamp.js";
@@ -362,6 +366,36 @@ export const runVaTick = async ({ job, tickId = null, deps: injected = {} } = {}
       // the shadow period nobody was watching.
       await recordTickHealth(deps.store, agent, true, { now: deps.now() });
       return { ok: true, paused: true, candidates: 0, fannedOut: 0, skipped: [{ key: "(agent)", reason: "paused" }] };
+    }
+
+    /*
+     * THE CAPABILITY GATE, BEFORE ANY WORK (F-482).
+     *
+     * A Virtual Administrator is an agent surface, and every other agent surface asks
+     * `agentCapability` before it runs. This one asked nobody, so a Standard tenant on
+     * Forge LLM had a working VA - ten item turns on dev, on the rules model, with the
+     * capability answering `needs-coder-edition` the whole time.
+     *
+     * The whole TICK refuses, not the individual item: the sweep is the spend (a JQL
+     * search per source, a ledger read per candidate) and fanning out items that will
+     * each refuse would be the same bill with more noise. It is LOUD in both places an
+     * admin looks - the receipt names the gate and the reason, and the health counter
+     * takes a failure so the banner appears - because a capability refusal that only
+     * showed as "nothing happened" is the F-233 shape: a control whose refusal reads as
+     * an outage.
+     */
+    const cap = await deps.capability();
+    if (!cap.enabled) {
+      const gate = [{ key: "(agent)", gate: "capability", reason: cap.reason || "unknown" }];
+      await recordTick(deps.store, agent, { tickId: tick, phase: "prepare", started, candidates: 0, staged: 0, skipped: gate });
+      // A FAILED tick, deliberately: this is not a healthy no-op like a paused agent. The
+      // agent is configured to work and the instance will not let it, which is exactly
+      // what the banner exists to surface.
+      // NO `phase: "prepare"`, deliberately, exactly like the paused arm: this tick did
+      // no work, so it is not a tick anybody could WATCH and it must not burn shadow mode.
+      // The failure counter still moves, because the banner is the point.
+      await recordTickHealth(deps.store, agent, false, { reason: `capability:${cap.reason || "unknown"}`, now: deps.now() });
+      return { ok: false, reason: "capability_off", capability: cap, candidates: 0, fannedOut: 0, skipped: gate };
     }
 
     const maxItems = Math.max(0, Math.trunc(guard(va, "maxItemsPerTick")));
@@ -686,6 +720,17 @@ export const runVaItem = async ({ agent, issueKey, tickId, deps: injected = {} }
 
 const oneItemTurn = async ({ job, va, agentId, issueKey, tick, deps }) => {
   const now = () => deps.now();
+  /*
+   * THE SAME CAPABILITY GATE, ASKED AGAIN (F-482). Not belt and braces: an item task is
+   * a QUEUED message and can be delivered minutes after the tick that pushed it, across
+   * a licence lapse or a provider switch, and it can be redelivered. The turn is where
+   * the model is actually called, so the last word about whether the model may be called
+   * belongs here too. It refuses BEFORE the tools are built, which is also what keeps
+   * `toolDefinitionsFor(..., { pregated: true })` below honest: the powers may decide the
+   * list only once the instance has agreed there may be an agent at all.
+   */
+  const cap = await deps.capability();
+  if (!cap.enabled) return { ok: false, ran: false, reason: "capability_off", detail: cap.reason || "unknown", capability: cap };
   const current = await readItem(deps.store, agentId, issueKey);
   if (current.readFailed) return { ok: false, reason: "item_read_failed" };
   let row = current.row;
@@ -1578,6 +1623,43 @@ export const DEFAULT_DEPS = {
 
   getJob: async (id) => (await import("./scheduled-jobs.js")).getJob(id),
 
+  /**
+   * THE AGENT CAPABILITY VERDICT (F-482), from the ONE predicate every other agent
+   * surface asks: `agentCapability` in src/shared/edition.js.
+   *
+   * The VA asked it NOWHERE. On a dev tenant whose own `getAgentCapability` resolver
+   * answered `{enabled:false, reason:"needs-coder-edition"}`, a Virtual Administrator ran
+   * ten item turns anyway - so a Standard tenant on Forge LLM got an agent the product
+   * says it may not have, driven by the rules model. The verdict is resolved here, from
+   * the exported facts readers, and the tick and the item turn both refuse on it.
+   *
+   * FAILS CLOSED. A fact we could not read is not a capability we may assume: any throw
+   * answers `{enabled:false, reason:"unknown"}`, which refuses the tick loudly rather
+   * than running an agent on facts nobody established.
+   *
+   * ONE KNOWN GAP, stated rather than hidden: `allowanceLevel` is NOT read here, because
+   * the monthly Forge LLM allowance is computed inside `src/index.js` from a private seat
+   * read and is not exported. So the `allowance-exhausted` arm of the predicate cannot
+   * fire on this surface; the edition, provider and frontier-model arms - which are the
+   * ones that were bypassed - all do. Closing it means exporting the facts assembler
+   * from index.js, which is one owner's call and not this module's.
+   */
+  capability: async () => {
+    const facts = { provider: null, edition: null, agentModel: null, allowanceLevel: null };
+    try {
+      const m = _index || (await import("./index.js"));
+      try { facts.provider = (await m.readProviderConfigFresh()).provider || null; } catch (e) { /* restrictive */ }
+      // `fresh: true` for the same reason the consumer reads everything fresh: this runs
+      // in a warm container that no licence change can invalidate.
+      try { facts.edition = (await m.currentEdition(null, { fresh: true })).edition; } catch (e) { /* restrictive */ }
+      try { facts.agentModel = await m.getAgentModel(); } catch (e) { /* restrictive */ }
+    } catch (e) { return { enabled: false, reason: "unknown", ...facts }; }
+    // NO PROVIDER, NO CAPABILITY - the same rule `buildAgentGateContext` applies: an
+    // unanswered question is refused, never assumed.
+    const verdict = facts.provider ? agentCapability(facts) : { enabled: false, reason: "unknown" };
+    return { enabled: verdict.enabled === true, reason: verdict.reason, ...facts };
+  },
+
   getIssue: async (issueKey) => {
     const { default: api, route } = await import("@forge/api");
     const res = await api.asApp().requestJira(route`/rest/api/3/issue/${issueKey}?fields=*navigable,comment&expand=names`);
@@ -1706,12 +1788,22 @@ export const DEFAULT_DEPS = {
   },
 
   /** THE LOOP. One implementation, shared with the listener, the job and the Coder. */
+  /**
+   * THE LOOP. One implementation, shared with the listener, the job and the Coder.
+   *
+   * THE MODEL IS THE AGENT MODEL (F-482), not the rules model. `getOpenAIModel()` is the
+   * slot validators and post-functions run on - on Forge LLM that is Haiku - and a
+   * Virtual Administrator ran its whole persona on it, ten item turns deep on dev, while
+   * the admin's chosen agent model sat unused. `getAgentModel()` is the same one home the
+   * capability verdict is computed from, and it falls back to the ordinary model rather
+   * than to a literal, so a BYOK tenant that never picked an agent model is unaffected.
+   */
   runLoop: async (args) => {
     const m = await import("./index.js");
     return _agentRunner.runAgentLoop({
       ...args,
       apiKey: await m.getOpenAIKey(),
-      model: await m.getOpenAIModel(),
+      model: await m.getAgentModel(),
     });
   },
   turnBudgetMs: 100000,

@@ -356,7 +356,17 @@ export const runAgentLoop = async ({
         messages.push({ role: "tool", tool_call_id: tc.id, content: defangFence(JSON.stringify(halt.toolResult === undefined ? { executed: false } : halt.toolResult).slice(0, 4000)) });
         continue;
       }
-      out.actions.push({ name, args: argsShort, ok, ms: Date.now() - ts });
+      // THE REFUSAL CODE IS STORED, not left for the model to quote (F-444). A namespace
+      // executor reports WHY it refused as a short machine-readable `code`
+      // (`identifier_leak:<kind>`, `budget_spent`, `brake:web-searches`, `mcp_off`…), and
+      // that code used to exist only inside the tool result — which a run row does not
+      // keep — so an operator could only see it when the model happened to repeat it.
+      // Codes are fixed strings that name a KIND and never a value, so storing one cannot
+      // leak the thing the refusal was protecting; clamped anyway, because it is not ours.
+      const code = !ok && res && typeof res === "object" && typeof res.code === "string"
+        ? res.code.slice(0, 60)
+        : null;
+      out.actions.push({ name, args: argsShort, ok, ms: Date.now() - ts, ...(code ? { code } : {}) });
       log(`${ok ? "tool" : "tool ERROR"} ${name}(${argsShort})${ok ? "" : ` → ${res.error}`}`);
       if (name === "finish" && ok) {
         finished = true;
@@ -558,7 +568,7 @@ export const createAgentActionDispatcher = ({ issueKey = null, session, allowed 
 
 /**
  * Run the agent. Returns
- *   { success, outcome, summary, rounds, toolCalls:[{name,args,ok,ms}], changes, logs,
+ *   { success, outcome, summary, rounds, toolCalls:[{name,args,ok,ms,code?}], changes, logs,
  *     tokens, aiTimeMs, error? }
  *
  * A THIN CALLER of runAgentLoop above: it owns the gate, the sandbox session, the Jira

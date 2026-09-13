@@ -10,7 +10,8 @@
  * analysis (Lezer syntax tree + regex over the raw document) — no eval,
  * no new Function. Diagnostics:
  *   (a) Lezer syntax error nodes
- *   (b) api.<member> not in the sandbox API surface
+ *   (b) api.<member> not in the sandbox API surface, and
+ *       api.<namespace>.<member> not a real member of that namespace
  *   (c) ${name} references to prior-step variables that don't exist
  *   (d) Jira labels containing whitespace
  *   (e) `.total` access on api.searchJql results (no total in the response)
@@ -18,7 +19,10 @@
 
 import { linter, lintGutter } from "@codemirror/lint";
 import { syntaxTree } from "@codemirror/language";
-import { KNOWN_API_MEMBERS } from "../../../../../src/shared/sandbox-api-spec.js";
+import {
+  KNOWN_API_MEMBERS,
+  getNamespaceMembers,
+} from "../../../../../src/shared/sandbox-api-spec.js";
 
 export function buildSandboxLinter({ priorVariables = [] } = {}) {
   const priorSet = new Set(priorVariables.filter(Boolean));
@@ -49,8 +53,11 @@ export function buildSandboxLinter({ priorVariables = [] } = {}) {
       },
     });
 
-    // (b) Unknown api.* members
-    const apiRe = /\bapi\.(\w+)/g;
+    // (b) Unknown api.* members. A NAMESPACE (api.confluence) is itself a readable
+    // member of `api`, so the first-segment check passes it, which used to let
+    // api.confluence.nope through unflagged. The second segment is checked against
+    // that namespace's real members, derived from the one spec helper.
+    const apiRe = /\bapi\.(\w+)(?:\.(\w+))?/g;
     let m;
     while ((m = apiRe.exec(doc)) !== null) {
       if (!KNOWN_API_MEMBERS.includes(m[1])) {
@@ -59,6 +66,16 @@ export function buildSandboxLinter({ priorVariables = [] } = {}) {
           to: m.index + m[0].length,
           severity: "error",
           message: `api.${m[1]} is not available in the sandbox. Available members: ${KNOWN_API_MEMBERS.join(", ")}`,
+        });
+        continue;
+      }
+      const nsMembers = getNamespaceMembers(m[1]);
+      if (nsMembers.length > 0 && m[2] && !nsMembers.some((mem) => mem.name === m[2])) {
+        diagnostics.push({
+          from: m.index,
+          to: m.index + m[0].length,
+          severity: "error",
+          message: `api.${m[1]}.${m[2]} does not exist. Members of api.${m[1]}: ${nsMembers.map((mem) => mem.name).join(", ")}`,
         });
       }
     }

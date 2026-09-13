@@ -14,6 +14,7 @@
 import { snippetCompletion } from "@codemirror/autocomplete";
 import {
   SANDBOX_API_METHODS,
+  getNamespaceMembers,
   ISSUE_FIELD_COMPLETIONS,
   WRITE_FORMATS_BY_CUSTOM_TYPE,
   WRITE_FORMATS_BY_SYSTEM_FIELD,
@@ -21,13 +22,28 @@ import {
 } from "../../../../../src/shared/sandbox-api-spec.js";
 
 // api.* completions generated from the spec (plus the issueKey accessor).
+// A NAMESPACE entry (api.confluence) contributes its own row AND one row per
+// member, derived from getNamespaceMembers() so the list never shows a bare
+// namespace the user cannot complete past. Typing "api.confluence." substring-
+// matches every member label below.
 const API_COMPLETIONS = [
-  ...SANDBOX_API_METHODS.map((m) => ({
-    label: `api.${m.name}`,
-    type: m.name === "context" ? "variable" : "function",
-    detail: m.detail,
-    info: m.summary,
-  })),
+  ...SANDBOX_API_METHODS.flatMap((m) => {
+    const members = getNamespaceMembers(m.name);
+    return [
+      {
+        label: `api.${m.name}`,
+        type: members.length > 0 ? "namespace" : m.name === "context" ? "variable" : "function",
+        detail: m.detail,
+        info: m.summary,
+      },
+      ...members.map((mem) => ({
+        label: mem.label,
+        type: "method",
+        detail: mem.returns,
+        info: mem.summary,
+      })),
+    ];
+  }),
   {
     label: "api.context.issueKey",
     type: "property",

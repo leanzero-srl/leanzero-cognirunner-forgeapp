@@ -574,6 +574,56 @@ When \`api.context.issueKey\` is null (a scheduled job without a JQL scope, or a
 // completions, hover, the API Reference panel, and the production `createApi()`
 // surface all agree. (Previously a hardcoded 6-name subset that red-flagged real,
 // working methods like api.addComment / api.cloneIssue and told the AI they "throw".)
+// === Namespace members, derived ONCE ========================================
+// `api.confluence` is a namespace OBJECT (callable: false) whose members live in
+// SANDBOX_CONFLUENCE_METHODS. The editor consumers — completions, hover, lint and
+// the API Reference panel — render one row per SANDBOX_API_METHODS entry, so a
+// namespace would otherwise collapse to a single row with no per-member
+// signatures. These two helpers are the ONE derivation: a seventh Confluence
+// member (or a second namespace) lands in every editor surface by editing the
+// member array above and nothing else.
+const SANDBOX_NAMESPACE_MEMBERS = {
+  confluence: SANDBOX_CONFLUENCE_METHODS,
+};
+
+/**
+ * The members of a namespace entry, each shaped like a SANDBOX_API_METHODS row so
+ * the consumers can render it with the same code path. Returns [] for a plain
+ * callable method, which is what lets callers ask unconditionally.
+ *
+ * @param {string} name - the namespace member name on `api` (e.g. "confluence")
+ * @returns {Array<{namespace, name, label, signature, returns, summary, example, write}>}
+ */
+export const getNamespaceMembers = (name) =>
+  (SANDBOX_NAMESPACE_MEMBERS[name] || []).map((m) => ({
+    namespace: name,
+    name: m.name,
+    label: `api.${name}.${m.name}`,
+    signature: m.signature,
+    returns: m.returns,
+    summary: m.summary,
+    example: m.example,
+    write: m.write === true,
+  }));
+
+/** The names of every namespace entry on `api`. */
+export const NAMESPACE_NAMES = Object.keys(SANDBOX_NAMESPACE_MEMBERS);
+
+/** True when `member` is a real member of the `namespace` object (the lint check). */
+export const isNamespaceMember = (namespace, member) =>
+  getNamespaceMembers(namespace).some((m) => m.name === member);
+
+/**
+ * Every api.* row the editors render, flattened: one entry per SANDBOX_API_METHODS
+ * method, each carrying its namespace members (empty for ordinary methods).
+ */
+export const getApiReferenceRows = () =>
+  SANDBOX_API_METHODS.map((method) => ({
+    name: method.name,
+    method,
+    members: getNamespaceMembers(method.name),
+  }));
+
 export const KNOWN_API_MEMBERS = SANDBOX_API_METHODS.map((m) => m.name);
 
 // Builtin transition guidance consumes these same method docs as prompts and editors.

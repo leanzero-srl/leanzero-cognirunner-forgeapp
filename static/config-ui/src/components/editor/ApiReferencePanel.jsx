@@ -13,10 +13,15 @@
 
 import React from "react";
 import {
-  SANDBOX_API_METHODS,
+  getApiReferenceRows,
   FIELD_TYPE_TABLE,
   JQL_REFERENCE,
 } from "../../../../../src/shared/sandbox-api-spec.js";
+
+// One row per api.* member. A NAMESPACE row (api.confluence) carries its members
+// as sub-rows so every member's signature and return shape is visible here, not
+// just the namespace summary. The rows come from the one spec helper.
+const API_ROWS = getApiReferenceRows();
 
 // Renders a spec string with `backtick` segments as <code> elements.
 const renderInline = (text) => {
@@ -31,12 +36,29 @@ export default function ApiReferencePanel() {
     <div className="api-ref-panel">
       <div className="api-ref-title">Sandbox API</div>
       <div className="api-ref-grid">
-        {SANDBOX_API_METHODS.map((m) => (
-          <div key={m.name} className="api-ref-item">
-            <code>{m.signature}</code>
-            <span>Returns: <code>{m.returns}</code> — {m.summary}</span>
-          </div>
-        ))}
+        {API_ROWS.map(({ name, method, members }) =>
+          members.length === 0 ? (
+            <div key={name} className="api-ref-item">
+              <code>{method.signature}</code>
+              <span>Returns: <code>{method.returns}</code> — {method.summary}</span>
+            </div>
+          ) : (
+            <div key={name} className="api-ref-ns">
+              <div className="api-ref-ns-head">
+                <span className="api-ref-ns-chip">api.{name}</span>
+                <span className="api-ref-ns-count">{members.length} members</span>
+              </div>
+              <div className="api-ref-grid api-ref-ns-members">
+                {members.map((mem) => (
+                  <div key={mem.name} className="api-ref-item">
+                    <code>{mem.signature}</code>
+                    <span>Returns: <code>{mem.returns}</code> — {mem.summary}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ),
+        )}
       </div>
 
       <div className="api-ref-title" style={{ marginTop: "12px" }}>Field Update Formats</div>

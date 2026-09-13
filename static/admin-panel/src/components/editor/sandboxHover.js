@@ -12,7 +12,7 @@
  */
 
 import { hoverTooltip } from "@codemirror/view";
-import { SANDBOX_API_METHODS } from "../../../../../src/shared/sandbox-api-spec.js";
+import { SANDBOX_API_METHODS, getNamespaceMembers } from "../../../../../src/shared/sandbox-api-spec.js";
 
 const MONO = "SFMono-Regular, Consolas, 'Liberation Mono', Menlo, monospace";
 
@@ -69,10 +69,15 @@ export const sandboxHover = hoverTooltip((view, pos) => {
   if (start === end) return null;
 
   const token = text.slice(start, end);
-  const match = token.match(/\bapi\.(\w+)/);
+  const match = token.match(/\bapi\.(\w+)(?:\.(\w+))?/);
   if (!match) return null;
 
-  const method = SANDBOX_API_METHODS.find((m) => m.name === match[1]);
+  // A namespace member (api.confluence.getPage) documents the MEMBER, not the
+  // namespace object - the member rows come from the one spec helper. Hovering
+  // the bare namespace, or a member name that does not exist, falls back to the
+  // namespace entry so the card still names the real members.
+  const member = match[2] ? getNamespaceMembers(match[1]).find((m) => m.name === match[2]) : null;
+  const method = member || SANDBOX_API_METHODS.find((m) => m.name === match[1]);
   if (!method) return null;
 
   return {

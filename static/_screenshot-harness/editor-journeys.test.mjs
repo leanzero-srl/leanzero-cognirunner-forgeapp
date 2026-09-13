@@ -3607,6 +3607,129 @@ try {
     await closeEditor(env);
   }
 
+  /* ---------------- J18n - F-497: the api.confluence NAMESPACE in the editor ----------
+     F-495 added `confluence` as a namespace entry (callable:false) whose members live in
+     SANDBOX_CONFLUENCE_METHODS. The three editor consumers render one row per
+     SANDBOX_API_METHODS entry, so the namespace collapsed to a single row: no member
+     completions, no per-member hover, one reference row. All three now derive their
+     member rows from getNamespaceMembers() in the spec, and the lint checks the SECOND
+     segment too (api.confluence is a real member of `api`, so the first-segment check
+     used to wave api.confluence.nope through). Asserted against the spec, never against
+     a retyped list, so a seventh member cannot pass here while missing in the UI. */
+  {
+    const { SANDBOX_CONFLUENCE_METHODS } = await import("../../src/shared/sandbox-api-spec.js");
+    const MEMBERS = SANDBOX_CONFLUENCE_METHODS.map((m) => m.name);
+
+    // Appends a line at the END of the first step's editor. Deliberately an APPEND and
+    // never a clear: emptying the document flips the step's `hasCode` false, React
+    // unmounts the CodeMirror, and every later assertion then runs against a different
+    // step's editor (which is exactly how the first cut of this journey lied).
+    const appendLine = async (page, text) => {
+      await page.locator(".cm-content").first().click();
+      await page.keyboard.press("ControlOrMeta+End");
+      await page.keyboard.press("Enter");
+      if (text) await page.keyboard.type(text, { delay: 20 });
+    };
+    // Centre of the first occurrence of `word` inside the editor text, via a DOM Range
+    // (CodeMirror splits highlighted tokens across spans, so a text search is safer
+    // than guessing at character coordinates).
+    const wordPoint = (page, word) =>
+      page.evaluate((w) => {
+        const root = document.querySelector(".cm-content");
+        if (!root) return null;
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+        let n;
+        while ((n = walker.nextNode())) {
+          const i = n.textContent.indexOf(w);
+          if (i < 0) continue;
+          const r = document.createRange();
+          r.setStart(n, i);
+          r.setEnd(n, i + w.length);
+          const b = r.getBoundingClientRect();
+          if (b.width === 0) continue;
+          return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+        }
+        return null;
+      }, word);
+
+    for (const theme of ["light", "dark"]) {
+      console.log(`J18n api.confluence namespace in the editor (cfg-static, ${theme})`);
+      const env = await openEditor(browser, "config-ui", "cfg-static", theme);
+      const { page } = env;
+      try {
+        /* --- (1) API REFERENCE PANEL: sub-rows, one per member --- */
+        await page.locator("button.btn-api-ref", { hasText: /Show API Reference/ }).first().click();
+        await page.waitForSelector(".api-ref-panel", { timeout: 8000 });
+        const ns = page.locator(".api-ref-panel .api-ref-ns").first();
+        ok(await page.locator(".api-ref-panel .api-ref-ns").count() === 1, `J18n (${theme}) the reference groups exactly one namespace (api.confluence)`);
+        ok((await ns.locator(".api-ref-ns-chip").innerText()).trim() === "api.confluence", `J18n (${theme}) the namespace chip names api.confluence`);
+        const subRows = ns.locator(".api-ref-ns-members .api-ref-item");
+        ok(await subRows.count() === MEMBERS.length, `J18n (${theme}) the namespace shows one sub-row per member (${MEMBERS.length}) - got ${await subRows.count()}`);
+        const nsText = await ns.innerText();
+        for (const name of MEMBERS) {
+          ok(nsText.includes(`api.confluence.${name}(`), `J18n (${theme}) the panel shows the SIGNATURE of api.confluence.${name}`);
+        }
+        ok(/storage-format|storage format|CQL/i.test(nsText), `J18n (${theme}) the sub-rows carry the member summaries, not just names`);
+        // Design: SOLID Confluence hue, white text, no left rail, no tint.
+        const chipBg = await ns.locator(".api-ref-ns-chip").evaluate((el) => getComputedStyle(el).backgroundColor);
+        ok(chipBg === (theme === "dark" ? "rgb(59, 130, 246)" : "rgb(29, 78, 216)"), `J18n (${theme}) the namespace chip is a SOLID Confluence-hue fill - got ${chipBg}`);
+        ok(await ns.locator(".api-ref-ns-chip").evaluate((el) => getComputedStyle(el).color) === "rgb(255, 255, 255)", `J18n (${theme}) the namespace chip has white text`);
+        ok(await ns.evaluate((el) => getComputedStyle(el).borderLeftWidth) === "1px", `J18n (${theme}) the namespace group has a full hairline box, NOT a left accent rail`);
+        ok(await ns.evaluate((el) => {
+          const s = getComputedStyle(el);
+          return s.borderLeftColor === s.borderTopColor && s.borderLeftColor === s.borderRightColor;
+        }), `J18n (${theme}) no coloured left edge - all four borders are the same neutral`);
+
+        /* --- (2) the seeded step lints clean, so any marker below is ours --- */
+        await page.locator(".cm-content").first().click();
+        await page.waitForTimeout(1500);
+        ok(await page.locator(".cm-lint-marker-error").count() === 0, `J18n (${theme}) the seeded step lints clean (lint baseline is zero)`);
+
+        /* --- (3) COMPLETIONS after "api.confluence." --- */
+        await appendLine(page, "api.confluence.");
+        await page.waitForSelector(".cm-tooltip-autocomplete", { timeout: 8000 });
+        const optionLabels = await page.locator(".cm-tooltip-autocomplete .cm-completionLabel").allInnerTexts();
+        for (const name of MEMBERS) {
+          ok(optionLabels.some((l) => l.trim() === `api.confluence.${name}`), `J18n (${theme}) completion list offers api.confluence.${name}`);
+        }
+        ok(optionLabels.length === MEMBERS.length, `J18n (${theme}) exactly the ${MEMBERS.length} members are offered - got ${optionLabels.length}`);
+        await page.keyboard.press("Escape");
+
+        /* --- (4) LINT accepts a real member, and HOVER documents the MEMBER --- */
+        await page.keyboard.type("getPage;", { delay: 20 });
+        await page.keyboard.press("Escape");
+        await page.waitForTimeout(1500);
+        ok(await page.locator(".cm-lint-marker-error").count() === 0, `J18n (${theme}) lint ACCEPTS api.confluence.getPage`);
+
+        await page.mouse.move(10, 10);
+        const pt = await wordPoint(page, "getPage");
+        ok(!!pt, `J18n (${theme}) the member token is on screen to hover`);
+        await page.mouse.move(pt.x, pt.y);
+        await page.mouse.move(pt.x + 1, pt.y);
+        await page.waitForSelector(".cm-api-hover", { timeout: 8000 });
+        const hoverText = await page.locator(".cm-api-hover").first().innerText();
+        ok(hoverText.includes("api.confluence.getPage({ id, bodyFormat? })"), `J18n (${theme}) hover shows the MEMBER signature, not the namespace one`);
+        ok(/Reads one page by id/.test(hoverText), `J18n (${theme}) hover shows the member summary`);
+        ok(!/Confluence namespace \(/.test(hoverText), `J18n (${theme}) hover on a member must NOT fall back to the namespace card`);
+
+        /* --- (5) LINT rejects an invented member of the namespace --- */
+        await appendLine(page, "api.confluence.nope;");
+        await page.keyboard.press("Escape");
+        await page.waitForSelector(".cm-lint-marker-error", { timeout: 8000 });
+        ok(await page.locator(".cm-lint-marker-error").count() >= 1, `J18n (${theme}) lint REJECTS api.confluence.nope`);
+        await page.mouse.move(10, 10);
+        await page.locator(".cm-lint-marker-error").last().hover();
+        await page.waitForSelector(".cm-tooltip-lint", { timeout: 8000 });
+        const lintText = await page.locator(".cm-tooltip-lint").first().innerText();
+        ok(/api\.confluence\.nope does not exist/.test(lintText), `J18n (${theme}) the lint message names the bad member`);
+        for (const name of MEMBERS) {
+          ok(lintText.includes(name), `J18n (${theme}) the lint message lists the real member ${name}`);
+        }
+      } catch (e) { fail++; console.log(`  ✗ J18n (${theme}) threw: ` + e.message.split("\n")[0]); }
+      await closeEditor(env);
+    }
+  }
+
 } finally {
   await browser.close();
 }

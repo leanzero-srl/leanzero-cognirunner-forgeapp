@@ -240,6 +240,60 @@ await check("a second confirm request inside one turn is refused, not queued", a
   assert.equal(rows.filter(Boolean).length, 1);
 });
 
+await check("F-359: a gate-REFUSED confirm action opens NO ticket — the gate runs before the ticket", async () => {
+  resetStore();
+  // A non-admin editor: `gateActions` refuses every `confirm` git action with
+  // "needs-admin", so none of them is in `allowed`. The model names one anyway.
+  const world = setupWorld({ rounds: [
+    reply([call("trigger_deploy", { repo: "acme/app", workflow: "deploy.yml", ref: "main" })]),
+    reply([finish("nothing done")]),
+  ] });
+  const r = await runCoderTurn({
+    issueKey: "LZPT-7", threadId: "t1", userMessage: "ship it", accountId: "acct-owner",
+    gateFacts: { edition: "advanced", provider: "anthropic", agentModel: "claude-sonnet-5", allowanceLevel: null },
+    savedByRole: "editor",
+    deps: { store, gitExecutor: recordingGit(world), ticketId: () => "tkt_FIXED_ID" },
+  });
+  assert.equal(r.awaiting, undefined, "a refused action must never put the turn into awaiting-confirm");
+  assert.equal(await store.get(coderTicketKey("tkt_FIXED_ID")), undefined, "NO consent ticket may exist for a refused action");
+  assert.equal(world.gitCalls.length, 0);
+  const thread = await store.get(coderThreadKey("LZPT-7", "t1"));
+  assert.match(JSON.stringify(thread.messages), /is not allowed for this rule/,
+    "the model gets the SAME refusal the dispatcher would have given");
+});
+
+await check("F-359: a dangerous action on an EXTERNALLY triggered gate context opens no ticket either", async () => {
+  resetStore();
+  const world = setupWorld({ rounds: [
+    reply([call("approve_pull_request", { repo: "acme/app", number: 4 })]),
+    reply([finish("no")]),
+  ] });
+  // admin-saved, but the ONE non-confirm route left: the engine's own gate keeps
+  // triggerSource null, so this asserts the allow-list path with a capability that is OFF.
+  const r = await runCoderTurn({
+    issueKey: "LZPT-7", threadId: "t2", userMessage: "approve it", accountId: "acct-owner",
+    gateFacts: { edition: "standard", provider: null, agentModel: null, allowanceLevel: null },
+    savedByRole: "admin",
+    deps: { store, gitExecutor: recordingGit(world), ticketId: () => "tkt_FIXED_ID" },
+  });
+  assert.equal(r.awaiting, undefined);
+  assert.equal(await store.get(coderTicketKey("tkt_FIXED_ID")), undefined, "capability-off must not open a ticket");
+  assert.equal(world.gitCalls.length, 0);
+});
+
+await check("F-359: a ticket naming something that is not a confirmable action executes nothing", async () => {
+  resetStore();
+  const world = setupWorld({});
+  await store.set(coderTicketKey("tkt_FORGED"), {
+    ticketId: "tkt_FORGED", issueKey: "LZPT-7", threadId: "t1", action: "get_issue",
+    args: {}, argsPreview: {}, ownerAccountId: "acct-owner", status: "pending",
+  });
+  const r = await confirmCoderTicket({ ticketId: "tkt_FORGED", decision: "confirm", accountId: "acct-owner", deps: { store, gitExecutor: recordingGit(world) } });
+  assert.equal(r.success, false);
+  assert.equal(r.code, "not_confirmable");
+  assert.equal(world.gitCalls.length, 0);
+});
+
 /* ═════════ 3. confirming — once, owner only ═════════ */
 
 const openTicket = async (world) => { resetStore(); setupWorld({ rounds: [reply([call("open_pull_request", { repo: "acme/app", title: "T", sourceBranch: "s" })])] }); return startTurn(world); };

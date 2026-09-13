@@ -61,7 +61,7 @@ import {
 } from "./shared/agent-actions.js";
 import { safeKeyPart } from "./shared/kvs-keys.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
-import { runAgentLoop, createAgentActionDispatcher, compactIssue } from "./agent-runner.js";
+import { runAgentLoop, createAgentActionDispatcher, assertAgentActionAllowed, compactIssue } from "./agent-runner.js";
 import { createGitActionExecutor } from "./git-actions.js";
 import { createCoderWorkspace } from "./coder-workspace.js";
 import { defangFence } from "./memories.js";
@@ -406,7 +406,15 @@ const runCoderTurnClaimed = async ({
   // ── the consent ticket ────────────────────────────────────────────────────
   let pendingTicket = null;
   const execute = async (name, args) => {
-    const action = getAgentAction(name);
+    // THE GATE RUNS FIRST (F-359). An action the gate refused — `needs-admin` for a
+    // non-admin, `dangerous` on an external trigger, a capability that is off — is absent
+    // from `allowed`, and before this line naming it anyway still OPENED A CONSENT TICKET:
+    // the ticket was written ahead of any allow-list check, the UI offered a confirm
+    // button, and `confirmCoderTicket` executed it behind an owner check alone. The gate
+    // the admin relied on never ran. It runs here, through the SAME predicate the
+    // dispatcher uses (src/agent-runner.js), so a refused action gets exactly the refusal
+    // `dispatch` would have given and no ticket row is ever created for it.
+    const action = assertAgentActionAllowed(name, allowed);
     // EVERY external write is a `confirm` action, and a `confirm` action NEVER executes
     // inside a turn — not even in simulation, because the flow the user sees must be the
     // same one that runs for real. The ticket is the only path from here to a repository.
@@ -647,6 +655,14 @@ export const confirmCoderTicket = async ({ ticketId, decision, change = "", acco
   if (ticket.ownerAccountId && ticket.ownerAccountId !== accountId) {
     const e = notOwner("answer this confirmation");
     return fail(e.message, { reason: e.reason, hint: e.hint });
+  }
+  // THE FLOOR AT CONFIRM TIME (F-359). The gate itself ran before the ticket was written
+  // — nothing else may open one — so this is the second assertion rather than the first:
+  // a row whose action is not a known `confirm` action cannot have come from this engine
+  // (a hand-written key, a row left by an older build), and it executes NOTHING.
+  const ticketAction = getAgentAction(ticket.action);
+  if (!ticketAction || ticketAction.confirm !== true) {
+    return fail(`"${String(ticket.action || "").slice(0, 60)}" is not an action that can be confirmed — nothing was performed.`, { code: "not_confirmable" });
   }
   if (ticket.status && ticket.status !== "pending") {
     return { success: true, duplicate: true, decision: ticket.decision || ticket.status, status: ticket.status, ticketId: id };

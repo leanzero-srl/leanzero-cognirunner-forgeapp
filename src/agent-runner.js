@@ -321,6 +321,30 @@ export const runAgentLoop = async ({
  * never silently succeeds. `m` is the loaded src/index.js module (the sandbox lives
  * behind it).
  */
+/**
+ * THE ALLOW-LIST CHECK, ONE HOME (F-359).
+ *
+ * The dispatcher enforced this inline, so any caller that intercepted an action BEFORE
+ * dispatch — the Coder's consent ticket did exactly that — skipped the gate entirely and
+ * a `needs-admin` / `external-trigger` / `capability-off` action could still open a
+ * ticket the user was then invited to confirm. The check is therefore a function both
+ * the dispatcher and every interceptor call, and it THROWS the one sentence the model
+ * already knows, so a refusal reaching the model is byte-identical whichever path saw it.
+ *
+ * `allowed` is ALREADY the gate's verdict (`normalizeAllowedActions`); this never
+ * re-decides it. `finish` (kind "control") is implicit and always allowed.
+ *
+ * @returns the action definition, so a caller that needs it does not look it up twice.
+ */
+export const assertAgentActionAllowed = (name, allowed) => {
+  const a = getAgentAction(name);
+  if (!a) throw new Error(`Unknown action "${name}"`);
+  if (a.kind !== "control" && !(Array.isArray(allowed) && allowed.includes(name))) {
+    throw new Error(`Action "${name}" is not allowed for this rule`);
+  }
+  return a;
+};
+
 export const createAgentActionDispatcher = ({ issueKey = null, session, allowed = [], executors = {}, m }) => {
   const baseApi = session.createApi();
   const apiFor = (key) => (key && key !== issueKey ? baseApi.forIssue(key) : baseApi);
@@ -329,9 +353,8 @@ export const createAgentActionDispatcher = ({ issueKey = null, session, allowed 
   const keyOf = (args) => args.issueKey;
 
   return async (name, args) => {
-    const a = getAgentAction(name);
-    if (!a) throw new Error(`Unknown action "${name}"`);
-    if (a.kind !== "control" && !allowed.includes(name)) throw new Error(`Action "${name}" is not allowed for this rule`);
+    // ONE HOME for the allow-list check (F-359) — see assertAgentActionAllowed above.
+    const a = assertAgentActionAllowed(name, allowed);
     // DELEGATION BY NAMESPACE (plan §3.5). This switch must never learn an id from
     // another namespace: a new namespace is a new executor module plus one row in
     // AGENT_ACTION_NAMESPACES, not a new case below.

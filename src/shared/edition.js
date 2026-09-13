@@ -118,6 +118,7 @@ export const resolveEdition = (license) => {
  */
 export const ADVANCED_FEATURES = [
   { id: "forge-llm-frontier-models", label: "Claude Sonnet 5 & Opus 5 on Atlassian Forge LLM" },
+  { id: "managed-cloud-ai", label: "CogniRunner Cloud AI - a LeanZero-managed engine, no key to paste" },
   { id: "coder", label: "the Coder toolset (in-issue coding chat, GitHub & Bitbucket, pipelines, Git-aware rules)" },
 ];
 
@@ -132,6 +133,41 @@ export const isFeatureAllowed = (edition, featureId) => {
   if (!ADVANCED_FEATURE_IDS.includes(featureId)) return true;
   return edition === EDITION_IDS.ADVANCED;
 };
+
+/*
+ * COGNIRUNNER CLOUD AI - the LeanZero-MANAGED engine (provider id "managed").
+ *
+ * ONE TABLE, here, because four surfaces ask the same question and none of them may
+ * answer it themselves: the provider picker (which ids may be selected), the save
+ * doors (saveOpenAIModel / saveAgentModel), the chat adapter's server-side clamp, and
+ * the usage meter's tier costing.
+ *
+ * WHAT IT IS: a LeanZero-owned OPENROUTER key (owner's decision, 2026-09-14 - the
+ * plan's 3.17 said Anthropic first-party; it is OpenRouter), riding the existing
+ * OpenRouter adapter and the already-allowed `openrouter.ai` egress. The KEY itself
+ * lives in an encrypted Forge environment variable and is read in exactly ONE place
+ * (`readManagedKey` in src/index.js) - never in KVS, never in a resolver's answer,
+ * never in a log line.
+ *
+ * WHOSE MONEY: LeanZero's, exactly like Forge LLM. So the same two gates apply and
+ * they are the SAME gates, not twins - the edition must be Coder, and the month's
+ * vendor allowance must not be exhausted (src/shared/usage-meter.js
+ * vendorAllowanceStatus). Widening MANAGED_MODELS is a pricing decision.
+ *
+ * The ids are EXACT and namespaced the way OpenRouter names them ("anthropic/..."),
+ * for the same reason FORGE_LLM_MODELS is exact-id: a substring policy cannot tell an
+ * entitled generation from an unentitled one.
+ */
+export const MANAGED_PROVIDER_ID = "managed";
+export const MANAGED_PROVIDER_LABEL = "CogniRunner Cloud AI";
+export const MANAGED_DEFAULT_MODEL = "anthropic/claude-sonnet-5";
+export const MANAGED_MODELS = [MANAGED_DEFAULT_MODEL, "anthropic/claude-opus-5"];
+
+/** May this exact model id run on the managed engine? Exact-id, like Forge LLM. */
+export const managedModelAllowed = (id) => MANAGED_MODELS.includes(String(id || ""));
+
+/** Billing backstop: a refused id becomes Sonnet 5, never an error. */
+export const clampManagedModel = (id) => (managedModelAllowed(id) ? String(id) : MANAGED_DEFAULT_MODEL);
 
 /*
  * FORGE LLM MODEL POLICY.
@@ -217,7 +253,7 @@ export const clampForgeLlmModel = (edition, id) =>
 export const AGENT_CAPABILITY_REASONS = {
   "needs-coder-edition": {
     title: "Coder is off - this site is on CogniRunner Standard",
-    remedy: "The Coder toolset runs on Atlassian Forge LLM only for Coder sites. Upgrade the app's edition, or switch to any BYOK provider (OpenAI, Anthropic, Azure, OpenRouter, LM Studio) and it turns on immediately.",
+    remedy: "The Coder toolset runs on CogniRunner Cloud AI and on Atlassian Forge LLM only for Coder sites. Upgrade the app's edition, or switch to any BYOK provider (OpenAI, Anthropic, Azure, OpenRouter, LM Studio) and it turns on immediately.",
     link: "settings",
   },
   "needs-frontier-model": {
@@ -240,6 +276,31 @@ export const AGENT_CAPABILITY_REASONS = {
     remedy: "Running on Atlassian Forge LLM with a frontier agent model.",
     link: null,
   },
+  managed: {
+    title: "Coder is on",
+    remedy: "Running on CogniRunner Cloud AI - LeanZero manages the engine, so there is no key to paste and no provider bill of your own.",
+    link: null,
+  },
+  /**
+   * A VENDOR outage, not a tenant misconfiguration: the managed key is absent from this
+   * deployment's environment. Nothing the admin can change will fix it, so the remedy
+   * names the one thing they CAN do and does not pretend an upgrade or a setting helps.
+   */
+  /**
+   * The KILL SWITCH (COGNIRUNNER_MANAGED_DISABLED=1). Distinct from key-missing on
+   * purpose: this one is a DECISION LeanZero took, not a broken deployment, so the
+   * wording does not imply something is faulty.
+   */
+  "managed-disabled": {
+    title: "CogniRunner Cloud AI is turned off",
+    remedy: "LeanZero has paused the managed engine for this deployment. Switch to Atlassian Forge LLM or any BYOK provider; nothing else about the app changes.",
+    link: "settings",
+  },
+  "managed-key-missing": {
+    title: "CogniRunner Cloud AI is unavailable",
+    remedy: "The managed engine is not configured on this deployment. That is on LeanZero's side - switch to Atlassian Forge LLM or any BYOK provider to keep going.",
+    link: "settings",
+  },
   /**
    * NOT a reason agentCapability() can return. It is what a SURFACE uses when the
    * capability read itself failed - the UI fails to the restrictive side and must
@@ -257,7 +318,32 @@ export const AGENT_CAPABILITY_REASONS = {
 export const agentCapabilityCopy = (reason) =>
   AGENT_CAPABILITY_REASONS[String(reason || "")] || AGENT_CAPABILITY_REASONS.unknown;
 
-export const agentCapability = ({ provider, edition, agentModel, allowanceLevel } = {}) => {
+export const agentCapability = ({ provider, edition, agentModel, allowanceLevel, managedKeyPresent } = {}) => {
+  /*
+   * THE MANAGED ENGINE IS NOT BYOK - it spends LeanZero's money, so it is gated like
+   * Forge LLM and not like a customer's own key. Order is deliberate:
+   *
+   *   key absent  -> "managed-key-missing" FIRST, and only when a caller actually READ
+   *                  the env var and found nothing (=== false; `undefined` means "not
+   *                  asked" and falls through, which is what the plain
+   *                  agentCapability({provider,edition}) shape relies on). A missing key
+   *                  is a VENDOR outage that affects every tenant, so telling a Standard
+   *                  tenant to upgrade would be a lie - upgrading would not turn it on.
+   *   Standard    -> "needs-coder-edition". The managed engine is a Coder entitlement.
+   *   allowance   -> "allowance-exhausted", the SAME hard cap Forge LLM hits, out of the
+   *                  same maths (vendorAllowanceStatus, src/shared/usage-meter.js).
+   *   otherwise   -> "managed".
+   *
+   * The MODEL is not checked here: unlike Forge LLM (where Haiku is selectable and must
+   * never drive an agent), every id in MANAGED_MODELS is a frontier model and the
+   * adapter clamps anything else to Sonnet 5 before the call goes out.
+   */
+  if (provider === MANAGED_PROVIDER_ID) {
+    if (managedKeyPresent === false) return { enabled: false, reason: "managed-key-missing" };
+    if (edition !== EDITION_IDS.ADVANCED) return { enabled: false, reason: "needs-coder-edition" };
+    if (allowanceLevel === "hard") return { enabled: false, reason: "allowance-exhausted" };
+    return { enabled: true, reason: "managed" };
+  }
   if (provider !== "atlassian") return { enabled: true, reason: "byok" };
   if (edition !== EDITION_IDS.ADVANCED) return { enabled: false, reason: "needs-coder-edition" };
   if (!FORGE_LLM_FRONTIER.includes(String(agentModel || ""))) return { enabled: false, reason: "needs-frontier-model" };

@@ -553,7 +553,11 @@ const gateActions = (ids, opts) => {
  * Omitting a fact keeps the RESTRICTIVE answer — this helper never invents a
  * capability it was not given.
  */
-export const buildAgentGateContext = ({ edition = null, provider = null, agentModel = null, allowanceLevel = null, products = ["jira"], triggerSource = null, savedByRole = null } = {}) => ({
+// `managedKeyPresent` is a PASS-THROUGH, not a fact this builder derives: only the
+// backend can read the managed engine's env var (agentGateFacts, src/index.js). Left
+// undefined it means "not asked", and agentCapability falls through to the edition and
+// allowance arms exactly as before - so every existing caller keeps its answer.
+export const buildAgentGateContext = ({ edition = null, provider = null, agentModel = null, allowanceLevel = null, managedKeyPresent = undefined, products = ["jira"], triggerSource = null, savedByRole = null } = {}) => ({
   // A MAP, not a bare verdict: an absent key is refused rather than assumed (F-281),
   // so adding the `web` namespace later cannot inherit git's answer.
   //
@@ -562,7 +566,7 @@ export const buildAgentGateContext = ({ edition = null, provider = null, agentMo
   // context without reading the provider would silently ENABLE git. The builder
   // refuses instead: an unknown provider is an unanswered question, and unanswered
   // is refused, exactly like an absent map key.
-  capability: { git: provider ? agentCapability({ provider, edition, agentModel, allowanceLevel }) : { enabled: false, reason: "capability-off:git" } },
+  capability: { git: provider ? agentCapability({ provider, edition, agentModel, allowanceLevel, managedKeyPresent }) : { enabled: false, reason: "capability-off:git" } },
   products, triggerSource, savedByRole,
 });
 

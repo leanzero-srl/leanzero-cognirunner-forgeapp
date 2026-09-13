@@ -424,6 +424,44 @@ await check("with no Git connection a confirmed write refuses — it never half-
   assert.equal(ticket.status, "failed", "a refused confirmation is never recorded as confirmed");
 });
 
+await check("F-360: a resume turn that carries no simulation flag inherits the thread's", async () => {
+  resetStore();
+  const world = setupWorld({ rounds: [reply([call("commit_files", { repo: "acme/app", branch: "b", message: "m", files: [{ path: "a.js", content: "x" }] })])] });
+  const first = await startTurn(world, { simulation: true });
+  assert.equal(first.awaiting, "confirm");
+  assert.equal((await store.get(coderThreadKey("LZPT-7", "t1"))).simulation, true);
+  // The resolver's resume push carries the decision text and no `simulation` — exactly
+  // the body that used to flip the thread live.
+  setupWorld({ rounds: [reply([call("commit_files", { repo: "acme/app", branch: "b", message: "m2", files: [{ path: "b.js", content: "y" }] })])] });
+  const resumed = await runCoderTurn({
+    issueKey: "LZPT-7", threadId: "t1", userMessage: "DECISION: the user SKIPPED commit_files.",
+    accountId: "acct-owner",
+    gateFacts: { edition: "advanced", provider: "anthropic", agentModel: "claude-sonnet-5", allowanceLevel: null },
+    savedByRole: "admin",
+    deps: { store, gitExecutor: recordingGit(world), ticketId: () => "tkt_SECOND" },
+  });
+  assert.equal(resumed.awaiting, "confirm");
+  assert.equal((await store.get(coderThreadKey("LZPT-7", "t1"))).simulation, true, "the thread stays a simulation");
+  const ticket2 = await store.get(coderTicketKey("tkt_SECOND"));
+  assert.equal(ticket2.simulation, true, "the ticket the resumed turn opened is still a simulation");
+});
+
+await check("F-360: a turn that asks for the OPPOSITE mode is refused by name, not honoured", async () => {
+  resetStore();
+  const world = setupWorld({ rounds: [reply([finish("ok")])] });
+  await startTurn(world, { simulation: true });
+  const flipped = await runCoderTurn({
+    issueKey: "LZPT-7", threadId: "t1", userMessage: "now do it for real", accountId: "acct-owner",
+    simulation: false, savedByRole: "admin",
+    deps: { store, gitExecutor: recordingGit(world), ticketId: () => "tkt_X" },
+  });
+  assert.equal(flipped.success, false);
+  assert.equal(flipped.reason, "simulation-locked");
+  assert.equal(flipped.simulation, true);
+  assert.equal((await store.get(coderThreadKey("LZPT-7", "t1"))).simulation, true);
+  assert.equal(await store.get(coderExecClaimKey("LZPT-7")), undefined, "the refused turn still releases its claim");
+});
+
 /* ═════════ 7. compaction ═════════ */
 
 const bigMsg = (i) => ({ role: i % 2 ? "assistant" : "user", at: "2026-09-13T00:00:00.000Z", content: `filler ${i} `.repeat(400) });

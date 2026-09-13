@@ -46,9 +46,12 @@
  *     src/index.js: `reason:"no-permission"`, `hint:"not-owner"` — the resolver's `okOr`
  *     copies them off the thrown error via `refusalFields`).
  *
- * SIMULATION is honoured by construction: the flag rides the thread row into
- * `createSandboxSession` and into `createGitActionExecutor`, and in simulation the git
- * executor never builds a provider and never makes a call.
+ * SIMULATION is honoured by construction, and it is FIXED BY THE THREAD'S FIRST TURN
+ * (F-360): the row carries the flag, every later turn reads it off the row, and a turn
+ * that asks for the opposite is refused with `reason:"simulation-locked"` instead of
+ * flipping the thread. From the row it rides into `createSandboxSession`, into
+ * `createGitActionExecutor` and onto every consent ticket; in simulation the git executor
+ * never builds a provider and never makes a call.
  *
  * WHERE IT RUNS: only on the 900 s `long-consumer` (`long-queue`). A coder turn is up to
  * eight rounds of a frontier model with tool calls; the 120 s consumer cannot hold one.
@@ -293,7 +296,9 @@ const makeTicketId = () => `tkt_${Date.now().toString(36)}_${Math.random().toStr
  */
 export const runCoderTurn = async ({
   issueKey, threadId, userMessage, accountId,
-  simulation = false, connectionId = null, maxRounds = CODER_DEFAULT_ROUNDS,
+  // UNDEFINED, not false: "the caller said nothing" and "the caller said live" must be
+  // distinguishable, because the thread row is the authority for simulation (F-360).
+  simulation = undefined, connectionId = null, maxRounds = CODER_DEFAULT_ROUNDS,
   gateFacts = null, savedByRole = "editor", deadline = null, cancelToken = null,
   deps = {},
 } = {}) => {
@@ -352,7 +357,32 @@ const runCoderTurnClaimed = async ({
     issueKey: key, threadId: thread, ownerAccountId: accountId,
     createdAt: nowIso(), messages: [], turns: 0,
   };
-  record.simulation = simulation === true;
+  // ── SIMULATION IS FIXED BY THE THREAD'S FIRST TURN (F-360) ───────────────
+  // This line used to be `record.simulation = simulation === true`, re-assigned on EVERY
+  // turn from a per-turn parameter. The resume push that answers a consent ticket carries
+  // no `simulation`, so answering ANY ticket silently converted a simulated thread into a
+  // live-writing one: the next session ran with simulationMode:false and every new ticket
+  // it opened carried simulation:false, so the following confirm wrote to a real
+  // repository — and the user was never told simulation had ended.
+  //
+  // THE THREAD ROW IS THE AUTHORITY. A turn that says nothing inherits it; a turn that
+  // says something DIFFERENT is refused by name rather than silently honoured, because
+  // flipping a live thread into simulation is just as much a lie as the reverse. Only the
+  // first turn of a thread decides. (The resolver's resume push carrying the original
+  // params is the other half of F-360 and makes the intent explicit; this half alone
+  // closes the hole, because nothing downstream reads the parameter any more.)
+  const firstTurn = !(row && typeof row === "object");
+  if (firstTurn) record.simulation = simulation === true;
+  else if (simulation !== undefined && (simulation === true) !== (record.simulation === true)) {
+    return fail(
+      record.simulation === true
+        ? "This Coder thread is running in SIMULATION — it cannot be switched to live writes mid-thread. Start a new thread to work for real."
+        : "This Coder thread is running LIVE — it cannot be switched to simulation mid-thread. Start a new thread to simulate.",
+      { reason: "simulation-locked", simulation: record.simulation === true },
+    );
+  }
+  // Everything below reads THIS, never the parameter.
+  const simulated = record.simulation === true;
   if (connectionId) record.connectionId = String(connectionId).slice(0, 100);
 
   // ── the gate, ONCE, before the tool list ──────────────────────────────────
@@ -375,11 +405,11 @@ const runCoderTurnClaimed = async ({
 
   // ── executors ─────────────────────────────────────────────────────────────
   const session = m.createSandboxSession({
-    issueKey: key, config: { simulationMode: simulation === true }, deadline: deadlineMs, cancelToken,
+    issueKey: key, config: { simulationMode: simulated }, deadline: deadlineMs, cancelToken,
     extraContext: { runtime: "coder", issueKey: key, threadId: thread },
   });
   const gitExecutor = deps.gitExecutor || createGitActionExecutor({
-    simulation: simulation === true, log, connectionId: record.connectionId || connectionId || null,
+    simulation: simulated, log, connectionId: record.connectionId || connectionId || null,
   });
   const dispatch = createAgentActionDispatcher({ issueKey: key, session, allowed, executors: { git: gitExecutor }, m });
 
@@ -389,7 +419,7 @@ const runCoderTurnClaimed = async ({
   // artifact - goes through it and through nothing else (src/coder-workspace.js). NONE of
   // its calls can fail the turn: they all answer {ok:false,...} instead of throwing, and
   // the turn records the answer rather than acting on it.
-  const workspace = deps.workspace || createCoderWorkspace({ simulation: simulation === true });
+  const workspace = deps.workspace || createCoderWorkspace({ simulation: simulated });
   const workspaceResults = [];
   // The running log is flushed ONCE PER ROUND, with only the lines added since the last
   // flush: the writer appends to what it already stored, so re-sending the whole buffer
@@ -432,7 +462,7 @@ const runCoderTurnClaimed = async ({
         args: args && typeof args === "object" ? args : {},
         argsPreview: buildArgsPreview(name, args),
         createdAt: nowIso(), ownerAccountId: accountId, status: "pending",
-        simulation: simulation === true, connectionId: record.connectionId || connectionId || null,
+        simulation: simulated, connectionId: record.connectionId || connectionId || null,
       };
       await store.set(coderTicketKey(ticketId), ticket, CODER_TICKET_TTL);
       pendingTicket = ticket;
@@ -456,7 +486,7 @@ const runCoderTurnClaimed = async ({
   };
 
   // ── the prompt: STABLE PREFIX FIRST, VOLATILE LAST ────────────────────────
-  const system = buildCoderSystemPrompt({ simulated: simulation === true });
+  const system = buildCoderSystemPrompt({ simulated });
   const history = (record.messages || []).map(toModelMessage).filter(Boolean);
   const issueBlock = await buildIssueContext(key, m);
   const userTurn = {

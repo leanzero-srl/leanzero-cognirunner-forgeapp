@@ -1253,7 +1253,12 @@ const executeCoderTurn = async (params, taskId) => {
   try {
     out = await runCoderTurn({
       issueKey: p.issueKey, threadId: p.threadId, userMessage: p.message, accountId: p.accountId,
-      simulation: p.simulation === true, connectionId: p.connectionId || null, maxRounds: p.maxRounds,
+      // PASSED THROUGH, never coerced (F-360). The thread row is the authority for
+      // simulation; `undefined` means "this delivery says nothing, inherit the thread".
+      // Coercing an absent flag to `false` here is what let a resume turn — whose push
+      // carries no `simulation` — turn a simulated thread into a live-writing one.
+      simulation: typeof p.simulation === "boolean" ? p.simulation : undefined,
+      connectionId: p.connectionId || null, maxRounds: p.maxRounds,
       gateFacts: p.gateFacts || null, savedByRole: p.savedByRole || "editor", cancelToken: taskId,
     });
   } catch (e) {

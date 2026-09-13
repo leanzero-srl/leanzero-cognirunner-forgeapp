@@ -40,6 +40,11 @@
  *   A14b the tick's own health ids (`tick:prepare_failed`, `tick:post_failed`) each read as
  *       their own sentence on the banner, in both themes, whether the stored row carries the
  *       base id alone or a legacy row with the exception glued on (F-535).
+ *   A17 the site-wide "recently deleted agents that wrote during deletion" section
+ *       (F-608): absent when nothing landed, the rows and their turns when something did,
+ *       the truncation note, a storage fault as a solid red notice and never as an empty
+ *       state, and the admin-floor refusal in the backend's own words - both themes,
+ *       computed colours, no rail, no em-dash, no engine id.
  *   A15 a SUCCESSFUL save's own notes reach the admin on BOTH doors (F-538): the resolver's
  *       `refused` and the job row's `vaRefused` both render, the id becomes a sentence, the
  *       door stays open until the notes are dismissed - both themes, computed colours.
@@ -1020,6 +1025,137 @@ try {
       ok((await badge.innerText()).trim() === "SHADOW", `A16 ${theme} Retry re-asks and the real state lands`);
       ok(env2.errors.length === 0, `A16 ${theme} no page errors (${env2.errors[0] || ""})`);
     } finally { await close(env2); }
+  }
+
+  /* ---------- A17 the deleted agents that wrote on their way out (F-608) ---------- */
+  for (const [theme, red, slate] of [
+    ["light", "rgb(220, 38, 38)", "rgb(71, 85, 105)"],
+    ["dark", "rgb(239, 68, 68)", "rgb(100, 116, 139)"],
+  ]) {
+    console.log(`A17 recent purges (${theme})`);
+
+    /* EMPTY. The resolver only ever returns tombstones that landed writes, so an empty
+       array is trustworthy and the honest rendering is silence - not a box saying nothing
+       happened, which is the shape that trains an admin to stop reading the panel. */
+    {
+      const env = await openAgents(browser, theme);
+      try {
+        await env.page.locator(".va-agent").first().waitFor({ timeout: 8000 });
+        await env.page.waitForTimeout(500);
+        ok(await env.page.locator(".va-purges").count() === 0, `A17 ${theme} no purge with writes renders NO section at all`);
+        ok(env.errors.length === 0, `A17 ${theme} empty: no page errors (${env.errors[0] || ""})`);
+      } finally { await close(env); }
+    }
+
+    /* TWO ROWS. The agent, when it went, how many writes, and the turns on click. */
+    {
+      const env = await openAgents(browser, theme, { __VA_PURGES__: "two" });
+      const { page } = env;
+      try {
+        await page.locator(".va-purges").waitFor({ timeout: 8000 });
+        const title = (await page.locator(".va-purges .label").first().innerText()).trim();
+        ok(/deleted agents that wrote during deletion/i.test(title), `A17 ${theme} the section says what it is, got ${JSON.stringify(title)}`);
+        const rows = page.locator(".va-purge");
+        ok(await rows.count() === 2, `A17 ${theme} both purges render, got ${await rows.count()}`);
+        const first = (await rows.first().innerText()).trim();
+        ok(/va_nadia_old/.test(first), `A17 ${theme} the row names the agent, got ${JSON.stringify(first)}`);
+        ok(/3 writes stayed/.test(first), `A17 ${theme} the row carries the engine's write count`);
+        ok(!/not known yet/.test(first), `A17 ${theme} the purge time is rendered, not "not known yet"`);
+        const second = (await rows.nth(1).innerText()).trim();
+        ok(/1 write stayed/.test(second), `A17 ${theme} a count of one is singular, got ${JSON.stringify(second)}`);
+        /* Newest purge first, which is the order listRecentPurges sorts in and the order
+           an admin acts in. */
+        ok(/va_nadia_old/.test(first) && /va_triage_old/.test(second), `A17 ${theme} newest purge first`);
+
+        // The turns are behind a click, and they name the issue and the write kinds.
+        ok(await page.locator(".va-purge-turn").count() === 0, `A17 ${theme} the turns start collapsed`);
+        await rows.first().locator(".va-purge-head").click();
+        await page.locator(".va-purge-turn").first().waitFor({ timeout: 5000 });
+        const turns = await page.locator(".va-purge-turn").allInnerTexts();
+        ok(turns.length === 2, `A17 ${theme} both turns expand, got ${turns.length}`);
+        ok(/SUP-1/.test(turns[0]) && /SUP-4/.test(turns[1]), `A17 ${theme} each turn names its issue`);
+        const writeChips = await page.locator(".va-purge-write").allInnerTexts();
+        ok(writeChips.length === 3 && writeChips.includes("add_comment SUP-1") && writeChips.includes("transition SUP-1") && writeChips.includes("set_assignee OPS-12") === false,
+          `A17 ${theme} only the expanded row's write kinds render, got ${JSON.stringify(writeChips)}`);
+
+        // Law 6, computed: solid fills, white ink, 600-700 weight, no rail anywhere.
+        const chipCss = (loc) => loc.evaluate((el) => { const c = getComputedStyle(el); return { bg: c.backgroundColor, fg: c.color, bl: c.borderLeftWidth, w: c.fontWeight }; });
+        const count = await chipCss(page.locator(".va-purge-count").first());
+        ok(count.bg === red, `A17 ${theme} the write count is the app's solid red, got ${count.bg}`);
+        ok(count.fg === "rgb(255, 255, 255)", `A17 ${theme} white ink on the count, got ${count.fg}`);
+        ok(count.bl === "0px", `A17 ${theme} no left rail on the count`);
+        ok(Number(count.w) >= 600 && Number(count.w) <= 800, `A17 ${theme} bold count, got ${count.w}`);
+        const w = await chipCss(page.locator(".va-purge-write").first());
+        ok(w.bg === slate, `A17 ${theme} the write kinds are solid slate, got ${w.bg}`);
+        ok(w.fg === "rgb(255, 255, 255)", `A17 ${theme} white ink on a write kind, got ${w.fg}`);
+        ok(w.bl === "0px", `A17 ${theme} no left rail on a write kind`);
+        const rowCss = await chipCss(page.locator(".va-purge").first());
+        ok(rowCss.bl === "1px", `A17 ${theme} the row is fully bordered, never a left rail, got ${rowCss.bl}`);
+
+        const all = (await page.locator(".va-purges").innerText()).trim();
+        ok(!/[—–→]/.test(all), `A17 ${theme} no em-dash, en-dash or arrow in the section`);
+        ok(!/scan_failed|scan_unavailable|agent-purged/.test(all), `A17 ${theme} no engine id reaches the admin`);
+        ok(await page.locator(".va-purge-fault").count() === 0, `A17 ${theme} a good answer raises no fault notice`);
+        ok(await page.locator(".va-purge-more").count() === 0, `A17 ${theme} a complete answer claims nothing about older rows`);
+        await page.waitForTimeout(900);
+        await shot(page, `agents-purges-${theme}`);
+        ok(env.errors.length === 0, `A17 ${theme} two rows: no page errors (${env.errors[0] || ""})`);
+      } finally { await close(env); }
+    }
+
+    /* TRUNCATED. The list is bounded by VA_ADMIN_PURGES_MAX and says so. */
+    {
+      const env = await openAgents(browser, theme, { __VA_PURGES__: "truncated" });
+      try {
+        await env.page.locator(".va-purge-more").waitFor({ timeout: 8000 });
+        const note = (await env.page.locator(".va-purge-more").innerText()).trim();
+        ok(/older/i.test(note) && /not shown/i.test(note), `A17 ${theme} the truncation note says what is missing, got ${JSON.stringify(note)}`);
+        ok(await env.page.locator(".va-purge").count() === 2, `A17 ${theme} the rows still render beside the note`);
+        ok(env.errors.length === 0, `A17 ${theme} truncated: no page errors (${env.errors[0] || ""})`);
+      } finally { await close(env); }
+    }
+
+    /* A STORAGE FAULT IS NOT AN EMPTY STATE. "No agent wrote while it was being deleted"
+       is the one sentence this panel must not say falsely, so an unreadable store makes
+       the section APPEAR, in solid red, with no rows. */
+    {
+      const env = await openAgents(browser, theme, { __VA_PURGES__: "scan_failed" });
+      const { page } = env;
+      try {
+        await page.locator(".va-purge-fault").waitFor({ timeout: 8000 });
+        const text = (await page.locator(".va-purge-fault").innerText()).trim();
+        ok(/not the whole answer/i.test(text), `A17 ${theme} the notice says the list is incomplete, got ${JSON.stringify(text)}`);
+        ok(/could not be read/i.test(text), `A17 ${theme} the notice names the fault`);
+        ok(!/scan_failed/.test(text), `A17 ${theme} the engine's reason id is not what the admin reads`);
+        ok(!/[—–→]/.test(text), `A17 ${theme} no em-dash in the fault notice`);
+        ok(await page.locator(".va-purge").count() === 0, `A17 ${theme} a fault invents no rows`);
+        ok(await page.locator(".va-purges .empty-state").count() === 0, `A17 ${theme} a fault is NEVER rendered as an empty state`);
+        const f = await page.locator(".va-purge-fault").evaluate((el) => { const c = getComputedStyle(el); const t = el.querySelector(".va-purge-fault-title"); return { bg: c.backgroundColor, fg: c.color, bl: c.borderLeftWidth, w: getComputedStyle(t).fontWeight }; });
+        ok(f.bg === red, `A17 ${theme} the fault notice is solid red, got ${f.bg}`);
+        ok(f.fg === "rgb(255, 255, 255)", `A17 ${theme} white ink on the fault notice, got ${f.fg}`);
+        ok(f.bl === "0px", `A17 ${theme} no left rail on the fault notice`);
+        ok(Number(f.w) >= 600 && Number(f.w) <= 800, `A17 ${theme} the fault title is bold, got ${f.w}`);
+        await page.waitForTimeout(900);
+        await shot(page, `agents-purges-fault-${theme}`);
+        ok(env.errors.length === 0, `A17 ${theme} fault: no page errors (${env.errors[0] || ""})`);
+      } finally { await close(env); }
+    }
+
+    /* THE ROLE FLOOR. This read is admin-only and the agent list is not, so an editor sees
+       the tab and this one refusal - rendered in the backend's own words, because the
+       sentence that names a remedy and its owner is the backend's to write. */
+    {
+      const env = await openAgents(browser, theme, { __VA_PURGES__: "non_admin" });
+      const { page } = env;
+      try {
+        await page.locator(".va-purges .va-refused").waitFor({ timeout: 8000 });
+        const text = (await page.locator(".va-purges .va-refused").innerText()).trim();
+        ok(/don't have permission/i.test(text) && /admin role/i.test(text), `A17 ${theme} the backend's refusal is rendered as given, got ${JSON.stringify(text)}`);
+        ok(await page.locator(".va-purge-fault").count() === 0, `A17 ${theme} a permission refusal is not a storage fault`);
+        ok(await page.locator(".va-purge").count() === 0, `A17 ${theme} a refusal invents no rows`);
+        ok(env.errors.length === 0, `A17 ${theme} refusal: no page errors (${env.errors[0] || ""})`);
+      } finally { await close(env); }
+    }
   }
 } finally {
   await browser.close();

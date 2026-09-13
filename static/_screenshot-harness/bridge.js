@@ -1548,6 +1548,28 @@ const VA_DRAFTS = {
   ],
   va_2: [],
 };
+/* F-608 - two deleted agents that had already written when the delete landed, newest
+   first, exactly as `listRecentPurges` sorts and shapes them: `writes` are the engine's
+   own landed-write strings and `writeCount` is their total across the turns. */
+const VA_PURGES = [
+  {
+    agent: "va_nadia_old",
+    purgedAt: "2026-09-08T11:04:00.000Z",
+    writeCount: 3,
+    turns: [
+      { at: "2026-09-08T11:03:41.000Z", issueKey: "SUP-1", writes: ["add_comment SUP-1", "transition SUP-1"] },
+      { at: "2026-09-08T11:03:58.000Z", issueKey: "SUP-4", writes: ["add_comment SUP-4"] },
+    ],
+  },
+  {
+    agent: "va_triage_old",
+    purgedAt: "2026-09-07T08:20:00.000Z",
+    writeCount: 1,
+    turns: [
+      { at: "2026-09-07T08:19:50.000Z", issueKey: "OPS-12", writes: ["set_assignee OPS-12"] },
+    ],
+  },
+];
 const VA_EFFECTS = {
   va_1: {
     effects: [{ at: "2026-09-13T08:31:30.000Z", issueKey: "OPS-12", action: "addComment", detail: "internal note", verified: true }],
@@ -2396,6 +2418,28 @@ function invoke(name, payload) {
       return Promise.resolve({ success: true });
     }
     case "listVaEffects": return Promise.resolve({ success: true, ...(VA_EFFECTS[(payload && payload.jobId) || ""] || { effects: [], items: [] }) });
+    /* F-608 - the SITE-WIDE purge read. None of these five answers can be produced by an
+       action in the UI: the agent is gone, the row is written by the dying turn itself and
+       the two failures are a storage fault and a role floor. So the scenario is selected by
+       `window.__VA_PURGES__` (the idiom `__VA_HEALTH_REASON__` and `__VA_STATUS_FAIL__`
+       already use) or by `?vaPurges=` when a human is browsing the harness by hand. The
+       shapes mirror src/va-admin.js `listRecentPurges` and src/index.js `vaAnswer` exactly:
+       a refusal carries BOTH the sentence on `error` and the machine-readable `reason`, and
+       a permission refusal carries `reason: null`, which is how the tab tells a store fault
+       (its own copy) from a role floor (the backend's sentence, rendered as given). */
+    case "getVaRecentPurges": {
+      const which = (typeof window !== "undefined" && (window.__VA_PURGES__ || new URLSearchParams(window.location.search).get("vaPurges"))) || "empty";
+      if (which === "scan_failed" || which === "scan_unavailable") {
+        return Promise.resolve({ success: false, reason: which, error: which === "scan_unavailable" ? "Stored history could not be read on this runtime." : "Stored history could not be read." });
+      }
+      if (which === "non_admin") {
+        return Promise.resolve({ success: false, reason: null, error: "You don't have permission to review what a deleted Virtual Administrator wrote. Ask a Jira administrator for the admin role in CogniRunner.", needsRole: "admin", code: "permission_denied" });
+      }
+      if (which === "two" || which === "truncated") {
+        return Promise.resolve({ success: true, purges: VA_PURGES, truncated: which === "truncated" });
+      }
+      return Promise.resolve({ success: true, purges: [], truncated: false });
+    }
     case "getVaMemory": return Promise.resolve({ success: true, memory: VA_MEMORY.text, constraints: VA_MEMORY.constraints, bytes: VA_MEMORY.text.length, capBytes: VA_LIMITS.memoryCapBytes });
     case "saveVaMemory": {
       if (typeof window !== "undefined") window.__VA_MEMORY_SAVE__ = payload;

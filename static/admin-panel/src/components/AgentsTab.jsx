@@ -30,6 +30,12 @@
  * a read-only record of what is staged. The buttons are absent rather than disabled when
  * they cannot apply, because a disabled Approve reads like a permission problem.
  *
+ * THE DELETED AGENTS ARE PART OF THIS TAB (F-608). A delete that catches a turn mid-flight
+ * leaves real writes on real issues and no agent card to report them, so the list is
+ * followed by a SITE-WIDE section reading `getVaRecentPurges`. It is absent when there is
+ * nothing to say, and a storage fault makes it appear in red rather than disappear: an
+ * unreadable store is not evidence that nothing happened.
+ *
  * Law 6 throughout: solid fills, no rails, no tints, the app's own `confirmDialog` and
  * `CustomSelect`, and the agents hue (#b45309 light / #f59e0b dark with the app's dark ink).
  */
@@ -288,6 +294,44 @@ const reasonCopy = (reason, opts) => {
   const row = has(GATE_COPY, base) ? GATE_COPY[base] : null;
   return typeof row === "string" ? row : UNKNOWN_REASON;
 };
+/* ── F-608: THE DELETE THAT CAUGHT A TURN MID-FLIGHT, read site-wide. ──────────
+   F-577 wrote the copy for this and F-595 proved the copy could never fire: the agent is
+   GONE, so there is no card to hang it on and no receipt to carry it. `getVaRecentPurges`
+   is the read door onto the tombstones that recorded what the dying turn had already
+   written, and the section below is the only place in the product those writes are named.
+
+   THE TWO NON-ANSWERS ARE DIFFERENT AND ARE RENDERED DIFFERENTLY, because the backend
+   deliberately keeps them apart (src/va-admin.js):
+
+     reason "scan_unavailable" / "scan_failed" - the STORE could not be read. The list on
+       screen is not the answer, so it renders a solid red notice. It must never render as
+       an empty state: "no agent wrote while it was being deleted" is the one sentence this
+       panel must not say falsely, and a storage fault is not evidence for it.
+     reason null - a PERMISSION refusal (this read is admin-floored, the agent list is
+       not, so an editor sees the tab and not this). The backend's sentence names the
+       remedy and its owner, so it is rendered AS GIVEN rather than re-typed here.
+
+   The sentences for the two faults are copy, not the store's own words: `VA_ADMIN_REFUSALS`
+   says "Stored history could not be read", which is true of six other reads and tells an
+   admin nothing about what this panel is now unable to promise. An unrecognised reason
+   lands on the neutral sentence and never echoes the id. */
+const PURGE_FAULT_COPY = {
+  scan_unavailable: "The record of deleted agents cannot be read on this runtime, so an agent may have written during a delete without appearing here.",
+  scan_failed: "The record of deleted agents could not be read, so an agent may have written during a delete without appearing here.",
+};
+const UNKNOWN_PURGE_FAULT = "The record of deleted agents could not be read, so an agent may have written during a delete without appearing here.";
+const purgeFaultCopy = (reason) => {
+  const id = String(reason || "");
+  return has(PURGE_FAULT_COPY, id) ? PURGE_FAULT_COPY[id] : UNKNOWN_PURGE_FAULT;
+};
+/* A count is printed only when the engine sent a positive whole number, the same rule
+   `purgedWritesRemedy` above holds for the receipt row. */
+const writeCountLabel = (n) => {
+  const v = Math.trunc(Number(n));
+  if (!Number.isFinite(v) || v <= 0) return "writes stayed on the issues";
+  return `${v} write${v === 1 ? "" : "s"} stayed`;
+};
+
 const bytesOf = (n) => String(Math.max(0, Math.trunc(Number(n) || 0)));
 
 /* Every compaction statement on one receipt, in the order an admin reads them. A fallback
@@ -391,6 +435,8 @@ export default function AgentsTab({ invoke, isAdmin, userRole, roleUnknown = fal
           ))}
         </div>
       )}
+
+      <PurgesSection client={client} />
     </div>
   );
 }
@@ -656,6 +702,88 @@ function ReceiptsPane({ receipts, tz }) {
           {r.error && <div className="va-receipt-error">{r.error}</div>}
         </div>
       ))}
+    </div>
+  );
+}
+
+/* ── F-608: the agents that wrote while they were being deleted (site-wide). ─── */
+
+/* It is ABSENT, not empty, when there is nothing to say. Every other pane on this tab
+   belongs to an agent and is reached deliberately; this one sits under the list and would
+   otherwise be a permanent "nothing happened" box on a healthy site - the exact shape that
+   trains an admin to stop reading it. An empty answer from this resolver is trustworthy
+   (only tombstones with landed writes are returned), so silence is the honest rendering
+   and the two failures above are the only reasons it appears with no rows. */
+function PurgesSection({ client }) {
+  const [answer, setAnswer] = useState(null);
+  const [fault, setFault] = useState(null);
+  const [openKey, setOpenKey] = useState(null);
+  const token = useRef(0);
+  useEffect(() => {
+    const mine = ++token.current;
+    client.recentPurges().then((r) => {
+      if (mine !== token.current) return;
+      if (r && r.success) { setAnswer({ purges: arr(r.purges), truncated: r.truncated === true }); setFault(null); return; }
+      setAnswer({ purges: [], truncated: false });
+      /* A named reason is a STORE fault and gets this panel's own sentence; a null reason
+         is the permission refusal, whose sentence names a remedy and its owner and is the
+         backend's to write (refusal.js is the one test for that shape). */
+      setFault(r && r.reason
+        ? { kind: "fault", text: purgeFaultCopy(r.reason) }
+        : { kind: "refusal", text: (r && r.error) || "" });
+    });
+    return () => { token.current += 1; };
+  }, [client]);
+
+  if (!answer) return null;
+  const rows = arr(answer.purges);
+  if (!rows.length && !(fault && fault.text)) return null;
+  return (
+    <div className="card va-purges">
+      <span className="label">Recently deleted agents that wrote during deletion</span>
+      <p className="hint">Deleting an agent stops it, but a turn already running can have put a comment or a transition on an issue before it read the delete. Those writes stay. They are listed here for three days so somebody can undo them.</p>
+      {fault && fault.kind === "fault" && fault.text && (
+        <div className="va-purge-fault" role="alert">
+          <span className="va-purge-fault-title">This list is not the whole answer</span>
+          <span className="va-purge-fault-text">{fault.text}</span>
+        </div>
+      )}
+      {fault && fault.kind === "refusal" && fault.text && (
+        <div className="alert alert-warning va-refused">{fault.text}</div>
+      )}
+      {rows.map((p, i) => {
+        const key = `${p.agent || "agent"}-${p.purgedAt || ""}-${i}`;
+        const open = openKey === key;
+        const turns = arr(p.turns);
+        return (
+          <div className="va-purge" key={key}>
+            <button type="button" className="va-purge-head" aria-expanded={open} onClick={() => setOpenKey(open ? null : key)}>
+              <span className="va-purge-caret" aria-hidden="true">{open ? "▾" : "▸"}</span>
+              <span className="va-purge-name">{p.agent || "An agent with no name on its record"}</span>
+              <span className="va-purge-at">deleted {when(p.purgedAt)}</span>
+              <span className="va-purge-count">{writeCountLabel(p.writeCount)}</span>
+            </button>
+            {open && (
+              <div className="va-purge-turns anim-rise">
+                {turns.length === 0 ? (
+                  <div className="va-purge-turn"><span className="va-purge-key">The turns behind this count were not recorded.</span></div>
+                ) : turns.map((t, j) => (
+                  <div className="va-purge-turn" key={j}>
+                    <span className="va-purge-key">{t.issueKey || "no issue named"}</span>
+                    <span className="va-purge-when">{when(t.at)}</span>
+                    <span className="va-purge-writes">
+                      {arr(t.writes).map((w, k) => <span className="va-purge-write" key={k}>{w}</span>)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        );
+      })}
+      {answer.truncated === true && rows.length > 0 && (
+        <p className="hint va-purge-more">Older deletions are not shown. This list is the most recent ones.</p>
+      )}
     </div>
   );
 }

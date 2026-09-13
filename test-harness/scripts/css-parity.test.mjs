@@ -37,20 +37,68 @@ const functionBody = (source, marker, where) => {
   assert.fail(`${where}: unbalanced braces after ${marker}`);
 };
 
-// The rule block whose selector is this class on its own or in a compound with other
-// classes (".fix-result.memory-card") — never a longer class name (".hard-stop-title"),
-// a descendant selector or a dark-mode variant. Normalised: leading indentation and
-// blank lines removed, so only the declarations themselves are compared.
-const ruleBlock = (css, selector) => {
-  const cls = selector.replace(/[.]/g, "\\.");
-  const re = new RegExp(`(^|[\\n;}])\\s*((?:\\.[\\w-]+)*)${cls}((?:\\.[\\w-]+)*)\\s*\\{`, "m");
-  const m = re.exec(css);
-  if (!m) return null;
-  const open = css.indexOf("{", m.index + m[0].length - 1);
-  const close = css.indexOf("}", open);
-  assert.notEqual(close, -1, `unterminated block for ${selector}`);
-  return css.slice(open + 1, close)
-    .split("\n").map((l) => l.trim()).filter(Boolean).join("\n");
+// F-226 — the old matcher looked at the BARE class only, so `.hard-stop-title`,
+// `.hard-stop-text` and `html[data-color-mode="dark"] .hard-stop` were out of scope
+// and drifted freely (a 700→400 title weight and a dark hue change both passed).
+// Scope is now every rule whose selector CONTAINS the class token: the class itself,
+// its `-`-suffixed siblings, descendant/compound selectors and dark-mode variants,
+// including rules nested in @media/@supports (the at-rule context is part of the key).
+//
+// Flatten a stylesheet into [{ selector, declarations }], where `selector` carries any
+// enclosing at-rule prelude ("@media (...) » .foo"). Declarations are dedented and
+// blank-line-stripped so only the declarations themselves are compared.
+// CSS comments are stripped FIRST: these blocks carry long provenance comments that
+// name other classes, and an unstripped comment both pollutes the selector key and
+// makes a prose edit read as a style drift.
+const stripComments = (css) => css.replace(/\/\*[\s\S]*?\*\//g, "");
+
+const flatten = (css) => {
+  const out = [];
+  const walk = (text, context) => {
+    let i = 0, chunkStart = 0, depth = 0, open = -1;
+    while (i < text.length) {
+      const ch = text[i];
+      if (ch === "{") {
+        if (depth === 0) open = i;
+        depth++;
+      } else if (ch === "}") {
+        depth--;
+        if (depth === 0) {
+          const prelude = text.slice(chunkStart, open).trim().replace(/\s+/g, " ");
+          const body = text.slice(open + 1, i);
+          if (prelude.startsWith("@") && /\{/.test(body)) walk(body, context.concat(prelude));
+          else if (prelude) {
+            out.push({
+              selector: context.concat(prelude).join(" » "),
+              declarations: body.split("\n").map((l) => l.trim()).filter(Boolean).join("\n"),
+            });
+          }
+          chunkStart = i + 1;
+        }
+      }
+      i++;
+    }
+  };
+  walk(stripComments(css), []);
+  return out;
+};
+
+// `.hard-stop` matches `.hard-stop`, `.hard-stop-title`, `.x.hard-stop`, but never
+// `.hard-stopper` (a `-` suffix is a sibling; a bare letter is a different class).
+const touches = (selector, cls) =>
+  new RegExp(`\\${cls}(?:-[\\w-]+)*(?![\\w-])`).test(selector);
+
+// Every rule in this home that touches the class, keyed by its normalised selector.
+const relatedBlocks = (css, cls) => {
+  const map = new Map();
+  for (const rule of flatten(css)) {
+    if (!touches(rule.selector, cls)) continue;
+    // Two rules with the same selector in one home: concatenate in source order,
+    // which is what the cascade does anyway.
+    map.set(rule.selector, map.has(rule.selector)
+      ? `${map.get(rule.selector)}\n${rule.declarations}` : rule.declarations);
+  }
+  return map;
 };
 
 const homes = [
@@ -61,13 +109,20 @@ const homes = [
 ];
 
 const failures = [];
+let compared = 0;
 for (const cls of SHARED_CSS_CLASSES) {
-  const found = homes.map((h) => ({ home: h.name, block: ruleBlock(h.css, cls) }));
-  const reference = found.find((f) => f.block !== null);
+  const found = homes.map((h) => ({ home: h.name, rules: relatedBlocks(h.css, cls) }));
+  const reference = found.find((f) => f.rules.size > 0);
   if (!reference) { failures.push(`${cls}: declared in NO home at all`); continue; }
-  for (const f of found) {
-    if (f.block === null) failures.push(`${cls}: MISSING from ${f.home} (present in ${reference.home})`);
-    else if (f.block !== reference.block) failures.push(`${cls}: DRIFTED in ${f.home} vs ${reference.home}`);
+  // Union of selectors so a rule PRESENT only in a non-reference home is caught too.
+  const selectors = [...new Set(found.flatMap((f) => [...f.rules.keys()]))].sort();
+  for (const selector of selectors) {
+    const ref = found.find((f) => f.rules.has(selector));
+    for (const f of found) {
+      compared++;
+      if (!f.rules.has(selector)) failures.push(`${selector}: MISSING from ${f.home} (present in ${ref.home})`);
+      else if (f.rules.get(selector) !== ref.rules.get(selector)) failures.push(`${selector}: DRIFTED in ${f.home} vs ${ref.home}`);
+    }
   }
 }
 
@@ -76,4 +131,4 @@ if (failures.length) {
   for (const f of failures) console.error(`  ✗ ${f}`);
   assert.fail(`css parity: ${failures[0]}`);
 }
-console.log(`CSS parity: ${SHARED_CSS_CLASSES.length} shared classes identical across ${homes.length} homes`);
+console.log(`CSS parity: ${SHARED_CSS_CLASSES.length} shared classes — ${compared} rule/home comparisons identical across ${homes.length} homes`);

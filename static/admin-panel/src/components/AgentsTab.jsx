@@ -106,16 +106,41 @@ const gateSentence = (g) => gateCopy(g).sentence || "";
    the engine deliberately not paying for a call it knows is dead, and painting six hours
    of them red would bury the banner the original failure already raised - so it renders
    as a solid slate state instead. No rail, no tint, either way. */
+/* F-518 - THE MAP COVERS EVERY ID THE ENGINE PUSHES, and `agents-tab.test.mjs` reads
+   `src/virtual-admin.js` to prove it still does. The map knew 3 of the ~8 reasons
+   `runVaCompaction` can return, so the newest failure modes spoke to the admin in an
+   engine id, and `compaction_failed:` carried a raw exception message (provider or KVS
+   text, whatever threw) into admin copy.
+
+   Two rules follow from that and neither is negotiable:
+   - the keys are BASE ids only. Several reasons carry a `:detail` suffix the engine adds
+     for the log (`pinned_dropped:2`, `not_claimed:storage_fault`, `compaction_failed:<80
+     chars of an exception>`); the suffix is cut before the lookup and NEVER reaches the
+     sentence, because none of it was written for a human to read.
+   - the fallback for a genuinely unknown id says so in plain words and prints NOTHING
+     from the engine. A new id added to the engine shows an honest blank rather than
+     leaking whatever string was in it, and the source assertion in the test fails the
+     run so it does not stay blank. */
 const COMPACTION_COPY = {
   "summariser-failed": "The summariser did not answer, so the notes were cut instead of summarised and the memory is still over budget.",
   "did-not-converge": "A summarisation was paid for and the memory is still over its byte budget.",
   "compaction-backoff": "Compaction is paused for six hours after a failed compaction.",
+  "compaction-backoff-write-failed": "The pause could not be recorded, so the next tick will try the summariser again.",
+  "memory_read_failed": "The agent's notes could not be read this tick, so nothing was summarised and the notes are untouched.",
+  "under_threshold": "The notes were under their size budget, so nothing needed summarising.",
+  "not_claimed": "Another delivery of this tick was already summarising the notes, so this one left them alone.",
+  "compaction_produced_nothing": "The summariser came back with nothing to store, so the notes were left exactly as they were.",
+  "pinned_dropped": "The proposed summary had lost a pinned instruction, so it was thrown away and the previous notes still stand.",
+  "compaction_failed": "Memory compaction stopped on an unexpected error and the previous notes are untouched.",
 };
-const compactionReason = (s) => String((s && (s.reason || s.gate)) || "").replace(/^compaction:/, "");
+const UNKNOWN_COMPACTION = "Memory compaction reported an unrecognised result.";
+/* The BASE id: the engine's `compaction:` namespace prefix off the front, and any
+   `:detail` the engine appended off the back. */
+const compactionReason = (s) => String((s && (s.reason || s.gate)) || "").replace(/^compaction:/, "").split(":")[0];
 /* A skip the engine namespaced `compaction:` is one of ours whether or not it also carries
-   the gate; an id with no copy still renders its own reason rather than disappearing. */
+   the gate; an id with no copy still renders a sentence rather than disappearing. */
 const isCompactionSkip = (s) => !!s && (s.gate === "compaction" || /^compaction:/.test(String((s && (s.reason || s.gate)) || "")));
-const compactionSentence = (reason) => COMPACTION_COPY[reason] || `Memory compaction stopped: ${reason || "unknown"}.`;
+const compactionSentence = (reason) => COMPACTION_COPY[reason] || UNKNOWN_COMPACTION;
 const bytesOf = (n) => String(Math.max(0, Math.trunc(Number(n) || 0)));
 
 /* Every compaction statement on one receipt, in the order an admin reads them. A fallback

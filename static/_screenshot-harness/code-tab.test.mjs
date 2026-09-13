@@ -29,6 +29,9 @@ import { ensureFreshBuildShot } from "./lib/build-shot.mjs";
 import { GIT_EVENT_IDS, EVENT_CATEGORIES } from "../../src/shared/jira-events.js";
 import { AGENT_ACTIONS, agentActionNamespace } from "../../src/shared/agent-actions.js";
 import { agentCapabilityCopy } from "../../src/shared/edition.js";
+/* F-526: the scaffold's OWN defaults, so "the form did not just ship the default" is
+   asserted against the value the renderer would really have used. */
+import { SCAFFOLDS } from "../../src/shared/git-scaffolds.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SHOTS = process.argv.includes("--shots");
@@ -70,6 +73,7 @@ const bg = (page, sel) => page.locator(sel).first().evaluate((el) => getComputed
 
 const GIT_HUE = (EVENT_CATEGORIES.find((c) => c.id === "git") || {}).hue;
 const GIT_ACTIONS = AGENT_ACTIONS.filter((a) => agentActionNamespace(a) === "git");
+const PIPE_VARS = (SCAFFOLDS["forge-pipeline"] || {}).vars || {};
 
 const browser = await chromium.launch();
 try {
@@ -492,6 +496,76 @@ try {
       await shot(page, `C12-pipeline-installed-${theme}`);
       ok(env.errors.length === 0, `C12 ${theme} no page errors: ` + env.errors.join(" | "));
     } catch (e) { fail++; console.log("  ✗ C12 threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
+  /* ---------------- C12b — F-526: the scaffold variables reach the backend -------------
+     The defect this closes was invisible on screen: the form looked complete, sent no
+     `scaffoldVars`, and every pipeline was rendered with "Forge app" and `static/app`.
+     So the assertions are (1) what the form asks for, (2) what it REFUSES, (3) what it
+     reads back, and (4) the payload the bridge recorded. */
+  for (const theme of ["light", "dark"]) {
+    console.log(`C12b pipeline scaffold variables (${theme})`);
+    const env = await openAdmin(browser, theme);
+    const { page } = env;
+    try {
+      await tab(page, "Code");
+      const row = page.locator(".code-repo-row", { hasText: "acme/web" }).first();
+      await row.waitFor({ timeout: 10000 });
+      await row.locator("button", { hasText: "Pipeline" }).click();
+      await row.locator(".code-textarea").waitFor({ timeout: 8000 });
+
+      const appInput = row.locator("input[id^='pipe-appname-']");
+      const dirInput = row.locator("input[id^='pipe-uidir-']");
+      ok(await appInput.count() === 1, `C12b ${theme} the form asks for the app name`);
+      ok(await dirInput.count() === 1, `C12b ${theme} the form asks for the Custom UI folder`);
+      // The folder starts at the SCAFFOLD's default, read from its one home.
+      ok(await dirInput.inputValue() === PIPE_VARS.UI_DIR, `C12b ${theme} the folder is seeded from the scaffold default (got ${await dirInput.inputValue()})`);
+      const dirHint = await dirInput.evaluate((el) => el.closest(".form-group").innerText);
+      ok(/package\.json/.test(dirHint), `C12b ${theme} the hint says it must hold the UI's package.json`);
+      ok(/none/.test(dirHint), `C12b ${theme} and names "none" for a backend only app`);
+
+      // The manifest names the app, so pasting it answers the question.
+      await row.locator(".code-textarea").fill("app:\n  id: ari:cloud:ecosystem::app/abc\n  name: Acme Deployer\npermissions:\n  scopes:\n    - read:jira-work\n");
+      await row.locator("input[placeholder='your-site.atlassian.net']").fill("acme.atlassian.net");
+      ok(await appInput.inputValue() === "Acme Deployer", `C12b ${theme} the app name is prefilled from the manifest, not left at the default (got ${await appInput.inputValue()})`);
+
+      const setupBtn = row.locator("button", { hasText: "Set up pipeline" });
+      // PATH TRAVERSAL IS REFUSED, in words, before anything is queued.
+      await dirInput.fill("../../etc");
+      ok(await row.locator(".code-field-err").count() === 1, `C12b ${theme} a climbing path is refused with a sentence`);
+      ok(/\.\./.test(await row.locator(".code-field-err").innerText()), `C12b ${theme} the refusal names what is wrong with it`);
+      ok(await setupBtn.isDisabled(), `C12b ${theme} and the setup cannot be started while it is wrong`);
+      const errColor = await row.locator(".code-field-err").evaluate((el) => getComputedStyle(el).color);
+      ok(errColor === (theme === "light" ? "rgb(220, 38, 38)" : "rgb(239, 68, 68)"), `C12b ${theme} the refusal is solid red with a dark override (got ${errColor})`);
+      await dirInput.fill("a".repeat(81));
+      ok(/80 characters/.test(await row.locator(".code-field-err").innerText()), `C12b ${theme} an over-long folder is refused by length`);
+      await dirInput.fill("   ");
+      ok(await row.locator(".code-field-err").count() === 1 && await setupBtn.isDisabled(), `C12b ${theme} an empty folder is refused too`);
+
+      // The values the workflow will carry, read back before the button.
+      await dirInput.fill("static/next-steps");
+      ok(await row.locator(".code-field-err").count() === 0, `C12b ${theme} a real folder clears the refusal`);
+      const review = await row.locator(".code-pipe-review").innerText();
+      ok(/FORGE_APP_NAME/.test(review) && /Acme Deployer/.test(review), `C12b ${theme} the review shows the rendered app name`);
+      // The chip key is upper-cased by CSS, so innerText carries it that way.
+      ok(/working-directory/i.test(review) && /static\/next-steps/.test(review), `C12b ${theme} the review shows the rendered working directory`);
+      ok(!/—/.test(review), `C12b ${theme} no em-dash in the copy`);
+      ok(await row.locator(".code-pipe-review").evaluate((el) => getComputedStyle(el).borderLeftWidth) === await row.locator(".code-pipe-review").evaluate((el) => getComputedStyle(el).borderRightWidth),
+        `C12b ${theme} the review has no left accent rail`);
+      ok(await page.locator("select").count() === 0, `C12b ${theme} no native control was added`);
+      await shot(page, `C12b-pipeline-vars-${theme}`);
+
+      ok(await page.evaluate(() => window.__PIPE_SETUP__ == null), `C12b ${theme} nothing was sent while the form was being corrected`);
+      ok(!(await setupBtn.isDisabled()), `C12b ${theme} a valid form arms the setup`);
+      await setupBtn.click();
+      await row.locator(".code-pipe-queued").waitFor({ timeout: 8000 });
+      const sent = await page.evaluate(() => window.__PIPE_SETUP__);
+      ok(!!(sent && sent.scaffoldVars), `C12b ${theme} the setup payload carries scaffoldVars at all (the finding)`);
+      ok(sent && sent.scaffoldVars && sent.scaffoldVars.APP_NAME === "Acme Deployer", `C12b ${theme} APP_NAME is the typed name, not "${PIPE_VARS.APP_NAME}"`);
+      ok(sent && sent.scaffoldVars && sent.scaffoldVars.UI_DIR === "static/next-steps", `C12b ${theme} UI_DIR is the typed folder, not "${PIPE_VARS.UI_DIR}"`);
+      ok(env.errors.length === 0, `C12b ${theme} no page errors: ` + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  ✗ C12b threw: " + e.message.split("\n")[0]); }
     await close(env);
   }
 

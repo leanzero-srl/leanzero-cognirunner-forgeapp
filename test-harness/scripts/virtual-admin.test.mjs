@@ -1969,6 +1969,65 @@ reset();
     "F-506.BACKOFF — the skip is still on the receipt: the memory is over budget and nothing is being done about it");
 }
 
+/* ── F-513: THE BRAKE THAT DID NOT ARM ──────────────────────────────────────
+ *
+ * F-506's backoff is armed by a WRITE, and all three arming sites discarded
+ * `setCompactBackoff`'s `{ok:false, compact_backoff_write_failed}`. A KVS throttle on that
+ * one `set` therefore left the brake un-armed while the receipt read EXACTLY as it does
+ * when the brake engaged, and the next tick — finding no row — bought the same dead
+ * provider's turn again. That is the 288-calls-a-day loop F-506 exists to stop, wearing
+ * F-506's own receipt, with nothing on any surface saying the brake did not engage.
+ *
+ * `__failSetWhen` aims the fault at the backoff key ALONE, so the reads around it still
+ * work — which is the real shape of a partially throttled KVS, and the reason nothing
+ * upstream stops the tick on our behalf (`readCompactBackoff` is deliberately fail-open).
+ */
+reset();
+{
+  await L.writeMemory(kvs, AG, { text: fatProse(), constraints: [] });
+  let calls = 0;
+  const job = vaJob();
+  job.va.intake.jql = "status = Open";
+  const deps = compactTickDeps({
+    summariseMemory: async () => { calls++; throw new Error("401 invalid api key"); },
+  });
+
+  kvs.__failSetWhen((key) => key.startsWith("va_compact_backoff:"), new Error("kvs throttled"));
+  const r1 = await V.runVaTick({ job, tickId: "u1", deps });
+  eq(calls, 1, "F-513 — the failed turn was paid for, exactly once");
+  eq((await L.readCompactBackoff(kvs, AG)).active, false, "F-513 — …and the brake did NOT arm (that is the fault under test)");
+  eq(r1.compacted.backoffArmed, false, "F-513.STEP — the step reports that the brake did not arm, instead of discarding it");
+  ok(String(r1.compacted.backoffError || "").includes("compact_backoff_write_failed"),
+    "F-513.STEP — …under the reason va-ledger.js returns");
+  eq(r1.ok, false, "F-513.NOT_OK — a tick that will re-buy this failure in five minutes is not an ok tick");
+
+  const receipt = (await L.readTick(kvs, AG, "u1", "prepare")).receipt;
+  const unarmed = receipt.skipped.find((x) => x.reason === "compaction-backoff-write-failed");
+  ok(unarmed, "F-513.RECEIPT — the receipt says the brake did not engage, in its OWN row");
+  eq(unarmed.key, "(memory)", "F-513.RECEIPT — …against the memory, like the compaction skip it accompanies");
+  eq(unarmed.gate, "compaction", "F-513.RECEIPT — …carrying the gate, so F-510's rule reads it as a stop");
+  ok(receipt.skipped.some((x) => /summariser-failed/.test(String(x.reason))),
+    "F-513.RECEIPT — and the provider failure is STILL named separately: two facts, two rows");
+
+  const health = await kvs.get(`va_health:${AG}`);
+  eq(health.consecutiveFailures, 1, "F-513.HEALTH — the banner counter moves for the admin who reads no receipts");
+  eq(health.lastReason, "compaction-backoff-write-failed",
+    "F-513.HEALTH — …and it names the UN-ARMED BRAKE, not the provider, because that is the fact that is still costing money");
+
+  // THE PROOF THAT IT MATTERS: with no marker in storage the very next tick pays again.
+  // The fault was one-shot, so this second arming succeeds and the loop closes.
+  await L.writeMemory(kvs, AG, { text: fatProse(), constraints: [] });
+  const r2 = await V.runVaTick({ job, tickId: "u2", deps });
+  eq(calls, 2, "F-513.THE_BILL — an un-armed brake means the next tick buys the identical failed turn");
+  eq(r2.compacted.backoffArmed, true, "F-513.HEALED — once the store accepts the write the brake arms…");
+  eq((await L.readCompactBackoff(kvs, AG)).active, true, "F-513.HEALED — …and the marker is really in storage");
+
+  await L.writeMemory(kvs, AG, { text: fatProse(), constraints: [] });
+  const r3 = await V.runVaTick({ job, tickId: "u3", deps });
+  eq(calls, 2, "F-513.HEALED — so the tick after that buys nothing, which is F-506 working");
+  eq(r3.ok, true, "F-513.HEALED — and a genuine backoff tick is ok again");
+}
+
 reset();
 {
   /* ── A SUMMARISER THAT ANSWERS OVER TARGET: not ok, and backed off ─────── */

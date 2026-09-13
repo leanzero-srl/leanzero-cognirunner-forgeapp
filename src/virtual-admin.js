@@ -384,6 +384,11 @@ export const itemQueueFor = (va) => {
  *   · a failed turn arms `va_compact_backoff:{agent}` (6 h) so the following ticks skip
  *     the model call by name instead of re-buying the same failure. The per-tick claim
  *     cannot do this: its key carries the `tickId`, so it only ever stops a REDELIVERY;
+ *   · ARMING THE BRAKE IS ITSELF A WRITE, AND IT IS CHECKED (F-513). `backoffArmed` on the
+ *     returned row says whether the marker actually went to storage; `false` means the
+ *     next tick will find no row and buy the same failed turn again, so the tick reports
+ *     it and fails. Discarding this result is how F-506's brake could look engaged on
+ *     every surface while doing nothing at all;
  *   · the failure is a GATE skip, and a gated tick is not an ok tick (F-502). This is the
  *     one thing about compaction that is NOT housekeeping — a spend that repeats and
  *     achieves nothing is exactly what the banner exists for.
@@ -391,6 +396,26 @@ export const itemQueueFor = (va) => {
  */
 export const runVaCompaction = async ({ agent, tick, deps }) => {
   let before = 0;
+  /*
+   * F-513 — ARM THE BRAKE WITH A CHECKED WRITE. `setCompactBackoff` returns
+   * `{ok:false, reason:"compact_backoff_write_failed"}` on a store fault, and all three
+   * arming sites used to discard it. A KVS throttle therefore left the brake UN-ARMED
+   * while the receipt read exactly as it does when the brake engaged — `gate:"compaction"`,
+   * `did-not-converge` — and the next tick, finding no row, bought the same dead
+   * provider's turn again: the 288-calls-a-day loop F-506 exists to stop, wearing F-506's
+   * own receipt.
+   *
+   * `readCompactBackoff` is fail-OPEN by design, so a partially throttled KVS fails this
+   * one `set` without failing the reads around it; nothing upstream stops the tick on our
+   * behalf, and health cannot show it either (the gate was already recording `false`, so
+   * a re-spend is indistinguishable from one long outage). The answer has to be carried
+   * OUT of here, on the row, and it is never swallowed.
+   */
+  const armBackoff = async (reason) => {
+    const r = await setCompactBackoff(deps.store, agent, reason, { now: deps.now() });
+    if (r && r.ok === true) return { backoffArmed: true };
+    return { backoffArmed: false, backoffError: (r && r.reason) || "compact_backoff_write_failed" };
+  };
   try {
     const read = await readMemory(deps.store, agent);
     if (!read.ok) return { ran: false, reason: `memory_read_failed:${read.reason}` };
@@ -439,9 +464,9 @@ export const runVaCompaction = async ({ agent, tick, deps }) => {
       // here too (F-506) — a summariser that drops pinned lines will drop them again next
       // tick. The tick stays ok: this is the engine protecting a human-typed rule, which
       // is the refusal working, not a failure to report.
-      await setCompactBackoff(deps.store, agent, "pinned_dropped", { now: deps.now() });
+      const armed = await armBackoff("pinned_dropped");
       return {
-        ran: false, kept: true, before,
+        ran: false, kept: true, before, ...armed,
         reason: `pinned_dropped:${survived.missing.length}`,
         missing: survived.missing.slice(0, 3),
       };
@@ -451,8 +476,8 @@ export const runVaCompaction = async ({ agent, tick, deps }) => {
     // A refused write (`memory-full`) leaves the previous row in storage — `writeMemory`
     // refuses BEFORE it sets anything — so the old memory is intact and nothing is lost.
     if (!wrote.ok) {
-      await setCompactBackoff(deps.store, agent, `write_refused:${wrote.reason}`, { now: deps.now() });
-      return { ran: false, gate: "compaction", reason: "did-not-converge", detail: `write_refused:${wrote.reason}`, before };
+      const armed = await armBackoff(`write_refused:${wrote.reason}`);
+      return { ran: false, gate: "compaction", reason: "did-not-converge", detail: `write_refused:${wrote.reason}`, before, ...armed };
     }
 
     /*
@@ -471,8 +496,8 @@ export const runVaCompaction = async ({ agent, tick, deps }) => {
     const converged = after <= VA_LIMITS.memoryCompactBytes;
     if (result.fellBack === true || !converged) {
       const reason = result.fellBack === true ? "summariser-failed" : "did-not-converge";
-      await setCompactBackoff(deps.store, agent, result.reason || reason, { now: deps.now() });
-      return { ran: false, gate: "compaction", reason, before, after, fellBack: result.fellBack === true, detail: result.reason || null };
+      const armed = await armBackoff(result.reason || reason);
+      return { ran: false, gate: "compaction", reason, before, after, fellBack: result.fellBack === true, detail: result.reason || null, ...armed };
     }
 
     // It converged: the provider is healthy and the window, if one was open, is closed —
@@ -593,7 +618,27 @@ export const runVaTick = async ({ job, tickId = null, deps: injected = {} } = {}
       if (compaction.gate) row.gate = compaction.gate;
       skipped.push(row);
     }
-    const compactionGated = compaction.gate === "compaction";
+    /*
+     * F-513 — THE BRAKE THAT DID NOT ARM IS ITS OWN ROW, AND IT FAILS THE TICK.
+     *
+     * `backoffArmed === false` means a turn was paid for AND the marker meant to stop the
+     * next one did not reach storage, so the following tick will buy the identical failure.
+     * It is reported separately from the compaction reason because the two are different
+     * facts an admin acts on differently: "the summariser is broken" is a provider problem
+     * that the engine has already stopped paying for, and "the brake did not engage" is
+     * the engine about to pay for it again every five minutes.
+     *
+     * It fails the tick on EVERY arm, including `pinned_dropped` — which is deliberately
+     * an ok tick when the brake DOES arm, because the refusal protecting a human-typed
+     * line is the engine working. With the brake un-armed that same refusal repeats on a
+     * paid turn every tick, which is the one thing this gate exists to surface.
+     */
+    const backoffUnarmed = compaction.backoffArmed === false;
+    if (backoffUnarmed) {
+      skipped.push({ key: "(memory)", reason: "compaction-backoff-write-failed", gate: "compaction", detail: compaction.backoffError || null });
+    }
+    const compactionGated = compaction.gate === "compaction" || backoffUnarmed;
+    const compactionGateReason = backoffUnarmed ? "compaction-backoff-write-failed" : `compaction:${compaction.reason}`;
 
     const maxItems = Math.max(0, Math.trunc(guard(va, "maxItemsPerTick")));
     // THE IDENTITY, ONCE PER TICK (F-451/F-452). The sweep fingerprints every candidate
@@ -666,7 +711,7 @@ export const runVaTick = async ({ job, tickId = null, deps: injected = {} } = {}
       // not read like a compaction that achieved nothing — and a compaction that achieved
       // nothing (F-506's `gate`) must not be absent either: the bytes are the evidence
       // that the spend bought no shrinkage, so they ride the receipt on BOTH arms.
-      compacted: (compaction.ran || compaction.gate === "compaction")
+      compacted: (compaction.ran || compactionGated)
         ? { before: compaction.before, after: compaction.after, fellBack: compaction.fellBack, reason: compaction.reason }
         : null,
     });
@@ -676,7 +721,7 @@ export const runVaTick = async ({ job, tickId = null, deps: injected = {} } = {}
     // is for. The SWEEP above still ran and its work still counts — only the verdict moves.
     await recordTickHealth(deps.store, agent, !compactionGated, {
       now: deps.now(), phase: "prepare",
-      ...(compactionGated ? { reason: `compaction:${compaction.reason}` } : {}),
+      ...(compactionGated ? { reason: compactionGateReason } : {}),
     });
     return { ok: !compactionGated, candidates, fannedOut, skipped, queue: queueKey, compacted: compaction };
   } catch (e) {

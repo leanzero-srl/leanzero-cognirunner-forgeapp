@@ -126,9 +126,14 @@ const cacheReadTokensOf = (usage) => {
  * module must not grow a provider feature (that is the backend surgeon's file).
  */
 const CACHE_READ_PROVIDERS = new Set(["anthropic", "managed"]);
-// NOTE: "managed" is not (today) a provider id that src/index.js dispatches on — the
-// set is deliberately permissive so the observation survives a rename; it gates a log
-// line only. See FINDINGS-LEDGER F-356.
+// F-546 — this NOTE used to say "managed" was not a provider id src/index.js dispatches
+// on. It was written for the pre-managed world (F-356) and was false from the commit that
+// landed the adapter: src/index.js dispatches on MANAGED_PROVIDER_ID to pin the
+// credential, to mark the cache breakpoints (`provider === "openrouter" || provider ===
+// MANAGED_PROVIDER_ID`) and to choose the pinned OpenRouter endpoint. So "managed" is
+// here because the engine REALLY bills cache reads, not as permissiveness against a
+// rename — and a zero-cache-read line on a managed coder turn is a real miss worth
+// reading, never noise from a dead entry. This still gates a log line only.
 
 /**
  * OBSERVATION LINE. When a provider that charges (and discounts) cache reads reports

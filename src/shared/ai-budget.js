@@ -40,10 +40,20 @@
  * a per-model bucket, this flag is the thing that says it is allowed to.
  */
 // `managed` is CogniRunner Cloud AI — LeanZero's own OpenRouter account, shared by every
-// tenant that selects it, so unlike a BYOK provider it MUST be paced: one busy site can
-// otherwise rate-limit every other site. 200,000 is a placeholder — set after probe (g)
-// reads the org's real OpenRouter tier. It is deliberately a CEILING we are confident is
-// not exceeded rather than a measured limit: pacing too hard only slows the queue.
+// tenant that selects it. 200,000 is a placeholder — set after probe (g) reads the org's
+// real OpenRouter tier — and deliberately a CEILING we are confident is not exceeded
+// rather than a measured limit: pacing too hard only slows the queue.
+//
+// F-543 — WHAT THIS NUMBER CANNOT DO, corrected. This comment used to claim the pacing
+// stops "one busy site rate-limiting every other site". It cannot: the minute-bucket
+// ledger it paces against lives in Forge KVS, which is scoped to ONE INSTALLATION, so
+// every tenant paces only ITSELF to AI_BUDGET_DEFAULT_TPM.managed against the single
+// shared account. The protection is per-site; the limit being protected is per-account,
+// and N sites each staying under their own budget sum to N times it. Lowering the number
+// does not fix that — 140k is safe for one tenant and unsafe for N. The lever is
+// VENDOR-SIDE (per-tenant OpenRouter keys, or an org rate limit the app cannot see), and
+// it is an owner decision before the managed engine goes GA. What this number DOES buy is
+// a single tenant's own queue not stampeding the account on its own.
 export const AI_PLATFORM_TPM = { atlassian: 50000, managed: 200000 };
 /** The cap above is per model, not per installation-wide token spend. */
 export const AI_PLATFORM_TPM_PER_MODEL = true;

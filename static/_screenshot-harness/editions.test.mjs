@@ -608,6 +608,72 @@ try {
       await close(env);
     }
 
+    /* ---- E4b3 F-603 - A FAILED KEY READ MUST NOT INHERIT THE LAST PROVIDER'S READINESS.
+       The regression this pins: F-591 moved the key form's gate off the `isManaged` provider
+       literal (recomputed every render, cannot go stale) and onto `noKeyNeeded` STATE written
+       only inside `if (keyResult.success)`. So the managed engine's `noKeyNeeded:true` survived
+       a failed load on the NEXT provider, and OpenAI rendered a green dot, "Managed by LeanZero
+       - ready, no key needed", and NO key input at all - a failure reported as readiness, with
+       no way to configure the provider the admin just picked short of a reload.
+       The journey loads the managed engine FIRST (so the flag is genuinely set), then switches
+       to OpenAI whose `getOpenAIKey` answers the real `{success:false}` refusal body. */
+    for (const theme of ["light", "dark"]) {
+      console.log(`E4b3 failed key read after a managed load (${theme})`);
+      const env = await openAdmin(browser, theme, false, false,
+        { __PROVIDER__: MANAGED_PROVIDER_ID, __KEYREAD_FAIL__: "openai" });
+      const { page } = env;
+      try {
+        await tab(page, "Settings");
+        await page.waitForTimeout(500);
+        // Precondition: the managed engine really is in the "ready, no key needed" state.
+        const before = await page.locator(".container").innerText();
+        ok(/ready, no key needed/i.test(before),
+          "E4b3 precondition - the managed engine loaded as ready with no key needed");
+        ok(await page.locator("input[type=password]").count() === 0,
+          "E4b3 precondition - the managed engine shows no key input");
+
+        // Now switch to OpenAI, whose key read fails.
+        await openProviderPicker(page);
+        await page.locator(".dropdown-item", { hasText: /^\s*OpenAI\s*$/ }).first().click();
+        await page.waitForTimeout(600);
+
+        const body = await page.locator(".container").innerText();
+        ok(!/Managed by LeanZero/i.test(body),
+          "E4b3 OpenAI is NOT described as managed by LeanZero after a failed read");
+        ok(!/ready, no key needed/i.test(body),
+          "E4b3 a failed read never claims 'ready, no key needed'");
+        ok(!/nothing to paste here/i.test(body),
+          "E4b3 the managed 'nothing to paste here' copy does not survive the switch");
+        // The whole point: the admin can still act.
+        ok(await page.locator("input[type=password]").count() >= 1,
+          "E4b3 the API key input IS rendered so the admin can configure OpenAI");
+        // And the card says plainly that the status is unread, rather than asserting "no key".
+        ok(/Couldn.t read key status/i.test(body),
+          "E4b3 the status names the failed read");
+        ok(!/No key configured/i.test(body),
+          "E4b3 an unread status is never reported as the measurement 'No key configured'");
+        const chip = page.locator("span", { hasText: /^STATUS UNREAD$/ }).first();
+        ok(await chip.count() === 1, "E4b3 a solid failure chip is rendered");
+        const chipBg = await chip.evaluate((el) => getComputedStyle(el).backgroundColor);
+        ok(/^rgb\(/.test(chipBg) && !/rgba/.test(chipBg),
+          `E4b3 the STATUS UNREAD chip is solid, not a faded tint (got ${chipBg})`);
+        ok((await chip.evaluate((el) => getComputedStyle(el).color)) === "rgb(255, 255, 255)",
+          "E4b3 the STATUS UNREAD chip carries white text");
+        const rail = await chip.evaluate((el) => {
+          const c = getComputedStyle(el);
+          return { l: c.borderLeftWidth, t: c.borderTopWidth };
+        });
+        ok(rail.l === rail.t, `E4b3 the failure chip has no left accent rail (l=${rail.l} t=${rail.t})`);
+        // The dot must be the error colour, not the success green it was a moment ago.
+        const dotBg = await page.locator(".status-dot").first().evaluate((el) => getComputedStyle(el).backgroundColor);
+        const okBg = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--success-color").trim());
+        ok(dotBg !== okBg, `E4b3 the status dot is not the ready green after a failed read (got ${dotBg})`);
+        await shot(page, `E4b3-key-read-failed-${theme}`);
+        ok(env.errors.length === 0, "E4b3 no page errors: " + env.errors.join(" | "));
+      } catch (e) { fail++; console.log("  x E4b3 threw: " + e.message.split("\n")[0]); }
+      await close(env);
+    }
+
     // ---- E4c Coder + no engine on the deployment: disabled + EXACT copy ----
     for (const reasonFlag of ["__MANAGED_MISSING__", "__MANAGED_DISABLED__"]) {
       const reason = reasonFlag === "__MANAGED_MISSING__" ? "managed-key-missing" : "managed-disabled";

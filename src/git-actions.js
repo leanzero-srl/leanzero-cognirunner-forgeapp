@@ -50,9 +50,11 @@ const MAX_MESSAGE_CHARS = 2000;
 const MAX_BRANCH_CHARS = 200;
 const MAX_PATH_CHARS = 255;
 const MAX_DEPLOY_INPUTS = 20;
+/** One repository per run. A create is the least reversible write in the namespace. */
+export const MAX_CREATE_REPO_PER_RUN = 1;
 
 /** Our own refusal codes, distinct from the provider's GIT_ERROR_CODES. */
-export const GIT_ACTION_CODES = ["not_configured", "not_allowed", "invalid_args", "too_large", "unknown_action"];
+export const GIT_ACTION_CODES = ["not_configured", "not_allowed", "invalid_args", "too_large", "unknown_action", "unknown"];
 
 class ActionRefusal extends Error {
   constructor(code, message) { super(message); this.code = code; }
@@ -116,11 +118,25 @@ const fenceReady = (value, depth = 0) => {
   return value;
 };
 
+/**
+ * Cap the serialised result at MAX_RESULT_BYTES measured in UTF-8 BYTES — the model's
+ * transport and the 12 KB tool-result budget are byte-counted, and a CJK or emoji
+ * payload is up to 4× its `.length` (F-280). The truncated form KEEPS `success` and
+ * `simulated`: a big result must never read as a different outcome than the small one.
+ */
 export const capResult = (result) => {
   const safe = fenceReady(result);
   const raw = JSON.stringify(safe === undefined ? {} : safe);
-  if (raw.length <= MAX_RESULT_BYTES) return safe;
-  return { truncated: true, note: `Result was ${raw.length} characters; truncated to ${MAX_RESULT_BYTES}.`, data: raw.slice(0, MAX_RESULT_BYTES - 200) };
+  if (byteLen(raw) <= MAX_RESULT_BYTES) return safe;
+  const keep = safe && typeof safe === "object" && !Array.isArray(safe) ? safe : {};
+  const head = { ...(keep.success !== undefined ? { success: keep.success } : {}), ...(keep.simulated !== undefined ? { simulated: keep.simulated } : {}), ...(keep.action !== undefined ? { action: keep.action } : {}) };
+  const room = Math.max(0, MAX_RESULT_BYTES - byteLen(JSON.stringify({ ...head, truncated: true, note: "", data: "" })) - 120);
+  return {
+    ...head,
+    truncated: true,
+    note: `Result was ${byteLen(raw)} bytes; truncated to ${MAX_RESULT_BYTES}.`,
+    data: Buffer.from(raw, "utf8").subarray(0, room).toString("utf8").replace(/\uFFFD$/, ""),
+  };
 };
 
 /**
@@ -133,6 +149,9 @@ export const createGitActionExecutor = ({ getConnection, getProviderToken, simul
   if (typeof getConnection !== "function" || typeof getProviderToken !== "function") {
     throw new Error("createGitActionExecutor: getConnection and getProviderToken are required");
   }
+
+  // Per-EXECUTOR (i.e. per-run) budget. The executor is built once per agent run.
+  let createdRepos = 0;
 
   const resolve = async (args) => {
     const id = args && args.connectionId ? str(args.connectionId) : connectionId;
@@ -177,9 +196,17 @@ export const createGitActionExecutor = ({ getConnection, getProviderToken, simul
       plan: (conn, args) => {
         const name = str(args.name).trim();
         if (!name || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/.test(name)) refuse("invalid_args", "name must be a simple repository name (letters, digits, . _ -)");
-        // No allow-list check: the repository does not exist yet. `confirm` (admin-saved
-        // rules only) is what bounds this action, not `conn.repos`.
-        const payload = { name, org: args.org ? str(args.org).trim().slice(0, 100) : undefined, private: args.private !== false, description: clampText(args.description, 1000, "description") };
+        // `conn.repos` cannot bound this one — the repository does not exist yet — so the
+        // bound is the CONNECTION'S OWN account/workspace plus a per-run budget of one
+        // (F-278). Without both, "create a repo" is an unbounded write to any org the
+        // token can reach, and a looping model can make hundreds.
+        const owner = str(args.org).trim();
+        const connOwner = str(conn.owner || conn.workspace || "").trim();
+        if (owner && connOwner && owner.toLowerCase() !== connOwner.toLowerCase()) refuse("not_allowed", `This connection may only create repositories under "${connOwner}".`);
+        if (owner && !connOwner) refuse("not_allowed", "This connection does not declare an owner, so a repository may only be created in its own account (omit org).");
+        if (createdRepos >= MAX_CREATE_REPO_PER_RUN) refuse("not_allowed", `Only ${MAX_CREATE_REPO_PER_RUN} repository may be created per run.`);
+        createdRepos++;
+        const payload = { name, org: owner || (connOwner || undefined), private: args.private !== false, description: clampText(args.description, 1000, "description") };
         return { summary: payload, call: (p) => p.createRepo(payload) };
       },
     },
@@ -316,7 +343,10 @@ export const createGitActionExecutor = ({ getConnection, getProviderToken, simul
           log(`git ${id} refused (${e.code}): ${e.message}`);
           return { success: false, code: e.code, error: defangFence(str(e.message).slice(0, 500)) };
         }
-        const code = e && GIT_ERROR_CODES.includes(e.code) ? e.code : "network";
+        // Only a code the PROVIDER actually produced is reported as a provider code.
+        // Anything else is OUR bug or an unexpected runtime fault and says so — calling
+        // it "network" told operators to check connectivity for a TypeError (F-279).
+        const code = e && GIT_ERROR_CODES.includes(e.code) ? e.code : "unknown";
         const out = { success: false, code, error: defangFence(str(e && e.message).slice(0, 500)) };
         if (code === "auth_dead") out.banner = "auth_dead";
         log(`git ${id} failed (${code})`);

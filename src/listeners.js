@@ -38,7 +38,7 @@ import {
   isKnownEvent, getEvent, eventLabel, extractEventContext, changedFieldsOf, commentTextOf,
   trimEventPayload, adfToPlainText,
 } from "./shared/jira-events.js";
-import { normalizeAllowedActions, DEFAULT_AGENT_ACTIONS, DEFAULT_AGENT_ROUNDS, MAX_AGENT_ROUNDS } from "./shared/agent-actions.js";
+import { assertAllowedActions, DEFAULT_AGENT_ACTIONS, DEFAULT_AGENT_ROUNDS, MAX_AGENT_ROUNDS } from "./shared/agent-actions.js";
 import { redosRisk } from "./shared/regex-safety.js";
 import { agentResultFields } from "./shared/agent-result.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
@@ -96,7 +96,7 @@ const safeKeyPart = (s) => String(s).replace(/[^a-zA-Z0-9:._#-]/g, "-").slice(0,
  * Validate + clamp a listener config. Throws Error(message) on hard errors.
  * `existing` (previous full record) preserves identity/stats on update.
  */
-export const normalizeListener = (input = {}, { existing = null, accountId = null } = {}) => {
+export const normalizeListener = (input = {}, { existing = null, accountId = null, gate = undefined } = {}) => {
   const src = input && typeof input === "object" ? input : {};
   const id = existing ? existing.id : (typeof src.id === "string" && /^[A-Za-z0-9_.-]{3,80}$/.test(src.id) ? src.id : newListenerId());
   const name = clampStr(src.name, 120).trim();
@@ -121,7 +121,11 @@ export const normalizeListener = (input = {}, { existing = null, accountId = nul
   const a = src.agent && typeof src.agent === "object" ? src.agent : {};
   const agent = {
     instructions: clampStr(a.instructions, 6000),
-    allowedActions: normalizeAllowedActions(a.allowedActions == null ? DEFAULT_AGENT_ACTIONS : a.allowedActions),
+    // SAVE TIME FAILS CLOSED (F-277): an action this context may not use is REFUSED,
+    // never quietly stripped — the admin UI offers the checkbox and the REST API
+    // advertises the id, so saving fewer actions than were ticked would leave the
+    // operator believing a gate they cannot see. `gate` omitted = restrictive default.
+    allowedActions: assertAllowedActions(a.allowedActions == null ? DEFAULT_AGENT_ACTIONS : a.allowedActions, gate),
     maxRounds: clampInt(a.maxRounds, 1, MAX_AGENT_ROUNDS, DEFAULT_AGENT_ROUNDS),
   };
   if (mode === "agent" && !agent.instructions.trim()) throw new Error("agent.instructions is required in agent mode");
@@ -206,9 +210,9 @@ export const getListener = async (id) => {
   return full;
 };
 
-export const saveListener = async (input, { accountId = null } = {}) => {
+export const saveListener = async (input, { accountId = null, gate = undefined } = {}) => {
   const existing = input && input.id ? await getListener(input.id) : null;
-  const full = normalizeListener(input, { existing, accountId });
+  const full = normalizeListener(input, { existing, accountId, gate });
   delete full.stats; // stats live in LISTENER_STATS_KEY — never inside the record
   const rows = await readListenerIndex();
   const at = rows.findIndex((r) => r.id === full.id);

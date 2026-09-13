@@ -206,11 +206,19 @@ const handleCollection = async ({ req, method, id, action, body, who, kind }) =>
     const r = await remove(id);
     return json(r.removed ? 200 : 404, r.removed ? { deleted: id } : { error: `${noun} not found` });
   }
+  // ONE validation-error body. A refusal that carries a machine-readable reason
+  // (today: agent.allowedActions, `reason:"action-not-allowed"` + `refused[]`) keeps
+  // it here; everything else stays the bare `{ error }` the admin UI already renders.
+  const errBody = (e) => ({
+    error: e && e.message ? String(e.message).slice(0, 500) : "invalid",
+    ...(e && e.reason ? { reason: e.reason } : {}),
+    ...(e && Array.isArray(e.refused) ? { refused: e.refused } : {}),
+  });
   if (method === "PUT") {
     if (!id) return json(400, { error: "id required" });
     const existing = await get(id);
     if (!existing) return json(404, { error: `${noun} not found` });
-    try { const saved = await save({ ...merge(existing, body || {}), id }, { accountId: actor }); return json(200, { [noun]: saved }); } catch (e) { return json(400, { error: e.message }); }
+    try { const saved = await save({ ...merge(existing, body || {}), id }, { accountId: actor }); return json(200, { [noun]: saved }); } catch (e) { return json(400, errBody(e)); }
   }
   if (method === "POST" && action) {
     if (!id) return json(400, { error: "id required" });
@@ -235,11 +243,11 @@ const handleCollection = async ({ req, method, id, action, body, who, kind }) =>
     if (!items.length || items.length > 100) return json(400, { error: "provide 1-100 items" });
     const saved = []; const errors = [];
     for (let i = 0; i < items.length; i++) {
-      try { saved.push(await save(items[i], { accountId: actor })); } catch (e) { errors.push({ index: i, name: items[i] && items[i].name, error: e.message }); }
+      try { saved.push(await save(items[i], { accountId: actor })); } catch (e) { errors.push({ index: i, name: items[i] && items[i].name, ...errBody(e) }); }
     }
     const status = saved.length ? (errors.length ? 207 : (items.length === 1 ? 201 : 200)) : 400;
     // Single-item ergonomics: `{ listener }` on success, `{ error }` on failure (the UI's shape).
-    if (items.length === 1) return json(status, saved.length === 1 ? { [noun]: saved[0] } : { error: errors[0] ? errors[0].error : "invalid" });
+    if (items.length === 1) return json(status, saved.length === 1 ? { [noun]: saved[0] } : (errors[0] ? { error: errors[0].error, ...(errors[0].reason ? { reason: errors[0].reason } : {}), ...(errors[0].refused ? { refused: errors[0].refused } : {}) } : { error: "invalid" }));
     return json(status, { [kind]: saved, errors });
   }
   return json(405, { error: `method ${method} not allowed` });

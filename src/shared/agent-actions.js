@@ -253,7 +253,15 @@ const capabilityEnabled = (capability, needed) => {
   if (capability === true) return { ok: true };
   if (capability == null || capability === false) return { ok: false, reason: `capability-off:${needed}` };
   if (typeof capability === "object") {
-    const row = Object.prototype.hasOwnProperty.call(capability, needed) ? capability[needed] : capability;
+    // Two accepted shapes, and the difference decides the FAIL-CLOSED direction:
+    //   · a single verdict — agentCapability()'s own `{enabled, reason}` — applies to
+    //     whatever capability is asked for;
+    //   · a MAP of capability id → verdict. A key ABSENT from a map is not
+    //     "unspecified, therefore fine": it is unanswered, and unanswered is REFUSED.
+    //     (F-281: the permissive reading let `{ confluence: true }` enable git.)
+    const isVerdict = Object.prototype.hasOwnProperty.call(capability, "enabled");
+    if (!isVerdict && !Object.prototype.hasOwnProperty.call(capability, needed)) return { ok: false, reason: `capability-off:${needed}` };
+    const row = isVerdict ? capability : capability[needed];
     if (row === true) return { ok: true };
     if (row && typeof row === "object" && row.enabled === true) return { ok: true };
     const reason = row && typeof row === "object" && row.reason ? String(row.reason) : `capability-off:${needed}`;
@@ -290,9 +298,37 @@ const gateActions = (ids, opts) => {
 export const normalizeAllowedActions = (ids, opts) =>
   (opts === undefined ? gateActions(ids, undefined).allowed : gateActions(ids, opts));
 
-/** OpenAI-shape tool definitions for the allowed ids (+ finish). Same gate, same opts. */
+/**
+ * SAVE TIME fails CLOSED and LOUDLY (F-277). A rule saved with an action the context
+ * does not allow is REFUSED with the reason — never saved with fewer actions than the
+ * admin ticked, because a silent strip is how a user comes to believe a gate exists.
+ * Throws an Error carrying `reason:"action-not-allowed"` and `refused:[{id,reason}]`
+ * so the resolver and the REST layer render the same sentence.
+ * Unknown and duplicate ids are still dropped quietly — that is hygiene, not a gate.
+ */
+export const assertAllowedActions = (ids, opts) => {
+  const { allowed, refused } = gateActions(ids, opts || {});
+  if (refused.length) {
+    const e = new Error(`agent.allowedActions contains actions this rule may not use: ${refused.map((r) => `${r.id} (${r.reason})`).join(", ")}`);
+    e.reason = "action-not-allowed";
+    e.refused = refused;
+    throw e;
+  }
+  return allowed;
+};
+
+/**
+ * OpenAI-shape tool definitions for the allowed ids (+ finish). Same gate, same opts.
+ *
+ * `{ pregated: true }` means the caller ALREADY ran the gate and `ids` IS its verdict:
+ * filter to known, non-control ids and stop. Without it a caller that gated with a
+ * context and then called this arity-1 would silently re-gate against the restrictive
+ * default and drop everything the context allowed (F-275).
+ */
 export const toolDefinitionsFor = (ids, opts) => {
-  const chosen = opts === undefined ? normalizeAllowedActions(ids) : gateActions(ids, opts).allowed;
+  const chosen = opts && opts.pregated === true
+    ? (Array.isArray(ids) ? ids : []).map((id) => BY_ID.get(String(id))).filter((a) => a && a.kind !== "control").map((a) => a.id)
+    : (opts === undefined ? normalizeAllowedActions(ids) : gateActions(ids, opts).allowed);
   const rows = AGENT_ACTIONS.filter((a) => a.always || chosen.includes(a.id));
   return rows.map((a) => ({ type: "function", function: { name: a.id, description: a.description, parameters: a.parameters } }));
 };

@@ -135,7 +135,9 @@ export const runAgentTask = async ({
   // to believe an action ran.
   const gated = gate === undefined ? { allowed: normalizeAllowedActions(allowedActions), refused: [] } : normalizeAllowedActions(allowedActions, gate);
   const allowed = gated.allowed;
-  const tools = toolDefinitionsFor(allowed);
+  // `allowed` is ALREADY the gate's verdict — re-gating it here (arity-1, restrictive)
+  // would drop every namespaced action the context had just allowed. F-275.
+  const tools = toolDefinitionsFor(allowed, { pregated: true });
   const rounds = clampInt(maxRounds, 1, MAX_AGENT_ROUNDS, DEFAULT_AGENT_ROUNDS);
   log(`Agent start: model=${model}, actions=[${allowed.join(", ")}], maxRounds=${rounds}${simulated ? ", SIMULATION (writes recorded, not executed)" : ""}`);
   if (gated.refused.length) {

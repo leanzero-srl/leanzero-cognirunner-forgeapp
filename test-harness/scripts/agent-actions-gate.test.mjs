@@ -5,8 +5,10 @@
 import assert from "node:assert/strict";
 import {
   AGENT_ACTIONS, AGENT_ACTION_IDS, AGENT_ACTION_NAMESPACES, AGENT_ACTION_NAMESPACE_IDS,
-  agentActionNamespace, normalizeAllowedActions, toolDefinitionsFor, hasWriteActions, getAgentAction,
+  agentActionNamespace, normalizeAllowedActions, assertAllowedActions, toolDefinitionsFor, hasWriteActions, getAgentAction,
 } from "../../src/shared/agent-actions.js";
+const { normalizeListener } = await import("../../src/listeners.js");
+const { normalizeJob } = await import("../../src/scheduled-jobs.js");
 
 let n = 0;
 const ok = (cond, msg) => { assert.ok(cond, msg); n++; };
@@ -75,7 +77,14 @@ eq(off.allowed, [], "BLOCK: capability off drops the git action");
 eq(off.refused, [{ id: "commit_files", reason: "needs-coder-edition" }], "the refusal carries the capability's own reason");
 eq(normalizeAllowedActions(["commit_files"], { savedByRole: "admin" }).refused, [{ id: "commit_files", reason: "capability-off:git" }], "BLOCK: no capability at all");
 eq(normalizeAllowedActions(["commit_files"], { capability: true, savedByRole: "admin" }).allowed, ["commit_files"], "ALLOW: capability may be a plain true");
-eq(normalizeAllowedActions(["commit_files"], { capability: { git: true }, savedByRole: "admin" }).allowed, ["commit_files"], "ALLOW: capability may be a per-capability map");
+eq(normalizeAllowedActions(["commit_files"], { capability: { git: true }, savedByRole: "admin" }).allowed, ["commit_files"], "ALLOW: a per-capability MAP that names git");
+// F-281 — a map that does NOT name the capability is UNANSWERED, and unanswered is refused.
+eq(normalizeAllowedActions(["commit_files"], { capability: { confluence: true }, savedByRole: "admin" }).refused,
+  [{ id: "commit_files", reason: "capability-off:git" }], "BLOCK: a map without the git key fails CLOSED");
+eq(normalizeAllowedActions(["commit_files"], { capability: { git: false }, savedByRole: "admin" }).refused,
+  [{ id: "commit_files", reason: "capability-off:git" }], "BLOCK: a map that says git:false");
+eq(normalizeAllowedActions(["commit_files"], { capability: { enabled: true, reason: "byok" }, savedByRole: "admin" }).allowed,
+  ["commit_files"], "ALLOW: agentCapability()'s own single verdict still applies to any capability");
 eq(normalizeAllowedActions(["get_issue"], { capability: false }).allowed, ["get_issue"], "a Jira action needs no capability");
 
 /* ---------- product ---------- */
@@ -104,5 +113,37 @@ eq(normalizeAllowedActions(["approve_pull_request"], { capability: false, trigge
 const tools = toolDefinitionsFor(["commit_files", "approve_pull_request"], { ...CAP_ON, triggerSource: "external" });
 eq(tools.map((t) => t.function.name), ["finish", "commit_files"], "a dangerous tool never reaches the model on an external run");
 ok(tools.every((t) => t.function.parameters && t.function.parameters.type === "object"), "every tool definition carries its schema");
+
+/* ---------- F-275: a pregated list is NOT re-gated ---------- */
+const verdict = normalizeAllowedActions(["commit_files", "get_issue"], CAP_ON).allowed;
+eq(verdict, ["commit_files", "get_issue"], "the gate allowed both");
+eq(toolDefinitionsFor(verdict, { pregated: true }).map((t) => t.function.name), ["get_issue", "finish", "commit_files"],
+  "pregated tool definitions keep the gate's verdict verbatim");
+eq(toolDefinitionsFor(verdict).map((t) => t.function.name), ["get_issue", "finish"],
+  "…and WITHOUT pregated the arity-1 default would have dropped the git tool — this is the F-275 trap");
+eq(toolDefinitionsFor(["zzz", "finish"], { pregated: true }).map((t) => t.function.name), ["finish"],
+  "pregated still drops unknown and control ids");
+
+/* ---------- F-277: save time refuses LOUDLY ---------- */
+eq(assertAllowedActions(["get_issue", "zzz", "get_issue"]), ["get_issue"], "unknown and duplicate ids are still dropped quietly");
+assert.throws(() => assertAllowedActions(["commit_files"]), (e) => {
+  ok(e.reason === "action-not-allowed", "the save-time refusal carries reason:action-not-allowed");
+  eq(e.refused, [{ id: "commit_files", reason: "capability-off:git" }], "…and the refused list");
+  ok(/commit_files/.test(e.message), "…and names the action in the message");
+  return true;
+}, "a capability-off action is REFUSED at save time, not stripped");
+n++;
+for (const [what, normalize] of [["listener", normalizeListener], ["job", normalizeJob]]) {
+  const base = what === "listener"
+    ? { name: "n", events: ["avi:jira:created:issue"], mode: "agent" }
+    : { name: "n", schedule: { cron: "*/5 * * * *" }, mode: "agent" };
+  const good = normalize({ ...base, agent: { instructions: "do it", allowedActions: ["get_issue", "add_comment"] } });
+  eq(good.agent.allowedActions, ["get_issue", "add_comment"], `a ${what} saves the Jira actions it was given`);
+  assert.throws(() => normalize({ ...base, agent: { instructions: "do it", allowedActions: ["get_issue", "commit_files"] } }),
+    (e) => e.reason === "action-not-allowed" && e.refused.length === 1, `saving a ${what} with a gated action is REFUSED, never silently reduced`);
+  n += 2;
+  const gated = normalize({ ...base, agent: { instructions: "do it", allowedActions: ["commit_files"] } }, { gate: { capability: true, savedByRole: "admin" } });
+  eq(gated.agent.allowedActions, ["commit_files"], `a ${what} saved with the right context keeps the git action`);
+}
 
 console.log(`agent-actions gate: ${n} assertions passed`);

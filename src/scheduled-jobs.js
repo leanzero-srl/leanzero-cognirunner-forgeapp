@@ -39,6 +39,7 @@ import api, { route } from "@forge/api";
 import { validateCron, normalizeTimeZone, dueInWindow, nextRuns, describeCron, fireIdentity } from "./shared/cron.js";
 import { assertAllowedActions, buildAgentGateContext, normalizeAgentKnowledge, DEFAULT_AGENT_ACTIONS, DEFAULT_AGENT_ROUNDS, MAX_AGENT_ROUNDS } from "./shared/agent-actions.js";
 import { normalizeStep, normalizeSavedByRole, assertKnownSkillIds, buildAgentKnowledge, takeAgentRunSlot } from "./listeners.js";
+import { createRunSearchBudget } from "./web-search-tool.js";
 import { JOB_DEFAULT_MAX_WRITES_PER_RUN, JOB_MAX_WRITES_PER_RUN, JOB_MIN_WRITES_PER_RUN, brakeRefusalText } from "./shared/registry-limits.js";
 import { agentResultFields, SCOPED_AGENT_SUMMARY_BUDGET_BYTES, boundScopedJobLog } from "./shared/agent-result.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
@@ -365,6 +366,10 @@ export const runJob = async ({ job, scheduledFor = null, missed = 0, manual = fa
   // session counts its own (`session.changes`, the one write ledger); this carries the
   // allowance forward, so the brake is a RUN budget and not a per-issue one.
   let writesDone = 0;
+  // THE RUN'S WEB-SEARCH CEILING (F-407), created ONCE and shared by every scope issue —
+  // the same reason `writesDone` is carried across issues rather than reset per issue. A
+  // per-issue counter is not a run budget, and a 100-issue sweep proved it.
+  const webRunBudget = createRunSearchBudget();
   const runOne = async (issue, perDeadline) => {
     const issueKey = issue ? issue.key : null;
     const extraContext = { ...baseCtx, issueKey, projectKey: issue && issue.fields && issue.fields.project ? issue.fields.project.key : null, scopeIssue: issue ? { key: issue.key, summary: issue.fields && issue.fields.summary, status: issue.fields && issue.fields.status && issue.fields.status.name } : null };
@@ -385,7 +390,7 @@ export const runJob = async ({ job, scheduledFor = null, missed = 0, manual = fa
       // project A's learned facts while acting on project B's issue.
       const knowledge = await buildAgentKnowledge(job.agent, { projectKey: extraContext.projectKey, audience: "agentRun" });
       // The allowance the agent gets is what is LEFT of the run's budget.
-      const r = await runAgentTask({ instructions: job.agent.instructions, allowedActions: job.agent.allowedActions, maxRounds: job.agent.maxRounds, issueKey, config, contextTitle: "JOB CONTEXT", contextText: summarizeJobForAi(job, scheduledFor, issue), deadline: perDeadline, cancelToken, extraContext, gate: agentGate, executors, knowledge, maxWrites: Math.max(0, maxWrites - writesDone) });
+      const r = await runAgentTask({ instructions: job.agent.instructions, allowedActions: job.agent.allowedActions, maxRounds: job.agent.maxRounds, issueKey, config, contextTitle: "JOB CONTEXT", contextText: summarizeJobForAi(job, scheduledFor, issue), deadline: perDeadline, cancelToken, extraContext, gate: agentGate, executors, knowledge, maxWrites: Math.max(0, maxWrites - writesDone), webRunBudget });
       if ((r.changes || []).length && writesDone + r.changes.length >= maxWrites) brake = brake || { kind: "job-writes", max: maxWrites, reason: brakeRefusalText("job-writes", maxWrites) };
       return { issueKey, ...agentResultFields(r, { summaryMaxBytes: job.scope ? Math.floor(SCOPED_AGENT_SUMMARY_BUDGET_BYTES / MAX_SCOPE_ISSUES) : null }), success: r.success, reason: r.success ? `${r.outcome}: ${r.summary || ""}` : (r.error || "agent failed"), changes: r.changes || [], logs: r.logs || [], tokens: r.tokens || 0, aiTimeMs: r.aiTimeMs || 0 };
     }

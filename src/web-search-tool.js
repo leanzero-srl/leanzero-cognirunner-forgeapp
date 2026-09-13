@@ -44,14 +44,18 @@
  *  4. THE READING RULE travels WITH the result (RESULT_RULE), not only in the system
  *     prompt, because by round four the system prompt is far away and the tool message
  *     is right there.
- *  5. BUDGET. SEARCHES_PER_TURN per run, counted by the counter the caller creates; past
- *     it the tool refuses with a NAMED reason instead of silently returning nothing.
+ *  5. BUDGETS, three of them, each refusing with a NAMED reason instead of silently
+ *     returning nothing: SEARCHES_PER_TURN per agent turn, WEB_SEARCH_MAX_PER_RUN per JOB
+ *     OR LISTENER RUN (F-407 — a scoped job runs one turn per issue, so the turn budget
+ *     alone let a 100-issue sweep search 300 times), and a tenant-wide 5-minute brake that
+ *     counts every search the installation makes.
  *  6. The MCP toggle is the ONE gate (see AGENT_ACTION_NAMESPACES.web). It is a LIVE
  *     tenant setting, so it is checked HERE, at run time — a rule saved while web search
  *     was on stays saved when an admin turns it off; its web_search calls just refuse.
  */
 
 import { defangFence } from "./memories.js";
+import { WEB_SEARCH_MAX_PER_RUN, brakeRefusalText } from "./shared/registry-limits.js";
 
 const idx = () => import("./index.js");
 
@@ -330,18 +334,38 @@ export const cacheFieldsOf = (envelope) => {
 export const createSearchBudget = (max = SEARCHES_PER_TURN) => ({ used: 0, max: Math.max(0, Number(max) || 0) });
 
 /**
+ * THE PER-RUN CEILING (F-407). The counter above is per `runAgentTask` call — and a scoped
+ * job calls that once PER ISSUE, so a 100-issue sweep could make 300 searches while every
+ * individual turn stayed politely inside its three. A RUN is what an operator schedules
+ * and reads a log row about, so a run gets one of these, created by the job or the listener
+ * and carried into every turn of that run.
+ *
+ * Deliberately the same shape as the turn budget: the executor checks both and names which
+ * one it hit, because "this turn has searched enough" and "this run has searched enough"
+ * are different things to tell an operator.
+ */
+export const createRunSearchBudget = (max = WEB_SEARCH_MAX_PER_RUN) => ({ used: 0, max: Math.max(0, Number(max) || 0) });
+
+/**
  * Build the `web` namespace executor for ONE agent run.
  *
  * `budget` is the shared counter above. `log` is the run's execution log — every refusal
  * is logged, because a tool that quietly returns nothing is indistinguishable from a
  * broken one, and an operator who cannot see the refusal cannot fix the query.
  *
- * `deps.projectKeys` (F-395) is the ONE seam to the instance: an async `() => { ok, keys }`
- * naming the tenant's real project keys. Omitted, it is the memoised reader in
- * src/index.js. It is a seam rather than a direct import so that the leak rule — the part
- * of this module that must never regress — stays assertable without the Forge runtime.
+ * `runBudget` (F-407) is the RUN's ceiling, shared by every turn of one job or listener
+ * run; omitted, only the per-turn budget applies (a caller that has no run to speak of).
+ *
+ * `deps` are the seams to the instance — each an async function, each defaulting to the
+ * real thing in src/index.js / src/listeners.js. They are seams rather than direct imports
+ * so that the parts of this module that must never regress — the leak rule and the three
+ * budgets — stay assertable with no Forge runtime at all:
+ *   projectKeys     () => { ok, keys }  the tenant's real project keys       (F-395)
+ *   mcpEnabled      () => boolean       the live web-search MCP toggle
+ *   webSearchBrake  () => { braked, max, reason }  the tenant 5-minute brake (F-407)
+ *   callBridgeTool  (mcp, tool, args) => string    the hosted MCP call
  */
-export const createWebSearchExecutor = ({ budget = createSearchBudget(), log = () => {}, deadline = null, deps = {} } = {}) => ({
+export const createWebSearchExecutor = ({ budget = createSearchBudget(), runBudget = null, log = () => {}, deadline = null, deps = {} } = {}) => ({
   namespace: "web",
   budget,
   execute: async (name, args) => {
@@ -372,18 +396,47 @@ export const createWebSearchExecutor = ({ budget = createSearchBudget(), log = (
     }
 
     if (budget.used >= budget.max) {
-      const error = `Refused: this run's web-search budget is spent (${budget.max} search${budget.max === 1 ? "" : "es"} per run). Work with what the previous searches returned, or say plainly that you could not check.`;
-      log(`web_search REFUSED — budget spent (${budget.used}/${budget.max}).`);
+      const error = `Refused: this turn's web-search budget is spent (${budget.max} search${budget.max === 1 ? "" : "es"} per turn). Work with what the previous searches returned, or say plainly that you could not check.`;
+      log(`web_search REFUSED — turn budget spent (${budget.used}/${budget.max}).`);
       return { success: false, code: "budget_spent", error, rule: RESULT_RULE };
     }
 
-    const m = await idx();
-    if (typeof m.mcpEnabled !== "function" || !(await m.mcpEnabled("webSearch"))) {
+    // (2b) THE RUN CEILING (F-407). Named separately from the turn budget: an operator
+    // reading "this run has searched ten times" knows to narrow the scope, and one reading
+    // "this turn has searched three times" knows the agent is looping.
+    if (runBudget && runBudget.used >= runBudget.max) {
+      const error = `Refused: ${brakeRefusalText("web-searches-run", runBudget.max)}`;
+      log(`web_search REFUSED — the RUN's search ceiling is spent (${runBudget.used}/${runBudget.max}).`);
+      return { success: false, code: "run_budget_spent", brake: { kind: "web-searches-run", max: runBudget.max, reason: error }, error, rule: RESULT_RULE };
+    }
+
+    const enabledRead = typeof deps.mcpEnabled === "function"
+      ? deps.mcpEnabled
+      : async () => { const m0 = await idx(); return typeof m0.mcpEnabled === "function" && (await m0.mcpEnabled("webSearch")); };
+    if (!(await enabledRead())) {
       log("web_search REFUSED — the web-search MCP is switched off for this instance.");
       return { success: false, code: "mcp_off", error: "Refused: web search is not enabled on this instance (an admin turns it on in CogniRunner Settings → MCP). Say plainly that you could not check.", rule: RESULT_RULE };
     }
 
+    // (2c) THE TENANT-WIDE SEARCH BRAKE (F-407), taken LAST — after the leak check, both
+    // budgets and the MCP toggle — so that a refused query never spends the installation's
+    // allowance. Same 5-minute bucket mechanism as the agent-run brake, from its one home
+    // in src/listeners.js; a seam, like the project-key read, so this module stays testable
+    // with no Forge runtime. A brake that cannot be read does NOT refuse: the two budgets
+    // above are already hard ceilings, and a KVS hiccup must not silence every agent.
+    try {
+      const take = typeof deps.webSearchBrake === "function"
+        ? deps.webSearchBrake
+        : async () => (await import("./listeners.js")).takeWebSearchSlot();
+      const slot = await take();
+      if (slot && slot.braked) {
+        log(`web_search REFUSED — the installation's 5-minute search brake is tripped (${slot.max}).`);
+        return { success: false, code: "brake:web-searches", brake: { kind: "web-searches", max: slot.max, reason: slot.reason }, error: `Refused: ${slot.reason}`, rule: RESULT_RULE };
+      }
+    } catch { /* the brake could not be read — see above */ }
+
     budget.used++;
+    if (runBudget) runBudget.used++;
     const params = { query };
     const tbs = RECENCY[String((args && args.recency) || "any")];
     if (tbs) params.tbs = tbs;
@@ -393,8 +446,11 @@ export const createWebSearchExecutor = ({ budget = createSearchBudget(), log = (
     let text;
     try {
       const TIMED_OUT = Symbol("web-search-timeout");
+      const call = typeof deps.callBridgeTool === "function"
+        ? deps.callBridgeTool
+        : async (...a) => (await idx()).callBridgeTool(...a);
       const raced = await Promise.race([
-        m.callBridgeTool("webSearch", "get-web-search-summaries", params),
+        call("webSearch", "get-web-search-summaries", params),
         new Promise((resolve) => setTimeout(() => resolve(TIMED_OUT), waitMs)),
       ]);
       if (raced === TIMED_OUT) {
@@ -421,7 +477,7 @@ export const createWebSearchExecutor = ({ budget = createSearchBudget(), log = (
     const { rows, raw, envelope } = parseSearchPayload(text);
     const results = reduceResults(rows);
     const cache = cacheFieldsOf(envelope);
-    log(`web_search "${query.slice(0, 120)}" → ${results.length} result(s)${cache.cached ? " (cached)" : ""} [${budget.used}/${budget.max}]`);
+    log(`web_search "${query.slice(0, 120)}" → ${results.length} result(s)${cache.cached ? " (cached)" : ""} [turn ${budget.used}/${budget.max}${runBudget ? `, run ${runBudget.used}/${runBudget.max}` : ""}]`);
 
     if (!results.length) {
       return {
@@ -443,7 +499,7 @@ export const createWebSearchExecutor = ({ budget = createSearchBudget(), log = (
       ...cache,
       rule: RESULT_RULE,
       results: `<<<WEB_RESULTS\n${fenced}\nWEB_RESULTS>>>`,
-      searchesLeft: Math.max(0, budget.max - budget.used),
+      searchesLeft: Math.max(0, Math.min(budget.max - budget.used, runBudget ? runBudget.max - runBudget.used : Infinity)),
     };
   },
 });

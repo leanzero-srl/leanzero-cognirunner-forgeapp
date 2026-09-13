@@ -19,7 +19,9 @@ import {
   cacheFieldsOf, createSearchBudget, createWebSearchExecutor,
   TOP_RESULTS, SNIPPET_MAX_CHARS, SEARCHES_PER_TURN, RESULT_RULE, WEB_SEARCH_SYSTEM_RULE,
   matchesTenantIssueKey, normalizeProjectKeys, createProjectKeysMemo, PROJECT_KEY_CAP,
+  createRunSearchBudget,
 } from "../../src/web-search-tool.js";
+import { WEB_SEARCH_MAX_PER_RUN, WEB_SEARCH_BRAKE_MAX_PER_BUCKET, brakeRefusalText } from "../../src/shared/registry-limits.js";
 
 let n = 0;
 const ok = (cond, msg) => { assert.ok(cond, msg); n++; };
@@ -246,7 +248,7 @@ ok(typeof ex.execute === "function", "the executor has an execute()");
   budget.used = budget.max;
   const r = await ex.execute("web_search", { query: "node 24 release date" });
   ok(r.success === false && r.code === "budget_spent", "past the budget the tool refuses…");
-  ok(/budget is spent/.test(r.error) && /2 searches per run/.test(r.error), "…with a NAMED reason that states the cap");
+  ok(/budget is spent/.test(r.error) && /2 searches per turn/.test(r.error), "…with a NAMED reason that states the cap");
 }
 eq(createSearchBudget().max, SEARCHES_PER_TURN, "the default budget is the plan's number");
 eq(createSearchBudget().used, 0, "a fresh budget starts at zero");
@@ -282,6 +284,94 @@ ok(createSearchBudget() !== createSearchBudget(), "the budget is PER RUN, not mo
   ok(r.success === false && r.code === "identifier_leak:issueKey", "a THROWING project read falls back to the shape rule, which refuses");
 }
 
+/* ========== the RUN ceiling and the tenant brake (F-407) ==========
+
+The per-turn budget is per runAgentTask call, and a scoped job calls that once PER ISSUE —
+so a 100-issue sweep could make 300 searches with every turn politely inside its three. */
+
+{
+  eq(createRunSearchBudget().max, WEB_SEARCH_MAX_PER_RUN, "the run ceiling is the number from its ONE home");
+  eq(createRunSearchBudget().used, 0, "…and starts at zero");
+  ok(createRunSearchBudget() !== createRunSearchBudget(), "…and is per run, not module state");
+
+  // The RUN ceiling refuses even when the TURN budget is untouched — which is exactly the
+  // shape of the sweep this exists for: a fresh turn per issue, each with its own three.
+  const runBudget = createRunSearchBudget(2);
+  runBudget.used = 2;
+  const logs3 = [];
+  const ex3 = createWebSearchExecutor({
+    budget: createSearchBudget(3), runBudget, log: (l) => logs3.push(l),
+    deps: { projectKeys: async () => ({ ok: true, keys: ["LZPT"] }) },
+  });
+  const r = await ex3.execute("web_search", { query: "node 24 release date" });
+  ok(r.success === false && r.code === "run_budget_spent", "a fresh TURN is still refused once the RUN's ceiling is spent");
+  ok(r.brake && r.brake.kind === "web-searches-run" && r.brake.max === 2, "…reporting WHICH limit it hit");
+  ok(r.error.includes(brakeRefusalText("web-searches-run", 2)), "…with the sentence from the ONE home");
+  ok(logs3.some((l) => /RUN's search ceiling/.test(l)), "…and the log says run, not turn, so an operator narrows the scope");
+  ok(r.rule === RESULT_RULE, "…and it still carries the reading rule");
+}
+{
+  // The tenant-wide brake is taken LAST, so a refused query never spends the installation's
+  // allowance. Here the leak check refuses first and the brake seam is never reached.
+  let takes = 0;
+  const ex4 = createWebSearchExecutor({
+    budget: createSearchBudget(3), runBudget: createRunSearchBudget(5),
+    deps: {
+      projectKeys: async () => ({ ok: true, keys: ["API"] }),
+      mcpEnabled: async () => true,
+      webSearchBrake: async () => { takes++; return { braked: false, kind: "web-searches", max: WEB_SEARCH_BRAKE_MAX_PER_BUCKET }; },
+    },
+  });
+  const leaked = await ex4.execute("web_search", { query: "API-12 root cause" });
+  ok(leaked.code === "identifier_leak:issueKey" && takes === 0, "a REFUSED query never takes a slot from the tenant's search brake");
+}
+{
+  // And when the installation's brake IS tripped, the search is refused by name, with
+  // neither budget spent — the brake is not this run's fault and must not read as if it were.
+  const turn = createSearchBudget(3);
+  const run = createRunSearchBudget(5);
+  const logs5 = [];
+  const ex5 = createWebSearchExecutor({
+    budget: turn, runBudget: run, log: (l) => logs5.push(l),
+    deps: {
+      projectKeys: async () => ({ ok: true, keys: ["LZPT"] }),
+      mcpEnabled: async () => true,
+      webSearchBrake: async () => ({ braked: true, kind: "web-searches", max: WEB_SEARCH_BRAKE_MAX_PER_BUCKET, reason: brakeRefusalText("web-searches", WEB_SEARCH_BRAKE_MAX_PER_BUCKET) }),
+    },
+  });
+  const r5 = await ex5.execute("web_search", { query: "forge kvs value limit" });
+  ok(r5.success === false && r5.code === "brake:web-searches", "BLOCK: the installation's 5-minute search brake refuses the search");
+  ok(r5.brake.kind === "web-searches" && r5.brake.max === WEB_SEARCH_BRAKE_MAX_PER_BUCKET, "…naming the limit that tripped, distinctly from the run ceiling");
+  ok(/more than \d+ web searches in 5 minutes/.test(r5.error), "…with the sentence from the ONE home");
+  ok(turn.used === 0 && run.used === 0, "…and neither budget is charged for a search that never happened");
+  ok(logs5.some((l) => /search brake/.test(l)), "…and the refusal is logged");
+}
+{
+  // A brake that cannot be read does NOT refuse: both budgets above are already hard
+  // ceilings, and a KVS hiccup must not silence every agent on the instance.
+  const ex6 = createWebSearchExecutor({
+    budget: createSearchBudget(0), runBudget: createRunSearchBudget(5),
+    deps: { projectKeys: async () => ({ ok: true, keys: ["LZPT"] }), webSearchBrake: async () => { throw new Error("kvs down"); } },
+  });
+  const r6 = await ex6.execute("web_search", { query: "forge kvs value limit" });
+  ok(r6.code === "budget_spent", "a brake read that THROWS is fail-open — the budgets still bound the run");
+}
+
+/* the wiring: one counter per RUN, at both run sites */
+{
+  const fs = await import("node:fs/promises");
+  const jobSrc = await fs.readFile(new URL("../../src/scheduled-jobs.js", import.meta.url), "utf8");
+  const lstSrc = await fs.readFile(new URL("../../src/listeners.js", import.meta.url), "utf8");
+  const agentSrc = await fs.readFile(new URL("../../src/agent-runner.js", import.meta.url), "utf8");
+  ok(/const webRunBudget = createRunSearchBudget\(\);[\s\S]{0,400}const runOne = async/.test(jobSrc),
+    "the job creates ONE run budget OUTSIDE runOne — a per-issue counter is not a run budget");
+  ok(/webRunBudget }\);/.test(jobSrc), "…and passes it into every turn of the run");
+  ok(/webRunBudget: createRunSearchBudget\(\)/.test(lstSrc), "the listener run site carries one too");
+  ok(/webRunBudget = null/.test(agentSrc) && /runBudget: webRunCeiling/.test(agentSrc),
+    "the runner takes the caller's ceiling and hands it to the executor");
+  ok(/takeWebSearchSlot/.test(lstSrc), "the tenant-wide search brake lives beside the agent-run brake, in ONE home");
+}
+
 /* ===================== the two sentences ===================== */
 
 ok(/pages a search engine returned, not answers/.test(RESULT_RULE), "the result rule is the plan's sentence");
@@ -293,7 +383,7 @@ ok(/must come from a read/.test(WEB_SEARCH_SYSTEM_RULE) && /when you could not c
 /* ===================== the wiring, asserted on the source ===================== */
 
 const src = await (await import("node:fs/promises")).readFile(new URL("../../src/agent-runner.js", import.meta.url), "utf8");
-ok(/createWebSearchExecutor, createSearchBudget, WEB_SEARCH_SYSTEM_RULE/.test(src), "the runner imports the executor from its ONE home");
+ok(/createWebSearchExecutor, createSearchBudget, createRunSearchBudget, WEB_SEARCH_SYSTEM_RULE/.test(src), "the runner imports the executor from its ONE home");
 ok(/allowed\.includes\("web_search"\)[\s\S]{0,200}executors\.web \|\| createWebSearchExecutor/.test(src),
   "the runner installs the web executor only for an agent that holds the action, and a caller's own executor still wins");
 ok(/\$\{webRule\}/.test(src) && /allowed\.includes\("web_search"\) \? `\\n- \$\{WEB_SEARCH_SYSTEM_RULE\}`/.test(src),

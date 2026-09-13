@@ -41,9 +41,10 @@ import {
   trimEventPayload, adfToPlainText, isGitEvent, requiresRepoFilter,
 } from "./shared/jira-events.js";
 import { assertAllowedActions, buildAgentGateContext, normalizeAgentKnowledge, DEFAULT_AGENT_ACTIONS, DEFAULT_AGENT_ROUNDS, MAX_AGENT_ROUNDS } from "./shared/agent-actions.js";
-import { knowledgeBudget, AGENT_RUN_BRAKE_MAX_PER_BUCKET, brakeRefusalText } from "./shared/registry-limits.js";
+import { knowledgeBudget, AGENT_RUN_BRAKE_MAX_PER_BUCKET, WEB_SEARCH_BRAKE_MAX_PER_BUCKET, brakeRefusalText } from "./shared/registry-limits.js";
 import { redosRisk } from "./shared/regex-safety.js";
 import { agentResultFields } from "./shared/agent-result.js";
+import { createRunSearchBudget } from "./web-search-tool.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
 // ONE HOME for KVS key sanitising / conflict detection — src/shared/kvs-keys.js (F-340).
 import { safeKeyPart } from "./shared/kvs-keys.js";
@@ -88,6 +89,11 @@ export const BRAKE_MAX_PER_LISTENER = 120;
  * whole point is that it counts EVERYTHING.
  */
 const AGENT_BRAKE_PREFIX = "agent_brake:";
+// The same mechanism, one bucket along, for the OTHER thing an agent spends that is not
+// tokens: hosted web searches (F-407). Its own key, because "stop searching" and "stop
+// running agents" are different refusals and an operator must be able to tell which
+// tripped.
+const WEB_SEARCH_BRAKE_PREFIX = "web_search_brake:";
 const SAMPLE_TTL = { ttl: { value: 7, unit: "DAYS" } };
 const SAMPLE_MIN_INTERVAL_MS = 15 * 60 * 1000;
 
@@ -573,17 +579,32 @@ export const bumpBrake = async (b) => { if (b.readFailed) return; try { await st
  * the accounting), or `{ braked: true, reason, max }` to skip, with the sentence from the
  * ONE home in src/shared/registry-limits.js.
  */
-export const takeAgentRunSlot = async ({ max = AGENT_RUN_BRAKE_MAX_PER_BUCKET } = {}) => {
+export const takeAgentRunSlot = async ({ max = AGENT_RUN_BRAKE_MAX_PER_BUCKET } = {}) => takeTenantSlot(AGENT_BRAKE_PREFIX, "agent-runs", max);
+
+/**
+ * THE TENANT-WIDE WEB-SEARCH BRAKE (F-407). Same bucket length, same accounting, its own
+ * key and its own refusal. Taken by src/web-search-tool.js immediately before a search
+ * actually leaves the instance — never for a refused or cached-out query, because a brake
+ * that counts refusals brakes the wrong thing.
+ */
+export const takeWebSearchSlot = async ({ max = WEB_SEARCH_BRAKE_MAX_PER_BUCKET } = {}) => takeTenantSlot(WEB_SEARCH_BRAKE_PREFIX, "web-searches", max);
+
+/**
+ * The shared body of both tenant-wide brakes. ONE implementation: the two differ only in
+ * their key prefix, their kind and their cap, and a second copy is how the "bump past the
+ * line" rule below comes to be true of one brake and not the other.
+ */
+const takeTenantSlot = async (prefix, kind, max) => {
   const bucket = Math.floor(Date.now() / BRAKE_BUCKET_MS);
-  const b = await readBrake(`${AGENT_BRAKE_PREFIX}${bucket}`);
+  const b = await readBrake(`${prefix}${bucket}`);
   if (b.count >= max) {
     // Bump past the line too, so the bucket records the real pressure rather than
     // flat-lining at the cap — an operator needs to see HOW far over it went.
     await bumpBrake(b);
-    return { braked: true, kind: "agent-runs", max, count: b.count, reason: brakeRefusalText("agent-runs", max) };
+    return { braked: true, kind, max, count: b.count, reason: brakeRefusalText(kind, max) };
   }
   await bumpBrake(b);
-  return { braked: false, kind: "agent-runs", max, count: b.count + 1 };
+  return { braked: false, kind, max, count: b.count + 1 };
 };
 /**
  * The per-OBJECT brake key (F-320).
@@ -1251,6 +1272,11 @@ export const runListener = async ({ listener, eventType, event, ctx, deadline = 
       instructions: listener.agent.instructions, allowedActions: listener.agent.allowedActions, maxRounds: listener.agent.maxRounds,
       issueKey: ctx.issueKey || null, config, contextTitle: "EVENT", contextText: summarizeEventForAi(eventType, event, ctx),
       deadline, cancelToken, extraContext, gate: agentGate, executors, knowledge,
+      // ONE listener run is ONE turn today, so this ceiling is not what stops a listener —
+      // the tenant-wide 5-minute brake is. It is passed anyway so that the run, not the
+      // turn, is where the number lives on BOTH surfaces (F-407): the day a listener grows
+      // a second turn, the ceiling is already the run's.
+      webRunBudget: createRunSearchBudget(),
     });
     return {
       skipped: false, result: r, gate, ...agentResultFields(r),

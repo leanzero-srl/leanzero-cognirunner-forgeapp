@@ -31,7 +31,7 @@
 import { toolDefinitionsFor, normalizeAllowedActions, getAgentAction, normalizeAgentIssueReferences, agentActionNamespace, DEFAULT_AGENT_ROUNDS, MAX_AGENT_ROUNDS } from "./shared/agent-actions.js";
 import { resolveIssueKey } from "./shared/sandbox-api-spec.js";
 import { defangFence } from "./memories.js";
-import { createWebSearchExecutor, createSearchBudget, WEB_SEARCH_SYSTEM_RULE } from "./web-search-tool.js";
+import { createWebSearchExecutor, createSearchBudget, createRunSearchBudget, WEB_SEARCH_SYSTEM_RULE } from "./web-search-tool.js";
 
 const idx = () => import("./index.js");
 
@@ -543,6 +543,12 @@ export const runAgentTask = async ({
   // write ledger every surface already shares. `null` = no brake (the pre-1.4 listener
   // behaviour, unchanged). A scheduled job passes its clamped `maxWritesPerRun`.
   maxWrites = null,
+  // THE RUN'S WEB-SEARCH CEILING (F-407). This function is ONE TURN; a scoped job calls it
+  // once per issue, so the per-turn budget alone let a 100-issue sweep make 300 searches.
+  // The caller (src/scheduled-jobs.js, src/listeners.js) creates ONE counter for the whole
+  // run and passes the same object into every turn. `null` = only the per-turn budget
+  // applies, which is what a one-off test run wants.
+  webRunBudget = null,
   // Run-time gate context for normalizeAllowedActions (capability / products /
   // triggerSource / savedByRole). OMITTED means the most restrictive context — the
   // 13 Jira actions behave exactly as before and nothing from another namespace is
@@ -587,8 +593,11 @@ export const runAgentTask = async ({
   // Note what is NOT here: an edition or capability check. Web is gated by the tenant's
   // MCP toggle alone, and that toggle is read at run time inside the executor.
   const webBudget = createSearchBudget();
+  // The RUN's ceiling is the caller's object when there is a run; a turn with no run of its
+  // own still gets one, so the ceiling exists on every path rather than only the wired ones.
+  const webRunCeiling = webRunBudget || createRunSearchBudget();
   const runExecutors = allowed.includes("web_search")
-    ? { ...executors, web: executors.web || createWebSearchExecutor({ budget: webBudget, log, deadline }) }
+    ? { ...executors, web: executors.web || createWebSearchExecutor({ budget: webBudget, runBudget: webRunCeiling, log, deadline }) }
     : executors;
   const execute = createAgentActionDispatcher({ issueKey, session, allowed, executors: runExecutors, m, maxWrites });
 

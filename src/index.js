@@ -1586,7 +1586,15 @@ resolver.define("checkLicense", ({ context }) => {
 resolver.define("getLogs", async ({ payload, context }) => {
   try {
     const perms = await getUserPermissions(context?.accountId);
-    if (!hasRole(perms)) return { success: false, error: perms?.unknown ? perms.reason : "You don't have access to execution logs.", logs: [] };
+    // F-240: ONE refusal sentence, never the fault text. `perms.reason` (F-230)
+    // interpolates the raw exception from the KVS read or the mypermissions probe,
+    // and this is the one gate that handed it to the caller it is refusing. The
+    // outage detail stays where it belongs: the server log below, and checkIsAdmin's
+    // own `reason` field, which the admin panel renders as an outage note.
+    if (!hasRole(perms)) {
+      if (perms?.unknown) console.warn(`getLogs: refusing an unverifiable caller — ${perms.reason}`);
+      return { ...noPerm("read execution logs"), logs: [] };
+    }
     let logs = await readLogs(payload?.ruleId || null);
     if (perms.role !== "admin" && perms.scope === "own") {
       const configs = (await storage.get(CONFIG_REGISTRY_KEY)) || [];

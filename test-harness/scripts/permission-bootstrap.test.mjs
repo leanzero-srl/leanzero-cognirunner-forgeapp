@@ -139,6 +139,10 @@ for (const fn of ["getAppAdmins", "getListeners", "getScheduledJobs", "getLogs",
   const out = await captureWarn(() => handler(
     { call: { functionKey: fn, payload: {} }, context: {} }, { principal: { accountId: USER } }));
   assert.equal(out[0].success, false, `${fn} must refuse an unverifiable caller (fail closed)`);
+  // F-240: the refusal text is the fixed sentence — never the F-230 `reason`, which
+  // interpolates the raw KVS/Jira fault. getLogs was the one gate that leaked it.
+  assert.doesNotMatch(String(out[0].error), /Jira 503|role store unavailable|HTTP \d|could not confirm/,
+    `${fn} must not hand the fault text to the caller it is refusing (got: ${out[0].error})`);
 }
 
 // ── F-227: getConfigs ran the app-privileged orphan sweep for a caller it could

@@ -111,6 +111,7 @@ import {
 import { runPipelineSetup, PIPELINE_TASK } from "./git-pipeline.js";
 import { executeScheduledJobTask, getJob } from "./scheduled-jobs.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
+import { isKeyConflict } from "./shared/kvs-keys.js";
 import { STATS_TASK_TYPE, processRuleStatsReceipt, statsReceipt } from "./rule-stats.js";
 import { providerKeySlot, providerModelSlot } from "./shared/provider-slots.js";
 
@@ -669,10 +670,9 @@ const executeQueuedPostFunction = async (params, taskId) => {
         ttl: { value: 6, unit: "HOURS" },
       });
     } catch (e) {
-      const isConflict = e?.code === "KEY_ALREADY_EXISTS"
-        || e?.responseDetails?.status === 409
-        || /already\s*exist/i.test(String(e?.message));
-      if (isConflict) {
+      // ONE HOME for the conflict predicate — src/shared/kvs-keys.js (F-340). A local
+      // copy that drifts reports a KVS throttle as a duplicate and drops the task.
+      if (isKeyConflict(e)) {
         console.log(`[pf] duplicate delivery of ${taskId} — already executed/executing, skipping`);
         return { success: true, deduped: true };
       }

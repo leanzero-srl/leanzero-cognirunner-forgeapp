@@ -25,6 +25,7 @@
 
 import "../lib/register-mocks-index.mjs";
 import { createHmac } from "node:crypto";
+import { readFileSync } from "node:fs";
 import storage from "../lib/mock-kvs.mjs";
 import { pushed, Queue } from "../lib/mock-forge-api.mjs";
 
@@ -368,6 +369,32 @@ seed();
   ok(mixed.status === 202 && mixed.body.accepted === true, `an arbitrary mixed casing is read too (${JSON.stringify(mixed)})`);
 }
 
+/* ============ 4d. ONE home for the header read (F-341) ============ */
+{
+  // The dev test hook carried its own `authorization || Authorization` guess —
+  // the same class F-338 removed from hookHeader. Both now go through the single
+  // shared reader, so this exercises the reader itself across casings AND asserts
+  // that neither call site has grown a private copy back.
+  const { readHeader, readBearerToken } = await import("../../src/shared/http-headers.js");
+  for (const name of ["Authorization", "authorization", "AUTHORIZATION", "AuThOrIzAtIoN"]) {
+    ok(readBearerToken({ headers: { [name]: ["Bearer s3cr3t"] } }) === "s3cr3t",
+      `a Bearer token is read from a \`${name}\` header`);
+    ok(readHeader({ headers: { [name]: "Bearer s3cr3t" } }, "authorization") === "Bearer s3cr3t",
+      `…and a non-array value from \`${name}\` too`);
+  }
+  ok(readBearerToken({ headers: {} }) === "", "no header reads as the empty token, never undefined");
+  ok(readBearerToken({}) === "" && readBearerToken(null) === "", "a headerless/absent request does not throw");
+  ok(readHeader({ headers: { "X-Thing": [] } }, "x-thing") === null, "an empty array value is null, not undefined");
+  ok(readHeader({ headers: { "X-Thing": [7] } }, "x-thing") === null, "a non-string value is null");
+
+  const hookSrc = readFileSync(new URL("../../src/test-hook.js", import.meta.url), "utf8");
+  ok(/readBearerToken\(req\)/.test(hookSrc) && !/headers\.Authorization/.test(hookSrc),
+    "src/test-hook.js reads the Bearer header through the shared module, not its own casing guess");
+  const idxSrc = readFileSync(new URL("../../src/index.js", import.meta.url), "utf8");
+  ok(/from\s+"\.\/shared\/http-headers\.js"/.test(idxSrc) && !/h\[String\(name\)\.toUpperCase\(\)\]/.test(idxSrc),
+    "src/index.js reads headers through the shared module too");
+}
+
 /* ============ 4c. the harness stand-in row (F-339) ============ */
 {
   // The inbound path had no automatable live proof: it needs a git_conn row, and
@@ -504,6 +531,25 @@ seed();
   await gitWebhook(req({ payload, event: "push" }));
   const bytes = Buffer.byteLength(JSON.stringify(lastEvent().body), "utf8");
   ok(bytes < 180000, `even a 500-commit push enqueues a bounded event (${bytes} bytes, async events cap near 200 KB)`);
+}
+
+/* ===== 8. F-340 — ONE HOME for safeKeyPart / the conflict predicate ======== */
+// The FAIL_IF_EXISTS conflict predicate and the KVS key sanitiser live in
+// src/shared/kvs-keys.js and nowhere else. A local copy that drifts (a new KVS
+// error code added in one file only) turns an infrastructure fault into a
+// "duplicate" and silently drops a queued run — F-334, in another file. This is
+// a grep-shaped guard: the inline literals must not reappear.
+{
+  const { readFileSync } = await import("node:fs");
+  for (const rel of ["../../src/async-handler.js", "../../src/listeners.js", "../../src/scheduled-jobs.js"]) {
+    const text = readFileSync(new URL(rel, import.meta.url), "utf8");
+    ok(!/const\s+safeKeyPart\s*=/.test(text),
+      `${rel}: safeKeyPart is imported from shared/kvs-keys.js, not redeclared`);
+    ok(!/KEY_ALREADY_EXISTS/.test(text),
+      `${rel}: the FAIL_IF_EXISTS conflict predicate is isKeyConflict(), not an inline literal`);
+    ok(/from\s+"\.\/shared\/kvs-keys\.js"|from\s+"\.\/shared\/execution-claim\.js"/.test(text),
+      `${rel}: claims go through the shared module`);
+  }
 }
 
 console.log(`git-webhook: ${pass} passed, ${fail} failed`);

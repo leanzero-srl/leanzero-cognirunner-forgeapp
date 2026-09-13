@@ -43,6 +43,8 @@ import { assertAllowedActions, buildAgentGateContext, DEFAULT_AGENT_ACTIONS, DEF
 import { redosRisk } from "./shared/regex-safety.js";
 import { agentResultFields } from "./shared/agent-result.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
+// ONE HOME for KVS key sanitising / conflict detection — src/shared/kvs-keys.js (F-340).
+import { safeKeyPart } from "./shared/kvs-keys.js";
 import { defangFence } from "./memories.js";
 import { LISTENER_STATS_KEY, statsForRule, statsReceipt, deleteRuleWithStats } from "./rule-stats.js";
 
@@ -90,7 +92,6 @@ const uniqStrings = (arr, max, mapFn = (s) => s) => {
   return out;
 };
 export const newListenerId = () => `lst_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
-const safeKeyPart = (s) => String(s).replace(/[^a-zA-Z0-9:._#-]/g, "-").slice(0, 120);
 
 // ── Validation / normalisation (shared by the resolvers AND the REST API) ─────
 

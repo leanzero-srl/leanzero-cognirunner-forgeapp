@@ -41,6 +41,8 @@ import { assertAllowedActions, buildAgentGateContext, DEFAULT_AGENT_ACTIONS, DEF
 import { normalizeStep, normalizeSavedByRole } from "./listeners.js";
 import { agentResultFields, SCOPED_AGENT_SUMMARY_BUDGET_BYTES, boundScopedJobLog } from "./shared/agent-result.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
+// ONE HOME for KVS key sanitising / conflict detection — src/shared/kvs-keys.js (F-340).
+import { safeKeyPart } from "./shared/kvs-keys.js";
 import { JOB_STATS_KEY, statsForRule, statsReceipt, deleteRuleWithStats, recoverRuleStats } from "./rule-stats.js";
 
 const idx = () => import("./index.js");
@@ -71,7 +73,6 @@ const nowIso = () => new Date().toISOString();
 const clampStr = (v, n) => (v == null ? "" : String(v)).slice(0, n);
 const clampInt = (v, lo, hi, d) => { const n = parseInt(v, 10); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : d; };
 export const newJobId = () => `job_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
-const safeKeyPart = (s) => String(s).replace(/[^a-zA-Z0-9:._#-]/g, "-").slice(0, 120);
 
 // ── Validation / normalisation ───────────────────────────────────────────────
 

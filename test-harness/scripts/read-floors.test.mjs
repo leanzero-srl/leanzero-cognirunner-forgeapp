@@ -21,6 +21,10 @@
  *      skills and memories are ORG-WIDE SHARED content, so no ownership gate);
  *   3. an unknown id, for a caller who passed the floor, answers plain not-found.
  *
+ * F-633 added §4: the SAME floor on the provider / model / MCP readers, which had no gate
+ * of any kind and named the tenant's AI infrastructure (active vendor, key presence, and
+ * the LM Studio Funnel / Azure resource `baseUrl`) to any licensed account.
+ *
  * Run: node scripts/read-floors.test.mjs (auto-discovered by run-offline.mjs)
  */
 
@@ -114,5 +118,56 @@ ok(missing.success === false && missing.error === "Document not found" && missin
   `an unknown id answers plain not-found for a caller past the floor (got ${JSON.stringify(missing)})`);
 ok(missing.doc === undefined, "…and carries no doc");
 
-console.log(`\nread-floors (F-626): ${pass} passed, ${fail} failed`);
+/* ═════ 4. F-633 — THE SAME FLOOR ON THE PROVIDER / MODEL / MCP READERS ═════
+ * The knowledge doors were gated on the reasoning that they name this instance's curated
+ * references. These name the instance's AI INFRASTRUCTURE — the active vendor, whether a
+ * BYOK key is configured, and the provider's own `baseUrl`, which for LM Studio is the
+ * tenant's Tailscale Funnel hostname and for Azure/Bedrock the customer's resource host —
+ * and they had NO gate at all. Same floor, same one `noPerm` shape.
+ */
+storage.__seed("COGNIRUNNER_AI_PROVIDER", "lmstudio");
+storage.__seed("COGNIRUNNER_AI_BASE_URL", "https://secret-box.tailnet-abc.ts.net");
+storage.__seed("COGNIRUNNER_BASEURL_lmstudio", "https://secret-box.tailnet-abc.ts.net");
+storage.__seed("COGNIRUNNER_KEY_lmstudio", "lm-studio-token-value");
+storage.__seed("COGNIRUNNER_DOC_PROCESSOR_REMOTE", { url: "https://secret-box.tailnet-abc.ts.net:8443/mcp", bearer: "tenant-bearer" });
+storage.__seed("COGNIRUNNER_WEB_SEARCH_REMOTE", { url: "https://secret-box.tailnet-abc.ts.net:10000/mcp", bearer: "tenant-bearer" });
+
+const PROVIDER_DOORS = [
+  ["getOpenAIKey", {}, "read the AI provider settings"],
+  ["getProvider", {}, "read the AI provider settings"],
+  ["getOpenAIModelFromKVS", {}, "read the AI provider settings"],
+  ["getAgentModel", {}, "view the agent model"],
+  ["getDocProcessorRemote", {}, "read the MCP settings"],
+  ["getWebSearchRemote", {}, "read the MCP settings"],
+  ["getContext7Remote", {}, "read the MCP settings"],
+  ["getLmStudioMcps", {}, "read the MCP settings"],
+  ["getLmStudioConcurrency", {}, "read the LM Studio settings"],
+  ["getLmStudioPool", {}, "read the LM Studio settings"],
+  ["getLmStudioWeights", {}, "read the LM Studio settings"],
+];
+
+for (const [fn, payload, what] of PROVIDER_DOORS) {
+  const r = await call(fn, payload, OUTSIDER);
+  ok(r && r.success === false && r.reason === "no-permission" && r.hint === "ask-app-admin" && r.needsRole === "viewer"
+    && r.error === `You don't have permission to ${what}.`,
+    `${fn} refuses a caller with no role in the ONE noPerm shape (got ${JSON.stringify(r)})`);
+  const blob = JSON.stringify(r);
+  ok(!blob.includes("ts.net") && !blob.includes("lmstudio") && !blob.includes("tenant-bearer") && !blob.includes("lm-studio-token-value"),
+    `${fn}'s refusal names no endpoint, vendor or credential`);
+}
+
+/* …and the floor is a floor: a roster VIEWER still reads the settings their rules run on. */
+const keyAsViewer = await call("getOpenAIKey", {}, VIEWER);
+ok(keyAsViewer.success === true && keyAsViewer.provider === "lmstudio",
+  `a viewer reads the provider status (got ${JSON.stringify(keyAsViewer)})`);
+ok(keyAsViewer.baseUrl === "https://secret-box.tailnet-abc.ts.net", "…including the endpoint the refusal withheld");
+ok((await call("getProvider", {}, VIEWER)).success === true, "a viewer reads the active provider");
+ok((await call("getOpenAIModelFromKVS", {}, VIEWER)).success === true, "a viewer reads the saved model");
+ok((await call("getLmStudioMcps", {}, VIEWER)).success === true, "a viewer reads the MCP toggles");
+
+/* The key ITSELF is still never returned to anyone — the floor did not become a licence. */
+ok(!JSON.stringify(keyAsViewer).includes("lm-studio-token-value"),
+  "the BYOK key is absent from the viewer's answer too — presence only, as before");
+
+console.log(`\nread-floors (F-626, F-633): ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

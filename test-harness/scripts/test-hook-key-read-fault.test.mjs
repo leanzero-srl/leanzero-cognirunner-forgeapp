@@ -54,6 +54,10 @@ const post = async (body, { bearer = SECRET } = {}) => {
   let parsed = null; try { parsed = JSON.parse(res.body); } catch { /* text */ }
   return { status: res.statusCode, body: parsed, raw: res.body };
 };
+// F-633 put a viewer floor on `getOpenAIKey`, and this suite is about what the door does
+// BELOW that floor — so the caller has to be on the roster to reach the lever at all.
+storage.__seed("app_admins", [{ accountId: "acct-admin", role: "admin", scope: "all" }]);
+
 const getKey = (provider) => handler({ call: { functionKey: "getOpenAIKey", payload: { provider } } }, { principal: { accountId: "acct-admin" } });
 const arm = (extra) => post({ action: "armKeyReadFault", provider: "openai", mode: "refuse", ttlSeconds: 60, ...extra });
 const disarm = (provider = "openai") => post({ action: "disarmKeyReadFault", provider });

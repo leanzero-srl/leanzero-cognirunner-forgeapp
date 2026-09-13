@@ -5140,8 +5140,30 @@ resolver.define("saveOpenAIKey", async ({ payload, context }) => {
 /**
  * Get BYOK status. Never returns the actual key to the frontend.
  */
-resolver.define("getOpenAIKey", async ({ payload }) => {
-  /* ── F-629 — THE DEV-ONLY KEY-READ FAULT, asked ONCE, at the top. ──────────────────
+resolver.define("getOpenAIKey", async ({ payload, context }) => {
+  /* ── F-633 — THE VIEWER FLOOR ON THE PROVIDER-SETTINGS READERS. ────────────────────
+   * This door had no gate of any kind: any licensed account on the site could read which
+   * AI provider is active, whether a BYOK key is configured, and the provider's own
+   * `baseUrl` — which for LM Studio is the tenant's Tailscale Funnel hostname (an internal
+   * endpoint only as private as its URL) and for Azure/Bedrock is the customer's resource
+   * host. F-235/F-626 already put this exact floor on the knowledge readers on the grounds
+   * that they "name this instance's curated references"; this one names the instance's AI
+   * INFRASTRUCTURE, so it gets the same floor and the same `noPerm` shape. It is a ROLE
+   * floor, not an ownership gate — every roster member sees the settings their rules run on.
+   *
+   * THE SAME FLOOR IS ON EVERY SIBLING READER (`getProvider`, `getOpenAIModelFromKVS`,
+   * `getAgentModel`, the three MCP remotes and the four LM Studio ops readers); the write
+   * doors and `getOpenAIModels` keep their stricter admin gate.
+   *
+   * The async consumer's key reads are NOT resolvers and are deliberately untouched —
+   * there is no caller principal on a queued task to hold a role.
+   *
+   * THE F-629 FAULT LEVER IS ASKED BELOW THE FLOOR, on purpose: a dev-only lever must
+   * never be reachable by a caller the door would refuse anyway. */
+  if (!(await requireRole(context?.accountId, "viewer"))) {
+    return noPerm("read the AI provider settings", "viewer");
+  }
+  /* ── F-629 — THE DEV-ONLY KEY-READ FAULT, asked ONCE, directly under the floor. ────
    * F-603 is a bug about what the settings card does when THIS resolver fails: a stale
    * `noKeyNeeded` paints a BYOK provider as "Managed by LeanZero — nothing to paste
    * here", with no key input rendered at all. The resolver is a KVS read plus a provider
@@ -5235,7 +5257,12 @@ resolver.define("removeOpenAIKey", async ({ payload, context }) => {
 // Bearer. The Bearer is never returned to the UI — getDocProcessorRemote
 // reports presence only, save/remove require admin.
 
-resolver.define("getDocProcessorRemote", async () => {
+resolver.define("getDocProcessorRemote", async ({ context }) => {
+  // F-633 — the viewer floor, one home at `getOpenAIKey`'s docblock. The URL is a private
+  // service hostname and `hasBearer` says it is credential-protected.
+  if (!(await requireRole(context?.accountId, "viewer"))) {
+    return noPerm("read the MCP settings", "viewer");
+  }
   try {
     const raw = await storage.get(DOC_PROCESSOR_REMOTE_KVS_KEY);
     if (raw && typeof raw === "object" && raw.url) {
@@ -5304,7 +5331,11 @@ resolver.define("removeDocProcessorRemote", async ({ context }) => {
 // every hosted provider (the app dials the URL); LM Studio can also point its
 // own mcp.json at the same URL+bearer (no CogniRunner code change for that path).
 
-resolver.define("getWebSearchRemote", async () => {
+resolver.define("getWebSearchRemote", async ({ context }) => {
+  // F-633 — the viewer floor, one home at `getOpenAIKey`'s docblock.
+  if (!(await requireRole(context?.accountId, "viewer"))) {
+    return noPerm("read the MCP settings", "viewer");
+  }
   try {
     const raw = await storage.get(WEB_SEARCH_REMOTE_KVS_KEY);
     if (raw && typeof raw === "object" && raw.url) {
@@ -5378,7 +5409,13 @@ resolver.define("removeWebSearchRemote", async ({ context }) => {
 // API key is OPTIONAL (keyless works), so Save requires only the URL. The key is
 // context7's own header (CONTEXT7_API_KEY), never returned to the UI.
 
-resolver.define("getContext7Remote", async () => {
+resolver.define("getContext7Remote", async ({ context }) => {
+  // F-633 — the viewer floor, one home at `getOpenAIKey`'s docblock. The refusal is the
+  // noPerm shape, NOT this door's success-with-defaults catch arm: "you may not ask" and
+  // "nothing is saved, here is the official endpoint" are different answers.
+  if (!(await requireRole(context?.accountId, "viewer"))) {
+    return noPerm("read the MCP settings", "viewer");
+  }
   try {
     const raw = await storage.get(CONTEXT7_REMOTE_KVS_KEY);
     const savedUrl = (raw && typeof raw === "object" && raw.url) ? String(raw.url) : "";
@@ -5556,7 +5593,12 @@ resolver.define("saveProvider", async ({ payload, context }) => {
 /**
  * Get the current provider config (provider name + base URL).
  */
-resolver.define("getProvider", async () => {
+resolver.define("getProvider", async ({ context }) => {
+  // F-633 — the viewer floor, one home at `getOpenAIKey`'s docblock. This door names the
+  // vendor the tenant bills and the active endpoint; it is not public state.
+  if (!(await requireRole(context?.accountId, "viewer"))) {
+    return noPerm("read the AI provider settings", "viewer");
+  }
   try {
     const provider = (await storage.get("COGNIRUNNER_AI_PROVIDER")) || "atlassian";
     const baseUrl = await storage.get("COGNIRUNNER_AI_BASE_URL");
@@ -6159,6 +6201,11 @@ resolver.define("saveAgentModel", async ({ payload, context }) => {
  * Get the currently saved model from KVS (or null if factory).
  */
 resolver.define("getOpenAIModelFromKVS", async ({ payload, context }) => {
+  // F-633 — the viewer floor, one home at `getOpenAIKey`'s docblock. `context` was already
+  // destructured here (for the edition) but never asked for a role.
+  if (!(await requireRole(context?.accountId, "viewer"))) {
+    return noPerm("read the AI provider settings", "viewer");
+  }
   try {
     const provider = await resolveTargetProvider(payload);
     const byokKey = await storage.get(providerKeySlot(provider));
@@ -6455,7 +6502,11 @@ const allEnabledMcpsLocal = (stored) => {
  * Get the user's MCP enable flags + the static catalog of supported MCPs.
  * UI uses this to render the three cards with their current state.
  */
-resolver.define("getLmStudioMcps", async () => {
+resolver.define("getLmStudioMcps", async ({ context }) => {
+  // F-633 — the viewer floor, one home at `getOpenAIKey`'s docblock.
+  if (!(await requireRole(context?.accountId, "viewer"))) {
+    return noPerm("read the MCP settings", "viewer");
+  }
   try {
     const stored = (await storage.get(LMSTUDIO_MCPS_KVS_KEY)) || {};
     const enabled = {
@@ -10096,7 +10147,11 @@ resolver.define("cancelAllQueuedJobs", async ({ context }) => {
  * runs queued events in parallel by default; this bounds how many LM Studio
  * jobs run at once via Forge's per-event concurrency key. 0 = uncapped.
  */
-resolver.define("getLmStudioConcurrency", async () => {
+resolver.define("getLmStudioConcurrency", async ({ context }) => {
+  // F-633 — the viewer floor, one home at `getOpenAIKey`'s docblock.
+  if (!(await requireRole(context?.accountId, "viewer"))) {
+    return noPerm("read the LM Studio settings", "viewer");
+  }
   try {
     return { success: true, limit: await getLmStudioConcurrencyLimit() };
   } catch (error) {
@@ -10164,7 +10219,11 @@ resolver.define("saveLmStudioConcurrency", async ({ payload, context }) => {
 // LM Studio multi-model pool toggle — when ON (default), runtime validator /
 // condition AI calls spread across all loaded models (capability-aware). A no-op
 // unless 2+ models are loaded. See lmAcquireWorker (least-loaded worker map).
-resolver.define("getLmStudioPool", async () => {
+resolver.define("getLmStudioPool", async ({ context }) => {
+  // F-633 — the viewer floor, one home at `getOpenAIKey`'s docblock.
+  if (!(await requireRole(context?.accountId, "viewer"))) {
+    return noPerm("read the LM Studio settings", "viewer");
+  }
   try {
     return { success: true, enabled: await isLmStudioPoolEnabled() };
   } catch (error) {
@@ -10189,7 +10248,12 @@ resolver.define("saveLmStudioPool", async ({ payload, context }) => {
 
 // Per-model dispatch weights (down-weight slow devices). Returns the currently
 // loaded models so the admin can set a weight per device.
-resolver.define("getLmStudioWeights", async () => {
+resolver.define("getLmStudioWeights", async ({ context }) => {
+  // F-633 — the viewer floor, one home at `getOpenAIKey`'s docblock. This one also
+  // enumerates the models loaded on the tenant's own machines.
+  if (!(await requireRole(context?.accountId, "viewer"))) {
+    return noPerm("read the LM Studio settings", "viewer");
+  }
   try {
     const [weights, loaded] = await Promise.all([getLmStudioWeightsMap(), getLmStudioLoadedModels()]);
     // One row PER loaded instance — do NOT collapse. Two quants of one model share

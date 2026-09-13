@@ -49,7 +49,7 @@ import {
 } from "./shared/edition.js";
 import { minuteKey, effectiveBudget, budgetDecision, inlineShouldQueue, AI_PLATFORM_TPM, AI_BUDGET_DEFAULT_TPM, BUDGET_WAIT_HORIZON_MS } from "./shared/ai-budget.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
-import { isKeyConflict } from "./shared/kvs-keys.js";
+import { isKeyConflict, safeKeyPart } from "./shared/kvs-keys.js";
 import { gitDeliveryClaimKey } from "./shared/git-ids.js";
 import { readHeader } from "./shared/http-headers.js";
 import { providerKeySlot, providerModelSlot, providerAgentModelSlot, providerBaseUrlSlot } from "./shared/provider-slots.js";
@@ -11164,7 +11164,14 @@ export async function gitWebhook(req) {
     }
   } catch (e) {
     // A storage fault is NOT "no secret, let it through": fail closed.
-    console.warn("[git-webhook] connection lookup failed — refusing delivery");
+    // F-347 — and it says WHY. This catch swallowed the exception, so a PERMANENT
+    // platform fault (F-346: the key shape KVS refuses) read exactly like a transient
+    // KVS blip while every delivery answered 503 and the provider retried forever.
+    // Names the route and the error CLASS + message only — never the body, never a
+    // signature, never a secret (the sibling branches below follow the same rule).
+    const cls = (e && (e.name || e.constructor?.name)) || "Error";
+    const msg = String((e && e.message) || e || "").slice(0, 300);
+    console.warn(`[git-webhook] connection lookup failed — refusing delivery conn=${safeKeyPart(connId)} repo=${safeKeyPart(repoId)} err=${cls}: ${msg}`);
     return hookJson(503, { ok: false });
   }
   if (!row || !secret) {

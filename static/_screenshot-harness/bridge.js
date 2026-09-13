@@ -862,6 +862,113 @@ const CODE_IDENTITY = () => ((typeof window !== "undefined" && window.__CODE_IDE
   ? { hasIdentity: true, email: "deploy@acme.example", consent: { accountId: ACCT, at: "2026-09-03T10:00:00.000Z" }, rotation: null, createdAt: "2026-09-03T10:00:00.000Z", updatedAt: "2026-09-03T10:00:00.000Z" }
   : { hasIdentity: false, email: null, consent: null, rotation: null, createdAt: null, updatedAt: null });
 
+/* ── 1.4 commit 9b: THE CODER PANEL fixtures ──────────────────────────────────────
+   One mutable thread per page load, because the panel's whole job is a CONVERSATION:
+   a turn appends to it, a decision appends to it, and the panel re-reads it after each.
+   A fixture that answered a constant would let a panel that never re-reads pass.
+
+   The shapes are the ENGINE's, field for field (src/coder-engine.js):
+     runCoderTurn  -> { success, reply, actions[{name,args,ok,ms}], usage, endedBy, rounds,
+                        awaiting:"confirm"?, ticket:{id,action,argsPreview}? }
+     thread        -> { messages[{role,content,kind?,at}], turns, pendingTicketId? }
+     confirm       -> { success, resume, ... } + { async:true, taskId } from the resolver,
+                      or { duplicate:true } when it was already answered.
+
+   NOTE the ticket id: it is in the fixture because the WIRE carries it, and the panel is
+   required never to render it. coder-panel.test.mjs asserts that absence, which is only
+   meaningful because the id here is a distinctive string.
+
+   Scenario flags:
+     window.__CODER_SCENARIO__ - "ticket" (default: the turn halts on a consent ticket),
+                                 "plain" (it just answers), "empty" (no thread yet).
+     window.__CODER_SLOW__     - the first poll answers `pending`, so the running state and
+                                 its veil are on screen long enough to be asserted.
+     window.__CODER_DUPLICATE__- confirmCoderTicket answers { duplicate: true }.
+     window.__CODER_NO_RESUME__- the decision is recorded but the follow-up did not enqueue.
+   The capability and the connection list reuse __CODE_CAP__ / __CODE_NO_CONNS__ above -
+   one flag per product question, not one per surface. */
+const CODER_TICKET_ID = "ct_9f31c0de";
+const CODER_SEED = () => ((typeof window !== "undefined" && window.__CODER_SCENARIO__) === "empty" ? [] : [
+  { role: "user", content: "Open a branch for this and add the retry guard to the payment client.", at: "2026-09-13T08:00:00.000Z" },
+  { role: "assistant", content: "I read PROJ-42 and the payment client.\n\nThe retry guard belongs in sendPayment, around the provider call. I will open a branch first and push the change to it, then ask before anything leaves the branch.", at: "2026-09-13T08:00:20.000Z" },
+]);
+let CODER_THREAD = null;
+const coderThread = () => {
+  if (!CODER_THREAD) CODER_THREAD = { messages: CODER_SEED(), turns: CODER_SEED().length ? 1 : 0 };
+  return CODER_THREAD;
+};
+const CODER_TURN_TICKET = {
+  success: true, reply: "", actions: [{ name: "create_branch", args: { name: "proj-42-retry-guard" }, ok: true, ms: 640 }],
+  usage: { totalTokens: 8120 }, endedBy: "awaiting_confirmation", rounds: 2,
+  awaiting: "confirm",
+  ticket: { id: CODER_TICKET_ID, action: "open_pull_request", argsPreview: "acme/web: proj-42-retry-guard into main, titled \"Retry guard for the payment client\"" },
+};
+const CODER_TURN_PLAIN = {
+  success: true, reply: "The retry guard is in and the branch is pushed.\n\nI did not open a pull request, because you have not asked for one yet.",
+  actions: [{ name: "create_branch", args: {}, ok: true, ms: 640 }, { name: "commit_files", args: {}, ok: true, ms: 1210 }, { name: "trigger_build", args: {}, ok: false, ms: 300 }],
+  usage: { totalTokens: 9400 }, endedBy: "final", rounds: 3,
+};
+const CODER_TURN_AFTER = (decision) => ({
+  success: true,
+  reply: decision === "skip"
+    ? "Understood, no pull request. The branch is pushed and waiting for you."
+    : "The pull request is open: acme/web #418.",
+  actions: decision === "skip" ? [] : [{ name: "open_pull_request", args: {}, ok: true, ms: 980 }],
+  usage: { totalTokens: 5100 }, endedBy: "final", rounds: 1,
+});
+let CODER_LAST_DECISION = "confirm";
+let CODER_POLLS = 0;
+function coderInvoke(name, payload) {
+  const scenario = (typeof window !== "undefined" && window.__CODER_SCENARIO__) || "ticket";
+  const t = coderThread();
+  switch (name) {
+    case "getCoderThread":
+      return Promise.resolve({ success: true, thread: { messages: t.messages.slice(), turns: t.turns, ...(t.pendingTicketId ? { pendingTicketId: t.pendingTicketId } : {}) } });
+    case "startCoderTurn": {
+      CODER_POLLS = 0;
+      t.messages.push({ role: "user", content: String((payload && payload.message) || ""), at: new Date().toISOString() });
+      if (typeof window !== "undefined") window.__CODER_LAST_START__ = payload;
+      return Promise.resolve({ success: true, async: true, taskId: "coder_turn_1", threadId: (payload && payload.threadId) || "p_demo" });
+    }
+    case "confirmCoderTicket": {
+      const decision = (payload && payload.decision) || "confirm";
+      CODER_LAST_DECISION = decision;
+      CODER_POLLS = 0;
+      if (typeof window !== "undefined") window.__CODER_LAST_DECISION__ = payload;
+      if (typeof window !== "undefined" && window.__CODER_DUPLICATE__) {
+        return Promise.resolve({ success: true, duplicate: true, decision, status: "confirmed", ticketId: CODER_TICKET_ID });
+      }
+      delete t.pendingTicketId;
+      t.messages.push({
+        role: "user", kind: "decision", at: new Date().toISOString(),
+        content: decision === "skip"
+          ? "DECISION: the user SKIPPED open_pull_request. It was not performed and must not be retried unless they ask again."
+          : decision === "change"
+            ? `DECISION: the user asked to CHANGE open_pull_request before it runs. Their words: ${String((payload && payload.change) || "")}`
+            : "DECISION: the user CONFIRMED open_pull_request and it was performed.",
+      });
+      if (typeof window !== "undefined" && window.__CODER_NO_RESUME__) {
+        return Promise.resolve({ success: true, resume: true, resumed: false, error: "The decision was recorded, but the Coder could not be resumed: the queue refused the push." });
+      }
+      return Promise.resolve({ success: true, resume: true, async: true, taskId: "coder_turn_2" });
+    }
+    case "getAsyncTaskResult": {
+      const slow = typeof window !== "undefined" && window.__CODER_SLOW__;
+      CODER_POLLS++;
+      if (slow && CODER_POLLS === 1) return Promise.resolve({ success: true, status: "processing" });
+      const first = payload && payload.taskId === "coder_turn_1";
+      const result = first
+        ? (scenario === "plain" ? CODER_TURN_PLAIN : CODER_TURN_TICKET)
+        : CODER_TURN_AFTER(CODER_LAST_DECISION);
+      if (result.awaiting === "confirm") t.pendingTicketId = result.ticket.id;
+      else if (result.reply) t.messages.push({ role: "assistant", content: result.reply, at: new Date().toISOString() });
+      t.turns++;
+      return Promise.resolve({ success: true, status: "done", result });
+    }
+    default: return Promise.resolve({ success: false, error: `no coder fixture for ${name}` });
+  }
+}
+
 const ROSTER_GATED_READS = ["getContextDocs", "getSkills", "getSkillContent", "getMemories", "getMemoryStoreStats"];
 const EDITION_GATED_READS = ["getContextDocs", "getSkills", "getSkillContent", "getMemories", "getMemoryStoreStats", "getKnowledgeCounts"];
 
@@ -998,6 +1105,12 @@ function invoke(name, payload) {
   // Optional resolver fixtures for targeted browser regressions; never bundled into production.
   if (typeof window !== "undefined" && window.__RESPONSES__) {
     if (Object.prototype.hasOwnProperty.call(window.__RESPONSES__, name)) return Promise.resolve(window.__RESPONSES__[name]);
+  }
+  /* 1.4 commit 9b - a CODER task id routes to the coder fixture before the switch below,
+     whose getAsyncTaskResult arm answers `pending` to anything it does not recognise. A
+     poll that never resolves would have made the panel's whole turn untestable. */
+  if (name === "getAsyncTaskResult" && payload && String(payload.taskId || "").startsWith("coder_turn_")) {
+    return coderInvoke(name, payload);
   }
   switch (name) {
     case "setUiIntent":
@@ -1280,6 +1393,12 @@ function invoke(name, payload) {
        non-admin reader; these arms are the ADMIN answers. */
     case "getAgentCapability": return Promise.resolve(CODE_CAP());
     case "listGitConnections": return Promise.resolve({ success: true, connections: CODE_CONNS() });
+    /* 1.4 commit 9b - THE CODER PANEL. Four doors, and the shapes are the ENGINE's own
+       (src/coder-engine.js runCoderTurn / getCoderThread / confirmCoderTicket): a turn is
+       `{success, async:true, taskId, threadId}` and the RESULT arrives through
+       getAsyncTaskResult, exactly like every other queued AI task. See CODER_STATE. */
+    case "startCoderTurn": case "getCoderThread": case "confirmCoderTicket":
+      return coderInvoke(name, payload);
     case "saveGitConnection": return Promise.resolve({ success: true, connection: CODE_CONNS()[0], whoami: { kind: "github", login: "acme-bot", name: "Acme Bot", scopes: ["repo", "workflow"] } });
     case "testGitConnection":
       if (typeof window !== "undefined" && window.__CODE_TEST_FAILS__) {

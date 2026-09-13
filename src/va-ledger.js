@@ -45,7 +45,7 @@ import {
   vaItemKey, vaIndexKey, vaMemoryKey, vaTickKey, vaEffectKey, vaCapsKey, vaHealthKey,
   vaExecClaimKey, vaPostClaimKey, vaCompactClaimKey, vaCompactBackoffKey, vaPurgedKey, capsBuckets, tickIdFor,
   VA_ITEM_TTL, VA_INDEX_TTL, VA_TICK_TTL, VA_EFFECT_TTL, VA_CAPS_TTL, VA_CLAIM_TTL, VA_HEALTH_TTL,
-  VA_COMPACT_BACKOFF_TTL, VA_PURGED_TTL,
+  VA_COMPACT_BACKOFF_TTL, VA_PURGED_TTL, VA_PURGED_TURNS_MAX, VA_PURGED_WRITES_PER_TURN,
   // F-575 — the settle window and the three claim prefixes a running turn holds.
   VA_PURGE_SETTLE_MS, vaClaimPrefixes,
 } from "./shared/va-keys.js";
@@ -113,6 +113,67 @@ export const markAgentPurged = async (store, agent, { now = Date.now() } = {}) =
   try {
     await store.set(vaPurgedKey(agent), { at: nowIso(now), agent: String(agent) }, VA_PURGED_TTL);
     return { ok: true };
+  } catch (e) {
+    return fail("tombstone_write_failed", { detail: String((e && e.message) || e) });
+  }
+};
+
+/**
+ * F-595 — THE ONE ROW A PURGED TURN MAY STILL WRITE, AND WHY IT IS THIS ONE.
+ *
+ * `runVaItem`'s write seam can find a tombstone with WRITES ALREADY BEHIND IT: the
+ * delete landed mid-turn, after the dispatcher had put a comment on an issue or edited
+ * a page. F-571 named that case (`agent-purged-after-writes`) and F-577 keyed the tab's
+ * copy on it — and then nothing could carry it, because every writer in this file
+ * refuses under the tombstone and `publicReceipt` never projects a queue task result.
+ * The one purge an admin must act on was the one purge no surface could show.
+ *
+ * So the turn appends to the TOMBSTONE. That is not a hole in F-553's rule, it is the
+ * rule's own boundary: the harm F-553 prevents is a ROW BEING RESURRECTED for an agent
+ * that no longer exists, and this row is neither resurrected (the purge wrote it, it is
+ * already there) nor a ledger row (nothing reads it as state; the only reader is the
+ * admin projection and the clear). Three properties keep it inside the line:
+ *
+ *  1. IT NEVER CREATES THE ROW. A missing tombstone means the purge could not stamp one
+ *     or a re-created agent has already cleared it — and stamping one HERE would mute a
+ *     live agent's ledger for three days, which is the exact disaster F-512 fixed.
+ *     A vanished tombstone therefore loses the note, deliberately.
+ *  2. IT IS BOUNDED (`VA_PURGED_TURNS_MAX` turns x `VA_PURGED_WRITES_PER_TURN` writes),
+ *     because the 240 KiB value limit applies here like everywhere else.
+ *  3. IT FAILS SOFT. A note that cannot be written must not change what the turn tells
+ *     the queue: the task result and the log line are still emitted either way.
+ *
+ * IT REFRESHES THE TTL, and that is accepted rather than worked around: KVS has no
+ * "keep the existing expiry" write. The writers are in-flight turns of an agent deleted
+ * minutes ago, so the tombstone ends up living three days from the last racing turn
+ * instead of from the delete — longer refusal for an agent that no longer exists, which
+ * is the safe direction, and `clearPurgeTombstone` still clears it for a re-creation on
+ * the usual terms.
+ */
+export const recordPurgedTurnWrites = async (store, agent, { issueKey = null, landedWrites = [], now = Date.now() } = {}) => {
+  const writes = (Array.isArray(landedWrites) ? landedWrites : [])
+    .map((w) => safeText(w, 200))
+    .filter(Boolean)
+    .slice(0, VA_PURGED_WRITES_PER_TURN);
+  if (!writes.length) return fail("no_writes");
+  let row = null;
+  try { row = await store.get(vaPurgedKey(agent)); }
+  catch (e) { return fail("tombstone_read_failed", { detail: String((e && e.message) || e) }); }
+  // NOT OURS TO CREATE. See property 1 above — this is the difference between a note and
+  // a resurrection, and it is the whole reason this write is allowed at all.
+  if (!isObj(row)) return fail("no_tombstone");
+  const prior = (Array.isArray(row.turns) ? row.turns : []).filter(isObj);
+  const entry = {
+    at: nowIso(now),
+    issueKey: issueKey == null ? null : safeText(issueKey, 60),
+    landedWrites: writes,
+  };
+  // NEWEST LAST, and the OLDEST are dropped when the cap is reached: an entry that has
+  // been on the row longest is the one an admin has had longest to act on.
+  const turns = [...prior, entry].slice(-VA_PURGED_TURNS_MAX);
+  try {
+    await store.set(vaPurgedKey(agent), { ...row, turns }, VA_PURGED_TTL);
+    return { ok: true, turns: turns.length, writes: writes.length };
   } catch (e) {
     return fail("tombstone_write_failed", { detail: String((e && e.message) || e) });
   }

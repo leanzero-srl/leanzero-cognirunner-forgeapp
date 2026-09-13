@@ -66,6 +66,9 @@ import {
   // two are what let a task refuse EARLY, before it spends a model call on a dead agent,
   // and what lets a re-created agent with the same id start writing again.
   readPurgeTombstone, clearPurgeTombstone,
+  // F-595 — the ONE row a purged turn may still write: what it had already landed, appended
+  // to the tombstone itself, because every other writer refuses under it.
+  recordPurgedTurnWrites,
 } from "./va-ledger.js";
 import {
   VA_LIMITS, VA_DEFAULTS, VA_PROJECT_KEY_RE, VA_JQL_MAX,
@@ -1471,20 +1474,36 @@ const oneItemTurn = async ({ job, va, agentId, issueKey, tick, deps }) => {
      * true wherever they are shown, which is the whole point — the tab keeps its existing
      * copy for the old id and adds one for the new.
      *
-     * WHERE IT DURABLY LIVES: the TASK RESULT, and only the task result. The health row
-     * would be the natural second home, but `recordTickHealth` sits behind `purgedGuard`
-     * (src/va-ledger.js) and REFUSES under this very tombstone — as does every other
-     * ledger writer, which is F-553's point and not a gap to work around. Calling it here
-     * would write nothing and answer like a refusal. The skip therefore stays
-     * receipt-free BY DESIGN, and the durable carriers are exactly two: this returned
-     * object, which the queue records verbatim as the task result (`executeVaItemTask`,
-     * src/async-handler.js), and the operator log line below — which now leads with the
-     * same id, so the log and the result cannot disagree. Do not add a third carrier by
-     * re-opening a ledger write.
+     * WHERE IT DURABLY LIVES. The health row would be the natural home, but
+     * `recordTickHealth` sits behind `purgedGuard` (src/va-ledger.js) and REFUSES under
+     * this very tombstone — as does every other ledger writer, which is F-553's point and
+     * not a gap to work around. Calling it here would write nothing and answer like a
+     * refusal, so the skip stays LEDGER-receipt-free BY DESIGN.
+     *
+     * F-595 — AND FOR A WHILE THAT LEFT NO SURFACE AT ALL. The carriers were exactly two:
+     * this returned object, which the queue records verbatim as the task result
+     * (`executeVaItemTask`, src/async-handler.js), and the operator log line below. The
+     * Agents tab reads NEITHER — `publicReceipt` (src/va-admin.js) projects tick receipts
+     * and never a queue task result — so F-577's solid-red row was copy that could not
+     * fire, and the one purge an admin must act on was invisible in the product.
+     *
+     * The third carrier is the TOMBSTONE ITSELF, and it is the only row that could be:
+     * it is the thing all the other writers refuse under, it is already there, and
+     * `recordPurgedTurnWrites` never creates it (see its docblock — creating one would
+     * mute a re-created agent). `listRecentPurges` projects it for the tab. This is NOT
+     * licence to re-open a ledger write: anything that would stamp a `va_item`,
+     * `va_index`, `va_health` or `va_effect` row here is still the F-553 defect.
      */
     const reason = landed.length ? "agent-purged-after-writes" : "agent-purged";
     if (landed.length) {
       deps.log(`[va] ${reason}: ${landed.length} write${landed.length === 1 ? "" : "s"} already landed on ${landed.join(", ")}`);
+      // FAIL-SOFT, and awaited: the note is worth a storage round trip at the end of a
+      // turn that is already over, but a note that cannot be written must not change what
+      // the turn tells the queue. The log line and the task result stand either way.
+      const noted = await recordPurgedTurnWrites(deps.store, agentId, {
+        issueKey, landedWrites: landed, now: now(),
+      });
+      if (!noted.ok) deps.log(`[va] ${agentId}: the purge note could not be kept (${noted.reason}) — this turn's writes survive only in this log`);
     }
     return {
       ok: true, ran: true, skipped: true, issueKey, reason, purgedAt: tombAtWrite.at,

@@ -231,6 +231,40 @@ export const VA_PURGED_TTL = days(3);
 export const vaPurgedKey = (agent) => assertKvsKey(`va_purged:${part(agent)}`);
 
 /**
+ * F-595 — THE TOMBSTONE IS ALSO THE ONLY RECEIPT A MID-TURN PURGE CAN HAVE.
+ *
+ * A turn that was already past its entry check when the delete landed can have written
+ * to Jira, to Confluence or to a repository before the cancellation caught it (F-571).
+ * Those writes are the one purge an admin must act on, and they had no durable carrier
+ * at all: every ledger writer refuses under this very tombstone (F-553, and that is the
+ * point, not a gap), `recordTickHealth` included, so the only survivors were the queue
+ * task result and a log line — neither of which any surface reads.
+ *
+ * This row is the exception, and it is the ONLY row that can be: it is written FIRST by
+ * the purge, it is the thing every other writer refuses under, and it already outlives
+ * the flight by construction. So the purged turn APPENDS what it landed to the marker
+ * itself rather than re-opening a ledger write, and `listRecentPurges` (src/va-admin.js)
+ * projects it for the Agents tab. Appending here creates no orphan: there is nothing to
+ * resurrect, the row is already there, and a turn that finds NO tombstone writes nothing
+ * — a cleared tombstone means a re-created agent, and re-stamping one would mute it.
+ *
+ * TWO BOUNDS, because a row nobody can read is no better than no row. At most
+ * `VA_PURGED_TURNS_MAX` turns are kept (newest first — an older entry is a turn an
+ * admin has had longer to see), and at most `VA_PURGED_WRITES_PER_TURN` named writes
+ * per turn. In practice a purge races one or two turns; the caps are what keep a
+ * pathological case inside the 240 KiB value limit rather than losing the whole row.
+ */
+export const VA_PURGED_TURNS_MAX = 20;
+export const VA_PURGED_WRITES_PER_TURN = 20;
+
+/**
+ * The tombstone prefix, for the admin projection. A PREFIX, so it is not asserted —
+ * `assertKvsKey` checks a whole key (the rule `vaTickPrefix` states) — and it lives
+ * beside the builder so the read side cannot retype what the write side built.
+ */
+export const vaPurgedPrefix = () => "va_purged:";
+
+/**
  * F-575 — THE SETTLE WINDOW: how long after a tombstone is stamped no clear may happen.
  *
  * THE NUMBER LIVES HERE, NOT IN `va-config.js`, for the `VA_COMPACT_BACKOFF_TTL` reason

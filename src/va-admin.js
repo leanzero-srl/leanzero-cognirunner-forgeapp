@@ -109,6 +109,8 @@ import {
 } from "./virtual-admin.js";
 import {
   vaWizardKey, vaTickPrefix, vaEffectPrefix, VA_WIZARD_TTL, VA_CLAIM_TTL,
+  // F-595 — the tombstone prefix, for the one purge an admin must act on.
+  vaPurgedPrefix,
 } from "./shared/va-keys.js";
 import {
   createWizard, resumeWizard, stepWizard, serializeWizardState, clampSay,
@@ -473,6 +475,66 @@ export const listAgents = async (_args = {}, injected = {}) => {
     });
   }
   return okv({ agents, unconfigured, truncated: vaRows.length > VA_ADMIN_AGENTS_MAX });
+};
+
+/**
+ * F-595 — `listRecentPurges`: THE AGENTS THAT WROTE WHILE THEY WERE BEING DELETED.
+ *
+ * `listAgents` can only ever show agents that still EXIST, and the purge an admin most
+ * needs to see is one where the agent is gone and its last turn had already put a comment
+ * on an issue. That turn writes no ledger row — every ledger writer refuses under the
+ * tombstone (F-553) — and its task result reaches no surface, so before this the tab's
+ * F-577 copy had nothing to render and the writes survived only in `forge logs`.
+ *
+ * The carrier is the TOMBSTONE, appended to by the purged turn itself
+ * (`recordPurgedTurnWrites`, src/va-ledger.js). This is the READ half, and it is a
+ * PANEL OF EVIDENCE, not a decision: §3's rule stands — `clearPurgeTombstone` remains the
+ * only authority on whether a tombstone may go, and nothing here influences it.
+ *
+ * ONLY TOMBSTONES WITH LANDED WRITES ARE RETURNED. Every delete leaves a tombstone for
+ * three days; listing all of them would be a list of ordinary deletes with the one row
+ * that matters buried in it. A purge with no writes behind it is honestly uneventful.
+ *
+ * It is TTL-BOUNDED by the row itself (`VA_PURGED_TTL`, three days), which is the right
+ * horizon: past that the agent is long gone and the note is history, not an action.
+ */
+export const VA_ADMIN_PURGES_MAX = 20;
+/** Rows read before filtering. Every delete leaves a tombstone; few carry writes. */
+export const VA_ADMIN_PURGE_SCAN = 100;
+
+export const listRecentPurges = async ({ limit = VA_ADMIN_PURGES_MAX } = {}, injected = {}) => {
+  const deps = withAdminDeps(injected);
+  const want = Math.max(1, Math.min(Math.trunc(Number(limit) || VA_ADMIN_PURGES_MAX), VA_ADMIN_PURGES_MAX));
+  const scan = await scanPrefix(deps.store, vaPurgedPrefix(), VA_ADMIN_PURGE_SCAN);
+  // A scan fault is REPORTED, never rendered as "no agent wrote during a delete" — the
+  // one sentence this panel must never say falsely.
+  if (!scan.ok) return scan;
+  const purges = [];
+  for (const row of asArray(scan.rows)) {
+    const v = row && row.value;
+    if (!isObj(v)) continue;
+    const turns = asArray(v.turns).filter(isObj).map((t) => ({
+      at: t.at || null,
+      issueKey: t.issueKey || null,
+      writes: asArray(t.landedWrites).map((w) => String(w)),
+    })).filter((t) => t.writes.length);
+    if (!turns.length) continue;
+    purges.push({
+      // The agent id is taken from the ROW, not parsed back out of the key: the writer
+      // stamped it, and a key re-split here would be a second reading of a format that
+      // has one author.
+      agent: v.agent ? String(v.agent) : String(row.key || "").slice(vaPurgedPrefix().length),
+      purgedAt: v.at || null,
+      turns,
+      writeCount: turns.reduce((n, t) => n + t.writes.length, 0),
+    });
+  }
+  // Newest purge first — an admin acts on the one that just happened.
+  purges.sort((a, b) => String(b.purgedAt || "").localeCompare(String(a.purgedAt || "")));
+  return okv({
+    purges: purges.slice(0, want),
+    truncated: purges.length > want || Boolean(scan.cursor),
+  });
 };
 
 /**

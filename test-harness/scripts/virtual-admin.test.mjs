@@ -38,6 +38,10 @@ const { VA_LIMITS } = await import("../../src/shared/va-config.js");
 // The KEY BUILDERS, never retyped as string literals here: a test that spells a key
 // itself passes while the engine writes a different one (F-346's shape, in a suite).
 const K = await import("../../src/shared/va-keys.js");
+// F-595 — the READ half of the mid-turn purge lives in the admin projection, and the
+// point of the finding is that the engine's report reaches a SURFACE. Asserting it
+// through `listRecentPurges` rather than by re-reading the row is what makes that true.
+const A = await import("../../src/va-admin.js");
 
 const AG = "job_va1";
 const reset = () => kvs.__reset();
@@ -2386,6 +2390,79 @@ reset();
   const effects = await L.listEffects?.(kvs, AG);
   ok(!effects || !effects.rows || effects.rows.length === 0,
     "F-571.receipt_free — no effects row is minted for a purged agent, even though the writes are now reported");
+
+  /* ── F-595. THE ONE PURGE AN ADMIN MUST ACT ON IS NOW VISIBLE ────────────────
+   *
+   * Everything above proved the turn REPORTS its landed writes — to the queue task
+   * result and to the log. Neither reaches a surface: `publicReceipt` projects tick
+   * receipts and never a task result, so F-577's solid-red row was copy that could not
+   * fire and this purge was invisible in the product.
+   *
+   * The carrier is the TOMBSTONE — the one row still writable under itself. Asserted
+   * end to end, from the turn that just ran to the projection the tab calls. */
+  const tombRow = await kvs.get(K.vaPurgedKey(AG));
+  ok(Array.isArray(tombRow && tombRow.turns) && tombRow.turns.length === 1,
+    `F-595.carrier — the purged turn APPENDED to the tombstone (got ${JSON.stringify(tombRow)})`);
+  eq(tombRow.turns[0].issueKey, "SUP-1", "F-595.carrier — …naming the issue it was working on");
+  eq((tombRow.turns[0].landedWrites || [])[0], "set_assignee SUP-1",
+    "F-595.carrier — …and the write itself, the same string the task result and the log carry");
+  ok(typeof tombRow.at === "string" && tombRow.at.length > 0,
+    "F-595.carrier — …and the purge's own stamp is NOT clobbered by the append");
+
+  const projected = await A.listRecentPurges({}, { store: kvs });
+  eq(projected.ok, true, `F-595.projection — the Agents tab can read it (got ${JSON.stringify(projected).slice(0, 200)})`);
+  eq((projected.purges || []).length, 1, "F-595.projection — exactly one recently-deleted agent wrote during its deletion");
+  eq(projected.purges[0].agent, AG, "F-595.projection — …named, so the note can say which agent");
+  eq(projected.purges[0].writeCount, 1, "F-595.projection — …with the write count the copy renders");
+  eq(projected.purges[0].turns[0].writes[0], "set_assignee SUP-1",
+    "F-595.projection — …and the named write, so an admin knows WHAT to go and undo");
+
+  // AND THE LEDGER IS STILL SHUT. The append must not have re-opened a writer: this is
+  // a note ON the tombstone, not a row written UNDER it.
+  eq((await L.saveItem(kvs, AG, "SUP-1", { state: "queued", event: "queued" })).ok, false,
+    "F-595.still_refusing — appending the note did not unlock the ledger for the dead agent");
+}
+
+/* ══ F-595 (b). THE PROJECTION'S THREE REFUSALS ══════════════════════════════
+ *
+ * A panel that says "no agent wrote during a delete" when it could not read is worse
+ * than no panel, and a panel listing every ordinary delete buries the one that matters. */
+reset();
+{
+  // An ordinary delete — a tombstone with no writes behind it — is NOT listed.
+  await L.markAgentPurged(kvs, "job_quiet");
+  const quiet = await A.listRecentPurges({}, { store: kvs });
+  eq(quiet.ok, true, "F-595.quiet — the projection reads");
+  eq((quiet.purges || []).length, 0,
+    `F-595.quiet — an ordinary delete is not listed; only one with writes behind it is (got ${JSON.stringify(quiet.purges)})`);
+
+  // THE APPEND NEVER CREATES THE ROW. A cleared tombstone means a RE-CREATED agent, and
+  // re-stamping one here would mute a live agent's ledger for three days (F-512's harm).
+  const none = await L.recordPurgedTurnWrites(kvs, "job_recreated", { issueKey: "SUP-1", landedWrites: ["add_comment SUP-1"] });
+  eq(none.ok, false, "F-595.no_resurrection — a turn that finds no tombstone writes NOTHING");
+  eq(none.reason, "no_tombstone", "F-595.no_resurrection — …and says why");
+  ok((await kvs.get(K.vaPurgedKey("job_recreated"))) == null,
+    "F-595.no_resurrection — …so a re-created agent does not inherit a tombstone from the turn it raced");
+
+  // A SCAN FAULT IS REPORTED, never rendered as an empty list.
+  const blind = { get: (k) => kvs.get(k), set: (k, v, o) => kvs.set(k, v, o), delete: (k) => kvs.delete(k) };
+  const degraded = await A.listRecentPurges({}, { store: blind });
+  eq(degraded.ok, false, "F-595.scan_unavailable — a store that cannot scan says so rather than answering 'nobody wrote'");
+
+  // THE BOUND. A pathological agent cannot grow the row without limit.
+  reset();
+  await L.markAgentPurged(kvs, "job_many");
+  for (let i = 0; i < K.VA_PURGED_TURNS_MAX + 5; i++) {
+    await L.recordPurgedTurnWrites(kvs, "job_many", { issueKey: `SUP-${i}`, landedWrites: ["add_comment SUP-x"] });
+  }
+  const many = await kvs.get(K.vaPurgedKey("job_many"));
+  eq(many.turns.length, K.VA_PURGED_TURNS_MAX, "F-595.bounded — the tombstone keeps at most VA_PURGED_TURNS_MAX turns");
+  eq(many.turns[many.turns.length - 1].issueKey, `SUP-${K.VA_PURGED_TURNS_MAX + 4}`,
+    "F-595.bounded — …and it is the NEWEST that survive, since the oldest have been visible longest");
+  const perTurn = await L.recordPurgedTurnWrites(kvs, "job_many", {
+    issueKey: "SUP-flood", landedWrites: Array.from({ length: K.VA_PURGED_WRITES_PER_TURN + 10 }, (_, i) => `add_comment SUP-${i}`),
+  });
+  eq(perTurn.writes, K.VA_PURGED_WRITES_PER_TURN, "F-595.bounded — …and one turn's named writes are capped too");
 }
 
 /* ══ F-571 (b). A HEALTHY TURN IS UNTOUCHED ══════════════════════════════════

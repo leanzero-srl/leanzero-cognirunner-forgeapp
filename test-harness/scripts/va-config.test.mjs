@@ -25,7 +25,7 @@ import assert from "node:assert/strict";
 import {
   normalizeVa, renderGuardrailSentences, vaWriteScope, clampPersonaName,
   VA_DEFAULTS, VA_LIMITS, VA_CEILINGS, VA_POWERS, VA_REGISTERS, VA_LANGUAGES, VA_PERSONA_NAME_MAX,
-  VA_JQL_MAX, VA_PROJECT_KEY_RE, VA_ITEM_STATES,
+  VA_JQL_MAX, VA_PROJECT_KEY_RE, VA_ITEM_STATES, vaConfluenceSpaces, VA_CONFLUENCE_SPACES_MAX,
 } from "../../src/shared/va-config.js";
 import * as limits from "../../src/shared/registry-limits.js";
 import { validateCron, cronToPreset } from "../../src/shared/cron.js";
@@ -129,7 +129,9 @@ throws(() => normalizeVa(base({ cadence: { preset: "custom" } }), CTX), /cadence
   ok(reasonsFor(r, "powers.deleteIssues").length === 1 && reasonsFor(r, "powers.changeWorkflow").length === 1,
     "an unknown power is refused BY NAME");
   ok(!("deleteIssues" in r.va.powers) && r.va.powers.replyPublic === true, "unknown powers are dropped, known ones kept");
-  ok(Object.keys(r.va.powers).sort().join(",") === [...VA_POWERS, "skillIds"].sort().join(","), "the power set is closed");
+  // `skillIds` and `confluenceSpaces` are LISTS, not flags: they are not in VA_POWERS
+  // (which is the closed set of booleans) but they are part of the powers block.
+  ok(Object.keys(r.va.powers).sort().join(",") === [...VA_POWERS, "skillIds", "confluenceSpaces"].sort().join(","), "the power set is closed");
   ok(!Object.keys(r.va.powers).some((k) => /workflow|scheme|permission|role|admin|config/i.test(k)),
     "there is no configuration-write power at all — configuration has no action, so it has no flag");
 }
@@ -262,6 +264,24 @@ throws(() => normalizeVa(base({ cadence: { preset: "custom" } }), CTX), /cadence
   ok(w.from === "00:00" && w.to === "17:30", "a malformed time of day falls back to the open end");
   const empty = norm({ cadence: { preset: "hourly", timeZone: "UTC", postWindow: { days: [] } } }).va.cadence.postWindow;
   ok(empty.days.length === 7, "no days listed means NO RESTRICTION, never never");
+}
+
+/* ── 8b. powers.confluenceSpaces (1.5 commit 4c) ──────────────────────────────── */
+{
+  const r = norm({ powers: { confluenceWrite: true, confluenceSpaces: ["eng", "ENG", "~alice", "not a key!", { key: "hr" }] } });
+  ok(r.va.powers.confluenceSpaces.join(",") === "ENG,~ALICE,HR", "space keys are upper-cased, de-duplicated and object-or-string");
+  ok(reasonsFor(r, "powers.confluenceSpaces").some((x) => /not a key/.test(x)), "a malformed space key is reported by name");
+  ok(norm({ powers: { confluenceWrite: true, confluenceSpaces: Array.from({ length: 30 }, (_, i) => `S${i}`) } }).va.powers.confluenceSpaces.length === VA_CONFLUENCE_SPACES_MAX,
+    "the space list is capped");
+  // WRITING ON WITH NO SPACE is a reported clamp, not a refused save: the wizard sets
+  // the power and the spaces in two steps.
+  ok(reasonsFor(norm({ powers: { confluenceWrite: true } }), "powers.confluenceSpaces").some((x) => /cannot write to it/.test(x)),
+    "confluenceWrite with no space says the agent cannot write");
+  // vaConfluenceSpaces: the POWER is the first gate. A list left behind by a power that
+  // was switched off must not still authorise anything.
+  ok(vaConfluenceSpaces(norm({ powers: { confluenceWrite: true, confluenceSpaces: ["ENG"] } }).va).join(",") === "ENG", "vaConfluenceSpaces reads the list");
+  ok(vaConfluenceSpaces(norm({ powers: { confluenceWrite: false, confluenceSpaces: ["ENG"] } }).va).length === 0, "vaConfluenceSpaces.BLOCK_power_off");
+  ok(vaConfluenceSpaces(null).length === 0 && vaConfluenceSpaces({}).length === 0, "vaConfluenceSpaces never throws on a junk record");
 }
 
 /* ── 9. powers.skillIds ───────────────────────────────────────────────────────── */

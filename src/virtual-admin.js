@@ -55,15 +55,16 @@ import {
   fingerprintOf, diffCandidates,
   withItemClaim, takePostClaim,
   recordTick, recordTickHealth, recordEffect,
-  readCaps, capsAllow, bumpCaps,
+  readCaps, capsAllow, bumpCaps, readHealth, draftIsApproved,
   readMemory, writeMemory, memoryPromptBlock,
 } from "./va-ledger.js";
 import {
   VA_LIMITS, VA_DEFAULTS, VA_PROJECT_KEY_RE, VA_JQL_MAX,
-  renderGuardrailSentences, vaWriteScope,
+  renderGuardrailSentences, vaWriteScope, vaConfluenceSpaces,
 } from "./shared/va-config.js";
 import { lintVoice } from "./shared/voice-lint.js";
 import { assertWriteScope } from "./shared/agent-actions.js";
+import { createVaLedgerExecutor, VA_LEDGER_ACTION_IDS } from "./va-ledger-actions.js";
 import { clampChars } from "./shared/text-clamp.js";
 
 const nowIso = (ms) => new Date(ms == null ? Date.now() : ms).toISOString();
@@ -252,7 +253,7 @@ const sweepQueues = async (va, deps, remaining) => {
  * agent on an issue is not a grant to write on it — the write-scope gate still decides
  * that, from the write scope alone.
  */
-export const sweepIntake = async (va, deps, { maxCandidates = VA_LIMITS.maxCandidatesPerTick } = {}) => {
+export const sweepIntake = async (va, deps, { maxCandidates = VA_LIMITS.maxCandidatesPerTick, selfAccountId = null } = {}) => {
   const intake = isObj(va.intake) ? va.intake : {};
   const projects = readScopeProjects(va);
   const seen = new Map();
@@ -263,7 +264,11 @@ export const sweepIntake = async (va, deps, { maxCandidates = VA_LIMITS.maxCandi
   const take = (issue, source) => {
     const key = issue && issue.key;
     if (!key || seen.has(key) || seen.size >= cap) return;
-    seen.set(key, { key, source, issue, fingerprint: fingerprintOf(issue), mention: source === "mention" });
+    // THE SWEEP'S FINGERPRINT IS AUTHORSHIP-AWARE TOO (F-452). It is diffed against the
+    // stored one to decide "has this issue changed since we last looked", and our OWN
+    // comment is not a change: counting it made every issue the agent had just replied to
+    // look freshly touched on the next tick, so the agent re-worked its own conversation.
+    seen.set(key, { key, source, issue, fingerprint: fingerprintOf(issue, { selfAccountId }), mention: source === "mention" });
   };
 
   const q = await sweepQueues(va, deps, cap);
@@ -352,12 +357,24 @@ export const runVaTick = async ({ job, tickId = null, deps: injected = {} } = {}
     // as the SPEECH (there), and an agent that keeps sweeping while paused is a bill.
     if (isObj(va.status) && va.status.paused === true) {
       await recordTick(deps.store, agent, { tickId: tick, phase: "prepare", started, candidates: 0, staged: 0, skipped: [{ key: "(agent)", reason: "paused" }] });
+      // A PAUSED tick is NOT a watched tick: it did no work, so it does not count toward
+      // shadow mode. Pausing an agent for a week and unpausing it must not have "used up"
+      // the shadow period nobody was watching.
       await recordTickHealth(deps.store, agent, true, { now: deps.now() });
       return { ok: true, paused: true, candidates: 0, fannedOut: 0, skipped: [{ key: "(agent)", reason: "paused" }] };
     }
 
     const maxItems = Math.max(0, Math.trunc(guard(va, "maxItemsPerTick")));
-    const sweep = await sweepIntake(va, deps, {});
+    // THE IDENTITY, ONCE PER TICK (F-451/F-452). The sweep fingerprints every candidate
+    // and the diff compares those against the stored rows, so the sweep must use the same
+    // authorship-aware rule the stage baseline and the post gates use. A fault here does
+    // NOT stop the tick — a prepare tick writes nothing anybody can see and the item turn
+    // refuses on its own — but it is recorded, because a tick that silently fingerprinted
+    // by a different rule is how F-452 hid.
+    const selfRead = await deps.selfAccountId();
+    const selfAccountId = selfRead && selfRead.ok ? selfRead.accountId : null;
+    if (!selfAccountId) skipped.push({ key: "(agent)", reason: "self_unknown" });
+    const sweep = await sweepIntake(va, deps, { selfAccountId });
     candidates = sweep.candidates.length;
     skipped.push(...sweep.dead, ...sweep.notes);
 
@@ -415,14 +432,14 @@ export const runVaTick = async ({ job, tickId = null, deps: injected = {} } = {}
       candidates, staged: fannedOut, skipped,
       next: deps.nextRunOf ? deps.nextRunOf(job) : null,
     });
-    await recordTickHealth(deps.store, agent, true, { now: deps.now() });
+    await recordTickHealth(deps.store, agent, true, { now: deps.now(), phase: "prepare" });
     return { ok: true, candidates, fannedOut, skipped, queue: queueKey };
   } catch (e) {
     const error = String((e && e.message) || e).slice(0, 300);
     // BOTH, and in this order: the receipt is the evidence, the health row is the banner.
     // F-426 is precisely the defect of deriving the second from the first.
     await recordTick(deps.store, agent, { tickId: tick, phase: "prepare", started, candidates, staged: fannedOut, skipped, error });
-    await recordTickHealth(deps.store, agent, false, { reason: error, now: deps.now() });
+    await recordTickHealth(deps.store, agent, false, { reason: error, now: deps.now(), phase: "prepare" });
     return { ok: false, reason: "tick_failed", detail: error, candidates, fannedOut };
   }
 };
@@ -497,68 +514,39 @@ export const decideAudience = ({ requested, va, issue, addresseeAccountId = null
  * 5. THE ITEM TURN — one issue, one bounded turn, and NO direct speech
  * ════════════════════════════════════════════════════════════════════════════ */
 
-const S = (properties, required) => ({ type: "object", properties, required, additionalProperties: false });
-
 /**
- * THE SPEECH AND STATE ACTIONS.
+ * THE SPEECH AND STATE ACTIONS NOW LIVE IN THE CATALOGUE (1.5 commit 4a).
  *
- * WHERE THEY LIVE, and why they live here TODAY. The `ledger` namespace is already
- * declared in `src/shared/agent-actions.js` with `executor: "va-ledger"` and
- * `reserved: true`; 1.5 commit 4 fills it with rows and this file becomes the executor
- * the table already names. Until that cut lands, the definitions have ONE home and it is
- * this constant — not a copy in the prompt and a copy in the dispatcher.
+ * They were defined here as `VA_SPEECH_ACTIONS` while the `ledger` namespace was still
+ * RESERVED. That namespace is now filled: the rows are in `src/shared/agent-actions.js`
+ * beside every other action the product has, the executor is `src/va-ledger-actions.js`,
+ * and this file reads the ids rather than owning the definitions. The consequence that
+ * matters is that the admin checklist, the REST validator and the gate now see these
+ * five actions — while they lived here, none of them did.
  *
- * WHAT IS NOT HERE, and never will be:
- *   · `post_comment`, or any action that speaks immediately. Speech is staged, always.
- *     The guarantee is not that the agent is told not to post — it is that there is no
- *     tool that posts, which is a code guarantee rather than a sentence in a prompt.
- *   · any configuration write. No scheme, workflow, permission, role or field action
- *     exists, so `propose_change` is not "the approved route", it is the ONLY route.
- *     A gate would imply a second one exists.
+ * `stage_reply` is offered only to an agent that may speak at all; the rest are an
+ * agent's own notebook and are unconditional. See `ledgerActionsFor`.
  */
-export const VA_SPEECH_ACTIONS = Object.freeze([
-  {
-    id: "stage_reply", label: "Stage a reply",
-    description: "Write the reply you want to send. It is NOT sent now: it is staged, checked and sent on a later run, at least a few minutes from now. Say who it is for: 'customer' only when you are answering the person who raised the request, otherwise 'internal' for a note your colleagues see. Plain sentences, no bullet points, no headings.",
-    parameters: S({
-      audience: { type: "string", enum: ["customer", "internal"], description: "Who reads it. 'customer' is only possible on a portal request, to its reporter." },
-      body: { type: "string", description: "The message, in plain sentences." },
-      reason: { type: "string", description: "One line: why this reply, for the ledger. The customer never sees it." },
-    }, ["audience", "body", "reason"]),
-  },
-  {
-    id: "ask_human", label: "Ask a human",
-    description: "Stop and ask a person. Use it when you need a decision, a permission or a fact you cannot read. The item waits and you will not be charged for it again until somebody answers.",
-    parameters: S({
-      summary: { type: "string", description: "What you are asking, in one or two sentences." },
-      needs: { type: "string", description: "Exactly what would unblock you." },
-    }, ["summary", "needs"]),
-  },
-  {
-    id: "propose_change", label: "Propose a change",
-    description: "Propose a change you are NOT allowed to make yourself — a scheme, a workflow, a permission, a field, or a bulk edit. This never executes anything. It files the proposal for a human to decide.",
-    parameters: S({
-      kind: { type: "string", description: "What kind of change, e.g. workflow, permission, field, bulk-edit." },
-      target: { type: "string", description: "What it would affect." },
-      blastRadius: { type: "string", description: "How many issues, projects or people it would touch." },
-      steps: { type: "string", description: "The steps a human would follow." },
-    }, ["kind", "target", "blastRadius", "steps"]),
-  },
-  {
-    id: "ledger_note", label: "Note on this item",
-    description: "Record one short note about THIS issue for your next run on it.",
-    parameters: S({ note: { type: "string", description: "One or two sentences." } }, ["note"]),
-  },
-  {
-    id: "memory_note", label: "Remember this",
-    description: "Record something you have learned that will still be true next week, about this instance rather than this issue. Mark it as a constraint only when it is a rule you must always follow.",
-    parameters: S({ note: { type: "string" }, constraint: { type: "boolean", description: "True only for a standing rule." } }, ["note"]),
-  },
-]);
-
-export const VA_SPEECH_ACTION_IDS = VA_SPEECH_ACTIONS.map((a) => a.id);
-
-const speechToolDefinitions = () => VA_SPEECH_ACTIONS.map((a) => ({ type: "function", function: { name: a.id, description: a.description, parameters: a.parameters } }));
+/**
+ * The LEDGER action ids this agent's powers allow.
+ *
+ * `replyPublic` / `replyInternal` decide whether `stage_reply` is a tool at all — an
+ * agent with neither power has no way to draft speech, which is a code guarantee rather
+ * than a prompt sentence. WHICH AUDIENCE a draft ends up with is a second, later gate
+ * (`decideAudience`), because `replyPublic` off must DOWNGRADE a customer reply to an
+ * internal note rather than lose it.
+ *
+ * `ask_human`, `propose_change`, `ledger_note` and `memory_note` are unconditional: they
+ * write in the agent's own ledger and change nothing anyone else can see, and an agent
+ * that cannot say "I am stuck" or "this needs a human" is an agent that guesses instead.
+ */
+export const ledgerActionsFor = (va) => {
+  const p = isObj(va && va.powers) ? va.powers : {};
+  const ids = [];
+  if (p.replyPublic === true || p.replyInternal === true) ids.push("stage_reply");
+  for (const id of VA_LEDGER_ACTION_IDS) if (id !== "stage_reply") ids.push(id);
+  return ids;
+};
 
 /**
  * THE FREE JIRA ACTIONS this agent's POWERS allow.
@@ -578,12 +566,82 @@ export const freeActionsFor = (va) => {
   if (p.assign) ids.push("set_assignee");
   if (p.transition) ids.push("transition_issue");
   if (p.editFields) ids.push("update_fields", "add_labels", "remove_labels");
-  // NOTE (commits 4/6): `confluenceRead`/`confluenceWrite`/`git`/`webSearch` decide the
-  // item's QUEUE today (see `itemQueueFor`) and nothing else. Their tools arrive with
-  // their executors. Listing a tool here before its executor exists would give the model
-  // a capability that refuses at dispatch, which reads to it as a broken instance.
   return ids;
 };
+
+/* ══════════════════════════════════════════════════════════════════════════════
+ * POWERS -> TOOLS (1.5 commit 4c)
+ *
+ * THE POWERS ARE THE GATE. Not `normalizeAllowedActions`: a VA does not carry an
+ * `agent.allowedActions` list an admin ticked, it carries POWERS an operator turned on
+ * in the wizard, and those are the verdict. Everything below turns that verdict into a
+ * tool list, and the item turn passes it `pregated: true` so nothing re-decides it.
+ *
+ * THE `confirm` FLAG IS NOT APPLIED HERE, AND THAT IS THE FRAME'S RULE, NOT AN OMISSION.
+ * `confirm` means "on a headless surface, only an ADMIN-saved rule may hold this" — a
+ * gate that exists because a listener or a job has nobody to ask. A VA turn is headless
+ * too, but it NEVER OPENS A CONSENT TICKET: there is no halt path anywhere in this file
+ * and none is coming. So a `confirm` action the POWERS do not allow is simply absent
+ * from the list and refused by `assertAgentActionAllowed` if the model invents it, and
+ * one the powers DO allow executes under the write scope, with the install probe gating
+ * Confluence fail-open. The operator who ticked `confluenceWrite` in the wizard IS the
+ * confirmation; asking again, of nobody, at three in the morning, is not a gate.
+ * ════════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * The CONFLUENCE tools. `confluenceRead` buys the two reads; `confluenceWrite` implies
+ * read (an agent that may change a page but not read it first would be writing blind)
+ * and adds the three writes.
+ *
+ * The WRITES are bounded by the SPACE allow-list (`powers.confluenceSpaces`), not by the
+ * Jira write scope — a page has a space and no project. An empty allow-list still offers
+ * the tools and refuses every write with a sentence the model can read, because "you may
+ * write in Confluence but nobody has said where" is a configuration mistake the agent
+ * should report rather than a capability it should not know it has.
+ */
+export const confluenceActionsFor = (va) => {
+  const p = isObj(va && va.powers) ? va.powers : {};
+  if (p.confluenceRead !== true && p.confluenceWrite !== true) return [];
+  const ids = ["confluence_search", "confluence_get_page"];
+  if (p.confluenceWrite === true) ids.push("confluence_create_page", "confluence_update_page", "confluence_add_comment");
+  return ids;
+};
+
+/**
+ * The GIT tools — READS ONLY, and the FRAME says nothing that widens it.
+ *
+ * A Virtual Administrator reads a pull request or a build to ANSWER a question on an
+ * issue. Committing, opening a PR, approving one or triggering a deploy are the Coder's
+ * job, on a surface where a human asked for a change and can see the result. Giving them
+ * to an unattended queue-worker would put an agent's unreviewed commit in somebody's
+ * repository at three in the morning, which is exactly the class of write this release
+ * built a two-phase speech clock to avoid for mere COMMENTS.
+ */
+export const GIT_READ_ACTION_IDS = Object.freeze(["get_pull_request", "get_build_state", "get_deploy_status"]);
+export const gitActionsFor = (va) => {
+  const p = isObj(va && va.powers) ? va.powers : {};
+  return p.git === true ? [...GIT_READ_ACTION_IDS] : [];
+};
+
+/** The WEB tool. One action, one per-run budget, and the tenant's MCP toggle at run time. */
+export const webActionsFor = (va) => {
+  const p = isObj(va && va.powers) ? va.powers : {};
+  return p.webSearch === true ? ["web_search"] : [];
+};
+
+/**
+ * THE WHOLE TOOL LIST for one item turn, in namespace order. ONE function, so that the
+ * turn, the tests and anything that later renders "what can this agent do" read the same
+ * answer. Order is the catalogue's, which keeps the cached prompt prefix stable across
+ * items of a tick (F-417).
+ */
+export const toolActionsFor = (va) => [
+  ...ledgerActionsFor(va),
+  ...freeActionsFor(va),
+  ...confluenceActionsFor(va),
+  ...gitActionsFor(va),
+  ...webActionsFor(va),
+];
 
 /**
  * `va-item` — ONE bounded turn on ONE issue.
@@ -651,6 +709,14 @@ const oneItemTurn = async ({ job, va, agentId, issueKey, tick, deps }) => {
   }
 
   const issue = await deps.getIssue(issueKey);
+  // THE IDENTITY, BEFORE THE MODEL IS CALLED (F-452/F-453). The staged draft's freshness
+  // BASELINE is authorship-aware, so a turn that cannot tell our comments from theirs
+  // would stage a draft the post phase is then guaranteed to drop — a model call spent to
+  // produce something that cannot be sent. Refusing costs nothing and says so; the post
+  // pass refuses on the same fact (F-451), and now both halves agree.
+  const self = await deps.selfAccountId();
+  const selfAccountId = self && self.ok ? self.accountId : null;
+  if (!selfAccountId) return { ok: false, reason: "self_unknown" };
   const memory = (await readMemory(deps.store, agentId)).memory;
 
   /* — the STABLE PREFIX: persona, rules, guardrails, knowledge, memory — */
@@ -700,157 +766,97 @@ const oneItemTurn = async ({ job, va, agentId, issueKey, tick, deps }) => {
     ].join("\n"),
   });
 
-  /* — the TOOLS: speech actions plus whatever the powers allow — */
+  /* — the TOOLS: ONE list, from the catalogue, decided by the POWERS — */
+  //
+  // THE POWERS ARE THE GATE (1.5 commit 4c). `pregated: true` says so: this list is
+  // already a verdict, reached from the agent's own record, and `toolDefinitionsFor`
+  // must not re-decide it against the restrictive default (F-275). It also means the
+  // catalogue's `confirm` flag — "only an ADMIN-saved rule may hold this" — is NOT
+  // applied here, deliberately: a VA turn is headless and has no admin to ask, so an
+  // action the powers allow executes under the write scope, and an action the powers do
+  // NOT allow is simply absent from this list and refused by `assertAgentActionAllowed`
+  // if the model invents it. A headless VA turn NEVER opens a consent ticket; there is
+  // no halt path anywhere in this file.
   const freeIds = freeActionsFor(va);
-  const tools = [...speechToolDefinitions(), ...deps.toolDefinitionsFor(freeIds, { pregated: true })];
+  const allowedIds = toolActionsFor(va);
+  const tools = deps.toolDefinitionsFor(allowedIds, { pregated: true });
 
-  /* — the DISPATCH — */
-  const outcome = { staged: null, asked: false, proposed: false, notes: 0, memories: 0, refusals: [] };
+  /* — the DISPATCH: ONE dispatcher, namespaces delegated to their executors — */
   const session = await deps.createSession({ issueKey, config: job });
-  const jiraDispatch = deps.createDispatcher({
-    issueKey, session, allowed: freeIds, m: deps.m, executors: {},
+  /**
+   * THE INBOX DISPATCHER (F-455). A SECOND dispatcher over the SAME session, allowing
+   * exactly one action: `create_issue`.
+   *
+   * Separate from the model's dispatcher because the model must never be offered
+   * `create_issue` — the approval inbox is not a target it may name, and a tool that
+   * creates issues anywhere is the opposite of "speech is staged". Sharing the SESSION is
+   * the point: one `session.changes`, so an inbox issue counts against the same
+   * `maxWritesPerRun` as a transition, and one write scope, so the inbox project is
+   * checked like any other target.
+   */
+  const inboxDispatch = deps.createDispatcher({
+    issueKey, session, allowed: ["create_issue"], m: deps.m, executors: {},
+    maxWrites: Math.max(0, Math.trunc(guard(va, "maxWritesPerRun"))),
+    writeScope: vaWriteScope(va),
+  });
+
+  const ledgerExecutor = deps.createLedgerExecutor({
+    store: deps.store, agentId, issueKey, va, issue, tickId: tick, memory,
+    now,
+    // THE INBOX WRITE GOES THROUGH THE DISPATCHER (F-455) — write scope, write brake and
+    // change ledger, exactly like every other write this run makes.
+    createIssue: (fields) => inboxDispatch("create_issue", fields),
+    decideAudience, fingerprintOf,
+    // Read from the ISSUE, never from a tool argument — see the executor's own note.
+    addresseeAccountId: lastCommentAuthorOf(issue),
+    // THE SAME identity the post phase uses, so the stage baseline and `gateFreshness`
+    // read one definition of "the thread moved" (F-453).
+    selfAccountId,
+    log: deps.log,
+  });
+  const outcome = ledgerExecutor.outcome;
+  outcome.refusals = [];
+  // THE NON-JIRA NAMESPACES. Each is built ONLY when its power is on: a namespace with
+  // no executor REFUSES at dispatch (agent-runner.js), and a tool the model is offered
+  // and then refused for reasons it cannot see reads to it as a broken instance.
+  const executors = { ledger: ledgerExecutor };
+  if (confluenceActionsFor(va).length) {
+    executors.confluence = deps.createConfluenceExecutor({
+      simulation: session.simulated === true,
+      // The SPACE allow-list, from the record. `vaConfluenceSpaces` returns EMPTY when
+      // `confluenceWrite` is off, so a read-only Confluence agent cannot write even if a
+      // space list was left behind by a power that was later switched off.
+      spaces: vaConfluenceSpaces(va),
+      log: deps.log,
+    });
+  }
+  if (gitActionsFor(va).length) executors.git = deps.createGitExecutor({ simulation: session.simulated === true, log: deps.log });
+  if (webActionsFor(va).length) {
+    executors.web = deps.createWebExecutor({
+      // THE RUN'S SEARCH CEILING (F-407). A VA item turn IS the run — a tick fans out to
+      // one task per item — so the ceiling is created here, once per turn, and not once
+      // per tick: a tick's items are separate tasks on separate invocations and could not
+      // share an in-memory counter even if they should.
+      runBudget: deps.createRunSearchBudget(),
+      log: deps.log,
+      deadline: now() + (deps.turnBudgetMs || 100000),
+    });
+  }
+  const dispatch = deps.createDispatcher({
+    issueKey, session, allowed: allowedIds, m: deps.m, executors,
     maxWrites: Math.max(0, Math.trunc(guard(va, "maxWritesPerRun"))),
     // THE WRITE SCOPE (F-410/F-411), built by `vaWriteScope` from the record. This is the
     // only surface that passes a REAL scope today; the others pass an explicit `null`.
+    // It bounds the JIRA namespace only: a Confluence write is bounded by its SPACE
+    // allow-list and a git write by its repository allow-list, and asking a Jira project
+    // question of either would make both unresolvable and therefore always refused.
     writeScope: vaWriteScope(va),
   });
 
   const execute = async (name, args) => {
-    const a = args && typeof args === "object" ? args : {};
-    switch (name) {
-      case "stage_reply": {
-        const decided = decideAudience({
-          requested: a.audience === "customer" ? "public" : "internal",
-          va, issue, addresseeAccountId: lastCommentAuthorOf(issue),
-        });
-        const fp = fingerprintOf(issue);
-        const saved = await saveItem(deps.store, agentId, issueKey, {
-          state: "staged",
-          staged: {
-            audience: decided.audience,
-            body: String(a.body || ""),
-            reason: String(a.reason || ""),
-            // THE FRESHNESS BASELINE: the last comment id we saw when the draft was
-            // written. Gate 2 at post time compares it against a FRESH read, which is
-            // the whole of "has a human spoken since we decided what to say".
-            baseline: fp.lastCommentId == null ? "" : String(fp.lastCommentId),
-            tickId: tick,
-            stagedAt: nowIso(now()),
-          },
-          fingerprint: fp,
-          event: "staged",
-          reason: `${decided.audience} (${decided.reason})`,
-        }, { now: now() });
-        if (!saved.ok) return { success: false, error: `The reply could not be staged: ${saved.reason}.` };
-        outcome.staged = { audience: decided.audience, reason: decided.reason };
-        return {
-          staged: true, audience: decided.audience, audienceReason: decided.reason,
-          note: decided.audience === "internal" && a.audience === "customer"
-            ? "You asked for a customer reply and it was staged as an internal note instead. The reason is above. Do not try to send it another way; there is no other way."
-            : "Staged. It goes out on a later run if every check passes.",
-        };
-      }
-      case "ask_human": {
-        const summary = String(a.summary || "");
-        const needs = String(a.needs || "");
-        const inbox = String((isObj(va.guardrails) && va.guardrails.approvalProjectKey) || "");
-        // THE DUE DATE reuses `antiPileUpDays` on purpose rather than inventing a number:
-        // it is exactly "how long before this agent may speak on this issue again", so
-        // chasing a human sooner than that would break its own quiet rule.
-        const dueAt = nowIso(now() + Math.max(1, guard(va, "antiPileUpDays")) * 86400000);
-        if (inbox) {
-          // THE APPROVAL INBOX IS NOT A MODEL-CHOSEN TARGET. The project comes from the
-          // record, validated at save time; the model cannot name it and cannot reach any
-          // other project through this action. That is why this create does not go
-          // through the write-scope gate: there is no argument for the gate to check.
-          try {
-            const created = await deps.createIssue({
-              project: { key: inbox }, issuetype: { name: "Task" },
-              summary: clampChars(`${persona.name || "Agent"} needs a decision on ${issueKey}`, 250),
-              description: `${summary}\n\nWhat would unblock it: ${needs}\n\nIssue: ${issueKey}`,
-            });
-            await saveItem(deps.store, agentId, issueKey, { state: "waiting_on_human", dueAt, event: "asked", reason: clampChars(summary, 200) }, { now: now() });
-            outcome.asked = true;
-            return { asked: true, where: `${inbox} (${created && created.key})`, note: "A human has been asked. This item now waits; you will not work it again until they answer or it falls due." };
-          } catch (e) {
-            return { success: false, error: `The approval inbox ${inbox} could not be written to: ${String((e && e.message) || e).slice(0, 160)}. Ask again as an internal note instead.` };
-          }
-        }
-        // NO INBOX: the question is STAGED as an internal note, so it still goes through
-        // every post gate. It does NOT bypass the two-phase clock just because it is
-        // addressed to a colleague — a question posted three times is as bad as a reply
-        // posted three times.
-        const saved = await saveItem(deps.store, agentId, issueKey, {
-          state: "staged",
-          staged: { audience: "internal", kind: "ask", body: `${summary}\n\nWhat would unblock this: ${needs}`, reason: "asking a human", baseline: String(fingerprintOf(issue).lastCommentId || ""), tickId: tick, stagedAt: nowIso(now()) },
-          dueAt, event: "asked", reason: clampChars(summary, 200),
-        }, { now: now() });
-        if (!saved.ok) return { success: false, error: `The question could not be staged: ${saved.reason}.` };
-        outcome.asked = true;
-        outcome.staged = { audience: "internal", reason: "ask_human" };
-        return { asked: true, where: "an internal note on this issue", note: "Staged as an internal note. It goes out on a later run." };
-      }
-      case "propose_change": {
-        // IT NEVER EXECUTES. Not "it executes after approval" — this action's entire
-        // implementation writes text. There is no code path from here to a scheme, a
-        // workflow, a permission or a bulk edit, because no such action exists at all.
-        const text = [
-          `Proposed ${String(a.kind || "change")} on ${String(a.target || "?")}`,
-          `Blast radius: ${String(a.blastRadius || "unknown")}`,
-          `Steps: ${String(a.steps || "")}`,
-          `Raised from ${issueKey}.`,
-        ].join("\n");
-        const inbox = String((isObj(va.guardrails) && va.guardrails.approvalProjectKey) || "");
-        outcome.proposed = true;
-        if (inbox) {
-          try {
-            const created = await deps.createIssue({
-              project: { key: inbox }, issuetype: { name: "Task" },
-              summary: clampChars(`Proposal: ${String(a.kind || "change")} on ${String(a.target || "?")}`, 250),
-              description: text,
-            });
-            await saveItem(deps.store, agentId, issueKey, { event: "proposed", reason: clampChars(String(a.kind || "change"), 200) }, { now: now() });
-            return { proposed: true, executed: false, where: `${inbox} (${created && created.key})`, note: "Filed for a human to decide. Nothing was changed." };
-          } catch (e) {
-            return { success: false, error: `The proposal could not be filed in ${inbox}: ${String((e && e.message) || e).slice(0, 160)}.` };
-          }
-        }
-        const saved = await saveItem(deps.store, agentId, issueKey, {
-          state: "staged",
-          staged: { audience: "internal", kind: "proposal", body: text, reason: "proposing a change", baseline: String(fingerprintOf(issue).lastCommentId || ""), tickId: tick, stagedAt: nowIso(now()) },
-          event: "proposed", reason: clampChars(String(a.kind || "change"), 200),
-        }, { now: now() });
-        if (!saved.ok) return { success: false, error: `The proposal could not be staged: ${saved.reason}.` };
-        outcome.staged = { audience: "internal", reason: "proposal" };
-        return { proposed: true, executed: false, where: "an internal note on this issue", note: "Staged as an internal note. Nothing was changed." };
-      }
-      case "ledger_note": {
-        const saved = await saveItem(deps.store, agentId, issueKey, { notes: String(a.note || ""), event: "note" }, { now: now() });
-        if (!saved.ok) return { success: false, error: `The note could not be saved: ${saved.reason}.` };
-        outcome.notes++;
-        return { saved: true };
-      }
-      case "memory_note": {
-        // DEFANGED AND CLAMPED AT WRITE TIME by `writeMemory` (F-423) — not here, and not
-        // at injection. One row that cannot contain a fence marker is safe at every
-        // injection site, including the ones that do not exist yet.
-        const constraints = asArray(memory.constraints).slice();
-        let text = memory.text || "";
-        if (a.constraint === true) constraints.push(String(a.note || ""));
-        else text = `${text}${text ? "\n" : ""}${String(a.note || "")}`;
-        const wrote = await writeMemory(deps.store, agentId, { text, constraints }, { now: now() });
-        if (!wrote.ok) return { success: false, error: `That could not be remembered: ${wrote.reason}.` };
-        memory.text = wrote.memory.text;
-        memory.constraints = wrote.memory.constraints;
-        outcome.memories++;
-        return { remembered: true, constraint: a.constraint === true };
-      }
-      default: {
-        const r = await jiraDispatch(name, a);
-        if (r && r.success === false) outcome.refusals.push({ name, code: r.code });
-        return r;
-      }
-    }
+    const r = await dispatch(name, args && typeof args === "object" ? args : {});
+    if (r && r.success === false) outcome.refusals.push({ name, code: r.code });
+    return r;
   };
 
   const loop = await deps.runLoop({
@@ -980,6 +986,9 @@ export const postFloorOk = ({ staged, currentTickId, minPostGapMinutes, now }) =
 
 /** GATE 1 — paused, shadow mode, kill switch. Agent-level, checked once per post run. */
 export const gatePausedShadow = ({ va, tickIndex = 0, killSwitchActive = false } = {}) => {
+  // `tickIndex` IS THE AGENT'S OWN PREPARE-TICK COUNT (F-454), read from `va_health` by
+  // the caller — not a wall-clock bucket. The argument keeps its name because the record's
+  // field is `shadowUntilTick` and renaming half of a pair is worse than naming it here.
   if (killSwitchActive) return { ok: false, reason: "kill_switch" };
   const status = isObj(va && va.status) ? va.status : {};
   if (status.paused === true) return { ok: false, reason: "paused" };
@@ -1037,6 +1046,15 @@ export const gateQuiet = ({ issue, now, quietMinutes, selfAccountId = null } = {
  * it still passes through the caps gate, against its own counter.
  */
 export const gatePileUp = ({ row, issue, now, antiPileUpDays, selfAccountId = null } = {}) => {
+  // AN UNKNOWN IDENTITY BLOCKS (F-451). The comment above this gate has always claimed a
+  // null `selfAccountId` "blocks", and it did the opposite: `lastOwnComment` cannot match
+  // anything without an identity, so it answered null, the gate read that as
+  // "we_did_not_speak_last" and PASSED. The agent could therefore pile a third reply onto
+  // its own thread precisely when it had lost track of who it was. Not being able to tell
+  // our comments from theirs is a refusal, not a pass — the same rule the write scope
+  // applies to an unresolvable project. The caller resolves the identity ONCE per pass
+  // and skips the whole pass when it cannot; this is the second wall.
+  if (selfAccountId == null || String(selfAccountId) === "") return { ok: false, reason: "self_unknown" };
   if (row && row.state === "owed") return { ok: true, reason: "owed_overrides" };
   const own = lastOwnComment(issue, selfAccountId);
   if (!own || !own.created) return { ok: true, reason: "we_did_not_speak_last" };
@@ -1151,15 +1169,49 @@ export const runVaPost = async ({ agent, tickId = null, deps: injected = {} } = 
 
   try {
     /* — GATE 1, once, for the whole run — */
-    const g1 = gatePausedShadow({ va, tickIndex: deps.tickIndex ? deps.tickIndex(job, tick) : 0, killSwitchActive: await deps.isKillSwitchActive(job) });
-    if (!g1.ok) { note("(agent)", `gate.${g1.reason}`); return await finish(); }
+    /* — GATE 1. THE SHADOW COUNT IS THE AGENT'S OWN PREPARE TICKS (F-454). — */
+    //
+    // It used to be `(now - createdAt) / 5 minutes` — the SCHEDULER's cadence, not the
+    // agent's. On a daily agent that left shadow mode 288 times faster than its operator
+    // was promised, and before the agent had run even once. The count is now the number
+    // of prepare receipts this agent has actually written.
+    //
+    // A HEALTH READ THAT FAULTS KEEPS THE AGENT IN SHADOW. "I cannot tell how many times
+    // you have been watched" is not "enough times"; the restrictive reading of an
+    // unreadable counter is the only one that keeps the promise shadow mode makes.
+    const health = await readHealth(deps.store, agentId);
+    const watched = health.ok ? health.prepareTicks : 0;
+    const g1 = gatePausedShadow({ va, tickIndex: watched, killSwitchActive: await deps.isKillSwitchActive(job) });
+    // PAUSED AND THE KILL SWITCH STOP THE WHOLE PASS. SHADOW DOES NOT (F-464).
+    //
+    // Shadow mode means "post nothing until a person has watched you" — and a person who
+    // reads a draft in the Agents tab and clicks Approve IS that person. Refusing to send
+    // what they approved made the approve button a no-op: the admin's verdict was written
+    // to `history`, the draft sat staged, and the next tick's freshness gate eventually
+    // dropped it. The reviewer's whole purpose is to say "yes, send this one", so the
+    // shadow arm is now decided PER DRAFT, below, and every other gate still applies to
+    // an approved draft exactly as it does to any other.
+    if (!g1.ok && g1.reason !== "shadow") { note("(agent)", `gate.${g1.reason}`); return await finish(); }
+    const inShadow = !g1.ok && g1.reason === "shadow";
     const window = inPostWindow(va, now);
     if (!window.ok) { note("(agent)", `gate.${window.reason}`); return await finish(); }
 
     /* — the BOUNDED scan for staged rows (F-421: bounded and recorded, like any tick) — */
     const index = await listItemIds(deps.store, agentId);
     if (!index.ok) { note("(agent)", "index_read_failed"); return await finish("index_read_failed"); }
-    const selfAccountId = await deps.selfAccountId();
+    /* — THE IDENTITY, RESOLVED ONCE FOR THE WHOLE PASS (F-451) — */
+    //
+    // Three gates (freshness, quiet, anti-pile-up) and `isOwed` all turn on telling our
+    // comments from theirs, and each of them used to ask separately. Asked once here,
+    // memoised for five minutes in the dep, and — the half that was missing — a FAULT
+    // STOPS THE PASS. Speech whose brakes cannot be evaluated does not happen; a receipt
+    // says so, so the silence is loud somewhere (§3.14 law 8).
+    const self = await deps.selfAccountId();
+    const selfAccountId = self && self.ok ? self.accountId : null;
+    if (!self || self.ok !== true || !selfAccountId) {
+      note("(agent)", "self_unknown");
+      return await finish("the app's own account could not be read, so no post gate could tell our comments from a human's");
+    }
     const voice = isObj(va.persona) && isObj(va.persona.voice) ? va.persona.voice : {};
     const writeScope = vaWriteScope(va);
     const minGap = guard(va, "minPostGapMinutes");
@@ -1172,17 +1224,35 @@ export const runVaPost = async ({ agent, tickId = null, deps: injected = {} } = 
 
     let considered = 0;
     for (const issueKey of index.ids) {
-      if (considered >= cap) { note(issueKey, "over_post_budget"); continue; }
       const read = await readItem(deps.store, agentId, issueKey);
       if (read.readFailed) { note(issueKey, "item_read_failed"); continue; }
       const row = read.row;
+      // FILTER FIRST, THEN BUDGET (F-457). The budget check used to run BEFORE the row was
+      // read, so once the cap was reached every remaining id in the index was recorded as
+      // `over_post_budget` — including the parked, the posted and the plain queued ones,
+      // which were never candidates for this pass at all. The receipt then told an
+      // operator that forty items had been skipped for budget when three existed, which
+      // is the kind of number somebody raises a cap over.
+      //
+      // The cost is that a non-candidate row is READ even after the budget is spent. That
+      // is bounded by the index itself, which the per-agent row cap and the 90-day TTL
+      // already bound (F-413); an honest receipt is worth the reads.
       if (!row || row.state !== "staged" || !row.staged) continue;
+      if (considered >= cap) { note(issueKey, "over_post_budget"); continue; }
       considered++;
 
       const refuse = async (reason, patch = {}) => {
         note(issueKey, reason);
         await saveItem(deps.store, agentId, issueKey, { event: "post_skipped", reason, ...patch }, { now });
       };
+
+      /* — GATE 1b: SHADOW, per draft (F-464) — */
+      // An APPROVED draft leaves shadow mode; an unapproved one does not. Note that this
+      // is the ONLY exemption: gates 2-11 run on an approved draft unchanged, so a human
+      // can say "send this sentence" and still be overruled by a fresher comment, a cap,
+      // the write scope or the voice lint. Approval answers "may this agent speak yet",
+      // not "is this particular reply still the right thing to say".
+      if (inShadow && !draftIsApproved(row.staged)) { note(issueKey, "gate.shadow"); continue; }
 
       /* — GATE 2: attempts — */
       const g2 = gateAttempts(row);
@@ -1203,6 +1273,13 @@ export const runVaPost = async ({ agent, tickId = null, deps: injected = {} } = 
         // DROPPED AND RE-QUEUED, not discarded: the next turn answers what was said.
         note(issueKey, "gate.thread_moved");
         await saveItem(deps.store, agentId, issueKey, { state: "queued", staged: null, event: "dropped", reason: "a human commented after the draft's baseline" }, { now });
+        // …AND IT COUNTS AS AN ATTEMPT (F-453). A turn that stages a draft which is then
+        // dropped has produced no outcome, exactly like a turn that staged nothing, and
+        // the cost is identical: one model call per tick, for ever. Before the
+        // authorship-aware fingerprint this was the livelock's engine; with it, this is
+        // the wall that stops any FUTURE disagreement between the baseline and the gate
+        // from becoming an unbounded spend instead of a parked item with a reason.
+        await bumpAttempt(deps.store, agentId, issueKey, "the draft was dropped: the thread moved after its baseline", { now });
         continue;
       }
 
@@ -1235,10 +1312,21 @@ export const runVaPost = async ({ agent, tickId = null, deps: injected = {} } = 
       });
       if (!allowed.allowed) { note(issueKey, `gate.caps.${allowed.reason}`); continue; }
       const bumped = await bumpCaps(deps.store, agentId, { owed, now });
-      if (!bumped.ok && bumped.reason === "caps-read-fault") {
-        // A bump that could not read cannot be projected, so nothing was written and the
-        // counter is unknown. Unknown BLOCKS: the thing being braked here is speech.
-        note(issueKey, "gate.caps.caps-read-fault");
+      if (!bumped.ok) {
+        // ANY BUMP FAILURE BLOCKS — read fault or write fault, ONE direction (F-458).
+        //
+        // A read fault cannot be projected from anything, so the counter is unknown, and
+        // unknown blocks. A WRITE fault used to be allowed through on the reasoning that
+        // the read had worked and only the note was lost — which holds for one post and
+        // fails at the second: a slot spent but never recorded can be spent again, and
+        // again, for as long as the write keeps failing. That is exactly when storage is
+        // misbehaving and exactly when a runaway is possible, and these counters are the
+        // only brake between a looping agent and an unbounded number of comments on
+        // somebody's issues.
+        //
+        // The cap is spent BEFORE speech, or the speech does not happen. Over-counting by
+        // one costs one reply; under-counting has no floor.
+        note(issueKey, `gate.caps.${bumped.reason || "caps_bump_failed"}`);
         continue;
       }
 
@@ -1293,8 +1381,17 @@ export const runVaPost = async ({ agent, tickId = null, deps: injected = {} } = 
       // The item is `posted` whatever the read-back said, because A COMMENT EXISTS. The
       // alternative — leaving it `staged` — invites a second one. The mismatch lives in
       // the history, in the receipt's error, and in the effects row's summary.
+      // THE FINGERPRINT STORED IS THE POST-POST ONE (F-452): the issue RE-READ after the
+      // comment landed, not the snapshot the gates judged. `updated` moves when we write,
+      // so storing the pre-write fingerprint guarantees the next sweep sees the item as
+      // changed and re-works an issue nobody but us has touched. A re-read that faults
+      // falls back to the pre-write issue rather than storing nothing — a missing
+      // fingerprint reads as "changed" to `fingerprintChanged`, which is the same defect.
+      let settled = issue;
+      try { settled = await deps.getIssue(issueKey); }
+      catch (e) { note(issueKey, "post_fingerprint_reread_failed"); }
       await saveItem(deps.store, agentId, issueKey, {
-        state: "posted", staged: null, fingerprint: fingerprintOf(issue),
+        state: "posted", staged: null, fingerprint: fingerprintOf(settled, { selfAccountId }),
         event: verdict.ok ? "posted" : "posted_with_error",
         reason: verdict.ok ? `${verdict.audience} comment ${commentId}` : `comment ${commentId}: ${verdict.reason}`,
       }, { now });
@@ -1387,6 +1484,13 @@ const verifyPostedComment = async ({ deps, issueKey, commentId, wantPublic, now 
  * would have prevented.
  */
 export const AI_BUDGET_CONCURRENCY = Object.freeze({ key: "ai-budget", limit: 2 });
+
+/** The app's own accountId (F-451). See `DEFAULT_DEPS.selfAccountId`. */
+export const SELF_MEMO_TTL_MS = 5 * 60 * 1000;
+let _selfMemo = null;
+let _selfMemoAt = 0;
+/** Tests only — a module-level memo outlives a test case otherwise. */
+export const resetSelfMemo = () => { _selfMemo = null; _selfMemoAt = 0; };
 
 let _store = null;
 const lazyStore = () => {
@@ -1483,6 +1587,19 @@ export const DEFAULT_DEPS = {
   toolDefinitionsFor: (ids, opts) => _agentActions.toolDefinitionsFor(ids, opts),
 
   /**
+   * The LEDGER namespace executor (1.5 commit 4a). A dep rather than a direct call so
+   * the offline suite can watch every ledger write the turn makes; production is the
+   * real module and nothing else builds one.
+   */
+  createLedgerExecutor: (ctx) => createVaLedgerExecutor(ctx),
+
+  /* — the namespace executors the POWERS switch on (1.5 commit 4c) — */
+  createConfluenceExecutor: (ctx) => _confluenceActions.createConfluenceActionExecutor(ctx),
+  createGitExecutor: (ctx) => _gitActions.createGitActionExecutor(ctx),
+  createWebExecutor: (ctx) => _webSearchTool.createWebSearchExecutor(ctx),
+  createRunSearchBudget: () => _webSearchTool.createRunSearchBudget(),
+
+  /**
    * The knowledge blocks, from the SAME builder the listener and the job use
    * (`buildAgentKnowledge`, src/listeners.js) — F-404 is open precisely because the
    * Coder grew its own path and the block never arrived. `log` is passed so an
@@ -1506,12 +1623,24 @@ export const DEFAULT_DEPS = {
    * direction (it blocks), so a failure here costs silence, never a double reply.
    */
   selfAccountId: async () => {
+    // MEMOISED FOR FIVE MINUTES (F-451). The app's own accountId changes never; asking
+    // `/myself` once per post pass was one REST call inside a budget that already has to
+    // re-read every candidate issue. Module-level, like the provider memo and the tenant
+    // project-key memo in src/index.js — the established shape in this codebase for a
+    // per-site fact that does not move.
+    if (_selfMemo && Date.now() - _selfMemoAt < SELF_MEMO_TTL_MS) return { ..._selfMemo, cached: true };
     const { default: api, route } = await import("@forge/api");
     try {
       const res = await api.asApp().requestJira(route`/rest/api/3/myself`);
-      if (!res.ok) return null;
-      return ((await res.json()) || {}).accountId || null;
-    } catch (e) { return null; }
+      if (!res.ok) return { ok: false, accountId: null, reason: `myself:${res.status}` };
+      const accountId = ((await res.json()) || {}).accountId || null;
+      if (!accountId) return { ok: false, accountId: null, reason: "myself:no_account_id" };
+      // ONLY A SUCCESS IS MEMOISED. Caching "I could not read it" for five minutes would
+      // turn one throttled call into five minutes of an agent that cannot speak.
+      _selfMemo = { ok: true, accountId };
+      _selfMemoAt = Date.now();
+      return { ok: true, accountId, cached: false };
+    } catch (e) { return { ok: false, accountId: null, reason: String((e && e.message) || e).slice(0, 120) }; }
   },
 
   /**
@@ -1558,17 +1687,6 @@ export const DEFAULT_DEPS = {
     catch (e) { return false; }
   },
 
-  /**
-   * Which tick number is this, for shadow mode? Counted from the agent's creation at the
-   * schedule's own cadence, so "three ticks of watching" means three of ITS runs rather
-   * than three of the scheduler's 5-minute ones.
-   */
-  tickIndex: (job) => {
-    const created = Date.parse(String((job && job.createdAt) || ""));
-    if (!Number.isFinite(created)) return Number.MAX_SAFE_INTEGER;   // unknown age ⇒ not in shadow
-    return Math.floor((Date.now() - created) / 300000);
-  },
-
   /** THE LOOP. One implementation, shared with the listener, the job and the Coder. */
   runLoop: async (args) => {
     const m = await import("./index.js");
@@ -1592,10 +1710,19 @@ export const DEFAULT_DEPS = {
 let _agentRunner = null;
 let _agentActions = null;
 let _index = null;
+// The three namespace-executor modules (1.5 commit 4c). Loaded here for the same reason:
+// `git-actions.js` pulls in the connection store and `confluence-actions.js` the client,
+// and an offline test of the JQL wrapper must pay for neither.
+let _confluenceActions = null;
+let _gitActions = null;
+let _webSearchTool = null;
 export const primeDeps = async () => {
   if (!_agentRunner) _agentRunner = await import("./agent-runner.js");
   if (!_agentActions) _agentActions = await import("./shared/agent-actions.js");
   if (!_index) _index = await import("./index.js");
+  if (!_confluenceActions) _confluenceActions = await import("./confluence-actions.js");
+  if (!_gitActions) _gitActions = await import("./git-actions.js");
+  if (!_webSearchTool) _webSearchTool = await import("./web-search-tool.js");
 };
 
 /** Merge injected deps over the defaults. One home, so no entry point can forget one. */

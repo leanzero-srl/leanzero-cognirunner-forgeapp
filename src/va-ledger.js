@@ -124,8 +124,27 @@ const normalizeStaged = (staged, now) => {
     baseline: staged.baseline == null ? null : clampChars(staged.baseline, 200),
     stagedAt: staged.stagedAt ? String(staged.stagedAt) : nowIso(now),
     tickId: staged.tickId == null ? null : clampChars(staged.tickId, 80),
+    // THE HUMAN'S APPROVAL (F-464). Written ONLY by `approveDraft` in src/va-admin.js;
+    // nothing the model can call reaches this field, because the actions it holds
+    // (src/va-ledger-actions.js) build a `staged` object without it and the allow-list
+    // above is the only shape that survives a write. That is what makes it safe for the
+    // post phase to treat it as a shadow-mode exemption: an approval is a person, and a
+    // person is the thing shadow mode is waiting for.
+    approvedBy: staged.approvedBy == null ? null : clampChars(staged.approvedBy, 128),
+    approvedAt: staged.approvedAt == null ? null : clampChars(staged.approvedAt, 40),
   };
 };
+
+/**
+ * Has a HUMAN approved this draft? (F-464)
+ *
+ * The predicate has one home because two places ask it — the post phase's shadow gate and
+ * the Agents tab — and "approved" must not come to mean two things. Both fields are
+ * required: a `approvedBy` with no timestamp is a half-written row, and a half-written row
+ * is not a decision.
+ */
+export const draftIsApproved = (staged) =>
+  Boolean(staged && typeof staged === "object" && staged.approvedBy && staged.approvedAt);
 
 /* ══════════════════════════════════════════════════════════════════════════════
  * 2. THE INDEX — bounded, LRU, and the only thing that knows what rows exist
@@ -397,10 +416,40 @@ const fnv1a = (s) => {
  *
  * Pure. The parts travel WITH the hash, so a receipt can say WHICH part moved.
  */
-export const fingerprintOf = (issue) => {
+/**
+ * THE FINGERPRINT IS AUTHORSHIP-AWARE (F-452/F-453), and it has to be, or the agent
+ * livelocks on its own voice.
+ *
+ * `lastCommentId` means "the last thing SOMEBODY ELSE said". Comments authored by the app
+ * are skipped, and the reason is that two different things were reading this field and
+ * disagreeing about it:
+ *
+ *   · the STAGE baseline took `fingerprintOf(issue).lastCommentId` — our own comment
+ *     included — and
+ *   · `gateFreshness` compared it against `lastOtherComment(...)`, which excludes ours.
+ *
+ * So on any issue where WE spoke last, the baseline was our comment's id, the freshness
+ * gate saw the human's earlier id, the two never matched, and every single draft was
+ * dropped as "the thread moved" and re-queued — for ever, one model call per tick, with
+ * nothing ever going out and nothing anywhere saying why. One function, one definition of
+ * "the thread moved", and both callers read it.
+ *
+ * The same rule fixes F-452: after we post, OUR comment is the newest one, and a
+ * fingerprint that counted it would mark the item changed on the next sweep and re-work
+ * an issue nobody had touched.
+ *
+ * `selfAccountId` is OPTIONAL and omitting it keeps the old, unfiltered behaviour — but
+ * every caller in the engine passes it, and the post pass refuses to run at all without
+ * one (F-451). It is optional only so that a caller with genuinely no identity (a test
+ * fixture, a diff over an issue we have never written on) is not forced to invent one.
+ */
+export const fingerprintOf = (issue, { selfAccountId = null } = {}) => {
   const f = (issue && issue.fields) || issue || {};
   const comments = (f.comment && f.comment.comments) || (issue && issue.comments) || [];
-  const last = Array.isArray(comments) && comments.length ? comments[comments.length - 1] : null;
+  const self = selfAccountId == null ? "" : String(selfAccountId);
+  const mine = (c) => self !== "" && c && c.author && String(c.author.accountId) === self;
+  const others = Array.isArray(comments) ? comments.filter((c) => !mine(c)) : [];
+  const last = others.length ? others[others.length - 1] : null;
   const parts = {
     updated: (issue && issue.updated) || f.updated || null,
     lastCommentId: issue && issue.lastCommentId != null
@@ -772,9 +821,19 @@ export const capsAllow = (caps, { owed = false, capsPerHour = VA_LIMITS.capsPerH
  * human, and storage misbehaving is exactly when a runaway happens. This is the one place
  * the VA differs from `lst_brake` (src/listeners.js:77), which fails open by design.
  *
- * Note the asymmetry that is NOT a bug: a failed WRITE still returns `caps_write_failed`
- * with the projected counts, because there the counter was read correctly and only the
- * note was lost. A failed READ cannot be projected from anything.
+ * A FAILED WRITE BLOCKS TOO, AND FOR THE SAME REASON (F-458). This used to be documented
+ * as an asymmetry that was "not a bug": the read had worked, so the projected counts were
+ * honest and only the note was lost. That reasoning holds for ONE post and falls apart at
+ * the second. A slot that is spent but never recorded is a slot that can be spent again,
+ * and again, for as long as the write keeps failing — which is precisely when storage is
+ * misbehaving and precisely when a runaway is possible. The counters are the ONLY brake
+ * between a looping agent and an unbounded number of comments on somebody's issues.
+ *
+ * ONE DIRECTION, WRITTEN ONCE: the cap is spent BEFORE speech, or the speech does not
+ * happen. Over-counting by one on a post that later fails is the safe error; under-
+ * counting is not, because the safe error costs one reply and the unsafe one has no floor.
+ * Post gate 7 treats `{ok:false}` as a BLOCK whatever the reason, so there is no branch
+ * left in which a caller can read one of these two faults as permissive.
  */
 export const bumpCaps = async (store, agent, { owed = false, now = Date.now() } = {}) => {
   const caps = await readCaps(store, agent, { now });
@@ -796,9 +855,13 @@ export const bumpCaps = async (store, agent, { owed = false, now = Date.now() } 
   const wrote = [await write(b.day, caps.day + 1)];
   if (owed) wrote.push(await write(b.owedHour, caps.owedHour + 1));
   else wrote.push(await write(b.hour, caps.hour + 1));
+  const allWritten = wrote.every(Boolean);
   return {
-    ok: wrote.every(Boolean),
-    ...(wrote.every(Boolean) ? {} : { reason: "caps_write_failed" }),
+    ok: allWritten,
+    // `error` as well as `reason`, matching the read fault's shape, so a caller cannot
+    // tell the two apart by accident and treat one of them as survivable (F-458).
+    ...(allWritten ? {} : { reason: "caps_write_failed", error: "caps_write_failed" }),
+    bumped: allWritten,
     owed: Boolean(owed),
     buckets: b,
     day: caps.day + 1,
@@ -833,14 +896,27 @@ export const VA_HEALTH_BANNER_AT = VA_LIMITS.healthBannerFailedTicks;
  *
  * A successful tick RESETS it to zero. Two failures are not a banner; three are.
  */
-export const recordTickHealth = async (store, agent, okTick, { reason = "", now = Date.now() } = {}) => {
+export const recordTickHealth = async (store, agent, okTick, { reason = "", now = Date.now(), phase = null } = {}) => {
   let prev = null;
   try { prev = await store.get(vaHealthKey(agent)); }
   catch (e) { return fail("health_read_failed", { detail: String((e && e.message) || e) }); }
   const current = Number(prev && prev.consecutiveFailures) || 0;
   const consecutiveFailures = okTick ? 0 : current + 1;
+  // THE AGENT'S OWN PREPARE-TICK COUNT (F-454). Shadow mode means "run, stage, and post
+  // NOTHING until you have been watched for N of YOUR OWN ticks", and it used to be
+  // measured by dividing the agent's age by five minutes — the SCHEDULER's cadence, not
+  // the agent's. An agent on a daily schedule therefore left shadow mode 288 times faster
+  // than its operator was promised, before it had run even once. The honest count is the
+  // number of prepare receipts this agent has actually written, so it lives beside the
+  // OTHER counter that exists because a scan over TTL'd receipts is not a count (F-426).
+  //
+  // Counted on EVERY prepare tick, failed ones included: a tick that ran and failed was
+  // still a tick somebody could watch, and only counting successes would let a broken
+  // agent sit in shadow mode for ever with nothing saying why.
+  const prepareTicks = (Number(prev && prev.prepareTicks) || 0) + (phase === "prepare" ? 1 : 0);
   const row = {
     consecutiveFailures,
+    prepareTicks,
     lastTickAt: nowIso(now),
     lastOkAt: okTick ? nowIso(now) : ((prev && prev.lastOkAt) || null),
     lastReason: okTick ? null : safeText(reason, 300),
@@ -854,7 +930,7 @@ export const readHealth = async (store, agent) => {
   try {
     const row = (await store.get(vaHealthKey(agent))) || { consecutiveFailures: 0 };
     const n = Number(row.consecutiveFailures) || 0;
-    return { ok: true, consecutiveFailures: n, banner: n >= VA_HEALTH_BANNER_AT, lastOkAt: row.lastOkAt || null, lastReason: row.lastReason || null };
+    return { ok: true, consecutiveFailures: n, prepareTicks: Number(row.prepareTicks) || 0, banner: n >= VA_HEALTH_BANNER_AT, lastOkAt: row.lastOkAt || null, lastReason: row.lastReason || null };
   } catch (e) {
     return fail("health_read_failed", { detail: String((e && e.message) || e) });
   }
@@ -894,19 +970,87 @@ export const readMemory = async (store, agent) => {
  * The byte ceiling is `memoryCapBytes`; over it the PROSE is clamped and the pinned
  * constraints are kept whole, because the constraints are the part a human typed.
  */
+/**
+ * `constraints[]` IS HUMAN-PINNED, AND ONLY HUMAN-PINNED (F-456).
+ *
+ * This list is what compaction preserves VERBATIM, by code, for ever — which makes it the
+ * one field in the whole record that outlives every summarisation. It is therefore written
+ * by the Agents tab's memory editor (src/va-admin.js) and by nothing else.
+ *
+ * The AGENT cannot add to it. `memory_note(constraint: true)` writes
+ * `proposed constraint: …` into the PROSE instead (src/va-ledger-actions.js), and an
+ * administrator who agrees promotes it here. Without that split, a model could issue
+ * itself a permanent standing order nobody approved, which would survive every compaction
+ * and be injected into every later turn as the agent's own rule.
+ *
+ * A caller passing `constraints` is asserting it is acting for a human. There is exactly
+ * one such caller; a second one is a finding.
+ */
+/**
+ * THE ONE MEASUREMENT OF A MEMORY ROW (F-459): the STORED JSON ENVELOPE, in UTF-8 bytes.
+ *
+ * There used to be three different numbers claiming to be "the size of the memory":
+ *
+ *   · `writeMemory` budgeted `memoryCapBytes - bytesOf(constraints)` and clamped the RAW
+ *     PROSE against it — measuring a string that is not what gets stored;
+ *   · `memoryNeedsCompaction` measured `{text, constraints}` — the envelope WITHOUT
+ *     `updatedAt`, and without the key names, quoting and escaping that JSON adds;
+ *   · the store received `{text, constraints, updatedAt}`, which is bigger than both.
+ *
+ * The consequence is not academic. JSON escaping can nearly DOUBLE a string (every
+ * backslash, quote and newline becomes two bytes), so a row clamped to "the cap" could be
+ * stored well over it — and the ceiling this cap exists to respect is KVS's 240 KiB per
+ * value, a limit that does not care which of our three numbers we believed. The same
+ * mismatch made the compaction trigger fire at a size nobody could reproduce from the row.
+ *
+ * ONE function, the envelope that is actually written, and both callers read it.
+ */
+export const memoryBytes = (memory) => bytesOf({
+  text: (memory && memory.text) || "",
+  constraints: (memory && memory.constraints) || [],
+  updatedAt: (memory && memory.updatedAt) || "",
+});
+
 export const writeMemory = async (store, agent, { text = "", constraints = [] } = {}, { now = Date.now() } = {}) => {
   const pinned = normalizeConstraints(constraints);
-  const budget = Math.max(256, VA_LIMITS.memoryCapBytes - bytesOf(pinned));
-  const clamped = clampUtf8Bytes(defangFence(text == null ? "" : text), budget, "\n[memory clamped]");
-  const memory = { text: clamped.text, constraints: pinned, updatedAt: nowIso(now) };
+  const updatedAt = nowIso(now);
+  const cap = VA_LIMITS.memoryCapBytes;
+  // The room the prose has is the cap MINUS everything else the envelope costs — the
+  // pinned constraints, the key names, the quoting, `updatedAt`. Measured, not estimated.
+  const overhead = memoryBytes({ text: "", constraints: pinned, updatedAt });
+  let budget = Math.max(256, cap - overhead);
+  let clamped = clampUtf8Bytes(defangFence(text == null ? "" : text), budget, "\n[memory clamped]");
+  let memory = { text: clamped.text, constraints: pinned, updatedAt };
+
+  // THE CLAMP IS VERIFIED AGAINST THE ENVELOPE, NOT ASSUMED FROM THE PROSE. Clamping the
+  // raw string to N bytes does not make its JSON form N bytes: a prose full of quotes,
+  // backslashes or newlines escapes to roughly twice its size. So the row is MEASURED as
+  // it will be stored and the budget is reduced by the real overflow until it fits.
+  // Bounded: each pass shrinks the budget by at least the overflow, so it converges, and
+  // the loop stops regardless after a few passes.
+  for (let pass = 0; pass < 8 && memoryBytes(memory) > cap && clamped.text; pass++) {
+    const over = memoryBytes(memory) - cap;
+    budget = Math.max(0, budget - Math.max(over, 32));
+    clamped = clampUtf8Bytes(clamped.text, budget, "\n[memory clamped]");
+    memory = { text: clamped.text, constraints: pinned, updatedAt };
+  }
+  // A LAST RESORT that keeps the promise rather than the prose. If the PINNED constraints
+  // alone overflow the cap, no amount of clamping the prose can help — and the constraints
+  // are what a human typed, so they are the part that survives. The row still goes to
+  // storage (240 KiB is far above this cap, so it is writable), and the caller is told.
+  const overCap = memoryBytes(memory) > cap;
+
   try { await store.set(vaMemoryKey(agent), memory); }
   catch (e) { return fail("memory_write_failed", { detail: String((e && e.message) || e) }); }
-  return { ok: true, memory, clamped: clamped.truncated };
+  return { ok: true, memory, clamped: clamped.truncated, bytes: memoryBytes(memory), overCap };
 };
 
-/** True when the memory is over the compaction trigger and the next tick should compact. */
-export const memoryNeedsCompaction = (memory) =>
-  bytesOf({ text: (memory && memory.text) || "", constraints: (memory && memory.constraints) || [] }) > VA_LIMITS.memoryCompactBytes;
+/**
+ * True when the memory is over the compaction trigger and the next tick should compact.
+ * MEASURED BY `memoryBytes` — the same envelope `writeMemory` clamps against (F-459), so
+ * the trigger and the cap can no longer disagree about what a row's size is.
+ */
+export const memoryNeedsCompaction = (memory) => memoryBytes(memory) > VA_LIMITS.memoryCompactBytes;
 
 /**
  * COMPACTION, AND WHY THE SUMMARISER IS NOT TRUSTED WITH THE CONSTRAINTS (F-423).
@@ -953,7 +1097,10 @@ export const compactMemory = async (memory, summariser, { now = Date.now() } = {
     reason = `summariser_failed: ${String((e && e.message) || e)}`;
   }
 
-  const budget = Math.max(256, VA_LIMITS.memoryCapBytes - bytesOf(pinned));
+  // The same envelope maths as `writeMemory` (F-459). The final row goes through
+  // `writeMemory` anyway, which re-measures and re-clamps; this keeps the summariser's
+  // target honest so it is not asked for prose that will then be cut.
+  const budget = Math.max(256, VA_LIMITS.memoryCapBytes - memoryBytes({ text: "", constraints: pinned, updatedAt: nowIso() }));
   const clamped = clampUtf8Bytes(defangFence(prose == null ? original : prose), budget, "\n[memory clamped]");
   return {
     ok: true,

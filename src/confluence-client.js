@@ -723,4 +723,58 @@ export function createConfluenceClient(deps = {}) {
   };
 }
 
+/* ══════════════ THE INSTALL PROBE MEMO -- ONE HOME (1.5 commit 4b) ══════════════
+ *
+ * "Is CogniRunner installed on Confluence too?" is a per-SITE fact that changes when an
+ * admin runs `forge install -p Confluence` -- roughly never -- while every Confluence
+ * rule, post-function, admin card and agent tool call would otherwise ask it again every
+ * time. 5 minutes rather than the provider memo'''s 30 s: a provider switch must take
+ * effect while an admin watches, an install does not, and 5 minutes is short enough that
+ * the admin card shows the truth a minute after they install.
+ *
+ * IT LIVES HERE, BESIDE THE CLIENT, and not beside its first caller. Two callers exist
+ * already -- the agent executor (src/confluence-actions.js) and the resolvers/validators
+ * in src/index.js -- and a memo is only a memo if there is one of it: two module-level
+ * caches on the same container answer differently after an install, and the one that is
+ * stale is the one that decides a rule fails open.
+ *
+ * ⚠️ src/index.js STILL CARRIES A PRIVATE COPY of these two accessors (grep
+ * `getConfluenceInstallState` there). It predates this module-level home by one commit
+ * and could not be removed in this cut -- index.js was held by another writer (prime
+ * directive 1). THE COPY IN index.js MUST BE DELETED and replaced with an import from
+ * here; until it is, an install can be visible to one half of the app and not the other
+ * for up to five minutes. Named loudly rather than quietly duplicated.
+ *
+ * TWO ACCESSORS, ONE MEMO, and the difference matters:
+ *   getConfluenceInstallState() -- probes when the memo is cold. Callers that are ABOUT
+ *     to do Confluence work and want to fail fast (the agent actions, the admin card).
+ *   peekConfluenceInstalled()   -- memo ONLY, never a call. Returns null for "unknown".
+ *     The VALIDATOR uses this: it is inside a transition'''s 8 s budget, and a probe there
+ *     would double the latency of the very check it precedes.
+ *
+ * `probeInstalled` never throws; a fault is "not installed", which is the fail-OPEN
+ * direction for every validator that reads it.
+ */
+export const CONFLUENCE_PROBE_TTL_MS = 5 * 60 * 1000;
+let _installMemo = null;
+let _installMemoAt = 0;
+
+export const peekConfluenceInstalled = () =>
+  (_installMemo && Date.now() - _installMemoAt < CONFLUENCE_PROBE_TTL_MS)
+    ? _installMemo.installed === true
+    : null;
+
+export const getConfluenceInstallState = async ({ fresh = false, client = null } = {}) => {
+  if (!fresh && _installMemo && Date.now() - _installMemoAt < CONFLUENCE_PROBE_TTL_MS) {
+    return { ..._installMemo, cached: true };
+  }
+  const state = await (client || createConfluenceClient()).probeInstalled();
+  _installMemo = state;
+  _installMemoAt = Date.now();
+  return { ...state, cached: false };
+};
+
+/** Tests only -- a module-level memo outlives a test case otherwise. */
+export const resetConfluenceInstallMemo = () => { _installMemo = null; _installMemoAt = 0; };
+
 export default createConfluenceClient;

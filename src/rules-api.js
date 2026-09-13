@@ -80,6 +80,8 @@ import * as J from "./scheduled-jobs.js";
 // The ONE home for every Virtual Administrator operation (1.5 commit 5b). The Agents
 // tab's resolvers are the other skin over this exact module.
 import * as VA from "./va-admin.js";
+// The recursive `va` patch merge lives with the record's shape, not with the door.
+import { mergeVaPatch } from "./shared/va-config.js";
 
 const idx = () => import("./index.js");
 
@@ -238,6 +240,13 @@ const merge = (existing, patch) => {
   for (const k of ["filters", "agent", "schedule", "scope"]) {
     if (patch[k] && typeof patch[k] === "object" && existing[k] && typeof existing[k] === "object") out[k] = { ...existing[k], ...patch[k] };
   }
+  // `va` IS DEEPER THAN THE FOUR ABOVE (F-477), so it gets the recursive merge that
+  // lives with the record's shape (`mergeVaPatch`, src/shared/va-config.js). A shallow
+  // spread here would carry `status` and `guardrails` forward but still rebuild
+  // `persona.voice` from the defaults on a rename. Without any merge at all the block
+  // was REPLACED, and `normalizeVa` then resumed a paused agent and re-widened every
+  // guardrail — from a request that only changed a name.
+  if (patch.va && typeof patch.va === "object" && existing.va && typeof existing.va === "object") out.va = mergeVaPatch(existing.va, patch.va);
   delete out.stats; delete out.createdAt; delete out.createdBy; delete out.lastCheckedAt;
   return out;
 };
@@ -345,6 +354,27 @@ const handleCollection = async ({ req, method, id, action, body, who, kind }) =>
    */
   const actor = tokenRole(who) === "admin" ? `api:${who.id}` : (who.createdBy || `api:${who.id}`);
   /*
+   * A VIRTUAL ADMINISTRATOR IS NOT A JOB ON THIS RESOURCE (F-478).
+   *
+   * A VA is stored as a job row, so `?resource=jobs` was a SECOND door onto every
+   * agent — and an editor-floor one. It bypassed `prepareVaSave` entirely: no live
+   * catalogue check, no shadow re-arm, no cadence-derived schedule, and it deleted at
+   * editor what `?resource=agents` protects at admin, while a viewer could read the
+   * whole `va` block (persona, instructions, memory-shaped guardrails) off a GET.
+   *
+   * So every route here refuses a `mode:"va"` row BY NAME and points at the resource
+   * that owns it, and the list hides them. It is the exact mirror of the agents
+   * resource refusing a script job with `not_a_virtual_administrator`: one row, one
+   * door, and the door carries the floor.
+   */
+  const vaDoor = (row) => (row && row.mode === "va"
+    ? json(404, {
+      error: "That id belongs to a Virtual Administrator. Use ?resource=agents.",
+      reason: "is_a_virtual_administrator",
+      resource: "agents",
+    })
+    : null);
+  /*
    * THE FLOORS, mirrored one-for-one off the resolvers in `src/index.js` (F-466):
    * getListeners/getScheduledJobs and their by-id reads gate on `viewer`; every write
    * — save, delete, enable/disable, test, run — gates on `editor`. The resolvers reach
@@ -360,12 +390,14 @@ const handleCollection = async ({ req, method, id, action, body, who, kind }) =>
 
   if (method === "GET") {
     const gate = floor("viewer", `view ${kind}`); if (gate) return gate;
-    if (id) { const row = await get(id); return row ? json(200, { [noun]: row }) : json(404, { error: `${noun} not found` }); }
-    return json(200, { [kind]: await list() });
+    if (id) { const row = await get(id); const va = vaDoor(row); if (va) return va; return row ? json(200, { [noun]: row }) : json(404, { error: `${noun} not found` }); }
+    const rows = await list();
+    return json(200, { [kind]: isL ? rows : rows.filter((r) => r && r.mode !== "va") });
   }
   if (method === "DELETE") {
     const gate = floor("editor", `delete a ${noun}`); if (gate) return gate;
     if (!id) return json(400, { error: "id required" });
+    { const va = vaDoor(await get(id)); if (va) return va; }
     // `destructive` selects the narrower ownership rule the delete resolver uses: an
     // OWNERLESS row is not yours. The row is read before the gate so an unknown id and
     // a foreign one give a scope-"own" caller the same answer (F-261).
@@ -378,6 +410,7 @@ const handleCollection = async ({ req, method, id, action, body, who, kind }) =>
     const gate = floor("editor", `change a ${noun}`); if (gate) return gate;
     if (!id) return json(400, { error: "id required" });
     const existing = await get(id);
+    { const va = vaDoor(existing); if (va) return va; }
     const owned = await ownerGate(who, existing, { what: `edit this ${noun}`, notFound: `${noun} not found` });
     if (owned) return owned;
     if (!existing) return json(404, { error: `${noun} not found` });
@@ -389,6 +422,7 @@ const handleCollection = async ({ req, method, id, action, body, who, kind }) =>
     const gate = floor(action === "preview" ? "viewer" : "editor", `${action} a ${noun}`); if (gate) return gate;
     if (!id) return json(400, { error: "id required" });
     const row = await get(id);
+    { const va = vaDoor(row); if (va) return va; }
     // `preview` only computes the next fire times of a cron string — it is a VIEWER
     // route and asks no ownership question, exactly as the previewSchedule resolver
     // does not. Every other action here is a write on someone's row.
@@ -418,6 +452,18 @@ const handleCollection = async ({ req, method, id, action, body, who, kind }) =>
     const gate = floor("editor", `create ${kind}`); if (gate) return gate;
     const items = Array.isArray(body) ? body : (body && Array.isArray(body[kind]) ? body[kind] : [body]);
     if (!items.length || items.length > 100) return json(400, { error: "provide 1-100 items" });
+    // CREATE is the same door (F-478): a `mode:"va"` body here would mint an agent with
+    // none of `prepareVaSave`'s checks, at the editor floor. It is refused before the
+    // batch runs, so a mixed batch cannot half-create one.
+    if (!isL) {
+      const va = items.map((it) => vaDoor(it)).find(Boolean); if (va) return va;
+      // …and an UPSERT that names an existing agent's id is the same door from the
+      // other side: without `mode:"va"` in the body it would rewrite the agent as a
+      // plain script job, losing the whole record.
+      for (const it of items) {
+        if (it && it.id) { const hit = vaDoor(await get(String(it.id))); if (hit) return hit; }
+      }
+    }
     const saved = []; const errors = [];
     for (let i = 0; i < items.length; i++) {
       try { saved.push(await save(items[i], { accountId: actor })); } catch (e) { errors.push({ index: i, name: items[i] && items[i].name, ...errBody(e) }); }
@@ -556,8 +602,11 @@ const handleAgents = async ({ method, id, action, part, body, who, req }) => {
     if (method === "PUT") {
       existing = await loadVaJob();
       if (!existing) return json(404, { error: "agent not found" });
-      // The SAME merge the other collections use, so a PUT is a patch here too; `va`
-      // is a merged sub-object like `agent`/`schedule`/`scope` already are.
+      // The SAME merge the other collections use, so a PUT is a patch here too. `va`
+      // is merged RECURSIVELY (`mergeVaPatch`, F-477) rather than by the shallow spread
+      // the flat sub-objects get: a partial `va` that replaced the block rebuilt every
+      // absent part from the defaults, which resumed a paused agent and re-widened its
+      // guardrails.
       input = { ...merge(existing, body || {}), id, mode: "va" };
     } else {
       // `?id=` wins over a body id: a POST to a named agent is an UPSERT of that

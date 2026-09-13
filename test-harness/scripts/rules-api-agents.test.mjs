@@ -147,6 +147,46 @@ let agentId = null;
   ok(!r.body.agent.va.scope.read.projects.includes("NOPE"), "…and the unknown project is gone from the stored record");
 }
 
+/* ═════ 1b. A PARTIAL `va` IS A PATCH, NOT A REPLACEMENT (F-477) ═════
+
+   The sharpest case: rename a PAUSED agent whose caps an admin tightened to one an
+   hour. Before the recursive merge, `{"va":{"persona":{"name":"Ada II"}}}` replaced the
+   whole block, `normalizeVa` rebuilt every absent part from the defaults, and the agent
+   came back RESUMED, out of shadow and with its guardrails re-widened — from a request
+   that changed a name. */
+{
+  const tightened = await rest("admin", {
+    method: "POST",
+    body: { mode: "va", va: vaRecord({ guardrails: { capsPerHour: 1, shadowTicks: 5 }, powers: { skillIds: ["sk1"], transition: true } }) },
+  });
+  ok(tightened.status === 201, `a tightened agent is created (got ${tightened.status} ${JSON.stringify(tightened.body).slice(0, 200)})`);
+  const patchId = tightened.body.agent.id;
+  const before = (await J.getJob(patchId)).va;
+
+  const paused = await rest("admin", { method: "POST", query: { id: patchId, action: "pause" }, body: { reason: "tuning" } });
+  ok(paused.status === 200 && paused.body.paused === true, "…and paused");
+
+  const renamed = await rest("admin", { method: "PUT", query: { id: patchId }, body: { va: { persona: { name: "Ada II" } } } });
+  ok(renamed.status === 200, `a partial va PUT is accepted (got ${renamed.status} ${JSON.stringify(renamed.body).slice(0, 200)})`);
+
+  const after = (await J.getJob(patchId)).va;
+  ok(after.persona.name === "Ada II", `…the rename landed (got ${after.persona.name})`);
+  ok(after.status.paused === true, "A RENAME DOES NOT RESUME A PAUSED AGENT");
+  ok(after.guardrails.capsPerHour === 1, `…and does not re-widen the hourly cap (got ${after.guardrails.capsPerHour})`);
+  ok(after.guardrails.shadowTicks === 5, `…nor the shadow watch (got ${after.guardrails.shadowTicks})`);
+  ok(JSON.stringify(after.scope) === JSON.stringify(before.scope), `…nor the scope (got ${JSON.stringify(after.scope)})`);
+  ok(after.powers.transition === true && after.powers.skillIds.includes("sk1"), `…nor the powers (got ${JSON.stringify(after.powers).slice(0, 160)})`);
+  // The sub-object the rename itself touched keeps its OTHER fields: a shallow merge of
+  // `va` alone would have rebuilt `persona.voice` from the defaults.
+  ok(after.persona.voice.maxSentences === before.persona.voice.maxSentences && after.persona.voice.register === before.persona.voice.register,
+    `…and the voice inside the patched sub-object survives (got ${JSON.stringify(after.persona.voice)})`);
+  // An allow-list sent explicitly still REPLACES: a patch must be able to remove.
+  const narrowed = await rest("admin", { method: "PUT", query: { id: patchId }, body: { va: { powers: { skillIds: [] } } } });
+  ok(narrowed.status === 200 && narrowed.body.agent.va.powers.skillIds.length === 0,
+    `an explicit empty allow-list still means "none" (got ${JSON.stringify(narrowed.body.agent && narrowed.body.agent.va.powers.skillIds)})`);
+  await J.deleteJob(patchId);
+}
+
 /* ═════ 2. THE ROLE FLOORS, in both directions ═════ */
 {
   const list = await rest("editor");
@@ -218,6 +258,55 @@ let agentId = null;
   const listed = await rest("editor");
   ok(listed.body.agents.every((a) => a.mode === "va"), "the list is VA-only");
   ok(!JSON.stringify(listed.body).includes("api.log"), "…and carries no other rule's step code");
+}
+
+/* ═════ 4b. `?resource=jobs` IS NOT A SECOND DOOR ONTO AN AGENT (F-478) ═════
+
+   A VA is stored as a job row, so the jobs resource was an EDITOR-floor door onto every
+   agent that bypassed `prepareVaSave` (no catalogue check, no shadow re-arm) and a
+   VIEWER-floor read of the whole `va` block. Both directions are asserted: the jobs
+   resource refuses a VA, and the agents resource refuses a script job (section 4). */
+{
+  const jobs = async (role, { method = "GET", query = {}, body } = {}) => {
+    const res = await rulesApiHandler({
+      method,
+      headers: { authorization: `Bearer ${tokens[role]}` },
+      queryParameters: Object.fromEntries(Object.entries({ resource: "jobs", ...query }).map(([k, v]) => [k, [String(v)]])),
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+    return { status: res.statusCode, body: JSON.parse(res.body) };
+  };
+
+  const named = (r, what) => {
+    ok(r.status === 404 && r.body.reason === "is_a_virtual_administrator" && r.body.resource === "agents",
+      `${what} through ?resource=jobs is refused BY NAME and points at ?resource=agents (got ${r.status} ${JSON.stringify(r.body).slice(0, 200)})`);
+  };
+
+  named(await jobs("viewer", { query: { id: agentId } }), "reading an agent");
+  named(await jobs("editor", { method: "PUT", query: { id: agentId }, body: { va: { scope: { write: { projects: ["OPS"] } } } } }), "re-scoping an agent");
+  named(await jobs("editor", { method: "DELETE", query: { id: agentId } }), "deleting an agent");
+  named(await jobs("editor", { method: "POST", query: { id: agentId, action: "run" }, body: {} }), "running an agent");
+  named(await jobs("editor", { method: "POST", query: { id: agentId, action: "disable" }, body: {} }), "disabling an agent");
+  named(await jobs("editor", { method: "POST", body: { mode: "va", va: vaRecord() } }), "creating an agent");
+  // The UPSERT from the other side: no `mode:"va"` in the body, so `normalizeJob` would
+  // have rewritten the agent as a plain script job and lost the record.
+  named(await jobs("editor", { method: "POST", body: { id: agentId, name: "hijack", schedule: { cron: "0 9 * * *", timeZone: "UTC" }, functions: [{ name: "s", code: "api.log('x')" }] } }), "rewriting an agent as a script job");
+
+  // …and nothing was actually changed by any of the refusals above.
+  const still = await J.getJob(agentId);
+  ok(still && still.mode === "va" && still.va.persona.name === "Ada", `the agent is untouched after every refusal (got ${still && still.mode}/${still && still.va && still.va.persona.name})`);
+
+  const list = await jobs("viewer");
+  ok(list.status === 200 && Array.isArray(list.body.jobs) && list.body.jobs.every((j) => j.mode !== "va"),
+    `the jobs list hides VA rows (got ${JSON.stringify((list.body.jobs || []).map((j) => j.mode))})`);
+  ok(!JSON.stringify(list.body).includes("Ada"), "…so no agent's persona leaks through the jobs list either");
+
+  // A PLAIN job is untouched by the guard: the door is closed to agents, not to jobs.
+  const plain = await jobs("editor", { method: "POST", body: { name: "Nightly", mode: "script", schedule: { cron: "0 9 * * *", timeZone: "UTC" }, functions: [{ name: "s", code: "api.log('x')" }] } });
+  ok(plain.status === 201 && plain.body.job, `a normal scheduled job still creates through ?resource=jobs (got ${plain.status} ${JSON.stringify(plain.body).slice(0, 160)})`);
+  const plainId = plain.body.job.id;
+  ok((await jobs("viewer", { query: { id: plainId } })).status === 200, "…and reads back");
+  ok((await jobs("editor", { method: "DELETE", query: { id: plainId } })).status === 200, "…and deletes");
 }
 
 /* ═════ 5. DRAFTS: the shapes, and NEITHER VERDICT POSTS ═════ */
@@ -336,6 +425,16 @@ let agentId = null;
   const del = await rest("admin", { method: "DELETE", query: { id: agentId } });
   ok(del.status === 200 && del.body.deleted === agentId, `an agent deletes through the job delete (got ${del.status} ${JSON.stringify(del.body)})`);
   ok((await J.getJob(agentId)) == null, "…and the job row is gone, because a VA has no second store");
+  /* AND IT TAKES ITS LEDGER WITH IT (F-469). Before this, the delete left `va_index`,
+     `va_health`, `va_memory` and every item row behind - none of the first three with a
+     TTL - so an agent that had staged a draft about a real person left that text in
+     storage for ever, with no surface able to show it or clear it. Sections 5 and 7
+     staged a draft and wrote a memory on this very agent, so the rows exist here. */
+  const K = await import("../../src/shared/va-keys.js");
+  ok((await storage.get(K.vaIndexKey(agentId))) == null, "…the VA ledger index went with it");
+  ok((await storage.get(K.vaMemoryKey(agentId))) == null, "…and the memory");
+  ok((await storage.get(K.vaHealthKey(agentId))) == null, "…and the health counter");
+  ok((await storage.get(K.vaItemKey(agentId, "SUP-1"))) == null, "…and the item row that held the staged draft text");
   ok((await rest("admin", { method: "DELETE", query: { id: agentId } })).status === 404, "…so deleting it twice is a 404");
 }
 

@@ -495,11 +495,23 @@ reset();
   eq(okTick.banner, false, "…and the banner clears");
   ok(okTick.lastOkAt, "a successful tick stamps lastOkAt");
   eq((await L.readHealth(kvs, AG)).lastReason, null, "…and clears the failure reason");
-  // The health row carries NO TTL: a banner that expires is a banner that stops appearing.
+  /* THE HEALTH ROW'S TTL, REFRESHED ON EVERY TICK (F-469, amending F-426).
+     F-426's rule is that the banner must not be RECONSTRUCTED from rows that can expire
+     under it - that is why this counter is a row of its own and not a scan over
+     `va_tick:*`, and it still is. It is not a rule that the row must be immortal: it is
+     rewritten by `recordTickHealth` on every tick, so a TTL as long as an item row can
+     only ever expire for an agent that has not ticked in 90 days. With NO TTL at all, a
+     DELETED agent's counter outlived the agent for ever, which is the orphan F-469
+     names. */
   const spy = spyStore();
   await L.recordTickHealth(spy, AG, false, { reason: "x" });
-  eq(spy.writes.find((w) => w.key === K.vaHealthKey(AG)).options, undefined,
-    "F-426: the health row is written with NO TTL — it must never age out from under the banner");
+  const healthWrite = spy.writes.find((w) => w.key === K.vaHealthKey(AG));
+  eq(JSON.stringify(healthWrite.options), JSON.stringify(K.VA_HEALTH_TTL),
+    "F-469: the health row is written WITH the item TTL, refreshed by this very write");
+  const spy2 = spyStore();
+  await L.recordTickHealth(spy2, AG, true);
+  ok(spy2.writes.find((w) => w.key === K.vaHealthKey(AG)).options,
+    "F-426 still holds: EVERY tick rewrites it, so a live agent's banner can never age out");
 
   // F-439 — ONE HOME for the threshold. The ledger must not carry its own literal: an
   // owner who raises the banner in registry-limits.js would otherwise move the admin copy
@@ -745,6 +757,74 @@ reset();
   ok(L.memoryNeedsCompaction(probe) === false, "memory.bytes: …and not under it");
 }
 
+
+/* ── 13. PURGE — a deleted agent takes its ledger with it (F-469) ───────────── */
+{
+  reset();
+  const AG = "job_purge1";
+  await L.saveItem(kvs, AG, "SUP-1", { state: "queued", event: "queued" });
+  await L.saveItem(kvs, AG, "SUP-2", { state: "queued", event: "queued" });
+  await L.saveItem(kvs, AG, "SUP-2", {
+    state: "staged",
+    staged: { audience: "internal", body: "A draft about a real person.", stagedAt: "2026-09-13T10:00:00.000Z", tickId: "t1" },
+    event: "staged",
+  });
+  await L.writeMemory(kvs, AG, { text: "The SUP desk escalates after 24h.", constraints: ["Never promise a date."] });
+  await L.recordTickHealth(kvs, AG, false, { reason: "search failed", phase: "prepare" });
+  // A SECOND agent, to prove the purge is scoped to the one it was asked about.
+  await L.saveItem(kvs, "job_purge2", "SUP-9", { state: "queued", event: "queued" });
+  await L.writeMemory(kvs, "job_purge2", { text: "keep me", constraints: [] });
+
+  ok(Boolean(await kvs.get(K.vaIndexKey(AG))), "purge: the index exists before the purge");
+  const r = await L.purgeAgent(kvs, AG);
+  ok(r.ok === true, `purge: it reports success (got ${JSON.stringify(r)})`);
+  ok(r.items === 2, `purge: both item rows went (got ${r.items})`);
+  ok(r.remaining === 0, `purge: nothing was left to the TTL (got ${r.remaining})`);
+  ok((await kvs.get(K.vaIndexKey(AG))) == null, "purge: va_index is gone");
+  ok((await kvs.get(K.vaHealthKey(AG))) == null, "purge: va_health is gone");
+  ok((await kvs.get(K.vaMemoryKey(AG))) == null, "purge: va_memory is gone");
+  ok((await kvs.get(K.vaItemKey(AG, "SUP-1"))) == null, "purge: the queued item row is gone");
+  ok((await kvs.get(K.vaItemKey(AG, "SUP-2"))) == null, "purge.STAGED_DRAFT_TEXT — the unsent message about a real person is gone too");
+  ok(Boolean(await kvs.get(K.vaItemKey("job_purge2", "SUP-9"))), "purge: the OTHER agent's item row is untouched");
+  ok(Boolean(await kvs.get(K.vaMemoryKey("job_purge2"))), "purge: …and its memory too");
+
+  // Purging twice is not an error: a delete that was interrupted must be repeatable.
+  const again = await L.purgeAgent(kvs, AG);
+  ok(again.ok === true && again.items === 0, `purge: purging twice is harmless (got ${JSON.stringify(again)})`);
+
+  // THE BUDGET IS REAL, and what it does not reach is NAMED rather than forgotten.
+  reset();
+  for (const n of [1, 2, 3]) await L.saveItem(kvs, AG, `SUP-${n}`, { state: "queued", event: "queued" });
+  const bounded = await L.purgeAgent(kvs, AG, { itemBudget: 2 });
+  ok(bounded.items === 2 && bounded.remaining === 1, `purge: the sweep is bounded and says what is left (got ${JSON.stringify(bounded)})`);
+  ok((await kvs.get(K.vaIndexKey(AG))) == null, "purge: …and the INDEX went first, so the remainder is unreachable, not orphaned-and-listed");
+
+  // A read fault is "we do not know", never "there is nothing" - and the purge still
+  // removes what it can name.
+  reset();
+  await L.saveItem(kvs, AG, "SUP-1", { state: "queued", event: "queued" });
+  await L.writeMemory(kvs, AG, { text: "x", constraints: [] });
+  kvs.__failNextGet(new Error("kvs throttled"));
+  const faulted = await L.purgeAgent(kvs, AG);
+  ok(faulted.ok === false && faulted.failures.some((f) => f.key === "index_read"),
+    `purge: an index read fault is reported by name (got ${JSON.stringify(faulted).slice(0, 200)})`);
+  ok((await kvs.get(K.vaMemoryKey(AG))) == null, "purge: …and the keys it did not need the index for still went");
+}
+
+/* THE HEALTH ROW'S TTL (F-469). The mock does not record TTL options, so this is a
+   lockstep source assertion: the counter is rewritten on every tick, so a TTL as long as
+   an item row can only expire for an agent that stopped ticking 90 days ago - while NO
+   TTL is how a deleted agent's counter outlived the agent for ever. `va_memory` keeps no
+   TTL on purpose (it is written only when the agent learns something), and that is
+   asserted too, so switching it on has to be a deliberate edit here. */
+{
+  const ledgerSrc = readFileSync(new URL("../../src/va-ledger.js", import.meta.url), "utf8");
+  const keysSrc = readFileSync(new URL("../../src/shared/va-keys.js", import.meta.url), "utf8");
+  ok(/export const VA_HEALTH_TTL = days\(VA_LIMITS\.itemTtlDays\)/.test(keysSrc),
+    "health: …and the TTL is the item TTL, from the one home for the numbers");
+  ok(!/store\.set\(vaMemoryKey\(agent\), memory,/.test(ledgerSrc),
+    "memory: the memory row still carries NO TTL - purgeAgent is its bounded end, not a clock");
+}
 
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"}: ${pass} checks passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

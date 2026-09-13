@@ -536,6 +536,41 @@ export const normalizeVa = (raw, ctx = {}) => {
   return { va: { persona, scope, intake, cadence, powers, guardrails, status }, refused };
 };
 
+/* ── mergeVaPatch — what a PARTIAL `va` in a PUT means (F-477) ────────────────── */
+
+/**
+ * Deep-merge a PARTIAL `va` block onto the stored one, so a PUT is a patch here too.
+ *
+ * WHY THIS EXISTS. The REST PUT merge is a shallow, fixed key list, and `va` was not on
+ * it, so `{"va":{"persona":{"name":"Ada"}}}` REPLACED the whole block. `normalizeVa`
+ * then rebuilt every absent sub-object from `VA_DEFAULTS` — which RESUMED a paused
+ * agent, reset `status.shadowUntilTick` and re-widened every guardrail an admin had
+ * tightened. A rename is not a permission change, and nothing in the request said it
+ * was one.
+ *
+ * A shallow merge of `va` alone would not have been enough either: `{"persona":{"name"}}`
+ * would still have dropped `persona.voice`. So the merge is RECURSIVE over plain
+ * objects, one home, used by every door that patches a record.
+ *
+ * ARRAYS REPLACE, never concatenate. `scope.write.projects` and `powers.skillIds` are
+ * allow-lists, and an allow-list that grows by being sent again is a permission change
+ * nobody asked for; sending `[]` must be able to mean "none".
+ *
+ * It merges SHAPE only. Every clamp, every refusal and every allow-list check is still
+ * `normalizeVa`'s, run on the merged result.
+ */
+export const mergeVaPatch = (existing, patch) => {
+  if (!isObj(patch)) return isObj(existing) ? existing : patch;
+  if (!isObj(existing)) return patch;
+  const out = { ...existing };
+  for (const k of Object.keys(patch)) {
+    const a = existing[k];
+    const b = patch[k];
+    out[k] = isObj(a) && isObj(b) ? mergeVaPatch(a, b) : b;
+  }
+  return out;
+};
+
 /* ── The ONE renderer of the guardrail sentences (F-420 class) ────────────────── */
 
 /**

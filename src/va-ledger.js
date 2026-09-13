@@ -44,7 +44,7 @@ import { VA_LIMITS } from "./shared/va-config.js";
 import {
   vaItemKey, vaIndexKey, vaMemoryKey, vaTickKey, vaEffectKey, vaCapsKey, vaHealthKey,
   vaExecClaimKey, vaPostClaimKey, capsBuckets, tickIdFor,
-  VA_ITEM_TTL, VA_INDEX_TTL, VA_TICK_TTL, VA_EFFECT_TTL, VA_CAPS_TTL, VA_CLAIM_TTL,
+  VA_ITEM_TTL, VA_INDEX_TTL, VA_TICK_TTL, VA_EFFECT_TTL, VA_CAPS_TTL, VA_CLAIM_TTL, VA_HEALTH_TTL,
 } from "./shared/va-keys.js";
 
 const nowIso = (now) => new Date(now == null ? Date.now() : now).toISOString();
@@ -623,7 +623,14 @@ export const recordTick = async (store, agent, { tickId, phase = "prepare", star
     staged: Math.max(0, Math.trunc(Number(staged) || 0)),
     // Bounded: a receipt is evidence, not a log file, and KVS refuses a 240 KiB value.
     skipped: (Array.isArray(skipped) ? skipped : []).slice(0, 50)
-      .map((s) => ({ key: clampChars(s && s.key, 80), reason: safeText(s && s.reason, 120) })),
+      // `gate` is optional and kept when present (F-482): a skip caused by a GATE - the
+      // instance may not run an agent at all - reads differently from a skip caused by
+      // this item, and the receipt is the only place an admin can tell them apart.
+      .map((s) => ({
+        key: clampChars(s && s.key, 80),
+        reason: safeText(s && s.reason, 120),
+        ...(s && s.gate ? { gate: clampChars(s.gate, 40) } : {}),
+      })),
     next: next == null ? null : String(next),
     error: error == null ? null : safeText(error, 300),
   };
@@ -921,7 +928,9 @@ export const recordTickHealth = async (store, agent, okTick, { reason = "", now 
     lastOkAt: okTick ? nowIso(now) : ((prev && prev.lastOkAt) || null),
     lastReason: okTick ? null : safeText(reason, 300),
   };
-  try { await store.set(vaHealthKey(agent), row); }
+  // The TTL is REFRESHED here, on every tick (F-469): a live agent's counter can never
+  // expire, and one that stopped ticking 90 days ago is not a counter anybody reads.
+  try { await store.set(vaHealthKey(agent), row, VA_HEALTH_TTL); }
   catch (e) { return fail("health_write_failed", { detail: String((e && e.message) || e) }); }
   return { ok: true, ...row, banner: consecutiveFailures >= VA_HEALTH_BANNER_AT };
 };
@@ -934,6 +943,69 @@ export const readHealth = async (store, agent) => {
   } catch (e) {
     return fail("health_read_failed", { detail: String((e && e.message) || e) });
   }
+};
+
+/* ══════════════════════════════════════════════════════════════════════════════
+ * 10b. PURGE — what a DELETED agent leaves behind (F-469)
+ * ════════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * How many item rows one purge removes. The index is capped at `VA_ITEM_ROW_CAP` (400)
+ * and a delete runs inside a 25 s resolver that has already written the job index, so
+ * the sweep is BOUNDED rather than complete: what it does not reach carries the 90-day
+ * item TTL and expires on its own. Dropping the INDEX first is what makes the remainder
+ * merely stale rather than reachable.
+ */
+export const VA_PURGE_ITEM_BUDGET = 200;
+
+/**
+ * Remove one agent's ledger. Called from the job delete (`src/scheduled-jobs.js`), which
+ * is the only thing that can destroy a Virtual Administrator.
+ *
+ * WHY IT EXISTS. `deleteScheduledJob` dropped the job row and the agent vanished from
+ * every list, while `va_index:{agent}`, `va_health:{agent}`, `va_memory:{agent}` and all
+ * its item rows stayed - proven live on dev after a delete. The index, the health
+ * counter and the memory carried NO TTL, so they were permanently unreachable rows
+ * holding staged draft text: unsent messages about real people, with no surface left
+ * that could show them or clear them.
+ *
+ * FAIL-SOFT, ALWAYS. Removing the agent must succeed even if the ledger cannot be read:
+ * an admin who presses delete and is refused because a counter row would not go has an
+ * agent they cannot remove. Every failure is counted and named in the return, so the
+ * caller can log it rather than discover it months later.
+ *
+ * `va_tick:*` and `va_effect:*` are NOT swept: they are prefix-scanned rows with their
+ * own 7 and 30 day TTLs, and a bounded `query()` inside a delete would trade a certain
+ * cost for rows that expire anyway.
+ */
+export const purgeAgent = async (store, agent, { itemBudget = VA_PURGE_ITEM_BUDGET } = {}) => {
+  const failures = [];
+  let ids = [];
+  try {
+    const row = await store.get(vaIndexKey(agent));
+    ids = Array.isArray(row && row.ids) ? row.ids : [];
+  } catch (e) {
+    // A read fault here is NOT "there are no items" - it is "we do not know", and the
+    // item rows' own TTL becomes the only floor. Named, never silent.
+    failures.push({ key: "index_read", detail: String((e && e.message) || e).slice(0, 200) });
+  }
+  const drop = async (label, key) => {
+    try { await store.delete(key); return true; }
+    catch (e) { failures.push({ key: label, detail: String((e && e.message) || e).slice(0, 200) }); return false; }
+  };
+  // THE INDEX FIRST. Everything else is reachable only through it, so an interrupted
+  // purge leaves rows that nothing can enumerate and that expire on their own, rather
+  // than an index pointing at rows that are already gone.
+  await drop("index", vaIndexKey(agent));
+  await drop("health", vaHealthKey(agent));
+  await drop("memory", vaMemoryKey(agent));
+  let items = 0;
+  const budget = Math.max(0, Math.trunc(itemBudget));
+  for (const key of ids.slice(0, budget)) {
+    if (await drop(`item:${key}`, vaItemKey(agent, key))) items++;
+  }
+  const remaining = Math.max(0, ids.length - budget);
+  return { ok: failures.length === 0, items, remaining, failures };
 };
 
 /* ══════════════════════════════════════════════════════════════════════════════

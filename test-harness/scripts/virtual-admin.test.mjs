@@ -22,6 +22,12 @@ import kvs from "../lib/mock-kvs.mjs";
 /** The app's own accountId. Every dep that tells our comments from theirs uses it. */
 const SELF = "app-user";
 
+/* THE AGENT CAPABILITY (F-482). Every tick and every item turn asks for it now, so the
+   fixtures state it rather than inheriting the production reader - an instance that may
+   not run an agent at all is a different test, and it is below. */
+const CAP_ON = async () => ({ enabled: true, reason: "byok", provider: "openai", edition: "advanced", agentModel: "gpt-5.4-mini" });
+const CAP_OFF = async () => ({ enabled: false, reason: "needs-coder-edition", provider: "atlassian", edition: "standard", agentModel: "claude-haiku-4-5-20251001" });
+
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) pass++; else { fail++; console.log("  ✗ " + m); } };
 const eq = (a, b, m) => ok(a === b, `${m} (got ${JSON.stringify(a)}, expected ${JSON.stringify(b)})`);
@@ -186,6 +192,7 @@ reset();
   const job = vaJob();
   job.va.intake.jql = "status = Open";
   const deps = {
+    capability: CAP_ON,
     store: kvs, now: () => Date.parse("2026-09-13T10:00:00Z"),
     jsmQueueIssues: async () => ({ ok: true, issues: [] }),
     selfAccountId: async () => ({ ok: true, accountId: SELF }),
@@ -219,7 +226,7 @@ reset();
   let searched = 0;
   const job = vaJob({ status: { paused: true, shadowUntilTick: 0 } });
   job.va.intake.jql = "status = Open";
-  const r = await V.runVaTick({ job, tickId: "t2", deps: { store: kvs, selfAccountId: async () => ({ ok: true, accountId: SELF }), searchJql: async () => { searched++; return { issues: [] }; }, jsmQueueIssues: async () => ({ ok: true, issues: [] }), pushTask: async () => {} } });
+  const r = await V.runVaTick({ job, tickId: "t2", deps: { capability: CAP_ON, store: kvs, selfAccountId: async () => ({ ok: true, accountId: SELF }), searchJql: async () => { searched++; return { issues: [] }; }, jsmQueueIssues: async () => ({ ok: true, issues: [] }), pushTask: async () => {} } });
   eq(r.paused, true, "tick.BLOCK_paused");
   eq(searched, 0, "tick: a paused agent does not even sweep — pausing stops the SPEND, not only the speech");
   eq((await L.readTick(kvs, AG, "t2", "prepare")).receipt.skipped[0].reason, "paused", "tick: the pause is in the receipt");
@@ -234,7 +241,7 @@ reset();
   // The queue fault is swallowed per-candidate (a named skip); force a real tick failure
   // by breaking the receipt path's own store instead.
   const brokenStore = { get: async () => { throw new Error("kvs down"); }, set: async (k, v, o) => kvs.set(k, v, o), delete: async (k) => kvs.delete(k) };
-  const r = await V.runVaTick({ job, tickId: "t3", deps: { ...boom, store: brokenStore, selfAccountId: async () => ({ ok: true, accountId: SELF }), jsmQueueIssues: async () => ({ ok: true, issues: [] }) } });
+  const r = await V.runVaTick({ job, tickId: "t3", deps: { capability: CAP_ON, ...boom, store: brokenStore, selfAccountId: async () => ({ ok: true, accountId: SELF }), jsmQueueIssues: async () => ({ ok: true, issues: [] }) } });
   ok(r.ok === false || r.candidates === 0, "tick: a store that cannot be read produces no candidates and no silent success");
   const h = await L.readHealth(kvs, AG);
   ok(h.ok !== false, "health: the health row is readable after a failed tick");
@@ -246,6 +253,7 @@ reset();
   const job = vaJob();
   job.va.intake.jql = "status = Open";
   const r = await V.runVaTick({ job, tickId: "t4", deps: {
+    capability: CAP_ON,
     store: kvs, jsmQueueIssues: async () => ({ ok: true, issues: [] }),
     selfAccountId: async () => ({ ok: true, accountId: SELF }),
     searchJql: async () => ({ issues: [issue("SUP-9")] }),
@@ -303,6 +311,7 @@ const itemDeps = (over = {}) => {
   const changes = [];
   const posted = [];
   return {
+    capability: CAP_ON,
     store: kvs, now: () => Date.parse("2026-09-13T12:00:00Z"),
     selfAccountId: async () => ({ ok: true, accountId: SELF }),
     getIssue: async (k) => issue(k, { fields: { reporter: { accountId: "rep-1" }, requestType: { id: "rt-1" }, comment: { comments: [{ id: "c-9", author: { accountId: "rep-1" }, body: "hi" }] } } }),
@@ -1073,7 +1082,7 @@ reset();
   reset();
   await V.runVaTick({
     job: vaJob({ status: { paused: true, shadowUntilTick: 3 } }), tickId: "paused-1",
-    deps: { store: kvs, selfAccountId: async () => ({ ok: true, accountId: SELF }), jsmQueueIssues: async () => ({ ok: true, issues: [] }), searchJql: async () => ({ issues: [] }), pushTask: async () => {} },
+    deps: { capability: CAP_ON, store: kvs, selfAccountId: async () => ({ ok: true, accountId: SELF }), jsmQueueIssues: async () => ({ ok: true, issues: [] }), searchJql: async () => ({ issues: [] }), pushTask: async () => {} },
   });
   eq((await L.readHealth(kvs, AG)).prepareTicks, 0, "shadow.BLOCK_paused_ticks_do_not_count");
 
@@ -1081,7 +1090,7 @@ reset();
   reset();
   await V.runVaTick({
     job: vaJob(), tickId: "real-1",
-    deps: { store: kvs, selfAccountId: async () => ({ ok: true, accountId: SELF }), jsmQueueIssues: async () => ({ ok: true, issues: [] }), searchJql: async () => ({ issues: [] }), pushTask: async () => {} },
+    deps: { capability: CAP_ON, store: kvs, selfAccountId: async () => ({ ok: true, accountId: SELF }), jsmQueueIssues: async () => ({ ok: true, issues: [] }), searchJql: async () => ({ issues: [] }), pushTask: async () => {} },
   });
   eq((await L.readHealth(kvs, AG)).prepareTicks, 1, "shadow.ALLOW_a_real_prepare_tick_counts");
 }
@@ -1530,6 +1539,75 @@ reset();
   eq(L.draftIsApproved(sneakyRow.staged), false, "…and the predicate agrees");
   r = await V.runVaPost({ agent: shadowed(), tickId: "s-8", deps: postDeps() });
   eq(r.posted, 0, "…so it still does not go out");
+}
+
+/* ── THE CAPABILITY GATE (F-482) ───────────────────────────────────────────────
+
+   A VA is an agent surface and it asked the ONE capability predicate nowhere, so on a
+   Standard tenant on Forge LLM - where `getAgentCapability` answers
+   `needs-coder-edition` - a Virtual Administrator ran ten item turns anyway, on the
+   rules model. BLOCK and ALLOW are both asserted, on the tick and on the item turn,
+   because a gate proved in one direction only can drift the other way silently. */
+reset();
+{
+  const job = vaJob();
+  job.va.intake.jql = "status = Open";
+  let searched = 0;
+  const pushed = [];
+  const r = await V.runVaTick({ job, tickId: "cap-off-1", deps: {
+    capability: CAP_OFF,
+    store: kvs,
+    selfAccountId: async () => ({ ok: true, accountId: SELF }),
+    jsmQueueIssues: async () => ({ ok: true, issues: [] }),
+    searchJql: async () => { searched++; return { issues: [issue("SUP-1")] }; },
+    pushTask: async (queueKey, body) => { pushed.push(body); },
+  } });
+  eq(r.ok, false, "capability.BLOCK_tick — a tick on an instance that may not run an agent does not succeed");
+  eq(r.reason, "capability_off", "…and says so by name");
+  eq(searched, 0, "capability.BLOCK_spend — it does not even sweep, so the refusal costs no search");
+  eq(pushed.length, 0, "capability.BLOCK_fanout — and no item task is queued to refuse later");
+
+  const receipt = (await L.readTick(kvs, AG, "cap-off-1", "prepare")).receipt;
+  eq(receipt.skipped[0].gate, "capability", "capability: the RECEIPT names the gate, not just an empty tick");
+  eq(receipt.skipped[0].reason, "needs-coder-edition", "…and the reason an admin can act on");
+  const h = await L.readHealth(kvs, AG);
+  eq(h.consecutiveFailures, 1, "capability: the health counter takes a FAILURE, so the banner can appear");
+  ok(/capability/.test(h.lastReason || ""), `capability: …and the banner's reason names it (got ${h.lastReason})`);
+  eq(h.prepareTicks, 0, "capability: a refused tick is not a WATCHED tick, so it does not burn shadow mode");
+}
+
+reset();
+{
+  // THE ITEM TURN ASKS AGAIN. An item task is a queued message and can be delivered
+  // across a licence lapse, so the last word belongs where the model is actually called.
+  const loop = scriptedLoop([[{ name: "stage_reply", args: { audience: "internal", body: "x", reason: "r" } }]]);
+  await L.saveItem(kvs, AG, "SUP-1", { state: "queued", event: "queued" });
+  const r = await V.runVaItem({ agent: vaJob(), issueKey: "SUP-1", tickId: "t1", deps: itemDeps({ runLoop: loop, capability: CAP_OFF }) });
+  eq(r.ok, false, "capability.BLOCK_item — the turn refuses");
+  eq(r.reason, "capability_off", "…by name");
+  eq(loop.seen.length, 0, "capability.BLOCK_model_call — the model was never called");
+  const row = (await L.readItem(kvs, AG, "SUP-1")).row;
+  eq(row.state, "queued", "capability: …and the item is left where it was, to run when the instance can");
+}
+
+reset();
+{
+  // ALLOW: the same turn on a capable instance still stages, so the gate is a gate and
+  // not a wall.
+  const loop = scriptedLoop([[{ name: "stage_reply", args: { audience: "internal", body: "Looking at it now.", reason: "r" } }]]);
+  const r = await V.runVaItem({ agent: vaJob(), issueKey: "SUP-1", tickId: "t1", deps: itemDeps({ runLoop: loop, capability: CAP_ON }) });
+  eq(r.ok, true, "capability.ALLOW_item — a capable instance runs the turn");
+  eq(r.staged.audience, "internal", "…and it stages as before");
+}
+
+/* THE MODEL SLOT (F-482). The turn ran on `getOpenAIModel()` - the RULES model, Haiku on
+   Forge LLM - while the admin's agent model sat unused. A source assertion, because the
+   dep is the production reader and the suite injects around it. */
+{
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync(new URL("../../src/virtual-admin.js", import.meta.url), "utf8");
+  ok(/model: await m\.getAgentModel\(\)/.test(src), "model: the VA loop runs on the AGENT model");
+  ok(!/model: await m\.getOpenAIModel\(\)/.test(src), "model: …and no longer on the rules model");
 }
 
 

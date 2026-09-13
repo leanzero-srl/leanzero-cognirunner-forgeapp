@@ -47,10 +47,21 @@ export const VA_EFFECT_TTL = days(VA_LIMITS.effectTtlDays);
  */
 export const VA_CAPS_TTL = days(2);
 /**
- * `va_memory` and `va_health` carry NO TTL on purpose. The memory is the agent's only
- * durable state, and F-426's whole point is that the banner's counter must not be
- * reconstructed from rows that can expire underneath it.
+ * `va_health`: the item TTL, REFRESHED on every tick (F-469).
+ *
+ * F-426 is why this counter is a row of its own rather than a scan over `va_tick:*`, and
+ * that argument is about RECONSTRUCTION, not about immortality: the row is rewritten by
+ * `recordTickHealth` on every single tick, so a TTL as long as an item row can only ever
+ * expire for an agent that has not ticked in 90 days - one that is disabled, or deleted
+ * and left behind by a purge that could not finish. Before this it never expired at all,
+ * which is how a deleted agent's counter outlived the agent for ever.
+ *
+ * `va_memory` still carries NO TTL, deliberately. It is the agent's only durable state
+ * and it is written only when the agent LEARNS something, not on a clock, so any TTL
+ * would silently erase what a quiet agent knows. Its bounded end is `purgeAgent`
+ * (src/va-ledger.js), called from the job delete.
  */
+export const VA_HEALTH_TTL = days(VA_LIMITS.itemTtlDays);
 /** Claims: 2 days. Longer than any retry window, shorter than the item row. */
 export const VA_CLAIM_TTL = days(2);
 /**

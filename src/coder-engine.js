@@ -304,6 +304,31 @@ const threadUnits = (all) => {
 };
 
 /**
+ * AN EMPTY TURN — the ONE predicate for "this row says nothing and must not be replayed"
+ * (F-644), shared by `storableMessage` (on the way in), `toModelMessage` (on the way out)
+ * and `compactThread` (for rows a previous version already wrote).
+ *
+ * A model can stop with empty prose and no tool calls — reachable on the `exhausted`
+ * round, where `tool_choice` is forced to "none". `runAgentLoop` pushes that message like
+ * any other, and it used to be STORED verbatim and replayed into every later turn of the
+ * thread: the Anthropic Messages API rejects a non-final message with empty content, so
+ * one such reply could 400 every later turn of that Coder thread, and it is also what left
+ * the cross-turn cache boundary with nothing to mark (F-643).
+ *
+ * A row that carries `tool_calls` or is itself a tool RESULT is never empty by this rule
+ * however blank its text: dropping either would orphan the other half of a tool pair,
+ * which `repairTranscript` exists to prevent.
+ */
+export const isEmptyTurn = (msg) => {
+  if (!msg || typeof msg !== "object") return false;
+  if (Array.isArray(msg.tool_calls) && msg.tool_calls.length > 0) return false;
+  if (msg.tool_call_id) return false;
+  if (typeof msg.content === "string") return msg.content.trim() === "";
+  if (Array.isArray(msg.content)) return msg.content.length === 0;
+  return msg.content == null;
+};
+
+/**
  * THE FLOOR: no message may leave compaction unpaired. Orphan `tool` rows are dropped,
  * and an assistant's `tool_calls` are narrowed to the ones whose results survived (with
  * the message itself dropped when nothing is left of it). Pure, and cheap enough to run
@@ -336,7 +361,12 @@ export const repairTranscript = (msgs) => {
 };
 
 export const compactThread = (messages, { maxBytes = CODER_THREAD_MAX_BYTES, keepRecent = CODER_THREAD_KEEP_RECENT } = {}) => {
-  const all = Array.isArray(messages) ? messages.slice() : [];
+  // LEGACY ROWS GO HERE (F-644). `storableMessage` no longer writes an empty turn, but
+  // threads written before it did are live for CODER_THREAD_TTL, and every thread write
+  // passes through this function — so a poisoned thread heals on its next turn instead of
+  // 400ing at the provider forever. Not counted as `dropped`: nothing was compacted away,
+  // a row that said nothing was removed.
+  const all = (Array.isArray(messages) ? messages : []).filter((m) => !isEmptyTurn(m));
   if (bytesOf(all) <= maxBytes) return { messages: all, compacted: false, dropped: 0 };
   const { leaderOf, members } = threadUnits(all);
 
@@ -931,6 +961,15 @@ const runCoderTurnClaimed = async ({
   // context: the context is rebuilt live next turn, and storing it would make the thread
   // grow by a full issue snapshot per message.
   const addedByLoop = loop.messages.slice(seededCount);
+  // F-644 — say it once, at INFO, naming the thread: a model reply that said nothing is
+  // dropped rather than stored, and a reader who later wonders why the transcript has a
+  // gap should not have to infer it.
+  const emptyTurns = addedByLoop.filter(isEmptyTurn).length;
+  if (emptyTurns) {
+    const line = `Dropped ${emptyTurns} empty model message(s) from thread ${thread} — an assistant turn with no text and no tool calls is not stored (it would be replayed into every later turn and rejected by the provider).`;
+    log(line);
+    console.log(`[coder] ${line}`);
+  }
   const addedThisTurn = [
     // The user's row carries the turn's KNOWLEDGE RECEIPT (F-487): which skills were
     // injected and how much memory, by id and count. `toModelMessage` drops every field
@@ -1140,9 +1179,13 @@ const clampRounds = (v) => {
   return Number.isFinite(n) ? Math.min(CODER_MAX_ROUNDS, Math.max(1, n)) : CODER_DEFAULT_ROUNDS;
 };
 
-/** What we KEEP of a model message: enough to resume the conversation, nothing else. */
+/**
+ * What we KEEP of a model message: enough to resume the conversation, nothing else.
+ * An EMPTY turn is not stored at all (F-644) — see `isEmptyTurn`.
+ */
 const storableMessage = (msg) => {
   if (!msg || typeof msg !== "object") return null;
+  if (isEmptyTurn(msg)) return null;
   const out = { role: msg.role, at: nowIso() };
   if (typeof msg.content === "string") out.content = msg.content;
   else if (msg.content != null) out.content = JSON.stringify(msg.content).slice(0, 8000);
@@ -1152,10 +1195,20 @@ const storableMessage = (msg) => {
   return out;
 };
 
-/** A stored row back into a provider message. Engine-only fields never leave. */
+/**
+ * A stored row back into a provider message. Engine-only fields never leave.
+ *
+ * F-644 — NOTHING MANUFACTURES AN EMPTY CONTENT HERE. An empty legacy row is skipped
+ * entirely (it can carry no tool pairing, by `isEmptyTurn`'s own rule, so nothing is
+ * orphaned), and a row whose stored content is not a string leaves the field OFF rather
+ * than replaying `""`: an assistant row with tool_calls is legal without content, and a
+ * fabricated empty string is exactly the shape the provider rejects mid-conversation.
+ */
 const toModelMessage = (msg) => {
   if (!msg || !msg.role) return null;
-  const out = { role: msg.role, content: typeof msg.content === "string" ? msg.content : "" };
+  if (isEmptyTurn(msg)) return null;
+  const out = { role: msg.role };
+  if (typeof msg.content === "string") out.content = msg.content;
   if (Array.isArray(msg.tool_calls)) out.tool_calls = msg.tool_calls;
   if (msg.tool_call_id) out.tool_call_id = msg.tool_call_id;
   return out;

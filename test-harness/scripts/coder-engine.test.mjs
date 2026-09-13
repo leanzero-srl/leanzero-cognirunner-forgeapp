@@ -52,7 +52,7 @@ const store = (await import("../lib/mock-kvs.mjs")).default;
 const {
   runCoderTurn, confirmCoderTicket, compactThread, buildCoderSystemPrompt, buildArgsPreview,
   coderThreadKey, coderPinKey, coderTicketKey, coderExecClaimKey, coderTicketExecClaimKey, coderThreadWriteClaimKey,
-  CODER_MAX_ROUNDS, CODER_CLAIM_TTL_MINUTES, repairTranscript,
+  CODER_MAX_ROUNDS, CODER_CLAIM_TTL_MINUTES, repairTranscript, isEmptyTurn,
 } = await import("../../src/coder-engine.js");
 const { runAgentTask, runAgentLoop, createAgentActionDispatcher } = await import("../../src/agent-runner.js");
 const { AGENT_ACTIONS } = await import("../../src/shared/agent-actions.js");
@@ -1281,6 +1281,84 @@ await check("F-641: a caller with no stablePrefixCount declares ONE boundary twi
     .filter((i) => i >= 0);
   assert.deepEqual(both, legacy, "coinciding boundaries collapse to the pre-F-641 marks");
   assert.equal(placementRule(msgs, 0, 2), msgs, "and a caller that never opted in is returned AS IS");
+});
+
+/* ═════════ F-644: an EMPTY model turn is never stored and never replayed ═════════
+ *
+ * A model can stop with empty prose and no tool calls (the `exhausted` round forces
+ * `tool_choice:"none"`). That message was stored verbatim and replayed into every later
+ * turn — and the Anthropic Messages API rejects a non-final message with empty content, so
+ * one such reply could 400 the rest of the thread. It is also what left the cross-turn
+ * cache boundary with nothing to mark (F-643). One predicate, `isEmptyTurn`, on all three
+ * seams: the store, the replay and the compactor.
+ */
+await check("F-644: an assistant reply with empty content and no tool calls is NOT stored", async () => {
+  resetStore();
+  const world = setupWorld({ rounds: [reply(null, "")] });
+  const r = await startTurn(world, { userMessage: "say nothing" });
+  assert.equal(r.success, true, "the turn itself still completes — this is about what is kept");
+  const thread = await store.get(coderThreadKey("LZPT-7", "t1"));
+  assert.ok(thread.messages.some((m) => m.content === "say nothing"), "the user's own words are stored");
+  assert.equal(thread.messages.filter((m) => m.role === "assistant").length, 0,
+    `THE FINDING: the empty assistant turn is dropped, not written (${JSON.stringify(thread.messages.map((m) => [m.role, m.content]))})`);
+  assert.ok(r.logs.some((l) => /Dropped 1 empty model message/.test(l)),
+    "…and the turn says so at INFO, naming the thread");
+});
+
+await check("F-644: a non-empty reply is still stored (the control)", async () => {
+  resetStore();
+  const world = setupWorld({ rounds: [reply(null, "here is the answer")] });
+  await startTurn(world, { userMessage: "say something" });
+  const thread = await store.get(coderThreadKey("LZPT-7", "t1"));
+  assert.equal(thread.messages.filter((m) => m.role === "assistant" && m.content === "here is the answer").length, 1,
+    "a reply with words is kept exactly as before");
+});
+
+await check("F-644: a LEGACY empty row is never replayed into the model's messages", async () => {
+  resetStore();
+  // A thread written by the previous version: the poisoned row is already on the record.
+  await store.set(coderThreadKey("LZPT-7", "t1"), {
+    issueKey: "LZPT-7", threadId: "t1", turns: 1, messages: [
+      { role: "user", at: "x", content: "turn 1" },
+      { role: "assistant", at: "x", content: "" },
+    ],
+  });
+  const world = setupWorld({ rounds: [reply([finish()])] });
+  await startTurn(world, { userMessage: "turn 2" });
+  const sent = world.requests[0].messages;
+  assert.equal(sent.filter((m) => m.role === "assistant" && (m.content === "" || m.content == null)).length, 0,
+    `THE FINDING: no empty assistant message reaches the provider (${JSON.stringify(sent.map((m) => [m.role, String(m.content).slice(0, 20)]))})`);
+  assert.ok(sent.some((m) => m.content === "turn 1"), "…while the rest of the history still replays");
+  const thread = await store.get(coderThreadKey("LZPT-7", "t1"));
+  assert.equal(thread.messages.filter((m) => isEmptyTurn(m)).length, 0,
+    "…and the thread write heals the stored row, so the next turn starts clean");
+});
+
+await check("F-644: isEmptyTurn never drops half of a tool pair", async () => {
+  const toolCall = { role: "assistant", content: "", tool_calls: [{ id: "c1", function: { name: "f", arguments: "{}" } }] };
+  const toolRow = { role: "tool", tool_call_id: "c1", content: "" };
+  assert.equal(isEmptyTurn(toolCall), false, "an assistant carrying tool_calls is never empty, whatever its text");
+  assert.equal(isEmptyTurn(toolRow), false, "a tool RESULT is never empty — dropping it would orphan the call");
+  assert.equal(isEmptyTurn({ role: "assistant", content: "   " }), true, "whitespace-only prose is empty");
+  assert.equal(isEmptyTurn({ role: "assistant", content: null }), true, "…so is null content with no calls");
+  assert.equal(isEmptyTurn({ role: "assistant", content: [] }), true, "…and an empty content array");
+  assert.equal(isEmptyTurn({ role: "assistant", content: "a" }), false, "a real answer is not empty");
+});
+
+await check("F-644: compactThread prunes legacy empty rows and keeps the pairs", async () => {
+  const msgs = [
+    { role: "user", content: "hi" },
+    { role: "assistant", content: "" },
+    { role: "assistant", content: null, tool_calls: [{ id: "c1", function: { name: "f", arguments: "{}" } }] },
+    { role: "tool", tool_call_id: "c1", content: "{}" },
+    { role: "assistant", content: "done" },
+  ];
+  const out = compactThread(msgs, { maxBytes: 10000 });
+  assert.equal(out.messages.length, 4, "the empty row is gone");
+  assert.equal(out.messages.filter((m) => isEmptyTurn(m)).length, 0, "…and nothing empty survives");
+  assert.equal(out.compacted, false, "removing a row that said nothing is not a compaction, and must not be reported as one");
+  assert.equal(out.dropped, 0, "…so the dropped COUNT stays about compaction");
+  assert.deepEqual(out.messages.map((m) => m.role), ["user", "assistant", "tool", "assistant"], "the tool pair is intact");
 });
 
 await check("F-578: a re-pin too large to write CLEARS the stale row rather than leaving it to replay", async () => {

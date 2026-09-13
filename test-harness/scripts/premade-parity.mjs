@@ -23,7 +23,7 @@ import {
   PREMADE_POSTFUNCTIONS, getPremadePostFunction, CODER_PF_MODES, CODER_PF_MODE_IDS, getCoderPfMode,
 } from "../../src/shared/premade-rules-catalog.js";
 import { isKnownEvent, requiresRepoFilter, isGitEvent } from "../../src/shared/jira-events.js";
-import { AGENT_ACTIONS } from "../../src/shared/agent-actions.js";
+import { AGENT_ACTIONS, AGENT_ACTION_NAMESPACES, agentActionNamespace } from "../../src/shared/agent-actions.js";
 import { normalizeListener } from "../../src/listeners.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -104,6 +104,41 @@ for (const row of PREMADE_LISTENERS) {
     for (const a of (seed.agent || {}).allowedActions || []) {
       if (a === "add_pr_comment" || a === "approve_pull_request" || a === "request_changes") {
         problems.push(`${where} runs the review ENGINE but its seed also allows the agent action "${a}" — that write would bypass the engine's brakes`);
+      }
+    }
+  }
+  // F-486 — CAPABILITY PARITY, both directions. The premade button is the FIRST thing a
+  // new instance clicks, and `assertAllowedActions` fails CLOSED at save time, so a seed
+  // that holds a capability-gated action is unsaveable on every instance that lacks the
+  // capability. An AGENTLESS row is served by a deterministic engine that never calls an
+  // agent action, so it must hold none of them — otherwise the starter is refused on
+  // exactly the instance its agentless engine exists for. And a row that DOES hold one
+  // must say so on the catalogue row, because that is the only field a UI can read to
+  // explain the refusal before it happens.
+  {
+    const gated = [];
+    for (const id of (seed.agent || {}).allowedActions || []) {
+      const a = AGENT_ACTIONS.find((x) => x.id === id);
+      if (!a) continue; // already reported above as not-in-catalogue
+      const ns = AGENT_ACTION_NAMESPACES[agentActionNamespace(a)] || {};
+      const cap = a.requiresCapability || ns.requiresCapability || null;
+      if (cap) gated.push(`${id} (${cap})`);
+    }
+    if (seed.agentlessTaskType && gated.length) {
+      problems.push(`${where} is AGENTLESS (agentlessTaskType "${seed.agentlessTaskType}") but its seed holds capability-gated action(s) ${gated.join(", ")} — assertAllowedActions refuses the save on exactly the instance the agentless engine serves`);
+    }
+    if (!seed.agentlessTaskType && gated.length && !row.requiresCapability) {
+      problems.push(`${where} holds capability-gated action(s) ${gated.join(", ")} but declares no requiresCapability on the catalogue row — nothing can warn before the save is refused`);
+    }
+    // …and the same claim in the shape the live failure took: an agentless starter must
+    // normalise on a CAPABILITY-OFF gate (Standard + Forge LLM), which is the gate the
+    // save path builds on such an instance.
+    if (seed.agentlessTaskType) {
+      const filled = { ...seed, events: row.events, filters: { ...(seed.filters || {}), ...(needsRepos ? { repos: ["owner/name"] } : {}) } };
+      try {
+        normalizeListener(filled, { gate: { capability: { git: { enabled: false, reason: "capability-off:git" } }, savedByRole: "admin" } });
+      } catch (e) {
+        problems.push(`${where} is AGENTLESS but its seed is REFUSED on an instance with no agent capability: ${e.message}`);
       }
     }
   }

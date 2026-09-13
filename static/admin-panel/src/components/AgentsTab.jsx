@@ -169,6 +169,11 @@ const COMPACTION_COPY = {
   "compaction_produced_nothing": "The summariser came back with nothing to store, so the notes were left exactly as they were.",
   "pinned_dropped": "The proposed summary had lost a pinned instruction, so it was thrown away and the previous notes still stand.",
   "compaction_failed": "Memory compaction stopped on an unexpected error and the previous notes are untouched.",
+  /* F-564 - the purge tombstone (F-553, src/va-ledger.js). Every site that reads it is
+     receipt-free on purpose, so this sentence is the answer for the one case where a row
+     survives the delete: a neutral statement, not a failure, which is why it renders on
+     the slate "paused" tone rather than the red gate one. */
+  "agent-purged": "This agent was deleted while a turn was still running, so nothing was written.",
 };
 const UNKNOWN_COMPACTION = "Memory compaction reported an unrecognised result.";
 /* The BASE id: the engine's `compaction:` namespace prefix off the front, and any

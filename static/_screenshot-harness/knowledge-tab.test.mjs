@@ -41,7 +41,7 @@ import { fileURLToPath } from "node:url";
 import { ensureFreshBuildShot } from "./lib/build-shot.mjs";
 /* The packs and the budgets come from THEIR one home, never retyped here. A suite that
    hand-listed nine titles would pass forever against a corpus that had been re-baked. */
-import { KNOWLEDGE_PACKS, KNOWLEDGE_CONTENT_VERSION } from "../../src/shared/knowledge-index.js";
+import { KNOWLEDGE_PACKS, KNOWLEDGE_PINS, KNOWLEDGE_CONTENT_VERSION } from "../../src/shared/knowledge-index.js";
 import { KNOWLEDGE_VERSION } from "../../src/shared/knowledge-select.js";
 import { fieldGuideBudget } from "../../src/shared/registry-limits.js";
 
@@ -138,12 +138,33 @@ try {
       const provCounts = await page.locator(".kn-pack").evaluateAll((els) => els.map((e) => e.querySelectorAll(".kn-prov-line").length));
       ok(provCounts.every((n) => n > 0), `K1 every card names its source and licence (${provCounts.join(",")})`);
 
-      /* The PINNED pack is the one the index says is pinned — a chip nobody else gets. */
-      const pinnedPack = KNOWLEDGE_PACKS.find((p) => (p.pinned || []).length > 0);
-      if (pinnedPack) {
-        const pinned = page.locator(".kn-pack").filter({ hasText: pinnedPack.title }).first();
-        ok(await pinned.locator(".kn-pack-pinned").count() === 1, `K1 ${pinnedPack.title} carries the pinned chip`);
-        ok(await page.locator(".kn-pack-pinned").count() === 1, "K1 only the pinned pack carries it");
+      /* THE PINNED PACKS, DERIVED, NEVER COUNTED BY HAND (F-564). This read used to take the
+         FIRST pack with pins and assert that exactly one chip existed on the page. That is a
+         literal wearing a derivation's clothes: the corpus already carried two pinned packs
+         and F-558 added a `va` pin on top, so the count broke the moment the corpus grew,
+         which is a re-bake and not a defect. What the card actually renders the chip from is
+         `packs[].pinned`, so the expectation is the SET of pack titles with a non-empty
+         `pinned`, matched against the set of cards carrying the chip. A pack added to or
+         removed from the pins now moves both sides together.
+
+         KNOWLEDGE_PINS (the selector's audience -> section map) is read here too, as the
+         second derivation: every pack it names must be a pack this index knows. It is NOT
+         asserted to carry a chip, because `packs[].pinned` and KNOWLEDGE_PINS are populated
+         from different fields of knowledge/sources.json (`pinned` vs `pinnedFor`) and the
+         `va` pin lives only in the latter - a real gap, filed rather than failed here. */
+      const pinnedTitles = KNOWLEDGE_PACKS.filter((p) => (p.pinned || []).length > 0).map((p) => p.title).sort();
+      const chipTitles = (await page.locator(".kn-pack").evaluateAll((els) => els
+        .filter((e) => e.querySelector(".kn-pack-pinned"))
+        .map((e) => (e.querySelector(".kn-pack-title") || {}).textContent || ""))).map((t) => t.trim()).sort();
+      ok(JSON.stringify(chipTitles) === JSON.stringify(pinnedTitles),
+        `K1 exactly the packs the index pins carry the pinned chip (want ${JSON.stringify(pinnedTitles)}, got ${JSON.stringify(chipTitles)})`);
+      for (const title of pinnedTitles) {
+        const pinned = page.locator(".kn-pack").filter({ hasText: title }).first();
+        ok(await pinned.locator(".kn-pack-pinned").count() === 1, `K1 ${title} carries the pinned chip`);
+      }
+      const packIds = new Set(KNOWLEDGE_PACKS.map((p) => p.id));
+      for (const [audience, pins] of Object.entries(KNOWLEDGE_PINS)) {
+        for (const pin of pins) ok(packIds.has(String(pin).split("#")[0]), `K1 the ${audience} pin "${pin}" names a pack in the index`);
       }
 
       /* The budget table is the REAL per-audience rule, not a decorative list. */

@@ -50,7 +50,7 @@ import {
 import { minuteKey, effectiveBudget, budgetDecision, inlineShouldQueue, AI_PLATFORM_TPM, AI_BUDGET_DEFAULT_TPM, BUDGET_WAIT_HORIZON_MS } from "./shared/ai-budget.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
 import { isKeyConflict, safeKeyPart } from "./shared/kvs-keys.js";
-import { gitDeliveryClaimKey } from "./shared/git-ids.js";
+import { gitDeliveryClaimKey, GIT_DELIVERY_CLAIM_TTL } from "./shared/git-ids.js";
 import { readHeader } from "./shared/http-headers.js";
 import { providerKeySlot, providerModelSlot, providerAgentModelSlot, providerBaseUrlSlot } from "./shared/provider-slots.js";
 // GIT CONNECTIONS (1.4 commit 2). The behaviour — key names, caps, the security
@@ -11547,9 +11547,11 @@ export async function gitWebhook(req) {
   // The builder sanitises both parts — `deliveryId` is a raw provider header.
   const claimKey = gitDeliveryClaimKey(connId, deliveryId);
   try {
+    // The TTL is NOT a literal here: the consumer re-takes this same row after a retried
+    // success (F-367) and the two windows must be identical — ONE home, git-ids.js (F-370).
     await storage.set(claimKey, { at: new Date().toISOString(), eventType }, {
       keyPolicy: "FAIL_IF_EXISTS",
-      ttl: { value: 24, unit: "HOURS" },
+      ...GIT_DELIVERY_CLAIM_TTL,
     });
   } catch (e) {
     // ONLY the FAIL_IF_EXISTS conflict is a duplicate. Any other fault (KVS

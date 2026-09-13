@@ -25,6 +25,27 @@ import { safeKeyPart, assertKvsKey } from "./kvs-keys.js";
 
 const part = (s) => safeKeyPart(s);
 
+/**
+ * F-370 — THE ONE HOME for how long a git delivery claim lives.
+ *
+ * Two files write this row: the webhook (src/index.js `gitWebhook`) takes it at ACCEPT
+ * time with FAIL_IF_EXISTS, and the consumer (src/async-handler.js `executeGitEvent`)
+ * RE-TAKES it after a retried success (F-367). The row means the same thing in both, so
+ * it must expire at the same time in both — a shorter re-take would let a provider
+ * Redeliver run a delivery twice, a longer one would answer `duplicate` for a delivery
+ * whose accept-time twin had already aged out. It was a bare `{ value: 24, unit: "HOURS" }`
+ * literal in BOTH files, which is LAW 1's signature defect.
+ *
+ * The attempt counter (`gitDeliveryAttemptKey`) shares the window deliberately: it must
+ * not outlive the claim it counts, nor vanish while the claim still refuses redelivery.
+ *
+ * Seconds, not hours, so a test can assert the number without re-deriving a unit.
+ */
+export const GIT_DELIVERY_CLAIM_TTL_S = 24 * 60 * 60;
+
+/** The same TTL in the option shape KVS `set` and `claimRuleExecution` both take. */
+export const GIT_DELIVERY_CLAIM_TTL = { ttl: { value: GIT_DELIVERY_CLAIM_TTL_S, unit: "SECONDS" } };
+
 /** The 24 h idempotency claim: taken at accept, released when a dispatch throws. */
 export const gitDeliveryClaimKey = (connectionId, deliveryId) => assertKvsKey(`git_delivery:${part(connectionId)}:${part(deliveryId)}`);
 

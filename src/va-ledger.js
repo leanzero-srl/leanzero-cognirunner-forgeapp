@@ -43,8 +43,9 @@ import { defangFence } from "./memories.js";
 import { VA_LIMITS } from "./shared/va-config.js";
 import {
   vaItemKey, vaIndexKey, vaMemoryKey, vaTickKey, vaEffectKey, vaCapsKey, vaHealthKey,
-  vaExecClaimKey, vaPostClaimKey, vaCompactClaimKey, capsBuckets, tickIdFor,
+  vaExecClaimKey, vaPostClaimKey, vaCompactClaimKey, vaCompactBackoffKey, capsBuckets, tickIdFor,
   VA_ITEM_TTL, VA_INDEX_TTL, VA_TICK_TTL, VA_EFFECT_TTL, VA_CAPS_TTL, VA_CLAIM_TTL, VA_HEALTH_TTL,
+  VA_COMPACT_BACKOFF_TTL,
 } from "./shared/va-keys.js";
 
 const nowIso = (now) => new Date(now == null ? Date.now() : now).toISOString();
@@ -588,6 +589,48 @@ export const takeCompactClaim = (store, agent, tickId) =>
   takeClaim(store, vaCompactClaimKey(agent, tickId), "va-compact");
 export const releaseCompactClaim = (store, agent, tickId) =>
   releaseClaim(store, vaCompactClaimKey(agent, tickId));
+
+/**
+ * F-506 — THE COMPACTION BACKOFF. The claim above is per TICK and can only ever stop a
+ * REDELIVERY of the same tick; it is powerless against the NEXT tick asking a provider
+ * that is still dead. This marker is per AGENT and outlives ticks: a compaction turn that
+ * was paid for and did not converge sets it, and every tick inside its TTL skips the model
+ * call by name instead of buying the same failure again.
+ *
+ * FAIL OPEN, deliberately, and the opposite polarity to the claims: a storage fault here
+ * answers "no backoff" and lets the tick TRY. A claim protects against a double spend,
+ * where doubt must stop the work; this one only delays a retry, so doubt must not be able
+ * to freeze compaction on a healthy agent.
+ */
+export const readCompactBackoff = async (store, agent) => {
+  try {
+    const row = await store.get(vaCompactBackoffKey(agent));
+    if (!isObj(row)) return { active: false };
+    return { active: true, since: row.at || null, reason: row.reason || null };
+  } catch (e) {
+    return { active: false, readFailed: true, detail: String((e && e.message) || e) };
+  }
+};
+
+/**
+ * Set (or refresh) the backoff. A plain `set`, NOT a claim: a later failure re-arming the
+ * window is the behaviour we want, and there is nothing here to race for — two ticks
+ * writing "this is broken" agree. The TTL is the whole policy (`VA_COMPACT_BACKOFF_TTL`).
+ */
+export const setCompactBackoff = async (store, agent, reason, { now = Date.now() } = {}) => {
+  try {
+    await store.set(vaCompactBackoffKey(agent), { at: nowIso(now), reason: String(reason || "unknown").slice(0, 80) }, VA_COMPACT_BACKOFF_TTL);
+    return { ok: true };
+  } catch (e) {
+    return fail("compact_backoff_write_failed", { detail: String((e && e.message) || e) });
+  }
+};
+
+/** Dropped when a compaction converges, so a healed provider is not waited out. */
+export const clearCompactBackoff = async (store, agent) => {
+  try { await store.delete(vaCompactBackoffKey(agent)); return { ok: true }; }
+  catch (e) { return fail("compact_backoff_clear_failed", { detail: String((e && e.message) || e) }); }
+};
 
 /**
  * Run `fn` holding the item claim, releasing it IF `fn` THROWS — the `git_delivery` shape
@@ -1305,9 +1348,18 @@ export const memoryNeedsCompaction = (memory) => memoryBytes(memory) > VA_LIMITS
  * so a test can hand it a stub that deliberately tries to drop a constraint.
  *
  * FAIL OPEN, BOUNDED: if the summariser throws or returns nothing usable, the ORIGINAL
- * prose is clamped to the cap instead, and `fellBack` + `reason` say so. Losing the
- * agent's memory because one Haiku call timed out is worse than a bluntly truncated one —
- * and the constraints, the part that must not be lost, survive either way.
+ * prose is clamped instead, and `fellBack` + `reason` say so. Losing the agent's memory
+ * because one Haiku call timed out is worse than a bluntly truncated one — and the
+ * constraints, the part that must not be lost, survive either way.
+ *
+ * F-506 — THE CLAMP BUDGET IS THE TRIGGER, NOT THE CAP, and the difference was a standing
+ * bill. `memoryCompactBytes` (6144) is what `memoryNeedsCompaction` re-asks next tick;
+ * `memoryCapBytes` (8192) is only what `writeMemory` refuses beyond. Clamping to the CAP
+ * produced a row that was still over the TRIGGER, so the next tick compacted again, and
+ * the next — on an agent with few pinned constraints the fallback truncated nothing at all
+ * and a dead provider bought one failed model call every five minutes, for ever. A
+ * fallback that does not converge is not a fallback. It cuts to the number that makes the
+ * question stop being asked.
  */
 export const compactMemory = async (memory, summariser, { now = Date.now() } = {}) => {
   const pinned = normalizeConstraints(memory && memory.constraints);
@@ -1329,18 +1381,40 @@ export const compactMemory = async (memory, summariser, { now = Date.now() } = {
     reason = `summariser_failed: ${String((e && e.message) || e)}`;
   }
 
-  // The same envelope maths as `writeMemory` (F-459). The final row goes through
-  // `writeMemory` anyway, which re-measures and re-clamps; this keeps the summariser's
-  // target honest so it is not asked for prose that will then be cut.
-  const budget = Math.max(256, VA_LIMITS.memoryCapBytes - memoryBytes({ text: "", constraints: pinned, updatedAt: nowIso() }));
-  const clamped = clampUtf8Bytes(defangFence(prose == null ? original : prose), budget, "\n[memory clamped]");
+  // The same envelope maths as `writeMemory` (F-459), against the COMPACTION TRIGGER
+  // (F-506): whatever leaves here — a summary or the clamped original — must be under the
+  // number that decides whether the NEXT tick compacts again, or nothing ever converges.
+  // `writeMemory` re-measures and re-clamps against the cap afterwards; this is the
+  // stricter of the two budgets, so that pass finds nothing left to do.
+  const target = VA_LIMITS.memoryCompactBytes;
+  const updatedAt = nowIso(now);
+  const source = defangFence(prose == null ? original : prose);
+  let budget = Math.max(256, target - memoryBytes({ text: "", constraints: pinned, updatedAt }));
+  let row = { text: source, constraints: pinned, updatedAt };
+  let truncated = false;
+  // MEASURED ON THE ENVELOPE, IN A BOUNDED LOOP — the same shape as `writeMemory`'s
+  // residual pass and for the same reason (F-459): clamping a raw string to N bytes does
+  // NOT make its JSON form N bytes, because every newline, quote and backslash escapes to
+  // two. Notes are line-heavy, so a single clamp against a raw budget overshot the
+  // envelope every time and the "converged" row was still over the trigger.
+  for (let pass = 0; pass < 8 && memoryBytes(row) > target && row.text; pass++) {
+    const c = clampUtf8Bytes(row.text, budget, "\n[memory clamped]");
+    truncated = truncated || c.truncated;
+    row = { text: c.text, constraints: pinned, updatedAt };
+    if (memoryBytes(row) <= target) break;
+    budget = Math.max(64, budget - Math.max(memoryBytes(row) - target, 32));
+  }
+  // No absolute fallback here, deliberately: `writeMemory` still re-measures against the
+  // CAP and the compaction STEP still re-asks whether the stored row is under the trigger
+  // (F-506). A pathological row that this loop cannot land is caught there, loudly, rather
+  // than being silently emptied here.
   return {
     ok: true,
     compacted: true,
     fellBack: prose == null,
     reason,
-    clamped: clamped.truncated,
-    memory: { text: clamped.text, constraints: pinned, updatedAt: nowIso(now) },
+    clamped: truncated,
+    memory: row,
   };
 };
 

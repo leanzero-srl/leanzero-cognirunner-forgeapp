@@ -1894,18 +1894,149 @@ reset();
   await V.runVaTick({ job, tickId: "g2", deps: compactTickDeps({ capability: CAP_OFF, summariseMemory }) });
   eq(calls, 0, "compaction.BLOCK_capability_off — nor does an instance that may not run an agent at all");
 
-  // A summariser that THROWS must not fail the tick, and must not lose the memory.
+  // A summariser that THROWS must not lose the memory and must not stop the SWEEP — but
+  // after F-506 it DOES fail the tick's verdict: a paid-for turn that produced no summary
+  // is a gate, not housekeeping. The work is fail-soft; the verdict is not.
   const beforeText = (await L.readMemory(kvs, AG)).memory.text;
   const r = await V.runVaTick({ job, tickId: "g3", deps: compactTickDeps({
     summariseMemory: async () => { throw new Error("provider down"); },
   }) });
-  eq(r.ok, true, "compaction.FAIL_SOFT — a dead summariser does not fail the tick");
+  eq(r.ok, false, "compaction.FAIL_SOFT — a dead summariser does not stop the sweep, but the tick is NOT ok (F-506)");
+  eq(r.compacted.gate, "compaction", "compaction.FAIL_SOFT — …because the step reports a GATE");
   const after = (await L.readMemory(kvs, AG)).memory;
   ok(after.text.length > 0, "compaction.FAIL_SOFT — and the memory is not lost");
   // `compactMemory` falls back to the ORIGINAL prose when the summariser dies, so the row
   // is still written (clamped), never emptied. Either way the notes survive.
   ok(after.text.includes("decision"), "compaction.FAIL_SOFT — the agent's own notes are still there");
   ok(beforeText.length > 0, "compaction.FAIL_SOFT — (the fixture had notes to lose)");
+}
+
+/* ── F-506: compaction must CONVERGE, and a failed turn must back off ───────
+ *
+ * The defect: `runVaCompaction` accepted any `compacted: true` without asking whether the
+ * memory was still over `memoryCompactBytes`. The fail-open arm of `compactMemory` handed
+ * back the ORIGINAL prose clamped to the CAP (8192 − pinned), which on an agent with few
+ * pinned lines cut nothing at all, so a dead provider bought one failed model call every
+ * five minutes for ever and the tick reported `ran: true`, `before === after`, empty
+ * `skipped`, green. Three things are asserted here: the memory ends up under the TRIGGER,
+ * the failure is loud (gate skip + not-ok tick), and the next tick does not pay again.
+ */
+reset();
+{
+  /* ── A DEAD PROVIDER: one call, a backoff row, and the next tick buys nothing ── */
+  await L.writeMemory(kvs, AG, { text: fatProse(), constraints: [] });
+  const before = L.memoryBytes((await L.readMemory(kvs, AG)).memory);
+  let calls = 0;
+  const job = vaJob();
+  job.va.intake.jql = "status = Open";
+  const deps = compactTickDeps({
+    summariseMemory: async () => { calls++; throw new Error("401 invalid api key"); },
+  });
+
+  const r1 = await V.runVaTick({ job, tickId: "b1", deps });
+  eq(calls, 1, "F-506.dead_provider — the first tick pays for exactly one turn");
+  eq(r1.ok, false, "F-506.NOT_OK — a compaction that was paid for and did not summarise fails the tick");
+  eq(r1.compacted.ran, false, "F-506 — …and the step does NOT report that it ran");
+  eq(r1.compacted.gate, "compaction", "F-506.GATE — the step names the gate it stopped at");
+  eq(r1.compacted.reason, "summariser-failed", "F-506 — …and the reason, by name");
+
+  const receipt1 = (await L.readTick(kvs, AG, "b1", "prepare")).receipt;
+  const memSkip = receipt1.skipped.find((x) => x.key === "(memory)");
+  ok(memSkip, "F-506.RECEIPT — the failure IS on the receipt (before F-506 `skipped` was empty)");
+  eq(memSkip.gate, "compaction", "F-506.RECEIPT — …carrying the gate, which is what separates a refusal from a no-op");
+  ok(/summariser-failed/.test(memSkip.reason), "F-506.RECEIPT — …and the named reason");
+  ok(receipt1.compacted, "F-506.RECEIPT — the bytes ride the receipt on the FAILING arm too");
+  eq(receipt1.compacted.before, before, "F-506.RECEIPT — …the size before");
+  ok(receipt1.compacted.fellBack, "F-506.RECEIPT — …and that it fell back");
+
+  const health = await kvs.get(`va_health:${AG}`);
+  eq(health.consecutiveFailures, 1, "F-506.HEALTH — the banner counter moves, so an admin who reads no receipts still learns");
+
+  const backoff = await L.readCompactBackoff(kvs, AG);
+  eq(backoff.active, true, "F-506.BACKOFF_row — a failed turn arms the per-AGENT backoff marker");
+  ok(await kvs.get(`va_compact_backoff:${AG}`), "F-506.BACKOFF_row — …under the key va-keys.js owns");
+
+  // The memory is re-fattened so the THRESHOLD would fire again, and the tickId is NEW so
+  // the per-tick claim cannot be what stops it. Only the backoff can.
+  await L.writeMemory(kvs, AG, { text: fatProse(), constraints: [] });
+  const r2 = await V.runVaTick({ job, tickId: "b2", deps });
+  eq(calls, 1, "F-506.BACKOFF_no_second_call — the NEXT tick buys no model call at all (this is the 288-a-day bill)");
+  eq(r2.compacted.ran, false, "F-506.BACKOFF — the step did not run");
+  eq(r2.compacted.reason, "compaction-backoff", "F-506.BACKOFF — …and says why, by name");
+  eq(r2.ok, true, "F-506.BACKOFF — a backoff tick is ok: the loud failure was already recorded, and six hours of red would bury it");
+  const receipt2 = (await L.readTick(kvs, AG, "b2", "prepare")).receipt;
+  ok(receipt2.skipped.some((x) => x.key === "(memory)" && /compaction-backoff/.test(x.reason)),
+    "F-506.BACKOFF — the skip is still on the receipt: the memory is over budget and nothing is being done about it");
+}
+
+reset();
+{
+  /* ── A SUMMARISER THAT ANSWERS OVER TARGET: not ok, and backed off ─────── */
+  // The compactor is injected so the non-convergence is exercised through the STEP, the
+  // way c3 exercises the pinned-line rejection: this is the arm where the turn succeeded
+  // and the result is still too big, which used to re-summarise from scratch every tick
+  // and lose detail every time.
+  await L.writeMemory(kvs, AG, { text: fatProse(), constraints: [] });
+  let summarised = 0;
+  const job = vaJob();
+  job.va.intake.jql = "status = Open";
+  const r = await V.runVaTick({ job, tickId: "b3", deps: compactTickDeps({
+    summariseMemory: async () => { summarised++; return "ignored"; },
+    compactMemory: async (memory, summariser) => {
+      await summariser(memory);
+      return { ok: true, compacted: true, fellBack: false, memory: { text: fatProse(240), constraints: [], updatedAt: null } };
+    },
+  }) });
+
+  eq(summarised, 1, "F-506.over_target — the turn ran; this is a rejection of its RESULT");
+  eq(r.ok, false, "F-506.over_target.NOT_OK — a compaction that left the memory over the trigger fails the tick");
+  eq(r.compacted.gate, "compaction", "F-506.over_target — the gate is named");
+  eq(r.compacted.reason, "did-not-converge", "F-506.over_target — …and it is NOT the summariser's failure, so it is named differently");
+  ok(r.compacted.after > VA_LIMITS.memoryCompactBytes, "F-506.over_target — the stored row really is still over the trigger");
+  eq((await L.readCompactBackoff(kvs, AG)).active, true, "F-506.over_target.BACKOFF — armed, so the next tick does not re-summarise from scratch");
+}
+
+reset();
+{
+  /* ── THE FALLBACK ITSELF CONVERGES (the clamp budget is the TRIGGER) ───── */
+  // Straight at `compactMemory`, no tick: the fail-open arm clamped to `memoryCapBytes`
+  // (8192) while `memoryNeedsCompaction` re-asked at 6144, so its output was over the
+  // trigger BY CONSTRUCTION whenever the pinned overhead was under ~2 KB — i.e. always,
+  // on a default agent.
+  const out = await L.compactMemory({ text: fatProse(), constraints: ["never promise a date"] },
+    async () => { throw new Error("provider down"); });
+  eq(out.fellBack, true, "F-506.fallback — the fixture really is on the fail-open arm");
+  ok(!L.memoryNeedsCompaction(out.memory), "F-506.fallback_converges — the clamped fallback is UNDER the compaction trigger, not merely under the cap");
+  ok(L.memoryBytes(out.memory) <= VA_LIMITS.memoryCompactBytes, "F-506.fallback_converges — …measured");
+  eq(out.memory.constraints[0], "never promise a date", "F-506.fallback — and the pinned line still survives the blunt cut");
+
+  // A summariser whose prose is over target is clamped to the same budget, so a healthy
+  // provider that overshoots cannot leave the row over the trigger either.
+  const over = await L.compactMemory({ text: fatProse(), constraints: [] }, async () => fatProse(200));
+  eq(over.fellBack, false, "F-506.over_target — (the summariser answered)");
+  ok(!L.memoryNeedsCompaction(over.memory), "F-506.over_target — an over-target summary is clamped under the trigger");
+}
+
+reset();
+{
+  /* ── A HEALTHY SUMMARISER: converges, and arms nothing ──────────────────── */
+  await L.writeMemory(kvs, AG, { text: fatProse(), constraints: ["never promise a date"] });
+  const job = vaJob();
+  job.va.intake.jql = "status = Open";
+  const r = await V.runVaTick({ job, tickId: "b4", deps: compactTickDeps({
+    summariseMemory: async () => "decisions: SUP-1 escalated, SUP-2 closed. open: waiting on finance.",
+  }) });
+  eq(r.ok, true, "F-506.healthy — a converging compaction is an ok tick");
+  eq(r.compacted.ran, true, "F-506.healthy — the step ran");
+  ok(r.compacted.after <= VA_LIMITS.memoryCompactBytes, "F-506.healthy — and the row is under the trigger");
+  eq((await L.readCompactBackoff(kvs, AG)).active, false, "F-506.healthy.NO_BACKOFF — a working provider is never made to wait");
+
+  // …and a window opened by yesterday's outage is CLOSED by today's success, rather than
+  // muting compaction for the rest of its TTL after the key was fixed.
+  await L.setCompactBackoff(kvs, AG, "summariser-failed");
+  eq((await L.readCompactBackoff(kvs, AG)).active, true, "F-506.clear — (armed)");
+  await L.clearCompactBackoff(kvs, AG);
+  eq((await L.readCompactBackoff(kvs, AG)).active, false, "F-506.clear — a converged compaction drops the marker");
 }
 
 

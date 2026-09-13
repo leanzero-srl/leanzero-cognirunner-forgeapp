@@ -231,6 +231,8 @@ for (const agent of VA_AGENT_FIXTURES) {
     ["va-keys.vaIndexKey", vaKeys.vaIndexKey],
     ["va-keys.vaMemoryKey", vaKeys.vaMemoryKey],
     ["va-keys.vaHealthKey", vaKeys.vaHealthKey],
+    // F-506 — the compaction backoff marker is keyed on the agent alone.
+    ["va-keys.vaCompactBackoffKey", vaKeys.vaCompactBackoffKey],
   ]) ok(legal(fn(agent)), `${label}(${JSON.stringify(agent)}) is key-legal`);
 
   for (const issue of VA_ISSUE_FIXTURES) {

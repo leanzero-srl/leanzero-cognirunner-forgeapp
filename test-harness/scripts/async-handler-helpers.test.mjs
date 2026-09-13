@@ -1345,6 +1345,56 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
 }
 
 // =====================================================================================
+// F-504 — the SECOND fault kind (hook-promote) lives in the SAME home, under the SAME
+// gate. What is asserted here is the SAMENESS: one file defines both kinds, one helper
+// arms/consumes both, and the production path of the new one is as inert as the old one.
+// Its behaviour at the rotate seam is proved in git-connections.test.mjs.
+// =====================================================================================
+{
+  const fault = await import("../../src/harness-fault.js");
+  const { kvs } = await import("../lib/mock-kvs.mjs");
+  const { HARNESS_FAULT_HOOK_PROMOTE: KIND } = fault;
+  ok(KIND === "hook-promote" && KIND !== fault.HARNESS_FAULT_GIT_DISPATCH,
+    "the promote lever is its OWN kind — arming one seam can never fire the other");
+  // A repo id carries a "/", which Forge KVS refuses. The KEY BUILDER sanitises it; no
+  // caller may pre-mangle it (F-334/F-346).
+  const parts = ["gc_live", "acme/app"];
+  const key = fault.harnessFaultKey(KIND, ...parts);
+  ok(key.startsWith("harness_fault:hook-promote:") && !key.includes("/"),
+    `EXECUTED: the repo id is sanitised INTO the key, never embedded raw (${key})`);
+
+  const savedEnv2 = process.env.HARNESS_SECRET;
+  const realGet2 = kvs.get;
+  let reads2 = 0;
+  kvs.get = async function countingGet(k) { if (String(k).startsWith("harness_fault:hook-promote:")) reads2 += 1; return realGet2.call(this, k); };
+  process.env.HARNESS_SECRET = "dev";
+  await fault.armHarnessFault(KIND, parts, 1);
+  delete process.env.HARNESS_SECRET;
+  reads2 = 0;
+  ok((await fault.harnessFaultArmed(KIND, ...parts)) === false,
+    "EXECUTED: with HARNESS_SECRET absent (production) the promote lever is never armed, even with a row present");
+  ok(reads2 === 0, "EXECUTED: …and reads no storage at all — it is not plantable in production");
+  process.env.HARNESS_SECRET = "dev";
+  ok((await fault.harnessFaultArmed(KIND, ...parts)) === true, "EXECUTED: in dev the armed unit fires ONCE");
+  ok((await fault.harnessFaultArmed(KIND, ...parts)) === false, "EXECUTED: …and the next promotion runs for real — one-shot, like the dispatch lever");
+  kvs.get = realGet2;
+  if (savedEnv2 === undefined) delete process.env.HARNESS_SECRET; else process.env.HARNESS_SECRET = savedEnv2;
+
+  const hookSrc2 = readFileSync(path.join(here, "../../src/test-hook.js"), "utf8");
+  ok(/armHookPromoteFault/.test(hookSrc2) && /disarmHookPromoteFault/.test(hookSrc2) && /readHookPromoteFault/.test(hookSrc2),
+    "the promote lever is a dev-hook action beside armGitDispatchFault — same Bearer gate, not a resolver");
+  ok(!/harness_fault:/.test(hookSrc2), "…and the hook still never retypes the key shape");
+  const connSrc = readFileSync(path.join(here, "../../src/git-connections.js"), "utf8");
+  ok(/harnessFaultArmed\(HARNESS_FAULT_HOOK_PROMOTE/.test(connSrc) && (connSrc.match(/harnessFaultArmed\(/g) || []).length === 1,
+    "SOURCE: the consumer is ONE seam in git-connections.js — the lever is not sprinkled through the module");
+  // Comments may NAME the gate (they must, to explain themselves); what must not exist is
+  // a second CHECK of it, or a second copy of the key shape.
+  const connCode = connSrc.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  ok(!/harness_fault:/.test(connCode) && !/process\.env\.HARNESS_SECRET/.test(connCode),
+    "SOURCE: …and it re-implements neither the key shape nor the env gate — both have one home");
+}
+
+// =====================================================================================
 // F-122 — a cancel must be distinguishable from a failure by a FLAG, not a string.
 // =====================================================================================
 {

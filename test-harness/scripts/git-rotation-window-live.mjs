@@ -26,10 +26,10 @@
  *   secret, sent to the same url, is REFUSED - so an accepted 202 means the signature
  *   was checked and passed, not that the endpoint accepts anything.
  *
- *   NOT VERIFIED, AND DELIBERATELY NOT FAKED: the step-3 failure itself. There is no
- *   lever for it. `src/harness-fault.js` defines exactly ONE fault kind,
- *   `HARNESS_FAULT_GIT_DISPATCH` ("git-dispatch"), and it is armed at the GIT-EVENT
- *   DISPATCH seam - a different seam in a different file from `writeHookSecret`.
+ *   NOT VERIFIED BY THIS SCRIPT, AND DELIBERATELY NOT FAKED: the step-3 failure itself.
+ *   F-504 gave it the lever it lacked - `src/harness-fault.js` kind
+ *   `HARNESS_FAULT_HOOK_PROMOTE`, armed through the dev hook action `armHookPromoteFault`
+ *   and consumed at the promote write - but THIS run does not arm it; a follow-up does.
  *   `plantHookSecret` writes `{secret, connId, repoId, createdAt}` and has no `pending`
  *   field, and the `kvSet` allow-list is explicitly NOT widened to `git_conn_secret:*`
  *   ("secrets are never plantable"). So neither the fault nor the two-slot state can be
@@ -162,9 +162,9 @@ async function main() {
 
   /* ── STEP 4 — what cannot be proven here, and exactly why ───────────────── */
   console.log("\nSTEP 4 - the step-3-failure arm");
-  NV("the PROMOTE failure (step 3 of rotateGitHookSecret) cannot be induced: src/harness-fault.js defines one fault kind, HARNESS_FAULT_GIT_DISPATCH, armed at the git-event DISPATCH seam - there is no lever at the writeHookSecret KVS write.");
+  NV("the PROMOTE failure (step 3 of rotateGitHookSecret) is not exercised by THIS script: F-504 added the lever it needed - src/harness-fault.js kind HARNESS_FAULT_HOOK_PROMOTE, armed via the dev hook action `armHookPromoteFault` ({connectionId, repoId, count}) and consumed at the promote write - so a follow-up run can arm one unit, rotate, and read the banner for real.");
   NV("the two-slot state cannot be planted either: plantHookSecret writes {secret, connId, repoId, createdAt} with no `pending` field, and the kvSet allow-list is deliberately not widened to git_conn_secret:* (\"secrets are never plantable\").");
-  NV('so `hookState:"rotation-failed"` and the pending-secret acceptance window are NOT VERIFIED live on this build. Proving them needs a new dev-gated lever (a fault at the promote write, or a pending-slot arm on plantHookSecret) - which this run does not invent.');
+  NV('so `hookState:"rotation-failed"` and the pending-secret acceptance window remain NOT VERIFIED by this run. The lever now exists (armHookPromoteFault, HARNESS_SECRET-gated, inert in production); driving it live is the next run, not this one.');
 
   console.log(`\nRESULT - ${passes} pass, ${fails} fail, ${unproven} not verified`);
   if (fails) process.exitCode = 1;

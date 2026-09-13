@@ -1295,3 +1295,102 @@ html[data-color-mode="dark"] .cpf-cap-retry:hover { background: #1e293b; }
 html[data-color-mode="dark"] .cpf-cap-on { background: #22c55e; color: #0a2a12; }
 html[data-color-mode="dark"] .cpf-cap-off { background: #f59e0b; color: #2a1602; }
 html[data-color-mode="dark"] .cpf-gate { background: #f59e0b; color: #2a1602; }
+
+/* F-505 — THE API REFERENCE FAMILY. The whole `api-ref-*` family existed only in
+   App.js injectStyles() (the live home); this mirror carried none of it, so a reader
+   of styles.css concluded the API reference panel was unstyled. Backfilled VERBATIM
+   from injectStyles() — same order, same dark override — and now gated by the
+   family-level assertion in test-harness/scripts/css-parity.test.mjs. */
+/* API Reference panel */
+.api-ref-panel {
+  margin-bottom: 10px;
+  padding: 12px;
+  border-radius: 6px;
+  background: var(--input-bg);
+  border: 1px solid var(--border-color);
+}
+
+.api-ref-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+
+.api-ref-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.api-ref-item {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.api-ref-item > code {
+  flex-shrink: 0;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 11px;
+  background: var(--code-bg);
+  color: var(--primary-color);
+  white-space: nowrap;
+}
+
+.api-ref-item > span {
+  color: var(--text-secondary);
+}
+
+.api-ref-item > span code {
+  padding: 1px 4px;
+  border-radius: 2px;
+  font-size: 10px;
+  background: var(--code-bg);
+  color: var(--text-color);
+}
+
+/* Namespace group in the API reference (api.confluence.*). The members are
+   grouped by a full hairline box plus a SOLID Confluence-hue chip with white
+   text - never a left accent rail, never a low-alpha tint. The hue is the same
+   #1d4ed8 the run-log Confluence banners use, one shade lighter in dark. */
+.api-ref-ns {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+}
+
+.api-ref-ns-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.api-ref-ns-chip {
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  white-space: nowrap;
+  background: #1d4ed8;
+  color: #ffffff;
+}
+
+.api-ref-ns-count {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.api-ref-ns-members { padding-left: 10px; }
+
+html[data-color-mode="dark"] .api-ref-ns-chip { background: #3b82f6; color: #ffffff; }

@@ -309,6 +309,39 @@ export async function testStateTrigger(req) {
       if (body.action === "disarmHookPromoteFault") return json(200, { ok: true, ...(await disarmHarnessFault(HARNESS_FAULT_HOOK_PROMOTE, parts)) });
       return json(200, { ok: true, ...(await readHarnessFault(HARNESS_FAULT_HOOK_PROMOTE, parts)) });
     }
+    /* ===== F-629 live proof: the dev-only KEY-READ fault lever =====
+     * THE THIRD MEMBER of the `armHarnessFault` family, and the first that is not
+     * git-scoped. F-603 is a bug about what the provider settings card does when
+     * `getOpenAIKey` FAILS — a stale `noKeyNeeded` painting a BYOK provider as "Managed
+     * by LeanZero, nothing to paste here" with no key input at all — and that resolver is
+     * a KVS read plus a provider switch, so nothing a tester can do from outside makes it
+     * fail. The fix could only ever be exercised against a mock.
+     *
+     * KEYED BY PROVIDER ID ALONE, so the F-603 scenario is expressible: the managed engine
+     * loads fine, then OpenAI's read fails. The cap, the two modes, the TTL and the env
+     * gate all live in src/harness-fault.js; this is wiring behind the same HARNESS_SECRET
+     * Bearer as everything else here, and the lever is additionally inert wherever that
+     * env var is absent (production).
+     *
+     * IT ACCEPTS NO KEY AND RETURNS NO KEY. The body carries a provider id, a mode and a
+     * TTL — nothing else — and the three answers carry the fault KEY, never a slot value.
+     */
+    if (body.action === "armKeyReadFault" || body.action === "disarmKeyReadFault" || body.action === "readKeyReadFault") {
+      const provider = String(body.provider || "");
+      if (!PROVIDER_IDS.includes(provider)) return json(400, { error: `provider must be one of: ${PROVIDER_IDS.join(", ")}` });
+      const {
+        armKeyReadFault, disarmHarnessFault, readHarnessFault,
+        HARNESS_FAULT_KEY_READ, KEY_READ_FAULT_MODES, HARNESS_KEY_READ_FAULT_MAX_TTL_SECONDS,
+      } = await import("./harness-fault.js");
+      if (body.action === "armKeyReadFault") {
+        if (!KEY_READ_FAULT_MODES.includes(body.mode)) return json(400, { error: `mode must be one of: ${KEY_READ_FAULT_MODES.join(", ")}` });
+        const r = await armKeyReadFault(provider, body.mode, body.ttlSeconds);
+        // The clamp lives with the lever; a refusal from it overrides the optimistic ok.
+        return json(r.ok === false ? 400 : 200, { ok: true, provider, maxTtlSeconds: HARNESS_KEY_READ_FAULT_MAX_TTL_SECONDS, ...r });
+      }
+      if (body.action === "disarmKeyReadFault") return json(200, { ok: true, provider, ...(await disarmHarnessFault(HARNESS_FAULT_KEY_READ, [provider])) });
+      return json(200, { ok: true, provider, ...(await readHarnessFault(HARNESS_FAULT_KEY_READ, [provider])) });
+    }
     if (body.action === "readProbe") {
       const name = String(body.name || "").replace(/[^A-Za-z0-9_.:-]/g, "");
       if (!name) return json(400, { error: "name required" });

@@ -58,6 +58,9 @@ import { gitDeliveryClaimKey, GIT_DELIVERY_CLAIM_TTL } from "./shared/git-ids.js
 import { createProjectKeysMemo, PROJECT_KEY_CAP } from "./shared/identifier-leak.js";
 import { readHeader } from "./shared/http-headers.js";
 import { providerKeySlot, providerModelSlot, providerAgentModelSlot, providerBaseUrlSlot } from "./shared/provider-slots.js";
+// F-629 — the dev-only key-read fault lever, in the same one-home/one-gate family as the
+// git ones (src/harness-fault.js). Inert without HARNESS_SECRET, i.e. in production.
+import { keyReadFaultMode, harnessEnabled, HarnessFault } from "./harness-fault.js";
 // GIT CONNECTIONS (1.4 commit 2). The behaviour — key names, caps, the security
 // model, auth_dead, queued rotation — lives in src/git-connections.js and is
 // never re-implemented here. Aliased where a name would collide with a resolver
@@ -5138,6 +5141,30 @@ resolver.define("saveOpenAIKey", async ({ payload, context }) => {
  * Get BYOK status. Never returns the actual key to the frontend.
  */
 resolver.define("getOpenAIKey", async ({ payload }) => {
+  /* ── F-629 — THE DEV-ONLY KEY-READ FAULT, asked ONCE, at the top. ──────────────────
+   * F-603 is a bug about what the settings card does when THIS resolver fails: a stale
+   * `noKeyNeeded` paints a BYOK provider as "Managed by LeanZero — nothing to paste
+   * here", with no key input rendered at all. The resolver is a KVS read plus a provider
+   * switch, so nothing a tester can do from outside makes it answer `{success:false}` or
+   * throw, and the fix could only ever be exercised against a mock.
+   *
+   * The lever lives in src/harness-fault.js with the git ones, behind the same single
+   * `harnessEnabled()` gate (`process.env.HARNESS_SECRET`, absent in production), so on a
+   * production deployment this line performs NO KVS access and can change no outcome.
+   * `keyReadFaultMode` is best-effort: a lever that cannot be read is not armed, so it can
+   * never break a provider read by accident.
+   *
+   * The check is OUTSIDE the try deliberately — `throw` has to reject the invocation, and
+   * inside the try the catch below would turn it into the `refuse` shape instead, which is
+   * the other arm and a different test. `harnessEnabled()` is asked FIRST so that a
+   * production build does not even resolve the target provider for this: one extra KVS
+   * read on every settings load, to answer a question that is always "no lever". */
+  let keyReadFault = null;
+  if (harnessEnabled()) {
+    try { keyReadFault = await keyReadFaultMode(await resolveTargetProvider(payload)); } catch (e) { keyReadFault = null; }
+  }
+  if (keyReadFault === "throw") throw new HarnessFault("F-629 harness key-read fault: getOpenAIKey");
+  if (keyReadFault === "refuse") return { success: false, hasKey: false, isByok: false, harnessFault: true };
   try {
     const provider = await resolveTargetProvider(payload);
     const byokKey = await storage.get(providerKeySlot(provider));

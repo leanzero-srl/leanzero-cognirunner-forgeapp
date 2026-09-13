@@ -1595,19 +1595,27 @@ try {
       ok(wtxt.includes(memoryPlatformCapMessage(6544)),
         `M1b ${theme} the wall carries the resolver's platform-cap sentence verbatim (got: ${wtxt.replace(/\n/g, " | ")})`);
       ok(/\b6544 bytes\b/.test(wtxt), `M1b ${theme} the deficit is a real quantity, not "some"`);
-      // OUR line. F-208 — this tab is reachable by a project EDITOR, and the bulk delete in
-      // the admin panel is admin-gated, so the line may not be phrased as an instruction to
-      // the reader: it has to name WHO can act and what has to happen first. It still says
-      // where the control lives, because that is how the reader escalates.
+      /* OUR line. F-208 made it a STATEMENT ("A Jira admin has to...") because the admin
+         panel's bulk delete was then admin-gated, so an instruction would have pointed a
+         project editor at a control they could not be given.
+         F-225 — F-219 moved that control onto `canEdit` (deleteMemory gates on
+         requireRole("editor")), so the editor reading this CAN clear the store and the
+         statement form now withholds the only instruction that works. It is an instruction
+         again, and it names the roles that can follow it. */
       ok(/Apps → CogniRunner → Memories/.test(wtxt),
         `M1b ${theme} the wall names where the bulk delete lives (got: ${wtxt.replace(/\n/g, " | ")})`);
-      ok(/A Jira admin has to delete several memories at once/i.test(wtxt),
-        `M1b ${theme} the wall names the ROLE that can act, not an instruction to the reader (got: ${wtxt.replace(/\n/g, " | ")})`);
-      ok(/before anything can be saved/i.test(wtxt),
-        `M1b ${theme} the wall states the precondition for any write landing here`);
-      // The imperative that told an editor to go and do an admin-only thing must be gone.
-      ok(!/\bopen Apps\b/i.test(wtxt) && !/Deleting memories one at a time here/i.test(wtxt),
-        `M1b ${theme} the wall does not instruct the reader to operate an admin-gated control (got: ${wtxt.replace(/\n/g, " | ")})`);
+      ok(/select several memories and delete them\s+together/i.test(wtxt),
+        `M1b ${theme} the wall gives the BULK instruction, which is the only write that clears an over-cap store (got: ${wtxt.replace(/\n/g, " | ")})`);
+      ok(/\(editors and admins can\)/i.test(wtxt),
+        `M1b ${theme} the wall names the roles the BACKEND accepts (got: ${wtxt.replace(/\n/g, " | ")})`);
+      /* And it must NOT say "a Jira admin" — false for the reader who most needs it, since
+         an app-demoted SITE admin IS the Jira admin and was being sent to themselves. This
+         is the same false referral F-219 removed from the admin tab's own wall. */
+      ok(!/a Jira admin has to/i.test(wtxt),
+        `M1b ${theme} the wall never refers an editor to "a Jira admin" (got: ${wtxt.replace(/\n/g, " | ")})`);
+      // The old single-row imperative stays gone: one-at-a-time deleting cannot clear this.
+      ok(!/Deleting memories one at a time here/i.test(wtxt),
+        `M1b ${theme} the wall does not suggest a one-row delete, which the same guard refuses`);
       // It is the WALL, not the grey error line — that substitution is the whole finding.
       ok(await kp.locator(".memory-cap-refusal").count() === 1, `M1b ${theme} exactly one wall`);
       const greys = await kp.locator(".doc-repo-embedded > div").evaluateAll(

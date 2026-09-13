@@ -2147,6 +2147,19 @@ const injectStyles = () => {
     .btn-add-memory:hover:not(:disabled) { opacity: 0.85; }
     .btn-add-memory:disabled { opacity: 0.5; cursor: default; }
 
+    /* F-224 — what a viewer gets where the add form would be. Neutral slate (#475569 /
+       #64748b dark, the owner's neutral hue), solid colour at 600 weight, no tint, no
+       rail, no border box: this is a statement of fact about who may write, not another
+       alarm competing with the red capacity wall above it. Sits in the same 14px
+       bottom-margin rhythm as .memories-admin-add so the table does not shift. */
+    .memories-admin-add-note {
+      margin-bottom: 14px;
+      font-size: 12px;
+      font-weight: 600;
+      color: #475569;
+    }
+    html[data-color-mode="dark"] .memories-admin-add-note { color: #64748b; }
+
     .memories-admin-source-badge {
       display: inline-block;
       padding: 2px 10px;
@@ -5674,6 +5687,13 @@ function App() {
   // CogniRunner role was demoted.
   const [onAdminPage, setOnAdminPage] = useState(false);
   const [userRole, setUserRole] = useState(null); // "viewer" | "editor" | "admin" | null
+  /* F-230 — "Jira could not be asked" is a THIRD answer, distinct from "you have no role".
+     checkIsAdmin now returns { isAdmin:false, role:null, unknown:true, reason } when both
+     the permission probe and the group scan threw. Without this flag the frontend collapses
+     an outage into a verdict: a real CogniRunner admin hitting a transient Jira 503 is told
+     they have "no role" and to go ask an admin — advice that is both false and unactionable,
+     since they ARE the admin and nothing is actually wrong with their permissions. */
+  const [roleUnknown, setRoleUnknown] = useState(false);
   const [userScope, setUserScope] = useState(null); // "own" | "all" | null
   const [accountId, setAccountId] = useState(null);
   const [activeTab, setActiveTab] = useState("rules");
@@ -6337,6 +6357,11 @@ function App() {
       let userIsAdmin = false;
       let detectedRole = null;
       let detectedScope = null;
+      /* F-230 — default TRUE, and cleared only by an answer we actually received. The
+         resolver throwing outright is the same epistemic state as the resolver reporting
+         `unknown`: in neither case did Jira tell us anything about this user. Defaulting
+         false would have made a thrown invoke() indistinguishable from a confirmed viewer. */
+      let roleIsUnknown = true;
 
       try {
         const adminResult = await invoke("checkIsAdmin");
@@ -6345,6 +6370,10 @@ function App() {
           detectedRole = adminResult.role;
           detectedScope = adminResult.scope;
           setAccountId(adminResult.accountId);
+          // The backend's own verdict, never re-derived here from a null role: a confirmed
+          // viewer and an unreachable Jira both arrive with role null, and only the
+          // resolver knows which of the two it saw.
+          roleIsUnknown = adminResult.unknown === true;
         }
       } catch (e) {
         console.log("Could not check role:", e);
@@ -6360,6 +6389,7 @@ function App() {
       // `prev || userIsAdmin` is gone with it: a stale true could never be cleared.
       setIsAdmin(userIsAdmin);
       setUserRole(detectedRole);
+      setRoleUnknown(roleIsUnknown);
       setUserScope(detectedScope);
 
       // Determine filter based on role + scope
@@ -6483,11 +6513,21 @@ function App() {
           that, in the slate neutral (#475569 / #64748b dark), solid fill, white text — a
           statement of fact, not a warning and not a capacity wall, so it deliberately
           does NOT borrow the red hard-stop grammar. No admin chrome comes with it. */}
+      {/* F-230 — the note has TWO causes and must not state the wrong one. The copy above
+          asserts a fact about this user's CogniRunner role, which we are only entitled to
+          assert when Jira actually answered. When `checkIsAdmin` comes back `unknown`
+          (probe and group scan both threw), we know nothing about them: saying "CogniRunner
+          has you as no role" is a false claim, and "ask a CogniRunner admin" is advice that
+          cannot help — the reader may BE that admin, and there is nothing for anyone to
+          change. So the unknown arm names the outage and gives the one action that can
+          resolve it. Same slate .role-note grammar either way (solid, no rail, dark override
+          already present): this is a statement of fact in both branches, not a warning. */}
       {onAdminPage && !isAdmin && (
         <div className="role-note" role="status">
           <span className="role-note-text">
-            You opened the admin page, but CogniRunner has you as {userRole || "no role"}.
-            A CogniRunner admin can change that under Permissions.
+            {roleUnknown
+              ? "CogniRunner could not verify your role with Jira just now — reload to try again."
+              : `You opened the admin page, but CogniRunner has you as ${userRole || "no role"}. A CogniRunner admin can change that under Permissions.`}
           </span>
         </div>
       )}

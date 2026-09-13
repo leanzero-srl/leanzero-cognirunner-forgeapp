@@ -532,11 +532,19 @@ export default function MemoriesAdminTab({ invoke, isAdmin, userRole }) {
           resolver cannot know the tab has a "Delete selected" button.
 
           F-200 — and it must be branched, because that button is not always there. The Add
-          Memory form below is the ONE write control on this tab that is not role-wrapped (an
-          editor is allowed to add — `addMemory` gates on requireRole(editor), not admin), and
-          `capRefusal` is raised from `handleAdd`. So a project editor on an over-platform
-          store is the exact person most likely to see this wall. Naming a control that is not
-          rendered for the reader is an instruction they cannot follow.
+          Memory form below is a write control too (an editor is allowed to add — `addMemory`
+          gates on requireRole(editor), not admin), and `capRefusal` is raised from `handleAdd`
+          and `saveEdit`. So a project editor on an over-platform store is the exact person
+          most likely to see this wall. Naming a control that is not rendered for the reader
+          is an instruction they cannot follow.
+
+          F-224 — the add form is now `canEdit`-gated like everything else, so BOTH refusal
+          paths (`handleAdd`, `saveEdit`) are behind `canEdit` and a viewer can no longer
+          raise this wall at all. The non-editor arm below is therefore currently unreachable.
+          It is kept, not deleted: it is the correct sentence if any future load-time or
+          push-driven refusal reaches a viewer, and the cost of keeping it is one string. A
+          viewer's live signal that the store is stuck is the `memories-admin-stats` line,
+          which is load-driven and role-independent.
 
           F-219 — but the branch is `canEdit`, NOT `isAdmin`, and the non-remedy arm no longer
           says "a Jira admin". Both were wrong for the same reason: the controls this wall
@@ -661,18 +669,31 @@ export default function MemoriesAdminTab({ invoke, isAdmin, userRole }) {
         </div>
       )}
 
-      <div className="memories-admin-add">
-        <input
-          type="text"
-          value={newContent}
-          onChange={(e) => setNewContent(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter") handleAdd(); }}
-          placeholder="Remember this about your Jira instance..."
-        />
-        <button className={`btn-add-memory${adding ? " is-busy busy-solid" : ""}`} onClick={handleAdd} disabled={adding || !newContent.trim()}>
-          Add Memory
-        </button>
-      </div>
+      {/* F-224 — the add form is a WRITE, and `addMemory` gates on requireRole(accountId,
+          "editor") exactly like update and delete (src/index.js:7262). F-219 moved every
+          other control on this tab onto `canEdit` and left this one rendered for everyone,
+          so a viewer still got a text box and a solid teal "Add Memory" button that the
+          backend was always going to refuse. That is the worst shape a permission error can
+          take: the UI invites the write, the user composes the sentence they want the AI to
+          learn, and the refusal arrives only after they commit to it.
+          The non-editor arm is a plain slate note, not a disabled control — a greyed-out
+          form still reads as "try again later" when the answer is "not you, ever". */}
+      {canEdit ? (
+        <div className="memories-admin-add">
+          <input
+            type="text"
+            value={newContent}
+            onChange={(e) => setNewContent(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") handleAdd(); }}
+            placeholder="Remember this about your Jira instance..."
+          />
+          <button className={`btn-add-memory${adding ? " is-busy busy-solid" : ""}`} onClick={handleAdd} disabled={adding || !newContent.trim()}>
+            Add Memory
+          </button>
+        </div>
+      ) : (
+        <div className="memories-admin-add-note">Editors and admins can add memories.</div>
+      )}
 
       {/* F-189 — the bulk-delete bar. Only rendered once something is ticked: an always-on
           "Delete selected (0)" is a dead control that trains the eye to ignore the row the

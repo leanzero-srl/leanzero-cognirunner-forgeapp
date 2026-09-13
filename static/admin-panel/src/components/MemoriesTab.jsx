@@ -270,10 +270,18 @@ export default function MemoriesTab({ onChanged = null }) {
           a retryable hiccup, it is the state in which every control on this tab is refused.
           First line is the BACKEND'S sentence verbatim (memoryPlatformCapMessage owns the
           byte deficit). Second line is ours, and F-208 turned it from an instruction into a
-          STATEMENT: this tab is reachable by a project editor, and the admin panel's bulk
-          delete is admin-gated, so "open Apps → CogniRunner → Memories to delete several at
-          once" told most readers to go and do something they cannot do. It now names WHO
-          has to act and what has to happen before any write here can land. */}
+          STATEMENT because the admin panel's bulk delete was then admin-gated: telling a
+          project editor to "open Apps → CogniRunner → Memories and delete several at once"
+          was sending them to a control they would not be given.
+
+          F-225 — that premise died with F-219, which moved the admin tab's select column,
+          row actions and bulk-delete bar from `isAdmin` onto `canEdit`, because `deleteMemory`
+          gates on requireRole(accountId, "editor") and always did. An editor reading this tab
+          CAN go and clear the store, so the statement form now withholds the one instruction
+          that would work, and "A Jira admin has to..." is additionally false for the reader
+          who most needs it — an app-demoted site admin IS the Jira admin, so it sent them to
+          themselves (the same defect F-219 fixed in the admin tab's own wall). Back to an
+          instruction, with the roles that can actually follow it named in it. */}
       {capRefusal && (
         <div className="hard-stop memory-cap-refusal" role="alert">
           <span className="hard-stop-title memory-cap-refusal-title">Memory store is over Jira&apos;s storage limit</span>
@@ -281,8 +289,8 @@ export default function MemoriesTab({ onChanged = null }) {
             {capRefusal.error || "The store is over the limit, so no change to it can be saved."}
           </span>
           <span className="hard-stop-text memory-cap-refusal-text">
-            A Jira admin has to delete several memories at once in Apps → CogniRunner → Memories
-            before anything can be saved.
+            Open Apps → CogniRunner → Memories, select several memories and delete them
+            together (editors and admins can).
           </span>
         </div>
       )}

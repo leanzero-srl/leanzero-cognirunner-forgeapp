@@ -1040,8 +1040,14 @@ try {
       ok(await page.locator(".memories-admin-tab .row-actions").count() > 0,
         `M6 ${theme} an editor has the per-row Edit/Archive/Delete actions`);
       // ...and that the add form IS there, which is how they reach the refusal at all.
+      // F-224 — both halves, and the absence of the non-editor note. `addMemory` gates on
+      // requireRole("editor"), so this is the arm the backend accepts; M6b asserts the other.
       ok(await page.locator(".memories-admin-add input").count() === 1,
         `M6 ${theme} the Add Memory form is available to an editor — this is how they hit the wall`);
+      ok(await page.locator(".btn-add-memory").count() === 1,
+        `M6 ${theme} an editor gets the Add Memory button, not a note`);
+      ok(await page.locator(".memories-admin-add-note").count() === 0,
+        `M6 ${theme} an editor is NOT told that only editors and admins can add`);
       // The bulk bar is selection-gated, not role-gated: tick a row and it must appear.
       await page.locator(".memories-admin-select").first().check();
       await page.locator(".memories-admin-bulkdelete").waitFor({ timeout: 5000 });
@@ -1072,12 +1078,20 @@ try {
       // Same solid-red hard-stop grammar in both themes — the copy changed, the design did not.
       const wst = await wall.evaluate((el) => {
         const c = getComputedStyle(el);
-        return { bg: c.backgroundColor, fg: c.color, bl: c.borderLeftWidth, bt: c.borderTopWidth };
+        return { bg: c.backgroundColor, fg: c.color, bl: c.borderLeftWidth, bt: c.borderTopWidth, r: c.borderRadius, g: c.gap, p: c.padding };
       });
       const wrgb = wst.bg.match(/\d+/g).map(Number);
       ok(wrgb[0] > 180 && wrgb[1] < 90 && wrgb[2] < 90, `M6 ${theme} wall is a SOLID red fill — got ${wst.bg}`);
       ok(/255,\s*255,\s*255/.test(wst.fg), `M6 ${theme} wall has white text — got ${wst.fg}`);
       ok(wst.bl === wst.bt, `M6 ${theme} wall has NO left accent rail`);
+      /* F-222's hard-stop geometry, asserted HERE from F-224 onward. It used to live in
+         M6b, but gating the add form on `canEdit` means a viewer can no longer raise this
+         wall at all, so M6b lost its only way to render one. The editor fixture is now the
+         only rendered hard-stop in this file — retiring these along with M6b's wall would
+         have silently dropped the cross-app CSS-drift claim they exist to make. */
+      ok(wst.r === "4px", `M6 ${theme} hard-stop radius is 4px (got ${wst.r})`);
+      ok(wst.g === "3px", `M6 ${theme} hard-stop gap is 3px (got ${wst.g})`);
+      ok(wst.p === "9px 12px", `M6 ${theme} hard-stop padding is 9px 12px (got ${wst.p})`);
       /* The page TITLE reads against the surface in both themes. Asserted here because
          m6-memories-capwall-nonadmin-dark.png was read as showing a near-black title on
          the dark surface: it is a mid-fade capture, not a token gap (the computed colour
@@ -1100,11 +1114,19 @@ try {
    * `isAdmin: false` had been doing duty for two very different people. A viewer is the one
    * the backend genuinely refuses (`requireRole(accountId, "editor")` fails for them on
    * add, update AND delete), so a viewer is the one for whom naming a delete control would
-   * be an order they cannot obey. The referral arm is asserted here, and its wording is
-   * load-bearing: it must name "an editor or admin" and must NOT say "a Jira admin", which
-   * was false for the exact reader who most needed it - an app-demoted SITE admin IS the
-   * Jira admin, so the old sentence sent them to themselves.
-   * Both themes, because the wall is a colour claim as much as a copy claim. */
+   * be an order they cannot obey.
+   *
+   * F-224 CHANGES WHAT THIS BLOCK CAN ASSERT. The add form was the last write control still
+   * rendered for a viewer, and it was also the only way a viewer could raise the capacity
+   * wall (`capRefusal` comes from handleAdd and saveEdit, nothing else). Gating it on
+   * `canEdit` therefore makes the wall unreachable here, and the referral-arm copy
+   * assertions that used to live in this block have nothing left to render. They are not
+   * simply deleted: the wall's copy and colour claims are still made in M6 against the
+   * EDITOR fixture, which is the one that can still produce one, and F-222's hard-stop
+   * geometry moved there with them. What this block asserts now is the gate itself - no
+   * text box, no button, the slate note in their place - plus the viewer's remaining
+   * signal that the store is stuck, which is the load-driven size line.
+   * Both themes, because the note is a colour claim as much as a copy claim. */
   for (const theme of ["light", "dark"]) {
     console.log(`M6b platform-cap wall for a VIEWER - ${theme}`);
     const env = await openAdmin(browser, theme, { __MEMORY_OVERCAP__: true, __VIEWER__: true });
@@ -1122,35 +1144,49 @@ try {
       ok(await page.locator(".memories-admin-toggles").count() === 0,
         `M6b ${theme} and no settings toggles - saveMemorySettings gates on requireAdmin`);
 
-      await page.locator(".memories-admin-add input").fill("A memory this store cannot fit.");
-      await page.locator(".btn-add-memory").click();
-      const wall = page.locator(".memories-admin-capwall").first();
-      await wall.waitFor({ timeout: 8000 });
-      const wtxt = await wall.innerText();
-      ok(wtxt.includes(memoryPlatformCapMessage(6544)),
-        `M6b ${theme} the wall still carries the resolver's sentence verbatim (got: ${wtxt.replace(/\n/g, " | ")})`);
-      ok(!/Select the memories to remove/i.test(wtxt),
-        `M6b ${theme} the wall does NOT name a control that is not rendered for a viewer`);
-      ok(/An editor or admin has to delete memories in this tab/i.test(wtxt),
-        `M6b ${theme} the wall names WHO can fix it, by the role the BACKEND checks (got: ${wtxt.replace(/\n/g, " | ")})`);
-      ok(!/a Jira admin has to delete memories/i.test(wtxt),
-        `M6b ${theme} and never "a Jira admin" - false for the demoted site admin reading it`);
-      // Same solid-red hard-stop grammar. F-222 keeps the four CSS homes byte-identical;
-      // this is the rendered end of that claim, in both themes.
-      const wst = await wall.evaluate((el) => {
+      /* F-224 - the add form is the LAST write control that was rendered for everyone, and
+         `addMemory` refuses a viewer exactly as update and delete do. Until now a viewer got
+         a live text box and a solid teal button: they could type the fact they wanted the AI
+         to learn, press Add, and only then be told no. The gate removes the invitation. */
+      ok(await page.locator(".memories-admin-add input").count() === 0,
+        `M6b ${theme} a viewer gets no Add Memory text box - addMemory gates on requireRole("editor")`);
+      ok(await page.locator(".btn-add-memory").count() === 0,
+        `M6b ${theme} a viewer gets no Add Memory button`);
+      // ...and is TOLD why, rather than simply finding the control missing.
+      const note = page.locator(".memories-admin-add-note");
+      ok(await note.count() === 1, `M6b ${theme} a viewer gets the one-line note in its place`);
+      const ntxt = (await note.innerText()).trim();
+      ok(/^Editors and admins can add memories\.$/.test(ntxt),
+        `M6b ${theme} the note names the roles the BACKEND accepts (got: ${ntxt})`);
+      /* Owner design law on the replacement: neutral slate, solid colour, 600 weight, and
+         NO left rail. Both themes, because slate needs its dark override like every hue. */
+      const nst = await note.evaluate((el) => {
         const c = getComputedStyle(el);
-        return { bg: c.backgroundColor, fg: c.color, bl: c.borderLeftWidth, bt: c.borderTopWidth, r: c.borderRadius, g: c.gap, p: c.padding };
+        return { fg: c.color, w: c.fontWeight, bl: c.borderLeftWidth, bt: c.borderTopWidth };
       });
-      const wrgb = wst.bg.match(/\d+/g).map(Number);
-      ok(wrgb[0] > 180 && wrgb[1] < 90 && wrgb[2] < 90, `M6b ${theme} wall is a SOLID red fill - got ${wst.bg}`);
-      ok(/255,\s*255,\s*255/.test(wst.fg), `M6b ${theme} wall has white text - got ${wst.fg}`);
-      ok(wst.bl === wst.bt, `M6b ${theme} wall has NO left accent rail`);
-      // F-222 - the properties the cross-app suites never asserted, and therefore the
-      // ones a silent drift between the two App.js copies would have shown up in first.
-      ok(wst.r === "4px", `M6b ${theme} hard-stop radius is 4px (got ${wst.r})`);
-      ok(wst.g === "3px", `M6b ${theme} hard-stop gap is 3px (got ${wst.g})`);
-      ok(wst.p === "9px 12px", `M6b ${theme} hard-stop padding is 9px 12px (got ${wst.p})`);
-      await shot(page, `m6b-memories-capwall-viewer-${theme}`);
+      const nrgb = nst.fg.match(/\d+/g).map(Number);
+      const wantSlate = theme === "dark" ? [100, 116, 139] : [71, 85, 105];
+      ok(nrgb.slice(0, 3).every((v, i) => Math.abs(v - wantSlate[i]) <= 2),
+        `M6b ${theme} the note is the neutral slate hue ${wantSlate.join(",")} - got ${nst.fg}`);
+      ok(Number(nst.w) >= 600, `M6b ${theme} the note is 600+ weight - got ${nst.w}`);
+      ok(nst.bl === nst.bt, `M6b ${theme} the note has NO left accent rail`);
+
+      /* And the wall itself is now UNREACHABLE for a viewer, which is the honest consequence
+         of the gate rather than an oversight: `capRefusal` is only ever raised by handleAdd
+         and saveEdit, and F-224 put both behind `canEdit`. Asserting its absence is what will
+         catch a future change that re-opens a write path to a viewer without noticing. The
+         viewer's live signal that the store is stuck is the load-driven, role-independent
+         size line, so THAT is what must carry the message here. */
+      ok(await page.locator(".memories-admin-capwall").count() === 0,
+        `M6b ${theme} a viewer cannot raise the capacity wall - no write path reaches it`);
+      const statsLine = page.locator(".memories-admin-stats").first();
+      await statsLine.waitFor({ timeout: 8000 });
+      const stxt = await statsLine.innerText();
+      ok(/over Jira's storage limit/i.test(stxt),
+        `M6b ${theme} the size line still tells a viewer the store is stuck (got: ${stxt.replace(/\n/g, " | ")})`);
+      ok(/deleted together/i.test(stxt),
+        `M6b ${theme} and that it takes a bulk delete to clear (got: ${stxt.replace(/\n/g, " | ")})`);
+      await shot(page, `m6b-memories-viewer-noadd-${theme}`);
       ok(env.errors.length === 0, `M6b ${theme} no page errors: ` + env.errors.join(" | "));
     } catch (e) { fail++; console.log(`  x M6b ${theme} threw: ` + e.message.split("\n")[0]); }
     await close(env);
@@ -1295,6 +1331,71 @@ try {
         "M7c the admin-gated row actions render for a real admin");
       ok(env.errors.length === 0, "M7c no page errors: " + env.errors.join(" | "));
     } catch (e) { fail++; console.log("  ✗ M7c threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
+  /* ---------------- M7d - F-230: Jira could not be asked, which is NOT "you have no role"
+   * M7 proves the note tells a demoted admin their real role. This block proves the app
+   * does not make that claim when it has no right to. `checkIsAdmin` now returns
+   * `{ isAdmin: false, role: null, unknown: true, reason }` when the permission probe AND
+   * the group scan both threw - a Jira outage, not a verdict about the user.
+   *
+   * Before F-230 the frontend had no way to tell that apart from a genuine `role: null`,
+   * so a transient 503 rendered "CogniRunner has you as no role. A CogniRunner admin can
+   * change that under Permissions." to a real site admin. Both halves are wrong in the
+   * worst direction: the first is a false statement about their permissions, and the second
+   * sends them to fix something that is not broken - possibly to themselves, since on
+   * jira:adminPage they demonstrably hold Jira's admin permission. Nothing about reloading
+   * is discoverable from that copy, and reloading is the only thing that helps.
+   *
+   * The module stays `jira:adminPage` (the flag is deliberately absent from bridge.js's
+   * `notAdmin` switch), because that is the surface the note is keyed to and the only place
+   * the false copy could be read. Both themes - same slate .role-note grammar as M7, which
+   * is the point: the severity does not change, only the claim. */
+  for (const theme of ["light", "dark"]) {
+    console.log(`M7d role unknown - Jira could not be asked - ${theme}`);
+    const env = await openAdmin(browser, theme, { __ROLE_UNKNOWN__: true });
+    const { page } = env;
+    try {
+      await page.locator(".tab-bar").first().waitFor({ timeout: 10000 });
+      // Still no admin chrome: `unknown` is not a grant. Failing OPEN on an unreadable
+      // role would paint exactly the controls the backend's requireAdmin then refuses.
+      ok(await page.locator(".tab-btn", { hasText: "Settings" }).count() === 0,
+        `M7d ${theme} an unreadable role grants no Settings tab`);
+      ok(await page.locator(".tab-btn", { hasText: "Permissions" }).count() === 0,
+        `M7d ${theme} nor a Permissions tab`);
+
+      const note = page.locator(".role-note").first();
+      await note.waitFor({ timeout: 8000 });
+      const ntxt = (await note.innerText()).replace(/\s+/g, " ").trim();
+      ok(/could not verify your role with Jira just now/i.test(ntxt),
+        `M7d ${theme} the note names the OUTAGE, not a role (got: ${ntxt})`);
+      ok(/reload to try again/i.test(ntxt),
+        `M7d ${theme} and gives the one action that can actually resolve it (got: ${ntxt})`);
+      // The two false claims, asserted as absences - this is the whole finding.
+      ok(!/no role/i.test(ntxt),
+        `M7d ${theme} it never claims the user has "no role" (got: ${ntxt})`);
+      ok(!/under Permissions/i.test(ntxt) && !/A CogniRunner admin can change/i.test(ntxt),
+        `M7d ${theme} it never sends them to an admin to fix a permission that is not broken (got: ${ntxt})`);
+      ok(!/You opened the admin page/i.test(ntxt),
+        `M7d ${theme} the known-role copy does not leak into the unknown arm (got: ${ntxt})`);
+
+      /* Same slate .role-note grammar as M7: solid neutral, no left rail, dark override.
+         Asserted here because the unknown arm is a NEW render path through that class and
+         a hue that only appears in one branch is exactly how a missing dark override ships. */
+      const g = await note.evaluate((el) => {
+        const c = getComputedStyle(el);
+        return { bg: c.backgroundColor, bl: c.borderLeftWidth, bt: c.borderTopWidth };
+      });
+      ok(g.bl === g.bt, `M7d ${theme} the note has NO left accent rail`);
+      const grgb = (g.bg.match(/\d+/g) || []).map(Number);
+      const wantSlate = theme === "dark" ? [100, 116, 139] : [71, 85, 105];
+      ok(grgb.length >= 3 && grgb.slice(0, 3).every((v, i) => Math.abs(v - wantSlate[i]) <= 2),
+        `M7d ${theme} the note is the neutral slate fill ${wantSlate.join(",")} - got ${g.bg}`);
+
+      await shot(page, `m7d-role-unknown-${theme}`);
+      ok(env.errors.length === 0, `M7d ${theme} no page errors: ` + env.errors.join(" | "));
+    } catch (e) { fail++; console.log(`  ✗ M7d ${theme} threw: ` + e.message.split("\n")[0]); }
     await close(env);
   }
 

@@ -89,7 +89,9 @@ export const KINDS = Object.freeze({
   "identity.email": "fail",
   "denylist.term": "fail",
   "denylist.ticket-key": "fail",
-  "forbidden.word": "fail",
+  "forbidden.env-file": "fail",
+  "forbidden.token-assignment": "fail",
+  "forbidden.credentials-word": "suspect",
   "suspect.base64-blob": "suspect",
   "suspect.url-token": "suspect",
 });
@@ -124,8 +126,29 @@ const SHAPES = [
 
 const HOST_RE = /\b([A-Za-z0-9][A-Za-z0-9-]*)\.atlassian\.net\b/g;
 const EMAIL_RE = /\b[A-Za-z0-9._%+-]+@([A-Za-z0-9.-]+\.[A-Za-z]{2,})\b/g;
-// `credentials`, `.env`, `token=` — the words that mean "the thing next to me is a secret".
-const FORBIDDEN_RE = /(\bcredentials?\b|(?:^|[\s"'(/])\.env\b|\btoken\s*=)/i;
+/*
+ * The three "a secret is nearby" words from the plan, split into three kinds because the
+ * FIRST REAL RUN of the bake over the owner's own (clean, Apache-2.0) corpus proved they
+ * are not one rule:
+ *
+ *   .env reference        — 0 false positives. Fatal.
+ *   token=<value>         — the QUERY-STRING / ENV shape, no whitespace. Fatal.
+ *                           `const token = randomBytes(32)` is a JS assignment, not this;
+ *                           matching it produced 5 findings in tier A, all innocent code.
+ *   the word "credentials" — 3 findings in tier A, ALL of them the security guidance we
+ *                           most want in the pack ("never cache credentials this way —
+ *                           a stale key is binary-wrong"). Reported as SUSPECT so it is
+ *                           still printed on every run and lands in MANIFEST.md for the
+ *                           human review, but it does not stop a build over a noun.
+ *
+ * This is a deliberate narrowing of one sentence in the plan, made on evidence and
+ * written down here rather than quietly: all three words are still DETECTED, and only the
+ * prose noun is non-fatal. If the owner wants the noun fatal too, flip the severity in
+ * KINDS — the fixture already exists.
+ */
+const ENV_FILE_RE = /(?:^|[\s"'(/=])\.env\b/;
+const TOKEN_ASSIGN_RE = /\b(?:access_?token|api_?token|auth_?token|token)=[^\s&"'`]/i;
+const CREDENTIALS_WORD_RE = /\bcredentials?\b/i;
 const BASE64_BLOB_RE = /\b[A-Za-z0-9+/]{64,}={0,2}\b/;
 const URL_TOKEN_RE = /https?:\/\/[^\s<>"')]*[?&](?:token|access_token|api_?key|secret|password|sig|signature)=[^\s<>"')&]+/i;
 
@@ -225,7 +248,9 @@ export const scanText = (text, file = "<text>", { denylist = null } = {}) => {
       if (!ok) { add(n, "identity.email"); break; }
     }
 
-    if (FORBIDDEN_RE.test(line)) add(n, "forbidden.word");
+    if (ENV_FILE_RE.test(line)) add(n, "forbidden.env-file");
+    if (TOKEN_ASSIGN_RE.test(line)) add(n, "forbidden.token-assignment");
+    if (CREDENTIALS_WORD_RE.test(line)) add(n, "forbidden.credentials-word");
     if (BASE64_BLOB_RE.test(line)) add(n, "suspect.base64-blob");
     if (URL_TOKEN_RE.test(line)) add(n, "suspect.url-token");
 

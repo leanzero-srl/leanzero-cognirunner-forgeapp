@@ -1,0 +1,300 @@
+{
+  "$comment": [
+    "THE ALLOW-LIST for the knowledge bake (plan §3.15). scripts/bake-knowledge.mjs reads",
+    "ONLY what is named here — there is no directory sweep, because a sweep picks up",
+    "whatever somebody drops into the corpus next month.",
+    "",
+    "`never` is the refusal list from the plan's NEVER row. The bake matches every",
+    "resolved path against it and dies on a hit; it is a second lock on top of the",
+    "allow-list, for the case where somebody adds an entry above without reading this.",
+    "",
+    "Tiers A and B are COPIED (scrubbed, then chunked). Tiers C, D and E are",
+    "`reauthor: true`: their content is NOT copied at any point. They exist here as a",
+    "record of what a hand-written replacement in knowledge/authored/ is supposed to",
+    "cover, and the bake REFUSES a reauthor section whose authored file is missing —",
+    "so the pack cannot quietly ship empty, and cannot quietly ship the original.",
+    "",
+    "Licences: tier A is Apache-2.0 with a NOTICE (leanzero-forge-skills); tier B and",
+    "the authored replacements are ours."
+  ],
+
+  "version": 1,
+
+  "never": [
+    "aerlingus", "alterdomus", "axpo", "diconium", "chatwise", "eon", "siemens",
+    "ness", "bankofireland", "bank-of-ireland", "dico-atlas", "roche", "ekkiden",
+    "lz-ppm-forge", "se-ppm-forge", "forge-live-harness", "Fiskars-Atlassian",
+    "Scripts-Atlassian_new", "VAL-",
+    "lz-community", "lz-devcommunity", "lz-newsroom", "lz-analytics", "lz-website",
+    "lz-management", "lz-tutorial", "lz-marketing",
+    "credentials", ".env", "desk-", "-desk"
+  ],
+
+  "packs": {
+    "forge-app-builder": {
+      "title": "Forge app builder",
+      "purpose": "What the Coder needs to produce a Forge app that deploys: modules, manifest shape, resolver and Custom UI patterns, production patterns, FaaS limits and cost, async events, Forge LLM, the security golden rules.",
+      "pinned": ["forge-app-builder/core-concepts"]
+    },
+    "forge-platform-facts": {
+      "title": "Forge platform facts",
+      "purpose": "The reconciled traps: what the platform actually does, as opposed to what the docs imply. Rate limits, quotas, the gotchas.",
+      "pinned": []
+    },
+    "cognirunner-sandbox-traps": {
+      "title": "CogniRunner sandbox traps",
+      "purpose": "The traps this app has paid for, re-keyed to the sandbox API. Pinned for codegen and fix, because these are the mistakes the model makes unprompted.",
+      "pinned": []
+    },
+    "jira-rest-correctness": {
+      "title": "Jira REST correctness",
+      "purpose": "Problem patterns and gotchas for the Jira Cloud REST API.",
+      "pinned": []
+    },
+    "confluence-rest-correctness": {
+      "title": "Confluence REST correctness",
+      "purpose": "Confluence modules, auth, macros, ADF and storage format, points-based rate limiting.",
+      "pinned": []
+    },
+    "jsm-correctness": {
+      "title": "Jira Service Management correctness",
+      "purpose": "Queues, sd.public.comment, agent visibility, audience.",
+      "pinned": []
+    },
+    "automation-semantics": {
+      "title": "Automation semantics",
+      "purpose": "Smart values, loops, and what Jira Automation can and cannot be driven to do over REST.",
+      "pinned": []
+    },
+    "administrator-practice": {
+      "title": "Administrator practice",
+      "purpose": "The confidence ladder, proven negatives, speaking vs changing, blast radius, the effects ledger, guard discipline, unattended operation, burstiness. Pinned for every Virtual Administrator turn.",
+      "pinned": []
+    },
+    "voice-rules": {
+      "title": "Voice rules",
+      "purpose": "DATA tables consumed by src/shared/voice-lint.js — not prose for the model.",
+      "pinned": []
+    }
+  },
+
+  "sources": [
+    {
+      "id": "jira-forge",
+      "tier": "A",
+      "root": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill",
+      "raw": "tier-a/jira-forge",
+      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)",
+      "sync": "local",
+      "scrub": {
+        "$comment": "The last four entries were PROVED necessary by the first real bake: the leak scanner found four provenance lines naming the internal apps and client engagements the docs were observed on (plan §3.15 predicted 12). They are deleted rather than rewritten because a provenance line carries no field-guide value at all.",
+        "deleteLinesMatching": [
+          "built (?:for|during|from) (?:the )?[A-Z][\\w-]+ (?:engagement|migration|review)",
+          "internal (?:app|repo|repository)",
+          "Atlassian Marketplace app id",
+          "(?i)what it looks like in production",
+          "(?i)license leash",
+          "(?i)axpo",
+          "(?i)on wolfaenpak"
+        ],
+        "replace": [
+          ["[a-z0-9-]+\\.atlassian\\.net", "your-domain.atlassian.net"]
+        ]
+      },
+      "files": [
+        { "path": "docs/01-core-concepts.md", "pack": "forge-app-builder", "audience": ["coder", "codegen"], "tags": ["manifest", "modules", "forge", "scopes", "app structure"] },
+        { "path": "docs/16-resolver-patterns.md", "pack": "forge-app-builder", "audience": ["coder", "codegen"], "tags": ["resolver", "invoke", "custom ui", "bridge"] },
+        { "path": "docs/24-production-patterns.md", "pack": "forge-app-builder", "audience": ["coder", "codegen", "review"], "tags": ["production", "error handling", "retry", "storage", "patterns"] },
+        { "path": "docs/25-workflow-modules-deep-dive.md", "pack": "forge-app-builder", "audience": ["coder", "codegen", "validator"], "tags": ["workflow", "validator", "condition", "post function"] },
+        { "path": "docs/26-async-events-and-queues.md", "pack": "forge-app-builder", "audience": ["coder", "codegen"], "tags": ["queue", "consumer", "async", "events"] },
+        { "path": "docs/27-faas-limits-and-cost.md", "pack": "forge-app-builder", "audience": ["coder", "codegen", "review"], "tags": ["limits", "timeout", "cost", "invocation", "faas"] },
+        { "path": "docs/31-forge-ai-and-llm.md", "pack": "forge-app-builder", "audience": ["coder", "codegen"], "tags": ["forge llm", "ai", "model", "token"] },
+        { "path": "docs/19-rate-limit-handling.md", "pack": "forge-platform-facts", "audience": ["coder", "codegen", "agent"], "tags": ["rate limit", "429", "retry", "backoff"] },
+        { "path": "docs/gotchas.md", "pack": "forge-platform-facts", "audience": ["coder", "codegen", "agent", "review"], "tags": ["gotcha", "trap", "forge"] },
+        { "path": "docs/22-jira-service-management.md", "pack": "jsm-correctness", "audience": ["agent", "va", "codegen"], "tags": ["jsm", "service desk", "queue", "request type", "sd.public.comment"] }
+      ]
+    },
+    {
+      "id": "confluence-forge",
+      "tier": "A",
+      "root": "~/Projects/skill-jira-forge/atlassian-confluence-forge-skill",
+      "raw": "tier-a/confluence-forge",
+      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)",
+      "sync": "local",
+      "scrub": {
+        "deleteLinesMatching": ["(?i)license leash", "(?i)axpo"],
+        "replace": [["[a-z0-9-]+\\.atlassian\\.net", "your-domain.atlassian.net"]]
+      },
+      "files": [
+        { "path": "docs/01-core-concepts.md", "pack": "confluence-rest-correctness", "audience": ["coder", "codegen"], "tags": ["confluence", "modules", "content"] },
+        { "path": "docs/12-permissions-scopes.md", "pack": "confluence-rest-correctness", "audience": ["coder", "codegen", "review"], "tags": ["confluence", "scopes", "permissions", "auth"] },
+        { "path": "docs/14-macros-and-section-sealing.md", "pack": "confluence-rest-correctness", "audience": ["coder", "codegen"], "tags": ["macro", "section", "confluence"] },
+        { "path": "docs/28-adf-and-storage-format.md", "pack": "confluence-rest-correctness", "audience": ["coder", "codegen", "va"], "tags": ["adf", "storage format", "body", "confluence"] },
+        { "path": "docs/31-points-rate-limiting.md", "pack": "confluence-rest-correctness", "audience": ["coder", "agent"], "tags": ["rate limit", "points", "429", "confluence"] },
+        { "path": "docs/24-production-patterns.md", "pack": "confluence-rest-correctness", "audience": ["coder", "codegen"], "tags": ["production", "patterns", "confluence"] }
+      ]
+    },
+    {
+      "id": "forge-security-review",
+      "tier": "A",
+      "root": "~/Projects/skill-jira-forge/forge-security-review",
+      "raw": "tier-a/forge-security-review",
+      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)",
+      "sync": "local",
+      "scrub": {
+        "$comment": "SKILL.md line 16 names a client, a ticket id and a person. The named-line deletion is the reason this scrub block exists at all, and the leak scanner is the proof it worked.",
+        "deleteLinesMatching": [
+          "ITSM-\\d+",
+          "(?i)chatwise",
+          "(?i)diconium",
+          "(?i)stefan denker",
+          "(?i)built \\d{4}-\\d{2}-\\d{2} from"
+        ]
+      },
+      "files": [
+        { "path": "docs/gotchas.md", "pack": "forge-app-builder", "audience": ["coder", "review"], "tags": ["security", "gotcha", "review", "scanner"] },
+        { "path": "docs/03-beyond-scanners.md", "pack": "forge-app-builder", "audience": ["coder", "review"], "tags": ["security", "sast", "sca", "risk", "review"] },
+        { "path": "SKILL.md", "pack": "forge-app-builder", "audience": ["coder", "review"], "tags": ["security", "golden rules", "review"] }
+      ]
+    },
+    {
+      "id": "jira-api",
+      "tier": "A",
+      "root": "~/Projects/skill-jira-forge/jira-api-skill",
+      "raw": "tier-a/jira-api",
+      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)",
+      "sync": "local",
+      "scrub": {
+        "replace": [["[a-z0-9-]+\\.atlassian\\.net", "your-domain.atlassian.net"]]
+      },
+      "files": [
+        { "path": "docs/problem-patterns.md", "pack": "jira-rest-correctness", "audience": ["codegen", "agent", "va"], "tags": ["rest", "jira", "problem", "pattern", "error"] },
+        { "path": "docs/gotchas.md", "pack": "jira-rest-correctness", "audience": ["codegen", "agent", "va", "validator"], "tags": ["rest", "jira", "gotcha", "trap"] }
+      ]
+    },
+    {
+      "id": "confluence-api",
+      "tier": "A",
+      "root": "~/Projects/skill-jira-forge/confluence-api-skill",
+      "raw": "tier-a/confluence-api",
+      "licence": "Apache-2.0 (leanzero-forge-skills, NOTICE retained)",
+      "sync": "local",
+      "scrub": {
+        "deleteLinesMatching": ["(?i)license leash", "(?i)axpo", "(?i)^source:"],
+        "replace": [["[a-z0-9-]+\\.atlassian\\.net", "your-domain.atlassian.net"]]
+      },
+      "files": [
+        { "path": "docs/problem-patterns.md", "pack": "confluence-rest-correctness", "audience": ["codegen", "agent", "va"], "tags": ["rest", "confluence", "problem", "pattern", "error"] },
+        { "path": "docs/gotchas.md", "pack": "confluence-rest-correctness", "audience": ["codegen", "agent", "va"], "tags": ["rest", "confluence", "gotcha", "trap"] }
+      ]
+    },
+    {
+      "id": "cognirunner-gotchas",
+      "tier": "B",
+      "root": "~/Projects/CogniRunner/.claude/skills/cognirunner-development/references",
+      "raw": "tier-b/cognirunner",
+      "licence": "ours (CogniRunner development skill)",
+      "sync": "local",
+      "scrub": {
+        "$comment": "The harness bed and its shared secret are ours, but they are operational detail that means nothing to a model generating a post-function — and HARNESS_SECRET is a secret-shaped word the scanner would rightly flag.",
+        "deleteLinesMatching": ["COGTEST", "HARNESS_SECRET", "(?i)wolfaenpak"]
+      },
+      "files": [
+        { "path": "GOTCHAS.md", "pack": "cognirunner-sandbox-traps", "audience": ["codegen", "fix", "coder", "review"], "tags": ["sandbox", "trap", "post function", "cognirunner", "kvs", "resolver"] }
+      ]
+    },
+
+    {
+      "id": "platform-fact-memories",
+      "tier": "C",
+      "reauthor": true,
+      "pack": "forge-platform-facts",
+      "authored": "forge-platform-facts.md",
+      "licence": "ours (re-authored)",
+      "$comment": [
+        "The laptop and workhorse fact memories. NOT COPIED — several carry a tenant host,",
+        "an app UUID, an account id or a client e-mail, and the value is in the FACT LINE,",
+        "which has to be re-stated as a neutral sentence anyway.",
+        "Two contradictions the plan requires reconciling BEFORE the authored file is",
+        "written: function-backed workflow conditions are a no-op while expression-backed",
+        "conditions ARE enforced over REST; and the Cloud Automation internal REST is",
+        "baked as 'no public create API; drive the UI', the earlier cloned-payload note",
+        "dropped."
+      ],
+      "covers": [
+        "project_forge_platform_gotchas", "project_test_harness", "project_jsx_classic_runtime",
+        "project_visual_harness", "forge_events_v2", "forge_sql_limit", "resolver_25s_budget",
+        "verify_ddl", "cross_product_install", "dashboard_poll_cost",
+        "forge-live-ui-testing-facts", "jira-mentions-indexed-by-accountid",
+        "forge-running-cost-constraint", "reference_connect_forge_timeline",
+        "issuelink_post_direction", "jcma_32767_adf_cap", "cloud_edit_perm_preflight",
+        "jsm_comment_property_post", "cloud-to-cloud-workflow-rules", "atlassian-teams-api",
+        "forge-cannot-reliably-read-assets", "atlassian-classification-needs-guard-premium",
+        "confluence-classification-display-solved", "jsm-internal-comments-invisible-to-portal-users",
+        "endpoint-answered-narrower-question", "a-404-can-mean-you-cannot-see-it",
+        "cloud-sandbox-shares-groups-with-prod", "assets-dc-to-cloud-one-hop", "rest-first-then-browser"
+      ]
+    },
+    {
+      "id": "administrator-practice",
+      "tier": "D",
+      "reauthor": true,
+      "pack": "administrator-practice",
+      "authored": "administrator-practice.md",
+      "licence": "ours (re-authored)",
+      "$comment": [
+        "workhorse _agent-commons/practice/*.md plus the client-free operating-model and",
+        "evidence-discipline notes. NOT COPIED: desk names and quoted corpus lines are",
+        "inseparable from the prose, so the replacement is written from scratch."
+      ],
+      "covers": [
+        "confidence ladder", "dead enforcement", "guard discipline", "effects ledger",
+        "platform-cap guards", "unattended operation", "measuring your own loop", "burstiness",
+        "agent operating model", "evidence discipline"
+      ]
+    },
+    {
+      "id": "voice-rules",
+      "tier": "D",
+      "reauthor": true,
+      "pack": "voice-rules",
+      "authored": "voice-rules.md",
+      "licence": "ours (re-authored)",
+      "$comment": [
+        "The generic BLOCK/WARN rule tables from the five linters. These become DATA for",
+        "src/shared/voice-lint.js (§3.11), never prose for a model, and no corpus line is",
+        "quoted."
+      ],
+      "covers": ["block rules", "warn rules", "hedge words", "banned openers", "claim words"]
+    },
+    {
+      "id": "automation-semantics",
+      "tier": "E",
+      "reauthor": true,
+      "pack": "automation-semantics",
+      "authored": "automation-semantics.md",
+      "licence": "ours (re-authored)",
+      "$comment": [
+        "workhorse atlassian-automation-builder smart-value and loop facts, plus the JSM",
+        "REST worked examples. Fact lines only, re-authored; project keys and app ids",
+        "never travel."
+      ],
+      "covers": ["smart values", "branch loops", "jsm rest examples", "automation limits"]
+    }
+  ],
+
+  "notBaked": [
+    {
+      "id": "jira-forge-templates",
+      "root": "~/Projects/skill-jira-forge/atlassian-jira-forge-skill/templates",
+      "use": "scaffolds",
+      "$comment": [
+        "The 22 manifest/handler templates are 10-15 KB of CODE each. Chunking code into",
+        "2-4 KB prose sections produces fragments that are worse than useless to a model —",
+        "half a manifest is not a manifest. They feed src/shared/git-scaffolds.js from the",
+        "same source (plan §3.15), which emits them WHOLE. The bake reads this list only to",
+        "state, here and in MANIFEST.md, that it deliberately skipped them."
+      ]
+    }
+  ]
+}

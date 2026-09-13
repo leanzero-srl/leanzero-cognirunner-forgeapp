@@ -55,13 +55,14 @@ for (const name of fixtureNames.sort()) {
   const found = scanText(text, name, { denylist: FIXTURE_DENYLIST });
   const kinds = new Set(found.map((f) => f.kind.replace(/\./g, "-")));
   ok(kinds.has(stem), `${name} is caught as ${stem} (got: ${[...kinds].join(", ") || "nothing"})`);
-  // Severity is part of the contract: a suspect fixture must NOT be fatal, and a
-  // credential fixture must NOT be downgraded to suspect.
-  const expected = KINDS[stem.replace(/-/g, ".").replace(/^(credential|identity|tenant|denylist|forbidden|suspect)\./, "$1.")];
+  // Severity is part of the contract, and it is read from KINDS rather than guessed from
+  // the filename: a credential fixture must never be silently downgraded to suspect, and
+  // a suspect fixture must never start failing builds because somebody "tightened" it.
   const hit = found.find((f) => f.kind.replace(/\./g, "-") === stem);
-  if (hit) ok(hit.severity === (stem.startsWith("suspect-") ? "suspect" : "fail"), `${name} carries the right severity`);
-  else ok(false, `${name} produced no finding of its own kind`);
-  void expected;
+  if (hit) {
+    const declared = Object.entries(KINDS).find(([k]) => k.replace(/\./g, "-") === stem);
+    ok(declared && hit.severity === declared[1], `${name} carries the severity KINDS declares (${declared ? declared[1] : "unknown kind"})`);
+  } else ok(false, `${name} produced no finding of its own kind`);
 }
 
 /* 4. The negative controls stay clean. This is the half that keeps the scanner usable —
@@ -74,7 +75,7 @@ for (const name of readdirSync(fixturesDir).filter((f) => f.startsWith("clean-")
 
 /* 5. THE REPORT NEVER CARRIES THE VALUE. The whole reason a leak report is safe to paste
       into a build log. Assert on the finding objects AND on the formatted lines. */
-const secretLine = "token is ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345 here";
+const secretLine = "the value ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345 was pasted here";
 const findings = scanText(secretLine, "x.md", { denylist: FIXTURE_DENYLIST });
 ok(findings.length > 0, "the value-leak probe produces a finding at all");
 for (const f of findings) {

@@ -31,6 +31,7 @@ import { pushed, Queue } from "../lib/mock-forge-api.mjs";
 const { gitWebhook, mapGitEvent, buildGitEnvelope, gitIssueKeysFrom } = await import("../../src/index.js");
 const { extractEventContext, GIT_EVENT_IDS, isKnownEvent } = await import("../../src/shared/jira-events.js");
 const { gitHookSecretKey, gitConnKey } = await import("../../src/git-connections.js");
+const { safeKeyPart } = await import("../../src/shared/kvs-keys.js");
 
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) pass++; else { fail++; console.log("FAIL:", m); } };
@@ -362,6 +363,28 @@ seed();
   ok(!storage.__raw(`git_delivery:${CONN}:boom-1`), "…and the idempotency claim is released, so the retry is not seen as a duplicate");
   const retry = parse(await gitWebhook(req({ payload: ghPr("opened"), delivery: "boom-1" })));
   ok(retry.status === 202 && retry.body.accepted === true && pushed.length === 1, "…and the retry is accepted and enqueued");
+}
+
+seed();
+{
+  // F-334: a KVS FAULT on the claim is NOT a duplicate. 202 is the one answer
+  // that stops the provider retrying, so an infrastructure fault must fail CLOSED.
+  storage.__failNextSet();
+  const r = parse(await gitWebhook(req({ payload: ghPr("opened"), delivery: "kvs-1" })));
+  ok(r.status === 503 && r.body.duplicate !== true, `a KVS fault on the claim answers 503, not 202 duplicate (${JSON.stringify(r)})`);
+  ok(pushed.length === 0, "…and nothing is enqueued");
+  const retry = parse(await gitWebhook(req({ payload: ghPr("opened"), delivery: "kvs-1" })));
+  ok(retry.status === 202 && retry.body.accepted === true && pushed.length === 1, "…and the provider's retry is accepted and enqueued");
+}
+seed();
+{
+  // The claim key is sanitised: a header id carrying key-hostile characters
+  // cannot shape the key (or collide with another connection's namespace).
+  const r = parse(await gitWebhook(req({ payload: ghPr("opened"), delivery: "a b/c\u00e9*1" })));
+  ok(r.status === 202 && r.body.accepted === true, "a delivery id with hostile characters is still accepted");
+  const rawId = "a b/c\u00e9*1";
+  ok(!storage.__raw(`git_delivery:${CONN}:${rawId}`), "…and the raw header value never becomes the key");
+  ok(!!storage.__raw(`git_delivery:${CONN}:${safeKeyPart(rawId)}`), "…the sanitised key is the one written");
 }
 
 /* ===================== 6. the raw cap and the raw whitelist ===================== */

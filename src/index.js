@@ -48,6 +48,7 @@ import {
 } from "./shared/edition.js";
 import { minuteKey, effectiveBudget, budgetDecision, inlineShouldQueue, AI_PLATFORM_TPM, AI_BUDGET_DEFAULT_TPM, BUDGET_WAIT_HORIZON_MS } from "./shared/ai-budget.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
+import { safeKeyPart, isKeyConflict } from "./shared/kvs-keys.js";
 import { providerKeySlot, providerModelSlot, providerAgentModelSlot, providerBaseUrlSlot } from "./shared/provider-slots.js";
 // GIT CONNECTIONS (1.4 commit 2). The behaviour — key names, caps, the security
 // model, auth_dead, queued rotation — lives in src/git-connections.js and is
@@ -1586,7 +1587,7 @@ const storeLog = async (logEntry, { statsReceipt = null } = {}) => {
       } catch (e) {
         // A timed-out first write may already have been recovered and counted.
         // Never overwrite its applied marker while retrying the original log.
-        if (e?.code === "KEY_ALREADY_EXISTS" || e?.responseDetails?.status === 409 || /already\s*exist/i.test(String(e?.message))) {
+        if (isKeyConflict(e)) {
           if ((await storage.get(key))?.id === entry.id) return;
           throw new Error("Log receipt key collision");
         }
@@ -11097,13 +11098,23 @@ export async function gitWebhook(req) {
   const envelope = buildGitEnvelope({ eventType, kind, headerEvent, connectionId: connId, repoId, deliveryId, payload });
 
   // ---- 5. idempotency claim BEFORE the enqueue ----
-  const claimKey = `git_delivery:${connId}:${deliveryId}`;
+  // F-335: ONE home for this key pending.
+  const claimKey = `git_delivery:${safeKeyPart(connId)}:${safeKeyPart(deliveryId)}`;
   try {
     await storage.set(claimKey, { at: new Date().toISOString(), eventType }, {
       keyPolicy: "FAIL_IF_EXISTS",
       ttl: { value: 24, unit: "HOURS" },
     });
   } catch (e) {
+    // ONLY the FAIL_IF_EXISTS conflict is a duplicate. Any other fault (KVS
+    // throttle, 5xx, rejected key) is an infrastructure failure and we FAIL
+    // CLOSED with 503 — like step 1 — so the provider retries. A 2xx here is
+    // the one answer that guarantees it never will, which silently drops a
+    // delivery we verified (F-334).
+    if (!isKeyConflict(e)) {
+      console.error(`[git-webhook] delivery claim failed conn=${connId} delivery=${deliveryId}: ${e && e.message} — failing closed so the provider retries`);
+      return hookJson(503, { ok: false });
+    }
     console.log(`[git-webhook] duplicate delivery ${deliveryId} conn=${connId} — not enqueued`);
     return hookJson(202, { ok: true, duplicate: true });
   }

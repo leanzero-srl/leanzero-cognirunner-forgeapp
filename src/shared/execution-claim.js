@@ -5,6 +5,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { isKeyConflict } from "./kvs-keys.js";
+
 // Dependency-free so the shared module remains safe for both bundlers. The
 // caller supplies KVS and its existing key/TTL; claim identity is never changed.
 export const claimRuleExecution = async (storage, key, ttl, source, { failClosed = false } = {}) => {
@@ -14,10 +16,8 @@ export const claimRuleExecution = async (storage, key, ttl, source, { failClosed
     await storage.set(key, { at: new Date().toISOString() }, { keyPolicy: "FAIL_IF_EXISTS", ...ttl });
     return true;
   } catch (e) {
-    const conflict = e?.code === "KEY_ALREADY_EXISTS"
-      || e?.responseDetails?.status === 409
-      || /already\s*exist/i.test(String(e?.message));
-    if (conflict) return false;
+    // ONE home for "is this the FAIL_IF_EXISTS conflict?" — kvs-keys.js.
+    if (isKeyConflict(e)) return false;
     // Capability handlers require ownership before serving data or uploading;
     // unlike rule delivery, their documented single-use contract is fail-closed.
     if (failClosed) throw e;

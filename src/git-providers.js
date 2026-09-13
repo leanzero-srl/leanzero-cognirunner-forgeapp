@@ -83,6 +83,11 @@ export const GIT_PROVIDER_KINDS = ["github", "bitbucket"];
 /** The closed error-code set. Anything outside it is a bug in this file. */
 export const GIT_ERROR_CODES = [
   "auth_dead",
+  // F-299 — a 403 that is NOT about the credential. A fine-grained PAT without access
+  // to ONE repository, an org enforcing SAML on ONE org, a protected-branch rejection:
+  // all 403, all per-RESOURCE, none of them a dead credential. They used to be reported
+  // as `auth_dead`, which is connection-wide and killed every repo on that connection.
+  "forbidden",
   "bad_request",
   "not_found",
   "rate_limited",
@@ -218,17 +223,26 @@ function isWriteMethod(method) {
  * from a repo that does not exist. So not_found NEVER authorises a write on its
  * own — callers must prove absence with a call the token demonstrably can make.
  */
-function codeForStatus(status, bodyText, headers) {
+function codeForStatus(status, bodyText, headers, operation) {
   if (status === 401) return "auth_dead";
   if (status === 403) {
     const remaining = headers && headers.get && headers.get("x-ratelimit-remaining");
     if (remaining === "0" || /rate limit|secondary rate|too many requests/i.test(bodyText || "")) {
       return "rate_limited";
     }
-    // A 403 that is not a rate limit is a credential/permission failure and is
-    // LOUD: the connection's status goes dead and the banner comes up. Silent
-    // "no restriction" is the failure mode this closes.
-    return "auth_dead";
+    // F-299 — A 403 IS STILL LOUD, BUT IT IS NOT PROOF THE CREDENTIAL IS DEAD.
+    //
+    // `auth_dead` is CONNECTION-WIDE: every call site routes it to markAuthDead, the
+    // row goes dead, and the only way out is a successful Test or a re-save. A 403 is
+    // routinely per-RESOURCE (a fine-grained PAT that cannot see one repo, SSO on one
+    // org, a protected branch), so one unlucky repository used to stop PR review for
+    // every repository on that connection — and pressing Test cleared the banner,
+    // because whoami never 403s, which is exactly the "banner that vanishes when
+    // challenged" an operator cannot trust.
+    //
+    // The credential IS the subject of a 403 on `whoami`: that call asks nothing but
+    // "who is this token". Only there does a 403 remain auth_dead.
+    return operation === "whoami" ? "auth_dead" : "forbidden";
   }
   if (status === 404) return "not_found";
   if (status === 429) return "rate_limited";
@@ -254,7 +268,7 @@ function retryAfterOf(headers) {
  * an SSRF the manifest would not have sanctioned, and a redirect is exactly how one
  * arrives. `http:` is refused outright: a token must never leave over plaintext.
  */
-export function assertAllowedUrl(url, operation, kind) {
+export function assertAllowedUrl(url, operation, kind, { redirected = false } = {}) {
   let parsed;
   try {
     parsed = new URL(String(url));
@@ -267,8 +281,25 @@ export function assertAllowedUrl(url, operation, kind) {
   if (parsed.protocol !== "https:") {
     throw new GitProviderError("not_supported", operation + ": refused a non-HTTPS URL (" + parsed.protocol + ")", { provider: kind, operation });
   }
-  if (!GIT_PROVIDER_HOST_NAMES.includes(parsed.hostname.toLowerCase())) {
+  const host = parsed.hostname.toLowerCase();
+  const entry = GIT_PROVIDER_HOSTS.find((h) => h.host === host) || null;
+  if (!entry) {
     throw new GitProviderError("not_supported", operation + ': refused a URL outside the allowed git hosts ("' + parsed.hostname + '")', { provider: kind, operation });
+  }
+  // F-306 — the entry's OWN declarations are enforced, not just its hostname.
+  //
+  //  · `redirectOnly` means what it says: bitbucket.org is on the list because
+  //    Bitbucket's /diff and /src answer 302 to it, NOT as a callable API host.
+  //  · `kind` scopes the host to its provider. Without this, a 3xx served to a GITHUB
+  //    call could carry the GitHub Authorization header to bitbucket.org — a host the
+  //    manifest allow-listed for a Bitbucket redirect, never as a place a GitHub
+  //    credential should be sent. The headers are reused on every hop, so the gate is
+  //    the only thing that can prevent it.
+  if (entry.redirectOnly && !redirected) {
+    throw new GitProviderError("not_supported", operation + ': refused to call "' + host + '" directly (it is reachable only by following a redirect)', { provider: kind, operation });
+  }
+  if (kind && entry.kind && entry.kind !== kind) {
+    throw new GitProviderError("not_supported", operation + ': refused to send a ' + kind + ' credential to "' + host + '" (a ' + entry.kind + ' host)', { provider: kind, operation });
   }
   return parsed.href;
 }
@@ -328,7 +359,14 @@ function makeClient(opts) {
     if (remaining <= 0) {
       throw fail(operation + ": operation budget of " + GIT_OPERATION_BUDGET_MS / 1000 + "s exhausted", { timeout: true }, "network");
     }
-    const effectiveMs = Math.max(1, Math.min(limitMs, remaining === Infinity ? limitMs : remaining));
+    // F-305 — the per-call wall clock is recomputed PER HOP, below. It used to be
+    // computed once, before the loop, and a fresh timer of that length was armed on
+    // every hop: with MAX_REDIRECT_HOPS = 3 one `once()` could burn 4 × 10 s = 40 s,
+    // past the 25 s sync-resolver cap, and the caller saw a platform timeout instead of
+    // this module's own error. The operation budget did not save it either — only calls
+    // wrapped in `withBudget` have one, and the Bitbucket adapters (the only reason the
+    // redirect loop exists) are unwrapped.
+    const callDeadline = Date.now() + Math.max(1, Math.min(limitMs, remaining === Infinity ? limitMs : remaining));
     let resp;
     // F-264/F-267: redirects are followed BY HAND (`redirect:"manual"`) so the host
     // gate sees every hop. `redirect:"follow"` would let a 302 carry the Authorization
@@ -337,6 +375,13 @@ function makeClient(opts) {
     // reason this loop exists. A WRITE is never redirect-followed: re-POSTing to a
     // new location is the duplicate-write this module refuses to risk.
     for (let hop = 0; ; hop++) {
+      // What is LEFT of this call's clock (and of the operation budget, which another
+      // chained call may have moved on) — never a fresh full timeout per hop.
+      const budgetLeft = budgetDeadline === null ? Infinity : budgetDeadline - Date.now();
+      const effectiveMs = Math.min(callDeadline - Date.now(), budgetLeft === Infinity ? Infinity : budgetLeft);
+      if (!(effectiveMs > 0)) {
+        throw fail(operation + ": timed out after " + limitMs / 1000 + "s" + (hop ? " (" + hop + " redirect hop(s))" : ""), { timeout: true }, "network");
+      }
       const ac = typeof AbortController === "function" ? new AbortController() : null;
       let timedOut = false;
       const timer = setTimeout(() => { timedOut = true; if (ac) ac.abort(); }, effectiveMs);
@@ -366,7 +411,7 @@ function makeClient(opts) {
       if (!location) throw fail(operation + ": HTTP " + resp.status + " with no Location header", { status: resp.status, operation }, "network");
       if (isWriteMethod(method)) throw fail(operation + ": refused to follow a redirect on a write", { status: resp.status, operation }, "not_supported");
       if (hop >= MAX_REDIRECT_HOPS) throw fail(operation + ": too many redirects", { status: resp.status, operation }, "network");
-      url = assertAllowedUrl(new URL(location, url).href, operation, kind);
+      url = assertAllowedUrl(new URL(location, url).href, operation, kind, { redirected: true });
     }
 
     const h = headerGetter(resp.headers);
@@ -378,7 +423,7 @@ function makeClient(opts) {
     } catch (_) {
       bodyText = "";
     }
-    const code = codeForStatus(resp.status, bodyText, h);
+    const code = codeForStatus(resp.status, bodyText, h, operation);
     throw fail(operation + ": HTTP " + resp.status + (bodyText ? " — " + bodyText.slice(0, 300) : ""), {
       status: resp.status,
       operation,

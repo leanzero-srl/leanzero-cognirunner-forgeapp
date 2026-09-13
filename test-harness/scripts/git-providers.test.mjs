@@ -30,8 +30,17 @@ const {
   DIFF_MAX_TOTAL_BYTES,
   DIFF_MAX_FILE_BYTES,
   capDiff,
+  capBody,
   splitUnifiedDiff,
   redactSecrets,
+  assertAllowedUrl,
+  assertCommitWithinCaps,
+  GIT_OPERATION_BUDGET_MS,
+  COMMIT_MAX_FILES,
+  COMMIT_MAX_TOTAL_BYTES,
+  COMMIT_MAX_FILE_BYTES,
+  PR_BODY_MAX_BYTES,
+  PR_COMMENT_RESOLVED_UNKNOWN,
 } = m;
 
 let checks = 0;
@@ -111,7 +120,7 @@ assert.throws(() => createGitProvider({ kind: "bitbucket", auth: { email: BB_EMA
 checks++;
 eq(GIT_PROVIDER_HOST_NAMES, ["api.github.com", "api.bitbucket.org", "bitbucket.org"], "the one egress home");
 ok(GIT_PROVIDER_HOSTS.find((h) => h.host === "bitbucket.org").redirectOnly === true, "bitbucket.org is flagged redirect-only");
-eq(GIT_ERROR_CODES, ["auth_dead", "not_found", "rate_limited", "conflict", "network", "not_supported"], "closed code set");
+eq(GIT_ERROR_CODES, ["auth_dead", "forbidden", "bad_request", "not_found", "rate_limited", "conflict", "network", "not_supported"], "closed code set (bad_request added by F-265, forbidden by F-299)");
 ok(GIT_CALL_TIMEOUT_MS === 10000, "10 s per call");
 ok(DIFF_MAX_TOTAL_BYTES === 61440 && DIFF_MAX_FILE_BYTES === 16384, "diff caps are 60 KB / 16 KB");
 
@@ -243,7 +252,7 @@ ok(DIFF_MAX_TOTAL_BYTES === 61440 && DIFF_MAX_FILE_BYTES === 16384, "diff caps a
   eq(JSON.parse(f.calls[0].body), { event: "APPROVE", body: "lgtm" }, "approve body");
   await p.requestChanges({ repo: "acme/app", number: 12, body: "fix lint" });
   eq(JSON.parse(f.calls[1].body), { event: "REQUEST_CHANGES", body: "fix lint" }, "request-changes body");
-  await assert.rejects(p.requestChanges({ repo: "acme/app", number: 12 }), (e) => e.code === "conflict");
+  await assert.rejects(p.requestChanges({ repo: "acme/app", number: 12 }), (e) => e.code === "bad_request", "a missing argument is bad_request, not conflict (F-265)");
   checks++;
 }
 
@@ -352,7 +361,7 @@ const BASIC = "Basic " + Buffer.from(BB_EMAIL + ":" + BB_TOKEN, "utf8").toString
   await bb(f).createRepo({ name: "new", workspace: "ws" });
   eq(f.calls[0].url, "https://api.bitbucket.org/2.0/repositories/ws/new", "bitbucket createRepo path");
   eq(JSON.parse(f.calls[0].body).scm, "git", "bitbucket needs scm:git");
-  await assert.rejects(bb(mockFetch([])).createRepo({ name: "x" }), (e) => e.code === "conflict");
+  await assert.rejects(bb(mockFetch([])).createRepo({ name: "x" }), (e) => e.code === "bad_request");
   checks++;
 }
 
@@ -471,11 +480,13 @@ const BASIC = "Basic " + Buffer.from(BB_EMAIL + ":" + BB_TOKEN, "utf8").toString
 const errorCases = [
   [401, {}, "auth_dead", "a dead token is loud"],
   [403, { "x-ratelimit-remaining": "0" }, "rate_limited", "403 + exhausted budget is a rate limit"],
-  [403, {}, "auth_dead", "a plain 403 is a credential/permission failure, never silence"],
+  // F-299 — a plain 403 is per-RESOURCE (a repo the PAT cannot see, SSO on one org, a
+  // protected branch). It stays LOUD, but it no longer kills the whole connection.
+  [403, {}, "forbidden", "a plain 403 is a per-resource refusal, not a dead credential"],
   [404, {}, "not_found", "404"],
   [429, { "retry-after": "30" }, "rate_limited", "429"],
   [409, {}, "conflict", "409"],
-  [422, {}, "conflict", "422"],
+  [422, {}, "bad_request", "422 is a BAD REQUEST — retrying it retries forever (F-265)"],
   [500, {}, "network", "5xx is transport, not a verdict"],
 ];
 for (const [status, headers, code, why] of errorCases) {
@@ -485,7 +496,7 @@ for (const [status, headers, code, why] of errorCases) {
     // redact its own secrets, which is exactly what the leak scan must prove.
     const echoed = kind === "github" ? GH_TOKEN : BB_TOKEN;
     const one = () => res(status, { message: "boom " + echoed }, headers);
-    const f = mockFetch(code === "not_found" || code === "conflict" || code === "auth_dead" ? [one()] : [one(), one()]);
+    const f = mockFetch(code === "not_found" || code === "conflict" || code === "bad_request" || code === "auth_dead" ? [one()] : [one(), one()]);
     const p = kind === "github" ? gh(f, { sleepImpl: async () => {} }) : bb(f, { sleepImpl: async () => {} });
     await assert.rejects(
       p.getRepo({ repo: "a/b" }),
@@ -538,6 +549,33 @@ for (const [status, headers, code, why] of errorCases) {
   );
   checks++;
   ok(Date.now() - t0 < 3000, "the abort fires on the configured budget, not on the socket");
+  // F-305 — the per-call wall clock is PER CALL, not per redirect HOP. Three 302s each
+  // armed a fresh full timeout, so one `once()` could burn 4 × the limit (40 s on the
+  // 10 s default) and blow a 25 s sync resolver while reporting nothing itself.
+  {
+    let hops = 0;
+    // Honours the abort signal, like a real fetch: each hop takes 40 ms, the call's
+    // whole clock is 60 ms. Under the old code every hop armed a FRESH 60 ms timer and
+    // the four-hop chain (160 ms) completed happily; now the second hop runs out of
+    // clock and the call reports its own timeout.
+    const slowRedirects = (url, init) => new Promise((resolve, reject) => {
+      hops++;
+      const n = hops;
+      const t = setTimeout(() => resolve(n <= 3
+        ? { status: 302, headers: { location: "https://api.github.com/hop" + n }, text: async () => "", json: async () => ({}) }
+        : { status: 200, headers: {}, text: async () => "{}", json: async () => ({}) }), 40);
+      if (init && init.signal) init.signal.addEventListener("abort", () => { clearTimeout(t); const e = new Error("aborted"); e.name = "AbortError"; reject(e); });
+    });
+    const t1 = Date.now();
+    await assert.rejects(
+      createGitProvider({ kind: "github", auth: { token: GH_TOKEN }, fetchImpl: slowRedirects, sleepImpl: async () => {}, timeoutMs: 60 }).whoami(),
+      (e) => e.code === "network" && e.timeout === true,
+      "a redirect chain that outlasts the call's clock times OUT",
+    );
+    checks++;
+    ok(Date.now() - t1 < 600, `the whole chain is bounded by ONE clock per call, not one per hop (took ${Date.now() - t1}ms across ${hops} hop(s))`);
+  }
+
   // The default budget is the declared 10 s.
   const f = mockFetch([res(200, {})]);
   await gh(f).whoami().catch(() => {});
@@ -621,7 +659,8 @@ for (const [label, run] of [
   const f = mockFetch([{ status: 200, headers: {}, async text() { return raw; } }]);
   const d = await bb(f).getPullRequestDiff({ repo: "ws/app", number: 7 });
   ok(f.calls[0].url.endsWith("/pullrequests/7/diff"), "bitbucket diff endpoint");
-  eq(f.calls[0].redirect, "follow", "the 302 to bitbucket.org is followed on purpose (flagged host)");
+  // F-264/F-267: redirects are followed BY HAND so the host gate sees every hop.
+  eq(f.calls[0].redirect, "manual", "every fetch is redirect:manual — a 302 must not carry the auth header anywhere unchecked");
   eq(d.files.map((x) => x.path), ["a.js", "b.js"], "bitbucket diff mapping");
 }
 
@@ -630,11 +669,11 @@ for (const [label, run] of [
 for (const kind of ["github", "bitbucket"]) {
   const f = mockFetch([]);
   const p = kind === "github" ? gh(f) : bb(f);
-  await assert.rejects(p.commitFiles({ repo: "a/b", branch: "x", message: "m", files: [] }), (e) => e.code === "conflict");
+  await assert.rejects(p.commitFiles({ repo: "a/b", branch: "x", message: "m", files: [] }), (e) => e.code === "bad_request");
   checks++;
-  await assert.rejects(p.getPullRequest({ repo: "a/b" }), (e) => e.code === "conflict");
+  await assert.rejects(p.getPullRequest({ repo: "a/b" }), (e) => e.code === "bad_request");
   checks++;
-  await assert.rejects(p.getRepo({ repo: "nota-repo" }), (e) => e.code === "conflict" && /owner\/name/.test(e.message));
+  await assert.rejects(p.getRepo({ repo: "nota-repo" }), (e) => e.code === "bad_request" && /owner\/name/.test(e.message));
   checks++;
   eq(f.calls.length, 0, kind + ": an argument refusal never reaches the network");
 }
@@ -664,6 +703,252 @@ for (const kind of ["github", "bitbucket"]) {
     });
   }
 }
+
+/* ══════════ Breaker 31 · F-262..F-271, F-282 ══════════ */
+
+/* F-267/F-264 — the outbound host gate, and it covers redirects too. */
+ok(assertAllowedUrl("https://api.github.com/user", "op", "github").startsWith("https://api.github.com/"), "an allowed host passes");
+// `not_supported`, not `network` — a refused host is permanent, and `network` is the
+// one code a READ retries; retrying an SSRF refusal just makes it twice.
+for (const bad of ["https://evil.example.com/x", "http://api.github.com/x", "https://api.github.com.evil.com/x"]) {
+  assert.throws(() => assertAllowedUrl(bad, "op", "github"), (e) => e.code === "not_supported", "refused: " + bad);
+  checks++;
+}
+assert.throws(() => assertAllowedUrl("not a url", "op", "github"), (e) => e.code === "bad_request", "a malformed URL is a bad request");
+checks++;
+// F-306 — the gate enforces the entry's OWN declarations, not just its hostname:
+// a host belongs to ONE provider kind, and a redirectOnly host is never called direct.
+for (const h of GIT_PROVIDER_HOSTS) {
+  const call = () => assertAllowedUrl("https://" + h.host + "/p", "op", h.kind);
+  if (h.redirectOnly) {
+    assert.throws(call, (e) => e.code === "not_supported" && /only by following a redirect/.test(e.message), h.host + " is refused as a DIRECT target");
+    ok(assertAllowedUrl("https://" + h.host + "/p", "op", h.kind, { redirected: true }), h.host + " is allowed as a redirect hop");
+  } else {
+    ok(call(), h.host + " is allowed for its own provider");
+  }
+  checks++;
+}
+assert.throws(() => assertAllowedUrl("https://bitbucket.org/x", "op", "github", { redirected: true }),
+  (e) => e.code === "not_supported" && /github credential/.test(e.message),
+  "a GitHub call may NOT be redirected onto a Bitbucket host — the Authorization header rides every hop");
+checks++;
+assert.throws(() => assertAllowedUrl("https://api.bitbucket.org/x", "op", "github"),
+  (e) => e.code === "not_supported", "…and the same is true of the Bitbucket API host");
+checks++;
+ok(assertAllowedUrl("https://api.github.com/p", "op", null), "a call with no declared kind is still host-gated");
+{
+  // An absolute path handed to a method is gated by the SAME check (F-267).
+  const f = mockFetch([]);
+  await assert.rejects(gh(f).getDeployStatus({ repo: "https://evil.example.com/repos/a/b" }), () => true);
+  checks++;
+}
+{
+  // A 302 to an allowed host is followed by hand, and the hop is gated.
+  const f = mockFetch([
+    { status: 302, headers: { location: "https://bitbucket.org/ws/app/diff" }, async text() { return ""; } },
+    { status: 200, headers: {}, async text() { return "diff --git a/a.js b/a.js\n@@ -1 +1 @@\n+x\n"; } },
+  ]);
+  const d = await bb(f).getPullRequestDiff({ repo: "ws/app", number: 7 });
+  eq(f.calls.length, 2, "the redirect is followed by hand (one extra fetch)");
+  ok(f.calls[1].url === "https://bitbucket.org/ws/app/diff", "…to the Location, host-checked");
+  eq(d.files.map((x) => x.path), ["a.js"], "…and the body is parsed");
+}
+{
+  const f = mockFetch([{ status: 302, headers: { location: "https://evil.example.com/steal" }, async text() { return ""; } }]);
+  await assert.rejects(bb(f).getPullRequestDiff({ repo: "ws/app", number: 7 }), (e) => {
+    allMessages.push(e.message);
+    return e.code === "not_supported" && /outside the allowed git hosts/.test(e.message);
+  }, "a redirect OFF the allow-list is refused — the auth header never follows it");
+  checks++;
+}
+{
+  const f = mockFetch([{ status: 302, headers: { location: "https://api.github.com/elsewhere" }, async text() { return ""; } }]);
+  await assert.rejects(gh(f).createRepo({ name: "x" }), (e) => { allMessages.push(e.message); return e.code === "not_supported" && /redirect on a write/.test(e.message); },
+    "a WRITE never follows a redirect (re-POSTing is the duplicate-write rule)");
+  checks++;
+}
+
+/* F-264 — a non-JSON body is an ERROR, never an empty result. */
+{
+  const f = mockFetch([{ status: 200, headers: {}, async text() { return "<!doctype html><html>login</html>"; } }]);
+  await assert.rejects(gh(f).getPullRequestDiff({ repo: "a/b", number: 1 }), (e) => {
+    allMessages.push(e.message);
+    return e.code === "network" && /HTML page/.test(e.message);
+  }, "an HTML interstitial is a network error, NEVER files:[] (a PR that 'changed nothing')");
+  checks++;
+}
+{
+  const f = mockFetch([{ status: 200, headers: {}, async text() { return "not json at all"; } }]);
+  await assert.rejects(gh(f).getRepo({ repo: "a/b" }), (e) => { allMessages.push(e.message); return e.code === "network"; }, "an unparseable body is an error");
+  checks++;
+}
+{
+  // An EMPTY body is still fine — several endpoints answer 201 with nothing.
+  const f = mockFetch([{ status: 201, headers: {}, async text() { return ""; } }]);
+  const out = await gh(f).setVariable({ repo: "a/b", name: "N", value: "v-123456789" });
+  eq(out, { name: "N", created: true }, "an empty 201 body is not an error");
+}
+
+/* F-265 — 400/422 are bad_request; only 409 is a conflict. */
+for (const [status, expected] of [[400, "bad_request"], [422, "bad_request"], [409, "conflict"], [418, "bad_request"]]) {
+  const f = mockFetch([{ status, headers: {}, async text() { return "{}"; } }]);
+  await assert.rejects(gh(f).getRepo({ repo: "a/b" }), (e) => { allMessages.push(e.message); return e.code === expected; }, status + " → " + expected);
+  checks++;
+}
+
+/* F-266 — a webhook secret and a variable value are redacted from later messages. */
+{
+  const HOOK = "whsec_0123456789abcdef";
+  const f = mockFetch([{ status: 422, headers: {}, async text() { return JSON.stringify({ message: "bad config", secret: HOOK }); } }]);
+  await assert.rejects(gh(f).createWebhook({ repo: "a/b", url: "https://x.example/hook", secret: HOOK }), (e) => {
+    allMessages.push(e.message);
+    return !e.message.includes(HOOK);
+  }, "a webhook secret echoed back in the error body is redacted (F-266)");
+  checks++;
+}
+{
+  const VALUE = "prod-deploy-key-abcdef123456";
+  const f = mockFetch([{ status: 422, headers: {}, async text() { return "rejected value " + VALUE; } }]);
+  await assert.rejects(gh(f).setVariable({ repo: "a/b", name: "N", value: VALUE }), (e) => {
+    allMessages.push(e.message);
+    return !e.message.includes(VALUE);
+  }, "a variable value echoed back is redacted (F-266)");
+  checks++;
+}
+
+/* F-268 — Retry-After is honoured on a READ retry, up to 10 s. */
+{
+  const waited = [];
+  const f = mockFetch([
+    { status: 429, headers: { "retry-after": "4" }, async text() { return "slow down"; } },
+    res(200, { full_name: "a/b", name: "b", owner: { login: "a" } }),
+  ]);
+  const p = createGitProvider({ kind: "github", auth: { token: GH_TOKEN }, fetchImpl: f, sleepImpl: async (ms) => { waited.push(ms); } });
+  const repo = await p.getRepo({ repo: "a/b" });
+  eq(waited, [4000], "a 4 s Retry-After is honoured in full, not clipped to 2 s");
+  eq(repo.fullName, "a/b", "…and the retry succeeds");
+}
+{
+  const waited = [];
+  const f = mockFetch([
+    { status: 429, headers: { "retry-after": "600" }, async text() { return "slow down"; } },
+    res(200, { full_name: "a/b", name: "b", owner: { login: "a" } }),
+  ]);
+  const p = createGitProvider({ kind: "github", auth: { token: GH_TOKEN }, fetchImpl: f, sleepImpl: async (ms) => { waited.push(ms); } });
+  await p.getRepo({ repo: "a/b" });
+  eq(waited, [10000], "a huge Retry-After is capped at 10 s");
+}
+
+/* F-262 — one budget for a chained operation, shared by every call in it. */
+ok(GIT_OPERATION_BUDGET_MS === 20000 && GIT_OPERATION_BUDGET_MS < 25000, "the operation budget is under the 25 s resolver cap");
+{
+  // Five 10 s calls cannot become a 50 s operation: once the budget is spent the
+  // next call in the chain is refused rather than issued.
+  let now = 1000;
+  const realNow = Date.now;
+  Date.now = () => now;
+  try {
+    const f = mockFetch([
+      (url) => { now += 9000; return res(200, { object: { sha: "p1" } }); },
+      (url) => { now += 9000; return res(200, { tree: { sha: "t1" } }); },
+      (url) => { now += 9000; return res(200, { sha: "tree" }); },
+    ]);
+    await assert.rejects(
+      gh(f).commitFiles({ repo: "a/b", branch: "main", message: "m", files: [{ path: "a.txt", content: "x" }] }),
+      (e) => { allMessages.push(e.message); return e.code === "network" && /budget/.test(e.message); },
+      "the chain stops when the shared 20 s budget is exhausted"
+    );
+    checks++;
+    ok(f.calls.length < 4, "…and the remaining calls were never issued (" + f.calls.length + " made)");
+  } finally {
+    Date.now = realNow;
+  }
+}
+
+/* F-270 — outbound commit caps live at the adapter, for EVERY caller. */
+ok(COMMIT_MAX_FILES === 20 && COMMIT_MAX_TOTAL_BYTES === 200 * 1024 && COMMIT_MAX_FILE_BYTES === 64 * 1024, "the commit caps are 20 / 200 KB / 64 KB");
+for (const kind of ["github", "bitbucket"]) {
+  const mk = (files) => (kind === "github" ? gh(mockFetch([])) : bb(mockFetch([]))).commitFiles({ repo: "a/b", branch: "main", message: "m", files });
+  await assert.rejects(mk(Array.from({ length: COMMIT_MAX_FILES + 1 }, (_, i) => ({ path: "f" + i, content: "x" }))), (e) => e.code === "bad_request", kind + ": > 20 files refused");
+  checks++;
+  await assert.rejects(mk([{ path: "big", content: "x".repeat(COMMIT_MAX_FILE_BYTES + 1) }]), (e) => e.code === "bad_request", kind + ": > 64 KB in one file refused");
+  checks++;
+  await assert.rejects(mk(Array.from({ length: 5 }, (_, i) => ({ path: "f" + i, content: "x".repeat(COMMIT_MAX_FILE_BYTES) }))), (e) => e.code === "bad_request", kind + ": > 200 KB total refused");
+  checks++;
+  await assert.rejects(mk([]), (e) => e.code === "bad_request", kind + ": an empty commit refused");
+  checks++;
+}
+assert.throws(() => assertCommitWithinCaps("github", [{ path: "a", content: "x".repeat(COMMIT_MAX_FILE_BYTES + 1) }]), (e) => /"a"/.test(e.message) && /65536-byte per-file cap/.test(e.message), "the refusal names the file and the cap");
+checks++;
+eq(assertCommitWithinCaps("github", [{ path: "a", content: "ok" }]).length, 1, "a commit within the caps passes through");
+
+/* F-263 — a patch GitHub WITHHELD is omitted, never an empty diff. */
+{
+  const capped = capDiff([
+    { path: "bin.png", status: "modified", withheld: true, patch: "" },
+    { path: "a.js", status: "modified", patch: "@@ -1 +1 @@\n+x\n" },
+    { path: "empty.txt", status: "modified", patch: "" },
+  ]);
+  const byPath = Object.fromEntries(capped.files.map((f) => [f.path, f]));
+  eq({ omitted: byPath["bin.png"].omitted, reason: byPath["bin.png"].reason }, { omitted: true, reason: "withheld-by-provider" },
+    "a withheld patch is OMITTED — a reviewer must never read it as 'this file changed nothing'");
+  eq(byPath["a.js"].omitted, false, "a real patch is not omitted");
+  eq(byPath["empty.txt"].omitted, false, "a genuinely empty patch is NOT withheld — the two are different facts");
+  ok(capped.truncated === true, "the set reports that something is missing");
+}
+{
+  const f = mockFetch([res(200, [
+    { filename: "bin.png", status: "modified", additions: 0, deletions: 0 },            // GitHub omits `patch`
+    { filename: "a.js", status: "modified", additions: 1, deletions: 0, patch: "@@\n+x" },
+  ])]);
+  const d = await gh(f).getPullRequestDiff({ repo: "a/b", number: 1 });
+  eq(d.files[0].omitted, true, "the GitHub adapter marks an absent patch as withheld (F-263)");
+  eq(d.files[1].omitted, false, "…and a present one as shown");
+}
+
+/* F-269 — the resolved contract is stated and exported. */
+eq(PR_COMMENT_RESOLVED_UNKNOWN, null, "unknown is null");
+{
+  const f = mockFetch([res(200, [{ id: 1, body: "b", user: { login: "u" }, path: "a.js", line: 3 }]), res(200, [])]);
+  const list = await gh(f).listPullRequestComments({ repo: "a/b", number: 1 });
+  eq(list[0].resolved, PR_COMMENT_RESOLVED_UNKNOWN, "GitHub REST cannot prove resolution → null, never false");
+}
+{
+  const f = mockFetch([res(200, { values: [
+    { id: 1, content: { raw: "b" }, user: { nickname: "u" }, resolution: null },
+    { id: 2, content: { raw: "c" }, user: { nickname: "u" }, resolution: { type: "x" } },
+  ] })]);
+  const list = await bb(f).listPullRequestComments({ repo: "ws/app", number: 1 });
+  eq([list[0].resolved, list[1].resolved], [false, true], "Bitbucket ANSWERS it: false is proven-unresolved, not unknown");
+}
+
+/* F-282 — the PR body reaches the review engine, capped. */
+ok(PR_BODY_MAX_BYTES === 8 * 1024, "the PR body cap is 8 KB");
+eq(capBody(null), "", "a missing description is an empty string, never null");
+ok(capBody("y".repeat(PR_BODY_MAX_BYTES * 2)).length < PR_BODY_MAX_BYTES + 100, "a long description is capped");
+{
+  const f = mockFetch([res(200, { number: 4, title: "T", body: "Fixes the thing.\nWhy: because.", state: "open", head: { ref: "f", sha: "s" }, base: { ref: "main" }, user: { login: "u" } })]);
+  const pr = await gh(f).getPullRequest({ repo: "a/b", number: 4 });
+  eq(pr.body, "Fixes the thing.\nWhy: because.", "GitHub: the PR body is carried (F-282)");
+}
+{
+  const f = mockFetch([res(200, { id: 9, title: "T", description: { raw: "Bitbucket body" }, state: "OPEN", source: { branch: { name: "f" }, commit: { hash: "s" } }, destination: { branch: { name: "main" } } })]);
+  const pr = await bb(f).getPullRequest({ repo: "ws/app", number: 9 });
+  eq(pr.body, "Bitbucket body", "Bitbucket: `description` (object form) normalises to `body`");
+}
+{
+  const f = mockFetch([res(200, { id: 9, title: "T", description: "plain string body", state: "OPEN", source: { branch: { name: "f" }, commit: { hash: "s" } }, destination: { branch: { name: "main" } } })]);
+  const pr = await bb(f).getPullRequest({ repo: "ws/app", number: 9 });
+  eq(pr.body, "plain string body", "Bitbucket: the plain-string form too");
+}
+
+/* F-271 — the guarantee is written where the next caller will read it. */
+{
+  const src = await (await import("node:fs/promises")).readFile(path.join(here, "..", "..", "src", "git-providers.js"), "utf8");
+  ok(/BOUNDED, NOT SANITISED/.test(src), "the module states that it bounds but does not sanitise (F-271)");
+  ok(/defangFence/.test(src.slice(0, 4000)), "…and names the helper the caller must run");
+}
+
 const forbidden = [GH_TOKEN, BB_TOKEN, BASIC, Buffer.from(GH_TOKEN, "utf8").toString("base64"), BB_EMAIL + ":" + BB_TOKEN];
 for (const msg of allMessages) {
   for (const secret of forbidden) {

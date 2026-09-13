@@ -20,7 +20,7 @@
  * and (b) the agentic line only when enableTools is a defined boolean.
  */
 
-import { findRule, opLabel } from "./premade-rules-catalog.js";
+import { findRule, opLabel, prMatchWords } from "./premade-rules-catalog.js";
 
 // Human-readable label for a premade (non-AI) rule. Reads premadeRuleType (admin
 // registry) OR ruleType (config-view saved config).
@@ -50,12 +50,9 @@ export const premadeRuleLabel = (config) => {
  * the same commit (LAW 3: the policy is written down next to the code, and this is the
  * copy a human actually reads).
  */
-const PR_MATCH_WORDS = {
-  branch: "the pull request's source branch name only",
-  property: "the source branch name or the pull request title",
-  both: "the source branch name or the pull request title",
-};
-const prMatchWords = (prMatch) => PR_MATCH_WORDS[String(prMatch || "both")] || PR_MATCH_WORDS.both;
+/* F-379 — the prMatch words come from the CATALOG, which is also where the picker's
+   labels and hints live. There used to be a copy here that told the truth and a copy in
+   PremadeRuleForm.jsx that did not; one rule, one home. */
 
 // Deliberately spells out BOTH halves: what strict changes, and what it does not.
 // A misconfigured connection or repository fails CLOSED whatever strict says.

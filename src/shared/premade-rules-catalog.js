@@ -79,6 +79,53 @@
  *                 because the two ways they can be wrong fail CLOSED at the transition.
  */
 
+/*
+ * THE `prMatch` VOCABULARY — ONE HOME (F-379).
+ *
+ * The executor (`prIsBoundToIssue`, src/premade-rules.js) reads exactly these three ids and
+ * treats anything else as "both". After F-362 the truth is narrower than it used to be: the
+ * `cognirunner.git` issue property only NOMINATES a candidate pull request number, and no
+ * mode accepts that candidate unless the LIVE pull request names the issue. So "property"
+ * and "both" are the SAME behaviour — branch OR title — and the only real choice on this
+ * control is whether the title counts.
+ *
+ * Before this, the picker still promised "Accept the pull request CogniRunner recorded for
+ * this issue", a trust the executor deliberately no longer has, while explain-facts.js told
+ * the truth: one rule, two homes, disagreeing. Both the form's hints and the Explain card's
+ * sentence now come from HERE, so the next change to the executor has one place to land.
+ *
+ *   label — the option's name in the picker
+ *   hint  — the sentence under it in the picker
+ *   words — the fragment the Explain card uses: "... is bound to the issue by <words>"
+ */
+export const PR_MATCH_OPTIONS = [
+  {
+    value: "branch",
+    label: "Branch names the issue",
+    hint: "Only accept the pull request if its live source branch contains the issue key.",
+    words: "the pull request's source branch name only",
+  },
+  {
+    value: "both",
+    label: "Branch or title names the issue",
+    hint: "Accept the pull request if its live source branch OR its title contains the issue key. The default.",
+    words: "the source branch name or the pull request title",
+  },
+  {
+    value: "property",
+    label: "Branch or title (linked by CogniRunner)",
+    hint: "The same check as above. The pull request CogniRunner recorded for this issue is only a candidate: its branch or title must still name the issue key.",
+    words: "the source branch name or the pull request title",
+  },
+];
+
+export const PR_MATCH_DEFAULT = "both";
+
+/** The Explain card's fragment for a mode. Unknown ids read as the default, like the executor. */
+export const prMatchWords = (prMatch) =>
+  (PR_MATCH_OPTIONS.find((o) => o.value === String(prMatch || PR_MATCH_DEFAULT)) ||
+    PR_MATCH_OPTIONS.find((o) => o.value === PR_MATCH_DEFAULT)).words;
+
 export const COMPARE_OPS = [
   { value: "eq", label: "equals" },
   { value: "ne", label: "does not equal" },

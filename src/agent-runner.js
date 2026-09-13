@@ -173,20 +173,49 @@ const reportPromptCacheDefect = (provider, out, log) => {
  * LOW 1 token per 5 bytes (English prose is nearer 1 per 4, so the estimate under-shoots
  * and cannot invent a defect), half of that is allowed for block granularity, and a prefix
  * under MIN_CACHEABLE_TOKENS is not checked at all because no provider would cache it.
+ *
+ * A DEFECT IS AN UNEXPLAINED MISS, NOT EVERY MISS (F-615). Some prefix moves are DECIDED,
+ * by this codebase, one step earlier: F-578 invalidates a pin whose memory or skill epoch
+ * moved and rebuilds the blocks, and the turn that does it says so on its own log. That
+ * turn then reads zero cached tokens — correctly, unavoidably, and at exactly the price
+ * the admin's delete was always going to cost. Calling it a DEFECT at WARN was a false
+ * alarm on the one path where the re-bill is the intended price (seen live on staging
+ * 2026-09-13 19:12:11Z), and the cost of that is not one wasted session: a WARN nobody can
+ * act on teaches the reader to ignore the whole class.
+ *
+ * So the caller hands in the reason the prefix moved WHEN IT HAS ONE (`prefixReset` — the
+ * knowledge builder's `pinInvalidated` verdict, which travels with `repin`). A miss WITH a
+ * reason is an INFO naming the true cause; a miss WITHOUT one is still the WARN defect,
+ * because an unexplained zero after a stable pin is the thing F-550 exists to catch. Both
+ * return the same shape, so the turn can record `cacheReset: { reason }` on the thread row
+ * and the next reader can tell the two apart without going back to the logs.
+ *
+ * ONE HOME FOR THE SENTENCE: the caller supplies the CAUSE, never the wording. Nothing
+ * outside this function composes a cross-turn cache line.
  */
 export const CACHE_BYTES_PER_TOKEN = 5;
 const MIN_CACHEABLE_TOKENS = 1024;
-export const reportCrossTurnCacheDefect = ({ provider, usage, priorPrefixBytes, log = () => {} } = {}) => {
+export const reportCrossTurnCacheDefect = ({ provider, usage, priorPrefixBytes, prefixReset, log = () => {} } = {}) => {
   if (!provider || !CACHE_READ_PROVIDERS.has(String(provider))) return null;
   const priorTokens = Math.floor((Number(priorPrefixBytes) || 0) / CACHE_BYTES_PER_TOKEN);
   if (priorTokens < MIN_CACHEABLE_TOKENS) return null;
   const first = Number(usage && usage.firstRoundCacheReadTokens) || 0;
   const floorTokens = Math.floor(priorTokens / 2);
+  // The cache held. Nothing is said — including on a turn that re-pinned and hit anyway:
+  // this function only ever speaks about a MISS.
   if (first >= floorTokens) return null;
-  const line = `DEFECT: provider "${provider}" read ${first} cached tokens on this turn's FIRST round, below the ~${floorTokens} the previous turn's ${priorPrefixBytes}-byte stable prefix should have provided — the prefix changed between turns, so the whole thread (system prompt, knowledge and the entire stored history) was re-billed in full.`;
+  const shortfall = `provider "${provider}" read ${first} cached tokens on this turn's FIRST round, below the ~${floorTokens} the previous turn's ${priorPrefixBytes}-byte stable prefix should have provided`;
+  const reason = typeof prefixReset === "string" ? prefixReset.trim() : "";
+  if (reason) {
+    const line = `pin re-built: ${reason} — ${shortfall}. This turn moved the prefix on purpose, so re-billing the thread once is the intended price of that change and not a defect.`;
+    log(line);
+    console.log(`[agent-loop] ${line}`);
+    return { defect: false, reason, line };
+  }
+  const line = `DEFECT: ${shortfall} — the prefix changed between turns with no change this turn decided, so the whole thread (system prompt, knowledge and the entire stored history) was re-billed in full.`;
   log(line);
   console.warn(`[agent-loop] ${line}`);
-  return line;
+  return { defect: true, reason: "unexplained", line };
 };
 
 /**

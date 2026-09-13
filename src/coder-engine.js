@@ -891,8 +891,23 @@ const runCoderTurnClaimed = async ({
   // THE CROSS-TURN CACHE OBSERVATION (F-550). One line, no behaviour: it fires only when
   // this turn's FIRST round read less than the previous turn's prefix should have given it,
   // which is the miss the per-turn check in `runAgentLoop` cannot see.
+  //
+  // F-615 — AND IT IS HANDED THE REASON, WHEN THIS TURN IS THE ONE THAT MOVED THE PREFIX.
+  // `repin` is F-578 invalidating a pin whose knowledge changed and rebuilding the blocks:
+  // the prefix moves ONCE, deliberately, and the very next thing that happens is a zero
+  // first-round read. Passing the builder's own verdict turns that into an INFO naming the
+  // true cause instead of a WARN accusing the thread of a bug it does not have; a zero with
+  // no verdict is untouched and still the defect. The cause travels, never the wording —
+  // the sentence lives in `reportCrossTurnCacheDefect` and nowhere else.
+  let cacheReset = null;
   try {
-    reportCrossTurnCacheDefect({ provider, usage: loop.usage, priorPrefixBytes, log });
+    const prefixReset = knowledge && knowledge.repin === true
+      ? String(knowledge.pinInvalidated || "epoch moved")
+      : "";
+    const verdict = reportCrossTurnCacheDefect({ provider, usage: loop.usage, priorPrefixBytes, prefixReset, log });
+    // Recorded on the thread row below so the next reader can tell a deliberate re-pin from
+    // an unexplained miss without the logs. A turn that cached normally records nothing.
+    if (verdict) cacheReset = { reason: verdict.reason, defect: verdict.defect === true };
   } catch (e) { console.warn("[coder] cross-turn cache check skipped:", e && e.message); }
 
   // ── write the thread back ─────────────────────────────────────────────────
@@ -935,6 +950,13 @@ const runCoderTurnClaimed = async ({
     // The size of the prefix THIS turn sent, so the next turn can tell a cross-turn cache
     // miss from a healthy one. A number, never any of the bytes it measured.
     record.promptPrefixBytes = prefixBytes;
+    // F-615 — WHY THE PREFIX MOVED, on the row, for the turn it moved on. A reason and a
+    // flag, never any of the bytes: `{ reason: "memoryEpoch 0→1…", defect: false }` is a
+    // re-pin this turn decided, `{ reason: "unexplained", defect: true }` is the F-550
+    // miss. It is CLEARED on every healthy turn, so it always describes THIS turn and a
+    // stale reason can never explain away a later real miss.
+    if (cacheReset) record.cacheReset = cacheReset;
+    else delete record.cacheReset;
     if (pendingTicket) record.pendingTicketId = pendingTicket.ticketId;
     else delete record.pendingTicketId;
     await store.set(threadKey, record, CODER_THREAD_TTL);

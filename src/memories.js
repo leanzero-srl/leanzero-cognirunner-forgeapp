@@ -45,10 +45,15 @@ import {
   MAX_MEMORIES,
   MEMORY_CONTENT_MAX,
   MEMORY_MAX_SERIALIZED_BYTES,
+  MEMORY_PLATFORM_MAX_SERIALIZED_BYTES,
   memoryCapRefusalMessage,
+  memoryPlatformCapMessage,
 } from "./shared/registry-limits.js";
 
-export { MAX_MEMORIES, MEMORY_CONTENT_MAX, MEMORY_MAX_SERIALIZED_BYTES, memoryCapRefusalMessage };
+export {
+  MAX_MEMORIES, MEMORY_CONTENT_MAX, MEMORY_MAX_SERIALIZED_BYTES,
+  MEMORY_PLATFORM_MAX_SERIALIZED_BYTES, memoryCapRefusalMessage, memoryPlatformCapMessage,
+};
 
 export const MEMORIES_KEY = "pf_memories";
 export const MEMORY_SETTINGS_KEY = "COGNIRUNNER_MEMORY_SETTINGS";
@@ -415,6 +420,24 @@ export const pruneForSave = (arr, protectId = null) => {
   return { out, evicted, protectedKept, reason: protectedKept ? null : (reason || "cap") };
 };
 
+/**
+ * What the store currently WEIGHS, against both ceilings (F-189). Pure — the resolver
+ * reads the array and calls this, so no surface has to retype either number or work out
+ * the deficit for itself.
+ */
+export const memoryStoreStats = (arr) => {
+  const bytes = serializedBytes(arr);
+  return {
+    rows: Array.isArray(arr) ? arr.length : 0,
+    bytes,
+    guardBytes: MEMORY_MAX_SERIALIZED_BYTES,
+    platformBytes: MEMORY_PLATFORM_MAX_SERIALIZED_BYTES,
+    overGuard: bytes >= MEMORY_MAX_SERIALIZED_BYTES,
+    overPlatform: bytes > MEMORY_PLATFORM_MAX_SERIALIZED_BYTES,
+    bytesOverPlatform: Math.max(0, bytes - MEMORY_PLATFORM_MAX_SERIALIZED_BYTES),
+  };
+};
+
 /** Serialized UTF-8 size of a memory array — the quantity the byte guard measures. */
 export const serializedBytes = (arr) => utf8Len(JSON.stringify(Array.isArray(arr) ? arr : []));
 
@@ -436,8 +459,11 @@ export const serializedBytes = (arr) => utf8Len(JSON.stringify(Array.isArray(arr
  * KVS at 245 831 B — the byte figure is what was measured; the platform's error CODE for it is
  * not (F-193), so nothing here may be gated on one — and from there every write that does not SHRINK the store
  * fails the same way — the reinforce path itself can no longer record anything, and an
- * addMemory or a growing edit only ever returns an error. (A delete still gets through,
- * because the rejected write was never stored; the store is stuck, not bricked.)
+ * addMemory or a growing edit only ever returns an error. (F-189 CORRECTS what stood here:
+ * "a delete still gets through" is true only BELOW the platform cap. On a store already over
+ * it, the one-row delete writes an array that is still oversized and is rejected too — which
+ * is why the platform ceiling is now checked before the write, answered as a refusal naming
+ * the deficit, and why deleteMemory takes a LIST of ids so enough rows can go in one write.)
  *
  * The rule, in order:
  *  - Under the guard → write, whatever the caller is doing.
@@ -506,7 +532,40 @@ export const saveMemories = async (arr, { protectId = null, refuseIfOverBytes = 
       }
     }
   }
-  await storage.set(MEMORIES_KEY, out);
+  /*
+   * F-189 — the PLATFORM ceiling, which is not our guard.
+   *
+   * Every write above this line was decided against MEMORY_MAX_SERIALIZED_BYTES, the
+   * guard with a safety margin. A store can nevertheless already be OVER the 245 760 B
+   * platform limit: any instance that ran the pre-F-183 merge/reinforce path walked its
+   * value past it, and for those the F-183 docblock's "a delete still gets through" is
+   * simply false — a delete SHRINKS, so it skips the guard branch entirely, and then KVS
+   * rejects the still-oversized array and the resolver hands the admin a raw platform
+   * byte string. Measured on 198 hand-authored 400-char CJK rows (275 111 B): the
+   * one-row delete write was 273 723 B and threw.
+   *
+   * So the size is checked HERE, before the write, and answered as a refusal that names
+   * the deficit — the admin needs to know it must delete in BULK (deleteMemory takes
+   * `ids`), not one row at a time. The write is still wrapped: the code the platform
+   * returns for an oversize value is not something this repo has measured (F-193), so
+   * nothing is gated on it — any throw from the write becomes the same refusal, with the
+   * size we measured ourselves.
+   */
+  const outBytes = serializedBytes(out);
+  if (outBytes > MEMORY_PLATFORM_MAX_SERIALIZED_BYTES) {
+    const bytesOver = outBytes - MEMORY_PLATFORM_MAX_SERIALIZED_BYTES;
+    console.warn(`memories: refusing a ${outBytes}B write — ${bytesOver}B over the ${MEMORY_PLATFORM_MAX_SERIALIZED_BYTES}B platform limit; the store needs a bulk delete`);
+    return { memories: null, refused: true, reason: "platform-cap", bytesOver, evicted: [] };
+  }
+  try {
+    await storage.set(MEMORIES_KEY, out);
+  } catch (error) {
+    console.error(`Failed to write the memory store (${outBytes}B):`, error);
+    return {
+      memories: null, refused: true, reason: "platform-cap",
+      bytesOver: Math.max(1, outBytes - MEMORY_PLATFORM_MAX_SERIALIZED_BYTES), evicted: [],
+    };
+  }
   // F-167/F-170/F-171: EVERY write re-evaluates the marker against the same admission
   // rule that raises it — never against a proxy like the row count. A delete, an
   // archive, a shortened row or a merge clears it only if a lesson would now be kept.

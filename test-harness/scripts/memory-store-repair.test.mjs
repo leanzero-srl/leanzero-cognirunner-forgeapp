@@ -15,12 +15,20 @@
 //   so the "rows this save ADDS" arm refused the write — and `deleteMemory` never inspected the
 //   return value, so the admin was told the delete worked. Two halves: the write path must not
 //   treat a faulted read as an empty store, and every resolver must honour `{ refused: true }`.
+// F-189 — a store already OVER the 240 KiB platform cap (legacy 1.2.0 instances) could not be
+//   repaired at all: a single-row delete still writes an oversized array and KVS rejects it, and
+//   the admin got a raw platform byte string. The write is now refused BEFORE it is handed to
+//   KVS, with reason "platform-cap" and the deficit in bytes; deleteMemory takes a LIST so enough
+//   rows can go in one write; getMemoryStoreStats reports the size against both ceilings.
 // F-193 — the mock's oversize throw mirrors @forge/kvs's real ForgeKvsAPIError shape instead of
 //   inventing a name and a code that the platform never emits.
 import "../lib/register-mocks-index.mjs";
 import storage, { KVS_PLATFORM_MAX_VALUE_BYTES, KVS_STORAGE_LIMIT_CODE } from "../lib/mock-kvs.mjs";
 import { readFileSync } from "node:fs";
-import { MEMORIES_KEY, MEMORY_MAX_SERIALIZED_BYTES, MEMORY_CONTENT_MAX, serializedBytes } from "../../src/memories.js";
+import {
+  MEMORIES_KEY, MEMORY_MAX_SERIALIZED_BYTES, MEMORY_PLATFORM_MAX_SERIALIZED_BYTES,
+  MEMORY_CONTENT_MAX, serializedBytes, memoryStoreStats,
+} from "../../src/memories.js";
 const { handler } = await import("../../src/index.js");
 
 let pass = 0, fail = 0;
@@ -153,6 +161,69 @@ const faultNthMemoryRead = (n) => {
   ok(thrown.responseDetails && typeof thrown.responseDetails.status === "number" && thrown.context,
     "the throw carries responseDetails and context like ForgeKvsAPIError does");
   ok(storage.__raw("oversize_probe") === undefined, "the rejected value was never stored");
+}
+
+// ---------------------------------------------------------------------------
+// F-189 — the over-platform-cap store, and the only repair that works on it.
+// ---------------------------------------------------------------------------
+{
+  // 198 hand-authored 400-char CJK rows: the shape the ledger measured at 275 111 B.
+  const huge = [];
+  for (let i = 0; i < 198; i++) huge.push(row(i, "漢".repeat(MEMORY_CONTENT_MAX)));
+  ok(serializedBytes(huge) > MEMORY_PLATFORM_MAX_SERIALIZED_BYTES,
+    `the legacy store is over the ${MEMORY_PLATFORM_MAX_SERIALIZED_BYTES}B platform cap (${serializedBytes(huge)}B)`);
+
+  // (c) the size is visible BEFORE anything is attempted.
+  reset(huge);
+  const stats = await call("getMemoryStoreStats");
+  ok(stats.success === true && stats.bytes === serializedBytes(huge), `getMemoryStoreStats reports the measured size (${stats.bytes}B)`);
+  ok(stats.guardBytes === MEMORY_MAX_SERIALIZED_BYTES && stats.platformBytes === MEMORY_PLATFORM_MAX_SERIALIZED_BYTES,
+    "it reports BOTH ceilings, so no surface retypes either");
+  ok(stats.overPlatform === true && stats.bytesOverPlatform === serializedBytes(huge) - MEMORY_PLATFORM_MAX_SERIALIZED_BYTES,
+    `it names the deficit (${stats.bytesOverPlatform}B over)`);
+  const pure = memoryStoreStats(huge);
+  ok(Object.keys(pure).every((k) => JSON.stringify(stats[k]) === JSON.stringify(pure[k])),
+    "every number the resolver reports comes from the pure memoryStoreStats helper");
+
+  // (b) a single-row delete is REFUSED with a sentence, never a raw platform byte string.
+  const oneRow = await call("deleteMemory", { id: "m0" });
+  ok(oneRow.success === false && oneRow.reason === "platform-cap",
+    `a one-row delete on an over-cap store is refused with reason "platform-cap" (got ${JSON.stringify({ success: oneRow.success, reason: oneRow.reason })})`);
+  ok(typeof oneRow.bytesOver === "number" && oneRow.bytesOver > 0, `the refusal carries the deficit (${oneRow.bytesOver}B)`);
+  ok(/storage limit/.test(oneRow.error) && new RegExp(String(oneRow.bytesOver)).test(oneRow.error),
+    `the refusal is a sentence naming the bytes that must go: "${oneRow.error}"`);
+  ok(!/over the \d+ byte limit/.test(oneRow.error), "the raw platform byte string never reaches the admin");
+  ok(load().length === 198, "the refused delete left the store untouched");
+
+  // (a) the BULK delete is the repair: enough rows in ONE write.
+  const bulk = await call("deleteMemory", { ids: ["m0", "m1", "m2", "m3", "m4", "m5", "m6", "m7", "m8", "m9", "m10", "m11", "m12", "m13", "m14", "m15", "m16", "m17", "m18", "m19", "m20", "m21", "m22", "m23", "m24", "m25", "m26", "m27", "m28", "m29", "m30", "m31", "m32", "m33", "m34", "m35", "m36", "m37", "m38", "m39"] });
+  ok(bulk.success === true, `a bulk delete of 40 rows repairs the store (got ${JSON.stringify({ success: bulk.success, reason: bulk.reason, error: bulk.error })})`);
+  ok(bulk.deleted.length === 40 && load().length === 158, `40 rows are gone in one write (${load().length} left)`);
+  const after = await call("getMemoryStoreStats");
+  ok(after.overPlatform === false, `the repaired store is under the platform cap (${after.bytes}B)`);
+
+  // and a single-row delete works again from there — the store is genuinely repaired.
+  const nowOne = await call("deleteMemory", { id: "m40" });
+  ok(nowOne.success === true && load().length === 157, "a one-row delete works again once the store is back under the cap");
+
+  // ids that no longer exist do not turn away a delete that still has real work.
+  const mixed = await call("deleteMemory", { ids: ["m41", "does-not-exist"] });
+  ok(mixed.success === true && mixed.deleted.length === 1 && mixed.notFound.length === 1,
+    `a partially-stale id list still deletes what is there (${JSON.stringify({ deleted: mixed.deleted, notFound: mixed.notFound })})`);
+  const none = await call("deleteMemory", { ids: ["nope-1", "nope-2"] });
+  ok(none.success === false && none.error === "Memory not found", "an all-stale id list is still Memory not found");
+  const empty = await call("deleteMemory", {});
+  ok(empty.success === false && /required/.test(empty.error), "a delete with neither id nor ids is refused");
+}
+
+// ---------------------------------------------------------------------------
+// F-189 — the same gate as before the change: no editor role, no delete.
+// ---------------------------------------------------------------------------
+{
+  reset([row(0, "a lesson"), row(1, "another lesson")]);
+  const denied = await call("deleteMemory", { ids: ["m0", "m1"] }, "acct-nobody");
+  ok(denied.success === false && /access required/i.test(denied.error), "the bulk form is behind the same role gate");
+  ok(load().length === 2, "the denied bulk delete wrote nothing");
 }
 
 console.log(`\nmemory-store-repair: ${pass} passed, ${fail} failed`);

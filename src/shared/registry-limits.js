@@ -251,6 +251,19 @@ export const MAX_MEMORIES = 200;
 export const MEMORY_MAX_SERIALIZED_BYTES = 230000;
 
 /**
+ * The PLATFORM ceiling for one KVS value: 240 KiB. This is not our guard — it is the
+ * point at which KVS rejects the write outright and the caller gets an exception instead
+ * of an answer (F-183). It exists here as a named constant because F-189 showed the two
+ * limits are not interchangeable: a store that is already OVER this number (any 1.2.0
+ * instance that ran the pre-F-183 merge/reinforce path) cannot be repaired one row at a
+ * time — every single-row delete still writes an oversized array and throws. The app
+ * therefore measures against THIS number before it writes, refuses with reason
+ * "platform-cap" and says how many bytes have to go, and offers a BULK delete so enough
+ * can go in one write.
+ */
+export const MEMORY_PLATFORM_MAX_SERIALIZED_BYTES = 245760;
+
+/**
  * The ONE memory-content clamp (F-168). Every caller that trims memory text —
  * saveMemoryCandidate in src/memories.js, the addMemory/updateMemory resolvers
  * in src/index.js — imports THIS constant; do not retype the number.
@@ -270,3 +283,15 @@ export const MEMORY_CONTENT_MAX = 400;
 export const memoryCapRefusalMessage = (reason) => (reason === "bytes"
   ? "Memory store has reached its size limit — delete or shorten some memories in the Memories tab."
   : `Memory store is full (${MAX_MEMORIES} max) — no memory you wrote is ever evicted automatically, and archived memories still count toward the cap — delete some in the Memories tab to make room.`);
+
+/**
+ * The refusal for a store that is already OVER the PLATFORM ceiling (F-189) — a different
+ * sentence from the two above because the ACTION is different: the store cannot accept any
+ * write at all, not even a one-row delete, until enough rows go in a SINGLE delete. It
+ * names the deficit because "delete some" is useless advice when the admin cannot tell
+ * whether that means one row or forty. Pure: no storage, no I/O.
+ */
+export const memoryPlatformCapMessage = (bytesOver) => {
+  const over = Math.max(1, Math.round(Number(bytesOver) || 0));
+  return `Memory store is ${over} bytes over Jira's ${MEMORY_PLATFORM_MAX_SERIALIZED_BYTES}-byte storage limit, so no change to it can be saved — not even deleting one memory. Select enough memories in the Memories tab to free at least ${over} bytes and delete them together.`;
+};

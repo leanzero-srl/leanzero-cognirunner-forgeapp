@@ -308,7 +308,9 @@ export async function testStateTrigger(req) {
         // no other hook path could reach, so it could only ever be proven offline. These are
         // WRITES, deliberately: they exist to prove the memory store live, and they are behind
         // the same HARNESS_SECRET Bearer gate (absent in production) as everything else here.
-        "getMemories", "addMemory", "updateMemory", "deleteMemory", "getMemorySettings", "saveMemorySettings"]);
+        "getMemories", "addMemory", "updateMemory", "deleteMemory", "getMemorySettings", "saveMemorySettings",
+        // F-189 — read-only: what the store weighs against both ceilings.
+        "getMemoryStoreStats"]);
       const functionKey = body.functionKey || body.name;
       if (!ALLOWED_KEYS.has(functionKey)) {
         return json(400, { error: `functionKey not allowlisted: ${functionKey}` });

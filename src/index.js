@@ -98,6 +98,8 @@ import {
   MEMORY_CONTENT_MAX,
   MAX_MEMORIES,
   memoryCapRefusalMessage,
+  memoryPlatformCapMessage,
+  memoryStoreStats,
   defangFence,
 } from "./memories.js";
 
@@ -7205,7 +7207,11 @@ const cleanProjectKey = (projectKey) =>
  * reason code. The sentences themselves live in src/shared/registry-limits.js; nothing
  * about a limit is retyped here.
  */
-const memoryRefusalMessage = (saved) => memoryCapRefusalMessage(saved?.reason);
+const memoryRefusalMessage = (saved) => (saved?.reason === "platform-cap"
+  // F-189: a store already over the PLATFORM limit cannot take any write at all, so the
+  // advice is different in kind — delete in BULK, and here is how many bytes must go.
+  ? memoryPlatformCapMessage(saved.bytesOver)
+  : memoryCapRefusalMessage(saved?.reason));
 
 resolver.define("getMemories", async () => {
   try {
@@ -7308,25 +7314,65 @@ resolver.define("deleteMemory", async ({ payload, context }) => {
     return { success: false, error: "Editor access required" };
   }
   try {
-    const { id } = payload || {};
+    /*
+     * F-189 — this takes a LIST. One row at a time is not a repair path for a store that
+     * is already over the 240 KiB platform limit: the delete writes the whole array back,
+     * so removing one row still writes an oversized value and the write is refused. The
+     * admin has to free enough bytes in a SINGLE write, which means selecting several
+     * memories and deleting them together. `id` still works — the same gate, the same
+     * answer shape — so no existing caller changes.
+     */
+    const { id, ids } = payload || {};
+    const requested = Array.isArray(ids) ? ids.map((x) => String(x)) : (id === undefined || id === null ? [] : [String(id)]);
+    const wanted = [...new Set(requested)].filter(Boolean);
+    if (!wanted.length) return { success: false, error: "Memory id is required" };
     const memories = await loadMemories();
-    const next = memories.filter((m) => m.id !== id);
-    if (next.length === memories.length) return { success: false, error: "Memory not found" };
+    const present = new Set(memories.map((m) => String(m.id)));
+    const deleted = wanted.filter((x) => present.has(x));
+    const notFound = wanted.filter((x) => !present.has(x));
+    // Nothing to do is an error only when NOTHING matched — a bulk delete where one id has
+    // already gone still has real work to do and must not be turned away.
+    if (!deleted.length) return { success: false, error: "Memory not found", notFound };
+    const toDelete = new Set(deleted);
+    const next = memories.filter((m) => !toDelete.has(String(m.id)));
     // F-178: a delete only ever SHRINKS the store, so it always proceeds — and, with no
     // newcomer to make room for, it evicts nothing on the way.
     // F-188: "proceeds" is a claim about the GUARD, not a guarantee that the write happened.
     // saveMemories can still answer `{ refused: true }` (a faulted prior read used to make
-    // every row look new; an over-platform-cap value cannot be handed to KVS at all), and
-    // this resolver used to drop that answer on the floor and report success for a delete
-    // that wrote nothing — on the very screen the store-full banner sends the admin to.
-    // Every caller honours the return.
+    // every row look new; a store still over the platform cap cannot be handed to KVS at
+    // all), and this resolver used to drop that answer on the floor and report success for
+    // a delete that wrote nothing — on the very screen the store-full banner sends the
+    // admin to. Every caller honours the return.
     const saved = await saveMemories(next);
     if (saved.refused) {
-      return { success: false, stored: false, reason: saved.reason, evicted: [], error: memoryRefusalMessage(saved) };
+      return {
+        success: false, stored: false, reason: saved.reason, bytesOver: saved.bytesOver ?? null,
+        deleted: [], notFound, evicted: [], error: memoryRefusalMessage(saved),
+      };
     }
-    return { success: true, evicted: [] };
+    return { success: true, deleted, notFound, evicted: [] };
   } catch (error) {
     console.error("Failed to delete memory:", error);
+    return { success: false, error: error.message };
+  }
+});
+
+/**
+ * What the memory store WEIGHS (F-189).
+ *
+ * A store over the platform limit is invisible on every existing surface: the row count
+ * looks healthy, the store-full banner speaks about the app's own guard, and the only
+ * clue is a refused write. This resolver reports the measured size against BOTH ceilings
+ * (our guard and the platform's) so the Memories tab can tell an admin how many bytes
+ * have to go before anything can be saved at all. The arithmetic lives in memories.js;
+ * nothing about a limit is computed here.
+ */
+resolver.define("getMemoryStoreStats", async () => {
+  try {
+    const [memories, storeFull] = await Promise.all([loadMemories(), readMemoryStoreFull()]);
+    return { success: true, ...memoryStoreStats(memories), storeFull };
+  } catch (error) {
+    console.error("Failed to measure the memory store:", error);
     return { success: false, error: error.message };
   }
 });

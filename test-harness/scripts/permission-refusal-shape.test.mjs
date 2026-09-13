@@ -82,6 +82,11 @@ for (const [key, payload, expectedRole] of GATED) {
     `${key}: refusal must name the role it wanted (got ${JSON.stringify(res?.needsRole)})`);
   assert.match(String(res?.error || ""), /permission|access required|Not authorized/i,
     `${key}: the human sentence must not have changed`);
+  // F-241 — a role-floor refusal names the ONE route that works. Roles come from
+  // the app roster or Jira SITE admin only; a Jira project admin gets no role, so
+  // the UI must say "ask a CogniRunner admin", never "retry" or "ask Jira".
+  assert.equal(res?.hint, "ask-app-admin",
+    `${key}: a needsRole refusal must carry the ask-app-admin hint`);
 }
 
 // The anonymous refusals (F-227/F-221): no principal is not a pass, and it is
@@ -92,6 +97,21 @@ for (const key of ["getConfigs", "explainRule", "buildRule", "narrateDryRun"]) {
   assert.equal(res?.success, false, `${key}: anonymous caller must be refused`);
   assert.equal(res?.reason, "no-permission", `${key}: anonymous refusal must be machine-readable`);
   assert.equal(res?.needsRole, "viewer", `${key}: anonymous refusal wants at least a viewer`);
+  assert.equal(res?.hint, "ask-app-admin", `${key}: anonymous refusal carries the hint too`);
+}
+
+// F-241 — the hint rides with `needsRole`, never alone: an ownership/scope refusal
+// (the caller HAS the role, the row is someone else's) must not tell them to go ask
+// an admin for a role they already hold.
+{
+  await reset();
+  await storage.set("app_admins", [{ accountId: CALLER, role: "editor", scope: "own" }]);
+  await storage.set("listener:l-other", { id: "l-other", name: "Other", createdBy: "acct-someone-else", enabled: true, events: [] });
+  const scoped = await invoke("setListenerEnabled", { id: "l-other", enabled: false });
+  assert.equal(scoped?.success, false, "a scope-own editor cannot toggle another owner's listener");
+  assert.equal(scoped?.reason, "no-permission");
+  assert.equal(scoped?.needsRole, undefined, "an ownership refusal names no role floor");
+  assert.equal(scoped?.hint, undefined, "an ownership refusal must not suggest asking for a role");
 }
 
 // A SUCCESS must never look like a refusal.
@@ -100,6 +120,7 @@ const ok = await invoke("checkIsAdmin", {});
 assert.equal(ok.success, true);
 assert.equal(ok.reason, undefined, "a successful result must not carry the refusal flag");
 assert.equal(ok.needsRole, undefined);
+assert.equal(ok.hint, undefined, "a successful result must not carry the refusal hint");
 await reset();
 const okIntent = await invoke("takeUiIntent", {});
 assert.equal(okIntent.success, true);

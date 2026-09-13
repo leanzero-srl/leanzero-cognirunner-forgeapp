@@ -267,6 +267,19 @@ const VALID_SCOPES = ["own", "all"];
  * UI can say "couldn't verify your role — try again" instead of the flatly wrong
  * "you have no role", which sends people to an admin for a permission they hold.
  * Callers must test `hasRole(perms)`, never truthiness of the object.
+ *
+ * F-241 — ROLE SOURCES ARE EXACTLY TWO: a row on the app roster (`app_admins`,
+ * managed in the admin panel's Permissions tab) and Jira SITE admin (the
+ * ADMINISTER probe in step 2, or admin-group membership in step 3). A Jira
+ * PROJECT administrator is deliberately NOT a role source and must not become
+ * one: ADMINISTER_PROJECTS on one project is a grant over that project's
+ * configuration, not over this app's instance-wide knowledge store (documents,
+ * skills, memories, provider keys' metadata, every rule on the site). Mapping it
+ * to viewer would silently widen read access on every install the day it shipped,
+ * with no admin action and no audit trail — least privilege says the grant must be
+ * explicit. The cost is borne in the refusal instead: a role-less caller gets
+ * `needsRole: "viewer"` plus `hint: "ask-app-admin"` so the UI can name the one
+ * route that works (owner decision, 2026-09-13).
  */
 const getUserPermissions = async (accountId) => {
   if (!accountId) return null;
@@ -482,13 +495,23 @@ const issueRefForLink = (ref) => (/^\d+$/.test(String(ref)) ? { id: String(ref) 
  * its absence means "the gate refused on ownership/scope", not "any role will do".
  * Never build a refusal object by hand — route it through here, or the machine
  * flag silently goes missing on one path again.
+ *
+ * F-241 — a `needsRole` refusal also carries `hint: "ask-app-admin"`, because for
+ * EVERY role floor the remedy is the same and the caller cannot reach it alone:
+ * roles come only from the app roster (Permissions tab) or from Jira site-admin.
+ * A Jira PROJECT admin is not a role source (see getUserPermissions), so "try
+ * again" / "you lack a Jira permission" are both wrong advice — the UI should say
+ * "Ask a CogniRunner admin to add you under Permissions". Ownership/scope
+ * refusals carry no `needsRole` and therefore no hint: another person's rule does
+ * not become yours because an admin adds you to the roster.
  */
 const PERMISSION_REFUSAL_REASON = "no-permission";
+const PERMISSION_REFUSAL_HINT = "ask-app-admin";
 const permissionDenied = (message, needsRole) => ({
   success: false,
   error: message,
   reason: PERMISSION_REFUSAL_REASON,
-  ...(needsRole ? { needsRole } : {}),
+  ...(needsRole ? { needsRole, hint: PERMISSION_REFUSAL_HINT } : {}),
 });
 const noPerm = (what, needsRole) =>
   permissionDenied(`You don't have permission to ${what}.`, needsRole);

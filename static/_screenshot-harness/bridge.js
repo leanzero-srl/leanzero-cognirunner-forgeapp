@@ -31,7 +31,7 @@
 /* F-085: the edition facts below come from the ONE home for them. A harness that
    re-states the frontier ids or invents feature ids stops being able to catch a
    drift between the app and src/shared/edition.js — it just agrees with itself. */
-import { FORGE_LLM_FRONTIER, FORGE_LLM_DEFAULT, ADVANCED_FEATURES, MANAGED_PROVIDER_ID, MANAGED_PROVIDER_LABEL, MANAGED_MODELS, MANAGED_DEFAULT_MODEL } from "../../src/shared/edition.js";
+import { FORGE_LLM_FRONTIER, FORGE_LLM_DEFAULT, ADVANCED_FEATURES, MANAGED_PROVIDER_ID, MANAGED_PROVIDER_LABEL, MANAGED_MODELS, MANAGED_DEFAULT_MODEL, EDITION_IDS, AGENT_CAPABILITY_REASONS } from "../../src/shared/edition.js";
 /* F-465: the pipeline step ids, from the ONE home. src/git-pipeline.js cannot be
    imported here (it pulls @forge/kvs and node:crypto), which is why the ids moved to a
    dependency-free shared module instead of being mirrored by hand in this file. */
@@ -235,7 +235,7 @@ const ADMIN_LOGS = {
       id: "1718200000001abcd", type: "validation", issueKey: "SDW-142", fieldId: "description",
       isValid: true, decision: null,
       reason: "Acceptance criteria are clear and testable; a rollback plan is present. Transition allowed.",
-      executionTimeMs: 4120, aiTimeMs: 3980, tokens: 1840, mode: "agentic", modelUsed: "claude-haiku-4-5-20251001",
+      executionTimeMs: 4120, aiTimeMs: 3980, tokens: 1840, mode: "agentic", modelUsed: FORGE_LLM_DEFAULT,
       toolMeta: { toolsUsed: true, toolRounds: 2, queries: ['project = SDW AND status changed to "In Review" ORDER BY updated DESC', "issuetype = Bug AND labels = regression AND created >= -14d"], totalResults: 17 },
       ruleId: "cr::Software Dev Workflow::21::a1b2c3", ruleName: "Software Dev Workflow / In Progress → In Review",
       ruleWorkflow: { workflowId: "wf-software-dev-001", transitionFromName: "In Progress", transitionToName: "In Review", siteUrl: SITE },
@@ -585,7 +585,7 @@ function mockAllowance() {
   if (managedSpend > 0) st.month.managed = { ...(st.month.managed || {}), estUsd: managedSpend };
   return forgeLlmAllowanceStatus(st, allowanceUsdForSeats(MOCK_SEATS), now);
 }
-const edName = () => (isStandardEd() ? "standard" : "advanced");
+const edName = () => (isStandardEd() ? EDITION_IDS.STANDARD : EDITION_IDS.ADVANCED);
 /* src/index.js VENDOR_BILLED_PROVIDERS - the engines LeanZero is billed for, and the only
    ones an allowance can mean anything for. A BYOK tenant pays its own bill. */
 const VENDOR_BILLED = ["atlassian", MANAGED_PROVIDER_ID];
@@ -596,11 +596,19 @@ const mockShowAllowance = () => {
 };
 const FORGE_FRONTIER = FORGE_LLM_FRONTIER;
 const FORGE_HAIKU = FORGE_LLM_DEFAULT;
+/* F-600 - a capability reason is a KEY of the shared table, never a string the fixture
+   invents. Written as a lookup so a renamed or deleted reason throws the moment this
+   module loads, instead of rendering the `unknown` degradation and passing quietly. */
+const CAP_REASON = (key) => {
+  if (!Object.prototype.hasOwnProperty.call(AGENT_CAPABILITY_REASONS, key))
+    throw new Error(`bridge.js fixture uses a capability reason the shared table does not carry: ${key}`);
+  return key;
+};
 const mockLicenseCtx = () => (isUnlicensedEd()
   ? null // no license property at all — resolveEdition() answers active:null, source:"none"
   : isStandardEd()
-    ? { active: true, isActive: true, capabilitySet: "capabilityStandard", state: "standard", type: "PAID" }
-    : { active: true, isActive: true, capabilitySet: "capabilityAdvanced", state: "advanced", type: "PAID" });
+    ? { active: true, isActive: true, capabilitySet: "capabilityStandard", state: EDITION_IDS.STANDARD, type: "PAID" }
+    : { active: true, isActive: true, capabilitySet: "capabilityAdvanced", state: EDITION_IDS.ADVANCED, type: "PAID" });
 
 /* ----------------------------- context router -------------------------------- */
 function getContext() {
@@ -1049,13 +1057,13 @@ const MEMORY_SETTINGS = () => ({
      window.__CODE_IDENTITY__  - a Forge deploy identity is already stored. */
 const CODE_CAP = () => {
   const raw = (typeof window !== "undefined" && window.__CODE_CAP__) || null;
-  if (!raw) return { success: true, enabled: true, reason: "byok", provider: "anthropic", edition: "standard", agentModel: "claude-sonnet-5", allowanceLevel: null };
-  if (raw === "needs-coder-edition") return { success: true, enabled: false, reason: raw, provider: "atlassian", edition: "standard", agentModel: "claude-sonnet-5", allowanceLevel: null };
-  if (raw === "needs-frontier-model") return { success: true, enabled: false, reason: raw, provider: "atlassian", edition: "advanced", agentModel: "claude-haiku-4-5-20251001", allowanceLevel: null };
-  if (raw === "allowance-exhausted") return { success: true, enabled: false, reason: raw, provider: "atlassian", edition: "advanced", agentModel: "claude-sonnet-5", allowanceLevel: "hard" };
-  if (raw === "forge-frontier") return { success: true, enabled: true, reason: raw, provider: "atlassian", edition: "advanced", agentModel: "claude-sonnet-5", allowanceLevel: "soft" };
+  if (!raw) return { success: true, enabled: true, reason: CAP_REASON("byok"), provider: "anthropic", edition: EDITION_IDS.STANDARD, agentModel: FORGE_FRONTIER[0], allowanceLevel: null };
+  if (raw === CAP_REASON("needs-coder-edition")) return { success: true, enabled: false, reason: raw, provider: "atlassian", edition: EDITION_IDS.STANDARD, agentModel: FORGE_FRONTIER[0], allowanceLevel: null };
+  if (raw === CAP_REASON("needs-frontier-model")) return { success: true, enabled: false, reason: raw, provider: "atlassian", edition: EDITION_IDS.ADVANCED, agentModel: FORGE_HAIKU, allowanceLevel: null };
+  if (raw === CAP_REASON("allowance-exhausted")) return { success: true, enabled: false, reason: raw, provider: "atlassian", edition: EDITION_IDS.ADVANCED, agentModel: FORGE_FRONTIER[0], allowanceLevel: "hard" };
+  if (raw === CAP_REASON("forge-frontier")) return { success: true, enabled: true, reason: raw, provider: "atlassian", edition: EDITION_IDS.ADVANCED, agentModel: FORGE_FRONTIER[0], allowanceLevel: "soft" };
   // Anything else models a read that did not answer - the restrictive side.
-  return { success: true, enabled: false, reason: "unknown", provider: null, edition: null, agentModel: null, allowanceLevel: null };
+  return { success: true, enabled: false, reason: CAP_REASON("unknown"), provider: null, edition: null, agentModel: null, allowanceLevel: null };
 };
 const CODE_CONNS = () => {
   if (typeof window !== "undefined" && window.__CODE_NO_CONNS__) return [];
@@ -1524,7 +1532,7 @@ const VA_STATUS = {
     receipts: [
       { at: "2026-09-13T07:05:00.000Z", phase: "prepare", ok: false, swept: 0, error: "auth_dead: the connection credential was rejected.", skipped: [] },
       /* F-501 - the capability gate. The receipt carries the reason, never the sentence. */
-      { at: "2026-09-13T07:00:00.000Z", phase: "prepare", ok: false, swept: 0, skipped: [{ gate: "capability", reason: "needs-coder-edition" }] },
+      { at: "2026-09-13T07:00:00.000Z", phase: "prepare", ok: false, swept: 0, skipped: [{ gate: "capability", reason: CAP_REASON("needs-coder-edition") }] },
       /* F-511 - a compaction that was PAID FOR and did not converge (F-506): the bytes
          ride the receipt on this arm too, which is the evidence the spend bought nothing. */
       { at: "2026-09-13T06:55:00.000Z", phase: "prepare", ok: false, swept: 0, skipped: [{ gate: "compaction", itemKey: "(memory)", reason: "compaction:did-not-converge" }], compacted: { before: 9120, after: 8990, reason: "did-not-converge" } },
@@ -1765,7 +1773,7 @@ function invoke(name, payload) {
         : typeof window !== "undefined" && (window.__NOT_ADMIN__ || window.__DEMOTED_ADMIN__)
         ? { success: true, isAdmin: false, role: "editor", scope: "mine", accountId: ACCT }
         : { success: true, isAdmin: true, role: "admin", scope: "all", accountId: ACCT });
-    case "checkProviderHealth": return Promise.resolve({ success: true, ok: true, provider: "anthropic", providerLabel: "Anthropic", model: "claude-haiku-4-5-20251001" });
+    case "checkProviderHealth": return Promise.resolve({ success: true, ok: true, provider: "anthropic", providerLabel: "Anthropic", model: FORGE_HAIKU });
     case "getConfigs": return Promise.resolve(ADMIN_CONFIGS);
     case "getRuleApiInfo": return Promise.resolve({
       success: true,
@@ -1946,11 +1954,11 @@ function invoke(name, payload) {
         success: true,
         // Standard shot: a Sonnet 5 was saved while on Coder, the edition lapsed ->
         // the backend serves Haiku and reports `clamped` so the UI can say so.
-        model: isStandardEd() ? FORGE_HAIKU : "claude-sonnet-5",
-        savedModel: isStandardEd() ? "claude-sonnet-5" : undefined,
+        model: isStandardEd() ? FORGE_HAIKU : FORGE_FRONTIER[0],
+        savedModel: isStandardEd() ? FORGE_FRONTIER[0] : undefined,
         isByok: false, edition: edName(), clamped: isStandardEd(),
       });
-      return Promise.resolve({ success: true, model: "claude-haiku-4-5-20251001", isByok: true, edition: edName(), clamped: false });
+      return Promise.resolve({ success: true, model: FORGE_HAIKU, isByok: true, edition: edName(), clamped: false });
     case "getAgentModel":
       // frontierOnly is true on BOTH vendor-billed engines: every id in MANAGED_MODELS
       // is a frontier model, so the selector offers the same fixed list, not free text.
@@ -1958,9 +1966,9 @@ function invoke(name, payload) {
         return Promise.resolve({ success: true, model: MANAGED_DEFAULT_MODEL, edition: edName(), frontierOnly: true });
       }
       if (payload && payload.provider === "atlassian") {
-        return Promise.resolve({ success: true, model: isStandardEd() ? "" : "claude-sonnet-5", edition: edName(), frontierOnly: true });
+        return Promise.resolve({ success: true, model: isStandardEd() ? "" : FORGE_FRONTIER[0], edition: edName(), frontierOnly: true });
       }
-      return Promise.resolve({ success: true, model: "anthropic/claude-opus-5", edition: edName(), frontierOnly: false });
+      return Promise.resolve({ success: true, model: MANAGED_MODELS[1], edition: edName(), frontierOnly: false });
     case "saveAgentModel":
       if (isStandardEd() && payload && payload.provider === "atlassian") {
         return Promise.resolve({ success: false, upgradeRequired: true, featureId: "agentModel", error: "The agent model on Forge LLM is part of CogniRunner Coder \u2014 upgrade in Jira's Manage apps." });

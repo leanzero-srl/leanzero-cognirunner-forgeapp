@@ -146,6 +146,113 @@ for (const [key, payload] of OWNERSHIP) {
     `${key}: an ownership refusal must say not-owner, never ask-app-admin (got ${JSON.stringify(res?.hint)})`);
 }
 
+// ==========================================================================
+// F-260 — A VIEWER WHO OWNS THE ROW.
+//
+// The fixture above seeds the caller as an EDITOR for every ownership case, so
+// it could never see the defect: `canActOnConfig` answers one boolean for three
+// different refusals, and every converted site rendered all three as `notOwner`.
+// A viewer therefore heard "it belongs to someone else" — about a row they OWN.
+// That is not just wrong, it is misdirecting: `notOwner` carries hint
+// "not-owner", which tells the UI that asking an admin for a role will NOT help,
+// when a role is exactly what this caller is missing.
+//
+// The rule: the ROLE question is answered FIRST. A caller below the floor gets a
+// role refusal (needsRole + ask-app-admin) no matter who owns the row.
+const seedViewerOwnsEverything = async () => {
+  await storage.set("app_admins", [{ accountId: CALLER, role: "viewer", scope: "own" }]);
+  // Every row below is owned by the CALLER — ownership is not the problem here.
+  await storage.set("listener:l-mine", { id: "l-mine", name: "Mine", createdBy: CALLER, enabled: true, events: [] });
+  await storage.set("listeners_index", ["l-mine"]);
+  await storage.set("job:j-mine", { id: "j-mine", name: "Mine", createdBy: CALLER, enabled: true, schedule: { kind: "interval", minutes: 60 } });
+  await storage.set("jobs_index", ["j-mine"]);
+  await storage.set("doc_repo_index", [{ id: "d-mine", title: "My doc", createdBy: CALLER }]);
+  await storage.set("skill_repo_index", [{ id: "s-mine", name: "My skill", createdBy: CALLER }]);
+  await storage.set("config_registry", [
+    { id: "r-mine", type: "validator", createdBy: CALLER, prompt: "x", transitionId: "1", workflowName: "wf" },
+  ]);
+};
+const VIEWER_OWNS = [
+  ["setListenerEnabled", { id: "l-mine", enabled: false }, "editor"],
+  ["saveListener", { listener: { id: "l-mine", name: "Renamed", events: [] } }, "editor"],
+  ["deleteListener", { id: "l-mine" }, "editor"],
+  ["setScheduledJobEnabled", { id: "j-mine", enabled: false }, "editor"],
+  ["deleteScheduledJob", { id: "j-mine" }, "editor"],
+  ["runScheduledJobNow", { id: "j-mine" }, "editor"],
+  ["deleteContextDoc", { id: "d-mine" }, "editor"],
+  ["deleteSkill", { id: "s-mine" }, "editor"],
+  ["removeConfig", { id: "r-mine" }, "editor"],
+];
+for (const [key, payload, expectedRole] of VIEWER_OWNS) {
+  await reset();
+  await seedViewerOwnsEverything();
+  const res = await invoke(key, payload);
+  assert.equal(res?.success, false, `${key}: a VIEWER cannot act, even on their own row`);
+  assert.equal(res?.reason, "no-permission", `${key}: still machine-readable`);
+  assert.equal(res?.needsRole, expectedRole,
+    `${key}: a viewer who OWNS the row is refused for the ROLE, and the refusal names it (got ${JSON.stringify(res?.needsRole)})`);
+  assert.equal(res?.hint, "ask-app-admin",
+    `${key}: the remedy is a role from an app admin, NOT "this belongs to someone else" (got ${JSON.stringify(res?.hint)})`);
+}
+
+// ==========================================================================
+// F-261 — THE EXISTENCE LEAK.
+//
+// `deleteListener("someone-elses-id")` answered "belongs to someone else" while
+// `deleteListener("made-up-id")` answered "Listener not found", so any editor
+// could enumerate which ids exist on the instance. For a caller who could not
+// have acted on the row ANYWAY, the two answers must be identical — byte for
+// byte, including the sentence.
+const UNKNOWN_ID = [
+  ["deleteListener", { id: "l-other" }, { id: "l-nonexistent" }],
+  ["setListenerEnabled", { id: "l-other", enabled: false }, { id: "l-nonexistent", enabled: false }],
+  ["saveListener", { listener: { id: "l-other", name: "R", events: [] } }, { listener: { id: "l-nonexistent", name: "R", events: [] } }],
+  ["testListener", { id: "l-other" }, { id: "l-nonexistent" }],
+  ["deleteScheduledJob", { id: "j-other" }, { id: "j-nonexistent" }],
+  ["setScheduledJobEnabled", { id: "j-other", enabled: false }, { id: "j-nonexistent", enabled: false }],
+  ["saveScheduledJob", { job: { id: "j-other", name: "R" } }, { job: { id: "j-nonexistent", name: "R" } }],
+  ["runScheduledJobNow", { id: "j-other" }, { id: "j-nonexistent" }],
+];
+for (const [key, existsPayload, missingPayload] of UNKNOWN_ID) {
+  await reset();
+  await seedOwnership();
+  const exists = await invoke(key, existsPayload);
+  await reset();
+  await seedOwnership();
+  const missing = await invoke(key, missingPayload);
+  assert.equal(missing?.success, false, `${key}: an unknown id is still refused`);
+  assert.deepEqual(
+    { success: missing?.success, error: missing?.error, reason: missing?.reason, hint: missing?.hint, needsRole: missing?.needsRole },
+    { success: exists?.success, error: exists?.error, reason: exists?.reason, hint: exists?.hint, needsRole: exists?.needsRole },
+    `${key}: "exists but not yours" and "does not exist" must be the SAME answer for a scope-own caller ` +
+    `(exists=${JSON.stringify(exists)} missing=${JSON.stringify(missing)})`
+  );
+  assert.doesNotMatch(String(missing?.error || ""), /not found/i,
+    `${key}: a scope-own caller is never told an id does not exist`);
+}
+
+// …and "not found" is RESERVED for callers who may act on every row, for whom it
+// leaks nothing. Without this half, "hide everything from everyone" would pass
+// the test above while making the product unusable for admins.
+{
+  const seedAdmin = async () => {
+    await storage.set("app_admins", [{ accountId: CALLER, role: "admin", scope: "all" }]);
+  };
+  for (const [key, payload, notFoundRe] of [
+    ["deleteListener", { id: "l-nope" }, /listener not found/i],
+    ["setListenerEnabled", { id: "l-nope", enabled: false }, /listener not found/i],
+    ["deleteScheduledJob", { id: "j-nope" }, /job not found/i],
+    ["runScheduledJobNow", { id: "j-nope" }, /save the job first/i],
+  ]) {
+    await reset();
+    await seedAdmin();
+    const res = await invoke(key, payload);
+    assert.equal(res?.success, false, `${key}: an admin still gets a failure for an unknown id`);
+    assert.equal(res?.reason, undefined, `${key}: and it is a NOT-FOUND, not a permission refusal`);
+    assert.match(String(res?.error || ""), notFoundRe, `${key}: an admin is told plainly (got ${JSON.stringify(res?.error)})`);
+  }
+}
+
 // F-254 — the BULK delete path speaks the same vocabulary in its per-row results,
 // so an ownership refusal there is machine-readable too and "forbidden" is gone.
 {

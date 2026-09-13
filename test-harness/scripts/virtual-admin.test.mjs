@@ -19,6 +19,9 @@
  */
 import kvs from "../lib/mock-kvs.mjs";
 
+/** The app's own accountId. Every dep that tells our comments from theirs uses it. */
+const SELF = "app-user";
+
 let pass = 0, fail = 0;
 const ok = (c, m) => { if (c) pass++; else { fail++; console.log("  ✗ " + m); } };
 const eq = (a, b, m) => ok(a === b, `${m} (got ${JSON.stringify(a)}, expected ${JSON.stringify(b)})`);
@@ -134,6 +137,7 @@ console.log("=== VA engine (1.5 commit 3) ===");
   va.intake.mentionsOf = ["acc-1"];
   await V.sweepIntake(va, {
     jsmQueueIssues: async () => ({ ok: true, issues: [] }),
+    selfAccountId: async () => ({ ok: true, accountId: SELF }),
     searchJql: async ({ jql }) => { calls.push(jql); return { issues: [issue("SUP-7")] }; },
   }, {});
   eq(calls.length, 1, "sweep: one query per configured mention");
@@ -184,6 +188,7 @@ reset();
   const deps = {
     store: kvs, now: () => Date.parse("2026-09-13T10:00:00Z"),
     jsmQueueIssues: async () => ({ ok: true, issues: [] }),
+    selfAccountId: async () => ({ ok: true, accountId: SELF }),
     searchJql: async () => ({ issues: Array.from({ length: 12 }, (_, i) => issue(`SUP-${i}`)) }),
     pushTask: async (queueKey, body) => { pushed.push({ queueKey, body }); },
   };
@@ -214,7 +219,7 @@ reset();
   let searched = 0;
   const job = vaJob({ status: { paused: true, shadowUntilTick: 0 } });
   job.va.intake.jql = "status = Open";
-  const r = await V.runVaTick({ job, tickId: "t2", deps: { store: kvs, searchJql: async () => { searched++; return { issues: [] }; }, jsmQueueIssues: async () => ({ ok: true, issues: [] }), pushTask: async () => {} } });
+  const r = await V.runVaTick({ job, tickId: "t2", deps: { store: kvs, selfAccountId: async () => ({ ok: true, accountId: SELF }), searchJql: async () => { searched++; return { issues: [] }; }, jsmQueueIssues: async () => ({ ok: true, issues: [] }), pushTask: async () => {} } });
   eq(r.paused, true, "tick.BLOCK_paused");
   eq(searched, 0, "tick: a paused agent does not even sweep — pausing stops the SPEND, not only the speech");
   eq((await L.readTick(kvs, AG, "t2", "prepare")).receipt.skipped[0].reason, "paused", "tick: the pause is in the receipt");
@@ -229,7 +234,7 @@ reset();
   // The queue fault is swallowed per-candidate (a named skip); force a real tick failure
   // by breaking the receipt path's own store instead.
   const brokenStore = { get: async () => { throw new Error("kvs down"); }, set: async (k, v, o) => kvs.set(k, v, o), delete: async (k) => kvs.delete(k) };
-  const r = await V.runVaTick({ job, tickId: "t3", deps: { ...boom, store: brokenStore, jsmQueueIssues: async () => ({ ok: true, issues: [] }) } });
+  const r = await V.runVaTick({ job, tickId: "t3", deps: { ...boom, store: brokenStore, selfAccountId: async () => ({ ok: true, accountId: SELF }), jsmQueueIssues: async () => ({ ok: true, issues: [] }) } });
   ok(r.ok === false || r.candidates === 0, "tick: a store that cannot be read produces no candidates and no silent success");
   const h = await L.readHealth(kvs, AG);
   ok(h.ok !== false, "health: the health row is readable after a failed tick");
@@ -242,6 +247,7 @@ reset();
   job.va.intake.jql = "status = Open";
   const r = await V.runVaTick({ job, tickId: "t4", deps: {
     store: kvs, jsmQueueIssues: async () => ({ ok: true, issues: [] }),
+    selfAccountId: async () => ({ ok: true, accountId: SELF }),
     searchJql: async () => ({ issues: [issue("SUP-9")] }),
     pushTask: async () => { throw new Error("queue down"); },
   } });
@@ -298,6 +304,7 @@ const itemDeps = (over = {}) => {
   const posted = [];
   return {
     store: kvs, now: () => Date.parse("2026-09-13T12:00:00Z"),
+    selfAccountId: async () => ({ ok: true, accountId: SELF }),
     getIssue: async (k) => issue(k, { fields: { reporter: { accountId: "rep-1" }, requestType: { id: "rt-1" }, comment: { comments: [{ id: "c-9", author: { accountId: "rep-1" }, body: "hi" }] } } }),
     createIssue: async (fields) => { posted.push(fields); return { key: "INBOX-1" }; },
     createSession: async () => ({ changes, createApi: () => ({}) }),
@@ -659,7 +666,6 @@ reset();
 const T0 = Date.parse("2026-09-13T12:00:00Z");
 const MIN = 60000;
 const DAY = 86400000;
-const SELF = "app-user";
 
 /** An issue with a comment thread, for the freshness / quiet / pile-up gates. */
 const thread = (comments) => issue("SUP-1", {
@@ -1033,6 +1039,104 @@ reset();
   ok(/const taskType = isVaJob\(job\)/.test(jobs), "wiring: the RUN path decides by isVaJob, on the full record");
   ok(/loadVaJob/.test(async) && /isVaJob\(job\)/.test(async), "wiring: every task handler re-checks isVaJob before running anything");
 }
+
+
+/* ══ 8b. F-452 / F-453 — THE LIVELOCK, AND THE FINGERPRINT THAT ENDS IT ════ */
+{
+  // THE SCENARIO, end to end, and it is the one that shipped broken:
+  // we spoke last on an issue, the agent stages a reply, the post phase runs — and the
+  // draft must GO OUT, exactly once. Before the authorship-aware fingerprint the stage
+  // baseline was OUR comment's id while `gateFreshness` compared it against the last
+  // comment by SOMEBODY ELSE, so the two could never match: every draft was dropped as
+  // "the thread moved" and re-queued, for ever, one model call per tick, with nothing
+  // going out and nothing anywhere saying why.
+  reset();
+  const withOurCommentLast = (k) => issue(k, {
+    fields: {
+      reporter: { accountId: "rep-1" }, requestType: { id: "rt-1" },
+      comment: { comments: [
+        // Both are well outside the 4-day anti-pile-up window, so this test is about
+        // FRESHNESS and nothing else: the only reason the draft could be dropped is the
+        // baseline disagreeing with the gate, which is exactly F-453.
+        { id: "c-1", author: { accountId: "rep-1" }, body: "any news?", created: "2026-09-01T09:00:00.000Z" },
+        { id: "c-2", author: { accountId: SELF }, body: "looking now", created: "2026-09-01T09:05:00.000Z" },
+      ] },
+    },
+  });
+
+  // 1. the item turn stages a reply while OUR comment is the newest.
+  const loop = scriptedLoop([[{ name: "stage_reply", args: { audience: "internal", body: "I have picked this up. It should be sorted today.", reason: "customer asked for an ETA" } }]]);
+  await V.runVaItem({
+    agent: vaJob(), issueKey: "SUP-1", tickId: "t-stage",
+    // Staged half an hour ago, so the double post floor (a 15-minute gap AND a later
+    // tick id) is genuinely satisfied and this test is about freshness, not the clock.
+    deps: itemDeps({ runLoop: loop, now: () => T0 - 30 * MIN, getIssue: async (k) => withOurCommentLast(k) }),
+  });
+  const staged = (await L.readItem(kvs, AG, "SUP-1")).row;
+  eq(staged.state, "staged", "livelock: the draft is staged");
+  // THE BASELINE IS THE LAST OTHER-AUTHORED COMMENT, not our own newest one.
+  eq(staged.staged.baseline, "c-1", "livelock.ALLOW_baseline_ignores_our_own_comment");
+
+  // 2. the post phase, on the SAME thread, nothing else having happened.
+  const d = postDeps({ getIssue: async (k) => withOurCommentLast(k) });
+  const r = await V.runVaPost({ agent: vaJob(), tickId: "t-post-2", deps: d });
+  eq(r.posted, 1, "livelock.ALLOW_posted_once — the draft is NOT dropped as 'the thread moved'");
+  eq(d.__commented.length, 1, "livelock: exactly one comment");
+  ok(!r.skipped.some((x) => /thread_moved/.test(x.reason)), "livelock.BLOCK_thread_moved_by_our_own_voice");
+  const after = (await L.readItem(kvs, AG, "SUP-1")).row;
+  eq(after.state, "posted", "livelock: the item is posted, not re-queued");
+  eq(after.attempts || 0, 0, "livelock: …and no attempt was burned");
+
+  // 3. …and a SECOND post pass posts nothing more.
+  const d2 = postDeps({ getIssue: async (k) => withOurCommentLast(k) });
+  const again = await V.runVaPost({ agent: vaJob(), tickId: "t-post-3", deps: d2 });
+  eq(again.posted, 0, "livelock: a second pass posts nothing — the draft was cleared");
+  eq(d2.__commented.length, 0, "livelock.BLOCK_double_post");
+}
+
+{
+  // THE FINGERPRINT ITSELF, directly. `lastCommentId` means "the last thing SOMEBODY
+  // ELSE said", so our own newest comment is invisible to it — which is what stops the
+  // next sweep marking an issue we just replied to as freshly changed (F-452).
+  const thread2 = {
+    key: "SUP-1",
+    fields: { updated: "2026-09-13T10:00:00.000Z", status: { name: "Open" }, comment: { comments: [
+      { id: "h-1", author: { accountId: "rep-1" } },
+      { id: "s-1", author: { accountId: SELF } },
+    ] } },
+  };
+  eq(L.fingerprintOf(thread2, { selfAccountId: SELF }).lastCommentId, "h-1", "fingerprint.ALLOW_ignores_our_own_comment");
+  eq(L.fingerprintOf(thread2, { selfAccountId: SELF }).lastCommentAuthor, "rep-1", "fingerprint: …and the author with it");
+  eq(L.fingerprintOf(thread2).lastCommentId, "s-1", "fingerprint: without an identity the old, unfiltered answer stands");
+  // A thread of ONLY our own comments has no last other comment at all — null, not the
+  // newest of ours.
+  const onlyOurs = { key: "X-1", fields: { comment: { comments: [{ id: "s-1", author: { accountId: SELF } }] } } };
+  eq(L.fingerprintOf(onlyOurs, { selfAccountId: SELF }).lastCommentId, null, "fingerprint: a thread of only our own comments has no baseline");
+  // And it is the SAME answer `gateFreshness` compares against — one definition of
+  // "the thread moved", read by both callers.
+  const fp = L.fingerprintOf(thread2, { selfAccountId: SELF });
+  eq(V.gateFreshness({ staged: { baseline: fp.lastCommentId }, issue: thread2, selfAccountId: SELF }).ok, true,
+    "fingerprint.ALLOW_agrees_with_gateFreshness");
+}
+
+{
+  // A DROPPED DRAFT COUNTS AS AN ATTEMPT (F-453). Before this, a disagreement between the
+  // baseline and the gate was an unbounded spend; now it parks with a reason.
+  reset();
+  await stageDraft();
+  const moved = (k) => issue(k, { fields: { reporter: { accountId: "rep-1" }, requestType: { id: "rt-1" }, comment: { comments: [
+    { id: "c-1", author: { accountId: "rep-1" }, created: "2026-09-10T09:00:00.000Z" },
+    { id: "c-99", author: { accountId: "rep-1" }, created: "2026-09-13T11:00:00.000Z" },
+  ] } } });
+  const d = postDeps({ getIssue: async (k) => moved(k) });
+  const r = await V.runVaPost({ agent: vaJob(), tickId: "t-moved", deps: d });
+  eq(r.posted, 0, "dropped: a genuinely moved thread still drops the draft");
+  ok(r.skipped.some((x) => x.reason === "gate.thread_moved"), "dropped: …by name");
+  const row = (await L.readItem(kvs, AG, "SUP-1")).row;
+  eq(row.state, "queued", "dropped: the item is re-queued so the next turn answers what was said");
+  eq(row.attempts, 1, "dropped.ALLOW_counts_as_an_attempt — a turn that produced nothing sendable is an attempt");
+}
+
 
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

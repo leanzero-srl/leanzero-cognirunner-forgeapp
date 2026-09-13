@@ -253,7 +253,7 @@ const sweepQueues = async (va, deps, remaining) => {
  * agent on an issue is not a grant to write on it — the write-scope gate still decides
  * that, from the write scope alone.
  */
-export const sweepIntake = async (va, deps, { maxCandidates = VA_LIMITS.maxCandidatesPerTick } = {}) => {
+export const sweepIntake = async (va, deps, { maxCandidates = VA_LIMITS.maxCandidatesPerTick, selfAccountId = null } = {}) => {
   const intake = isObj(va.intake) ? va.intake : {};
   const projects = readScopeProjects(va);
   const seen = new Map();
@@ -264,7 +264,11 @@ export const sweepIntake = async (va, deps, { maxCandidates = VA_LIMITS.maxCandi
   const take = (issue, source) => {
     const key = issue && issue.key;
     if (!key || seen.has(key) || seen.size >= cap) return;
-    seen.set(key, { key, source, issue, fingerprint: fingerprintOf(issue), mention: source === "mention" });
+    // THE SWEEP'S FINGERPRINT IS AUTHORSHIP-AWARE TOO (F-452). It is diffed against the
+    // stored one to decide "has this issue changed since we last looked", and our OWN
+    // comment is not a change: counting it made every issue the agent had just replied to
+    // look freshly touched on the next tick, so the agent re-worked its own conversation.
+    seen.set(key, { key, source, issue, fingerprint: fingerprintOf(issue, { selfAccountId }), mention: source === "mention" });
   };
 
   const q = await sweepQueues(va, deps, cap);
@@ -358,7 +362,16 @@ export const runVaTick = async ({ job, tickId = null, deps: injected = {} } = {}
     }
 
     const maxItems = Math.max(0, Math.trunc(guard(va, "maxItemsPerTick")));
-    const sweep = await sweepIntake(va, deps, {});
+    // THE IDENTITY, ONCE PER TICK (F-451/F-452). The sweep fingerprints every candidate
+    // and the diff compares those against the stored rows, so the sweep must use the same
+    // authorship-aware rule the stage baseline and the post gates use. A fault here does
+    // NOT stop the tick — a prepare tick writes nothing anybody can see and the item turn
+    // refuses on its own — but it is recorded, because a tick that silently fingerprinted
+    // by a different rule is how F-452 hid.
+    const selfRead = await deps.selfAccountId();
+    const selfAccountId = selfRead && selfRead.ok ? selfRead.accountId : null;
+    if (!selfAccountId) skipped.push({ key: "(agent)", reason: "self_unknown" });
+    const sweep = await sweepIntake(va, deps, { selfAccountId });
     candidates = sweep.candidates.length;
     skipped.push(...sweep.dead, ...sweep.notes);
 
@@ -693,6 +706,14 @@ const oneItemTurn = async ({ job, va, agentId, issueKey, tick, deps }) => {
   }
 
   const issue = await deps.getIssue(issueKey);
+  // THE IDENTITY, BEFORE THE MODEL IS CALLED (F-452/F-453). The staged draft's freshness
+  // BASELINE is authorship-aware, so a turn that cannot tell our comments from theirs
+  // would stage a draft the post phase is then guaranteed to drop — a model call spent to
+  // produce something that cannot be sent. Refusing costs nothing and says so; the post
+  // pass refuses on the same fact (F-451), and now both halves agree.
+  const self = await deps.selfAccountId();
+  const selfAccountId = self && self.ok ? self.accountId : null;
+  if (!selfAccountId) return { ok: false, reason: "self_unknown" };
   const memory = (await readMemory(deps.store, agentId)).memory;
 
   /* — the STABLE PREFIX: persona, rules, guardrails, knowledge, memory — */
@@ -765,6 +786,9 @@ const oneItemTurn = async ({ job, va, agentId, issueKey, tick, deps }) => {
     decideAudience, fingerprintOf,
     // Read from the ISSUE, never from a tool argument — see the executor's own note.
     addresseeAccountId: lastCommentAuthorOf(issue),
+    // THE SAME identity the post phase uses, so the stage baseline and `gateFreshness`
+    // read one definition of "the thread moved" (F-453).
+    selfAccountId,
     log: deps.log,
   });
   const outcome = ledgerExecutor.outcome;
@@ -1183,6 +1207,13 @@ export const runVaPost = async ({ agent, tickId = null, deps: injected = {} } = 
         // DROPPED AND RE-QUEUED, not discarded: the next turn answers what was said.
         note(issueKey, "gate.thread_moved");
         await saveItem(deps.store, agentId, issueKey, { state: "queued", staged: null, event: "dropped", reason: "a human commented after the draft's baseline" }, { now });
+        // …AND IT COUNTS AS AN ATTEMPT (F-453). A turn that stages a draft which is then
+        // dropped has produced no outcome, exactly like a turn that staged nothing, and
+        // the cost is identical: one model call per tick, for ever. Before the
+        // authorship-aware fingerprint this was the livelock's engine; with it, this is
+        // the wall that stops any FUTURE disagreement between the baseline and the gate
+        // from becoming an unbounded spend instead of a parked item with a reason.
+        await bumpAttempt(deps.store, agentId, issueKey, "the draft was dropped: the thread moved after its baseline", { now });
         continue;
       }
 
@@ -1273,8 +1304,17 @@ export const runVaPost = async ({ agent, tickId = null, deps: injected = {} } = 
       // The item is `posted` whatever the read-back said, because A COMMENT EXISTS. The
       // alternative — leaving it `staged` — invites a second one. The mismatch lives in
       // the history, in the receipt's error, and in the effects row's summary.
+      // THE FINGERPRINT STORED IS THE POST-POST ONE (F-452): the issue RE-READ after the
+      // comment landed, not the snapshot the gates judged. `updated` moves when we write,
+      // so storing the pre-write fingerprint guarantees the next sweep sees the item as
+      // changed and re-works an issue nobody but us has touched. A re-read that faults
+      // falls back to the pre-write issue rather than storing nothing — a missing
+      // fingerprint reads as "changed" to `fingerprintChanged`, which is the same defect.
+      let settled = issue;
+      try { settled = await deps.getIssue(issueKey); }
+      catch (e) { note(issueKey, "post_fingerprint_reread_failed"); }
       await saveItem(deps.store, agentId, issueKey, {
-        state: "posted", staged: null, fingerprint: fingerprintOf(issue),
+        state: "posted", staged: null, fingerprint: fingerprintOf(settled, { selfAccountId }),
         event: verdict.ok ? "posted" : "posted_with_error",
         reason: verdict.ok ? `${verdict.audience} comment ${commentId}` : `comment ${commentId}: ${verdict.reason}`,
       }, { now });

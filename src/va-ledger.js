@@ -397,10 +397,40 @@ const fnv1a = (s) => {
  *
  * Pure. The parts travel WITH the hash, so a receipt can say WHICH part moved.
  */
-export const fingerprintOf = (issue) => {
+/**
+ * THE FINGERPRINT IS AUTHORSHIP-AWARE (F-452/F-453), and it has to be, or the agent
+ * livelocks on its own voice.
+ *
+ * `lastCommentId` means "the last thing SOMEBODY ELSE said". Comments authored by the app
+ * are skipped, and the reason is that two different things were reading this field and
+ * disagreeing about it:
+ *
+ *   · the STAGE baseline took `fingerprintOf(issue).lastCommentId` — our own comment
+ *     included — and
+ *   · `gateFreshness` compared it against `lastOtherComment(...)`, which excludes ours.
+ *
+ * So on any issue where WE spoke last, the baseline was our comment's id, the freshness
+ * gate saw the human's earlier id, the two never matched, and every single draft was
+ * dropped as "the thread moved" and re-queued — for ever, one model call per tick, with
+ * nothing ever going out and nothing anywhere saying why. One function, one definition of
+ * "the thread moved", and both callers read it.
+ *
+ * The same rule fixes F-452: after we post, OUR comment is the newest one, and a
+ * fingerprint that counted it would mark the item changed on the next sweep and re-work
+ * an issue nobody had touched.
+ *
+ * `selfAccountId` is OPTIONAL and omitting it keeps the old, unfiltered behaviour — but
+ * every caller in the engine passes it, and the post pass refuses to run at all without
+ * one (F-451). It is optional only so that a caller with genuinely no identity (a test
+ * fixture, a diff over an issue we have never written on) is not forced to invent one.
+ */
+export const fingerprintOf = (issue, { selfAccountId = null } = {}) => {
   const f = (issue && issue.fields) || issue || {};
   const comments = (f.comment && f.comment.comments) || (issue && issue.comments) || [];
-  const last = Array.isArray(comments) && comments.length ? comments[comments.length - 1] : null;
+  const self = selfAccountId == null ? "" : String(selfAccountId);
+  const mine = (c) => self !== "" && c && c.author && String(c.author.accountId) === self;
+  const others = Array.isArray(comments) ? comments.filter((c) => !mine(c)) : [];
+  const last = others.length ? others[others.length - 1] : null;
   const parts = {
     updated: (issue && issue.updated) || f.updated || null,
     lastCommentId: issue && issue.lastCommentId != null

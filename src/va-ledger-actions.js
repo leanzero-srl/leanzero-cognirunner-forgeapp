@@ -82,6 +82,7 @@ export const VA_LEDGER_ACTION_IDS = Object.freeze([
  * @param {Function} ctx.decideAudience  the engine's audience gate
  * @param {Function} ctx.fingerprintOf   the ledger's fingerprint builder
  * @param {string|null} [ctx.addresseeAccountId] who the reply answers, read from the issue
+ * @param {string|null} [ctx.selfAccountId] the app's own account — the baseline ignores our own comments
  * @param {Function} [ctx.log]
  */
 export const createVaLedgerExecutor = ({
@@ -92,6 +93,11 @@ export const createVaLedgerExecutor = ({
   // tool argument would let the model name the reporter and talk its own way onto the
   // portal. It arrives here as a fact about the issue, not as an argument.
   addresseeAccountId = null,
+  // THE APP'S OWN ACCOUNT (F-453). The staged draft's freshness BASELINE is "the last
+  // thing somebody else said", and the post phase's `gateFreshness` asks the same
+  // question of the same function. Without it the two disagree on every issue where we
+  // spoke last, and every draft is dropped as "the thread moved" — for ever.
+  selfAccountId = null,
   log = () => {},
 } = {}) => {
   const outcome = { staged: null, asked: false, proposed: false, notes: 0, memories: 0 };
@@ -109,7 +115,7 @@ export const createVaLedgerExecutor = ({
 
   /** The freshness baseline: the last comment id visible when the draft was written. */
   const baselineOf = () => {
-    const fp = fingerprintOf(issue);
+    const fp = fingerprintOf(issue, { selfAccountId });
     return fp.lastCommentId == null ? "" : String(fp.lastCommentId);
   };
 
@@ -125,7 +131,7 @@ export const createVaLedgerExecutor = ({
         requested: a.audience === "customer" ? "public" : "internal",
         va, issue, addresseeAccountId,
       });
-      const fp = fingerprintOf(issue);
+      const fp = fingerprintOf(issue, { selfAccountId });
       const saved = await saveItem(store, agentId, issueKey, {
         state: "staged",
         staged: {

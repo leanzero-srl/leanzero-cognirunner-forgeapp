@@ -2555,5 +2555,150 @@ reset();
 }
 
 
+/* ══ F-609. THE TOMBSTONE CLEAR RUNS BEFORE EVERY CLAIM TAKE IN THE TICK ══════
+ *
+ * F-596 made `va_running:{agent}` the O(1) answer to "could a turn still be running?",
+ * and EVERY winning claim take refreshes it. `clearPurgeTombstone` reads that marker, so
+ * the ordering inside `runVaTick` is load-bearing in a way nothing pinned: take any claim
+ * before the clear and a re-created agent stamps the marker itself on every tick, reads
+ * it back as a live turn, and never clears the tombstone — an INDEFINITE self-lockout
+ * whose only symptom is "purge still settling" on a receipt-free tick. Today the clear is
+ * first by construction; this block makes a reordering fail the suite instead of shipping.
+ *
+ * TWO ASSERTIONS, deliberately, because neither alone holds the line:
+ *   · the SOURCE one catches a reorder even when the reordered path is not exercised
+ *     (a take in the paused arm, say, which no behavioural fixture reaches);
+ *   · the BEHAVIOURAL one catches a take that moves into a HELPER the source scan does
+ *     not know about, by watching the store's write order on a real recovering tick.
+ */
+{
+  const { readFileSync } = await import("node:fs");
+  const vaSource = readFileSync(new URL("../../src/virtual-admin.js", import.meta.url), "utf8");
+
+  /*
+   * Comments are stripped before indexing: the invariant comment above the clear NAMES the
+   * calls it forbids, and a prose mention must not be able to fail (or to pass) an
+   * assertion about executable order. Block comments and whole-line `//` comments only —
+   * that is every comment shape in this engine, and a naive string-aware stripper would be
+   * a second parser to get wrong.
+   */
+  const stripComments = (s) => s
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .split("\n").filter((l) => !/^\s*\/\//.test(l)).join("\n");
+
+  const bodyOf = (name, endMarker) => {
+    const from = vaSource.indexOf(`export const ${name} = `) >= 0
+      ? vaSource.indexOf(`export const ${name} = `)
+      : vaSource.indexOf(`const ${name} = `);
+    const to = vaSource.indexOf(endMarker, from);
+    return (from >= 0 && to > from) ? stripComments(vaSource.slice(from, to)) : "";
+  };
+
+  const tickBody = bodyOf("runVaTick", "export const requestTypeOf");
+  ok(tickBody.length > 0, "F-609.source — the runVaTick body is findable (rename the function and fix this scan)");
+
+  /*
+   * WHAT COUNTS AS A TAKE, from the tick's point of view. The claim entry points the
+   * ledger exposes, plus `runVaCompaction(` — the tick's only TRANSITIVE take today, and
+   * the exact call the finding names as the one a refactor would hoist. Including the
+   * helper is what makes this an assertion about the tick's real claim order rather than
+   * about the identifiers that happen to be spelled in its body.
+   */
+  const TAKE_SITES = ["takeClaim(", "takeCompactClaim(", "withItemClaim(", "takeItemClaim(", "takePostClaim(", "runVaCompaction("];
+
+  const clearAt = tickBody.indexOf("clearPurgeTombstone(");
+  ok(clearAt >= 0, "F-609.source — runVaTick still calls clearPurgeTombstone");
+
+  // NON-VACUITY FIRST. A scan that finds no take sites passes for the wrong reason, and
+  // this assertion is the difference between "the order is right" and "there is nothing
+  // left to order".
+  const present = TAKE_SITES.filter((s) => tickBody.includes(s));
+  ok(present.length > 0,
+    `F-609.source — the tick still reaches at least one claim take, so the ordering assertion means something (found: ${JSON.stringify(present)})`);
+
+  for (const site of TAKE_SITES) {
+    let at = tickBody.indexOf(site);
+    while (at >= 0) {
+      ok(clearAt < at,
+        `F-609.source.ORDER — clearPurgeTombstone (@${clearAt}) precedes \`${site}\` (@${at}) in runVaTick: a take before the clear refreshes va_running and self-locks a re-created agent`);
+      at = tickBody.indexOf(site, at + 1);
+    }
+  }
+
+  // AND THE HELPER MAPPING IS PROVEN, NOT ASSUMED. `runVaCompaction(` is in the list above
+  // because it takes a claim; if that ever stops being true the list is stale and this
+  // says so, rather than the scan quietly guarding a call that no longer matters.
+  const compactionBody = bodyOf("runVaCompaction", "export const runVaTick");
+  ok(compactionBody.length > 0, "F-609.source — the runVaCompaction body is findable");
+  ok(/takeCompactClaim\(/.test(compactionBody),
+    "F-609.source — runVaCompaction really is a claim-taking call, which is why the tick must not hoist it above the clear");
+}
+
+/* ── The behavioural half: a re-created agent with a STALE tombstone ─────────
+ *
+ * The recovery path in full — tombstone older than `createdAt` and older than the settle
+ * window, memory over the compaction trigger so the tick genuinely TAKES the compaction
+ * claim — with the store recording the order of its writes. The claim's `va_running`
+ * stamp must land strictly AFTER the `va_purged` row is deleted. Reverse them and this
+ * tick would answer `purge-settling` for ever.
+ */
+reset();
+{
+  const T0 = Date.parse("2026-09-13T12:00:00.000Z");
+  const NOW = T0 + K.VA_PURGE_SETTLE_MS + 60000;
+
+  const PIN = "never promise a date";
+  await L.writeMemory(kvs, AG, { text: fatProse(), constraints: [PIN] });
+  ok(L.memoryNeedsCompaction((await L.readMemory(kvs, AG)).memory),
+    "F-609.behaviour — the fixture is over the compaction trigger, so the tick really does take a claim");
+
+  await L.markAgentPurged(kvs, AG, { now: T0 });
+
+  const job = vaJob();
+  job.va.intake.jql = "status = Open";
+  job.createdAt = new Date(T0 + 5000).toISOString();   // re-created after the purge
+
+  // The recorder WRAPS the mock store rather than replacing it: every other read and write
+  // in the tick must behave exactly as it does in the rest of this suite, or the ordering
+  // observed here would not be the ordering production sees.
+  const writes = [];
+  const recording = {
+    ...kvs,
+    get: (k) => kvs.get(k),
+    query: (...a) => kvs.query(...a),
+    set: async (k, v, o) => { const r = await kvs.set(k, v, o); writes.push({ op: "set", key: k }); return r; },
+    delete: async (k) => { const r = await kvs.delete(k); writes.push({ op: "delete", key: k }); return r; },
+  };
+
+  let summarised = 0;
+  const r = await V.runVaTick({ job, tickId: "t-609", deps: {
+    capability: CAP_ON,
+    store: recording,
+    now: () => NOW,
+    selfAccountId: async () => ({ ok: true, accountId: SELF }),
+    searchJql: async () => ({ issues: [] }),
+    jsmQueueIssues: async () => ({ ok: true, issues: [] }),
+    pushTask: async () => {},
+    summariseMemory: async () => { summarised++; return "decisions: SUP-1 escalated. open: none."; },
+  } });
+
+  eq(r.ok, true, "F-609.behaviour — the re-created agent's tick RUNS");
+  eq(r.reason, undefined, "F-609.behaviour — …it is not skipped as a settling purge");
+  eq(r.compacted.ran, true, "F-609.behaviour — …and it reached the compaction claim");
+  eq(summarised, 1, "F-609.behaviour — …which bought exactly one summarisation turn");
+  ok((await kvs.get(K.vaPurgedKey(AG))) == null, "F-609.behaviour — the tombstone is cleared");
+
+  const clearIdx = writes.findIndex((w) => w.op === "delete" && w.key === K.vaPurgedKey(AG));
+  const markerIdx = writes.findIndex((w) => w.op === "set" && w.key === K.vaRunningKey(AG));
+  ok(clearIdx >= 0, "F-609.behaviour — the tombstone delete is on the recorded write order");
+  ok(markerIdx >= 0, `F-609.behaviour — the va_running marker was written by the claim take (writes: ${JSON.stringify(writes.map((w) => w.op + " " + w.key))})`);
+  ok(clearIdx < markerIdx,
+    `F-609.behaviour.ORDER — va_purged is DELETED (@${clearIdx}) before va_running is stamped (@${markerIdx}); the reverse is the indefinite self-lockout F-596's marker made possible`);
+
+  // And no take stamped the marker BEFORE the clear — the whole hazard in one predicate.
+  ok(!writes.slice(0, clearIdx).some((w) => w.key === K.vaRunningKey(AG)),
+    "F-609.behaviour.ORDER — nothing touched va_running at all before the tombstone was cleared");
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

@@ -678,6 +678,24 @@ export const runVaTick = async ({ job, tickId = null, deps: injected = {} } = {}
      * write and the tombstone is exactly what refuses it. The reason goes to the log and to
      * the return value, which the queue log carries.
      */
+    /*
+     * F-596/F-609 — THE CLEAR RUNS BEFORE ANY CLAIM TAKE, AND THAT ORDER IS THE INVARIANT.
+     *
+     * Every winning claim take in the ledger stamps `va_running:{agent}` with NOW (F-596's
+     * O(1) successor to the claim scan), and `clearPurgeTombstone` reads that marker to
+     * decide whether a pre-delete turn could still be running: a fresh stamp means
+     * `purge-settling`, so the tombstone stands and this tick skips. Take a claim of ANY
+     * kind — the compaction claim below, an item or post claim, anything routed through
+     * `takeClaim` — before this line, and a re-created agent stamps its own marker on every
+     * tick, reads it back as "a turn is live", and can never clear the tombstone it wrote
+     * the stamp under. That is not a slow recovery, it is an indefinite self-lockout with a
+     * receipt that says only "purge still settling". The clear is therefore FIRST in this
+     * function, ahead of the paused arm, the capability arm and the compaction step, and
+     * `virtual-admin.test.mjs` pins the ordering in the source (index of the clear vs. the
+     * index of every claim-taking call reachable from this body) as well as behaviourally
+     * (the marker must be written only AFTER the tombstone row is deleted). Reordering this
+     * is not a refactor; it is the defect.
+     */
     const cleared = await clearPurgeTombstone(deps.store, agent, { createdAt: job.createdAt || null, now: deps.now() });
     if (cleared.reason === "purge-settling") {
       const detail = `purge still settling (${cleared.settling}${cleared.claimKey ? `: ${cleared.claimKey}` : ""})`;

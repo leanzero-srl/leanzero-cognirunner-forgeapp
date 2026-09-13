@@ -68,7 +68,12 @@ import {
   getForgeIdentityStatus,
   CONNECTION_SECURITY_MODEL,
 } from "./git-connections.js";
-import { gitPipelineKey, gitPipelineClaimKey } from "./shared/git-ids.js";
+import {
+  gitPipelineKey,
+  gitPipelineClaimKey,
+  normalizeDeveloperSpaceId,
+  normalizeForgeAppId,
+} from "./shared/git-ids.js";
 // F-465 — the step ids, from the ONE dependency-free home the browser fixture can
 // import too. Re-exported below, because every caller imports them from this module.
 import { pipelineStepNames } from "./shared/git-pipeline-steps.js";
@@ -87,6 +92,9 @@ import { pipelineStepNames } from "./shared/git-pipeline-steps.js";
  * the queue's retry is never swallowed — see `runPipelineSetup`.
  */
 export { gitPipelineKey, gitPipelineClaimKey };
+/* F-557 — the two Forge id shapes live in the same dependency-free module, because the
+   Code tab form checks them too; re-exported because every caller imports them here. */
+export { normalizeDeveloperSpaceId, normalizeForgeAppId };
 
 /** Task type on the EXISTING `async-ai-queue`. Priced at 0 in ai-budget.js. */
 export const PIPELINE_TASK = "gitpipeline";
@@ -230,55 +238,18 @@ const freshSteps = (kind, opts = {}) => pipelineStepNames(kind, opts).map((name)
 
 const invalid = (error, code = "invalid", extra = {}) => ({ ok: false, error, code, ...extra });
 
-/**
- * F-527 — THE DEVELOPER SPACE ID. `forge register` asks for a Developer Space and no
- * flag short of `-s <id>` answers it, so a pipeline whose repo has no
- * `FORGE_DEVELOPER_SPACE` variable can never bootstrap: the runner sits on a prompt it
- * cannot render and dies. CogniRunner therefore COLLECTS the id (optional — a repo
- * whose app is already registered does not need one) and writes it as a repository
- * variable next to FORGE_SITE.
+/*
+ * F-527 (the developer space id) and F-528 (the app id) — the two REPOSITORY variables
+ * the headless `forge register` needs. Their shapes and normalisers live in
+ * `src/shared/git-ids.js` and are imported above, because the Code tab's form checks the
+ * same two shapes and that module is the dependency-free home both sides already load
+ * (F-557). The rationale for each id is written there, next to the shape.
  *
- * The shape is the one the live offshoot run proved (36 characters of hex and dashes).
- * It is validated here rather than trusted because it is interpolated into a shell word
- * in the rendered workflow; anything outside this set is refused.
+ * This module stays the GATE: whatever the form lets through is re-checked here and
+ * refused with `invalid_developer_space` / `invalid_app_id`. `setupGitPipeline` is what
+ * writes FORGE_APP_ID as a repository variable with the connection's own token — the
+ * runner prints the id, the product stores it.
  */
-const DEVELOPER_SPACE_RE = /^[0-9a-f-]{36}$/;
-
-/** `null` when absent, the trimmed id when valid, `false` when present and malformed. */
-export const normalizeDeveloperSpaceId = (value) => {
-  if (value === null || value === undefined || String(value).trim() === "") return null;
-  const v = String(value).trim().toLowerCase();
-  return DEVELOPER_SPACE_RE.test(v) ? v : false;
-};
-
-/**
- * F-528 — THE APP ID, AND WHO IS ALLOWED TO STORE IT.
- *
- * The scaffold used to register the app and then `gh variable set FORGE_APP_ID`. That
- * can never work: repository variables are an `administration` resource and GITHUB_TOKEN
- * cannot hold it, with or without `actions: write` (live 2026-09-13 — HTTP 403
- * "Resource not accessible by integration", while a PAT accepted the identical call on
- * the identical repository seconds later). The credential that CAN write it is the
- * connection's own token, which this app holds.
- *
- * So the honest division is: the RUNNER registers and prints the id; the PRODUCT stores
- * it. `setupGitPipeline` takes the id the admin pastes back and writes it as the
- * repository variable FORGE_APP_ID, after which the bootstrap step never runs again.
- *
- * Accepted in either form the admin is likely to have in the clipboard — the full ARI
- * the CLI prints, or the bare uuid — and always STORED as the full ARI, because that is
- * what `.cognirunner/inject-app-id.js` requires and it refuses anything else.
- */
-const APP_ID_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const APP_ID_ARI_PREFIX = "ari:cloud:ecosystem::app/";
-
-/** `null` when absent, the full ARI when valid, `false` when present and malformed. */
-export const normalizeForgeAppId = (value) => {
-  if (value === null || value === undefined || String(value).trim() === "") return null;
-  let v = String(value).trim().toLowerCase();
-  if (v.startsWith(APP_ID_ARI_PREFIX)) v = v.slice(APP_ID_ARI_PREFIX.length);
-  return APP_ID_UUID_RE.test(v) ? APP_ID_ARI_PREFIX + v : false;
-};
 
 /**
  * THE ONE HOME for "what a setup request carries from the caller".

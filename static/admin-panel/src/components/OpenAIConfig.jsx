@@ -13,7 +13,7 @@ import { showToast } from "./toast";
 import {
   EDITION_IDS, FORGE_LLM_FRONTIER, FORGE_LLM_DEFAULT,
   MANAGED_PROVIDER_ID, MANAGED_PROVIDER_LABEL, MANAGED_MODELS, MANAGED_DEFAULT_MODEL,
-  agentCapabilityCopy,
+  agentCapabilityCopy, allowanceConsequenceCopy,
 } from "../../../../src/shared/edition.js";
 
 // Forge Custom UI runs in a sandboxed iframe — plain <a target="_blank"> links
@@ -1439,9 +1439,15 @@ export default function OpenAIConfig({ invoke }) {
                   Most of this month&apos;s vendor allowance is used.
                 </p>
               )}
-              {allowance.level === "hard" && (
+              {/* F-556 - the consequence is NOT the same on both vendor-billed engines,
+                  and this note used to state the Forge LLM one whichever was active. On
+                  the managed engine nothing falls back: every call refuses, validators
+                  fail open and queued work stops. The sentence comes from the one copy
+                  home (src/shared/edition.js) and is keyed on `activeProvider` - what is
+                  SAVED and running, never the picker's current selection. */}
+              {allowance.level === "hard" && allowanceConsequenceCopy(activeProvider) && (
                 <p className="usage-allow-note lvl-hard">
-                  Allowance spent — Sonnet 5 / Opus 5 paused until next month. Rules fall back to Claude Haiku.
+                  {allowanceConsequenceCopy(activeProvider)}
                 </p>
               )}
               {usageSeats !== undefined && usageSeats !== null && (

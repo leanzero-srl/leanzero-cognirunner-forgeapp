@@ -2072,7 +2072,17 @@ function invoke(name, payload) {
     case "listVaAgents": return Promise.resolve({ success: true, agents: VA_AGENTS.map((a) => ({ ...a, va: { ...a.va, status: { ...a.va.status, paused: VA_PAUSED.has(a.id) } } })) });
     case "getVaStatus": {
       const st = VA_STATUS[(payload && payload.jobId) || ""] || null;
-      return Promise.resolve(st ? { success: true, ...st, paused: VA_PAUSED.has(payload.jobId) } : { success: false, error: "No status for that agent." });
+      /* F-535 - the health row's reason is whatever the ENGINE wrote, and the tick's two
+         catch arms write ids the compaction fixture cannot model (`tick:prepare_failed`,
+         `tick:post_failed`, each carrying a 300-character slice of the exception). Rather
+         than a third and fourth agent card - which every other assertion here counts - the
+         broken agent's stored reason is swapped by a window flag, the same idiom
+         `window.__STANDARD__` and `window.__MEMORY_FULL__` already use. */
+      const override = (typeof window !== "undefined" && window.__VA_HEALTH_REASON__) || null;
+      const out = st && override && st.health && st.health.ok === false
+        ? { ...st, health: { ...st.health, reason: override } }
+        : st;
+      return Promise.resolve(out ? { success: true, ...out, paused: VA_PAUSED.has(payload.jobId) } : { success: false, error: "No status for that agent." });
     }
     case "listVaDrafts": return Promise.resolve({ success: true, drafts: (VA_DRAFTS[(payload && payload.jobId) || ""] || []).filter((d) => !VA_DECIDED.has(`${payload.jobId}:${d.itemKey}`)) });
     case "approveVaDraft": case "rejectVaDraft": {

@@ -243,7 +243,10 @@ const handleCollection = async ({ req, method, id, action, body, who, kind }) =>
       try {
         const r = await L.testListener({ listener: row, issueKey: body && body.issueKey, eventType: body && body.eventType, syntheticEvent: body && body.event, deadline: Date.now() + 20000 });
         return json(200, { result: r });
-      } catch (e) { return json(400, { error: e.message }); }
+      // F-337 — the LAST refusal site on this surface that bypassed errBody. A
+      // testListener throw can carry raw Jira body text (`JQL check failed: 400 …`);
+      // it is clamped and shaped exactly like every other refusal here.
+      } catch (e) { return json(400, errBody(e)); }
     }
     if (!isL && action === "run") {
       const r = await J.enqueueJobRun({ job: row, manual: true, accountId: actor });

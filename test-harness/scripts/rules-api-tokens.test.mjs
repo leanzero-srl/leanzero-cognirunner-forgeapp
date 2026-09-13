@@ -151,5 +151,24 @@ await check("a validation refusal forwards reason, needsRole, hint and refused[]
   assert.deepEqual(errBody(null), { error: "invalid" }, "…and a thrown non-error is still an { error }");
 });
 
+// F-337 — the listener `test` action was the last catch that answered { error: e.message }
+// raw: a testListener throw can carry Jira body text and had no machine-readable half.
+await check("every refusal on the surface goes through errBody (F-337)", async () => {
+  const src = await import("node:fs").then((fs) => fs.readFileSync(new URL("../../src/rules-api.js", import.meta.url), "utf8"));
+  // The only surviving `{ error: e.message }` is parseBody's, whose throws are two
+  // fixed literals with no external text in them.
+  const raws = src.match(/\{ error: e\.message \}/g) || [];
+  assert.equal(raws.length, 1, "the test action no longer returns a raw e.message");
+  assert.match(src.slice(src.indexOf("{ error: e.message }") - 140, src.indexOf("{ error: e.message }")), /parseBody\(req\)/, "…and the one that remains is parseBody's fixed-literal guard");
+  const testArm = src.slice(src.indexOf('action === "test"'), src.indexOf('action === "test"') + 900);
+  assert.match(testArm, /catch \(e\) \{ return json\(400, errBody\(e\)\); \}/, "the test action refuses through errBody");
+  const body = src.match(/const errBody = \(e\) => \(\{[\s\S]*?\}\);/)[0];
+  const errBody = new Function("e", `return (e => ${body.replace("const errBody = (e) =>", "").replace(/;\s*$/, "")})(e);`);
+  const raw = Object.assign(new Error(`JQL check failed: 400 ${"x".repeat(900)}`), { reason: "jql-invalid" });
+  const out = errBody(raw);
+  assert.equal(out.error.length, 500, "a raw Jira body is clamped to 500 chars");
+  assert.equal(out.reason, "jql-invalid", "…and the machine-readable half survives");
+});
+
 console.log(`rules-api tokens: ${passed} passed, ${failed} failed`);
 process.exitCode = failed ? 1 : 0;

@@ -543,8 +543,17 @@ if (CAP_OFF) {
   ok(ev && ev.body.taskType === "coder", "an EXACT id match arms the turn");
   ok(ev && ev.body.params.savedByRole === "admin" && ev.body.params.allowedActions.includes("commit_files"),
     "…with its OWN row's stamp, writes included");
-  ok(ev && ev.body.params.accountId === EDITOR,
-    "…and it runs as its OWN row's createdBy (the editor who first saved it), never the sibling's admin");
+  // F-409 — THE ARMING SAVE MOVES BOTH FIELDS. The admin re-save above did not merely
+  // raise the role: it took over as the account the turn runs as. Arming a rule for
+  // repository writes while it commits as someone else is the state nobody can reason
+  // about — one save, one authority. (The sibling's admin is still never consulted.)
+  ok(ev && ev.body.params.accountId === ADMIN,
+    "…and it runs as the ADMIN who armed it — createdBy moved with savedByRole, never the sibling's");
+  const own = ((await storage.get("config_registry")) || []).find((r) => r.id === "pf-coder-own");
+  ok(own && own.createdBy === ADMIN && own.savedByRole === "admin",
+    "…the row records the arming account and role together");
+  ok(own && own.firstCreatedBy === EDITOR,
+    "…and firstCreatedBy still names the editor who first authored it (display only, never a permission)");
 
   // The disable check KEEPS the fallback: disabling the sibling still mutes the
   // transition's post-function invocation, which is what that tier exists for.

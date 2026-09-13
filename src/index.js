@@ -6913,17 +6913,15 @@ resolver.define("registerPostFunction", async ({ payload, context }) => {
       ...(INSTANCED_ID_RE.test(effectiveId) || (existing >= 0 && configs[existing].instanced === true)
         ? { instanced: true } : {}),
       disabled: existing >= 0 ? configs[existing].disabled : false,
-      // Only the CREATE branch stamps an owner (mirrors registerConfig). Editing an
-      // ownerless row must not silently adopt it — a bulk re-save would otherwise
-      // mass-attribute machine-claimed rules to whoever hit Save. `?? null` keeps the
-      // field's shape stable; `|| context.accountId` used to write `undefined`, which
-      // JSON.stringify drops entirely.
-      createdBy: existing >= 0 ? (configs[existing].createdBy ?? null) : (context.accountId || null),
-      // F-394 — THE SAVER'S ROLE, RECORDED AT SAVE TIME. Re-stamped on every save (the
-      // listeners.js pattern): an editor re-saving an admin's rule DOWNGRADES it, which is
-      // the whole point — the row records who last armed it, and nothing is ever re-read
-      // about a third party while a transition is running.
-      savedByRole: await stampSavedByRole(context.accountId),
+      // F-394/F-409 — WHO ARMED THIS RULE, RECORDED AT SAVE TIME, ROLE AND ACCOUNT
+      // TOGETHER. Re-stamped on every save (the listeners.js pattern): an editor re-saving
+      // an admin's rule DOWNGRADES it, and an admin re-saving an editor's rule takes over
+      // as the account it runs as — the row records who LAST armed it, and nothing is ever
+      // re-read about a third party while a transition is running. `createdBy` is "the
+      // account whose authority the rule runs under", not "first author"; `firstCreatedBy`
+      // is the first author and is written once. Whole contract: `armingStamp` in
+      // src/listeners.js. An unknown saver keeps the existing owner rather than blanking it.
+      ...(await stampArming(context.accountId, existing >= 0 ? configs[existing] : null)),
       createdAt: existing >= 0 ? configs[existing].createdAt : new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -7280,11 +7278,13 @@ export const commitImportCore = async ({ rule, targetWorkflowName, targetTransit
       // Keep the workflow-rule instance id the inject just minted: it lets a later
       // delete locate this exact rule inside the transition without guessing.
       const instanceId = injected.ruleId ? { ruleInstanceId: String(injected.ruleId) } : {};
-      // F-394 — the same save-time stamp the resolver writes; `accountId` is the CALLER.
-      const savedByRole = await stampSavedByRole(accountId);
+      // F-394/F-409 — the same save-time arming stamp the resolver writes (role AND the
+      // account the rule runs as); `accountId` is the CALLER. An import always creates, so
+      // there is no existing row and `firstCreatedBy` lands on the importer.
+      const arming = await stampArming(accountId, null);
       let row = isPf
-        ? { ...cfg, ...instanceId, instanced: true, disabled: false, savedByRole, createdBy: accountId || null, createdAt: now, updatedAt: now }
-        : { id: freshId, type: ruleType, fieldId: cfg.fieldId, prompt: typeof cfg.prompt === "string" ? cfg.prompt.slice(0, 200) : "", workflow: cfg.workflow, ruleKind: cfg.ruleKind, premadeRuleType: cfg.premadeRuleType, ...instanceId, instanced: true, disabled: false, savedByRole, createdBy: accountId || null, createdAt: now, updatedAt: now };
+        ? { ...cfg, ...instanceId, instanced: true, disabled: false, ...arming, createdAt: now, updatedAt: now }
+        : { id: freshId, type: ruleType, fieldId: cfg.fieldId, prompt: typeof cfg.prompt === "string" ? cfg.prompt.slice(0, 200) : "", workflow: cfg.workflow, ruleKind: cfg.ruleKind, premadeRuleType: cfg.premadeRuleType, ...instanceId, instanced: true, disabled: false, ...arming, createdAt: now, updatedAt: now };
       // Registry-copy offload (mirrors registerPostFunction): the WORKFLOW config
       // above decided inline-vs-codeRef at 24KB for runtime semantics; the REGISTRY
       // row offloads at 2KB so imported step code doesn't eat the shared value.
@@ -10379,6 +10379,21 @@ const savedByRoleFor = async (accountId) => {
  */
 const stampSavedByRole = async (accountId) =>
   listenersMod.normalizeSavedByRole(accountId ? await savedByRoleFor(accountId) : "editor");
+
+/**
+ * F-409 — THE WHOLE ARMING STAMP for a registry row: role AND acting account, resolved
+ * here and shaped by the ONE helper listeners/jobs use (`listenersMod.armingStamp`).
+ *
+ * Stamping only the ROLE was half an answer. `savedByRole` decides what a rule MAY do and
+ * `createdBy` decides WHOSE ACCOUNT it does it as, so an admin re-saving an editor's Coder
+ * rule used to arm repository writes that then ran — commits, pull requests — attributed to
+ * the editor. One save, two disagreeing authorities. They move together now: the save
+ * records who armed it, in both fields. `firstCreatedBy` preserves the original author for
+ * display; no permission is ever read from it. See `armingStamp` in src/listeners.js for
+ * the field-by-field contract.
+ */
+const stampArming = async (accountId, existing = null) =>
+  listenersMod.armingStamp({ accountId: accountId || null, savedByRole: await stampSavedByRole(accountId), existing });
 
 // ═══════════════════════ LISTENERS · SCHEDULED JOBS · REST API ═══════════════════════
 // Thin permission-gated wrappers; logic lives in src/listeners.js, src/scheduled-jobs.js,

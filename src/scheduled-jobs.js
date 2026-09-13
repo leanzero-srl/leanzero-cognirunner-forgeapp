@@ -38,7 +38,7 @@ import { kvs as storage } from "@forge/kvs";
 import api, { route } from "@forge/api";
 import { validateCron, normalizeTimeZone, dueInWindow, nextRuns, describeCron, fireIdentity } from "./shared/cron.js";
 import { assertAllowedActions, buildAgentGateContext, normalizeAgentKnowledge, DEFAULT_AGENT_ACTIONS, DEFAULT_AGENT_ROUNDS, MAX_AGENT_ROUNDS } from "./shared/agent-actions.js";
-import { normalizeStep, normalizeSavedByRole, assertKnownSkillIds, buildAgentKnowledge, takeAgentRunSlot } from "./listeners.js";
+import { normalizeStep, armingStamp, assertKnownSkillIds, buildAgentKnowledge, takeAgentRunSlot } from "./listeners.js";
 import { JOB_DEFAULT_MAX_WRITES_PER_RUN, JOB_MAX_WRITES_PER_RUN, JOB_MIN_WRITES_PER_RUN, brakeRefusalText } from "./shared/registry-limits.js";
 import { agentResultFields, SCOPED_AGENT_SUMMARY_BUDGET_BYTES, boundScopedJobLog } from "./shared/agent-result.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
@@ -120,12 +120,13 @@ export const normalizeJob = (input = {}, { existing = null, accountId = null, ga
     // report but never change anything), so `clampInt`'s NaN fallback is what picks the
     // default — a blank or absent field, never a deliberate zero.
     maxWritesPerRun: clampInt(src.maxWritesPerRun, JOB_MIN_WRITES_PER_RUN, JOB_MAX_WRITES_PER_RUN, JOB_DEFAULT_MAX_WRITES_PER_RUN),
-    // The saver's role, recorded at save time — see normalizeSavedByRole in
-    // listeners.js for why a stored field and not a live check, and why the default
-    // is the least-privileged one. A job holds no verdict actions today; the field is
-    // here so BOTH rule kinds answer "who armed this" the same way, from one home.
-    savedByRole: normalizeSavedByRole(savedByRole),
-    createdBy: existing ? existing.createdBy || accountId || null : accountId || null,
+    // WHO ARMED THIS JOB — role AND acting account, from the ONE stamp in listeners.js
+    // (F-409). See `armingStamp` there for why a stored field and not a live check, why
+    // the default is the least-privileged one, and why `createdBy` moves with the role:
+    // it is the account the job's authority comes from, not its first author
+    // (`firstCreatedBy` keeps that). A job holds no verdict actions today; the fields are
+    // here so ALL THREE rule kinds answer "who armed this" the same way, from one home.
+    ...armingStamp({ accountId, savedByRole, existing }),
     createdAt: existing ? existing.createdAt || nowIso() : nowIso(),
     updatedAt: nowIso(),
   };

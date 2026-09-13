@@ -302,6 +302,31 @@ ok(normalizeJob({ name: "j", schedule: { cron: "0 9 * * *" }, functions: [{ code
   && normalizeJob({ name: "j", schedule: { cron: "0 9 * * *" }, functions: [{ code: "1" }] }, { savedByRole: "admin" }).savedByRole === "admin",
   "a scheduled job records the saver's role the same way, from the same normaliser");
 
+// F-409 — THE ARMING STAMP: role AND acting account move TOGETHER, from one helper, for
+// listeners and jobs exactly as for post-functions. `createdBy` is the account whose
+// authority the rule runs under, not the first author; `firstCreatedBy` is the author.
+{
+  const first = normalizeListener(base5c, { accountId: "acc-editor", savedByRole: "editor" });
+  ok(first.createdBy === "acc-editor" && first.firstCreatedBy === "acc-editor" && first.savedByRole === "editor",
+    "a first save stamps owner, first author and role");
+  const rearmed = normalizeListener({ ...base5c, id: first.id }, { existing: first, accountId: "acc-admin", savedByRole: "admin" });
+  ok(rearmed.createdBy === "acc-admin" && rearmed.savedByRole === "admin",
+    "an admin re-save takes over BOTH the role and the account the listener runs as");
+  ok(rearmed.firstCreatedBy === "acc-editor",
+    "…and the first author is preserved, written once, never a permission");
+  const downgraded = normalizeListener({ ...base5c, id: first.id }, { existing: rearmed, accountId: "acc-editor", savedByRole: "editor" });
+  ok(downgraded.savedByRole === "editor" && downgraded.createdBy === "acc-editor",
+    "a lower-role re-save downgrades the arming, both fields");
+  const anon = normalizeListener({ ...base5c, id: first.id }, { existing: rearmed, accountId: null, savedByRole: "editor" });
+  ok(anon.createdBy === "acc-admin" && anon.savedByRole === "editor",
+    "a save with no known account keeps the existing owner (blanking it would leave the rule ownerless) but still re-stamps the role");
+  const jobBase = { name: "j", schedule: { cron: "0 9 * * *" }, functions: [{ code: "1" }] };
+  const j1 = normalizeJob(jobBase, { accountId: "acc-editor", savedByRole: "editor" });
+  const j2 = normalizeJob({ ...jobBase, id: j1.id }, { existing: j1, accountId: "acc-admin", savedByRole: "admin" });
+  ok(j2.createdBy === "acc-admin" && j2.savedByRole === "admin" && j2.firstCreatedBy === "acc-editor",
+    "a scheduled job arms through the SAME helper — same three fields, same rule");
+}
+
 // The advisory property: merge per repo, bounded.
 const pEntry = gitPropertyEntry({ pullRequest: { number: 7, state: "open", headSha: "abc" } }, { repoId: "o/r", eventType: "git:pull_request:opened" });
 ok(pEntry.repoId === "o/r" && pEntry.pr.number === 7 && pEntry.pr.headSha === "abc", "the entry carries the PR identity");

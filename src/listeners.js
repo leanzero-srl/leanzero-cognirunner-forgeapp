@@ -122,6 +122,45 @@ export const SAVED_BY_ROLES = ["admin", "editor"];
 export const normalizeSavedByRole = (role) => (role === "admin" ? "admin" : "editor");
 
 /**
+ * F-409 — THE ARMING STAMP. ONE home for "who armed this rule", used by post-functions,
+ * listeners and scheduled jobs alike (`registerPostFunction` / `commitImportCore` in
+ * src/index.js call it through `stampArming`, which resolves the role first).
+ *
+ * ROW SHAPE, STATED ONCE:
+ *   `savedByRole`   — the role the saver held at THIS save. Re-stamped every save, so an
+ *                     editor re-saving an admin's rule DOWNGRADES it. Granting privilege
+ *                     requires holding it.
+ *   `createdBy`     — NOT "first author". It is THE ACCOUNT WHOSE AUTHORITY THE RULE RUNS
+ *                     UNDER: a headless Coder turn commits as this account. It is
+ *                     therefore re-stamped with the SAVING account on every save, in
+ *                     lock-step with `savedByRole`. Before F-409 only the role moved, so
+ *                     an admin who re-saved an editor's rule armed repository writes that
+ *                     then executed as the editor — the arming role and the acting account
+ *                     disagreeing is exactly the state nobody can reason about.
+ *   `firstCreatedBy`— the actual first author, written ONCE and never moved, for display
+ *                     and audit only. No permission is ever read from it.
+ *
+ * CONSEQUENCE, ON PURPOSE: `createdBy` is also what the ownership gate reads
+ * (`canActOnConfig` in src/index.js), so an admin re-arming an editor's rule takes over
+ * its editing too. That is the same statement twice — the account the rule acts as is the
+ * account answerable for it — not a second rule.
+ *
+ * An unknown saver (`accountId` null — the REST API's service path) does NOT blank an
+ * existing owner: wiping `createdBy` would leave a live Coder rule ownerless, which is a
+ * hard error at run time. The previous owner stands and the role still re-stamps.
+ */
+export const armingStamp = ({ accountId = null, savedByRole = "editor", existing = null } = {}) => {
+  const acct = accountId || null;
+  const prevOwner = existing ? existing.createdBy || null : null;
+  const prevFirst = existing ? existing.firstCreatedBy || prevOwner : null;
+  return {
+    savedByRole: normalizeSavedByRole(savedByRole),
+    createdBy: acct || prevOwner,
+    firstCreatedBy: prevFirst || acct || null,
+  };
+};
+
+/**
  * Validate + clamp a listener config. Throws Error(message) on hard errors.
  * `existing` (previous full record) preserves identity/stats on update.
  */
@@ -201,8 +240,8 @@ export const normalizeListener = (input = {}, { existing = null, accountId = nul
     agentlessTaskType, gitReview,
     simulationMode: src.simulationMode === true,
     suppressNotifications: src.suppressNotifications === true,
-    savedByRole: role,
-    createdBy: existing ? existing.createdBy || accountId || null : accountId || null,
+    // F-409 — role AND acting account, from the ONE arming stamp above.
+    ...armingStamp({ accountId, savedByRole: role, existing }),
     createdAt: existing ? existing.createdAt || nowIso() : nowIso(),
     updatedAt: nowIso(),
   };

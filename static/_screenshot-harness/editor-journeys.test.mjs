@@ -3060,6 +3060,95 @@ try {
     await closeEditor(env);
   }
 
+  /* ---------------- J23f — F-587: the predicate and the chip must AGREE -------------------
+     `hasProvenance` tested the presence of stored IDS; `FieldGuideChip` tests the presence of
+     resolvable TITLES and renders null when it can name none. They disagree in exactly the
+     case the chip was written for — a config saved before a RE-BAKE, whose chunk ids carry a
+     content hash and no longer exist — so with no docs, no skills and memory injection off
+     (the stated default) the row rendered the words GENERATED WITH followed by empty space.
+     That is a worse claim than the blank row F-572 replaced: it asserts provenance and then
+     names none. Two arms, because a fix that simply HID the row would pass the first one and
+     lose real provenance in the second:
+       all-stale → the label plus a NEUTRAL chip saying the sections predate this bake
+       mixed     → the resolvable titles, and no neutral chip while a real title exists */
+  for (const theme of ["light", "dark"]) {
+    console.log(`J23f config-view stale field-guide ids (view-static-fieldguide, all-stale, ${theme})`);
+    const env = await openEditor(browser, "config-view", "view-static-fieldguide", theme, { __FG_STALE__: "all" });
+    const { page } = env;
+    try {
+      const row = page.locator(".cv-gen-row", { hasText: "GENERATED WITH" }).first();
+      await row.waitFor({ timeout: 8000 });
+      ok(await row.count() > 0, `J23f (${theme}) the GENERATED WITH row still renders when every stored id is stale`);
+
+      // The control: the guide is the ONLY provenance, so nothing else can hold the row open.
+      ok(await page.locator(".cv-gen-docs, .cv-gen-skill, .cv-gen-mem").count() === 0,
+        `J23f (${theme}) no docs/skills/memories chip — the row is the guide's alone`);
+
+      // The bug, asserted directly: the shared chip can name nothing, so the row must not be empty.
+      ok(await row.locator(".gen-meta-chip.gmc-fieldguide").count() === 0,
+        `J23f (${theme}) the resolving chip is absent — it can name no section`);
+      const stale = row.locator(".cv-gen-fg-stale").first();
+      ok(await stale.count() === 1, `J23f (${theme}) the neutral stale chip stands in its place`);
+      const staleText = (await stale.innerText()).replace(/\s+/g, " ").trim();
+      ok(/field guide sections from an earlier bake/i.test(staleText),
+        `J23f (${theme}) the chip says the sections predate this bake (got "${staleText}")`);
+      ok(!/—/.test(staleText), `J23f (${theme}) no em-dash in the chip copy`);
+
+      /* The defect itself, asserted on the RENDERED TEXT rather than on the chip that happens
+         to fix it today: GENERATED WITH may never be followed by nothing again. */
+      const rowText = (await row.innerText()).replace(/\s+/g, " ").trim();
+      ok(rowText.replace(/GENERATED WITH/i, "").trim().length > 0,
+        `J23f (${theme}) GENERATED WITH is never followed by nothing (got "${rowText}")`);
+
+      // The chip's standing rule: a generated section id is meaningless and never reaches the screen.
+      const body = await page.locator("body").innerText();
+      ok(!/stale-chunk-1|stale-chunk-2/.test(body), `J23f (${theme}) no raw stale id is printed as a fallback`);
+
+      /* Design: NEUTRAL slate, solid fill, white ink, 600-700, no left rail, no alpha tint.
+         Slate rather than the guide's amber on purpose — amber would imply the sections
+         resolved. --accent-slate carries its own dark variant, asserted here in both themes. */
+      const style = await stale.evaluate((el) => {
+        const cs = getComputedStyle(el);
+        return { background: cs.backgroundColor, color: cs.color, borderLeftWidth: cs.borderLeftWidth, fontWeight: cs.fontWeight };
+      });
+      ok(style.borderLeftWidth === "0px", `J23f (${theme}) no left accent rail on the stale chip`);
+      ok(/^rgb\(\d+, \d+, \d+\)$/.test(style.background), `J23f (${theme}) the fill is SOLID, not an alpha tint (got ${style.background})`);
+      ok(Number(style.fontWeight) >= 600, `J23f (${theme}) the stale chip carries the 600-700 emphasis weight`);
+      ok(style.color === "rgb(255, 255, 255)", `J23f (${theme}) white ink on the slate fill (got ${style.color})`);
+      ok(style.background === (theme === "dark" ? "rgb(100, 116, 139)" : "rgb(71, 85, 105)"),
+        `J23f (${theme}) the slate has a dark-mode override (got ${style.background})`);
+    } catch (e) { fail++; console.log(`  ✗ J23f (${theme}) threw: ` + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
+  {
+    /* MIXED — one resolvable id among two stale ones. The fix must not trade a wrong EMPTY
+       row for a wrong NEUTRAL one: the chip names what it can, the count matches the expanded
+       list, and the stale chip stays away while a real title is on screen. */
+    console.log("J23f-mixed config-view mixed field-guide ids (view-static-fieldguide, mixed)");
+    const env = await openEditor(browser, "config-view", "view-static-fieldguide", "light", { __FG_STALE__: "mixed" });
+    const { page } = env;
+    try {
+      const row = page.locator(".cv-gen-row", { hasText: "GENERATED WITH" }).first();
+      await row.waitFor({ timeout: 8000 });
+      const chip = row.locator(".gen-meta-chip.gmc-fieldguide").first();
+      ok(await chip.count() === 1, "J23f-mixed the resolving chip renders for the id that still exists");
+      const label = (await chip.innerText()).replace(/\s+/g, " ").trim();
+      ok(/Field guide:\s*1 section\b/.test(label), `J23f-mixed the chip counts ONLY what it resolved (got "${label}")`);
+      ok(await row.locator(".cv-gen-fg-stale").count() === 0,
+        "J23f-mixed no neutral stale chip while a real title is nameable");
+
+      // The expanded list must agree with the count, as it does in the all-resolvable arm.
+      await chip.click();
+      await page.locator(".fg-chip-item").first().waitFor({ timeout: 4000 });
+      const titles = await page.locator(".fg-chip-item").allInnerTexts();
+      ok(titles.length === 1, `J23f-mixed the expanded list has one entry per counted section (got ${titles.length})`);
+      const body = await page.locator("body").innerText();
+      ok(!/stale-chunk-1|stale-chunk-2/.test(body), "J23f-mixed the two dead ids are dropped, not printed");
+    } catch (e) { fail++; console.log("  ✗ J23f-mixed threw: " + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
   /* ---------------- J24 — jira:issueContext "CogniRunner on this issue" glance ---------------- */
   {
     console.log("J24 issue-context glance (issue-glance)");

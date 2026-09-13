@@ -655,7 +655,25 @@ function getContext() {
     // An OFFLOADED static PF (config >24KB → code moved to pf_code): functions:[] + name-only functionsMeta.
     // config-view must render the step NAMES from functionsMeta (never the full details). E11 path.
     return { accountId: ACCT, siteUrl: SITE, license: mockLicenseCtx(), extension: { ...baseExt, type: "jira:workflowPostFunction", key: "ai-static-post-function", entryPoint: "view", transitionContext: { id: "81", from: { name: "Triaged" }, to: { name: "Mitigating" } }, postFunctionConfig: JSON.stringify({ id: "postfunction-static::Incident::81::i-offload", type: "postfunction-static", fieldId: "", functions: [], functionsMeta: [{ id: "s1", name: "Escalate priority to High", operationType: "rest_api_internal", variableName: "r1" }, { id: "s2", name: "Add on-call watcher", operationType: "rest_api_internal", variableName: "r2" }], workflow: { workflowId: "wf-incident-007", workflowName: "Incident Response", transitionId: "81", siteUrl: SITE } }) } };
-  if (s === "view-static-fieldguide")
+  if (s === "view-static-fieldguide") {
+    /* F-587 - window.__FG_STALE__ ages the stored ids the way a RE-BAKE does. The chunk ids
+       carry a content hash, so re-baking the corpus does not rename a section, it replaces
+       every id; a rule config saved before that bake keeps ids the current index has never
+       heard of. "all" is the case the bug lived in (nothing resolves -> the chip returned
+       null and the GENERATED WITH label stood alone over empty space); "mixed" proves the
+       row still names what it CAN and does not fall back to the neutral chip while a real
+       title is available. The stale ids are shaped like real ones on purpose - a fixture
+       using "nope" would not catch a renderer that printed the raw id as a fallback. */
+    const STALE_IDS = [
+      "jira-rest-correctness/jira-rest-correctness/0000/stale-chunk-1",
+      "cognirunner-sandbox-traps/cognirunner-sandbox-traps/0000/stale-chunk-2",
+    ];
+    const fgMode = (typeof window !== "undefined" && window.__FG_STALE__) || "";
+    const fgSections = fgMode === "all"
+      ? STALE_IDS
+      : fgMode === "mixed"
+        ? [FIELD_GUIDE_SECTION_IDS[0], ...STALE_IDS]
+        : FIELD_GUIDE_SECTION_IDS;
     /* F-572 - a SAVED static PF opened in the READ-ONLY view whose single step was generated
        with the BAKED FIELD GUIDE AND NOTHING ELSE. This is not a contrived shape: no docs
        picked, no skills bound and memory injection off is the DEFAULT for a first-time
@@ -663,7 +681,8 @@ function getContext() {
        three emptied fields are spelled out rather than omitted because the bug was a
        predicate that only tested those three - a fixture that left them undefined would
        pass against a renderer that read them wrongly. */
-    return { accountId: ACCT, siteUrl: SITE, license: mockLicenseCtx(), extension: { ...baseExt, type: "jira:workflowPostFunction", key: "ai-static-post-function", entryPoint: "view", transitionContext: { id: "31", from: { name: "In Review" }, to: { name: "Done" } }, postFunctionConfig: JSON.stringify({ id: "postfunction-static::Software Simplified Workflow::31::i-fg", type: "postfunction-static", fieldId: "", functions: [{ id: "func_fg", name: "Roll the fix version forward", conditionPrompt: "", operationType: "rest_api_internal", operationPrompt: "Set the fix version on the issue to the next unreleased version in the project.", endpoint: "", method: "GET", variableName: "fixver", includeBackoff: false, code: STATIC_CODE_1, testedFingerprint: fpOf(STATIC_CODE_1), generationMeta: { appliedDocs: [], appliedSkills: [], appliedMemories: 0, truncatedDocs: [], fieldGuide: FIELD_GUIDE_SECTION_IDS } }], workflow: { workflowId: "wf-software-simplified-12345", workflowName: "Software Simplified Workflow", transitionId: "31", siteUrl: SITE } }) } };
+    return { accountId: ACCT, siteUrl: SITE, license: mockLicenseCtx(), extension: { ...baseExt, type: "jira:workflowPostFunction", key: "ai-static-post-function", entryPoint: "view", transitionContext: { id: "31", from: { name: "In Review" }, to: { name: "Done" } }, postFunctionConfig: JSON.stringify({ id: "postfunction-static::Software Simplified Workflow::31::i-fg", type: "postfunction-static", fieldId: "", functions: [{ id: "func_fg", name: "Roll the fix version forward", conditionPrompt: "", operationType: "rest_api_internal", operationPrompt: "Set the fix version on the issue to the next unreleased version in the project.", endpoint: "", method: "GET", variableName: "fixver", includeBackoff: false, code: STATIC_CODE_1, testedFingerprint: fpOf(STATIC_CODE_1), generationMeta: { appliedDocs: [], appliedSkills: [], appliedMemories: 0, truncatedDocs: [], fieldGuide: fgSections } }], workflow: { workflowId: "wf-software-simplified-12345", workflowName: "Software Simplified Workflow", transitionId: "31", siteUrl: SITE } }) } };
+  }
   if (s === "view-premade-git")
     /* F-380 - a SAVED git premade rule opened in the READ-ONLY view. The whole point of the
        arm is the connection row: config-view has no picker, so if it cannot resolve `gc_1`

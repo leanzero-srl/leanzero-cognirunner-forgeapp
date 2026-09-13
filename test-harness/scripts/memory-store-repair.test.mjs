@@ -27,7 +27,8 @@ import storage, { KVS_PLATFORM_MAX_VALUE_BYTES, KVS_STORAGE_LIMIT_CODE } from ".
 import { readFileSync } from "node:fs";
 import {
   MEMORIES_KEY, MEMORY_MAX_SERIALIZED_BYTES, MEMORY_PLATFORM_MAX_SERIALIZED_BYTES,
-  MEMORY_CONTENT_MAX, serializedBytes, memoryStoreStats,
+  MEMORY_CONTENT_MAX, serializedBytes, memoryStoreStats, saveMemories,
+  memoryWriteFaultMessage, memoryPlatformCapMessage,
 } from "../../src/memories.js";
 const { handler } = await import("../../src/index.js");
 
@@ -224,6 +225,41 @@ const faultNthMemoryRead = (n) => {
   const denied = await call("deleteMemory", { ids: ["m0", "m1"] }, "acct-nobody");
   ok(denied.success === false && /access required/i.test(denied.error), "the bulk form is behind the same role gate");
   ok(load().length === 2, "the denied bulk delete wrote nothing");
+}
+
+// ---------------------------------------------------------------------------
+// F-197 — a THROW from the write is not the platform cap.
+//
+// The size is measured against MEMORY_PLATFORM_MAX_SERIALIZED_BYTES before the `set`, and
+// that measurement owns the "platform-cap" answer and its deficit. Any throw AFTER that
+// check passed used to be mapped to "platform-cap" with `bytesOver = Math.max(1, bytes -
+// ceiling)` — always the fabricated floor of 1 — so a transient KVS fault on a 1.4 KB
+// store told the admin it was "1 byte over Jira's 245760-byte storage limit" and to
+// bulk-delete memories. Wrong diagnosis, wrong action, and it hid the retry that works.
+// ---------------------------------------------------------------------------
+{
+  reset([row(0, "a lesson"), row(1, "another lesson")]);
+  const small = load();
+  const bytes = serializedBytes(small);
+  ok(bytes > 0 && bytes < 2000, `the faulting write is ~${bytes}B — far under both ceilings`);
+  storage.__failNextSet();
+  const faulted = await saveMemories(small);
+  ok(faulted.refused === true, "a throw from storage.set is still answered, never rethrown at the caller");
+  ok(faulted.reason === "write-fault", `…with reason "write-fault", not "platform-cap" (got ${JSON.stringify(faulted.reason)})`);
+  ok(faulted.bytesOver === undefined, "and NO fabricated byte deficit");
+  ok(typeof faulted.error === "string" && faulted.error.length > 0, "the platform's own message is carried for the log");
+
+  // the sentence the admin sees: an action they can take, and no number that means nothing
+  reset([row(0, "a lesson"), row(1, "another lesson")]);
+  storage.__failNextSet();
+  const del = await call("deleteMemory", { id: "m0" });
+  ok(del.success === false && del.reason === "write-fault", `a faulted delete is reported as a delete that did NOT happen (got ${JSON.stringify({ success: del.success, reason: del.reason })})`);
+  ok(del.error === memoryWriteFaultMessage(), `the sentence is the shared write-fault one: "${del.error}"`);
+  ok(!/\d/.test(del.error), "it names no byte count — nothing is over any limit");
+  ok(del.error !== memoryPlatformCapMessage(1), "and it is NOT the bulk-delete advice the old code gave");
+  ok(load().length === 2, "the store is untouched by the faulted write");
+  const retried = await call("deleteMemory", { id: "m0" });
+  ok(retried.success === true && load().length === 1, "the retry the sentence recommends actually works");
 }
 
 console.log(`\nmemory-store-repair: ${pass} passed, ${fail} failed`);

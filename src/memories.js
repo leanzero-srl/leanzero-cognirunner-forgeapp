@@ -48,11 +48,13 @@ import {
   MEMORY_PLATFORM_MAX_SERIALIZED_BYTES,
   memoryCapRefusalMessage,
   memoryPlatformCapMessage,
+  memoryWriteFaultMessage,
 } from "./shared/registry-limits.js";
 
 export {
   MAX_MEMORIES, MEMORY_CONTENT_MAX, MEMORY_MAX_SERIALIZED_BYTES,
   MEMORY_PLATFORM_MAX_SERIALIZED_BYTES, memoryCapRefusalMessage, memoryPlatformCapMessage,
+  memoryWriteFaultMessage,
 };
 
 export const MEMORIES_KEY = "pf_memories";
@@ -577,10 +579,28 @@ export const saveMemories = async (arr, { protectId = null, refuseIfOverBytes = 
   try {
     await storage.set(MEMORIES_KEY, out);
   } catch (error) {
+    /*
+     * F-197 — a throw HERE is not the platform cap, and must not be dressed as one.
+     *
+     * The size was measured against MEMORY_PLATFORM_MAX_SERIALIZED_BYTES immediately
+     * above and this write PASSED that check, so `outBytes` is at or under the ceiling
+     * by our own measurement. The previous code mapped every throw to
+     * reason "platform-cap" with `bytesOver = Math.max(1, outBytes - ceiling)` — a
+     * number that, on a passing pre-check, is always the fabricated floor of 1, so a
+     * transient KVS fault on a 1.4 KB write told the admin the store was "1 byte over
+     * Jira's 245760-byte storage limit" and to bulk-delete memories. That is advice for
+     * a problem the store does not have, and it hides the real one: the write faulted
+     * and should be retried.
+     *
+     * "platform-cap" is therefore reported in exactly ONE place — the pre-measurement
+     * above, which owns the deficit number. Anything the platform throws after a
+     * passing pre-check is a "write-fault": the error's own message, and NO byte
+     * number, because we do not have one that means anything.
+     */
     console.error(`Failed to write the memory store (${outBytes}B):`, error);
     return {
-      memories: null, refused: true, reason: "platform-cap",
-      bytesOver: Math.max(1, outBytes - MEMORY_PLATFORM_MAX_SERIALIZED_BYTES), evicted: [],
+      memories: null, refused: true, reason: "write-fault",
+      error: String(error?.message || error), evicted: [],
     };
   }
   // F-167/F-170/F-171: EVERY write re-evaluates the marker against the same admission

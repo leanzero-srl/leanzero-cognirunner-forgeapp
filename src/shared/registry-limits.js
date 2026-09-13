@@ -291,6 +291,17 @@ export const memoryCapRefusalMessage = (reason) => (reason === "bytes"
  * names the deficit because "delete some" is useless advice when the admin cannot tell
  * whether that means one row or forty. Pure: no storage, no I/O.
  */
+/**
+ * The refusal for a write the PLATFORM threw on after our own measurement said it would
+ * fit (F-197). A different sentence again, because the action is different a third time:
+ * nothing is too big, nothing needs deleting, the write simply did not land — so the
+ * honest advice is to try again. It carries NO byte number on purpose: the old code
+ * reported this case as "platform-cap" with a fabricated 1-byte deficit, which sent an
+ * admin to bulk-delete memories over a transient KVS fault on a 1.4 KB write. Pure: no
+ * storage, no I/O.
+ */
+export const memoryWriteFaultMessage = () => "Could not save — Jira storage refused the write; try again.";
+
 export const memoryPlatformCapMessage = (bytesOver) => {
   const over = Math.max(1, Math.round(Number(bytesOver) || 0));
   return `Memory store is ${over} bytes over Jira's ${MEMORY_PLATFORM_MAX_SERIALIZED_BYTES}-byte storage limit, so no change to it can be saved — not even deleting one memory. Select enough memories in the Memories tab to free at least ${over} bytes and delete them together.`;

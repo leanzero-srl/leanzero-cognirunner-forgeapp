@@ -53,9 +53,23 @@ const enforceValueSize = (key, value) => {
   }
 };
 
+/*
+ * A ONE-SHOT WRITE FAULT (F-197). Not every throw from `set` is the value being too big:
+ * KVS can fault on a perfectly sized write (a 5xx, a trace-level blip), and the app's
+ * answer for that case must be different from its answer for the size cap — so a suite
+ * needs to produce a throw that is NOT the size check above. `__failNextSet` arms exactly
+ * one, so it can never leak into a later assertion in the same file.
+ */
+let pendingSetFault = null;
+
 const storage = {
   async get(key) { return store.has(key) ? clone(store.get(key)) : undefined; },
   async set(key, value, options = {}) {
+    if (pendingSetFault) {
+      const fault = pendingSetFault;
+      pendingSetFault = null;
+      throw fault;
+    }
     // Conditional writes must be atomic even when callers await them concurrently.
     // Otherwise the mock hides the exact duplicate-delivery race these claims guard.
     if (options.keyPolicy === "FAIL_IF_EXISTS" && store.has(key)) {
@@ -98,7 +112,17 @@ const storage = {
     return transaction;
   },
   // test helpers (not part of the real API)
-  __reset() { store.clear(); },
+  __reset() { store.clear(); pendingSetFault = null; },
+  // Arm ONE throw from the next `set` — a transient fault, not the size ceiling.
+  __failNextSet(error) {
+    const fault = error instanceof Error ? error : new Error(String(error || "KVS write failed"));
+    if (!error || !(error instanceof Error)) {
+      fault.name = "ForgeKvsError";
+      fault.code = "INTERNAL_SERVER_ERROR";
+      fault.responseDetails = { status: 500, statusText: "Internal Server Error", traceId: "mock-trace", httpMethod: "POST", httpPath: "/api/v1/set" };
+    }
+    pendingSetFault = fault;
+  },
   __seed(key, value) { store.set(key, clone(value)); },
   __raw(key) { return store.get(key); },
 };

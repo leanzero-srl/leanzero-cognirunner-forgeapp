@@ -98,6 +98,7 @@ import {
   MEMORY_CONTENT_MAX,
   MAX_MEMORIES,
   memoryCapRefusalMessage,
+  memoryWriteFaultMessage,
   memoryPlatformCapMessage,
   memoryStoreStats,
   defangFence,
@@ -7207,11 +7208,23 @@ const cleanProjectKey = (projectKey) =>
  * reason code. The sentences themselves live in src/shared/registry-limits.js; nothing
  * about a limit is retyped here.
  */
-const memoryRefusalMessage = (saved) => (saved?.reason === "platform-cap"
+/**
+ * The reason codes that mean "the memory store did not take the write" (F-196/F-197).
+ * ONE list, next to the ONE builder that turns each of them into a sentence, so a new
+ * reason code cannot be added to memories.js and silently fall through to a generic
+ * "Failed to save memory" at a resolver.
+ */
+const MEMORY_WRITE_REFUSAL_REASONS = ["cap", "bytes", "platform-cap", "write-fault"];
+
+const memoryRefusalMessage = (saved) => {
   // F-189: a store already over the PLATFORM limit cannot take any write at all, so the
   // advice is different in kind — delete in BULK, and here is how many bytes must go.
-  ? memoryPlatformCapMessage(saved.bytesOver)
-  : memoryCapRefusalMessage(saved?.reason));
+  if (saved?.reason === "platform-cap") return memoryPlatformCapMessage(saved.bytesOver);
+  // F-197: KVS threw on a write our own pre-measurement passed. Nothing is over any
+  // limit, so no sentence about bytes may be shown — the write faulted, retry it.
+  if (saved?.reason === "write-fault") return memoryWriteFaultMessage();
+  return memoryCapRefusalMessage(saved?.reason);
+};
 
 resolver.define("getMemories", async () => {
   try {
@@ -7262,7 +7275,11 @@ resolver.define("addMemory", async ({ payload, context }) => {
       let error = result.error || "Failed to save memory";
       // F-172/F-174: the sentence (and the cap inside it) has ONE home in memories.js —
       // nothing about the limits is retyped at a consumption site.
-      if (reason === "cap" || reason === "bytes") error = memoryCapRefusalMessage(reason);
+      // F-196: saveMemoryCandidate now reports the refusals that come from the WRITE
+      // (a store already over the platform ceiling, a faulted write) as well as the two
+      // admission limits, so the sentence is chosen by the one builder that knows all
+      // four — never by a list of reason codes that has to be kept in step with it.
+      if (MEMORY_WRITE_REFUSAL_REASONS.includes(reason)) error = memoryRefusalMessage(result);
       return { success: false, stored: false, reason, error };
     }
     return { success: true, stored: true, id: result.id, merged: result.merged, evicted: result.evicted || [] };

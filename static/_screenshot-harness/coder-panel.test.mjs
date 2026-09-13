@@ -158,6 +158,39 @@ try {
       });
     }
 
+    /* ------------------------------------- 1b. THE READ THAT NEVER CAME BACK (F-436).
+       Distinct from every reason above: those are ANSWERS, this is a dropped request. The
+       panel used to store it as `{enabled:false, reason:"unknown"}` and render "Coder off"
+       with no way back, which told a developer on a flaky connection a fact about their
+       instance that nobody had established. It must now say the CHECK failed, wear the
+       neutral slate rather than the Coder's amber, and offer a Retry that re-asks. */
+    {
+      // 99 = every read rejects, so the 2/4/8 s ladder is exhausted rather than lucky.
+      await withPanel({ __THEME__: theme, __CODE_CAP_FAIL__: 99 }, async (page, errors) => {
+        const id = `unknown-read/${theme}`;
+        await page.locator(".coder-cap-unknown").waitFor({ timeout: 25000 });
+        const txt = (await page.locator(".coder-cap-unknown").innerText());
+        ok(/Could not check whether the Coder is available/.test(txt), `${id} the card says the CHECK failed`);
+        ok(!/Coder is off|CogniRunner Standard|Upgrade in Settings/i.test(txt), `${id} it makes no claim about the instance`);
+        ok(await page.locator(".coder-cap-off").count() === 0, `${id} the OFF arm is NOT rendered for a transport failure`);
+        ok(await page.locator(".coder-composer").count() === 0, `${id} still no composer - not knowing is not a yes`);
+        const chipBg = await page.locator(".coder-chip-unknown").evaluate((el) => getComputedStyle(el).backgroundColor);
+        ok(chipBg === HUE.slate[theme], `${id} the chip is the solid slate (got ${chipBg})`);
+        const tries = await page.evaluate(() => (window.__CALLS__ || []).filter((c) => c.name === "getAgentCapability").length);
+        ok(tries === 4, `${id} the read was retried on the ladder (1 + 3 tries, got ${tries})`);
+        ok(!(await page.evaluate(() => (window.__CALLS__ || []).some((c) => c.name === "getCoderThread"))), `${id} no thread read behind an unknown capability`);
+        await designRules(page, id);
+        ok(errors.length === 0, `${id} no page errors: ${errors.join(" | ")}`);
+        if (SHOTS) await page.locator(".glance").screenshot({ path: path.join(OUT, `coder-unknown-read-${theme}.png`) });
+
+        // THE WAY BACK: the connection comes good and Retry reaches the verdict.
+        await page.evaluate(() => { window.__CODE_CAP_FAIL__ = 0; });
+        await page.locator(".coder-cap-unknown .coder-btn-go").click();
+        await page.locator(".coder-cap-on").waitFor({ timeout: 15000 });
+        ok(await page.locator(".coder-composer").count() === 1, `${id} Retry re-asks and the panel opens on the ON verdict`);
+      });
+    }
+
     /* ------------------------------------------------- 2a. the UPGRADE arm (F-255).
        An edition denial is a BILLING statement. It must not be rendered as a permission
        problem, and the sentence must name the feature from ADVANCED_FEATURES rather than

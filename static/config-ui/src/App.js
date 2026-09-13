@@ -27,6 +27,12 @@ import ReviewPanel from "./components/ReviewPanel";
 import AILoadingState from "./components/AILoadingState";
 import { ConfigSkeleton } from "./components/Skeleton";
 import { resolveEdition, EDITION_IDS, agentCapabilityCopy } from "../../../src/shared/edition.js";
+// F-436 - the capability read (retry ladder + the loading/unknown/verdict contract) and the
+// ONE wording for a read that never came back. Copied byte-for-byte into admin-panel.
+import {
+  useAgentCapability, CAPABILITY_UNKNOWN_TITLE, CAPABILITY_UNKNOWN_TEXT,
+  CAPABILITY_CHECKING_TITLE, CAPABILITY_RETRY_LABEL,
+} from "./components/capability.js";
 // F-398 - the premade POST-FUNCTION catalogue. Which rules exist, what each one is
 // called and which instance capability it needs are the CATALOGUE's answers, never
 // this file's: a second list here is how a rule ships with a gate in one place and
@@ -3087,6 +3093,23 @@ const injectStyles = () => {
     .cpf-cap-off { background: #b45309; }
     .cpf-cap-title { font-size: 12px; font-weight: 800; letter-spacing: 0.02em; }
     .cpf-cap-text { font-size: 12px; font-weight: 500; line-height: 1.45; }
+    /* F-436 — THE READ'S OWN TWO STATES. Neither is a verdict, so neither may wear the
+       Coder's amber: an admin who sees amber reads "off", which is the exact lie this
+       finding is about. They are NEUTRAL SLATE (#475569 light, one shade lighter #64748b
+       dark) — solid, white text, no rail and no tint. The dark fill keeps WHITE ink rather
+       than the dark ink the amber arms use: slate-500 under white measures ~4.6:1 at the
+       700/800 weights these two lines use, where amber-500 under white measured ~2.1:1.
+       The retry button is a solid inverse chip, because no button primitive in this app
+       survives being placed on a saturated fill. */
+    .cpf-cap-checking { background: #475569; }
+    .cpf-cap-unknown { background: #475569; }
+    .cpf-cap-actions { display: flex; gap: 8px; margin-top: 7px; }
+    .cpf-cap-retry { appearance: none; border: none; cursor: pointer; background: #fff; color: #0f172a; font-size: 12px; font-weight: 700; padding: 5px 12px; border-radius: var(--r-sm, 6px); }
+    .cpf-cap-retry:hover { background: #e2e8f0; }
+    html[data-color-mode="dark"] .cpf-cap-checking { background: #64748b; }
+    html[data-color-mode="dark"] .cpf-cap-unknown { background: #64748b; }
+    html[data-color-mode="dark"] .cpf-cap-retry { background: #0f172a; color: #f8fafc; }
+    html[data-color-mode="dark"] .cpf-cap-retry:hover { background: #1e293b; }
     .cpf-gate { display: flex; flex-direction: column; gap: 3px; margin-top: 14px; padding: 11px 13px; border-radius: var(--r-md, 8px); background: #b45309; color: #fff; }
     .cpf-gate strong { font-size: 12.5px; font-weight: 800; }
     .cpf-gate span { font-size: 12px; font-weight: 500; line-height: 1.45; }
@@ -3234,9 +3257,12 @@ let currentPremadeValid = false;
    would hand Jira a stale config. Kept in sync by a useEffect, never refactored away.
    `currentCoderCapability` starts null = NOT YET ANSWERED, and a null refuses the save the
    same as an OFF verdict: a rule that cannot run must not be saved, and an unanswered
-   capability read is not a yes. */
+   capability read is not a yes.
+   F-436 - the STATUS rides alongside the verdict, because "not yet answered" and "answered
+   no" refuse the save for the same reason but must not say the same sentence. */
 let currentPfKind = "ai"; // "ai" | "premade" - the POST-FUNCTION slot's kind
-let currentCoderCapability = null; // the getAgentCapability answer, or null while unknown
+let currentCoderCapability = null; // the getAgentCapability verdict, or null while there is none
+let currentCoderCapStatus = "loading"; // "loading" | "unknown" | "verdict" (see components/capability.js)
 
 function App() {
   const [fieldId, setFieldId] = useState("");
@@ -3331,7 +3357,6 @@ function App() {
   const [premadeValid, setPremadeValid] = useState(false);
   // F-398 - the post-function slot's own kind switch and the Coder capability verdict.
   const [pfKind, setPfKind] = useState("ai"); // "ai" | "premade"
-  const [coderCapability, setCoderCapability] = useState(null); // null = not yet answered
   const [postFunctionType, setPostFunctionType] = useState(null); // null | "semantic" | "static"
   const [conditionPrompt, setConditionPrompt] = useState("");
   const [actionPrompt, setActionPrompt] = useState("");
@@ -3380,23 +3405,24 @@ function App() {
   useEffect(() => { currentPremadeConfig = premadeConfig; }, [premadeConfig]);
   useEffect(() => { currentPremadeValid = premadeValid; }, [premadeValid]);
   useEffect(() => { currentPfKind = pfKind; }, [pfKind]);
-  useEffect(() => { currentCoderCapability = coderCapability; }, [coderCapability]);
-
   /* F-398 - READ the Coder verdict, never derive it. The premade post-function catalogue's
      one entry declares `requiresCapability: "git"`, and `agentCapability` (src/shared/edition.js)
      is the ONE predicate that answers whether this instance may run it - a frontend that
      inferred it from the edition would be wrong for three of the five reasons. Fetched only
      when the premade post-function kind is actually on screen, so no other slot provokes a
-     read it has no use for. A throw is transport, which is still "we do not know", which is
-     still refused. */
-  useEffect(() => {
-    if (!isPostFunction || pfKind !== "premade" || coderCapability) return;
-    let live = true;
-    invoke("getAgentCapability")
-      .then((r) => { if (live) setCoderCapability(r && r.success ? r : { enabled: false, reason: "unknown" }); })
-      .catch(() => { if (live) setCoderCapability({ enabled: false, reason: "unknown" }); });
-    return () => { live = false; };
-  }, [isPostFunction, pfKind, coderCapability]);
+     read it has no use for.
+     F-436 - the read now lives in components/capability.js, which distinguishes a transport
+     failure from a verdict and retries it (2/4/8 s, plus the banner's button). The previous
+     effect stored a failed read AS a verdict and guarded on `|| coderCapability`, so one
+     timeout refused every subsequent save for the life of the iframe - while claiming the
+     Coder was off. A failure still refuses; it no longer lies, and it no longer sticks. */
+  const {
+    status: coderCapStatus,
+    verdict: coderCapability,
+    retry: retryCoderCapability,
+  } = useAgentCapability(invoke, isPostFunction && pfKind === "premade");
+  useEffect(() => { currentCoderCapability = coderCapability; }, [coderCapability]);
+  useEffect(() => { currentCoderCapStatus = coderCapStatus; }, [coderCapStatus]);
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -3777,6 +3803,17 @@ function App() {
                 return undefined;
               }
               if (premadePfNeedsCoder(currentPremadeConfig.ruleType)) {
+                /* F-436 - three answers, three sentences. The REFUSAL is the same in all
+                   three cases (an unanswered question is not a yes), but a save blocked by a
+                   dropped request must never be told the Coder is off - that is a claim about
+                   the instance made from a network error, and it sends the admin to Settings
+                   to fix something that was never broken. */
+                if (currentCoderCapStatus !== "verdict") {
+                  setError(currentCoderCapStatus === "unknown"
+                    ? `${CAPABILITY_UNKNOWN_TITLE}. ${CAPABILITY_UNKNOWN_TEXT}`
+                    : `${CAPABILITY_CHECKING_TITLE}. Try saving again in a moment.`);
+                  return undefined;
+                }
                 const cap = currentCoderCapability;
                 if (!cap || cap.enabled !== true) {
                   const copy = agentCapabilityCopy(cap ? cap.reason : "unknown");
@@ -4277,7 +4314,25 @@ function App() {
                 skipped transition a week later. The words come from the ONE table
                 (AGENT_CAPABILITY_REASONS, src/shared/edition.js) — four surfaces, one wording. */}
             {premadePfNeedsCoder(premadeConfig.ruleType) && (
-              coderCapability && coderCapability.enabled === true ? (
+              /* F-436 - FOUR arms, because there are four states and only two of them are
+                 verdicts. "Checking" and "could not check" are about the READ; only the last
+                 two are about the Coder. */
+              coderCapStatus === "loading" ? (
+                <div className="cpf-cap cpf-cap-checking" role="status">
+                  <span className="cpf-cap-title">{CAPABILITY_CHECKING_TITLE}</span>
+                  <span className="cpf-cap-text">One moment - the save is blocked until this answers.</span>
+                </div>
+              ) : coderCapStatus === "unknown" ? (
+                <div className="cpf-cap cpf-cap-unknown" role="alert">
+                  <span className="cpf-cap-title">{CAPABILITY_UNKNOWN_TITLE}</span>
+                  <span className="cpf-cap-text">{CAPABILITY_UNKNOWN_TEXT}</span>
+                  <span className="cpf-cap-actions">
+                    <button type="button" className="cpf-cap-retry" onClick={retryCoderCapability}>
+                      {CAPABILITY_RETRY_LABEL}
+                    </button>
+                  </span>
+                </div>
+              ) : coderCapability && coderCapability.enabled === true ? (
                 <div className="cpf-cap cpf-cap-on" role="note">
                   <span className="cpf-cap-title">{agentCapabilityCopy(coderCapability.reason).title}</span>
                   <span className="cpf-cap-text">{agentCapabilityCopy(coderCapability.reason).remedy}</span>

@@ -2731,6 +2731,74 @@ try {
     await closeEditor(env);
   }
 
+  /* ---------------- J16s — F-436: the capability READ failed, which is not "the Coder is off"
+     The finding: one dropped `getAgentCapability` was stored as `{enabled:false,
+     reason:"unknown"}`, the fetching effect guarded on that value being truthy, and so the
+     editor never asked again for the life of the iframe - every later save refused, naming a
+     cause the backend had never given. This journey fails the read outright, waits out the
+     2/4/8 s ladder, and asserts three things: the banner is about the CHECK, the refusal it
+     produces never says the Coder is off, and Retry actually re-asks and reaches the verdict.
+     The OFF arm is J16q's and is deliberately untouched. */
+  for (const theme of ["light", "dark"]) {
+    console.log(`J16s Coder capability read FAILS, then retries (${theme})`);
+    // 99 = every read rejects, so the ladder is genuinely exhausted rather than lucky.
+    const env = await openEditor(browser, "config-ui", "cfg-premade-pf", theme, { __CODE_CAP_FAIL__: 99 });
+    const { page } = env;
+    try {
+      await page.waitForSelector(".pr-form", { timeout: 8000 });
+      await page.locator(".dropdown-trigger", { hasText: "Choose a premade rule" }).first().click();
+      await page.waitForSelector(".dropdown-panel", { timeout: 6000 });
+      await page.locator(".dropdown-panel .dropdown-item", { hasText: "Coder: build" }).first().click();
+
+      // While the ladder runs, the editor says it is CHECKING - not that anything is off.
+      await page.waitForSelector(".cpf-cap-checking", { timeout: 8000 });
+      ok(await page.locator(".cpf-cap-off").count() === 0, `J16s (${theme}) nothing claims the Coder is off while the check is still running`);
+
+      /* The ladder: first read immediately, retries at 2 s, 4 s and 8 s, so the verdict
+         cannot be declared unknown before ~14 s. 25 s of headroom. */
+      await page.waitForSelector(".cpf-cap-unknown", { timeout: 25000 });
+      const capText = await page.locator(".cpf-cap-unknown").first().innerText();
+      ok(/Could not check whether the Coder is available/.test(capText), `J16s (${theme}) the banner says the CHECK failed`);
+      ok(!/Coder is off|CogniRunner Standard|Upgrade the app/i.test(capText), `J16s (${theme}) the banner makes no claim about the instance's capability`);
+      ok(await page.locator(".cpf-cap-off").count() === 0, `J16s (${theme}) the OFF arm is NOT rendered for a transport failure`);
+      const bg = await page.locator(".cpf-cap-unknown").first().evaluate((el) => getComputedStyle(el).backgroundColor);
+      ok(bg === (theme === "dark" ? "rgb(100, 116, 139)" : "rgb(71, 85, 105)"), `J16s (${theme}) the unknown arm is a SOLID slate block, not the Coder's amber - got ${bg}`);
+      ok(await page.locator(".cpf-cap-unknown").first().evaluate((el) => getComputedStyle(el).borderLeftWidth) === "0px", `J16s (${theme}) the unknown arm has no left accent rail`);
+      ok(await page.locator(".cpf-cap-retry").count() === 1, `J16s (${theme}) there is a Retry control`);
+
+      // The save is still refused - and the refusal names the READ, never the Coder.
+      await page.locator(".pr-seg-coder .pr-seg-btn", { hasText: "Build the change" }).first().click();
+      await page.locator(".dropdown-trigger", { hasText: "Choose a git connection" }).first().click();
+      await page.waitForSelector(".dropdown-panel", { timeout: 6000 });
+      await page.locator(".dropdown-panel .dropdown-item", { hasText: "Acme engineering" }).first().click();
+      await page.locator(".dropdown-trigger", { hasText: "Choose a repository" }).first().click();
+      await page.waitForSelector(".dropdown-panel", { timeout: 6000 });
+      await page.locator(".dropdown-panel .dropdown-item", { hasText: "acme/web" }).first().click();
+      const refused = await page.evaluate(async () => await window.__ON_CONFIGURE__());
+      ok(refused === undefined, `J16s (${theme}) the save is still REFUSED while the capability is unknown`);
+      ok(!(await page.evaluate(() => (window.__CALLS__ || []).some((c) => c.name === "registerPostFunction"))), `J16s (${theme}) nothing reached the registry`);
+      const err = await page.locator(".alert-error").first().innerText();
+      ok(/Could not check whether the Coder is available/.test(err), `J16s (${theme}) the refusal banner names the failed check`);
+      ok(!/is off|CogniRunner Standard/i.test(err), `J16s (${theme}) the refusal banner never says the Coder is off`);
+
+      // THE WAY BACK. The connection comes good; Retry re-asks and the verdict lands.
+      await page.evaluate(() => { window.__CODE_CAP_FAIL__ = 0; });
+      const before = await page.evaluate(() => (window.__CALLS__ || []).filter((c) => c.name === "getAgentCapability").length);
+      await page.locator(".cpf-cap-retry").first().click();
+      await page.waitForSelector(".cpf-cap-on", { timeout: 15000 });
+      const after = await page.evaluate(() => (window.__CALLS__ || []).filter((c) => c.name === "getAgentCapability").length);
+      ok(after > before, `J16s (${theme}) Retry actually re-asks getAgentCapability (${before} -> ${after})`);
+      ok(await page.locator(".cpf-cap-unknown").count() === 0, `J16s (${theme}) the unknown banner is gone once the verdict lands`);
+      ok(/Coder/i.test(await page.locator(".cpf-cap-on").first().innerText()), `J16s (${theme}) the ON verdict renders`);
+
+      // And the save the transport failure had bricked now goes through.
+      const saved = await page.evaluate(async () => await window.__ON_CONFIGURE__());
+      ok(typeof saved === "string" && JSON.parse(saved).ruleType === "postfunction-coder",
+        `J16s (${theme}) the save that one dropped request used to brick now succeeds`);
+    } catch (e) { fail++; console.log(`  ✗ J16s (${theme}) threw: ` + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
   /* ---------------- J16r — F-398: the admin wizard offers the same row -------------------- */
   {
     console.log("J16r admin wizard offers the Coder post-function (admin)");

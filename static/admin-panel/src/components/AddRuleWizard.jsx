@@ -34,6 +34,12 @@ import FunctionBuilder from "./FunctionBuilder";
 import PremadeRuleForm from "./PremadeRuleForm";
 import { getCatalog as getPremadeCatalog, findRule as findPremadeRule } from "../../../../src/shared/premade-rules-catalog.js";
 import { agentCapabilityCopy } from "../../../../src/shared/edition.js";
+// F-436 - the capability read (retry ladder + the loading/unknown/verdict contract) and the
+// ONE wording for a read that never came back. Byte-identical with config-ui's copy.
+import {
+  useAgentCapability, CAPABILITY_UNKNOWN_TITLE, CAPABILITY_UNKNOWN_TEXT,
+  CAPABILITY_CHECKING_TITLE, CAPABILITY_RETRY_LABEL,
+} from "./capability.js";
 
 const RULE_TYPE_OPTIONS = [
   { value: "validator", label: "Validator", desc: "Block transition if validation fails" },
@@ -154,17 +160,17 @@ export default function AddRuleWizard({ invoke, onClose, onCreated, canEdit = fa
   const [ruleKind, setRuleKind] = useState("ai"); // "ai" | "premade"
   /* F-398 - the Coder verdict for a premade post-function. READ from getAgentCapability,
      never derived from the edition (a BYOK site is on while Standard, a Coder site on Haiku
-     is off). null = NOT YET ANSWERED, and a null refuses the save exactly like an OFF
-     verdict: an unanswered question is not a yes. */
-  const [coderCapability, setCoderCapability] = useState(null);
-  useEffect(() => {
-    if (!premadePfNeedsCoder(ruleType) || coderCapability) return;
-    let live = true;
-    invoke("getAgentCapability")
-      .then((r) => { if (live) setCoderCapability(r && r.success ? r : { enabled: false, reason: "unknown" }); })
-      .catch(() => { if (live) setCoderCapability({ enabled: false, reason: "unknown" }); });
-    return () => { live = false; };
-  }, [ruleType, coderCapability, invoke]);
+     is off). No verdict refuses the create exactly like an OFF verdict: an unanswered
+     question is not a yes.
+     F-436 - but "no verdict" is not one state, it is two. The read now runs through
+     components/capability.js, which retries a TRANSPORT failure (2/4/8 s, plus the banner's
+     button) and reports "unknown" rather than storing a made-up OFF verdict that the old
+     `|| coderCapability` guard then treated as an answer forever. */
+  const {
+    status: coderCapStatus,
+    verdict: coderCapability,
+    retry: retryCoderCapability,
+  } = useAgentCapability(invoke, premadePfNeedsCoder(ruleType));
   const [premadeConfig, setPremadeConfig] = useState({});
   const [premadeValid, setPremadeValid] = useState(false);
   const [conditionPrompt, setConditionPrompt] = useState("");
@@ -367,10 +373,21 @@ export default function AddRuleWizard({ invoke, onClose, onCreated, canEdit = fa
         setError("Complete the post-function's details before creating the rule - pick what the Coder should do, a connection and a repository.");
         return;
       }
-      if (premadePfNeedsCoder(ruleType) && !(coderCapability && coderCapability.enabled === true)) {
-        const copy = agentCapabilityCopy(coderCapability ? coderCapability.reason : "unknown");
-        setError(`${copy.title}. ${copy.remedy}`);
-        return;
+      if (premadePfNeedsCoder(ruleType)) {
+        /* F-436 - a create blocked by a dropped request must not be told the Coder is off.
+           Same refusal, different sentence: this one is about the READ, and it points at the
+           Retry button rather than at Settings. */
+        if (coderCapStatus !== "verdict") {
+          setError(coderCapStatus === "unknown"
+            ? `${CAPABILITY_UNKNOWN_TITLE}. ${CAPABILITY_UNKNOWN_TEXT}`
+            : `${CAPABILITY_CHECKING_TITLE}. Try again in a moment.`);
+          return;
+        }
+        if (!(coderCapability && coderCapability.enabled === true)) {
+          const copy = agentCapabilityCopy(coderCapability ? coderCapability.reason : "unknown");
+          setError(`${copy.title}. ${copy.remedy}`);
+          return;
+        }
       }
     }
 
@@ -921,7 +938,25 @@ export default function AddRuleWizard({ invoke, onClose, onCreated, canEdit = fa
             {isPremadePfType(ruleType) && (
               <>
                 {premadePfNeedsCoder(ruleType) && (
-                  coderCapability && coderCapability.enabled === true ? (
+                  /* F-436 - four arms: the two states of the READ, then the two verdicts.
+                     "Could not check" is slate, never the Coder's amber - amber reads "off",
+                     and off is precisely what this state does not know. */
+                  coderCapStatus === "loading" ? (
+                    <div className="cpf-cap cpf-cap-checking" role="status">
+                      <span className="cpf-cap-title">{CAPABILITY_CHECKING_TITLE}</span>
+                      <span className="cpf-cap-text">One moment - the rule cannot be created until this answers.</span>
+                    </div>
+                  ) : coderCapStatus === "unknown" ? (
+                    <div className="cpf-cap cpf-cap-unknown" role="alert">
+                      <span className="cpf-cap-title">{CAPABILITY_UNKNOWN_TITLE}</span>
+                      <span className="cpf-cap-text">{CAPABILITY_UNKNOWN_TEXT}</span>
+                      <span className="cpf-cap-actions">
+                        <button type="button" className="cpf-cap-retry" onClick={retryCoderCapability}>
+                          {CAPABILITY_RETRY_LABEL}
+                        </button>
+                      </span>
+                    </div>
+                  ) : coderCapability && coderCapability.enabled === true ? (
                     <div className="cpf-cap cpf-cap-on" role="note">
                       <span className="cpf-cap-title">{agentCapabilityCopy(coderCapability.reason).title}</span>
                       <span className="cpf-cap-text">{agentCapabilityCopy(coderCapability.reason).remedy}</span>

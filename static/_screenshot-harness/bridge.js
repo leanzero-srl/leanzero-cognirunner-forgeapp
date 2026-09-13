@@ -1519,7 +1519,19 @@ function invoke(name, payload) {
     /* 1.4 commit 6 - Code tab. Every one of these resolvers is requireAdmin in the
        backend, so `__REFUSE__`/`__NO_ROSTER__` at the top of invoke() is what models a
        non-admin reader; these arms are the ADMIN answers. */
-    case "getAgentCapability": return Promise.resolve(CODE_CAP());
+    /* F-436 - __CODE_CAP_FAIL__ is a COUNT of leading capability reads that never come back
+       (a rejected promise, which is what a timed-out or blocked invoke looks like from the
+       iframe). It is decremented per call, so a fixture can model "the first read failed and
+       the retry succeeded" as well as "every read fails". A failure here is TRANSPORT and
+       must never be confused with the OFF verdict __CODE_CAP__ produces - that confusion is
+       the whole of the finding. */
+    case "getAgentCapability": {
+      if (typeof window !== "undefined" && Number(window.__CODE_CAP_FAIL__) > 0) {
+        window.__CODE_CAP_FAIL__ = Number(window.__CODE_CAP_FAIL__) - 1;
+        return Promise.reject(new Error("Failed to fetch"));
+      }
+      return Promise.resolve(CODE_CAP());
+    }
     case "listGitConnections": return Promise.resolve({ success: true, connections: CODE_CONNS() });
     /* 1.4 commit 9b - THE CODER PANEL. Four doors, and the shapes are the ENGINE's own
        (src/coder-engine.js runCoderTurn / getCoderThread / confirmCoderTicket): a turn is

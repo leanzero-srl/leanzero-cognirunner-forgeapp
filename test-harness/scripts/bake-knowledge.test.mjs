@@ -358,5 +358,52 @@ const secLit = JSON.stringify(sections);
     "and one changed byte changes it");
 }
 
+/* ---- a TIERED bake does not write, and the pin gates run anyway (F-589) ----
+   `--tier` used to skip assertPinsAgree AND assertPinnedSectionsFitShare while leaving the
+   emit on, so a partial corpus could overwrite the index, the titles module and all nine
+   packs with nothing having looked at the pins. */
+{
+  const fs = await import("node:fs");
+  const src = fs.readFileSync(bakePath, "utf8");
+  ok(!/if \(!tiers\) assertPins/.test(src) && !/if \(!tiers\) assertPinnedSectionsFitShare/.test(src),
+    "neither pin gate is skipped on a tier filter any more");
+  ok(/const effectiveDryRun = dryRun \|\| \(!!tiers && !write\)/.test(src),
+    "--tier implies a dry run unless --write is passed");
+  ok(/if \(!effectiveDryRun\) \{/.test(src) && !/if \(!dryRun\) \{/.test(src),
+    "and the EMIT is guarded by that one decision, not by dryRun alone");
+  ok(/write: args\.includes\("--write"\)/.test(src), "--write is a real CLI flag, not a convention");
+
+  // warn mode: the gate still RUNS and still reports, it just does not kill a dry run.
+  const packs = [{ id: "administrator-practice", pinned: [] }];
+  const liePins = { va: ["administrator-practice#administrator-practice"] };
+  ok(bake.assertPinsAgree(packs, liePins, { warnOnly: true }) === false,
+    "assertPinsAgree in warn mode reports the disagreement and returns false instead of exiting");
+  const strict = run(`B.assertPinsAgree(${JSON.stringify(packs)}, ${JSON.stringify(liePins)});`);
+  ok(strict.status !== 0, `and with no warnOnly it still REFUSES (exit ${strict.status})`);
+
+  // The real thing, when the (gitignored) raw corpus is present: a tiered bake writes NOTHING.
+  const rawPresent = fs.existsSync(path.join(repoRoot, "knowledge/raw"))
+    && fs.existsSync(path.join(repoRoot, "knowledge/denylist.local"));
+  if (rawPresent) {
+    const watched = [
+      path.join(repoRoot, "src/shared/knowledge-index.js"),
+      path.join(repoRoot, "src/shared/knowledge-titles.js"),
+      path.join(repoRoot, "src/shared/knowledge-packs/voice-rules.js"),
+      path.join(repoRoot, "knowledge/MANIFEST.md"),
+    ];
+    const before = watched.map((f) => fs.statSync(f).mtimeMs);
+    const r = spawnSync(process.execPath, [bakePath, "--tier", "A"], { encoding: "utf8", cwd: repoRoot });
+    const out = `${r.stdout || ""}${r.stderr || ""}`;
+    ok(r.status === 0, `a tiered bake still exits 0 (exit ${r.status})`);
+    ok(/--tier implies a DRY RUN/.test(out), "and says out loud that it wrote nothing");
+    const after = watched.map((f) => fs.statSync(f).mtimeMs);
+    ok(watched.every((f, i) => before[i] === after[i]),
+      "a partial corpus did NOT overwrite the index, the titles module, a pack or the MANIFEST");
+    ok(/pinned share/.test(out), "the pinned-share gate ran on the subset regardless of the tier");
+  } else {
+    console.log("  (skipped the live --tier bake: knowledge/raw or denylist.local absent)");
+  }
+}
+
 console.log(`\nbake-knowledge: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

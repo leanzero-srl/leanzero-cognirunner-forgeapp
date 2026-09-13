@@ -10,6 +10,8 @@
 // (item cap + serialized-byte cap, auto-before-user eviction, pruneScore + updatedAt tie-break).
 // Uses the mock @forge/kvs. Run:
 //   node --import ../lib/register-mocks.mjs scripts/memory-block.test.mjs
+// F-467: self-arranging mocks — must precede every src/ import (see lib/ensure-mocks.mjs).
+import "../lib/ensure-mocks.mjs";
 import storage from "../lib/mock-kvs.mjs";
 import {
   buildMemoryBlock, getMemorySettings, saveMemories, saveMemorySettingsInternal,

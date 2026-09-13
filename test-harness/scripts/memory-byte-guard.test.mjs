@@ -23,6 +23,8 @@
 //   of those clamps.
 // F-191 — `meta.stepName` / `meta.ruleId` had zero readers in src/ and static/, so they are no
 //   longer stored on the row (they stay memory_distill task params, which ARE read).
+// F-467: self-arranging mocks — must precede every src/ import (see lib/ensure-mocks.mjs).
+import "../lib/ensure-mocks.mjs";
 import storage from "../lib/mock-kvs.mjs";
 import {
   saveMemories, saveMemoryCandidate, serializedBytes, clampMemoryMeta, META_LIMITS,

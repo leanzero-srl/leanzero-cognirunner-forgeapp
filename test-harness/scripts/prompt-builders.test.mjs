@@ -17,6 +17,8 @@
 // mock-kvs store. This exercises the true fencing + defang path, not a stub.
 //
 // Run: node --import ../lib/register-mocks.mjs scripts/prompt-builders.test.mjs
+// F-467: self-arranging mocks — must precede every src/ import (see lib/ensure-mocks.mjs).
+import "../lib/ensure-mocks.mjs";
 import { readFileSync } from "node:fs";
 import { isKnownEvent, buildEventPromptBlock } from "../../src/shared/jira-events.js";
 import { describeCron } from "../../src/shared/cron.js";

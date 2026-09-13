@@ -12,6 +12,8 @@
 // a user add at an all-user cap is refused instead; 200-item cap), and the audit's PLAUSIBLE "reinforce a DISABLED memory
 // without re-enabling" — a USER re-add of an archived memory must re-enable it (else it's a silent no-op);
 // an AUTO reinforce must NOT resurrect an admin's archive.
+// F-467: self-arranging mocks — must precede every src/ import (see lib/ensure-mocks.mjs).
+import "../lib/ensure-mocks.mjs";
 import storage from "../lib/mock-kvs.mjs";
 import {
   saveMemoryCandidate, normalizeMemoryText, buildMemoryBlock, pruneForSave, MEMORIES_KEY, MAX_MEMORIES,

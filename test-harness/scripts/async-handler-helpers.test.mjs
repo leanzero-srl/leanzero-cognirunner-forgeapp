@@ -20,6 +20,8 @@
 // isTransientStepError / isTransientAIError are NOT exported → fs+eval-extracted (project pattern,
 // see recover-verdict.test.mjs). errorSignature is imported directly (pure; no @forge/kvs touched).
 // Run: node --import ../lib/register-mocks.mjs scripts/async-handler-helpers.test.mjs
+// F-467: self-arranging mocks — must precede every src/ import (see lib/ensure-mocks.mjs).
+import "../lib/ensure-mocks.mjs";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";

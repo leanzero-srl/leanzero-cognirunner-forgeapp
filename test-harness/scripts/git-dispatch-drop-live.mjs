@@ -8,8 +8,9 @@
 /*
  * LIVE proof of the F-335 / F-367 RETRY CONTRACT, in the ORDER the contract happens.
  *
- * WHY THIS EXISTS ALONGSIDE `git-inbound-live.mjs` (which already has a FAULT=1 section):
- * that script reads the completion claim the instant the attempt counter reaches 2, and
+ * WHY THIS EXISTS ALONGSIDE `git-inbound-live.mjs` (which CARRIED a FAULT=1 section until
+ * F-385 removed it in favour of this file — one home):
+ * that section read the completion claim the instant the attempt counter reaches 2, and
  * the successful attempt is the NEXT one — the platform redelivered it 67 s later in the
  * 2026-09-13 run. So it asks its F-367 question BEFORE the answer exists, calls a correct
  * app a failure, and (worse) its own "is a Redeliver answered duplicate?" POST is itself

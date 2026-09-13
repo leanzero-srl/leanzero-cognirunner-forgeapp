@@ -660,6 +660,43 @@ let agentId = null;
   ok(postSkip && postSkip.skipped[0].itemKey === "SUP-1",
     "F-501: …and an ITEM-level skip still names its issue");
 
+  /* ── F-502: the receipt agrees with the health counter about a failed tick ────
+   *
+   * The capability-refused tick reported `ok: true` on the receipt while `va_health`
+   * recorded `consecutiveFailures: 1` for the same run — the two surfaces an admin reads
+   * disagreeing about whether the run failed, with the receipt (the one that names the
+   * reason) being the green one. Below the banner threshold the receipt is the ONLY signal
+   * there is, so a green receipt is the F-233 shape: a control whose refusal reads as
+   * everything being fine.
+   *
+   * The engine writes no `error` on that arm — nothing threw, the instance refused — so
+   * the verdict is read from the agent-level GATE skip it DOES write.
+   */
+  ok(capReceipt && capReceipt.ok === false,
+    `F-502: a tick the engine stopped at a gate reports ok:false (got ${JSON.stringify(capReceipt && { ok: capReceipt.ok, error: capReceipt.error })})`);
+  ok(capReceipt && capReceipt.error === null,
+    "F-502: …with `error` still null — it did not throw, it was refused, and the two are different claims");
+
+  // A PAUSED agent is a healthy no-op, not a failure: its agent-level skip carries NO
+  // gate, which is exactly the line F-482 drew, and it must stay green.
+  await recordTick(storage, agentId, {
+    tickId: "f502p", phase: "prepare", candidates: 0, staged: 0,
+    skipped: [{ key: "(agent)", reason: "paused" }],
+  });
+  const okSt = await call("getVaStatus", { jobId: agentId });
+  const pausedReceipt = (okSt.receipts || []).find((r) => r.tickId === "f502p");
+  ok(pausedReceipt && pausedReceipt.ok === true,
+    `F-502: a PAUSED tick stays ok — a healthy no-op is not a failure (got ${JSON.stringify(pausedReceipt && { ok: pausedReceipt.ok })})`);
+
+  // And a tick that really threw is still not ok, by the original rule.
+  await recordTick(storage, agentId, {
+    tickId: "f502e", phase: "prepare", candidates: 0, staged: 0, error: "kvs down",
+  });
+  const errSt = await call("getVaStatus", { jobId: agentId });
+  const errReceipt = (errSt.receipts || []).find((r) => r.tickId === "f502e");
+  ok(errReceipt && errReceipt.ok === false && errReceipt.error === "kvs down",
+    `F-502: a tick that threw is still ok:false and still names the error (got ${JSON.stringify(errReceipt && { ok: errReceipt.ok, error: errReceipt.error })})`);
+
   const agents = await call("listVaAgents", {});
   has(agents, ["agents"], "listVaAgents");
   has(agents.agents[0], ["id", "name", "enabled", "va"], "an agent row (job row + {va})");

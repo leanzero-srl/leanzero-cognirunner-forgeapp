@@ -605,12 +605,32 @@ export const postWindowInstants = (va, nowMs) => {
  */
 const publicReceipt = (r) => {
   const phase = r.phase === "post" ? "post" : "prepare";
+  /*
+   * F-502 — A TICK THE ENGINE STOPPED AT A GATE IS NOT AN OK TICK.
+   *
+   * `ok: !r.error` reported GREEN on a capability-refused tick while `va_health` recorded
+   * `consecutiveFailures: 1` for the same run. The two surfaces an admin reads disagreed
+   * about whether the run failed, and the receipt — the one that names the reason — was
+   * the one saying everything is fine. Below the banner threshold the receipt is the ONLY
+   * signal there is.
+   *
+   * The engine does not write an `error` on that arm, by design: nothing threw, the
+   * instance simply refused. What it DOES write is the agent-level GATE skip (F-482,
+   * `{key: "(agent)", gate: "capability"}`), and that field IS the engine's statement that
+   * the whole run stopped here — the same statement it takes a health failure for. So the
+   * verdict is read from it rather than inferred from the absence of an exception.
+   *
+   * A skip on `(agent)` WITHOUT a gate stays ok: that is the paused arm, and a paused
+   * agent is a healthy no-op, not a failure. The gate field is exactly the line between
+   * the two, which is why F-482 added it.
+   */
+  const stoppedAtGate = asArray(r.skipped).some((s) => s && s.key === "(agent)" && s.gate);
   return {
     at: r.finished || r.started || null,
     startedAt: r.started || null,
     phase,
     tickId: r.tickId || null,
-    ok: !r.error,
+    ok: !r.error && !stoppedAtGate,
     swept: r.candidates,
     worked: phase === "prepare" ? r.staged : null,
     posted: phase === "post" ? r.staged : null,

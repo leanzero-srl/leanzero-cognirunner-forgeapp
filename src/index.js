@@ -520,19 +520,36 @@ const issueRefForLink = (ref) => (/^\d+$/.test(String(ref)) ? { id: String(ref) 
  * A Jira PROJECT admin is not a role source (see getUserPermissions), so "try
  * again" / "you lack a Jira permission" are both wrong advice — the UI should say
  * "Ask a CogniRunner admin to add you under Permissions". Ownership/scope
- * refusals carry no `needsRole` and therefore no hint: another person's rule does
- * not become yours because an admin adds you to the roster.
+ * refusals carry no `needsRole` and hint `not-owner` instead (F-252/F-254, see
+ * notOwner below): another person's rule does not become yours because an admin
+ * adds you to the roster.
  */
 const PERMISSION_REFUSAL_REASON = "no-permission";
 const PERMISSION_REFUSAL_HINT = "ask-app-admin";
-const permissionDenied = (message, needsRole) => ({
-  success: false,
-  error: message,
-  reason: PERMISSION_REFUSAL_REASON,
-  ...(needsRole ? { needsRole, hint: PERMISSION_REFUSAL_HINT } : {}),
-});
+const PERMISSION_REFUSAL_HINT_NOT_OWNER = "not-owner";
+const permissionDenied = (message, needsRole, opts = {}) => {
+  const hint = opts.hint || (needsRole ? PERMISSION_REFUSAL_HINT : null);
+  return {
+    success: false,
+    error: message,
+    reason: PERMISSION_REFUSAL_REASON,
+    ...(needsRole ? { needsRole } : {}),
+    ...(hint ? { hint } : {}),
+  };
+};
 const noPerm = (what, needsRole) =>
   permissionDenied(`You don't have permission to ${what}.`, needsRole);
+/**
+ * F-252/F-254 — the OWNERSHIP refusal. The caller already holds the role; the row
+ * belongs to somebody else, so there is no role floor to name and the remedy is
+ * NOT "ask an admin for a role" (that advice invites an escalation to scope "all"
+ * to touch one row they did not write). `hint: "not-owner"` says exactly that, and
+ * the sentence says it in English. Every canActOnConfig / canDeleteConfig refusal
+ * — single and bulk — goes through here.
+ */
+const notOwner = (what) =>
+  permissionDenied(`You can't ${what} — it belongs to someone else.`, null,
+    { hint: PERMISSION_REFUSAL_HINT_NOT_OWNER });
 /** "Editor access required" / "Admin access required" — sentence unchanged. */
 const needRole = (role) =>
   permissionDenied(`${role.charAt(0).toUpperCase()}${role.slice(1)} access required`, role);
@@ -1812,7 +1829,7 @@ resolver.define("registerConfig", async ({ payload, context }) => {
       // config they're allowed to act on (role + scope/ownership). Without this any caller
       // could overwrite another user's validator/condition rule.
       if (!(await canActOnConfig(context.accountId, configs[existingIndex], "editor"))) {
-        return permissionDenied("You don't have permission to modify this rule.", "editor");
+        return notOwner("modify this rule");
       }
       // UPDATE growth guard (see registerPostFunction): updates bypass the create
       // checks, so refuse only if this edit would push the value near the hard cap.
@@ -1912,7 +1929,7 @@ export const setRuleDisabledCore = async ({ id, disabled, accountId, bypassAuthz
     return { success: false, error: "That id belongs to a different kind of rule." };
   }
   if (!bypassAuthz && !(await canActOnConfig(accountId, config, "editor"))) {
-    return permissionDenied("You don't have permission to manage this rule", "editor");
+    return notOwner("manage this rule");
   }
   // Identities owned by OTHER registry rows — the tier-3 fallback inside the
   // propagation must refuse to write into a rule one of them owns, exactly as
@@ -4136,7 +4153,9 @@ const isPostFunctionRow = (row) => String(row?.type || "").startsWith("postfunct
 const describeDeleteFailure = (r) => {
   switch (r?.reason) {
     case "not-found": return "That rule is no longer in the registry.";
-    case "forbidden": return "You don't have permission to delete this rule.";
+    // F-254: the bulk path reports ownership with the SAME vocabulary as every
+    // other gate (`no-permission` + hint `not-owner`), never a private "forbidden".
+    case "no-permission": return "You can't delete this rule — it belongs to someone else.";
     case "wrong-family": return "That id belongs to a different kind of rule.";
     case "ambiguous": return "This transition has more than one CogniRunner rule of the same kind and none of them carry an id, so we can't tell which to remove. Open the workflow editor and delete it there.";
     case "workflow-not-found": return "That workflow could not be read. If it has unpublished changes, publish them and try again.";
@@ -4150,15 +4169,18 @@ const describeDeleteFailure = (r) => {
 
 /**
  * The single-row delete refusal both removeConfig and removePostFunction return.
- * F-242: a "forbidden" row IS a permission refusal, so it must carry the same
+ * F-242: an ownership row IS a permission refusal, so it must carry the same
  * machine flag as every gate (`reason: "no-permission"`); the granular delete
  * code moves to `failure` so nothing that inspected it loses information.
+ * F-254: that refusal is an AUTHORSHIP verdict, never a role floor — no
+ * `needsRole`, hint `not-owner` (see notOwner). The old private code "forbidden"
+ * is gone; the bulk results[] rows carry the same pair.
  */
 const deleteFailureResult = (r) => {
   const message = describeDeleteFailure(r);
   const code = r?.reason || "unknown";
-  return code === "forbidden"
-    ? { ...permissionDenied(message, "editor"), failure: code }
+  return code === PERMISSION_REFUSAL_REASON
+    ? { ...permissionDenied(message, null, { hint: PERMISSION_REFUSAL_HINT_NOT_OWNER }), failure: code }
     : { success: false, error: message, reason: code, failure: code };
 };
 
@@ -4200,7 +4222,7 @@ export const removeRegistryRowsCore = async ({ ids, accountId, detach = false, f
     // bypassAuthz is ONLY ever set by the dev-gated HARNESS_SECRET web trigger, where
     // the Bearer secret is the authorization (same reasoning as its other actions).
     // Resolvers never pass it.
-    if (!bypassAuthz && !(await canDeleteConfig(accountId, target))) { results.push({ id, ok: false, reason: "forbidden" }); continue; }
+    if (!bypassAuthz && !(await canDeleteConfig(accountId, target))) { results.push({ id, ok: false, reason: PERMISSION_REFUSAL_REASON, hint: PERMISSION_REFUSAL_HINT_NOT_OWNER }); continue; }
     removable.push(target);
   }
 
@@ -6495,7 +6517,7 @@ resolver.define("registerPostFunction", async ({ payload, context }) => {
     // On update: verify the caller has editor rights on the existing record. Other PF resolvers
     // (remove/disable/enable) already do this; the create/update path was an oversight.
     if (existing >= 0 && !(await canActOnConfig(context.accountId, configs[existing], "editor"))) {
-      return permissionDenied("You don't have permission to modify this post-function", "editor");
+      return notOwner("modify this post-function");
     }
     // Authz on CREATE — mirror the update gate: a new registry row (and its offloaded pf_code
     // bundle written below) requires at least the editor role. The create branch was ungated, so
@@ -7122,7 +7144,7 @@ resolver.define("deleteContextDoc", async ({ payload, context }) => {
     const index = (await storage.get(DOC_REPO_INDEX_KEY)) || [];
     const doc = index.find((d) => d.id === id);
     if (doc && !(await canActOnConfig(context.accountId, doc, "editor"))) {
-      return permissionDenied("You don't have permission to delete this document", "editor");
+      return notOwner("delete this document");
     }
     // Builtin docs flip to disabled instead of deleting — the seeder upserts by
     // id, so a hard delete would resurrect the doc on the next seed-version bump.
@@ -7209,7 +7231,7 @@ resolver.define("saveSkill", async ({ payload, context }) => {
         return permissionDenied("Admin access required to edit built-in skills", "admin");
       }
       if (existing && !(await canActOnConfig(context.accountId, existing, "editor"))) {
-        return permissionDenied("You don't have permission to edit this skill", "editor");
+        return notOwner("edit this skill");
       }
     }
     const result = await saveSkillInternal(
@@ -7241,7 +7263,7 @@ resolver.define("deleteSkill", async ({ payload, context }) => {
     const index = (await storage.get(SKILL_INDEX_KEY)) || [];
     const skill = index.find((s) => s.id === id);
     if (skill && !(await canActOnConfig(context.accountId, skill, "editor"))) {
-      return permissionDenied("You don't have permission to delete this skill", "editor");
+      return notOwner("delete this skill");
     }
     if (skill?.builtin === true) {
       // Builtins are shared, curated content — mirror the saveSkill gate.
@@ -9996,8 +10018,13 @@ resolver.define("saveListener", async ({ payload, context }) => {
   const input = payload?.listener;
   if (!input || typeof input !== "object") return { success: false, error: "listener is required" };
   const existing = input.id ? await listenersMod.getListener(input.id) : null;
-  const allowed = existing ? await canActOnConfig(context.accountId, existing, "editor") : await requireRole(context.accountId, "editor");
-  if (!allowed) return noPerm(existing ? "edit this listener" : "create listeners", "editor");
+  // F-252 — the two arms are DIFFERENT refusals: creating wants a role floor,
+  // editing someone else's row is an ownership verdict no role grant fixes.
+  if (existing) {
+    if (!(await canActOnConfig(context.accountId, existing, "editor"))) return notOwner("edit this listener");
+  } else if (!(await requireRole(context.accountId, "editor"))) {
+    return noPerm("create listeners", "editor");
+  }
   return okOr(async () => ({ success: true, listener: await listenersMod.saveListener(input, { accountId: context.accountId }) }));
 });
 resolver.define("deleteListener", async ({ payload, context }) => {
@@ -10005,13 +10032,13 @@ resolver.define("deleteListener", async ({ payload, context }) => {
   if (!existing) return { success: false, error: "Listener not found" };
   // canDeleteConfig, NOT canActOnConfig — destruction requires genuine authorship
   // for a scope-"own" editor (see the block comment on canDeleteConfig).
-  if (!(await canDeleteConfig(context.accountId, existing))) return noPerm("delete this listener");
+  if (!(await canDeleteConfig(context.accountId, existing))) return notOwner("delete this listener");
   return okOr(async () => ({ success: true, ...(await listenersMod.deleteListener(payload.id)) }));
 });
 resolver.define("setListenerEnabled", async ({ payload, context }) => {
   const existing = await listenersMod.getListener(payload?.id);
   if (!existing) return { success: false, error: "Listener not found" };
-  if (!(await canActOnConfig(context.accountId, existing, "editor"))) return noPerm("change this listener");
+  if (!(await canActOnConfig(context.accountId, existing, "editor"))) return notOwner("change this listener");
   return okOr(async () => ({ success: true, listener: await listenersMod.setListenerEnabled(payload.id, payload.enabled !== false) }));
 });
 // "Test with an issue": runs the (possibly unsaved) listener in SIMULATION against a
@@ -10031,7 +10058,7 @@ resolver.define("testListener", async ({ payload, context }) => {
     // editor run someone else's agent (real provider call, real reads).
     // normalizeListener carries the EXISTING createdBy for a saved id and stamps
     // the caller for a brand-new draft, so both branches check the true owner.
-    if (!(await canActOnConfig(context.accountId, listener, "editor"))) return noPerm("test this listener");
+    if (!(await canActOnConfig(context.accountId, listener, "editor"))) return notOwner("test this listener");
     const result = await listenersMod.testListener({ listener, issueKey: payload?.issueKey ? String(payload.issueKey).trim() : null, eventType: payload?.eventType || null, deadline: Date.now() + 20000 });
     return { success: true, result };
   });
@@ -10068,21 +10095,25 @@ resolver.define("saveScheduledJob", async ({ payload, context }) => {
   const input = payload?.job;
   if (!input || typeof input !== "object") return { success: false, error: "job is required" };
   const existing = input.id ? await jobsMod.getJob(input.id) : null;
-  const allowed = existing ? await canActOnConfig(context.accountId, existing, "editor") : await requireRole(context.accountId, "editor");
-  if (!allowed) return noPerm(existing ? "edit this job" : "create scheduled jobs", "editor");
+  // F-252 — see saveListener: ownership and role floor are not the same refusal.
+  if (existing) {
+    if (!(await canActOnConfig(context.accountId, existing, "editor"))) return notOwner("edit this job");
+  } else if (!(await requireRole(context.accountId, "editor"))) {
+    return noPerm("create scheduled jobs", "editor");
+  }
   return okOr(async () => ({ success: true, job: await jobsMod.saveJob(input, { accountId: context.accountId }) }));
 });
 resolver.define("deleteScheduledJob", async ({ payload, context }) => {
   const existing = await jobsMod.getJob(payload?.id);
   if (!existing) return { success: false, error: "Scheduled job not found" };
   // canDeleteConfig, NOT canActOnConfig — see deleteListener.
-  if (!(await canDeleteConfig(context.accountId, existing))) return noPerm("delete this job");
+  if (!(await canDeleteConfig(context.accountId, existing))) return notOwner("delete this job");
   return okOr(async () => ({ success: true, ...(await jobsMod.deleteJob(payload.id)) }));
 });
 resolver.define("setScheduledJobEnabled", async ({ payload, context }) => {
   const existing = await jobsMod.getJob(payload?.id);
   if (!existing) return { success: false, error: "Scheduled job not found" };
-  if (!(await canActOnConfig(context.accountId, existing, "editor"))) return noPerm("change this job");
+  if (!(await canActOnConfig(context.accountId, existing, "editor"))) return notOwner("change this job");
   return okOr(async () => ({ success: true, job: await jobsMod.setJobEnabled(payload.id, payload.enabled !== false) }));
 });
 // "Run now": queues a manual run of a SAVED job (the consumer loads it by id) and
@@ -10090,7 +10121,7 @@ resolver.define("setScheduledJobEnabled", async ({ payload, context }) => {
 resolver.define("runScheduledJobNow", async ({ payload, context }) => {
   const job = await jobsMod.getJob(payload?.id);
   if (!job) return { success: false, error: "Save the job first, then run it." };
-  if (!(await canActOnConfig(context.accountId, job, "editor"))) return noPerm("run this job");
+  if (!(await canActOnConfig(context.accountId, job, "editor"))) return notOwner("run this job");
   return okOr(async () => ({ success: true, async: true, ...(await jobsMod.enqueueJobRun({ job, manual: true, accountId: context.accountId })) }));
 });
 resolver.define("previewSchedule", async ({ payload, context }) => {

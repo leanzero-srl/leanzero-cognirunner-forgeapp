@@ -100,18 +100,63 @@ for (const key of ["getConfigs", "explainRule", "buildRule", "narrateDryRun"]) {
   assert.equal(res?.hint, "ask-app-admin", `${key}: anonymous refusal carries the hint too`);
 }
 
-// F-241 — the hint rides with `needsRole`, never alone: an ownership/scope refusal
-// (the caller HAS the role, the row is someone else's) must not tell them to go ask
-// an admin for a role they already hold.
+// F-241/F-252/F-254 — the OWNERSHIP table. The caller HAS editor; the row is
+// someone else's. Every one of these refusals must carry `reason:"no-permission"`,
+// NO `needsRole`, and `hint:"not-owner"` — never "ask-app-admin", which would send
+// a role-holder to beg for scope:"all" over the whole site to touch one row.
+const OWNED_BY_OTHER = "acct-someone-else";
+const seedOwnership = async () => {
+  await storage.set("app_admins", [{ accountId: CALLER, role: "editor", scope: "own" }]);
+  await storage.set("listener:l-other", { id: "l-other", name: "Other", createdBy: OWNED_BY_OTHER, enabled: true, events: [] });
+  await storage.set("listeners_index", ["l-other"]);
+  await storage.set("job:j-other", { id: "j-other", name: "Other", createdBy: OWNED_BY_OTHER, enabled: true, schedule: { kind: "interval", minutes: 60 } });
+  await storage.set("jobs_index", ["j-other"]);
+  await storage.set("doc_repo_index", [{ id: "d-other", title: "Other doc", createdBy: OWNED_BY_OTHER }]);
+  await storage.set("skill_repo_index", [{ id: "s-other", name: "Other skill", createdBy: OWNED_BY_OTHER }]);
+  await storage.set("config_registry", [
+    { id: "r-other", type: "validator", createdBy: OWNED_BY_OTHER, prompt: "x", transitionId: "1", workflowName: "wf" },
+  ]);
+};
+const OWNERSHIP = [
+  ["setListenerEnabled", { id: "l-other", enabled: false }],
+  ["saveListener", { listener: { id: "l-other", name: "Renamed", events: [] } }],
+  ["deleteListener", { id: "l-other" }],
+  ["testListener", { id: "l-other" }],
+  ["saveScheduledJob", { job: { id: "j-other", name: "Renamed" } }],
+  ["deleteScheduledJob", { id: "j-other" }],
+  ["setScheduledJobEnabled", { id: "j-other", enabled: false }],
+  ["runScheduledJobNow", { id: "j-other" }],
+  ["deleteContextDoc", { id: "d-other" }],
+  // saveSkill takes a FLAT payload (id/name/instructions), unlike the GATED row
+  // above where the role gate fires before the body is read.
+  ["saveSkill", { id: "s-other", name: "Other skill", instructions: "do a thing" }],
+  ["deleteSkill", { id: "s-other" }],
+  ["removeConfig", { id: "r-other" }],
+];
+for (const [key, payload] of OWNERSHIP) {
+  await reset();
+  await seedOwnership();
+  const res = await invoke(key, payload);
+  assert.equal(res?.success, false, `${key}: a scope-own editor cannot act on another owner's row`);
+  assert.equal(res?.reason, "no-permission",
+    `${key}: an ownership refusal is still machine-readable (got ${JSON.stringify(res?.reason)})`);
+  assert.equal(res?.needsRole, undefined,
+    `${key}: an ownership refusal names no role floor (got ${JSON.stringify(res?.needsRole)})`);
+  assert.equal(res?.hint, "not-owner",
+    `${key}: an ownership refusal must say not-owner, never ask-app-admin (got ${JSON.stringify(res?.hint)})`);
+}
+
+// F-254 — the BULK delete path speaks the same vocabulary in its per-row results,
+// so an ownership refusal there is machine-readable too and "forbidden" is gone.
 {
   await reset();
-  await storage.set("app_admins", [{ accountId: CALLER, role: "editor", scope: "own" }]);
-  await storage.set("listener:l-other", { id: "l-other", name: "Other", createdBy: "acct-someone-else", enabled: true, events: [] });
-  const scoped = await invoke("setListenerEnabled", { id: "l-other", enabled: false });
-  assert.equal(scoped?.success, false, "a scope-own editor cannot toggle another owner's listener");
-  assert.equal(scoped?.reason, "no-permission");
-  assert.equal(scoped?.needsRole, undefined, "an ownership refusal names no role floor");
-  assert.equal(scoped?.hint, undefined, "an ownership refusal must not suggest asking for a role");
+  await seedOwnership();
+  const bulk = await invoke("deleteRules", { ids: ["r-other"] });
+  const row = (bulk?.results || [])[0];
+  assert.ok(row, "deleteRules reports a row per id");
+  assert.equal(row.ok, false, "the row is refused");
+  assert.equal(row.reason, "no-permission", `bulk ownership refusal uses the shared vocabulary (got ${JSON.stringify(row.reason)})`);
+  assert.equal(row.hint, "not-owner", "bulk ownership refusal carries the not-owner hint");
 }
 
 // A SUCCESS must never look like a refusal.

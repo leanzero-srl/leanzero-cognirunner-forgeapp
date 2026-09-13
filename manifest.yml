@@ -66,6 +66,36 @@ modules:
   #      semantics — that residual is documented in the rule's own help text.)
   #   4. Anything unrecognised — missing exprProp/exprKind (every pre-ship saved
   #      config), an unknown exprKind, a non-custom exprProp — falls to TRUE.
+  #
+  # ⚠️ THE GIT BRANCHES READ A FORGEABLE PROPERTY, AND THAT IS BY DESIGN.
+  # `cognirunner.git` is written by our own webhook listeners and is ADVISORY: it
+  # is the last state this app SAW, and anyone who can edit the issue can write it.
+  # A Jira expression cannot make a network call, so a CONDITION can never verify
+  # it — the condition is a HINT that hides a transition nobody should be trying
+  # yet, never a gate (plan §3.7/§3.9). The gate is the git VALIDATOR
+  # (src/premade-rules.js runGitValidator), which reads the provider LIVE on the
+  # transition and binds the candidate pull request to the issue (F-362). The
+  # rules' own help text says so, and config-view repeats it. Provenance on the
+  # property (a signature the expression could check) is PARKED by that design
+  # decision, not forgotten — F-365.
+  #
+  # F-365 — the git branches carry the same STRICT SAFETY PATTERN, extended for
+  # dynamic indexing by `config.repo` (which is not a customfield id):
+  #   a. ONE leading guard covers all three branches and falls to TRUE unless the
+  #      whole shape is the one our writer produces: `config.repo` present and
+  #      "owner/name" shaped (src/shared/git-ids.js isRepoIdShaped, lower-cased by
+  #      normalizeRepoId), the property present, `version == 1` (a future version 2
+  #      SHOWS rather than guesses), and `repos` present. Only then is
+  #      `repos?.[config.repo]` evaluated at all.
+  #   b. Each branch still null-guards its own leaf before reading it, so an entry
+  #      that exists without the flag SHOWS.
+  #   c. RESIDUAL, stated because it is structural: Jira expressions have no type
+  #      test and no try/catch, so a config whose `repo` is not a STRING (which the
+  #      app's own writers cannot produce — normalizeRepoId returns a String or
+  #      nothing) lands on the `.match` evaluation ERROR path = FALSE = hidden,
+  #      exactly like the exprProp pattern above. Every SHAPE oddness is TRUE; only
+  #      a type oddness is not, and closing that needs a type test the language
+  #      does not have.
   jira:workflowCondition:
     - key: ai-text-field-condition
       name: CogniRunner Field Condition
@@ -106,14 +136,21 @@ modules:
         config.ruleType == "probe-git-build" ?
           (issue.properties?.["cognirunner.git"]?.build?.conclusion == null ? true :
            issue.properties?.["cognirunner.git"]?.build?.conclusion == "success") :
+        (config.ruleType == "git-pr-merged" || config.ruleType == "git-pr-approved" || config.ruleType == "git-build-passed")
+          && (config.repo == null
+              || config.repo.match("^[a-z0-9._-]+/[a-z0-9._-]+$") == null
+              || issue.properties?.["cognirunner.git"] == null
+              || issue.properties?.["cognirunner.git"].version == null
+              || issue.properties?.["cognirunner.git"].version != 1
+              || issue.properties?.["cognirunner.git"].repos == null) ? true :
         config.ruleType == "git-pr-merged" ?
-          (config.repo == null || issue.properties?.["cognirunner.git"]?.repos?.[config.repo]?.pr?.merged == null ? true :
+          (issue.properties?.["cognirunner.git"]?.repos?.[config.repo]?.pr?.merged == null ? true :
            issue.properties?.["cognirunner.git"]?.repos?.[config.repo]?.pr.merged) :
         config.ruleType == "git-pr-approved" ?
-          (config.repo == null || issue.properties?.["cognirunner.git"]?.repos?.[config.repo]?.pr?.approved == null ? true :
+          (issue.properties?.["cognirunner.git"]?.repos?.[config.repo]?.pr?.approved == null ? true :
            issue.properties?.["cognirunner.git"]?.repos?.[config.repo]?.pr.approved) :
         config.ruleType == "git-build-passed" ?
-          (config.repo == null || issue.properties?.["cognirunner.git"]?.repos?.[config.repo]?.pr?.build == null ? true :
+          (issue.properties?.["cognirunner.git"]?.repos?.[config.repo]?.pr?.build == null ? true :
            issue.properties?.["cognirunner.git"]?.repos?.[config.repo]?.pr.build.toLowerCase().match("^(failure|failed|timed_out|cancelled|canceled|action_required|startup_failure|stale|stopped)$") == null) :
         true
       create:

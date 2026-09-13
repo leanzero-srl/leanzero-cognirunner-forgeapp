@@ -105,6 +105,30 @@ for (const bad of ["failure", "FAILED", "timed_out", "cancelled", "action_requir
   eq(show("git-build-passed", REPO, prop({ number: 4, build: bad })), false, `build "${bad}" -> HIDE`);
 }
 
+// --- 3b. F-365: odd SHAPES can only evaluate TRUE ----------------------------
+// `repos?.[config.repo]` is dynamic indexing, and the property is user-writable,
+// so every shape that is not the one our writer produces must SHOW rather than
+// hide. (The forgeability itself is BY DESIGN — a condition is a hint, the git
+// VALIDATOR is the gate. See the manifest comment.)
+const hides = prop({ number: 4, merged: false, approved: false, build: "failure" });
+for (const t of ["git-pr-merged", "git-pr-approved", "git-build-passed"]) {
+  eq(show(t, REPO, { ...hides, version: 2 }), true, `${t}: a FUTURE property version -> SHOW (never guess)`);
+  eq(show(t, REPO, { ...hides, version: null }), true, `${t}: property with no version -> SHOW`);
+  eq(show(t, REPO, { version: 1, updatedAt: "x" }), true, `${t}: property with no repos map at all -> SHOW`);
+  eq(show(t, REPO, { version: 1, repos: null }), true, `${t}: repos:null -> SHOW`);
+  eq(show(t, REPO, { version: 1, repos: { [REPO]: null } }), true, `${t}: the repo entry is null -> SHOW`);
+  eq(show(t, REPO, { version: 1, repos: { [REPO]: { repoId: REPO } } }), true, `${t}: the entry carries no pr at all -> SHOW`);
+  eq(show(t, REPO, { version: 1, repos: { [REPO]: { pr: null } } }), true, `${t}: pr:null -> SHOW`);
+  // a repo id that is not "owner/name" never reaches the indexing
+  eq(show(t, "not-a-repo-id", { version: 1, repos: { "not-a-repo-id": { pr: { merged: false, approved: false, build: "failure" } } } }), true,
+    `${t}: a repo that is not owner/name shaped -> SHOW`);
+  eq(show(t, "", hides), true, `${t}: empty repo string -> SHOW`);
+  eq(show(t, "OWNER/Name", { version: 1, repos: { "OWNER/Name": { pr: { merged: false, approved: false, build: "failure" } } } }), true,
+    `${t}: a repo id that normalizeRepoId would have lower-cased -> SHOW`);
+  // …and the guard did not break the real negative it exists to serve.
+  eq(show(t, REPO, hides), false, `${t}: the REAL known-negative still HIDES (guard is not a bypass)`);
+}
+
 // --- 4. the expression's own guards still hold (no regression) ----------------
 eq(evaluate(null, { properties: {} }, null), true, "config == null -> SHOW (unchanged)");
 eq(evaluate({ ruleType: "git-pr-merged", repo: REPO }, { properties: { "cognirunner.git": prop({ number: 4, merged: false }) } }, null), true,

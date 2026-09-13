@@ -224,10 +224,13 @@ const beforeNew = JSON.stringify(load());
 const newRefused = await saveMemoryCandidate({ content: "a brand new distinct lesson about sprint mapping", source: "test" });
 ok(newRefused.stored === false && newRefused.id === null,
   `F-196 new-row arm: a refused write reports stored:false and NO id (got ${JSON.stringify({ stored: newRefused.stored, id: newRefused.id })})`);
-// (this one is caught EARLIER, by the admission guard's dry run, which is why the
-// hard-coded `stored: true` never showed here — the throwing-set case below is the one
-// that reaches saveMemories and used to come back a success.)
-ok(newRefused.reason === "bytes", `with the admission guard naming the reason (got ${JSON.stringify(newRefused.reason)})`);
+// (this one is caught EARLIER, by the admission check, which is why the hard-coded
+// `stored: true` never showed here — the throwing-set case below is the one that reaches
+// saveMemories and used to come back a success. F-198: the admission check now names the
+// PLATFORM ceiling on a store that is over it, because "shorten or delete a memory" is
+// not a remedy for a store where deleting one memory is refused too.)
+ok(newRefused.reason === "platform-cap" && newRefused.bytesOver > 0,
+  `with the admission check naming the platform ceiling and the deficit (got ${JSON.stringify({ reason: newRefused.reason, bytesOver: newRefused.bytesOver })})`);
 ok(JSON.stringify(load()) === beforeNew, "nothing was written");
 
 // --- both arms, with a THROWING storage.set on a write that passed our size check ---

@@ -258,9 +258,43 @@ const PROBE_CONTENT = "\u{1F600}".repeat(MEMORY_CONTENT_MAX);
 const PROBE_META = Object.fromEntries(
   Object.entries(META_LIMITS).map(([key, max]) => [key, "\u{1F600}".repeat(max)]),
 );
-export const wouldRefuseNewMemory = (arr) => {
+/**
+ * THE ADMISSION ANSWER — one function, used by the probe AND by the real save (F-198).
+ *
+ * "Would this array be admitted, and if not, WHICH ceiling is the caller against?"
+ * `protectId` is the row being admitted (a real newcomer, or the hypothetical probe).
+ *
+ * F-198: the probe used to ask `pruneForSave` alone, which knows only the 230 000 B
+ * admission guard — while merges, edits and deletes are refused by saveMemories at the
+ * 245 760 B PLATFORM ceiling. On a store that had walked past the platform limit the two
+ * disagreed about the WHY: the marker said "bytes", whose remedy is "shorten or delete a
+ * memory", on a store where deleting ONE memory still writes an oversized array and is
+ * refused as well. The remedy there is a BULK delete, and the reason code that carries it
+ * is "platform-cap" — so the reason is decided HERE, by the same function both paths use,
+ * and no surface has to infer it from a byte count of its own.
+ *
+ * Order matters: `pruneForSave` already clamps its output to the 230 000 B guard, so a
+ * KEPT row can never be over the platform ceiling — the platform question is only asked
+ * on the refusal path, about the stored array as it stands.
+ *
+ * @returns {{ refused: boolean, reason: "cap"|"bytes"|"platform-cap"|null, bytesOver: number }}
+ */
+export const memoryAdmission = (arr, protectId = null) => {
+  const list = Array.isArray(arr) ? arr : [];
+  const dry = pruneForSave(list, protectId);
+  if (dry.protectedKept) return { refused: false, reason: null, bytesOver: 0 };
+  // The stored array WITHOUT the row we were trying to admit — that is what KVS holds,
+  // and what every other write (a delete, an archive, a reinforce) has to write back.
+  const stored = protectId ? list.filter((m) => m.id !== protectId) : list;
+  const overPlatform = serializedBytes(stored) - MEMORY_PLATFORM_MAX_SERIALIZED_BYTES;
+  if (overPlatform > 0) return { refused: true, reason: "platform-cap", bytesOver: overPlatform };
+  return { refused: true, reason: dry.reason || "cap", bytesOver: 0 };
+};
+
+/** The hypothetical newcomer the probe admits — worst case content AND meta. */
+const hypotheticalProbeRow = () => {
   const now = new Date().toISOString();
-  const probe = {
+  return {
     id: HYPOTHETICAL_PROBE_ID,
     content: PROBE_CONTENT,
     source: "test",
@@ -272,15 +306,31 @@ export const wouldRefuseNewMemory = (arr) => {
     disabled: false,
     meta: PROBE_META,
   };
-  const list = [probe, ...(Array.isArray(arr) ? arr : [])];
-  return !pruneForSave(list, HYPOTHETICAL_PROBE_ID).protectedKept;
 };
+
+/**
+ * WHY a novel lesson would be refused right now — "cap", "bytes", "platform-cap", or
+ * null when the instance is still learning. This is the reason the store-full marker
+ * carries, so the banner's remedy matches the refusal the next capture will actually hit.
+ */
+export const memoryStoreFullReason = (arr) => memoryAdmission(
+  [hypotheticalProbeRow(), ...(Array.isArray(arr) ? arr : [])],
+  HYPOTHETICAL_PROBE_ID,
+).reason;
+
+export const wouldRefuseNewMemory = (arr) => memoryStoreFullReason(arr) !== null;
 
 /**
  * Re-evaluate the marker after a write. Clears it when the store can accept a lesson
  * again; when it is still full the EXISTING row is left untouched (its `at`/`reason`/
  * `source` belong to the real refusal that raised it). Never raises — only a genuine
  * refusal in saveMemoryCandidate does that. Best-effort: never fails a caller's answer.
+ *
+ * F-198: "still full" is `memoryStoreFullReason`, which is `memoryAdmission` — the same
+ * answer the write path acts on, platform ceiling included. A store between the guard and
+ * the platform limit clears only when a lesson would be kept; a store OVER the platform
+ * limit cannot be written to at all, so no write reaches here until a bulk delete brings
+ * it back under, which is exactly when the marker goes.
  */
 const refreshMemoryStoreFull = async (arr) => {
   try {
@@ -714,9 +764,11 @@ export const saveMemoryCandidate = async ({ content, source = "user", projectKey
   // (no collateral eviction for a row we are not going to keep).
   // F-160/F-164: a candidate is rejected outright rather than evicting a hand-authored
   // memory — for an auto candidate AND for a user one.
-  const dryRun = pruneForSave(memories, id);
-  if (!dryRun.protectedKept) {
-    const reason = dryRun.reason || "cap";
+  // F-198: the same admission function the probe asks, so the reason the refusal reports
+  // and the reason the marker carries can never disagree.
+  const dryRun = memoryAdmission(memories, id);
+  if (dryRun.refused) {
+    const reason = dryRun.reason;
     // F-167: refusing a lesson is the moment the instance STOPS LEARNING. It used to
     // be disclosed only by a console.warn in an unpolled queue task, so an instance
     // could discard months of novel captures while the tab showed 200 healthy rows.
@@ -724,9 +776,12 @@ export const saveMemoryCandidate = async ({ content, source = "user", projectKey
     await markMemoryStoreFull(reason, source);
     return {
       id: null, merged: false, stored: false, reason, evicted: [],
-      error: reason === "bytes"
-        ? "Memory store is full (size limit reached)"
-        : "Memory store is full",
+      ...(reason === "platform-cap" ? { bytesOver: dryRun.bytesOver } : {}),
+      error: reason === "platform-cap"
+        ? memoryPlatformCapMessage(dryRun.bytesOver)
+        : (reason === "bytes"
+          ? "Memory store is full (size limit reached)"
+          : "Memory store is full"),
     };
   }
   const saved = await saveMemories(memories, { protectId: id });

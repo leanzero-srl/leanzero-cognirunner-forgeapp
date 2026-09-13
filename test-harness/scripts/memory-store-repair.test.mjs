@@ -27,8 +27,9 @@ import storage, { KVS_PLATFORM_MAX_VALUE_BYTES, KVS_STORAGE_LIMIT_CODE } from ".
 import { readFileSync } from "node:fs";
 import {
   MEMORIES_KEY, MEMORY_MAX_SERIALIZED_BYTES, MEMORY_PLATFORM_MAX_SERIALIZED_BYTES,
-  MEMORY_CONTENT_MAX, serializedBytes, memoryStoreStats, saveMemories,
-  memoryWriteFaultMessage, memoryPlatformCapMessage,
+  MEMORY_CONTENT_MAX, serializedBytes, memoryStoreStats, saveMemories, pruneForSave,
+  memoryWriteFaultMessage, memoryPlatformCapMessage, memoryStoreFullReason, memoryAdmission,
+  MEMORY_STORE_FULL_KEY,
 } from "../../src/memories.js";
 const { handler } = await import("../../src/index.js");
 
@@ -260,6 +261,64 @@ const faultNthMemoryRead = (n) => {
   ok(load().length === 2, "the store is untouched by the faulted write");
   const retried = await call("deleteMemory", { id: "m0" });
   ok(retried.success === true && load().length === 1, "the retry the sentence recommends actually works");
+}
+
+// ---------------------------------------------------------------------------
+// F-198 — the store-full MARKER names the ceiling the next lesson will actually hit.
+//
+// The probe asked pruneForSave, which knows only the 230 000 B admission guard, while
+// merges, edits and deletes are refused by saveMemories at the 245 760 B PLATFORM
+// ceiling. On a store past the platform limit the marker therefore said reason "bytes",
+// whose remedy is "shorten or delete a memory" — on a store where deleting ONE memory
+// writes an oversized array and is refused as well. Both now ask memoryAdmission.
+// ---------------------------------------------------------------------------
+{
+  // between the two ceilings: the guard is what refuses a lesson
+  const betweenStore = buildStore(MEMORY_PLATFORM_MAX_SERIALIZED_BYTES - 4000);
+  const betweenBytes = serializedBytes(betweenStore);
+  ok(betweenBytes >= MEMORY_MAX_SERIALIZED_BYTES && betweenBytes <= MEMORY_PLATFORM_MAX_SERIALIZED_BYTES,
+    `the fixture sits BETWEEN the guard and the platform ceiling (${betweenBytes} B)`);
+  ok(memoryStoreFullReason(betweenStore) === "bytes",
+    `a store between the ceilings is refused for "bytes" (got ${JSON.stringify(memoryStoreFullReason(betweenStore))})`);
+
+  // over the platform ceiling: NOTHING can be written, so the reason — and the remedy — differ
+  const overStore = buildStore(MEMORY_PLATFORM_MAX_SERIALIZED_BYTES + 3000);
+  ok(serializedBytes(overStore) > MEMORY_PLATFORM_MAX_SERIALIZED_BYTES, "the second fixture is genuinely over the platform ceiling");
+  // the refuted answer, kept as evidence: pruneForSave alone — all the old probe asked —
+  // still calls this store "bytes", because the guard is the only ceiling it knows.
+  ok(pruneForSave([{ ...overStore[0], id: "PROBE" }, ...overStore], "PROBE").reason === "bytes",
+    "the guard alone would have said \"bytes\" (the pre-F-198 answer)");
+  ok(memoryStoreFullReason(overStore) === "platform-cap",
+    `a store over the platform ceiling is refused for "platform-cap" (got ${JSON.stringify(memoryStoreFullReason(overStore))})`);
+  // (memoryAdmission with no row to admit answers about the array as given — a delete or an
+  // edit, which pruneForSave keeps whole; the deficit is reported on the candidate path below.)
+  ok(memoryAdmission(overStore, "nope").reason === "platform-cap" && memoryAdmission(overStore, "nope").bytesOver > 0,
+    "admitting a row into that store names the platform ceiling AND the deficit to free");
+  ok(memoryStoreFullReason([]) === null && memoryStoreFullReason(betweenStore.slice(0, 50)) === null,
+    "a healthy store has NO refusal reason");
+
+  // …and that is the reason the marker carries, end to end through the resolvers
+  reset(overStore);
+  const refusedAdd = await call("addMemory", { content: "a novel lesson that cannot be stored", source: "user" });
+  ok(refusedAdd.success === false && refusedAdd.reason === "platform-cap",
+    `the add is refused as platform-cap (got ${JSON.stringify({ success: refusedAdd.success, reason: refusedAdd.reason })})`);
+  ok(refusedAdd.error === memoryPlatformCapMessage(refusedAdd.bytesOver ?? memoryStoreStats(overStore).bytesOverPlatform),
+    `and the admin is told to BULK delete: "${String(refusedAdd.error).slice(0, 60)}…"`);
+  const marker = storage.__raw(MEMORY_STORE_FULL_KEY);
+  ok(marker && marker.reason === "platform-cap",
+    `the marker records the same reason (got ${JSON.stringify(marker && marker.reason)})`);
+
+  // a ONE-ROW delete cannot clear it — the write is still oversized
+  const oneRow = await call("deleteMemory", { id: "m0" });
+  ok(oneRow.success === false && storage.__raw(MEMORY_STORE_FULL_KEY),
+    "a one-row delete neither lands nor clears the marker");
+
+  // a BULK delete that brings the store under both ceilings does
+  const bulk = overStore.slice(0, 60).map((m) => m.id);
+  const bulkDel = await call("deleteMemory", { ids: bulk });
+  ok(bulkDel.success === true, `the bulk delete lands (${JSON.stringify(bulkDel.error || "")})`);
+  ok(serializedBytes(load()) < MEMORY_MAX_SERIALIZED_BYTES, "the store is back under the guard");
+  ok(storage.__raw(MEMORY_STORE_FULL_KEY) === undefined, "and the marker is gone — the instance is learning again");
 }
 
 console.log(`\nmemory-store-repair: ${pass} passed, ${fail} failed`);

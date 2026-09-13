@@ -250,5 +250,266 @@ eq(V.isVaJob({ mode: "va", va: {} }), true, "isVaJob: mode va with a record");
 eq(V.isVaJob({ mode: "va" }), false, "isVaJob: mode va with NO record is not a VA — one home for the question");
 eq(V.isVaJob({ mode: "agent", va: {} }), false, "isVaJob: an agent job is not a VA");
 
+/* ══ 4. THE AUDIENCE DECISION (F-415) ══════════════════════════════════════ */
+{
+  const req = issue("SUP-1", { fields: { reporter: { accountId: "rep-1" }, requestType: { id: "rt-1" }, comment: { comments: [] } } });
+  const openVa = vaJob({ powers: { replyPublic: true, replyInternal: true } }).va;
+  const shutVa = vaJob().va;
+
+  eq(V.decideAudience({ requested: "public", va: shutVa, issue: req, addresseeAccountId: "rep-1" }).reason, "reply_public_power_off", "gate.audience.BLOCK_public_without_power");
+  eq(V.decideAudience({ requested: "public", va: openVa, issue: req, addresseeAccountId: "other" }).reason, "addressee_not_reporter", "gate.audience.BLOCK_public_to_non_reporter");
+  eq(V.decideAudience({ requested: "public", va: openVa, issue: issue("SUP-2", { fields: { reporter: { accountId: "rep-1" } } }), addresseeAccountId: "rep-1" }).reason, "unknown_request_type", "gate.audience.BLOCK_unknown_request_type");
+  eq(V.decideAudience({ requested: "public", va: openVa, issue: { key: "SUP-3", fields: { requestType: { id: "r" } } } }).reason, "unknown_reporter", "gate.audience.BLOCK_unknown_reporter");
+  eq(V.decideAudience({ requested: "internal", va: openVa, issue: req, addresseeAccountId: "rep-1" }).audience, "internal", "gate.audience.ALLOW_internal_default");
+  eq(V.decideAudience({ requested: "public", va: openVa, issue: req, addresseeAccountId: "rep-1" }).audience, "public", "gate.audience.ALLOW_public_to_reporter");
+  // EVERY refusal downgrades; none of them throws and none answers "unknown".
+  for (const bad of [null, undefined, {}, { fields: null }]) {
+    eq(V.decideAudience({ requested: "public", va: openVa, issue: bad }).audience, "internal", "audience: an unreadable issue downgrades to internal, never throws");
+  }
+}
+
+/* ══ 5. THE ITEM TURN ══════════════════════════════════════════════════════ */
+
+/** A scripted model: each entry is one round's tool calls, or a prose string. */
+const scriptedLoop = (script) => {
+  const seen = [];
+  const fn = async ({ messages, tools, execute }) => {
+    fn.messages = messages.slice();
+    fn.tools = tools;
+    for (const round of script) {
+      if (typeof round === "string") return { endedBy: "prose", rounds: 1, summary: round, usage: { tokens: 1 } };
+      for (const call of round) {
+        seen.push({ name: call.name, result: await execute(call.name, call.args || {}) });
+      }
+    }
+    return { endedBy: "finish", rounds: script.length, summary: "done", usage: { tokens: 1 } };
+  };
+  fn.seen = seen;
+  return fn;
+};
+
+/** Deps for an item turn with no Forge anywhere. */
+const itemDeps = (over = {}) => {
+  const changes = [];
+  const posted = [];
+  return {
+    store: kvs, now: () => Date.parse("2026-09-13T12:00:00Z"),
+    getIssue: async (k) => issue(k, { fields: { reporter: { accountId: "rep-1" }, requestType: { id: "rt-1" }, comment: { comments: [{ id: "c-9", author: { accountId: "rep-1" }, body: "hi" }] } } }),
+    createIssue: async (fields) => { posted.push(fields); return { key: "INBOX-1" }; },
+    createSession: async () => ({ changes, createApi: () => ({}) }),
+    createDispatcher: () => async (name) => { changes.push({ action: name }); return { ok: true }; },
+    compactIssue: (i) => ({ key: i.key, summary: i.fields.summary }),
+    buildKnowledge: async () => ({ skillsBlock: "house rules" }),
+    buildKnowledgeMessages: (k) => (k && k.skillsBlock ? [{ role: "system", content: `## OPERATOR KNOWLEDGE\n${k.skillsBlock}` }] : []),
+    toolDefinitionsFor: (ids) => ids.map((id) => ({ type: "function", function: { name: id } })),
+    log: () => {},
+    __changes: changes, __posted: posted,
+    ...over,
+  };
+};
+
+reset();
+{
+  // A TURN STAGES; IT NEVER POSTS.
+  const loop = scriptedLoop([[{ name: "stage_reply", args: { audience: "internal", body: "Looking at it now.", reason: "customer asked for an ETA" } }]]);
+  const d = itemDeps({ runLoop: loop });
+  const r = await V.runVaItem({ agent: vaJob(), issueKey: "SUP-1", tickId: "t1", deps: d });
+  eq(r.ok, true, "item: the turn ran");
+  eq(r.staged.audience, "internal", "item.ALLOW_stage_reply");
+  eq(d.__posted.length, 0, "item.BLOCK_never_posts — a turn creates no comment at all");
+  const row = (await L.readItem(kvs, "job_va1", "SUP-1")).row;
+  eq(row.state, "staged", "item: the row is staged");
+  eq(row.staged.body, "Looking at it now.", "item: the draft body round-trips");
+  eq(row.staged.baseline, "c-9", "item: the FRESHNESS baseline is the last comment id we saw");
+  eq(row.staged.tickId, "t1", "item: the staging tick id is recorded — the post floor's second condition");
+
+  // The tool list: speech actions, reads, and NOT add_comment.
+  ok(loop.tools.some((t) => t.function.name === "stage_reply"), "item: the model is given stage_reply");
+  ok(!loop.tools.some((t) => t.function.name === "add_comment"), "item.BLOCK_add_comment_is_not_a_tool — the guarantee is that no tool posts");
+  ok(!V.freeActionsFor(vaJob({ powers: { editFields: true, assign: true, transition: true } }).va).includes("add_comment"),
+    "freeActionsFor: add_comment is absent whatever the powers say");
+}
+
+reset();
+{
+  // AUDIENCE IS DECIDED AT STAGE TIME, and a customer reply the powers forbid is
+  // DOWNGRADED, not dropped and not posted.
+  const loop = scriptedLoop([[{ name: "stage_reply", args: { audience: "customer", body: "We are on it.", reason: "reply" } }]]);
+  const r = await V.runVaItem({ agent: vaJob(), issueKey: "SUP-1", tickId: "t1", deps: itemDeps({ runLoop: loop }) });
+  eq(r.staged.audience, "internal", "item: a customer reply without the power is staged internal");
+  eq(r.staged.reason, "reply_public_power_off", "…with the reason recorded");
+  ok(/no other way/.test(loop.seen[0].result.note), "…and the model is told there is no other way, so it does not hunt for one");
+
+  // With the power and the right reporter, it is staged public.
+  reset();
+  const loop2 = scriptedLoop([[{ name: "stage_reply", args: { audience: "customer", body: "We are on it.", reason: "reply" } }]]);
+  const r2 = await V.runVaItem({ agent: vaJob({ powers: { replyPublic: true, replyInternal: true } }), issueKey: "SUP-1", tickId: "t1", deps: itemDeps({ runLoop: loop2 }) });
+  eq(r2.staged.audience, "public", "item: with the power, and the reporter as the addressee, it is staged public");
+}
+
+reset();
+{
+  // PROPOSE_CHANGE NEVER EXECUTES.
+  const loop = scriptedLoop([[{ name: "propose_change", args: { kind: "workflow", target: "SUP workflow", blastRadius: "all SUP issues", steps: "add a status" } }]]);
+  const d = itemDeps({ runLoop: loop });
+  const r = await V.runVaItem({ agent: vaJob(), issueKey: "SUP-1", tickId: "t1", deps: d });
+  eq(r.proposed, true, "item: the proposal was filed");
+  eq(loop.seen[0].result.executed, false, "propose.BLOCK_never_executes — the result says so explicitly");
+  eq(d.__changes.length, 0, "propose: nothing was dispatched, so nothing could have been changed");
+  eq(d.__posted.length, 0, "propose: with no inbox it is staged, not posted");
+  // With an inbox it goes to the inbox, and STILL changes nothing on the issue.
+  reset();
+  const loop2 = scriptedLoop([[{ name: "propose_change", args: { kind: "permission", target: "x", blastRadius: "y", steps: "z" } }]]);
+  const d2 = itemDeps({ runLoop: loop2 });
+  await V.runVaItem({ agent: vaJob({ guardrails: { ...vaJob().va.guardrails, approvalProjectKey: "INBOX" } }), issueKey: "SUP-1", tickId: "t1", deps: d2 });
+  eq(d2.__posted.length, 1, "propose: with an inbox, one issue is filed there");
+  eq(d2.__posted[0].project.key, "INBOX", "…in the project the RECORD names, never one the model chose");
+  eq(d2.__changes.length, 0, "…and still nothing was changed on the issue");
+}
+
+reset();
+{
+  // ASK_HUMAN parks the item on a human, and with no inbox it is STAGED, not posted.
+  const loop = scriptedLoop([[{ name: "ask_human", args: { summary: "Can we refund this?", needs: "a yes or no from billing" } }]]);
+  const d = itemDeps({ runLoop: loop });
+  const r = await V.runVaItem({ agent: vaJob(), issueKey: "SUP-1", tickId: "t1", deps: d });
+  eq(r.asked, true, "item.ALLOW_ask_human");
+  eq(d.__posted.length, 0, "ask_human: with no inbox the question is STAGED — it does not bypass the post gates");
+  eq((await L.readItem(kvs, "job_va1", "SUP-1")).row.staged.audience, "internal", "ask_human: staged as an internal note");
+
+  reset();
+  const loop2 = scriptedLoop([[{ name: "ask_human", args: { summary: "q", needs: "n" } }]]);
+  const d2 = itemDeps({ runLoop: loop2 });
+  await V.runVaItem({ agent: vaJob({ guardrails: { ...vaJob().va.guardrails, approvalProjectKey: "INBOX" } }), issueKey: "SUP-1", tickId: "t1", deps: d2 });
+  const row = (await L.readItem(kvs, "job_va1", "SUP-1")).row;
+  eq(row.state, "waiting_on_human", "ask_human: with an inbox the item waits on a human");
+  ok(row.dueAt, "…with a due date, so it comes back rather than waiting for ever");
+}
+
+reset();
+{
+  // ATTEMPTS: a turn that stages nothing bumps, and parks at the cap.
+  const nothing = () => scriptedLoop(["I had a think and did nothing."]);
+  for (let i = 1; i <= VA_LIMITS.attemptsCap; i++) {
+    const r = await V.runVaItem({ agent: vaJob(), issueKey: "SUP-5", tickId: `t${i}`, deps: itemDeps({ runLoop: nothing() }) });
+    if (i < VA_LIMITS.attemptsCap) ok(r.parked === false, `item.attempts.ALLOW_attempt_${i}`);
+    else eq(r.parked, true, "item.attempts.BLOCK_parked_at_cap");
+  }
+  const parked = (await L.readItem(kvs, "job_va1", "SUP-5")).row;
+  eq(parked.state, "parked", "attempts: the item is PARKED, so it stops consuming ticks");
+  ok(parked.history.some((h) => h.event === "parked"), "attempts: the park is in the history with its reason");
+  // A parked item is not worked again — the model is never called.
+  let called = 0;
+  await V.runVaItem({ agent: vaJob(), issueKey: "SUP-5", tickId: "t99", deps: itemDeps({ runLoop: async () => { called++; return { endedBy: "finish", rounds: 1, usage: {} }; } }) });
+  eq(called, 0, "item.attempts.BLOCK_parked_item_never_calls_the_model");
+}
+
+reset();
+{
+  // THE CLAIM (F-422) is taken by the CONSUMER, and a second delivery does not run.
+  const loop = scriptedLoop([[{ name: "ledger_note", args: { note: "a note" } }]]);
+  const first = await V.runVaItem({ agent: vaJob(), issueKey: "SUP-6", tickId: "t1", deps: itemDeps({ runLoop: loop }) });
+  eq(first.ok, true, "claim.exec.ALLOW_first_delivery");
+  let called = 0;
+  const second = await V.runVaItem({ agent: vaJob(), issueKey: "SUP-6", tickId: "t1", deps: itemDeps({ runLoop: async () => { called++; return { endedBy: "finish", rounds: 1, usage: {} }; } }) });
+  eq(second.ok, false, "claim.exec.BLOCK_second_consumer");
+  eq(second.reason, "already_claimed", "…with the named reason");
+  eq(called, 0, "…and the model was never called a second time, so the tokens were not spent twice");
+}
+
+reset();
+{
+  // A TURN THAT THROWS RELEASES ITS CLAIM, so a retry can run (F-335/F-367's shape).
+  const r = await V.runVaItem({ agent: vaJob(), issueKey: "SUP-7", tickId: "t1", deps: itemDeps({ runLoop: async () => { throw new Error("provider died"); } }) });
+  eq(r.ok, false, "claim: a turn that throws reports the failure");
+  const retry = await V.runVaItem({ agent: vaJob(), issueKey: "SUP-7", tickId: "t1", deps: itemDeps({ runLoop: scriptedLoop([[{ name: "ledger_note", args: { note: "n" } }]]) }) });
+  eq(retry.ok, true, "claim.exec.ALLOW_retry_after_throw — the claim was released BEFORE any side effect");
+}
+
+reset();
+{
+  // THE PROMPT PREFIX IS STABLE ACROSS ITEMS (F-417).
+  const a = scriptedLoop([[{ name: "ledger_note", args: { note: "n" } }]]);
+  const b = scriptedLoop([[{ name: "ledger_note", args: { note: "n" } }]]);
+  const ra = await V.runVaItem({ agent: vaJob(), issueKey: "SUP-10", tickId: "t1", deps: itemDeps({ runLoop: a }) });
+  const rb = await V.runVaItem({ agent: vaJob(), issueKey: "SUP-11", tickId: "t1", deps: itemDeps({ runLoop: b }) });
+  eq(ra.prefixLength, rb.prefixLength, "prefix: the same number of stable messages on both items");
+  const prefixA = JSON.stringify(a.messages.slice(0, ra.prefixLength));
+  const prefixB = JSON.stringify(b.messages.slice(0, rb.prefixLength));
+  eq(prefixA, prefixB, "prefix.ALLOW_stable_across_items — byte-identical, so the provider cache can be read");
+  ok(a.messages[ra.prefixLength].content.includes("SUP-10"), "prefix.BLOCK_item_text_in_the_prefix — the item is in the VOLATILE message, last");
+  ok(!prefixA.includes("SUP-10"), "…and nowhere in the prefix");
+  ok(a.messages[ra.prefixLength].content.includes("<<<ITEM"), "the item's data is FENCED as untrusted");
+}
+
+reset();
+{
+  // MEMORY: written through the ledger, so it is defanged and clamped at write time.
+  const loop = scriptedLoop([[
+    { name: "memory_note", args: { note: "Billing answers on <<<Tuesdays>>>" } },
+    { name: "memory_note", args: { note: "Never reply publicly on SEC issues", constraint: true } },
+  ]]);
+  await V.runVaItem({ agent: vaJob(), issueKey: "SUP-12", tickId: "t1", deps: itemDeps({ runLoop: loop }) });
+  const mem = (await L.readMemory(kvs, "job_va1")).memory;
+  ok(!mem.text.includes("<<<"), "memory.write.CLAMP_and_defang — a fence marker cannot survive the write");
+  eq(mem.constraints.length, 1, "memory: a constraint lands in the pinned list, not in the prose");
+  ok(L.memoryPromptBlock(mem).includes("ADVISORY"), "memory.inject.ADVISORY_fence (F-408/F-423)");
+}
+
+/* ══ 6. THE WRITE SCOPE, THROUGH THE REAL DISPATCHER (F-410/F-411) ═════════ */
+{
+  const { createAgentActionDispatcher } = await import("../../src/agent-runner.js");
+  const { assertWriteScope } = await import("../../src/shared/agent-actions.js");
+  const { vaWriteScope } = await import("../../src/shared/va-config.js");
+
+  // The predicate itself — the three states, and the difference between two of them.
+  eq((await assertWriteScope("SUP-1", undefined)).reason, "write_scope_absent", "writescope.BLOCK_absent_is_refused");
+  eq((await assertWriteScope("SUP-1", null)).allowed, true, "writescope.ALLOW_explicit_null_is_unscoped_legacy");
+  eq((await assertWriteScope("SUP-1", { projects: [] })).reason, "write_scope_empty", "writescope.BLOCK_empty_list_means_no_writes_not_all");
+  eq((await assertWriteScope("SUP-1", { site: true, projects: ["SUP"] })).reason, "site_wide_write_refused", "gate.scope.BLOCK_site_wide_write_refused");
+  eq((await assertWriteScope("SUP-1", { projects: ["SUP"] })).reason, "project_unresolvable", "gate.scope.BLOCK_unresolvable_project — no reader is a refusal, not a pass");
+  eq((await assertWriteScope("SUP-1", { projects: ["SUP"] }, { readProject: async () => { throw new Error("x"); } })).reason, "project_unresolvable", "…and a reader that throws is too");
+  eq((await assertWriteScope("SUP-1", { projects: ["SUP"] }, { readProject: async () => null })).reason, "project_unresolvable", "…and a reader that answers nothing is too");
+  eq((await assertWriteScope("OPS-1", { projects: ["SUP"] }, { readProject: async () => "OPS" })).reason, "outside_write_scope", "gate.scope.BLOCK_outside_write_scope");
+  eq((await assertWriteScope("SUP-1", { projects: ["SUP"] }, { readProject: async () => "sup" })).allowed, true, "gate.scope.ALLOW_in_scope (case-insensitive)");
+
+  eq(vaWriteScope(vaJob().va).projects.join(","), "SUP", "vaWriteScope builds the context the dispatcher consumes");
+
+  // Through the REAL dispatcher: the project comes from a READ, not from the argument.
+  const changes = [];
+  const mkApi = (projectKey) => {
+    const api = {
+      getIssue: async (k) => ({ key: k, fields: { project: { key: projectKey } } }),
+      addComment: async () => { changes.push({}); return { id: "1" }; },
+      setAssignee: async () => { changes.push({}); return { success: true }; },
+      createIssue: async () => { changes.push({}); return { key: "X-1" }; },
+      forIssue: () => api,
+    };
+    return api;
+  };
+  const dispatcherOn = (projectKey, writeScope) => createAgentActionDispatcher({
+    issueKey: "SUP-1", session: { createApi: () => mkApi(projectKey), changes },
+    allowed: ["add_comment", "set_assignee", "create_issue", "get_issue"], m: {}, maxWrites: null, writeScope,
+  });
+
+  const inScope = await dispatcherOn("SUP", { projects: ["SUP"] })("add_comment", { issueKey: "SUP-1", text: "hi" });
+  ok(inScope && inScope.id === "1", "gate.scope.ALLOW_in_scope_write_through_the_dispatcher");
+
+  changes.length = 0;
+  // The model CLAIMS the issue is in SUP; the READ says OPS. The read wins.
+  const lied = await dispatcherOn("OPS", { projects: ["SUP"] })("add_comment", { issueKey: "SUP-1", text: "hi" });
+  eq(lied.code, "write_scope", "writescope.BLOCK_dispatcher_outside_scope — resolved from a READ, never from the model's argument");
+  eq(changes.length, 0, "…and nothing reached Jira");
+
+  const foreign = await dispatcherOn("SUP", { projects: ["SUP"] })("create_issue", { projectKey: "OPS", issueType: "Task", summary: "s" });
+  eq(foreign.code, "write_scope", "writescope.BLOCK_create_issue_foreign_project");
+  const own = await dispatcherOn("SUP", { projects: ["SUP"] })("create_issue", { projectKey: "SUP", issueType: "Task", summary: "s" });
+  ok(own && own.key === "X-1", "writescope.ALLOW_create_issue_in_scope");
+
+  // A READ is never scope-checked: an agent that cannot read cannot decide anything.
+  const read = await dispatcherOn("OPS", { projects: ["SUP"] })("get_issue", { issueKey: "OPS-1" });
+  ok(read, "writescope: reads are not blocked by the WRITE scope");
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

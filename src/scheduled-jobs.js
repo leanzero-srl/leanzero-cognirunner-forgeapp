@@ -394,7 +394,15 @@ export const runJob = async ({ job, scheduledFor = null, missed = 0, manual = fa
       const knowledgeNotices = [];
       const knowledge = await buildAgentKnowledge(job.agent, { projectKey: extraContext.projectKey, audience: "agentRun", log: (line) => knowledgeNotices.push(String(line)) });
       // The allowance the agent gets is what is LEFT of the run's budget.
-      const r = await runAgentTask({ instructions: job.agent.instructions, allowedActions: job.agent.allowedActions, maxRounds: job.agent.maxRounds, issueKey, config, contextTitle: "JOB CONTEXT", contextText: summarizeJobForAi(job, scheduledFor, issue), deadline: perDeadline, cancelToken, extraContext, gate: agentGate, executors, knowledge, maxWrites: Math.max(0, maxWrites - writesDone), webRunBudget });
+      const r = await runAgentTask({ instructions: job.agent.instructions, allowedActions: job.agent.allowedActions, maxRounds: job.agent.maxRounds, issueKey, config, contextTitle: "JOB CONTEXT", contextText: summarizeJobForAi(job, scheduledFor, issue), deadline: perDeadline, cancelToken, extraContext, gate: agentGate, executors, knowledge, maxWrites: Math.max(0, maxWrites - writesDone), webRunBudget,
+        // `writeScope: null` — UNSCOPED, DELIBERATELY (F-411). A scheduled job is bounded
+        // by its SCOPE JQL (the issues it walks) and by `maxWritesPerRun`, not by a
+        // project allow-list, so `null` is exactly the pre-1.5 behaviour. Explicit, not
+        // omitted: omitting it now refuses every write, and the explicit value is the
+        // greppable admission that this surface has no project scope of its own.
+        // TODO(F-411): a job's scope JQL names the issues it READS; give it a
+        // `scope.write` naming the projects it may CHANGE, and drop this `null`.
+        writeScope: null });
       // NO STAMP HERE (F-402). Reaching the limit is not the same as being STOPPED by it:
       // a run that made exactly its allowance and had nothing left to do was reported as
       // braked, with "the remaining work was not done" on a run where none remained. The

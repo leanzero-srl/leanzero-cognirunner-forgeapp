@@ -657,7 +657,13 @@ const runCoderTurnClaimed = async ({
   const gitExecutor = deps.gitExecutor || createGitActionExecutor({
     simulation: simulated, log, connectionId: record.connectionId || connectionId || null,
   });
-  const dispatch = createAgentActionDispatcher({ issueKey: key, session, allowed, executors: { git: gitExecutor }, m });
+  // `writeScope: null` — UNSCOPED, DELIBERATELY (F-411). The Coder acts on the ONE issue
+  // a human opened it on, and that issue is the whole of its Jira reach, so a project
+  // allow-list would restate a bound the surface already has. It is passed explicitly
+  // rather than omitted because omitting it now REFUSES every write: the explicit `null`
+  // is the difference between a considered decision and a forgotten argument.
+  // TODO(F-411): if the Coder ever acts across issues, this becomes a real scope.
+  const dispatch = createAgentActionDispatcher({ issueKey: key, session, allowed, executors: { git: gitExecutor }, m, writeScope: null });
 
   // -- the workspace: THE one writer onto the issue ------------------------
   // Injectable so the engine's own suite can stub it whole (deps.workspace). Every effect

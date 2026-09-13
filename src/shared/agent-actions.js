@@ -465,3 +465,88 @@ export const normalizeAgentIssueReferences = (action, args) => {
   }
   return normalized;
 };
+
+/* ══════════════════════════════════════════════════════════════════════════════
+ * THE WRITE SCOPE (F-410/F-411) — ONE HOME
+ * ════════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * "MAY THIS RUN WRITE TO THIS ISSUE?" — asked HERE, by every surface that writes.
+ *
+ * WHY IT LIVES IN THIS FILE. The write scope is a property of the ACTION GATE, not of
+ * the Virtual Administrator: the VA post phase, the Coder's headless post-function and
+ * a listener's agent run all dispatch through `createAgentActionDispatcher`, and the
+ * dispatcher is the one place all three meet. Putting the predicate beside the record
+ * shape (`va-config.js`) would mean `agent-runner.js` importing a VA module to answer a
+ * question that has nothing to do with VAs — and the second caller would then write its
+ * own copy, which is the defect this repo is named for. `vaWriteScope(va)` in
+ * `va-config.js` BUILDS the context; this function ENFORCES it. Two halves, two homes,
+ * one shape.
+ *
+ * THREE STATES, and the difference between two of them is the whole gate:
+ *
+ *   `undefined` (the argument was never passed) → REFUSE every write.
+ *       This is the arity trap (GOTCHAS 3) closed by construction. A caller that forgets
+ *       the context gets no writes at all, loudly, instead of silently getting every
+ *       write — "forgot to pass it" must never be the way past the gate. It is the same
+ *       reasoning as `normalizeAllowedActions(ids)`'s restrictive default.
+ *   `null` (passed DELIBERATELY) → allow, unscoped. This is the pre-1.5 behaviour, for
+ *       the surfaces that have never had a project scope: a listener and a scheduled job
+ *       are bounded by their own event filter and JQL scope instead.
+ *       TODO(F-411): give listeners and scheduled jobs a real `scope.write` in their own
+ *       record and drop this state. Until then every `null` is an explicit, greppable
+ *       admission rather than an omission.
+ *   `{projects:[...]}` → the target's project must be in the list.
+ *
+ * THE PROJECT IS RESOLVED FROM A READ, NEVER FROM THE MODEL'S ARGUMENT. `deps.readProject`
+ * is an async `(issueKey) => projectKey | null`, and a null or a throw is a REFUSAL, not
+ * a pass: "I could not work out which project this is" and "it is in scope" are different
+ * answers, and conflating them is the proven-negative trap. The one exception is issue
+ * CREATION, where there is no issue to read and the project IS the argument — the caller
+ * passes it through `deps.readProject` as a constant, and the allow-list is still the
+ * authority, so a foreign project key is refused exactly like any other.
+ *
+ * `site: true` on a scope is REFUSED here as well as at save time. `normalizeVa` throws
+ * on it, so it should be unreachable; a gate that trusts an upstream refusal to have
+ * happened is a gate that disappears the day a record is written by something else.
+ *
+ * @returns {Promise<{allowed: boolean, reason: string, projectKey: string|null}>}
+ */
+export const assertWriteScope = async (issueKey, writeScope, deps = {}) => {
+  if (writeScope === undefined) return { allowed: false, reason: "write_scope_absent", projectKey: null };
+  if (writeScope === null) return { allowed: true, reason: "unscoped_legacy", projectKey: null };
+  if (typeof writeScope !== "object" || Array.isArray(writeScope)) return { allowed: false, reason: "write_scope_malformed", projectKey: null };
+  if (writeScope.site === true) return { allowed: false, reason: "site_wide_write_refused", projectKey: null };
+
+  const projects = (Array.isArray(writeScope.projects) ? writeScope.projects : [])
+    .map((k) => String(k == null ? "" : k).trim().toUpperCase())
+    .filter(Boolean);
+  // An EMPTY list means "no writes", never "all writes". A read-only agent is a valid
+  // agent, and the permissive reading of an empty list is how it would stop being one.
+  if (!projects.length) return { allowed: false, reason: "write_scope_empty", projectKey: null };
+
+  if (typeof deps.readProject !== "function") return { allowed: false, reason: "project_unresolvable", projectKey: null };
+  let projectKey = null;
+  try { projectKey = await deps.readProject(issueKey); }
+  catch (e) { return { allowed: false, reason: "project_unresolvable", projectKey: null }; }
+  const key = String(projectKey == null ? "" : projectKey).trim().toUpperCase();
+  if (!key) return { allowed: false, reason: "project_unresolvable", projectKey: null };
+  if (!projects.includes(key)) return { allowed: false, reason: "outside_write_scope", projectKey: key };
+  return { allowed: true, reason: "in_scope", projectKey: key };
+};
+
+/**
+ * The sentence a MODEL reads when a write-scope check refuses. It must name the cause and
+ * a next step it can actually take, because the model's alternative to understanding this
+ * is retrying the same call until its rounds run out.
+ */
+export const writeScopeRefusalText = (reason, { issueKey = null, projects = [] } = {}) => {
+  const where = issueKey ? ` ${issueKey}` : "";
+  const list = Array.isArray(projects) && projects.length ? projects.join(", ") : "none";
+  if (reason === "write_scope_absent") return `Refused: this run was started without a write scope, so it may not change any issue. Read, report and finish.`;
+  if (reason === "write_scope_empty") return `Refused: this agent has no projects it may write in. You can read, stage a reply and propose a change, but you cannot change${where || " an issue"}. Say so and finish.`;
+  if (reason === "site_wide_write_refused") return `Refused: a site-wide write scope is not allowed. Name the projects instead.`;
+  if (reason === "outside_write_scope") return `Refused:${where || " that issue"} is outside this agent's write scope (${list}). Do not try another way to change it — propose the change instead, or finish.`;
+  if (reason === "project_unresolvable") return `Refused: the project of${where || " that issue"} could not be read, so it cannot be checked against the write scope (${list}). Not being able to check is a refusal, not a pass.`;
+  return `Refused: the write scope check said "${String(reason || "no")}".`;
+};

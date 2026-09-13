@@ -3370,6 +3370,20 @@ resolver.define("getRuleLists", async ({ context }) => {
       .sort()
       .map((n) => ({ value: n, label: n }));
   try {
+    // Connections + the union of their repo allow-lists, for the git rule pickers.
+    const gitLists = await (async () => {
+      try {
+        const rows = await listGitConnections();
+        const repos = new Set();
+        for (const r of rows) for (const repo of r.repos || []) repos.add(repo);
+        return {
+          connections: rows.map((r) => ({ value: r.id, label: `${r.label || r.id} (${r.kind})` })),
+          repos: [...repos].sort().map((r) => ({ value: r, label: r })),
+        };
+      } catch {
+        return { connections: [], repos: [] };
+      }
+    })();
     const [its, sts, res, lts, prs, grp] = await Promise.all([
       j(route`/rest/api/3/issuetype`),
       j(route`/rest/api/3/status`),
@@ -3387,6 +3401,12 @@ resolver.define("getRuleLists", async ({ context }) => {
         linktypes: uniqNames(lts && lts.issueLinkTypes), // GET /issueLinkType → { issueLinkTypes:[{name}] }
         priorities: uniqNames(prs),
         groups: uniqNames(grp && grp.values), // GET /group/bulk → { values:[{name}] } (user-in-group picker)
+        // Git rule pickers (1.4 commits 10/11). These come from KVS, not Jira, and
+        // carry NOTHING secret: publicConnection is an allow-list of fields and a
+        // token is not one of them. A storage fault must not fail the whole list
+        // call, so it degrades to an empty picker.
+        gitconnections: gitLists.connections,
+        gitrepos: gitLists.repos,
       },
     };
   } catch (error) {
@@ -15601,7 +15621,11 @@ export const validate = async (args) => {
     const invocationType = String(args?.context?.extension?.type || "").includes("Condition")
       ? "condition"
       : "validator";
-    const out = await executePremadeRule(configuration, args, invocationType);
+    // `raceDeadline` is injected, not imported back: premade-rules.js is imported
+    // BY this file, so importing it there would be a cycle — and the 8 s ceiling
+    // the git validators need must be the SAME deadline helper every other
+    // bounded call in this file uses (LAW 1).
+    const out = await executePremadeRule(configuration, args, invocationType, { raceDeadline });
     // Slim execution log (metadata only — never field VALUES) so premade runs
     // still appear in the admin panel's execution history alongside AI rules.
     try {
@@ -15616,9 +15640,17 @@ export const validate = async (args) => {
         reason:
           out?.result === false
             ? out.errorMessage || "Condition not met (transition hidden)"
-            : "Passed",
+            : out?.banner === "auth_dead"
+              ? "Allowed — the git connection's credential is dead (failed OPEN; turn Strict on to block instead)"
+              : out?.banner === "git_unavailable"
+                ? "Allowed — the git provider could not be reached (failed OPEN; turn Strict on to block instead)"
+                : "Passed",
         executionTimeMs: Date.now() - premadeStart,
         mode: "premade",
+        // Git validators may allow while telling the admin WHY (a dead token, an
+        // unreachable provider). `banner` is what config-view renders; `reason`
+        // above stays the human sentence.
+        banner: out?.banner || null,
         ruleId: configuration?.ruleId || configuration?.id || null,
         ruleName: configuration?.workflow?.workflowName
           ? `${configuration.workflow.workflowName} / ${configuration.workflow.transitionFromName || "Any"} → ${configuration.workflow.transitionToName || "?"}`

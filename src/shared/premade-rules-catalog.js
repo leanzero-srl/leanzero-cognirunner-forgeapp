@@ -57,6 +57,20 @@
  *   text:{key,label,ph}              — one named text input
  *   picker:{key,label,source,ph,optional} — REST-backed dropdown (source = a list
  *                                           key from the getRuleLists resolver)
+ *   git         — the GIT parameter group (1.4 commit 10). Writes FOUR keys:
+ *                   connectionId — a connection id (getRuleLists `gitconnections`)
+ *                   repo         — "owner/name", normalised through
+ *                                  src/shared/git-ids.js normalizeRepoId
+ *                   prMatch      — "property" | "branch" | "both" (default "both"):
+ *                                  what makes a candidate pull request acceptable
+ *                   strict       — boolean, default false: what a provider outage,
+ *                                  a dead token or "no pull request found" does
+ *                                  (see the fail-open/fail-closed table beside
+ *                                  runGitValidator in src/premade-rules.js).
+ *                 NOTE — PremadeRuleForm.jsx does NOT render this group yet; it
+ *                 renders field/opValue/regex/allowed/value/lengthBounds/dateRel/
+ *                 picker only. The executor, the catalogue and the tests are the
+ *                 backend half (commit 10); the form renderer is a UI cut.
  */
 
 export const COMPARE_OPS = [
@@ -145,6 +159,46 @@ export const PREMADE_VALIDATORS = [
     label: "Field value count is within bounds",
     help: "Block unless a multi-value field (Fix versions, Components, Labels…) has a value count within the min/max you set. For exactly one, set min 1 and max 1.",
     params: { field: true, lengthBounds: true },
+    availability: "available",
+  },
+  // --- GIT validators (1.4 commit 10). `network:true` — unlike every other premade
+  //     rule these make an OUTBOUND provider call inside the transition, bounded to
+  //     GIT_VALIDATOR_BUDGET_MS (8 s) by src/premade-rules.js, and they verify LIVE:
+  //     the cognirunner.git issue property only LOCATES the pull request. ---
+  {
+    key: "git-build-passed",
+    label: "Git: the pull request's build passed",
+    help: "Block unless the CI build on the linked pull request's head commit has passed. Verified LIVE against the provider on every transition \u2014 the cognirunner.git issue property is only used to find the pull request, never as evidence.",
+    category: "Git",
+    network: true,
+    params: { git: true },
+    availability: "available",
+  },
+  {
+    key: "git-pr-approved",
+    label: "Git: the pull request is approved",
+    help: "Block unless the linked pull request has at least one approval and no outstanding \u201cchanges requested\u201d. Read live from the provider on every transition.",
+    category: "Git",
+    network: true,
+    params: { git: true },
+    availability: "available",
+  },
+  {
+    key: "git-pr-comments-resolved",
+    label: "Git: the pull request's comments are resolved",
+    help: "Block while any review comment on the linked pull request is still unresolved. GitHub's REST API cannot report thread resolution at all \u2014 with Strict on that unknown blocks, with Strict off it allows (PR_COMMENT_RESOLVED_UNKNOWN).",
+    category: "Git",
+    network: true,
+    params: { git: true },
+    availability: "available",
+  },
+  {
+    key: "git-pr-merged",
+    label: "Git: the pull request is merged",
+    help: "Block unless the linked pull request has actually been merged, read live from the provider. A merged flag in the cognirunner.git property alone never satisfies this rule \u2014 the property is advisory and anyone who can write issue properties can forge it.",
+    category: "Git",
+    network: true,
+    params: { git: true },
     availability: "available",
   },
 ];

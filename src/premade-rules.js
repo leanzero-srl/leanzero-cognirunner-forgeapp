@@ -52,6 +52,12 @@
  */
 import api, { route } from "@forge/api";
 import { redosRisk } from "./shared/regex-safety.js";
+// GIT validators (1.4 commit 10). Each name has ONE home and is imported, never
+// retyped: the repo-id normaliser, the advisory property's key, the connection
+// row + its allow-list predicate + the adapter factory.
+import { normalizeRepoId } from "./shared/git-ids.js";
+import { GIT_PROPERTY_KEY } from "./listeners.js";
+import { getConnection, isRepoAllowed, providerForConnection } from "./git-connections.js";
 
 const PASS = { result: true };
 // Cap the length of the value fed to a user regex — defense-in-depth so a pattern the ReDoS
@@ -131,7 +137,7 @@ const norm = (s) => String(s).trim().toLowerCase();
  * Run a VALIDATOR rule. Returns { result:true } to ALLOW or { result:false, errorMessage } to BLOCK.
  * `mf` = the modified-fields map (transition/create screen). Ported verbatim from Altomata validators.js.
  */
-async function runValidator(cfg, mf, issueKey, read) {
+async function runValidator(cfg, mf, issueKey, read, gitDeps = {}) {
   const label = cfg.fieldName || "This field";
   const fail = (msg) => ({ result: false, errorMessage: (cfg.errorMessage && cfg.errorMessage.trim()) || msg });
 
@@ -160,6 +166,25 @@ async function runValidator(cfg, mf, issueKey, read) {
     const min = cfg.minLen === "" || cfg.minLen == null ? NaN : Number(cfg.minLen); // presence-gated like text-length
     if (Number.isFinite(min) && [...t].length < min) return fail(`Your comment must be at least ${min} characters.`); // code points, not UTF-16 units
     return PASS;
+  }
+
+  // GIT validators (no field picker, one outbound provider call). Handled before
+  // the field guard for the same reason the issue-level rules are.
+  if (isGitValidatorType(cfg.ruleType)) {
+    const run = runGitValidator(cfg, issueKey, gitDeps);
+    // The 8 s ceiling. `raceDeadline` is index.js's ONE deadline helper, injected
+    // through opts so this module does not import index.js (a cycle) and does not
+    // grow a second copy of it. Without it (offline tests) the adapter's own
+    // per-call timeout still bounds the call.
+    if (typeof gitDeps.raceDeadline !== "function") return run;
+    try {
+      return await gitDeps.raceDeadline(run, Date.now() + GIT_VALIDATOR_BUDGET_MS, "Git validator");
+    } catch {
+      // Timed out. Same decision as any other transport fault.
+      return cfg.strict === true
+        ? { result: false, errorMessage: (cfg.errorMessage && cfg.errorMessage.trim()) || `Checking the pull request in ${normalizeRepoId(cfg.repo) || "the repository"} took too long, and this rule is set to Strict.`, banner: "git_unavailable" }
+        : { result: true, gitReason: "provider-timeout", banner: "git_unavailable" };
+    }
   }
 
   if (!cfg.fieldId) return PASS;
@@ -381,6 +406,193 @@ async function runCondition(cfg, issueKey, read, actingUser, readUserGroups) {
   }
 }
 
+/* ===== GIT VALIDATORS (1.4 commit 10) ===================================== */
+
+/** The four git validator rule types. Conditions with the same keys are a DIFFERENT
+ *  engine (the manifest expression) — see runCondition's git note. */
+export const GIT_VALIDATOR_TYPES = [
+  "git-build-passed",
+  "git-pr-approved",
+  "git-pr-comments-resolved",
+  "git-pr-merged",
+];
+export const isGitValidatorType = (t) => GIT_VALIDATOR_TYPES.includes(t);
+
+/**
+ * Wall clock for the WHOLE git check, inside the validator's own budget. A
+ * transition is a human waiting on a screen: the adapter's per-call timeout is
+ * 10 s and one check can chain two calls, so the ceiling has to be here, not
+ * there. 8 s leaves the rest of validate() (log write, registry read) room
+ * inside the 25 s platform cap.
+ */
+export const GIT_VALIDATOR_BUDGET_MS = 8000;
+
+/** Build states that are a DETERMINATE "has not passed" (rollUpChecks vocabulary). */
+const BUILD_NOT_PASSED = ["failed", "running", "pending"];
+
+/** Read the advisory cognirunner.git property for one issue. Never throws. */
+async function readGitProperty(issueKey) {
+  try {
+    const res = await api.asApp().requestJira(
+      route`/rest/api/3/issue/${issueKey}/properties/${GIT_PROPERTY_KEY}`,
+      { headers: { Accept: "application/json" } },
+    );
+    if (!res.ok) return null;
+    const body = await res.json();
+    return body && body.value ? body.value : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Run a GIT validator. Returns the same shape as every other validator, plus an
+ * optional `banner` the execution log and config-view render.
+ *
+ * WHY IT NEVER TRUSTS THE PROPERTY. `cognirunner.git` is the last state this app
+ * SAW (listeners.js: "THE PROPERTY IS ADVISORY"). Anyone who can write an issue
+ * property can set `pr.merged:true`, and deliveries arrive out of order. So the
+ * property is an INDEX — it supplies the candidate PR number — and every answer
+ * that blocks or allows comes from a live provider read on this transition.
+ *
+ * FAIL-OPEN / FAIL-CLOSED, on purpose (LAW 3). Validators fail OPEN by default;
+ * `strict:true` is the admin opting into the opposite, and two cases ignore it:
+ *
+ *   situation                          strict:false          strict:true
+ *   ---------------------------------- --------------------- ---------------------
+ *   config not finished (no connection  ALLOW                 ALLOW
+ *     id / no repo)                     (the rule isn't built yet — same as every
+ *                                        other premade rule's malformed-config path)
+ *   connection id names no row          BLOCK                 BLOCK   <- fail CLOSED
+ *   repo not on the allow-list          BLOCK                 BLOCK   <- fail CLOSED
+ *   no pull request found               ALLOW                 BLOCK
+ *   dead token (auth_dead)              ALLOW + banner        BLOCK (names the
+ *                                                              connection, never
+ *                                                              the token)
+ *   network error / timeout / 429       ALLOW + banner        BLOCK
+ *   determinate negative (not merged,
+ *     not approved, build failed,
+ *     unresolved comment)               BLOCK                 BLOCK
+ *   unknown (no checks at all, thread
+ *     resolution unreadable on GitHub)  ALLOW                 BLOCK
+ *
+ * The two fail-CLOSED rows are the §8 "dead gate" finding: a rule pointing at a
+ * connection that was deleted, or at a repository the connection is not allowed
+ * to read, is MISCONFIGURED — not unlucky. Letting it pass silently turns a gate
+ * somebody relies on into decoration, and nothing anywhere would say so. A
+ * transport fault is different in kind: the rule is correct, the world is
+ * momentarily unreachable, and that is what `strict` is for.
+ */
+async function runGitValidator(cfg, issueKey, deps) {
+  const strict = cfg.strict === true;
+  const fail = (msg) => ({ result: false, errorMessage: (cfg.errorMessage && cfg.errorMessage.trim()) || msg });
+  const allow = (reason, banner) => ({ result: true, gitReason: reason, ...(banner ? { banner } : {}) });
+
+  const connectionId = typeof cfg.connectionId === "string" ? cfg.connectionId.trim() : "";
+  const repo = normalizeRepoId(cfg.repo);
+  // Unfinished config → fail OPEN, exactly like `if (!cfg.fieldId) return PASS`.
+  if (!connectionId || !repo) return allow("not-configured");
+
+  const getConn = deps.getConnection || getConnection;
+  const allowedRepo = deps.isRepoAllowed || isRepoAllowed;
+  const makeProvider = deps.providerForConnection || providerForConnection;
+  const readProperty = deps.readGitProperty || readGitProperty;
+
+  const conn = await getConn(connectionId);
+  if (!conn) {
+    return fail("This rule points at a git connection that no longer exists. Re-pick the connection in the rule's configuration.");
+  }
+  const connLabel = conn.label || conn.id || "the git connection";
+  if (!allowedRepo(conn, repo)) {
+    // FAIL CLOSED regardless of `strict`: a misconfigured gate must not silently pass.
+    return fail(`This rule checks ${repo}, which is not on the allow-list of the git connection “${connLabel}”. Add the repository to that connection, or point the rule at one that is allowed.`);
+  }
+
+  // The candidate pull request. The property is the INDEX; `prMatch` says what
+  // makes the candidate acceptable once the live read comes back:
+  //   "property" — accept it (the delivery that wrote it named this issue),
+  //   "branch"   — only if the LIVE source branch contains the issue key,
+  //   "both"     — either of the two (the default; the widest match).
+  // There is no discovery-by-listing: the adapter has no list-pull-requests
+  // method, so an issue whose repo has no property entry has no candidate.
+  const prMatch = cfg.prMatch === "property" || cfg.prMatch === "branch" ? cfg.prMatch : "both";
+  const prop = issueKey ? await readProperty(issueKey) : null;
+  const entry = prop && prop.repos && typeof prop.repos === "object" ? prop.repos[repo] : null;
+  const number = entry && entry.pr && entry.pr.number != null ? Number(entry.pr.number) : null;
+  const noPr = () =>
+    strict
+      ? fail(`No pull request for this issue was found in ${repo}, so this check cannot pass. Open a pull request whose branch names ${issueKey || "this issue"}, or turn Strict off on this rule.`)
+      : allow("no-pull-request");
+  if (!Number.isFinite(number) || number <= 0) return noPr();
+
+  try {
+    const provider = await makeProvider(connectionId, { repo });
+    const live = await provider.getPullRequestState({ repo, number });
+    const pr = (live && live.pr) || {};
+    if (prMatch === "branch") {
+      const branch = String(pr.sourceBranch || "").toUpperCase();
+      if (!issueKey || !branch.includes(String(issueKey).toUpperCase())) return noPr();
+    }
+    switch (cfg.ruleType) {
+      case "git-pr-merged":
+        return (live && live.state) === "merged" || pr.state === "merged"
+          ? PASS
+          : fail(`Pull request #${number} in ${repo} is not merged yet.`);
+      case "git-pr-approved":
+        if (live && live.changesRequested) return fail(`Pull request #${number} in ${repo} has changes requested.`);
+        return live && live.approved ? PASS : fail(`Pull request #${number} in ${repo} has not been approved yet.`);
+      case "git-build-passed": {
+        const ref = pr.headSha || (entry && entry.pr && entry.pr.headSha) || null;
+        if (!ref) return strict ? fail(`The head commit of pull request #${number} in ${repo} could not be read, so the build state is unknown.`) : allow("no-head-sha");
+        const build = await provider.getBuildState({ repo, ref });
+        const state = (build && build.state) || "none";
+        if (state === "success") return PASS;
+        if (BUILD_NOT_PASSED.includes(state)) {
+          return fail(state === "failed"
+            ? `The build on pull request #${number} in ${repo} failed${build && build.name ? ` (${build.name})` : ""}.`
+            : `The build on pull request #${number} in ${repo} has not finished yet.`);
+        }
+        // "none" — no checks reported at all. Not a negative, an absence.
+        return strict ? fail(`No build has reported on pull request #${number} in ${repo}.`) : allow("no-checks");
+      }
+      case "git-pr-comments-resolved": {
+        const comments = await provider.listPullRequestComments({ repo, number });
+        const rows = Array.isArray(comments) ? comments : [];
+        const unresolved = rows.filter((c) => c && c.resolved === false).length;
+        if (unresolved > 0) return fail(`Pull request #${number} in ${repo} still has ${unresolved} unresolved review comment${unresolved === 1 ? "" : "s"}.`);
+        // F-269: `resolved === null` is NOT PROVEN — GitHub REST cannot answer
+        // thread resolution. Never read it as "resolved".
+        const unknown = rows.some((c) => c && c.resolved !== true && c.resolved !== false);
+        if (unknown) {
+          return strict
+            ? fail(`Whether the review comments on pull request #${number} in ${repo} are resolved cannot be read from this provider, and this rule is set to Strict.`)
+            : allow("resolution-unknown");
+        }
+        return PASS;
+      }
+      default:
+        return PASS; // unknown git rule type → fail OPEN
+    }
+  } catch (e) {
+    const code = e && e.code;
+    // A repo the connection may not read can also surface here (a row edited
+    // between our check and the adapter's) — same fail-CLOSED answer.
+    if (code === "not_supported" || code === "not_found") {
+      return fail(`This rule's git connection “${connLabel}” cannot read ${repo}. Check the connection's repository allow-list.`);
+    }
+    if (code === "auth_dead") {
+      // The credential is dead. The message NAMES the connection and never any
+      // part of the token; `banner:"auth_dead"` is what config-view renders.
+      return strict
+        ? { ...fail(`The git connection “${connLabel}” can no longer sign in, so this check cannot run. An admin must re-connect it.`), banner: "auth_dead" }
+        : allow("auth-dead", "auth_dead");
+    }
+    return strict
+      ? { ...fail(`${repo} could not be reached to check this pull request (${code || "error"}).`), banner: "git_unavailable" }
+      : allow("provider-unavailable", "git_unavailable");
+  }
+}
+
 /**
  * Entry point. Dispatches to the validator or condition path, fail-OPEN on any error,
  * and emits one structured (metadata-only — never field VALUES) trace line per evaluation
@@ -402,7 +614,7 @@ export async function executePremadeRule(config, args, invocationType, opts = {}
     } else if (invocationType === "condition") {
       out = (await runCondition(cfg, issueKey, read, actingUser, readUserGroups)) ? PASS : { result: false }; // hide silently — no message
     } else {
-      out = await runValidator(cfg, mf, issueKey, read);
+      out = await runValidator(cfg, mf, issueKey, read, opts.gitDeps || opts);
     }
   } catch {
     out = PASS; // fail-OPEN — a runtime bug never traps (or silently hides) a transition
@@ -415,6 +627,8 @@ export async function executePremadeRule(config, args, invocationType, opts = {}
       issue: issueKey || null,
       result: out?.result !== false,
       blocked: out?.result === false,
+      ...(out?.banner ? { banner: out.banner } : {}),
+      ...(out?.gitReason ? { why: out.gitReason } : {}),
     })}`);
   } catch { /* best-effort trace */ }
   return out;

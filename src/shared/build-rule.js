@@ -26,7 +26,7 @@ import { redosRisk } from "./regex-safety.js";
 // The param types this module knows how to prompt for and validate. The offline
 // test asserts every "available" catalog rule uses only these — so an unhandled
 // param type fails CI instead of silently under-handling a rule.
-export const KNOWN_PARAM_TYPES = ["field", "opValue", "regex", "allowed", "value", "lengthBounds", "dateRel", "picker", "text"];
+export const KNOWN_PARAM_TYPES = ["field", "opValue", "regex", "allowed", "value", "lengthBounds", "dateRel", "picker", "text", "git"];
 
 // One compact prompt line per AVAILABLE rule (the unavailable ones — e.g.
 // user-in-role — are filtered out so the AI can never pick them).
@@ -44,6 +44,7 @@ export const buildCatalogPromptBlock = (mode) => {
     if (p.dateRel) hints.push('"mode" ("future" or "within"), "days" (positive integer, only when "within")');
     if (p.picker) hints.push(`"${p.picker.key}" (a name from the provided ${p.picker.source} list)`);
     if (p.text) hints.push(`"${p.text.key}" (text)`);
+    if (p.git) hints.push('"connectionId" (an id from the provided gitconnections list), "repo" ("owner/name", from the provided gitrepos list), "prMatch" ("property", "branch" or "both"), "strict" (true/false)');
     const params = hints.length ? hints.join("; ") : "no params";
     return `- ${r.key}: ${r.label} — ${r.help} PARAMS: ${params}`;
   }).join("\n");
@@ -123,6 +124,25 @@ export const validateBuiltRule = (mode, aiOutput, ctx = {}) => {
     const key = p.text.key;
     const t = clampStr(raw[key], 200);
     if (t) built.textValue = t; else unresolved.push(key);
+  }
+  if (p.git) {
+    // Model output is never trusted: the connection and the repository must each
+    // be a value the CALLER supplied (the same allow-lists the pickers use), and
+    // the two enums are clamped to their fixed vocabularies AFTER parsing. A
+    // draft that cannot resolve them is left `unresolved` for the human — the
+    // wizard never invents a repository a rule would then fail CLOSED on.
+    const conns = Array.isArray(lists.gitconnections) ? lists.gitconnections : [];
+    const repos = Array.isArray(lists.gitrepos) ? lists.gitrepos : [];
+    const wantConn = clampStr(raw.connectionId ?? raw.connection, 120).toLowerCase();
+    const conn = conns.find((o) => String(o && o.value).toLowerCase() === wantConn && wantConn);
+    if (conn) built.connectionId = conn.value; else unresolved.push("connectionId");
+    const wantRepo = clampStr(raw.repo ?? raw.repository, 200).toLowerCase();
+    const repo = repos.find((o) => String(o && o.value).toLowerCase() === wantRepo && wantRepo);
+    if (repo) built.repo = repo.value; else unresolved.push("repo");
+    built.prMatch = raw.prMatch === "property" || raw.prMatch === "branch" ? raw.prMatch : "both";
+    // Strict defaults to FALSE — the wizard must not silently arm the
+    // fail-CLOSED behaviour on somebody's transition.
+    built.strict = raw.strict === true || raw.strict === "true";
   }
 
   return { ok: true, config: built, explanation: clampNarrateLine(aiOutput.explanation, 240), unresolved };

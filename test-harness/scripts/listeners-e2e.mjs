@@ -22,7 +22,17 @@
 import { loadEnv } from "../lib/env.mjs";
 import { disposableProject, cleanupFixtures, deleteIssueFixture } from "../lib/fixture-cleanup.mjs";
 import { closeRulesApi, rulesApi, waitForLogs, ensureRulesApi } from "../lib/rules-api.mjs";
-import { EVENT_IDS } from "../../src/shared/jira-events.js";
+import { EVENT_IDS, GIT_EVENT_IDS, isGitEvent } from "../../src/shared/jira-events.js";
+
+// THE CATCH-ALL IS A JIRA CATCH-ALL (F-445). The catalogue also carries the `source:"git"`
+// rows (1.4 "Coder"), which do NOT come from Jira at all: they arrive on the app's own
+// git-webhook, and the saver REFUSES a git subscription with no `filters.repos` ("a
+// repository is not a Jira project"). Subscribing the catch-all to the whole catalogue
+// therefore made the very first create 400 and killed the suite after three assertions.
+// This script fires JIRA events; the git half is proven by scripts/git-inbound-live.mjs,
+// which plants a stand-in connection + hook secret and drives the real web trigger. What
+// IS asserted here, cheaply, is the refusal itself — see "git events" below.
+const JIRA_EVENT_IDS = EVENT_IDS.filter((id) => !isGitEvent(id));
 
 try {
 const env = loadEnv();
@@ -82,11 +92,11 @@ async function main() {
 
   // ── listeners ──
   const catchAll = must(await rulesApi.listeners.create({
-    name: `E2E catch-all ${RUN}`, description: "records every event on the ledger issue", events: EVENT_IDS, ignoreSelf: true,
+    name: `E2E catch-all ${RUN}`, description: "records every Jira event on the ledger issue", events: JIRA_EVENT_IDS, ignoreSelf: true,
     functions: [{ name: "record", code: `await api.forIssue("${ledger.key}").addComment("caught " + api.context.eventType + " " + (api.context.issueKey || "(no issue)"));\nreturn api.context.eventType;` }],
   }).then((r) => ({ ok: r.ok, body: r.body, status: r.status })), "create catch-all").listener;
   created.listeners.push(catchAll.id);
-  ok(catchAll.events.length === EVENT_IDS.length, `catch-all listener subscribed to all ${EVENT_IDS.length} events (id ${catchAll.id})`);
+  ok(catchAll.events.length === JIRA_EVENT_IDS.length, `catch-all listener subscribed to all ${JIRA_EVENT_IDS.length} JIRA events (id ${catchAll.id}; ${GIT_EVENT_IDS.length} git events excluded — they need filters.repos)`);
 
   const onCreate = must(await rulesApi.listeners.create({
     name: `E2E created→label ${RUN}`, events: ["avi:jira:created:issue"], filters: { projectKeys: [proj.key] },
@@ -122,6 +132,17 @@ async function main() {
   ok(upd.ok && upd.body.listener.description === "updated via PUT" && upd.body.listener.enabled === false, "PUT merge-updates a listener and keeps enabled=false");
   const rej = await rulesApi.listeners.create({ name: "bad", events: ["avi:jira:nope"] });
   ok(rej.status === 400 && /events must contain/.test(rej.body.error || (rej.body.errors && rej.body.errors[0] && rej.body.errors[0].error) || ""), `validation error → 400 with message (${rej.status})`);
+
+  // ── git events: the RULE, proven here; the DELIVERY, proven elsewhere (F-445) ──
+  // Cheap and worth having: a git subscription with no `filters.repos` must be refused
+  // with the message the admin UI shows. This is the rule that broke the catch-all, so it
+  // is asserted rather than merely worked around. Actually DELIVERING a git event needs a
+  // connection row, a per-repo hook secret and a signed POST to the git-webhook trigger —
+  // that is scripts/git-inbound-live.mjs, and it is not duplicated here.
+  const gitNoRepos = await rulesApi.listeners.create({ name: `E2E git no repos ${RUN}`, events: [GIT_EVENT_IDS[0]], functions: [{ name: "x", code: "return api.context.eventType;" }] });
+  const gitErr = gitNoRepos.body.error || (gitNoRepos.body.errors && gitNoRepos.body.errors[0] && gitNoRepos.body.errors[0].error) || "";
+  ok(gitNoRepos.status === 400 && /filters\.repos is required for git events/.test(gitErr), `a git event with no filters.repos → 400 "${String(gitErr).slice(0, 80)}"`);
+  note(`git events (${GIT_EVENT_IDS.length}) are excluded from the catch-all by design and are proven end to end by scripts/git-inbound-live.mjs`);
   await sleep(35000); // let the trigger container's 30s index cache expire
   console.log("  listeners in place; firing events…");
 
@@ -328,7 +349,7 @@ async function main() {
   }
   console.log("\n  EVENT COVERAGE (ledger issue — one comment per event the catch-all caught):");
   let hit = 0; const missed = [];
-  for (const e of EVENT_IDS) { const f = fired.has(e); const s = seen.has(e); if (f && s) hit++; if (f && !s) missed.push(e); console.log(`    ${s ? "✓" : f ? "✗" : "·"} ${e}${!f ? "  (not fired by this script)" : ""}`); }
+  for (const e of JIRA_EVENT_IDS) { const f = fired.has(e); const s = seen.has(e); if (f && s) hit++; if (f && !s) missed.push(e); console.log(`    ${s ? "✓" : f ? "✗" : "·"} ${e}${!f ? "  (not fired by this script)" : ""}`); }
   const extra = [...seen].filter((e) => !fired.has(e));
   if (extra.length) console.log(`    (also caught, fired implicitly by Jira: ${extra.join(", ")})`);
   ok(missed.length === 0, `catch-all caught ${hit}/${fired.size} fired event types${missed.length ? ` — missing: ${missed.join(", ")}` : ""} (+${extra.length} caught implicitly, ${seen.size} distinct total)`);

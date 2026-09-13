@@ -208,6 +208,55 @@ const listenerBody = (over = {}) => ({
   ok(legacyAdmin.success === true, `resolver deleteContextDoc: an ADMIN can still delete it (got ${JSON.stringify(legacyAdmin)})`);
 }
 
+/* ═════ F-635 — BUILTINS ARE NOT A PARITY CASE, AND THEY GET THE ADMIN SENTENCE ═════
+ * F-624/F-625 put the destructive gate above the builtin branch. Builtins are OWNERLESS,
+ * so a scope-'own' editor deleting one was told `notOwner` — `hint:"not-owner"` and no
+ * `needsRole`, which the F-241/F-260 contract defines as "asking an admin will not help"
+ * — about the one row class where an admin is exactly who can act. Builtins are seeded on
+ * every tenant, so their existence is public and there is nothing to keep parity WITH;
+ * the builtin branch runs first and keeps its own sentence, with the remedy named.
+ * The USER-row parity above is unaffected, and is re-asserted here byte for byte. */
+{
+  const docIndex = async () => (await storage.get("doc_repo_index")) || [];
+  const BSKILL = { id: "skill_builtin_635", name: "Builtin skill", category: "Other", enabled: true, builtin: true };
+  const BDOC = { id: "doc_builtin_635", title: "Builtin doc", category: "General", builtin: true, disabled: false };
+  await storage.set("skill_repo_index", [...(await skillIndex()), BSKILL]);
+  await storage.set(`skill_repo:${BSKILL.id}`, { ...BSKILL, instructions: "curated" });
+  await storage.set("doc_repo_index", [...(await docIndex()), BDOC]);
+  await storage.set(`doc_repo:${BDOC.id}`, { ...BDOC, content: "curated" });
+
+  const s = await call("deleteSkill", { id: BSKILL.id }, OWN);
+  ok(s.success === false && s.error === "Only admins can disable built-in skills" && s.needsRole === "admin" && s.hint === "ask-app-admin",
+    `deleteSkill on a BUILTIN names the remedy and its owner, not notOwner (got ${JSON.stringify(s)})`);
+  ok((await skillIndex()).find((x) => x.id === BSKILL.id), "…and the builtin skill is untouched");
+
+  const d = await call("deleteContextDoc", { id: BDOC.id }, OWN);
+  ok(d.success === false && d.error === "Only admins can disable built-in documents" && d.needsRole === "admin" && d.hint === "ask-app-admin",
+    `deleteContextDoc on a BUILTIN names the remedy and its owner, not notOwner (got ${JSON.stringify(d)})`);
+  ok((await docIndex()).find((x) => x.id === BDOC.id), "…and the builtin doc is untouched");
+
+  /* An admin still disables (never hard-deletes) a builtin — the seeder would resurrect it. */
+  const sAdmin = await call("deleteSkill", { id: BSKILL.id }, ADMIN);
+  ok(sAdmin.success === true, `an ADMIN can disable the builtin skill (got ${JSON.stringify(sAdmin)})`);
+  ok((await skillIndex()).find((x) => x.id === BSKILL.id)?.enabled === false,
+    "…by FLIPPING it disabled, not deleting the row");
+  const dAdmin = await call("deleteContextDoc", { id: BDOC.id }, ADMIN);
+  ok(dAdmin.success === true && dAdmin.disabled === true, `an ADMIN disables the builtin doc (got ${JSON.stringify(dAdmin)})`);
+  ok((await docIndex()).find((x) => x.id === BDOC.id)?.disabled === true, "…by flipping it disabled, not deleting the row");
+
+  /* USER rows: the parity F-624/F-625 established is still exactly as it was. */
+  const mineSkill = await call("saveSkill", { name: "Admin's 635 skill", instructions: "x" }, ADMIN);
+  const sUnknown = await call("deleteSkill", { id: "skill_635_free" }, OWN);
+  const sForeign = await call("deleteSkill", { id: mineSkill.id }, OWN);
+  same(sUnknown, sForeign, "deleteSkill user rows, after F-635");
+  const mineDoc = await call("saveContextDoc", { title: "Admin's 635 doc", content: "body", category: "General" }, ADMIN);
+  const dUnknown = await call("deleteContextDoc", { id: "doc_635_free" }, OWN);
+  const dForeign = await call("deleteContextDoc", { id: mineDoc.id }, OWN);
+  same(dUnknown, dForeign, "deleteContextDoc user rows, after F-635");
+  ok(dUnknown.hint === "not-owner" && dUnknown.needsRole === undefined,
+    `…and a user row still gets the ownership refusal, unchanged (got ${JSON.stringify(dUnknown)})`);
+}
+
 /* agents — the VA resolvers sit at the ADMIN floor, so the parity here is that the
  * floor answers FIRST and an id never reaches a row read at all. */
 {
@@ -265,5 +314,5 @@ for (const [resource, mk, noun, free, indexOf] of [
   same(a, b, "REST POST ?resource=agents");
 }
 
-console.log(`existence-parity (F-620/F-622/F-624/F-625): ${pass} passed, ${fail} failed`);
+console.log(`existence-parity (F-620/F-622/F-624/F-625/F-635): ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

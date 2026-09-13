@@ -8020,20 +8020,29 @@ resolver.define("deleteContextDoc", async ({ payload, context }) => {
     //
     // DECISION (F-624, carried here): PARITY WINS. `destructive: true` narrows
     // scope-"own" to genuine authorship, so an OWNERLESS legacy document (no
-    // `createdBy` — saved before authorship was recorded, and every builtin)
-    // becomes deletable by ADMINS ONLY. Deliberate, not an oversight.
-    const refusal = await gateExistingRow(context.accountId, doc, {
-      what: "delete this document", minRole: "editor", destructive: true,
-      notFound: "Document not found",
-    });
-    if (refusal) return refusal;
-    // Builtin docs flip to disabled instead of deleting — the seeder upserts by
-    // id, so a hard delete would resurrect the doc on the next seed-version bump.
+    // `createdBy` — saved before authorship was recorded) is deletable only by an
+    // admin or by an editor whose scope is "all" — which IS the default scope, so
+    // the narrowing bites explicitly scope-"own" editors and nobody else.
+    // Deliberate, not an oversight. (F-635 corrected this note: it used to say
+    // "ADMINS ONLY", which `ownershipAllows` does not implement.)
+    //
+    // F-635 — THE BUILTIN BRANCH RUNS FIRST, ABOVE THE GATE. A builtin is ownerless,
+    // so `destructive: true` refused a scope-"own" editor with `notOwner` — a sentence
+    // that carries `hint: "not-owner"` and deliberately NO `needsRole`, i.e. "asking an
+    // admin will not help" — about the one row class where an admin is precisely who
+    // can act. That is the F-260 failure mode. It costs nothing to answer honestly
+    // here: builtins are seeded on every tenant from `src/shared/builtin-docs.js`, so
+    // their ids and existence are public knowledge and naming one leaks nothing an
+    // off-roster caller could not read from the app itself. The existence-parity
+    // contract F-625 established is unaffected — it is about USER rows, which still
+    // go through the gate below.
     if (doc?.builtin === true) {
       // Builtins are shared, curated content — mirror the saveSkill gate.
       if (!(await requireAdmin(context.accountId))) {
         return permissionDenied("Only admins can disable built-in documents", "admin");
       }
+      // Builtin docs flip to disabled instead of deleting — the seeder upserts by
+      // id, so a hard delete would resurrect the doc on the next seed-version bump.
       const updated = index.map((d) => (d.id === id ? { ...d, disabled: true } : d));
       await storage.set(DOC_REPO_INDEX_KEY, updated);
       try {
@@ -8044,6 +8053,11 @@ resolver.define("deleteContextDoc", async ({ payload, context }) => {
       }
       return { success: true, disabled: true };
     }
+    const refusal = await gateExistingRow(context.accountId, doc, {
+      what: "delete this document", minRole: "editor", destructive: true,
+      notFound: "Document not found",
+    });
+    if (refusal) return refusal;
     await storage.delete(`${DOC_REPO_PREFIX}${id}`);
     const updated = index.filter((d) => d.id !== id);
     await storage.set(DOC_REPO_INDEX_KEY, updated);
@@ -8170,19 +8184,32 @@ resolver.define("deleteSkill", async ({ payload, context }) => {
     // DECISION (F-624, coordinator, under the owner's "no more security issues"):
     // PARITY WINS over the old leniency. `destructive: true` narrows scope-"own"
     // to genuine authorship, so an OWNERLESS legacy user skill (no `createdBy` —
-    // saved before authorship was recorded) becomes deletable by ADMINS ONLY.
-    // That is the listener/job rule applied here deliberately; it is a behaviour
-    // change, not an oversight.
-    const refusal = await gateExistingRow(context.accountId, skill, {
-      what: "delete this skill", minRole: "editor", destructive: true,
-      notFound: "Skill not found",
-    });
-    if (refusal) return refusal;
+    // saved before authorship was recorded) is deletable only by an admin or by an
+    // editor whose scope is "all" — which IS the default scope, so the narrowing
+    // bites explicitly scope-"own" editors and nobody else. That is the
+    // listener/job rule applied here deliberately; it is a behaviour change, not an
+    // oversight. (F-635 corrected this note: it used to say "ADMINS ONLY", which
+    // `ownershipAllows` does not implement.)
+    //
+    // F-635 — THE BUILTIN BRANCH RUNS FIRST, ABOVE THE GATE, for the same reason it
+    // does in `deleteContextDoc`: a builtin is ownerless, so `destructive: true`
+    // answered a scope-"own" editor with `notOwner` — `hint: "not-owner"`, no
+    // `needsRole`, i.e. "asking an admin will not help" — about the one row class
+    // where an admin is exactly who can act. Builtins are seeded on every tenant
+    // from `src/shared/builtin-skills.js`, so their existence is public and naming
+    // one leaks nothing; the F-624 existence-parity contract covers USER rows, which
+    // still go through the gate below.
     if (skill?.builtin === true) {
       // Builtins are shared, curated content — mirror the saveSkill gate.
       if (!(await requireAdmin(context.accountId))) {
         return permissionDenied("Only admins can disable built-in skills", "admin");
       }
+    } else {
+      const refusal = await gateExistingRow(context.accountId, skill, {
+        what: "delete this skill", minRole: "editor", destructive: true,
+        notFound: "Skill not found",
+      });
+      if (refusal) return refusal;
     }
     // F-590 — the index write lives in src/skills.js (one writer); this
     // resolver owns the permission gates only. deleteSkillRows itself decides

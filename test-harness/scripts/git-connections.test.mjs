@@ -996,9 +996,13 @@ ok(healed2.connection.webhooks["acme/app"].hookState === null, "…clearing the 
   const prodRot = await callScanned("rotateGitWebhookSecret", { connectionId: hookId, repo: "acme/app" });
   ok(prodRot.success === true,
     `with HARNESS_SECRET absent (production) an armed row CANNOT break a rotation (${JSON.stringify(prodRot).slice(0, 120)})`);
+  // F-522 — the READ is gated too, so with the env gone it answers `null` without
+  // touching storage. The row is proved intact a line later, with the gate back on.
+  ok((await fault.readHarnessFault(fault.HARNESS_FAULT_HOOK_PROMOTE, faultParts)) === null,
+    "…and the read path is inert in production too — null, with no KVS read (F-522)");
+  process.env.HARNESS_SECRET = "dev";
   ok((await fault.readHarnessFault(fault.HARNESS_FAULT_HOOK_PROMOTE, faultParts)).value.count === 1,
     "…and the row was not even read — a planted lever is inert, not merely unlucky");
-  process.env.HARNESS_SECRET = "dev";
   await fault.disarmHarnessFault(fault.HARNESS_FAULT_HOOK_PROMOTE, faultParts);
   if (savedHarnessEnv === undefined) delete process.env.HARNESS_SECRET; else process.env.HARNESS_SECRET = savedHarnessEnv;
 }

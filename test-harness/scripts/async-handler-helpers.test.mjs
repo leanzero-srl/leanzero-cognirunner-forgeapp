@@ -1314,7 +1314,14 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   reads = 0;
   ok((await fault.harnessFaultArmed(KIND, ...parts)) === false, "EXECUTED: with HARNESS_SECRET absent (production) the lever is never armed, even with a row present");
   ok(reads === 0, "EXECUTED: …and it performs ZERO KVS reads of the fault key — the production path does not touch storage");
+  // F-522 — the READ is gated too, so in production it answers `null` (no row, no read)
+  // rather than reporting on a row it should not have looked at.
+  ok((await fault.readHarnessFault(KIND, parts)) === null, "EXECUTED: …and reading the lever answers null in production, without a KVS read (F-522)");
+  ok(reads === 0, "EXECUTED: …so the read side is inert too — still ZERO reads of the fault key");
+  // The row is untouched: put the secret back on just long enough to look.
+  process.env.HARNESS_SECRET = "peek";
   ok((await fault.readHarnessFault(KIND, parts)).value.count === 2, "EXECUTED: …and the row was NOT consumed by that call");
+  delete process.env.HARNESS_SECRET;
 
   // --- env PRESENT: dev/staging. The counter advances and then stops. ---
   process.env.HARNESS_SECRET = "dev";
@@ -1426,8 +1433,8 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
       `EXECUTED: with HARNESS_SECRET absent, arming "${KIND}" REFUSES — {ok:false, reason:"harness-off"}`);
     ok(writes.length === 0,
       `EXECUTED: …and writes ZERO KVS rows for "${KIND}" — the refusal is before the side effect, not after it`);
-    ok((await fault.readHarnessFault(KIND, parts)).value === null,
-      `EXECUTED: …and no row exists to be consumed later for "${KIND}"`);
+    ok((await fault.readHarnessFault(KIND, parts)) === null,
+      `EXECUTED: …and the gated read answers null for "${KIND}" (F-522), so no row can be consumed later`);
     ok(!Object.prototype.hasOwnProperty.call(res, "key") && !Object.prototype.hasOwnProperty.call(res, "count"),
       `EXECUTED: …and the refusal carries no key or count for "${KIND}" — the web trigger spreads this over {ok:true}, so ok flips to false`);
   }
@@ -1452,6 +1459,82 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
     "SOURCE: the env var is read in exactly ONE place — harnessEnabled()");
   ok(/if \(!harnessEnabled\(\)\) return \{ ok: false, reason: "harness-off" \};/.test(faultSrc.split("armHarnessFault = async")[1].slice(0, 200)),
     "SOURCE: the gate is the FIRST statement of armHarnessFault — before the storage.set");
+}
+
+// =====================================================================================
+// F-522 — the DOCBLOCK'S property, measured across ALL FOUR storage-touching exports.
+//
+// F-517 gated arming and the file went on claiming, in prose, that "a production
+// deployment performs no KVS access through this module at all" — while
+// `disarmHarnessFault` issued an ungated DELETE and `readHarnessFault` an ungated GET.
+// Two of four exports, one of them a write, in a file whose entire premise is one home
+// and one gate. What is asserted here is the SENTENCE, not the two new lines: every KVS
+// operation on the fault keyspace is counted (get, set AND delete) while every export is
+// called with HARNESS_SECRET deleted, and the total must be zero.
+// =====================================================================================
+{
+  const fault = await import("../../src/harness-fault.js");
+  const { kvs } = await import("../lib/mock-kvs.mjs");
+  const savedEnv = process.env.HARNESS_SECRET;
+  const real = { get: kvs.get, set: kvs.set, delete: kvs.delete };
+  let ops = [];
+  const spy = (name) => async function counting(k, ...rest) {
+    if (String(k).startsWith("harness_fault:")) ops.push(`${name} ${k}`);
+    return real[name].call(this, k, ...rest);
+  };
+  kvs.get = spy("get"); kvs.set = spy("set"); kvs.delete = spy("delete");
+
+  const KIND = fault.HARNESS_FAULT_HOOK_PROMOTE;
+  const parts = ["gc_f522", "acme/app"];
+
+  // A row REALLY EXISTS, planted with the gate open — otherwise "zero operations" could
+  // just be the module short-circuiting on an empty store.
+  process.env.HARNESS_SECRET = "dev";
+  await fault.armHarnessFault(KIND, parts, 3);
+  ok((await fault.readHarnessFault(KIND, parts)).value.count === 3, "F-522: (fixture) a lever really is armed before the gate closes");
+
+  delete process.env.HARNESS_SECRET;
+  ops = [];
+  const consumed = await fault.harnessFaultArmed(KIND, ...parts);
+  const armedOff = await fault.armHarnessFault(KIND, parts, 2);
+  const readOff = await fault.readHarnessFault(KIND, parts);
+  const disarmedOff = await fault.disarmHarnessFault(KIND, parts);
+
+  ok(consumed === false, "F-522: with HARNESS_SECRET absent, consuming answers false");
+  ok(armedOff && armedOff.ok === false && armedOff.reason === "harness-off", "F-522: …arming refuses harness-off");
+  ok(readOff === null, "F-522: …reading answers null");
+  ok(disarmedOff && disarmedOff.ok === false && disarmedOff.reason === "harness-off",
+    "F-522: …and DISARMING refuses harness-off — it is a WRITE (a delete), and it was the ungated one");
+  ok(ops.length === 0,
+    `F-522.ZERO_KVS — all four exports together performed ZERO KVS operations on the fault keyspace (got ${JSON.stringify(ops)})`);
+
+  // …AND THE ROW IS STILL THERE. The ungated delete really would have destroyed it: this
+  // is the difference between "answered a refusal" and "did nothing".
+  process.env.HARNESS_SECRET = "dev";
+  ok((await fault.readHarnessFault(KIND, parts)).value.count === 3,
+    "F-522: the armed row is untouched — the refused disarm deleted nothing");
+
+  // Sanity: the spy is alive. The zeros above are the gate, not a dead counter.
+  ops = [];
+  await fault.disarmHarnessFault(KIND, parts);
+  ok(ops.length === 1 && ops[0].startsWith("delete "), "F-522: (sanity) in dev the same disarm DOES issue exactly one delete");
+
+  kvs.get = real.get; kvs.set = real.set; kvs.delete = real.delete;
+  if (savedEnv === undefined) delete process.env.HARNESS_SECRET; else process.env.HARNESS_SECRET = savedEnv;
+
+  // SOURCE: ONE predicate, asked by every export that touches storage. Counted rather than
+  // eyeballed, because the next export added is the one that will forget.
+  const faultSrc = readFileSync(path.join(here, "../../src/harness-fault.js"), "utf8");
+  const faultCode = faultSrc.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  ok((faultCode.match(/process\.env\.HARNESS_SECRET/g) || []).length === 1,
+    "F-522.SOURCE: the env var is still read in exactly ONE place — harnessEnabled()");
+  ok((faultCode.match(/if \(!harnessEnabled\(\)\)/g) || []).length === 4,
+    `F-522.SOURCE: …and asked by all FOUR storage-touching exports (got ${(faultCode.match(/if \(!harnessEnabled\(\)\)/g) || []).length})`);
+  for (const fn of ["harnessFaultArmed", "armHarnessFault", "disarmHarnessFault", "readHarnessFault"]) {
+    const body = faultSrc.split(`${fn} = async`)[1] || "";
+    ok(/^\s*\([^)]*\)\s*=>\s*\{\s*if \(!harnessEnabled\(\)\)/.test(body),
+      `F-522.SOURCE: the gate is the FIRST statement of ${fn} — before any storage call`);
+  }
 }
 
 // =====================================================================================

@@ -5059,6 +5059,20 @@ resolver.define("saveOpenAIKey", async ({ payload, context }) => {
     if (provider === "atlassian") {
       return { success: false, error: "Atlassian Forge LLM does not use an API key — inference runs on the Atlassian platform." };
     }
+    // F-544 — the managed engine has no BYOK slot, and the refusal belongs HERE, at the
+    // door, BEFORE the side effect. Its credential is LeanZero's, read from an encrypted
+    // env var in exactly one place (readManagedKey) and never from KVS. Without this twin
+    // of the Forge LLM refusal above, the `storage.set(providerKeySlot(provider), key)`
+    // below parks a live key in COGNIRUNNER_KEY_managed: nothing reads it (the adapter
+    // pins readManagedKey), no admin surface shows or clears it, and getOpenAIKey
+    // reported hasKey/isByok off it. A secret its owner can neither see nor erase.
+    if (provider === MANAGED_PROVIDER_ID) {
+      return {
+        success: false,
+        reason: "managed-has-no-key",
+        error: `${MANAGED_PROVIDER_LABEL} does not use an API key — inference runs on LeanZero's managed account.`,
+      };
+    }
     if (provider === "openai" && !key.startsWith("sk-")) {
       return { success: false, error: "OpenAI API keys must start with sk-" };
     }
@@ -5086,6 +5100,25 @@ resolver.define("getOpenAIKey", async ({ payload }) => {
     if (provider === "atlassian") {
       // Forge LLM: always "configured" — no key exists. isByok unlocks the model picker.
       return { success: true, provider, baseUrl, hasKey: true, isByok: true, noKeyNeeded: true };
+    }
+    if (provider === MANAGED_PROVIDER_ID) {
+      // F-544 — the managed engine is NOT BYOK and never has a key in KVS, so the BYOK
+      // arm at the bottom would report hasKey/isByok off a slot that must always be empty
+      // — i.e. tell the panel "configured with your key" about an engine whose key is
+      // LeanZero's. The honest shape: no key here, not BYOK, and `managed: true` so the
+      // panel renders the managed row (which has no key field) rather than an
+      // unconfigured BYOK one. Whether the ENGINE is offerable is a different question,
+      // answered by getProvider / getOpenAIModelFromKVS via managedCloudStatus() — never
+      // from a KVS slot.
+      //
+      // `noKeyNeeded` rides along for the same reason Forge LLM sets it: it is the field
+      // that says "absence of a key is the NORMAL state here", so a caller asking
+      // "should I nag this admin to configure a key" has one predicate covering both
+      // vendor-billed engines instead of a per-provider list. (config-ui today derives
+      // its readiness notice from `hasKey !== false` alone and will therefore show its
+      // "provider not configured" line on a managed-active tenant until it is taught
+      // this field — a UI-side follow-up, noted with F-544.)
+      return { success: true, provider, baseUrl, hasKey: false, isByok: false, managed: true, noKeyNeeded: true };
     }
     if (provider === "lmstudio") {
       // LM Studio: "configured" once a baseUrl is set; auth is optional.

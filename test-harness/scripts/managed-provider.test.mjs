@@ -23,11 +23,16 @@
 //      the spend (F-089's lesson), so an edition/allowance check that lives only on the
 //      synchronous path is no check at all.
 //
-// src/index.js and src/async-handler.js cannot be imported offline (they pull @forge/* at
-// load), so those are source-parsed — the project's established pattern (see
-// forge-llm-policy.test.mjs, async-handler-helpers.test.mjs). The pure modules are
-// imported for real.
+// src/index.js and src/async-handler.js are mostly source-parsed here — the project's
+// established pattern (see forge-llm-policy.test.mjs, async-handler-helpers.test.mjs) —
+// and the pure modules are imported for real. F-544 added the third mode: where the claim
+// is about what a resolver DOES rather than what it says, src/index.js is imported for
+// real behind the @forge/* mocks (lib/register-mocks-index.mjs) and the resolver is
+// CALLED. A source grep could not have caught F-544: it asserted a literal the file never
+// contained, so it was green while the door it guarded was open.
 // Auto-discovered by run-offline.mjs. Run: node scripts/managed-provider.test.mjs
+import "../lib/register-mocks-index.mjs";
+import kvs from "../lib/mock-kvs.mjs";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -236,8 +241,38 @@ ok(agentCapabilityCopy("managed-key-missing").remedy.includes("LeanZero"),
   // The managed engine has no KVS key slot in use, and nothing writes one.
   ok(PROVIDER_IDS.includes("managed"), "PROVIDER_IDS carries 'managed' (it IS a provider id)");
   ok(providerKeySlot("managed") === "COGNIRUNNER_KEY_managed", "the slot NAME exists for uniformity…");
-  ok(!/storage\.set\(providerKeySlot\("managed"\)/.test(indexCode),
-    "…but nothing ever WRITES it — the credential is never in KVS");
+  // F-544 — what stood here was `ok(!/storage\.set\(providerKeySlot\("managed"\)/…)`:
+  // a grep for a literal src/index.js has never contained. The write is
+  // `storage.set(providerKeySlot(provider), key)` with `provider` taken from the PAYLOAD,
+  // so the pattern could not match whether the door was open or shut — and it was open.
+  // The invariant is BEHAVIOURAL, so it is proved by calling the door and counting the
+  // writes the mock store actually receives.
+  const { handler } = await import("../../src/index.js");
+  const ADMIN = "acct-managed-admin";
+  await kvs.set("app_admins", [{ accountId: ADMIN, role: "admin", scope: "all" }]);
+  const call = (functionKey, payload = {}) =>
+    handler({ call: { functionKey, payload }, context: {} }, { principal: { accountId: ADMIN } });
+
+  // Count every write aimed at the managed slot, so a write-then-delete cannot pass either.
+  const slot = providerKeySlot("managed");
+  const realSet = kvs.set.bind(kvs);
+  let managedWrites = 0;
+  kvs.set = async (key, value, options) => { if (key === slot) managedWrites++; return realSet(key, value, options); };
+  let saved, status;
+  try {
+    saved = await call("saveOpenAIKey", { provider: "managed", key: "sk-or-v1-000000000000000000000000" });
+    status = await call("getOpenAIKey", { provider: "managed" });
+  } finally {
+    kvs.set = realSet;
+  }
+  ok(saved && saved.success === false,
+    `saveOpenAIKey REFUSES provider "managed" at the door (got ${JSON.stringify(saved).slice(0, 200)})`);
+  ok(saved && saved.reason === "managed-has-no-key",
+    "…with a reason code, so the panel can say WHY instead of guessing from prose");
+  ok(managedWrites === 0, `…and the KVS slot is never written (writes seen: ${managedWrites})`);
+  ok(kvs.__raw(slot) === undefined, "…so COGNIRUNNER_KEY_managed stays empty — the credential is never in KVS");
+  ok(status && status.success === true && status.hasKey === false && status.isByok === false && status.managed === true,
+    `getOpenAIKey answers hasKey:false, isByok:false, managed:true (got ${JSON.stringify(status).slice(0, 200)})`);
 }
 
 // =====================================================================================

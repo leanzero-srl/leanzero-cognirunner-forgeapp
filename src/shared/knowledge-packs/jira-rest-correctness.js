@@ -49,7 +49,8 @@ export const SECTIONS = [
       "codegen",
       "agent",
       "va",
-      "validator"
+      "validator",
+      "fix"
     ],
     "provenance": {
       "source": "jira-api",
@@ -82,7 +83,8 @@ export const SECTIONS = [
       "codegen",
       "agent",
       "va",
-      "validator"
+      "validator",
+      "fix"
     ],
     "provenance": {
       "source": "jira-api",
@@ -115,7 +117,8 @@ export const SECTIONS = [
       "codegen",
       "agent",
       "va",
-      "validator"
+      "validator",
+      "fix"
     ],
     "provenance": {
       "source": "jira-api",
@@ -147,7 +150,9 @@ export const SECTIONS = [
     "audience": [
       "codegen",
       "agent",
-      "va"
+      "va",
+      "fix",
+      "validator"
     ],
     "provenance": {
       "source": "jira-api",
@@ -179,7 +184,9 @@ export const SECTIONS = [
     "audience": [
       "codegen",
       "agent",
-      "va"
+      "va",
+      "fix",
+      "validator"
     ],
     "provenance": {
       "source": "jira-api",
@@ -211,7 +218,9 @@ export const SECTIONS = [
     "audience": [
       "codegen",
       "agent",
-      "va"
+      "va",
+      "fix",
+      "validator"
     ],
     "provenance": {
       "source": "jira-api",
@@ -245,7 +254,9 @@ export const SECTIONS = [
     "audience": [
       "codegen",
       "agent",
-      "va"
+      "va",
+      "fix",
+      "validator"
     ],
     "provenance": {
       "source": "jira-api",
@@ -272,7 +283,9 @@ export const SECTIONS = [
     "audience": [
       "codegen",
       "agent",
-      "va"
+      "va",
+      "fix",
+      "validator"
     ],
     "provenance": {
       "source": "jira-api",
@@ -307,7 +320,9 @@ export const SECTIONS = [
     "audience": [
       "codegen",
       "agent",
-      "va"
+      "va",
+      "fix",
+      "validator"
     ],
     "provenance": {
       "source": "jira-api",
@@ -336,7 +351,9 @@ export const SECTIONS = [
     "audience": [
       "codegen",
       "agent",
-      "va"
+      "va",
+      "fix",
+      "validator"
     ],
     "provenance": {
       "source": "jira-api",
@@ -372,7 +389,9 @@ export const SECTIONS = [
     "audience": [
       "codegen",
       "agent",
-      "va"
+      "va",
+      "fix",
+      "validator"
     ],
     "provenance": {
       "source": "jira-api",

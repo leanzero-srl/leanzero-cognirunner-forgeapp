@@ -46,7 +46,9 @@ export const SECTIONS = [
     "audience": [
       "agent",
       "va",
-      "codegen"
+      "codegen",
+      "fix",
+      "validator"
     ],
     "provenance": {
       "source": "jira-forge",
@@ -82,7 +84,9 @@ export const SECTIONS = [
     "audience": [
       "agent",
       "va",
-      "codegen"
+      "codegen",
+      "fix",
+      "validator"
     ],
     "provenance": {
       "source": "jira-forge",
@@ -118,7 +122,9 @@ export const SECTIONS = [
     "audience": [
       "agent",
       "va",
-      "codegen"
+      "codegen",
+      "fix",
+      "validator"
     ],
     "provenance": {
       "source": "jira-forge",
@@ -149,7 +155,9 @@ export const SECTIONS = [
     "audience": [
       "agent",
       "va",
-      "codegen"
+      "codegen",
+      "fix",
+      "validator"
     ],
     "provenance": {
       "source": "jira-forge",
@@ -184,7 +192,9 @@ export const SECTIONS = [
     "audience": [
       "agent",
       "va",
-      "codegen"
+      "codegen",
+      "fix",
+      "validator"
     ],
     "provenance": {
       "source": "jira-forge",
@@ -220,7 +230,9 @@ export const SECTIONS = [
     "audience": [
       "agent",
       "va",
-      "codegen"
+      "codegen",
+      "fix",
+      "validator"
     ],
     "provenance": {
       "source": "jira-forge",
@@ -255,7 +267,9 @@ export const SECTIONS = [
     "audience": [
       "agent",
       "va",
-      "codegen"
+      "codegen",
+      "fix",
+      "validator"
     ],
     "provenance": {
       "source": "jira-forge",
@@ -286,7 +300,9 @@ export const SECTIONS = [
     "audience": [
       "agent",
       "va",
-      "codegen"
+      "codegen",
+      "fix",
+      "validator"
     ],
     "provenance": {
       "source": "jira-forge",
@@ -321,7 +337,9 @@ export const SECTIONS = [
     "audience": [
       "agent",
       "va",
-      "codegen"
+      "codegen",
+      "fix",
+      "validator"
     ],
     "provenance": {
       "source": "jira-forge",
@@ -356,7 +374,9 @@ export const SECTIONS = [
     "audience": [
       "agent",
       "va",
-      "codegen"
+      "codegen",
+      "fix",
+      "validator"
     ],
     "provenance": {
       "source": "jira-forge",
@@ -387,7 +407,9 @@ export const SECTIONS = [
     "audience": [
       "agent",
       "va",
-      "codegen"
+      "codegen",
+      "fix",
+      "validator"
     ],
     "provenance": {
       "source": "jira-forge",

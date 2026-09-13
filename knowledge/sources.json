@@ -15,7 +15,21 @@
     "so the pack cannot quietly ship empty, and cannot quietly ship the original.",
     "",
     "Licences: tier A is Apache-2.0 with a NOTICE (leanzero-forge-skills); tier B and",
-    "the authored replacements are ours."
+    "the authored replacements are ours.",
+    "",
+    "AUDIENCES are the only thing in this file that decides what a SURFACE can see, and",
+    "they are the easiest thing to under-declare, because nothing fails when a surface is",
+    "offered nothing — its field guide simply comes back short (F-539: `fix` was declared",
+    "on one entry and could reach 5 sections against a 12 KB budget, `validator` on two",
+    "and could reach 8 against 6 KB). The rule now, per source: `fix` goes on every source",
+    "whose sections are about FAILURE MODES AND CORRECTIONS, because the fix prompt is the",
+    "codegen prompt plus an error; `validator` goes on the sources a transition-time",
+    "question is asked of — Jira REST correctness, JSM audience and comment visibility,",
+    "automation semantics, and the platform facts about fields and JQL. A re-authored",
+    "source has NO per-file audience, so widening one means spelling its list out in full",
+    "(the bake's default is codegen/coder/agent/va/review). Widen by SOURCE; adding a",
+    "source is a separate, reviewed act. `test-harness/scripts/knowledge-select.test.mjs`",
+    "holds the floor: an audience with a budget of 6 KB or more must reach >= 20 sections."
   ],
 
   "version": 1,
@@ -45,7 +59,8 @@
     "cognirunner-sandbox-traps": {
       "title": "CogniRunner sandbox traps",
       "purpose": "The traps this app has paid for, re-keyed to the sandbox API. Pinned for codegen and fix, because these are the mistakes the model makes unprompted.",
-      "pinned": []
+      "pinned": ["cognirunner-sandbox-traps#gotchas-traps-each-with-its-receipt"],
+      "pinnedFor": ["codegen", "fix"]
     },
     "jira-rest-correctness": {
       "title": "Jira REST correctness",
@@ -110,9 +125,9 @@
         { "path": "docs/26-async-events-and-queues.md", "pack": "forge-app-builder", "audience": ["coder", "codegen"], "tags": ["queue", "consumer", "async", "events"] },
         { "path": "docs/27-faas-limits-and-cost.md", "pack": "forge-app-builder", "audience": ["coder", "codegen", "review"], "tags": ["limits", "timeout", "cost", "invocation", "faas"] },
         { "path": "docs/31-forge-ai-and-llm.md", "pack": "forge-app-builder", "audience": ["coder", "codegen"], "tags": ["forge llm", "ai", "model", "token"] },
-        { "path": "docs/19-rate-limit-handling.md", "pack": "forge-platform-facts", "audience": ["coder", "codegen", "agent"], "tags": ["rate limit", "429", "retry", "backoff"] },
-        { "path": "docs/gotchas.md", "pack": "forge-platform-facts", "audience": ["coder", "codegen", "agent", "review"], "tags": ["gotcha", "trap", "forge"] },
-        { "path": "docs/22-jira-service-management.md", "pack": "jsm-correctness", "audience": ["agent", "va", "codegen"], "tags": ["jsm", "service desk", "queue", "request type", "sd.public.comment"] }
+        { "path": "docs/19-rate-limit-handling.md", "pack": "forge-platform-facts", "audience": ["coder", "codegen", "agent", "fix"], "tags": ["rate limit", "429", "retry", "backoff"] },
+        { "path": "docs/gotchas.md", "pack": "forge-platform-facts", "audience": ["coder", "codegen", "agent", "review", "fix"], "tags": ["gotcha", "trap", "forge"] },
+        { "path": "docs/22-jira-service-management.md", "pack": "jsm-correctness", "audience": ["agent", "va", "codegen", "fix", "validator"], "tags": ["jsm", "service desk", "queue", "request type", "sd.public.comment"] }
       ]
     },
     {
@@ -169,8 +184,8 @@
         "replace": [["[a-z0-9-]+\\.atlassian\\.net", "your-domain.atlassian.net"]]
       },
       "files": [
-        { "path": "docs/problem-patterns.md", "pack": "jira-rest-correctness", "audience": ["codegen", "agent", "va"], "tags": ["rest", "jira", "problem", "pattern", "error"] },
-        { "path": "docs/gotchas.md", "pack": "jira-rest-correctness", "audience": ["codegen", "agent", "va", "validator"], "tags": ["rest", "jira", "gotcha", "trap"] }
+        { "path": "docs/problem-patterns.md", "pack": "jira-rest-correctness", "audience": ["codegen", "agent", "va", "fix", "validator"], "tags": ["rest", "jira", "problem", "pattern", "error"] },
+        { "path": "docs/gotchas.md", "pack": "jira-rest-correctness", "audience": ["codegen", "agent", "va", "validator", "fix"], "tags": ["rest", "jira", "gotcha", "trap"] }
       ]
     },
     {
@@ -186,7 +201,7 @@
       },
       "files": [
         { "path": "docs/problem-patterns.md", "pack": "confluence-rest-correctness", "audience": ["codegen", "agent", "va"], "tags": ["rest", "confluence", "problem", "pattern", "error"] },
-        { "path": "docs/gotchas.md", "pack": "confluence-rest-correctness", "audience": ["codegen", "agent", "va"], "tags": ["rest", "confluence", "gotcha", "trap"] }
+        { "path": "docs/gotchas.md", "pack": "confluence-rest-correctness", "audience": ["codegen", "agent", "va", "fix"], "tags": ["rest", "confluence", "gotcha", "trap"] }
       ]
     },
     {
@@ -211,6 +226,7 @@
       "reauthor": true,
       "pack": "forge-platform-facts",
       "authored": "forge-platform-facts.md",
+      "audience": ["codegen", "coder", "agent", "va", "review", "fix", "validator"],
       "licence": "ours (re-authored)",
       "$comment": [
         "The laptop and workhorse fact memories. NOT COPIED — several carry a tenant host,",
@@ -274,6 +290,7 @@
       "reauthor": true,
       "pack": "automation-semantics",
       "authored": "automation-semantics.md",
+      "audience": ["codegen", "coder", "agent", "va", "review", "validator"],
       "licence": "ours (re-authored)",
       "$comment": [
         "workhorse atlassian-automation-builder smart-value and loop facts, plus the JSM",

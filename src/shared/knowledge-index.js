@@ -45,7 +45,9 @@ export const KNOWLEDGE_PACKS = [
     "title": "CogniRunner sandbox traps",
     "sections": 5,
     "bytes": 12702,
-    "pinned": []
+    "pinned": [
+      "cognirunner-sandbox-traps#gotchas-traps-each-with-its-receipt"
+    ]
   },
   {
     "id": "confluence-rest-correctness",
@@ -101,6 +103,12 @@ export const KNOWLEDGE_PACKS = [
 export const KNOWLEDGE_PINS = {
   "coder": [
     "forge-app-builder#core-forge-concepts"
+  ],
+  "codegen": [
+    "cognirunner-sandbox-traps#gotchas-traps-each-with-its-receipt"
+  ],
+  "fix": [
+    "cognirunner-sandbox-traps#gotchas-traps-each-with-its-receipt"
   ]
 };
 
@@ -341,7 +349,8 @@ export const KNOWLEDGE_INDEX = [
       "coder",
       "agent",
       "va",
-      "review"
+      "review",
+      "validator"
     ],
     "bytes": 3008,
     "provenance": {
@@ -370,7 +379,8 @@ export const KNOWLEDGE_INDEX = [
       "coder",
       "agent",
       "va",
-      "review"
+      "review",
+      "validator"
     ],
     "bytes": 3255,
     "provenance": {
@@ -403,7 +413,8 @@ export const KNOWLEDGE_INDEX = [
       "coder",
       "agent",
       "va",
-      "review"
+      "review",
+      "validator"
     ],
     "bytes": 2259,
     "provenance": {
@@ -429,7 +440,8 @@ export const KNOWLEDGE_INDEX = [
       "coder",
       "agent",
       "va",
-      "review"
+      "review",
+      "validator"
     ],
     "bytes": 3863,
     "provenance": {
@@ -644,7 +656,8 @@ export const KNOWLEDGE_INDEX = [
     "audience": [
       "codegen",
       "agent",
-      "va"
+      "va",
+      "fix"
     ],
     "bytes": 841,
     "provenance": {
@@ -674,7 +687,8 @@ export const KNOWLEDGE_INDEX = [
     "audience": [
       "codegen",
       "agent",
-      "va"
+      "va",
+      "fix"
     ],
     "bytes": 2273,
     "provenance": {
@@ -707,7 +721,8 @@ export const KNOWLEDGE_INDEX = [
     "audience": [
       "codegen",
       "agent",
-      "va"
+      "va",
+      "fix"
     ],
     "bytes": 2387,
     "provenance": {
@@ -3793,7 +3808,8 @@ export const KNOWLEDGE_INDEX = [
     "audience": [
       "coder",
       "codegen",
-      "agent"
+      "agent",
+      "fix"
     ],
     "bytes": 2524,
     "provenance": {
@@ -3826,7 +3842,8 @@ export const KNOWLEDGE_INDEX = [
     "audience": [
       "coder",
       "codegen",
-      "agent"
+      "agent",
+      "fix"
     ],
     "bytes": 3930,
     "provenance": {
@@ -3860,7 +3877,8 @@ export const KNOWLEDGE_INDEX = [
     "audience": [
       "coder",
       "codegen",
-      "agent"
+      "agent",
+      "fix"
     ],
     "bytes": 2877,
     "provenance": {
@@ -3895,7 +3913,8 @@ export const KNOWLEDGE_INDEX = [
     "audience": [
       "coder",
       "codegen",
-      "agent"
+      "agent",
+      "fix"
     ],
     "bytes": 3039,
     "provenance": {
@@ -3928,7 +3947,8 @@ export const KNOWLEDGE_INDEX = [
     "audience": [
       "coder",
       "codegen",
-      "agent"
+      "agent",
+      "fix"
     ],
     "bytes": 1386,
     "provenance": {
@@ -3963,7 +3983,8 @@ export const KNOWLEDGE_INDEX = [
     "audience": [
       "coder",
       "codegen",
-      "agent"
+      "agent",
+      "fix"
     ],
     "bytes": 2142,
     "provenance": {
@@ -4001,7 +4022,8 @@ export const KNOWLEDGE_INDEX = [
     "audience": [
       "coder",
       "codegen",
-      "agent"
+      "agent",
+      "fix"
     ],
     "bytes": 3013,
     "provenance": {
@@ -4031,7 +4053,8 @@ export const KNOWLEDGE_INDEX = [
     "audience": [
       "coder",
       "codegen",
-      "agent"
+      "agent",
+      "fix"
     ],
     "bytes": 2102,
     "provenance": {
@@ -4064,7 +4087,8 @@ export const KNOWLEDGE_INDEX = [
       "coder",
       "codegen",
       "agent",
-      "review"
+      "review",
+      "fix"
     ],
     "bytes": 1165,
     "provenance": {
@@ -4090,7 +4114,8 @@ export const KNOWLEDGE_INDEX = [
       "coder",
       "codegen",
       "agent",
-      "review"
+      "review",
+      "fix"
     ],
     "bytes": 2341,
     "provenance": {
@@ -4118,7 +4143,8 @@ export const KNOWLEDGE_INDEX = [
       "coder",
       "codegen",
       "agent",
-      "review"
+      "review",
+      "fix"
     ],
     "bytes": 2342,
     "provenance": {
@@ -4150,7 +4176,8 @@ export const KNOWLEDGE_INDEX = [
       "coder",
       "codegen",
       "agent",
-      "review"
+      "review",
+      "fix"
     ],
     "bytes": 3703,
     "provenance": {
@@ -4183,7 +4210,8 @@ export const KNOWLEDGE_INDEX = [
       "coder",
       "codegen",
       "agent",
-      "review"
+      "review",
+      "fix"
     ],
     "bytes": 2243,
     "provenance": {
@@ -4215,7 +4243,8 @@ export const KNOWLEDGE_INDEX = [
       "coder",
       "codegen",
       "agent",
-      "review"
+      "review",
+      "fix"
     ],
     "bytes": 2576,
     "provenance": {
@@ -4244,7 +4273,8 @@ export const KNOWLEDGE_INDEX = [
       "coder",
       "codegen",
       "agent",
-      "review"
+      "review",
+      "fix"
     ],
     "bytes": 2280,
     "provenance": {
@@ -4274,7 +4304,9 @@ export const KNOWLEDGE_INDEX = [
       "coder",
       "agent",
       "va",
-      "review"
+      "review",
+      "fix",
+      "validator"
     ],
     "bytes": 3226,
     "provenance": {
@@ -4302,7 +4334,9 @@ export const KNOWLEDGE_INDEX = [
       "coder",
       "agent",
       "va",
-      "review"
+      "review",
+      "fix",
+      "validator"
     ],
     "bytes": 1803,
     "provenance": {
@@ -4330,7 +4364,9 @@ export const KNOWLEDGE_INDEX = [
       "coder",
       "agent",
       "va",
-      "review"
+      "review",
+      "fix",
+      "validator"
     ],
     "bytes": 1906,
     "provenance": {
@@ -4359,7 +4395,9 @@ export const KNOWLEDGE_INDEX = [
       "coder",
       "agent",
       "va",
-      "review"
+      "review",
+      "fix",
+      "validator"
     ],
     "bytes": 3592,
     "provenance": {
@@ -4386,7 +4424,9 @@ export const KNOWLEDGE_INDEX = [
       "coder",
       "agent",
       "va",
-      "review"
+      "review",
+      "fix",
+      "validator"
     ],
     "bytes": 3196,
     "provenance": {
@@ -4421,7 +4461,9 @@ export const KNOWLEDGE_INDEX = [
       "coder",
       "agent",
       "va",
-      "review"
+      "review",
+      "fix",
+      "validator"
     ],
     "bytes": 2597,
     "provenance": {
@@ -4453,7 +4495,9 @@ export const KNOWLEDGE_INDEX = [
       "coder",
       "agent",
       "va",
-      "review"
+      "review",
+      "fix",
+      "validator"
     ],
     "bytes": 3694,
     "provenance": {
@@ -4483,7 +4527,9 @@ export const KNOWLEDGE_INDEX = [
       "coder",
       "agent",
       "va",
-      "review"
+      "review",
+      "fix",
+      "validator"
     ],
     "bytes": 2064,
     "provenance": {
@@ -4520,7 +4566,8 @@ export const KNOWLEDGE_INDEX = [
       "codegen",
       "agent",
       "va",
-      "validator"
+      "validator",
+      "fix"
     ],
     "bytes": 2294,
     "provenance": {
@@ -4552,7 +4599,8 @@ export const KNOWLEDGE_INDEX = [
       "codegen",
       "agent",
       "va",
-      "validator"
+      "validator",
+      "fix"
     ],
     "bytes": 2215,
     "provenance": {
@@ -4584,7 +4632,8 @@ export const KNOWLEDGE_INDEX = [
       "codegen",
       "agent",
       "va",
-      "validator"
+      "validator",
+      "fix"
     ],
     "bytes": 1934,
     "provenance": {
@@ -4615,7 +4664,9 @@ export const KNOWLEDGE_INDEX = [
     "audience": [
       "codegen",
       "agent",
-      "va"
+      "va",
+      "fix",
+      "validator"
     ],
     "bytes": 2187,
     "provenance": {
@@ -4646,7 +4697,9 @@ export const KNOWLEDGE_INDEX = [
     "audience": [
       "codegen",
       "agent",
-      "va"
+      "va",
+      "fix",
+      "validator"
     ],
     "bytes": 3267,
     "provenance": {
@@ -4677,7 +4730,9 @@ export const KNOWLEDGE_INDEX = [
     "audience": [
       "codegen",
       "agent",
-      "va"
+      "va",
+      "fix",
+      "validator"
     ],
     "bytes": 2583,
     "provenance": {
@@ -4710,7 +4765,9 @@ export const KNOWLEDGE_INDEX = [
     "audience": [
       "codegen",
       "agent",
-      "va"
+      "va",
+      "fix",
+      "validator"
     ],
     "bytes": 2066,
     "provenance": {
@@ -4736,7 +4793,9 @@ export const KNOWLEDGE_INDEX = [
     "audience": [
       "codegen",
       "agent",
-      "va"
+      "va",
+      "fix",
+      "validator"
     ],
     "bytes": 182,
     "provenance": {
@@ -4770,7 +4829,9 @@ export const KNOWLEDGE_INDEX = [
     "audience": [
       "codegen",
       "agent",
-      "va"
+      "va",
+      "fix",
+      "validator"
     ],
     "bytes": 2837,
     "provenance": {
@@ -4798,7 +4859,9 @@ export const KNOWLEDGE_INDEX = [
     "audience": [
       "codegen",
       "agent",
-      "va"
+      "va",
+      "fix",
+      "validator"
     ],
     "bytes": 2374,
     "provenance": {
@@ -4833,7 +4896,9 @@ export const KNOWLEDGE_INDEX = [
     "audience": [
       "codegen",
       "agent",
-      "va"
+      "va",
+      "fix",
+      "validator"
     ],
     "bytes": 2378,
     "provenance": {
@@ -4867,7 +4932,9 @@ export const KNOWLEDGE_INDEX = [
     "audience": [
       "agent",
       "va",
-      "codegen"
+      "codegen",
+      "fix",
+      "validator"
     ],
     "bytes": 1762,
     "provenance": {
@@ -4902,7 +4969,9 @@ export const KNOWLEDGE_INDEX = [
     "audience": [
       "agent",
       "va",
-      "codegen"
+      "codegen",
+      "fix",
+      "validator"
     ],
     "bytes": 2433,
     "provenance": {
@@ -4937,7 +5006,9 @@ export const KNOWLEDGE_INDEX = [
     "audience": [
       "agent",
       "va",
-      "codegen"
+      "codegen",
+      "fix",
+      "validator"
     ],
     "bytes": 2897,
     "provenance": {
@@ -4967,7 +5038,9 @@ export const KNOWLEDGE_INDEX = [
     "audience": [
       "agent",
       "va",
-      "codegen"
+      "codegen",
+      "fix",
+      "validator"
     ],
     "bytes": 3370,
     "provenance": {
@@ -5001,7 +5074,9 @@ export const KNOWLEDGE_INDEX = [
     "audience": [
       "agent",
       "va",
-      "codegen"
+      "codegen",
+      "fix",
+      "validator"
     ],
     "bytes": 2977,
     "provenance": {
@@ -5036,7 +5111,9 @@ export const KNOWLEDGE_INDEX = [
     "audience": [
       "agent",
       "va",
-      "codegen"
+      "codegen",
+      "fix",
+      "validator"
     ],
     "bytes": 3479,
     "provenance": {
@@ -5070,7 +5147,9 @@ export const KNOWLEDGE_INDEX = [
     "audience": [
       "agent",
       "va",
-      "codegen"
+      "codegen",
+      "fix",
+      "validator"
     ],
     "bytes": 1908,
     "provenance": {
@@ -5100,7 +5179,9 @@ export const KNOWLEDGE_INDEX = [
     "audience": [
       "agent",
       "va",
-      "codegen"
+      "codegen",
+      "fix",
+      "validator"
     ],
     "bytes": 2351,
     "provenance": {
@@ -5134,7 +5215,9 @@ export const KNOWLEDGE_INDEX = [
     "audience": [
       "agent",
       "va",
-      "codegen"
+      "codegen",
+      "fix",
+      "validator"
     ],
     "bytes": 3212,
     "provenance": {
@@ -5168,7 +5251,9 @@ export const KNOWLEDGE_INDEX = [
     "audience": [
       "agent",
       "va",
-      "codegen"
+      "codegen",
+      "fix",
+      "validator"
     ],
     "bytes": 1240,
     "provenance": {
@@ -5198,7 +5283,9 @@ export const KNOWLEDGE_INDEX = [
     "audience": [
       "agent",
       "va",
-      "codegen"
+      "codegen",
+      "fix",
+      "validator"
     ],
     "bytes": 808,
     "provenance": {

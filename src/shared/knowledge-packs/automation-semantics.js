@@ -37,7 +37,8 @@ export const SECTIONS = [
       "coder",
       "agent",
       "va",
-      "review"
+      "review",
+      "validator"
     ],
     "provenance": {
       "source": "automation-semantics",
@@ -67,7 +68,8 @@ export const SECTIONS = [
       "coder",
       "agent",
       "va",
-      "review"
+      "review",
+      "validator"
     ],
     "provenance": {
       "source": "automation-semantics",
@@ -101,7 +103,8 @@ export const SECTIONS = [
       "coder",
       "agent",
       "va",
-      "review"
+      "review",
+      "validator"
     ],
     "provenance": {
       "source": "automation-semantics",
@@ -128,7 +131,8 @@ export const SECTIONS = [
       "coder",
       "agent",
       "va",
-      "review"
+      "review",
+      "validator"
     ],
     "provenance": {
       "source": "automation-semantics",

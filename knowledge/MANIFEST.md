@@ -14,7 +14,7 @@ through, and this list is how a human proves nothing it does NOT recognise did.
 |---|---:|---:|---|
 | `administrator-practice` | 9 | 23.0 KB | — |
 | `automation-semantics` | 4 | 12.1 KB | — |
-| `cognirunner-sandbox-traps` | 5 | 12.4 KB | — |
+| `cognirunner-sandbox-traps` | 5 | 12.4 KB | `cognirunner-sandbox-traps#gotchas-traps-each-with-its-receipt` |
 | `confluence-rest-correctness` | 46 | 112.8 KB | — |
 | `forge-app-builder` | 61 | 140.8 KB | `forge-app-builder#core-forge-concepts` |
 | `forge-platform-facts` | 23 | 58.3 KB | — |
@@ -30,7 +30,9 @@ an audience's byte budget between them — the rest always answers the request.
 
 | audience | pin | pack | matched sections |
 |---|---|---|---|
+| codegen | `cognirunner-sandbox-traps#gotchas-traps-each-with-its-receipt` | `cognirunner-sandbox-traps` | `cognirunner-sandbox-traps/cognirunner-gotchas/4870432a/gotchas-traps-each-with-its-receipt-1` |
 | coder | `forge-app-builder#core-forge-concepts` | `forge-app-builder` | `forge-app-builder/jira-forge/790cea09/core-forge-concepts-1` |
+| fix | `cognirunner-sandbox-traps#gotchas-traps-each-with-its-receipt` | `cognirunner-sandbox-traps` | `cognirunner-sandbox-traps/cognirunner-gotchas/4870432a/gotchas-traps-each-with-its-receipt-1` |
 
 ## Sources
 
@@ -90,18 +92,18 @@ Deliberately NOT baked: `jira-forge-templates` (scaffolds).
 | `administrator-practice/administrator-practice/6d0d454c/the-effects-ledger-4` | The effects ledger | 1863 | codegen, coder, agent, va, review | administrator-practice `b2d76c3368ef6355` |
 | `administrator-practice/administrator-practice/6d0d454c/the-operating-loop-9` | The operating loop | 2072 | codegen, coder, agent, va, review | administrator-practice `b2d76c3368ef6355` |
 | `administrator-practice/administrator-practice/6d0d454c/unattended-operation-7` | Unattended operation | 3559 | codegen, coder, agent, va, review | administrator-practice `b2d76c3368ef6355` |
-| `automation-semantics/automation-semantics/9d8eb604/automation-semantics-1` | Automation semantics | 3008 | codegen, coder, agent, va, review | automation-semantics `ad709467d2e3b15b` |
-| `automation-semantics/automation-semantics/9d8eb604/rule-limits-worth-designing-around-3` | Rule limits worth designing around | 3255 | codegen, coder, agent, va, review | automation-semantics `ad709467d2e3b15b` |
-| `automation-semantics/automation-semantics/9d8eb604/service-management-over-rest-workflows-fields-and-verificati-4` | Service management over REST: workflows, fields and verification | 2259 | codegen, coder, agent, va, review | automation-semantics `ad709467d2e3b15b` |
-| `automation-semantics/automation-semantics/9d8eb604/smart-values-what-renders-and-what-silently-renders-empty-2` | Smart values: what renders and what silently renders empty | 3863 | codegen, coder, agent, va, review | automation-semantics `ad709467d2e3b15b` |
+| `automation-semantics/automation-semantics/9d8eb604/automation-semantics-1` | Automation semantics | 3008 | codegen, coder, agent, va, review, validator | automation-semantics `ad709467d2e3b15b` |
+| `automation-semantics/automation-semantics/9d8eb604/rule-limits-worth-designing-around-3` | Rule limits worth designing around | 3255 | codegen, coder, agent, va, review, validator | automation-semantics `ad709467d2e3b15b` |
+| `automation-semantics/automation-semantics/9d8eb604/service-management-over-rest-workflows-fields-and-verificati-4` | Service management over REST: workflows, fields and verification | 2259 | codegen, coder, agent, va, review, validator | automation-semantics `ad709467d2e3b15b` |
+| `automation-semantics/automation-semantics/9d8eb604/smart-values-what-renders-and-what-silently-renders-empty-2` | Smart values: what renders and what silently renders empty | 3863 | codegen, coder, agent, va, review, validator | automation-semantics `ad709467d2e3b15b` |
 | `cognirunner-sandbox-traps/cognirunner-gotchas/4870432a/12-two-agents-one-working-tree-4` | 12. Two agents, one working tree | 2296 | codegen, fix, coder, review | cognirunner-gotchas `813bd11877c55a90` |
 | `cognirunner-sandbox-traps/cognirunner-gotchas/4870432a/17-an-assets-object-field-silently-stores-nothing-until-conf-5` | 17. An Assets object field silently stores nothing until configured in the UI | 3191 | codegen, fix, coder, review | cognirunner-gotchas `813bd11877c55a90` |
 | `cognirunner-sandbox-traps/cognirunner-gotchas/4870432a/4-a-silent-wrong-issue-write-hides-behind-a-type-check-that--2` | 4. A silent wrong-issue WRITE hides behind a type check that looks defensive | 2196 | codegen, fix, coder, review | cognirunner-gotchas `813bd11877c55a90` |
 | `cognirunner-sandbox-traps/cognirunner-gotchas/4870432a/7-forge-logs-cannot-be-relied-on-for-a-specific-window-3` | 7. forge logs cannot be relied on for a specific window | 2134 | codegen, fix, coder, review | cognirunner-gotchas `813bd11877c55a90` |
 | `cognirunner-sandbox-traps/cognirunner-gotchas/4870432a/gotchas-traps-each-with-its-receipt-1` | GOTCHAS — traps, each with its receipt | 2885 | codegen, fix, coder, review | cognirunner-gotchas `813bd11877c55a90` |
-| `confluence-rest-correctness/confluence-api/7042ac24/email-address-needs-a-scope-3` | Email address needs a scope | 841 | codegen, agent, va | confluence-api `15cada9d99696f26` |
-| `confluence-rest-correctness/confluence-api/7042ac24/forge-development-gotchas-confluence-1` | Forge Development Gotchas (Confluence) | 2273 | codegen, agent, va | confluence-api `15cada9d99696f26` |
-| `confluence-rest-correctness/confluence-api/7042ac24/large-page-content-in-custom-ui-2` | Large Page Content in Custom UI | 2387 | codegen, agent, va | confluence-api `15cada9d99696f26` |
+| `confluence-rest-correctness/confluence-api/7042ac24/email-address-needs-a-scope-3` | Email address needs a scope | 841 | codegen, agent, va, fix | confluence-api `15cada9d99696f26` |
+| `confluence-rest-correctness/confluence-api/7042ac24/forge-development-gotchas-confluence-1` | Forge Development Gotchas (Confluence) | 2273 | codegen, agent, va, fix | confluence-api `15cada9d99696f26` |
+| `confluence-rest-correctness/confluence-api/7042ac24/large-page-content-in-custom-ui-2` | Large Page Content in Custom UI | 2387 | codegen, agent, va, fix | confluence-api `15cada9d99696f26` |
 | `confluence-rest-correctness/confluence-api/95b3f442/next-steps-6` | Next Steps | 190 | codegen, agent, va | confluence-api `29b62a6169bb7df6` |
 | `confluence-rest-correctness/confluence-api/95b3f442/pattern-2-display-sync-status-on-page-2` | Pattern 2: Display Sync Status on Page | 2553 | codegen, agent, va | confluence-api `29b62a6169bb7df6` |
 | `confluence-rest-correctness/confluence-api/95b3f442/pattern-3-space-wide-configuration-with-per-page-overrides-3` | Pattern 3: Space-Wide Configuration with Per-Page Overrides | 2825 | codegen, agent, va | confluence-api `29b62a6169bb7df6` |
@@ -206,51 +208,51 @@ Deliberately NOT baked: `jira-forge-templates` (scaffolds).
 | `forge-app-builder/jira-forge/e23d057d/output-ceiling-is-not-32k-it-is-the-model-s-own-5` | Output ceiling is NOT 32k — it is the model's own | 2102 | coder, codegen | jira-forge `45710125f9b8f6d9` |
 | `forge-app-builder/jira-forge/e23d057d/output-length-is-the-ceiling-for-structured-generation-not-c-6` | OUTPUT LENGTH is the ceiling for structured generation, not context | 2239 | coder, codegen | jira-forge `45710125f9b8f6d9` |
 | `forge-app-builder/jira-forge/e23d057d/write-progress-to-the-job-row-the-poller-is-already-reading--7` | Write progress to the job row; the poller is already reading it | 2413 | coder, codegen | jira-forge `45710125f9b8f6d9` |
-| `forge-platform-facts/jira-forge/5b7cf75d/5-use-etags-for-conditional-requests-5` | 5. Use ETags for Conditional Requests | 2524 | coder, codegen, agent | jira-forge `0ca6d38ed57a95ff` |
-| `forge-platform-facts/jira-forge/5b7cf75d/complete-implementation-with-quota-tracking-part-1-3` | Complete Implementation with Quota Tracking (part 1) | 3930 | coder, codegen, agent | jira-forge `0ca6d38ed57a95ff` |
-| `forge-platform-facts/jira-forge/5b7cf75d/complete-implementation-with-quota-tracking-part-2-4` | Complete Implementation with Quota Tracking (part 2) | 2877 | coder, codegen, agent | jira-forge `0ca6d38ed57a95ff` |
-| `forge-platform-facts/jira-forge/5b7cf75d/detect-all-three-limit-types-2` | Detect All Three Limit Types | 3039 | coder, codegen, agent | jira-forge `0ca6d38ed57a95ff` |
-| `forge-platform-facts/jira-forge/5b7cf75d/if-you-build-a-self-meter-it-is-not-capture-only-if-anything-8` | If you build a self-meter, it is not "capture-only" if anything reads it | 1386 | coder, codegen, agent | jira-forge `0ca6d38ed57a95ff` |
-| `forge-platform-facts/jira-forge/5b7cf75d/jira-s-identity-class-is-wider-than-confluence-s-7` | Jira's identity class is wider than Confluence's | 2142 | coder, codegen, agent | jira-forge `0ca6d38ed57a95ff` |
-| `forge-platform-facts/jira-forge/5b7cf75d/patterns-proven-under-the-confluence-points-quota-that-trans-6` | Patterns proven under the Confluence points quota that transfer to Jira (2026-08-20) | 3013 | coder, codegen, agent | jira-forge `0ca6d38ed57a95ff` |
-| `forge-platform-facts/jira-forge/5b7cf75d/rate-limit-handling-in-jira-forge-1` | Rate Limit Handling in Jira Forge | 2102 | coder, codegen, agent | jira-forge `0ca6d38ed57a95ff` |
-| `forge-platform-facts/jira-forge/e828b082/bulk-endpoints-need-the-global-bulk-change-permission-7` | Bulk endpoints need the Global bulk change permission | 1165 | coder, codegen, agent, review | jira-forge `cb83656981c6988c` |
-| `forge-platform-facts/jira-forge/e828b082/custom-ui-modal-sizing-5` | Custom UI modal sizing | 2341 | coder, codegen, agent, review | jira-forge `cb83656981c6988c` |
-| `forge-platform-facts/jira-forge/e828b082/forge-development-gotchas-jira-1` | Forge Development Gotchas (Jira) | 2342 | coder, codegen, agent, review | jira-forge `cb83656981c6988c` |
-| `forge-platform-facts/jira-forge/e828b082/kvs-query-has-no-sort-6` | kvs.query() has no sort() | 3703 | coder, codegen, agent, review | jira-forge `cb83656981c6988c` |
-| `forge-platform-facts/jira-forge/e828b082/no-use-before-define-is-not-a-style-rule-in-a-forge-function-2` | no-use-before-define is not a style rule in a Forge function | 2243 | coder, codegen, agent, review | jira-forge `cb83656981c6988c` |
-| `forge-platform-facts/jira-forge/e828b082/permissions-external-images-is-separate-from-fetch-3` | permissions.external.images is separate from fetch | 2576 | coder, codegen, agent, review | jira-forge `cb83656981c6988c` |
-| `forge-platform-facts/jira-forge/e828b082/workflow-validator-error-messages-4` | Workflow validator error messages | 2280 | coder, codegen, agent, review | jira-forge `cb83656981c6988c` |
-| `forge-platform-facts/platform-fact-memories/93df0223/async-events-queues-and-post-function-timing-3` | Async events, queues and post-function timing | 3226 | codegen, coder, agent, va, review | platform-fact-memories `9365f20107b9760b` |
-| `forge-platform-facts/platform-fact-memories/93df0223/automation-the-browser-and-rest-first-8` | Automation, the browser, and REST first | 1803 | codegen, coder, agent, va, review | platform-fact-memories `9365f20107b9760b` |
-| `forge-platform-facts/platform-fact-memories/93df0223/custom-ui-jira-expressions-in-the-wild-and-the-route-helper-5` | Custom UI, Jira expressions in the wild, and the route helper | 1906 | codegen, coder, agent, va, review | platform-fact-memories `9365f20107b9760b` |
-| `forge-platform-facts/platform-fact-memories/93df0223/forge-llm-contract-and-cost-4` | Forge LLM contract and cost | 3592 | codegen, coder, agent, va, review | platform-fact-memories `9365f20107b9760b` |
-| `forge-platform-facts/platform-fact-memories/93df0223/forge-platform-facts-1` | Forge platform facts | 3196 | codegen, coder, agent, va, review | platform-fact-memories `9365f20107b9760b` |
-| `forge-platform-facts/platform-fact-memories/93df0223/identity-permissions-and-what-an-endpoint-quietly-excludes-6` | Identity, permissions and what an endpoint quietly excludes | 2597 | codegen, coder, agent, va, review | platform-fact-memories `9365f20107b9760b` |
-| `forge-platform-facts/platform-fact-memories/93df0223/service-management-comments-and-visibility-7` | Service management comments and visibility | 3694 | codegen, coder, agent, va, review | platform-fact-memories `9365f20107b9760b` |
-| `forge-platform-facts/platform-fact-memories/93df0223/workflow-rules-over-rest-and-the-workflows-api-2` | Workflow rules over REST and the workflows API | 2064 | codegen, coder, agent, va, review | platform-fact-memories `9365f20107b9760b` |
-| `jira-rest-correctness/jira-api/86cb78d3/field-writes-can-silently-no-op-editmeta-before-write-2` | Field writes can silently no-op (editmeta before write) | 2294 | codegen, agent, va, validator | jira-api `32fcbc215217ea63` |
-| `jira-rest-correctness/jira-api/86cb78d3/forge-development-gotchas-jira-1` | Forge Development Gotchas (Jira) | 2215 | codegen, agent, va, validator | jira-api `32fcbc215217ea63` |
-| `jira-rest-correctness/jira-api/86cb78d3/post-rest-api-3-issue-bulk-returns-only-the-successes-3` | POST /rest/api/3/issue/bulk returns ONLY the successes | 1934 | codegen, agent, va, validator | jira-api `32fcbc215217ea63` |
-| `jira-rest-correctness/jira-api/ff281fe4/common-problem-patterns-for-jira-forge-1` | Common Problem Patterns for Jira Forge | 2187 | codegen, agent, va | jira-api `668c2a14e965fab3` |
-| `jira-rest-correctness/jira-api/ff281fe4/configuration-ui-3` | Configuration UI | 3267 | codegen, agent, va | jira-api `668c2a14e965fab3` |
-| `jira-rest-correctness/jira-api/ff281fe4/detect-and-respond-to-configuration-updates-6` | Detect and Respond to Configuration Updates | 2583 | codegen, agent, va | jira-api `668c2a14e965fab3` |
-| `jira-rest-correctness/jira-api/ff281fe4/manifest-configuration-2` | Manifest Configuration | 2066 | codegen, agent, va | jira-api `668c2a14e965fab3` |
-| `jira-rest-correctness/jira-api/ff281fe4/next-steps-8` | Next Steps | 182 | codegen, agent, va | jira-api `668c2a14e965fab3` |
-| `jira-rest-correctness/jira-api/ff281fe4/rate-limit-helper-function-4` | Rate Limit Helper Function | 2837 | codegen, agent, va | jira-api `668c2a14e965fab3` |
-| `jira-rest-correctness/jira-api/ff281fe4/validator-with-multiple-validation-rules-5` | Validator with Multiple Validation Rules | 2374 | codegen, agent, va | jira-api `668c2a14e965fab3` |
-| `jira-rest-correctness/jira-api/ff281fe4/webhook-style-sync-to-external-system-7` | Webhook-style Sync to External System | 2378 | codegen, agent, va | jira-api `668c2a14e965fab3` |
-| `jsm-correctness/jira-forge/2aa673c7/auto-assignment-based-on-category-7` | Auto-Assignment Based on Category | 1762 | agent, va, codegen | jira-forge `97401216f2606f72` |
-| `jsm-correctness/jira-forge/2aa673c7/auto-resolve-based-on-customer-inactivity-8` | Auto-Resolve Based on Customer Inactivity | 2433 | agent, va, codegen | jira-forge `97401216f2606f72` |
-| `jsm-correctness/jira-forge/2aa673c7/custom-email-notifications-via-webhooks-10` | Custom Email Notifications via Webhooks | 2897 | agent, va, codegen | jira-forge `97401216f2606f72` |
-| `jsm-correctness/jira-forge/2aa673c7/custom-form-with-validation-part-1-5` | Custom Form with Validation (part 1) | 3370 | agent, va, codegen | jira-forge `97401216f2606f72` |
-| `jsm-correctness/jira-forge/2aa673c7/custom-form-with-validation-part-2-6` | Custom Form with Validation (part 2) | 2977 | agent, va, codegen | jira-forge `97401216f2606f72` |
-| `jsm-correctness/jira-forge/2aa673c7/jira-service-management-jsm-extensions-with-forge-1` | Jira Service Management (JSM) Extensions with Forge | 3479 | agent, va, codegen | jira-forge `97401216f2606f72` |
-| `jsm-correctness/jira-forge/2aa673c7/link-service-requests-to-kb-articles-9` | Link Service Requests to KB Articles | 1908 | agent, va, codegen | jira-forge `97401216f2606f72` |
-| `jsm-correctness/jira-forge/2aa673c7/manifest-configuration-for-sla-monitoring-4` | Manifest Configuration for SLA Monitoring | 2351 | agent, va, codegen | jira-forge `97401216f2606f72` |
-| `jsm-correctness/jira-forge/2aa673c7/monitor-and-act-on-sla-breaches-3` | Monitor and Act on SLA Breaches | 3212 | agent, va, codegen | jira-forge `97401216f2606f72` |
-| `jsm-correctness/jira-forge/2aa673c7/step-2-add-custom-fields-to-request-types-2` | Step 2: Add Custom Fields to Request Types | 1240 | agent, va, codegen | jira-forge `97401216f2606f72` |
-| `jsm-correctness/jira-forge/2aa673c7/summary-of-jsm-forge-capabilities-11` | Summary of JSM Forge Capabilities | 808 | agent, va, codegen | jira-forge `97401216f2606f72` |
+| `forge-platform-facts/jira-forge/5b7cf75d/5-use-etags-for-conditional-requests-5` | 5. Use ETags for Conditional Requests | 2524 | coder, codegen, agent, fix | jira-forge `0ca6d38ed57a95ff` |
+| `forge-platform-facts/jira-forge/5b7cf75d/complete-implementation-with-quota-tracking-part-1-3` | Complete Implementation with Quota Tracking (part 1) | 3930 | coder, codegen, agent, fix | jira-forge `0ca6d38ed57a95ff` |
+| `forge-platform-facts/jira-forge/5b7cf75d/complete-implementation-with-quota-tracking-part-2-4` | Complete Implementation with Quota Tracking (part 2) | 2877 | coder, codegen, agent, fix | jira-forge `0ca6d38ed57a95ff` |
+| `forge-platform-facts/jira-forge/5b7cf75d/detect-all-three-limit-types-2` | Detect All Three Limit Types | 3039 | coder, codegen, agent, fix | jira-forge `0ca6d38ed57a95ff` |
+| `forge-platform-facts/jira-forge/5b7cf75d/if-you-build-a-self-meter-it-is-not-capture-only-if-anything-8` | If you build a self-meter, it is not "capture-only" if anything reads it | 1386 | coder, codegen, agent, fix | jira-forge `0ca6d38ed57a95ff` |
+| `forge-platform-facts/jira-forge/5b7cf75d/jira-s-identity-class-is-wider-than-confluence-s-7` | Jira's identity class is wider than Confluence's | 2142 | coder, codegen, agent, fix | jira-forge `0ca6d38ed57a95ff` |
+| `forge-platform-facts/jira-forge/5b7cf75d/patterns-proven-under-the-confluence-points-quota-that-trans-6` | Patterns proven under the Confluence points quota that transfer to Jira (2026-08-20) | 3013 | coder, codegen, agent, fix | jira-forge `0ca6d38ed57a95ff` |
+| `forge-platform-facts/jira-forge/5b7cf75d/rate-limit-handling-in-jira-forge-1` | Rate Limit Handling in Jira Forge | 2102 | coder, codegen, agent, fix | jira-forge `0ca6d38ed57a95ff` |
+| `forge-platform-facts/jira-forge/e828b082/bulk-endpoints-need-the-global-bulk-change-permission-7` | Bulk endpoints need the Global bulk change permission | 1165 | coder, codegen, agent, review, fix | jira-forge `cb83656981c6988c` |
+| `forge-platform-facts/jira-forge/e828b082/custom-ui-modal-sizing-5` | Custom UI modal sizing | 2341 | coder, codegen, agent, review, fix | jira-forge `cb83656981c6988c` |
+| `forge-platform-facts/jira-forge/e828b082/forge-development-gotchas-jira-1` | Forge Development Gotchas (Jira) | 2342 | coder, codegen, agent, review, fix | jira-forge `cb83656981c6988c` |
+| `forge-platform-facts/jira-forge/e828b082/kvs-query-has-no-sort-6` | kvs.query() has no sort() | 3703 | coder, codegen, agent, review, fix | jira-forge `cb83656981c6988c` |
+| `forge-platform-facts/jira-forge/e828b082/no-use-before-define-is-not-a-style-rule-in-a-forge-function-2` | no-use-before-define is not a style rule in a Forge function | 2243 | coder, codegen, agent, review, fix | jira-forge `cb83656981c6988c` |
+| `forge-platform-facts/jira-forge/e828b082/permissions-external-images-is-separate-from-fetch-3` | permissions.external.images is separate from fetch | 2576 | coder, codegen, agent, review, fix | jira-forge `cb83656981c6988c` |
+| `forge-platform-facts/jira-forge/e828b082/workflow-validator-error-messages-4` | Workflow validator error messages | 2280 | coder, codegen, agent, review, fix | jira-forge `cb83656981c6988c` |
+| `forge-platform-facts/platform-fact-memories/93df0223/async-events-queues-and-post-function-timing-3` | Async events, queues and post-function timing | 3226 | codegen, coder, agent, va, review, fix, validator | platform-fact-memories `9365f20107b9760b` |
+| `forge-platform-facts/platform-fact-memories/93df0223/automation-the-browser-and-rest-first-8` | Automation, the browser, and REST first | 1803 | codegen, coder, agent, va, review, fix, validator | platform-fact-memories `9365f20107b9760b` |
+| `forge-platform-facts/platform-fact-memories/93df0223/custom-ui-jira-expressions-in-the-wild-and-the-route-helper-5` | Custom UI, Jira expressions in the wild, and the route helper | 1906 | codegen, coder, agent, va, review, fix, validator | platform-fact-memories `9365f20107b9760b` |
+| `forge-platform-facts/platform-fact-memories/93df0223/forge-llm-contract-and-cost-4` | Forge LLM contract and cost | 3592 | codegen, coder, agent, va, review, fix, validator | platform-fact-memories `9365f20107b9760b` |
+| `forge-platform-facts/platform-fact-memories/93df0223/forge-platform-facts-1` | Forge platform facts | 3196 | codegen, coder, agent, va, review, fix, validator | platform-fact-memories `9365f20107b9760b` |
+| `forge-platform-facts/platform-fact-memories/93df0223/identity-permissions-and-what-an-endpoint-quietly-excludes-6` | Identity, permissions and what an endpoint quietly excludes | 2597 | codegen, coder, agent, va, review, fix, validator | platform-fact-memories `9365f20107b9760b` |
+| `forge-platform-facts/platform-fact-memories/93df0223/service-management-comments-and-visibility-7` | Service management comments and visibility | 3694 | codegen, coder, agent, va, review, fix, validator | platform-fact-memories `9365f20107b9760b` |
+| `forge-platform-facts/platform-fact-memories/93df0223/workflow-rules-over-rest-and-the-workflows-api-2` | Workflow rules over REST and the workflows API | 2064 | codegen, coder, agent, va, review, fix, validator | platform-fact-memories `9365f20107b9760b` |
+| `jira-rest-correctness/jira-api/86cb78d3/field-writes-can-silently-no-op-editmeta-before-write-2` | Field writes can silently no-op (editmeta before write) | 2294 | codegen, agent, va, validator, fix | jira-api `32fcbc215217ea63` |
+| `jira-rest-correctness/jira-api/86cb78d3/forge-development-gotchas-jira-1` | Forge Development Gotchas (Jira) | 2215 | codegen, agent, va, validator, fix | jira-api `32fcbc215217ea63` |
+| `jira-rest-correctness/jira-api/86cb78d3/post-rest-api-3-issue-bulk-returns-only-the-successes-3` | POST /rest/api/3/issue/bulk returns ONLY the successes | 1934 | codegen, agent, va, validator, fix | jira-api `32fcbc215217ea63` |
+| `jira-rest-correctness/jira-api/ff281fe4/common-problem-patterns-for-jira-forge-1` | Common Problem Patterns for Jira Forge | 2187 | codegen, agent, va, fix, validator | jira-api `668c2a14e965fab3` |
+| `jira-rest-correctness/jira-api/ff281fe4/configuration-ui-3` | Configuration UI | 3267 | codegen, agent, va, fix, validator | jira-api `668c2a14e965fab3` |
+| `jira-rest-correctness/jira-api/ff281fe4/detect-and-respond-to-configuration-updates-6` | Detect and Respond to Configuration Updates | 2583 | codegen, agent, va, fix, validator | jira-api `668c2a14e965fab3` |
+| `jira-rest-correctness/jira-api/ff281fe4/manifest-configuration-2` | Manifest Configuration | 2066 | codegen, agent, va, fix, validator | jira-api `668c2a14e965fab3` |
+| `jira-rest-correctness/jira-api/ff281fe4/next-steps-8` | Next Steps | 182 | codegen, agent, va, fix, validator | jira-api `668c2a14e965fab3` |
+| `jira-rest-correctness/jira-api/ff281fe4/rate-limit-helper-function-4` | Rate Limit Helper Function | 2837 | codegen, agent, va, fix, validator | jira-api `668c2a14e965fab3` |
+| `jira-rest-correctness/jira-api/ff281fe4/validator-with-multiple-validation-rules-5` | Validator with Multiple Validation Rules | 2374 | codegen, agent, va, fix, validator | jira-api `668c2a14e965fab3` |
+| `jira-rest-correctness/jira-api/ff281fe4/webhook-style-sync-to-external-system-7` | Webhook-style Sync to External System | 2378 | codegen, agent, va, fix, validator | jira-api `668c2a14e965fab3` |
+| `jsm-correctness/jira-forge/2aa673c7/auto-assignment-based-on-category-7` | Auto-Assignment Based on Category | 1762 | agent, va, codegen, fix, validator | jira-forge `97401216f2606f72` |
+| `jsm-correctness/jira-forge/2aa673c7/auto-resolve-based-on-customer-inactivity-8` | Auto-Resolve Based on Customer Inactivity | 2433 | agent, va, codegen, fix, validator | jira-forge `97401216f2606f72` |
+| `jsm-correctness/jira-forge/2aa673c7/custom-email-notifications-via-webhooks-10` | Custom Email Notifications via Webhooks | 2897 | agent, va, codegen, fix, validator | jira-forge `97401216f2606f72` |
+| `jsm-correctness/jira-forge/2aa673c7/custom-form-with-validation-part-1-5` | Custom Form with Validation (part 1) | 3370 | agent, va, codegen, fix, validator | jira-forge `97401216f2606f72` |
+| `jsm-correctness/jira-forge/2aa673c7/custom-form-with-validation-part-2-6` | Custom Form with Validation (part 2) | 2977 | agent, va, codegen, fix, validator | jira-forge `97401216f2606f72` |
+| `jsm-correctness/jira-forge/2aa673c7/jira-service-management-jsm-extensions-with-forge-1` | Jira Service Management (JSM) Extensions with Forge | 3479 | agent, va, codegen, fix, validator | jira-forge `97401216f2606f72` |
+| `jsm-correctness/jira-forge/2aa673c7/link-service-requests-to-kb-articles-9` | Link Service Requests to KB Articles | 1908 | agent, va, codegen, fix, validator | jira-forge `97401216f2606f72` |
+| `jsm-correctness/jira-forge/2aa673c7/manifest-configuration-for-sla-monitoring-4` | Manifest Configuration for SLA Monitoring | 2351 | agent, va, codegen, fix, validator | jira-forge `97401216f2606f72` |
+| `jsm-correctness/jira-forge/2aa673c7/monitor-and-act-on-sla-breaches-3` | Monitor and Act on SLA Breaches | 3212 | agent, va, codegen, fix, validator | jira-forge `97401216f2606f72` |
+| `jsm-correctness/jira-forge/2aa673c7/step-2-add-custom-fields-to-request-types-2` | Step 2: Add Custom Fields to Request Types | 1240 | agent, va, codegen, fix, validator | jira-forge `97401216f2606f72` |
+| `jsm-correctness/jira-forge/2aa673c7/summary-of-jsm-forge-capabilities-11` | Summary of JSM Forge Capabilities | 808 | agent, va, codegen, fix, validator | jira-forge `97401216f2606f72` |
 | `voice-rules/voice-rules/adf3f44d/affirmationopeners-and-assistanttalk-6` | affirmationOpeners and assistantTalk | 1951 | codegen, coder, agent, va, review | voice-rules `a8baf7ec6b97a0bf` |
 | `voice-rules/voice-rules/adf3f44d/blockrules-4` | blockRules | 3699 | codegen, coder, agent, va, review | voice-rules `a8baf7ec6b97a0bf` |
 | `voice-rules/voice-rules/adf3f44d/claimwords-and-airegisterwords-8` | claimWords and aiRegisterWords | 2544 | codegen, coder, agent, va, review | voice-rules `a8baf7ec6b97a0bf` |

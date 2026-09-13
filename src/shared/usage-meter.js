@@ -32,13 +32,31 @@ const nn = (v) => {
 // Bedrock {inputTokens,outputTokens,totalTokens}; a bare number or {tokens:N} (async
 // flat seam); null/garbage -> zeros + hadUsage:false.
 export const normalizeUsage = (u) => {
-  if (typeof u === "number") { const t = nn(u); return { prompt: 0, completion: 0, total: t, hadUsage: t > 0 }; }
-  if (!u || typeof u !== "object") return { prompt: 0, completion: 0, total: 0, hadUsage: false };
+  if (typeof u === "number") { const t = nn(u); return { prompt: 0, completion: 0, total: t, cacheRead: 0, cacheCreation: 0, hadUsage: t > 0 }; }
+  if (!u || typeof u !== "object") return { prompt: 0, completion: 0, total: 0, cacheRead: 0, cacheCreation: 0, hadUsage: false };
   const prompt = nn(u.prompt_tokens ?? u.input_tokens ?? u.inputTokens ?? u.promptTokens);
   const completion = nn(u.completion_tokens ?? u.output_tokens ?? u.outputTokens ?? u.completionTokens);
   let total = nn(u.total_tokens ?? u.totalTokens ?? u.tokens);
   if (!total) total = prompt + completion;
-  return { prompt, completion, total, hadUsage: (prompt + completion + total) > 0 };
+  /*
+   * F-366 — CACHE READS ARE SPEND, AND THEY ARE NOT IN `prompt`.
+   *
+   * `prompt_tokens_details.cached_tokens` carries TWO semantics and this is the
+   * one place that has to know it:
+   *   OpenAI-compatible providers — a SUBSET of prompt_tokens (already counted),
+   *   our Anthropic adapter (src/index.js callAnthropicChat) — IN ADDITION to
+   *     prompt_tokens, because a cache read does not count toward the input rate
+   *     limit and `prompt` is what the TPM budget ledger paces on.
+   * Either way it is a COUNT OF CACHE-READ TOKENS, billed at roughly 0.1x, so it
+   * gets its OWN counter and is never folded into `prompt` — folding it would
+   * double-count on OpenAI and corrupt the paced figure on Anthropic. The
+   * explicit `cache_read_tokens` field is preferred; the OpenAI-shaped detail is
+   * the fallback so a provider that only reports that shape is still counted.
+   */
+  const cacheRead = nn(u.cache_read_tokens ?? u.cache_read_input_tokens
+    ?? (u.prompt_tokens_details && u.prompt_tokens_details.cached_tokens));
+  const cacheCreation = nn(u.cache_creation_tokens ?? u.cache_creation_input_tokens);
+  return { prompt, completion, total, cacheRead, cacheCreation, hadUsage: (prompt + completion + total) > 0 };
 };
 
 // UTC period keys.
@@ -114,7 +132,11 @@ const mergeForgeLlm = (f) => {
   return base;
 };
 
-const emptyMonth = (key) => ({ key, calls: 0, prompt: 0, completion: 0, total: 0, byProvider: {}, forgeLlm: emptyForgeLlm() });
+// `cacheReadTokens` / `cacheCreationTokens` are SEPARATE from prompt/total on
+// purpose (F-366): cache reads are billed input the cost views must be able to
+// price, and `prompt` is the paced figure the TPM ledger owns. Old stored months
+// have neither key — nn() reads them as 0.
+const emptyMonth = (key) => ({ key, calls: 0, prompt: 0, completion: 0, total: 0, cacheReadTokens: 0, cacheCreationTokens: 0, byProvider: {}, forgeLlm: emptyForgeLlm() });
 const emptyDay = (key) => ({ key, calls: 0, prompt: 0, completion: 0, total: 0 });
 
 export const emptyState = () => ({ month: emptyMonth(null), today: emptyDay(null), history: [] });
@@ -155,6 +177,8 @@ export const bumpCounters = (state, { provider, usage, nowMs, model, tier, costU
   month.prompt += nn(u.prompt);
   month.completion += nn(u.completion);
   month.total += nn(u.total);
+  month.cacheReadTokens = nn(month.cacheReadTokens) + nn(u.cacheRead);
+  month.cacheCreationTokens = nn(month.cacheCreationTokens) + nn(u.cacheCreation);
   const bp = month.byProvider[p] || { calls: 0, total: 0 };
   month.byProvider[p] = { calls: bp.calls + 1, total: bp.total + nn(u.total) };
   if (p === "atlassian") {
@@ -178,7 +202,7 @@ export const bumpCounters = (state, { provider, usage, nowMs, model, tier, costU
 export const summarizeState = (state, nowMs) => {
   const s = rolled(state, nowMs);
   return {
-    month: { key: s.month.key, calls: nn(s.month.calls), prompt: nn(s.month.prompt), completion: nn(s.month.completion), total: nn(s.month.total), byProvider: s.month.byProvider || {}, forgeLlm: mergeForgeLlm(s.month.forgeLlm) },
+    month: { key: s.month.key, calls: nn(s.month.calls), prompt: nn(s.month.prompt), completion: nn(s.month.completion), total: nn(s.month.total), cacheReadTokens: nn(s.month.cacheReadTokens), cacheCreationTokens: nn(s.month.cacheCreationTokens), byProvider: s.month.byProvider || {}, forgeLlm: mergeForgeLlm(s.month.forgeLlm) },
     today: { key: s.today.key, calls: nn(s.today.calls), total: nn(s.today.total) },
     history: s.history || [],
   };

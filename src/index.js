@@ -12529,6 +12529,15 @@ const callAnthropicChat = async ({ apiKey, model, messages, tools, tool_choice, 
   // paces on — and are surfaced in ONE shape every consumer already reads:
   // `prompt_tokens_details.cached_tokens` (OpenAI-style, what agent-runner's
   // cacheReadTokensOf looks at first) plus the explicit cache_* fields.
+  //
+  // F-366 — ONE FIELD, TWO SEMANTICS, WRITTEN DOWN HERE. On an OpenAI-compatible
+  // provider `prompt_tokens_details.cached_tokens` is a SUBSET of prompt_tokens;
+  // here it is IN ADDITION to it. Nothing may fold it into prompt_tokens: the TPM
+  // ledger paces on prompt_tokens and a cache read is not rate-limited input. The
+  // usage METER therefore counts cache reads in their OWN counter
+  // (`month.cacheReadTokens` / `cacheCreationTokens`, src/shared/usage-meter.js
+  // normalizeUsage + bumpCounters), so a cost view can price them at the ~0.1x
+  // rate instead of the admin panel reading caching as a DROP in usage.
   const cacheReadTokens = anthropicData.usage?.cache_read_input_tokens || 0;
   const cacheCreationTokens = anthropicData.usage?.cache_creation_input_tokens || 0;
   const inputTokens = rawInputTokens + cacheCreationTokens;

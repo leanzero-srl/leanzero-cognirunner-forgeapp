@@ -29,6 +29,36 @@ ok(normalizeUsage({ garbage: true }).total === 0, "garbage object → 0");
 ok(normalizeUsage({ prompt_tokens: -5, completion_tokens: -2 }).total === 0, "negatives clamped to 0");
 ok(normalizeUsage({ prompt_tokens: 3.9 }).prompt === 3, "floored");
 
+// --- F-366: cache reads are counted, in their OWN counter, never in `prompt` ---
+{
+  // our Anthropic adapter's shape: cache reads are IN ADDITION to prompt_tokens
+  const anth = normalizeUsage({ prompt_tokens: 150, completion_tokens: 20, total_tokens: 170, prompt_tokens_details: { cached_tokens: 900 }, cache_read_tokens: 900, cache_creation_tokens: 50 });
+  ok(anth.cacheRead === 900, "explicit cache_read_tokens is read");
+  ok(anth.cacheCreation === 50, "explicit cache_creation_tokens is read");
+  ok(anth.prompt === 150 && anth.total === 170, "the PACED figures are untouched — cache reads are never folded into prompt/total");
+  // an OpenAI-compatible provider reports the detail only (a SUBSET of prompt_tokens)
+  const oai = normalizeUsage({ prompt_tokens: 1000, completion_tokens: 10, prompt_tokens_details: { cached_tokens: 800 } });
+  ok(oai.cacheRead === 800, "the OpenAI-shaped detail is the fallback source");
+  ok(oai.prompt === 1000, "…and it is NOT subtracted from prompt (it is already inside it there)");
+  // raw Anthropic field names, for a shape that reaches the meter unmapped
+  ok(normalizeUsage({ input_tokens: 5, cache_read_input_tokens: 7, cache_creation_input_tokens: 3 }).cacheRead === 7, "raw cache_read_input_tokens is read");
+  ok(normalizeUsage({ input_tokens: 5, cache_read_input_tokens: 7 }).cacheCreation === 0, "absent cache creation → 0, never undefined");
+  ok(normalizeUsage(null).cacheRead === 0 && normalizeUsage(42).cacheRead === 0, "null / bare-number shapes carry 0 cache reads");
+  ok(normalizeUsage({ cache_read_tokens: 900 }).hadUsage === false, "cache reads alone are not 'usage' — hadUsage still keys on prompt/completion/total");
+
+  let c = emptyState();
+  c = bumpCounters(c, { provider: "anthropic", usage: anth, nowMs: MS(2026, 7, 8) });
+  c = bumpCounters(c, { provider: "anthropic", usage: anth, nowMs: MS(2026, 7, 8) });
+  const cm = summarizeState(c, MS(2026, 7, 8)).month;
+  ok(cm.cacheReadTokens === 1800 && cm.cacheCreationTokens === 100, "the month accumulates cache reads and writes separately");
+  ok(cm.prompt === 300 && cm.total === 340, "prompt/total still only count billed non-cached input");
+  // an OLD stored month has neither key — it must read as 0 and keep accumulating
+  const legacy = { month: { key: "2026-07", calls: 1, prompt: 10, completion: 1, total: 11, byProvider: {} }, today: { key: "2026-07-08", calls: 1, total: 11 }, history: [] };
+  const bumped = summarizeState(bumpCounters(legacy, { provider: "anthropic", usage: anth, nowMs: MS(2026, 7, 8) }), MS(2026, 7, 8)).month;
+  ok(bumped.cacheReadTokens === 900 && bumped.cacheCreationTokens === 50, "a pre-F-366 stored month gains the counters without NaN");
+  ok(summarizeState(emptyState(), MS(2026, 7, 8)).month.cacheReadTokens === 0, "an empty month reports 0, not undefined");
+}
+
 // --- bumpCounters: accumulation + per-provider (clamped to enum) ---
 let s = emptyState();
 s = bumpCounters(s, { provider: "openai", usage: normalizeUsage({ total_tokens: 100 }), nowMs: MS(2026, 7, 8) });

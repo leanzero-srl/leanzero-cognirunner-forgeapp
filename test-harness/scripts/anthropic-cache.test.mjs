@@ -23,6 +23,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { normalizeUsage, emptyState, bumpCounters, summarizeState } from "../../src/shared/usage-meter.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const src = readFileSync(path.join(here, "../../src/index.js"), "utf8");
@@ -118,6 +119,18 @@ install({ cache_read_input_tokens: 900, cache_creation_input_tokens: 50 });
   // The shape agent-runner reads, verbatim.
   const cacheReadTokensOf = (usage) => Number((usage.prompt_tokens_details && usage.prompt_tokens_details.cached_tokens) || usage.cache_read_input_tokens || 0) || 0;
   ok(cacheReadTokensOf(u) === 900, "agent-runner's cacheReadTokensOf now sees a non-zero cache read");
+}
+
+console.log("\n== 3b. F-366: the usage METER counts cache reads in their own counter ==");
+install({ cache_read_input_tokens: 900, cache_creation_input_tokens: 50 });
+{
+  const res = await callAnthropicChat({ apiKey: "k", model: "m", messages: baseMessages(), baseUrl: "https://x", cachePrefix: 2 });
+  const u = normalizeUsage(res.data.usage);
+  ok(u.cacheRead === 900 && u.cacheCreation === 50, "normalizeUsage lifts both cache figures off the mapped usage");
+  ok(u.prompt === 150 && u.total === 170, "the TPM-paced figures stay cache-read free");
+  const m = summarizeState(bumpCounters(emptyState(), { provider: "anthropic", usage: u, nowMs: Date.UTC(2026, 8, 13) }), Date.UTC(2026, 8, 13)).month;
+  ok(m.cacheReadTokens === 900 && m.cacheCreationTokens === 50, "the month meter records them separately, so a cost view can price them at ~0.1x");
+  ok(m.prompt === 150, "…and caching does NOT read as a drop in the meter's prompt line");
 }
 
 console.log("\n== 4. zero-cache response keeps the fields at 0, never undefined ==");

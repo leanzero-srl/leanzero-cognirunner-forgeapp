@@ -476,6 +476,84 @@ if (CAP_OFF) {
   ok(pushed.length === before2, "a transition on the registered EDITOR row enqueues nothing (F-390)");
 }
 
+/* ══════════ F-401 — PRIVILEGE IS READ FROM THE RULE'S OWN ROW, NEVER FROM A SIBLING ══════════ */
+// The disable check has a workflow+transition FALLBACK tier (any non-instanced
+// post-function row on the transition may MUTE this invocation). F-394 reused that same
+// resolved row as the authority for `createdBy`/`savedByRole` — so a Coder rule whose id
+// tier missed inherited a sibling SEMANTIC rule's admin stamp and got its git writes
+// armed. Two PF rows on ONE transition; the coder config's id matches neither.
+{
+  await storage.set("app_admins", [
+    { accountId: ADMIN, role: "admin", scope: "all" },
+    { accountId: EDITOR, role: "editor", scope: "all" },
+  ]);
+  const { handler } = await import("../../src/index.js");
+  const call = (functionKey, payload, accountId) =>
+    handler({ call: { functionKey, payload } }, { principal: { accountId } });
+  const WF = { workflowName: "SW9", transitionId: "91", transitionFromName: "To Do", transitionToName: "In Progress" };
+
+  // (1) the sibling: an ADMIN-saved SEMANTIC post-function, non-instanced — exactly the
+  //     row the fallback tier would hand over.
+  ok((await call("registerPostFunction", {
+    id: "pf-sem-sibling", type: "postfunction-semantic", fieldId: "description",
+    actionFieldId: "summary", actionPrompt: "summarise", workflow: WF,
+  }, ADMIN)).success === true, "the admin's semantic sibling is registered on the transition");
+  // (2) the Coder rule itself, saved by an EDITOR.
+  ok((await call("registerPostFunction", {
+    id: "pf-coder-own", type: "postfunction-coder", ruleKind: "premade",
+    premadeRuleType: "postfunction-coder", mode: "build",
+    connectionId: CONN, repo: REPO, workflow: WF,
+  }, EDITOR)).success === true, "the coder rule is registered by an editor on the SAME transition");
+  const rows = (await storage.get("config_registry")) || [];
+  const sib = rows.find((r) => r.id === "pf-sem-sibling");
+  ok(sib && sib.savedByRole === "admin" && sib.instanced !== true,
+    "…and the sibling really is a non-instanced admin-stamped PF row (the fallback's shape)");
+
+  // (a) THE DEFECT: the coder config's id resolves to NO row (renamed/legacy id). The
+  //     fallback tier would find the semantic sibling; privilege must not.
+  const before = pushed.length;
+  await fire("LZPT-150", cfg({ ruleId: "pf-coder-drifted", mode: "build", strict: false,
+    workflow: WF }));
+  ok(pushed.length === before,
+    "a coder rule whose id matches no row enqueues NOTHING — it may not borrow the sibling's owner");
+  const l = await lastLog("LZPT-150");
+  ok(l && l.isValid === false && l.stepResults[0].status === "error" && /owner/i.test(l.reason),
+    `…it is OWNERLESS: an ERROR row in both strict columns (got ${l && l.stepResults[0].status})`);
+  ok(l && /save it once/i.test(l.recommendation || ""),
+    "…and the log tells the admin to re-save the rule");
+
+  // (b) THE EXACT ROW still decides: its own editor stamp refuses the writes (F-390)…
+  const before2 = pushed.length;
+  await fire("LZPT-151", cfg({ ruleId: "pf-coder-own", mode: "build", strict: false, workflow: WF }));
+  ok(pushed.length === before2,
+    "the exact row's OWN editor stamp still refuses the build writes — not the sibling's admin stamp");
+  const l2 = await lastLog("LZPT-151");
+  ok(l2 && /Commit files/.test(l2.reason || ""),
+    "…naming the refused write, so the sibling's admin role provably did not arm it");
+
+  // …and an ADMIN-saved coder row on the same transition IS armed, by exact id match.
+  ok((await call("registerPostFunction", {
+    id: "pf-coder-own", type: "postfunction-coder", ruleKind: "premade",
+    premadeRuleType: "postfunction-coder", mode: "build",
+    connectionId: CONN, repo: REPO, workflow: WF,
+  }, ADMIN)).success === true, "an admin re-saves the coder rule");
+  const before3 = pushed.length;
+  await fire("LZPT-152", cfg({ ruleId: "pf-coder-own", mode: "build", strict: false, workflow: WF }));
+  const ev = pushed.slice(before3)[0];
+  ok(ev && ev.body.taskType === "coder", "an EXACT id match arms the turn");
+  ok(ev && ev.body.params.savedByRole === "admin" && ev.body.params.allowedActions.includes("commit_files"),
+    "…with its OWN row's stamp, writes included");
+  ok(ev && ev.body.params.accountId === EDITOR,
+    "…and it runs as its OWN row's createdBy (the editor who first saved it), never the sibling's admin");
+
+  // The disable check KEEPS the fallback: disabling the sibling still mutes the
+  // transition's post-function invocation, which is what that tier exists for.
+  const all = (await storage.get("config_registry")) || [];
+  await call("disablePostFunction", { id: "pf-sem-sibling" }, ADMIN).catch(() => {});
+  const after = (await storage.get("config_registry")) || [];
+  ok(all.length === after.length, "the sibling row is still there after the disable call");
+}
+
 console.log(`\npremade-coder-pf: ${pass} passed, ${fail} failed`);
 
 /* ══════════ 5. the HEADLESS halt, against the real engine ══════════ */

@@ -18617,12 +18617,23 @@ export const executePostFunction = async (args) => {
     return { result: true };
   }
 
-  // THE REGISTRY ROW FOR THIS INVOCATION, resolved ONCE below and reused.
+  // THE PRIVILEGE ROW FOR THIS INVOCATION — resolved ONCE below, by the rule's OWN id and
+  // by nothing else, and reused.
   // The workflow config is what the transition carries; the REGISTRY ROW is what the app
   // owns — `createdBy` and (F-394) `savedByRole` live only there, and the Coder branch
-  // needs both. Null means "no row was found or the registry could not be read", which the
-  // Coder branch treats as ownerless (fail CLOSED — an ERROR row, never a quiet run).
-  let registryRow = null;
+  // needs both. Null means "no row was found by exact id, or the registry could not be
+  // read", which the Coder branch treats as ownerless (fail CLOSED — an ERROR row, never a
+  // quiet run, and the log says to re-save the rule).
+  //
+  // WHY THIS IS NOT THE SAME ROW THE DISABLE CHECK USES (F-401). The disable check below
+  // has a workflow+transition FALLBACK tier: any non-instanced post-function row on the
+  // same transition may mute this invocation. That tier is sound for MUTING — the worst a
+  // wrong-but-sibling match can do is not run something — but it is NOT sound as an
+  // authority for identity. `isPfRow` accepts any `postfunction*` row, so a Coder rule
+  // whose id tier missed would inherit a sibling SEMANTIC rule's `createdBy` and its
+  // admin `savedByRole`, and arm git writes no admin ever armed on it. Privilege is read
+  // from the exact row or from no row at all.
+  let privilegeRow = null;
   // Check if disabled in KVS. Accept both the id embedded in the (possibly old)
   // workflow-rule config and its type-namespaced registry variant, and only let
   // post-function rows mute a post-function invocation.
@@ -18643,6 +18654,10 @@ export const executePostFunction = async (args) => {
       const idCandidates = new Set([ruleId]);
       if (pfType) idCandidates.add(`${pfType}::${ruleId}`);
       match = configs.find((c) => idCandidates.has(c.id) && isPfRow(c)) || null;
+      // EXACT ID ONLY — the privilege row is fixed here, before the fallback tier widens
+      // `match`. See the comment on `privilegeRow` above (F-401): the fallback may mute a
+      // rule, it may never lend it an owner or a role.
+      privilegeRow = match;
     }
     // Context fallback — mirrors the validator path, with the SAME four guards.
     // Without it a post-function claimed by a workflow scan could never be disabled:
@@ -18658,6 +18673,9 @@ export const executePostFunction = async (args) => {
     //    would silently mute the OTHER same-type rule on the transition, which is the
     //    exact collapse per-instance ids exist to prevent;
     //  - identity is workflowName + transitionId, never fieldId alone.
+    // FALLBACK TIER — DISABLE CHECK ONLY. It widens `match`, never `privilegeRow`
+    // (F-401): a sibling row on the same transition may mute this invocation, but it may
+    // never supply `createdBy`/`savedByRole` for it.
     const invocationIsInstanced = ruleId && INSTANCED_ID_RE.test(String(ruleId));
     if (!match && !invocationIsInstanced
         && config?.workflow?.workflowName && config?.workflow?.transitionId) {
@@ -18668,7 +18686,6 @@ export const executePostFunction = async (args) => {
         && String(c.workflow?.transitionId) === String(config.workflow.transitionId)
       ) || null;
     }
-    registryRow = match;
     if (match?.disabled) {
       const shownId = ruleId || match.id;
       console.log(`Post-function "${shownId}" is disabled — skipping`);
@@ -18792,7 +18809,7 @@ export const executePostFunction = async (args) => {
   // 900 s consumer (LONG_QUEUE_ONLY_TASKS), and an inline coder turn cannot exist.
   // enqueueCoderPostFunction never throws and always writes its own log entry.
   if (isCoderPfType(pfType)) {
-    await enqueueCoderPostFunction(issue.key, config, extensionKey, registryRow);
+    await enqueueCoderPostFunction(issue.key, config, extensionKey, privilegeRow);
     return { result: true };
   }
   const queuePayloadTaskId = makeTaskId("pf");
@@ -18950,7 +18967,7 @@ const coderPfLogBase = (issueKey, config) => ({
  * execution-log entry, and it never throws (a post-function that throws fails the
  * transition's audit trail without telling anyone why).
  */
-const enqueueCoderPostFunction = async (issueKey, config, extensionKey, registryRow = null) => {
+const enqueueCoderPostFunction = async (issueKey, config, extensionKey, privilegeRow = null) => {
   const startedAt = Date.now();
   const strict = config?.strict === true;
   const step = (status, name, reason, recommendation) => ({ index: 1, name, status, reason, recommendation });
@@ -19003,11 +19020,16 @@ const enqueueCoderPostFunction = async (issueKey, config, extensionKey, registry
     // `savedByRole` is stamped at SAVE time by `registerPostFunction` / `commitImportCore`
     // (the listeners/jobs pattern); a legacy row with no stamp is "editor" — the
     // restrictive answer — and the refusal below says to re-save it as an admin.
-    const ownerAccountId = registryRow?.createdBy || null;
-    const savedByRole = listenersMod.normalizeSavedByRole(registryRow?.savedByRole);
+    //
+    // The row handed in is resolved by the rule's OWN id and by nothing else (F-401) — the
+    // caller's workflow+transition fallback tier serves the disable check only, because a
+    // sibling semantic row on the same transition must never lend this rule an owner or an
+    // admin stamp. No exact row ⇒ ownerless ⇒ the ERROR below.
+    const ownerAccountId = privilegeRow?.createdBy || null;
+    const savedByRole = listenersMod.normalizeSavedByRole(privilegeRow?.savedByRole);
     // Whether the row carries a stamp at all — a legacy row is treated as "editor", and
     // the F-390 refusal below says so rather than blaming the admin's role.
-    const roleIsStamped = registryRow?.savedByRole === "admin" || registryRow?.savedByRole === "editor";
+    const roleIsStamped = privilegeRow?.savedByRole === "admin" || privilegeRow?.savedByRole === "editor";
     if (!ownerAccountId) {
       return await write(false,
         "This Coder rule has no owner account, so there is nobody to run it as and nothing ran.",

@@ -575,3 +575,6 @@ made before the UI surgeon starts, not after.
 1. **Start at the provider-agnostic layer.** Commit 1 is the git provider layer (`src/git-providers.js`, mocked-fetch tests); the `managed` AI provider waits for probe (g) (owner key). Nothing else in 1.4 depends on it.
 2. **One manifest bump, including `bitbucket.org`.** An unused outbound host costs nothing; a second major bump costs every tenant a re-consent.
 3. **Render surfaces use a read-only role check.** `checkIsAdmin` (which may bootstrap) stays the admin panel's mount call only; the Code tab reuses that answer, and the issue panel gets a read-only `whoAmI` resolver (`getUserPermissions` without `allowBootstrap`). F-251 is closed, not inherited.
+
+
+> Correction (2026-09-13): F-251 is FIXED (33ca6fc), not parked — the bootstrap runs only from `checkIsAdmin`. Line pointers into `src/index.js` in this document are approximate (~50 lines drift after the F-242 refusal-helper commit); grep the symbol, not the line.

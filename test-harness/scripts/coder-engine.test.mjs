@@ -1188,7 +1188,8 @@ await check("F-550: the cross-turn cache miss gets its own observation line", as
 
   // The MISS: this turn's first round read almost nothing of it.
   const miss = reportCrossTurnCacheDefect({ provider: "anthropic", usage: { firstRoundCacheReadTokens: 0 }, priorPrefixBytes, log });
-  assert.ok(miss && /FIRST round/.test(miss), "a first round that read nothing of the previous prefix is reported");
+  assert.ok(miss && /FIRST round/.test(miss.line), "a first round that read nothing of the previous prefix is reported");
+  assert.equal(miss.defect, true, "…as a defect, because nothing explained it");
   assert.equal(lines.length, 1, "…once, on the turn's own log");
 
   // The HIT: nothing is said.
@@ -1205,6 +1206,71 @@ await check("F-550: the cross-turn cache miss gets its own observation line", as
   assert.equal(reportCrossTurnCacheDefect({ provider: "anthropic", usage: { firstRoundCacheReadTokens: 0 }, priorPrefixBytes: 900, log }),
     null, "a prefix under the minimum cacheable size is not a defect");
   assert.equal(lines.length, 1, "no other case logged anything");
+});
+
+await check("F-615: a prefix this turn re-built ON PURPOSE is an INFO with the true cause, not a DEFECT", async () => {
+  const { reportCrossTurnCacheDefect } = await import("../../src/agent-runner.js");
+  const lines = [];
+  const log = (l) => lines.push(l);
+  const warned = [];
+  const warn = console.warn; console.warn = (...a) => warned.push(a.join(" "));
+  let out;
+  try {
+    // Exactly the live case: F-578 invalidated the pin because the memory epoch moved, the
+    // engine rebuilt the blocks and said so, and the turn then read nothing of the old prefix.
+    out = reportCrossTurnCacheDefect({
+      provider: "managed", usage: { firstRoundCacheReadTokens: 0 }, priorPrefixBytes: 40000,
+      prefixReset: "memoryEpoch 0→1, and this project's memory block changed with it", log,
+    });
+  } finally { console.warn = warn; }
+  assert.equal(out.defect, false, "THE FINDING: a deliberate re-pin is not counted as a defect");
+  assert.equal(warned.length, 0, "…and nothing is written at WARN");
+  assert.ok(/^pin re-built: memoryEpoch 0→1/.test(out.line), "…the line names the true cause first");
+  assert.ok(!/DEFECT/.test(out.line), "…and never uses the word the reader acts on");
+  assert.equal(out.reason, "memoryEpoch 0→1, and this project's memory block changed with it");
+  assert.equal(lines.length, 1, "still one line on the turn's own log");
+});
+
+await check("F-615: a zero read with NO reason is still the WARN defect", async () => {
+  const { reportCrossTurnCacheDefect } = await import("../../src/agent-runner.js");
+  const warned = [];
+  const warn = console.warn; console.warn = (...a) => warned.push(a.join(" "));
+  let out;
+  try {
+    out = reportCrossTurnCacheDefect({ provider: "managed", usage: { firstRoundCacheReadTokens: 0 }, priorPrefixBytes: 40000, prefixReset: "" });
+  } finally { console.warn = warn; }
+  assert.equal(out.defect, true, "a stable pin that read nothing is the miss F-550 exists to catch");
+  assert.equal(out.reason, "unexplained");
+  assert.equal(warned.filter((l) => /DEFECT/.test(l)).length, 1, "…and it is still a WARN");
+});
+
+await check("F-615: the turn records WHY the prefix moved, and a healthy turn records nothing", async () => {
+  resetStore();
+  const world = setupWorld({ rounds: [reply([finish()]), reply([finish()]), reply([finish()])] });
+  const stable = { skillsBlock: SKILLS, memoryBlock: MEM, memoryEpoch: 1, skillEpoch: "e1" };
+  await startTurn(world, { knowledge: stable });
+  // Turn 1 of a thread compares against nothing, so it is NEITHER a defect nor a re-pin.
+  const first = await store.get(coderThreadKey("LZPT-7", "t1"));
+  assert.equal(first.cacheReset, undefined, "a thread's first turn has no cache reset to explain");
+
+  // Make the previous prefix big enough to be worth caching, then re-pin on purpose.
+  first.promptPrefixBytes = 40000;
+  await store.set(coderThreadKey("LZPT-7", "t1"), first);
+  await startTurn(world, {
+    userMessage: "second",
+    knowledge: { ...stable, memoryEpoch: 2, repin: true, pinInvalidated: "memoryEpoch 1→2, and this project's memory block changed with it" },
+  });
+  const row = await store.get(coderThreadKey("LZPT-7", "t1"));
+  assert.equal(row.cacheReset.defect, false, "THE FINDING: the deliberate re-pin is recorded as not-a-defect");
+  assert.match(row.cacheReset.reason, /memoryEpoch 1→2/, "…with the cause the next tester needs");
+
+  // A turn that did not move the prefix must not inherit the previous turn's excuse.
+  row.promptPrefixBytes = 40000;
+  await store.set(coderThreadKey("LZPT-7", "t1"), row);
+  await startTurn(world, { userMessage: "third", knowledge: { ...stable, memoryEpoch: 2 } });
+  const row3 = await store.get(coderThreadKey("LZPT-7", "t1"));
+  assert.equal(row3.cacheReset.defect, true, "an unexplained miss on a stable pin is still the defect");
+  assert.equal(row3.cacheReset.reason, "unexplained", "…and it never carries the last turn's reason");
 });
 
 console.log(`CODER ENGINE: ${passed} passed, ${failed} failed`);

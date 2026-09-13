@@ -55,7 +55,9 @@ const res = (status, body, headers = {}) => ({
   async text() { return JSON.stringify(body); },
 });
 globalThis.fetch = async (url, init) => {
-  fetchCalls.push({ url, method: (init && init.method) || "GET" });
+  // The BODY is recorded too (F-481): proving the rotation window accepts the right
+  // secret means comparing what we PATCHed to the provider against what we stored.
+  fetchCalls.push({ url, method: (init && init.method) || "GET", body: (init && init.body) || null });
   if (!fetchQueue.length) throw new Error("unexpected fetch: " + url);
   const next = fetchQueue.shift();
   if (next instanceof Error) throw next;
@@ -734,7 +736,9 @@ ok(fetchCalls.length === 2 && fetchCalls[1].method === "PATCH", `…converging i
 ok(storage.__raw(conns.gitHookSecretKey(hookId, "acme/app")).secret === HOOK_SECRET,
   "…and it does NOT mint a new secret, which would silently invalidate the installed hook");
 
-// --- (3) rotation: the provider is updated FIRST; the store follows on success.
+// --- (3) rotation: the new secret is STORED as `pending` first, then installed at the
+// provider, then promoted (F-481). A happy path looks the same from outside: one PATCH,
+// one new stored secret, no window left open.
 fetchCalls = [];
 fetchQueue = [res(200, { id: 4242 })];
 const hookRot = await callScanned("rotateGitWebhookSecret", { connectionId: hookId, repo: "acme/app" });
@@ -755,6 +759,80 @@ const rotFail = await callScanned("rotateGitWebhookSecret", { connectionId: hook
 ok(rotFail.success === false && rotFail.code === "not_found", `a refused rotation is named (${JSON.stringify(rotFail)})`);
 ok(storage.__raw(conns.gitHookSecretKey(hookId, "acme/app")).secret === hookSecret2.secret,
   "…and the stored secret is untouched — a failed rotation leaves a WORKING hook, not a deaf one");
+
+/* --- F-481: THE STORE IS PART OF THE ORDER GUARANTEE -------------------------
+ *
+ * The F-460 guarantee ("a failed rotation leaves a working webhook, not a deaf one")
+ * only ever covered the PROVIDER call. The store was the second step, so a KVS fault
+ * AFTER a successful PATCH left the hook signing with a secret we never kept: every
+ * delivery 401s for ever and the admin sees a generic error. These arms hold the
+ * guarantee over BOTH steps.
+ */
+const HOOK_KEY = conns.gitHookSecretKey(hookId, "acme/app");
+
+// (a) a store fault BEFORE the provider hears anything: nothing installed, nothing changed.
+fetchCalls = [];
+storage.__failNextSet();
+const rotStore0 = await callScanned("rotateGitWebhookSecret", { connectionId: hookId, repo: "acme/app" });
+ok(rotStore0.success === false && rotStore0.code === "storage",
+  `a store fault before the PATCH is named "storage" (${JSON.stringify(rotStore0)})`);
+ok(fetchCalls.length === 0, "…and the provider was never called — the new secret is durable BEFORE the side effect");
+ok(storage.__raw(HOOK_KEY).secret === hookSecret2.secret && !storage.__raw(HOOK_KEY).pending,
+  "…and the row is exactly as it was");
+
+// (b) THE FATAL CASE: the provider accepted the new secret, the PROMOTION throws.
+fetchCalls = [];
+fetchQueue = [res(200, { id: 4242 })];
+// Fail the SECOND write to the hook-secret key — the promotion carries no pending slot,
+// which is what distinguishes it from the pending write that precedes the PATCH.
+storage.__failSetWhen((key, value) => key === HOOK_KEY && value && !value.pending);
+const rotHalf = await callScanned("rotateGitWebhookSecret", { connectionId: hookId, repo: "acme/app" });
+ok(rotHalf.success === false && rotHalf.code === "rotation-failed",
+  `a store fault after the PATCH is named "rotation-failed", not a generic error (${JSON.stringify(rotHalf).slice(0, 200)})`);
+ok(/set up webhook/i.test(String(rotHalf.error || "")),
+  `…and the refusal names the REMEDY (${JSON.stringify(rotHalf.error)})`);
+const halfRow = storage.__raw(HOOK_KEY);
+const installed = JSON.parse(fetchCalls[0].body || "{}").config.secret;
+ok(halfRow.secret === hookSecret2.secret, "the CURRENT secret is still the old one — the promotion did not happen");
+ok(typeof halfRow.pending === "string" && halfRow.pending === installed,
+  "…but the secret the provider now signs with is held in the PENDING slot");
+ok(Date.parse(halfRow.pendingUntil) > Date.now(), "…with an expiry, so a half-rotation cannot leave two live secrets for ever");
+const candidates = await conns.getHookSecretCandidates(hookId, "acme/app");
+ok(candidates.length === 2 && candidates[0] === hookSecret2.secret && candidates[1] === installed,
+  `the verifier is offered BOTH secrets during the window, current first (${candidates.length})`);
+ok(findSecret(rotHalf, installed) === null && findSecret(rotHalf, hookSecret2.secret) === null,
+  "…and the failed rotation still returns no secret of either generation");
+
+// the failure is LOUD: the connection carries it, and the read-only door repeats it.
+const halfConn = storage.__raw(conns.gitConnKey(hookId)).webhooks["acme/app"];
+ok(halfConn.hookState === "rotation-failed" && typeof halfConn.hookStateAt === "string",
+  `the connection row records the broken rotation, so the Code tab can say so (${JSON.stringify(halfConn)})`);
+fetchQueue = [res(200, [{ id: 4242, active: true, events: GIT_HOOK_EVENTS.github.slice(), config: { url: HOOK_URL } }])];
+const halfListed = await callScanned("listGitWebhooks", { connectionId: hookId, repo: "acme/app" });
+ok(halfListed.success === true && halfListed.recorded.hookState === "rotation-failed",
+  `listGitWebhooks surfaces the state the banner renders (${JSON.stringify(halfListed.recorded)})`);
+ok(findSecret(halfListed, installed) === null, "…without carrying the pending secret anywhere");
+
+// an EXPIRED pending slot is simply absent — the window closes on its own.
+const expired = { ...storage.__raw(HOOK_KEY), pendingUntil: new Date(Date.now() - 1000).toISOString() };
+storage.__seed(HOOK_KEY, expired);
+ok((await conns.getHookSecretCandidates(hookId, "acme/app")).length === 1,
+  "an expired pending secret is no longer accepted");
+storage.__seed(HOOK_KEY, halfRow);
+
+// (c) SELF-HEAL: the next "Set up webhook" re-installs the stored secret and closes both
+// the window and the banner — the recovery path the refusal told the admin to take.
+fetchCalls = [];
+fetchQueue = [res(200, [{ id: 4242, active: true, events: GIT_HOOK_EVENTS.github.slice(), config: { url: HOOK_URL } }]), res(200, { id: 4242 })];
+const healed = await callScanned("setupGitWebhook", { connectionId: hookId, repo: "acme/app" });
+ok(healed.success === true && healed.reused === true, `the self-heal re-installs the existing hook (${JSON.stringify(healed).slice(0, 160)})`);
+ok(JSON.parse(fetchCalls[1].body || "{}").config.secret === hookSecret2.secret,
+  "…with the STORED current secret, so provider and store agree again");
+ok(storage.__raw(HOOK_KEY).secret === hookSecret2.secret && storage.__raw(HOOK_KEY).pending === undefined,
+  "…the pending slot is closed");
+ok((await conns.getHookSecretCandidates(hookId, "acme/app")).length === 1, "…so exactly one secret is legal again");
+ok(healed.connection.webhooks["acme/app"].hookState === null,
+  `…and the loud banner is cleared only by a call that PROVED the hook healthy (${JSON.stringify(healed.connection.webhooks["acme/app"])})`);
 
 // --- rotation before setup is refused, and the allow-list gates both.
 fetchCalls = [];

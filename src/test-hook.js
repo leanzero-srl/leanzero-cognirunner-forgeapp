@@ -84,6 +84,23 @@ const SECRET_VALUE_RE =
 
 export const SECRET_PLANT_REFUSAL = "harnessRefusal: a plant body may never carry a credential — this door plants state, never secrets";
 
+/*
+ * F-632 — ONE PREDICATE FOR "THE HARNESS PLANTED THIS ROW", AND ONE REFUSAL FOR WHEN IT
+ * DID NOT. The pipeline door shipped with this discipline and the tombstone door shipped
+ * without it, in the same commit: `pipelineRow clear` refused a row it had not planted,
+ * while `vaTombstone clear` deleted ANY tombstone and `op:"age"` rewrote a real one.
+ * Deleting a real `va_purged:{agent}` row is the one direction that hands a purged agent
+ * its voice back and destroys the record the F-608 purges panel exists to print, and an
+ * age is the soft form of the same thing. Both doors now ask the SAME question here
+ * rather than each carrying its own copy of it.
+ */
+export const harnessPlanted = (row) => Boolean(row && typeof row === "object" && row.plantedBy === "harness");
+
+export const notPlantedRefusal = (what) => ({
+  error: `harnessRefusal: that ${what} was not planted by the harness — this door never touches a real record`,
+  harnessRefusal: "not-planted",
+});
+
 export const findPlantedSecret = (value, path = "", depth = 0) => {
   if (depth > 6) return null;
   if (typeof value === "string") {
@@ -915,7 +932,7 @@ export async function testStateTrigger(req) {
       const key = gitPipelineKey(connId, repoId);
       const op = String(body.op || "read");
       const existing = (await storage.get(key)) ?? null;
-      const planted = Boolean(existing && typeof existing === "object" && existing.plantedBy === "harness");
+      const planted = harnessPlanted(existing);
 
       if (op === "read") {
         return json(200, {
@@ -933,7 +950,7 @@ export async function testStateTrigger(req) {
       }
       if (op === "clear") {
         if (existing && !planted) {
-          return json(409, { error: "harnessRefusal: that row was not planted by the harness — this door never deletes a real pipeline record", harnessRefusal: "not-planted", key });
+          return json(409, { ...notPlantedRefusal("pipeline row"), key });
         }
         await storage.delete(key);
         return json(200, { ok: true, key, row: (await storage.get(key)) ?? null });
@@ -946,7 +963,7 @@ export async function testStateTrigger(req) {
       if (leak) return json(400, { error: SECRET_PLANT_REFUSAL, harnessRefusal: "secret-field", field: leak.field, why: leak.why });
 
       if (existing && !planted) {
-        return json(409, { error: "harnessRefusal: a real pipeline row already exists for that repository — this door never overwrites one", harnessRefusal: "not-planted", key });
+        return json(409, { ...notPlantedRefusal("pipeline row"), error: "harnessRefusal: a real pipeline row already exists for that repository — this door never overwrites one", key });
       }
       const status = body.status === "queued" ? "queued" : "installed";
       if (body.status !== undefined && body.status !== "queued" && body.status !== "installed") {
@@ -1053,11 +1070,14 @@ export async function testStateTrigger(req) {
      * WHY IT IS NOT A PLANTABLE PERMISSION (the objection the old driver recorded when
      * it refused to add `va_purged:*` to `kvSet`'s allow-list). A tombstone GRANTS
      * nothing: every writer that reads one REFUSES under it. Planting one can only take
-     * an agent's voice away, never hand it one. The one direction that does relax
-     * something is `op:"age"`/a large `ageMs`, which can retire a settle window early —
-     * so this door is behind the same HARNESS_SECRET Bearer as everything else in this
-     * file (absent in production, checked at the top of the handler), it refuses an
-     * agent id that names no job row, and it never touches any other key.
+     * an agent's voice away, never hand it one. The directions that DO relax something
+     * are `clear` (which hands a purged agent its voice back outright) and `op:"age"`/a
+     * large `ageMs` (which retires a settle window early) — and F-632 closed both: every
+     * write and the delete refuse a row that is not stamped `plantedBy:"harness"`, through
+     * the same `harnessPlanted` predicate `pipelineRow` asks. On top of that this door is
+     * behind the same HARNESS_SECRET Bearer as everything else in this file (absent in
+     * production, checked at the top of the handler), it refuses an agent id that names
+     * no job row, and it never touches any other key.
      *
      * THE CLAMP IS THE POINT. `clearPurgeTombstone` only considers a tombstone STAMPED
      * BEFORE the job's `createdAt` (that is what tells a re-created job from a tick of
@@ -1074,7 +1094,16 @@ export async function testStateTrigger(req) {
       const key = vaPurgedKey(agent);
       const op = String(body.op || "read");
       if (op === "read") return json(200, { ok: true, key, row: (await storage.get(key)) ?? null });
-      if (op === "clear") { await storage.delete(key); return json(200, { ok: true, key, row: (await storage.get(key)) ?? null }); }
+      if (op === "clear") {
+        // F-632 — the same predicate `pipelineRow clear` asks, from the same home. A
+        // tombstone this door did not plant is a REAL purge record: deleting it retires a
+        // live settle window and erases the landed writes the F-608 purges panel reports,
+        // so it is refused and left exactly as it stands.
+        const standing = (await storage.get(key)) ?? null;
+        if (standing && !harnessPlanted(standing)) return json(409, { ...notPlantedRefusal("tombstone"), key, row: standing });
+        await storage.delete(key);
+        return json(200, { ok: true, key, row: (await storage.get(key)) ?? null });
+      }
       if (op === "plant" || op === "age") {
         // F-628 — a write body may never name a credential. One home, shared with the
         // F-627 pipeline door, and asked BEFORE anything is read or written.
@@ -1087,6 +1116,11 @@ export async function testStateTrigger(req) {
         if (!job) return json(404, { error: "no scheduled job / agent with that id" });
         const existing = (await storage.get(key)) ?? null;
         if (op === "age" && !existing) return json(409, { error: "no tombstone to age — plant one first" });
+        // F-632 — both write ops REWRITE the row they find, and moving a real tombstone's
+        // `at` back is the soft form of deleting it (it retires the settle window early).
+        // So a plant or an age over a row this door did not plant is refused, exactly as
+        // `pipelineRow plant` refuses a real pipeline record.
+        if (existing && !harnessPlanted(existing)) return json(409, { ...notPlantedRefusal("tombstone"), key, op, row: existing });
         const ageMs = Math.max(0, Math.min(7 * 24 * 3600 * 1000, Number(body.ageMs) || 0));
         const createdMs = Date.parse((job.createdAt == null ? "" : job.createdAt));
         const wanted = Date.now() - ageMs;

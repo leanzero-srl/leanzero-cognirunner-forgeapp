@@ -24,7 +24,10 @@
  *  · `age` moves `at` back far enough that the window has retired, and refuses when
  *    there is no tombstone to age;
  *  · the KEY is `vaPurgedKey`'s, and the row is one `clearPurgeTombstone` accepts —
- *    asserted by calling the REAL function both ways.
+ *    asserted by calling the REAL function both ways;
+ *  · F-632 — it NEVER touches a tombstone it did not plant: clear, age and plant all
+ *    refuse a row without `plantedBy:"harness"` and leave it byte-for-byte, while the
+ *    harness's own tombstone still clears.
  *
  * Run: node scripts/test-hook-va-tombstone.test.mjs (auto-discovered by run-offline.mjs)
  */
@@ -122,5 +125,41 @@ process.env.HARNESS_SECRET = SECRET;
   ok(cleared.status === 200 && cleared.body.row === null, "clear removes it and says so");
 }
 
-console.log(`test-hook-va-tombstone (F-616): ${pass} passed, ${fail} failed`);
+/* ═════ 6. F-632 — THE DOOR NEVER TOUCHES A REAL TOMBSTONE ═════
+ * `purgeAgent` stamps `va_purged:{agent}` with NO `plantedBy`. Clearing one hands a
+ * purged agent its voice back and erases the landed writes the purges panel reports;
+ * ageing one retires a live settle window early. Both must refuse, and must leave the
+ * row byte-for-byte where it stood — the same discipline `pipelineRow clear` shipped with.
+ */
+{
+  const KEY = vaPurgedKey(AGENT);
+  const real = { at: new Date(Date.parse(job.createdAt) - 1000).toISOString(), agent: AGENT, turns: [{ landedWrites: ["LZPT-1 comment"] }] };
+  await storage.set(KEY, real);
+
+  const cleared = await post({ action: "vaTombstone", op: "clear", agent: AGENT });
+  ok(cleared.status === 409 && cleared.body.harnessRefusal === "not-planted",
+    `clearing a REAL tombstone is refused not-planted (got ${cleared.status} ${cleared.raw.slice(0, 160)})`);
+  ok(JSON.stringify((await storage.get(KEY)) ?? null) === JSON.stringify(real), "…and the real row is untouched");
+
+  const aged = await post({ action: "vaTombstone", op: "age", agent: AGENT, ageMs: VA_PURGE_SETTLE_MS + 60000 });
+  ok(aged.status === 409 && aged.body.harnessRefusal === "not-planted",
+    `ageing a REAL tombstone is refused not-planted (got ${aged.status})`);
+  ok(JSON.stringify((await storage.get(KEY)) ?? null) === JSON.stringify(real), "…and its `at` did not move, so the settle window still stands");
+
+  const planted = await post({ action: "vaTombstone", op: "plant", agent: AGENT });
+  ok(planted.status === 409 && planted.body.harnessRefusal === "not-planted", `…and a plant over it is refused too (got ${planted.status})`);
+
+  const verdict = await clearPurgeTombstone(storage, AGENT, { createdAt: job.createdAt });
+  ok(verdict.cleared === false && verdict.settling === "window",
+    `the REAL clearPurgeTombstone still sees the untouched window (got ${JSON.stringify(verdict)})`);
+
+  /* A tombstone this door DID plant is still its own to clear. */
+  await storage.delete(KEY);
+  await post({ action: "vaTombstone", op: "plant", agent: AGENT });
+  ok(((await storage.get(KEY)) ?? {}).plantedBy === "harness", "a fresh plant stamps plantedBy:\"harness\"");
+  const mine = await post({ action: "vaTombstone", op: "clear", agent: AGENT });
+  ok(mine.status === 200 && mine.body.row === null, `…and the harness's own tombstone still clears (got ${mine.status})`);
+}
+
+console.log(`test-hook-va-tombstone (F-616, F-632): ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

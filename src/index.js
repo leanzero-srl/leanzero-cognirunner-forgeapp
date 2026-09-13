@@ -4987,7 +4987,7 @@ resolver.define("addAppAdmin", async ({ payload, context }) => {
   if (!(await requireAdmin(context.accountId))) {
     return needRole("admin");
   }
-  const { accountId, displayName, role, scope } = payload;
+  const { accountId, displayName, role, scope, emailAddress } = payload;
   if (!accountId) return { success: false, error: "Account ID required" };
   const assignRole = VALID_ROLES.includes(role) ? role : "viewer";
   const assignScope = assignRole === "admin" ? "all" : (VALID_SCOPES.includes(scope) ? scope : "own");
@@ -4996,7 +4996,16 @@ resolver.define("addAppAdmin", async ({ payload, context }) => {
   if (users.some((a) => (typeof a === "string" ? a : a.accountId) === accountId)) {
     return { success: false, error: "User already has a role" };
   }
-  users.push({ accountId, displayName: displayName || accountId, role: assignRole, scope: assignScope });
+  // F-647 — the roster card must be able to show the SAME discriminator the admin
+  // clicked in the picker, so the email the search row carried is persisted with the
+  // grant (clamped and length-bounded; the key is OMITTED, never stored empty, when
+  // there is none, which is the signal the UI falls back to the account id segment).
+  // It is stored for display only and is never written to an execution log.
+  const email = typeof emailAddress === "string" ? emailAddress.trim().slice(0, 254) : "";
+  users.push({
+    accountId, displayName: displayName || accountId, role: assignRole, scope: assignScope,
+    ...(email ? { emailAddress: email } : {}),
+  });
   await storage.set(APP_ADMINS_KEY, users);
   return { success: true };
 });
@@ -5063,9 +5072,18 @@ resolver.define("removeAppAdmin", async ({ payload, context }) => {
  * Search Jira users by name/email for the admin picker (admin only).
  */
 resolver.define("searchUsers", async ({ payload, context }) => {
-  // F-257 — a refusal is NEVER reported as an empty success: "nobody matches" and
-  // "you may not search" must stay distinguishable (the short-query branch below
-  // is the legitimate empty result).
+  // F-257 / F-648 — NEITHER a refusal NOR a transport failure is reported as an
+  // empty success. "nobody matches", "you may not search" and "Jira did not answer"
+  // are three distinguishable answers; the short-query branch below is the ONLY
+  // legitimate empty result this resolver can produce.
+  //
+  // FAIL-CLOSED, DELIBERATELY (F-648): validators and conditions fail OPEN because a
+  // missing key must not block a transition. This resolver is the opposite case — it
+  // feeds the picker that GRANTS APP ROLES, so an incomplete or failed result set
+  // presented as complete is a negative that authorises action: the admin reads
+  // "No users found", concludes the person is absent, and invites a duplicate or
+  // grants the role to a namesake a full result set would have disambiguated.
+  // A read that backs a permission grant must say what it does not know.
   if (!(await requireAdmin(context.accountId))) {
     return { ...noPerm("search users", "admin"), users: [] };
   }
@@ -5075,18 +5093,41 @@ resolver.define("searchUsers", async ({ payload, context }) => {
     const resp = await api.asApp().requestJira(
       route`/rest/api/3/user/search?query=${query}&maxResults=10`,
     );
-    if (!resp.ok) return { success: true, users: [] };
+    if (!resp.ok) {
+      // `reason: "jira_unavailable"` keeps this distinct from the admin-gate refusal
+      // shape above (`reason: "no-permission"`, with needsRole/hint).
+      return {
+        success: false,
+        error: `User search failed: Jira returned HTTP ${resp.status}. Results may be incomplete - try again.`,
+        reason: "jira_unavailable",
+        status: resp.status,
+        users: [],
+      };
+    }
     const users = await resp.json();
     return {
       success: true,
-      users: users.map((u) => ({
+      users: (Array.isArray(users) ? users : []).map((u) => ({
         accountId: u.accountId,
         displayName: u.displayName,
         avatarUrl: u.avatarUrls?.["24x24"],
+        // F-647 — Jira returns emailAddress only when the caller is allowed to see it
+        // (profile visibility / GDPR strict mode), so the key is ABSENT rather than
+        // empty when it is not available. Never logged: it only ever goes to the admin
+        // picker as a discriminator between namesakes.
+        ...(typeof u.emailAddress === "string" && u.emailAddress.trim()
+          ? { emailAddress: u.emailAddress.trim() }
+          : {}),
       })),
     };
   } catch (e) {
-    return { success: true, users: [] };
+    // Same fail-closed decision as the !resp.ok arm: a thrown fetch is not "nobody matches".
+    return {
+      success: false,
+      error: "User search failed: Jira could not be reached. Results may be incomplete - try again.",
+      reason: "jira_unavailable",
+      users: [],
+    };
   }
 });
 

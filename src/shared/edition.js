@@ -318,6 +318,42 @@ export const AGENT_CAPABILITY_REASONS = {
 export const agentCapabilityCopy = (reason) =>
   AGENT_CAPABILITY_REASONS[String(reason || "")] || AGENT_CAPABILITY_REASONS.unknown;
 
+/*
+ * F-556 - WHAT AN EXHAUSTED ALLOWANCE ACTUALLY DOES, PER ENGINE.
+ *
+ * One ceiling covers both vendor-billed engines (vendorAllowanceStatus sums them), but
+ * hitting it does NOT mean the same thing on each side, and the admin panel used to
+ * state only the Forge LLM outcome whichever engine was active:
+ *
+ *   atlassian -> forgeLlmBillingClamp DOWNGRADES. The frontier models pause and every
+ *                rule keeps running on FORGE_LLM_DEFAULT (Haiku). Degraded, not stopped.
+ *   managed   -> the adapter REFUSES before a model is even chosen, because every id in
+ *                MANAGED_MODELS is frontier and there is no cheap tier to fall to. Every
+ *                managed call returns `allowance-exhausted`: validators fail OPEN (so
+ *                transitions pass unchecked), semantic post-functions and queued
+ *                jobs/listeners/agent tasks refuse, and the Coder answers nothing.
+ *
+ * Telling a managed tenant "rules fall back to Claude Haiku" is the dangerous version of
+ * this: it reads as "degraded", so the admin waits for the month to roll while the app
+ * has silently stopped validating anything. The two sentences live HERE, with
+ * AGENT_CAPABILITY_REASONS, because copy about what an engine does is one rule.
+ *
+ * Keyed on the ACTIVE engine (what is saved), never on a picker selection.
+ */
+const ALLOWANCE_CONSEQUENCE = {
+  [MANAGED_PROVIDER_ID]: `Allowance spent. ${MANAGED_PROVIDER_LABEL} has stopped until next month: rules that use AI are not validated, and queued jobs and agent tasks refuse. Switch to Atlassian Forge LLM or a BYOK provider to keep going.`,
+  atlassian: "Allowance spent. Sonnet 5 and Opus 5 are paused until next month; rules keep running on Claude Haiku.",
+};
+
+/**
+ * The sentence for "the vendor allowance is spent", for the engine that is ACTIVE.
+ * `null` for any engine the allowance cannot mean anything for (a BYOK tenant pays its
+ * own bill and is never shown the meter), so a surface renders nothing rather than a
+ * sentence that is true of someone else.
+ */
+export const allowanceConsequenceCopy = (activeProvider) =>
+  ALLOWANCE_CONSEQUENCE[String(activeProvider || "")] || null;
+
 export const agentCapability = ({ provider, edition, agentModel, allowanceLevel, managedKeyPresent } = {}) => {
   /*
    * THE MANAGED ENGINE IS NOT BYOK - it spends LeanZero's money, so it is gated like

@@ -453,10 +453,14 @@ try {
           from the one home, never retyped here, so a reworded remedy fails loudly
           instead of drifting.
        d) The allowance card is "Vendor allowance" and splits into two SOLID bars when
-          both vendor-billed engines spent. Colours are read COMPUTED, per theme. */
+          both vendor-billed engines spent. Colours are read COMPUTED, per theme.
+       e) F-556: at level "hard" the note states the consequence of the ACTIVE engine -
+          Forge LLM downgrades, the managed engine STOPS - and never the other one's. */
   {
-    const { MANAGED_PROVIDER_LABEL, MANAGED_MODELS, MANAGED_DEFAULT_MODEL, agentCapabilityCopy } =
-      await import("../../src/shared/edition.js");
+    const {
+      MANAGED_PROVIDER_ID, MANAGED_PROVIDER_LABEL, MANAGED_MODELS, MANAGED_DEFAULT_MODEL,
+      agentCapabilityCopy, allowanceConsequenceCopy,
+    } = await import("../../src/shared/edition.js");
 
     const openProviderPicker = async (page) => {
       await page.locator(".dropdown-trigger").first().click();
@@ -634,6 +638,47 @@ try {
         ok(env.errors.length === 0, "E4d no page errors: " + env.errors.join(" | "));
       } catch (e) { fail++; console.log("  ✗ E4d threw: " + e.message.split("\n")[0]); }
       await close(env);
+    }
+
+    /* ---- E4e F-556: the EXHAUSTED note states the consequence of the ACTIVE engine ----
+       One ceiling covers both vendor-billed engines, but hitting it does not mean the
+       same thing on each. Forge LLM DOWNGRADES to Haiku; the managed engine STOPS, and
+       the panel used to promise the Haiku fallback to a managed tenant whose app had
+       silently stopped validating anything. The sentences come from the one copy home,
+       so they are compared against it rather than retyped here.
+       $200 allowance (100 seats) against $92.40 forge + $120 managed = level "hard". */
+    for (const theme of ["light", "dark"]) {
+      for (const [engine, key] of [["managed", MANAGED_PROVIDER_ID], ["atlassian", "atlassian"]]) {
+        console.log(`E4e exhausted allowance on ${engine} (${theme})`);
+        const env = await openAdmin(browser, theme, false, false,
+          { __PROVIDER__: key, __MANAGED_SPEND__: 120 });
+        const { page } = env;
+        try {
+          await tab(page, "Settings");
+          await page.locator(".usage-card").waitFor({ timeout: 10000 });
+          const note = page.locator(".usage-allow-note.lvl-hard").first();
+          ok(await note.count() === 1, `E4e the exhausted note is shown on ${engine}`);
+          const txt = (await note.innerText()).trim();
+          ok(txt === allowanceConsequenceCopy(key),
+            `E4e the ${engine} note is the exact sentence from the one copy home (got "${txt.slice(0, 70)}…")`);
+          ok(txt !== allowanceConsequenceCopy(engine === "managed" ? "atlassian" : MANAGED_PROVIDER_ID),
+            `E4e ...and NOT the other engine's sentence (${engine})`);
+          ok(!txt.includes("—"), `E4e no em-dash in the exhausted note (${engine})`);
+          if (engine === "managed") {
+            ok(!/fall back|Haiku/i.test(txt),
+              "E4e the managed note never promises a Haiku fallback - there is none");
+          } else {
+            ok(/Haiku/.test(txt), "E4e the Forge LLM note still names the Haiku fallback, which is real");
+          }
+          /* Solid, not a faded tint, in BOTH themes - the note is the only surface that
+             explains the pause, so it must read as a statement and not a whisper. */
+          ok(await note.evaluate((el) => getComputedStyle(el).opacity) === "1",
+            `E4e the exhausted note is solid, not faded (${engine}, ${theme})`);
+          await shot(page, `E4e-allowance-hard-${engine}-${theme}`);
+          ok(env.errors.length === 0, "E4e no page errors: " + env.errors.join(" | "));
+        } catch (e) { fail++; console.log("  ✗ E4e threw: " + e.message.split("\n")[0]); }
+        await close(env);
+      }
     }
   }
 } finally {

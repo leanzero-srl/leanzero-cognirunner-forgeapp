@@ -212,6 +212,35 @@ console.log("F-436 the capability helper obeys the duplication convention");
   ok(capabilityAnswer({}) === null, "F-436 a body with no success field is transport");
 }
 
+/* F-555 — THE PROVIDER-READINESS PREDICATE, pinned here rather than only in a browser
+   journey. The defect was that a surface derived readiness from ONE field of getOpenAIKey
+   (`hasKey !== false`), which is wrong for every engine whose credential is not a KVS slot.
+   Each case below is a real arm of src/index.js's getOpenAIKey, so a backend change that
+   adds a vendor-billed engine without `noKeyNeeded` fails here instead of in a tenant's
+   editor. */
+console.log("F-555 provider readiness is one predicate over noKeyNeeded + hasKey");
+{
+  const { providerReady } = await import("../config-ui/src/components/capability.js");
+
+  // The finding itself: the managed arm reports no key AND no key needed.
+  ok(providerReady({ success: true, provider: "managed", hasKey: false, isByok: false, managed: true, noKeyNeeded: true }) === true,
+    "F-555 the managed engine (hasKey:false + noKeyNeeded) is READY — no key warning");
+  // Forge LLM: already fine under the old test, must stay fine under the new one.
+  ok(providerReady({ success: true, provider: "atlassian", hasKey: true, isByok: true, noKeyNeeded: true }) === true,
+    "F-555 Forge LLM is READY");
+  // The direction of the gate does not change: a BYOK tenant with no key still warns.
+  ok(providerReady({ success: true, provider: "anthropic", hasKey: false, isByok: false }) === false,
+    "F-555 a BYOK provider with no key is NOT ready — the warning is preserved");
+  ok(providerReady({ success: true, provider: "anthropic", hasKey: true, isByok: true }) === true,
+    "F-555 a BYOK provider with a key is READY");
+  // A non-answer must never flash a warning (the fetch has not resolved, or the call threw).
+  ok(providerReady(null) === true && providerReady(undefined) === true,
+    "F-555 a missing body is not a 'no key' claim");
+  // Explicitly NOT folded in: a resolved failure body keeps today's behaviour.
+  ok(providerReady({ success: false, hasKey: false, isByok: false }) === false,
+    "F-555 a getOpenAIKey failure body still warns (unchanged — a different question)");
+}
+
 /* F-252/F-254/F-255 — THE VOCABULARY, asserted on the helper directly.
    A pure function with a branch per refusal shape is exactly the thing to unit-test: the
    browser journeys can only reach the shapes some surface happens to render today, and the

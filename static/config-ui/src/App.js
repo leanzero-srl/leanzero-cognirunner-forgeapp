@@ -31,7 +31,7 @@ import { resolveEdition, EDITION_IDS, agentCapabilityCopy } from "../../../src/s
 // ONE wording for a read that never came back. Copied byte-for-byte into admin-panel.
 import {
   useAgentCapability, CAPABILITY_UNKNOWN_TITLE, CAPABILITY_UNKNOWN_TEXT,
-  CAPABILITY_CHECKING_TITLE, CAPABILITY_RETRY_LABEL,
+  CAPABILITY_CHECKING_TITLE, CAPABILITY_RETRY_LABEL, providerReady as isProviderReady,
 } from "./components/capability.js";
 // F-398 - the premade POST-FUNCTION catalogue. Which rules exist, what each one is
 // called and which instance capability it needs are the CATALOGUE's answers, never
@@ -3378,8 +3378,10 @@ function App() {
   // BYOK state — used to show cost notice when user's own key is active
   const [isByok, setIsByok] = useState(false);
   const [providerLabel, setProviderLabel] = useState("AI");
-  // hasKey !== false ⇒ ready. Defaults true so no warning flashes before the fetch resolves;
-  // Forge LLM reports hasKey:true (noKeyNeeded) so a keyless-but-valid provider never warns.
+  /* Readiness is `providerReady(keyStatus)` from components/capability.js — ONE predicate for
+     every engine, never a field read here (F-555: the local `hasKey !== false` test warned a
+     managed-engine tenant about a key it can never have). Defaults true so no warning flashes
+     before the fetch resolves. */
   const [providerReady, setProviderReady] = useState(true);
 
   // Post-function state
@@ -4108,9 +4110,10 @@ function App() {
           invoke("getProvider"),
         ]);
         if (keyStatus?.isByok) setIsByok(true);
-        // hasKey is present on every getOpenAIKey result (false only when no key is stored);
-        // Forge LLM returns hasKey:true (noKeyNeeded).
-        setProviderReady(keyStatus?.hasKey !== false);
+        // F-555 — ask the shared predicate, not a field. `hasKey` alone is not the answer:
+        // the vendor-billed engines (Forge LLM, the managed CogniRunner Cloud AI) say
+        // `noKeyNeeded: true` precisely because no key is the normal state for them.
+        setProviderReady(isProviderReady(keyStatus));
         if (providerResult?.success) {
           const labels = { openai: "OpenAI", azure: "Azure OpenAI", openrouter: "OpenRouter", anthropic: "Anthropic" };
           setProviderLabel(labels[providerResult.provider] || providerResult.provider || "AI");
@@ -4193,7 +4196,8 @@ function App() {
 
   // First-run guardrail: an admin who hasn't set up an AI provider key can still create an AI
   // rule that then silently no-ops at runtime (the AI call can't run). Warn at the point of need.
-  // Never fires for Forge LLM (hasKey:true / noKeyNeeded). The consequence differs per surface —
+  // Never fires for an engine that needs no key of its own — Forge LLM or the managed
+  // CogniRunner Cloud AI (both `noKeyNeeded`). The consequence differs per surface —
   // a validator/condition fails OPEN (allows the transition), a semantic post-function just
   // produces no output — so the copy is accurate per surface, not reused verbatim.
   const providerWarningWith = (consequence) => (

@@ -2116,6 +2116,34 @@ try {
     await closeEditor(env);
   }
 
+  /* ---------------- E1b — F-555: a managed-engine tenant is NOT warned ----------------
+     The managed engine (CogniRunner Cloud AI) reports `hasKey: false` honestly — its
+     credential is LeanZero's env var, never a KVS slot — together with `noKeyNeeded: true`.
+     config-ui used to read `hasKey !== false` alone and so told a tenant on a WORKING
+     provider that its rules fail open, pointing at a Settings key field that does not exist
+     for that engine. E1 above is the other half of the pair: the BYOK-without-key case must
+     keep warning, so this fix cannot be "stop warning".
+
+     The absence assertion is guarded by a positive control first (the hydrated prompt
+     textarea): an editor that failed to render also has no .provider-warning, and that
+     must not read as a pass. */
+  for (const theme of ["light", "dark"]) {
+    console.log(`E1b managed engine → no provider warning (cfg-validator, ${theme})`);
+    const env = await openEditor(browser, "config-ui", "cfg-validator", theme, { __MANAGED__: true, __PROVIDER__: "managed" });
+    const { page } = env;
+    try {
+      const prompt = "textarea[placeholder*='makes the field value valid']";
+      await page.locator(prompt).first().waitFor({ timeout: 8000 });
+      ok(await page.locator(prompt).count() > 0,
+        `E1b/${theme} positive control: the validator form rendered (so an absent warning means absent, not blank)`);
+      // Give the getOpenAIKey effect room to land a warning if it were going to.
+      await page.waitForTimeout(700);
+      ok(await page.locator(".provider-warning").count() === 0,
+        `E1b/${theme} no 'no AI provider key' warning on a managed-engine tenant (noKeyNeeded)`);
+    } catch (e) { fail++; console.log(`  ✗ E1b/${theme} threw: ` + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
   /* ---------------- E2 — premade picker list-load failure → error + Retry ---------------- */
   {
     console.log("E2 getRuleLists failure + Retry (cfg-premade)");

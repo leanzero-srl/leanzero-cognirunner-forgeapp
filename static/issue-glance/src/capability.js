@@ -134,3 +134,35 @@ export function useAgentCapability(invoke, active) {
 
   return { status: state.status, verdict: state.verdict, retry };
 }
+
+/**
+ * F-555 — "IS THE AI PROVIDER READY", AS ONE PREDICATE.
+ *
+ * A second question of the same family as the Coder read above, and it broke the same way:
+ * a surface derived its own answer from ONE field of `getOpenAIKey`. config-ui asked
+ * `keyStatus?.hasKey !== false` — right for a BYOK provider, right for Forge LLM (which
+ * reports `hasKey: true`), and WRONG for the managed engine (CogniRunner Cloud AI), which
+ * honestly reports `hasKey: false` because its credential is LeanZero's env var and never a
+ * KVS slot. A managed tenant on a fully working provider was therefore told "No AI provider
+ * key is set up yet ... this rule fails open" — a false alarm about a rule that runs fine,
+ * and the worst kind, because the remedy it names (add a key in Settings) does not exist for
+ * that engine: the managed row has no key field at all.
+ *
+ * The field that actually answers the question is `noKeyNeeded`. The backend sets it on every
+ * arm where the ABSENCE of a stored key is the NORMAL state (Forge LLM and managed today),
+ * precisely so a caller asking "should I nag this admin" has ONE predicate instead of a
+ * per-provider list that the next vendor-billed engine would silently fall off.
+ *
+ * Deliberately NOT folded in: `success === false`. A resolved refusal or fault from
+ * `getOpenAIKey` is a different question ("the check did not answer") with a different
+ * remedy, and answering it here would change the direction of an existing gate under cover
+ * of a bug fix. Today's behaviour is kept exactly: a false `hasKey` in a failure body warns.
+ *
+ * Pure and self-contained, so the duplication convention's `diff -q` gate covers it along
+ * with the hook above (config-ui, admin-panel, issue-glance).
+ */
+export function providerReady(keyStatus) {
+  // No object at all (pre-fetch, or the call threw): a non-answer must never flash a warning.
+  if (!keyStatus || typeof keyStatus !== "object") return true;
+  return keyStatus.noKeyNeeded === true || keyStatus.hasKey !== false;
+}

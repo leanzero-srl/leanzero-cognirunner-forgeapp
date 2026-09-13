@@ -52,7 +52,24 @@ function fmtBytes(n) {
   return n < 1024 ? `${Math.round(n)} bytes` : `${Math.round(n / 1024)} KB`;
 }
 
-export default function MemoriesAdminTab({ invoke, isAdmin }) {
+/* F-219 — the UI gate MATCHES THE BACKEND GATE, and nothing else.
+   `addMemory`/`updateMemory`/`deleteMemory` all gate on `requireRole(accountId, "editor")`
+   (src/index.js:7262/7312/7349). `saveMemorySettings` gates on `requireAdmin` (:7491).
+   So the row actions (Edit / Archive / Delete), the select column and the bulk-delete bar
+   belong to `canEdit`, and only the settings toggles below belong to `isAdmin`.
+
+   This was not a cosmetic mismatch. Until F-213 the admin page forced `isAdmin = true`, so
+   a site admin always had the delete controls and the `isAdmin` gate was never load-bearing.
+   F-213 correctly deleted that override — and in doing so made an app-demoted site admin
+   land here as an editor with the platform-cap wall and NOT ONE control able to clear it.
+   Bulk delete is the only write that can shrink an over-cap store below 240 KiB (a one-row
+   delete is refused by the same platform guard, F-188/F-209), so the single repair for the
+   store existed nowhere any editor could reach. */
+export default function MemoriesAdminTab({ invoke, isAdmin, userRole }) {
+  // Admin implies edit; `userRole` is the resolver's answer (checkIsAdmin), passed down from
+  // App.js exactly as ListenersTab/JobsTab already receive it. No new resolver, no second
+  // authority on role — F-213's law is that `checkIsAdmin` is the only one.
+  const canEdit = !!isAdmin || userRole === "editor" || userRole === "admin";
   const [memories, setMemories] = useState([]);
   const [settings, setSettings] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -358,13 +375,14 @@ export default function MemoriesAdminTab({ invoke, isAdmin }) {
   const byNewest = (a, b) => new Date(b.createdAt || 0) - new Date(a.createdAt || 0);
   const active = memories.filter((m) => !m.disabled).sort(byNewest);
   const archived = memories.filter((m) => m.disabled).sort(byNewest);
-  // F-189 — the select column only exists for admins (they are the only ones with any
-  // row actions), so the archived divider's colSpan has to move with it.
-  const colCount = isAdmin ? 6 : 5;
+  // F-189 — the select column only exists where there ARE row actions, so the archived
+  // divider's colSpan has to move with it. F-219 — that condition is `canEdit`, not
+  // `isAdmin`: an editor has every one of those row actions on the backend.
+  const colCount = canEdit ? 6 : 5;
 
   const renderRow = (mem) => (
     <tr key={mem.id} className={mem.disabled ? "memories-admin-archived-row" : undefined}>
-      {isAdmin && (
+      {canEdit && (
         <td className="memories-admin-selcell">
           <input
             type="checkbox"
@@ -421,7 +439,7 @@ export default function MemoriesAdminTab({ invoke, isAdmin }) {
         )}
       </td>
       <td>
-        {isAdmin && (
+        {canEdit && (
           <div className="row-actions">
             {editingId !== mem.id && (
               <button className="btn-small" onClick={() => startEdit(mem)} disabled={!!working}>Edit</button>
@@ -513,15 +531,20 @@ export default function MemoriesAdminTab({ invoke, isAdmin }) {
           The second line is OURS to add, because it is about THIS SCREEN's controls: the
           resolver cannot know the tab has a "Delete selected" button.
 
-          F-200 — and it must be branched on `isAdmin`, because that button is not always
-          there. The Add Memory form below is the ONE write control on this tab that is not
-          wrapped in `{isAdmin && ...}` (an editor is allowed to add — `addMemory` gates on
-          requireRole(editor), not admin), and `capRefusal` is raised from `handleAdd`. So a
-          project editor on an over-platform store is the exact person most likely to see
-          this wall — and for them the select column, the bulk bar and every row action are
-          unrendered. Telling them to tick rows and press "Delete selected" is an
-          instruction they cannot follow on a screen that shows neither control. They get
-          told what is true and who can fix it instead. */}
+          F-200 — and it must be branched, because that button is not always there. The Add
+          Memory form below is the ONE write control on this tab that is not role-wrapped (an
+          editor is allowed to add — `addMemory` gates on requireRole(editor), not admin), and
+          `capRefusal` is raised from `handleAdd`. So a project editor on an over-platform
+          store is the exact person most likely to see this wall. Naming a control that is not
+          rendered for the reader is an instruction they cannot follow.
+
+          F-219 — but the branch is `canEdit`, NOT `isAdmin`, and the non-remedy arm no longer
+          says "a Jira admin". Both were wrong for the same reason: the controls this wall
+          points at are backed by `deleteMemory`, which gates on requireRole("editor"). An
+          editor HAS them now, so the editor/admin arm gets the remedy. And the referral arm
+          must name the role that can actually act — "a Jira admin" was not merely imprecise,
+          it was false in the one case that matters: an app-demoted SITE admin reading this
+          wall IS the Jira admin, so the old sentence sent them to themselves. */}
       {capRefusal && (
         <div className="hard-stop memories-admin-capwall" role="alert">
           <span className="hard-stop-title memories-admin-capwall-title">Memory store is over Jira's storage limit</span>
@@ -532,9 +555,9 @@ export default function MemoriesAdminTab({ invoke, isAdmin }) {
                 : "The store is over the limit, so no change to it can be saved.")}
           </span>
           <span className="hard-stop-text memories-admin-capwall-text">
-            {isAdmin
-              ? "Tick the memories you no longer need and use “Delete selected” to remove them in one go. Archiving does not free capacity, and deleting them one at a time will not work."
-              : "The memory store is over Jira's storage limit; a Jira admin has to delete memories in this tab before anything can be saved."}
+            {canEdit
+              ? "Select the memories to remove and delete them together. Archiving does not free capacity, and deleting them one at a time will not work."
+              : "An editor or admin has to delete memories in this tab before anything can be saved."}
           </span>
         </div>
       )}
@@ -656,7 +679,7 @@ export default function MemoriesAdminTab({ invoke, isAdmin }) {
           real one will appear in. The count is IN the label because this button is the one
           irreversible action on the tab and the confirm dialog should never be the first
           place the admin learns how many rows they picked. */}
-      {isAdmin && selected.size > 0 && (
+      {canEdit && selected.size > 0 && (
         <div className="memories-admin-bulkbar">
           <span className="memories-admin-bulkcount">
             {selected.size} selected
@@ -707,7 +730,7 @@ export default function MemoriesAdminTab({ invoke, isAdmin }) {
           <table className="table">
             <thead>
               <tr>
-                {isAdmin && <th className="memories-admin-selcell"></th>}
+                {canEdit && <th className="memories-admin-selcell"></th>}
                 <th>Memory</th>
                 <th>Source</th>
                 <th>Project</th>

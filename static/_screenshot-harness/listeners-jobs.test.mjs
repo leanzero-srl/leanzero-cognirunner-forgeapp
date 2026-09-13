@@ -687,7 +687,15 @@ try {
         `M3 ${theme} the wall carries the resolver's platform-cap sentence verbatim (got: ${wtxt.replace(/\n/g, " | ")})`);
       ok(/\b6544 bytes\b/.test(wtxt),
         `M3 ${theme} the wall names the deficit as a real quantity (got: ${wtxt.replace(/\n/g, " | ")})`);
-      ok(/Delete selected/.test(wtxt), `M3 ${theme} the wall points at the control that recovers capacity`);
+      /* F-219 — the wall still points at the control that recovers capacity, but the
+         sentence is no longer keyed to the literal button label. It was re-worded when the
+         gate moved from isAdmin to canEdit, because the SAME sentence now has to be true
+         for an editor as well as an admin. What is asserted is the instruction, and (just
+         below) that the control it names is actually on this screen. */
+      ok(/Select the memories to remove and delete them together/i.test(wtxt),
+        `M3 ${theme} the wall points at the control that recovers capacity (got: ${wtxt.replace(/\n/g, " | ")})`);
+      ok(await page.locator(".memories-admin-select").count() > 0,
+        `M3 ${theme} ...and that control exists here, so the wall is not giving an unfollowable order`);
       // F-200 — and it may only say that to someone who HAS that control. This is the admin
       // arm, so the admin remedy is the right one and the non-admin sentence must be absent.
       ok(!/a Jira admin has to delete memories/i.test(wtxt),
@@ -1000,31 +1008,46 @@ try {
     await close(env);
   }
 
-  /* ---------------- M6 — F-200: the capacity wall does not give a non-admin an order they cannot obey ----------------
-   * The Add Memory form is the ONE write control on this tab that is not wrapped in
-   * `{isAdmin && ...}` — `addMemory` gates on requireRole("editor"), so a project editor is
-   * allowed to add and is therefore allowed to hit the platform-cap refusal. Every control
-   * the wall used to name (the select column, the bulk bar, "Delete selected", the row
-   * Delete buttons) is admin-only and simply not rendered for them. The wall must say who
-   * can fix it instead of pointing at buttons that are not on the page. */
+  /* ---------------- M6 — F-219: the EDITOR owns the repair, because the backend says so ----------------
+   * F-200 asserted the opposite of this block, and it was right for the code as it then
+   * stood: every delete control was wrapped in `{isAdmin && ...}`, so the wall could not
+   * honestly name one. F-219 fixed the gate rather than the copy. `deleteMemory`,
+   * `updateMemory` and `addMemory` all gate on `requireRole(accountId, "editor")`
+   * (src/index.js:7349/7312/7262) — an editor was ALWAYS allowed to do every one of these
+   * writes, and the UI was simply refusing to render controls the backend would have
+   * accepted. That gap became reachable the moment F-213 stopped forcing `isAdmin = true`
+   * on jira:adminPage: an app-demoted site admin then arrived as an editor, met the
+   * platform-cap wall, and had nothing on screen able to clear it — while the wall told
+   * them "a Jira admin has to delete memories", which they were.
+   *
+   * So the assertions INVERT. The editor must now SEE the select column, the row actions
+   * and the bulk bar, and the wall must give them the remedy. The old "no control is
+   * rendered" premise moves to M6b, where it is true: a VIEWER. */
   for (const theme of ["light", "dark"]) {
-    console.log(`M6 platform-cap wall for a NON-admin — ${theme}`);
+    console.log(`M6 platform-cap wall for an EDITOR — ${theme}`);
     const env = await openAdmin(browser, theme, { __MEMORY_OVERCAP__: true, __NOT_ADMIN__: true });
     const { page } = env;
     try {
       await tab(page, "Memories");
       await page.locator(".memories-admin-tab .table").waitFor({ timeout: 10000 });
-      // First prove the premise: this really is the admin-less rendering, or the assertions
-      // below would pass vacuously against an admin screen that happens not to say the word.
-      ok(await page.locator(".memories-admin-select").count() === 0,
-        `M6 ${theme} a non-admin sees no select checkboxes (the premise of the finding)`);
-      ok(await page.locator(".memories-admin-bulkdelete").count() === 0,
-        `M6 ${theme} a non-admin has no "Delete selected" control anywhere on the page`);
-      ok(await page.locator(".memories-admin-tab .row-actions").count() === 0,
-        `M6 ${theme} a non-admin has no per-row Delete either`);
+      // Prove the premise: this really is the NON-admin rendering. If the fixture silently
+      // stopped demoting, every assertion below would pass vacuously on an admin screen.
+      ok(await page.locator(".tab-btn", { hasText: "Settings" }).count() === 0,
+        `M6 ${theme} the fixture really is non-admin (no admin-only Settings tab)`);
+      // F-219 — and the editor HAS the delete controls, because the backend accepts them.
+      ok(await page.locator(".memories-admin-select").count() > 0,
+        `M6 ${theme} an editor SEES the select checkboxes (deleteMemory gates on editor)`);
+      ok(await page.locator(".memories-admin-tab .row-actions").count() > 0,
+        `M6 ${theme} an editor has the per-row Edit/Archive/Delete actions`);
       // ...and that the add form IS there, which is how they reach the refusal at all.
       ok(await page.locator(".memories-admin-add input").count() === 1,
-        `M6 ${theme} the Add Memory form is NOT admin-gated — this is how an editor hits the wall`);
+        `M6 ${theme} the Add Memory form is available to an editor — this is how they hit the wall`);
+      // The bulk bar is selection-gated, not role-gated: tick a row and it must appear.
+      await page.locator(".memories-admin-select").first().check();
+      await page.locator(".memories-admin-bulkdelete").waitFor({ timeout: 5000 });
+      ok(await page.locator(".memories-admin-bulkdelete").count() === 1,
+        `M6 ${theme} "Delete selected" — the ONLY write that can shrink an over-cap store — is reachable`);
+      await page.locator(".memories-admin-select").first().uncheck();
 
       await page.locator(".memories-admin-add input").fill("A memory this store cannot fit.");
       await page.locator(".btn-add-memory").click();
@@ -1034,13 +1057,16 @@ try {
       // The backend's sentence still travels verbatim — that half is not surface-dependent.
       ok(wtxt.includes(memoryPlatformCapMessage(6544)),
         `M6 ${theme} the wall still carries the resolver's sentence verbatim (got: ${wtxt.replace(/\n/g, " | ")})`);
-      // The REMEDY half is. No instruction they cannot follow:
-      ok(!/Delete selected/.test(wtxt),
-        `M6 ${theme} the wall does NOT name a control that is not rendered (got: ${wtxt.replace(/\n/g, " | ")})`);
-      ok(!/Tick the memories/i.test(wtxt),
-        `M6 ${theme} the wall does NOT tell them to tick rows that have no checkboxes`);
-      ok(/a Jira admin has to delete memories in this tab/i.test(wtxt),
-        `M6 ${theme} the wall names WHO can fix it (got: ${wtxt.replace(/\n/g, " | ")})`);
+      // The REMEDY half inverts with the gate: the editor gets the instruction, because
+      // every control it names is now on their screen (asserted above, so this cannot be
+      // an instruction they are unable to follow).
+      ok(/Select the memories to remove and delete them together/i.test(wtxt),
+        `M6 ${theme} the wall gives the editor the remedy (got: ${wtxt.replace(/\n/g, " | ")})`);
+      ok(/Archiving does not free capacity/i.test(wtxt),
+        `M6 ${theme} the wall still kills the wrong instinct (archive does not reclaim a slot)`);
+      // And it must NOT send them to somebody else — the false referral F-219 removed.
+      ok(!/a Jira admin has to delete memories/i.test(wtxt),
+        `M6 ${theme} the wall does NOT send an editor to a "Jira admin" it no longer needs`);
       ok(/over Jira's storage limit/i.test(wtxt),
         `M6 ${theme} the wall still names the condition`);
       // Same solid-red hard-stop grammar in both themes — the copy changed, the design did not.
@@ -1063,9 +1089,70 @@ try {
       });
       ok(theme === "dark" ? titleLum > 140 : titleLum < 120,
         `M6 ${theme} the page title contrasts with the surface (luminance ${Math.round(titleLum)})`);
-      await shot(page, `m6-memories-capwall-nonadmin-${theme}`);
+      await shot(page, `m6-memories-capwall-editor-${theme}`);
       ok(env.errors.length === 0, `M6 ${theme} no page errors: ` + env.errors.join(" | "));
     } catch (e) { fail++; console.log(`  ✗ M6 ${theme} threw: ` + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
+  /* ---------------- M6b - F-219: the VIEWER, who is the real "cannot repair this" case ----------------
+   * This is where F-200's premise actually lives now, and it needs its own fixture because
+   * `isAdmin: false` had been doing duty for two very different people. A viewer is the one
+   * the backend genuinely refuses (`requireRole(accountId, "editor")` fails for them on
+   * add, update AND delete), so a viewer is the one for whom naming a delete control would
+   * be an order they cannot obey. The referral arm is asserted here, and its wording is
+   * load-bearing: it must name "an editor or admin" and must NOT say "a Jira admin", which
+   * was false for the exact reader who most needed it - an app-demoted SITE admin IS the
+   * Jira admin, so the old sentence sent them to themselves.
+   * Both themes, because the wall is a colour claim as much as a copy claim. */
+  for (const theme of ["light", "dark"]) {
+    console.log(`M6b platform-cap wall for a VIEWER - ${theme}`);
+    const env = await openAdmin(browser, theme, { __MEMORY_OVERCAP__: true, __VIEWER__: true });
+    const { page } = env;
+    try {
+      await tab(page, "Memories");
+      await page.locator(".memories-admin-tab .table").waitFor({ timeout: 10000 });
+      // The premise, and the whole point of the new fixture: NO write control at all.
+      ok(await page.locator(".memories-admin-select").count() === 0,
+        `M6b ${theme} a viewer sees no select checkboxes`);
+      ok(await page.locator(".memories-admin-bulkdelete").count() === 0,
+        `M6b ${theme} a viewer has no "Delete selected" control`);
+      ok(await page.locator(".memories-admin-tab .row-actions").count() === 0,
+        `M6b ${theme} a viewer has no per-row Edit/Archive/Delete either`);
+      ok(await page.locator(".memories-admin-toggles").count() === 0,
+        `M6b ${theme} and no settings toggles - saveMemorySettings gates on requireAdmin`);
+
+      await page.locator(".memories-admin-add input").fill("A memory this store cannot fit.");
+      await page.locator(".btn-add-memory").click();
+      const wall = page.locator(".memories-admin-capwall").first();
+      await wall.waitFor({ timeout: 8000 });
+      const wtxt = await wall.innerText();
+      ok(wtxt.includes(memoryPlatformCapMessage(6544)),
+        `M6b ${theme} the wall still carries the resolver's sentence verbatim (got: ${wtxt.replace(/\n/g, " | ")})`);
+      ok(!/Select the memories to remove/i.test(wtxt),
+        `M6b ${theme} the wall does NOT name a control that is not rendered for a viewer`);
+      ok(/An editor or admin has to delete memories in this tab/i.test(wtxt),
+        `M6b ${theme} the wall names WHO can fix it, by the role the BACKEND checks (got: ${wtxt.replace(/\n/g, " | ")})`);
+      ok(!/a Jira admin has to delete memories/i.test(wtxt),
+        `M6b ${theme} and never "a Jira admin" - false for the demoted site admin reading it`);
+      // Same solid-red hard-stop grammar. F-222 keeps the four CSS homes byte-identical;
+      // this is the rendered end of that claim, in both themes.
+      const wst = await wall.evaluate((el) => {
+        const c = getComputedStyle(el);
+        return { bg: c.backgroundColor, fg: c.color, bl: c.borderLeftWidth, bt: c.borderTopWidth, r: c.borderRadius, g: c.gap, p: c.padding };
+      });
+      const wrgb = wst.bg.match(/\d+/g).map(Number);
+      ok(wrgb[0] > 180 && wrgb[1] < 90 && wrgb[2] < 90, `M6b ${theme} wall is a SOLID red fill - got ${wst.bg}`);
+      ok(/255,\s*255,\s*255/.test(wst.fg), `M6b ${theme} wall has white text - got ${wst.fg}`);
+      ok(wst.bl === wst.bt, `M6b ${theme} wall has NO left accent rail`);
+      // F-222 - the properties the cross-app suites never asserted, and therefore the
+      // ones a silent drift between the two App.js copies would have shown up in first.
+      ok(wst.r === "4px", `M6b ${theme} hard-stop radius is 4px (got ${wst.r})`);
+      ok(wst.g === "3px", `M6b ${theme} hard-stop gap is 3px (got ${wst.g})`);
+      ok(wst.p === "9px 12px", `M6b ${theme} hard-stop padding is 9px 12px (got ${wst.p})`);
+      await shot(page, `m6b-memories-capwall-viewer-${theme}`);
+      ok(env.errors.length === 0, `M6b ${theme} no page errors: ` + env.errors.join(" | "));
+    } catch (e) { fail++; console.log(`  x M6b ${theme} threw: ` + e.message.split("\n")[0]); }
     await close(env);
   }
 
@@ -1126,11 +1213,20 @@ try {
         ok((await scopeSel.first().innerText()).includes("My Rules"),
           `M7 ${theme} the rules scope stays My Rules (got: ${(await scopeSel.first().innerText()).trim()})`);
       }
-      // role "editor" — the Memories tab's admin-gated controls are the visible consequence.
+      /* role "editor" - and F-219 changes what that now looks like on the Memories tab.
+         The ADMIN-only surfaces stay gone (the two tabs above, and the settings toggles
+         below, all backed by `requireAdmin`). The EDITOR surfaces must be present, because
+         `deleteMemory`/`updateMemory` gate on `requireRole("editor")` and this user passes
+         that. This pairing is the whole finding: a demoted site admin keeps exactly the
+         powers the backend grants them, no more and - the part that was broken - no less. */
       await tab(page, "Memories");
       await page.locator(".memories-admin-tab .table").waitFor({ timeout: 10000 });
-      ok(await page.locator(".memories-admin-select").count() === 0,
-        `M7 ${theme} no admin-gated select column (role is editor, and the backend agrees)`);
+      ok(await page.locator(".memories-admin-select").count() > 0,
+        `M7 ${theme} the select column IS there for an editor (deleteMemory gates on editor)`);
+      ok(await page.locator(".memories-admin-tab .row-actions").count() > 0,
+        `M7 ${theme} row Edit/Archive/Delete are there too`);
+      ok(await page.locator(".memories-admin-toggles").count() === 0,
+        `M7 ${theme} but NOT the memory settings toggles - saveMemorySettings gates on requireAdmin`);
       await shot(page, `m7-demoted-admin-${theme}`);
       ok(env.errors.length === 0, `M7 ${theme} no page errors: ` + env.errors.join(" | "));
     } catch (e) { fail++; console.log(`  ✗ M7 ${theme} threw: ` + e.message.split("\n")[0]); }
@@ -1157,8 +1253,15 @@ try {
         "M7b no admin-page note off jira:adminPage — it explains a MODULE, not a role");
       await tab(page, "Memories");
       await page.locator(".memories-admin-tab .table").waitFor({ timeout: 10000 });
-      ok(await page.locator(".memories-admin-select").count() === 0,
-        "M7b an editor on jira:globalPage gets no admin-gated select column");
+      /* F-219 — inverted with the gate. This assertion used to read "no admin-gated select
+         column", which was only ever describing the bug: the column is gated on the ability
+         to DELETE, and deleteMemory gates on requireRole("editor"). The module is irrelevant
+         to it — that is the point of M7b as a control — so an editor arriving through
+         jira:globalPage gets exactly what the same editor gets through jira:adminPage. */
+      ok(await page.locator(".memories-admin-select").count() > 0,
+        "M7b an editor on jira:globalPage gets the select column, same as on jira:adminPage");
+      ok(await page.locator(".memories-admin-toggles").count() === 0,
+        "M7b but still no memory settings toggles — those are requireAdmin on both modules");
       ok(env.errors.length === 0, "M7b no page errors: " + env.errors.join(" | "));
     } catch (e) { fail++; console.log("  ✗ M7b threw: " + e.message.split("\n")[0]); }
     await close(env);

@@ -1954,6 +1954,68 @@ html[data-color-mode="dark"] .alert-warning {
     }
     html[data-color-mode="dark"] .async-cancelled-note { background: #64748b; }
 
+    /* F-212 / F-222 — THE HARD-STOP GRAMMAR. Mirror of injectCopiedComponentStyles()
+       in App.js, which is the LIVE source in this app. This file carried NO copy of it
+       at all until F-222, so the convention mirror was silently forked from the two
+       live injectors it is supposed to mirror. Solid #dc2626 (dark one shade lighter,
+       #ef4444), white text, 700 title / 500 body, full radius, NO left rail, NO tint.
+       The extender classes below keep ONLY what genuinely differs, which is margin. */
+    .hard-stop {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      background: #dc2626;
+      color: #ffffff;
+      border: none;
+      border-radius: 4px;
+      padding: 9px 12px;
+    }
+    html[data-color-mode="dark"] .hard-stop { background: #ef4444; color: #ffffff; }
+    .hard-stop-title { font-size: 12px; font-weight: 700; letter-spacing: 0.02em; }
+    .hard-stop-text { font-size: 12px; font-weight: 500; line-height: 1.45; }
+
+    /* F-201 — the PLATFORM-CAP wall in the rule-editor Memories tab. Layout only; the
+       fill, the text colour and the type weights come from .hard-stop above. */
+    .memory-cap-refusal { margin: 6px 12px 0; }
+
+    /* F-167 — memory store FULL. Layout only; the hard-stop grammar above owns the rest. */
+    .memory-full-banner { margin-bottom: 10px; }
+    .kc-mem-full { color: #dc2626 !important; }
+
+    /* F-152 / F-222 — ONE visible busy state for a static-PF step, driven by stepBusy.
+       Solid slate (the neutral hue), white text, white MLS spinner — no tint, no rail. */
+    .step-busy-note {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 2px 9px;
+      border-radius: 10px;
+      background: #475569;
+      color: #ffffff;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .step-busy-note .spin-ring {
+      border-color: rgba(255, 255, 255, 0.35);
+      border-top-color: #ffffff;
+    }
+    html[data-color-mode="dark"] .step-busy-note { background: #64748b; }
+
+    .fix-result {
+      margin: 8px 0;
+      padding: 10px 12px;
+      border: 2px solid var(--border-color);
+      border-radius: 10px;
+      background: var(--card-bg);
+    }
+    .fix-result.fix-verified { border-color: var(--success-color); }
+    /* F-162 — the standalone memory card. Not a fix outcome, so never the green
+       "verified" border: the memories hue (#0d9488 / dark #14b8a6 via --accent-memories),
+       a full border, no left rail, no tint. */
+    .fix-result.memory-card { border-color: var(--accent-memories); }
+
     /* F-133 — a generate that FAILED while the step already had code. The code, its
        provenance and its dry-run verdict were all KEPT (a failed regenerate never
        replaces the author's work, and there is no undo for generate). This IS a

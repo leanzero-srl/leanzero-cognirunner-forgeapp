@@ -5083,8 +5083,21 @@ const injectCopiedComponentStyles = () => {
        two — so the same severity rendered two ways depending on which screen you were
        on. The hue, the fill, the text colour, the radius and the two type weights live
        here; the three extender classes keep ONLY what genuinely differs, which is margin.
-       F-218 — this block lives in injectCopiedComponentStyles(), not injectStyles(), so the
-       config-ui and admin-panel duplication convention carries it with MemoriesTab.
+       F-218 — this block lives in injectCopiedComponentStyles(), not injectStyles(), because
+       that is the right HOME for it: it is styling for MemoriesTab.jsx, a copied component.
+
+       F-222 — but the home buys no guarantee, and the sentence that used to stand here
+       ("so the duplication convention carries it") was false. The diff -q convention covers
+       the copied COMPONENT FILES only; App.js is not one of them, and no diff has ever
+       compared these two injectors. What actually holds the four copies together is
+       test-harness/scripts/css-parity.test.mjs, which asserts that .hard-stop,
+       .step-busy-note, .async-error-note and .memory-card have byte-identical declaration
+       blocks in all FOUR homes: config-ui App.js injectStyles(), admin-panel App.js
+       injectCopiedComponentStyles(), and both src/styles.css mirrors. Edit this block and
+       you must edit the other three, or that test fails. Do not trust the home; trust the
+       gate. (No backticks anywhere in this comment: it lives inside a template literal,
+       and one of them ends the CSS string mid-file.)
+
        Owner design law: solid #dc2626 (dark one shade lighter, #ef4444), white text,
        700 title / 500 body, full radius, NO left rail and NO tint. */
     .hard-stop {
@@ -7473,7 +7486,7 @@ function App() {
 
       {/* Memories Tab */}
       {activeTab === "memories" && (
-        <MemoriesAdminTab invoke={invoke} isAdmin={isAdmin} accountId={accountId} />
+        <MemoriesAdminTab invoke={invoke} isAdmin={isAdmin} userRole={userRole} accountId={accountId} />
       )}
 
       {/* Permissions Tab (admin only) — app admin management */}

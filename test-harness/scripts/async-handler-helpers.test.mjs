@@ -134,14 +134,20 @@ const COMPUTED_TASK_KEYS = {};
   // now two producer modules (rotation in git-connections.js, pipeline setup in
   // git-pipeline.js), so resolve a computed key from either rather than hard-coding
   // which file owns which constant.
+  // 1.5 probes: HARNESS_PROBE_TASK is produced by the dev hook and owned by the
+  // consumer itself, so the consumer is a source too.
   const sources = [
     await import("../../src/git-connections.js").catch(() => null),
     await import("../../src/git-pipeline.js").catch(() => null),
   ];
+  // The consumer OWNS `HARNESS_PROBE_TASK` (1.5 §5 P3/P4) and cannot be imported under
+  // this suite's loader (it pulls src/index.js), so its exported constants are read from
+  // the source text — still the one home, never a retyped literal here.
+  const ownConstants = Object.fromEntries([...asyncSrc.matchAll(/export const ([A-Z_]{3,}) = "([^"]+)";/g)].map((m) => [m[1], m[2]]));
   for (const name of computed) {
     const src = sources.find((m) => m && typeof m[name] === "string" && m[name]);
-    const value = src && src[name];
-    ok(typeof value === "string" && value.length > 0, `the computed TASK_HANDLERS key ${name} resolves from a producer module`);
+    const value = (src && src[name]) || ownConstants[name];
+    ok(typeof value === "string" && value.length > 0, `the computed TASK_HANDLERS key ${name} resolves from a producer module or the consumer's own export`);
     if (typeof value === "string") { handlerKeys.push(value); COMPUTED_TASK_KEYS[name] = value; }
   }
 }
@@ -156,11 +162,13 @@ const UNPOLLED_TASKS = new Set(eval(unpolledLiteral));
 
 // "coder" (1.4 commit 8) is the 14th and the first LONG-QUEUE-ONLY type — see the
 // LONG_QUEUE_ONLY_TASKS assertions further down.
-const expectedHandlers = ["probe", "review", "postfunction", "codegen", "fixcode", "skilldistill", "memory_distill", "listener", "scheduledjob", "gitreview", "git-event", "gitcredrotate", "gitpipeline", "coder"];
+// "probe-confluence" (1.5 §5 P3/P4) is the 15th: a DEV-ONLY reach probe whose handler
+// refuses unless HARNESS_SECRET is set, so it is registered everywhere and inert in prod.
+const expectedHandlers = ["probe", "review", "postfunction", "codegen", "fixcode", "skilldistill", "memory_distill", "listener", "scheduledjob", "gitreview", "git-event", "gitcredrotate", "gitpipeline", "coder", "probe-confluence"];
 for (const t of expectedHandlers) ok(handlerKeys.includes(t), `TASK_HANDLERS registers "${t}"`);
 ok(handlerKeys.length === expectedHandlers.length, `TASK_HANDLERS has exactly ${expectedHandlers.length} task types (no orphans)`);
-ok(["postfunction", "memory_distill", "listener", "probe", "gitreview", "git-event", "gitpipeline"].every((t) => UNPOLLED_TASKS.has(t)) && UNPOLLED_TASKS.size === 7,
-   "UNPOLLED_TASKS = { postfunction, memory_distill, listener, probe, gitreview, git-event, gitpipeline } (scheduledjob is polled by Run now, gitcredrotate by the Code tab; gitpipeline is watched through getGitPipelineStatus, which reads the bounded row rather than an async_task row; probe is dev-only, read via the test hook)");
+ok(["postfunction", "memory_distill", "listener", "probe", "gitreview", "git-event", "gitpipeline", "probe-confluence"].every((t) => UNPOLLED_TASKS.has(t)) && UNPOLLED_TASKS.size === 8,
+   "UNPOLLED_TASKS = { postfunction, memory_distill, listener, probe, gitreview, git-event, gitpipeline, probe-confluence } (scheduledjob is polled by Run now, gitcredrotate by the Code tab; gitpipeline is watched through getGitPipelineStatus, which reads the bounded row rather than an async_task row; both probes are dev-only and read via the test hook)");
 // Invariant: every unpolled type MUST be a registered handler (an unpolled type absent from the
 // registry could never run yet would skip its status-row write — a silent dead task).
 ok([...UNPOLLED_TASKS].every((t) => handlerKeys.includes(t)), "every UNPOLLED task is a registered TASK_HANDLER");

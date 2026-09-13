@@ -205,5 +205,37 @@ ok(/voice-rules/.test(voiceLintSrc) && /voice-rules/.test(readFileSync(path.join
   ok(r.ok === false && !JSON.stringify(r).includes("frobnicator"), "the lint result never echoes the text it judged");
 }
 
+/* ===== 1.5 commit 5a — the wizard state machine ===== */
+// The wizard resolvers (5b) and the Agents tab (5c) build on this contract from two other
+// worktrees, so a rename here has to fail at MERGE and not in someone's UI.
+const vaWizard = await import(pathToFileURL(path.join(sharedDir, "va-wizard.js")).href);
+const vaWizardSrc = readFileSync(path.join(sharedDir, "va-wizard.js"), "utf8");
+for (const name of ["createWizard", "stepWizard", "resumeWizard", "serializeWizardState",
+  "buildVaRecord", "catalogToCtx", "checkJqlShape", "renderVoiceSamples", "renderReviewSummary",
+  "optionsForStep", "clampSay", "writeSiteRefusalReason",
+  "WIZARD_STEPS", "VOICE_SAMPLE_CHIPS", "VA_WIZARD_STATE_MAX_BYTES", "VA_WIZARD_VERSION"]) {
+  ok(typeof vaWizard[name] !== "undefined", `va-wizard.js exports ${name}`);
+}
+// THE FIELD ORDER IS IN CODE. A model cannot reorder, skip or invent a step, so the order
+// is asserted here as data rather than described in a prompt.
+ok(vaWizard.WIZARD_STEPS.map((s) => s.id).join(",")
+  === "persona_name,persona_voice,intake,read_scope,write_scope,cadence,powers,guardrails,review,create",
+  "the wizard's field order is the one the FRAME names");
+// ONE RECORD, TWO DOORS: the wizard has no save path and no clamps of its own. It calls
+// normalizeVa and lintVoice, and it must never grow a second copy of either.
+ok(/from\s+"\.\/va-config\.js"/.test(vaWizardSrc) && /from\s+"\.\/voice-lint\.js"/.test(vaWizardSrc),
+  "va-wizard.js gets its clamps from va-config.js and its voice rules from voice-lint.js");
+ok(/from\s+"\.\/cron\.js"/.test(vaWizardSrc) && !/presetToCron\(/.test(vaWizardSrc),
+  "va-wizard.js reads the cadence presets from cron.js and authors no cron of its own");
+ok(!/scope\.write\.site is refused/.test(vaWizardSrc),
+  "va-wizard.js does not retype the site-wide-write refusal sentence");
+ok(vaWizard.writeSiteRefusalReason().length > 20, "…it probes normalizeVa for that sentence instead");
+// The state the resolver stores at va_wizard:{accountId} is JSON and bounded.
+{
+  const w = vaWizard.serializeWizardState(vaWizard.createWizard({ catalog: { projects: [{ key: "AAA" }] } }).state);
+  ok(w.state.catalog === undefined && w.bytes <= vaWizard.VA_WIZARD_STATE_MAX_BYTES,
+    "a serialised wizard state drops the live catalogue and fits its KVS budget");
+}
+
 console.log(`\nshared-imports: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

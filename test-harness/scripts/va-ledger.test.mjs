@@ -15,6 +15,7 @@
  * Auto-discovered by run-offline.mjs.
  * Run: node --import ./lib/register-mocks.mjs scripts/va-ledger.test.mjs
  */
+import { readFileSync } from "node:fs";
 import kvs from "../lib/mock-kvs.mjs";
 
 let pass = 0, fail = 0;
@@ -191,6 +192,63 @@ reset();
   const next = await L.saveItem(kvs, AG, "SUP-OVER2", { state: "seen" });
   ok(!next.parked.includes("SUP-1"), "LRU: a row that was touched is not the next one parked");
   eq(next.parked[0], "SUP-2", "…the next-oldest is");
+  eq(next.parkedRows[0].key, "SUP-2", "…and the parked RECEIPT names the key");
+  eq(next.parkedRows[0].reason, "row_cap_forgettable", "…and why it was forgettable");
+}
+
+/* ── 7b. F-430: eviction is ordered by STATE, never by recency alone ───────── */
+reset();
+{
+  const cap = VA_LIMITS.itemRowCap;
+  // The OLDEST row is `owed` — a human replied three days ago and the agent still owes an
+  // answer. Under a recency-only cap it is the first thing deleted, silently.
+  await L.saveItem(kvs, AG, "OWED-1", { state: "queued" });
+  await L.saveItem(kvs, AG, "OWED-1", { state: "staged", staged: { body: "b", audience: "internal" } });
+  await L.saveItem(kvs, AG, "OWED-1", { state: "posted" });
+  await L.saveItem(kvs, AG, "OWED-1", { state: "owed", event: "customer replied" });
+  await L.saveItem(kvs, AG, "WAIT-1", { state: "queued" });
+  await L.saveItem(kvs, AG, "WAIT-1", { state: "waiting_on_human" });
+  for (let i = 0; i < cap - 2; i++) await L.saveItem(kvs, AG, `SEEN-${i}`, { state: "seen" });
+  let idx = await L.listItemIds(kvs, AG);
+  eq(idx.ids.length, cap, "the index is at the cap with an owed row at the very tail");
+  eq(idx.ids[idx.ids.length - 1], "OWED-1", "…and OWED-1 really is the least-recently-touched");
+
+  const over = await L.saveItem(kvs, AG, "NEW-1", { state: "seen" });
+  eq(over.ok, true, "the new row is admitted");
+  eq(over.parked.includes("OWED-1"), false, "F-430 BLOCK: an `owed` row is NOT evicted even though it is the oldest");
+  eq(over.parked.includes("WAIT-1"), false, "F-430 BLOCK: neither is `waiting_on_human`");
+  eq(over.parked[0], "SEEN-0", "F-430 ALLOW: the oldest FORGETTABLE row goes instead");
+  ok((await L.readItem(kvs, AG, "OWED-1")).row !== null, "…and the owed row is still in storage");
+  eq((await L.readItem(kvs, AG, "OWED-1")).row.state, "owed", "…still owed, with its history intact");
+  eq((await L.readItem(kvs, AG, "SEEN-0")).row, null, "…while the forgettable row is gone");
+
+  // `posted` is the middle tier: forgettable rows go first, but it is not an obligation.
+  await L.saveItem(kvs, AG, "POSTED-1", { state: "queued" });
+  await L.saveItem(kvs, AG, "POSTED-1", { state: "staged", staged: { body: "b" } });
+  await L.saveItem(kvs, AG, "POSTED-1", { state: "posted" });
+  const still = await L.saveItem(kvs, AG, "NEW-2", { state: "seen" });
+  ok(String(still.parked[0]).startsWith("SEEN-"), "tier order: a `seen` row is parked before a `posted` one");
+  ok((await L.readItem(kvs, AG, "POSTED-1")).row !== null, "…and the `posted` row survives the pass");
+
+  // Saturation: when EVERY row in the scan window is an obligation the insert is REFUSED.
+  reset();
+  const small = { get: (k) => kvs.get(k), set: (k, v, o) => kvs.set(k, v, o), delete: (k) => kvs.delete(k) };
+  for (let i = 0; i < cap; i++) {
+    await L.saveItem(small, AG, `OWE-${i}`, { state: "queued" });
+    await L.saveItem(small, AG, `OWE-${i}`, { state: "staged", staged: { body: "b" } });
+    await L.saveItem(small, AG, `OWE-${i}`, { state: "posted" });
+    await L.saveItem(small, AG, `OWE-${i}`, { state: "owed" });
+  }
+  const refused = await L.saveItem(small, AG, "NEW-3", { state: "seen" });
+  eq(refused.ok, true, "F-430: the ROW is still written — losing state is worse than losing membership");
+  eq(refused.indexOk, false, "F-430 BLOCK: the index REFUSES the insert when only obligations remain");
+  eq(refused.indexReason, "index_full_obligations", "…with a named reason");
+  eq(refused.indexRefused.key, "NEW-3", "…and the receipt names the KEY that could not be admitted");
+  eq(refused.parked.length, 0, "…and nothing was parked to make room for it");
+  const after = await L.listItemIds(small, AG);
+  eq(after.ids.length, cap, "…the index is unchanged at the cap");
+  eq(after.ids.includes("NEW-3"), false, "…and the refused key is not in it");
+  ok((await L.readItem(small, AG, "OWE-0")).row !== null, "…no obligation was dropped to make room");
 }
 
 /* ── 8. claims: ALLOW / BLOCK / release-on-throw (F-422) ──────────────────── */
@@ -251,36 +309,97 @@ reset();
   ok(failed.receipt.error.includes("job_claim"), "a tick that could not run still writes a receipt saying so");
 }
 
-/* ── 10. effects refuse without a read-back proof (§3.14 law 6) ───────────── */
+/* ── 10. effects: the proof must be TIED to the effect (§3.14 law 6, F-437) ── */
 reset();
 {
-  const bad = [
-    [null, "no proof at all"],
-    [{}, "an empty object"],
-    [{ verified: true }, "a bare 'verified' flag"],
-    [{ verifiedAt: "2026-09-13T10:00:00Z" }, "a timestamp with no read-back"],
-    [{ verifiedAt: "2026-09-13T10:00:00Z", readBack: {} }, "an EMPTY read-back"],
-    [{ readBack: { commentId: "10001" } }, "a read-back with no verifiedAt"],
-    [{ verifiedAt: "2026-09-13T10:00:00Z", readBack: { commentId: "" } }, "a read-back whose identifier is empty"],
-  ];
-  for (const [proof, label] of bad) {
-    const r = await L.recordEffect(kvs, AG, { issueKey: "SUP-1", kind: "comment" }, proof);
-    eq(r.ok, false, `effects BLOCK: ${label} is refused`);
-    eq(r.reason, "read_back_proof_required", `…with the named reason (${label})`);
-  }
-  const rows = await kvs.query().where("key", { condition: "BEGINS_WITH", values: ["va_effect:"] }).limit(50).getMany();
-  eq(rows.results.length, 0, "effects BLOCK: NO row is written without proof — not even an 'attempted' one");
+  // The effect every case below is trying to verify: a comment posted on SUP-1.
+  const EFFECT = { issueKey: "SUP-1", kind: "comment", commentId: "10001", audience: "internal", summary: "posted an ETA", tickId: "t1" };
+  const VALID = {
+    source: "rest",
+    verifiedAt: "2026-09-13T10:00:00Z",
+    observed: { body: "Looking at it now.", jsdPublic: false },
+    readBack: { commentId: "10001", issueKey: "SUP-1" },
+  };
+  const without = (k) => { const p2 = { ...VALID }; delete p2[k]; return p2; };
 
-  const good = await L.recordEffect(kvs, AG, { issueKey: "SUP-1", kind: "comment", audience: "internal", summary: "posted an ETA", tickId: "t1" },
-    { verifiedAt: "2026-09-13T10:00:00Z", readBack: { commentId: "10001", issueKey: "SUP-1" } });
-  eq(good.ok, true, "effects ALLOW: a read-back proof writes the row");
+  const bad = [
+    [null, "no proof at all", "read_back_proof_required"],
+    [{}, "an empty object", "read_back_proof_required"],
+    [{ verified: true }, "a bare 'verified' flag", "read_back_proof_required"],
+    [{ ...VALID, readBack: undefined }, "a proof with no read-back", "read_back_proof_required"],
+    [{ ...VALID, readBack: {} }, "an EMPTY read-back", "read_back_proof_required"],
+    [without("verifiedAt"), "a read-back with no verifiedAt", "read_back_proof_required"],
+    // F-437 — the four new bindings.
+    [without("source"), "a proof that does not say it came from REST", "proof_source_not_rest"],
+    [{ ...VALID, source: "model" }, "a proof sourced from the MODEL's own tool result", "proof_source_not_rest"],
+    [{ ...VALID, verifiedAt: "yes" }, "a verifiedAt that is not a timestamp", "proof_verified_at_invalid"],
+    [without("observed"), "a proof with no observed snapshot", "proof_observed_missing"],
+    [{ ...VALID, observed: {} }, "an empty observed snapshot", "proof_observed_missing"],
+    [{ ...VALID, observed: "   " }, "a whitespace observed snapshot", "proof_observed_missing"],
+    [{ ...VALID, readBack: { commentId: "10001", issueKey: "SUP-9" } }, "a proof about ANOTHER issue", "proof_issue_mismatch"],
+    [{ ...VALID, readBack: { commentId: "99999", issueKey: "SUP-1" } }, "a proof about another COMMENT on the right issue", "proof_target_mismatch"],
+    [{ ...VALID, readBack: { issueKey: "SUP-1" } }, "a proof carrying no comment id at all", "proof_target_mismatch"],
+    [{ ...VALID, readBack: { commentId: "", issueKey: "SUP-1" } }, "a read-back whose identifier is empty", "proof_target_mismatch"],
+    // The exact shape a model echoes back: plausible keys, bound to nothing.
+    [{ source: "rest", verifiedAt: "2026-09-13T10:00:00Z", observed: "Done", readBack: { status: "Done" } },
+      "a MODEL-SHAPED object with a status and no matching ids", "proof_issue_mismatch"],
+  ];
+  for (const [proof, label, reason] of bad) {
+    const r = await L.recordEffect(kvs, AG, EFFECT, proof);
+    eq(r.ok, false, `effects BLOCK: ${label} is refused`);
+    eq(r.reason, reason, `…with the named reason (${label})`);
+  }
+  // An effect whose KIND is not in the target table cannot be verified at all.
+  const unknown = await L.recordEffect(kvs, AG, { ...EFFECT, kind: "deleted_the_project" }, VALID);
+  eq(unknown.ok, false, "effects BLOCK: an unrecognised effect kind is refused, not waved through");
+  eq(unknown.reason, "proof_kind_unknown", "…with the named reason");
+
+  const rows = await kvs.query().where("key", { condition: "BEGINS_WITH", values: ["va_effect:"] }).limit(50).getMany();
+  eq(rows.results.length, 0, "effects BLOCK: NO row is written without a bound proof — not even an 'attempted' one");
+
+  // ALLOW — the same effect, with a proof that is actually tied to it.
+  const good = await L.recordEffect(kvs, AG, EFFECT, VALID);
+  eq(good.ok, true, "effects ALLOW: a REST read-back bound to the effect writes the row");
   eq(good.effect.proof.readBack.commentId, "10001", "…and the proof travels WITH the effect");
+  eq(good.effect.proof.source, "rest", "…recording that it came from a REST read");
+  ok(good.effect.proof.observed.includes("Looking at it now."), "…and the OBSERVED value the admin checks against");
+  eq(good.effect.target.kind, "comment", "…and the row names the target kind");
+  eq(good.effect.target.id, "10001", "…and the target id");
+
+  // The other two write kinds bind to their own identifier.
+  const fieldEffect = { issueKey: "SUP-2", kind: "field_update", field: "customfield_10010" };
+  eq((await L.recordEffect(kvs, AG, fieldEffect, {
+    source: "rest", verifiedAt: "2026-09-13T10:01:00Z", observed: "2026-09-20",
+    readBack: { issueKey: "SUP-2", field: "customfield_10010", fieldValue: "2026-09-20" },
+  })).ok, true, "effects ALLOW: a field write proved by issue key + field name");
+  eq((await L.recordEffect(kvs, AG, fieldEffect, {
+    source: "rest", verifiedAt: "2026-09-13T10:01:00Z", observed: "2026-09-20",
+    readBack: { issueKey: "SUP-2", field: "duedate", fieldValue: "2026-09-20" },
+  })).reason, "proof_target_mismatch", "effects BLOCK: a proof for a DIFFERENT field does not verify this one");
+  const transEffect = { issueKey: "SUP-3", kind: "transition", transitionId: "31" };
+  eq((await L.recordEffect(kvs, AG, transEffect, {
+    source: "rest", verifiedAt: "2026-09-13T10:02:00Z", observed: { status: "Done" },
+    readBack: { issueKey: "SUP-3", transitionId: "31", status: "Done" },
+  })).ok, true, "effects ALLOW: a transition proved by issue key + transition id");
+  eq((await L.recordEffect(kvs, AG, transEffect, {
+    source: "rest", verifiedAt: "2026-09-13T10:02:00Z", observed: { status: "Done" },
+    readBack: { issueKey: "SUP-3", status: "Done" },
+  })).reason, "proof_target_mismatch", "effects BLOCK: a status string alone does not prove the transition landed");
+
+  // The pure binding is testable without a store — the post gate uses it before it writes.
+  eq(L.proofBindsEffect(EFFECT, VALID).ok, true, "proofBindsEffect is PURE and accepts the bound proof");
+  eq(L.isReadBackProof(VALID, EFFECT), true, "isReadBackProof agrees when given the EFFECT");
+  eq(L.isReadBackProof(VALID), false, "F-437: a proof is never valid on its own — the effect is required");
+  eq(L.effectKind("public_comment"), "comment", "effect kinds are aliased explicitly…");
+  eq(L.effectKind("nonsense"), null, "…and an unknown one resolves to nothing");
+
   const spy = spyStore();
-  await L.recordEffect(spy, AG, { issueKey: "SUP-1" }, { verifiedAt: "x", readBack: { status: "Done" } });
+  await L.recordEffect(spy, AG, EFFECT, VALID);
   eq(spy.writes[0].options.ttl.value, VA_LIMITS.effectTtlDays, "an effect carries the 30-day TTL");
   // Newest-first ordering: the inverse timestamp must sort the later effect FIRST.
-  const early = await L.recordEffect(kvs, AG, { issueKey: "SUP-2" }, { verifiedAt: "x", readBack: { status: "A" } }, { now: 1_700_000_000_000 });
-  const later = await L.recordEffect(kvs, AG, { issueKey: "SUP-3" }, { verifiedAt: "x", readBack: { status: "B" } }, { now: 1_800_000_000_000 });
+  const p3 = { source: "rest", verifiedAt: "2026-09-13T10:00:00Z", observed: { status: "A" }, readBack: { issueKey: "SUP-3", transitionId: "31" } };
+  const early = await L.recordEffect(kvs, AG, transEffect, p3, { now: 1_700_000_000_000 });
+  const later = await L.recordEffect(kvs, AG, transEffect, p3, { now: 1_800_000_000_000 });
   ok(later.key < early.key, "effect keys sort NEWEST FIRST (the inverse-timestamp shape)");
 }
 
@@ -327,6 +446,36 @@ reset();
   eq(faulted.readFailed, true, "a caps read fault is reported");
   eq(L.capsAllow(faulted).allowed, false, "caps BLOCK on unknown counters — the brake on speech fails CLOSED");
   eq(L.capsAllow(faulted).reason, "caps_unknown", "…with the named reason");
+
+  // F-431 — THE BUMP FAILS CLOSED TOO. A read fault inside `bumpCaps` used to write
+  // `0 + 1` over a live counter, which does not lose one post, it resets the whole day.
+  // The refusal must write NOTHING: the counters below are checked before and after.
+  const before = await L.readCaps(kvs, AG, { now });
+  let gets = 0;
+  const oneFaultyGet = {
+    async get(k) { gets++; if (gets === 1) throw new Error("kvs read glitch"); return kvs.get(k); },
+    async set(k, v, o) { return kvs.set(k, v, o); },
+    async delete(k) { return kvs.delete(k); },
+  };
+  const refused = await L.bumpCaps(oneFaultyGet, AG, { now });
+  eq(refused.ok, false, "F-431 caps BLOCK: a read fault REFUSES the bump");
+  eq(refused.error, "caps-read-fault", "…with the named error the post gate treats as a BLOCK");
+  eq(refused.reason, "caps-read-fault", "…carried on `reason` too, so the receipt prints it");
+  eq(refused.bumped, false, "…and it says it did not bump");
+  const after = await L.readCaps(kvs, AG, { now });
+  eq(after.day, before.day, "F-431: the DAY counter is untouched by a refused bump — not reset to 1");
+  eq(after.hour, before.hour, "…and so is the hour counter");
+  eq(after.owedHour, before.owedHour, "…and the owed counter");
+  ok(before.day > 1, "…(and the day counter really was above 1, so an overwrite would have been visible)");
+  // The same, with a store whose get ALWAYS throws: still a refusal, still no write.
+  const writes = [];
+  const deadGet = {
+    async get() { throw new Error("kvs down"); },
+    async set(k, v, o) { writes.push(k); return kvs.set(k, v, o); },
+    async delete(k) { return kvs.delete(k); },
+  };
+  eq((await L.bumpCaps(deadGet, AG, { owed: true, now })).error, "caps-read-fault", "F-431: an owed bump refuses on a read fault as well");
+  eq(writes.length, 0, "F-431: a refused bump performs NO set at all");
 }
 
 /* ── 12. health is its own row (F-426) ────────────────────────────────────── */
@@ -351,6 +500,28 @@ reset();
   await L.recordTickHealth(spy, AG, false, { reason: "x" });
   eq(spy.writes.find((w) => w.key === K.vaHealthKey(AG)).options, undefined,
     "F-426: the health row is written with NO TTL — it must never age out from under the banner");
+
+  // F-439 — ONE HOME for the threshold. The ledger must not carry its own literal: an
+  // owner who raises the banner in registry-limits.js would otherwise move the admin copy
+  // and `normalizeVa` while the ledger kept comparing against a stale 3, and nothing would
+  // fail. The grep is the lockstep: a bare number reintroduced here fails this assertion.
+  const limits = await import("../../src/shared/registry-limits.js");
+  eq(L.VA_HEALTH_BANNER_AT, limits.VA_HEALTH_BANNER_FAILED_TICKS,
+    "F-439: VA_HEALTH_BANNER_AT IS registry-limits' VA_HEALTH_BANNER_FAILED_TICKS");
+  eq(L.VA_HEALTH_BANNER_AT, VA_LIMITS.healthBannerFailedTicks,
+    "…reached through VA_LIMITS, like every other number in the ledger (rule 3)");
+  const ledgerSrc = readFileSync(new URL("../../src/va-ledger.js", import.meta.url), "utf8");
+  ok(/export const VA_HEALTH_BANNER_AT = VA_LIMITS\.healthBannerFailedTicks;/.test(ledgerSrc),
+    "F-439: the ledger IMPORTS the threshold…");
+  ok(!/export const VA_HEALTH_BANNER_AT\s*=\s*\d/.test(ledgerSrc),
+    "…and declares no bare literal for it");
+  // The banner really does move with the constant, not with a hard-coded 3.
+  reset();
+  for (let i = 1; i < limits.VA_HEALTH_BANNER_FAILED_TICKS; i++) {
+    eq((await L.recordTickHealth(kvs, AG, false, { reason: "x" })).banner, false, `no banner at ${i} consecutive failures`);
+  }
+  eq((await L.recordTickHealth(kvs, AG, false, { reason: "x" })).banner, true,
+    `the banner raises at exactly VA_HEALTH_BANNER_FAILED_TICKS (${limits.VA_HEALTH_BANNER_FAILED_TICKS})`);
 }
 
 /* ── 13. fingerprints ─────────────────────────────────────────────────────── */
@@ -497,7 +668,8 @@ reset();
     ["listItemIds", () => L.listItemIds(dead, AG)],
     ["recordTick", () => L.recordTick(dead, AG, { tickId: "t1" })],
     ["readTick", () => L.readTick(dead, AG, "t1")],
-    ["recordEffect", () => L.recordEffect(dead, AG, {}, { verifiedAt: "x", readBack: { commentId: "1" } })],
+    ["recordEffect", () => L.recordEffect(dead, AG, { issueKey: "SUP-1", kind: "comment", commentId: "1" },
+      { source: "rest", verifiedAt: "2026-09-13T10:00:00Z", observed: "hello", readBack: { issueKey: "SUP-1", commentId: "1" } })],
     ["readCaps", () => L.readCaps(dead, AG)],
     ["bumpCaps", () => L.bumpCaps(dead, AG)],
     ["recordTickHealth", () => L.recordTickHealth(dead, AG, false)],

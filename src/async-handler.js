@@ -113,12 +113,15 @@ import {
 // task-type STRING has ONE home (the producer and this registry read the same
 // constant), and the work itself lives in src/git-pipeline.js, not here.
 import { runPipelineSetup, PIPELINE_TASK } from "./git-pipeline.js";
+// 1.5 probe P3 — the ONE Confluence call site rule holds for the probe too: it goes
+// through the client, never straight to `requestConfluence`.
+import { createConfluenceClient } from "./confluence-client.js";
 import { runCoderTurn, isHeadlessTrigger, coderPfDoneClaimKey, CODER_PF_DONE_TTL } from "./coder-engine.js";
 // The knowledge byte budgets have ONE home (F-404 builds the Coder's blocks below).
 import { knowledgeBudget } from "./shared/registry-limits.js";
 import { executeScheduledJobTask, getJob } from "./scheduled-jobs.js";
 import { claimRuleExecution } from "./shared/execution-claim.js";
-import { isKeyConflict } from "./shared/kvs-keys.js";
+import { isKeyConflict, safeKeyPart, assertKvsKey } from "./shared/kvs-keys.js";
 import { STATS_TASK_TYPE, processRuleStatsReceipt, statsReceipt } from "./rule-stats.js";
 import { providerKeySlot, providerModelSlot } from "./shared/provider-slots.js";
 
@@ -1340,6 +1343,113 @@ const buildCoderKnowledge = async (p) => {
   return out;
 };
 
+/* ─────────────────── 1.5 probes P3 / P4 — reach FROM THE CONSUMER ───────────────────
+ *
+ * FRAME-1.5 §5 P3 and P4 are open questions about the RUNTIME, not about the APIs:
+ * `requestConfluence` is proven from a webtrigger and `servicedeskapi` is proven from
+ * the probe surface, but a VA item, a queued Confluence post-function and the queue
+ * sweep all run HERE, in a consumer, with a different context. This task answers both
+ * from the place the code will actually live.
+ *
+ * IT IS A DEV LEVER, NOT A FEATURE. Exactly like `harnessFaultArmed` (src/harness-fault.js),
+ * the handler REFUSES on its first statement whenever `process.env.HARNESS_SECRET` is
+ * absent — dev and staging builds carry that variable, PRODUCTION NEVER DOES — so the
+ * task type is registered everywhere and inert in production. The only producer is the
+ * HARNESS_SECRET-gated web trigger in src/test-hook.js.
+ *
+ * IT SPENDS NO MODEL TOKENS: it issues read-only HTTP calls. So it belongs in
+ * `NON_AI_TASK_TYPES` (src/shared/ai-budget.js — the ONE home of that partition) and is
+ * absent from AI_TASK_TYPES; pacing a reachability probe would only delay a measurement.
+ *
+ * IT RECORDS STATUS CODES, AN ERROR CODE AND RESPONSE KEYS — NEVER A BODY. A Confluence
+ * space list and a JSM queue are tenant content; the question is "did the call reach",
+ * and a shape answers that. The row is TTL-bound to 10 minutes.
+ */
+export const HARNESS_PROBE_TASK = "probe-confluence";
+export const HARNESS_PROBE_KINDS = Object.freeze(["confluence", "servicedesk"]);
+export const HARNESS_PROBE_TTL = { ttl: { value: 10, unit: "MINUTES" } };
+
+/** THE key shape. Both parts are sanitised HERE, never at a call site. */
+export const harnessProbeKey = (kind, id) =>
+  assertKvsKey(`harness_probe:${safeKeyPart(kind || "confluence")}:${safeKeyPart(id)}`);
+
+/**
+ * The two reach measurements, with their transports injected so the offline suite can
+ * drive every branch without a network. Never throws: a probe that cannot report is
+ * worse than a probe that reports a failure.
+ */
+export const runHarnessProbe = async ({ kind, queue, confluenceClient, servicedeskCalls } = {}) => {
+  const at = new Date().toISOString();
+  const where = queue === "long" ? "long" : "standard";
+  if (kind === "servicedesk") {
+    const row = { kind, at, queue: where, statusDesk: null, statusQueue: null, keys: [], errorClass: null };
+    try {
+      const calls = servicedeskCalls || defaultServicedeskCalls();
+      const r1 = await calls.listDesks();
+      row.statusDesk = r1 && r1.status != null ? r1.status : null;
+      const d1 = await readJsonSafe(r1);
+      row.keys = objectKeys(d1);
+      const firstId = d1 && Array.isArray(d1.values) && d1.values[0] ? String(d1.values[0].id ?? "") : "";
+      if (/^[0-9]+$/.test(firstId)) {
+        const r2 = await calls.listQueues(firstId);
+        row.statusQueue = r2 && r2.status != null ? r2.status : null;
+        row.keys = row.keys.concat(objectKeys(await readJsonSafe(r2)).map((k) => `queue.${k}`));
+      }
+    } catch (e) {
+      row.errorClass = errorClassOf(e);
+    }
+    return row;
+  }
+  const row = { kind: "confluence", at, queue: where, status: null, code: null, installed: null, errorClass: null };
+  try {
+    const client = confluenceClient || createConfluenceClient();
+    // `probeInstalled` NEVER throws by contract — it answers the install question with
+    // a code from the closed set. That is exactly what P2/P3 need.
+    const out = await client.probeInstalled();
+    row.installed = out && out.installed === true;
+    row.status = out && out.status != null ? out.status : null;
+    row.code = (out && out.code) || null;
+  } catch (e) {
+    row.errorClass = errorClassOf(e);
+  }
+  return row;
+};
+
+/** Default transports (real Forge calls). Read-only, `limit=1`, no body is kept. */
+const defaultServicedeskCalls = () => ({
+  listDesks: () => api.asApp().requestJira(route`/rest/servicedeskapi/servicedesk?limit=1`),
+  listQueues: (deskId) => api.asApp().requestJira(route`/rest/servicedeskapi/servicedesk/${deskId}/queue?limit=1`),
+});
+
+const objectKeys = (data) => (data && typeof data === "object" && !Array.isArray(data) ? Object.keys(data).slice(0, 25) : []);
+const readJsonSafe = async (res) => {
+  try { return JSON.parse(String(await res.text()).slice(0, 200000)); } catch { return null; }
+};
+/** The error CLASS only — never a message, which could carry a URL, an id or a token. */
+const errorClassOf = (e) => (e && (e.code || e.name)) ? String(e.code || e.name).slice(0, 60) : "Error";
+
+export const executeHarnessProbe = async (params, taskId) => {
+  // THE PRODUCTION REFUSAL, first statement, before any storage or HTTP access —
+  // the same shape as `harnessFaultArmed`. HARNESS_SECRET is absent in production.
+  if (!process.env.HARNESS_SECRET) {
+    console.warn(`[${HARNESS_PROBE_TASK}] refused: HARNESS_SECRET is absent (this is a dev-only lever)`);
+    return { success: false, refused: true, error: "harness probe refused: HARNESS_SECRET is absent" };
+  }
+  const p = params || {};
+  const kind = HARNESS_PROBE_KINDS.includes(p.kind) ? p.kind : "confluence";
+  const id = String(p.probeId || taskId || Date.now().toString(36));
+  const row = await runHarnessProbe({ kind, queue: p.queue });
+  const key = harnessProbeKey(kind, id);
+  try {
+    await storage.set(key, row, HARNESS_PROBE_TTL);
+  } catch (e) {
+    console.warn(`[${HARNESS_PROBE_TASK}] could not record ${key}: ${(e && e.message) || e}`);
+    return { success: false, key, error: "probe row not recorded" };
+  }
+  console.log(`[${HARNESS_PROBE_TASK}] ${kind} from the ${row.queue} consumer → ${key}`);
+  return { success: true, key };
+};
+
 const executeCoderTurn = async (params, taskId) => {
   const p = params || {};
   // F-393 — THE PER-EVENT COMPLETION CLAIM, for the POST-FUNCTION path only.
@@ -1424,6 +1534,9 @@ const TASK_HANDLERS = {
   [PIPELINE_TASK]: executePipelineSetup,
   // 1.4 commit 8 — an in-issue Coder turn. LONG QUEUE ONLY (see LONG_QUEUE_ONLY_TASKS).
   "coder": executeCoderTurn,
+  // 1.5 probes P3/P4 — DEV-ONLY reach probe; the handler refuses when HARNESS_SECRET
+  // is absent (production), and only the HARNESS_SECRET-gated test hook produces it.
+  [HARNESS_PROBE_TASK]: executeHarnessProbe,
 };
 
 /**
@@ -1454,7 +1567,7 @@ const LONG_QUEUE_EVENTS = new WeakSet();
 // polls them. gitreview writes its OWN execution-log entry on every outcome (see
 // executeGitReview's single exit), so it is deliberately absent from UNPOLLED_LOG_TYPE
 // below: adding it there would double-log every failure.
-const UNPOLLED_TASKS = new Set(["postfunction", "memory_distill", "listener", "probe", "gitreview", "git-event", PIPELINE_TASK]);
+const UNPOLLED_TASKS = new Set(["postfunction", "memory_distill", "listener", "probe", "gitreview", "git-event", PIPELINE_TASK, HARNESS_PROBE_TASK]);
 
 // F-119 — which UNPOLLED task types write an execution-log entry when they FAIL, and
 // under WHICH log type. The value must be a type the UI badge maps already know

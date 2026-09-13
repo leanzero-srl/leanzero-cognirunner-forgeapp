@@ -393,9 +393,34 @@ export const itemQueueFor = (va) => {
  *     one thing about compaction that is NOT housekeeping — a spend that repeats and
  *     achieves nothing is exactly what the banner exists for.
  * `gate: "compaction"` on the returned row is what the tick reads to decide both.
+ *
+ * F-520 — AND *EVERY* FAILURE ARM CARRIES IT. Two did not: `compaction_produced_nothing`
+ * and the catch-all at the bottom. Both are reachable AFTER the model call (a
+ * `writeMemory` storage fault, a summariser wrapper throwing outside `compactMemory`'s own
+ * try), and without a gate the tick answered `ok:true`, recorded a HEALTHY row, armed no
+ * brake, and the Agents tab painted the muted "Memory compaction paused" for a fault that
+ * paused nothing — while the next tick re-read, re-claimed and RE-PAID. The arms are:
+ *
+ *   arm                            gate   brake   ok tick   why
+ *   under_threshold                 no     no      yes      nothing to do, the common case
+ *   memory_read_failed / not_claimed no    no      yes      before the claim, nothing paid
+ *   compaction-backoff              no     n/a     yes      the brake WORKING, deliberately quiet
+ *   compaction_produced_nothing    YES    yes      no       paid, produced nothing
+ *   pinned_dropped                  no     yes     yes*     the guard working — F-521
+ *   write_refused / did-not-converge YES   yes     no       paid, did not converge
+ *   summariser-failed              YES    yes      no       paid, no summary came back
+ *   compaction_failed (throw)      YES    if paid  no       a throw is a failure, not a pause
+ *
+ * (*) unless the brake failed to ARM, which fails the tick on its own and by its own name
+ * (`compaction-backoff-write-failed`, F-513) — see the pinned arm's comment.
  */
 export const runVaCompaction = async ({ agent, tick, deps }) => {
   let before = 0;
+  // Has a summarisation turn been BOUGHT on this pass (F-520)? Set immediately before the
+  // model call, so a throw out of `deps.compactMemory` itself counts as paid — the
+  // expensive assumption is the safe one here: treating a paid failure as free is what
+  // bought the same broken turn 288 times a day.
+  let spent = false;
   /*
    * F-513 — ARM THE BRAKE WITH A CHECKED WRITE. `setCompactBackoff` returns
    * `{ok:false, reason:"compact_backoff_write_failed"}` on a store fault, and all three
@@ -447,13 +472,24 @@ export const runVaCompaction = async ({ agent, tick, deps }) => {
     if (!claim.ok) return { ran: false, reason: `not_claimed:${claim.reason}`, before };
 
     const targetBytes = Math.max(256, VA_LIMITS.memoryCompactBytes - 512);
+    // FROM HERE ON A TURN HAS BEEN BOUGHT (F-520). Everything below is a POST-MODEL
+    // failure path, and every one of them has to arm the brake and gate the tick — see
+    // the catch at the bottom, which uses this flag to tell a paid failure from a storage
+    // fault that never reached the provider.
+    spent = true;
     const result = await deps.compactMemory(
       memory,
       (m) => deps.summariseMemory({ text: m.text, constraints: m.constraints, targetBytes }),
       { now: deps.now() },
     );
     if (!result || !result.ok || !result.compacted) {
-      return { ran: false, reason: (result && result.reason) || "compaction_produced_nothing", before };
+      // F-520 — THIS IS A PAID FAILURE, NOT A PAUSE. It returned no gate and armed no
+      // brake, so `compactionGated` was false, the tick recorded HEALTHY, and the tab
+      // painted "Memory compaction paused" for a compactor that had just been paid and
+      // produced nothing. Five minutes later it was paid again. Same arm as
+      // `summariser-failed` now, for the same reason: the spend repeats.
+      const armed = await armBackoff((result && result.reason) || "compaction_produced_nothing");
+      return { ran: false, gate: "compaction", reason: (result && result.reason) || "compaction_produced_nothing", before, ...armed };
     }
 
     // THE VERIFICATION, BEFORE THE WRITE. A proposed memory that has lost a pinned line is
@@ -511,7 +547,27 @@ export const runVaCompaction = async ({ agent, tick, deps }) => {
   } catch (e) {
     // The claim is NOT released. A compaction that threw after the model call has already
     // been paid for, and releasing would let a redelivery pay again for the same tick.
-    return { ran: false, reason: `compaction_failed:${String((e && e.message) || e).slice(0, 80)}`, before };
+    /*
+     * F-520 — A THROW IS A FAILURE, AND A FAILURE IS NOT A PAUSE.
+     *
+     * This arm returned no `gate`, so `compactionGated` was false: the tick reported
+     * `ok:true`, `recordTickHealth(..., true)` wrote a HEALTHY row, no brake was armed,
+     * and the Agents tab rendered the muted "Memory compaction paused" — for a fault that
+     * paused nothing. With `writeMemory`'s `set` throwing under a partial KVS throttle the
+     * engine re-read, re-claimed and RE-PAID the summariser every five minutes while
+     * recording a healthy tick each time: F-506's 288-calls-a-day loop, on the arm F-506
+     * did not cover.
+     *
+     * THE GATE IS UNCONDITIONAL, THE BRAKE IS NOT. The gate says "the engine stopped
+     * here", which is true of any throw, and it is what stops the receipt reading as a
+     * deliberate pause. The brake mutes compaction for six hours, and that is only the
+     * right answer when a TURN WAS BOUGHT (`spent`) — arming it on a transient storage
+     * fault read before the model call would silence a step that has cost nothing and
+     * would have recovered on the next tick.
+     */
+    const detail = String((e && e.message) || e).slice(0, 80);
+    const armed = spent ? await armBackoff(`compaction_failed:${detail}`) : {};
+    return { ran: false, gate: "compaction", reason: `compaction_failed:${detail}`, before, ...armed };
   }
 };
 

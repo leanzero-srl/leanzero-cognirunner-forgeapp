@@ -2363,12 +2363,17 @@ reset();
   eq(changes.length, 1, "F-571.BLOCK_round2 — …and NOTHING further reached the dispatcher");
 
   eq(r.skipped, true, "F-571.result — the turn still reports the skip");
-  eq(r.reason, "agent-purged", "F-571.result — …with the same reason");
+  // F-577 — the mid-turn skip no longer borrows the ENTRY paths' reason. It landed a
+  // write, so it says so, and the tab's "nothing was written" copy can never key on it.
+  eq(r.reason, "agent-purged-after-writes", "F-577.result — a mid-turn purge WITH writes behind it gets its own reason");
   eq(r.changes, 1, "F-571.result — but it no longer DISCARDS what it did: one write is carried on the task result");
+  eq((r.landedWrites || []).length, 1, "F-577.result — …and landedWrites carries exactly the one that landed");
   eq((r.landedWrites || [])[0], "set_assignee SUP-1", "F-571.result — …named by action AND key, so the queue log shows where it went");
   ok((r.refusals || []).some((x) => x.code === "agent-purged"), "F-571.result — and the refusal is carried too");
 
-  const line = logged.find((l) => l.includes("purged mid-turn"));
+  // F-577 — the log line LEADS with the same id the task result carries, so an operator
+  // grepping the queue log and an admin reading the tab are looking at one word.
+  const line = logged.find((l) => l.includes("agent-purged-after-writes"));
   ok(Boolean(line), `F-571.log — the escape is LOGGED loudly, not dropped on the floor (lines: ${JSON.stringify(logged)})`);
   ok(line && line.includes("SUP-1") && line.includes("set_assignee"),
     `F-571.log — …and the line NAMES round 1's write, which is the only record left once the ledger is gone (got ${line})`);
@@ -2410,6 +2415,66 @@ reset();
   eq(r.skipped, undefined, "F-571.no_regression — with no tombstone the turn is not skipped");
   eq(changes.length, 1, "F-571.no_regression — …and the write still lands");
   eq((r.refusals || []).length, 0, "F-571.no_regression — …with no spurious agent-purged refusal");
+}
+
+/* ══ F-577. THE ENTRY PURGE KEEPS THE OLD REASON, AND ITS COPY STAYS TRUE ══════
+ *
+ * `runVaItem` has four `agent-purged` returns and they carry two different truths. The
+ * ENTRY check (src/virtual-admin.js:1130) reads the tombstone before the loop, the
+ * dispatcher, or anything else has run, so "nothing was written" is exactly right and the
+ * id must NOT drift to the after-writes one — otherwise the split has just moved the lie.
+ *
+ * Paired with the F-577 assertion inside the F-571 block above: same surface, same
+ * tombstone, opposite side of `deps.runLoop`, opposite reason. */
+reset();
+{
+  await L.markAgentPurged(kvs, AG, { now: T0 });
+  const changes = [];
+  // If the entry check works, the loop is never reached — so a loop that WRITES is the
+  // sharpest fixture: any change recorded here would mean the check ran too late.
+  const shouldNotRun = async ({ execute }) => {
+    await execute("set_assignee", { issueKey: "SUP-1", accountId: "u-1" });
+    return { endedBy: "finish", rounds: 1, summary: "", usage: { tokens: 1 } };
+  };
+  const r = await V.runVaItem({
+    agent: vaJob(), issueKey: "SUP-1", tickId: "t-entry-purge",
+    deps: itemDeps({ runLoop: shouldNotRun, createSession: async () => ({ changes, createApi: () => ({}), recordChange: (c) => { changes.push(c); return c; } }), __changes: changes }),
+  });
+  eq(r.skipped, true, "F-577.entry — a turn entered under a standing tombstone skips");
+  eq(r.reason, "agent-purged", "F-577.entry — …and KEEPS the plain reason, because nothing was written");
+  eq(r.ran, false, "F-577.entry — …the turn never ran");
+  eq(changes.length, 0, "F-577.entry — …and no write reached the dispatcher, which is what makes the copy true");
+  eq(r.landedWrites, undefined, "F-577.entry — no landed-writes list on a path where none can exist");
+}
+
+/* ══ F-577 (b). A MID-TURN PURGE THAT BEAT EVERY WRITE IS STILL `agent-purged` ══
+ *
+ * The split is on the FACT, not on the seam. A delete that lands during a turn which had
+ * not yet written anything leaves "nothing was written" true, so the write seam must hand
+ * back the plain id there — claiming `-after-writes` with `changes: 0` would be the same
+ * class of false statement pointing the other way. */
+reset();
+{
+  const changes = [];
+  const readOnlyRound = async ({ execute }) => {
+    await L.markAgentPurged(kvs, AG);          // the delete lands, before any write
+    await execute("get_issue", { issueKey: "SUP-1" });
+    return { endedBy: "cancelled", rounds: 1, summary: "", usage: { tokens: 1 } };
+  };
+  const r = await V.runVaItem({
+    agent: vaJob(), issueKey: "SUP-1", tickId: "t-purge-clean",
+    deps: itemDeps({
+      runLoop: readOnlyRound,
+      // A READ records no change — the default stand-in records every id, which would
+      // manufacture the very "write" this block exists to prove did not happen.
+      createDispatcher: () => async () => ({ success: true }),
+      createSession: async () => ({ changes, createApi: () => ({}), recordChange: (c) => { changes.push(c); return c; } }),
+      __changes: changes,
+    }),
+  });
+  eq(r.skipped, true, "F-577.clean — the mid-turn purge still skips");
+  eq(r.reason, "agent-purged", "F-577.clean — …with the plain reason, because no write landed");
+  eq(r.changes, 0, "F-577.clean — …and the count agrees with the reason");
 }
 
 

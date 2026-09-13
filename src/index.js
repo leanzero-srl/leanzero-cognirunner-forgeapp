@@ -11034,9 +11034,22 @@ resolver.define("getApiTokens", async ({ context }) => {
   if (!(await requireAdmin(context.accountId))) return noPerm("manage API tokens", "admin");
   return okOr(async () => ({ success: true, tokens: await listApiTokens(), url: await getWebtriggerUrlFor(RULES_API_WEBTRIGGER_KEY, RULES_API_URL_KVS_KEY) }));
 });
+/*
+ * F-466 — the token's ROLE is chosen HERE, at mint time, or the editor/viewer floors
+ * on the REST surface are unreachable from the product: every UI-minted token was
+ * admin. The closed set and the refusal of anything outside it live in
+ * `rules-api.js` (`normalizeMintRole`) so the REST surface and this resolver cannot
+ * disagree about what a role is; an omitted role stays the documented compatibility
+ * default (admin), which is what every token minted before the field existed is.
+ * `label` is accepted as an alias for `name` — the admin dialog's field.
+ */
 resolver.define("createApiToken", async ({ payload, context }) => {
   if (!(await requireAdmin(context.accountId))) return noPerm("manage API tokens", "admin");
-  return okOr(async () => ({ success: true, ...(await createApiTokenInternal({ name: payload?.name, accountId: context.accountId })) }));
+  return okOr(async () => ({ success: true, ...(await createApiTokenInternal({
+    name: payload?.name ?? payload?.label,
+    role: payload?.role,
+    accountId: context.accountId,
+  })) }));
 });
 resolver.define("revokeApiToken", async ({ payload, context }) => {
   if (!(await requireAdmin(context.accountId))) return noPerm("manage API tokens", "admin");

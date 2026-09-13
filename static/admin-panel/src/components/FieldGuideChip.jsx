@@ -30,10 +30,12 @@
  * for a first-time author with no docs picked, no skills bound and memory injection off —
  * told its reviewer the code was generated with nothing.
  *
- * WHAT IT READS. `src/shared/knowledge-index.js` — the GENERATED index of titles, tags and
- * provenance, with NO bodies. That is the module the UI bundles are meant to import: the
- * packs themselves are 582 KB and are backend-only, so resolving a title here costs the
- * bundle kilobytes rather than megabytes. Do not reach for a pack module from a frontend.
+ * WHAT IT READS. `src/shared/knowledge-titles.js` — the GENERATED id→title map, and NOTHING
+ * else: no tags, no provenance, no bodies. A chip needs one string per id, so that is all
+ * this import may cost. It used to read `knowledge-index.js`, which carries the tags and
+ * provenance no frontend renders and put ~110 KB of dead weight in FOUR bundles (F-582);
+ * the packs themselves are 582 KB and backend-only. Do not reach for the index, and never
+ * for a pack module, from a frontend.
  *
  * WHAT IT DOES NOT DO. It never asks the backend anything. The ids are already on the
  * record the caller is rendering (`generationMeta.fieldGuide` on a step, or
@@ -45,24 +47,20 @@
  */
 
 import React, { useState } from "react";
-/* SWAP PENDING: a titles-only `src/shared/knowledge-titles.js` is being generated to replace
-   this 136 KB import (F-573); point all four copies at it when it lands. */
-import { KNOWLEDGE_INDEX } from "../../../../src/shared/knowledge-index.js";
+import { KNOWLEDGE_TITLES } from "../../../../src/shared/knowledge-titles.js";
 
-/* Built once, on first use. A module-level Map over ~180 rows; building it eagerly at
-   import would cost every app that never renders a chip. */
-let TITLES = null;
+/* A plain object lookup keyed by section id — no Map to build, so nothing is paid by an app
+   that never renders a chip. `hasOwnProperty` via the null-prototype-safe guard keeps an id
+   like "constructor" from resolving to something that is not a title. */
 const titleFor = (id) => {
-  if (!TITLES) {
-    TITLES = new Map();
-    for (const s of KNOWLEDGE_INDEX) TITLES.set(s.id, s.title);
-  }
-  return TITLES.get(id) || null;
+  if (typeof id !== "string" || !Object.prototype.hasOwnProperty.call(KNOWLEDGE_TITLES, id)) return null;
+  const t = KNOWLEDGE_TITLES[id];
+  return typeof t === "string" && t ? t : null;
 };
 
 /**
  * @param sections  the section ids from the record. Anything not an array, and any id the
- *                  index cannot name, is dropped rather than printed.
+ *                  titles map cannot name, is dropped rather than printed.
  */
 export default function FieldGuideChip({ sections }) {
   const [open, setOpen] = useState(false);

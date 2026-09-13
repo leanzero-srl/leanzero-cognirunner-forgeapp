@@ -656,7 +656,19 @@ try {
       "tick:prepare_failed",
       "unknown",
     ];
-    const extra = [...engineIds].filter((id) => !EXPECTED.includes(id)).sort();
+    /* F-577/F-575 - IDS THE COPY LEADS THE ENGINE ON. The purge work lands in two halves:
+       the engine half teaches `runVaItem` to answer `agent-purged-after-writes` (with a
+       count) on the write-seam path, and this half writes the sentences. The copy may ship
+       FIRST - an admin never sees a sentence for an id nobody emits, and a missing sentence
+       is what does the damage - so these ids are allowed to be absent from the engine and
+       are still REQUIRED to have copy. The tolerance is one-directional on purpose: an id
+       the engine emits with no sentence fails below, always, and the moment the engine half
+       merges these stop being pending and are covered by the ordinary `missing` check. */
+    const PENDING_ENGINE_IDS = [
+      "agent-purged-after-writes",
+      "purge-settling",
+    ];
+    const extra = [...engineIds].filter((id) => !EXPECTED.includes(id) && !PENDING_ENGINE_IDS.includes(id)).sort();
     const missing = EXPECTED.filter((id) => !engineIds.has(id));
     ok(extra.length === 0, `A14 the engine pushes no reason id this test does not know about (new: ${extra.join(", ")})`);
     ok(missing.length === 0, `A14 every expected engine reason id is still pushed (gone: ${missing.join(", ")})`);
@@ -668,7 +680,11 @@ try {
     /* BOTH copy maps: the receipt's compaction ids and F-535's health ids. A key may be
        quoted (`"tick:prepare_failed"`) or bare (`unknown`), and a sentence may be written
        as the shared UNKNOWN_REASON constant rather than inline. */
-    const mapText = `${mapOf("const COMPACTION_COPY = {")}\n${mapOf("const HEALTH_COPY = {")}`;
+    /* F-577 added a THIRD map to the scan: `purge-settling` reaches the admin as a skip
+       row's GATE, so its sentence lives in GATE_COPY, which is where a gate id's copy has
+       always lived. Function rows there (`capability`, `agent-purged-after-writes`) do not
+       match KEY_RE and are asserted by name below instead. */
+    const mapText = `${mapOf("const COMPACTION_COPY = {")}\n${mapOf("const HEALTH_COPY = {")}\n${mapOf("const GATE_COPY = {")}`;
     const KEY_RE = /^\s*"?([a-z][a-z0-9_:.-]*)"?\s*:\s*("([^"]+)"|UNKNOWN_REASON)/gm;
     const rows = [...mapText.matchAll(KEY_RE)];
     const unknownText = (tabSrc.match(/const UNKNOWN_REASON = "([^"]+)"/) || [])[1] || "";
@@ -682,6 +698,28 @@ try {
         continue;
       }
       ok(mapKeys.has(id), `A14 the copy map has a sentence for the engine id "${id}"`);
+    }
+    /* F-577/F-575 - the pending ids owe their sentence NOW, whether or not the engine half
+       has merged. `agent-purged-after-writes` is a copy ROW, not a flat sentence, because
+       it is the one purge an admin must act on: it renders the solid-red receipt state and
+       names how many writes stayed on the issue, so it is asserted by shape rather than by
+       KEY_RE. And the id it replaces must have stopped promising that nothing was written. */
+    for (const id of PENDING_ENGINE_IDS) {
+      const inFlatMap = mapKeys.has(id);
+      const asCopyRow = new RegExp(`"${id}":\\s*\\(s\\)\\s*=>`).test(tabSrc);
+      ok(inFlatMap || asCopyRow, `A14 the pending engine id "${id}" already has copy in the tab`);
+    }
+    ok(/"agent-purged-after-writes":\s*\(s\)\s*=>/.test(tabSrc) && /va-receipt-cap/.test(tabSrc),
+      "A14 agent-purged-after-writes is a copy row, so it renders the solid-red receipt state");
+    ok(!/"agent-purged":\s*"[^"]*nothing was written[^"]*while a turn/.test(tabSrc),
+      "A14 the entry-check sentence no longer claims nothing was written for a turn that ran");
+    {
+      const purgedRow = (tabSrc.match(/"agent-purged":\s*"([^"]+)"/) || [])[1] || "";
+      ok(/before the turn started/.test(purgedRow),
+        `A14 agent-purged names the entry check it actually covers, got ${JSON.stringify(purgedRow)}`);
+      const afterRow = (tabSrc.match(/"agent-purged-after-writes":\s*"([^"]+)"/) || [])[1] || "";
+      ok(/stayed on the issue/.test(afterRow),
+        `A14 agent-purged-after-writes says the writes stayed on the issue, got ${JSON.stringify(afterRow)}`);
     }
     /* And no sentence carries an em-dash or an engine id inside it. */
     const sentences = rows.map((m) => m[3] || unknownText);
@@ -740,6 +778,65 @@ try {
       ok(Number(css.w) >= 600 && Number(css.w) <= 700, `A14 ${theme} 600-700 weight, got ${css.w}`);
       await shot(page, `agents-compaction-unknown-${theme}`);
       ok(env.errors.length === 0, `A14 ${theme} no page errors (${env.errors[0] || ""})`);
+    } finally { await close(env); }
+  }
+  /* ---------- A14c the three purge states, rendered, both themes (F-577 / F-575) ---------- */
+  for (const [theme, red, slate] of [
+    ["light", "rgb(220, 38, 38)", "rgb(71, 85, 105)"],
+    ["dark", "rgb(239, 68, 68)", "rgb(100, 116, 139)"],
+  ]) {
+    console.log(`A14c purge states (${theme})`);
+    const env = await openAgents(browser, theme);
+    const { page } = env;
+    try {
+      await page.locator(".va-agent").first().locator(".rule-expand-btn").click();
+      await page.locator(".va-pane-btn", { hasText: "Ticks" }).click();
+      await page.locator(".va-receipt-cap").first().waitFor({ timeout: 8000 });
+      const all = (await page.locator(".va-receipts").innerText());
+
+      /* F-575 - a WAIT, not a failure: the ordinary slate skip row, and the engine's claim
+         key stays in the engine. */
+      const settling = page.locator(".va-receipt-skip", { hasText: /waiting for the deleted agent/i }).first();
+      ok(await settling.count() === 1, `A14c ${theme} the settling tick renders its sentence`);
+      const settlingText = await settling.count() ? (await settling.innerText()).trim() : "";
+      ok(/last turns to finish before it starts/.test(settlingText), `A14c ${theme} the settling sentence is the copy map's, got ${JSON.stringify(settlingText)}`);
+      for (const leak of ["claim:", "purge still settling", "va_1"]) {
+        ok(!settlingText.includes(leak), `A14c ${theme} the settling row never prints "${leak}"`);
+      }
+      ok(await settling.count() ? await settling.evaluate((el) => getComputedStyle(el).borderLeftWidth) === "0px" : false, `A14c ${theme} no left rail on the settling row`);
+
+      /* F-577 - the entry check keeps the "nothing was written" promise, because there it
+         is true. */
+      const before = page.locator(".va-receipt-skip", { hasText: /before the turn started/i }).first();
+      const beforeFound = await before.count() === 1;
+      ok(beforeFound, `A14c ${theme} the entry-check purge renders its sentence`);
+      /* Read only if it is there: a missing row is already a failure above, and reading it
+         anyway would spend a 30s locator timeout to say the same thing. */
+      ok(beforeFound && /nothing was written/.test(await before.innerText()), `A14c ${theme} the entry check still says nothing was written`);
+
+      /* F-577 - and the MID-TURN purge, which is the defect: a solid red state that names
+         the count the engine sent, and never the promise that nothing was written. */
+      const cap = page.locator(".va-receipt-cap", { hasText: /deleted while a turn was running/i }).first();
+      const capFound = await cap.count() === 1;
+      ok(capFound, `A14c ${theme} the mid-turn purge renders as its own state`);
+      const capText = capFound ? (await cap.innerText()).trim() : "";
+      ok(/3 earlier writes stayed on the issue/.test(capText), `A14c ${theme} the count the engine sent is named, got ${JSON.stringify(capText)}`);
+      ok(/check its history/i.test(capText), `A14c ${theme} the admin is told where to look`);
+      ok(!/nothing was written/.test(capText), `A14c ${theme} the mid-turn state never claims nothing was written`);
+      ok(!/agent-purged/.test(capText), `A14c ${theme} the raw reason id is not what the admin reads`);
+      ok(!/[\u2014\u2013\u2192]/.test(capText), `A14c ${theme} no em-dash, en-dash or arrow`);
+      ok(/OPS-77/.test(capText), `A14c ${theme} the item the writes landed on is named`);
+      const css = capFound ? await cap.evaluate((el) => {
+        const c = getComputedStyle(el);
+        return { bg: c.backgroundColor, fg: c.color, bl: c.borderLeftWidth, w: getComputedStyle(el.querySelector(".va-receipt-cap-title")).fontWeight };
+      }) : { bg: "", fg: "", bl: "", w: "0" };
+      ok(css.bg === red, `A14c ${theme} solid red fill on the mid-turn purge, got ${css.bg}`);
+      ok(css.fg === "rgb(255, 255, 255)", `A14c ${theme} white ink, got ${css.fg}`);
+      ok(css.bl === "0px", `A14c ${theme} no left rail, got ${css.bl}`);
+      ok(Number(css.w) >= 600 && Number(css.w) <= 700, `A14c ${theme} 600-700 weight, got ${css.w}`);
+      ok(slate.length > 0 && !all.includes("purge still settling"), `A14c ${theme} no engine detail anywhere on the pane`);
+      await shot(page, `agents-purge-${theme}`);
+      ok(env.errors.length === 0, `A14c ${theme} no page errors (${env.errors[0] || ""})`);
     } finally { await close(env); }
   }
   /* ---------- A14b the TICK's own health ids, both themes (F-535) ---------- */

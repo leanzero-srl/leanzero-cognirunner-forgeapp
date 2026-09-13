@@ -1470,6 +1470,14 @@ const VA_STATUS = {
       { at: "2026-09-13T07:15:00.000Z", phase: "prepare", ok: true, swept: 9, worked: 0, skipped: [{ itemKey: "(memory)", reason: "compaction:pinned_dropped:2" }] },
       { at: "2026-09-13T07:10:00.000Z", phase: "prepare", ok: true, swept: 8, worked: 0, skipped: [{ itemKey: "(memory)", reason: "compaction:compaction_failed:TypeError: Cannot read properties of undefined (reading 'text')" }] },
       { at: "2026-09-13T07:08:00.000Z", phase: "prepare", ok: true, swept: 8, worked: 0, skipped: [{ itemKey: "(memory)", reason: "compaction:memory_conveyor_jammed:sprocket-7" }] },
+      /* F-575 - the RE-CREATED agent's tick, held while the deleted agent's turns settle.
+         The engine's own detail names a claim key; the admin must read neither. */
+      { at: "2026-09-13T07:06:00.000Z", phase: "prepare", ok: true, swept: 0, worked: 0, skipped: [{ key: "(agent)", gate: "purge-settling", reason: "purge still settling (claim:va_1:8:post)" }] },
+      /* F-577 - THE TWO PURGE TRUTHS, side by side. The entry check, where the turn never
+         began, and the write-seam check, where it did and the writes are on the issue. The
+         second carries the engine's count and is the only one an admin must act on. */
+      { at: "2026-09-13T07:04:00.000Z", phase: "post", ok: true, posted: 0, skipped: [{ key: "(agent)", reason: "agent-purged" }] },
+      { at: "2026-09-13T07:02:00.000Z", phase: "post", ok: true, posted: 0, skipped: [{ itemKey: "OPS-77", reason: "agent-purged-after-writes", changes: 3 }] },
     ],
   },
   /* Live, and BROKEN: three failed ticks is the banner's own threshold (VA_LIMITS). */

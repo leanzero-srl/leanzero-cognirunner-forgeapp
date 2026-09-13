@@ -76,13 +76,49 @@ const GATE_COPY = {
      row may be a FUNCTION of the skip, and gateCopy() calls it rather than this file
      re-typing a sentence that would then drift from the other two surfaces. */
   capability: (s) => agentCapabilityCopy(s && s.reason),
+  /* F-575 - the re-created agent's first ticks. The engine skips them while the DELETED
+     agent's in-flight turns settle, so this is a wait, not a failure: a flat sentence on
+     the ordinary slate skip row, never the red state. The engine's own detail string
+     ("purge still settling (claim:...)") is not projected; a claim key is not copy. */
+  "purge-settling": "It is waiting for the deleted agent's last turns to finish before it starts.",
+  /* F-577 - THE PURGE THAT CAUGHT A TURN MID-FLIGHT, which is the one purge that is not
+     harmless. The tombstone is read AFTER the loop has run, so the writes the turn had
+     already made are on the issue and no ledger row survives to record them. This is the
+     only skip an administrator must ACT on, so it is a copy row and renders solid red.
+     The count is the engine's `changes`; when the engine does not name one the sentence
+     says so rather than inventing a number. */
+  "agent-purged-after-writes": (s) => ({
+    title: "This agent was deleted while a turn was running",
+    remedy: purgedWritesRemedy(s),
+  }),
 };
+/* Kept out of the row above so the "how many" rule is one function, not an expression
+   inside a map. A count is printed ONLY when the engine sent a positive whole number. */
+function purgedWritesRemedy(s) {
+  const raw = s && typeof s === "object" ? s.changes : null;
+  const n = Math.trunc(Number(raw));
+  if (Number.isFinite(n) && n > 0) {
+    return `${n} earlier write${n === 1 ? "" : "s"} stayed on the issue, so check its history.`;
+  }
+  return "Earlier writes from that turn stayed on the issue, so check its history.";
+}
 /* A gate resolves to EITHER a flat sentence (the eleven post gates) or a copy row
    { title, remedy, link } that renders as its own solid-red state. An id with no copy at
    all still renders as itself. */
 const gateCopy = (g) => {
-  const row = GATE_COPY[String((g && (g.gate || g.reason)) || g || "")];
+  const id = String((g && (g.gate || g.reason)) || g || "");
+  const row = GATE_COPY[id];
   if (typeof row === "function") return { copy: row(g) };
+  /* F-577 - A SKIP MAY CARRY A REASON THAT IS NOT A GATE. `agent-purged` arrives on a skip
+     row with no gate at all (src/virtual-admin.js post arm), and before this it fell all
+     the way to the echo below and printed the bare id at the administrator. So an id this
+     table does not own is offered to the reason copy that DOES own it before anything is
+     echoed. The echo stays for a genuinely unknown id, which is the point of it: a gate
+     added to the engine is visible here the day it ships. */
+  if (!row) {
+    const viaReason = reasonCopy(g);
+    if (viaReason && viaReason !== UNKNOWN_REASON && viaReason !== UNKNOWN_COMPACTION) return { sentence: viaReason };
+  }
   return { sentence: row || String((g && (g.reason || g.gate)) || g) };
 };
 const gateSentence = (g) => gateCopy(g).sentence || "";
@@ -172,8 +208,17 @@ const COMPACTION_COPY = {
   /* F-564 - the purge tombstone (F-553, src/va-ledger.js). Every site that reads it is
      receipt-free on purpose, so this sentence is the answer for the one case where a row
      survives the delete: a neutral statement, not a failure, which is why it renders on
-     the slate "paused" tone rather than the red gate one. */
-  "agent-purged": "This agent was deleted while a turn was still running, so nothing was written.",
+     the slate "paused" tone rather than the red gate one. F-577 split it in two: this one
+     is the ENTRY check, where the turn had not begun and nothing can have been written. */
+  "agent-purged": "This agent was deleted before the turn started, so nothing was written.",
+  /* F-577 - THE SAME TOMBSTONE READ ONE ROUND LATER, where "nothing was written" is FALSE.
+     The row above used to carry that promise for both paths: the entry checks, where it is
+     true, and the write-seam check at the end of an item turn, where the loop has already
+     put comments, transitions and pages into Jira and Confluence and only the LEDGER write
+     was skipped. The engine now separates them, so the sentences separate too. No count
+     here on purpose: this is the flat form the health banner reads, and the banner has no
+     skip object to take a number from. The receipt's own row (GATE_COPY above) names it. */
+  "agent-purged-after-writes": "This agent was deleted while a turn was running, and the writes that turn had already made stayed on the issue.",
 };
 const UNKNOWN_COMPACTION = "Memory compaction reported an unrecognised result.";
 /* The BASE id: the engine's `compaction:` namespace prefix off the front, and any

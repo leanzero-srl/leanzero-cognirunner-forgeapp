@@ -1521,6 +1521,11 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   // proves it inherits the gate rather than having quietly grown its own read.
   const keyArmOff = await fault.armKeyReadFault("openai", "refuse", 60);
   const keyModeOff = await fault.keyReadFaultMode("openai");
+  // F-655 — the SIXTH storage-touching export, held to the same sentence, and its
+  // consuming side (`jiraFaultStatus`) called too for the same reason as `keyReadFaultMode`:
+  // the count is what proves it reaches storage only through the gated `readHarnessFault`.
+  const jiraArmOff = await fault.armJiraFault(fault.JIRA_FAULT_USER_SEARCH_PATH, 429, 60);
+  const jiraStatusOff = await fault.jiraFaultStatus(fault.JIRA_FAULT_USER_SEARCH_PATH);
 
   ok(consumed === false, "F-522: with HARNESS_SECRET absent, consuming answers false");
   ok(armedOff && armedOff.ok === false && armedOff.reason === "harness-off", "F-522: …arming refuses harness-off");
@@ -1529,8 +1534,10 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
     "F-522: …and DISARMING refuses harness-off — it is a WRITE (a delete), and it was the ungated one");
   ok(keyArmOff && keyArmOff.ok === false && keyArmOff.reason === "harness-off", "F-629: …arming the key-read fault refuses harness-off");
   ok(keyModeOff === null, "F-629: …and asking for a key-read fault mode answers null in production");
+  ok(jiraArmOff && jiraArmOff.ok === false && jiraArmOff.reason === "harness-off", "F-655: …arming the Jira transport fault refuses harness-off");
+  ok(jiraStatusOff === null, "F-655: …and asking for a Jira fault status answers null in production");
   ok(ops.length === 0,
-    `F-522.ZERO_KVS — all five exports together performed ZERO KVS operations on the fault keyspace (got ${JSON.stringify(ops)})`);
+    `F-522.ZERO_KVS — all six exports together performed ZERO KVS operations on the fault keyspace (got ${JSON.stringify(ops)})`);
 
   // …AND THE ROW IS STILL THERE. The ungated delete really would have destroyed it: this
   // is the difference between "answered a refusal" and "did nothing".
@@ -1552,9 +1559,9 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   const faultCode = faultSrc.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
   ok((faultCode.match(/process\.env\.HARNESS_SECRET/g) || []).length === 1,
     "F-522.SOURCE: the env var is still read in exactly ONE place — harnessEnabled()");
-  ok((faultCode.match(/if \(!harnessEnabled\(\)\)/g) || []).length === 5,
-    `F-522.SOURCE: …and asked by all FIVE storage-touching exports (got ${(faultCode.match(/if \(!harnessEnabled\(\)\)/g) || []).length})`);
-  for (const fn of ["harnessFaultArmed", "armHarnessFault", "disarmHarnessFault", "readHarnessFault", "armKeyReadFault"]) {
+  ok((faultCode.match(/if \(!harnessEnabled\(\)\)/g) || []).length === 6,
+    `F-522.SOURCE: …and asked by all SIX storage-touching exports (got ${(faultCode.match(/if \(!harnessEnabled\(\)\)/g) || []).length})`);
+  for (const fn of ["harnessFaultArmed", "armHarnessFault", "disarmHarnessFault", "readHarnessFault", "armKeyReadFault", "armJiraFault"]) {
     const body = faultSrc.split(`${fn} = async`)[1] || "";
     ok(/^\s*\([^)]*\)\s*=>\s*\{\s*if \(!harnessEnabled\(\)\)/.test(body),
       `F-522.SOURCE: the gate is the FIRST statement of ${fn} — before any storage call`);

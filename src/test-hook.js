@@ -359,6 +359,37 @@ export async function testStateTrigger(req) {
       if (body.action === "disarmKeyReadFault") return json(200, { ok: true, provider, ...(await disarmHarnessFault(HARNESS_FAULT_KEY_READ, [provider])) });
       return json(200, { ok: true, provider, ...(await readHarnessFault(HARNESS_FAULT_KEY_READ, [provider])) });
     }
+    /* ===== F-655 live proof: the dev-only JIRA TRANSPORT fault lever =====
+     * THE FOURTH MEMBER of the `armHarnessFault` family. F-648 made `searchUsers` fail
+     * CLOSED for the whole transport class — a 403/429/500 from Jira's user search is
+     * `{success:false, reason:"jira_unavailable"}` and no longer an empty success the
+     * admin reads as "that person is not on this site" — and nothing a tester can do from
+     * outside makes that endpoint fail, so the arm (and the ordering of the admin gate
+     * above it) had no live door.
+     *
+     * THE PATH IS EXACT. `armJiraFault` accepts only a member of `JIRA_FAULT_PATHS`; there
+     * is no wildcard and no prefix match, because a lever that can fault "anything under
+     * /rest" is a lever that can break an arbitrary product path on a real tenant. The
+     * status range, the path allow-list and the TTL cap all live in src/harness-fault.js;
+     * this is wiring behind the same HARNESS_SECRET Bearer as everything else here, and
+     * the lever is additionally inert wherever that env var is absent (production).
+     *
+     * It plants no data and returns none: the body carries a path, a status and a TTL. */
+    if (body.action === "armJiraFault" || body.action === "disarmJiraFault" || body.action === "readJiraFault") {
+      const {
+        armJiraFault, disarmHarnessFault, readHarnessFault,
+        HARNESS_FAULT_JIRA, JIRA_FAULT_PATHS, HARNESS_JIRA_FAULT_MAX_TTL_SECONDS,
+      } = await import("./harness-fault.js");
+      const path = String(body.path || "");
+      if (!JIRA_FAULT_PATHS.includes(path)) return json(400, { error: `path must be one of: ${JIRA_FAULT_PATHS.join(", ")}` });
+      if (body.action === "armJiraFault") {
+        const r = await armJiraFault(path, body.status, body.ttlSeconds);
+        // The clamps live with the lever; a refusal from it overrides the optimistic ok.
+        return json(r.ok === false ? 400 : 200, { ok: true, path, maxTtlSeconds: HARNESS_JIRA_FAULT_MAX_TTL_SECONDS, ...r });
+      }
+      if (body.action === "disarmJiraFault") return json(200, { ok: true, path, ...(await disarmHarnessFault(HARNESS_FAULT_JIRA, [path])) });
+      return json(200, { ok: true, path, ...(await readHarnessFault(HARNESS_FAULT_JIRA, [path])) });
+    }
     if (body.action === "readProbe") {
       const name = String(body.name || "").replace(/[^A-Za-z0-9_.:-]/g, "");
       if (!name) return json(400, { error: "name required" });
@@ -717,6 +748,20 @@ export async function testStateTrigger(req) {
          *                          inert without HARNESS_SECRET.
          */
         "saveSkill", "deleteSkill", "deleteContextDoc", "getContextDocContent", "getOpenAIKey",
+        /* F-655 — `searchUsers`, on exactly the same terms as the five above and for the
+         * same reason: F-648 made it fail CLOSED for the whole Jira transport class
+         * (`reason:"jira_unavailable"`, kept distinct from the F-257 admin refusal), and
+         * neither that arm nor the ORDER of the admin gate above it could be exercised on
+         * a tenant — the key was refused by name here, and nothing made Jira's user search
+         * fail. The `armJiraFault` action above is the other half of that door.
+         *
+         * READ-ONLY. It grants nothing: it forwards a query string to Jira's own
+         * `/rest/api/3/user/search` as the app and returns accountId / displayName /
+         * avatar / (when Jira discloses it) email — strictly less than `getAppAdmins`,
+         * already allowlisted, and it writes nothing. It keeps its OWN admin gate, which
+         * is half of what is worth testing: driven with a non-admin `body.accountId` it
+         * must answer the refusal, and it must do so BEFORE the fault lever is consulted. */
+        "searchUsers",
         // F-566 — the knowledge-pack surfaces. `getKnowledgePacks` is a pure READ of the
         // generated index (titles, tags, sizes, budgets — never a pack BODY), the same
         // class as `getKnowledgeCounts` above. `saveKnowledgeSettings` is a WRITE and is

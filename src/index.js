@@ -60,7 +60,8 @@ import { readHeader } from "./shared/http-headers.js";
 import { providerKeySlot, providerModelSlot, providerAgentModelSlot, providerBaseUrlSlot } from "./shared/provider-slots.js";
 // F-629 — the dev-only key-read fault lever, in the same one-home/one-gate family as the
 // git ones (src/harness-fault.js). Inert without HARNESS_SECRET, i.e. in production.
-import { keyReadFaultMode, harnessEnabled, HarnessFault } from "./harness-fault.js";
+// F-655 — the sibling lever for a planted Jira transport failure, same file, same gate.
+import { keyReadFaultMode, harnessEnabled, HarnessFault, jiraFaultStatus, JIRA_FAULT_USER_SEARCH_PATH } from "./harness-fault.js";
 // GIT CONNECTIONS (1.4 commit 2). The behaviour — key names, caps, the security
 // model, auth_dead, queued rotation — lives in src/git-connections.js and is
 // never re-implemented here. Aliased where a name would collide with a resolver
@@ -5090,9 +5091,28 @@ resolver.define("searchUsers", async ({ payload, context }) => {
   try {
     const { query } = payload;
     if (!query || query.length < 2) return { success: true, users: [] };
-    const resp = await api.asApp().requestJira(
-      route`/rest/api/3/user/search?query=${query}&maxResults=10`,
-    );
+    /* ── F-655 — THE DEV-ONLY JIRA FAULT, asked ONCE, here and nowhere else. ──────────
+     * F-648's fail-closed arm is about what this resolver does when Jira's user search
+     * FAILS, and nothing a tester can do from outside makes that endpoint fail — so the
+     * arm and the ORDER it sits in (the admin gate above runs FIRST: a non-admin is
+     * refused before this line is ever reached) had no live door at all.
+     *
+     * The lever lives in src/harness-fault.js with the others, behind the same single
+     * `harnessEnabled()` gate (`process.env.HARNESS_SECRET`, absent in production), so on
+     * a production deployment this performs NO KVS access and can change no outcome. It
+     * is asked FIRST so a production build does not pay a KVS read per keystroke to
+     * answer a question that is always "no lever", and it is keyed by the EXACT path —
+     * `JIRA_FAULT_USER_SEARCH_PATH` is the one home of that string, shared with the lever.
+     *
+     * A planted fault becomes a synthetic `{ ok: false, status }` rather than a separate
+     * return: the real `!ok` arm below then runs UNCHANGED, which is the only thing that
+     * makes this a proof of the product's behaviour instead of a proof of the lever's. */
+    const plantedStatus = harnessEnabled() ? await jiraFaultStatus(JIRA_FAULT_USER_SEARCH_PATH) : null;
+    const resp = plantedStatus !== null
+      ? { ok: false, status: plantedStatus }
+      : await api.asApp().requestJira(
+        route`/rest/api/3/user/search?query=${query}&maxResults=10`,
+      );
     if (!resp.ok) {
       // `reason: "jira_unavailable"` keeps this distinct from the admin-gate refusal
       // shape above (`reason: "no-permission"`, with needsRole/hint).

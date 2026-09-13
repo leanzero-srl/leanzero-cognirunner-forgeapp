@@ -21,6 +21,9 @@ const { processRuleStatsReceipt, statsReceipt, enqueueRuleStats, recoverRuleStat
 let passed = 0; let failed = 0;
 const check = async (name, fn) => {
   storage.__reset(); pushed.length = 0; jira.__reset();
+  // The admin caller must be on the roster explicitly: an empty roster no longer
+  // bootstraps whoever calls first (F-220 — only a Jira-confirmed admin is seeded).
+  storage.__seed("app_admins", [{ accountId: "stats-test-admin", displayName: "Stats admin", role: "admin", scope: "all" }]);
   try { await fn(); passed++; }
   catch (error) { failed++; console.error(`FAIL ${name}: ${error.stack}`); }
 };

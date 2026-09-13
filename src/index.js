@@ -261,6 +261,20 @@ const VALID_SCOPES = ["own", "all"];
 const getUserPermissions = async (accountId) => {
   if (!accountId) return null;
 
+  // Set when the roster read succeeds and finds nobody — see the bootstrap below.
+  let rosterEmpty = false;
+
+  // Seed the first admin row, but only for a caller Jira has just confirmed is an
+  // administrator. Never called on the non-admin path: a non-admin first caller
+  // gets role null and nothing is written.
+  const bootstrapFirstAdmin = async () => {
+    if (!rosterEmpty) return;
+    try {
+      console.log(`No app users configured — bootstrapping Jira admin ${accountId} as first app admin`);
+      await storage.set(APP_ADMINS_KEY, [{ accountId, displayName: "Auto (first admin)", role: "admin", scope: "all" }]);
+    } catch (e) { /* the role still stands for this call; we retry on the next one */ }
+  };
+
   // 1. Check app users list in KVS
   try {
     const appUsers = (await storage.get(APP_ADMINS_KEY)) || [];
@@ -271,12 +285,11 @@ const getUserPermissions = async (accountId) => {
       return { role, scope };
     }
 
-    // Bootstrap: if no users exist at all, the first user becomes admin
-    if (appUsers.length === 0) {
-      console.log(`No app users configured — bootstrapping ${accountId} as first admin`);
-      await storage.set(APP_ADMINS_KEY, [{ accountId, displayName: "Auto (first user)", role: "admin", scope: "all" }]);
-      return { role: "admin", scope: "all" };
-    }
+    // Roster is empty: this install has never granted anyone a role. We may seed
+    // the first admin here, but ONLY after Jira itself confirms the caller is an
+    // administrator (steps 2/3 below). Seeding whoever happens to call first hands
+    // full app admin to any licensed user who opens the page.
+    if (appUsers.length === 0) rosterEmpty = true;
   } catch (e) { /* fall through */ }
 
   // 2. Real Jira authorization of the CALLER: ask Jira, as the user, whether they
@@ -293,7 +306,10 @@ const getUserPermissions = async (accountId) => {
     );
     if (permResp.ok) {
       const permData = await permResp.json();
-      if (permData?.permissions?.ADMINISTER?.havePermission === true) return { role: "admin", scope: "all" };
+      if (permData?.permissions?.ADMINISTER?.havePermission === true) {
+        await bootstrapFirstAdmin();
+        return { role: "admin", scope: "all" };
+      }
     }
   } catch (e) { /* fall through to the group scan */ }
 
@@ -306,7 +322,10 @@ const getUserPermissions = async (accountId) => {
       );
       if (resp.ok) {
         const data = await resp.json();
-        if ((data.values || []).some((u) => u.accountId === accountId)) return { role: "admin", scope: "all" };
+        if ((data.values || []).some((u) => u.accountId === accountId)) {
+          await bootstrapFirstAdmin();
+          return { role: "admin", scope: "all" };
+        }
       }
     } catch (e) { /* try next group */ }
   }
@@ -1974,8 +1993,9 @@ resolver.define("getConfigs", async ({ payload, context }) => {
     // app (AMS-65110). No role at all (not in the roster, not a Jira admin) → no
     // rules and no sweep. The scope enforcement further down carves out ownerless
     // rows for scope-"own" EDITORS; without this gate that carve-out applied to
-    // everyone with a licence. (First-ever user can't hit this: getUserPermissions
-    // bootstraps them admin.) The meter still reports the shared site-wide state.
+    // everyone with a licence. (A first-ever caller who IS a Jira admin is
+    // bootstrapped onto the roster by getUserPermissions; a non-admin one is not.)
+    // The meter still reports the shared site-wide state.
     const accountId = context?.accountId;
     const perms = accountId ? await getUserPermissions(accountId) : null;
     if (accountId && !perms) {

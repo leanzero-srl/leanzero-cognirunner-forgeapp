@@ -140,7 +140,43 @@ const compactionReason = (s) => String((s && (s.reason || s.gate)) || "").replac
 /* A skip the engine namespaced `compaction:` is one of ours whether or not it also carries
    the gate; an id with no copy still renders a sentence rather than disappearing. */
 const isCompactionSkip = (s) => !!s && (s.gate === "compaction" || /^compaction:/.test(String((s && (s.reason || s.gate)) || "")));
-const compactionSentence = (reason) => COMPACTION_COPY[reason] || UNKNOWN_COMPACTION;
+/* ── F-524: ONE reason-to-sentence helper, for every surface that shows an engine reason.
+   The engine writes the same reason string into TWO places: the skip row on a receipt
+   (`reason: "compaction:<id>[:detail]"`) and, durably, the health row the "This agent is
+   not working" banner reads (`health.lastReason`, src/va-ledger.js). F-518 gave the
+   receipt a copy map and left the banner printing the string raw — including the prepare
+   catch arm's 300-character slice of whatever exception was thrown (provider or KVS text).
+
+   So the mapping lives here, once, and BOTH callers go through it:
+   - `compaction:` namespace off the front, any `:detail` off the back, look up the base id;
+   - `capability:<id>` resolves through agentCapabilityCopy() in src/shared/edition.js —
+     the one home for those words (F-501);
+   - a bare post-gate id resolves through GATE_COPY;
+   - anything else — an unknown id, an exception message, an empty string — returns the
+     neutral sentence. NOTHING from the engine is ever echoed: an id is not copy and an
+     exception message is not for an administrator. This does NOT depend on the engine
+     storing base ids only; a `:detail`, a prefix or free text all land on a sentence.
+
+   `compaction: true` says the caller already knows the row is a compaction row (the skip
+   carries `gate: "compaction"`), so an unrecognised id there gets the compaction-specific
+   unknown sentence rather than the generic one. */
+const UNKNOWN_REASON = "Its ticks are failing for a reason this panel does not recognise. The tick receipts below carry the detail.";
+const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
+const reasonCopy = (reason, opts) => {
+  const raw = String((reason && typeof reason === "object" ? reason.reason || reason.gate : reason) || "").trim();
+  if (!raw) return "";
+  const base = raw.replace(/^compaction:/, "").split(":")[0];
+  if ((opts && opts.compaction) || /^compaction:/.test(raw) || has(COMPACTION_COPY, base)) {
+    return COMPACTION_COPY[base] || UNKNOWN_COMPACTION;
+  }
+  if (/^capability:/.test(raw)) {
+    const row = agentCapabilityCopy(raw.split(":")[1] || "unknown") || null;
+    if (row && row.title) return row.remedy ? `${row.title}. ${row.remedy}` : row.title;
+    return UNKNOWN_REASON;
+  }
+  const row = has(GATE_COPY, base) ? GATE_COPY[base] : null;
+  return typeof row === "string" ? row : UNKNOWN_REASON;
+};
 const bytesOf = (n) => String(Math.max(0, Math.trunc(Number(n) || 0)));
 
 /* Every compaction statement on one receipt, in the order an admin reads them. A fallback
@@ -155,12 +191,12 @@ function compactionRows(r) {
   if (c && !fellBack && !gated) {
     out.push({ tone: "ok", title: `Memory compacted ${bytesOf(c.before)} to ${bytesOf(c.after)} bytes` });
   }
-  if (fellBack) out.push({ tone: "bad", title: "Memory compaction failed", text: compactionSentence(compactionReason(c) || "summariser-failed") });
+  if (fellBack) out.push({ tone: "bad", title: "Memory compaction failed", text: reasonCopy(compactionReason(c) || "summariser-failed", { compaction: true }) });
   for (const s of skips) {
     const reason = compactionReason(s);
     if (fellBack && reason === "summariser-failed") continue;
     const isGate = s.gate === "compaction";
-    out.push({ tone: isGate ? "bad" : "muted", title: isGate ? "Memory compaction failed" : "Memory compaction paused", text: compactionSentence(reason) });
+    out.push({ tone: isGate ? "bad" : "muted", title: isGate ? "Memory compaction failed" : "Memory compaction paused", text: reasonCopy(reason, { compaction: true }) });
   }
   return out;
 }
@@ -303,7 +339,7 @@ function AgentCard({ agent, client, canEdit, open, onToggle, onChanged }) {
       {healthBad && (
         <div className="va-health" role="alert">
           <span className="va-health-title">This agent is not working</span>
-          <span className="va-health-text">{health.reason || `Its last ${health.failedTicks || VA_LIMITS.healthBannerFailedTicks} ticks failed.`}</span>
+          <span className="va-health-text">{reasonCopy(health.reason) || `Its last ${health.failedTicks || VA_LIMITS.healthBannerFailedTicks} ticks failed.`}</span>
         </div>
       )}
       {statusError && <div className="alert alert-warning">{statusError} <button type="button" className="btn-small" onClick={refresh}>Retry</button></div>}

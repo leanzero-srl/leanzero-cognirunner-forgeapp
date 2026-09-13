@@ -31,7 +31,8 @@
  *   A14 the compaction copy map covers EVERY reason id `src/virtual-admin.js` pushes
  *       (asserted by reading the engine source, F-518), and the ids that carry a `:detail`
  *       suffix or that the map has never heard of never leak an id or an exception message
- *       into the admin's copy.
+ *       into the admin's copy - on the receipt rows AND on the health banner, the reason's
+ *       second and durable home (F-524).
  *
  * Run: node static/_screenshot-harness/agents-tab.test.mjs   (add --shots to save PNGs)
  */
@@ -292,7 +293,12 @@ try {
       // The banner is the engine's counter at the engine's threshold, not a UI guess.
       ok(await page.locator(".va-health").count() === 1, "A6 exactly one health banner, on the broken agent");
       const health = await page.locator(".va-health").innerText();
-      ok(/not working/i.test(health) && /credential/i.test(health), "A6 the banner names the cause");
+      /* F-524 - the cause is named in COPY. The fixture's `lastReason` is the engine's own
+         namespaced id with an exception slice on it (what the engine actually stores), so
+         "names the cause" means the mapped sentence and none of the stored string. */
+      ok(/not working/i.test(health), "A6 the banner says the agent is not working");
+      ok(/stopped on an unexpected error/.test(health), `A6 the banner names the cause in copy, got ${JSON.stringify(health)}`);
+      ok(!/compaction:|compaction_failed|TypeError|Cannot read properties/.test(health), "A6 the banner names it without the engine's own string");
       ok(VA_LIMITS.healthBannerFailedTicks >= 1, "A6 the threshold has one home");
       await shot(page, "agents-status");
     } finally { await close(env); }
@@ -543,6 +549,18 @@ try {
     const env = await openAgents(browser, theme);
     const { page } = env;
     try {
+      /* F-524 - THE HEALTH BANNER, the reason's SECOND and durable home. The fixture's
+         `lastReason` is the engine's own string, prefix and exception slice included; the
+         admin must read the mapped sentence and none of the string. */
+      const hb = page.locator(".va-health-text").first();
+      await hb.waitFor({ timeout: 8000 });
+      const banner = (await hb.innerText()).trim();
+      ok(/stopped on an unexpected error/.test(banner), `A14 ${theme} the health banner renders the mapped sentence, got ${JSON.stringify(banner)}`);
+      for (const leak of ["compaction:", "compaction_failed", "TypeError", "Cannot read properties", "undefined"]) {
+        ok(!banner.includes(leak), `A14 ${theme} the health banner never prints "${leak}"`);
+      }
+      ok(!/[—–→]/.test(banner), `A14 ${theme} no em-dash, en-dash or arrow in the health banner`);
+
       await page.locator(".va-agent").first().locator(".rule-expand-btn").click();
       await page.locator(".va-pane-btn", { hasText: "Ticks" }).click();
       await page.locator(".va-receipt-compact").first().waitFor({ timeout: 8000 });

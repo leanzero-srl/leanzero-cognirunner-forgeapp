@@ -1339,7 +1339,10 @@ const VA_STATUS = {
     lastTick: "2026-09-13T07:05:00.000Z", staged: 0, nextTick: "2026-09-13T09:05:00.000Z",
     nextPostWindow: { from: "2026-09-13T09:05:00.000Z", to: "2026-09-13T17:00:00.000Z" },
     shadow: null, paused: false,
-    health: { ok: false, failedTicks: VA_LIMITS.healthBannerFailedTicks, reason: "The Git connection this agent uses has a dead credential, so its last three ticks failed." },
+    /* F-524 - `lastReason` is whatever the ENGINE wrote, never a sentence: a namespaced
+       compaction id carrying the catch arm's slice of an exception. The banner has to map
+       it to copy the way the receipt rows do, and print none of it. */
+    health: { ok: false, failedTicks: VA_LIMITS.healthBannerFailedTicks, reason: "compaction:compaction_failed:TypeError: Cannot read properties of undefined (reading 'text')" },
     receipts: [
       { at: "2026-09-13T07:05:00.000Z", phase: "prepare", ok: false, swept: 0, error: "auth_dead: the connection credential was rejected.", skipped: [] },
       /* F-501 - the capability gate. The receipt carries the reason, never the sentence. */

@@ -48,6 +48,9 @@ export const DUPLICATED_COMPONENTS = [
   // bottom of this file holds equal.
   "MemoriesTab.jsx", "PremadeRuleForm.jsx", "IssuePicker.jsx", "Skeleton.jsx", "toast.js", "refusal.js",
   "capability.js",
+  // 1.4 commit 14b — the field-guide chip is a fourth shared helper of that kind (three homes:
+  // config-ui, admin-panel, issue-glance), gated like capability.js.
+  "FieldGuideChip.jsx",
   "components/editor/*",
 ];
 // Deliberately DIVERGED — never blind-copied between the two apps. Verified by

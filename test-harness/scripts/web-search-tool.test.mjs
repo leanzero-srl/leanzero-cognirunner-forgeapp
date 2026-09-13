@@ -123,6 +123,13 @@ const site = (...keys) => ({ ok: true, keys });
   ok(findIdentifierLeak("CVE-2024-1234 exploitability", { ok: false, keys: [] }) === null,
     "…and under the fallback the deny-list is what keeps the public standards usable");
   ok(findIdentifierLeak("PROJ-123") !== null, "a caller that passes no list at all gets the fallback, never a free pass");
+  // F-400: the fallback used to take the FIRST match only, so one public token early in
+  // the sentence vouched for a real key later in it. Every match is scanned now.
+  ok(findIdentifierLeak("UTF-8 error in ACME-1234", { ok: false, keys: [] }) !== null,
+    "a deny-listed token EARLY in the query does not smuggle a real key past the fallback");
+  ok(findIdentifierLeak("CVE-2024-1234 and RFC-7231 and ISO-8601", { ok: false, keys: [] }) === null,
+    "…while a query of nothing but public standards is still allowed");
+  ok(findIdentifierLeak("ACME-1 then UTF-8", { ok: false, keys: [] }) !== null, "…in either order");
 }
 
 // The matcher itself, and what it will put into a regex.

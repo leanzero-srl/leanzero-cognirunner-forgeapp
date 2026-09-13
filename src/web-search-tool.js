@@ -86,6 +86,12 @@ export const WEB_SEARCH_SYSTEM_RULE =
  * Order matters only for which kind is REPORTED first; every row is evaluated against
  * the raw query, so a query with two kinds is refused for the first one listed.
  */
+/**
+ * The issue-key SHAPE, named because two things use it and they must not drift: the table
+ * row below and the all-matches scanner in shapeLooksLikeIssueKey.
+ */
+const ISSUE_KEY_SHAPE = /\b[A-Z][A-Z0-9_]{1,9}-\d{1,6}\b/;
+
 export const IDENTIFIER_PATTERNS = Object.freeze([
   // Atlassian account id: the `712020:` (or any numeric realm) prefix followed by hex.
   { id: "accountId", kind: "an Atlassian account id", re: /\b\d{6}:[0-9a-fA-F]{8}/ },
@@ -93,8 +99,9 @@ export const IDENTIFIER_PATTERNS = Object.freeze([
   { id: "atlassianHost", kind: "an Atlassian site address", re: /\b[A-Za-z0-9][A-Za-z0-9-]*\.atlassian\.net\b/ },
   { id: "email", kind: "an e-mail address", re: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/ },
   { id: "uuid", kind: "a UUID", re: /\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b/ },
-  // Jira issue key. See NON_KEY_PREFIXES below for why this one needs a deny-list.
-  { id: "issueKey", kind: "a Jira issue key", re: /\b[A-Z][A-Z0-9_]{1,9}-\d{1,6}\b/ },
+  // Jira issue key. Decided by the TENANT'S project keys (F-395); this shape is the
+  // fallback for a failed read — see NON_KEY_PREFIXES and shapeLooksLikeIssueKey.
+  { id: "issueKey", kind: "a Jira issue key", re: ISSUE_KEY_SHAPE },
 ]);
 
 /**
@@ -167,6 +174,26 @@ export const matchesTenantIssueKey = (query, keys) => {
 };
 
 /**
+ * THE SHAPE FALLBACK, used only when the tenant's project list could not be read.
+ *
+ * F-400: this used to take the FIRST shape match and, if its prefix was deny-listed,
+ * `continue` past the WHOLE query — so "UTF-8 error in ACME-1234" was allowed, carrying a
+ * real issue key to the search engine on the strength of an unrelated public token earlier
+ * in the sentence. One innocent match cannot vouch for the rest of the string. EVERY match
+ * is examined, and ANY match whose prefix is not a known public standard refuses.
+ *
+ * The matched text is examined here and DISCARDED — it never reaches the refusal, the log
+ * or the tool result.
+ */
+const shapeLooksLikeIssueKey = (q) => {
+  const scan = new RegExp(ISSUE_KEY_SHAPE.source, "g");
+  for (const m of q.matchAll(scan)) {
+    if (!NON_KEY_PREFIXES.has(String(m[0]).split("-")[0].toUpperCase())) return true;
+  }
+  return false;
+};
+
+/**
  * Refusal check. Returns `null` when the query is clean, or
  * `{ id, kind, message }` when it is not. NEVER returns the offending text.
  *
@@ -190,14 +217,7 @@ export const findIdentifierLeak = (query, projectKeys = null) => {
         // The tenant's own keys decide it. The shape regex is not consulted at all: it is
         // upper-case-anchored and would miss "api-12", which leaks just as well.
         if (!matchesTenantIssueKey(q, projectKeys.keys)) continue;
-      } else {
-        const m = q.match(row.re);
-        if (!m) continue;
-        // Subtract the public-standard shapes. `m[0]` is examined here and DISCARDED —
-        // it is never put into the refusal, the log or the tool result.
-        const prefix = String(m[0]).split("-")[0].toUpperCase();
-        if (NON_KEY_PREFIXES.has(prefix)) continue;
-      }
+      } else if (!shapeLooksLikeIssueKey(q)) continue;
     } else if (!row.re.test(q)) continue;
     return {
       id: row.id,

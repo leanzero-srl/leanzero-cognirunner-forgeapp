@@ -802,9 +802,19 @@ export const capsAllow = (caps, { owed = false, capsPerHour = VA_LIMITS.capsPerH
  * human, and storage misbehaving is exactly when a runaway happens. This is the one place
  * the VA differs from `lst_brake` (src/listeners.js:77), which fails open by design.
  *
- * Note the asymmetry that is NOT a bug: a failed WRITE still returns `caps_write_failed`
- * with the projected counts, because there the counter was read correctly and only the
- * note was lost. A failed READ cannot be projected from anything.
+ * A FAILED WRITE BLOCKS TOO, AND FOR THE SAME REASON (F-458). This used to be documented
+ * as an asymmetry that was "not a bug": the read had worked, so the projected counts were
+ * honest and only the note was lost. That reasoning holds for ONE post and falls apart at
+ * the second. A slot that is spent but never recorded is a slot that can be spent again,
+ * and again, for as long as the write keeps failing — which is precisely when storage is
+ * misbehaving and precisely when a runaway is possible. The counters are the ONLY brake
+ * between a looping agent and an unbounded number of comments on somebody's issues.
+ *
+ * ONE DIRECTION, WRITTEN ONCE: the cap is spent BEFORE speech, or the speech does not
+ * happen. Over-counting by one on a post that later fails is the safe error; under-
+ * counting is not, because the safe error costs one reply and the unsafe one has no floor.
+ * Post gate 7 treats `{ok:false}` as a BLOCK whatever the reason, so there is no branch
+ * left in which a caller can read one of these two faults as permissive.
  */
 export const bumpCaps = async (store, agent, { owed = false, now = Date.now() } = {}) => {
   const caps = await readCaps(store, agent, { now });
@@ -826,9 +836,13 @@ export const bumpCaps = async (store, agent, { owed = false, now = Date.now() } 
   const wrote = [await write(b.day, caps.day + 1)];
   if (owed) wrote.push(await write(b.owedHour, caps.owedHour + 1));
   else wrote.push(await write(b.hour, caps.hour + 1));
+  const allWritten = wrote.every(Boolean);
   return {
-    ok: wrote.every(Boolean),
-    ...(wrote.every(Boolean) ? {} : { reason: "caps_write_failed" }),
+    ok: allWritten,
+    // `error` as well as `reason`, matching the read fault's shape, so a caller cannot
+    // tell the two apart by accident and treat one of them as survivable (F-458).
+    ...(allWritten ? {} : { reason: "caps_write_failed", error: "caps_write_failed" }),
+    bumped: allWritten,
     owed: Boolean(owed),
     buckets: b,
     day: caps.day + 1,

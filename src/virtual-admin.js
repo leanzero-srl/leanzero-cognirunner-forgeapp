@@ -1294,10 +1294,21 @@ export const runVaPost = async ({ agent, tickId = null, deps: injected = {} } = 
       });
       if (!allowed.allowed) { note(issueKey, `gate.caps.${allowed.reason}`); continue; }
       const bumped = await bumpCaps(deps.store, agentId, { owed, now });
-      if (!bumped.ok && bumped.reason === "caps-read-fault") {
-        // A bump that could not read cannot be projected, so nothing was written and the
-        // counter is unknown. Unknown BLOCKS: the thing being braked here is speech.
-        note(issueKey, "gate.caps.caps-read-fault");
+      if (!bumped.ok) {
+        // ANY BUMP FAILURE BLOCKS — read fault or write fault, ONE direction (F-458).
+        //
+        // A read fault cannot be projected from anything, so the counter is unknown, and
+        // unknown blocks. A WRITE fault used to be allowed through on the reasoning that
+        // the read had worked and only the note was lost — which holds for one post and
+        // fails at the second: a slot spent but never recorded can be spent again, and
+        // again, for as long as the write keeps failing. That is exactly when storage is
+        // misbehaving and exactly when a runaway is possible, and these counters are the
+        // only brake between a looping agent and an unbounded number of comments on
+        // somebody's issues.
+        //
+        // The cap is spent BEFORE speech, or the speech does not happen. Over-counting by
+        // one costs one reply; under-counting has no floor.
+        note(issueKey, `gate.caps.${bumped.reason || "caps_bump_failed"}`);
         continue;
       }
 

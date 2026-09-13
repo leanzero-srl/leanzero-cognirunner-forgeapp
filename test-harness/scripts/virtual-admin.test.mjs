@@ -1357,5 +1357,62 @@ reset();
 }
 
 
+
+/* ══ F-458 — A CAPS WRITE FAULT BLOCKS, LIKE A CAPS READ FAULT ════════════ */
+{
+  // ONE DIRECTION: the cap is spent BEFORE speech, or the speech does not happen. A write
+  // fault used to be allowed through, on the reasoning that the read had worked and only
+  // the note was lost. That holds for ONE post and fails at the second — a slot spent but
+  // never recorded can be spent again, and again, for as long as the write keeps failing,
+  // which is exactly when storage is misbehaving and exactly when a runaway is possible.
+
+  // A store that READS fine and refuses to write the CAPS keys only. Everything else must
+  // keep working, or the test proves the store is broken rather than that the gate holds.
+  const capsBlindStore = (inner) => ({
+    get: (k) => inner.get(k),
+    set: async (k, v, o) => { if (String(k).startsWith("va_caps:")) throw new Error("kvs write down"); return inner.set(k, v, o); },
+    delete: (k) => inner.delete(k),
+  });
+
+  reset();
+  await stageDraft();
+  const d = postDeps({ store: capsBlindStore(kvs) });
+  const r = await V.runVaPost({ agent: vaJob(), tickId: "t-caps-write", deps: d });
+  eq(r.posted, 0, "caps.BLOCK_write_fault — an unrecorded slot is a slot that can be spent twice");
+  eq(d.__commented.length, 0, "caps: …and nothing reached Jira");
+  ok(r.skipped.some((x) => x.reason === "gate.caps.caps_write_failed"), "caps: the skip names the WRITE fault specifically");
+  eq((await L.readItem(kvs, AG, "SUP-1")).row.state, "staged", "caps: the draft survives — it is a fault, not a refusal of the draft");
+
+  // …and the read fault still blocks, by its own name, so the two are distinguishable in
+  // a receipt even though they have the same consequence.
+  reset();
+  await stageDraft();
+  const readBlind = {
+    get: async (k) => { if (String(k).startsWith("va_caps:")) throw new Error("kvs read down"); return kvs.get(k); },
+    set: (k, v, o) => kvs.set(k, v, o),
+    delete: (k) => kvs.delete(k),
+  };
+  const d2 = postDeps({ store: readBlind });
+  const r2 = await V.runVaPost({ agent: vaJob(), tickId: "t-caps-read", deps: d2 });
+  eq(r2.posted, 0, "caps.BLOCK_read_fault");
+  eq(d2.__commented.length, 0, "caps: …and nothing reached Jira");
+
+  // THE BUMP ITSELF reports the write fault honestly rather than as a success.
+  reset();
+  const bumped = await L.bumpCaps(capsBlindStore(kvs), AG, { owed: false });
+  eq(bumped.ok, false, "bumpCaps.BLOCK_reports_a_write_fault");
+  eq(bumped.reason, "caps_write_failed", "bumpCaps: …by name");
+  eq(bumped.error, "caps_write_failed", "bumpCaps: …in the SAME shape as the read fault, so neither reads as survivable");
+  eq(bumped.bumped, false, "bumpCaps: and it does not claim to have bumped anything");
+
+  // The healthy path is untouched.
+  reset();
+  const good = await L.bumpCaps(kvs, AG, { owed: false });
+  eq(good.ok, true, "bumpCaps.ALLOW_healthy_store");
+  eq(good.bumped, true, "bumpCaps: …and says it bumped");
+  eq(good.day, 1, "bumpCaps: the day bucket moved");
+}
+
+
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

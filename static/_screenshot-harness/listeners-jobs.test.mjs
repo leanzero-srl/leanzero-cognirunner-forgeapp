@@ -1812,6 +1812,129 @@ try {
     await close(env);
   }
 
+  /* ---------------- F-462 — the knowledge binding, the write brake and the premade listener
+   *
+   * Three record fields that existed since 1.4 and that only the REST API could reach:
+   * `agent.skillIds` / `agent.useMemories` (the agent's knowledge), a job's
+   * `maxWritesPerRun` (its blast radius), and the catalogue's one premade listener. An
+   * admin could not bind a skill, could not cap a job's writes and could not create the
+   * PR-review listener from this panel at all.
+   *
+   * What is asserted is the PAYLOAD that leaves the form and the REFUSALS that stop it:
+   * the cap refuses the fifth skill instead of silently dropping one, the write cap is
+   * clamped to the record's own bounds, the premade cannot be saved without the
+   * repositories it must run for, and a braked run says so in its own badge.
+   * Both themes: every one of these is a new hue. */
+  for (const theme of ["light", "dark"]) {
+    console.log(`F-462 ${theme} knowledge binding + write brake + premade listener`);
+    const env = await openAdmin(browser, theme);
+    const { page } = env;
+    try {
+      await tab(page, "Listeners");
+      await page.locator(".lst-table").waitFor({ timeout: 10000 });
+
+      /* ── the premade row, offered from the catalogue ── */
+      ok(await page.locator(".lst-premade-btn").count() === 1, "F-462 one premade listener is offered");
+      ok(await page.locator(".lst-premade-name", { hasText: "Review every opened PR" }).count() === 1, "F-462 the premade is the PR review starter");
+      await page.locator(".lst-premade-btn").first().click();
+      await page.locator(".lst-editor").waitFor({ timeout: 10000 });
+      ok(await page.locator("#lst-name").inputValue() === "Review every opened PR", "F-462 the editor opens pre-filled from the seed");
+      ok(await page.locator(".mode-btn.mode-agent[aria-checked='true']").count() === 1, "F-462 the premade opens in agent mode");
+      ok(await page.locator(".evp-selected .evp-chip").count() === 2, "F-462 both git PR events are selected");
+      ok(await page.locator(".evp-repos-input").count() === 1, "F-462 the repositories control is present for a git event");
+
+      /* THE REQUIRED DECISION: no repository, no save. Nothing may reach the backend. */
+      await page.locator(".section-actions .btn-edit", { hasText: /^Save$/ }).click();
+      await page.locator(".mls-toast", { hasText: "repository" }).waitFor({ timeout: 5000 });
+      ok(!(await page.evaluate(() => window.__CALLS__)).some((c) => c.name === "saveListener"), "F-462 a premade with no repositories is never saved");
+
+      /* ── the skills picker: four, and the fifth is REFUSED, not swallowed ── */
+      await page.locator(".agc-knowledge .va-chips").waitFor({ timeout: 10000 });
+      const skillChips = page.locator(".agc-knowledge .va-chip");
+      const total = await skillChips.count();
+      ok(total >= 5, "F-462 the picker lists the instance's skills");
+      for (let i = 0; i < 4; i++) await skillChips.nth(i).click();
+      ok(await page.locator(".agc-knowledge .va-chip.on").count() === 4, "F-462 four skills bind");
+      ok((await page.locator(".va-chip-cap").first().innerText()).includes("4/4"), "F-462 the cap is shown as 4/4");
+      const chipStyle = await page.locator(".agc-knowledge .va-chip.on").first().evaluate((el) => { const cs = getComputedStyle(el); return { bg: cs.backgroundColor, color: cs.color, bl: cs.borderLeftWidth, bt: cs.borderTopWidth }; });
+      ok(chipStyle.bg === (theme === "dark" ? "rgb(139, 92, 246)" : "rgb(124, 58, 237)"), `F-462 ${theme} a bound skill wears the solid skills purple (got ${chipStyle.bg})`);
+      ok(chipStyle.color === "rgb(255, 255, 255)" && chipStyle.bl === chipStyle.bt, "F-462 white text, no rail on the bound-skill chip");
+      await skillChips.nth(4).click();
+      ok(await page.locator(".agc-knowledge .va-chip.on").count() === 4, "F-462 the fifth skill is refused, and no earlier pick is dropped");
+      await page.locator(".agc-memories input").check();
+
+      /* ── the saved payload: the premade's shape, plus the binding ── */
+      await page.locator(".evp-repos-input").fill("Acme/Web, acme/api");
+      await page.locator(".evp-repos-input").blur();
+      await page.locator(".section-actions .btn-edit", { hasText: /^Save$/ }).click();
+      await page.locator(".mls-toast", { hasText: "Listener saved" }).waitFor({ timeout: 5000 });
+      const savedL = await page.evaluate(() => window.__CALLS__.filter((c) => c.name === "saveListener").at(-1).payload.listener);
+      ok(Array.isArray(savedL.filters.repos) && savedL.filters.repos.length === 2, "F-462 the repositories ride the saved payload");
+      ok(savedL.agentlessTaskType === "gitreview", "F-462 agentlessTaskType survives the form");
+      ok(savedL.mode === "agent" && Array.isArray(savedL.agent.skillIds) && savedL.agent.skillIds.length === 4, "F-462 four skill ids are saved on the agent");
+      ok(savedL.agent.useMemories === true, "F-462 the memories toggle is saved");
+      await shot(page, `F-462-${theme}-premade-knowledge`);
+
+      /* ── the unknown-skill refusal, rendered by name where the binding is ── */
+      await page.evaluate(() => { window.__UNKNOWN_SKILL__ = "sk_ghost"; });
+      await page.locator(".section-actions .btn-edit", { hasText: /^Save$/ }).click();
+      const refusal = page.locator(".agc-knowledge-refusal");
+      await refusal.waitFor({ timeout: 5000 });
+      const rtxt = (await refusal.innerText()).replace(/\s+/g, " ");
+      ok(/sk_ghost/.test(rtxt), "F-462 the refusal names the skill the backend could not find");
+      ok(await page.locator(".agc-kr-chip").count() === 4, "F-462 every bound skill is listed back, by the name the picker knows");
+      const krChip = await page.locator(".agc-kr-chip").first().evaluate((el) => { const cs = getComputedStyle(el); return { bg: cs.backgroundColor, bl: cs.borderLeftWidth, bt: cs.borderTopWidth, text: el.innerText }; });
+      ok(!/^sk\d/.test(krChip.text.trim()), `F-462 a known binding is listed by NAME, not by id (got ${krChip.text.trim()})`);
+      ok(krChip.bl === krChip.bt, "F-462 no rail on the listed bindings");
+      const rstyle = await refusal.evaluate((el) => { const cs = getComputedStyle(el); return { bg: cs.backgroundColor, bl: cs.borderLeftWidth, bt: cs.borderTopWidth, color: cs.color }; });
+      ok(rstyle.bl === rstyle.bt, "F-462 the refusal has NO left accent rail");
+      ok(rstyle.bg === (theme === "dark" ? "rgb(239, 68, 68)" : "rgb(220, 38, 38)"), `F-462 ${theme} the refusal is a solid red, never a tint (got ${rstyle.bg})`);
+      ok(rstyle.color === "rgb(255, 255, 255)", "F-462 white text on the refusal");
+      await shot(page, `F-462-${theme}-unknown-skill`);
+      await page.evaluate(() => { window.__UNKNOWN_SKILL__ = null; });
+
+      /* ── the listener's own brake badge ── */
+      await page.evaluate(() => { window.__LST_BRAKE__ = true; });
+      await page.locator(".lst-test .btn-solid", { hasText: "Run test" }).click();
+      await page.locator(".lst-test .runres-brake").waitFor({ timeout: 10000 });
+      ok((await page.locator(".lst-test .runres-brake").innerText()).includes("BRAKED (agent-runs)"), "F-462 a tenant-brake run says BRAKED (agent-runs)");
+      await page.evaluate(() => { window.__LST_BRAKE__ = false; });
+
+      /* ── the job write cap: clamped to the record's own bounds ── */
+      await tab(page, "Scheduled Jobs");
+      await page.locator(".lst-table").waitFor({ timeout: 10000 });
+      await page.locator("tr", { hasText: "Weekly release digest" }).locator("button", { hasText: "Edit" }).click();
+      await page.locator(".lst-editor").waitFor({ timeout: 10000 });
+      const writes = page.locator("#job-maxwrites");
+      await writes.waitFor({ timeout: 5000 });
+      ok((await page.locator(".job-writes .hint").innerText()).includes("The job stops writing after this many changes in one run and records the rest as not processed"), "F-462 the write cap says what it does");
+      ok((await page.locator(".job-writes .hint").innerText()).includes("default 200"), "F-462 the default is shown");
+      await writes.fill("5000");
+      ok(await writes.inputValue() === "1000", "F-462 above the ceiling clamps to 1000");
+      await writes.fill("-40");
+      ok(await writes.inputValue() === "0", "F-462 below the floor clamps to 0 (a real value, not unset)");
+      await writes.fill("2");
+      await page.locator(".section-actions .btn-edit", { hasText: /^Save$/ }).click();
+      await page.locator(".mls-toast", { hasText: "Job saved" }).waitFor({ timeout: 5000 });
+      const savedJ = await page.evaluate(() => window.__CALLS__.filter((c) => c.name === "saveScheduledJob").at(-1).payload.job);
+      ok(savedJ.maxWritesPerRun === 2, `F-462 the cap rides the saved job (got ${savedJ.maxWritesPerRun})`);
+
+      /* ── and the braked run reports it ── */
+      await page.evaluate(() => { window.__JOB_BRAKE__ = true; });
+      await page.locator(".section-actions .btn-small", { hasText: "Save & run now" }).click();
+      await page.locator(".runres-brake").waitFor({ timeout: 20000 });
+      const btxt = await page.locator(".runres-brake").first().innerText();
+      ok(btxt.replace(/\s+/g, " ").includes("BRAKED (job-writes 2/2)"), `F-462 the run says BRAKED (job-writes 2/2) (got ${btxt})`);
+      const bstyle = await page.locator(".runres-brake").first().evaluate((el) => { const cs = getComputedStyle(el); return { bg: cs.backgroundColor, color: cs.color, bl: cs.borderLeftWidth, bt: cs.borderTopWidth }; });
+      ok(bstyle.bg === (theme === "dark" ? "rgb(245, 158, 11)" : "rgb(217, 119, 6)"), `F-462 ${theme} the brake badge is solid amber (got ${bstyle.bg})`);
+      ok(bstyle.color === "rgb(255, 255, 255)" && bstyle.bl === bstyle.bt, "F-462 white text, no rail on the brake badge");
+      ok(await page.locator("select").count() === 0, "F-462 no native <select> anywhere in these editors");
+      await shot(page, `F-462-${theme}-job-write-brake`);
+      ok(env.errors.length === 0, `F-462 ${theme} no page errors: ` + env.errors.join(" | "));
+    } catch (e) { fail++; console.log(`  ✗ F-462 ${theme} threw: ` + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
 } finally {
   await browser.close();
 }

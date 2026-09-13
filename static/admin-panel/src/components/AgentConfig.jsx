@@ -8,10 +8,13 @@
 import React, { useEffect, useState } from "react";
 import { AGENT_ACTIONS, DEFAULT_AGENT_ACTIONS, MAX_AGENT_ROUNDS, DEFAULT_AGENT_ROUNDS, agentActionNamespace } from "../../../../src/shared/agent-actions.js";
 import { agentCapabilityCopy } from "../../../../src/shared/edition.js";
+import { MAX_RULE_SKILL_IDS } from "../../../../src/shared/registry-limits.js";
+import { ChipPicker } from "./VaPickers";
+import { isPermissionRefusal, permissionRefusalText } from "./refusal";
 
 // "AI agent" mode editor: plain-language instructions + the allow-list of actions
 // the agent may take (one tool each; src/shared/agent-actions.js is the single source).
-export default function AgentConfig({ value, onChange, runtime = "listener", scoped = false, disabled = false, invoke = null }) {
+export default function AgentConfig({ value, onChange, runtime = "listener", scoped = false, disabled = false, invoke = null, knowledgeRefusal = null }) {
   /* 1.4 commit 6 - THE CODE COLUMN'S GATE.
      The verdict is READ, never derived. A frontend that inferred "Coder is on" from the
      edition would be wrong for three of the five reasons (a BYOK site is enabled on
@@ -29,6 +32,30 @@ export default function AgentConfig({ value, onChange, runtime = "listener", sco
       .then((r) => { if (live) setCapability(r && r.success ? r : { enabled: false, reason: "unknown" }); })
       // A THROW is transport. It is still "we do not know", which is still off.
       .catch(() => { if (live) setCapability({ enabled: false, reason: "unknown" }); });
+    return () => { live = false; };
+  }, [invoke]);
+  /* F-462 - THE KNOWLEDGE BINDING (`agent.skillIds` / `agent.useMemories`, 1.4 commit 13b).
+     The record has carried both fields since 1.4 and only the REST API could set them, so a
+     skill written for an agent listener had no way into one from this panel.
+
+     The skills list is READ, never assumed: `getSkills` is the same resolver the Skills tab
+     uses and carries the same viewer floor, so a reader who may not see skills gets the
+     refusal sentence instead of an empty picker claiming this instance has none. A THROW is
+     transport and lands in the same "we could not ask" state - it must never be spelled
+     "there are no skills", which would read as an answer about the instance. */
+  const [skills, setSkills] = useState(null);   // null = not yet answered
+  const [skillsNote, setSkillsNote] = useState(null);
+  useEffect(() => {
+    if (!invoke) { setSkills([]); return; }
+    let live = true;
+    invoke("getSkills")
+      .then((r) => {
+        if (!live) return;
+        if (r && r.success) { setSkills(Array.isArray(r.skills) ? r.skills.filter((s) => s && s.enabled !== false) : []); setSkillsNote(null); }
+        else if (isPermissionRefusal(r)) { setSkills([]); setSkillsNote(permissionRefusalText(r, "skills")); }
+        else { setSkills([]); setSkillsNote((r && r.error) || "Skills could not be loaded, so none can be bound right now."); }
+      })
+      .catch(() => { if (live) { setSkills([]); setSkillsNote("Skills could not be loaded, so none can be bound right now."); } });
     return () => { live = false; };
   }, [invoke]);
   const v = value || { instructions: "", allowedActions: DEFAULT_AGENT_ACTIONS, maxRounds: DEFAULT_AGENT_ROUNDS };
@@ -110,6 +137,60 @@ export default function AgentConfig({ value, onChange, runtime = "listener", sco
           </div>
         </div>
         <p className="hint"><strong>Finish</strong> is always available: the agent ends every run with a one-line summary that lands in the execution log.</p>
+      </div>
+      {/* F-462 - Knowledge. Same cap the record enforces (MAX_RULE_SKILL_IDS, read from
+          registry-limits so the number cannot drift), same ChipPicker the Virtual
+          Administrator's "Skills it may use" row uses: a rule binds a VOICE, not a library. */}
+      <div className="form-group agc-knowledge">
+        <span className="label">Knowledge</span>
+        <p className="hint">Bind up to {MAX_RULE_SKILL_IDS} skills the agent may apply on every run, and choose whether it reads this instance&apos;s memories. Both cost tokens on every round, so nothing is bound unless you say so.</p>
+        {skills === null ? (
+          <div className="hint">Loading skills…</div>
+        ) : skillsNote ? (
+          <div className="access-note" role="note">{skillsNote}</div>
+        ) : (
+          <ChipPicker
+            options={skills.map((s) => ({ value: String(s.id), label: String(s.name || s.id) }))}
+            values={Array.isArray(v.skillIds) ? v.skillIds : []}
+            max={MAX_RULE_SKILL_IDS}
+            ariaLabel="Skills this agent may use"
+            disabled={disabled}
+            onChange={(skillIds) => set({ skillIds })}
+            empty="No skills on this instance yet. Write one in the Skills tab, then bind it here."
+          />
+        )}
+        {/* THE REFUSAL, BY NAME. `assertKnownSkillIds` (src/listeners.js) refuses a save whose
+            binding names a skill this instance does not have, and the id alone is not an
+            answer an admin can act on: every bound skill is listed back with the name the
+            picker knows, and the ones that are not in the list are marked NOT FOUND and can
+            be dropped in one click. A binding that silently bound nothing is the defect the
+            backend refusal exists to prevent - so the UI must not re-hide it. */}
+        {knowledgeRefusal && (
+          <div className="agc-knowledge-refusal" role="alert">
+            <span className="agc-kr-title">Skill not found</span>
+            <span className="agc-kr-text">{knowledgeRefusal}</span>
+            <span className="agc-kr-list">
+              {(Array.isArray(v.skillIds) ? v.skillIds : []).map((id) => {
+                const known = (skills || []).find((s) => String(s.id) === String(id));
+                return (
+                  <span key={id} className={`agc-kr-chip ${known ? "" : "missing"}`}>
+                    {known ? String(known.name || known.id) : id}
+                    {!known && (
+                      <>
+                        <span className="agc-kr-flag">NOT FOUND</span>
+                        <button type="button" className="agc-kr-drop" onClick={() => set({ skillIds: (v.skillIds || []).filter((x) => String(x) !== String(id)) })} disabled={disabled} aria-label={`Remove ${id}`}>×</button>
+                      </>
+                    )}
+                  </span>
+                );
+              })}
+            </span>
+          </div>
+        )}
+        <label className="lst-check agc-memories">
+          <input type="checkbox" checked={v.useMemories === true} onChange={(e) => set({ useMemories: e.target.checked })} disabled={disabled} />
+          <span><strong>Use memories</strong>: the agent reads this instance&apos;s learned facts as advisory context on every round. Off by default.</span>
+        </label>
       </div>
       <div className="form-group agc-rounds">
         <label className="label" htmlFor="agc-rounds">Max tool rounds</label>

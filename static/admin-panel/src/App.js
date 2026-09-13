@@ -2881,6 +2881,38 @@ const injectStyles = () => {
     .agc-action-desc { font-size: 11px; color: var(--text-secondary); line-height: 1.4; }
     .agc-rounds { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
     .agc-rounds .label { margin: 0; }
+    /* F-462 - knowledge binding, the write brake, the brake badge and the premade row.
+       Solid fills only, white text on every badge, and a dark override for each hue. */
+    .agc-knowledge .va-chips { margin-top: 6px; }
+    /* Skills are purple everywhere in this app, so a bound skill is purple here too. */
+    .agc-knowledge .va-chip.on { background: #7c3aed; border-color: #7c3aed; color: #fff; }
+    .agc-memories { margin-top: 10px; }
+    .agc-knowledge-refusal { margin-top: 10px; padding: 10px 12px; border-radius: var(--r-md, 8px); background: #dc2626; color: #fff; display: flex; flex-direction: column; gap: 6px; }
+    .agc-kr-title { font-size: 12px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; }
+    .agc-kr-text { font-size: 12.5px; line-height: 1.45; }
+    .agc-kr-list { display: flex; flex-wrap: wrap; gap: 6px; }
+    .agc-kr-chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 999px; background: #0f172a; color: #fff; font-size: 12px; font-weight: 700; }
+    .agc-kr-chip.missing { background: #fff; color: #991b1b; }
+    .agc-kr-flag { font-size: 10px; font-weight: 800; letter-spacing: 0.05em; color: #991b1b; }
+    .agc-kr-drop { border: 0; background: #991b1b; color: #fff; border-radius: 999px; width: 16px; height: 16px; line-height: 1; font-size: 12px; font-weight: 800; cursor: pointer; }
+    .job-writes { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    .job-writes .label { margin: 0; }
+    .runres-brake { padding: 3px 9px; border-radius: 4px; background: #d97706; color: #fff; font-size: 11px; font-weight: 800; letter-spacing: 0.04em; }
+    .lst-premade { margin: 10px 0 14px; }
+    .lst-premade-label { display: block; font-size: 11px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-secondary); margin-bottom: 8px; }
+    .lst-premade-rows { display: flex; flex-wrap: wrap; gap: 10px; }
+    .lst-premade-btn { flex: 1 1 320px; text-align: left; padding: 12px 14px; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); background: var(--card-bg, var(--input-bg)); color: var(--text-color); cursor: pointer; display: flex; flex-direction: column; gap: 4px; }
+    .lst-premade-btn:hover { border-color: #7c3aed; }
+    .lst-premade-name { font-size: 13.5px; font-weight: 700; }
+    .lst-premade-help { font-size: 11.5px; color: var(--text-secondary); line-height: 1.45; }
+    html[data-color-mode="dark"] .runres-brake { background: #f59e0b; }
+    html[data-color-mode="dark"] .agc-knowledge-refusal { background: #ef4444; }
+    html[data-color-mode="dark"] .agc-kr-chip { background: #1e293b; }
+    html[data-color-mode="dark"] .agc-kr-chip.missing { background: #fff; color: #b91c1c; }
+    html[data-color-mode="dark"] .agc-kr-flag { color: #b91c1c; }
+    html[data-color-mode="dark"] .agc-kr-drop { background: #b91c1c; }
+    html[data-color-mode="dark"] .lst-premade-btn:hover { border-color: #8b5cf6; }
+    html[data-color-mode="dark"] .agc-knowledge .va-chip.on { background: #8b5cf6; border-color: #8b5cf6; color: #fff; }
     /* API access */
     .apx { padding: 20px; margin-top: 20px; }
     .apx-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 14px; }

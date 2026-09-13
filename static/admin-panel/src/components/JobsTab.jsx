@@ -14,6 +14,7 @@ import { showToast } from "./toast";
 import { confirmDialog } from "../confirmDialog";
 import { describeCron, validateCron } from "../../../../src/shared/cron.js";
 import { DEFAULT_AGENT_ACTIONS, DEFAULT_AGENT_ROUNDS } from "../../../../src/shared/agent-actions.js";
+import { JOB_DEFAULT_MAX_WRITES_PER_RUN, JOB_MAX_WRITES_PER_RUN, JOB_MIN_WRITES_PER_RUN } from "../../../../src/shared/registry-limits.js";
 
 const newStep = () => ({ id: `fn-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, name: "", conditionPrompt: "", operationType: "work_item_query", operationPrompt: "", endpoint: "", method: "GET", variableName: "result1", code: "", includeBackoff: false });
 const guessZone = () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; } catch { return "UTC"; } };
@@ -21,6 +22,9 @@ const emptyDraft = () => ({
   id: null, name: "", description: "", enabled: true,
   schedule: { cron: "0 9 * * 1-5", timeZone: guessZone() },
   scope: { jql: "", maxIssues: 50 }, mode: "script",
+  // F-462 - the per-run write brake (1.4 commit 13d). The record has always clamped it;
+  // until now only the REST API could set it, so a job's blast radius was un-editable here.
+  maxWritesPerRun: JOB_DEFAULT_MAX_WRITES_PER_RUN,
   agent: { instructions: "", allowedActions: DEFAULT_AGENT_ACTIONS, maxRounds: DEFAULT_AGENT_ROUNDS },
   simulationMode: false, suppressNotifications: false,
 });
@@ -44,6 +48,10 @@ export default function JobsTab({ invoke, isAdmin, userRole, roleUnknown = false
   const [saving, setSaving] = useState(false);
   const [running, setRunning] = useState(null); // { id, taskId, status }
   const [runResult, setRunResult] = useState(null);
+  // F-462 - the backend's `unknown-skill` refusal, held so AgentConfig can render it by
+  // name beside the picker. Cleared on every new save attempt: a refusal about a binding
+  // the admin has since changed is a claim we can no longer make.
+  const [knowledgeRefusal, setKnowledgeRefusal] = useState(null);
   const loadToken = useRef(0);
   const pollRef = useRef(0);
   const editorToken = useRef(0);
@@ -142,7 +150,7 @@ export default function JobsTab({ invoke, isAdmin, userRole, roleUnknown = false
 
   // editor
   const resetEditor = () => { editorToken.current += 1; setSaving(false); setBusyId(null); return editorToken.current; };
-  const openNew = () => { resetEditor(); setDraft(emptyDraft()); setFunctions([newStep()]); setRunResult(null); };
+  const openNew = () => { resetEditor(); setDraft(emptyDraft()); setFunctions([newStep()]); setRunResult(null); setKnowledgeRefusal(null); };
   const openEdit = async (row) => {
     const token = resetEditor();
     setBusyId(row.id);
@@ -153,11 +161,11 @@ export default function JobsTab({ invoke, isAdmin, userRole, roleUnknown = false
       const j = r.job;
       setDraft({ ...emptyDraft(), ...j, schedule: { ...emptyDraft().schedule, ...(j.schedule || {}) }, scope: j.scope ? { maxIssues: 50, ...j.scope } : { jql: "", maxIssues: 50 }, agent: { ...emptyDraft().agent, ...(j.agent || {}) } });
       setFunctions(Array.isArray(j.functions) && j.functions.length ? j.functions : [newStep()]);
-      setRunResult(null);
+      setRunResult(null); setKnowledgeRefusal(null);
     } catch (e) { if (token === editorToken.current) showToast(e.message, "error"); }
     if (token === editorToken.current) setBusyId(null);
   };
-  const closeEditor = () => { resetEditor(); setDraft(null); setRunResult(null); load(); };
+  const closeEditor = () => { resetEditor(); setDraft(null); setRunResult(null); setKnowledgeRefusal(null); load(); };
   const patch = (p) => setDraft((d) => ({ ...d, ...p }));
   const buildPayload = () => ({ ...draft, scope: draft.scope && draft.scope.jql && draft.scope.jql.trim() ? draft.scope : null, functions: draft.mode === "script" ? functions : [] });
   const validateDraft = () => {
@@ -172,11 +180,14 @@ export default function JobsTab({ invoke, isAdmin, userRole, roleUnknown = false
     const err = validateDraft();
     if (err) { showToast(err, "error"); return null; }
     const token = editorToken.current;
-    setSaving(true);
+    setSaving(true); setKnowledgeRefusal(null);
     try {
       const r = await invoke("saveScheduledJob", { job: buildPayload() });
       if (token !== editorToken.current) return null;
       if (r.success) { setDraft((d) => ({ ...d, id: r.job.id, stats: r.job.stats })); showToast("Job saved"); if (andClose) closeEditor(); return r.job; }
+      // The skill binding is refused BY REASON, not by matching the sentence: the panel
+      // shows it beside the picker that produced it, where the fix is.
+      if (r.reason === "unknown-skill") setKnowledgeRefusal(r.error || "A bound skill does not exist on this instance.");
       showToast(r.error || "Save failed", "error");
     } catch (e) { if (token === editorToken.current) showToast(e.message, "error"); }
     finally { if (token === editorToken.current) setSaving(false); }
@@ -224,6 +235,25 @@ export default function JobsTab({ invoke, isAdmin, userRole, roleUnknown = false
             </div>
             <span className="hint">{scoped ? "Runs once for each matching issue, sharing the job runtime budget. Write actions for the current issue; the job already iterates this JQL scope." : "Runs once per schedule with no current issue. Search for issues in the code or AI instructions if needed, then act on those results."}</span>
           </div>
+          {/* F-462 - the WRITE BRAKE. A run budget, not a per-issue one: the job stops at
+              this many changes and every issue it had not reached is recorded as not
+              processed, which is what the run result then says. 0 is a real value (a job
+              that may read and never write), so it is not treated as "unset". */}
+          <div className="form-group job-writes">
+            <label className="label" htmlFor="job-maxwrites">Writes per run</label>
+            <input
+              id="job-maxwrites" type="number" className="schp-num"
+              min={JOB_MIN_WRITES_PER_RUN} max={JOB_MAX_WRITES_PER_RUN}
+              value={Number.isFinite(Number(draft.maxWritesPerRun)) ? draft.maxWritesPerRun : JOB_DEFAULT_MAX_WRITES_PER_RUN}
+              onChange={(e) => {
+                const raw = e.target.value;
+                if (raw === "") { patch({ maxWritesPerRun: "" }); return; }
+                patch({ maxWritesPerRun: Math.min(JOB_MAX_WRITES_PER_RUN, Math.max(JOB_MIN_WRITES_PER_RUN, Math.trunc(Number(raw)) || 0)) });
+              }}
+              onBlur={(e) => { if (e.target.value === "") patch({ maxWritesPerRun: JOB_DEFAULT_MAX_WRITES_PER_RUN }); }}
+            />
+            <span className="hint">The job stops writing after this many changes in one run and records the rest as not processed. {JOB_MIN_WRITES_PER_RUN} to {JOB_MAX_WRITES_PER_RUN}, default {JOB_DEFAULT_MAX_WRITES_PER_RUN}.</span>
+          </div>
           <div className="form-group">
             <span className="label">What happens</span>
             <p className="hint">Actions run as the CogniRunner app, using its Jira permissions.</p>
@@ -234,7 +264,7 @@ export default function JobsTab({ invoke, isAdmin, userRole, roleUnknown = false
               <FunctionBuilder functions={functions} setFunctions={setFunctions} codegenContext={codegenContext} testContext={testContext} reviewConfigType="postfunction-static" howItWorks={false} canEdit={canEdit} roleUnknown={roleUnknown} />
             </div>
           ) : (
-            <AgentConfig value={draft.agent} onChange={(agent) => patch({ agent })} runtime="job" scoped={!!scoped} invoke={invoke} />
+            <AgentConfig value={draft.agent} onChange={(agent) => patch({ agent })} runtime="job" scoped={!!scoped} invoke={invoke} knowledgeRefusal={knowledgeRefusal} />
           )}
           <div className="lst-options">
             <label className="lst-check"><input type="checkbox" checked={draft.simulationMode} onChange={(e) => patch({ simulationMode: e.target.checked })} /><span><strong>Simulation mode</strong> — reads are live, writes are logged but never executed.</span></label>

@@ -16,6 +16,7 @@ import { showToast } from "./toast";
 import { confirmDialog } from "../confirmDialog";
 import { getEvent, eventLabel, filtersForEvents, EVENT_CATEGORIES, requiresRepoFilter } from "../../../../src/shared/jira-events.js";
 import { DEFAULT_AGENT_ACTIONS, DEFAULT_AGENT_ROUNDS } from "../../../../src/shared/agent-actions.js";
+import { PREMADE_LISTENERS } from "../../../../src/shared/premade-rules-catalog.js";
 
 const newStep = () => ({ id: `fn-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, name: "", conditionPrompt: "", operationType: "work_item_query", operationPrompt: "", endpoint: "", method: "GET", variableName: "result1", code: "", includeBackoff: false });
 const emptyDraft = () => ({
@@ -53,6 +54,9 @@ export default function ListenersTab({ invoke, isAdmin, userRole, siteUrl, route
   const [testResult, setTestResult] = useState(null);
   const [sample, setSample] = useState(null);
   const [sampleLoading, setSampleLoading] = useState(false);
+  /* F-462 - the backend's `unknown-skill` refusal, handed to AgentConfig so it renders
+     beside the picker that produced it. Held by REASON, never by matching the sentence. */
+  const [knowledgeRefusal, setKnowledgeRefusal] = useState(null);
   const loadToken = useRef(0);
   const editorToken = useRef(0);
   const expandToken = useRef(0);
@@ -102,7 +106,28 @@ export default function ListenersTab({ invoke, isAdmin, userRole, siteUrl, route
   // ── editor ──
   // Responses, especially minted IDs, belong to the editor session that requested them.
   const resetEditor = () => { editorToken.current += 1; setSaving(false); setTesting(false); setSampleLoading(false); setBusyId(null); return editorToken.current; };
-  const openNew = () => { resetEditor(); setDraft(emptyDraft()); setFunctions([newStep()]); setTestResult(null); setTestKey(""); setTestEvent(""); setSample(null); };
+  const openNew = () => { resetEditor(); setDraft(emptyDraft()); setFunctions([newStep()]); setTestResult(null); setTestKey(""); setTestEvent(""); setSample(null); setKnowledgeRefusal(null); };
+  /* F-462 - PREMADE LISTENERS. The row's `seed` is a listener DRAFT, not a saved rule: it
+     opens the ordinary editor pre-filled and goes out through the ordinary saveListener
+     path, so every invariant that path enforces still applies. `filters.repos` is seeded
+     EMPTY on purpose (src/shared/premade-rules-catalog.js) and `validateDraft` below
+     refuses the save until the admin names the repositories, which is the one decision
+     nobody can make for them. `agentlessTaskType` rides the draft because it is what
+     dispatches the deterministic PR-review engine on an instance with no agent. */
+  const openPremade = (premade) => {
+    resetEditor();
+    const seed = (premade && premade.seed) || {};
+    setDraft({
+      ...emptyDraft(),
+      ...seed,
+      events: Array.isArray(premade.events) ? premade.events.slice() : [],
+      filters: { ...emptyDraft().filters, ...(seed.filters || {}) },
+      agent: { ...emptyDraft().agent, ...(seed.agent || {}) },
+      premadeKey: premade.key,
+    });
+    setFunctions([newStep()]);
+    setTestResult(null); setTestKey(""); setTestEvent((premade.events || [])[0] || ""); setSample(null); setKnowledgeRefusal(null);
+  };
   const openEdit = async (row) => {
     const token = resetEditor();
     setBusyId(row.id);
@@ -113,11 +138,11 @@ export default function ListenersTab({ invoke, isAdmin, userRole, siteUrl, route
       const l = r.listener;
       setDraft({ ...emptyDraft(), ...l, filters: { ...emptyDraft().filters, ...(l.filters || {}) }, agent: { ...emptyDraft().agent, ...(l.agent || {}) } });
       setFunctions(Array.isArray(l.functions) && l.functions.length ? l.functions : [newStep()]);
-      setTestResult(null); setTestKey(""); setTestEvent((l.events || [])[0] || ""); setSample(null);
+      setTestResult(null); setTestKey(""); setTestEvent((l.events || [])[0] || ""); setSample(null); setKnowledgeRefusal(null);
     } catch (e) { if (token === editorToken.current) showToast(e.message, "error"); }
     if (token === editorToken.current) setBusyId(null);
   };
-  const closeEditor = () => { resetEditor(); setDraft(null); load(); };
+  const closeEditor = () => { resetEditor(); setDraft(null); setKnowledgeRefusal(null); load(); };
   const patch = (p) => setDraft((d) => ({ ...d, ...p }));
   const patchFilters = (p) => setDraft((d) => ({ ...d, filters: { ...d.filters, ...p } }));
   const buildPayload = () => ({ ...draft, functions: draft.mode === "script" ? functions : [] });
@@ -137,11 +162,12 @@ export default function ListenersTab({ invoke, isAdmin, userRole, siteUrl, route
     const err = validateDraft();
     if (err) { showToast(err, "error"); return null; }
     const token = editorToken.current;
-    setSaving(true);
+    setSaving(true); setKnowledgeRefusal(null);
     try {
       const r = await invoke("saveListener", { listener: buildPayload() });
       if (token !== editorToken.current) return null;
       if (r.success) { setDraft((d) => ({ ...d, id: r.listener.id, stats: r.listener.stats })); showToast("Listener saved"); if (andClose) closeEditor(); return r.listener; }
+      if (r.reason === "unknown-skill") setKnowledgeRefusal(r.error || "A bound skill does not exist on this instance.");
       showToast(r.error || "Save failed", "error");
     } catch (e) { if (token === editorToken.current) showToast(e.message, "error"); }
     finally { if (token === editorToken.current) setSaving(false); }
@@ -266,7 +292,7 @@ export default function ListenersTab({ invoke, isAdmin, userRole, siteUrl, route
               <FunctionBuilder functions={functions} setFunctions={setFunctions} codegenContext={codegenContext} testContext={testContext} reviewConfigType="postfunction-static" howItWorks={false} canEdit={canEdit} roleUnknown={roleUnknown} />
             </div>
           ) : (
-            <AgentConfig value={draft.agent} onChange={(agent) => patch({ agent })} runtime="listener" invoke={invoke} />
+            <AgentConfig value={draft.agent} onChange={(agent) => patch({ agent })} runtime="listener" invoke={invoke} knowledgeRefusal={knowledgeRefusal} />
           )}
 
           <div className="lst-options">
@@ -322,6 +348,23 @@ export default function ListenersTab({ invoke, isAdmin, userRole, siteUrl, route
         </div>
       </div>
       {loadError && <div className="alert alert-warning">{loadError}</div>}
+      {/* F-462 - PREMADE LISTENERS, offered from the catalogue and never from a list kept
+          here: src/shared/premade-rules-catalog.js is the one home, so a row added there
+          appears here with no second edit. Each button opens the ordinary editor
+          pre-filled; nothing is saved until the admin completes it and presses Save. */}
+      {canEdit && PREMADE_LISTENERS.length > 0 && (
+        <div className="lst-premade">
+          <span className="lst-premade-label">Premade listeners</span>
+          <div className="lst-premade-rows">
+            {PREMADE_LISTENERS.map((p) => (
+              <button type="button" key={p.key} className="lst-premade-btn" onClick={() => openPremade(p)} title={p.help}>
+                <span className="lst-premade-name">{p.label}</span>
+                <span className="lst-premade-help">{p.help}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
       <div className="card lst-table-scroll" role="region" aria-label="Listeners table" tabIndex={0}>
         {loading ? (
           <div className="empty-state">Loading listeners…</div>

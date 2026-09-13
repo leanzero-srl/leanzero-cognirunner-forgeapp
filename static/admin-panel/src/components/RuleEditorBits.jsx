@@ -121,6 +121,18 @@ export function RunResultView({ result, title = "Result", titleHint = null }) {
         {typeof result.executionTimeMs === "number" && <span className="runres-ms">{result.executionTimeMs} ms</span>}
         {result.tokens > 0 && <span className="runres-ms">{result.tokens} tokens</span>}
         {result.eventUsed && <span className="runres-ms">event: {result.eventUsed}</span>}
+        {/* F-462 - THE BRAKE, SAID IN THE HEAD. A braked run is neither a failure nor a
+            clean success: it did some of the work and stopped. `brake` is the run's own
+            field ({kind, max, reason}) — "job-writes" from the per-job write cap and
+            "agent-runs" from the tenant-wide agent brake. The reason sentence already
+            renders through `recommendation`, so the badge only has to make the STOP
+            visible at a glance. A write brake trips exactly AT its limit, which is what
+            max/max says. ONE home: both tabs and the recent-log rows render through here. */}
+        {result.brake && result.brake.kind && (
+          <span className="runres-brake" title={result.brake.reason || undefined}>
+            BRAKED ({result.brake.kind}{result.brake.kind === "job-writes" && Number.isFinite(Number(result.brake.max)) ? ` ${result.brake.max}/${result.brake.max}` : ""})
+          </span>
+        )}
       </div>
       {result.reason && <div className="runres-reason">{result.reason}</div>}
       {result.testNote && <details className="runres-details"><summary>Test context</summary><div className="runres-reason">{result.testNote}</div></details>}

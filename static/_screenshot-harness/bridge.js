@@ -1843,9 +1843,22 @@ function invoke(name, payload) {
     /* listeners + scheduled jobs + API tokens (admin) */
     case "getListeners": return Promise.resolve({ success: true, listeners: LISTENER_ROWS });
     case "getListener": return Promise.resolve(LISTENER_FULL[payload && payload.id] ? { success: true, listener: LISTENER_FULL[payload.id] } : { success: false, error: "Listener not found" });
-    case "saveListener": { const l = (payload && payload.listener) || {}; return Promise.resolve({ success: true, listener: { ...l, id: l.id || "lst_new1", stats: l.stats || { runCount: 0 } } }); }
+    /* F-462 - `__UNKNOWN_SKILL__` is the backend's own `assertKnownSkillIds` refusal
+       VERBATIM (src/listeners.js): the sentence names the id, and `reason` is the
+       machine-readable half the panel branches on, never the sentence. The SAVED PAYLOAD
+       itself needs no fixture - `window.__CALLS__` already records every invoke. */
+    case "saveListener": {
+      const l = (payload && payload.listener) || {};
+      const unknown = typeof window !== "undefined" ? window.__UNKNOWN_SKILL__ : null;
+      if (unknown) {
+        return Promise.resolve({ success: false, reason: "unknown-skill", error: `agent.skillIds names a skill that does not exist on this instance: ${unknown}. Pick skills from the Skills tab.` });
+      }
+      return Promise.resolve({ success: true, listener: { ...l, id: l.id || "lst_new1", stats: l.stats || { runCount: 0 } } });
+    }
     case "deleteListener": case "setListenerEnabled": return Promise.resolve({ success: true, listener: { ...(LISTENER_FULL[payload && payload.id] || {}), enabled: payload && payload.enabled }, removed: true });
-    case "testListener": return new Promise((r) => setTimeout(() => r({ success: true, result: LISTENER_TEST_RESULT }), 300));
+    // `__LST_BRAKE__` = the tenant-wide agent-run brake tripped on this run: the run's own
+    // `brake` field, exactly as src/listeners.js takeAgentRunSlot reports it.
+    case "testListener": return new Promise((r) => setTimeout(() => r({ success: true, result: (typeof window !== "undefined" && window.__LST_BRAKE__) ? { ...LISTENER_TEST_RESULT, isValid: false, skipped: true, reason: "Agent brake: this installation started more than 120 AI agent runs in 5 minutes, so this run was skipped.", recommendation: "Agent brake: this installation started more than 120 AI agent runs in 5 minutes, so this run was skipped.", brake: { kind: "agent-runs", max: 120, reason: "Agent brake: this installation started more than 120 AI agent runs in 5 minutes, so this run was skipped." } } : LISTENER_TEST_RESULT }), 300));
     case "getEventSample": return Promise.resolve({ success: true, sample: (payload && payload.eventType === "avi:jira:created:issue") ? { eventType: "avi:jira:created:issue", capturedAt: "2026-09-01T08:00:00.000Z", payload: { eventType: "avi:jira:created:issue", atlassianId: ACCT, issue: { id: "10042", key: "PROJ-42", fields: { summary: "Payment retry fails", issuetype: { name: "Bug" }, project: { key: "PROJ" } } } } } : null });
     case "getScheduledJobs": return Promise.resolve({ success: true, jobs: JOB_ROWS });
     case "getScheduledJob": return Promise.resolve(JOB_FULL[payload && payload.id] ? { success: true, job: JOB_FULL[payload.id] } : { success: false, error: "Scheduled job not found" });
@@ -1862,6 +1875,11 @@ function invoke(name, payload) {
     case "runScheduledJobNow": return Promise.resolve({ success: true, async: true, taskId: "task-job-1" });
     case "previewSchedule": return Promise.resolve({ success: true, ok: true, description: "Weekdays at 09:00", runs: ["2026-09-02T07:00:00.000Z"] });
     case "getAsyncTaskResult":
+      /* F-462 - `__JOB_BRAKE__` is a run that hit its per-run write cap: the job stopped at
+         `maxWritesPerRun` changes and the issues it never reached are reported as not
+         processed, which is exactly the `brake` + perIssue shape src/scheduled-jobs.js
+         writes. The numbers are small so the badge reads BRAKED (job-writes 2/2). */
+      if (payload && payload.taskId === "task-job-1" && typeof window !== "undefined" && window.__JOB_BRAKE__) return Promise.resolve({ success: true, status: "done", result: { success: false, reason: "1/3 issue(s) processed OK, 2 change(s), BRAKED (job-writes)", recommendation: "Write brake: this run reached its limit of 2 changes. The remaining work was not done. Raise the job's \"maximum writes per run\", narrow its scope JQL, or split it into several jobs.", brake: { kind: "job-writes", max: 2, reason: "Write brake: this run reached its limit of 2 changes." }, changes: [{ action: "addComment", key: "PROJ-7" }, { action: "addLabels", key: "PROJ-7" }], logs: ["Scope matched 3 issue(s)"], issues: [{ key: "PROJ-7", success: true }, { key: "PROJ-9", success: false, reason: "not processed (write brake)" }, { key: "PROJ-11", success: false, reason: "not processed (write brake)" }], executionTimeMs: 3100, tokens: 900 } });
       if (payload && payload.taskId === "task-job-1") return Promise.resolve({ success: true, status: "done", result: { success: true, reason: "2/2 issue(s) processed OK, 4 change(s)", changes: [{ action: "addComment", key: "PROJ-7", id: "1" }, { action: "addLabels", key: "PROJ-7" }], logs: ["Scope \"project = PROJ AND status = \"In Progress\" AND updated <= -7d\" matched 2 issue(s) (cap 25)", "--- PROJ-7: OK — done: asked for an update", "--- PROJ-9: OK — done: asked for an update"], issues: [{ key: "PROJ-7", success: true }, { key: "PROJ-9", success: true }], executionTimeMs: 6120, tokens: 1830 } });
       return Promise.resolve({ success: true, status: "pending" });
     case "getApiTokens": return Promise.resolve(API_TOKENS);

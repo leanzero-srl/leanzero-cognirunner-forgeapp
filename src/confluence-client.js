@@ -57,9 +57,10 @@
  *  - WRITES ARE NEVER RETRIED. A retried POST is a duplicate page or a duplicate
  *    comment. Reads retry at most once, and only on `network` or `rate_limited`.
  *
- *  - 10 s per logical operation (`CONFLUENCE_OPERATION_BUDGET_MS`), shared by
- *    every HTTP call an operation chains, and a 10 s per-call wall clock
- *    (AbortController). `getPageByTitle` and `createPage` are two calls each:
+ *  - 10 s per logical operation (`CONFLUENCE_OPERATION_BUDGET_MS`), CARRIED BY A
+ *    TOKEN down the call chain (never a client-level variable — two concurrent
+ *    operations would restore each other's deadline, F-433), and a 10 s per-call
+ *    wall clock (AbortController). `getPageByTitle` and `createPage` are two calls each:
  *    two independent 10 s timeouts would be a 20 s operation inside a 25 s sync
  *    resolver, so the BUDGET — not the per-call timeout — is what bounds them.
  *
@@ -71,8 +72,21 @@
  *  - Response bodies are CLAMPED BEFORE PARSING (1 MB), and page text is clamped
  *    to 60 KB by the ONE html→text reducer in this file (`storageToText`).
  *
+ * AN ERROR MESSAGE CARRIES NO REMOTE TEXT (F-434). `ConfluenceError.message` is
+ * built from the operation, the HTTP status and a SHORT ALLOW-LISTED reason from
+ * this file — never from the response body. The body used to ride in it as
+ * `bodyText.slice(0, 300)`, and that message is the value the F-416 degradation
+ * table hands a user (and, at the VA seam, a model) as "the reason": a 404 body
+ * echoing user-authored content, or a branded interstitial, landed verbatim in a
+ * validator's errorMessage, in the execution log and in a prompt — and `slice()`
+ * is the UTF-16 cut src/shared/text-clamp.js exists to prevent. What the remote
+ * said is kept on `error.detail`, clamped with `clampChars` and flagged
+ * `detailUntrusted`: it is for a server log or a debug surface, and anything that
+ * puts it in a prompt must fence and defang it like any other remote content.
+ *
  * ⚠ WHAT THIS MODULE GUARANTEES: BOUNDED, NOT SANITISED.
- * A page title, a page body, an excerpt and a comment are all user-authored
+ * A page title, a page body, an excerpt, a comment and `ConfluenceError.detail`
+ * are all user-authored
  * content from another product. This module size-caps and shape-normalises them
  * and DOES NOT fence or defang them — `text` handed to a caller is raw.
  * A CALLER THAT PUTS ANY OF IT IN A PROMPT MUST FENCE IT AND RUN `defangFence()`
@@ -85,7 +99,7 @@
  * no @forge/* module available. Every request goes through an injectable
  * `deps.request`.
  */
-import { clampUtf8Bytes } from "./shared/text-clamp.js";
+import { clampUtf8Bytes, clampChars } from "./shared/text-clamp.js";
 
 /** The closed error-code set. Anything outside it is a bug in this file. */
 export const CONFLUENCE_ERROR_CODES = [
@@ -118,9 +132,35 @@ export const COMMENT_MAX_BYTES = 32 * 1024;
 /** The install probe — the same entry the catalogue documents. */
 export const INSTALL_PROBE_PATH = "/wiki/api/v2/spaces?limit=1";
 
+/** How much of a remote body we keep on `detail`. Code POINTS, never `slice()` (F-391). */
+export const ERROR_DETAIL_MAX_CHARS = 300;
+
+/**
+ * THE ALLOW-LISTED REASONS (F-434). One short sentence per code, written here, shown to
+ * humans and models. The set is closed: an error message may say what KIND of failure it
+ * was and nothing the remote chose to say.
+ */
+export const CONFLUENCE_ERROR_REASONS = Object.freeze({
+  confluence_unavailable: "Confluence did not answer in a way this app recognises",
+  auth: "the app is not permitted to do that in Confluence",
+  not_found: "no such content, or it is not visible to the app",
+  conflict: "the content changed since it was read",
+  rate_limited: "Confluence is rate limiting this app",
+  network: "the request to Confluence did not complete",
+  invalid: "Confluence rejected the request as invalid",
+});
+
+/** The reason sentence for a code. An unknown code gets the fail-open one. */
+export const reasonFor = (code) =>
+  CONFLUENCE_ERROR_REASONS[code] || CONFLUENCE_ERROR_REASONS.confluence_unavailable;
+
 /**
  * The one error every method throws. `code` is from CONFLUENCE_ERROR_CODES,
  * `status` is the HTTP status when there was one, `timeout` marks our own abort.
+ *
+ * `message` NEVER carries remote text (F-434) — see the file header. `detail` is where
+ * what the remote said goes: clamped to ERROR_DETAIL_MAX_CHARS code points, and flagged
+ * `detailUntrusted` so no caller can mistake it for something this module sanitised.
  */
 export class ConfluenceError extends Error {
   constructor(code, message, details = {}) {
@@ -134,6 +174,10 @@ export class ConfluenceError extends Error {
     this.timeout = details.timeout === true;
     this.retryAfterSeconds =
       typeof details.retryAfterSeconds === "number" ? details.retryAfterSeconds : null;
+    // UNTRUSTED REMOTE BYTES. Bounded, not sanitised: fence and defang before a prompt.
+    const detail = details.detail == null ? "" : clampChars(details.detail, ERROR_DETAIL_MAX_CHARS, "…");
+    this.detail = detail || null;
+    this.detailUntrusted = detail ? true : false;
   }
 }
 
@@ -161,7 +205,11 @@ export function statusToCode(status, opts = {}) {
 
 const isWriteMethod = (method) => method !== "GET" && method !== "HEAD";
 
-const enc = (v) => encodeURIComponent(String(v == null ? "" : v));
+/*
+ * There is no `enc` helper any more (F-441). Escaping happens ONCE, in the `route` tag:
+ * a path segment is checked for traversal, a query value is percent-encoded. Encoding a
+ * value here as well would double-encode every title and space key that reaches Confluence.
+ */
 
 /** Minimal entity set — enough for text Confluence actually emits in storage format. */
 const ENTITIES = {
@@ -220,14 +268,23 @@ export function storageToText(html, maxBytes = PAGE_TEXT_MAX_BYTES) {
  * Build a Confluence client.
  *
  * @param {object} [deps]
- * @param {(path: string, init: object) => Promise<{status:number, ok?:boolean, headers?:any, text:() => Promise<string>}>} [deps.request]
+ * @param {(path: object, init: object) => Promise<{status:number, ok?:boolean, headers?:any, text:() => Promise<string>}>} [deps.request]
  *   The transport. Injected by the offline suite; defaults to
- *   `asApp().requestConfluence(path, init)`. The path handed to it is ALREADY
- *   fully encoded by this module (every dynamic segment and query value goes
- *   through encodeURIComponent), which is why it is passed as a plain string
- *   rather than through the `route` tag — `route` would percent-encode an
- *   interpolated whole path a second time. This matches the existing plain-path
- *   call idiom in src/coder-workspace.js and src/index.js.
+ *   `asApp().requestConfluence(path, init)`.
+ *
+ *   THE PATH IS A `route` OBJECT, NEVER A STRING (F-441). `@forge/api` wraps every
+ *   product request in `requireSafeUrl(path)`, which THROWS unless it is handed a
+ *   route built by the `route` tagged template — so a plain string does not merely
+ *   skip a safety check, it fails every call in-app (surfacing here as `network`).
+ *   The earlier note claiming a "plain-path call idiom" elsewhere in this repo was
+ *   wrong: those call sites pass route VALUES through a variable.
+ *
+ *   Escaping happens ONCE, and `route` does it: a dynamic path segment is checked
+ *   for path manipulation and a query value is percent-encoded by the tag itself.
+ *   Nothing here pre-encodes with `encodeURIComponent` — doing both is a
+ *   double-encoded path, which is how this rule usually gets broken.
+ * @param {Function} [deps.route] the `route` tag. Injected by the offline suite so
+ *   the module needs no @forge/* at load; defaults to the SDK's, imported lazily.
  * @param {number} [deps.timeoutMs]
  * @param {(ms:number)=>Promise<void>} [deps.sleep]
  */
@@ -243,20 +300,44 @@ export function createConfluenceClient(deps = {}) {
       return api.asApp().requestConfluence(path, init);
     });
 
+  /**
+   * The `route` tag (F-441). Lazily imported for the same reason as the transport: this
+   * module must load with no @forge/* available, so the offline suite can exercise every
+   * path. A caller may inject one; the default is the SDK's, which is the only thing
+   * `requireSafeUrl` accepts.
+   */
+  let routeTag = typeof deps.route === "function" ? deps.route : null;
+  const getRoute = async () => {
+    if (routeTag) return routeTag;
+    const mod = await import("@forge/api");
+    routeTag = mod.route || (mod.default && mod.default.route);
+    if (typeof routeTag !== "function") {
+      throw fail("confluence_unavailable", "the Forge `route` tag is unavailable", {});
+    }
+    return routeTag;
+  };
+
   const fail = (code, message, details = {}) => new ConfluenceError(code, message, details);
 
-  // ONE budget per logical OPERATION, shared by every call it chains. Nesting
-  // can only ever TIGHTEN it.
-  let budgetDeadline = null;
-  async function withBudget(totalMs, fn) {
-    const prev = budgetDeadline;
+  /**
+   * ONE budget per logical OPERATION, shared by every call that operation chains, and
+   * carried by a TOKEN passed down the chain — not by a closure variable (F-433).
+   *
+   * It used to be `let budgetDeadline`, saved and restored around each operation. That is
+   * correct for NESTING and wrong for INTERLEAVING: with two operations in flight on one
+   * client — `Promise.all([client.getPage(...), client.getPageByTitle(...)])`, the obvious
+   * thing to do inside a 25 s resolver — whichever finished FIRST restored the deadline it
+   * had captured, which for the first-started operation is `null`. The other operation's
+   * remaining calls then saw `remaining = Infinity` and got the full per-call timeout with
+   * no operation ceiling: exactly the 20 s two-call chain this budget exists to prevent.
+   *
+   * A token cannot be restored out from under anyone. Nesting still only TIGHTENS: pass the
+   * parent token and the deadline is the earlier of the two.
+   */
+  async function withBudget(totalMs, fn, parent = null) {
     const want = Date.now() + (typeof totalMs === "number" && totalMs > 0 ? totalMs : CONFLUENCE_OPERATION_BUDGET_MS);
-    budgetDeadline = prev === null ? want : Math.min(prev, want);
-    try {
-      return await fn();
-    } finally {
-      budgetDeadline = prev;
-    }
+    const deadline = parent && typeof parent.deadline === "number" ? Math.min(parent.deadline, want) : want;
+    return fn({ deadline });
   }
 
   const headerOf = (headers, name) => {
@@ -267,8 +348,9 @@ export function createConfluenceClient(deps = {}) {
     return null;
   };
 
-  async function once(operation, method, path, init, opts = {}) {
-    const remaining = budgetDeadline === null ? Infinity : budgetDeadline - Date.now();
+  async function once(operation, method, path, init, opts = {}, budget = null) {
+    const deadline = budget && typeof budget.deadline === "number" ? budget.deadline : null;
+    const remaining = deadline === null ? Infinity : deadline - Date.now();
     if (remaining <= 0) {
       throw fail("network", `${operation}: operation budget of ${CONFLUENCE_OPERATION_BUDGET_MS / 1000}s exhausted`, {
         operation,
@@ -315,9 +397,12 @@ export function createConfluenceClient(deps = {}) {
       bodyText = "";
     }
     const retryAfter = Number(headerOf(resp && resp.headers, "retry-after"));
-    throw fail(code, `${operation}: HTTP ${status}${bodyText ? ` — ${bodyText.slice(0, 300)}` : ""}`, {
+    // The MESSAGE is ours: operation, status, allow-listed reason. What Confluence said
+    // rides on `detail`, untrusted and clamped (F-434).
+    throw fail(code, `${operation}: HTTP ${status} — ${reasonFor(code)}`, {
       operation,
       status,
+      detail: bodyText,
       retryAfterSeconds: code === "rate_limited" && Number.isFinite(retryAfter) ? retryAfter : null,
     });
   }
@@ -330,27 +415,28 @@ export function createConfluenceClient(deps = {}) {
    *   - a READ retries at most once, and only on `network` or `rate_limited`,
    *     and only if the operation budget can still pay for it.
    */
-  async function request(operation, method, path, init, opts) {
+  async function request(operation, method, path, init, opts, budget = null) {
     try {
-      return await once(operation, method, path, init, opts);
+      return await once(operation, method, path, init, opts, budget);
     } catch (e) {
       const retryable = e instanceof ConfluenceError && (e.code === "network" || e.code === "rate_limited");
       if (isWriteMethod(method) || !retryable) throw e;
       const waitMs = e.retryAfterSeconds ? Math.min(Math.max(e.retryAfterSeconds, 0) * 1000, 5000) : 250;
-      if (budgetDeadline !== null && Date.now() + waitMs >= budgetDeadline) throw e;
+      const deadline = budget && typeof budget.deadline === "number" ? budget.deadline : null;
+      if (deadline !== null && Date.now() + waitMs >= deadline) throw e;
       await sleep(waitMs);
-      return once(operation, method, path, init, opts);
+      return once(operation, method, path, init, opts, budget);
     }
   }
 
   /** Read the body, CLAMP IT, then parse. A body we cannot parse is an error, never null. */
-  async function json(operation, method, path, body, opts) {
+  async function json(operation, method, path, body, opts, budget = null) {
     const init = {};
     if (body !== undefined) {
       init.body = typeof body === "string" ? body : JSON.stringify(body);
       init.headers = { "Content-Type": "application/json" };
     }
-    const resp = await request(operation, method, path, init, opts);
+    const resp = await request(operation, method, path, init, opts, budget);
     if (Number(resp.status) === 204) return null;
 
     let raw = "";
@@ -378,8 +464,8 @@ export function createConfluenceClient(deps = {}) {
       // this product" / interstitial answer — the fail-open direction again.
       throw fail(
         "confluence_unavailable",
-        `${operation}: expected JSON but got ${looksHtml ? "an HTML page" : "an unparseable body"} — ${clamped.text.slice(0, 200)}`,
-        { operation, status: Number(resp.status) }
+        `${operation}: expected JSON but got ${looksHtml ? "an HTML page" : "an unparseable body"}`,
+        { operation, status: Number(resp.status), detail: clamped.text }
       );
     }
   }
@@ -401,8 +487,9 @@ export function createConfluenceClient(deps = {}) {
    */
   async function probeInstalled() {
     try {
-      return await withBudget(CONFLUENCE_OPERATION_BUDGET_MS, async () => {
-        await request("probeInstalled", "GET", INSTALL_PROBE_PATH, undefined, { installProbe: true });
+      const r = await getRoute();
+      return await withBudget(CONFLUENCE_OPERATION_BUDGET_MS, async (budget) => {
+        await request("probeInstalled", "GET", r`/wiki/api/v2/spaces?limit=1`, undefined, { installProbe: true }, budget);
         return { installed: true, code: null, message: null };
       });
     } catch (e) {
@@ -436,8 +523,9 @@ export function createConfluenceClient(deps = {}) {
     const op = "searchCql";
     const q = requireString(op, "cql", cql);
     const n = Math.max(1, Math.min(SEARCH_MAX_LIMIT, Number(limit) || 1));
-    return withBudget(CONFLUENCE_OPERATION_BUDGET_MS, async () => {
-      const data = await json(op, "GET", `/wiki/rest/api/search?cql=${enc(q)}&limit=${n}`);
+    const r = await getRoute();
+    return withBudget(CONFLUENCE_OPERATION_BUDGET_MS, async (budget) => {
+      const data = await json(op, "GET", r`/wiki/rest/api/search?cql=${q}&limit=${n}`, undefined, undefined, budget);
       const results = Array.isArray(data && data.results) ? data.results : [];
       return {
         results: results.slice(0, n).map((r) => ({
@@ -460,8 +548,9 @@ export function createConfluenceClient(deps = {}) {
     const op = "getPage";
     const pageId = requireString(op, "id", id);
     const fmt = bodyFormat === "atlas_doc_format" ? "atlas_doc_format" : "storage";
-    return withBudget(CONFLUENCE_OPERATION_BUDGET_MS, async () => {
-      const data = await json(op, "GET", `/wiki/api/v2/pages/${enc(pageId)}?body-format=${fmt}`);
+    const r = await getRoute();
+    return withBudget(CONFLUENCE_OPERATION_BUDGET_MS, async (budget) => {
+      const data = await json(op, "GET", r`/wiki/api/v2/pages/${pageId}?body-format=${fmt}`, undefined, undefined, budget);
       return shapePage(data, fmt);
     });
   }
@@ -484,9 +573,10 @@ export function createConfluenceClient(deps = {}) {
   }
 
   /** Resolve a space KEY to its numeric id — page writes need the id, configs carry the key. */
-  async function resolveSpaceId(op, spaceKey) {
+  async function resolveSpaceId(op, spaceKey, budget) {
     const key = requireString(op, "spaceKey", spaceKey);
-    const data = await json(op, "GET", `/wiki/api/v2/spaces?keys=${enc(key)}&limit=1`);
+    const r = await getRoute();
+    const data = await json(op, "GET", r`/wiki/api/v2/spaces?keys=${key}&limit=1`, undefined, undefined, budget);
     const hit = Array.isArray(data && data.results) ? data.results[0] : null;
     if (!hit || hit.id == null) {
       throw fail("not_found", `${op}: no space with key ${key}`, { operation: op });
@@ -502,12 +592,16 @@ export function createConfluenceClient(deps = {}) {
   async function getPageByTitle({ spaceKey, title } = {}) {
     const op = "getPageByTitle";
     const wanted = requireString(op, "title", title);
-    return withBudget(CONFLUENCE_OPERATION_BUDGET_MS, async () => {
-      const spaceId = await resolveSpaceId(op, spaceKey);
+    const r = await getRoute();
+    return withBudget(CONFLUENCE_OPERATION_BUDGET_MS, async (budget) => {
+      const spaceId = await resolveSpaceId(op, spaceKey, budget);
       const data = await json(
         op,
         "GET",
-        `/wiki/api/v2/spaces/${enc(spaceId)}/pages?title=${enc(wanted)}&limit=1&body-format=storage`
+        r`/wiki/api/v2/spaces/${spaceId}/pages?title=${wanted}&limit=1&body-format=storage`,
+        undefined,
+        undefined,
+        budget
       );
       const hit = Array.isArray(data && data.results) ? data.results[0] : null;
       return hit ? shapePage(hit, "storage") : null;
@@ -521,8 +615,9 @@ export function createConfluenceClient(deps = {}) {
     const value = String(storage == null ? "" : storage);
     if (!value) throw fail("invalid", `${op}: storage body is required`, { operation: op });
     const capped = clampUtf8Bytes(value, PAGE_STORAGE_MAX_BYTES, "");
-    return withBudget(CONFLUENCE_OPERATION_BUDGET_MS, async () => {
-      const spaceId = await resolveSpaceId(op, spaceKey);
+    const r = await getRoute();
+    return withBudget(CONFLUENCE_OPERATION_BUDGET_MS, async (budget) => {
+      const spaceId = await resolveSpaceId(op, spaceKey, budget);
       const body = {
         spaceId,
         status: "current",
@@ -530,7 +625,7 @@ export function createConfluenceClient(deps = {}) {
         body: { representation: "storage", value: capped.text },
       };
       if (parentId) body.parentId = String(parentId);
-      const data = await json(op, "POST", "/wiki/api/v2/pages", body);
+      const data = await json(op, "POST", r`/wiki/api/v2/pages`, body, undefined, budget);
       return {
         id: String((data && data.id) || ""),
         title: String((data && data.title) || pageTitle),
@@ -562,10 +657,11 @@ export function createConfluenceClient(deps = {}) {
     if (!value) throw fail("invalid", `${op}: storage body is required`, { operation: op });
     const capped = clampUtf8Bytes(value, PAGE_STORAGE_MAX_BYTES, "");
 
-    return withBudget(CONFLUENCE_OPERATION_BUDGET_MS, async () => {
+    const r = await getRoute();
+    return withBudget(CONFLUENCE_OPERATION_BUDGET_MS, async (budget) => {
       let pageTitle = title == null ? "" : String(title).trim();
       if (!pageTitle) {
-        const existing = await json(op, "GET", `/wiki/api/v2/pages/${enc(pageId)}`);
+        const existing = await json(op, "GET", r`/wiki/api/v2/pages/${pageId}`, undefined, undefined, budget);
         const live = Number((existing && existing.version && existing.version.number) || 0);
         if (live !== current) {
           throw fail(
@@ -576,13 +672,13 @@ export function createConfluenceClient(deps = {}) {
         }
         pageTitle = String((existing && existing.title) || "");
       }
-      const data = await json(op, "PUT", `/wiki/api/v2/pages/${enc(pageId)}`, {
+      const data = await json(op, "PUT", r`/wiki/api/v2/pages/${pageId}`, {
         id: pageId,
         status: "current",
         title: pageTitle,
         version: { number: current + 1, message: "Updated by CogniRunner" },
         body: { representation: "storage", value: capped.text },
-      });
+      }, undefined, budget);
       return {
         id: String((data && data.id) || pageId),
         title: String((data && data.title) || pageTitle),
@@ -600,11 +696,12 @@ export function createConfluenceClient(deps = {}) {
     const value = String(body == null ? "" : body);
     if (!value.trim()) throw fail("invalid", `${op}: body is required`, { operation: op });
     const capped = clampUtf8Bytes(value, COMMENT_MAX_BYTES, "");
-    return withBudget(CONFLUENCE_OPERATION_BUDGET_MS, async () => {
-      const data = await json(op, "POST", "/wiki/api/v2/footer-comments", {
+    const r = await getRoute();
+    return withBudget(CONFLUENCE_OPERATION_BUDGET_MS, async (budget) => {
+      const data = await json(op, "POST", r`/wiki/api/v2/footer-comments`, {
         pageId: id,
         body: { representation: "storage", value: capped.text },
-      });
+      }, undefined, budget);
       return {
         id: String((data && data.id) || ""),
         pageId: id,

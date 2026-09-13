@@ -1,0 +1,404 @@
+/*
+ * CogniRunner - AI-powered workflow validation for Jira
+ * Copyright (C) 2025 LeanZero
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * admin-panel AGENTS tab browser journeys (mock-bridge harness) — release 1.5 commit 5c.
+ * Drives the REAL admin-panel build with @forge/bridge aliased to bridge.js, whose wizard
+ * turns come from the REAL state machine (src/shared/va-wizard.js). So this suite exercises
+ * the chat wizard end to end, the classic form, and every status surface, with no Jira and
+ * no model.
+ *
+ * What it proves, and why each one is here:
+ *   A1  the full interview to Create, asserting the EXACT saved payload — the wizard's whole
+ *       claim is that it hands over the record normalizeVa produced, unedited.
+ *   A2  a refused answer renders as a refusal and does NOT advance the step.
+ *   A3  the site-wide WRITE refusal says what the save path says, word for word.
+ *   A4  the voice sample chips re-render the sample on the same step.
+ *   A5  fallbackToForm lands in the classic form holding the answers.
+ *   A6  the status card, and the solid red health banner at the engine's own threshold.
+ *   A7  staged drafts approve / reject carry the item to the resolver.
+ *   A8  pause goes through the app's own confirm dialog, never window.confirm.
+ *   A9  the memory editor saves what is on screen.
+ *   A10 SchedulePicker's multi-hour presets round-trip through the minute spinner (13c).
+ *   A11 dark theme renders the same surfaces.
+ *
+ * Run: node static/_screenshot-harness/agents-tab.test.mjs   (add --shots to save PNGs)
+ */
+import { chromium } from "playwright";
+import http from "node:http";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { ensureFreshBuildShot } from "./lib/build-shot.mjs";
+/* The refusal sentence and the banner threshold come from their ONE home, so this suite
+   cannot assert words or a number the app does not actually use. */
+import { writeSiteRefusalReason, stepWizard } from "../../src/shared/va-wizard.js";
+import { VA_LIMITS } from "../../src/shared/va-config.js";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const SHOTS = process.argv.includes("--shots");
+const OUT = path.join(__dirname, "out"); if (SHOTS) fs.mkdirSync(OUT, { recursive: true });
+
+const MIME = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".json": "application/json", ".png": "image/png", ".svg": "image/svg+xml" };
+function serve(root) {
+  return new Promise((resolve) => {
+    const s = http.createServer((req, res) => {
+      let p = decodeURIComponent(req.url.split("?")[0]); if (p === "/") p = "/index.html";
+      const f = path.join(root, p);
+      if (!f.startsWith(root) || !fs.existsSync(f)) { res.writeHead(404); return res.end("x"); }
+      res.writeHead(200, { "Content-Type": MIME[path.extname(f)] || "application/octet-stream" }); fs.createReadStream(f).pipe(res);
+    });
+    s.listen(0, "127.0.0.1", () => resolve({ s, port: s.address().port }));
+  });
+}
+let pass = 0, fail = 0;
+const ok = (cond, msg) => { if (cond) pass++; else { fail++; console.log("  ✗ " + msg); } };
+const shot = async (page, name) => { if (SHOTS) await page.screenshot({ path: path.join(OUT, `${name}.png`), fullPage: true }); };
+
+async function openAgents(browser, theme = "light", extraInit = null) {
+  const root = ensureFreshBuildShot("admin-panel");
+  const { s, port } = await serve(root);
+  const ctx = await browser.newContext({ viewport: { width: 1440, height: 1200 } });
+  await ctx.addInitScript(([th, extra]) => { window.__SHOT__ = "admin"; window.__THEME__ = th; if (extra) for (const k in extra) window[k] = extra[k]; }, [theme, extraInit]);
+  const page = await ctx.newPage();
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(String(e && e.message)));
+  await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: "domcontentloaded" });
+  await page.waitForFunction(() => !!document.querySelector(".container"), { timeout: 15000 }).catch(() => {});
+  await page.locator(".tab-btn", { hasText: /^\s*Agents\s*$/ }).first().click();
+  await page.locator(".section-title", { hasText: /Agents/ }).first().waitFor({ timeout: 10000 });
+  return { page, ctx, s, errors };
+}
+const close = async (env) => { await env.ctx.close(); await new Promise((r) => env.s.close(r)); };
+const chip = (page, label) => page.locator(".va-chip", { hasText: new RegExp(`^${label}( ×)?$`) }).first();
+const stepIs = (page, id) => page.locator(`.va-step[data-step="${id}"]`).waitFor({ timeout: 8000 });
+/* The app's own dialog primitive, never window.confirm (the harness would hang on a native
+   one, which is itself a check: a native confirm blocks the page and this helper times out). */
+const confirmYes = async (page) => { await page.locator(".cr-confirm").waitFor({ timeout: 5000 }); await page.locator(".cr-confirm button", { hasText: /^(?!Cancel).*$/ }).last().click(); };
+
+/** Drive the interview from the opening turn to the create step. */
+async function runInterview(page, { stopAt = null } = {}) {
+  await page.locator(".va-new").click();
+  await stepIs(page, "persona_name");
+  if (stopAt === "persona_name") return;
+  await page.locator(".va-name").fill("Nadia");
+  await page.locator(".va-actions .btn-solid").click();
+
+  await stepIs(page, "persona_voice");
+  if (stopAt === "persona_voice") return;
+  await chip(page, "warm").click();
+  await page.locator(".va-actions .btn-solid").click();
+
+  await stepIs(page, "intake");
+  if (stopAt === "intake") return;
+  await page.locator(".va-desk-head", { hasText: "IT Service Desk" }).locator("input").check();
+  await chip(page, "Waiting for support").click();
+  await page.locator(".va-actions .btn-solid").click();
+
+  await stepIs(page, "read_scope");
+  if (stopAt === "read_scope") return;
+  await chip(page, "Payments").click();
+  await chip(page, "IT Operations").click();
+  await page.locator(".va-actions .btn-solid").click();
+
+  await stepIs(page, "write_scope");
+  if (stopAt === "write_scope") return;
+  await chip(page, "IT Operations").click();
+  await page.locator(".va-actions .btn-solid").click();
+
+  await stepIs(page, "cadence");
+  if (stopAt === "cadence") return;
+  await chip(page, "Every 30 minutes").click();
+  await page.locator(".va-actions .btn-solid").click();
+
+  await stepIs(page, "powers");
+  if (stopAt === "powers") return;
+  await page.locator(".va-power", { hasText: "Reply internally" }).locator("input").check();
+  await page.locator(".va-actions .btn-solid").click();
+
+  await stepIs(page, "guardrails");
+  if (stopAt === "guardrails") return;
+  await page.locator(".va-actions .btn-solid").click();
+
+  await stepIs(page, "review");
+  if (stopAt === "review") return;
+  await page.locator(".va-actions .btn-solid").first().click();
+  await stepIs(page, "create");
+}
+
+const browser = await chromium.launch();
+try {
+  /* ---------- A1 the whole interview, and the exact payload it saves ---------- */
+  {
+    console.log("A1 wizard → Create");
+    const env = await openAgents(browser);
+    const { page } = env;
+    try {
+      await runInterview(page);
+      await shot(page, "agents-wizard-create");
+      await page.locator(".va-actions .btn-solid").click();
+      await page.waitForFunction(() => !!window.__VA_SAVE__, { timeout: 8000 });
+      const saved = await page.evaluate(() => window.__VA_SAVE__);
+      ok(saved && saved.mode === "va", "A1 saved with mode va");
+      const va = (saved && saved.va) || {};
+      ok(va.persona && va.persona.name === "Nadia", "A1 persona name saved");
+      ok(va.persona && va.persona.voice && va.persona.voice.register === "warm", "A1 register saved");
+      ok(va.scope && !va.scope.read.site && va.scope.read.projects.join(",") === "PROJ,OPS", "A1 read scope saved");
+      ok(va.scope && va.scope.write.projects.join(",") === "OPS", "A1 write scope saved");
+      ok(va.intake && va.intake.serviceDesks.length === 1 && va.intake.serviceDesks[0].queueIds.join(",") === "21", "A1 intake desk + queue saved");
+      ok(va.cadence && va.cadence.preset === "every30", "A1 cadence preset saved");
+      ok(va.powers && va.powers.replyInternal === true && va.powers.replyPublic === false, "A1 powers saved, replyPublic still off");
+      // F-425's vocabulary: one brake name, and the dropped ones must not exist.
+      ok(va.guardrails && typeof va.guardrails.maxWritesPerRun === "number", "A1 maxWritesPerRun on the record");
+      ok(va.guardrails && va.guardrails.maxBulkTargets === undefined && va.guardrails.owedUncapped === undefined, "A1 the dropped brake names are absent");
+      ok(va.status && va.status.shadowUntilTick > 0, "A1 it starts in shadow");
+      // back on the list, and the agent count came from the resolver again
+      await page.locator(".section-title", { hasText: /Agents/ }).first().waitFor({ timeout: 8000 });
+      ok(env.errors.length === 0, `A1 no page errors (${env.errors[0] || ""})`);
+    } finally { await close(env); }
+  }
+
+  /* ---------- A2 a refused answer stays on its step and says why ---------- */
+  {
+    console.log("A2 refusal");
+    const env = await openAgents(browser);
+    const { page } = env;
+    try {
+      await runInterview(page, { stopAt: "write_scope" });
+      await stepIs(page, "write_scope");
+      // SUP is in the catalogue but NOT in the read scope chosen above: an agent cannot
+      // write where it cannot read, and the refusal must name the project.
+      await chip(page, "Customer Support").click();
+      await page.locator(".va-actions .btn-solid").click();
+      await page.locator(".va-notes-refusal").waitFor({ timeout: 8000 });
+      const text = await page.locator(".va-notes-refusal").innerText();
+      ok(/SUP/.test(text) && /read scope/i.test(text), "A2 refusal names the project and the reason");
+      ok(await page.locator('.va-step[data-step="write_scope"]').count() === 1, "A2 the step did not advance");
+      // innerText is what the reader sees, and the label is uppercased by CSS.
+      const fields = (await page.locator(".va-note-field").allInnerTexts()).map((t) => t.toLowerCase());
+      ok(fields.includes("scope.write.projects"), `A2 refusal names the field (got ${fields.join("|")})`);
+      await shot(page, "agents-wizard-refusal");
+    } finally { await close(env); }
+  }
+
+  /* ---------- A3 the site-wide WRITE refusal, word for word ---------- */
+  {
+    console.log("A3 write-site refusal");
+    const env = await openAgents(browser);
+    const { page } = env;
+    try {
+      await runInterview(page, { stopAt: "write_scope" });
+      await stepIs(page, "write_scope");
+      // The UI offers NO site-wide write control at all - that is the point - so the
+      // refusal itself is asserted at the module seam (the machine answers with the SAVE
+      // PATH's own sentence, probed from normalizeVa rather than retyped), and the screen is
+      // asserted for saying the same thing in the copy an admin actually reads.
+      const machine = stepWizard({ v: 1, stepId: "write_scope", answers: { readScope: { site: false, projects: ["PROJ"] } }, history: [], refused: [], notes: [], done: false, catalog: {} }, { answer: { site: true } });
+      const sentence = (machine.refused[0] || {}).reason;
+      ok(sentence === writeSiteRefusalReason(), "A3 the wizard refuses site-wide writes in the save path's own words");
+      ok(/projects/i.test(String(sentence)), "A3 the sentence names what IS allowed (a list of projects)");
+      const hint = await page.locator('.va-step[data-step="write_scope"] .hint').innerText();
+      ok(/no site-wide option/i.test(hint), "A3 the step's copy says the same thing on screen");
+    } finally { await close(env); }
+  }
+
+  /* ---------- A4 the voice sample and its chips ---------- */
+  {
+    console.log("A4 voice sample chips");
+    const env = await openAgents(browser);
+    const { page } = env;
+    try {
+      await runInterview(page, { stopAt: "persona_voice" });
+      await stepIs(page, "persona_voice");
+      await page.locator(".va-sample").waitFor({ timeout: 8000 });
+      ok(await page.locator(".va-reply").count() === 2, "A4 two samples render");
+      ok(await page.locator(".va-sample-flag").count() === 1, "A4 the sample carries a verdict flag");
+      const before = await page.locator(".va-reply-text").first().innerText();
+      await page.locator(".va-sample-chips .va-chip", { hasText: "Shorter" }).click();
+      await page.waitForTimeout(300);
+      ok(await page.locator('.va-step[data-step="persona_voice"]').count() === 1, "A4 a chip stays on the voice step");
+      const after = await page.locator(".va-reply-text").first().innerText();
+      ok(before !== after, "A4 Shorter changed the sample");
+      await shot(page, "agents-wizard-voice");
+    } finally { await close(env); }
+  }
+
+  /* ---------- A5 fallbackToForm ---------- */
+  {
+    console.log("A5 fallback to the classic form");
+    const env = await openAgents(browser);
+    const { page } = env;
+    try {
+      // The form is also the "Use the form" door, and the same component. Opening it
+      // directly proves it renders and saves the same record shape.
+      await page.locator(".btn-small", { hasText: "Use the form" }).click();
+      await page.locator(".va-editor").waitFor({ timeout: 8000 });
+      await page.locator(".va-name").fill("Priya");
+      await chip(page, "Payments").first().click();
+      await page.locator(".va-editor .section-actions .btn-solid").click();
+      await page.waitForFunction(() => !!window.__VA_SAVE__, { timeout: 8000 });
+      const saved = await page.evaluate(() => window.__VA_SAVE__);
+      ok(saved && saved.mode === "va" && saved.va.persona.name === "Priya", "A5 the form saves the same record shape");
+      ok(saved.va.scope.read.projects.includes("PROJ"), "A5 the form's read scope lands on the record");
+      await shot(page, "agents-form");
+    } finally { await close(env); }
+  }
+
+  /* ---------- A5b the wizard FAILS CLOSED into the form, holding the answers ---------- */
+  {
+    console.log("A5b fallbackToForm");
+    const env = await openAgents(browser, "light", { __VA_FALLBACK__: true });
+    const { page } = env;
+    try {
+      await runInterview(page, { stopAt: "guardrails" });
+      await page.locator(".va-actions .btn-solid").click(); // the answer whose turn cannot be reviewed
+      await page.locator(".va-editor").waitFor({ timeout: 8000 });
+      ok(true, "A5b a record the save path refuses lands in the classic form");
+      ok(await page.locator(".va-name").inputValue() === "Nadia", "A5b the name answered in the interview is still there");
+      ok(await page.locator(".va-notes-refusal").count() === 1, "A5b the refusal that stopped it is rendered above the form");
+      const on = await page.locator(".va-chip.on").allInnerTexts();
+      ok(on.includes("Payments") && on.includes("IT Operations"), "A5b the read scope survived the handover");
+      await shot(page, "agents-fallback");
+    } finally { await close(env); }
+  }
+
+  /* ---------- A6 status card + health banner ---------- */
+  {
+    console.log("A6 status + health");
+    const env = await openAgents(browser);
+    const { page } = env;
+    try {
+      await page.locator(".va-agent").first().waitFor({ timeout: 8000 });
+      ok(await page.locator(".va-agent").count() === 2, "A6 two agent cards");
+      ok(await page.locator(".va-badge-shadow").count() === 1, "A6 the shadow agent is badged SHADOW");
+      ok(await page.locator(".va-badge-live").count() === 1, "A6 the live agent is badged LIVE");
+      const stats = await page.locator(".va-agent").first().locator(".va-stat-label").allInnerTexts();
+      ok(stats.join("|").includes("LAST TICK") || stats.join("|").toLowerCase().includes("last tick"), "A6 last tick is rendered");
+      ok(stats.length === 5, "A6 five status facts (last tick, staged, next tick, next window, mode)");
+      // The banner is the engine's counter at the engine's threshold, not a UI guess.
+      ok(await page.locator(".va-health").count() === 1, "A6 exactly one health banner, on the broken agent");
+      const health = await page.locator(".va-health").innerText();
+      ok(/not working/i.test(health) && /credential/i.test(health), "A6 the banner names the cause");
+      ok(VA_LIMITS.healthBannerFailedTicks >= 1, "A6 the threshold has one home");
+      await shot(page, "agents-status");
+    } finally { await close(env); }
+  }
+
+  /* ---------- A7 drafts approve / reject ---------- */
+  {
+    console.log("A7 drafts");
+    const env = await openAgents(browser);
+    const { page } = env;
+    try {
+      await page.locator(".va-agent").first().locator(".rule-expand-btn").click();
+      await page.locator(".va-table").first().waitFor({ timeout: 8000 });
+      ok(await page.locator(".va-table tbody tr").count() === 2, "A7 two staged drafts");
+      ok(await page.locator(".va-badge-public").count() === 1, "A7 the customer-bound draft is badged");
+      await shot(page, "agents-drafts");
+      await page.locator(".va-table tbody tr").first().locator("button", { hasText: "Approve" }).click();
+      await confirmYes(page);
+      await page.waitForFunction(() => (window.__VA_DECISIONS__ || []).length === 1, { timeout: 8000 });
+      const d1 = await page.evaluate(() => window.__VA_DECISIONS__[0]);
+      ok(d1.name === "approveVaDraft" && d1.itemKey === "OPS-31" && !!d1.stagedAt, "A7 approve carries the item and its stagedAt");
+      await page.locator(".va-table tbody tr").first().locator("button", { hasText: "Reject" }).click();
+      await confirmYes(page);
+      await page.waitForFunction(() => (window.__VA_DECISIONS__ || []).length === 2, { timeout: 8000 });
+      const d2 = await page.evaluate(() => window.__VA_DECISIONS__[1]);
+      ok(d2.name === "rejectVaDraft" && d2.itemKey === "OPS-44", "A7 reject carries the other item");
+      // The tick receipts pane renders a skip BY GATE NAME, never as a bare count.
+      await page.locator(".va-pane-btn", { hasText: "Ticks" }).click();
+      await page.locator(".va-receipt").first().waitFor({ timeout: 8000 });
+      const gates = await page.locator(".va-receipt-gate").allInnerTexts();
+      ok(gates.includes("pileup") && gates.includes("shadow"), "A7 receipts name the gates that skipped");
+      ok((await page.locator(".va-receipt-skip").first().innerText()).length > 20, "A7 each skip renders a sentence");
+    } finally { await close(env); }
+  }
+
+  /* ---------- A8 pause goes through the app's own dialog ---------- */
+  {
+    console.log("A8 pause");
+    const env = await openAgents(browser);
+    const { page } = env;
+    let nativeCalled = false;
+    page.on("dialog", async (d) => { nativeCalled = true; await d.dismiss(); });
+    try {
+      await page.locator(".va-agent").first().locator("button", { hasText: "Pause" }).click();
+      await page.locator(".cr-confirm").waitFor({ timeout: 5000 });
+      ok(true, "A8 the app's confirm dialog opened");
+      await confirmYes(page);
+      await page.locator(".va-badge-paused").first().waitFor({ timeout: 8000 });
+      ok(await page.locator(".va-badge-paused").count() === 1, "A8 the card reads PAUSED");
+      ok(await page.locator(".va-agent").first().locator("button", { hasText: "Resume" }).count() === 1, "A8 the control became Resume");
+      ok(!nativeCalled, "A8 no native confirm was used");
+      ok(await page.locator("select").count() === 0, "A8 no native select anywhere on the tab");
+    } finally { await close(env); }
+  }
+
+  /* ---------- A9 memory editor ---------- */
+  {
+    console.log("A9 memory");
+    const env = await openAgents(browser);
+    const { page } = env;
+    try {
+      await page.locator(".va-agent").first().locator(".rule-expand-btn").click();
+      await page.locator(".va-pane-btn", { hasText: "Memory" }).click();
+      await page.locator(".va-memory").waitFor({ timeout: 8000 });
+      ok(await page.locator(".va-constraint").count() === 2, "A9 the pinned constraints are shown");
+      ok(/bytes/.test(await page.locator(".va-memory-count").innerText()), "A9 the counter is in bytes, like the cap");
+      await page.locator(".va-memory").fill("Finance approves licence requests on Tuesdays.");
+      await page.locator("button", { hasText: "Save memory" }).click();
+      await page.waitForFunction(() => !!window.__VA_MEMORY_SAVE__, { timeout: 8000 });
+      const saved = await page.evaluate(() => window.__VA_MEMORY_SAVE__);
+      ok(saved.memory === "Finance approves licence requests on Tuesdays." && saved.jobId === "va_1", "A9 the memory saved is what was on screen");
+      ok(Array.isArray(saved.constraints) && saved.constraints.length === 2, "A9 the constraints ride the save");
+      await shot(page, "agents-memory");
+    } finally { await close(env); }
+  }
+
+  /* ---------- A10 the 13c presets in SchedulePicker ---------- */
+  {
+    console.log("A10 multi-hour presets");
+    const env = await openAgents(browser);
+    const { page } = env;
+    try {
+      await page.locator(".btn-small", { hasText: "Use the form" }).click();
+      await page.locator(".schp").waitFor({ timeout: 8000 });
+      await page.locator(".schp-preset button").first().click();
+      await page.locator(".dropdown-item", { hasText: "Every 4 hours" }).first().click();
+      await page.locator(".schp-preview-cron").waitFor({ timeout: 5000 });
+      ok((await page.locator(".schp-preview-cron").innerText()).includes("*/4"), "A10 Every 4 hours emits a 4-hourly cron");
+      const minute = page.locator('.schp-field:has-text("At minute") input');
+      ok(await minute.count() === 1, "A10 the minute spinner is offered for a multi-hour cadence (the owed 13c UI half)");
+      await minute.fill("15");
+      await page.waitForTimeout(200);
+      const cron = await page.locator(".schp-preview-cron").innerText();
+      ok(cron.trim().startsWith("15 ") && cron.includes("*/4"), `A10 the minute round-trips into the cron (${cron})`);
+      ok(/Every 4 hours at minute 15/i.test(await page.locator(".schp-preview-head").innerText()), "A10 the description names the minute");
+    } finally { await close(env); }
+  }
+
+  /* ---------- A11 dark ---------- */
+  {
+    console.log("A11 dark theme");
+    const env = await openAgents(browser, "dark");
+    const { page } = env;
+    try {
+      await page.locator(".va-agent").first().waitFor({ timeout: 8000 });
+      ok(await page.locator(".va-health").count() === 1, "A11 the health banner renders in dark");
+      const bg = await page.locator(".va-badge-shadow").first().evaluate((el) => getComputedStyle(el).backgroundColor);
+      ok(bg === "rgb(245, 158, 11)", `A11 the shadow badge takes its dark override (#f59e0b), got ${bg}`);
+      const ink = await page.locator(".va-badge-shadow").first().evaluate((el) => getComputedStyle(el).color);
+      ok(ink === "rgb(42, 22, 2)", `A11 dark amber keeps the app's dark ink, got ${ink}`);
+      await page.locator(".va-new").click();
+      await stepIs(page, "persona_name");
+      await shot(page, "agents-wizard-dark");
+      ok(env.errors.length === 0, `A11 no page errors in dark (${env.errors[0] || ""})`);
+    } finally { await close(env); }
+  }
+} finally {
+  await browser.close();
+}
+console.log(`\nagents-tab: ${pass} passed, ${fail} failed`);
+process.exit(fail ? 1 : 0);

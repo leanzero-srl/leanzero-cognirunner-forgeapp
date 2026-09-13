@@ -1112,6 +1112,72 @@ await check("F-578: a re-pin too large to write CLEARS the stale row rather than
     "the INVALIDATED row is removed: keeping it would hand the deleted memory back to the next turn");
 });
 
+/* ═════════ F-581: the pin lives exactly as long as the thread does ═════════
+ *
+ * The transcript row's 90-day TTL is re-set on EVERY turn, so a thread in regular use is
+ * effectively immortal. The pin's was written once under `if (!already)` and never renewed,
+ * so it expired FIRST — and the turn after that found no pin, built knowledge live, and
+ * wrote a NEW pin presenting today's skills and memories in the prefix as if they had been
+ * the thread's all along. A silent re-pin, a moved prefix, and the whole stored history
+ * re-billed at write price, with nothing in the log to say why.
+ */
+const ttlSpyStore = (calls) => ({
+  ...store,
+  get: (k) => store.get(k),
+  set: (k, v, opts) => { calls.push({ key: k, ttl: opts && opts.ttl }); return store.set(k, v, opts); },
+  delete: (k) => store.delete(k),
+  query: (...a) => store.query(...a),
+});
+
+await check("F-581: the pin's TTL is refreshed on every turn, by the same writer and on the same turn as the thread row's", async () => {
+  resetStore();
+  const world = setupWorld({ rounds: [reply([finish()]), reply([finish()])] });
+  const stable = { skillsBlock: SKILLS, memoryBlock: MEM, memoryEpoch: 1, skillEpoch: "e1" };
+  await startTurn(world, { knowledge: stable });
+
+  const calls = [];
+  await startTurn(world, { userMessage: "second", knowledge: stable, deps: { store: ttlSpyStore(calls), gitExecutor: recordingGit(world), ticketId: () => "tkt_FIXED_ID" } });
+
+  const pinWrites = calls.filter((c) => c.key === coderPinKey("LZPT-7", "t1"));
+  const threadWrites = calls.filter((c) => c.key === coderThreadKey("LZPT-7", "t1"));
+  assert.equal(pinWrites.length, 1, "THE FINDING: a later turn writes the pin at all — it used to write it never");
+  assert.deepEqual(pinWrites[0].ttl, threadWrites[threadWrites.length - 1].ttl,
+    "…under exactly the thread row's TTL, from the one constant both now read");
+
+  // REFRESHED, NOT REWRITTEN: the bytes the prefix carries must not move for this.
+  const pin = await store.get(coderPinKey("LZPT-7", "t1"));
+  assert.equal(pin.memoryBlock, MEM, "the refresh puts the SAME object back");
+  assert.equal(pin.skillsBlock, SKILLS);
+  const t1 = world.requests[0].messages;
+  const t2 = world.requests[1].messages;
+  assert.equal(JSON.stringify(t2.slice(0, t1.length - 1)), JSON.stringify(t1.slice(0, t1.length - 1)),
+    "…and not one byte of the shared prefix moved");
+});
+
+await check("F-581: a pin that expired under a living thread is re-pinned OUT LOUD, never silently", async () => {
+  resetStore();
+  const world = setupWorld({ rounds: [reply([finish()]), reply([finish()])] });
+  const stable = { skillsBlock: SKILLS, memoryBlock: MEM, memoryEpoch: 1, skillEpoch: "e1" };
+  await startTurn(world, { knowledge: stable });
+  // What a 90-day TTL does to the pin while the thread row, refreshed every turn, lives on.
+  await store.delete(coderPinKey("LZPT-7", "t1"));
+
+  const TODAY = "- [user] Deploys need the production environment flag set.";
+  const r = await startTurn(world, { userMessage: "second", knowledge: { ...stable, memoryBlock: TODAY, memoryEpoch: 2 } });
+  const pin = await store.get(coderPinKey("LZPT-7", "t1"));
+  assert.equal(pin.memoryBlock, TODAY, "the thread does get a working pin again");
+  assert.ok((r.logs || []).some((l) => /pin expired/.test(l) && /prefix moves once/.test(l)),
+    `THE FINDING: the turn says the prefix moved and why (${JSON.stringify((r.logs || []).filter((l) => /pin/.test(l)))})`);
+});
+
+await check("F-581: the FIRST turn of a thread pins without claiming anything expired", async () => {
+  resetStore();
+  const world = setupWorld({ rounds: [reply([finish()])] });
+  const r = await startTurn(world, { knowledge: { skillsBlock: SKILLS, memoryBlock: MEM, memoryEpoch: 1, skillEpoch: "e1" } });
+  assert.ok(!(r.logs || []).some((l) => /pin expired/.test(l)), "turn 1 has nothing to have expired");
+  assert.ok(await store.get(coderPinKey("LZPT-7", "t1")), "…and it still pins");
+});
+
 await check("F-550: the cross-turn cache miss gets its own observation line", async () => {
   const { reportCrossTurnCacheDefect, CACHE_BYTES_PER_TOKEN } = await import("../../src/agent-runner.js");
   const lines = [];

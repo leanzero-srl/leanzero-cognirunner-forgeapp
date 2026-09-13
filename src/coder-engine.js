@@ -86,6 +86,21 @@ const CODER_CLAIM_TTL = { ttl: { value: CODER_CLAIM_TTL_MINUTES, unit: "MINUTES"
 /** A consent ticket the user never answers expires. 24 h, the same window a git delivery claim uses. */
 export const CODER_TICKET_TTL = { ttl: { value: 24, unit: "HOURS" } };
 /**
+ * HOW LONG A THREAD LIVES — the transcript row AND the knowledge pin beside it, from ONE
+ * constant (F-581).
+ *
+ * They were two identical literals, and that is precisely how they came to disagree: the
+ * transcript's TTL is re-set on every turn, so a thread in weekly use is effectively
+ * immortal, while the pin was written once under `if (!already)` and never renewed. The pin
+ * therefore expired FIRST, and the turn after that found no pin, built knowledge live, and
+ * wrote a NEW pin presenting today's skills and memories in the prefix as if they had been
+ * the thread's all along — a silent re-pin, a moved prefix, and a whole stored history
+ * re-billed at write price with nothing in the log to say why.
+ *
+ * One constant, and both rows are refreshed by the same writer on the same turn.
+ */
+export const CODER_THREAD_TTL = { ttl: { value: 90, unit: "DAYS" } };
+/**
  * THE POST-FUNCTION TURN'S PER-EVENT COMPLETION CLAIM (F-393).
  *
  * `coder_exec:<issueKey>` is a LOCK — it is released in `finally`, so once a turn ends it
@@ -922,7 +937,7 @@ const runCoderTurnClaimed = async ({
     record.promptPrefixBytes = prefixBytes;
     if (pendingTicket) record.pendingTicketId = pendingTicket.ticketId;
     else delete record.pendingTicketId;
-    await store.set(threadKey, record, { ttl: { value: 90, unit: "DAYS" } });
+    await store.set(threadKey, record, CODER_THREAD_TTL);
   });
 
   // THE THREAD'S SKILLS AND MEMORIES, PINNED FOR AS LONG AS THEY ARE STILL TRUE (F-574,
@@ -947,16 +962,26 @@ const runCoderTurnClaimed = async ({
   //
   // What it is NOT is permanent. A pin whose knowledge has since been DELETED or EDITED is
   // replaced, once, by the turn that noticed (F-578 — the builder decides that and says so
-  // in `repin`).
+  // in `repin`), and a pin that is still true has its TTL renewed on every turn beside the
+  // thread row's, so it can never expire under a living thread and re-pin today's knowledge
+  // as if it had always been there (F-581).
   if (knowledge && typeof knowledge === "object") {
     try {
       const pinKey = coderPinKey(key, thread);
       const already = await store.get(pinKey);
       const repin = knowledge.repin === true;
-      if (!already || repin) {
-        // A re-pin moves the prompt prefix once, and an unexplained prefix move is the very
-        // thing this pin exists to prevent — so the turn's own log carries the reason.
-        if (repin) {
+      if (already && !repin) {
+        // A LIVING PIN IS REFRESHED, NOT REWRITTEN (F-581): the SAME object back under a
+        // fresh TTL, on the same turn and by the same writer as the thread row above. The
+        // bytes the prefix carries do not move, and the pin can no longer expire first.
+        await store.set(pinKey, already, CODER_THREAD_TTL);
+      } else {
+        // Two ways to reach here that are NOT the ordinary first turn, and neither may be
+        // silent — both move the prompt prefix once, and an unexplained prefix move is the
+        // thing this pin exists to prevent.
+        if (!already && Number(record.turns) > 1) {
+          log("pin expired — this thread had no pinned knowledge left, so this turn pins today's skills and memories; the prompt prefix moves once");
+        } else if (repin) {
           log(`this thread's knowledge changed since it was pinned (${knowledge.pinInvalidated || "epoch moved"}) — re-pinned, the prompt prefix moves once`);
         }
         const pinnedSkills = typeof knowledge.skillsBlock === "string" ? knowledge.skillsBlock : "";
@@ -978,7 +1003,7 @@ const runCoderTurnClaimed = async ({
             ...(knowledge.memoryEpoch !== undefined ? { memoryEpoch: Number(knowledge.memoryEpoch) || 0 } : {}),
             ...(knowledge.skillEpoch !== undefined ? { skillEpoch: String(knowledge.skillEpoch) } : {}),
             at: nowIso(),
-          }, { ttl: { value: 90, unit: "DAYS" } });
+          }, CODER_THREAD_TTL);
         } else {
           // Say it on the turn's own log: an unpinned thread re-derives its knowledge every
           // turn (the pre-F-574 behaviour), which costs cache hits, never answers.
@@ -1179,7 +1204,7 @@ const appendDecisionRow = async (store, issueKey, threadId, text) => {
       row.messages = compactThread([...(row.messages || []), { role: "user", kind: "decision", at: nowIso(), content: text }]).messages;
       row.updatedAt = nowIso();
       delete row.pendingTicketId;
-      await store.set(threadKey, row, { ttl: { value: 90, unit: "DAYS" } });
+      await store.set(threadKey, row, CODER_THREAD_TTL);
     }
   });
 };

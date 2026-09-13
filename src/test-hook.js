@@ -549,6 +549,16 @@ export async function testStateTrigger(req) {
         // getKnowledgeCounts and getLogs are already allowlisted above; listed here in the
         // comment only, not re-added — one entry, one home.
         "getContextDocs", "getSkills", "getSkillContent", "explainRule",
+        // 1.5 commit 5b — the Virtual Administrator READ surfaces, so a live pass can
+        // prove the permission floors and the answer shapes on real data: the editor
+        // floor on listVaAgents/getVaStatus and the ADMIN floor on the three below.
+        // DELIBERATELY ABSENT, and this is the same line the git resolvers draw:
+        // saveVaMemory, approveVaDraft, rejectVaDraft, pauseVa, resumeVa, runVaTickNow
+        // and runVaPostNow. Every one of those either changes a live automation or
+        // moves a human's verdict onto a message queued for a real customer, and a
+        // harness that can run a VA tick is a harness that can be turned into one.
+        // `vaWizardStep` is also absent: it CREATES an agent and it calls a model.
+        "listVaAgents", "getVaStatus", "listVaDrafts", "listVaEffects", "getVaMemory",
         // 1.4 commit 2 — the git-connection READ surfaces only, so a live pass can
         // prove the admin gate and the "a resolver never returns a token" contract
         // on real data. DELIBERATELY ABSENT: saveGitConnection, deleteGitConnection,

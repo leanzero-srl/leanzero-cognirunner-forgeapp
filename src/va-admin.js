@@ -111,6 +111,62 @@ const nowIso = (ms) => new Date(ms == null ? Date.now() : ms).toISOString();
 const fail = (reason, extra = {}) => ({ ok: false, reason, ...extra });
 const okv = (extra = {}) => ({ ok: true, ...extra });
 
+/**
+ * THE SENTENCE FOR EVERY REASON THIS MODULE CAN EMIT, and it lives HERE rather than
+ * in the resolver layer or the tab.
+ *
+ * Two doors render these refusals (the Agents tab and the REST resource) and a third
+ * asserts them (the offline suite). Copy that lived at a call site would be copy the
+ * other two doors each rewrote — which is how one rule grows four wordings that
+ * disagree about what the product actually refused. A reason with no row here renders
+ * as the reason itself: visible and ugly, which is the right pressure to add the row,
+ * and never silent.
+ *
+ * `detail` on the refusal, when present, is the SPECIFIC half (which project, which
+ * draft) and is appended by `refusalSentence`; the row below is the general half.
+ */
+export const VA_ADMIN_REFUSALS = Object.freeze({
+  job_id_required: "No agent was named.",
+  account_required: "The setup interview needs to know who is running it.",
+  item_key_required: "No staged reply was named.",
+  not_found: "That agent no longer exists.",
+  not_a_virtual_administrator: "That scheduled job is not a Virtual Administrator.",
+  job_read_failed: "The agent could not be read.",
+  job_index_read_failed: "The list of agents could not be read.",
+  job_write_failed: "The change could not be saved.",
+  index_read_failed: "What this agent is carrying could not be read.",
+  item_read_failed: "That item could not be read.",
+  no_such_item: "This agent is not carrying that item.",
+  no_staged_draft: "There is no staged reply on that item any more.",
+  draft_changed: "That draft was replaced by a newer one since you opened it.",
+  not_in_shadow: "This agent is live, so it delivers its own drafts behind the post gates.",
+  scan_unavailable: "Stored history could not be read on this runtime.",
+  scan_failed: "Stored history could not be read.",
+  memory_read_failed: "The agent's memory could not be read.",
+  memory_write_failed: "The agent's memory could not be saved.",
+  agent_disabled: "This agent is switched off. Enable it first.",
+  agent_paused: "This agent is paused. Resume it first.",
+  already_running: "A run for this agent is already queued.",
+  claim_failed: "Whether a run is already in flight could not be determined, so nothing was queued.",
+  enqueue_failed: "The run could not be queued.",
+  wizard_read_failed: "The setup interview could not be read.",
+  wizard_delete_failed: "The setup interview could not be cleared.",
+  jql_unwrappable: "The filter could not be bounded to the agent's read scope.",
+  jql_unexecutable: "Jira refused to run that filter.",
+});
+
+/**
+ * A refusal turned into one sentence. `message` wins when the refusal carried its own
+ * (the JQL refusals do, because theirs name a Jira error class), then the table, then
+ * the bare reason.
+ */
+export const refusalSentence = (r) => {
+  if (!r || r.ok) return "";
+  if (r.message) return String(r.message);
+  const general = VA_ADMIN_REFUSALS[r.reason] || String(r.reason || "The operation did not complete.");
+  return r.detail ? `${general} ${String(r.detail)}` : general;
+};
+
 /* ══════════════════════════════════════════════════════════════════════════════
  * 0. BOUNDS — every read in this file is bounded, and the bound has a name
  *
@@ -1323,12 +1379,25 @@ export const wizardStep = async ({ accountId, input } = {}, injected = {}) => {
       : (isObj(inp.model) ? inp.model.value : undefined);
     const jql = isObj(candidate) ? candidate.jql : undefined;
     if (jql != null && String(jql).trim()) {
-      // The read scope as answered SO FAR. `read_scope` comes after `intake` in the
-      // step order, so this is usually empty — and `wrapScopedJql` refuses an empty
-      // non-site scope BY NAME, which is the correct, explainable thing to tell an
-      // admin who typed a filter before saying which projects the agent may read.
+      /*
+       * The read scope as answered SO FAR — and `null` (do not wrap) when it has not
+       * been answered yet.
+       *
+       * `read_scope` comes AFTER `intake` in the step order, so on a first pass through
+       * the interview there is no scope to wrap with. Treating that as an empty list
+       * would make `wrapScopedJql` refuse `read_scope_empty` on EVERY first-time filter
+       * — the question asked before the one it depends on, which is a wizard that
+       * cannot be completed in its own order.
+       *
+       * Falling back to the unwrapped query is not a hole: this check asks "can Jira run
+       * this at all", the ONE thing a shape check cannot answer, and the narrowing is
+       * applied and re-validated by `normalizeVa` at save time and by `wrapScopedJql`
+       * again at every sweep. An admin who goes back and edits the filter after choosing
+       * projects gets the wrapped check, which is the stricter one.
+       */
       const answered = isObj(state.answers) && isObj(state.answers.readScope) ? state.answers.readScope : null;
-      const readProjects = answered && answered.site === true ? null : asArray(answered && answered.projects).map((k) => String(k).toUpperCase());
+      const chosen = asArray(answered && answered.projects).map((k) => String(k).toUpperCase());
+      const readProjects = (answered && answered.site === true) || !chosen.length ? null : chosen;
       const dry = await dryRunJql({ jql, readProjects }, deps);
       if (!dry.ok) {
         const turn = stepWizard(state, {});          // re-render the SAME step

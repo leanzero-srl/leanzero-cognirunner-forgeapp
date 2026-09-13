@@ -16,7 +16,7 @@ import {
   normalizeListener, normalizeStep, matchListenerStatic, toIndexRow, listenerTrigger,
   LISTENER_INDEX_KEY, LISTENER_PREFIX, saveListener, listListeners, getListener, deleteListener, setListenerEnabled,
   BRAKE_MAX_PER_LISTENER, matchesListenerRepos, sameGitActor, isGitSelfEvent, setConnectionIdentityResolver,
-  normalizeSavedByRole, mergeGitProperty, gitPropertyEntry, writeGitIssueProperty, dispatchGitEvent,
+  normalizeSavedByRole, brakeObjectKey, BRAKE_MAX_PER_ISSUE, mergeGitProperty, gitPropertyEntry, writeGitIssueProperty, dispatchGitEvent,
   GIT_PROPERTY_KEY, GIT_PROPERTY_MAX_REPOS, GIT_PROPERTY_MAX_BYTES,
 } from "../../src/listeners.js";
 import { normalizeJob, planTick, saveJob, listJobs, setJobEnabled, previewSchedule } from "../../src/scheduled-jobs.js";
@@ -385,6 +385,49 @@ const bucket = Math.floor(Date.now() / 300000);
 storage.__seed(`lst_brake:L:${agentlessL.id}:${bucket}`, BRAKE_MAX_PER_LISTENER);
 await dispatchGitEvent(env5c);
 ok(pushed.filter((x) => x.body && x.body.taskType === "gitreview").length === 0, "the per-listener brake (120 / 5 min) stops a git delivery exactly as it stops a Jira event");
+setConnectionIdentityResolver(null);
+
+// ── breaker 35: git brakes, identity, payload trimming, the agentless premade ──
+
+// F-320 — a git delivery has no issue key, so the per-OBJECT brake keys on the PR.
+ok(brakeObjectKey({ eventType: "avi:jira:updated:issue", issueKey: "LZPT-1" }) === "LZPT-1", "a Jira event still brakes per issue");
+ok(brakeObjectKey({ eventType: "git:pull_request:opened", repoId: "o/r", prNumber: 7 }) === "git:o/r#7", "a git delivery brakes per PULL REQUEST");
+ok(brakeObjectKey({ eventType: "git:push", repoId: "o/r" }) === "git:o/r", "a push with no PR brakes per repository");
+ok(brakeObjectKey({ eventType: "git:pull_request:opened", repoId: "o/r", prNumber: 7, issueKey: "LZPT-9" }) === "LZPT-9",
+  "a git delivery that DID resolve a Jira key brakes on the issue (the tighter object)");
+ok(brakeObjectKey({ eventType: "git:pull_request:opened" }) === null, "no repo and no issue: no per-object brake to take");
+
+// …and it really bites: seed the PR's bucket at the cap and the delivery is stopped.
+storage.__reset(); forgeApi.__reset(); pushed.length = 0;
+forgeApi.__respond((path, opts) => forgeApi.__response(opts && opts.method === "PUT" ? 200 : 404, {}));
+setConnectionIdentityResolver(async () => ({ login: "cognirunner[bot]" }));
+const brakeL = await saveListener({ name: "PR agent", events: ["git:pull_request:opened"], mode: "agent", agent: { instructions: "x", allowedActions: [] }, filters: { repos: ["o/r"] } }, { accountId: "u" });
+const genv = { eventType: "git:pull_request:opened", source: "git", connectionId: "gc_1", repoId: "o/r", actor: { login: "octocat" }, pullRequest: { number: 7, headSha: "a" } };
+storage.__seed(`lst_brake:git:o-r#7:${Math.floor(Date.now() / 300000)}`, BRAKE_MAX_PER_ISSUE);
+await dispatchGitEvent(genv);
+ok(pushed.filter((x) => x.body && x.body.taskType === "listener").length === 0,
+  "the 30-per-5-min loop guard now exists for a PR with no Jira key (F-320)");
+pushed.length = 0;
+await dispatchGitEvent({ ...genv, pullRequest: { number: 8, headSha: "b" } });
+ok(pushed.filter((x) => x.body && x.body.taskType === "listener").length === 1, "…and it is PER PULL REQUEST, not per repository");
+ok(brakeL.id, "the braked listener is the same rule");
+
+// F-326 — identity, not a label: an id match wins, an id MISMATCH refuses a login match.
+ok(sameGitActor({ accountId: "557058:x" }, { accountId: "557058:X" }), "an account id matches case-insensitively");
+ok(sameGitActor({ login: "Mihai P", uuid: "{u1}" }, { login: "mihaip", uuid: "{U1}" }),
+  "a Bitbucket actor whose nickname differs from whoami's username is STILL self, on the uuid (F-326)");
+ok(!sameGitActor({ login: "bot", uuid: "{u1}" }, { login: "bot", uuid: "{u2}" }), "two different accounts that share a display name are NOT the same actor");
+ok(sameGitActor("Octocat", "octocat") && !sameGitActor("a", "b"), "a bare login on either side still works (every existing caller)");
+ok(!sameGitActor({}, {}) && !sameGitActor(null, { login: "x" }), "nothing matches nothing");
+
+// F-328 — the self-check is resolved ONCE per delivery, not once per candidate.
+storage.__reset(); forgeApi.__reset(); pushed.length = 0;
+forgeApi.__respond((path, opts) => forgeApi.__response(opts && opts.method === "PUT" ? 200 : 404, {}));
+let identityReads = 0;
+setConnectionIdentityResolver(async () => { identityReads++; return { login: "cognirunner[bot]" }; });
+for (let i = 0; i < 4; i++) await saveListener({ name: `PR ${i}`, events: ["git:pull_request:opened"], mode: "agent", agent: { instructions: "x", allowedActions: [] }, filters: { repos: ["o/r"] } }, { accountId: "u" });
+await dispatchGitEvent(genv);
+ok(identityReads === 1, `the connection identity is read ONCE per delivery, not once per candidate (read ${identityReads}x for 4 listeners)`);
 setConnectionIdentityResolver(null);
 
 // ── agent actions ────────────────────────────────────────────────────────────

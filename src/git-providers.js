@@ -751,6 +751,10 @@ function githubAdapter({ auth, fetchImpl, timeoutMs, sleepImpl }) {
         kind: "github",
         login: (data && data.login) || null,
         id: (data && data.id) || null,
+        // The ACCOUNT TYPE ("User" / "Organization"). The login cannot answer it and
+        // two things need it: create_repo's /user/repos vs /orgs/{org}/repos choice
+        // (F-301) and any identity comparison that must not match on a login alone.
+        type: (data && data.type) || null,
         name: (data && data.name) || null,
         scopes: String(headers.get("x-oauth-scopes") || "")
           .split(",")
@@ -1313,6 +1317,13 @@ function bitbucketAdapter({ auth, fetchImpl, timeoutMs, sleepImpl }) {
         kind: "bitbucket",
         login: (data && (data.username || data.nickname)) || null,
         id: (data && data.uuid) || null,
+        // BOTH stable identifiers, because Bitbucket's own payloads disagree about
+        // which name a user has: a whoami `username` and a PR-comment `nickname` can
+        // differ, so ignoreSelf must be able to compare an ACCOUNT ID, not a label
+        // (F-326). `uuid` is the classic id, `account_id` the Atlassian one.
+        uuid: (data && data.uuid) || null,
+        accountId: (data && data.account_id) || null,
+        type: (data && data.type) || null,
         name: (data && data.display_name) || null,
         scopes: [],
       };

@@ -372,15 +372,39 @@ export const setConnectionIdentityResolver = (fn) => { _identityResolver = typeo
 const defaultConnectionIdentity = async (connId) => {
   const gc = await import("./git-connections.js");
   const row = await gc.getConnection(connId);
-  return row ? { login: row.login || null } : null;
+  // Every identifier the connection row has kept, not just the label (F-326). The row
+  // owner stores what whoami returned; missing fields simply do not participate.
+  return row ? { login: row.login || null, accountId: row.accountId || null, uuid: row.uuid || null, id: row.accountIdNumeric || row.userId || null } : null;
 };
 export const getConnectionIdentity = (connId) => (_identityResolver || defaultConnectionIdentity)(connId);
 
-/** Pure: are these two git logins the same actor? (provider logins are case-insensitive) */
+/**
+ * Are these two git identities the same actor? (F-326)
+ *
+ * NOT a login comparison. Bitbucket's own payloads disagree about a user's NAME —
+ * whoami returns `username || nickname`, a PR comment's author is `nickname ||
+ * display_name` — so a login-only check was permanently false for some workspaces and
+ * ignoreSelf was inert with nothing in the log saying so. Compare every stable
+ * identifier either side offers (`accountId`, `uuid`, numeric `id`) and fall back to
+ * the lower-cased login. Any ONE matching identifier is a match; a match on nothing is
+ * not a match.
+ *
+ * Accepts a bare login string on either side, so every existing caller keeps working.
+ */
+const gitIdentity = (v) => {
+  if (v == null) return {};
+  if (typeof v === "string") return { login: v.trim().toLowerCase() };
+  const norm = (x) => (x == null ? "" : String(x).trim().toLowerCase());
+  return { login: norm(v.login), accountId: norm(v.accountId), uuid: norm(v.uuid), id: norm(v.id) };
+};
 export const sameGitActor = (a, b) => {
-  const x = a == null ? "" : String(a).trim().toLowerCase();
-  const y = b == null ? "" : String(b).trim().toLowerCase();
-  return Boolean(x && y && x === y);
+  const x = gitIdentity(a);
+  const y = gitIdentity(b);
+  // Ids first: they survive a rename and they never collide across accounts.
+  for (const k of ["accountId", "uuid", "id"]) if (x[k] && y[k] && x[k] === y[k]) return true;
+  // A login match is only trusted when neither side offered an id that DISAGREED.
+  for (const k of ["accountId", "uuid", "id"]) if (x[k] && y[k] && x[k] !== y[k]) return false;
+  return Boolean(x.login && y.login && x.login === y.login);
 };
 
 /**
@@ -393,10 +417,13 @@ export const sameGitActor = (a, b) => {
  * loop at 30 / 120 per 5 minutes. Say it in the log when it happens.
  */
 export const isGitSelfEvent = async (ctx) => {
-  if (!ctx || !isGitEvent(ctx.eventType) || !ctx.actorLogin || !ctx.connectionId) return false;
+  if (!ctx || !isGitEvent(ctx.eventType) || !ctx.connectionId) return false;
+  // Either a login or a stable id is enough to ask the question (F-326).
+  const actor = { login: ctx.actorLogin || null, accountId: ctx.actorAccountIdGit || null, uuid: ctx.actorUuid || null, id: ctx.actorId || null };
+  if (!actor.login && !actor.accountId && !actor.uuid && !actor.id) return false;
   try {
     const who = await getConnectionIdentity(ctx.connectionId);
-    return sameGitActor(ctx.actorLogin, who && who.login);
+    return sameGitActor(actor, who);
   } catch (e) {
     console.warn("[listener] git ignoreSelf lookup failed (event NOT dropped; brakes still apply):", e && e.message);
     return false;
@@ -437,9 +464,26 @@ const readBrake = async (key) => {
   try { return { key, count: Number(await storage.get(key)) || 0 }; } catch { return { key, count: 0, readFailed: true }; }
 };
 const bumpBrake = async (b) => { if (b.readFailed) return; try { await storage.set(b.key, b.count + 1, { ttl: { value: 15, unit: "MINUTES" } }); } catch { /* best-effort */ } };
-const brakeKeys = (listenerId, issueKey) => {
+/**
+ * The per-OBJECT brake key (F-320).
+ *
+ * For a Jira event the object is the issue. For a GIT delivery there usually is NO
+ * issue key — one is present only when the webhook parsed one out of a branch name or
+ * a PR title, which is advisory and usually absent — so the 30-per-5-minutes loop
+ * guard did not exist for git at all and the only ceiling left was 120 per listener
+ * per 5 minutes, i.e. a steady ~34k comments a day on someone's pull request. The
+ * object for a git delivery is the PULL REQUEST (`repo#number`), falling back to the
+ * repository, so a loop on one PR is capped at 30 runs per 5 minutes like any issue.
+ */
+export const brakeObjectKey = (ctx) => {
+  if (!ctx) return null;
+  if (ctx.issueKey) return ctx.issueKey;
+  if (isGitEvent(ctx.eventType) && ctx.repoId) return ctx.prNumber == null ? `git:${ctx.repoId}` : `git:${ctx.repoId}#${ctx.prNumber}`;
+  return null;
+};
+const brakeKeys = (listenerId, objectKey) => {
   const bucket = Math.floor(Date.now() / BRAKE_BUCKET_MS);
-  return { issue: issueKey ? `${BRAKE_PREFIX}${safeKeyPart(issueKey)}:${bucket}` : null, listener: `${BRAKE_PREFIX}L:${safeKeyPart(listenerId)}:${bucket}` };
+  return { issue: objectKey ? `${BRAKE_PREFIX}${safeKeyPart(objectKey)}:${bucket}` : null, listener: `${BRAKE_PREFIX}L:${safeKeyPart(listenerId)}:${bucket}` };
 };
 
 // ── Event samples (the "last seen payload" reference in the editor) ──────────
@@ -589,7 +633,11 @@ export const enqueueGitReviewRun = async ({ listener, ctx }) => {
  * only push onto the queue.
  */
 export const enqueueForListener = async ({ listener, eventType, event, ctx, source = "event" }) => {
-  const agentless = isGitEvent(eventType) && listener.mode !== "agent" && listener.agentlessTaskType === "gitreview";
+  // The ROW names the engine, and naming it wins over `mode` (F-329): a rule that
+  // says "gitreview" runs the deterministic engine — with its claim, its write brake
+  // and its per-repo rate ledger — and its agent block is only what an admin gets if
+  // they clear the field. A field that lost to `mode` would be metadata again.
+  const agentless = isGitEvent(eventType) && listener.agentlessTaskType === "gitreview";
   if (agentless) {
     if (ctx.prNumber == null) {
       console.log(`[listener] ${eventType}: "${listener.name}" (${listener.id}) skipped — the PR review engine needs a pull-request number`);
@@ -798,13 +846,19 @@ export async function listenerTrigger(event, context) {
   if (!shortlisted.length) return { queued: 0 };
 
   const jqlCache = new Map();
+  // ONE per-delivery fact, resolved ONCE (F-328). Both depend only on the delivery,
+  // not on the candidate: re-asking inside the loop cost up to 25 serial KVS reads
+  // (plus a dynamic import each) against the same 25 s budget the loop breaks out of,
+  // which drops the tail of the shortlist — the newest listeners.
+  const objectKey = brakeObjectKey(ctx);
+  const gitSelf = gitDelivery ? await isGitSelfEvent(ctx) : false;
   let queued = 0;
   for (const row of shortlisted) {
     if (Date.now() - started > TRIGGER_BUDGET_MS) { console.warn(`[listener] trigger budget hit after ${queued} enqueue(s); remaining candidates skipped for ${eventType}`); break; }
     let full;
     try { full = await getListener(row.id); } catch { full = null; }
     if (!full) continue;
-    if (gitDelivery && full.ignoreSelf !== false && await isGitSelfEvent(ctx)) {
+    if (gitDelivery && full.ignoreSelf !== false && gitSelf) {
       console.log(`[listener] ${eventType}: "${full.name}" (${full.id}) skipped — the actor is the connection's own identity (ignoreSelf)`);
       continue;
     }
@@ -824,13 +878,13 @@ export async function listenerTrigger(event, context) {
       }
     }
     // Brakes: per issue (loop guard) and per listener (cost guard).
-    const bk = brakeKeys(full.id, ctx.issueKey);
+    const bk = brakeKeys(full.id, objectKey);
     const lb = await readBrake(bk.listener);
     if (lb.count >= BRAKE_MAX_PER_LISTENER) { await bumpBrake(lb); if (lb.count === BRAKE_MAX_PER_LISTENER) await logBrake(full, ctx, `listener fired more than ${BRAKE_MAX_PER_LISTENER} times in 5 minutes`); continue; }
     let ib = null;
     if (bk.issue) {
       ib = await readBrake(bk.issue);
-      if (ib.count >= BRAKE_MAX_PER_ISSUE) { await bumpBrake(ib); if (ib.count === BRAKE_MAX_PER_ISSUE) await logBrake(full, ctx, `issue ${ctx.issueKey} triggered more than ${BRAKE_MAX_PER_ISSUE} listener runs in 5 minutes`); continue; }
+      if (ib.count >= BRAKE_MAX_PER_ISSUE) { await bumpBrake(ib); if (ib.count === BRAKE_MAX_PER_ISSUE) await logBrake(full, ctx, `${objectKey} triggered more than ${BRAKE_MAX_PER_ISSUE} listener runs in 5 minutes`); continue; }
     }
     try {
       const enq = await enqueueForListener({ listener: full, eventType, event, ctx: { ...ctx, jqlPending }, source: "event" });

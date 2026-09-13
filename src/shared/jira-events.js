@@ -466,7 +466,12 @@ export const trimEventPayload = (payload, maxBytes = 60000) => {
     const json = JSON.stringify(payload);
     if (json.length <= maxBytes) return payload;
     const slim = { ...payload };
-    if (slim.source === "git") {
+    // ASK THE CATALOGUE, not the payload (F-327). Every other consumer answers "is
+    // this a git event" with isGitEvent(eventType); branching on a `source` field the
+    // payload declares about itself meant an envelope that omitted it was trimmed with
+    // the Jira trimmer — leaving the diff, the file list and the patch in place, which
+    // is the one thing this function exists to prevent.
+    if (isGitEvent(slim.eventType) || slim.source === "git") {
       // Drop the bulk a git payload carries (diffs, commit lists, comment bodies)
       // but keep the identity the consumer needs to re-fetch anything it wants.
       if (slim.push && Array.isArray(slim.push.commits) && slim.push.commits.length > 20) {

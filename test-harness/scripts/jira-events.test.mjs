@@ -139,5 +139,17 @@ ok(t.issue.key === "K-1" && t.issue.fields.summary === "s" && !t.issue.fields.de
 ok(JSON.stringify(trimEventPayload(big, 100)).length < 400, "hard cap produces a stub");
 ok(buildEventPromptBlock(["avi:jira:commented:issue"]).includes("event.comment"), "prompt block carries payload hints");
 
+// F-327 — the trimmer asks the CATALOGUE, not the payload. An envelope that omits
+// `source` must still be trimmed as git: otherwise the diff, the file list and the
+// patch survive, which is the one thing trimEventPayload exists to prevent.
+{
+  const big = "x".repeat(70000);
+  const env = { eventType: "git:pull_request:opened", repoId: "o/r", connectionId: "c1", pullRequest: { number: 1, title: "t", headSha: "a" }, diff: big, files: [big], patch: big };
+  const out = trimEventPayload(env, 60000);
+  ok(out.diff === undefined && out.files === undefined && out.patch === undefined, "a git envelope with NO source field is still trimmed as git (F-327)");
+  ok(out.eventType === "git:pull_request:opened" && (out.pullRequest || {}).number === 1, "…keeping the identity the consumer needs");
+  ok(JSON.stringify(out).length <= 60000, "…and landing inside the transport budget");
+}
+
 console.log(`JIRA-EVENTS: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

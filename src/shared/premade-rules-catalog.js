@@ -421,10 +421,21 @@ export const PREMADE_LISTENERS = [
       mode: "agent",
       ignoreSelf: true,
       filters: { repos: [] },
+      // THE FIELD RIDES ON THE SEED, not only on the catalogue row (F-329): the seed is
+      // what goes through normalizeListener and becomes the saved rule, so a field that
+      // lives only beside it is metadata nothing can act on. With it, the delivery
+      // dispatches the DETERMINISTIC engine (src/git-review.js) — which owns the
+      // per-head-SHA claim, the 1-general/10-inline write brake and the 6-reviews-per-
+      // repo-per-hour ledger — instead of an agent turn that has none of them.
+      agentlessTaskType: "gitreview",
       agent: {
-        allowedActions: ["get_pull_request", "add_pr_comment"],
+        // NO `add_pr_comment` (F-320/F-329). The engine posts the review itself, under
+        // its own brakes; an agent-mode comment write would be capped only by the
+        // listener brakes, which is how a self-triggering comment loop becomes 120 AI
+        // comments per 5 minutes on somebody's pull request. The agent may READ.
+        allowedActions: ["get_pull_request"],
         maxRounds: 4,
-        instructions: "A pull request was opened or updated. Read it with get_pull_request, then post ONE comment with add_pr_comment summarising the risk you found: correctness bugs, missing error handling, secrets or credentials in the diff, and anything that widens permissions. Be specific — name the file and the line. If the change looks fine, say so in one sentence. Never post more than one comment, and never approve or request changes.",
+        instructions: "A pull request was opened or updated. Read it with get_pull_request and report what you find: correctness bugs, missing error handling, secrets or credentials in the diff, and anything that widens permissions. Be specific — name the file and the line. If the change looks fine, say so in one sentence. Never approve or request changes.",
       },
     },
     agentlessTaskType: "gitreview",

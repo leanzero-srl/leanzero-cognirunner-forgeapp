@@ -88,6 +88,22 @@ for (const row of PREMADE_LISTENERS) {
   if (row.agentlessTaskType && row.agentlessTaskType !== "gitreview") {
     problems.push(`${where} names an unknown agent-less task type "${row.agentlessTaskType}"`);
   }
+  // F-329 — the field must ride on the SEED, or it is metadata nothing acts on: the
+  // seed is what normalizeListener sees and what the saved rule keeps, and the
+  // dispatcher routes on the saved row.
+  if (row.agentlessTaskType && seed.agentlessTaskType !== row.agentlessTaskType) {
+    problems.push(`${where} names agentlessTaskType "${row.agentlessTaskType}" on the catalogue row but its SEED does not carry it — the saved rule would run an agent turn instead of the engine`);
+  }
+  // …and an agentless review row must not also arm an agent-mode PR WRITE: the engine
+  // owns the claim, the write brake and the rate ledger, an agent turn owns none of
+  // them (F-320).
+  if (row.agentlessTaskType === "gitreview") {
+    for (const a of (seed.agent || {}).allowedActions || []) {
+      if (a === "add_pr_comment" || a === "approve_pull_request" || a === "request_changes") {
+        problems.push(`${where} runs the review ENGINE but its seed also allows the agent action "${a}" — that write would bypass the engine's brakes`);
+      }
+    }
+  }
   // The seed must survive the SAME validation the REST API and the admin UI use —
   // minus the repos the picker supplies, which we stand in for here.
   try {

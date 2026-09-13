@@ -1732,6 +1732,23 @@ const injectStyles = () => {
     .cpf-cap-off { background: #b45309; }
     .cpf-cap-title { font-size: 12px; font-weight: 800; letter-spacing: 0.02em; }
     .cpf-cap-text { font-size: 12px; font-weight: 500; line-height: 1.45; }
+    /* F-436 — THE READ'S OWN TWO STATES. Neither is a verdict, so neither may wear the
+       Coder's amber: an admin who sees amber reads "off", which is the exact lie this
+       finding is about. They are NEUTRAL SLATE (#475569 light, one shade lighter #64748b
+       dark) — solid, white text, no rail and no tint. The dark fill keeps WHITE ink rather
+       than the dark ink the amber arms use: slate-500 under white measures ~4.6:1 at the
+       700/800 weights these two lines use, where amber-500 under white measured ~2.1:1.
+       The retry button is a solid inverse chip, because no button primitive in this app
+       survives being placed on a saturated fill. */
+    .cpf-cap-checking { background: #475569; }
+    .cpf-cap-unknown { background: #475569; }
+    .cpf-cap-actions { display: flex; gap: 8px; margin-top: 7px; }
+    .cpf-cap-retry { appearance: none; border: none; cursor: pointer; background: #fff; color: #0f172a; font-size: 12px; font-weight: 700; padding: 5px 12px; border-radius: var(--r-sm, 6px); }
+    .cpf-cap-retry:hover { background: #e2e8f0; }
+    html[data-color-mode="dark"] .cpf-cap-checking { background: #64748b; }
+    html[data-color-mode="dark"] .cpf-cap-unknown { background: #64748b; }
+    html[data-color-mode="dark"] .cpf-cap-retry { background: #0f172a; color: #f8fafc; }
+    html[data-color-mode="dark"] .cpf-cap-retry:hover { background: #1e293b; }
     .cpf-gate { display: flex; flex-direction: column; gap: 3px; margin-top: 14px; padding: 11px 13px; border-radius: var(--r-md, 8px); background: #b45309; color: #fff; }
     .cpf-gate strong { font-size: 12.5px; font-weight: 800; }
     .cpf-gate span { font-size: 12px; font-weight: 500; line-height: 1.45; }

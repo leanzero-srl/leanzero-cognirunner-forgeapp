@@ -171,6 +171,47 @@ console.log("F-242 the helper obeys the duplication convention");
   ok(body(a) === body(d), "issue-glance's copy is code-identical to the shared pair (comments aside)");
 }
 
+/* F-436 — THE SECOND HELPER OF THE SAME KIND. capability.js turns one getAgentCapability
+   read into {loading|unknown|verdict} + retry, so that a transport failure stops being
+   stored as an OFF verdict. It lives beside refusal.js in all three apps that ask the
+   question — components/ in the pair, src/ in issue-glance — and is gated here for the same
+   reason refusal.js is: a helper whose copies drift is how "one home" becomes three. The
+   files import only React, so there is no import-depth difference to normalise and the
+   comparison is BYTES. */
+console.log("F-436 the capability helper obeys the duplication convention");
+{
+  const homes = [
+    join(STATIC, "config-ui/src/components/capability.js"),
+    join(STATIC, "admin-panel/src/components/capability.js"),
+    join(STATIC, "issue-glance/src/capability.js"),
+  ];
+  const bodies = homes.map((p) => readFileSync(p, "utf8"));
+  ok(bodies.every((b) => b === bodies[0]),
+    `all ${homes.length} copies of capability.js are byte-identical (${homes.map((p) => relative(ROOT, p)).join(", ")})`);
+
+  /* The WORDING is the other half of the finding: the refusal on an unanswered read must
+     say the read failed, and must never assert the Coder is off. Asserted on the constant,
+     not on a rendered sentence, so a surface that re-words it locally fails the scan below
+     rather than shipping a second vocabulary. */
+  const { CAPABILITY_UNKNOWN_TITLE, CAPABILITY_UNKNOWN_TEXT, capabilityAnswer, CAPABILITY_RETRY_DELAYS_MS } =
+    await import("../config-ui/src/components/capability.js");
+  ok(CAPABILITY_UNKNOWN_TITLE === "Could not check whether the Coder is available",
+    "F-436 the unknown headline is about the CHECK, not about the Coder");
+  ok(!/is off|turned off|not available on this/i.test(CAPABILITY_UNKNOWN_TITLE + " " + CAPABILITY_UNKNOWN_TEXT),
+    "F-436 the unknown copy never claims the Coder is off");
+  ok(CAPABILITY_RETRY_DELAYS_MS.join(",") === "2000,4000,8000",
+    "F-436 the retry ladder is 2 s / 4 s / 8 s");
+
+  // The classification: an answer is an answer even when it is a no; transport is not.
+  ok(capabilityAnswer({ success: true, enabled: false, reason: "needs-coder-edition" }) !== null,
+    "F-436 an enabled:false VERDICT is an answer (it is not retried)");
+  ok(capabilityAnswer({ success: false, reason: "no-permission", error: "x" }) !== null,
+    "F-436 a permission refusal is an answer (it is not retried)");
+  ok(capabilityAnswer(undefined) === null && capabilityAnswer(null) === null,
+    "F-436 a missing body is transport");
+  ok(capabilityAnswer({}) === null, "F-436 a body with no success field is transport");
+}
+
 /* F-252/F-254/F-255 — THE VOCABULARY, asserted on the helper directly.
    A pure function with a branch per refusal shape is exactly the thing to unit-test: the
    browser journeys can only reach the shapes some surface happens to render today, and the

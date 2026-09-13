@@ -42,7 +42,12 @@ export const DUPLICATED_COMPONENTS = [
   // they are identical — a claim that licenses the next editor to fork them.
   // toast.js (not .jsx) was likewise identical and unlisted — the reality scan below
   // is what found it.
+  // F-436 — capability.js (the getAgentCapability retry ladder and the ONE wording for a
+  // read that never came back) is a THIRD shared helper of the refusal.js kind: the pair
+  // below plus a copy at issue-glance/src/capability.js, which the identity block at the
+  // bottom of this file holds equal.
   "MemoriesTab.jsx", "PremadeRuleForm.jsx", "IssuePicker.jsx", "Skeleton.jsx", "toast.js", "refusal.js",
+  "capability.js",
   "components/editor/*",
 ];
 // Deliberately DIVERGED — never blind-copied between the two apps. Verified by
@@ -162,6 +167,20 @@ for (const rel of targets) {
   ok(misfiled.length === 0, misfiled.length
     ? `THE LISTS DISAGREE WITH THE BYTES — ${misfiled.join("; ")}`
     : `all ${shared.length} shared components are filed to match their bytes`);
+}
+
+/* F-436 — THE THIRD COPY. issue-glance has no components/ directory to share with the pair,
+   so its copy of capability.js sits at src/capability.js (the same place its refusal.js does)
+   and the walk above cannot see it. Compared by BYTES, because there is no import-depth
+   difference to excuse: all three files import nothing but React. */
+{
+  const pair = path.join(ROOT, "static", "config-ui", "src", "components", "capability.js");
+  const glance = path.join(ROOT, "static", "issue-glance", "src", "capability.js");
+  ok(existsSync(glance), "issue-glance carries its own copy of capability.js");
+  if (existsSync(glance) && existsSync(pair)) {
+    ok(readFileSync(pair).equals(readFileSync(glance)),
+      "issue-glance's capability.js is byte-identical to the config-ui/admin-panel pair");
+  }
 }
 
 ok(drifted.length === 0,

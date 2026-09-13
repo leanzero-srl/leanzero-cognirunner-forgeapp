@@ -44,6 +44,12 @@ import { invoke } from "@forge/bridge";
 import CustomSelect from "./CustomSelect.jsx";
 import { agentCapabilityCopy } from "../../../../src/shared/edition.js";
 import { isPermissionRefusal, isUpgradeRequired, permissionRefusalText, upgradeRequiredText, UPGRADE_REQUIRED_HEADLINE } from "../refusal.js";
+// F-436 - the capability read with a retry ladder, and the ONE wording for a read that never
+// came back. Byte-identical with config-ui/admin-panel's components/capability.js.
+import {
+  useAgentCapability, CAPABILITY_UNKNOWN_TITLE, CAPABILITY_UNKNOWN_TEXT,
+  CAPABILITY_CHECKING_TITLE, CAPABILITY_RETRY_LABEL,
+} from "../capability.js";
 
 /* A coder turn runs on the 900 s long consumer, so the poll budget is 300 tries at 3 s
    (= 900 s) rather than the 40 the 120 s consumer's surfaces use. Same cadence, same
@@ -155,7 +161,7 @@ const noPreviewText = (action) =>
 
 export default function CoderPanel({ issueKey, accountId }) {
   const [cap, setCap] = useState(null);            // the getAgentCapability answer
-  const [capState, setCapState] = useState("loading"); // loading | ok | refused | upgrade | error
+  const [capState, setCapState] = useState("loading"); // loading | ok | refused | upgrade | unknown
   const [refusal, setRefusal] = useState(null);    // the raw refusal body for the permission arm
   const [messages, setMessages] = useState([]);
   const [connections, setConnections] = useState([]);
@@ -205,28 +211,30 @@ export default function CoderPanel({ issueKey, accountId }) {
   }, [messages]);
 
   /* ---------------------------------------------------------------- mount reads */
+  /* F-436 - THE CAPABILITY READ, AND THE TWO THINGS "no answer" USED TO MEAN.
+     This panel used to catch a transport failure and store `{enabled:false, reason:"unknown"}`
+     as though the backend had said so, then render "Coder off" with no way back: a developer
+     on a flaky connection was told their instance cannot run the Coder, for the life of the
+     panel. The read now runs through ../capability.js, which retries transport (2/4/8 s) and
+     reports "unknown" as its own state with a Retry button. The direction is unchanged - a
+     panel that does not know is still not a panel that opens the composer. */
+  const { status: capStatus, verdict: capVerdict, retry: retryCapability } = useAgentCapability(invoke, true);
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await invoke("getAgentCapability");
-        if (cancelled || !mountedRef.current) return;
-        if (isUpgradeRequired(res)) { setRefusal(res); setCapState("upgrade"); return; }
-        if (isPermissionRefusal(res)) { setRefusal(res); setCapState("refused"); return; }
-        if (!res || res.success !== true) {
-          // The restrictive side: a read that did not answer is "off", never "on".
-          setCap({ enabled: false, reason: "unknown" });
-          setCapState("ok");
-          return;
-        }
-        setCap(res);
-        setCapState("ok");
-      } catch (e) {
-        if (!cancelled && mountedRef.current) { setCap({ enabled: false, reason: "unknown" }); setCapState("ok"); }
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [issueKey]);
+    if (!mountedRef.current) return;
+    if (capStatus === "loading") { setCap(null); setCapState("loading"); return; }
+    if (capStatus === "unknown") { setCap(null); setCapState("unknown"); return; }
+    const res = capVerdict;
+    if (isUpgradeRequired(res)) { setRefusal(res); setCapState("upgrade"); return; }
+    if (isPermissionRefusal(res)) { setRefusal(res); setCapState("refused"); return; }
+    if (!res || res.success !== true) {
+      // An answered "no" that is neither of the two refusal shapes: the restrictive side.
+      setCap({ enabled: false, reason: "unknown" });
+      setCapState("ok");
+      return;
+    }
+    setCap(res);
+    setCapState("ok");
+  }, [capStatus, capVerdict]);
 
   /* F-368 split the mount read in two, because the THREAD can now change without the
      capability changing: switching conversations must re-read the transcript and nothing
@@ -479,7 +487,23 @@ export default function CoderPanel({ issueKey, accountId }) {
   };
 
   /* ------------------------------------------------------------------ rendering */
-  if (capState === "loading") return <div className="coder-cap coder-cap-loading"><span className="spin-ring" /> <span className="coder-cap-title">Checking the Coder</span></div>;
+  if (capState === "loading") return <div className="coder-cap coder-cap-loading"><span className="spin-ring" /> <span className="coder-cap-title">{CAPABILITY_CHECKING_TITLE}</span></div>;
+
+  /* F-436 - the read never came back. Slate, not the OFF amber, and it says what it knows:
+     nothing. "Coder off" here would be a claim about the instance made from a dropped
+     request - the exact sentence the finding is about. */
+  if (capState === "unknown") {
+    return (
+      <div className="coder-cap coder-cap-unknown" role="alert">
+        <span className="coder-chip coder-chip-unknown">No answer</span>
+        <p className="coder-cap-title">{CAPABILITY_UNKNOWN_TITLE}</p>
+        <p className="coder-cap-remedy">{CAPABILITY_UNKNOWN_TEXT}</p>
+        <div className="coder-cap-actions">
+          <button type="button" className="coder-btn coder-btn-go" onClick={retryCapability}>{CAPABILITY_RETRY_LABEL}</button>
+        </div>
+      </div>
+    );
+  }
 
   if (capState === "upgrade") {
     return (

@@ -90,8 +90,13 @@ const injectStyles = () => {
     .coder-chip-on { background: #b45309; }
     .coder-chip-off { background: #475569; }
     .coder-chip-consent { background: #b45309; }
+    /* F-436 - the READ failed, which is not the same statement as "off". It wears the
+       neutral slate rather than the Coder's amber precisely so it does not read as a
+       verdict, and the card below it carries a Retry using the app's own button. */
+    .coder-chip-unknown { background: #475569; }
+    .coder-cap-actions { margin: 9px 0 0; display: flex; gap: 8px; }
     html[data-color-mode="dark"] .coder-chip-on, html[data-color-mode="dark"] .coder-chip-consent { background: #f59e0b; color: #2a1602; }
-    html[data-color-mode="dark"] .coder-chip-off { background: #64748b; }
+    html[data-color-mode="dark"] .coder-chip-off, html[data-color-mode="dark"] .coder-chip-unknown { background: #64748b; }
 
     /* -- the transcript. Model text is PLAIN paragraphs (CoderPanel rule 2) -- */
     .coder-thread { display: flex; flex-direction: column; gap: 8px; max-height: 360px; overflow-y: auto; }

@@ -274,6 +274,12 @@ surface is recorded as `savedByRole: "editor"`: a rule pushed over the API can n
 an admin-only power such as a PR verdict action or a headless git write. Rows created by an admin
 token carry `createdBy: "api:<tokenId>"`; rows created by an editor token carry the
 account that minted the token, which is the account its ownership is judged against.
+An editor token always acts with scope "own", whatever the minting admin's own scope is:
+it may edit and delete only rows stamped with its minter's account (rows that admin created
+by hand in the UI), never rows stamped `api:<tokenId>` by an admin token, and never another
+account's rows. A body-supplied `id` on `POST` is judged by the same rule, so an existing
+row can only be upserted by its owner. If the minting account is later demoted below
+editor, every write from its tokens is refused.
 
 ## Storage
 

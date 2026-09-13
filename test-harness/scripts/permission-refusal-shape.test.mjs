@@ -402,7 +402,11 @@ console.log("permission-refusal-shape: OK");
   assert.ok(Array.isArray(refused?.refused) && refused.refused.length === 1,
     "…and so does refused[] — the UI can highlight the exact checkbox");
   assert.equal(refused.refused[0].id, "commit_files", "refused[].id is the action id");
-  assert.equal(refused.refused[0].reason, "capability-off:git", "refused[].reason is the machine code, not prose");
+  // The CODE, not prose — and on this default tenant (Forge LLM, Standard) it is the
+  // real cause the F-302 wiring computes, never the blanket "capability-off:git" a
+  // gate with no context used to return.
+  assert.equal(refused.refused[0].reason, "needs-coder-edition",
+    `refused[].reason is the machine code (got ${JSON.stringify(refused.refused)})`);
   assert.match(String(refused.error || ""), /commit_files/,
     "the human sentence still comes along — the two halves are additive, never a swap");
 

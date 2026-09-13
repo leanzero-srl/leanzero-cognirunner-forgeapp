@@ -97,6 +97,9 @@ import * as listenersMod from "./listeners.js";
 import * as jobsMod from "./scheduled-jobs.js";
 import { createApiTokenInternal, listApiTokens, revokeApiTokenInternal, RULES_API_WEBTRIGGER_KEY, RULES_API_URL_KVS_KEY } from "./rules-api.js";
 import { isKnownEvent, buildEventPromptBlock, GIT_EVENT_IDS } from "./shared/jira-events.js";
+// F-302: the ONE builder of the agent action gate's context. index.js reads the facts
+// (agentGateFacts, below) and NEVER assembles the context shape itself.
+import { buildAgentGateContext } from "./shared/agent-actions.js";
 import { describeCron } from "./shared/cron.js";
 // Skill repository (skill packs injected into codegen/fix prompts).
 import {
@@ -10163,6 +10166,55 @@ resolver.define("testPostFunction", async ({ payload, context }) => {
   }
 });
 
+/**
+ * F-302 — THE INSTANCE'S FACTS FOR THE AGENT ACTION GATE, read in ONE place.
+ *
+ * The gate (`buildAgentGateContext` → `agentCapability`, src/shared/agent-actions.js)
+ * is pure: it decides from four facts, and it cannot read them itself. Before this
+ * existed, no production call site supplied any of them — so SAVE time gated against
+ * the restrictive default and refused every git action with "capability-off:git",
+ * naming a capability that was never computed on that path, with no setting anywhere
+ * that could satisfy it. Run time gated arity-1 and silently dropped the ids.
+ *
+ * ONE MEMO READ: `getProviderConfig()` answers provider AND allowance from the same
+ * 30 s memo (the allowance arm only does extra work on Forge LLM), and
+ * `currentEdition(context)` takes the invocation's own licence when it has one.
+ * `getAgentModel()` rides the same memo.
+ *
+ * FAILS TO THE RESTRICTIVE SIDE, and never throws: a fact we could not read is
+ * omitted, and `buildAgentGateContext` refuses what it was not told about. That is
+ * the right direction even though a save-time refusal is loud — inventing a
+ * capability from a failed read is how a tenant gets a power nobody granted.
+ */
+const agentGateFacts = async (context) => {
+  const facts = { edition: null, provider: null, agentModel: null, allowanceLevel: null };
+  try {
+    const cfg = await getProviderConfig();
+    facts.provider = cfg.provider || null;
+    facts.allowanceLevel = cfg.allowance && cfg.allowance.level ? cfg.allowance.level : null;
+  } catch (e) { /* restrictive: provider unknown → the gate refuses */ }
+  try {
+    facts.edition = (await currentEdition(context)).edition;
+  } catch (e) { /* restrictive: edition unknown → Coder-only actions refuse */ }
+  try {
+    facts.agentModel = await getAgentModel();
+  } catch (e) { /* restrictive: a frontier-model check with no model refuses */ }
+  return facts;
+};
+
+/**
+ * `savedByRole` — "admin" ONLY when an admin saved the rule. It is what lets an
+ * admin-confirm action (a PR verdict) exist on a rule at all, so anything short of a
+ * confirmed admin role is "editor". A read fault lands on "editor" too: the lesser
+ * power is the safe answer.
+ */
+const savedByRoleFor = async (accountId) => {
+  try {
+    const perms = await getUserPermissions(accountId);
+    return perms && perms.role === "admin" ? "admin" : "editor";
+  } catch (e) { return "editor"; }
+};
+
 // ═══════════════════════ LISTENERS · SCHEDULED JOBS · REST API ═══════════════════════
 // Thin permission-gated wrappers; logic lives in src/listeners.js, src/scheduled-jobs.js,
 // src/rules-api.js (which lazily import the internals exported at the end of this file).
@@ -10263,7 +10315,19 @@ resolver.define("saveListener", async ({ payload, context }) => {
   } else if (!(await requireRole(context.accountId, "editor"))) {
     return noPerm("create listeners", "editor");
   }
-  return okOr(async () => ({ success: true, listener: await listenersMod.saveListener(input, { accountId: context.accountId }) }));
+  // F-302 — the gate context is supplied HERE or the git namespace is unreachable in
+  // both directions: save time refuses every git action against the restrictive
+  // default, and run time drops the ids. Same helper, same four facts, for the
+  // resolver, the REST API and the two run sites.
+  const [facts, savedByRole] = await Promise.all([agentGateFacts(context), savedByRoleFor(context.accountId)]);
+  // `savedByRole` rides the CONTEXT as well as the row: it is what an admin-confirm
+  // action (a PR verdict) is gated on, and it comes from the ROSTER — never from the
+  // payload, or the flag would be self-granted by whoever is saving.
+  const gate = buildAgentGateContext({ ...facts, triggerSource: null, savedByRole });
+  return okOr(async () => ({
+    success: true,
+    listener: await listenersMod.saveListener(input, { accountId: context.accountId, gate, savedByRole }),
+  }));
 });
 resolver.define("deleteListener", async ({ payload, context }) => {
   const existing = await listenersMod.getListener(payload?.id);
@@ -10294,10 +10358,17 @@ resolver.define("setListenerEnabled", async ({ payload, context }) => {
 resolver.define("testListener", async ({ payload, context }) => {
   if (!(await requireRole(context.accountId, "editor"))) return noPerm("test listeners", "editor");
   return okOr(async () => {
+    // F-302 — a TEST must gate exactly like a save, or an admin proves a draft that
+    // the save then refuses (or worse, the other way round).
+    const facts = await agentGateFacts(context);
+    const savedByRole = await savedByRoleFor(context.accountId);
+    const gate = buildAgentGateContext({ ...facts, triggerSource: null, savedByRole });
     let listener;
     if (payload?.listener && typeof payload.listener === "object") {
       const existing = payload.listener.id ? await listenersMod.getListener(payload.listener.id) : null;
-      listener = listenersMod.normalizeListener(payload.listener, { existing, accountId: context.accountId });
+      listener = listenersMod.normalizeListener(payload.listener, {
+        existing, accountId: context.accountId, gate, savedByRole,
+      });
     } else {
       listener = await listenersMod.getListener(payload?.id);
     }
@@ -10313,7 +10384,17 @@ resolver.define("testListener", async ({ payload, context }) => {
       });
       if (refusal) return refusal;
     }
-    const result = await listenersMod.testListener({ listener, issueKey: payload?.issueKey ? String(payload.issueKey).trim() : null, eventType: payload?.eventType || null, deadline: Date.now() + 20000 });
+    // TODO(F-302): `listeners.testListener` does not thread `gateFacts` through to
+    // `runListener` yet, so a test run still gates arity-1 and drops git actions. The
+    // facts are supplied here against the contract the run sites already use; threading
+    // them is one line in src/listeners.js, which is another surgeon's file this commit.
+    const result = await listenersMod.testListener({
+      listener,
+      issueKey: payload?.issueKey ? String(payload.issueKey).trim() : null,
+      eventType: payload?.eventType || null,
+      deadline: Date.now() + 20000,
+      gateFacts: facts,
+    });
     return { success: true, result };
   });
 });
@@ -10358,7 +10439,16 @@ resolver.define("saveScheduledJob", async ({ payload, context }) => {
   } else if (!(await requireRole(context.accountId, "editor"))) {
     return noPerm("create scheduled jobs", "editor");
   }
-  return okOr(async () => ({ success: true, job: await jobsMod.saveJob(input, { accountId: context.accountId }) }));
+  // F-302 — see saveListener: the same gate, built from the same four facts.
+  const [facts, savedByRole] = await Promise.all([agentGateFacts(context), savedByRoleFor(context.accountId)]);
+  // `savedByRole` rides the CONTEXT as well as the row: it is what an admin-confirm
+  // action (a PR verdict) is gated on, and it comes from the ROSTER — never from the
+  // payload, or the flag would be self-granted by whoever is saving.
+  const gate = buildAgentGateContext({ ...facts, triggerSource: null, savedByRole });
+  return okOr(async () => ({
+    success: true,
+    job: await jobsMod.saveJob(input, { accountId: context.accountId, gate, savedByRole }),
+  }));
 });
 resolver.define("deleteScheduledJob", async ({ payload, context }) => {
   const existing = await jobsMod.getJob(payload?.id);

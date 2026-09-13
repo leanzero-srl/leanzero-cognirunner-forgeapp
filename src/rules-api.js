@@ -25,7 +25,9 @@
  * AUTH: bearer API tokens minted by an app ADMIN in Settings → API access. Only a
  * SHA-256 hash is stored (`api_tokens`); the plaintext is shown once. Every
  * request must carry `Authorization: Bearer cgr_…` (or `X-Api-Key`). No token →
- * 401 with no detail. Rows created through the API carry createdBy "api:<tokenId>".
+ * 401 with no detail. Rows created by an ADMIN token carry createdBy "api:<tokenId>";
+ * an EDITOR token acts as the ACCOUNT THAT MINTED IT and its rows carry that account,
+ * because an editor token is gated on OWNERSHIP by the resolvers' own gate (F-471).
  *
  * ROUTING (Forge web-trigger URLs are fixed, so the resource travels in the
  * query string):
@@ -268,6 +270,51 @@ const roleFloor = (who, level, what) => (tokenRoleAtLeast(who, level)
   ? null
   : json(403, { error: `This token may not ${what}.`, reason: "no-permission", needsRole: level, hint: "ask-app-admin" }));
 
+/*
+ * F-471 — OWNERSHIP, through the RESOLVERS' gate and nothing else.
+ *
+ * The role floors above mirror the resolvers' ROLE floors; they had no analogue for
+ * the resolvers' other arm. `gateExistingRow`'s `minRole:"editor"` is only half the
+ * question a click answers — the other half is scope "own", which refuses an editor
+ * the rows they did not write. Without it an EDITOR token could edit, disable and
+ * delete ANY listener or job on the instance, including an admin-armed one, while the
+ * same person's click on the Listeners tab is refused.
+ *
+ * A TOKEN ACTS AS THE ACCOUNT THAT MINTED IT. `createdBy` is on the row already, so
+ * the token resolves to a principal and the ownership question is asked EXACTLY once,
+ * in `src/index.js` (`gateExistingRow` → `rowGateVerdict`). There is deliberately no
+ * ownership rule in this file: a second one is how two doors to the same row grow two
+ * answers, and the F-261 existence-leak rule (an unknown id and a foreign row are the
+ * same refusal for a scope-"own" caller) would have to be re-derived here to match.
+ *
+ * ADMIN TOKENS KEEP SCOPE "ALL" and skip this gate — that is what an admin's verdict
+ * is in `rowGateVerdict` anyway, and it is what every token on this surface already
+ * was (a row with no `role` reads as admin). So no live integration loses a power on
+ * upgrade: only an EDITOR token, a role that could not be minted before F-466,
+ * narrows. An editor token with no `createdBy` has no principal to act as and is
+ * REFUSED in the one refusal shape — failing open there would hand back exactly the
+ * capability this gate exists to remove.
+ */
+const ownerGate = async (who, row, { what, minRole = "editor", destructive = false, notFound }) => {
+  if (tokenRole(who) === "admin") return null; // scope "all" — the pre-F-466 behaviour
+  const accountId = who && who.createdBy;
+  if (!accountId) {
+    return json(403, {
+      error: `This token has no owning account and may not ${what}. Mint a new token.`,
+      reason: "no-permission", needsRole: "admin", hint: "ask-app-admin",
+    });
+  }
+  const { gateExistingRow } = await idx();
+  const refusal = await gateExistingRow(accountId, row, { what, minRole, destructive, notFound });
+  if (!refusal) return null;
+  // The resolver's refusal object, unchanged, as an HTTP answer: `reason:"no-permission"`
+  // is a 403 (role floor or ownership, with `needsRole`/`hint` intact); anything else is
+  // the "not found" arm, which `rowGateVerdict` only produces for a scope-"all" caller.
+  return json(refusal.reason === "no-permission" ? 403 : 404, errBody({
+    message: refusal.error, reason: refusal.reason, needsRole: refusal.needsRole, hint: refusal.hint,
+  }));
+};
+
 const eventCatalog = () => ({
   categories: EVENT_CATEGORIES,
   // `source` tells a client WHERE the event comes from ("jira" = a Forge product
@@ -287,14 +334,23 @@ const handleCollection = async ({ req, method, id, action, body, who, kind }) =>
   const remove = isL ? L.deleteListener : J.deleteJob;
   const setEnabled = isL ? L.setListenerEnabled : J.setJobEnabled;
   const noun = isL ? "listener" : "job";
-  const actor = `api:${who.id}`;
+  /*
+   * WHO A NEW ROW BELONGS TO (F-471). An ADMIN token keeps recording `api:<tokenId>`:
+   * it is the audit string every row minted over this surface already carries, its
+   * scope is "all", and ownership never gates it. An EDITOR token records the ACCOUNT
+   * THAT MINTED IT, because ownership DOES gate it — a row stamped with a token id
+   * could never match `perms.accountId`, so an editor token would be unable to edit
+   * back the rule it had just written. Same principal either way: `ownerGate` asks the
+   * ownership question about `who.createdBy`, so the stamp and the gate agree.
+   */
+  const actor = tokenRole(who) === "admin" ? `api:${who.id}` : (who.createdBy || `api:${who.id}`);
   /*
    * THE FLOORS, mirrored one-for-one off the resolvers in `src/index.js` (F-466):
    * getListeners/getScheduledJobs and their by-id reads gate on `viewer`; every write
-   * — save, delete, enable/disable, test, run — gates on `editor` (the resolvers reach
-   * it through gateExistingRow's `minRole: "editor"`, whose OWNERSHIP arm has no
-   * meaning for a token: a token is not an author). previewSchedule is `viewer`.
-   * Before this, EVERY token was admin-in-effect here regardless of its role.
+   * — save, delete, enable/disable, test, run — gates on `editor`. The resolvers reach
+   * that floor through `gateExistingRow`, whose OWNERSHIP arm is asked here too
+   * (`ownerGate`, F-471) for every write on an EXISTING row.
+   * Before F-466, EVERY token was admin-in-effect here regardless of its role.
    */
   const floor = (level, what) => roleFloor(who, level, what);
   // A REST token carries no role, so every save through this surface is recorded as
@@ -310,6 +366,11 @@ const handleCollection = async ({ req, method, id, action, body, who, kind }) =>
   if (method === "DELETE") {
     const gate = floor("editor", `delete a ${noun}`); if (gate) return gate;
     if (!id) return json(400, { error: "id required" });
+    // `destructive` selects the narrower ownership rule the delete resolver uses: an
+    // OWNERLESS row is not yours. The row is read before the gate so an unknown id and
+    // a foreign one give a scope-"own" caller the same answer (F-261).
+    const owned = await ownerGate(who, await get(id), { what: `delete this ${noun}`, destructive: true, notFound: `${noun} not found` });
+    if (owned) return owned;
     const r = await remove(id);
     return json(r.removed ? 200 : 404, r.removed ? { deleted: id } : { error: `${noun} not found` });
   }
@@ -317,6 +378,8 @@ const handleCollection = async ({ req, method, id, action, body, who, kind }) =>
     const gate = floor("editor", `change a ${noun}`); if (gate) return gate;
     if (!id) return json(400, { error: "id required" });
     const existing = await get(id);
+    const owned = await ownerGate(who, existing, { what: `edit this ${noun}`, notFound: `${noun} not found` });
+    if (owned) return owned;
     if (!existing) return json(404, { error: `${noun} not found` });
     try { const saved = await save({ ...merge(existing, body || {}), id }, { accountId: actor }); return json(200, { [noun]: saved }); } catch (e) { return json(400, errBody(e)); }
   }
@@ -326,6 +389,13 @@ const handleCollection = async ({ req, method, id, action, body, who, kind }) =>
     const gate = floor(action === "preview" ? "viewer" : "editor", `${action} a ${noun}`); if (gate) return gate;
     if (!id) return json(400, { error: "id required" });
     const row = await get(id);
+    // `preview` only computes the next fire times of a cron string — it is a VIEWER
+    // route and asks no ownership question, exactly as the previewSchedule resolver
+    // does not. Every other action here is a write on someone's row.
+    if (action !== "preview") {
+      const owned = await ownerGate(who, row, { what: `${action} this ${noun}`, notFound: `${noun} not found` });
+      if (owned) return owned;
+    }
     if (!row) return json(404, { error: `${noun} not found` });
     if (action === "enable" || action === "disable") { const saved = await setEnabled(id, action === "enable"); return json(200, { [noun]: saved }); }
     if (isL && action === "test") {

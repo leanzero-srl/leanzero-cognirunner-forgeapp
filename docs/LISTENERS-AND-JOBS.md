@@ -184,6 +184,10 @@ Tokens carry a role. Mint one per integration and give it the least it needs:
 | editor | list agents, read one agent's status, caps, health and tick receipts |
 | admin | everything above, plus drafts, effects, memory, create, update, delete, pause, resume, tick, post, approve, reject |
 
+An **editor** token acts as the account that minted it: it may change, disable or delete
+only the listeners and jobs that account owns, through the same ownership gate the
+Listeners and Jobs tabs use, while an **admin** token keeps site-wide scope.
+
 A token minted before roles existed counts as admin, which is what such a token could
 already do here. The floors match the Agents tab exactly: a REST caller cannot do anything
 the tab cannot, and in particular a staged reply is an unsent message to a real person, so
@@ -267,8 +271,9 @@ resolvers use: `reason` (for example `"action-not-allowed"`, `"unknown-skill"`,
 UI renders, `"ask-app-admin"` or `"not-owner"`) and, for a refused action list,
 `refused: [{ id, reason }]`. A REST token carries no role, so every save through this
 surface is recorded as `savedByRole: "editor"`: a rule pushed over the API can never hold
-an admin-only power such as a PR verdict action or a headless git write. Rows created
-through the API carry `createdBy: "api:<tokenId>"`.
+an admin-only power such as a PR verdict action or a headless git write. Rows created by an admin
+token carry `createdBy: "api:<tokenId>"`; rows created by an editor token carry the
+account that minted the token, which is the account its ownership is judged against.
 
 ## Storage
 

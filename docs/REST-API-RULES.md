@@ -262,6 +262,33 @@ detection and similar). It costs more per transition.
 `ruleKind: "premade"` and `ruleType` are what route it away from the AI path. See
 `src/shared/premade-rules-catalog.js` for every available `ruleType` and its parameters.
 
+### Git validator (1.4) — one live provider call per transition
+
+```json
+{
+  "id": "acme-pr-merged",
+  "type": "validator",
+  "ruleKind": "premade",
+  "ruleType": "git-pr-merged",
+  "premadeRuleType": "git-pr-merged",
+  "connectionId": "gc_0123456789abcdef",
+  "repo": "acme/widgets",
+  "prMatch": "both",
+  "strict": false,
+  "errorMessage": "Merge the pull request before closing this issue."
+}
+```
+
+`ruleType` is one of `git-build-passed`, `git-pr-approved`, `git-pr-comments-resolved`,
+`git-pr-merged`. `connectionId` is the id of a Git connection from the admin panel's Code
+tab and `repo` must be on that connection's allow-list; both are picked from lists in the
+editor, and a rule whose connection is gone or whose repository is not allow-listed
+**blocks** whatever `strict` says. `prMatch` (`"both"` default, `"branch"`, `"property"`)
+says which live signal must bind the pull request to the issue; `strict` decides whether
+an unreachable provider, a dead credential or a missing pull request blocks (`true`) or
+allows (`false`). The full table is in
+[`GIT-INTEGRATION.md`](GIT-INTEGRATION.md#5-git-validators).
+
 ### Condition — deterministic only
 
 ```json
@@ -284,9 +311,13 @@ condition does nothing. Supported `ruleType` values are exactly:
 
 `issue-type-is` · `issue-is-resolved` · `resolution-is` · `priority-is` ·
 `parent-status-is` · `current-user-is-assignee` · `current-user-is-reporter` ·
-`field-has-value` · `field-empty` · `field-equals`
+`field-has-value` · `field-empty` · `field-equals` ·
+`git-pr-merged` · `git-pr-approved` · `git-build-passed` (1.4)
 
-Any other value allows the transition.
+Any other value allows the transition. The three Git conditions take a `repo`
+(`"owner/name"`) and read the advisory `cognirunner.git` issue property; a missing property
+or entry allows, so they hide a transition only on a known-negative state and never verify
+live (use the Git validator of the same name to block).
 
 ### Field conditions — custom fields only, and the config carries the strategy
 
@@ -384,6 +415,20 @@ solely in an unpublished draft is invisible to this API and to Scan workflows.
 the rule is also in the registry, delete it from the admin panel instead — the panel's
 Delete removes it from *both*, whereas a REST-only removal leaves an orphaned registry row
 until the panel's next sweep.
+
+**Refusal fields.** When a CogniRunner resolver or the Rules REST API refuses a write, the
+body carries the same machine-readable fields everywhere: `reason` (`"no-permission"`,
+`"action-not-allowed"`, `"unknown-skill"`, …), `needsRole` (the role the caller would need),
+`hint` (`"ask-app-admin"` or `"not-owner"`), and for a refused agent action list
+`refused: [{ id, reason }]`. A client can branch on these instead of parsing `error`.
+
+**The Coder post-function (1.4)** (`ruleKind: "premade"`, `ruleType: "postfunction-coder"`,
+with `connectionId`, `repo`, `mode` one of `build` / `open-branch` / `open-pr` / `fix` /
+`review`, optional `instructions` and `strict`) is always queued and runs as the account
+stamped on its registry row, with the role that armed it. A rule attached over this API
+has no registry row until it is claimed (§5), so it has no owner and logs an error on every
+transition instead of running; claiming it, or saving it once from the editor, stamps the
+owner and the role. See [`CODER.md`](CODER.md#5-the-coder-post-function).
 
 ---
 

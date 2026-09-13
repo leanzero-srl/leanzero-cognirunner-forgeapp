@@ -74,6 +74,14 @@ import {
   isRepoAllowed,
   normalizeRepoId,
 } from "./git-connections.js";
+// GIT PIPELINE SETUP (1.4 commit 7). Same rule as the connection layer above: the
+// behaviour lives in src/git-pipeline.js and these resolvers are a permission skin.
+import {
+  requestPipelineSetup,
+  pipelineStatus,
+  triggerPipelineDeploy,
+  publicPipelineRow,
+} from "./git-pipeline.js";
 import { serializeRule, buildExportEnvelope, validateImportSchema, resolveBindings, containsSecretKey, EXPORT_CAPS } from "./shared/rule-portability.js";
 // Registry scale caps + pressure math — single source, shared with the admin panel.
 import {
@@ -10655,6 +10663,87 @@ resolver.define("rotateGitCredential", async ({ payload, context }) => {
       { accountId: context.accountId }
     );
     return r.ok ? { success: true, taskId: r.taskId, queued: true } : { success: false, error: r.error, code: r.code };
+  });
+});
+
+/* =========================================================================
+ * GIT PIPELINE SETUP — resolvers (1.4 commit 7, FRAME section "Commit 7")
+ *
+ * SETUP IS AN ADMIN RESOLVER, NEVER AN AGENT ACTION. That is the red team's
+ * finding closed: setup and execution are two surfaces, and a model can only ever
+ * reach the second. The BEHAVIOUR — the scope allow-list, the permission lock and
+ * its by-scope-name refusal, the step chain, the claim, the bounded
+ * `git_pipeline:<connId>:<repoId>` row — lives in src/git-pipeline.js. Nothing
+ * here re-implements a rule and nothing here reads a credential.
+ *
+ * IT IS QUEUED, NOT INLINE. One setup is up to ~15 HTTP calls at 10 s each; a
+ * 25 s sync resolver cannot hold it, and a resolver that times out mid-chain is
+ * the `commitImportCore` defect wearing a different hat. So the resolver refuses
+ * everything refusable BEFORE any side effect, then returns `{async:true,taskId}`
+ * and the `gitpipeline` consumer task runs the chain. The UI polls
+ * `getGitPipelineStatus`, which is also what carries a partial setup's failed step.
+ * ========================================================================= */
+
+// Admin only. Payload: { connectionId, repo, manifestYaml, site, product?, branch?,
+// scaffoldVars? } -> { success, async:true, taskId, lockHash, status } or a refusal
+// with a machine `code` (not_found / not_allowed / identity_required /
+// consent_required / scope_not_allowed / lock_mismatch / already_running).
+resolver.define("setupGitPipeline", async ({ payload, context }) => {
+  if (!(await requireAdmin(context.accountId))) return needRole("admin");
+  return okOr(async () => {
+    const r = await requestPipelineSetup({
+      connectionId: payload?.connectionId,
+      repo: payload?.repo,
+      manifestYaml: payload?.manifestYaml,
+      site: payload?.site,
+      product: payload?.product,
+      branch: payload?.branch,
+      scaffoldVars: payload?.scaffoldVars,
+      accountId: context.accountId,
+    });
+    if (!r.ok) {
+      return {
+        success: false,
+        error: r.error,
+        code: r.code,
+        ...(r.hint ? { hint: r.hint } : {}),
+        ...(r.scopes ? { scopes: r.scopes } : {}),
+        ...(r.added ? { added: r.added, removed: r.removed } : {}),
+      };
+    }
+    return { success: true, async: true, taskId: r.taskId, lockHash: r.lockHash, status: publicPipelineRow(r.status) };
+  });
+});
+
+// READ. An EDITOR floor, not admin: this is the progress of a setup an admin
+// already authorised, and the person watching a deploy is not always the person
+// who holds the credentials. It returns no secret — `publicPipelineRow` is an
+// allow-list — and it cannot start anything.
+resolver.define("getGitPipelineStatus", async ({ payload, context }) => {
+  if (!(await requireRole(context.accountId, "editor"))) return needRole("editor");
+  return okOr(async () => {
+    const r = await pipelineStatus(payload?.connectionId, payload?.repo);
+    return { success: true, status: r.status, deploy: r.deploy, ...(r.deployError ? { deployError: r.deployError } : {}) };
+  });
+});
+
+// Start a deploy on an already-installed pipeline. Admin, allow-listed repos only,
+// and `payload.confirm === true` is REQUIRED — this is the `dangerous`-class
+// confirmation, and an absent flag is a refusal, never a default-yes.
+resolver.define("triggerGitDeploy", async ({ payload, context }) => {
+  if (!(await requireAdmin(context.accountId))) return needRole("admin");
+  return okOr(async () => {
+    const r = await triggerPipelineDeploy({
+      connectionId: payload?.connectionId,
+      repo: payload?.repo,
+      confirm: payload?.confirm === true,
+      ref: payload?.ref,
+      workflow: payload?.workflow,
+      accountId: context.accountId,
+    });
+    return r.ok
+      ? { success: true, run: r.run }
+      : { success: false, error: r.error, code: r.code, ...(r.hint ? { hint: r.hint } : {}) };
   });
 });
 

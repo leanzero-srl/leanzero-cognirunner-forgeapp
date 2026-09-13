@@ -127,25 +127,38 @@ const handlerKeys = [...handlersBlock[1].matchAll(/"([^"]+)"\s*:/g)].map((x) => 
 // F-290 — one key is COMPUTED from git-connections.js's exported constant (the producer
 // and the registry must not retype the same string). Resolve it from the real module so
 // the orphan count below still covers it.
+const COMPUTED_TASK_KEYS = {};
 {
   const computed = [...handlersBlock[1].matchAll(/\[([A-Z_]+)\]\s*:/g)].map((x) => x[1]);
-  const conns = await import("../../src/git-connections.js").catch(() => null);
+  // F-290 — the producer and the registry read the SAME exported constant. There are
+  // now two producer modules (rotation in git-connections.js, pipeline setup in
+  // git-pipeline.js), so resolve a computed key from either rather than hard-coding
+  // which file owns which constant.
+  const sources = [
+    await import("../../src/git-connections.js").catch(() => null),
+    await import("../../src/git-pipeline.js").catch(() => null),
+  ];
   for (const name of computed) {
-    const value = conns && conns[name];
-    ok(typeof value === "string" && value.length > 0, `the computed TASK_HANDLERS key ${name} resolves from git-connections.js`);
-    if (typeof value === "string") handlerKeys.push(value);
+    const src = sources.find((m) => m && typeof m[name] === "string" && m[name]);
+    const value = src && src[name];
+    ok(typeof value === "string" && value.length > 0, `the computed TASK_HANDLERS key ${name} resolves from a producer module`);
+    if (typeof value === "string") { handlerKeys.push(value); COMPUTED_TASK_KEYS[name] = value; }
   }
 }
 const unpolledMatch = asyncSrc.match(/const UNPOLLED_TASKS = new Set\((\[[\s\S]*?\])\);/);
 if (!unpolledMatch) { console.log("FAIL: could not locate UNPOLLED_TASKS"); process.exit(1); }
+// The literal may reference a producer's exported constant (PIPELINE_TASK); substitute
+// the resolved value so the set is compared by VALUE, never by the identifier's name.
+const unpolledLiteral = unpolledMatch[1].replace(/\b([A-Z_]{3,})\b/g, (m) =>
+  Object.prototype.hasOwnProperty.call(COMPUTED_TASK_KEYS, m) ? JSON.stringify(COMPUTED_TASK_KEYS[m]) : m);
 // eslint-disable-next-line no-eval
-const UNPOLLED_TASKS = new Set(eval(unpolledMatch[1]));
+const UNPOLLED_TASKS = new Set(eval(unpolledLiteral));
 
-const expectedHandlers = ["probe", "review", "postfunction", "codegen", "fixcode", "skilldistill", "memory_distill", "listener", "scheduledjob", "gitreview", "git-event", "gitcredrotate"];
+const expectedHandlers = ["probe", "review", "postfunction", "codegen", "fixcode", "skilldistill", "memory_distill", "listener", "scheduledjob", "gitreview", "git-event", "gitcredrotate", "gitpipeline"];
 for (const t of expectedHandlers) ok(handlerKeys.includes(t), `TASK_HANDLERS registers "${t}"`);
 ok(handlerKeys.length === expectedHandlers.length, `TASK_HANDLERS has exactly ${expectedHandlers.length} task types (no orphans)`);
-ok(["postfunction", "memory_distill", "listener", "probe", "gitreview", "git-event"].every((t) => UNPOLLED_TASKS.has(t)) && UNPOLLED_TASKS.size === 6,
-   "UNPOLLED_TASKS = { postfunction, memory_distill, listener, probe, gitreview, git-event } (scheduledjob is polled by Run now, gitcredrotate by the Code tab; probe is dev-only, read via the test hook)");
+ok(["postfunction", "memory_distill", "listener", "probe", "gitreview", "git-event", "gitpipeline"].every((t) => UNPOLLED_TASKS.has(t)) && UNPOLLED_TASKS.size === 7,
+   "UNPOLLED_TASKS = { postfunction, memory_distill, listener, probe, gitreview, git-event, gitpipeline } (scheduledjob is polled by Run now, gitcredrotate by the Code tab; gitpipeline is watched through getGitPipelineStatus, which reads the bounded row rather than an async_task row; probe is dev-only, read via the test hook)");
 // Invariant: every unpolled type MUST be a registered handler (an unpolled type absent from the
 // registry could never run yet would skip its status-row write — a silent dead task).
 ok([...UNPOLLED_TASKS].every((t) => handlerKeys.includes(t)), "every UNPOLLED task is a registered TASK_HANDLER");

@@ -805,6 +805,104 @@ try {
     } catch (e) { fail++; console.log("  ✗ C15 threw: " + e.message.split("\n")[0]); }
     await close(env);
   }
+
+  /* ---------------- C16 - F-583: an OUTDATED pipeline must not read as installed --------
+     F-565 fixed the scaffold TEMPLATE; every repo that already had the broken
+     forge-deploy.yml committed kept it, and F-579 gave publicPipelineRow the derived
+     `outdated`/`outdatedReason`/`currentScaffoldVersion` to say so. The Code tab ignored
+     all three: the row still rendered status "installed", 6/6 steps and the green badge -
+     byte-for-byte a healthy pipeline - while every dispatch against it answered 422. The
+     admin was shown green and given no reason to re-run the one thing that fixes it.
+     The fixture is installed at scaffold v1 against the shipped SCAFFOLD_VERSION. */
+  for (const theme of ["light", "dark"]) {
+    console.log(`C16 outdated pipeline (${theme})`);
+    const env = await openAdmin(browser, theme, { __PIPE_SCENARIO__: "outdated" });
+    const { page } = env;
+    try {
+      await tab(page, "Code");
+      const row = page.locator(".code-repo-row", { hasText: "acme/web" }).first();
+      await row.waitFor({ timeout: 10000 });
+      await row.locator("button", { hasText: "Pipeline" }).click();
+      await row.locator(".code-pipe-outdated-box").waitFor({ timeout: 8000 });
+
+      /* THE DEFECT: the badge. The outdated state has to TAKE THE PLACE of the green one,
+         not sit beside it - a screen showing INSTALLED anywhere is the screen F-579 is about. */
+      const badge = row.locator(".code-pipe-status").first();
+      ok((await badge.innerText()).trim() === "PIPELINE OUTDATED", `C16 ${theme} the badge reads PIPELINE OUTDATED (got "${(await badge.innerText()).trim()}")`);
+      ok(await row.locator(".code-pipe-installed").count() === 0, `C16 ${theme} the green INSTALLED badge is GONE, not merely accompanied`);
+      /* Scoped to the STATUS BADGES. The card also carries an "Installed <date>" FACT, which
+         is true and must stay - the setup really did complete then, and that is part of why
+         the row looks healthy. What may not survive is a badge claiming the state. */
+      const badgeTexts = (await row.locator(".code-pipe-status").allInnerTexts()).map((t) => t.trim());
+      ok(!badgeTexts.some((t) => /INSTALLED/.test(t)), `C16 ${theme} no status badge claims INSTALLED (got ${JSON.stringify(badgeTexts)})`);
+      ok(/INSTALLED/.test(await row.locator(".code-fact", { hasText: "Installed" }).first().innerText()), `C16 ${theme} the installedAt FACT survives - when the setup ran is still true`);
+
+      /* The steps still read 6/6 done - that is TRUE and must stay true. The point is that
+         it is no longer the only thing on screen, so this asserts the honest half survived. */
+      ok(await row.locator(".code-step-done").count() > 0, `C16 ${theme} the completed steps are still shown - the setup really did finish`);
+
+      /* The reason, VERBATIM from the shared changelog. Matched on the substance of the
+         sentence rather than a paraphrase, so a renderer that summarised it would fail. */
+      const box = await row.locator(".code-pipe-outdated-box").innerText();
+      ok(/422/.test(box), `C16 ${theme} the reason names the 422 the admin is actually seeing`);
+      ok(/workflow_dispatch/.test(box), `C16 ${theme} the reason names the missing trigger`);
+      ok(/invalid YAML/i.test(box), `C16 ${theme} the reason says what is wrong with the committed file`);
+      ok(/Re-run the setup/i.test(box), `C16 ${theme} the reason names the remedy`);
+
+      // The version pair, from the two row fields rather than a literal in the component.
+      ok(/v1 to v2/.test(box), `C16 ${theme} the box says which version it is on and which it should be (got "${box.replace(/\s+/g, " ").trim()}")`);
+
+      // No em-dash anywhere in the state's own copy.
+      ok(!/\u2014/.test(box), `C16 ${theme} no em-dash in the outdated copy`);
+
+      /* THE REMEDY. Before the fix the setup form was gated on `status !== "installed"`,
+         which is exactly what an outdated row is - so the tab named a fault and offered no
+         way to act on it. The button must be reachable. */
+      const setup = row.locator("button", { hasText: "Set up pipeline" });
+      ok(await setup.count() === 1, `C16 ${theme} the "Set up pipeline" button is reachable on an installed-but-outdated row`);
+
+      /* Design: solid amber, white ink, 600-700, NO left rail, NO alpha tint, dark override.
+         Asserted on computed style on BOTH the badge and the body. */
+      for (const [name, loc] of [["badge", badge], ["box", row.locator(".code-pipe-outdated-box").first()]]) {
+        const st = await loc.evaluate((el) => {
+          const cs = getComputedStyle(el);
+          return { bg: cs.backgroundColor, color: cs.color, rail: cs.borderLeftWidth, weight: cs.fontWeight };
+        });
+        ok(st.rail === "0px", `C16 ${theme} ${name} has no left accent rail`);
+        ok(/^rgb\(\d+, \d+, \d+\)$/.test(st.bg), `C16 ${theme} ${name} fill is SOLID, not an alpha tint (got ${st.bg})`);
+        ok(st.color === "rgb(255, 255, 255)", `C16 ${theme} ${name} has white ink (got ${st.color})`);
+        ok(Number(st.weight) >= 600, `C16 ${theme} ${name} carries the 600-700 emphasis weight (got ${st.weight})`);
+        ok(st.bg === (theme === "light" ? "rgb(217, 119, 6)" : "rgb(245, 158, 11)"),
+          `C16 ${theme} ${name} amber has a dark-mode override (got ${st.bg})`);
+      }
+
+      await shot(page, `C16-pipeline-outdated-${theme}`);
+      ok(env.errors.length === 0, `C16 ${theme} no page errors: ` + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  ✗ C16 threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
+  /* ---------------- C16b - the CURRENT pipeline is left alone --------------------------
+     The other half of the same rule: a row installed at the shipped scaffold version must
+     show none of this. Without this arm a renderer that flagged every installed pipeline
+     as outdated would pass C16 and be wrong for every healthy repo. */
+  {
+    console.log("C16b current pipeline shows no outdated state");
+    const env = await openAdmin(browser, "light", { __PIPE_SCENARIO__: "installed" });
+    const { page } = env;
+    try {
+      await tab(page, "Code");
+      const row = page.locator(".code-repo-row", { hasText: "acme/web" }).first();
+      await row.waitFor({ timeout: 10000 });
+      await row.locator("button", { hasText: "Pipeline" }).click();
+      await row.locator(".code-pipe-installed").waitFor({ timeout: 8000 });
+      ok(await row.locator(".code-pipe-outdated-box").count() === 0, "C16b an up-to-date pipeline shows no outdated box");
+      ok((await row.locator(".code-pipe-status").first().innerText()).trim() === "INSTALLED", "C16b it keeps the green INSTALLED badge");
+      ok(await row.locator("button", { hasText: "Set up pipeline" }).count() === 0, "C16b and it is not asked to set itself up again");
+      ok(env.errors.length === 0, "C16b no page errors: " + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  ✗ C16b threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
 } finally {
   await browser.close();
 }

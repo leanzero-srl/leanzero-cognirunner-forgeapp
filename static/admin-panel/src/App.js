@@ -3294,6 +3294,14 @@ const injectStyles = () => {
     .code-pipe-running { background: #2563eb; }
     .code-pipe-installed { background: #16a34a; }
     .code-pipe-partial { background: #d97706; }
+    /* F-583 - the OUTDATED pipeline state. Solid #d97706 amber with white ink and the 700
+       weight the other pipe states carry, matching .code-pipe-partial and .code-pipe-warn
+       because it is the same class of fact: the pipeline is not usable as it stands. NO left
+       rail and NO low-alpha tint - a fault that contradicts a green INSTALLED badge has to
+       read as loudly as the badge it replaces. Dark override below with the rest of them. */
+    .code-pipe-outdated { background: #d97706; }
+    .code-pipe-outdated-box { display: flex; flex-direction: column; gap: 4px; padding: 11px 13px; border-radius: var(--r-md, 8px); background: #d97706; color: #fff; font-weight: 600; }
+    .code-pipe-outdated-ver { font-family: SFMono-Regular, Consolas, monospace; font-size: 11px; font-weight: 700; color: #fff; }
     .code-pipe-live { margin: 0; }
     .code-steps { display: flex; flex-direction: column; gap: 4px; }
     .code-step { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12px; }
@@ -3336,7 +3344,7 @@ const injectStyles = () => {
     .code-textarea { width: 100%; box-sizing: border-box; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); background: var(--input-bg); color: var(--text-color); font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace); font-size: 12px; line-height: 1.5; resize: vertical; }
     html[data-color-mode="dark"] .code-hook.set, html[data-color-mode="dark"] .code-pipe-installed, html[data-color-mode="dark"] .code-step-done .code-step-state, html[data-color-mode="dark"] .code-diff-add, html[data-color-mode="dark"] .code-run-success { background: #22c55e; }
     html[data-color-mode="dark"] .code-hook.unset, html[data-color-mode="dark"] .code-pipe-status, html[data-color-mode="dark"] .code-pipe-queued, html[data-color-mode="dark"] .code-step-state, html[data-color-mode="dark"] .code-diff, html[data-color-mode="dark"] .code-run-state { background: #64748b; }
-    html[data-color-mode="dark"] .code-hook-note, html[data-color-mode="dark"] .code-pipe-partial, html[data-color-mode="dark"] .code-pipe-warn { background: #f59e0b; }
+    html[data-color-mode="dark"] .code-hook-note, html[data-color-mode="dark"] .code-pipe-partial, html[data-color-mode="dark"] .code-pipe-warn, html[data-color-mode="dark"] .code-pipe-outdated, html[data-color-mode="dark"] .code-pipe-outdated-box { background: #f59e0b; }
     html[data-color-mode="dark"] .code-pipe-running, html[data-color-mode="dark"] .code-step-running .code-step-state, html[data-color-mode="dark"] .code-run-running, html[data-color-mode="dark"] .code-run-pending { background: #3b82f6; }
     html[data-color-mode="dark"] .code-pipe-err, html[data-color-mode="dark"] .code-step-failed .code-step-state, html[data-color-mode="dark"] .code-diff-rem, html[data-color-mode="dark"] .code-run-failed, html[data-color-mode="dark"] .code-hook-broken { background: #ef4444; }
     html[data-color-mode="dark"] .code-diff-lock { background: #c026d3; }

@@ -36,6 +36,11 @@ import { FORGE_LLM_FRONTIER, FORGE_LLM_DEFAULT, ADVANCED_FEATURES, MANAGED_PROVI
    imported here (it pulls @forge/kvs and node:crypto), which is why the ids moved to a
    dependency-free shared module instead of being mirrored by hand in this file. */
 import { pipelineStepNames } from "../../src/shared/git-pipeline-steps.js";
+/* F-583: the scaffold version and the changelog line come from the ONE home, for the same
+   reason the edition ids do. publicPipelineRow DERIVES `outdated`/`outdatedReason`/
+   `currentScaffoldVersion` from it against the row's stored version, so a fixture that
+   re-stated the sentence would just agree with itself and stop catching a drift. */
+import { SCAFFOLD_VERSION, scaffoldOutdatedReason } from "../../src/shared/git-scaffolds.js";
 /* F-090: the allowance block the mock serves is COMPUTED by the same function the
    backend calls (forgeLlmAllowanceStatus), from the same seat->dollars rule
    (allowanceUsdForSeats). It used to be hand-written, and it hand-wrote `pct: 46`
@@ -655,7 +660,25 @@ function getContext() {
     // An OFFLOADED static PF (config >24KB → code moved to pf_code): functions:[] + name-only functionsMeta.
     // config-view must render the step NAMES from functionsMeta (never the full details). E11 path.
     return { accountId: ACCT, siteUrl: SITE, license: mockLicenseCtx(), extension: { ...baseExt, type: "jira:workflowPostFunction", key: "ai-static-post-function", entryPoint: "view", transitionContext: { id: "81", from: { name: "Triaged" }, to: { name: "Mitigating" } }, postFunctionConfig: JSON.stringify({ id: "postfunction-static::Incident::81::i-offload", type: "postfunction-static", fieldId: "", functions: [], functionsMeta: [{ id: "s1", name: "Escalate priority to High", operationType: "rest_api_internal", variableName: "r1" }, { id: "s2", name: "Add on-call watcher", operationType: "rest_api_internal", variableName: "r2" }], workflow: { workflowId: "wf-incident-007", workflowName: "Incident Response", transitionId: "81", siteUrl: SITE } }) } };
-  if (s === "view-static-fieldguide")
+  if (s === "view-static-fieldguide") {
+    /* F-587 - window.__FG_STALE__ ages the stored ids the way a RE-BAKE does. The chunk ids
+       carry a content hash, so re-baking the corpus does not rename a section, it replaces
+       every id; a rule config saved before that bake keeps ids the current index has never
+       heard of. "all" is the case the bug lived in (nothing resolves -> the chip returned
+       null and the GENERATED WITH label stood alone over empty space); "mixed" proves the
+       row still names what it CAN and does not fall back to the neutral chip while a real
+       title is available. The stale ids are shaped like real ones on purpose - a fixture
+       using "nope" would not catch a renderer that printed the raw id as a fallback. */
+    const STALE_IDS = [
+      "jira-rest-correctness/jira-rest-correctness/0000/stale-chunk-1",
+      "cognirunner-sandbox-traps/cognirunner-sandbox-traps/0000/stale-chunk-2",
+    ];
+    const fgMode = (typeof window !== "undefined" && window.__FG_STALE__) || "";
+    const fgSections = fgMode === "all"
+      ? STALE_IDS
+      : fgMode === "mixed"
+        ? [FIELD_GUIDE_SECTION_IDS[0], ...STALE_IDS]
+        : FIELD_GUIDE_SECTION_IDS;
     /* F-572 - a SAVED static PF opened in the READ-ONLY view whose single step was generated
        with the BAKED FIELD GUIDE AND NOTHING ELSE. This is not a contrived shape: no docs
        picked, no skills bound and memory injection off is the DEFAULT for a first-time
@@ -663,7 +686,8 @@ function getContext() {
        three emptied fields are spelled out rather than omitted because the bug was a
        predicate that only tested those three - a fixture that left them undefined would
        pass against a renderer that read them wrongly. */
-    return { accountId: ACCT, siteUrl: SITE, license: mockLicenseCtx(), extension: { ...baseExt, type: "jira:workflowPostFunction", key: "ai-static-post-function", entryPoint: "view", transitionContext: { id: "31", from: { name: "In Review" }, to: { name: "Done" } }, postFunctionConfig: JSON.stringify({ id: "postfunction-static::Software Simplified Workflow::31::i-fg", type: "postfunction-static", fieldId: "", functions: [{ id: "func_fg", name: "Roll the fix version forward", conditionPrompt: "", operationType: "rest_api_internal", operationPrompt: "Set the fix version on the issue to the next unreleased version in the project.", endpoint: "", method: "GET", variableName: "fixver", includeBackoff: false, code: STATIC_CODE_1, testedFingerprint: fpOf(STATIC_CODE_1), generationMeta: { appliedDocs: [], appliedSkills: [], appliedMemories: 0, truncatedDocs: [], fieldGuide: FIELD_GUIDE_SECTION_IDS } }], workflow: { workflowId: "wf-software-simplified-12345", workflowName: "Software Simplified Workflow", transitionId: "31", siteUrl: SITE } }) } };
+    return { accountId: ACCT, siteUrl: SITE, license: mockLicenseCtx(), extension: { ...baseExt, type: "jira:workflowPostFunction", key: "ai-static-post-function", entryPoint: "view", transitionContext: { id: "31", from: { name: "In Review" }, to: { name: "Done" } }, postFunctionConfig: JSON.stringify({ id: "postfunction-static::Software Simplified Workflow::31::i-fg", type: "postfunction-static", fieldId: "", functions: [{ id: "func_fg", name: "Roll the fix version forward", conditionPrompt: "", operationType: "rest_api_internal", operationPrompt: "Set the fix version on the issue to the next unreleased version in the project.", endpoint: "", method: "GET", variableName: "fixver", includeBackoff: false, code: STATIC_CODE_1, testedFingerprint: fpOf(STATIC_CODE_1), generationMeta: { appliedDocs: [], appliedSkills: [], appliedMemories: 0, truncatedDocs: [], fieldGuide: fgSections } }], workflow: { workflowId: "wf-software-simplified-12345", workflowName: "Software Simplified Workflow", transitionId: "31", siteUrl: SITE } }) } };
+  }
   if (s === "view-premade-git")
     /* F-380 - a SAVED git premade rule opened in the READ-ONLY view. The whole point of the
        arm is the connection row: config-view has no picker, so if it cannot resolve `gc_1`
@@ -1084,7 +1108,8 @@ const CODE_IDENTITY = () => ((typeof window !== "undefined" && window.__CODE_IDE
      window.__HOOK_REFUSE__    - setupGitWebhook answers a refusal instead.
      window.__HOOK_ROTATION_FAILED__ - acme/web's hook carries hookState "rotation-failed".
      window.__ROTATE_FAILS__   - rotateGitWebhookSecret refuses with code "rotation-failed".
-     window.__PIPE_SCENARIO__  - "none" (default: no row, so the setup form), "queued"
+     window.__PIPE_SCENARIO__  - "none" (default: no row, so the setup form), "outdated"
+                                 (F-583: installed 6/6 but stuck on scaffold v1), "queued"
                                  (queued -> running -> installed across polls),
                                  "installed", "partial" (failed at commit-scaffold).
      window.__PIPE_REFUSE__    - the machine `code` setupGitPipeline refuses with:
@@ -1139,8 +1164,18 @@ const PIPE_STEPS = (kind, phase) => PIPELINE_STEP_NAMES(kind, PIPE_IDS()).map((n
   ...(phase === "fail" && name === "commit-scaffold"
     ? { error: "The default branch is protected and refused the commit" } : {}),
 }));
-const PIPE_ROW = (status) => ({
-  connId: "gc_1", repoId: "acme/web", kind: "github", scaffold: "forge-pipeline", scaffoldVersion: 1,
+const PIPE_ROW = (status, storedScaffoldVersion = SCAFFOLD_VERSION) => ({
+  connId: "gc_1", repoId: "acme/web", kind: "github", scaffold: "forge-pipeline",
+  /* F-583: the DEFAULT row is now installed at the CURRENT scaffold version. It used to be
+     hardcoded to 1, which — once SCAFFOLD_VERSION went to 2 — quietly made every existing
+     pipeline arm an outdated one. A fixture that is accidentally in the failure state cannot
+     prove the healthy state renders, so the age is a parameter and the outdated arm asks
+     for it explicitly. */
+  scaffoldVersion: storedScaffoldVersion,
+  /* Derived exactly as publicPipelineRow derives them, from the shared module. */
+  outdated: scaffoldOutdatedReason(storedScaffoldVersion) !== null,
+  outdatedReason: scaffoldOutdatedReason(storedScaffoldVersion),
+  currentScaffoldVersion: SCAFFOLD_VERSION,
   status,
   steps: PIPE_STEPS("github", status === "installed" ? "all" : status === "partial" ? "fail" : status === "running" ? "some" : "none"),
   failedStep: status === "partial" ? "commit-scaffold" : null,
@@ -1168,6 +1203,11 @@ const PIPE_READ = (repoId) => {
     PIPE_STATE.stage += 1;
     return PIPE_ROW(st);
   }
+  /* F-583 — the row F-579 describes: status "installed", every step done, an installedAt
+     and a commit sha, indistinguishable from a healthy pipeline EXCEPT that the workflow
+     committed to the repo is the v1 one whose YAML makes GitHub answer every dispatch 422.
+     Stored version 1 against a shipped SCAFFOLD_VERSION of 2. */
+  if (scenario === "outdated") return PIPE_ROW("installed", 1);
   if (scenario === "installed" || scenario === "partial") return PIPE_ROW(scenario);
   return null;
 };

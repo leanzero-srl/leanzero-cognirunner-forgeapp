@@ -24,6 +24,41 @@ import { logSourceOf, SOURCE_LABEL, FLAG_LABEL, isSkippedLog } from "../../../sr
 import { codeFingerprint } from "../../../src/shared/code-fingerprint.js";
 import { resolveEdition, EDITION_IDS } from "../../../src/shared/edition.js";
 import FieldGuideChip from "./components/FieldGuideChip.jsx";
+import { KNOWLEDGE_INDEX } from "../../../src/shared/knowledge-index.js";
+
+/**
+ * F-587 — ONE ANSWER for "can this step's field guide be named?".
+ *
+ * `hasProvenance` used to test the presence of stored IDS while `FieldGuideChip` tests the
+ * presence of resolvable TITLES, and the two disagree in exactly the case the chip was
+ * written for: a config saved before a re-bake, whose chunk ids carry a content hash and no
+ * longer exist. With no docs, no skills and memory injection off — the stated default — the
+ * row rendered the words GENERATED WITH and then nothing, which asserts provenance and names
+ * none. So the predicate and the chip now read the SAME titles source, resolved the SAME way
+ * (resolve first then de-duplicate BY TITLE, because the bake splits one document into
+ * numbered chunks that all carry the document's title).
+ *
+ * ⚠️ THIS BELONGS ON THE CHIP MODULE, NOT HERE. FieldGuideChip.jsx is a byte-identical file
+ * across four apps and exports only its component, so exporting a helper from it would have
+ * to land in all four homes at once. F-582 is already rewriting that import (the 136 KB
+ * index -> the 25 KB titles map) in all four copies: MOVE THIS FUNCTION ONTO THE CHIP'S
+ * PUBLIC SURFACE IN THAT CUT and have App.js import it, so there is one implementation
+ * rather than two that happen to agree today.
+ */
+let FIELD_GUIDE_TITLES = null;
+export const resolvableFieldGuideTitles = (sections) => {
+  if (!Array.isArray(sections) || !sections.length) return [];
+  if (!FIELD_GUIDE_TITLES) {
+    FIELD_GUIDE_TITLES = new Map();
+    for (const s of KNOWLEDGE_INDEX) FIELD_GUIDE_TITLES.set(s.id, s.title);
+  }
+  const titles = [];
+  for (const id of sections) {
+    const t = FIELD_GUIDE_TITLES.get(id) || null;
+    if (t && !titles.includes(t)) titles.push(t);
+  }
+  return titles;
+};
 
 // Inject styles directly
 const injectStyles = () => {
@@ -907,6 +942,12 @@ const injectStyles = () => {
     .cv-gen-skill { background: var(--accent-skills); }
     .cv-gen-mem { background: var(--accent-memories); }
     .cv-gen-recipe { background: var(--accent-indigo); }
+    /* F-587 — stale field-guide ids. NEUTRAL on purpose: the step's provenance is real but
+       unnameable after a re-bake, so it gets the slate that means "no hue claimed" rather than
+       the guide's amber, which would imply the sections resolved. Solid fill, white text, 700,
+       no rail, no tint. --accent-slate carries its own dark variant (#475569 -> #64748b), so
+       both themes are covered by the token. */
+    .cv-gen-fg-stale { background: var(--accent-slate); }
 
     /* F-572 — the field-guide chip. FieldGuideChip.jsx is a byte-identical copy shared with
        config-ui, admin-panel and issue-glance, so it brings ITS class names (gen-meta-chip /
@@ -2131,11 +2172,22 @@ function App() {
             // has: no docs picked, no skills bound, memory injection off is the default for
             // a first-time author. Leaving it out of this predicate hid the whole GENERATED
             // WITH row and told the reviewer the code was generated with nothing.
+            // F-587 — the predicate and the chip must give the SAME answer. The chip resolves
+            // titles and renders null when it can name none, so testing `fieldGuide?.length`
+            // here (ids present) opened the row for a step whose ids are stale after a re-bake
+            // and then filled it with nothing. Resolve once, share the result with the chip.
+            const fgIds = Array.isArray(meta?.fieldGuide) ? meta.fieldGuide : [];
+            const fgTitles = resolvableFieldGuideTitles(fgIds);
+            // Ids on the record that the current index cannot name. The step WAS generated with
+            // the field guide, so the honest row is the label plus a neutral chip saying the
+            // sections predate this bake — not a silent row, and not a fabricated title list.
+            const fgStale = fgIds.length > 0 && fgTitles.length === 0;
             const hasProvenance = !!meta && !isRecipe && (
               meta.appliedDocs?.length > 0 ||
               meta.appliedSkills?.length > 0 ||
               meta.appliedMemories > 0 ||
-              meta.fieldGuide?.length > 0
+              fgTitles.length > 0 ||
+              fgStale
             );
             return (
               <React.Fragment key={i}>
@@ -2180,6 +2232,11 @@ function App() {
                         expandable title list cannot disagree across surfaces. It resolves its
                         own titles and returns null when it can name none. */}
                     <FieldGuideChip sections={meta.fieldGuide} />
+                    {fgStale && (
+                      <span className="cv-gen-chip cv-gen-fg-stale">
+                        Field guide sections from an earlier bake
+                      </span>
+                    )}
                   </div>
                 )}
               </React.Fragment>

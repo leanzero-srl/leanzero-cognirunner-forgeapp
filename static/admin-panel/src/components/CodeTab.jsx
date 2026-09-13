@@ -435,6 +435,15 @@ function PipelineCard({ invoke, conn, repoId, onNeedIdentity }) {
 
   const status = (row && row.status) || null;
   const live = status === "queued" || status === "running";
+  /* F-583 - the row is OUTDATED when the scaffold committed to the repository is older
+     than the one this build installs. `outdated`/`outdatedReason`/`currentScaffoldVersion`
+     are DERIVED by publicPipelineRow (F-579) against the shipped SCAFFOLD_VERSION, so the
+     tab needs no migration and no version arithmetic of its own - it renders the answer.
+     Never shown for a run still in flight: a queued or running setup is ABOUT to write the
+     current scaffold, so calling it outdated would be stale by the time it is read. */
+  const outdated = !!(row && row.outdated) && !live;
+  const fromVersion = Number(row && row.scaffoldVersion) >= 1 ? Math.floor(Number(row.scaffoldVersion)) : 1;
+  const toVersion = row && row.currentScaffoldVersion != null ? row.currentScaffoldVersion : null;
   const lastRun = run || (row && row.lastRun) || null;
   const latest = deploy && deploy.latest ? deploy.latest : null;
 
@@ -442,8 +451,13 @@ function PipelineCard({ invoke, conn, repoId, onNeedIdentity }) {
     <div className="code-pipe">
       <div className="code-pipe-head">
         <span className="code-pipe-title">Deploy pipeline</span>
-        <span className={`code-pipe-status code-pipe-${status || "none"}`}>
-          {status ? PIPE_STATUS_LABEL[status] || String(status).toUpperCase() : "NOT SET UP"}
+        {/* F-583 - OUTDATED WINS OVER INSTALLED. The bug was that a repo stuck on the
+            broken scaffold reported status "installed", steps 6/6 and a green badge:
+            byte-for-byte what a healthy install reports, while every dispatch 422s. The
+            green badge is the single most load-bearing thing on this screen, so the state
+            that contradicts it has to TAKE ITS PLACE rather than sit underneath it. */}
+        <span className={`code-pipe-status ${outdated ? "code-pipe-outdated" : `code-pipe-${status || "none"}`}`}>
+          {outdated ? "PIPELINE OUTDATED" : status ? PIPE_STATUS_LABEL[status] || String(status).toUpperCase() : "NOT SET UP"}
         </span>
         {row && row.installedAt && (
           <span className="code-fact"><span className="code-fact-k">Installed</span><span className="code-fact-v">{new Date(row.installedAt).toLocaleString()}</span></span>
@@ -466,6 +480,22 @@ function PipelineCard({ invoke, conn, repoId, onNeedIdentity }) {
           </button>
         )}
       </div>
+
+      {outdated && (
+        /* The REASON is the scaffold changelog line for the version this repo is stuck on,
+           rendered VERBATIM: the tab does not know what changed between two scaffolds and
+           must not paraphrase a fix it cannot see. The version pair is the fact that makes
+           the sentence actionable, and the remedy is the setup form below, which this state
+           also unlocks - re-running setup is the only way to replace the committed file. */
+        <div className="code-pipe-outdated-box" role="alert">
+          <span className="code-pipe-err-title">Pipeline outdated</span>
+          <span className="code-pipe-err-text">{row.outdatedReason}</span>
+          {toVersion != null && (
+            <span className="code-pipe-outdated-ver">Installed scaffold v{fromVersion} to v{toVersion}</span>
+          )}
+          <span className="code-pipe-err-text">Use "Set up pipeline" below to commit the current workflow to this repository.</span>
+        </div>
+      )}
 
       {readFailed && (
         <div className="load-error">
@@ -534,7 +564,10 @@ function PipelineCard({ invoke, conn, repoId, onNeedIdentity }) {
 
       <PipelineError err={err} onNeedIdentity={onNeedIdentity} />
 
-      {!live && status !== "installed" && (
+      {/* F-583 - an OUTDATED row reaches the form even though it IS installed. Without this
+          the Code tab named a fault and offered no way to act on it: the form was gated on
+          `status !== "installed"`, which is exactly the state an outdated pipeline is in. */}
+      {!live && (status !== "installed" || outdated) && (
         <div className="code-pipe-form">
           <p className="hint" style={{ marginTop: 0 }}>
             CogniRunner commits a deploy workflow to this repository, stores the deploy identity as CI secrets, and locks the app's permissions to the manifest you paste here. The lock is what refuses a later manifest that quietly asks for more.

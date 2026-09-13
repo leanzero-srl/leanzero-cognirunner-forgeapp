@@ -19,7 +19,10 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
-const SHARED_CSS_CLASSES = [".hard-stop", ".step-busy-note", ".async-error-note", ".memory-card"];
+// F-236 — `.memory-source-badge` and `.doc-empty` belong to copied components
+// (MemoriesTab, DocRepository) and so must exist, identically, in all four homes.
+const SHARED_CSS_CLASSES = [".hard-stop", ".step-busy-note", ".async-error-note", ".memory-card",
+  ".memory-source-badge", ".doc-empty"];
 
 const read = (rel) => readFileSync(path.join(repo, rel), "utf8");
 

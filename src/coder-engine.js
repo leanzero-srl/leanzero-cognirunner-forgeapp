@@ -523,7 +523,11 @@ export const runCoderTurn = async ({
   simulation = undefined, connectionId = null, maxRounds = CODER_DEFAULT_ROUNDS,
   gateFacts = null, savedByRole = "editor", deadline = null, cancelToken = null,
   headless = false, allowedActions = null,
-  // TRUSTED-BUT-BOUNDED knowledge for this turn: { memoryBlock, skillsBlock } (1.4
+  // TRUSTED-BUT-BOUNDED knowledge for this turn: { memoryBlock, skillsBlock,
+  // fieldGuideBlock, fieldGuideSections } (1.4 commits 13b and 14b). Built by
+  // `buildCoderKnowledge` (src/async-handler.js); rendered by the ONE builder
+  // `buildKnowledgeMessages` (src/agent-runner.js), which is why nothing here changed
+  // when the field guide became a third block. (1.4
   // commit 13b). Built by the caller with the `coderTurn` byte budget
   // (src/shared/registry-limits.js); omitted = no knowledge, exactly as before.
   knowledge = null,

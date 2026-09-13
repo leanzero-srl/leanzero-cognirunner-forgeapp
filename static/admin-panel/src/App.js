@@ -3589,6 +3589,33 @@ const injectStyles = () => {
     .va-memory-over { color: #dc2626; }
     html[data-color-mode="dark"] .va-memory-over { color: #ef4444; }
     .va-refused { font-weight: 600; }
+
+    /* ── F-608: the deleted agents that wrote on their way out. ──────────────────
+       The one surface in the product that names those writes, so it reads as an action:
+       a solid red count chip because somebody has to go and look at the issue, solid
+       slate chips for the write kinds, and the storage-fault notice in the same solid red
+       the health banner uses. Solid fills, white ink, no left rail, no tint, dark
+       override for every hue. */
+    .va-purges { display: flex; flex-direction: column; gap: 9px; }
+    .va-purge-fault { display: flex; flex-direction: column; gap: 3px; padding: 11px 13px; border-radius: var(--r-md, 8px); background: #dc2626; color: #fff; }
+    .va-purge-fault-title { font-size: 12.5px; font-weight: 800; }
+    .va-purge-fault-text { font-size: 12px; font-weight: 500; line-height: 1.45; }
+    html[data-color-mode="dark"] .va-purge-fault { background: #ef4444; }
+    .va-purge { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); }
+    .va-purge-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; width: 100%; padding: 0; border: 0; background: none; color: var(--text-color); font: inherit; text-align: left; cursor: pointer; }
+    .va-purge-caret { font-size: 11px; font-weight: 800; color: var(--text-secondary); }
+    .va-purge-name { font-size: 13px; font-weight: 700; color: var(--text-color); }
+    .va-purge-at { font-size: 12px; font-weight: 600; color: var(--text-secondary); }
+    .va-purge-count { margin-left: auto; padding: 2px 9px; border-radius: 999px; background: #dc2626; color: #fff; font-size: 11px; font-weight: 800; letter-spacing: 0.02em; }
+    html[data-color-mode="dark"] .va-purge-count { background: #ef4444; }
+    .va-purge-turns { display: flex; flex-direction: column; gap: 6px; padding-top: 8px; border-top: 1px solid var(--border-color); }
+    .va-purge-turn { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; }
+    .va-purge-key { font-size: 12.5px; font-weight: 700; color: var(--text-color); }
+    .va-purge-when { font-size: 11.5px; font-weight: 600; color: var(--text-secondary); }
+    .va-purge-writes { display: flex; flex-wrap: wrap; gap: 6px; }
+    .va-purge-write { padding: 2px 8px; border-radius: 4px; background: #475569; color: #fff; font-size: 11px; font-weight: 700; }
+    html[data-color-mode="dark"] .va-purge-write { background: #64748b; }
+    .va-purge-more { margin: 0; }
 `;
   document.head.appendChild(style);
 };

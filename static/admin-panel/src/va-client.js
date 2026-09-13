@@ -37,6 +37,12 @@
  *   listVaDrafts({jobId})  -> {success, drafts:[...]}   (shadow mode staging table)
  *   approveVaDraft / rejectVaDraft({jobId, itemKey, stagedAt}) -> {success}
  *   listVaEffects({jobId}) -> {success, effects:[...], items:[...]}
+ *   getVaRecentPurges({limit}) -> {success, purges:[{agent, purgedAt, writeCount,
+ *                             turns:[{at, issueKey, writes:[...]}]}], truncated}
+ *                             SITE-WIDE and admin-floored: the agents it names no longer
+ *                             exist, so there is no jobId. A storage fault answers
+ *                             {success:false, reason:"scan_unavailable"|"scan_failed"};
+ *                             an empty list genuinely means no delete landed a write.
  *   getVaMemory({jobId})   -> {success, memory, constraints:[...], bytes, capBytes}
  *   saveVaMemory({jobId, memory, constraints}) -> {success, bytes} | a named refusal
  *   pauseVa / resumeVa({jobId}) -> {success, paused}
@@ -72,6 +78,9 @@ export const createVaClient = (invoke) => ({
   approveDraft: (jobId, draft) => call(invoke, "approveVaDraft", { jobId, itemKey: draft && draft.itemKey, stagedAt: draft && draft.stagedAt }),
   rejectDraft: (jobId, draft) => call(invoke, "rejectVaDraft", { jobId, itemKey: draft && draft.itemKey, stagedAt: draft && draft.stagedAt }),
   effects: (jobId) => call(invoke, "listVaEffects", { jobId }),
+  /* F-608 - the site-wide read, so it takes no jobId. The clamp on `limit` belongs to
+     src/va-admin.js `listRecentPurges` (VA_ADMIN_PURGES_MAX); nothing here re-states it. */
+  recentPurges: (limit) => call(invoke, "getVaRecentPurges", { limit }),
   getMemory: (jobId) => call(invoke, "getVaMemory", { jobId }),
   saveMemory: (jobId, memory, constraints) => call(invoke, "saveVaMemory", { jobId, memory, constraints }),
   pause: (jobId) => call(invoke, "pauseVa", { jobId }),

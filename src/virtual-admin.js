@@ -2241,7 +2241,38 @@ export const DEFAULT_DEPS = {
     const { buildAgentKnowledge } = await import("./listeners.js");
     const powers = isObj(va && va.powers) ? va.powers : {};
     return buildAgentKnowledge({ skillIds: asArray(powers.skillIds), useMemories: false }, {
-      projectKey: projectKey || null, audience: "agentRun",
+      projectKey: projectKey || null,
+      // TWO AUDIENCES, DELIBERATELY, BECAUSE THEY ARE TWO VOCABULARIES (F-549).
+      //
+      // `audience` names the SKILLS/MEMORIES budget row and must stay "agentRun": a VA item
+      // turn has an agent run's token economy, and `KNOWLEDGE_BUDGET_BYTES` has no `va` row,
+      // so passing "va" here would silently drop the skills budget from 8192 to the 6144
+      // `knowledgeBudget` hands an unknown caller.
+      //
+      // `fieldGuideAudience` names the FIELD GUIDE's, and it is "va" because the bake tags
+      // four sections `va` WITHOUT `agent` — all four of them Confluence ADF/storage-format
+      // sections. A VA that posts a Confluence page or an ADF comment could never be shown
+      // one of them, because `buildAgentKnowledge` translated "agentRun" to "agent" and
+      // `matchesAudience` filtered them out before scoring, while the admin's Knowledge tab
+      // went on advertising "va: 8 KB" for a budget nothing ever spent.
+      //
+      // ⚠ `fieldGuideAudience` IS INERT UNTIL `buildAgentKnowledge` (src/listeners.js) READS
+      // IT. Said here rather than only in a ledger row, because a knob with no reader that
+      // looks like it works is worse than no knob. The half that is missing is two lines in
+      // that function's signature and its `resolveFieldGuideBlock` call:
+      //
+      //     export const buildAgentKnowledge = async (agent, {
+      //       projectKey = null, audience = "agentRun", fieldGuideAudience: guideAudience = null, log = null,
+      //     } = {}) => { …
+      //       audience: guideAudience || fieldGuideAudience(audience),
+      //
+      // Nothing else moves: the default is `null`, so every existing caller (the listener
+      // run, the job run) keeps translating "agentRun" to "agent" exactly as it does today,
+      // and only a caller that already speaks the field guide's vocabulary overrides it —
+      // which is the case `fieldGuideAudience`'s own comment in registry-limits.js reserves
+      // for "validator", "va" and "fix". That file is another surgeon's territory.
+      audience: "agentRun",
+      fieldGuideAudience: "va",
       log: (line) => console.log(`[va] knowledge: ${line}`),
     });
   },

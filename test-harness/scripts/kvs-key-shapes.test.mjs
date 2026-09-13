@@ -229,5 +229,34 @@ ok((await kvs.get(gitIds.gitHookSecretKey("c1", "acme/widget"))) !== undefined,
   "and the FIXED key writes and reads back");
 kvs.__reset();
 
+/* ── 8. F-370 — the delivery claim TTL has ONE home ───────────────────────── */
+// The claim row is written by TWO files and means the same thing in both, so the window
+// may not live inline in either. This is a grep-shaped assertion on purpose: importing
+// the constant would prove only that the constant exists, not that the call sites use it.
+{
+  const { readFileSync } = await import("node:fs");
+  const src = (rel) => readFileSync(new URL(`../../${rel}`, import.meta.url), "utf8");
+  eq(gitIds.GIT_DELIVERY_CLAIM_TTL_S, 24 * 60 * 60, "git-ids.js owns the 24 h delivery-claim window");
+  eq(gitIds.GIT_DELIVERY_CLAIM_TTL.ttl.unit, "SECONDS", "and exports it in the KVS option shape");
+  eq(gitIds.GIT_DELIVERY_CLAIM_TTL.ttl.value, gitIds.GIT_DELIVERY_CLAIM_TTL_S, "the option shape carries the same number");
+  // A 24 h literal in ANY unit. Checked (a) file-wide for the hour/minute/second forms,
+  // which nothing else in these two files legitimately uses, and (b) in a ±4-line window
+  // around every `gitDelivery*` key mention, which catches the DAYS form too without
+  // tripping over unrelated one-day TTLs elsewhere in the file (the dev probe row).
+  const TTL_24H = /value:\s*(24\s*,\s*unit:\s*"HOURS"|1440\s*,\s*unit:\s*"MINUTES"|86400\s*,\s*unit:\s*"SECONDS")/;
+  const ANY_TTL = /ttl:\s*\{\s*value:/;
+  for (const rel of ["src/index.js", "src/async-handler.js"]) {
+    const text = src(rel);
+    ok(!TTL_24H.test(text), `${rel} carries no inline 24 h TTL literal — it imports GIT_DELIVERY_CLAIM_TTL (F-370)`);
+    ok(/GIT_DELIVERY_CLAIM_TTL\b/.test(text), `${rel} imports the shared delivery-claim TTL`);
+    const lines = text.split("\n");
+    lines.forEach((line, i) => {
+      if (!/gitDelivery(Claim|Attempt)Key|claimKey\b/.test(line)) return;
+      const window = lines.slice(Math.max(0, i - 4), i + 5).join("\n");
+      ok(!ANY_TTL.test(window), `${rel}:${i + 1} — no inline TTL literal beside a git delivery key (F-370)`);
+    });
+  }
+}
+
 console.log(`\n${failed === 0 ? "PASS" : "FAIL"}: ${passed} checks passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

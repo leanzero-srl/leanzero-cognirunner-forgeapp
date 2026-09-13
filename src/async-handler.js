@@ -90,7 +90,7 @@ import {
   defangFence,
 } from "./memories.js";
 import { executeListenerTask, getListener, dispatchGitEvent } from "./listeners.js";
-import { gitDeliveryClaimKey, gitDeliveryAttemptKey, GIT_DISPATCH_MAX_ATTEMPTS } from "./shared/git-ids.js";
+import { gitDeliveryClaimKey, gitDeliveryAttemptKey, GIT_DISPATCH_MAX_ATTEMPTS, GIT_DELIVERY_CLAIM_TTL } from "./shared/git-ids.js";
 // F-335 live proof — the dev-only fault lever (inert without HARNESS_SECRET; see src/harness-fault.js).
 import { harnessFaultArmed, HarnessFault, HARNESS_FAULT_GIT_DISPATCH } from "./harness-fault.js";
 // 1.4 commit 4b — the PR review engine and the connection layer it runs over. The
@@ -1218,9 +1218,10 @@ const executeGitEvent = async (params) => {
       try { priorAttempts = Number((await storage.get(gitDeliveryAttemptKey(okConn, okDelivery)) || {}).attempts) || 0; } catch { /* best-effort */ }
       if (priorAttempts > 0) {
         try {
-          // The SAME 24 h window the webhook's accept-time claim uses (src/index.js
+          // The SAME window the webhook's accept-time claim uses (src/index.js
           // `gitWebhook`) — the row means the same thing, so it must expire together.
-          const retaken = await claimRuleExecution(storage, gitDeliveryClaimKey(okConn, okDelivery), { ttl: { value: 24, unit: "HOURS" } }, "git-delivery");
+          // That is why the number is imported and not retyped (F-370).
+          const retaken = await claimRuleExecution(storage, gitDeliveryClaimKey(okConn, okDelivery), GIT_DELIVERY_CLAIM_TTL, "git-delivery");
           console.log(`[git-event] delivery ${okDelivery} succeeded on attempt ${priorAttempts + 1} — completion claim ${retaken ? "re-taken" : "already present"}; a provider Redeliver is answered duplicate`);
         } catch (e) { console.warn(`[git-event] completion claim NOT re-taken for ${okDelivery} (${e && e.message}) — a Redeliver would run it again`); }
       }
@@ -1247,7 +1248,8 @@ const executeGitEvent = async (params) => {
       const attemptKey = gitDeliveryAttemptKey(connId, deliveryId);
       try { attempts = Number((await storage.get(attemptKey) || {}).attempts) || 0; } catch { /* best-effort */ }
       attempts += 1;
-      try { await storage.set(attemptKey, { attempts, at: new Date().toISOString() }, { ttl: { value: 24, unit: "HOURS" } }); } catch { /* best-effort */ }
+      // Same window as the claim it counts, deliberately (see git-ids.js, F-370).
+      try { await storage.set(attemptKey, { attempts, at: new Date().toISOString() }, { ...GIT_DELIVERY_CLAIM_TTL }); } catch { /* best-effort */ }
     }
     if (!connId || !deliveryId || attempts >= GIT_DISPATCH_MAX_ATTEMPTS) {
       console.error(`[git-event] DELIVERY DROPPED after ${attempts || "?"} dispatch attempt(s) — conn=${connId || "?"} delivery=${deliveryId || "?"}: ${msg}. Nothing ran and nothing will retry; re-run the pull request's event from the provider after fixing the cause.`);

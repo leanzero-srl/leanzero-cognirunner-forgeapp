@@ -37,6 +37,7 @@ const ok = (c, m) => { if (c) pass++; else { fail++; console.log("FAIL:", m); } 
 const ADMIN = "acct-admin";
 const VIEWER = "acct-viewer";
 const NOBODY = "acct-nobody";
+const EDITOR = "acct-editor";
 
 /* ---- the planted secrets. Nothing may echo any of these. ---- */
 const GH_TOKEN = "ghp_PLANTED_CONNECTION_TOKEN_0123456789";
@@ -68,6 +69,7 @@ const reset = () => {
   storage.__seed("app_admins", [
     { accountId: ADMIN, displayName: "Admin", role: "admin", scope: "all" },
     { accountId: VIEWER, displayName: "Viewer", role: "viewer", scope: "own" },
+    { accountId: EDITOR, displayName: "Editor", role: "editor", scope: "all" },
   ]);
   fetchQueue = [];
   fetchCalls = [];
@@ -610,6 +612,71 @@ ok(findSecret(conns.publicConnection(storage.__raw(conns.gitConnKey(bb.connectio
 const tainted = { ...storage.__raw(conns.gitConnKey(bb.connection.id)), token: BB_TOKEN, secret: BB_TOKEN };
 ok(findSecret(conns.publicConnection(tainted), BB_TOKEN) === null,
   "even a row that carries a token field emits nothing — publicConnection builds a new object, it does not spread-and-delete");
+
+/* ===================== 12. F-373 — THE EDITOR FLOOR ============================ */
+// `getRuleLists` is the ONE resolver here that a non-admin editor may call, and it is
+// where a git rule's connection and repository are chosen. It used to return a flat
+// UNION of every connection's allow-list, so an editor could pair connection A with a
+// repository only B may read — the rule saved and then failed CLOSED forever. It now
+// returns RICH rows. Two things must both hold: the editor gets enough to NARROW, and
+// the editor gets nothing about anyone's CREDENTIAL.
+reset();
+fetchQueue = [whoamiOk()];
+const cA = await call("saveGitConnection", { kind: "github", label: "Alpha org", token: GH_TOKEN, repos: ["acme/alpha", "acme/shared"] });
+fetchQueue = [res(200, { username: "bb-bot", display_name: "BB Bot", account_id: "1" })];
+const cB = await call("saveGitConnection", { kind: "bitbucket", label: "Beta team", token: BB_TOKEN, email: "bot@leanzero.net", repos: ["beta/web"] });
+ok(cA.success === true && cB.success === true, "two connections with DIFFERENT allow-lists are set up");
+
+const asEditor = await call("getRuleLists", {}, EDITOR);
+ok(asEditor.success === true, `an editor may call getRuleLists (${JSON.stringify(asEditor).slice(0, 120)})`);
+const gconns = (asEditor.lists || {}).gitconnections || [];
+ok(Array.isArray(gconns) && gconns.length === 2, `the editor receives one row per connection (${gconns.length})`);
+
+const alpha = gconns.find((c) => c.label === "Alpha org");
+const beta = gconns.find((c) => c.label === "Beta team");
+ok(!!alpha && !!beta, "…keyed by a human label, not just an id");
+ok(alpha.id === cA.connection.id && alpha.kind === "github", "the row carries id and kind, so the form can validate repo shape per provider");
+ok(Array.isArray(alpha.repos) && alpha.repos.includes("acme/alpha") && alpha.repos.includes("acme/shared"), "the row carries ITS OWN repo allow-list");
+// THE DEFECT, stated as an assertion: one connection's repos must not appear on another.
+ok(!alpha.repos.includes("beta/web"), "F-373: connection A's row does NOT carry connection B's repository");
+ok(beta.repos.length === 1 && beta.repos[0] === "beta/web", "…and B's row carries only B's");
+
+// Every admin-only field of publicConnection must be ABSENT from every editor row.
+// Enumerated against publicConnection itself, so a field added there tomorrow that is
+// not in editorConnectionView's four keys fails HERE.
+const EDITOR_KEYS = ["id", "kind", "label", "repos"];
+const adminOnly = Object.keys(conns.publicConnection(storage.__raw(conns.gitConnKey(cA.connection.id))))
+  .filter((k) => !EDITOR_KEYS.includes(k));
+ok(adminOnly.includes("hasToken") && adminOnly.includes("status"), `the enumeration really covers the credential fields (${adminOnly.join(",")})`);
+for (const row of gconns) {
+  ok(Object.keys(row).sort().join(",") === EDITOR_KEYS.slice().sort().join(","),
+    `an editor row carries EXACTLY ${EDITOR_KEYS.join("/")} (got ${Object.keys(row).join(",")})`);
+  for (const k of adminOnly) {
+    ok(!(k in row), `an editor row never carries the admin-only field "${k}"`);
+  }
+}
+// hasToken/status named explicitly too — these are the two the ledger row calls out.
+ok(!gconns.some((c) => "hasToken" in c), "F-373: no editor row exposes hasToken");
+ok(!gconns.some((c) => "status" in c), "F-373: no editor row exposes status");
+// And nothing in the whole editor-floor answer is a secret.
+for (const secret of SECRETS) ok(findSecret(asEditor, secret) === null, "getRuleLists returns no secret at the editor floor");
+
+// The flat union stays, for the `picker` source vocabulary that still reads it.
+const grepos = (asEditor.lists || {}).gitrepos || [];
+ok(grepos.some((r) => r.value === "acme/alpha") && grepos.some((r) => r.value === "beta/web"),
+  "gitrepos is still the union, so the existing picker source keeps working");
+
+// The projection is ONE home and it is a whitelist by construction — same proof as
+// publicConnection's: plant a token on the stored row and it still emits nothing.
+const taintedEd = { ...storage.__raw(conns.gitConnKey(cA.connection.id)), token: GH_TOKEN, hasToken: true, status: "auth_dead" };
+const edView = conns.editorConnectionView(taintedEd);
+ok(findSecret(edView, GH_TOKEN) === null, "editorConnectionView builds a new object — a planted token cannot leak through it");
+ok(!("hasToken" in edView) && !("status" in edView), "…and a planted credential-health field cannot either");
+ok(conns.editorConnectionView(null) === null, "editorConnectionView refuses a non-row rather than inventing one");
+
+// A viewer is still below the floor.
+const asViewer = await call("getRuleLists", {}, VIEWER);
+ok(asViewer.success !== true, "a viewer is still refused the editor floor");
 
 console.log(`git-connections: ${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

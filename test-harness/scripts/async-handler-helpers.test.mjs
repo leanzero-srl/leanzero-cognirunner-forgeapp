@@ -1123,7 +1123,9 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   // EXECUTED: the real handler source over a stubbed dispatch.
   const logs = [];
   const quiet = { log: (...a) => logs.push(a.join(" ")), warn: (...a) => logs.push(a.join(" ")), error: (...a) => logs.push(a.join(" ")) };
-  const { gitDeliveryClaimKey, gitDeliveryAttemptKey, GIT_DISPATCH_MAX_ATTEMPTS } = await import("../../src/shared/git-ids.js");
+  // F-370 — the delivery-claim TTL is imported by the handler now, so the executed slice
+  // needs it injected like every other dependency.
+  const { gitDeliveryClaimKey, gitDeliveryAttemptKey, GIT_DISPATCH_MAX_ATTEMPTS, GIT_DELIVERY_CLAIM_TTL } = await import("../../src/shared/git-ids.js");
   const gitStore = new Map();
   const gitStorage = {
     get: async (k) => gitStore.get(k),
@@ -1139,8 +1141,8 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   // F-367 — the success path re-takes the completion claim, so the real shared claim
   // helper is injected too (the region is executed, not paraphrased).
   const { claimRuleExecution } = await import("../../src/shared/execution-claim.js");
-  const mk = (dispatch) => new Function("dispatchGitEvent", "console", "storage", "gitDeliveryClaimKey", "gitDeliveryAttemptKey", "GIT_DISPATCH_MAX_ATTEMPTS", "harnessFaultArmed", "HarnessFault", "HARNESS_FAULT_GIT_DISPATCH", "claimRuleExecution",
-    `return (${g.slice(g.indexOf("async (params)"), g.lastIndexOf("};") + 1)});`)(dispatch, quiet, gitStorage, gitDeliveryClaimKey, gitDeliveryAttemptKey, GIT_DISPATCH_MAX_ATTEMPTS, fakeArmed, HarnessFault, HARNESS_FAULT_GIT_DISPATCH, claimRuleExecution);
+  const mk = (dispatch) => new Function("dispatchGitEvent", "console", "storage", "gitDeliveryClaimKey", "gitDeliveryAttemptKey", "GIT_DISPATCH_MAX_ATTEMPTS", "harnessFaultArmed", "HarnessFault", "HARNESS_FAULT_GIT_DISPATCH", "claimRuleExecution", "GIT_DELIVERY_CLAIM_TTL",
+    `return (${g.slice(g.indexOf("async (params)"), g.lastIndexOf("};") + 1)});`)(dispatch, quiet, gitStorage, gitDeliveryClaimKey, gitDeliveryAttemptKey, GIT_DISPATCH_MAX_ATTEMPTS, fakeArmed, HarnessFault, HARNESS_FAULT_GIT_DISPATCH, claimRuleExecution, GIT_DELIVERY_CLAIM_TTL);
   let seen = null;
   const okHandler = mk(async (env) => { seen = env; return { eventType: env.eventType, repoId: "o/r", queued: 2, propertyWrites: 1 }; });
   const r1 = await okHandler({ envelope: { eventType: "git:pull_request:opened", repoId: "o/r" } });

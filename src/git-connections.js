@@ -242,6 +242,41 @@ export function publicConnection(row) {
   };
 }
 
+/**
+ * F-373 — THE EMIT ALLOW-LIST for what a non-admin WORKFLOW EDITOR may see of a
+ * connection, and the SECOND home of nothing: it is `publicConnection` minus the
+ * admin-only fields, built the same way (field by field, never a spread-and-delete),
+ * so a field added to the stored row tomorrow cannot leak into the editor floor by
+ * default either.
+ *
+ * WHY IT EXISTS: `getRuleLists` (src/index.js, the editor floor) returned a FLAT
+ * union of every connection's repo allow-list, so an editor picking connection A
+ * could pick a repository only connection B is allowed to read. The rule saved
+ * fine and then failed CLOSED at every transition ("repo not on the allow-list" —
+ * see the table beside runGitValidator in src/premade-rules.js), which is a gate
+ * that looks configured and blocks forever. The form can only narrow if it is
+ * told which repos belong to which connection.
+ *
+ * WHAT IS DELIBERATELY ABSENT, and must stay absent: `hasToken` (whether a
+ * credential exists), `status` / `authDeadAt` / `authDeadReason` /
+ * `lastCheckedAt` (the credential's health), `host`, `owner`, `login`,
+ * `createdBy` / `createdAt` / `updatedAt` and `capabilities`. A workflow editor
+ * needs to choose a connection and a repository; the state of somebody's
+ * credential is an ADMIN fact and is served by `listConnections` behind
+ * requireAdmin. `label` is included because a picker that shows only ids is a
+ * picker nobody can use; `kind` because the two providers are visually
+ * distinguished and the form validates repo shape per provider.
+ */
+export function editorConnectionView(row) {
+  if (!row || typeof row !== "object") return null;
+  return {
+    id: row.id,
+    kind: row.kind,
+    label: row.label,
+    repos: Array.isArray(row.repos) ? row.repos.slice() : [],
+  };
+}
+
 /* ===== INDEX + ROWS ===== */
 
 async function readIndex() {

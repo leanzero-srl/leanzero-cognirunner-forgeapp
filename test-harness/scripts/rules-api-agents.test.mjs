@@ -260,6 +260,55 @@ let agentId = null;
   ok(!JSON.stringify(listed.body).includes("api.log"), "…and carries no other rule's step code");
 }
 
+/* ═════ 4b. `?resource=jobs` IS NOT A SECOND DOOR ONTO AN AGENT (F-478) ═════
+
+   A VA is stored as a job row, so the jobs resource was an EDITOR-floor door onto every
+   agent that bypassed `prepareVaSave` (no catalogue check, no shadow re-arm) and a
+   VIEWER-floor read of the whole `va` block. Both directions are asserted: the jobs
+   resource refuses a VA, and the agents resource refuses a script job (section 4). */
+{
+  const jobs = async (role, { method = "GET", query = {}, body } = {}) => {
+    const res = await rulesApiHandler({
+      method,
+      headers: { authorization: `Bearer ${tokens[role]}` },
+      queryParameters: Object.fromEntries(Object.entries({ resource: "jobs", ...query }).map(([k, v]) => [k, [String(v)]])),
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+    return { status: res.statusCode, body: JSON.parse(res.body) };
+  };
+
+  const named = (r, what) => {
+    ok(r.status === 404 && r.body.reason === "is_a_virtual_administrator" && r.body.resource === "agents",
+      `${what} through ?resource=jobs is refused BY NAME and points at ?resource=agents (got ${r.status} ${JSON.stringify(r.body).slice(0, 200)})`);
+  };
+
+  named(await jobs("viewer", { query: { id: agentId } }), "reading an agent");
+  named(await jobs("editor", { method: "PUT", query: { id: agentId }, body: { va: { scope: { write: { projects: ["OPS"] } } } } }), "re-scoping an agent");
+  named(await jobs("editor", { method: "DELETE", query: { id: agentId } }), "deleting an agent");
+  named(await jobs("editor", { method: "POST", query: { id: agentId, action: "run" }, body: {} }), "running an agent");
+  named(await jobs("editor", { method: "POST", query: { id: agentId, action: "disable" }, body: {} }), "disabling an agent");
+  named(await jobs("editor", { method: "POST", body: { mode: "va", va: vaRecord() } }), "creating an agent");
+  // The UPSERT from the other side: no `mode:"va"` in the body, so `normalizeJob` would
+  // have rewritten the agent as a plain script job and lost the record.
+  named(await jobs("editor", { method: "POST", body: { id: agentId, name: "hijack", schedule: { cron: "0 9 * * *", timeZone: "UTC" }, functions: [{ name: "s", code: "api.log('x')" }] } }), "rewriting an agent as a script job");
+
+  // …and nothing was actually changed by any of the refusals above.
+  const still = await J.getJob(agentId);
+  ok(still && still.mode === "va" && still.va.persona.name === "Ada", `the agent is untouched after every refusal (got ${still && still.mode}/${still && still.va && still.va.persona.name})`);
+
+  const list = await jobs("viewer");
+  ok(list.status === 200 && Array.isArray(list.body.jobs) && list.body.jobs.every((j) => j.mode !== "va"),
+    `the jobs list hides VA rows (got ${JSON.stringify((list.body.jobs || []).map((j) => j.mode))})`);
+  ok(!JSON.stringify(list.body).includes("Ada"), "…so no agent's persona leaks through the jobs list either");
+
+  // A PLAIN job is untouched by the guard: the door is closed to agents, not to jobs.
+  const plain = await jobs("editor", { method: "POST", body: { name: "Nightly", mode: "script", schedule: { cron: "0 9 * * *", timeZone: "UTC" }, functions: [{ name: "s", code: "api.log('x')" }] } });
+  ok(plain.status === 201 && plain.body.job, `a normal scheduled job still creates through ?resource=jobs (got ${plain.status} ${JSON.stringify(plain.body).slice(0, 160)})`);
+  const plainId = plain.body.job.id;
+  ok((await jobs("viewer", { query: { id: plainId } })).status === 200, "…and reads back");
+  ok((await jobs("editor", { method: "DELETE", query: { id: plainId } })).status === 200, "…and deletes");
+}
+
 /* ═════ 5. DRAFTS: the shapes, and NEITHER VERDICT POSTS ═════ */
 {
   const { saveItem } = await import("../../src/va-ledger.js");

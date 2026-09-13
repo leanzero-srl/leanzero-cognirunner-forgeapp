@@ -298,6 +298,27 @@ const handleCollection = async ({ req, method, id, action, body, who, kind }) =>
   const noun = isL ? "listener" : "job";
   const actor = `api:${who.id}`;
   /*
+   * A VIRTUAL ADMINISTRATOR IS NOT A JOB ON THIS RESOURCE (F-478).
+   *
+   * A VA is stored as a job row, so `?resource=jobs` was a SECOND door onto every
+   * agent — and an editor-floor one. It bypassed `prepareVaSave` entirely: no live
+   * catalogue check, no shadow re-arm, no cadence-derived schedule, and it deleted at
+   * editor what `?resource=agents` protects at admin, while a viewer could read the
+   * whole `va` block (persona, instructions, memory-shaped guardrails) off a GET.
+   *
+   * So every route here refuses a `mode:"va"` row BY NAME and points at the resource
+   * that owns it, and the list hides them. It is the exact mirror of the agents
+   * resource refusing a script job with `not_a_virtual_administrator`: one row, one
+   * door, and the door carries the floor.
+   */
+  const vaDoor = (row) => (row && row.mode === "va"
+    ? json(404, {
+      error: "That id belongs to a Virtual Administrator. Use ?resource=agents.",
+      reason: "is_a_virtual_administrator",
+      resource: "agents",
+    })
+    : null);
+  /*
    * THE FLOORS, mirrored one-for-one off the resolvers in `src/index.js` (F-466):
    * getListeners/getScheduledJobs and their by-id reads gate on `viewer`; every write
    * — save, delete, enable/disable, test, run — gates on `editor` (the resolvers reach
@@ -313,12 +334,14 @@ const handleCollection = async ({ req, method, id, action, body, who, kind }) =>
 
   if (method === "GET") {
     const gate = floor("viewer", `view ${kind}`); if (gate) return gate;
-    if (id) { const row = await get(id); return row ? json(200, { [noun]: row }) : json(404, { error: `${noun} not found` }); }
-    return json(200, { [kind]: await list() });
+    if (id) { const row = await get(id); const va = vaDoor(row); if (va) return va; return row ? json(200, { [noun]: row }) : json(404, { error: `${noun} not found` }); }
+    const rows = await list();
+    return json(200, { [kind]: isL ? rows : rows.filter((r) => r && r.mode !== "va") });
   }
   if (method === "DELETE") {
     const gate = floor("editor", `delete a ${noun}`); if (gate) return gate;
     if (!id) return json(400, { error: "id required" });
+    { const va = vaDoor(await get(id)); if (va) return va; }
     const r = await remove(id);
     return json(r.removed ? 200 : 404, r.removed ? { deleted: id } : { error: `${noun} not found` });
   }
@@ -326,6 +349,7 @@ const handleCollection = async ({ req, method, id, action, body, who, kind }) =>
     const gate = floor("editor", `change a ${noun}`); if (gate) return gate;
     if (!id) return json(400, { error: "id required" });
     const existing = await get(id);
+    { const va = vaDoor(existing); if (va) return va; }
     if (!existing) return json(404, { error: `${noun} not found` });
     try { const saved = await save({ ...merge(existing, body || {}), id }, { accountId: actor }); return json(200, { [noun]: saved }); } catch (e) { return json(400, errBody(e)); }
   }
@@ -335,6 +359,7 @@ const handleCollection = async ({ req, method, id, action, body, who, kind }) =>
     const gate = floor(action === "preview" ? "viewer" : "editor", `${action} a ${noun}`); if (gate) return gate;
     if (!id) return json(400, { error: "id required" });
     const row = await get(id);
+    { const va = vaDoor(row); if (va) return va; }
     if (!row) return json(404, { error: `${noun} not found` });
     if (action === "enable" || action === "disable") { const saved = await setEnabled(id, action === "enable"); return json(200, { [noun]: saved }); }
     if (isL && action === "test") {
@@ -357,6 +382,18 @@ const handleCollection = async ({ req, method, id, action, body, who, kind }) =>
     const gate = floor("editor", `create ${kind}`); if (gate) return gate;
     const items = Array.isArray(body) ? body : (body && Array.isArray(body[kind]) ? body[kind] : [body]);
     if (!items.length || items.length > 100) return json(400, { error: "provide 1-100 items" });
+    // CREATE is the same door (F-478): a `mode:"va"` body here would mint an agent with
+    // none of `prepareVaSave`'s checks, at the editor floor. It is refused before the
+    // batch runs, so a mixed batch cannot half-create one.
+    if (!isL) {
+      const va = items.map((it) => vaDoor(it)).find(Boolean); if (va) return va;
+      // …and an UPSERT that names an existing agent's id is the same door from the
+      // other side: without `mode:"va"` in the body it would rewrite the agent as a
+      // plain script job, losing the whole record.
+      for (const it of items) {
+        if (it && it.id) { const hit = vaDoor(await get(String(it.id))); if (hit) return hit; }
+      }
+    }
     const saved = []; const errors = [];
     for (let i = 0; i < items.length; i++) {
       try { saved.push(await save(items[i], { accountId: actor })); } catch (e) { errors.push({ index: i, name: items[i] && items[i].name, ...errBody(e) }); }

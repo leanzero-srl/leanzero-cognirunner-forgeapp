@@ -418,6 +418,35 @@ export const collectPins = (cfg, sections, { partial = false } = {}) => {
   return { byAudience, rows };
 };
 
+/**
+ * THE DRIFT PROBE. Compares the corpus fingerprint against the one pinned in the generated
+ * index, and REFUSES — with a non-zero exit code — on either failure.
+ *
+ * F-435: the absent-index arm used to print "NOT A PASS" and then fall out of `bake()`,
+ * ending the process with status 0. The only thing `npm run bake:check` in a CI step or a
+ * pre-commit hook can read is the exit code, so the gate was told the packs were current
+ * precisely when there were none. A negative that authorises action must be PROVEN: "no
+ * packs" is not "packs are current".
+ *
+ * Extracted so the harness can assert the exit code of each arm without a raw corpus.
+ */
+export const checkIndexCurrent = (contentVersion) => {
+  if (!existsSync(P.index)) {
+    die("--check: NOT A PASS — no baked packs exist (src/shared/knowledge-index.js is missing).\n"
+      + "  Run `npm run bake`, review knowledge/MANIFEST.md, and commit the generated packs.", 1);
+    return { checked: false };
+  }
+  const current = readFileSync(P.index, "utf8");
+  const pinned = (/KNOWLEDGE_CONTENT_VERSION = "([a-f0-9]+)"/.exec(current) || [])[1];
+  if (pinned !== contentVersion) {
+    die(`a pinned source has changed since the last bake (index ${pinned}, corpus ${contentVersion}).\n`
+      + "  Run `npm run bake`, review knowledge/MANIFEST.md, and commit the regenerated packs.", 1);
+    return { checked: false };
+  }
+  console.log(`bake-knowledge --check: packs are current (${contentVersion}).`);
+  return { checked: true };
+};
+
 export const bake = ({ dryRun = false, check = false, tiers = null } = {}) => {
   const { denylist } = runPreflight();
   const cfg = readSources();
@@ -544,20 +573,7 @@ export const bake = ({ dryRun = false, check = false, tiers = null } = {}) => {
 
   /* ---- --check: the pinned hashes ------------------------------------ */
   if (check) {
-    if (!existsSync(P.index)) {
-      // Loud on purpose. "No packs" is not "packs are current" — this repo's own lesson
-      // about negatives that authorise action. 14a ships the pipeline; 14b commits the
-      // packs, and from that commit on this check has something real to compare.
-      console.log("bake-knowledge --check: NOT A PASS — no baked packs exist yet (14b commits them).");
-      return { sections, packSummaries, contentVersion, pins, checked: false };
-    }
-    const current = readFileSync(P.index, "utf8");
-    const pinned = (/KNOWLEDGE_CONTENT_VERSION = "([a-f0-9]+)"/.exec(current) || [])[1];
-    if (pinned !== contentVersion) {
-      die(`a pinned source has changed since the last bake (index ${pinned}, corpus ${contentVersion}).\n`
-        + "  Run `npm run bake`, review knowledge/MANIFEST.md, and commit the regenerated packs.", 1);
-    }
-    console.log(`bake-knowledge --check: packs are current (${contentVersion}).`);
+    checkIndexCurrent(contentVersion);
     return { sections, packSummaries, contentVersion, pins, checked: true };
   }
 

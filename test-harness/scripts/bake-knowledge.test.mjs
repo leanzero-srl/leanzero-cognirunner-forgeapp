@@ -88,6 +88,22 @@ const secLit = JSON.stringify(sections);
   ok(/WARNING/.test(r.out), "and it says so loudly");
 }
 
+/* ---- the drift probe REFUSES on the exit code (F-435) ----
+   `--check` used to print "NOT A PASS — no baked packs exist yet" and exit 0, which is
+   the only thing a CI step or a pre-commit hook can read. "No packs" is not "packs are
+   current": a negative that authorises action must be proven. */
+{
+  const indexPath = path.join(repoRoot, "src/shared/knowledge-index.js");
+  const fs = await import("node:fs");
+  const indexPresent = fs.existsSync(indexPath);
+  const r = run(`B.checkIndexCurrent("0000000000000000");`);
+  ok(r.status !== 0,
+    `checkIndexCurrent refuses with a NON-ZERO exit (${indexPresent ? "index present, hash mismatch" : "index absent"}) — got ${r.status}`);
+  ok(/NOT A PASS|has changed since the last bake/.test(r.out), "and the refusal says why");
+  if (!indexPresent) ok(/NOT A PASS/.test(r.out), "an absent index is explicitly NOT A PASS");
+  else ok(true, "an absent index cannot be asserted here — the index is committed");
+}
+
 /* ---- what the MANIFEST renders is what the selector reads (F-429) ---- */
 {
   const cfg = { packs: { "forge-app-builder": { pinned: ["forge-app-builder#core-concepts"], pinnedFor: ["coder"] } } };

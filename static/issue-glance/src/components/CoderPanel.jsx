@@ -57,6 +57,43 @@ const POLL_MAX_TRIES = 300;
    on a shared id and being told "not yours" for a thread they never opened. */
 const threadIdFor = (accountId) => `p_${String(accountId || "anon").replace(/[^a-zA-Z0-9]/g, "").slice(-12) || "anon"}`;
 
+/* F-368 - A SECOND CONVERSATION, AND A WAY BACK TO THE FIRST.
+   The stable id above stays the DEFAULT, so a reload still lands on the thread you were
+   in. What it must not be is the only thread a person can ever have on an issue: a fresh
+   plan should not inherit the old one's history and its compaction pins, and before this
+   there was no affordance to start one.
+
+   The switcher is a PER-VIEWER CONVENIENCE, not a record. The backend exposes
+   getCoderThread({issueKey, threadId}) and nothing that LISTS threads, so the only ids a
+   panel can offer are the ones this browser has opened. They live in localStorage keyed by
+   issue; a viewer with nothing stored sees exactly the default thread and no list, and an
+   id whose thread no longer exists simply reads back empty. Every access is wrapped,
+   because a Custom UI iframe in a locked-down browser can throw on the first touch of
+   localStorage, and a storage fault must never take the panel with it. */
+const THREAD_MEMORY_CAP = 8;
+const threadsKey = (issueKey) => `cognirunner.coder.threads.${issueKey || "none"}`;
+const readThreads = (issueKey) => {
+  try {
+    const raw = window.localStorage.getItem(threadsKey(issueKey));
+    const parsed = raw ? JSON.parse(raw) : null;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((r) => r && typeof r.id === "string").slice(0, THREAD_MEMORY_CAP);
+  } catch (e) { return []; }
+};
+const writeThreads = (issueKey, rows) => {
+  try { window.localStorage.setItem(threadsKey(issueKey), JSON.stringify(rows.slice(0, THREAD_MEMORY_CAP))); } catch (e) { /* the switcher is a convenience; losing it is not a failure */ }
+};
+/* The label is the only place a thread id influences copy, and it never PRINTS the id: a
+   minted id carries its own timestamp, so the chip can say when the conversation started,
+   and the default one is simply the first. */
+const threadLabel = (id, defaultId) => {
+  if (id === defaultId) return "First conversation";
+  const ms = Number(String(id).replace(/^t_/, ""));
+  if (!Number.isFinite(ms) || ms <= 0) return "Conversation";
+  const d = new Date(ms);
+  return `${d.toLocaleDateString(undefined, { month: "short", day: "numeric" })}, ${d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })}`;
+};
+
 /** Plain paragraphs. See rule 2 - this is the whole rendering of model text. */
 const paragraphs = (text) => String(text || "").split(/\n{2,}/).map((p) => p.trim()).filter(Boolean);
 
@@ -80,7 +117,9 @@ export default function CoderPanel({ issueKey, accountId }) {
   const [outcome, setOutcome] = useState(null);    // the finished turn: { reply, actions, endedBy, rounds }
   const [error, setError] = useState("");
 
-  const threadId = threadIdFor(accountId);
+  const defaultThreadId = threadIdFor(accountId);
+  const [threadId, setThreadId] = useState(defaultThreadId);
+  const [knownThreads, setKnownThreads] = useState([]);
   /* The transcript is a scroll box (it has to be - a long thread would push the composer
      off an issue panel), so the NEWEST message is the one off-screen by default. Without
      this the answer to the turn you just took is the one thing you cannot see: caught in
@@ -90,6 +129,10 @@ export default function CoderPanel({ issueKey, accountId }) {
   const pollRef = useRef(null);
   // Rule 4: the token of the turn currently allowed to write state.
   const genRef = useRef(0);
+
+  // F-368: the remembered ids, read once per issue. Nothing stored is the normal first
+  // open, and it renders as no list at all rather than an empty control.
+  useEffect(() => { setKnownThreads(readThreads(issueKey)); }, [issueKey]);
 
   useEffect(() => () => {
     mountedRef.current = false;
@@ -107,7 +150,6 @@ export default function CoderPanel({ issueKey, accountId }) {
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      let capability = null;
       try {
         const res = await invoke("getAgentCapability");
         if (cancelled || !mountedRef.current) return;
@@ -119,18 +161,29 @@ export default function CoderPanel({ issueKey, accountId }) {
           setCapState("ok");
           return;
         }
-        capability = res;
         setCap(res);
         setCapState("ok");
       } catch (e) {
         if (!cancelled && mountedRef.current) { setCap({ enabled: false, reason: "unknown" }); setCapState("ok"); }
-        return;
       }
-      if (!capability || capability.enabled !== true) return;
+    })();
+    return () => { cancelled = true; };
+  }, [issueKey]);
 
-      /* The thread. "not found" is the normal first-open answer, so it is NOT an error
-         banner: an empty thread is exactly what a developer who has never used the panel
-         should see. Only a refusal is worth saying out loud. */
+  /* F-368 split the mount read in two, because the THREAD can now change without the
+     capability changing: switching conversations must re-read the transcript and nothing
+     else. Both reads stay gated on an ENABLED capability, so a site with the Coder off
+     still makes exactly ONE refused read and never asks for a thread it may not have. */
+  const capEnabled = capState === "ok" && !!(cap && cap.enabled === true);
+
+  useEffect(() => {
+    if (!capEnabled) return undefined;
+    let cancelled = false;
+    (async () => {
+      /* "not found" is the normal first-open answer, so it is NOT an error banner: an
+         empty transcript is exactly what a developer who has never used the panel - or
+         who has just started a new conversation - should see. Only a refusal is worth
+         saying out loud. */
       try {
         const t = await invoke("getCoderThread", { issueKey, threadId });
         if (cancelled || !mountedRef.current) return;
@@ -143,18 +196,24 @@ export default function CoderPanel({ issueKey, accountId }) {
           if (t.thread.pendingTicketId) setTicket({ id: t.thread.pendingTicketId, action: null, argsPreview: null });
         }
       } catch (e) { /* a thread we could not read is an empty thread, not a broken panel */ }
+    })();
+    return () => { cancelled = true; };
+  }, [issueKey, threadId, capEnabled]);
 
-      /* Connections drive the picker, and ONLY the picker. listGitConnections is admin-only
-         in the backend, so an editor is refused here as a matter of course - that is not an
-         error, it just means no picker and the engine's own default connection. */
+  /* Connections drive the picker, and ONLY the picker. Read once the capability is on and
+     never per conversation: the list does not depend on which thread is open. */
+  useEffect(() => {
+    if (!capEnabled) return undefined;
+    let cancelled = false;
+    (async () => {
       try {
         const c = await invoke("listGitConnections");
         if (cancelled || !mountedRef.current) return;
         if (c && c.success && Array.isArray(c.connections)) setConnections(c.connections);
-      } catch (e) { /* same: no picker */ }
+      } catch (e) { /* no picker */ }
     })();
     return () => { cancelled = true; };
-  }, [issueKey, threadId]);
+  }, [capEnabled]);
 
   /* ------------------------------------------------------------------- polling */
   const applyResult = useCallback((result) => {
@@ -216,6 +275,32 @@ export default function CoderPanel({ issueKey, accountId }) {
     };
     tick();
   }, [applyResult]);
+
+  /* ------------------------------------------------------------- F-368 threads */
+  /* A switch DROPS the turn in flight exactly the way a new turn does: the generation
+     token moves, so a poll that lands afterwards writes nothing into a conversation it
+     does not belong to (rule 4, now ACROSS threads as well as within one). */
+  const switchThread = (id) => {
+    if (running || deciding || !id || id === threadId) return;
+    genRef.current++;
+    if (pollRef.current) clearTimeout(pollRef.current);
+    setThreadId(id);
+    setMessages([]); setTicket(null); setOutcome(null); setError(""); setRounds(0);
+    setChangeOpen(false); setChangeText("");
+  };
+
+  const startNewConversation = () => {
+    if (running || deciding) return;
+    const id = `t_${Date.now()}`;
+    /* The DEFAULT thread is remembered at the same moment, so the first conversation
+       stays reachable after the switch that would otherwise hide it. */
+    const rows = [{ id, at: new Date().toISOString() }, ...knownThreads.filter((r) => r.id !== id)];
+    if (!rows.some((r) => r.id === defaultThreadId)) rows.push({ id: defaultThreadId, at: null });
+    const capped = rows.slice(0, THREAD_MEMORY_CAP);
+    setKnownThreads(capped);
+    writeThreads(issueKey, capped);
+    switchThread(id);
+  };
 
   /* --------------------------------------------------------------------- send */
   const send = async () => {
@@ -321,6 +406,16 @@ export default function CoderPanel({ issueKey, accountId }) {
   const connOptions = connections.map((c) => ({ value: c.id, label: c.label || c.id, meta: c.kind }));
   const showPicker = connOptions.length > 1;
   const busy = running || !!deciding;
+  /* The chips: the threads this browser remembers, plus the one on screen and the default,
+     newest first. Ids are never printed - threadLabel turns each one into a date or into
+     "First conversation". */
+  const threadChips = (() => {
+    const ids = [];
+    for (const r of knownThreads) if (r && r.id && !ids.includes(r.id)) ids.push(r.id);
+    if (!ids.includes(threadId)) ids.unshift(threadId);
+    if (!ids.includes(defaultThreadId)) ids.push(defaultThreadId);
+    return ids.slice(0, THREAD_MEMORY_CAP);
+  })();
 
   return (
     <div className="coder">
@@ -331,6 +426,29 @@ export default function CoderPanel({ issueKey, accountId }) {
           <span className="coder-fact">{cap.provider || "provider unknown"}</span>
           {cap.agentModel && <span className="coder-fact coder-fact-model">{cap.agentModel}</span>}
         </p>
+      </div>
+
+      {/* F-368: the conversations bar. The LIST appears only when there is more than one
+          thread to choose between; a switcher with a single entry is a control whose only
+          value is the one already in force. */}
+      <div className="coder-threads">
+        {threadChips.length > 1 && (
+          <div className="coder-thread-list" role="group" aria-label="Conversations on this issue">
+            {threadChips.map((id) => (
+              <button
+                key={id}
+                type="button"
+                className={`coder-thread-chip${id === threadId ? " is-current" : ""}`}
+                aria-pressed={id === threadId}
+                onClick={() => switchThread(id)}
+                disabled={busy}
+              >
+                {threadLabel(id, defaultThreadId)}
+              </button>
+            ))}
+          </div>
+        )}
+        <button type="button" className="coder-newconv" onClick={startNewConversation} disabled={busy}>Start a new conversation</button>
       </div>
 
       {messages.length > 0 && (

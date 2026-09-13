@@ -71,6 +71,11 @@ async function withPanel(flags, body) {
     /* The owner's hardest "never" is a native dialog. Replacing them with a recorder is the
        only way to prove a click did not open one: a confirm() in a headless browser returns
        false and the flow silently continues, which reads exactly like a pass. */
+    /* F-368 - the remembered thread ids are a per-viewer localStorage convenience, so the
+       panel has to survive a store that is unreadable. Writing garbage here is the only way
+       to prove the try/catch is real: a browser that never throws would let a missing one
+       pass. DEMO-42 is the issue key the glance context seeds. */
+    if (f.__CODER_BAD_STORAGE__) { try { window.localStorage.setItem("cognirunner.coder.threads.DEMO-42", "{not json"); } catch (e) { /* nothing to do */ } }
     window.__NATIVE__ = [];
     for (const fn of ["alert", "confirm", "prompt"]) {
       window[fn] = (msg) => { window.__NATIVE__.push(fn + ":" + String(msg)); return fn === "confirm" ? true : ""; };
@@ -387,6 +392,82 @@ try {
       ok(start.simulation === true, `${id} Dry run sends simulation: true (got ${start.simulation})`);
       ok(errors.length === 0, `${id} no page errors: ${errors.join(" | ")}`);
       if (SHOTS) await page.locator(".glance").screenshot({ path: path.join(OUT, `coder-plain-${theme}.png`) });
+    });
+
+    /* ------------------------------------ 8. F-368: a SECOND conversation, and back.
+       The defect: one thread per person per issue forever. A developer who wants a fresh
+       plan on the same issue could only get it with the old thread's history and its
+       compaction pins attached, because nothing on screen started a new one.
+
+       What is asserted: the button exists and is the app's OWN control; pressing it mints
+       a `t_<timestamp>` id and sends THAT id on the next turn; the transcript it opens is
+       EMPTY rather than the previous conversation's; the switcher then lists both and can
+       go back; and the ids the browser remembers survive a reload of the panel. */
+    await withPanel({ __THEME__: theme }, async (page, errors) => {
+      const id = `threads/${theme}`;
+      await page.locator(".coder-composer").waitFor({ timeout: 10000 });
+
+      // With nothing remembered there is ONE thread, so no switcher - just the button.
+      ok(await page.locator(".coder-newconv").count() === 1, `${id} the new-conversation button is offered`);
+      ok(await page.locator(".coder-thread-list").count() === 0, `${id} no switcher while there is only one conversation`);
+      ok(await page.locator(".coder-msg").count() === 2, `${id} the first conversation has its transcript`);
+      const firstThreadId = await page.evaluate(() => {
+        const c = (window.__CALLS__ || []).filter((x) => x.name === "getCoderThread");
+        return c.length ? c[0].payload.threadId : null;
+      });
+      ok(/^p_/.test(String(firstThreadId)), `${id} the default thread is still the stable per-person id (got ${firstThreadId})`);
+
+      // Start a new one. No native dialog, an EMPTY transcript, and a minted t_<ts> id.
+      await page.locator(".coder-newconv").click();
+      await page.waitForFunction(() => document.querySelectorAll(".coder-msg").length === 0, { timeout: 8000 });
+      ok((await page.evaluate(() => window.__NATIVE__ || [])).length === 0, `${id} starting a conversation opened no native confirm`);
+      ok(await page.locator(".coder-msg").count() === 0, `${id} the new conversation starts empty`);
+      const askedIds = await page.evaluate(() => (window.__CALLS__ || []).filter((c) => c.name === "getCoderThread").map((c) => c.payload.threadId));
+      const newThreadId = askedIds[askedIds.length - 1];
+      ok(/^t_\d+$/.test(String(newThreadId)), `${id} the new conversation is a minted t_<timestamp> (got ${newThreadId})`);
+      ok(newThreadId !== firstThreadId, `${id} it is NOT the default thread`);
+
+      // The switcher now lists both, labels neither with a raw id, and the current one is
+      // the solid agents hue (the "you are here" statement, never a tint).
+      const chips = page.locator(".coder-thread-chip");
+      ok(await chips.count() === 2, `${id} the switcher lists both conversations (got ${await chips.count()})`);
+      const chipText = (await chips.allInnerTexts()).join("|");
+      ok(!/p_|t_\d/.test(chipText), `${id} a thread id is never printed on a chip (got "${chipText}")`);
+      ok(/First conversation/.test(chipText), `${id} the default thread is named "First conversation"`);
+      const curBg = await page.locator(".coder-thread-chip.is-current").evaluate((el) => getComputedStyle(el).backgroundColor);
+      ok(curBg === HUE.agents[theme], `${id} the current conversation chip is the solid agents hue (got ${curBg})`);
+
+      // A turn in the new conversation travels on the NEW id.
+      await page.locator("textarea.coder-input").fill("Start again, from the issue only.");
+      await page.locator(".coder-composer .coder-btn-go").click();
+      await page.locator(".coder-consent").waitFor({ timeout: 20000 });
+      const start = await page.evaluate(() => window.__CODER_LAST_START__ || {});
+      ok(start.threadId === newThreadId, `${id} the turn was started on the new thread (got ${start.threadId})`);
+
+      // Go BACK. The first conversation's transcript returns; nothing was lost.
+      await page.locator(".coder-consent-btns .coder-btn-alt").nth(1).click(); // Skip, to clear the ticket
+      await page.locator(".coder-outcome").waitFor({ timeout: 20000 });
+      await page.locator(".coder-thread-chip", { hasText: "First conversation" }).click();
+      await page.waitForFunction(() => document.querySelectorAll(".coder-msg-assistant").length > 0, { timeout: 8000 });
+      const backText = await page.locator(".coder-thread").innerText();
+      ok(/retry guard/i.test(backText), `${id} switching back shows the FIRST conversation again`);
+      ok(await page.locator(".coder-consent").count() === 0, `${id} the other conversation's consent chip did not follow the switch`);
+
+      await designRules(page, id);
+      ok(errors.length === 0, `${id} no page errors: ${errors.join(" | ")}`);
+      if (SHOTS) await page.locator(".glance").screenshot({ path: path.join(OUT, `coder-threads-${theme}.png`) });
+    });
+
+    /* --------------------------- 8b. the remembered ids are a CONVENIENCE, not a record.
+       localStorage is per viewer and can be empty, stale or unreadable, so the panel has to
+       render correctly with NOTHING stored (the arm above) and with a garbage value. Neither
+       may take the panel down: the default conversation is always reachable. */
+    await withPanel({ __THEME__: theme, __CODER_BAD_STORAGE__: true }, async (page, errors) => {
+      const id = `threads-garbage/${theme}`;
+      await page.locator(".coder-composer").waitFor({ timeout: 10000 });
+      ok(await page.locator(".coder-newconv").count() === 1, `${id} the panel still renders with unreadable stored threads`);
+      ok(await page.locator(".coder-thread-list").count() === 0, `${id} a garbage store lists no conversations`);
+      ok(errors.length === 0, `${id} no page errors: ${errors.join(" | ")}`);
     });
 
     /* --------------------------------------- 7b. a FIRST open: no thread, no empty-state lie.

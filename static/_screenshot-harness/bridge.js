@@ -904,10 +904,23 @@ const CODER_SEED = () => ((typeof window !== "undefined" && window.__CODER_SCENA
   { role: "user", content: "Open a branch for this and add the retry guard to the payment client.", at: "2026-09-13T08:00:00.000Z" },
   { role: "assistant", content: "I read PROJ-42 and the payment client.\n\nThe retry guard belongs in sendPayment, around the provider call. I will open a branch first and push the change to it, then ask before anything leaves the branch.", at: "2026-09-13T08:00:20.000Z" },
 ]);
-let CODER_THREAD = null;
-const coderThread = () => {
-  if (!CODER_THREAD) CODER_THREAD = { messages: CODER_SEED(), turns: CODER_SEED().length ? 1 : 0 };
-  return CODER_THREAD;
+/* F-368 - threads are keyed BY ID, because the panel can now start a second conversation
+   on the same issue and switch back. The FIRST id the panel asks for gets the seeded
+   transcript; every later one starts EMPTY, which is what a freshly minted `t_<ts>` thread
+   is. A fixture that answered the same messages for every id would let a panel that
+   ignores threadId pass the switch. */
+const CODER_THREADS = new Map();
+let CODER_FIRST_THREAD = null;
+let CODER_ACTIVE_THREAD = null;
+const coderThread = (threadId) => {
+  const key = String(threadId || CODER_ACTIVE_THREAD || "p_demo");
+  if (!CODER_THREADS.has(key)) {
+    const first = CODER_FIRST_THREAD === null;
+    if (first) CODER_FIRST_THREAD = key;
+    const seed = first ? CODER_SEED() : [];
+    CODER_THREADS.set(key, { messages: seed, turns: seed.length ? 1 : 0 });
+  }
+  return CODER_THREADS.get(key);
 };
 const CODER_TURN_TICKET = {
   success: true, reply: "", actions: [{ name: "create_branch", args: { name: "proj-42-retry-guard" }, ok: true, ms: 640 }],
@@ -932,7 +945,11 @@ let CODER_LAST_DECISION = "confirm";
 let CODER_POLLS = 0;
 function coderInvoke(name, payload) {
   const scenario = (typeof window !== "undefined" && window.__CODER_SCENARIO__) || "ticket";
-  const t = coderThread();
+  /* confirmCoderTicket and getAsyncTaskResult carry no threadId (a ticket id is already
+     bound to its thread in the engine), so the last thread the panel NAMED is the one they
+     append to - exactly the binding the backend makes off the ticket row. */
+  if (payload && payload.threadId) CODER_ACTIVE_THREAD = payload.threadId;
+  const t = coderThread(payload && payload.threadId);
   switch (name) {
     case "getCoderThread":
       return Promise.resolve({ success: true, thread: { messages: t.messages.slice(), turns: t.turns, ...(t.pendingTicketId ? { pendingTicketId: t.pendingTicketId } : {}) } });

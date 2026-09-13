@@ -24,6 +24,14 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { ensureFreshBuildShot } from "./lib/build-shot.mjs";
+/* 1.4 commit 14b — the field-guide chip resolves section ids to TITLES out of the generated
+   index. Both the ids the mock stamps and the titles they must render come from that one
+   home, so this suite cannot assert a name the corpus does not carry. */
+import { KNOWLEDGE_INDEX } from "../../src/shared/knowledge-index.js";
+const FG_IDS = KNOWLEDGE_INDEX
+  .filter((x) => x.pack === "jira-rest-correctness" || x.pack === "cognirunner-sandbox-traps")
+  .slice(0, 3).map((x) => x.id);
+const FG_TITLES = [...new Set(FG_IDS.map((id) => KNOWLEDGE_INDEX.find((x) => x.id === id).title))];
 /* F-175: M1 asserts the cap refusal the app ACTUALLY emits, pulled from its ONE home.
    Retyping the sentence here would let the test and the mock agree with each other while
    both drift from src/shared/registry-limits.js — which is exactly what happened before
@@ -124,6 +132,23 @@ try {
       ok(await page.locator(".gen-meta-chip.gmc-docs").count() >= 1, "J18 provenance shows an applied-docs chip");
       ok(await page.locator(".gen-meta-chip.gmc-skill", { hasText: "Duplicate Finder" }).count() >= 1, "J18 provenance shows the applied-skill chip");
       ok(await page.locator(".gen-meta-chip.gmc-mem").count() >= 1, "J18 provenance shows an applied-memories chip");
+      /* 1.4 commit 14b — the BAKED knowledge, beside the three curated stores. Collapsed by
+         default: the section names are long and this is provenance, not the subject. */
+      const fg = page.locator(".gmc-fieldguide").first();
+      ok(await fg.count() === 1, "J18 provenance shows the field-guide chip");
+      ok(new RegExp(`Field guide: ${FG_TITLES.length} sections?`).test(await fg.innerText()),
+        `J18 the chip counts the sections it can NAME (want ${FG_TITLES.length}), got "${await fg.innerText()}"`);
+      ok(await page.locator(".fg-chip-list").count() === 0, "J18 the section list starts collapsed");
+      ok(await fg.getAttribute("aria-expanded") === "false", "J18 and says so");
+      await fg.click();
+      await page.locator(".fg-chip-list").first().waitFor({ timeout: 5000 });
+      const fgItems = await page.locator(".fg-chip-item").allInnerTexts();
+      for (const t of FG_TITLES) ok(fgItems.includes(t), `J18 the expanded list names "${t}"`);
+      ok(await fg.getAttribute("aria-expanded") === "true", "J18 expanded state is announced");
+      /* A BUTTON, not a native control, and not a bare span pretending to be clickable. */
+      ok(await fg.evaluate((el) => el.tagName) === "BUTTON", "J18 the chip is a real button");
+      await fg.click();
+      ok(await page.locator(".fg-chip-list").count() === 0, "J18 it collapses again");
       // Interactive: a step with code offers Regenerate (vs first-time Generate).
       ok(await page.locator(".btn-generate", { hasText: "Regenerate Code" }).count() >= 1, "J18 Regenerate Code control present on a coded step");
     } catch (e) { fail++; console.log("  ✗ J18 threw: " + e.message.split("\n")[0]); }
@@ -418,6 +443,9 @@ try {
       await firstBlock.locator(".btn-generate", { hasText: "Regenerate Code" }).first().click();
       await firstBlock.locator(".gmc-mem", { hasText: "1 memor" }).first().waitFor({ timeout: 8000 });
       ok(true, "J18b Regenerate Code runs generatePostFunctionCode → provenance updates (2 → 1 memory)");
+      ok(await firstBlock.locator(".gmc-fieldguide").count() === 1, "J18b the regenerated step carries a field-guide chip");
+      ok(new RegExp(`Field guide: ${FG_TITLES.length} sections?`).test(await firstBlock.locator(".gmc-fieldguide").first().innerText()),
+        "J18b and it counts the sections the fresh generation was shown");
       // Dry-run Test Run → testPostFunction mock → a PASS with the proposed changes.
       await firstBlock.locator(".btn-test-run", { hasText: /Test Run/ }).click();
       await firstBlock.locator(".btn-run-test", { hasText: "Run Test" }).click();

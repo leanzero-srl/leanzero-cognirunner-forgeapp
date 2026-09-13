@@ -62,10 +62,27 @@ import { MAX_MEMORIES, memoryCapRefusalMessage, MEMORY_MAX_SERIALIZED_BYTES, MEM
    or a retyped threshold would let the UI and the mock agree while both drifted from the
    module the backend runs. */
 import { createWizard, resumeWizard, stepWizard, serializeWizardState } from "../../src/shared/va-wizard.js";
+/* 1.4 commit 14b - the KNOWLEDGE PACKS the mock serves are the REAL generated index rows
+   and the REAL per-audience budgets, never hand-written ones. The Knowledge tab's whole
+   claim is that it reports what is baked into this build; a fixture that invented nine
+   pack titles and a budget table would let the tab and the mock agree while both drifted
+   from the corpus the backend actually ships. The one thing the mock owns is the tenant's
+   `disabled` list, which is per-INSTALL state and has no home in the bundle. */
+import { KNOWLEDGE_PACKS, KNOWLEDGE_INDEX, KNOWLEDGE_CONTENT_VERSION } from "../../src/shared/knowledge-index.js";
+import { KNOWLEDGE_VERSION } from "../../src/shared/knowledge-select.js";
+import { fieldGuideBudget } from "../../src/shared/registry-limits.js";
 import { VA_LIMITS } from "../../src/shared/va-config.js";
 
 const ACCT = "557058:11111111-1111-1111-1111-111111111111";
 const SITE = "https://your-site.atlassian.net";
+
+/* The section ids a generation/turn fixture stamps. Taken from the real index so the chip
+   resolves real titles; a made-up id would be silently dropped by the chip's own guard and
+   the assertion would then be testing the empty case by accident. */
+const FIELD_GUIDE_SECTION_IDS = KNOWLEDGE_INDEX
+  .filter((s) => s.pack === "jira-rest-correctness" || s.pack === "cognirunner-sandbox-traps")
+  .slice(0, 3)
+  .map((s) => s.id);
 
 function shot() {
   return (typeof window !== "undefined" && window.__SHOT__) || "admin";
@@ -413,7 +430,7 @@ const CFG_STATIC = {
   workflow: { workflowId: "wf-software-simplified-12345", workflowName: "Software Simplified Workflow", transitionId: "11" },
   runAsync: false,
   functions: [
-    { id: "func_1", name: "Find duplicate issues", conditionPrompt: "", operationType: "work_item_query", operationPrompt: "Find all issues in this project with a summary similar to the current issue, excluding the current one.", endpoint: "", method: "GET", variableName: "duplicates", includeBackoff: false, code: STATIC_CODE_1, generationMeta: { appliedDocs: [{ id: "builtin_doc_jql", title: "JQL Cheat Sheet" }], appliedSkills: [{ id: "skill_dup", name: "Duplicate Finder", auto: true }], appliedMemories: 2, truncatedDocs: [] } },
+    { id: "func_1", name: "Find duplicate issues", conditionPrompt: "", operationType: "work_item_query", operationPrompt: "Find all issues in this project with a summary similar to the current issue, excluding the current one.", endpoint: "", method: "GET", variableName: "duplicates", includeBackoff: false, code: STATIC_CODE_1, generationMeta: { appliedDocs: [{ id: "builtin_doc_jql", title: "JQL Cheat Sheet" }], appliedSkills: [{ id: "skill_dup", name: "Duplicate Finder", auto: true }], appliedMemories: 2, truncatedDocs: [], fieldGuide: FIELD_GUIDE_SECTION_IDS } },
     { id: "func_2", name: "Comment with links", conditionPrompt: "", operationType: "rest_api_internal", operationPrompt: "If duplicates were found, add a comment to the current issue linking to each duplicate by key.", endpoint: "/rest/api/3/issue/{issueIdOrKey}/comment", method: "POST", requestBody: '{\n  "body": { "type": "doc", "version": 1, "content": [] }\n}', variableName: "comment", includeBackoff: true, code: STATIC_CODE_2, generationMeta: null },
     { id: "func_3", name: "Log outcome", conditionPrompt: "", operationType: "log_function", operationPrompt: "Log the final status and how many duplicates were linked.", endpoint: "", method: "GET", variableName: "result3", includeBackoff: false, code: STATIC_CODE_3, generationMeta: null },
   ],
@@ -897,6 +914,41 @@ const MEMORY_ROWS = [
       { id: "m6", content: "The old Severity field was retired in March; do not write to it.", source: "learned", createdAt: "2026-05-02T08:00:00Z", disabled: true },
 ];
 
+/* ----------------------------- knowledge packs (1.4 commit 14b) ------------------ */
+/* The tenant's switches. Mutated by saveKnowledgeSettings below so a toggle journey sees
+   its own write come back on the next read, exactly as a real install would. */
+let KNOWLEDGE_DISABLED = [];
+/* window.__KNOWLEDGE_OFF__ = ["voice-rules", ...] seeds the list before the first read,
+   so a test can photograph the OFF card without having to click its way there. */
+const knowledgeDisabled = () => {
+  if (typeof window !== "undefined" && Array.isArray(window.__KNOWLEDGE_OFF__) && !KNOWLEDGE_DISABLED.length) {
+    KNOWLEDGE_DISABLED = window.__KNOWLEDGE_OFF__.slice();
+  }
+  return KNOWLEDGE_DISABLED;
+};
+/* The backend's describeKnowledgePacks (src/knowledge-packs.js) cannot be imported here -
+   that module statically pulls @forge/kvs and 582 KB of pack bodies - so this rebuilds its
+   RESULT from the same generated index it reads, including the "source, licence" provenance
+   join and the clamp that drops an unknown pack id. */
+const describePacks = () => KNOWLEDGE_PACKS.map((pack) => {
+  const sources = [];
+  for (const sec of KNOWLEDGE_INDEX) {
+    if (sec.pack !== pack.id) continue;
+    const pv = sec.provenance || {};
+    const line = [pv.source, pv.licence].filter(Boolean).join(", ");
+    if (line && !sources.includes(line)) sources.push(line);
+  }
+  return {
+    id: pack.id,
+    title: pack.title,
+    sections: pack.sections,
+    bytes: pack.bytes,
+    pinned: Array.isArray(pack.pinned) ? pack.pinned.slice() : [],
+    provenance: sources,
+    enabled: !knowledgeDisabled().includes(pack.id),
+  };
+});
+const KNOWN_PACK_IDS = KNOWLEDGE_PACKS.map((p) => p.id);
 const MEMORY_SETTINGS = () => ({
   autoCapture: true,
   injection: true,
@@ -1112,7 +1164,7 @@ const PIPE_REFUSALS = {
    one flag per product question, not one per surface. */
 const CODER_TICKET_ID = "ct_9f31c0de";
 const CODER_SEED = () => ((typeof window !== "undefined" && window.__CODER_SCENARIO__) === "empty" ? [] : [
-  { role: "user", content: "Open a branch for this and add the retry guard to the payment client.", at: "2026-09-13T08:00:00.000Z" },
+  { role: "user", content: "Open a branch for this and add the retry guard to the payment client.", at: "2026-09-13T08:00:00.000Z", knowledge: { skillIds: [], skillCount: 0, memoryCount: 2, fieldGuideSections: FIELD_GUIDE_SECTION_IDS } },
   { role: "assistant", content: "I read PROJ-42 and the payment client.\n\nThe retry guard belongs in sendPayment, around the provider call. I will open a branch first and push the change to it, then ask before anything leaves the branch.", at: "2026-09-13T08:00:20.000Z" },
 ]);
 /* F-368 - threads are keyed BY ID, because the panel can now start a second conversation
@@ -1222,7 +1274,7 @@ function coderInvoke(name, payload) {
           error: "One or more of the chosen skills no longer exists.",
         });
       }
-      t.messages.push({ role: "user", content: String((payload && payload.message) || ""), at: new Date().toISOString() });
+      t.messages.push({ role: "user", content: String((payload && payload.message) || ""), at: new Date().toISOString(), knowledge: { skillIds: [], skillCount: 0, memoryCount: 1, fieldGuideSections: FIELD_GUIDE_SECTION_IDS.slice(0, 2) } });
       if (typeof window !== "undefined") window.__CODER_LAST_START__ = payload;
       return Promise.resolve({ success: true, async: true, taskId: "coder_turn_1", threadId: (payload && payload.threadId) || "p_demo" });
     }
@@ -1797,6 +1849,39 @@ function invoke(name, payload) {
       });
     }
     case "getMemorySettings": return Promise.resolve({ success: true, settings: MEMORY_SETTINGS() });
+    /* 1.4 commit 14b - the Knowledge tab's resolver pair. The read carries a VIEWER floor
+       and the write is requireAdmin, so __REFUSE__/__NO_ROSTER__ at the top of invoke()
+       models the refused reader and this arm is the permitted answer. The write returns
+       what it STORED (post-clamp), never what it was sent - the tab re-renders from that
+       return, and a mock that echoed the request back would hide a UI that trusts its own
+       optimistic list. */
+    case "getKnowledgePacks": return Promise.resolve({
+      success: true,
+      packs: describePacks(),
+      settings: { disabled: knowledgeDisabled().slice() },
+      budgets: {
+        codegen: fieldGuideBudget("codegen"), fix: fieldGuideBudget("fix"),
+        validator: fieldGuideBudget("validator"), agent: fieldGuideBudget("agent"),
+        va: fieldGuideBudget("va"), coder: fieldGuideBudget("coder"),
+        review: fieldGuideBudget("review"),
+      },
+      knowledgeVersion: KNOWLEDGE_VERSION,
+      contentVersion: KNOWLEDGE_CONTENT_VERSION,
+    });
+    case "saveKnowledgeSettings": {
+      if (typeof window !== "undefined") window.__KN_LAST_SAVE__ = payload;
+      const asked = Array.isArray(payload && payload.disabled) ? payload.disabled : [];
+      /* THE BACKEND'S CLAMP, not a pass-through: unknown ids, duplicates and non-strings
+         never reach storage (normalizeSettings, src/knowledge-packs.js). */
+      const stored = [];
+      for (const raw of asked) {
+        const id = typeof raw === "string" ? raw.trim() : "";
+        if (!id || !KNOWN_PACK_IDS.includes(id) || stored.includes(id)) continue;
+        stored.push(id);
+      }
+      KNOWLEDGE_DISABLED = stored;
+      return Promise.resolve({ success: true, settings: { disabled: stored.slice() }, packs: describePacks() });
+    }
     case "getSkills": if (typeof window !== "undefined" && window.__EMPTY__) return Promise.resolve({ success: true, skills: [] }); return Promise.resolve({ success: true, skills: [
       { id: "sk1", name: "Create a linked issue", category: "Jira API", builtin: true, description: "Create and link a sub-task or related issue via the REST API." },
       { id: "sk2", name: "Find duplicates by summary", category: "Workflow Patterns", builtin: true, description: "Search the project with JQL for issues with a similar summary." },
@@ -1970,7 +2055,7 @@ function invoke(name, payload) {
       return Promise.resolve({ success: true, token: "cgr_9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f", row });
     }
     case "revokeApiToken": return Promise.resolve({ success: true, revoked: true });
-    case "generatePostFunctionCode": return Promise.resolve({ success: true, code: STATIC_CODE_1, meta: { appliedDocs: [{ id: "builtin_doc_jql", title: "JQL Cheat Sheet" }], appliedSkills: [], appliedMemories: 1, truncatedDocs: [] } });
+    case "generatePostFunctionCode": return Promise.resolve({ success: true, code: STATIC_CODE_1, meta: { appliedDocs: [{ id: "builtin_doc_jql", title: "JQL Cheat Sheet" }], appliedSkills: [], appliedMemories: 1, truncatedDocs: [], fieldGuide: FIELD_GUIDE_SECTION_IDS } });
     // F-150 — window.__FIX_MEMORY__ = true makes the fix answer carry a memoryCandidate,
     // which is what drives FunctionBlock's post-verified-re-run addMemory tail (the badge
     // + veto). Opt-in so the other fix journeys keep their existing, memory-free screens.
@@ -1981,7 +2066,7 @@ function invoke(name, payload) {
     case "fixPostFunctionCode": {
       if (typeof window !== "undefined") window.__FIXCALLS__ = (window.__FIXCALLS__ || 0) + 1;
       const nth = (typeof window !== "undefined" && window.__FIXCALLS__) || 1;
-      return Promise.resolve({ success: true, code: nth >= 2 ? STATIC_CODE_FIXED_2 : STATIC_CODE_FIXED, explanation: "Renamed the undefined `dupes` to `duplicates` and guarded the empty case.", meta: { appliedDocs: [], appliedSkills: [], appliedMemories: 1, truncatedDocs: [] }, ...(typeof window !== "undefined" && window.__FIX_MEMORY__ ? { memoryCandidate: { content: "api.searchJql returns { issues }, not a bare array — destructure before mapping.", projectScoped: false } } : {}) });
+      return Promise.resolve({ success: true, code: nth >= 2 ? STATIC_CODE_FIXED_2 : STATIC_CODE_FIXED, explanation: "Renamed the undefined `dupes` to `duplicates` and guarded the empty case.", meta: { appliedDocs: [], appliedSkills: [], appliedMemories: 1, truncatedDocs: [], fieldGuide: FIELD_GUIDE_SECTION_IDS.slice(0, 1) }, ...(typeof window !== "undefined" && window.__FIX_MEMORY__ ? { memoryCandidate: { content: "api.searchJql returns { issues }, not a bare array — destructure before mapping.", projectScoped: false } } : {}) });
     }
     // F-155 — addMemory has TWO real shapes and the UI must tell them apart:
     //   { success, id, merged: false } -> a NEW row this fix owns (veto = undo)

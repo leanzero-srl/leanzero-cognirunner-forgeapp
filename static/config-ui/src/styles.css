@@ -823,6 +823,35 @@ html[data-color-mode="dark"] .hard-stop { background: #ef4444; color: #ffffff; }
 .gmc-docs { background: #2563eb; }
 .gmc-skill { background: #7c3aed; }
 .gmc-mem { background: #0d9488; }
+/* 1.4 commit 14b - the BAKED field guide. Amber (the agents hue), because the guide is
+   what the agents read; docs/skills/memories keep their own colours. It is a BUTTON, so
+   it carries the button reset the other three chips do not need. Dark theme takes dark
+   ink on #f59e0b: white on that amber is the one pair in the project map that fails
+   contrast (.memories-admin-src-test already makes the same exception). */
+.gmc-fieldguide {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: none;
+  background: #b45309;
+  font-family: inherit;
+  cursor: pointer;
+}
+.gmc-fieldguide:focus-visible { outline: 2px solid #b45309; outline-offset: 2px; }
+html[data-color-mode="dark"] .gmc-fieldguide { background: #f59e0b; color: #2a1602; }
+html[data-color-mode="dark"] .gmc-fieldguide:focus-visible { outline-color: #f59e0b; }
+.fg-chip-wrap { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 5px; }
+.fg-chip-caret { font-size: 8px; }
+.fg-chip-list { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.fg-chip-item {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  padding: 1px 6px;
+  white-space: nowrap;
+}
 
 .truncation-warning {
   width: 100%;

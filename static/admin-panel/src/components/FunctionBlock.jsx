@@ -22,6 +22,7 @@ import { BUILTIN_RECIPES, getRecipeByKey } from "../../../../src/shared/builtin-
 import { KNOWN_API_MEMBERS } from "../../../../src/shared/sandbox-api-spec.js";
 import { buildDryRunFacts, countChangeVerbs, CHANGE_VERB_LABEL } from "../../../../src/shared/narrate-utils.js";
 import { codeFingerprint } from "../../../../src/shared/code-fingerprint.js";
+import FieldGuideChip from "./FieldGuideChip";
 
 // ONE literal for the "another writer holds this step" tooltip — it sits on every
 // writer affordance (recipe bar toggle, Insert recipe, Undo fix) and must name the
@@ -57,6 +58,15 @@ const compactMeta = (meta) => {
     appliedSkills: (meta.appliedSkills || []).map((s) => ({ id: s.id, name: sliceTitle(s.name), auto: !!s.auto })),
     appliedMemories: meta.appliedMemories || 0,
     truncatedDocs: (meta.truncatedDocs || []).map((d) => ({ title: sliceTitle(d.title) })),
+    /* 1.4 commit 14b — the baked sections this generation was shown. IDS ONLY, and sliced
+       to 12: the titles live in the generated index that FieldGuideChip resolves against,
+       so storing them here would be a second copy of a string that has one author AND
+       would push a rule config toward the 24 KB pf_code offload threshold for nothing.
+       Absent (not an empty array) when the backend sent nothing, so "this path carries no
+       field guide" stays distinguishable from "the guide selected nothing". */
+    ...(Array.isArray(meta.fieldGuide) && meta.fieldGuide.length
+      ? { fieldGuide: meta.fieldGuide.slice(0, 12).map((id) => String(id)) }
+      : {}),
   };
 };
 
@@ -1492,6 +1502,10 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
                   {functionData.generationMeta.appliedMemories} memor{functionData.generationMeta.appliedMemories > 1 ? "ies" : "y"}
                 </span>
               )}
+              {/* 1.4 commit 14b — the BAKED knowledge, beside the three curated stores.
+                  It sits last because it is the only one the author did not choose: docs,
+                  skills and memories are this instance's, the field guide is the app's. */}
+              <FieldGuideChip sections={functionData.generationMeta.fieldGuide} />
             </div>
           )}
 

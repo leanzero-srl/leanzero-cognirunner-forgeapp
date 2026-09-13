@@ -541,5 +541,74 @@ let agentId = null;
   ok((await rest("admin", { method: "DELETE", query: { id: agentId } })).status === 404, "…so deleting it twice is a 404");
 }
 
+/* ═════ 10. F-608 — `part=purges`: the agents that wrote while being DELETED ═════
+
+   F-595 gave the tombstone a `turns[]` carrier and `listRecentPurges` a reader, and
+   then nothing called it: the writes an admin most needs to see — a comment landed on
+   a customer's issue by an agent that no longer exists — reached no surface at all.
+   This section is the WIRING, not the projection (the projection is proved in
+   virtual-admin.test.mjs against the real purge path): that the two new doors exist,
+   sit at the ADMIN floor in BOTH directions, and hand back the shape unchanged.
+
+   The fixture is a tombstone written DIRECTLY, because what is under test here is the
+   door and not the turn that fills it. Section 9's own delete left a tombstone with NO
+   turns, which is the other half of the contract: an ordinary delete is uneventful and
+   must not appear in this list. */
+{
+  const K = await import("../../src/shared/va-keys.js");
+  await storage.set(K.vaPurgedKey("job_purged_writer"), {
+    at: "2026-09-12T10:00:00.000Z",
+    agent: "job_purged_writer",
+    turns: [
+      { at: "2026-09-12T09:59:50.000Z", issueKey: "SUP-77", landedWrites: ["comment", "transition"] },
+      { at: "2026-09-12T09:59:58.000Z", issueKey: "SUP-78", landedWrites: [] },
+    ],
+  });
+
+  const admin = await rest("admin", { query: { part: "purges" } });
+  ok(admin.status === 200 && Array.isArray(admin.body.purges),
+    `GET ?resource=agents&part=purges is a 200 with a purges array (got ${admin.status} ${JSON.stringify(admin.body).slice(0, 200)})`);
+  const row = (admin.body.purges || []).find((p) => p.agent === "job_purged_writer");
+  ok(Boolean(row), `…and the tombstone that carries writes is in it (got ${JSON.stringify(admin.body.purges || []).slice(0, 240)})`);
+  ok(row && row.purgedAt === "2026-09-12T10:00:00.000Z" && row.writeCount === 2,
+    `…with purgedAt and a writeCount summing the landed writes (got ${row && row.purgedAt} / ${row && row.writeCount})`);
+  ok(row && Array.isArray(row.turns) && row.turns.length === 1 && row.turns[0].issueKey === "SUP-77"
+    && JSON.stringify(row.turns[0].writes) === JSON.stringify(["comment", "transition"]),
+    `…and only the turn that actually wrote, naming the issue (got ${String(JSON.stringify(row && row.turns)).slice(0, 200)})`);
+  ok(typeof admin.body.truncated === "boolean", "…and `truncated` rides through, so a cut list can say it was cut");
+  ok(!(admin.body.purges || []).some((p) => p.agent === agentId),
+    "…while section 9's ordinary delete, which wrote nothing, is NOT listed");
+
+  /* THE FLOOR, in both directions. It names what an agent did to Jira, which is
+     `part=effects`'s secret, so an EDITOR token is refused exactly as it is there. */
+  const editor = await rest("editor", { query: { part: "purges" } });
+  ok(editor.status === 403, `an EDITOR token is refused part=purges (got ${editor.status} ${JSON.stringify(editor.body).slice(0, 160)})`);
+  ok(editor.body && !("purges" in editor.body), "…and the refusal carries no purge data");
+  const viewer = await rest("viewer", { query: { part: "purges" } });
+  ok(viewer.status === 403, `a VIEWER token likewise (got ${viewer.status})`);
+
+  /* AND IT IS NOT THE NO-ID AGENT LIST IN DISGUISE. `part=purges` is answered above the
+     `GET && !id` branch; if that ordering is ever lost this returns `agents`. */
+  ok(!("agents" in admin.body), "part=purges is answered by the purge reader, not by the no-id agent list");
+  const withId = await rest("admin", { query: { id: agentId, part: "purges" } });
+  ok(withId.status === 400 && /no id/.test(withId.body.error),
+    `…and an id with it is refused rather than silently answered site-wide (got ${withId.status} ${JSON.stringify(withId.body).slice(0, 160)})`);
+  ok((await rest("admin", { method: "POST", query: { part: "purges" }, body: {} })).status === 405,
+    "…and a write to it is a 405");
+
+  /* THE RESOLVER DOOR, the same answer through the tab's skin. */
+  const asAdmin = await resolverCall("getVaRecentPurges", {}, ADMIN);
+  ok(asAdmin.success === true && Array.isArray(asAdmin.purges),
+    `getVaRecentPurges answers an admin (got ${JSON.stringify(asAdmin).slice(0, 200)})`);
+  const rRow = (asAdmin.purges || []).find((p) => p.agent === "job_purged_writer");
+  ok(rRow && rRow.writeCount === 2 && Array.isArray(rRow.turns) && rRow.turns[0] && rRow.turns[0].issueKey === "SUP-77",
+    `…with the SAME shape the REST door returns, because both are skins over one function (got ${String(JSON.stringify(rRow)).slice(0, 200)})`);
+  const asEditor = await resolverCall("getVaRecentPurges", {}, EDITOR);
+  ok(asEditor.success === false && !("purges" in asEditor) && typeof asEditor.error === "string",
+    `…and an editor is refused with a sentence and no data (got ${JSON.stringify(asEditor).slice(0, 200)})`);
+
+  await storage.delete(K.vaPurgedKey("job_purged_writer"));
+}
+
 console.log(`\nrules-api-agents.test.mjs: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

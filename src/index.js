@@ -11336,6 +11336,30 @@ resolver.define("listVaEffects", async ({ payload, context }) => {
   return okOr(async () => vaAnswer(await vaAdmin.effects({ jobId: payload?.jobId })));
 });
 
+/**
+ * F-608 — the READ DOOR onto F-595's purge tombstones: the agents that were deleted
+ * mid-turn and had already written to Jira when they went.
+ *
+ * SITE-WIDE, NOT PER-AGENT, and that is the whole point: `listVaAgents` can only show
+ * agents that still exist, and the purge an admin must act on is one where the agent is
+ * gone. So there is no `jobId` here; `listRecentPurges` scans the tombstone prefix and
+ * returns only the rows that carry landed writes.
+ *
+ * ADMIN FLOOR. The answer names the issues a now-deleted agent wrote to, which is the
+ * same class of secret as `listVaEffects` — what an agent did to Jira — and sits above
+ * the editor overview for exactly the reason the group docblock gives.
+ *
+ * A scan fault comes back as a refusal (`scan_unavailable` / `scan_failed`), never as an
+ * empty list: "nothing wrote during a delete" is the one sentence this panel must not
+ * say falsely. Both sentences live in `VA_ADMIN_REFUSALS`.
+ */
+resolver.define("getVaRecentPurges", async ({ payload, context }) => {
+  if (!(await requireAdmin(context.accountId))) return noPerm("review what a deleted Virtual Administrator wrote", "admin");
+  // The clamp on `limit` is `listRecentPurges`'s, at the bound it owns
+  // (`VA_ADMIN_PURGES_MAX`); a second clamp here would be a second authority on it.
+  return okOr(async () => vaAnswer(await vaAdmin.listRecentPurges({ limit: payload?.limit })));
+});
+
 // NEITHER OF THESE POSTS. They record a human verdict on the ledger row; the post
 // phase is the only thing that delivers a draft, and it does so behind eleven gates.
 // `stagedAt` rides through as the concurrency check — see `decide` in va-admin.js.

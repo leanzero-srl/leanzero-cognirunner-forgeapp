@@ -279,5 +279,88 @@ await call("confirmCoderTicket", { ticketId: "tkt_5", decision: "skip" });
     "a new thread selects its own guide");
 }
 
+/* ===== 8. F-574 — THE SKILLS AND MEMORY BLOCKS ARE PINNED PER THREAD TOO ======
+ *
+ * F-550 pinned the field guide and left `skillsBlock` and `memoryBlock` in the same cached
+ * prefix, both re-derived every turn: the skills block from the delivery's ids (a skill can
+ * be EDITED) and the memory block from the live store (a memory can be ADDED mid-thread).
+ * Either one moves message index 1 of the prompt `runCoderTurn` promises is byte-identical
+ * across the turns of a thread, and the whole thread — system prompt, knowledge and the
+ * entire stored history — is re-billed at write price.
+ *
+ * Proven here against the REAL memory store (the offline mock KVS) and the REAL skills
+ * store: a memory added BETWEEN two turns of one thread does not move a single byte of the
+ * rendered prefix, and it still reaches the model — in the extra block that goes after the
+ * history.
+ */
+{
+  const THREAD = "t_pin";
+  const key = coder.coderThreadKey(ISSUE, THREAD);
+  const { saveMemoryCandidate } = await import("../../src/memories.js");
+  const { buildKnowledgeMessages } = await import("../../src/agent-runner.js");
+
+  await saveMemoryCandidate({ content: "Always rebase before opening a PR on this instance.", source: "user" });
+
+  const turn1 = { issueKey: ISSUE, threadId: THREAD, message: "add a resolver", skillIds: ["skill_house"] };
+  const k1 = await __coderKnowledgeInternals.buildCoderKnowledge(turn1);
+  ok(typeof k1.skillsBlock === "string" && /Two-space indent/.test(k1.skillsBlock), "turn 1 gets its bound skill");
+  ok(typeof k1.memoryBlock === "string" && /Always rebase/.test(k1.memoryBlock), "…and the memories that exist now");
+  ok(k1.memoryExtraBlock === undefined && k1.skillsExtraBlock === undefined, "a first turn has nothing to ADD");
+
+  // The engine writes the rendered bytes to the thread's PIN key — beside the transcript,
+  // never inside it (F-487). Stand in for it exactly as it does (coder-engine.test.mjs
+  // proves runCoderTurn is what writes this row).
+  await storage.set(key, {
+    issueKey: ISSUE, threadId: THREAD, ownerAccountId: OWNER,
+    messages: [{ role: "user", content: turn1.message }], turns: 1,
+    fieldGuideSections: k1.fieldGuideSections || [],
+  });
+  await storage.set(coder.coderPinKey(ISSUE, THREAD), {
+    issueKey: ISSUE, threadId: THREAD,
+    skillsBlock: k1.skillsBlock || "", memoryBlock: k1.memoryBlock || "",
+    skillIds: k1.skillIds || [], memoryCount: k1.memoryCount || 0, at: new Date().toISOString(),
+  });
+
+  // BETWEEN THE TURNS: an admin adds a memory, and the user binds one more skill.
+  await saveMemoryCandidate({ content: "Deploys need the production environment flag set.", source: "user" });
+
+  const k2 = await __coderKnowledgeInternals.buildCoderKnowledge({
+    issueKey: ISSUE, threadId: THREAD, message: "now the ADF", skillIds: ["skill_house", "skill_adf"],
+  });
+  ok(k2.memoryBlock === k1.memoryBlock, "THE FINDING: a memory added mid-thread does not touch the pinned memory block");
+  ok(k2.skillsBlock === k1.skillsBlock, "…and the pinned skills block is replayed byte for byte");
+  ok(!String(k2.memoryBlock || "").includes("production environment flag"),
+    "the new memory is NOT folded into the block the prefix already carries");
+  ok(typeof k2.memoryExtraBlock === "string" && /production environment flag/.test(k2.memoryExtraBlock),
+    `…it comes back as the per-turn block instead (${String(k2.memoryExtraBlock || "").slice(0, 60)})`);
+  ok(!/Always rebase/.test(String(k2.memoryExtraBlock || "")), "…carrying ONLY what the thread has not seen");
+  ok(typeof k2.skillsExtraBlock === "string" && /Comments are ADF documents/.test(k2.skillsExtraBlock),
+    "a newly bound skill takes the same route — after the history, not inside the prefix");
+  ok(!/Two-space indent/.test(String(k2.skillsExtraBlock || "")), "…and never repeats a skill the prefix carries");
+  ok(Array.isArray(k2.skillIds) && k2.skillIds.includes("skill_house") && k2.skillIds.includes("skill_adf"),
+    `the receipt still names everything the model received (${JSON.stringify(k2.skillIds)})`);
+
+  // THE BYTES THAT ACTUALLY GET BILLED: what `runCoderTurn` puts in the prefix is
+  // `buildKnowledgeMessages(knowledge)`, so compare THAT, not the fields.
+  ok(JSON.stringify(buildKnowledgeMessages(k2)) === JSON.stringify(buildKnowledgeMessages(k1)),
+    "F-574: the rendered prefix knowledge of turn 2 is byte-identical to turn 1's");
+
+  // A third turn that binds nothing new and sees no new memory is still the same bytes.
+  const k3 = await __coderKnowledgeInternals.buildCoderKnowledge({
+    issueKey: ISSUE, threadId: THREAD, message: "", skillIds: ["skill_house"],
+  });
+  ok(JSON.stringify(buildKnowledgeMessages(k3)) === JSON.stringify(buildKnowledgeMessages(k1)),
+    "…and so is a turn that says nothing at all");
+  ok(k3.skillsExtraBlock === undefined, "no new binding means no extra skills block");
+
+  // A DIFFERENT thread gets today's memories in its OWN prefix: the pin is per thread.
+  const kNew = await __coderKnowledgeInternals.buildCoderKnowledge({
+    issueKey: ISSUE, threadId: "t_pin_other", message: "start fresh", skillIds: [],
+  });
+  ok(/production environment flag/.test(String(kNew.memoryBlock || "")),
+    "a NEW thread starts from the memories that exist now, in its own stable block");
+  ok(kNew.memoryExtraBlock === undefined, "…with nothing hanging off the back of it");
+}
+
 console.log(`\ncoder resume params: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

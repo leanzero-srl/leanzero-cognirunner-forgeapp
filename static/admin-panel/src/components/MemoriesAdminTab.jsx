@@ -170,6 +170,16 @@ export default function MemoriesAdminTab({ invoke, isAdmin }) {
    * generic error. Deliberately keyed on `reason`, not on a substring of `error`: the
    * sentence is the backend's to change, the reason code is the contract.
    */
+  /**
+   * F-215 — a refusal describes the LAST write, so a write that LANDS falsifies it. Every
+   * successful path on this tab drops both the red capacity wall and the grey error line,
+   * which is the same rule the rule-editor Memories tab already follows (F-207). Before
+   * this, add and bulk delete cleared the wall and edit, archive/restore and the per-row
+   * delete did not — so an admin could free enough bytes, watch the write succeed, and
+   * still be told by a stale red block that nothing can be saved.
+   */
+  const clearRefusals = () => { setCapRefusal(null); setError(null); };
+
   const consumeCapRefusal = (result) => {
     if (!result || result.reason !== "platform-cap") return false;
     setCapRefusal(result);
@@ -189,7 +199,7 @@ export default function MemoriesAdminTab({ invoke, isAdmin }) {
       const result = await invoke("addMemory", { content, source: "user" });
       if (result.success) {
         setNewContent("");
-        setCapRefusal(null);
+        clearRefusals();
         await loadMemories();
         showToast("Memory added");
       } else if (!consumeCapRefusal(result)) {
@@ -218,6 +228,7 @@ export default function MemoriesAdminTab({ invoke, isAdmin }) {
         // (a 40-char memory rewritten to 400), and it lands here, not in handleAdd.
         if (!consumeCapRefusal(result)) setError(result.error || "Failed to update memory.");
       } else {
+        clearRefusals();
         setEditingId(null);
         setEditContent("");
         await loadMemories();
@@ -237,6 +248,7 @@ export default function MemoriesAdminTab({ invoke, isAdmin }) {
       if (result && result.success === false) {
         showToast(result.error || "Failed to update memory", "error");
       } else {
+        clearRefusals();
         await loadMemories();
         showToast(mem.disabled ? "Memory restored" : "Memory archived");
       }
@@ -254,8 +266,19 @@ export default function MemoriesAdminTab({ invoke, isAdmin }) {
     try {
       const result = await invoke("deleteMemory", { id });
       if (result && result.success === false) {
+        // F-214 — a DELETE is a write, and `pf_memories` is ONE KVS value, so a one-row
+        // delete rewrites an array that may STILL be over the platform ceiling and is
+        // refused by exactly the guard an add is (src/index.js deleteMemory honours
+        // saveMemories' `{ refused: true }`). Routing that through a toast alone put the
+        // single state this tab exists to repair into a banner that fades in four seconds,
+        // and left whatever deficit a PREVIOUS refusal had printed sitting on screen —
+        // stale numbers describing a different attempt. The wall is the primary surface
+        // and it is replaced, not appended to; the toast stays as the secondary,
+        // "something just happened here" signal.
+        consumeCapRefusal(result);
         showToast(result.error || "Failed to delete memory", "error");
       } else {
+        clearRefusals();
         await loadMemories();
         showToast("Memory deleted");
       }
@@ -296,11 +319,19 @@ export default function MemoriesAdminTab({ invoke, isAdmin }) {
     try {
       const result = await invoke("deleteMemory", { ids });
       if (result && result.success === false) {
+        // F-214 — the bulk delete is the REPAIR path, so it is the path most likely to be
+        // refused: an admin selects three rows, frees less than the deficit, and the store
+        // is still oversized. That answer has to land on the wall with the NEW, smaller
+        // deficit, because "how much more do I have to delete" is the only question left
+        // on this screen — and the old wall's number would otherwise still read the
+        // original overshoot. Selection is deliberately NOT cleared: nothing was deleted,
+        // and the admin's next move is to tick more rows, not to start again.
+        consumeCapRefusal(result);
         showToast(result.error || "Failed to delete memories", "error");
       } else {
         // A successful delete is the one thing that can clear a capacity wall, so drop
         // it here rather than waiting for the admin's next write to discover it is gone.
-        setCapRefusal(null);
+        clearRefusals();
         setSelected(new Set());
         await loadMemories();
         // F-202 — `deleted` is an ARRAY of the ids that were actually present and went

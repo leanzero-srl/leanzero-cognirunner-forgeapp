@@ -2218,30 +2218,27 @@ const injectStyles = () => {
        override in sync for — it is the same alarm, said at more length. */
     .memories-admin-stats-note { font-weight: 700; }
 
-    /* F-212 — THE HARD-STOP GRAMMAR, declared ONCE per injectStyles home.
-       Three surfaces say "this store cannot accept a write": .memory-full-banner (row
-       cap, rule editor + admin), .memories-admin-capwall (platform cap, admin tab) and
-       .memory-cap-refusal (platform cap, rule editor). They were three hand-copied
-       blocks and they had already drifted — body weight 600 on one and 500 on the other
-       two — so the same severity rendered two ways depending on which screen you were
-       on. The hue, the fill, the text colour, the radius and the two type weights live
-       here; the three classes below keep ONLY what genuinely differs, which is margin.
-       Owner design law: solid #dc2626 (dark one shade lighter, #ef4444), white text,
-       700 title / 500 body, full radius, NO left rail and NO tint. */
-    .hard-stop {
-      display: flex;
-      flex-direction: column;
-      gap: 3px;
-      background: #dc2626;
+    /* F-213 — the role note. Solid slate neutral, white text, no rail, no tint: it is a
+       STATEMENT (you are an editor here), not an alarm, so it must not read as the red
+       hard stop. Dark one shade lighter per the hue map. */
+    .role-note {
+      background: #475569;
       color: #ffffff;
       border: none;
       border-radius: 4px;
-      padding: 9px 12px;
+      padding: 10px 14px;
+      margin-bottom: 16px;
     }
-    html[data-color-mode="dark"] .hard-stop { background: #ef4444; color: #ffffff; }
-    .hard-stop-title { font-size: 12px; font-weight: 700; letter-spacing: 0.02em; }
-    .hard-stop-text { font-size: 12px; font-weight: 500; line-height: 1.45; }
+    html[data-color-mode="dark"] .role-note { background: #64748b; color: #ffffff; }
+    .role-note-text { font-size: 12px; font-weight: 600; line-height: 1.45; }
 
+    /* F-218 — .hard-stop itself now lives in injectCopiedComponentStyles(), because two of
+       its three extenders (.memory-cap-refusal, .memory-full-banner) belong to MemoriesTab,
+       a byte-identical copy shared with config-ui. A grammar declared in this app's own
+       injectStyles could not be carried by the "diff -q" duplication convention, so the two
+       apps were one hand-edit away from drifting again — the exact defect F-212 closed.
+       Only .memories-admin-capwall below is genuinely admin-only, and it contributes margin
+       alone, so its order relative to the definition does not matter. */
     /* The capacity wall. Layout only; .hard-stop (F-212) owns the fill and the weights. */
     .memories-admin-capwall { margin-bottom: 10px; }
 
@@ -5078,6 +5075,32 @@ const injectCopiedComponentStyles = () => {
     }
     .memory-quick-add .input { flex: 1; }
 
+    /* F-212 — THE HARD-STOP GRAMMAR, declared ONCE per injectStyles home.
+       Three surfaces say "this store cannot accept a write": .memory-full-banner (row
+       cap, rule editor + admin), .memories-admin-capwall (platform cap, admin tab) and
+       .memory-cap-refusal (platform cap, rule editor). They were three hand-copied
+       blocks and they had already drifted — body weight 600 on one and 500 on the other
+       two — so the same severity rendered two ways depending on which screen you were
+       on. The hue, the fill, the text colour, the radius and the two type weights live
+       here; the three extender classes keep ONLY what genuinely differs, which is margin.
+       F-218 — this block lives in injectCopiedComponentStyles(), not injectStyles(), so the
+       config-ui and admin-panel duplication convention carries it with MemoriesTab.
+       Owner design law: solid #dc2626 (dark one shade lighter, #ef4444), white text,
+       700 title / 500 body, full radius, NO left rail and NO tint. */
+    .hard-stop {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      background: #dc2626;
+      color: #ffffff;
+      border: none;
+      border-radius: 4px;
+      padding: 9px 12px;
+    }
+    html[data-color-mode="dark"] .hard-stop { background: #ef4444; color: #ffffff; }
+    .hard-stop-title { font-size: 12px; font-weight: 700; letter-spacing: 0.02em; }
+    .hard-stop-text { font-size: 12px; font-weight: 500; line-height: 1.45; }
+
     /* F-201 — the PLATFORM-CAP wall in the rule-editor Memories tab. Layout only; the
        fill, the text colour and the type weights come from .hard-stop above. */
     .memory-cap-refusal { margin: 6px 12px 0; }
@@ -5633,6 +5656,10 @@ function App() {
   // overridden by checkLicense which is authoritative for paid apps.
   const [edition, setEdition] = useState(EDITION_IDS.STANDARD);
   const [isAdmin, setIsAdmin] = useState(false);
+  // F-213 — which MODULE this app was opened from. Never an input to `isAdmin`; its only
+  // job is the note below the header that explains a bare admin page to a site admin whose
+  // CogniRunner role was demoted.
+  const [onAdminPage, setOnAdminPage] = useState(false);
   const [userRole, setUserRole] = useState(null); // "viewer" | "editor" | "admin" | null
   const [userScope, setUserScope] = useState(null); // "own" | "all" | null
   const [accountId, setAccountId] = useState(null);
@@ -6236,12 +6263,15 @@ function App() {
     injectCopiedComponentStyles();
 
     const init = async () => {
-      // F-210 - the module this app was opened from. Only jira:adminPage is gated by
-      // Jira's own admin permission, so reaching it IS proof of site admin regardless of
-      // what checkIsAdmin answers (an app-level demotion can make that resolver say
-      // "editor" for a site admin). Lives here, in the effect's closure, because state
-      // set inside this async function is not readable from it.
-      let isAdminPage = false;
+      // F-213 - the module this app was opened from. Recorded for ONE purpose: to explain
+      // to a site admin why an admin-gated page is not showing admin chrome. It does NOT
+      // decide admin-ness. `requireAdmin` in src/index.js (~261) is the only authority on
+      // that, every admin-gated resolver is gated by it, and a frontend that disagrees
+      // renders controls the backend will refuse — which is what F-210 shipped: admin
+      // chrome over editor permissions. Reaching jira:adminPage proves Jira SITE admin;
+      // it proves nothing about the CogniRunner role, which an app admin can demote.
+      // Lives here, in the effect's closure, because state set inside this async function
+      // is not readable from it.
       try {
         const bridge = await import("@forge/bridge");
         invoke = bridge.invoke;
@@ -6271,14 +6301,9 @@ function App() {
         } catch (e) {
           console.log("Could not check license:", e);
         }
-        // Detect if accessed from jira:adminPage (auto-admin).
-        // F-210 - captured in the effect's own scope, NOT read back off state later:
-        // `isAdmin` inside this effect is frozen at its first-render value (false), so
-        // the reconciliation below used to be dead code.
-        if (context?.extension?.type === "jira:adminPage") {
-          isAdminPage = true;
-          setIsAdmin(true);
-        }
+        // F-213 - note the module; grant nothing. The `setIsAdmin(true)` that used to sit
+        // here was the actual source of F-210's damage.
+        if (context?.extension?.type === "jira:adminPage") setOnAdminPage(true);
 
         // One-shot UI-intent handoff: another surface (config-view) may have stashed a
         // "jump to this tab / rule" intent before navigating here. Consume it once and open
@@ -6312,13 +6337,15 @@ function App() {
         console.log("Could not check role:", e);
       }
 
-      // jira:adminPage always grants admin - role and scope included, so the header, the
-      // rules filter default and every role-gated control agree with the badge.
-      // F-210: this read `isAdmin` (the frozen first-render state, always false), so an
-      // app-demoted site admin landed on isAdmin:true (from the setIsAdmin above) with
-      // role "editor" and scope "mine" - admin chrome over editor permissions.
-      if (isAdminPage) { userIsAdmin = true; detectedRole = "admin"; detectedScope = "all"; }
-      setIsAdmin((prev) => prev || userIsAdmin);
+      // F-213 - NO module-type override. `checkIsAdmin` (backed by requireAdmin /
+      // getUserPermissions) is the single authority, on jira:adminPage exactly as on
+      // jira:globalPage. F-210 tried to reconcile "site admin" with "app role" by
+      // promoting the role in the frontend; that is the wrong direction — it paints
+      // chrome the backend refuses. The honest answer is to show the real role and SAY
+      // why the page looks bare (the note under the header), which is the one thing
+      // knowing the module is good for.
+      // `prev || userIsAdmin` is gone with it: a stale true could never be cleared.
+      setIsAdmin(userIsAdmin);
       setUserRole(detectedRole);
       setUserScope(detectedScope);
 
@@ -6435,6 +6462,22 @@ function App() {
       </div>
 
       {licenseBanner}
+
+      {/* F-213 — the ONE thing knowing the module is good for. Reaching jira:adminPage
+          proves Jira site admin, so an admin who lands here and finds no Settings and no
+          Permissions tab has every reason to think the app is broken. It is not: their
+          CogniRunner role was demoted, and only a CogniRunner admin can restore it. Say
+          that, in the slate neutral (#475569 / #64748b dark), solid fill, white text — a
+          statement of fact, not a warning and not a capacity wall, so it deliberately
+          does NOT borrow the red hard-stop grammar. No admin chrome comes with it. */}
+      {onAdminPage && !isAdmin && (
+        <div className="role-note" role="status">
+          <span className="role-note-text">
+            You opened the admin page, but CogniRunner has you as {userRole || "no role"}.
+            A CogniRunner admin can change that under Permissions.
+          </span>
+        </div>
+      )}
 
       {/* F19 / F-113 — a misconfigured/unreachable provider returns a persistent config
           error (401/403/404/400). The banner used to claim validators FAIL CLOSED and

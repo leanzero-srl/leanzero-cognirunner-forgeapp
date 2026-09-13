@@ -1665,9 +1665,35 @@ try {
       await kp.locator(".knowledge-tab-memories").click();
       await kp.locator(".memory-quick-add .input").waitFor({ timeout: 8000 });
 
-      /* ---- F-209: the per-row Delete is refused, and says so as the WALL ---- */
+      /* ---- F-216: FIRST put a real grey `error` line on screen ----
+       * The F-207 assertion at the foot of this journey checks that no stale refusal text
+       * survives a successful write. As written it could not fail: nothing in the journey
+       * ever produced a grey `error` at all, so "the grey line is gone" was asserted
+       * against a line that had never existed. A test that cannot fail is not a test.
+       *
+       * So produce one, the way a tenant does: with the store merely FULL (row cap) rather
+       * than over the platform ceiling, an add is refused with reason "cap" — which
+       * `consumeCapRefusal` correctly declines (it is keyed on reason "platform-cap"), so
+       * it lands in the grey line. THEN raise the platform wall on top of it. That is the
+       * exact two-account-of-one-refusal state F-207 closed: a grey line and a red block
+       * describing different failures at once. */
+      await page.evaluate(() => { window.__MEMORY_OVERCAP__ = false; });
+      await kp.locator(".memory-quick-add .input").fill("Refused by the row cap.");
+      await kp.locator(".btn-remember").click();
+      const panel = kp.locator(".doc-repo-embedded").filter({ has: page.locator(".memory-quick-add") }).first();
+      const greyText = () => panel.innerText();
+      await page.waitForFunction(
+        (sentence) => document.body.innerText.includes(sentence),
+        memoryCapRefusalMessage("cap"),
+        { timeout: 8000 },
+      );
+      ok((await greyText()).includes(memoryCapRefusalMessage("cap")),
+        `M1c ${theme} a row-cap refusal renders as the grey error line, not the red wall`);
       ok(await kp.locator(".memory-cap-refusal").count() === 0,
-        `M1c ${theme} no wall before anything is attempted`);
+        `M1c ${theme} a row-cap refusal is NOT the platform wall (they are different states)`);
+      await page.evaluate(() => { window.__MEMORY_OVERCAP__ = true; });
+
+      /* ---- F-209: the per-row Delete is refused, and says so as the WALL ---- */
       const rowDelete = kp.locator(".memory-item .doc-btn-delete").first();
       await rowDelete.waitFor({ timeout: 8000 });
       const rowsBefore = await kp.locator(".memory-item").count();
@@ -1679,6 +1705,10 @@ try {
       ok(/bytes/.test(dtxt), `M1c ${theme} the delete-side wall names the deficit (got: ${dtxt.replace(/\n/g, " | ")})`);
       ok(await kp.locator(".memory-item").count() === rowsBefore,
         `M1c ${theme} a refused delete removes nothing from the list`);
+      // F-216 — and the grey line from the PREVIOUS refusal is gone. consumeCapRefusal
+      // clears it, so the screen carries exactly ONE account of why writes are failing.
+      ok(!(await greyText()).includes(memoryCapRefusalMessage("cap")),
+        `M1c ${theme} raising the platform wall clears the older grey error line (got: ${(await greyText()).replace(/\n/g, " | ")})`);
       // The call still went out with the single-row shape — the refusal is the SERVER's.
       const dcalls = await page.evaluate(() => window.__DELETE_MEMORY_CALLS__ || []);
       ok(dcalls.length === 1 && !!dcalls[0].id && !dcalls[0].ids,
@@ -1718,9 +1748,13 @@ try {
         `M1c ${theme} a successful ADD clears the refusal wall (F-207: only delete used to)`);
       // ...including the GREY error line, which is the other half of F-207: consuming a
       // wall used to leave whatever the previous failure had written sitting above it.
-      const stale = await kp.locator(".doc-repo-embedded").filter({ has: page.locator(".memory-quick-add") }).first().evaluate(
-        (el, sentence) => (el.innerText.includes(sentence) ? el.innerText : ""),
-        memoryPlatformCapMessage(3272),
+      // F-216 — check BOTH refusal sentences this journey has now produced: the grey
+      // row-cap one AND the red platform one. Checking only the platform sentence was half
+      // the assertion, and the half that was already covered by the .memory-cap-refusal
+      // count above it.
+      const stale = await panel.evaluate(
+        (el, sentences) => (sentences.some((x) => el.innerText.includes(x)) ? el.innerText : ""),
+        [memoryPlatformCapMessage(3272), memoryCapRefusalMessage("cap")],
       );
       ok(stale === "",
         `M1c ${theme} no stale refusal text of any severity survives the successful write (got: ${stale.replace(/\n/g, " | ")})`);

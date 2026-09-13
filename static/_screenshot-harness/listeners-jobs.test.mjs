@@ -812,6 +812,125 @@ try {
     await close(env);
   }
 
+  /* ---------------- M3b — F-214 / F-215 / F-217: the admin tab's DELETE side of the wall
+   * M3 above proves the ADD refusal and a bulk delete that lands. Neither of the two paths
+   * this journey exists for had any coverage at all:
+   *
+   * F-214 — a delete is a write. `pf_memories` is ONE KVS value, so the delete rewrites the
+   * whole array and is refused by the same platform ceiling an add is (src/index.js
+   * deleteMemory honours saveMemories' `{ refused: true }`). Both delete paths used to
+   * report that with a toast alone — a four-second banner for the one state this tab exists
+   * to repair — while the red wall above kept printing the deficit from an EARLIER attempt.
+   * The wall must be REPLACED with the new, smaller deficit, because "how much more must I
+   * delete" is the only question left on this screen.
+   *
+   * F-215 — and a write that LANDS falsifies a refusal, so every successful path clears it.
+   *
+   * F-217 — the mock now mirrors the backend's ORDER and its QUANTITY: presence is resolved
+   * before the cap (an already-gone row is "Memory not found", never a capacity sentence),
+   * and the refusal is keyed on the post-delete SIZE, not on "one row is never enough".
+   * Both themes. */
+  for (const theme of ["light", "dark"]) {
+    console.log(`M3b memories platform-cap: the admin tab's delete refusals — ${theme}`);
+    const env = await openAdmin(browser, theme, { __MEMORY_OVERCAP__: true });
+    const { page } = env;
+    try {
+      await tab(page, "Memories");
+      await page.locator(".memories-admin-tab .table").waitFor({ timeout: 10000 });
+      const wall = () => page.locator(".memories-admin-capwall").first();
+      const wallText = async () => (await page.locator(".memories-admin-capwall").count() ? wall().innerText() : "");
+
+      /* ---- raise the wall with an ADD, so there is a STALE deficit to replace ---- */
+      await page.locator(".memories-admin-add input").fill("A memory this store cannot fit.");
+      await page.locator(".btn-add-memory").click();
+      await wall().waitFor({ timeout: 8000 });
+      ok((await wallText()).includes(memoryPlatformCapMessage(6544)),
+        `M3b ${theme} the add refusal prints the full 6544-byte deficit first`);
+
+      /* ---- F-214 (row delete): refused → the WALL, carrying the NEW deficit ---- */
+      const rowsBefore = await page.locator(".memories-admin-select").count();
+      await page.locator(".memories-admin-tab .row-actions .btn-danger").first().click();
+      await page.locator(".cr-confirm").first().waitFor({ timeout: 5000 });
+      await page.locator(".cr-confirm .btn-danger").click();
+      // One row frees 3272 of the 6544 overshoot, so the store is still over and the write
+      // is refused — with HALF the deficit left. That number is the whole point.
+      await page.waitForFunction(
+        (sentence) => document.body.innerText.includes(sentence),
+        memoryPlatformCapMessage(3272),
+        { timeout: 8000 },
+      );
+      const w1 = await wallText();
+      ok(w1.includes(memoryPlatformCapMessage(3272)),
+        `M3b ${theme} a refused ROW delete replaces the wall's deficit with the new one (got: ${w1.replace(/\n/g, " | ")})`);
+      ok(!w1.includes(memoryPlatformCapMessage(6544)),
+        `M3b ${theme} the stale 6544 deficit from the add is GONE — one account, not two`);
+      ok(await page.locator(".memories-admin-select").count() === rowsBefore,
+        `M3b ${theme} a refused delete removes nothing from the table`);
+      // The toast is the SECONDARY signal, not the only one.
+      ok(/over Jira/i.test(await page.locator(".mls-toast").first().innerText().catch(() => "")),
+        `M3b ${theme} the toast still fires alongside the wall`);
+
+      /* ---- F-214 (bulk delete): refused → the wall, and the SELECTION SURVIVES ---- */
+      const boxes = page.locator(".memories-admin-select");
+      await boxes.nth(0).check();
+      await page.locator(".memories-admin-bulkdelete").first().click();
+      await page.locator(".cr-confirm").first().waitFor({ timeout: 5000 });
+      await page.locator(".cr-confirm .btn-danger").click();
+      await page.waitForTimeout(600);
+      const w2 = await wallText();
+      ok(w2.includes(memoryPlatformCapMessage(3272)),
+        `M3b ${theme} a refused BULK delete lands on the wall too (got: ${w2.replace(/\n/g, " | ")})`);
+      ok(await page.locator(".memories-admin-bulkdelete").count() === 1,
+        `M3b ${theme} a refused bulk delete keeps the selection — the next move is to tick MORE`);
+
+      /* ---- F-215: a delete that LANDS clears the wall ---- */
+      // Two rows free the whole overshoot, so this one fits and the refusal is falsified.
+      await boxes.nth(1).check();
+      await page.locator(".memories-admin-bulkdelete").first().click();
+      await page.locator(".cr-confirm").first().waitFor({ timeout: 5000 });
+      await page.locator(".cr-confirm .btn-danger").click();
+      await page.waitForTimeout(800);
+      ok(await page.locator(".memories-admin-capwall").count() === 0,
+        `M3b ${theme} the delete that LANDS clears the wall (F-215: only add and bulk used to)`);
+      ok(await page.locator(".memories-admin-select").count() === rowsBefore - 2,
+        `M3b ${theme} and the two rows are actually gone`);
+      await shot(page, `m3b-admin-delete-refusal-${theme}`);
+      ok(env.errors.length === 0, `M3b ${theme} no page errors: ` + env.errors.join(" | "));
+    } catch (e) { fail++; console.log(`  ✗ M3b ${theme} threw: ` + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
+  /* ---------------- M3c — F-217: PRESENCE is resolved BEFORE the cap ----------------
+   * `__MEMORY_STALE_LIST__` gives the loaded table a row the server no longer has. Deleting
+   * it under `__MEMORY_OVERCAP__` must answer "Memory not found" — the backend checks
+   * presence first and returns before any write, so no capacity sentence is reachable for
+   * that input. The old mock checked the cap first and would have said the store was over
+   * Jira's storage limit, sending an admin to bulk-delete over a row that was already gone.
+   * One theme: this is a wire-order fact, not a rendering one. */
+  {
+    console.log("M3c a delete of an already-gone row is 'not found', never a capacity wall");
+    const env = await openAdmin(browser, "light", { __MEMORY_OVERCAP__: true, __MEMORY_STALE_LIST__: true });
+    const { page } = env;
+    try {
+      await tab(page, "Memories");
+      await page.locator(".memories-admin-tab .table").waitFor({ timeout: 10000 });
+      // m3 is the seeded stale row — find it by its text and delete that row.
+      const row = page.locator(".memories-admin-tab tr", { hasText: "Transitions to Done require a non-empty resolution." }).first();
+      await row.locator(".row-actions .btn-danger").click();
+      await page.locator(".cr-confirm").first().waitFor({ timeout: 5000 });
+      await page.locator(".cr-confirm .btn-danger").click();
+      const toast = page.locator(".mls-toast").first();
+      await toast.waitFor({ timeout: 8000 });
+      const t = await toast.innerText();
+      ok(/Memory not found/i.test(t), `M3c the answer is "Memory not found" (got: ${t})`);
+      ok(!/storage limit/i.test(t), `M3c it is NOT a capacity sentence (got: ${t})`);
+      ok(await page.locator(".memories-admin-capwall").count() === 0,
+        "M3c and no capacity wall is raised for a row that was already gone");
+      ok(env.errors.length === 0, "M3c no page errors: " + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  ✗ M3c threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
   /* ---------------- M4 — F-189: a HEALTHY store states its size in slate, not red ----------------
    * The other half of the stats line, and the half that must not cry wolf: under the guard
    * this is a statistic. If it rendered red always, the red that means "nothing is being
@@ -950,68 +1069,129 @@ try {
     await close(env);
   }
 
-  /* ---------------- M7 — F-210: an app-DEMOTED site admin on jira:adminPage ----------------
-   * `jira:adminPage` is gated by Jira's OWN admin permission, so merely reaching this
-   * module proves site admin. App.js has always meant to reconcile that with the app's
-   * role resolver ("jira:adminPage always grants admin") — but the reconciliation read
-   * `isAdmin`, the state value, from inside the mount effect, where it is frozen at its
-   * first-render `false` forever. The branch had never once executed.
+  /* ---------------- M7 — F-213: an app-DEMOTED site admin on jira:adminPage ----------------
+   * `jira:adminPage` is gated by Jira's OWN admin permission, so reaching this module
+   * proves SITE admin. It proves nothing about the CogniRunner role, and F-210 conflated
+   * the two: App.js granted `isAdmin`, role "admin" and scope "all" from the module type,
+   * so a site admin the app had demoted to editor got the full admin chrome over editor
+   * permissions — Settings and Permissions tabs, bulk-delete controls, an "All Rules"
+   * default — every one of which the backend's `requireAdmin` (src/index.js ~261) then
+   * refuses. A frontend that overrules the permission authority does not grant access, it
+   * manufactures buttons that fail.
    *
-   * The damage was not "no admin": the earlier `setIsAdmin(true)` still fired, so a site
-   * admin whose app role had been demoted to editor ended up with isAdmin TRUE and role
-   * "editor" / scope "mine" — admin chrome over editor permissions, and the rules list
-   * silently narrowed to their own rules with no indication why.
+   * F-213 removes the override entirely. `checkIsAdmin` is the answer on BOTH modules. The
+   * one thing the module is still good for is the EXPLANATION: on jira:adminPage, and only
+   * there, an editor/viewer gets a solid slate note naming their real role, because an
+   * admin who reaches an admin-gated page and finds it bare will otherwise conclude the app
+   * is broken. No chrome comes with the note.
    *
-   * `__DEMOTED_ADMIN__` is the only fixture that can show it: it keeps the module at
+   * `__DEMOTED_ADMIN__` is the only fixture that can show this: it keeps the module at
    * jira:adminPage while checkIsAdmin answers editor/mine. `__NOT_ADMIN__` cannot, because
-   * it switches the module to jira:globalPage as well — so it is the negative control
-   * here, proving the reconciliation is keyed on the MODULE and not on "always admin".
+   * it switches the module to jira:globalPage as well — so it is M7b, the control proving
+   * the note is keyed on the MODULE while the PERMISSIONS are keyed on the resolver.
    * Both themes, because this decides what chrome renders. */
   for (const theme of ["light", "dark"]) {
-    console.log(`M7 jira:adminPage overrides a demoted app role — ${theme}`);
+    console.log(`M7 jira:adminPage does NOT override a demoted app role — ${theme}`);
     const env = await openAdmin(browser, theme, { __DEMOTED_ADMIN__: true });
     const { page } = env;
     try {
       await page.locator(".tab-bar").first().waitFor({ timeout: 10000 });
-      // isAdmin — the admin-only chrome is present despite checkIsAdmin saying editor.
-      ok(await page.locator(".tab-btn", { hasText: "Settings" }).count() === 1,
-        `M7 ${theme} the admin-only Settings tab renders for a site admin the app demoted`);
-      // scope "all" — the rules-scope filter only exists when userScope === "all", and its
-      // default value is computed from the same scope. This is the state F-210 corrupted.
-      const scopeSel = page.locator(".dropdown-trigger", { hasText: /All Rules|My Rules/ }).first();
-      await scopeSel.waitFor({ timeout: 8000 });
-      ok((await scopeSel.innerText()).includes("All Rules"),
-        `M7 ${theme} the rules scope defaults to All Rules, not My Rules (got: ${(await scopeSel.innerText()).trim()})`);
-      // role "admin" — the Memories tab's admin-gated controls are the visible consequence.
+      // NO admin chrome. These are the two adminOnly tabs (App.js TABS: settings,
+      // permissions) and they are exactly what the backend would refuse.
+      ok(await page.locator(".tab-btn", { hasText: "Settings" }).count() === 0,
+        `M7 ${theme} no Settings tab for a site admin the app demoted to editor`);
+      ok(await page.locator(".tab-btn", { hasText: "Permissions" }).count() === 0,
+        `M7 ${theme} no Permissions tab either`);
+      // The note, with the REAL role in it, and in the slate neutral — not the red
+      // hard-stop grammar, because nothing here is a capacity failure.
+      const note = page.locator(".role-note").first();
+      await note.waitFor({ timeout: 8000 });
+      const ntxt = await note.innerText();
+      ok(/You opened the admin page/i.test(ntxt) && /editor/.test(ntxt),
+        `M7 ${theme} the note names the REAL role from the resolver (got: ${ntxt.replace(/\n/g, " ")})`);
+      ok(/A CogniRunner admin can change that under Permissions/i.test(ntxt),
+        `M7 ${theme} the note names WHO can act (F-208 grammar: a statement, not an instruction)`);
+      const g = await note.evaluate((el) => {
+        const c = getComputedStyle(el);
+        return { bg: c.backgroundColor, fg: c.color, bl: c.borderLeftWidth, bt: c.borderTopWidth };
+      });
+      const slate = theme === "dark" ? "rgb(100, 116, 139)" : "rgb(71, 85, 105)";
+      ok(g.bg === slate, `M7 ${theme} the note is the solid slate neutral (got ${g.bg}, want ${slate})`);
+      ok(g.fg === "rgb(255, 255, 255)", `M7 ${theme} white text on the solid fill (got ${g.fg})`);
+      ok(g.bl === g.bt, `M7 ${theme} the note has no left accent rail (${g.bl} vs ${g.bt})`);
+      // scope "mine" — the editor's real scope survives, so the rules list is honestly
+      // narrowed rather than silently narrowed under an admin badge.
+      const scopeSel = page.locator(".dropdown-trigger", { hasText: /All Rules|My Rules/ });
+      if (await scopeSel.count() > 0) {
+        ok((await scopeSel.first().innerText()).includes("My Rules"),
+          `M7 ${theme} the rules scope stays My Rules (got: ${(await scopeSel.first().innerText()).trim()})`);
+      }
+      // role "editor" — the Memories tab's admin-gated controls are the visible consequence.
       await tab(page, "Memories");
       await page.locator(".memories-admin-tab .table").waitFor({ timeout: 10000 });
-      ok(await page.locator(".memories-admin-select").count() > 0,
-        `M7 ${theme} the admin-gated select column renders (role reconciled to admin)`);
-      ok(await page.locator(".memories-admin-tab .row-actions").count() > 0,
-        `M7 ${theme} the admin-gated row actions render`);
+      ok(await page.locator(".memories-admin-select").count() === 0,
+        `M7 ${theme} no admin-gated select column (role is editor, and the backend agrees)`);
       await shot(page, `m7-demoted-admin-${theme}`);
       ok(env.errors.length === 0, `M7 ${theme} no page errors: ` + env.errors.join(" | "));
-    } catch (e) { fail++; console.log(`  \u2717 M7 ${theme} threw: ` + e.message.split("\n")[0]); }
+    } catch (e) { fail++; console.log(`  ✗ M7 ${theme} threw: ` + e.message.split("\n")[0]); }
     await close(env);
   }
 
-  /* M7b — the NEGATIVE control. Same demoted role, but reached through jira:globalPage,
-   * where Jira enforced nothing. Here editor must stay editor: if M7 passed because the
-   * app simply grants admin to everyone, this fails. */
+  /* M7b — the NEGATIVE control for the NOTE. Same demoted role, but reached through
+   * jira:globalPage, where Jira enforced nothing and where there is no expectation of
+   * admin chrome to explain away. Permissions must look identical to M7 (the resolver is
+   * the authority on both modules) and the note must be ABSENT — if it rendered here it
+   * would be keyed on the role rather than the module, and every editor in the tenant
+   * would be told to go and ask about a page they never opened. */
   {
-    console.log("M7b jira:globalPage does NOT grant admin to an editor");
+    console.log("M7b jira:globalPage: same permissions, and no admin-page note");
     const env = await openAdmin(browser, "light", { __NOT_ADMIN__: true });
     const { page } = env;
     try {
       await page.locator(".tab-bar").first().waitFor({ timeout: 10000 });
       ok(await page.locator(".tab-btn", { hasText: "Settings" }).count() === 0,
         "M7b an editor on jira:globalPage gets no admin-only Settings tab");
+      ok(await page.locator(".tab-btn", { hasText: "Permissions" }).count() === 0,
+        "M7b an editor on jira:globalPage gets no Permissions tab");
+      ok(await page.locator(".role-note").count() === 0,
+        "M7b no admin-page note off jira:adminPage — it explains a MODULE, not a role");
       await tab(page, "Memories");
       await page.locator(".memories-admin-tab .table").waitFor({ timeout: 10000 });
       ok(await page.locator(".memories-admin-select").count() === 0,
         "M7b an editor on jira:globalPage gets no admin-gated select column");
       ok(env.errors.length === 0, "M7b no page errors: " + env.errors.join(" | "));
-    } catch (e) { fail++; console.log("  \u2717 M7b threw: " + e.message.split("\n")[0]); }
+    } catch (e) { fail++; console.log("  ✗ M7b threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
+  /* M7c — the POSITIVE control, and the one that stops F-213 from reading as "admin chrome
+   * is gone". A REAL admin (no flag: module jira:adminPage, checkIsAdmin answers
+   * admin/all) must still get everything. Without this, deleting the override and deleting
+   * the feature look identical to the suite. */
+  {
+    console.log("M7c a real admin on jira:adminPage still gets the full chrome and no note");
+    const env = await openAdmin(browser, "light");
+    const { page } = env;
+    try {
+      await page.locator(".tab-bar").first().waitFor({ timeout: 10000 });
+      ok(await page.locator(".tab-btn", { hasText: "Settings" }).count() === 1,
+        "M7c a real admin gets the Settings tab");
+      ok(await page.locator(".tab-btn", { hasText: "Permissions" }).count() === 1,
+        "M7c a real admin gets the Permissions tab");
+      ok(await page.locator(".role-note").count() === 0,
+        "M7c no note for an admin who is actually an admin");
+      const scopeSel = page.locator(".dropdown-trigger", { hasText: /All Rules|My Rules/ }).first();
+      await scopeSel.waitFor({ timeout: 8000 });
+      ok((await scopeSel.innerText()).includes("All Rules"),
+        `M7c the rules scope defaults to All Rules (got: ${(await scopeSel.innerText()).trim()})`);
+      await tab(page, "Memories");
+      await page.locator(".memories-admin-tab .table").waitFor({ timeout: 10000 });
+      ok(await page.locator(".memories-admin-select").count() > 0,
+        "M7c the admin-gated select column renders for a real admin");
+      ok(await page.locator(".memories-admin-tab .row-actions").count() > 0,
+        "M7c the admin-gated row actions render for a real admin");
+      ok(env.errors.length === 0, "M7c no page errors: " + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  ✗ M7c threw: " + e.message.split("\n")[0]); }
     await close(env);
   }
 

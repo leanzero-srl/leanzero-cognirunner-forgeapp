@@ -516,17 +516,25 @@ function getContext() {
   if (s.startsWith("issue-glance"))
     // The jira:issueContext "CogniRunner on this issue" glance — the platform gives the open issue.
     return { accountId: ACCT, siteUrl: SITE, license: mockLicenseCtx(), theme: { colorMode: theme() }, extension: { type: "jira:issueContext", key: "cognirunner-issue-glance", issue: { id: "10042", key: "DEMO-42" }, project: { id: "10000", key: "DEMO" } } };
-  // default: admin global page (auto-admin via jira:adminPage)
-  // F-200 — `__NOT_ADMIN__` must switch the MODULE too, not just checkIsAdmin. App.js
-  // auto-admins on `jira:adminPage` ("Detect if accessed from jira:adminPage"), so a mock
-  // that always reports that type makes `isAdmin: false` unreachable no matter what the
-  // resolver answers. `jira:globalPage` (cognirunner-global-page) is the real entry point a
-  // non-admin reaches the app through, which is what makes the editor scenario honest.
-  // F-210 - `__DEMOTED_ADMIN__` is the OTHER half of the pair, and the one no scenario
-  // had: the module IS `jira:adminPage` (so Jira's own admin permission was enforced to
-  // get here) while `checkIsAdmin` answers editor/mine, which an app-level role demotion
-  // really does produce. App.js reconciles that with "jira:adminPage always grants admin";
-  // __NOT_ADMIN__ cannot test it because it also switches the module away.
+  // default: the admin page, reached as a real admin.
+  // F-200 / F-213 — `__NOT_ADMIN__` switches the MODULE as well as checkIsAdmin, and still
+  // should: `jira:globalPage` (cognirunner-global-page) is the entry point a non-admin
+  // genuinely reaches the app through, so pairing the two is what makes the editor scenario
+  // honest rather than a half-state no tenant is in. (It was once also NECESSARY, because
+  // App.js auto-admined on `jira:adminPage` and no resolver answer could produce
+  // `isAdmin: false` under that module. F-213 deleted that override — admin-ness is the
+  // role resolver's answer on both modules — so the module switch is now fidelity, not a
+  // workaround.)
+  // F-213 - `__DEMOTED_ADMIN__` is the OTHER half of the pair: the module IS
+  // `jira:adminPage` (so Jira's own admin permission was enforced to get here) while
+  // `checkIsAdmin` answers editor/mine, which an app-level role demotion really does
+  // produce. It no longer models an OVERRIDE - App.js does not derive admin-ness from the
+  // module any more, because `requireAdmin` in src/index.js is the only authority and a
+  // frontend that disagrees paints controls the backend refuses (that WAS F-210). What the
+  // flag now proves is the pair of things F-213 asks for: editor permissions survive on
+  // jira:adminPage, AND that module (alone) earns the slate `.role-note` explaining the
+  // bare page. __NOT_ADMIN__ cannot test either, because it switches the module away -
+  // which is exactly what makes it the control for the note.
   const notAdmin = typeof window !== "undefined" && !!window.__NOT_ADMIN__;
   return { extension: notAdmin ? { type: "jira:globalPage", key: "cognirunner-global-page" } : { type: "jira:adminPage", key: "cognirunner-admin-page" }, license: mockLicenseCtx(), siteUrl: SITE, accountId: ACCT, cloudId: "00000000-aaaa-bbbb-cccc-000000000000", localId: "mock-local-id", theme: { colorMode: theme() }, locale: "en-US" };
 }
@@ -1121,39 +1129,39 @@ function invoke(name, payload) {
         window.__DELETE_MEMORY_CALLS__ = window.__DELETE_MEMORY_CALLS__ || [];
         window.__DELETE_MEMORY_CALLS__.push(payload);
       }
-      /* F-209 - a DELETE is a write, and under `platform-cap` it lands or is refused for
-         exactly the reason every other write is: `pf_memories` is ONE KVS value, so the
-         delete rewrites the whole array and the PLATFORM ceiling applies to what comes
-         out. That is what makes "memories have to be deleted together" true rather than
-         decorative: removing one row rewrites an array that is STILL over the limit and
-         is refused, while removing enough rows rewrites one that fits and lands.
-         The mock modelled neither - it let every delete through under __MEMORY_OVERCAP__,
-         which is a shape the backend cannot produce, and it left the delete-side
-         `consumeCapRefusal` in both Memories tabs (the ONLY refusal path the rule-editor
-         tab's per-row Delete can take) entirely unexercised. Derived from the same
-         overshoot constant: one row frees less than the deficit, two rows clear it. */
-      if (isMemoryOvercap()) {
-        const freed = ids.length * MEMORY_OVERCAP_ROW_BYTES;
-        if (freed < MEMORY_OVERCAP_OVER) {
-          return Promise.resolve(MEMORY_PLATFORM_REFUSAL(MEMORY_OVERCAP_OVER - freed));
-        }
-      }
-      // F-202 — answer the SHAPE the backend answers, on BOTH arms. src/index.js
-      // deleteMemory returns `{ success, deleted, notFound, evicted }` where `deleted` and
-      // `notFound` are ARRAYS of ids (`wanted.filter((x) => present.has(x))` and its
-      // complement). The mock used to invent `deleted: <number>` for the bulk arm and a
-      // bare `{ success: true }` for the single arm — so the only thing exercising the
-      // UI's read of that field was photographing a shape production never emits, and the
-      // tab's numeric branch stayed green while being dead.
-      // A row already in DELETED_MEMORY_IDS is the real stale-list case: the admin ticked
-      // it, someone else removed it first, and it comes back in `notFound`.
+      /* F-217 - MIRROR src/index.js deleteMemory (~7343-7368), in its order, because the
+         order is the behaviour:
+
+         1. PRESENCE FIRST. The backend resolves `deleted` / `notFound` against the rows it
+            actually holds and returns `{ success:false, error:"Memory not found", notFound }`
+            when NOTHING matched - before any write, so before any cap can be consulted. The
+            mock used to check the cap first, which made a delete of an already-gone row
+            answer "over Jira's storage limit" - a sentence the backend cannot produce for
+            that input, and the one shape that would hide a real ordering bug in the UI.
+         2. THEN THE WRITE, AND THE WRITE IS BYTES. `pf_memories` is one KVS value: the
+            delete rewrites the whole array, and `saveMemories` refuses when what comes out
+            is still over the PLATFORM ceiling. F-209 modelled that as "one row is never
+            enough, two always are", which is a rule about COUNT and is not true - it made
+            a 1-row delete of a store 10 bytes over refuse. Model the real quantity: the
+            post-delete serialized size. Freed bytes come off `deleted.length`, not
+            `ids.length`, because rows that were already gone free nothing.
+         3. THE REFUSAL ARM CARRIES THE ARRAYS. src/index.js returns `deleted: []` and the
+            real `notFound` on refusal (F-188/F-202) - nothing went, but the stale ids are
+            still worth reporting. A mock that omits them lets a UI reading
+            `result.deleted.length` on the failure path pass here and throw in production. */
       const alreadyGone = ids.filter((i) => isServerGone(i));
       const deleted = ids.filter((i) => !isServerGone(i));
-      ids.forEach((i) => DELETED_MEMORY_IDS.add(i));
-      // And the backend's failure arm: nothing matched at all is a refusal, not a no-op
-      // success (src/index.js: `if (!deleted.length) return { success: false, error:
-      // "Memory not found", notFound }`).
       if (!deleted.length) return Promise.resolve({ success: false, error: "Memory not found", notFound: alreadyGone });
+      if (isMemoryOvercap()) {
+        const after = MEMORY_OVERCAP_BYTES - (deleted.length * MEMORY_OVERCAP_ROW_BYTES);
+        if (after > MEMORY_PLATFORM_MAX_SERIALIZED_BYTES) {
+          return Promise.resolve({
+            ...MEMORY_PLATFORM_REFUSAL(after - MEMORY_PLATFORM_MAX_SERIALIZED_BYTES),
+            deleted: [], notFound: alreadyGone, evicted: [],
+          });
+        }
+      }
+      ids.forEach((i) => DELETED_MEMORY_IDS.add(i));
       return Promise.resolve({ success: true, deleted, notFound: alreadyGone, evicted: [] });
     }
     case "reviewConfig": return Promise.resolve({ success: true, review: { verdict: "has_issues", summary: "The steps are sound; two improvements suggested.", items: [{ type: "warning", message: "Step 2 posts a comment without checking the issue is still open." }, { type: "suggestion", message: "Reuse the JQL result from step 1 instead of re-querying." }] }, tokens: 1240 });

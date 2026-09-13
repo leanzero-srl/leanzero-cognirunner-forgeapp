@@ -82,5 +82,35 @@ for (const [name, value] of [["MAX_MEMORIES", 200], ["MEMORY_CONTENT_MAX", 400],
 ok(/from\s+"\.\/shared\/registry-limits\.js"/.test(memoriesSrc),
   "src/memories.js imports the memory limits from the shared module");
 
+// 1.4 commit 14a — defangFence has ONE home and it is the shared module.
+// It was declared in src/memories.js, which every fencing site imports it from. That file
+// loads @forge/kvs, so src/shared/knowledge-select.js could not reach it without dragging
+// the KVS client into three webpack bundles — and the alternative, a second copy of a
+// four-character security rule, is this repo's signature defect. The declaration moved to
+// src/shared/prompt-fencing.js and memories.js RE-EXPORTS it, so every existing importer
+// is unchanged. Assert both halves: one declaration, and the re-export door still open.
+const fencingSrc = readFileSync(path.join(sharedDir, "prompt-fencing.js"), "utf8");
+const fencing = await import(pathToFileURL(path.join(sharedDir, "prompt-fencing.js")).href);
+ok(typeof fencing.defangFence === "function", "src/shared/prompt-fencing.js exports defangFence");
+ok(fencing.defangFence("<<<X and >>> out") === "<<X and >> out", "defangFence collapses 3+ angle brackets");
+ok(/export const defangFence\s*=/.test(fencingSrc), "prompt-fencing.js DECLARES defangFence");
+ok(!/export const defangFence\s*=/.test(memoriesSrc), "src/memories.js does NOT re-declare defangFence");
+ok(/export \{ defangFence \} from "\.\/shared\/prompt-fencing\.js"/.test(memoriesSrc),
+  "src/memories.js re-exports defangFence so every existing importer keeps working");
+const memoriesMod = await import(pathToFileURL(path.join(sharedDir, "../memories.js")).href);
+ok(memoriesMod.defangFence === fencing.defangFence,
+  "the defangFence reached through memories.js IS the shared one (one home, two doors)");
+
+// The field-guide selector must stay importable with NO baked packs on disk: they are
+// generated later, and a shared module that static-imports a file which may not exist
+// breaks the backend and all three webpack builds at once.
+const select = await import(pathToFileURL(path.join(sharedDir, "knowledge-select.js")).href);
+ok(typeof select.selectKnowledge === "function" && typeof select.buildFieldGuideBlock === "function",
+  "knowledge-select.js exports selectKnowledge and buildFieldGuideBlock");
+const selectSrc = readFileSync(path.join(sharedDir, "knowledge-select.js"), "utf8");
+ok(!/from\s+["']\.\/knowledge-(index|packs)/.test(selectSrc),
+  "knowledge-select.js does NOT static-import the generated index or packs");
+ok(select.buildFieldGuideBlock([]).block === "", "an empty selection builds an empty block, not an empty fence");
+
 console.log(`\nshared-imports: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

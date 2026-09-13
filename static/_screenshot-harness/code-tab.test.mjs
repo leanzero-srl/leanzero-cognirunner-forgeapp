@@ -894,6 +894,61 @@ try {
     await close(env);
   }
 
+  /* ---------------- C16c - F-604: the remedy RE-RUNS the install, it does not reset it ---
+     F-583 admits an outdated-but-installed row to the setup form, and the form started at
+     the scaffold's DEFAULTS: following the amber banner re-committed the workflow with
+     UI_DIR "static/ui" and dropped the repository's developer space and app id. The form
+     is seeded from the row, and what the screen ASKS THE BACKEND FOR is what the journey
+     reads - a prefilled box that is not sent would look identical on screen. */
+  const SPACE_FIX = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+  const ARI_FIX = "ari:cloud:ecosystem::app/11111111-2222-3333-4444-555555555555";
+  for (const theme of ["light", "dark"]) {
+    console.log(`C16c outdated pipeline prefills the setup form (${theme})`);
+    const env = await openAdmin(browser, theme, {
+      __PIPE_SCENARIO__: "outdated",
+      __PIPE_IDS__: { developerSpaceId: SPACE_FIX, appId: ARI_FIX },
+      __PIPE_VARS__: { APP_NAME: "Acme Ops", UI_DIR: "static/app" },
+    });
+    const { page } = env;
+    try {
+      await tab(page, "Code");
+      const row = page.locator(".code-repo-row", { hasText: "acme/web" }).first();
+      await row.waitFor({ timeout: 10000 });
+      await row.locator("button", { hasText: "Pipeline" }).click();
+      await row.locator(".code-pipe-form").waitFor({ timeout: 8000 });
+
+      const val = (sel) => row.locator(sel).first().inputValue();
+      ok(await val("input[id^='pipe-appname-']") === "Acme Ops", `C16c ${theme} the app name is prefilled from the row (got "${await val("input[id^='pipe-appname-']")}")`);
+      ok(await val("input[id^='pipe-uidir-']") === "static/app", `C16c ${theme} the Custom UI folder is the INSTALLED one, not the scaffold default (got "${await val("input[id^='pipe-uidir-']")}")`);
+      ok(await val("input[id^='pipe-space-']") === SPACE_FIX, `C16c ${theme} the developer space id survives into the form`);
+      ok(await val("input[id^='pipe-appid-']") === ARI_FIX, `C16c ${theme} the app id survives into the form`);
+      ok(await val("input[id^='pipe-branch-']") === "main", `C16c ${theme} the branch is the one the pipeline was installed on`);
+
+      /* The review block reads back what will be committed, so the defect is visible there
+         too: before the fix it said "static/ui" for a repo built from static/app. */
+      const review = await row.locator(".code-pipe-review").innerText();
+      ok(/static\/app/.test(review) && !/static\/ui/.test(review), `C16c ${theme} the review says the folder the repo really builds (got "${review.replace(/\s+/g, " ").trim()}")`);
+      ok(!/\u2014/.test(review), `C16c ${theme} no em-dash in the review copy`);
+
+      // The manifest is NEVER prefilled: the row stores a lock hash, not the manifest.
+      ok(await row.locator("textarea[id^='pipe-manifest-']").first().inputValue() === "",
+        `C16c ${theme} the manifest is not prefilled - pasting it is what re-proves the permissions`);
+
+      await row.locator("textarea[id^='pipe-manifest-']").first().fill("permissions:\n  scopes:\n    - storage:app\n");
+      await row.locator("input[id^='pipe-site-']").first().fill("acme.atlassian.net");
+      await row.locator("button", { hasText: "Set up pipeline" }).first().click();
+      await page.waitForFunction(() => !!window.__PIPE_SETUP__, null, { timeout: 8000 });
+      const sent = await page.evaluate(() => window.__PIPE_SETUP__);
+      ok(sent.scaffoldVars && sent.scaffoldVars.UI_DIR === "static/app" && sent.scaffoldVars.APP_NAME === "Acme Ops",
+        `C16c ${theme} the re-setup SENDS the installed scaffold variables (got ${JSON.stringify(sent.scaffoldVars)})`);
+      ok(sent.developerSpaceId === SPACE_FIX && sent.appId === ARI_FIX,
+        `C16c ${theme} …and the developer space and app id, which the defect dropped (got ${JSON.stringify({ s: sent.developerSpaceId, a: sent.appId })})`);
+      await shot(page, `C16c-outdated-prefilled-${theme}`);
+      ok(env.errors.length === 0, `C16c ${theme} no page errors: ` + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  ✗ C16c threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
   /* ---------------- C16b - the CURRENT pipeline is left alone --------------------------
      The other half of the same rule: a row installed at the shipped scaffold version must
      show none of this. Without this arm a renderer that flagged every installed pipeline

@@ -57,7 +57,7 @@
 
 import storage from "@forge/kvs";
 import { createHash } from "node:crypto";
-import { renderScaffold, buildPermissionLock, scaffoldVarError, SCAFFOLD_VERSION, scaffoldOutdatedReason } from "./shared/git-scaffolds.js";
+import { renderScaffold, buildPermissionLock, scaffoldVarError, scaffoldVarNames, SCAFFOLD_VERSION, scaffoldOutdatedReason } from "./shared/git-scaffolds.js";
 import { assertCommitWithinCaps, GitProviderError } from "./git-providers.js";
 import {
   getConnection,
@@ -290,10 +290,10 @@ export async function requestPipelineSetup({
   manifestYaml,
   site,
   product = "Jira",
-  branch = null,
-  scaffoldVars = null,
-  developerSpaceId = null,
-  appId = null,
+  branch = undefined,
+  scaffoldVars = undefined,
+  developerSpaceId = undefined,
+  appId = undefined,
   accountId = null,
 } = {}) {
   // The security model is DATA, and this is the assertion that keeps it honest.
@@ -397,6 +397,37 @@ export async function requestPipelineSetup({
     );
   }
 
+  /* F-604 — A RE-SETUP IS A RE-RUN OF WHAT WAS INSTALLED, NOT A FRESH ONE.
+     F-583 lets an INSTALLED-but-outdated row reach the setup form, and this write used
+     to be a whole-row `storage.set` built only from the payload: a field the caller did
+     not send landed as null, so the remedy for a stale scaffold quietly re-rendered the
+     workflow with the scaffold's DEFAULT variables and dropped the repo's developer space
+     and app id. The rule is CARRY-OVER, NOT OVERWRITE: `undefined` means "the caller said
+     nothing, keep what the row holds"; an explicitly sent value (including an empty one)
+     still wins, so a field can be cleared on purpose. The Code tab prefills the form from
+     the row for the same reason, but the backend does not rely on it - a script that posts
+     a partial payload gets the same carry-over. */
+  const carriedVars =
+    scaffoldVars === undefined
+      ? (existing && existing.scaffoldVars && typeof existing.scaffoldVars === "object" ? existing.scaffoldVars : null)
+      : (scaffoldVars && typeof scaffoldVars === "object" ? scaffoldVars : null);
+  // Carried values were validated when they were first accepted, but a row can be older
+  // than the current rule, so they are re-checked here - before the claim, before the
+  // enqueue, and never inside the consumer where secrets are already committed.
+  if (carriedVars) {
+    for (const [k, v] of Object.entries(carriedVars)) {
+      const err = scaffoldVarError(k, v);
+      if (err) return invalid(err, "invalid_scaffold_var", { variable: k });
+    }
+  }
+  const carriedSpaceId = developerSpaceId === undefined
+    ? (existing && existing.developerSpaceId) || null
+    : spaceId;
+  const carriedAppId = appId === undefined ? (existing && existing.appId) || null : forgeAppId;
+  const carriedBranch = branch === undefined
+    ? (existing && existing.branch) || null
+    : (branch ? String(branch) : null);
+
   // Nothing has been written yet. From here on there is exactly one write before
   // the enqueue — the claim — and it is released by whichever run does not finish.
   const taskId = `gpipe_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
@@ -424,10 +455,10 @@ export async function requestPipelineSetup({
           repoId,
           site: String(site).trim(),
           product: String(product || "Jira").trim() || "Jira",
-          branch: branch ? String(branch) : null,
-          scaffoldVars: scaffoldVars && typeof scaffoldVars === "object" ? scaffoldVars : null,
-          developerSpaceId: spaceId,
-          appId: forgeAppId,
+          branch: carriedBranch,
+          scaffoldVars: carriedVars,
+          developerSpaceId: carriedSpaceId,
+          appId: carriedAppId,
           lock,
           lockHash,
           requestedBy: accountId || null,
@@ -450,9 +481,15 @@ export async function requestPipelineSetup({
     kind: conn.kind,
     scaffold: PIPELINE_SCAFFOLD,
     scaffoldVersion: SCAFFOLD_VERSION,
-    steps: freshSteps(conn.kind, { developerSpaceId: spaceId, appId: forgeAppId }),
-    developerSpaceId: spaceId,
-    appId: forgeAppId,
+    steps: freshSteps(conn.kind, { developerSpaceId: carriedSpaceId, appId: carriedAppId }),
+    // F-604 — what this run will RENDER with, stored on the row so the Code tab can
+    // prefill a later re-setup from it instead of from the scaffold's defaults.
+    scaffoldVars: carriedVars,
+    developerSpaceId: carriedSpaceId,
+    appId: carriedAppId,
+    branch: carriedBranch || (existing ? existing.branch || null : null),
+    commitSha: existing ? existing.commitSha || null : null,
+    failedStep: null,
     lockHash,
     lockPermissions: lock.permissions.slice(0, 200),
     lockScopes: scopes,
@@ -646,6 +683,17 @@ export async function runPipelineSetup(params, { fetchImpl } = {}) {
  * `publicConnection` is one: a field added to the stored row must not become a
  * field the UI receives by accident.
  */
+/** The declared scaffold variables of a row, clamped. `null` when the row has none. */
+function publicScaffoldVars(vars) {
+  if (!vars || typeof vars !== "object") return null;
+  const out = {};
+  for (const name of scaffoldVarNames(PIPELINE_SCAFFOLD)) {
+    if (vars[name] === undefined || vars[name] === null) continue;
+    out[name] = String(vars[name]).slice(0, 200);
+  }
+  return Object.keys(out).length ? out : null;
+}
+
 export function publicPipelineRow(row) {
   if (!row || typeof row !== "object") return null;
   return {
@@ -685,6 +733,12 @@ export function publicPipelineRow(row) {
     // F-528 — a public app identifier, not a credential. The UI needs it to tell the
     // admin whether the pipeline still has to register on every run.
     appId: row.appId || null,
+    /* F-604 — the scaffold variables this pipeline was rendered with, so a re-setup can
+       be prefilled from what is installed rather than from the scaffold's defaults. These
+       are an app NAME and a folder PATH the admin typed; the allow-list stays an
+       allow-list, so only DECLARED scaffold variables are projected, each clamped, and a
+       key the scaffold does not declare never reaches the browser. */
+    scaffoldVars: publicScaffoldVars(row.scaffoldVars),
   };
 }
 

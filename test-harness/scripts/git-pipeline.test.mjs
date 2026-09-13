@@ -707,5 +707,71 @@ reset();
     `a redelivery of a CURRENT install is still a no-op (got ${JSON.stringify(dup).slice(0, 160)})`);
 }
 
+/* ===== 17. F-604 — A RE-SETUP CARRIES THE INSTALLED VALUES, IT DOES NOT RESET THEM =====
+ * F-583 lets an outdated-but-installed row reach the setup form. The row write used to be
+ * built from the payload alone, so a caller that omitted a field got null: re-running the
+ * remedy re-rendered the workflow with the scaffold's DEFAULT variables and erased the
+ * repository's developer space and app id. Carry-over, not overwrite. */
+reset();
+{
+  const connId = await seedConnection();
+  const SPACE = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+  const ARI = "ari:cloud:ecosystem::app/11111111-2222-3333-4444-555555555555";
+  await call("setupGitPipeline", {
+    connectionId: connId, repo: REPO, manifestYaml: MANIFEST, site: SITE,
+    scaffoldVars: { APP_NAME: "Acme App", UI_DIR: "static/app" },
+    developerSpaceId: SPACE, appId: ARI,
+  });
+  fetchQueue = githubSetupChain(5);
+  await runQueued(lastParams());
+  const key = pipe.gitPipelineKey(connId, REPO);
+  const installed = storage.__raw(key);
+  ok(installed.status === "installed", `the seed install completes (got ${installed.status} / ${installed.failedStep})`);
+  ok(installed.scaffoldVars && installed.scaffoldVars.UI_DIR === "static/app",
+    `the installed row records the variables it was rendered with (got ${JSON.stringify(installed.scaffoldVars)})`);
+  const pub = await call("getGitPipelineStatus", { connectionId: connId, repo: REPO });
+  ok(pub.status.scaffoldVars && pub.status.scaffoldVars.APP_NAME === "Acme App" &&
+     pub.status.scaffoldVars.UI_DIR === "static/app",
+    "…and the public row carries them, so the Code tab can prefill the form from what is installed");
+  ok(findSecret(pub, GH_TOKEN) === null && findSecret(pub, FORGE_TOKEN) === null,
+    "…without carrying a secret with them");
+
+  // Age it, then re-set-up with NO scaffoldVars / space / app id in the payload at all.
+  storage.__seed(key, { ...installed, scaffoldVersion: 1 });
+  pushedEvents.length = 0;
+  const again = await call("setupGitPipeline", { connectionId: connId, repo: REPO, manifestYaml: MANIFEST, site: SITE });
+  ok(again.success === true, `a partial payload is accepted (got ${JSON.stringify(again).slice(0, 160)})`);
+  const queuedRow = storage.__raw(key);
+  ok(queuedRow.scaffoldVars && queuedRow.scaffoldVars.UI_DIR === "static/app" &&
+     queuedRow.developerSpaceId === SPACE && queuedRow.appId === ARI,
+    `the re-setup row KEPT the installed values instead of nulling them (got ${JSON.stringify({ v: queuedRow.scaffoldVars, s: queuedRow.developerSpaceId, a: queuedRow.appId })})`);
+  ok(queuedRow.installedAt === installed.installedAt,
+    "…and it keeps installedAt, so the header does not lose the install date");
+  const params = lastParams();
+  ok(params.scaffoldVars && params.scaffoldVars.UI_DIR === "static/app" &&
+     params.developerSpaceId === SPACE && params.appId === ARI,
+    `…and the CONSUMER is asked to render the same folder and set the same variables (got ${JSON.stringify({ v: params.scaffoldVars, s: params.developerSpaceId, a: params.appId })})`);
+  fetchCalls = [];
+  const chain = githubSetupChain(5);
+  chain.splice(4 + 5, 1); // no default-branch lookup: the row already names the branch
+  fetchQueue = chain;
+  const out = await runQueued(params);
+  ok(out.ok === true, `the carried re-setup runs (got ${JSON.stringify(out).slice(0, 200)})`);
+  const treeCall = fetchCalls.find((c) => /git\/trees/.test(c.url));
+  ok(!!treeCall && String(treeCall.body).includes("static/app") && !String(treeCall.body).includes("static/ui"),
+    "…and the COMMITTED workflow builds the folder the pipeline was installed with, not the scaffold default");
+
+  // An explicitly EMPTY value is a clear, not an omission: the admin can still remove one.
+  storage.__seed(key, { ...storage.__raw(key), scaffoldVersion: 1 });
+  await call("setupGitPipeline", {
+    connectionId: connId, repo: REPO, manifestYaml: MANIFEST, site: SITE, developerSpaceId: "", appId: "",
+  });
+  const cleared = storage.__raw(key);
+  ok(cleared.developerSpaceId === null && cleared.appId === null,
+    `an explicitly empty field CLEARS the stored one (got ${JSON.stringify({ s: cleared.developerSpaceId, a: cleared.appId })})`);
+  ok(cleared.scaffoldVars && cleared.scaffoldVars.UI_DIR === "static/app",
+    "…and clearing one field does not disturb the ones the payload said nothing about");
+}
+
 console.log(`git-pipeline: ${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

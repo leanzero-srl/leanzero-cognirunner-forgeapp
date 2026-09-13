@@ -1129,6 +1129,8 @@ const CODE_IDENTITY = () => ((typeof window !== "undefined" && window.__CODE_IDE
                                  carries `variable`).
      window.__PIPE_IDS__       - {developerSpaceId, appId} for the already-installed
                                  scenarios, so the row can be asked to render them.
+     window.__PIPE_VARS__      - the scaffoldVars the installed row carries (F-604); set
+                                 it to null for a row installed before the field existed.
      window.__PIPE_DEPLOY_FAIL__ - triggerGitDeploy refuses with not_installed.
      window.__PIPE_SETUP__     - WRITTEN BY the mock: the last setupGitPipeline payload
                                  (F-526, the scaffoldVars assertion reads it). */
@@ -1162,6 +1164,13 @@ const PIPE_IDS = () => {
   const seeded = (typeof window !== "undefined" && window.__PIPE_IDS__) || null;
   return seeded || { developerSpaceId: null, appId: null };
 };
+/* The installed scaffold variables. Overridable so an arm can ask for a row that has
+   none at all (a pipeline installed before the field existed). */
+const PIPE_VARS = () => {
+  if (typeof window !== "undefined" && window.__PIPE_VARS__ !== undefined) return window.__PIPE_VARS__;
+  return { APP_NAME: "Acme Ops", UI_DIR: "static/app" };
+};
+
 const PIPE_STEPS = (kind, phase) => PIPELINE_STEP_NAMES(kind, PIPE_IDS()).map((name, i) => ({
   name,
   status: phase === "all" ? "done"
@@ -1197,6 +1206,11 @@ const PIPE_ROW = (status, storedScaffoldVersion = SCAFFOLD_VERSION) => ({
      BACKEND's value rather than the reader's keystrokes. */
   developerSpaceId: PIPE_IDS().developerSpaceId || null,
   appId: PIPE_IDS().appId || null,
+  /* F-604: publicPipelineRow carries the scaffold variables the pipeline was RENDERED
+     with, so a re-setup can be prefilled from what is installed. The fixture's values are
+     deliberately NOT the scaffold's defaults - a form seeded from the defaults would look
+     identical to a prefilled one if they matched. */
+  scaffoldVars: PIPE_VARS(),
 });
 /* The QUEUED journey is a SEQUENCE, not a state: each poll advances it one stage, which
    is the only way "queued becomes installed" can prove the card really re-read. */

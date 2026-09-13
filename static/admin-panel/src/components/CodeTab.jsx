@@ -324,6 +324,33 @@ function PipelineCard({ invoke, conn, repoId, onNeedIdentity }) {
     };
   }, [conn.id, repoId]);
 
+  /* F-604 - PREFILL THE FORM FROM THE ROW, ONCE PER REPO.
+
+     F-583 admits an INSTALLED-but-outdated pipeline to this form, and the form's fields
+     start at the scaffold's DEFAULTS. Following the amber banner therefore re-installed the
+     pipeline with APP_NAME/UI_DIR defaults and dropped the developer space and app id the
+     repository was set up with: the remedy for stale bytes broke the build folder and the
+     app registration in the same commit. The row is the record of what is installed
+     (publicPipelineRow carries scaffoldVars, developerSpaceId, appId and branch), so a
+     re-setup starts from it.
+
+     SEEDED ONCE, per repo. The card polls every 5 seconds; a seed that ran on every read
+     would overwrite whatever the admin is typing. The manifest is deliberately NOT seeded -
+     the row stores a lock hash, never the manifest, and the paste is what proves the
+     permissions again. */
+  const seededRef = useRef(null);
+  useEffect(() => { seededRef.current = null; }, [conn.id, repoId]);
+  useEffect(() => {
+    if (!row || seededRef.current === repoId) return;
+    seededRef.current = repoId;
+    const vars = row.scaffoldVars || {};
+    if (vars.APP_NAME) { appNameTouched.current = true; setAppName(vars.APP_NAME); }
+    if (vars.UI_DIR) setUiDir(vars.UI_DIR);
+    if (row.developerSpaceId) setDeveloperSpaceId(row.developerSpaceId);
+    if (row.appId) setAppId(row.appId);
+    if (row.branch) setBranch(row.branch);
+  }, [row, repoId]);
+
   const restartPolling = () => {
     const token = ++tokenRef.current;
     if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; }
@@ -367,8 +394,12 @@ function PipelineCard({ invoke, conn, repoId, onNeedIdentity }) {
         /* F-548: both are optional, and an EMPTY one is sent as absent rather than as
            an empty string, because the backend reads "present and malformed" as a
            refusal and "absent" as "do not write this repository variable at all". */
-        developerSpaceId: developerSpaceId.trim() || undefined,
-        appId: appId.trim() || undefined,
+        /* F-604: with a row on screen the form was PREFILLED from it, so an emptied field
+           is an explicit clear and is sent as the empty string; the backend reads a key it
+           was not sent as "keep what the row holds". With no row there is nothing to keep
+           and the F-548 shape is unchanged. */
+        developerSpaceId: row ? developerSpaceId.trim() : (developerSpaceId.trim() || undefined),
+        appId: row ? appId.trim() : (appId.trim() || undefined),
       });
       if (r && r.success) {
         setRow(r.status || null);

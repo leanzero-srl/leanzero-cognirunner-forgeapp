@@ -25,7 +25,7 @@ import assert from "node:assert/strict";
 register("data:text/javascript," + encodeURIComponent(`
 export async function resolve(spec, ctx, next) {
   const parent = String(ctx.parentURL || "");
-  if (spec === "./index.js" && (parent.endsWith("/src/agent-runner.js") || parent.endsWith("/src/coder-engine.js"))) {
+  if (spec === "./index.js" && (parent.endsWith("/src/agent-runner.js") || parent.endsWith("/src/coder-engine.js") || parent.endsWith("/src/coder-workspace.js"))) {
     return { url: "coder-engine:index", shortCircuit: true };
   }
   return next(spec, ctx);
@@ -41,7 +41,9 @@ export async function load(url, ctx, next) {
     + "export const isJobCancelled = async () => false;"
     + "export const coerceToAdf = s => s;"
     + "export const extractTextFromADF = s => s;"
-    + "export const parseAIJson = () => ({});" };
+    + "export const parseAIJson = () => ({});"
+    + "export const UPLOAD_ALLOWED_EXTENSIONS = new Set(['.md','.txt']);"
+    + "export const UPLOAD_MAX_BYTES = 26214400;" };
   return next(url, ctx);
 }`));
 

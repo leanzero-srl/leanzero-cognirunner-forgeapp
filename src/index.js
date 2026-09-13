@@ -6268,13 +6268,14 @@ const WEBTRIGGER_URL_KVS_KEY = "webtrigger_url:attachment-bridge";
 const UPLOAD_TOKEN_PREFIX = "upload_token:";
 const UPLOAD_TOKEN_TTL_MS = 10 * 60 * 1000;
 const UPLOAD_WEBTRIGGER_URL_KVS_KEY = "webtrigger_url:attachment-upload";
-const UPLOAD_MAX_BYTES = 25 * 1024 * 1024;
+export const UPLOAD_MAX_BYTES = 25 * 1024 * 1024;
 // Must stay in lockstep with MCP_WRITE_TOOLS / DOC_FORMAT_EXT below: every format the model is
 // OFFERED as a write tool has to be uploadable, or the deck is generated, rejected 415, and the
 // single-use token is burned with no retry. `.pptx` was missing exactly that way — a88908d added
 // this allowlist, 2bd55f3 later enabled create-pptx in writeTools + writeGuidance and never came
 // back here. Both sides read correctly on their own; the contract between them was unchecked.
-const UPLOAD_ALLOWED_EXTENSIONS = new Set([".pdf", ".docx", ".xlsx", ".pptx", ".md", ".txt", ".csv"]);
+// Exported so src/coder-workspace.js attaches through THIS list and never a second copy.
+export const UPLOAD_ALLOWED_EXTENSIONS = new Set([".pdf", ".docx", ".xlsx", ".pptx", ".md", ".txt", ".csv"]);
 
 const redactSecret = (s) =>
   typeof s === "string" && s.length > 6 ? `${s.substring(0, 6)}…` : "***";

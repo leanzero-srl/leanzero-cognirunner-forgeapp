@@ -65,6 +65,88 @@ ok(!/atlassian-dev\.net/.test(JSON.stringify(redactSecrets({ url: "https://abc12
 ok(redactSecrets({ url: "https://wolfaenpak.atlassian.net/browse/COG-1" }).url === "https://wolfaenpak.atlassian.net/browse/COG-1",
   "…but an ordinary Jira URL is left alone, so evidence stays useful");
 
+/* ── 2b. F-650 — THE APP'S OWN TOKEN, SECRET-SHAPED KEYS, QUERY CREDENTIALS ─────
+   Every shape below was MEASURED passing through verbatim before the fix. The
+   fixture token is a real-shaped one: `cgr_` + 48 lowercase hex, which is what
+   `createApiTokenInternal` mints (`randomBytes(24).toString("hex")`). */
+const CGR = "cgr_" + "ab12cd34".repeat(6);               // 48 hex, the live shape
+const noCgr = (v) => !JSON.stringify(v).includes(CGR);
+
+ok(CGR.length === 52, "the fixture really is the minted shape (cgr_ + 48 hex)");
+ok(noCgr(redactString(`Authorization: Bearer ${CGR}`)),
+  "F-650: a cgr_ token in a BARE STRING is masked (the app's own prefix was the one missing)");
+ok(noCgr(redactSecrets({ note: `minted ${CGR}` })),
+  "F-650: a cgr_ token in prose under an innocent key is masked");
+ok(noCgr(redactSecrets({ url: `https://wolfaenpak.atlassian.net/x1/abc?token=${CGR}` })),
+  "F-650: a credential in a QUERY PARAMETER is masked even on a non-dev host");
+ok(redactString("https://x/y?secret=hunter2&key=abc&z=keep").includes("z=keep")
+  && !/hunter2|key=abc/.test(redactString("https://x/y?secret=hunter2&key=abc&z=keep")),
+  "F-650: `secret=` and `key=` query VALUES are masked while unrelated parameters survive");
+ok(redactString("the key=value pair is documented") === "the key=value pair is documented",
+  "NEGATIVE: `key=` in prose (no ? or &) is NOT masked — the query rule is anchored");
+ok(redactSecrets({ harnessSecret: "s3cr3t" }).harnessSecret === REDACTED
+  && redactSecrets({ HARNESS_SECRET: "s3cr3t" }).HARNESS_SECRET === REDACTED
+  && redactSecrets({ hookSecret: "s3cr3t" }).hookSecret === REDACTED
+  && redactSecrets({ editorApiKey: "x" }).editorApiKey === REDACTED,
+  "F-650: key matching is now case-insensitive SUBSTRING (`^secret$` missed harnessSecret)");
+const budget = redactSecrets({ maxTokens: 4000, promptTokens: 812, tokensPerMinute: 35000 });
+ok(budget.maxTokens === 4000 && budget.promptTokens === 812 && budget.tokensPerMinute === 35000,
+  "NEGATIVE: numeric token COUNTS survive — the substring rule fires on strings only");
+ok(redactSecrets({ row: { prefix: "cgr_deadbe", id: "tok_1" } }).row.prefix === "cgr_deadbe",
+  "NEGATIVE: `row.prefix` (cgr_ + 6 hex, the public handle) is NOT masked — {48,} is deliberate");
+ok(redactSecrets({ tokenCount: 0, secretsFound: "" }).tokenCount === 0,
+  "NEGATIVE: a zero / empty value is not turned into [REDACTED] noise");
+const beforeCgr = { token: CGR };
+redactSecrets(beforeCgr);
+ok(beforeCgr.token === CGR, "the no-mutation contract still holds with the new layers");
+
+/* ── 2c. F-652 — PII: `emailAddress` lands in `app_admins` since F-647 ─────────── */
+const ROSTER = [
+  { accountId: "557058:aaa", displayName: "Mihai Perdum", emailAddress: "mihai@wolfaenpak.com", role: "admin", scope: "all" },
+  { accountId: "557058:bbb", displayName: "Mihai Perdum", emailAddress: "mihai.perdum+contractor2025@wolfaenpak.com", role: "editor", scope: "own" },
+];
+const noAddr = (v) => !/mihai@|contractor2025@/.test(JSON.stringify(v));
+const rRoster = redactSecrets(ROSTER);
+
+ok(noAddr(rRoster), "F-652: `emailAddress` in a roster row is masked (it was passing through verbatim)");
+ok(rRoster[0].emailAddress === "m***@wolfaenpak.com", "…to <local-initial>***@<domain>");
+ok(rRoster[0].emailAddress.endsWith("@wolfaenpak.com"),
+  "…the DOMAIN is KEPT on purpose — a flat [REDACTED] would destroy the namesake evidence");
+ok(rRoster[0].accountId === "557058:aaa" && rRoster[0].displayName === "Mihai Perdum" && rRoster[1].role === "editor",
+  "…while accountId / displayName / role — the fields the namesake proof needs — survive");
+ok(ROSTER[0].emailAddress === "mihai@wolfaenpak.com", "the no-mutation contract holds for the PII layer too");
+ok(JSON.stringify(redactSecrets(rRoster)) === JSON.stringify(rRoster),
+  "the mask is IDEMPOTENT — a payload redacted by a writer AND at the file boundary is stable");
+
+// The other arm: the driver stringifies the roster and slices it into a FAIL payload.
+ok(noAddr(redactSecrets({ before: JSON.stringify(ROSTER) })),
+  "F-652: an email inside an ALREADY-STRINGIFIED roster is masked (the key-walk alone would miss it)");
+ok(noAddr(redactString(JSON.stringify(ROSTER)).slice(0, 300)),
+  "…and redacting BEFORE the slice leaves no half-address under the cut");
+ok(redactSecrets({ email: "x@y.co" }).email === "x***@y.co"
+  && redactSecrets({ emailAddress: "x@y.co" }).emailAddress === "x***@y.co"
+  && redactSecrets({ email_address: "x@y.co" }).email_address === "x***@y.co",
+  "the PII key set covers email / emailAddress / email_address");
+ok(redactSecrets({ email: "not-an-address" }).email === REDACTED,
+  "a PII key whose value is not an address is masked outright rather than half-shown");
+ok(redactSecrets({ note: "reach me at mihai@wolfaenpak.com about it" }).note === "reach me at m***@wolfaenpak.com about it",
+  "an email in PROSE under an innocent key is masked, and the sentence stays readable");
+ok(redactSecrets({ id: "557058:653160a5-6112-470d-baea-333ac760364e" }).id === "557058:653160a5-6112-470d-baea-333ac760364e",
+  "NEGATIVE: an account id is NOT an email and is left whole — it is the discriminator under test");
+
+/* THE RESTORE MUST STILL WORK. The byte-identical roster restore compares the RAW
+   snapshot held in memory. Redacted comparison is what would break, and it breaks the
+   dangerous way: two DIFFERENT addresses collapse onto one mask and compare EQUAL. */
+const restored = JSON.parse(JSON.stringify(ROSTER));
+const notRestored = JSON.parse(JSON.stringify(ROSTER));
+notRestored[1].emailAddress = "mihai.perdum+contractor2024@wolfaenpak.com";  // a DIFFERENT account
+ok(JSON.stringify(restored) === JSON.stringify(ROSTER),
+  "RESTORE: a raw in-memory snapshot still compares byte-identical to an unchanged roster");
+ok(JSON.stringify(notRestored) !== JSON.stringify(ROSTER),
+  "RESTORE: a raw comparison still DETECTS a roster that came back different");
+ok(JSON.stringify(redactSecrets(notRestored)) === JSON.stringify(redactSecrets(ROSTER)),
+  "…and this is exactly why the comparison must stay RAW: the redacted forms are EQUAL");
+
 /* ── 3. it must survive whatever an evidence writer hands it ───────────────────── */
 const cyc = { a: 1 }; cyc.self = cyc;
 ok(redactSecrets(cyc).self === "[CIRCULAR]", "a cyclic payload does not hang the writer");
@@ -127,18 +209,77 @@ ok(scanSource([
   'if (!e.json.token || e.json.role !== "editor") { FAIL("x", { body: JSON.stringify(redactSecrets(e.json)).slice(0, 250) }); return; }',
 ].join("\n")).hits.length === 0, "NEGATIVE CONTROL: an explicitly redacted stringify is not flagged");
 
+/* ── 4b. F-650 — THE CHEAP TEXTUAL NET OVER THE EVIDENCE WRITERS ────────────────
+   The scan above follows a MINT VARIABLE, which is why F-650 slipped past it: the
+   leak it predicts is not a stringified mint answer but a token INTERPOLATED into a
+   writer's own argument — ``FAIL("refused", { url: `${RULES_URL}?token=${tok("admin")}` })``
+   or ``info(`using ${editorToken}`)``. That has no mint variable near it at all.
+   This is a TEXT net, not an analysis: it reads the argument text of every
+   FAIL/NV/info call and flags the three shapes a credential actually arrives in.
+   It is allowed to be crude because both controls below are paid in full. */
+/* No `\b` before `tok`: the variable is usually a camelCase TAIL (`adminToken`,
+   `editorTok`), and a word boundary is exactly what is missing there. */
+const LEAKY_ARG = /\$\{[^}]*tok|token\s*\}|[?&]token=/i;
+function scanWriters(src) {
+  const hits = [];
+  src.split("\n").forEach((line, i) => {
+    const call = line.match(/\b(?:FAIL|NV|info)\s*\(([\s\S]*)$/);
+    if (!call || !LEAKY_ARG.test(call[1])) return;
+    if (/redactSecrets\s*\(|redactString\s*\(/.test(line)) return;   // explicitly redacted
+    // Safe ONLY when the guard on the same line proves the token is ABSENT — the same
+    // discriminator section 4 uses, and for the same reason: F-646's guard was a
+    // disjunct, so it fired holding a live token.
+    if (/!\(?[^)]*\.token\b/.test(line) && !line.includes("||")) return;
+    hits.push(i + 1);
+  });
+  return hits;
+}
+
+/* POSITIVE CONTROL — the two shapes F-650 names, written the obvious way. */
+ok(scanWriters('    FAIL("rest call refused", { url: `${RULES_URL}?token=${tok("admin")}` });').length === 1,
+  "POSITIVE CONTROL: the writer net FIRES on a token interpolated into a FAIL payload");
+ok(scanWriters('  info(`calling the rules API with ${adminToken}`);').length === 1,
+  "POSITIVE CONTROL: the writer net FIRES on `${…token}` inside an info line");
+ok(scanWriters('    NV("unreachable", { url: RULES_URL + "?token=" + t });').length === 1,
+  "POSITIVE CONTROL: the writer net FIRES on a concatenated `?token=`");
+/* …and the shapes it must NOT fire on, or the drivers become unwritable. */
+ok(scanWriters('  FAIL("refused", { body: JSON.stringify(redactSecrets(tok.json)).slice(0, 200) });').length === 0,
+  "NEGATIVE CONTROL: an explicitly redacted payload is not flagged");
+ok(scanWriters('  if (!(tok.body && tok.body.success && tok.body.token)) { FAIL(`refused: ${JSON.stringify(tok.body).slice(0, 300)}`); return; }').length === 0,
+  "NEGATIVE CONTROL: a guard that proves the token is absent is not flagged (va-shadow-door:303)");
+ok(scanWriters('  info(`${rows.length} row(s) -> ${OUT}/roster-before.json`);').length === 0,
+  "NEGATIVE CONTROL: an ordinary interpolated info line is not flagged");
+
 const offenders = [];
 let scannedVars = 0;
 for (const f of liveFiles) {
-  const { hits, vars } = scanSource(readFileSync(path.join(here, f), "utf8"));
+  const src = readFileSync(path.join(here, f), "utf8");
+  const { hits, vars } = scanSource(src);
   scannedVars += vars;
   for (const ln of hits) offenders.push(`${f}:${ln}`);
+  for (const ln of scanWriters(src)) offenders.push(`${f}:${ln} (writer arg)`);
 }
 ok(scannedVars >= 4, `the scan located mint-response variables to follow (${scannedVars})`);
 ok(offenders.length === 0, `no live driver stringifies a mint response un-redacted (offending sites: ${offenders.join(", ")})`);
 
-/* ── 5. the two hardened drivers redact in the writers themselves ──────────────── */
-for (const f of ["parity-doors-live.mjs", "knowledge-doors-editor-live.mjs"]) {
+/* ── 4c. F-652 — NO DRIVER WRITES AN `app_admins` SNAPSHOT UN-REDACTED ──────────
+   The roster is the one artefact that carries PII, and it reaches disk through named
+   snapshot files as well as through evidence.json. This is a whole-directory rule, so
+   a NEW driver that snapshots the roster inherits it instead of having to remember. */
+const rosterWriters = [];
+for (const f of liveFiles) {
+  const src = readFileSync(path.join(here, f), "utf8");
+  if (!/app_admins/.test(src)) continue;
+  rosterWriters.push(f);
+  const bad = src.split("\n")
+    .map((l, i) => ({ l, n: i + 1 }))
+    .filter(({ l }) => /writeFileSync\(/.test(l) && /roster|evidence\.json/i.test(l) && !/redactSecrets\(/.test(l));
+  ok(bad.length === 0, `${f}: every roster/evidence file write is redacted (raw at: ${bad.map((b) => b.n).join(", ")})`);
+}
+ok(rosterWriters.length >= 2, `the roster-snapshot rule found drivers to apply to (${rosterWriters.join(", ")})`);
+
+/* ── 5. the hardened drivers redact in the writers themselves ──────────────────── */
+for (const f of ["parity-doors-live.mjs", "knowledge-doors-editor-live.mjs", "perm-namesake-ui-live.mjs"]) {
   const src = readFileSync(path.join(here, f), "utf8");
   ok(/from "\.\.\/lib\/redact\.mjs"/.test(src), `${f} imports the shared redactor`);
   for (const w of ["PASS", "FAIL", "NV"]) {

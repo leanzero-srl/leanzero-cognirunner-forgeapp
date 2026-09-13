@@ -18,10 +18,14 @@
  *     F-647 says is missing when an email exists — here both surfaces are id-kind);
  *  4. removing that card restores `app_admins` BYTE-IDENTICALLY to the snapshot.
  *
- * READ-ONLY on src/ and static/. No deploy. No token, URL or secret is ever printed.
+ * READ-ONLY on src/ and static/. No deploy. No token, URL or secret is ever printed —
+ * and since F-652, no EMAIL ADDRESS either: every roster row this driver touches goes
+ * through `lib/redact.mjs` before it reaches a terminal or a file, because that header
+ * sentence was a promise the code did not keep (F-646 is what a promise like it costs).
  * ═══════════════════════════════════════════════════════════════════════════════ */
 import fs from "node:fs";
 import { loadEnv, requireEnv } from "../lib/env.mjs";
+import { redactSecrets, redactString } from "../lib/redact.mjs";
 
 const env = loadEnv();
 const arg = (n, d) => { const h = process.argv.slice(2).find((a) => a.startsWith(`--${n}=`)); return h ? h.slice(n.length + 3) : d; };
@@ -42,10 +46,15 @@ const TARGET_SEG = seg(TARGET);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let passes = 0, fails = 0, unproven = 0;
 const ev = { at: new Date().toISOString(), env: ENV_NAME, target: TARGET, checks: [] };
-const PASS = (s, d) => { passes++; ev.checks.push({ v: "PASS", s, ...(d ? { d } : {}) }); console.log(`  PASS  ${s}${d ? " " + JSON.stringify(d) : ""}`); };
-const FAIL = (s, d) => { fails++; ev.checks.push({ v: "FAIL", s, ...(d ? { d } : {}) }); console.log(`  FAIL  ${s}${d ? " " + JSON.stringify(d) : ""}`); };
-const NV = (s, d) => { unproven++; ev.checks.push({ v: "N/V", s, ...(d ? { d } : {}) }); console.log(`  N/V   ${s}${d ? " " + JSON.stringify(d) : ""}`); };
-const info = (s) => console.log(`        ${s}`);
+/* F-646/F-652 — this driver reads `app_admins`, which carries real `emailAddress`
+   values since F-647, and it wrote every roster row to four files and to stdout with
+   no redaction at all. EVERY payload now passes `redactSecrets` ONCE, here, before
+   the console line and before it is pushed into `ev`; the raw rows survive only in
+   memory, where the byte-identical restore diff needs them. */
+const PASS = (s, d) => { const r = d ? redactSecrets(d) : d; passes++; ev.checks.push({ v: "PASS", s, ...(d ? { d: r } : {}) }); console.log(`  PASS  ${s}${d ? " " + JSON.stringify(r) : ""}`); };
+const FAIL = (s, d) => { const r = d ? redactSecrets(d) : d; fails++; ev.checks.push({ v: "FAIL", s, ...(d ? { d: r } : {}) }); console.log(`  FAIL  ${s}${d ? " " + JSON.stringify(r) : ""}`); };
+const NV = (s, d) => { const r = d ? redactSecrets(d) : d; unproven++; ev.checks.push({ v: "N/V", s, ...(d ? { d: r } : {}) }); console.log(`  N/V   ${s}${d ? " " + JSON.stringify(r) : ""}`); };
+const info = (s) => console.log(`        ${redactString(String(s))}`);
 
 async function hook(body, method = "POST", qs = "") {
   if (!HOOK_URL) throw new Error(`no web-trigger URL for environment "${ENV_NAME}"`);
@@ -186,10 +195,13 @@ async function main() {
   PASS(`hook reachable on ${ENV_NAME}, secret accepted`);
 
   /* ── STEP 0 — snapshot, and prove the target is NOT already on it ──────────── */
+  /* F-652 — `beforeJson` is the RAW snapshot and stays in memory: the restore check
+     below is a BYTE-IDENTICAL comparison, and comparing redacted forms would call two
+     different addresses equal because they share one mask. The disk copy is redacted. */
   const before = await roster();
   const beforeJson = JSON.stringify(before);
-  fs.writeFileSync(`${OUT}/roster-before.json`, JSON.stringify(before, null, 2));
-  ev.rosterBefore = before;
+  fs.writeFileSync(`${OUT}/roster-before.json`, JSON.stringify(redactSecrets(before), null, 2));
+  ev.rosterBefore = before;   // redacted at the file boundary below
   info(`roster snapshot: ${before.length} row(s) -> ${OUT}/roster-before.json`);
   const beforeIds = before.map((r) => (typeof r === "string" ? r : r.accountId));
   if (beforeIds.includes(TARGET)) { FAIL("the target account is ALREADY on the roster — the grant below would prove nothing"); }
@@ -200,7 +212,7 @@ async function main() {
     /* ── STEP 1 — the three namesake search rows ───────────────────────────── */
     const rows = await readSearchRows("01-search-three-namesakes.png");
     ev.searchRows = rows;
-    fs.writeFileSync(`${OUT}/search-rows.json`, JSON.stringify(rows, null, 2));
+    fs.writeFileSync(`${OUT}/search-rows.json`, JSON.stringify(redactSecrets(rows), null, 2));
     const named = rows.filter((r) => r.name === NAME);
     if (named.length >= 3) PASS(`the search for "${NAME}" returns ${named.length} rows with an IDENTICAL display name`, { rows: rows.length });
     else FAIL(`expected >=3 namesake rows, got ${named.length} — the F-645 scenario is not reproduced on this site`, { rows });
@@ -229,7 +241,7 @@ async function main() {
     if (!click.clicked) { FAIL("the target row could not be clicked", click); throw new Error("no grant"); }
     const after = await roster();
     ev.rosterAfter = after;
-    fs.writeFileSync(`${OUT}/roster-after-grant.json`, JSON.stringify(after, null, 2));
+    fs.writeFileSync(`${OUT}/roster-after-grant.json`, JSON.stringify(redactSecrets(after), null, 2));
     const afterIds = after.map((r) => (typeof r === "string" ? r : r.accountId));
     const added = afterIds.filter((id) => !beforeIds.includes(id));
     const removedIds = beforeIds.filter((id) => !afterIds.includes(id));
@@ -244,7 +256,7 @@ async function main() {
     /* ── STEP 3 — the roster card names the SAME account ───────────────────── */
     const cards = await readRosterCards("03-roster-card.png");
     ev.rosterCards = cards;
-    fs.writeFileSync(`${OUT}/roster-cards.json`, JSON.stringify(cards, null, 2));
+    fs.writeFileSync(`${OUT}/roster-cards.json`, JSON.stringify(redactSecrets(cards), null, 2));
     const targetCards = cards.filter((c) => c.ident === TARGET_SEG);
     if (targetCards.length === 1) PASS("CROSS-SURFACE: the roster card shows the SAME segment the search row did", { card: targetCards[0] });
     else FAIL("the roster does not carry exactly one card with the clicked segment", { targetSeg: TARGET_SEG, cards });
@@ -260,7 +272,7 @@ async function main() {
     if (rm.removed) PASS("the card was located and removed by its DISCRIMINATOR, not by position", rm);
     else FAIL("the card could not be located by discriminator for removal", rm);
     const end = await roster();
-    fs.writeFileSync(`${OUT}/roster-after-restore.json`, JSON.stringify(end, null, 2));
+    fs.writeFileSync(`${OUT}/roster-after-restore.json`, JSON.stringify(redactSecrets(end), null, 2));
     ev.rosterEnd = end;
     if (JSON.stringify(end) === beforeJson) { restored = true; PASS("SECOND READ: `app_admins` is BYTE-IDENTICAL to the snapshot — the roster is restored", { rows: end.length }); }
     else FAIL("the roster did NOT return to its snapshot", { before, end });
@@ -273,13 +285,13 @@ async function main() {
         info("ROSTER NOT RESTORED — attempting a final removal by segment");
         await removeRosterBySegment(TARGET_SEG).catch(() => {});
         const end2 = await roster();
-        fs.writeFileSync(`${OUT}/roster-after-restore.json`, JSON.stringify(end2, null, 2));
+        fs.writeFileSync(`${OUT}/roster-after-restore.json`, JSON.stringify(redactSecrets(end2), null, 2));
         if (JSON.stringify(end2) === beforeJson) PASS("recovery: the roster is byte-identical to the snapshot");
         else FAIL("RECOVERY FAILED — the roster still differs from the snapshot", { end: end2 });
       }
     }
     ev.summary = { passes, fails, unproven };
-    fs.writeFileSync(`${OUT}/evidence.json`, JSON.stringify(ev, null, 2));
+    fs.writeFileSync(`${OUT}/evidence.json`, JSON.stringify(redactSecrets(ev), null, 2));
     console.log(`\n  ${passes} PASS · ${fails} FAIL · ${unproven} N/V   -> ${OUT}/evidence.json\n`);
     process.exit(fails ? 1 : 0);
   }

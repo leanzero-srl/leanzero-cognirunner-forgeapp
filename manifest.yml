@@ -451,6 +451,10 @@ app:
   id: ari:cloud:ecosystem::app/36415848-6868-4697-9554-3c3ad87b8da9
   licensing:
     enabled: true
+    # Editions (1.3, owner go 2026-09-13): IRREVERSIBLE once deployed. The Marketplace
+    # listing carries Standard + "CogniRunner Coder" (capabilitySet advanced); the app
+    # reads it through src/shared/edition.js only.
+    editionsEnabled: true
   # Confluence is OPTIONAL: the app stays a Jira app; Confluence effects light up
   # only where an admin also installs it on Confluence (probe d, Coder plan).
   compatibility:

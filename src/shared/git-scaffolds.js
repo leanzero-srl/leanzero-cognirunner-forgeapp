@@ -66,7 +66,7 @@ const FORGE_DEPLOY_YML = [
   "",
   "on:",
   "  push:",
-  "    branches: [main]",
+  "    branches: [main, master]",
   "  workflow_dispatch:",
   "    inputs:",
   "      environment:",
@@ -143,6 +143,19 @@ const FORGE_DEPLOY_YML = [
 // ---------------------------------------------------------------------------
 // Pipeline: Bitbucket Pipelines (custom pipeline `forge-deploy`, no manifest push-back)
 // ---------------------------------------------------------------------------
+// F-531 — THE TRIGGER BRANCH IS NOT THE SAME WORD ON BOTH HOSTS. A repository CogniRunner
+// creates on Bitbucket comes back with `mainbranch.name = "master"` (live, the offshoot's
+// `-bb` repo), while a new GitHub repository defaults to `main` — which is why this was
+// invisible until Bitbucket was exercised. The branch pipeline of a CogniRunner-provisioned
+// Bitbucket repo therefore never fired: only the `custom:` entry could be started, and only
+// by an explicit trigger.
+//
+// Both scaffolds now trigger on BOTH names on BOTH hosts. The alternative — rendering the
+// repository's own `mainbranch.name` into the YAML — makes the committed pipeline depend on
+// a value read at setup time, so a repo whose default branch is renamed afterwards silently
+// stops deploying, and the scaffold stops being a deterministic render. Naming both costs
+// one extra key and is true whatever the repo does. A repo cannot have both branches as its
+// default, so this never double-fires on one push.
 const BITBUCKET_PIPELINES_YML = [
   "image: node:22",
   "",
@@ -183,6 +196,8 @@ const BITBUCKET_PIPELINES_YML = [
   "pipelines:",
   "  branches:",
   "    main:",
+  "      - step: *forge-deploy",
+  "    master:",
   "      - step: *forge-deploy",
   "  custom:",
   "    forge-deploy:",

@@ -101,6 +101,22 @@ for (const kind of ["forge-custom-ui", "forge-pipeline"]) {
 assert.ok(!/registers the app ONCE/.test(src) && !/registers at most once/.test(src),
   "the module's own comments no longer promise a bootstrap that registers at most once automatically");
 
+/* ===================== F-531 — THE TRIGGER BRANCH ON BOTH HOSTS ======================
+ * A repository CogniRunner creates on Bitbucket comes back with mainbranch.name = "master"
+ * (live, the offshoot's -bb repo), while the committed pipeline only listed `main`, so its
+ * branch pipeline never fired -- only the custom: entry could be started. New GitHub repos
+ * default to `main`, which is why this stayed invisible until Bitbucket was exercised. Both
+ * names, on both hosts, is the answer that does not depend on a value read at setup time. */
+for (const kind of ["forge-custom-ui", "forge-pipeline"]) {
+  const rendered = m.renderScaffold(kind, {});
+  const gh = rendered.find((f) => f.path === ".github/workflows/forge-deploy.yml").content;
+  const bb = rendered.find((f) => f.path === "bitbucket-pipelines.yml").content;
+  assert.ok(/branches: \[main, master\]/.test(gh), kind + ": the GitHub workflow triggers on main AND master");
+  assert.ok(/\n    main:\n      - step: \*forge-deploy\n    master:\n      - step: \*forge-deploy\n/.test(bb),
+    kind + ": the Bitbucket branch pipeline names both, reusing the one step anchor");
+  assert.ok(/  custom:\n    forge-deploy:/.test(bb), kind + ": ...and the custom entry is still there");
+}
+
 /* ===================== F-530 — THE INSTALL COMMAND MATCHES THE TREE ==================
  * Live, Bitbucket run #1 of the offshoot: `+ npm ci` -> `npm error code EUSAGE`, "The
  * `npm ci` command can only install with an existing package-lock.json or

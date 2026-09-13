@@ -472,6 +472,19 @@ the generated checker because that file is standalone in a customer's repository
 import nothing; `git-scaffolds.test.mjs` holds the two regex literals byte-equal so the two
 homes cannot drift apart.
 
+**Which branch triggers a deploy (F-531).** Both scaffolds trigger on **`main` and
+`master`**, on both hosts. A repository CogniRunner creates on Bitbucket comes back with
+`mainbranch.name = "master"` (live, the offshoot's `-bb` repo) while the committed
+`bitbucket-pipelines.yml` listed only `main`, so the branch pipeline of a
+CogniRunner-provisioned Bitbucket repo never fired and only the `custom: forge-deploy` entry
+could be started. New GitHub repositories default to `main`, which is why this stayed
+invisible until Bitbucket was exercised. Rendering the repository's own `mainbranch.name`
+into the YAML was rejected: it makes the committed pipeline depend on a value read at setup
+time, so a later rename silently stops deploys and the scaffold stops rendering
+deterministically. Naming both is true whatever the repo does. Where the scaffold is
+COMMITTED is a separate question and was always right — `setupGitPipeline` uses
+`p.branch || getDefaultBranch()`.
+
 **Installing dependencies (F-530).** Both pipelines run `npm install --no-audit --no-fund`,
 not `npm ci`. `npm ci` refuses to run without a lockfile (`npm error code EUSAGE`) and the
 scaffold ships none — live, Bitbucket run #1 of the offshoot died on that line before

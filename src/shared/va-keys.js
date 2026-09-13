@@ -1,0 +1,111 @@
+/*
+ * CogniRunner - AI-powered workflow validation for Jira
+ * Copyright (C) 2025 LeanZero
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/**
+ * THE ONE HOME for every Virtual Administrator KVS key and its row TTL (F-346/F-349).
+ *
+ * F-346 was live proof that an id interpolated straight into a key can make a whole
+ * feature unwritable: Forge KVS refuses "/" (`INVALID_KEY`), and nothing offline could
+ * tell, because legality was asserted nowhere. The VA's key parts are WORSE than a repo
+ * id — an agent id is generated, but an issue key comes from a JQL sweep, a caps bucket
+ * from a clock, and a `tickId` from a scheduler. So every part goes through
+ * `safeKeyPart` and every finished key through `assertKvsKey`, HERE, not at the call
+ * site. `test-harness/scripts/kvs-key-shapes.test.mjs` feeds each builder below the same
+ * hostile fixture set the git builders get.
+ *
+ * WHY THE TTL SHAPES LIVE HERE AND THE NUMBERS DO NOT: a row's lifetime belongs beside
+ * the key that names it (the `git-ids.js` GIT_DELIVERY_CLAIM_TTL precedent — two writers,
+ * one window), but the NUMBER is a cap and caps have one home in `va-config.js`. So this
+ * file owns the `{ttl:{value,unit}}` shapes and imports every number.
+ *
+ * Dependency-free: it bundles into the backend and into the admin panel's Agents tab,
+ * which renders the same TTLs it must not retype.
+ */
+import { safeKeyPart, assertKvsKey } from "./kvs-keys.js";
+import { VA_LIMITS } from "./va-config.js";
+
+const part = (s) => safeKeyPart(s);
+const days = (n) => ({ ttl: { value: n, unit: "DAYS" } });
+
+/* ── row TTLs, in the option shape KVS `set` and `claimRuleExecution` both take ── */
+
+/** 90 days, REFRESHED on every touch (F-413) — an item worked on yesterday is not stale. */
+export const VA_ITEM_TTL = days(VA_LIMITS.itemTtlDays);
+/** The index shares the item TTL: an index that outlives every row it names is a lie. */
+export const VA_INDEX_TTL = days(VA_LIMITS.itemTtlDays);
+/** Tick receipts: 7 days. Long enough to read a weekend, short enough to stay cheap. */
+export const VA_TICK_TTL = days(VA_LIMITS.tickTtlDays);
+/** Effects: 30 days — this is the row an admin reads to answer "what did it DO?". */
+export const VA_EFFECT_TTL = days(VA_LIMITS.effectTtlDays);
+/**
+ * Caps buckets outlive their own window by a margin so a clock skew cannot make a bucket
+ * vanish mid-window; 2 days covers the day bucket and every hour bucket inside it.
+ */
+export const VA_CAPS_TTL = days(2);
+/**
+ * `va_memory` and `va_health` carry NO TTL on purpose. The memory is the agent's only
+ * durable state, and F-426's whole point is that the banner's counter must not be
+ * reconstructed from rows that can expire underneath it.
+ */
+/** Claims: 2 days. Longer than any retry window, shorter than the item row. */
+export const VA_CLAIM_TTL = days(2);
+
+/* ── key builders — every one asserted ─────────────────────────────────────── */
+
+/** `va_item:{agent}:{issueKey}` — one row per item. NEVER an array (the `pf_memories` lesson). */
+export const vaItemKey = (agent, issueKey) => assertKvsKey(`va_item:${part(agent)}:${part(issueKey)}`);
+
+/** `va_index:{agent}` — the bounded, LRU-ordered list of live item ids for one agent. */
+export const vaIndexKey = (agent) => assertKvsKey(`va_index:${part(agent)}`);
+
+/** `va_memory:{agent}` — prose + pinned constraints. */
+export const vaMemoryKey = (agent) => assertKvsKey(`va_memory:${part(agent)}`);
+
+/**
+ * `va_tick:{agent}:{tickId}` — ONE receipt per PHASE (F-421): the post phase is its own
+ * task and does not ride the prepare tick's receipt, so callers pass `tickIdFor(phase, id)`.
+ */
+export const vaTickKey = (agent, tickId) => assertKvsKey(`va_tick:${part(agent)}:${part(tickId)}`);
+
+/** The phased receipt id. Kept here so both phases cannot drift apart in two files. */
+export const VA_TICK_PHASES = Object.freeze(["prepare", "post"]);
+export const tickIdFor = (phase, tickId) => `${VA_TICK_PHASES.includes(phase) ? phase : "prepare"}-${tickId}`;
+
+/** `va_effect:{agent}:{invTs}` — written ONLY after a read-back proof (§3.14 law 6). */
+export const vaEffectKey = (agent, invTs) => assertKvsKey(`va_effect:${part(agent)}:${part(invTs)}`);
+
+/**
+ * `va_caps:{agent}:{bucket}` — fixed clock buckets, the `lst_brake` mechanism
+ * (`src/listeners.js:77`) at a different granularity. Owed speech has its OWN bucket
+ * prefix because F-412 dropped `owedUncapped`: owed is cheaper, never free.
+ */
+export const VA_CAPS_BUCKET_PREFIXES = Object.freeze({ hour: "h", day: "d", owedHour: "oh" });
+export const vaCapsKey = (agent, bucket) => assertKvsKey(`va_caps:${part(agent)}:${part(bucket)}`);
+export const capsBuckets = (now = Date.now()) => {
+  const t = Number(now) || 0;
+  const hour = Math.floor(t / 3600000);
+  const day = Math.floor(t / 86400000);
+  return { hour: `h:${hour}`, day: `d:${day}`, owedHour: `oh:${hour}` };
+};
+
+/** `va_health:{agent}` — the banner's OWN consecutive-failure counter (F-426). */
+export const vaHealthKey = (agent) => assertKvsKey(`va_health:${part(agent)}`);
+
+/**
+ * `va_exec:{agent}:{key}:{tickId}` — taken by the CONSUMER at the start of the item task,
+ * FAIL_IF_EXISTS + failClosed, released on throw before any side effect (F-422).
+ */
+export const vaExecClaimKey = (agent, issueKey, tickId) =>
+  assertKvsKey(`va_exec:${part(agent)}:${part(issueKey)}:${part(tickId)}`);
+
+/**
+ * `va_post:{agent}:{key}:{stagedAt}` — the delivery claim. `stagedAt`, not `tickId`: the
+ * identity of a post is the DRAFT it delivers, so a redelivered post task and a second
+ * tick that finds the same staged row both land on the same key.
+ */
+export const vaPostClaimKey = (agent, issueKey, stagedAt) =>
+  assertKvsKey(`va_post:${part(agent)}:${part(issueKey)}:${part(stagedAt)}`);

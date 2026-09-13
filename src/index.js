@@ -8236,6 +8236,63 @@ resolver.define("getMemorySettings", async ({ context }) => {
   }
 });
 
+/**
+ * THE KNOWLEDGE TAB (1.4 commit 14b) — the baked field-guide packs and their switches.
+ *
+ * VIEWER FLOOR, the same one `getMemorySettings` and `getKnowledgeCounts` sit behind and
+ * for the same reason: which packs an instance has switched off is CONFIGURATION, and
+ * this payload also reports the byte budgets each surface spends. Neither is public state.
+ *
+ * NO BODIES, ever. The response is built from the generated INDEX (titles, tags,
+ * provenance, sizes), not from the packs, so the tab costs kilobytes on a corpus that is
+ * 582 KB in the bundle. A "show me the text" resolver is not missing by accident — the
+ * human-review artefact for the content is knowledge/MANIFEST.md, which is reviewed
+ * before the packs are committed rather than rendered to every viewer at runtime.
+ */
+resolver.define("getKnowledgePacks", async ({ context }) => {
+  if (!(await requireRole(context?.accountId, "viewer"))) return noPerm("read the knowledge packs", "viewer");
+  try {
+    const settings = await getKnowledgeSettings();
+    return {
+      success: true,
+      packs: describeKnowledgePacks(settings),
+      settings,
+      budgets: knowledgeAudienceBudgets(),
+      // Two versions because they answer two questions — "did the text change?" and "did
+      // the way we pick text change?" A support line carrying only one cannot explain a
+      // shift in behaviour.
+      knowledgeVersion: KNOWLEDGE_VERSION,
+      contentVersion: KNOWLEDGE_CONTENT_VERSION,
+    };
+  } catch (error) {
+    console.error("Failed to read knowledge packs:", error);
+    return { success: false, error: error.message };
+  }
+});
+
+/**
+ * Switch packs on and off. ADMIN, matching `saveMemorySettings`: this changes what every
+ * validator, agent and Coder turn on the instance is shown, which is the same class of
+ * decision as the memory injection toggles.
+ *
+ * The clamp is `saveKnowledgeSettings`' (src/knowledge-packs.js) and it runs BEFORE the
+ * write, so an id naming no pack can never be stored as a phantom switch. The resolver
+ * returns what was actually stored, not what was asked for, so a UI that sent a stale
+ * pack id learns it immediately instead of rendering a toggle nothing reads.
+ */
+resolver.define("saveKnowledgeSettings", async ({ payload, context }) => {
+  if (!(await requireAdmin(context.accountId))) {
+    return needRole("admin");
+  }
+  try {
+    const settings = await saveKnowledgeSettings(payload || {});
+    return { success: true, settings, packs: describeKnowledgePacks(settings) };
+  } catch (error) {
+    console.error("Failed to save knowledge settings:", error);
+    return { success: false, error: error.message };
+  }
+});
+
 // AI usage meter (admin-only). Read-only summary of AI calls + tokens (this month,
 // today, per-provider, 6-month history). Best-effort under-count, not an exact ledger.
 resolver.define("getAiUsage", async ({ context }) => {

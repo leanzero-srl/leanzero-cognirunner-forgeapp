@@ -209,7 +209,11 @@ return { success: true };`)}`;
   }
 }
 
-export default function FunctionBlock({ index, functionData, priorSteps, fields = [], onUpdate, onRemove, isOnly, codegenContext = null, testContext = null }) {
+// F-233 — `canEdit` is a pure pass-through to KnowledgePanel → MemoriesTab, which gates
+// its memory add/delete writes on it. Defaults FALSE for the same fail-closed reason
+// documented on MemoriesTab. It does NOT gate anything else on this block: step editing
+// is already reachable only from surfaces the caller has gated.
+export default function FunctionBlock({ index, functionData, priorSteps, fields = [], onUpdate, onRemove, isOnly, codegenContext = null, testContext = null, canEdit = false }) {
   const runtime = codegenContext?.runtime || testContext?.runtime;
   const executionWhen = runtime === "listener" ? "when the listener runs" : runtime === "job" ? "when the job runs" : "on every transition";
   const [isGenerating, setIsGenerating] = useState(false);
@@ -1295,6 +1299,7 @@ export default function FunctionBlock({ index, functionData, priorSteps, fields 
           onSkillSelectionChange={(ids) => { setSelectedSkills(ids); onUpdate({ selectedSkillIds: ids }); }}
           autoAppliedSkills={(functionData.generationMeta?.appliedSkills || []).filter((s) => s.auto)}
           refreshKey={knowledgeRefresh}
+          canEdit={canEdit}
         />
       )}
 

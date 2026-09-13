@@ -536,7 +536,9 @@ function getContext() {
   // bare page. __NOT_ADMIN__ cannot test either, because it switches the module away -
   // which is exactly what makes it the control for the note.
   // F-219 — a viewer reaches the app the same way an editor does: jira:globalPage.
-  const notAdmin = typeof window !== "undefined" && (!!window.__NOT_ADMIN__ || !!window.__VIEWER__);
+  // F-234 — `__NO_ROSTER__` reaches the app the same way an editor or a viewer does:
+  // jira:globalPage. A user with no CogniRunner role could not be on jira:adminPage.
+  const notAdmin = typeof window !== "undefined" && (!!window.__NOT_ADMIN__ || !!window.__VIEWER__ || !!window.__NO_ROSTER__);
   return { extension: notAdmin ? { type: "jira:globalPage", key: "cognirunner-global-page" } : { type: "jira:adminPage", key: "cognirunner-admin-page" }, license: mockLicenseCtx(), siteUrl: SITE, accountId: ACCT, cloudId: "00000000-aaaa-bbbb-cccc-000000000000", localId: "mock-local-id", theme: { colorMode: theme() }, locale: "en-US" };
 }
 
@@ -883,6 +885,10 @@ function invoke(name, payload) {
     case "checkIsAdmin": return Promise.resolve(
       typeof window !== "undefined" && window.__ROLE_UNKNOWN__
         ? { success: true, isAdmin: false, role: null, unknown: true, reason: "jira-unreachable", accountId: ACCT }
+        : typeof window !== "undefined" && window.__NO_ROSTER__
+        // F-234 — on neither the roster nor Jira's admin list: a real, answered `role: null`
+        // (NOT `unknown`, which means the lookup faulted — F-230 keeps those two apart).
+        ? { success: true, isAdmin: false, role: null, scope: null, accountId: ACCT }
         : typeof window !== "undefined" && window.__VIEWER__
         ? { success: true, isAdmin: false, role: "viewer", scope: "mine", accountId: ACCT }
         : typeof window !== "undefined" && (window.__NOT_ADMIN__ || window.__DEMOTED_ADMIN__)
@@ -1047,6 +1053,12 @@ function invoke(name, payload) {
      * state the real rule would not produce. Answered on BOTH branches because the stats
      * line has two states — slate under the guard, red over it — and both are real. */
     case "getMemoryStoreStats": {
+      /* F-234 — this resolver carries the SAME F-228 viewer floor as getMemories
+         (src/index.js:7502), so `__NO_ROSTER__` must refuse it too. Without this the
+         fixture models a half-state no tenant is ever in — the read refused but the
+         store's byte pressure still reported — and the access-denied screen would be
+         verified with a size line on it that the real backend would never send. */
+      if (typeof window !== "undefined" && window.__NO_ROSTER__) return Promise.resolve({ success: false, error: "You don't have permission to read memories." });
       const bytes = isMemoryOvercap() ? MEMORY_OVERCAP_BYTES : 49152;
       return Promise.resolve({
         success: true,
@@ -1069,7 +1081,16 @@ function invoke(name, payload) {
       { id: "sk5", name: "Post to an external webhook", category: "External / Webhooks", builtin: false, description: "Notify an external service on a transition." },
       { id: "sk6", name: "Summarize a description", category: "Other", builtin: false, description: "Condense a long description into a short, structured summary." },
     ] });
-    case "getMemories": if (typeof window !== "undefined" && window.__EMPTY__) return Promise.resolve({ success: true, memories: [], settings: MEMORY_SETTINGS() }); return Promise.resolve({ success: true, settings: MEMORY_SETTINGS(), memories: MEMORY_ROWS.filter((m) => !DELETED_MEMORY_IDS.has(m.id)) });
+    /* F-234 — `__NO_ROSTER__` is the F-228 VIEWER FLOOR refusing the read: a user who is
+       on neither the CogniRunner roster nor Jira's admin list. The shape is the backend's
+       own `noPerm("read memories")` VERBATIM (src/index.js:476/7341) — `success:false`,
+       that exact sentence, and `memories: []`. It must stay verbatim: the frontend has no
+       machine-readable marker to branch on and matches the sentence, so a paraphrase here
+       would make the test pass against a string the app will never actually receive. */
+    case "getMemories":
+      if (typeof window !== "undefined" && window.__NO_ROSTER__) return Promise.resolve({ success: false, error: "You don't have permission to read memories.", memories: [] });
+      if (typeof window !== "undefined" && window.__EMPTY__) return Promise.resolve({ success: true, memories: [], settings: MEMORY_SETTINGS() });
+      return Promise.resolve({ success: true, settings: MEMORY_SETTINGS(), memories: MEMORY_ROWS.filter((m) => !DELETED_MEMORY_IDS.has(m.id)) });
     /* listeners + scheduled jobs + API tokens (admin) */
     case "getListeners": return Promise.resolve({ success: true, listeners: LISTENER_ROWS });
     case "getListener": return Promise.resolve(LISTENER_FULL[payload && payload.id] ? { success: true, listener: LISTENER_FULL[payload.id] } : { success: false, error: "Listener not found" });

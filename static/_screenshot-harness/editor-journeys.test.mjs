@@ -262,7 +262,70 @@ try {
       // Documentation tab → seeded docs (getContextDocs mock).
       await kp.locator(".knowledge-tab-docs").click();
       ok(await kp.getByText("Jira Field Reference").count() > 0, "J21 Documentation tab lists the seeded docs (getContextDocs)");
+      /* F-233 CONTROL — the same panel as an EDITOR-or-better must still offer the write.
+         Without this arm the viewer assertions below pass just as well against a Memories
+         tab that renders the add form for NOBODY, which is the other way to get this
+         wrong and the one a permission fix is most likely to cause. */
+      await kp.locator(".knowledge-tab-memories").click();
+      await kp.locator(".memory-quick-add").first().waitFor({ timeout: 6000 });
+      ok(await kp.locator(".btn-remember").count() > 0, "J21 an admin gets the Remember add form on the Memories tab");
+      ok(await kp.locator(".memory-list .doc-btn-delete").count() > 0, "J21 an admin gets the per-row delete on the Memories tab");
+      ok(await kp.locator(".memory-quick-add-note").count() === 0, "J21 an admin gets no non-editor note");
     } catch (e) { fail++; console.log("  ✗ J21 threw: " + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
+  /* ---------------- F-233 — a VIEWER on the rule editor's Memories tab ----------------
+     `addMemory` and `deleteMemory` both gate on requireRole(accountId, "editor")
+     (src/index.js:7355 / 7442). MemoriesTab carried no role state at all, so the rule
+     editor handed a viewer a text box and a solid teal "Remember" button — plus a per-row
+     × — that the backend was always going to refuse. This is the config-ui twin of F-224,
+     which fixed exactly this shape on the ADMIN Memories tab and left the copy inside the
+     KnowledgePanel untouched; the component is byte-shared with admin-panel, so the same
+     defect shipped in the rule wizard, the listeners tab and the jobs tab as well.
+     The non-editor arm is a plain slate NOTE, not a disabled input: a greyed-out form
+     reads as "try again later" when the answer is "not you, ever" (F-224's words).
+     Both themes — the note is a new hue slot and the owner's law is that every one of
+     them carries a dark override. */
+  for (const T of ["light", "dark"]) {
+    console.log(`F-233 viewer / rule-editor Memories tab (${T})`);
+    const env = await openEditor(browser, "config-ui", "cfg-static", T, { __VIEWER__: true });
+    const { page } = env;
+    try {
+      const kp = page.locator(".knowledge-panel").first();
+      if (!(await kp.locator(".knowledge-tabs").isVisible().catch(() => false))) {
+        await kp.locator(".knowledge-summary").click();
+      }
+      await kp.locator(".knowledge-tabs").waitFor({ timeout: 6000 });
+      await kp.locator(".knowledge-tab-memories").click();
+      // The READ survives — a viewer still sees what the AI is being told.
+      await kp.locator(".memory-list .memory-item").first().waitFor({ timeout: 6000 });
+      ok(await kp.getByText(/customfield_10003|resolution|Risk Level/i).count() > 0,
+        `F-233 ${T} a viewer still READS the memories injected into every generation`);
+
+      // The two WRITES are gone.
+      ok(await kp.locator(".memory-quick-add").count() === 0, `F-233 ${T} no add form for a viewer`);
+      ok(await kp.locator(".btn-remember").count() === 0, `F-233 ${T} no "Remember" button for a viewer`);
+      ok(await kp.locator(".memory-list .doc-btn-delete").count() === 0, `F-233 ${T} no per-row delete for a viewer`);
+
+      // ...and are REPLACED by an explanation, not left as a silent hole.
+      const note = kp.locator(".memory-quick-add-note").first();
+      ok(await note.count() > 0, `F-233 ${T} the viewer gets the slate non-editor note`);
+      ok(/Editors and admins can add memories\./.test(await note.innerText()),
+        `F-233 ${T} the note names the roles that CAN, in the admin tab's words`);
+
+      /* Owner design law, ASSERTED not eyeballed: the note is a plain slate line — no
+         left accent rail, solid colour, no tinted block. A rail on this element is the
+         single most likely way a later edit breaks the rule. */
+      const style = await note.evaluate((el) => {
+        const cs = getComputedStyle(el);
+        return { bl: cs.borderLeftWidth, color: cs.color, bg: cs.backgroundColor };
+      });
+      ok(parseFloat(style.bl) === 0, `F-233 ${T} the note has NO left accent rail (got ${style.bl})`);
+      const alpha = (style.color.match(/[\d.]+/g) || [])[3];
+      ok(alpha === undefined || parseFloat(alpha) === 1, `F-233 ${T} the note colour is solid, not a faded alpha (${style.color})`);
+      ok(/rgba\(0, 0, 0, 0\)|transparent/.test(style.bg), `F-233 ${T} the note is not a tinted block (${style.bg})`);
+    } catch (e) { fail++; console.log("  ✗ F-233 " + T + " threw: " + e.message.split("\n")[0]); }
     await closeEditor(env);
   }
 

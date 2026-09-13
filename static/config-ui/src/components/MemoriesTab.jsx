@@ -93,7 +93,29 @@ export function MemoryFullBanner({ storeFull }) {
   );
 }
 
-export default function MemoriesTab({ onChanged = null }) {
+/**
+ * F-233 — `canEdit` is the caller's answer to "may this user WRITE memories", and it
+ * gates the only two writes this tab makes: the quick-add form and the per-row delete.
+ * Both resolvers gate on requireRole(accountId, "editor") (addMemory src/index.js:7355,
+ * deleteMemory :7442), so without it the rule editor offered a viewer a text box, a solid
+ * teal "Remember" button and a × per row that the backend was always going to refuse.
+ * This is the config-ui twin of F-224, which fixed the same shape on the ADMIN Memories
+ * tab; the KnowledgePanel copy was missed because this component had no role state at all.
+ *
+ * It DEFAULTS FALSE, deliberately, and that is the fail-CLOSED direction. A default of
+ * true would mean any future caller that forgets to thread it silently reintroduces
+ * exactly this defect with no symptom — the failure mode that produced F-219, F-224 and
+ * this finding in turn. Fail-closed costs an editor a visible control if a caller is
+ * missed, which is reported in minutes; fail-open costs a viewer a refusal they only
+ * discover after composing the sentence they wanted the AI to learn. Every caller in
+ * both apps threads it (config-ui App.js, and admin-panel's AddRuleWizard / ListenersTab
+ * / JobsTab, which already compute the same `canEdit`).
+ *
+ * NOTE the asymmetry: READING is not gated. `getMemories` has no role gate and a viewer
+ * has a real reason to see what the AI is being told about their instance. Hiding the
+ * list would be a different, unasked-for change.
+ */
+export default function MemoriesTab({ onChanged = null, canEdit = false }) {
   const [memories, setMemories] = useState([]);
   const [settings, setSettings] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -245,23 +267,31 @@ export default function MemoriesTab({ onChanged = null }) {
         </div>
       )}
 
-      <div className="memory-quick-add">
-        <input
-          type="text"
-          className="input"
-          value={newContent}
-          onChange={(e) => setNewContent(e.target.value)}
-          onKeyDown={(e) => { if (e.key === "Enter") handleAdd(); }}
-          placeholder="Remember this about your Jira instance..."
-        />
-        <button
-          className={`btn-remember${adding ? " is-busy busy-solid" : ""}`}
-          onClick={handleAdd}
-          disabled={adding || !newContent.trim()}
-        >
-          Remember
-        </button>
-      </div>
+      {/* F-233 — the add form is a WRITE. The non-editor arm is a plain slate NOTE, not a
+          disabled input: a greyed-out form still reads as "try again later" when the answer
+          is "not you, ever". Same wording as the admin tab's (MemoriesAdminTab, F-224) so
+          the two surfaces that refuse the same write refuse it in the same words. */}
+      {canEdit ? (
+        <div className="memory-quick-add">
+          <input
+            type="text"
+            className="input"
+            value={newContent}
+            onChange={(e) => setNewContent(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") handleAdd(); }}
+            placeholder="Remember this about your Jira instance..."
+          />
+          <button
+            className={`btn-remember${adding ? " is-busy busy-solid" : ""}`}
+            onClick={handleAdd}
+            disabled={adding || !newContent.trim()}
+          >
+            Remember
+          </button>
+        </div>
+      ) : (
+        <div className="memory-quick-add-note">Editors and admins can add memories.</div>
+      )}
 
       {/* F-201 — the capacity wall, rendered as the SAME solid red block the admin tab uses
           (F-189): #dc2626 fill, white text, 700 title, full border radius, no left rail and
@@ -313,7 +343,13 @@ export default function MemoriesTab({ onChanged = null }) {
         </div>
       ) : recent.length === 0 ? (
         <div className="doc-empty">
-          No memories yet. Add facts about your Jira instance — field IDs, conventions, gotchas.
+          {/* F-233 — the empty state is an INSTRUCTION, and "Add facts about your Jira
+              instance" is one a viewer cannot follow. Same defect as the add form, one
+              element further down; fixing the control and leaving the prompt that points
+              at it would just move the dead end. */}
+          {canEdit
+            ? "No memories yet. Add facts about your Jira instance — field IDs, conventions, gotchas."
+            : "No memories yet. Editors and admins can add facts about your Jira instance — field IDs, conventions, gotchas."}
         </div>
       ) : (
         <div className="veil-host">
@@ -329,14 +365,19 @@ export default function MemoriesTab({ onChanged = null }) {
                 <span style={{ flex: 1, fontSize: "12px", minWidth: 0, wordBreak: "break-word" }}>
                   {mem.content}
                 </span>
-                <button
-                  className={`doc-btn-delete${deletingId === mem.id ? " is-busy" : ""}`}
-                  onClick={() => handleDelete(mem.id)}
-                  disabled={deletingId === mem.id}
-                  title="Delete"
-                >
-                  &times;
-                </button>
+                {/* F-233 — the second write. `deleteMemory` gates on the same editor role
+                    as the add, so the × is gone for a viewer rather than disabled: the row
+                    is still readable, it simply carries no control the reader cannot use. */}
+                {canEdit && (
+                  <button
+                    className={`doc-btn-delete${deletingId === mem.id ? " is-busy" : ""}`}
+                    onClick={() => handleDelete(mem.id)}
+                    disabled={deletingId === mem.id}
+                    title="Delete"
+                  >
+                    &times;
+                  </button>
+                )}
               </div>
             ))}
           </div>

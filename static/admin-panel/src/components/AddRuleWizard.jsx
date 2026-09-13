@@ -95,7 +95,13 @@ function WizardShell({ onClose, children }) {
   );
 }
 
-export default function AddRuleWizard({ invoke, onClose, onCreated }) {
+/* F-233 — `canEdit` rides through to the Knowledge panel's Memories tab, which gates its
+   add/delete writes on it (both resolvers require the editor role).
+   The wizard is only OPENED for editors and admins today (App.js gates the "+ Add rule"
+   button on exactly that), so this is belt-and-braces — but the gate and the control now
+   read the SAME value instead of one being inferred from the other's reachability. An
+   entry point that grows a second caller should not silently re-open the hole. */
+export default function AddRuleWizard({ invoke, onClose, onCreated, canEdit = false }) {
   // Wizard steps: project -> workflow -> transition -> type -> config
   const [step, setStep] = useState(1);
 
@@ -1229,6 +1235,7 @@ export default function AddRuleWizard({ invoke, onClose, onCreated }) {
                 setFunctions={setFunctions}
                 runAsync={runAsync}
                 setRunAsync={setRunAsync}
+                canEdit={canEdit}
               />
             )}
 

@@ -1367,6 +1367,22 @@ const injectStyles = () => {
     }
     .memory-quick-add .input { flex: 1; }
 
+    /* F-233 — what a NON-EDITOR sees where the quick-add form would be. Same padding as
+       .memory-quick-add so the tab does not jump between the two roles, and the same
+       neutral slate + 600 weight the admin tab's .memories-admin-add-note uses (F-224) —
+       one refusal, one voice, on both surfaces that render it.
+       Owner design law: solid #475569 (dark one shade lighter, #64748b), NO left rail and
+       NO tinted background. It is a statement of fact, not an error and not a callout, so
+       it gets neither the red hard-stop grammar nor a block fill. The harness asserts the
+       absence of a rail and the solidity of the colour in both themes. */
+    .memory-quick-add-note {
+      padding: 10px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      color: #475569;
+    }
+    html[data-color-mode="dark"] .memory-quick-add-note { color: #64748b; }
+
     /* F-212 — THE HARD-STOP GRAMMAR, declared ONCE per injectStyles home.
        Three surfaces say "this store cannot accept a write": .memory-full-banner (row
        cap, rule editor + admin), .memories-admin-capwall (platform cap, admin tab) and
@@ -3118,6 +3134,17 @@ function App() {
      it invited the gate back). `edition` fails soft to Standard. */
   const [edition, setEdition] = useState(EDITION_IDS.STANDARD);
 
+  /* F-233 — the caller's CogniRunner role, from `checkIsAdmin` (the same resolver the
+     admin panel uses; src/index.js:4327 returns { isAdmin, role, scope, unknown }).
+     config-ui had NO role source at all before this — every gate it had was about
+     LICENSE (`checkLicense`/edition) or PROVIDER readiness, which answer a different
+     question. That gap is why the rule editor's Memories tab offered a viewer writes the
+     backend refuses: there was nothing to gate on.
+     Its ONLY consumer is `canEdit` below. It is deliberately not used to gate rule
+     editing itself: reaching this iframe already required Jira's own workflow-edit
+     permission, and second-guessing that here would paint a refusal Jira never made. */
+  const [userRole, setUserRole] = useState(null); // "viewer" | "editor" | "admin" | null
+
   const [isPostFunction, setIsPostFunction] = useState(false);
   const [isCondition, setIsCondition] = useState(false);
   // The AI prompt of a condition saved by an older version — shown for reference
@@ -3736,6 +3763,20 @@ function App() {
         // (resolveEdition fails soft to standard, on purpose), so the chip is correct.
       }
 
+      /* F-233 — the CogniRunner role, for the memory write gate in the Knowledge panel.
+         Own try/catch and never awaited into a blocking position for the same reason the
+         license block has one: a permission lookup that throws must not stop the workflow
+         editor from loading. On a throw `userRole` stays null, which is the CLOSED answer
+         — the Memories tab then shows the read-only note. That is the correct direction to
+         fail for a control whose backend will refuse it anyway; the cost of being wrong is
+         an editor who must use the admin panel's Memories tab, not a lost rule. */
+      try {
+        const roleResult = await invoke("checkIsAdmin");
+        if (roleResult?.success) setUserRole(roleResult.role || null);
+      } catch (e) {
+        // Unknown role — stays null, i.e. no memory writes offered here.
+      }
+
       setLoading(false);
     };
     init();
@@ -3900,7 +3941,10 @@ function App() {
       {/* Static post-function: FunctionBuilder (replaces the standard form) */}
       {isPostFunction && postFunctionType === "static" && (
         <div className="card">
-          <FunctionBuilder functions={functions} setFunctions={setFunctions} runAsync={runAsync} setRunAsync={setRunAsync} />
+          {/* F-233 — `canEdit` is the memory-write gate for the Knowledge panel's Memories
+              tab, in the SAME expression the admin panel's tabs use (ListenersTab:31,
+              JobsTab:30, MemoriesAdminTab:72) so one rule has one shape everywhere. */}
+          <FunctionBuilder functions={functions} setFunctions={setFunctions} runAsync={runAsync} setRunAsync={setRunAsync} canEdit={userRole === "editor" || userRole === "admin"} />
         </div>
       )}
 

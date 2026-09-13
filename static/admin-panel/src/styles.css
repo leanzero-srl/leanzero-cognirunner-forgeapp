@@ -1982,6 +1982,37 @@ html[data-color-mode="dark"] .alert-warning {
     .memory-full-banner { margin-bottom: 10px; }
     .kc-mem-full { color: #dc2626 !important; }
 
+    /* F-236 — mirrored here because the css-parity gate requires this class to exist in
+       styles.css: the live source is injectCopiedComponentStyles() in App.js, and
+       MemoriesTab (byte-shared with config-ui) renders the badge on every row.
+       Owner hue map: memory sources user #2563eb / test #d97706 / fix #16a34a, solid fill
+       with white text and 700 weight. The `test` amber carries a dark INK (#2a1602)
+       instead of white because white on #d97706 does not clear contrast — that override
+       is part of the live rule and must not be dropped when mirroring. */
+    .memory-source-badge {
+      padding: 1px 8px;
+      border-radius: 10px;
+      font-size: 10px;
+      font-weight: 700;
+      color: #ffffff;
+      text-transform: uppercase;
+      flex-shrink: 0;
+    }
+    .memory-src-user { background: #2563eb; }
+    .memory-src-test { background: #d97706; color: #2a1602; }
+    .memory-src-fix { background: #16a34a; }
+
+    /* F-233 — the non-editor note that replaces the memory quick-add form. Solid slate
+       (#475569, dark one shade lighter), 600 weight, no left rail, no tinted block.
+       Mirror of the live injectCopiedComponentStyles() block. */
+    .memory-quick-add-note {
+      padding: 10px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      color: #475569;
+    }
+    html[data-color-mode="dark"] .memory-quick-add-note { color: #64748b; }
+
     /* F-152 / F-222 — ONE visible busy state for a static-PF step, driven by stepBusy.
        Solid slate (the neutral hue), white text, white MLS spinner — no tint, no rail. */
     .step-busy-note {

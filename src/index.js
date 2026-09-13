@@ -199,6 +199,7 @@ import {
   SKILL_PREFIX,
   seedBuiltinSkills,
   saveSkillInternal,
+  deleteSkillRows,
   autoMatchSkills,
   fetchSkillsBlock,
 } from "./skills.js";
@@ -8010,18 +8011,11 @@ resolver.define("deleteSkill", async ({ payload, context }) => {
       if (!(await requireAdmin(context.accountId))) {
         return permissionDenied("Only admins can disable built-in skills", "admin");
       }
-      const disabledRow = { ...skill, enabled: false, updatedAt: new Date().toISOString() };
-      await storage.set(SKILL_INDEX_KEY, index.map((s) => (s.id === id ? disabledRow : s)));
-      try {
-        const record = await storage.get(`${SKILL_PREFIX}${id}`);
-        if (record) await storage.set(`${SKILL_PREFIX}${id}`, { ...record, enabled: false });
-      } catch (e) {
-        console.error("Failed to flag builtin skill record as disabled:", e);
-      }
-      return { success: true };
     }
-    await storage.delete(`${SKILL_PREFIX}${id}`);
-    await storage.set(SKILL_INDEX_KEY, index.filter((s) => s.id !== id));
+    // F-590 — the index write lives in src/skills.js (one writer); this
+    // resolver owns the permission gates only. deleteSkillRows itself decides
+    // flip-vs-delete from the row's builtin flag.
+    await deleteSkillRows(id, { who: context.accountId || null });
     return { success: true };
   } catch (error) {
     console.error("Failed to delete skill:", error);

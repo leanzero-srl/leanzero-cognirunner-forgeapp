@@ -983,6 +983,8 @@ const CODE_IDENTITY = () => ((typeof window !== "undefined" && window.__CODE_IDE
    Scenario flags:
      window.__CODE_HOOK__      - acme/web already has a registered webhook.
      window.__HOOK_REFUSE__    - setupGitWebhook answers a refusal instead.
+     window.__HOOK_ROTATION_FAILED__ - acme/web's hook carries hookState "rotation-failed".
+     window.__ROTATE_FAILS__   - rotateGitWebhookSecret refuses with code "rotation-failed".
      window.__PIPE_SCENARIO__  - "none" (default: no row, so the setup form), "queued"
                                  (queued -> running -> installed across polls),
                                  "installed", "partial" (failed at commit-scaffold).
@@ -998,9 +1000,14 @@ const CODE_IDENTITY = () => ((typeof window !== "undefined" && window.__CODE_IDE
 const PIPELINE_STEP_NAMES = pipelineStepNames;
 const HOOK_STORE = { seeded: false };
 const HOOKS = () => {
-  if (typeof window !== "undefined" && window.__CODE_HOOK__ && !HOOK_STORE.seeded) {
+  if (typeof window !== "undefined" && (window.__CODE_HOOK__ || window.__HOOK_ROTATION_FAILED__) && !HOOK_STORE.seeded) {
     HOOK_STORE.seeded = true;
-    HOOK_STORE["acme/web"] = { hookId: "hook_77123", provider: "github", createdAt: "2026-09-08T10:00:00.000Z" };
+    /* F-481: hookState/hookStateAt ride the hook record the connection row carries.
+       "rotation-failed" means a rotation started and did not finish, so the provider may
+       hold a secret the app does not. Anything else reads as "ok". */
+    HOOK_STORE["acme/web"] = (typeof window !== "undefined" && window.__HOOK_ROTATION_FAILED__)
+      ? { hookId: "hook_77123", provider: "github", createdAt: "2026-09-08T10:00:00.000Z", hookState: "rotation-failed", hookStateAt: "2026-09-12T11:00:00.000Z" }
+      : { hookId: "hook_77123", provider: "github", createdAt: "2026-09-08T10:00:00.000Z", hookState: "ok", hookStateAt: null };
   }
   const out = {};
   for (const k of Object.keys(HOOK_STORE)) { if (k !== "seeded") out[k] = HOOK_STORE[k]; }
@@ -1824,12 +1831,18 @@ function invoke(name, payload) {
         return Promise.resolve({ success: false, error: "You need to be a CogniRunner admin to register webhooks", reason: "no-permission", needsRole: "admin" });
       }
       const repoId = (payload && payload.repo) || "";
-      const hook = { hookId: "hook_" + Math.floor(Math.random() * 90000 + 10000), provider: "github", createdAt: new Date().toISOString() };
+      const hook = { hookId: "hook_" + Math.floor(Math.random() * 90000 + 10000), provider: "github", createdAt: new Date().toISOString(), hookState: "ok", hookStateAt: null };
       HOOK_STORE[repoId] = hook;
       return Promise.resolve({ success: true, hook });
     }
     case "rotateGitWebhookSecret": {
       const repoId = (payload && payload.repo) || "";
+      /* F-481: the rotation that half-finished. The backend answers with the code the UI
+         keys on and copy that names the remedy, and the hook is left marked broken. */
+      if (typeof window !== "undefined" && window.__ROTATE_FAILS__) {
+        if (HOOK_STORE[repoId]) HOOK_STORE[repoId] = { ...HOOK_STORE[repoId], hookState: "rotation-failed", hookStateAt: new Date().toISOString() };
+        return Promise.resolve({ success: false, code: "rotation-failed", error: "The new secret was stored but the provider was not updated. Use Set up webhook to register this repository again." });
+      }
       const rotatedAt = new Date().toISOString();
       if (HOOK_STORE[repoId]) HOOK_STORE[repoId] = { ...HOOK_STORE[repoId], rotatedAt };
       return Promise.resolve({ success: true, rotatedAt });

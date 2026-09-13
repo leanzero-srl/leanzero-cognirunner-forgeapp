@@ -396,6 +396,65 @@ try {
     await close(env);
   }
 
+  /* ---------------- C11b — F-481: a rotation that did not finish, said in full ---------- */
+  for (const theme of ["light", "dark"]) {
+    console.log(`C11b rotation-failed webhook (${theme})`);
+    const env = await openAdmin(browser, theme, { __HOOK_ROTATION_FAILED__: true });
+    const { page } = env;
+    try {
+      await tab(page, "Code");
+      const row = page.locator(".code-repo-row", { hasText: "acme/web" }).first();
+      await row.locator(".code-hook-broken").waitFor({ timeout: 10000 });
+      const banner = await row.locator(".code-hook-broken").innerText();
+      ok(/did not finish/i.test(banner), `C11b ${theme} the banner says the last rotation did not finish`);
+      ok(/refused/i.test(banner) && /acme\/web/.test(banner), `C11b ${theme} it says deliveries from THAT repo may be refused`);
+      ok(/set up again/i.test(banner), `C11b ${theme} and it names setting the webhook up again as the remedy`);
+      ok(!/—/.test(banner), `C11b ${theme} no em-dash in the copy`);
+      // The action is attached to the banner, not left for the reader to find.
+      ok(await row.locator(".code-hook-broken-action", { hasText: "Set up webhook" }).count() === 1, `C11b ${theme} the banner carries the Set up webhook button`);
+      // Solid red with a dark override, white text, and no left rail.
+      const fill = await row.locator(".code-hook-broken").evaluate((el) => getComputedStyle(el).backgroundColor);
+      ok(fill === (theme === "light" ? "rgb(220, 38, 38)" : "rgb(239, 68, 68)"), `C11b ${theme} solid red with a dark override (got ${fill})`);
+      ok(await row.locator(".code-hook-broken").evaluate((el) => getComputedStyle(el).color) === "rgb(255, 255, 255)", `C11b ${theme} white text on the banner`);
+      ok(await row.locator(".code-hook-broken").evaluate((el) => getComputedStyle(el).borderLeftWidth) === "0px", `C11b ${theme} no left accent rail`);
+      ok(await row.locator(".code-hook-broken-title").evaluate((el) => Number(getComputedStyle(el).fontWeight)) >= 600, `C11b ${theme} the headline carries the weight`);
+      ok(!/whsec|secret[:=]/i.test(await page.locator(".code-tab").first().innerText()), `C11b ${theme} still no secret on the screen`);
+      await shot(page, `C11b-rotation-failed-${theme}`);
+      // Setting it up again clears the state, which is the whole point of the button.
+      await row.locator(".code-hook-broken-action").click();
+      await row.locator(".code-hook-broken").waitFor({ state: "detached", timeout: 8000 });
+      ok(await row.locator(".code-hook-broken").count() === 0, `C11b ${theme} registering the hook again clears the banner`);
+      ok(env.errors.length === 0, `C11b ${theme} no page errors: ` + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  ✗ C11b threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
+  /* ---------------- C11c — the refusal itself: the backend's words, in a toast --------- */
+  {
+    console.log("C11c rotate refusal, rotation-failed");
+    const env = await openAdmin(browser, "light", { __CODE_HOOK__: true, __ROTATE_FAILS__: true });
+    const { page } = env;
+    try {
+      await tab(page, "Code");
+      const row = page.locator(".code-repo-row", { hasText: "acme/web" }).first();
+      await row.locator(".code-hook.set").waitFor({ timeout: 10000 });
+      await row.locator("button", { hasText: "Rotate secret" }).click();
+      await page.locator(".cr-confirm").waitFor({ timeout: 5000 });
+      await page.locator(".cr-confirm .btn-small", { hasText: "Rotate" }).click();
+      await page.locator(".mls-toast").waitFor({ timeout: 8000 });
+      const toast = await page.locator(".mls-toast").innerText();
+      ok(/Set up webhook/i.test(toast), "C11c the toast carries the backend's message, naming the self-heal");
+      ok(await page.locator(".mls-toast-error").count() === 1, "C11c a refusal is toasted as an error, not as a success");
+      // And the re-read raises the banner, so the state is not only a transient message.
+      await row.locator(".code-hook-broken").waitFor({ timeout: 8000 });
+      ok(await row.locator(".code-hook-broken-action", { hasText: "Set up webhook" }).count() === 1, "C11c the row then offers the remedy");
+      ok(await row.locator(".code-fact-k", { hasText: "Secret rotated" }).count() === 0, "C11c a refused rotation is never reported as a rotation");
+      await shot(page, "C11c-rotate-refusal");
+      ok(env.errors.length === 0, "C11c no page errors: " + env.errors.join(" | "));
+    } catch (e) { fail++; console.log("  ✗ C11c threw: " + e.message.split("\n")[0]); }
+    await close(env);
+  }
+
   /* ---------------- C12 — F-461: queued setup becomes installed, by POLLING ------------- */
   for (const theme of ["light", "dark"]) {
     console.log(`C12 pipeline queued to installed (${theme})`);

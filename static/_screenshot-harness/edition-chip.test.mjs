@@ -8,6 +8,13 @@
  * and issue-glance. Asserts the chip renders once, reads the right label, and carries
  * the SOLID per-theme hue (never a faded tint), in light AND dark.
  *
+ * ALSO (F-294): the CODER PANEL block at the bottom. manifest 176dd13 pointed
+ * `jira:issuePanel coder-panel` at the SAME issue-glance-resource as the issueContext
+ * glance, so every issue rendered the full glance twice — a duplicate activity list and a
+ * duplicate getIssueActivity round-trip. That block mounts the bundle with
+ * window.__MODULE_KEY__ = "coder-panel" and asserts the placeholder card, the ABSENCE of
+ * the activity list, and the ABSENCE of the getIssueActivity invoke, in both themes.
+ *
  * No prereq build: each app's build-shot is rebuilt here when missing or stale
  * (lib/build-shot.mjs, F-125) — a missing bundle is never a skip.
  * Run: node static/_screenshot-harness/edition-chip.test.mjs   (--shots saves header PNGs)
@@ -104,8 +111,114 @@ try {
     }
     console.log(`${app} done`);
   }
+
+  /* ------------------------------------------------------------------ F-294
+     THE CODER PANEL (jira:issuePanel coder-panel), same bundle, different module.
+
+     FAIL-BEFORE: with the module unread, App.js took the glance path regardless, so
+     `.glance-list` rendered (4 canned activity items) and getIssueActivity was invoked —
+     both of the assertions below flip. PASS-AFTER: a `.coder-soon` card, no list, no call.
+
+     Three tenants, because the upgrade sentence has three distinct answers:
+       advanced + Forge LLM  -> no sentence (they already have Coder)
+       standard + Forge LLM  -> the sentence (the one case that earns it)
+       standard + BYOK       -> no sentence (agentCapability enables BYOK outright, so
+                                upgrading buys them nothing — offering it would be a lie) */
+  const PANEL = [
+    { tenant: "advanced", standard: false, provider: "atlassian", upgrade: false, ed: "advanced" },
+    { tenant: "standard-forge", standard: true, provider: "atlassian", upgrade: true, ed: "standard" },
+    { tenant: "standard-byok", standard: true, provider: "anthropic", upgrade: false, ed: "standard" },
+  ];
+  // The "1.4" badge deliberately reuses the Coder burnt orange, so its solid per-theme
+  // value is the SAME pair the chip is checked against — one hue, one dark override.
+  const BADGE_HUE = HUE.advanced;
+
+  for (const theme of ["light", "dark"]) {
+    for (const t of PANEL) {
+      const root = ensureFreshBuildShot("issue-glance");
+      const { s, port } = await serve(root);
+      const ctx = await browser.newContext({ viewport: { width: 420, height: 500 } });
+      await ctx.addInitScript(([th, std, prov]) => {
+        window.__SHOT__ = "issue-glance"; window.__THEME__ = th;
+        window.__MODULE_KEY__ = "coder-panel";   // <- mount as the issuePanel, not the glance
+        window.__PROVIDER__ = prov;
+        if (std) window.__STANDARD__ = true;
+      }, [theme, t.standard, t.provider]);
+      const page = await ctx.newPage();
+      const errors = []; page.on("pageerror", (e) => errors.push(String(e && e.message)));
+      await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: "domcontentloaded" });
+      const id = `coder-panel/${theme}/${t.tenant}`;
+      try {
+        /* Wait on `.glance` (the ROOT, which mounts on BOTH paths), never on
+           `.coder-soon`. Waiting on the card would make the fail-before a single
+           15s timeout that says only "no card" — the duplicate list and the stray
+           getIssueActivity, which ARE the defect, would never get asserted. Waiting
+           on the root lets every assertion below run and name what is actually wrong. */
+        await page.locator(".glance").waitFor({ timeout: 15000 });
+        await page.waitForTimeout(600); // let either path finish its invokes + render
+
+        ok(await page.locator(".coder-soon").count() === 1, `${id} placeholder card rendered`);
+
+        // --- the duplicate this finding is about ---------------------------------
+        ok(await page.locator(".glance-list").count() === 0, `${id} NO duplicate activity list`);
+        ok(await page.locator(".glance-item").count() === 0, `${id} NO activity items`);
+        const calls = await page.evaluate(() => (window.__CALLS__ || []).map((c) => c.name));
+        ok(!calls.includes("getIssueActivity"), `${id} getIssueActivity NOT invoked (saw: ${calls.join(",") || "none"})`);
+        // Positive control: __CALLS__ is genuinely recording, so the negative above means
+        // something. Without this, a broken recorder would read as a pass (LAW: prove the
+        // negative, never merely observe it).
+        ok(calls.includes("checkLicense"), `${id} __CALLS__ is recording (checkLicense seen)`);
+
+        // --- the placeholder content ---------------------------------------------
+        /* .glance-head is `text-transform: uppercase`, and innerText reports the
+           TRANSFORMED text ("CR COGNIRUNNER CODER"), so compare case-insensitively —
+           the source casing is asserted by the lead sentence below, which is not
+           transformed. Also assert it is NOT the glance header, so a header that
+           somehow contained both strings could not pass. */
+        const headTxt = (await page.locator(".glance-head").innerText()).toUpperCase();
+        ok(headTxt.includes("COGNIRUNNER CODER"), `${id} header reads CogniRunner Coder (got "${headTxt}")`);
+        ok(!headTxt.includes("ON THIS ISSUE"), `${id} header is NOT the glance header`);
+        const lead = (await page.locator(".coder-soon-lead").innerText()).trim();
+        ok(/^CogniRunner Coder arrives in 1\.4 . in-issue coding chat, GitHub & Bitbucket, PR review\.$/.test(lead), `${id} lead sentence (got "${lead}")`);
+        ok(await page.locator(".coder-soon-upgrade").count() === (t.upgrade ? 1 : 0), `${id} upgrade sentence ${t.upgrade ? "shown" : "hidden"}`);
+        if (t.upgrade) {
+          ok((await page.locator(".coder-soon-upgrade").innerText()).includes("upgrade in Jira's Manage apps"), `${id} upgrade sentence copy`);
+        }
+
+        // --- the owner's UI rules, on the new card --------------------------------
+        const badgeBg = await page.locator(".coder-soon-badge").evaluate((el) => getComputedStyle(el).backgroundColor);
+        ok(badgeBg === BADGE_HUE[theme], `${id} badge solid hue (got ${badgeBg})`);
+        ok(await page.locator(".coder-soon-badge").evaluate((el) => getComputedStyle(el).opacity) === "1", `${id} badge not faded`);
+        // No left accent rail, anywhere on the card (the owner's hardest rule).
+        const rails = await page.locator(".coder-soon").evaluate((el) => {
+          const bad = [];
+          for (const n of [el, ...el.querySelectorAll("*")]) {
+            const cs = getComputedStyle(n);
+            const lw = parseFloat(cs.borderLeftWidth) || 0;
+            const others = ["borderTopWidth", "borderRightWidth", "borderBottomWidth"].map((k) => parseFloat(cs[k]) || 0);
+            if (lw > 0 && others.some((w) => w !== lw)) bad.push(n.className + ":" + cs.borderLeftWidth);
+          }
+          return bad;
+        });
+        ok(rails.length === 0, `${id} no left accent rail (${rails.join(" | ")})`);
+
+        // The chip still renders exactly once, with its solid per-theme hue.
+        const chip = page.locator(".edition-chip");
+        ok(await chip.count() === 1, `${id} exactly one chip`);
+        ok((await chip.innerText()).trim().toLowerCase() === (t.ed === "advanced" ? "coder" : "standard"), `${id} chip label`);
+        ok(await chip.evaluate((el) => getComputedStyle(el).backgroundColor) === HUE[t.ed][theme], `${id} chip solid hue`);
+
+        ok(errors.length === 0, `${id} no page errors: ${errors.join(" | ")}`);
+        if (SHOTS) await page.locator(".glance").screenshot({ path: path.join(OUT, `coder-panel-${theme}-${t.tenant}.png`) });
+      } catch (e) {
+        fail++; console.log(`  ✗ ${id} threw: ${e.message.split("\n")[0]}`);
+      }
+      await ctx.close(); await new Promise((r) => s.close(r));
+    }
+  }
+  console.log("coder-panel done");
 } finally {
   await browser.close();
 }
-console.log(`EDITION CHIP (config-ui / config-view / issue-glance): ${pass} passed, ${fail} failed`);
+console.log(`EDITION CHIP (config-ui / config-view / issue-glance) + CODER PANEL (F-294): ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

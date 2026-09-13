@@ -513,9 +513,29 @@ function getContext() {
     return { accountId: ACCT, siteUrl: SITE, license: mockLicenseCtx(), extension: { ...baseExt, type: "jira:workflowPostFunction", key: "ai-static-post-function", entryPoint: "view", transitionContext: { id: "81", from: { name: "Triaged" }, to: { name: "Mitigating" } }, postFunctionConfig: JSON.stringify({ id: "postfunction-static::Incident::81::i-offload", type: "postfunction-static", fieldId: "", functions: [], functionsMeta: [{ id: "s1", name: "Escalate priority to High", operationType: "rest_api_internal", variableName: "r1" }, { id: "s2", name: "Add on-call watcher", operationType: "rest_api_internal", variableName: "r2" }], workflow: { workflowId: "wf-incident-007", workflowName: "Incident Response", transitionId: "81", siteUrl: SITE } }) } };
   if (s === "view-active" || s === "view-disabled")
     return { accountId: ACCT, siteUrl: SITE, license: mockLicenseCtx(), extension: { ...baseExt, type: "jira:workflowValidator", key: "cognirunner-validator", entryPoint: "view", transitionContext: { id: "21", from: { name: "In Progress" }, to: { name: "Done" } }, validatorConfig: VIEW_VALIDATOR_CONFIG } };
-  if (s.startsWith("issue-glance"))
-    // The jira:issueContext "CogniRunner on this issue" glance — the platform gives the open issue.
-    return { accountId: ACCT, siteUrl: SITE, license: mockLicenseCtx(), theme: { colorMode: theme() }, extension: { type: "jira:issueContext", key: "cognirunner-issue-glance", issue: { id: "10042", key: "DEMO-42" }, project: { id: "10000", key: "DEMO" } } };
+  if (s.startsWith("issue-glance")) {
+    /* F-294 - the issue-glance BUNDLE backs TWO manifest modules off one resource:
+         jira:issueContext  cognirunner-issue-glance  (the activity glance)
+         jira:issuePanel    coder-panel               (the 1.4 placeholder)
+       window.__MODULE_KEY__ = "coder-panel" mounts it as the panel. The mock now also
+       carries the fields the REAL bridge carries and this mock previously did not:
+       a TOP-LEVEL `moduleKey` (the documented FullContext field - @forge/bridge
+       types.d.ts) and a `localId` ARI. Without them the mock could not have caught a
+       reader that looked in the wrong place, because it only ever set extension.key. */
+    const mk = (typeof window !== "undefined" && window.__MODULE_KEY__) || "cognirunner-issue-glance";
+    const isPanel = mk === "coder-panel";
+    return {
+      accountId: ACCT, siteUrl: SITE, license: mockLicenseCtx(), theme: { colorMode: theme() },
+      moduleKey: mk,
+      localId: `ari:cloud:ecosystem::extension/36415848-6868-4697-9554-3c3ad87b8da9/env-dev/static/${mk}`,
+      extension: {
+        type: isPanel ? "jira:issuePanel" : "jira:issueContext",
+        key: mk,
+        issue: { id: "10042", key: "DEMO-42" },
+        project: { id: "10000", key: "DEMO" },
+      },
+    };
+  }
   // default: the admin page, reached as a real admin.
   // F-200 / F-213 — `__NOT_ADMIN__` switches the MODULE as well as checkIsAdmin, and still
   // should: `jira:globalPage` (cognirunner-global-page) is the entry point a non-admin
@@ -871,10 +891,17 @@ function invoke(name, payload) {
       return Promise.resolve({ success: true, status: "error", error: "Cancelled", cancelled: true });
     }
   }
-  // Optional resolver fixtures for targeted browser regressions; never bundled into production.
-  if (typeof window !== "undefined" && window.__RESPONSES__) {
+  /* F-294: record EVERY invoke, unconditionally. This used to happen only when a test had
+     also set window.__RESPONSES__, which made __CALLS__ useless for the assertion that
+     matters here - that a resolver is NEVER called. A negative cannot be proven from a log
+     that is only kept when something else opted in. Existing readers all filter by name
+     (`.filter(c => c.name === X)` / `.some(...)`), so a longer log cannot break them. */
+  if (typeof window !== "undefined") {
     window.__CALLS__ = window.__CALLS__ || [];
     window.__CALLS__.push({ name, payload });
+  }
+  // Optional resolver fixtures for targeted browser regressions; never bundled into production.
+  if (typeof window !== "undefined" && window.__RESPONSES__) {
     if (Object.prototype.hasOwnProperty.call(window.__RESPONSES__, name)) return Promise.resolve(window.__RESPONSES__[name]);
   }
   switch (name) {
@@ -1034,7 +1061,14 @@ function invoke(name, payload) {
       { action: "setAssignee", key: "PROJ-42", accountId: "5f00aa" },
     ], result: { commented: true, count: 3 }, executionTimeMs: 1600 });
     case "narrateDryRun": return Promise.resolve({ success: true, summary: "This step raises PROJ-42 to High priority, tags it \"escalated\", posts a comment, moves it to the next status, and assigns it to a teammate.", verify: ["Confirm \"High\" is the intended priority", "Check the comment wording is customer-safe", "Make sure transition 31 is the right next status"] });
-    case "getProvider": return Promise.resolve({ success: true, provider: "anthropic", baseUrl: "https://api.anthropic.com", providers: PROVIDER_LIST, bedrockAck: false });
+    /* F-294: window.__PROVIDER__ overrides the active provider. The default stays
+       "anthropic" (a BYOK tenant) so no existing shot changes; set it to "atlassian" to
+       model a Forge LLM tenant, which is the only case that earns the upgrade sentence. */
+    case "getProvider": {
+      const prov = (typeof window !== "undefined" && window.__PROVIDER__) || "anthropic";
+      const burl = prov === "atlassian" ? "" : "https://api.anthropic.com";
+      return Promise.resolve({ success: true, provider: prov, baseUrl: burl, providers: PROVIDER_LIST, bedrockAck: false });
+    }
     case "getOpenAIKey":
       // First-run no-key state (window.__NOKEY__): a BYOK provider with no key stored →
       // hasKey:false (matches the real getOpenAIKey shape). Exercises the provider-warning.

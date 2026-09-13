@@ -57,6 +57,16 @@ const injectStyles = () => {
     .edition-chip.edition-standard { background: #475569; }
     html[data-color-mode="dark"] .edition-chip.edition-advanced { background: #f97316; color: #2a1602; }
     html[data-color-mode="dark"] .edition-chip.edition-standard { background: #64748b; }
+    /* F-294 placeholder card for the jira:issuePanel "coder-panel" module. Deliberately
+       NOT the activity list: that surface belongs to the issueContext glance, and rendering
+       it twice on one issue is what this card exists to stop. Full border, no left accent
+       rail; the "1.4" badge reuses the SOLID Coder burnt orange (same hue as
+       .edition-advanced, so no new hue and no new dark override to forget). */
+    .coder-soon { border: 1px solid var(--border-color); border-radius: 8px; background: var(--card-bg); padding: 12px 13px; }
+    .coder-soon-badge { display: inline-block; padding: 2px 8px; border-radius: 5px; background: #c2410c; color: #fff; font-size: 10px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; }
+    html[data-color-mode="dark"] .coder-soon-badge { background: #f97316; color: #2a1602; }
+    .coder-soon-lead { margin: 8px 0 0; font-size: 13px; font-weight: 600; color: var(--text-color); }
+    .coder-soon-upgrade { margin: 10px 0 0; padding-top: 10px; border-top: 1px solid var(--border-color); font-size: 12px; font-weight: 600; color: var(--text-secondary); }
   `;
   document.head.appendChild(el);
 };
@@ -96,9 +106,52 @@ const badgeFor = (it) => {
     : { cls: "g-block", glyph: "✕", text: it.decision || "Blocked" };
 };
 
+/*
+ * F-294 - WHICH MODULE is this bundle rendering in?
+ *
+ * manifest.yml points BOTH `jira:issueContext cognirunner-issue-glance` and
+ * `jira:issuePanel coder-panel` at the same issue-glance-resource (one resource may back
+ * several modules). Without this discriminator the panel rendered the whole glance a
+ * second time on every issue: a duplicate activity list plus a duplicate
+ * getIssueActivity round-trip per issue view.
+ *
+ * `moduleKey` is a TOP-LEVEL field of the bridge FullContext (@forge/bridge types.d.ts) -
+ * NOT `extension.moduleKey`. The extra reads below are belt-and-braces for older bridge
+ * payload shapes, in descending order of how well-specified they are:
+ *   ctx.moduleKey            - the documented field
+ *   ctx.extension.moduleKey  - defensive; some payloads have mirrored it
+ *   ctx.extension.key        - the module key as the mock and the workflow surfaces carry it
+ *   ctx.localId              - `ari:cloud:ecosystem::extension/{appId}/{envId}/static/{moduleKey}`
+ */
+const moduleKeyOf = (ctx) => {
+  const direct = ctx?.moduleKey || ctx?.extension?.moduleKey || ctx?.extension?.key;
+  if (direct) return String(direct);
+  const ari = String(ctx?.localId || "");
+  const tail = ari.split("/").pop();
+  return ari && tail ? tail : "";
+};
+
+/*
+ * Is this the Coder panel? Two INDEPENDENT signals, either of which is sufficient, so a
+ * bridge that drops one still routes correctly:
+ *   - the module key is literally "coder-panel"
+ *   - the extension type is `jira:issuePanel` - and coder-panel is the ONLY issuePanel
+ *     module this app declares, so the type alone identifies it. If a second issuePanel
+ *     is ever added, this fallback must become key-only.
+ * Getting this WRONG in the safe direction (false negative) restores the duplicate; wrong
+ * in the unsafe direction would hide the real glance, so the key check is listed first and
+ * the type check is scoped to a module set of exactly one.
+ */
+const CODER_PANEL_KEY = "coder-panel";
+const isCoderPanelCtx = (ctx) =>
+  moduleKeyOf(ctx) === CODER_PANEL_KEY || ctx?.extension?.type === "jira:issuePanel";
+
 export default function App() {
-  const [state, setState] = useState("loading"); // loading | ready | error | notVisible
+  const [state, setState] = useState("loading"); // loading | ready | error | notVisible | coder
   const [items, setItems] = useState([]);
+  /* F-294: true when this bundle is mounted as the `coder-panel` issuePanel rather than the
+     issueContext glance. It renders a compact placeholder and fetches NO activity. */
+  const [showUpgrade, setShowUpgrade] = useState(false);
   /* Edition chip state. There is no license BANNER on the glance, so the only thing
      this surface ever needed was the edition — and `edition` fails soft to Standard,
      which is the truthful answer for an install with no license object. The
@@ -122,6 +175,34 @@ export default function App() {
       }
       try {
         const ctx = await view.getContext();
+
+        /* F-294 - the Coder panel branch. Resolve the edition (and only the edition) and
+           STOP: no issue key is needed, no getIssueActivity is issued, and the activity
+           list never mounts. Everything below this block is the issueContext glance. */
+        if (isCoderPanelCtx(ctx)) {
+          const edp = resolveEdition(ctx?.license);
+          let edition_ = edp.edition;
+          if (!cancelled) { setEdition(edition_); setState("coder"); }
+          // checkLicense is authoritative and is a pure read of the invocation context
+          // (no storage I/O server-side), so it stays. It is also the ONLY invoke this
+          // branch makes on a Coder tenant.
+          try {
+            const lic = await invoke("checkLicense");
+            if (!cancelled && lic?.edition) { edition_ = lic.edition; setEdition(lic.edition); }
+          } catch (_) { /* unknown edition - chip stays as resolved from context */ }
+          /* The upgrade sentence is for Standard tenants ON FORGE LLM only - a BYOK tenant
+             buys nothing by upgrading (see agentCapability in src/shared/edition.js, where
+             `provider !== "atlassian"` is enabled outright). getProvider is therefore only
+             called when the tenant is Standard; a Coder tenant issues no second invoke. */
+          if (edition_ !== EDITION_IDS.ADVANCED) {
+            try {
+              const pv = await invoke("getProvider");
+              if (!cancelled && pv?.provider === "atlassian") setShowUpgrade(true);
+            } catch (_) { /* provider unknown - say nothing rather than guess an upsell */ }
+          }
+          return;
+        }
+
         const issueKey = ctx?.extension?.issue?.key || ctx?.extension?.issueKey
           || ctx?.issue?.key || ctx?.issueKey || null;
         if (!issueKey) { if (!cancelled) setState("error"); return; }
@@ -152,10 +233,12 @@ export default function App() {
     return () => { cancelled = true; };
   }, []);
 
+  const coder = state === "coder";
+
   return (
     <div className="glance">
       <div className="glance-head">
-        <span className="glance-mark">CR</span> CogniRunner on this issue
+        <span className="glance-mark">CR</span> {coder ? "CogniRunner Coder" : "CogniRunner on this issue"}
         {/* F-106: gated on the EDITION, not on licenseActive — an install with no
             license object reports isActive:null and edition:"standard", and used to
             show no chip at all. `edition` is always a real id, so it reads STANDARD. */}
@@ -165,6 +248,16 @@ export default function App() {
           </span>
         )}
       </div>
+      {/* F-294: the Coder panel is a placeholder card only - never the activity list. */}
+      {coder && (
+        <div className="coder-soon">
+          <span className="coder-soon-badge">1.4</span>
+          <p className="coder-soon-lead">CogniRunner Coder arrives in 1.4 &mdash; in-issue coding chat, GitHub &amp; Bitbucket, PR review.</p>
+          {showUpgrade && (
+            <p className="coder-soon-upgrade">On Forge LLM the agent model is part of CogniRunner Coder &mdash; upgrade in Jira&apos;s Manage apps, or point CogniRunner at your own provider key.</p>
+          )}
+        </div>
+      )}
       {state === "loading" && <div className="glance-spinner" aria-label="Loading activity" />}
       {state === "error" && <div className="glance-err">Couldn't load activity. Try reloading the issue.</div>}
       {(state === "ready" || state === "notVisible") && items.length === 0 && (

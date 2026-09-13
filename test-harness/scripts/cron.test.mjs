@@ -10,6 +10,7 @@
 import {
   parseCron, validateCron, cronMatches, nextRuns, dueInWindow, getTimeParts,
   presetToCron, cronToPreset, describeCron, normalizeTimeZone, fireIdentity, isWallClockAnchored,
+  SCHEDULE_PRESETS,
 } from "../../src/shared/cron.js";
 
 let pass = 0; let fail = 0;
@@ -138,6 +139,64 @@ for (const [preset, opts] of [["daily", { hour: 9, minute: "" }], ["monthly", { 
   ok(validateCron(expr).ok, `${preset} with blank options is still a valid cron (got "${expr}")`);
 }
 ok(!validateCron("NaN 9 * * *").ok, "a NaN cron is rejected if one ever reaches validation");
+
+// ── 1.4 commit 13c: the multi-hour cadence presets ───────────────────────────
+// The ROUND TRIP is the contract: preset -> cron -> preset -> the same preset, and a
+// describeCron that never says "Custom" for something the picker can produce. A preset
+// the editor can emit but cannot read back is how a saved job's schedule silently
+// becomes un-editable.
+{
+  const ids = SCHEDULE_PRESETS.map((p) => p.id);
+  for (const id of ["every2h", "every4h", "every6h", "every12h"]) {
+    ok(ids.includes(id), `${id} is offered by SCHEDULE_PRESETS`);
+    const row = SCHEDULE_PRESETS.find((p) => p.id === id);
+    ok(typeof row.label === "string" && row.label.length > 0, `${id} has a label for the picker`);
+  }
+  ok(new Set(ids).size === ids.length, "preset ids are unique");
+  // The picker renders these in order; the new cadences belong with the interval ones,
+  // above the clock-anchored ones, and `custom` stays last.
+  ok(ids.indexOf("every2h") > ids.indexOf("hourly") && ids.indexOf("every12h") < ids.indexOf("daily"), "the cadences sit between hourly and daily");
+  ok(ids[ids.length - 1] === "custom", "custom is still last");
+
+  const HOURS = { every2h: 2, every4h: 4, every6h: 6, every12h: 12 };
+  for (const [id, h] of Object.entries(HOURS)) {
+    eq(presetToCron(id, { minute: 0 }), `0 */${h} * * *`, `${id} builds its cron`);
+    eq(cronToPreset(`0 */${h} * * *`), { preset: id, minute: 0 }, `${id} is recognised back`);
+    eq(describeCron(`0 */${h} * * *`), `Every ${h} hours`, `${id} describes itself, never "Custom"`);
+    // the minute rides along, and round-trips
+    eq(presetToCron(id, { minute: 15 }), `15 */${h} * * *`, `${id} honours the minute`);
+    eq(cronToPreset(`15 */${h} * * *`), { preset: id, minute: 15 }, `${id} round-trips with a minute`);
+    eq(describeCron(`15 */${h} * * *`), `Every ${h} hours at minute 15`, `${id} describes the minute`);
+    // a blank minute must never emit NaN, like every other preset
+    const blank = presetToCron(id, { minute: "" });
+    ok(!/NaN/.test(blank) && validateCron(blank).ok, `${id} with a blank minute is still valid cron (got "${blank}")`);
+    // the HOUR option is ignored — the preset IS the hour field
+    eq(presetToCron(id, { minute: 0, hour: 23 }), `0 */${h} * * *`, `${id} ignores an hour option`);
+    // and it really fires on that cadence, on fixed hours dividing the day evenly
+    // nextRuns returns ISO STRINGS — parse before doing arithmetic on them.
+    const runs = nextRuns(`0 */${h} * * *`, { timeZone: "UTC", count: 3, from: Date.UTC(2026, 0, 1, 0, 1) }).map((r) => Date.parse(r));
+    ok(runs.length === 3 && runs.every(Number.isFinite), `${id} produces three parsable runs`);
+    ok(runs[1] - runs[0] === h * 3600000 && runs[2] - runs[1] === h * 3600000, `${id} fires every ${h}h exactly`);
+    ok(new Date(runs[0]).getUTCHours() % h === 0, `${id} fires on hours divisible by ${h} (no short gap at midnight)`);
+  }
+  // A cadence that does NOT divide 24 stays Custom on purpose — labelling "*/5" as
+  // "Every 5 hours" would be a lie for the 04:00 gap after 20:00.
+  eq(cronToPreset("0 */5 * * *"), { preset: "custom", cron: "0 */5 * * *" }, "*/5 hours stays custom");
+  eq(cronToPreset("0 */3 * * *"), { preset: "custom", cron: "0 */3 * * *" }, "*/3 hours stays custom");
+  ok(describeCron("0 */5 * * *").startsWith("Custom"), "…and describes itself honestly as custom");
+  // The pre-existing presets are untouched by the new matcher.
+  eq(cronToPreset("0 * * * *"), { preset: "hourly", minute: 0 }, "hourly still recognised");
+  eq(cronToPreset("30 7 * * *"), { preset: "daily", minute: 30, hour: 7 }, "daily still recognised");
+  // Every preset the picker offers must round-trip through describeCron without
+  // falling into "Custom" — the whole point of adding the four.
+  for (const p of SCHEDULE_PRESETS) {
+    if (p.id === "custom") continue;
+    const expr = presetToCron(p.id, { minute: 0, hour: 9, dom: 1, days: [1] });
+    ok(validateCron(expr).ok, `${p.id} emits valid cron`);
+    ok(cronToPreset(expr).preset === p.id, `${p.id} round-trips preset -> cron -> preset`);
+    ok(!describeCron(expr).startsWith("Custom"), `${p.id} is never described as Custom`);
+  }
+}
 
 eq(normalizeTimeZone("Not/AZone"), "UTC", "unknown zone → UTC");
 eq(normalizeTimeZone("Europe/Zurich"), "Europe/Zurich", "known zone kept");

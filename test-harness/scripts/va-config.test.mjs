@@ -26,6 +26,7 @@ import {
   normalizeVa, renderGuardrailSentences, vaWriteScope, clampPersonaName,
   VA_DEFAULTS, VA_LIMITS, VA_CEILINGS, VA_POWERS, VA_REGISTERS, VA_LANGUAGES, VA_PERSONA_NAME_MAX,
   VA_JQL_MAX, VA_PROJECT_KEY_RE, VA_ITEM_STATES, vaConfluenceSpaces, VA_CONFLUENCE_SPACES_MAX,
+  mergeVaPatch,
 } from "../../src/shared/va-config.js";
 import * as limits from "../../src/shared/registry-limits.js";
 import { validateCron, cronToPreset } from "../../src/shared/cron.js";
@@ -368,6 +369,84 @@ throws(() => normalizeVa(base({ cadence: { preset: "custom" } }), CTX), /cadence
   }
   assert.deepEqual(vaWriteScope({ scope: { write: { projects: ["ops", "OPS", "bad key", { key: "SUP" }] } } }), { projects: ["OPS", "SUP"] });
   pass++;
+}
+
+/* ── 14. mergeVaPatch — null in a patch means KEEP, never "reset" (F-492) ─────── */
+{
+  // The stored record is a TIGHTENED, PAUSED agent: every value below differs from the
+  // default, so anything that quietly rebuilds from VA_DEFAULTS is visible here.
+  const stored = norm({
+    guardrails: { capsPerHour: 2, capsPerDay: 9, shadowTicks: 7 },
+    status: { paused: true, shadowUntilTick: 41 },
+    powers: { skillIds: ["sk1", "sk2"] },
+  }).va;
+  stored.status.paused = true; // normalizeVa keeps it; assert the premise before relying on it.
+  ok(stored.status.paused === true && stored.guardrails.capsPerHour === 2, "the fixture really is a paused, tightened agent");
+
+  const merged = (patch) => normalizeVa(mergeVaPatch(stored, patch), CTX);
+
+  // A whole sub-object sent as null. This is the F-492 shape: `normalizeVa` reads null
+  // as absent and rebuilds from VA_DEFAULTS, which RESUMES the agent.
+  {
+    const { va, refused } = merged({ persona: { name: "Ada" }, status: null });
+    ok(va.status.paused === true, "status:null leaves a paused agent PAUSED (F-492)");
+    ok(va.status.shadowUntilTick === 41, "status:null leaves shadow mode where it was");
+    ok(va.persona.name === "Ada", "the rest of the patch still applies");
+    ok(refused.length === 0, `a null sub-object is not a refusal, it is a no-op (${JSON.stringify(refused)})`);
+  }
+  {
+    const { va } = merged({ guardrails: null });
+    ok(va.guardrails.capsPerHour === 2 && va.guardrails.capsPerDay === 9,
+      "guardrails:null keeps every tightened cap (F-492)");
+  }
+
+  // A single scalar field sent as null inside a real sub-object.
+  {
+    const { va } = merged({ guardrails: { capsPerHour: null } });
+    ok(va.guardrails.capsPerHour === 2, "guardrails.capsPerHour:null leaves the cap alone (F-492)");
+    ok(va.guardrails.capsPerDay === 9, "and its siblings are untouched");
+  }
+  {
+    const { va } = merged({ status: { paused: null } });
+    ok(va.status.paused === true, "status.paused:null does not un-pause");
+  }
+
+  // Scope is the permission case: a null must never WIDEN what the agent may write.
+  {
+    const { va } = merged({ scope: { write: null } });
+    assert.deepEqual(vaWriteScope(va), { projects: ["OPS"] });
+    pass++;
+  }
+  {
+    const { va } = merged({ scope: { write: { projects: null } } });
+    assert.deepEqual(vaWriteScope(va), { projects: ["OPS"] });
+    pass++;
+  }
+  // …but an EMPTY ARRAY is a sent value and still means "none". That is the one case
+  // null is deliberately NOT a synonym for.
+  {
+    const { va } = merged({ scope: { write: { projects: [] } } });
+    assert.deepEqual(vaWriteScope(va), { projects: [] });
+    pass++;
+    ok(mergeVaPatch(stored, { powers: { skillIds: [] } }).powers.skillIds.length === 0,
+      "an empty allow-list still means none");
+    assert.deepEqual(mergeVaPatch(stored, { powers: { skillIds: null } }).powers.skillIds, ["sk1", "sk2"]);
+    pass++;
+  }
+
+  // undefined behaves as null (a serialiser that drops undefined never gets here, but
+  // an in-process caller can hand one over).
+  ok(mergeVaPatch(stored, { status: undefined }).status.paused === true, "undefined keeps existing too");
+
+  // Arrays and non-objects on the LEFT are still replaceable by a real value: "keep"
+  // is a property of the PATCH being empty, not of the existing value's type.
+  assert.deepEqual(mergeVaPatch({ a: 1, b: { c: 2 } }, { a: 5, b: { c: null, d: 3 } }), { a: 5, b: { c: 2, d: 3 } });
+  pass++;
+  assert.deepEqual(mergeVaPatch({ a: 1 }, { a: false }), { a: false });
+  pass++;
+  ok(mergeVaPatch({ a: 1 }, { a: 0 }).a === 0, "0 and false are SENT values, not absences");
+  // The merge never mutates the stored record.
+  ok(stored.status.paused === true && stored.guardrails.capsPerHour === 2, "mergeVaPatch did not mutate the stored record");
 }
 
 console.log(`VA CONFIG: ${pass} passed, ${fail} failed`);

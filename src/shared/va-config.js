@@ -536,7 +536,7 @@ export const normalizeVa = (raw, ctx = {}) => {
   return { va: { persona, scope, intake, cadence, powers, guardrails, status }, refused };
 };
 
-/* ── mergeVaPatch — what a PARTIAL `va` in a PUT means (F-477) ────────────────── */
+/* ── mergeVaPatch — what a PARTIAL `va` in a PUT means (F-477 / F-492) ───────── */
 
 /**
  * Deep-merge a PARTIAL `va` block onto the stored one, so a PUT is a patch here too.
@@ -556,6 +556,19 @@ export const normalizeVa = (raw, ctx = {}) => {
  * allow-lists, and an allow-list that grows by being sent again is a permission change
  * nobody asked for; sending `[]` must be able to mean "none".
  *
+ * `null` AND `undefined` MEAN "KEEP EXISTING" — for sub-objects and for scalars alike
+ * (F-492). The recursion above only protected keys that were ABSENT from the patch: a
+ * key present with a null value was copied through as null, `normalizeVa` read null as
+ * absent, and rebuilt it from `VA_DEFAULTS`. That is the SAME un-pause, the same shadow
+ * reset and the same re-widened caps F-477 was written to stop, reached through a
+ * different door — `{"status":null}` resumed a paused agent, and
+ * `{"guardrails":{"capsPerHour":null}}` restored the default cap. Serialisers that emit
+ * every key of a form, null included, make that the ordinary shape of a PUT, not an
+ * exotic one. "Clear this back to the default" is therefore NOT expressible as null; it
+ * is expressed by sending the default value, which is a deliberate statement a caller
+ * has to make. The one exception stays the array case above: `[]` is a real, sent value
+ * and still means "none", while a null array keeps the existing list.
+ *
  * It merges SHAPE only. Every clamp, every refusal and every allow-list check is still
  * `normalizeVa`'s, run on the merged result.
  */
@@ -566,6 +579,7 @@ export const mergeVaPatch = (existing, patch) => {
   for (const k of Object.keys(patch)) {
     const a = existing[k];
     const b = patch[k];
+    if (b === null || b === undefined) continue; // "keep existing" — see F-492 above.
     out[k] = isObj(a) && isObj(b) ? mergeVaPatch(a, b) : b;
   }
   return out;

@@ -187,6 +187,64 @@ let agentId = null;
   await J.deleteJob(patchId);
 }
 
+/* ═════ 1c. A NULL IN A PATCH MEANS "KEEP", NOT "RESET" (F-492) ═════
+
+   The same damage as 1b, through a different door. 1b protected keys that were ABSENT
+   from the patch; a key PRESENT and null went through as null, `normalizeVa` read null
+   as absent, and rebuilt it from the defaults — so `{"va":{"status":null}}` resumed a
+   paused agent and `{"guardrails":{"capsPerHour":null}}` restored the default cap. Any
+   client that serialises a whole form, nulls included, sends exactly this. And it must
+   be a NO-OP, not a refusal: refused[] stays empty, because nothing was asked for. */
+{
+  const created = await rest("admin", {
+    method: "POST",
+    body: { mode: "va", va: vaRecord({ guardrails: { capsPerHour: 1, capsPerDay: 4, shadowTicks: 5 }, powers: { skillIds: ["sk1"] } }) },
+  });
+  ok(created.status === 201, `the F-492 fixture agent is created (got ${created.status} ${JSON.stringify(created.body).slice(0, 200)})`);
+  const nullId = created.body.agent.id;
+  const before = (await J.getJob(nullId)).va;
+  const paused = await rest("admin", { method: "POST", query: { id: nullId, action: "pause" }, body: { reason: "tuning" } });
+  ok(paused.status === 200 && paused.body.paused === true, "…and paused");
+  const shadowBefore = (await J.getJob(nullId)).va.status.shadowUntilTick;
+
+  const nulled = await rest("admin", { method: "PUT", query: { id: nullId }, body: { va: { persona: { name: "Ada III" }, status: null, intake: null } } });
+  ok(nulled.status === 200, `a PUT carrying null sub-objects is accepted (got ${nulled.status} ${JSON.stringify(nulled.body).slice(0, 200)})`);
+  // `refused` is OMITTED when empty (the bare success shape), so "empty" means absent
+  // or an empty array — never a present, populated one.
+  ok((nulled.body.refused || []).length === 0,
+    `…and refuses NOTHING — a null is a no-op, not a repair (got ${JSON.stringify(nulled.body.refused || []).slice(0, 240)})`);
+  let after = (await J.getJob(nullId)).va;
+  ok(after.persona.name === "Ada III", `…the rename still landed (got ${after.persona.name})`);
+  ok(after.status.paused === true, "status:null LEAVES A PAUSED AGENT PAUSED");
+  ok(after.status.shadowUntilTick === shadowBefore, `…and leaves shadow mode where it was (got ${after.status.shadowUntilTick}, was ${shadowBefore})`);
+  ok(JSON.stringify(after.intake) === JSON.stringify(before.intake), `…and intake:null changed no intake (got ${JSON.stringify(after.intake).slice(0, 160)})`);
+
+  // A null SCALAR inside a real sub-object — the narrowest shape, and the one a form
+  // with a cleared numeric input produces.
+  const capNulled = await rest("admin", { method: "PUT", query: { id: nullId }, body: { va: { guardrails: { capsPerHour: null, capsPerDay: 3 } } } });
+  ok(capNulled.status === 200 && (capNulled.body.refused || []).length === 0,
+    `a null scalar is accepted and refuses nothing (got ${capNulled.status} ${JSON.stringify(capNulled.body.refused || []).slice(0, 200)})`);
+  after = (await J.getJob(nullId)).va;
+  ok(after.guardrails.capsPerHour === 1, `capsPerHour:null LEAVES THE TIGHTENED CAP (got ${after.guardrails.capsPerHour})`);
+  ok(after.guardrails.capsPerDay === 3, `…while the sibling that WAS sent is applied (got ${after.guardrails.capsPerDay})`);
+  ok(after.guardrails.shadowTicks === 5, `…and the untouched guardrails stand (got ${after.guardrails.shadowTicks})`);
+
+  // The permission case. A null must never WIDEN what the agent may write.
+  await rest("admin", { method: "PUT", query: { id: nullId }, body: { va: { scope: { write: null } } } });
+  after = (await J.getJob(nullId)).va;
+  ok(JSON.stringify(after.scope.write) === JSON.stringify(before.scope.write),
+    `scope.write:null NEVER WIDENS THE WRITE SCOPE (got ${JSON.stringify(after.scope.write)}, was ${JSON.stringify(before.scope.write)})`);
+  await rest("admin", { method: "PUT", query: { id: nullId }, body: { va: { scope: { write: { projects: null } } } } });
+  after = (await J.getJob(nullId)).va;
+  ok(JSON.stringify(after.scope.write.projects) === JSON.stringify(before.scope.write.projects),
+    `…and neither does a null allow-list (got ${JSON.stringify(after.scope.write.projects)})`);
+  // …while an EMPTY list still removes. Null and [] are not synonyms.
+  const emptied = await rest("admin", { method: "PUT", query: { id: nullId }, body: { va: { powers: { skillIds: [] } } } });
+  ok(emptied.status === 200 && emptied.body.agent.va.powers.skillIds.length === 0,
+    `an explicit empty allow-list still means "none" (got ${JSON.stringify(emptied.body.agent && emptied.body.agent.va.powers.skillIds)})`);
+  await J.deleteJob(nullId);
+}
+
 /* ═════ 2. THE ROLE FLOORS, in both directions ═════ */
 {
   const list = await rest("editor");

@@ -273,7 +273,8 @@ const phaseDrift = async () => {
     verdict.ok,
     { lockLines: verdict.lockLines.slice(0, 3).map((l) => l.slice(0, 240)),
       errLines: verdict.errLines.slice(0, 5).map((l) => l.slice(0, 240)),
-      sawMajorVersionRule: verdict.sawMajorVersionRule });
+      sawMajorVersionRule: verdict.sawMajorVersionRule,
+      missing: verdict.missing, broken: verdict.broken });
 };
 
 /* ═══════════════════════ phase: cleanup ═══════════════════════ */

@@ -1305,8 +1305,9 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   kvs.get = async function countingGet(k) { if (String(k).startsWith("harness_fault:")) reads += 1; return realGet.call(this, k); };
   const savedEnv = process.env.HARNESS_SECRET;
   delete process.env.HARNESS_SECRET;
-  // Arm the row FIRST (arming is the dev hook's job and is not env-gated itself — the
-  // Bearer gate in test-hook.js is; what must be inert is the READ on the hot path).
+  // Arm the row FIRST. Arming is ALSO env-gated since F-517, so the secret goes back on
+  // for the arm and comes off again — what is under test here is that the READ on the hot
+  // path is inert in production even when a row somehow exists.
   process.env.HARNESS_SECRET = "armed-by-the-hook";
   await fault.armHarnessFault(KIND, parts, 2);
   delete process.env.HARNESS_SECRET;
@@ -1334,7 +1335,7 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   // --- the named error, and the wiring ---
   const e = new fault.HarnessFault("planted");
   ok(e instanceof Error && e.name === "HarnessFault" && e.harnessFault === true, "EXECUTED: the planted failure is NAMED, so no log reader mistakes it for a product error");
-  ok(/if \(!process\.env\.HARNESS_SECRET\) return false;/.test(readFileSync(path.join(here, "../../src/harness-fault.js"), "utf8").split("harnessFaultArmed = async")[1].slice(0, 200)),
+  ok(/if \(!harnessEnabled\(\)\) return false;/.test(readFileSync(path.join(here, "../../src/harness-fault.js"), "utf8").split("harnessFaultArmed = async")[1].slice(0, 200)),
     "the env gate is the FIRST statement of harnessFaultArmed — before any storage call");
   const hookSrc = readFileSync(path.join(here, "../../src/test-hook.js"), "utf8");
   ok(/armGitDispatchFault/.test(hookSrc) && /disarmGitDispatchFault/.test(hookSrc), "arm/disarm are dev-hook actions (HARNESS_SECRET Bearer gated), not resolvers");
@@ -1392,6 +1393,65 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   const connCode = connSrc.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
   ok(!/harness_fault:/.test(connCode) && !/process\.env\.HARNESS_SECRET/.test(connCode),
     "SOURCE: …and it re-implements neither the key shape nor the env gate — both have one home");
+}
+
+// =====================================================================================
+// F-517 — the ARMING side is gated too, and the gate has ONE home.
+//
+// Before this, `armHarnessFault` had no env check of its own: the only thing standing
+// between a production build and a planted fault row was the Bearer check in a DIFFERENT
+// file (src/test-hook.js). A gate that lives in the caller is a gate the next caller does
+// not inherit. What is asserted: with HARNESS_SECRET deleted, arming BOTH kinds writes
+// ZERO KVS rows — measured by counting sets, not by reading the refusal string.
+// =====================================================================================
+{
+  const fault = await import("../../src/harness-fault.js");
+  const { kvs } = await import("../lib/mock-kvs.mjs");
+  const savedEnv3 = process.env.HARNESS_SECRET;
+  const realSet = kvs.set;
+  const realDelete = kvs.delete;
+  let writes = [];
+  kvs.set = async function countingSet(k, v, o) { if (String(k).startsWith("harness_fault:")) writes.push(String(k)); return realSet.call(this, k, v, o); };
+
+  const kinds = [
+    { KIND: fault.HARNESS_FAULT_GIT_DISPATCH, parts: ["gc_f517", "delivery-1"] },
+    { KIND: fault.HARNESS_FAULT_HOOK_PROMOTE, parts: ["gc_f517", "acme/app"] },
+  ];
+
+  delete process.env.HARNESS_SECRET;
+  for (const { KIND, parts } of kinds) {
+    writes = [];
+    const res = await fault.armHarnessFault(KIND, parts, 3);
+    ok(res && res.ok === false && res.reason === "harness-off",
+      `EXECUTED: with HARNESS_SECRET absent, arming "${KIND}" REFUSES — {ok:false, reason:"harness-off"}`);
+    ok(writes.length === 0,
+      `EXECUTED: …and writes ZERO KVS rows for "${KIND}" — the refusal is before the side effect, not after it`);
+    ok((await fault.readHarnessFault(KIND, parts)).value === null,
+      `EXECUTED: …and no row exists to be consumed later for "${KIND}"`);
+    ok(!Object.prototype.hasOwnProperty.call(res, "key") && !Object.prototype.hasOwnProperty.call(res, "count"),
+      `EXECUTED: …and the refusal carries no key or count for "${KIND}" — the web trigger spreads this over {ok:true}, so ok flips to false`);
+  }
+
+  // Sanity: the spy really does see writes when the gate is open — the zeros above are the
+  // gate, not a dead counter.
+  process.env.HARNESS_SECRET = "dev";
+  writes = [];
+  const armedOk = await fault.armHarnessFault(kinds[0].KIND, kinds[0].parts, 3);
+  ok(writes.length === 1 && armedOk.count === 3, "EXECUTED: (sanity) in dev the same call DOES write exactly one row");
+  await fault.disarmHarnessFault(kinds[0].KIND, kinds[0].parts);
+
+  kvs.set = realSet;
+  kvs.delete = realDelete;
+  if (savedEnv3 === undefined) delete process.env.HARNESS_SECRET; else process.env.HARNESS_SECRET = savedEnv3;
+
+  // SOURCE: the predicate has ONE home. `harnessEnabled()` is the only place the env var
+  // is read in this module, and both entry points call it as their first statement.
+  const faultSrc = readFileSync(path.join(here, "../../src/harness-fault.js"), "utf8");
+  const faultCode = faultSrc.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  ok((faultCode.match(/process\.env\.HARNESS_SECRET/g) || []).length === 1,
+    "SOURCE: the env var is read in exactly ONE place — harnessEnabled()");
+  ok(/if \(!harnessEnabled\(\)\) return \{ ok: false, reason: "harness-off" \};/.test(faultSrc.split("armHarnessFault = async")[1].slice(0, 200)),
+    "SOURCE: the gate is the FIRST statement of armHarnessFault — before the storage.set");
 }
 
 // =====================================================================================

@@ -17,11 +17,14 @@
  * that stays unproven — so the failure gets a LEVER, with one home and one gate.
  *
  * THE GATE IS `process.env.HARNESS_SECRET`, exactly like src/test-hook.js: development
- * and staging builds carry it, PRODUCTION NEVER DOES. `harnessFaultArmed` returns false
- * on its FIRST statement when the variable is absent — before any storage call — so on a
- * production deployment this helper performs no KVS read, no allocation beyond the call
- * itself, and cannot change any outcome. That is asserted offline by stubbing the env
- * (async-handler-helpers.test.mjs counts KVS reads of the fault key and expects zero).
+ * and staging builds carry it, PRODUCTION NEVER DOES. It has ONE home in this file,
+ * `harnessEnabled()`, and BOTH sides ask it on their FIRST statement — `harnessFaultArmed`
+ * returns false and `armHarnessFault` returns `{ ok: false, reason: "harness-off" }`, both
+ * before any storage call. So on a production deployment this module performs no KVS read
+ * and no KVS write, and cannot change any outcome, no matter who imports it (F-517: the
+ * arming side used to rely on its caller's Bearer check alone). That is asserted offline by
+ * stubbing the env (async-handler-helpers.test.mjs counts KVS reads of the fault key and
+ * expects zero, and counts KVS writes from arming both kinds and expects zero).
  *
  * SHAPE: `harness_fault:<kind>:<part>:<part>…`, value `{ count, armedAt }`, TTL 10 min so
  * an armed lever that is never consumed disarms itself. Every part goes through
@@ -84,6 +87,15 @@ export class HarnessFault extends Error {
 }
 
 /**
+ * THE gate, in ONE home. `process.env.HARNESS_SECRET` is set in development and staging
+ * builds and NEVER in production, exactly as in src/test-hook.js. Both the consuming side
+ * (`harnessFaultArmed`) and the arming side (`armHarnessFault`, F-517) ask this — and ask
+ * it as their FIRST statement, before any storage call, so a production deployment performs
+ * no KVS access through this module at all.
+ */
+export const harnessEnabled = () => Boolean(process.env.HARNESS_SECRET);
+
+/**
  * Is a fault armed for this key — and if so, consume one unit of it?
  *
  * Returns false, with NO storage access at all, whenever HARNESS_SECRET is absent (i.e.
@@ -91,7 +103,7 @@ export class HarnessFault extends Error {
  * lever that is not armed. It must never be able to fail a delivery by accident.
  */
 export const harnessFaultArmed = async (kind, ...parts) => {
-  if (!process.env.HARNESS_SECRET) return false;
+  if (!harnessEnabled()) return false;
   try {
     const key = harnessFaultKey(kind, ...parts);
     const row = (await storage.get(key)) || null;
@@ -105,8 +117,19 @@ export const harnessFaultArmed = async (kind, ...parts) => {
   }
 };
 
-/** Arm `count` consecutive faults. Dev-gated by the caller (src/test-hook.js). */
+/**
+ * Arm `count` consecutive faults.
+ *
+ * F-517 — the ARMING side carries the SAME env gate as the consuming side, on its FIRST
+ * statement, and writes NOTHING when it refuses. The Bearer check in src/test-hook.js is
+ * still the authorization for the one caller that exists today, but a gate that lives only
+ * in the caller is a gate the NEXT caller does not inherit, and this file's whole premise is
+ * one home and one gate — `harnessFaultArmed` already refuses here rather than trusting its
+ * callers. Refusal shape is `{ ok: false, reason: "harness-off" }`: the web trigger spreads
+ * this return into a `{ ok: true, ... }` body, so the refusal overrides the optimistic ok.
+ */
 export const armHarnessFault = async (kind, parts, count) => {
+  if (!harnessEnabled()) return { ok: false, reason: "harness-off" };
   const n = Math.max(1, Math.min(HARNESS_FAULT_MAX_COUNT, Math.floor(Number(count) || 1)));
   const key = harnessFaultKey(kind, ...parts);
   await storage.set(key, { count: n, armedAt: new Date().toISOString() }, { ttl: HARNESS_FAULT_TTL });

@@ -640,13 +640,17 @@ export async function testStateTrigger(req) {
         return json(500, { error: String((e && e.message) || e) });
       }
     }
-    // Invoke a read-only resolver through the REAL dispatcher (resolver.getDefinitions()
+    // Invoke an allowlisted resolver through the REAL dispatcher (resolver.getDefinitions()
     // → exported `handler`), not through an extracted core: the point is to exercise the
     // resolver body's own wiring — filter args, context construction, sanitizeObject —
     // which unit tests of the pure pieces cannot reach. getConfigs also carries the
     // one-shot ownership/slim migrations, so this is how the harness fires and then
-    // verifies them on live data. Allowlisted read-only keys ONLY: this must never
-    // become a generic invoke-anything bridge.
+    // verifies them on live data. THE ALLOW-LIST BELOW IS THE ONLY AUTHORITY on what may
+    // be driven: most of it is read-only, the mutators on it are named and justified where
+    // they are listed, and this must never become a generic invoke-anything bridge. The
+    // whole trigger is dev/staging only — the HARNESS_SECRET Bearer gate at the top of this
+    // handler 404s wherever the variable is unset, which is every production deployment —
+    // and a driver that calls a mutator MUST restore what it changed in the same run.
     if (body.action === "invokeResolver") {
       // Read-only registry keys + the Listener / Scheduled Job / API-token resolvers (the
       // harness drives the admin-panel resolver layer — permission gates, payload shapes —
@@ -677,6 +681,42 @@ export async function testStateTrigger(req) {
         // getKnowledgeCounts and getLogs are already allowlisted above; listed here in the
         // comment only, not re-added — one entry, one home.
         "getContextDocs", "getSkills", "getSkillContent", "explainRule",
+        /* ── F-637 / F-638 — THE FIVE KNOWLEDGE/PROVIDER DOORS THAT HAD NO LIVE ARM. ─────
+         * Each of these was refused BY NAME (`functionKey not allowlisted: …`), so five
+         * shipped fixes could be proven offline and nowhere else. The hook is the right
+         * instrument for all five because it is the only path that can choose the CALLING
+         * PRINCIPAL (`body.accountId` → `principal.accountId` on the handler call below),
+         * and every one of these findings is about WHO the door answers.
+         *
+         * THREE OF THEM ARE MUTATORS (`saveSkill`, `deleteSkill`, `deleteContextDoc`).
+         * They are admitted on the same terms as `saveListener`/`deleteScheduledJob`/
+         * `addMemory` above and no wider: this whole trigger is DEV/STAGING ONLY — it is
+         * gated by the `HARNESS_SECRET` Bearer check at the top of this handler and 404s
+         * wherever that variable is unset, which is every production deployment. They keep
+         * their OWN gates (the hook bypasses nothing: a scope-"own" editor still gets the
+         * `notOwner` sentence, a builtin row still asks the admin question), and A DRIVER
+         * THAT CALLS THEM MUST RESTORE WHAT IT CHANGED — re-save the skill it edited,
+         * re-seed the doc it deleted — in the same run, in a `finally`.
+         *
+         * NOT WIDENED BY ANY OF THIS: every deploy/dispatch key stays out. `setupGitPipeline`
+         * is still absent, `triggerGitDeploy` is still reachable ONLY through the F-627
+         * outdated-only wrapper below, and the Coder write doors are still forced to
+         * simulation. A knowledge door is not a precedent for a door that touches a
+         * customer's repository.
+         *
+         *   saveSkill            — F-622: the unknown-id arm must answer the same sentence
+         *                          a colleague's skill does, for a scope-"own" editor.
+         *   deleteSkill          — F-624: the same existence parity on the destructive twin.
+         *   deleteContextDoc     — F-625: the same existence parity on the docs delete.
+         *   getContextDocContent — F-626: the viewer floor on the doc CONTENT reader, which
+         *                          had no gate of any kind.
+         *   getOpenAIKey         — F-629/F-633: the only consumer of the `armKeyReadFault`
+         *                          lever, and the door F-633 put a viewer floor on. It
+         *                          returns `hasKey`/`isByok` booleans and a base URL — never
+         *                          key material — and the fault lever it reads is itself
+         *                          inert without HARNESS_SECRET.
+         */
+        "saveSkill", "deleteSkill", "deleteContextDoc", "getContextDocContent", "getOpenAIKey",
         // F-566 — the knowledge-pack surfaces. `getKnowledgePacks` is a pure READ of the
         // generated index (titles, tags, sizes, budgets — never a pack BODY), the same
         // class as `getKnowledgeCounts` above. `saveKnowledgeSettings` is a WRITE and is

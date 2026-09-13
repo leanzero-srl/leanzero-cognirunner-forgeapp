@@ -39,6 +39,7 @@ import Tooltip from "./components/Tooltip";
 import RulePortabilityDialog from "./components/RulePortabilityDialog";
 import ListenersTab from "./components/ListenersTab";
 import JobsTab from "./components/JobsTab";
+import AgentsTab from "./components/AgentsTab";
 import DeleteRulesDialog from "./components/DeleteRulesDialog";
 import { showToast } from "./components/toast";
 import { confirmDialog } from "./confirmDialog";
@@ -2981,6 +2982,175 @@ const injectStyles = () => {
     .evp-repos-hint { margin: 0; font-size: 11px; color: var(--text-secondary); line-height: 1.45; }
     .evp-repos-bad { margin: 0; padding: 6px 10px; border-radius: 4px; background: #dc2626; color: #fff; font-size: 11px; font-weight: 700; }
     html[data-color-mode="dark"] .evp-repos-bad { background: #ef4444; }
+
+    /* ── AGENTS (1.5) — the Virtual Administrator tab, its wizard and its form. ──
+       The hue is #b45309 light / #f59e0b dark, and the dark amber keeps the app's DARK ink
+       (F-298) rather than white. Solid fills only: no left rails, no low-alpha tints, and
+       every new hue has its dark override in this same block so the two cannot drift. */
+    .va-new { background: #b45309; border-color: #b45309; }
+    html[data-color-mode="dark"] .va-new { background: #f59e0b; border-color: #f59e0b; color: #2a1602; }
+    .va-card { padding: 18px 20px; }
+    .va-list { display: flex; flex-direction: column; gap: 14px; }
+
+    /* chips — the one multi/single pick primitive the wizard and the form share */
+    .va-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
+    .va-chip { padding: 6px 12px; border: 1px solid var(--border-color); border-radius: 999px; background: var(--input-bg); color: var(--text-color); font-size: 12.5px; font-weight: 600; cursor: pointer; }
+    .va-chip:hover:not(:disabled) { border-color: #b45309; }
+    .va-chip.on { background: #b45309; border-color: #b45309; color: #fff; font-weight: 700; }
+    .va-chip-act { border-color: #475569; }
+    .va-chip:disabled { cursor: not-allowed; opacity: 0.6; }
+    .va-chip-cap { font-size: 11px; font-weight: 700; color: var(--text-secondary); }
+    html[data-color-mode="dark"] .va-chip.on { background: #f59e0b; border-color: #f59e0b; color: #2a1602; }
+    html[data-color-mode="dark"] .va-chip:hover:not(:disabled) { border-color: #f59e0b; }
+
+    /* the chat surface */
+    .va-chat { margin-bottom: 14px; }
+    .va-say { margin: 0 0 8px; font-size: 13.5px; line-height: 1.6; color: var(--text-secondary); }
+    .va-ask { margin: 0; font-size: 15px; font-weight: 700; line-height: 1.5; color: var(--text-color); }
+    .va-step { display: flex; flex-direction: column; gap: 14px; }
+    .va-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 4px; }
+    .va-back { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-left: auto; }
+    .va-name { max-width: 340px; }
+    .va-voice-row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+    .va-empty { margin: 0; }
+
+    /* notes: a refusal is red and names its field, a note is slate. Both solid. */
+    .va-notes { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+    .va-note { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; padding: 9px 12px; border-radius: var(--r-md, 8px); color: #fff; font-size: 12.5px; line-height: 1.5; }
+    .va-notes-refusal .va-note { background: #dc2626; }
+    .va-notes-note .va-note { background: #475569; }
+    .va-note-field { font-size: 10.5px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; opacity: 0.92; }
+    .va-note-text { font-weight: 600; }
+    html[data-color-mode="dark"] .va-notes-refusal .va-note { background: #ef4444; }
+    html[data-color-mode="dark"] .va-notes-note .va-note { background: #64748b; }
+
+    /* the voice sample */
+    .va-sample { display: flex; flex-direction: column; gap: 9px; padding: 14px 16px; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); }
+    .va-sample-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .va-sample-flag { padding: 3px 9px; border-radius: 4px; color: #fff; font-size: 10px; font-weight: 800; letter-spacing: 0.05em; }
+    .va-sample-ok { background: #16a34a; }
+    .va-sample-bad { background: #dc2626; }
+    .va-sample-unchecked { background: #475569; }
+    .va-reply { display: flex; flex-direction: column; gap: 4px; padding: 11px 13px; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); background: var(--input-bg); }
+    .va-reply-kind { font-size: 10.5px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-secondary); }
+    .va-reply-text { font-size: 13.5px; line-height: 1.6; color: var(--text-color); white-space: pre-wrap; }
+    .va-reply-bad { border-color: #dc2626; }
+    .va-sample-block { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; padding: 8px 11px; border-radius: 6px; background: #dc2626; color: #fff; font-size: 12px; font-weight: 600; }
+    .va-sample-rule { font-size: 10.5px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; }
+    .va-sample-warn { padding: 8px 11px; border-radius: 6px; background: #d97706; color: #fff; font-size: 12px; font-weight: 600; }
+    .va-sample-chips { margin-top: 2px; }
+    html[data-color-mode="dark"] .va-sample-ok { background: #22c55e; color: #0a2a12; }
+    html[data-color-mode="dark"] .va-sample-bad { background: #ef4444; }
+    html[data-color-mode="dark"] .va-sample-unchecked { background: #64748b; }
+    html[data-color-mode="dark"] .va-sample-block { background: #ef4444; }
+    html[data-color-mode="dark"] .va-sample-warn { background: #f59e0b; color: #2a1602; }
+    html[data-color-mode="dark"] .va-reply-bad { border-color: #ef4444; }
+
+    /* desks, powers, brakes */
+    .va-desks { display: flex; flex-direction: column; gap: 9px; }
+    .va-desk { padding: 11px 13px; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); }
+    .va-desk.on { border-color: #b45309; }
+    .va-desk-head { display: flex; align-items: center; gap: 9px; cursor: pointer; }
+    .va-desk-name { font-size: 13px; font-weight: 700; color: var(--text-color); }
+    .va-desk-queues { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+    html[data-color-mode="dark"] .va-desk.on { border-color: #f59e0b; }
+    .va-powers { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 9px; }
+    .va-power { display: grid; grid-template-columns: auto 1fr; align-items: start; gap: 4px 9px; padding: 10px 12px; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); cursor: pointer; }
+    .va-power.on { border-color: #b45309; }
+    .va-power-label { font-size: 13px; font-weight: 700; color: var(--text-color); }
+    .va-power-desc { grid-column: 2; font-size: 11.5px; line-height: 1.45; color: var(--text-secondary); }
+    .va-powers-note { grid-column: 1 / -1; margin: 2px 0 0; }
+    html[data-color-mode="dark"] .va-power.on { border-color: #f59e0b; }
+    .va-guards { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
+    .va-guard { display: flex; flex-direction: column; gap: 4px; }
+    .va-guard-wide { grid-column: 1 / -1; }
+    .va-guard-range { font-size: 11px; font-weight: 700; color: #b45309; }
+    .va-guard-desc { font-size: 11.5px; line-height: 1.45; color: var(--text-secondary); }
+    html[data-color-mode="dark"] .va-guard-range { color: #f59e0b; }
+    .va-window { display: flex; flex-direction: column; gap: 9px; }
+    .va-window-times { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+    .va-time { padding: 7px 10px; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); background: var(--input-bg); color: var(--text-color); font-size: 13px; }
+    .va-textlist { display: flex; flex-direction: column; gap: 8px; }
+    .va-textlist-row { display: flex; gap: 8px; }
+
+    /* the review card: plain sentences, no bullets */
+    .va-review { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin-top: 6px; padding: 15px 17px; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); }
+    .va-review-block { display: flex; flex-direction: column; gap: 5px; }
+    .va-sentence { margin: 0; font-size: 13px; line-height: 1.65; color: var(--text-color); }
+    .va-hardstop { font-weight: 600; }
+
+    /* the agent card and its status surfaces */
+    .va-agent { padding: 16px 18px; display: flex; flex-direction: column; gap: 12px; }
+    .va-agent-paused { opacity: 0.85; }
+    .va-agent-head { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; }
+    .va-agent-name { font-size: 15px; font-weight: 700; color: var(--text-color); }
+    .va-agent-spacer { flex: 1; }
+    .va-badge { padding: 3px 9px; border-radius: 4px; color: #fff; font-size: 10px; font-weight: 800; letter-spacing: 0.05em; }
+    .va-badge-shadow { background: #b45309; }
+    .va-badge-live { background: #16a34a; }
+    .va-badge-paused { background: #475569; }
+    .va-badge-public { background: #2563eb; }
+    .va-badge-internal { background: #475569; }
+    .va-badge-ok { background: #16a34a; }
+    .va-badge-bad { background: #dc2626; }
+    .va-state-staged { background: #b45309; }
+    .va-state-posted { background: #16a34a; }
+    .va-state-owed { background: #dc2626; }
+    .va-state-parked { background: #475569; }
+    .va-state-seen, .va-state-queued, .va-state-done, .va-state-waiting_on_human { background: #475569; }
+    html[data-color-mode="dark"] .va-badge-shadow, html[data-color-mode="dark"] .va-state-staged { background: #f59e0b; color: #2a1602; }
+    html[data-color-mode="dark"] .va-badge-live, html[data-color-mode="dark"] .va-badge-ok, html[data-color-mode="dark"] .va-state-posted { background: #22c55e; color: #0a2a12; }
+    html[data-color-mode="dark"] .va-badge-paused, html[data-color-mode="dark"] .va-badge-internal, html[data-color-mode="dark"] .va-state-parked,
+    html[data-color-mode="dark"] .va-state-seen, html[data-color-mode="dark"] .va-state-queued, html[data-color-mode="dark"] .va-state-done, html[data-color-mode="dark"] .va-state-waiting_on_human { background: #64748b; }
+    html[data-color-mode="dark"] .va-badge-public { background: #3b82f6; }
+    html[data-color-mode="dark"] .va-badge-bad, html[data-color-mode="dark"] .va-state-owed { background: #ef4444; }
+
+    /* the health banner: SOLID red, because a dead agent is not a hint */
+    .va-health { display: flex; flex-direction: column; gap: 3px; padding: 11px 13px; border-radius: var(--r-md, 8px); background: #dc2626; color: #fff; }
+    .va-health-title { font-size: 12.5px; font-weight: 800; }
+    .va-health-text { font-size: 12px; font-weight: 500; line-height: 1.45; }
+    html[data-color-mode="dark"] .va-health { background: #ef4444; }
+
+    .va-stats { display: flex; flex-wrap: wrap; gap: 10px 22px; }
+    .va-stat { display: flex; flex-direction: column; gap: 2px; }
+    .va-stat-label { font-size: 10.5px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-secondary); }
+    .va-stat-value { font-size: 13px; font-weight: 700; color: var(--text-color); }
+
+    .va-detail { display: flex; flex-direction: column; gap: 11px; padding-top: 12px; border-top: 1px solid var(--border-color); }
+    .va-panes { display: flex; flex-wrap: wrap; gap: 7px; }
+    .va-pane-btn { padding: 6px 12px; border: 1px solid var(--border-color); border-radius: 999px; background: var(--input-bg); color: var(--text-color); font-size: 12.5px; font-weight: 600; cursor: pointer; }
+    .va-pane-btn.on { background: #b45309; border-color: #b45309; color: #fff; font-weight: 700; }
+    html[data-color-mode="dark"] .va-pane-btn.on { background: #f59e0b; border-color: #f59e0b; color: #2a1602; }
+    .va-table { width: 100%; }
+    .va-td-key { font-weight: 700; white-space: nowrap; }
+    .va-td-body { font-size: 12.5px; line-height: 1.55; }
+    .va-td-num { font-weight: 700; }
+    .va-label-gap { display: block; margin-top: 14px; }
+
+    .va-receipts { display: flex; flex-direction: column; gap: 9px; }
+    .va-receipt { display: flex; flex-direction: column; gap: 6px; padding: 11px 13px; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); }
+    .va-receipt-bad { border-color: #dc2626; }
+    .va-receipt-head { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; }
+    .va-receipt-kind { padding: 2px 8px; border-radius: 4px; background: #475569; color: #fff; font-size: 10px; font-weight: 800; letter-spacing: 0.05em; }
+    .va-receipt-at { font-size: 12px; font-weight: 700; color: var(--text-color); }
+    .va-receipt-counts { font-size: 12px; color: var(--text-secondary); }
+    .va-receipt-skip { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; font-size: 12.5px; line-height: 1.5; color: var(--text-color); }
+    .va-receipt-gate { padding: 2px 7px; border-radius: 4px; background: #b45309; color: #fff; font-size: 10px; font-weight: 800; letter-spacing: 0.04em; }
+    .va-receipt-error { padding: 8px 11px; border-radius: 6px; background: #dc2626; color: #fff; font-size: 12px; font-weight: 600; }
+    html[data-color-mode="dark"] .va-receipt-kind { background: #64748b; }
+    html[data-color-mode="dark"] .va-receipt-gate { background: #f59e0b; color: #2a1602; }
+    html[data-color-mode="dark"] .va-receipt-error { background: #ef4444; }
+    html[data-color-mode="dark"] .va-receipt-bad { border-color: #ef4444; }
+
+    .va-constraints { display: flex; flex-direction: column; gap: 6px; }
+    .va-constraint { padding: 9px 12px; border-radius: var(--r-md, 8px); background: #475569; color: #fff; font-size: 12.5px; font-weight: 600; line-height: 1.5; }
+    html[data-color-mode="dark"] .va-constraint { background: #64748b; }
+    .va-memory { width: 100%; box-sizing: border-box; padding: 11px 13px; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); background: var(--input-bg); color: var(--text-color); font-size: 13px; line-height: 1.6; font-family: inherit; resize: vertical; }
+    .va-memory-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 6px; }
+    .va-memory-count { font-size: 11.5px; font-weight: 700; color: var(--text-secondary); }
+    .va-memory-over { color: #dc2626; }
+    html[data-color-mode="dark"] .va-memory-over { color: #ef4444; }
+    .va-refused { font-weight: 600; }
 `;
   document.head.appendChild(style);
 };
@@ -5791,6 +5961,11 @@ const TABS = [
   { key: "rules", label: "Rules" },
   { key: "listeners", label: "Listeners" },
   { key: "jobs", label: "Scheduled Jobs" },
+  // 1.5 — the Virtual Administrator. Deliberately NOT adminOnly, for the same reason the
+  // Code tab is not: every write behind it is gated by the backend roster, which answers a
+  // refusal the tab renders as one ("ask a CogniRunner admin"), and a tab that silently
+  // does not exist teaches a reader nothing about a capability they may be entitled to.
+  { key: "agents", label: "Agents" },
   { key: "logs", label: "Execution Logs" },
   { key: "docs", label: "Documentation" },
   { key: "skills", label: "Skills" },
@@ -5825,6 +6000,12 @@ const SURFACES = {
     ] },
   jobs: { eyebrow: "SCHEDULED JOBS", what: "Rules that run on a cron schedule — every 5 minutes up to monthly, in any time zone — once, or per issue of a JQL scope (escalation-style). Same code steps or AI agent as listeners.",
     terms: [{ label: "scope", def: "A JQL query the job runs against; each matching issue becomes the current issue for its own run, sharing the ~100 s budget." }] },
+  agents: { eyebrow: "AGENTS", what: "Virtual administrators: agents that work a service desk queue on a schedule, stage a reply, and send it on a later tick only after eleven checks. Every one starts in shadow mode, where it stages and posts nothing.",
+    terms: [
+      { label: "shadow mode", def: "The first ticks of an agent's life. It sweeps and it stages replies, and it posts none of them — you approve or reject each draft until the shadow ticks are used up." },
+      { label: "tick", def: "One scheduled run. A prepare tick finds work and stages replies; a separate post tick sends what is due, so nothing an agent writes can go out in the run that wrote it." },
+      { label: "owed", def: "An item where a human is waiting on the agent. Owed replies are worked first and have their own hourly cap." },
+    ] },
   logs: { eyebrow: "EXECUTION LOGS", what: "A running history of what your rules did on real transitions: pass or fail, the AI's reasoning, and any changes a post-function made." },
   docs: { eyebrow: "DOCUMENTATION", what: "Reference docs the AI reads when it generates code and validates fields. Add your own API notes or conventions; the built-in guides come seeded.",
     terms: [{ label: "provenance", def: "The record of exactly which docs, skills, and memories the AI drew on when it generated a step's code — shown as chips on each rule." }] },
@@ -7806,6 +7987,11 @@ function App() {
       {/* Listeners Tab — Jira product-event rules */}
       {activeTab === "listeners" && (
         <ListenersTab invoke={invoke} isAdmin={isAdmin} userRole={userRole} siteUrl={siteUrl} router={router} roleUnknown={roleUnknown} />
+      )}
+
+      {/* Agents Tab — virtual administrators (1.5) */}
+      {activeTab === "agents" && (
+        <AgentsTab invoke={invoke} isAdmin={isAdmin} userRole={userRole} roleUnknown={roleUnknown} />
       )}
 
       {/* Scheduled Jobs Tab — cron rules */}

@@ -7275,10 +7275,13 @@ resolver.define("updateMemory", async ({ payload, context }) => {
     if (projectKey !== undefined) memory.projectKey = cleanProjectKey(projectKey);
     memory.updatedAt = new Date().toISOString();
     // F-178: an EDIT is not a newcomer — it may never cost another memory its life.
-    // saveMemories evicts nothing without a protectId; if the edit would leave the store
-    // at or over the byte guard WITHOUT shrinking it, the edit itself is refused and the
-    // store is left byte-identical. (Shortening rows still works — that is the recovery
-    // path out of an over-size store, and it shrinks.)
+    // saveMemories evicts nothing without a protectId. F-183/F-184: the byte ceiling is
+    // enforced there, on every write, and `refuseIfOverBytes` says what THIS caller wants
+    // when the store is over it — a human is watching, so a CONTENT edit that grows the
+    // store is refused rather than silently half-applied. Shortening rows still works
+    // (the recovery path out of an over-size store), and metadata-only edits (archive /
+    // restore / project clear) are always allowed: refusing Restore while allowing
+    // Archive was a one-way door.
     const saved = await saveMemories(memories, { refuseIfOverBytes: true, priorBytes });
     if (saved.refused) {
       return { success: false, stored: false, reason: saved.reason, evicted: [], error: memoryCapRefusalMessage(saved.reason) };

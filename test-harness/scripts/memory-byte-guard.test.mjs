@@ -15,6 +15,8 @@
 //   the single `pf_memories` value up to the platform cap, at which point KVS rejects it: measured
 //   on the pre-fix module, the 76th full-length merge throws VALUE_TOO_LARGE at 245 831 B and no
 //   growing write ever succeeds again.
+// F-184 — metadata-only edits (archive/restore, project clear) must never be refused by the byte
+//   guard. Archive (-1 B) succeeded while Restore (+1 B) was refused: a one-way door.
 import storage from "../lib/mock-kvs.mjs";
 import {
   saveMemories, serializedBytes, loadMemories,
@@ -112,6 +114,41 @@ over[0].reinforcements = 7;
 await saveMemories(over);
 ok(load()[0].content === oldText, "over the guard: the merged (longer) text is dropped, the stored text is kept");
 ok(load()[0].reinforcements === 7, "over the guard: the reinforcement counter is still recorded");
+
+// ---------------------------------------------------------------------------
+// F-184: metadata-only edits are ALWAYS allowed; only content growth is refused.
+// ---------------------------------------------------------------------------
+storage.__reset();
+storage.__seed(MEMORIES_KEY, buildStore(MEMORY_MAX_SERIALIZED_BYTES + 500));
+ok(serializedBytes(load()) >= MEMORY_MAX_SERIALIZED_BYTES, "store seeded OVER the byte guard");
+
+const editWith = async (mutate) => {
+  const all = await loadMemories();
+  const priorBytes = serializedBytes(all);
+  mutate(all[0]);
+  all[0].updatedAt = new Date().toISOString();
+  return saveMemories(all, { refuseIfOverBytes: true, priorBytes });
+};
+
+// the measured cost of an updatedAt re-stamp is ZERO (fixed-length ISO), not "+4 bytes"
+const stampProbe = await loadMemories();
+const stampBefore = serializedBytes(stampProbe);
+stampProbe[0].updatedAt = new Date().toISOString();
+ok(serializedBytes(stampProbe) - stampBefore === 0, "an updatedAt re-stamp costs exactly 0 bytes (the docblock said +4)");
+
+const archived = await editWith((m) => { m.disabled = true; });
+ok(archived.refused !== true && load()[0].disabled === true, "ARCHIVE (metadata only) is allowed on an over-guard store");
+const restored = await editWith((m) => { m.disabled = false; });
+ok(restored.refused !== true && load()[0].disabled === false, "RESTORE (metadata only, +1 byte) is allowed too — the one-way door is closed");
+const scoped = await editWith((m) => { m.projectKey = null; });
+ok(scoped.refused !== true, "a projectKey clear is allowed on an over-guard store");
+
+const textBefore = load()[0].content;
+const grown = await editWith((m) => { m.content = `${m.content}MORE`.substring(0, MEMORY_CONTENT_MAX + 4); });
+ok(grown.refused === true && grown.reason === "bytes", "CONTENT growth on an over-guard store is refused");
+ok(load()[0].content === textBefore, "the refused content edit left the store untouched");
+const shrunk = await editWith((m) => { m.content = m.content.substring(0, 100); });
+ok(shrunk.refused !== true && load()[0].content.length === 100, "CONTENT shrink is allowed — the recovery path out of an over-size store");
 
 console.log(`\nmemory-byte-guard: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

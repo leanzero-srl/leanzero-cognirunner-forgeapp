@@ -401,8 +401,12 @@ export const serializedBytes = (arr) => utf8Len(JSON.stringify(Array.isArray(arr
  *      · `refuseIfOverBytes: true` (updateMemory — a human editing one row): the edit is
  *        REFUSED, `{ refused: true, reason: "bytes" }`, store untouched. Silently keeping
  *        the old text under a "saved" toast would lie to the person who typed the new one.
- *  - Growth that is NOT content (a `disabled` toggle, a `projectKey` change) is left alone:
- *    only text can materially grow this value.
+ *  - METADATA-only edits (`disabled` toggles, a `projectKey` clear) are ALWAYS allowed,
+ *    over the guard or not. F-184: the previous docblock claimed an `updatedAt` re-stamp
+ *    costs "+4 bytes" — measured, it costs exactly 0 (a fixed-length ISO stamp), and the
+ *    real deltas are Archive (`"disabled":false` → `true`) −1 B and Restore +1 B. That
+ *    asymmetry built a ONE-WAY DOOR on an over-guard store: Archive succeeded and Restore
+ *    was refused. Metadata edits cannot materially grow the store, so they never refuse.
  *
  * `priorBytes` is an optimisation only: when the caller already measured the store it is
  * used, otherwise the stored value is re-read (once, and only when over the guard).

@@ -55,7 +55,7 @@ import {
   fingerprintOf, diffCandidates,
   withItemClaim, takePostClaim,
   recordTick, recordTickHealth, recordEffect,
-  readCaps, capsAllow, bumpCaps, readHealth,
+  readCaps, capsAllow, bumpCaps, readHealth, draftIsApproved,
   readMemory, writeMemory, memoryPromptBlock,
 } from "./va-ledger.js";
 import {
@@ -1182,7 +1182,17 @@ export const runVaPost = async ({ agent, tickId = null, deps: injected = {} } = 
     const health = await readHealth(deps.store, agentId);
     const watched = health.ok ? health.prepareTicks : 0;
     const g1 = gatePausedShadow({ va, tickIndex: watched, killSwitchActive: await deps.isKillSwitchActive(job) });
-    if (!g1.ok) { note("(agent)", `gate.${g1.reason}`); return await finish(); }
+    // PAUSED AND THE KILL SWITCH STOP THE WHOLE PASS. SHADOW DOES NOT (F-464).
+    //
+    // Shadow mode means "post nothing until a person has watched you" — and a person who
+    // reads a draft in the Agents tab and clicks Approve IS that person. Refusing to send
+    // what they approved made the approve button a no-op: the admin's verdict was written
+    // to `history`, the draft sat staged, and the next tick's freshness gate eventually
+    // dropped it. The reviewer's whole purpose is to say "yes, send this one", so the
+    // shadow arm is now decided PER DRAFT, below, and every other gate still applies to
+    // an approved draft exactly as it does to any other.
+    if (!g1.ok && g1.reason !== "shadow") { note("(agent)", `gate.${g1.reason}`); return await finish(); }
+    const inShadow = !g1.ok && g1.reason === "shadow";
     const window = inPostWindow(va, now);
     if (!window.ok) { note("(agent)", `gate.${window.reason}`); return await finish(); }
 
@@ -1235,6 +1245,14 @@ export const runVaPost = async ({ agent, tickId = null, deps: injected = {} } = 
         note(issueKey, reason);
         await saveItem(deps.store, agentId, issueKey, { event: "post_skipped", reason, ...patch }, { now });
       };
+
+      /* — GATE 1b: SHADOW, per draft (F-464) — */
+      // An APPROVED draft leaves shadow mode; an unapproved one does not. Note that this
+      // is the ONLY exemption: gates 2-11 run on an approved draft unchanged, so a human
+      // can say "send this sentence" and still be overruled by a fresher comment, a cap,
+      // the write scope or the voice lint. Approval answers "may this agent speak yet",
+      // not "is this particular reply still the right thing to say".
+      if (inShadow && !draftIsApproved(row.staged)) { note(issueKey, "gate.shadow"); continue; }
 
       /* — GATE 2: attempts — */
       const g2 = gateAttempts(row);

@@ -124,8 +124,27 @@ const normalizeStaged = (staged, now) => {
     baseline: staged.baseline == null ? null : clampChars(staged.baseline, 200),
     stagedAt: staged.stagedAt ? String(staged.stagedAt) : nowIso(now),
     tickId: staged.tickId == null ? null : clampChars(staged.tickId, 80),
+    // THE HUMAN'S APPROVAL (F-464). Written ONLY by `approveDraft` in src/va-admin.js;
+    // nothing the model can call reaches this field, because the actions it holds
+    // (src/va-ledger-actions.js) build a `staged` object without it and the allow-list
+    // above is the only shape that survives a write. That is what makes it safe for the
+    // post phase to treat it as a shadow-mode exemption: an approval is a person, and a
+    // person is the thing shadow mode is waiting for.
+    approvedBy: staged.approvedBy == null ? null : clampChars(staged.approvedBy, 128),
+    approvedAt: staged.approvedAt == null ? null : clampChars(staged.approvedAt, 40),
   };
 };
+
+/**
+ * Has a HUMAN approved this draft? (F-464)
+ *
+ * The predicate has one home because two places ask it — the post phase's shadow gate and
+ * the Agents tab — and "approved" must not come to mean two things. Both fields are
+ * required: a `approvedBy` with no timestamp is a half-written row, and a half-written row
+ * is not a decision.
+ */
+export const draftIsApproved = (staged) =>
+  Boolean(staged && typeof staged === "object" && staged.approvedBy && staged.approvedAt);
 
 /* ══════════════════════════════════════════════════════════════════════════════
  * 2. THE INDEX — bounded, LRU, and the only thing that knows what rows exist

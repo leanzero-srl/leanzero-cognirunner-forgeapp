@@ -918,9 +918,12 @@ const decide = async (verdict, { jobId, itemKey, issueKey, stagedAt, reason, acc
   const stamp = `${verdict} by ${who || "an admin"} at ${nowIso(deps.now())}${why ? ` — ${why}` : ""}`;
 
   const saved = verdict === "approved"
-    // staged → staged. Legal in VA_TRANSITIONS; the draft is untouched and the
-    // verdict rides history + notes.
-    ? await saveItem(deps.store, agent, key, { state: "staged", event: "approved", reason: stamp, notes: stamp }, { now: deps.now() })
+    // staged → staged. Legal in VA_TRANSITIONS; the draft's WORDS are untouched and the
+    // verdict rides the draft itself (F-464) as well as history + notes.
+    // F-464: the verdict is STAMPED ON THE DRAFT, not only in `history`. `approvedBy` /
+    // `approvedAt` are what the post phase's shadow gate reads to let an approved draft
+    // out; without them Approve wrote a note and the draft never went anywhere.
+    ? await saveItem(deps.store, agent, key, { state: "staged", staged: { ...current.row.staged, approvedBy: who || "admin", approvedAt: nowIso(deps.now()) }, event: "approved", reason: stamp, notes: stamp }, { now: deps.now() })
     // staged → queued, draft dropped. The ledger's own drop move.
     : await transitionItem(deps.store, agent, key, "queued", { staged: null, event: "rejected", reason: stamp, notes: stamp, now: deps.now() });
 

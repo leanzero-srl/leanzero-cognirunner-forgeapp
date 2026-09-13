@@ -1414,5 +1414,117 @@ reset();
 }
 
 
+
+/* ══ F-464 — APPROVING A DRAFT IN SHADOW MODE SENDS IT ════════════════════ */
+{
+  const shadowed = () => vaJob({ status: { paused: false, shadowUntilTick: 3 } });
+  const approve = async (key = "SUP-1", by = "admin-1") => {
+    const row = (await L.readItem(kvs, AG, key)).row;
+    await L.saveItem(kvs, AG, key, {
+      state: "staged",
+      staged: { ...row.staged, approvedBy: by, approvedAt: "2026-09-13T11:00:00.000Z" },
+      event: "approved", reason: "approved by admin-1",
+    }, { now: T0 });
+  };
+
+  // BLOCK — an UNAPPROVED draft in shadow mode goes nowhere. Shadow mode still means
+  // what it says for everything a person has not read.
+  reset();
+  await stageDraft();
+  let d = postDeps();
+  let r = await V.runVaPost({ agent: shadowed(), tickId: "s-1", deps: d });
+  eq(r.posted, 0, "shadow.BLOCK_unapproved_draft");
+  eq(d.__commented.length, 0, "…and nothing reached Jira");
+  ok(r.skipped.some((x) => x.key === "SUP-1" && x.reason === "gate.shadow"), "…skipped by name, against the ITEM not the agent");
+  eq((await L.readItem(kvs, AG, "SUP-1")).row.state, "staged", "…and the draft is still there to be reviewed");
+
+  // ALLOW — an APPROVED draft leaves shadow mode. This is the whole point of the review
+  // pane: a person read it and said send it. Before this, Approve wrote a note, the draft
+  // sat staged, and the next tick's freshness gate eventually dropped it.
+  reset();
+  await stageDraft();
+  await approve();
+  d = postDeps();
+  r = await V.runVaPost({ agent: shadowed(), tickId: "s-2", deps: d });
+  eq(r.posted, 1, "shadow.ALLOW_approved_draft_is_sent");
+  eq(d.__commented.length, 1, "…exactly one comment");
+  eq((await L.readItem(kvs, AG, "SUP-1")).row.state, "posted", "…and the item is posted");
+
+  // …AND EVERY LATER GATE STILL APPLIES. Approval answers "may this agent speak yet",
+  // never "is this particular reply still the right thing to say".
+  //   · freshness: a human spoke after the baseline → dropped, approval or not.
+  reset();
+  await stageDraft();
+  await approve();
+  const moved = (k) => issue(k, { fields: { reporter: { accountId: "rep-1" }, requestType: { id: "rt-1" }, comment: { comments: [
+    { id: "c-1", author: { accountId: "rep-1" }, created: "2026-09-01T09:00:00.000Z" },
+    { id: "c-99", author: { accountId: "rep-1" }, created: "2026-09-13T11:30:00.000Z" },
+  ] } } });
+  d = postDeps({ getIssue: async (k) => moved(k) });
+  r = await V.runVaPost({ agent: shadowed(), tickId: "s-3", deps: d });
+  eq(r.posted, 0, "shadow.BLOCK_approved_but_thread_moved — gate 3 still runs");
+  eq(d.__commented.length, 0, "…and nothing reached Jira");
+
+  //   · the write scope: an approved draft on an out-of-scope issue is still refused.
+  reset();
+  await stageDraft();
+  await approve();
+  const outOfScope = vaJob({
+    status: { paused: false, shadowUntilTick: 3 },
+    scope: { read: { site: false, projects: ["SUP"] }, write: { projects: ["OTHER"] } },
+  });
+  d = postDeps();
+  r = await V.runVaPost({ agent: outOfScope, tickId: "s-4", deps: d });
+  eq(r.posted, 0, "shadow.BLOCK_approved_but_outside_the_write_scope — gate 8 still runs");
+
+  //   · the voice lint: an approved draft that breaks the voice contract is still refused.
+  reset();
+  await L.saveItem(kvs, AG, "SUP-1", { state: "queued" }, { now: T0 });
+  await L.saveItem(kvs, AG, "SUP-1", {
+    state: "staged",
+    staged: { audience: "internal", body: "- one\n- two", reason: "r", baseline: "c-1", tickId: "t-stage", stagedAt: new Date(T0 - 30 * MIN).toISOString() },
+  }, { now: T0 });
+  await approve();
+  d = postDeps();
+  r = await V.runVaPost({ agent: shadowed(), tickId: "s-5", deps: d });
+  eq(r.posted, 0, "shadow.BLOCK_approved_but_voice_lint_refuses — gate 9 still runs");
+
+  // PAUSED AND THE KILL SWITCH ARE NOT EXEMPTED. They stop the whole pass, approval or
+  // not — they are not "have you been watched enough", they are "stop".
+  reset();
+  await stageDraft();
+  await approve();
+  d = postDeps();
+  r = await V.runVaPost({ agent: vaJob({ status: { paused: true, shadowUntilTick: 3 } }), tickId: "s-6", deps: d });
+  eq(r.posted, 0, "shadow.BLOCK_paused_beats_an_approval");
+  ok(r.skipped.some((x) => x.key === "(agent)" && x.reason === "gate.paused"), "…and it stops the whole pass, not one item");
+
+  reset();
+  await stageDraft();
+  await approve();
+  d = postDeps({ isKillSwitchActive: async () => true });
+  r = await V.runVaPost({ agent: shadowed(), tickId: "s-7", deps: d });
+  eq(r.posted, 0, "shadow.BLOCK_kill_switch_beats_an_approval");
+
+  // THE PREDICATE. Both halves are required: a half-written row is not a decision.
+  ok(L.draftIsApproved({ approvedBy: "a", approvedAt: "t" }) === true, "draftIsApproved.ALLOW_both_fields");
+  ok(L.draftIsApproved({ approvedBy: "a" }) === false, "draftIsApproved.BLOCK_no_timestamp");
+  ok(L.draftIsApproved({ approvedAt: "t" }) === false, "draftIsApproved.BLOCK_no_approver");
+  ok(L.draftIsApproved(null) === false && L.draftIsApproved({}) === false, "draftIsApproved: junk is not an approval");
+
+  // THE MODEL CANNOT APPROVE ITS OWN DRAFT. `stage_reply` builds a `staged` object, and
+  // the ledger's allow-list is the only shape that survives a write — so an approval
+  // smuggled through a tool argument is simply not stored.
+  reset();
+  const sneaky = scriptedLoop([[{ name: "stage_reply", args: { audience: "internal", body: "I have picked this up. It should be sorted today.", reason: "r", approvedBy: "me", approvedAt: "now" } }]]);
+  await V.runVaItem({ agent: shadowed(), issueKey: "SUP-1", tickId: "t1", deps: itemDeps({ runLoop: sneaky, now: () => T0 - 30 * MIN }) });
+  const sneakyRow = (await L.readItem(kvs, AG, "SUP-1")).row;
+  eq(sneakyRow.staged.approvedBy, null, "shadow.BLOCK_model_cannot_approve_its_own_draft");
+  eq(L.draftIsApproved(sneakyRow.staged), false, "…and the predicate agrees");
+  r = await V.runVaPost({ agent: shadowed(), tickId: "s-8", deps: postDeps() });
+  eq(r.posted, 0, "…so it still does not go out");
+}
+
+
 console.log(`\n${pass} passed, ${fail} failed`);
 if (fail) process.exit(1);

@@ -68,6 +68,7 @@
 
 import storage from "@forge/kvs";
 import { createGitProvider, GitProviderError, GIT_PROVIDER_KINDS } from "./git-providers.js";
+import { safeKeyPart, isKeyConflict } from "./shared/kvs-keys.js";
 
 /* ===== KEY NAMES — the ONE home. Never retype one of these strings. ===== */
 
@@ -86,12 +87,23 @@ export const FORGE_IDENTITY_KEY = "COGNIRUNNER_FORGE_IDENTITY";
 /** Task type for the rotation job on the EXISTING `async-ai-queue`. */
 export const CREDENTIAL_ROTATION_TASK = "gitcredrotate";
 /**
- * F-304 — the idempotency claim for ONE rotation delivery. The queue is
- * at-least-once, and `applyCredentialRotation` is the only writer that replaces a
- * secret in place, so a redelivered event must not run the write twice.
+ * F-336 — the rotation LOCK, keyed by TARGET and nothing else. It serialises
+ * rotations; it does not dedupe deliveries.
+ *
+ * It used to carry the taskId (F-304), which made it a per-delivery dedupe key
+ * and therefore no lock at all: two DIFFERENT rotations of one connection both
+ * claimed, both read the pre-rotation row, and whichever finished its network
+ * probe last won — so the credential the admin abandoned could be the one that
+ * is stored. Per-delivery idempotency did not disappear with the key: the row
+ * records the `taskId` it last applied, and a redelivery of that same task is
+ * answered `duplicate` under the lock.
+ *
  * `forge-identity` has no id of its own and uses the literal as its slot.
  */
-export const gitRotateClaimKey = (targetId, taskId) => `git_rotate:${targetId || "forge-identity"}:${taskId}`;
+export const gitRotateClaimKey = (targetId) => `git_rotate:${safeKeyPart(targetId || "forge-identity")}`;
+
+/** Safety net only — the lock is released on EVERY exit, success or failure. */
+const ROTATE_LOCK_TTL = { ttl: { value: 10, unit: "MINUTES" } };
 
 /* ===== CAPS — checked BEFORE the side effect, always (commitImportCore) ===== */
 
@@ -814,6 +826,12 @@ export async function requestCredentialRotation(target, secret, { accountId } = 
       // is the moment a redelivery happened to arrive.
       params: { target, secret, requestedBy: accountId || null, enqueuedAt: nowIso(), taskId },
     },
+    // F-336 — ONE rotation at a time per target. The consumer also takes a
+    // `git_rotate:<target>` lock (a concurrency key is a scheduling hint, not a
+    // mutual-exclusion guarantee), but starting two probes for one connection at
+    // once is the race itself, so it is refused here too. Mirrors the shape
+    // `gitWebhook` pushes with.
+    concurrency: { key: `git-rotate:${target.kind === "connection" ? target.id : "forge-identity"}`, limit: 1 },
   });
   return { ok: true, taskId, queued: true };
 }
@@ -827,17 +845,22 @@ export async function requestCredentialRotation(target, secret, { accountId } = 
  * connection, so the check happens BEFORE the side effect, like every other cap
  * in this app.
  *
- * F-304 — AT-LEAST-ONCE IS THE PLATFORM'S PROMISE, SO THE GUARD IS OURS. Two
- * guards, both BEFORE the write:
- *   1. An idempotency CLAIM on `git_rotate:<target>:<taskId>` (FAIL_IF_EXISTS,
- *      24 h). A redelivery of the same event does nothing and says so.
- *   2. An ORDERING check: a rotation is refused when the row already carries a
+ * F-304 / F-336 — AT-LEAST-ONCE IS THE PLATFORM'S PROMISE AND CONCURRENCY IS ITS
+ * COROLLARY, SO BOTH GUARDS ARE OURS. Three, all BEFORE the write:
+ *   1. A LOCK on `git_rotate:<target>` (FAIL_IF_EXISTS, released on EVERY exit).
+ *      It is keyed by target, not by taskId, because its job is to serialise two
+ *      DIFFERENT rotations of one connection: they used to read the same
+ *      pre-rotation row and race on their `whoami` probes, so the credential the
+ *      admin had already abandoned could be the one left in the box. A conflict
+ *      answers `busy`; a KVS fault answers `claim_failed` and writes nothing.
+ *   2. PER-DELIVERY IDEMPOTENCY, held in the row as `rotatedTaskId`. A redelivery
+ *      of the same event does nothing and says `duplicate`.
+ *   3. An ORDERING check: a rotation is refused when the row already carries a
  *      `rotatedAt` NEWER than this request's `enqueuedAt`. Without it, a late
  *      redelivery of rotation A overwrites the newer token stored by rotation B —
  *      an admin who fixed a mistyped token watches it silently revert, and the
- *      next deploy 401s with nobody having asked for a change.
- * The claim is RELEASED whenever the rotation does not complete, because a claim
- * that outlives a failed attempt turns the platform's retry into a silent drop.
+ *      next deploy 401s with nobody having asked for a change. Equal timestamps
+ *      are broken by taskId so the winner is deterministic, never "both".
  * Ordering uses `enqueuedAt` — when the ADMIN asked — never the consumer's clock,
  * which is only when a redelivery happened to arrive.
  *
@@ -859,29 +882,51 @@ export async function applyCredentialRotation(params, { fetchImpl } = {}) {
   // The moment the ADMIN asked. Missing (a pre-F-304 event still on the queue)
   // means "unknown", and an unknown moment never wins an ordering comparison.
   const requestedAtMs = params && params.enqueuedAt ? Date.parse(params.enqueuedAt) : NaN;
-  const isStale = (rotatedAt) => {
+  const thisTaskId = (params && params.taskId) || "";
+  /**
+   * Is the request we are holding OLDER than what the row already has?
+   * `enqueuedAt` first — the moment the ADMIN asked, never the consumer's clock.
+   * EQUAL timestamps are broken by taskId, compared lexicographically, so two
+   * requests made in the same millisecond still have ONE deterministic winner
+   * instead of both applying (F-336; the old `<` let both through).
+   */
+  const isStale = (rotatedAt, appliedTaskId) => {
     if (!rotatedAt || Number.isNaN(requestedAtMs)) return false;
     const appliedMs = Date.parse(rotatedAt);
-    return !Number.isNaN(appliedMs) && requestedAtMs < appliedMs;
+    if (Number.isNaN(appliedMs)) return false;
+    if (requestedAtMs !== appliedMs) return requestedAtMs < appliedMs;
+    return String(appliedTaskId || "") > thisTaskId;
   };
-  const claimKey = params && params.taskId
-    ? gitRotateClaimKey(target.kind === "connection" ? target.id : "forge-identity", params.taskId)
-    : null;
+  const targetId = target.kind === "connection" ? target.id : "forge-identity";
+  /** Has THIS delivery already been applied? Per-task idempotency lives in the row now. */
+  const alreadyApplied = (row) => !!thisTaskId && row && row.rotatedTaskId === thisTaskId;
+
+  // F-336 — take the per-TARGET lock before reading anything. Two rotations of one
+  // connection used to read the same pre-rotation row and race on their network
+  // probes; the lock makes the read-probe-write sequence one at a time.
+  const lockKey = gitRotateClaimKey(targetId);
+  let lockHeld = false;
   const releaseClaim = async () => {
-    if (!claimKey) return;
-    try { await storage.delete(claimKey); } catch (_) { /* best-effort: the real answer is the caller's */ }
+    if (!lockHeld) return;
+    lockHeld = false;
+    try { await storage.delete(lockKey); } catch (_) { /* best-effort: the real answer is the caller's */ }
   };
-  if (claimKey) {
-    try {
-      await storage.set(claimKey, { at: nowIso(), target: target.kind }, {
-        keyPolicy: "FAIL_IF_EXISTS",
-        ttl: { value: 24, unit: "HOURS" },
-      });
-    } catch (e) {
-      // Already claimed: this exact delivery has been handled. Not an error — the
-      // rotation the admin asked for did happen, once.
-      return { ok: true, rotated: null, duplicate: true };
+  try {
+    await storage.set(lockKey, { at: nowIso(), target: target.kind, taskId: thisTaskId || null }, {
+      keyPolicy: "FAIL_IF_EXISTS",
+      ...ROTATE_LOCK_TTL,
+    });
+    lockHeld = true;
+  } catch (e) {
+    // A real conflict means another rotation for this target is in flight. Refuse
+    // and write NOTHING — the admin's other rotation is the one that lands, and a
+    // second answer would be the race we just closed.
+    if (isKeyConflict(e)) {
+      return { ok: false, error: "Another rotation for this target is already running — nothing was changed", code: "busy" };
     }
+    // Anything else is a KVS fault. This is the only writer that replaces a secret
+    // in place, so it fails CLOSED rather than rotating unserialised.
+    return { ok: false, error: "The rotation lock could not be taken — nothing was changed", code: "claim_failed" };
   }
 
   if (target.kind === "forge-identity") {
@@ -889,8 +934,16 @@ export async function applyCredentialRotation(params, { fetchImpl } = {}) {
     if (!prev) { await releaseClaim(); return { ok: false, error: "No Forge deploy identity is configured", code: "not_found" }; }
     const idTokenErr = tokenValueError(secret.token, "A replacement token is required");
     if (idTokenErr) { await releaseClaim(); return { ok: false, error: idTokenErr, code: "invalid" }; }
-    if (isStale(prev.rotatedAt)) {
+    if (alreadyApplied(prev)) {
+      // This exact delivery already landed. Not an error — the rotation the admin
+      // asked for did happen, once (the per-delivery half of F-304, now recorded
+      // in the row instead of in the lock key).
+      await releaseClaim();
+      return { ok: true, rotated: null, duplicate: true };
+    }
+    if (isStale(prev.rotatedAt, prev.rotatedTaskId)) {
       // A newer rotation is already stored. Applying this one would REVERT it.
+      await releaseClaim();
       return { ok: false, error: "A newer rotation has already been applied — nothing was changed", code: "stale" };
     }
     await storage.set(FORGE_IDENTITY_KEY, {
@@ -915,8 +968,12 @@ export async function applyCredentialRotation(params, { fetchImpl } = {}) {
         at: (params && params.enqueuedAt) || nowIso(),
       },
       rotatedAt: (params && params.enqueuedAt) || nowIso(),
+      // The delivery that produced what is in the box: the tiebreak for two
+      // requests sharing a millisecond, and the per-task idempotency marker.
+      rotatedTaskId: thisTaskId || null,
       updatedAt: nowIso(),
     });
+    await releaseClaim();
     return { ok: true, rotated: "forge-identity" };
   }
 
@@ -924,7 +981,12 @@ export async function applyCredentialRotation(params, { fetchImpl } = {}) {
   if (!row) { await releaseClaim(); return { ok: false, error: "Unknown git connection", code: "not_found" }; }
   const connTokenErr = tokenValueError(secret.token, "A replacement token is required");
   if (connTokenErr) { await releaseClaim(); return { ok: false, error: connTokenErr, code: "invalid" }; }
-  if (isStale(row.rotatedAt)) {
+  if (alreadyApplied(row)) {
+    await releaseClaim();
+    return { ok: true, rotated: null, duplicate: true };
+  }
+  if (isStale(row.rotatedAt, row.rotatedTaskId)) {
+    await releaseClaim();
     return { ok: false, error: "A newer rotation has already been applied — nothing was changed", code: "stale" };
   }
   try {
@@ -956,8 +1018,10 @@ export async function applyCredentialRotation(params, { fetchImpl } = {}) {
     // now in the box. A later delivery carrying an EARLIER `enqueuedAt` is refused.
     rotatedAt: (params && params.enqueuedAt) || nowIso(),
     rotatedBy: (params && params.requestedBy) || null,
+    rotatedTaskId: thisTaskId || null,
     updatedAt: nowIso(),
   });
+  await releaseClaim();
   return { ok: true, rotated: "connection", id: target.id };
 }
 

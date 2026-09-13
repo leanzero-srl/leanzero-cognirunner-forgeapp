@@ -397,7 +397,10 @@ ok(replay.ok === true && replay.duplicate === true,
   `a redelivered rotation is a no-op, not an error (got ${JSON.stringify(replay)})`);
 ok(storage.__raw(conns.FORGE_IDENTITY_KEY).token === "ATATT_ROTATED_TOKEN",
   "…and the stored token is untouched by the replay");
-ok(storage.__raw(conns.gitRotateClaimKey("forge-identity", "rot_1")), "the claim key is git_rotate:<target>:<taskId>");
+ok(storage.__raw(conns.gitRotateClaimKey("forge-identity")) === undefined,
+  "the lock key is git_rotate:<target> and it is RELEASED on completion — it is a lock, not a receipt");
+ok(storage.__raw(conns.FORGE_IDENTITY_KEY).rotatedTaskId === "rot_1",
+  "…and per-delivery idempotency lives in the ROW, as rotatedTaskId (F-336)");
 
 // …and a LATE delivery of an OLDER rotation never overwrites a newer one. This is
 // the scenario in the finding: an admin mistypes a token, rotates again to fix it,
@@ -418,8 +421,8 @@ const failed = await conns.applyCredentialRotation({
   requestedBy: ADMIN, enqueuedAt: new Date(Date.now() + 5000).toISOString(), taskId: "rot_retry",
 });
 ok(failed.ok === false && /implausibly long/i.test(String(failed.error)), "the identity arm caps the token too");
-ok(!storage.__raw(conns.gitRotateClaimKey("forge-identity", "rot_retry")),
-  "a refused rotation RELEASES its claim, so the retry is not seen as a duplicate");
+ok(!storage.__raw(conns.gitRotateClaimKey("forge-identity")),
+  "a refused rotation RELEASES its lock, so the next attempt is not refused as busy");
 const retried = await conns.applyCredentialRotation({
   target: { kind: "forge-identity" }, secret: { token: "ATATT_RETRIED" },
   requestedBy: ADMIN, enqueuedAt: new Date(Date.now() + 5000).toISOString(), taskId: "rot_retry",
@@ -465,6 +468,80 @@ ok(cLate.ok === false && cLate.code === "stale" && storage.__raw(conns.gitConnSe
 ok(fetchCalls.length === 2,
   "a refused-by-ordering rotation never even probes the provider — the guard is BEFORE the side effect");
 
+// F-336 — TWO ROTATIONS OF ONE CONNECTION MUST NOT RACE.
+// The finding's scenario: an admin pastes a token with a trailing space, sees the
+// connection go auth_dead, and immediately submits the correct one. Both events are
+// on the queue. The guard is a per-TARGET lock plus an ordering compare, so the
+// SECOND-ENQUEUED request is the one whose credential is left in the box — whatever
+// order the two probes happen to finish in.
+reset();
+fetchQueue = [whoamiOk()];
+const rSaved = await call("saveGitConnection", { kind: "github", label: "race", token: GH_TOKEN });
+const rId = rSaved.connection.id;
+const T1 = new Date(Date.now() + 1000).toISOString();
+const T2 = new Date(Date.now() + 2000).toISOString();
+fetchQueue = [whoamiOk(), whoamiOk()];
+// The NEWER request lands first; the older one arrives after and must be refused.
+const good = await conns.applyCredentialRotation({
+  target: { kind: "connection", id: rId }, secret: { token: "ghp_GOOD" },
+  requestedBy: ADMIN, enqueuedAt: T2, taskId: "rot_b",
+});
+const bad = await conns.applyCredentialRotation({
+  target: { kind: "connection", id: rId }, secret: { token: "ghp_BAD_TRAILING_SPACE" },
+  requestedBy: ADMIN, enqueuedAt: T1, taskId: "rot_a",
+});
+ok(good.ok === true, `the second-enqueued rotation applies (${JSON.stringify(good)})`);
+ok(bad.ok === false && bad.code === "stale", `the first-enqueued one, arriving later, is REFUSED (${JSON.stringify(bad)})`);
+ok(storage.__raw(conns.gitConnSecretKey(rId)).token === "ghp_GOOD",
+  "the credential the admin actually wanted is the one stored");
+
+// EQUAL enqueuedAt is the gap the old strict `<` left open: both applied, and the
+// slower probe won. The tiebreak is the taskId, so there is exactly one winner.
+reset();
+fetchQueue = [whoamiOk()];
+const eSaved = await call("saveGitConnection", { kind: "github", label: "tie", token: GH_TOKEN });
+const eId = eSaved.connection.id;
+const SAME = new Date(Date.now() + 1000).toISOString();
+fetchQueue = [whoamiOk(), whoamiOk()];
+const tieHigh = await conns.applyCredentialRotation({
+  target: { kind: "connection", id: eId }, secret: { token: "ghp_TIE_B" },
+  requestedBy: ADMIN, enqueuedAt: SAME, taskId: "rot_b",
+});
+const tieLow = await conns.applyCredentialRotation({
+  target: { kind: "connection", id: eId }, secret: { token: "ghp_TIE_A" },
+  requestedBy: ADMIN, enqueuedAt: SAME, taskId: "rot_a",
+});
+ok(tieHigh.ok === true && tieLow.ok === false && tieLow.code === "stale",
+  `two rotations in the SAME millisecond have one deterministic winner (${JSON.stringify(tieLow)})`);
+ok(storage.__raw(conns.gitConnSecretKey(eId)).token === "ghp_TIE_B",
+  "…and the loser never reaches the write");
+
+// A rotation running while another holds the target's lock is refused BUSY, and it
+// never probes the provider — the refusal is before the side effect.
+reset();
+fetchQueue = [whoamiOk()];
+const bSaved = await call("saveGitConnection", { kind: "github", label: "busy", token: GH_TOKEN });
+const bId = bSaved.connection.id;
+storage.__seed(conns.gitRotateClaimKey(bId), { at: new Date().toISOString(), target: "connection" });
+const probesBefore = fetchCalls.length;
+const busy = await conns.applyCredentialRotation({
+  target: { kind: "connection", id: bId }, secret: { token: "ghp_BUSY" },
+  requestedBy: ADMIN, enqueuedAt: new Date(Date.now() + 3000).toISOString(), taskId: "rot_busy",
+});
+ok(busy.ok === false && busy.code === "busy", `a rotation held off by the lock answers busy (${JSON.stringify(busy)})`);
+ok(fetchCalls.length === probesBefore, "…and it never probes the provider");
+ok(storage.__raw(conns.gitConnSecretKey(bId)).token === GH_TOKEN, "…and nothing was written");
+
+// A KVS fault taking the lock is NOT a conflict: it fails closed and writes nothing.
+storage.__failNextSet();
+const lockFault = await conns.applyCredentialRotation({
+  target: { kind: "connection", id: bId }, secret: { token: "ghp_FAULT" },
+  requestedBy: ADMIN, enqueuedAt: new Date(Date.now() + 4000).toISOString(), taskId: "rot_fault",
+});
+ok(lockFault.ok === false && lockFault.code === "claim_failed",
+  `a KVS fault on the lock fails CLOSED, it is not reported as a duplicate (${JSON.stringify(lockFault)})`);
+ok(storage.__raw(conns.gitConnSecretKey(bId)).token === GH_TOKEN, "…and nothing was written");
+
 // The queued request carries the idempotency key the consumer needs.
 reset();
 fetchQueue = [whoamiOk()];
@@ -477,6 +554,9 @@ ok(rotEvent.body.params.taskId === qReq.taskId,
   "the taskId rides the PARAMS — the consumer is handed `params` only, and the claim needs the key");
 ok(typeof rotEvent.body.params.enqueuedAt === "string",
   "…and so does enqueuedAt, which is what orders two rotations");
+ok(rotEvent.concurrency && rotEvent.concurrency.limit === 1
+  && rotEvent.concurrency.key === `git-rotate:${qSaved.connection.id}`,
+  `the rotation is pushed with a per-connection concurrency key, limit 1 (${JSON.stringify(rotEvent.concurrency)})`);
 
 /* ===================== 10. the security model is data, and it is asserted ===================== */
 ok(conns.PIPELINE_SETUP_IS_ADMIN_RESOLVER === true,

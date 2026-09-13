@@ -7151,7 +7151,7 @@ resolver.define("deleteContextDoc", async ({ payload, context }) => {
     if (doc?.builtin === true) {
       // Builtins are shared, curated content — mirror the saveSkill gate.
       if (!(await requireAdmin(context.accountId))) {
-        return { success: false, error: "Only admins can disable built-in documents" };
+        return permissionDenied("Only admins can disable built-in documents", "admin");
       }
       const updated = index.map((d) => (d.id === id ? { ...d, disabled: true } : d));
       await storage.set(DOC_REPO_INDEX_KEY, updated);
@@ -7268,7 +7268,7 @@ resolver.define("deleteSkill", async ({ payload, context }) => {
     if (skill?.builtin === true) {
       // Builtins are shared, curated content — mirror the saveSkill gate.
       if (!(await requireAdmin(context.accountId))) {
-        return { success: false, error: "Only admins can disable built-in skills" };
+        return permissionDenied("Only admins can disable built-in skills", "admin");
       }
       const disabledRow = { ...skill, enabled: false, updatedAt: new Date().toISOString() };
       await storage.set(SKILL_INDEX_KEY, index.map((s) => (s.id === id ? disabledRow : s)));

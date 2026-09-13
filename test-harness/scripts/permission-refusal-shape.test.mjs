@@ -179,7 +179,10 @@ const handBuilt = src
   .split("\n")
   .map((line, i) => [i + 1, line])
   .filter(([, line]) =>
-    /success:\s*false\s*,\s*error:\s*["'`](?:[^"'`]*(?:access required|on't have permission)[^"'`]*)["'`]/.test(line));
+    // F-258 — the guard used to grep only two English phrasings, so two refusals
+    // worded "Only admins can …" sailed past the "one home" invariant for a whole
+    // release. Any sentence that REFUSES belongs in permissionDenied().
+    /success:\s*false\s*,\s*error:\s*["'`](?:[^"'`]*(?:access required|on't have permission|Only admins|Only editors|Only viewers|dmin access|ditor access)[^"'`]*)["'`]/.test(line));
 assert.equal(handBuilt.length, 0,
   `hand-built permission refusals bypass the helper at src/index.js lines: ${handBuilt.map(([n]) => n).join(", ")}`);
 

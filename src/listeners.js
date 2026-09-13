@@ -363,8 +363,24 @@ export const assertKnownSkillIds = async (agent) => {
  *
  * `audience` picks the byte budget (src/shared/registry-limits.js). An agent run is the
  * tightest row because its prompt is re-sent every round.
+ *
+ * TWO VOCABULARIES, TWO KNOBS (F-558, closing F-549's second half). `audience` names the
+ * SKILLS/MEMORIES budget row ("agentRun"); the FIELD GUIDE has its own audience names
+ * ("agent", "va", "validator", "fix" — src/shared/registry-limits.js `fieldGuideAudience`)
+ * and its own scoring query. A caller that already speaks the guide's vocabulary overrides
+ * both:
+ *
+ *   `fieldGuideAudience` — default null, so the listener run and the job run keep
+ *     translating "agentRun" → "agent" byte-identically. The Virtual Administrator passes
+ *     "va", which is the only way the four Confluence ADF/storage-format sections tagged
+ *     `va` WITHOUT `agent` can ever reach a prompt.
+ *   `queryText` — default null, so the same two callers keep scoring on the agent's own
+ *     instructions and name. A caller whose "agent" is SYNTHESISED (the VA builds one from
+ *     `{ skillIds, useMemories }` and supplies neither field) must pass its own text or the
+ *     query is the blank string `" "`, every section scores 0, and the guide comes back
+ *     EMPTY — which is exactly what a VA turn got before this parameter existed.
  */
-export const buildAgentKnowledge = async (agent, { projectKey = null, audience = "agentRun", log = null } = {}) => {
+export const buildAgentKnowledge = async (agent, { projectKey = null, audience = "agentRun", fieldGuideAudience: guideAudience = null, queryText = null, log = null } = {}) => {
   const out = {};
   const budget = knowledgeBudget(audience);
   const ids = (agent && Array.isArray(agent.skillIds)) ? agent.skillIds : [];
@@ -402,8 +418,8 @@ export const buildAgentKnowledge = async (agent, { projectKey = null, audience =
   try {
     const { resolveFieldGuideBlock } = await import("./knowledge-packs.js");
     const guide = await resolveFieldGuideBlock({
-      audience: fieldGuideAudience(audience),
-      text: `${(agent && agent.instructions) || ""} ${(agent && agent.name) || ""}`,
+      audience: guideAudience || fieldGuideAudience(audience),
+      text: queryText || `${(agent && agent.instructions) || ""} ${(agent && agent.name) || ""}`,
     });
     if (guide.block) {
       out.fieldGuideBlock = guide.block;

@@ -145,14 +145,84 @@ ok(JSON.stringify(result || {}).includes("The portal rejects my password."),
   ok(limits.KNOWLEDGE_BUDGET_BYTES.va === undefined,
     "F-549: …and that split is necessary because KNOWLEDGE_BUDGET_BYTES has no va row");
 
-  // THE HALF THAT IS NOT CUT. Not an assertion in either direction: `buildAgentKnowledge`
-  // is another surgeon's file, and a check that failed the day they landed it would break
-  // their gate for doing the right thing. It is printed so the gap cannot go quiet.
+  /* ── F-558 — THE READER, AND THE QUERY THE VA ACTUALLY HAS ──────────────────
+   *
+   * F-549 cut half: `fieldGuideAudience: "va"` at the call site with NO READER in
+   * `buildAgentKnowledge`. The second half is here, and it is two knobs, because the
+   * audience alone would still have returned NOTHING: the builder scored the guide on
+   * `agent.instructions + agent.name`, and the "agent" a VA synthesises is
+   * `{ skillIds, useMemories }` — neither field. The query was `" "`, every section
+   * scored 0, and a VA item turn got ZERO sections however its audience was named.
+   *
+   * Asserted through the REAL builder over the REAL baked corpus, end to end.
+   */
   const lstSrc = readFileSync(new URL("../../src/listeners.js", import.meta.url), "utf8");
-  if (!/fieldGuideAudience:\s*guideAudience/.test(lstSrc)) {
-    console.log("  · F-549 HALF OPEN: src/listeners.js buildAgentKnowledge does not yet read"
-      + " `fieldGuideAudience`, so the option above is inert. See the comment at the call site.");
-  }
+  const VAM = await import("../../src/virtual-admin.js");
+  const { getKnowledgePins } = await import("../../src/shared/knowledge-select.js");
+  const pins = getKnowledgePins();
+  const sources = JSON.parse(readFileSync(new URL("../../knowledge/sources.json", import.meta.url), "utf8"));
+  // The pinned core, named once. If the bake re-chunks the pack this id moves and this
+  // test is where it must be re-read — a pin that silently stops matching is F-428 again.
+  const PINNED_VA_CORE = "administrator-practice/administrator-practice/6d0d454c/administrator-practice-1";
+  ok(/fieldGuideAudience:\s*guideAudience\s*=\s*null/.test(lstSrc),
+    "F-558: buildAgentKnowledge READS `fieldGuideAudience`, defaulting to null");
+  ok(/queryText\s*=\s*null/.test(lstSrc),
+    "F-558: …and accepts a `queryText` override, defaulting to null");
+  ok(/audience:\s*guideAudience\s*\|\|\s*fieldGuideAudience\(audience\)/.test(lstSrc),
+    "F-558: …the override wins, the translation is the fallback");
+  ok(/text:\s*queryText\s*\|\|\s*`\$\{\(agent && agent\.instructions\)/.test(lstSrc),
+    "F-558: …and the same shape for the query");
+  ok(/queryText:\s*queryText\s*\|\|\s*null/.test(call),
+    "F-558: the VA forwards its own query into the builder");
+
+  // THE BLANK QUERY IS THE DEFECT, not a theory about it: the VA's synthetic agent has
+  // no `instructions` and no `name`, so the builder's default query was `" "`. Measured
+  // WITHOUT the pin, because the pin is the other half of this row and would otherwise
+  // hide the very thing being shown — on a blank query the SCORER returns nothing at all.
+  // `selectKnowledge` rather than the packs wrapper, because only the raw selector takes
+  // `pins` — the wrapper always uses the registered map, which now contains the va pin.
+  const { selectKnowledge } = await import("../../src/shared/knowledge-select.js");
+  const blank = selectKnowledge({ audience: "va", text: " ", pins: [], sections: KP.ALL_SECTIONS });
+  ok(blank.sections.length === 0,
+    `F-558: the query a VA used to produce scores NOTHING (got ${blank.sections.length} section(s))`);
+  // And WITH the pin, which is why "zero sections" is no longer reachable for a VA turn
+  // even if some later caller forgets the query.
+  const blankPinned = await KP.selectFieldGuide({ audience: "va", text: " " });
+  ok(blankPinned.sectionIds.length === 1 && blankPinned.sectionIds[0] === PINNED_VA_CORE,
+    `F-558: …and the pin alone carries the core through it (got ${blankPinned.sectionIds.join(", ") || "none"})`);
+
+  // THE TURN, through the real dep. No skills bound and memories off, so this is the
+  // field-guide half alone — which is the half that was empty.
+  const VA = {
+    persona: { name: "Atlas Admin" },
+    powers: { skillIds: [] },
+  };
+  const query = VAM.buildFieldGuideQuery(VA, {
+    summary: "Confluence release-notes page renders blank after we switched the body to ADF",
+    lastComment: "The storage-format macro breaks when the page body is posted as ADF through the v2 endpoint.",
+  });
+  ok(query.includes("Atlas Admin") && query.includes("ADF"),
+    "F-558: the query carries the persona AND the item");
+  ok(!/[<>]{3}/.test(query), "F-558: …and is defanged — it can never close a fence");
+
+  const knowledge = await VAM.DEFAULT_DEPS.buildKnowledge(VA, { projectKey: "SUP", queryText: query });
+  const ids = knowledge.fieldGuideSections || [];
+  ok(ids.length >= 1, `F-558: a VA turn now gets a field guide (got ${ids.length} section(s))`);
+  ok(ids.includes(PINNED_VA_CORE),
+    `F-558: …including the PINNED administrator-practice core (got ${ids.join(", ") || "none"})`);
+  ok(ids.some((id) => (KP.ALL_SECTIONS.find((s) => s.id === id) || { audience: [] }).audience.includes("va")),
+    "F-558: …and at least one va-tagged section");
+  const emitted = Buffer.byteLength(knowledge.fieldGuideBlock || "", "utf8");
+  ok(emitted > 0 && emitted <= limits.fieldGuideBudget("va"),
+    `F-558: …inside the va budget, measured on the EMITTED block (${emitted} <= ${limits.fieldGuideBudget("va")})`);
+
+  // THE PIN ITSELF. `administrator-practice` declares "Pinned for every Virtual
+  // Administrator turn" in its purpose and pinned NOTHING until this row.
+  ok(pins.va && pins.va.length === 1,
+    "F-558: the registered pin map has exactly one va pin");
+  ok(sources.packs["administrator-practice"].pinned.length === 1
+    && (sources.packs["administrator-practice"].pinnedFor || []).includes("va"),
+    "F-558: …and knowledge/sources.json is its one home (pinned + pinnedFor)");
 }
 
 console.log(`\nva-agent-deps: ${pass} passed, ${fail} failed`);

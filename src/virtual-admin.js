@@ -1094,6 +1094,42 @@ export const runVaItem = async ({ agent, issueKey, tickId, deps: injected = {} }
   return { ok: true, ...held.result };
 };
 
+/**
+ * THE FIELD GUIDE'S SCORING QUERY for a VA item turn (F-558).
+ *
+ * The guide is chosen by scoring every section of the baked corpus against a bag of terms.
+ * `buildAgentKnowledge` (src/listeners.js) scores on `agent.instructions + agent.name` by
+ * default — and the "agent" a VA synthesises has NEITHER field, so the query was the blank
+ * string and a VA turn was shown ZERO sections. This builds the query a VA actually has:
+ * who it is, what it is allowed to do, and what this issue is about.
+ *
+ * BOUNDED AND DEFANGED. Bounded because the query is only a bag of terms — the first
+ * `QUERY_MAX_CHARS` of summary and last comment carry the subject as well as the whole
+ * issue would, and an unbounded query would let one 3 KB comment dominate the inverse
+ * document frequency maths. Defanged for the same reason every other untrusted string in
+ * this file is: the text never reaches a prompt today (the selector only tokenises it),
+ * and the day somebody logs it, it must not be able to close a fence.
+ *
+ * ⚠ ITEM-DEPENDENT, ON PURPOSE. It makes the turn's knowledge block a function of the
+ * issue, so two turns on two issues get two prefixes. That is safe HERE and nowhere else:
+ * a VA item turn is its own conversation and `runAgentLoop` freezes `cachePrefix` at entry,
+ * so the prefix is still byte-identical across the ROUNDS of one turn, which is the only
+ * span the cache spans. Do not copy this into the Coder, whose thread survives turns and
+ * whose guide is deliberately chosen once per thread (F-550).
+ */
+const QUERY_MAX_CHARS = 600;
+const defangQuery = (text) => String(text == null ? "" : text).replace(/[<>]{3,}/g, "---");
+export const buildFieldGuideQuery = (va, { summary = "", lastComment = "" } = {}) => {
+  const persona = isObj(va && va.persona) ? va.persona : {};
+  const parts = [
+    persona.name || "virtual administrator",
+    ...renderGuardrailSentences(va),
+    String(summary || "").slice(0, QUERY_MAX_CHARS),
+    String(lastComment || "").slice(0, QUERY_MAX_CHARS),
+  ];
+  return defangQuery(parts.filter(Boolean).join(" ")).replace(/\s+/g, " ").trim();
+};
+
 const oneItemTurn = async ({ job, va, agentId, issueKey, tick, deps }) => {
   const now = () => deps.now();
   /*
@@ -1154,7 +1190,19 @@ const oneItemTurn = async ({ job, va, agentId, issueKey, tick, deps }) => {
     "When you have nothing useful to do on this issue, call finish and say so. Doing nothing is a correct outcome and costs nobody anything.",
   ].join("\n");
 
-  const knowledge = await deps.buildKnowledge(va, { projectKey: String(issueKey).split("-")[0] });
+  // THE COMPACT VIEW IS BUILT HERE, one step earlier than it is used (F-558), because the
+  // field guide is now scored against THIS turn — persona, guardrails and the issue in
+  // front of it — and `compact` is the ONE place ADF is already flattened to text. It is a
+  // local, not a message: the stable prefix below is unchanged in ORDER, only in content.
+  const compact = deps.compactIssue(issue);
+  const lastComments = asArray(compact && compact.lastComments);
+  const knowledge = await deps.buildKnowledge(va, {
+    projectKey: String(issueKey).split("-")[0],
+    queryText: buildFieldGuideQuery(va, {
+      summary: (compact && compact.summary) || "",
+      lastComment: lastComments.length ? (lastComments[lastComments.length - 1].text || "") : "",
+    }),
+  });
   const knowledgeMessages = deps.buildKnowledgeMessages(knowledge);
   const memoryBlock = memoryPromptBlock(memory);
 
@@ -1168,7 +1216,6 @@ const oneItemTurn = async ({ job, va, agentId, issueKey, tick, deps }) => {
   // appended AFTER this line and nothing above it may depend on the item.
   const prefixLength = messages.length;
 
-  const compact = deps.compactIssue(issue);
   const ledgerView = {
     state: row.state, attempts: row.attempts || 0, notes: row.notes || "",
     history: asArray(row.history).slice(-5),
@@ -2237,7 +2284,7 @@ export const DEFAULT_DEPS = {
    * Coder grew its own path and the block never arrived. `log` is passed so an
    * over-budget skill SAYS so (F-405), into the tick's own log rather than nowhere.
    */
-  buildKnowledge: async (va, { projectKey } = {}) => {
+  buildKnowledge: async (va, { projectKey, queryText = null } = {}) => {
     const { buildAgentKnowledge } = await import("./listeners.js");
     const powers = isObj(va && va.powers) ? va.powers : {};
     return buildAgentKnowledge({ skillIds: asArray(powers.skillIds), useMemories: false }, {
@@ -2256,23 +2303,18 @@ export const DEFAULT_DEPS = {
       // `matchesAudience` filtered them out before scoring, while the admin's Knowledge tab
       // went on advertising "va: 8 KB" for a budget nothing ever spent.
       //
-      // ⚠ `fieldGuideAudience` IS INERT UNTIL `buildAgentKnowledge` (src/listeners.js) READS
-      // IT. Said here rather than only in a ledger row, because a knob with no reader that
-      // looks like it works is worse than no knob. The half that is missing is two lines in
-      // that function's signature and its `resolveFieldGuideBlock` call:
+      // Both halves are LIVE since F-558: `buildAgentKnowledge` reads `fieldGuideAudience`
+      // (default null, so the listener and job runs are unchanged) and `queryText`.
       //
-      //     export const buildAgentKnowledge = async (agent, {
-      //       projectKey = null, audience = "agentRun", fieldGuideAudience: guideAudience = null, log = null,
-      //     } = {}) => { …
-      //       audience: guideAudience || fieldGuideAudience(audience),
-      //
-      // Nothing else moves: the default is `null`, so every existing caller (the listener
-      // run, the job run) keeps translating "agentRun" to "agent" exactly as it does today,
-      // and only a caller that already speaks the field guide's vocabulary overrides it —
-      // which is the case `fieldGuideAudience`'s own comment in registry-limits.js reserves
-      // for "validator", "va" and "fix". That file is another surgeon's territory.
+      // `queryText` is not optional for THIS caller. The "agent" built one line above is a
+      // synthetic `{ skillIds, useMemories }` with no `instructions` and no `name`, so the
+      // builder's default query would be `" "` — every section scores 0 and the guide comes
+      // back empty. `buildFieldGuideQuery` (above) supplies the persona, the guardrails and
+      // the item; a caller that forgets it gets the pinned `administrator-practice` core and
+      // nothing else, which is a degradation rather than a break.
       audience: "agentRun",
       fieldGuideAudience: "va",
+      queryText: queryText || null,
       log: (line) => console.log(`[va] knowledge: ${line}`),
     });
   },

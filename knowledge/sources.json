@@ -85,7 +85,8 @@
     "administrator-practice": {
       "title": "Administrator practice",
       "purpose": "The confidence ladder, proven negatives, speaking vs changing, blast radius, the effects ledger, guard discipline, unattended operation, burstiness. Pinned for every Virtual Administrator turn.",
-      "pinned": []
+      "pinned": ["administrator-practice#administrator-practice"],
+      "pinnedFor": ["va"]
     },
     "voice-rules": {
       "title": "Voice rules",

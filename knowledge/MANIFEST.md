@@ -12,7 +12,7 @@ through, and this list is how a human proves nothing it does NOT recognise did.
 
 | pack | sections | bytes | pinned |
 |---|---:|---:|---|
-| `administrator-practice` | 9 | 23.0 KB | — |
+| `administrator-practice` | 9 | 23.0 KB | `administrator-practice#administrator-practice` |
 | `automation-semantics` | 4 | 12.1 KB | — |
 | `cognirunner-sandbox-traps` | 5 | 12.4 KB | `cognirunner-sandbox-traps#gotchas-traps-each-with-its-receipt` |
 | `confluence-rest-correctness` | 46 | 112.8 KB | — |
@@ -33,6 +33,7 @@ an audience's byte budget between them — the rest always answers the request.
 | codegen | `cognirunner-sandbox-traps#gotchas-traps-each-with-its-receipt` | `cognirunner-sandbox-traps` | `cognirunner-sandbox-traps/cognirunner-gotchas/4870432a/gotchas-traps-each-with-its-receipt-1` |
 | coder | `forge-app-builder#core-forge-concepts` | `forge-app-builder` | `forge-app-builder/jira-forge/790cea09/core-forge-concepts-1` |
 | fix | `cognirunner-sandbox-traps#gotchas-traps-each-with-its-receipt` | `cognirunner-sandbox-traps` | `cognirunner-sandbox-traps/cognirunner-gotchas/4870432a/gotchas-traps-each-with-its-receipt-1` |
+| va | `administrator-practice#administrator-practice` | `administrator-practice` | `administrator-practice/administrator-practice/6d0d454c/administrator-practice-1` |
 
 ## Sources
 

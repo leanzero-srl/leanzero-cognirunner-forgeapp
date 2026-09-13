@@ -19,7 +19,7 @@ import {
   LISTENER_INDEX_KEY, LISTENER_PREFIX, saveListener, listListeners, getListener, deleteListener, setListenerEnabled,
   BRAKE_MAX_PER_LISTENER, matchesListenerRepos, sameGitActor, isGitSelfEvent, setConnectionIdentityResolver,
   normalizeSavedByRole, brakeObjectKey, BRAKE_MAX_PER_ISSUE, BRAKE_BUCKET_MS, takeAgentRunSlot, runListener, mergeGitProperty, gitPropertyEntry, writeGitIssueProperty, dispatchGitEvent, gitPropertyTargets, summarizeEventForAi,
-  GIT_PROPERTY_KEY, GIT_PROPERTY_MAX_REPOS, GIT_PROPERTY_MAX_BYTES,
+  GIT_PROPERTY_KEY, GIT_PROPERTY_MAX_REPOS, GIT_PROPERTY_MAX_BYTES, buildAgentKnowledge,
 } from "../../src/listeners.js";
 import { normalizeJob, planTick, saveJob, listJobs, setJobEnabled, previewSchedule, toIndexRow as toJobIndexRow, MAX_SCOPE_ISSUES } from "../../src/scheduled-jobs.js";
 import { JOB_DEFAULT_MAX_WRITES_PER_RUN, JOB_MAX_WRITES_PER_RUN, AGENT_RUN_BRAKE_MAX_PER_BUCKET } from "../../src/shared/registry-limits.js";
@@ -735,6 +735,52 @@ register("data:text/javascript," + encodeURIComponent(AGENT_STUB_HOOK));
   ok(!scriptRun.braked && scriptRun.threw && /runSandboxSteps/.test(String(scriptRun.threw.message)),
     "a SCRIPT listener is not stopped by the AI brake — it starts no model, and the run reaches the sandbox");
   ok(Number(storage.__raw(bucketKey)) === AGENT_RUN_BRAKE_MAX_PER_BUCKET, "…and it takes no slot from the agent bucket");
+}
+
+// ── F-558 — the two new knobs DEFAULT TO THE OLD BEHAVIOUR ───────────────────
+//
+// `buildAgentKnowledge` grew `fieldGuideAudience` and `queryText` so the Virtual
+// Administrator could reach the `va` audience with a query it actually has (F-549's
+// second half). Both default to null, and this is the assertion that says so in bytes:
+// a LISTENER run — which passes neither — must produce the byte-identical field guide it
+// produced before the parameters existed, i.e. the "agent" audience scored on the agent's
+// own instructions and name. Measured through the REAL selector over the REAL corpus, not
+// a source grep: the risk is a behaviour change, and only bytes can rule that out.
+{
+  const agent = {
+    name: "Triage bot",
+    instructions: "Read the issue description and set the priority. Use the Jira REST API v3 and never delete anything.",
+    skillIds: [], useMemories: false,
+  };
+  const { resolveFieldGuideBlock } = await import("../../src/knowledge-packs.js");
+  const expected = await resolveFieldGuideBlock({
+    audience: "agent",
+    text: `${agent.instructions} ${agent.name}`,
+  });
+
+  const asListener = await buildAgentKnowledge(agent, { projectKey: "LZPT", audience: "agentRun" });
+  ok(Boolean(asListener.fieldGuideBlock) && asListener.fieldGuideBlock === expected.block,
+    "F-558: a listener/job run's field guide is BYTE-IDENTICAL to the pre-F-558 selection");
+  ok(JSON.stringify(asListener.fieldGuideSections) === JSON.stringify(expected.sectionIds),
+    "F-558: …and names the same sections");
+
+  // Passing the defaults EXPLICITLY is the same call. This is what keeps "default null"
+  // from quietly becoming "default the VA's audience" in a later edit.
+  const explicitNulls = await buildAgentKnowledge(agent, {
+    projectKey: "LZPT", audience: "agentRun", fieldGuideAudience: null, queryText: null,
+  });
+  ok(explicitNulls.fieldGuideBlock === asListener.fieldGuideBlock,
+    "F-558: …and explicit nulls are the same call as omitting them");
+
+  // The override does reach the selector — proven by it choosing a DIFFERENT guide, on the
+  // same agent, for the audience and query only the VA passes.
+  const asVa = await buildAgentKnowledge(agent, {
+    projectKey: "LZPT", audience: "agentRun",
+    fieldGuideAudience: "va",
+    queryText: "Post a Confluence page in storage format and an ADF comment for the release notes.",
+  });
+  ok(asVa.fieldGuideBlock && asVa.fieldGuideBlock !== asListener.fieldGuideBlock,
+    "F-558: the overrides are LIVE — the same agent gets a different guide for the va audience");
 }
 
 console.log(`LISTENERS: ${pass} passed, ${fail} failed`);

@@ -109,6 +109,9 @@ export const KNOWLEDGE_PINS = {
   ],
   "fix": [
     "cognirunner-sandbox-traps#gotchas-traps-each-with-its-receipt"
+  ],
+  "va": [
+    "administrator-practice#administrator-practice"
   ]
 };
 

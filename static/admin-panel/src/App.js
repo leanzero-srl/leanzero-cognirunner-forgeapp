@@ -3842,6 +3842,38 @@ const injectCopiedComponentStyles = () => {
     }
     html[data-color-mode="dark"] .access-note { color: #64748b; }
 
+    /* F-273 — THE EDITION NOTE. A third voice, next to .access-note (a refusal) and
+       .load-error (a fault), because an upgrade-required answer is neither: the reader's
+       role is fine, nothing is broken, and the site's plan does not include the feature.
+       It used to have no voice at all and fell through to .load-error, so the app told a
+       paying Standard tenant it had failed and offered a Retry that cannot ever succeed.
+       Owner design law: SOLID saturated orange (#b45309, dark one shade lighter #f59e0b),
+       WHITE text, 700 title / 500 body, NO left accent rail, NO tinted or low-alpha wash.
+       Orange is deliberately not the red hard-stop (nothing is wrong) and not the slate
+       refusal (nobody can grant you this) — it is the app's one commercial statement. */
+    .upgrade-note {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      background: #b45309;
+      color: #ffffff;
+      border: none;
+      border-radius: 4px;
+      padding: 9px 12px;
+    }
+    html[data-color-mode="dark"] .upgrade-note { background: #f59e0b; color: #ffffff; }
+    .upgrade-note-title { font-size: 12px; font-weight: 700; letter-spacing: 0.02em; }
+    .upgrade-note-text { font-size: 12px; font-weight: 500; line-height: 1.45; }
+
+    /* The one-line form, for a summary row that has no space for the two-line note
+       (KnowledgePanel's counts). Same hue and the same dark override — a new hue without a
+       dark-mode override is the defect this codebase keeps paying for. */
+    .upgrade-chip {
+      color: #b45309 !important;
+      font-weight: 700;
+    }
+    html[data-color-mode="dark"] .upgrade-chip { color: #f59e0b !important; }
+
     .doc-empty {
       padding: 16px 12px;
       text-align: center;
@@ -6435,6 +6467,16 @@ function App() {
           roleIsUnknown = adminResult.unknown === true;
         }
       } catch (e) {
+        /* F-274 — say it, do not merely inherit it. F-230's `let roleIsUnknown = true`
+           above already leaves a thrown invoke() reported as "unknown", so this assignment
+           changes no behaviour today — it removes the DEPENDENCE on that default. The
+           invariant ("a throw is the strongest form of 'we never got an answer', so the
+           note must not claim the closure is about this reader") currently survives only
+           because nothing in the try block runs after the line that can set it false; move
+           that line, add a statement after it, or flip the initialiser while tidying, and
+           the false claim comes back with no diff that looks wrong. config-ui states it
+           explicitly in its own catch (F-243) — the two apps now read the same. */
+        roleIsUnknown = true;
         console.log("Could not check role:", e);
       }
 

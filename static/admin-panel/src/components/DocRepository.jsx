@@ -11,7 +11,7 @@ import { javascriptLanguage } from "@codemirror/lang-javascript";
 import Tooltip from "./Tooltip";
 import CustomSelect from "./CustomSelect";
 import { showToast } from "./toast";
-import { isPermissionRefusal, permissionRefusalText } from "./refusal";
+import { isPermissionRefusal, permissionRefusalText, isUpgradeRequired, upgradeRequiredText, UPGRADE_REQUIRED_HEADLINE } from "./refusal";
 
 // CSP-safe JavaScript syntax check: parse with Lezer (no eval / new Function,
 // which the Forge iframe CSP blocks) and look for error nodes in the tree.
@@ -53,6 +53,14 @@ export default function DocRepository({ selectedDocs, onSelectionChange, embedde
      and gets the same no. Holds the refusal RESULT, not a boolean, because the sentence needs
      `needsRole` off it. */
   const [accessRefusal, setAccessRefusal] = useState(null);
+  /* F-273 — the EDITION arm, and deliberately NOT folded into `accessRefusal`. F-255 made
+     the two refusal families distinguishable on the wire; the point of that separation is
+     lost the moment one state holds both, because every other branch that reads
+     `accessRefusal` (the add form, the empty state) would start treating a billing answer
+     as a role answer. Before this, an `upgrade-required` result matched neither
+     isPermissionRefusal nor success and fell straight through to `loadError` — "Couldn't
+     load documents." plus a Retry, for a tenant whose only remedy is to buy Coder. */
+  const [upgradeRefusal, setUpgradeRefusal] = useState(null);
   const [refreshing, setRefreshing] = useState(false); // non-initial reload — veil over the visible list
   const [showAdd, setShowAdd] = useState(false);
   const [newTitle, setNewTitle] = useState("");
@@ -78,10 +86,17 @@ export default function DocRepository({ selectedDocs, onSelectionChange, embedde
         setDocs(result.docs || []);
         setLoadError(null);
         setAccessRefusal(null);
+        setUpgradeRefusal(null);
       } else if (isPermissionRefusal(result)) {
         // F-244 — authoritative, and it clears the error arm: a refusal answered is not a
         // load that failed, and showing both would give one state two voices.
         setAccessRefusal(result);
+        setUpgradeRefusal(null);
+        setLoadError(null);
+      } else if (isUpgradeRequired(result)) {
+        // F-273 — checked alongside its twin, so neither can fall through to the fault arm.
+        setUpgradeRefusal(result);
+        setAccessRefusal(null);
         setLoadError(null);
       } else {
         setLoadError(result.error || "Failed to load documents.");
@@ -366,6 +381,16 @@ export default function DocRepository({ selectedDocs, onSelectionChange, embedde
            not the red hard-stop grammar: nothing is broken and nothing was lost. */
         <div className="access-note" role="note" style={{ margin: "10px 12px" }}>
           {permissionRefusalText(accessRefusal, "documents")}
+        </div>
+      ) : upgradeRefusal ? (
+        /* F-273 — the edition note. Also BEFORE loadError, and carrying no Retry for a
+           sharper version of the same reason: no number of retries changes which edition
+           the site is on. Solid orange (.upgrade-note), distinct from the slate refusal
+           note and from the red hard-stop, because this is the one "no" in the app that is
+           a PURCHASE decision rather than a fault or a permission. */
+        <div className="upgrade-note" role="note" style={{ margin: "10px 12px" }}>
+          <span className="upgrade-note-title">{UPGRADE_REQUIRED_HEADLINE}</span>
+          <span className="upgrade-note-text">{upgradeRequiredText(upgradeRefusal)}</span>
         </div>
       ) : loadError ? (
         <div className="load-error" style={{ margin: "10px 12px" }}>

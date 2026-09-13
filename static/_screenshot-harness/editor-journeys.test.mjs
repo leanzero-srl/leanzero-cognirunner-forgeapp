@@ -604,6 +604,108 @@ try {
     await closeEditor(env);
   }
 
+  /* F-273 — and now the POSITIVE half of F-255.
+     F-255 proved an edition denial is not absorbed into the permission grammar. It did not
+     prove the reader is told anything, and they were not: `upgrade-required` matched neither
+     the success arm nor isPermissionRefusal on all four knowledge surfaces, so it fell
+     through to the OUTAGE arm — "Couldn't load memories." beside a Retry. A false claim
+     (nothing is broken; the app works exactly as sold) plus a control that CANNOT succeed,
+     because no number of re-asks changes which edition the site is on. The negative
+     assertions alone would stay green against that bug, which is why this arm exists.
+
+     BOTH THEMES, because this introduces a NEW HUE, and every new hue needs a dark-mode
+     override. The colour is read live from getComputedStyle rather than eyeballed in a
+     screenshot, so a missing override fails the run instead of surviving as a washed-out
+     orange nobody looks at. */
+  for (const theme of ["light", "dark"]) {
+    console.log(`F-273 ${theme} an edition denial is told as an upgrade, not an outage`);
+    const env = await openEditor(browser, "config-ui", "cfg-static", theme, {
+      __UPGRADE__: ["getMemories"], __UPGRADE_FEATURE__: "coder",
+    });
+    const { page } = env;
+    try {
+      const kp = page.locator(".knowledge-panel").first();
+      if (!(await kp.locator(".knowledge-tabs").isVisible().catch(() => false))) {
+        await kp.locator(".knowledge-summary").click();
+      }
+      await kp.locator(".knowledge-tabs").waitFor({ timeout: 6000 });
+      await kp.locator(".knowledge-tab-memories").click();
+      const note = kp.locator(".upgrade-note").first();
+      await note.waitFor({ timeout: 8000 });
+
+      /* The two false things the reader used to be shown. Their ABSENCE is the fix — the
+         note merely being present would not prove the outage arm stopped firing. */
+      ok(await kp.locator(".load-error").count() === 0,
+        `F-273 ${theme} an edition denial is NOT rendered as a failed load`);
+      ok(await kp.locator(".btn-retry").count() === 0,
+        `F-273 ${theme} and offers no Retry — no retry buys a licence`);
+      ok(await kp.locator(".doc-repo-embedded:visible .access-note").count() === 0,
+        `F-273 ${theme} and is still not mistold as a role refusal (F-255 holds)`);
+
+      const txt = (await note.innerText()).replace(/\s+/g, " ").trim();
+      ok(/This needs CogniRunner Coder\./.test(txt),
+        `F-273 ${theme} the note names the edition — got: ${JSON.stringify(txt)}`);
+      ok(/upgrade in Settings/.test(txt),
+        `F-273 ${theme} and names the remedy and where to do it — got: ${JSON.stringify(txt)}`);
+
+      /* Owner design law, asserted live in BOTH themes: solid saturated orange, white text,
+         no left accent rail, no faded low-alpha tint. */
+      const st = await note.evaluate((el) => {
+        const cs = getComputedStyle(el);
+        return { bl: cs.borderLeftWidth, bt: cs.borderTopWidth, color: cs.color, bg: cs.backgroundColor };
+      });
+      ok(st.bl === st.bt, `F-273 ${theme} the upgrade note has NO left accent rail`);
+      const bg = (st.bg.match(/[\d.]+/g) || []).map(Number);
+      const wantBg = theme === "dark" ? [245, 158, 11] : [180, 83, 9];
+      ok(bg.slice(0, 3).every((v, i) => Math.abs(v - wantBg[i]) <= 2),
+        `F-273 ${theme} the fill is the solid orange ${wantBg.join(",")} — got ${st.bg}`);
+      /* Alpha 1 states the "no faded tint" law numerically — a 10% wash would still match
+         the hue above, and is exactly what the owner rejects. */
+      ok(bg.length < 4 || bg[3] === 1,
+        `F-273 ${theme} the fill is SOLID, not a low-alpha tint — got ${st.bg}`);
+      const fg = (st.color.match(/\d+/g) || []).map(Number);
+      ok(fg.slice(0, 3).every((v) => v >= 250), `F-273 ${theme} the text is white — got ${st.color}`);
+
+      /* The header counts, the fourth surface: three em-dashes are the app's symbol for
+         "still loading", so a refused count read made the panel look permanently mid-fetch. */
+      const summary = (await kp.locator(".knowledge-summary-counts").first().innerText()).replace(/\s+/g, " ").trim();
+      ok(!/—\s*(docs|memories)/.test(summary),
+        `F-273 ${theme} the summary does not imply a fetch that will never finish — got: ${JSON.stringify(summary)}`);
+
+      /* No screenshot here on purpose: this file has no shot plumbing, and the colour is
+         already asserted from getComputedStyle above — which is the STRONGER check. A PNG
+         proves a human could have looked; the assertion fails the run when nobody does. */
+    } catch (e) { fail++; console.log(`  ✗ F-273 ${theme} threw: ` + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
+  /* F-273 CONTROL — a genuine transport failure must STILL retry.
+     The arm that stops the fix from over-reaching: if a later edit routed every
+     unsuccessful load to the upgrade note, the journey above would stay green while the
+     real retry path quietly disappeared for everyone. One theme — a behaviour claim, not a
+     colour claim. */
+  {
+    console.log("F-273 CONTROL a thrown knowledge read is still a retryable outage");
+    const env = await openEditor(browser, "config-ui", "cfg-static", "light", {
+      __FAIL__: ["getMemories"],
+    });
+    const { page } = env;
+    try {
+      const kp = page.locator(".knowledge-panel").first();
+      if (!(await kp.locator(".knowledge-tabs").isVisible().catch(() => false))) {
+        await kp.locator(".knowledge-summary").click();
+      }
+      await kp.locator(".knowledge-tabs").waitFor({ timeout: 6000 });
+      await kp.locator(".knowledge-tab-memories").click();
+      await kp.locator(".load-error").first().waitFor({ timeout: 8000 });
+      ok(await kp.locator(".btn-retry").count() >= 1,
+        "F-273 CONTROL a transport failure still offers Retry");
+      ok(await kp.locator(".upgrade-note").count() === 0,
+        "F-273 CONTROL and is NOT mistold as an edition denial");
+    } catch (e) { fail++; console.log("  ✗ F-273 CONTROL threw: " + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
   /* ---------------- J20 — NL-to-rule ("Build from a description") ---------------- */
   {
     console.log("J20 NL-to-rule builder (cfg-premade)");

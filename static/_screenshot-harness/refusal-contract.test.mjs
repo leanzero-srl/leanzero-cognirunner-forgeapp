@@ -143,7 +143,15 @@ console.log("F-242 the helper obeys the duplication convention");
      with a different reason to exist, and forcing the two to share prose would be a rule
      about paragraphs rather than about behaviour. What must NOT drift is the code: same flag,
      same sentence builder, same fallbacks. So the comparison strips comments first. */
-  const body = (src) => stripComments(src).replace(/\s+/g, " ").trim();
+  /* F-273 — and it normalises the DEPTH of the src/shared import, because config-view's
+     copy sits one directory higher than the components/ pair, so the same module is reached
+     by "../../../" there and "../../../../" here. That is a filesystem fact, not drift.
+     Only the leading ../ run is collapsed — the module PATH, the imported names and every
+     other character still have to match, so importing a different module, or a different
+     symbol from it, still fails this assertion. */
+  const body = (src) => stripComments(src)
+    .replace(/(?:\.\.\/)+src\/shared\//g, "«shared»/")
+    .replace(/\s+/g, " ").trim();
   ok(body(a).includes('reason === "no-permission"') && body(c).includes('reason === "no-permission"'),
     "config-view's copy tests the same flag");
   ok(body(a) === body(c), "config-view's copy is code-identical to the shared pair (comments aside)");
@@ -200,6 +208,94 @@ console.log("F-252/F-254/F-255 refusal vocabulary");
   ok(!isPermissionRefusal({ success: true, reason: "no-permission" }),
     "a success:true result is never a refusal, even carrying the flag");
 }
+
+/* F-273 — THE EDITION ARM ON THE KNOWLEDGE SURFACES.
+   F-255 taught the helper to tell an edition denial apart from a permission refusal, and
+   stopped there. The four knowledge surfaces each branched on isPermissionRefusal and then
+   fell through to their OUTAGE arm, so a Standard tenant reading a Coder-gated store was
+   told "Couldn't load documents." and handed a Retry — a false claim plus a control that
+   cannot succeed, because no retry buys a licence.
+
+   Asserted on the SOURCE for the same reason the prose scan above is: the defect is a
+   MISSING branch, and a journey test only sees a missing branch if the fixture happens to
+   produce the shape that needs it. A surface that quietly loses its arm in a later refactor
+   would keep passing every screenshot while telling the lie again. */
+console.log("\nF-273 the edition arm on the knowledge surfaces");
+{
+  const SURFACES = ["DocRepository.jsx", "SkillsTab.jsx", "MemoriesTab.jsx", "KnowledgePanel.jsx"];
+  for (const app of ["config-ui", "admin-panel"]) {
+    for (const file of SURFACES) {
+      const src = readFileSync(join(STATIC, app, "src", "components", file), "utf8");
+      ok(/isUpgradeRequired\s*\(/.test(src),
+        `${app}/${file} branches on isUpgradeRequired`);
+      /* The ORDER is the whole fix: the upgrade arm must be reached before the fault arm,
+         exactly as the permission arm already is. Both refusal arms appearing textually
+         before the loadError/em-dash arm is what stops the outage from shadowing them. */
+      const iUp = src.search(/isUpgradeRequired\s*\(/);
+      const iErr = src.search(/setLoadError\(result\.error/);
+      ok(iErr === -1 || iUp < iErr,
+        `${app}/${file} routes the edition answer before the generic failure arm`);
+    }
+  }
+}
+
+/* F-274 — A THROWN checkIsAdmin IS "UNKNOWN", NOT "VIEWER".
+   admin-panel's catch only logged. It happened to behave correctly because F-230 had
+   initialised `roleIsUnknown = true` and nothing cleared it on that path — an invariant
+   held up by a default three dozen lines away, with no statement of intent at the site that
+   depends on it. Move the assignment, add a line after it, or "tidy" the initialiser to
+   false, and the page starts telling a user whose role could not be verified that they are
+   a viewer. config-ui states it explicitly in its own catch (F-243); this pins the pair. */
+console.log("\nF-274 a thrown role check is unknown, not a verdict");
+{
+  const adminSrc = readFileSync(join(STATIC, "admin-panel", "src", "App.js"), "utf8");
+  const i = adminSrc.indexOf('await invoke("checkIsAdmin")');
+  ok(i !== -1, "admin-panel still calls checkIsAdmin");
+  const cat = adminSrc.indexOf("} catch (e) {", i);
+  const body = adminSrc.slice(cat, cat + 900);
+  ok(/roleIsUnknown\s*=\s*true/.test(body),
+    "F-274 the catch around checkIsAdmin sets roleIsUnknown true explicitly");
+  ok(!/roleIsUnknown\s*=\s*false/.test(body),
+    "F-274 the catch never asserts a verdict it did not receive");
+
+  const uiSrc = readFileSync(join(STATIC, "config-ui", "src", "App.js"), "utf8");
+  const j = uiSrc.indexOf('await invoke("checkIsAdmin")');
+  const jcat = uiSrc.indexOf("} catch (e) {", j);
+  ok(/setRoleUnknown\(true\)/.test(uiSrc.slice(jcat, jcat + 900)),
+    "F-274 config-ui's catch does the same — the two apps agree");
+}
+
+/* F-273 — THE COPY, from the one home, with the label taken from the one table.
+   A second hardcoded list of what Coder sells is the drift this codebase keeps paying for,
+   so the label is asserted to come from src/shared/edition.js's ADVANCED_FEATURES rather
+   than from a string in the frontend. */
+console.log("\nF-273 the upgrade copy");
+{
+  const { upgradeRequiredText, UPGRADE_REQUIRED_HEADLINE } =
+    await import("../config-ui/src/components/refusal.js");
+  const { ADVANCED_FEATURES } = await import("../../src/shared/edition.js");
+
+  ok(UPGRADE_REQUIRED_HEADLINE === "This needs CogniRunner Coder.",
+    "F-273 the headline names the edition by its PRODUCT name (Coder), not its id (advanced)");
+
+  const known = ADVANCED_FEATURES[0];
+  const text = upgradeRequiredText({ success: false, reason: "upgrade-required", featureId: known.id });
+  ok(text === `${known.label} is part of the Coder edition — upgrade in Settings.`,
+    "F-273 a known featureId renders its label from ADVANCED_FEATURES and names the remedy");
+  ok(text.includes(known.label),
+    "F-273 the label comes from the shared table, not a frontend copy of it");
+  ok(/upgrade in Settings/.test(text) && !/Retry|Ask a CogniRunner admin/.test(text),
+    "F-273 the remedy is an upgrade — never a retry and never a role request");
+
+  /* Unknown / absent featureId degrades rather than guessing, the same discipline the
+     unnamed-role case follows. A wrong confident claim about what someone must buy is
+     worse than a vague true one. */
+  ok(upgradeRequiredText({ featureId: "no-such-feature" }) === "This feature is part of the Coder edition — upgrade in Settings.",
+    "F-273 an unknown featureId degrades to 'This feature' instead of guessing");
+  ok(upgradeRequiredText({}) === "This feature is part of the Coder edition — upgrade in Settings.",
+    "F-273 a missing featureId degrades the same way");
+}
+
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -29,9 +29,18 @@
  *
  * ONE HOME. This file is byte-identical between config-ui and admin-panel (the duplication
  * convention — copy, then `diff -q`). config-view carries its own copy of the one-liner
- * because it has no components/ directory to share. It imports NOTHING, which is what keeps
- * it copyable.
+ * because it has no components/ directory to share.
+ *
+ * WHAT IT MAY IMPORT. Nothing from App.js, and nothing from a sibling component — that is
+ * what keeps it copyable, and it is the rule the original "imports NOTHING" note was really
+ * stating. `src/shared/*` is the one exception, because those modules are deliberately
+ * bundled by BOTH apps (and by the Forge backend) and sit at the same relative depth from
+ * config-ui/src/components and admin-panel/src/components, so byte-identity survives the
+ * copy. F-273 takes that exception exactly once, for the Coder feature labels, rather than
+ * giving the product a second home for what the paid edition sells.
  */
+
+import { ADVANCED_FEATURES, EDITIONS } from "../../../../src/shared/edition.js";
 
 /**
  * Did the backend REFUSE this caller, as opposed to fail?
@@ -98,3 +107,41 @@ export function permissionRefusalText(result, what = "this") {
   if (sentence) return `${sentence} Ask a CogniRunner admin under Permissions.`;
   return `You do not have access to ${what}. Ask a CogniRunner admin under Permissions.`;
 }
+
+/**
+ * F-273 — THE ONE SENTENCE for an edition denial, for the same reason
+ * permissionRefusalText exists for a role refusal: the four knowledge surfaces
+ * (DocRepository, SkillsTab, MemoriesTab, KnowledgePanel's counts) each branch on
+ * `isPermissionRefusal` and then fall through to their OUTAGE arm — "Couldn't load
+ * documents." beside a Retry. F-255 taught the predicate to tell the two families
+ * apart but gave the call sites no second arm to route the edition case into, so a
+ * Standard tenant reading a Coder-only store still got the false claim and the
+ * button that cannot succeed. A retry does not buy a licence.
+ *
+ * WHY THE LABEL IS IMPORTED, not retyped. `ADVANCED_FEATURES` in
+ * src/shared/edition.js is the single home for what Coder sells, and the backend's
+ * own `upgradeRequired()` already renders its `error` from that table. Keeping a
+ * second copy of those labels here would give the product two answers to "what is
+ * in Coder", and the frontend copy would be the one nobody updates. This is the
+ * same relative path from config-ui/src/components and admin-panel/src/components,
+ * so the duplication convention (byte-identical, `diff -q`) still holds — the
+ * "imports nothing" note above means no import from App.js, which is what makes a
+ * component copyable; src/shared is deliberately shared by both bundlers.
+ *
+ * An UNKNOWN or absent featureId degrades to "This feature" rather than guessing —
+ * the same discipline as the unnamed-role case above.
+ */
+export function upgradeRequiredText(result) {
+  const id = result && result.featureId;
+  const feature = ADVANCED_FEATURES.find((f) => f.id === id);
+  const label = feature ? feature.label : "This feature";
+  return `${label} is part of the ${EDITIONS.advanced.label} edition — upgrade in Settings.`;
+}
+
+/**
+ * The headline above that sentence. Split out so every surface renders the SAME two
+ * lines in the same order (title then detail) instead of each one inventing a lead —
+ * the drift that .memory-full-banner / .memories-admin-capwall / .memory-cap-refusal
+ * suffered before F-212 collapsed them.
+ */
+export const UPGRADE_REQUIRED_HEADLINE = `This needs CogniRunner ${EDITIONS.advanced.label}.`;

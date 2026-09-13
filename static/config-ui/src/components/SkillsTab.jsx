@@ -25,7 +25,7 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@forge/bridge";
 import SkillEditor from "./SkillEditor";
 import { showToast } from "./toast";
-import { isPermissionRefusal, permissionRefusalText } from "./refusal";
+import { isPermissionRefusal, permissionRefusalText, isUpgradeRequired, upgradeRequiredText, UPGRADE_REQUIRED_HEADLINE } from "./refusal";
 
 const MAX_SELECTED_SKILLS = 4;
 
@@ -47,6 +47,12 @@ export default function SkillsTab({ selectedSkills, onSkillSelectionChange, onCh
      load skills." plus a Retry that re-asks the same question forever. Holds the RESULT,
      not a boolean, because the sentence is built from its `needsRole`. */
   const [accessRefusal, setAccessRefusal] = useState(null);
+  /* F-273 — the EDITION arm, in its own state for the same reason F-255 gave the two
+     refusal families different `reason` values: an upgrade denial says the reader's ROLE is
+     fine and the SITE's plan is not, so no branch that asks "may this reader?" may consume
+     it. Until now it matched neither arm and landed in `loadError`, i.e. "Couldn't load
+     skills." plus a Retry, which is both a false claim and a dead control. */
+  const [upgradeRefusal, setUpgradeRefusal] = useState(null);
   const [refreshing, setRefreshing] = useState(false); // non-initial reload — veil over the visible list
   const [showAdd, setShowAdd] = useState(false);
   const [expandedSkill, setExpandedSkill] = useState(null);
@@ -65,9 +71,16 @@ export default function SkillsTab({ selectedSkills, onSkillSelectionChange, onCh
         setSkills(result.skills || []);
         setLoadError(null);
         setAccessRefusal(null);
+        setUpgradeRefusal(null);
       } else if (isPermissionRefusal(result)) {
         // F-244 — authoritative, and it clears the error arm: one state, one voice.
         setAccessRefusal(result);
+        setUpgradeRefusal(null);
+        setLoadError(null);
+      } else if (isUpgradeRequired(result)) {
+        // F-273 — the edition twin, caught here so it cannot reach the fault arm.
+        setUpgradeRefusal(result);
+        setAccessRefusal(null);
         setLoadError(null);
       } else {
         setLoadError(result.error || "Failed to load skills.");
@@ -203,6 +216,14 @@ export default function SkillsTab({ selectedSkills, onSkillSelectionChange, onCh
            .access-note, not the red hard-stop grammar — nothing is broken. */
         <div className="access-note" role="note" style={{ margin: "10px 12px" }}>
           {permissionRefusalText(accessRefusal, "skills")}
+        </div>
+      ) : upgradeRefusal ? (
+        /* F-273 — the edition note, also before loadError. Solid orange .upgrade-note: a
+           purchase decision, not a fault and not a permission, and no Retry because no
+           retry changes which edition the site is on. */
+        <div className="upgrade-note" role="note" style={{ margin: "10px 12px" }}>
+          <span className="upgrade-note-title">{UPGRADE_REQUIRED_HEADLINE}</span>
+          <span className="upgrade-note-text">{upgradeRequiredText(upgradeRefusal)}</span>
         </div>
       ) : loadError ? (
         <div className="load-error" style={{ margin: "10px 12px" }}>

@@ -50,6 +50,7 @@ import { minuteKey, effectiveBudget, budgetDecision, inlineShouldQueue, AI_PLATF
 import { claimRuleExecution } from "./shared/execution-claim.js";
 import { isKeyConflict } from "./shared/kvs-keys.js";
 import { gitDeliveryClaimKey } from "./shared/git-ids.js";
+import { readHeader } from "./shared/http-headers.js";
 import { providerKeySlot, providerModelSlot, providerAgentModelSlot, providerBaseUrlSlot } from "./shared/provider-slots.js";
 // GIT CONNECTIONS (1.4 commit 2). The behaviour — key names, caps, the security
 // model, auth_dead, queued rotation — lives in src/git-connections.js and is
@@ -10783,25 +10784,11 @@ const GIT_RAW_MAX_BYTES = 8192;
 const GIT_RAW_EMIT_KEYS = ["action", "eventKey", "ref", "before", "after", "created", "deleted", "forced", "number"];
 
 /**
- * Header read helper: Forge gives header values as ARRAYS.
- * HTTP header names are case-insensitive and providers send mixed case
- * (`X-Hub-Signature-256`, `X-GitHub-Event`), so this folds case over the ACTUAL
- * keys of the object instead of guessing a fixed set of spellings — the old
- * exact/lower/UPPER probe matched none of the canonical forms and rested on the
- * runtime happening to lower-case them (F-338). Exact hit first: it is the
- * common case and skips the scan.
+ * Header read helper. The case-folding lookup itself lives in
+ * `src/shared/http-headers.js` — ONE home, shared with the dev test hook
+ * (F-338/F-341). This alias just keeps the call sites in this file short.
  */
-const hookHeader = (req, name) => {
-  const h = (req && req.headers) || {};
-  let v = h[name];
-  if (v === undefined || v === null) {
-    const want = String(name).toLowerCase();
-    const key = Object.keys(h).find((k) => String(k).toLowerCase() === want);
-    v = key === undefined ? undefined : h[key];
-  }
-  const out = Array.isArray(v) ? v[0] : v;
-  return typeof out === "string" ? out : null;
-};
+const hookHeader = readHeader;
 const hookQuery = (req, name) => {
   const v = req && req.queryParameters && req.queryParameters[name];
   const out = Array.isArray(v) ? v[0] : v;

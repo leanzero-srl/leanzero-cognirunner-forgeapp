@@ -13,6 +13,7 @@
  */
 import { kvs as storage } from "@forge/kvs";
 import { PROVIDER_IDS, providerSlotsFor } from "./shared/provider-slots.js";
+import { readBearerToken } from "./shared/http-headers.js";
 // F-163: the memory-store key NAMES come from the module that owns them — never retyped here.
 import { MEMORIES_KEY, MEMORY_SETTINGS_KEY, MEMORY_STORE_FULL_KEY } from "./memories.js";
 
@@ -30,9 +31,9 @@ const q = (req, n) => {
 export async function testStateTrigger(req) {
   const secret = process.env.HARNESS_SECRET;
   if (!secret) return notFound();
-  const authArr = (req && req.headers && (req.headers.authorization || req.headers.Authorization)) || null;
-  const auth = Array.isArray(authArr) ? authArr[0] : authArr;
-  const provided = typeof auth === "string" ? auth.replace(/^Bearer\s+/i, "").trim() : "";
+  // F-341: header names are case-insensitive — the read folds case over the actual
+  // keys in ONE place (src/shared/http-headers.js), shared with gitWebhook's hookHeader.
+  const provided = readBearerToken(req);
   if (!provided || provided !== secret) return notFound();
 
   // Dev-gated POST action for the it12 import-commit smoke. Runs the SAME

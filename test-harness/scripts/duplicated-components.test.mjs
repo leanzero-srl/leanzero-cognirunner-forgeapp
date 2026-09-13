@@ -192,8 +192,8 @@ for (const rel of targets) {
 /* F-572 — THE THIRD AND FOURTH COPIES of FieldGuideChip.jsx. issue-glance and config-view sit
    outside the APPS walk above, so their copies are held equal here the way capability.js's third
    home is. Compared by BYTES: all four live at the same import depth
-   (`../../../../src/shared/knowledge-index.js`), so there is nothing to normalise, and the rule
-   the file exists to carry — never print a section id the index cannot name — must not fork. */
+   (`../../../../src/shared/knowledge-titles.js`), so there is nothing to normalise, and the rule
+   the file exists to carry — never print a section id the titles map cannot name — must not fork. */
 {
   const chipBase = path.join(ROOT, "static", "config-ui", "src", "components", "FieldGuideChip.jsx");
   const chipHomes = [
@@ -208,6 +208,40 @@ for (const rel of targets) {
         `${rel} is byte-identical to the config-ui/admin-panel pair`);
     }
   }
+}
+
+/* F-582 — THE INDEX IS BACKEND-SIZED AND MUST NOT ENTER A BUNDLE. `knowledge-index.js` is
+   136 KB of titles PLUS tags and provenance; the only thing a frontend ever needs from the
+   corpus is a title, and `knowledge-titles.js` (25 KB) carries exactly that. Importing the
+   index from any app put ~110 KB of never-read bytes into FOUR bundles. The Knowledge tab is
+   NOT an exception: it reads packs through the resolver, not from a bundled module. This is a
+   source-text check across every app's src/, not just the duplicated pair, because the next
+   importer will not be FieldGuideChip. */
+{
+  const offenders = [];
+  const scan = (dir) => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) { if (e.name !== "node_modules") scan(full); continue; }
+      if (!/\.(js|jsx|mjs)$/.test(e.name)) continue;
+      /* A MODULE SPECIFIER, not any mention: the chips document in prose why they no longer
+         read the index, and a comment costs a bundle nothing. Quoted form catches static
+         import, dynamic import() and require() alike. */
+      if (/["'][^"']*knowledge-index\.js["']/.test(readFileSync(full, "utf8"))) offenders.push(path.relative(ROOT, full));
+    }
+  };
+  let scanned = 0;
+  for (const app of readdirSync(path.join(ROOT, "static"), { withFileTypes: true })) {
+    if (!app.isDirectory()) continue;
+    const src = path.join(ROOT, "static", app.name, "src");
+    if (!existsSync(src)) continue;
+    scanned += 1;
+    scan(src);
+  }
+  ok(scanned >= 4, `positive control: scanned the src/ of ${scanned} apps for the index import`);
+  ok(offenders.length === 0, offenders.length
+    ? `A FRONTEND IMPORTS knowledge-index.js — ${offenders.join(", ")}. Use src/shared/knowledge-titles.js for titles, or the resolver for pack content.`
+    : "no file under static/*/src names knowledge-index.js");
 }
 
 ok(drifted.length === 0,

@@ -1136,8 +1136,11 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   let armedFault = false;
   const faultCalls = [];
   const fakeArmed = async (kind, ...parts) => { faultCalls.push([kind, ...parts].join("|")); return armedFault; };
-  const mk = (dispatch) => new Function("dispatchGitEvent", "console", "storage", "gitDeliveryClaimKey", "gitDeliveryAttemptKey", "GIT_DISPATCH_MAX_ATTEMPTS", "harnessFaultArmed", "HarnessFault", "HARNESS_FAULT_GIT_DISPATCH",
-    `return (${g.slice(g.indexOf("async (params)"), g.lastIndexOf("};") + 1)});`)(dispatch, quiet, gitStorage, gitDeliveryClaimKey, gitDeliveryAttemptKey, GIT_DISPATCH_MAX_ATTEMPTS, fakeArmed, HarnessFault, HARNESS_FAULT_GIT_DISPATCH);
+  // F-367 — the success path re-takes the completion claim, so the real shared claim
+  // helper is injected too (the region is executed, not paraphrased).
+  const { claimRuleExecution } = await import("../../src/shared/execution-claim.js");
+  const mk = (dispatch) => new Function("dispatchGitEvent", "console", "storage", "gitDeliveryClaimKey", "gitDeliveryAttemptKey", "GIT_DISPATCH_MAX_ATTEMPTS", "harnessFaultArmed", "HarnessFault", "HARNESS_FAULT_GIT_DISPATCH", "claimRuleExecution",
+    `return (${g.slice(g.indexOf("async (params)"), g.lastIndexOf("};") + 1)});`)(dispatch, quiet, gitStorage, gitDeliveryClaimKey, gitDeliveryAttemptKey, GIT_DISPATCH_MAX_ATTEMPTS, fakeArmed, HarnessFault, HARNESS_FAULT_GIT_DISPATCH, claimRuleExecution);
   let seen = null;
   const okHandler = mk(async (env) => { seen = env; return { eventType: env.eventType, repoId: "o/r", queued: 2, propertyWrites: 1 }; });
   const r1 = await okHandler({ envelope: { eventType: "git:pull_request:opened", repoId: "o/r" } });
@@ -1185,6 +1188,17 @@ ok(["review", "codegen", "fixcode", "skilldistill"].every((t) => !UNPOLLED_TASKS
   armedFault = false;
   const okAfter = await faulted(envF);
   ok(okAfter.success === true && dispatched === 1, "EXECUTED: with the lever disarmed the very next attempt dispatches for real");
+  // F-367 — …and the retried SUCCESS re-takes the completion claim, so a provider
+  // Redeliver after it is answered `duplicate` instead of running everything again.
+  ok(gitStore.get(gitDeliveryClaimKey("gc_f", "d-f")) !== undefined,
+    "EXECUTED (F-367): a dispatch that succeeds after a release RE-TAKES the 24 h delivery claim");
+  // A first-attempt success touches nothing: there was no release, and the accept-time
+  // claim is already the completion record.
+  gitStore.clear();
+  const fresh = mk(async () => ({ eventType: "git:push", repoId: "o/r", queued: 1, propertyWrites: 0 }));
+  await fresh({ envelope: { eventType: "git:push", connectionId: "gc_n", deliveryId: "d-n" } });
+  ok(gitStore.get(gitDeliveryClaimKey("gc_n", "d-n")) === undefined,
+    "EXECUTED (F-367): a first-attempt success writes no claim of its own — the webhook's accept-time claim is the one that stands");
 }
 
 // =====================================================================================

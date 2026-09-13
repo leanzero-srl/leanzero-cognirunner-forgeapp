@@ -1197,6 +1197,34 @@ const executeGitEvent = async (params) => {
       throw new HarnessFault(`harness fault armed for conn=${envelope.connectionId || "?"} delivery=${envelope.deliveryId || "?"} — dispatch refused before any side effect`);
     }
     const out = await dispatchGitEvent(envelope);
+    // F-367 — RE-TAKE THE CLAIM AFTER A RETRIED SUCCESS.
+    //
+    // The claim is written by the webhook at ACCEPT time and DELETED by the catch below
+    // on every rethrown failure. So a delivery that failed once and then succeeded ended
+    // with no claim at all: the provider's Redeliver button was ACCEPTED and the whole
+    // delivery — the listener runs and the issue-property writes — happened a second
+    // time. The claim means COMPLETION here (that is what F-335 made it), so completion
+    // must re-record it.
+    //
+    // Only after a release: `attempts > 0` is the evidence that this delivery released
+    // its claim at least once. On the first-attempt happy path the accept-time claim is
+    // still there and this does nothing but one read. FAIL_IF_EXISTS keeps it a no-op if
+    // it is somehow present, and a KVS fault here is logged and swallowed — the dispatch
+    // has already happened and nothing may undo or repeat it.
+    const okConn = envelope.connectionId || null;
+    const okDelivery = envelope.deliveryId || null;
+    if (okConn && okDelivery) {
+      let priorAttempts = 0;
+      try { priorAttempts = Number((await storage.get(gitDeliveryAttemptKey(okConn, okDelivery)) || {}).attempts) || 0; } catch { /* best-effort */ }
+      if (priorAttempts > 0) {
+        try {
+          // The SAME 24 h window the webhook's accept-time claim uses (src/index.js
+          // `gitWebhook`) — the row means the same thing, so it must expire together.
+          const retaken = await claimRuleExecution(storage, gitDeliveryClaimKey(okConn, okDelivery), { ttl: { value: 24, unit: "HOURS" } }, "git-delivery");
+          console.log(`[git-event] delivery ${okDelivery} succeeded on attempt ${priorAttempts + 1} — completion claim ${retaken ? "re-taken" : "already present"}; a provider Redeliver is answered duplicate`);
+        } catch (e) { console.warn(`[git-event] completion claim NOT re-taken for ${okDelivery} (${e && e.message}) — a Redeliver would run it again`); }
+      }
+    }
     console.log(`[git-event] ${out.eventType || "?"} ${out.repoId || "?"}: ${out.queued || 0} run(s) queued, ${out.propertyWrites || 0} issue propert(ies) written`);
     return { success: true, ...out };
   } catch (e) {

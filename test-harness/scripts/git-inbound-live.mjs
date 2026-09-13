@@ -195,17 +195,19 @@ const main = async () => {
         // The lever is consumed: nothing is left armed, so the NEXT attempt must run for real.
         const left = await testState.post({ action: "readGitDispatchFault", connectionId: CONN, deliveryId: d1 });
         check("both armed faults were consumed", left.body?.value === null, true, JSON.stringify(left.body?.value));
-        // WHAT THE END STATE ACTUALLY IS, and why this does NOT assert a held claim:
-        // `git_delivery` is written ONLY by the webhook at ACCEPT time (src/index.js
-        // ~L11437) and deleted by this consumer on every rethrown failure. A retried
-        // attempt that succeeds does not re-take it — so after two released failures the
-        // claim is legitimately ABSENT at the end, and asserting "claim present" here would
-        // be asserting a behaviour the code does not have. The cost is a real one and it is
-        // F-335's deliberate trade: a delivery that ran on attempt 3 would be accepted
-        // AGAIN if the provider re-sent it, because completion is no longer recorded.
+        // THE END STATE (F-367): `git_delivery` is written by the webhook at ACCEPT time
+        // (src/index.js `gitWebhook`) and deleted by this consumer on every rethrown
+        // failure — so the claim means COMPLETION, not acceptance. It used to be absent
+        // after a retried success, which made the provider's Redeliver button a second
+        // real run of the same delivery. The consumer now RE-TAKES it (FAIL_IF_EXISTS,
+        // same 24 h TTL) whenever a dispatch succeeds after at least one release, so the
+        // claim must be PRESENT here.
         const claimAfter = await kvRead(claimKey1);
-        check("the released claim is NOT re-taken by the successful retry", claimAfter === null, true,
-          "documented consequence: a post-success provider Redeliver is accepted, not answered duplicate");
+        check("the claim is RE-TAKEN by the successful retry (F-367)", claimAfter !== null, true,
+          "an absent claim here means a post-success provider Redeliver runs the delivery a second time");
+        // PROOF BY BEHAVIOUR: re-sending the same delivery id must now be answered duplicate.
+        const redup = await deliver(URL_, { body: prBody(11, crypto.randomBytes(20).toString("hex")), secret, delivery: d1 });
+        check("…so a Redeliver after the success is answered duplicate", redup.body?.duplicate === true, true, JSON.stringify(redup.body));
         // POSITIVE EVIDENCE that attempt 3 dispatched: the ladder STOPS. A third failure
         // would write attempts=3 within one retry interval; a settle window that ends with
         // the counter still at 2 is the observable form of "the third attempt ran".

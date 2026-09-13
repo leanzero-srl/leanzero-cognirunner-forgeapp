@@ -449,6 +449,66 @@ let agentId = null;
     await setWatched(3);
   }
 
+  /* ── F-523 — THE *SECOND* NORMALISATION DOES NOT RE-CUT THE RE-ARM ──────────
+   *
+   * A VA save normalises TWICE: `prepareVaSave` (which can read the tick counter) and
+   * then `normalizeJob` inside `saveJob` (which cannot). F-519 gave the first door the
+   * real count and left the second one deriving a watch from the STORED value — so its
+   * ceiling was the ceiling of what was stored, never of what `rearmShadow` had just
+   * armed, and the derivation is INVISIBLE because the second pass's `refused[]` was
+   * discarded outright.
+   *
+   * The scenario, which is the ordinary one: an agent watched 600 of its own ticks,
+   * carrying an OLD, long-expired watch of 100. An admin edits the persona. Door 1 keeps
+   * 100 and the re-arm raises it to 650 — fifty ticks of supervision over the agent
+   * nobody has watched yet, which is the entire purpose of the re-arm. The defect: door 2
+   * derived `100 - 50 = 50`, ceiled at 500, CUT 650 to 500 and dropped the refusal. 500 is
+   * below the 600 already watched, so the edited agent was LIVE on its very next tick —
+   * a permissive change to the one field whose contract is to err the other way.
+   */
+  {
+    await setWatched(600);
+    const row = await rowOf();
+    row.va.status.shadowUntilTick = 100;   // an old watch, expired 500 ticks ago
+    await writeRow(row);
+    const edited = await call("saveScheduledJob", { job: { id: agentId, mode: "va", va: vaRecord({ persona: { name: "Ada", voice: { register: "warm", maxSentences: 2 } }, guardrails: { shadowTicks: 50 }, status: { paused: false, shadowUntilTick: 100 } }) } });
+    ok(edited.success === true, "F-523 — the persona edit saves");
+    const back = await rowOf();
+    eqish(back && back.va.status.shadowUntilTick, 650,
+      "F-523 — what the RE-ARM armed is what is STORED: 600 watched + 50 shadowTicks (the defect stored 500)");
+    ok(!asRefusals(edited).some((r) => String(r.field) === "status.shadowUntilTick"),
+      `F-523 — …and nothing is refused, because nothing was moved (got ${JSON.stringify(asRefusals(edited))})`);
+    // THE PROPERTY THAT MATTERS, said in the units the engine uses: the edited agent is
+    // supervised. Under the defect 500 <= 600 and it was live with no shadow at all.
+    const st = await call("getVaStatus", { jobId: agentId });
+    ok(st.success && st.shadow && st.shadow.ticksLeft === 50,
+      `F-523 — the edited agent is in shadow for the fifty ticks it was armed for (got ${JSON.stringify(st.shadow)})`);
+    const { isInShadow } = await import("../../src/virtual-admin.js");
+    ok(Boolean(await isInShadow(await rowOf(), { receipts: 600 })),
+      "F-523 — …and the post gate's own predicate agrees, which under the defect it did not");
+    // AND THE SECOND PASS'S REFUSALS ARE NO LONGER DISCARDED. Nothing was clamped here,
+    // so the answer carries no second-pass note — the assertion that matters is that the
+    // channel EXISTS: `saveJob` hands `normalizeJob` a sink and returns what lands in it.
+    ok(!(edited.job && edited.job.vaRefused && edited.job.vaRefused.length),
+      `F-523 — a save that clamped nothing at the second door reports nothing (got ${JSON.stringify(edited.job && edited.job.vaRefused)})`);
+  }
+
+  /* ── F-523 — AND DOOR 1 IS STILL THE DOOR: the F-484 leftover is still cut ── */
+  {
+    await setWatched(20);
+    const row = await rowOf();
+    row.va.status.shadowUntilTick = 8643;
+    await writeRow(row);
+    const edited = await call("saveScheduledJob", { job: { id: agentId, mode: "va", va: vaRecord({ guardrails: { shadowTicks: 3 }, status: { paused: false, shadowUntilTick: 8643 } }) } });
+    ok(edited.success === true, "F-523 — the legacy agent still saves");
+    const back = await rowOf();
+    eqish(back && back.va.status.shadowUntilTick, VA_CEILINGS.shadowUntilTick.max,
+      "F-523 — …and the wall-clock leftover is STILL cut at door 1, to a number the agent can reach");
+    ok(asRefusals(edited).some((r) => String(r.field) === "status.shadowUntilTick"),
+      `F-523 — …with the cut still said out loud (got ${JSON.stringify(asRefusals(edited))})`);
+    await setWatched(3);
+  }
+
   /* ── F-508 — THE F-484 BOUNDARY IS UNCHANGED: shadowTicks 50 on a NEW agent ── */
   {
     const made = await call("saveScheduledJob", { job: { mode: "va", name: "Boundary", va: vaRecord({ guardrails: { shadowTicks: 50 } }) } });

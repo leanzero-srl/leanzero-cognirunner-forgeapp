@@ -647,5 +647,74 @@ await call("confirmCoderTicket", { ticketId: "tkt_5", decision: "skip" });
     `a turn that MEANS the empty list still clears the thread's skills (${JSON.stringify(d2.skillIds)})`);
 }
 
+/* ===== 12. F-598 — AN EPOCH BUMP IS A TRIGGER, NOT A VERDICT =======================
+ *
+ * The memory epoch is instance-GLOBAL; `buildMemoryBlock` is project-SCOPED. So the counter
+ * could only ever say "something in the store changed", never "something this thread
+ * carries changed" — and a cap-200 eviction or a prune in an unrelated project invalidated
+ * every Coder pin on the instance, in every project. With `autoCapture` on and a full store
+ * that is one eviction per captured lesson, each one re-pinning every live thread and
+ * re-billing its whole stored history at write price, for a memory no thread's block ever
+ * contained: F-574's benefit cancelled precisely on the busiest instances.
+ *
+ * A bump now costs one RE-RENDER and the rendered bytes decide. Proven on the pair that
+ * matters — the write this thread cannot see keeps the pin, the write it CAN see drops it.
+ */
+{
+  const { loadMemories, saveMemories, saveMemoryCandidate } = await import("../../src/memories.js");
+  const { buildKnowledgeMessages } = await import("../../src/agent-runner.js");
+  const THREAD = "t_project_scope";
+
+  // ONE memory this project's block carries, and one it cannot: `buildMemoryBlock` admits a
+  // row only when it is unscoped or scoped to THIS project.
+  const MINE = "The LZPT deploy job needs the release label before it will run.";
+  const THEIRS = "The OTHER project keeps its runbooks in Confluence, not the repo.";
+  const mine = await saveMemoryCandidate({ content: MINE, source: "user" });
+  await saveMemoryCandidate({ content: THEIRS, source: "user", projectKey: "OTHER" });
+
+  await storage.set(coder.coderThreadKey(ISSUE, THREAD), {
+    issueKey: ISSUE, threadId: THREAD, ownerAccountId: OWNER,
+    messages: [{ role: "user", content: "turn one" }], turns: 1,
+  });
+  const turn = (message) => __coderKnowledgeInternals.buildCoderKnowledge({
+    issueKey: ISSUE, threadId: THREAD, message, skillIds: ["skill_house"],
+  });
+  const pinIt = async (k) => storage.set(coder.coderPinKey(ISSUE, THREAD), {
+    issueKey: ISSUE, threadId: THREAD,
+    skillsBlock: k.skillsBlock || "", memoryBlock: k.memoryBlock || "",
+    skillIds: k.skillIds || [], memoryCount: k.memoryCount || 0,
+    memoryEpoch: k.memoryEpoch, skillEpoch: k.skillEpoch, at: new Date().toISOString(),
+  });
+
+  const p1 = await turn("turn one");
+  ok(p1.memoryBlock.includes(MINE), "turn 1's block carries this project's memory");
+  ok(!p1.memoryBlock.includes(THEIRS), "…and not the other project's — the block is project-scoped");
+  await pinIt(p1);
+
+  /* --- the write this thread cannot see --- */
+  const rows = await loadMemories();
+  const theirs = rows.find((m) => m.content === THEIRS);
+  ok(!!theirs, "the other project's memory is in the store");
+  await saveMemories(rows.filter((m) => m.id !== theirs.id));
+  const p2 = await turn("turn two");
+  ok(p2.repin === undefined && p2.pinInvalidated === undefined,
+    `THE FINDING: a delete in another project does NOT invalidate this thread's pin (repin=${p2.repin})`);
+  ok(p2.pinEpochVerified === true,
+    "…the epoch moved, the block was re-rendered and matched, and the turn says so for the re-stamp");
+  ok(JSON.stringify(buildKnowledgeMessages(p2)) === JSON.stringify(buildKnowledgeMessages(p1)),
+    "…and the prompt prefix is byte-identical");
+
+  /* --- the write it CAN see --- */
+  const rows2 = await loadMemories();
+  await saveMemories(rows2.filter((m) => m.id !== mine.id));
+  const p3 = await turn("turn three");
+  ok(p3.repin === true, "deleting a memory the thread's own block carries still invalidates it");
+  ok(typeof p3.pinInvalidated === "string" && /memory block changed/.test(p3.pinInvalidated),
+    `…and the reason names the block, not merely the counter (${p3.pinInvalidated})`);
+  ok(!JSON.stringify(buildKnowledgeMessages(p3)).includes(MINE),
+    "…the deleted memory is gone from the prefix");
+  ok(p3.pinEpochVerified === undefined, "…and nothing claims the bytes were verified unchanged");
+}
+
 console.log(`\ncoder resume params: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

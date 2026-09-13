@@ -974,7 +974,17 @@ const runCoderTurnClaimed = async ({
         // A LIVING PIN IS REFRESHED, NOT REWRITTEN (F-581): the SAME object back under a
         // fresh TTL, on the same turn and by the same writer as the thread row above. The
         // bytes the prefix carries do not move, and the pin can no longer expire first.
-        await store.set(pinKey, already, CODER_THREAD_TTL);
+        //
+        // F-598 — with ONE exception, and it is not the bytes: when the builder saw the
+        // memory epoch move, re-rendered this project's block and found it IDENTICAL, it
+        // says so with `pinEpochVerified`. The stamp is advanced to the epoch the bytes
+        // were just proven against, so an unrelated write elsewhere on the instance costs
+        // one re-render in total and not one on every later turn of the thread. The
+        // skills and memory BLOCKS are untouched, so the prompt prefix still does not move.
+        const restamped = knowledge.pinEpochVerified === true && knowledge.memoryEpoch !== undefined
+          ? { ...already, memoryEpoch: Number(knowledge.memoryEpoch) || 0 }
+          : already;
+        await store.set(pinKey, restamped, CODER_THREAD_TTL);
       } else {
         // Two ways to reach here that are NOT the ordinary first turn, and neither may be
         // silent — both move the prompt prefix once, and an unexplained prefix move is the

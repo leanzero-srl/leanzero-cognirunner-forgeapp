@@ -1433,6 +1433,51 @@ const buildCoderKnowledge = async (p) => {
   try { pinned = await getCoderPinnedKnowledge(issueKey, threadId); } catch (e) { pinned = null; }
 
   /*
+   * F-598 — THIS PROJECT'S MEMORY BLOCK, RENDERED AT MOST ONCE PER TURN.
+   *
+   * The epoch is instance-global; `buildMemoryBlock` is PROJECT-scoped. So the counter says
+   * "something in the store changed", never "something THIS thread carries changed", and a
+   * cap-200 eviction or a prune in an unrelated project invalidated every Coder pin on the
+   * instance. With `autoCapture` on and a full store that is one eviction per captured
+   * lesson, each one re-pinning every live thread in every project and re-billing its whole
+   * stored history at write price — F-574's benefit cancelled precisely on the busiest
+   * instances, for a memory no thread's block ever contained.
+   *
+   * The fix does not make the counter cleverer (a per-project counter is a second home for
+   * the same rule, and a memory can move between projects). It makes the counter a TRIGGER:
+   * a bump costs one re-render, and only the rendered BYTES decide. The pin already stores
+   * those bytes, so the comparison is the pin's own block against today's — an exact
+   * comparison, no stored hash, no migration, no collisions to reason about.
+   *
+   * Memoized because both callers want the same answer from the same instant: the pin check
+   * below, and the block builder further down. Rendering it twice is how two halves of one
+   * decision come to disagree about what the store said.
+   *
+   * `null` means the store could not be read at all — fail-open, exactly as before: no
+   * verdict, no block, the turn goes on.
+   */
+  const memoryProjectKey = String((p && p.issueKey) || "").split("-")[0] || null;
+  let memoryRender;
+  const liveMemoryBlock = async () => {
+    if (memoryRender !== undefined) return memoryRender;
+    memoryRender = null;
+    try {
+      const { getMemorySettings, buildMemoryBlock } = await import("./memories.js");
+      const settings = await getMemorySettings();
+      if (settings && settings.injection !== false) {
+        const b = await buildMemoryBlock({ projectKey: memoryProjectKey, capBytes: budget.memories });
+        memoryRender = { injection: true, text: String(b.text || ""), count: Number(b.count) || 0 };
+      } else {
+        memoryRender = { injection: false, text: "", count: 0 };
+      }
+    } catch (e) {
+      console.warn("[coder] memory block skipped:", e && e.message);
+      memoryRender = null;
+    }
+    return memoryRender;
+  };
+
+  /*
    * F-578 — A PIN IS REPLAYED ONLY WHILE THE KNOWLEDGE IT FROZE IS STILL TRUE.
    *
    * F-574 pinned the rendered bytes for up to 90 days and nothing invalidated them, so a
@@ -1487,7 +1532,21 @@ const buildCoderKnowledge = async (p) => {
       if (pinned.memoryEpoch === undefined || pinned.skillEpoch === undefined) {
         verdict = "pin predates epoch stamping";
       } else if (liveMemoryEpoch !== null && Number(pinned.memoryEpoch) !== Number(liveMemoryEpoch)) {
-        verdict = `memoryEpoch ${Number(pinned.memoryEpoch) || 0}→${liveMemoryEpoch}`;
+        // F-598 — THE BUMP IS A TRIGGER, NOT A VERDICT. The epoch counts writes to the whole
+        // instance; the pin carries one project's rendered lines. Re-render and compare the
+        // bytes: only a block that actually MOVED may move a prompt prefix.
+        const live = await liveMemoryBlock();
+        const moved = Number(pinned.memoryEpoch) || 0;
+        if (live === null) {
+          console.warn(`[coder] memoryEpoch ${moved}→${liveMemoryEpoch}, but the memory store could not be re-read — the pin is kept and this turn replays it`);
+        } else if (live.text === String(pinned.memoryBlock || "")) {
+          console.log(`[coder] memoryEpoch ${moved}→${liveMemoryEpoch} bumped, block unchanged, pin kept — the write was to a memory this thread's project never carried`);
+          // Re-stamp the pin at the epoch we just proved it still matches, so the next turn
+          // does not pay the same re-render again for the same unrelated write.
+          out.pinEpochVerified = true;
+        } else {
+          verdict = `memoryEpoch ${moved}→${liveMemoryEpoch}, and this project's memory block changed with it`;
+        }
       } else if (liveSkillEpoch !== null && String(pinned.skillEpoch) !== String(liveSkillEpoch)) {
         verdict = "skillEpoch changed — a pinned skill was edited, disabled or deleted";
       }
@@ -1565,12 +1624,12 @@ const buildCoderKnowledge = async (p) => {
       }
     } catch (e) { console.warn("[coder] skills block skipped:", e && e.message); }
   }
-  try {
-    const { getMemorySettings, buildMemoryBlock } = await import("./memories.js");
-    const settings = await getMemorySettings();
-    if (settings && settings.injection !== false) {
-      const projectKey = String((p && p.issueKey) || "").split("-")[0] || null;
-      const b = await buildMemoryBlock({ projectKey, capBytes: budget.memories });
+  {
+    // ONE RENDER PER TURN (F-598) — the pin check above may already have asked for it, and
+    // both halves must be looking at the same store reading. `null` is the read fault and
+    // is skipped exactly as the old catch arm skipped it.
+    const b = await liveMemoryBlock();
+    if (b && b.injection) {
       if (pinned) {
         // MEMORIES WRITTEN SINCE THIS THREAD STARTED go after the history (F-574). The
         // pinned block is already on `out`; what is new is the lines the live block has
@@ -1585,14 +1644,14 @@ const buildCoderKnowledge = async (p) => {
         if (b.text) out.memoryBlock = b.text;
         if (b.text) out.memoryCount = Number(b.count) || 0;
       }
-    } else if (pinned && out.memoryBlock) {
+    } else if (b && !b.injection && pinned && out.memoryBlock) {
       // The admin turned instance-wide memory injection OFF mid-thread. That is a
       // deliberate instruction and it wins over the prefix: the block is dropped, the
       // prefix moves ONCE, and the thread carries no learned facts from here on.
       delete out.memoryBlock;
       delete out.memoryCount;
     }
-  } catch (e) { console.warn("[coder] memory block skipped:", e && e.message); }
+  }
   // THE BAKED FIELD GUIDE (1.4 commit 14b) — the Coder's turn is the widest budget in the
   // table (16 KB) because it is the surface that writes Forge apps, and the packs are the
   // Forge knowledge it writes them from. Same shape as `buildAgentKnowledge`

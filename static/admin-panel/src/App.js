@@ -413,6 +413,39 @@ const injectStyles = () => {
     html[data-color-mode="dark"] .usage-allow-fill.lvl-ok { background: #14b8a6; }
     html[data-color-mode="dark"] .usage-allow-fill.lvl-soft { background: #f59e0b; }
     html[data-color-mode="dark"] .usage-allow-fill.lvl-hard { background: #ef4444; }
+
+    /* === CogniRunner Cloud AI (the managed engine) ==========================
+       Solid saturated colour, white text on the chip, 700 weight for emphasis.
+       No left rail and no low-alpha tint: the card carries a full 2px border in
+       the accent hue and the state is read from the CHIP, not from a wash.
+       Available = violet #7c3aed; unavailable = red #dc2626. Both have a
+       dark-mode override one shade lighter, as every new hue must. */
+    .mg-note { padding: 10px 12px; border-radius: 6px; background: var(--card-bg); }
+    .mg-note .mg-body { margin: 6px 0 0; font-size: 11px; color: var(--text-secondary); line-height: 1.5; }
+    .mg-note .mg-body strong { color: var(--text-color); font-weight: 700; }
+    .mg-chip {
+      display: inline-block; padding: 2px 9px; border-radius: 5px;
+      font-size: 10px; font-weight: 700; letter-spacing: 0.02em;
+      color: #fff; text-transform: uppercase;
+    }
+    .mg-note.mg-ok { border: 2px solid #7c3aed; box-shadow: 0 4px 12px -4px rgba(124, 58, 237, 0.35); }
+    .mg-note.mg-ok .mg-chip { background: #7c3aed; }
+    .mg-note.mg-off { border: 2px solid #dc2626; box-shadow: 0 4px 12px -4px rgba(220, 38, 38, 0.35); }
+    .mg-note.mg-off .mg-chip { background: #dc2626; }
+    html[data-color-mode="dark"] .mg-note.mg-ok { border-color: #8b5cf6; box-shadow: 0 4px 12px -4px rgba(139, 92, 246, 0.4); }
+    html[data-color-mode="dark"] .mg-note.mg-ok .mg-chip { background: #8b5cf6; color: #1e1035; }
+    html[data-color-mode="dark"] .mg-note.mg-off { border-color: #ef4444; box-shadow: 0 4px 12px -4px rgba(239, 68, 68, 0.4); }
+    html[data-color-mode="dark"] .mg-note.mg-off .mg-chip { background: #ef4444; color: #2a0707; }
+    /* The "Unavailable" badge on the non-selectable managed picker row. */
+    .dib-unavailable { background: #dc2626; }
+    html[data-color-mode="dark"] .dib-unavailable { background: #ef4444; color: #2a0707; }
+    /* Per-engine split of the ONE vendor allowance. Solid fills, distinct hues:
+       Forge LLM = Atlassian blue, CogniRunner Cloud AI = the managed violet. */
+    .usage-byengine { margin-top: 8px; }
+    .usage-engine-fill.eng-forge { background: #2563eb; }
+    .usage-engine-fill.eng-managed { background: #7c3aed; }
+    html[data-color-mode="dark"] .usage-engine-fill.eng-forge { background: #3b82f6; }
+    html[data-color-mode="dark"] .usage-engine-fill.eng-managed { background: #8b5cf6; }
     .usage-allow-note { margin: 6px 0 0; font-size: 11px; font-weight: 700; }
     .usage-allow-note.lvl-soft { color: #b45309; }
     .usage-allow-note.lvl-hard { color: #dc2626; }

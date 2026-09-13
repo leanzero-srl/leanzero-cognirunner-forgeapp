@@ -29,7 +29,7 @@
 /* F-085: the edition facts below come from the ONE home for them. A harness that
    re-states the frontier ids or invents feature ids stops being able to catch a
    drift between the app and src/shared/edition.js — it just agrees with itself. */
-import { FORGE_LLM_FRONTIER, FORGE_LLM_DEFAULT, ADVANCED_FEATURES } from "../../src/shared/edition.js";
+import { FORGE_LLM_FRONTIER, FORGE_LLM_DEFAULT, ADVANCED_FEATURES, MANAGED_PROVIDER_ID, MANAGED_PROVIDER_LABEL, MANAGED_MODELS, MANAGED_DEFAULT_MODEL } from "../../src/shared/edition.js";
 /* F-465: the pipeline step ids, from the ONE home. src/git-pipeline.js cannot be
    imported here (it pulls @forge/kvs and node:crypto), which is why the ids moved to a
    dependency-free shared module instead of being mirrored by hand in this file. */
@@ -251,7 +251,18 @@ const ADMIN_LOGS = {
 };
 
 /* ----------------------------- admin: BYOK / settings ------------------------ */
-const PROVIDER_LIST = [
+/* Every row carries the four flags src/index.js getProvider now emits, so the picker is
+   never tested against a shape the backend does not send. `managed`/`coderOnly` are true
+   for exactly one row; `available`/`unavailableReason` answer the deployment-side fact.
+   window.__MANAGED_MISSING__ / __MANAGED_DISABLED__ flip the managed row to unavailable. */
+const managedMockReason = () => {
+  if (typeof window === "undefined") return null;
+  if (window.__MANAGED_MISSING__) return "managed-key-missing";
+  if (window.__MANAGED_DISABLED__) return "managed-disabled";
+  return null;
+};
+const managedMockAvailable = () => managedMockReason() === null;
+const PROVIDER_LIST_BASE = [
   { key: "openai", label: "OpenAI", hasDefaultUrl: true },
   { key: "azure", label: "Azure OpenAI", hasDefaultUrl: false },
   { key: "openrouter", label: "OpenRouter", hasDefaultUrl: true },
@@ -259,7 +270,18 @@ const PROVIDER_LIST = [
   { key: "lmstudio", label: "LM Studio", hasDefaultUrl: false },
   { key: "atlassian", label: "Atlassian (Forge LLM)", hasDefaultUrl: false },
   { key: "bedrock", label: "AWS Bedrock", hasDefaultUrl: false },
+  { key: MANAGED_PROVIDER_ID, label: MANAGED_PROVIDER_LABEL, hasDefaultUrl: false },
 ];
+const providerList = () => PROVIDER_LIST_BASE.map((p) => {
+  const isManaged = p.key === MANAGED_PROVIDER_ID;
+  return {
+    ...p,
+    managed: isManaged,
+    coderOnly: isManaged,
+    available: isManaged ? managedMockAvailable() : true,
+    unavailableReason: isManaged && !managedMockAvailable() ? managedMockReason() : null,
+  };
+});
 
 /* ----------------------------- admin: permissions / docs --------------------- */
 const ADMINS = {
@@ -526,14 +548,28 @@ const isStandardEd = () => typeof window !== "undefined" && (!!window.__STANDARD
    Only these two numbers are chosen here; the SHAPE and the maths are the app's. */
 const MOCK_SEATS = 100;
 const MOCK_FORGE_EST_USD = 92.4;
+/* window.__MANAGED_SPEND__ (dollars) adds CogniRunner Cloud AI spend to the SAME
+   allowance, which is what makes `byEngine` carry two non-zero figures and the card
+   render two bars. Default 0 so every pre-existing allowance shot and assertion —
+   which photograph a Forge-LLM-only tenant — is untouched. */
 function mockAllowance() {
   const now = Date.now();
   const st = emptyState();
   st.month.key = monthKey(now);
   st.month.forgeLlm.estUsd = MOCK_FORGE_EST_USD;
+  const managedSpend = (typeof window !== "undefined" && Number(window.__MANAGED_SPEND__)) || 0;
+  if (managedSpend > 0) st.month.managed = { ...(st.month.managed || {}), estUsd: managedSpend };
   return forgeLlmAllowanceStatus(st, allowanceUsdForSeats(MOCK_SEATS), now);
 }
 const edName = () => (isStandardEd() ? "standard" : "advanced");
+/* src/index.js VENDOR_BILLED_PROVIDERS - the engines LeanZero is billed for, and the only
+   ones an allowance can mean anything for. A BYOK tenant pays its own bill. */
+const VENDOR_BILLED = ["atlassian", MANAGED_PROVIDER_ID];
+const mockShowAllowance = () => {
+  if (isStandardEd()) return false;
+  const prov = (typeof window !== "undefined" && window.__PROVIDER__) || "anthropic";
+  return VENDOR_BILLED.includes(prov);
+};
 const FORGE_FRONTIER = FORGE_LLM_FRONTIER;
 const FORGE_HAIKU = FORGE_LLM_DEFAULT;
 const mockLicenseCtx = () => (isUnlicensedEd()
@@ -1669,7 +1705,17 @@ function invoke(name, payload) {
       // 1.3: the monthly Forge LLM allowance meter. F-091: Standard (and any BYOK
       // tenant) gets an explicit `null`, which is what the backend sends — NOT
       // `undefined`, so "no allowance row" is tested against the real absent value.
-      forgeLlm: isStandardEd() ? null : mockAllowance(),
+      /* F-545: the BACKEND decides whether an allowance exists at all - showAllowance is
+         `VENDOR_BILLED_PROVIDERS.includes(provider) && edition === ADVANCED`, expressed as
+         the object or an explicit `null`. The mock reproduces that rule so the panel's
+         presence-gate is tested against the real absent value. Note this follows the
+         ACTIVE provider (window.__PROVIDER__), which is what the real resolver reads -
+         merely BROWSING another provider in the picker does not refetch usage. */
+      forgeLlm: mockShowAllowance() ? mockAllowance() : null,
+      // `vendorAllowance` is the honest name for the SAME object (src/index.js getAiUsage):
+      // one ceiling covering both vendor-billed engines, with `byEngine` saying where the
+      // money went. New surfaces read this one; `forgeLlm` stays for old readers.
+      vendorAllowance: mockShowAllowance() ? mockAllowance() : null,
       seats: MOCK_SEATS,
     });
     case "resetAiUsage": return Promise.resolve({ success: true });
@@ -1705,7 +1751,15 @@ function invoke(name, payload) {
     case "getProvider": {
       const prov = (typeof window !== "undefined" && window.__PROVIDER__) || "anthropic";
       const burl = prov === "atlassian" ? "" : "https://api.anthropic.com";
-      return Promise.resolve({ success: true, provider: prov, baseUrl: burl, providers: PROVIDER_LIST, bedrockAck: false });
+      return Promise.resolve({
+        success: true, provider: prov, baseUrl: burl, providers: providerList(), bedrockAck: false,
+        // The managed engine's deployment-side facts — a boolean and a REASON CODE,
+        // never the key (src/index.js getProvider).
+        managedAvailable: managedMockAvailable(),
+        managedReason: managedMockReason() || "managed",
+        managedModels: [...MANAGED_MODELS],
+        managedDefaultModel: MANAGED_DEFAULT_MODEL,
+      });
     }
     case "getOpenAIKey":
       // First-run no-key state (window.__NOKEY__): a BYOK provider with no key stored →
@@ -1715,6 +1769,18 @@ function invoke(name, payload) {
       return Promise.resolve(isAdmin ? { success: true, provider: "anthropic", baseUrl: "https://api.anthropic.com", hasKey: true, isByok: true } : { success: true, isByok: false });
     case "getOpenAIModels":
       if (payload && payload.provider === "lmstudio") return Promise.resolve({ success: true, isByok: true, models: LM_MODELS.map((m) => m.id), modelDetails: LM_MODELS, locked: [], edition: edName() });
+      /* The managed engine: a FIXED list (MANAGED_MODELS), never OpenRouter's catalogue,
+         and an EMPTY list when the deployment has no engine. `locked` stays empty — a
+         Standard tenant cannot select the PROVIDER at all, which is the real boundary. */
+      if (payload && payload.provider === MANAGED_PROVIDER_ID) return Promise.resolve({
+        success: true,
+        isByok: false,
+        edition: edName(),
+        models: managedMockAvailable() ? [...MANAGED_MODELS] : [],
+        locked: [],
+        managedAvailable: managedMockAvailable(),
+        managedReason: managedMockReason() || "managed",
+      });
       // Forge LLM: never refuses — returns what this edition may pick PLUS the locked ids.
       if (payload && payload.provider === "atlassian") return Promise.resolve({
         success: true,
@@ -1726,6 +1792,10 @@ function invoke(name, payload) {
       });
       return Promise.resolve({ success: true, isByok: true, edition: edName(), locked: [], models: ["claude-haiku-4-5-20251001", "claude-sonnet-4-6-20260101", "claude-opus-4-1-20250805", "claude-3-7-sonnet-20250219"] });
     case "getOpenAIModelFromKVS":
+      if (payload && payload.provider === MANAGED_PROVIDER_ID) return Promise.resolve({
+        success: true, model: MANAGED_DEFAULT_MODEL, isByok: false, edition: edName(), clamped: false,
+        managedAvailable: managedMockAvailable(), managedReason: managedMockReason() || "managed",
+      });
       if (payload && payload.provider === "lmstudio") return Promise.resolve({ success: true, model: "qwen/qwen3.6-27b", isByok: true, edition: edName(), clamped: false });
       if (payload && payload.provider === "atlassian") return Promise.resolve({
         success: true,
@@ -1737,6 +1807,11 @@ function invoke(name, payload) {
       });
       return Promise.resolve({ success: true, model: "claude-haiku-4-5-20251001", isByok: true, edition: edName(), clamped: false });
     case "getAgentModel":
+      // frontierOnly is true on BOTH vendor-billed engines: every id in MANAGED_MODELS
+      // is a frontier model, so the selector offers the same fixed list, not free text.
+      if (payload && payload.provider === MANAGED_PROVIDER_ID) {
+        return Promise.resolve({ success: true, model: MANAGED_DEFAULT_MODEL, edition: edName(), frontierOnly: true });
+      }
       if (payload && payload.provider === "atlassian") {
         return Promise.resolve({ success: true, model: isStandardEd() ? "" : "claude-sonnet-5", edition: edName(), frontierOnly: true });
       }

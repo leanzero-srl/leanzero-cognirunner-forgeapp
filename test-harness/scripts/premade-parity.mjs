@@ -127,7 +127,11 @@ for (const row of PREMADE_LISTENERS) {
 
 const validatorCount = PREMADE_VALIDATORS.filter((r) => r.availability !== "unavailable").length;
 const conditionCount = PREMADE_CONDITIONS.filter((r) => r.availability !== "unavailable").length;
-const unavailableCount = allCatalog.length - availableKeys.size;
+// Count ROWS, not key-set arithmetic: one key may legitimately appear in BOTH lists
+// (the git rules ship as a validator that verifies live AND a condition Jira
+// evaluates itself as an expression), and length-minus-set-size counted those
+// duplicates as "unavailable".
+const unavailableCount = allCatalog.filter((r) => r.availability === "unavailable").length;
 
 if (problems.length) {
   console.error("✗ Premade-rule parity FAILED:");

@@ -57,6 +57,20 @@
  *   text:{key,label,ph}              — one named text input
  *   picker:{key,label,source,ph,optional} — REST-backed dropdown (source = a list
  *                                           key from the getRuleLists resolver)
+ *   git         — the GIT parameter group (1.4 commit 10). Writes FOUR keys:
+ *                   connectionId — a connection id (getRuleLists `gitconnections`)
+ *                   repo         — "owner/name", normalised through
+ *                                  src/shared/git-ids.js normalizeRepoId
+ *                   prMatch      — "property" | "branch" | "both" (default "both"):
+ *                                  what makes a candidate pull request acceptable
+ *                   strict       — boolean, default false: what a provider outage,
+ *                                  a dead token or "no pull request found" does
+ *                                  (see the fail-open/fail-closed table beside
+ *                                  runGitValidator in src/premade-rules.js).
+ *                 NOTE — PremadeRuleForm.jsx does NOT render this group yet; it
+ *                 renders field/opValue/regex/allowed/value/lengthBounds/dateRel/
+ *                 picker only. The executor, the catalogue and the tests are the
+ *                 backend half (commit 10); the form renderer is a UI cut.
  */
 
 export const COMPARE_OPS = [
@@ -147,6 +161,46 @@ export const PREMADE_VALIDATORS = [
     params: { field: true, lengthBounds: true },
     availability: "available",
   },
+  // --- GIT validators (1.4 commit 10). `network:true` — unlike every other premade
+  //     rule these make an OUTBOUND provider call inside the transition, bounded to
+  //     GIT_VALIDATOR_BUDGET_MS (8 s) by src/premade-rules.js, and they verify LIVE:
+  //     the cognirunner.git issue property only LOCATES the pull request. ---
+  {
+    key: "git-build-passed",
+    label: "Git: the pull request's build passed",
+    help: "Block unless the CI build on the linked pull request's head commit has passed. Verified LIVE against the provider on every transition \u2014 the cognirunner.git issue property is only used to find the pull request, never as evidence.",
+    category: "Git",
+    network: true,
+    params: { git: true },
+    availability: "available",
+  },
+  {
+    key: "git-pr-approved",
+    label: "Git: the pull request is approved",
+    help: "Block unless the linked pull request has at least one approval and no outstanding \u201cchanges requested\u201d. Read live from the provider on every transition.",
+    category: "Git",
+    network: true,
+    params: { git: true },
+    availability: "available",
+  },
+  {
+    key: "git-pr-comments-resolved",
+    label: "Git: the pull request's comments are resolved",
+    help: "Block while any review comment on the linked pull request is still unresolved. GitHub's REST API cannot report thread resolution at all \u2014 with Strict on that unknown blocks, with Strict off it allows (PR_COMMENT_RESOLVED_UNKNOWN).",
+    category: "Git",
+    network: true,
+    params: { git: true },
+    availability: "available",
+  },
+  {
+    key: "git-pr-merged",
+    label: "Git: the pull request is merged",
+    help: "Block unless the linked pull request has actually been merged, read live from the provider. A merged flag in the cognirunner.git property alone never satisfies this rule \u2014 the property is advisory and anyone who can write issue properties can forge it.",
+    category: "Git",
+    network: true,
+    params: { git: true },
+    availability: "available",
+  },
 ];
 
 /**
@@ -173,6 +227,13 @@ export const EXPRESSION_BACKED_CONDITIONS = [
   "field-has-value",
   "field-empty",
   "field-equals",
+  // Git conditions (1.4 commit 11). Null-guarded branches on the SAME expression:
+  // a missing cognirunner.git property, a missing repository entry or a missing
+  // flag all evaluate TRUE. A condition hides the transition only on a
+  // known-negative state; it never blocks on a missing property.
+  "git-pr-merged",
+  "git-pr-approved",
+  "git-build-passed",
 ];
 
 /**
@@ -382,6 +443,38 @@ export const PREMADE_CONDITIONS = [
     params: { picker: { key: "roleName", label: "Project role", source: "roles", ph: "Choose a role…" } },
     availability: "unavailable",
     unavailableReason: "Deferred — needs project-role-actor resolution and only resolves in company-managed projects. Use Jira's built-in “User Is In Project Role” condition.",
+  },
+  // --- GIT conditions (1.4 commit 11). Jira evaluates these ITSELF, as branches of
+  //     the ONE manifest expression, reading the ADVISORY cognirunner.git issue
+  //     property — no provider call, no credential, no cost. That is why the same
+  //     keys exist as VALIDATORS too (src/premade-rules.js runGitValidator): a
+  //     validator BLOCKS, so it must verify live; a condition only decides what a
+  //     screen shows, so reading the last state we saw is proportionate.
+  //     Probe (b), 2026-09-12: issue.properties reads work in a workflow condition,
+  //     six of them on six transitions of one workflow. ---
+  {
+    key: "git-pr-merged",
+    label: "Git: the pull request is merged",
+    help: "Only show this transition when the last pull request CogniRunner saw for the chosen repository was merged. A condition hides the transition only on a known-negative state; it never blocks on a missing property. Use the Git VALIDATOR of the same name to actually block on it \u2014 that one verifies live.",
+    category: "Git",
+    params: { picker: { key: "repo", label: "Repository", source: "gitrepos", ph: "Choose a repository\u2026" } },
+    availability: "available",
+  },
+  {
+    key: "git-pr-approved",
+    label: "Git: the pull request is approved",
+    help: "Only show this transition when the last pull request CogniRunner saw for the chosen repository was approved. A condition hides the transition only on a known-negative state; it never blocks on a missing property. Use the Git VALIDATOR of the same name to block on it \u2014 that one verifies live.",
+    category: "Git",
+    params: { picker: { key: "repo", label: "Repository", source: "gitrepos", ph: "Choose a repository\u2026" } },
+    availability: "available",
+  },
+  {
+    key: "git-build-passed",
+    label: "Git: the build has not failed",
+    help: "Hide this transition only when the last build CogniRunner saw for the chosen repository FAILED (failed, cancelled, timed out, stopped\u2026). A build still running, or none at all, shows the transition. A condition hides the transition only on a known-negative state; it never blocks on a missing property. Use the Git VALIDATOR to require a passing build.",
+    category: "Git",
+    params: { picker: { key: "repo", label: "Repository", source: "gitrepos", ph: "Choose a repository\u2026" } },
+    availability: "available",
   },
 ];
 

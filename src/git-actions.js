@@ -33,10 +33,12 @@
  * SIMULATION is a guarantee, not a convention: in simulation every write returns
  * `{ simulated: true, … }` and the provider is never called at all.
  *
- * The connection store is INJECTED (`getConnection` / `getProviderToken`) so this
- * module stays testable offline and has no opinion about how credentials are stored.
+ * The connection store (src/git-connections.js) is the ONE home of the connection
+ * record, the repo allow-list predicate and the provider factory; this module imports
+ * them and only accepts `deps` overrides so the offline suite can run without KVS.
  */
-import { createGitProvider, GitProviderError, GIT_ERROR_CODES } from "./git-providers.js";
+import { GitProviderError, GIT_ERROR_CODES } from "./git-providers.js";
+import { getConnection as storeGetConnection, providerForConnection as storeProviderForConnection, isRepoAllowed } from "./git-connections.js";
 import { defangFence } from "./memories.js";
 
 /** Caps — the ONE home for the git-action clamps (plan §3.14 "bounded inputs"). */
@@ -98,12 +100,13 @@ const positiveInt = (value, what) => {
   return n;
 };
 
-/** Repo ids are compared case-insensitively; a connection with no repos allows nothing. */
-export const repoAllowed = (conn, repo) => {
-  const wanted = str(repo).trim().toLowerCase().replace(/\.git$/, "");
-  const list = Array.isArray(conn && conn.repos) ? conn.repos : [];
-  return list.some((r) => str(typeof r === "string" ? r : r && (r.fullName || r.id)).trim().toLowerCase().replace(/\.git$/, "") === wanted);
-};
+/**
+ * THE allow-list predicate has ONE home: `isRepoAllowed` in src/git-connections.js
+ * (F-276 — this file used to carry a second, subtly different copy that also
+ * stripped a `.git` suffix, so the two disagreed on `acme/app.git`). Re-exported
+ * here only so a reader of this file can find it.
+ */
+export { isRepoAllowed };
 
 /** Deep-defang every string in a result, then cap the serialised size. */
 const fenceReady = (value, depth = 0) => {
@@ -140,15 +143,25 @@ export const capResult = (result) => {
 };
 
 /**
- * Build the executor. `getConnection(connectionId)` returns
- * `{ id, kind, repos, status? }`; `getProviderToken(connectionId)` returns the
- * credential — a string token (GitHub) or `{ token, email }` (Bitbucket).
- * Both are injected by the caller; this module never reads the connection store.
+ * Build the executor for ONE agent run. `connectionId` is the rule's connection;
+ * a tool call may name another with `connectionId`, and it is resolved through the
+ * same store (which refuses an unknown, dead or credential-less connection).
+ * This module never sees a token — it sees the adapter the store built.
  */
-export const createGitActionExecutor = ({ getConnection, getProviderToken, simulation = false, log = () => {}, connectionId = null, createProvider = createGitProvider, fetchImpl } = {}) => {
-  if (typeof getConnection !== "function" || typeof getProviderToken !== "function") {
-    throw new Error("createGitActionExecutor: getConnection and getProviderToken are required");
-  }
+export const createGitActionExecutor = ({
+  simulation = false,
+  log = () => {},
+  connectionId = null,
+  fetchImpl,
+  // DI, FOR TESTS ONLY. Production takes the real store: the connection record, the
+  // allow-list predicate and the provider factory all have ONE home in
+  // src/git-connections.js (F-276), and that home is what applies the auth_dead and
+  // allow-list refusals to every caller, not just this one.
+  deps = {},
+} = {}) => {
+  const getConnection = deps.getConnection || storeGetConnection;
+  const providerFor = deps.providerForConnection || storeProviderForConnection;
+  const allowed = deps.isRepoAllowed || isRepoAllowed;
 
   // Per-EXECUTOR (i.e. per-run) budget. The executor is built once per agent run.
   let createdRepos = 0;
@@ -158,19 +171,22 @@ export const createGitActionExecutor = ({ getConnection, getProviderToken, simul
     const conn = await getConnection(id || null);
     if (!conn) refuse("not_configured", "No Git connection is configured for this rule.");
     if (conn.status === "auth_dead") {
-      const e = new GitProviderError("auth_dead", "The Git connection's credential is no longer valid.", { provider: conn.kind });
-      throw e;
+      throw new GitProviderError("auth_dead", "The Git connection's credential is no longer valid.", { provider: conn.kind });
     }
-    const credential = await getProviderToken(conn.id || id || null);
-    if (!credential) refuse("not_configured", "The Git connection has no usable credential.");
-    const auth = typeof credential === "string" ? { token: credential } : credential;
-    return { conn, provider: createProvider({ kind: conn.kind, auth, fetchImpl }) };
+    // The provider is built LAZILY and by the store, which never lets the token out
+    // of itself. Lazy matters twice: the argument clamps and the allow-list refusal
+    // run first (so the model gets OUR reason, not the store's), and a SIMULATED
+    // write never builds a provider or reads a credential at all.
+    // `repo` is passed on so the store re-checks the allow-list: the check in
+    // repoOf() is the message, this one is the guarantee.
+    const getProvider = () => providerFor(conn.id || id || null, { repo: args && args.repo ? str(args.repo).trim() : undefined, fetchImpl });
+    return { conn, getProvider };
   };
 
   const repoOf = (conn, args) => {
     const repo = str(args && args.repo).trim();
     if (!repo) refuse("invalid_args", "repo is required (owner/name)");
-    if (!repoAllowed(conn, repo)) refuse("not_allowed", `Repository "${repo}" is not in this connection's allowed repositories.`);
+    if (!allowed(conn, repo)) refuse("not_allowed", `Repository "${repo}" is not in this connection's allowed repositories.`);
     return repo;
   };
 
@@ -329,13 +345,13 @@ export const createGitActionExecutor = ({ getConnection, getProviderToken, simul
       if (!row) return { success: false, code: "unknown_action", error: `"${id}" is not a git action.` };
       try {
         if (!args || typeof args !== "object" || Array.isArray(args)) refuse("invalid_args", "tool arguments must be a JSON object");
-        const { conn, provider } = await resolve(args);
+        const { conn, getProvider } = await resolve(args);
         const planned = row.plan(conn, args);
         if (row.write && simulation) {
           log(`SIMULATION git ${id}: ${JSON.stringify(planned.summary).slice(0, 400)}`);
           return capResult({ success: true, simulated: true, action: id, connection: conn.id || null, request: planned.summary });
         }
-        const out = await planned.call(provider);
+        const out = await planned.call(await getProvider());
         log(`git ${id} ok`);
         return capResult({ success: true, action: id, ...(out && typeof out === "object" && !Array.isArray(out) ? out : { result: out }) });
       } catch (e) {

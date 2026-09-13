@@ -36,6 +36,15 @@
  *  - Egress: api.github.com and api.bitbucket.org only, plus bitbucket.org for
  *    the diff/src redirect (flagged — see GIT_PROVIDER_HOSTS).
  *
+ * ⚠ WHAT THIS MODULE GUARANTEES: BOUNDED, NOT SANITISED (F-271).
+ * Every value returned here is size-capped, shape-normalised and secret-redacted.
+ * It is NOT safe content: a PR title, body, comment, branch name, file path and
+ * diff are all attacker-authored on a public repository, and this module does not
+ * defang fence markers, strip prompt injections or escape markup. A CALLER THAT
+ * PUTS ANY OF IT IN A PROMPT MUST FENCE IT AND RUN defangFence() ITSELF
+ * (src/memories.js) — see src/git-review.js and src/git-actions.js. Do not "fix"
+ * that here: defanging at the source would corrupt the content we commit and diff.
+ *
  * NO FORGE RUNTIME on purpose: it is imported by the backend and by an offline
  * mocked-fetch suite (test-harness/scripts/git-providers.test.mjs) that runs
  * with no @forge/* module available. Its ONE npm dependency is `tweetnacl`
@@ -74,6 +83,7 @@ export const GIT_PROVIDER_KINDS = ["github", "bitbucket"];
 /** The closed error-code set. Anything outside it is a bug in this file. */
 export const GIT_ERROR_CODES = [
   "auth_dead",
+  "bad_request",
   "not_found",
   "rate_limited",
   "conflict",
@@ -81,12 +91,49 @@ export const GIT_ERROR_CODES = [
   "not_supported",
 ];
 
+/** Redirect hops followed by hand, and the ceiling on an honoured Retry-After. */
+const MAX_REDIRECT_HOPS = 3;
+const RETRY_AFTER_MAX_MS = 10000;
+
 /** Per-call wall clock. Deliberately well under the 25 s sync resolver cap. */
 export const GIT_CALL_TIMEOUT_MS = 10000;
 
 /** Diff caps (plan §3.14 "bounded inputs everywhere"). */
 export const DIFF_MAX_TOTAL_BYTES = 60 * 1024;
 export const DIFF_MAX_FILE_BYTES = 16 * 1024;
+
+/**
+ * Wall clock for ONE logical OPERATION, shared by every HTTP call it chains
+ * (F-262). `commitFiles` is 4–5 calls: five independent 10 s timeouts is a 50 s
+ * operation inside a 25 s resolver, so the budget — not the per-call timeout —
+ * is what actually bounds it. Deliberately under the sync resolver cap.
+ */
+export const GIT_OPERATION_BUDGET_MS = 20000;
+
+/**
+ * Outbound commit caps, enforced AT THE ADAPTER (F-270). src/git-actions.js caps
+ * the model's arguments too; this is the backstop for every OTHER caller
+ * (pipeline setup, scaffolds, a future coder turn) — one bound they all inherit.
+ */
+export const COMMIT_MAX_FILES = 20;
+export const COMMIT_MAX_TOTAL_BYTES = 200 * 1024;
+export const COMMIT_MAX_FILE_BYTES = 64 * 1024;
+
+/**
+ * PR BODY cap on the normalised shape (F-282). The review engine reads `body`;
+ * it is raw, attacker-authored text and the engine fences + defangs it.
+ */
+export const PR_BODY_MAX_BYTES = 8 * 1024;
+
+/**
+ * THE resolved-thread contract (F-269). Three values, three meanings:
+ *   null  — NOT PROVEN. GitHub exposes thread resolution only through GraphQL, so
+ *           REST cannot answer it. A validator must never read this as "resolved"
+ *           NOR as "unresolved"; it is unknown and must say so.
+ *   false — PROVEN UNRESOLVED (Bitbucket answers it directly).
+ *   true  — PROVEN RESOLVED.
+ */
+export const PR_COMMENT_RESOLVED_UNKNOWN = null;
 
 /** Hard ceiling on any single list call, so a huge repo cannot blow the budget. */
 export const LIST_PAGE_SIZE = 100;
@@ -180,15 +227,45 @@ function codeForStatus(status, bodyText, headers) {
   }
   if (status === 404) return "not_found";
   if (status === 429) return "rate_limited";
-  if (status === 409 || status === 422) return "conflict";
+  // ONLY 409 is a conflict — "the thing you are acting on moved or already exists",
+  // which is a RETRYABLE-BY-A-HUMAN state. 400/422 are "your request was wrong",
+  // which is our bug or the model's argument, and a caller that retries it retries
+  // forever. Two different answers deserve two different codes (F-265).
+  if (status === 409) return "conflict";
   if (status >= 500) return "network";
-  return "conflict";
+  return "bad_request";
 }
 
 function retryAfterOf(headers) {
   const raw = headers && headers.get && headers.get("retry-after");
   const n = raw == null ? NaN : Number(raw);
   return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * THE outbound host gate (F-264 / F-267). Every absolute URL this module fetches —
+ * a caller-supplied `path`, or a Location header we are about to follow — must be
+ * one of GIT_PROVIDER_HOSTS. The manifest allow-lists those hosts; anything else is
+ * an SSRF the manifest would not have sanctioned, and a redirect is exactly how one
+ * arrives. `http:` is refused outright: a token must never leave over plaintext.
+ */
+export function assertAllowedUrl(url, operation, kind) {
+  let parsed;
+  try {
+    parsed = new URL(String(url));
+  } catch (_) {
+    throw new GitProviderError("bad_request", operation + ": not a valid URL", { provider: kind, operation });
+  }
+  // `not_supported`, deliberately, and NOT `network`: a refused host is a permanent
+  // answer, and `network` is the one code a READ retries. Retrying an SSRF refusal
+  // would just make the same forbidden request twice.
+  if (parsed.protocol !== "https:") {
+    throw new GitProviderError("not_supported", operation + ": refused a non-HTTPS URL (" + parsed.protocol + ")", { provider: kind, operation });
+  }
+  if (!GIT_PROVIDER_HOST_NAMES.includes(parsed.hostname.toLowerCase())) {
+    throw new GitProviderError("not_supported", operation + ': refused a URL outside the allowed git hosts ("' + parsed.hostname + '")', { provider: kind, operation });
+  }
+  return parsed.href;
 }
 
 /** Header bag shim so a mocked fetch may return a plain object for `headers`. */
@@ -223,38 +300,68 @@ function makeClient(opts) {
   const sleep = sleepImpl || ((ms) => new Promise((r) => setTimeout(r, ms)));
   const limitMs = typeof timeoutMs === "number" && timeoutMs > 0 ? timeoutMs : GIT_CALL_TIMEOUT_MS;
 
-  function fail(code, message, details) {
+  // fail(message, details, code) — `secrets` is read at CALL time, so a secret
+  // registered mid-operation (a webhook secret, a variable value — F-266) is
+  // redacted out of every message produced after it was registered.
+  function fail(message, details, code = "network") {
     return new GitProviderError(code, redactSecrets(message, secrets), { provider: kind, ...details });
   }
 
+  // F-262: one budget per logical OPERATION, shared by every call it chains.
+  // `withBudget` nests safely — an inner budget can only ever be TIGHTER.
+  let budgetDeadline = null;
+  async function withBudget(totalMs, fn) {
+    const prev = budgetDeadline;
+    const want = Date.now() + (typeof totalMs === "number" && totalMs > 0 ? totalMs : GIT_OPERATION_BUDGET_MS);
+    budgetDeadline = prev === null ? want : Math.min(prev, want);
+    try { return await fn(); } finally { budgetDeadline = prev; }
+  }
+
   async function once(operation, method, path, init) {
-    const url = /^https?:/i.test(path) ? path : baseUrl + path;
-    const ac = typeof AbortController === "function" ? new AbortController() : null;
-    let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      if (ac) ac.abort();
-    }, limitMs);
+    let url = /^[a-z][a-z0-9+.-]*:/i.test(path) ? assertAllowedUrl(path, operation, kind) : baseUrl + path;
+    const remaining = budgetDeadline === null ? Infinity : budgetDeadline - Date.now();
+    if (remaining <= 0) {
+      throw fail(operation + ": operation budget of " + GIT_OPERATION_BUDGET_MS / 1000 + "s exhausted", { timeout: true }, "network");
+    }
+    const effectiveMs = Math.max(1, Math.min(limitMs, remaining === Infinity ? limitMs : remaining));
     let resp;
-    try {
-      resp = await doFetch(url, {
-        method,
-        headers: { ...defaultHeaders, ...authHeaders(), ...((init && init.headers) || {}) },
-        body: init && init.body !== undefined ? init.body : undefined,
-        redirect: (init && init.redirect) || "follow",
-        signal: ac ? ac.signal : undefined,
-      });
-    } catch (e) {
-      const aborted = timedOut || (e && (e.name === "AbortError" || e.code === "ABORT_ERR"));
-      throw fail(
-        "network",
-        aborted
-          ? operation + ": timed out after " + limitMs / 1000 + "s"
-          : operation + ": " + (e && e.message ? e.message : "network failure"),
-        { timeout: !!aborted }
-      );
-    } finally {
-      clearTimeout(timer);
+    // F-264/F-267: redirects are followed BY HAND (`redirect:"manual"`) so the host
+    // gate sees every hop. `redirect:"follow"` would let a 302 carry the Authorization
+    // header to a host the manifest never allow-listed. Bitbucket's /diff and /src
+    // legitimately 302 to bitbucket.org, which IS on the list — that is the only
+    // reason this loop exists. A WRITE is never redirect-followed: re-POSTing to a
+    // new location is the duplicate-write this module refuses to risk.
+    for (let hop = 0; ; hop++) {
+      const ac = typeof AbortController === "function" ? new AbortController() : null;
+      let timedOut = false;
+      const timer = setTimeout(() => { timedOut = true; if (ac) ac.abort(); }, effectiveMs);
+      try {
+        resp = await doFetch(url, {
+          method,
+          headers: { ...defaultHeaders, ...authHeaders(), ...((init && init.headers) || {}) },
+          body: init && init.body !== undefined ? init.body : undefined,
+          redirect: "manual",
+          signal: ac ? ac.signal : undefined,
+        });
+      } catch (e) {
+        const aborted = timedOut || (e && (e.name === "AbortError" || e.code === "ABORT_ERR"));
+        throw fail(
+          aborted
+            ? operation + ": timed out after " + effectiveMs / 1000 + "s"
+            : operation + ": " + (e && e.message ? e.message : "network failure"),
+          { timeout: !!aborted },
+          "network"
+        );
+      } finally {
+        clearTimeout(timer);
+      }
+      const isRedirect = resp.status >= 300 && resp.status < 400;
+      if (!isRedirect) break;
+      const location = headerGetter(resp.headers).get("location");
+      if (!location) throw fail(operation + ": HTTP " + resp.status + " with no Location header", { status: resp.status, operation }, "network");
+      if (isWriteMethod(method)) throw fail(operation + ": refused to follow a redirect on a write", { status: resp.status, operation }, "not_supported");
+      if (hop >= MAX_REDIRECT_HOPS) throw fail(operation + ": too many redirects", { status: resp.status, operation }, "network");
+      url = assertAllowedUrl(new URL(location, url).href, operation, kind);
     }
 
     const h = headerGetter(resp.headers);
@@ -267,11 +374,11 @@ function makeClient(opts) {
       bodyText = "";
     }
     const code = codeForStatus(resp.status, bodyText, h);
-    throw fail(code, operation + ": HTTP " + resp.status + (bodyText ? " — " + bodyText.slice(0, 300) : ""), {
+    throw fail(operation + ": HTTP " + resp.status + (bodyText ? " — " + bodyText.slice(0, 300) : ""), {
       status: resp.status,
       operation,
       retryAfterSeconds: code === "rate_limited" ? retryAfterOf(h) : null,
-    });
+    }, code);
   }
 
   /**
@@ -288,7 +395,12 @@ function makeClient(opts) {
     } catch (e) {
       const retryable = e instanceof GitProviderError && (e.code === "network" || e.code === "rate_limited");
       if (isWriteMethod(method) || !retryable) throw e;
-      const waitMs = e.retryAfterSeconds ? Math.min(e.retryAfterSeconds * 1000, 2000) : 250;
+      // F-268: the host told us when it will serve us again — honour it, up to 10 s.
+      // Capping at 2 s meant the retry was issued while still rate-limited, burning
+      // the one retry a read gets and turning a 1 s wait into a hard failure. The
+      // operation budget still bounds the total, so a long Retry-After cannot hang.
+      const waitMs = e.retryAfterSeconds ? Math.min(Math.max(e.retryAfterSeconds, 0) * 1000, RETRY_AFTER_MAX_MS) : 250;
+      if (budgetDeadline !== null && Date.now() + waitMs >= budgetDeadline) throw e;
       await sleep(waitMs);
       return once(operation, method, path, init);
     }
@@ -302,12 +414,29 @@ function makeClient(opts) {
     }
     const { resp, headers } = await request(operation, method, path, init);
     if (resp.status === 204) return { data: null, headers };
+    // F-264: a body we cannot parse is an ERROR, never `null`. Swallowing it turned
+    // an HTML error page / captive portal / proxy interstitial into `files: []` — a
+    // PR that "has no changes", which is the false-negative that authorises a bad
+    // review. An EMPTY body stays null: several endpoints legitimately answer 201
+    // with nothing.
     let data = null;
+    let raw = "";
     try {
-      if (typeof resp.json === "function") data = await resp.json();
-      else if (typeof resp.text === "function") data = JSON.parse((await resp.text()) || "null");
-    } catch (_) {
-      data = null;
+      raw = typeof resp.text === "function" ? await resp.text() : "";
+    } catch (e) {
+      throw fail(operation + ": response body could not be read", { operation }, "network");
+    }
+    if (raw && raw.trim()) {
+      try {
+        data = JSON.parse(raw);
+      } catch (_) {
+        const looksHtml = /^\s*<(?:!doctype|html|\?xml)/i.test(raw);
+        throw fail(
+          operation + ": expected JSON but got " + (looksHtml ? "an HTML page" : "an unparseable body") + " — " + raw.slice(0, 200),
+          { operation, status: resp.status },
+          "network"
+        );
+      }
     }
     return { data, headers };
   }
@@ -318,7 +447,7 @@ function makeClient(opts) {
     return { body: body || "", headers };
   }
 
-  return { request, json, text, fail, secrets };
+  return { request, json, text, fail, secrets, withBudget };
 }
 
 /* An async refusal, not a sync throw: every other method is awaited, and a
@@ -334,7 +463,8 @@ function notSupported(kind, operation, why) {
 
 function requireArg(kind, operation, name, value) {
   if (value === undefined || value === null || value === "") {
-    throw new GitProviderError("conflict", operation + ": missing required argument `" + name + "`", {
+    // A missing argument is a BAD REQUEST, never a conflict (F-265).
+    throw new GitProviderError("bad_request", operation + ": missing required argument `" + name + "`", {
       provider: kind,
       operation,
     });
@@ -356,7 +486,7 @@ function splitRepo(kind, operation, repo) {
   const s = String(repo || "");
   const i = s.indexOf("/");
   if (i > 0 && i < s.length - 1) return { owner: s.slice(0, i), name: s.slice(i + 1) };
-  throw new GitProviderError("conflict", operation + ": repo must be \"owner/name\"", {
+  throw new GitProviderError("bad_request", operation + ": repo must be \"owner/name\"", {
     provider: kind,
     operation,
   });
@@ -365,11 +495,14 @@ function splitRepo(kind, operation, repo) {
 /* ── normalised shapes ──────────────────────────────────────────────────────
  * Every adapter answers in THESE shapes. A caller never branches on `kind`.
  *   repo:    { fullName, owner, name, defaultBranch, private, url, kind }
- *   pr:      { id, number, title, state: open|merged|closed, sourceBranch,
+ *   pr:      { id, number, title, body, state: open|merged|closed, sourceBranch,
  *              targetBranch, url, headSha, author, draft }
+ *              — `body` is the PR description, <= 8 KB, RAW (F-282).
  *   prState: { state, approved, changesRequested, mergeable, reviewers[] }
  *   comment: { id, body, author, createdAt, inline: {path,line}|null,
- *              resolved: boolean|null }
+ *              resolved: true|false|null } — null is NOT PROVEN (GitHub REST cannot
+ *              answer it); false is PROVEN unresolved (Bitbucket). See
+ *              PR_COMMENT_RESOLVED_UNKNOWN (F-269).
  *   build:   { state: success|failed|running|pending|none, url, name, checks[] }
  *   deploy:  { id, state, url, createdAt }
  * ------------------------------------------------------------------------ */
@@ -548,6 +681,9 @@ function githubAdapter({ auth, fetchImpl, timeoutMs, sleepImpl }) {
     throw new GitProviderError("auth_dead", "github: no token configured", { provider: "github" });
   }
   const secrets = [token];
+  // F-266: the redaction set GROWS. `fail()` reads it at call time, so anything
+  // registered here is scrubbed from every message produced afterwards.
+  const registerSecret = (v) => { const t = String(v == null ? "" : v); if (t.length >= 8 && !secrets.includes(t)) secrets.push(t); };
   const client = makeClient({
     kind: "github",
     baseUrl: API_BASE.github,
@@ -587,6 +723,10 @@ function githubAdapter({ auth, fetchImpl, timeoutMs, sleepImpl }) {
       id: d.number,
       number: d.number,
       title: d.title,
+      // F-282: the DESCRIPTION. The review engine reads it ("(no description)" was
+      // all it ever saw). Raw and attacker-authored — capped here, fenced+defanged
+      // by the caller (see this file's "BOUNDED, NOT SANITISED" note).
+      body: capBody(d.body),
       state: prStateFromFlags(d.state === "open", !!d.merged_at || d.merged === true),
       sourceBranch: d.head && d.head.ref,
       targetBranch: d.base && d.base.ref,
@@ -679,12 +819,10 @@ function githubAdapter({ auth, fetchImpl, timeoutMs, sleepImpl }) {
     async commitFiles({ repo, branch, message, files, baseSha }) {
       requireArg("github", "commitFiles", "branch", branch);
       requireArg("github", "commitFiles", "message", message);
-      if (!Array.isArray(files) || files.length === 0) {
-        throw new GitProviderError("conflict", "commitFiles: no files given", {
-          provider: "github",
-          operation: "commitFiles",
-        });
-      }
+      assertCommitWithinCaps("github", files);
+      // F-262: ONE budget for the whole chain. commitFiles is 4–5 HTTP calls and five
+      // independent 10 s timeouts is a 50 s operation inside a 25 s resolver.
+      return client.withBudget(GIT_OPERATION_BUDGET_MS, async () => {
       const base = repoPath(repo, "commitFiles");
       let parent = baseSha;
       if (!parent) {
@@ -715,11 +853,13 @@ function githubAdapter({ auth, fetchImpl, timeoutMs, sleepImpl }) {
         force: false,
       });
       return { sha: (commit && commit.sha) || null, branch, files: files.length };
+      });
     },
 
     async openPullRequest({ repo, title, body = "", sourceBranch, targetBranch, draft = false }) {
       requireArg("github", "openPullRequest", "title", title);
       requireArg("github", "openPullRequest", "sourceBranch", sourceBranch);
+      return client.withBudget(GIT_OPERATION_BUDGET_MS, async () => { // F-262
       const base = repoPath(repo, "openPullRequest");
       const target = targetBranch || (await api.getDefaultBranch({ repo }));
       const { data } = await client.json("openPullRequest", "POST", base + "/pulls", {
@@ -730,6 +870,7 @@ function githubAdapter({ auth, fetchImpl, timeoutMs, sleepImpl }) {
         draft: !!draft,
       });
       return mapPr(data || {});
+      });
     },
 
     async getPullRequest({ repo, number }) {
@@ -743,6 +884,7 @@ function githubAdapter({ auth, fetchImpl, timeoutMs, sleepImpl }) {
     },
 
     async getPullRequestState({ repo, number }) {
+      return client.withBudget(GIT_OPERATION_BUDGET_MS, async () => { // F-262
       const pr = await api.getPullRequest({ repo, number });
       const { data } = await client.json(
         "getPullRequestState",
@@ -767,6 +909,7 @@ function githubAdapter({ auth, fetchImpl, timeoutMs, sleepImpl }) {
         reviewers: verdicts.map(([login, s]) => ({ login, state: s })),
         pr,
       };
+      });
     },
 
     async getPullRequestDiff({ repo, number }) {
@@ -782,7 +925,12 @@ function githubAdapter({ auth, fetchImpl, timeoutMs, sleepImpl }) {
           status: f.status,
           additions: f.additions,
           deletions: f.deletions,
-          patch: f.patch || "",
+          // F-263: GitHub OMITS `patch` for binary files, very large files and
+          // renames-without-changes. `f.patch || ""` turned "we were not shown this"
+          // into "this file changed nothing" — a reviewer then approves a diff it
+          // never saw. Absent is WITHHELD; present-but-empty is genuinely empty.
+          patch: typeof f.patch === "string" ? f.patch : "",
+          withheld: typeof f.patch !== "string",
         }))
       );
     },
@@ -807,9 +955,9 @@ function githubAdapter({ auth, fetchImpl, timeoutMs, sleepImpl }) {
         author: (c.user && c.user.login) || null,
         createdAt: c.created_at || null,
         inline: isInline ? { path: c.path || null, line: c.line != null ? c.line : c.original_line } : null,
-        // GitHub exposes thread resolution only through GraphQL; REST cannot
-        // answer it, and `null` means UNKNOWN — never "resolved".
-        resolved: null,
+        // F-269 — see PR_COMMENT_RESOLVED_UNKNOWN: null is NOT PROVEN, not "resolved"
+        // and not "unresolved". GitHub REST cannot answer thread resolution at all.
+        resolved: PR_COMMENT_RESOLVED_UNKNOWN,
       });
       return [
         ...(Array.isArray(inline) ? inline : []).map((c) => map(c, true)),
@@ -820,6 +968,7 @@ function githubAdapter({ auth, fetchImpl, timeoutMs, sleepImpl }) {
     async addPullRequestComment({ repo, number, body, path, line, commitSha }) {
       requireArg("github", "addPullRequestComment", "number", number);
       requireArg("github", "addPullRequestComment", "body", body);
+      return client.withBudget(GIT_OPERATION_BUDGET_MS, async () => { // F-262
       const base = repoPath(repo, "addPullRequestComment");
       if (path) {
         let sha = commitSha;
@@ -839,6 +988,7 @@ function githubAdapter({ auth, fetchImpl, timeoutMs, sleepImpl }) {
         { body }
       );
       return { id: data && data.id, inline: false, url: (data && data.html_url) || null };
+      });
     },
 
     async approvePullRequest({ repo, number, body = "" }) {
@@ -882,6 +1032,10 @@ function githubAdapter({ auth, fetchImpl, timeoutMs, sleepImpl }) {
 
     async createWebhook({ repo, url, secret, events = ["pull_request", "push"] }) {
       requireArg("github", "createWebhook", "url", url);
+      // F-266: the secret joins the redaction list BEFORE the call, because the
+      // failure path is exactly the one that echoes it (a 422 body repeating the
+      // rejected config, a proxy error quoting the request).
+      registerSecret(secret);
       const { data } = await client.json("createWebhook", "POST", repoPath(repo, "createWebhook") + "/hooks", {
         name: "web",
         active: true,
@@ -927,6 +1081,9 @@ function githubAdapter({ auth, fetchImpl, timeoutMs, sleepImpl }) {
 
     async setVariable({ repo, name, value }) {
       requireArg("github", "setVariable", "name", name);
+      // A "variable" is not a secret by GitHub's taxonomy, but callers put connection
+      // ids, webtrigger URLs and tokens-in-all-but-name in them. Redact it too (F-266).
+      registerSecret(value);
       const base = repoPath(repo, "setVariable") + "/actions/variables";
       try {
         await client.json("setVariable", "POST", base, { name, value: String(value == null ? "" : value) });
@@ -1006,15 +1163,55 @@ function rollUpChecks(runs) {
 }
 
 /**
+ * Outbound commit caps (F-270). src/git-actions.js clamps the MODEL's arguments;
+ * this is the bound every OTHER caller inherits — pipeline setup, scaffold
+ * rendering, a coder turn. Refuses (`bad_request`) rather than truncating: a
+ * silently shortened file is a corrupt commit, which is worse than a failed one.
+ */
+export function assertCommitWithinCaps(kind, files) {
+  if (!Array.isArray(files) || files.length === 0) {
+    throw new GitProviderError("bad_request", "commitFiles: no files given", { provider: kind, operation: "commitFiles" });
+  }
+  if (files.length > COMMIT_MAX_FILES) {
+    throw new GitProviderError("bad_request", "commitFiles: " + files.length + " files exceeds the cap of " + COMMIT_MAX_FILES, { provider: kind, operation: "commitFiles" });
+  }
+  let total = 0;
+  for (const f of files) {
+    const size = byteLength(String((f && f.content) == null ? "" : f.content));
+    if (size > COMMIT_MAX_FILE_BYTES) {
+      throw new GitProviderError("bad_request", "commitFiles: \"" + String(f && f.path) + "\" is " + size + " bytes, over the " + COMMIT_MAX_FILE_BYTES + "-byte per-file cap", { provider: kind, operation: "commitFiles" });
+    }
+    total += size;
+  }
+  if (total > COMMIT_MAX_TOTAL_BYTES) {
+    throw new GitProviderError("bad_request", "commitFiles: " + total + " bytes exceeds the " + COMMIT_MAX_TOTAL_BYTES + "-byte commit cap", { provider: kind, operation: "commitFiles" });
+  }
+  return files;
+}
+
+/**
  * Enforce the diff caps. A per-file patch is cut at 16 KB, and the whole set at
  * 60 KB; files that no longer fit are listed by name with `omitted: true` so the
  * model is told what it cannot see instead of silently reasoning about a subset.
  */
+/** PR body → a capped string. Never null: "" is "no description", and says so once. */
+export function capBody(value) {
+  const raw = String(value == null ? "" : value);
+  if (byteLength(raw) <= PR_BODY_MAX_BYTES) return raw;
+  return clampBytes(raw, PR_BODY_MAX_BYTES, "\n… [description truncated at 8 KB]").text;
+}
+
 export function capDiff(files) {
   let total = 0;
   const out = [];
   let truncated = false;
   for (const f of files) {
+    // F-263: a withheld patch is reported as OMITTED, never as an empty diff.
+    if (f.withheld) {
+      out.push({ ...f, patch: "", omitted: true, truncated: true, reason: "withheld-by-provider" });
+      truncated = true;
+      continue;
+    }
     const capped = clampBytes(f.patch || "", DIFF_MAX_FILE_BYTES, "\n… [file diff truncated at 16 KB]");
     if (capped.truncated) truncated = true;
     const size = byteLength(capped.text);
@@ -1042,6 +1239,8 @@ function bitbucketAdapter({ auth, fetchImpl, timeoutMs, sleepImpl }) {
     });
   }
   const secrets = [token, user + ":" + token];
+  // F-266 — see the GitHub adapter: the redaction set grows as secrets are used.
+  const registerSecret = (v) => { const t = String(v == null ? "" : v); if (t.length >= 8 && !secrets.includes(t)) secrets.push(t); };
   const basic = "Basic " + base64(user + ":" + token);
   const client = makeClient({
     kind: "bitbucket",
@@ -1078,6 +1277,9 @@ function bitbucketAdapter({ auth, fetchImpl, timeoutMs, sleepImpl }) {
       id: d.id,
       number: d.id,
       title: d.title,
+      // F-282 — Bitbucket calls it `description`, and it arrives either as a plain
+      // string or as `{ raw, markup, html }`. One normalised `body` either way.
+      body: capBody(d.description && typeof d.description === "object" ? d.description.raw : d.description),
       state,
       sourceBranch: d.source && d.source.branch && d.source.branch.name,
       targetBranch: d.destination && d.destination.branch && d.destination.branch.name,
@@ -1171,12 +1373,7 @@ function bitbucketAdapter({ auth, fetchImpl, timeoutMs, sleepImpl }) {
     async commitFiles({ repo, branch, message, files, baseSha }) {
       requireArg("bitbucket", "commitFiles", "branch", branch);
       requireArg("bitbucket", "commitFiles", "message", message);
-      if (!Array.isArray(files) || files.length === 0) {
-        throw new GitProviderError("conflict", "commitFiles: no files given", {
-          provider: "bitbucket",
-          operation: "commitFiles",
-        });
-      }
+      assertCommitWithinCaps("bitbucket", files);
       const fields = { message, branch };
       if (baseSha) fields.parents = baseSha;
       for (const f of files) fields[f.path] = f.content == null ? "" : String(f.content);
@@ -1273,6 +1470,9 @@ function bitbucketAdapter({ auth, fetchImpl, timeoutMs, sleepImpl }) {
         author: (c.user && (c.user.nickname || c.user.display_name)) || null,
         createdAt: c.created_on || null,
         inline: c.inline ? { path: c.inline.path || null, line: c.inline.to != null ? c.inline.to : c.inline.from } : null,
+        // F-269: Bitbucket DOES answer this, so `false` here is PROVEN unresolved —
+        // unlike GitHub's `null`, which is not proven at all. A validator must treat
+        // the two differently; see PR_COMMENT_RESOLVED_UNKNOWN.
         resolved: c.resolution ? true : false,
       }));
     },
@@ -1350,6 +1550,10 @@ function bitbucketAdapter({ auth, fetchImpl, timeoutMs, sleepImpl }) {
      */
     async createWebhook({ repo, url, secret, events = ["pullrequest:created", "pullrequest:updated", "repo:push"] }) {
       requireArg("bitbucket", "createWebhook", "url", url);
+      // F-266: the secret joins the redaction list BEFORE the call, because the
+      // failure path is exactly the one that echoes it (a 422 body repeating the
+      // rejected config, a proxy error quoting the request).
+      registerSecret(secret);
       const { data } = await client.json("createWebhook", "POST", repoPath(repo, "createWebhook") + "/hooks", {
         description: "CogniRunner",
         url,
@@ -1363,6 +1567,7 @@ function bitbucketAdapter({ auth, fetchImpl, timeoutMs, sleepImpl }) {
     /** Bitbucket takes the plaintext and stores it secured — no sealed box. */
     async setSecret({ repo, name, value }) {
       requireArg("bitbucket", "setSecret", "name", name);
+      registerSecret(value);
       const { data } = await client.json(
         "setSecret",
         "POST",
@@ -1374,6 +1579,7 @@ function bitbucketAdapter({ auth, fetchImpl, timeoutMs, sleepImpl }) {
 
     async setVariable({ repo, name, value }) {
       requireArg("bitbucket", "setVariable", "name", name);
+      registerSecret(value);
       const { data } = await client.json(
         "setVariable",
         "POST",

@@ -4,9 +4,12 @@
 // GitProviderError mapping and the auth_dead banner.
 import "../lib/register-mocks.mjs";
 import assert from "node:assert/strict";
-const { createGitActionExecutor, repoAllowed, sanitizeBranch, sanitizePath, capResult,
+const { createGitActionExecutor, isRepoAllowed, sanitizeBranch, sanitizePath, capResult,
   MAX_COMMIT_FILES, MAX_COMMIT_BYTES, MAX_PR_BODY_BYTES, MAX_COMMENT_BYTES, MAX_RESULT_BYTES } = await import("../../src/git-actions.js");
 const { GitProviderError } = await import("../../src/git-providers.js");
+// F-276: the allow-list predicate has ONE home — git-connections.js. git-actions
+// re-exports it; this asserts they are the same function, not two copies.
+const conns = await import("../../src/git-connections.js");
 
 let n = 0;
 const ok = (c, m) => { assert.ok(c, m); n++; };
@@ -14,26 +17,42 @@ const eq = (a, b, m) => { assert.deepEqual(a, b, m + " — got " + JSON.stringif
 
 const CONN = { id: "c1", kind: "github", owner: "acme", repos: ["acme/app", "acme/Infra"] };
 let calls = [];
+let providerBuilds = 0;
+// A PLAIN object, never a Proxy: `await provider` would hit a Proxy's `then` trap and
+// treat the provider itself as a thenable — the test would hang, not fail.
+const PROVIDER_METHODS = ["createRepo", "createBranch", "commitFiles", "openPullRequest", "getPullRequest",
+  "addPullRequestComment", "approvePullRequest", "requestChanges", "getBuildState", "triggerDeploy", "getDeployStatus"];
 const mockProvider = (impl = {}) => {
-  const rec = (name) => async (args) => { calls.push({ name, args }); return impl[name] ? impl[name](args) : { ok: true, name }; };
-  return new Proxy({}, { get: (_t, prop) => rec(String(prop)) });
+  const p = { kind: "github" };
+  for (const name of PROVIDER_METHODS) p[name] = async (args) => { calls.push({ name, args }); return impl[name] ? impl[name](args) : { ok: true, name }; };
+  return p;
 };
 const build = (over = {}) => {
   calls = [];
+  providerBuilds = 0;
   return createGitActionExecutor({
-    getConnection: async () => over.conn === undefined ? CONN : over.conn,
-    getProviderToken: async () => over.token === undefined ? "tok" : over.token,
     simulation: !!over.simulation,
     log: () => {},
-    createProvider: () => mockProvider(over.impl || {}),
+    deps: {
+      getConnection: async () => (over.conn === undefined ? CONN : over.conn),
+      providerForConnection: async (id, o) => {
+        providerBuilds++;
+        if (over.token === null) throw new GitProviderError("auth_dead", "This connection has no stored credential");
+        if (o && o.repo !== undefined && !conns.isRepoAllowed(over.conn === undefined ? CONN : over.conn, o.repo)) {
+          throw new GitProviderError("not_supported", "That repository is not on this connection's allow-list");
+        }
+        return mockProvider(over.impl || {});
+      },
+    },
   });
 };
 
 /* ---------- pure helpers ---------- */
-ok(repoAllowed(CONN, "ACME/App"), "the allow-list is case-insensitive");
-ok(repoAllowed(CONN, "acme/app.git"), "a .git suffix still matches");
-ok(!repoAllowed(CONN, "acme/other"), "an unlisted repo is not allowed");
-ok(!repoAllowed({ repos: [] }, "acme/app"), "a connection with no repos allows nothing");
+ok(isRepoAllowed === conns.isRepoAllowed, "F-276: git-actions re-exports the ONE allow-list predicate, it does not own a copy");
+ok(isRepoAllowed(CONN, "ACME/App"), "the allow-list is case-insensitive");
+ok(!isRepoAllowed(CONN, "acme/other"), "an unlisted repo is not allowed");
+ok(!isRepoAllowed({ repos: [] }, "acme/app"), "a connection with no repos allows nothing");
+ok(!isRepoAllowed({}, "acme/app"), "a malformed connection allows nothing (fail closed)");
 eq(sanitizeBranch(" feature/ai-1 "), "feature/ai-1", "a branch is trimmed");
 for (const bad of ["a..b", "-x", "x/", "a b", "he^ad", "re:f", "x?", "x~1", "a@{0}", "x.lock", ""]) {
   assert.throws(() => sanitizeBranch(bad), (e) => e.code === "invalid_args", `branch "${bad}" is refused`); n++;
@@ -54,7 +73,7 @@ ok(/not in this connection/i.test(r.error), "the refusal says why");
 
 /* ---------- no connection / no credential ---------- */
 eq((await build({ conn: null }).execute("get_pull_request", { repo: "acme/app", number: 1 })).code, "not_configured", "no connection → not_configured");
-eq((await build({ token: null }).execute("get_pull_request", { repo: "acme/app", number: 1 })).code, "not_configured", "no credential → not_configured");
+eq((await build({ token: null }).execute("get_pull_request", { repo: "acme/app", number: 1 })).code, "auth_dead", "the store's credential refusal (auth_dead) comes straight through");
 eq((await build().execute("no_such_action", {})).code, "unknown_action", "an unknown id is refused, not dispatched");
 eq((await build().execute("commit_files", "not-an-object")).code, "invalid_args", "non-object arguments are refused");
 
@@ -97,6 +116,7 @@ for (const id of ["create_repo", "create_branch", "commit_files", "open_pull_req
   eq(calls, [], `${id} never called the provider in simulation`);
   ok(out.request && typeof out.request === "object", `${id} records what it would have done`);
 }
+ok(providerBuilds === 0, "a simulated write never even BUILDS a provider — no credential is read");
 const simRead = build({ simulation: true, impl: { getPullRequest: () => ({ number: 7, title: "T" }) } });
 r = await simRead.execute("get_pull_request", { repo: "acme/app", number: 7 });
 ok(r.success === true && !r.simulated && calls.length === 1, "a READ still runs in simulation");
@@ -105,7 +125,7 @@ eq((await build({ simulation: true }).execute("commit_files", { repo: "acme/othe
 
 /* ---------- provider errors ---------- */
 const err = (code) => ({ getPullRequest: () => { throw new GitProviderError(code, code + " happened"); } });
-for (const code of ["not_found", "rate_limited", "conflict", "network", "not_supported"]) {
+for (const code of ["not_found", "bad_request", "rate_limited", "conflict", "network", "not_supported"]) {
   const out = await build({ impl: err(code) }).execute("get_pull_request", { repo: "acme/app", number: 1 });
   eq({ s: out.success, c: out.code, b: out.banner }, { s: false, c: code, b: undefined }, `GitProviderError ${code} maps through`);
 }

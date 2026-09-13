@@ -17,6 +17,22 @@ import { confirmDialog } from "../confirmDialog";
 import { getEvent, eventLabel, filtersForEvents, EVENT_CATEGORIES, requiresRepoFilter } from "../../../../src/shared/jira-events.js";
 import { DEFAULT_AGENT_ACTIONS, DEFAULT_AGENT_ROUNDS } from "../../../../src/shared/agent-actions.js";
 import { PREMADE_LISTENERS } from "../../../../src/shared/premade-rules-catalog.js";
+import { agentCapabilityCopy } from "../../../../src/shared/edition.js";
+import {
+  useAgentCapability, CAPABILITY_UNKNOWN_TITLE, CAPABILITY_UNKNOWN_TEXT,
+  CAPABILITY_CHECKING_TITLE, CAPABILITY_RETRY_LABEL,
+} from "./capability";
+
+/* F-486 - THE CATALOGUE'S `requiresCapability` FINALLY HAS A READER HERE.
+   `src/shared/premade-rules-catalog.js` declares what an instance must be able to DO
+   before a premade listener can run (today: "git", the Coder toolset). Nothing in this
+   tab ever asked, so on a Standard + Forge LLM site the button opened the editor, the
+   admin picked repositories and wrote instructions, and the refusal arrived at SAVE -
+   after all of the work. The question is the catalogue's, asked once here, and answered
+   by the ONE capability read (`useAgentCapability`, byte-identical in three apps).
+   An agentless row (`agentlessTaskType`) that declares NO capability is untouched: the
+   deterministic engine needs no Coder, so gating it would remove a starter that works. */
+const premadeNeedsCapability = (p) => !!(p && p.requiresCapability);
 
 const newStep = () => ({ id: `fn-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, name: "", conditionPrompt: "", operationType: "work_item_query", operationPrompt: "", endpoint: "", method: "GET", variableName: "result1", code: "", includeBackoff: false });
 const emptyDraft = () => ({
@@ -37,6 +53,22 @@ const hueOf = (cat) => (EVENT_CATEGORIES.find((c) => c.id === cat) || {}).hue ||
    place of the memory add form makes a claim about this reader or names the outage. */
 export default function ListenersTab({ invoke, isAdmin, userRole, siteUrl, router, roleUnknown = false }) {
   const canEdit = isAdmin || userRole === "editor" || userRole === "admin";
+  /* Ask ONLY when a row on offer needs an answer: a tab whose premades are all agentless
+     must not provoke a capability read it has no use for. */
+  const capabilityMatters = canEdit && PREMADE_LISTENERS.some(premadeNeedsCapability);
+  const { status: capStatus, verdict: capVerdict, retry: retryCapability } = useAgentCapability(invoke, capabilityMatters);
+  /* The gate direction (LAW 3): anything that is not an ENABLED verdict blocks. "Checking"
+     and "could not check" are not a yes, so they block too - but each says its own thing,
+     because claiming the Coder is OFF when the question never got an answer is exactly the
+     F-436 defect. Returns null when the row may be opened. */
+  const premadeBlock = (p) => {
+    if (!premadeNeedsCapability(p)) return null;
+    if (capStatus === "loading") return { kind: "checking", title: CAPABILITY_CHECKING_TITLE, text: "One moment - this starter cannot be opened until the check answers." };
+    if (capStatus === "unknown") return { kind: "unknown", title: CAPABILITY_UNKNOWN_TITLE, text: CAPABILITY_UNKNOWN_TEXT };
+    if (capVerdict && capVerdict.enabled === true) return null;
+    const copy = agentCapabilityCopy(capVerdict ? capVerdict.reason : "unknown");
+    return { kind: "off", title: copy.title, text: copy.remedy };
+  };
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(null);
@@ -356,12 +388,43 @@ export default function ListenersTab({ invoke, isAdmin, userRole, siteUrl, route
         <div className="lst-premade">
           <span className="lst-premade-label">Premade listeners</span>
           <div className="lst-premade-rows">
-            {PREMADE_LISTENERS.map((p) => (
-              <button type="button" key={p.key} className="lst-premade-btn" onClick={() => openPremade(p)} title={p.help}>
-                <span className="lst-premade-name">{p.label}</span>
-                <span className="lst-premade-help">{p.help}</span>
-              </button>
-            ))}
+            {PREMADE_LISTENERS.map((p) => {
+              /* F-486 - a blocked row renders DISABLED with the reason beside it, so the
+                 answer arrives before the work instead of at Save. `disabled` is the
+                 guarantee; the onClick guard is the second lock, because a disabled button
+                 is a DOM state and the gate must not depend on one. The note is a SIBLING
+                 of the button and never a child: the unknown arm carries a Retry button,
+                 and a button inside a button is not something a browser will render. */
+              const block = premadeBlock(p);
+              return (
+                <div className="lst-premade-cell" key={p.key}>
+                  <button
+                    type="button"
+                    className={`lst-premade-btn${block ? " lst-premade-btn-blocked" : ""}`}
+                    onClick={() => { if (!premadeBlock(p)) openPremade(p); }}
+                    disabled={!!block}
+                    title={block ? `${block.title}. ${block.text}` : p.help}
+                  >
+                    <span className="lst-premade-name">{p.label}</span>
+                    <span className="lst-premade-help">{p.help}</span>
+                  </button>
+                  {block && (
+                    <div
+                      className={`cpf-cap lst-premade-cap ${block.kind === "off" ? "cpf-cap-off" : block.kind === "unknown" ? "cpf-cap-unknown" : "cpf-cap-checking"}`}
+                      role={block.kind === "unknown" ? "alert" : "note"}
+                    >
+                      <span className="cpf-cap-title">{block.title}</span>
+                      <span className="cpf-cap-text">{block.text}</span>
+                      {block.kind === "unknown" && (
+                        <span className="cpf-cap-actions">
+                          <button type="button" className="cpf-cap-retry" onClick={retryCapability}>{CAPABILITY_RETRY_LABEL}</button>
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
         </div>
       )}

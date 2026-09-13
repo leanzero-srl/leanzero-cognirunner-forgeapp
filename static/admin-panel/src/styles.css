@@ -3049,3 +3049,32 @@ html[data-color-mode="dark"] .usage-allow-fill.lvl-hard { background: #ef4444; }
 html[data-color-mode="dark"] .usage-allow-note.lvl-soft { color: #f59e0b; }
 html[data-color-mode="dark"] .usage-allow-note.lvl-hard { color: #ef4444; }
 .usage-seats { font-size: 11px; color: var(--text-secondary); margin-top: 4px; }
+
+/* GIT param group (F-350) in PremadeRuleForm — solid chips, a solid segmented control,
+   and a solid red dead-credential block. MIRROR ONLY: the live copy is config-ui
+   App.js injectStyles() and admin-panel App.js injectCopiedComponentStyles().
+   css-parity.test.mjs locks all four homes on the `.pr-git` and `.pr-seg` tokens. */
+.pr-git-chosen { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.pr-git-chosen-label { font-size: 12.5px; font-weight: 600; color: var(--text-secondary); }
+.pr-git-kind { padding: 3px 9px; border-radius: 4px; color: #fff; font-size: 11px; font-weight: 700; background: #475569; }
+.pr-git-kind-github { background: #0f172a; }
+.pr-git-kind-bitbucket { background: #0052cc; }
+.pr-git-dead { display: flex; flex-direction: column; gap: 3px; margin-top: 10px; padding: 11px 13px; border-radius: var(--r-md, 8px); background: #dc2626; color: #fff; }
+.pr-git-dead-title { font-size: 12px; font-weight: 800; letter-spacing: 0.02em; }
+.pr-git-dead-text { font-size: 12px; font-weight: 500; line-height: 1.45; }
+.pr-git-toggle-row { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+.pr-git-toggle-row input[type="checkbox"] { width: 16px; height: 16px; accent-color: #2563eb; cursor: pointer; margin: 0; }
+.pr-git-toggle-label { font-size: 13px; font-weight: 700; color: var(--text-primary); }
+html[data-color-mode="dark"] .pr-git-kind { background: #64748b; }
+html[data-color-mode="dark"] .pr-git-kind-github { background: #334155; }
+html[data-color-mode="dark"] .pr-git-kind-bitbucket { background: #2684ff; }
+html[data-color-mode="dark"] .pr-git-dead { background: #ef4444; }
+html[data-color-mode="dark"] .pr-git-toggle-row input[type="checkbox"] { accent-color: #3b82f6; }
+
+/* The app's own segmented radio group — never a native <select>. */
+.pr-seg { display: inline-flex; border: 1px solid var(--border-color); border-radius: 8px; overflow: hidden; }
+.pr-seg-btn { appearance: none; background: transparent; border: none; border-right: 1px solid var(--border-color); padding: 7px 14px; font-size: 12.5px; font-weight: 600; color: var(--text-secondary); cursor: pointer; }
+.pr-seg-btn:last-child { border-right: none; }
+.pr-seg-btn:hover { color: var(--text-primary); }
+.pr-seg-btn.active { background: #2563eb; color: #fff; font-weight: 700; }
+html[data-color-mode="dark"] .pr-seg-btn.active { background: #3b82f6; }

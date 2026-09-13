@@ -213,6 +213,106 @@ try {
     await closeEditor(env);
   }
 
+  /* ---------------- J16g — F-350: the GIT param group, light AND dark ----------------
+     The defect this closes: PremadeRuleForm had no renderer for the `git` group the git
+     premade validators declare, so a designer could pick "PR merged", save a rule with no
+     connection and no repo, and the executor would ALLOW every transition as unfinished
+     config. The journey drives the whole group from empty and then asserts on the string
+     the editor hands JIRA — a rendered picker that does not reach the saved config is the
+     same silent pass wearing a form. */
+  for (const theme of ["light", "dark"]) {
+    console.log(`J16g git premade validator group (cfg-premade-git, ${theme})`);
+    const env = await openEditor(browser, "config-ui", "cfg-premade-git", theme);
+    const { page } = env;
+    try {
+      // Pick the git rule. It is in the VALIDATOR half of the catalogue only.
+      const rulePicker = page.locator(".dropdown-trigger", { hasText: "Choose a premade rule" }).first();
+      await rulePicker.click();
+      await page.waitForSelector(".dropdown-panel", { timeout: 6000 });
+      const gitOpt = page.locator(".dropdown-panel .dropdown-item", { hasText: "the pull request is merged" }).first();
+      ok(await gitOpt.count() > 0, `J16g (${theme}) the catalogue offers "Git: the pull request is merged"`);
+      await gitOpt.click();
+
+      // The whole group renders — and none of it is native chrome.
+      await page.waitForSelector(".pr-seg", { timeout: 6000 });
+      ok(await page.locator("select").count() === 0, `J16g (${theme}) no native <select> anywhere in the git group`);
+      ok(await page.locator(".pr-seg-btn").count() === 3, `J16g (${theme}) prMatch is a 3-option segmented control, not a dropdown`);
+      ok(await page.locator(".pr-git-toggle-row input[type=checkbox]").count() === 1, `J16g (${theme}) the Strict toggle renders`);
+
+      // Connection list — both mock connections, each carrying its provider kind.
+      const connPicker = page.locator(".dropdown-trigger", { hasText: "Choose a git connection" }).first();
+      ok(await connPicker.count() > 0, `J16g (${theme}) the connection picker renders with its placeholder`);
+      await connPicker.click();
+      await page.waitForSelector(".dropdown-panel", { timeout: 6000 });
+      ok(await page.locator(".dropdown-panel .dropdown-item", { hasText: "Acme engineering" }).count() > 0, `J16g (${theme}) connection list shows listGitConnections rows (Acme engineering)`);
+      ok(await page.locator(".dropdown-panel .dropdown-item", { hasText: "Acme platform" }).count() > 0, `J16g (${theme}) connection list shows the second connection (Acme platform)`);
+      ok(/GitHub/.test(await page.locator(".dropdown-panel .dropdown-item", { hasText: "Acme engineering" }).first().innerText()), `J16g (${theme}) the connection option names its provider kind`);
+      await page.locator(".dropdown-panel .dropdown-item", { hasText: "Acme engineering" }).first().click();
+      // The chosen connection gets the SOLID kind chip (never a faded tint).
+      await page.waitForSelector(".pr-git-kind-github", { timeout: 6000 });
+      ok(await page.locator(".pr-git-kind-github").count() === 1, `J16g (${theme}) the chosen connection shows a solid GitHub kind chip`);
+
+      // THE NARROWING. gc_1 allows acme/web + acme/api; acme/platform belongs to gc_2 and
+      // must not be offerable — the executor fails CLOSED on a repo off the allow-list, so
+      // a picker that offered it would build a rule that blocks every transition.
+      const repoPicker = page.locator(".dropdown-trigger", { hasText: "Choose a repository" }).first();
+      await repoPicker.click();
+      await page.waitForSelector(".dropdown-panel", { timeout: 6000 });
+      const repoItems = await page.locator(".dropdown-panel .dropdown-item").allInnerTexts();
+      ok(repoItems.some((t) => /acme\/web/.test(t)), `J16g (${theme}) repo list narrows to the connection's allow-list (acme/web)`);
+      ok(repoItems.some((t) => /acme\/api/.test(t)), `J16g (${theme}) repo list narrows to the connection's allow-list (acme/api)`);
+      ok(!repoItems.some((t) => /acme\/platform/.test(t)), `J16g (${theme}) the OTHER connection's repo (acme/platform) is not offered`);
+      await page.locator(".dropdown-panel .dropdown-item", { hasText: "acme/web" }).first().click();
+
+      // Strict copy switches, and it says what the executor's fail-open/closed table says.
+      const strictBox = page.locator(".pr-git-toggle-row input[type=checkbox]").first();
+      ok(!(await strictBox.isChecked()), `J16g (${theme}) Strict defaults OFF (the app-wide fail-OPEN contract)`);
+      // The helper text is the <p class="hint"> immediately after the toggle's own label.
+      const strictCopy = async () => (await page.locator(".pr-git-toggle-row").locator("xpath=following-sibling::p[1]").first().innerText());
+      ok(/allowed and a banner shows why/.test(await strictCopy()), `J16g (${theme}) Strict OFF copy: transition is allowed + a banner shows why`);
+      await strictBox.check();
+      ok(/blocked until the connection works again/.test(await strictCopy()), `J16g (${theme}) Strict ON copy: transition is blocked until the connection works again`);
+
+      // prMatch: pick the non-default so the saved value proves the control is wired.
+      await page.locator(".pr-seg-btn", { hasText: "Branch names the issue" }).first().click();
+      ok(await page.locator(".pr-seg-btn.active", { hasText: "Branch names the issue" }).count() === 1, `J16g (${theme}) the segmented control marks the chosen option active`);
+
+      // THE POINT OF THE WHOLE JOURNEY: all four keys reach the config Jira is handed.
+      const saved = await page.evaluate(async () => JSON.parse(await window.__ON_CONFIGURE__()));
+      ok(saved.ruleKind === "premade" && saved.ruleType === "git-pr-merged", `J16g (${theme}) saved config is the premade git rule`);
+      ok(saved.connectionId === "gc_1", `J16g (${theme}) saved config carries connectionId (gc_1)`);
+      ok(saved.repo === "acme/web", `J16g (${theme}) saved config carries repo (acme/web)`);
+      ok(saved.prMatch === "branch", `J16g (${theme}) saved config carries prMatch (branch)`);
+      ok(saved.strict === true, `J16g (${theme}) saved config carries strict (true)`);
+    } catch (e) { fail++; console.log(`  ✗ J16g (${theme}) threw: ` + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
+  /* ---------------- J16h — F-350: a DEAD credential is loud, not whispered ----------- */
+  {
+    console.log("J16h git connection with a dead credential (cfg-premade-git)");
+    const env = await openEditor(browser, "config-ui", "cfg-premade-git", "light", { __CODE_DEAD__: true });
+    const { page } = env;
+    try {
+      await page.locator(".dropdown-trigger", { hasText: "Choose a premade rule" }).first().click();
+      await page.waitForSelector(".dropdown-panel", { timeout: 6000 });
+      await page.locator(".dropdown-panel .dropdown-item", { hasText: "the pull request is merged" }).first().click();
+      await page.waitForSelector(".pr-seg", { timeout: 6000 });
+      await page.locator(".dropdown-trigger", { hasText: "Choose a git connection" }).first().click();
+      await page.waitForSelector(".dropdown-panel", { timeout: 6000 });
+      const deadOpt = page.locator(".dropdown-panel .dropdown-item", { hasText: "Acme platform" }).first();
+      ok(/credential dead/.test(await deadOpt.innerText()), "J16h the dead connection is marked IN the list, before it is chosen");
+      await deadOpt.click();
+      await page.waitForSelector(".pr-git-dead", { timeout: 6000 });
+      const bg = await page.locator(".pr-git-dead").first().evaluate((el) => getComputedStyle(el).backgroundColor);
+      ok(bg === "rgb(220, 38, 38)", `J16h the dead-credential block is SOLID red (#dc2626), not a tint — got ${bg}`);
+      const borderLeft = await page.locator(".pr-git-dead").first().evaluate((el) => getComputedStyle(el).borderLeftWidth);
+      ok(borderLeft === "0px", `J16h the dead-credential block has NO left accent rail — got ${borderLeft}`);
+      ok(/credential is dead/i.test(await page.locator(".pr-git-dead").first().innerText()), "J16h the block says the credential is dead in words");
+    } catch (e) { fail++; console.log("  ✗ J16h threw: " + e.message.split("\n")[0]); }
+    await closeEditor(env);
+  }
+
   /* ---------------- J18b — static-PF DRIVE: Regenerate + dry-run Test ---------------- */
   {
     console.log("J18b static-PF drive (regenerate + test run)");

@@ -3174,6 +3174,24 @@ const injectStyles = () => {
     html[data-color-mode="dark"] .va-notes-refusal .va-note { background: #ef4444; }
     html[data-color-mode="dark"] .va-notes-note .va-note { background: #64748b; }
 
+    /* F-538 save notes: what the SAVE narrowed, amber and solid, and it stays on screen
+       until the admin dismisses it. Not red - nothing failed; not slate - this is not a
+       live preview but a change already written. No rail, no tint, white on solid amber.
+       DARK: amber-500 (#f59e0b) under WHITE measures ~2.1:1, so the dark override pairs it
+       with the dark ink this app already uses for that hue (F-298, .cpf-cap-off above).
+       Do not "fix" it back to white. */
+    .va-save-notes { display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; margin-bottom: 12px; border-radius: var(--r-md, 8px); background: #d97706; color: #fff; }
+    .va-save-notes-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
+    .va-save-notes-title { font-size: 12.5px; font-weight: 700; letter-spacing: 0.01em; }
+    .va-save-notes-dismiss { padding: 5px 12px; border: 0; border-radius: 6px; background: #fff; color: #b45309; font-size: 11.5px; font-weight: 700; cursor: pointer; }
+    .va-save-notes-dismiss:hover { background: #fef3c7; }
+    .va-save-note { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; font-size: 12.5px; line-height: 1.5; }
+    .va-save-note-field { font-size: 10.5px; font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; }
+    .va-save-note-text { font-weight: 600; }
+    html[data-color-mode="dark"] .va-save-notes { background: #f59e0b; color: #2a1602; }
+    html[data-color-mode="dark"] .va-save-notes-dismiss { background: #2a1602; color: #fcd34d; }
+    html[data-color-mode="dark"] .va-save-notes-dismiss:hover { background: #3d2103; }
+
     /* the voice sample */
     .va-sample { display: flex; flex-direction: column; gap: 9px; padding: 14px 16px; border: 1px solid var(--border-color); border-radius: var(--r-md, 8px); }
     .va-sample-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }

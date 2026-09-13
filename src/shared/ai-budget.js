@@ -98,7 +98,10 @@ export const TOKEN_SPENDING_TASK_TYPES = Object.freeze([
   "review", "codegen", "fixcode", "skilldistill", "memory_distill", "gitreview", "coder", "va-item", "va-post",
 ]);
 export const MODE_DECIDED_TASK_TYPES = Object.freeze(["postfunction", "listener", "scheduledjob"]);
-export const NON_AI_TASK_TYPES = Object.freeze(["git-event", "gitcredrotate", "gitpipeline", "probe"]);
+// "probe-confluence" is the 1.5 §5 P3/P4 reach probe (src/async-handler.js): read-only
+// HTTP from the consumer, no model call, dev-gated by HARNESS_SECRET. It is listed here
+// because THIS is the one home of the partition every TASK_HANDLERS key must be in.
+export const NON_AI_TASK_TYPES = Object.freeze(["git-event", "gitcredrotate", "gitpipeline", "probe", "probe-confluence"]);
 
 /** ~4 chars per token is the usual English/JSON ratio; good enough for a gate. */
 export const estimateTokensFromText = (text) => Math.ceil(String(text || "").length / 4);

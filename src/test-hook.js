@@ -28,6 +28,102 @@ const q = (req, n) => {
   return Array.isArray(v) ? v[0] : v;
 };
 
+/* ───────────────── 1.5 probe P1 — the JSM audience question (FRAME §5) ─────────────────
+ *
+ * FRAME-1.5 §5 P1 is a CONTRADICTION, not a curiosity: this app's own sandbox spec says
+ * a JSM internal note is the comment property `sd.public.comment = { internal: true }`
+ * (src/shared/sandbox-api-spec.js:279), the 1.5 plan text says `sd.public.comment = false`.
+ * The code is the authority, and the VA's audience gate is built on whichever is true.
+ * So the probe POSTS one short fixed comment both ways and READS IT BACK through the
+ * JSM request-comment API, where `public` is the portal's own answer.
+ *
+ * WHAT IT REPORTS: status codes, response KEYS, the boolean `public`, and whether the
+ * property echo carries `internal: true`. NEVER a body, never a comment id, never a
+ * display name — a probe result is evidence, not a data export.
+ *
+ * THE COMMENT IS ALWAYS DELETED. The delete lives in `finally` and runs on the throw
+ * path, the non-2xx read path and the happy path alike: a probe that leaves a comment on
+ * a customer-visible request has become the leak it was measuring.
+ */
+export const JSM_PROBE_COMMENT_TEXT = "CogniRunner harness audience probe — safe to ignore, deleted automatically.";
+export const JSM_INTERNAL_PROPERTY_KEY = "sd.public.comment";
+
+/** The error CLASS only — a message can carry a URL, an issue key or a token. */
+const errorClassOf = (e) => (e && (e.code || e.name) ? String(e.code || e.name) : "Error").slice(0, 60);
+const keysOf = (data) => (data && typeof data === "object" && !Array.isArray(data) ? Object.keys(data).slice(0, 30) : []);
+const jsonOf = async (res) => { try { return JSON.parse(String(await res.text()).slice(0, 200000)); } catch { return null; } };
+
+/**
+ * The four calls, as real `route` templates. Injected as a unit so the offline suite can
+ * drive every branch (including the delete) without a network.
+ */
+export const createJsmProbeCalls = (api, route) => ({
+  postComment: (issueKey, payload) =>
+    api.asApp().requestJira(route`/rest/api/3/issue/${issueKey}/comment`, {
+      method: "POST", headers: { "Content-Type": "application/json", Accept: "application/json" }, body: JSON.stringify(payload),
+    }),
+  readJsdComment: (issueKey, commentId) =>
+    api.asApp().requestJira(route`/rest/servicedeskapi/request/${issueKey}/comment/${commentId}`),
+  readCommentProperty: (commentId) =>
+    api.asApp().requestJira(route`/rest/api/3/comment/${commentId}/properties/sd.public.comment`),
+  deleteComment: (issueKey, commentId) =>
+    api.asApp().requestJira(route`/rest/api/3/issue/${issueKey}/comment/${commentId}`, { method: "DELETE" }),
+});
+
+export async function runJsmCommentProbe({ issueKey, mode, calls }) {
+  const internal = mode !== "public";
+  const out = {
+    mode: internal ? "internal" : "public",
+    postStatus: null, hasId: false, readStatus: null, jsdPublic: null,
+    keys: [], propertyStatus: null, propertyEcho: null, deleteStatus: null, errorClass: null,
+  };
+  let commentId = null;
+  try {
+    const payload = {
+      body: { type: "doc", version: 1, content: [{ type: "paragraph", content: [{ type: "text", text: JSM_PROBE_COMMENT_TEXT }] }] },
+    };
+    // The ONE claim under test: the property shape for an internal note. The public arm
+    // sends NO property at all — that is what "public" means on this API.
+    if (internal) payload.properties = [{ key: JSM_INTERNAL_PROPERTY_KEY, value: { internal: true } }];
+    const post = await calls.postComment(issueKey, payload);
+    out.postStatus = post && post.status != null ? post.status : null;
+    const created = await jsonOf(post);
+    const rawId = created && created.id != null ? String(created.id) : "";
+    // Only a digit id is ever interpolated into a later path.
+    if (/^[0-9]{1,20}$/.test(rawId)) { commentId = rawId; out.hasId = true; }
+    if (commentId) {
+      const read = await calls.readJsdComment(issueKey, commentId);
+      out.readStatus = read && read.status != null ? read.status : null;
+      const data = await jsonOf(read);
+      out.keys = keysOf(data);
+      out.jsdPublic = data && typeof data.public === "boolean" ? data.public : null;
+      const prop = await calls.readCommentProperty(commentId);
+      out.propertyStatus = prop && prop.status != null ? prop.status : null;
+      const pv = await jsonOf(prop);
+      const value = pv && pv.value;
+      out.propertyEcho = value && typeof value === "object"
+        ? { internal: value.internal === true, keys: keysOf(value) }
+        : null;
+    }
+  } catch (e) {
+    out.errorClass = errorClassOf(e);
+  } finally {
+    // ALWAYS. Throw path, error-status path, happy path.
+    if (commentId) {
+      try {
+        const del = await calls.deleteComment(issueKey, commentId);
+        out.deleteStatus = del && del.status != null ? del.status : null;
+      } catch (e) {
+        out.deleteStatus = null;
+        out.deleteErrorClass = errorClassOf(e);
+      }
+    } else {
+      out.deleteStatus = "nothing-to-delete";
+    }
+  }
+  return out;
+}
+
 export async function testStateTrigger(req) {
   const secret = process.env.HARNESS_SECRET;
   if (!secret) return notFound();
@@ -196,6 +292,74 @@ export async function testStateTrigger(req) {
       } catch (e) {
         return json(200, { thrown: String((e && e.message) || e).slice(0, 600) });
       }
+    }
+    // ===== 1.5 §5 probes P1–P4 (dev-gated, dev/staging only) =====
+    // Every one of these returns STATUS CODES, RESPONSE KEYS and an ERROR CLASS only —
+    // never a body, never a token, never a comment id.
+    //
+    // P1 — the JSM audience contradiction. Posts one short fixed comment as the app
+    // (internal: with `sd.public.comment = {internal:true}`; public: with no property),
+    // reads it back through the JSM request-comment API and DELETES it on every path.
+    if (body.action === "probeJsmComment") {
+      if (typeof body.issueKey !== "string" || !/^[A-Z][A-Z0-9_]*-\d+$/.test(body.issueKey)) return json(400, { error: "issueKey required" });
+      const mode = body.mode === "public" ? "public" : "internal";
+      const { default: api, route } = await import("@forge/api");
+      const r = await runJsmCommentProbe({ issueKey: body.issueKey, mode, calls: createJsmProbeCalls(api, route) });
+      return json(200, r);
+    }
+    // P2 — what a site answers when the app is NOT installed on Confluence. The shape of
+    // the NOT-INSTALLED answer is what 1.5 needs; this site may well HAVE it installed,
+    // in which case `installed:true` is the honest result and the question is still open.
+    if (body.action === "probeConfluenceInstalled") {
+      try {
+        const { createConfluenceClient, INSTALL_PROBE_PATH } = await import("./confluence-client.js");
+        // The transport is instrumented ONLY to capture the status and the top-level
+        // response KEYS; the body itself is read and dropped here and never returned.
+        let status = null; let bodyKeys = [];
+        const client = createConfluenceClient({
+          request: async (path, init) => {
+            const { default: api } = await import("@forge/api");
+            const res = await api.asApp().requestConfluence(path, init);
+            status = res && res.status != null ? res.status : null;
+            const clone = typeof res.clone === "function" ? res.clone() : null;
+            if (clone) { const data = await jsonOf(clone); bodyKeys = keysOf(data); }
+            return res;
+          },
+        });
+        const out = await client.probeInstalled();
+        return json(200, { probePath: INSTALL_PROBE_PATH, installed: out.installed === true, status: status ?? out.status ?? null, code: out.code || null, bodyKeys });
+      } catch (e) {
+        return json(200, { errorClass: errorClassOf(e) });
+      }
+    }
+    // P3/P4 — the same two reaches FROM THE CONSUMER, which is where a VA item and a
+    // queued Confluence post-function actually run. One NON-AI task type, two kinds; the
+    // consumer writes `harness_probe:<kind>:<id>` (TTL 10 min) and `readHarnessProbe`
+    // reads it. The handler additionally refuses when HARNESS_SECRET is absent.
+    if (body.action === "probeConfluenceFromConsumer" || body.action === "probeServicedeskFromConsumer") {
+      try {
+        const { Queue } = await import("@forge/events");
+        const { HARNESS_PROBE_TASK, harnessProbeKey } = await import("./async-handler.js");
+        const kind = body.action === "probeServicedeskFromConsumer" ? "servicedesk" : "confluence";
+        // P4 runs on the long queue by default (the sweep it stands in for does);
+        // P3 answers the question on whichever queue the caller asks for.
+        const long = kind === "servicedesk" ? body.long !== false : body.long === true;
+        const probeId = "p" + Date.now().toString(36);
+        const taskId = "harnessprobe-" + probeId;
+        const queue = new Queue({ key: long ? "long-queue" : "async-ai-queue" });
+        await queue.push({ body: { taskType: HARNESS_PROBE_TASK, taskId, params: { kind, probeId, queue: long ? "long" : "standard", enqueuedAt: new Date().toISOString() } } });
+        return json(200, { id: probeId, kind, queue: long ? "long" : "standard", key: harnessProbeKey(kind, probeId) });
+      } catch (e) {
+        return json(200, { errorClass: errorClassOf(e) });
+      }
+    }
+    if (body.action === "readHarnessProbe") {
+      const id = String(body.id || "");
+      if (!/^[A-Za-z0-9_.:-]{1,80}$/.test(id)) return json(400, { error: "id required" });
+      const { harnessProbeKey, HARNESS_PROBE_KINDS } = await import("./async-handler.js");
+      const kind = HARNESS_PROBE_KINDS.includes(body.kind) ? body.kind : "confluence";
+      const key = harnessProbeKey(kind, id);
+      return json(200, { id, kind, key, value: (await storage.get(key)) || null });
     }
     if (body.action === "commit") {
       try {

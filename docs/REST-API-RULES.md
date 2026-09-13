@@ -291,6 +291,44 @@ an unreachable provider, a dead credential or a missing pull request blocks (`tr
 allows (`false`). The full table is in
 [`GIT-INTEGRATION.md`](GIT-INTEGRATION.md#5-git-validators).
 
+### Confluence validator (1.5), one live Confluence search per transition
+
+```json
+{
+  "id": "acme-design-page",
+  "type": "validator",
+  "ruleKind": "premade",
+  "ruleType": "confluence-page-exists",
+  "premadeRuleType": "confluence-page-exists",
+  "spaceKey": "DOCS",
+  "mode": "cql",
+  "cqlTemplate": "title ~ {summary} OR text ~ {issueKey}",
+  "strict": false,
+  "errorMessage": "Write the design page before starting work."
+}
+```
+
+`spaceKey` is required and is picked from the space picker in the editor. `mode` is `cql`
+(a matching page must exist; no AI) or `semantic` (the top three matching pages are read and
+judged against a required `prompt`). `cqlTemplate` takes `{issueKey}`, `{summary}` and
+`{field:<fieldId>}`, each substituted as a complete quoted literal, so never add your own
+quotes around a placeholder; the rule adds `space = "<key>" AND type = page AND (...)` itself.
+`strict` decides whether an unreachable Confluence (not installed, auth, network, timeout, or
+the AI judge unavailable) blocks (`true`) or allows (`false`, with a banner and the reason in
+the log row). A rule with no space, no template, no prompt in semantic mode, a space that
+does not exist or a query Confluence rejects **blocks** whatever `strict` says. The full table
+is in [`CONFLUENCE.md`](CONFLUENCE.md#5-the-validator).
+
+The condition of the same family, `ruleType: "confluence-page-linked"` with
+`conditionKind: "deterministic"` and no parameters, is evaluated by Jira from the advisory
+`cognirunner.confluence` issue property: a missing property shows the transition.
+
+The two post-functions are `ruleType: "postfunction-confluence-page"` (queued; `spaceKey`
+required, optional `titleTemplate`, `parentId`, `instructions`, `fieldId`) and
+`ruleType: "postfunction-confluence-comment"` (inline; `commentTemplate` required, same
+placeholders). Neither has `strict`; an unreachable Confluence is a named skip, a missing
+space or template an error. See [`CONFLUENCE.md`](CONFLUENCE.md#7-the-post-functions).
+
 ### Condition — deterministic only
 
 ```json
@@ -432,6 +470,15 @@ has no registry row until it is claimed (§5), so it has no owner and logs an er
 transition instead of running; claiming it, or saving it once from the editor, stamps the
 owner and the role. See [`CODER.md`](CODER.md#5-the-coder-post-function).
 
+**Virtual Administrators (1.5) are not workflow rules** and are not attached through the
+workflows API on this page. They are scheduled jobs with `mode: "va"` and live on the
+app's own Rules REST API (the bearer-token web trigger minted in Settings → API access) as
+`?resource=agents`: `GET` list and status at the editor floor; `POST` / `PUT` / `DELETE`,
+`part=drafts|effects|memory` and `action=pause|resume|tick|post|approve|reject` at the admin
+floor. `?resource=jobs` refuses a VA row by name. The routes, the statuses and examples are
+in [`LISTENERS-AND-JOBS.md`](LISTENERS-AND-JOBS.md#virtual-administrators-resourceagents);
+the record and the engine are in [`VIRTUAL-ADMINISTRATOR.md`](VIRTUAL-ADMINISTRATOR.md).
+
 ---
 
 ## 8. Worked example
@@ -529,6 +576,8 @@ curl -si -u "$EMAIL:$TOKEN" -X POST \
 ## See also
 
 - `docs/FEATURES.md` — what each rule type does and when to use it
+- `docs/CONFLUENCE.md`, the Confluence validator, condition, post-functions and agent actions (1.5)
+- `docs/VIRTUAL-ADMINISTRATOR.md`, the Virtual Administrator and `?resource=agents` (1.5)
 - `docs/PERMISSIONS.md` — the roles that gate rule management in the panel
 - `src/shared/premade-rules-catalog.js` — every deterministic rule type and its parameters
 - `src/shared/sandbox-api-spec.js` — the `api.*` surface available to static post-functions

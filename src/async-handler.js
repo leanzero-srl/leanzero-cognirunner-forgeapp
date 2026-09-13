@@ -1531,24 +1531,58 @@ const buildCoderKnowledge = async (p) => {
       // this finding is about — and the re-pin below stamps both, after which it is stable.
       if (pinned.memoryEpoch === undefined || pinned.skillEpoch === undefined) {
         verdict = "pin predates epoch stamping";
-      } else if (liveMemoryEpoch !== null && Number(pinned.memoryEpoch) !== Number(liveMemoryEpoch)) {
-        // F-598 — THE BUMP IS A TRIGGER, NOT A VERDICT. The epoch counts writes to the whole
-        // instance; the pin carries one project's rendered lines. Re-render and compare the
-        // bytes: only a block that actually MOVED may move a prompt prefix.
-        const live = await liveMemoryBlock();
-        const moved = Number(pinned.memoryEpoch) || 0;
-        if (live === null) {
-          console.warn(`[coder] memoryEpoch ${moved}→${liveMemoryEpoch}, but the memory store could not be re-read — the pin is kept and this turn replays it`);
-        } else if (live.text === String(pinned.memoryBlock || "")) {
-          console.log(`[coder] memoryEpoch ${moved}→${liveMemoryEpoch} bumped, block unchanged, pin kept — the write was to a memory this thread's project never carried`);
-          // Re-stamp the pin at the epoch we just proved it still matches, so the next turn
-          // does not pay the same re-render again for the same unrelated write.
-          out.pinEpochVerified = true;
-        } else {
-          verdict = `memoryEpoch ${moved}→${liveMemoryEpoch}, and this project's memory block changed with it`;
+      } else {
+        /*
+         * F-619 — TWO STORES, TWO VERDICTS. A PIN IS KEPT ONLY IF BOTH ARMS VERIFY.
+         *
+         * F-598 turned the memory bump into a trigger but left the skill comparison as the
+         * final `else if` of one chain — so a moved MEMORY epoch made the skill arm
+         * unreachable on that turn. On a busy instance a memory is written most turns, the
+         * memory arm wins every time, and a skill the admin DELETED replays verbatim for the
+         * life of the thread: exactly the failure F-578 exists to prevent, reached through a
+         * store that has nothing to do with skills.
+         *
+         * So the arms are evaluated INDEPENDENTLY. Each judges its own epoch, each may fail
+         * on its own, and the pin survives only when neither did. There is still ONE verdict
+         * string — the reasons are joined — because downstream (`out.pinInvalidated`, the
+         * engine's re-pin log) reads a single sentence naming why the prefix moved.
+         */
+        const reasons = [];
+        let memoryVerified = false;
+
+        // MEMORY ARM — the epoch is INSTANCE-GLOBAL while the pinned block is one project's
+        // lines, so a bump only says "look", never "rebuild": re-render and compare bytes.
+        if (liveMemoryEpoch !== null && Number(pinned.memoryEpoch) !== Number(liveMemoryEpoch)) {
+          const live = await liveMemoryBlock();
+          const moved = Number(pinned.memoryEpoch) || 0;
+          if (live === null) {
+            console.warn(`[coder] memoryEpoch ${moved}→${liveMemoryEpoch}, but the memory store could not be re-read — the memory arm abstains and this turn replays the pinned block`);
+          } else if (live.text === String(pinned.memoryBlock || "")) {
+            console.log(`[coder] memoryEpoch ${moved}→${liveMemoryEpoch} bumped, block unchanged — the write was to a memory this thread's project never carried`);
+            memoryVerified = true;
+          } else {
+            reasons.push(`memoryEpoch ${moved}→${liveMemoryEpoch}, and this project's memory block changed with it`);
+          }
         }
-      } else if (liveSkillEpoch !== null && String(pinned.skillEpoch) !== String(liveSkillEpoch)) {
-        verdict = "skillEpoch changed — a pinned skill was edited, disabled or deleted";
+
+        // SKILL ARM — reached whatever the memory arm decided. No byte re-render here, and
+        // the asymmetry is the point: `skillEpochFor` is DERIVED from the index rows of the
+        // PINNED ids alone (src/skills.js), so a move is already about a skill in THIS
+        // prefix — it is the localisation the instance-wide memory counter cannot give. A
+        // bump is therefore a verdict, as it was before F-598.
+        if (liveSkillEpoch !== null && String(pinned.skillEpoch) !== String(liveSkillEpoch)) {
+          reasons.push("skillEpoch changed — a pinned skill was edited, disabled or deleted");
+        }
+
+        if (reasons.length) {
+          verdict = reasons.join("; ");
+        } else if (memoryVerified) {
+          // BOTH arms verified and one of them paid a re-render. Re-stamp the pin at the
+          // memory epoch the bytes were just proven against, so the next turn does not pay
+          // it again for the same unrelated write. Never reached when any arm failed — a
+          // pin being rebuilt must not also be re-stamped.
+          out.pinEpochVerified = true;
+        }
       }
     } catch (e) {
       console.warn("[coder] pin epoch check skipped, replaying the pinned knowledge:", e && e.message);

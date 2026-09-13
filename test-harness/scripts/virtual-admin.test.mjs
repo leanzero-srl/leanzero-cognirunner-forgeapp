@@ -468,6 +468,137 @@ reset();
   ok(L.memoryPromptBlock(mem).includes("ADVISORY"), "memory.inject.ADVISORY_fence (F-408/F-423)");
 }
 
+
+/* ══ 5c. POWERS -> TOOLS (1.5 commit 4c) ══════════════════════════════════ */
+{
+  const A = await import("../../src/shared/agent-actions.js");
+  const powers = (over) => vaJob({ powers: { replyPublic: false, replyInternal: true, assign: false, transition: false, editFields: false, confluenceRead: false, confluenceWrite: false, git: false, webSearch: false, skillIds: [], confluenceSpaces: [], ...over } }).va;
+  const tools = (over) => V.toolActionsFor(powers(over));
+
+  // THE TABLE. Each row: the power(s) on, and exactly the ids they add over the floor.
+  const FLOOR = ["stage_reply", "ask_human", "propose_change", "ledger_note", "memory_note", "get_issue", "search_issues"];
+  eq(tools({}).join(","), FLOOR.join(","), "powers.table: the floor is speech, the notebook and the two reads");
+
+  const adds = (over, expected, name) => {
+    const got = tools(over).filter((id) => !FLOOR.includes(id));
+    eq(got.join(","), expected.join(","), name);
+  };
+  adds({ assign: true }, ["set_assignee"], "powers.table: assign -> set_assignee");
+  adds({ transition: true }, ["transition_issue"], "powers.table: transition -> transition_issue");
+  adds({ editFields: true }, ["update_fields", "add_labels", "remove_labels"], "powers.table: editFields -> the three field writes");
+  adds({ confluenceRead: true }, ["confluence_search", "confluence_get_page"], "powers.table: confluenceRead -> the two Confluence reads");
+  adds({ confluenceWrite: true, confluenceSpaces: ["ENG"] },
+    ["confluence_search", "confluence_get_page", "confluence_create_page", "confluence_update_page", "confluence_add_comment"],
+    "powers.table: confluenceWrite -> reads AND writes (a blind page edit is not a feature)");
+  adds({ git: true }, ["get_pull_request", "get_build_state", "get_deploy_status"], "powers.table: git -> READ actions only");
+  adds({ webSearch: true }, ["web_search"], "powers.table: webSearch -> web_search");
+
+  // SPEECH: `stage_reply` exists only for an agent that may speak at all.
+  ok(!tools({ replyInternal: false, replyPublic: false }).includes("stage_reply"),
+    "powers.BLOCK_stage_reply_without_either_reply_power");
+  ok(tools({ replyInternal: false, replyPublic: true }).includes("stage_reply"),
+    "powers.ALLOW_stage_reply_with_public_only");
+  // …and the notebook survives even then: an agent that cannot speak can still say it is
+  // stuck, which is the difference between a quiet agent and a guessing one.
+  for (const id of ["ask_human", "propose_change", "ledger_note", "memory_note"]) {
+    ok(tools({ replyInternal: false, replyPublic: false }).includes(id), `powers.ALLOW_${id}_is_unconditional`);
+  }
+
+  // NO WRITE-SHAPED GIT ACTION, EVER, whatever the powers say. Asserted by NAME rather
+  // than by the list's contents, the same way `add_comment`'s absence is.
+  for (const id of ["commit_files", "open_pull_request", "approve_pull_request", "trigger_deploy", "create_repo", "create_branch", "request_changes", "add_pr_comment"]) {
+    ok(!tools({ git: true }).includes(id), `powers.BLOCK_git_write_${id}`);
+  }
+  // …and no direct-speech action of any kind reaches the list under ANY power set.
+  const everything = tools({ replyPublic: true, replyInternal: true, assign: true, transition: true, editFields: true, confluenceRead: true, confluenceWrite: true, confluenceSpaces: ["ENG"], git: true, webSearch: true });
+  ok(!everything.includes("add_comment"), "powers.BLOCK_add_comment_under_every_power");
+  ok(!everything.includes("create_issue"), "powers.BLOCK_create_issue — the approval inbox is not a model-chosen target");
+  ok(!everything.some((id) => /scheme|workflow|permission|role/i.test(id)), "powers.BLOCK_no_configuration_write_exists");
+  // Every id is a real catalogue id — a typo here would be a tool the dispatcher refuses.
+  for (const id of everything) ok(A.getAgentAction(id) !== null, `powers: ${id} is a real catalogue action`);
+  // Order is the catalogue's namespace order, which keeps the cached prefix stable (F-417).
+  eq(everything.slice(0, 5).join(","), "stage_reply,ask_human,propose_change,ledger_note,memory_note", "powers: the ledger block comes first");
+}
+
+/* ══ 5d. THE HEADLESS `confirm` RULE (1.5 commit 4c) ═══════════════════════ */
+{
+  const A = await import("../../src/shared/agent-actions.js");
+  // The two Confluence PAGE writes are `confirm: true`. On a listener or a job that means
+  // "only an admin-saved rule may hold this". A VA turn is headless too — and it NEVER
+  // opens a consent ticket, so the POWERS are the confirmation.
+  ok(A.getAgentAction("confluence_create_page").confirm === true, "confluence_create_page is a confirm action");
+  const on = V.toolActionsFor(vaJob({ powers: { replyInternal: true, confluenceWrite: true, confluenceSpaces: ["ENG"] } }).va);
+  ok(on.includes("confluence_create_page"), "confirm.ALLOW_powers_are_the_confirmation");
+  const off = V.toolActionsFor(vaJob({ powers: { replyInternal: true, confluenceRead: true } }).va);
+  ok(!off.includes("confluence_create_page"), "confirm.BLOCK_not_allowed_by_the_powers");
+
+  // …and if the model invents it anyway, the ONE allow-list check refuses it, with the
+  // sentence every surface uses. This is `assertAgentActionAllowed`, not a VA branch.
+  const { assertAgentActionAllowed } = await import("../../src/agent-runner.js");
+  let threw = null;
+  try { assertAgentActionAllowed("confluence_create_page", off); } catch (e) { threw = e; }
+  ok(threw && /is not allowed for this rule/.test(threw.message), "confirm.BLOCK_invented_action_is_refused_by_the_one_gate");
+
+  // THE PROOF THAT NO CONSENT TICKET EXISTS ON THIS SURFACE: the halt protocol the Coder
+  // uses (`__agentHalt`) appears nowhere in the engine, and neither does a consent issue.
+  const { readFileSync } = await import("node:fs");
+  const vsrc = readFileSync(new URL("../../src/virtual-admin.js", import.meta.url), "utf8");
+  ok(!/__agentHalt/.test(vsrc), "confirm.BLOCK_no_halt_path — a headless VA turn never opens a consent ticket");
+  // No IDENTIFIER carrying the word either — the prose above may discuss consent tickets,
+  // but a variable, function or field named for one would be a code path toward one.
+  ok(!/[A-Za-z_$][A-Za-z0-9_$]*[Cc]onsent[A-Za-z0-9_$]*\s*[=(:]/.test(vsrc),
+    "confirm.BLOCK_no_consent_ticket_code_path_in_the_engine");
+  ok(!/"awaiting"/.test(vsrc), "confirm.BLOCK_no_awaiting_outcome — the turn cannot end waiting on a human it never asked");
+}
+
+/* ══ 5e. CONFLUENCE WRITES ARE SCOPED BY SPACE, NOT BY PROJECT ════════════ */
+{
+  // THE DECISION, stated where it is enforced: a Confluence page is in a SPACE and has no
+  // project, so `scope.write.projects` cannot answer "may this agent change this page".
+  // Asking the Jira question of a page would make every Confluence write unresolvable and
+  // therefore permanently refused. The allow-list is `powers.confluenceSpaces[]`.
+  const { vaConfluenceSpaces } = await import("../../src/shared/va-config.js");
+  const va = vaJob({
+    scope: { read: { site: false, projects: ["SUP"] }, write: { projects: ["SUP"] } },
+    powers: { replyInternal: true, confluenceWrite: true, confluenceSpaces: ["ENG"] },
+  }).va;
+  eq(vaConfluenceSpaces(va).join(","), "ENG", "space scope: the allow-list is the SPACE list, not the project list");
+
+  // The engine hands that list, and only that list, to the executor.
+  const built = [];
+  const loop = scriptedLoop([[{ name: "confluence_create_page", args: { spaceKey: "ENG", title: "t", body: "b" } }]]);
+  const d = itemDeps({
+    runLoop: loop,
+    createSession: async () => ({ changes: [], simulated: false, createApi: () => ({}) }),
+    createConfluenceExecutor: (ctx) => {
+      built.push(ctx);
+      return { namespace: "confluence", handles: (id) => String(id).startsWith("confluence_"), execute: async (id, args) => ({ success: true, action: id, args, spaces: ctx.spaces }) };
+    },
+  });
+  reset();
+  await V.runVaItem({ agent: vaJob({ powers: { replyInternal: true, confluenceWrite: true, confluenceSpaces: ["ENG"] } }), issueKey: "SUP-1", tickId: "t1", deps: d });
+  eq(built.length, 1, "space scope: the Confluence executor is built once for the turn");
+  eq(built[0].spaces.join(","), "ENG", "space scope: it receives the record's space allow-list");
+  ok(!("writeScope" in built[0]), "space scope: …and NOT the Jira write scope, which cannot answer for a page");
+  eq(loop.seen[0].result.spaces.join(","), "ENG", "space scope: the call really went through that executor");
+
+  // A read-only Confluence agent gets NO space list at all, so the executor refuses every
+  // write even though the record still names a space.
+  const readOnly = vaJob({ powers: { replyInternal: true, confluenceRead: true, confluenceWrite: false, confluenceSpaces: ["ENG"] } }).va;
+  eq(vaConfluenceSpaces(readOnly).length, 0, "space scope.BLOCK_list_without_the_power");
+
+  // NO EXECUTOR IS BUILT for a namespace the powers do not switch on — a tool the model
+  // is offered and then refused for reasons it cannot see reads as a broken instance.
+  const built2 = [];
+  reset();
+  await V.runVaItem({
+    agent: vaJob(), issueKey: "SUP-1", tickId: "t1",
+    deps: itemDeps({ runLoop: scriptedLoop([[{ name: "ledger_note", args: { note: "x" } }]]), createConfluenceExecutor: (ctx) => { built2.push(ctx); return {}; } }),
+  });
+  eq(built2.length, 0, "space scope.BLOCK_no_executor_without_the_power");
+}
+
+
 /* ══ 6. THE WRITE SCOPE, THROUGH THE REAL DISPATCHER (F-410/F-411) ═════════ */
 {
   const { createAgentActionDispatcher } = await import("../../src/agent-runner.js");

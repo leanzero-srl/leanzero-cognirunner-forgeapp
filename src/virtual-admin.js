@@ -60,7 +60,7 @@ import {
 } from "./va-ledger.js";
 import {
   VA_LIMITS, VA_DEFAULTS, VA_PROJECT_KEY_RE, VA_JQL_MAX,
-  renderGuardrailSentences, vaWriteScope,
+  renderGuardrailSentences, vaWriteScope, vaConfluenceSpaces,
 } from "./shared/va-config.js";
 import { lintVoice } from "./shared/voice-lint.js";
 import { assertWriteScope } from "./shared/agent-actions.js";
@@ -550,12 +550,82 @@ export const freeActionsFor = (va) => {
   if (p.assign) ids.push("set_assignee");
   if (p.transition) ids.push("transition_issue");
   if (p.editFields) ids.push("update_fields", "add_labels", "remove_labels");
-  // NOTE (commits 4/6): `confluenceRead`/`confluenceWrite`/`git`/`webSearch` decide the
-  // item's QUEUE today (see `itemQueueFor`) and nothing else. Their tools arrive with
-  // their executors. Listing a tool here before its executor exists would give the model
-  // a capability that refuses at dispatch, which reads to it as a broken instance.
   return ids;
 };
+
+/* ══════════════════════════════════════════════════════════════════════════════
+ * POWERS -> TOOLS (1.5 commit 4c)
+ *
+ * THE POWERS ARE THE GATE. Not `normalizeAllowedActions`: a VA does not carry an
+ * `agent.allowedActions` list an admin ticked, it carries POWERS an operator turned on
+ * in the wizard, and those are the verdict. Everything below turns that verdict into a
+ * tool list, and the item turn passes it `pregated: true` so nothing re-decides it.
+ *
+ * THE `confirm` FLAG IS NOT APPLIED HERE, AND THAT IS THE FRAME'S RULE, NOT AN OMISSION.
+ * `confirm` means "on a headless surface, only an ADMIN-saved rule may hold this" — a
+ * gate that exists because a listener or a job has nobody to ask. A VA turn is headless
+ * too, but it NEVER OPENS A CONSENT TICKET: there is no halt path anywhere in this file
+ * and none is coming. So a `confirm` action the POWERS do not allow is simply absent
+ * from the list and refused by `assertAgentActionAllowed` if the model invents it, and
+ * one the powers DO allow executes under the write scope, with the install probe gating
+ * Confluence fail-open. The operator who ticked `confluenceWrite` in the wizard IS the
+ * confirmation; asking again, of nobody, at three in the morning, is not a gate.
+ * ════════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * The CONFLUENCE tools. `confluenceRead` buys the two reads; `confluenceWrite` implies
+ * read (an agent that may change a page but not read it first would be writing blind)
+ * and adds the three writes.
+ *
+ * The WRITES are bounded by the SPACE allow-list (`powers.confluenceSpaces`), not by the
+ * Jira write scope — a page has a space and no project. An empty allow-list still offers
+ * the tools and refuses every write with a sentence the model can read, because "you may
+ * write in Confluence but nobody has said where" is a configuration mistake the agent
+ * should report rather than a capability it should not know it has.
+ */
+export const confluenceActionsFor = (va) => {
+  const p = isObj(va && va.powers) ? va.powers : {};
+  if (p.confluenceRead !== true && p.confluenceWrite !== true) return [];
+  const ids = ["confluence_search", "confluence_get_page"];
+  if (p.confluenceWrite === true) ids.push("confluence_create_page", "confluence_update_page", "confluence_add_comment");
+  return ids;
+};
+
+/**
+ * The GIT tools — READS ONLY, and the FRAME says nothing that widens it.
+ *
+ * A Virtual Administrator reads a pull request or a build to ANSWER a question on an
+ * issue. Committing, opening a PR, approving one or triggering a deploy are the Coder's
+ * job, on a surface where a human asked for a change and can see the result. Giving them
+ * to an unattended queue-worker would put an agent's unreviewed commit in somebody's
+ * repository at three in the morning, which is exactly the class of write this release
+ * built a two-phase speech clock to avoid for mere COMMENTS.
+ */
+export const GIT_READ_ACTION_IDS = Object.freeze(["get_pull_request", "get_build_state", "get_deploy_status"]);
+export const gitActionsFor = (va) => {
+  const p = isObj(va && va.powers) ? va.powers : {};
+  return p.git === true ? [...GIT_READ_ACTION_IDS] : [];
+};
+
+/** The WEB tool. One action, one per-run budget, and the tenant's MCP toggle at run time. */
+export const webActionsFor = (va) => {
+  const p = isObj(va && va.powers) ? va.powers : {};
+  return p.webSearch === true ? ["web_search"] : [];
+};
+
+/**
+ * THE WHOLE TOOL LIST for one item turn, in namespace order. ONE function, so that the
+ * turn, the tests and anything that later renders "what can this agent do" read the same
+ * answer. Order is the catalogue's, which keeps the cached prompt prefix stable across
+ * items of a tick (F-417).
+ */
+export const toolActionsFor = (va) => [
+  ...ledgerActionsFor(va),
+  ...freeActionsFor(va),
+  ...confluenceActionsFor(va),
+  ...gitActionsFor(va),
+  ...webActionsFor(va),
+];
 
 /**
  * `va-item` — ONE bounded turn on ONE issue.
@@ -683,9 +753,8 @@ const oneItemTurn = async ({ job, va, agentId, issueKey, tick, deps }) => {
   // NOT allow is simply absent from this list and refused by `assertAgentActionAllowed`
   // if the model invents it. A headless VA turn NEVER opens a consent ticket; there is
   // no halt path anywhere in this file.
-  const ledgerIds = ledgerActionsFor(va);
   const freeIds = freeActionsFor(va);
-  const allowedIds = [...ledgerIds, ...freeIds];
+  const allowedIds = toolActionsFor(va);
   const tools = deps.toolDefinitionsFor(allowedIds, { pregated: true });
 
   /* — the DISPATCH: ONE dispatcher, namespaces delegated to their executors — */
@@ -700,7 +769,32 @@ const oneItemTurn = async ({ job, va, agentId, issueKey, tick, deps }) => {
   });
   const outcome = ledgerExecutor.outcome;
   outcome.refusals = [];
+  // THE NON-JIRA NAMESPACES. Each is built ONLY when its power is on: a namespace with
+  // no executor REFUSES at dispatch (agent-runner.js), and a tool the model is offered
+  // and then refused for reasons it cannot see reads to it as a broken instance.
   const executors = { ledger: ledgerExecutor };
+  if (confluenceActionsFor(va).length) {
+    executors.confluence = deps.createConfluenceExecutor({
+      simulation: session.simulated === true,
+      // The SPACE allow-list, from the record. `vaConfluenceSpaces` returns EMPTY when
+      // `confluenceWrite` is off, so a read-only Confluence agent cannot write even if a
+      // space list was left behind by a power that was later switched off.
+      spaces: vaConfluenceSpaces(va),
+      log: deps.log,
+    });
+  }
+  if (gitActionsFor(va).length) executors.git = deps.createGitExecutor({ simulation: session.simulated === true, log: deps.log });
+  if (webActionsFor(va).length) {
+    executors.web = deps.createWebExecutor({
+      // THE RUN'S SEARCH CEILING (F-407). A VA item turn IS the run — a tick fans out to
+      // one task per item — so the ceiling is created here, once per turn, and not once
+      // per tick: a tick's items are separate tasks on separate invocations and could not
+      // share an in-memory counter even if they should.
+      runBudget: deps.createRunSearchBudget(),
+      log: deps.log,
+      deadline: now() + (deps.turnBudgetMs || 100000),
+    });
+  }
   const dispatch = deps.createDispatcher({
     issueKey, session, allowed: allowedIds, m: deps.m, executors,
     maxWrites: Math.max(0, Math.trunc(guard(va, "maxWritesPerRun"))),
@@ -1354,6 +1448,12 @@ export const DEFAULT_DEPS = {
    */
   createLedgerExecutor: (ctx) => createVaLedgerExecutor(ctx),
 
+  /* — the namespace executors the POWERS switch on (1.5 commit 4c) — */
+  createConfluenceExecutor: (ctx) => _confluenceActions.createConfluenceActionExecutor(ctx),
+  createGitExecutor: (ctx) => _gitActions.createGitActionExecutor(ctx),
+  createWebExecutor: (ctx) => _webSearchTool.createWebSearchExecutor(ctx),
+  createRunSearchBudget: () => _webSearchTool.createRunSearchBudget(),
+
   /**
    * The knowledge blocks, from the SAME builder the listener and the job use
    * (`buildAgentKnowledge`, src/listeners.js) — F-404 is open precisely because the
@@ -1464,10 +1564,19 @@ export const DEFAULT_DEPS = {
 let _agentRunner = null;
 let _agentActions = null;
 let _index = null;
+// The three namespace-executor modules (1.5 commit 4c). Loaded here for the same reason:
+// `git-actions.js` pulls in the connection store and `confluence-actions.js` the client,
+// and an offline test of the JQL wrapper must pay for neither.
+let _confluenceActions = null;
+let _gitActions = null;
+let _webSearchTool = null;
 export const primeDeps = async () => {
   if (!_agentRunner) _agentRunner = await import("./agent-runner.js");
   if (!_agentActions) _agentActions = await import("./shared/agent-actions.js");
   if (!_index) _index = await import("./index.js");
+  if (!_confluenceActions) _confluenceActions = await import("./confluence-actions.js");
+  if (!_gitActions) _gitActions = await import("./git-actions.js");
+  if (!_webSearchTool) _webSearchTool = await import("./web-search-tool.js");
 };
 
 /** Merge injected deps over the defaults. One home, so no entry point can forget one. */

@@ -38,10 +38,15 @@ const ROOT = join(STATIC, "..");
 let pass = 0, fail = 0;
 const ok = (cond, msg) => { if (cond) { pass++; console.log("  ✓ " + msg); } else { fail++; console.log("  ✗ " + msg); } };
 
-/** Every .js/.jsx under the three apps' src/, excluding build output. */
+/** Every .js/.jsx under the FOUR apps' src/, excluding build output.
+    1.4 commit 9b added issue-glance to this list: the Coder panel is the first surface in
+    that app that can be refused, so it carries a refusal.js of its own and must therefore
+    be inside every scan below - the prose-matching scan, the flag-reader count and the
+    code-identity comparison. An app with a copy of the helper that no test looks at is the
+    "one home quietly becomes four" shape this file exists to prevent. */
 function sources() {
   const out = [];
-  for (const app of ["config-ui", "config-view", "admin-panel"]) {
+  for (const app of ["config-ui", "config-view", "admin-panel", "issue-glance"]) {
     const base = join(STATIC, app, "src");
     const walk = (dir) => {
       for (const name of readdirSync(dir)) {
@@ -125,9 +130,10 @@ console.log("F-242 refusal contract — frontends branch on reason, never on pro
 console.log("F-242 the flag itself is the one that IS read");
 {
   const readers = sources().filter((f) => /reason\s*===\s*["']no-permission["']/.test(stripComments(readFileSync(f, "utf8"))));
-  // Exactly the helper homes: config-ui + admin-panel components/refusal.js, config-view's copy.
-  ok(readers.length === 3,
-    `the "no-permission" literal lives in exactly 3 files (the helper homes) — found ${readers.length}: ${readers.map((f) => relative(ROOT, f)).join(", ")}`);
+  /* Exactly the helper homes: config-ui + admin-panel components/refusal.js (the
+     byte-identical pair), config-view's copy, and issue-glance's copy (1.4 commit 9b). */
+  ok(readers.length === 4,
+    `the "no-permission" literal lives in exactly 4 files (the helper homes) — found ${readers.length}: ${readers.map((f) => relative(ROOT, f)).join(", ")}`);
   ok(readers.every((f) => /refusal\.js$/.test(f)),
     "every file that reads the flag IS a refusal.js helper — no call site re-implements the test");
 }
@@ -137,7 +143,8 @@ console.log("F-242 the helper obeys the duplication convention");
   const cu = join(STATIC, "config-ui/src/components/refusal.js");
   const ap = join(STATIC, "admin-panel/src/components/refusal.js");
   const cv = join(STATIC, "config-view/src/refusal.js");
-  const a = readFileSync(cu, "utf8"), b = readFileSync(ap, "utf8"), c = readFileSync(cv, "utf8");
+  const ig = join(STATIC, "issue-glance/src/refusal.js");
+  const a = readFileSync(cu, "utf8"), b = readFileSync(ap, "utf8"), c = readFileSync(cv, "utf8"), d = readFileSync(ig, "utf8");
   ok(a === b, "config-ui and admin-panel copies of refusal.js are byte-identical");
   /* config-view's copy carries its own, shorter docblock by design — it is a different app
      with a different reason to exist, and forcing the two to share prose would be a rule
@@ -155,6 +162,13 @@ console.log("F-242 the helper obeys the duplication convention");
   ok(body(a).includes('reason === "no-permission"') && body(c).includes('reason === "no-permission"'),
     "config-view's copy tests the same flag");
   ok(body(a) === body(c), "config-view's copy is code-identical to the shared pair (comments aside)");
+  /* 1.4 commit 9b - issue-glance's copy. It was taken BYTE-for-byte from config-view's,
+     because both sit at src/refusal.js (the same import depth) and neither app has a
+     components/ directory to share with the pair. Asserting the BYTES as well as the
+     normalised code says which file to copy when this one needs a change, and makes a
+     "small tweak" to one of the two impossible to land quietly. */
+  ok(d === c, "issue-glance's copy is byte-identical to config-view's (the file it was taken from)");
+  ok(body(a) === body(d), "issue-glance's copy is code-identical to the shared pair (comments aside)");
 }
 
 /* F-252/F-254/F-255 — THE VOCABULARY, asserted on the helper directly.

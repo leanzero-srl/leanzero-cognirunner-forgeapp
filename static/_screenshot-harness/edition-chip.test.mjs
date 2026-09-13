@@ -115,29 +115,33 @@ try {
   /* ------------------------------------------------------------------ F-294
      THE CODER PANEL (jira:issuePanel coder-panel), same bundle, different module.
 
+     WHAT THIS BLOCK OWNS: the ROUTING, and nothing else. manifest 176dd13 points both
+     `jira:issueContext cognirunner-issue-glance` and `jira:issuePanel coder-panel` at ONE
+     resource, so the bundle must read its module key and render one surface or the other.
+
      FAIL-BEFORE: with the module unread, App.js took the glance path regardless, so
      `.glance-list` rendered (4 canned activity items) and getIssueActivity was invoked —
-     both of the assertions below flip. PASS-AFTER: a `.coder-soon` card, no list, no call.
+     both of the assertions below flip. PASS-AFTER: the Coder panel, no list, no call.
 
-     Three tenants, because the upgrade sentence has three distinct answers:
-       advanced + Forge LLM  -> no sentence (they already have Coder)
-       standard + Forge LLM  -> the sentence (the one case that earns it)
-       standard + BYOK       -> no sentence (agentCapability enables BYOK outright, so
-                                upgrading buys them nothing — offering it would be a lie) */
+     1.4 commit 9b replaced the placeholder card (`.coder-soon`) with the real panel
+     (`.coder`, components/CoderPanel.jsx). The PANEL's own behaviour — the capability arms,
+     the thread, the consent ticket, the composer — is coder-panel.test.mjs's subject, not
+     this file's: this one only proves the right surface mounted and the wrong one did not.
+
+     Three tenants, because the edition chip has to stay right on all of them while the
+     capability answer varies underneath it (the chip reads the LICENSE, the panel reads
+     getAgentCapability — two questions, and this block is where they must not be confused). */
   const PANEL = [
-    { tenant: "advanced", standard: false, provider: "atlassian", upgrade: false, ed: "advanced" },
-    { tenant: "standard-forge", standard: true, provider: "atlassian", upgrade: true, ed: "standard" },
-    { tenant: "standard-byok", standard: true, provider: "anthropic", upgrade: false, ed: "standard" },
+    { tenant: "advanced", standard: false, provider: "atlassian", ed: "advanced" },
+    { tenant: "standard-forge", standard: true, provider: "atlassian", ed: "standard" },
+    { tenant: "standard-byok", standard: true, provider: "anthropic", ed: "standard" },
   ];
-  // The "1.4" badge deliberately reuses the Coder burnt orange, so its solid per-theme
-  // value is the SAME pair the chip is checked against — one hue, one dark override.
-  const BADGE_HUE = HUE.advanced;
 
   for (const theme of ["light", "dark"]) {
     for (const t of PANEL) {
       const root = ensureFreshBuildShot("issue-glance");
       const { s, port } = await serve(root);
-      const ctx = await browser.newContext({ viewport: { width: 420, height: 500 } });
+      const ctx = await browser.newContext({ viewport: { width: 420, height: 640 } });
       await ctx.addInitScript(([th, std, prov]) => {
         window.__SHOT__ = "issue-glance"; window.__THEME__ = th;
         window.__MODULE_KEY__ = "coder-panel";   // <- mount as the issuePanel, not the glance
@@ -149,15 +153,15 @@ try {
       await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: "domcontentloaded" });
       const id = `coder-panel/${theme}/${t.tenant}`;
       try {
-        /* Wait on `.glance` (the ROOT, which mounts on BOTH paths), never on
-           `.coder-soon`. Waiting on the card would make the fail-before a single
-           15s timeout that says only "no card" — the duplicate list and the stray
-           getIssueActivity, which ARE the defect, would never get asserted. Waiting
-           on the root lets every assertion below run and name what is actually wrong. */
+        /* Wait on `.glance` (the ROOT, which mounts on BOTH paths), never on the panel.
+           Waiting on the panel would make the fail-before a single 15s timeout that says
+           only "no panel" — the duplicate list and the stray getIssueActivity, which ARE
+           the defect, would never get asserted. Waiting on the root lets every assertion
+           below run and name what is actually wrong. */
         await page.locator(".glance").waitFor({ timeout: 15000 });
         await page.waitForTimeout(600); // let either path finish its invokes + render
 
-        ok(await page.locator(".coder-soon").count() === 1, `${id} placeholder card rendered`);
+        ok(await page.locator(".coder").count() === 1, `${id} the Coder panel rendered`);
 
         // --- the duplicate this finding is about ---------------------------------
         ok(await page.locator(".glance-list").count() === 0, `${id} NO duplicate activity list`);
@@ -168,39 +172,18 @@ try {
         // something. Without this, a broken recorder would read as a pass (LAW: prove the
         // negative, never merely observe it).
         ok(calls.includes("checkLicense"), `${id} __CALLS__ is recording (checkLicense seen)`);
+        // The panel asks the capability question itself rather than inferring it from the
+        // edition — the distinction commit 9b is built on.
+        ok(calls.includes("getAgentCapability"), `${id} the panel asked getAgentCapability`);
 
-        // --- the placeholder content ---------------------------------------------
+        // --- the header ------------------------------------------------------------
         /* .glance-head is `text-transform: uppercase`, and innerText reports the
-           TRANSFORMED text ("CR COGNIRUNNER CODER"), so compare case-insensitively —
-           the source casing is asserted by the lead sentence below, which is not
-           transformed. Also assert it is NOT the glance header, so a header that
-           somehow contained both strings could not pass. */
+           TRANSFORMED text ("CR COGNIRUNNER CODER"), so compare case-insensitively.
+           Also assert it is NOT the glance header, so a header that somehow contained
+           both strings could not pass. */
         const headTxt = (await page.locator(".glance-head").innerText()).toUpperCase();
         ok(headTxt.includes("COGNIRUNNER CODER"), `${id} header reads CogniRunner Coder (got "${headTxt}")`);
         ok(!headTxt.includes("ON THIS ISSUE"), `${id} header is NOT the glance header`);
-        const lead = (await page.locator(".coder-soon-lead").innerText()).trim();
-        ok(/^CogniRunner Coder arrives in 1\.4 . in-issue coding chat, GitHub & Bitbucket, PR review\.$/.test(lead), `${id} lead sentence (got "${lead}")`);
-        ok(await page.locator(".coder-soon-upgrade").count() === (t.upgrade ? 1 : 0), `${id} upgrade sentence ${t.upgrade ? "shown" : "hidden"}`);
-        if (t.upgrade) {
-          ok((await page.locator(".coder-soon-upgrade").innerText()).includes("upgrade in Jira's Manage apps"), `${id} upgrade sentence copy`);
-        }
-
-        // --- the owner's UI rules, on the new card --------------------------------
-        const badgeBg = await page.locator(".coder-soon-badge").evaluate((el) => getComputedStyle(el).backgroundColor);
-        ok(badgeBg === BADGE_HUE[theme], `${id} badge solid hue (got ${badgeBg})`);
-        ok(await page.locator(".coder-soon-badge").evaluate((el) => getComputedStyle(el).opacity) === "1", `${id} badge not faded`);
-        // No left accent rail, anywhere on the card (the owner's hardest rule).
-        const rails = await page.locator(".coder-soon").evaluate((el) => {
-          const bad = [];
-          for (const n of [el, ...el.querySelectorAll("*")]) {
-            const cs = getComputedStyle(n);
-            const lw = parseFloat(cs.borderLeftWidth) || 0;
-            const others = ["borderTopWidth", "borderRightWidth", "borderBottomWidth"].map((k) => parseFloat(cs[k]) || 0);
-            if (lw > 0 && others.some((w) => w !== lw)) bad.push(n.className + ":" + cs.borderLeftWidth);
-          }
-          return bad;
-        });
-        ok(rails.length === 0, `${id} no left accent rail (${rails.join(" | ")})`);
 
         // The chip still renders exactly once, with its solid per-theme hue.
         const chip = page.locator(".edition-chip");

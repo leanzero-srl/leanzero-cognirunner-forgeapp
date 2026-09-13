@@ -343,15 +343,47 @@ const roleFloor = (who, level, what) => (tokenRoleAtLeast(who, level)
  * REFUSED in the one refusal shape — failing open there would hand back exactly the
  * capability this gate exists to remove.
  */
+const noPrincipal = (what) => json(403, {
+  error: `This token has no owning account and may not ${what}. Mint a new token.`,
+  reason: "no-permission", needsRole: "admin", hint: "ask-app-admin",
+});
+
+/*
+ * F-493 — THE OWNING ACCOUNT'S ROLE IS RE-READ ON A CREATE TOO.
+ *
+ * Every route on an EXISTING row asks `gateExistingRow`, which reads the account's LIVE
+ * role. The create route read only the stamp on the token, so an editor token kept
+ * minting live listeners and jobs after its owning account was demoted to viewer or
+ * deactivated — rows the product's own UI would have refused that person, enabled, and
+ * governable afterwards by nobody but an admin (the owner cannot edit them either,
+ * because `ownerGate` correctly refuses them).
+ *
+ * THE SAME FLOOR THE RESOLVER USES on the same path: `requireRole(accountId, "editor")`,
+ * which is what `saveListener`'s create branch asks in src/index.js. Not a new predicate.
+ *
+ * FAILS CLOSED. A role read that throws refuses: "I cannot tell whether this account may
+ * author rules" is not "it may". ADMIN TOKENS SKIP IT, deliberately and as documented for
+ * `ownerGate` — an admin token is scope "all" and has always survived its minter's
+ * demotion; narrowing that here would revoke a power from every live integration on
+ * upgrade, silently, which is the worse failure of the two.
+ */
+const creatorGate = async (who, what) => {
+  if (tokenRole(who) === "admin") return null;
+  const accountId = who && who.createdBy;
+  if (!accountId) return noPrincipal(what);
+  const { requireRole } = await idx();
+  let allowed = false;
+  try { allowed = await requireRole(accountId, "editor"); } catch (e) { allowed = false; }
+  return allowed ? null : json(403, {
+    error: `The account this token acts as may no longer ${what}.`,
+    reason: "no-permission", needsRole: "editor", hint: "ask-app-admin",
+  });
+};
+
 const ownerGate = async (who, row, { what, minRole = "editor", destructive = false, notFound }) => {
   if (tokenRole(who) === "admin") return null; // scope "all" — the pre-F-466 behaviour
   const accountId = who && who.createdBy;
-  if (!accountId) {
-    return json(403, {
-      error: `This token has no owning account and may not ${what}. Mint a new token.`,
-      reason: "no-permission", needsRole: "admin", hint: "ask-app-admin",
-    });
-  }
+  if (!accountId) return noPrincipal(what);
   const { gateExistingRow } = await idx();
   const refusal = await gateExistingRow(accountId, row, { what, minRole, destructive, notFound });
   if (!refusal) return null;
@@ -496,6 +528,10 @@ const handleCollection = async ({ req, method, id, action, body, who, kind }) =>
   }
   if (method === "POST") {
     const gate = floor("editor", `create ${kind}`); if (gate) return gate;
+    // …and the LIVE role of the account the token acts as (F-493). The token's own role
+    // is a stamp made when it was minted; every other route on this surface re-reads the
+    // account, and a create that did not was how a demoted owner kept authoring rules.
+    const creator = await creatorGate(who, `create ${kind}`); if (creator) return creator;
     const items = Array.isArray(body) ? body : (body && Array.isArray(body[kind]) ? body[kind] : [body]);
     if (!items.length || items.length > 100) return json(400, { error: "provide 1-100 items" });
     // CREATE is the same door (F-478): a `mode:"va"` body here would mint an agent with

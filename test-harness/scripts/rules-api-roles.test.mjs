@@ -250,6 +250,44 @@ for (const [label, resource, opts, floor] of ROUTES) {
   }
 }
 
+/* ═════ F-493 — A CREATE RE-READS THE OWNING ACCOUNT'S LIVE ROLE ═════
+ *
+ * A token's role is a stamp made at mint time. Every route on an EXISTING row re-reads
+ * the account through `gateExistingRow`; the CREATE route read only the stamp, so an
+ * editor token kept minting live, enabled rules after its owner was demoted or
+ * deactivated — rules the product's own UI would have refused that person, and which
+ * nobody but an admin could govern afterwards (the owner cannot edit them either).
+ *
+ * Deliberately LAST in this file: it demotes `acc-own`, and every assertion above needs
+ * that account to still hold the editor role. */
+{
+  const bodies = [["listeners", listenerBody], ["jobs", jobBody]];
+  // ALLOW first, so the BLOCK below cannot pass because the route was broken all along.
+  for (const [kind, mk] of bodies) {
+    ok((await rest("owner", kind, { method: "POST", body: mk("while-editor") })).status === 201,
+      `F-493.ALLOW — an editor token whose account still holds the role creates ${kind}`);
+  }
+
+  await storage.set("app_admins", [
+    { accountId: "admin-1", displayName: "Admin", role: "admin", scope: "all" },
+    // Bob left the team: the app admin took his editor role away. His token was never revoked.
+    { accountId: "acc-own", displayName: "Demoted", role: "viewer", scope: "own" },
+  ]);
+
+  for (const [kind, mk] of bodies) {
+    const r = await rest("owner", kind, { method: "POST", body: mk("after-demotion") });
+    ok(r.status === 403 && r.body.reason === "no-permission" && r.body.needsRole === "editor",
+      `F-493.BLOCK — a demoted owner's token may no longer create ${kind} (got ${r.status} ${JSON.stringify(r.body).slice(0, 160)})`);
+    ok((await rest("admin", kind, { method: "GET" })).body[kind].every((x) => x.name !== "after-demotion"),
+      `…and nothing was written for ${kind}`);
+    // The ADMIN token is unchanged and documented as such: it is scope "all", it has
+    // always survived its minter's demotion, and narrowing it would break live
+    // integrations silently on upgrade.
+    ok((await rest("admin", kind, { method: "POST", body: mk("admin-still-can") })).status === 201,
+      `F-493 — an ADMIN token still creates ${kind} (the deliberate residual)`);
+  }
+}
+
 // ONE ownership home: the verdict is asked in src/index.js, never re-derived here.
 {
   const fs = await import("node:fs");

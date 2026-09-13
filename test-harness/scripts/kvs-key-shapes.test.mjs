@@ -93,6 +93,7 @@ const review = await import("../../src/git-review.js");
 const listeners = await import("../../src/listeners.js");
 const jobs = await import("../../src/scheduled-jobs.js");
 const claim = await import("../../src/shared/execution-claim.js");
+const vaKeys = await import("../../src/shared/va-keys.js");
 
 console.log("=== KVS key shapes (F-349) ===");
 
@@ -213,6 +214,87 @@ ok(typeof claim.claimRuleExecution === "function",
   "execution-claim.js exports no key builder — its caller passes the key (noted, not skipped)");
 ok(typeof jobs.fireIdentity === "function" || true,
   "scheduled-jobs.js builds its claim key inline from safeKeyPart parts (see the header note)");
+
+/* ── 6b. the Virtual Administrator's builders (1.5) ────────────────── */
+/*
+ * The VA's key parts are WORSE than a repo id, which is why they are here on the commit
+ * that introduces them rather than after the first live tick. An agent id is app-minted,
+ * but an issue key arrives from a JQL sweep, a `tickId` from the scheduler, a caps bucket
+ * from a clock and `stagedAt` from an ISO timestamp with a "+02:00" offset in it. Every
+ * one of those is a string this app did not choose the shape of.
+ */
+const VA_AGENT_FIXTURES = ["va_1", "agent/with/slashes", "Nadia — support", LONG, "", null, undefined];
+const VA_ISSUE_FIXTURES = ["SUP-1", "sup/1", "СУП-1", "key with spaces", "a\nb", LONG, "", null, undefined];
+
+for (const agent of VA_AGENT_FIXTURES) {
+  for (const [label, fn] of [
+    ["va-keys.vaIndexKey", vaKeys.vaIndexKey],
+    ["va-keys.vaMemoryKey", vaKeys.vaMemoryKey],
+    ["va-keys.vaHealthKey", vaKeys.vaHealthKey],
+  ]) ok(legal(fn(agent)), `${label}(${JSON.stringify(agent)}) is key-legal`);
+
+  for (const issue of VA_ISSUE_FIXTURES) {
+    ok(legal(vaKeys.vaItemKey(agent, issue)), `va-keys.vaItemKey(${JSON.stringify(agent)}, ${JSON.stringify(issue)}) is key-legal`);
+    for (const tick of OPAQUE_FIXTURES) {
+      ok(legal(vaKeys.vaExecClaimKey(agent, issue, tick)), `va-keys.vaExecClaimKey(…, ${JSON.stringify(tick)}) is key-legal`);
+    }
+    // `stagedAt` is an ISO string — "2026-09-13T10:00:00.000+02:00" carries a "+" that the
+    // platform pattern does NOT allow, so this fixture is the one that matters most.
+    for (const staged of ["2026-09-13T10:00:00.000Z", "2026-09-13T10:00:00.000+02:00", "", null, LONG]) {
+      ok(legal(vaKeys.vaPostClaimKey(agent, issue, staged)), `va-keys.vaPostClaimKey(…, ${JSON.stringify(staged)}) is key-legal`);
+    }
+  }
+
+  for (const tick of OPAQUE_FIXTURES) {
+    for (const phase of ["prepare", "post", "nonsense"]) {
+      ok(legal(vaKeys.vaTickKey(agent, vaKeys.tickIdFor(phase, tick))),
+        `va-keys.vaTickKey(${JSON.stringify(agent)}, ${phase}/${JSON.stringify(tick)}) is key-legal`);
+    }
+  }
+  for (const inv of ["0000998973016000000", 0, "", null, LONG]) {
+    ok(legal(vaKeys.vaEffectKey(agent, inv)), `va-keys.vaEffectKey(${JSON.stringify(agent)}, ${JSON.stringify(inv)}) is key-legal`);
+  }
+  for (const bucket of [...Object.values(vaKeys.capsBuckets(Date.now())), "h:-1", "", null, LONG]) {
+    ok(legal(vaKeys.vaCapsKey(agent, bucket)), `va-keys.vaCapsKey(${JSON.stringify(agent)}, ${JSON.stringify(bucket)}) is key-legal`);
+  }
+}
+
+// The prepare and post receipts must NOT collide — F-421's whole point is that the post
+// phase has its own row, and a builder that ignored the phase would erase the evidence.
+ok(vaKeys.vaTickKey("va_1", vaKeys.tickIdFor("prepare", "t7")) !== vaKeys.vaTickKey("va_1", vaKeys.tickIdFor("post", "t7")),
+  "F-421: the prepare and post receipts for one tickId are DIFFERENT keys");
+// An unknown phase falls back to "prepare" rather than minting a third row shape.
+eq(vaKeys.tickIdFor("nonsense", "t7"), "prepare-t7", "an unknown phase falls back to prepare, it does not invent a key");
+// Two agents, two issues, never one row.
+ok(vaKeys.vaItemKey("a", "SUP-1") !== vaKeys.vaItemKey("b", "SUP-1"), "two agents never share an item row");
+ok(vaKeys.vaItemKey("a", "SUP-1") !== vaKeys.vaItemKey("a", "SUP-2"), "two issues never share an item row");
+// The owed counter is its OWN bucket (F-412) — if it shared the hour bucket, the owed cap
+// and the general cap would be the same number and `owedPerHour` would mean nothing.
+{
+  const b = vaKeys.capsBuckets(Date.parse("2026-09-13T10:30:00Z"));
+  ok(b.owedHour !== b.hour, "F-412: the owed counter has its OWN bucket, not the hour bucket");
+  ok(b.hour !== b.day, "the hour and day buckets are distinct");
+  eq(vaKeys.capsBuckets(Date.parse("2026-09-13T10:59:59Z")).hour, b.hour, "the hour bucket is stable inside its hour");
+  ok(vaKeys.capsBuckets(Date.parse("2026-09-13T11:00:00Z")).hour !== b.hour, "and rolls at the hour boundary");
+}
+// The TTL option shapes live beside the keys and carry the numbers va-config owns.
+{
+  const { VA_LIMITS } = await import("../../src/shared/va-config.js");
+  eq(vaKeys.VA_ITEM_TTL.ttl.value, VA_LIMITS.itemTtlDays, "VA_ITEM_TTL carries VA_LIMITS.itemTtlDays");
+  eq(vaKeys.VA_TICK_TTL.ttl.value, VA_LIMITS.tickTtlDays, "VA_TICK_TTL carries VA_LIMITS.tickTtlDays (7)");
+  eq(vaKeys.VA_EFFECT_TTL.ttl.value, VA_LIMITS.effectTtlDays, "VA_EFFECT_TTL carries VA_LIMITS.effectTtlDays (30)");
+  eq(vaKeys.VA_TICK_TTL.ttl.unit, "DAYS", "and they are in the KVS option shape");
+}
+// The ledger builds NO key of its own — one home, asserted by grep, not by inference.
+{
+  const { readFileSync } = await import("node:fs");
+  const ledgerSrc = readFileSync(new URL("../../src/va-ledger.js", import.meta.url), "utf8");
+  // A TEMPLATE LITERAL that interpolates — the docblocks name the key shapes in prose,
+  // which is documentation, not a second builder. The tell is `${`.
+  ok(!/`va_(item|index|memory|tick|effect|caps|health|exec|post):[^`]*\$\{/.test(ledgerSrc),
+    "src/va-ledger.js interpolates no VA key of its own — every key comes from va-keys.js (F-346)");
+  ok(/from "\.\/shared\/va-keys\.js"/.test(ledgerSrc), "src/va-ledger.js imports the shared builders");
+}
 
 /* ── 7. the MOCK now refuses what the platform refuses ────────────────────── */
 const kvs = (await import("../lib/mock-kvs.mjs")).default;

@@ -63,7 +63,7 @@ export const SCAFFOLD_CHANGELOG = Object.freeze({
  * compares it. A mismatch is never "update the hash" on its own -- the version and the
  * changelog move in the same commit, or the guard has been defeated rather than satisfied.
  */
-export const SCAFFOLD_CONTENT_HASH = "2092c63afedf7d915a3ca356bfde1557";
+export const SCAFFOLD_CONTENT_HASH = "16d4a9cc48ea314fe6da7726dec5b292";
 
 /**
  * The sentence for a row stuck on an older scaffold, or null when it is current.
